@@ -292,6 +292,14 @@ void Fast3dGui::HandleWindowEvents(Fast::WindowEvent event) {
                     break;
                 case SDL_KEYDOWN:
                 case SDL_KEYUP:
+                    // The consolidated settings window follows the key event,
+                    // never a per-frame sample: a tap whose press and release
+                    // land inside one host iteration must still toggle it.
+                    if (sdlEvent.type == SDL_KEYDOWN &&
+                        sdlEvent.key.keysym.scancode == SDL_SCANCODE_F1 &&
+                        sdlEvent.key.repeat == 0) {
+                        ToggleOot3dGraphicsWindow();
+                    }
                     // Host renderer shortcuts must not also reach ImGui bindings.
                     if (sdlEvent.key.keysym.scancode != SDL_SCANCODE_F1 &&
                         sdlEvent.key.keysym.scancode != SDL_SCANCODE_F2) {
@@ -316,21 +324,22 @@ void Fast3dGui::HandleWindowEvents(Fast::WindowEvent event) {
     }
 }
 
+void Fast3dGui::ToggleOot3dGraphicsWindow() {
+#ifdef ENABLE_OOT3D_VULKAN
+    if (mImpl.Backend != WindowBackend::FAST3D_SDL_OOT3D_VULKAN) {
+        return;
+    }
+    const auto settingsWindow = GetGuiWindow("OOT3D Graphics");
+    if (settingsWindow != nullptr) {
+        settingsWindow->ToggleVisibility();
+    }
+#endif
+}
+
 void Fast3dGui::DrawMenu() {
     Ship::Gui::DrawMenu();
 #ifdef ENABLE_OOT3D_VULKAN
     if (mImpl.Backend == WindowBackend::FAST3D_SDL_OOT3D_VULKAN) {
-        const auto settingsWindow = GetGuiWindow("OOT3D Graphics");
-        const auto window = std::dynamic_pointer_cast<Fast3dWindow>(
-            Ship::Context::GetRawInstance()->GetWindow());
-        const bool toggleKeyDown =
-            window != nullptr &&
-            window->IsKeyDown(Ship::KbScancode::LUS_KB_F1);
-        if (settingsWindow != nullptr && toggleKeyDown &&
-            !mOot3dGraphicsToggleKeyWasDown) {
-            settingsWindow->ToggleVisibility();
-        }
-        mOot3dGraphicsToggleKeyWasDown = toggleKeyDown;
         const bool hostUiVisible = GetAnyGuiWindowVisible();
         if (hostUiVisible != mOot3dGraphicsWindowVisible) {
             mOot3dGraphicsWindowVisible = hostUiVisible;

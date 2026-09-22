@@ -164,8 +164,9 @@ class Fast3dGui : public Ship::Gui {
 
   private:
     void SyncOot3dVulkanMousePosition();
+    /** @brief Toggles the consolidated OOT3D settings window from a key event. */
+    void ToggleOot3dGraphicsWindow();
     bool mOot3dGraphicsWindowVisible = false;
-    bool mOot3dGraphicsToggleKeyWasDown = false;
 
     /** @brief Applies any pending resolution or MSAA changes to the render target. */
     void ApplyResolutionChanges();

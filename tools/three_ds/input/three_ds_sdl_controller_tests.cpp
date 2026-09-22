@@ -62,6 +62,20 @@ int main(int argc, char** argv) try {
     Ship::ConfigureSDLControllerCapabilities();
     Require(!SDL_GetHintBoolean(SDL_HINT_JOYSTICK_HIDAPI_PS4_RUMBLE, SDL_TRUE),
             "controller setup overwrote explicit user preference");
+    // Steam Input delivers pads to Linux/SteamOS sessions as its own virtual
+    // gamepad, which SDL drops unless the process opts in. SDL3 reads the
+    // environment directly, so that is what has to be set - and an explicit
+    // Steam or user value must survive.
+    const auto steamVirtualPadHint = [] {
+        const char* value = SDL_getenv("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD");
+        return value != nullptr ? std::string_view(value) : std::string_view{};
+    };
+    Require(steamVirtualPadHint() == "1", "Steam Input virtual gamepad opt-in is not applied");
+    SDL_setenv("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD", "0", 1);
+    Ship::ConfigureSDLControllerCapabilities();
+    Require(steamVirtualPadHint() == "0",
+            "controller setup overwrote an explicit virtual gamepad preference");
+    SDL_setenv("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD", "1", 1);
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     Require(SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0, "SDL initialization");
     const int index = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER,
