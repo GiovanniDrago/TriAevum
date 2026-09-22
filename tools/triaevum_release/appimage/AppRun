@@ -5,4 +5,10 @@ APPDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 export APPDIR
 package="$APPDIR/usr/lib/triaevum"
 export LD_LIBRARY_PATH="$package/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# A launch that cannot reach the Forge must say so: a desktop launch that exits
+# silently is indistinguishable from "the application does nothing".
+if [ ! -x "$package/TriAevumForge" ]; then
+    echo "TriAevum: bundled Forge is missing or not executable: $package/TriAevumForge" >&2
+    exit 1
+fi
 exec "$package/TriAevumForge" --play "$@"

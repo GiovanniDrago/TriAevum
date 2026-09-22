@@ -2,10 +2,20 @@ param(
     [Parameter(Mandatory=$true)][string]$Build,
     [Parameter(Mandatory=$true)][string]$Dependencies,
     [Parameter(Mandatory=$true)][string]$Compiler,
-    [string]$Vcpkg = 'C:/vcpkg/installed/x64-windows-static'
+    [string]$Vcpkg = 'C:/vcpkg/installed/x64-windows-static',
+    [string]$Archives = ''
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot/../../..").Path
+# Library outputs go to the configured archive directory, not to the build
+# tree: read it from the cache so the smoke links what the build produced
+# instead of stale copies left there by an older configure.
+if (!$Archives) {
+    $match = Select-String -Path (Join-Path $Build 'CMakeCache.txt') `
+        -Pattern '^CMAKE_ARCHIVE_OUTPUT_DIRECTORY:[^=]*=(.+)$' | Select-Object -First 1
+    if (!$match) { throw "cannot resolve the archive directory from $Build/CMakeCache.txt" }
+    $Archives = $match.Matches[0].Groups[1].Value
+}
 $imgui = Join-Path $Dependencies 'imgui-src'
 $output = Join-Path $Build 'f1-settings-smoke.exe'
 $testObjects = Join-Path $Build 'f1-settings-smoke-objects'
@@ -28,12 +38,12 @@ $args = @('-std=c++20', '-O1', '-fms-runtime-lib=static', '-DIMGUI_ENABLE_TEST_E
     "-I$repo/runtime/three_ds_recomp/src/fast/renderer",
     "-I$repo/tools/three_ds/input",
     "$PSScriptRoot/f1_settings_panel_smoke.cpp",
-    "$Build/three_ds_recomp_runtime/src/three_ds_recomp_runtime.lib",
-    "$Build/three_ds_recomp_runtime/src/fast/renderer_extension_core.lib",
-    "$Build/three_ds_recomp_runtime/stb.lib", "$Vcpkg/lib/zs.lib",
+    "$Archives/three_ds_recomp_runtime.lib",
+    "$Archives/renderer_extension_core.lib",
+    "$Archives/stb.lib", "$Vcpkg/lib/zs.lib",
     "$Vcpkg/lib/spdlog.lib", "$Vcpkg/lib/fmt.lib",
-    "$Build/oot3d_ui_topscreen.lib", "$Build/oot3d_native_control_config.lib",
-    "$Build/three_ds_recomp_input.lib",
+    "$Archives/oot3d_ui_topscreen.lib", "$Archives/oot3d_native_control_config.lib",
+    "$Archives/three_ds_recomp_input.lib",
     "$Build/CMakeFiles/oot3d_native_game.dir/tools/oot3d/native_game_runtime/oot3d_native_controls_settings_panel.cpp.obj",
     "$Build/CMakeFiles/oot3d_native_game.dir/tools/oot3d/native_game_runtime/oot3d_top_screen_settings_panel.cpp.obj",
     "$Build/CMakeFiles/oot3d_native_game.dir/tools/oot3d/native_game_runtime/oot3d_game_language.cpp.obj",

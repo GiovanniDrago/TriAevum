@@ -49,8 +49,12 @@ def atomic_write_json(path: Path, value: object) -> None:
 
 def atomic_write_bytes(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Keep the temporary name shorter than the destination. Content-addressed
+    # destinations already sit close to the legacy Win32 path limit inside a
+    # deep installation root, where a longer temporary name turns a legal write
+    # into a misleading "No such file or directory" failure (issue 53).
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        prefix=".", suffix=".tmp", dir=path.parent
     )
     temporary = Path(temporary_name)
     try:

@@ -1,4 +1,6 @@
+import io
 import os
+from contextlib import redirect_stderr
 from pathlib import Path
 import sys
 import tempfile
@@ -31,6 +33,30 @@ class HostLayoutTests(unittest.TestCase):
             env = dict(self.env, FLATPAK_ID=app_id)
             self.assertEqual(for_package(self.package, environ=env, platform="linux").activation,
                              self.package)
+
+    def test_appimage_layout_keeps_user_data_without_appdir(self):
+        """The payload layout owns the decision; the environment may be absent."""
+        for appdir in ("", ".", str(self.root / "another mount")):
+            env = {"HOME": str(self.root / "home"), "APPDIR": appdir}
+            for data_home, expected in (
+                (None, self.root / "home/.local/share/TriAevum"),
+                (str(self.xdg), self.xdg / "TriAevum"),
+            ):
+                if data_home is not None:
+                    env["XDG_DATA_HOME"] = data_home
+                else:
+                    env.pop("XDG_DATA_HOME", None)
+                with self.subTest(appdir=appdir, data_home=data_home):
+                    layout = for_package(self.root / "mount/usr/lib/triaevum",
+                                         platform="linux", environ=env)
+                    self.assertEqual(layout.activation, expected)
+
+    def test_similar_directory_name_is_not_an_appimage(self):
+        for package in (self.root / "opt/triaevum", self.root / "triaevum"):
+            with self.subTest(package=package.name):
+                layout = for_package(package, platform="linux",
+                                     environ={"HOME": str(self.root / "home")})
+                self.assertEqual(layout.activation, package)
 
     def test_flatpak_defaults_are_writable_and_shared(self):
         with (patch.object(sys, "platform", "linux"),
@@ -85,3 +111,19 @@ class DesktopLauncherTests(unittest.TestCase):
               patch.object(desktop_launcher.forge_gui, "launch_runtime", side_effect=OSError("changed module"))):
             self.assertEqual(desktop_launcher.main([]), 0)
             gui.assert_called_once_with(startup_error="changed module")
+
+    def test_opened_file_argument_still_reaches_the_application(self):
+        """A desktop integration that passes the AppImage path must not disable it."""
+        with tempfile.TemporaryDirectory() as temporary:
+            opened = Path(temporary) / "TriAevum.AppImage"
+            opened.write_bytes(b"")
+            with (patch.object(desktop_launcher.forge_gui, "load_active_title", return_value=None),
+                  patch.object(desktop_launcher.forge_gui, "main", return_value=0) as gui):
+                self.assertEqual(desktop_launcher.main([str(opened)]), 0)
+                self.assertEqual(desktop_launcher.main(["--forge", str(opened)]), 0)
+                self.assertEqual(gui.call_count, 2)
+
+    def test_unknown_option_is_still_rejected(self):
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(desktop_launcher.main(["--unknown"]), 2)
+            self.assertEqual(desktop_launcher.main(["missing-file.cci"]), 2)
