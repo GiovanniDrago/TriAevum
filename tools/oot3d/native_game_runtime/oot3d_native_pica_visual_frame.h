@@ -174,6 +174,10 @@ class Oot3dPicaVisualFrameAccumulator final {
     std::optional<Oot3dPicaVisualFrame>
     Finish(const Oot3dPicaDisplayTransferSubmission& topTransfer, bool allowTransferOnly = false);
     size_t PendingDrawCount() const;
+    // A deferred raw TextureCopy owns one guest PPF completion. The obligation
+    // is part of the ordered replay state, so it must survive save and restore
+    // and be discharged by the dependency boundary, never by host-local state.
+    bool HasPendingRawCopyCompletion() const;
     Oot3dPicaVisualFrameAccumulatorState CaptureState() const;
     bool RestoreState(Oot3dPicaVisualFrameAccumulatorState state);
 

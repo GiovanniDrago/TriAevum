@@ -225,6 +225,35 @@ int main() {
                 decoded.LatestFrame->DisplayTransfers[0].Transfer.TextureCopyBytes == 768000U &&
                 decoded.LatestFrame->DisplayTransfers[0].Transfer.OutputSize == 0x4003C0U,
             "raw copy operation lost its fields on savestate round-trip");
+    {
+        // A raw copy still pending in the ordered replay state owes the guest
+        // one PPF completion. That obligation must survive save and restore and
+        // be discharged by the dependency boundary, never by host-local state
+        // (issue 49: the guest otherwise waits forever on a frozen frame).
+        Oot3dPicaVisualReplayState pending = state;
+        pending.Scheduler.Accumulator.PendingDisplayTransfers = {rawCopy};
+        std::vector<uint8_t> pendingEncoded;
+        Require(EncodeOot3dPicaVisualReplayState(pending, pendingEncoded, &error), error);
+        Oot3dPicaVisualReplayState pendingDecoded;
+        Require(DecodeOot3dPicaVisualReplayState(pendingEncoded, pendingDecoded, &error), error);
+        Require(pendingDecoded.Scheduler.Accumulator.PendingDisplayTransfers.size() == 1U,
+                "a pending raw copy was dropped by the savestate round-trip");
+        Oot3dPicaPresentationScheduler scheduler;
+        Require(scheduler.RestoreState(std::move(pendingDecoded.Scheduler)),
+                "the restored scheduler rejected a pending raw copy");
+        Require(scheduler.HasPendingRawCopyCompletion(),
+                "a restored pending raw copy stopped owing its guest completion");
+        const auto dependencyWork = scheduler.TakeDependencyWork();
+        Require(dependencyWork.has_value() &&
+                    dependencyWork->DisplayTransfers.size() == 1U &&
+                    dependencyWork->DisplayTransfers[0].CompletionId == rawCopy.CompletionId &&
+                    dependencyWork->DisplayTransfers[0].SignalInterrupt &&
+                    dependencyWork->DisplayTransfers[0].Transfer.TextureCopyBytes ==
+                        rawCopy.Transfer.TextureCopyBytes,
+                "the dependency boundary did not drain the restored raw copy exactly once");
+        Require(!scheduler.HasPendingRawCopyCompletion(),
+                "a drained raw copy kept owing its guest completion");
+    }
     Require(decoded.Scheduler.Accumulator.PendingDraws[0].LightingLuts ==
                 decoded.PreviousFrame->Draws[0].LightingLuts &&
                 decoded.PreviousFrame->Draws[0].LightingLuts ==

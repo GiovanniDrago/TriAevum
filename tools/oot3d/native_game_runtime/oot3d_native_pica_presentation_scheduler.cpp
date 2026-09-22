@@ -367,6 +367,10 @@ size_t Oot3dPicaPresentationScheduler::PendingDrawCount() const {
   return mAccumulator.PendingDrawCount();
 }
 
+bool Oot3dPicaPresentationScheduler::HasPendingRawCopyCompletion() const {
+  return mAccumulator.HasPendingRawCopyCompletion();
+}
+
 const Oot3dPicaPresentationSchedulerStats &
 Oot3dPicaPresentationScheduler::Stats() const noexcept {
   return mStats;

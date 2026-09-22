@@ -4022,7 +4022,6 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   std::map<uint32_t, Oot3dNativeGame::Oot3dPicaDisplayTransferSubmission>
       displayTransfersByOutput;
   uint64_t lastSubmittedDrawId = 0;
-  std::unordered_set<uint64_t> pendingTextureCopyCompletions;
   uint64_t lastSelectedTopTransferCompletionId = 0;
   const auto restoreSavestateTiming =
       [&](const Oot3dNativeGame::NativeA32SavestateRuntimeState &runtime) {
@@ -4172,10 +4171,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       };
   const auto restoreSavestatePicaVisualReplayState =
       [&](const Oot3dNativeGame::NativeA32SavestateRuntimeState &runtime) {
-        pendingTextureCopyCompletions.clear();
         if (!runtime.PicaVisualReplayStateAvailable) {
           picaPresentationScheduler.Reset();
-          pendingTextureCopyCompletions.clear();
           visualContinuityTracker = {};
           preparedVisualTransition.Reset();
           latestVisualFrame.reset();
@@ -4405,8 +4402,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   picaPresentationScheduler.SetTimingEnabled(launch.ExtendedDiagnostics);
   api.SetPicaPhysicalMemoryAccess(
       [&](uint32_t address, std::span<uint8_t> bytes) { return picaMemoryView.Read(address, bytes); },
-      [&](uint64_t completion, std::span<const Fast::Renderer3ds::PicaPhysicalMemoryWrite> writes) {
-        if (!pendingTextureCopyCompletions.contains(completion)) return true;
+      [&](uint64_t, std::span<const Fast::Renderer3ds::PicaPhysicalMemoryWrite> writes) {
         for (const auto& write : writes) {
           const auto address = picaMemoryView.Translate(write.Address, write.Bytes.size());
           if (!address || !process.Memory().IsWritable(*address, write.Bytes.size())) return false;
@@ -4416,7 +4412,6 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           if (!process.Memory().WriteBytes(*address, write.Bytes)) return false;
         }
         if (!hostServices.SignalPicaInterrupt(process.Memory(), Oot3dNativeGame::Oot3dPicaInterruptId::Ppf)) return false;
-        pendingTextureCopyCompletions.erase(completion);
         ++completedPpfCount;
         ++recordedCompletionCount;
         return true;
@@ -4682,7 +4677,6 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     lastPublishedSceneViewSerial = 0;
     n64UiRenderer.Release();
     picaPresentationScheduler.Reset();
-    pendingTextureCopyCompletions.clear();
     visualContinuityTracker = {};
     preparedVisualTransition.Reset();
     latestVisualFrame.reset();
@@ -5315,7 +5309,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         CpuProbe::Scope cpuVisual(CpuProbe::Phase::VisualPresentation);
         const auto visualPresentationStart = std::chrono::steady_clock::now();
         bool flushedPicaDependency = false;
-        if (!pendingTextureCopyCompletions.empty()) {
+        if (picaPresentationScheduler.HasPendingRawCopyCompletion()) {
           if (auto work = picaPresentationScheduler.TakeDependencyWork()) {
             Oot3dNativeGame::Oot3dPicaVisualFrameViewSample sample;
             (void)Oot3dNativeGame::ViewOot3dPicaVisualFrame(*work, sample);
@@ -5795,9 +5789,6 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                   });
                 }
                 picaPresentationScheduler.Capture(transfer);
-                if (transfer.SignalInterrupt && transfer.Transfer.TextureCopyBytes != 0U) {
-                  pendingTextureCopyCompletions.insert(transfer.CompletionId);
-                }
                 if (transfer.SignalInterrupt && transfer.Transfer.TextureCopyBytes == 0U) {
                   if (!hostServices.SignalPicaInterrupt(
                           process.Memory(),

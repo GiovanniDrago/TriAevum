@@ -103,6 +103,9 @@ public:
   Oot3dPicaPresentationSchedulerState CaptureState() const;
   bool RestoreState(Oot3dPicaPresentationSchedulerState state);
   size_t PendingDrawCount() const;
+  // True while an ordered raw TextureCopy still owes the guest a PPF
+  // completion and therefore needs a dependency flush.
+  bool HasPendingRawCopyCompletion() const;
   const Oot3dPicaPresentationSchedulerStats &Stats() const noexcept;
   const Oot3dPicaPresentationSchedulerTimings &Timings() const noexcept;
 

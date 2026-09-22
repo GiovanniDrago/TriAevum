@@ -1576,6 +1576,15 @@ size_t Oot3dPicaVisualFrameAccumulator::PendingDrawCount() const {
     return mPendingDraws.size();
 }
 
+bool Oot3dPicaVisualFrameAccumulator::HasPendingRawCopyCompletion() const {
+    return std::any_of(
+        mPendingDisplayTransfers.begin(), mPendingDisplayTransfers.end(),
+        [](const Oot3dPicaDisplayTransferSubmission& transfer) {
+            return transfer.SignalInterrupt &&
+                   transfer.Transfer.TextureCopyBytes != 0U;
+        });
+}
+
 Oot3dPicaVisualFrameAccumulatorState
 Oot3dPicaVisualFrameAccumulator::CaptureState() const {
     return {mNextSequence, mPendingDraws, mPendingMemoryFills,
