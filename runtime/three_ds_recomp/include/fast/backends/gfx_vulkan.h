@@ -625,6 +625,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     VkExtent2D ChooseExtent(const VkSurfaceCapabilitiesKHR& capabilities) const;
     VkFormat FindDepthFormat() const;
     uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) const;
+    uint32_t FindReadbackMemoryType(uint32_t typeFilter) const;
+    BufferAllocation CreateReadbackBuffer(VkDeviceSize size, bool* coherent);
     BufferAllocation CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                                   VkMemoryPropertyFlags properties, bool persistentlyMapped);
     void CopyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height,
@@ -742,6 +744,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     std::array<VkSemaphore, kFramesInFlight> mImageAvailableSemaphores{};
     std::vector<VkSemaphore> mRenderFinishedSemaphores;
     std::array<VkFence, kFramesInFlight> mInFlightFences{};
+    // Raw TextureCopy submissions are ordered offscreen work: they wait on their
+    // own fence instead of idling the whole graphics queue, so unrelated
+    // submissions keep executing while the copy's bytes are read back.
+    VkFence mRawCopyFence = VK_NULL_HANDLE;
     std::array<FrameResources, kFramesInFlight> mFrameResources{};
     VulkanScanoutProbe mScanoutProbe;
     std::thread mPresentThread;
@@ -826,6 +832,28 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         std::vector<Renderer3ds::PicaPhysicalMemoryWrite> Writes;
     };
     std::map<std::pair<uint64_t, uint32_t>, RawTextureCopyWriteback> mRawTextureCopyWritebacks;
+    // Diagnostic attribution of the ordered raw copy's CPU work, so the phase
+    // that keeps the copy off the gameplay budget is measured rather than
+    // guessed. Collected always, printed once at shutdown.
+    struct RawCopyTiming {
+        uint64_t Copies = 0;
+        uint64_t Spans = 0;
+        uint64_t InvalidatedTextures = 0;
+        uint64_t ReadbackBytes = 0;
+        uint64_t WritebackBytes = 0;
+        double ReadbackSeconds = 0.0;
+        double EncodeSeconds = 0.0;
+        double InvalidateSeconds = 0.0;
+        double SpanSeconds = 0.0;
+        double CommitSeconds = 0.0;
+    };
+    RawCopyTiming mRawCopyTiming;
+    // Host-visible staging for the ordered raw copy's readback. Reused and kept
+    // mapped: a buffer allocation, an immediate command buffer and a full queue
+    // idle per copy dominated the copy cost (measured 31.6 ms per copy), while
+    // the bytes handed to the encoder stay exactly the same.
+    BufferAllocation mRawCopyReadbackBuffer;
+    bool mRawCopyReadbackCoherent = true;
     bool SubmitNativePicaTextureCopy(const GfxNativePicaDisplayTransferView& transfer, std::string* error);
     GfxNativePicaTextureView ResolveNativePicaCopiedTexture(const GfxNativePicaTextureView& texture,
         uint64_t renderTargetNamespace, uint64_t drawId, std::vector<uint8_t>& coherentBytes);

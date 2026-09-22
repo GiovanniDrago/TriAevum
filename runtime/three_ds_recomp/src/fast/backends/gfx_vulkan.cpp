@@ -1223,6 +1223,11 @@ void GfxRenderingAPIVulkan::Shutdown() {
                 mInFlightFences[index] = VK_NULL_HANDLE;
             }
         }
+        if (mRawCopyFence != VK_NULL_HANDLE) {
+            vkDestroyFence(mDevice, mRawCopyFence, nullptr);
+            mRawCopyFence = VK_NULL_HANDLE;
+        }
+        DestroyBuffer(mRawCopyReadbackBuffer);
         if (mOot3dShadow2dRenderPass != VK_NULL_HANDLE) {
             vkDestroyRenderPass(mDevice, mOot3dShadow2dRenderPass, nullptr);
             mOot3dShadow2dRenderPass = VK_NULL_HANDLE;
@@ -2979,6 +2984,22 @@ void GfxRenderingAPIVulkan::StorePipelineCache() {
                  static_cast<unsigned long long>(mNativePicaVulkanPipelineCreations));
     std::fprintf(stderr, "TRIAEVUM_PICA_VULKAN_SHADER_PAIRS created=%llu\n",
                  static_cast<unsigned long long>(mNativePicaVulkanShaderPairCreations));
+    const auto& copyTiming = mRawCopyTiming;
+    std::fprintf(stderr,
+                 "TRIAEVUM_RAW_COPY copies=%llu spans=%llu invalidated_textures=%llu "
+                 "readback_bytes=%llu writeback_bytes=%llu readback_ms=%.3f encode_ms=%.3f "
+                 "invalidate_ms=%.3f span_ms=%.3f commit_ms=%.3f total_ms=%.3f\n",
+                 static_cast<unsigned long long>(copyTiming.Copies),
+                 static_cast<unsigned long long>(copyTiming.Spans),
+                 static_cast<unsigned long long>(copyTiming.InvalidatedTextures),
+                 static_cast<unsigned long long>(copyTiming.ReadbackBytes),
+                 static_cast<unsigned long long>(copyTiming.WritebackBytes),
+                 copyTiming.ReadbackSeconds, copyTiming.EncodeSeconds,
+                 copyTiming.InvalidateSeconds, copyTiming.SpanSeconds,
+                 copyTiming.CommitSeconds,
+                 copyTiming.ReadbackSeconds + copyTiming.EncodeSeconds +
+                     copyTiming.InvalidateSeconds + copyTiming.SpanSeconds +
+                     copyTiming.CommitSeconds);
     const auto nriData = mNriPicaPipelineBridge.GetPipelineCacheData();
     if (!nriData.empty()) {
         VkPhysicalDeviceProperties properties{};
@@ -3204,6 +3225,8 @@ void GfxRenderingAPIVulkan::CreateSyncObjects() {
         CheckVk(vkCreateFence(mDevice, &fenceInfo, nullptr, &mInFlightFences[index]),
                 "vkCreateFence");
     }
+    CheckVk(vkCreateFence(mDevice, &fenceInfo, nullptr, &mRawCopyFence),
+            "vkCreateFence(raw copy)");
 }
 
 VulkanShaderProgram GfxRenderingAPIVulkan::BuildShaderProgram(uint64_t shaderId0,
@@ -4982,6 +5005,63 @@ uint32_t GfxRenderingAPIVulkan::FindMemoryType(uint32_t typeFilter,
         }
     }
     throw std::runtime_error("Vulkan memory type was not found");
+}
+
+uint32_t GfxRenderingAPIVulkan::FindReadbackMemoryType(uint32_t typeFilter) const {
+    // CPU reads of GPU-written staging are the dominant cost of the ordered raw
+    // copy when the staging lands in write-combined memory (measured 25.5 ms
+    // per copy, ~289 MB/s). Prefer cached host-visible memory for readbacks.
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
+    vkGetPhysicalDeviceMemoryProperties(mPhysicalDevice, &memoryProperties);
+    constexpr VkMemoryPropertyFlags required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+    const VkMemoryPropertyFlags preferences[] = {
+        VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+    for (const VkMemoryPropertyFlags preferred : preferences) {
+        for (uint32_t index = 0; index < memoryProperties.memoryTypeCount; ++index) {
+            const VkMemoryPropertyFlags flags =
+                memoryProperties.memoryTypes[index].propertyFlags;
+            if ((typeFilter & (1u << index)) != 0 &&
+                (flags & required) == required &&
+                (flags & preferred) == preferred) {
+                return index;
+            }
+        }
+    }
+    throw std::runtime_error("Vulkan readback memory type was not found");
+}
+
+GfxRenderingAPIVulkan::BufferAllocation GfxRenderingAPIVulkan::CreateReadbackBuffer(
+    VkDeviceSize size, bool* coherent) {
+    BufferAllocation buffer{};
+    buffer.Size = size;
+    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = size;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    CheckVk(vkCreateBuffer(mDevice, &bufferInfo, nullptr, &buffer.Buffer),
+            "vkCreateBuffer(readback)");
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(mDevice, buffer.Buffer, &requirements);
+    const uint32_t typeIndex = FindReadbackMemoryType(requirements.memoryTypeBits);
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
+    vkGetPhysicalDeviceMemoryProperties(mPhysicalDevice, &memoryProperties);
+    if (coherent != nullptr) {
+        *coherent =
+            (memoryProperties.memoryTypes[typeIndex].propertyFlags &
+             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    }
+    VkMemoryAllocateInfo allocationInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocationInfo.allocationSize = requirements.size;
+    allocationInfo.memoryTypeIndex = typeIndex;
+    CheckVk(vkAllocateMemory(mDevice, &allocationInfo, nullptr, &buffer.Memory),
+            "vkAllocateMemory(readback)");
+    CheckVk(vkBindBufferMemory(mDevice, buffer.Buffer, buffer.Memory, 0),
+            "vkBindBufferMemory(readback)");
+    CheckVk(vkMapMemory(mDevice, buffer.Memory, 0, size, 0, &buffer.Mapped),
+            "vkMapMemory(readback)");
+    return buffer;
 }
 
 void GfxRenderingAPIVulkan::CreateDepthResources() {

@@ -93,19 +93,92 @@ bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
         }
         // A rare raw transfer is a GPU/CPU coherence boundary. Submit the exact
         // recorded prefix, not the whole frame or an unrelated presentation.
+        // The wait is on this submission's own fence: queue submissions of one
+        // queue complete in submission order, so this still guarantees every
+        // earlier submission retired, while later submissions and other queues
+        // keep running instead of idling the whole queue.
         WaitForAllPresents();
         const VkCommandBuffer command = mCommandBuffers[mCurrentFrame];
+        // Read the source back inside the very submission the copy already
+        // waits on: the fence below orders it, so the readback needs no second
+        // submit, no queue idle and no per-copy buffer. Bytes handed to the
+        // encoder are identical to the previous immediate-command readback.
+        const auto readbackBytes =
+            static_cast<VkDeviceSize>(source->Width) * source->Height * 4U;
+        if (mRawCopyReadbackBuffer.Size < readbackBytes) {
+            DestroyBuffer(mRawCopyReadbackBuffer);
+            mRawCopyReadbackBuffer =
+                CreateReadbackBuffer(readbackBytes, &mRawCopyReadbackCoherent);
+        }
+        VkImageMemoryBarrier readbackToTransfer{
+            VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        readbackToTransfer.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        readbackToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        readbackToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        readbackToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        readbackToTransfer.image = source->ColorImage;
+        readbackToTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        readbackToTransfer.subresourceRange.levelCount = 1U;
+        readbackToTransfer.subresourceRange.layerCount = 1U;
+        readbackToTransfer.srcAccessMask =
+            VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        readbackToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(
+            command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+            &readbackToTransfer);
+        VkBufferImageCopy readbackCopy{};
+        readbackCopy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        readbackCopy.imageSubresource.layerCount = 1U;
+        readbackCopy.imageExtent = {source->Width, source->Height, 1U};
+        vkCmdCopyImageToBuffer(
+            command, source->ColorImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            mRawCopyReadbackBuffer.Buffer, 1U, &readbackCopy);
+        VkImageMemoryBarrier readbackToStable = readbackToTransfer;
+        readbackToStable.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        readbackToStable.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        readbackToStable.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        readbackToStable.dstAccessMask =
+            VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(
+            command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
+            nullptr, 1, &readbackToStable);
         RequireCopyVk(vkEndCommandBuffer(command), "end raw-copy prefix");
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &command;
-        RequireCopyVk(vkQueueSubmit(mGraphicsQueue, 1, &submit, VK_NULL_HANDLE), "submit raw-copy prefix");
-        RequireCopyVk(vkQueueWaitIdle(mGraphicsQueue), "wait raw-copy prefix");
-        const auto rgba = CaptureNativePicaImageBytes(source->ColorImage, source->Width, source->Height, 4,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+        RequireCopyVk(vkResetFences(mDevice, 1, &mRawCopyFence), "reset raw-copy fence");
+        RequireCopyVk(vkQueueSubmit(mGraphicsQueue, 1, &submit, mRawCopyFence), "submit raw-copy prefix");
+        RequireCopyVk(vkWaitForFences(mDevice, 1, &mRawCopyFence, VK_TRUE, UINT64_MAX),
+                      "wait raw-copy fence");
+        const auto copyPhaseClock = [] { return std::chrono::steady_clock::now(); };
+        const auto phaseMilliseconds = [](const auto& from, const auto& to) {
+            return std::chrono::duration<double, std::milli>(to - from).count();
+        };
+        const auto readbackStart = copyPhaseClock();
+        if (!mRawCopyReadbackCoherent) {
+            VkMappedMemoryRange readbackRange{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+            readbackRange.memory = mRawCopyReadbackBuffer.Memory;
+            readbackRange.offset = 0;
+            readbackRange.size = VK_WHOLE_SIZE;
+            RequireCopyVk(vkInvalidateMappedMemoryRanges(mDevice, 1, &readbackRange),
+                          "invalidate raw-copy readback");
+        }
+        const auto* readbackBytesPointer =
+            static_cast<const uint8_t*>(mRawCopyReadbackBuffer.Mapped);
+        if (readbackBytesPointer == nullptr) {
+            throw std::runtime_error("raw PICA copy readback staging is not mapped");
+        }
+        const auto rgba = std::vector<uint8_t>(
+            readbackBytesPointer,
+            readbackBytesPointer + static_cast<size_t>(readbackBytes));
+        const auto encodeStart = copyPhaseClock();
         const auto native = Renderer3ds::EncodePicaFramebuffer(rgba, source->Width, source->Height,
             source->Key.Width, source->Key.Height, source->Key.ColorFormat);
+        const auto invalidateStart = copyPhaseClock();
         // The prefix fence has retired every prior use. A framebuffer copy
         // changes each frame; retaining all its content-hash texture versions
         // would grow both GPU memory and savestates without bound.
@@ -124,6 +197,7 @@ bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
             if (address < outputEnd && address + extent > transfer.OutputPhysicalAddress &&
                 it->second.ImageLayout != VK_IMAGE_LAYOUT_GENERAL) {
                 DestroyTexture(it->second);
+                ++mRawCopyTiming.InvalidatedTextures;
                 it = mNativePicaTextures.erase(it);
             } else ++it;
         }
@@ -134,6 +208,7 @@ bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
         if (mNriInterop.Available() && !mNriInterop.WrapFrameCommandBuffer(mCurrentFrame, command))
             throw std::runtime_error("cannot wrap raw-copy continuation in NRI");
 
+        const auto spanStart = copyPhaseClock();
         RawTextureCopyWriteback writeback;
         writeback.CompletionId = transfer.CompletionId;
         writeback.AfterDrawSubmissionId = transfer.AfterDrawSubmissionId;
@@ -149,13 +224,24 @@ bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
             const size_t offset = static_cast<size_t>(input - source->Key.ColorPhysicalAddress);
             write.Bytes.assign(native.begin() + offset, native.begin() + offset + count);
             writeback.Writes.push_back(std::move(write));
+            ++mRawCopyTiming.Spans;
             left -= count; inputLeft -= count; outputLeft -= count;
             input += count; output += count;
             if (!inputLeft) { input += inputGap; inputLeft = inputWidth; }
             if (!outputLeft) { output += outputGap; outputLeft = outputWidth; }
         }
+        const auto commitStart = copyPhaseClock();
         if (!mPhysicalMemoryCommit(transfer.CompletionId, writeback.Writes))
             throw std::runtime_error("raw PICA copy writeback/completion failed");
+        const auto copyEnd = copyPhaseClock();
+        ++mRawCopyTiming.Copies;
+        mRawCopyTiming.ReadbackBytes += rgba.size();
+        mRawCopyTiming.WritebackBytes += native.size();
+        mRawCopyTiming.ReadbackSeconds += phaseMilliseconds(readbackStart, encodeStart);
+        mRawCopyTiming.EncodeSeconds += phaseMilliseconds(encodeStart, invalidateStart);
+        mRawCopyTiming.InvalidateSeconds += phaseMilliseconds(invalidateStart, spanStart);
+        mRawCopyTiming.SpanSeconds += phaseMilliseconds(spanStart, commitStart);
+        mRawCopyTiming.CommitSeconds += phaseMilliseconds(commitStart, copyEnd);
         mRawTextureCopyWritebacks.insert_or_assign(
             std::pair{transfer.RenderTargetNamespace, transfer.OutputPhysicalAddress}, std::move(writeback));
         return true;

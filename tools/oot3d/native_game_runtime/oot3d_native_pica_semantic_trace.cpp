@@ -356,6 +356,11 @@ void Oot3dPicaSemanticTraceWriter::RecordDisplayTransfer(
         {"input_size", transfer.Transfer.InputSize},
         {"output_size", transfer.Transfer.OutputSize},
         {"flags", transfer.Transfer.Flags},
+        // Nonzero selects the raw TextureCopy operation. The transfer event is
+        // the only complete history of transfers in a run, so the raw/display
+        // distinction has to be readable here: without it a run cannot be asked
+        // whether it contained a raw copy at all.
+        {"texture_copy_bytes", transfer.Transfer.TextureCopyBytes},
         {"signal_interrupt", transfer.SignalInterrupt},
         {"selected_for_top_at_submission", selectedForTopAtSubmission},
         {"topscreen_backdrop_suppression_active",
