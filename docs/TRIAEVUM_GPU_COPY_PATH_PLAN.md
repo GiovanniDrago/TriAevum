@@ -520,3 +520,25 @@ Decisioni ancora da risolvere con esperimento: presenza/ubicazione delle copie r
   (materializzazione solo se serve) subordinata a D3/D4: finche' non e' provato
   che il consumer tradotto non legge la destinazione via host pointer, il
   writeback guest-visibile resta e il giro CPU non si puo' togliere.
+- **Controllo negativo C4, stato attuale (dopo la correzione readback).** Nel
+  metodo copia non compaiono piu' `CaptureNativePicaImageBytes`,
+  `vkQueueWaitIdle` ne' `vkDeviceWaitIdle`: la copia legge la sorgente in-band
+  sulla propria submission e attende il proprio fence. `WaitForAllPresents`
+  resta, e resta il termine del passo 7 (ritiro differito delle texture), che
+  richiede il registro di versioni non ancora costruito; la sua attesa non e'
+  pero' il termine dominante: i 4,36 ms per copia si spiegano interamente con le
+  fasi misurate (`readback` 1,98 + `encode` 1,13 + `invalidate` 0,92 + `span`
+  0,24 + `commit` 0,08), e la finestra copie sta a 1,83-1,92 ms/frame.
+- **Prerequisito D non ancora eseguito, per scelta.** L'esperimento D3/D4
+  (guardia sulle letture host della destinazione) non e' stato avviato: la
+  risposta serve a C, che non e' iniziata, e senza C l'evidenza resterebbe
+  inutilizzata. Va eseguito quando C entra in lavorazione, con le due avvertenze
+  del §6: `ReadFast` e' inline e non virtuale, quindi agganciare solo
+  `GetReadPointer` non intercetta il percorso reale, e il modulo titolo e'
+  precompilato, quindi la guardia deve agire sul mapping/percorso e non su
+  codice ricompilato.
+- **Difetti di confine e di build trovati in questo passaggio e corretti** (non
+  erano difetti della copia): il gate `verify_renderer_3ds_cross_title_boundary`
+  era rosso su due file dello shared renderer, `oot3d_pica_scene_frame_tests`
+  non era mai stato linkato, e lo smoke F1 linkava copie stale delle librerie.
+  Dettaglio in `TRIAEVUM_ALPHA2C_TO_ALPHA3_RECONSTRUCTION.md` §3.4.
