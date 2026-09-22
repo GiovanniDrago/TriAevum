@@ -4,6 +4,7 @@
 #include "fast/oot3d/outline_occlusion_pass.h"
 
 #include "fast/backends/gfx_vulkan.h"
+#include "oot3d/renderer/ui_presentation_layout.h"
 #include "fast/oot3d/pica_shadow2d.h"
 #include "fast/oot3d/pica_display_composition.h"
 #include "fast/oot3d/display_effect_plan.h"
@@ -4682,8 +4683,30 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 std::to_string(draw.FragmentShaderKey) +
                 ", packed_error=" + geometry.PackedError + "]");
         }
-        const auto rasterCanvas = Renderer3ds::ResolvePicaRasterCanvas(
-            draw.CompositionDomain, draw.FramebufferWidth, draw.FramebufferHeight,
+        // A UI-classified draw that renders into the colour target the frame's
+        // scene draws use **and** covers that whole target is not a placed UI
+        // element: it is two-dimensional frame content the title composites over
+        // the whole native screen (movie frames, full-frame effect re-draws,
+        // screen-space post-process). It is composed like the scene so the
+        // title's own effect reaches the whole frame and our recomposition stays
+        // the single owner of the output. Placed elements - HUD, menus, the
+        // file-select screen - stay `Ui` and keep the uniform native canvas that
+        // their layout and pointer mapping depend on.
+        const float viewportRight = draw.ViewportX + draw.ViewportWidth;
+        const float viewportBottom = draw.ViewportY + draw.ViewportHeight;
+        const bool coversWholeTarget =
+            draw.ViewportX <= 0.0F && draw.ViewportY <= 0.0F &&
+            viewportRight >= static_cast<float>(draw.FramebufferWidth) &&
+            viewportBottom >= static_cast<float>(draw.FramebufferHeight);
+        const auto compositionDomain =
+            draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui &&
+                    coversWholeTarget &&
+                    mPicaSceneFrame.HasSceneDrawOnColorTarget(
+                        draw.FramebufferColorPhysicalAddress)
+                ? Renderer3ds::PicaCompositionDomain::Screen
+                : draw.CompositionDomain;
+        const auto rasterCanvas = ::Oot3d::Renderer::ResolvePicaRasterCanvas(
+            compositionDomain, draw.FramebufferWidth, draw.FramebufferHeight,
             renderTarget.Width, renderTarget.Height);
         const float framebufferScaleX = rasterCanvas.ScaleX;
         const float framebufferScaleY = rasterCanvas.ScaleY;
@@ -4711,7 +4734,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         }
         mViewportSet = true;
         mScissorSet = true;
-        if (draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui) {
+        if (compositionDomain == Renderer3ds::PicaCompositionDomain::Ui) {
             const auto clip = Renderer3ds::ClipToPicaCanvas(
                 {mScissor.offset.x, mScissor.offset.y,
                  mScissor.extent.width, mScissor.extent.height},
@@ -4968,7 +4991,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 .SubmissionId = draw.SubmissionId,
                 .CommandListAddress = draw.CommandListAddress,
                 .CommandListOffsetWords = draw.CommandListOffsetWords,
-                .CompositionDomain = draw.CompositionDomain,
+                .CompositionDomain = compositionDomain,
                 .Composition = draw.Composition,
                 .Raster = {
                     .SchemaVersion =

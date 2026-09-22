@@ -9,6 +9,14 @@ enum class PicaCompositionDomain : uint8_t {
     Unknown = 0,
     Scene = 1,
     Ui = 2,
+    // Two-dimensional content the title composites over the whole native
+    // screen: movie frames, full-frame effect re-draws, screen-space
+    // post-process. It is frame content rather than a placed UI element, so it
+    // is rasterised over the presentation extent like the scene - the frame has
+    // one owner and the title's own effect reaches the whole frame - instead of
+    // being inset in the uniform native UI canvas. Placed UI keeps `Ui`: HUD,
+    // menu layout and pointer mapping depend on that exact rectangle.
+    Screen = 3,
 };
 
 enum class PicaCompositionLayer : uint8_t {

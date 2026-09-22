@@ -227,6 +227,40 @@ Fast::Oot3d::PicaSceneDrawRecordDesc BuildDraw(
     return draw;
 }
 
+TEST(Oot3dPicaSceneFrame, ReportsTheColourTargetsTheFrameSceneDrewInto) {
+    using namespace Fast::Oot3d;
+    std::string shader = "#version 450\nvoid main(){}\n";
+    const std::array<PicaNriPackedVertexBinding, 1> layoutBindings{ {
+        { 0U, 16U, false },
+    } };
+    const std::array<PicaNriPackedVertexAttribute, 1> layoutAttributes{ {
+        { 0U, 0U, 0U, PicaNriVertexScalar::Float, 4U, 0U },
+    } };
+    std::array<PicaSceneVertexBufferBinding, 1> vertexBindings{ {
+        { 0U, 0U, 4096U, 16U },
+    } };
+
+    PicaSceneFrame frame;
+    frame.BeginFrame(1U, 9U);
+    ASSERT_EQ(frame.Record(BuildDraw(shader, layoutBindings, layoutAttributes,
+                                     vertexBindings)),
+              PicaSceneRecordStatus::Recorded);
+    auto uiDraw =
+        BuildDraw(shader, layoutBindings, layoutAttributes, vertexBindings);
+    uiDraw.CompositionDomain = Oot3d::Renderer::PicaCompositionDomain::Ui;
+    uiDraw.RenderTarget.ColorPhysicalAddress = 0x18300000U;
+    ASSERT_EQ(frame.Record(uiDraw), PicaSceneRecordStatus::Recorded);
+
+    // The target the frame's scene drew into is the evidence that separates
+    // full-screen frame content from a placed UI element on another surface.
+    EXPECT_TRUE(frame.HasSceneDrawOnColorTarget(0x18100000U));
+    EXPECT_FALSE(frame.HasSceneDrawOnColorTarget(0x18300000U));
+    EXPECT_FALSE(frame.HasSceneDrawOnColorTarget(0U));
+
+    frame.Reset();
+    EXPECT_FALSE(frame.HasSceneDrawOnColorTarget(0x18100000U));
+}
+
 TEST(Oot3dPicaSceneFrame, RecordsGpuResourcesWithoutGeometryPayloadCopies) {
     using namespace Fast::Oot3d;
     std::string shader = "#version 450\nvoid main(){}\n";
@@ -716,6 +750,9 @@ TEST(Oot3dPicaSceneFrame,
     draw.FragmentUniformOffset =
         draw.VertexUniformOffset + draw.VertexUniformSize;
     draw.FragmentUniformSize = fragmentUniforms.size();
+    // The frame validates the declared slices against the declared buffer, so
+    // the buffer has to cover both packed blocks.
+    draw.UniformBuffer.Size = draw.FragmentUniformOffset + draw.FragmentUniformSize;
     ASSERT_EQ(frame.Record(draw), PicaSceneRecordStatus::Recorded);
     ASSERT_EQ(frame.Draws().size(), 1U);
     const auto& recorded = frame.Draws().front();

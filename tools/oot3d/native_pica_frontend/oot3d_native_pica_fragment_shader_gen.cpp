@@ -451,7 +451,7 @@ Oot3dPicaFragmentUniformState BuildOot3dPicaFragmentUniformState(
             static_cast<float>(difference) / 2047.0F};
     }
     uniforms.Lighting = BuildOot3dPicaFragmentLightingUniformState(packet);
-    uniforms.LightingProgram = Fast::Renderer3ds::BuildPicaLightingProgram(
+    uniforms.LightingProgram = Fast::Oot3d::BuildPicaLightingProgram(
         Fast::Oot3d::DecodePicaFragmentLighting(packet.Registers));
     uniforms.FragmentControl = {packet.Registers[0x0E0U], packet.Registers[0x104U],
                                packet.Registers[0x080U], packet.Registers[0x083U]};

@@ -4,9 +4,6 @@
 #include <algorithm>
 #include <cmath>
 
-#include "fast/renderer3ds/pica_composition.h"
-#include "oot3d/renderer/ui_presentation_layout.h"
-
 namespace Fast::Renderer3ds {
 
 struct PicaRasterCanvas {
@@ -33,23 +30,6 @@ inline PicaCanvasClip ClipToPicaCanvas(
     return {static_cast<int32_t>(x1), static_cast<int32_t>(y1),
             static_cast<uint32_t>(std::max<int64_t>(0, x2 - x1)),
             static_cast<uint32_t>(std::max<int64_t>(0, y2 - y1))};
-}
-
-// Native framebuffer coordinates include the LCD rotation/sampling convention.
-// Fit in that coordinate system, not in host logical screen coordinates.
-// Ownership, not an orthographic matrix or shader mode, distinguishes UI.
-inline PicaRasterCanvas ResolvePicaRasterCanvas(
-    PicaCompositionDomain domain, uint32_t nativeWidth, uint32_t nativeHeight,
-    uint32_t targetWidth, uint32_t targetHeight) noexcept {
-    if (!nativeWidth || !nativeHeight || !targetWidth || !targetHeight) return {};
-    if (domain == PicaCompositionDomain::Ui) {
-        const auto fit = ::Oot3d::Renderer::FitUiPresentation(
-            targetWidth, targetHeight, static_cast<float>(nativeWidth),
-            static_cast<float>(nativeHeight));
-        return {fit.X, fit.Y, fit.Width / nativeWidth, fit.Height / nativeHeight};
-    }
-    return {0, 0, static_cast<float>(targetWidth) / nativeWidth,
-            static_cast<float>(targetHeight) / nativeHeight};
 }
 
 } // namespace Fast::Renderer3ds

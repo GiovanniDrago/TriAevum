@@ -1,4 +1,6 @@
 #include "fast/oot3d/effect_graph.h"
+#include "fast/renderer3ds/pica_ui_canvas.h"
+#include "oot3d/renderer/ui_presentation_layout.h"
 #include "fast/renderer3ds/pica_surface_passthrough_scale.h"
 #include "fast/oot3d/display_effect_plan.h"
 #include "fast/oot3d/directional_shadows.h"
@@ -134,6 +136,38 @@ TEST(Oot3dUiPresentationLayout, KeepsWidescreenCanvasIndependent) {
     EXPECT_EQ(viewport.Y, 96U);
     EXPECT_EQ(viewport.Width, 1024U);
     EXPECT_EQ(viewport.Height, 576U);
+}
+
+TEST(Oot3dPicaRasterCanvas, ScreenSpaceContentCoversAndPlacedUiKeepsNativeFit) {
+    using Fast::Renderer3ds::PicaCompositionDomain;
+    using ::Oot3d::Renderer::ResolvePicaRasterCanvas;
+
+    // Placed UI keeps the uniform native canvas: HUD and menu layout, and the
+    // pointer mapping that shares the same rectangle.
+    const auto ui = ResolvePicaRasterCanvas(PicaCompositionDomain::Ui, 400U,
+                                            240U, 1280U, 720U);
+    EXPECT_FLOAT_EQ(ui.X, 40.0F);
+    EXPECT_FLOAT_EQ(ui.Y, 0.0F);
+    EXPECT_FLOAT_EQ(ui.ScaleX, 3.0F);
+    EXPECT_FLOAT_EQ(ui.ScaleY, 3.0F);
+
+    // Screen-space frame content covers the presentation extent without
+    // distortion, so the title's own full-frame effect reaches every pixel.
+    const auto screen = ResolvePicaRasterCanvas(PicaCompositionDomain::Screen,
+                                                400U, 240U, 1280U, 720U);
+    EXPECT_FLOAT_EQ(screen.X, 0.0F);
+    EXPECT_FLOAT_EQ(screen.Y, -24.0F);
+    EXPECT_FLOAT_EQ(screen.ScaleX, 3.2F);
+    EXPECT_FLOAT_EQ(screen.ScaleY, 3.2F);
+
+    // The perspective scene keeps its own full-target stretch, compensated by
+    // the frame's field-of-view policy.
+    const auto scene = ResolvePicaRasterCanvas(PicaCompositionDomain::Scene,
+                                               400U, 240U, 1280U, 720U);
+    EXPECT_FLOAT_EQ(scene.X, 0.0F);
+    EXPECT_FLOAT_EQ(scene.Y, 0.0F);
+    EXPECT_FLOAT_EQ(scene.ScaleX, 3.2F);
+    EXPECT_FLOAT_EQ(scene.ScaleY, 3.0F);
 }
 
 TEST(Oot3dUiPresentationLayout, RejectsInvalidExtents) {

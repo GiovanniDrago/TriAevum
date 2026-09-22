@@ -4,6 +4,9 @@
 #include <cmath>
 #include <cstdint>
 
+#include "fast/renderer3ds/pica_composition.h"
+#include "fast/renderer3ds/pica_ui_canvas.h"
+
 namespace Oot3d::Renderer {
 
 struct UiPresentationRect {
@@ -45,6 +48,28 @@ struct UiPresentationPoint {
     float presentWidth = static_cast<float>(targetWidth);
     float presentHeight = presentWidth * logicalHeight / logicalWidth;
     if (presentHeight > static_cast<float>(targetHeight)) {
+        presentHeight = static_cast<float>(targetHeight);
+        presentWidth = presentHeight * logicalWidth / logicalHeight;
+    }
+    return {
+        (static_cast<float>(targetWidth) - presentWidth) * 0.5F,
+        (static_cast<float>(targetHeight) - presentHeight) * 0.5F,
+        presentWidth,
+        presentHeight,
+    };
+}
+
+[[nodiscard]] inline UiPresentationRect FillUiPresentation(
+    std::uint32_t targetWidth, std::uint32_t targetHeight, float logicalWidth,
+    float logicalHeight) noexcept {
+    if (targetWidth == 0U || targetHeight == 0U ||
+        !(logicalWidth > 0.0F) || !(logicalHeight > 0.0F)) {
+        return {};
+    }
+
+    float presentWidth = static_cast<float>(targetWidth);
+    float presentHeight = presentWidth * logicalHeight / logicalWidth;
+    if (presentHeight < static_cast<float>(targetHeight)) {
         presentHeight = static_cast<float>(targetHeight);
         presentWidth = presentHeight * logicalWidth / logicalHeight;
     }
@@ -98,6 +123,39 @@ struct UiPresentationPoint {
         (targetY - fitted.Y) * logicalHeight / fitted.Height,
         true,
     };
+}
+
+// Native framebuffer coordinates include the LCD rotation/sampling convention.
+// Fit in that coordinate system, not in host logical screen coordinates.
+// Ownership, not an orthographic matrix or shader mode, distinguishes UI.
+// Title-side: it applies this title's presentation convention and placement
+// policy, so it stays out of the title-neutral renderer boundary.
+[[nodiscard]] inline Fast::Renderer3ds::PicaRasterCanvas ResolvePicaRasterCanvas(
+    Fast::Renderer3ds::PicaCompositionDomain domain, std::uint32_t nativeWidth,
+    std::uint32_t nativeHeight, std::uint32_t targetWidth,
+    std::uint32_t targetHeight) noexcept {
+    if (!nativeWidth || !nativeHeight || !targetWidth || !targetHeight) {
+        return {};
+    }
+    if (domain == Fast::Renderer3ds::PicaCompositionDomain::Ui) {
+        const auto fit = FitUiPresentation(
+            targetWidth, targetHeight, static_cast<float>(nativeWidth),
+            static_cast<float>(nativeHeight));
+        return {fit.X, fit.Y, fit.Width / nativeWidth, fit.Height / nativeHeight};
+    }
+    if (domain == Fast::Renderer3ds::PicaCompositionDomain::Screen) {
+        // Screen-space frame content covers the presentation extent without
+        // distortion: native proportions are preserved and the excess is
+        // centred, so the title's own full-frame effect reaches every output
+        // pixel instead of leaving the un-effected scene visible around it.
+        const auto cover = FillUiPresentation(
+            targetWidth, targetHeight, static_cast<float>(nativeWidth),
+            static_cast<float>(nativeHeight));
+        return {cover.X, cover.Y, cover.Width / nativeWidth,
+                cover.Height / nativeHeight};
+    }
+    return {0, 0, static_cast<float>(targetWidth) / nativeWidth,
+            static_cast<float>(targetHeight) / nativeHeight};
 }
 
 } // namespace Oot3d::Renderer

@@ -553,6 +553,21 @@ bool PicaSceneFrame::DirectionalShadowCaster(
            mImpl->DirectionalShadowCasterFlags[drawIndex] != 0U;
 }
 
+bool PicaSceneFrame::HasSceneDrawOnColorTarget(
+    uint32_t colorPhysicalAddress) const noexcept {
+    if (colorPhysicalAddress == 0U) {
+        return false;
+    }
+    for (const auto& draw : mImpl->DrawRecords) {
+        if (draw.CompositionDomain ==
+                ::Fast::Renderer3ds::PicaCompositionDomain::Scene &&
+            draw.RenderTarget.ColorPhysicalAddress == colorPhysicalAddress) {
+            return true;
+        }
+    }
+    return false;
+}
+
 PicaSceneFrameStats PicaSceneFrame::Stats() const noexcept {
     PicaSceneFrameStats stats;
     stats.DrawCount = static_cast<uint32_t>(std::min<size_t>(
@@ -571,6 +586,9 @@ PicaSceneFrameStats PicaSceneFrame::Stats() const noexcept {
             break;
         case ::Fast::Renderer3ds::PicaCompositionDomain::Ui:
             ++stats.UiDomainDrawCount;
+            break;
+        case ::Fast::Renderer3ds::PicaCompositionDomain::Screen:
+            ++stats.ScreenDomainDrawCount;
             break;
         case ::Fast::Renderer3ds::PicaCompositionDomain::Unknown:
             ++stats.UnknownDomainDrawCount;

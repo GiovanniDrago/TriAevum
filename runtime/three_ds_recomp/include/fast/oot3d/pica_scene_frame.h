@@ -127,6 +127,7 @@ struct PicaSceneFrameStats {
     uint8_t TemporalSampleOrdinal = 0;
     uint32_t SceneDomainDrawCount = 0;
     uint32_t UiDomainDrawCount = 0;
+    uint32_t ScreenDomainDrawCount = 0;
     uint32_t UnknownDomainDrawCount = 0;
     uint32_t OpaqueWorldLayerDrawCount = 0;
     uint32_t TransparentWorldLayerDrawCount = 0;
@@ -187,6 +188,12 @@ class PicaSceneFrame final {
     VertexBindings(const PicaSceneDrawRecord& draw) const noexcept;
     [[nodiscard]] bool DirectionalShadowCaster(
         size_t drawIndex) const noexcept;
+    // Frame evidence for the composition policy: did this frame's scene
+    // (perspective world) draws render into that colour target? The renderer
+    // resolves a UI-attributed draw on such a target as screen-space frame
+    // content rather than as a placed UI element.
+    [[nodiscard]] bool HasSceneDrawOnColorTarget(
+        uint32_t colorPhysicalAddress) const noexcept;
     [[nodiscard]] PicaSceneFrameStats Stats() const noexcept;
 
   private:

@@ -156,6 +156,9 @@ set_property(TARGET oot3d_pica_scene_frame_tests PROPERTY CXX_STANDARD 20)
 target_include_directories(oot3d_pica_scene_frame_tests PRIVATE ../include)
 target_link_libraries(oot3d_pica_scene_frame_tests PRIVATE
     gtest_main
+    # The frame-evidence test calls the OOT3D renderer hash, which the runtime
+    # library compiles from fast/oot3d/*.cpp; without it the target cannot link.
+    ThreeDsRecomp::Runtime
     ThreeDsRecomp::RendererExtensionCore
     ThreeDsRecomp::Renderer3dsPicaCore)
 if(MSVC)
