@@ -584,8 +584,15 @@ experiments:
   reads, zero byte writes, and 104,141 live-pointer handouts, all from our own
   PICA memory view - the sampler path phase B replaces. A 400-frame run from the
   near-phase checkpoint reproduces it (164 copies, `pointer_reads` 33,291) and
-  adds `suppressed_byte_writes` 8,200, exactly the copy's writeback spans, as
-  the positive control that the trap was live. The generated title code never
+  adds `suppressed_byte_writes` 8,200, exactly the copy's writeback spans. The
+  instrument itself is controlled rather than assumed: counting sits in the
+  checked path (`ReadSized`/`WriteSized`), because counting only the inline
+  fallbacks would have missed the precompiled module entirely, and a gameplay run
+  watching one MiB of guest memory reports 80,844 typed reads with a plausible
+  first address while the copy destination reports none. Two defects surfaced
+  while building that control: the watch was lost on every savestate restore
+  (the memory image is replaced wholesale) and the receipt printed shifted
+  numbers until its argument list was fixed. The generated title code never
   asks for a pointer at all (311,191 `ReadFast`, 189,552 `WriteFast`, zero
   `ReadBytes`/`GetReadPointer`/`GetWritePointer` in the product cache), so the
   only untrappable case is a pointer handed out to the guest through a service.

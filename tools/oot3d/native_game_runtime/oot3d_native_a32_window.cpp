@@ -4025,6 +4025,26 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   // Diagnostic: raw TextureCopy destinations watched for guest access while
   // extended diagnostics are on. Empty otherwise, so normal runs are untouched.
   std::vector<std::pair<uint32_t, uint32_t>> rawCopyWatchRanges;
+  // Instrument control: TRIAEVUM_WATCH_GUEST_RANGE=0xSTART:0xSIZE watches an
+  // arbitrary guest range, so a run can show that typed accesses from the
+  // precompiled title module really are counted instead of assumed.
+  bool watchReportRequested = false;
+  if (const char* watchRange = std::getenv("TRIAEVUM_WATCH_GUEST_RANGE")) {
+    unsigned long long start = 0, size = 0;
+    const int parsed = std::sscanf(watchRange, "%llx:%llx", &start, &size);
+    std::fprintf(stderr,
+                 "TRIAEVUM_WATCH_GUEST_RANGE raw='%s' parsed=%d start=0x%llX size=0x%llX\n",
+                 watchRange, parsed, start, size);
+    if (parsed == 2 && size != 0) {
+      rawCopyWatchRanges.emplace_back(static_cast<uint32_t>(start),
+                                      static_cast<uint32_t>(start + size));
+      process.Memory().SetRangeWatch(rawCopyWatchRanges);
+      watchReportRequested = true;
+      std::fprintf(stderr, "TRIAEVUM_WATCH_GUEST_RANGE active=%d ranges=%zu\n",
+                   process.Memory().RangeWatchActive() ? 1 : 0,
+                   process.Memory().WatchedRangeCount());
+    }
+  }
   uint64_t lastSelectedTopTransferCompletionId = 0;
   const auto restoreSavestateTiming =
       [&](const Oot3dNativeGame::NativeA32SavestateRuntimeState &runtime) {
@@ -4407,8 +4427,11 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       [&](uint32_t address, std::span<uint8_t> bytes) { return picaMemoryView.Read(address, bytes); },
       [&](uint64_t, std::span<const Fast::Renderer3ds::PicaPhysicalMemoryWrite> writes) {
         // The writeback is the renderer writing the copy itself, not a guest or
-        // service access; keep it out of the guest-access counters.
-        process.Memory().SetRangeWatchSuppressed(true);
+        // service access; keep it out of the guest-access counters. Scope, not
+        // a pair of calls: an early return must not leave the watch suppressed.
+        {
+        const Oot3dNativeGame::NativeA32Memory::RangeWatchSuppression suppressed(
+            process.Memory());
         for (const auto& write : writes) {
           const auto address = picaMemoryView.Translate(write.Address, write.Bytes.size());
           if (!address || !process.Memory().IsWritable(*address, write.Bytes.size())) return false;
@@ -4417,7 +4440,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           const auto address = picaMemoryView.Translate(write.Address, write.Bytes.size());
           if (!process.Memory().WriteBytes(*address, write.Bytes)) return false;
         }
-        process.Memory().SetRangeWatchSuppressed(false);
+        }
         if (!hostServices.SignalPicaInterrupt(process.Memory(), Oot3dNativeGame::Oot3dPicaInterruptId::Ppf)) return false;
         ++completedPpfCount;
         ++recordedCompletionCount;
@@ -4934,6 +4957,13 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               refreshedTopScreenGameplayInputMode
                   ? Oot3dNativeGame::Oot3dPicaCompositionDomain::Scene
                   : Oot3dNativeGame::Oot3dPicaCompositionDomain::Unknown;
+        }
+        // Re-arm after any state restore: RestoreState replaces the memory
+        // image, and the watch is diagnostic state that must not disappear with
+        // it. Cheap when the trapped page set is unchanged.
+        if (!rawCopyWatchRanges.empty() &&
+            !process.Memory().RangeWatchActive()) {
+          process.Memory().SetRangeWatch(rawCopyWatchRanges);
         }
         inputFrame = ResolveNativeA32GuestInput(
             physicalInputFrame, inputTimeline, frameCount, runFrameCount,
@@ -9132,22 +9162,30 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         });
   }
 
-  if (launch.ExtendedDiagnostics && process.Memory().RangeWatchActive()) {
+  if (launch.ExtendedDiagnostics &&
+      (process.Memory().RangeWatchActive() || watchReportRequested)) {
     const auto& watched = process.Memory().WatchCounters();
     std::fprintf(
         stderr,
-        "TRIAEVUM_RAW_COPY_HOST_ACCESS ranges=%zu typed_reads=%llu typed_writes=%llu "
-        "byte_reads=%llu pointer_reads=%llu byte_writes=%llu suppressed_byte_writes=%llu "
-        "first_read=0x%08X first_size=%u\n",
+        "TRIAEVUM_RAW_COPY_HOST_ACCESS active=%d ranges=%zu typed_reads=%llu typed_writes=%llu "
+        "byte_reads=%llu pointer_reads=%llu pointer_writes=%llu byte_writes=%llu "
+        "host_byte_writes=%llu fills=%llu suppressed_byte_writes=%llu first_read=0x%08X "
+        "first_size=%u first_write=0x%08X first_write_size=%u\n",
+        process.Memory().RangeWatchActive() ? 1 : 0,
         process.Memory().WatchedRangeCount(),
         static_cast<unsigned long long>(watched.TypedReads),
         static_cast<unsigned long long>(watched.TypedWrites),
         static_cast<unsigned long long>(watched.ByteReads),
         static_cast<unsigned long long>(watched.PointerReads),
+        static_cast<unsigned long long>(watched.PointerWrites),
         static_cast<unsigned long long>(watched.ByteWrites),
+        static_cast<unsigned long long>(watched.HostByteWrites),
+        static_cast<unsigned long long>(watched.Fills),
         static_cast<unsigned long long>(watched.SuppressedByteWrites),
         watched.FirstReadAddress,
-        static_cast<unsigned>(watched.FirstReadSize));
+        static_cast<unsigned>(watched.FirstReadSize),
+        watched.FirstWriteAddress,
+        static_cast<unsigned>(watched.FirstWriteSize));
   }
 
   if (launch.ScenarioStrict &&

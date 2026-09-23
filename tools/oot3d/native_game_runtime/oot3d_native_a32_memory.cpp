@@ -400,11 +400,19 @@ bool NativeA32Memory::RestoreState(const nlohmann::json& state,
             return false;
         }
         staged.mTraceWriteFingerprint = mTraceWriteFingerprint;
+        // The access watch describes which ranges the diagnostics are observing,
+        // not the memory contents, so it survives the image replacement; without
+        // this the trap is silently lost on every savestate load.
+        const std::vector<std::pair<uint32_t, uint32_t>> watched = mWatchRanges;
+        const bool watchWasActive = mWatchActive;
         *this = std::move(staged);
         // Fast-page entries contain pointers into region backing storage.
         // Rebind them after replacing the complete memory image so restoring a
         // savestate cannot retain pointers owned by the staged instance.
         RebuildPageTable();
+        if (watchWasActive && !watched.empty()) {
+            SetRangeWatch(watched);
+        }
         return true;
     } catch (const std::exception& exception) {
         if (error != nullptr) {
@@ -492,6 +500,9 @@ uint8_t* NativeA32Memory::GetWritePointer(uint32_t address, size_t size) {
     if (region == nullptr || !region->Writable) {
         return nullptr;
     }
+    if (!mWatchSuppressed && Watches(address, size)) [[unlikely]] {
+        ++mWatchCounters.PointerWrites;
+    }
     uint8_t* destination = region->Bytes.data() +
                            static_cast<size_t>(address - region->BaseAddress);
     if (mTraceWriteFingerprint) {
@@ -558,6 +569,9 @@ bool NativeA32Memory::WriteBytes(uint32_t address,
         RecordTracedWrite(address, bytes);
     }
     ++mWriteGeneration;
+    if (!mWatchSuppressed && Watches(address, bytes.size())) [[unlikely]] {
+        ++mWatchCounters.HostByteWrites;
+    }
     return true;
 }
 
@@ -597,6 +611,9 @@ bool NativeA32Memory::Fill(uint32_t address, size_t size, uint8_t value) {
             std::span<const uint8_t>(region->Bytes.data() + offset, size));
     }
     ++mWriteGeneration;
+    if (!mWatchSuppressed && Watches(address, size)) [[unlikely]] {
+        ++mWatchCounters.Fills;
+    }
     return true;
 }
 
@@ -623,6 +640,9 @@ bool NativeA32Memory::ReadSized(uint32_t address, uint8_t size,
                    << (index * 8U);
     }
     *value = decoded;
+    if (Watches(address, size)) [[unlikely]] {
+        NoteWatchedRead(address, size);
+    }
     return true;
 }
 
@@ -652,6 +672,9 @@ bool NativeA32Memory::WriteSized(uint32_t address, uint8_t size,
             std::span<const uint8_t>(region->Bytes.data() + offset, size));
     }
     ++mWriteGeneration;
+    if (Watches(address, size)) [[unlikely]] {
+        NoteWatchedWrite(address, size);
+    }
     return true;
 }
 

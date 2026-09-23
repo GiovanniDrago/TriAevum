@@ -72,9 +72,16 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
         // a run where nothing else touches the range still proves the trap is
         // live (one writeback span per written row).
         uint64_t SuppressedByteWrites = 0;
+        // Host-service write paths that do not go through the guest bus.
+        uint64_t HostByteWrites = 0;
+        uint64_t Fills = 0;
+        uint64_t PointerWrites = 0; // GetWritePointer: same, for writes
         uint32_t FirstReadAddress = 0;
         uint8_t FirstReadSize = 0;
+        uint32_t FirstWriteAddress = 0;
+        uint8_t FirstWriteSize = 0;
         bool FirstReadRecorded = false;
+        bool FirstWriteRecorded = false;
     };
     // Ranges are half-open [begin, end). Setting them rebuilds the page table
     // only when the trapped pages change, so the same destination seen once per
@@ -165,9 +172,6 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
                        faultAddress)) {
             return false;
         }
-        if (Watches(address, sizeof(T))) [[unlikely]] {
-            NoteWatchedRead(address, static_cast<uint8_t>(sizeof(T)));
-        }
         *value = static_cast<T>(decoded);
         return true;
     }
@@ -197,9 +201,6 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
                 ++mWriteGeneration;
                 return true;
             }
-        }
-        if (Watches(address, sizeof(T))) [[unlikely]] {
-            ++mWatchCounters.TypedWrites;
         }
         return WriteSized(address, static_cast<uint8_t>(sizeof(T)), value,
                           faultAddress);
@@ -257,12 +258,24 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
         }
         return false;
     }
+    // Both raise only when a watch is active, and both are reached only after
+    // the range was actually accessed. Counting here, in the checked path,
+    // covers every compiled variant: a trapped access from the precompiled
+    // title module lands here, not in the inline fast path above.
     void NoteWatchedRead(uint32_t address, uint8_t size) const noexcept {
         ++mWatchCounters.TypedReads;
         if (!mWatchCounters.FirstReadRecorded) {
             mWatchCounters.FirstReadRecorded = true;
             mWatchCounters.FirstReadAddress = address;
             mWatchCounters.FirstReadSize = size;
+        }
+    }
+    void NoteWatchedWrite(uint32_t address, uint8_t size) const noexcept {
+        ++mWatchCounters.TypedWrites;
+        if (!mWatchCounters.FirstWriteRecorded) {
+            mWatchCounters.FirstWriteRecorded = true;
+            mWatchCounters.FirstWriteAddress = address;
+            mWatchCounters.FirstWriteSize = size;
         }
     }
     bool ReadSized(uint32_t address, uint8_t size, uint64_t* value,
@@ -298,6 +311,25 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     std::vector<std::pair<uint32_t, size_t>> mPendingTracedPointerWrites;
     // Diagnostic watch state. Empty and inactive in normal runs.
     std::vector<std::pair<uint32_t, uint32_t>> mWatchRanges;
+  public:
+    // Scoped suppression for the renderer's own materialization: it must not be
+    // possible to leave the watch suppressed by returning early.
+    class RangeWatchSuppression {
+      public:
+        explicit RangeWatchSuppression(NativeA32Memory& memory) noexcept
+            : mMemory(&memory), mPrevious(memory.mWatchSuppressed) {
+            memory.mWatchSuppressed = true;
+        }
+        ~RangeWatchSuppression() { mMemory->mWatchSuppressed = mPrevious; }
+        RangeWatchSuppression(const RangeWatchSuppression&) = delete;
+        RangeWatchSuppression& operator=(const RangeWatchSuppression&) = delete;
+
+      private:
+        NativeA32Memory* mMemory = nullptr;
+        bool mPrevious = false;
+    };
+
+  private:
     std::vector<size_t> mTrappedPages;
     mutable RangeWatchCounters mWatchCounters;
     bool mWatchActive = false;

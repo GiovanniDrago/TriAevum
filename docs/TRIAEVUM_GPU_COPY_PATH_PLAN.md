@@ -515,40 +515,47 @@ Decisioni ancora da risolvere con esperimento: presenza/ubicazione delle copie r
   riportati in guest, e l'encode possa restare su GPU. Finche' D3/D4 non provano
   che il consumer tradotto non legge la destinazione via host pointer, il
   writeback guest-visibile resta e questo pavimento resta.
-- **D3/D4 — eseguito, con controllo positivo.** La domanda del §6 ("il
-  consumer tradotto legge la destinazione via host?") ora ha una risposta
-  misurata, non un'ipotesi. Strumento: `NativeA32Memory` espone una guardia
-  opt-in su intervalli (`SetRangeWatch`, contatori `RangeWatchCounters`); le
-  pagine osservate **perdono l'entry del fast path**, quindi gli accessi tipizzati
-  del modulo titolo — inlined contro quell'header, quindi anche nel modulo
-  precompilato — cadono nel percorso checked, dove vengono contati. Il percorso
-  checked legge e scrive gli stessi byte: la guardia non cambia il comportamento,
-  e a intervalli vuoti il fast path resta intatto. Coperta da
-  `oot3d_native_a32_ctr_host_tests` (valori identici, conteggi per origine,
-  soppressione, ripristino dopo `ClearRangeWatch`).
-  Attenzione metodologica pagata sul campo: la copia nomina indirizzi **fisici**,
-  la memoria è indicizzata per indirizzi **guest**; la guardia va posta sullo
-  span tradotto (`picaMemoryView.Translate`), altrimenti trappa pagine che
-  nessuno tocca e restituisce zeri falsi.
-  Misure. Finestra rivelazione completa (3500 frame, 513 copie):
-  `typed_reads=0 typed_writes=0 byte_reads=0 byte_writes=0 pointer_reads=104141`.
-  Ripetuta dallo stato ravvicinato `sheik-near-copy` (400 frame, 164 copie,
-  37 s): `typed_reads=0 byte_reads=0 byte_writes=0 pointer_reads=33291
-  suppressed_byte_writes=8200`. I 8.200 byte scritti soppressi sono esattamente
-  gli span di writeback della copia: è il **controllo positivo** che la trappola
-  è viva sull'intervallo reale.
-  Lettura dei dati: nel percorso AOT il codice tradotto del titolo **non legge
-  mai** la destinazione via host; gli unici lettori host sono i nostri
-  (`GetReadPointer` dal memory view PICA, ~200 per copia), cioè esattamente il
-  percorso che la Fase B sostituisce. Coerente con la forma misurata del codice
-  generato (311.191 `ReadFast`, 189.552 `WriteFast`, **zero** `ReadBytes`,
-  `GetReadPointer`, `GetWritePointer`).
+- **D3/D4 — eseguito, con controllo positivo verificato.** La domanda del §6
+  ("il consumer tradotto legge la destinazione via host?") ora ha una risposta
+  misurata. Strumento: `NativeA32Memory` espone una guardia opt-in su intervalli
+  (`SetRangeWatch`, contatori `RangeWatchCounters`); le pagine osservate perdono
+  l'entry del fast path, quindi gli accessi tipizzati **del modulo precompilato**
+  cadono nel percorso checked, dove vengono contati. Il conteggio sta nel
+  percorso checked (`ReadSized`/`WriteSized`), non negli inline: la prima
+  versione contava solo i fallback inline e avrebbe prodotto un falso negativo
+  per il modulo compilato contro l'header precedente. Il percorso checked legge e
+  scrive gli stessi byte e a intervalli vuoti il fast path resta intatto.
+  Coperta da `oot3d_native_a32_ctr_host_tests` (valori identici, conteggi per
+  origine, soppressione RAII, ripristino dopo `ClearRangeWatch`).
+  Attenzioni pagate sul campo: la copia nomina indirizzi **fisici** e la memoria
+  è indicizzata per indirizzi **guest** (la guardia va posta sullo span
+  tradotto, altrimenti trappa pagine che nessuno tocca); `RestoreState` sostituisce
+  l'intero oggetto memoria, quindi la guardia va fatta sopravvivere al restore e
+  ri-armata.
+  **Controllo positivo:** gameplay 300 frame (anchor `hud_minimap_visible`) con
+  `TRIAEVUM_WATCH_GUEST_RANGE=0x08000000:0x00100000` —
+  `typed_reads=80844 typed_writes=51728 byte_reads=66079 first_read=0x080EB944
+  size=4`. Cioè lo strumento conta davvero accessi typed del modulo reale,
+  dentro l'intervallo osservato.
+  **Misura:** finestra copie (400 frame da `sheik-near-copy`, 164 copie, stesso
+  strumento) — `typed_reads=0 typed_writes=0 byte_reads=0 byte_writes=0
+  host_byte_writes=0 fills=0 pointer_reads=33291 suppressed_byte_writes=8200`.
+  I soli lettori host dell'intervallo sono i nostri: `GetReadPointer` ha due
+  chiamanti nel prodotto, e solo il primo copre lo spazio del framebuffer —
+  `oot3d_native_pica_a32_memory_view.cpp:12-17`, la callback di lettura del
+  memory view PICA usata dal path di sampling/cattura (≈200 handout per copia);
+  il secondo è `oot3d_native_a32_dsp_memory_adapter.cpp:39`, che risolve solo
+  indirizzi dentro le proprie regioni DSP. Gli 8.200 byte soppressi sono esattamente gli span
+  di writeback, cioè la prova che la trappola era viva. Coerente con la forma
+  misurata del codice generato (311.191 `ReadFast`, 189.552 `WriteFast`, **zero**
+  `ReadBytes`/`GetReadPointer`/`GetWritePointer`).
   Conseguenza per C: la materializzazione si può differire per il consumer di
-  sampling, mentre resta eager sui percorsi host che il guest può raggiungere
-  tramite servizi/viste; la guardia è lo strumento per ripetere la verifica su
-  ogni scenario (movie, altre entrance) e il contatore `pointer_reads` registra
-  il momento in cui un puntatore vivo viene consegnato, che è l'unico punto non
-  più osservabile dopo.
+  sampling, mentre resta eager sui percorsi host raggiungibili dal guest tramite
+  servizi/viste. Restano **non misurati** e dichiarati tali: D4 (byte stale in
+  RAM guest fra copia e materializzazione), exclusive/atomic, `WriteHostBytes`/
+  `Fill` (contati ma non esercitati in questo scenario) e i puntatori ottenuti
+  prima dell'attivazione della guardia; il contatore `pointer_reads` registra il
+  momento della consegna, che è l'unico punto non più osservabile dopo.
 - **Prossimo.** A reale (copia/encode su GPU verso risorsa versionata), B
   (binding GPU-owned, risoluzione versionata prima di hash/decode), C
   (materializzazione solo se serve) subordinata a D3/D4: finche' non e' provato
