@@ -211,6 +211,24 @@ dall'encode a risoluzione interna.
 - Se D richiede intercept: `oot3d_native_a32_memory.{h,cpp}` (`ReadFast`, `ReadBytes`, `GetReadPointer`, `WriteFast`, `GetWritePointer`, scritture checked/atomiche), `oot3d_native_a32_memory_region.h` (`NativeA32UnobservedMemory::{Resolve,ReadFast,WriteFast,Commit}`), e generatori AOT soltanto dove necessario a chiudere il bypass. Questo tocca ABI/plugin: qualificazione obbligatoria D.
 - `oot3d_native_a32_savestate.cpp`: barriera di snapshot memoria prima della serializzazione già esistente, non un guest read simulato.
 
+### D, risposta misurata (la decisione che segue ne dipende)
+
+La prova D3/D4 del §6 è stata eseguita con la guardia su intervalli: nello
+scenario osservato **il codice tradotto del titolo non legge la destinazione**
+(zero accessi typed e byte; i soli handout di puntatore sono i nostri, ora serviti
+dalla GPU dopo B). Restano non misurati, e dichiarati: D4 (byte stale in RAM fra
+copia e materializzazione), exclusive/atomic e i puntatori ottenuti prima
+dell'attivazione della guardia. Con B in esercizio il sampler non consuma più i
+byte guest per la superficie copiata: la decodifica avviene sulla GPU dai byte
+nativi che il resolver ha reso coerenti.
+
+Decisione: il writeback guest **resta** — la memoria guest è stato osservabile
+del titolo e savestate/replay la serializzano — ma il giro CPU che lo accompagna
+è ciò che C deve togliere: il readback ordinato di 768 KB per copia e la copia di
+coerenza da 1 MiB per risoluzione, materializzando al confine di dipendenza e solo
+per gli intervalli che qualcuno legge davvero. La guardia è ciò che prova quale
+dei due casi si applica.
+
 ### Decisione di materializzazione, dipendente da D
 
 1. Consumer esclusivamente GPU, con confine che rileva future letture/scritture CPU: nessun writeback per il sampling; PPF dopo completamento del lavoro ordinato e visibilità logica garantita dal contratto di memoria.
