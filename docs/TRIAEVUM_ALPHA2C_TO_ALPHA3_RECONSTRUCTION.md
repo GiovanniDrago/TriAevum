@@ -612,6 +612,15 @@ experiments:
   numerator that could wrap). This is an increment of phase A, not phase A: the
   ordered readback (smaller), present wait, guest writeback, texture
   invalidation and CPU upload are all still there.
+- **What the sampler pays because of the copy, measured.** With the GPU encode in
+  place the dominant cost moved off the copy itself: over 400 frames and 164
+  copies, `TRIAEVUM_RAW_COPY_SAMPLER` reports 164 resolutions, 164 texture
+  creations, 171,966,464 bytes pulled through the coherence path and 1,685 ms
+  spent resolving them (about 10 ms per resolution, 4.2 ms per frame), against
+  307 ms for the copies themselves. Every copy invalidates the overlapping
+  decoded texture and the sampler rebuilds it from guest bytes; that rebuild, not
+  the copy, is what phase B has to remove by writing the copied region into the
+  texture that already exists.
 - **Where the floor is.** The residual ~4.4 ms per copy is the CPU-encode model
   itself: ~2.0 ms reading back roughly 7.4 MB of source per copy, ~1.1 ms of
   PICA encode, ~0.9 ms retiring overlapped textures. No further Phase A/C

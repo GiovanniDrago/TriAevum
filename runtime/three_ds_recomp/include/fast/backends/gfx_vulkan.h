@@ -877,6 +877,20 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     bool mRawCopyEncodeVerify = false;
     uint64_t mRawCopyEncodeVerifyBytes = 0;
     uint64_t mRawCopyEncodeVerifyMismatches = 0;
+    // What the sampler pays because a raw copy wrote into its texture: every
+    // resolution that touches a copy destination, the bytes the coherence path
+    // has to refresh for it, and the texture creations that follow the copy's
+    // invalidation. This is the cost phase B is meant to remove, measured on
+    // the real draw stream rather than assumed.
+    struct RawCopySamplerCost {
+        uint64_t Resolutions = 0;
+        uint64_t OverlappingResolutions = 0;
+        uint64_t Creations = 0;
+        uint64_t CoherenceBytes = 0;
+        double ResolveSeconds = 0.0;
+    };
+    RawCopySamplerCost mRawCopySamplerCost;
+    [[nodiscard]] bool RawCopyDestinationOverlaps(uint32_t address, uint64_t bytes) const;
     void DestroyRawCopyEncodeResources();
     bool EnsureRawCopyEncodeResources(uint32_t encodedBytes, std::string* error);
     bool RecordRawCopyEncode(VkCommandBuffer command, VkImage sourceImage,

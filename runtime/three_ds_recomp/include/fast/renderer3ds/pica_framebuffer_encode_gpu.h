@@ -12,6 +12,12 @@ namespace Fast::Renderer3ds {
 // packing of the CPU oracle for that texel and selects the byte, so formats
 // with two or three bytes per texel stay exact across word boundaries.
 //
+// Resolution contract, which the rest of the GPU path must keep: the source is
+// sampled at the *internal* rendering resolution (imageWidth x imageHeight) and
+// only the output is the native tiled surface (width x height). A GPU path that
+// simplified this to native-resolution sampling would silently drop the internal
+// render resolution.
+//
 // The host must validate before dispatch (the oracle refuses these, the shader
 // cannot): width/height nonzero and multiples of eight, format 0-4, bytes per
 // pixel consistent with the format, nonzero image extents, and

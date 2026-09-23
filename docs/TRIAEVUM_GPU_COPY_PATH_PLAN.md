@@ -147,6 +147,18 @@ Un binding non possiede l'immagine; possiede solo view/sampler e una pin alla ve
 
 `CapturePicaTextureCache`, `CapturePicaColorTargets`, presentation snapshot e visual replay devono continuare a funzionare. Al confine idle materializzare tutte le versioni necessarie al restore una sola volta tramite l'owner, poi serializzare alias/referenze in modo coerente. Se basta normalizzare in payload CPU nello schema corrente, preferirlo a un nuovo formato savestate. Se nuove identità persistenti non sono ricostruibili dallo schema corrente, aggiornare encoder/decoder insieme con versione/compatibilità esplicita; non scartare dati sconosciuti in silenzio. Restore ripristina un epoch nuovo per gli handle runtime e la stessa obbligazione logica guest.
 
+### Risoluzione interna (vincolo per A/B/C)
+
+La copia legge la colour target alla **risoluzione interna** di rendering e
+produce il layout nativo solo in uscita: `EncodePicaFramebuffer(rgba, imageWidth,
+imageHeight, width, height, format)` campiona il target interno e scrive la
+superficie nativa. L'encode su GPU appena introdotto rispetta questo contratto e
+lo dichiara nel proprio header. Le fasi successive devono fare lo stesso: una
+superficie GPU-owned decodificata per il sampler va costruita alla risoluzione
+della texture campionata a partire dal contenuto copiato, che è a risoluzione
+interna; non è ammessa una scorciatoia che campioni o materializzi a risoluzione
+nativa, perché perderebbe silenziosamente la risoluzione interna del renderer.
+
 ### Acceptance B
 
 - C1 submission/plan/bridge verdi; nuove verifiche mirate di versioni immutabili: draw prima/dopo, due copie allo stesso indirizzo, namespace separati, scrittura CPU parziale e same-value, mip superiore modificato.
@@ -583,6 +595,20 @@ Decisioni ancora da risolvere con esperimento: presenza/ubicazione delle copie r
   CPU→GPU, cioè tutto ciò che l'accettazione A chiede di eliminare; B e C non
   sono toccate. Lo shader è nel renderer condiviso ed è neutro rispetto al
   titolo (nessun token del titolo), con un test che lo compila offline.
+- **Costo del sampler attribuito — il bersaglio della Fase B.** Con l'encode su
+  GPU in esercizio, la finestra copie mostra che il costo dominante non è più la
+  copia ma ciò che il sampler paga *a causa* dell'invalidazione: su 400 frame /
+  164 copie, `TRIAEVUM_RAW_COPY_SAMPLER resolutions=164 creations=164
+  coherence_bytes=171966464 resolve_ms=1685.568`. Cioè: una risoluzione per
+  copia, **ogni volta una nuova texture decodificata e caricata**, 1,05 MB per
+  copia ricopiati dal percorso di coerenza, e ~10 ms di lavoro per risoluzione
+  (4,2 ms/frame), contro 307 ms totali per le copie stesse (1,9 ms/copia). La
+  Fase B deve togliere proprio questo: portare la regione scritta dentro la
+  texture decodificata già esistente invece di distruggerla e ricostruirla.
+- **Risoluzione interna: vincolo esplicito.** La copia campiona la colour target
+  alla risoluzione interna e scrive il layout nativo solo in uscita; il percorso
+  GPU deve mantenere lo stesso contratto (vedi la sezione dedicata), altrimenti
+  perderebbe in silenzio la risoluzione interna del renderer.
 - **Prossimo.** A reale (copia/encode su GPU verso risorsa versionata), B
   (binding GPU-owned, risoluzione versionata prima di hash/decode), C
   (materializzazione solo se serve) subordinata a D3/D4: finche' non e' provato

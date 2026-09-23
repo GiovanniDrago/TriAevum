@@ -2985,6 +2985,15 @@ void GfxRenderingAPIVulkan::StorePipelineCache() {
                  static_cast<unsigned long long>(mNativePicaVulkanPipelineCreations));
     std::fprintf(stderr, "TRIAEVUM_PICA_VULKAN_SHADER_PAIRS created=%llu\n",
                  static_cast<unsigned long long>(mNativePicaVulkanShaderPairCreations));
+    if (mRawCopySamplerCost.Resolutions != 0U) {
+        std::fprintf(stderr,
+                     "TRIAEVUM_RAW_COPY_SAMPLER resolutions=%llu creations=%llu "
+                     "coherence_bytes=%llu resolve_ms=%.3f\n",
+                     static_cast<unsigned long long>(mRawCopySamplerCost.Resolutions),
+                     static_cast<unsigned long long>(mRawCopySamplerCost.Creations),
+                     static_cast<unsigned long long>(mRawCopySamplerCost.CoherenceBytes),
+                     mRawCopySamplerCost.ResolveSeconds * 1000.0);
+    }
     if (mRawCopyEncodeVerifyBytes != 0U) {
         std::fprintf(stderr,
                      "TRIAEVUM_RAW_COPY_ENCODE_DIFF bytes=%llu mismatches=%llu\n",

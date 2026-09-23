@@ -4146,6 +4146,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     "native PICA texture type is unsupported by sampler2D");
             }
             std::vector<uint8_t> coherentBytes;
+            const auto resolutionStart = std::chrono::steady_clock::now();
+            const size_t texturesBefore = mNativePicaTextures.size();
             const auto coherentTexture = ResolveNativePicaCopiedTexture(
                 texture, draw.RenderTargetNamespace, draw.SubmissionId, coherentBytes);
             TextureRecord* record =
@@ -4157,6 +4159,19 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             if (record == nullptr) {
                 return false;
             }
+            if (RawCopyDestinationOverlaps(texture.PhysicalAddress,
+                                            texture.NativeBytes.size())) {
+                ++mRawCopySamplerCost.Resolutions;
+                mRawCopySamplerCost.CoherenceBytes += coherentBytes.size();
+                if (mNativePicaTextures.size() != texturesBefore) {
+                    ++mRawCopySamplerCost.Creations;
+                }
+                mRawCopySamplerCost.ResolveSeconds +=
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                  resolutionStart)
+                        .count();
+            }
+            ++mRawCopySamplerCost.OverlappingResolutions;
             textures[texture.Slot] = record;
             textureFormats[texture.Slot] =
                 texture.NativeType == 2U ? VK_FORMAT_R32_UINT

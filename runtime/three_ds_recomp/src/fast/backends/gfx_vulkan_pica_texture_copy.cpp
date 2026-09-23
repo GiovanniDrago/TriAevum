@@ -338,6 +338,20 @@ bool GfxRenderingAPIVulkan::RecordRawCopyEncode(
     return true;
 }
 
+bool GfxRenderingAPIVulkan::RawCopyDestinationOverlaps(uint32_t address,
+                                                       uint64_t bytes) const {
+    const uint64_t end = uint64_t{address} + bytes;
+    for (const auto& [identity, copy] : mRawTextureCopyWritebacks) {
+        for (const auto& write : copy.Writes) {
+            const uint64_t writeEnd = uint64_t{write.Address} + write.Bytes.size();
+            if (address < writeEnd && end > write.Address) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
     const GfxNativePicaDisplayTransferView& transfer, std::string* error) {
     try {
