@@ -717,3 +717,5 @@ qualification. Ordered checks for the next Linux session:
 | `runtime/three_ds_recomp/tests/oot3d_pica_scene_frame_tests.cpp` | Declared uniform buffer covers the declared slices. |
 | `tools/renderer/tev_program/lighting_gpu_tests.cpp` | Explicit title-adapter include for the moved builder. |
 | `tools/triaevum_release/tests/run_f1_settings_smoke.ps1` | Links the configured archive directory from the build cache instead of stale build-tree copies. |
+| `tools/oot3d/operational_inputs.json` | Adds the paths found in this pass (generated translated code, savestates, structural scenario catalog, release corresponding source) as 22 entries and 10 variables, plus two probe commands and the known absence of a regenerated tree in the build; validated with `Test-Oot3dOperationalInputs.ps1`, no new failures. |
+| `docs/OOT3D_WORKSPACE_PATHS.md` | Narrative map of those paths, with the recipe for moving between situations (including the quiescent anchor the structural scenarios require) and the measured memory-access shape of the generated title code. |

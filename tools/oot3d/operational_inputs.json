@@ -1,9 +1,10 @@
 {
   "format": "oot3d_operational_inputs_v1",
-  "last_reviewed": "2026-08-27",
+  "last_reviewed": "2026-09-23",
   "policy": {
     "purpose": "Stable local index for OOT3D tools, original game inputs, derived exports, and validation captures used by this workspace.",
-    "rule": "Check this manifest before searching for Ghidra, code.bin, ROMFS, emulator, trace, or demo manifest paths."
+    "rule": "Check this manifest before searching for Ghidra, code.bin, ROMFS, emulator, trace, or demo manifest paths. Entry ids are stable: scripts in scripts\\\\oot3d resolve variables from here, so add rather than rename.",
+    "translated_code_and_scenarios": "Translated title code lives in ${aotProductCache} (generated) and in tools/oot3d/{source_overlay,source_imports,decomp_support} (readable). Savestates live in ${nativeGameCheckpoints} and ${diagnosticsRoot}; native transitions are driven through ${structuralScenarios} instead of one savestate per scene. Narrative map: docs\\\\OOT3D_WORKSPACE_PATHS.md."
   },
   "variables": {
     "repoRoot": "I:\\oot3dre",
@@ -29,7 +30,17 @@
     "llvmBuildScript": "${repoRoot}\\scripts\\oot3d\\Build-Oot3dLlvm.ps1",
     "wholeAotOptimizationAnalysis": "${repoRoot}\\tools\\oot3d\\native_a32_runtime\\analyze_whole_aot_optimization_ir.py",
     "llvmAotPilot": "${repoRoot}\\tools\\oot3d\\native_a32_runtime\\run_llvm_aot_pilot.py",
-    "llvmAotPilotBuildRoot": "${workRoot}\\build-llvm-aot-pilot"
+    "llvmAotPilotBuildRoot": "${workRoot}\\build-llvm-aot-pilot",
+    "publicCleanRepo": "I:\\TriAevum-public\\source-repository-clean",
+    "verifyBuildRoot": "J:\\TriAevum-verify-20260910\\runtime",
+    "verifyBinaryRoot": "I:\\TriAevum-public\\ui-dependencies\\bin",
+    "verifyInstallRoot": "I:\\TriAevum-public\\releases\\v0.6.0-alpha.3b\\qualification-windows",
+    "aotProductCache": "${workRoot}\\oot3d-whole-aot-product-cache",
+    "structuralScenarios": "${workRoot}\\structural-scenarios",
+    "nativeGameCheckpoints": "${workRoot}\\native_game\\checkpoints",
+    "diagnosticsRoot": "J:\\TriAevum-diagnostics",
+    "releaseSourceRoot": "I:\\TriAevum-public\\releases\\v0.6.0-alpha.3\\title-build-source",
+    "historyBundle": "I:\\TriAevum-public\\history-cleanup.git"
   },
   "entries": [
     {
@@ -836,6 +847,175 @@
       "required": true,
       "min_length": 50000,
       "purpose": "Binding backlog for native PICA/light/shadow origin structures and unresolved mismatches."
+    },
+    {
+      "id": "aot_product_cache",
+      "kind": "directory",
+      "path": "${aotProductCache}",
+      "required": false,
+      "purpose": "Generated whole-AOT translated title code, one directory per product hash: cpp/oot3d_whole_aot_generated.{h,cpp}, oot3d_whole_aot_shard_NNN.cpp, aot_program.json, product_artifacts.json, whole_aot_archive.json. This is the translated title logic; read it instead of guessing what guest code does."
+    },
+    {
+      "id": "aot_generated_kokiri_main",
+      "kind": "directory",
+      "path": "${workRoot}\\native_game\\whole_aot_kokiri_main_top12",
+      "required": false,
+      "min_file_count": 1,
+      "purpose": "Loose generated whole-AOT tree from the Kokiri main/top12 experiment; earlier snapshot than the product cache."
+    },
+    {
+      "id": "aot_generated_navi_pica_flush",
+      "kind": "directory",
+      "path": "${workRoot}\\native_game\\whole_aot_navi_pica_flush",
+      "required": false,
+      "min_file_count": 1,
+      "purpose": "Loose generated whole-AOT tree from the Navi flight PICA flush experiment."
+    },
+    {
+      "id": "whole_aot_product_manifest",
+      "kind": "file",
+      "path": "${repoRoot}\\tools\\oot3d\\native_a32_runtime\\whole_aot_product_manifest.json",
+      "required": true,
+      "min_length": 1000,
+      "purpose": "Index of the product whole-AOT selection: source image, frontend, closure and codegen contract that the generator consumes."
+    },
+    {
+      "id": "whole_aot_functions",
+      "kind": "file",
+      "path": "${repoRoot}\\tools\\oot3d\\native_a32_runtime\\whole_aot_functions.json",
+      "required": true,
+      "min_length": 1000,
+      "purpose": "Address-to-function selection list for whole-AOT codegen."
+    },
+    {
+      "id": "whole_aot_product_scenarios",
+      "kind": "file",
+      "path": "${repoRoot}\\tools\\oot3d\\native_a32_runtime\\whole_aot_product_scenarios.json",
+      "required": true,
+      "min_length": 500,
+      "purpose": "Eight product scenarios (frontend_ui, cutscene, cutscene_streaming, scene_transition, interior_gameplay, outdoor_gameplay_hud, player_interaction, pause_ui) with checkpoint file name, SHA-256, input profile and frame budget."
+    },
+    {
+      "id": "whole_aot_generator",
+      "kind": "file",
+      "path": "${repoRoot}\\tools\\oot3d\\native_a32_runtime\\generate_whole_aot_cpp.py",
+      "required": true,
+      "min_length": 1000,
+      "purpose": "Whole-AOT C++ generator; writes oot3d_whole_aot_generated.{h,cpp} plus shards into the configured output directory."
+    },
+    {
+      "id": "scenario_checkpoints",
+      "kind": "directory",
+      "path": "${nativeGameCheckpoints}",
+      "required": false,
+      "min_file_count": 100,
+      "purpose": "Scenario and diagnostic savestates (.oot3dsav) plus their JSON profiles: title, file select, Kokiri, HUD, Navi flight, ladder, interior gameplay."
+    },
+    {
+      "id": "issue_checkpoints",
+      "kind": "directory",
+      "path": "${diagnosticsRoot}\\issues45-46",
+      "required": false,
+      "min_file_count": 10,
+      "purpose": "Issue-specific savestates and captures: sheik-* (raw TextureCopy and revelation), gameover-* (composition variants), zero-health, dialogue traces."
+    },
+    {
+      "id": "diagnostics_root",
+      "kind": "directory",
+      "path": "${diagnosticsRoot}",
+      "required": false,
+      "purpose": "Per-topic diagnostic evidence: performance campaigns, lighting/TEV probes, Y2R codec, reveal freeze diagnostics."
+    },
+    {
+      "id": "structural_scenarios_root",
+      "kind": "directory",
+      "path": "${structuralScenarios}",
+      "required": false,
+      "purpose": "Structural scenario harness output: entrance recipes, compiled shader packs and run matrices that move the game through native transitions without a savestate per scene."
+    },
+    {
+      "id": "structural_scenario_matrix_latest",
+      "kind": "file",
+      "path": "${structuralScenarios}\\matrices\\latest.json",
+      "required": false,
+      "min_length": 50,
+      "purpose": "Pointer to the most recent structural scenario matrix run."
+    },
+    {
+      "id": "structural_scenario_strict_latest",
+      "kind": "file",
+      "path": "${structuralScenarios}\\all-entrances-v2\\strict-matrix\\latest.json",
+      "required": false,
+      "min_length": 50,
+      "purpose": "Pointer to the most recent strict (all-entrances-v2) matrix run."
+    },
+    {
+      "id": "structural_scenario_catalog",
+      "kind": "file",
+      "path": "${repoRoot}\\tools\\oot3d\\native_a32_runtime\\oot3d_structural_scenarios.json",
+      "required": true,
+      "min_length": 50000,
+      "purpose": "Generated structural scenario catalog (oot3d_structural_scenario_catalog_v2): 82 validated entrance recipes across 27 scenes, each with entrance index, scene id, local entrance, validation status and reference kinds. Consumed by --scenario-catalog."
+    },
+    {
+      "id": "structural_scenario_catalog_updater",
+      "kind": "file",
+      "path": "${repoRoot}\\scripts\\oot3d\\Update-Oot3dStructuralScenarioCatalog.ps1",
+      "required": true,
+      "min_length": 500,
+      "purpose": "Reproducible entry point that regenerates the structural scenario catalog from the structured decomp evidence."
+    },
+    {
+      "id": "structural_scenario_generator",
+      "kind": "file",
+      "path": "${repoRoot}\\tools\\oot3d\\native_a32_runtime\\generate_structural_scenario_catalog.py",
+      "required": true,
+      "min_length": 1000,
+      "purpose": "Joins entrance table, scene setups, actor placements, light records and cutscene references into the scenario catalog (oot3d_structural_scenario_catalog_v2)."
+    },
+    {
+      "id": "structural_scenario_tester",
+      "kind": "file",
+      "path": "${repoRoot}\\scripts\\oot3d\\Test-Oot3dStructuralScenarioMatrix.ps1",
+      "required": true,
+      "min_length": 500,
+      "purpose": "Runs and validates a structural scenario matrix against the catalog."
+    },
+    {
+      "id": "input_timelines",
+      "kind": "directory",
+      "path": "${repoRoot}\\tools\\oot3d\\native_game_runtime\\input_timelines",
+      "required": true,
+      "min_file_count": 8,
+      "purpose": "Deterministic native input timelines: title to file select, existing save, empty slot name entry, second slot, ladder interaction, cutscene dialogue advance, no input."
+    },
+    {
+      "id": "source_overlay_decomp_owners",
+      "kind": "directory",
+      "path": "${repoRoot}\\tools\\oot3d\\source_overlay\\decomp_owner",
+      "required": true,
+      "purpose": "Recovered (translated) owner sources promoted into the hot source overlay DLL; with source_imports and decomp_support this is the readable title code inside the repository."
+    },
+    {
+      "id": "source_imports",
+      "kind": "directory",
+      "path": "${repoRoot}\\tools\\oot3d\\source_imports",
+      "required": true,
+      "purpose": "Imported decompiled functions (actor init/update, camera, CSAB curves, cutscene command processing, player update) with their own manifest and tests."
+    },
+    {
+      "id": "release_corresponding_source",
+      "kind": "directory",
+      "path": "${releaseSourceRoot}",
+      "required": false,
+      "purpose": "Corresponding source shipped with the packaged title module; SOURCE_ARCHIVE_MANIFEST.json pins the commit and the renderer subtree hash."
+    },
+    {
+      "id": "history_bundle",
+      "kind": "directory",
+      "path": "${historyBundle}",
+      "required": false,
+      "purpose": "Full development history bundle kept outside the public snapshot, for questions the squashed public history cannot answer."
     }
   ],
   "commands": [
@@ -918,6 +1098,16 @@
       "id": "native_fast3d_title_intro_frame600_backend_probe",
       "working_directory": "${repoRoot}",
       "command": ".\\build-codex\\oot3d_native_fast3d_demo.exe --manifest '${workRoot}\\standalone_demo\\title_intro\\demo_manifest.json' --resource-root '${repoRoot}\\runtime/three_ds_recomp\\src\\fast' --title-intro --title-intro-frame 600 --frames 1 --max-seconds 1 --width 320 --height 180 --output build-codex\\title_intro_frame600_kankyo_fog_backend_stats.json"
+    },
+    {
+      "id": "verify_revelation_raw_copy_window",
+      "working_directory": "${repoRoot}",
+      "command": "python tools\\triaevum_release\\probe_renderer.py '${verifyInstallRoot}' '${verifyBinaryRoot}\\TriAevum.exe' I:\\_triaevum_work\\attr3 --native-fidelity --frames 3500 --seconds 400 --no-captures --extended-diagnostics --load-state '${diagnosticsRoot}\\issues45-46\\sheik-native-trigger\\checkpoint.oot3dsav' --input-timeline tools\\oot3d\\native_game_runtime\\input_timelines\\native_cutscene_dialogue_advance.json"
+    },
+    {
+      "id": "verify_structural_scenario_run",
+      "working_directory": "${repoRoot}",
+      "command": "python tools\\triaevum_release\\probe_renderer.py '${verifyInstallRoot}' '${verifyBinaryRoot}\\TriAevum.exe' I:\\_triaevum_work\\scenario --native-fidelity --frames 600 --seconds 200 --capture-interval 60 --load-state '${nativeGameCheckpoints}\\hud_minimap_visible_20260721.oot3dsav' --scenario-catalog '${repoRoot}\\tools\\oot3d\\native_a32_runtime\\oot3d_structural_scenarios.json' --scenario link_info_entry_00bb"
     }
   ],
   "known_absences": [
@@ -932,6 +1122,12 @@
       "path": "${repoRoot}\\tools\\oot3d\\decomp_support\\ghidra_export\\functions.csv",
       "status": "optional_missing",
       "reason": "The local active export is selective; the full function index is canonical at ${oot3dDecompGit}\\ghidra_export\\functions.csv."
+    },
+    {
+      "id": "verify_build_generated_whole_aot",
+      "path": "${verifyBuildRoot}\\oot3d_whole_aot_cpp\\oot3d_whole_aot_generated.cpp",
+      "status": "optional_missing",
+      "reason": "The verification build tree does not regenerate whole-AOT (OOT3D_REBUILD_WHOLE_AOT=OFF) and loads the packaged title module; generated translated code is read from ${aotProductCache} instead. OOT3D_WHOLE_AOT_GENERATED_DIR in the build cache names the directory that would hold it."
     }
   ]
 }

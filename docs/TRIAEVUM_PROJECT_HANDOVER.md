@@ -706,6 +706,7 @@ Android e le ottimizzazioni AOT parallele non sostituiscono tale verifica.
 | Linux | `TRIAEVUM_LINUX_PORT.md`, `TRIAEVUM_STEAM_RUNTIME_BUILD.md`, `TRIAEVUM_DESKTOP_PACKAGING.md` |
 | Android | `../ports/android/README.md`, `../ports/android/INTRO.md` |
 | Indice tool/input, da validare | `OOT3D_OPERATIONAL_INPUTS.md` |
+| Percorsi di codice tradotto, savestate, scenari (mappa operativa) | `OOT3D_WORKSPACE_PATHS.md` + `tools/oot3d/operational_inputs.json` |
 
 Regola conclusiva: distinguere sempre **esiste nel sorgente**, **e' collegato**,
 **e' selezionato**, **e' stato eseguito**, **e' corretto negli scenari provati**
