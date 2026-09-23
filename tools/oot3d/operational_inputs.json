@@ -40,7 +40,8 @@
     "nativeGameCheckpoints": "${workRoot}\\native_game\\checkpoints",
     "diagnosticsRoot": "J:\\TriAevum-diagnostics",
     "releaseSourceRoot": "I:\\TriAevum-public\\releases\\v0.6.0-alpha.3\\title-build-source",
-    "historyBundle": "I:\\TriAevum-public\\history-cleanup.git"
+    "historyBundle": "I:\\TriAevum-public\\history-cleanup.git",
+    "nativeRendererRepo": "I:\\oot3d-native-renderer"
   },
   "entries": [
     {
@@ -1009,6 +1010,21 @@
       "path": "${releaseSourceRoot}",
       "required": false,
       "purpose": "Corresponding source shipped with the packaged title module; SOURCE_ARCHIVE_MANIFEST.json pins the commit and the renderer subtree hash."
+    },
+    {
+      "id": "native_renderer_repo",
+      "kind": "directory",
+      "path": "${nativeRendererRepo}",
+      "required": false,
+      "purpose": "Separate renderer checkout with its own history (branch integration-source, remote I:/oot3dre-vulkan/libultraship) and a scratch build under .renderer-dev/build. Not this repository and not the development workspace."
+    },
+    {
+      "id": "legacy_a32_generated_stub",
+      "kind": "file",
+      "path": "${nativeRendererRepo}\\.renderer-dev\\build\\oot3d_a32_generated\\oot3d_a32_generated.h",
+      "required": false,
+      "min_length": 100,
+      "purpose": "Legacy A32 generated header, declaration-only (about 300 bytes: GetA32GeneratedRegistry and nothing else). Same stubs exist under ${workRoot}\\mods\\topscreen_single_screen\\a32_generated and twice under ${zelda3dRecompRoot}\\build. Not generated title code."
     },
     {
       "id": "history_bundle",

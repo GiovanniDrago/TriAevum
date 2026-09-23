@@ -16,6 +16,7 @@ Two trees are involved and they are not the same:
 | --- | --- | --- |
 | Public clean repository | `I:/TriAevum-public/source-repository-clean` | The tree under review, tracked, `port/linux-nri`. No ROM-derived data, no captures. |
 | Development workspace | `I:/oot3dre` (`repoRoot` in the manifest) | Where the code.bin reconstruction, generated trees and experiments live. Many manifest entries point here. |
+| Separate renderer checkout | `I:/oot3d-native-renderer` | Its own git history (`integration-source`, remote `I:/oot3dre-vulkan/libultraship`) with a scratch build in `.renderer-dev/build`. Not this repository and not the development workspace; check before assuming a path belongs to either. |
 | Verification build | `J:/TriAevum-verify-20260910/runtime` | Ninja + clang-cl tree configured against the clean repository. Test executables land in `I:/TriAevum-public/ui-dependencies/bin`. |
 
 ## 1. Translated title code
@@ -33,6 +34,16 @@ source is what to read when a question is about what the guest actually does.
 | Structured decomp evidence inside the repository (struct layouts, symbols, metadata, analysis, Ghidra helpers) | `tools/oot3d/decomp_support/` |
 | Corresponding source shipped with the package | `I:/TriAevum-public/releases/v0.6.0-alpha.3/title-build-source/` (`SOURCE_ARCHIVE_MANIFEST.json` pins the commit and the renderer subtree hash) |
 | External reconstruction checkout (read-only evidence) | `I:/Zelda3drecomp` (with `analysis/`, `ghidra/`, `build/`), original image at `E:/ppssppvr/oot3d_decomp/work/extract/exefs/code.bin`, ROMFS at `.../extract/romfs` |
+
+Legacy A32 trees: `oot3d_a32_generated.h` also exists at
+`I:/oot3d-native-renderer/.renderer-dev/build/oot3d_a32_generated/`,
+`I:/oot3dre_work/mods/topscreen_single_screen/a32_generated/` and twice under
+`I:/Zelda3drecomp/build/`. All of them are **declaration-only stubs** of
+162-301 bytes (`GetA32GeneratedRegistry()` and nothing else), not translations;
+do not treat them as generated title code, and do not expect them to satisfy a
+target that needs the real A32 registry. The legacy generator writes
+`<build>/oot3d_a32_generated/` (`tools/oot3d/build_fast_dev.ps1`), the current
+one `<build>/oot3d_whole_aot_cpp/` (CMake option `OOT3D_WHOLE_AOT_GENERATED_DIR`).
 
 The verification build does **not** regenerate this code:
 `OOT3D_REBUILD_WHOLE_AOT=OFF` in its `CMakeCache.txt`, and
