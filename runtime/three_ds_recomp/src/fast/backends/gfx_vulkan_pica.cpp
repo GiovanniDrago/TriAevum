@@ -2857,6 +2857,54 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                 baseLevelContentHash.value_or(key.ContentHash),
                 key.Width, key.Height,
                 std::span<const uint8_t>(pixels).first(baseDecodedBytes));
+            // Differential gate for the GPU decoder: only when asked, and only
+            // for the formats it covers, so the reference path is untouched.
+            static const bool verifyGpuDecode =
+                std::getenv("TRIAEVUM_RAW_COPY_GPU_DECODE_VERIFY") != nullptr;
+            if (verifyGpuDecode && GpuDecodePicaTextureSupported(texture.NativeFormat) &&
+                mipLevels == 1U) {
+                VkImageCreateInfo scratchInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+                scratchInfo.imageType = VK_IMAGE_TYPE_2D;
+                scratchInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+                scratchInfo.extent = {texture.Width, texture.Height, 1U};
+                scratchInfo.mipLevels = 1U;
+                scratchInfo.arrayLayers = 1U;
+                scratchInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+                scratchInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+                scratchInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+                scratchInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+                scratchInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                VkImage scratch = VK_NULL_HANDLE;
+                VkDeviceMemory scratchMemory = VK_NULL_HANDLE;
+                if (vkCreateImage(mDevice, &scratchInfo, nullptr, &scratch) == VK_SUCCESS) {
+                    VkMemoryRequirements requirements{};
+                    vkGetImageMemoryRequirements(mDevice, scratch, &requirements);
+                    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+                    allocation.allocationSize = requirements.size;
+                    allocation.memoryTypeIndex = FindMemoryType(
+                        requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                    if (vkAllocateMemory(mDevice, &allocation, nullptr, &scratchMemory) == VK_SUCCESS &&
+                        vkBindImageMemory(mDevice, scratch, scratchMemory, 0U) == VK_SUCCESS) {
+                        if (mRawCopyReadbackBuffer.Size < 64U) {
+                            DestroyBuffer(mRawCopyReadbackBuffer);
+                            mRawCopyReadbackBuffer = CreateReadbackBuffer(64U, &mRawCopyReadbackCoherent);
+                        }
+                        if (mRawCopyEncodedBuffer.Size < baseDecodedBytes) {
+                            DestroyBuffer(mRawCopyEncodedBuffer);
+                            mRawCopyEncodedBuffer =
+                                CreateReadbackBuffer(baseDecodedBytes, &mRawCopyReadbackCoherent);
+                        }
+                        VerifyGpuTextureDecode(
+                            scratch, texture.Width, texture.Height, texture.NativeFormat,
+                            texture.NativeBytes.first(baseNativeBytes),
+                            std::span<const uint8_t>(pixels).first(baseDecodedBytes));
+                    }
+                    vkDestroyImage(mDevice, scratch, nullptr);
+                    if (scratchMemory != VK_NULL_HANDLE) {
+                        vkFreeMemory(mDevice, scratchMemory, nullptr);
+                    }
+                }
+            }
         }
         uint32_t uploadWidth = texture.Width;
         uint32_t uploadHeight = texture.Height;
@@ -4150,6 +4198,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             const size_t texturesBefore = mNativePicaTextures.size();
             const auto coherentTexture = ResolveNativePicaCopiedTexture(
                 texture, draw.RenderTargetNamespace, draw.SubmissionId, coherentBytes);
+            const auto resolveDone = std::chrono::steady_clock::now();
             TextureRecord* record =
                 GetOrCreateNativePicaTexture(
                     coherentTexture, error, azaharTextureGeneration,
@@ -4161,15 +4210,19 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             }
             if (RawCopyDestinationOverlaps(texture.PhysicalAddress,
                                             texture.NativeBytes.size())) {
+                const auto finished = std::chrono::steady_clock::now();
+                const auto elapsed = [](const auto& from, const auto& to) {
+                    return std::chrono::duration<double>(to - from).count();
+                };
                 ++mRawCopySamplerCost.Resolutions;
                 mRawCopySamplerCost.CoherenceBytes += coherentBytes.size();
+                mRawCopySamplerCost.NativeBytes += texture.NativeBytes.size();
+                mRawCopySamplerCost.CoherenceSeconds += elapsed(resolutionStart, resolveDone);
+                mRawCopySamplerCost.CreationSeconds += elapsed(resolveDone, finished);
                 if (mNativePicaTextures.size() != texturesBefore) {
                     ++mRawCopySamplerCost.Creations;
                 }
-                mRawCopySamplerCost.ResolveSeconds +=
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                                  resolutionStart)
-                        .count();
+                mRawCopySamplerCost.ResolveSeconds += elapsed(resolutionStart, finished);
             }
             ++mRawCopySamplerCost.OverlappingResolutions;
             textures[texture.Slot] = record;

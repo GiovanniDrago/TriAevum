@@ -1229,6 +1229,7 @@ void GfxRenderingAPIVulkan::Shutdown() {
         }
         DestroyBuffer(mRawCopyReadbackBuffer);
         DestroyRawCopyEncodeResources();
+        DestroyRawCopyDecodeResources();
         if (mOot3dShadow2dRenderPass != VK_NULL_HANDLE) {
             vkDestroyRenderPass(mDevice, mOot3dShadow2dRenderPass, nullptr);
             mOot3dShadow2dRenderPass = VK_NULL_HANDLE;
@@ -2988,11 +2989,21 @@ void GfxRenderingAPIVulkan::StorePipelineCache() {
     if (mRawCopySamplerCost.Resolutions != 0U) {
         std::fprintf(stderr,
                      "TRIAEVUM_RAW_COPY_SAMPLER resolutions=%llu creations=%llu "
-                     "coherence_bytes=%llu resolve_ms=%.3f\n",
+                     "coherence_bytes=%llu native_bytes=%llu resolve_ms=%.3f "
+                     "coherence_ms=%.3f creation_ms=%.3f\n",
                      static_cast<unsigned long long>(mRawCopySamplerCost.Resolutions),
                      static_cast<unsigned long long>(mRawCopySamplerCost.Creations),
                      static_cast<unsigned long long>(mRawCopySamplerCost.CoherenceBytes),
-                     mRawCopySamplerCost.ResolveSeconds * 1000.0);
+                     static_cast<unsigned long long>(mRawCopySamplerCost.NativeBytes),
+                     mRawCopySamplerCost.ResolveSeconds * 1000.0,
+                     mRawCopySamplerCost.CoherenceSeconds * 1000.0,
+                     mRawCopySamplerCost.CreationSeconds * 1000.0);
+    }
+    if (mRawCopyDecodePixels != 0U) {
+        std::fprintf(stderr,
+                     "TRIAEVUM_RAW_COPY_DECODE_DIFF pixels=%llu mismatches=%llu\n",
+                     static_cast<unsigned long long>(mRawCopyDecodePixels),
+                     static_cast<unsigned long long>(mRawCopyDecodeMismatches));
     }
     if (mRawCopyEncodeVerifyBytes != 0U) {
         std::fprintf(stderr,

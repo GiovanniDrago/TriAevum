@@ -2,8 +2,10 @@
 #include "fast/backends/gfx_vulkan.h"
 #include "fast/renderer3ds/pica_framebuffer_encode.h"
 #include "fast/renderer3ds/pica_framebuffer_encode_gpu.h"
+#include "fast/renderer3ds/pica_texture_decode_gpu.h"
 #include "fast/renderer/spirv_cache.h"
 #include <algorithm>
+#include <iostream>
 #include <stdexcept>
 
 namespace Fast {
@@ -178,16 +180,8 @@ bool GfxRenderingAPIVulkan::EnsureRawCopyEncodeResources(uint32_t encodedBytes,
         mRawCopyEncodeImage.Stride = wordsPerRow;
         mRawCopyEncodeImage.Height = rows;
     }
-    if (mRawCopyEncodeSampler == VK_NULL_HANDLE) {
-        VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-        samplerInfo.magFilter = VK_FILTER_NEAREST;
-        samplerInfo.minFilter = VK_FILTER_NEAREST;
-        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        RequireCopyVk(vkCreateSampler(mDevice, &samplerInfo, nullptr, &mRawCopyEncodeSampler),
-                "vkCreateSampler(raw copy encode)");
+    if (!EnsureRawCopySampler(error)) {
+        return false;
     }
     if (mRawCopyEncodePipeline == VK_NULL_HANDLE) {
         std::array<VkDescriptorSetLayoutBinding, 2U> bindings{};
@@ -350,6 +344,447 @@ bool GfxRenderingAPIVulkan::RawCopyDestinationOverlaps(uint32_t address,
         }
     }
     return false;
+}
+
+bool GfxRenderingAPIVulkan::EnsureRawCopySampler(std::string* error) {
+    if (mRawCopyEncodeSampler != VK_NULL_HANDLE) {
+        return true;
+    }
+    if (mDevice == VK_NULL_HANDLE) {
+        if (error != nullptr) *error = "raw copy scratch sampler has no device";
+        return false;
+    }
+    VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    samplerInfo.magFilter = VK_FILTER_NEAREST;
+    samplerInfo.minFilter = VK_FILTER_NEAREST;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    RequireCopyVk(vkCreateSampler(mDevice, &samplerInfo, nullptr, &mRawCopyEncodeSampler),
+                  "vkCreateSampler(raw copy scratch)");
+    return true;
+}
+
+bool GfxRenderingAPIVulkan::GpuDecodePicaTextureSupported(uint8_t format) const noexcept {
+    // The tiled eight-bit-per-texel formats the shader mirrors; anything else
+    // (4bpp, ETC1, LA variants) keeps the CPU path.
+    return format <= 4U;
+}
+
+void GfxRenderingAPIVulkan::DestroyRawCopyDecodeResources() {
+    if (mDevice != VK_NULL_HANDLE) {
+        if (mRawCopyDecode.Pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(mDevice, mRawCopyDecode.Pipeline, nullptr);
+        }
+        if (mRawCopyDecode.PipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(mDevice, mRawCopyDecode.PipelineLayout, nullptr);
+        }
+        if (mRawCopyDecode.DescriptorPool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(mDevice, mRawCopyDecode.DescriptorPool, nullptr);
+        }
+        if (mRawCopyDecode.DescriptorLayout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(mDevice, mRawCopyDecode.DescriptorLayout, nullptr);
+        }
+        if (mRawCopyDecode.ByteView != VK_NULL_HANDLE) {
+            vkDestroyImageView(mDevice, mRawCopyDecode.ByteView, nullptr);
+        }
+        if (mRawCopyDecode.ByteImage != VK_NULL_HANDLE) {
+            vkDestroyImage(mDevice, mRawCopyDecode.ByteImage, nullptr);
+        }
+        if (mRawCopyDecode.ByteMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(mDevice, mRawCopyDecode.ByteMemory, nullptr);
+        }
+        if (mRawCopyDecode.DecodedBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(mDevice, mRawCopyDecode.DecodedBuffer, nullptr);
+        }
+        if (mRawCopyDecode.DecodedMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(mDevice, mRawCopyDecode.DecodedMemory, nullptr);
+        }
+    }
+    mRawCopyDecode = {};
+}
+
+bool GfxRenderingAPIVulkan::DecodeNativePicaTextureOnGpu(
+    VkImage destination, uint32_t width, uint32_t height, uint8_t format,
+    std::span<const uint8_t> nativeBytes, std::string* error) {
+    const auto fail = [&](const char* message) {
+        if (error != nullptr) *error = message;
+        return false;
+    };
+    if (!GpuDecodePicaTextureSupported(format)) {
+        return fail("texture format is not decoded on the GPU");
+    }
+    if (destination == VK_NULL_HANDLE || width == 0U || height == 0U || nativeBytes.empty()) {
+        return fail("GPU texture decode has no destination or data");
+    }
+    const uint32_t bytesPerPixel = format == 0U ? 4U : format == 1U ? 3U : 2U;
+    const uint32_t alignedWidth = std::max(8U, (width + 7U) & ~7U);
+    const uint32_t tilesX = alignedWidth / 8U;
+    const uint32_t tilesY = (height + 7U) / 8U;
+    const uint64_t tiledBytes = uint64_t{tilesX} * tilesY * 64U * bytesPerPixel;
+    if (tiledBytes > nativeBytes.size()) {
+        return fail("GPU texture decode data is smaller than the tiled surface");
+    }
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(mPhysicalDevice, &properties);
+    const uint32_t wordsPerRow = std::min<uint32_t>(
+        static_cast<uint32_t>((tiledBytes + 3U) / 4U), 1024U);
+    const uint32_t rows = static_cast<uint32_t>(((tiledBytes + 3U) / 4U + wordsPerRow - 1U) / wordsPerRow);
+    const uint64_t pixels = uint64_t{width} * height;
+    if (wordsPerRow == 0U || rows == 0U ||
+        rows > properties.limits.maxImageDimension2D ||
+        pixels > (uint64_t{1} << 28U) / 4U) {
+        return fail("GPU texture decode extent is out of range");
+    }
+    VkFormatProperties formatProperties{};
+    vkGetPhysicalDeviceFormatProperties(mPhysicalDevice, VK_FORMAT_R32_UINT, &formatProperties);
+    if ((formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) == 0U) {
+        return fail("GPU texture decode needs R32_UINT storage support");
+    }
+    // Scratch resources, shared across decodes: a byte image for the tiled data
+    // and a device-local word buffer for the decoded RGBA8 pixels.
+    if (mRawCopyDecode.ByteCapacity < tiledBytes) {
+        if (mRawCopyDecode.ByteView != VK_NULL_HANDLE) {
+            vkDestroyImageView(mDevice, mRawCopyDecode.ByteView, nullptr);
+            mRawCopyDecode.ByteView = VK_NULL_HANDLE;
+        }
+        if (mRawCopyDecode.ByteImage != VK_NULL_HANDLE) {
+            vkDestroyImage(mDevice, mRawCopyDecode.ByteImage, nullptr);
+            mRawCopyDecode.ByteImage = VK_NULL_HANDLE;
+        }
+        if (mRawCopyDecode.ByteMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(mDevice, mRawCopyDecode.ByteMemory, nullptr);
+            mRawCopyDecode.ByteMemory = VK_NULL_HANDLE;
+        }
+        VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = VK_FORMAT_R32_UINT;
+        imageInfo.extent = {wordsPerRow, rows, 1U};
+        imageInfo.mipLevels = 1U;
+        imageInfo.arrayLayers = 1U;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        RequireCopyVk(vkCreateImage(mDevice, &imageInfo, nullptr, &mRawCopyDecode.ByteImage),
+                      "vkCreateImage(texture decode bytes)");
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(mDevice, mRawCopyDecode.ByteImage, &requirements);
+        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = FindMemoryType(requirements.memoryTypeBits,
+                                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        RequireCopyVk(vkAllocateMemory(mDevice, &allocation, nullptr, &mRawCopyDecode.ByteMemory),
+                      "vkAllocateMemory(texture decode bytes)");
+        RequireCopyVk(vkBindImageMemory(mDevice, mRawCopyDecode.ByteImage,
+                                        mRawCopyDecode.ByteMemory, 0U),
+                      "vkBindImageMemory(texture decode bytes)");
+        VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        viewInfo.image = mRawCopyDecode.ByteImage;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R32_UINT;
+        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U};
+        RequireCopyVk(vkCreateImageView(mDevice, &viewInfo, nullptr, &mRawCopyDecode.ByteView),
+                      "vkCreateImageView(texture decode bytes)");
+        mRawCopyDecode.ByteCapacity = tiledBytes;
+        mRawCopyDecode.ByteStrideWords = wordsPerRow;
+        mRawCopyDecode.ByteRows = rows;
+    }
+    if (mRawCopyDecode.DecodedCapacity < pixels * 4U) {
+        if (mRawCopyDecode.DecodedBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(mDevice, mRawCopyDecode.DecodedBuffer, nullptr);
+            mRawCopyDecode.DecodedBuffer = VK_NULL_HANDLE;
+        }
+        if (mRawCopyDecode.DecodedMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(mDevice, mRawCopyDecode.DecodedMemory, nullptr);
+            mRawCopyDecode.DecodedMemory = VK_NULL_HANDLE;
+        }
+        VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bufferInfo.size = pixels * 4U;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        RequireCopyVk(vkCreateBuffer(mDevice, &bufferInfo, nullptr, &mRawCopyDecode.DecodedBuffer),
+                      "vkCreateBuffer(texture decode pixels)");
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(mDevice, mRawCopyDecode.DecodedBuffer, &requirements);
+        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = FindMemoryType(requirements.memoryTypeBits,
+                                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        RequireCopyVk(vkAllocateMemory(mDevice, &allocation, nullptr,
+                                       &mRawCopyDecode.DecodedMemory),
+                      "vkAllocateMemory(texture decode pixels)");
+        RequireCopyVk(vkBindBufferMemory(mDevice, mRawCopyDecode.DecodedBuffer,
+                                         mRawCopyDecode.DecodedMemory, 0U),
+                      "vkBindBufferMemory(texture decode pixels)");
+        mRawCopyDecode.DecodedCapacity = pixels * 4U;
+        if (mRawCopyDecode.DescriptorSet != VK_NULL_HANDLE) {
+            VkDescriptorBufferInfo decodedInfo{};
+            decodedInfo.buffer = mRawCopyDecode.DecodedBuffer;
+            decodedInfo.range = VK_WHOLE_SIZE;
+            VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            write.dstSet = mRawCopyDecode.DescriptorSet;
+            write.dstBinding = 1U;
+            write.descriptorCount = 1U;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write.pBufferInfo = &decodedInfo;
+            vkUpdateDescriptorSets(mDevice, 1U, &write, 0U, nullptr);
+        }
+    }
+    if (mRawCopyDecode.DescriptorSet != VK_NULL_HANDLE) {
+        VkDescriptorImageInfo byteInfo{};
+        byteInfo.imageView = mRawCopyDecode.ByteView;
+        byteInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = mRawCopyDecode.DescriptorSet;
+        write.dstBinding = 0U;
+        write.descriptorCount = 1U;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        write.pImageInfo = &byteInfo;
+        vkUpdateDescriptorSets(mDevice, 1U, &write, 0U, nullptr);
+    }
+    if (mRawCopyDecode.Pipeline == VK_NULL_HANDLE) {
+        std::array<VkDescriptorSetLayoutBinding, 2U> bindings{};
+        bindings[0] = {0U, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1U,
+                       VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[1] = {1U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U,
+                       VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        layoutInfo.pBindings = bindings.data();
+        RequireCopyVk(vkCreateDescriptorSetLayout(mDevice, &layoutInfo, nullptr,
+                                                 &mRawCopyDecode.DescriptorLayout),
+                      "vkCreateDescriptorSetLayout(texture decode)");
+        const VkDescriptorPoolSize poolSizes[2]{
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1U},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U}};
+        VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        poolInfo.maxSets = 1U;
+        poolInfo.poolSizeCount = 2U;
+        poolInfo.pPoolSizes = poolSizes;
+        RequireCopyVk(vkCreateDescriptorPool(mDevice, &poolInfo, nullptr,
+                                             &mRawCopyDecode.DescriptorPool),
+                      "vkCreateDescriptorPool(texture decode)");
+        VkDescriptorSetAllocateInfo allocateInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocateInfo.descriptorPool = mRawCopyDecode.DescriptorPool;
+        allocateInfo.descriptorSetCount = 1U;
+        allocateInfo.pSetLayouts = &mRawCopyDecode.DescriptorLayout;
+        RequireCopyVk(vkAllocateDescriptorSets(mDevice, &allocateInfo, &mRawCopyDecode.DescriptorSet),
+                      "vkAllocateDescriptorSets(texture decode)");
+        const VkPushConstantRange pushRange{VK_SHADER_STAGE_COMPUTE_BIT, 0U, 32U};
+        VkPipelineLayoutCreateInfo pipelineLayout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pipelineLayout.setLayoutCount = 1U;
+        pipelineLayout.pSetLayouts = &mRawCopyDecode.DescriptorLayout;
+        pipelineLayout.pushConstantRangeCount = 1U;
+        pipelineLayout.pPushConstantRanges = &pushRange;
+        RequireCopyVk(vkCreatePipelineLayout(mDevice, &pipelineLayout, nullptr,
+                                             &mRawCopyDecode.PipelineLayout),
+                      "vkCreatePipelineLayout(texture decode)");
+        const std::string source(Renderer3ds::PicaTextureDecodeComputeSource);
+        const auto spirv = mCompiledShaderCache.Resolve(
+            source, Renderer::SpirvStage::Compute, [&] {
+                return Renderer::CompileShadercSpirv(source, Renderer::SpirvStage::Compute,
+                                                     "pica_texture_decode.comp");
+            });
+        const VkShaderModule module = CreateShaderModuleFromSpirv(spirv);
+        if (module == VK_NULL_HANDLE) {
+            return fail("GPU texture decode shader module could not be created");
+        }
+        VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pipelineInfo.stage.module = module;
+        pipelineInfo.stage.pName = "main";
+        pipelineInfo.layout = mRawCopyDecode.PipelineLayout;
+        const VkResult created = vkCreateComputePipelines(mDevice, VK_NULL_HANDLE, 1U, &pipelineInfo,
+                                                          nullptr, &mRawCopyDecode.Pipeline);
+        vkDestroyShaderModule(mDevice, module, nullptr);
+        RequireCopyVk(created, "vkCreateComputePipelines(texture decode)");
+        VkDescriptorImageInfo byteInfo{};
+        byteInfo.imageView = mRawCopyDecode.ByteView;
+        byteInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkDescriptorBufferInfo decodedInfo{};
+        decodedInfo.buffer = mRawCopyDecode.DecodedBuffer;
+        decodedInfo.range = VK_WHOLE_SIZE;
+        std::array<VkWriteDescriptorSet, 2U> writes{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = mRawCopyDecode.DescriptorSet;
+        writes[0].dstBinding = 0U;
+        writes[0].descriptorCount = 1U;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[0].pImageInfo = &byteInfo;
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = mRawCopyDecode.DescriptorSet;
+        writes[1].dstBinding = 1U;
+        writes[1].descriptorCount = 1U;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[1].pBufferInfo = &decodedInfo;
+        vkUpdateDescriptorSets(mDevice, static_cast<uint32_t>(writes.size()), writes.data(), 0U, nullptr);
+    }
+    // Stage the tiled bytes, then decode, then land the pixels in the texture.
+    if (mRawCopyEncodedBuffer.Size < tiledBytes) {
+        DestroyBuffer(mRawCopyEncodedBuffer);
+        mRawCopyEncodedBuffer = CreateReadbackBuffer(tiledBytes, &mRawCopyReadbackCoherent);
+    }
+    if (mRawCopyEncodedBuffer.Mapped == nullptr) {
+        return fail("GPU texture decode has no staging buffer");
+    }
+    std::memcpy(mRawCopyEncodedBuffer.Mapped, nativeBytes.data(),
+                static_cast<size_t>(tiledBytes));
+    if (!mRawCopyReadbackCoherent) {
+        // This staging is written by the CPU and read by the GPU: without the
+        // flush the device would read whatever was in memory before.
+        VkMappedMemoryRange staged{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+        staged.memory = mRawCopyEncodedBuffer.Memory;
+        staged.offset = 0U;
+        staged.size = VK_WHOLE_SIZE;
+        RequireCopyVk(vkFlushMappedMemoryRanges(mDevice, 1U, &staged),
+                      "flush texture decode staging");
+    }
+    const VkCommandBuffer command = BeginImmediateCommands();
+    VkBufferImageCopy upload{};
+    upload.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 0U, 1U};
+    upload.imageExtent = {mRawCopyDecode.ByteStrideWords, mRawCopyDecode.ByteRows, 1U};
+    VkImageMemoryBarrier byteBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    byteBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    byteBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    byteBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    byteBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    byteBarrier.image = mRawCopyDecode.ByteImage;
+    byteBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U};
+    byteBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U, nullptr, 1U,
+                         &byteBarrier);
+    vkCmdCopyBufferToImage(command, mRawCopyEncodedBuffer.Buffer, mRawCopyDecode.ByteImage,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U, &upload);
+    byteBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    byteBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    byteBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    byteBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0U, 0U, nullptr, 0U, nullptr, 1U,
+                         &byteBarrier);
+
+    const uint32_t push[8] = {width, height, mRawCopyDecode.ByteStrideWords,
+                              static_cast<uint32_t>(pixels), static_cast<uint32_t>(format),
+                              bytesPerPixel, 0U, 0U};
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, mRawCopyDecode.Pipeline);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, mRawCopyDecode.PipelineLayout,
+                            0U, 1U, &mRawCopyDecode.DescriptorSet, 0U, nullptr);
+    vkCmdPushConstants(command, mRawCopyDecode.PipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0U,
+                       sizeof(push), push);
+    vkCmdDispatch(command, static_cast<uint32_t>((pixels + 63U) / 64U), 1U, 1U);
+
+    VkBufferMemoryBarrier decodedBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    decodedBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    decodedBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    decodedBarrier.buffer = mRawCopyDecode.DecodedBuffer;
+    decodedBarrier.size = pixels * 4U;
+    decodedBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    decodedBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 1U, &decodedBarrier,
+                         0U, nullptr);
+    VkImageMemoryBarrier destinationBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    destinationBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    destinationBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    destinationBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    destinationBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    destinationBarrier.image = destination;
+    destinationBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U};
+    destinationBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U, nullptr, 1U,
+                         &destinationBarrier);
+    VkBufferImageCopy landing{};
+    landing.bufferRowLength = width;
+    landing.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 0U, 1U};
+    landing.imageExtent = {width, height, 1U};
+    vkCmdCopyBufferToImage(command, mRawCopyDecode.DecodedBuffer, destination,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U, &landing);
+    destinationBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    destinationBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    destinationBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    destinationBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0U, 0U, nullptr, 0U, nullptr, 1U,
+                         &destinationBarrier);
+    EndImmediateCommands(command);
+    mRawCopyDecodePixels += pixels;
+    return true;
+}
+
+void GfxRenderingAPIVulkan::VerifyGpuTextureDecode(
+    VkImage decoded, uint32_t width, uint32_t height, uint8_t format,
+    std::span<const uint8_t> nativeBytes, std::span<const uint8_t> cpuDecodedRgba8) {
+    const size_t bytes = static_cast<size_t>(width) * height * 4U;
+    if (decoded == VK_NULL_HANDLE || cpuDecodedRgba8.size() < bytes ||
+        mRawCopyEncodedBuffer.Mapped == nullptr) {
+        return;
+    }
+    try {
+        std::string error;
+        if (!DecodeNativePicaTextureOnGpu(decoded, width, height, format, nativeBytes,
+                                          &error)) {
+            std::fprintf(stderr, "TRIAEVUM_RAW_COPY_DECODE_UNAVAILABLE %s\n", error.c_str());
+            return;
+        }
+        const VkCommandBuffer command = BeginImmediateCommands();
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 0U, 1U};
+        region.imageExtent = {width, height, 1U};
+        VkImageMemoryBarrier toTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toTransfer.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.image = decoded;
+        toTransfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U};
+        toTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U, nullptr, 1U,
+                             &toTransfer);
+        vkCmdCopyImageToBuffer(command, decoded, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               mRawCopyEncodedBuffer.Buffer, 1U, &region);
+        VkImageMemoryBarrier back = toTransfer;
+        back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        back.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        back.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        back.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0U, 0U, nullptr, 0U, nullptr,
+                             1U, &back);
+        EndImmediateCommands(command);
+        if (!mRawCopyReadbackCoherent) {
+            VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+            range.memory = mRawCopyEncodedBuffer.Memory;
+            range.offset = 0;
+            range.size = VK_WHOLE_SIZE;
+            vkInvalidateMappedMemoryRanges(mDevice, 1U, &range);
+        }
+        const auto* gpu = static_cast<const uint8_t*>(mRawCopyEncodedBuffer.Mapped);
+        uint64_t mismatches = 0;
+        uint64_t firstPixel = 0;
+        for (size_t index = 0; index < bytes; ++index) {
+            if (gpu[index] != cpuDecodedRgba8[index]) {
+                if (mismatches == 0) firstPixel = index / 4U;
+                ++mismatches;
+            }
+        }
+        if (mismatches != 0 && mRawCopyDecodeMismatches == 0) {
+            std::fprintf(stderr,
+                         "TRIAEVUM_RAW_COPY_DECODE_MISMATCH pixel=%llu format=%u gpu=0x%02X cpu=0x%02X\n",
+                         static_cast<unsigned long long>(firstPixel), unsigned(format),
+                         gpu[firstPixel * 4U], cpuDecodedRgba8[firstPixel * 4U]);
+        }
+        mRawCopyDecodePixels += static_cast<uint64_t>(width) * height;
+        mRawCopyDecodeMismatches += mismatches;
+    } catch (const std::exception& exception) {
+        std::fprintf(stderr, "TRIAEVUM_RAW_COPY_DECODE_FAILED %s\n", exception.what());
+    }
 }
 
 bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(

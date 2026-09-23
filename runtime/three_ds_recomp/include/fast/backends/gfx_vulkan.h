@@ -351,7 +351,13 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     };
 
     struct NativePicaTextureKey {
+        // Content identity. Zero means the identity comes from SurfaceVersion
+        // instead: a GPU-owned surface whose content is produced on the GPU and
+        // therefore never hashed on the CPU. Zero with SurfaceVersion zero is
+        // the ordinary hash identity.
         uint64_t ContentHash = 0;
+        // Monotonic version of a GPU-owned surface (see GpuOwnedTextureSurface).
+        uint64_t SurfaceVersion = 0;
         uint64_t ReplacementGeneration = 0;
         uint32_t PhysicalAddress = 0;
         uint16_t Width = 0;
@@ -875,6 +881,44 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     VkPipelineLayout mRawCopyEncodePipelineLayout = VK_NULL_HANDLE;
     VkPipeline mRawCopyEncodePipeline = VK_NULL_HANDLE;
     bool mRawCopyEncodeVerify = false;
+    // GPU decode of a copied surface: replaces the per-copy CPU hash, decode and
+    // RGBA8 upload with a version identity, a byte upload and one compute
+    // dispatch. Off by default so the CPU path stays the reference until the
+    // differential and the captures agree with it.
+    bool mRawCopyGpuDecode = false;
+    uint64_t mRawCopySurfaceVersion = 0;
+    struct RawCopyDecodeResources {
+        VkImage ByteImage = VK_NULL_HANDLE;
+        VkDeviceMemory ByteMemory = VK_NULL_HANDLE;
+        VkImageView ByteView = VK_NULL_HANDLE;
+        VkDeviceSize ByteCapacity = 0;
+        uint32_t ByteStrideWords = 0;
+        uint32_t ByteRows = 0;
+        VkBuffer DecodedBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory DecodedMemory = VK_NULL_HANDLE;
+        VkDeviceSize DecodedCapacity = 0;
+        VkDescriptorSetLayout DescriptorLayout = VK_NULL_HANDLE;
+        VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
+        VkDescriptorSet DescriptorSet = VK_NULL_HANDLE;
+        VkPipelineLayout PipelineLayout = VK_NULL_HANDLE;
+        VkPipeline Pipeline = VK_NULL_HANDLE;
+    };
+    RawCopyDecodeResources mRawCopyDecode;
+    uint64_t mRawCopyDecodeMismatches = 0;
+    uint64_t mRawCopyDecodePixels = 0;
+    bool EnsureRawCopySampler(std::string* error);
+    void DestroyRawCopyDecodeResources();
+    [[nodiscard]] bool GpuDecodePicaTextureSupported(uint8_t format) const noexcept;
+    bool DecodeNativePicaTextureOnGpu(VkImage destination, uint32_t width,
+                                      uint32_t height, uint8_t format,
+                                      std::span<const uint8_t> nativeBytes,
+                                      std::string* error);
+    // Differential gate for the GPU decoder: decode the same native bytes on the
+    // GPU and with the CPU oracle and compare them, so the decoder is proven on
+    // real textures before anything is switched over to it.
+    void VerifyGpuTextureDecode(VkImage decoded, uint32_t width, uint32_t height,
+                                uint8_t format, std::span<const uint8_t> nativeBytes,
+                                std::span<const uint8_t> cpuDecodedRgba8);
     uint64_t mRawCopyEncodeVerifyBytes = 0;
     uint64_t mRawCopyEncodeVerifyMismatches = 0;
     // What the sampler pays because a raw copy wrote into its texture: every
@@ -887,7 +931,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         uint64_t OverlappingResolutions = 0;
         uint64_t Creations = 0;
         uint64_t CoherenceBytes = 0;
+        uint64_t NativeBytes = 0;
         double ResolveSeconds = 0.0;
+        double CoherenceSeconds = 0.0;
+        double CreationSeconds = 0.0;
     };
     RawCopySamplerCost mRawCopySamplerCost;
     [[nodiscard]] bool RawCopyDestinationOverlaps(uint32_t address, uint64_t bytes) const;

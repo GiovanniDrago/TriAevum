@@ -22,7 +22,7 @@ namespace Fast::Renderer3ds {
 inline constexpr std::string_view PicaTextureDecodeComputeSource = R"glsl(
 #version 450
 layout(local_size_x = 64) in;
-layout(set = 0, binding = 0) uniform usampler2D NativeWords;
+layout(set = 0, binding = 0, r32ui) uniform readonly uimage2D NativeWords;
 layout(set = 0, binding = 1) buffer Decoded {
     uint pixels[];
 } decoded;
@@ -34,8 +34,8 @@ layout(push_constant) uniform Decode {
 uint nativeByte(uint byteIndex) {
     const uint wordsPerRow = decode.Extent.z;
     const uint word = byteIndex / 4u;
-    const uint value = texelFetch(NativeWords,
-                                  ivec2(int(word % wordsPerRow), int(word / wordsPerRow)), 0).x;
+    const uint value =
+        imageLoad(NativeWords, ivec2(int(word % wordsPerRow), int(word / wordsPerRow))).x;
     return (value >> ((byteIndex % 4u) * 8u)) & 0xFFu;
 }
 

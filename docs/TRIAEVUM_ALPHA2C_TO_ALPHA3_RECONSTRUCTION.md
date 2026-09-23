@@ -621,6 +621,18 @@ experiments:
   decoded texture and the sampler rebuilds it from guest bytes; that rebuild, not
   the copy, is what phase B has to remove by writing the copied region into the
   texture that already exists.
+- **The GPU texture decoder is proven before anything switches to it.** With
+  `TRIAEVUM_RAW_COPY_GPU_DECODE_VERIFY=1` the new compute decoder is compared
+  pixel by pixel with the CPU oracle on the game's own textures:
+  `DECODE_DIFF pixels=86026368 mismatches=0` over the copy window and
+  `pixels=536960 mismatches=0` in gameplay. Making it faithful surfaced three
+  defects worth recording: CPU-written staging consumed by the GPU needs
+  `vkFlushMappedMemoryRanges`; the descriptor kept pointing at the previous view
+  after the byte image grew; and reading the R32_UINT storage image through a
+  `usampler2D` returned zeros, so the decoder reads it with `imageLoad` and needs
+  no sampler. The runtime compiler (shaderc) also rejected a construct
+  glslangValidator accepted, which is why the live differential, not the offline
+  compile, is the gate that counts.
 - **Where the floor is.** The residual ~4.4 ms per copy is the CPU-encode model
   itself: ~2.0 ms reading back roughly 7.4 MB of source per copy, ~1.1 ms of
   PICA encode, ~0.9 ms retiring overlapped textures. No further Phase A/C

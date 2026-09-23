@@ -642,6 +642,22 @@ Decisioni ancora da risolvere con esperimento: presenza/ubicazione delle copie r
   alla risoluzione interna e scrive il layout nativo solo in uscita; il percorso
   GPU deve mantenere lo stesso contratto (vedi la sezione dedicata), altrimenti
   perderebbe in silenzio la risoluzione interna del renderer.
+- **Decoder GPU verificato — la porta d'ingresso di B.** Il compute shader che
+  riproduce `DecodePicaTextureRgba8` (formati tiled 0-4) è ora provato contro
+  l'oracolo CPU **sulle texture reali del gioco**: con
+  `TRIAEVUM_RAW_COPY_GPU_DECODE_VERIFY=1`,
+  `TRIAEVUM_RAW_COPY_DECODE_DIFF pixels=86026368 mismatches=0` sulla finestra
+  copie e `pixels=536960 mismatches=0` su gameplay. Il percorso di produzione non
+  è toccato: la verifica è un cancello, non un cutover.
+  Difetti trovati rendendolo fedele: (a) lo staging scritto dalla CPU e letto
+  dalla GPU richiede `vkFlushMappedMemoryRanges`, assente; (b) la descriptor
+  restava puntata alla view vecchia quando la byte image cresceva; (c) leggere la
+  storage image `R32_UINT` con un `usampler2D` dava zeri, mentre `imageLoad` su
+  storage image dà i byte giusti — quindi niente sampler nel decode.
+  Nota di verifica: **shaderc (runtime) ha rifiutato un costrutto che
+  glslangValidator accettava**, quindi il test offline non è equivalente al
+  compilatore reale; il differenziale live copre anche la compilazione, e un
+  fallimento di compilazione viene stampato come `DECODE_FAILED`, mai ignorato.
 - **Prossimo.** A reale (copia/encode su GPU verso risorsa versionata), B
   (binding GPU-owned, risoluzione versionata prima di hash/decode), C
   (materializzazione solo se serve) subordinata a D3/D4: finche' non e' provato
