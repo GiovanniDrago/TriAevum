@@ -696,6 +696,31 @@ Decisioni ancora da risolvere con esperimento: presenza/ubicazione delle copie r
   per lo più l'`EndImmediateCommands` del decode (un submit con `vkQueueWaitIdle`
   per texture): il passo successivo è accodare i decode invece di aspettarli uno
   per uno.
+- **C — primo incremento e confine dichiarato.** Con il percorso GPU il
+  confronto sui byte *pre-copia* (`PicaPhysicalMemoryWrite::Before`) è
+  ridondante: la copia ha già scritto i byte in guest, e il resolver serving la
+  GPU non ha bisogno di sapere se lo snapshot CPU era vecchio. Sotto il percorso
+  GPU quella lettura non viene più fatta (768 KB di lettura guest e 768 KB di
+  copia per copia, più un'euristica in meno nel resolver); il resolver tratta
+  l'assenza dei byte pre-copia come "da aggiornare". Verifica: **12/12 catture
+  byte-identiche** alla baseline, suite verdi, e un salvataggio/ripristino a metà
+  fase con 300 copie senza fault né stallo. Nota onesta: su questa finestra il
+  risparmio non emerge sopra il rumore run-to-run (`span_ms` 108 → 227 ms tra due
+  run diverse); il guadagno è la lettura rimossa e l'euristica eliminata, non un
+  numero di wall-clock.
+- **Confine di C, con la ragione per cui non si va oltre.** Il writeback guest
+  **resta sincrono al PPF**: la memoria guest è stato osservabile del titolo, e
+  il piano stesso prescrive di materializzare gli intervalli host-osservabili "al
+  più tardi prima di PPF". Differire oltre quel punto risparmierebbe il readback
+  ordinato (768 KB per copia) e la copia di coerenza (1 MiB per risoluzione), ma
+  solo se fosse provato che nessuno legge quei byte — e i puntatori consegnati
+  al guest sono, per costruzione, non osservabili dopo la consegna. La guardia
+  registra il momento della consegna e gli accessi tipizzati: nello scenario
+  misurato non ce ne sono, quindi il caso è tracciato ma **non** è una licenza a
+  differire. Restano perciò in piedi, dichiarati: il readback ordinato ridotto e
+  la materializzazione; il passo successivo utile non è ometterli ma accodare i
+  decode GPU (oggi un `vkQueueWaitIdle` per texture, ~2,0 s di `creation_ms` su
+  513 copie).
 - **Prossimo.** A reale (copia/encode su GPU verso risorsa versionata), B
   (binding GPU-owned, risoluzione versionata prima di hash/decode), C
   (materializzazione solo se serve) subordinata a D3/D4: finche' non e' provato

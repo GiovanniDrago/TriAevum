@@ -646,6 +646,21 @@ experiments:
   513 copies, all 513 textures GPU-created); direct A/B 6/6 identical on the copy
   scene with resolve time 1,306 -> 833 ms, and 6/6 identical on a scene without
   copies; PICA, memory and graphics suites green.
+- **Phase C's first increment, and where it stops.** With the GPU-owned decode
+  the pre-copy bytes (`PicaPhysicalMemoryWrite::Before`) are no longer needed: the
+  copy has already written them, and the resolver serving the GPU does not need
+  to know whether the CPU snapshot was old. Under the GPU path that read is gone
+  (768 KB of guest reads and 768 KB of copying per copy, plus one heuristic fewer
+  in the resolver). Verified: 12 of 12 captures byte-identical, suites green, and
+  a save/restore taken mid-phase running 300 copies without faults or stalls. The
+  saving does not rise above run-to-run noise on this window, so the reason to
+  keep it is the removed read and the removed heuristic, not a wall-clock number.
+  What is refused, with reasons: deferring the guest writeback past PPF. Guest
+  memory is observable state, the plan itself requires materializing
+  host-observable intervals at the latest before PPF, and a pointer handed to the
+  guest is unobservable after it is handed out - the watch records that delivery
+  and shows none in the measured scenario, which tracks the case without
+  licensing a deferral.
 - **Where the floor is.** The residual ~4.4 ms per copy is the CPU-encode model
   itself: ~2.0 ms reading back roughly 7.4 MB of source per copy, ~1.1 ms of
   PICA encode, ~0.9 ms retiring overlapped textures. No further Phase A/C

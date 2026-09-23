@@ -909,6 +909,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     RawCopyDecodeResources mRawCopyDecode;
     uint64_t mRawCopyDecodeMismatches = 0;
     uint64_t mRawCopyDecodePixels = 0;
+    [[nodiscard]] static bool RawCopyGpuDecodeEnabled();
     bool EnsureRawCopySampler(std::string* error);
     void DestroyRawCopyDecodeResources();
     [[nodiscard]] bool GpuDecodePicaTextureSupported(uint8_t format) const noexcept;

@@ -2577,15 +2577,9 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
         // it gets a version identity and is decoded on the GPU instead. Every
         // other texture keeps the hash identity and the CPU path, and without
         // the switch the behaviour is unchanged.
-        // On by default now that the decode is proven against the oracle and the
-        // captures are identical; TRIAEVUM_RAW_COPY_GPU_DECODE=0 forces the CPU
-        // path back for an A/B.
-        static const bool gpuDecodeEnabled = [] {
-            const char* value = std::getenv("TRIAEVUM_RAW_COPY_GPU_DECODE");
-            return value == nullptr || std::string_view(value) != "0";
-        }();
         const bool gpuOwned =
-            gpuDecodeEnabled && !shadow2d && precomputedContentHash == nullptr &&
+            RawCopyGpuDecodeEnabled() && !shadow2d &&
+            precomputedContentHash == nullptr &&
             GpuDecodePicaTextureSupported(texture.NativeFormat) &&
             !texture.NativeBytes.empty() &&
             NativePicaMipLevelCount(texture) == 1U;

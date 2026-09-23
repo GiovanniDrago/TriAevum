@@ -25,9 +25,12 @@ GfxNativePicaTextureView GfxRenderingAPIVulkan::ResolveNativePicaCopiedTexture(
             if (lo >= hi) continue;
             const size_t textureOffset = lo - texture.PhysicalAddress, writeOffset = lo - write.Address;
             const size_t count = hi - lo;
-            if (!std::equal(texture.NativeBytes.begin() + textureOffset,
+            if (!write.Before.empty() &&
+                !std::equal(texture.NativeBytes.begin() + textureOffset,
                             texture.NativeBytes.begin() + textureOffset + count,
-                            write.Before.begin() + writeOffset)) continue;
+                            write.Before.begin() + writeOffset)) {
+                continue;
+            }
             std::vector<uint8_t> live(count);
             if (!mPhysicalMemoryRead || !mPhysicalMemoryRead(static_cast<uint32_t>(lo), live) ||
                 !std::equal(live.begin(), live.end(), write.Bytes.begin() + writeOffset)) continue;
@@ -344,6 +347,13 @@ bool GfxRenderingAPIVulkan::RawCopyDestinationOverlaps(uint32_t address,
         }
     }
     return false;
+}
+
+bool GfxRenderingAPIVulkan::RawCopyGpuDecodeEnabled() {
+    // On by default; TRIAEVUM_RAW_COPY_GPU_DECODE=0 restores the CPU decode path
+    // for an A/B.
+    const char* value = std::getenv("TRIAEVUM_RAW_COPY_GPU_DECODE");
+    return value == nullptr || std::string_view(value) != "0";
 }
 
 bool GfxRenderingAPIVulkan::EnsureRawCopySampler(std::string* error) {
@@ -961,9 +971,15 @@ bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
             const uint32_t count = std::min({left, inputLeft, outputLeft});
             Renderer3ds::PicaPhysicalMemoryWrite write;
             write.Address = static_cast<uint32_t>(output);
-            write.Before.resize(count);
-            if (!mPhysicalMemoryRead(write.Address, write.Before))
-                throw std::runtime_error("raw PICA copy destination is unmapped");
+            if (!RawCopyGpuDecodeEnabled()) {
+                // Only the CPU resolver's staleness heuristic needs the pre-copy
+                // bytes: the GPU-owned decode patches from live memory, where the
+                // copy has already written them.
+                write.Before.resize(count);
+                if (!mPhysicalMemoryRead(write.Address, write.Before))
+                    throw std::runtime_error(
+                        "raw PICA copy destination is unmapped");
+            }
             const size_t offset = static_cast<size_t>(input - source->Key.ColorPhysicalAddress);
             write.Bytes.assign(native.begin() + offset, native.begin() + offset + count);
             writeback.Writes.push_back(std::move(write));
