@@ -2557,9 +2557,6 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
     const uint64_t* precomputedContentHash) {
     try {
         NativePicaTextureKey key;
-        key.ContentHash = precomputedContentHash != nullptr
-            ? *precomputedContentHash
-            : HashNativeBytes(texture.NativeBytes);
         key.ReplacementGeneration = replacementGeneration;
         key.PhysicalAddress = texture.PhysicalAddress;
         key.Width = texture.Width;
@@ -2575,6 +2572,29 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
         key.MinMipLevel = texture.MinMipLevel;
         key.MaxMipLevel = texture.MaxMipLevel;
         const bool shadow2d = texture.NativeType == 2U;
+        // A surface a raw copy wrote into arrives without a content hash, and
+        // hashing plus decoding it on the CPU is exactly what phase B removes:
+        // it gets a version identity and is decoded on the GPU instead. Every
+        // other texture keeps the hash identity and the CPU path, and without
+        // the switch the behaviour is unchanged.
+        // On by default now that the decode is proven against the oracle and the
+        // captures are identical; TRIAEVUM_RAW_COPY_GPU_DECODE=0 forces the CPU
+        // path back for an A/B.
+        static const bool gpuDecodeEnabled = [] {
+            const char* value = std::getenv("TRIAEVUM_RAW_COPY_GPU_DECODE");
+            return value == nullptr || std::string_view(value) != "0";
+        }();
+        const bool gpuOwned =
+            gpuDecodeEnabled && !shadow2d && precomputedContentHash == nullptr &&
+            GpuDecodePicaTextureSupported(texture.NativeFormat) &&
+            !texture.NativeBytes.empty() &&
+            NativePicaMipLevelCount(texture) == 1U;
+        key.ContentHash = gpuOwned
+            ? 0U
+            : (precomputedContentHash != nullptr
+                   ? *precomputedContentHash
+                   : HashNativeBytes(texture.NativeBytes));
+        key.SurfaceVersion = gpuOwned ? ++mRawCopySurfaceVersion : 0U;
         const auto baseLevelContentHash = !shadow2d
             ? ResolveNativeTextureBaseLevelContentHash(texture)
             : std::nullopt;
@@ -2592,7 +2612,10 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                 uint32_t width, uint32_t height,
                 uint32_t mipLevels,
                 VkFormat format, uint64_t replacementHash,
-                bool replacement, bool* insertedResult = nullptr) {
+                bool replacement, bool* insertedResult = nullptr,
+                bool fillFromGpuDecode = false,
+                std::span<const uint8_t> nativeBytes = {},
+                uint8_t picaFormat = 0U) {
                 auto [inserted, wasInserted] =
                     mNativePicaTextures.emplace(
                         textureKey, TextureRecord{});
@@ -2623,7 +2646,8 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                 record.CustomReplacementHash = replacementHash;
                 record.CustomReplacementReady = replacement;
                 CreateNativePicaTextureImage(
-                    record, pixels, width, height, mipLevels, format);
+                    record, pixels, width, height, mipLevels, format,
+                    fillFromGpuDecode, nativeBytes, picaFormat);
                 return &record;
             };
 
@@ -2802,6 +2826,43 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
         size_t baseNativeBytes = texture.NativeBytes.size();
         size_t baseDecodedBytes =
             static_cast<size_t>(texture.Width) * texture.Height * 4U;
+        if (gpuOwned) {
+            // Decoded on the GPU from the native bytes: no CPU decode, no
+            // content hash, no decoded upload.
+            const auto encodedBytes = NativePicaEncodedMipSize(
+                texture.NativeFormat, texture.Width, texture.Height);
+            if (!encodedBytes.has_value() ||
+                *encodedBytes > texture.NativeBytes.size()) {
+                throw std::runtime_error(
+                    "native PICA GPU texture bytes are truncated");
+            }
+            bool inserted = false;
+            TextureRecord* created = createTexture(
+                key, {}, texture.Width, texture.Height, 1U,
+                VK_FORMAT_R8G8B8A8_UNORM, 0U, false, &inserted, true,
+                texture.NativeBytes.first(*encodedBytes),
+                static_cast<uint8_t>(texture.NativeFormat));
+            ++mRawCopySamplerCost.GpuCreated;
+            // One version per copy: retire the previous version of the same
+            // surface so versions do not accumulate.
+            for (auto it = mNativePicaTextures.begin();
+                 it != mNativePicaTextures.end();) {
+                const auto& other = it->first;
+                if (it->second.Uploaded &&
+                    &it->second != created &&
+                    other.SurfaceVersion != 0U &&
+                    other.SurfaceVersion < key.SurfaceVersion &&
+                    other.PhysicalAddress == key.PhysicalAddress &&
+                    other.Width == key.Width && other.Height == key.Height &&
+                    other.Format == key.Format && other.Type == key.Type) {
+                    DestroyTexture(it->second);
+                    it = mNativePicaTextures.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            return created;
+        }
         if (shadow2d) {
             std::vector<uint32_t> shadowPixels;
             if (!Oot3d::DetilePicaShadow2d(
@@ -3033,10 +3094,19 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaLightingLut(
 
 void GfxRenderingAPIVulkan::CreateNativePicaTextureImage(
     TextureRecord& texture, std::span<const uint8_t> pixels, uint32_t width,
-    uint32_t height, uint32_t mipLevels, VkFormat format) {
+    uint32_t height, uint32_t mipLevels, VkFormat format,
+    bool fillFromGpuDecode, std::span<const uint8_t> nativeBytes,
+    uint8_t picaFormat) {
     const auto expectedBytes =
         NativePicaDecodedMipChainSize(width, height, mipLevels);
-    if (!expectedBytes.has_value() || pixels.size() != *expectedBytes ||
+    if (fillFromGpuDecode) {
+        // The pixels are produced on the GPU from the native bytes; there is no
+        // CPU-decoded payload to validate or upload.
+        if (nativeBytes.empty() || mipLevels != 1U) {
+            throw std::runtime_error(
+                "native PICA GPU texture creation needs one mip level and native bytes");
+        }
+    } else if (!expectedBytes.has_value() || pixels.size() != *expectedBytes ||
         pixels.empty()) {
         throw std::runtime_error("native PICA texture upload size is invalid");
     }
@@ -3095,8 +3165,17 @@ void GfxRenderingAPIVulkan::CreateNativePicaTextureImage(
         mRenderPassActive = false;
         mOverlayRenderPassActive = false;
     }
+    if (fillFromGpuDecode) {
+        std::string decodeError;
+        if (!DecodeNativePicaTextureOnGpu(texture.Image, width, height,
+                                          picaFormat, nativeBytes, &decodeError)) {
+            throw std::runtime_error("native PICA GPU texture decode failed: " +
+                                     decodeError);
+        }
+        texture.UploadedMipLevels = 1U;
+    }
     size_t pixelOffset = 0U;
-    for (uint32_t level = 0U; level < mipLevels; ++level) {
+    for (uint32_t level = 0U; !fillFromGpuDecode && level < mipLevels; ++level) {
         const uint32_t mipWidth = std::max(1U, width >> level);
         const uint32_t mipHeight = std::max(1U, height >> level);
         const VkDeviceSize byteCount =

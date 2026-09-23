@@ -633,6 +633,19 @@ experiments:
   no sampler. The runtime compiler (shaderc) also rejected a construct
   glslangValidator accepted, which is why the live differential, not the offline
   compile, is the gate that counts.
+- **The sampler stopped rebuilding copied textures from guest bytes.** A texture
+  a raw copy writes into arrives without a content hash, which is exactly the
+  case the CPU path answers with a 1 MiB hash, a CPU decode and an RGBA8 upload.
+  It now takes a version identity (`SurfaceVersion` in the texture key) and is
+  decoded on the GPU from its native bytes, with the previous version of the same
+  surface retired immediately so versions stay bounded. Everything else keeps the
+  hash identity and the CPU path, and `TRIAEVUM_RAW_COPY_GPU_DECODE=0` restores
+  the old behaviour for an A/B. Verified: decoder differential zero mismatches
+  over 86,026,368 pixels plus 536,960 in gameplay; 12 of 12 captures
+  byte-identical to the CPU baseline in the shipping configuration (3,500 frames,
+  513 copies, all 513 textures GPU-created); direct A/B 6/6 identical on the copy
+  scene with resolve time 1,306 -> 833 ms, and 6/6 identical on a scene without
+  copies; PICA, memory and graphics suites green.
 - **Where the floor is.** The residual ~4.4 ms per copy is the CPU-encode model
   itself: ~2.0 ms reading back roughly 7.4 MB of source per copy, ~1.1 ms of
   PICA encode, ~0.9 ms retiring overlapped textures. No further Phase A/C

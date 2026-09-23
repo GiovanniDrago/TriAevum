@@ -2989,12 +2989,13 @@ void GfxRenderingAPIVulkan::StorePipelineCache() {
     if (mRawCopySamplerCost.Resolutions != 0U) {
         std::fprintf(stderr,
                      "TRIAEVUM_RAW_COPY_SAMPLER resolutions=%llu creations=%llu "
-                     "coherence_bytes=%llu native_bytes=%llu resolve_ms=%.3f "
+                     "coherence_bytes=%llu native_bytes=%llu gpu_created=%llu resolve_ms=%.3f "
                      "coherence_ms=%.3f creation_ms=%.3f\n",
                      static_cast<unsigned long long>(mRawCopySamplerCost.Resolutions),
                      static_cast<unsigned long long>(mRawCopySamplerCost.Creations),
                      static_cast<unsigned long long>(mRawCopySamplerCost.CoherenceBytes),
                      static_cast<unsigned long long>(mRawCopySamplerCost.NativeBytes),
+                     static_cast<unsigned long long>(mRawCopySamplerCost.GpuCreated),
                      mRawCopySamplerCost.ResolveSeconds * 1000.0,
                      mRawCopySamplerCost.CoherenceSeconds * 1000.0,
                      mRawCopySamplerCost.CreationSeconds * 1000.0);

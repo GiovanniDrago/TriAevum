@@ -678,7 +678,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     void CreateNativePicaTextureImage(TextureRecord& texture,
                                       std::span<const uint8_t> pixels,
                                       uint32_t width, uint32_t height,
-                                      uint32_t mipLevels, VkFormat format);
+                                      uint32_t mipLevels, VkFormat format,
+                                      bool fillFromGpuDecode = false,
+                                      std::span<const uint8_t> nativeBytes = {},
+                                      uint8_t picaFormat = 0);
     TextureRecord* GetOrCreateNativePicaTexture(
         const GfxNativePicaTextureView& texture, std::string* error,
         uint64_t replacementGeneration,
@@ -932,6 +935,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         uint64_t Creations = 0;
         uint64_t CoherenceBytes = 0;
         uint64_t NativeBytes = 0;
+        uint64_t GpuCreated = 0;
         double ResolveSeconds = 0.0;
         double CoherenceSeconds = 0.0;
         double CreationSeconds = 0.0;

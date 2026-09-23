@@ -658,6 +658,26 @@ Decisioni ancora da risolvere con esperimento: presenza/ubicazione delle copie r
   glslangValidator accettava**, quindi il test offline non è equivalente al
   compilatore reale; il differenziale live copre anche la compilazione, e un
   fallimento di compilazione viene stampato come `DECODE_FAILED`, mai ignorato.
+- **B, cutover del binding: il sampler non ricostruisce più dai byte guest.**
+  Una texture che una copia ha scritto arriva senza hash di contenuto: invece di
+  calcolare l'hash (1 MiB su CPU), decodificare su CPU e caricare RGBA8, riceve
+  un'**identità di versione** (`NativePicaTextureKey::SurfaceVersion`) e viene
+  decodificata dalla GPU dai suoi byte nativi. Una versione per copia, con la
+  versione precedente della stessa superficie ritirata subito, così le versioni
+  non si accumulano. Tutto il resto — hash identity, decodifica CPU, sostituzioni
+  mod, mip multipli, Shadow2D — resta esattamente com'era; `TRIAEVUM_RAW_COPY_GPU_DECODE=0`
+  riporta al percorso CPU per un A/B.
+  **Verifica.** Differenziale del decoder: `pixels=86026368 mismatches=0` (finestra
+  copie) e `pixels=536960 mismatches=0` (gameplay). Catture: **12/12
+  byte-identiche** alla baseline CPU nella configurazione di spedizione (3500
+  frame, 513 copie, `gpu_created=513`); A/B diretto sulla scena copie 6/6
+  identiche (`resolve_ms` 1306 → 833); A/B su una scena senza copie 6/6 identiche.
+  Suite PICA/memoria/grafica verdi.
+  **Costo.** Finestra copie: `SAMPLER resolve_ms` 1460 → 2300? no: per 400 frame
+  1460 → 833, `creation_ms` 1344 → 742, `invalidate_ms` 219 → 96. Il residuo è
+  per lo più l'`EndImmediateCommands` del decode (un submit con `vkQueueWaitIdle`
+  per texture): il passo successivo è accodare i decode invece di aspettarli uno
+  per uno.
 - **Prossimo.** A reale (copia/encode su GPU verso risorsa versionata), B
   (binding GPU-owned, risoluzione versionata prima di hash/decode), C
   (materializzazione solo se serve) subordinata a D3/D4: finche' non e' provato
