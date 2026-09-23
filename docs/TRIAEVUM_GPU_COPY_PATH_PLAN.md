@@ -159,6 +159,39 @@ della texture campionata a partire dal contenuto copiato, che è a risoluzione
 interna; non è ammessa una scorciatoia che campioni o materializzi a risoluzione
 nativa, perché perderebbe silenziosamente la risoluzione interna del renderer.
 
+### B, progetto concreto derivato dalle misure (aggiornato)
+
+I dati di §8 dicono cosa va tolto: 164 risoluzioni e **164 ricreazioni di texture**
+per copia, 1,05 MB per copia ricopiati dal percorso di coerenza, ~10 ms per
+risoluzione. L'invalidazione distrugge una texture decodificata e il sampler la
+ricostruisce dai byte guest: è quel ciclo a dover sparire.
+
+Passi, ognuno verificabile da solo:
+
+1. **Byte image per texture** — i byte nativi (tiled) di una texture campionata
+   vivono in un'immagine GPU `R32_UINT` (una parola per quattro byte), caricati
+   una volta dal guest e poi **patchati** dalla copia: la patch è una copia
+   byte-esatta dall'immagine di encode già esistente all'offset di destinazione,
+   senza aritmetica di tiling e senza ambiguità sui texel parziali.
+2. **Decode su GPU** — un compute shader riproduce `DecodePicaTextureRgba8`
+   (detile Morton, `alignedWidth = max(8, roundUp(width,8))`, formati 0-4 con le
+   stesse espansioni 4/5/6 bit) scrivendo **parole** in un buffer device-local,
+   seguito da una copia buffer→immagine nell'immagine `RGBA8` campionata. Così
+   non serve `shaderStorageImageExtendedFormats`, che le storage image `R8`/`RGBA8`
+   richiederebbero e che non è garantito; la copia buffer→immagine è Vulkan base.
+3. **Binding** — il sampler usa l'immagine decodificata quando la sua versione
+   corrisponde alla byte image; l'invalidazione distruttiva sparisce, e con essa
+   la ricostruzione dai byte guest. I formati che il decoder GPU non copre
+   ricadono sul percorso CPU **esplicitamente**, mai in silenzio.
+4. **Identità** — la versione della superficie (byte image) e la sua derivata
+   decodificata sono la stessa versione logica; niente hash inventato da un
+   seriale, e snapshot/replay continuano a serializzare il payload che già
+   serializzano.
+
+Guardia: la risoluzione interna resta quella del renderer (sezione dedicata): il
+decode lavora sui byte nativi della texture, il cui contenuto copiato proviene
+dall'encode a risoluzione interna.
+
 ### Acceptance B
 
 - C1 submission/plan/bridge verdi; nuove verifiche mirate di versioni immutabili: draw prima/dopo, due copie allo stesso indirizzo, namespace separati, scrittura CPU parziale e same-value, mip superiore modificato.

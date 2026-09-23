@@ -15,14 +15,21 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
-HEADER = (
+HEADERS = (
     REPO
     / "runtime"
     / "three_ds_recomp"
     / "include"
     / "fast"
     / "renderer3ds"
-    / "pica_framebuffer_encode_gpu.h"
+    / "pica_framebuffer_encode_gpu.h",
+    REPO
+    / "runtime"
+    / "three_ds_recomp"
+    / "include"
+    / "fast"
+    / "renderer3ds"
+    / "pica_texture_decode_gpu.h",
 )
 GLSL_PATTERN = re.compile(r'R"glsl\((.*?)\)glsl"', re.S)
 
@@ -46,22 +53,24 @@ def find_glslang_validator() -> str | None:
 
 
 class PicaFramebufferEncodeGpuShaderTests(unittest.TestCase):
-    def test_embedded_compute_shader_compiles(self) -> None:
+    def test_embedded_compute_shaders_compile(self) -> None:
         glslang = find_glslang_validator()
         if glslang is None:
             self.skipTest("glslangValidator is not available")
-        match = GLSL_PATTERN.search(HEADER.read_text(encoding="utf-8"))
-        self.assertIsNotNone(match, "encode shader source missing from the header")
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "pica_framebuffer_encode.comp"
-            source.write_text(match.group(1), encoding="utf-8", newline="\n")
-            result = subprocess.run(
-                [glslang, "-V", str(source)],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for header in HEADERS:
+                with self.subTest(header=header.name):
+                    match = GLSL_PATTERN.search(header.read_text(encoding="utf-8"))
+                    self.assertIsNotNone(match, f"{header.name} has no embedded GLSL")
+                    source = Path(directory) / f"{header.stem}.comp"
+                    source.write_text(match.group(1), encoding="utf-8", newline="\n")
+                    result = subprocess.run(
+                        [glslang, "-V", str(source)],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
