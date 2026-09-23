@@ -673,8 +673,8 @@ Decisioni ancora da risolvere con esperimento: presenza/ubicazione delle copie r
   frame, 513 copie, `gpu_created=513`); A/B diretto sulla scena copie 6/6
   identiche (`resolve_ms` 1306 → 833); A/B su una scena senza copie 6/6 identiche.
   Suite PICA/memoria/grafica verdi.
-  **Costo.** Finestra copie: `SAMPLER resolve_ms` 1460 → 2300? no: per 400 frame
-  1460 → 833, `creation_ms` 1344 → 742, `invalidate_ms` 219 → 96. Il residuo è
+  **Costo** (400 frame, 164 copie): `SAMPLER resolve_ms` 1460 → 833,
+  `creation_ms` 1344 → 742, `invalidate_ms` 219 → 96. Il residuo è
   per lo più l'`EndImmediateCommands` del decode (un submit con `vkQueueWaitIdle`
   per texture): il passo successivo è accodare i decode invece di aspettarli uno
   per uno.
