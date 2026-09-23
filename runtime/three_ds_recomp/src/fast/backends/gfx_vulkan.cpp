@@ -1228,6 +1228,7 @@ void GfxRenderingAPIVulkan::Shutdown() {
             mRawCopyFence = VK_NULL_HANDLE;
         }
         DestroyBuffer(mRawCopyReadbackBuffer);
+        DestroyRawCopyEncodeResources();
         if (mOot3dShadow2dRenderPass != VK_NULL_HANDLE) {
             vkDestroyRenderPass(mDevice, mOot3dShadow2dRenderPass, nullptr);
             mOot3dShadow2dRenderPass = VK_NULL_HANDLE;
@@ -2984,6 +2985,12 @@ void GfxRenderingAPIVulkan::StorePipelineCache() {
                  static_cast<unsigned long long>(mNativePicaVulkanPipelineCreations));
     std::fprintf(stderr, "TRIAEVUM_PICA_VULKAN_SHADER_PAIRS created=%llu\n",
                  static_cast<unsigned long long>(mNativePicaVulkanShaderPairCreations));
+    if (mRawCopyEncodeVerifyBytes != 0U) {
+        std::fprintf(stderr,
+                     "TRIAEVUM_RAW_COPY_ENCODE_DIFF bytes=%llu mismatches=%llu\n",
+                     static_cast<unsigned long long>(mRawCopyEncodeVerifyBytes),
+                     static_cast<unsigned long long>(mRawCopyEncodeVerifyMismatches));
+    }
     const auto& copyTiming = mRawCopyTiming;
     std::fprintf(stderr,
                  "TRIAEVUM_RAW_COPY copies=%llu spans=%llu invalidated_textures=%llu "

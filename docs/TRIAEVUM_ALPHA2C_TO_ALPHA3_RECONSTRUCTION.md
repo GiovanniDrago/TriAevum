@@ -240,6 +240,7 @@ section 1 and run from `I:/TriAevum-public/ui-dependencies/bin`.
 | Raw-copy savestate restore A/B, live runtime | corrected (section 3.3) |
 | Control-run capture determinism | 5 of 5 captures byte-identical across runs |
 | Raw-copy cost attribution and readback fix (section 7.4) | 513 copies attributed per cause (`TRIAEVUM_RAW_COPY`): readback was 94% of copy time. In-band readback into cached staging takes 33.6 -> 4.36 ms per copy and the copy window from 6.95 to 1.83 ms/frame (two paired runs, 1.832/1.825), `execute` 12.50 -> 7.84 ms/frame; 10 PICA suites green, 12 flashback captures byte-identical, boot 5/5 hash-exact, file-select 6/6 identical to the agreeing qualified baselines, gameplay run unchanged with zero raw copies |
+| Raw-copy GPU encode (section 7.4) | Differential against the CPU oracle on real colour targets: 125,952,000 bytes, 0 mismatches over 164 copies; 12/12 captures byte-identical; readback 7.37 MB -> 768 KB per copy, window transfer time 1.83-1.92 -> 0.730 ms/frame, per-copy cost 4.36 -> 1.14 ms |
 | Raw-copy destination host-access watch (section 7.4) | `NativeA32Memory` range watch traps the translated destination on the checked path; `oot3d_native_a32_ctr_host_tests` proves identical values and per-origin counters. Revelation window: zero guest typed/byte accesses, 104,141 renderer pointer handouts; short run from `sheik-near-copy` reproduces it with 8,200 suppressed writeback spans as the live-trap control |
 | Title-neutral renderer boundary (section 3.4) | Gate reports 67 files title-neutral (was failing on two files at HEAD). After the relocation: flashback 12/12, boot 5/5, file-select 6/6 captures byte-identical to the qualified baselines; `pica_ui_canvas_tests` passes; `pica_lighting_gpu_tests` compiles against the moved builder; `oot3d_graphics_foundation_tests` 292 tests pass |
 | `oot3d_pica_scene_frame_tests` (section 3.4) | Built and executed for the first time (18 tests, all pass, including the frame-evidence test the composition-domain fix relies on) |
@@ -596,6 +597,21 @@ experiments:
   asks for a pointer at all (311,191 `ReadFast`, 189,552 `WriteFast`, zero
   `ReadBytes`/`GetReadPointer`/`GetWritePointer` in the product cache), so the
   only untrappable case is a pointer handed out to the guest through a service.
+- **The encode moved to the GPU, measured.** The native packing of a raw copy
+  (Morton order, formats 0-4, half-texel rule) is now done by a compute shader
+  writing R32_UINT words into a storage image, copied to host staging inside the
+  submission the copy already waits on; the CPU oracle runs only under
+  `TRIAEVUM_RAW_COPY_ENCODE_VERIFY=1`, where it compares byte for byte with what
+  the GPU produced (`ENCODE_DIFF bytes=125952000 mismatches=0` over 164 copies).
+  Captures stay byte-identical to the CPU-path baseline (12 of 12), the readback
+  per copy falls from 7.37 MB to 768 KB, the copy window's transfer time from
+  1.83-1.92 to 0.730 ms per frame and the per-copy cost from 4.36 to 1.14 ms.
+  The host refuses what the shader cannot check (non compute-capable queue
+  family, missing R32_UINT storage or transfer-source support, extents or
+  dispatch beyond device limits, geometry the oracle would reject, a half-texel
+  numerator that could wrap). This is an increment of phase A, not phase A: the
+  ordered readback (smaller), present wait, guest writeback, texture
+  invalidation and CPU upload are all still there.
 - **Where the floor is.** The residual ~4.4 ms per copy is the CPU-encode model
   itself: ~2.0 ms reading back roughly 7.4 MB of source per copy, ~1.1 ms of
   PICA encode, ~0.9 ms retiring overlapped textures. No further Phase A/C
@@ -752,6 +768,9 @@ qualification. Ordered checks for the next Linux session:
 | `runtime/three_ds_recomp/tests/oot3d_pica_scene_frame_tests.cpp` | Declared uniform buffer covers the declared slices. |
 | `tools/renderer/tev_program/lighting_gpu_tests.cpp` | Explicit title-adapter include for the moved builder. |
 | `tools/triaevum_release/tests/run_f1_settings_smoke.ps1` | Links the configured archive directory from the build cache instead of stale build-tree copies. |
+| `runtime/three_ds_recomp/include/fast/renderer3ds/pica_framebuffer_encode_gpu.h` | Compute shader reproducing the native packing on R32_UINT words, title-neutral, with a test that compiles it offline. |
+| `runtime/three_ds_recomp/src/fast/backends/gfx_vulkan_pica_texture_copy.cpp` | GPU encode resources, dispatch and staging copy replace the CPU encode in the copy path; the oracle stays behind the differential switch. |
+| `runtime/three_ds_recomp/include/fast/backends/gfx_vulkan.h` | Encode resource members and the capability/limit validation entry points. |
 | `tools/oot3d/native_game_runtime/oot3d_native_a32_memory.{h,cpp}` | Opt-in range watch: trapped pages lose their fast entry, per-origin counters, suppression for the renderer's own materialization. Inert when unused. |
 | `tools/oot3d/native_game_runtime/oot3d_native_a32_ctr_host_tests.cpp` | Proves the watch keeps values identical and counts typed, byte, pointer and suppressed traffic. |
 | `tools/oot3d/native_game_runtime/oot3d_native_a32_window.cpp` | Watches the translated raw-copy destination under extended diagnostics and prints `TRIAEVUM_RAW_COPY_HOST_ACCESS`. |

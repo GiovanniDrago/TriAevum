@@ -854,6 +854,36 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     // the bytes handed to the encoder stay exactly the same.
     BufferAllocation mRawCopyReadbackBuffer;
     bool mRawCopyReadbackCoherent = true;
+    // GPU encode of a raw copy: a compute shader packs the native tiled bytes
+    // into an R8_UINT storage image which is copied to host staging, replacing
+    // the CPU encode of a read-back colour target. Existing only once a raw
+    // copy has run; nothing is allocated for runs without one.
+    struct RawCopyEncodeResources {
+        VkImage Image = VK_NULL_HANDLE;
+        VkDeviceMemory Memory = VK_NULL_HANDLE;
+        VkImageView View = VK_NULL_HANDLE;
+        VkDeviceSize Capacity = 0;
+        uint32_t Stride = 0;
+        uint32_t Height = 0;
+    };
+    RawCopyEncodeResources mRawCopyEncodeImage;
+    BufferAllocation mRawCopyEncodedBuffer;
+    VkSampler mRawCopyEncodeSampler = VK_NULL_HANDLE;
+    VkDescriptorSetLayout mRawCopyEncodeDescriptorLayout = VK_NULL_HANDLE;
+    VkDescriptorPool mRawCopyEncodeDescriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet mRawCopyEncodeDescriptorSet = VK_NULL_HANDLE;
+    VkPipelineLayout mRawCopyEncodePipelineLayout = VK_NULL_HANDLE;
+    VkPipeline mRawCopyEncodePipeline = VK_NULL_HANDLE;
+    bool mRawCopyEncodeVerify = false;
+    uint64_t mRawCopyEncodeVerifyBytes = 0;
+    uint64_t mRawCopyEncodeVerifyMismatches = 0;
+    void DestroyRawCopyEncodeResources();
+    bool EnsureRawCopyEncodeResources(uint32_t encodedBytes, std::string* error);
+    bool RecordRawCopyEncode(VkCommandBuffer command, VkImage sourceImage,
+                             VkImageView sourceView,
+                             uint32_t imageWidth, uint32_t imageHeight,
+                             uint32_t width, uint32_t height, uint8_t format,
+                             uint32_t encodedBytes);
     bool SubmitNativePicaTextureCopy(const GfxNativePicaDisplayTransferView& transfer, std::string* error);
     GfxNativePicaTextureView ResolveNativePicaCopiedTexture(const GfxNativePicaTextureView& texture,
         uint64_t renderTargetNamespace, uint64_t drawId, std::vector<uint8_t>& coherentBytes);

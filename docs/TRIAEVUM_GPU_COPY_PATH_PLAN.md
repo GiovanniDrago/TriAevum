@@ -556,6 +556,33 @@ Decisioni ancora da risolvere con esperimento: presenza/ubicazione delle copie r
   `Fill` (contati ma non esercitati in questo scenario) e i puntatori ottenuti
   prima dell'attivazione della guardia; il contatore `pointer_reads` registra il
   momento della consegna, che è l'unico punto non più osservabile dopo.
+- **Encode su GPU — fatto e verificato (incremento di A, non A).** L'encode
+  nativo (tiling Morton, formati 0-4, regola del mezzo texel) ora gira sul
+  percorso grafico: uno shader compute scrive parole `R32_UINT` in una storage
+  image e la copia verso lo staging host avviene nella stessa submission che la
+  copia già attende. Il formato storage è `R32_UINT`, non `R8_UINT`: il secondo
+  richiede `shaderStorageImageExtendedFormats` e non è garantito. L'host rifiuta
+  esplicitamente ciò che lo shader non può controllare: famiglia di coda senza
+  `VK_QUEUE_COMPUTE_BIT`, assenza di `STORAGE_IMAGE`/`TRANSFER_SRC` su
+  `R32_UINT`, extent fuori da `maxImageDimension2D`, dispatch oltre
+  `maxComputeWorkGroupCount`, geometria che l'oracolo rifiuterebbe (dimensioni
+  nulle o non multiple di 8, formato > 4, bpp incoerente) e numeratore del mezzo
+  texel che potrebbe andare in wrap a 32 bit. In assenza di questi requisiti la
+  copia fallisce visibilmente, senza PPF e senza fallback silenziosi.
+  **Prova.** Differenziale con l'oracolo CPU attivo sulla stessa finestra
+  (`TRIAEVUM_RAW_COPY_ENCODE_VERIFY=1`, ricetta GPU più oracolo e confronto
+  byte a byte): `TRIAEVUM_RAW_COPY_ENCODE_DIFF bytes=125952000 mismatches=0` su
+  164 copie. End-to-end: 12 catture su 12 **byte-identiche** alla baseline
+  prodotta con l'encode CPU.
+  **Costo.** Finestra copie (3500 frame, 513 copie, nessuna cattura):
+  `snapshot_transfer_seconds` 1,83-1,92 → **0,730 ms/frame**; readback per copia
+  7,37 MB → **768 KB**; `encode` CPU 0,55 s → 0,0003 s; costo per copia 4,36 →
+  **1,14 ms** (dai 33,6 ms di partenza). `execute` resta ~7,7 ms/frame.
+  **Non è la Fase A.** Restano il readback ordinato (ridotto), `WaitForAllPresents`,
+  il writeback guest, l'invalidazione delle texture e il successivo upload
+  CPU→GPU, cioè tutto ciò che l'accettazione A chiede di eliminare; B e C non
+  sono toccate. Lo shader è nel renderer condiviso ed è neutro rispetto al
+  titolo (nessun token del titolo), con un test che lo compila offline.
 - **Prossimo.** A reale (copia/encode su GPU verso risorsa versionata), B
   (binding GPU-owned, risoluzione versionata prima di hash/decode), C
   (materializzazione solo se serve) subordinata a D3/D4: finche' non e' provato
