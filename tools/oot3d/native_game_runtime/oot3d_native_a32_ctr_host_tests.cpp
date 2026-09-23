@@ -205,7 +205,90 @@ void TestBoundedSvcEventHistory() {
 
 } // namespace
 
+void TestGuestAccessWatch() {
+    // Diagnostic watch: watched pages lose their fast entry so typed accesses
+    // take the checked path. Values must be identical, only visibility changes.
+    NativeA32Memory memory;
+    std::string error;
+    Require(memory.MapRegion(
+                {"watch", 0x1C000000, 0x8000, true, false, {}}, &error),
+            error);
+    constexpr uint32_t watchedAddress = 0x1C001000;
+    constexpr uint32_t outsideAddress = 0x1C006000;
+    const std::array<uint8_t, 4> initial{0x78, 0x56, 0x34, 0x12};
+    const std::array<uint8_t, 4> replacement{0xEF, 0xBE, 0xAD, 0xDE};
+    Require(memory.WriteBytes(watchedAddress, initial), "seed watched bytes");
+    Require(memory.WriteBytes(outsideAddress, initial), "seed outside bytes");
+
+    uint32_t value = 0;
+    Require(memory.ReadFast<uint32_t>(watchedAddress, &value) &&
+                value == 0x12345678U,
+            "fast read before watching");
+    Require(memory.WatchCounters().TypedReads == 0U,
+            "unwatched memory must not be counted");
+
+    const std::array<std::pair<uint32_t, uint32_t>, 1> ranges{
+        {{watchedAddress, watchedAddress + 0x100U}}};
+    memory.SetRangeWatch(ranges);
+    Require(memory.RangeWatchActive() && memory.WatchedRangeCount() == 1U,
+            "watch must be active after SetRangeWatch");
+
+    value = 0;
+    Require(memory.ReadFast<uint32_t>(watchedAddress, &value) &&
+                value == 0x12345678U,
+            "watched typed read must return the same bytes");
+    Require(memory.WatchCounters().TypedReads == 1U &&
+                memory.WatchCounters().FirstReadAddress == watchedAddress &&
+                memory.WatchCounters().FirstReadSize == 4U,
+            "watched typed read must be counted once with its identity");
+
+    Require(memory.ReadFast<uint32_t>(outsideAddress, &value) &&
+                value == 0x12345678U,
+            "read outside the watch still works");
+    Require(memory.WatchCounters().TypedReads == 1U,
+            "read outside the watch must not be counted");
+
+    Require(memory.WriteFast<uint32_t>(watchedAddress, 0xDEADBEEFU),
+            "watched typed write");
+    Require(memory.WatchCounters().TypedWrites == 1U,
+            "watched typed write must be counted");
+    Require(memory.ReadFast<uint32_t>(watchedAddress, &value) &&
+                value == 0xDEADBEEFU,
+            "watched typed write must land");
+
+    std::array<uint8_t, 4> bytes{};
+    Require(memory.ReadBytes(watchedAddress, bytes) &&
+                bytes == replacement,
+            "watched byte read must return the bytes just written");
+    Require(memory.WatchCounters().ByteReads == 1U,
+            "watched byte read must be counted");
+    Require(memory.GetReadPointer(watchedAddress, 4U) != nullptr &&
+                memory.WatchCounters().PointerReads == 1U,
+            "handing out a live pointer must be recorded");
+
+    memory.SetRangeWatchSuppressed(true);
+    Require(memory.WriteBytes(watchedAddress, initial), "suppressed byte write");
+    Require(memory.WatchCounters().ByteWrites == 0U,
+            "suppressed byte write must not be counted");
+    memory.SetRangeWatchSuppressed(false);
+    Require(memory.WriteBytes(watchedAddress, replacement),
+            "counted byte write");
+    Require(memory.WatchCounters().ByteWrites == 1U,
+            "byte write must be counted when not suppressed");
+
+    memory.ClearRangeWatch();
+    Require(!memory.RangeWatchActive() && memory.WatchedRangeCount() == 0U,
+            "watch must be cleared");
+    const auto counters = memory.WatchCounters();
+    Require(memory.ReadFast<uint32_t>(watchedAddress, &value) &&
+                value == 0xDEADBEEFU,
+            "typed read after clearing the watch");
+    Require(memory.WatchCounters().TypedReads == counters.TypedReads,
+            "cleared watch must stop counting");
+}
+
 int main() {
+    TestGuestAccessWatch();
     TestBoundedSvcEventHistory();
     const std::filesystem::path romFsPath =
         std::filesystem::temp_directory_path() /

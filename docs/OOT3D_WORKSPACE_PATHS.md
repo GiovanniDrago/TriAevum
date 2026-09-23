@@ -67,6 +67,7 @@ Build and iteration entry points: `scripts/oot3d/Build-Oot3dLlvmWholeAot.ps1`,
 | --- | --- |
 | Scenario checkpoints used by the product scenario list, plus their JSON profiles (117 files) | `I:/oot3dre_work/native_game/checkpoints/` |
 | Issue-specific savestates and captures: `sheik-*` (raw TextureCopy, revelation, overlap), `gameover-*` (composition variants), `zero-health`, `sheik-before-event` | `J:/TriAevum-diagnostics/issues45-46/` |
+| Iteration states: `sheik-near-copy/checkpoint.oot3dsav` sits 73 run frames before the first raw copy, so a 400-frame run (about 37 s) reaches the phase instead of replaying 3,500 frames; provenance and commands in its README. Use it for iteration, the full run for qualification. | `J:/TriAevum-diagnostics/issues45-46/` |
 | Other topic evidence: performance campaigns, lighting/TEV probes, Y2R codec, revelation freeze diagnostics | `J:/TriAevum-diagnostics/*` |
 | Scenario list with checkpoint filename, SHA-256, input profile and frame budget (8 scenarios: `file_select_empty_slots`, `link_dream`, `navi_kokiri_flight`, `kokiri_preload_transition`, `link_house_gameplay`, `kokiri_hud_gameplay`, `kokiri_ladder_interaction`, `topscreen_items`) | `tools/oot3d/native_a32_runtime/whole_aot_product_scenarios.json` |
 

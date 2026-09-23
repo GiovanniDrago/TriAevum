@@ -143,6 +143,15 @@ void NativeA32Memory::RebuildPageTable() {
                 auto& fastPage = group[groupPage];
                 const size_t offset = static_cast<size_t>(
                     pageAddress - region.BaseAddress);
+                // Watched pages keep no fast entry: typed accesses then take
+                // the checked path, which reads and writes the same bytes.
+                const bool trapped =
+                    !mTrappedPages.empty() &&
+                    std::binary_search(mTrappedPages.begin(),
+                                       mTrappedPages.end(), page);
+                if (trapped) {
+                    continue;
+                }
                 fastPage.Read = region.Bytes.data() + offset;
                 fastPage.Write = region.Writable
                                      ? region.Bytes.data() + offset
@@ -406,6 +415,45 @@ bool NativeA32Memory::RestoreState(const nlohmann::json& state,
     }
 }
 
+void NativeA32Memory::SetRangeWatch(
+    std::span<const std::pair<uint32_t, uint32_t>> ranges) {
+    mWatchRanges.assign(ranges.begin(), ranges.end());
+    mWatchActive = !mWatchRanges.empty();
+    std::vector<size_t> trapped;
+    for (const auto& range : mWatchRanges) {
+        if (range.second <= range.first) {
+            continue;
+        }
+        const size_t firstPage = range.first >> PageShift;
+        const size_t lastPage = static_cast<size_t>(
+            (static_cast<uint64_t>(range.second) - 1U) >> PageShift);
+        for (size_t page = firstPage; page <= lastPage; ++page) {
+            trapped.push_back(page);
+        }
+    }
+    std::sort(trapped.begin(), trapped.end());
+    trapped.erase(std::unique(trapped.begin(), trapped.end()), trapped.end());
+    // Trapping costs a page-table rebuild, so rebuild only when the trapped
+    // page set changes: the same destination every frame costs nothing after
+    // the first time.
+    if (trapped != mTrappedPages) {
+        mTrappedPages = std::move(trapped);
+        RebuildPageTable();
+    }
+}
+
+void NativeA32Memory::ClearRangeWatch() {
+    if (mWatchRanges.empty() && mTrappedPages.empty() && !mWatchActive) {
+        return;
+    }
+    mWatchRanges.clear();
+    mWatchActive = false;
+    if (!mTrappedPages.empty()) {
+        mTrappedPages.clear();
+        RebuildPageTable();
+    }
+}
+
 bool NativeA32Memory::ReadBytes(uint32_t address,
                                 std::span<uint8_t> bytes) const {
     if (bytes.empty()) {
@@ -418,6 +466,9 @@ bool NativeA32Memory::ReadBytes(uint32_t address,
     const size_t offset = static_cast<size_t>(address - region->BaseAddress);
     std::copy_n(region->Bytes.begin() + static_cast<std::ptrdiff_t>(offset),
                 bytes.size(), bytes.begin());
+    if (!mWatchSuppressed && Watches(address, bytes.size())) [[unlikely]] {
+        ++mWatchCounters.ByteReads;
+    }
     return true;
 }
 
@@ -426,6 +477,11 @@ const uint8_t* NativeA32Memory::GetReadPointer(uint32_t address,
     const auto* region = FindRegion(address, size);
     if (region == nullptr) {
         return nullptr;
+    }
+    if (!mWatchSuppressed && Watches(address, size)) [[unlikely]] {
+        // Handing out a live pointer ends observability for this range: every
+        // later read through it happens outside any hook we own.
+        ++mWatchCounters.PointerReads;
     }
     return region->Bytes.data() +
            static_cast<size_t>(address - region->BaseAddress);
@@ -487,6 +543,17 @@ bool NativeA32Memory::WriteBytes(uint32_t address,
     const size_t offset = static_cast<size_t>(address - region->BaseAddress);
     std::copy(bytes.begin(), bytes.end(),
               region->Bytes.begin() + static_cast<std::ptrdiff_t>(offset));
+    if (Watches(address, bytes.size())) [[unlikely]] {
+        // Counted apart from typed writes. The renderer suppresses itself
+        // around its own materialization of these bytes: that traffic lands in
+        // SuppressedByteWrites, which doubles as the control that the trap is
+        // live in a run where no guest or service touched the range.
+        if (mWatchSuppressed) {
+            ++mWatchCounters.SuppressedByteWrites;
+        } else {
+            ++mWatchCounters.ByteWrites;
+        }
+    }
     if (mTraceWriteFingerprint) [[unlikely]] {
         RecordTracedWrite(address, bytes);
     }

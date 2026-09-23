@@ -240,6 +240,7 @@ section 1 and run from `I:/TriAevum-public/ui-dependencies/bin`.
 | Raw-copy savestate restore A/B, live runtime | corrected (section 3.3) |
 | Control-run capture determinism | 5 of 5 captures byte-identical across runs |
 | Raw-copy cost attribution and readback fix (section 7.4) | 513 copies attributed per cause (`TRIAEVUM_RAW_COPY`): readback was 94% of copy time. In-band readback into cached staging takes 33.6 -> 4.36 ms per copy and the copy window from 6.95 to 1.83 ms/frame (two paired runs, 1.832/1.825), `execute` 12.50 -> 7.84 ms/frame; 10 PICA suites green, 12 flashback captures byte-identical, boot 5/5 hash-exact, file-select 6/6 identical to the agreeing qualified baselines, gameplay run unchanged with zero raw copies |
+| Raw-copy destination host-access watch (section 7.4) | `NativeA32Memory` range watch traps the translated destination on the checked path; `oot3d_native_a32_ctr_host_tests` proves identical values and per-origin counters. Revelation window: zero guest typed/byte accesses, 104,141 renderer pointer handouts; short run from `sheik-near-copy` reproduces it with 8,200 suppressed writeback spans as the live-trap control |
 | Title-neutral renderer boundary (section 3.4) | Gate reports 67 files title-neutral (was failing on two files at HEAD). After the relocation: flashback 12/12, boot 5/5, file-select 6/6 captures byte-identical to the qualified baselines; `pica_ui_canvas_tests` passes; `pica_lighting_gpu_tests` compiles against the moved builder; `oot3d_graphics_foundation_tests` 292 tests pass |
 | `oot3d_pica_scene_frame_tests` (section 3.4) | Built and executed for the first time (18 tests, all pass, including the frame-evidence test the composition-domain fix relies on) |
 | Actual F1 widget smoke after the script fix | 3,978 assertions passed (`run_f1_settings_smoke.ps1`, real renderer/Controls/TopScreen widgets) |
@@ -569,6 +570,25 @@ experiments:
   comparison is the copy window against itself. Verification after the change:
   captures byte-identical on 12 frames, boot 5/5 hash-exact, file-select 6/6
   identical to the three agreeing qualified baselines, 10 PICA suites green.
+- **D3/D4, executed.** The open question in section 7.5 step 3 - does the
+  translated title read the copy destination through host memory - is now
+  measured. `NativeA32Memory` gained an opt-in range watch: watched pages lose
+  their fast entry, so typed accesses from the title module (inlined against
+  that header, so also from the precompiled module) fall into the checked path
+  where they are counted, with identical bytes read and written and the fast
+  path untouched when no range is watched. Covered by
+  `oot3d_native_a32_ctr_host_tests`. First attempt returned a false zero because
+  the transfer names *physical* addresses while the memory object is indexed by
+  *guest* addresses; the watch now translates the span first. Revelation window
+  (3,500 frames, 513 copies): zero typed reads, zero typed writes, zero byte
+  reads, zero byte writes, and 104,141 live-pointer handouts, all from our own
+  PICA memory view - the sampler path phase B replaces. A 400-frame run from the
+  near-phase checkpoint reproduces it (164 copies, `pointer_reads` 33,291) and
+  adds `suppressed_byte_writes` 8,200, exactly the copy's writeback spans, as
+  the positive control that the trap was live. The generated title code never
+  asks for a pointer at all (311,191 `ReadFast`, 189,552 `WriteFast`, zero
+  `ReadBytes`/`GetReadPointer`/`GetWritePointer` in the product cache), so the
+  only untrappable case is a pointer handed out to the guest through a service.
 - **Where the floor is.** The residual ~4.4 ms per copy is the CPU-encode model
   itself: ~2.0 ms reading back roughly 7.4 MB of source per copy, ~1.1 ms of
   PICA encode, ~0.9 ms retiring overlapped textures. No further Phase A/C
@@ -604,6 +624,14 @@ report asks for, in this order:
 4. Verification: transfer/submission/bridge/savestate suites and the
    byte-exact tiling oracles stay green; the flashback captures must not regress;
    transfer submission time must drop from the recorded tens of seconds.
+   The host-read question that gates step 3 is now measured rather than assumed
+   (section 7.4 and `TRIAEVUM_GPU_COPY_PATH_PLAN.md` section 6): with an opt-in
+   range watch that traps the copy destination on the checked path, the
+   revelation window shows zero typed, byte or write accesses from the guest and
+   only our own sampler traffic reading it (`pointer_reads`), with the copy's own
+   writeback spans as the positive control that the trap was live. What remains
+   unobservable is the moment a live pointer is handed out, which is why that
+   event is what the counter records.
    Current state after the readback fix: ten PICA suites green
    (`transfer`, `vulkan_bridge`, `visual_savestate`, `semantic_trace`, `texture`,
    `composition`, `submission`, `vulkan_plan`, `azahar_capture`,
@@ -717,5 +745,8 @@ qualification. Ordered checks for the next Linux session:
 | `runtime/three_ds_recomp/tests/oot3d_pica_scene_frame_tests.cpp` | Declared uniform buffer covers the declared slices. |
 | `tools/renderer/tev_program/lighting_gpu_tests.cpp` | Explicit title-adapter include for the moved builder. |
 | `tools/triaevum_release/tests/run_f1_settings_smoke.ps1` | Links the configured archive directory from the build cache instead of stale build-tree copies. |
+| `tools/oot3d/native_game_runtime/oot3d_native_a32_memory.{h,cpp}` | Opt-in range watch: trapped pages lose their fast entry, per-origin counters, suppression for the renderer's own materialization. Inert when unused. |
+| `tools/oot3d/native_game_runtime/oot3d_native_a32_ctr_host_tests.cpp` | Proves the watch keeps values identical and counts typed, byte, pointer and suppressed traffic. |
+| `tools/oot3d/native_game_runtime/oot3d_native_a32_window.cpp` | Watches the translated raw-copy destination under extended diagnostics and prints `TRIAEVUM_RAW_COPY_HOST_ACCESS`. |
 | `tools/oot3d/operational_inputs.json` | Adds the paths found in this pass (generated translated code, savestates, structural scenario catalog, release corresponding source) as 22 entries and 10 variables, plus two probe commands and the known absence of a regenerated tree in the build; validated with `Test-Oot3dOperationalInputs.ps1`, no new failures. |
 | `docs/OOT3D_WORKSPACE_PATHS.md` | Narrative map of those paths, with the recipe for moving between situations (including the quiescent anchor the structural scenarios require) and the measured memory-access shape of the generated title code. |

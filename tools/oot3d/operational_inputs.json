@@ -913,6 +913,14 @@
       "purpose": "Scenario and diagnostic savestates (.oot3dsav) plus their JSON profiles: title, file select, Kokiri, HUD, Navi flight, ladder, interior gameplay."
     },
     {
+      "id": "sheik_near_copy_checkpoint",
+      "kind": "file",
+      "path": "${diagnosticsRoot}\\issues45-46\\sheik-near-copy\\checkpoint.oot3dsav",
+      "required": false,
+      "min_length": 1000000,
+      "purpose": "Revelation state captured 73 run frames before the first raw TextureCopy, so a 400-frame run reaches the phase (164 copies) in about 37 s instead of replaying 3,500 frames. Provenance and exact commands in the README next to it."
+    },
+    {
       "id": "issue_checkpoints",
       "kind": "directory",
       "path": "${diagnosticsRoot}\\issues45-46",
@@ -1119,6 +1127,11 @@
       "id": "verify_revelation_raw_copy_window",
       "working_directory": "${repoRoot}",
       "command": "python tools\\triaevum_release\\probe_renderer.py '${verifyInstallRoot}' '${verifyBinaryRoot}\\TriAevum.exe' I:\\_triaevum_work\\attr3 --native-fidelity --frames 3500 --seconds 400 --no-captures --extended-diagnostics --load-state '${diagnosticsRoot}\\issues45-46\\sheik-native-trigger\\checkpoint.oot3dsav' --input-timeline tools\\oot3d\\native_game_runtime\\input_timelines\\native_cutscene_dialogue_advance.json"
+    },
+    {
+      "id": "iterate_revelation_raw_copy_fast",
+      "working_directory": "${repoRoot}",
+      "command": "python tools\\triaevum_release\\probe_renderer.py '${verifyInstallRoot}' '${verifyBinaryRoot}\\TriAevum.exe' I:\\_triaevum_work\\near1 --native-fidelity --frames 400 --seconds 120 --no-captures --extended-diagnostics --load-state '${diagnosticsRoot}\\issues45-46\\sheik-near-copy\\checkpoint.oot3dsav' --input-timeline tools\\oot3d\\native_game_runtime\\input_timelines\\native_cutscene_dialogue_advance.json"
     },
     {
       "id": "verify_structural_scenario_run",

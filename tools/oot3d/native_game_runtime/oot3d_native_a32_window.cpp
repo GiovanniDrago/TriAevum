@@ -4022,6 +4022,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   std::map<uint32_t, Oot3dNativeGame::Oot3dPicaDisplayTransferSubmission>
       displayTransfersByOutput;
   uint64_t lastSubmittedDrawId = 0;
+  // Diagnostic: raw TextureCopy destinations watched for guest access while
+  // extended diagnostics are on. Empty otherwise, so normal runs are untouched.
+  std::vector<std::pair<uint32_t, uint32_t>> rawCopyWatchRanges;
   uint64_t lastSelectedTopTransferCompletionId = 0;
   const auto restoreSavestateTiming =
       [&](const Oot3dNativeGame::NativeA32SavestateRuntimeState &runtime) {
@@ -4403,6 +4406,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   api.SetPicaPhysicalMemoryAccess(
       [&](uint32_t address, std::span<uint8_t> bytes) { return picaMemoryView.Read(address, bytes); },
       [&](uint64_t, std::span<const Fast::Renderer3ds::PicaPhysicalMemoryWrite> writes) {
+        // The writeback is the renderer writing the copy itself, not a guest or
+        // service access; keep it out of the guest-access counters.
+        process.Memory().SetRangeWatchSuppressed(true);
         for (const auto& write : writes) {
           const auto address = picaMemoryView.Translate(write.Address, write.Bytes.size());
           if (!address || !process.Memory().IsWritable(*address, write.Bytes.size())) return false;
@@ -4411,6 +4417,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           const auto address = picaMemoryView.Translate(write.Address, write.Bytes.size());
           if (!process.Memory().WriteBytes(*address, write.Bytes)) return false;
         }
+        process.Memory().SetRangeWatchSuppressed(false);
         if (!hostServices.SignalPicaInterrupt(process.Memory(), Oot3dNativeGame::Oot3dPicaInterruptId::Ppf)) return false;
         ++completedPpfCount;
         ++recordedCompletionCount;
@@ -5787,6 +5794,48 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                       {"topscreen_frontend_backdrop_suppression_active",
                        suppressTopScreenFrontendBackdrop},
                   });
+                  if (transfer.Transfer.TextureCopyBytes != 0U) {
+                    // Same span the backend writes: byte count plus the per-row
+                    // gap, so every byte the copy materializes is inside the
+                    // watch. For a raw copy OutputSize carries the native
+                    // width/height pair in 16-byte units (see the bridge).
+                    const uint32_t copySize =
+                        transfer.Transfer.TextureCopyBytes & ~15U;
+                    const uint32_t copyGap =
+                        (transfer.Transfer.OutputSize >> 16U) * 16U;
+                    const uint32_t copyWidth =
+                        copyGap == 0U
+                            ? copySize
+                            : (transfer.Transfer.OutputSize & 0xFFFFU) * 16U;
+                    if (copySize != 0U && copyWidth != 0U) {
+                      const uint64_t copyEnd =
+                          uint64_t{transfer.OutputPhysicalAddress} + copySize +
+                          uint64_t{(copySize - 1U) / copyWidth} * copyGap;
+                      const auto copySpan = static_cast<size_t>(
+                          std::min<uint64_t>(copyEnd, uint64_t{1} << 32) -
+                          transfer.OutputPhysicalAddress);
+                      // The memory object is indexed by guest addresses: the
+                      // transfer names a physical destination, so it has to be
+                      // translated before anything can be trapped. A span that
+                      // does not translate is skipped rather than watched at the
+                      // wrong address.
+                      const auto watchGuest = picaMemoryView.Translate(
+                          transfer.OutputPhysicalAddress, copySpan);
+                      if (watchGuest.has_value()) {
+                        const std::pair<uint32_t, uint32_t> watched{
+                            *watchGuest,
+                            *watchGuest + static_cast<uint32_t>(copySpan)};
+                        if (std::find(rawCopyWatchRanges.begin(),
+                                      rawCopyWatchRanges.end(),
+                                      watched) == rawCopyWatchRanges.end()) {
+                          rawCopyWatchRanges.push_back(watched);
+                          process.Memory().SetRangeWatch(rawCopyWatchRanges);
+                        } else if (!process.Memory().RangeWatchActive()) {
+                          process.Memory().SetRangeWatch(rawCopyWatchRanges);
+                        }
+                      }
+                    }
+                  }
                 }
                 picaPresentationScheduler.Capture(transfer);
                 if (transfer.SignalInterrupt && transfer.Transfer.TextureCopyBytes == 0U) {
@@ -9081,6 +9130,24 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               {"fragment_misses", shaderSourceCache.FragmentMisses}}},
             {"authority", "oot3d_a32_process_pica_vulkan"},
         });
+  }
+
+  if (launch.ExtendedDiagnostics && process.Memory().RangeWatchActive()) {
+    const auto& watched = process.Memory().WatchCounters();
+    std::fprintf(
+        stderr,
+        "TRIAEVUM_RAW_COPY_HOST_ACCESS ranges=%zu typed_reads=%llu typed_writes=%llu "
+        "byte_reads=%llu pointer_reads=%llu byte_writes=%llu suppressed_byte_writes=%llu "
+        "first_read=0x%08X first_size=%u\n",
+        process.Memory().WatchedRangeCount(),
+        static_cast<unsigned long long>(watched.TypedReads),
+        static_cast<unsigned long long>(watched.TypedWrites),
+        static_cast<unsigned long long>(watched.ByteReads),
+        static_cast<unsigned long long>(watched.PointerReads),
+        static_cast<unsigned long long>(watched.ByteWrites),
+        static_cast<unsigned long long>(watched.SuppressedByteWrites),
+        watched.FirstReadAddress,
+        static_cast<unsigned>(watched.FirstReadSize));
   }
 
   if (launch.ScenarioStrict &&

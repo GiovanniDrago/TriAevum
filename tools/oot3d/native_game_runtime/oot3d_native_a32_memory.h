@@ -52,6 +52,50 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     uint32_t LastFastReadMismatchAddress() const noexcept;
     uint64_t LastFastReadMismatchValue() const noexcept;
     uint64_t LastCheckedReadMismatchValue() const noexcept;
+
+    // Diagnostic guest-access watch for a small number of address ranges
+    // (whole-AOT raw TextureCopy destinations, for example). Watched pages lose
+    // their fast entry, so typed accesses issued by the title module - compiled
+    // against this header, including the precompiled module - take the checked
+    // path, where they are counted. Reads and writes return and store exactly
+    // the same bytes, so enabling the watch never changes behaviour; with no
+    // range set the fast path is untouched and the branches below are a single
+    // predictable bool test.
+    struct RangeWatchCounters {
+        uint64_t TypedReads = 0;   // ReadFast/Read8..64 fallback
+        uint64_t TypedWrites = 0;  // WriteFast/Write8..64 fallback
+        uint64_t ByteReads = 0;    // ReadBytes
+        uint64_t PointerReads = 0; // GetReadPointer: a live pointer, invisible
+                                   // after it is handed out
+        uint64_t ByteWrites = 0;   // WriteBytes from a guest or a service
+        // The renderer's own materialization of the same bytes, kept apart so
+        // a run where nothing else touches the range still proves the trap is
+        // live (one writeback span per written row).
+        uint64_t SuppressedByteWrites = 0;
+        uint32_t FirstReadAddress = 0;
+        uint8_t FirstReadSize = 0;
+        bool FirstReadRecorded = false;
+    };
+    // Ranges are half-open [begin, end). Setting them rebuilds the page table
+    // only when the trapped pages change, so the same destination seen once per
+    // frame costs nothing after the first time.
+    void SetRangeWatch(std::span<const std::pair<uint32_t, uint32_t>> ranges);
+    void ClearRangeWatch();
+    [[nodiscard]] bool RangeWatchActive() const noexcept {
+        return mWatchActive;
+    }
+    [[nodiscard]] const RangeWatchCounters& WatchCounters() const noexcept {
+        return mWatchCounters;
+    }
+    [[nodiscard]] size_t WatchedRangeCount() const noexcept {
+        return mWatchRanges.size();
+    }
+    // The renderer materializes a raw copy into the same bytes it is watching,
+    // through the byte API; suppression keeps that self-traffic out of the
+    // guest-access counts without changing what is written.
+    void SetRangeWatchSuppressed(bool suppressed) noexcept {
+        mWatchSuppressed = suppressed;
+    }
     uint64_t ContentFingerprint() const noexcept;
     uint64_t StateFingerprint() const noexcept;
     nlohmann::json CaptureState() const;
@@ -121,6 +165,9 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
                        faultAddress)) {
             return false;
         }
+        if (Watches(address, sizeof(T))) [[unlikely]] {
+            NoteWatchedRead(address, static_cast<uint8_t>(sizeof(T)));
+        }
         *value = static_cast<T>(decoded);
         return true;
     }
@@ -151,8 +198,15 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
                 return true;
             }
         }
+        if (Watches(address, sizeof(T))) [[unlikely]] {
+            ++mWatchCounters.TypedWrites;
+        }
         return WriteSized(address, static_cast<uint8_t>(sizeof(T)), value,
                           faultAddress);
+    }
+
+    bool RangeWatched(uint32_t address, size_t size) const noexcept {
+        return Watches(address, size);
     }
 
     bool Read8(uint32_t address, uint8_t* value) override;
@@ -190,6 +244,27 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     Region* FindRegion(uint32_t address, size_t size);
     const Region* FindRegion(uint32_t address, size_t size) const;
     void RebuildPageTable();
+    [[nodiscard]] bool Watches(uint32_t address, size_t size) const noexcept {
+        if (!mWatchActive) {
+            return false;
+        }
+        const uint64_t end = static_cast<uint64_t>(address) + size;
+        for (const auto& range : mWatchRanges) {
+            if (static_cast<uint64_t>(address) < range.second &&
+                end > range.first) {
+                return true;
+            }
+        }
+        return false;
+    }
+    void NoteWatchedRead(uint32_t address, uint8_t size) const noexcept {
+        ++mWatchCounters.TypedReads;
+        if (!mWatchCounters.FirstReadRecorded) {
+            mWatchCounters.FirstReadRecorded = true;
+            mWatchCounters.FirstReadAddress = address;
+            mWatchCounters.FirstReadSize = size;
+        }
+    }
     bool ReadSized(uint32_t address, uint8_t size, uint64_t* value,
                    uint32_t* faultAddress) const;
     bool WriteSized(uint32_t address, uint8_t size, uint64_t value,
@@ -221,6 +296,12 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     mutable uint64_t mLastFastReadMismatchValue = 0;
     mutable uint64_t mLastCheckedReadMismatchValue = 0;
     std::vector<std::pair<uint32_t, size_t>> mPendingTracedPointerWrites;
+    // Diagnostic watch state. Empty and inactive in normal runs.
+    std::vector<std::pair<uint32_t, uint32_t>> mWatchRanges;
+    std::vector<size_t> mTrappedPages;
+    mutable RangeWatchCounters mWatchCounters;
+    bool mWatchActive = false;
+    bool mWatchSuppressed = false;
 };
 
 } // namespace Oot3dNativeGame
