@@ -48,6 +48,17 @@ Native ordered surfaces --------------> Native Frame Composer
 - **Extension Render Graph** owns declared dependencies, resource lifetimes, barriers and pass ordering.
 - **Native Frame Composer** preserves the original ordering of world, atmosphere, transparent content, display transfer and UI.
 
+Composition sequences (schema 3) declare `Presentation` or `NativeMemory`.
+The latter completes guest-visible raster/copy dependencies with canonical
+shaders, without temporal jitter, extension passes or publication into the
+extension scene view. It does not mutate the user's visual settings. Its target
+namespace and execution deduplication are separate from interpolated visual
+samples, which retain the complete ordered frame and its configured effects.
+Guest PPF completion must not wait for a host presentation or consume those
+retained plans. Completed prefixes survive save/restore without repeating guest
+writes; visual copies are recaptured for each host sample. Frontend UI composition
+belongs after canonical completion, not in guest-visible memory.
+
 ### Cross-Title 3DS Reuse Boundary
 
 The intended reuse boundary is specifically **other Nintendo 3DS games**. It is
@@ -235,8 +246,8 @@ historical measurements, not the current instrumented layout. See
 - The former non-native real-time-shadow implementation is not a compatibility baseline and may be replaced wholesale. It remains useful only as historical evidence for host integration points; its visual policy, receiver selection, resource model and private ownership must not be carried into the typed NRI path. Shadow acceptance is defined by typed PICA/decomp semantics plus framebuffer/validation evidence, not by preserving that implementation.
 - Validation exposed and fixed two native-composer ownership defects. Display copy now allocates immutable descriptor sets per invocation until command submission, rather than updating a set already bound by an earlier copy. Scanout now binds auxiliary images only for resources declared as reads by its compiled pass; inactive slots retain the valid primary image instead of silently binding attachment-layout guide images.
 - The reworked map uses exact typed PICA `ClipToWorld`/`ViewToWorld` transforms, including generated-shader viewport-Y and clip-Z conversion. Native lights are transformed to world space and clustered by direction; no duplicate register decoder or global draw-local light tuple remains.
-- The enhanced receiver policy is deliberately additive to the original presentation: dynamic skinned geometry casts, rigid ambient/baked world geometry receives, and native actor lighting is not re-shadowed. This preserves original vertex/material self-lighting while adding projected actor shadows to the level. The policy is based on decoded skeleton and lighting semantics, never scene, actor, shader or texture IDs.
-- Deterministic Kokiri validation over 180 frames executes 89 maps. A representative frame contains 19 skinned caster draws, 38 native light candidates in two world-space clusters, and 29 rigid baked receivers. The extensions-off/on RMSE is `0.00701319`; the difference is confined to ground projections beneath Link and the Kokiri rather than actor self-darkening or global level darkening. Vulkan/NRI validation remains clean. Artifacts use the `nativeview_v6` suffix under `I:/oot3dre_work/visual-parity/directional-shadow-rework-20260825/`.
+- Shadow caster eligibility includes rigid and skinned opaque perspective geometry with valid typed view transforms. The former skeleton-only gate excluded the static level and was removed; native receiver classification remains separate from caster eligibility. Native mode preserves its original receiver policy, while per-pixel/PBR lighting shadows the matching direct-light contribution on actors and static surfaces. Selection never uses scene, actor, shader or texture IDs.
+- Earlier `nativeview_v6` Kokiri validation covered projected actor shadows only: 180 frames executed 89 maps, with 19 skinned caster draws, 38 native light candidates in two world-space clusters, and 29 rigid baked receivers. Its extensions-off/on RMSE was `0.00701319`, with clean Vulkan/NRI validation. These historical artifacts remain under `I:/oot3dre_work/visual-parity/directional-shadow-rework-20260825/`; they are not evidence of static-world casting. The scene-environment verification below covers that correction.
 - `InteractiveGrass` is now the first closed `GeometryProvider`. Its compiled pass reads only the versioned `PicaSceneFrame` and `NativeSceneView`, writes and exports `ExtensionGeometry`, and schedules at `BeforeTransparent`. Source inspection, publication, execution, reuse, fallback and rejection are recorded in a fixed ledger; settings can no longer authorize grass when the compiled pass is absent.
 - Grass-only no longer requests fabricated normal/material/ambient guides. The graph therefore keeps the canonical one-color-attachment path, while grass+TAA selects the stable five-MRT ABI only because TAA declares material and rigid-motion guides. `InteractiveGrassPass` owns matching canonical/instrumented pipeline and fragment-shader variants, selected from `PicaAttachmentRequirements`; this fixed a validation error where the former fixed five-MRT grass pipeline was bound inside a one-attachment rendering scope.
 - The normal Kokiri path reaches the declared boundary directly. The display-transfer safety path now runs only for an eligible world/top-screen target that has not already attempted the declared insertion, rather than being invoked for every top/bottom transfer and reported as fallback work.
@@ -1703,6 +1714,591 @@ historical measurements, not the current instrumented layout. See
 - This is the closed restart point. The next renderer task may consume the typed
   caster contract but must not resume cross-title separation or shader-text
   mutation unless a new, explicitly scoped tranche is approved.
+
+### Native Per-Pixel Lighting and Material Packs (2026-09-23)
+
+- `Graphics.Effects.SurfaceLighting` has one F1 owner: **Lighting model** in
+  Lighting. Values are `Native` (default), `PerPixel`, and `PerPixelPBR`.
+  Missing capability or unsupported typed shader metadata leaves the native
+  path intact. PBR replaces toon lighting only on material-enabled draws;
+  geometric outlines remain independent.
+- The OOT3D adapter observes the lights actually accepted and assigned to the
+  native three CMB slots. Identity, world position, radius and unattenuated
+  point color travel with the draw. It does not select a different set of
+  lights or sum the scene into a fabricated global source. Interpolation
+  requires matching source kind and identity.
+- Shared typed vertex metadata supplies rigid/skinned normals and unlit tint.
+  Per-pixel lighting evaluates the selected native sources. PBR uses
+  GGX/Smith/Schlick in linear color space before native fog; native diffuse and
+  ambient material coefficients remain separate, including ambient-only
+  materials whose diffuse coefficient is zero. Native fragment-lighting
+  permutations and attenuation LUTs are retained where that path is used.
+- Native TEV alpha is evaluated with the original lighting, even when alpha
+  depends on RGB or `DOT3_RGBA`. Alpha tests, blending, depth/stencil, native
+  draw order, transfers and UI composition are not replaced. Shadow visibility
+  is applied to the matching selected direct-light slot, not ambient or
+  emission. Mapped normals, roughness and reflectivity feed existing AO and
+  reflection guides; the compiled graph continues to own pass order.
+
+#### Pack authoring
+
+Use the original Azahar texture hash, not a replacement image's pixel hash.
+The pack's existing `use_new_hash` and `flip_png_files` options also apply.
+Enable **Load custom textures**, select the pack directory in Texture packs,
+then select **Per-pixel + PBR** in Lighting.
+
+| File | Meaning |
+| --- | --- |
+| `HASH_n.png` | Tangent-space normal; linear data, default `+Y` |
+| `HASH_orm.png` | Linear R=occlusion, G=roughness, B=metallic |
+| `HASH_e.png` | Emissive color, decoded from sRGB |
+| `HASH.material.json` | Optional parameters and explicit map paths |
+
+`HASH` is hexadecimal. Use the short hash suffix names above, not
+`tex1_..._n.png`. Existing Azahar `tex1_....norm.png` and mapped
+`custom.norm.png` normal sidecars are also recognized and never indexed as
+albedo replacements. Base color still uses the bound native texture or its
+ordinary Azahar color replacement. Maps alone are sufficient; absent ORM
+defaults to roughness 1 and metallic 0, and absent emission defaults to zero.
+
+Example `0123456789ABCDEF.material.json`:
+
+```json
+{
+  "schema": "triaevum.pbr-material",
+  "version": 1,
+  "shading": "metallic_roughness",
+  "baseColor": { "source": "bound_texture", "factor": [1, 1, 1, 1] },
+  "normal": {
+    "texture": "0123456789ABCDEF_n.png",
+    "scale": 1,
+    "convention": "+Y"
+  },
+  "orm": {
+    "texture": "0123456789ABCDEF_orm.png",
+    "occlusionStrength": 1,
+    "roughnessFactor": 1,
+    "metallicFactor": 1
+  },
+  "emissive": {
+    "texture": "0123456789ABCDEF_e.png",
+    "factor": [1, 1, 1]
+  }
+}
+```
+
+Paths are relative to the JSON file and must remain inside the pack, including
+after symlink resolution. Unknown fields, unsupported versions, invalid PNGs
+and unresolved duplicate maps are errors. A section or its `texture` set to
+`null` disables suffix discovery for that role. Normal scale accepts 0–8;
+normal convention accepts `+Y` or `-Y`. Base and ORM factors accept 0–1;
+base alpha must remain 1. Emissive factors accept 0–65504.
+Optional `textureSlot` selects 0, 1 or 2 when native TEV uses multiple possible
+color samplers; without it, an unambiguous final-RGB sampler is required.
+Paint emissive coverage for the material's native blend mode: a uniformly
+emissive additive particle quad will also illuminate its otherwise black edges.
+
+The existing asynchronous pack worker owns indexing, JSON parsing and PNG
+decoding. **Reload custom textures** requests a new generation; the old valid
+material remains usable until its replacement is complete. CPU publication and
+GPU publication each commit a complete material bundle, including an optional
+color replacement. PBR uploads are row-sliced within the shared 32 MiB/frame
+budget; that bound does not remove the legacy color loader's existing first
+oversize-image exception. GPU images are reused by decoded content and old
+images retire behind the frame fence. F1 reports pending indexing and material
+errors rather than claiming that an asynchronous reload already succeeded.
+
+#### Live material controls
+
+Lighting also owns `Graphics.Effects.PBR`, shown only for **Per-pixel + PBR**:
+
+- **Normal strength** accepts 0–8 and multiplies the pack's normal scale.
+  Zero uses the geometric normal; 1 preserves the authored scale.
+- **Glossiness strength** accepts 0–2. Given authored roughness
+  `r = clamp(ORM.g * roughnessFactor, 0, 1)`, effective roughness is
+  `clamp(1 - (1 - r) * strength, 0.045, 1)`. Zero is matte, 1 preserves
+  the authored response, and values above 1 make the surface glossier.
+  Reflection strength remains owned by Reflections.
+- **Material view** selects **Shaded**, **Surface normals**, or **Roughness**.
+  Diagnostic RGB replaces the output of active PBR surfaces after native fog;
+  it is not a whole-screen filter. Alpha, depth/stencil, native blending/order
+  and UI composition remain native. Preview materials suppress their AO and
+  reflection response so those effects do not obscure the displayed data.
+- **Reset PBR controls** restores both strengths to 1 and the Shaded view.
+
+These are persistent live uniforms, not texture reloads or per-strength shader
+variants. PBR control changes invalidate temporal history while PBR is active.
+Old profiles without the optional PBR object retain neutral defaults. Normal
+maps cannot invent direct lighting on ambient-only or baked surfaces; use the
+normal view to distinguish a loaded map from a weak shaded response.
+
+The supplied `6CD66D0B74E16AEA` material was checked in six deterministic Kokiri
+GPU runs at guest frame 23339: normal view at strengths 0/1/4, roughness view
+at glossiness 0/1, and Shaded at 1/1. Each exited successfully and used a PBR
+pipeline. Normal 0→1 changed 280,590 framebuffer pixels, normal 1→4 changed
+302,492, and glossiness 0→1 changed 306,687. All six framebuffers were inspected;
+native-memory RGBA and compared alpha/depth/stencil attachments were identical.
+Evidence stays private under
+`I:/_triaevum_work/kokiri-material-6CD66D0B74E16AEA/controls/`.
+The rebuilt foundation and shader-pipeline suites passed 293/293 and 40/40;
+the shared-renderer boundary passed for 77 files. The real F1 widget fixture
+passed 4,200 assertions, including both live strengths, both diagnostic choices,
+reset and capability loss. GPU captures exercise the configured uniform values;
+the headless widget fixture separately exercises their live UI application.
+
+#### Verification and limits
+
+Kokiri Forest checkpoint `hud_minimap_visible_20260721.oot3dsav` was loaded for
+Native, Native with a maps-only pack, Per-pixel, PBR, and PBR with directional
+shadows/Hi-Z reflections. All five captures reached guest frame 23759 at
+1280×720. Native with and without the maps-only pack was byte-identical;
+native-memory RGBA and all compared alpha/depth/stencil attachments remained
+identical across modes. Live inventories recorded 28 per-pixel and 21 PBR
+pipeline variants. The first GPU capture exposed the ambient-only albedo bug;
+the corrected capture retains the terrain and wall textures.
+
+The private fixture contains 194 synthetic materials, not a distributable art
+pack. Captures, inventories, isolated launch profiles and comparison evidence
+remain under `I:/_triaevum_work/pbr-implementation/captures/`, outside public
+packages. This checkpoint exercised two real directional source identities
+and no selected point lights. Point transform/attenuation and native
+fragment-lighting/LUT variants were probed separately; their presence in this
+Kokiri GPU run is not claimed. GPU allocation failure was not induced.
+The ten generated vertex/fragment variants compiled and passed SPIR-V
+validation. Foundation tests passed 293/293, shader-pipeline tests 40/40,
+the shared renderer boundary passed for 77 files, and the actual F1 widget
+smoke passed 4,083 assertions.
+Pipeline-manifest serialization and prewarm filtering also passed 8/8 tests.
+
+#### Uniform arena catch-up lifetime
+
+A real-time Kokiri session exposed `native PICA per-frame uniform arena
+exhausted` after framebuffer readback: multiple catch-up refreshes share one
+submitted frame and can exceed the original 4 MiB arena. The backend now grows
+only when needed, reserving every aligned uniform block of a draw together
+before uploading any block. Previously recorded buffers remain alive until
+the owning frame fence completes; their contents are not copied or overwritten.
+Legacy texture-descriptor caches are cleared on rollover because their keys
+implicitly reference the active uniform buffer. NRI's existing capacity-change
+fallback preserves bindings already recorded against its earlier upload arena.
+
+The rebuilt runtime completed the real-time reproduction for 45 seconds:
+1,530 presentations, 594 batched presentations and 21 framebuffer captures
+through presentation 1,500, with no arena-exhaustion or scheduled-presentation
+failure. The final framebuffer was inspected. The private reproduction profile
+and evidence are in
+`I:/_triaevum_work/kokiri-material-6CD66D0B74E16AEA/realtime-probe/`;
+this GPU smoke requires the external title/checkpoint and is not a standalone
+unit test.
+
+### Optional Scene Environment Profiles (2026-09-23)
+
+`oot3d_scene_environment` owns authored lighting profiles in the OOT3D adapter.
+The key is the native scene ID read from `PlayState + 0x104`, not a room,
+texture hash, actor, or renderer-generated identifier. Kokiri Forest is scene
+`0x0055`, associated with `spot04_info.zsi`; all its rooms share one profile.
+No ZSI, native asset, translated title logic, or canonical shader is modified.
+
+Profiles live beside the global graphics configuration:
+`environments/scene-XXXX.environment.json`, with a four-digit uppercase
+hexadecimal scene ID. The minimal complete schema is:
+
+```json
+{
+  "schema": "triaevum.scene-environment",
+  "version": 3,
+  "sceneId": 85,
+  "enabled": true,
+  "nativeDirectStrength": 0.0,
+  "nativeLocalStrength": 0.0,
+  "nativeAmbientStrength": 0.0,
+  "ambientColor": [1.0, 1.0, 1.0],
+  "ambientIntensity": 0.12,
+  "fogStrength": 0.35,
+  "directionalLights": [
+    {"azimuth": 45.0, "elevation": 35.0, "color": [1.0, 0.96, 0.9], "intensity": 1.0},
+    {"azimuth": -135.0, "elevation": 30.0, "color": [0.75, 0.85, 1.0], "intensity": 0.0}
+  ],
+  "pointLights": [
+    {"enabled": true, "intensity": 1.0, "radiusScale": 1.0, "colorTint": [1.0, 1.0, 1.0]},
+    {"enabled": true, "intensity": 1.0, "radiusScale": 1.0, "colorTint": [1.0, 1.0, 1.0]}
+  ]
+}
+```
+
+Ambient is uniform and has no direction. The first directional light is the
+shadow-casting key; the second is an unshadowed fill. Directions point toward
+the source in OOT3D's Y-up world: azimuth 0 is +Z, 90 is +X, and elevation 90
+is overhead. The adapter resolves these angles before publishing the shared
+`PicaEnvironmentLighting` value. Colors accept 0–1, native contribution and
+ambient intensity 0–2, light intensity 0–4, and fog contribution 0–1.
+Angles accept azimuth -180–180 and elevation -90–90 degrees.
+The two point-light groups are Navi, then other fairies. Each has an independent
+enable, intensity multiplier 0–8, radius multiplier 0.1–8 and linear RGB tint
+0–1. They remain editable and effective without the ambient/directional override.
+Version 1 profiles remain readable and acquire the default point-light groups.
+Version 3 separates the scene-wide native directional gain (`nativeDirectStrength`)
+from other native per-draw direct sources (`nativeLocalStrength`). Versions 1 and
+2 initialize both from their old direct gain; explicit saves write version 3.
+No existing file is rewritten merely by loading it.
+
+
+F1 **Environment** is the sole owner of these controls and file operations.
+Edits preview immediately; **Save scene environment** writes atomically.
+Unsaved edits are discarded on scene change, with an explicit UI warning.
+**Reload scene environment** reads manual file edits; there is no file poller.
+Missing profiles use the native environment. An invalid new scene profile
+cannot inherit the previous scene's light; failed same-scene reloads retain
+the last good preview and display the error. Files are limited to 64 KiB and
+must match the schema, version, scene identity, finite ranges and versioned
+light layout. **Use native environment** remains available after capability loss;
+save that disabled state to persist it.
+
+The renderer consumes only the effective snapshot. Native lighting mode,
+Authentic and F2 bypass authored lighting without erasing the saved profile.
+The lighting model and normal/gloss controls belong to F1 **Lighting**.
+Directional-shadow quality belongs only to **Environment**, with global
+automatic persistence separate from scene-profile saves.
+Per-pixel lighting uses authored diffuse illumination;
+PBR uses the normal map and GGX. Both paths retain native material reflectance:
+authored ambient uses the material ambient coefficient, and authored direct
+uses diffuse, or ambient reflectance for an entirely ambient-only material.
+Thus those materials still receive directional light without whitening lit
+materials or losing black diffuse channels. Painted lighting in albedo remains.
+Fog contribution scales the native fog blend; it does not invent a fog color.
+The optional graph still owns map scheduling/resources and scene/UI separation.
+Caster admission covers opaque, depth-writing, non-alpha-tested perspective
+geometry; alpha-cutout and transparent caster support is not claimed.
+
+Eleven deterministic Kokiri captures at guest frame 23399 passed. Disabled
+profiles with different parameters were byte-identical; Native mode with the
+profile enabled/disabled was also byte-identical. In Shaded mode, normal 0→1
+changed 120,016 pixels and 1→4 changed 207,199. Changing key direction,
+ambient-only and fill-only lighting each changed the expected scene output.
+After removing the skeleton-only gate, shadows changed 50,022 pixels,
+including 6,756 on the far static wall, versus zero there before the fix.
+Native-memory RGBA and compared alpha/depth/stencil attachments stayed exact.
+The owning caster regression failed before the fix and all 18 scene-frame
+tests passed afterward. Foundation and pipeline suites passed 293/293 and
+40/40; the shared-renderer boundary covered 78 files. Captures and structural
+comparison evidence remain private under `I:/_triaevum_work/scene-environment/`.
+
+Inactive profiles collapse to one neutral rendering snapshot: editing their
+stored values cannot reset TAA or shadow histories. The actual-widget fixture
+passes 4,516 assertions, including this invariant and persistence failures.
+Two further GPU runs exercise the user's combined CACAO/Hi-Z/PBR/shadow
+settings and an effects-off baseline at matching 1920×1080 output extent;
+native-memory RGBA and compared alpha/depth/stencil remain identical.
+
+#### World-fixed lighting under camera movement
+
+Native CMB matrix-chain labels do not establish world-space ownership. The
+captured Kokiri program uploads identity to its post-palette `view` rows;
+camera transforms are already folded into the model/bone matrices. Treating
+those rows as the camera made authored lighting camera-relative.
+
+Reconstructing a separate camera from the latest PlayState eye/at was also
+insufficient: that camera can belong to a newer simulation step than the
+geometry being replayed. The failed approach showed approximately 6.5 degrees
+of light-direction drift on the same static surfaces during movement.
+
+The OOT3D adapter now captures the native world-to-view and post-view matrices
+at command-packet submission, using the same native producers as CMB geometry
+and light preparation. Their composed column-major transform belongs to the
+immutable `PicaNativeLightBinding.WorldToView`, including atmospheric draw
+provenance without changing native light selection. No guest addresses enter
+the shared renderer, and no scene/asset-specific anchors are inferred.
+
+Visual sampling interpolates this transform with the same alpha as the
+geometry uniforms. Replay format PVRG preserves it; older replay formats have
+no fabricated replacement and acquire it when new native commands arrive.
+Authored key/fill directions, point positions, shadow receivers and each caster
+use the transform paired with their own draw, never `LatestPerspective()`.
+Shadow replay retains native vertex inputs and culling while projecting onto
+world-fixed virtual pages, not a camera-fitted shadow frustum. Missing transform
+data fails closed rather than consulting a live camera or treating a model/bone
+palette as a world basis.
+
+Resolved draw-stream schema 3 carries the captured transform and shadow-caster
+bounds/content identity to replay.
+Perspective payload schema 3 removes the obsolete reconstructed `WorldToView`;
+the separate eye/at perspective capability remains available to its existing
+consumers. Environment files need no migration; the VSM settings migration is
+described below.
+
+Regression coverage exercises immutable native packets after camera changes,
+non-commuting post-view transforms, geometry/light agreement at interpolation
+endpoints and midpoint, and replay persistence. The earlier directional-light
+and shadow-matching tests remain in place.
+
+Six deterministic GPU runs cover stationary Link, walking/turning and a
+free-camera orbit, with the authored environment off and on. On 25 matched
+static geometries across 10,419 observed draw samples, maximum world-direction
+delta falls from `0.11411135` to `9.46e-8` (less than `0.00001` degrees).
+Captured transforms also reconstruct the same static world anchors for shadow
+receivers/casters. Native-memory RGBA and compared alpha/depth/stencil remain
+identical; all three disabled-profile framebuffer captures exactly match the
+previous binary. These are renderer captures and geometry-relative diagnostics,
+not Windows screenshots or a test against a separately reconstructed camera.
+Private evidence: `I:/_triaevum_work/environment-geometry-anchor/verification.json`
+and its `verified` / `verified-off` captures.
+
+#### Material reflectance and amplified shadow strength
+
+The authored profile initially replaced material response with unit reflectance.
+Captured actor materials use diffuse `127/255`, ambient `0.4`, and a native
+TEV RGB gain of 2. Removing their coefficients while retaining TEV overexposed
+them. `BuildPicaSurfaceLightingUniforms` now weights authored radiance by those
+coefficients once, shared by per-pixel and PBR paths. For zero RGB diffuse,
+the material's ambient reflectance supplies the new direct response; this is
+material semantics, not an actor, texture, or scene exception.
+
+F1 Environment **Shadow strength** accepts 0–4x through validation, persistence,
+shadow planning, receiver packing and the shader. Visibility is
+`max(0, 1 - coverage * strength * directFraction)`. Values above 1 amplify
+partial occlusion, never negative light; already extinguished direct light
+cannot darken further. Existing values through 1 retain their response.
+The shadow variant key advances to V3; canonical shader keys are unchanged.
+
+The material regression fails before the fix and passes afterward, covering
+reduced/colored reflectance, black channels and ambient-only surfaces.
+Six deterministic GPU runs at guest frame 23399 use the current user's frozen
+Kokiri settings: before/after with the environment on/off, then shadow strength
+0 and 4. The compared static wall is byte-identical; 70,957 changed pixels in
+the Link region have mean display luma 116.47 before and 58.92 after.
+Strength 0 vs 1 changes 92,524 pixels; 1 vs 4 changes 96,343, with decreasing
+mean brightness. Disabled-profile framebuffers are identical.
+Native-dependency namespace 1 RGBA and both namespaces' alpha/depth/stencil
+remain exact. Captures and `verification.json` stay private under
+`I:/_triaevum_work/actor-light-shadow/`.
+
+Pipeline, graphics foundation/persistence and scene-frame suites pass
+42/293/18 tests. The real F1 widget fixture passes 4,593 assertions, including
+live 4x and zero strength plus capability-safe Off; the shared-renderer boundary
+passes for 78 files. No user setting or environment profile is reset.
+
+### Paged Virtual Shadow Maps
+
+Directional shadows are exclusive to **Per-pixel** and **Per-pixel + PBR**.
+The stored preference survives Native lighting and the F2 native override, but
+their effective snapshots disable shadow execution and receiver instrumentation.
+There is no baked/native-lighting multiplier or single-cascade renderer fallback.
+The sole F1 surface is **Environment > Directional shadows**; Off remains
+selectable when lighting or renderer capabilities cannot support VSM.
+
+The shared `renderer3ds/virtual_shadow_map` owns world-fixed page keys and
+residency. Up to ten 8x8 clipmap grids start at half-unit virtual texels and
+double scale with distance, covering up to 65,536 native world units. Camera
+rotation does not refit the projection; translation scrolls integer page keys.
+Float32 view/inverse-view light-direction roundoff does not reset the cache.
+Real light changes and incompatible layouts invalidate it.
+
+A persistent D32 atlas has 2048/4096 extents (16/64 MiB), with 128-texel pages
+and three-texel resident PCF borders. Residency reserves coarse fallback,
+prioritizes the receiver LOD rings and their blend regions from near to far,
+then spends remaining capacity on additional pages. Surviving selected pages
+are protected before eviction/allocation. Under pressure, missing fine pages
+fall back to resident coarser levels; the smaller budget can reduce distant
+detail. Empty geometric pages require no physical allocation.
+
+Typed CPU caster bounds use the same captured view transform, packed attributes,
+fixed/per-instance inputs, position scale and skeleton palette as native replay.
+Rigid geometry/pose/raster identities permit reuse; unproven animated content
+invalidates its intersected pages. Movement/removal invalidates old footprints
+as well as new ones. Failed recording cannot commit a dirty page as valid.
+Caster admission remains opaque, depth-writing, non-alpha-tested native scene
+geometry; transparent and alpha-cutout caster support is not claimed.
+
+The compiled graph declares history reads and the AfterOpaque map output and
+owns both image transitions. Early receivers consume prior history; the queued
+map update preserves native draw order. Rasterization loads the existing atlas,
+clears only dirty tiles and replays overlapping casters in their native order.
+The per-draw page table is immutable. Receivers use 1/4/9 gather operations for
+PCF radii 0/1/2 and a narrow continuous LOD transition. NRI's bottom-left
+viewport flag produces positive Vulkan viewport height: physical Y must not
+be mirrored. Scene/UI composition and canonical shaders remain unchanged.
+
+Graphics settings schema 12 migrates legacy `SingleCascade` to
+`VirtualShadowMaps`, retaining Off, strength, PCF and bias choices. Atlas budgets
+below 2048 become 2048. The old camera-fitted distance is replaced by the
+65,536-unit VSM range; obsolete `DepthPadding` and `Stabilize` fields are removed.
+Scene-environment files keep their existing schema and ownership.
+
+Verification uses the frozen Kokiri checkpoint on RTX 3060 at 2560x1440,
+Original30, atlas 4096, PCF 2 and strength 2. Across 238 steady samples, GPU mean
+falls from **14.514 to 13.339 ms** (8.1%), GPU p95 from **15.439 to 13.984 ms**,
+and CPU mean from **29.923 to 28.181 ms**. The corrected moving-camera run
+averages **13.342 ms GPU**, with 24–62 dirty pages and at least 306 reused pages
+per measured frame; no global residency reset or unmapped page occurs at 4096.
+The 2048 run averages 13.319 ms GPU and reuses about 96% of its 225 resident
+pages. These are scene-specific measurements, not a cross-device guarantee.
+
+The final cleaned-binary repeat produces a byte-identical framebuffer and
+identical page counters, but measures **14.088 ms GPU mean** (2.9% below the
+baseline), **15.625 ms GPU p95** and **30.841 ms CPU mean**. Timing variation
+therefore precludes claiming a uniform 8.1% gain, a CPU improvement, or a
+tail-latency improvement. `clean-verification.json` records the final executable
+hash, all targeted regression results and the repeated Native/PerPixel checks.
+
+A 30-frame renderer capture sequence verifies camera-relative motion without
+world-shadow jumps or mirrored-page bands. Native lighting with the stored
+shadow preference On/Off yields byte-identical framebuffers and zero shadow
+passes/atlas allocation. Structural diagnostics report zero failed passes,
+missing reads and Vulkan/NRI validation errors. Cache-versus-full-redraw at
+2048 differs on 178 of 3,686,400 pixels, maximum 9/255; the conservative rigid
+pose quantization is therefore not claimed to be byte-exact.
+CPU regressions cover fixed skinned inputs, world-page retention, uncommitted
+updates and near/far coverage under physical exhaustion. Actual F1 widget smoke
+passes 4,676 assertions. Private evidence:
+`I:/_triaevum_work/virtual-shadow-maps/accepted-verification.json`.
+Earlier captures preceding `corrected-still` are diagnostic iterations, not
+visual acceptance evidence; the old `baseline-orbit` was stationary.
+
+## Per-pixel actor lighting and native UI boundaries (2026-09-24)
+
+- Native projected actor shadows are a typed composition role, not a texture,
+  blend-state or scene heuristic. The OOT3D adapter identifies the native blob
+  and both foot-model producers at model queue submission. Presentation omits
+  that role only in Per-pixel and Per-pixel + PBR. Native, Authentic, F2 and
+  native-memory execution retain their canonical draws. The player's separate
+  mirrored-model route is not classified as a blob shadow.
+- Navi and fairy lights come from immutable native-frame snapshots, with stable
+  source identities and a maximum of 32 records. The adapter rebuilds ownership
+  from the live actor lists and native LightNodes after restore; stale or recycled
+  nodes cannot inherit a fairy role. Renderer code contains no title addresses.
+  Active native light records retain their position, color and radius.
+  NPC fairies with dormant native records instead use the live `En_Elf` glow's
+  world position, inner color and opacity, subject to its native visibility gates.
+  Their title-owned default reach is 100 world units, scaled by Environment.
+- Both per-pixel models remove the corresponding selected native vertex-light
+  direct terms even when a point group is Off, preserving the independent native
+  ambient term. They evaluate the replacement points per fragment in
+  world-distance units; PBR uses its GGX response. Group controls do not depend
+  on enabling authored ambient/directional lighting. Replay V18 retains the
+  snapshots and shadow role; V17 and V16 remain readable. Visual sampling
+  interpolates matching source identities without inventing emitter lifetimes.
+- Surface normals transform each authored normal by each bone's inverse
+  transpose before applying native weights, then transform to view space.
+  Inverting the blended bone matrix caused singularities during animation.
+  An unavailable surface direction stays zero rather than reading a stale
+  native temporary. Positions, UVs, alpha and authored hard edges are unchanged.
+- A restored shader may first enter the cache through legacy source inference.
+  A later valid typed frontend contract supersedes that inference after checking
+  the native output interface. Its new identity rebuilds derived variants while
+  retaining variants referenced by recorded draws. Without this promotion,
+  per-pixel requests could silently keep the native vertex-lighting shader.
+- A mixed opaque/transparent scene can still have a truthful completion boundary:
+  a scene-only prefix followed exclusively by native UI on the same target.
+  The schedule publishes that `BeforeUi` anchor without fabricating an
+  `AfterOpaque` anchor or changing native order. Interleaved UI followed by more
+  scene draws has no such boundary. Once UI is consumed, the target is no longer
+  an eligible unresolved scene input.
+- At that anchor, the compiled scene graph resolves into its declared output.
+  The native UI consumer commits it by an exact, initialized, same-extent NRI
+  image copy. Offscreen composition retains storage orientation; physical
+  scanout alone applies display-transfer flips. Native UI writes preserve the
+  resolved-scene provenance and its auxiliary bindings, so presentation does
+  not run AO again over the HUD.
+- Native PICA descriptor storage grows in reusable per-frame pool blocks.
+  Growth preserves previously recorded sets rather than failing at a fixed
+  draw count. A 431-draw native capture with 64-set initial blocks completed
+  without binding errors and matched the 512-set control framebuffer exactly.
+
+Verification uses the user's static fairy checkpoint without gameplay input.
+The final shadow trace identifies five projected-shadow draws; their removal
+is visible in both per-pixel modes, while Native remains byte-identical.
+With authored/native illumination off, the actors are dark; Navi-only,
+fairy-only and combined settings produce distinct local illumination.
+GPU regressions cover animated normals and independent point-light contributions.
+Private evidence is under `I:/_triaevum_work/surface-lighting/`; no save, capture
+or extracted title data belongs in a public package.
+
+## Scene-wide native environment lighting (2026-09-24)
+
+The two native environment directionals are explicit scene sources in Per-pixel
+and Per-pixel + PBR, not multipliers on whichever lights an actor selected.
+The EUR adapter derives their ownership from `Gameplay_Init` at
+`00449218..00449228` and `Environment_Init` at `0044FF38`: the environment is
+`PlayState + 3190`, with `LightInfo` records at `+2C` and `+44`.
+Only records still linked through that PlayState's `LightContext` are accepted.
+Directions are signed bytes pointing toward the source; native CMB assignment
+negates and divides by 127 at `0035BDF8..0035BEE4`. Colors come from the live
+records, including native environment updates, never static scene-file guesses.
+
+Immutable directional snapshots are independent of moving fairy snapshots.
+The captured world/view transform accompanies geometry, replay and interpolation.
+Replay V18 deduplicates both snapshot types; sampling pairs source identities
+rather than selected slot numbers. Resolved draw-stream schema 5 retains the
+scene directions for shadow selection.
+
+Both native directionals illuminate eligible world and actor surfaces. Matching
+selected native direct terms are removed by source identity, without discarding
+the shared native ambient term. Other native lights retain their per-draw
+assignment and native lighting-enable contract. Ambient-only materials use their
+authored ambient reflectance for new direct illumination, as with authored key/fill
+and fairy points. Native, Authentic, F2 and native-memory rendering remain canonical.
+
+F1 **Native scene direct contribution** controls these two native directions;
+**Native local contribution** controls the remaining native per-draw direct
+terms. Added key/fill, ambient and the two fairy groups keep their existing
+independent controls. With no authored override, native scene/local gains are one.
+An active authored key owns the single shadow map; otherwise the brightest valid
+native environment source is selected without averaging opposing directions or
+weighting by actor geometry. Existing graph-anchor restrictions still apply:
+this does not manufacture an `AfterOpaque` boundary in a mixed target.
+
+Static framebuffer probes at the private fairy checkpoint verify changes on
+terrain, tree, Link and Saria in both per-pixel modes. Added key, Navi and other
+fairies remain independently observable; 311 opaque heart pixels are unchanged.
+Native direct-on and direct-off captures both match the pre-change framebuffer
+SHA-256 `e568d7e93b126720171e13202f1aec9b805b97adf2a3e3ef37fc235db074dfe0`.
+Fifteen GPU lighting cases cover opposite directions, simultaneous scene/local
+gains, source deduplication, preserved ambient and stale slots on unlit materials.
+The actual F1 widgets pass 5,077 assertions, including version 1/2 migration
+without rewriting files. Native capture, replay, interpolation, 19 scene-frame,
+41 shader-cache, 292 foundation and 47 graph tests pass. No graph pass failed or
+remained unresolved in the bounded captures. Evidence is private under
+`I:/_triaevum_work/native-scene-lighting/`; no gameplay input was injected.
+
+### Selected-tree commit qualification
+
+The lighting and canonical-copy closure was also exported from the Git index and
+built independently, excluding the unrelated AO, grass, audio and AOT memory-region
+changes. This selected Windows tree passes 294 foundation, 47 graph, 41 shader-cache,
+19 scene-frame and 8 pipeline-manifest tests, plus the native host/memory,
+composition, submission, semantic-trace, bridge, plan, visual-savestate,
+savestate and Native-policy executables. The real F1 widgets pass 4,807 assertions.
+The product-only configuration lacks `oot3d_native_runtime_host.lib` required by
+the aggregate native-game test target; its affected scene-view tests pass through
+a focused runner linked to the same built objects. No global-suite pass is claimed.
+The rebuilt synthetic title DLL passes all eight ABI checks, including compiled
+deferred reads and repeated same-value writes. The staged GPU probes pass 15
+lighting cases, nine normal cases and 61,440 copy pixels; all 57 selected built-in
+shader artifacts match their sources.
+
+Independent grass changes produce different placement counts, so the cross-tree
+framebuffer comparison disables grass only in private verification profiles.
+Native output is byte-identical between the verified full-tree executable and
+the selected-tree executable, and between scene-direct Off and On:
+`f356543d2893028f68cfc8bd1eb24159643ba516799bf205c1e00d75dffe0859`.
+Both per-pixel models change terrain, tree, Link and Saria while preserving the
+sampled opaque heart interiors. All seven bounded runs complete without failed,
+unresolved or missing-read graph work. Receipts, invocations, hashes and captures
+remain private under `native-scene-lighting/staged-*-proof`; user profiles,
+checkpoints and public packages are unchanged.
+
+The private native-copy checkpoint also passes 180 fixed-delta frames in Native,
+Per-pixel and Per-pixel+PBR with Toon/outline retained. Each run records 108
+deferred copies, 216 GPU bindings, one final materialization and zero prefix
+waits. Vulkan and NRI validation are enabled: zero errors, zero NRI warnings,
+11 unsuppressed Vulkan warnings. This smoke first exposed missing scanout guide
+transitions and descriptor mutation across repeated composite invocations;
+the graph-declared reads now always receive their barriers, and each composite
+invocation retains its own descriptor set until the frame slot can be reused.
+Guest memory content, memory state and process fingerprints match across all
+three models (`12296319316116986855`, `539994612170039003`,
+`3145733879543920988`). Evidence is in `staged-copy*-proof` and
+`copy-memory-proof.json`; the failed reproduction remains in `staged-copy-before`.
 
 ## Acceptance Gates
 

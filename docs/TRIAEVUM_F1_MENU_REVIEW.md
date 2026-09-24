@@ -1,5 +1,52 @@
 # F1 settings rationalization
 
+Directional shadows now live only in **Environment**, above the per-scene
+profile controls, and offer **Off / Virtual Shadow Maps**. They are active only
+with **Per-pixel** or **Per-pixel + PBR** selected in Lighting. Native lighting
+disables VSM selection with an explicit reason but keeps Off usable; switching
+lighting or using F2 does not erase the saved preference.
+
+The global controls are **Shadow atlas budget** (2048/16 MiB or 4096/64 MiB),
+distance (50–65,536 native world units), strength (0–4x), PCF radius (0–2),
+and advanced constant/slope bias. Stabilization is inherent to world-fixed
+virtual pages, not a toggle. These settings save automatically and are not
+part of **Save scene environment**. Schema 12 migrates the old single-cascade
+choice and removes its depth-padding/stabilization fields. Actual-widget smoke
+passes **4,676 assertions**, covering gating, persistence, capability-safe Off
+and F2 restoration. The NRI architecture document records GPU/camera evidence.
+
+2026-09-23 amplified directional shadows: Lighting **Shadow strength** now
+accepts **0–4x**, including persistence, cascade planning and GPU receiver
+evaluation. Above 1x amplifies partial occlusion; visibility saturates at zero
+instead of producing negative light. The tooltip describes that limit.
+The real-widget fixture passes **4,593 assertions**, including live 4x/zero
+and capability-safe Off. Deterministic Kokiri captures verify distinct 0/1/4x
+output while preserving native-dependency color and alpha/depth/stencil.
+Existing values and the separate Toon shadow-tint control are unchanged.
+
+2026-09-23 surface lighting: Lighting owns the persistent **Lighting model**
+selector (**Native**, **Per-pixel**, **Per-pixel + PBR**). Native stays available
+when the renderer capability is missing; unsupported choices are disabled and
+capability loss normalizes the active mode. Texture packs retains the sole
+folder/load/reload controls, now with material counts, pending indexing and
+explicit asynchronous errors. Actual-widget smoke passes 4,083 assertions,
+including all three selections and capability loss. The Kokiri GPU captures
+and material format are documented in
+[`OOT3D_NRI_FIDELITY_EXTENSION_ARCHITECTURE.md`](OOT3D_NRI_FIDELITY_EXTENSION_ARCHITECTURE.md#native-per-pixel-lighting-and-material-packs-2026-09-23).
+
+2026-09-23 live PBR controls: Lighting additionally owns **Normal strength**
+(0–8×), **Glossiness strength** (0–2×), **Material view** (Shaded / Surface
+normals / Roughness), and **Reset PBR controls**, visible under Per-pixel + PBR.
+Both strengths default to 1; zero disables mapped-normal perturbation or makes
+the material matte, respectively. Changes persist and update live uniforms
+without reloading textures. Reflection intensity keeps its existing owner.
+Diagnostic views affect active PBR surfaces, not HUD or menu composition.
+Actual-widget smoke now passes **4,200 assertions**, covering both sliders,
+both diagnostic selections and reset. Separate deterministic GPU captures prove
+normal strengths 0/1/4 and glossiness 0/1 change material output without changing
+native-memory RGBA or compared alpha/depth/stencil attachments. The architecture
+document above records the formula, captures and ambient-only lighting limit.
+
 2026-09-17 camera/motion separation: free camera offers only disabled, digital
 look, mouse, right stick and automatic. Sensor sources and their camera-only
 sensitivity are removed; aiming keeps its sensor controls. Legacy motion-camera
@@ -187,8 +234,9 @@ It uses a private ImGui build with assertions and item hooks, synthetic ImGui
 mouse events, and memory-only configuration. It requires neither a ROM nor a GPU.
 Its cached ImGui objects avoid recompiling the test framework on every iteration.
 
-Coverage: preset selection; capability loss and Off; CACAO quality; reflection,
-MSAA and upscaler selectors; toon-profile preservation; every top-level and nested
+Coverage: preset selection; capability loss and Off; CACAO quality; surface
+lighting/PBR and independent Navi/fairy controls; reflection, MSAA and upscaler
+selectors; toon-profile preservation; every top-level and nested
 tab; application preview and external-revision reconciliation; display confirmation
 from Grass; compact panel footers; deferred persistence and save failure/retry.
 The test also checks balanced UI scopes and finite geometry on every UI frame.
@@ -329,3 +377,60 @@ under Nearby toon rim. Distances use meters in the UI and world units in storage
 disabled rim disables its distance widgets. The real-widget smoke edits start
 to 3 m and end to 12 m, checks 300/1200 world units, and toggles off/on. Global
 toon rim strength/color remain shared rather than duplicated in Grass settings.
+
+## Scene Environment (2026-09-23)
+
+F1 **Environment** owns the current native scene's authored lighting profile.
+It displays the scene ID and file path, and edits ambient color/intensity,
+native scene/local/ambient contribution, native fog contribution, and added
+key/fill color, intensity, azimuth and elevation. **Native scene direct
+contribution** uses both live native environment directions on world and actors.
+**Native local contribution** retains other native per-draw assignments.
+Neither controls the added key/fill or fairy groups. Ambient has no direction.
+An active added key casts shadows; otherwise the dominant native environment
+direction is eligible. Added fill is unshadowed. Lighting model and normal/gloss controls
+remain exclusively in **Lighting**. Global shadow quality belongs exclusively
+to the **Directional shadows** section of **Environment**.
+The **Navi and fairy point lights** controls expose separate enable, intensity,
+radius scale and color tint for Navi and other fairies. They remain independent
+of the ambient/directional profile's enabled state. Switching a group Off
+also removes its old native vertex-light direct contribution in both per-pixel
+models, without removing the independent native ambient term. It does not
+silently fall back to the original vertex light.
+
+
+Profiles use `environments/scene-XXXX.environment.json` beside the global
+graphics configuration. Kokiri is `scene-0055.environment.json`, shared by all
+rooms associated with `spot04_info.zsi`. No native ZSI is rewritten.
+Version 3 separates `nativeLocalStrength` from the scene-wide
+`nativeDirectStrength`. Versions 1 and 2 retain their old gain for both.
+Version 1 acquires default point groups; version 2 retains its saved groups.
+Loading does not rewrite the user's file; explicit saves write version 3.
+**Save scene environment** persists the live preview atomically; **Reload
+scene environment** reads the file. The unsaved warning explicitly requires
+saving before leaving the scene. Save/reload errors are visible and a failed
+reload retains the last valid same-scene preview.
+
+**Use native environment** remains available when capabilities disappear.
+Native lighting, Authentic and F2 bypass the profile without erasing it.
+Inactive ambient/directional edits publish unchanged effective rendering inputs,
+so they cannot invalidate temporal or shadow histories. Point-group edits remain
+effective independently. Missing or invalid destination
+profiles cannot inherit another scene's authored light.
+
+Both the CMake and PowerShell actual-widget build paths include the title-owned
+profile and panel. The fixture exercises key/fill tabs, live controls, real
+file persistence, reload, F2, scene transitions, invalid files, write failures
+and capability-safe Off. Deterministic renderer captures separately verify
+normal-map response, key direction, ambient/fill, static-world shadows,
+disabled-path identity and unchanged native RGBA/alpha/depth/stencil.
+See the scene-environment section of the NRI architecture document for the
+schema, ranges, owning boundaries and capture evidence.
+
+Final verification: 4,516 actual-widget assertions passed, including the
+inactive-profile rendering-input invariant. Two additional GPU runs compare
+the user's combined CACAO/Hi-Z/PBR/shadow configuration with an effects-off
+baseline at the same persisted 1920×1080 output extent. Native-memory RGBA and
+all compared alpha/depth/stencil attachments remain exact. The real-time
+interactive runtime also survived framebuffer readback and the following
+20 seconds; its fresh renderer framebuffer was inspected.

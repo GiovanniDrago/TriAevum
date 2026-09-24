@@ -2,13 +2,220 @@
 
 ## Stato e obiettivo
 
-Documento di design, non implementazione. Nessun sorgente del repository modificato e nessuna nuova esecuzione del gioco/build in questo passaggio. I riferimenti sotto sono stati verificati leggendo il checkout; le righe possono spostarsi per lavoro concorrente. I nomi marcati **nuovo** sono proposte, non API già disponibili.
+Le sezioni numerate conservano il design iniziale e la cronologia degli incrementi;
+non sono una descrizione uniforme del checkout corrente. Lo stato operativo qui
+sotto prevale sulle precedenti indicazioni di accodare i decode dai byte guest.
+I nomi marcati **nuovo** nelle sezioni storiche erano proposte al momento della
+stesura; verificarli nei sorgenti prima di riaprire quel lavoro.
 
 Obiettivo: mantenere la copia raw e il successivo campionamento sul percorso GPU/NRI, integrando sistematicamente gli effetti nativi nella ricomposizione proprietaria del frame. Non implementare un nuovo effetto desaturazione: il draw nativo continua a produrlo tramite shader/state canonici. Non riconoscere scene, asset, hash di shader, checkpoint o indirizzi specifici nel renderer.
 
 Vincoli: `AGENTS.md:5-15`; `docs/OOT3D_NRI_FIDELITY_EXTENSION_ARCHITECTURE.md:9-12,36-49,72-79,111,179-182`. Il composer mantiene l'ordine nativo; il grafo possiede dipendenze, barriere e lifetime; gli effetti opzionali non possono cambiare target, shader, state o semantica dei transfer. La copia raw è un'operazione nativa obbligatoria, non un effetto opzionale. Il percorso AOT/guest rimane l'oracolo end-to-end, senza fallback interprete.
 
 Le sezioni 7.2 e 7.4 di `docs/TRIAEVUM_ALPHA2C_TO_ALPHA3_RECONSTRUCTION.md` sono state lette per prime. L'ordine tecnico concordato è copia GPU, binding GPU, materializzazione guest solo necessaria. La verifica AOT D è un prerequisito della scelta di coerenza e del cutover, non un'indagine rimandata a dopo il rilascio.
+
+### Stato operativo — copie differite e visibilità guest
+
+La copia ordinaria pubblica un producer GPU immutabile e una promessa di byte
+guest, non un encode/readback/writeback immediato. `NativeA32Memory::DeferWrites`
+trappa le pagine interessate: letture AOT/checked, atomiche, esportazione di
+puntatori, fingerprint e savestate materializzano i byte necessari. Una scrittura
+CPU, anche dello stesso valore, sostituisce soltanto il proprio intervallo;
+una nuova copia sostituisce soltanto gli intervalli che produce. La generazione
+di scrittura cambia alla pubblicazione logica, non alla materializzazione.
+
+Il frontend raccoglie prima le referenze ai producer e legge RAM soltanto nei
+gap CPU-owned. Gli slot del payload di base coperti dal producer sono segnaposto,
+non contenuto guest: nessun hash li presenta come una texture CPU completa.
+Il sampler risolve le versioni GPU; gli alias fisici mantengono la medesima
+precedenza anche per scritture CPU parziali. I puntatori senza un contratto di
+rilascio impediscono ulteriori defer nello stesso intervallo; il fallback eager
+resta obbligatorio in quel caso e con l'oracolo encode esplicitamente abilitato.
+PICA usa viste sincrone con estensione esatta, senza puntatori persistenti.
+
+PPF segnala una sola volta la disponibilità logica. L'ordine GPU soddisfa i
+consumer GPU; una lettura CPU forza submit/wait del producer prima di restituire
+byte. La cattura nativa resta distinta dal composito con effetti opzionali quando
+necessario. Il rilascio richiede contemporaneamente assenza di owner guest,
+assenza di pin frontend e completamento dell'ultimo frame che usa il producer.
+Nessuna condizione dipende dal flashback, dagli asset o da indirizzi del titolo.
+
+Compatibilità: `MemoryWriteObservationVersion` **2** certifica anche la visibilità
+delle letture. Il runtime rifiuta moduli precedenti; serve una coppia runtime/DLL
+ricostruita dal publisher, non compilazione o fallback nell'installazione utente.
+Il modulo privato verificato è in `I:/_triaevum_work/deferred-copy/`; nessun
+catalogo o pacchetto pubblico è stato modificato.
+
+Prove sul checkpoint `sheik-near-copy`, Authentic, stessa timeline:
+
+- 1.100 frame, **514 copie differite e 514 binding GPU, zero fallback,
+  zero attese del prefisso copia**. Picco di due producer vivi.
+- Writeback eager precedente: **394.752.000 byte**. Nel nuovo percorso ordinario:
+  **zero**. Il fingerprint finale materializza una sola versione:
+  7.372.800 byte RGBA di readback e 768.000 byte guest di writeback.
+  Non è una dichiarazione di zero readback per snapshot/debug.
+- Finestra throughput di 800 frame dopo 300 di warmup, cache calda:
+  **60,872 → 71,622 / 71,905 frame/s** nei due run successivi
+  (**+17,7% / +18,1%**); 13,1423 → 11,1697 / 11,1259 secondi.
+  Sono frame di presentazione misurati, non Hz della simulazione. Il copy
+  roundtrip non era l'unico costo: il nuovo run misura ancora 4,132 s di
+  queue capture nella stessa finestra.
+- Fingerprint contenuto/stato memoria e processo identici alla baseline;
+  invariati 3.986 completamenti PICA e 581 aggiornamenti di stato gioco.
+  Catture visibili 720/1020 identiche byte per byte al percorso GPU precedente.
+- Savestate al frame 720: due sole materializzazioni totali, inclusa quella
+  finale. Ripristino e 300 frame successivi: framebuffer identico al frame 1020
+  della continuazione senza ripristino. Validatori Vulkan/NRI attivi:
+  zero errori, zero warning NRI, 11 warning Vulkan; non soppressi.
+- Avvio **5/5** e selezione file **6/6** framebuffer identici alle baseline.
+  Suite host/memoria, submission/alias, bridge, visual-savestate, savestate,
+  semantic trace e planner verdi; foundation **291/291**.
+  Probe DLL reale: otto controlli ABI verdi,
+  inclusa una lettura compilata di memoria differita. Confine condiviso: 69 file.
+
+Invocazioni, log, catture e ricevute restano fuori repository in
+`I:/_triaevum_work/deferred-copy/`: `before`, `after`, `final`, `smoke`,
+`validated-save`, `resumed`, `boot`, `file-select`, `abi`; riepilogo verificato
+in `verification.json`, incluso SHA-256 dell'eseguibile finale.
+La suite process completa non è dichiarata
+verde: il tree product-only non esegue il suo callback PackedOp; la prova privata
+in modalità packed arriva poi ai blocchi true-AOT generati non presenti in quel
+tree. Il probe ABI reale e gli scenari usano invece il modulo prodotto effettivo.
+Linux e gli altri preset opzionali restano non qualificati; il profilo grafico
+predefinito Windows è verificato nell'incremento seguente.
+
+### Verifica del profilo NRI predefinito e lifetime dei grafi inattivi
+
+Il riavvio con `--product-info` / `default_config.Graphics` ha esposto una
+distruzione prematura: un grafo successivo senza immagini transient liberava
+l'arena e i descriptor del composito ancora referenziati nel command buffer
+corrente. `vkDeviceWaitIdle` attende il lavoro sottomesso, non esegue quello
+soltanto registrato. Riproduzione: 39 errori Vulkan e `VK_ERROR_DEVICE_LOST`.
+
+`ExecuteNativePicaDisplayGraph` ora lascia inerte la cache quando il grafo non
+richiede immagini: non pubblica binding e non esegue effetti, ma non distrugge
+le risorse di un anchor precedente. Restano i confini espliciti di
+riconfigurazione/reset; nessuna attesa è stata aggiunta alla copia ordinaria.
+
+Stesso checkpoint e prova senza input di 180 frame: exit 0, validatori attivi,
+zero errori. Run esteso di 1.100 frame con avanzamento dialoghi: 361 copie e
+binding GPU, zero fallback e attese del prefisso; una materializzazione finale.
+Toon, outline e composito effettivamente eseguiti; catture visibili 720/1020.
+Zero errori Vulkan/NRI, zero warning NRI, 11 warning Vulkan. Evidenza privata:
+`deferred-copy/default-nri-validation-before`, `default-nri-exact-after`,
+`default-nri-validation-after/verification.json`.
+
+Il profilo di prodotto abilita Toon/outline ed erba; AA, AO e riflessi sono Off
+nei default stessi, non disabilitati dal probe. Questa qualifica storica usava
+Original30: il loader allora rifiutava il contratto x2 dei checkpoint.
+La prova usa tempo reale, non il delta fisso del benchmark precedente.
+
+### Composito ripetuto nello stesso frame e barriere dello scanout
+
+La qualifica del tree selezionato per l'illuminazione nativa ha riprodotto due
+errori Vulkan con Per-pixel e Toon/outline attivi: guide dichiarate dal pass
+finale ancora in layout attachment e aggiornamento di un descriptor set già
+referenziato da comandi registrati.
+
+Lo scanout applica ora le barriere delle letture dichiarate dal grafo anche
+quando il colore è già compositato. `SceneCompositePass` assegna un set immutabile
+a ogni invocazione, usando blocchi che crescono su richiesta e vengono riusati
+solo al nuovo frame del relativo slot, dopo la sua fence. Cambiare il binding
+di output non distrugge più i pool dei comandi precedenti.
+
+Lo stesso checkpoint, 180 frame a delta fisso e nessun input, passa sia in
+Per-pixel sia in Per-pixel+PBR: 108 copie differite, 216 binding GPU, una
+materializzazione finale e zero attese del prefisso. Validatori Vulkan/NRI
+attivi: zero errori, zero warning NRI; restano 11 warning Vulkan, non soppressi.
+Il caso richiede il checkpoint privato: è uno smoke della runtime reale, non
+un test unitario con asset redistribuiti. Invocazioni e riproduzione fallente
+restano sotto `native-scene-lighting/staged-copy-before`, `staged-copy-proof`
+e `staged-copy-pbr-proof`. L'erba è Off nei soli profili privati, per escludere
+le modifiche indipendenti non selezionate.
+
+Anche Native passa lo stesso smoke. I fingerprint di contenuto memoria
+`12296319316116986855`, stato memoria `539994612170039003` e processo
+`3145733879543920988` coincidono in tutti e tre i modelli di illuminazione.
+Ricevute aggiuntive: `staged-copy-native-proof` e `copy-memory-proof.json`.
+
+### Interpolazione x2: completamenti nativi e campioni visivi separati
+
+Il contatore delle presentazioni non misurava la fluidità: in 2.200 refresh,
+la baseline x2 completava 752 aggiornamenti ma soltanto 69 snapshot interi.
+Il flush della copia consumava il prefisso del frame e rinviava il PPF alla
+presentazione successiva. Il replay riutilizzava quindi immagini vecchie.
+
+Il scheduler esegue ora le dipendenze nello stesso refresh guest, prima della
+presentazione, mantenendo i piani per il frame completo. Il prefisso completato
+non viene eseguito nuovamente nel dominio nativo; il suo obbligo PPF, salvabile,
+è scaricato una sola volta. Namespace e deduplicazione distinguono raster
+canonico per la memoria guest e replay visivo. `NativeMemory`, nello schema
+di composizione 2, esclude shader strumentati, jitter ed estensioni: non cambia
+le impostazioni della presentazione. Il compositore TopScreen interviene dopo
+il completamento canonico. Le copie visive vengono ricatturate per ogni
+presentazione, invece di congelare il primo campione di interpolazione.
+
+### Incremento precedente — collegamento diretto GPU verificato, 2026-09-23
+
+Il percorso visivo riusa la scena GPU già renderizzata: cattura immutabile al
+confine della copia, mapping verso la texture campionata e draw nativo
+dell'effetto. Non aggiunge uno shader di desaturazione e non ricostruisce il
+contenuto copiato dalla griglia nativa. La materializzazione guest resta separata
+e conservativa; gli intervalli della texture non posseduti dalla copia mantengono
+il percorso di base esistente. Non è una dichiarazione di zero readback globale.
+
+Una prova con il planner di produzione sul trace reale ha ridotto i 50 span
+della prima copia a un rettangolo: sorgente RGBA8 480x400, destinazione 512x512,
+offset (0,112), area 480x400. Questi valori sono evidenza, non condizioni nel
+renderer. Il consumer successivo scrive nello stesso target del producer:
+conservare la copia stabile resta necessario, un alias dell'attachment live no.
+
+Correzioni circoscritte:
+
+- `pica_texture_copy_derive_gpu.h`: normalizzare i canali 0–255 prima di
+  `imageStore` nella destinazione UNORM. Prima, per esempio, 17 diventava 255.
+  Il test GPU reale `pica_texture_copy_derive_gpu_tests` riproduceva 15.355 pixel
+  errati; dopo la correzione confronta 61.440 pixel senza differenze, inclusi i
+  cinque formati, il padding intatto e una scala anisotropa non intera.
+- `RecordGpuTextureCopyDerivation`: una vista interamente GPU-owned nasce
+  undefined; solo il base fill o una regione precedente autorizzano il layout
+  shader-readable iniziale. Non dichiarare inizializzata una nuova immagine.
+
+Prova sul prodotto, checkpoint `sheik-near-copy`, profilo Authentic:
+
+- Sorgente interna 1440x1280 e texture campionata 1536x2048: **2.304.000 pixel
+  copiati confrontati, zero differenze** rispetto al mapping della sorgente.
+  Il dettaglio interno sopravvive; la sola uguaglianza alla vecchia baseline
+  ridotta a risoluzione nativa non sarebbe un criterio sufficiente.
+- Finestra di 1.100 frame, senza dump diagnostico: **514 copie, 514 binding GPU,
+  zero fallback**. Le catture 720 e 1020 mostrano la scena in bianco e nero
+  sull'intero output 1280x720, senza pixel cromatici. I primi 400 frame includono
+  soprattutto il nero iniziale e da soli non qualificano il risultato visivo.
+- Run diagnostica separata: encode guest contro oracolo CPU,
+  **125.952.000 byte, zero differenze**. Nessuna modifica al contratto guest.
+- Avvio **5/5** e selezione file **6/6** catture byte-identiche alle baseline.
+- Validazione esplicitamente abilitata (`OOT3D_VULKAN_VALIDATION=1`) in un
+  ulteriore run di 1.100 frame: Vulkan e NRI attivi, **zero errori**, zero warning
+  NRI. Restano **11 warning Vulkan** già presenti nel log precedente: caricamento
+  della DLL ReShade esterna e attributi/output shader inutilizzati, incluso il
+  messaggio di limite duplicati. Non sono stati soppressi o corretti in questo
+  lavoro. Le catture 720 e 1020 sono byte-identiche al run senza validazione.
+  I quattro probe ordinari avevano invece i validatori disabilitati: i loro
+  contatori a zero non sono una prova di validazione.
+- Suite transfer, submission, bridge e visual-savestate verdi; foundation
+  **291/291**; gate renderer condiviso **69 file title-neutral**; test GPU
+  registrato in CTest e compilazione offline degli shader verdi.
+
+Evidenza privata: `I:/_triaevum_work/copy-strategy-review/verification.json`,
+`after/` (coppia sorgente/consumer), `after-visible/` (scena e log),
+`boot/`, `file-select/`, `validated/` (validazione attiva, riepilogo in
+`validation.json`). Le invocazioni complete sono nei rispettivi `invocation.json`;
+il run `after/` abilita anche `TRIAEVUM_GPU_COPY_DUMP` e
+`TRIAEVUM_RAW_COPY_ENCODE_VERIFY`, quello `validated/` abilita
+`OOT3D_VULKAN_VALIDATION=1`. Eseguibile verificato:
+`I:/TriAevum-public/ui-dependencies/bin/TriAevum.exe`. Nessun asset o capture
+viene aggiunto al repository. Questa verifica non qualifica Linux, effetti
+opzionali o materializzazione guest differita.
 
 ## 1. Evidenze e distinzione dei tre percorsi
 
