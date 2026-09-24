@@ -1033,6 +1033,21 @@ TEST(Oot3dCompositionSchedule,
                                     PicaCompositionLayer::Ui,
                                     PicaCompositionProvenance::NativeCmbDrawPass, 0x0030F4D0U));
     ASSERT_TRUE(schedule.Compile({.SequenceId = 94U, .Draws = withUi}, &error));
+    const auto* beforeUi = schedule.FindAnchor(EffectStage::BeforeUi, target);
+    ASSERT_NE(beforeUi, nullptr);
+    EXPECT_EQ(beforeUi->BeforeSubmissionId, 23U);
+    EXPECT_FALSE(beforeUi->AtTargetEnd);
+    for (const auto& draw : draws) ASSERT_TRUE(schedule.ConsumeDraw(draw, &error));
+    EXPECT_TRUE(ResolvePicaDisplayComposition(schedule, target).SceneResolved);
+    EXPECT_TRUE(schedule.Reached(*beforeUi));
+    EXPECT_EQ(schedule.FindAnchor(EffectStage::AfterOpaque, target), nullptr);
+    ASSERT_TRUE(schedule.ConsumeDraw(withUi.back(), &error));
+    EXPECT_FALSE(ResolvePicaDisplayComposition(schedule, target).SceneResolved);
+
+    std::swap(withUi[2].Domain, withUi[3].Domain);
+    std::swap(withUi[2].Composition, withUi[3].Composition);
+    ASSERT_TRUE(schedule.Compile({.SequenceId = 95U, .Draws = withUi}, &error));
+    EXPECT_EQ(schedule.FindAnchor(EffectStage::BeforeUi, target), nullptr);
     for (const auto& draw : withUi) ASSERT_TRUE(schedule.ConsumeDraw(draw, &error));
     EXPECT_FALSE(ResolvePicaDisplayComposition(schedule, target).SceneResolved);
 

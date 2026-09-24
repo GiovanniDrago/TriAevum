@@ -77,6 +77,7 @@ class PicaCompositionSchedule final {
 
     [[nodiscard]] bool Valid() const noexcept;
     [[nodiscard]] uint64_t SequenceId() const noexcept;
+    [[nodiscard]] size_t ConsumedDrawCount() const noexcept;
     [[nodiscard]] std::span<const PicaCompositionRun> Runs() const noexcept;
     [[nodiscard]] std::span<const PicaCompositionStageAnchor> Anchors()
         const noexcept;

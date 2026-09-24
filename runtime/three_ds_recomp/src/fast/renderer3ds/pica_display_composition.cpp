@@ -17,7 +17,10 @@ PicaDisplayComposition ResolvePicaDisplayComposition(
         ::Fast::Renderer::ExtensionStage::SceneResolved, target);
     if (sceneResolved != nullptr && schedule.Reached(*sceneResolved)) {
         result.Domain = PicaCompositionDomain::Scene;
-        result.SceneResolved = true;
+        const auto* targetSchedule = schedule.FindTarget(target);
+        result.SceneResolved = targetSchedule != nullptr &&
+            (targetSchedule->UiDrawCount == 0U ||
+             schedule.ConsumedDrawCount() <= sceneResolved->BeforeDrawIndex);
         return result;
     }
 
