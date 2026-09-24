@@ -91,6 +91,7 @@ const Oot3dWholeAotProgramV2 *WholeAotProgram() noexcept {
     if (candidate == nullptr ||
         candidate->AbiVersion != kOot3dWholeAotPluginAbiV2 ||
         candidate->StructSize < sizeof(Oot3dWholeAotProgramV2) ||
+        candidate->MemoryWriteObservationVersion != NativeA32Memory::WriteObservationAbiVersion() ||
         candidate->EntryPoints == nullptr || candidate->EntryPointCount == 0U ||
         candidate->Execute == nullptr || candidate->ExecutionActive == nullptr ||
         candidate->ObservableExit == nullptr) {
@@ -218,6 +219,13 @@ void ConfigureTitlePlugin(const std::filesystem::path& path) {
 
 bool Oot3dWholeAotPluginV2Available() noexcept {
   return WholeAotProgram() != nullptr;
+}
+
+bool Oot3dWholeAotPluginObservesMemoryWrites() noexcept {
+  const auto* program = WholeAotProgram();
+  if (program == nullptr) return DirectAotProgram() != nullptr;
+  return program->StructSize >= sizeof(Oot3dWholeAotProgramV2) &&
+         program->MemoryWriteObservationVersion == NativeA32Memory::WriteObservationAbiVersion();
 }
 
 bool Oot3dWholeAotPluginExecutionActive() noexcept {

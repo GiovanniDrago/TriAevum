@@ -893,7 +893,7 @@ NativeA32ProcessTimingStats NativeA32Process::TimingStats() const noexcept {
     return mTimingStats;
 }
 
-uint64_t NativeA32Process::StateFingerprint() const noexcept {
+uint64_t NativeA32Process::StateFingerprint() const {
     uint64_t hash = mMemory.StateFingerprint();
     const auto append = [&](const void* data, size_t size) {
         const auto* bytes = static_cast<const uint8_t*>(data);
@@ -1099,6 +1099,7 @@ bool NativeA32Process::RestoreState(const nlohmann::json& state,
         pendingFallback.Exit.detail =
             encodedFallback.at("exit_detail").get<uint32_t>();
 
+        stagedMemory.PreserveAccessObserversFrom(mMemory);
         mMemory = std::move(stagedMemory);
         mPrimaryThreadState = primaryState;
         mPrimaryThreadStatus = primaryStatus;

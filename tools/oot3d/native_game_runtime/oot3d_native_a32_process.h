@@ -170,7 +170,7 @@ class NativeA32Process {
         void* user = nullptr);
     void SetTimingEnabled(bool enabled) noexcept;
     NativeA32ProcessTimingStats TimingStats() const noexcept;
-    uint64_t StateFingerprint() const noexcept;
+    uint64_t StateFingerprint() const;
     nlohmann::json CaptureState() const;
     bool RestoreState(const nlohmann::json& state,
                       std::string* error = nullptr);

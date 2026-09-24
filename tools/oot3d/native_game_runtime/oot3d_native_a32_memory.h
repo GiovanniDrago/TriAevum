@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -52,6 +53,27 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     uint32_t LastFastReadMismatchAddress() const noexcept;
     uint64_t LastFastReadMismatchValue() const noexcept;
     uint64_t LastCheckedReadMismatchValue() const noexcept;
+
+    // GPU ownership is invalidated by writes, including same-value writes.
+    // ObserveWrites traps only write fast-path entries for registered ranges.
+    using WriteObserver = std::function<void(uint32_t, size_t)>;
+    static uint32_t WriteObservationAbiVersion() noexcept;
+    void SetWriteObserver(WriteObserver observer);
+    bool ObserveWrites(uint32_t address, size_t size);
+    bool HasEscapedWritePointer(uint32_t address, size_t size) const noexcept;
+    void PreserveAccessObserversFrom(const NativeA32Memory& memory);
+
+    // A completed device write is logically visible immediately. Backing RAM
+    // is populated only when a CPU reader or a state snapshot needs its bytes.
+    // The reader owns the immutable producer until its last range is consumed
+    // or overwritten. All ranges are validated before publishing any write.
+    using DeferredRead = std::function<bool(uint32_t, std::span<uint8_t>)>;
+    bool DeferWrites(std::span<const std::pair<uint32_t, size_t>> ranges,
+                     DeferredRead reader);
+    bool MaterializeDeferredWrites() const;
+    // Synchronous, read-only view: callers must finish consuming it before
+    // executing guest code, device work, or another memory operation.
+    std::span<const uint8_t> SynchronousReadView(uint32_t address, size_t size) const;
 
     // Diagnostic guest-access watch for a small number of address ranges
     // (whole-AOT raw TextureCopy destinations, for example). Watched pages lose
@@ -103,8 +125,8 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     void SetRangeWatchSuppressed(bool suppressed) noexcept {
         mWatchSuppressed = suppressed;
     }
-    uint64_t ContentFingerprint() const noexcept;
-    uint64_t StateFingerprint() const noexcept;
+    uint64_t ContentFingerprint() const;
+    uint64_t StateFingerprint() const;
     nlohmann::json CaptureState() const;
     bool RestoreState(const nlohmann::json& state,
                       std::string* error = nullptr);
@@ -286,8 +308,9 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
                            std::span<const uint8_t> bytes) noexcept;
     void FlushTracedPointerWrites() noexcept;
     static void SetError(std::string* error, std::string_view message);
+    void NotifyObservedWrite(uint32_t address, size_t size);
 
-    std::vector<Region> mRegions;
+    mutable std::vector<Region> mRegions;
     static constexpr uint32_t PageShift = 12U;
     static constexpr size_t PageSize = size_t{1} << PageShift;
     static constexpr size_t PageMask = PageSize - 1U;
@@ -334,6 +357,23 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     mutable RangeWatchCounters mWatchCounters;
     bool mWatchActive = false;
     bool mWatchSuppressed = false;
+    WriteObserver mWriteObserver;
+    std::vector<std::pair<uint32_t, size_t>> mObservedWriteRanges;
+    std::vector<size_t> mObservedWritePages;
+    // Mutable pointers have no release contract. Their ranges cannot become
+    // GPU-owned again until the memory image is replaced.
+    std::vector<std::pair<uint32_t, size_t>> mEscapedWritePointers;
+    mutable std::vector<std::pair<uint32_t, size_t>> mEscapedReadPointers;
+    struct DeferredWrite {
+        uint32_t Address = 0;
+        size_t Size = 0;
+        std::shared_ptr<const DeferredRead> Reader;
+    };
+    mutable std::vector<DeferredWrite> mDeferredWrites;
+    mutable std::vector<size_t> mDeferredPages;
+    bool ResolveDeferredRead(uint32_t address, size_t size) const;
+    void DiscardDeferredWrites(uint32_t address, size_t size) const;
+    void ReleaseDeferredPageTraps() const;
 };
 
 } // namespace Oot3dNativeGame

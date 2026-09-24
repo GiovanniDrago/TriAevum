@@ -50,6 +50,14 @@ their complete-file identities. Prepared files retain their actual hashes and
 are revalidated against the module-bound family before activation.
 Hash validation is integrity checking, not cryptographic publisher authentication.
 
+Deferred device-owned memory additionally requires the whole-AOT descriptor's
+`MemoryWriteObservationVersion` to equal **2**. Despite the historical field
+name, version 2 covers compiled reads, writes, atomics and escaped pointers.
+The runtime rejects older or truncated descriptors before title execution:
+publish a matching runtime/title-module pair and its corresponding source.
+Forge must not repair this package mismatch by generating IR or compiling.
+The developer ABI probe exercises an actual compiled read of deferred memory.
+
 The user requested this distribution policy after discussing the Xbox 360 model.
 The project's license does not grant or relicense original-game rights. Existing
 donor notices remain; earlier legal approval is not expanded into a blanket legal

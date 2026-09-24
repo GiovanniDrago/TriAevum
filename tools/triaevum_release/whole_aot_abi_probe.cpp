@@ -7,6 +7,8 @@
 #endif
 #include <memory>
 #include <iostream>
+#include <algorithm>
+#include <array>
 
 using namespace Oot3dNativeGame;
 namespace a32 = oot3d::recomp::a32;
@@ -56,6 +58,20 @@ int main(int argc, char** argv) {
     region.Size = 4096;
     region.Writable = true;
     if (!memory->MapRegion(region)) return 6;
+    if (program->MemoryWriteObservationVersion != NativeA32Memory::WriteObservationAbiVersion())
+        return 10;
+    unsigned observedWrites = 0;
+    memory->SetWriteObserver([&](uint32_t address, size_t bytes) {
+        if (address == 0x2000 && bytes == 4) ++observedWrites;
+    });
+    if (!memory->ObserveWrites(0x2000, 4)) return 11;
+    size_t materialized = 0;
+    const std::array ranges{std::pair<uint32_t, size_t>{0x2000, 8}};
+    if (!memory->DeferWrites(ranges, [&](uint32_t, std::span<uint8_t> bytes) {
+            materialized += bytes.size();
+            std::fill(bytes.begin(), bytes.end(), 0x4AU);
+            return true;
+        })) return 13;
     a32::GuestState guest;
     guest.r[1] = 0x2000;
     guest.r[14] = 0x4000;
@@ -73,10 +89,15 @@ int main(int argc, char** argv) {
     if (guest.r[0] != 3 || guest.r[2] != 3 || !memory->Read32(0x2000, &stored) || stored != 3 ||
         result.pc != 0x4000 || !callbacks.Active || callbacks.Calls != 1 ||
         consumed == 0 || stats.Calls != 1 || program->ExecutionActive()) return 8;
+    if (guest.r[3] != 0x4A4A4A4A || materialized != 4)
+        return 14; // Compiled DLL read must resolve; its store must discard.
+    if (observedWrites != 1 || !execute() || observedWrites != 2)
+        return 12; // The second generated store writes the same value.
     callbacks.Exit = true;
     if (!execute() || guest.r[0] != 99 || result.pc != 0x3330 ||
-        callbacks.Calls != 2 || program->ExecutionActive()) return 9;
+        callbacks.Calls != 3 || program->ExecutionActive() || observedWrites != 2) return 9;
     std::cout << "{\"arithmetic\":true,\"memory\":true,\"callback\":true,"
-                 "\"tls\":true,\"observable_exit\":true,\"abi_rejection\":true}\n";
+                 "\"tls\":true,\"observable_exit\":true,\"abi_rejection\":true,"
+                 "\"memory_write_observation\":true,\"deferred_memory_visibility\":true}\n";
     return 0;
 }

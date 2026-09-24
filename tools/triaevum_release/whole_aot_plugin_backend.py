@@ -365,6 +365,7 @@ def build_whole_aot_plugin(
                 RUNTIME_ROOT,
                 A32_ROOT,
                 A32_ROOT / "upstream",
+                toolchain.nlohmann_include,
             )
             if windows:
                 compile_command = (

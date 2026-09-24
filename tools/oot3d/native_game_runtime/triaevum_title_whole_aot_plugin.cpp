@@ -1,6 +1,7 @@
 #include "triaevum_title_aot_abi.h"
 #include "triaevum_title_whole_aot_abi.h"
 
+#include "oot3d_native_a32_memory.h"
 #include "oot3d_whole_aot_generated.h"
 
 #if defined(_WIN32)
@@ -42,7 +43,8 @@ triaevum_title_whole_aot_query(uint32_t requestedAbi) noexcept {
     return Oot3dWholeAotProgramV2{
         kOot3dWholeAotPluginAbiV2, sizeof(Oot3dWholeAotProgramV2),
         entries.data(), entries.size(), ExecuteOot3dWholeAotFunction,
-        PluginExecutionActive, PluginObservableExit};
+        PluginExecutionActive, PluginObservableExit,
+        NativeA32Memory::WriteObservationAbiVersion()};
   }();
   return &program;
 }

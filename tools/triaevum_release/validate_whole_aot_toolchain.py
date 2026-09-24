@@ -33,9 +33,9 @@ def validate(compiler: Path, archiver: Path, support: Path, include: Path,
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
-    # mov r0,#1; add r0,r0,#2; str r0,[r1]; ldr r2,[r1]; bx lr.
+    # ldr r3,[r1,#4]; mov r0,#1; add r0,r0,#2; str r0,[r1]; ldr r2,[r1]; bx lr.
     code = b"".join(word.to_bytes(4, "little") for word in
-                    (0xE3A00001, 0xE2800002, 0xE5810000, 0xE5912000, 0xE12FFF1E))
+                    (0xE5913004, 0xE3A00001, 0xE2800002, 0xE5810000, 0xE5912000, 0xE12FFF1E))
     code_path = output / "synthetic.bin"
     atomic_write_bytes(code_path, code)
     program = output / "program.json"
@@ -43,8 +43,8 @@ def validate(compiler: Path, archiver: Path, support: Path, include: Path,
     atomic_write_json(program, {
         "format": "oot3d_whole_aot_program_v1", "base": 0x1000,
         "code_sha256": sha256_file(code_path),
-        "blocks": [{"id": 0, "pc": 0x1000, "end_pc": 0x1014,
-                    "successors": [{"site": 0x1010, "kind": "return"}]}],
+        "blocks": [{"id": 0, "pc": 0x1000, "end_pc": 0x1018,
+                    "successors": [{"site": 0x1014, "kind": "return"}]}],
         "functions": [{"entry": 0x1000, "name": "SyntheticFunction", "blocks": [0],
                        "closed_static_cfg": True, "direct_calls": [], "tail_calls": [], "indirect_sites": []}],
     })
@@ -88,7 +88,8 @@ def validate(compiler: Path, archiver: Path, support: Path, include: Path,
             raise ValueError(f"Native ABI {name} failed ({result.returncode}); see {output / (name + '.log')}")
     checks = json.loads(result.stdout)
     if not all(checks.get(key) is True for key in
-               ("arithmetic", "memory", "callback", "tls", "observable_exit", "abi_rejection")):
+               ("arithmetic", "memory", "callback", "tls", "observable_exit", "abi_rejection",
+                "memory_write_observation", "deferred_memory_visibility")):
         raise ValueError("Native ABI probe did not establish all checks")
     receipt = {"format": "triaevum_native_abi_probe_v1", "status": "passed", "checks": checks,
                "target": platform.target, "plugin": built["plugin"],

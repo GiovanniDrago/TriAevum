@@ -33,9 +33,15 @@ struct Oot3dWholeAotProgramV2 final {
   Oot3dWholeAotExecuteFunctionV2 Execute = nullptr;
   Oot3dWholeAotExecutionActiveV2 ExecutionActive = nullptr;
   Oot3dWholeAotObservableExitV2 ObservableExit = nullptr;
+  // Optional tail, gated by StructSize. Generated code uses checked memory
+  // helpers from its own support library, not the host executable's helpers.
+  // Version 2 also resolves deferred device writes on reads, atomics and
+  // pointer handout. A version-1 module cannot execute with deferred RAM.
+  uint32_t MemoryWriteObservationVersion = 0U;
 };
 
-static_assert(sizeof(Oot3dWholeAotProgramV2) == 48U);
+static_assert(offsetof(Oot3dWholeAotProgramV2, MemoryWriteObservationVersion) == 48U);
+static_assert(sizeof(Oot3dWholeAotProgramV2) == 56U);
 
 extern "C" const Oot3dWholeAotProgramV2 *
 triaevum_title_whole_aot_query(uint32_t requestedAbi) noexcept;
