@@ -97,7 +97,7 @@ int main(int argc, char** argv) {
         Renderer3ds::NriPicaExecutionConfig execution;
         execution.OwnedDraws = false;
         execution.FrameSlotCount = 1;
-        execution.MaxDrawsPerFrame = 1;
+        execution.DescriptorSetsPerPool = 1;
         if (!bridge.Initialize(device, execution)) throw std::runtime_error(bridge.UnavailableReason());
         std::vector<uint8_t> cache;
         const bool loaded = Renderer3ds::LoadPipelineCacheData(cachePath, identity, cache);

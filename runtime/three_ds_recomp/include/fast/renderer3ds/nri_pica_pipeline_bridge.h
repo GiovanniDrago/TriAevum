@@ -32,7 +32,8 @@ struct PicaDevicePipelineRecord {
 
 struct NriPicaExecutionConfig {
     uint32_t FrameSlotCount = 2U;
-    uint32_t MaxDrawsPerFrame = 512U;
+    // Allocation granularity, not a limit on the number of draws in a frame.
+    uint32_t DescriptorSetsPerPool = 512U;
     bool OwnedDraws = true;
     bool PreferOwnedUploads = false;
     bool PipelineLibrariesEnabled = false;

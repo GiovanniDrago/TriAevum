@@ -219,13 +219,16 @@ struct NriPicaPipelineBridge::Impl {
     nri::PipelineLayout* DescriptorLayout = nullptr;
     nri::PipelineCache* PipelineCache = nullptr;
     bool PipelineCacheAttempted = false;
-    struct FrameDescriptors {
+    struct DescriptorPoolBlock {
         nri::DescriptorPool* Pool = nullptr;
         std::vector<nri::DescriptorSet*> Sets;
+    };
+    struct FrameDescriptors {
+        std::vector<DescriptorPoolBlock> Pools;
         std::vector<nri::Descriptor*> TransientViews;
         std::unique_ptr<NriPicaUploadArena> UploadArena;
         uint64_t FrameId = std::numeric_limits<uint64_t>::max();
-        uint32_t Used = 0;
+        size_t Used = 0;
     };
     std::vector<FrameDescriptors> Frames;
     std::map<NriPicaSamplerKey, nri::Descriptor*> Samplers;
@@ -234,6 +237,30 @@ struct NriPicaPipelineBridge::Impl {
     bool PipelineLibrariesEnabled = false;
     bool LastDrawUploadsOwned = false;
     uint64_t LastDrawUploadBytes = 0;
+    uint32_t DescriptorSetsPerPool = 0;
+
+    bool AddDescriptorPool(FrameDescriptors& frame, nri::CoreInterface& core,
+                           nri::Device& device) {
+        frame.Pools.emplace_back();
+        auto& block = frame.Pools.back();
+        block.Sets.resize(DescriptorSetsPerPool);
+        nri::DescriptorPoolDesc pool{};
+        pool.descriptorSetMaxNum = DescriptorSetsPerPool;
+        pool.constantBufferMaxNum =
+            static_cast<uint32_t>(std::tuple_size_v<decltype(NriPicaOwnedDrawDesc::Uniforms)>) *
+            DescriptorSetsPerPool;
+        pool.textureMaxNum = 8U * DescriptorSetsPerPool;
+        pool.storageTextureMaxNum = DescriptorSetsPerPool;
+        pool.samplerMaxNum = 8U * DescriptorSetsPerPool;
+        if (core.CreateDescriptorPool(device, pool, block.Pool) != nri::Result::SUCCESS ||
+            core.AllocateDescriptorSets(*block.Pool, *DescriptorLayout, 0,
+                block.Sets.data(), DescriptorSetsPerPool, 0) != nri::Result::SUCCESS) {
+            if (block.Pool != nullptr) core.DestroyDescriptorPool(block.Pool);
+            frame.Pools.pop_back();
+            return false;
+        }
+        return true;
+    }
 #endif
 };
 
@@ -254,7 +281,8 @@ bool NriPicaPipelineBridge::Initialize(
     return false;
 #else
     if (config.FrameSlotCount == 0U ||
-        config.MaxDrawsPerFrame == 0U) {
+        config.DescriptorSetsPerPool == 0U ||
+        config.DescriptorSetsPerPool > std::numeric_limits<uint32_t>::max() / 8U) {
         mImpl->Reason = "NRI PICA execution configuration is invalid";
         return false;
     }
@@ -319,32 +347,18 @@ bool NriPicaPipelineBridge::Initialize(
     mImpl->OwnedDraws = config.OwnedDraws;
     mImpl->PreferOwnedUploads = config.PreferOwnedUploads;
     mImpl->PipelineLibrariesEnabled = config.PipelineLibrariesEnabled;
+    mImpl->DescriptorSetsPerPool = config.DescriptorSetsPerPool;
     if (mImpl->OwnedDraws) {
         for (auto& frame : mImpl->Frames) {
-            nri::DescriptorPoolDesc pool{};
-            pool.descriptorSetMaxNum = config.MaxDrawsPerFrame;
-            pool.constantBufferMaxNum =
-                5U * config.MaxDrawsPerFrame;
-            pool.textureMaxNum = 5U * config.MaxDrawsPerFrame;
-            pool.storageTextureMaxNum = config.MaxDrawsPerFrame;
-            pool.samplerMaxNum = 5U * config.MaxDrawsPerFrame;
-            frame.Sets.resize(config.MaxDrawsPerFrame);
-            if (core->CreateDescriptorPool(
-                    *device, pool, frame.Pool) !=
-                    nri::Result::SUCCESS ||
-                core->AllocateDescriptorSets(
-                    *frame.Pool, *mImpl->DescriptorLayout, 0,
-                    frame.Sets.data(),
-                    static_cast<uint32_t>(frame.Sets.size()), 0) !=
-                    nri::Result::SUCCESS) {
+            if (!mImpl->AddDescriptorPool(frame, *core, *device)) {
                 mImpl->OwnedDraws = false;
                 break;
             }
         }
         if (!mImpl->OwnedDraws) {
             for (auto& frame : mImpl->Frames) {
-                if (frame.Pool != nullptr)
-                    core->DestroyDescriptorPool(frame.Pool);
+                for (const auto& block : frame.Pools)
+                    core->DestroyDescriptorPool(block.Pool);
                 frame = {};
             }
         }
@@ -629,7 +643,7 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
     nri::Device* device = mImpl->Interop->Device();
     if (pipeline == mImpl->OwnedPipelines.end() ||
         command == nullptr || core == nullptr || device == nullptr ||
-        frame.Pool == nullptr)
+        frame.Pools.empty())
         return false;
     if (frame.FrameId != desc.FrameId) {
         for (nri::Descriptor* view : frame.TransientViews)
@@ -638,8 +652,13 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
         frame.FrameId = desc.FrameId;
         frame.Used = 0;
     }
-    if (frame.Used >= frame.Sets.size())
+    const size_t poolIndex = frame.Used / mImpl->DescriptorSetsPerPool;
+    // Earlier sets are already referenced by recorded commands. Retain their
+    // pools and reuse every block only when this frame slot's fence has passed.
+    if (poolIndex == frame.Pools.size() &&
+        !mImpl->AddDescriptorPool(frame, *core, *device))
         return false;
+    auto& descriptorPool = frame.Pools[poolIndex];
 
     nri::Buffer* uniformBuffer = nullptr;
     nri::Buffer* vertexBuffer = nullptr;
@@ -802,7 +821,8 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
     if (storage == nullptr)
         return false;
 
-    nri::DescriptorSet* set = frame.Sets[frame.Used++];
+    nri::DescriptorSet* set =
+        descriptorPool.Sets[frame.Used++ % mImpl->DescriptorSetsPerPool];
     const std::array<nri::UpdateDescriptorRangeDesc, 16> updates{{
         {set, 0, 0, &constantBuffers[0], 1},
         {set, 1, 0, &textures[0], 1},
@@ -823,7 +843,7 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
     }};
     core->UpdateDescriptorRanges(
         updates.data(), static_cast<uint32_t>(updates.size()));
-    core->CmdSetDescriptorPool(*command, *frame.Pool);
+    core->CmdSetDescriptorPool(*command, *descriptorPool.Pool);
     core->CmdSetPipelineLayout(
         *command, nri::BindPoint::GRAPHICS,
         *mImpl->DescriptorLayout);
@@ -997,8 +1017,8 @@ void NriPicaPipelineBridge::Shutdown() {
             for (nri::Descriptor* view : frame.TransientViews)
                 core->DestroyDescriptor(view);
             frame.UploadArena.reset();
-            if (frame.Pool != nullptr)
-                core->DestroyDescriptorPool(frame.Pool);
+            for (const auto& block : frame.Pools)
+                if (block.Pool != nullptr) core->DestroyDescriptorPool(block.Pool);
         }
         for (auto& [_, sampler] : mImpl->Samplers)
             core->DestroyDescriptor(sampler);
@@ -1031,7 +1051,7 @@ bool NriPicaPipelineBridge::DescriptorsOwnedByNri() const {
            std::all_of(
                mImpl->Frames.begin(), mImpl->Frames.end(),
                [](const Impl::FrameDescriptors& frame) {
-                   return frame.Pool != nullptr;
+                   return !frame.Pools.empty();
                });
 #else
     return false;
