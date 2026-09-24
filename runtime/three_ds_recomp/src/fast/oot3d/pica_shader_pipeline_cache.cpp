@@ -432,6 +432,25 @@ class PicaShaderPipelineCache::Impl final {
         const bool directHooks =
             request.FragmentShaderHooks.ValidFor(
                 request.FragmentShaderSource);
+                if (!entry->Result.DirectCanonicalFragmentHooksUsed &&
+                    request.FragmentShaderHooks.ValidFor(request.FragmentShaderSource)) {
+                    if (request.FragmentShaderHooks.Outputs !=
+                        entry->Result.CanonicalFragmentHooks.Outputs) {
+                        ++CanonicalOutputContractRejects;
+                        throw std::logic_error(
+                            "typed PICA fragment hooks contradict audited native outputs");
+                    }
+                    // A restored replay can populate this source before the live
+                    // frontend supplies its authoritative semantic contract.
+                    entry->Result.CanonicalFragmentHooks = request.FragmentShaderHooks;
+                    entry->Result.DirectCanonicalFragmentHooksUsed = true;
+                    entry->Result.DirectFragmentHooksUsed = true;
+                    entry->Result.GrassTexture0Sampled =
+                        request.FragmentShaderHooks.SamplesTexture(0U);
+                    // Re-key derived variants without invalidating references
+                    // held by draws already recorded in the current frame.
+                    entry->Identity = NextCanonicalIdentity++;
+                }
         PicaShaderHookLayout canonicalHooks =
             directHooks
                 ? request.FragmentShaderHooks

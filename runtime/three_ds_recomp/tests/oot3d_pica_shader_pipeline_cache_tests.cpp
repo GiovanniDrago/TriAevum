@@ -450,6 +450,44 @@ TEST(Oot3dPicaShaderPipelineCache,
 
 TEST(Oot3dPicaShaderPipelineCache,
      RejectsTemporalInstrumentationWithoutTypedFrontendProgram) {
+TEST(Oot3dPicaShaderPipelineCache,
+     LiveTypedContractSupersedesReplayInferenceAndCachedVariants) {
+    using namespace Fast::Oot3d;
+    constexpr std::string_view source = R"glsl(#version 450
+layout(location=0) out vec4 pica_color;
+void main() {
+    vec3 normal = vec3(0.25, 0.5, 1.0);
+    pica_color = vec4(normal, 1.0);
+}
+)glsl";
+    auto request = BaseRequest();
+    request.FragmentShaderSource = source;
+    request.FragmentShaderHooks = {};
+    EffectsSettings effects;
+    effects.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    PicaShaderPipelineCache cache;
+    cache.BeginFrame(1U);
+    const auto& replay = cache.Resolve(request, effects);
+    ASSERT_TRUE(HasPicaShaderInstrumentationFeature(
+        replay.AppliedFeatures, PicaShaderInstrumentationFeature::NormalGuide));
+
+    // This native program uses "normal" as a color, not a surface normal.
+    // The frontend contract is authoritative over legacy source inference.
+    request.FragmentShaderHooks = AnalyzePicaFragmentShaderHooks(source);
+    request.FragmentShaderHooks.Semantics = static_cast<PicaShaderSemantic>(
+        static_cast<uint32_t>(request.FragmentShaderHooks.Semantics) &
+        ~static_cast<uint32_t>(PicaShaderSemantic::MaterialNormal));
+    const auto& live = cache.Resolve(request, effects);
+    EXPECT_FALSE(HasPicaShaderInstrumentationFeature(
+        live.AppliedFeatures, PicaShaderInstrumentationFeature::NormalGuide));
+    // Earlier recorded draws retain their variant until the frame boundary.
+    EXPECT_TRUE(HasPicaShaderInstrumentationFeature(
+        replay.AppliedFeatures, PicaShaderInstrumentationFeature::NormalGuide));
+    EXPECT_FALSE(HasPicaShaderInstrumentationFeature(
+        cache.Resolve(request, effects).AppliedFeatures,
+        PicaShaderInstrumentationFeature::NormalGuide));
+}
+
     Fast::Oot3d::PicaShaderPipelineCache cache;
     Fast::Oot3d::EffectsSettings effects;
     auto request = BaseRequest();
