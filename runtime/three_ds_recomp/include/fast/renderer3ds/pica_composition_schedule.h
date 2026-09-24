@@ -77,6 +77,7 @@ class PicaCompositionSchedule final {
 
     [[nodiscard]] bool Valid() const noexcept;
     [[nodiscard]] uint64_t SequenceId() const noexcept;
+    [[nodiscard]] PicaCompositionPurpose Purpose() const noexcept;
     [[nodiscard]] size_t ConsumedDrawCount() const noexcept;
     [[nodiscard]] std::span<const PicaCompositionRun> Runs() const noexcept;
     [[nodiscard]] std::span<const PicaCompositionStageAnchor> Anchors()
@@ -117,6 +118,7 @@ class PicaCompositionSchedule final {
     std::vector<PicaCompositionStageAnchor> mPublishedGeometryAnchors;
     std::vector<PicaCompositionTargetSchedule> mTargets;
     uint64_t mSequenceId = 0U;
+    PicaCompositionPurpose mPurpose = PicaCompositionPurpose::Presentation;
     size_t mConsumedDrawCount = 0U;
     uint32_t mExecutionMismatchCount = 0U;
     bool mValid = false;

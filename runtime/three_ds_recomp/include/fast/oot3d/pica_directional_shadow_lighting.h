@@ -23,29 +23,27 @@ enum class PicaDirectionalShadowLightingEligibility : uint8_t {
 };
 
 struct alignas(16) PicaDirectionalShadowReceiverUniforms {
-    std::array<float, 16> ViewToShadowTexture{};
-    // strength, inverse map resolution, reserved, depth bias
+    std::array<float, 16> ViewToLight{};
+    // strength, inverse atlas resolution, reserved, finest-level depth bias
     std::array<float, 4> ShadowState{};
-    // Per-channel fraction of native direct lighting cast by the selected
-    // world-space light cluster.
+    // RGB: native direct fraction; W: selected shader-light mask for surface lighting.
     std::array<float, 4> ShadowedDirectFraction{};
     // shadow-map width, shadow-map height, PCF radius, flags
     std::array<uint32_t, 4> Extent{};
+    // Light-plane camera position and active clipmap level count.
+    std::array<float, 4> CameraLight{};
+    std::array<std::array<float, 4>, Renderer3ds::kVirtualShadowLevelCount> Levels{};
+    // Packed as uvec4[] in std140, not scalar uint[].
+    std::array<uint32_t, Renderer3ds::kVirtualShadowTableEntries> PageTable{};
 };
 
-static_assert(sizeof(PicaDirectionalShadowReceiverUniforms) == 112U);
+static_assert(sizeof(PicaDirectionalShadowReceiverUniforms) == 2848U);
 
-enum class PicaDirectionalShadowReceiverContribution : uint8_t {
-    None,
-    BakedRigidMaterial,
-};
 
 struct PicaDirectionalShadowReceiverBinding {
     PicaDirectionalShadowReceiverUniforms Uniforms;
     PicaDirectionalShadowReceiverClass Classification =
         PicaDirectionalShadowReceiverClass::LightingUnavailable;
-    PicaDirectionalShadowReceiverContribution Contribution =
-        PicaDirectionalShadowReceiverContribution::None;
 
     [[nodiscard]] bool Bound() const noexcept {
         return (Uniforms.Extent[3] & 1U) != 0U;
@@ -53,25 +51,22 @@ struct PicaDirectionalShadowReceiverBinding {
 };
 
 struct PicaDirectionalShadowHistoryState {
-    DirectionalShadowMatrix WorldToShadowTexture{};
+    Renderer3ds::VirtualShadowLayout Virtual;
+    std::array<uint32_t, Renderer3ds::kVirtualShadowTableEntries> PageTable{};
     DirectionalShadowVector WorldLightDirectionTowardSource{};
     uint64_t ProducedFrameId = 0U;
-    uint32_t Resolution = 0U;
     float Strength = 0.0F;
     float DepthBias = 0.0F;
     uint8_t PcfRadius = 0U;
 
     [[nodiscard]] bool Valid() const noexcept {
-        return ProducedFrameId != 0U && Resolution != 0U;
+        return ProducedFrameId != 0U && Virtual.Valid();
     }
 };
 
 struct PicaDirectionalShadowLightingInstrumentation {
     std::string Declarations;
-    std::string Body;
     uint64_t FragmentKey = 0U;
-    ::Oot3d::Renderer::PicaShaderHook InsertionHook =
-        ::Oot3d::Renderer::PicaShaderHook::PicaLighting;
     PicaDirectionalShadowLightingEligibility Eligibility =
         PicaDirectionalShadowLightingEligibility::Disabled;
 
@@ -88,11 +83,11 @@ BuildPicaDirectionalShadowLightingInstrumentation(
     uint64_t originalFragmentKey, bool enabled,
     const ::Oot3d::Renderer::PicaShaderHookLayout& hooks);
 
+
 [[nodiscard]] PicaDirectionalShadowReceiverBinding
-BuildPicaDirectionalShadowReceiverBinding(
+BuildPicaSurfaceShadowReceiverBinding(
     const DirectionalShadowMatrix& currentViewToWorld,
-    const PicaNativeLightingState& nativeLighting,
-    bool skinnedGeometry,
+    std::span<const PicaSurfaceShadowLight> lights,
     const PicaDirectionalShadowHistoryState& history) noexcept;
 
 } // namespace Fast::Oot3d

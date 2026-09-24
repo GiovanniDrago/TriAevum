@@ -110,6 +110,31 @@ int main() {
         0x01U, 0x02U, 0x03U, 0x04U,
         0x05U, 0x06U, 0x07U, 0x08U};
     runtime.PicaTextureCache.push_back(cachedTexture);
+    // A GPU copy version carries its identity in CopyProducer; the renderer
+    // leaves every ordinary native cache key field zero for these entries.
+    Oot3d::Renderer::PicaTextureCacheEntrySnapshot copiedTexture;
+    copiedTexture.ImageWidth = 2U;
+    copiedTexture.ImageHeight = 1U;
+    copiedTexture.PixelBytes = {
+        0x11U, 0x22U, 0x33U, 0x44U,
+        0x55U, 0x66U, 0x77U, 0x88U};
+    copiedTexture.HasCopyProducer = true;
+    copiedTexture.CopyProducer.RenderTargetNamespace = 0U;
+    copiedTexture.CopyProducer.CompletionId = 41U;
+    copiedTexture.CopyProducer.AfterDrawSubmissionId = 39U;
+    copiedTexture.CopyProducer.SourcePhysicalAddress = 0x20000200U;
+    copiedTexture.CopyProducer.SourceWidth = 2U;
+    copiedTexture.CopyProducer.SourceHeight = 1U;
+    copiedTexture.CopyProducer.SourceNativeFormat = 0U;
+    copiedTexture.CopyProducer.Spans = {{0x20000200U, 0x20000300U, 8U}};
+    copiedTexture.CopyProducer.ColorEncoding = 1U;
+    copiedTexture.CopyProducer.SceneEffectsResolved = true;
+    runtime.PicaTextureCache.push_back(copiedTexture);
+    // Equal native cache keys can still name different immutable GPU versions.
+    copiedTexture.CopyProducer.CompletionId = 42U;
+    copiedTexture.CopyProducer.AfterDrawSubmissionId = 40U;
+    copiedTexture.PixelBytes[0] = 0x99U;
+    runtime.PicaTextureCache.push_back(copiedTexture);
     runtime.PicaColorTargetsAvailable = true;
     Oot3d::Renderer::PicaRenderTargetColorSnapshot target;
     target.ColorPhysicalAddress = 0x20000200U;
@@ -119,6 +144,7 @@ int main() {
     target.FramebufferDepthFormat = 2U;
     target.ImageWidth = 2U;
     target.ImageHeight = 1U;
+    target.SceneEffectsResolved = true;
     target.ColorRgba8 = {
         0x10U, 0x20U, 0x30U, 0x40U,
         0x50U, 0x60U, 0x70U, 0x80U};
@@ -140,6 +166,7 @@ int main() {
     displayImage.ImageWidth = 2U;
     displayImage.ImageHeight = 1U;
     displayImage.Initialized = true;
+    displayImage.SceneEffectsResolved = true;
     displayImage.ColorRgba8 = {
         0x80U, 0x70U, 0x60U, 0x50U,
         0x40U, 0x30U, 0x20U, 0x10U};
@@ -178,6 +205,40 @@ int main() {
     std::cout << "save capture=" << io.CaptureSeconds
               << " encode=" << io.EncodeSeconds
               << " io=" << io.IoSeconds << '\n';
+
+    // A producer-only entry is judged by its producer schema: malformed
+    // identity, layout or pixels must still be rejected.
+    {
+        auto malformed = runtime;
+        malformed.PicaTextureCache[1].CopyProducer.CompletionId = 0U;
+        std::string producerError;
+        Require(!SaveNativeA32State(
+                    root / "malformed-producer-id.oot3dsav", compatibility,
+                    malformed, process, host, picaFrontend, submissionQueue,
+                    dspHle, nullptr, &producerError),
+                "savestate accepted a producer without a completion identity");
+    }
+    {
+        auto malformed = runtime;
+        malformed.PicaTextureCache[1].CopyProducer.Spans[0].SourceAddress =
+            0x20000100U;
+        std::string producerError;
+        Require(!SaveNativeA32State(
+                    root / "malformed-producer-layout.oot3dsav", compatibility,
+                    malformed, process, host, picaFrontend, submissionQueue,
+                    dspHle, nullptr, &producerError),
+                "savestate accepted a producer span outside its source");
+    }
+    {
+        auto malformed = runtime;
+        malformed.PicaTextureCache[1].PixelBytes.resize(4U);
+        std::string producerError;
+        Require(!SaveNativeA32State(
+                    root / "malformed-producer-pixels.oot3dsav", compatibility,
+                    malformed, process, host, picaFrontend, submissionQueue,
+                    dspHle, nullptr, &producerError),
+                "savestate accepted a producer with incomplete pixels");
+    }
 
     Require(process.Memory().Write32(0x00100020U, 0xDEADBEEFU),
             "cannot mutate guest memory");
@@ -240,7 +301,38 @@ int main() {
                 runtime.PicaVisualReplayState ==
                     std::vector<uint8_t>({0x50U, 0x56U, 0x52U, 0x31U}) &&
                 runtime.PicaTextureCacheAvailable &&
-                runtime.PicaTextureCache.size() == 1U &&
+                runtime.PicaTextureCache.size() == 3U &&
+                !runtime.PicaTextureCache[0].HasCopyProducer &&
+                runtime.PicaTextureCache[1].HasCopyProducer &&
+                runtime.PicaTextureCache[1].CopyProducer
+                        .RenderTargetNamespace == 0U &&
+                runtime.PicaTextureCache[1].CopyProducer.CompletionId == 41U &&
+                runtime.PicaTextureCache[1].CopyProducer
+                        .AfterDrawSubmissionId == 39U &&
+                runtime.PicaTextureCache[1].CopyProducer
+                        .SourcePhysicalAddress == 0x20000200U &&
+                runtime.PicaTextureCache[1].CopyProducer.SourceWidth == 2U &&
+                runtime.PicaTextureCache[1].CopyProducer.SourceHeight == 1U &&
+                runtime.PicaTextureCache[1].CopyProducer
+                        .SourceNativeFormat == 0U &&
+                runtime.PicaTextureCache[1].CopyProducer.ColorEncoding == 1U &&
+                runtime.PicaTextureCache[1].CopyProducer.SceneEffectsResolved &&
+                runtime.PicaTextureCache[1].CopyProducer.Spans.size() == 1U &&
+                runtime.PicaTextureCache[1].CopyProducer.Spans[0]
+                        .DestinationAddress == 0x20000300U &&
+                runtime.PicaTextureCache[1].CopyProducer.Spans[0].ByteCount ==
+                    8U &&
+                runtime.PicaTextureCache[1].PixelBytes ==
+                    std::vector<uint8_t>({0x11U, 0x22U, 0x33U, 0x44U, 0x55U,
+                                          0x66U, 0x77U, 0x88U}) &&
+                runtime.PicaTextureCache[2].CopyProducer.CompletionId == 42U &&
+                runtime.PicaTextureCache[2].CopyProducer.AfterDrawSubmissionId == 40U &&
+                runtime.PicaTextureCache[2].CopyProducer.SceneEffectsResolved &&
+                runtime.PicaTextureCache[2].PixelBytes[0] == 0x99U &&
+                runtime.PicaTextureCache[1].ContentHash == 0U &&
+                runtime.PicaTextureCache[1].PhysicalAddress == 0U &&
+                runtime.PicaTextureCache[1].SourceWidth == 0U &&
+                runtime.PicaTextureCache[1].SourceHeight == 0U &&
                 runtime.PicaTextureCache[0].ContentHash ==
                     0x1122334455667788ULL &&
                 runtime.PicaTextureCache[0].ReplacementGeneration == 3U &&
@@ -260,6 +352,7 @@ int main() {
                     0x20000200U &&
                 runtime.PicaColorTargets[0].ImageWidth == 2U &&
                 runtime.PicaColorTargets[0].ImageHeight == 1U &&
+                runtime.PicaColorTargets[0].SceneEffectsResolved &&
                 runtime.PicaColorTargets[0].ColorRgba8 ==
                     std::vector<uint8_t>({
                         0x10U, 0x20U, 0x30U, 0x40U,
@@ -274,6 +367,7 @@ int main() {
                         .OutputPhysicalAddress == 0x20000600U &&
                 runtime.PicaPresentationState.DisplayImages[0]
                         .HasDepthTarget &&
+                runtime.PicaPresentationState.DisplayImages[0].SceneEffectsResolved &&
                 runtime.PicaPresentationState.DisplayImages[0].ColorRgba8 ==
                     std::vector<uint8_t>({
                         0x80U, 0x70U, 0x60U, 0x50U,

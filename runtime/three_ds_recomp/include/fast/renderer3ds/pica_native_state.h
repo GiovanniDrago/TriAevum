@@ -147,6 +147,19 @@ struct PicaVertexAttributeView {
     uint16_t ByteOffset = 0;
 };
 
+// Explicit producer of the bytes a sampler reads. A raw PICA TextureCopy runs
+// on the GPU; until a guest CPU write or a newer copy takes the bytes back, the
+// copy's ordered producer owns that physical subrange and the sampled color must
+// come from that immutable GPU version rather than a re-uploaded guest payload.
+// Identity is the producer's CompletionId inside the draw's render-target
+// namespace: never a byte hash, and never inferred from an absent hash.
+struct PicaTextureCopyReference {
+    uint64_t CompletionId = 0;
+    uint64_t AfterDrawSubmissionId = 0;
+    uint32_t PhysicalAddress = 0;
+    uint32_t ByteCount = 0;
+};
+
 struct PicaTextureView {
     uint8_t Slot = 0;
     uint16_t Width = 0;
@@ -167,6 +180,12 @@ struct PicaTextureView {
     bool NativeContentHashAvailable = false;
     uint64_t NativeBaseLevelContentHash = 0;
     bool NativeBaseLevelContentHashAvailable = false;
+    // Empty for an ordinary CPU-owned texture. Non-empty only where an ordered
+    // raw copy still owns bytes of this immutable draw snapshot; each entry is
+    // the intersection of that producer's destination subrange with this
+    // texture's physical byte range, so the union is exactly what the producer
+    // covers and a partially covered texture stays CPU-owned.
+    std::span<const PicaTextureCopyReference> CopyReferences;
 };
 
 inline constexpr size_t kPicaLightingLutPackedEntryCount = 24U * 256U;

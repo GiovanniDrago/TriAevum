@@ -287,6 +287,11 @@ PicaSceneRecordStatus PicaSceneFrame::Record(
              desc.UniformBuffer.Size - desc.FragmentUniformOffset)) {
         return mImpl->Reject(PicaSceneRecordStatus::InvalidUniformRange);
     }
+    if (desc.SurfaceLightingUniformSize != 0U &&
+        (desc.SurfaceLightingUniformOffset > desc.UniformBuffer.Size ||
+         desc.SurfaceLightingUniformSize > desc.UniformBuffer.Size - desc.SurfaceLightingUniformOffset)) {
+        return mImpl->Reject(PicaSceneRecordStatus::InvalidUniformRange);
+    }
     if (desc.GeometryBuffer.NativeHandle == 0U ||
         desc.VertexBindings.empty() || desc.VertexOrIndexCount == 0U) {
         return mImpl->Reject(PicaSceneRecordStatus::InvalidGeometryRange);
@@ -358,6 +363,9 @@ PicaSceneRecordStatus PicaSceneFrame::Record(
     record.CommandListOffsetWords = desc.CommandListOffsetWords;
     record.CompositionDomain = desc.CompositionDomain;
     record.Composition = desc.Composition;
+    record.LightingWorldToView = desc.LightingWorldToView;
+    record.SceneDirectionals = desc.SceneDirectionals;
+    record.ShadowCaster = desc.ShadowCaster;
     record.Raster = desc.Raster;
     record.RenderTarget = desc.RenderTarget;
     record.CanonicalDescriptorSchemaVersion =
@@ -391,6 +399,8 @@ PicaSceneRecordStatus PicaSceneFrame::Record(
     record.FragmentUniformSize = desc.FragmentUniformSize;
     record.FragmentUniformContentVersion =
         HashPicaUniformBytes(desc.PackedFragmentUniforms);
+    record.SurfaceLightingUniformOffset = desc.SurfaceLightingUniformOffset;
+    record.SurfaceLightingUniformSize = desc.SurfaceLightingUniformSize;
     record.GeometryBuffer = desc.GeometryBuffer;
     record.FirstVertexBinding =
         static_cast<uint32_t>(mImpl->DrawVertexBindings.size());
@@ -452,8 +462,7 @@ PicaSceneRecordStatus PicaSceneFrame::Record(
         record.VertexShader->VertexHooks.Has(
             ::Fast::Renderer3ds::PicaVertexShaderSemantic::
                 ViewPositionOutput) &&
-        record.NativeTransform.CurrentViewToWorldAvailable &&
-        record.NativeTransform.CurrentUsesSkeleton;
+        record.NativeTransform.CurrentViewToWorldAvailable;
     if (directionalShadowCaster) {
         ++mImpl->DirectionalShadowCasters;
         if (record.NativeLighting.Available &&

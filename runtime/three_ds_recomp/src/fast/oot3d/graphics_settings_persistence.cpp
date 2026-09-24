@@ -69,7 +69,7 @@ constexpr EnumNames<FrameRateMode> kFrameRateNames{
 };
 constexpr EnumNames<DirectionalShadowMode> kDirectionalShadowNames{
     {DirectionalShadowMode::Off, "Off"},
-    {DirectionalShadowMode::SingleCascade, "SingleCascade"},
+    {DirectionalShadowMode::VirtualShadowMaps, "VirtualShadowMaps"},
 };
 constexpr EnumNames<AmbientOcclusionMode> kAoNames{
     {AmbientOcclusionMode::Off, "Off"},
@@ -84,6 +84,16 @@ constexpr EnumNames<ToonMode> kToonNames{
     {ToonMode::Off, "Off"},
     {ToonMode::PostProcessPreview, "PostProcessPreview"},
     {ToonMode::PicaMaterial, "PicaMaterial"},
+};
+constexpr EnumNames<SurfaceLightingMode> kSurfaceLightingNames{
+    {SurfaceLightingMode::Native, "Native"},
+    {SurfaceLightingMode::PerPixel, "PerPixel"},
+    {SurfaceLightingMode::PerPixelPbr, "PerPixelPBR"},
+};
+constexpr EnumNames<Renderer3ds::PicaPbrDebugView> kPbrDebugNames{
+    {Renderer3ds::PicaPbrDebugView::Shaded, "Shaded"},
+    {Renderer3ds::PicaPbrDebugView::SurfaceNormals, "SurfaceNormals"},
+    {Renderer3ds::PicaPbrDebugView::Roughness, "Roughness"},
 };
 constexpr EnumNames<GrassQuality> kGrassQualityNames{
     {GrassQuality::Off, "Off"},
@@ -874,7 +884,7 @@ GraphicsCapabilities PermissiveCapabilities() {
     for (uint8_t value =
              static_cast<uint8_t>(GraphicsCapability::NriInterop);
          value <= static_cast<uint8_t>(
-                      GraphicsCapability::ExclusiveFullscreen);
+                      GraphicsCapability::NativeSurfaceLighting);
          ++value) {
         capabilities.Set(
             static_cast<GraphicsCapability>(value), true);
@@ -1203,6 +1213,12 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
              settings.GrassSavedPreset)},
         {"Effects",
          {
+             {"SurfaceLighting", EnumName(effects.SurfaceLighting, kSurfaceLightingNames)},
+             {"PBR", {
+                 {"NormalStrength", effects.Pbr.NormalStrength},
+                 {"GlossinessStrength", effects.Pbr.GlossinessStrength},
+                 {"DebugView", EnumName(effects.Pbr.DebugView, kPbrDebugNames)},
+             }},
              {"DirectionalShadows",
               {
                   {"Mode",
@@ -1211,14 +1227,12 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                   {"Resolution", directionalShadows.Resolution},
                   {"MaximumDistance",
                    directionalShadows.MaximumDistance},
-                  {"DepthPadding", directionalShadows.DepthPadding},
                   {"DepthBiasConstant",
                    directionalShadows.DepthBiasConstant},
                   {"DepthBiasSlope",
                    directionalShadows.DepthBiasSlope},
                   {"Strength", directionalShadows.Strength},
                   {"PcfRadius", directionalShadows.PcfRadius},
-                  {"Stabilize", directionalShadows.Stabilize},
               }},
              {"AO",
               {
@@ -1482,16 +1496,36 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
             RequireObject(document, "Effects",
                           "Graphics.Effects", result)) {
         auto& value = result.Value.Effects;
+        if (FindMember(*effects, "SurfaceLighting")) {
+            ReadEnum(*effects, "SurfaceLighting", value.SurfaceLighting,
+                     kSurfaceLightingNames, "Graphics.Effects.SurfaceLighting", result);
+        } else {
+            value.SurfaceLighting = SurfaceLightingMode::Native;
+        }
+        if (FindMember(*effects, "PBR")) {
+            if (const Json* pbr = RequireObject(*effects, "PBR", "Graphics.Effects.PBR", result)) {
+                ReadScalar(*pbr, "NormalStrength", value.Pbr.NormalStrength,
+                           "Graphics.Effects.PBR.NormalStrength", result);
+                ReadScalar(*pbr, "GlossinessStrength", value.Pbr.GlossinessStrength,
+                           "Graphics.Effects.PBR.GlossinessStrength", result);
+                ReadEnum(*pbr, "DebugView", value.Pbr.DebugView, kPbrDebugNames,
+                         "Graphics.Effects.PBR.DebugView", result);
+            }
+        }
         if (version >= 3U) {
             if (const Json* shadows =
                     RequireObject(*effects, "DirectionalShadows",
                                   "Graphics.Effects.DirectionalShadows",
                                   result)) {
                 auto& settings = value.DirectionalShadows;
-                ReadEnum(*shadows, "Mode", settings.Mode,
-                         kDirectionalShadowNames,
-                         "Graphics.Effects.DirectionalShadows.Mode",
-                         result);
+                const auto* mode = FindMember(*shadows, "Mode");
+                const bool legacyMode = mode != nullptr && mode->is_string() && *mode == "SingleCascade";
+                if (legacyMode) {
+                    settings.Mode = DirectionalShadowMode::VirtualShadowMaps;
+                } else {
+                    ReadEnum(*shadows, "Mode", settings.Mode, kDirectionalShadowNames,
+                             "Graphics.Effects.DirectionalShadows.Mode", result);
+                }
                 ReadScalar(
                     *shadows, "Resolution", settings.Resolution,
                     "Graphics.Effects.DirectionalShadows.Resolution",
@@ -1500,10 +1534,6 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                     *shadows, "MaximumDistance",
                     settings.MaximumDistance,
                     "Graphics.Effects.DirectionalShadows.MaximumDistance",
-                    result);
-                ReadScalar(
-                    *shadows, "DepthPadding", settings.DepthPadding,
-                    "Graphics.Effects.DirectionalShadows.DepthPadding",
                     result);
                 ReadScalar(
                     *shadows, "DepthBiasConstant",
@@ -1523,10 +1553,13 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                     *shadows, "PcfRadius", settings.PcfRadius,
                     "Graphics.Effects.DirectionalShadows.PcfRadius",
                     result);
-                ReadScalar(
-                    *shadows, "Stabilize", settings.Stabilize,
-                    "Graphics.Effects.DirectionalShadows.Stabilize",
-                    result);
+                if (version < 12U || legacyMode) {
+                    // The old distance sized a camera-fitted map; it is not a
+                    // virtual-map coverage limit. Preserve strength/filter/bias.
+                    settings.MaximumDistance = DirectionalShadowSettings{}.MaximumDistance;
+                    settings.Resolution = std::max(settings.Resolution, 2048U);
+                    result.NeedsRewrite = true;
+                }
             }
         } else {
             value.DirectionalShadows = {};

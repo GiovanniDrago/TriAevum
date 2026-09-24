@@ -57,7 +57,13 @@ bool PicaCompositionSchedule::Compile(
         SetError(error, "native PICA composition sequence identity is missing");
         return false;
     }
-    if (sequence.Draws.empty()) {
+    if (sequence.Purpose != PicaCompositionPurpose::Presentation &&
+        sequence.Purpose != PicaCompositionPurpose::NativeMemory) {
+        SetError(error, "native PICA composition purpose is unsupported");
+        return false;
+    }
+    if (sequence.Draws.empty() &&
+        sequence.Purpose != PicaCompositionPurpose::NativeMemory) {
         SetError(error, "native PICA composition sequence has no draws");
         return false;
     }
@@ -89,6 +95,7 @@ bool PicaCompositionSchedule::Compile(
         mDraws.push_back(draw);
     }
     mSequenceId = sequence.SequenceId;
+    mPurpose = sequence.Purpose;
 
     for (size_t index = 0U; index < mDraws.size(); ++index) {
         const auto& draw = mDraws[index];
@@ -309,6 +316,7 @@ void PicaCompositionSchedule::Reset() noexcept {
     mPublishedGeometryAnchors.clear();
     mTargets.clear();
     mSequenceId = 0U;
+    mPurpose = PicaCompositionPurpose::Presentation;
     mConsumedDrawCount = 0U;
     mExecutionMismatchCount = 0U;
     mValid = false;
@@ -322,6 +330,14 @@ uint64_t PicaCompositionSchedule::SequenceId() const noexcept {
     return mSequenceId;
 }
 
+PicaCompositionPurpose PicaCompositionSchedule::Purpose() const noexcept {
+    return mPurpose;
+}
+
+size_t PicaCompositionSchedule::ConsumedDrawCount() const noexcept {
+    return mConsumedDrawCount;
+}
+
 std::span<const PicaCompositionRun>
 PicaCompositionSchedule::Runs() const noexcept {
     return mRuns;
@@ -330,10 +346,6 @@ PicaCompositionSchedule::Runs() const noexcept {
 std::span<const PicaCompositionStageAnchor>
 PicaCompositionSchedule::Anchors() const noexcept {
     return mAnchors;
-size_t PicaCompositionSchedule::ConsumedDrawCount() const noexcept {
-    return mConsumedDrawCount;
-}
-
 }
 
 std::span<const PicaCompositionTargetSchedule>

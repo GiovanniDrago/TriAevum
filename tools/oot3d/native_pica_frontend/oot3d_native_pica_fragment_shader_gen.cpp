@@ -821,6 +821,9 @@ bool GenerateOot3dPicaFragmentShader(
         source << "    combiner_output = pica_evaluate_tev_resolved(fragment_uniforms.tev_program, tev_inputs);\n";
         if (!supported) { SetError(error, "parametric TEV texture interface unsupported"); return false; }
     }
+    hooks.Offsets[static_cast<size_t>(
+        Oot3d::Renderer::PicaShaderHook::AfterNativeTev)] =
+        StreamOffset(source);
 
     for (uint8_t texture = 0U;
          texture < hooks.TextureSamples.size(); ++texture) {

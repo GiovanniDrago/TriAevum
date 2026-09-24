@@ -235,8 +235,8 @@ int main(int argc, char** argv) {
 #if defined(OOT3D_REQUIRE_WHOLE_AOT_PLUGIN_V2)
         if (!Oot3dNativeGame::Oot3dWholeAotPluginV2Available()) {
             throw std::runtime_error(
-                "the private whole-AOT ABI-v2 plugin is missing or invalid; "
-                "run TriAevum Forge again before launching the game");
+                "the packaged whole-AOT ABI-v2 title module is missing or incompatible "
+                "(memory visibility ABI 2 required); install a matching runtime/title package");
         }
 #endif
 #if defined(__SWITCH__)

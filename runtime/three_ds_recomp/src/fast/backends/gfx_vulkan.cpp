@@ -615,6 +615,7 @@ void GfxRenderingAPIVulkan::DrawTrianglesFromBuffer(VkBuffer vertexBuffer,
     mDrawUniforms.FrameCount = mFrameCounter;
     mDrawUniforms.NoiseScale = mCurrentNoiseScale;
 
+    EnsureFrameUniformCapacity(sizeof(mDrawUniforms), mStorageBufferAlignment);
     const VkDeviceSize uniformOffset =
         (frame.UniformBytesUsed + mStorageBufferAlignment - 1) &
         ~(mStorageBufferAlignment - 1);
@@ -878,6 +879,16 @@ void GfxRenderingAPIVulkan::Init() {
             "OOT3D Vulkan NRI PICA display copies unavailable: {}",
             mNriPicaDisplayCopyPass.UnavailableReason());
     }
+    if (!mNriPicaTextureCopyCapturePass.Initialize(mNriInterop)) {
+        SPDLOG_INFO(
+            "OOT3D Vulkan NRI PICA raw-copy capture unavailable: {}",
+            mNriPicaTextureCopyCapturePass.UnavailableReason());
+    }
+    if (!mNriPicaTextureCopyDerivePass.Initialize(mNriInterop)) {
+        SPDLOG_INFO(
+            "OOT3D Vulkan NRI PICA raw-copy derivation unavailable: {}",
+            mNriPicaTextureCopyDerivePass.UnavailableReason());
+    }
     if (!mNriPicaMemoryFillClearPass.Initialize(mNriInterop)) {
         SPDLOG_INFO(
             "OOT3D Vulkan NRI PICA memory-fill clears unavailable: {}",
@@ -967,6 +978,7 @@ void GfxRenderingAPIVulkan::Init() {
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::SampledDepth, true);
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::NormalGuide, true);
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::MaterialGuide, true);
+    settingsRuntime.SetCapability(Oot3d::GraphicsCapability::NativeSurfaceLighting, true);
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::MotionVectors,
                                   mMotionVectorPass.Available(),
                                   mMotionVectorPass.UnavailableReason());
@@ -1149,6 +1161,8 @@ void GfxRenderingAPIVulkan::Shutdown() {
         DestroyNativePicaGeometryResources();
         DestroyNativePicaShaderResources();
         mNriPicaDisplayCopyPass.Shutdown();
+        mNriPicaTextureCopyCapturePass.Shutdown();
+        mNriPicaTextureCopyDerivePass.Shutdown();
         mNriPicaMemoryFillClearPass.Shutdown();
         mNriPicaRenderTargetInitPass.Shutdown();
         mNriPicaRenderTargetOwner.Shutdown();
@@ -1195,6 +1209,8 @@ void GfxRenderingAPIVulkan::Shutdown() {
             }
             DestroyBuffer(frame.VertexBuffer);
             DestroyBuffer(frame.UniformBuffer);
+            for (auto& buffer : frame.RetiredUniformBuffers) DestroyBuffer(buffer);
+            frame.RetiredUniformBuffers.clear();
         }
         for (auto& [key, shader] : mShaders) {
             if (shader.VertexShader != VK_NULL_HANDLE) {
@@ -1227,9 +1243,8 @@ void GfxRenderingAPIVulkan::Shutdown() {
             vkDestroyFence(mDevice, mRawCopyFence, nullptr);
             mRawCopyFence = VK_NULL_HANDLE;
         }
-        DestroyBuffer(mRawCopyReadbackBuffer);
+        DestroyGpuTextureCopySurfaces();
         DestroyRawCopyEncodeResources();
-        DestroyRawCopyDecodeResources();
         if (mOot3dShadow2dRenderPass != VK_NULL_HANDLE) {
             vkDestroyRenderPass(mDevice, mOot3dShadow2dRenderPass, nullptr);
             mOot3dShadow2dRenderPass = VK_NULL_HANDLE;
@@ -1550,6 +1565,10 @@ void GfxRenderingAPIVulkan::StartFrame() {
     if (!mInitialized || mFrameActive || mFrameSubmitted) {
         return;
     }
+    // Guest completion survives presentations. A visual replay, however, must
+    // capture this sample's source image again instead of reusing alpha zero.
+    std::erase_if(mHandledNativePicaTextureCopies,
+                  [](const auto& entry) { return !entry.second.second; });
     auto& settingsRuntime = Oot3d::GraphicsSettingsRuntime::Instance();
     Oot3d::TickCacaoDiagnostics(settingsRuntime, mFrameCounter);
     Oot3d::TickDisplayDiagnostics(settingsRuntime, mFrameCounter);
@@ -1686,9 +1705,26 @@ void GfxRenderingAPIVulkan::StartFrame() {
     }
     auto graphicsSnapshot = settingsRuntime.SnapshotForRendering();
     const auto& nextGraphicsSettings = graphicsSnapshot.Value;
+    if (mFrameEnvironment != graphicsSnapshot.Environment) {
+        mTemporalAaPass.ResetHistory();
+        mTaaOutputValid = false;
+        // Never use a previous scene/sun's depth map for a new lighting direction.
+        if (mFrameEnvironment.ScopeIdentity != graphicsSnapshot.Environment.ScopeIdentity ||
+            mFrameEnvironment.Enabled != graphicsSnapshot.Environment.Enabled ||
+            mFrameEnvironment.Lights[0].DirectionTowardSource !=
+                graphicsSnapshot.Environment.Lights[0].DirectionTowardSource)
+            mNriDirectionalShadowPass.InvalidateHistory();
+        mFrameEnvironment = graphicsSnapshot.Environment;
+    }
+    if (mFrameGraphicsSettings.Effects.DirectionalShadows.Mode != nextGraphicsSettings.Effects.DirectionalShadows.Mode ||
+        mFrameGraphicsSettings.Effects.SurfaceLighting != nextGraphicsSettings.Effects.SurfaceLighting)
+        mNriDirectionalShadowPass.InvalidateHistory();
     if (mFrameGraphicsSettingsRevision != 0 &&
         (mFrameGraphicsSettings.Grass.Quality != nextGraphicsSettings.Grass.Quality ||
          mFrameGraphicsSettings.Effects.Toon != nextGraphicsSettings.Effects.Toon ||
+         mFrameGraphicsSettings.Effects.SurfaceLighting != nextGraphicsSettings.Effects.SurfaceLighting ||
+         (nextGraphicsSettings.Effects.SurfaceLighting == Oot3d::SurfaceLightingMode::PerPixelPbr &&
+          mFrameGraphicsSettings.Effects.Pbr != nextGraphicsSettings.Effects.Pbr) ||
          mFrameGraphicsSettings.Effects.ToonStyle.OutlineEnabled != nextGraphicsSettings.Effects.ToonStyle.OutlineEnabled ||
          mFrameGraphicsSettings.Effects.AmbientOcclusion != nextGraphicsSettings.Effects.AmbientOcclusion ||
          mFrameGraphicsSettings.Effects.Reflections != nextGraphicsSettings.Effects.Reflections)) {
@@ -1742,7 +1778,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
         !mNativeFidelityProfile && aaPolicy.TemporalMotion;
     const Oot3d::PicaAttachmentFeatureRequests extensionRequests{
         graphicsSettings.Effects.DirectionalShadows.Mode ==
-            Oot3d::DirectionalShadowMode::SingleCascade,
+            Oot3d::DirectionalShadowMode::VirtualShadowMaps,
         graphicsSettings.Effects.AmbientOcclusion ==
             Oot3d::AmbientOcclusionMode::Cacao,
         graphicsSettings.Effects.Toon != Oot3d::ToonMode::Off &&
@@ -1884,7 +1920,21 @@ void GfxRenderingAPIVulkan::StartFrame() {
                  mInFlightFences[mCurrentFrame], VkFence{VK_NULL_HANDLE});
     mScanoutProbe.Consume(mCurrentFrame);
     ReleaseRetiredNativePicaGeometryBuffers(mCurrentFrame);
+    RetireGpuTextureCopyProducers(mGpuCopySubmittedFrames[mCurrentFrame]);
     auto& frame = mFrameResources[mCurrentFrame];
+    for (auto& image : frame.RetiredTextures) DestroyTexture(image);
+    frame.RetiredTextures.clear();
+    for (auto& buffer : frame.RetiredUniformBuffers) DestroyBuffer(buffer);
+    frame.RetiredUniformBuffers.clear();
+    for (auto material = mNativePicaMaterials.begin(); material != mNativePicaMaterials.end();) {
+        if (mFrameCounter <= material->second.LastUsedFrame + 240U) {
+            ++material;
+            continue;
+        }
+        RetireNativePicaMaterial(material->second.Active);
+        RetireNativePicaMaterial(material->second.Pending);
+        material = mNativePicaMaterials.erase(material);
+    }
     mCompletedNativePicaIds.insert(mCompletedNativePicaIds.end(),
                                    frame.NativePicaCompletionIds.begin(),
                                    frame.NativePicaCompletionIds.end());
@@ -1972,6 +2022,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
     CheckVk(vkResetFences(mDevice, 1, &mInFlightFences[mCurrentFrame]), "vkResetFences");
     CheckVk(vkResetCommandBuffer(mCommandBuffers[mCurrentFrame], 0), "vkResetCommandBuffer");
 
+    mFrameAcquirePending = true;
     mFrameExternalComputeSplit = false;
     mFrameExternalWaitSemaphore = VK_NULL_HANDLE;
     mFrameExternalWaitValue = 0U;
@@ -2082,35 +2133,10 @@ void GfxRenderingAPIVulkan::EndFrame() {
     mGpuProfiler.EndFrame(mCurrentFrame, mCommandBuffers[mCurrentFrame]);
     CheckVk(vkEndCommandBuffer(mCommandBuffers[mCurrentFrame]), "vkEndCommandBuffer");
 
-    const std::array<VkSemaphore, 2> waitSemaphores{
-        mImageAvailableSemaphores[mCurrentFrame],
-        mFrameExternalWaitSemaphore};
-    const std::array<VkPipelineStageFlags, 2> waitStages{
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
-    const std::array<uint64_t, 2> waitValues{
-        0U, mFrameExternalWaitValue};
-    const uint64_t signalValue = 0U;
-    VkTimelineSemaphoreSubmitInfo timeline{
-        VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
-    if (mFrameExternalComputeSplit) {
-        timeline.waitSemaphoreValueCount =
-            static_cast<uint32_t>(waitValues.size());
-        timeline.pWaitSemaphoreValues = waitValues.data();
-        timeline.signalSemaphoreValueCount = 1U;
-        timeline.pSignalSemaphoreValues = &signalValue;
-    }
-    VkSubmitInfo submitInfo{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
-    submitInfo.pNext = mFrameExternalComputeSplit ? &timeline : nullptr;
-    submitInfo.waitSemaphoreCount = mFrameExternalComputeSplit ? 2U : 1U;
-    submitInfo.pWaitSemaphores = waitSemaphores.data();
-    submitInfo.pWaitDstStageMask = waitStages.data();
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &mCommandBuffers[mCurrentFrame];
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &mRenderFinishedSemaphores[mCurrentImage];
-    CheckVk(vkQueueSubmit(mGraphicsQueue, 1, &submitInfo, mInFlightFences[mCurrentFrame]),
-            "vkQueueSubmit");
+    SubmitFrameCommandBuffer(mCommandBuffers[mCurrentFrame],
+                             mInFlightFences[mCurrentFrame],
+                             mRenderFinishedSemaphores[mCurrentImage]);
+    mGpuCopySubmittedFrames[mCurrentFrame] = mFrameCounter;
     mFrameActive = false;
     mFrameSubmitted = true;
 }
@@ -2986,25 +3012,28 @@ void GfxRenderingAPIVulkan::StorePipelineCache() {
                  static_cast<unsigned long long>(mNativePicaVulkanPipelineCreations));
     std::fprintf(stderr, "TRIAEVUM_PICA_VULKAN_SHADER_PAIRS created=%llu\n",
                  static_cast<unsigned long long>(mNativePicaVulkanShaderPairCreations));
-    if (mRawCopySamplerCost.Resolutions != 0U) {
+    const auto& copySampler = mGpuTextureCopySamplerCost;
+    if (copySampler.Resolutions != 0U) {
         std::fprintf(stderr,
-                     "TRIAEVUM_RAW_COPY_SAMPLER resolutions=%llu creations=%llu "
-                     "coherence_bytes=%llu native_bytes=%llu gpu_created=%llu resolve_ms=%.3f "
-                     "coherence_ms=%.3f creation_ms=%.3f\n",
-                     static_cast<unsigned long long>(mRawCopySamplerCost.Resolutions),
-                     static_cast<unsigned long long>(mRawCopySamplerCost.Creations),
-                     static_cast<unsigned long long>(mRawCopySamplerCost.CoherenceBytes),
-                     static_cast<unsigned long long>(mRawCopySamplerCost.NativeBytes),
-                     static_cast<unsigned long long>(mRawCopySamplerCost.GpuCreated),
-                     mRawCopySamplerCost.ResolveSeconds * 1000.0,
-                     mRawCopySamplerCost.CoherenceSeconds * 1000.0,
-                     mRawCopySamplerCost.CreationSeconds * 1000.0);
-    }
-    if (mRawCopyDecodePixels != 0U) {
-        std::fprintf(stderr,
-                     "TRIAEVUM_RAW_COPY_DECODE_DIFF pixels=%llu mismatches=%llu\n",
-                     static_cast<unsigned long long>(mRawCopyDecodePixels),
-                     static_cast<unsigned long long>(mRawCopyDecodeMismatches));
+                     "TRIAEVUM_GPU_COPY_SAMPLER resolutions=%llu producer=%llu "
+                     "gpu_bound=%llu gpu_bytes=%llu gpu_pixels=%llu native_pixels=%llu "
+                     "regions=%llu producer_restores=%llu fallback_unknown=%llu "
+                     "fallback_uncaptured=%llu fallback_layout=%llu fallback_mips=%llu "
+                     "resolve_ms=%.3f bind_ms=%.3f\n",
+                     static_cast<unsigned long long>(copySampler.Resolutions),
+                     static_cast<unsigned long long>(copySampler.ProducerResolutions),
+                     static_cast<unsigned long long>(copySampler.GpuBound),
+                     static_cast<unsigned long long>(copySampler.GpuBytes),
+                     static_cast<unsigned long long>(copySampler.GpuExtentPixels),
+                     static_cast<unsigned long long>(copySampler.NativeExtentPixels),
+                     static_cast<unsigned long long>(copySampler.Regions),
+                     static_cast<unsigned long long>(copySampler.ProducerRestores),
+                     static_cast<unsigned long long>(copySampler.FallbackUnknownProducer),
+                     static_cast<unsigned long long>(copySampler.FallbackUncapturedProducer),
+                     static_cast<unsigned long long>(copySampler.FallbackLayout),
+                     static_cast<unsigned long long>(copySampler.FallbackMipChain),
+                     copySampler.ResolveSeconds * 1000.0,
+                     copySampler.BindSeconds * 1000.0);
     }
     if (mRawCopyEncodeVerifyBytes != 0U) {
         std::fprintf(stderr,
@@ -3028,6 +3057,12 @@ void GfxRenderingAPIVulkan::StorePipelineCache() {
                  copyTiming.ReadbackSeconds + copyTiming.EncodeSeconds +
                      copyTiming.InvalidateSeconds + copyTiming.SpanSeconds +
                      copyTiming.CommitSeconds);
+    std::fprintf(stderr,
+                 "TRIAEVUM_DEFERRED_COPY deferred=%llu materializations=%llu prefix_waits=%llu peak_producers=%llu\n",
+                 static_cast<unsigned long long>(copyTiming.DeferredCopies),
+                 static_cast<unsigned long long>(copyTiming.Materializations),
+                 static_cast<unsigned long long>(copyTiming.PrefixWaits),
+                 static_cast<unsigned long long>(copyTiming.PeakLiveProducers));
     const auto nriData = mNriPicaPipelineBridge.GetPipelineCacheData();
     if (!nriData.empty()) {
         VkPhysicalDeviceProperties properties{};
@@ -3189,6 +3224,47 @@ void GfxRenderingAPIVulkan::CreateCommandResources() {
             "vkAllocateCommandBuffers(continuation)");
 }
 
+void GfxRenderingAPIVulkan::SubmitFrameCommandBuffer(
+    VkCommandBuffer command, VkFence fence,
+    VkSemaphore signal, uint64_t signalValue) {
+    std::array<VkSemaphore, 2> waits{};
+    std::array<VkPipelineStageFlags, 2> stages{};
+    std::array<uint64_t, 2> values{};
+    uint32_t waitCount = 0U;
+    if (mFrameAcquirePending) {
+        waits[waitCount] = mImageAvailableSemaphores[mCurrentFrame];
+        stages[waitCount++] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    }
+    const bool externalWait = mFrameExternalWaitSemaphore != VK_NULL_HANDLE;
+    if (externalWait) {
+        waits[waitCount] = mFrameExternalWaitSemaphore;
+        values[waitCount] = mFrameExternalWaitValue;
+        stages[waitCount++] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    }
+    VkTimelineSemaphoreSubmitInfo timeline{
+        VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+    timeline.waitSemaphoreValueCount = waitCount;
+    timeline.pWaitSemaphoreValues = values.data();
+    timeline.signalSemaphoreValueCount = signal != VK_NULL_HANDLE ? 1U : 0U;
+    timeline.pSignalSemaphoreValues = &signalValue;
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.pNext = externalWait || signalValue != 0U ? &timeline : nullptr;
+    submit.waitSemaphoreCount = waitCount;
+    submit.pWaitSemaphores = waits.data();
+    submit.pWaitDstStageMask = stages.data();
+    submit.commandBufferCount = 1U;
+    submit.pCommandBuffers = &command;
+    submit.signalSemaphoreCount = timeline.signalSemaphoreValueCount;
+    submit.pSignalSemaphores = &signal;
+    CheckVk(vkQueueSubmit(mGraphicsQueue, 1U, &submit, fence),
+            "vkQueueSubmit(frame)");
+    // The first prefix owns acquisition; later prefixes and the final submit
+    // must not wait a second time on the same binary semaphore.
+    mFrameAcquirePending = false;
+    mFrameExternalWaitSemaphore = VK_NULL_HANDLE;
+    mFrameExternalWaitValue = 0U;
+}
+
 VkCommandBuffer GfxRenderingAPIVulkan::SplitFrameForExternalCompute(
     VkSemaphore timelineSemaphore, uint64_t vulkanSignalValue,
     uint64_t externalCompletionValue) {
@@ -3203,18 +3279,8 @@ VkCommandBuffer GfxRenderingAPIVulkan::SplitFrameForExternalCompute(
     VkCommandBuffer prefix = mCommandBuffers[mCurrentFrame];
     CheckVk(vkEndCommandBuffer(prefix),
             "vkEndCommandBuffer(external compute prefix)");
-    VkTimelineSemaphoreSubmitInfo timeline{
-        VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
-    timeline.signalSemaphoreValueCount = 1U;
-    timeline.pSignalSemaphoreValues = &vulkanSignalValue;
-    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    submit.pNext = &timeline;
-    submit.commandBufferCount = 1U;
-    submit.pCommandBuffers = &prefix;
-    submit.signalSemaphoreCount = 1U;
-    submit.pSignalSemaphores = &timelineSemaphore;
-    CheckVk(vkQueueSubmit(mGraphicsQueue, 1U, &submit, VK_NULL_HANDLE),
-            "vkQueueSubmit(external compute prefix)");
+    SubmitFrameCommandBuffer(prefix, VK_NULL_HANDLE,
+                             timelineSemaphore, vulkanSignalValue);
 
     std::swap(mCommandBuffers[mCurrentFrame],
               mContinuationCommandBuffers[mCurrentFrame]);
@@ -3666,6 +3732,32 @@ void GfxRenderingAPIVulkan::CreateShaderResources() {
     CreateNativePicaShaderResources();
 }
 
+void GfxRenderingAPIVulkan::EnsureFrameUniformCapacity(
+    VkDeviceSize bytes, VkDeviceSize alignment) {
+    auto& frame = mFrameResources[mCurrentFrame];
+    const VkDeviceSize offset =
+        (frame.UniformBytesUsed + alignment - 1U) & ~(alignment - 1U);
+    if (offset <= frame.UniformBuffer.Size &&
+        bytes <= frame.UniformBuffer.Size - offset) {
+        return;
+    }
+    // Catch-up refreshes share one submitted frame. Reserve a complete draw
+    // before uploading any of its blocks, and retain buffers referenced by
+    // already-recorded draws until this frame's fence completes.
+    frame.RetiredUniformBuffers.reserve(frame.RetiredUniformBuffers.size() + 1U);
+    const auto replacement = CreateBuffer(
+        std::max(frame.UniformBuffer.Size * 2U, bytes),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        true);
+    frame.RetiredUniformBuffers.push_back(frame.UniformBuffer);
+    frame.UniformBuffer = replacement;
+    frame.UniformBytesUsed = 0;
+    // Legacy descriptor keys contain textures, not the implicit uniform buffer.
+    // Existing sets stay alive in the frame pool; new draws need fresh bindings.
+    frame.TextureDescriptorSets.clear();
+}
+
 void GfxRenderingAPIVulkan::CreateFrameResources() {
     constexpr VkDeviceSize kVertexArenaSize = 64ull * 1024ull * 1024ull;
     constexpr VkDeviceSize kUniformArenaSize = 4ull * 1024ull * 1024ull;
@@ -3682,9 +3774,9 @@ void GfxRenderingAPIVulkan::CreateFrameResources() {
                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                          true);
         const std::array<VkDescriptorPoolSize, 4> poolSizes = {
-            VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096 * 5 },
+            VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096 * 8 },
             VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 4096 },
-            VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4096 * 5 },
+            VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4096 * 7 },
             VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4096 },
         };
         VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
@@ -4318,12 +4410,17 @@ void GfxRenderingAPIVulkan::DestroyTexture(TextureRecord& texture) {
         if (texture.View != VK_NULL_HANDLE) {
             vkDestroyImageView(mDevice, texture.View, nullptr);
         }
-        if (texture.Image != VK_NULL_HANDLE) {
+        if (!texture.ImageBorrowed && texture.Image != VK_NULL_HANDLE) {
             vkDestroyImage(mDevice, texture.Image, nullptr);
         }
-        if (texture.Memory != VK_NULL_HANDLE) {
+        if (!texture.ImageBorrowed && texture.Memory != VK_NULL_HANDLE) {
             vkFreeMemory(mDevice, texture.Memory, nullptr);
         }
+    }
+    if (texture.BaseImage != VK_NULL_HANDLE) {
+        // The native-sized base of a derived raw-copy sample is owned here.
+        mNriPicaTextureImageOwner.Destroy(texture.BaseImage);
+        texture.BaseImage = VK_NULL_HANDLE;
     }
     texture.Image = VK_NULL_HANDLE;
     texture.NriImage = VK_NULL_HANDLE;
@@ -4333,6 +4430,8 @@ void GfxRenderingAPIVulkan::DestroyTexture(TextureRecord& texture) {
     texture.UploadedMipLevels = 0;
     texture.SamplerStateApplied = false;
     texture.NriOwnedImage = false;
+    texture.ImageBorrowed = false;
+    texture.LiveRenderTargetAlias = false;
     texture.Uploaded = false;
 }
 

@@ -12,7 +12,6 @@
 #include <NRI.h>
 #endif
 
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -56,15 +55,14 @@ struct ShadowTargetKey {
 struct ShadowTargetKeyHash {
     size_t operator()(const ShadowTargetKey& key) const noexcept {
         uint64_t value = key.RenderTargetNamespace;
-        value ^= static_cast<uint64_t>(key.ColorPhysicalAddress) +
-                 0x9e3779b97f4a7c15ULL + (value << 6U) + (value >> 2U);
+        value ^=
+            static_cast<uint64_t>(key.ColorPhysicalAddress) + 0x9e3779b97f4a7c15ULL + (value << 6U) + (value >> 2U);
         return static_cast<size_t>(value);
     }
 };
 
 std::vector<uint32_t> Compile(Renderer::CachedPassShaderCompiler& shaders, const std::string& source,
-                              Renderer::SpirvStage kind,
-                              const char* name) {
+                              Renderer::SpirvStage kind, const char* name) {
     return shaders.Resolve(source, kind, name);
 }
 
@@ -78,8 +76,7 @@ uint64_t HashBytes(uint64_t hash, const void* data, size_t size) {
     return hash;
 }
 
-template <typename T>
-uint64_t HashValue(uint64_t hash, const T& value) {
+template <typename T> uint64_t HashValue(uint64_t hash, const T& value) {
     return HashBytes(hash, &value, sizeof(value));
 }
 
@@ -106,8 +103,7 @@ nri::CullMode ToNriCullMode(PicaSceneCullMode mode) {
     return nri::CullMode::MAX_NUM;
 }
 
-template <typename Handle>
-Handle FromSceneNativeHandle(uintptr_t value) noexcept {
+template <typename Handle> Handle FromSceneNativeHandle(uintptr_t value) noexcept {
     if constexpr (std::is_pointer_v<Handle>) {
         return reinterpret_cast<Handle>(value);
     } else {
@@ -125,7 +121,8 @@ struct NriDirectionalShadowPass::Impl {
     };
 
     struct TargetHistory {
-        std::array<HistorySlot, kFrameSlots> Slots;
+        HistorySlot Slot;
+        Renderer3ds::VirtualShadowMapCache Cache;
         uint32_t Resolution = 0U;
         uint64_t LastUsedFrameId = 0U;
     };
@@ -134,19 +131,19 @@ struct NriDirectionalShadowPass::Impl {
     VkDevice Device = VK_NULL_HANDLE;
     VkSampler ReceiverSampler = VK_NULL_HANDLE;
     NriInteropContext* Interop = nullptr;
-    std::unordered_map<ShadowTargetKey, TargetHistory,
-                       ShadowTargetKeyHash>
-        Histories;
-    std::vector<NriOwnedTexture2D> RetiredTextures;
+    std::unordered_map<ShadowTargetKey, TargetHistory, ShadowTargetKeyHash> Histories;
+    struct RetiredTexture {
+        NriOwnedTexture2D Texture;
+        uint64_t FrameId;
+    };
+    std::vector<RetiredTexture> RetiredTextures;
     ResourceStateTracker OwnedStates;
     bool LastNativeLight = false;
     uint32_t LastCasters = 0U;
     NriDirectionalShadowLightTelemetry LastLight;
-    NriDirectionalShadowExecutionStage LastStage =
-        NriDirectionalShadowExecutionStage::NotAttempted;
+    NriDirectionalShadowExecutionStage LastStage = NriDirectionalShadowExecutionStage::NotAttempted;
     EffectPassBarrierExecution LastShadowMapBarrierExecution;
-    std::string Reason =
-        "NRI directional shadow pass is not initialized";
+    std::string Reason = "NRI directional shadow pass is not initialized";
 #ifdef ENABLE_OOT3D_NRI
     nri::CoreInterface* Core = nullptr;
     nri::PipelineLayout* ShadowLayout = nullptr;
@@ -166,14 +163,11 @@ struct NriDirectionalShadowPass::Impl {
     std::unordered_set<uint64_t> FailedShadowPipelines;
 #endif
 
-    void Retire(TargetHistory& history) {
-        for (auto& slot : history.Slots) {
-            if (slot.Texture.Image != VK_NULL_HANDLE) {
-                OwnedStates.Forget(
-                    reinterpret_cast<uintptr_t>(slot.Texture.Image));
-                RetiredTextures.push_back(slot.Texture);
-            }
-            slot = {};
+    void Retire(TargetHistory& history, uint64_t frameId) {
+        auto& slot = history.Slot;
+        if (slot.Texture.Image != VK_NULL_HANDLE) {
+            OwnedStates.Forget(reinterpret_cast<uintptr_t>(slot.Texture.Image));
+            RetiredTextures.push_back({ slot.Texture, frameId });
         }
         history = {};
     }
@@ -182,12 +176,10 @@ struct NriDirectionalShadowPass::Impl {
         if (Interop != nullptr) {
             for (auto& [key, history] : Histories) {
                 (void)key;
-                for (auto& slot : history.Slots) {
-                    Interop->DestroyOwnedTexture(slot.Texture.Image);
-                }
+                Interop->DestroyOwnedTexture(history.Slot.Texture.Image);
             }
             for (auto& texture : RetiredTextures) {
-                Interop->DestroyOwnedTexture(texture.Image);
+                Interop->DestroyOwnedTexture(texture.Texture.Image);
             }
         }
         Histories.clear();
@@ -196,17 +188,18 @@ struct NriDirectionalShadowPass::Impl {
     }
 
 #ifdef ENABLE_OOT3D_NRI
-    TargetHistory* EnsureTarget(const ShadowTargetKey& key,
-                                uint32_t resolution,
-                                uint64_t frameId) {
+    TargetHistory* EnsureTarget(const ShadowTargetKey& key, uint32_t resolution, uint64_t frameId) {
+        // The host has waited for this frame slot's fence. An atlas last
+        // referenced a full slot rotation ago can no longer be sampled.
+        std::erase_if(RetiredTextures, [&](const auto& retired) {
+            if (frameId < retired.FrameId || frameId - retired.FrameId < kFrameSlots)
+                return false;
+            Interop->DestroyOwnedTexture(retired.Texture.Image);
+            return true;
+        });
         auto found = Histories.find(key);
-        if (found != Histories.end() &&
-            found->second.Resolution == resolution &&
-            std::all_of(
-                found->second.Slots.begin(), found->second.Slots.end(),
-                [](const HistorySlot& slot) {
-                    return slot.Texture.Image != VK_NULL_HANDLE;
-                })) {
+        if (found != Histories.end() && found->second.Resolution == resolution &&
+            found->second.Slot.Texture.Image != VK_NULL_HANDLE) {
             found->second.LastUsedFrameId = frameId;
             return &found->second;
         }
@@ -218,41 +211,29 @@ struct NriDirectionalShadowPass::Impl {
         textureDesc.Width = resolution;
         textureDesc.Height = resolution;
         textureDesc.Format = VK_FORMAT_D32_SFLOAT;
-        textureDesc.Usage =
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-            VK_IMAGE_USAGE_SAMPLED_BIT;
-        for (auto& slot : replacement.Slots) {
-            if (!Interop->CreateOwnedTexture2D(textureDesc, slot.Texture)) {
-                for (auto& created : replacement.Slots) {
-                    Interop->DestroyOwnedTexture(created.Texture.Image);
-                }
-                return nullptr;
-            }
-        }
+        textureDesc.Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (!Interop->CreateOwnedTexture2D(textureDesc, replacement.Slot.Texture))
+            return nullptr;
 
         if (found != Histories.end()) {
-            Retire(found->second);
+            Retire(found->second, frameId);
             found->second = std::move(replacement);
             return &found->second;
         }
         if (Histories.size() >= kMaximumShadowTargets) {
-            const auto oldest = std::min_element(
-                Histories.begin(), Histories.end(),
-                [](const auto& left, const auto& right) {
-                    return left.second.LastUsedFrameId <
-                           right.second.LastUsedFrameId;
+            const auto oldest =
+                std::min_element(Histories.begin(), Histories.end(), [](const auto& left, const auto& right) {
+                    return left.second.LastUsedFrameId < right.second.LastUsedFrameId;
                 });
             if (oldest != Histories.end()) {
-                Retire(oldest->second);
+                Retire(oldest->second, frameId);
                 Histories.erase(oldest);
             }
         }
-        return &Histories.emplace(key, std::move(replacement))
-                    .first->second;
+        return &Histories.emplace(key, std::move(replacement)).first->second;
     }
 
-    uint64_t PipelineKey(const PicaSceneDrawRecord& caster,
-                         const DirectionalShadowFramePlan& plan) const {
+    uint64_t PipelineKey(const PicaSceneDrawRecord& caster, const DirectionalShadowFramePlan& plan) const {
         uint64_t hash = 1469598103934665603ULL;
         hash = HashValue(hash, caster.VertexShader->Key);
         hash = HashValue(hash, caster.Material.Topology);
@@ -264,9 +245,7 @@ struct NriDirectionalShadowPass::Impl {
         return hash;
     }
 
-    nri::Pipeline* GetOrCreatePipeline(
-        const PicaSceneDrawRecord& caster,
-        const DirectionalShadowFramePlan& plan) {
+    nri::Pipeline* GetOrCreatePipeline(const PicaSceneDrawRecord& caster, const DirectionalShadowFramePlan& plan) {
         const uint64_t key = PipelineKey(caster, plan);
         const auto found = ShadowPipelines.find(key);
         if (found != ShadowPipelines.end()) {
@@ -279,12 +258,9 @@ struct NriDirectionalShadowPass::Impl {
             FailedShadowPipelines.insert(key);
             return nullptr;
         };
-        const nri::Topology topology =
-            ToNriTopology(caster.Material.Topology);
-        const nri::CullMode cull =
-            ToNriCullMode(caster.Material.CullMode);
-        if (topology == nri::Topology::MAX_NUM ||
-            cull == nri::CullMode::MAX_NUM) {
+        const nri::Topology topology = ToNriTopology(caster.Material.Topology);
+        const nri::CullMode cull = ToNriCullMode(caster.Material.CullMode);
+        if (topology == nri::Topology::MAX_NUM || cull == nri::CullMode::MAX_NUM) {
             return reject();
         }
 
@@ -292,71 +268,52 @@ struct NriDirectionalShadowPass::Impl {
         streams.reserve(caster.VertexLayout->Bindings.size());
         for (const auto& source : caster.VertexLayout->Bindings) {
             if (source.Binding > std::numeric_limits<uint16_t>::max() ||
-                source.ByteStride >
-                    std::numeric_limits<uint16_t>::max()) {
+                source.ByteStride > std::numeric_limits<uint16_t>::max()) {
                 return reject();
             }
             streams.push_back({
                 static_cast<uint16_t>(source.Binding),
-                source.PerInstance
-                    ? nri::VertexStreamStepRate::PER_INSTANCE
-                    : nri::VertexStreamStepRate::PER_VERTEX,
+                source.PerInstance ? nri::VertexStreamStepRate::PER_INSTANCE : nri::VertexStreamStepRate::PER_VERTEX,
                 static_cast<uint16_t>(source.ByteStride),
             });
         }
         std::vector<nri::VertexAttributeDesc> attributes;
         attributes.reserve(caster.VertexLayout->Attributes.size());
         for (const auto& source : caster.VertexLayout->Attributes) {
-            if (source.Location >
-                    std::numeric_limits<uint16_t>::max() ||
-                source.Binding >
-                    std::numeric_limits<uint16_t>::max()) {
+            if (source.Location > std::numeric_limits<uint16_t>::max() ||
+                source.Binding > std::numeric_limits<uint16_t>::max()) {
                 return reject();
             }
             nri::VertexAttributeDesc attribute{};
             attribute.vk.location = source.Location;
             attribute.offset = source.ByteOffset;
             attribute.format = nri::Format::RGBA32_SFLOAT;
-            attribute.streamIndex =
-                static_cast<uint16_t>(source.Binding);
+            attribute.streamIndex = static_cast<uint16_t>(source.Binding);
             attributes.push_back(attribute);
         }
-        const nri::VertexInputDesc vertexInput{
-            attributes.data(), static_cast<uint8_t>(attributes.size()),
-            streams.data(), static_cast<uint8_t>(streams.size())};
+        const nri::VertexInputDesc vertexInput{ attributes.data(), static_cast<uint8_t>(attributes.size()),
+                                                streams.data(), static_cast<uint8_t>(streams.size()) };
 
         std::vector<uint32_t> vertex;
         std::vector<uint32_t> fragment;
         try {
-            if (caster.VertexShader == nullptr ||
-                !caster.VertexShader->VertexHooksAvailable()) {
+            if (caster.VertexShader == nullptr || !caster.VertexShader->VertexHooksAvailable()) {
                 return reject();
             }
-            const auto casterShader =
-                BuildPicaDirectionalShadowCasterShader(
-                    caster.VertexShader->Source,
-                    caster.VertexShader->Key,
-                    caster.VertexShader->VertexHooks);
+            const auto casterShader = BuildPicaDirectionalShadowCasterShader(
+                caster.VertexShader->Source, caster.VertexShader->Key, caster.VertexShader->VertexHooks);
             if (!casterShader.Applied()) {
                 return reject();
             }
-            vertex = Compile(Interop->Shaders(),
-                casterShader.Source,
-                Renderer::SpirvStage::Vertex,
-                "oot3d_nri_directional_shadow.vert");
-            fragment = Compile(Interop->Shaders(),
-                kPicaDirectionalShadowFragmentShader,
-                Renderer::SpirvStage::Fragment,
-                "oot3d_nri_directional_shadow.frag");
-        } catch (const std::exception&) {
-            return reject();
-        }
-        const std::array<nri::ShaderDesc, 2> shaders{{
-            {nri::StageBits::VERTEX_SHADER, vertex.data(),
-             vertex.size() * sizeof(uint32_t)},
-            {nri::StageBits::FRAGMENT_SHADER, fragment.data(),
-             fragment.size() * sizeof(uint32_t)},
-        }};
+            vertex = Compile(Interop->Shaders(), casterShader.Source, Renderer::SpirvStage::Vertex,
+                             "oot3d_nri_directional_shadow.vert");
+            fragment = Compile(Interop->Shaders(), kPicaDirectionalShadowFragmentShader, Renderer::SpirvStage::Fragment,
+                               "oot3d_nri_directional_shadow.frag");
+        } catch (const std::exception&) { return reject(); }
+        const std::array<nri::ShaderDesc, 2> shaders{ {
+            { nri::StageBits::VERTEX_SHADER, vertex.data(), vertex.size() * sizeof(uint32_t) },
+            { nri::StageBits::FRAGMENT_SHADER, fragment.data(), fragment.size() * sizeof(uint32_t) },
+        } };
         nri::MultisampleDesc multisample{};
         multisample.sampleMask = 0xFFFFFFFFU;
         multisample.sampleNum = 1;
@@ -367,22 +324,17 @@ struct NriDirectionalShadowPass::Impl {
         pipeline.rasterization.fillMode = nri::FillMode::SOLID;
         pipeline.rasterization.cullMode = cull;
         pipeline.rasterization.frontCounterClockwise =
-            caster.Material.FrontFace ==
-            PicaSceneFrontFace::CounterClockwise;
-        pipeline.rasterization.depthBias = {
-            plan.DepthBiasConstant, 0.0F, plan.DepthBiasSlope};
+            caster.Material.FrontFace == PicaSceneFrontFace::CounterClockwise;
+        pipeline.rasterization.depthBias = { plan.DepthBiasConstant, 0.0F, plan.DepthBiasSlope };
         pipeline.multisample = &multisample;
-        pipeline.outputMerger.depth.compareOp =
-            nri::CompareOp::LESS_EQUAL;
+        pipeline.outputMerger.depth.compareOp = nri::CompareOp::LESS_EQUAL;
         pipeline.outputMerger.depth.write = true;
-        pipeline.outputMerger.depthStencilFormat =
-            nri::Format::D32_SFLOAT;
+        pipeline.outputMerger.depthStencilFormat = nri::Format::D32_SFLOAT;
         pipeline.shaders = shaders.data();
         pipeline.shaderNum = static_cast<uint32_t>(shaders.size());
         nri::Pipeline* result = nullptr;
-        if (Core->CreateGraphicsPipeline(
-                *NriInteropAccess::Device(*Interop), pipeline,
-                result) != nri::Result::SUCCESS) {
+        if (Core->CreateGraphicsPipeline(*NriInteropAccess::Device(*Interop), pipeline, result) !=
+            nri::Result::SUCCESS) {
             return reject();
         }
         ShadowPipelines.emplace(key, result);
@@ -391,25 +343,22 @@ struct NriDirectionalShadowPass::Impl {
 #endif
 };
 
-NriDirectionalShadowPass::NriDirectionalShadowPass()
-    : mImpl(std::make_unique<Impl>()) {}
+NriDirectionalShadowPass::NriDirectionalShadowPass() : mImpl(std::make_unique<Impl>()) {
+}
 
 NriDirectionalShadowPass::~NriDirectionalShadowPass() {
     Shutdown();
 }
 
-bool NriDirectionalShadowPass::Initialize(
-    VkPhysicalDevice physicalDevice, VkDevice device,
-    NriInteropContext& interop) {
+bool NriDirectionalShadowPass::Initialize(VkPhysicalDevice physicalDevice, VkDevice device,
+                                          NriInteropContext& interop) {
     Shutdown();
     mImpl->PhysicalDevice = physicalDevice;
     mImpl->Device = device;
     mImpl->Interop = &interop;
-    if (const char* enabled =
-            std::getenv("OOT3D_GRAPHICS_NRI_DIRECTIONAL_SHADOWS");
+    if (const char* enabled = std::getenv("OOT3D_GRAPHICS_NRI_DIRECTIONAL_SHADOWS");
         enabled != nullptr && std::string_view(enabled) == "0") {
-        mImpl->Reason =
-            "NRI directional shadows disabled by environment";
+        mImpl->Reason = "NRI directional shadows disabled by environment";
         return false;
     }
     if (!interop.Available()) {
@@ -417,8 +366,7 @@ bool NriDirectionalShadowPass::Initialize(
         return false;
     }
     if (!interop.DynamicRenderingAvailable()) {
-        mImpl->Reason =
-            "NRI directional shadows require dynamic rendering";
+        mImpl->Reason = "NRI directional shadows require dynamic rendering";
         return false;
     }
 #ifndef ENABLE_OOT3D_NRI
@@ -427,104 +375,74 @@ bool NriDirectionalShadowPass::Initialize(
 #else
     try {
         VkFormatProperties properties{};
-        vkGetPhysicalDeviceFormatProperties(
-            physicalDevice, VK_FORMAT_D32_SFLOAT, &properties);
+        vkGetPhysicalDeviceFormatProperties(physicalDevice, VK_FORMAT_D32_SFLOAT, &properties);
         const VkFormatFeatureFlags required =
-            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
-            VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
         if ((properties.optimalTilingFeatures & required) != required) {
-            throw std::runtime_error(
-                "D32 sampled depth attachments are unavailable");
+            throw std::runtime_error("D32 sampled depth attachments are unavailable");
         }
         nri::Device* nriDevice = NriInteropAccess::Device(interop);
         mImpl->Core = NriInteropAccess::Core(interop);
         if (nriDevice == nullptr || mImpl->Core == nullptr) {
-            throw std::runtime_error(
-                "NRI directional shadow device is unavailable");
+            throw std::runtime_error("NRI directional shadow device is unavailable");
         }
 
-        const std::array<nri::DescriptorRangeDesc, 2> ranges{{
-            {0, 1, nri::DescriptorType::CONSTANT_BUFFER,
-             nri::StageBits::VERTEX_SHADER},
-            {1, 1, nri::DescriptorType::CONSTANT_BUFFER,
-             nri::StageBits::VERTEX_SHADER},
-        }};
+        const std::array<nri::DescriptorRangeDesc, 2> ranges{ {
+            { 0, 1, nri::DescriptorType::CONSTANT_BUFFER, nri::StageBits::VERTEX_SHADER },
+            { 1, 1, nri::DescriptorType::CONSTANT_BUFFER, nri::StageBits::VERTEX_SHADER },
+        } };
         nri::DescriptorSetDesc descriptorSet{};
         descriptorSet.ranges = ranges.data();
         descriptorSet.rangeNum = static_cast<uint32_t>(ranges.size());
         nri::PipelineLayoutDesc layout{};
+        const nri::RootConstantDesc pageConstants{ 0, sizeof(float) * 4, nri::StageBits::VERTEX_SHADER };
+        layout.rootConstants = &pageConstants;
+        layout.rootConstantNum = 1;
         layout.descriptorSets = &descriptorSet;
         layout.descriptorSetNum = 1;
-        layout.shaderStages = nri::StageBits::VERTEX_SHADER |
-                              nri::StageBits::FRAGMENT_SHADER;
-        layout.flags =
-            nri::PipelineLayoutBits::IGNORE_GLOBAL_SPIRV_OFFSETS;
-        if (mImpl->Core->CreatePipelineLayout(
-                *nriDevice, layout, mImpl->ShadowLayout) !=
-            nri::Result::SUCCESS) {
-            throw std::runtime_error(
-                "NRI directional shadow layout creation failed");
+        layout.shaderStages = nri::StageBits::VERTEX_SHADER | nri::StageBits::FRAGMENT_SHADER;
+        layout.flags = nri::PipelineLayoutBits::IGNORE_GLOBAL_SPIRV_OFFSETS;
+        if (mImpl->Core->CreatePipelineLayout(*nriDevice, layout, mImpl->ShadowLayout) != nri::Result::SUCCESS) {
+            throw std::runtime_error("NRI directional shadow layout creation failed");
         }
 
-        VkSamplerCreateInfo samplerInfo{
-            VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        VkSamplerCreateInfo samplerInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
         samplerInfo.magFilter = VK_FILTER_NEAREST;
         samplerInfo.minFilter = VK_FILTER_NEAREST;
         samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-        samplerInfo.addressModeU =
-            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeV =
-            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeW =
-            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         samplerInfo.maxLod = 0.0F;
-        if (vkCreateSampler(
-                device, &samplerInfo, nullptr,
-                &mImpl->ReceiverSampler) != VK_SUCCESS) {
-            throw std::runtime_error(
-                "directional shadow receiver sampler creation failed");
+        if (vkCreateSampler(device, &samplerInfo, nullptr, &mImpl->ReceiverSampler) != VK_SUCCESS) {
+            throw std::runtime_error("directional shadow receiver sampler creation failed");
         }
 
-        const auto& deviceDesc =
-            mImpl->Core->GetDeviceDesc(*nriDevice);
-        const uint64_t uniformAlignment = std::max<uint64_t>(
-            1U, deviceDesc.memoryAlignment.constantBufferOffset);
+        const auto& deviceDesc = mImpl->Core->GetDeviceDesc(*nriDevice);
+        const uint64_t uniformAlignment = std::max<uint64_t>(1U, deviceDesc.memoryAlignment.constantBufferOffset);
         for (auto& frame : mImpl->Frames) {
-            frame.ShadowUniformStride = AlignUp(
-                sizeof(ShadowTransformUniforms), uniformAlignment);
+            frame.ShadowUniformStride = AlignUp(sizeof(ShadowTransformUniforms), uniformAlignment);
             nri::BufferDesc bufferDesc{};
-            bufferDesc.size =
-                frame.ShadowUniformStride * kMaximumCasters;
+            bufferDesc.size = frame.ShadowUniformStride * kMaximumCasters;
             bufferDesc.usage = nri::BufferUsageBits::CONSTANT_BUFFER;
-            if (mImpl->Core->CreateCommittedBuffer(
-                    *nriDevice, nri::MemoryLocation::HOST_UPLOAD,
-                    0.0F, bufferDesc,
-                    frame.ShadowUniformBuffer) !=
-                nri::Result::SUCCESS) {
-                throw std::runtime_error(
-                    "NRI directional shadow uniform arena creation failed");
+            if (mImpl->Core->CreateCommittedBuffer(*nriDevice, nri::MemoryLocation::HOST_UPLOAD, 0.0F, bufferDesc,
+                                                   frame.ShadowUniformBuffer) != nri::Result::SUCCESS) {
+                throw std::runtime_error("NRI directional shadow uniform arena creation failed");
             }
-            frame.ShadowUniformMapped = static_cast<uint8_t*>(
-                mImpl->Core->MapBuffer(
-                    *frame.ShadowUniformBuffer, 0,
-                    bufferDesc.size));
+            frame.ShadowUniformMapped =
+                static_cast<uint8_t*>(mImpl->Core->MapBuffer(*frame.ShadowUniformBuffer, 0, bufferDesc.size));
             if (frame.ShadowUniformMapped == nullptr) {
-                throw std::runtime_error(
-                    "NRI directional shadow uniform arena mapping failed");
+                throw std::runtime_error("NRI directional shadow uniform arena mapping failed");
             }
             frame.ShadowUniformViews.resize(kMaximumCasters, nullptr);
-            for (uint32_t index = 0U; index < kMaximumCasters;
-                 ++index) {
+            for (uint32_t index = 0U; index < kMaximumCasters; ++index) {
                 nri::BufferViewDesc view{};
                 view.buffer = frame.ShadowUniformBuffer;
                 view.type = nri::BufferView::CONSTANT_BUFFER;
                 view.offset = frame.ShadowUniformStride * index;
                 view.size = sizeof(ShadowTransformUniforms);
-                if (mImpl->Core->CreateBufferView(
-                        view, frame.ShadowUniformViews[index]) !=
-                    nri::Result::SUCCESS) {
-                    throw std::runtime_error(
-                        "NRI directional shadow uniform view creation failed");
+                if (mImpl->Core->CreateBufferView(view, frame.ShadowUniformViews[index]) != nri::Result::SUCCESS) {
+                    throw std::runtime_error("NRI directional shadow uniform view creation failed");
                 }
             }
 
@@ -532,15 +450,10 @@ bool NriDirectionalShadowPass::Initialize(
             pool.descriptorSetMaxNum = kMaximumCasters;
             pool.constantBufferMaxNum = 2U * kMaximumCasters;
             frame.CasterSets.resize(kMaximumCasters);
-            if (mImpl->Core->CreateDescriptorPool(
-                    *nriDevice, pool, frame.CasterPool) !=
-                    nri::Result::SUCCESS ||
-                mImpl->Core->AllocateDescriptorSets(
-                    *frame.CasterPool, *mImpl->ShadowLayout, 0,
-                    frame.CasterSets.data(), kMaximumCasters, 0) !=
-                    nri::Result::SUCCESS) {
-                throw std::runtime_error(
-                    "NRI directional shadow caster descriptors failed");
+            if (mImpl->Core->CreateDescriptorPool(*nriDevice, pool, frame.CasterPool) != nri::Result::SUCCESS ||
+                mImpl->Core->AllocateDescriptorSets(*frame.CasterPool, *mImpl->ShadowLayout, 0, frame.CasterSets.data(),
+                                                    kMaximumCasters, 0) != nri::Result::SUCCESS) {
+                throw std::runtime_error("NRI directional shadow caster descriptors failed");
             }
         }
         mImpl->Reason.clear();
@@ -554,15 +467,12 @@ bool NriDirectionalShadowPass::Initialize(
 #endif
 }
 
-bool NriDirectionalShadowPass::ExecuteMap(
-    const NriDirectionalShadowExecuteDesc& desc,
-    const NativeSceneView& sceneView,
-    const EffectPassBarrierPlan& shadowMapBarrierPlan) {
+bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc& desc, const NativeSceneView& sceneView,
+                                          const EffectPassBarrierPlan& shadowMapBarrierPlan) {
     mImpl->LastNativeLight = false;
-    mImpl->LastCasters = 0U;
+    mImpl->LastCasters = 0;
     mImpl->LastLight = {};
-    mImpl->LastStage =
-        NriDirectionalShadowExecutionStage::NotAttempted;
+    mImpl->LastStage = NriDirectionalShadowExecutionStage::NotAttempted;
     mImpl->LastShadowMapBarrierExecution = {};
 #ifndef ENABLE_OOT3D_NRI
     (void)desc;
@@ -570,344 +480,274 @@ bool NriDirectionalShadowPass::ExecuteMap(
     (void)shadowMapBarrierPlan;
     return false;
 #else
-    const auto* mapBarrier = shadowMapBarrierPlan.Find(
-        EffectResource::DirectionalShadowMap);
-    const auto expectedPassId = ::Fast::Renderer::StableExtensionPassId(
-        PicaExtensionPassName(PicaExtensionPass::DirectionalShadowMap));
+    const auto* mapBarrier = shadowMapBarrierPlan.Find(EffectResource::DirectionalShadowMap);
+    const auto expectedPassId =
+        ::Fast::Renderer::StableExtensionPassId(PicaExtensionPassName(PicaExtensionPass::DirectionalShadowMap));
     if (!Available() ||
-        !desc.ScheduleAuthorization.Matches(
-            expectedPassId, EffectStage::AfterOpaque,
-            desc.ExpectedSurface) ||
+        !desc.ScheduleAuthorization.Matches(expectedPassId, EffectStage::AfterOpaque, desc.ExpectedSurface) ||
         desc.ExpectedSurface.Namespace != desc.RenderTargetNamespace ||
         desc.ExpectedSurface.Resource != desc.ColorPhysicalAddress ||
-        desc.Settings.Mode != DirectionalShadowMode::SingleCascade ||
-        !sceneView.Active() || sceneView.FrameId() != desc.FrameId ||
-        sceneView.PicaFrame() == nullptr ||
-        !sceneView.PicaFrame()->Active() ||
-        sceneView.PicaFrame()->FrameId() != desc.FrameId ||
-        sceneView.PicaFrame()->FrameSlot() != desc.FrameSlot ||
+        desc.Settings.Mode != DirectionalShadowMode::VirtualShadowMaps || !sceneView.Active() ||
+        sceneView.FrameId() != desc.FrameId || sceneView.PicaFrame() == nullptr || !sceneView.PicaFrame()->Active() ||
+        sceneView.PicaFrame()->FrameId() != desc.FrameId || sceneView.PicaFrame()->FrameSlot() != desc.FrameSlot ||
         !shadowMapBarrierPlan.Valid() || mapBarrier == nullptr ||
         mapBarrier->DispatchAccess != ResourceAccess::DepthAttachment ||
-        mapBarrier->CompletionAccess != ResourceAccess::ShaderRead ||
-        !mapBarrier->DownstreamRead) {
+        mapBarrier->CompletionAccess != ResourceAccess::ShaderRead || !mapBarrier->DownstreamRead)
         return false;
-    }
-    mImpl->LastStage =
-        NriDirectionalShadowExecutionStage::InputAccepted;
+    mImpl->LastStage = NriDirectionalShadowExecutionStage::InputAccepted;
 
-    const PicaSceneFrame& sceneFrame = *sceneView.PicaFrame();
-    std::vector<const PicaSceneDrawRecord*> casters;
-    casters.reserve(std::min<size_t>(
-        sceneFrame.Draws().size(), kMaximumCasters));
+    const auto& sceneFrame = *sceneView.PicaFrame();
+    std::array<const PicaSceneDrawRecord*, kMaximumCasters> casterStorage{};
+    size_t casterCount = 0;
     const auto sceneDraws = sceneFrame.Draws();
-    for (size_t drawIndex = 0U; drawIndex < sceneDraws.size();
-         ++drawIndex) {
-        const auto& caster = sceneDraws[drawIndex];
-        if (!sceneFrame.DirectionalShadowCaster(drawIndex) ||
-            !caster.NativeTransform.CurrentViewToWorldAvailable ||
-            !caster.NativeTransform.CurrentClipToWorldAvailable ||
-            caster.RenderTarget.RenderTargetNamespace !=
-                desc.RenderTargetNamespace ||
-            caster.RenderTarget.ColorPhysicalAddress !=
-                desc.ColorPhysicalAddress) {
+    for (size_t index = 0; index < sceneDraws.size(); ++index) {
+        const auto& caster = sceneDraws[index];
+        if (!sceneFrame.DirectionalShadowCaster(index) || !caster.NativeTransform.CurrentViewToWorldAvailable ||
+            !caster.NativeTransform.CurrentClipToWorldAvailable || !caster.LightingWorldToView ||
+            caster.RenderTarget.RenderTargetNamespace != desc.RenderTargetNamespace ||
+            caster.RenderTarget.ColorPhysicalAddress != desc.ColorPhysicalAddress)
             continue;
-        }
-        if (casters.size() == kMaximumCasters) {
-            break;
-        }
-        casters.push_back(&caster);
+        if (casterCount == casterStorage.size())
+            return false;
+        casterStorage[casterCount++] = &caster;
     }
-    if (casters.empty()) {
+    const auto casters = std::span(casterStorage).first(casterCount);
+    if (casters.empty())
         return false;
+    mImpl->LastStage = NriDirectionalShadowExecutionStage::CastersMatched;
+    PicaDirectionalShadowLightSelection light;
+    const bool authoredKey = desc.EnvironmentKey && desc.EnvironmentKey->Intensity > 0.0F;
+    if (authoredKey) {
+        light.WorldDirectionTowardSource = desc.EnvironmentKey->DirectionTowardSource;
+        light.ReferenceDraw = casters.front();
+        light.CandidateCount = light.ClusterCount = 1;
+        light.GeometryLightWeight = desc.EnvironmentKey->Intensity;
+    } else {
+        if (desc.NativeDirectStrength <= 0.0F) return false;
+        light = ResolvePicaDirectionalShadowLightSelection(casters);
     }
-    mImpl->LastStage =
-        NriDirectionalShadowExecutionStage::CastersMatched;
-    const PicaDirectionalShadowLightSelection light =
-        ResolvePicaDirectionalShadowLightSelection(casters);
-    if (!light.Valid()) {
+    if (!light.Valid())
         return false;
-    }
-    mImpl->LastLight = {
-        light.WorldDirectionTowardSource,
-        light.CandidateCount,
-        light.ClusterCount,
-        light.GeometryLightWeight,
-    };
-    mImpl->LastStage =
-        NriDirectionalShadowExecutionStage::NativeLightResolved;
+    mImpl->LastLight = { light.WorldDirectionTowardSource, light.CandidateCount, light.ClusterCount,
+                         light.GeometryLightWeight };
+    mImpl->LastStage = NriDirectionalShadowExecutionStage::NativeLightResolved;
 
-    DirectionalShadowFrameInput frameInput;
-    frameInput.ClipToWorld = light.ReferenceDraw->NativeTransform
-                                 .CurrentClipToWorld;
-    frameInput.LightDirectionTowardSource =
-        light.WorldDirectionTowardSource;
-    frameInput.Settings = desc.Settings;
-    const auto plan = BuildDirectionalShadowFramePlan(frameInput);
-    if (!plan.Ready()) {
+    // Use the exact camera captured with this draw, for both authored and
+    // native lights. Later gameplay camera samples cannot move existing pages.
+    DirectionalShadowMatrix viewToWorld;
+    if (!InvertDirectionalShadowMatrix(*light.ReferenceDraw->LightingWorldToView, viewToWorld))
         return false;
+    DirectionalShadowFrameInput input;
+    input.CameraWorld = { viewToWorld[12], viewToWorld[13], viewToWorld[14] };
+    input.LightDirectionTowardSource = light.WorldDirectionTowardSource;
+    input.Settings = desc.Settings;
+    const auto previous = mImpl->Histories.find({ desc.RenderTargetNamespace, desc.ColorPhysicalAddress });
+    if (previous != mImpl->Histories.end() && previous->second.Slot.State.Valid())
+        input.PreviousLayout = &previous->second.Slot.State.Virtual;
+    const auto plan = BuildDirectionalShadowFramePlan(input);
+    if (!plan.Ready())
+        return false;
+    mImpl->LastLight.WorldDirectionTowardSource = plan.LightDirectionTowardSource;
+    mImpl->LastStage = NriDirectionalShadowExecutionStage::FramePlanReady;
+    auto* target = mImpl->EnsureTarget({ desc.RenderTargetNamespace, desc.ColorPhysicalAddress },
+                                       plan.Virtual.AtlasResolution, desc.FrameId);
+    if (target == nullptr)
+        return false;
+    auto& history = target->Slot;
+    history.State = {};
+    mImpl->LastStage = NriDirectionalShadowExecutionStage::ResourcesReady;
+    std::array<Renderer3ds::VirtualShadowCaster, kMaximumCasters> geometry{};
+    for (size_t index = 0; index < casterCount; ++index) {
+        geometry[index] = casters[index]->ShadowCaster;
+        if (geometry[index].ContentVersion != 0)
+            geometry[index].ContentVersion =
+                HashValue(geometry[index].ContentVersion, mImpl->PipelineKey(*casters[index], plan));
     }
-    mImpl->LastStage =
-        NriDirectionalShadowExecutionStage::FramePlanReady;
+    target->Cache.Prepare(plan.Virtual, std::span(geometry).first(casterCount), desc.FrameId);
+    mImpl->LastLight.Pages = target->Cache.Statistics();
+    mImpl->LastLight.UpdatedPages = static_cast<uint32_t>(target->Cache.Updates().size());
+    mImpl->LastLight.AtlasBytes = uint64_t(plan.Virtual.AtlasResolution) * plan.Virtual.AtlasResolution * sizeof(float);
 
-    const ShadowTargetKey targetKey{
-        desc.RenderTargetNamespace, desc.ColorPhysicalAddress};
-    Impl::TargetHistory* target = mImpl->EnsureTarget(
-        targetKey, plan.Resolution, desc.FrameId);
-    if (target == nullptr) {
+    auto* command = NriInteropAccess::CommandBuffer(*mImpl->Interop, desc.FrameSlot);
+    auto& frame = mImpl->Frames[desc.FrameSlot % kFrameSlots];
+    if (command == nullptr || frame.CasterPool == nullptr || frame.ShadowUniformMapped == nullptr)
         return false;
-    }
-    auto& historySlot =
-        target->Slots[desc.FrameId % kFrameSlots];
-    historySlot.State = {};
-    mImpl->LastStage =
-        NriDirectionalShadowExecutionStage::ResourcesReady;
-
-    const uint32_t frameIndex = desc.FrameSlot % kFrameSlots;
-    nri::CommandBuffer* command =
-        NriInteropAccess::CommandBuffer(
-            *mImpl->Interop, desc.FrameSlot);
-    auto& frame = mImpl->Frames[frameIndex];
-    if (command == nullptr || frame.CasterPool == nullptr ||
-        frame.ShadowUniformMapped == nullptr) {
-        return false;
-    }
     if (frame.FrameId != desc.FrameId) {
-        for (nri::Descriptor* view : frame.TransientViews) {
+        for (auto* view : frame.TransientViews)
             mImpl->Core->DestroyDescriptor(view);
-        }
         frame.TransientViews.clear();
         frame.FrameId = desc.FrameId;
-        frame.CastersUsed = 0U;
+        frame.CastersUsed = 0;
     }
-    if (frame.CastersUsed + casters.size() >
-        frame.CasterSets.size()) {
-        return false;
-    }
-
-    const uintptr_t shadowKey =
-        reinterpret_cast<uintptr_t>(historySlot.Texture.Image);
-    mImpl->LastShadowMapBarrierExecution =
-        shadowMapBarrierPlan.BeginOutputExecution(
-            EffectResource::DirectionalShadowMap);
-    const auto shadowWrite = mImpl->OwnedStates.PlanTransition(
-        shadowKey, {mapBarrier->DispatchAccess, 0U});
-    if (!NriInteropAccess::CmdTextureBarrier(
-            *mImpl->Interop, desc.FrameSlot,
-            historySlot.Texture.Image, shadowWrite)) {
-        return false;
-    }
-    mImpl->LastShadowMapBarrierExecution.RecordGraphTransition(
-        shadowWrite);
-    mImpl->OwnedStates.Commit(shadowWrite);
-
-    nri::AttachmentDesc depthAttachment{};
-    depthAttachment.descriptor =
-        NriInteropAccess::DepthAttachmentView(
-            *mImpl->Interop, historySlot.Texture.Image);
-    if (depthAttachment.descriptor == nullptr) {
-        return false;
-    }
-    depthAttachment.clearValue.depthStencil.depth = 1.0F;
-    depthAttachment.loadOp = nri::LoadOp::CLEAR;
-    depthAttachment.storeOp = nri::StoreOp::STORE;
-    nri::RenderingDesc rendering{};
-    rendering.depth = depthAttachment;
-    mImpl->Core->CmdSetDescriptorPool(
-        *command, *frame.CasterPool);
-    mImpl->Core->CmdBeginRendering(*command, rendering);
-    mImpl->Core->CmdSetPipelineLayout(
-        *command, nri::BindPoint::GRAPHICS,
-        *mImpl->ShadowLayout);
-    const nri::Viewport viewport{
-        0.0F, 0.0F, static_cast<float>(plan.Resolution),
-        static_cast<float>(plan.Resolution), 0.0F, 1.0F, true};
-    const nri::Rect scissor{
-        0, 0, static_cast<nri::Dim_t>(plan.Resolution),
-        static_cast<nri::Dim_t>(plan.Resolution)};
-    mImpl->Core->CmdSetViewports(*command, &viewport, 1);
-    mImpl->Core->CmdSetScissors(*command, &scissor, 1);
-
-    uint32_t renderedCasters = 0U;
-    for (const PicaSceneDrawRecord* caster : casters) {
-        const VkBuffer uniformHandle =
-            FromSceneNativeHandle<VkBuffer>(
-                caster->UniformBuffer.NativeHandle);
-        const VkBuffer geometryHandle =
-            FromSceneNativeHandle<VkBuffer>(
-                caster->GeometryBuffer.NativeHandle);
-        nri::Pipeline* pipeline =
-            mImpl->GetOrCreatePipeline(*caster, plan);
-        if (pipeline == nullptr ||
-            !mImpl->Interop->WrapBuffer(
-                uniformHandle, caster->UniformBuffer.Size) ||
-            !mImpl->Interop->WrapBuffer(
-                geometryHandle, caster->GeometryBuffer.Size)) {
+    struct PreparedCaster {
+        nri::Pipeline* Pipeline = nullptr;
+        nri::Buffer* Geometry = nullptr;
+        nri::DescriptorSet* Set = nullptr;
+    };
+    std::array<PreparedCaster, kMaximumCasters> prepared{};
+    std::array<bool, kMaximumCasters> required{};
+    for (const auto& page : target->Cache.Updates())
+        for (auto index : target->Cache.Casters(page))
+            required[index] = true;
+    for (size_t index = 0; index < casterCount; ++index) {
+        if (!required[index])
             continue;
-        }
-        nri::Buffer* uniformBuffer = NriInteropAccess::Buffer(
-            *mImpl->Interop, uniformHandle);
-        nri::Buffer* vertexBuffer = NriInteropAccess::Buffer(
-            *mImpl->Interop, geometryHandle);
-        if (uniformBuffer == nullptr || vertexBuffer == nullptr ||
-            caster->VertexUniformOffset >
-                caster->UniformBuffer.Size ||
-            caster->VertexUniformSize >
-                caster->UniformBuffer.Size -
-                    caster->VertexUniformOffset) {
-            continue;
-        }
-
-        nri::Descriptor* vertexUniform = nullptr;
+        const auto& caster = *casters[index];
+        if (frame.CastersUsed == frame.CasterSets.size())
+            return false;
+        const auto uniforms = FromSceneNativeHandle<VkBuffer>(caster.UniformBuffer.NativeHandle);
+        const auto vertices = FromSceneNativeHandle<VkBuffer>(caster.GeometryBuffer.NativeHandle);
+        auto& draw = prepared[index];
+        draw.Pipeline = mImpl->GetOrCreatePipeline(caster, plan);
+        if (draw.Pipeline == nullptr || !mImpl->Interop->WrapBuffer(uniforms, caster.UniformBuffer.Size) ||
+            !mImpl->Interop->WrapBuffer(vertices, caster.GeometryBuffer.Size))
+            return false;
+        auto* uniformBuffer = NriInteropAccess::Buffer(*mImpl->Interop, uniforms);
+        draw.Geometry = NriInteropAccess::Buffer(*mImpl->Interop, vertices);
+        if (uniformBuffer == nullptr || draw.Geometry == nullptr ||
+            caster.VertexUniformOffset > caster.UniformBuffer.Size ||
+            caster.VertexUniformSize > caster.UniformBuffer.Size - caster.VertexUniformOffset)
+            return false;
+        for (const auto& binding : sceneFrame.VertexBindings(caster))
+            if (binding.Size == 0 || binding.Stride == 0 || binding.Offset > caster.GeometryBuffer.Size ||
+                binding.Size > caster.GeometryBuffer.Size - binding.Offset)
+                return false;
+        if (caster.Indexed &&
+            (caster.IndexOffset > caster.GeometryBuffer.Size ||
+             uint64_t(caster.VertexOrIndexCount) * sizeof(uint16_t) > caster.GeometryBuffer.Size - caster.IndexOffset))
+            return false;
+        ShadowTransformUniforms transform;
+        if (!InvertDirectionalShadowMatrix(*caster.LightingWorldToView, transform.ViewToWorld))
+            return false;
+        transform.WorldToLightClip = plan.Virtual.WorldToLight;
         nri::BufferViewDesc uniformView{};
         uniformView.buffer = uniformBuffer;
         uniformView.type = nri::BufferView::CONSTANT_BUFFER;
-        uniformView.offset = caster->VertexUniformOffset;
-        uniformView.size = caster->VertexUniformSize;
-        if (mImpl->Core->CreateBufferView(
-                uniformView, vertexUniform) !=
-            nri::Result::SUCCESS) {
-            continue;
-        }
+        uniformView.offset = caster.VertexUniformOffset;
+        uniformView.size = caster.VertexUniformSize;
+        nri::Descriptor* vertexUniform = nullptr;
+        if (mImpl->Core->CreateBufferView(uniformView, vertexUniform) != nri::Result::SUCCESS)
+            return false;
         frame.TransientViews.push_back(vertexUniform);
-
-        const uint32_t casterSlot = frame.CastersUsed++;
-        ShadowTransformUniforms transform;
-        transform.ViewToWorld =
-            caster->NativeTransform.CurrentViewToWorld;
-        transform.WorldToLightClip = plan.WorldToLightClip;
-        std::memcpy(
-            frame.ShadowUniformMapped +
-                frame.ShadowUniformStride * casterSlot,
-            &transform, sizeof(transform));
-
-        nri::DescriptorSet* set = frame.CasterSets[casterSlot];
-        const std::array<nri::UpdateDescriptorRangeDesc, 2> updates{{
-            {set, 0, 0, &vertexUniform, 1},
-            {set, 1, 0,
-             &frame.ShadowUniformViews[casterSlot], 1},
-        }};
-        mImpl->Core->UpdateDescriptorRanges(
-            updates.data(), static_cast<uint32_t>(updates.size()));
-        mImpl->Core->CmdSetPipeline(*command, *pipeline);
-        const nri::SetDescriptorSetDesc setDesc{
-            0, set, nri::BindPoint::GRAPHICS};
-        mImpl->Core->CmdSetDescriptorSet(*command, setDesc);
-
-        bool validBindings = true;
-        for (const auto& binding :
-             sceneFrame.VertexBindings(*caster)) {
-            if (binding.Size == 0U || binding.Stride == 0U ||
-                binding.Offset > caster->GeometryBuffer.Size ||
-                binding.Size > caster->GeometryBuffer.Size -
-                                   binding.Offset) {
-                validBindings = false;
-                break;
-            }
-            const nri::VertexBufferDesc vertex{
-                vertexBuffer, binding.Offset, binding.Stride};
-            mImpl->Core->CmdSetVertexBuffers(
-                *command, binding.Binding, &vertex, 1);
-        }
-        if (!validBindings) {
-            continue;
-        }
-        if (caster->Indexed) {
-            const uint64_t indexBytes =
-                static_cast<uint64_t>(caster->VertexOrIndexCount) *
-                sizeof(uint16_t);
-            if (caster->IndexOffset >
-                    caster->GeometryBuffer.Size ||
-                indexBytes > caster->GeometryBuffer.Size -
-                                 caster->IndexOffset) {
-                continue;
-            }
-            mImpl->Core->CmdSetIndexBuffer(
-                *command, *vertexBuffer, caster->IndexOffset,
-                nri::IndexType::UINT16);
-            const nri::DrawIndexedDesc draw{
-                caster->VertexOrIndexCount, 1U, 0U,
-                caster->BaseVertex, 0U};
-            mImpl->Core->CmdDrawIndexed(*command, draw);
-        } else {
-            const nri::DrawDesc draw{
-                caster->VertexOrIndexCount, 1U, 0U, 0U};
-            mImpl->Core->CmdDraw(*command, draw);
-        }
-        ++renderedCasters;
+        const uint32_t slot = frame.CastersUsed++;
+        std::memcpy(frame.ShadowUniformMapped + frame.ShadowUniformStride * slot, &transform, sizeof(transform));
+        draw.Set = frame.CasterSets[slot];
+        const std::array<nri::UpdateDescriptorRangeDesc, 2> updates{
+            { { draw.Set, 0, 0, &vertexUniform, 1 }, { draw.Set, 1, 0, &frame.ShadowUniformViews[slot], 1 } }
+        };
+        mImpl->Core->UpdateDescriptorRanges(updates.data(), static_cast<uint32_t>(updates.size()));
     }
-    mImpl->Core->CmdEndRendering(*command);
-    if (renderedCasters == 0U) {
+
+    const auto shadowKey = reinterpret_cast<uintptr_t>(history.Texture.Image);
+    mImpl->LastShadowMapBarrierExecution =
+        shadowMapBarrierPlan.BeginOutputExecution(EffectResource::DirectionalShadowMap);
+    const auto write = mImpl->OwnedStates.PlanTransition(shadowKey, { mapBarrier->DispatchAccess, 0 });
+    if (!NriInteropAccess::CmdTextureBarrier(*mImpl->Interop, desc.FrameSlot, history.Texture.Image, write))
         return false;
+    mImpl->LastShadowMapBarrierExecution.RecordGraphTransition(write);
+    mImpl->OwnedStates.Commit(write);
+    if (!target->Cache.Updates().empty()) {
+        nri::RenderingDesc rendering{};
+        rendering.depth.descriptor = NriInteropAccess::DepthAttachmentView(*mImpl->Interop, history.Texture.Image);
+        if (rendering.depth.descriptor == nullptr)
+            return false;
+        rendering.depth.loadOp = nri::LoadOp::LOAD;
+        rendering.depth.storeOp = nri::StoreOp::STORE;
+        mImpl->Core->CmdSetDescriptorPool(*command, *frame.CasterPool);
+        mImpl->Core->CmdBeginRendering(*command, rendering);
+        mImpl->Core->CmdSetPipelineLayout(*command, nri::BindPoint::GRAPHICS, *mImpl->ShadowLayout);
+        constexpr uint32_t pageSize = Renderer3ds::kVirtualShadowPhysicalPageTexels;
+        const uint32_t pagesAcross = plan.Virtual.AtlasResolution / pageSize;
+        nri::Pipeline* boundPipeline = nullptr;
+        for (const auto& page : target->Cache.Updates()) {
+            const uint32_t x = (page.PhysicalPage % pagesAcross) * pageSize;
+            const uint32_t y = (page.PhysicalPage / pagesAcross) * pageSize;
+            const nri::Rect scissor{ static_cast<int32_t>(x), static_cast<int32_t>(y), pageSize, pageSize };
+            nri::ClearAttachmentDesc clear{};
+            clear.planes = nri::PlaneBits::DEPTH;
+            clear.value.depthStencil.depth = 1;
+            mImpl->Core->CmdClearAttachments(*command, &clear, 1, &scissor, 1);
+            const nri::Viewport viewport{ float(x), float(y), float(pageSize), float(pageSize), 0, 1, true };
+            mImpl->Core->CmdSetViewports(*command, &viewport, 1);
+            mImpl->Core->CmdSetScissors(*command, &scissor, 1);
+            constexpr float coverage = float(Renderer3ds::kVirtualShadowPageTexels) / pageSize;
+            const float scale = 2.0F * coverage / plan.Virtual.Levels[page.Key.Level].PageWorldSize;
+            const std::array<float, 4> pageTransform{ scale, scale, (-2.0F * float(page.Key.X) - 1.0F) * coverage,
+                                                      (-2.0F * float(page.Key.Y) - 1.0F) * coverage };
+            const nri::SetRootConstantsDesc constants{ 0, pageTransform.data(), sizeof(pageTransform) };
+            mImpl->Core->CmdSetRootConstants(*command, constants);
+            for (auto index : target->Cache.Casters(page)) {
+                const auto& caster = *casters[index];
+                const auto& draw = prepared[index];
+                if (boundPipeline != draw.Pipeline) {
+                    mImpl->Core->CmdSetPipeline(*command, *draw.Pipeline);
+                    boundPipeline = draw.Pipeline;
+                }
+                const nri::SetDescriptorSetDesc set{ 0, draw.Set, nri::BindPoint::GRAPHICS };
+                mImpl->Core->CmdSetDescriptorSet(*command, set);
+                for (const auto& binding : sceneFrame.VertexBindings(caster)) {
+                    const nri::VertexBufferDesc vertex{ draw.Geometry, binding.Offset, binding.Stride };
+                    mImpl->Core->CmdSetVertexBuffers(*command, binding.Binding, &vertex, 1);
+                }
+                if (caster.Indexed) {
+                    mImpl->Core->CmdSetIndexBuffer(*command, *draw.Geometry, caster.IndexOffset,
+                                                   nri::IndexType::UINT16);
+                    const nri::DrawIndexedDesc nativeDraw{ caster.VertexOrIndexCount, 1, 0, caster.BaseVertex, 0 };
+                    mImpl->Core->CmdDrawIndexed(*command, nativeDraw);
+                } else {
+                    const nri::DrawDesc nativeDraw{ caster.VertexOrIndexCount, 1, 0, 0 };
+                    mImpl->Core->CmdDraw(*command, nativeDraw);
+                }
+                ++mImpl->LastCasters;
+            }
+        }
+        mImpl->Core->CmdEndRendering(*command);
     }
-    mImpl->LastStage =
-        NriDirectionalShadowExecutionStage::ShadowRasterized;
-
-    const auto shadowRead = mImpl->OwnedStates.PlanTransition(
-        shadowKey, {mapBarrier->CompletionAccess, 0U});
-    if (!NriInteropAccess::CmdTextureBarrier(
-            *mImpl->Interop, desc.FrameSlot,
-            historySlot.Texture.Image, shadowRead)) {
+    mImpl->LastStage = NriDirectionalShadowExecutionStage::ShadowRasterized;
+    const auto read = mImpl->OwnedStates.PlanTransition(shadowKey, { mapBarrier->CompletionAccess, 0 });
+    if (!NriInteropAccess::CmdTextureBarrier(*mImpl->Interop, desc.FrameSlot, history.Texture.Image, read))
         return false;
-    }
-    mImpl->LastShadowMapBarrierExecution.RecordGraphTransition(
-        shadowRead);
-    mImpl->OwnedStates.Commit(shadowRead);
-
-    historySlot.State.WorldToShadowTexture =
-        plan.WorldToShadowTexture;
-    historySlot.State.WorldLightDirectionTowardSource =
-        plan.LightDirectionTowardSource;
-    historySlot.State.ProducedFrameId = desc.FrameId;
-    historySlot.State.Resolution = plan.Resolution;
-    historySlot.State.Strength = plan.Strength;
-    historySlot.State.DepthBias =
-        std::max(plan.DepthBiasConstant, 0.0F) /
-        static_cast<float>(plan.Resolution);
-    historySlot.State.PcfRadius = plan.PcfRadius;
+    mImpl->LastShadowMapBarrierExecution.RecordGraphTransition(read);
+    mImpl->OwnedStates.Commit(read);
+    target->Cache.Commit();
+    history.State.Virtual = plan.Virtual;
+    history.State.PageTable = target->Cache.Table();
+    history.State.WorldLightDirectionTowardSource = plan.LightDirectionTowardSource;
+    history.State.ProducedFrameId = desc.FrameId;
+    history.State.Strength = plan.Strength;
+    history.State.DepthBias = std::max(plan.DepthBiasConstant, 0.0F) * 0.5F / (2.0F * plan.Virtual.DepthExtent);
+    history.State.PcfRadius = plan.PcfRadius;
     target->LastUsedFrameId = desc.FrameId;
-
-    mImpl->LastNativeLight = true;
-    mImpl->LastCasters = renderedCasters;
-    mImpl->LastStage =
-        NriDirectionalShadowExecutionStage::HistoryPublished;
+    mImpl->LastNativeLight = !authoredKey;
+    mImpl->LastStage = NriDirectionalShadowExecutionStage::HistoryPublished;
     return true;
 #endif
 }
 
-NriDirectionalShadowHistorySnapshot
-NriDirectionalShadowPass::FindLatestHistory(
-    uint64_t renderTargetNamespace,
-    uint32_t colorPhysicalAddress,
-    uint64_t beforeFrameId) const noexcept {
+NriDirectionalShadowHistorySnapshot NriDirectionalShadowPass::FindLatestHistory(uint64_t renderTargetNamespace,
+                                                                                uint32_t colorPhysicalAddress,
+                                                                                uint64_t atFrameId) const noexcept {
     NriDirectionalShadowHistorySnapshot result;
-    if (!Available() || beforeFrameId == 0U) {
+    if (!Available() || atFrameId == 0)
         return result;
-    }
-    const auto found = mImpl->Histories.find({
-        renderTargetNamespace, colorPhysicalAddress});
-    if (found == mImpl->Histories.end()) {
+    const auto found = mImpl->Histories.find({ renderTargetNamespace, colorPhysicalAddress });
+    if (found == mImpl->Histories.end())
         return result;
-    }
-    const Impl::HistorySlot* latest = nullptr;
-    for (const auto& slot : found->second.Slots) {
-        if (!slot.State.Valid() ||
-            slot.State.ProducedFrameId >= beforeFrameId ||
-            (latest != nullptr &&
-             latest->State.ProducedFrameId >=
-                 slot.State.ProducedFrameId)) {
-            continue;
-        }
-        latest = &slot;
-    }
-    if (latest == nullptr) {
+    const auto& slot = found->second.Slot;
+    if (!slot.State.Valid() || slot.State.ProducedFrameId > atFrameId)
         return result;
-    }
-    result.Image = latest->Texture.Image;
-    result.View = latest->Texture.SampledView;
+    result.Image = slot.Texture.Image;
+    result.View = slot.Texture.SampledView;
     result.Sampler = mImpl->ReceiverSampler;
-    result.State = latest->State;
-    return result.Valid() ? result
-                          : NriDirectionalShadowHistorySnapshot{};
+    result.State = slot.State;
+    return result.Valid() ? result : NriDirectionalShadowHistorySnapshot{};
+}
+
+void NriDirectionalShadowPass::InvalidateHistory() noexcept {
+    for (auto& [key, history] : mImpl->Histories) {
+        history.Slot.State = {};
+        history.Cache.Invalidate();
+    }
 }
 
 void NriDirectionalShadowPass::InvalidateScreenResources() {
@@ -925,24 +765,19 @@ void NriDirectionalShadowPass::Shutdown() {
             for (nri::Descriptor* view : frame.TransientViews) {
                 mImpl->Core->DestroyDescriptor(view);
             }
-            if (frame.ShadowUniformMapped != nullptr &&
-                frame.ShadowUniformBuffer != nullptr) {
-                mImpl->Core->UnmapBuffer(
-                    *frame.ShadowUniformBuffer);
+            if (frame.ShadowUniformMapped != nullptr && frame.ShadowUniformBuffer != nullptr) {
+                mImpl->Core->UnmapBuffer(*frame.ShadowUniformBuffer);
             }
-            for (nri::Descriptor* view :
-                 frame.ShadowUniformViews) {
+            for (nri::Descriptor* view : frame.ShadowUniformViews) {
                 if (view != nullptr) {
                     mImpl->Core->DestroyDescriptor(view);
                 }
             }
             if (frame.ShadowUniformBuffer != nullptr) {
-                mImpl->Core->DestroyBuffer(
-                    frame.ShadowUniformBuffer);
+                mImpl->Core->DestroyBuffer(frame.ShadowUniformBuffer);
             }
             if (frame.CasterPool != nullptr) {
-                mImpl->Core->DestroyDescriptorPool(
-                    frame.CasterPool);
+                mImpl->Core->DestroyDescriptorPool(frame.CasterPool);
             }
         }
         for (auto& [key, pipeline] : mImpl->ShadowPipelines) {
@@ -950,27 +785,21 @@ void NriDirectionalShadowPass::Shutdown() {
             mImpl->Core->DestroyPipeline(pipeline);
         }
         if (mImpl->ShadowLayout != nullptr) {
-            mImpl->Core->DestroyPipelineLayout(
-                mImpl->ShadowLayout);
+            mImpl->Core->DestroyPipelineLayout(mImpl->ShadowLayout);
         }
     }
 #endif
-    if (mImpl->ReceiverSampler != VK_NULL_HANDLE &&
-        mImpl->Device != VK_NULL_HANDLE) {
-        vkDestroySampler(
-            mImpl->Device, mImpl->ReceiverSampler, nullptr);
+    if (mImpl->ReceiverSampler != VK_NULL_HANDLE && mImpl->Device != VK_NULL_HANDLE) {
+        vkDestroySampler(mImpl->Device, mImpl->ReceiverSampler, nullptr);
     }
     *mImpl = {};
-    mImpl->Reason =
-        "NRI directional shadow pass is not initialized";
+    mImpl->Reason = "NRI directional shadow pass is not initialized";
 }
 
 bool NriDirectionalShadowPass::Available() const {
 #ifdef ENABLE_OOT3D_NRI
-    return mImpl->Reason.empty() && mImpl->Interop != nullptr &&
-           mImpl->Core != nullptr &&
-           mImpl->ShadowLayout != nullptr &&
-           mImpl->ReceiverSampler != VK_NULL_HANDLE;
+    return mImpl->Reason.empty() && mImpl->Interop != nullptr && mImpl->Core != nullptr &&
+           mImpl->ShadowLayout != nullptr && mImpl->ReceiverSampler != VK_NULL_HANDLE;
 #else
     return false;
 #endif
@@ -984,23 +813,19 @@ uint32_t NriDirectionalShadowPass::LastCasterCount() const {
     return mImpl->LastCasters;
 }
 
-const NriDirectionalShadowLightTelemetry&
-NriDirectionalShadowPass::LastLightTelemetry() const {
+const NriDirectionalShadowLightTelemetry& NriDirectionalShadowPass::LastLightTelemetry() const {
     return mImpl->LastLight;
 }
 
-NriDirectionalShadowExecutionStage
-NriDirectionalShadowPass::LastExecutionStage() const {
+NriDirectionalShadowExecutionStage NriDirectionalShadowPass::LastExecutionStage() const {
     return mImpl->LastStage;
 }
 
-const EffectPassBarrierExecution&
-NriDirectionalShadowPass::LastShadowMapBarrierExecution() const {
+const EffectPassBarrierExecution& NriDirectionalShadowPass::LastShadowMapBarrierExecution() const {
     return mImpl->LastShadowMapBarrierExecution;
 }
 
-const std::string&
-NriDirectionalShadowPass::UnavailableReason() const {
+const std::string& NriDirectionalShadowPass::UnavailableReason() const {
     return mImpl->Reason;
 }
 

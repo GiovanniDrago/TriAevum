@@ -38,6 +38,11 @@ struct NriPicaScanoutDesc {
     uint32_t ScissorHeight = 0;
     std::array<float, 4> ClearColor{};
     bool Overlay = false;
+    // The target role decides both the pixel domain the pipeline samples and
+    // the completion state it retires in: presentation scans out the packed
+    // physical surface, an offscreen boundary materializes a surface-domain
+    // image a native consumer samples.
+    bool OffscreenTarget = false;
 };
 
 class NriPicaScanoutPass final {
@@ -48,7 +53,11 @@ class NriPicaScanoutPass final {
     NriPicaScanoutPass& operator=(const NriPicaScanoutPass&) = delete;
 
     bool Initialize(VkDevice device, NriInteropContext& interop);
+    // Presentation target: the packed physical display surface.
     bool Configure(VkFormat targetFormat);
+    // Offscreen target: the surface-domain image a native consumer samples. It
+    // keeps its own pipeline so a boundary never disturbs scanout state.
+    bool ConfigureOffscreen(VkFormat targetFormat);
     bool Execute(const NriPicaScanoutDesc& desc,
                  const EffectPassBarrierPlan& barrierPlan);
     void ResetTargets();

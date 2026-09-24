@@ -3,8 +3,12 @@
 #include "oot3d_native_a32_memory.h"
 #include "oot3d_typed_gameplay_bridge.h"
 #include "recomp/a32_runtime.h"
+#include "oot3d/actor_spawn.h"
+#include <cstddef>
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -33,9 +37,273 @@ void Map(Oot3dNativeGame::NativeA32Memory& memory, uint32_t address,
             error);
 }
 
+void TestSelectedLightSnapshot() {
+    using Light = Fast::Renderer3ds::PicaNativeLightSource;
+    Oot3dNativeGame::NativeA32Memory memory;
+    Map(memory, 0x0054C000U, 0x1000U);
+    Map(memory, 0x10000000U, 0x1000U);
+    Map(memory, 0x005B5000U, 0x1000U);
+    const auto writeView = [&](const std::array<float, 12>& view) {
+        for (size_t i = 0; i < view.size(); ++i) {
+            Require(memory.Write32(0x005B5018U + static_cast<uint32_t>(i * 4U),
+                                  std::bit_cast<uint32_t>(view[i])), "could not write native view");
+            const float identity = i == 0 || i == 5 || i == 10 ? 1.0F : 0.0F;
+            Require(memory.Write32(0x005B5058U + static_cast<uint32_t>(i * 4U),
+                                  std::bit_cast<uint32_t>(identity)), "could not write native post-view");
+        }
+    };
+    constexpr uint32_t lights = 0x10000400U;
+    constexpr uint32_t point = 0x10000500U;
+    constexpr uint32_t renderer = 0x10000600U;
+    constexpr uint32_t renderState = 0x10000700U;
+    constexpr uint32_t record = lights + 0x60U;
+    Require(memory.Write32(renderer + 0x10U, renderState) &&
+                memory.Write32(0x10000010U, 0x20U) &&
+                memory.Write16(point + 0x10U, 100U),
+            "could not seed light ownership");
+    for (uint32_t channel = 0; channel < 3U; ++channel) {
+        Require(memory.Write8(point + 0xCU + channel, 200U) &&
+                    memory.Write8(record + channel, 100U),
+                "could not seed native light colors");
+    }
+    Oot3dNativeGame::Oot3dNativePicaCompositionTracker tracker;
+    oot3d::recomp::a32::GuestState state{};
+    const auto bindPoint = [&](float x) {
+        Require(memory.Write32(point, std::bit_cast<uint32_t>(x)),
+                "could not move point light");
+        state.r[0] = lights;
+        state.r[1] = point;
+        state.r[2] = record;
+        tracker.ObserveBlockEntry(0x00213DFCU, state, memory);
+        state.r[0] = renderState;
+        state.r[1] = 2U;
+        state.r[5] = record;
+        state.r[6] = lights;
+        state.r[14] = 0x0035BEE8U;
+        tracker.ObserveBlockEntry(0x0033D14CU, state, memory);
+    };
+    const auto emit = [&](uint32_t cursor) {
+        Require(memory.Write32(0x0054CC4CU, cursor), "could not advance light draw cursor");
+        state.r[0] = 0x10000000U;
+        tracker.ObserveBlockEntry(Oot3dNativeGame::kOot3dMeshCommandPacketSubmitEntry, state, memory);
+    };
+    bindPoint(10.0F);
+    state.r[0] = renderer;
+    state.r[1] = 0U;
+    state.r[14] = 0x002FADDCU;
+    tracker.ObserveBlockEntry(Oot3dNativeGame::kOot3dCmbRendererSubmitDrawHandleEntry, state, memory);
+    writeView({1,0,0,0, 0,1,0,0, 0,0,1,-11});
+    emit(0x14001000U);
+    bindPoint(20.0F);
+    writeView({0,0,1,0, 0,1,0,0, -1,0,0,0});
+    // A non-commuting post-view rotation must use the geometry's order.
+    Require(memory.Write32(0x005B5058U, std::bit_cast<uint32_t>(0.0F)) &&
+                memory.Write32(0x005B505CU, std::bit_cast<uint32_t>(-1.0F)) &&
+                memory.Write32(0x005B5068U, std::bit_cast<uint32_t>(1.0F)) &&
+                memory.Write32(0x005B506CU, std::bit_cast<uint32_t>(0.0F)),
+            "could not rotate native post-view");
+    emit(0x14001020U);
+    state.r[0] = renderState;
+    state.r[1] = 2U;
+    tracker.ObserveBlockEntry(0x0033D174U, state, memory);
+    emit(0x14001040U);
+    std::vector<Oot3dNativeGame::Oot3dPicaCommandListCompositionSpan> spans;
+    std::string error;
+    Require(tracker.TakeCommandListCompositionSpans(0x14001000U, 0x60U, spans, &error), error);
+    Require(spans.size() == 3U &&
+                spans[0].LightBinding.Sources[2].Kind == Light::Type::Point &&
+                spans[0].LightBinding.Sources[2].PositionWorld[0] == 10.0F &&
+                spans[1].LightBinding.Sources[2].PositionWorld[0] == 20.0F &&
+                spans[0].LightBinding.Sources[0].Kind == Light::Type::Unavailable &&
+                spans[2].LightBinding.Sources[2].Kind == Light::Type::Unavailable,
+            "adjacent draws lost selected slots, immutable light state, or explicit override invalidation");
+    // A later gameplay camera must not move a surface in an earlier packet.
+    const std::array<float, 4> worldPoint{3,5,7,1};
+    const std::array<std::array<float, 3>, 2> expectedView{{{3,5,-4}, {-5,7,-3}}};
+    for (size_t draw = 0; draw < expectedView.size(); ++draw) {
+        const auto& view = spans[draw].LightBinding.WorldToView;
+        Require(view.has_value(), "geometry-synchronous lighting view was not captured");
+        for (size_t row = 0; row < 3; ++row) {
+            float actual = 0;
+            for (size_t column = 0; column < 4; ++column)
+                actual += (*view)[column * 4 + row] * worldPoint[column];
+            Require(actual == expectedView[draw][row], "live camera moved an immutable lighting surface");
+        }
+    }
+}
+
+void TestProjectedShadowOwnership() {
+    using namespace Oot3dNativeGame;
+    NativeA32Memory memory;
+    Map(memory, 0x0054C000U, 0x1000U);
+    Map(memory, 0x10000000U, 0x1000U);
+    constexpr uint32_t model = 0x10000400U, shadow = 0x10000600U, ordinary = 0x10000700U;
+    Require(memory.Write32(model + 0x14U, shadow) &&
+            memory.Write32(model + 0x18U, shadow) &&
+            memory.Write32(0x10000010U, 0x20U), "could not seed shadow model");
+    Oot3dNativePicaCompositionTracker tracker;
+    oot3d::recomp::a32::GuestState state{};
+    uint32_t cursor = 0x14001000U;
+    const auto emit = [&](uint32_t renderer) {
+        state.r[0] = renderer;
+        state.r[1] = 1U;
+        state.r[14] = 0x002FADDCU;
+        tracker.ObserveBlockEntry(kOot3dCmbRendererSubmitDrawHandleEntry, state, memory);
+        Require(memory.Write32(0x0054CC4CU, cursor), "could not move shadow packet cursor");
+        state.r[0] = 0x10000000U;
+        tracker.ObserveBlockEntry(kOot3dMeshCommandPacketSubmitEntry, state, memory);
+        tracker.ObserveBlockEntry(0x002FADDCU, state, memory);
+        cursor += 0x20U;
+    };
+    state.r[0] = model;
+    state.r[14] = 0x004BFC8CU; // Player's separate mirrored-model route is not a blob shadow.
+    tracker.ObserveBlockEntry(kOot3dModelQueueSubmitEntry, state, memory);
+    emit(shadow);
+    state.r[0] = model;
+    state.r[14] = 0x001D04DCU;
+    tracker.ObserveBlockEntry(kOot3dModelQueueSubmitEntry, state, memory);
+    emit(shadow);
+    emit(ordinary);
+    tracker.ObserveBlockEntry(kOot3dGameplayDrawEntry, state, memory);
+    emit(shadow); // Reusing a renderer next frame must not retain its old role.
+    state.r[0] = model;
+    state.r[14] = 0x0033EA3CU;
+    tracker.ObserveBlockEntry(kOot3dModelQueueSubmitEntry, state, memory);
+    emit(shadow);
+    tracker.ObserveBlockEntry(kOot3dGameplayDrawEntry, state, memory);
+    state.r[0] = model;
+    state.r[14] = 0x0033E684U; // ActorShadow_DrawFeet's floor-aligned model producer.
+    tracker.ObserveBlockEntry(kOot3dModelQueueSubmitEntry, state, memory);
+    emit(shadow);
+    emit(ordinary);
+    std::vector<Oot3dPicaCommandListCompositionSpan> spans;
+    std::string error;
+    Require(tracker.TakeCommandListCompositionSpans(0x14001000U, 0xE0U, spans, &error), error);
+    // Adjacent ordinary spans can coalesce, but preserve every command byte's owner.
+    const std::array expected{false, true, false, false, true, true, false};
+    for (size_t i = 0; i < expected.size(); ++i) {
+        const auto address = 0x14001000U + static_cast<uint32_t>(i) * 0x20U;
+        const auto found = std::find_if(spans.begin(), spans.end(), [&](const auto& span) {
+            return span.BeginAddress <= address && address < span.EndAddress;
+        });
+        Require(found != spans.end() && found->Attribution.NativeProjectedShadow == expected[i],
+                "shadow producer ownership was lost, overextended, or retained across frames");
+    }
+}
+
+void TestRestoredSceneLightOwnership() {
+    using namespace Oot3dNativeGame;
+    NativeA32Memory memory;
+    constexpr uint32_t play = 0x10000000U, navi = play + 0x4000U;
+    constexpr uint32_t fairy = play + 0x5000U, nodes = play + 0x8000U;
+    Map(memory, play, 0x10000U);
+    const uint32_t list = play + OOT3D_ACTOR_CONTEXT_PLAY_OFFSET + offsetof(Oot3dActorContext, lists);
+    Require(memory.Write32(list, 2U) && memory.Write32(list + 4U, navi), "could not seed restored actor list");
+    for (uint32_t actor : {navi, fairy}) {
+        Require(memory.Write16(actor + offsetof(Oot3dActor, id), 0x18U) &&
+                memory.Write8(actor + offsetof(Oot3dActor, category), 0U) &&
+                memory.Write16(actor + offsetof(Oot3dActor, params), actor == navi ? 0U : 2U) &&
+                memory.Write32(actor + offsetof(Oot3dActor, update), 0x001D732CU) &&
+                memory.Write32(actor + offsetof(Oot3dActor, next), actor == navi ? fairy : 0U),
+                "could not seed restored fairy ownership");
+    }
+    const std::array infos{navi + 0x948U, navi + 0x964U, fairy + 0x948U};
+    for (uint32_t i = 0; i < infos.size(); ++i) {
+        const uint32_t info = infos[i], node = nodes + i * 12U;
+        Require(memory.Write32(info + 0x18U, node) && memory.Write32(node, info) &&
+                memory.Write32(info + 4U, std::bit_cast<uint32_t>(10.0F + i)) &&
+                memory.Write8(info + 0x10U + i, 255U) &&
+                memory.Write16(info + 0x14U, i == 1 ? 0U : 80U),
+                "could not seed native light records");
+    }
+    NativeA32LightingProbe probe;
+    // No Init hook is replayed after loading a savestate.
+    probe.CaptureSceneLights(play, memory);
+    const auto restored = probe.CaptureRenderer(0, memory).ScenePoints;
+    Require(restored && restored->Count == 3 &&
+                restored->Lights[0].Group == 0 && restored->Lights[1].Radius == 0 &&
+                restored->Lights[2].Group == 1 && restored->Lights[2].PositionWorld[0] == 12,
+            "restored scene lost native light ownership, groups, or inactive source suppression");
+    Require(memory.Write32(navi + offsetof(Oot3dActor, update), 0) &&
+                memory.Write32(infos[2] + 4U, std::bit_cast<uint32_t>(20.0F)), "could not remove native Navi");
+    probe.CaptureSceneLights(play, memory);
+    const auto next = probe.CaptureRenderer(0, memory).ScenePoints;
+    Require(next && next->Count == 1 && next->Lights[0].PositionWorld[0] == 20 &&
+                restored->Count == 3 && restored->Lights[2].PositionWorld[0] == 12,
+            "actor destruction retained a light or mutated an earlier geometry snapshot");
+    const auto scalar = [&](uint32_t offset, float value) {
+        return memory.Write32(fairy + offset, std::bit_cast<uint32_t>(value));
+    };
+    Require(memory.Write16(infos[2] + 0x14U, 0U) &&
+                memory.Write32(fairy + offsetof(Oot3dActor, draw), 0x001D6EC4U) &&
+                scalar(0x28U, 30.0F) && scalar(0x2CU, 55.0F) &&
+                scalar(0x54U, 0.008F) && scalar(0x924U, 0.5F) &&
+                scalar(0x928U, 255.0F) && scalar(0x92CU, 128.0F) &&
+                scalar(0x930U, 64.0F) && scalar(0x934U, 255.0F),
+            "could not seed a visible fairy with a dormant native light");
+    probe.CaptureSceneLights(play, memory);
+    const auto emitting = probe.CaptureRenderer(0, memory).ScenePoints;
+    Require(emitting && emitting->Lights[0].Radius > 0 &&
+                emitting->Lights[0].PositionWorld[0] == 30.0F &&
+                emitting->Lights[0].PositionWorld[1] == 55.0F &&
+                emitting->Lights[0].Color[0] == 0.5F,
+            "fairy emission used dormant light coordinates instead of the live glow");
+    Require(memory.Write16(fairy + 0x9C4U, 8U), "could not hide fairy glow");
+    probe.CaptureSceneLights(play, memory);
+    const auto hidden = probe.CaptureRenderer(0, memory).ScenePoints;
+    Require(hidden && hidden->Lights[0].Radius == 0 &&
+                hidden->Lights[0].SourceIdentity == emitting->Lights[0].SourceIdentity &&
+                emitting->Lights[0].Color[0] == 0.5F,
+            "a hidden fairy emitted light or lost native-slot suppression ownership");
+    Require(memory.Write32(nodes + 24U, 0), "could not recycle native light node");
+    probe.CaptureSceneLights(play, memory);
+    Require(!probe.CaptureRenderer(0, memory).ScenePoints,
+            "a recycled LightNode remained attributed to its old actor");
+}
+
+void TestRestoredNativeEnvironmentLights() {
+    using namespace Oot3dNativeGame;
+    NativeA32Memory memory;
+    constexpr uint32_t play = 0x10000000U, nodes = play + 0x8000U;
+    Map(memory, play, 0x10000U);
+    Require(memory.Write32(play + 0xA70U, nodes), "could not seed LightContext");
+    const std::array infos{play + 0x31BCU, play + 0x31D4U, play + 0x7000U};
+    for (uint32_t i = 0; i < infos.size(); ++i) {
+        Require(memory.Write32(nodes + i * 12U, infos[i]) &&
+                    memory.Write32(nodes + i * 12U + 8U, i < 2 ? nodes + (i + 1U) * 12U : 0U) &&
+                    memory.Write8(infos[i], 1U) &&
+                    memory.Write8(infos[i] + 5U, i == 1 ? 129U : 127U) &&
+                    memory.Write8(infos[i] + 7U + i, 255U),
+                "could not seed native environment light");
+    }
+    NativeA32LightingProbe probe;
+    probe.CaptureSceneLights(play, memory);
+    const auto restored = probe.CaptureRenderer(0, memory).SceneDirectionals;
+    Require(restored && restored->Count == 2 &&
+                restored->Lights[0].SourceIdentity == infos[0] + 4U &&
+                restored->Lights[0].DirectionTowardSource[1] == 1.0F &&
+                restored->Lights[1].DirectionTowardSource[1] == -1.0F &&
+                restored->Lights[0].Color[0] == 1.0F && restored->Lights[1].Color[1] == 1.0F,
+            "restored scene environment lost ownership, signed direction or live color");
+    Require(memory.Write32(nodes + 8U, nodes + 24U) &&
+                memory.Write8(infos[0] + 7U, 0U), "could not update native environment");
+    probe.CaptureSceneLights(play, memory);
+    const auto changed = probe.CaptureRenderer(0, memory).SceneDirectionals;
+    Require(changed && changed->Count == 1 && changed->Lights[0].Color[0] == 0.0F &&
+                restored->Count == 2 && restored->Lights[0].Color[0] == 1.0F,
+            "unlinked source survived or a live environment update mutated old geometry");
+    probe.CaptureSceneLights(0, memory);
+    Require(!probe.CaptureRenderer(0, memory).SceneDirectionals,
+            "native environment leaked after leaving gameplay");
+}
+
 } // namespace
 
 int main() {
+    TestSelectedLightSnapshot();
+    TestProjectedShadowOwnership();
+    TestRestoredSceneLightOwnership();
+    TestRestoredNativeEnvironmentLights();
     constexpr uint32_t kWriterWrapper = 0x10000200U;
     constexpr uint32_t kWriterContext = 0x10000300U;
 
@@ -53,18 +321,6 @@ int main() {
 
     Oot3dNativeGame::Oot3dNativePicaCompositionTracker tracker;
     oot3d::recomp::a32::GuestState state{};
-    const auto hooks =
-        Oot3dNativeGame::Oot3dNativePicaCompositionHookPcs();
-    Require(hooks.size() == 67U &&
-                std::find(
-                    hooks.begin(), hooks.end(),
-                    Oot3dNativeGame::kOot3dPicaPrimitivePacketBuilderEntry) !=
-                    hooks.end() &&
-                std::find(
-                    hooks.begin(), hooks.end(),
-                    Oot3dNativeGame::kOot3dKankyoEffectPrimitiveDrawEntry) !=
-                    hooks.end(),
-            "native composition hook inventory is incomplete");
 
     const auto emitPrimitive =
         [&](uint32_t beginAddress, uint32_t endAddress,

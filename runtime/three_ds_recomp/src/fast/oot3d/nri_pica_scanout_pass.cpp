@@ -44,6 +44,18 @@ struct NriPicaScanoutPass::Impl {
     nri::Pipeline* BasePipeline = nullptr;
     nri::Pipeline* OverlayPipeline = nullptr;
     nri::Descriptor* Sampler = nullptr;
+    // The offscreen role keeps its own pipeline so a boundary materialization
+    // never disturbs the swapchain-target scanout state.
+    VkFormat OffscreenFormat = VK_FORMAT_UNDEFINED;
+    nri::Pipeline* OffscreenPipeline = nullptr;
+
+    // Creates (or reuses) the pipelines of one declared target role. `overlay`
+    // is the presentation-only overlay pipeline slot; the offscreen role passes
+    // null because it never blends over an existing image. Returns false and
+    // keeps `Reason` set when this device cannot express the role.
+    bool ConfigureTarget(VkFormat format, PicaScanoutOrientation orientation,
+                         VkFormat& formatSlot, nri::Pipeline*& base,
+                         nri::Pipeline** overlay);
     struct FrameDescriptors {
         nri::DescriptorPool* Pool = nullptr;
         std::array<nri::DescriptorSet*, kDrawsPerFrame> Sets{};
@@ -159,6 +171,74 @@ bool NriPicaScanoutPass::Initialize(
 #endif
 }
 
+#ifdef ENABLE_OOT3D_NRI
+bool NriPicaScanoutPass::Impl::ConfigureTarget(
+    VkFormat format, PicaScanoutOrientation orientation,
+    VkFormat& formatSlot, nri::Pipeline*& base, nri::Pipeline** overlay) {
+    if (formatSlot != VK_FORMAT_UNDEFINED &&
+        vkDeviceWaitIdle(Device) != VK_SUCCESS)
+        return false;
+    if (base != nullptr) Core->DestroyPipeline(base);
+    if (overlay != nullptr && *overlay != nullptr)
+        Core->DestroyPipeline(*overlay);
+    base = nullptr;
+    if (overlay != nullptr) *overlay = nullptr;
+    try {
+        const auto vertex = Compile(Interop->Shaders(),
+            BuildPicaScanoutVertexShader(), Renderer::SpirvStage::Vertex,
+            "oot3d_nri_pica_scanout.vert");
+        const auto fragment = Compile(Interop->Shaders(),
+            BuildPicaScanoutFragmentShader(true, std::nullopt, orientation),
+            Renderer::SpirvStage::Fragment, "oot3d_nri_pica_scanout.frag");
+        const std::array<nri::ShaderDesc, 2> shaders{{
+            {nri::StageBits::VERTEX_SHADER, vertex.data(),
+             vertex.size() * sizeof(uint32_t)},
+            {nri::StageBits::FRAGMENT_SHADER, fragment.data(),
+             fragment.size() * sizeof(uint32_t)}}};
+        nri::ColorAttachmentDesc color{};
+        color.format = nri::nriConvertVKFormatToNRI(format);
+        color.colorWriteMask = nri::ColorWriteBits::RGBA;
+        if (color.format == nri::Format::UNKNOWN)
+            throw std::runtime_error("NRI scanout target format unsupported");
+        nri::MultisampleDesc multisample{};
+        multisample.sampleMask = 0xFFFFFFFFU;
+        multisample.sampleNum = 1;
+        nri::GraphicsPipelineDesc pipeline{};
+        pipeline.pipelineLayout = PipelineLayout;
+        pipeline.inputAssembly.topology = nri::Topology::TRIANGLE_LIST;
+        pipeline.rasterization.fillMode = nri::FillMode::SOLID;
+        pipeline.rasterization.cullMode = nri::CullMode::NONE;
+        pipeline.rasterization.frontCounterClockwise = true;
+        pipeline.multisample = &multisample;
+        pipeline.outputMerger.colors = &color;
+        pipeline.outputMerger.colorNum = 1;
+        pipeline.shaders = shaders.data();
+        pipeline.shaderNum = static_cast<uint32_t>(shaders.size());
+        nri::Device* nriDevice = NriInteropAccess::Device(*Interop);
+        if (Core->CreateGraphicsPipeline(*nriDevice, pipeline, base) !=
+            nri::Result::SUCCESS)
+            throw std::runtime_error("NRI base scanout pipeline failed");
+        if (overlay != nullptr) {
+            color.blendEnabled = true;
+            color.colorBlend = {nri::BlendFactor::SRC_ALPHA,
+                                nri::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                                nri::BlendOp::ADD};
+            color.alphaBlend = {nri::BlendFactor::ONE,
+                                nri::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                                nri::BlendOp::ADD};
+            if (Core->CreateGraphicsPipeline(*nriDevice, pipeline, *overlay) !=
+                nri::Result::SUCCESS)
+                throw std::runtime_error("NRI overlay scanout pipeline failed");
+        }
+        formatSlot = format;
+        return true;
+    } catch (const std::exception& exception) {
+        Reason = exception.what();
+        return false;
+    }
+}
+#endif
+
 bool NriPicaScanoutPass::Configure(VkFormat targetFormat) {
     if (mImpl->Reason.size() != 0U ||
         targetFormat == VK_FORMAT_UNDEFINED)
@@ -169,69 +249,26 @@ bool NriPicaScanoutPass::Configure(VkFormat targetFormat) {
 #ifndef ENABLE_OOT3D_NRI
     return false;
 #else
-    if (mImpl->TargetFormat != VK_FORMAT_UNDEFINED &&
-        vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS)
+    return mImpl->ConfigureTarget(
+        targetFormat, PicaScanoutOrientation::PhysicalScreen,
+        mImpl->TargetFormat, mImpl->BasePipeline,
+        &mImpl->OverlayPipeline);
+#endif
+}
+
+bool NriPicaScanoutPass::ConfigureOffscreen(VkFormat targetFormat) {
+    if (mImpl->Reason.size() != 0U ||
+        targetFormat == VK_FORMAT_UNDEFINED)
         return false;
-    if (mImpl->BasePipeline != nullptr)
-        mImpl->Core->DestroyPipeline(mImpl->BasePipeline);
-    if (mImpl->OverlayPipeline != nullptr)
-        mImpl->Core->DestroyPipeline(mImpl->OverlayPipeline);
-    mImpl->BasePipeline = nullptr;
-    mImpl->OverlayPipeline = nullptr;
-    try {
-        const auto vertex = Compile(mImpl->Interop->Shaders(),
-            BuildPicaScanoutVertexShader(), Renderer::SpirvStage::Vertex,
-            "oot3d_nri_pica_scanout.vert");
-        const auto fragment = Compile(mImpl->Interop->Shaders(),
-            BuildPicaScanoutFragmentShader(true), Renderer::SpirvStage::Fragment,
-            "oot3d_nri_pica_scanout.frag");
-        const std::array<nri::ShaderDesc, 2> shaders{{
-            {nri::StageBits::VERTEX_SHADER, vertex.data(),
-             vertex.size() * sizeof(uint32_t)},
-            {nri::StageBits::FRAGMENT_SHADER, fragment.data(),
-             fragment.size() * sizeof(uint32_t)}}};
-        nri::ColorAttachmentDesc color{};
-        color.format = nri::nriConvertVKFormatToNRI(targetFormat);
-        color.colorWriteMask = nri::ColorWriteBits::RGBA;
-        if (color.format == nri::Format::UNKNOWN)
-            throw std::runtime_error("NRI scanout target format unsupported");
-        nri::MultisampleDesc multisample{};
-        multisample.sampleMask = 0xFFFFFFFFU;
-        multisample.sampleNum = 1;
-        nri::GraphicsPipelineDesc pipeline{};
-        pipeline.pipelineLayout = mImpl->PipelineLayout;
-        pipeline.inputAssembly.topology = nri::Topology::TRIANGLE_LIST;
-        pipeline.rasterization.fillMode = nri::FillMode::SOLID;
-        pipeline.rasterization.cullMode = nri::CullMode::NONE;
-        pipeline.rasterization.frontCounterClockwise = true;
-        pipeline.multisample = &multisample;
-        pipeline.outputMerger.colors = &color;
-        pipeline.outputMerger.colorNum = 1;
-        pipeline.shaders = shaders.data();
-        pipeline.shaderNum = static_cast<uint32_t>(shaders.size());
-        nri::Device* nriDevice =
-            NriInteropAccess::Device(*mImpl->Interop);
-        if (mImpl->Core->CreateGraphicsPipeline(
-                *nriDevice, pipeline, mImpl->BasePipeline) !=
-            nri::Result::SUCCESS)
-            throw std::runtime_error("NRI base scanout pipeline failed");
-        color.blendEnabled = true;
-        color.colorBlend = {nri::BlendFactor::SRC_ALPHA,
-                            nri::BlendFactor::ONE_MINUS_SRC_ALPHA,
-                            nri::BlendOp::ADD};
-        color.alphaBlend = {nri::BlendFactor::ONE,
-                            nri::BlendFactor::ONE_MINUS_SRC_ALPHA,
-                            nri::BlendOp::ADD};
-        if (mImpl->Core->CreateGraphicsPipeline(
-                *nriDevice, pipeline, mImpl->OverlayPipeline) !=
-            nri::Result::SUCCESS)
-            throw std::runtime_error("NRI overlay scanout pipeline failed");
-        mImpl->TargetFormat = targetFormat;
+#ifndef ENABLE_OOT3D_NRI
+    return false;
+#else
+    if (mImpl->OffscreenFormat == targetFormat &&
+        mImpl->OffscreenPipeline != nullptr)
         return true;
-    } catch (const std::exception& exception) {
-        mImpl->Reason = exception.what();
-        return false;
-    }
+    return mImpl->ConfigureTarget(
+        targetFormat, PicaScanoutOrientation::Surface,
+        mImpl->OffscreenFormat, mImpl->OffscreenPipeline, nullptr);
 #endif
 }
 
@@ -244,9 +281,15 @@ bool NriPicaScanoutPass::Execute(
     return false;
 #else
     const auto* outputBarrier = barrierPlan.Find(
-        EffectResource::PresentationOutput);
-    if (!PipelineOwnedByNri() ||
-        desc.TargetFormat != mImpl->TargetFormat ||
+        desc.OffscreenTarget ? EffectResource::SceneComposition
+                             : EffectResource::PresentationOutput);
+    const VkFormat roleFormat =
+        desc.OffscreenTarget ? mImpl->OffscreenFormat : mImpl->TargetFormat;
+    if (!(desc.OffscreenTarget
+              ? mImpl->OffscreenPipeline != nullptr
+              : PipelineOwnedByNri()) ||
+        (desc.OffscreenTarget && desc.Overlay) ||
+        desc.TargetFormat != roleFormat ||
         desc.CommandBuffer == VK_NULL_HANDLE ||
         desc.TargetImage == VK_NULL_HANDLE ||
         desc.TargetView == VK_NULL_HANDLE ||
@@ -341,8 +384,11 @@ bool NriPicaScanoutPass::Execute(
     mImpl->Core->CmdSetPipelineLayout(
         *command, nri::BindPoint::GRAPHICS, *mImpl->PipelineLayout);
     mImpl->Core->CmdSetPipeline(
-        *command, desc.Overlay ? *mImpl->OverlayPipeline
-                               : *mImpl->BasePipeline);
+        *command,
+        desc.OffscreenTarget
+            ? *mImpl->OffscreenPipeline
+            : (desc.Overlay ? *mImpl->OverlayPipeline
+                            : *mImpl->BasePipeline));
     const nri::SetDescriptorSetDesc setDesc{
         0, set, nri::BindPoint::GRAPHICS};
     mImpl->Core->CmdSetDescriptorSet(*command, setDesc);
@@ -403,6 +449,8 @@ void NriPicaScanoutPass::Shutdown() {
             mImpl->Core->DestroyPipeline(mImpl->BasePipeline);
         if (mImpl->OverlayPipeline != nullptr)
             mImpl->Core->DestroyPipeline(mImpl->OverlayPipeline);
+        if (mImpl->OffscreenPipeline != nullptr)
+            mImpl->Core->DestroyPipeline(mImpl->OffscreenPipeline);
         if (mImpl->Sampler != nullptr)
             mImpl->Core->DestroyDescriptor(mImpl->Sampler);
         if (mImpl->PipelineLayout != nullptr)

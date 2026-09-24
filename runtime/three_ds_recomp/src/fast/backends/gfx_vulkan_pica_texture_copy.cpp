@@ -1,56 +1,514 @@
 #ifdef ENABLE_OOT3D_VULKAN
 #include "fast/backends/gfx_vulkan.h"
+#include "fast/oot3d/pica_grass_texture_coordinates.h"
+#include "fast/oot3d/nri_interop_context.h"
+#include "fast/oot3d/nri_pica_display_copy_pass.h"
 #include "fast/renderer3ds/pica_framebuffer_encode.h"
 #include "fast/renderer3ds/pica_framebuffer_encode_gpu.h"
-#include "fast/renderer3ds/pica_texture_decode_gpu.h"
+#include "fast/renderer3ds/pica_texture_copy_plan.h"
 #include "fast/renderer/spirv_cache.h"
 #include <algorithm>
+#include <cstdio>
 #include <iostream>
 #include <stdexcept>
 
 namespace Fast {
-GfxNativePicaTextureView GfxRenderingAPIVulkan::ResolveNativePicaCopiedTexture(
-    const GfxNativePicaTextureView& texture, uint64_t renderTargetNamespace,
-    uint64_t drawId, std::vector<uint8_t>& coherentBytes) {
-    // A captured plan can precede completion of the raw GPU copy. Refresh only
-    // unchanged, stale bytes after that copy, never a newer CPU-owned payload.
-    auto resolved = texture;
-    coherentBytes.clear();
-    for (const auto& [identity, copy] : mRawTextureCopyWritebacks) {
-        if (identity.first != renderTargetNamespace || drawId <= copy.AfterDrawSubmissionId) continue;
-        for (const auto& write : copy.Writes) {
-            const uint64_t lo = std::max<uint64_t>(texture.PhysicalAddress, write.Address);
-            const uint64_t hi = std::min<uint64_t>(uint64_t{texture.PhysicalAddress} + texture.NativeBytes.size(),
-                                                  uint64_t{write.Address} + write.Bytes.size());
-            if (lo >= hi) continue;
-            const size_t textureOffset = lo - texture.PhysicalAddress, writeOffset = lo - write.Address;
-            const size_t count = hi - lo;
-            if (!write.Before.empty() &&
-                !std::equal(texture.NativeBytes.begin() + textureOffset,
-                            texture.NativeBytes.begin() + textureOffset + count,
-                            write.Before.begin() + writeOffset)) {
-                continue;
-            }
-            std::vector<uint8_t> live(count);
-            if (!mPhysicalMemoryRead || !mPhysicalMemoryRead(static_cast<uint32_t>(lo), live) ||
-                !std::equal(live.begin(), live.end(), write.Bytes.begin() + writeOffset)) continue;
-            if (coherentBytes.empty()) coherentBytes.assign(texture.NativeBytes.begin(), texture.NativeBytes.end());
-            std::copy(live.begin(), live.end(), coherentBytes.begin() + textureOffset);
-        }
-    }
-    if (!coherentBytes.empty()) {
-        resolved.NativeBytes = coherentBytes;
-        resolved.NativeContentHashAvailable = false;
-        resolved.NativeBaseLevelContentHashAvailable = false;
-    }
-    return resolved;
-}
-
 namespace {
 void RequireCopyVk(VkResult result, const char* operation) {
     if (result != VK_SUCCESS) throw std::runtime_error(operation);
 }
+
+// A framebuffer encode format and a texture format that describe the same
+// packed native bytes. Formats 2 and 3 swap meaning between the two sides
+// (RGB565 and RGBA5551); the byte layouts are identical, which is what a
+// byte-exact surface copy needs.
+uint8_t PicaTextureFormatFromFramebufferFormat(uint8_t framebufferFormat) {
+    static constexpr std::array<uint8_t, 5> kTextureFormat{0U, 1U, 3U, 2U, 4U};
+    return framebufferFormat < kTextureFormat.size()
+               ? kTextureFormat[framebufferFormat]
+               : 0xFFU;
 }
+
+bool PicaFramebufferFormatMatchesTextureFormat(uint8_t framebufferFormat,
+                                               uint8_t textureFormat) {
+    return PicaTextureFormatFromFramebufferFormat(framebufferFormat) ==
+           textureFormat;
+}
+}
+uint64_t GfxRenderingAPIVulkan::GpuTextureCopyReferenceIdentity(
+    const GfxNativePicaTextureView& texture, uint64_t renderTargetNamespace) {
+    // Deterministic over the resolved producer set: a lookup, a re-lookup and a
+    // restored plan that re-emits the same references all agree on one identity,
+    // and no per-lookup serial ever enters the texture key.
+    std::vector<std::array<uint64_t, 4>> entries;
+    entries.reserve(texture.CopyReferences.size());
+    for (const auto& reference : texture.CopyReferences) {
+        entries.push_back({reference.CompletionId,
+                           reference.AfterDrawSubmissionId,
+                           reference.PhysicalAddress, reference.ByteCount});
+    }
+    std::sort(entries.begin(), entries.end());
+    uint64_t hash = 1469598103934665603ULL;
+    const auto mix = [&hash](uint64_t value) {
+        for (uint32_t byte = 0U; byte < 8U; ++byte) {
+            hash ^= (value >> (byte * 8U)) & 0xFFULL;
+            hash *= 1099511628211ULL;
+        }
+    };
+    mix(renderTargetNamespace);
+    mix(texture.PhysicalAddress);
+    mix(texture.Width);
+    mix(texture.Height);
+    mix(texture.NativeFormat);
+    for (const auto& entry : entries) {
+        for (const uint64_t value : entry) {
+            mix(value);
+        }
+    }
+    return hash == 0U ? 1U : hash;
+}
+
+bool GfxRenderingAPIVulkan::BuildGpuTextureCopyDerivation(
+    const GfxNativePicaTextureView& texture, uint64_t renderTargetNamespace,
+    GpuTextureCopyDerivation& derivation, GpuTextureCopyFallback* fallback,
+    std::string* error) const {
+    derivation = {};
+    const auto fail = [&](GpuTextureCopyFallback reason, const std::string& message) {
+        if (fallback != nullptr) *fallback = reason;
+        if (error != nullptr) *error = message;
+        return false;
+    };
+    if (fallback != nullptr) *fallback = GpuTextureCopyFallback::None;
+    if (texture.CopyReferences.empty()) {
+        return fail(GpuTextureCopyFallback::Layout,
+                    "the view declares no producer references");
+    }
+    if (texture.Width == 0U || texture.Height == 0U) {
+        return fail(GpuTextureCopyFallback::Layout,
+                    "the sampled texture has no extent");
+    }
+    if (NativePicaMipLevelCount(texture) != 1U) {
+        return fail(GpuTextureCopyFallback::MipChain,
+                    "a mimapped copied texture is not derivable");
+    }
+    const auto encodedBytes = NativePicaEncodedMipSize(
+        texture.NativeFormat, texture.Width, texture.Height);
+    if (!encodedBytes.has_value() || *encodedBytes == 0U) {
+        return fail(GpuTextureCopyFallback::Layout,
+                    "the sampled texture has no native byte size");
+    }
+    // Group the references by producer and translate each one back to the source
+    // bytes it came from, using that producer's own copy walk. A texture may be
+    // composed from several producers, and each reference is only the subrange
+    // its producer still owns.
+    std::vector<std::vector<Renderer3ds::PicaRawCopySpan>> groupedSpans;
+    std::vector<const GpuTextureCopySurface*> groupedSurfaces;
+    for (const auto& reference : texture.CopyReferences) {
+        if (reference.ByteCount == 0U ||
+            reference.PhysicalAddress < texture.PhysicalAddress ||
+            uint64_t{reference.PhysicalAddress} + reference.ByteCount >
+                uint64_t{texture.PhysicalAddress} + *encodedBytes) {
+            return fail(GpuTextureCopyFallback::Layout,
+                        "a producer reference lies outside the sampled texture");
+        }
+        const auto producer = mGpuTextureCopyProducers.find(
+            {renderTargetNamespace, reference.CompletionId,
+             reference.AfterDrawSubmissionId});
+        if (producer == mGpuTextureCopyProducers.end()) {
+            return fail(GpuTextureCopyFallback::UnknownProducer,
+                        "the producer version is not registered in this "
+                        "namespace");
+        }
+        const auto surface = mGpuTextureCopySurfaces.find(producer->second);
+        if (surface == mGpuTextureCopySurfaces.end()) {
+            return fail(GpuTextureCopyFallback::UnknownProducer,
+                        "the producer surface is gone");
+        }
+        const auto& candidate = surface->second;
+        if (candidate.Image == VK_NULL_HANDLE) {
+            return fail(GpuTextureCopyFallback::UncapturedProducer,
+                        "the producer has no captured GPU copy");
+        }
+        if (!PicaFramebufferFormatMatchesTextureFormat(candidate.SourceFormat,
+                                                       texture.NativeFormat)) {
+            return fail(GpuTextureCopyFallback::Layout,
+                        "the declared native format differs from the copy");
+        }
+        Renderer3ds::PicaRawCopySpan mapped;
+        bool found = false;
+        for (const auto& span : candidate.Spans) {
+            if (reference.PhysicalAddress < span.DestinationAddress ||
+                uint64_t{reference.PhysicalAddress} + reference.ByteCount >
+                    uint64_t{span.DestinationAddress} + span.ByteCount) {
+                continue;
+            }
+            if (found) {
+                return fail(GpuTextureCopyFallback::Layout,
+                            "a producer reference spans several copy spans");
+            }
+            mapped.SourceAddress =
+                span.SourceAddress +
+                (reference.PhysicalAddress - span.DestinationAddress);
+            mapped.DestinationAddress = reference.PhysicalAddress;
+            mapped.ByteCount = reference.ByteCount;
+            found = true;
+        }
+        if (!found) {
+            return fail(GpuTextureCopyFallback::Layout,
+                        "a producer reference does not lie in a copy span");
+        }
+        size_t index = 0U;
+        const auto found2 = std::find(groupedSurfaces.begin(),
+                                      groupedSurfaces.end(), &candidate);
+        if (found2 == groupedSurfaces.end()) {
+            derivation.Groups.push_back(
+                GpuTextureCopyDerivation::Group{candidate.Identity, {}});
+            groupedSpans.emplace_back();
+            groupedSurfaces.push_back(&candidate);
+            index = derivation.Groups.size() - 1U;
+        } else {
+            index = static_cast<size_t>(
+                std::distance(groupedSurfaces.begin(), found2));
+        }
+        groupedSpans[index].push_back(mapped);
+    }
+    // The shared planner turns each producer's native byte spans into texel
+    // regions and keeps every untouched gap, so a partial or strided copy maps
+    // exactly instead of being widened to a whole surface.
+    const uint8_t framebufferFormat = groupedSurfaces.front()->SourceFormat;
+    for (size_t index = 0U; index < derivation.Groups.size(); ++index) {
+        const GpuTextureCopySurface& producer = *groupedSurfaces[index];
+        const uint32_t bytesPerPixel =
+            framebufferFormat == 0U ? 4U : framebufferFormat == 1U ? 3U : 2U;
+        std::vector<Renderer3ds::PicaTextureCopyRegion> regions;
+        std::string planError;
+        const Renderer3ds::PicaTiledCopySurface source{
+            producer.SourceSurfaceAddress, producer.SourceWidth,
+            producer.SourceHeight, bytesPerPixel, framebufferFormat};
+        const Renderer3ds::PicaTiledCopySurface destination{
+            texture.PhysicalAddress, texture.Width, texture.Height,
+            bytesPerPixel, framebufferFormat};
+        if (!Renderer3ds::BuildPicaTiledTextureCopyRegions(
+                groupedSpans[index], source, destination, regions,
+                &planError)) {
+            return fail(GpuTextureCopyFallback::Layout,
+                        "the copy's byte walk does not map onto the sampled "
+                        "texture: " +
+                            planError);
+        }
+        if (regions.empty()) {
+            return fail(GpuTextureCopyFallback::Layout,
+                        "the copy's owned ranges cover no texel");
+        }
+        derivation.Groups[index].Regions = std::move(regions);
+    }
+    // Density policy: per axis, the destination must carry at least the largest
+    // internal-per-native ratio among the producers, rounded up, so a scaled
+    // source is never reduced to the declared native layout and anisotropic or
+    // non-integral scales (for example a native 480x400 source rendered at
+    // 1440x1280) stay at internal-or-higher density per axis.
+    uint32_t densityX = 1U;
+    uint32_t densityY = 1U;
+    bool scaledSource = false;
+    for (const GpuTextureCopySurface* producer : groupedSurfaces) {
+        if (producer->SourceWidth == 0U || producer->SourceHeight == 0U) {
+            return fail(GpuTextureCopyFallback::Layout,
+                        "the producer has no declared native geometry");
+        }
+        densityX = std::max(
+            densityX, std::max(1U, (producer->ImageWidth +
+                                    producer->SourceWidth - 1U) /
+                                       producer->SourceWidth));
+        densityY = std::max(
+            densityY, std::max(1U, (producer->ImageHeight +
+                                    producer->SourceHeight - 1U) /
+                                       producer->SourceHeight));
+        scaledSource =
+            scaledSource || producer->ImageWidth > producer->SourceWidth ||
+            producer->ImageHeight > producer->SourceHeight;
+    }
+    const uint32_t imageWidth = texture.Width * densityX;
+    const uint32_t imageHeight = texture.Height * densityY;
+    // Policy guard on the real numbers: a scaled source must never be served at
+    // the declared native size, because that is exactly the downgrade the
+    // fidelity requirement forbids.
+    if (scaledSource &&
+        (imageWidth <= texture.Width || imageHeight <= texture.Height)) {
+        return fail(GpuTextureCopyFallback::Layout,
+                    "the copy's internal density would collapse to the declared "
+                    "native layout");
+    }
+    // Whether the declared layout is fully owned, so the sampled image carries
+    // no CPU-owned pixel and its content is entirely the producers'.
+    uint64_t coveredTexels = 0U;
+    for (const auto& group : derivation.Groups) {
+        for (const auto& region : group.Regions) {
+            coveredTexels += uint64_t{region.Width} * region.Height;
+        }
+    }
+    derivation.CoversDeclaredLayout =
+        coveredTexels >= uint64_t{texture.Width} * texture.Height;
+    uint32_t ownedX0 = 0xFFFFFFFFU;
+    uint32_t ownedY0 = 0xFFFFFFFFU;
+    for (const auto& group : derivation.Groups) {
+        for (const auto& region : group.Regions) {
+            ownedX0 = std::min(ownedX0, region.DestinationX);
+            ownedY0 = std::min(ownedY0, region.DestinationY);
+            derivation.OwnedX1 = std::max(derivation.OwnedX1,
+                                          region.DestinationX + region.Width);
+            derivation.OwnedY1 = std::max(derivation.OwnedY1,
+                                          region.DestinationY + region.Height);
+        }
+    }
+    derivation.OwnedX0 = ownedX0 == 0xFFFFFFFFU ? 0U : ownedX0;
+    derivation.OwnedY0 = ownedY0 == 0xFFFFFFFFU ? 0U : ownedY0;
+    derivation.Encoding = groupedSurfaces.front()->Encoding;
+    derivation.SceneEffectsResolved = true;
+    derivation.FirstProducerCompletionId =
+        groupedSurfaces.front()->CompletionId;
+    for (const GpuTextureCopySurface* producer : groupedSurfaces) {
+        if (producer->SceneEffectsResolved == false ||
+            producer->Encoding != derivation.Encoding) {
+            derivation.SceneEffectsResolved = false;
+            break;
+        }
+    }
+    derivation.DensityX = densityX;
+    derivation.DensityY = densityY;
+    derivation.DeclaredWidth = texture.Width;
+    derivation.DeclaredHeight = texture.Height;
+    derivation.ImageWidth = imageWidth;
+    derivation.ImageHeight = imageHeight;
+    return true;
+}
+
+bool GfxRenderingAPIVulkan::RecordGpuTextureCopyBaseFill(
+    const GpuTextureCopyDerivation& derivation, VkImage baseImage,
+    TextureRecord& record) {
+    if (baseImage == VK_NULL_HANDLE || record.Image == VK_NULL_HANDLE ||
+        derivation.DeclaredWidth == 0U || derivation.DeclaredHeight == 0U) {
+        return false;
+    }
+    Oot3d::NriPicaDisplayCopyRegionDesc desc;
+    desc.FrameIndex = mCurrentFrame;
+    desc.FrameId = mFrameCounter;
+    desc.SourceImage = baseImage;
+    desc.SourceFormat = VK_FORMAT_R8G8B8A8_UNORM;
+    // The base is the decoded native layout, so its own extent is the space the
+    // expansion samples from.
+    desc.SourceWidth = derivation.DeclaredWidth;
+    desc.SourceHeight = derivation.DeclaredHeight;
+    desc.DestinationImage = record.Image;
+    desc.DestinationFormat = VK_FORMAT_R8G8B8A8_UNORM;
+    desc.DestinationWidth = record.Width;
+    desc.DestinationHeight = record.Height;
+    desc.DestinationInitialized = false;
+    desc.DestinationX = 0U;
+    desc.DestinationY = 0U;
+    desc.Width = record.Width;
+    desc.Height = record.Height;
+    desc.NativeDeltaX = 0;
+    desc.NativeDeltaY = 0;
+    desc.DensityX = derivation.DensityX;
+    desc.DensityY = derivation.DensityY;
+    desc.SourceNativeWidth = derivation.DeclaredWidth;
+    desc.SourceNativeHeight = derivation.DeclaredHeight;
+    // RGBA8 pass-through: the base is already the decoded native pixel, so no
+    // native format semantics may be applied a second time.
+    desc.NativeFormat = 0U;
+    if (!mNriPicaTextureCopyDerivePass.ExecuteRegion(desc)) {
+        throw std::runtime_error(
+            "raw PICA copy base fill dispatch was refused");
+    }
+    return true;
+}
+
+bool GfxRenderingAPIVulkan::RecordGpuTextureCopyDerivation(
+    const GpuTextureCopyDerivation& derivation, TextureRecord& record) {
+    if (record.Image == VK_NULL_HANDLE || derivation.Groups.empty()) {
+        return false;
+    }
+    uint64_t regions = 0U;
+    for (const auto& group : derivation.Groups) {
+        const auto found = mGpuTextureCopySurfaces.find(group.SurfaceIdentity);
+        if (found == mGpuTextureCopySurfaces.end()) {
+            return false;
+        }
+        auto& surface = found->second;
+        // Keep the capture alive for as long as this frame's command buffer can
+        // still read it.
+        surface.LastReferencedFrame = mFrameCounter;
+        record.CopyProducerIdentities.push_back(group.SurfaceIdentity);
+        for (const auto& region : group.Regions) {
+            Oot3d::NriPicaDisplayCopyRegionDesc desc;
+            desc.FrameIndex = mCurrentFrame;
+            desc.FrameId = mFrameCounter;
+            desc.SourceImage = surface.Image;
+            desc.SourceFormat = VK_FORMAT_R8G8B8A8_UNORM;
+            desc.SourceWidth = surface.ImageWidth;
+            desc.SourceHeight = surface.ImageHeight;
+            desc.DestinationImage = record.Image;
+            desc.DestinationFormat = VK_FORMAT_R8G8B8A8_UNORM;
+            desc.DestinationWidth = record.Width;
+            desc.DestinationHeight = record.Height;
+            // Partial views already have a base fill. Fully GPU-owned views
+            // start undefined; only later regions preserve prior dispatches.
+            desc.DestinationInitialized =
+                !derivation.CoversDeclaredLayout || regions != 0U;
+            desc.DestinationX = region.DestinationX * derivation.DensityX;
+            desc.DestinationY = region.DestinationY * derivation.DensityY;
+            desc.Width = region.Width * derivation.DensityX;
+            desc.Height = region.Height * derivation.DensityY;
+            // The region is a pure translation in native texel units; the
+            // shader turns each destination texel of the derived density into a
+            // fractional position inside the capture.
+            desc.NativeDeltaX =
+                static_cast<int32_t>(region.SourceX) -
+                static_cast<int32_t>(region.DestinationX);
+            desc.NativeDeltaY =
+                static_cast<int32_t>(region.SourceY) -
+                static_cast<int32_t>(region.DestinationY);
+            desc.DensityX = derivation.DensityX;
+            desc.DensityY = derivation.DensityY;
+            desc.SourceNativeWidth = surface.SourceWidth;
+            desc.SourceNativeHeight = surface.SourceHeight;
+            desc.NativeFormat = surface.SourceFormat;
+            if (!mNriPicaTextureCopyDerivePass.ExecuteRegion(desc)) {
+                throw std::runtime_error(
+                    "raw PICA copy derivation dispatch was refused");
+            }
+            ++regions;
+        }
+    }
+    mGpuTextureCopySamplerCost.Regions += regions;
+    // Numeric density report so the policy can be asserted from a run instead of
+    // inferred: a scaled source must show a derived extent above the declared
+    // layout, at internal-or-higher density per axis.
+    static uint32_t densityReports = 0U;
+    if (densityReports < 4U) {
+        ++densityReports;
+        const GpuTextureCopySurface& first =
+            mGpuTextureCopySurfaces.at(
+                derivation.Groups.front().SurfaceIdentity);
+        std::fprintf(stderr,
+                     "TRIAEVUM_GPU_COPY_DENSITY native=%ux%u internal=%ux%u "
+                     "declared=%ux%u derived=%ux%u density=%ux%u\n",
+                     first.SourceWidth, first.SourceHeight, first.ImageWidth,
+                     first.ImageHeight, derivation.DeclaredWidth,
+                     derivation.DeclaredHeight, record.Width, record.Height,
+                     derivation.DensityX, derivation.DensityY);
+    }
+    return regions != 0U;
+}
+
+bool GfxRenderingAPIVulkan::SetPinnedPicaTextureCopies(
+    std::span<const Renderer3ds::PicaTextureCopyReference> retained,
+    std::string* error) {
+    // Pin updates may arrive while command buffers still use older producers.
+    // Frame fences, not pin updates, authorize reclamation.
+    std::set<std::pair<uint64_t, uint64_t>> pins;
+    for (const auto& reference : retained) {
+        // A copy's completion id identifies every version of it, across
+        // namespaces; the subranges are informational.
+        for (const auto& [producer, identity] : mGpuTextureCopyProducers) {
+            if (std::get<1>(producer) == reference.CompletionId) {
+                pins.insert({std::get<0>(producer), std::get<1>(producer)});
+            }
+        }
+    }
+    mGpuTextureCopyPins = std::move(pins);
+    mGpuTextureCopyPinsDeclared = true;
+    (void)error;
+    return true;
+}
+
+void GfxRenderingAPIVulkan::RetireGpuTextureCopyProducers(uint64_t completedFrame) {
+    std::vector<uint64_t> retired;
+    for (const auto& [identity, surface] : mGpuTextureCopySurfaces) {
+        if (surface.CapturedFrame > completedFrame ||
+            surface.LastReferencedFrame > completedFrame ||
+            (surface.GuestOwner && surface.GuestOwner.use_count() > 1))
+            continue;
+        if (mGpuTextureCopyPinsDeclared) {
+            if (mGpuTextureCopyPins.contains({surface.RenderTargetNamespace, surface.CompletionId}))
+                continue;
+        } else {
+            const auto current = mHandledNativePicaTextureCopies.find(
+                {surface.RenderTargetNamespace, surface.DestinationAddress});
+            if (current != mHandledNativePicaTextureCopies.end() &&
+                current->second.first == surface.CompletionId) continue;
+        }
+        retired.push_back(identity);
+    }
+    for (const auto identity : retired) DestroyGpuTextureCopySurface(identity);
+}
+
+void GfxRenderingAPIVulkan::FlushGpuTextureCopyPrefix() {
+    if (!mFrameActive) return;
+    EndNativePicaRenderPass();
+    const auto command = mCommandBuffers[mCurrentFrame];
+    if (mRenderPassActive) {
+        vkCmdEndRenderPass(command);
+        mRenderPassActive = false;
+        mOverlayRenderPassActive = false;
+    }
+    WaitForAllPresents();
+    RequireCopyVk(vkEndCommandBuffer(command), "end materialization prefix");
+    RequireCopyVk(vkResetFences(mDevice, 1, &mRawCopyFence), "reset materialization fence");
+    SubmitFrameCommandBuffer(command, mRawCopyFence);
+    RequireCopyVk(vkWaitForFences(mDevice, 1, &mRawCopyFence, VK_TRUE, UINT64_MAX),
+                  "wait materialization fence");
+    ++mRawCopyTiming.PrefixWaits;
+    RequireCopyVk(vkResetCommandBuffer(command, 0), "reset materialization continuation");
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    RequireCopyVk(vkBeginCommandBuffer(command, &begin), "begin materialization continuation");
+    if (mNriInterop.Available() && !mNriInterop.WrapFrameCommandBuffer(mCurrentFrame, command))
+        throw std::runtime_error("cannot wrap materialization continuation in NRI");
+}
+
+bool GfxRenderingAPIVulkan::ReadGpuTextureCopyBytes(
+    uint64_t identity, uint32_t address, std::span<uint8_t> bytes) {
+    const auto found = mGpuTextureCopySurfaces.find(identity);
+    if (found == mGpuTextureCopySurfaces.end()) return false;
+    auto& surface = found->second;
+    if (surface.MaterializedNativeBytes.empty()) {
+        // This is an explicit CPU visibility boundary, never sampler work.
+        // Execute the recorded producer first; read the native capture, not a
+        // mutable attachment or the optional-effects composition.
+        FlushGpuTextureCopyPrefix();
+        const auto rgba = CaptureNativePicaImageBytes(
+            surface.NativeImage != VK_NULL_HANDLE ? surface.NativeImage : surface.Image,
+            surface.ImageWidth, surface.ImageHeight, 4U,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_SHADER_READ_BIT);
+        surface.MaterializedNativeBytes = Renderer3ds::EncodePicaFramebuffer(
+            rgba, surface.ImageWidth, surface.ImageHeight,
+            surface.SourceWidth, surface.SourceHeight, surface.SourceFormat);
+        ++mRawCopyTiming.Materializations;
+        mRawCopyTiming.ReadbackBytes += rgba.size();
+    }
+    size_t done = 0;
+    while (done < bytes.size()) {
+        const uint64_t current = uint64_t{address} + done;
+        const auto span = std::find_if(surface.Spans.begin(), surface.Spans.end(),
+            [&](const auto& item) {
+                return current >= item.DestinationAddress &&
+                       current < uint64_t{item.DestinationAddress} + item.ByteCount;
+            });
+        if (span == surface.Spans.end()) return false;
+        const size_t count = std::min(bytes.size() - done,
+            static_cast<size_t>(uint64_t{span->DestinationAddress} + span->ByteCount - current));
+        const uint64_t offset = uint64_t{span->SourceAddress} - surface.SourceSurfaceAddress +
+                                current - span->DestinationAddress;
+        if (offset + count > surface.MaterializedNativeBytes.size()) return false;
+        std::memcpy(bytes.data() + done, surface.MaterializedNativeBytes.data() + offset, count);
+        done += count;
+    }
+    mRawCopyTiming.WritebackBytes += bytes.size();
+    return true;
+}
+
 
 void GfxRenderingAPIVulkan::DestroyRawCopyEncodeResources() {
     if (mDevice != VK_NULL_HANDLE) {
@@ -131,11 +589,6 @@ bool GfxRenderingAPIVulkan::EnsureRawCopyEncodeResources(uint32_t encodedBytes,
     if (groups == 0U || groups > properties.limits.maxComputeWorkGroupCount[0]) {
         return fail("raw PICA copy GPU encode dispatch exceeds the workgroup limit");
     }
-    if (mRawCopyEncodedBuffer.Size < static_cast<VkDeviceSize>(wordCount) * 4U) {
-        DestroyBuffer(mRawCopyEncodedBuffer);
-        mRawCopyEncodedBuffer = CreateReadbackBuffer(
-            static_cast<VkDeviceSize>(wordCount) * 4U, &mRawCopyReadbackCoherent);
-    }
     if (mRawCopyEncodeImage.Capacity < static_cast<VkDeviceSize>(wordCount) * 4U) {
         if (mRawCopyEncodeImage.View != VK_NULL_HANDLE) {
             vkDestroyImageView(mDevice, mRawCopyEncodeImage.View, nullptr);
@@ -182,6 +635,18 @@ bool GfxRenderingAPIVulkan::EnsureRawCopyEncodeResources(uint32_t encodedBytes,
         mRawCopyEncodeImage.Capacity = static_cast<VkDeviceSize>(wordCount) * 4U;
         mRawCopyEncodeImage.Stride = wordsPerRow;
         mRawCopyEncodeImage.Height = rows;
+    }
+    // The word image is padded to whole rows so a word index can address it with
+    // two divisions in the shader, and the readback copies whole rows: the
+    // staging must hold the padded extent of the *retained* image, which can be
+    // larger than this call's own word count.
+    const VkDeviceSize stagedBytes =
+        static_cast<VkDeviceSize>(mRawCopyEncodeImage.Stride) *
+        mRawCopyEncodeImage.Height * 4U;
+    if (mRawCopyEncodedBuffer.Size < stagedBytes) {
+        DestroyBuffer(mRawCopyEncodedBuffer);
+        mRawCopyEncodedBuffer =
+            CreateReadbackBuffer(stagedBytes, &mRawCopyReadbackCoherent);
     }
     if (!EnsureRawCopySampler(error)) {
         return false;
@@ -234,6 +699,7 @@ bool GfxRenderingAPIVulkan::EnsureRawCopyEncodeResources(uint32_t encodedBytes,
             return fail("raw PICA copy GPU encode shader module could not be created");
         }
         VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         pipelineInfo.stage.module = module;
         pipelineInfo.stage.pName = "main";
@@ -335,27 +801,6 @@ bool GfxRenderingAPIVulkan::RecordRawCopyEncode(
     return true;
 }
 
-bool GfxRenderingAPIVulkan::RawCopyDestinationOverlaps(uint32_t address,
-                                                       uint64_t bytes) const {
-    const uint64_t end = uint64_t{address} + bytes;
-    for (const auto& [identity, copy] : mRawTextureCopyWritebacks) {
-        for (const auto& write : copy.Writes) {
-            const uint64_t writeEnd = uint64_t{write.Address} + write.Bytes.size();
-            if (address < writeEnd && end > write.Address) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-bool GfxRenderingAPIVulkan::RawCopyGpuDecodeEnabled() {
-    // On by default; TRIAEVUM_RAW_COPY_GPU_DECODE=0 restores the CPU decode path
-    // for an A/B.
-    const char* value = std::getenv("TRIAEVUM_RAW_COPY_GPU_DECODE");
-    return value == nullptr || std::string_view(value) != "0";
-}
-
 bool GfxRenderingAPIVulkan::EnsureRawCopySampler(std::string* error) {
     if (mRawCopyEncodeSampler != VK_NULL_HANDLE) {
         return true;
@@ -376,435 +821,518 @@ bool GfxRenderingAPIVulkan::EnsureRawCopySampler(std::string* error) {
     return true;
 }
 
-bool GfxRenderingAPIVulkan::GpuDecodePicaTextureSupported(uint8_t format) const noexcept {
-    // The tiled eight-bit-per-texel formats the shader mirrors; anything else
-    // (4bpp, ETC1, LA variants) keeps the CPU path.
-    return format <= 4U;
-}
-
-void GfxRenderingAPIVulkan::DestroyRawCopyDecodeResources() {
-    if (mDevice != VK_NULL_HANDLE) {
-        if (mRawCopyDecode.Pipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(mDevice, mRawCopyDecode.Pipeline, nullptr);
-        }
-        if (mRawCopyDecode.PipelineLayout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(mDevice, mRawCopyDecode.PipelineLayout, nullptr);
-        }
-        if (mRawCopyDecode.DescriptorPool != VK_NULL_HANDLE) {
-            vkDestroyDescriptorPool(mDevice, mRawCopyDecode.DescriptorPool, nullptr);
-        }
-        if (mRawCopyDecode.DescriptorLayout != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(mDevice, mRawCopyDecode.DescriptorLayout, nullptr);
-        }
-        if (mRawCopyDecode.ByteView != VK_NULL_HANDLE) {
-            vkDestroyImageView(mDevice, mRawCopyDecode.ByteView, nullptr);
-        }
-        if (mRawCopyDecode.ByteImage != VK_NULL_HANDLE) {
-            vkDestroyImage(mDevice, mRawCopyDecode.ByteImage, nullptr);
-        }
-        if (mRawCopyDecode.ByteMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(mDevice, mRawCopyDecode.ByteMemory, nullptr);
-        }
-        if (mRawCopyDecode.DecodedBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(mDevice, mRawCopyDecode.DecodedBuffer, nullptr);
-        }
-        if (mRawCopyDecode.DecodedMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(mDevice, mRawCopyDecode.DecodedMemory, nullptr);
-        }
-    }
-    mRawCopyDecode = {};
-}
-
-bool GfxRenderingAPIVulkan::DecodeNativePicaTextureOnGpu(
-    VkImage destination, uint32_t width, uint32_t height, uint8_t format,
-    std::span<const uint8_t> nativeBytes, std::string* error) {
-    const auto fail = [&](const char* message) {
-        if (error != nullptr) *error = message;
+bool GfxRenderingAPIVulkan::CaptureGpuTextureCopySource(
+    const GpuTextureCopySourceImport& source, GpuTextureCopySurface& surface) {
+    // An NRI pass performs the capture: NRI owns the destination resource,
+    // declares the transition of both imports and leaves the destination
+    // shader-readable for whoever samples it. There is no readback, no decode
+    // and no re-upload anywhere in this path.
+    surface.Image = VK_NULL_HANDLE;
+    surface.ImageWidth = 0U;
+    surface.ImageHeight = 0U;
+    if (source.Image == VK_NULL_HANDLE || source.Width == 0U ||
+        source.Height == 0U || !mNriPicaTextureCopyCapturePass.Available()) {
         return false;
-    };
-    if (!GpuDecodePicaTextureSupported(format)) {
-        return fail("texture format is not decoded on the GPU");
     }
-    if (destination == VK_NULL_HANDLE || width == 0U || height == 0U || nativeBytes.empty()) {
-        return fail("GPU texture decode has no destination or data");
+    const uint32_t width = source.Width;
+    const uint32_t height = source.Height;
+    Oot3d::NriOwnedTexture2D captured;
+    if (!mNriInterop.CreateOwnedTexture2D(width, height,
+                                          VK_FORMAT_R8G8B8A8_UNORM, captured) ||
+        captured.Image == VK_NULL_HANDLE) {
+        return false;
     }
-    const uint32_t bytesPerPixel = format == 0U ? 4U : format == 1U ? 3U : 2U;
-    const uint32_t alignedWidth = std::max(8U, (width + 7U) & ~7U);
-    const uint32_t tilesX = alignedWidth / 8U;
-    const uint32_t tilesY = (height + 7U) / 8U;
-    const uint64_t tiledBytes = uint64_t{tilesX} * tilesY * 64U * bytesPerPixel;
-    if (tiledBytes > nativeBytes.size()) {
-        return fail("GPU texture decode data is smaller than the tiled surface");
+    // An identity plan samples the source 1:1 at its internal extent, so the
+    // internal rendering resolution survives the copy instead of being reduced
+    // to native bytes first.
+    const Oot3d::PicaDisplayTransferPlan plan{
+        width, height, width, height, 1U, 1U, 0U};
+    const bool capturedOk = mNriPicaTextureCopyCapturePass.Execute(
+        {mCurrentFrame,
+         mFrameCounter,
+         source.Image,
+         captured.Image,
+         source.Format,
+         plan,
+         source.ShaderRead,
+         false});
+    if (!capturedOk) {
+        mNriInterop.DestroyOwnedTexture(captured.Image);
+        return false;
     }
-    VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(mPhysicalDevice, &properties);
-    const uint32_t wordsPerRow = std::min<uint32_t>(
-        static_cast<uint32_t>((tiledBytes + 3U) / 4U), 1024U);
-    const uint32_t rows = static_cast<uint32_t>(((tiledBytes + 3U) / 4U + wordsPerRow - 1U) / wordsPerRow);
-    const uint64_t pixels = uint64_t{width} * height;
-    if (wordsPerRow == 0U || rows == 0U ||
-        rows > properties.limits.maxImageDimension2D ||
-        pixels > (uint64_t{1} << 28U) / 4U) {
-        return fail("GPU texture decode extent is out of range");
-    }
-    VkFormatProperties formatProperties{};
-    vkGetPhysicalDeviceFormatProperties(mPhysicalDevice, VK_FORMAT_R32_UINT, &formatProperties);
-    if ((formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) == 0U) {
-        return fail("GPU texture decode needs R32_UINT storage support");
-    }
-    // Scratch resources, shared across decodes: a byte image for the tiled data
-    // and a device-local word buffer for the decoded RGBA8 pixels.
-    if (mRawCopyDecode.ByteCapacity < tiledBytes) {
-        if (mRawCopyDecode.ByteView != VK_NULL_HANDLE) {
-            vkDestroyImageView(mDevice, mRawCopyDecode.ByteView, nullptr);
-            mRawCopyDecode.ByteView = VK_NULL_HANDLE;
-        }
-        if (mRawCopyDecode.ByteImage != VK_NULL_HANDLE) {
-            vkDestroyImage(mDevice, mRawCopyDecode.ByteImage, nullptr);
-            mRawCopyDecode.ByteImage = VK_NULL_HANDLE;
-        }
-        if (mRawCopyDecode.ByteMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(mDevice, mRawCopyDecode.ByteMemory, nullptr);
-            mRawCopyDecode.ByteMemory = VK_NULL_HANDLE;
-        }
-        VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-        imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.format = VK_FORMAT_R32_UINT;
-        imageInfo.extent = {wordsPerRow, rows, 1U};
-        imageInfo.mipLevels = 1U;
-        imageInfo.arrayLayers = 1U;
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        RequireCopyVk(vkCreateImage(mDevice, &imageInfo, nullptr, &mRawCopyDecode.ByteImage),
-                      "vkCreateImage(texture decode bytes)");
-        VkMemoryRequirements requirements{};
-        vkGetImageMemoryRequirements(mDevice, mRawCopyDecode.ByteImage, &requirements);
-        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        allocation.allocationSize = requirements.size;
-        allocation.memoryTypeIndex = FindMemoryType(requirements.memoryTypeBits,
-                                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        RequireCopyVk(vkAllocateMemory(mDevice, &allocation, nullptr, &mRawCopyDecode.ByteMemory),
-                      "vkAllocateMemory(texture decode bytes)");
-        RequireCopyVk(vkBindImageMemory(mDevice, mRawCopyDecode.ByteImage,
-                                        mRawCopyDecode.ByteMemory, 0U),
-                      "vkBindImageMemory(texture decode bytes)");
-        VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        viewInfo.image = mRawCopyDecode.ByteImage;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = VK_FORMAT_R32_UINT;
-        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U};
-        RequireCopyVk(vkCreateImageView(mDevice, &viewInfo, nullptr, &mRawCopyDecode.ByteView),
-                      "vkCreateImageView(texture decode bytes)");
-        mRawCopyDecode.ByteCapacity = tiledBytes;
-        mRawCopyDecode.ByteStrideWords = wordsPerRow;
-        mRawCopyDecode.ByteRows = rows;
-    }
-    if (mRawCopyDecode.DecodedCapacity < pixels * 4U) {
-        if (mRawCopyDecode.DecodedBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(mDevice, mRawCopyDecode.DecodedBuffer, nullptr);
-            mRawCopyDecode.DecodedBuffer = VK_NULL_HANDLE;
-        }
-        if (mRawCopyDecode.DecodedMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(mDevice, mRawCopyDecode.DecodedMemory, nullptr);
-            mRawCopyDecode.DecodedMemory = VK_NULL_HANDLE;
-        }
-        VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        bufferInfo.size = pixels * 4U;
-        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        RequireCopyVk(vkCreateBuffer(mDevice, &bufferInfo, nullptr, &mRawCopyDecode.DecodedBuffer),
-                      "vkCreateBuffer(texture decode pixels)");
-        VkMemoryRequirements requirements{};
-        vkGetBufferMemoryRequirements(mDevice, mRawCopyDecode.DecodedBuffer, &requirements);
-        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        allocation.allocationSize = requirements.size;
-        allocation.memoryTypeIndex = FindMemoryType(requirements.memoryTypeBits,
-                                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        RequireCopyVk(vkAllocateMemory(mDevice, &allocation, nullptr,
-                                       &mRawCopyDecode.DecodedMemory),
-                      "vkAllocateMemory(texture decode pixels)");
-        RequireCopyVk(vkBindBufferMemory(mDevice, mRawCopyDecode.DecodedBuffer,
-                                         mRawCopyDecode.DecodedMemory, 0U),
-                      "vkBindBufferMemory(texture decode pixels)");
-        mRawCopyDecode.DecodedCapacity = pixels * 4U;
-        if (mRawCopyDecode.DescriptorSet != VK_NULL_HANDLE) {
-            VkDescriptorBufferInfo decodedInfo{};
-            decodedInfo.buffer = mRawCopyDecode.DecodedBuffer;
-            decodedInfo.range = VK_WHOLE_SIZE;
-            VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-            write.dstSet = mRawCopyDecode.DescriptorSet;
-            write.dstBinding = 1U;
-            write.descriptorCount = 1U;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            write.pBufferInfo = &decodedInfo;
-            vkUpdateDescriptorSets(mDevice, 1U, &write, 0U, nullptr);
-        }
-    }
-    if (mRawCopyDecode.DescriptorSet != VK_NULL_HANDLE) {
-        VkDescriptorImageInfo byteInfo{};
-        byteInfo.imageView = mRawCopyDecode.ByteView;
-        byteInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        write.dstSet = mRawCopyDecode.DescriptorSet;
-        write.dstBinding = 0U;
-        write.descriptorCount = 1U;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        write.pImageInfo = &byteInfo;
-        vkUpdateDescriptorSets(mDevice, 1U, &write, 0U, nullptr);
-    }
-    if (mRawCopyDecode.Pipeline == VK_NULL_HANDLE) {
-        std::array<VkDescriptorSetLayoutBinding, 2U> bindings{};
-        bindings[0] = {0U, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1U,
-                       VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-        bindings[1] = {1U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U,
-                       VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-        VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-        layoutInfo.pBindings = bindings.data();
-        RequireCopyVk(vkCreateDescriptorSetLayout(mDevice, &layoutInfo, nullptr,
-                                                 &mRawCopyDecode.DescriptorLayout),
-                      "vkCreateDescriptorSetLayout(texture decode)");
-        const VkDescriptorPoolSize poolSizes[2]{
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1U},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U}};
-        VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        poolInfo.maxSets = 1U;
-        poolInfo.poolSizeCount = 2U;
-        poolInfo.pPoolSizes = poolSizes;
-        RequireCopyVk(vkCreateDescriptorPool(mDevice, &poolInfo, nullptr,
-                                             &mRawCopyDecode.DescriptorPool),
-                      "vkCreateDescriptorPool(texture decode)");
-        VkDescriptorSetAllocateInfo allocateInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        allocateInfo.descriptorPool = mRawCopyDecode.DescriptorPool;
-        allocateInfo.descriptorSetCount = 1U;
-        allocateInfo.pSetLayouts = &mRawCopyDecode.DescriptorLayout;
-        RequireCopyVk(vkAllocateDescriptorSets(mDevice, &allocateInfo, &mRawCopyDecode.DescriptorSet),
-                      "vkAllocateDescriptorSets(texture decode)");
-        const VkPushConstantRange pushRange{VK_SHADER_STAGE_COMPUTE_BIT, 0U, 32U};
-        VkPipelineLayoutCreateInfo pipelineLayout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-        pipelineLayout.setLayoutCount = 1U;
-        pipelineLayout.pSetLayouts = &mRawCopyDecode.DescriptorLayout;
-        pipelineLayout.pushConstantRangeCount = 1U;
-        pipelineLayout.pPushConstantRanges = &pushRange;
-        RequireCopyVk(vkCreatePipelineLayout(mDevice, &pipelineLayout, nullptr,
-                                             &mRawCopyDecode.PipelineLayout),
-                      "vkCreatePipelineLayout(texture decode)");
-        const std::string source(Renderer3ds::PicaTextureDecodeComputeSource);
-        const auto spirv = mCompiledShaderCache.Resolve(
-            source, Renderer::SpirvStage::Compute, [&] {
-                return Renderer::CompileShadercSpirv(source, Renderer::SpirvStage::Compute,
-                                                     "pica_texture_decode.comp");
-            });
-        const VkShaderModule module = CreateShaderModuleFromSpirv(spirv);
-        if (module == VK_NULL_HANDLE) {
-            return fail("GPU texture decode shader module could not be created");
-        }
-        VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-        pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        pipelineInfo.stage.module = module;
-        pipelineInfo.stage.pName = "main";
-        pipelineInfo.layout = mRawCopyDecode.PipelineLayout;
-        const VkResult created = vkCreateComputePipelines(mDevice, VK_NULL_HANDLE, 1U, &pipelineInfo,
-                                                          nullptr, &mRawCopyDecode.Pipeline);
-        vkDestroyShaderModule(mDevice, module, nullptr);
-        RequireCopyVk(created, "vkCreateComputePipelines(texture decode)");
-        VkDescriptorImageInfo byteInfo{};
-        byteInfo.imageView = mRawCopyDecode.ByteView;
-        byteInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-        VkDescriptorBufferInfo decodedInfo{};
-        decodedInfo.buffer = mRawCopyDecode.DecodedBuffer;
-        decodedInfo.range = VK_WHOLE_SIZE;
-        std::array<VkWriteDescriptorSet, 2U> writes{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = mRawCopyDecode.DescriptorSet;
-        writes[0].dstBinding = 0U;
-        writes[0].descriptorCount = 1U;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[0].pImageInfo = &byteInfo;
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = mRawCopyDecode.DescriptorSet;
-        writes[1].dstBinding = 1U;
-        writes[1].descriptorCount = 1U;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[1].pBufferInfo = &decodedInfo;
-        vkUpdateDescriptorSets(mDevice, static_cast<uint32_t>(writes.size()), writes.data(), 0U, nullptr);
-    }
-    // Stage the tiled bytes, then decode, then land the pixels in the texture.
-    if (mRawCopyEncodedBuffer.Size < tiledBytes) {
-        DestroyBuffer(mRawCopyEncodedBuffer);
-        mRawCopyEncodedBuffer = CreateReadbackBuffer(tiledBytes, &mRawCopyReadbackCoherent);
-    }
-    if (mRawCopyEncodedBuffer.Mapped == nullptr) {
-        return fail("GPU texture decode has no staging buffer");
-    }
-    std::memcpy(mRawCopyEncodedBuffer.Mapped, nativeBytes.data(),
-                static_cast<size_t>(tiledBytes));
-    if (!mRawCopyReadbackCoherent) {
-        // This staging is written by the CPU and read by the GPU: without the
-        // flush the device would read whatever was in memory before.
-        VkMappedMemoryRange staged{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-        staged.memory = mRawCopyEncodedBuffer.Memory;
-        staged.offset = 0U;
-        staged.size = VK_WHOLE_SIZE;
-        RequireCopyVk(vkFlushMappedMemoryRanges(mDevice, 1U, &staged),
-                      "flush texture decode staging");
-    }
-    const VkCommandBuffer command = BeginImmediateCommands();
-    VkBufferImageCopy upload{};
-    upload.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 0U, 1U};
-    upload.imageExtent = {mRawCopyDecode.ByteStrideWords, mRawCopyDecode.ByteRows, 1U};
-    VkImageMemoryBarrier byteBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    byteBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    byteBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    byteBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    byteBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    byteBarrier.image = mRawCopyDecode.ByteImage;
-    byteBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U};
-    byteBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U, nullptr, 1U,
-                         &byteBarrier);
-    vkCmdCopyBufferToImage(command, mRawCopyEncodedBuffer.Buffer, mRawCopyDecode.ByteImage,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U, &upload);
-    byteBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    byteBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    byteBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    byteBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0U, 0U, nullptr, 0U, nullptr, 1U,
-                         &byteBarrier);
-
-    const uint32_t push[8] = {width, height, mRawCopyDecode.ByteStrideWords,
-                              static_cast<uint32_t>(pixels), static_cast<uint32_t>(format),
-                              bytesPerPixel, 0U, 0U};
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, mRawCopyDecode.Pipeline);
-    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, mRawCopyDecode.PipelineLayout,
-                            0U, 1U, &mRawCopyDecode.DescriptorSet, 0U, nullptr);
-    vkCmdPushConstants(command, mRawCopyDecode.PipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0U,
-                       sizeof(push), push);
-    vkCmdDispatch(command, static_cast<uint32_t>((pixels + 63U) / 64U), 1U, 1U);
-
-    VkBufferMemoryBarrier decodedBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-    decodedBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    decodedBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    decodedBarrier.buffer = mRawCopyDecode.DecodedBuffer;
-    decodedBarrier.size = pixels * 4U;
-    decodedBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    decodedBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 1U, &decodedBarrier,
-                         0U, nullptr);
-    VkImageMemoryBarrier destinationBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    destinationBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    destinationBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    destinationBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    destinationBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    destinationBarrier.image = destination;
-    destinationBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U};
-    destinationBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U, nullptr, 1U,
-                         &destinationBarrier);
-    VkBufferImageCopy landing{};
-    landing.bufferRowLength = width;
-    landing.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 0U, 1U};
-    landing.imageExtent = {width, height, 1U};
-    vkCmdCopyBufferToImage(command, mRawCopyDecode.DecodedBuffer, destination,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U, &landing);
-    destinationBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    destinationBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    destinationBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    destinationBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0U, 0U, nullptr, 0U, nullptr, 1U,
-                         &destinationBarrier);
-    EndImmediateCommands(command);
-    mRawCopyDecodePixels += pixels;
+    surface.Image = captured.Image;
+    surface.ImageWidth = width;
+    surface.ImageHeight = height;
+    surface.Encoding = source.Encoding;
+    surface.SceneEffectsResolved = source.SceneEffectsResolved;
+    surface.Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     return true;
 }
 
-void GfxRenderingAPIVulkan::VerifyGpuTextureDecode(
-    VkImage decoded, uint32_t width, uint32_t height, uint8_t format,
-    std::span<const uint8_t> nativeBytes, std::span<const uint8_t> cpuDecodedRgba8) {
-    const size_t bytes = static_cast<size_t>(width) * height * 4U;
-    if (decoded == VK_NULL_HANDLE || cpuDecodedRgba8.size() < bytes ||
-        mRawCopyEncodedBuffer.Mapped == nullptr) {
+void GfxRenderingAPIVulkan::MaterializeRestoredGpuTextureCopyProducers() {
+    for (auto& [identity, surface] : mGpuTextureCopySurfaces) {
+        if (surface.PendingPixels.empty()) {
+            continue;
+        }
+        std::vector<uint8_t> pixels = std::move(surface.PendingPixels);
+        surface.PendingPixels.clear();
+        if (surface.Image != VK_NULL_HANDLE ||
+            pixels.size() !=
+                size_t{surface.ImageWidth} * surface.ImageHeight * 4U) {
+            continue;
+        }
+        // The captured version is an immutable RGBA8 image, recreated here as
+        // one: the sampler reads it exactly like a freshly captured copy.
+        TextureRecord staged;
+        try {
+            CreateNativePicaTextureImage(staged, pixels, surface.ImageWidth,
+                                         surface.ImageHeight, 1U,
+                                         VK_FORMAT_R8G8B8A8_UNORM,
+                                         /*storageView=*/true);
+        } catch (const std::exception&) {
+            DestroyTexture(staged);
+            throw;
+        }
+        surface.Image = staged.Image;
+        surface.Layout = staged.ImageLayout;
+        // The staged record only carried the upload; the register owns the
+        // image now, so its sampler and view go away.
+        staged.Image = VK_NULL_HANDLE;
+        staged.NriImage = VK_NULL_HANDLE;
+        staged.Memory = VK_NULL_HANDLE;
+        DestroyTexture(staged);
+    }
+}
+
+void GfxRenderingAPIVulkan::PublishGpuTextureCopySurface(
+    GpuTextureCopySurface& surface) {
+    if (surface.Image == VK_NULL_HANDLE) {
         return;
     }
-    try {
-        std::string error;
-        if (!DecodeNativePicaTextureOnGpu(decoded, width, height, format, nativeBytes,
-                                          &error)) {
-            std::fprintf(stderr, "TRIAEVUM_RAW_COPY_DECODE_UNAVAILABLE %s\n", error.c_str());
-            return;
+    surface.Identity = ++mGpuTextureCopySerial;
+    surface.GuestOwner = std::make_shared<const uint64_t>(surface.Identity);
+    mGpuTextureCopySurfaces.emplace(surface.Identity, surface);
+    mRawCopyTiming.PeakLiveProducers =
+        std::max<uint64_t>(mRawCopyTiming.PeakLiveProducers, mGpuTextureCopySurfaces.size());
+    // Each execution is its own version, keyed by its order boundary, so a
+    // replay that still references the earlier boundary resolves to the version
+    // that boundary produced rather than to the newest one.
+    mGpuTextureCopyProducers[{surface.RenderTargetNamespace,
+                              surface.CompletionId,
+                              surface.AfterDrawSubmissionId}] =
+        surface.Identity;
+}
+
+void GfxRenderingAPIVulkan::DestroyGpuTextureCopySurface(uint64_t identity) {
+    const auto found = mGpuTextureCopySurfaces.find(identity);
+    if (found == mGpuTextureCopySurfaces.end()) {
+        return;
+    }
+    // Derived images have their own storage, but cache entries tied to a
+    // retired producer can no longer be looked up by a retained plan.
+    // Callers have retired the GPU work before releasing either resource.
+    for (auto texture = mNativePicaTextures.begin();
+         texture != mNativePicaTextures.end();) {
+        const auto& producers = texture->second.CopyProducerIdentities;
+        if (std::find(producers.begin(), producers.end(), identity) !=
+            producers.end()) {
+            DestroyTexture(texture->second);
+            texture = mNativePicaTextures.erase(texture);
+        } else {
+            ++texture;
         }
-        const VkCommandBuffer command = BeginImmediateCommands();
-        VkBufferImageCopy region{};
-        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 0U, 1U};
-        region.imageExtent = {width, height, 1U};
-        VkImageMemoryBarrier toTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        toTransfer.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toTransfer.image = decoded;
-        toTransfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U};
-        toTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U, nullptr, 1U,
-                             &toTransfer);
-        vkCmdCopyImageToBuffer(command, decoded, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               mRawCopyEncodedBuffer.Buffer, 1U, &region);
-        VkImageMemoryBarrier back = toTransfer;
-        back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        back.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        back.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        back.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0U, 0U, nullptr, 0U, nullptr,
-                             1U, &back);
-        EndImmediateCommands(command);
-        if (!mRawCopyReadbackCoherent) {
-            VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-            range.memory = mRawCopyEncodedBuffer.Memory;
-            range.offset = 0;
-            range.size = VK_WHOLE_SIZE;
-            vkInvalidateMappedMemoryRanges(mDevice, 1U, &range);
+    }
+    if (found->second.Image != VK_NULL_HANDLE) {
+        mNriPicaTextureCopyCapturePass.ForgetTexture(found->second.Image);
+        mNriInterop.DestroyOwnedTexture(found->second.Image);
+    }
+    if (found->second.NativeImage != VK_NULL_HANDLE) {
+        mNriPicaTextureCopyCapturePass.ForgetTexture(found->second.NativeImage);
+        mNriInterop.DestroyOwnedTexture(found->second.NativeImage);
+    }
+    for (auto producer = mGpuTextureCopyProducers.begin();
+         producer != mGpuTextureCopyProducers.end();) {
+        if (producer->second == identity) {
+            producer = mGpuTextureCopyProducers.erase(producer);
+        } else {
+            ++producer;
         }
-        const auto* gpu = static_cast<const uint8_t*>(mRawCopyEncodedBuffer.Mapped);
-        uint64_t mismatches = 0;
-        uint64_t firstPixel = 0;
-        for (size_t index = 0; index < bytes; ++index) {
-            if (gpu[index] != cpuDecodedRgba8[index]) {
-                if (mismatches == 0) firstPixel = index / 4U;
-                ++mismatches;
+    }
+    mGpuTextureCopySurfaces.erase(found);
+}
+
+void GfxRenderingAPIVulkan::DestroyGpuTextureCopySurfaces() {
+    if (mPhysicalMemoryBarrier && !mPhysicalMemoryBarrier())
+        throw std::runtime_error("cannot retire GPU copies with unresolved guest bytes");
+    while (!mGpuTextureCopySurfaces.empty()) {
+        DestroyGpuTextureCopySurface(mGpuTextureCopySurfaces.begin()->first);
+    }
+    mHandledNativePicaTextureCopies.clear();
+    mGpuTextureCopyPins.clear();
+    mGpuTextureCopyPinsDeclared = false;
+}
+
+namespace {
+// Opt-in diagnostic dump of an immutable copy, so the sampled mapping can be
+// asserted from pixels instead of inferred from extents and counters.
+[[nodiscard]] const char* GpuTextureCopyDumpPrefix() {
+    static const char* prefix = std::getenv("TRIAEVUM_GPU_COPY_DUMP");
+    return prefix != nullptr && *prefix != '\0' ? prefix : nullptr;
+}
+
+void WriteGpuTextureCopyDump(const char* prefix, const char* suffix,
+                             uint32_t width, uint32_t height, uint32_t cellWidth,
+                             uint32_t cellHeight,
+                             std::span<const uint8_t> rgba8) {
+    if (prefix == nullptr || rgba8.size() <
+                                 size_t{width} * height * 4U) {
+        return;
+    }
+    // How much internal detail survives inside each native texel: the copy must
+    // keep sampling the internal extent, while a native-byte round trip would
+    // collapse every cell to one value.
+    uint64_t detailCells = 0;
+    uint64_t cellCount = 0;
+    if (cellWidth != 0U && cellHeight != 0U) {
+        for (uint32_t y = 0; y + cellHeight <= height; y += cellHeight) {
+            for (uint32_t x = 0; x + cellWidth <= width; x += cellWidth) {
+                ++cellCount;
+                const auto* first = rgba8.data() + (size_t{y} * width + x) * 4U;
+                bool varies = false;
+                for (uint32_t cy = 0; cy < cellHeight && !varies; ++cy) {
+                    for (uint32_t cx = 0; cx < cellWidth; ++cx) {
+                        const auto* pixel =
+                            rgba8.data() +
+                            (size_t{y + cy} * width + x + cx) * 4U;
+                        if (pixel[0] != first[0] || pixel[1] != first[1] ||
+                            pixel[2] != first[2] || pixel[3] != first[3]) {
+                            varies = true;
+                            break;
+                        }
+                    }
+                }
+                detailCells += varies ? 1U : 0U;
             }
         }
-        if (mismatches != 0 && mRawCopyDecodeMismatches == 0) {
-            std::fprintf(stderr,
-                         "TRIAEVUM_RAW_COPY_DECODE_MISMATCH pixel=%llu format=%u gpu=0x%02X cpu=0x%02X\n",
-                         static_cast<unsigned long long>(firstPixel), unsigned(format),
-                         gpu[firstPixel * 4U], cpuDecodedRgba8[firstPixel * 4U]);
-        }
-        mRawCopyDecodePixels += static_cast<uint64_t>(width) * height;
-        mRawCopyDecodeMismatches += mismatches;
-    } catch (const std::exception& exception) {
-        std::fprintf(stderr, "TRIAEVUM_RAW_COPY_DECODE_FAILED %s\n", exception.what());
     }
+    const std::string path = std::string(prefix) + suffix;
+    if (std::FILE* file = std::fopen(path.c_str(), "wb"); file != nullptr) {
+        std::fprintf(file, "RGBA8 %u %u\n", width, height);
+        std::fwrite(rgba8.data(), 1U, size_t{width} * height * 4U, file);
+        std::fclose(file);
+    }
+    std::fprintf(stderr,
+                 "TRIAEVUM_GPU_COPY_DUMP file=%s extent=%ux%u cells=%llu "
+                 "cells_with_internal_detail=%llu\n",
+                 path.c_str(), width, height,
+                 static_cast<unsigned long long>(cellCount),
+                 static_cast<unsigned long long>(detailCells));
+}
+}
+
+void GfxRenderingAPIVulkan::DumpGpuTextureCopyCapture(
+    const GpuTextureCopySurface& surface) {
+    const char* prefix = GpuTextureCopyDumpPrefix();
+    if (prefix == nullptr || surface.Image == VK_NULL_HANDLE) {
+        return;
+    }
+    static bool dumped = false;
+    if (dumped) {
+        return;
+    }
+    dumped = true;
+    try {
+        const size_t bytes =
+            size_t{surface.ImageWidth} * surface.ImageHeight * 4U;
+        if (mRawCopyEncodedBuffer.Size < bytes) {
+            DestroyBuffer(mRawCopyEncodedBuffer);
+            mRawCopyEncodedBuffer =
+                CreateReadbackBuffer(bytes, &mRawCopyReadbackCoherent);
+        }
+        const auto rgba = CaptureNativePicaImageBytes(
+            surface.Image, surface.ImageWidth, surface.ImageHeight, 4U,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_SHADER_READ_BIT);
+        // Cell size in internal pixels for one declared native texel: the
+        // proof that the copy kept the internal grid rather than a native one.
+        const uint32_t cellWidth = surface.TextureWidth != 0U
+            ? std::max(1U, surface.ImageWidth / surface.TextureWidth) : 0U;
+        const uint32_t cellHeight = surface.TextureHeight != 0U
+            ? std::max(1U, surface.ImageHeight / surface.TextureHeight) : 0U;
+        WriteGpuTextureCopyDump(prefix, ".capture.raw", surface.ImageWidth,
+                                surface.ImageHeight, cellWidth, cellHeight, rgba);
+        // The same internal image is what a native-grid encode would reduce,
+        // and what the sampler must not receive reduced.
+        const auto oracle = Renderer3ds::EncodePicaFramebuffer(
+            rgba, surface.ImageWidth, surface.ImageHeight, surface.TextureWidth,
+            surface.TextureHeight, surface.TextureFormat);
+        const auto encodedBytes = NativePicaEncodedMipSize(
+            PicaTextureFormatFromFramebufferFormat(surface.TextureFormat),
+            surface.TextureWidth, surface.TextureHeight);
+        std::fprintf(stderr,
+                     "TRIAEVUM_GPU_COPY_CAPTURE extent=%ux%u native=%ux%u "
+                     "native_bytes=%llu\n",
+                     surface.ImageWidth, surface.ImageHeight,
+                     surface.TextureWidth, surface.TextureHeight,
+                     static_cast<unsigned long long>(
+                         encodedBytes.value_or(oracle.size())));
+    } catch (const std::exception& exception) {
+        std::fprintf(stderr, "TRIAEVUM_GPU_COPY_DUMP_FAILED %s\n",
+                     exception.what());
+    }
+}
+
+void GfxRenderingAPIVulkan::DumpGpuTextureCopyConsumer(
+    VkImage sampled, uint32_t sampledWidth, uint32_t sampledHeight,
+    const GfxNativePicaTextureView& texture, uint64_t producerCompletionId,
+    Oot3d::SceneColorEncoding encoding, bool sceneEffectsResolved) {
+    const char* prefix = GpuTextureCopyDumpPrefix();
+    if (prefix == nullptr || sampled == VK_NULL_HANDLE) {
+        return;
+    }
+    static bool dumped = false;
+    if (dumped) {
+        return;
+    }
+    dumped = true;
+    try {
+        // The derive dispatch is still in the active frame, not on the queue.
+        // Submit it before the separate diagnostic readback command.
+        const VkCommandBuffer command = mCommandBuffers[mCurrentFrame];
+        RequireCopyVk(vkEndCommandBuffer(command), "end copy diagnostic prefix");
+        SubmitFrameCommandBuffer(command, VK_NULL_HANDLE);
+        RequireCopyVk(vkQueueWaitIdle(mGraphicsQueue), "wait copy diagnostic prefix");
+        RequireCopyVk(vkResetCommandBuffer(command, 0U), "reset copy diagnostic continuation");
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        RequireCopyVk(vkBeginCommandBuffer(command, &begin), "begin copy diagnostic continuation");
+        if (mNriInterop.Available() &&
+            !mNriInterop.WrapFrameCommandBuffer(mCurrentFrame, command)) {
+            throw std::runtime_error("cannot wrap copy diagnostic continuation in NRI");
+        }
+        // Read back through the image the record samples, so the dump proves
+        // what the sampler sees, not what the producer intended.
+        const auto rgba = CaptureNativePicaImageBytes(
+            sampled, sampledWidth, sampledHeight, 4U,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_SHADER_READ_BIT);
+        const uint32_t cellWidth = texture.Width != 0U
+            ? std::max(1U, sampledWidth / texture.Width) : 0U;
+        const uint32_t cellHeight = texture.Height != 0U
+            ? std::max(1U, sampledHeight / texture.Height) : 0U;
+        WriteGpuTextureCopyDump(prefix, ".consumer.raw", sampledWidth,
+                                sampledHeight, cellWidth, cellHeight, rgba);
+        std::fprintf(stderr,
+                     "TRIAEVUM_GPU_COPY_CONSUMER sampled=%ux%u declared=%ux%u "
+                     "producer=%llu encoding=%u scene_effects=%u\n",
+                     sampledWidth, sampledHeight, texture.Width, texture.Height,
+                     static_cast<unsigned long long>(producerCompletionId),
+                     static_cast<unsigned>(encoding),
+                     sceneEffectsResolved ? 1U : 0U);
+    } catch (const std::exception& exception) {
+        std::fprintf(stderr, "TRIAEVUM_GPU_COPY_DUMP_FAILED %s\n",
+                     exception.what());
+    }
+}
+
+bool GfxRenderingAPIVulkan::SampledFootprintInsideOwnedRect(
+    const GfxNativePicaDrawView& draw, const TextureRecord& record) const {
+    if (record.SourceResolvedColour == false ||
+        record.SourceOwnedX1 == 0U || record.SourceOwnedY1 == 0U ||
+        record.SourceDeclaredWidth == 0U || record.SourceDeclaredHeight == 0U ||
+        draw.TexCoord0AttributeLocation == 0xFFU || draw.VertexCount == 0U) {
+        return false;
+    }
+    const Renderer3ds::PicaVertexAttributeView* attribute = nullptr;
+    for (const auto& candidate : draw.VertexAttributes) {
+        if (candidate.Location == draw.TexCoord0AttributeLocation) {
+            attribute = &candidate;
+            break;
+        }
+    }
+    const Renderer3ds::PicaVertexBindingView* binding = nullptr;
+    if (attribute != nullptr) {
+        for (const auto& candidate : draw.VertexBindings) {
+            if (candidate.Binding == attribute->Binding) {
+                binding = &candidate;
+                break;
+            }
+        }
+    }
+    if (attribute == nullptr || binding == nullptr || binding->Bytes.empty() ||
+        attribute->ComponentCount < 2U) {
+        return false;
+    }
+    // The authoritative texture-coordinate path: the same decode the canonical
+    // consumers of this program use, independent of whether an effect consumes
+    // it, so the sampled space is never guessed. Its rows already carry the
+    // native V flip and offset, so a footprint compared in that space needs no
+    // orientation or unit assumption.
+    const Oot3d::PicaGrassTextureCoordinateTransform transform =
+        Oot3d::DecodePicaGrassTextureCoordinateTransform(
+            draw.VertexShaderSource, draw.FragmentShaderSource,
+            draw.VertexUniformBytes, draw.TexCoord0AttributeLocation,
+            &draw.TemporalVertexProgram.Hooks,
+            &draw.FragmentShaderHooks);
+    if (transform.Applied() == false) {
+        static bool footprintUnsupportedReported = false;
+        if (footprintUnsupportedReported == false) {
+            footprintUnsupportedReported = true;
+            std::fprintf(
+                stderr,
+                "TRIAEVUM_GPU_COPY_FOOTPRINT_UNSUPPORTED reason=%s\n",
+                Oot3d::PicaGrassTextureCoordinateEligibilityName(
+                    transform.Eligibility));
+        }
+        return false;
+    }
+    // Typed attribute decode, the same component semantics the geometry registry
+    // uses for this format enum.
+    const uint32_t componentBytes =
+        attribute->Format == Renderer3ds::PicaVertexFormat::SignedByte ||
+                attribute->Format == Renderer3ds::PicaVertexFormat::UnsignedByte
+            ? 1U
+        : attribute->Format == Renderer3ds::PicaVertexFormat::SignedShort
+            ? 2U
+            : attribute->Format == Renderer3ds::PicaVertexFormat::Float ? 4U
+                                                                        : 0U;
+    const uint32_t stride = std::max<uint32_t>(binding->ByteStride, 2U * componentBytes);
+    if (componentBytes == 0U ||
+        uint64_t{attribute->ByteOffset} + 2U * componentBytes > stride ||
+        uint64_t{stride} * draw.VertexCount > binding->Bytes.size()) {
+        return false;
+    }
+    const auto readAttribute = [&](uint32_t index, float* output) {
+        const size_t offset =
+            static_cast<size_t>(index) * stride + attribute->ByteOffset;
+        if (offset + 2U * componentBytes > binding->Bytes.size()) {
+            return false;
+        }
+        const uint8_t* source = binding->Bytes.data() + offset;
+        for (uint32_t component = 0U; component < 2U; ++component) {
+            const uint8_t* value = source + component * componentBytes;
+            switch (attribute->Format) {
+                case Renderer3ds::PicaVertexFormat::SignedByte:
+                    output[component] =
+                        static_cast<float>(static_cast<int8_t>(*value));
+                    break;
+                case Renderer3ds::PicaVertexFormat::UnsignedByte:
+                    output[component] = static_cast<float>(*value);
+                    break;
+                case Renderer3ds::PicaVertexFormat::SignedShort: {
+                    int16_t raw = 0;
+                    std::memcpy(&raw, value, sizeof(raw));
+                    output[component] = static_cast<float>(raw);
+                    break;
+                }
+                case Renderer3ds::PicaVertexFormat::Float:
+                    std::memcpy(&output[component], value, sizeof(float));
+                    break;
+            }
+        }
+        return std::isfinite(output[0]) && std::isfinite(output[1]);
+    };
+    float minU = 0.0F, minV = 0.0F, maxU = 0.0F, maxV = 0.0F;
+    bool any = false;
+    const auto accumulate = [&](uint32_t index) {
+        if (index >= draw.VertexCount) {
+            return;
+        }
+        float rawUv[2] = {0.0F, 0.0F};
+        if (readAttribute(index, rawUv) == false) {
+            return;
+        }
+        const auto sample = Oot3d::ApplyPicaGrassTextureCoordinateTransform(
+            transform, {rawUv[0], rawUv[1]});
+        if (std::isfinite(sample[0]) == false ||
+            std::isfinite(sample[1]) == false) {
+            return;
+        }
+        if (any == false) {
+            minU = maxU = sample[0];
+            minV = maxV = sample[1];
+            any = true;
+            return;
+        }
+        minU = std::min(minU, sample[0]);
+        maxU = std::max(maxU, sample[0]);
+        minV = std::min(minV, sample[1]);
+        maxV = std::max(maxV, sample[1]);
+    };
+    if (draw.Indexed) {
+        const uint32_t indexBytes = draw.IndicesAre16Bit ? 2U : 1U;
+        for (uint32_t i = 0U; i < draw.VertexCount; ++i) {
+            const size_t offset = static_cast<size_t>(i) * indexBytes;
+            if (offset + indexBytes > draw.IndexBytes.size()) {
+                break;
+            }
+            uint32_t index = 0U;
+            if (indexBytes == 2U) {
+                uint16_t raw = 0U;
+                std::memcpy(&raw, draw.IndexBytes.data() + offset, sizeof(raw));
+                index = raw;
+            } else {
+                index = draw.IndexBytes[offset];
+            }
+            accumulate(index);
+        }
+    } else {
+        for (uint32_t i = 0U; i < draw.VertexCount; ++i) {
+            accumulate(i);
+        }
+    }
+    if (any == false) {
+        return false;
+    }
+    // The owned rectangle in the same sample space the transform produces.
+    const float ownedU0 =
+        static_cast<float>(record.SourceOwnedX0) /
+        static_cast<float>(record.SourceDeclaredWidth);
+    const float ownedU1 =
+        static_cast<float>(record.SourceOwnedX1) /
+        static_cast<float>(record.SourceDeclaredWidth);
+    const float ownedV0 =
+        static_cast<float>(record.SourceOwnedY0) /
+        static_cast<float>(record.SourceDeclaredHeight);
+    const float ownedV1 =
+        static_cast<float>(record.SourceOwnedY1) /
+        static_cast<float>(record.SourceDeclaredHeight);
+    const float epsilon = 1.0e-3F;
+    return minU >= ownedU0 - epsilon && maxU <= ownedU1 + epsilon &&
+           minV >= ownedV0 - epsilon && maxV <= ownedV1 + epsilon;
+}
+
+bool GfxRenderingAPIVulkan::NativePicaSceneFullyResolvedForTarget(
+    uint64_t renderTargetNamespace, uint32_t colorPhysicalAddress) const {
+    if (colorPhysicalAddress == 0U) {
+        return false;
+    }
+    for (const auto& [key, target] : mNativePicaRenderTargets) {
+        if (key.RenderTargetNamespace != renderTargetNamespace ||
+            key.ColorPhysicalAddress != colorPhysicalAddress) {
+            continue;
+        }
+        return target.SceneEffectsResolvedSerial != 0U &&
+               target.SceneEffectsResolvedSerial == target.ContentWriteSerial;
+    }
+    return false;
 }
 
 bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
     const GfxNativePicaDisplayTransferView& transfer, std::string* error) {
     try {
-        const auto previous = mRawTextureCopyWritebacks.find({transfer.RenderTargetNamespace, transfer.OutputPhysicalAddress});
-        if (previous != mRawTextureCopyWritebacks.end() && previous->second.CompletionId == transfer.CompletionId)
+        const bool materializeGuest = transfer.MaterializeGuest;
+        const auto previous = mHandledNativePicaTextureCopies.find(
+            {transfer.RenderTargetNamespace, transfer.OutputPhysicalAddress});
+        const bool alreadyExecuted =
+            previous != mHandledNativePicaTextureCopies.end() &&
+            previous->second.first == transfer.CompletionId;
+        if (alreadyExecuted &&
+            (materializeGuest == false || previous->second.second)) {
             return true;
+        }
         if (!mFrameActive || transfer.Present || !mPhysicalMemoryRead || !mPhysicalMemoryCommit ||
-            mFrameExternalComputeSplit || mNativePicaPresentedThisFrame)
+            !mPhysicalMemoryComplete || mFrameExternalComputeSplit || mNativePicaPresentedThisFrame)
             throw std::runtime_error("raw PICA copy requires ordered offscreen work and coherent memory access");
         const uint32_t size = transfer.TextureCopyBytes & ~15U;
         const uint32_t inputGap = uint32_t{transfer.InputHeight} * 16U;
@@ -837,48 +1365,181 @@ bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
                 key.ColorPhysicalAddress < outputEnd && end > transfer.OutputPhysicalAddress)
                 throw std::runtime_error("raw PICA copy destination aliases an active GPU attachment");
         }
+        const uint32_t copyBpp = source->Key.ColorFormat == 0U   ? 4U
+                                 : source->Key.ColorFormat == 1U ? 3U
+                                                                 : 2U;
+        const uint32_t encodedBytes =
+            uint32_t{source->Key.Width} * source->Key.Height * copyBpp;
+        // The copy's byte walk in native addresses, before anything is recorded:
+        // it decides whether the copy may be sampled as an image, and it is what
+        // the guest writeback materializes.
+        std::vector<Renderer3ds::PicaRawCopySpan> spans;
+        {
+            uint64_t input = transfer.InputPhysicalAddress;
+            uint64_t output = transfer.OutputPhysicalAddress;
+            uint32_t left = size, inputLeft = inputWidth, outputLeft = outputWidth;
+            while (left) {
+                const uint32_t count = std::min({left, inputLeft, outputLeft});
+                spans.push_back({static_cast<uint32_t>(input),
+                                 static_cast<uint32_t>(output), count});
+                left -= count; inputLeft -= count; outputLeft -= count;
+                input += count; output += count;
+                if (!inputLeft) { input += inputGap; inputLeft = inputWidth; }
+                if (!outputLeft) { output += outputGap; outputLeft = outputWidth; }
+            }
+        }
+        // The immutable capture of the whole source is taken whenever the NRI
+        // capture pass is available; which subranges a sampler may use is decided
+        // per consumer from the bytes that consumer still owns.
+        const bool captureAvailable =
+            mNriPicaTextureCopyCapturePass.Available();
+        GpuTextureCopySurface surface;
+        surface.RenderTargetNamespace = transfer.RenderTargetNamespace;
+        surface.CompletionId = transfer.CompletionId;
+        surface.AfterDrawSubmissionId = transfer.AfterDrawSubmissionId;
+        surface.DestinationAddress = transfer.OutputPhysicalAddress;
+        surface.DestinationBytes = encodedBytes;
+        surface.TextureWidth = source->Key.Width;
+        surface.TextureHeight = source->Key.Height;
+        surface.TextureFormat = source->Key.ColorFormat;
+        surface.SourceSurfaceAddress = source->Key.ColorPhysicalAddress;
+        surface.SourceWidth = source->Key.Width;
+        surface.SourceHeight = source->Key.Height;
+        surface.SourceFormat = source->Key.ColorFormat;
+        surface.Spans = spans;
+        surface.CapturedFrame = mFrameCounter;
+        // Whether the copy may be sampled as an image is decided per consumer
+        // from the subranges it still owns, through the same shared planner; the
+        // capture itself always happens so a later partial consumer can use it.
+        const bool sampleable = captureAvailable;
         EndNativePicaRenderPass();
         if (mRenderPassActive) {
             vkCmdEndRenderPass(mCommandBuffers[mCurrentFrame]);
             mRenderPassActive = false;
             mOverlayRenderPassActive = false;
         }
-        // A rare raw transfer is a GPU/CPU coherence boundary. Submit the exact
-        // recorded prefix, not the whole frame or an unrelated presentation.
-        // The wait is on this submission's own fence: queue submissions of one
-        // queue complete in submission order, so this still guarantees every
-        // earlier submission retired, while later submissions and other queues
-        // keep running instead of idling the whole queue.
-        WaitForAllPresents();
+        // The compositor declares what this copy samples at this exact boundary:
+        // the renderer-composed scene at the native effect anchor, or the
+        // identity import of the native colour target when no scene effect
+        // applies here. A composer that cannot produce a valid source fails the
+        // copy, so an enabled effect can never silently sample the base target.
+        GpuTextureCopySourceImport copySource;
+        if (sampleable) {
+            std::string composeError;
+            if (!ComposeNativePicaSceneForCopy(
+                    *source, transfer.AfterDrawSubmissionId, copySource,
+                    &composeError)) {
+                throw std::runtime_error(
+                    "raw PICA copy scene source is unavailable: " +
+                    composeError);
+            }
+            if (copySource.Image == VK_NULL_HANDLE ||
+                copySource.Format != VK_FORMAT_R8G8B8A8_UNORM ||
+                copySource.Width != source->Width ||
+                copySource.Height != source->Height) {
+                throw std::runtime_error(
+                    "raw PICA copy scene source does not match the source's "
+                    "internal extent and RGBA8 domain");
+            }
+        } else {
+            // The byte walk is not a whole-surface translation, so this copy is
+            // never sampled from the GPU and no scene source is declared: the
+            // guest writeback below stays native truth. Reported, never silent.
+            static bool unsampleableReported = false;
+            if (!unsampleableReported) {
+                unsampleableReported = true;
+                std::fprintf(stderr,
+                             "TRIAEVUM_GPU_COPY_UNSAMPLEABLE bytes=%u spans=%llu "
+                             "native=%ux%u format=%u\n",
+                             transfer.TextureCopyBytes,
+                             static_cast<unsigned long long>(spans.size()),
+                             source->Key.Width, source->Key.Height,
+                             source->Key.ColorFormat);
+            }
+        }
         const VkCommandBuffer command = mCommandBuffers[mCurrentFrame];
-        // The native tiled bytes are packed on the GPU inside the submission the
-        // copy already waits on, then copied to host staging for the guest
-        // writeback: no CPU encode, and the staging shrinks from the whole colour
-        // target to the encoded bytes themselves.
-        const uint32_t copyBpp = source->Key.ColorFormat == 0U   ? 4U
-                                 : source->Key.ColorFormat == 1U ? 3U
-                                                                 : 2U;
-        const uint32_t encodedBytes =
-            uint32_t{source->Key.Width} * source->Key.Height * copyBpp;
+        if (sampleable && !CaptureGpuTextureCopySource(copySource, surface)) {
+            surface.Image = VK_NULL_HANDLE;
+            static bool captureReported = false;
+            if (!captureReported) {
+                captureReported = true;
+                std::fprintf(stderr,
+                             "TRIAEVUM_GPU_COPY_CAPTURE_UNAVAILABLE reason=%s\n",
+                             mNriPicaTextureCopyCapturePass.Available()
+                                 ? "capture failed"
+                                 : mNriPicaTextureCopyCapturePass
+                                       .UnavailableReason()
+                                       .c_str());
+            }
+        }
+        PublishGpuTextureCopySurface(surface);
+        static const bool encodeVerify =
+            std::getenv("TRIAEVUM_RAW_COPY_ENCODE_VERIFY") != nullptr;
+        mRawCopyEncodeVerify = encodeVerify;
+        if (materializeGuest && surface.Image != VK_NULL_HANDLE && mPhysicalMemoryDefer &&
+            !encodeVerify) {
+            // Optional effects belong only to the sampled image. Preserve a
+            // second native capture only when the composer selected another
+            // image; Authentic shares the one immutable capture.
+            if (copySource.Image != source->ColorImage) {
+                GpuTextureCopySurface nativeSurface;
+                GpuTextureCopySourceImport nativeSource;
+                nativeSource.Image = source->ColorImage;
+                nativeSource.Width = source->Width;
+                nativeSource.Height = source->Height;
+                if (!CaptureGpuTextureCopySource(nativeSource, nativeSurface))
+                    throw std::runtime_error("cannot retain native copy bytes independently of scene effects");
+                mGpuTextureCopySurfaces.at(surface.Identity).NativeImage = nativeSurface.Image;
+            }
+            const auto owner = surface.GuestOwner;
+            if (mPhysicalMemoryDefer(spans,
+                    [this, owner](uint32_t address, std::span<uint8_t> bytes) {
+                        return ReadGpuTextureCopyBytes(*owner, address, bytes);
+                    })) {
+                // PPF promises logical visibility, not a host RAM memcpy.
+                // Subsequent GPU commands are ordered after this capture; a
+                // CPU read submits/waits the producer before returning bytes.
+                if (!mPhysicalMemoryComplete(transfer.CompletionId))
+                    throw std::runtime_error("raw PICA copy completion failed");
+                mHandledNativePicaTextureCopies.insert_or_assign(
+                    {transfer.RenderTargetNamespace, transfer.OutputPhysicalAddress},
+                    std::pair{transfer.CompletionId, true});
+                ++mRawCopyTiming.Copies;
+                ++mRawCopyTiming.DeferredCopies;
+                mRawCopyTiming.Spans += spans.size();
+                if (GpuTextureCopyDumpPrefix()) {
+                    FlushGpuTextureCopyPrefix();
+                    DumpGpuTextureCopyCapture(surface);
+                }
+                return true;
+            }
+        }
+        if (materializeGuest == false) {
+            // The immutable capture stays in this frame's command buffer and
+            // retires with it; the producer version is already registered, so a
+            // draw later in the frame samples it and the guest owes nothing.
+            mHandledNativePicaTextureCopies.insert_or_assign(
+                {transfer.RenderTargetNamespace, transfer.OutputPhysicalAddress},
+                std::pair{transfer.CompletionId, false});
+            return true;
+        }
+        // An escaped host pointer or an explicit encode-oracle request requires
+        // eager RAM visibility. This is a memory contract, never a scene rule.
         std::string encodeError;
-        if (!EnsureRawCopyEncodeResources(encodedBytes, &encodeError)) {
-            throw std::runtime_error("raw PICA copy GPU encode is unavailable: " +
-                                     encodeError);
-        }
+        if (!EnsureRawCopyEncodeResources(encodedBytes, &encodeError))
+            throw std::runtime_error("raw PICA copy GPU encode is unavailable: " + encodeError);
         if (!RecordRawCopyEncode(command, source->ColorImage, source->ColorView,
-                                 source->Width, source->Height, source->Key.Width,
-                                 source->Key.Height, source->Key.ColorFormat,
-                                 encodedBytes)) {
+                source->Width, source->Height, source->Key.Width, source->Key.Height,
+                source->Key.ColorFormat, encodedBytes))
             throw std::runtime_error("raw PICA copy GPU encode was not recorded");
-        }
+        WaitForAllPresents();
         RequireCopyVk(vkEndCommandBuffer(command), "end raw-copy prefix");
-        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &command;
+        // This prefix may already contain presentation writes.
         RequireCopyVk(vkResetFences(mDevice, 1, &mRawCopyFence), "reset raw-copy fence");
-        RequireCopyVk(vkQueueSubmit(mGraphicsQueue, 1, &submit, mRawCopyFence), "submit raw-copy prefix");
+        SubmitFrameCommandBuffer(command, mRawCopyFence);
         RequireCopyVk(vkWaitForFences(mDevice, 1, &mRawCopyFence, VK_TRUE, UINT64_MAX),
                       "wait raw-copy fence");
+        ++mRawCopyTiming.PrefixWaits;
         const auto copyPhaseClock = [] { return std::chrono::steady_clock::now(); };
         const auto phaseMilliseconds = [](const auto& from, const auto& to) {
             return std::chrono::duration<double, std::milli>(to - from).count();
@@ -901,9 +1562,6 @@ bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
         const auto encodeStart = copyPhaseClock();
         // Diagnostic differential: keep the CPU oracle in the loop and compare
         // it with what the GPU produced, on the real colour targets.
-        static const bool encodeVerify =
-            std::getenv("TRIAEVUM_RAW_COPY_ENCODE_VERIFY") != nullptr;
-        mRawCopyEncodeVerify = encodeVerify;
         if (encodeVerify) {
             const auto rgba = CaptureNativePicaImageBytes(
                 source->ColorImage, source->Width, source->Height, 4,
@@ -932,28 +1590,8 @@ bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
             mRawCopyEncodeVerifyMismatches += mismatches;
         }
         const auto invalidateStart = copyPhaseClock();
-        // The prefix fence has retired every prior use. A framebuffer copy
-        // changes each frame; retaining all its content-hash texture versions
-        // would grow both GPU memory and savestates without bound.
-        for (auto it = mNativePicaTextures.begin(); it != mNativePicaTextures.end();) {
-            const auto& key = it->first;
-            const uint64_t address = key.PhysicalAddress;
-            // Bound native storage conservatively by RGBA8 across all mips.
-            // Over-invalidation costs an upload; under-invalidation retains
-            // every animated version when a copy writes inside a texture.
-            uint64_t extent = 0;
-            for (uint32_t width = key.Width, height = key.Height;;
-                 width = std::max(1U, width / 2), height = std::max(1U, height / 2)) {
-                extent += uint64_t{std::max(8U, width)} * std::max(8U, height) * 4U;
-                if (width <= 1 && height <= 1) break;
-            }
-            if (address < outputEnd && address + extent > transfer.OutputPhysicalAddress &&
-                it->second.ImageLayout != VK_IMAGE_LAYOUT_GENERAL) {
-                DestroyTexture(it->second);
-                ++mRawCopyTiming.InvalidatedTextures;
-                it = mNativePicaTextures.erase(it);
-            } else ++it;
-        }
+        RetireGpuTextureCopyProducers(mFrameCounter - 1U);
+        DumpGpuTextureCopyCapture(surface);
         RequireCopyVk(vkResetCommandBuffer(command, 0), "reset raw-copy continuation");
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -962,35 +1600,25 @@ bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
             throw std::runtime_error("cannot wrap raw-copy continuation in NRI");
 
         const auto spanStart = copyPhaseClock();
-        RawTextureCopyWriteback writeback;
-        writeback.CompletionId = transfer.CompletionId;
-        writeback.AfterDrawSubmissionId = transfer.AfterDrawSubmissionId;
-        uint64_t input = transfer.InputPhysicalAddress, output = transfer.OutputPhysicalAddress;
-        uint32_t left = size, inputLeft = inputWidth, outputLeft = outputWidth;
-        while (left) {
-            const uint32_t count = std::min({left, inputLeft, outputLeft});
-            Renderer3ds::PicaPhysicalMemoryWrite write;
-            write.Address = static_cast<uint32_t>(output);
-            if (!RawCopyGpuDecodeEnabled()) {
-                // Only the CPU resolver's staleness heuristic needs the pre-copy
-                // bytes: the GPU-owned decode patches from live memory, where the
-                // copy has already written them.
-                write.Before.resize(count);
-                if (!mPhysicalMemoryRead(write.Address, write.Before))
-                    throw std::runtime_error(
-                        "raw PICA copy destination is unmapped");
+        std::vector<Renderer3ds::PicaPhysicalMemoryWrite> writes;
+        writes.reserve(spans.size());
+        for (const auto& span : spans) {
+            const uint64_t offset =
+                uint64_t{span.SourceAddress} - source->Key.ColorPhysicalAddress;
+            if (offset > encodedBytes ||
+                span.ByteCount > encodedBytes - offset) {
+                throw std::runtime_error(
+                    "raw PICA copy source span exceeds the encoded surface");
             }
-            const size_t offset = static_cast<size_t>(input - source->Key.ColorPhysicalAddress);
-            write.Bytes.assign(native.begin() + offset, native.begin() + offset + count);
-            writeback.Writes.push_back(std::move(write));
+            Renderer3ds::PicaPhysicalMemoryWrite write;
+            write.Address = span.DestinationAddress;
+            write.Bytes.assign(native.begin() + offset,
+                               native.begin() + offset + span.ByteCount);
+            writes.push_back(std::move(write));
             ++mRawCopyTiming.Spans;
-            left -= count; inputLeft -= count; outputLeft -= count;
-            input += count; output += count;
-            if (!inputLeft) { input += inputGap; inputLeft = inputWidth; }
-            if (!outputLeft) { output += outputGap; outputLeft = outputWidth; }
         }
         const auto commitStart = copyPhaseClock();
-        if (!mPhysicalMemoryCommit(transfer.CompletionId, writeback.Writes))
+        if (!mPhysicalMemoryCommit(writes) || !mPhysicalMemoryComplete(transfer.CompletionId))
             throw std::runtime_error("raw PICA copy writeback/completion failed");
         const auto copyEnd = copyPhaseClock();
         ++mRawCopyTiming.Copies;
@@ -1001,8 +1629,9 @@ bool GfxRenderingAPIVulkan::SubmitNativePicaTextureCopy(
         mRawCopyTiming.InvalidateSeconds += phaseMilliseconds(invalidateStart, spanStart);
         mRawCopyTiming.SpanSeconds += phaseMilliseconds(spanStart, commitStart);
         mRawCopyTiming.CommitSeconds += phaseMilliseconds(commitStart, copyEnd);
-        mRawTextureCopyWritebacks.insert_or_assign(
-            std::pair{transfer.RenderTargetNamespace, transfer.OutputPhysicalAddress}, std::move(writeback));
+        mHandledNativePicaTextureCopies.insert_or_assign(
+            {transfer.RenderTargetNamespace, transfer.OutputPhysicalAddress},
+            std::pair{transfer.CompletionId, true});
         return true;
     } catch (const std::exception& exception) {
         if (error) *error = exception.what();

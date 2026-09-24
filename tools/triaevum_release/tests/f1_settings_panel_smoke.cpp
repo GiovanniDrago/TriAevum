@@ -4,6 +4,7 @@
 #include "oot3d_native_controls_settings_panel.h"
 #include "oot3d_top_screen_settings_panel.h"
 #include "oot3d_game_language_panel.h"
+#include "oot3d_scene_environment.h"
 #include "fast/MouseCapturePolicy.h"
 #include <imgui_internal.h>
 #include <nlohmann/json.hpp>
@@ -182,7 +183,7 @@ void ClickTexture(uint64_t hash, bool reorderDuringClick = false) {
 }
 void AllCapabilities(bool available) {
     auto& runtime = GraphicsSettingsRuntime::Instance();
-    for (unsigned value = 0; value <= static_cast<unsigned>(GraphicsCapability::ExclusiveFullscreen); ++value)
+    for (unsigned value = 0; value <= static_cast<unsigned>(GraphicsCapability::NativeSurfaceLighting); ++value)
         runtime.SetCapability(static_cast<GraphicsCapability>(value), available, "test capability");
 }
 
@@ -247,6 +248,163 @@ void CheckControlPersistence() {
     Frame(true);
     Check(loggedPanelText.find("cannot") != std::string::npos, "Save error was not visible");
     InstallGraphicsSettingsPanelTabs({});
+}
+
+void CheckSceneEnvironment() {
+    using namespace Oot3dNativeGame;
+    const auto root = std::filesystem::temp_directory_path() /
+        ("triaevum-environment-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directory(root);
+    struct Cleanup { std::filesystem::path Root; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(Root, ec); } } cleanup{root};
+    auto& graphics = GraphicsSettingsRuntime::Instance();
+    AllCapabilities(true);
+    auto settings = graphics.Snapshot();
+    settings.Preset = GraphicsPreset::Custom;
+    settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixelPbr;
+    graphics.Apply(settings);
+    auto environment = std::make_shared<SceneEnvironmentRuntime>(root, [&](const auto& value) {
+        graphics.PublishSceneEnvironment(value);
+    });
+    environment->ObserveScene(0x55);
+    InstallGraphicsSettingsPanelTabs({CreateSceneEnvironmentPanel(environment)});
+    size = ImVec2(760, 1450);
+    Frame(); Frame(); Click("Environment");
+    Select("Shadow mode", "Virtual Shadow Maps");
+    EditScalar("Shadow strength", "4");
+    Check(graphics.Snapshot().Effects.DirectionalShadows.Strength == 4.0F,
+          "shadow strength above one did not apply live");
+    EditScalar("Shadow strength", "0");
+    Check(graphics.Snapshot().Effects.DirectionalShadows.Strength == 0.0F,
+          "zero shadow strength did not apply live");
+    graphics.SetCapability(GraphicsCapability::NriDirectionalShadows, false, "test unavailable");
+    Frame();
+    Select("Shadow mode", "Off");
+    Check(graphics.Snapshot().Effects.DirectionalShadows.Mode == DirectionalShadowMode::Off,
+          "cannot disable unsupported shadows");
+    Click("Shadow mode");
+    Check(Find("Virtual Shadow Maps").Disabled, "unsupported shadow mode selectable");
+    Click("Off");
+    AllCapabilities(true);
+    Select("Shadow mode", "Virtual Shadow Maps");
+    settings = graphics.Snapshot();
+    settings.Effects.SurfaceLighting = SurfaceLightingMode::Native;
+    graphics.Apply(settings);
+    Frame();
+    Check(graphics.Snapshot().Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps &&
+          graphics.SnapshotForRendering().Value.Effects.DirectionalShadows.Mode == DirectionalShadowMode::Off,
+          "native lighting did not bypass VSM while preserving its preference");
+    Click("Shadow mode");
+    Check(Find("Virtual Shadow Maps").Disabled, "native lighting can enable VSM");
+    Click("Off");
+    settings = graphics.Snapshot();
+    settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixel;
+    graphics.Apply(settings);
+    Frame();
+    Select("Shadow mode", "Virtual Shadow Maps");
+    Check(graphics.SnapshotForRendering().Value.Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps,
+          "per-pixel lighting did not enable VSM");
+    graphics.ToggleNativePresentationOverride();
+    Check(graphics.SnapshotForRendering().Value.Effects.DirectionalShadows.Mode == DirectionalShadowMode::Off &&
+          graphics.Snapshot().Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps,
+          "F2 did not bypass VSM without erasing its preference");
+    graphics.ToggleNativePresentationOverride();
+    settings = graphics.Snapshot();
+    settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixelPbr;
+    graphics.Apply(settings);
+    Check(graphics.SnapshotForRendering().Value.Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps,
+          "per-pixel PBR lighting did not restore VSM");
+    Click("Use scene environment");
+    EditScalar("Ambient intensity", "0.12");
+    EditScalar("Native scene direct contribution", "0.25");
+    EditScalar("Native local contribution", "0.7");
+    EditScalar("Native ambient contribution", "0.15");
+    EditScalar("Native fog contribution", "0.4");
+    EditScalar("Light intensity", "1.4");
+    EditScalar("Azimuth", "90");
+    EditScalar("Elevation", "30");
+    const auto rendered = graphics.SnapshotForRendering().Environment;
+    Check(rendered.Enabled && rendered.AmbientIntensity == 0.12F &&
+          rendered.NativeDirectStrength == 0.25F && rendered.NativeLocalStrength == 0.7F &&
+          rendered.NativeAmbientStrength == 0.15F &&
+          rendered.FogStrength == 0.4F && rendered.Lights[0].Intensity == 1.4F,
+          "scene controls did not reach the live rendering snapshot");
+    Check(std::abs(rendered.Lights[0].DirectionTowardSource[0] - std::sqrt(0.75F)) < 0.0001F &&
+          std::abs(rendered.Lights[0].DirectionTowardSource[1] - 0.5F) < 0.0001F &&
+          std::abs(rendered.Lights[0].DirectionTowardSource[2]) < 0.0001F,
+          "scene light direction does not follow the displayed world axes");
+    Click("Fill light"); EditScalar("Light intensity", "0.3");
+    EditScalar("Navi intensity", "2.5");
+    EditScalar("Fairy radius scale", "1.75");
+    Click("Fairy point lights");
+    Click("Save scene environment");
+    const auto saved = environment->Snapshot();
+    Check(saved.FileExists && !saved.Dirty && saved.Error.empty(), "scene environment was not saved");
+    Click("Use native environment");
+    Check(!graphics.SnapshotForRendering().Environment.Enabled, "native environment restore was not immediate");
+    Check(graphics.SnapshotForRendering().Environment.PointLights[0].Intensity == 2.5F &&
+              !graphics.SnapshotForRendering().Environment.PointLights[1].Enabled,
+          "using native environment erased independent scene point-light controls");
+    const auto inactiveEnvironment = graphics.SnapshotForRendering().Environment;
+    auto inactiveEdit = environment->Snapshot().Profile;
+    inactiveEdit.AmbientIntensity = 1.7F;
+    inactiveEdit.Lights[0].Azimuth = -75.0F;
+    environment->Preview(inactiveEdit);
+    Check(graphics.SnapshotForRendering().Environment == inactiveEnvironment,
+          "disabled profile edits changed rendering inputs and invalidated history");
+    Click("Reload scene environment");
+    Check(environment->Snapshot().Profile == saved.Profile, "scene profile reload lost authored settings");
+    graphics.ToggleNativePresentationOverride();
+    Check(!graphics.SnapshotForRendering().Environment.Enabled && environment->Snapshot().Profile.Enabled,
+          "F2 did not bypass scene relighting without erasing its profile");
+    graphics.ToggleNativePresentationOverride();
+    Check(graphics.SnapshotForRendering().Environment.Enabled, "F2 did not restore the authored environment");
+    environment->ObserveScene(0x56);
+    Check(!graphics.SnapshotForRendering().Environment.Enabled, "previous scene's environment leaked across a transition");
+    environment->ObserveScene(0x55);
+    Check(environment->Snapshot().Profile == saved.Profile, "returning to scene did not restore its file");
+    const auto backup = root / "saved.json";
+    std::filesystem::rename(saved.Path, backup);
+    std::filesystem::create_directory(saved.Path);
+    Check(!environment->Save() && !environment->Snapshot().Error.empty(), "profile save failure was hidden");
+    std::filesystem::remove(saved.Path);
+    { std::ofstream file(saved.Path); file << "{invalid"; }
+    Check(!environment->Reload() && environment->Snapshot().Profile == saved.Profile,
+          "malformed reload replaced the last valid live environment");
+    environment->ObserveScene(0x56);
+    environment->ObserveScene(0x55);
+    Check(!graphics.SnapshotForRendering().Environment.Enabled && !environment->Snapshot().Error.empty(),
+          "invalid destination profile inherited another scene's lights");
+    std::filesystem::remove(saved.Path);
+    std::filesystem::rename(backup, saved.Path);
+    Click("Reload scene environment");
+    nlohmann::json originalProfile;
+    { std::ifstream file(saved.Path); file >> originalProfile; }
+    for (int version : {1, 2}) {
+        auto legacy = originalProfile;
+        legacy["version"] = version;
+        legacy.erase("nativeLocalStrength");
+        if (version == 1) legacy.erase("pointLights");
+        { std::ofstream file(saved.Path); file << legacy; }
+        Click("Reload scene environment");
+        const auto migrated = environment->Snapshot();
+        Check(migrated.Error.empty() && !migrated.Dirty &&
+                  migrated.Profile.NativeDirectStrength == 0.25F &&
+                  migrated.Profile.NativeLocalStrength == 0.25F,
+              "legacy profile lost its native direct/local gain");
+        Check(migrated.Profile.PointLights[1].Enabled == (version == 1),
+              "legacy profile lost point-group defaults or saved Off");
+        nlohmann::json unchanged;
+        { std::ifstream file(saved.Path); file >> unchanged; }
+        Check(unchanged == legacy, "loading a legacy profile rewrote the user's file");
+    }
+    graphics.SetCapability(GraphicsCapability::NativeSurfaceLighting, false, "test unavailable");
+    Frame(); Click("Use native environment");
+    Check(!environment->Snapshot().Profile.Enabled, "capability loss prevented the native off control");
+    Click("Navi point lights");
+    Check(!graphics.SnapshotForRendering().Environment.PointLights[0].Enabled,
+          "capability loss prevented disabling Navi point lights");
+    environment->ObserveScene(std::nullopt);
+    AllCapabilities(true);
 }
 
 void CheckGameSurfaceMouseResume() {
@@ -441,14 +599,37 @@ int main() try {
           "outline softness not applied");
 
     Click("Lighting");
-    runtime.SetCapability(GraphicsCapability::NriDirectionalShadows, false, "test unavailable");
+    Select("Lighting model", "Per-pixel");
+    Check(runtime.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::PerPixel,
+          "per-pixel lighting selection not applied");
+    Select("Lighting model", "Per-pixel + PBR");
+    Check(runtime.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::PerPixelPbr,
+          "PBR lighting selection not applied");
+    EditScalar("Normal strength", "3.5");
+    EditScalar("Glossiness strength", "0.6");
+    Check(runtime.Snapshot().Effects.Pbr.NormalStrength == 3.5F,
+          "normal strength did not apply live");
+    Check(runtime.Snapshot().Effects.Pbr.GlossinessStrength == 0.6F,
+          "glossiness strength did not apply live");
+    Select("Material view", "Surface normals");
+    Check(runtime.Snapshot().Effects.Pbr.DebugView == Fast::Renderer3ds::PicaPbrDebugView::SurfaceNormals,
+          "normal diagnostic view did not apply");
+    Select("Material view", "Roughness");
+    Check(runtime.Snapshot().Effects.Pbr.DebugView == Fast::Renderer3ds::PicaPbrDebugView::Roughness,
+          "roughness diagnostic view did not apply");
+    Click("Reset PBR controls");
+    Check(runtime.Snapshot().Effects.Pbr == Fast::Renderer3ds::PicaPbrControls{},
+          "PBR controls did not reset");
+    runtime.SetCapability(GraphicsCapability::NativeSurfaceLighting, false, "test unavailable");
     Frame();
-    Select("Shadow mode", "Off");
-    Check(runtime.Snapshot().Effects.DirectionalShadows.Mode == DirectionalShadowMode::Off,
-          "cannot disable unsupported shadows");
-    Click("Shadow mode");
-    Check(Find("Single cascade").Disabled, "unsupported shadow mode selectable");
-    Click("Off");
+    Select("Lighting model", "Native");
+    Check(runtime.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::Native,
+          "cannot restore native lighting after capability loss");
+    Click("Lighting model");
+    Check(Find("Per-pixel").Disabled && Find("Per-pixel + PBR").Disabled,
+          "unsupported lighting model selectable");
+    Click("Native");
+    AllCapabilities(true);
     runtime.SetCapability(GraphicsCapability::ValidViewMetadata, false, "test unavailable");
     Frame();
     Select("Ambient occlusion", "Off");
@@ -866,6 +1047,7 @@ int main() try {
     Oot3dNativeGame::GameLanguageSettings differentRom(languagePath,{{"en","English",1}});
     Check(differentRom.SystemId() == 1, "unsupported old language leaked into another ROM");
     std::filesystem::remove(languagePath);
+    CheckSceneEnvironment();
     InstallGraphicsSettingsPanelTabs({});
     ImGui::DestroyContext();
     std::cout << "F1 UI smoke passed: " << assertions << " assertions, real renderer/Controls/TopScreen widgets\n";

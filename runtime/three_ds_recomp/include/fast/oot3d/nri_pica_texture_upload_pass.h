@@ -23,6 +23,9 @@ struct NriPicaTextureUploadDesc {
     uint32_t MipLevel = 0;
     uint32_t MipLevels = 1;
     std::span<const uint8_t> Pixels;
+    // Full image extent remains Width/Height; zero RowCount uploads all rows.
+    uint32_t RowOffset = 0;
+    uint32_t RowCount = 0;
 };
 
 class NriPicaTextureUploadPass final {

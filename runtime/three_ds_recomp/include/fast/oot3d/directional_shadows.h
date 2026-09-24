@@ -1,5 +1,7 @@
 #pragma once
 
+#include "fast/renderer3ds/virtual_shadow_map.h"
+
 #include <array>
 #include <cstdint>
 #include <span>
@@ -9,19 +11,17 @@ namespace Fast::Oot3d {
 
 enum class DirectionalShadowMode : uint8_t {
     Off,
-    SingleCascade,
+    VirtualShadowMaps,
 };
 
 struct DirectionalShadowSettings {
     DirectionalShadowMode Mode = DirectionalShadowMode::Off;
-    uint32_t Resolution = 1024;
-    float MaximumDistance = 2400.0F;
-    float DepthPadding = 300.0F;
+    uint32_t Resolution = 2048;
+    float MaximumDistance = 65536.0F;
     float DepthBiasConstant = 1.25F;
     float DepthBiasSlope = 1.75F;
     float Strength = 0.80F;
     uint8_t PcfRadius = 1;
-    bool Stabilize = true;
 };
 
 using DirectionalShadowMatrix = std::array<float, 16>;
@@ -29,25 +29,22 @@ using DirectionalShadowVector = std::array<float, 3>;
 
 enum class DirectionalShadowPlanStatus : uint8_t {
     Disabled,
-    InvalidProjection,
+    InvalidCamera,
     InvalidLightDirection,
-    DegenerateFrustum,
     Ready,
 };
 
 struct DirectionalShadowFrameInput {
-    DirectionalShadowMatrix ClipToWorld{};
+    DirectionalShadowVector CameraWorld{};
     DirectionalShadowVector LightDirectionTowardSource{};
     DirectionalShadowSettings Settings;
+    const ::Fast::Renderer3ds::VirtualShadowLayout* PreviousLayout = nullptr;
 };
 
 struct DirectionalShadowFramePlan {
     DirectionalShadowPlanStatus Status = DirectionalShadowPlanStatus::Disabled;
-    DirectionalShadowMatrix WorldToLightClip{};
-    DirectionalShadowMatrix WorldToShadowTexture{};
-    DirectionalShadowMatrix ClipToWorld{};
+    ::Fast::Renderer3ds::VirtualShadowLayout Virtual;
     DirectionalShadowVector LightDirectionTowardSource{};
-    uint32_t Resolution = 0;
     float DepthBiasConstant = 0.0F;
     float DepthBiasSlope = 0.0F;
     float Strength = 0.0F;

@@ -42,6 +42,18 @@ struct PicaDirectionalShadowReceiverLight {
     }
 };
 
+struct PicaSurfaceShadowLight {
+    DirectionalShadowVector DirectionViewTowardSource{};
+    uint8_t ShaderSlot = 0;
+    bool Enabled = false;
+    bool Point = false;
+};
+
+[[nodiscard]] uint16_t ResolvePicaSurfaceDirectionalShadowMask(
+    std::span<const PicaSurfaceShadowLight> lights,
+    const DirectionalShadowMatrix& viewToWorld,
+    const DirectionalShadowVector& worldDirectionTowardSource) noexcept;
+
 [[nodiscard]] PicaDirectionalShadowLightSelection
 ResolvePicaDirectionalShadowLightSelection(
     std::span<const PicaSceneDrawRecord* const> draws) noexcept;

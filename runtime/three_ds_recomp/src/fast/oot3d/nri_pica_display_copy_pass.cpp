@@ -1,5 +1,7 @@
 #include "fast/oot3d/nri_pica_display_copy_pass.h"
 
+#include "fast/renderer3ds/pica_texture_copy_derive_gpu.h"
+
 #ifdef ENABLE_OOT3D_VULKAN
 
 #include "fast/oot3d/nri_interop_context.h"
@@ -22,7 +24,9 @@ namespace Fast::Oot3d {
 namespace {
 
 constexpr uint32_t kFrameSlots = 2U;
-constexpr uint32_t kMaximumCopiesPerFrame = 16U;
+// One descriptor set per executed copy or derived region; a strided raw copy
+// contributes one region per translation it contains.
+constexpr uint32_t kMaximumCopiesPerFrame = 256U;
 constexpr uint32_t kDescriptorSetCount =
     kFrameSlots * kMaximumCopiesPerFrame;
 
@@ -36,9 +40,35 @@ struct DisplayTransferPush {
 };
 static_assert(sizeof(DisplayTransferPush) == 24U);
 
+struct DerivePush {
+    uint32_t DestinationX = 0;
+    uint32_t DestinationY = 0;
+    uint32_t Width = 0;
+    uint32_t Height = 0;
+    int32_t NativeDeltaX = 0;
+    int32_t NativeDeltaY = 0;
+    uint32_t Padding0 = 0;
+    uint32_t Padding1 = 0;
+    uint32_t DensityX = 1;
+    uint32_t DensityY = 1;
+    uint32_t SourceNativeWidth = 0;
+    uint32_t SourceNativeHeight = 0;
+    uint32_t ImageWidth = 0;
+    uint32_t ImageHeight = 0;
+    uint32_t NativeFormat = 0;
+    uint32_t Padding2 = 0;
+};
+static_assert(sizeof(DerivePush) == 64U);
+
 #ifdef ENABLE_OOT3D_NRI
 std::vector<uint32_t> CompileDisplayTransferShader(Renderer::CachedPassShaderCompiler& shaders) {
     return shaders.Resolve(BuildPicaDisplayTransferComputeShader(), Renderer::SpirvStage::Compute, "oot3d_pica_display_transfer.comp");
+}
+
+std::vector<uint32_t> CompileDeriveShader(Renderer::CachedPassShaderCompiler& shaders) {
+    return shaders.Resolve(
+        std::string(Renderer3ds::PicaTextureCopyDeriveComputeSource),
+        Renderer::SpirvStage::Compute, "oot3d_pica_texture_copy_derive.comp");
 }
 #endif
 
@@ -54,6 +84,8 @@ struct NriPicaDisplayCopyPass::Impl {
     nri::CoreInterface* Core = nullptr;
     nri::PipelineLayout* PipelineLayout = nullptr;
     nri::Pipeline* Pipeline = nullptr;
+    nri::PipelineLayout* DeriveLayout = nullptr;
+    nri::Pipeline* DerivePipeline = nullptr;
     nri::Descriptor* Sampler = nullptr;
     nri::DescriptorPool* Pool = nullptr;
     std::array<nri::DescriptorSet*, kDescriptorSetCount> Sets{};
@@ -136,6 +168,39 @@ bool NriPicaDisplayCopyPass::Initialize(NriInteropContext& interop) {
                 "NRI PICA display-transfer pipeline creation failed");
         }
 
+        {
+            nri::RootConstantDesc deriveRoot{};
+            deriveRoot.size = sizeof(DerivePush);
+            deriveRoot.shaderStages = nri::StageBits::COMPUTE_SHADER;
+            nri::PipelineLayoutDesc deriveLayout{};
+            deriveLayout.rootConstants = &deriveRoot;
+            deriveLayout.rootConstantNum = 1;
+            deriveLayout.descriptorSets = &setDesc;
+            deriveLayout.descriptorSetNum = 1;
+            deriveLayout.shaderStages = nri::StageBits::COMPUTE_SHADER;
+            deriveLayout.flags =
+                nri::PipelineLayoutBits::IGNORE_GLOBAL_SPIRV_OFFSETS;
+            if (mImpl->Core->CreatePipelineLayout(
+                    *device, deriveLayout, mImpl->DeriveLayout) !=
+                nri::Result::SUCCESS) {
+                throw std::runtime_error(
+                    "NRI PICA raw-copy derive layout creation failed");
+            }
+            const auto deriveShader = CompileDeriveShader(interop.Shaders());
+            nri::ComputePipelineDesc derivePipeline{};
+            derivePipeline.pipelineLayout = mImpl->DeriveLayout;
+            derivePipeline.shader.stage = nri::StageBits::COMPUTE_SHADER;
+            derivePipeline.shader.bytecode = deriveShader.data();
+            derivePipeline.shader.size =
+                deriveShader.size() * sizeof(uint32_t);
+            if (mImpl->Core->CreateComputePipeline(
+                    *device, derivePipeline, mImpl->DerivePipeline) !=
+                nri::Result::SUCCESS) {
+                throw std::runtime_error(
+                    "NRI PICA raw-copy derive pipeline creation failed");
+            }
+        }
+
         nri::SamplerDesc sampler{};
         sampler.filters = {nri::Filter::NEAREST, nri::Filter::NEAREST,
                            nri::Filter::NEAREST};
@@ -203,20 +268,14 @@ bool NriPicaDisplayCopyPass::Execute(
             desc.Plan.SourceWidth, desc.Plan.SourceHeight) ||
         !mImpl->Interop->WrapTexture(
             desc.DestinationImage, desc.Format, VK_IMAGE_TYPE_2D,
-            VK_IMAGE_USAGE_STORAGE_BIT |
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                VK_IMAGE_USAGE_SAMPLED_BIT,
+            (desc.DestinationColorAttachment ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                                             : VK_IMAGE_USAGE_STORAGE_BIT) |
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
             desc.Plan.DestinationWidth,
             desc.Plan.DestinationHeight)) {
         return false;
     }
 
-    nri::Descriptor* sourceView = NriInteropAccess::TextureView(
-        *mImpl->Interop, desc.SourceImage, false);
-    nri::Descriptor* destinationView = NriInteropAccess::TextureView(
-        *mImpl->Interop, desc.DestinationImage, true);
-    if (sourceView == nullptr || destinationView == nullptr)
-        return false;
 
     const uintptr_t sourceKey =
         reinterpret_cast<uintptr_t>(desc.SourceImage);
@@ -234,9 +293,44 @@ bool NriPicaDisplayCopyPass::Execute(
     };
     seed(sourceKey, sourceInitial);
     seed(destinationKey,
-         desc.DestinationInitialized
-             ? ResourceAccess::ShaderRead
-             : ResourceAccess::Undefined);
+         desc.DestinationColorAttachment ? ResourceAccess::ColorAttachment :
+         desc.DestinationInitialized ? ResourceAccess::ShaderRead : ResourceAccess::Undefined);
+    if (desc.DestinationColorAttachment) {
+        auto* source = NriInteropAccess::Texture(*mImpl->Interop, desc.SourceImage);
+        auto* destination = NriInteropAccess::Texture(*mImpl->Interop, desc.DestinationImage);
+        if (source == nullptr || destination == nullptr) return false;
+        const std::array<ResourceTransition, 2> before{{
+            mImpl->States.PlanTransition(sourceKey, {ResourceAccess::TransferRead, 0}),
+            mImpl->States.PlanTransition(destinationKey, {ResourceAccess::TransferWrite, 0}),
+        }};
+        const std::array<NriTextureTransitionDesc, 2> beforeDescs{{
+            {desc.SourceImage, before[0], 0, 1},
+            {desc.DestinationImage, before[1], 0, 1},
+        }};
+        if (!NriInteropAccess::CmdTextureBarriers(*mImpl->Interop, desc.FrameIndex,
+                beforeDescs.data(), static_cast<uint32_t>(beforeDescs.size()))) return false;
+        for (const auto& transition : before) mImpl->States.Commit(transition);
+        mImpl->Core->CmdCopyTexture(*command, *destination, nullptr, *source, nullptr);
+        const std::array<ResourceTransition, 2> after{{
+            mImpl->States.PlanTransition(sourceKey, {sourceInitial, 0}),
+            mImpl->States.PlanTransition(destinationKey, {ResourceAccess::ColorAttachment, 0}),
+        }};
+        const std::array<NriTextureTransitionDesc, 2> afterDescs{{
+            {desc.SourceImage, after[0], 0, 1},
+            {desc.DestinationImage, after[1], 0, 1},
+        }};
+        if (!NriInteropAccess::CmdTextureBarriers(*mImpl->Interop, desc.FrameIndex,
+                afterDescs.data(), static_cast<uint32_t>(afterDescs.size()))) return false;
+        for (const auto& transition : after) mImpl->States.Commit(transition);
+        mImpl->LastBarrierCount = 4U;
+        return true;
+    }
+    nri::Descriptor* sourceView = NriInteropAccess::TextureView(
+        *mImpl->Interop, desc.SourceImage, false);
+    nri::Descriptor* destinationView = NriInteropAccess::TextureView(
+        *mImpl->Interop, desc.DestinationImage, true);
+    if (sourceView == nullptr || destinationView == nullptr)
+        return false;
 
     const std::array<ResourceTransition, 2> toCompute{{
         mImpl->States.PlanTransition(
@@ -319,6 +413,147 @@ bool NriPicaDisplayCopyPass::Execute(
 #endif
 }
 
+bool NriPicaDisplayCopyPass::ExecuteRegion(
+    const NriPicaDisplayCopyRegionDesc& desc) {
+    mImpl->LastBarrierCount = 0;
+#ifndef ENABLE_OOT3D_NRI
+    (void)desc;
+    return false;
+#else
+    if (!Available() || !ValidateNriPicaDisplayCopyRegionDesc(desc) ||
+        mImpl->DeriveLayout == nullptr || mImpl->DerivePipeline == nullptr) {
+        return false;
+    }
+    nri::CommandBuffer* command = NriInteropAccess::CommandBuffer(
+        *mImpl->Interop, desc.FrameIndex);
+    if (command == nullptr ||
+        !mImpl->Interop->WrapTexture(
+            desc.SourceImage, desc.SourceFormat, VK_IMAGE_TYPE_2D,
+            VK_IMAGE_USAGE_SAMPLED_BIT |
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                VK_IMAGE_USAGE_STORAGE_BIT,
+            desc.SourceWidth, desc.SourceHeight) ||
+        !mImpl->Interop->WrapTexture(
+            desc.DestinationImage, desc.DestinationFormat, VK_IMAGE_TYPE_2D,
+            VK_IMAGE_USAGE_SAMPLED_BIT |
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                VK_IMAGE_USAGE_STORAGE_BIT,
+            desc.DestinationWidth, desc.DestinationHeight)) {
+        return false;
+    }
+    nri::Descriptor* sourceView = NriInteropAccess::TextureView(
+        *mImpl->Interop, desc.SourceImage, false);
+    nri::Descriptor* destinationView = NriInteropAccess::TextureView(
+        *mImpl->Interop, desc.DestinationImage, true);
+    if (sourceView == nullptr || destinationView == nullptr) {
+        return false;
+    }
+
+    const uintptr_t sourceKey =
+        reinterpret_cast<uintptr_t>(desc.SourceImage);
+    const uintptr_t destinationKey =
+        reinterpret_cast<uintptr_t>(desc.DestinationImage);
+    const auto seed = [this](uintptr_t key, ResourceAccess access) {
+        mImpl->States.Forget(key);
+        ResourceTransition state;
+        state.Resource = key;
+        state.After = {access, 0};
+        mImpl->States.Commit(state);
+    };
+    seed(sourceKey, ResourceAccess::ShaderRead);
+    seed(destinationKey,
+         desc.DestinationInitialized ? ResourceAccess::ShaderRead
+                                     : ResourceAccess::Undefined);
+
+    const std::array<ResourceTransition, 2> toCompute{{
+        mImpl->States.PlanTransition(sourceKey,
+                                     {ResourceAccess::ShaderRead, 0}),
+        mImpl->States.PlanTransition(destinationKey,
+                                     {ResourceAccess::ComputeWrite, 0}),
+    }};
+    const std::array<NriTextureTransitionDesc, 2> toComputeDescs{{
+        {desc.SourceImage, toCompute[0], 0, 1},
+        {desc.DestinationImage, toCompute[1], 0, 1},
+    }};
+    if (!NriInteropAccess::CmdTextureBarriers(
+            *mImpl->Interop, desc.FrameIndex, toComputeDescs.data(),
+            static_cast<uint32_t>(toComputeDescs.size()))) {
+        return false;
+    }
+    for (const auto& transition : toCompute)
+        mImpl->States.Commit(transition);
+
+    const uint32_t slot = desc.FrameIndex % kFrameSlots;
+    if (mImpl->FrameIds[slot] != desc.FrameId) {
+        mImpl->FrameIds[slot] = desc.FrameId;
+        mImpl->SetsUsed[slot] = 0U;
+    }
+    if (mImpl->SetsUsed[slot] >= kMaximumCopiesPerFrame) {
+        return false;
+    }
+    nri::DescriptorSet* descriptorSet =
+        mImpl->Sets[slot * kMaximumCopiesPerFrame + mImpl->SetsUsed[slot]++];
+    const std::array<nri::UpdateDescriptorRangeDesc, 2> updates{{
+        {descriptorSet, 0, 0, &sourceView, 1},
+        {descriptorSet, 1, 0, &destinationView, 1},
+    }};
+    mImpl->Core->UpdateDescriptorRanges(
+        updates.data(), static_cast<uint32_t>(updates.size()));
+    const DerivePush push{
+        desc.DestinationX,
+        desc.DestinationY,
+        desc.Width,
+        desc.Height,
+        desc.NativeDeltaX,
+        desc.NativeDeltaY,
+        0U,
+        0U,
+        desc.DensityX,
+        desc.DensityY,
+        desc.SourceNativeWidth,
+        desc.SourceNativeHeight,
+        desc.SourceWidth,
+        desc.SourceHeight,
+        desc.NativeFormat,
+        0U,
+    };
+    mImpl->Core->CmdSetDescriptorPool(*command, *mImpl->Pool);
+    mImpl->Core->CmdSetPipelineLayout(
+        *command, nri::BindPoint::COMPUTE, *mImpl->DeriveLayout);
+    mImpl->Core->CmdSetPipeline(*command, *mImpl->DerivePipeline);
+    const nri::SetDescriptorSetDesc set{0, descriptorSet};
+    mImpl->Core->CmdSetDescriptorSet(*command, set);
+    const nri::SetRootConstantsDesc constants{0, &push, sizeof(push)};
+    mImpl->Core->CmdSetRootConstants(*command, constants);
+    const nri::DispatchDesc dispatch{
+        (desc.Width + 7U) / 8U,
+        (desc.Height + 7U) / 8U,
+        1U,
+    };
+    mImpl->Core->CmdDispatch(*command, dispatch);
+
+    const std::array<ResourceTransition, 2> fromCompute{{
+        mImpl->States.PlanTransition(sourceKey,
+                                     {ResourceAccess::ShaderRead, 0}),
+        mImpl->States.PlanTransition(destinationKey,
+                                     {ResourceAccess::ShaderRead, 0}),
+    }};
+    const std::array<NriTextureTransitionDesc, 2> fromComputeDescs{{
+        {desc.SourceImage, fromCompute[0], 0, 1},
+        {desc.DestinationImage, fromCompute[1], 0, 1},
+    }};
+    if (!NriInteropAccess::CmdTextureBarriers(
+            *mImpl->Interop, desc.FrameIndex, fromComputeDescs.data(),
+            static_cast<uint32_t>(fromComputeDescs.size()))) {
+        return false;
+    }
+    for (const auto& transition : fromCompute)
+        mImpl->States.Commit(transition);
+    mImpl->LastBarrierCount = 4U;
+    return true;
+#endif
+}
+
 void NriPicaDisplayCopyPass::ForgetTexture(VkImage image) {
     if (image != VK_NULL_HANDLE)
         mImpl->States.Forget(reinterpret_cast<uintptr_t>(image));
@@ -336,6 +571,10 @@ void NriPicaDisplayCopyPass::Shutdown() {
             mImpl->Core->DestroyPipeline(mImpl->Pipeline);
         if (mImpl->PipelineLayout != nullptr)
             mImpl->Core->DestroyPipelineLayout(mImpl->PipelineLayout);
+        if (mImpl->DerivePipeline != nullptr)
+            mImpl->Core->DestroyPipeline(mImpl->DerivePipeline);
+        if (mImpl->DeriveLayout != nullptr)
+            mImpl->Core->DestroyPipelineLayout(mImpl->DeriveLayout);
     }
 #endif
     *mImpl = {};
@@ -347,7 +586,8 @@ bool NriPicaDisplayCopyPass::Available() const {
 #ifdef ENABLE_OOT3D_NRI
     return mImpl->Reason.empty() && mImpl->Interop != nullptr &&
            mImpl->Core != nullptr && mImpl->PipelineLayout != nullptr &&
-           mImpl->Pipeline != nullptr && mImpl->Sampler != nullptr &&
+           mImpl->Pipeline != nullptr && mImpl->DeriveLayout != nullptr &&
+           mImpl->DerivePipeline != nullptr && mImpl->Sampler != nullptr &&
            mImpl->Pool != nullptr && mImpl->Interop->Available();
 #else
     return false;

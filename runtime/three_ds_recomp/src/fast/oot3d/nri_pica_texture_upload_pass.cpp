@@ -175,8 +175,11 @@ bool NriPicaTextureUploadPass::Execute(
         desc.Height == 0U || desc.MipLevels == 0U ||
         desc.MipLevel >= desc.MipLevels)
         return false;
+    const uint32_t rows = desc.RowCount != 0U ? desc.RowCount : desc.Height;
+    if (desc.RowOffset > desc.Height || rows > desc.Height - desc.RowOffset)
+        return false;
     const uint64_t pixelCount =
-        static_cast<uint64_t>(desc.Width) * desc.Height;
+        static_cast<uint64_t>(desc.Width) * rows;
     if (pixelCount >
             std::numeric_limits<uint64_t>::max() / kBytesPerPixel ||
         pixelCount * kBytesPerPixel != desc.Pixels.size())
@@ -193,7 +196,7 @@ bool NriPicaTextureUploadPass::Execute(
     std::optional<PicaNriTextureUploadLayout> layout;
     for (auto& candidate : frame.Buffers) {
         const auto candidateLayout = PlanPicaNriTextureUpload(
-            candidate.Used, candidate.Capacity, desc.Width, desc.Height,
+            candidate.Used, candidate.Capacity, desc.Width, rows,
             kBytesPerPixel, mImpl->RowAlignment, mImpl->SliceAlignment);
         if (candidateLayout.has_value()) {
             upload = &candidate;
@@ -204,7 +207,7 @@ bool NriPicaTextureUploadPass::Execute(
     if (upload == nullptr) {
         const auto required = PlanPicaNriTextureUpload(
             0U, std::numeric_limits<uint64_t>::max(),
-            desc.Width, desc.Height, kBytesPerPixel,
+            desc.Width, rows, kBytesPerPixel,
             mImpl->RowAlignment, mImpl->SliceAlignment);
         if (!required.has_value())
             return false;
@@ -218,13 +221,13 @@ bool NriPicaTextureUploadPass::Execute(
         }
         upload = &frame.Buffers.back();
         layout = PlanPicaNriTextureUpload(
-            0U, upload->Capacity, desc.Width, desc.Height,
+            0U, upload->Capacity, desc.Width, rows,
             kBytesPerPixel, mImpl->RowAlignment, mImpl->SliceAlignment);
         if (!layout.has_value())
             return false;
     }
     if (!PackPicaNriTextureUpload(
-            desc.Pixels, desc.Width, desc.Height, kBytesPerPixel,
+            desc.Pixels, desc.Width, rows, kBytesPerPixel,
             *layout, std::span<uint8_t>(
                          upload->Mapped,
                          static_cast<size_t>(upload->Capacity))))
@@ -261,7 +264,8 @@ bool NriPicaTextureUploadPass::Execute(
 
     nri::TextureRegionDesc region{};
     region.width = static_cast<nri::Dim_t>(desc.Width);
-    region.height = static_cast<nri::Dim_t>(desc.Height);
+    region.y = static_cast<nri::Dim_t>(desc.RowOffset);
+    region.height = static_cast<nri::Dim_t>(rows);
     region.depth = 1;
     region.mipOffset = static_cast<nri::Dim_t>(desc.MipLevel);
     region.planes = nri::PlaneBits::COLOR;

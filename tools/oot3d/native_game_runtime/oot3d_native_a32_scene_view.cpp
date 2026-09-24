@@ -77,6 +77,11 @@ NativeA32SceneViewProbe::Capture(oot3d::recomp::a32::MemoryBus &memory) {
   }
 
   snapshot.PlayStateAddress = mStats.LastPlayStateAddress;
+  // Same PlayState identity used by native scene transitions (not a room ID).
+  uint16_t sceneId = 0xFFFFU;
+  if (memory.Read16(snapshot.PlayStateAddress + 0x104U, &sceneId) &&
+      sceneId < 0x8000U)
+    snapshot.SceneId = sceneId;
   const uint32_t view = snapshot.PlayStateAddress + kPlayViewOffset;
   const bool read =
       ReadFloat(memory, view + kViewEyeOffset, snapshot.Eye[0]) &&

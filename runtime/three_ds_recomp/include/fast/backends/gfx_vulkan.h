@@ -10,6 +10,8 @@
 #include "fast/renderer/spirv_cache.h"
 #include "fast/renderer3ds/pica_shader_module_identity.h"
 #include "fast/renderer3ds/pica_program_preparation.h"
+#include "fast/renderer3ds/pica_texture_copy_plan.h"
+#include "fast/renderer3ds/pica_shadow_geometry.h"
 #include "fast/backends/oot3d_vulkan_diagnostics.h"
 #include "fast/backends/oot3d_vulkan_gpu_profiler.h"
 #include "fast/backends/oot3d_vulkan_validation.h"
@@ -26,6 +28,7 @@
 #include "fast/oot3d/hiz_depth_pyramid_pass.h"
 #include "fast/oot3d/hiz_reflection_pass.h"
 #include "fast/oot3d/interactive_grass_pass.h"
+#include "fast/oot3d/linear_scene_color.h"
 #include "fast/oot3d/linear_scene_color_pass.h"
 #include "fast/oot3d/motion_vector_pass.h"
 #include "fast/oot3d/native_scene_view.h"
@@ -83,9 +86,17 @@
 #include <utility>
 #include <vector>
 
+namespace Oot3d::Renderer { struct AzaharPbrMaterial; }
+
 namespace Fast {
 
 class GfxWindowBackendSDL2;
+
+// Native PICA texture geometry, shared between the backend's texture creation
+// and the raw-copy register (defined in gfx_vulkan_pica.cpp).
+uint32_t NativePicaMipLevelCount(const GfxNativePicaTextureView& texture);
+std::optional<size_t> NativePicaEncodedMipSize(uint8_t format, uint32_t width,
+                                               uint32_t height);
 
 struct VulkanShaderProgram {
     static constexpr uint32_t kAbsentAttribute = UINT32_MAX;
@@ -157,6 +168,12 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
                         std::string* error = nullptr) override;
     bool SubmitPicaDisplayTransfer(
         const GfxNativePicaDisplayTransferView& transfer,
+        std::string* error = nullptr) override;
+    // Declares the producers referenced by the frontend ledger and captured
+    // plans. Reclamation also waits for deferred guest ownership and the last
+    // GPU frame that sampled the producer; dropping a plan pin alone is unsafe.
+    bool SetPinnedPicaTextureCopies(
+        std::span<const ::Fast::Renderer3ds::PicaTextureCopyReference> copies,
         std::string* error = nullptr) override;
     bool ClearPicaRenderTarget(
         uint64_t renderTargetNamespace, uint32_t colorPhysicalAddress,
@@ -274,10 +291,54 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         GfxNativeSamplerState AppliedSamplerState{};
         bool SamplerStateApplied = false;
         bool NriOwnedImage = false;
+        // Ownership is explicit, never inferred from ImageLayout: the image is
+        // another owner's (a live Shadow2D render target, or an immutable raw
+        // copy source owned by the GPU copy register) and this record must not
+        // destroy it.
+        bool ImageBorrowed = false;
+        // A storage alias of a live render target. Its content and lifetime
+        // belong to that target, so it is serialized with the target rather
+        // than with the texture cache.
+        bool LiveRenderTargetAlias = false;
         bool Uploaded = false;
+        // Native-sized RGBA8 image holding the CPU-owned base of a derived
+        // raw-copy sample, owned by this record and sampled only until the base
+        // fill dispatch that expands it into the sampled image has executed.
+        VkImage BaseImage = VK_NULL_HANDLE;
+        std::vector<uint64_t> CopyProducerIdentities;
+        // The sampled content is a raw-copy production whose scene effects were
+        // already resolved when it was captured, so a draw declared full-frame
+        // screen content that samples it writes colour already carrying them.
+        // Carried on the record, so a cache hit and a restored record keep it.
+        bool SourceResolvedColour = false;
+        // The owned (producer-covered) rectangle of the sampled texture in
+        // declared native texels, so a draw's sampled UV footprint can be tested
+        // against the content that is actually resolved.
+        uint32_t SourceOwnedX0 = 0;
+        uint32_t SourceOwnedY0 = 0;
+        uint32_t SourceOwnedX1 = 0;
+        uint32_t SourceOwnedY1 = 0;
+        uint32_t SourceDeclaredWidth = 0;
+        uint32_t SourceDeclaredHeight = 0;
         uint64_t CustomReplacementHash = 0;
+        uint64_t CustomReplacementPixelHash = 0;
+        bool CustomReplacementApplied = false;
         bool CustomReplacementPending = false;
         bool CustomReplacementReady = false;
+    };
+
+    struct NativePicaMaterialBundle {
+        std::shared_ptr<const ::Oot3d::Renderer::AzaharPbrMaterial> Material;
+        // Normal, ORM, emissive, and optional color replacement publish together.
+        std::array<TextureRecord, 4> Images;
+        std::array<uint32_t, 4> UploadedRows{};
+        uint8_t ReusedImages = 0;
+    };
+    struct NativePicaMaterialEntry {
+        NativePicaMaterialBundle Active;
+        NativePicaMaterialBundle Pending;
+        uint64_t FailedGeneration = 0;
+        uint64_t LastUsedFrame = 0;
     };
 
     struct BufferAllocation {
@@ -319,6 +380,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
         std::map<TextureDescriptorKey, VkDescriptorSet> TextureDescriptorSets;
         std::vector<uint64_t> NativePicaCompletionIds;
+        std::vector<TextureRecord> RetiredTextures;
+        std::vector<BufferAllocation> RetiredUniformBuffers;
     };
 
     struct CachedVertexBuffer {
@@ -347,17 +410,23 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         std::array<BufferAllocation, kFramesInFlight> Buffers{};
         std::array<uint64_t, kFramesInFlight> ContentVersions{};
         std::array<uint64_t, kFramesInFlight> StructuralSignatures{};
+        Renderer3ds::PicaShadowCasterCache ShadowCaster;
         uint64_t LastUsedFrame = 0;
     };
 
     struct NativePicaTextureKey {
-        // Content identity. Zero means the identity comes from SurfaceVersion
-        // instead: a GPU-owned surface whose content is produced on the GPU and
-        // therefore never hashed on the CPU. Zero with SurfaceVersion zero is
-        // the ordinary hash identity.
+        // Content identity. Zero means the identity comes from
+        // GpuCopyIdentity instead: the samples come from an ordered raw copy
+        // produced on the GPU, so there is no CPU payload to hash. Zero with a
+        // zero GpuCopyIdentity is the ordinary hash identity. Ownership is
+        // never inferred from a missing hash.
         uint64_t ContentHash = 0;
-        // Monotonic version of a GPU-owned surface (see GpuOwnedTextureSurface).
-        uint64_t SurfaceVersion = 0;
+        // Identity of the immutable GPU producer this record samples (see
+        // GpuTextureCopySurface). It is assigned once per captured copy and
+        // stays stable for that producer's life, so repeated lookups of the
+        // same copy reuse one texture record instead of allocating a version
+        // per lookup.
+        uint64_t GpuCopyIdentity = 0;
         uint64_t ReplacementGeneration = 0;
         uint32_t PhysicalAddress = 0;
         uint16_t Width = 0;
@@ -429,6 +498,13 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         VkImageView DepthView = VK_NULL_HANDLE;
         uint64_t ColorSurfaceGeneration = 0;
         uint64_t DepthSurfaceGeneration = 0;
+        // Content provenance: the serial of the last write to this target, and
+        // the serial of the write that produced content already carrying its
+        // resolved scene effects. They are equal exactly while no other write
+        // has happened since, and any draw, clear or fill of this target bumps
+        // the first.
+        uint64_t ContentWriteSerial = 0;
+        uint64_t SceneEffectsResolvedSerial = 0;
         VkImage MsaaColorImage = VK_NULL_HANDLE;
         VkDeviceMemory MsaaColorMemory = VK_NULL_HANDLE;
         VkImageView MsaaColorView = VK_NULL_HANDLE;
@@ -476,6 +552,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
             ::Oot3d::Renderer::PicaCompositionDomain::Unknown;
         uint64_t CompositionSequenceId = 0U;
         bool SceneResolved = false;
+        // True when this image's colour already carries the resolved scene
+        // effects for its boundary, so a later display of it must not re-run
+        // the scene stages.
+        bool SceneEffectsResolved = false;
     };
 
     struct PresentRequest {
@@ -544,6 +624,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     void CreatePipelineCache();
     void StorePipelineCache();
     void CreateCommandResources();
+    void SubmitFrameCommandBuffer(VkCommandBuffer command, VkFence fence,
+                                  VkSemaphore signal = VK_NULL_HANDLE,
+                                  uint64_t signalValue = 0U);
     VkCommandBuffer SplitFrameForExternalCompute(
         VkSemaphore timelineSemaphore, uint64_t vulkanSignalValue,
         uint64_t externalCompletionValue);
@@ -594,6 +677,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         std::span<const uint8_t> stencilValues);
     void BeginNativePicaRenderPass(NativePicaRenderTarget& target);
     void EndNativePicaRenderPass();
+    void ExecuteNativePicaBeforeDrawAnchors(
+        NativePicaRenderTarget& target, const GfxNativePicaDrawView& draw,
+        double& shadowMilliseconds, double& grassMilliseconds);
     bool TryRenderInteractiveGrass(
         NativePicaRenderTarget& target,
         const Oot3d::GraphicsSettings& settings,
@@ -608,6 +694,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     void ForgetNativePicaEffectNriTextures();
     void ApplyPendingNativePicaMemoryFills(NativePicaRenderTarget& target);
     void CreateFrameResources();
+    void EnsureFrameUniformCapacity(VkDeviceSize bytes, VkDeviceSize alignment);
     void CreateFallbackTexture();
     void CreateOot3dShadow2dRenderPass();
     void CreateOot3dShadow2dDepthEncodePipeline();
@@ -679,12 +766,30 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
                                       std::span<const uint8_t> pixels,
                                       uint32_t width, uint32_t height,
                                       uint32_t mipLevels, VkFormat format,
-                                      bool fillFromGpuDecode = false,
-                                      std::span<const uint8_t> nativeBytes = {},
-                                      uint8_t picaFormat = 0);
+                                      bool storageView = false);
+    void UploadNativePicaTextureRows(TextureRecord& texture,
+                                    std::span<const uint8_t> pixels,
+                                    uint32_t width, uint32_t height,
+                                    uint32_t level, uint32_t mipLevels,
+                                    VkFormat format, uint32_t rowOffset,
+                                    uint32_t rowCount);
+    void RetireNativePicaTexture(TextureRecord& texture);
+    void RetireNativePicaMaterial(NativePicaMaterialBundle& material);
+    NativePicaMaterialBundle* GetOrCreateNativePicaMaterial(
+        const std::shared_ptr<const ::Oot3d::Renderer::AzaharPbrMaterial>& material);
+    // Allocate (and view) a native PICA texture image without uploading.
+    void CreateNativePicaTextureStorage(TextureRecord& texture, uint32_t width,
+                                        uint32_t height, uint32_t mipLevels,
+                                        VkFormat format, bool storageView);
+    // A record that samples a raw copy: no CPU payload is uploaded, the image is
+    // filled on the GPU by the copy's own passes.
+    TextureRecord* CreateGpuCopiedTextureRecord(
+        const NativePicaTextureKey& textureKey,
+        const GfxNativePicaTextureView& texture, uint32_t width,
+        uint32_t height);
     TextureRecord* GetOrCreateNativePicaTexture(
         const GfxNativePicaTextureView& texture, std::string* error,
-        uint64_t replacementGeneration,
+        uint64_t replacementGeneration, uint64_t renderTargetNamespace,
         const uint64_t* precomputedContentHash = nullptr);
     TextureRecord* GetOrCreateNativePicaLightingLut(
         const ::Oot3d::Renderer::PicaLightingLutView& lightingLut,
@@ -747,6 +852,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     std::array<VkCommandBuffer, kFramesInFlight> mCommandBuffers{};
     std::array<VkCommandBuffer, kFramesInFlight>
         mContinuationCommandBuffers{};
+    bool mFrameAcquirePending = false;
     bool mFrameExternalComputeSplit = false;
     VkSemaphore mFrameExternalWaitSemaphore = VK_NULL_HANDLE;
     uint64_t mFrameExternalWaitValue = 0U;
@@ -817,6 +923,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     uint64_t mPicaPipelinePrewarmReused = 0U;
     uint64_t mPicaPipelinePrewarmSkipped = 0U;
     Oot3d::GraphicsSettings mFrameGraphicsSettings;
+    Renderer3ds::PicaEnvironmentLighting mFrameEnvironment;
     uint64_t mFrameGraphicsSettingsRevision = 0;
     uint64_t mAzaharConfiguredSettingsRevision = 0;
     std::optional<Oot3d::PicaAttachmentFeatureRequests>
@@ -835,21 +942,127 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     uint64_t mNativePicaVulkanPipelineCreations = 0;
     uint64_t mNativePicaVulkanShaderPairCreations = 0;
     std::map<NativePicaTextureKey, TextureRecord> mNativePicaTextures;
-    struct RawTextureCopyWriteback {
+    std::map<uint64_t, NativePicaMaterialEntry> mNativePicaMaterials;
+    // The declared sampled source of a raw copy, resolved at the copy's order
+    // boundary by the scene compositor: either the renderer-composed scene at
+    // the native effect anchor (so the copy inherits the graph's effects instead
+    // of bypassing them) or, when no scene effect applies at that boundary, the
+    // identity import of the native colour target. The copy's guest bytes always
+    // stay the native encode of the colour target, because guest memory is
+    // native state.
+    struct GpuTextureCopySourceImport {
+        VkImage Image = VK_NULL_HANDLE;
+        // The sampled source must be RGBA8: the capture pass wraps it with this
+        // format and the copy validates it instead of trusting it.
+        VkFormat Format = VK_FORMAT_R8G8B8A8_UNORM;
+        uint32_t Width = 0;
+        uint32_t Height = 0;
+        bool ShaderRead = false;
+        // The declared encoded domain of the sampled source and whether it
+        // already carries this boundary's resolved scene effects. Typed rather
+        // than inferred, so nothing decodes the source or applies a scene effect
+        // a second time. The identity native target is display-encoded with no
+        // effect applied.
+        Oot3d::SceneColorEncoding Encoding = Oot3d::NativePicaSceneColorEncoding();
+        bool SceneEffectsResolved = false;
+    };
+    // Immutable GPU copies of raw-transfer sources, captured at the copy's
+    // order boundary at the source's actual internal extent. This register owns
+    // those images: texture records borrow them, never re-create them and never
+    // read them back. It replaces the writeback register, which re-implemented
+    // the copy's output on the CPU and let the sampler infer ownership from a
+    // missing content hash.
+    struct GpuTextureCopySurface {
+        uint64_t Identity = 0;
+        uint64_t RenderTargetNamespace = 0;
         uint64_t CompletionId = 0;
         uint64_t AfterDrawSubmissionId = 0;
-        std::vector<Renderer3ds::PicaPhysicalMemoryWrite> Writes;
+        // The declared native tiled surface the copy wrote.
+        uint32_t DestinationAddress = 0;
+        uint32_t DestinationBytes = 0;
+        uint32_t TextureWidth = 0;
+        uint32_t TextureHeight = 0;
+        uint8_t TextureFormat = 0;
+        // The source surface the copy read, in native tiled terms. A consumer
+        // maps its own owned byte ranges back through Spans onto this surface.
+        uint32_t SourceSurfaceAddress = 0;
+        uint32_t SourceWidth = 0;
+        uint32_t SourceHeight = 0;
+        uint8_t SourceFormat = 0;
+        std::vector<Renderer3ds::PicaRawCopySpan> Spans;
+        // The source's internal extent: the extent the copy is captured at.
+        uint32_t ImageWidth = 0;
+        uint32_t ImageHeight = 0;
+        // Declared provenance of the sampled source, carried from the composer
+        // through to the sampler so nothing re-applies a resolved effect.
+        Oot3d::SceneColorEncoding Encoding = Oot3d::NativePicaSceneColorEncoding();
+        bool SceneEffectsResolved = false;
+        VkImage Image = VK_NULL_HANDLE;
+        VkImageLayout Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // The frame the copy was captured in, so a sweep never retires a
+        // producer the current frame may still reference.
+        uint64_t CapturedFrame = 0;
+        // The frame a derivation last sampled this copy in, so a sweep never
+        // retires an image a command buffer recorded this frame still reads.
+        uint64_t LastReferencedFrame = 0;
+        // Serialized capture waiting for the next active frame to be uploaded
+        // into a fresh image. Only set by a restore; emptied once materialized.
+        std::vector<uint8_t> PendingPixels;
+        // Native guest bytes must not include optional scene effects. When the
+        // sampled capture is canonical, NativeImage aliases Image implicitly.
+        VkImage NativeImage = VK_NULL_HANDLE;
+        std::vector<uint8_t> MaterializedNativeBytes;
+        // Memory ranges hold this pin independently from sampled-plan pins.
+        std::shared_ptr<const uint64_t> GuestOwner;
     };
-    std::map<std::pair<uint64_t, uint32_t>, RawTextureCopyWriteback> mRawTextureCopyWritebacks;
-    // Diagnostic attribution of the ordered raw copy's CPU work, so the phase
-    // that keeps the copy off the gameplay budget is measured rather than
-    // guessed. Collected always, printed once at shutdown.
+    // The boundary canvas the scene composer materializes and owns.
+    Oot3d::NriOwnedTexture2D mNativePicaSceneCopyCanvas;
+    uint32_t mNativePicaSceneCopyCanvasWidth = 0;
+    uint32_t mNativePicaSceneCopyCanvasHeight = 0;
+    // Retire only at a completed frame fence, never while recorded sampling or
+    // deferred guest bytes can still refer to the immutable producer.
+    void RetireGpuTextureCopyProducers(uint64_t completedFrame);
+    void FlushGpuTextureCopyPrefix();
+    bool ReadGpuTextureCopyBytes(uint64_t identity, uint32_t address,
+                                 std::span<uint8_t> bytes);
+    std::array<uint64_t, kFramesInFlight> mGpuCopySubmittedFrames{};
+    std::map<uint64_t, GpuTextureCopySurface> mGpuTextureCopySurfaces;
+    // (render target namespace, completion id, order boundary) -> surface
+    // identity. The boundary is part of the key because re-executing one copy
+    // produces a new immutable version, and a replay of an older plan must
+    // resolve to the version its own boundary produced.
+    std::map<std::tuple<uint64_t, uint64_t, uint64_t>, uint64_t>
+        mGpuTextureCopyProducers;
+    // Explicit frontend pins supersede conservative latest-destination retention.
+    // Both policies still require completed GPU frames and no deferred guest bytes.
+    std::set<std::pair<uint64_t, uint64_t>> mGpuTextureCopyPins;
+    bool mGpuTextureCopyPinsDeclared = false;
+    // Producer versions travel in the texture-cache snapshot vector, not in a
+    // parallel one: an entry with copy-producer metadata carries the full
+    // captured RGBA image, and restoring it rebuilds the immutable version so a
+    // plan's references resolve again. Upload any staged restored payloads into
+    // fresh images before resolving references in an active frame.
+    void MaterializeRestoredGpuTextureCopyProducers();
+    // Raw copies already consumed (completion id, guest visibility published).
+    // Publication may own deferred bytes rather than a RAM memcpy. Repeated
+    // execution must neither replace that promise nor signal PPF twice.
+    // Bounded by distinct destinations.
+    std::map<std::pair<uint64_t, uint32_t>, std::pair<uint64_t, bool>>
+        mHandledNativePicaTextureCopies;
+    uint64_t mGpuTextureCopySerial = 0;
+    // Counts include explicit deferred materializations. Phase timers describe
+    // only the eager fallback, not fence waits or deferred CPU visibility.
+    // Collected always, printed once at shutdown.
     struct RawCopyTiming {
         uint64_t Copies = 0;
         uint64_t Spans = 0;
         uint64_t InvalidatedTextures = 0;
         uint64_t ReadbackBytes = 0;
         uint64_t WritebackBytes = 0;
+        uint64_t DeferredCopies = 0;
+        uint64_t Materializations = 0;
+        uint64_t PrefixWaits = 0;
+        uint64_t PeakLiveProducers = 0;
         double ReadbackSeconds = 0.0;
         double EncodeSeconds = 0.0;
         double InvalidateSeconds = 0.0;
@@ -857,16 +1070,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         double CommitSeconds = 0.0;
     };
     RawCopyTiming mRawCopyTiming;
-    // Host-visible staging for the ordered raw copy's readback. Reused and kept
-    // mapped: a buffer allocation, an immediate command buffer and a full queue
-    // idle per copy dominated the copy cost (measured 31.6 ms per copy), while
-    // the bytes handed to the encoder stay exactly the same.
-    BufferAllocation mRawCopyReadbackBuffer;
     bool mRawCopyReadbackCoherent = true;
-    // GPU encode of a raw copy: a compute shader packs the native tiled bytes
-    // into an R8_UINT storage image which is copied to host staging, replacing
-    // the CPU encode of a read-back colour target. Existing only once a raw
-    // copy has run; nothing is allocated for runs without one.
+    // Eager fallback and encode-oracle diagnostics pack native tiled bytes into
+    // an R8_UINT image, then host staging. Ordinary deferred copies do not
+    // allocate these resources.
     struct RawCopyEncodeResources {
         VkImage Image = VK_NULL_HANDLE;
         VkDeviceMemory Memory = VK_NULL_HANDLE;
@@ -884,75 +1091,160 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     VkPipelineLayout mRawCopyEncodePipelineLayout = VK_NULL_HANDLE;
     VkPipeline mRawCopyEncodePipeline = VK_NULL_HANDLE;
     bool mRawCopyEncodeVerify = false;
-    // GPU decode of a copied surface: replaces the per-copy CPU hash, decode and
-    // RGBA8 upload with a version identity, a byte upload and one compute
-    // dispatch. Off by default so the CPU path stays the reference until the
-    // differential and the captures agree with it.
-    bool mRawCopyGpuDecode = false;
-    uint64_t mRawCopySurfaceVersion = 0;
-    struct RawCopyDecodeResources {
-        VkImage ByteImage = VK_NULL_HANDLE;
-        VkDeviceMemory ByteMemory = VK_NULL_HANDLE;
-        VkImageView ByteView = VK_NULL_HANDLE;
-        VkDeviceSize ByteCapacity = 0;
-        uint32_t ByteStrideWords = 0;
-        uint32_t ByteRows = 0;
-        VkBuffer DecodedBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory DecodedMemory = VK_NULL_HANDLE;
-        VkDeviceSize DecodedCapacity = 0;
-        VkDescriptorSetLayout DescriptorLayout = VK_NULL_HANDLE;
-        VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
-        VkDescriptorSet DescriptorSet = VK_NULL_HANDLE;
-        VkPipelineLayout PipelineLayout = VK_NULL_HANDLE;
-        VkPipeline Pipeline = VK_NULL_HANDLE;
-    };
-    RawCopyDecodeResources mRawCopyDecode;
-    uint64_t mRawCopyDecodeMismatches = 0;
-    uint64_t mRawCopyDecodePixels = 0;
-    [[nodiscard]] static bool RawCopyGpuDecodeEnabled();
-    bool EnsureRawCopySampler(std::string* error);
-    void DestroyRawCopyDecodeResources();
-    [[nodiscard]] bool GpuDecodePicaTextureSupported(uint8_t format) const noexcept;
-    bool DecodeNativePicaTextureOnGpu(VkImage destination, uint32_t width,
-                                      uint32_t height, uint8_t format,
-                                      std::span<const uint8_t> nativeBytes,
-                                      std::string* error);
-    // Differential gate for the GPU decoder: decode the same native bytes on the
-    // GPU and with the CPU oracle and compare them, so the decoder is proven on
-    // real textures before anything is switched over to it.
-    void VerifyGpuTextureDecode(VkImage decoded, uint32_t width, uint32_t height,
-                                uint8_t format, std::span<const uint8_t> nativeBytes,
-                                std::span<const uint8_t> cpuDecodedRgba8);
     uint64_t mRawCopyEncodeVerifyBytes = 0;
     uint64_t mRawCopyEncodeVerifyMismatches = 0;
-    // What the sampler pays because a raw copy wrote into its texture: every
-    // resolution that touches a copy destination, the bytes the coherence path
-    // has to refresh for it, and the texture creations that follow the copy's
-    // invalidation. This is the cost phase B is meant to remove, measured on
-    // the real draw stream rather than assumed.
-    struct RawCopySamplerCost {
+    // Truthful attribution of the sampled raw-copy path: which draw resolutions
+    // are served by an immutable internal-resolution GPU copy, and exactly why
+    // the others are not. Collected always, printed once at shutdown.
+    struct GpuTextureCopySamplerCost {
         uint64_t Resolutions = 0;
-        uint64_t OverlappingResolutions = 0;
-        uint64_t Creations = 0;
-        uint64_t CoherenceBytes = 0;
-        uint64_t NativeBytes = 0;
-        uint64_t GpuCreated = 0;
+        uint64_t ProducerResolutions = 0;
+        uint64_t GpuBound = 0;
+        uint64_t GpuBytes = 0;
+        uint64_t GpuExtentPixels = 0;
+        uint64_t NativeExtentPixels = 0;
+        uint64_t FallbackUnknownProducer = 0;
+        uint64_t FallbackUncapturedProducer = 0;
+        uint64_t FallbackLayout = 0;
+        uint64_t FallbackMipChain = 0;
+        uint64_t Regions = 0;
+        uint64_t ProducerRestores = 0;
         double ResolveSeconds = 0.0;
-        double CoherenceSeconds = 0.0;
-        double CreationSeconds = 0.0;
+        double BindSeconds = 0.0;
     };
-    RawCopySamplerCost mRawCopySamplerCost;
-    [[nodiscard]] bool RawCopyDestinationOverlaps(uint32_t address, uint64_t bytes) const;
+    GpuTextureCopySamplerCost mGpuTextureCopySamplerCost;
+    // Why a view that carries producer references cannot be served from the
+    // immutable GPU copy. None of these is allowed to pass as a GPU result.
+    enum class GpuTextureCopyFallback : uint8_t {
+        None = 0,
+        UnknownProducer,
+        UncapturedProducer,
+        Layout,
+        MipChain,
+    };
+    // A resolved derivation of a raw copy into the texture a native draw
+    // samples: the immutable source captures to sample, and the regions of the
+    // sampled texture the bytes their producers still own map to.
+    struct GpuTextureCopyDerivation {
+        struct Group {
+            uint64_t SurfaceIdentity = 0;
+            std::vector<Renderer3ds::PicaTextureCopyRegion> Regions;
+        };
+        std::vector<Group> Groups;
+        // Every texel of the declared layout is owned by a producer, so the
+        // sampled image carries no CPU-owned pixel.
+        bool CoversDeclaredLayout = false;
+        // Bounding rectangle of every owned region in declared native texels.
+        uint32_t OwnedX0 = 0;
+        uint32_t OwnedY0 = 0;
+        uint32_t OwnedX1 = 0;
+        uint32_t OwnedY1 = 0;
+        // Destination texels per declared native texel, per axis: at least the
+        // producers' internal-per-native ratio, so the sampled image is at
+        // internal-or-higher density even for anisotropic or non-integral
+        // source scales.
+        uint32_t DensityX = 1;
+        uint32_t DensityY = 1;
+        uint32_t DeclaredWidth = 0;
+        uint32_t DeclaredHeight = 0;
+        uint32_t ImageWidth = 0;
+        uint32_t ImageHeight = 0;
+        // Declared provenance of the resolved producers: the encoded domain and
+        // whether their captures already carry this boundary's scene effects.
+        Oot3d::SceneColorEncoding Encoding = Oot3d::NativePicaSceneColorEncoding();
+        bool SceneEffectsResolved = false;
+        uint64_t FirstProducerCompletionId = 0;
+    };
+    void PublishGpuTextureCopySurface(GpuTextureCopySurface& surface);
+    void DestroyGpuTextureCopySurface(uint64_t identity);
+    void DestroyGpuTextureCopySurfaces();
+    // Resolve a view's producer references into the regions to materialize.
+    // Returns false, with `fallback` and `error` set, when the bytes cannot be
+    // served from the GPU; that is never downgraded to a CPU sample.
+    [[nodiscard]] bool BuildGpuTextureCopyDerivation(
+        const GfxNativePicaTextureView& texture, uint64_t renderTargetNamespace,
+        GpuTextureCopyDerivation& derivation, GpuTextureCopyFallback* fallback,
+        std::string* error) const;
+    // Record the derivation's regions into the frame command buffer, sampling
+    // the immutable captures into the record's image.
+    bool RecordGpuTextureCopyDerivation(
+        const GpuTextureCopyDerivation& derivation, TextureRecord& record);
+    // Expand the native-sized CPU-owned base into the sampled image before the
+    // owned regions are overlaid. The base carries no native format semantics:
+    // it is already the decoded RGBA8 the CPU path produced.
+    bool RecordGpuTextureCopyBaseFill(const GpuTextureCopyDerivation& derivation,
+                                      VkImage baseImage,
+                                      TextureRecord& record);
+    // Identity of the resolved producer set, stable across lookups and restores.
+    [[nodiscard]] static uint64_t GpuTextureCopyReferenceIdentity(
+        const GfxNativePicaTextureView& texture,
+        uint64_t renderTargetNamespace);
+    // True when every texture coordinate the draw samples lies inside the owned
+    // (producer-covered) rectangle of that resolved copy record, so the pixels it
+    // writes are resolved copy pixels rather than the CPU-owned remainder of a
+    // padded texture. Requires a float texture coordinate attribute whose values
+    // are either normalised or in texel units - both interpretations must accept;
+    // anything else answers false instead of guessing.
+    [[nodiscard]] bool SampledFootprintInsideOwnedRect(
+        const GfxNativePicaDrawView& draw, const TextureRecord& record) const;
+    // True when the displayed target's current content is exactly the draw that
+    // consumed a copy whose scene effects were already resolved and covered the
+    // whole target, so that target's colour already carries them. Provenance is
+    // per target and per content write: any later draw, clear or memory fill of
+    // that target answers false, so a textured quad or a later world draw on
+    // another surface never suppresses scene effects for unrelated content.
+    [[nodiscard]] bool NativePicaSceneFullyResolvedForTarget(
+        uint64_t renderTargetNamespace, uint32_t colorPhysicalAddress) const;
+    // Monotonic serial of content writes, used to invalidate that provenance.
+    uint64_t mGpuTextureCopyWriteSerial = 0;
+    // Opt-in (TRIAEVUM_GPU_COPY_DUMP) readback of the producer's immutable copy
+    // and of the image a consumer actually samples, so the mapping can be
+    // asserted from pixels rather than from extents and counters.
+    void DumpGpuTextureCopyCapture(const GpuTextureCopySurface& surface);
+    void DumpGpuTextureCopyConsumer(
+        VkImage sampled, uint32_t sampledWidth, uint32_t sampledHeight,
+        const GfxNativePicaTextureView& texture, uint64_t producerCompletionId,
+        Oot3d::SceneColorEncoding encoding, bool sceneEffectsResolved);
     void DestroyRawCopyEncodeResources();
+    bool EnsureRawCopySampler(std::string* error);
     bool EnsureRawCopyEncodeResources(uint32_t encodedBytes, std::string* error);
     bool RecordRawCopyEncode(VkCommandBuffer command, VkImage sourceImage,
                              VkImageView sourceView,
                              uint32_t imageWidth, uint32_t imageHeight,
                              uint32_t width, uint32_t height, uint8_t format,
                              uint32_t encodedBytes);
+    // Capture this copy's source into an immutable device-local image at the
+    // source's internal extent, inside the command buffer the copy is ordered
+    // with. No readback, no decode, no re-upload.
+    bool CaptureGpuTextureCopySource(const GpuTextureCopySourceImport& source,
+                                     GpuTextureCopySurface& surface);
+    // Resolve the sampled source of a raw copy at its order boundary. Returns
+    // the renderer-composed scene colour when the display graph composes this
+    // boundary, and the identity import of the native colour target otherwise.
+    // A false return fails the copy: an enabled effect must never fall back to
+    // sampling the base colour target, and a composed source whose extent or
+    // encoded domain does not match the source's internal extent is an error,
+    // not a fallback. `afterDrawSubmissionId` is the copy's real order boundary:
+    // the scene this copy samples is composed as of that submission, so a
+    // provider anchor the native sequence has not reached is never flushed into
+    // the composition. Implemented in the display-graph region.
+    bool ComposeNativePicaSceneForCopy(NativePicaRenderTarget& source,
+                                       uint64_t afterDrawSubmissionId,
+                                       GpuTextureCopySourceImport& output,
+                                       std::string* error,
+                                       const Renderer3ds::PicaCompositionStageAnchor* beforeUi = nullptr);
+    // The display graph body, shared between presentation and the raw copy's
+    // scene-source composition so the graph is executed exactly once and in the
+    // same order in both cases. `copyOutput` (and the `copySource` it belongs
+    // to) is non-null only for the raw-copy boundary: the shared body then stops
+    // before scanout and declares the sampled source it reached. Presentation
+    // passes null pointers. Implemented in the display-graph region.
+    bool ExecuteNativePicaDisplayGraph(
+        const GfxNativePicaDisplayTransferView& transfer,
+        const NativePicaDisplayImage& display,
+        NativePicaRenderTarget* copySource,
+        GpuTextureCopySourceImport* copyOutput, std::string* error);
     bool SubmitNativePicaTextureCopy(const GfxNativePicaDisplayTransferView& transfer, std::string* error);
-    GfxNativePicaTextureView ResolveNativePicaCopiedTexture(const GfxNativePicaTextureView& texture,
-        uint64_t renderTargetNamespace, uint64_t drawId, std::vector<uint8_t>& coherentBytes);
     std::map<uint64_t, NativePicaLightingLutTexture>
         mNativePicaLightingLuts;
     std::map<NativePicaRenderTargetKey, NativePicaRenderTarget>
@@ -1055,6 +1347,11 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::NriEffectGraphTransientImageArena
         mNriEffectGraphTransientImageArena;
     Oot3d::NriPicaDisplayCopyPass mNriPicaDisplayCopyPass;
+    // Raw-transfer source capture. A separate instance so the display
+    // transfer's per-frame descriptor budget stays independent of raw copies.
+    Oot3d::NriPicaDisplayCopyPass mNriPicaTextureCopyCapturePass;
+    // Raw-copy derivation into the sampled texture, likewise independent.
+    Oot3d::NriPicaDisplayCopyPass mNriPicaTextureCopyDerivePass;
     Oot3d::NriPicaMemoryFillClearPass mNriPicaMemoryFillClearPass;
     Oot3d::NriPicaScanoutPass mNriPicaScanoutPass;
     Oot3d::NriPicaPipelineBridge mNriPicaPipelineBridge;

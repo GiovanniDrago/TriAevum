@@ -1,4 +1,5 @@
 #include "fast/oot3d/pica_shader_instrumentation.h"
+#include "fast/renderer3ds/pica_surface_lighting.h"
 
 #include <algorithm>
 #include <array>
@@ -557,6 +558,57 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
     std::string epilogue;
     std::string deferredEpilogue;
     std::vector<Insertion> insertions;
+    const bool surfaceLighting = HasPicaShaderInstrumentationFeature(
+        request.RequestedFeatures, PicaShaderInstrumentationFeature::NativePerPixelLighting) &&
+        result.UsedProvidedHooks && result.Hooks.Supports(PicaShaderHook::PicaLighting) &&
+        result.Hooks.Supports(PicaShaderHook::AfterNativeTev) &&
+        result.Hooks.Offset(PicaShaderHook::AfterNativeTev) >= result.Hooks.Offset(PicaShaderHook::PicaLighting) &&
+        result.Hooks.Offset(PicaShaderHook::AfterNativeTev) <= request.Source.size() &&
+        result.Hooks.Has(PicaShaderSemantic::PrimaryColorInput) &&
+        result.Hooks.Has(PicaShaderSemantic::ViewVector);
+    const auto pbr = surfaceLighting && HasPicaShaderInstrumentationFeature(
+        request.RequestedFeatures, PicaShaderInstrumentationFeature::PbrMaterial)
+        ? Renderer3ds::BuildPicaPbrShader(result.Hooks, request.Pbr) : std::nullopt;
+    if (surfaceLighting) {
+        declarations += Renderer3ds::PicaSurfaceLightingDeclarations();
+        insertions.push_back({result.Hooks.Offset(PicaShaderHook::PicaLighting),
+            "\n    vec4 surface_native_primary = rounded_primary_color;\n"
+            "    vec4 surface_native_fragment = primary_fragment_color;\n"
+            "    vec4 surface_native_secondary = secondary_fragment_color;\n" +
+            (pbr ? pbr->UnlitInputs : std::string(Renderer3ds::PicaSurfaceLightingBody()))});
+        // Native TEV alpha may read RGB operands or DOT3_RGBA. Re-evaluate
+        // that dependency chain with the original lighting; never let an
+        // extension change native coverage. Dead RGB outputs are eliminated
+        // by the shader compiler. The frontend owns both region boundaries.
+        const auto tevBegin = result.Hooks.Offset(PicaShaderHook::PicaLighting);
+        const auto tevEnd = result.Hooks.Offset(PicaShaderHook::AfterNativeTev);
+        std::string preserveAlpha = R"glsl(
+    {
+        vec3 surface_lit_rgb = combiner_output.rgb;
+        vec4 rounded_primary_color = surface_native_primary;
+        vec4 primary_fragment_color = surface_native_fragment;
+        vec4 secondary_fragment_color = surface_native_secondary;
+        vec4 combiner_buffer = vec4(0.0);
+        vec4 next_combiner_buffer = fragment_uniforms.combiner_buffer_color;
+        combiner_output = vec4(0.0);
+)glsl";
+        preserveAlpha.append(request.Source.substr(tevBegin, tevEnd - tevBegin));
+        preserveAlpha += "\n        combiner_output.rgb = surface_lit_rgb;\n    }\n";
+        insertions.push_back({tevEnd, std::move(preserveAlpha)});
+        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_NATIVE_PER_PIXEL_LIGHTING_V7");
+        result.AppliedFeatures |= PicaShaderInstrumentationFeature::NativePerPixelLighting;
+        if (pbr) {
+            declarations += pbr->Declarations;
+            insertions.push_back({tevEnd, pbr->ShadingBody});
+            result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_PBR_GGX_V6");
+            MixKey(result.FragmentKey, request.Pbr.TextureSlot);
+            MixKey(result.FragmentKey, request.Pbr.NativeFragmentLighting);
+            MixKey(result.FragmentKey, request.Pbr.NativeAttenuationLuts);
+            result.AppliedFeatures |= PicaShaderInstrumentationFeature::PbrMaterial;
+        }
+        if (result.Hooks.Has(PicaShaderSemantic::NativeColorOutput))
+            insertions.push_back({tevEnd, "\n    vec3 surface_before_fog = combiner_output.rgb;\n"});
+    }
     bool normalAvailable = result.Hooks.Has(PicaShaderSemantic::NormalGuideOutput);
     bool ambientAvailable = result.Hooks.Has(PicaShaderSemantic::AmbientGuideOutput);
     bool materialAvailable = result.Hooks.Has(PicaShaderSemantic::MaterialGuideOutput);
@@ -584,13 +636,18 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
         const bool normalQuaternion =
             result.Hooks.Has(PicaShaderSemantic::NormalQuaternion);
         if (!result.Hooks.Valid() ||
-            (!materialNormal && !normalQuaternion) ||
+            (!surfaceLighting && !materialNormal && !normalQuaternion) ||
             HasOutputAtLocation(request.Source, 1U)) {
             return false;
         }
         declarations +=
             "layout(location=1) out vec4 pica_normal_guide;\n";
-        if (materialNormal) {
+        if (pbr) {
+            epilogue += "    pica_normal_guide = vec4(pbr_normal * 0.5 + 0.5, 1.0);\n";
+        } else if (surfaceLighting) {
+            epilogue +=
+                "    pica_normal_guide = vec4(pica_surface_unit(pica_surface_normal) * 0.5 + 0.5, 1.0);\n";
+        } else if (materialNormal) {
             epilogue +=
                 "    pica_normal_guide = vec4(normal * 0.5 + 0.5, 1.0);\n";
         } else {
@@ -679,7 +736,9 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
             epilogue += "    pica_outline_geometry_guide = vec4(0.0, 0.0, 0.0, 1.0);\n";
             result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_OUTLINE_CANVAS_CLEAR_V2");
         } else {
-            epilogue += "    pica_outline_geometry_guide = vec4(pica_normal_guide.rgb * 2.0 - 1.0, ";
+            epilogue += pbr
+                ? "    pica_outline_geometry_guide = vec4(pbr_geometric_normal, "
+                : "    pica_outline_geometry_guide = vec4(pica_normal_guide.rgb * 2.0 - 1.0, ";
             epilogue += depth == ::Oot3d::Renderer::PicaFragmentDepthOutput::ExplicitNative ? "gl_FragDepth);\n"
                                                                                        : "gl_FragCoord.z);\n";
             result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_OUTLINE_GEOMETRY_GUIDE_V2");
@@ -688,7 +747,8 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
         apply(PicaShaderInstrumentationFeature::OutlineGeometryGuide);
     }
 
-    if (HasPicaShaderInstrumentationFeature(
+    bool surfaceShadow = false;
+    if (surfaceLighting && HasPicaShaderInstrumentationFeature(
             request.RequestedFeatures,
             PicaShaderInstrumentationFeature::DirectionalShadowLighting)) {
         const auto shadow =
@@ -697,15 +757,24 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
         result.DirectionalShadowEligibility = shadow.Eligibility;
         if (shadow.Applied()) {
             declarations += shadow.Declarations;
-            insertions.push_back({
-                result.Hooks.Offset(shadow.InsertionHook), shadow.Body});
+            surfaceShadow = surfaceLighting;
             result.FragmentKey = shadow.FragmentKey;
             apply(PicaShaderInstrumentationFeature::
                       DirectionalShadowLighting);
         }
     }
+    if (surfaceLighting) {
+        declarations += surfaceShadow ? R"glsl(
+vec3 pica_surface_shadow(int slot) {
+    uint selected = uint(oot3d_directional_shadow.shadowed_direct_fraction.w);
+    if (slot < 0) return vec3(1.0);
+    return (selected & (1u << uint(slot))) != 0u
+        ? oot3d_directional_shadow_visibility() : vec3(1.0);
+}
+)glsl" : "\nvec3 pica_surface_shadow(int slot) { return vec3(1.0); }\n";
+    }
 
-    if (HasPicaShaderInstrumentationFeature(
+    if (!pbr && HasPicaShaderInstrumentationFeature(
             request.RequestedFeatures,
             PicaShaderInstrumentationFeature::Toon)) {
         if (!request.Draw.PerspectiveProjection && replacesDestinationRgb &&
@@ -753,7 +822,10 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
                 ambientAvailable = true;
             }
             const bool exact = result.Hooks.Has(PicaShaderSemantic::AmbientOcclusionResponse);
-            if (exact) {
+            if (pbr) {
+                epilogue += "\n    pica_ambient_guide = vec4(pbr_ao_response, 1.0);\n";
+                result.AmbientGuideEligibility = PicaAmbientOcclusionGuideEligibility::AppliedExact;
+            } else if (exact) {
                 epilogue += "\n    pica_ambient_guide = vec4("
                             "clamp(oot3d_ao_response_rgb, vec3(0.0), vec3(1.0)), 1.0);";
                 result.AmbientGuideEligibility = PicaAmbientOcclusionGuideEligibility::AppliedExact;
@@ -859,11 +931,18 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
             ClassifyPicaReflectionMaterialDraw(
                 result.Hooks, draw, true,
                 request.ReflectionProfile);
+        if (pbr && draw.DepthTestEnabled && draw.DepthWriteEnabled &&
+            draw.FragmentOperationMode == 0U && (draw.ColorWriteMask & 7U) != 0U)
+            result.ReflectionEligibility = PicaReflectionMaterialEligibility::Eligible;
         const bool reflectionApplied =
             result.ReflectionEligibility == PicaReflectionMaterialEligibility::Eligible ||
             result.ReflectionEligibility == PicaReflectionMaterialEligibility::ExplicitTextureProfile;
         if (reflectionApplied && ensureMaterialGuide()) {
-            if (request.ReflectionProfile != nullptr) {
+            if (pbr) {
+                epilogue += "    pica_material_guide = vec4(pbr_reflectivity, pbr_roughness, "
+                    "pbr_metallic >= 0.5 ? 0.75 : 0.875, 0.0);\n";
+                apply(PicaShaderInstrumentationFeature::ReflectionMaterialGuide);
+            } else if (request.ReflectionProfile != nullptr) {
                 const auto profile =
                     SanitizeProfile(*request.ReflectionProfile);
                 epilogue += "    ";
@@ -934,6 +1013,11 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
     }
 
     epilogue += deferredEpilogue;
+    if (surfaceLighting && result.Hooks.Has(PicaShaderSemantic::NativeColorOutput))
+        epilogue += "\n    if (pica_surface.environment_parameters.w != 0.0)\n"
+                    "        pica_color.rgb = mix(surface_before_fog, pica_color.rgb, pica_surface.environment_parameters.z);\n";
+    if (pbr && result.Hooks.Has(PicaShaderSemantic::NativeColorOutput))
+        epilogue += pbr->DiagnosticOutput;
 
     if (result.Applied()) {
         result.Source = Compose(

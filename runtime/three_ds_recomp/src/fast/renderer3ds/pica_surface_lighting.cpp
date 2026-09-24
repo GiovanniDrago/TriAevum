@@ -1,0 +1,288 @@
+#include "fast/renderer3ds/pica_surface_lighting.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
+namespace Fast::Renderer3ds {
+namespace {
+
+using Vec4 = std::array<float, 4>;
+
+bool ReadUniform(std::span<const uint8_t> bytes, uint8_t slot, Vec4& value) noexcept {
+    const size_t offset = static_cast<size_t>(slot) * sizeof(value);
+    if (offset > bytes.size() || bytes.size() - offset < sizeof(value)) return false;
+    std::memcpy(value.data(), bytes.data() + offset, sizeof(value));
+    return std::all_of(value.begin(), value.end(), [](float component) { return std::isfinite(component); });
+}
+
+Vec4 Cross(const Vec4& a, const Vec4& b) noexcept {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0], 0.0F};
+}
+
+} // namespace
+
+std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
+    const PicaVertexShaderHookLayout& hooks, uint32_t booleanUniforms,
+    std::span<const uint8_t> floatUniformBytes,
+    const PicaNativeLightBinding& binding,
+    const PicaEnvironmentLighting& environment,
+    const std::array<float, 16>* cameraWorldToView) noexcept {
+    const auto* surface = hooks.SurfaceProgram();
+    const auto* transform = hooks.TransformProgram();
+    if (surface == nullptr || transform == nullptr) return std::nullopt;
+    PicaSurfaceLightingUniforms result;
+    if (!ReadUniform(floatUniformBytes, surface->DiffuseUniform, result.MaterialDiffuse) ||
+        !ReadUniform(floatUniformBytes, surface->AmbientUniform, result.MaterialAmbient)) return std::nullopt;
+    result.Control[0] = (booleanUniforms >> surface->LightingBooleanUniform) & 1U;
+    Vec4 enabledValue{};
+    if (!ReadUniform(floatUniformBytes, surface->LightEnabledValue.Uniform, enabledValue)) return std::nullopt;
+    std::span<const PicaScenePointLight> scenePoints;
+    if (binding.ScenePoints) {
+        if (binding.ScenePoints->Count > binding.ScenePoints->Lights.size()) return std::nullopt;
+        scenePoints = {binding.ScenePoints->Lights.data(), binding.ScenePoints->Count};
+    }
+    std::span<const PicaSceneDirectionalLight> sceneDirectionals;
+    if (binding.SceneDirectionals) {
+        if (binding.SceneDirectionals->Count > binding.SceneDirectionals->Lights.size()) return std::nullopt;
+        sceneDirectionals = {binding.SceneDirectionals->Lights.data(), binding.SceneDirectionals->Count};
+    }
+    const bool needsWorldView = environment.Enabled || !scenePoints.empty() || !sceneDirectionals.empty() ||
+        std::any_of(binding.Sources.begin(), binding.Sources.end(), [](const auto& light) {
+            return light.Kind == PicaNativeLightSource::Type::Point;
+        });
+    if (needsWorldView && cameraWorldToView == nullptr) return std::nullopt;
+    std::array<Vec4, 3> view{};
+    if (cameraWorldToView != nullptr) {
+        if (!std::all_of(cameraWorldToView->begin(), cameraWorldToView->end(),
+                         [](float value) { return std::isfinite(value); })) return std::nullopt;
+        for (size_t row = 0; row < 3U; ++row)
+            for (size_t column = 0; column < 4U; ++column)
+                view[row][column] = (*cameraWorldToView)[column * 4U + row];
+    } else {
+        for (uint8_t row = 0; row < 3U; ++row)
+            if (!ReadUniform(floatUniformBytes, transform->ViewFirstUniform + row, view[row])) return std::nullopt;
+    }
+    const std::array<Vec4, 3> inverseColumns{Cross(view[1], view[2]), Cross(view[2], view[0]), Cross(view[0], view[1])};
+    const float determinant = view[0][0] * inverseColumns[0][0] + view[0][1] * inverseColumns[0][1] + view[0][2] * inverseColumns[0][2];
+    if (!std::isfinite(determinant) || std::abs(determinant) < 1.0e-12F) return std::nullopt;
+    for (size_t row = 0; row < 3U; ++row)
+        for (size_t column = 0; column < 3U; ++column)
+            result.ViewToWorldLinear[row][column] = inverseColumns[column][row] / determinant;
+    for (size_t slot = 0; slot < result.Lights.size(); ++slot) {
+        auto& light = result.Lights[slot];
+        const uint8_t first = surface->LightDirectionUniforms[slot];
+        if (!ReadUniform(floatUniformBytes, first, light.DirectionEnabled) ||
+            !ReadUniform(floatUniformBytes, first + 1U, light.Diffuse) ||
+            !ReadUniform(floatUniformBytes, first + 2U, light.Ambient)) return std::nullopt;
+        light.DirectionEnabled[3] = light.DirectionEnabled[3] == enabledValue[surface->LightEnabledValue.Component] ? 1.0F : 0.0F;
+        for (size_t component = 0; component < 3U; ++component) light.DirectionEnabled[component] = -light.DirectionEnabled[component];
+        const auto& source = binding.Sources[slot];
+        if (source.SourceIdentity != 0 &&
+            (std::any_of(scenePoints.begin(), scenePoints.end(),
+                [&](const auto& point) { return point.SourceIdentity == source.SourceIdentity; }) ||
+             std::any_of(sceneDirectionals.begin(), sceneDirectionals.end(),
+                [&](const auto& directional) { return directional.SourceIdentity == source.SourceIdentity; }))) {
+            // Remove only the duplicated direct source. Native slot zero may
+            // also carry LightContext ambient, which does not belong to it.
+            light.Diffuse = {};
+            continue;
+        }
+        if (source.Kind != PicaNativeLightSource::Type::Point || source.Radius <= 0.0F) continue;
+        light.PositionRadius[3] = source.Radius;
+        for (size_t component = 0; component < 3U; ++component) {
+            light.PositionRadius[component] = view[component][3];
+            for (size_t axis = 0; axis < 3U; ++axis)
+                light.PositionRadius[component] += view[component][axis] * source.PositionWorld[axis];
+            // The selected native record contains attenuation at the actor's
+            // reference point. Remove that attenuation, not material/color gain.
+            const float gain = source.ReferenceColor[component] > 0.0F
+                ? light.Diffuse[component] / source.ReferenceColor[component] : 1.0F;
+            light.Diffuse[component] = source.UnattenuatedColor[component] * gain;
+        }
+    }
+    const bool hasDiffuse = std::any_of(result.MaterialDiffuse.begin(),
+        result.MaterialDiffuse.begin() + 3, [](float value) { return value != 0.0F; });
+    const auto& reflectance = hasDiffuse ? result.MaterialDiffuse : result.MaterialAmbient;
+    const float sceneDirectStrength = environment.Enabled ? environment.NativeDirectStrength : 1.0F;
+    if (sceneDirectStrength > 0.0F) {
+        for (const auto& source : sceneDirectionals) {
+            const uint32_t slot = result.Control[2]++;
+            for (size_t row = 0; row < 3; ++row) {
+                for (size_t axis = 0; axis < 3; ++axis)
+                    result.SceneDirections[slot][row] += view[row][axis] * source.DirectionTowardSource[axis];
+                result.SceneDirectionalColors[slot][row] = source.Color[row] * sceneDirectStrength * reflectance[row];
+            }
+        }
+    }
+    for (const auto& source : scenePoints) {
+        if (source.Group >= environment.PointLights.size()) return std::nullopt;
+        const auto& settings = environment.PointLights[source.Group];
+        if (!settings.Enabled || settings.Intensity <= 0 || source.Radius <= 0) continue;
+        auto& point = result.ScenePoints[result.Control[1]++];
+        point.PositionRadius[3] = source.Radius * settings.RadiusScale;
+        for (size_t row = 0; row < 3; ++row) {
+            point.PositionRadius[row] = view[row][3];
+            for (size_t axis = 0; axis < 3; ++axis)
+                point.PositionRadius[row] += view[row][axis] * source.PositionWorld[axis];
+            point.Color[row] = source.Color[row] * settings.ColorTint[row] *
+                settings.Intensity * reflectance[row];
+        }
+    }
+    if (environment.Enabled) {
+        result.EnvironmentParameters = {environment.NativeLocalStrength, environment.NativeAmbientStrength,
+                                        environment.FogStrength, 1.0F};
+        // The profile replaces illumination, not material reflectance. Native
+        // TEV gains still apply, so dropping these coefficients overexposes
+        // materials authored with reduced diffuse/ambient response.
+        // Ambient-only materials use their authored ambient reflectance for
+        // the new direct lights rather than acquiring an arbitrary white one.
+        for (size_t channel = 0; channel < 3; ++channel)
+            result.EnvironmentAmbient[channel] = environment.AmbientColor[channel] *
+                environment.AmbientIntensity * result.MaterialAmbient[channel];
+        for (size_t slot = 0; slot < environment.Lights.size(); ++slot) {
+            const auto& source = environment.Lights[slot];
+            result.EnvironmentDirections[slot][3] = source.Intensity;
+            for (size_t row = 0; row < 3; ++row) {
+                for (size_t axis = 0; axis < 3; ++axis)
+                    result.EnvironmentDirections[slot][row] += view[row][axis] * source.DirectionTowardSource[axis];
+                result.EnvironmentColors[slot][row] = source.Color[row] * reflectance[row];
+            }
+        }
+    }
+    return result;
+}
+
+std::string_view PicaSurfaceLightingDeclarations() noexcept {
+    return R"glsl(
+layout(location=9) in vec3 pica_surface_normal;
+layout(location=10) in vec4 pica_surface_tint;
+struct PicaSurfaceLight {
+    vec4 direction_enabled;
+    vec4 diffuse;
+    vec4 ambient;
+    vec4 position_radius;
+};
+struct PicaScenePointLight {
+    vec4 position_radius;
+    vec4 color;
+};
+layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
+    vec4 material_diffuse;
+    vec4 material_ambient;
+    uvec4 control;
+    vec4 view_to_world_linear[3];
+    PicaSurfaceLight lights[3];
+    vec4 environment_parameters;
+    vec4 environment_ambient;
+    vec4 environment_directions[2];
+    vec4 environment_colors[2];
+    vec4 scene_directions[2];
+    vec4 scene_directional_colors[2];
+    PicaScenePointLight scene_points[32];
+} pica_surface;
+vec3 pica_surface_unit(vec3 value) {
+    float squared = dot(value, value);
+    return squared > 1.0e-20 ? value * inversesqrt(squared) : vec3(0.0);
+}
+vec3 pica_surface_shadow(int slot);
+void pica_surface_light(int slot, out vec3 direction, out vec3 radiance) {
+    PicaSurfaceLight light = pica_surface.lights[slot];
+    direction = light.direction_enabled.xyz;
+    radiance = light.diffuse.rgb;
+    if (light.position_radius.w > 0.0) {
+        vec3 delta = light.position_radius.xyz + pica_view;
+        vec3 world_delta = vec3(dot(pica_surface.view_to_world_linear[0].xyz, delta),
+                                dot(pica_surface.view_to_world_linear[1].xyz, delta),
+                                dot(pica_surface.view_to_world_linear[2].xyz, delta));
+        float attenuation = max(0.0, 1.0 - dot(world_delta, world_delta) /
+                                (light.position_radius.w * light.position_radius.w));
+        direction = pica_surface_unit(delta);
+        radiance *= attenuation;
+    }
+}
+void pica_surface_scene_point(int slot, out vec3 direction, out vec3 radiance) {
+    PicaScenePointLight light = pica_surface.scene_points[slot];
+    vec3 delta = light.position_radius.xyz + pica_view;
+    vec3 world_delta = vec3(dot(pica_surface.view_to_world_linear[0].xyz, delta),
+                            dot(pica_surface.view_to_world_linear[1].xyz, delta),
+                            dot(pica_surface.view_to_world_linear[2].xyz, delta));
+    float attenuation = max(0.0, 1.0 - dot(world_delta, world_delta) /
+                            (light.position_radius.w * light.position_radius.w));
+    direction = pica_surface_unit(delta);
+    radiance = light.color.rgb * attenuation;
+}
+vec3 pica_surface_scene_point_primary(vec3 normal_view) {
+    vec3 color = vec3(0.0);
+    for (uint slot = 0u; slot < pica_surface.control.y; ++slot) {
+        vec3 direction, radiance;
+        pica_surface_scene_point(int(slot), direction, radiance);
+        color += max(dot(normal_view, direction), 0.0) * radiance;
+    }
+    return color;
+}
+vec3 pica_surface_scene_directional_primary(vec3 normal_view) {
+    vec3 color = vec3(0.0);
+    for (uint slot = 0u; slot < pica_surface.control.z; ++slot) {
+        vec3 direction = pica_surface_unit(pica_surface.scene_directions[slot].xyz);
+        color += max(dot(normal_view, direction), 0.0) *
+            pica_surface.scene_directional_colors[slot].rgb * pica_surface_shadow(10 + int(slot));
+    }
+    return color;
+}
+vec3 pica_surface_native_primary(vec3 normal_view) {
+    vec3 direct = vec3(0.0);
+    vec3 ambient = vec3(0.0);
+    bool native_direct = pica_surface.environment_parameters.w == 0.0 ||
+        pica_surface.environment_parameters.x != 0.0;
+    bool native_ambient = pica_surface.environment_parameters.w == 0.0 ||
+        pica_surface.environment_parameters.y != 0.0;
+    for (int slot = 0; pica_surface.control.x != 0u && (native_direct || native_ambient) && slot < 3; ++slot) {
+        if (pica_surface.lights[slot].direction_enabled.w == 0.0) continue;
+        if (native_direct && any(notEqual(pica_surface.lights[slot].diffuse.rgb, vec3(0.0)))) {
+        vec3 direction, radiance;
+        pica_surface_light(slot, direction, radiance);
+        direct += max(dot(normal_view, direction), 0.0) * radiance * pica_surface_shadow(slot);
+        }
+        ambient += pica_surface.lights[slot].ambient.rgb;
+    }
+    vec3 color = direct * pica_surface.material_diffuse.rgb +
+                 ambient * pica_surface.material_ambient.rgb;
+    if (pica_surface.environment_parameters.w != 0.0) {
+        color = direct * pica_surface.material_diffuse.rgb * pica_surface.environment_parameters.x +
+                ambient * pica_surface.material_ambient.rgb * pica_surface.environment_parameters.y +
+                pica_surface.environment_ambient.rgb;
+        for (int slot = 0; slot < 2; ++slot) {
+            vec3 direction = pica_surface_unit(pica_surface.environment_directions[slot].xyz);
+            color += max(dot(normal_view, direction), 0.0) *
+                pica_surface.environment_colors[slot].rgb * pica_surface.environment_directions[slot].w *
+                pica_surface_shadow(8 + slot);
+        }
+    }
+    color += pica_surface_scene_point_primary(normal_view);
+    color += pica_surface_scene_directional_primary(normal_view);
+    return min(abs(color * pica_surface_tint.rgb), vec3(1.0));
+}
+vec3 pica_surface_primary(vec3 native_color, vec3 normal_view) {
+    if (pica_surface.control.x != 0u || pica_surface.environment_parameters.w != 0.0)
+        return pica_surface_native_primary(normal_view);
+    // A natively unlit material keeps its original base when there is no
+    // ambient/directional override; add scene-wide point/directional irradiance.
+    return min(native_color + (pica_surface_scene_point_primary(normal_view) +
+               pica_surface_scene_directional_primary(normal_view)) * pica_surface_tint.rgb, vec3(1.0));
+}
+)glsl";
+}
+
+std::string_view PicaSurfaceLightingBody() noexcept {
+    return R"glsl(
+    if (pica_surface.control.x != 0u || pica_surface.environment_parameters.w != 0.0 ||
+        pica_surface.control.y != 0u || pica_surface.control.z != 0u) {
+        rounded_primary_color.rgb = byteround3(pica_surface_primary(rounded_primary_color.rgb,
+            pica_surface_unit(pica_surface_normal)));
+    }
+)glsl";
+}
+
+} // namespace Fast::Renderer3ds

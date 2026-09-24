@@ -83,6 +83,8 @@ struct NriPicaTextureBindingDesc {
     bool Integer = false;
 };
 
+inline constexpr size_t kNriPicaUniformBindingCount = 7U;
+
 struct NriPicaUniformBindingDesc {
     uint64_t Offset = 0;
     uint64_t Size = 0;
@@ -102,8 +104,8 @@ struct NriPicaOwnedDrawDesc {
     VkBuffer UniformBuffer = VK_NULL_HANDLE;
     uint64_t UniformBufferSize = 0;
     uint8_t* UniformMappedMemory = nullptr;
-    // Vertex, fragment, previous-vertex, shadow receiver and surface-style UBOs.
-    std::array<NriPicaUniformBindingDesc, 5> Uniforms{};
+    // Vertex, fragment, previous-vertex, shadow, style, lighting and PBR UBOs.
+    std::array<NriPicaUniformBindingDesc, kNriPicaUniformBindingCount> Uniforms{};
     VkBuffer VertexBuffer = VK_NULL_HANDLE;
     uint64_t VertexBufferSize = 0;
     uint8_t* VertexMappedMemory = nullptr;
@@ -116,6 +118,7 @@ struct NriPicaOwnedDrawDesc {
     std::array<NriPicaTextureBindingDesc, 3> Textures{};
     NriPicaTextureBindingDesc DirectionalShadowTexture;
     NriPicaTextureBindingDesc LightingLutTexture;
+    std::array<NriPicaTextureBindingDesc, 3> PbrTextures{};
     VkImage StorageImage = VK_NULL_HANDLE;
     VkFormat StorageFormat = VK_FORMAT_UNDEFINED;
     uint32_t StorageWidth = 0;

@@ -559,12 +559,10 @@ bool Oot3dNativePicaFrontend::SubmitGspCommand(
     mNextCommandListCompositionSpans.clear();
 
     const auto resolveComposition =
-        [&](uint32_t offsetWords) -> Oot3dPicaCompositionAttribution {
+        [&](uint32_t offsetWords) -> const Oot3dPicaCommandListCompositionSpan* {
         if (mCommandListCompositionDomain ==
             Oot3dPicaCompositionDomain::Ui) {
-            return {Oot3dPicaCompositionLayer::Ui,
-                    Oot3dPicaCompositionProvenance::NativeUiLifecycle,
-                    0U, 0U};
+            return nullptr;
         }
         const uint64_t address = static_cast<uint64_t>(commandListAddress) +
                                  static_cast<uint64_t>(offsetWords) * 4U;
@@ -575,12 +573,10 @@ bool Oot3dNativePicaFrontend::SubmitGspCommand(
                 return value < span.BeginAddress;
             });
         if (found == compositionSpans.begin()) {
-            return {};
+            return nullptr;
         }
         const auto& candidate = *std::prev(found);
-        return address < candidate.EndAddress
-                   ? candidate.Attribution
-                   : Oot3dPicaCompositionAttribution{};
+        return address < candidate.EndAddress ? &candidate : nullptr;
     };
 
     size_t cursor = 0;
@@ -633,7 +629,14 @@ bool Oot3dNativePicaFrontend::SubmitGspCommand(
                         ComputeOot3dPicaLightingLutContentHash(*mLightingLuts);
                     mLightingLuts->ContentHashAvailable = true;
                 }
-                const auto composition = resolveComposition(offsetWords);
+                const auto* metadata = resolveComposition(offsetWords);
+                const auto composition = metadata != nullptr
+                    ? metadata->Attribution
+                    : mCommandListCompositionDomain == Oot3dPicaCompositionDomain::Ui
+                        ? Oot3dPicaCompositionAttribution{
+                              Oot3dPicaCompositionLayer::Ui,
+                              Oot3dPicaCompositionProvenance::NativeUiLifecycle, 0U, 0U}
+                        : Oot3dPicaCompositionAttribution{};
                 auto domain = mCommandListCompositionDomain;
                 switch (composition.Layer) {
                     case Oot3dPicaCompositionLayer::OpaqueWorld:
@@ -653,6 +656,8 @@ bool Oot3dNativePicaFrontend::SubmitGspCommand(
                     id == kPicaTriggerDrawIndexed, mPicaRegisters,
                     mVertexShader, mGeometryShader, mFogLut, mProcTexLuts,
                     mLightingLuts, mDefaultAttributes);
+                if (metadata != nullptr && domain == Oot3dPicaCompositionDomain::Scene)
+                    draw.LightBinding = metadata->LightBinding;
                 if (mPacketSink != nullptr &&
                     !mPacketSink->SubmitDrawPacket(draw, error)) {
                     return false;

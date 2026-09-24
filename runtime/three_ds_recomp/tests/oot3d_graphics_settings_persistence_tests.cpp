@@ -31,6 +31,10 @@ Fast::Oot3d::GraphicsSettings CompleteSettings() {
         "D:/texture-packs/oot3d";
     settings.TexturePacks.Azahar.DumpDirectory =
         "E:/texture-dumps/oot3d";
+    settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixelPbr;
+    settings.Effects.Pbr.NormalStrength = 3.5F;
+    settings.Effects.Pbr.GlossinessStrength = 0.6F;
+    settings.Effects.Pbr.DebugView = Fast::Renderer3ds::PicaPbrDebugView::Roughness;
 
     auto& grass = settings.Grass;
     grass.Quality = GrassQuality::Custom;
@@ -122,15 +126,13 @@ Fast::Oot3d::GraphicsSettings CompleteSettings() {
 
     auto& effects = settings.Effects;
     effects.DirectionalShadows.Mode =
-        DirectionalShadowMode::SingleCascade;
+        DirectionalShadowMode::VirtualShadowMaps;
     effects.DirectionalShadows.Resolution = 2048U;
     effects.DirectionalShadows.MaximumDistance = 3200.0F;
-    effects.DirectionalShadows.DepthPadding = 480.0F;
     effects.DirectionalShadows.DepthBiasConstant = 1.5F;
     effects.DirectionalShadows.DepthBiasSlope = 2.25F;
-    effects.DirectionalShadows.Strength = 0.72F;
+    effects.DirectionalShadows.Strength = 3.25F;
     effects.DirectionalShadows.PcfRadius = 2U;
-    effects.DirectionalShadows.Stabilize = false;
     effects.AmbientOcclusion = AmbientOcclusionMode::Cacao;
     effects.AoQuality = 1U;
     effects.AoRadius = 4.25F;
@@ -237,6 +239,34 @@ void DowngradeGrassDocumentToVersionNine(
     }
 }
 
+TEST(Oot3dGraphicsSettingsPersistence, MigratesSingleCascadeWithoutLosingTheOffChoiceOrLightResponse) {
+    using namespace Fast::Oot3d;
+    auto document = SerializeGraphicsSettings(CompleteSettings());
+    document["SchemaVersion"] = 11;
+    auto& shadows = document["Effects"]["DirectionalShadows"];
+    shadows["Mode"] = "SingleCascade";
+    shadows["Resolution"] = 1024;
+    shadows["MaximumDistance"] = 1310;
+    shadows["DepthPadding"] = 30;
+    shadows["Stabilize"] = false;
+    const auto migrated = DeserializeGraphicsSettings(document);
+    EXPECT_TRUE(migrated.NeedsRewrite);
+    EXPECT_EQ(migrated.Value.Effects.DirectionalShadows.Mode, DirectionalShadowMode::VirtualShadowMaps);
+    EXPECT_EQ(migrated.Value.Effects.DirectionalShadows.Resolution, 2048U);
+    EXPECT_FLOAT_EQ(migrated.Value.Effects.DirectionalShadows.MaximumDistance, 65536.0F);
+    EXPECT_FLOAT_EQ(migrated.Value.Effects.DirectionalShadows.Strength, 3.25F);
+    EXPECT_FLOAT_EQ(migrated.Value.Effects.DirectionalShadows.DepthBiasSlope, 2.25F);
+    const auto saved = SerializeGraphicsSettings(migrated.Value);
+    const auto reloaded = DeserializeGraphicsSettings(saved);
+    EXPECT_FALSE(reloaded.NeedsRewrite);
+    EXPECT_EQ(SerializeGraphicsSettings(reloaded.Value)["Effects"]["DirectionalShadows"],
+              saved["Effects"]["DirectionalShadows"]);
+    EXPECT_FALSE(saved["Effects"]["DirectionalShadows"].contains("DepthPadding"));
+    EXPECT_FALSE(saved["Effects"]["DirectionalShadows"].contains("Stabilize"));
+    shadows["Mode"] = "Off";
+    EXPECT_EQ(DeserializeGraphicsSettings(document).Value.Effects.DirectionalShadows.Mode, DirectionalShadowMode::Off);
+}
+
 TEST(Oot3dGraphicsSettingsPersistence, MigratesCoupledSegmentLodWithoutMovingItsThresholds) {
     auto settings = CompleteSettings();
     settings.Grass.DrawDistance = 5000.0F;
@@ -263,6 +293,9 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsCompleteSettings) {
     EXPECT_TRUE(loaded.Issues.empty());
     EXPECT_EQ(Fast::Oot3d::SerializeGraphicsSettings(loaded.Value),
               document);
+    EXPECT_EQ(loaded.Value.Effects.SurfaceLighting,
+              Fast::Oot3d::SurfaceLightingMode::PerPixelPbr);
+    EXPECT_EQ(loaded.Value.Effects.Pbr, original.Effects.Pbr);
     ASSERT_EQ(loaded.Value.Grass.Rules.size(), 2U);
     EXPECT_EQ(loaded.Value.Grass.Rules[0].Target.Rgba8Hash,
               0xFEDCBA9876543210ULL);
@@ -486,8 +519,6 @@ TEST(Oot3dGraphicsSettingsPersistence,
     EXPECT_TRUE(loaded.NeedsRewrite);
     EXPECT_EQ(loaded.Value.Effects.DirectionalShadows.Mode,
               Fast::Oot3d::DirectionalShadowMode::Off);
-    EXPECT_EQ(loaded.Value.Effects.DirectionalShadows.Resolution,
-              1024U);
 }
 
 TEST(Oot3dGraphicsSettingsPersistence,

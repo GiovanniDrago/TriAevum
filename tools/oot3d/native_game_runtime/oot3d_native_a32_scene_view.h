@@ -25,6 +25,7 @@ struct NativeA32SceneViewSnapshot {
   std::array<float, 3> Eye{};
   std::array<float, 3> At{};
   bool CameraAvailable = false;
+  std::optional<uint16_t> SceneId;
 };
 
 struct NativeA32SceneViewProbeStats {

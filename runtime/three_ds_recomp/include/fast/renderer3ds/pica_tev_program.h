@@ -20,6 +20,11 @@ enum class PicaTevDecodeError { None, TruncatedRegisters, Source, ColorOperand, 
 PicaTevDecodeError DecodePicaTevProgram(std::span<const uint32_t> registers,
                                       PicaTevProgram& output) noexcept;
 
+// Texture RGB that reaches the final color through native TEV dependencies.
+// Alpha-only/scalar operands and overwritten stages are not albedo candidates.
+// Bit three denotes the procedural texture; physical samplers occupy bits 0–2.
+[[nodiscard]] uint8_t PicaTevMaterialTextureMask(const PicaTevProgram& program) noexcept;
+
 // Immutable shader library: no per-draw generation, shaderc, texture sampling,
 // output attachments or composition policy. Call pica_evaluate_tev after the
 // native lighting and sampling stages and before alpha/depth/fog/composition.

@@ -91,20 +91,50 @@ using PicaTextureSnapshotIdentity =
 
 std::optional<uint64_t> PicaDecodedMipChainBytes(
     uint32_t width, uint32_t height, uint32_t levels) {
-    if (width == 0U || height == 0U || levels == 0U) {
+    if (width == 0U || height == 0U || levels == 0U || levels > 32U) {
         return std::nullopt;
     }
     uint64_t bytes = 0U;
     for (uint32_t level = 0U; level < levels; ++level) {
-        const uint64_t levelBytes =
+        const uint64_t pixels =
             static_cast<uint64_t>(std::max(1U, width >> level)) *
-            std::max(1U, height >> level) * 4U;
-        if (bytes > std::numeric_limits<uint64_t>::max() - levelBytes) {
+            std::max(1U, height >> level);
+        if (pixels > (std::numeric_limits<uint64_t>::max() - bytes) / 4U) {
             return std::nullopt;
         }
-        bytes += levelBytes;
+        bytes += pixels * 4U;
     }
     return bytes;
+}
+
+bool ValidCopyProducer(const Oot3d::Renderer::PicaTextureCacheEntrySnapshot& texture) {
+    if (!texture.HasCopyProducer) return true;
+    const auto& producer = texture.CopyProducer;
+    if (producer.CompletionId == 0U || producer.SourceWidth == 0U ||
+        producer.SourceHeight == 0U || producer.SourceWidth > UINT16_MAX ||
+        producer.SourceHeight > UINT16_MAX || producer.SourceNativeFormat > 4U ||
+        producer.Spans.empty() || producer.Spans.size() > 4096U ||
+        producer.ColorEncoding > 2U || texture.MipLevels != 1U ||
+        texture.ImageFormat != Oot3d::Renderer::PicaTextureSnapshotFormat::Rgba8) {
+        return false;
+    }
+    const uint32_t bytesPerPixel = producer.SourceNativeFormat == 0U ? 4U :
+                                  producer.SourceNativeFormat == 1U ? 3U : 2U;
+    const uint64_t sourceEnd = uint64_t{producer.SourcePhysicalAddress} +
+        uint64_t{producer.SourceWidth} * producer.SourceHeight * bytesPerPixel;
+    if (sourceEnd > (uint64_t{1} << 32U)) return false;
+    uint64_t previousDestinationEnd = 0U;
+    for (const auto& span : producer.Spans) {
+        const uint64_t destinationEnd = uint64_t{span.DestinationAddress} + span.ByteCount;
+        if (span.ByteCount == 0U || span.SourceAddress < producer.SourcePhysicalAddress ||
+            uint64_t{span.SourceAddress} + span.ByteCount > sourceEnd ||
+            span.DestinationAddress < previousDestinationEnd ||
+            destinationEnd > (uint64_t{1} << 32U)) {
+            return false;
+        }
+        previousDestinationEnd = destinationEnd;
+    }
+    return true;
 }
 
 void SetError(std::string* error, const std::string& message) {
@@ -238,6 +268,7 @@ bool SaveNativeA32State(
         nlohmann::json encodedPicaTextureCache = nlohmann::json::array();
         uint64_t picaTextureCacheBytes = 0U;
         std::set<PicaTextureSnapshotIdentity> picaTextureCacheIdentities;
+        std::set<std::tuple<uint64_t, uint64_t, uint64_t>> producerIdentities;
         if (runtime.PicaTextureCache.size() >
             kMaximumPicaTextureCacheEntryCount) {
             SetError(error,
@@ -251,7 +282,10 @@ bool SaveNativeA32State(
             const uint8_t imageFormat =
                 static_cast<uint8_t>(texture.ImageFormat);
             picaTextureCacheBytes += texture.PixelBytes.size();
-            if (texture.SourceWidth == 0U || texture.SourceHeight == 0U ||
+            // A GPU copy version carries its source identity in CopyProducer and
+            // leaves the ordinary cache key fields zero.
+            if ((!texture.HasCopyProducer &&
+                 (texture.SourceWidth == 0U || texture.SourceHeight == 0U)) ||
                 texture.ImageWidth == 0U || texture.ImageHeight == 0U ||
                 texture.MipLevels == 0U || !expectedBytes.has_value() ||
                 imageFormat > static_cast<uint8_t>(
@@ -267,8 +301,14 @@ bool SaveNativeA32State(
                              PicaTextureSnapshotFormat::R32Uint &&
                  texture.MipLevels != 1U) ||
                 *expectedBytes != texture.PixelBytes.size() ||
+                !ValidCopyProducer(texture) ||
                 picaTextureCacheBytes > kMaximumPicaTextureCacheBytes ||
-                !picaTextureCacheIdentities
+                (texture.HasCopyProducer
+                     ? !producerIdentities.emplace(
+                           texture.CopyProducer.RenderTargetNamespace,
+                           texture.CopyProducer.CompletionId,
+                           texture.CopyProducer.AfterDrawSubmissionId).second
+                     : !picaTextureCacheIdentities
                      .insert({texture.ContentHash,
                               texture.ReplacementGeneration,
                               texture.PhysicalAddress,
@@ -285,7 +325,7 @@ bool SaveNativeA32State(
                               texture.MinMipLevel,
                               texture.MaxMipLevel,
                               texture.CustomReplacement})
-                     .second) {
+                     .second)) {
                 SetError(error,
                          "savestate native PICA cached texture is invalid: address=" +
                          std::to_string(texture.PhysicalAddress) +
@@ -296,6 +336,13 @@ bool SaveNativeA32State(
                          " total_bytes=" + std::to_string(picaTextureCacheBytes) +
                          " entries=" + std::to_string(picaTextureCacheIdentities.size()));
                 return false;
+            }
+            nlohmann::json encodedCopySpans = nlohmann::json::array();
+            for (const auto& span : texture.CopyProducer.Spans) {
+                encodedCopySpans.push_back(
+                    {{"source_address", span.SourceAddress},
+                     {"destination_address", span.DestinationAddress},
+                     {"byte_count", span.ByteCount}});
             }
             encodedPicaTextureCache.push_back(
                 {{"content_hash", texture.ContentHash},
@@ -325,6 +372,26 @@ bool SaveNativeA32State(
                   texture.CustomReplacementPending},
                  {"custom_replacement_ready",
                   texture.CustomReplacementReady},
+                 {"has_copy_producer", texture.HasCopyProducer},
+                 {"copy_producer_namespace",
+                  texture.CopyProducer.RenderTargetNamespace},
+                 {"copy_producer_completion_id",
+                  texture.CopyProducer.CompletionId},
+                 {"copy_producer_after_draw_submission_id",
+                  texture.CopyProducer.AfterDrawSubmissionId},
+                 {"copy_producer_source_physical_address",
+                  texture.CopyProducer.SourcePhysicalAddress},
+                 {"copy_producer_source_width",
+                  texture.CopyProducer.SourceWidth},
+                 {"copy_producer_source_height",
+                  texture.CopyProducer.SourceHeight},
+                 {"copy_producer_source_native_format",
+                  texture.CopyProducer.SourceNativeFormat},
+                 {"copy_producer_spans", std::move(encodedCopySpans)},
+                 {"copy_producer_color_encoding",
+                  texture.CopyProducer.ColorEncoding},
+                 {"copy_producer_scene_effects_resolved",
+                  texture.CopyProducer.SceneEffectsResolved},
                  {"pixel_bytes",
                   nlohmann::json::binary(texture.PixelBytes)}});
         }
@@ -419,6 +486,7 @@ bool SaveNativeA32State(
                  {"image_height", target.ImageHeight},
                  {"sample_count", target.SampleCount},
                  {"w_buffering", target.WBuffering},
+                 {"scene_effects_resolved", target.SceneEffectsResolved},
                  {"color_rgba8",
                   nlohmann::json::binary(target.ColorRgba8)},
                  {"normal_guide_rgba8",
@@ -486,6 +554,7 @@ bool SaveNativeA32State(
                  {"image_width", image.ImageWidth},
                  {"image_height", image.ImageHeight},
                  {"initialized", image.Initialized},
+                 {"scene_effects_resolved", image.SceneEffectsResolved},
                  {"color_rgba8",
                   nlohmann::json::binary(image.ColorRgba8)},
                  {"has_depth_target", image.HasDepthTarget},
@@ -961,6 +1030,7 @@ bool LoadNativeA32State(
             }
             uint64_t totalBytes = 0U;
             std::set<PicaTextureSnapshotIdentity> identities;
+            std::set<std::tuple<uint64_t, uint64_t, uint64_t>> producerIdentities;
             for (const auto& encoded : entries) {
                 Oot3d::Renderer::PicaTextureCacheEntrySnapshot texture;
                 texture.ContentHash =
@@ -1012,6 +1082,59 @@ bool LoadNativeA32State(
                     "custom_replacement_pending").get<bool>();
                 texture.CustomReplacementReady = encoded.at(
                     "custom_replacement_ready").get<bool>();
+                texture.HasCopyProducer =
+                    encoded.value("has_copy_producer", false);
+                if (texture.HasCopyProducer) {
+                    texture.CopyProducer.RenderTargetNamespace =
+                        encoded.at("copy_producer_namespace").get<uint64_t>();
+                    texture.CopyProducer.CompletionId =
+                        encoded.at("copy_producer_completion_id")
+                            .get<uint64_t>();
+                    texture.CopyProducer.AfterDrawSubmissionId =
+                        encoded.at("copy_producer_after_draw_submission_id")
+                            .get<uint64_t>();
+                    texture.CopyProducer.SourcePhysicalAddress =
+                        encoded.at("copy_producer_source_physical_address")
+                            .get<uint32_t>();
+                    texture.CopyProducer.SourceWidth =
+                        encoded.at("copy_producer_source_width")
+                            .get<uint32_t>();
+                    texture.CopyProducer.SourceHeight =
+                        encoded.at("copy_producer_source_height")
+                            .get<uint32_t>();
+                    texture.CopyProducer.SourceNativeFormat =
+                        encoded.at("copy_producer_source_native_format")
+                            .get<uint8_t>();
+                    texture.CopyProducer.ColorEncoding =
+                        encoded.at("copy_producer_color_encoding")
+                            .get<uint8_t>();
+                    texture.CopyProducer.SceneEffectsResolved =
+                        encoded.at("copy_producer_scene_effects_resolved")
+                            .get<bool>();
+                    const auto& spans = encoded.at("copy_producer_spans");
+                    if (!spans.is_array() || spans.empty() ||
+                        spans.size() > 4096U) {
+                        SetError(error,
+                                 "savestate native PICA copy producer spans are invalid");
+                        return false;
+                    }
+                    for (const auto& encodedSpan : spans) {
+                        Fast::Renderer3ds::PicaRawCopySpan span;
+                        span.SourceAddress =
+                            encodedSpan.at("source_address").get<uint32_t>();
+                        span.DestinationAddress =
+                            encodedSpan.at("destination_address")
+                                .get<uint32_t>();
+                        span.ByteCount =
+                            encodedSpan.at("byte_count").get<uint32_t>();
+                        if (span.ByteCount == 0U) {
+                            SetError(error,
+                                     "savestate native PICA copy producer span is invalid");
+                            return false;
+                        }
+                        texture.CopyProducer.Spans.push_back(span);
+                    }
+                }
                 const auto& pixels = encoded.at("pixel_bytes");
                 if (!pixels.is_binary()) {
                     SetError(error,
@@ -1024,8 +1147,11 @@ bool LoadNativeA32State(
                     texture.ImageWidth, texture.ImageHeight,
                     texture.MipLevels);
                 totalBytes += texture.PixelBytes.size();
-                if (texture.SourceWidth == 0U ||
-                    texture.SourceHeight == 0U ||
+                // A GPU copy version carries its source identity in CopyProducer
+                // and leaves the ordinary cache key fields zero.
+                if ((!texture.HasCopyProducer &&
+                     (texture.SourceWidth == 0U ||
+                      texture.SourceHeight == 0U)) ||
                     texture.ImageWidth == 0U ||
                     texture.ImageHeight == 0U ||
                     texture.MipLevels == 0U ||
@@ -1043,8 +1169,14 @@ bool LoadNativeA32State(
                                  PicaTextureSnapshotFormat::R32Uint &&
                      texture.MipLevels != 1U) ||
                     *expectedBytes != texture.PixelBytes.size() ||
+                    !ValidCopyProducer(texture) ||
                     totalBytes > kMaximumPicaTextureCacheBytes ||
-                    !identities
+                    (texture.HasCopyProducer
+                         ? !producerIdentities.emplace(
+                               texture.CopyProducer.RenderTargetNamespace,
+                               texture.CopyProducer.CompletionId,
+                               texture.CopyProducer.AfterDrawSubmissionId).second
+                         : !identities
                          .insert({texture.ContentHash,
                                   texture.ReplacementGeneration,
                                   texture.PhysicalAddress,
@@ -1061,7 +1193,7 @@ bool LoadNativeA32State(
                                   texture.MinMipLevel,
                                   texture.MaxMipLevel,
                                   texture.CustomReplacement})
-                         .second) {
+                         .second)) {
                     SetError(error,
                              "savestate native PICA cached texture is invalid");
                     return false;
@@ -1111,6 +1243,8 @@ bool LoadNativeA32State(
                 target.SampleCount =
                     encoded.at("sample_count").get<uint8_t>();
                 target.WBuffering = encoded.value("w_buffering", false);
+                target.SceneEffectsResolved =
+                    encoded.value("scene_effects_resolved", false);
                 const auto& color = encoded.at("color_rgba8");
                 if (!color.is_binary()) {
                     SetError(error,
@@ -1325,6 +1459,8 @@ bool LoadNativeA32State(
                     encoded.at("image_height").get<uint32_t>();
                 image.Initialized =
                     encoded.at("initialized").get<bool>();
+                image.SceneEffectsResolved =
+                    encoded.value("scene_effects_resolved", false);
                 const auto& color = encoded.at("color_rgba8");
                 if (!color.is_binary()) {
                     SetError(error,

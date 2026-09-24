@@ -7,78 +7,26 @@ using SettingsUi::EnumCombo;
 
 bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, const GraphicsCapabilities& capabilities) {
     bool changed = false;
-    ImGui::SeparatorText("Directional shadows");
-    auto& directionalShadows = settings.Effects.DirectionalShadows;
-    const auto& directionalShadowCapability =
-        capabilities.Get(GraphicsCapability::NriDirectionalShadows);
-    const bool directionalShadowsReady =
-        directionalShadowCapability.Available;
-    const char* const directionalShadowModes[] = {
-        "Off", "Single cascade" };
-    changed |= SettingsUi::ValidatedCombo<DirectionalShadowMode>(
-        "Shadow mode", settings, capabilities, directionalShadowModes,
-        [](auto& value, auto mode) { value.Effects.DirectionalShadows.Mode = mode; },
-        [](const auto& value) { return value.Effects.DirectionalShadows.Mode; });
-    if (directionalShadows.Mode ==
-        DirectionalShadowMode::SingleCascade) {
-        if (!directionalShadowsReady) ImGui::BeginDisabled();
-        constexpr uint32_t resolutions[] = {
-            512U, 1024U, 2048U, 4096U };
-        int resolutionIndex = 1;
-        for (size_t index = 0; index < std::size(resolutions);
-             ++index) {
-            if (resolutions[index] ==
-                directionalShadows.Resolution) {
-                resolutionIndex = static_cast<int>(index);
-                break;
-            }
-        }
-        const char* const resolutionNames[] = {
-            "512", "1024", "2048", "4096" };
-        if (ImGui::Combo("Shadow resolution", &resolutionIndex,
-                         resolutionNames,
-                         static_cast<int>(
-                             std::size(resolutionNames)))) {
-            directionalShadows.Resolution =
-                resolutions[resolutionIndex];
+    ImGui::SeparatorText("Surface lighting");
+    const char* const surfaceLightingModes[] = {"Native", "Per-pixel", "Per-pixel + PBR"};
+    changed |= SettingsUi::ValidatedCombo<SurfaceLightingMode>(
+        "Lighting model", settings, capabilities, surfaceLightingModes,
+        [](auto& value, auto mode) { value.Effects.SurfaceLighting = mode; },
+        [](const auto& value) { return value.Effects.SurfaceLighting; });
+    ImGui::TextWrapped("Uses native scene lights and selected local lights. Unsupported native materials keep their original shading.");
+    if (settings.Effects.SurfaceLighting == SurfaceLightingMode::PerPixelPbr) {
+        ImGui::TextWrapped("PBR uses Azahar material packs configured in Textures. Materials without a pack use native per-pixel lighting.");
+        auto& pbr = settings.Effects.Pbr;
+        changed |= ImGui::SliderFloat("Normal strength", &pbr.NormalStrength, 0.0F, 8.0F, "%.2fx");
+        changed |= ImGui::SliderFloat("Glossiness strength", &pbr.GlossinessStrength, 0.0F, 2.0F, "%.2fx");
+        const char* const materialViews[] = {"Shaded", "Surface normals", "Roughness"};
+        changed |= EnumCombo("Material view", pbr.DebugView, materialViews);
+        ImGui::TextWrapped("Live controls: 1x uses the pack; normal 0x flattens the normal map, glossy 0x makes the material rough. Reflection strength remains in Reflections.");
+        ImGui::TextWrapped("Normal detail needs direct light or reflections; ambient-only/baked materials may look unchanged. Material view shows only active PBR surfaces, without changing native coverage.");
+        if (ImGui::Button("Reset PBR controls")) {
+            pbr = {};
             changed = true;
         }
-        changed |= ImGui::DragFloat(
-            "Shadow distance",
-            &directionalShadows.MaximumDistance,
-            10.0F, 50.0F, 20000.0F, "%.0f");
-        changed |= ImGui::SliderFloat(
-            "Shadow strength", &directionalShadows.Strength,
-            0.0F, 1.0F, "%.2f");
-        int pcfRadius = directionalShadows.PcfRadius;
-        if (ImGui::SliderInt("PCF radius", &pcfRadius, 0, 2)) {
-            directionalShadows.PcfRadius =
-                static_cast<uint8_t>(pcfRadius);
-            changed = true;
-        }
-        changed |= ImGui::Checkbox(
-            "Stable shadow projection",
-            &directionalShadows.Stabilize);
-        if (ImGui::TreeNode("Advanced directional shadows")) {
-            changed |= ImGui::DragFloat(
-                "Shadow depth padding",
-                &directionalShadows.DepthPadding,
-                5.0F, 0.0F, 5000.0F, "%.0f");
-            changed |= ImGui::DragFloat(
-                "Shadow constant bias",
-                &directionalShadows.DepthBiasConstant,
-                0.05F, 0.0F, 16.0F, "%.2f");
-            changed |= ImGui::DragFloat(
-                "Shadow slope bias",
-                &directionalShadows.DepthBiasSlope,
-                0.05F, 0.0F, 16.0F, "%.2f");
-            ImGui::TreePop();
-        }
-        if (!directionalShadowsReady) ImGui::EndDisabled();
-    }
-    if (!directionalShadowsReady) {
-        ImGui::TextDisabled("Unavailable: %s",
-            directionalShadowCapability.Reason.c_str());
     }
 
     ImGui::SeparatorText("Ambient occlusion");

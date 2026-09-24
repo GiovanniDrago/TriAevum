@@ -33,6 +33,9 @@
 #include "fast/oot3d/pica_nri_vertex_input.h"
 #include "fast/oot3d/pica_nri_pipeline_state.h"
 #include "fast/renderer3ds/pica_pipeline_identity.h"
+#include "fast/renderer3ds/pica_surface_lighting.h"
+#include "fast/renderer3ds/pica_tev_program.h"
+#include "fast/oot3d/pica_uniform_layout.h"
 #include "fast/oot3d/pica_nri_draw_ownership.h"
 #include "fast/oot3d/pica_directional_shadow_lighting.h"
 #include "fast/oot3d/pica_scene_semantics.h"
@@ -340,7 +343,7 @@ bool BuildNativePicaMemoryFillSmoke(
 
 void GfxRenderingAPIVulkan::CreateNativePicaShaderResources() {
     CreateNativePicaRenderPass();
-    std::array<VkDescriptorSetLayoutBinding, 11> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 16> bindings{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                    VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     for (uint32_t binding = 1; binding <= 3; ++binding) {
@@ -362,6 +365,13 @@ void GfxRenderingAPIVulkan::CreateNativePicaShaderResources() {
                   VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[10] = {15, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                    VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[11] = {16, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+                   VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[12] = {17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+                    VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    for (uint32_t index = 13U; index < 16U; ++index)
+        bindings[index] = {index + 5U, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo descriptorInfo{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     descriptorInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -425,12 +435,20 @@ void GfxRenderingAPIVulkan::CreateNativePicaShaderResources() {
 }
 
 void GfxRenderingAPIVulkan::DestroyNativePicaShaderResources() {
-    mRawTextureCopyWritebacks.clear();
     EndNativePicaRenderPass();
     for (auto& [key, texture] : mNativePicaTextures) {
         DestroyTexture(texture);
     }
     mNativePicaTextures.clear();
+    for (auto& [hash, material] : mNativePicaMaterials) {
+        for (auto& image : material.Active.Images) DestroyTexture(image);
+        for (auto& image : material.Pending.Images) DestroyTexture(image);
+    }
+    mNativePicaMaterials.clear();
+    for (auto& frame : mFrameResources) {
+        for (auto& image : frame.RetiredTextures) DestroyTexture(image);
+        frame.RetiredTextures.clear();
+    }
     for (auto& [key, lightingLut] : mNativePicaLightingLuts) {
         DestroyTexture(lightingLut.Texture);
     }
@@ -1822,6 +1840,7 @@ std::optional<size_t> NativePicaEncodedMipSize(
 
 std::optional<uint64_t> ResolveNativeTextureBaseLevelContentHash(
     const GfxNativePicaTextureView& texture) {
+    if (!texture.CopyReferences.empty()) return std::nullopt;
     if (texture.NativeBaseLevelContentHashAvailable) {
         return texture.NativeBaseLevelContentHash;
     }
@@ -2521,6 +2540,11 @@ void GfxRenderingAPIVulkan::ApplyPendingNativePicaMemoryFills(NativePicaRenderTa
             vkCmdClearAttachments(mCommandBuffers[mCurrentFrame], attachmentCount, attachments.data(), 1U, &clearRect);
         }
         mDiagnostics.RecordNriPicaMemoryFillClear(nriShadowClear, nriAttachmentClear, shadowBarrierCount);
+        if (coversColor) {
+            // Filled colour is new content: it carries no resolved scene
+            // effects any more, so the provenance serial moves on.
+            target.ContentWriteSerial = ++mGpuTextureCopyWriteSerial;
+        }
         fill = mPendingNativePicaMemoryFills.erase(fill);
     }
 }
@@ -2551,10 +2575,42 @@ GfxRenderingAPIVulkan::AllocateNativePicaScanoutDescriptorSet() {
 }
 
 GfxRenderingAPIVulkan::TextureRecord*
+GfxRenderingAPIVulkan::CreateGpuCopiedTextureRecord(
+    const NativePicaTextureKey& textureKey,
+    const GfxNativePicaTextureView& texture, uint32_t width, uint32_t height) {
+    auto [inserted, wasInserted] = mNativePicaTextures.emplace(textureKey,
+                                                               TextureRecord{});
+    if (!wasInserted) {
+        return &inserted->second;
+    }
+    auto& record = inserted->second;
+    record.SamplerState.MinFilter = NativePicaMinFilter(
+        texture.MinLinear, texture.MipLinear, 1U);
+    record.SamplerState.MagFilter = texture.MagLinear
+        ? GfxNativeTextureFilter::Linear
+        : GfxNativeTextureFilter::Nearest;
+    record.SamplerState.WrapS = DecodeNativePicaWrap(texture.NativeWrapS);
+    record.SamplerState.WrapT = DecodeNativePicaWrap(texture.NativeWrapT);
+    record.SamplerState.LodBias = 0.0F;
+    record.SamplerState.MinMipLevel = texture.MinMipLevel;
+    record.SamplerState.MaxMipLevel = texture.MaxMipLevel;
+    // The image is written by the base fill and the owned regions below, so it
+    // is allocated without an upload and needs a storage view.
+    CreateNativePicaTextureStorage(record, width, height, 1U,
+                                   VK_FORMAT_R8G8B8A8_UNORM,
+                                   /*storageView=*/true);
+    record.UploadedMipLevels = 1U;
+    record.Uploaded = true;
+    RecreateSampler(record);
+    return &record;
+}
+
+GfxRenderingAPIVulkan::TextureRecord*
 GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
-    const GfxNativePicaTextureView& texture, std::string* error,
-    uint64_t replacementGeneration,
+    const GfxNativePicaTextureView& textureView, std::string* error,
+    uint64_t replacementGeneration, uint64_t renderTargetNamespace,
     const uint64_t* precomputedContentHash) {
+    const GfxNativePicaTextureView& texture = textureView;
     try {
         NativePicaTextureKey key;
         key.ReplacementGeneration = replacementGeneration;
@@ -2572,32 +2628,158 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
         key.MinMipLevel = texture.MinMipLevel;
         key.MaxMipLevel = texture.MaxMipLevel;
         const bool shadow2d = texture.NativeType == 2U;
-        // A surface a raw copy wrote into arrives without a content hash, and
-        // hashing plus decoding it on the CPU is exactly what phase B removes:
-        // it gets a version identity and is decoded on the GPU instead. Every
-        // other texture keeps the hash identity and the CPU path, and without
-        // the switch the behaviour is unchanged.
-        const bool gpuOwned =
-            RawCopyGpuDecodeEnabled() && !shadow2d &&
-            precomputedContentHash == nullptr &&
-            GpuDecodePicaTextureSupported(texture.NativeFormat) &&
-            !texture.NativeBytes.empty() &&
-            NativePicaMipLevelCount(texture) == 1U;
-        key.ContentHash = gpuOwned
+        if (shadow2d && !texture.CopyReferences.empty()) {
+            throw std::runtime_error(
+                "GPU-produced PICA copies require an RGBA sampler, not a packed shadow sampler");
+        }
+        ++mGpuTextureCopySamplerCost.Resolutions;
+        // Ownership comes from the producer references the view carries, never
+        // from a missing content hash: a view with references is served by the
+        // immutable copy that producer captured at its internal resolution.
+        GpuTextureCopyDerivation derivation;
+        GpuTextureCopyFallback copyFallback = GpuTextureCopyFallback::None;
+        std::string derivationError;
+        const bool derivesCopy =
+            shadow2d == false && texture.CopyReferences.empty() == false &&
+            BuildGpuTextureCopyDerivation(texture, renderTargetNamespace,
+                                          derivation, &copyFallback,
+                                          &derivationError);
+        if (shadow2d == false && texture.CopyReferences.empty() == false &&
+            derivesCopy == false) {
+            switch (copyFallback) {
+                case GpuTextureCopyFallback::UnknownProducer:
+                    ++mGpuTextureCopySamplerCost.FallbackUnknownProducer;
+                    break;
+                case GpuTextureCopyFallback::UncapturedProducer:
+                    ++mGpuTextureCopySamplerCost.FallbackUncapturedProducer;
+                    break;
+                case GpuTextureCopyFallback::MipChain:
+                    ++mGpuTextureCopySamplerCost.FallbackMipChain;
+                    break;
+                case GpuTextureCopyFallback::Layout:
+                case GpuTextureCopyFallback::None:
+                    ++mGpuTextureCopySamplerCost.FallbackLayout;
+                    break;
+            }
+            static bool derivationReported = false;
+            if (!derivationReported) {
+                derivationReported = true;
+                std::fprintf(
+                    stderr,
+                    "TRIAEVUM_GPU_COPY_UNRESOLVED reason=%u texture=%ux%u "
+                    "address=0x%08X detail=%s\n",
+                    static_cast<unsigned>(copyFallback), texture.Width,
+                    texture.Height, texture.PhysicalAddress,
+                    derivationError.c_str());
+            }
+            throw std::runtime_error(
+                "raw PICA copy samples cannot be resolved: " + derivationError);
+        }
+        key.GpuCopyIdentity = derivesCopy
+            ? GpuTextureCopyReferenceIdentity(texture, renderTargetNamespace)
+            : 0U;
+        key.ContentHash = derivesCopy && derivation.CoversDeclaredLayout
             ? 0U
             : (precomputedContentHash != nullptr
                    ? *precomputedContentHash
                    : HashNativeBytes(texture.NativeBytes));
-        key.SurfaceVersion = gpuOwned ? ++mRawCopySurfaceVersion : 0U;
+        if (derivesCopy) {
+            const auto exact = mNativePicaTextures.find(key);
+            if (exact != mNativePicaTextures.end()) {
+                for (const auto identity : exact->second.CopyProducerIdentities) {
+                    const auto producer = mGpuTextureCopySurfaces.find(identity);
+                    if (producer != mGpuTextureCopySurfaces.end())
+                        producer->second.LastReferencedFrame = mFrameCounter;
+                }
+                return &exact->second;
+            }
+            TextureRecord* record = CreateGpuCopiedTextureRecord(
+                key, texture, derivation.ImageWidth, derivation.ImageHeight);
+            try {
+                // Only CPU-owned (uncovered) bytes are initialized from the
+                // snapshot, at the declared native size: the expand into the
+                // sampled density happens on the GPU, in the copy's own pass. A
+                // fully owned view needs no CPU decode and no upload at all.
+                if (derivation.CoversDeclaredLayout == false) {
+                    const auto encodedBytes = NativePicaEncodedMipSize(
+                        texture.NativeFormat, texture.Width, texture.Height);
+                    if (encodedBytes.has_value() == false ||
+                        *encodedBytes > texture.NativeBytes.size()) {
+                        throw std::runtime_error(
+                            "native PICA copy source bytes are truncated");
+                    }
+                    std::vector<uint8_t> nativePixels;
+                    std::string decodeError;
+                    if (Oot3d::DecodePicaTextureRgba8(
+                            texture.NativeFormat, texture.Width,
+                            texture.Height,
+                            texture.NativeBytes.first(*encodedBytes),
+                            nativePixels, &decodeError) == false) {
+                        throw std::runtime_error(
+                            "native PICA copy base decode failed: " +
+                            decodeError);
+                    }
+                    TextureRecord base;
+                    CreateNativePicaTextureImage(
+                        base, nativePixels, texture.Width, texture.Height, 1U,
+                        VK_FORMAT_R8G8B8A8_UNORM, /*storageView=*/false);
+                    // The record owns the base image: it is sampled only until
+                    // the fill dispatch that expands it has executed.
+                    record->BaseImage = base.Image;
+                    base.Image = VK_NULL_HANDLE;
+                    base.NriImage = VK_NULL_HANDLE;
+                    base.Memory = VK_NULL_HANDLE;
+                    DestroyTexture(base);
+                    if (RecordGpuTextureCopyBaseFill(derivation,
+                                                    record->BaseImage,
+                                                    *record) == false) {
+                        throw std::runtime_error(
+                            "native PICA copy base fill was refused");
+                    }
+                }
+                if (RecordGpuTextureCopyDerivation(derivation, *record) ==
+                    false) {
+                    throw std::runtime_error(
+                        "native PICA copy derivation recorded no region");
+                }
+            } catch (...) {
+                const auto created = mNativePicaTextures.find(key);
+                if (created != mNativePicaTextures.end()) {
+                    DestroyTexture(created->second);
+                    mNativePicaTextures.erase(created);
+                }
+                throw;
+            }
+            // The record itself carries the provenance and the owned rectangle,
+            // so a later draw reads them on a cache hit as well, and a restored
+            // record keeps them.
+            record->SourceResolvedColour = derivation.SceneEffectsResolved;
+            record->SourceOwnedX0 = derivation.OwnedX0;
+            record->SourceOwnedY0 = derivation.OwnedY0;
+            record->SourceOwnedX1 = derivation.OwnedX1;
+            record->SourceOwnedY1 = derivation.OwnedY1;
+            record->SourceDeclaredWidth = derivation.DeclaredWidth;
+            record->SourceDeclaredHeight = derivation.DeclaredHeight;
+            DumpGpuTextureCopyConsumer(
+                record->Image, record->Width, record->Height, texture,
+                derivation.FirstProducerCompletionId, derivation.Encoding,
+                derivation.SceneEffectsResolved);
+            ++mGpuTextureCopySamplerCost.GpuBound;
+            mGpuTextureCopySamplerCost.GpuBytes +=
+                uint64_t{derivation.ImageWidth} * derivation.ImageHeight * 4U;
+            mGpuTextureCopySamplerCost.GpuExtentPixels +=
+                uint64_t{derivation.ImageWidth} * derivation.ImageHeight;
+            mGpuTextureCopySamplerCost.NativeExtentPixels +=
+                uint64_t{texture.Width} * texture.Height;
+            return record;
+        }
         const auto baseLevelContentHash = !shadow2d
             ? ResolveNativeTextureBaseLevelContentHash(texture)
             : std::nullopt;
-        if (!shadow2d) {
-            if (baseLevelContentHash.has_value()) {
-                Oot3d::TextureCatalogRuntime::Instance().Observe(
-                    *baseLevelContentHash, key.PhysicalAddress, key.Width,
-                    key.Height, key.Format);
-            }
+        if (baseLevelContentHash.has_value()) {
+            Oot3d::TextureCatalogRuntime::Instance().Observe(
+                *baseLevelContentHash, key.PhysicalAddress, key.Width,
+                key.Height, key.Format);
         }
 
         const auto createTexture =
@@ -2607,9 +2789,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                 uint32_t mipLevels,
                 VkFormat format, uint64_t replacementHash,
                 bool replacement, bool* insertedResult = nullptr,
-                bool fillFromGpuDecode = false,
-                std::span<const uint8_t> nativeBytes = {},
-                uint8_t picaFormat = 0U) {
+                uint64_t replacementPixelHash = 0U) {
                 auto [inserted, wasInserted] =
                     mNativePicaTextures.emplace(
                         textureKey, TextureRecord{});
@@ -2638,10 +2818,11 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                 record.SamplerState.MaxMipLevel = !shadow2d
                     ? texture.MaxMipLevel : 0U;
                 record.CustomReplacementHash = replacementHash;
+                record.CustomReplacementPixelHash = replacementPixelHash;
+                record.CustomReplacementApplied = replacement;
                 record.CustomReplacementReady = replacement;
                 CreateNativePicaTextureImage(
-                    record, pixels, width, height, mipLevels, format,
-                    fillFromGpuDecode, nativeBytes, picaFormat);
+                    record, pixels, width, height, mipLevels, format);
                 return &record;
             };
 
@@ -2728,6 +2909,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                     resolved.Replacement->Rgba8 != nullptr) {
                     record.CustomReplacementPending = false;
                     record.CustomReplacementReady = true;
+                    replacementKey.ReplacementGeneration = resolved.Replacement->Generation;
                     const uint64_t replacementBytes =
                         resolved.Replacement->Rgba8->size();
                     const bool budgetAvailable =
@@ -2748,7 +2930,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                         resolved.Replacement->Height,
                         1U,
                         VK_FORMAT_R8G8B8A8_UNORM,
-                        resolved.NativeHash, true, &inserted);
+                        resolved.NativeHash, true, &inserted, resolved.Replacement->PixelContentHash);
                     if (inserted) {
                         mCustomTextureUploadBytesThisFrame +=
                             replacementBytes;
@@ -2781,6 +2963,8 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                     mNativePicaTextures.emplace(key, TextureRecord{});
                 auto& record = inserted->second;
                 record.NriImage = liveTarget->second.ShadowImage;
+                record.ImageBorrowed = true;
+                record.LiveRenderTargetAlias = true;
                 record.Width = liveTarget->second.Width;
                 record.Height = liveTarget->second.Height;
                 record.MipLevels = 1U;
@@ -2820,43 +3004,6 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
         size_t baseNativeBytes = texture.NativeBytes.size();
         size_t baseDecodedBytes =
             static_cast<size_t>(texture.Width) * texture.Height * 4U;
-        if (gpuOwned) {
-            // Decoded on the GPU from the native bytes: no CPU decode, no
-            // content hash, no decoded upload.
-            const auto encodedBytes = NativePicaEncodedMipSize(
-                texture.NativeFormat, texture.Width, texture.Height);
-            if (!encodedBytes.has_value() ||
-                *encodedBytes > texture.NativeBytes.size()) {
-                throw std::runtime_error(
-                    "native PICA GPU texture bytes are truncated");
-            }
-            bool inserted = false;
-            TextureRecord* created = createTexture(
-                key, {}, texture.Width, texture.Height, 1U,
-                VK_FORMAT_R8G8B8A8_UNORM, 0U, false, &inserted, true,
-                texture.NativeBytes.first(*encodedBytes),
-                static_cast<uint8_t>(texture.NativeFormat));
-            ++mRawCopySamplerCost.GpuCreated;
-            // One version per copy: retire the previous version of the same
-            // surface so versions do not accumulate.
-            for (auto it = mNativePicaTextures.begin();
-                 it != mNativePicaTextures.end();) {
-                const auto& other = it->first;
-                if (it->second.Uploaded &&
-                    &it->second != created &&
-                    other.SurfaceVersion != 0U &&
-                    other.SurfaceVersion < key.SurfaceVersion &&
-                    other.PhysicalAddress == key.PhysicalAddress &&
-                    other.Width == key.Width && other.Height == key.Height &&
-                    other.Format == key.Format && other.Type == key.Type) {
-                    DestroyTexture(it->second);
-                    it = mNativePicaTextures.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-            return created;
-        }
         if (shadow2d) {
             std::vector<uint32_t> shadowPixels;
             if (!Oot3d::DetilePicaShadow2d(
@@ -2912,54 +3059,6 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                 baseLevelContentHash.value_or(key.ContentHash),
                 key.Width, key.Height,
                 std::span<const uint8_t>(pixels).first(baseDecodedBytes));
-            // Differential gate for the GPU decoder: only when asked, and only
-            // for the formats it covers, so the reference path is untouched.
-            static const bool verifyGpuDecode =
-                std::getenv("TRIAEVUM_RAW_COPY_GPU_DECODE_VERIFY") != nullptr;
-            if (verifyGpuDecode && GpuDecodePicaTextureSupported(texture.NativeFormat) &&
-                mipLevels == 1U) {
-                VkImageCreateInfo scratchInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-                scratchInfo.imageType = VK_IMAGE_TYPE_2D;
-                scratchInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-                scratchInfo.extent = {texture.Width, texture.Height, 1U};
-                scratchInfo.mipLevels = 1U;
-                scratchInfo.arrayLayers = 1U;
-                scratchInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-                scratchInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-                scratchInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-                scratchInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-                scratchInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-                VkImage scratch = VK_NULL_HANDLE;
-                VkDeviceMemory scratchMemory = VK_NULL_HANDLE;
-                if (vkCreateImage(mDevice, &scratchInfo, nullptr, &scratch) == VK_SUCCESS) {
-                    VkMemoryRequirements requirements{};
-                    vkGetImageMemoryRequirements(mDevice, scratch, &requirements);
-                    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-                    allocation.allocationSize = requirements.size;
-                    allocation.memoryTypeIndex = FindMemoryType(
-                        requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-                    if (vkAllocateMemory(mDevice, &allocation, nullptr, &scratchMemory) == VK_SUCCESS &&
-                        vkBindImageMemory(mDevice, scratch, scratchMemory, 0U) == VK_SUCCESS) {
-                        if (mRawCopyReadbackBuffer.Size < 64U) {
-                            DestroyBuffer(mRawCopyReadbackBuffer);
-                            mRawCopyReadbackBuffer = CreateReadbackBuffer(64U, &mRawCopyReadbackCoherent);
-                        }
-                        if (mRawCopyEncodedBuffer.Size < baseDecodedBytes) {
-                            DestroyBuffer(mRawCopyEncodedBuffer);
-                            mRawCopyEncodedBuffer =
-                                CreateReadbackBuffer(baseDecodedBytes, &mRawCopyReadbackCoherent);
-                        }
-                        VerifyGpuTextureDecode(
-                            scratch, texture.Width, texture.Height, texture.NativeFormat,
-                            texture.NativeBytes.first(baseNativeBytes),
-                            std::span<const uint8_t>(pixels).first(baseDecodedBytes));
-                    }
-                    vkDestroyImage(mDevice, scratch, nullptr);
-                    if (scratchMemory != VK_NULL_HANDLE) {
-                        vkFreeMemory(mDevice, scratchMemory, nullptr);
-                    }
-                }
-            }
         }
         uint32_t uploadWidth = texture.Width;
         uint32_t uploadHeight = texture.Height;
@@ -2986,6 +3085,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                         AzaharTextureResolveState::Ready &&
                 replacementResult.Replacement != nullptr &&
                 replacementResult.Replacement->Rgba8 != nullptr) {
+                replacementKey.ReplacementGeneration = replacementResult.Replacement->Generation;
                 const uint64_t replacementBytes =
                     replacementResult.Replacement->Rgba8->size();
                 const bool budgetAvailable =
@@ -3005,7 +3105,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                         1U,
                         VK_FORMAT_R8G8B8A8_UNORM,
                         replacementResult.NativeHash, true,
-                        &inserted);
+                        &inserted, replacementResult.Replacement->PixelContentHash);
                     if (inserted) {
                         mCustomTextureUploadBytesThisFrame +=
                             replacementBytes;
@@ -3086,24 +3186,9 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaLightingLut(
     }
 }
 
-void GfxRenderingAPIVulkan::CreateNativePicaTextureImage(
-    TextureRecord& texture, std::span<const uint8_t> pixels, uint32_t width,
-    uint32_t height, uint32_t mipLevels, VkFormat format,
-    bool fillFromGpuDecode, std::span<const uint8_t> nativeBytes,
-    uint8_t picaFormat) {
-    const auto expectedBytes =
-        NativePicaDecodedMipChainSize(width, height, mipLevels);
-    if (fillFromGpuDecode) {
-        // The pixels are produced on the GPU from the native bytes; there is no
-        // CPU-decoded payload to validate or upload.
-        if (nativeBytes.empty() || mipLevels != 1U) {
-            throw std::runtime_error(
-                "native PICA GPU texture creation needs one mip level and native bytes");
-        }
-    } else if (!expectedBytes.has_value() || pixels.size() != *expectedBytes ||
-        pixels.empty()) {
-        throw std::runtime_error("native PICA texture upload size is invalid");
-    }
+void GfxRenderingAPIVulkan::CreateNativePicaTextureStorage(
+    TextureRecord& texture, uint32_t width, uint32_t height, uint32_t mipLevels,
+    VkFormat format, bool storageView) {
 
     texture.Width = width;
     texture.Height = height;
@@ -3111,8 +3196,8 @@ void GfxRenderingAPIVulkan::CreateNativePicaTextureImage(
     texture.UploadedMipLevels = 0;
 
     Oot3d::NriPicaTextureImage nriTexture;
-    if (mNriPicaTextureImageOwner.Create(
-            width, height, format, mipLevels, nriTexture)) {
+    if (mNriPicaTextureImageOwner.Create(width, height, format, mipLevels,
+                                         nriTexture, storageView)) {
         texture.Image = nriTexture.Image;
         texture.NriImage = nriTexture.Image;
         texture.View = nriTexture.View;
@@ -3129,6 +3214,11 @@ void GfxRenderingAPIVulkan::CreateNativePicaTextureImage(
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         imageInfo.usage =
             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (storageView) {
+            // A derived raw-copy image is materialized on the GPU, so its
+            // compute pass needs a storage view of it.
+            imageInfo.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        }
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         CheckNativeVk(
@@ -3152,108 +3242,6 @@ void GfxRenderingAPIVulkan::CreateNativePicaTextureImage(
                 mDevice, texture.Image, texture.Memory, 0),
             "vkBindImageMemory(native PICA texture)");
     }
-
-    EndNativePicaRenderPass();
-    if (mRenderPassActive) {
-        vkCmdEndRenderPass(mCommandBuffers[mCurrentFrame]);
-        mRenderPassActive = false;
-        mOverlayRenderPassActive = false;
-    }
-    if (fillFromGpuDecode) {
-        std::string decodeError;
-        if (!DecodeNativePicaTextureOnGpu(texture.Image, width, height,
-                                          picaFormat, nativeBytes, &decodeError)) {
-            throw std::runtime_error("native PICA GPU texture decode failed: " +
-                                     decodeError);
-        }
-        texture.UploadedMipLevels = 1U;
-    }
-    size_t pixelOffset = 0U;
-    for (uint32_t level = 0U; !fillFromGpuDecode && level < mipLevels; ++level) {
-        const uint32_t mipWidth = std::max(1U, width >> level);
-        const uint32_t mipHeight = std::max(1U, height >> level);
-        const VkDeviceSize byteCount =
-            static_cast<VkDeviceSize>(mipWidth) * mipHeight * 4U;
-        const auto mipPixels = pixels.subspan(
-            pixelOffset, static_cast<size_t>(byteCount));
-        Oot3d::NriPicaTextureUploadDesc upload;
-        upload.FrameIndex = mCurrentFrame;
-        upload.FrameId = mFrameCounter;
-        upload.Image = texture.Image;
-        upload.Format = format;
-        upload.Width = mipWidth;
-        upload.Height = mipHeight;
-        upload.MipLevel = level;
-        upload.MipLevels = mipLevels;
-        upload.Pixels = mipPixels;
-        const bool nriTextureUpload =
-            mNriPicaTextureUploadPass.Execute(upload);
-        if (nriTextureUpload) {
-            mDiagnostics.RecordNriPicaTextureUpload(
-                true, mNriPicaTextureUploadPass.LastUploadedBytes());
-        } else {
-            auto& frame = mFrameResources[mCurrentFrame];
-            const VkDeviceSize uploadOffset =
-                (frame.VertexBytesUsed + 15U) & ~VkDeviceSize(15U);
-            if (uploadOffset + byteCount > frame.VertexBuffer.Size) {
-                throw std::runtime_error(
-                    "native PICA texture exceeds the per-frame upload arena");
-            }
-            std::memcpy(
-                static_cast<uint8_t*>(frame.VertexBuffer.Mapped) +
-                    uploadOffset,
-                mipPixels.data(), mipPixels.size());
-            frame.VertexBytesUsed = uploadOffset + byteCount;
-
-            VkCommandBuffer commandBuffer = mCommandBuffers[mCurrentFrame];
-            VkImageMemoryBarrier toTransfer{
-                VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-            toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toTransfer.image = texture.Image;
-            toTransfer.subresourceRange.aspectMask =
-                VK_IMAGE_ASPECT_COLOR_BIT;
-            toTransfer.subresourceRange.baseMipLevel = level;
-            toTransfer.subresourceRange.levelCount = 1U;
-            toTransfer.subresourceRange.layerCount = 1U;
-            toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            vkCmdPipelineBarrier(
-                commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                nullptr, 1, &toTransfer);
-
-            VkBufferImageCopy copy{};
-            copy.bufferOffset = uploadOffset;
-            copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            copy.imageSubresource.mipLevel = level;
-            copy.imageSubresource.layerCount = 1U;
-            copy.imageExtent = {mipWidth, mipHeight, 1U};
-            vkCmdCopyBufferToImage(
-                commandBuffer, frame.VertexBuffer.Buffer, texture.Image,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U, &copy);
-
-            VkImageMemoryBarrier toShaderRead{
-                VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-            toShaderRead.oldLayout =
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            toShaderRead.newLayout =
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            toShaderRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toShaderRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            toShaderRead.image = texture.Image;
-            toShaderRead.subresourceRange = toTransfer.subresourceRange;
-            toShaderRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            toShaderRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            vkCmdPipelineBarrier(
-                commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
-                nullptr, 1, &toShaderRead);
-        }
-        pixelOffset += static_cast<size_t>(byteCount);
-    }
-
     if (!texture.NriOwnedImage) {
         VkImageViewCreateInfo view{
             VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -3267,9 +3255,199 @@ void GfxRenderingAPIVulkan::CreateNativePicaTextureImage(
             vkCreateImageView(mDevice, &view, nullptr, &texture.View),
             "vkCreateImageView(native PICA texture)");
     }
+}
+
+void GfxRenderingAPIVulkan::CreateNativePicaTextureImage(
+    TextureRecord& texture, std::span<const uint8_t> pixels, uint32_t width,
+    uint32_t height, uint32_t mipLevels, VkFormat format, bool storageView) {
+    const auto expectedBytes = NativePicaDecodedMipChainSize(width, height, mipLevels);
+    if (!expectedBytes.has_value() || pixels.size() != *expectedBytes || pixels.empty())
+        throw std::runtime_error("native PICA texture upload size is invalid");
+    CreateNativePicaTextureStorage(texture, width, height, mipLevels, format, storageView);
+    size_t offset = 0U;
+    for (uint32_t level = 0U; level < mipLevels; ++level) {
+        const uint32_t mipWidth = std::max(1U, width >> level);
+        const uint32_t mipHeight = std::max(1U, height >> level);
+        const size_t bytes = static_cast<size_t>(mipWidth) * mipHeight * 4U;
+        UploadNativePicaTextureRows(texture, pixels.subspan(offset, bytes),
+            mipWidth, mipHeight, level, mipLevels, format, 0U, mipHeight);
+        offset += bytes;
+    }
     texture.UploadedMipLevels = mipLevels;
     texture.Uploaded = true;
     RecreateSampler(texture);
+}
+
+void GfxRenderingAPIVulkan::UploadNativePicaTextureRows(
+    TextureRecord& texture, std::span<const uint8_t> pixels,
+    uint32_t width, uint32_t height, uint32_t level, uint32_t mipLevels,
+    VkFormat format, uint32_t rowOffset, uint32_t rowCount) {
+    if (rowCount == 0U || rowOffset > height || rowCount > height - rowOffset ||
+        static_cast<uint64_t>(width) * rowCount * 4U != pixels.size())
+        throw std::runtime_error("native PICA texture upload region is invalid");
+    EndNativePicaRenderPass();
+    if (mRenderPassActive) {
+        vkCmdEndRenderPass(mCommandBuffers[mCurrentFrame]);
+        mRenderPassActive = false;
+        mOverlayRenderPassActive = false;
+    }
+    Oot3d::NriPicaTextureUploadDesc upload;
+    upload.FrameIndex = mCurrentFrame;
+    upload.FrameId = mFrameCounter;
+    upload.Image = texture.Image;
+    upload.Format = format;
+    upload.Width = width;
+    upload.Height = height;
+    upload.MipLevel = level;
+    upload.MipLevels = mipLevels;
+    upload.Pixels = pixels;
+    upload.RowOffset = rowOffset;
+    upload.RowCount = rowCount;
+    if (mNriPicaTextureUploadPass.Execute(upload)) {
+        mDiagnostics.RecordNriPicaTextureUpload(
+            true, mNriPicaTextureUploadPass.LastUploadedBytes());
+        return;
+    }
+    auto& frame = mFrameResources[mCurrentFrame];
+    const VkDeviceSize uploadOffset = (frame.VertexBytesUsed + 15U) & ~VkDeviceSize(15U);
+    if (uploadOffset + pixels.size() > frame.VertexBuffer.Size)
+        throw std::runtime_error("native PICA texture exceeds the per-frame upload arena");
+    std::memcpy(static_cast<uint8_t*>(frame.VertexBuffer.Mapped) + uploadOffset,
+                pixels.data(), pixels.size());
+    frame.VertexBytesUsed = uploadOffset + pixels.size();
+
+    VkCommandBuffer commandBuffer = mCommandBuffers[mCurrentFrame];
+    VkImageMemoryBarrier toTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    toTransfer.oldLayout = rowOffset == 0U ? VK_IMAGE_LAYOUT_UNDEFINED :
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toTransfer.image = texture.Image;
+    toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toTransfer.subresourceRange.baseMipLevel = level;
+    toTransfer.subresourceRange.levelCount = 1U;
+    toTransfer.subresourceRange.layerCount = 1U;
+    toTransfer.srcAccessMask = rowOffset == 0U ? 0U : VK_ACCESS_SHADER_READ_BIT;
+    toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(commandBuffer,
+        rowOffset == 0U ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+    VkBufferImageCopy copy{};
+    copy.bufferOffset = uploadOffset;
+    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.imageSubresource.mipLevel = level;
+    copy.imageSubresource.layerCount = 1U;
+    copy.imageOffset.y = static_cast<int32_t>(rowOffset);
+    copy.imageExtent = {width, rowCount, 1U};
+    vkCmdCopyBufferToImage(commandBuffer, frame.VertexBuffer.Buffer, texture.Image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U, &copy);
+    VkImageMemoryBarrier toShaderRead{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    toShaderRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toShaderRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    toShaderRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toShaderRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toShaderRead.image = texture.Image;
+    toShaderRead.subresourceRange = toTransfer.subresourceRange;
+    toShaderRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toShaderRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toShaderRead);
+}
+
+void GfxRenderingAPIVulkan::RetireNativePicaTexture(TextureRecord& texture) {
+    if (texture.Image != VK_NULL_HANDLE || texture.NriImage != VK_NULL_HANDLE ||
+        texture.Memory != VK_NULL_HANDLE || texture.Sampler != VK_NULL_HANDLE)
+        mFrameResources[mCurrentFrame].RetiredTextures.push_back(std::move(texture));
+    texture = {};
+}
+
+void GfxRenderingAPIVulkan::RetireNativePicaMaterial(NativePicaMaterialBundle& material) {
+    for (auto& image : material.Images) RetireNativePicaTexture(image);
+    material = {};
+}
+
+GfxRenderingAPIVulkan::NativePicaMaterialBundle*
+GfxRenderingAPIVulkan::GetOrCreateNativePicaMaterial(
+    const std::shared_ptr<const ::Oot3d::Renderer::AzaharPbrMaterial>& material) {
+    auto& entry = mNativePicaMaterials[material->Identity.NativeHash];
+    entry.LastUsedFrame = mFrameCounter;
+    if (entry.Active.Material && entry.Active.Material->Identity != material->Identity) {
+        RetireNativePicaMaterial(entry.Active);
+        RetireNativePicaMaterial(entry.Pending);
+        entry.FailedGeneration = 0U;
+    }
+    const auto active = [&]() -> NativePicaMaterialBundle* {
+        return entry.Active.Material ? &entry.Active : nullptr;
+    };
+    if ((entry.Active.Material && entry.Active.Material->Generation == material->Generation) ||
+        entry.FailedGeneration == material->Generation) return active();
+    const auto sourceAt = [](const auto& source, size_t role) -> const auto& {
+        return role < 3U ? source.Textures[role] : source.ColorReplacement;
+    };
+    if (!entry.Pending.Material || entry.Pending.Material->Generation != material->Generation) {
+        RetireNativePicaMaterial(entry.Pending);
+        entry.Pending.Material = material;
+        if (entry.Active.Material) {
+            for (size_t role = 0U; role < 4U; ++role) {
+                const auto& old = sourceAt(*entry.Active.Material, role);
+                const auto& next = sourceAt(*material, role);
+                if (old && next && old->PixelContentHash == next->PixelContentHash &&
+                    old->Width == next->Width && old->Height == next->Height)
+                    entry.Pending.ReusedImages |= static_cast<uint8_t>(1U << role);
+            }
+        }
+    }
+    try {
+        for (size_t role = 0U; role < 4U; ++role) {
+            const auto& source = sourceAt(*material, role);
+            if (!source || (entry.Pending.ReusedImages & (1U << role)) != 0U) continue;
+            auto& image = entry.Pending.Images[role];
+            auto& uploaded = entry.Pending.UploadedRows[role];
+            if (uploaded == source->Height) continue;
+            const uint64_t rowBytes = static_cast<uint64_t>(source->Width) * 4U;
+            if (!source->Rgba8 || rowBytes == 0U || source->Height == 0U ||
+                rowBytes * source->Height != source->Rgba8->size())
+                throw std::runtime_error("invalid decoded PBR texture dimensions");
+            const uint64_t remaining = kCustomTextureUploadBudgetBytes -
+                std::min(kCustomTextureUploadBudgetBytes, mCustomTextureUploadBytesThisFrame);
+            const auto rows = static_cast<uint32_t>(
+                std::min<uint64_t>(source->Height - uploaded, remaining / rowBytes));
+            if (rows == 0U) return active();
+            if (image.Image == VK_NULL_HANDLE)
+                CreateNativePicaTextureStorage(image, source->Width, source->Height,
+                    1U, VK_FORMAT_R8G8B8A8_UNORM, false);
+            const auto pixels = std::span<const uint8_t>(*source->Rgba8).subspan(
+                static_cast<size_t>(uploaded * rowBytes), static_cast<size_t>(rows * rowBytes));
+            UploadNativePicaTextureRows(image, pixels, source->Width, source->Height,
+                0U, 1U, VK_FORMAT_R8G8B8A8_UNORM, uploaded, rows);
+            uploaded += rows;
+            mCustomTextureUploadBytesThisFrame += pixels.size();
+            if (uploaded != source->Height) return active();
+            image.UploadedMipLevels = 1U;
+            image.Uploaded = true;
+            image.CustomReplacementHash = material->Identity.NativeHash;
+            image.CustomReplacementPixelHash = source->PixelContentHash;
+            image.CustomReplacementApplied = true;
+            image.CustomReplacementReady = true;
+        }
+        for (size_t role = 0U; role < 4U; ++role) {
+            if ((entry.Pending.ReusedImages & (1U << role)) == 0U) continue;
+            entry.Pending.Images[role] = std::move(entry.Active.Images[role]);
+            entry.Active.Images[role] = {};
+        }
+        RetireNativePicaMaterial(entry.Active);
+        entry.Active = std::move(entry.Pending);
+        entry.Pending = {};
+        return &entry.Active;
+    } catch (const std::exception& exception) {
+        RetireNativePicaMaterial(entry.Pending);
+        entry.FailedGeneration = material->Generation;
+        ::Oot3d::Renderer::AzaharTexturePackRuntime::Instance().ReportMaterialUploadFailure(
+            material->Identity.NativeHash, material->Generation,
+            fmt::format("PBR material {:016X}: {}", material->Identity.NativeHash, exception.what()));
+        return active();
+    }
 }
 
 void GfxRenderingAPIVulkan::EnsureNativePicaVulkanShaderModules(
@@ -3765,6 +3943,61 @@ bool GfxRenderingAPIVulkan::PublishPicaCompositionSequence(
     }
 }
 
+void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
+    NativePicaRenderTarget& target, const GfxNativePicaDrawView& draw,
+    double& shadowMilliseconds, double& grassMilliseconds) {
+    if (mNativePicaCompositionSchedule.Purpose() ==
+        Renderer3ds::PicaCompositionPurpose::NativeMemory) return;
+    const auto reference = Renderer3ds::BuildPicaCompositionDrawReference(draw);
+    const bool timed = mDiagnostics.Enabled();
+    using Clock = std::chrono::steady_clock;
+    auto begin = timed ? Clock::now() : Clock::time_point{};
+    if (mDirectionalShadowSchedulePlan.Valid() && mNativePicaCompositionSchedule.Valid()) {
+        if (const auto* anchor = mNativePicaCompositionSchedule.FindAnchorBeforeDraw(
+                Oot3d::EffectStage::AfterOpaque, reference.Target, draw.SubmissionId))
+            TryRenderDirectionalShadowMap(target, mFrameGraphicsSettings, *anchor);
+    }
+    if (timed) {
+        const auto now = Clock::now();
+        shadowMilliseconds += std::chrono::duration<double, std::milli>(now - begin).count();
+        begin = now;
+    }
+    const auto* grassAnchor = mInteractiveGrassProviderPlan.Valid()
+        ? mNativePicaCompositionSchedule.FindPublishedGeometryAnchor(reference.Target) : nullptr;
+    if (grassAnchor != nullptr && !grassAnchor->AtTargetEnd &&
+        grassAnchor->BeforeSubmissionId == draw.SubmissionId)
+        TryRenderInteractiveGrass(target, mFrameGraphicsSettings,
+            Oot3d::EffectGeometryProviderInvocationKind::DeclaredBoundary);
+    if (timed)
+        grassMilliseconds += std::chrono::duration<double, std::milli>(Clock::now() - begin).count();
+    const auto& effects = mFrameGraphicsSettings.Effects;
+    const bool sceneEffects = effects.AmbientOcclusion != Oot3d::AmbientOcclusionMode::Off ||
+        effects.Reflections != Oot3d::ReflectionMode::Off ||
+        (effects.Toon != Oot3d::ToonMode::Off && effects.ToonStyle.OutlineEnabled);
+    if (!mNativeFidelityProfile && sceneEffects &&
+        draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui) {
+        const auto* beforeUi = mNativePicaCompositionSchedule.FindAnchorBeforeDraw(
+            Oot3d::EffectStage::BeforeUi, reference.Target, draw.SubmissionId);
+        if (beforeUi != nullptr) {
+            GpuTextureCopySourceImport composed;
+            std::string error;
+            if (!ComposeNativePicaSceneForCopy(target, draw.SubmissionId, composed, &error, beforeUi))
+                throw std::runtime_error(error);
+            if (composed.Image != target.ColorImage) {
+                if (!mNriPicaDisplayCopyPass.Execute({
+                        mCurrentFrame, mFrameCounter, composed.Image, target.ColorImage,
+                        composed.Format, {target.Width, target.Height, target.Width, target.Height},
+                        composed.ShaderRead, true, true}))
+                    throw std::runtime_error("native pre-UI scene commit failed");
+                mDiagnostics.RecordNriPicaDisplayCopy(
+                    true, mNriPicaDisplayCopyPass.LastBarrierCount());
+                target.ContentWriteSerial = ++mGpuTextureCopyWriteSerial;
+                target.SceneEffectsResolvedSerial = target.ContentWriteSerial;
+            }
+        }
+    }
+}
+
 bool GfxRenderingAPIVulkan::SubmitPicaDraw(
     const GfxNativePicaDrawView& draw, std::string* error) {
     try {
@@ -3822,16 +4055,6 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             throw std::runtime_error("native PICA framebuffer dimensions are zero");
         }
 
-        const ::Oot3d::Renderer::PicaCompositionTargetReference
-            compositionTarget{
-                draw.RenderTargetNamespace,
-                draw.FramebufferColorPhysicalAddress,
-                draw.FramebufferDepthPhysicalAddress,
-                draw.FramebufferWidth,
-                draw.FramebufferHeight,
-                draw.FramebufferColorFormat,
-                draw.FramebufferDepthFormat,
-            };
         if (mNativePicaCompositionSchedule.Valid()) {
             std::string scheduleError;
             const bool matched =
@@ -3850,11 +4073,24 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             sceneDraw &&
             draw.Composition.Layer ==
                 ::Oot3d::Renderer::PicaCompositionLayer::OpaqueWorld;
+        const bool nativeMemoryOnly = mNativePicaCompositionSchedule.Purpose() ==
+            Renderer3ds::PicaCompositionPurpose::NativeMemory;
 
         const auto& graphicsSettings = mFrameGraphicsSettings;
+        if (!nativeMemoryOnly && !mNativeFidelityProfile && sceneDraw &&
+            draw.Composition.NativeProjectedShadow &&
+            graphicsSettings.Effects.SurfaceLighting != Oot3d::SurfaceLightingMode::Native) {
+            // Consume native ordering and its graph boundaries, but do not
+            // rasterize the legacy projected shadow into presentation or guides.
+            // The canonical native-memory replay remains untouched.
+            auto& target = GetOrCreateNativePicaRenderTarget(draw);
+            ExecuteNativePicaBeforeDrawAnchors(target, draw,
+                cpuTimings.DirectionalShadowMilliseconds, cpuTimings.GrassRenderMilliseconds);
+            return true;
+        }
         const uint64_t azaharTextureGeneration =
             mFrameAzaharTextureGeneration;
-        const bool reflectionsEnabled =
+        const bool reflectionsEnabled = !nativeMemoryOnly &&
             graphicsSettings.Effects.Reflections !=
             Oot3d::ReflectionMode::Off;
         std::array<Oot3d::ReflectionMaterialTextureIdentity, 3U>
@@ -3892,12 +4128,168 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         const bool grassPerspectiveProjection =
             Oot3d::UsesPicaPerspectiveProjection(
                 draw.VertexUniformBytes);
-        const bool directionalShadowReceiver =
+        const bool directionalShadowReceiver = !nativeMemoryOnly &&
+            graphicsSettings.Effects.SurfaceLighting != Oot3d::SurfaceLightingMode::Native &&
             mDirectionalShadowMapBarrierPlan.Valid() &&
             Oot3d::PicaExtensionPassEnabled(
                 mPicaExtensionGraph,
                 Oot3d::PicaExtensionPass::DirectionalShadowLighting) &&
             grassPerspectiveProjection;
+        std::optional<Renderer3ds::PicaSurfaceLightingUniforms> surfaceLighting;
+        const auto* environmentWorldToView = draw.LightBinding.WorldToView
+            ? &*draw.LightBinding.WorldToView : nullptr;
+        Oot3d::DirectionalShadowMatrix environmentViewToWorld{};
+        if (!nativeMemoryOnly && !mNativeFidelityProfile &&
+            graphicsSettings.Effects.SurfaceLighting != Oot3d::SurfaceLightingMode::Native &&
+            draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Scene &&
+            grassPerspectiveProjection && draw.FragmentOperationMode != 3U &&
+            draw.VertexUniformBytes.size() >= Oot3d::kPicaPackedVertexFloatOffset) {
+            uint32_t booleanUniforms = 0U;
+            std::memcpy(&booleanUniforms, draw.VertexUniformBytes.data() +
+                        Oot3d::kPicaPackedVertexBooleanMaskOffset, sizeof(booleanUniforms));
+            surfaceLighting = Renderer3ds::BuildPicaSurfaceLightingUniforms(
+                draw.TemporalVertexProgram.Hooks, booleanUniforms,
+                draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset),
+                draw.LightBinding, mFrameEnvironment,
+                environmentWorldToView);
+            if (surfaceLighting && environmentWorldToView && directionalShadowReceiver &&
+                !Oot3d::InvertDirectionalShadowMatrix(*environmentWorldToView, environmentViewToWorld))
+                surfaceLighting.reset();
+        }
+        std::array<TextureRecord*, 3> textures{
+            &mFallbackTexture, &mFallbackTexture, &mFallbackTexture};
+        std::array<VkFormat, 3> textureFormats{
+            VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
+            VK_FORMAT_R8G8B8A8_UNORM};
+        std::array<bool, 3> integerTextures{};
+        for (const auto& texture : draw.Textures) {
+            if (texture.Slot >= textures.size()) {
+                throw std::runtime_error("native PICA texture slot is invalid");
+            }
+            if (texture.NativeType != 0U &&
+                !(texture.Slot == 0U &&
+                  (texture.NativeType == 2U || texture.NativeType == 3U))) {
+                throw std::runtime_error(
+                    "native PICA texture type is unsupported by sampler2D");
+            }
+            const auto resolutionStart = std::chrono::steady_clock::now();
+            MaterializeRestoredGpuTextureCopyProducers();
+            TextureRecord* record =
+                GetOrCreateNativePicaTexture(
+                    texture, error, azaharTextureGeneration,
+                    draw.RenderTargetNamespace,
+                    texture.NativeContentHashAvailable
+                        ? &texture.NativeContentHash
+                        : nullptr);
+            if (record == nullptr) {
+                return false;
+            }
+            const auto finished = std::chrono::steady_clock::now();
+            const auto elapsed = [](const auto& from, const auto& to) {
+                return std::chrono::duration<double>(to - from).count();
+            };
+            if (texture.CopyReferences.empty() == false) {
+                // Producer references resolved into the sampled image on the
+                // GPU: no CPU hash of the copy's ranges, no decode of them and no
+                // queue idle.
+                mGpuTextureCopySamplerCost.BindSeconds +=
+                    elapsed(resolutionStart, finished);
+            } else {
+                mGpuTextureCopySamplerCost.ResolveSeconds +=
+                    elapsed(resolutionStart, finished);
+            }
+            textures[texture.Slot] = record;
+            textureFormats[texture.Slot] =
+                texture.NativeType == 2U ? VK_FORMAT_R32_UINT
+                                         : VK_FORMAT_R8G8B8A8_UNORM;
+            integerTextures[texture.Slot] =
+                texture.NativeType == 2U;
+        }
+        TextureRecord* lightingLutTexture = &mFallbackTexture;
+        bool lightingLutInteger = false;
+        if (!draw.LightingLut.PackedEntries.empty()) {
+            lightingLutTexture =
+                GetOrCreateNativePicaLightingLut(draw.LightingLut, error);
+            if (lightingLutTexture == nullptr) {
+                return false;
+            }
+            lightingLutInteger = true;
+        }
+        finishCpuStage(cpuTimings.TextureMilliseconds);
+        const auto nativeTextures = textures;
+        NativePicaMaterialBundle* pbrMaterial = nullptr;
+        Renderer3ds::PicaPbrShaderOptions pbrOptions;
+        std::optional<Renderer3ds::PicaPbrUniforms> pbrUniforms;
+        std::array<TextureRecord*, 3> pbrTextures{
+            &mFallbackTexture, &mFallbackTexture, &mFallbackTexture};
+        VkSampler pbrSampler = mFallbackTexture.Sampler;
+        if (surfaceLighting &&
+            graphicsSettings.Effects.SurfaceLighting == Oot3d::SurfaceLightingMode::PerPixelPbr &&
+            draw.FragmentShaderHooks.ValidFor(draw.FragmentShaderSource) &&
+            draw.FragmentShaderHooks.Supports(Renderer3ds::PicaShaderHook::AfterNativeTev) &&
+            (!draw.FragmentFeatures.FragmentLightingEnabled ||
+             (draw.FragmentFeatures.FragmentLighting.Valid() &&
+              draw.FragmentUniformBytes.size() >= Oot3d::kPicaPackedFragmentLightingProgramOffset +
+                  sizeof(Renderer3ds::PicaLightingProgram))) &&
+            draw.FragmentUniformBytes.size() >= Oot3d::kPicaPackedFragmentTevProgramOffset +
+                sizeof(Renderer3ds::PicaTevProgram)) {
+            Renderer3ds::PicaTevProgram tev;
+            std::memcpy(&tev, draw.FragmentUniformBytes.data() +
+                Oot3d::kPicaPackedFragmentTevProgramOffset, sizeof(tev));
+            const uint8_t colorMask = Renderer3ds::PicaTevMaterialTextureMask(tev) & 7U;
+            uint8_t automaticMask = colorMask;
+            if (draw.FragmentFeatures.FragmentLighting.BumpMode != Renderer3ds::PicaFragmentLightingBumpMode::None)
+                automaticMask &= static_cast<uint8_t>(
+                    ~(1U << draw.FragmentFeatures.FragmentLighting.BumpTextureUnit));
+            std::shared_ptr<const ::Oot3d::Renderer::AzaharPbrMaterial> selected;
+            uint8_t selectedSlot = 0xffU;
+            for (uint8_t slot = 0; slot < 3U; ++slot) {
+                const auto* sample = draw.FragmentShaderHooks.TextureSample(slot);
+                if ((colorMask & (1U << slot)) == 0U || integerTextures[slot] || sample == nullptr ||
+                    (sample->Operation != Renderer3ds::PicaTextureCoordinateOperation::NativeVFlip &&
+                     sample->Operation != Renderer3ds::PicaTextureCoordinateOperation::ProjectedNativeVFlip))
+                    continue;
+                const auto resolved = ::Oot3d::Renderer::AzaharTexturePackRuntime::Instance().
+                    ResolveMaterialOrQueue(textures[slot]->CustomReplacementHash, azaharTextureGeneration);
+                if (!resolved.Material) continue;
+                const uint8_t explicitSlot = resolved.Material->Parameters.TextureSlot;
+                if ((explicitSlot == 0xffU && automaticMask != (1U << slot)) ||
+                    (explicitSlot != 0xffU && explicitSlot != slot)) continue;
+                if (selected) {
+                    selected.reset();
+                    break; // Two authored material selectors are ambiguous, not an ordering rule.
+                }
+                selected = resolved.Material;
+                selectedSlot = slot;
+            }
+            if (selected) pbrMaterial = GetOrCreateNativePicaMaterial(selected);
+            if (pbrMaterial != nullptr) {
+                pbrOptions.TextureSlot = selectedSlot;
+                pbrOptions.NativeFragmentLighting = draw.FragmentFeatures.FragmentLightingEnabled;
+                const auto& layout = draw.FragmentFeatures.FragmentLighting;
+                for (size_t slot = 0; slot < layout.ActiveLightCount; ++slot) {
+                    const auto& light = layout.Lights[layout.LightPermutation[slot]];
+                    pbrOptions.NativeAttenuationLuts |= light.SpotAttenuationEnabled || light.DistanceAttenuationEnabled;
+                }
+                Renderer3ds::PicaLightingProgram lighting;
+                if (draw.FragmentUniformBytes.size() >= Oot3d::kPicaPackedFragmentLightingProgramOffset + sizeof(lighting))
+                    std::memcpy(&lighting, draw.FragmentUniformBytes.data() +
+                        Oot3d::kPicaPackedFragmentLightingProgramOffset, sizeof(lighting));
+                uint8_t mapMask = 0U;
+                for (size_t role = 0; role < pbrTextures.size(); ++role) {
+                    if (!pbrMaterial->Material->Textures[role]) continue;
+                    mapMask |= static_cast<uint8_t>(1U << role);
+                    pbrTextures[role] = &pbrMaterial->Images[role];
+                }
+                pbrUniforms = Renderer3ds::BuildPicaPbrUniforms(
+                    pbrMaterial->Material->Parameters, mapMask, lighting, graphicsSettings.Effects.Pbr);
+                pbrSampler = nativeTextures[selectedSlot]->Sampler;
+                if (pbrMaterial->Material->ColorReplacement)
+                    textures[selectedSlot] = &pbrMaterial->Images[3];
+                resolvedReflectionMaterial.reset();
+            }
+        }
+        finishCpuStage(cpuTimings.TextureMilliseconds);
         const Oot3d::PicaShaderPipelineRequest variantRequest{
             draw.VertexShaderSource,
             draw.VertexShaderKey,
@@ -3916,21 +4308,25 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 draw.CompositionDomain,
                 draw.DepthCompare,
             },
-            mTemporalMotionEnabled,
+            mTemporalMotionEnabled && !nativeMemoryOnly,
             resolvedReflectionMaterial.has_value()
                 ? std::optional<Oot3d::ReflectionMaterialParameters>(
                       resolvedReflectionMaterial->Parameters)
                 : std::nullopt,
-            mNativeFidelityProfile,
+            mNativeFidelityProfile || nativeMemoryOnly,
             draw.TemporalVertexProgram,
             draw.FragmentShaderHooks,
             draw.VertexShaderSourceIdentity,
             draw.FragmentShaderSourceIdentity,
+            surfaceLighting.has_value(),
+            pbrOptions,
         };
+        static const Oot3d::EffectsSettings nativeMemoryEffects;
         bool variantCacheHit = false;
         const auto& shaderVariant =
             mPicaShaderPipelineCache.Resolve(
-                variantRequest, graphicsSettings.Effects,
+                variantRequest,
+                nativeMemoryOnly ? nativeMemoryEffects : graphicsSettings.Effects,
                 &variantCacheHit);
         const auto variantCacheStats =
             mPicaShaderPipelineCache.Stats();
@@ -4250,73 +4646,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             mNriPicaPipelineBridge.DescriptorLayoutOwnedByNri());
         finishCpuStage(cpuTimings.ShaderCacheMilliseconds);
 
-        std::array<TextureRecord*, 3> textures{
-            &mFallbackTexture, &mFallbackTexture, &mFallbackTexture};
-        std::array<VkFormat, 3> textureFormats{
-            VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
-            VK_FORMAT_R8G8B8A8_UNORM};
-        std::array<bool, 3> integerTextures{};
-        for (const auto& texture : draw.Textures) {
-            if (texture.Slot >= textures.size()) {
-                throw std::runtime_error("native PICA texture slot is invalid");
-            }
-            if (texture.NativeType != 0U &&
-                !(texture.Slot == 0U &&
-                  (texture.NativeType == 2U || texture.NativeType == 3U))) {
-                throw std::runtime_error(
-                    "native PICA texture type is unsupported by sampler2D");
-            }
-            std::vector<uint8_t> coherentBytes;
-            const auto resolutionStart = std::chrono::steady_clock::now();
-            const size_t texturesBefore = mNativePicaTextures.size();
-            const auto coherentTexture = ResolveNativePicaCopiedTexture(
-                texture, draw.RenderTargetNamespace, draw.SubmissionId, coherentBytes);
-            const auto resolveDone = std::chrono::steady_clock::now();
-            TextureRecord* record =
-                GetOrCreateNativePicaTexture(
-                    coherentTexture, error, azaharTextureGeneration,
-                    coherentTexture.NativeContentHashAvailable
-                        ? &coherentTexture.NativeContentHash
-                        : nullptr);
-            if (record == nullptr) {
-                return false;
-            }
-            if (RawCopyDestinationOverlaps(texture.PhysicalAddress,
-                                            texture.NativeBytes.size())) {
-                const auto finished = std::chrono::steady_clock::now();
-                const auto elapsed = [](const auto& from, const auto& to) {
-                    return std::chrono::duration<double>(to - from).count();
-                };
-                ++mRawCopySamplerCost.Resolutions;
-                mRawCopySamplerCost.CoherenceBytes += coherentBytes.size();
-                mRawCopySamplerCost.NativeBytes += texture.NativeBytes.size();
-                mRawCopySamplerCost.CoherenceSeconds += elapsed(resolutionStart, resolveDone);
-                mRawCopySamplerCost.CreationSeconds += elapsed(resolveDone, finished);
-                if (mNativePicaTextures.size() != texturesBefore) {
-                    ++mRawCopySamplerCost.Creations;
-                }
-                mRawCopySamplerCost.ResolveSeconds += elapsed(resolutionStart, finished);
-            }
-            ++mRawCopySamplerCost.OverlappingResolutions;
-            textures[texture.Slot] = record;
-            textureFormats[texture.Slot] =
-                texture.NativeType == 2U ? VK_FORMAT_R32_UINT
-                                         : VK_FORMAT_R8G8B8A8_UNORM;
-            integerTextures[texture.Slot] =
-                texture.NativeType == 2U;
-        }
-        TextureRecord* lightingLutTexture = &mFallbackTexture;
-        bool lightingLutInteger = false;
-        if (!draw.LightingLut.PackedEntries.empty()) {
-            lightingLutTexture =
-                GetOrCreateNativePicaLightingLut(draw.LightingLut, error);
-            if (lightingLutTexture == nullptr) {
-                return false;
-            }
-            lightingLutInteger = true;
-        }
-        finishCpuStage(cpuTimings.TextureMilliseconds);
-        if (mInteractiveGrassProviderPlan.Valid() && opaqueWorldDraw) {
+        if (!nativeMemoryOnly && mInteractiveGrassProviderPlan.Valid() && opaqueWorldDraw) {
             const auto latestGrassPerspective =
                 Oot3d::SceneViewRuntime::Instance()
                     .LatestPerspective();
@@ -4350,28 +4680,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
 
         auto& renderTarget = GetOrCreateNativePicaRenderTarget(draw);
         finishCpuStage(cpuTimings.RenderTargetStateMilliseconds);
-        if (mDirectionalShadowSchedulePlan.Valid() &&
-            mNativePicaCompositionSchedule.Valid()) {
-            const auto* shadowAnchor =
-                mNativePicaCompositionSchedule.FindAnchorBeforeDraw(
-                    Oot3d::EffectStage::AfterOpaque,
-                    compositionTarget, draw.SubmissionId);
-            if (shadowAnchor != nullptr) {
-                TryRenderDirectionalShadowMap(
-                    renderTarget, graphicsSettings, *shadowAnchor);
-            }
-        }
-        finishCpuStage(cpuTimings.DirectionalShadowMilliseconds);
-        const auto* grassAnchor = mInteractiveGrassProviderPlan.Valid()
-            ? mNativePicaCompositionSchedule.FindPublishedGeometryAnchor(compositionTarget)
-            : nullptr;
-        if (grassAnchor != nullptr && !grassAnchor->AtTargetEnd &&
-            grassAnchor->BeforeSubmissionId == draw.SubmissionId) {
-            TryRenderInteractiveGrass(
-                renderTarget, graphicsSettings,
-                Oot3d::EffectGeometryProviderInvocationKind::DeclaredBoundary);
-        }
-        finishCpuStage(cpuTimings.GrassRenderMilliseconds);
+        ExecuteNativePicaBeforeDrawAnchors(renderTarget, draw,
+            cpuTimings.DirectionalShadowMilliseconds, cpuTimings.GrassRenderMilliseconds);
+        if (collectCpuTimings) cpuStageStart = CpuClock::now();
         renderTarget.WBuffering = draw.WBuffering;
         const bool reflectionEnvironmentEligible =
             sceneDraw &&
@@ -4388,7 +4699,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             cpuTimings.GrassRenderMilliseconds +
             cpuTimings.ReflectionEnvironmentMilliseconds;
         Oot3d::RigidMotionSample rigidMotion{};
-        const std::array<float, 2> jitterUv = mTemporalJitterEnabled
+        const std::array<float, 2> jitterUv = mTemporalJitterEnabled && !nativeMemoryOnly
             ? std::array<float, 2>{
                   mTemporalJitterPixels[0] /
                       static_cast<float>(renderTarget.Width),
@@ -4396,7 +4707,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                       static_cast<float>(renderTarget.Height)}
             : std::array<float, 2>{};
         std::array<float, 4> rigidOriginClip{};
-        const bool temporalEligible = mTemporalMotionEnabled &&
+        const bool temporalEligible = mTemporalMotionEnabled && !nativeMemoryOnly &&
             sceneDraw &&
             draw.FragmentOperationMode == 0U &&
             draw.DepthTestEnabled && draw.DepthWriteEnabled;
@@ -4615,27 +4926,58 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     draw.FramebufferColorPhysicalAddress,
                     mFrameCounter);
             if (directionalShadowHistory.Valid()) {
-                const auto nativeVertexState =
-                    Oot3d::DecodePicaNativeVertexState(
-                        draw.VertexUniformBytes,
-                        previousVertexUniformBytes,
-                        exactMotionHistory,
-                        draw.TemporalVertexProgram.Hooks);
                 const auto nativeEnvironment =
                     Oot3d::DecodePicaNativeDrawEnvironment(
                         draw.VertexUniformBytes,
                         draw.FragmentUniformBytes,
                         draw.FragmentFeatures);
-                if (nativeVertexState.Transform
-                        .CurrentViewToWorldAvailable) {
-                    directionalShadowBinding =
-                        Oot3d::BuildPicaDirectionalShadowReceiverBinding(
-                            nativeVertexState.Transform
-                                .CurrentViewToWorld,
-                            nativeEnvironment.Lighting,
-                            nativeVertexState.Transform
-                                .CurrentUsesSkeleton,
-                            directionalShadowHistory.State);
+                Oot3d::DirectionalShadowMatrix receiverViewToWorld;
+                if (draw.LightBinding.WorldToView &&
+                    Oot3d::InvertDirectionalShadowMatrix(*draw.LightBinding.WorldToView, receiverViewToWorld)) {
+                    if (surfaceLighting &&
+                        Oot3d::HasPicaShaderInstrumentationFeature(shaderVariant.AppliedFeatures,
+                            Oot3d::PicaShaderInstrumentationFeature::NativePerPixelLighting) &&
+                        (surfaceLighting->EnvironmentParameters[3] != 0.0F ||
+                         surfaceLighting->Control[0] != 0U ||
+                         surfaceLighting->Control[2] != 0U ||
+                         (pbrMaterial != nullptr && pbrOptions.NativeFragmentLighting))) {
+                        std::array<Oot3d::PicaSurfaceShadowLight, 12> lights{};
+                        if (pbrMaterial != nullptr && pbrOptions.NativeFragmentLighting) {
+                            const auto& native = nativeEnvironment.FragmentLighting;
+                            for (size_t index = 0; index < native.Lights.size(); ++index) {
+                                const auto& source = native.Lights[index];
+                                lights[index].DirectionViewTowardSource = source.PositionOrDirectionView;
+                                lights[index].ShaderSlot = static_cast<uint8_t>(index);
+                                lights[index].Enabled = source.Active && source.ValuesAvailable;
+                                lights[index].Point = !native.Layout.Lights[index].Directional;
+                            }
+                        } else {
+                            for (size_t slot = 0; slot < surfaceLighting->Lights.size(); ++slot) {
+                                const auto& source = surfaceLighting->Lights[slot];
+                                std::copy_n(source.DirectionEnabled.begin(), 3,
+                                    lights[slot].DirectionViewTowardSource.begin());
+                                lights[slot].ShaderSlot = static_cast<uint8_t>(slot);
+                                lights[slot].Enabled = source.DirectionEnabled[3] != 0.0F;
+                                lights[slot].Point = source.PositionRadius[3] > 0.0F;
+                            }
+                        }
+                        if (surfaceLighting->EnvironmentParameters[3] != 0.0F) {
+                            // Only the authored key casts; native slots retain their own matching.
+                            const auto& direction = surfaceLighting->EnvironmentDirections[0];
+                            std::copy_n(direction.begin(), 3, lights[8].DirectionViewTowardSource.begin());
+                            lights[8].ShaderSlot = 8;
+                            lights[8].Enabled = direction[3] > 0.0F;
+                        }
+                        for (uint32_t slot = 0; slot < surfaceLighting->Control[2]; ++slot) {
+                            std::copy_n(surfaceLighting->SceneDirections[slot].begin(), 3,
+                                lights[10 + slot].DirectionViewTowardSource.begin());
+                            lights[10 + slot].ShaderSlot = static_cast<uint8_t>(10 + slot);
+                            lights[10 + slot].Enabled = true;
+                        }
+                        directionalShadowBinding = Oot3d::BuildPicaSurfaceShadowReceiverBinding(
+                            receiverViewToWorld,
+                            lights, directionalShadowHistory.State);
+                    }
                 }
             }
         }
@@ -4663,6 +5005,27 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         const auto toonUniforms = Oot3d::PackToonSurfaceParameters(
             graphicsSettings.Effects.Toon, graphicsSettings.Effects.ToonStyle, false);
 
+        const bool uniformToon = Oot3d::HasPicaShaderInstrumentationFeature(
+            shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::Toon);
+        const bool uniformSurface = Oot3d::HasPicaShaderInstrumentationFeature(
+            shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::NativePerPixelLighting);
+        const bool uniformPbr = Oot3d::HasPicaShaderInstrumentationFeature(
+            shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::PbrMaterial);
+        const bool uniformShadow = Oot3d::HasPicaShaderInstrumentationFeature(
+            shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::DirectionalShadowLighting);
+        const VkDeviceSize directionalShadowUniformSize = uniformShadow
+            ? sizeof(directionalShadowUniforms) : draw.FragmentUniformBytes.size();
+        const std::array<VkDeviceSize, 7> uniformSizes{
+            draw.VertexUniformBytes.size(), previousVertexUniformBytes.size(),
+            draw.FragmentUniformBytes.size(), uniformShadow ? sizeof(directionalShadowUniforms) : 0U,
+            uniformToon ? sizeof(toonUniforms) : 0U,
+            uniformSurface ? sizeof(*surfaceLighting) : 0U,
+            uniformPbr ? sizeof(*pbrUniforms) : 0U};
+        VkDeviceSize uniformBytes = 0;
+        for (const auto size : uniformSizes)
+            uniformBytes += (size + mUniformBufferAlignment - 1U) & ~(mUniformBufferAlignment - 1U);
+        EnsureFrameUniformCapacity(uniformBytes, mUniformBufferAlignment);
+
         const auto uploadUniform = [&](std::span<const uint8_t> bytes) {
             const VkDeviceSize offset =
                 (frame.UniformBytesUsed + mUniformBufferAlignment - 1U) &
@@ -4684,21 +5047,29 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             uploadUniform(previousVertexUniformBytes);
         const VkDeviceSize fragmentUniformOffset =
             uploadUniform(draw.FragmentUniformBytes);
-        const VkDeviceSize directionalShadowUniformOffset =
-            uploadUniform(std::span<const uint8_t>(
-                reinterpret_cast<const uint8_t*>(
-                    &directionalShadowUniforms),
-                sizeof(directionalShadowUniforms)));
-        const bool uniformToon = Oot3d::HasPicaShaderInstrumentationFeature(
-            shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::Toon);
-        // Disabled extensions consume no additional upload space. Binding 15
-        // is unused by canonical programs and can reference a valid existing range.
+        const VkDeviceSize directionalShadowUniformOffset = uniformShadow
+            ? uploadUniform(std::span<const uint8_t>(
+                reinterpret_cast<const uint8_t*>(&directionalShadowUniforms),
+                sizeof(directionalShadowUniforms)))
+            : fragmentUniformOffset;
+        // Inactive extension bindings reuse an existing range; no upload.
         const VkDeviceSize toonUniformOffset = uniformToon
             ? uploadUniform(std::span<const uint8_t>(
                 reinterpret_cast<const uint8_t*>(&toonUniforms), sizeof(toonUniforms)))
             : directionalShadowUniformOffset;
         const VkDeviceSize toonUniformSize = uniformToon
-            ? sizeof(toonUniforms) : sizeof(directionalShadowUniforms);
+            ? sizeof(toonUniforms) : directionalShadowUniformSize;
+        const VkDeviceSize surfaceUniformOffset = uniformSurface
+            ? uploadUniform(std::span<const uint8_t>(
+                reinterpret_cast<const uint8_t*>(&surfaceLighting.value()), sizeof(*surfaceLighting)))
+            : directionalShadowUniformOffset;
+        const VkDeviceSize surfaceUniformSize = uniformSurface
+            ? sizeof(*surfaceLighting) : directionalShadowUniformSize;
+        const VkDeviceSize pbrUniformOffset = uniformPbr
+            ? uploadUniform(std::span<const uint8_t>(
+                reinterpret_cast<const uint8_t*>(&pbrUniforms.value()), sizeof(*pbrUniforms)))
+            : directionalShadowUniformOffset;
+        const VkDeviceSize pbrUniformSize = uniformPbr ? sizeof(*pbrUniforms) : directionalShadowUniformSize;
         finishCpuStage(cpuTimings.UploadMilliseconds);
 
         const VkDescriptorSet descriptor = AllocateNativePicaDescriptorSet();
@@ -4714,12 +5085,19 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         const VkDescriptorBufferInfo directionalShadowUniform{
             frame.UniformBuffer.Buffer,
             directionalShadowUniformOffset,
-            sizeof(directionalShadowUniforms)};
+            directionalShadowUniformSize};
         const VkDescriptorBufferInfo toonUniform{
             frame.UniformBuffer.Buffer, toonUniformOffset, toonUniformSize};
+        const VkDescriptorBufferInfo surfaceUniform{
+            frame.UniformBuffer.Buffer, surfaceUniformOffset, surfaceUniformSize};
+        const VkDescriptorBufferInfo pbrUniform{
+            frame.UniformBuffer.Buffer, pbrUniformOffset, pbrUniformSize};
+        std::array<VkDescriptorImageInfo, 3> pbrImageInfos{};
+        for (size_t role = 0; role < pbrImageInfos.size(); ++role)
+            pbrImageInfos[role] = {pbrSampler, pbrTextures[role]->View, pbrTextures[role]->ImageLayout};
         std::array<VkDescriptorImageInfo, 3> imageInfos{};
         for (size_t slot = 0; slot < imageInfos.size(); ++slot) {
-            imageInfos[slot] = {textures[slot]->Sampler, textures[slot]->View,
+            imageInfos[slot] = {nativeTextures[slot]->Sampler, textures[slot]->View,
                                 textures[slot]->ImageLayout};
         }
         const VkDescriptorImageInfo shadowStorage{
@@ -4738,7 +5116,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             lightingLutTexture->Sampler,
             lightingLutTexture->View,
             lightingLutTexture->ImageLayout};
-        std::array<VkWriteDescriptorSet, 11> writes{};
+        std::array<VkWriteDescriptorSet, 16> writes{};
         writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                      descriptor, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                      nullptr, &vertexUniform, nullptr};
@@ -4775,14 +5153,23 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         writes[10] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                       descriptor, 15, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                       nullptr, &toonUniform, nullptr};
+        writes[11] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                      descriptor, 16, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                      nullptr, &surfaceUniform, nullptr};
+        writes[12] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                      descriptor, 17, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                      nullptr, &pbrUniform, nullptr};
+        for (uint32_t role = 0; role < 3U; ++role)
+            writes[13U + role] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                descriptor, 18U + role, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                &pbrImageInfos[role], nullptr, nullptr};
         vkUpdateDescriptorSets(mDevice, static_cast<uint32_t>(writes.size()),
                                writes.data(), 0, nullptr);
         finishCpuStage(cpuTimings.DescriptorMilliseconds);
 
         const bool samplesLiveShadow = std::any_of(
             textures.begin(), textures.end(), [](const TextureRecord* texture) {
-                return texture != nullptr &&
-                       texture->ImageLayout == VK_IMAGE_LAYOUT_GENERAL;
+                return texture != nullptr && texture->LiveRenderTargetAlias;
             });
         if (samplesLiveShadow) {
             EndNativePicaRenderPass();
@@ -4875,6 +5262,64 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         }
         mViewportSet = true;
         mScissorSet = true;
+        // Resolved-colour provenance of the target this draw writes, evaluated
+        // here because only now are the resolved texture records, the effective
+        // typed composition domain and the effective raster extent all known.
+        // The conditions are: the draw is composed as full-frame screen content,
+        // its effective viewport and scissor cover the whole target, every
+        // non-fallback texture it samples is a resolved copy record, and the UV
+        // footprint it samples lies inside that record's owned (producer-covered)
+        // rectangle - so the pixels actually written are resolved copy pixels,
+        // not the CPU-owned remainder of a padded texture. Nothing here uses the
+        // raw draw viewport as a geometry proof, and a tiny mesh cannot qualify.
+        {
+            // Native UI consumes the completed scene; its pixels must neither
+            // invalidate that completion nor become inputs to scene effects.
+            const bool retainResolvedScene =
+                draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui &&
+                renderTarget.SceneEffectsResolvedSerial != 0U &&
+                renderTarget.SceneEffectsResolvedSerial == renderTarget.ContentWriteSerial;
+            renderTarget.ContentWriteSerial = ++mGpuTextureCopyWriteSerial;
+            if (retainResolvedScene)
+                renderTarget.SceneEffectsResolvedSerial = renderTarget.ContentWriteSerial;
+            const bool fullTargetRaster =
+                compositionDomain ==
+                    ::Fast::Renderer3ds::PicaCompositionDomain::Screen &&
+                mViewport.x <= 0.0F && mViewport.y <= 0.0F &&
+                mViewport.x + static_cast<float>(mViewport.width) >=
+                    static_cast<float>(renderTarget.Width) &&
+                mViewport.y + static_cast<float>(mViewport.height) >=
+                    static_cast<float>(renderTarget.Height) &&
+                mScissor.offset.x <= 0 &&
+                mScissor.offset.y <= 0 &&
+                static_cast<uint32_t>(mScissor.offset.x) + mScissor.extent.width >=
+                    renderTarget.Width &&
+                static_cast<uint32_t>(mScissor.offset.y) + mScissor.extent.height >=
+                    renderTarget.Height;
+            if (fullTargetRaster) {
+                bool sampledResolvedCopy = false;
+                bool resolvedContentDraw = true;
+                for (const TextureRecord* sampled : textures) {
+                    if (sampled == nullptr || sampled == &mFallbackTexture) {
+                        continue;
+                    }
+                    if (sampled->SourceResolvedColour == false ||
+                        SampledFootprintInsideOwnedRect(draw, *sampled) == false) {
+                        resolvedContentDraw = false;
+                        break;
+                    }
+                    sampledResolvedCopy = true;
+                }
+                if (resolvedContentDraw && sampledResolvedCopy) {
+                    // This draw's own write is resolved content, so the target's
+                    // current content version carries the resolved scene effects;
+                    // any later draw, clear or fill of it bumps the write serial
+                    // and the accessor answers false again.
+                    renderTarget.SceneEffectsResolvedSerial =
+                        renderTarget.ContentWriteSerial;
+                }
+            }
+        }
         if (compositionDomain == Renderer3ds::PicaCompositionDomain::Ui) {
             const auto clip = Renderer3ds::ClipToPicaCanvas(
                 {mScissor.offset.x, mScissor.offset.y,
@@ -4916,8 +5361,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 {previousVertexUniformOffset,
                  previousVertexUniformBytes.size()},
                 {directionalShadowUniformOffset,
-                 sizeof(directionalShadowUniforms)},
+                 directionalShadowUniformSize},
                 {toonUniformOffset, toonUniformSize},
+                {surfaceUniformOffset, surfaceUniformSize},
+                {pbrUniformOffset, pbrUniformSize},
             }};
             nriDraw.VertexBuffer = geometryBuffer;
             nriDraw.VertexBufferSize = geometryBufferSize;
@@ -4929,44 +5376,35 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             nriDraw.VertexOrIndexCount =
                 draw.Indexed ? indexCount : draw.VertexCount;
             nriDraw.BaseVertex = draw.BaseVertex;
-            for (size_t slot = 0;
-                 slot < nriDraw.Textures.size(); ++slot) {
-                const auto* texture = textures[slot];
-                auto& destination = nriDraw.Textures[slot];
-                destination.Image = texture->NriImage;
-                destination.Format = textureFormats[slot];
+            const auto bindTexture = [](Oot3d::NriPicaTextureBindingDesc& destination,
+                                        const TextureRecord& texture, const TextureRecord& sampler,
+                                        VkFormat format, bool integer) {
+                destination.Image = texture.NriImage;
+                destination.Format = format;
                 destination.Usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-                if (texture->ImageLayout == VK_IMAGE_LAYOUT_GENERAL)
+                if (texture.ImageLayout == VK_IMAGE_LAYOUT_GENERAL)
                     destination.Usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-                destination.Width = texture->Width;
-                destination.Height = texture->Height;
-                destination.MipLevels = texture->MipLevels;
-                destination.MinFilter = ToNativePicaVkFilter(
-                    texture->SamplerState.MinFilter);
-                destination.MagFilter = ToNativePicaVkFilter(
-                    texture->SamplerState.MagFilter);
-                destination.MipmapMode =
-                    ToNativePicaVkMipmapMode(
-                        texture->SamplerState.MinFilter);
-                destination.AddressU =
-                    ToNativePicaVkAddressMode(
-                        texture->SamplerState.WrapS);
-                destination.AddressV =
-                    ToNativePicaVkAddressMode(
-                        texture->SamplerState.WrapT);
-                destination.MipBias =
-                    texture->SamplerState.LodBias;
-                const uint32_t highestMip =
-                    texture->UploadedMipLevels > 0U
-                        ? texture->UploadedMipLevels - 1U : 0U;
-                destination.MaxLod = static_cast<float>(
-                    std::min(texture->SamplerState.MaxMipLevel,
-                             highestMip));
-                destination.MinLod = static_cast<float>(
-                    std::min(texture->SamplerState.MinMipLevel,
-                             highestMip));
-                destination.Integer = integerTextures[slot];
-            }
+                destination.Width = texture.Width;
+                destination.Height = texture.Height;
+                destination.MipLevels = texture.MipLevels;
+                destination.MinFilter = ToNativePicaVkFilter(sampler.SamplerState.MinFilter);
+                destination.MagFilter = ToNativePicaVkFilter(sampler.SamplerState.MagFilter);
+                destination.MipmapMode = ToNativePicaVkMipmapMode(sampler.SamplerState.MinFilter);
+                destination.AddressU = ToNativePicaVkAddressMode(sampler.SamplerState.WrapS);
+                destination.AddressV = ToNativePicaVkAddressMode(sampler.SamplerState.WrapT);
+                destination.MipBias = sampler.SamplerState.LodBias;
+                const uint32_t highestMip = texture.UploadedMipLevels > 0U ? texture.UploadedMipLevels - 1U : 0U;
+                destination.MaxLod = static_cast<float>(std::min(sampler.SamplerState.MaxMipLevel, highestMip));
+                destination.MinLod = static_cast<float>(std::min(sampler.SamplerState.MinMipLevel, highestMip));
+                destination.Integer = integer;
+            };
+            for (size_t slot = 0; slot < nriDraw.Textures.size(); ++slot)
+                bindTexture(nriDraw.Textures[slot], *textures[slot], *nativeTextures[slot],
+                    textureFormats[slot], integerTextures[slot]);
+            for (size_t role = 0; role < nriDraw.PbrTextures.size(); ++role)
+                bindTexture(nriDraw.PbrTextures[role], *pbrTextures[role],
+                    pbrMaterial ? *nativeTextures[pbrOptions.TextureSlot] : mFallbackTexture,
+                    VK_FORMAT_R8G8B8A8_UNORM, false);
             {
                 auto& destination =
                     nriDraw.DirectionalShadowTexture;
@@ -4978,10 +5416,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     : VK_FORMAT_R8G8B8A8_UNORM;
                 destination.Usage = VK_IMAGE_USAGE_SAMPLED_BIT;
                 destination.Width = directionalShadowHistoryBound
-                    ? directionalShadowHistory.State.Resolution
+                    ? directionalShadowHistory.State.Virtual.AtlasResolution
                     : mFallbackTexture.Width;
                 destination.Height = directionalShadowHistoryBound
-                    ? directionalShadowHistory.State.Resolution
+                    ? directionalShadowHistory.State.Virtual.AtlasResolution
                     : mFallbackTexture.Height;
                 destination.MipLevels = 1U;
                 destination.MinFilter = VK_FILTER_NEAREST;
@@ -5054,7 +5492,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 Oot3d::PicaExtensionPass::DirectionalShadowLighting) &&
             draw.FragmentOperationMode == 0U && draw.DepthTestEnabled && draw.DepthWriteEnabled &&
             !draw.AlphaTestEnabled && (draw.ColorWriteMask & 0x7U) != 0U;
-        if (nriOwnedDraw) {
+        if (nriOwnedDraw && !nativeMemoryOnly) {
             std::vector<Oot3d::PicaSceneVertexBufferBinding>
                 sceneVertexBindings;
             sceneVertexBindings.reserve(nriVertexBindings.size());
@@ -5062,6 +5500,28 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 sceneVertexBindings.push_back(
                     { binding.Binding, binding.Offset, binding.Size,
                       binding.Stride });
+            }
+            Renderer3ds::VirtualShadowCaster shadowCaster;
+            Oot3d::DirectionalShadowMatrix shadowViewToWorld;
+            if (directionalShadowCaster && draw.LightBinding.WorldToView &&
+                draw.VertexUniformBytes.size() >= Oot3d::kPicaPackedVertexFloatOffset &&
+                Oot3d::InvertDirectionalShadowMatrix(*draw.LightBinding.WorldToView, shadowViewToWorld)) {
+                uint32_t booleanUniforms = 0;
+                std::memcpy(&booleanUniforms, draw.VertexUniformBytes.data() +
+                            Oot3d::kPicaPackedVertexBooleanMaskOffset, sizeof(booleanUniforms));
+                Renderer3ds::PicaShadowCasterCache transientCache;
+                auto& shadowCache = geometryResolution.Cacheable
+                    ? mNativePicaGeometryBuffers.at(geometry.Identity).ShadowCaster : transientCache;
+                const uint64_t version = geometryResolution.Cacheable
+                    ? geometry.ContentVersion ^ (geometry.StructuralSignature * 0x9e3779b97f4a7c15ULL) ^
+                      geometry.Identity ^ draw.VertexShaderKey : 0;
+                shadowCaster = Renderer3ds::BuildPicaShadowCaster(
+                    {geometry.Payload, sceneVertexBindings, sceneVertexLayout.Attributes, sceneVertexLayout.Bindings,
+                     geometryBaseOffset, geometry.IndexOffset, geometry.VertexOrIndexCount,
+                     draw.BaseVertex, geometry.Indexed},
+                    draw.TemporalVertexProgram.Hooks, booleanUniforms,
+                    draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset),
+                    shadowViewToWorld, version, shadowCache);
             }
             std::array<Oot3d::PicaSceneTextureBinding, 3>
                 sceneTextures{};
@@ -5071,7 +5531,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 destination.NativeImageHandle =
                     ToPicaSceneNativeHandle(texture->NriImage);
                 destination.ReplacementContentHash =
-                    texture->CustomReplacementHash;
+                    texture->CustomReplacementPixelHash;
                 destination.ImageWidth = texture->Width;
                 destination.ImageHeight = texture->Height;
                 destination.MipLevels = texture->UploadedMipLevels;
@@ -5080,7 +5540,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     ? Oot3d::PicaSceneTextureImageFormat::R32Uint
                     : Oot3d::PicaSceneTextureImageFormat::Rgba8;
                 destination.CustomReplacement =
-                    texture->CustomReplacementHash != 0U;
+                    texture->CustomReplacementApplied;
             }
             for (const auto& texture : draw.Textures) {
                 auto& destination = sceneTextures[texture.Slot];
@@ -5134,6 +5594,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 .CommandListOffsetWords = draw.CommandListOffsetWords,
                 .CompositionDomain = compositionDomain,
                 .Composition = draw.Composition,
+                .LightingWorldToView = draw.LightBinding.WorldToView,
+                .SceneDirectionals = draw.LightBinding.SceneDirectionals,
+                .ShadowCaster = shadowCaster,
                 .Raster = {
                     .SchemaVersion =
                         Oot3d::kPicaSceneResolvedRasterStateSchemaVersion,
@@ -5267,6 +5730,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 .FragmentUniformOffset = fragmentUniformOffset,
                 .FragmentUniformSize =
                     draw.FragmentUniformBytes.size(),
+                .SurfaceLightingUniformOffset = uniformSurface ? surfaceUniformOffset : 0U,
+                .SurfaceLightingUniformSize = uniformSurface ? surfaceUniformSize : 0U,
                 .GeometryBuffer = {
                     ToPicaSceneNativeHandle(geometryBuffer),
                     geometryBufferSize,
@@ -5642,6 +6107,9 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
                 decision.Authorization,
                 boundary.Surface,
                 settings.Effects.DirectionalShadows,
+                mFrameEnvironment.Enabled
+                    ? std::optional(mFrameEnvironment.Lights[0]) : std::nullopt,
+                mFrameEnvironment.Enabled ? mFrameEnvironment.NativeDirectStrength : 1.0F,
             },
             mNativeSceneView,
             mDirectionalShadowMapBarrierPlan);
@@ -5667,6 +6135,8 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
     if (executed) {
         const auto& lightTelemetry =
             mNriDirectionalShadowPass.LastLightTelemetry();
+        mDiagnostics.RecordNriVirtualShadowPages(
+            lightTelemetry.Pages, lightTelemetry.UpdatedPages, lightTelemetry.AtlasBytes);
         mDiagnostics.RecordNriDirectionalShadowLightSelection(
             lightTelemetry.CandidateCount,
             lightTelemetry.ClusterCount,
@@ -5680,6 +6150,57 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
     }
     return executed;
 }
+
+namespace {
+
+// The declared end-of-target providers of one composition target: the shadow
+// map at the post-opaque anchor and the interactive geometry published for the
+// target. Both the display transfer boundary and a native copy boundary compose
+// the same scene, so the providers and their anchors live here once instead of
+// in two lists.
+struct NativePicaTargetEndDispatch {
+    const Oot3d::PicaCompositionStageAnchor* ShadowAnchor = nullptr;
+    bool DispatchGeometry = false;
+};
+
+// `submissionId` is 0 for a display transfer, which composes at the target's own
+// end, and the consumer's real order id for a native boundary, which composes
+// the scene as of that submission: an anchor the native sequence has not
+// reached is never flushed into the composition, and later draws are never
+// moved across it. A boundary therefore accepts the target's declared anchor
+// once the sequence has passed its insertion point - including a target-end
+// anchor, which is reached only after every draw of the sequence.
+[[nodiscard]] NativePicaTargetEndDispatch ResolveNativePicaTargetEndDispatch(
+    const Oot3d::PicaCompositionSchedule& schedule, bool shadowScheduleValid,
+    bool geometryProviderValid,
+    const ::Oot3d::Renderer::PicaCompositionTargetReference& target,
+    uint64_t submissionId, bool geometryTargetPublished,
+    bool geometryAlreadyAttempted) {
+    NativePicaTargetEndDispatch dispatch;
+    if (!schedule.Valid()) {
+        return dispatch;
+    }
+    if (shadowScheduleValid) {
+        const auto* anchor = submissionId == 0U
+            ? schedule.FindTargetEndAnchor(Oot3d::EffectStage::AfterOpaque,
+                                           target)
+            : schedule.FindAnchor(Oot3d::EffectStage::AfterOpaque, target);
+        if (anchor != nullptr &&
+            (submissionId == 0U || schedule.Reached(*anchor))) {
+            dispatch.ShadowAnchor = anchor;
+        }
+    }
+    if (geometryProviderValid) {
+        const auto* anchor = schedule.FindPublishedGeometryAnchor(target);
+        dispatch.DispatchGeometry =
+            anchor != nullptr && anchor->AtTargetEnd &&
+            geometryTargetPublished && !geometryAlreadyAttempted &&
+            (submissionId == 0U || schedule.Reached(*anchor));
+    }
+    return dispatch;
+}
+
+} // namespace
 
 bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
     const GfxNativePicaDisplayTransferView& transfer, std::string* error) {
@@ -5755,24 +6276,19 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                     source->Key.ColorFormat,
                     source->Key.DepthFormat,
                 };
-            if (mDirectionalShadowSchedulePlan.Valid() &&
-                mNativePicaCompositionSchedule.Valid()) {
-                const auto* shadowAnchor =
-                    mNativePicaCompositionSchedule.FindTargetEndAnchor(
-                        Oot3d::EffectStage::AfterOpaque,
-                        compositionTarget);
-                if (shadowAnchor != nullptr) {
-                    TryRenderDirectionalShadowMap(
-                        *source, graphicsSettings, *shadowAnchor);
-                }
+            const auto targetEnd = ResolveNativePicaTargetEndDispatch(
+                mNativePicaCompositionSchedule,
+                mDirectionalShadowSchedulePlan.Valid(),
+                mInteractiveGrassProviderPlan.Valid(), compositionTarget,
+                /*submissionId=*/0U,
+                mGrassWorldTargetsThisFrame.contains(source->Key),
+                mGrassInsertionAttemptedTargetsThisFrame.contains(
+                    source->Key));
+            if (targetEnd.ShadowAnchor != nullptr) {
+                TryRenderDirectionalShadowMap(
+                    *source, graphicsSettings, *targetEnd.ShadowAnchor);
             }
-            const auto* grassAnchor = mInteractiveGrassProviderPlan.Valid()
-                ? mNativePicaCompositionSchedule.FindPublishedGeometryAnchor(compositionTarget)
-                : nullptr;
-            if (grassAnchor != nullptr && grassAnchor->AtTargetEnd &&
-                mGrassWorldTargetsThisFrame.contains(source->Key) &&
-                !mGrassInsertionAttemptedTargetsThisFrame.contains(
-                    source->Key)) {
+            if (targetEnd.DispatchGeometry) {
                 TryRenderInteractiveGrass(
                     *source, graphicsSettings,
                     Oot3d::EffectGeometryProviderInvocationKind::DeclaredBoundary);
@@ -5800,10 +6316,22 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                 displayComposition.SequenceId;
             display.SceneResolved =
                 displayComposition.SceneResolved;
+            // A display whose producing draw consumed a resolved scene
+            // composition over the whole target already carries those scene
+            // effects, so presentation must not apply them a second time.
+            // Resolved here, at the moment the scene colour is snapshotted, and
+            // carried on the display image: a later UI write to the same
+            // attachment bumps the target's content serial and must not
+            // invalidate the version that was actually imported, so this is
+            // never re-queried when the snapshot is presented.
+            display.SceneEffectsResolved =
+                NativePicaSceneFullyResolvedForTarget(
+                    source->Key.RenderTargetNamespace,
+                    source->Key.ColorPhysicalAddress);
             mDiagnostics.RecordPicaDisplayComposition(
                 display.CompositionDomain, display.SceneResolved);
             if (source->DepthView != VK_NULL_HANDLE &&
-                display.SceneResolved) {
+                (display.SceneResolved || display.SceneEffectsResolved)) {
                 mNativePicaDisplayDepthTargets[displayKey] = source->Key;
             } else {
                 mNativePicaDisplayDepthTargets.erase(displayKey);
@@ -5952,6 +6480,20 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                 "native PICA display transfer output has no GPU snapshot");
         }
         const auto& display = displayFound->second;
+        return ExecuteNativePicaDisplayGraph(transfer, display, nullptr,
+                                             nullptr, error);
+    } catch (const std::exception& exception) {
+        SetNativeError(error, exception.what());
+        return false;
+    }
+}
+
+bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
+    const GfxNativePicaDisplayTransferView& transfer,
+    const NativePicaDisplayImage& display,
+    NativePicaRenderTarget* copySource,
+    GpuTextureCopySourceImport* copyOutput, std::string* error) {
+
         const auto& presentationSettings =
             mFrameGraphicsSettings;
         auto& sceneViewRuntime = Oot3d::SceneViewRuntime::Instance();
@@ -5969,13 +6511,19 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
             mRenderPassActive = false;
             mOverlayRenderPassActive = false;
         }
-        CreateNativePicaScanoutPipeline();
+        // A native boundary (raw copy / native screen effect) composes the
+        // scene for its consumer at the boundary's own order and materializes
+        // it for that consumer. Presentation keeps the swapchain target.
+        const bool copyBoundary = copyOutput != nullptr;
         VkCommandBuffer command = mCommandBuffers[mCurrentFrame];
-        const VkDescriptorSet descriptor =
-            AllocateNativePicaScanoutDescriptorSet();
-        const bool alphaOverlay =
+        VkDescriptorSet descriptor = VK_NULL_HANDLE;
+        if (!copyBoundary) {
+            CreateNativePicaScanoutPipeline();
+            descriptor = AllocateNativePicaScanoutDescriptorSet();
+        }
+        const bool alphaOverlay = !copyBoundary &&
             transfer.PresentationMode ==
-            GfxNativePicaPresentationMode::AlphaOverlay;
+                GfxNativePicaPresentationMode::AlphaOverlay;
         const auto environmentEnabled = [](const char* name) {
             const char* value = std::getenv(name);
             return value != nullptr && std::string_view(value) == "1";
@@ -5983,7 +6531,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
         const bool worldSurface =
             display.CompositionDomain ==
                 ::Oot3d::Renderer::PicaCompositionDomain::Scene &&
-            display.SceneResolved;
+            (display.SceneResolved || display.SceneEffectsResolved);
         const auto effectPlan = Oot3d::BuildDisplayEffectPlan({
             .AlphaOverlay = alphaOverlay,
             .WorldSurface = worldSurface,
@@ -6002,6 +6550,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
             .AntiAliasing = presentationSettings.AntiAliasing,
             .Upscaler = presentationSettings.Upscaler,
             .GuideDiagnostics = Oot3d::PicaGuideDiagnosticMode() != 0,
+            .NativeSceneBoundary = copyBoundary,
+            .SceneEffectsResolved = display.SceneEffectsResolved,
+            .Purpose = mNativePicaCompositionSchedule.Purpose(),
         });
         const auto motionBarrierPlan =
             Oot3d::BuildEffectPassBarrierPlan(
@@ -6058,6 +6609,11 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                 effectPlan.Graph,
                 Oot3d::DisplayEffectPassName(
                     Oot3d::DisplayEffectPass::Scanout));
+        const auto sceneCompositionBarrierPlan =
+            Oot3d::BuildEffectPassBarrierPlan(
+                effectPlan.Graph,
+                Oot3d::DisplayEffectPassName(
+                    Oot3d::DisplayEffectPass::SceneComposition));
         if (!effectPlan.Graph.Valid()) {
             throw std::runtime_error(
                 "display effect graph is invalid: " +
@@ -6072,6 +6628,30 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                     execution.EmittedPrivateTransitionCount());
             };
         Oot3d::DisplayEffectExecutionLedger effectExecution(effectPlan);
+        using EffectOutcome = Oot3d::DisplayEffectExecutionOutcome;
+        // Every declared pass of this boundary is accounted for exactly once,
+        // including the boundary composition that a native consumer samples.
+        const auto recordDeclared = [&](Oot3d::DisplayEffectPass pass,
+                                        EffectOutcome outcome) {
+            if (effectPlan.Enabled(pass) &&
+                !effectExecution.Record(pass, outcome)) {
+                throw std::runtime_error(
+                    "display effect execution ledger rejected " +
+                    std::string(Oot3d::DisplayEffectPassName(pass)));
+            }
+        };
+        const auto producedOutcome = [](bool attempted, bool produced,
+                                        bool reused = false) {
+            if (produced) {
+                return attempted ? EffectOutcome::Executed
+                                 : EffectOutcome::Reused;
+            }
+            if (reused) {
+                return EffectOutcome::Reused;
+            }
+            return attempted ? EffectOutcome::Failed
+                             : EffectOutcome::Skipped;
+        };
         const bool displayEffectsPreviouslyPresented =
             mNativePicaPresentedThisFrame;
         mDiagnostics.RecordEffectGraph(
@@ -6110,7 +6690,15 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
         const bool wantsMotionVectors = effectPlan.Enabled(
             Oot3d::DisplayEffectPass::Motion);
         NativePicaRenderTarget* effectGuideTarget = nullptr;
-        if (!effectPlan.Graph.Attachments.NativeColorOnly()) {
+        if (copyBoundary) {
+            // A boundary declares its own source: the target whose scene it
+            // composes, not a presentation transfer's display mapping.
+            if (copySource != nullptr &&
+                copySource->DepthView != VK_NULL_HANDLE) {
+                PrepareNativePicaTargetAttachments(*copySource);
+                effectGuideTarget = copySource;
+            }
+        } else if (!effectPlan.Graph.Attachments.NativeColorOnly()) {
             const auto depthAssociation = mNativePicaDisplayDepthTargets.find(
                 std::make_pair(transfer.RenderTargetNamespace,
                                transfer.OutputPhysicalAddress));
@@ -6250,9 +6838,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                 Oot3d::EffectResource::UpscaledColor,
                 plannedUpscalerWidth, plannedUpscalerHeight);
         }
-        if (requirementCount != 0U ||
-            (worldSurface &&
-             mNriEffectGraphTransientImageArena.HasActiveResources())) {
+        // An inactive graph declares no new bindings; it does not retire the
+        // resources used by an earlier native composition anchor. Those
+        // commands may still be recorded in this frame, so even DeviceWaitIdle
+        // cannot authorize destroying their images and descriptor pools.
+        // Keep the allocation cache inert until a real reconfiguration/reset.
+        if (requirementCount != 0U) {
             const std::span<const Oot3d::EffectTransientImageRequirement>
                 activeRequirements(requirements.data(), requirementCount);
             const auto allocationPlan =
@@ -6473,6 +7064,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
             return reads.FindFirstColorRead(effectPlan.Bindings(pass));
         };
         std::optional<Oot3d::TemporalViewState> temporalState;
+        // A native boundary resolves the same temporal state the display that
+        // presents this view will use: TemporalHistoryManager::Prepare is keyed
+        // by view and frame, so it returns that frame's state instead of
+        // advancing history a second time. A scene stage that needs motion
+        // vectors (SSSR) therefore executes at the boundary with the frame's own
+        // jitter, and the presentation keeps its history untouched.
         if (wantsTemporalMetadata && effectGuideTarget != nullptr) {
             Oot3d::TemporalViewInput temporalInput{};
             temporalInput.Key = {
@@ -6535,6 +7132,98 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                     guideBarriers.Count,
                     guideBarriers.Images.data());
             }
+        };
+        // Every guide this graph sampled returns to its attachment role. A
+        // boundary that composes mid-frame must do this before it returns,
+        // because the native draws that follow it write those same guides.
+        const auto restoreEffectPassGuides = [
+            &effectResources, &guideSampledResourceMask,
+            &command, this]() {
+            if (guideSampledResourceMask == 0U) {
+                return;
+            }
+            const auto guideBarriers =
+                Oot3d::BuildPicaGuideAttachmentBarriers(
+                    effectResources, guideSampledResourceMask);
+            if (!guideBarriers.Complete()) {
+                throw std::runtime_error(
+                    "display effect graph has unresolved PICA guide barriers");
+            }
+            mDiagnostics.RecordEffectGraphGuideImageBarriers(
+                guideBarriers.Count);
+            if (guideBarriers.Count != 0U) {
+                vkCmdPipelineBarrier(
+                    command, guideBarriers.SourceStages,
+                    guideBarriers.DestinationStages,
+                    0, 0, nullptr, 0, nullptr,
+                    guideBarriers.Count,
+                    guideBarriers.Images.data());
+            }
+        };
+        // A boundary samples the source's own colour target, which the native
+        // draw path leaves in its attachment layout: the scene stages read it as
+        // a texture, and the draws that follow attach it again. Same barrier
+        // pair the native encode path uses for this image. Only a plan that
+        // declares a read of that colour is transitioned: a plan whose scene
+        // stages are already resolved for this version declares none.
+        const bool boundarySamplesSourceColor =
+            copyBoundary && copySource != nullptr &&
+            copySource->ColorImage != VK_NULL_HANDLE &&
+            std::any_of(
+                effectPlan.Graph.Passes.begin(),
+                effectPlan.Graph.Passes.end(),
+                [](const Oot3d::CompiledEffectPass& pass) {
+                    return std::any_of(
+                        pass.Resources.begin(), pass.Resources.end(),
+                        [](const Oot3d::EffectResourceUse& use) {
+                            return use.Resource ==
+                                       Oot3d::EffectResource::SceneColor &&
+                                   Oot3d::ReadsEffectResource(use.Access);
+                        });
+                });
+        const auto setSourceColorLayout = [&command, this](
+            VkImage image, VkImageLayout from, VkImageLayout to,
+            VkPipelineStageFlags sourceStage,
+            VkPipelineStageFlags destinationStage,
+            VkAccessFlags sourceAccess, VkAccessFlags destinationAccess) {
+            VkImageMemoryBarrier barrier{
+                VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            barrier.oldLayout = from;
+            barrier.newLayout = to;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = image;
+            barrier.subresourceRange = {
+                VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U};
+            barrier.srcAccessMask = sourceAccess;
+            barrier.dstAccessMask = destinationAccess;
+            vkCmdPipelineBarrier(command, sourceStage, destinationStage, 0U,
+                                 0U, nullptr, 0U, nullptr, 1U, &barrier);
+        };
+        if (boundarySamplesSourceColor) {
+            setSourceColorLayout(
+                copySource->ColorImage,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_ACCESS_SHADER_READ_BIT);
+        }
+        const auto restoreBoundarySourceColor = [&]() {
+            if (!boundarySamplesSourceColor) {
+                return;
+            }
+            setSourceColorLayout(
+                copySource->ColorImage,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_SHADER_READ_BIT,
+                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
         };
         bool cacaoAttempted = false;
         bool cacaoExecutedNow = false;
@@ -6789,7 +7478,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
             linearKey = Oot3d::SceneSurfaceKey{
                 transfer.RenderTargetNamespace,
                 effectGuideTarget->Key.ColorPhysicalAddress,
-                Oot3d::SceneSurfaceKind::LinearWorkingColor};
+                copyBoundary
+                    ? Oot3d::SceneSurfaceKind::BoundaryWorkingColor
+                    : Oot3d::SceneSurfaceKind::LinearWorkingColor};
         }
         const bool canReuseWorkingColor =
             wantsWorkingColor && mLinearColorExecutedThisFrame &&
@@ -7227,7 +7918,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
             compositeKey = Oot3d::SceneSurfaceKey{
                 transfer.RenderTargetNamespace,
                 effectGuideTarget->Key.ColorPhysicalAddress,
-                Oot3d::SceneSurfaceKind::Composite};
+                // A boundary composes the source's own domain, so its result is
+                // not the presentation's composite: reusing it for a later
+                // display of this target would scan out the pre-consumer scene.
+                copyBoundary
+                    ? Oot3d::SceneSurfaceKind::BoundaryComposition
+                    : Oot3d::SceneSurfaceKind::Composite};
         }
         const bool canReuseComposite =
             effectPlan.Enabled(Oot3d::DisplayEffectPass::Composite) &&
@@ -7242,12 +7938,16 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                 transfer.RenderTargetNamespace &&
             mUpscalerDisplayPhysicalAddress ==
                 transfer.OutputPhysicalAddress;
+        // A boundary always composes when any scene stage applies, because its
+        // consumer samples the composed colour instead of a later presentation
+        // fusing those stages in. Presentation keeps its existing gate.
         bool compositeForTaa =
-            ((((wantsTaa && !canReuseTaa) ||
-               (wantsTemporalUpscaler && !canReuseUpscaler)) &&
-              motionAvailableForDisplay) ||
-             (wantsNis && !canReuseUpscaler) ||
-             (wantsSmaa && !mSmaaExecutedThisFrame)) &&
+            (copyBoundary ||
+             ((((wantsTaa && !canReuseTaa) ||
+                (wantsTemporalUpscaler && !canReuseUpscaler)) &&
+               motionAvailableForDisplay) ||
+              (wantsNis && !canReuseUpscaler) ||
+              (wantsSmaa && !mSmaaExecutedThisFrame))) &&
             (cacaoForDisplay || reflectionsForDisplay ||
              outlineForDisplay) &&
             mSceneCompositePass.Available();
@@ -7333,7 +8033,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
             compositeForTaa =
                 transientCompositeOutput != nullptr && mSceneCompositePass.Configure(*transientCompositeOutput) &&
                 mSceneCompositePass.Execute(
-                    command, mCurrentFrame, compositeColorImage, compositeColorFormat, compositeCacaoImage,
+                    command, mCurrentFrame, mFrameCounter, compositeColorImage, compositeColorFormat, compositeCacaoImage,
                     compositeCacaoFormat, compositeReflectionImage, compositeReflectionFormat, compositeMaterialImage,
                     compositeMaterialFormat, compositeNormalImage, compositeNormalFormat,
                     compositeTransparentDepthImage, compositeTransparentDepthFormat, compositeAmbientImage,
@@ -7386,6 +8086,266 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                     effectGuideTarget->Height,
                     mSceneCompositePass.OutputEncoding());
             }
+        }
+        if (copyBoundary) {
+            // A native boundary stops here: the scene stages are resolved and
+            // the boundary's declared output is what the native consumer
+            // samples. Presentation AA/upscale/scanout belong to the display
+            // that later presents this scene, and this frame never presents.
+            if (effectPlan.Enabled(Oot3d::DisplayEffectPass::Guides)) {
+                recordDeclared(Oot3d::DisplayEffectPass::Guides,
+                               guidesMaterialized ? EffectOutcome::Fused
+                                                  : EffectOutcome::Failed);
+            }
+            recordDeclared(
+                Oot3d::DisplayEffectPass::WorkingColor,
+                producedOutcome(workingColorAttempted,
+                                linearWorkingColorForDisplay,
+                                canReuseWorkingColor));
+            recordDeclared(
+                Oot3d::DisplayEffectPass::Cacao,
+                producedOutcome(cacaoAttempted, cacaoForDisplay));
+            recordDeclared(
+                Oot3d::DisplayEffectPass::HiZ,
+                producedOutcome(hiZAttempted, hiZExecutedNow, canReuseHiZ));
+            recordDeclared(
+                Oot3d::DisplayEffectPass::Reflections,
+                producedOutcome(reflectionsAttempted, reflectionsForDisplay,
+                                canReuseReflections));
+            recordDeclared(
+                Oot3d::DisplayEffectPass::Motion,
+                producedOutcome(motionAttempted, motionForDisplay,
+                                canReuseMotion));
+            if (effectPlan.Enabled(Oot3d::DisplayEffectPass::Outline)) {
+                // The outline is fused into the composition at a boundary:
+                // there is no presentation pass left to apply it in.
+                EffectOutcome outlineOutcome = EffectOutcome::Skipped;
+                if (outlineForDisplay && !guidesMaterialized) {
+                    outlineOutcome = EffectOutcome::Failed;
+                } else if (outlineForDisplay && compositeForTaa) {
+                    outlineOutcome = EffectOutcome::Fused;
+                }
+                recordDeclared(Oot3d::DisplayEffectPass::Outline,
+                               outlineOutcome);
+            }
+            recordDeclared(
+                Oot3d::DisplayEffectPass::Composite,
+                producedOutcome(compositeAttempted, compositeForTaa,
+                                canReuseComposite));
+            // A declared scene stage that did not produce its output fails the
+            // copy: an enabled effect must never silently sample the base
+            // colour target.
+            const bool declaredSceneStageFailed =
+                (effectPlan.Enabled(Oot3d::DisplayEffectPass::Cacao) &&
+                 !cacaoForDisplay) ||
+                (effectPlan.Enabled(Oot3d::DisplayEffectPass::Reflections) &&
+                 !reflectionsForDisplay) ||
+                (effectPlan.Enabled(Oot3d::DisplayEffectPass::Outline) &&
+                 !outlineForDisplay) ||
+                (effectPlan.Enabled(Oot3d::DisplayEffectPass::WorkingColor) &&
+                 !linearWorkingColorForDisplay) ||
+                (effectPlan.Enabled(Oot3d::DisplayEffectPass::Composite) &&
+                 !compositeForTaa);
+            if (declaredSceneStageFailed) {
+                mDiagnostics.RecordDisplayEffectGraphExecution(
+                    effectExecution.Summary());
+                // A declared stage that did not produce its output is a fatal
+                // boundary failure, not a fallback to the base colour target.
+                restoreEffectPassGuides();
+                restoreBoundarySourceColor();
+                SetNativeError(
+                    error,
+                    "native scene boundary did not resolve every declared "
+                    "scene stage");
+                return false;
+            }
+            // The declared scene colour, not an effect name, decides whether
+            // this boundary composed anything: when no scene stage applies, the
+            // native target already is the composed scene.
+            const bool composedScene =
+                effectPlan.SceneOutput != Oot3d::EffectResource::SceneColor;
+            const auto compositionPass = effectPlan.FindPass(
+                Oot3d::DisplayEffectPass::SceneComposition);
+            if (compositionPass == nullptr || copySource == nullptr) {
+                throw std::runtime_error(
+                    "native scene boundary has no declared composition pass");
+            }
+            const auto compositionReads = resolveEffectPassReads(
+                Oot3d::DisplayEffectPass::SceneComposition);
+            const auto* compositionSource = findEffectColorRead(
+                compositionReads,
+                Oot3d::DisplayEffectPass::SceneComposition);
+            if (compositionSource == nullptr ||
+                compositionSource->Kind !=
+                    Oot3d::EffectResourceBindingKind::Image ||
+                !Oot3d::IsKnownSceneColorEncoding(
+                    compositionSource->ColorEncoding)) {
+                throw std::runtime_error(
+                    "native scene boundary composition source is incomplete");
+            }
+            const uint32_t compositionWidth = copySource->Width;
+            const uint32_t compositionHeight = copySource->Height;
+            if (compositionWidth == 0U || compositionHeight == 0U) {
+                throw std::runtime_error(
+                    "native scene boundary source has no internal extent");
+            }
+            if (!composedScene) {
+                // No scene stage applies to this version: either none is
+                // declared, or the colour the source target already holds
+                // carries them. The identity import of that target is the
+                // composed scene, and it keeps the version's own provenance so
+                // a consumer of this copy does not resolve the scene again.
+                recordDeclared(Oot3d::DisplayEffectPass::SceneComposition,
+                               EffectOutcome::Skipped);
+                copyOutput->Image = copySource->ColorImage;
+                copyOutput->Format = VK_FORMAT_R8G8B8A8_UNORM;
+                copyOutput->Width = compositionWidth;
+                copyOutput->Height = compositionHeight;
+                copyOutput->ShaderRead = false;
+                copyOutput->Encoding = Oot3d::NativePicaSceneColorEncoding();
+                copyOutput->SceneEffectsResolved =
+                    display.SceneEffectsResolved;
+                mDiagnostics.RecordDisplayEffectGraphExecution(
+                    effectExecution.Summary());
+                restoreEffectPassGuides();
+                restoreBoundarySourceColor();
+                return true;
+            }
+            // The composed scene is materialized once, at the source's own
+            // internal extent, in the encoded domain the native consumer
+            // samples. The target is offscreen: no swapchain, no present, and
+            // the pixel domain is the source's own, so the composition is a
+            // format/encode conversion and not a resample.
+            // ponytail: one reusable canvas per extent; a device wait on extent
+            // change is the ceiling. Key it per extent if copy resolutions ever
+            // thrash within a frame.
+            if (mNativePicaSceneCopyCanvas.Image == VK_NULL_HANDLE ||
+                mNativePicaSceneCopyCanvasWidth != compositionWidth ||
+                mNativePicaSceneCopyCanvasHeight != compositionHeight) {
+                if (mNativePicaSceneCopyCanvas.Image != VK_NULL_HANDLE) {
+                    CheckNativeVk(
+                        vkDeviceWaitIdle(mDevice),
+                        "vkDeviceWaitIdle(native scene composition canvas)");
+                    // The canvas is an NRI-owned texture, so the owned path
+                    // releases its views and image together.
+                    mNriInterop.DestroyOwnedTexture(
+                        mNativePicaSceneCopyCanvas.Image);
+                    mNativePicaSceneCopyCanvas = {};
+                }
+                Oot3d::NriOwnedTexture2DDesc canvas{};
+                canvas.Width = compositionWidth;
+                canvas.Height = compositionHeight;
+                canvas.Format = VK_FORMAT_R8G8B8A8_UNORM;
+                canvas.Usage =
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+                if (!mNriInterop.CreateOwnedTexture2D(
+                        canvas, mNativePicaSceneCopyCanvas)) {
+                    throw std::runtime_error(
+                        "native scene composition canvas is unavailable");
+                }
+                mNativePicaSceneCopyCanvasWidth = compositionWidth;
+                mNativePicaSceneCopyCanvasHeight = compositionHeight;
+            }
+            bindEffectImage(
+                Oot3d::EffectResource::SceneComposition,
+                mNativePicaSceneCopyCanvas.Image,
+                mNativePicaSceneCopyCanvas.ColorAttachmentView,
+                VK_FORMAT_R8G8B8A8_UNORM, compositionWidth,
+                compositionHeight);
+            const VkImage composedImage = reinterpret_cast<VkImage>(
+                compositionSource->NativeImage);
+            const VkFormat composedFormat =
+                static_cast<VkFormat>(compositionSource->Format);
+            std::array<VkImage, 11> compositionImages{};
+            std::array<VkFormat, 11> compositionFormats{};
+            compositionImages.fill(composedImage);
+            compositionFormats.fill(composedFormat);
+            Oot3d::PicaScanoutPolicyInput compositionPolicy{};
+            compositionPolicy.TransferFlags = 0U;
+            compositionPolicy.AaMode = 0U;
+            compositionPolicy.Width = compositionWidth;
+            compositionPolicy.Height = compositionHeight;
+            compositionPolicy.EffectsComposited = true;
+            compositionPolicy.InputEncoding =
+                compositionSource->ColorEncoding;
+            compositionPolicy.TargetSrgb = false;
+            if (!Oot3d::ValidatePicaScanoutPolicyInput(compositionPolicy)) {
+                throw std::runtime_error(
+                    "native scene composition color policy is invalid");
+            }
+            const Oot3d::PicaScanoutPushConstants composition =
+                Oot3d::BuildPicaScanoutPushConstants(compositionPolicy);
+            // The composition samples the same guide attachments the scene
+            // stages do, through the same declared graph edges.
+            transitionEffectPassGuides(
+                Oot3d::DisplayEffectPass::SceneComposition);
+            mGpuProfiler.BeginScope(
+                mCurrentFrame, Oot3d::GpuProfileScope::SceneComposite,
+                command);
+            const bool nriComposition =
+                mNriPicaScanoutPass.ConfigureOffscreen(
+                    VK_FORMAT_R8G8B8A8_UNORM) &&
+                mNriPicaScanoutPass.Execute(
+                    {
+                        .FrameSlot = mCurrentFrame,
+                        .FrameId = mFrameCounter,
+                        .CommandBuffer = command,
+                        .TargetImage = mNativePicaSceneCopyCanvas.Image,
+                        .TargetView =
+                            mNativePicaSceneCopyCanvas.ColorAttachmentView,
+                        .TargetFormat = VK_FORMAT_R8G8B8A8_UNORM,
+                        .TargetWidth = compositionWidth,
+                        .TargetHeight = compositionHeight,
+                        .InputImages = compositionImages,
+                        .InputFormats = compositionFormats,
+                        .Push = composition,
+                        .ViewportX = 0.0F,
+                        .ViewportY = 0.0F,
+                        .ViewportWidth =
+                            static_cast<float>(compositionWidth),
+                        .ViewportHeight =
+                            static_cast<float>(compositionHeight),
+                        .ScissorX = 0,
+                        .ScissorY = 0,
+                        .ScissorWidth = compositionWidth,
+                        .ScissorHeight = compositionHeight,
+                        .ClearColor = {},
+                        .Overlay = false,
+                        .OffscreenTarget = true,
+                    },
+                    sceneCompositionBarrierPlan);
+            mGpuProfiler.EndScope(
+                mCurrentFrame, Oot3d::GpuProfileScope::SceneComposite,
+                command);
+            if (!nriComposition) {
+                // Without the materialization there is no composed source, and
+                // sampling the base target instead would silently drop the
+                // enabled effects.
+                restoreEffectPassGuides();
+                restoreBoundarySourceColor();
+                SetNativeError(
+                    error, "native scene composition pass is unavailable");
+                return false;
+            }
+            recordDeclared(Oot3d::DisplayEffectPass::SceneComposition,
+                           EffectOutcome::Executed);
+            recordEffectPassTransitions(
+                mNriPicaScanoutPass.LastBarrierExecution());
+            copyOutput->Image = mNativePicaSceneCopyCanvas.Image;
+            copyOutput->Format = VK_FORMAT_R8G8B8A8_UNORM;
+            copyOutput->Width = compositionWidth;
+            copyOutput->Height = compositionHeight;
+            copyOutput->ShaderRead = true;
+            // The materialization wrote the encoded display domain: the
+            // composed colour is what a display-encoded native target holds.
+            copyOutput->Encoding = Oot3d::NativePicaSceneColorEncoding();
+            copyOutput->SceneEffectsResolved = true;
+            mDiagnostics.RecordDisplayEffectGraphExecution(
+                effectExecution.Summary());
+            restoreEffectPassGuides();
+            restoreBoundarySourceColor();
+            return true;
         }
         bool taaNriWrapped = false;
         bool taaForDisplay = canReuseTaa;
@@ -7966,12 +8926,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                 mSmaaOutputEncodingThisFrame);
         }
 
-        if (!effectsCompositedForScanout &&
-            (cacaoForDisplay || outlineForDisplay ||
-             reflectionsForDisplay)) {
-            transitionEffectPassGuides(
-                Oot3d::DisplayEffectPass::Scanout);
-        }
+        transitionEffectPassGuides(Oot3d::DisplayEffectPass::Scanout);
         const auto physicalEffectPlan =
             Oot3d::BuildEffectGraphPhysicalPlan(
                 effectPlan.Graph, effectResources);
@@ -8183,29 +9138,6 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
             mDiagnostics.RecordCacaoAmbientComposite();
         }
 
-        using EffectOutcome = Oot3d::DisplayEffectExecutionOutcome;
-        const auto producedOutcome = [](bool attempted, bool produced,
-                                        bool reused = false) {
-            if (produced) {
-                return attempted ? EffectOutcome::Executed
-                                 : EffectOutcome::Reused;
-            }
-            if (reused) {
-                return EffectOutcome::Reused;
-            }
-            return attempted ? EffectOutcome::Failed
-                             : EffectOutcome::Skipped;
-        };
-        const auto recordDeclared = [&](Oot3d::DisplayEffectPass pass,
-                                        EffectOutcome outcome) {
-            if (effectPlan.Enabled(pass) &&
-                !effectExecution.Record(pass, outcome)) {
-                throw std::runtime_error(
-                    "display effect execution ledger rejected " +
-                    std::string(Oot3d::DisplayEffectPassName(pass)));
-            }
-        };
-
         if (effectPlan.Enabled(Oot3d::DisplayEffectPass::Guides)) {
             recordDeclared(
                 Oot3d::DisplayEffectPass::Guides,
@@ -8277,25 +9209,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
         mDiagnostics.RecordDisplayEffectGraphExecution(
             effectExecution.Summary());
 
-        if (guideSampledResourceMask != 0U) {
-            const auto guideBarriers =
-                Oot3d::BuildPicaGuideAttachmentBarriers(
-                    effectResources, guideSampledResourceMask);
-            if (!guideBarriers.Complete()) {
-                throw std::runtime_error(
-                    "display effect graph has unresolved PICA guide barriers");
-            }
-            mDiagnostics.RecordEffectGraphGuideImageBarriers(
-                guideBarriers.Count);
-            if (guideBarriers.Count != 0U) {
-                vkCmdPipelineBarrier(
-                    command, guideBarriers.SourceStages,
-                    guideBarriers.DestinationStages,
-                    0, 0, nullptr, 0, nullptr,
-                    guideBarriers.Count,
-                    guideBarriers.Images.data());
-            }
-        }
+        restoreEffectPassGuides();
 
         if (!alphaOverlay) {
             mLastPresentedNativePicaDisplayTransfer = transfer;
@@ -8324,10 +9238,120 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
             true, smaaForDisplay ? 2U : mSpatialAaMode,
             static_cast<uint32_t>(mNativePicaSampleCount));
         return true;
-    } catch (const std::exception& exception) {
-        SetNativeError(error, exception.what());
+}
+
+// Resolves the sampled source of a raw copy at its order boundary. The copy's
+// consumer samples the renderer-composed scene when a scene stage applies at
+// that boundary, and the identity import of the native colour target
+// otherwise. A false return fails the copy: an enabled effect never silently
+// falls back to sampling the base target.
+bool GfxRenderingAPIVulkan::ComposeNativePicaSceneForCopy(
+    NativePicaRenderTarget& source, uint64_t afterDrawSubmissionId,
+    GpuTextureCopySourceImport& output, std::string* error,
+    const Renderer3ds::PicaCompositionStageAnchor* beforeUi) {
+    output = {};
+    if (!mFrameActive || source.ColorImage == VK_NULL_HANDLE ||
+        source.Width == 0U || source.Height == 0U ||
+        !mNativePicaCompositionSchedule.Valid()) {
+        SetNativeError(
+            error, "native scene boundary has no composable frame state");
         return false;
     }
+    const auto perspective =
+        Oot3d::SceneViewRuntime::Instance().LatestPerspective();
+    (void)mNativeSceneView.Publish(
+        mFrameCounter, mPicaSceneFrame, perspective);
+    const ::Oot3d::Renderer::PicaCompositionTargetReference compositionTarget{
+        source.Key.RenderTargetNamespace,
+        source.Key.ColorPhysicalAddress,
+        source.Key.DepthPhysicalAddress,
+        source.Key.Width,
+        source.Key.Height,
+        source.Key.ColorFormat,
+        source.Key.DepthFormat,
+    };
+    const auto composition = Oot3d::ResolvePicaDisplayComposition(
+        mNativePicaCompositionSchedule, compositionTarget);
+    if (beforeUi != nullptr &&
+        (beforeUi != mNativePicaCompositionSchedule.FindAnchorBeforeDraw(
+             Oot3d::EffectStage::BeforeUi, compositionTarget, afterDrawSubmissionId) ||
+         !mNativePicaCompositionSchedule.Reached(*beforeUi))) {
+        SetNativeError(error, "native pre-UI composition has no reached schedule anchor");
+        return false;
+    }
+    // The scene this copy samples is the scene as of this copy's own order, so
+    // the declared end-of-target providers are dispatched only where the native
+    // sequence has already reached them. Nothing later is flushed into the
+    // composition, and transparent/UI content stays after it.
+    const auto targetEnd = ResolveNativePicaTargetEndDispatch(
+        mNativePicaCompositionSchedule,
+        mDirectionalShadowSchedulePlan.Valid(),
+        mInteractiveGrassProviderPlan.Valid(), compositionTarget,
+        afterDrawSubmissionId,
+        mGrassWorldTargetsThisFrame.contains(source.Key),
+        mGrassInsertionAttemptedTargetsThisFrame.contains(source.Key));
+    const bool presentation =
+        mNativePicaCompositionSchedule.Purpose() ==
+        Renderer3ds::PicaCompositionPurpose::Presentation;
+    if (presentation && targetEnd.ShadowAnchor != nullptr) {
+        TryRenderDirectionalShadowMap(
+            source, mFrameGraphicsSettings, *targetEnd.ShadowAnchor);
+    }
+    if (presentation && targetEnd.DispatchGeometry) {
+        TryRenderInteractiveGrass(
+            source, mFrameGraphicsSettings,
+            Oot3d::EffectGeometryProviderInvocationKind::DeclaredBoundary);
+    }
+    // The boundary is described by the target it composes, not by a display
+    // transfer: the copy's own order, the source's own surface coordinates and
+    // its own internal extent. Nothing here fabricates a present or rotates a
+    // swapchain, and the composition never writes back into the source target,
+    // so a repeated boundary recomposes the same scene instead of compounding
+    // effects onto it.
+    GfxNativePicaDisplayTransferView boundary{};
+    boundary.AfterDrawSubmissionId = afterDrawSubmissionId;
+    boundary.RenderTargetNamespace = source.Key.RenderTargetNamespace;
+    boundary.InputPhysicalAddress = source.Key.ColorPhysicalAddress;
+    boundary.OutputPhysicalAddress = source.Key.ColorPhysicalAddress;
+    boundary.InputWidth = static_cast<uint16_t>(source.Width);
+    boundary.InputHeight = static_cast<uint16_t>(source.Height);
+    boundary.OutputWidth = static_cast<uint16_t>(source.Width);
+    boundary.OutputHeight = static_cast<uint16_t>(source.Height);
+    boundary.Flags = 0U;
+    boundary.Present = false;
+    NativePicaDisplayImage boundaryImage{};
+    boundaryImage.Width = source.Width;
+    boundaryImage.Height = source.Height;
+    boundaryImage.Image = source.ColorImage;
+    boundaryImage.View = source.ColorView;
+    boundaryImage.Initialized = true;
+    boundaryImage.NriOwned = false;
+    boundaryImage.CompositionDomain = composition.Domain;
+    boundaryImage.CompositionSequenceId = composition.SequenceId;
+    // ConsumeDraw advances the schedule before submitting the draw. The
+    // explicit pre-UI anchor proves this attachment has not received UI yet.
+    boundaryImage.SceneResolved = beforeUi != nullptr || composition.SceneResolved;
+    // The version this boundary consumes is the source's own: when a native
+    // draw already sampled a resolved composition over this target, its colour
+    // carries the scene stages and this boundary must not apply them again. The
+    // provenance is resolved here, for this version, exactly as presentation
+    // resolves it, so chaining raw copies and native effects stays generic.
+    boundaryImage.SceneEffectsResolved =
+        NativePicaSceneFullyResolvedForTarget(
+            source.Key.RenderTargetNamespace,
+            source.Key.ColorPhysicalAddress);
+    if (!ExecuteNativePicaDisplayGraph(
+            boundary, boundaryImage, &source, &output, error)) {
+        output = {};
+        return false;
+    }
+    if (output.Image == VK_NULL_HANDLE) {
+        output = {};
+        SetNativeError(
+            error, "native scene boundary declared no sampled source");
+        return false;
+    }
+    return true;
 }
 
 bool GfxRenderingAPIVulkan::ClearPicaRenderTarget(
@@ -8403,6 +9427,9 @@ bool GfxRenderingAPIVulkan::ClearPicaRenderTarget(
             vkCmdClearAttachments(mCommandBuffers[mCurrentFrame],
                                   static_cast<uint32_t>(attachments.size()),
                                   attachments.data(), 1U, &clearRect);
+            // The cleared content is new: it carries no resolved scene effects
+            // any more, so the provenance serial moves on.
+            target.ContentWriteSerial = ++mGpuTextureCopyWriteSerial;
         }
         // A target not created yet already starts with the same transparent
         // color and default depth values in GetOrCreateNativePicaRenderTarget.
@@ -8500,9 +9527,14 @@ bool GfxRenderingAPIVulkan::CapturePicaTextureCache(
         CheckNativeVk(vkDeviceWaitIdle(mDevice),
                       "vkDeviceWaitIdle(native PICA texture capture)");
         for (const auto& [key, texture] : mNativePicaTextures) {
-            // GENERAL entries alias live Shadow2D render-target images. Their
-            // contents and ownership are restored with the render target.
-            if (texture.ImageLayout == VK_IMAGE_LAYOUT_GENERAL) {
+            // Live render-target aliases are restored with the render target.
+            if (texture.LiveRenderTargetAlias) {
+                continue;
+            }
+            // A derived raw-copy sample is a function of its producers and of the
+            // snapshot's own bytes, so it is regenerated on restore instead of
+            // being serialized; only the immutable producer versions travel.
+            if (key.GpuCopyIdentity != 0U) {
                 continue;
             }
             const auto expectedBytes = NativePicaDecodedMipChainSize(
@@ -8564,6 +9596,47 @@ bool GfxRenderingAPIVulkan::CapturePicaTextureCache(
             }
             snapshots.push_back(std::move(snapshot));
         }
+        // Immutable copy producers travel in the same vector: each carries the
+        // full captured GPU image at its internal extent plus the identity and
+        // span table a resumed plan's references resolve against.
+        for (const auto& [identity, surface] : mGpuTextureCopySurfaces) {
+            if (surface.Image == VK_NULL_HANDLE || surface.ImageWidth == 0U ||
+                surface.ImageHeight == 0U) {
+                continue;
+            }
+            GfxNativePicaTextureCacheEntrySnapshot snapshot;
+            snapshot.HasCopyProducer = true;
+            snapshot.CopyProducer.RenderTargetNamespace =
+                surface.RenderTargetNamespace;
+            snapshot.CopyProducer.CompletionId = surface.CompletionId;
+            snapshot.CopyProducer.AfterDrawSubmissionId =
+                surface.AfterDrawSubmissionId;
+            snapshot.CopyProducer.SourcePhysicalAddress =
+                surface.SourceSurfaceAddress;
+            snapshot.CopyProducer.SourceWidth = surface.SourceWidth;
+            snapshot.CopyProducer.SourceHeight = surface.SourceHeight;
+            snapshot.CopyProducer.SourceNativeFormat = surface.SourceFormat;
+            snapshot.CopyProducer.Spans = surface.Spans;
+            snapshot.CopyProducer.ColorEncoding =
+                static_cast<uint8_t>(surface.Encoding);
+            snapshot.CopyProducer.SceneEffectsResolved =
+                surface.SceneEffectsResolved;
+            snapshot.ImageWidth = surface.ImageWidth;
+            snapshot.ImageHeight = surface.ImageHeight;
+            snapshot.ImageFormat = GfxNativePicaTextureSnapshotFormat::Rgba8;
+            snapshot.MipLevels = 1U;
+            snapshot.PixelBytes = CaptureNativePicaImageBytes(
+                surface.Image, surface.ImageWidth, surface.ImageHeight, 4U,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_SHADER_READ_BIT);
+            if (snapshot.PixelBytes.size() !=
+                static_cast<size_t>(surface.ImageWidth) * surface.ImageHeight *
+                    4U) {
+                throw std::runtime_error(
+                    "native PICA copy producer capture is incomplete");
+            }
+            snapshots.push_back(std::move(snapshot));
+        }
         return true;
     } catch (const std::exception& exception) {
         snapshots.clear();
@@ -8583,14 +9656,31 @@ bool GfxRenderingAPIVulkan::RestorePicaTextureCache(
         if (std::any_of(
                 mNativePicaTextures.begin(), mNativePicaTextures.end(),
                 [](const auto& entry) {
-                    return entry.second.ImageLayout ==
-                           VK_IMAGE_LAYOUT_GENERAL;
+                    return entry.second.LiveRenderTargetAlias;
                 })) {
             throw std::runtime_error(
                 "native PICA texture restore requires reset renderer state");
         }
         std::set<NativePicaTextureKey> identities;
         for (const auto& snapshot : snapshots) {
+            if (snapshot.HasCopyProducer) {
+                const auto& producer = snapshot.CopyProducer;
+                // Namespace 0 is the valid default namespace, not a sentinel.
+                if (producer.CompletionId == 0U || producer.SourceWidth == 0U ||
+                    producer.SourceHeight == 0U ||
+                    producer.SourceNativeFormat > 4U || producer.Spans.empty() ||
+                    snapshot.ImageWidth == 0U || snapshot.ImageHeight == 0U ||
+                    snapshot.ImageFormat !=
+                        GfxNativePicaTextureSnapshotFormat::Rgba8 ||
+                    snapshot.MipLevels != 1U ||
+                    snapshot.PixelBytes.size() !=
+                        static_cast<size_t>(snapshot.ImageWidth) *
+                            snapshot.ImageHeight * 4U) {
+                    throw std::runtime_error(
+                        "native PICA copy producer snapshot is incompatible");
+                }
+                continue;
+            }
             const auto expectedBytes = NativePicaDecodedMipChainSize(
                 snapshot.ImageWidth, snapshot.ImageHeight,
                 snapshot.MipLevels);
@@ -8638,7 +9728,54 @@ bool GfxRenderingAPIVulkan::RestorePicaTextureCache(
             DestroyTexture(texture);
         }
         mNativePicaTextures.clear();
+        DestroyGpuTextureCopySurfaces();
         for (const auto& snapshot : snapshots) {
+            if (snapshot.HasCopyProducer) {
+                // Rebuild the immutable version under the same register key a
+                // resumed plan's references resolve against. The image itself is
+                // created in the next active frame, where an upload path exists.
+                const auto& producer = snapshot.CopyProducer;
+                GpuTextureCopySurface surface;
+                surface.Identity = ++mGpuTextureCopySerial;
+                surface.RenderTargetNamespace = producer.RenderTargetNamespace;
+                surface.CompletionId = producer.CompletionId;
+                surface.AfterDrawSubmissionId = producer.AfterDrawSubmissionId;
+                // The declared destination surface is not part of the persisted
+                // identity: the sampler's own layout defines it. Keep the bytes
+                // consistent with the source geometry for the live sweep that
+                // still consults these fields.
+                const uint32_t restoredBpp =
+                    producer.SourceNativeFormat == 0U   ? 4U
+                    : producer.SourceNativeFormat == 1U ? 3U
+                                                        : 2U;
+                surface.DestinationAddress = producer.SourcePhysicalAddress;
+                surface.DestinationBytes = producer.SourceWidth *
+                                           producer.SourceHeight * restoredBpp;
+                surface.TextureWidth = producer.SourceWidth;
+                surface.TextureHeight = producer.SourceHeight;
+                surface.TextureFormat = producer.SourceNativeFormat;
+                surface.SourceSurfaceAddress = producer.SourcePhysicalAddress;
+                surface.SourceWidth = producer.SourceWidth;
+                surface.SourceHeight = producer.SourceHeight;
+                surface.SourceFormat = producer.SourceNativeFormat;
+                surface.Spans = producer.Spans;
+                surface.ImageWidth = snapshot.ImageWidth;
+                surface.ImageHeight = snapshot.ImageHeight;
+                surface.Encoding =
+                    static_cast<Oot3d::SceneColorEncoding>(
+                        producer.ColorEncoding);
+                surface.SceneEffectsResolved =
+                    producer.SceneEffectsResolved;
+                surface.PendingPixels = snapshot.PixelBytes;
+                const uint64_t identity = surface.Identity;
+                mGpuTextureCopySurfaces.emplace(identity, std::move(surface));
+                mGpuTextureCopyProducers[{producer.RenderTargetNamespace,
+                                          producer.CompletionId,
+                                          producer.AfterDrawSubmissionId}] =
+                    identity;
+                ++mGpuTextureCopySamplerCost.ProducerRestores;
+                continue;
+            }
             NativePicaTextureKey key;
             key.ContentHash = snapshot.ContentHash;
             key.ReplacementGeneration = snapshot.ReplacementGeneration;
@@ -8661,6 +9798,9 @@ bool GfxRenderingAPIVulkan::RestorePicaTextureCache(
             texture.Height = snapshot.ImageHeight;
             texture.MipLevels = snapshot.MipLevels;
             texture.Rgba8 = snapshot.PixelBytes;
+            texture.CustomReplacementApplied = snapshot.CustomReplacement;
+            if (snapshot.CustomReplacement)
+                texture.CustomReplacementPixelHash = ::Oot3d::Renderer::AzaharCityHash64(texture.Rgba8);
             texture.SamplerState.MinFilter = snapshot.NativeType != 2U
                 ? NativePicaMinFilter(snapshot.MinLinear,
                                       snapshot.MipLinear,
@@ -8715,6 +9855,12 @@ bool GfxRenderingAPIVulkan::CapturePicaColorTargets(
                 continue;
             }
             GfxNativePicaRenderTargetColorSnapshot snapshot;
+            // The saved colour carries the resolved scene effects only while the
+            // last write to this target is the one that produced them; a sticky
+            // flag would suppress the scene stages for unrelated content.
+            snapshot.SceneEffectsResolved =
+                target.SceneEffectsResolvedSerial != 0U &&
+                target.SceneEffectsResolvedSerial == target.ContentWriteSerial;
             snapshot.RenderTargetNamespace = key.RenderTargetNamespace;
             snapshot.ColorPhysicalAddress = key.ColorPhysicalAddress;
             snapshot.DepthPhysicalAddress = key.DepthPhysicalAddress;
@@ -8882,6 +10028,14 @@ bool GfxRenderingAPIVulkan::RestorePicaColorTargets(
                         VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
                             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
                 };
+            // The restored colour becomes this target's current content version.
+            // If it was saved as resolved content, the provenance answers true
+            // immediately - including the first presentation of a restored
+            // checkpoint, before any further native draw - and any later draw,
+            // clear or memory fill of this target invalidates it again.
+            target.ContentWriteSerial = ++mGpuTextureCopyWriteSerial;
+            target.SceneEffectsResolvedSerial =
+                snapshot.SceneEffectsResolved ? target.ContentWriteSerial : 0U;
             restoreColorAttachment(
                 target.ColorImage, 4U, snapshot.ColorRgba8);
             if (!target.Attachments.NativeColorOnly()) {
@@ -9126,7 +10280,6 @@ bool GfxRenderingAPIVulkan::ResetPicaState(
         CheckNativeVk(vkDeviceWaitIdle(mDevice),
                       "vkDeviceWaitIdle(native PICA state reset)");
         DestroyNativePicaGeometryResources();
-        mRawTextureCopyWritebacks.clear();
         ForgetNativePicaEffectNriTextures();
         mCacaoPass.InvalidateScreenResources();
         mFidelityFxSssrPass.InvalidateScreenResources();
@@ -9172,13 +10325,14 @@ bool GfxRenderingAPIVulkan::ResetPicaState(
         mNativePicaCompositionSchedule.Reset();
         for (auto texture = mNativePicaTextures.begin();
              texture != mNativePicaTextures.end();) {
-            if (texture->second.ImageLayout != VK_IMAGE_LAYOUT_GENERAL) {
+            if (!texture->second.ImageBorrowed) {
                 ++texture;
                 continue;
             }
             DestroyTexture(texture->second);
             texture = mNativePicaTextures.erase(texture);
         }
+        DestroyGpuTextureCopySurfaces();
         for (auto& [key, target] : mNativePicaRenderTargets) {
             DestroyNativePicaRenderTarget(target);
         }
@@ -9714,13 +10868,14 @@ void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayIma
     mPreviousPicaVertexUniforms.clear();
     for (auto texture = mNativePicaTextures.begin();
          texture != mNativePicaTextures.end();) {
-        if (texture->second.ImageLayout != VK_IMAGE_LAYOUT_GENERAL) {
+        if (!texture->second.ImageBorrowed) {
             ++texture;
             continue;
         }
         DestroyTexture(texture->second);
         texture = mNativePicaTextures.erase(texture);
     }
+    DestroyGpuTextureCopySurfaces();
     for (auto& [key, target] : mNativePicaRenderTargets) {
         DestroyNativePicaRenderTarget(target);
     }
@@ -9735,8 +10890,13 @@ void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayIma
     } else {
         // Retained pixels remain presentable, but their old scene/depth guides
         // no longer exist. The next native transfer republishes that capability;
-        // until then the graph must not declare reads from retired attachments.
-        for (auto& [key, image] : mNativePicaDisplayImages) image.SceneResolved = false;
+        // until then the graph must not declare reads from retired attachments,
+        // and a resolved-composition provenance from an earlier frame must not
+        // suppress the scene stages for these pixels.
+        for (auto& [key, image] : mNativePicaDisplayImages) {
+            image.SceneResolved = false;
+            image.SceneEffectsResolved = false;
+        }
     }
     mInvalidatedNativePicaRenderTargetAddresses.clear();
     mActiveNativePicaRenderTarget = nullptr;

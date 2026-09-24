@@ -285,9 +285,6 @@ bool NriEffectGraphTransientImageArena::ConfiguredFor(
     return mImpl->Ready && plan.Complete() && mImpl->SamePlan(plan);
 }
 
-bool NriEffectGraphTransientImageArena::HasActiveResources() const noexcept {
-    return mImpl->SlotCount != 0U || mImpl->ResourceCount != 0U;
-}
 
 const NriEffectGraphTransientImageBinding*
 NriEffectGraphTransientImageArena::Find(

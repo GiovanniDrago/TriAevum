@@ -1,5 +1,7 @@
 #pragma once
 
+#include "fast/renderer3ds/pica_pbr_material.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -35,6 +37,8 @@ struct AzaharTextureReplacement {
     uint32_t Width = 0;
     uint32_t Height = 0;
     uint64_t NativeHash = 0;
+    uint64_t PixelContentHash = 0;
+    uint64_t Generation = 0;
     std::shared_ptr<const std::vector<uint8_t>> Rgba8;
     std::filesystem::path SourcePath;
 };
@@ -53,6 +57,27 @@ struct AzaharTextureResolveResult {
     std::shared_ptr<const AzaharTextureReplacement> Replacement;
 };
 
+struct AzaharMaterialIdentity {
+    uint64_t TitleId = 0;
+    uint64_t NativeHash = 0;
+    bool UseNewHash = true;
+
+    bool operator==(const AzaharMaterialIdentity&) const = default;
+};
+
+struct AzaharPbrMaterial {
+    AzaharMaterialIdentity Identity;
+    uint64_t Generation = 0;
+    Fast::Renderer3ds::PicaPbrMaterialParameters Parameters;
+    std::array<std::shared_ptr<const AzaharTextureReplacement>, 3> Textures;
+    std::shared_ptr<const AzaharTextureReplacement> ColorReplacement;
+};
+
+struct AzaharMaterialResolveResult {
+    AzaharTextureResolveState State = AzaharTextureResolveState::Disabled;
+    std::shared_ptr<const AzaharPbrMaterial> Material;
+};
+
 struct AzaharTexturePackStatus {
     bool DumpTextures = false;
     bool LoadCustomTextures = false;
@@ -66,6 +91,10 @@ struct AzaharTexturePackStatus {
     size_t PendingLoads = 0;
     size_t FailedLoads = 0;
     size_t UnsupportedTextureFiles = 0;
+    bool IndexPending = false;
+    size_t IndexedMaterials = 0;
+    size_t LoadedMaterials = 0;
+    size_t FailedMaterials = 0;
     std::filesystem::path LoadDirectory;
     std::filesystem::path DumpDirectory;
     std::string LastError;
@@ -92,8 +121,8 @@ class AzaharTexturePackRuntime final {
 
     static AzaharTexturePackRuntime& Instance();
 
-    // Reconfiguration and reload invalidate only this module's decoded cache.
-    // Generation lets a backend invalidate its own texture identity lazily.
+    // Indexing and decoding run on the pack worker. Reload retains valid
+    // resources until replacements are ready; generation changes are atomic.
     void Configure(AzaharTexturePackConfiguration configuration);
     void Reload();
 
@@ -105,6 +134,9 @@ class AzaharTexturePackRuntime final {
     ResolveOrQueue(const AzaharTextureRequest& request);
     [[nodiscard]] AzaharTextureResolveResult
     PollQueued(uint64_t nativeHash) const;
+    [[nodiscard]] AzaharMaterialResolveResult
+    ResolveMaterialOrQueue(uint64_t nativeHash, uint64_t expectedGeneration);
+    void ReportMaterialUploadFailure(uint64_t nativeHash, uint64_t generation, std::string error);
     [[nodiscard]] AzaharTexturePackStatus Snapshot() const;
     [[nodiscard]] uint64_t Generation() const;
 

@@ -24,7 +24,8 @@ void PopulateCompatibilityProjections(
         plan.ReflectionProvider == ReflectionMode::FidelityFxSssr;
     plan.TemporalMetadata =
         input.WorldSurface && input.PerspectiveAvailable &&
-        input.CameraAvailable;
+        input.CameraAvailable &&
+        input.Purpose == Renderer3ds::PicaCompositionPurpose::Presentation;
     plan.Taa = plan.Enabled(DisplayEffectPass::Taa);
     plan.Smaa = plan.Enabled(DisplayEffectPass::Smaa);
     plan.Nis = plan.Enabled(DisplayEffectPass::Nis);
@@ -40,6 +41,112 @@ void PopulateCompatibilityProjections(
 }
 
 } // namespace
+
+namespace {
+// A pass belongs to a domain by its declared stage. The domains are adjacent by
+// construction, so a pass in neither (atmosphere) is kept only as a dependency
+// of a domain pass that reads it.
+[[nodiscard]] bool InDisplayEffectDomain(EffectStage stage,
+                                         DisplayEffectDomain domain) noexcept {
+    const uint8_t order = static_cast<uint8_t>(stage);
+    return domain == DisplayEffectDomain::Scene
+        ? order <= static_cast<uint8_t>(EffectStage::AfterTransparent)
+        : order >= static_cast<uint8_t>(EffectStage::BeforeUi);
+}
+} // namespace
+
+std::vector<EffectPass> ProjectDisplayEffectPasses(
+    const CompiledEffectGraph& graph, DisplayEffectDomain domain,
+    std::span<const EffectResource> resolvedResources,
+    EffectResource resolvedInput) {
+    std::vector<EffectPass> projected;
+    if (!graph.Valid()) {
+        return projected;
+    }
+    constexpr size_t kResourceCount =
+        static_cast<size_t>(EffectResource::Count);
+    std::array<bool, kResourceCount> resolved{};
+    for (const EffectResource resource : resolvedResources) {
+        resolved[static_cast<size_t>(resource)] = true;
+    }
+    std::array<bool, kResourceCount> needed{};
+    std::vector<EffectPass> reversed;
+    reversed.reserve(graph.Passes.size());
+    for (auto pass = graph.Passes.rbegin(); pass != graph.Passes.rend();
+         ++pass) {
+        // A contribution an earlier domain already applied to the colour is not
+        // re-derived here.
+        const bool alreadyResolved = std::any_of(
+            pass->Resources.begin(), pass->Resources.end(),
+            [&resolved](const EffectResourceUse& use) {
+                return WritesEffectResource(use.Access) &&
+                       resolved[static_cast<size_t>(use.Resource)];
+            });
+        if (alreadyResolved) {
+            continue;
+        }
+        bool keep = InDisplayEffectDomain(pass->Stage, domain);
+        if (!keep) {
+            keep = std::any_of(
+                pass->Resources.begin(), pass->Resources.end(),
+                [&needed](const EffectResourceUse& use) {
+                    return WritesEffectResource(use.Access) &&
+                           needed[static_cast<size_t>(use.Resource)];
+                });
+        }
+        if (!keep) {
+            continue;
+        }
+        EffectPass kept;
+        kept.Name = pass->Name;
+        kept.Stage = pass->Stage;
+        kept.Contract = pass->Contract;
+        for (const EffectResourceUse& use : pass->Resources) {
+            EffectResourceUse declared = use;
+            if (ReadsEffectResource(use.Access) &&
+                resolved[static_cast<size_t>(use.Resource)]) {
+                declared.Resource = resolvedInput;
+            }
+            if (std::find(kept.Resources.begin(), kept.Resources.end(),
+                          declared) != kept.Resources.end()) {
+                // The resolved colour is read once, however many resolved
+                // contributions it replaced.
+                continue;
+            }
+            kept.Resources.push_back(declared);
+        }
+        for (const EffectResourceUse& use : kept.Resources) {
+            if (ReadsEffectResource(use.Access)) {
+                needed[static_cast<size_t>(use.Resource)] = true;
+            }
+        }
+        reversed.push_back(std::move(kept));
+    }
+    projected.assign(reversed.rbegin(), reversed.rend());
+    // Rebuild the dependency edges from the resource edges that survived, so a
+    // kept pass still runs after whatever produces what it reads.
+    std::array<std::string, kResourceCount> writer{};
+    for (EffectPass& pass : projected) {
+        for (const EffectResourceUse& use : pass.Resources) {
+            if (!ReadsEffectResource(use.Access)) {
+                continue;
+            }
+            const std::string& producer =
+                writer[static_cast<size_t>(use.Resource)];
+            if (!producer.empty() && producer != pass.Name &&
+                std::find(pass.DependsOn.begin(), pass.DependsOn.end(),
+                          producer) == pass.DependsOn.end()) {
+                pass.DependsOn.push_back(producer);
+            }
+        }
+        for (const EffectResourceUse& use : pass.Resources) {
+            if (WritesEffectResource(use.Access)) {
+                writer[static_cast<size_t>(use.Resource)] = pass.Name;
+            }
+        }
+    }
+    return projected;
+}
 
 std::string_view DisplayEffectPassName(DisplayEffectPass pass) noexcept {
     switch (pass) {
@@ -57,6 +164,7 @@ std::string_view DisplayEffectPassName(DisplayEffectPass pass) noexcept {
         case DisplayEffectPass::Smaa: return "SMAA";
         case DisplayEffectPass::Scanout: return "Scanout";
         case DisplayEffectPass::WorkingColor: return "WorkingColor";
+        case DisplayEffectPass::SceneComposition: return "SceneComposition";
         case DisplayEffectPass::Count: return {};
     }
     return {};
@@ -178,25 +286,34 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
         return plan;
     }
 
-    const bool cacao = input.WorldSurface &&
-                       input.AmbientOcclusion ==
-                           AmbientOcclusionMode::Cacao &&
+    // Scene stages are declared whenever the feature applies. Whether they run
+    // at this boundary is decided by the declared domain projection below, not
+    // by a list of names.
+    const bool extensionWorld = input.WorldSurface &&
+        input.Purpose == Renderer3ds::PicaCompositionPurpose::Presentation;
+    const bool cacao = extensionWorld &&
+                       input.AmbientOcclusion == AmbientOcclusionMode::Cacao &&
                        input.PerspectiveAvailable;
-    const bool outline = input.WorldSurface &&
+    const bool outline = extensionWorld &&
                          input.Toon != ToonMode::Off &&
                          input.OutlineEnabled;
-    const bool reflections = input.WorldSurface &&
+    const bool reflections = extensionWorld &&
                              input.Reflections != ReflectionMode::Off &&
                              input.PerspectiveAvailable;
     const bool fidelityFxSssr = reflections && input.Reflections == ReflectionMode::FidelityFxSssr;
-    const bool temporalMetadata = input.WorldSurface &&
+    const bool temporalMetadata = extensionWorld &&
                                   input.PerspectiveAvailable &&
                                   input.CameraAvailable;
-    const bool taa = temporalMetadata && (input.AntiAliasing == AntiAliasingMode::Taa || input.ForceTaa);
-    const bool smaa = input.WorldSurface &&
+    // A native boundary has no presentation stages, so its inputs never declare
+    // them: the domain projection below is what enforces that structurally, and
+    // these keep the boundary's derived requirements free of presentation
+    // resources.
+    const bool taa = !input.NativeSceneBoundary && temporalMetadata &&
+        (input.AntiAliasing == AntiAliasingMode::Taa || input.ForceTaa);
+    const bool smaa = !input.NativeSceneBoundary && extensionWorld &&
                       input.AntiAliasing == AntiAliasingMode::Smaa1x &&
                       input.SmaaAvailable;
-    const bool upscaler = input.WorldSurface &&
+    const bool upscaler = !input.NativeSceneBoundary && extensionWorld &&
                           input.AntiAliasing == AntiAliasingMode::Upscaler;
     const bool nis = upscaler && input.Upscaler == UpscalerProvider::Nis;
     const bool fsr = temporalMetadata && upscaler && input.Upscaler == UpscalerProvider::Fsr;
@@ -204,10 +321,15 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     const bool temporalUpscaler = fsr || dlss;
     const bool hiZ = reflections || fsr;
     const bool motionVectors =
-        temporalMetadata && (taa || temporalUpscaler || fidelityFxSssr || input.ForceMotion);
+        temporalMetadata && (taa || temporalUpscaler || fidelityFxSssr ||
+                             (!input.NativeSceneBoundary && input.ForceMotion));
 
+    // A native boundary materializes the composed scene for its consumer at
+    // the boundary's own order, so the scene stages must actually be baked into
+    // the boundary output rather than fused into presentation.
     const bool composite = (cacao || outline || reflections) &&
-                           (taa || temporalUpscaler || smaa || nis);
+                           (taa || temporalUpscaler || smaa || nis ||
+                            input.NativeSceneBoundary);
     const bool workingColor = fidelityFxSssr ||
         ((taa || temporalUpscaler) && !composite);
 
@@ -333,6 +455,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     const EffectResource sourceColor = composite
         ? EffectResource::CompositeColor
         : baseColor;
+    plan.SceneOutput = sourceColor;
     graph.Add({ .Name = "TAA",
                 .DependsOn = { "Composite", "Motion", "WorkingColor" },
                 .Enabled = taa,
@@ -377,35 +500,141 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     }
     if (smaa)
         finalColor = EffectResource::AntiAliasedColor;
-    std::vector<EffectResourceUse> scanoutResources{ Read(finalColor) };
+    std::vector<EffectResourceUse> terminalResources{ Read(finalColor) };
     if (!composite && cacao) {
-        scanoutResources.push_back(Read(EffectResource::AmbientOcclusion));
-        scanoutResources.push_back(Read(EffectResource::AmbientGuide));
+        terminalResources.push_back(Read(EffectResource::AmbientOcclusion));
+        terminalResources.push_back(Read(EffectResource::AmbientGuide));
     }
     if (!composite && reflections) {
-        scanoutResources.push_back(Read(EffectResource::ReflectionColor));
-        scanoutResources.push_back(Read(EffectResource::MaterialGuide));
+        terminalResources.push_back(Read(EffectResource::ReflectionColor));
+        terminalResources.push_back(Read(EffectResource::MaterialGuide));
     }
     if (!composite && outline) {
-        scanoutResources.push_back(Read(EffectResource::NativeDepth));
-        scanoutResources.push_back(Read(EffectResource::NormalGuide));
-        scanoutResources.push_back(Read(EffectResource::OutlineGeometryGuide));
-        scanoutResources.push_back(Read(EffectResource::RigidMotionGuide));
-        scanoutResources.push_back(Read(EffectResource::FogGuide));
+        terminalResources.push_back(Read(EffectResource::NativeDepth));
+        terminalResources.push_back(Read(EffectResource::NormalGuide));
+        terminalResources.push_back(Read(EffectResource::OutlineGeometryGuide));
+        terminalResources.push_back(Read(EffectResource::RigidMotionGuide));
+        terminalResources.push_back(Read(EffectResource::FogGuide));
     }
     if (input.GuideDiagnostics && cacao && (composite || !outline)) {
-        scanoutResources.push_back(Read(EffectResource::NativeDepth));
-        scanoutResources.push_back(Read(EffectResource::NormalGuide));
+        terminalResources.push_back(Read(EffectResource::NativeDepth));
+        terminalResources.push_back(Read(EffectResource::NormalGuide));
     }
-    scanoutResources.push_back(Write(EffectResource::PresentationOutput));
+    // The two declared terminals of this graph: the scene output a native
+    // boundary's consumer samples, and the presentation scanout. Which one a
+    // plan describes is its domain, so neither is selected by an effect name.
+    std::vector<EffectResourceUse> compositionResources = terminalResources;
+    compositionResources.push_back(Write(EffectResource::SceneComposition));
+    graph.Add({ .Name = "SceneComposition",
+                .DependsOn = { "CACAO", "Reflections", "Outline",
+                               "Composite", "WorkingColor" },
+                .Enabled = input.NativeSceneBoundary,
+                .Stage = EffectStage::AfterTransparent,
+                .Contract = EffectContractKind::ComposerPass,
+                .Resources = std::move(compositionResources) });
+    terminalResources.push_back(Write(EffectResource::PresentationOutput));
     graph.Add({ .Name = "Scanout",
                 .DependsOn = { "CACAO", "Reflections", "Outline",
                                "Composite", "TAA", "TemporalUpscaler",
                                "NIS", "SMAA", "WorkingColor" },
+                .Enabled = !input.NativeSceneBoundary,
                 .Stage = EffectStage::AfterUi,
                 .Contract = EffectContractKind::ComposerPass,
-                .Resources = std::move(scanoutResources) });
+                .Resources = std::move(terminalResources) });
     plan.Graph = graph.Compile();
+    plan.SceneOutput = sourceColor;
+    const bool sceneEffectsResolved =
+        input.WorldSurface && input.SceneEffectsResolved;
+    if (plan.Graph.Valid() &&
+        (input.NativeSceneBoundary || sceneEffectsResolved)) {
+        // Everything a scene stage resolves into the colour is already there:
+        // the resources are collected from the same declaration the boundary
+        // projects, so a new scene pass needs no entry here. Auxiliary scene
+        // data (guides, depth, motion) stays re-derivable for the stages that
+        // consume it.
+        std::array<EffectResource, static_cast<size_t>(EffectResource::Count)>
+            resolvedColour{};
+        size_t resolvedCount = 0U;
+        if (sceneEffectsResolved) {
+            for (const auto& pass : plan.Graph.Passes) {
+                if (!InDisplayEffectDomain(pass.Stage,
+                                           DisplayEffectDomain::Scene)) {
+                    continue;
+                }
+                for (const auto& use : pass.Resources) {
+                    if (!WritesEffectResource(use.Access) ||
+                        IsAuxiliarySceneData(use.Resource) ||
+                        IsLinearWorkingDomain(use.Resource) ||
+                        // This plan's own terminal is what the boundary
+                        // materializes, not a contribution already in the
+                        // colour, so it is never collected as resolved.
+                        use.Resource == EffectResource::SceneComposition) {
+                        continue;
+                    }
+                    if (std::find(resolvedColour.begin(),
+                                  resolvedColour.begin() +
+                                      static_cast<ptrdiff_t>(resolvedCount),
+                                  use.Resource) ==
+                        resolvedColour.begin() +
+                            static_cast<ptrdiff_t>(resolvedCount)) {
+                        resolvedColour[resolvedCount++] = use.Resource;
+                    }
+                }
+            }
+        }
+        EffectGraph projected;
+        // A composed scene that was built from the linear working domain is
+        // still read in that domain: the conversion is not a scene effect, so
+        // the resolved colour is converted for the stages that declared it
+        // instead of being handed encoded colour.
+        EffectResource resolvedSceneInput = EffectResource::SceneColor;
+        if (sceneEffectsResolved) {
+            for (const auto& pass : plan.Graph.Passes) {
+                const bool writesComposedScene = std::any_of(
+                    pass.Resources.begin(), pass.Resources.end(),
+                    [&plan](const EffectResourceUse& use) {
+                        return WritesEffectResource(use.Access) &&
+                               use.Resource == plan.SceneOutput;
+                    });
+                if (!writesComposedScene) {
+                    continue;
+                }
+                const bool composedFromLinearDomain = std::any_of(
+                    pass.Resources.begin(), pass.Resources.end(),
+                    [](const EffectResourceUse& use) {
+                        return ReadsEffectResource(use.Access) &&
+                               IsLinearWorkingDomain(use.Resource);
+                    });
+                if (composedFromLinearDomain) {
+                    resolvedSceneInput = EffectResource::LinearWorkingColor;
+                }
+            }
+        }
+        const auto projectedPasses = ProjectDisplayEffectPasses(
+            plan.Graph,
+            input.NativeSceneBoundary ? DisplayEffectDomain::Scene
+                                      : DisplayEffectDomain::Presentation,
+            sceneEffectsResolved
+                ? std::span<const EffectResource>(resolvedColour.data(),
+                                                  resolvedCount)
+                : std::span<const EffectResource>{},
+            resolvedSceneInput);
+        for (auto pass : projectedPasses) {
+            projected.Add(std::move(pass));
+        }
+        if (input.NativeSceneBoundary) {
+            // The boundary's declared output is sampled by a native consumer,
+            // which is what retires it readable for that consumer.
+            projected.Export(EffectResource::SceneComposition);
+        }
+        if (!input.NativeSceneBoundary || sceneEffectsResolved) {
+            // No scene stage applies to this colour: either none is declared, or
+            // the version this plan consumes already carries them, so the native
+            // target itself is the composed scene.
+            plan.SceneOutput = EffectResource::SceneColor;
+        }
+        plan.Graph = projected.Compile();
+    }
     PopulateCompatibilityProjections(plan, input);
     return plan;
 }

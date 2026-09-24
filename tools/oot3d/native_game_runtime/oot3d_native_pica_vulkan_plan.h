@@ -64,6 +64,10 @@ struct Oot3dPicaVulkanTextureBinding {
     bool NativeContentHashAvailable = false;
     uint64_t NativeBaseLevelContentHash = 0;
     bool NativeBaseLevelContentHashAvailable = false;
+    // Explicit producers of this binding's bytes, carried from the immutable
+    // draw snapshot. Empty for an ordinary CPU-owned texture; never derived
+    // from a hash or from an absent hash.
+    std::vector<Fast::Renderer3ds::PicaTextureCopyReference> CopyReferences;
 
     [[nodiscard]] std::span<const uint8_t> ResolvedNativeBytes() const {
         return SharedNativeBytes != nullptr
@@ -82,6 +86,7 @@ struct Oot3dPicaVulkanDrawPlan {
     Oot3dPicaCompositionDomain CompositionDomain =
         Oot3dPicaCompositionDomain::Unknown;
     Oot3dPicaCompositionAttribution Composition;
+    Fast::Renderer3ds::PicaNativeLightBinding LightBinding;
     Oot3dPicaCanonicalDrawIdentity CanonicalIdentity;
     Oot3dPicaFragmentFeatureSet FragmentFeatures;
     Oot3dPicaGeneratedVertexShader VertexShader;
@@ -130,6 +135,7 @@ struct Oot3dPicaVulkanDrawPlan {
 struct Oot3dPicaVulkanDrawOverrides {
     const Oot3dPicaVertexUniformState* VertexUniforms = nullptr;
     const Oot3dPicaFragmentUniformState* FragmentUniforms = nullptr;
+    const Fast::Renderer3ds::PicaNativeLightBinding* LightBinding = nullptr;
     const Oot3dPicaViewportState* Viewport = nullptr;
     const std::array<float, 4>* BlendConstantColor = nullptr;
     const std::vector<Oot3dPicaVulkanVertexBinding>* VertexBindings = nullptr;

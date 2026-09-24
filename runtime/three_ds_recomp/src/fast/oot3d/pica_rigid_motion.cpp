@@ -1,4 +1,5 @@
 #include "fast/oot3d/pica_rigid_motion.h"
+#include "fast/renderer3ds/pica_vertex_surface.h"
 
 #include <algorithm>
 #include <cctype>
@@ -128,7 +129,7 @@ PicaRigidMotionShaderVariant BuildPicaRigidMotionShaderVariant(
 static PicaRigidMotionShaderVariant BuildTemporalVertexVariantImpl(
     std::string_view source, uint64_t vertexKey,
     const ::Oot3d::Renderer::PicaTemporalVertexProgramView* program,
-    bool allowCompatibilityAnalysis) {
+    bool allowCompatibilityAnalysis, bool temporal, bool surface) {
     using ::Oot3d::Renderer::PicaVertexShaderHook;
 
     PicaRigidMotionShaderVariant result{};
@@ -183,14 +184,20 @@ static PicaRigidMotionShaderVariant BuildTemporalVertexVariantImpl(
         end > source.size()) {
         return result;
     }
+    const auto surfaceProgram = surface && program != nullptr
+        ? Fast::Renderer3ds::BuildPicaVertexSurfaceShader(program->Hooks)
+        : Fast::Renderer3ds::PicaVertexSurfaceShader{};
+    if (!temporal && !surfaceProgram.Available) return result;
     const std::string_view prefix = source.substr(0U, state);
     const std::string_view currentState =
         source.substr(state, main - state);
     const std::string_view currentMain =
         source.substr(mainBody, end - mainBody);
-    result.Source.reserve(source.size()*2U);
+    result.Source.reserve(source.size() * (temporal ? 2U : 1U) +
+                          surfaceProgram.Declarations.size() + surfaceProgram.MainBody.size());
     result.Source.append(prefix);
-    result.Source.append(
+    result.Source.append(surfaceProgram.Declarations);
+    if (temporal) result.Source.append(
         "layout(location=7) out vec4 oot3d_current_clip;\n"
         "layout(location=8) out vec4 oot3d_previous_clip;\n"
         "layout(set=0,binding=6,std140) uniform PicaPreviousVertexUniforms {\n"
@@ -198,35 +205,41 @@ static PicaRigidMotionShaderVariant BuildTemporalVertexVariantImpl(
         "} uniforms_previous;\n"
         "layout(push_constant) uniform Oot3dDrawState { vec4 rigid_motion; vec4 jitter; } oot3d_draw;\n");
     result.Source.append(currentState);
-    result.Source.append(previousState);
+    if (temporal) result.Source.append(previousState);
     result.Source.append("void main() {\n");
-    result.Source.append(previousMain);
-    result.Source.append(
-        "    vec4 oot3d_previous_position = gl_Position;\n");
+    if (temporal) {
+        result.Source.append(previousMain);
+        result.Source.append("    vec4 oot3d_previous_position = gl_Position;\n");
+    }
     result.Source.append(currentMain);
-    result.Source.append(
+    result.Source.append(surfaceProgram.MainBody);
+    if (temporal) result.Source.append(
         "    gl_Position.xy += oot3d_draw.jitter.xy * gl_Position.w;\n"
         "    oot3d_previous_position.xy += oot3d_draw.jitter.zw * oot3d_previous_position.w;\n"
         "    oot3d_current_clip = gl_Position;\n"
-        "    oot3d_previous_clip = oot3d_previous_position;\n"
-        "}\n");
-    result.FragmentKey=vertexKey^0x54454d504a495454ULL;
+        "    oot3d_previous_clip = oot3d_previous_position;\n");
+    result.Source.append("}\n");
+    result.FragmentKey = vertexKey ^ (temporal ? 0x54454d504a495454ULL : 0ULL) ^
+                         (surfaceProgram.Available ? 0x5355524641434532ULL : 0ULL);
+    result.TemporalApplied = temporal;
+    result.SurfaceApplied = surfaceProgram.Available;
     result.Applied=true;
     return result;
 }
 
-PicaRigidMotionShaderVariant BuildPicaTemporalVertexInstrumentation(
+PicaRigidMotionShaderVariant BuildPicaVertexInstrumentation(
     std::string_view source, uint64_t vertexKey,
-    const ::Oot3d::Renderer::PicaTemporalVertexProgramView& program) {
+    const ::Oot3d::Renderer::PicaTemporalVertexProgramView& program,
+    bool temporal, bool surface) {
     return BuildTemporalVertexVariantImpl(
-        source, vertexKey, &program, false);
+        source, vertexKey, &program, false, temporal, surface);
 }
 
 PicaRigidMotionShaderVariant BuildPicaTemporalVertexVariant(
     std::string_view source, uint64_t vertexKey,
     const ::Oot3d::Renderer::PicaTemporalVertexProgramView* program) {
     return BuildTemporalVertexVariantImpl(
-        source, vertexKey, program, true);
+        source, vertexKey, program, true, true, false);
 }
 
 } // namespace Fast::Oot3d

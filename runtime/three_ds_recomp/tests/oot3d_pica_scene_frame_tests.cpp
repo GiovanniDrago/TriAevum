@@ -13,6 +13,7 @@
 #include <array>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -453,7 +454,7 @@ TEST(Oot3dPicaSceneFrame, InternsShaderAndLayoutAcrossFrames) {
 }
 
 TEST(Oot3dPicaSceneFrame,
-     DecodesNativeLightOnlyForDynamicPerspectiveShadowCasters) {
+     IncludesRigidAndSkinnedPerspectiveShadowCasters) {
     using namespace Fast::Oot3d;
     constexpr size_t floatOffset = 80U;
     constexpr size_t vec4Bytes = 4U * sizeof(float);
@@ -512,10 +513,17 @@ TEST(Oot3dPicaSceneFrame,
     EXPECT_EQ(frame.Stats().DirectionalShadowCasterCount, 1U);
     EXPECT_EQ(frame.Stats().DirectionalShadowNativeLightCasterCount, 1U);
 
+    const uint32_t rigidLights = enabledLights & ~(1U << 2U);
+    std::memcpy(uniforms.data(), &rigidLights, sizeof(rigidLights));
+    ASSERT_EQ(frame.Record(draw), PicaSceneRecordStatus::Recorded);
+    EXPECT_FALSE(frame.Draws()[1].NativeTransform.CurrentUsesSkeleton);
+    EXPECT_TRUE(frame.DirectionalShadowCaster(1U));
+    EXPECT_EQ(frame.Stats().DirectionalShadowCasterCount, 2U);
+
     draw.PerspectiveProjection = false;
     ASSERT_EQ(frame.Record(draw), PicaSceneRecordStatus::Recorded);
-    EXPECT_FALSE(frame.DirectionalShadowCaster(1U));
-    EXPECT_EQ(frame.Stats().DirectionalShadowCasterCount, 1U);
+    EXPECT_FALSE(frame.DirectionalShadowCaster(2U));
+    EXPECT_EQ(frame.Stats().DirectionalShadowCasterCount, 2U);
 }
 
 TEST(Oot3dPicaSceneFrame, RetainsCanonicalMaterialAndResolvedTextureBindings) {
@@ -934,6 +942,12 @@ TEST(Oot3dPicaSceneFrame, RejectsConflictingShaderIdentityAndInvalidRanges) {
     EXPECT_EQ(frame.Record(draw), PicaSceneRecordStatus::FrameNotActive);
     frame.BeginFrame(0U, 13U);
     ASSERT_EQ(frame.Record(draw), PicaSceneRecordStatus::Recorded);
+    draw.SurfaceLightingUniformOffset = draw.UniformBuffer.Size - 1;
+    draw.SurfaceLightingUniformSize = 2;
+    EXPECT_EQ(frame.Record(draw), PicaSceneRecordStatus::InvalidUniformRange);
+    draw.SurfaceLightingUniformOffset = std::numeric_limits<uint64_t>::max();
+    EXPECT_EQ(frame.Record(draw), PicaSceneRecordStatus::InvalidUniformRange);
+    draw.SurfaceLightingUniformOffset = draw.SurfaceLightingUniformSize = 0;
     draw.VertexShaderSource = "different source with the same key";
     EXPECT_EQ(frame.Record(draw),
               PicaSceneRecordStatus::ShaderIdentityConflict);
@@ -950,7 +964,7 @@ TEST(Oot3dPicaSceneFrame, RejectsConflictingShaderIdentityAndInvalidRanges) {
         kPicaSceneRenderTargetStateSchemaVersion;
     draw.Material.SchemaVersion = 0U;
     EXPECT_EQ(frame.Record(draw), PicaSceneRecordStatus::InvalidMaterialState);
-    EXPECT_EQ(frame.Stats().RejectedDrawCount, 5U);
+    EXPECT_EQ(frame.Stats().RejectedDrawCount, 7U);
 }
 
 TEST(Oot3dNativeSceneView, ReferencesFrameAndTracksCameraHistory) {
@@ -1266,6 +1280,26 @@ TEST(Oot3dDirectionalShadowSemantics,
     EXPECT_NEAR(selection.WorldDirectionTowardSource[0], 0.0F, 1.0e-5F);
     EXPECT_NEAR(selection.WorldDirectionTowardSource[1], 1.0F, 1.0e-5F);
     EXPECT_NEAR(selection.WorldDirectionTowardSource[2], 0.0F, 1.0e-5F);
+}
+
+TEST(Oot3dDirectionalShadowSemantics, NativeEnvironmentUsesDominantSourceWithoutActorSlots) {
+    using namespace Fast::Oot3d;
+    auto sources = std::make_shared<Fast::Renderer3ds::PicaSceneDirectionalLights>();
+    sources->Count = 2;
+    sources->Lights[0] = {51, {0,1,0}, {1,0,0}};
+    sources->Lights[1] = {52, {0,-1,0}, {0,1,0}};
+    PicaSceneDrawRecord world;
+    world.SceneDirectionals = sources;
+    const std::array<const PicaSceneDrawRecord*, 1> draws{&world};
+    const auto selected = ResolvePicaDirectionalShadowLightSelection(draws);
+    ASSERT_TRUE(selected.Valid());
+    EXPECT_EQ(selected.WorldDirectionTowardSource, (DirectionalShadowVector{0,-1,0}));
+    const std::array<PicaSurfaceShadowLight, 2> receiverLights{{
+        {{0,1,0}, 10, true, false},
+        {{0,-1,0}, 11, true, false},
+    }};
+    EXPECT_EQ(ResolvePicaSurfaceDirectionalShadowMask(receiverLights, IdentityDirectionalShadowMatrix(),
+                  selected.WorldDirectionTowardSource), 1U << 11U);
 }
 
 TEST(Oot3dDirectionalShadowSemantics,

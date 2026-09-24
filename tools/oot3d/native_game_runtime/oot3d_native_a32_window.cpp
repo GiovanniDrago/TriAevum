@@ -6,6 +6,7 @@
 #include "fast/renderer/slow_frame_samples.h"
 #include "fast/renderer3ds/pica_program_preparation.h"
 #include "oot3d_game_language_panel.h"
+#include "oot3d_scene_environment.h"
 #ifdef OOT3D_WHOLE_AOT_PRODUCT_MODE
 #include "oot3d_native_crash_diagnostics.h"
 #endif
@@ -195,7 +196,8 @@ constexpr uint64_t kGuestDisplayRefreshRate =
     Oot3dNativeGame::kOot3dNativeTimeUnitsPerSecond;
 constexpr uint32_t kMinimumHostAudioPrebufferMilliseconds = 100U;
 constexpr uint64_t kA32RuntimeSampleDenominator = 64ULL;
-constexpr uint64_t kVisualInterpolationRenderTargetNamespace = 1ULL;
+constexpr uint64_t kNativeDependencyRenderTargetNamespace = 1ULL;
+constexpr uint64_t kVisualInterpolationRenderTargetNamespace = 2ULL;
 constexpr size_t kMaximumPicaDrainPassesPerRefresh = 64U;
 constexpr uint32_t kMtx4x4BuildFrustum = 0x002FDE9CU;
 constexpr uint32_t kMtx4x4BuildOrthographicProjectionRotated = 0x00300AA8U;
@@ -3814,6 +3816,30 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   }
   Oot3dNativeGame::Oot3dNativePicaSubmissionQueue submissionQueue(
       picaMemoryView, true);
+  // Generated title code links its own checked memory helpers. Only a module
+  // advertising the observer contract can preserve GPU/CPU byte ownership.
+#if defined(OOT3D_NATIVE_DIRECT_AOT_PLUGIN)
+  const bool copyWritesObservable =
+      Oot3dNativeGame::Oot3dWholeAotPluginObservesMemoryWrites();
+#else
+  constexpr bool copyWritesObservable = true;
+#endif
+  if (copyWritesObservable) {
+    process.Memory().SetWriteObserver(
+        [&](uint32_t address, size_t size) {
+          if (!picaMemoryView.SynchronizeGuestWrite(process.Memory(), address, size))
+            throw std::runtime_error("cannot make a guest write visible through its physical aliases");
+          submissionQueue.NotifyGuestWrite(address, size);
+        });
+    submissionQueue.BindGuestWriteObservation(
+        [&](uint32_t address, size_t size) {
+          return process.Memory().ObserveWrites(address, size);
+        });
+  }
+  struct CopyWriteObserverLifetime {
+    Oot3dNativeGame::NativeA32Memory& Memory;
+    ~CopyWriteObserverLifetime() { Memory.SetWriteObserver({}); }
+  } copyWriteObserverLifetime{process.Memory()};
   if (hdFontsLoaded) submissionQueue.SetTextureSnapshotTransform(
       [&](const Oot3dNativeGame::Oot3dPicaTextureState& texture,
           Oot3dNativeGame::Oot3dPicaResourceSnapshot& resource) {
@@ -3839,9 +3865,15 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                                 kMinimumHostAudioPrebufferMilliseconds +
                             999U) /
                            1000U));
+  const auto sceneEnvironment = std::make_shared<Oot3dNativeGame::SceneEnvironmentRuntime>(
+      std::filesystem::path(launch.Host.ConfigurationPath).parent_path() / "environments",
+      [](const Fast::Renderer3ds::PicaEnvironmentLighting& environment) {
+        Fast::Oot3d::GraphicsSettingsRuntime::Instance().PublishSceneEnvironment(environment);
+      });
   std::vector<std::shared_ptr<Fast::Oot3d::GraphicsSettingsPanelTab>>
       applicationSettingsTabs;
   applicationSettingsTabs.push_back(Oot3dNativeGame::CreateGameLanguagePanel(languageSettings));
+  applicationSettingsTabs.push_back(Oot3dNativeGame::CreateSceneEnvironmentPanel(sceneEnvironment));
   applicationSettingsTabs.push_back(
       Oot3dNativeGame::CreateNativeControlsSettingsPanel(
           controlConfigRuntime,
@@ -4399,6 +4431,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   uint64_t publishedSceneViewCount = 0;
   const auto publishNativeSceneView = [&]() {
     const auto snapshot = sceneViewProbe.Capture(process.Memory());
+    sceneEnvironment->ObserveScene(snapshot ? snapshot->SceneId : std::nullopt);
     if (!snapshot.has_value() ||
         snapshot->Serial == lastPublishedSceneViewSerial) {
       return;
@@ -4425,7 +4458,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   picaPresentationScheduler.SetTimingEnabled(launch.ExtendedDiagnostics);
   api.SetPicaPhysicalMemoryAccess(
       [&](uint32_t address, std::span<uint8_t> bytes) { return picaMemoryView.Read(address, bytes); },
-      [&](uint64_t, std::span<const Fast::Renderer3ds::PicaPhysicalMemoryWrite> writes) {
+      [&](std::span<const Fast::Renderer3ds::PicaPhysicalMemoryWrite> writes) {
         // The writeback is the renderer writing the copy itself, not a guest or
         // service access; keep it out of the guest-access counters. Scope, not
         // a pair of calls: an early return must not leave the watch suppressed.
@@ -4433,34 +4466,106 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         const Oot3dNativeGame::NativeA32Memory::RangeWatchSuppression suppressed(
             process.Memory());
         for (const auto& write : writes) {
-          const auto address = picaMemoryView.Translate(write.Address, write.Bytes.size());
-          if (!address || !process.Memory().IsWritable(*address, write.Bytes.size())) return false;
+          const auto aliases = picaMemoryView.GuestAliases(write.Address, write.Bytes.size());
+          if (aliases.empty()) return false;
+          for (const auto address : aliases)
+            if (!process.Memory().IsWritable(address, write.Bytes.size())) return false;
         }
         for (const auto& write : writes) {
-          const auto address = picaMemoryView.Translate(write.Address, write.Bytes.size());
-          if (!process.Memory().WriteBytes(*address, write.Bytes)) return false;
+          for (const auto address : picaMemoryView.GuestAliases(write.Address, write.Bytes.size()))
+            if (!process.Memory().WriteBytes(address, write.Bytes)) return false;
         }
         }
+        return true;
+      },
+      [&](std::span<const Fast::Renderer3ds::PicaRawCopySpan> spans,
+          Fast::Renderer3ds::PicaRenderBackend::PhysicalMemoryRead reader) {
+        std::vector<std::pair<uint32_t, size_t>> ranges;
+        for (const auto& span : spans) {
+          const auto aliases = picaMemoryView.GuestAliases(span.DestinationAddress, span.ByteCount);
+          if (aliases.empty()) return false;
+          for (const auto address : aliases) ranges.emplace_back(address, span.ByteCount);
+        }
+        return process.Memory().DeferWrites(ranges,
+            [&, reader = std::move(reader)](uint32_t address, std::span<uint8_t> bytes) {
+              const auto physical = picaMemoryView.TranslateGuest(address, bytes.size());
+              return physical && reader(*physical, bytes);
+            });
+      },
+      [&](uint64_t) {
         if (!hostServices.SignalPicaInterrupt(process.Memory(), Oot3dNativeGame::Oot3dPicaInterruptId::Ppf)) return false;
         ++completedPpfCount;
         ++recordedCompletionCount;
         return true;
-      });
+      },
+      [&]() { return process.Memory().MaterializeDeferredWrites(); });
   struct PhysicalMemoryAccessLifetime {
     Fast::Renderer3ds::PicaRenderBackend& Backend;
-    ~PhysicalMemoryAccessLifetime() { Backend.SetPicaPhysicalMemoryAccess({}, {}); }
+    ~PhysicalMemoryAccessLifetime() { Backend.SetPicaPhysicalMemoryAccess({}, {}, {}, {}, {}); }
   } physicalMemoryAccessLifetime{api};
   std::optional<Fast::Oot3d::NativeFrameTemporalSample> capturedTemporalSample;
+  std::vector<Fast::Renderer3ds::PicaTextureCopyReference> pinnedCopyReferences;
+  const auto pinGpuCopyResources =
+      [&](const Oot3dNativeGame::Oot3dPicaVisualFrameViewSample& sample) {
+        pinnedCopyReferences.clear();
+        submissionQueue.CollectLiveCopyReferences(pinnedCopyReferences);
+        for (const auto& draw : submissionQueue.PendingDraws()) {
+          for (const auto& resource : draw.Resources) {
+            pinnedCopyReferences.insert(pinnedCopyReferences.end(),
+                                        resource.CopyReferences.begin(),
+                                        resource.CopyReferences.end());
+          }
+        }
+        for (const auto& plan : picaPresentationScheduler.PendingDraws()) {
+          Oot3dNativeGame::CollectOot3dPicaPlanCopyReferences(
+              plan, pinnedCopyReferences);
+        }
+        if (previousVisualFrame) {
+          Oot3dNativeGame::CollectOot3dPicaFrameCopyReferences(
+              *previousVisualFrame, pinnedCopyReferences);
+        }
+        if (latestVisualFrame) {
+          Oot3dNativeGame::CollectOot3dPicaFrameCopyReferences(
+              *latestVisualFrame, pinnedCopyReferences);
+        }
+        // The active sample may already have left the accumulator, or may be
+        // the new frame before it replaces latestVisualFrame.
+        for (const auto& draw : sample.Draws) {
+          if (draw.BasePlan != nullptr) {
+            Oot3dNativeGame::CollectOot3dPicaPlanCopyReferences(
+                *draw.BasePlan, pinnedCopyReferences);
+          }
+        }
+        if (!api.SetPinnedPicaTextureCopies(pinnedCopyReferences, &error)) {
+          throw std::runtime_error("native PICA copy retention failed: " + error);
+        }
+      };
+  Oot3dNativeGame::Oot3dPicaVisualFrameViewSample dependencySampleScratch;
+  const auto flushNativeDependencies = [&]() {
+    if (!picaPresentationScheduler.ViewDependencyWork(dependencySampleScratch))
+      return false;
+    pinGpuCopyResources(dependencySampleScratch);
+    if (!picaPresentationScheduler.Execute(
+            api, dependencySampleScratch, kNativeDependencyRenderTargetNamespace,
+            Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::DependencyFlush,
+            false, &error)) {
+      throw std::runtime_error("native PICA dependency flush failed: " + error);
+    }
+    return true;
+  };
   const auto executeVisualSample =
       [&](const Oot3dNativeGame::Oot3dPicaVisualFrameViewSample &sample,
           Oot3dNativeGame::Oot3dPicaPresentationExecutionKind kind,
           bool present,
-          const Fast::Oot3d::NativeFrameTemporalSample& temporalSample) {
+          const Fast::Oot3d::NativeFrameTemporalSample& temporalSample,
+          uint64_t renderTargetNamespace =
+              kVisualInterpolationRenderTargetNamespace) {
         const auto started = std::chrono::steady_clock::now();
         (void)api.PublishPicaFrameTemporalSample(temporalSample);
         Fast::Oot3d::GrassInteractionBridge::Instance().SelectSample(temporalSample);
+        pinGpuCopyResources(sample);
         if (!picaPresentationScheduler.Execute(
-                api, sample, kVisualInterpolationRenderTargetNamespace, kind,
+                api, sample, renderTargetNamespace, kind,
                 present, &error)) {
           throw std::runtime_error(
               "native PICA scheduled presentation failed: " + error);
@@ -4702,6 +4807,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     nativeCandidateDispatch.TopScreenExtendedCameraActive = false;
     restoreSavestateTopScreenTemporalState(runtime);
     sceneViewProbe.Reset();
+    sceneEnvironment->ObserveScene(std::nullopt);
     Fast::Oot3d::GrassInteractionBridge::Instance().Reset();
     temporalEventLedger.Reset();
     lastPublishedSceneViewSerial = 0;
@@ -5342,360 +5448,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         }
         ++vblankCount;
       }
-      if (presentHostFrame) {
-        CpuProbe::Scope cpuVisual(CpuProbe::Phase::VisualPresentation);
-        const auto visualPresentationStart = std::chrono::steady_clock::now();
-        bool flushedPicaDependency = false;
-        if (picaPresentationScheduler.HasPendingRawCopyCompletion()) {
-          if (auto work = picaPresentationScheduler.TakeDependencyWork()) {
-            Oot3dNativeGame::Oot3dPicaVisualFrameViewSample sample;
-            (void)Oot3dNativeGame::ViewOot3dPicaVisualFrame(*work, sample);
-            if (!picaPresentationScheduler.Execute(api, sample, kVisualInterpolationRenderTargetNamespace,
-                    Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::DependencyFlush, false, &error)) {
-              throw std::runtime_error("native PICA dependency flush failed: " + error);
-            }
-            flushedPicaDependency = true;
-          }
-        }
-        const bool lcdForceBlack = hostServices.LcdForceBlack();
-        const auto topFramebuffer = hostServices.TopFramebuffer();
-        const Oot3dNativeGame::Oot3dPicaDisplayTransferSubmission
-            *traceSelectedTopTransfer = nullptr;
-        if (topFramebuffer.has_value()) {
-          auto traceSelected =
-              displayTransfersByOutput.find(topFramebuffer->AddressLeft);
-          if (traceSelected == displayTransfersByOutput.end() &&
-              topFramebuffer->AddressRight != topFramebuffer->AddressLeft) {
-            traceSelected =
-                displayTransfersByOutput.find(topFramebuffer->AddressRight);
-          }
-          if (traceSelected != displayTransfersByOutput.end()) {
-            traceSelectedTopTransfer = &traceSelected->second;
-          }
-        }
-        picaSemanticTrace.RecordPresentationSelection(
-            presentationFrameCount, frameCount, lcdForceBlack,
-            topFramebuffer.has_value()
-                ? std::optional<uint32_t>(topFramebuffer->AddressLeft)
-                : std::nullopt,
-            topFramebuffer.has_value()
-                ? std::optional<uint32_t>(topFramebuffer->AddressRight)
-                : std::nullopt,
-            traceSelectedTopTransfer);
-        if (!lcdForceBlack) {
-          if (flushedPicaDependency) {
-            if (traceSelectedTopTransfer && picaPresentationScheduler.HasSnapshot(
-                    *traceSelectedTopTransfer, kVisualInterpolationRenderTargetNamespace) &&
-                !picaPresentationScheduler.PresentExisting(api, *traceSelectedTopTransfer,
-                    kVisualInterpolationRenderTargetNamespace, &error))
-              throw std::runtime_error("native PICA dependency scanout failed: " + error);
-          } else if (topFramebuffer.has_value()) {
-            auto selected =
-                displayTransfersByOutput.find(topFramebuffer->AddressLeft);
-            if (selected == displayTransfersByOutput.end() &&
-                topFramebuffer->AddressRight != topFramebuffer->AddressLeft) {
-              selected =
-                  displayTransfersByOutput.find(topFramebuffer->AddressRight);
-            }
-            if (selected != displayTransfersByOutput.end()) {
-              bool presentedVisualSample = false;
-              bool selectedNewVisualFrame = false;
-              if (selected->second.CompletionId !=
-                  lastSelectedTopTransferCompletionId) {
-                lastSelectedTopTransferCompletionId =
-                    selected->second.CompletionId;
-                ++selectedTopTransferCount;
-                auto currentVisualFrame =
-                    picaPresentationScheduler.FinishFrame(selected->second);
-                if (currentVisualFrame.has_value()) {
-                  Oot3dNativeGame::PublishNativeActorInteractions(
-                      process.Memory(), sceneViewProbe.Stats().LastPlayStateAddress, currentVisualFrame->Sequence);
-                  Oot3dNativeGame::ComposeTopScreenFrontendFrame(
-                      *currentVisualFrame,
-                      Oot3dNativeGame::ShouldSuppressTopScreenFrontendBackdrop(
-                          launch.UiProfile,
-                          uiLifecycleBridge.NativeFrontendPresentationActive()));
-                  selectedNewVisualFrame = true;
-                  ++visualSnapshotCount;
-                  auto &sample = visualFrameSampleScratch;
-                  if (!visualInterpolationEnabled) {
-                    if (Oot3dNativeGame::ViewOot3dPicaVisualFrame(
-                            *currentVisualFrame, sample)) {
-                      const auto temporalSample =
-                          Fast::Oot3d::BuildNativeFrameTemporalSample(
-                              frameCompositionPolicy,
-                              Fast::Oot3d::NativeFrameTemporalSampleKind::
-                                  Authoritative,
-                              currentVisualFrame->Sequence,
-                              currentVisualFrame->Sequence,
-                              visualContinuityEpoch, 1.0F,
-                              static_cast<float>(
-                                  presentationElapsedSeconds));
-                      executeVisualSample(
-                          sample,
-                          Oot3dNativeGame::
-                              Oot3dPicaPresentationExecutionKind::CurrentFrame,
-                          true, temporalSample);
-                      ++visualDirectFramesPresented;
-                      ++visualSamplesPresented;
-                      visualSampleDrawCount += sample.Draws.size();
-                      presentedVisualSample = true;
-                    }
-                    // Direct gameplay modes retain no cross-frame matching
-                    // history. The scheduler keeps only the executed scanout
-                    // snapshot needed if presentation temporarily outruns
-                    // simulation.
-                    preparedVisualTransition.Reset();
-                    previousVisualFrame.reset();
-                    latestVisualFrame.reset();
-                    latestVisualTransitionContinuous = false;
-                  } else {
-                    bool resynchronizeVisualNamespace =
-                        !latestVisualFrame.has_value();
-                    if (latestVisualFrame.has_value()) {
-                      const bool transitionPrepared =
-                          preparedVisualTransition.Prepare(
-                              *latestVisualFrame, *currentVisualFrame,
-                              &visualInterpolationTiming);
-                      const auto &transition =
-                          preparedVisualTransition.Stats();
-                      const float sampleAlpha =
-                          visualSampleCadence.Resolve(
-                              true, visualInterpolationAlpha);
-                      const bool visualSampleReady =
-                          transitionPrepared &&
-                          preparedVisualTransition.Sample(
-                              *latestVisualFrame, *currentVisualFrame,
-                              sampleAlpha, sample,
-                              &visualInterpolationTiming);
-                      ++visualTransitionCount;
-                      visualMatchedDrawCount += transition.MatchedDraws;
-                      visualStrictUniqueMatchedDrawCount +=
-                          transition.StrictUniqueMatchedDraws;
-                      visualStrictOrdinalMatchedDrawCount +=
-                          transition.StrictOrdinalMatchedDraws;
-                      visualStructuralOrdinalMatchedDrawCount +=
-                          transition.StructuralOrdinalMatchedDraws;
-                      visualPipelineOrdinalMatchedDrawCount +=
-                          transition.PipelineOrdinalMatchedDraws;
-                      visualChangedContinuousDrawCount +=
-                          transition.ChangedContinuousDraws;
-                      visualChangedPerInstanceVertexDrawCount +=
-                          transition.ChangedPerInstanceVertexDraws;
-                      visualChangedPerVertexDrawCount +=
-                          transition.ChangedPerVertexDraws;
-                      visualAmbiguousPreviousDrawCount +=
-                          transition.AmbiguousPreviousDraws;
-                      visualAmbiguousCurrentDrawCount +=
-                          transition.AmbiguousCurrentDraws;
-                      visualUnmatchedPreviousDrawCount +=
-                          transition.UnmatchedPreviousDraws;
-                      visualUnmatchedCurrentDrawCount +=
-                          transition.UnmatchedCurrentDraws;
-                      const double continuityThreshold =
-                          visualContinuityTracker.CurrentThreshold();
-                      const bool continuousTransition =
-                          transitionPrepared &&
-                          visualContinuityTracker.Accept(transition);
-                      latestVisualTransitionContinuous = continuousTransition;
-                      visualDiscontinuityCount +=
-                          continuousTransition ? 0U : 1U;
-                      if (launch.ExtendedDiagnostics) {
-                        if (visualTransitionEvents.size() == 1024U) {
-                          visualTransitionEvents.erase(
-                              visualTransitionEvents.begin());
-                        }
-                        visualTransitionEvents.push_back({
-                            {"host_frame", frameCount},
-                            {"previous_sequence",
-                             latestVisualFrame->Sequence},
-                            {"current_sequence",
-                             currentVisualFrame->Sequence},
-                            {"matched_draws", transition.MatchedDraws},
-                            {"strict_unique_matched_draws",
-                             transition.StrictUniqueMatchedDraws},
-                            {"strict_ordinal_matched_draws",
-                             transition.StrictOrdinalMatchedDraws},
-                            {"structural_ordinal_matched_draws",
-                             transition.StructuralOrdinalMatchedDraws},
-                            {"pipeline_ordinal_matched_draws",
-                             transition.PipelineOrdinalMatchedDraws},
-                            {"changed_per_instance_vertex_draws",
-                             transition.ChangedPerInstanceVertexDraws},
-                            {"changed_per_vertex_draws",
-                             transition.ChangedPerVertexDraws},
-                            {"unmatched_previous_draws",
-                             transition.UnmatchedPreviousDraws},
-                            {"unmatched_current_draws",
-                             transition.UnmatchedCurrentDraws},
-                            {"top_target_matched_draws",
-                             transition.TopTargetMatchedDraws},
-                            {"matched_draw_coverage",
-                             transition.MatchedDrawCoverage},
-                            {"median_normalized_continuous_delta",
-                             transition.MedianNormalizedContinuousDelta},
-                            {"p90_normalized_continuous_delta",
-                             transition.P90NormalizedContinuousDelta},
-                            {"continuity_threshold", continuityThreshold},
-                            {"continuous", continuousTransition},
-                        });
-                      }
-                      if (continuousTransition && visualSampleReady) {
-                        const auto temporalSample =
-                            Fast::Oot3d::BuildNativeFrameTemporalSample(
-                                frameCompositionPolicy,
-                                Fast::Oot3d::NativeFrameTemporalSampleKind::
-                                    Transition,
-                                latestVisualFrame->Sequence,
-                                currentVisualFrame->Sequence,
-                                visualContinuityEpoch, sampleAlpha,
-                                static_cast<float>(
-                                    presentationElapsedSeconds));
-                        executeVisualSample(
-                            sample,
-                            Oot3dNativeGame::
-                                Oot3dPicaPresentationExecutionKind::
-                                    InterpolatedFrame,
-                            true, temporalSample);
-                        ++visualSamplesPresented;
-                        visualSampleDrawCount += sample.Draws.size();
-                        visualInterpolatedDrawCount +=
-                            sample.InterpolatedDraws;
-                        visualInterpolatedPerInstanceVertexDrawCount +=
-                            sample.InterpolatedPerInstanceVertexDraws;
-                        visualInterpolatedPerVertexDrawCount +=
-                            sample.InterpolatedPerVertexDraws;
-                        presentedVisualSample = true;
-                      } else {
-                        resynchronizeVisualNamespace = true;
-                      }
-                    }
-                    if (resynchronizeVisualNamespace &&
-                        Oot3dNativeGame::ViewOot3dPicaVisualFrame(
-                            *currentVisualFrame, sample)) {
-                      preparedVisualTransition.Reset();
-                      ++visualContinuityEpoch;
-                      const auto temporalSample =
-                          Fast::Oot3d::BuildNativeFrameTemporalSample(
-                              frameCompositionPolicy,
-                              Fast::Oot3d::NativeFrameTemporalSampleKind::
-                                  Resynchronized,
-                              currentVisualFrame->Sequence,
-                              currentVisualFrame->Sequence,
-                              visualContinuityEpoch, 1.0F,
-                              static_cast<float>(
-                                  presentationElapsedSeconds));
-                      executeVisualSample(
-                          sample,
-                          Oot3dNativeGame::
-                              Oot3dPicaPresentationExecutionKind::CurrentFrame,
-                          true, temporalSample);
-                      ++visualNamespaceResyncCount;
-                      ++visualSamplesPresented;
-                      visualSampleDrawCount += sample.Draws.size();
-                      presentedVisualSample = true;
-                    }
-                    if (latestVisualFrame.has_value()) {
-                      previousVisualFrame = std::move(latestVisualFrame);
-                    } else {
-                      latestVisualTransitionContinuous = false;
-                    }
-                    latestVisualFrame = std::move(currentVisualFrame);
-                  }
-                }
-              }
-              if (!selectedNewVisualFrame && !presentedVisualSample &&
-                  visualInterpolationEnabled &&
-                  latestVisualTransitionContinuous &&
-                  previousVisualFrame.has_value() &&
-                  latestVisualFrame.has_value() &&
-                  preparedVisualTransition.Ready()) {
-                auto &sample = visualFrameSampleScratch;
-                const float sampleAlpha =
-                    visualSampleCadence.Resolve(
-                        false, visualInterpolationAlpha);
-                if (preparedVisualTransition.Sample(
-                        *previousVisualFrame, *latestVisualFrame, sampleAlpha,
-                        sample, &visualInterpolationTiming)) {
-                  const auto temporalSample =
-                      Fast::Oot3d::BuildNativeFrameTemporalSample(
-                          frameCompositionPolicy,
-                          Fast::Oot3d::NativeFrameTemporalSampleKind::
-                              Transition,
-                          previousVisualFrame->Sequence,
-                          latestVisualFrame->Sequence,
-                          visualContinuityEpoch, sampleAlpha,
-                          static_cast<float>(presentationElapsedSeconds));
-                  executeVisualSample(
-                      sample,
-                      Oot3dNativeGame::
-                          Oot3dPicaPresentationExecutionKind::RepeatedFrame,
-                      true, temporalSample);
-                  ++visualSamplesPresented;
-                  visualSampleDrawCount += sample.Draws.size();
-                  visualInterpolatedDrawCount += sample.InterpolatedDraws;
-                  visualInterpolatedPerInstanceVertexDrawCount +=
-                      sample.InterpolatedPerInstanceVertexDraws;
-                  visualInterpolatedPerVertexDrawCount +=
-                      sample.InterpolatedPerVertexDraws;
-                  presentedVisualSample = true;
-                }
-              }
-              if (!presentedVisualSample &&
-                  picaPresentationScheduler.HasSnapshot(
-                      selected->second,
-                      kVisualInterpolationRenderTargetNamespace)) {
-                const auto started = std::chrono::steady_clock::now();
-                if (!picaPresentationScheduler.PresentExisting(
-                        api, selected->second,
-                        kVisualInterpolationRenderTargetNamespace, &error)) {
-                  throw std::runtime_error(
-                      "native top-screen scheduled scanout failed: " + error);
-                }
-                phaseTiming.VisualReplaySeconds += SecondsSince(started);
-                ++visualReusedSnapshotPresentations;
-              }
-            }
-          }
-
-          const bool presentNativeBottomFrontend =
-              Oot3dNativeGame::ShouldPresentNativeBottomFrontend(
-                  launch.UiProfile,
-                  uiLifecycleBridge.NativeFrontendPresentationActive());
-          const auto bottomFramebuffer = hostServices.BottomFramebuffer();
-          if (presentNativeBottomFrontend &&
-              bottomFramebuffer.has_value()) {
-            ++nativeFrontendPresentationActiveCount;
-            auto selectedBottom =
-                displayTransfersByOutput.find(bottomFramebuffer->AddressLeft);
-            if (selectedBottom == displayTransfersByOutput.end() &&
-                bottomFramebuffer->AddressRight != 0U &&
-                bottomFramebuffer->AddressRight !=
-                    bottomFramebuffer->AddressLeft) {
-              selectedBottom = displayTransfersByOutput.find(
-                  bottomFramebuffer->AddressRight);
-            }
-            nativeFrontendBottomTransferHitCount +=
-                selectedBottom != displayTransfersByOutput.end() ? 1U : 0U;
-            if (selectedBottom != displayTransfersByOutput.end() &&
-                picaPresentationScheduler.HasSnapshot(
-                    selectedBottom->second,
-                    kVisualInterpolationRenderTargetNamespace)) {
-              if (!picaPresentationScheduler.PresentExisting(
-                      api, selectedBottom->second,
-                      kVisualInterpolationRenderTargetNamespace, &error)) {
-                throw std::runtime_error(
-                    "native bottom-screen frontend presentation failed: " +
-                    error);
-              }
-              ++nativeBottomFrontendPresentationCount;
-            }
-          }
-        }
-        phaseTiming.VisualPresentationSeconds +=
-            SecondsSince(visualPresentationStart);
-      }
       if (advanceGuest) {
+        // PPF unblocks the current guest refresh, not the next presentation.
+        // The dependency capture keeps its plans for the complete visual frame.
+        (void)flushNativeDependencies();
         phaseStart = std::chrono::steady_clock::now();
         processResult =
             RunUntilGuestWait(process, launch.WholeAotBlockBudget);
@@ -6166,6 +5922,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
             throw std::runtime_error("native PICA display transfer did not "
                                      "match a submitted draw");
           }
+          signaledPicaCompletion =
+              flushNativeDependencies() || signaledPicaCompletion;
           if (!signaledPicaCompletion) {
             break;
           }
@@ -6189,6 +5947,363 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
             maximumPicaDrainPassesPerRefresh, drainPassesThisRefresh);
         refreshesWithNativeDraws += refreshHadNativeDraws ? 1U : 0U;
         phaseTiming.PicaSubmitSeconds += SecondsSince(picaSubmitStart);
+      }
+      if (presentHostFrame) {
+        CpuProbe::Scope cpuVisual(CpuProbe::Phase::VisualPresentation);
+        const auto visualPresentationStart = std::chrono::steady_clock::now();
+        constexpr auto presentationRenderTargetNamespace =
+            kVisualInterpolationRenderTargetNamespace;
+        const bool lcdForceBlack = hostServices.LcdForceBlack();
+        const auto topFramebuffer = hostServices.TopFramebuffer();
+        const Oot3dNativeGame::Oot3dPicaDisplayTransferSubmission
+            *traceSelectedTopTransfer = nullptr;
+        if (topFramebuffer.has_value()) {
+          auto traceSelected =
+              displayTransfersByOutput.find(topFramebuffer->AddressLeft);
+          if (traceSelected == displayTransfersByOutput.end() &&
+              topFramebuffer->AddressRight != topFramebuffer->AddressLeft) {
+            traceSelected =
+                displayTransfersByOutput.find(topFramebuffer->AddressRight);
+          }
+          if (traceSelected != displayTransfersByOutput.end()) {
+            traceSelectedTopTransfer = &traceSelected->second;
+          }
+        }
+        picaSemanticTrace.RecordPresentationSelection(
+            presentationFrameCount, frameCount, lcdForceBlack,
+            topFramebuffer.has_value()
+                ? std::optional<uint32_t>(topFramebuffer->AddressLeft)
+                : std::nullopt,
+            topFramebuffer.has_value()
+                ? std::optional<uint32_t>(topFramebuffer->AddressRight)
+                : std::nullopt,
+            traceSelectedTopTransfer);
+        if (!lcdForceBlack) {
+          if (topFramebuffer.has_value()) {
+            auto selected =
+                displayTransfersByOutput.find(topFramebuffer->AddressLeft);
+            if (selected == displayTransfersByOutput.end() &&
+                topFramebuffer->AddressRight != topFramebuffer->AddressLeft) {
+              selected =
+                  displayTransfersByOutput.find(topFramebuffer->AddressRight);
+            }
+            if (selected != displayTransfersByOutput.end()) {
+              bool presentedVisualSample = false;
+              bool selectedNewVisualFrame = false;
+              if (selected->second.CompletionId !=
+                  lastSelectedTopTransferCompletionId) {
+                lastSelectedTopTransferCompletionId =
+                    selected->second.CompletionId;
+                ++selectedTopTransferCount;
+                auto currentVisualFrame =
+                    picaPresentationScheduler.FinishFrame(selected->second);
+                if (currentVisualFrame.has_value()) {
+                  Oot3dNativeGame::PublishNativeActorInteractions(
+                      process.Memory(), sceneViewProbe.Stats().LastPlayStateAddress, currentVisualFrame->Sequence);
+                  selectedNewVisualFrame = true;
+                  ++visualSnapshotCount;
+                  auto &sample = visualFrameSampleScratch;
+                  // Keep the canonical target complete independently of the
+                  // delayed visual target. Raw-copy prefixes have already
+                  // executed; only the native suffix remains here.
+                  (void)Oot3dNativeGame::ViewOot3dPicaVisualFrame(
+                      *currentVisualFrame, sample, true);
+                  const auto nativeTemporalSample =
+                      Fast::Oot3d::BuildNativeFrameTemporalSample(
+                          frameCompositionPolicy,
+                          Fast::Oot3d::NativeFrameTemporalSampleKind::
+                              Authoritative,
+                          currentVisualFrame->Sequence,
+                          currentVisualFrame->Sequence, visualContinuityEpoch,
+                          1.0F, static_cast<float>(presentationElapsedSeconds));
+                  executeVisualSample(
+                      sample,
+                      Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::
+                          NativeFrame,
+                      false, nativeTemporalSample,
+                      kNativeDependencyRenderTargetNamespace);
+                  Oot3dNativeGame::ComposeTopScreenFrontendFrame(
+                      *currentVisualFrame,
+                      Oot3dNativeGame::ShouldSuppressTopScreenFrontendBackdrop(
+                          launch.UiProfile,
+                          uiLifecycleBridge
+                              .NativeFrontendPresentationActive()));
+                  if (!visualInterpolationEnabled) {
+                    if (Oot3dNativeGame::ViewOot3dPicaVisualFrame(
+                            *currentVisualFrame, sample)) {
+                      const auto temporalSample =
+                          Fast::Oot3d::BuildNativeFrameTemporalSample(
+                              frameCompositionPolicy,
+                              Fast::Oot3d::NativeFrameTemporalSampleKind::
+                                  Authoritative,
+                              currentVisualFrame->Sequence,
+                              currentVisualFrame->Sequence,
+                              visualContinuityEpoch, 1.0F,
+                              static_cast<float>(
+                                  presentationElapsedSeconds));
+                      executeVisualSample(
+                          sample,
+                          Oot3dNativeGame::
+                              Oot3dPicaPresentationExecutionKind::CurrentFrame,
+                          true, temporalSample);
+                      ++visualDirectFramesPresented;
+                      ++visualSamplesPresented;
+                      visualSampleDrawCount += sample.Draws.size();
+                      presentedVisualSample = true;
+                    }
+                    // Direct gameplay modes retain no cross-frame matching
+                    // history. The scheduler keeps only the executed scanout
+                    // snapshot needed if presentation temporarily outruns
+                    // simulation.
+                    preparedVisualTransition.Reset();
+                    previousVisualFrame.reset();
+                    latestVisualFrame.reset();
+                    latestVisualTransitionContinuous = false;
+                  } else {
+                    bool resynchronizeVisualNamespace =
+                        !latestVisualFrame.has_value();
+                    if (latestVisualFrame.has_value()) {
+                      const bool transitionPrepared =
+                          preparedVisualTransition.Prepare(
+                              *latestVisualFrame, *currentVisualFrame,
+                              &visualInterpolationTiming);
+                      const auto &transition =
+                          preparedVisualTransition.Stats();
+                      const float sampleAlpha =
+                          visualSampleCadence.Resolve(
+                              true, visualInterpolationAlpha);
+                      const bool visualSampleReady =
+                          transitionPrepared &&
+                          preparedVisualTransition.Sample(
+                              *latestVisualFrame, *currentVisualFrame,
+                              sampleAlpha, sample,
+                              &visualInterpolationTiming);
+                      ++visualTransitionCount;
+                      visualMatchedDrawCount += transition.MatchedDraws;
+                      visualStrictUniqueMatchedDrawCount +=
+                          transition.StrictUniqueMatchedDraws;
+                      visualStrictOrdinalMatchedDrawCount +=
+                          transition.StrictOrdinalMatchedDraws;
+                      visualStructuralOrdinalMatchedDrawCount +=
+                          transition.StructuralOrdinalMatchedDraws;
+                      visualPipelineOrdinalMatchedDrawCount +=
+                          transition.PipelineOrdinalMatchedDraws;
+                      visualChangedContinuousDrawCount +=
+                          transition.ChangedContinuousDraws;
+                      visualChangedPerInstanceVertexDrawCount +=
+                          transition.ChangedPerInstanceVertexDraws;
+                      visualChangedPerVertexDrawCount +=
+                          transition.ChangedPerVertexDraws;
+                      visualAmbiguousPreviousDrawCount +=
+                          transition.AmbiguousPreviousDraws;
+                      visualAmbiguousCurrentDrawCount +=
+                          transition.AmbiguousCurrentDraws;
+                      visualUnmatchedPreviousDrawCount +=
+                          transition.UnmatchedPreviousDraws;
+                      visualUnmatchedCurrentDrawCount +=
+                          transition.UnmatchedCurrentDraws;
+                      const double continuityThreshold =
+                          visualContinuityTracker.CurrentThreshold();
+                      const bool continuousTransition =
+                          transitionPrepared &&
+                          visualContinuityTracker.Accept(transition);
+                      latestVisualTransitionContinuous = continuousTransition;
+                      visualDiscontinuityCount +=
+                          continuousTransition ? 0U : 1U;
+                      if (launch.ExtendedDiagnostics) {
+                        if (visualTransitionEvents.size() == 1024U) {
+                          visualTransitionEvents.erase(
+                              visualTransitionEvents.begin());
+                        }
+                        visualTransitionEvents.push_back({
+                            {"host_frame", frameCount},
+                            {"previous_sequence",
+                             latestVisualFrame->Sequence},
+                            {"current_sequence",
+                             currentVisualFrame->Sequence},
+                            {"matched_draws", transition.MatchedDraws},
+                            {"strict_unique_matched_draws",
+                             transition.StrictUniqueMatchedDraws},
+                            {"strict_ordinal_matched_draws",
+                             transition.StrictOrdinalMatchedDraws},
+                            {"structural_ordinal_matched_draws",
+                             transition.StructuralOrdinalMatchedDraws},
+                            {"pipeline_ordinal_matched_draws",
+                             transition.PipelineOrdinalMatchedDraws},
+                            {"changed_per_instance_vertex_draws",
+                             transition.ChangedPerInstanceVertexDraws},
+                            {"changed_per_vertex_draws",
+                             transition.ChangedPerVertexDraws},
+                            {"unmatched_previous_draws",
+                             transition.UnmatchedPreviousDraws},
+                            {"unmatched_current_draws",
+                             transition.UnmatchedCurrentDraws},
+                            {"top_target_matched_draws",
+                             transition.TopTargetMatchedDraws},
+                            {"matched_draw_coverage",
+                             transition.MatchedDrawCoverage},
+                            {"median_normalized_continuous_delta",
+                             transition.MedianNormalizedContinuousDelta},
+                            {"p90_normalized_continuous_delta",
+                             transition.P90NormalizedContinuousDelta},
+                            {"continuity_threshold", continuityThreshold},
+                            {"continuous", continuousTransition},
+                        });
+                      }
+                      if (continuousTransition && visualSampleReady) {
+                        const auto temporalSample =
+                            Fast::Oot3d::BuildNativeFrameTemporalSample(
+                                frameCompositionPolicy,
+                                Fast::Oot3d::NativeFrameTemporalSampleKind::
+                                    Transition,
+                                latestVisualFrame->Sequence,
+                                currentVisualFrame->Sequence,
+                                visualContinuityEpoch, sampleAlpha,
+                                static_cast<float>(
+                                    presentationElapsedSeconds));
+                        executeVisualSample(
+                            sample,
+                            Oot3dNativeGame::
+                                Oot3dPicaPresentationExecutionKind::
+                                    InterpolatedFrame,
+                            true, temporalSample);
+                        ++visualSamplesPresented;
+                        visualSampleDrawCount += sample.Draws.size();
+                        visualInterpolatedDrawCount +=
+                            sample.InterpolatedDraws;
+                        visualInterpolatedPerInstanceVertexDrawCount +=
+                            sample.InterpolatedPerInstanceVertexDraws;
+                        visualInterpolatedPerVertexDrawCount +=
+                            sample.InterpolatedPerVertexDraws;
+                        presentedVisualSample = true;
+                      } else {
+                        resynchronizeVisualNamespace = true;
+                      }
+                    }
+                    if (resynchronizeVisualNamespace &&
+                        Oot3dNativeGame::ViewOot3dPicaVisualFrame(
+                            *currentVisualFrame, sample)) {
+                      preparedVisualTransition.Reset();
+                      ++visualContinuityEpoch;
+                      const auto temporalSample =
+                          Fast::Oot3d::BuildNativeFrameTemporalSample(
+                              frameCompositionPolicy,
+                              Fast::Oot3d::NativeFrameTemporalSampleKind::
+                                  Resynchronized,
+                              currentVisualFrame->Sequence,
+                              currentVisualFrame->Sequence,
+                              visualContinuityEpoch, 1.0F,
+                              static_cast<float>(
+                                  presentationElapsedSeconds));
+                      executeVisualSample(
+                          sample,
+                          Oot3dNativeGame::
+                              Oot3dPicaPresentationExecutionKind::CurrentFrame,
+                          true, temporalSample);
+                      ++visualNamespaceResyncCount;
+                      ++visualSamplesPresented;
+                      visualSampleDrawCount += sample.Draws.size();
+                      presentedVisualSample = true;
+                    }
+                    if (latestVisualFrame.has_value()) {
+                      previousVisualFrame = std::move(latestVisualFrame);
+                    } else {
+                      latestVisualTransitionContinuous = false;
+                    }
+                    latestVisualFrame = std::move(currentVisualFrame);
+                  }
+                }
+              }
+              if (!selectedNewVisualFrame && !presentedVisualSample &&
+                  visualInterpolationEnabled &&
+                  latestVisualTransitionContinuous &&
+                  previousVisualFrame.has_value() &&
+                  latestVisualFrame.has_value() &&
+                  preparedVisualTransition.Ready()) {
+                auto &sample = visualFrameSampleScratch;
+                const float sampleAlpha =
+                    visualSampleCadence.Resolve(
+                        false, visualInterpolationAlpha);
+                if (preparedVisualTransition.Sample(
+                        *previousVisualFrame, *latestVisualFrame, sampleAlpha,
+                        sample, &visualInterpolationTiming)) {
+                  const auto temporalSample =
+                      Fast::Oot3d::BuildNativeFrameTemporalSample(
+                          frameCompositionPolicy,
+                          Fast::Oot3d::NativeFrameTemporalSampleKind::
+                              Transition,
+                          previousVisualFrame->Sequence,
+                          latestVisualFrame->Sequence,
+                          visualContinuityEpoch, sampleAlpha,
+                          static_cast<float>(presentationElapsedSeconds));
+                  executeVisualSample(
+                      sample,
+                      Oot3dNativeGame::
+                          Oot3dPicaPresentationExecutionKind::RepeatedFrame,
+                      true, temporalSample);
+                  ++visualSamplesPresented;
+                  visualSampleDrawCount += sample.Draws.size();
+                  visualInterpolatedDrawCount += sample.InterpolatedDraws;
+                  visualInterpolatedPerInstanceVertexDrawCount +=
+                      sample.InterpolatedPerInstanceVertexDraws;
+                  visualInterpolatedPerVertexDrawCount +=
+                      sample.InterpolatedPerVertexDraws;
+                  presentedVisualSample = true;
+                }
+              }
+              if (!presentedVisualSample &&
+                  picaPresentationScheduler.HasSnapshot(
+                      selected->second,
+                      presentationRenderTargetNamespace)) {
+                const auto started = std::chrono::steady_clock::now();
+                if (!picaPresentationScheduler.PresentExisting(
+                        api, selected->second,
+                        presentationRenderTargetNamespace, &error)) {
+                  throw std::runtime_error(
+                      "native top-screen scheduled scanout failed: " + error);
+                }
+                phaseTiming.VisualReplaySeconds += SecondsSince(started);
+                ++visualReusedSnapshotPresentations;
+              }
+            }
+          }
+
+          const bool presentNativeBottomFrontend =
+              Oot3dNativeGame::ShouldPresentNativeBottomFrontend(
+                  launch.UiProfile,
+                  uiLifecycleBridge.NativeFrontendPresentationActive());
+          const auto bottomFramebuffer = hostServices.BottomFramebuffer();
+          if (presentNativeBottomFrontend &&
+              bottomFramebuffer.has_value()) {
+            ++nativeFrontendPresentationActiveCount;
+            auto selectedBottom =
+                displayTransfersByOutput.find(bottomFramebuffer->AddressLeft);
+            if (selectedBottom == displayTransfersByOutput.end() &&
+                bottomFramebuffer->AddressRight != 0U &&
+                bottomFramebuffer->AddressRight !=
+                    bottomFramebuffer->AddressLeft) {
+              selectedBottom = displayTransfersByOutput.find(
+                  bottomFramebuffer->AddressRight);
+            }
+            nativeFrontendBottomTransferHitCount +=
+                selectedBottom != displayTransfersByOutput.end() ? 1U : 0U;
+            if (selectedBottom != displayTransfersByOutput.end() &&
+                picaPresentationScheduler.HasSnapshot(
+                    selectedBottom->second,
+                    presentationRenderTargetNamespace)) {
+              if (!picaPresentationScheduler.PresentExisting(
+                      api, selectedBottom->second,
+                      presentationRenderTargetNamespace, &error)) {
+                throw std::runtime_error(
+                    "native bottom-screen frontend presentation failed: " +
+                    error);
+              }
+              ++nativeBottomFrontendPresentationCount;
+            }
+          }
+        }
+        phaseTiming.VisualPresentationSeconds +=
+            SecondsSince(visualPresentationStart);
       }
       frameCount += advanceGuest ? 1U : 0U;
     }
@@ -7427,21 +7542,19 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                {{"enabled",
                  directionalShadows.Mode ==
                      Fast::Oot3d::DirectionalShadowMode::
-                         SingleCascade},
+                         VirtualShadowMaps},
                 {"mode",
                  static_cast<std::uint32_t>(
                      directionalShadows.Mode)},
                 {"resolution", directionalShadows.Resolution},
                 {"maximum_distance",
                  directionalShadows.MaximumDistance},
-                {"depth_padding", directionalShadows.DepthPadding},
                 {"depth_bias_constant",
                  directionalShadows.DepthBiasConstant},
                 {"depth_bias_slope",
                  directionalShadows.DepthBiasSlope},
                 {"strength", directionalShadows.Strength},
-                {"pcf_radius", directionalShadows.PcfRadius},
-                {"stabilize", directionalShadows.Stabilize}}}}},
+                {"pcf_radius", directionalShadows.PcfRadius}}}}},
             {"topscreen_config",
              launch.TopScreenConfigPath.empty()
                  ? nlohmann::json(nullptr)
@@ -7619,6 +7732,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                      {"interpolated_draws", stats.InterpolatedDraws},
                      {"execution_lists", stats.ExecutionLists},
                      {"current_frame_lists", stats.CurrentFrameLists},
+                     {"native_frame_lists", stats.NativeFrameLists},
                      {"interpolated_frame_lists",
                       stats.InterpolatedFrameLists},
                      {"repeated_frame_lists", stats.RepeatedFrameLists},

@@ -7,7 +7,7 @@
 
 namespace Fast::Renderer3ds {
 
-inline constexpr uint32_t kPicaShaderHookSchemaVersion = 7U;
+inline constexpr uint32_t kPicaShaderHookSchemaVersion = 10U;
 inline constexpr uint32_t kPicaFragmentOutputContractSchemaVersion = 1U;
 
 enum class PicaFragmentDepthOutput : uint8_t {
@@ -56,6 +56,7 @@ enum class PicaShaderHook : uint8_t {
     BeforeDepth,
     BeforeNativeColor,
     MainEpilogue,
+    AfterNativeTev,
     Count,
 };
 
@@ -179,6 +180,7 @@ enum class PicaVertexShaderSemantic : uint32_t {
     TransformProgram = 1U << 4U,
     SkeletonProgram = 1U << 5U,
     ViewPositionOutput = 1U << 6U,
+    SurfaceProgram = 1U << 7U,
 };
 
 constexpr PicaVertexShaderSemantic operator|(
@@ -331,6 +333,53 @@ struct PicaVertexSkeletonLayout {
     }
 };
 
+struct PicaVertexUniformComponent {
+    uint8_t Uniform = 0xffU;
+    uint8_t Component = 0xffU;
+
+    bool operator==(const PicaVertexUniformComponent&) const = default;
+    [[nodiscard]] bool Available() const noexcept {
+        return Uniform < 96U && Component < 4U;
+    }
+};
+
+// Structurally recovered inputs to native diffuse lighting, before lighting is
+// folded into primary color. Register names are never inferred from GLSL.
+struct PicaVertexSurfaceLayout {
+    uint8_t ViewNormalTemporary = 0xffU;
+    uint8_t LightingBooleanUniform = 0xffU;
+    uint8_t DiffuseUniform = 0xffU;
+    uint8_t AmbientUniform = 0xffU;
+    uint8_t TintBooleanUniform = 0xffU;
+    uint8_t TintInputRegister = 0xffU;
+    PicaVertexUniformComponent TintScale;
+    PicaVertexUniformComponent LightEnabledValue;
+    std::array<uint8_t, 3> LightDirectionUniforms{0xffU, 0xffU, 0xffU};
+    PicaVertexUniformComponent BoneIndexScale;
+    PicaVertexUniformComponent BoneWeightScale;
+    PicaVertexUniformComponent SkinnedNormalScale;
+    PicaVertexUniformComponent SkinnedPositionScale;
+    PicaVertexUniformComponent InfluenceCount;
+    std::array<PicaVertexUniformComponent, 2> AdditionalInfluenceThresholds{};
+
+    bool operator==(const PicaVertexSurfaceLayout&) const = default;
+    [[nodiscard]] bool Available() const noexcept {
+        if (ViewNormalTemporary >= 16U || LightingBooleanUniform >= 16U ||
+            DiffuseUniform >= 96U || AmbientUniform >= 96U ||
+            TintBooleanUniform >= 16U || TintInputRegister >= 16U ||
+            !TintScale.Available() || !LightEnabledValue.Available()) return false;
+        for (auto uniform : LightDirectionUniforms)
+            if (uniform >= 94U) return false;
+        return true;
+    }
+    [[nodiscard]] bool SkinnedNormalsAvailable() const noexcept {
+        return BoneIndexScale.Available() && BoneWeightScale.Available() &&
+               SkinnedNormalScale.Available() && InfluenceCount.Available() &&
+               AdditionalInfluenceThresholds[0].Available() &&
+               AdditionalInfluenceThresholds[1].Available();
+    }
+};
+
 struct PicaVertexShaderHookLayout {
     static constexpr size_t Unavailable = static_cast<size_t>(-1);
 
@@ -345,6 +394,7 @@ struct PicaVertexShaderHookLayout {
         TextureCoordinates{};
     PicaVertexTransformLayout Transform;
     PicaVertexSkeletonLayout Skeleton;
+    PicaVertexSurfaceLayout Surface;
 
     bool operator==(const PicaVertexShaderHookLayout&) const = default;
 
@@ -382,6 +432,10 @@ struct PicaVertexShaderHookLayout {
 
     [[nodiscard]] const PicaVertexSkeletonLayout* SkeletonProgram() const noexcept {
         return Skeleton.Available() ? &Skeleton : nullptr;
+    }
+
+    [[nodiscard]] const PicaVertexSurfaceLayout* SurfaceProgram() const noexcept {
+        return Surface.Available() ? &Surface : nullptr;
     }
 
     [[nodiscard]] bool Valid() const noexcept {

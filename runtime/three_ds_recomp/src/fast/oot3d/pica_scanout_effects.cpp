@@ -7,6 +7,7 @@
 #include "fast/oot3d/spatial_aa.h"
 
 #include <algorithm>
+#include <string_view>
 
 namespace Fast::Oot3d {
 
@@ -81,7 +82,8 @@ void main() {
 }
 
 std::string BuildPicaScanoutFragmentShader(bool separateSampler,
-                                          std::optional<int> diagnosticMode) {
+                                          std::optional<int> diagnosticMode,
+                                          PicaScanoutOrientation orientation) {
     std::string source = R"glsl(
 #version 450
 layout(set = 0, binding = 0) uniform sampler2D physical_scanout;
@@ -204,8 +206,8 @@ vec4 oot3d_compose_at(vec2 uv) {
     source += R"glsl(
 
 void main() {
-    vec2 source_uv = vec2(1.0 - output_uv.y, output_uv.x);
-    if (scanout.flip_y != 0u) source_uv.y = 1.0 - source_uv.y;
+    vec2 source_uv = OOT3D_SCANOUT_SOURCE_UV;
+    if (OOT3D_SCANOUT_FLIP_Y) source_uv.y = 1.0 - source_uv.y;
     if(oot3d_guide_diagnostic_mode!=0 && (scanout.cacao!=0u || scanout.outline!=0u)) {
         output_color=vec4(oot3d_guide_diagnostic(source_uv),1.0);
         return;
@@ -250,6 +252,18 @@ void main() {
         source.insert(declarationEnd, "layout(set = 0, binding = 11) uniform sampler "
                                       "scanout_sampler;\n");
     }
+    // The source pixel domain is declared by the caller and baked here; an
+    // unreplaced marker fails shader compilation instead of sampling wrongly.
+    static constexpr std::string_view kSourceUvMarker =
+        "OOT3D_SCANOUT_SOURCE_UV";
+    const bool physical =
+        orientation == PicaScanoutOrientation::PhysicalScreen;
+    source.replace(
+        source.find(kSourceUvMarker), kSourceUvMarker.size(),
+        physical ? "vec2(1.0 - output_uv.y, output_uv.x)" : "output_uv");
+    static constexpr std::string_view kFlipMarker = "OOT3D_SCANOUT_FLIP_Y";
+    source.replace(source.find(kFlipMarker), kFlipMarker.size(),
+                   physical ? "scanout.flip_y != 0u" : "false");
     return source;
 }
 

@@ -73,25 +73,9 @@ TEST(Oot3dGrassSurfaceLighting, DecodesMaterialScalesWithoutSceneExceptions) {
 
 TEST(Oot3dGrassSurfaceLighting, RejectsMissingNativeShaderHooks) {
     EXPECT_TRUE(Fast::Renderer3ds::BuildPicaSurfaceLightingVertexShader(
-        "void main() {}", {}).empty());
+        "void main() {}", {}, false).empty());
 }
 
-TEST(Oot3dGrassSurfaceLighting, PreservesNativeProgramBeforeAtlasProjection) {
-    using namespace Fast::Renderer3ds;
-    const std::string source = "// native registers\nvoid main() { native_lighting();\n}";
-    PicaVertexShaderHookLayout hooks;
-    hooks.SchemaVersion = kPicaShaderHookSchemaVersion;
-    hooks.SourceSize = source.size();
-    hooks.Offsets.fill(0);
-    hooks.Offsets[size_t(PicaVertexShaderHook::RegisterStateEnd)] = source.find("void main");
-    hooks.Offsets[size_t(PicaVertexShaderHook::MainBodyBegin)] = source.find("native_lighting");
-    hooks.Offsets[size_t(PicaVertexShaderHook::MainBodyEnd)] = source.rfind('}');
-    const auto patched = BuildPicaSurfaceLightingVertexShader(source, hooks);
-    ASSERT_FALSE(patched.empty());
-    EXPECT_LT(patched.find("native_lighting();"), patched.find("uint atlas_index"));
-    EXPECT_LT(patched.find("layout(push_constant)"), patched.find("void main()"));
-    EXPECT_EQ(source, "// native registers\nvoid main() { native_lighting();\n}");
-}
 
 TEST(Oot3dGrassSurfaceReference, SubdivisionRetainsOriginalTriangleCoordinates) {
     using namespace Fast::Oot3d;

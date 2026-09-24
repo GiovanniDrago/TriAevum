@@ -681,7 +681,7 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
         frame.UploadArena->Configure(
             *core, *device, desc.UniformBufferSize,
             desc.VertexBufferSize)) {
-        std::array<PicaNriUploadRange, 5> uniformRanges{};
+        std::array<PicaNriUploadRange, kNriPicaUniformBindingCount> uniformRanges{};
         for (size_t index = 0; index < uniformRanges.size(); ++index) {
             uniformRanges[index] = {
                 desc.Uniforms[index].Offset,
@@ -728,7 +728,7 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
             return false;
     }
 
-    std::array<nri::Descriptor*, 5> constantBuffers{};
+    std::array<nri::Descriptor*, kNriPicaUniformBindingCount> constantBuffers{};
     for (size_t index = 0; index < constantBuffers.size(); ++index) {
         const auto& source = desc.Uniforms[index];
         if (source.Size == 0U ||
@@ -756,13 +756,14 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
         frame.TransientViews.push_back(constantBuffers[index]);
     }
 
-    std::array<NriPicaTextureBindingDesc, 5> textureSources{};
+    std::array<NriPicaTextureBindingDesc, 8> textureSources{};
     std::copy(desc.Textures.begin(), desc.Textures.end(),
               textureSources.begin());
     textureSources[3] = desc.DirectionalShadowTexture;
     textureSources[4] = desc.LightingLutTexture;
-    std::array<nri::Descriptor*, 5> textures{};
-    std::array<nri::Descriptor*, 5> samplers{};
+    std::copy(desc.PbrTextures.begin(), desc.PbrTextures.end(), textureSources.begin() + 5);
+    std::array<nri::Descriptor*, 8> textures{};
+    std::array<nri::Descriptor*, 8> samplers{};
     for (size_t index = 0; index < textures.size(); ++index) {
         const auto& source = textureSources[index];
         if (source.Image == VK_NULL_HANDLE ||
@@ -823,7 +824,7 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
 
     nri::DescriptorSet* set =
         descriptorPool.Sets[frame.Used++ % mImpl->DescriptorSetsPerPool];
-    const std::array<nri::UpdateDescriptorRangeDesc, 16> updates{{
+    const std::array<nri::UpdateDescriptorRangeDesc, 24> updates{{
         {set, 0, 0, &constantBuffers[0], 1},
         {set, 1, 0, &textures[0], 1},
         {set, 2, 0, &textures[1], 1},
@@ -840,6 +841,14 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
         {set, 13, 0, &textures[4], 1},
         {set, 14, 0, &samplers[4], 1},
         {set, 15, 0, &constantBuffers[4], 1},
+        {set, 16, 0, &constantBuffers[5], 1},
+        {set, 17, 0, &constantBuffers[6], 1},
+        {set, 18, 0, &textures[5], 1},
+        {set, 19, 0, &textures[6], 1},
+        {set, 20, 0, &textures[7], 1},
+        {set, 21, 0, &samplers[5], 1},
+        {set, 22, 0, &samplers[6], 1},
+        {set, 23, 0, &samplers[7], 1},
     }};
     core->UpdateDescriptorRanges(
         updates.data(), static_cast<uint32_t>(updates.size()));

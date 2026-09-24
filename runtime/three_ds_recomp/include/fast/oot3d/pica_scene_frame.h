@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -48,6 +49,9 @@ struct PicaSceneDrawRecordDesc {
     ::Fast::Renderer3ds::PicaCompositionDomain CompositionDomain =
         ::Fast::Renderer3ds::PicaCompositionDomain::Unknown;
     ::Fast::Renderer3ds::PicaCompositionAttribution Composition;
+    std::optional<std::array<float, 16>> LightingWorldToView;
+    std::shared_ptr<const ::Fast::Renderer3ds::PicaSceneDirectionalLights> SceneDirectionals;
+    ::Fast::Renderer3ds::VirtualShadowCaster ShadowCaster;
     PicaSceneResolvedRasterState Raster;
     PicaSceneRenderTargetState RenderTarget;
 
@@ -83,6 +87,8 @@ struct PicaSceneDrawRecordDesc {
     bool PreviousVertexUniformHistoryAvailable = false;
     uint64_t FragmentUniformOffset = 0;
     uint64_t FragmentUniformSize = 0;
+    uint64_t SurfaceLightingUniformOffset = 0;
+    uint64_t SurfaceLightingUniformSize = 0;
     PicaSceneBufferResource GeometryBuffer;
     std::span<const PicaSceneVertexBufferBinding> VertexBindings;
     bool Indexed = false;
@@ -165,7 +171,7 @@ struct PicaSceneFrameStats {
 // metadata is retained. Shader sources and layouts are interned across frames.
 class PicaSceneFrame final {
   public:
-    static constexpr uint32_t kSchemaVersion = 9U;
+    static constexpr uint32_t kSchemaVersion = 11U;
 
     PicaSceneFrame();
     ~PicaSceneFrame();

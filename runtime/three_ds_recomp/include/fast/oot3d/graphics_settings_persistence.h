@@ -8,7 +8,7 @@
 
 namespace Fast::Oot3d {
 
-inline constexpr uint32_t kGraphicsSettingsSchemaVersion = 11U;
+inline constexpr uint32_t kGraphicsSettingsSchemaVersion = 12U;
 
 struct GraphicsSettingsLoadResult {
     GraphicsSettings Value;

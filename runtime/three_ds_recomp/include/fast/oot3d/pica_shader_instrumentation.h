@@ -7,6 +7,7 @@
 #include "fast/oot3d/pica_scene_domain_guide.h"
 #include "fast/oot3d/pica_toon_shader.h"
 #include "oot3d/renderer/pica_shader_hooks.h"
+#include "fast/renderer3ds/pica_pbr_shading.h"
 
 #include <compare>
 #include <cstdint>
@@ -28,6 +29,8 @@ enum class PicaShaderInstrumentationFeature : uint32_t {
     NormalGuide = 1U << 8U,
     NativeFogGuide = 1U << 9U,
     OutlineGeometryGuide = 1U << 10U,
+    NativePerPixelLighting = 1U << 11U,
+    PbrMaterial = 1U << 12U,
 };
 
 constexpr PicaShaderInstrumentationFeature operator|(PicaShaderInstrumentationFeature left,
@@ -77,6 +80,7 @@ struct PicaFragmentInstrumentationRequest {
     ToonMode Toon = ToonMode::Off;
     const ToonStyleSettings* ToonStyle = nullptr;
     bool ToonParametersUniform = false;
+    Renderer3ds::PicaPbrShaderOptions Pbr;
 };
 
 struct PicaFragmentInstrumentationOutputLayout {

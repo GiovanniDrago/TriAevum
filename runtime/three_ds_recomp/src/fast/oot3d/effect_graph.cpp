@@ -462,6 +462,7 @@ CompiledEffectGraph BuildPicaExtensionGraph(const PicaAttachmentFeatureRequests&
                 .Stage = EffectStage::AfterOpaque,
                 .Contract = EffectContractKind::AuxiliaryOutput,
                 .Resources = { Read(EffectResource::PicaSceneFrame), Read(EffectResource::NativeSceneView),
+                               Read(EffectResource::DirectionalShadowHistory),
                                Write(EffectResource::DirectionalShadowMap) } });
     if (requests.DirectionalShadows) {
         graph.Export(EffectResource::DirectionalShadowMap);

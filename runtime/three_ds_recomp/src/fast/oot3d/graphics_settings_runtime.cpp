@@ -401,7 +401,24 @@ VersionedGraphicsSettings GraphicsSettingsRuntime::SnapshotForRendering() const 
     std::scoped_lock lock(mMutex);
     VersionedGraphicsSettings result{mService.Current(), mRevision};
     mNativePresentation.Apply(result.Value);
+    if (result.Value.Effects.SurfaceLighting == SurfaceLightingMode::Native)
+        result.Value.Effects.DirectionalShadows.Mode = DirectionalShadowMode::Off;
+    // Inactive directional/ambient edits must not invalidate histories.
+    // Point-light groups remain independently controllable in per-pixel modes.
+    if (!mNativePresentation.Active() && result.Value.Preset != GraphicsPreset::Authentic &&
+        result.Value.Effects.SurfaceLighting != SurfaceLightingMode::Native) {
+        if (mSceneEnvironment.Enabled) result.Environment = mSceneEnvironment;
+        else {
+            result.Environment.ScopeIdentity = mSceneEnvironment.ScopeIdentity;
+            result.Environment.PointLights = mSceneEnvironment.PointLights;
+        }
+    }
     return result;
+}
+void GraphicsSettingsRuntime::PublishSceneEnvironment(
+    const Renderer3ds::PicaEnvironmentLighting& environment) {
+    std::scoped_lock lock(mMutex);
+    mSceneEnvironment = environment;
 }
 bool GraphicsSettingsRuntime::NativePresentationOverrideActive() const {
     std::scoped_lock lock(mMutex);

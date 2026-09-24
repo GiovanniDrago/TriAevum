@@ -29,6 +29,7 @@ bool SubmitOot3dPicaVulkanDisplayTransfer(
     bool present,
     std::string* error = nullptr,
     uint64_t renderTargetNamespace = 0,
+    bool materializeGuest = false,
     Oot3d::Renderer::PicaPresentationMode presentationMode =
         Oot3d::Renderer::PicaPresentationMode::Replace);
 

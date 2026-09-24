@@ -10,12 +10,14 @@
 #include "nri_interop_internal.h"
 #endif
 #include <array>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
 namespace Fast::Oot3d {
 namespace {
 constexpr uint32_t kFrameSlots = 2U;
+constexpr uint32_t kDescriptorSetsPerPool = 64U;
 struct CompositePush {
     uint32_t Width = 0, Height = 0, Cacao = 0, Reflections = 0;
     float ReflectionStrength = 0.0F;
@@ -47,8 +49,40 @@ struct SceneCompositePass::Impl {
     nri::PipelineLayout* PipelineLayout = nullptr;
     nri::Pipeline* Pipeline = nullptr;
     nri::Descriptor* Sampler = nullptr;
-    nri::DescriptorPool* Pool = nullptr;
-    std::array<nri::DescriptorSet*, kFrameSlots> Sets{};
+    struct DescriptorPoolBlock {
+        nri::DescriptorPool* Pool = nullptr;
+        std::array<nri::DescriptorSet*, kDescriptorSetsPerPool> Sets{};
+    };
+    struct FrameDescriptors {
+        std::vector<DescriptorPoolBlock> Pools;
+        uint64_t FrameId = std::numeric_limits<uint64_t>::max();
+        size_t Used = 0;
+    };
+    std::array<FrameDescriptors, kFrameSlots> Frames;
+
+    bool AddDescriptorPool(FrameDescriptors& frame) {
+        frame.Pools.emplace_back();
+        auto& block = frame.Pools.back();
+        nri::DescriptorPoolDesc pool{};
+        pool.descriptorSetMaxNum = kDescriptorSetsPerPool;
+        pool.samplerMaxNum = kDescriptorSetsPerPool;
+        pool.textureMaxNum = 10U * kDescriptorSetsPerPool;
+        pool.storageTextureMaxNum = kDescriptorSetsPerPool;
+        auto* device = NriInteropAccess::Device(*Interop);
+        if (Core->CreateDescriptorPool(*device, pool, block.Pool) != nri::Result::SUCCESS ||
+            Core->AllocateDescriptorSets(*block.Pool, *PipelineLayout, 0,
+                block.Sets.data(), kDescriptorSetsPerPool, 0) != nri::Result::SUCCESS) {
+            if (block.Pool != nullptr) Core->DestroyDescriptorPool(block.Pool);
+            frame.Pools.pop_back();
+            Reason = "NRI scene composite descriptor allocation failed";
+            return false;
+        }
+        for (auto* set : block.Sets) {
+            const nri::UpdateDescriptorRangeDesc update{set, 8, 0, &Sampler, 1};
+            Core->UpdateDescriptorRanges(&update, 1);
+        }
+        return true;
+    }
 #endif
     VkImage Image = VK_NULL_HANDLE;
     VkImageView View = VK_NULL_HANDLE;
@@ -167,44 +201,18 @@ bool SceneCompositePass::Configure(
 #ifndef ENABLE_OOT3D_NRI
     return false;
 #else
-    if (mImpl->Width != 0U && vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS)
-        return false;
     InvalidateScreenResources();
-    try {
-        mImpl->Image = output.Texture.Image;
-        mImpl->View = output.Texture.SampledView;
-        mImpl->StorageView = output.Texture.StorageView;
-        mImpl->OutputStates = output.StateTracker;
-        nri::DescriptorPoolDesc pool{};
-        pool.descriptorSetMaxNum = kFrameSlots;
-        pool.samplerMaxNum = kFrameSlots;
-        pool.textureMaxNum = 10U * kFrameSlots;
-        pool.storageTextureMaxNum = kFrameSlots;
-        nri::Device* device = NriInteropAccess::Device(*mImpl->Interop);
-        if (mImpl->Core->CreateDescriptorPool(*device, pool, mImpl->Pool) !=
-            nri::Result::SUCCESS)
-            throw std::runtime_error("NRI scene composite pool failed");
-        if (mImpl->Core->AllocateDescriptorSets(
-                *mImpl->Pool, *mImpl->PipelineLayout, 0, mImpl->Sets.data(),
-                kFrameSlots, 0) != nri::Result::SUCCESS)
-            throw std::runtime_error("NRI scene composite sets failed");
-        for (uint32_t slot = 0; slot < kFrameSlots; ++slot) {
-            const nri::UpdateDescriptorRangeDesc update{
-                mImpl->Sets[slot], 8, 0, &mImpl->Sampler, 1};
-            mImpl->Core->UpdateDescriptorRanges(&update, 1);
-        }
-        mImpl->Width = output.Width;
-        mImpl->Height = output.Height;
-        return true;
-    } catch (const std::exception& exception) {
-        mImpl->Reason = exception.what();
-        InvalidateScreenResources();
-        return false;
-    }
+    mImpl->Image = output.Texture.Image;
+    mImpl->View = output.Texture.SampledView;
+    mImpl->StorageView = output.Texture.StorageView;
+    mImpl->OutputStates = output.StateTracker;
+    mImpl->Width = output.Width;
+    mImpl->Height = output.Height;
+    return true;
 #endif
 }
 
-bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, VkImage colorImage, VkFormat colorFormat,
+bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, uint64_t frameId, VkImage colorImage, VkFormat colorFormat,
                                  VkImage cacaoImage, VkFormat cacaoFormat, VkImage reflectionImage,
                                  VkFormat reflectionFormat, VkImage materialImage, VkFormat materialFormat,
                                  VkImage normalImage, VkFormat normalFormat, VkImage transparentDepthImage,
@@ -230,6 +238,7 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, Vk
         return false;
 #ifndef ENABLE_OOT3D_NRI
     (void)command; (void)frameSlot; (void)colorFormat; (void)cacaoFormat;
+    (void)frameId;
     (void)reflectionFormat; (void)materialFormat; (void)normalFormat;
     (void)transparentDepthFormat;
     (void)ambientFormat;
@@ -266,6 +275,17 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, Vk
     if (outputDescriptor == nullptr) return false;
 
     (void)command;
+    auto& frame = mImpl->Frames[frameSlot % kFrameSlots];
+    if (frame.FrameId != frameId) {
+        frame.FrameId = frameId;
+        frame.Used = 0;
+    }
+    const size_t poolIndex = frame.Used / kDescriptorSetsPerPool;
+    // Recorded invocations retain immutable sets until this slot's fence passes.
+    if (poolIndex == frame.Pools.size() && !mImpl->AddDescriptorPool(frame))
+        return false;
+    auto& descriptorPool = frame.Pools[poolIndex];
+    auto* descriptorSet = descriptorPool.Sets[frame.Used++ % kDescriptorSetsPerPool];
     mImpl->NriBarriersUsed = false;
     mImpl->LastBarrierExecution = barrierPlan.BeginExecution();
     const auto writeTransition = mImpl->OutputStates->PlanTransition(
@@ -276,17 +296,16 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, Vk
         return false;
     mImpl->LastBarrierExecution.RecordGraphTransition(writeTransition);
     mImpl->OutputStates->Commit(writeTransition);
-    const uint32_t slot = frameSlot % kFrameSlots;
     std::array<nri::UpdateDescriptorRangeDesc, 11> updates{};
     for (uint32_t i = 0; i < 7U; ++i) {
-        updates[i] = {mImpl->Sets[slot], i, 0,
+        updates[i] = {descriptorSet, i, 0,
                       &sampledDescriptors[i], 1};
     }
-    updates[7] = {mImpl->Sets[slot], 7, 0, &outputDescriptor, 1};
-    updates[8] = {mImpl->Sets[slot], 9, 0,
+    updates[7] = {descriptorSet, 7, 0, &outputDescriptor, 1};
+    updates[8] = {descriptorSet, 9, 0,
                   &sampledDescriptors[7], 1};
-    updates[9] = {mImpl->Sets[slot], 10, 0, &sampledDescriptors[8], 1};
-    updates[10] = { mImpl->Sets[slot], 11, 0, &sampledDescriptors[9], 1 };
+    updates[9] = {descriptorSet, 10, 0, &sampledDescriptors[8], 1};
+    updates[10] = {descriptorSet, 11, 0, &sampledDescriptors[9], 1};
     mImpl->Core->UpdateDescriptorRanges(
         updates.data(), static_cast<uint32_t>(updates.size()));
     const CompositePush push{
@@ -305,11 +324,11 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, Vk
          outlineSettings.OutlineTint[1],
          outlineSettings.OutlineTint[2]},
         outlineSettings.OutlineOpacity};
-    mImpl->Core->CmdSetDescriptorPool(*nriCommand, *mImpl->Pool);
+    mImpl->Core->CmdSetDescriptorPool(*nriCommand, *descriptorPool.Pool);
     mImpl->Core->CmdSetPipelineLayout(
         *nriCommand, nri::BindPoint::COMPUTE, *mImpl->PipelineLayout);
     mImpl->Core->CmdSetPipeline(*nriCommand, *mImpl->Pipeline);
-    const nri::SetDescriptorSetDesc set{0, mImpl->Sets[slot]};
+    const nri::SetDescriptorSetDesc set{0, descriptorSet};
     mImpl->Core->CmdSetDescriptorSet(*nriCommand, set);
     const nri::SetRootConstantsDesc constants{0, &push, sizeof(push)};
     mImpl->Core->CmdSetRootConstants(*nriCommand, constants);
@@ -331,12 +350,6 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, Vk
 }
 
 void SceneCompositePass::InvalidateScreenResources() {
-#ifdef ENABLE_OOT3D_NRI
-    if (mImpl->Core != nullptr && mImpl->Pool != nullptr)
-        mImpl->Core->DestroyDescriptorPool(mImpl->Pool);
-    mImpl->Pool = nullptr;
-    mImpl->Sets = {};
-#endif
     mImpl->Image = VK_NULL_HANDLE;
     mImpl->View = VK_NULL_HANDLE;
     mImpl->StorageView = VK_NULL_HANDLE;
@@ -351,6 +364,9 @@ void SceneCompositePass::Shutdown() {
     InvalidateScreenResources();
 #ifdef ENABLE_OOT3D_NRI
     if (mImpl->Core != nullptr) {
+        for (auto& frame : mImpl->Frames)
+            for (const auto& block : frame.Pools)
+                mImpl->Core->DestroyDescriptorPool(block.Pool);
         if (mImpl->Sampler != nullptr) mImpl->Core->DestroyDescriptor(mImpl->Sampler);
         if (mImpl->Pipeline != nullptr) mImpl->Core->DestroyPipeline(mImpl->Pipeline);
         if (mImpl->PipelineLayout != nullptr)
@@ -370,7 +386,7 @@ bool SceneCompositePass::OutputOwnedByNri() const {
 bool SceneCompositePass::ComputeOwnedByNri() const {
 #ifdef ENABLE_OOT3D_NRI
     return mImpl->Ready && mImpl->Pipeline != nullptr &&
-           mImpl->Pool != nullptr && mImpl->Sampler != nullptr;
+           mImpl->Sampler != nullptr;
 #else
     return false;
 #endif

@@ -4,18 +4,23 @@ namespace Fast::Oot3d {
 namespace {
 
 constexpr uint64_t kDirectionalShadowCasterKey =
-    0x534841444f574341ULL;
+    0x56534d5041474531ULL;
 
 constexpr std::string_view kShadowTransformDeclaration =
     "layout(set=0,binding=1,std140) uniform "
     "Oot3dDirectionalShadowTransform {\n"
     "    mat4 view_to_world;\n"
     "    mat4 world_to_light_clip;\n"
-    "} oot3d_shadow;\n";
+    "} oot3d_shadow;\n"
+    "layout(push_constant) uniform Oot3dVirtualShadowPage {\n"
+    "    vec4 scale_offset;\n"
+    "} oot3d_shadow_page;\n";
 
 constexpr std::string_view kShadowPositionOverride =
     "    gl_Position = oot3d_shadow.world_to_light_clip *\n"
-    "        (oot3d_shadow.view_to_world * vec4(-pica_view, 1.0));\n";
+    "        (oot3d_shadow.view_to_world * vec4(-pica_view, 1.0));\n"
+    "    gl_Position.xy = gl_Position.xy * oot3d_shadow_page.scale_offset.xy +\n"
+    "        oot3d_shadow_page.scale_offset.zw * gl_Position.w;\n";
 
 } // namespace
 

@@ -53,6 +53,8 @@ struct PicaShaderPipelineRequest {
     PicaShaderHookLayout FragmentShaderHooks;
     ::Oot3d::Renderer::PicaShaderSourceIdentity VertexShaderSourceIdentity;
     ::Oot3d::Renderer::PicaShaderSourceIdentity FragmentShaderSourceIdentity;
+    bool SurfaceLightingAvailable = false;
+    Renderer3ds::PicaPbrShaderOptions Pbr;
 };
 
 struct PicaShaderPipelineResult {

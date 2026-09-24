@@ -1002,6 +1002,177 @@ CmbTransformPrograms DecodeCmbTransformPrograms(const Oot3dPicaDrawPacket& packe
     return result;
 }
 
+std::optional<Fast::Renderer3ds::PicaVertexUniformComponent> DecodeScalarUniform(
+    const ArithmeticInstructionView& instruction, uint8_t source) {
+    const auto& reg = source == 1U ? instruction.Source1 : instruction.Source2;
+    if (reg.GetRegisterType() != nihstro::RegisterType::FloatUniform ||
+        reg.GetIndex() < 0 || reg.GetIndex() >= 96 ||
+        instruction.AddressRegister != 0U || SourceNegated(instruction, source)) return std::nullopt;
+    std::optional<uint8_t> component;
+    for (uint8_t output = 0; output < 4U; ++output) {
+        if (!instruction.Swizzle.DestComponentEnabled(output)) continue;
+        const auto value = SourceComponent(instruction, source, output);
+        if (component && *component != value) return std::nullopt;
+        component = value;
+    }
+    if (!component) return std::nullopt;
+    return Fast::Renderer3ds::PicaVertexUniformComponent{
+        static_cast<uint8_t>(reg.GetIndex()), *component};
+}
+
+std::optional<Fast::Renderer3ds::PicaVertexUniformComponent> DecodeInputScale(
+    const ArithmeticInstructionView& instruction, uint8_t input) {
+    if (instruction.Opcode != nihstro::OpCode::Id::MUL) return std::nullopt;
+    if (IsRegister(instruction.Source1, nihstro::RegisterType::Input, input) &&
+        !SourceNegated(instruction, 1U)) return DecodeScalarUniform(instruction, 2U);
+    if (IsRegister(instruction.Source2, nihstro::RegisterType::Input, input) &&
+        !SourceNegated(instruction, 2U)) return DecodeScalarUniform(instruction, 1U);
+    return std::nullopt;
+}
+
+std::optional<Fast::Renderer3ds::PicaVertexSurfaceLayout> DecodeCmbSurface(
+    const Oot3dPicaDrawPacket& packet, const CmbTransformPrograms& transforms) {
+    using namespace Fast::Renderer3ds;
+    using Op = nihstro::OpCode::Id;
+    using Reg = nihstro::RegisterType;
+    if (!transforms.Transform) return std::nullopt;
+    const auto& transform = *transforms.Transform;
+    const auto modelNormal = FindConsistentDotMatrixChain(packet, Op::DP3, 3U,
+        [&](const DotMatrixChain& chain) {
+            return chain.AddressRegister == 0U &&
+                   chain.FirstUniform == transform.ModelFirstUniform &&
+                   IsRegister(chain.Value, Reg::Input, transform.NormalInputRegister);
+        });
+    if (!modelNormal || modelNormal->Destination.GetRegisterType() != Reg::Temporary) return std::nullopt;
+    const auto viewNormal = FindConsistentDotMatrixChain(packet, Op::DP3, 3U,
+        [&](const DotMatrixChain& chain) {
+            return chain.AddressRegister == 0U && chain.FirstUniform == transform.ViewFirstUniform &&
+                   IsRegister(chain.Value, Reg::Temporary, static_cast<uint8_t>(modelNormal->Destination.GetIndex())) &&
+                   chain.Destination.GetRegisterType() == Reg::Temporary;
+        });
+    if (!viewNormal) return std::nullopt;
+    PicaVertexSurfaceLayout surface;
+    surface.ViewNormalTemporary = static_cast<uint8_t>(viewNormal->Destination.GetIndex());
+    // A temporary exported at main-end must not have a later writer. Reject
+    // unsupported programs rather than guessing a register from generated text.
+    for (size_t offset = viewNormal->Offset + 3U; offset < packet.VertexShader.ProgramWordCount; ++offset) {
+        const auto arithmetic = DecodeArithmeticInstruction(packet, offset);
+        if (arithmetic && arithmetic->Opcode != Op::CMP && arithmetic->Opcode != Op::MOVA &&
+            IsRegister(arithmetic->Destination, Reg::Temporary, surface.ViewNormalTemporary)) return std::nullopt;
+        const nihstro::Instruction instruction{packet.VertexShader.Program[offset]};
+        const auto op = instruction.opcode.Value().EffectiveOpCode();
+        if ((op == Op::MAD || op == Op::MADI) &&
+            IsRegister(instruction.mad.dest.Value(), Reg::Temporary, surface.ViewNormalTemporary)) return std::nullopt;
+    }
+
+    std::optional<UniformBranch> lighting;
+    for (size_t offset = 0; offset < packet.VertexShader.ProgramWordCount; ++offset) {
+        const auto branch = DecodeUniformBranch(packet, offset);
+        if (!branch || branch->ThenBegin + 11U >= branch->ElseBegin) continue;
+        const auto diffuse = DecodeArithmeticInstruction(packet, branch->ThenBegin);
+        const auto ambient = DecodeArithmeticInstruction(packet, branch->ThenBegin + 1U);
+        if (!diffuse || !ambient || diffuse->Opcode != Op::MOV || ambient->Opcode != Op::MOV ||
+            diffuse->Source1.GetRegisterType() != Reg::FloatUniform ||
+            ambient->Source1.GetRegisterType() != Reg::FloatUniform ||
+            diffuse->AddressRegister != 0U || ambient->AddressRegister != 0U ||
+            SourceNegated(*diffuse, 1U) || SourceNegated(*ambient, 1U) ||
+            !SourceIdentity(*diffuse, 1U) || !SourceIdentity(*ambient, 1U)) continue;
+        auto candidate = surface;
+        bool valid = true;
+        for (uint8_t slot = 0; slot < 3U; ++slot) {
+            const auto dot = DecodeArithmeticInstruction(packet, branch->ThenBegin + 2U + slot);
+            const auto flag = DecodeArithmeticInstruction(packet, branch->ThenBegin + 7U + slot);
+            if (!dot || !flag || dot->Opcode != Op::DP3 || flag->Opcode != Op::MOV ||
+                dot->AddressRegister != 0U || flag->AddressRegister != 0U ||
+                dot->Source1.GetRegisterType() != Reg::FloatUniform ||
+                !IsRegister(dot->Source2, Reg::Temporary, surface.ViewNormalTemporary) ||
+                !SourceNegated(*dot, 1U) || SourceNegated(*dot, 2U) ||
+                !SourceIdentity(*dot, 1U) || !SourceIdentity(*dot, 2U) ||
+                !IsRegister(flag->Source1, Reg::FloatUniform, static_cast<uint8_t>(dot->Source1.GetIndex())) ||
+                SourceComponent(*flag, 1U, slot) != 3U) {
+                valid = false;
+                break;
+            }
+            candidate.LightDirectionUniforms[slot] = static_cast<uint8_t>(dot->Source1.GetIndex());
+        }
+        const auto compare = DecodeArithmeticInstruction(packet, branch->ThenBegin + 10U);
+        if (!valid || !compare || compare->Opcode != Op::CMP ||
+            compare->Source1.GetRegisterType() != Reg::FloatUniform ||
+            SourceComponent(*compare, 1U, 0U) != SourceComponent(*compare, 1U, 1U) ||
+            compare->Instruction.common.compare_op.x.Value() != nihstro::Instruction::Common::CompareOpType::Equal ||
+            compare->Instruction.common.compare_op.y.Value() != nihstro::Instruction::Common::CompareOpType::Equal)
+            continue;
+        if (lighting) return std::nullopt;
+        lighting = branch;
+        candidate.LightingBooleanUniform = branch->BooleanUniform;
+        candidate.DiffuseUniform = static_cast<uint8_t>(diffuse->Source1.GetIndex());
+        candidate.AmbientUniform = static_cast<uint8_t>(ambient->Source1.GetIndex());
+        candidate.LightEnabledValue = {static_cast<uint8_t>(compare->Source1.GetIndex()),
+                                       SourceComponent(*compare, 1U, 0U)};
+        surface = candidate;
+    }
+    if (!lighting) return std::nullopt;
+    for (size_t offset = lighting->ThenBegin; offset < lighting->ElseBegin; ++offset) {
+        const auto branch = DecodeUniformBranch(packet, offset);
+        if (!branch || branch->ThenBegin >= branch->ElseBegin) continue;
+        const auto multiply = DecodeArithmeticInstruction(packet, branch->ThenBegin);
+        if (!multiply || multiply->Opcode != Op::MUL) continue;
+        const uint8_t inputSource = multiply->Source1.GetRegisterType() == Reg::Input ? 1U : 2U;
+        const auto& input = inputSource == 1U ? multiply->Source1 : multiply->Source2;
+        if (input.GetRegisterType() != Reg::Input || !SourceIdentity(*multiply, inputSource)) continue;
+        const auto scale = DecodeInputScale(*multiply, static_cast<uint8_t>(input.GetIndex()));
+        if (!scale || surface.TintScale.Available()) return std::nullopt;
+        surface.TintScale = *scale;
+        surface.TintBooleanUniform = branch->BooleanUniform;
+        surface.TintInputRegister = static_cast<uint8_t>(input.GetIndex());
+    }
+    if (!surface.Available()) return std::nullopt;
+
+    if (transforms.Skeleton) {
+        const auto& skeleton = *transforms.Skeleton;
+        bool positionScaleAmbiguous = false;
+        const auto merge = [](PicaVertexUniformComponent& target,
+                              const std::optional<PicaVertexUniformComponent>& value) {
+            if (!value) return true;
+            if (target.Available() && target != *value) return false;
+            target = *value;
+            return true;
+        };
+        for (size_t offset = 0; offset < packet.VertexShader.ProgramWordCount; ++offset) {
+            const auto instruction = DecodeArithmeticInstruction(packet, offset);
+            if (!instruction) continue;
+            if (!merge(surface.BoneIndexScale, DecodeInputScale(*instruction, skeleton.BoneIndexInputRegister)) ||
+                !merge(surface.BoneWeightScale, DecodeInputScale(*instruction, skeleton.BoneWeightInputRegister)) ||
+                !merge(surface.SkinnedNormalScale, DecodeInputScale(*instruction, transform.NormalInputRegister)))
+                return std::nullopt;
+            if (const auto scale = DecodeInputScale(*instruction, transform.PositionInputRegister)) {
+                if (surface.SkinnedPositionScale.Available() && surface.SkinnedPositionScale != *scale)
+                    positionScaleAmbiguous = true;
+                surface.SkinnedPositionScale = *scale;
+            }
+            if (instruction->Opcode != Op::MOV || offset + 1U >= packet.VertexShader.ProgramWordCount) continue;
+            const auto count = DecodeScalarUniform(*instruction, 1U);
+            const auto compare = DecodeArithmeticInstruction(packet, offset + 1U);
+            if (!count || !compare || compare->Opcode != Op::CMP ||
+                compare->Source1.GetRegisterType() != Reg::FloatUniform ||
+                instruction->Destination.GetRegisterType() != Reg::Temporary ||
+                !IsRegister(compare->Source2, Reg::Temporary, static_cast<uint8_t>(instruction->Destination.GetIndex())) ||
+                compare->Instruction.common.compare_op.x.Value() != nihstro::Instruction::Common::CompareOpType::LessEqual ||
+                compare->Instruction.common.compare_op.y.Value() != nihstro::Instruction::Common::CompareOpType::LessEqual)
+                continue;
+            if (!merge(surface.InfluenceCount, count)) return std::nullopt;
+            for (uint8_t axis = 0; axis < 2U; ++axis) {
+                const PicaVertexUniformComponent threshold{
+                    static_cast<uint8_t>(compare->Source1.GetIndex()), SourceComponent(*compare, 1U, axis)};
+                if (!merge(surface.AdditionalInfluenceThresholds[axis], threshold)) return std::nullopt;
+            }
+        }
+        if (!surface.SkinnedNormalsAvailable()) return std::nullopt;
+        if (positionScaleAmbiguous) surface.SkinnedPositionScale = {};
+    }
+    return surface;
+}
+
 } // namespace
 
 uint64_t ComputeOot3dPicaVertexShaderStateKey(
@@ -1141,6 +1312,10 @@ bool GenerateOot3dPicaVertexShader(
     if (transformPrograms.Skeleton.has_value()) {
         hooks.Skeleton = *transformPrograms.Skeleton;
         hooks.Semantics |= PicaVertexShaderSemantic::SkeletonProgram;
+    }
+    if (const auto surface = DecodeCmbSurface(packet, transformPrograms)) {
+        hooks.Surface = *surface;
+        hooks.Semantics |= PicaVertexShaderSemantic::SurfaceProgram;
     }
 
     std::ostringstream source;

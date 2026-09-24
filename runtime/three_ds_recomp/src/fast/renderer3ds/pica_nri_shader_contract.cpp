@@ -15,7 +15,7 @@ struct CombinedSamplerDeclaration {
     bool Required = true;
 };
 
-constexpr std::array<CombinedSamplerDeclaration, 4> kCombinedSamplers{{
+constexpr std::array<CombinedSamplerDeclaration, 7> kCombinedSamplers{{
     {"layout(set=0,binding=1) uniform sampler2D pica_texture0;",
      "layout(set=0,binding=1) uniform usampler2D pica_texture0;",
      "pica_texture0", 1U, 7U, true},
@@ -25,6 +25,12 @@ constexpr std::array<CombinedSamplerDeclaration, 4> kCombinedSamplers{{
      {}, "pica_texture2", 3U, 9U, true},
     {{}, "layout(set=0,binding=13) uniform usampler2D pica_lighting_lut;",
      "pica_lighting_lut", 13U, 14U, false},
+    {"layout(set=0,binding=18) uniform sampler2D pbr_normal_map;",
+     {}, "pbr_normal_map", 18U, 21U, false},
+    {"layout(set=0,binding=19) uniform sampler2D pbr_orm_map;",
+     {}, "pbr_orm_map", 19U, 22U, false},
+    {"layout(set=0,binding=20) uniform sampler2D pbr_emissive_map;",
+     {}, "pbr_emissive_map", 20U, 23U, false},
 }};
 
 bool ReplaceOnce(std::string& source, std::string_view needle,

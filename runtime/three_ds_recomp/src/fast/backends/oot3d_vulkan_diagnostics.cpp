@@ -1,3 +1,4 @@
+#include "fast/renderer3ds/virtual_shadow_map.h"
 #include "fast/backends/oot3d_vulkan_diagnostics.h"
 #include "fast/oot3d/pica_scene_frame.h"
 #include "fast/renderer3ds/pica_composition_schedule.h"
@@ -542,6 +543,14 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
           frame.NriDirectionalShadowLightDirectionY },
         { "nri_directional_shadow_light_direction_z",
           frame.NriDirectionalShadowLightDirectionZ },
+        {"nri_vsm_requested_pages", frame.NriVirtualShadowRequestedPageCount},
+        {"nri_vsm_resident_pages", frame.NriVirtualShadowResidentPageCount},
+        {"nri_vsm_reused_pages", frame.NriVirtualShadowReusedPageCount},
+        {"nri_vsm_updated_pages", frame.NriVirtualShadowUpdatedPageCount},
+        {"nri_vsm_empty_pages", frame.NriVirtualShadowEmptyPageCount},
+        {"nri_vsm_evicted_pages", frame.NriVirtualShadowEvictedPageCount},
+        {"nri_vsm_unmapped_pages", frame.NriVirtualShadowUnmappedPageCount},
+        {"nri_vsm_atlas_bytes", frame.NriVirtualShadowAtlasBytes},
         { "nri_directional_shadow_receiver_eligible_draw_count",
           frame.NriDirectionalShadowReceiverEligibleDrawCount },
         { "nri_directional_shadow_receiver_lighting_available_draw_count",
@@ -1565,6 +1574,20 @@ void Oot3dVulkanDiagnostics::RecordNriDirectionalShadowLightSelection(
         mActiveFrame->NriDirectionalShadowLightDirectionY = directionY;
         mActiveFrame->NriDirectionalShadowLightDirectionZ = directionZ;
     }
+}
+
+void Oot3dVulkanDiagnostics::RecordNriVirtualShadowPages(
+    const Renderer3ds::VirtualShadowPageStatistics& pages, uint32_t updated, uint64_t atlasBytes) {
+    if (!mActiveFrame) return;
+    auto& frame = *mActiveFrame;
+    frame.NriVirtualShadowRequestedPageCount += pages.Requested;
+    frame.NriVirtualShadowResidentPageCount += pages.Resident;
+    frame.NriVirtualShadowReusedPageCount += pages.Reused;
+    frame.NriVirtualShadowUpdatedPageCount += updated;
+    frame.NriVirtualShadowEmptyPageCount += pages.Empty;
+    frame.NriVirtualShadowEvictedPageCount += pages.Evicted;
+    frame.NriVirtualShadowUnmappedPageCount += pages.Unmapped;
+    frame.NriVirtualShadowAtlasBytes += atlasBytes;
 }
 
 void Oot3dVulkanDiagnostics::RecordNriDirectionalShadowReceiver(

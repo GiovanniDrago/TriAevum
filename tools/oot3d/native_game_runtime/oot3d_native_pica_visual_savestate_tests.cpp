@@ -32,6 +32,26 @@ int main() {
         0x0030F4D0U,
         1U,
     };
+    draw.Composition.NativeProjectedShadow = true;
+    auto scenePoints = std::make_shared<Fast::Renderer3ds::PicaScenePointLights>();
+    scenePoints->Count = 2;
+    scenePoints->Lights[0] = {42, {3,5,7}, {1,.5F,.25F}, 0, 0};
+    scenePoints->Lights[1] = {43, {-3,6,8}, {.25F,.5F,1}, 80, 1};
+    draw.LightBinding.ScenePoints = scenePoints;
+    auto sceneDirectionals = std::make_shared<Fast::Renderer3ds::PicaSceneDirectionalLights>();
+    sceneDirectionals->Count = 2;
+    sceneDirectionals->Lights[0] = {51, {0,1,0}, {.6F,.4F,.2F}};
+    sceneDirectionals->Lights[1] = {52, {0,-1,0}, {.2F,.4F,.6F}};
+    draw.LightBinding.SceneDirectionals = sceneDirectionals;
+    auto& pointLight = draw.LightBinding.Sources[2];
+    pointLight.Kind = Fast::Renderer3ds::PicaNativeLightSource::Type::Point;
+    pointLight.SourceIdentity = 42U;
+    pointLight.PositionWorld = {3.0F, 5.0F, 7.0F};
+    pointLight.UnattenuatedColor = {1.0F, 0.5F, 0.25F};
+    pointLight.ReferenceColor = {0.5F, 0.25F, 0.125F};
+    pointLight.Radius = 80.0F;
+    draw.LightBinding.WorldToView = std::array<float, 16>{
+        0,0,-1,0, 0,1,0,0, 1,0,0,0, -11,5,7,1};
     draw.VertexShader.StateKey = 11U;
     draw.VertexShader.Source = "vertex";
     draw.FragmentShader.StateKey = 13U;
@@ -95,9 +115,11 @@ int main() {
     texture.State.MinMipLevel = 1U;
     texture.State.MaxMipLevel = 1U;
     texture.NativeBytes.resize(1280U, 0x5AU);
+    texture.CopyReferences = {
+        {24U, 21U, 0x20005000U, 768U},
+        {24U, 21U, 0x20005400U, 256U},
+    };
     Require(ResolveOot3dPicaTextureContentIdentity(texture, &error), error);
-    const uint64_t expectedBaseLevelContentHash =
-        texture.NativeBaseLevelContentHash;
     draw.Textures.push_back(std::move(texture));
     Oot3dPicaVisualFrame frame;
     frame.Sequence = 5U;
@@ -163,12 +185,34 @@ int main() {
                         .Textures[0].State.LodBiasRaw == -256 &&
                 decoded.Scheduler.Accumulator.PendingDraws[0]
                         .Textures[0].ResolvedNativeBytes().size() == 1280U &&
+                !decoded.Scheduler.Accumulator.PendingDraws[0]
+                        .Textures[0].NativeContentHashAvailable &&
+                !decoded.Scheduler.Accumulator.PendingDraws[0]
+                        .Textures[0].NativeBaseLevelContentHashAvailable &&
                 decoded.Scheduler.Accumulator.PendingDraws[0]
-                        .Textures[0]
-                        .NativeBaseLevelContentHashAvailable &&
+                        .Textures[0].CopyReferences.size() == 2U &&
                 decoded.Scheduler.Accumulator.PendingDraws[0]
-                        .Textures[0].NativeBaseLevelContentHash ==
-                    expectedBaseLevelContentHash &&
+                        .Textures[0].CopyReferences[0].CompletionId == 24U &&
+                decoded.Scheduler.Accumulator.PendingDraws[0]
+                        .Textures[0].CopyReferences[0]
+                        .AfterDrawSubmissionId == 21U &&
+                decoded.Scheduler.Accumulator.PendingDraws[0]
+                        .Textures[0].CopyReferences[0].PhysicalAddress ==
+                    0x20005000U &&
+                decoded.Scheduler.Accumulator.PendingDraws[0]
+                        .Textures[0].CopyReferences[0].ByteCount == 768U &&
+                decoded.Scheduler.Accumulator.PendingDraws[0]
+                        .Textures[0].CopyReferences[1].PhysicalAddress ==
+                    0x20005400U &&
+                decoded.Scheduler.Accumulator.PendingDraws[0]
+                        .Textures[0].CopyReferences[1].ByteCount == 256U &&
+                decoded.Scheduler.Accumulator.PendingDraws[0].LightBinding.Sources == draw.LightBinding.Sources &&
+                decoded.Scheduler.Accumulator.PendingDraws[0].LightBinding.WorldToView == draw.LightBinding.WorldToView &&
+                decoded.Scheduler.Accumulator.PendingDraws[0].Composition.NativeProjectedShadow &&
+                decoded.Scheduler.Accumulator.PendingDraws[0].LightBinding.ScenePoints &&
+                *decoded.Scheduler.Accumulator.PendingDraws[0].LightBinding.ScenePoints == *scenePoints &&
+                decoded.Scheduler.Accumulator.PendingDraws[0].LightBinding.SceneDirectionals &&
+                *decoded.Scheduler.Accumulator.PendingDraws[0].LightBinding.SceneDirectionals == *sceneDirectionals &&
                 decoded.Scheduler.Accumulator.PendingDraws[0]
                         .FragmentShader.Uniforms.TextureLodBias[2] == 1.25F &&
                 decoded.Scheduler.Accumulator.PendingDraws[0]
@@ -243,22 +287,30 @@ int main() {
                 "the restored scheduler rejected a pending raw copy");
         Require(scheduler.HasPendingRawCopyCompletion(),
                 "a restored pending raw copy stopped owing its guest completion");
-        const auto dependencyWork = scheduler.TakeDependencyWork();
-        Require(dependencyWork.has_value() &&
-                    dependencyWork->DisplayTransfers.size() == 1U &&
-                    dependencyWork->DisplayTransfers[0].CompletionId == rawCopy.CompletionId &&
-                    dependencyWork->DisplayTransfers[0].SignalInterrupt &&
-                    dependencyWork->DisplayTransfers[0].Transfer.TextureCopyBytes ==
+        Oot3dPicaVisualFrameViewSample dependencyWork;
+        Require(scheduler.ViewDependencyWork(dependencyWork) &&
+                    dependencyWork.DisplayTransfers.size() == 1U &&
+                    dependencyWork.DisplayTransfers[0].CompletionId == rawCopy.CompletionId &&
+                    dependencyWork.DisplayTransfers[0].SignalInterrupt &&
+                    dependencyWork.DisplayTransfers[0].Transfer.TextureCopyBytes ==
                         rawCopy.Transfer.TextureCopyBytes,
-                "the dependency boundary did not drain the restored raw copy exactly once");
-        Require(!scheduler.HasPendingRawCopyCompletion(),
-                "a drained raw copy kept owing its guest completion");
+                "the restored dependency boundary lost its native copy");
+        Require(scheduler.HasPendingRawCopyCompletion(),
+                "viewing a dependency discharged an unexecuted guest completion");
     }
     Require(decoded.Scheduler.Accumulator.PendingDraws[0].LightingLuts ==
                 decoded.PreviousFrame->Draws[0].LightingLuts &&
                 decoded.PreviousFrame->Draws[0].LightingLuts ==
                     decoded.LatestFrame->Draws[0].LightingLuts,
             "visual replay duplicated shared lighting LUT state");
+    const auto restoredPoints = decoded.PreviousFrame->Draws[0].LightBinding.ScenePoints;
+    Require(restoredPoints && restoredPoints == decoded.LatestFrame->Draws[0].LightBinding.ScenePoints &&
+                restoredPoints == decoded.Scheduler.Accumulator.PendingDraws[0].LightBinding.ScenePoints,
+            "restoring shared scene lighting duplicated its immutable native-frame snapshot");
+    const auto restoredDirectionals = decoded.PreviousFrame->Draws[0].LightBinding.SceneDirectionals;
+    Require(restoredDirectionals && restoredDirectionals == decoded.LatestFrame->Draws[0].LightBinding.SceneDirectionals &&
+                restoredDirectionals == decoded.Scheduler.Accumulator.PendingDraws[0].LightBinding.SceneDirectionals,
+            "restored native environment lost its shared geometry-synchronous snapshot");
     encoded.pop_back();
     Require(!DecodeOot3dPicaVisualReplayState(encoded, decoded, &error),
             "truncated visual replay state was accepted");

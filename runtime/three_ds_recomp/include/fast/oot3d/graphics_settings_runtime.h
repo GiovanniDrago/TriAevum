@@ -3,6 +3,7 @@
 #include "fast/oot3d/graphics_settings.h"
 #include "fast/oot3d/native_presentation_policy.h"
 #include "fast/oot3d/presentation_settings_transaction.h"
+#include "fast/renderer3ds/pica_environment_lighting.h"
 
 #include <cstdint>
 #include <memory>
@@ -27,6 +28,7 @@ void InstallGraphicsSettingsPersistencePort(
 struct VersionedGraphicsSettings {
     GraphicsSettings Value;
     uint64_t Revision = 0;
+    Renderer3ds::PicaEnvironmentLighting Environment;
 };
 
 // Observed renderer state, never persisted as a user request.
@@ -56,6 +58,8 @@ class GraphicsSettingsRuntime final {
     [[nodiscard]] GraphicsDisplayMetrics DisplayMetrics() const;
     void PublishDisplayMetrics(GraphicsDisplayMetrics metrics);
     void PublishSceneExtent(uint32_t width, uint32_t height);
+    // Resolved title-owned profile; never serialized into global graphics settings.
+    void PublishSceneEnvironment(const Renderer3ds::PicaEnvironmentLighting& environment);
     GraphicsSettingsValidation Apply(GraphicsSettings candidate, bool persist = true);
     [[nodiscard]] GraphicsSettingsSaveState SaveState() const;
     void SavePending();
@@ -78,6 +82,7 @@ class GraphicsSettingsRuntime final {
     GraphicsSettingsService mService;
     GraphicsCapabilities mCapabilities;
     GraphicsDisplayMetrics mDisplayMetrics;
+    Renderer3ds::PicaEnvironmentLighting mSceneEnvironment;
     PresentationSettingsTransaction mPresentationTransaction;
     std::string mLastPresentationRejection;
     std::shared_ptr<GraphicsSettingsPersistencePort> mPersistence;

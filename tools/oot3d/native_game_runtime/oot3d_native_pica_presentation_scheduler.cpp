@@ -77,11 +77,14 @@ void Oot3dPicaPresentationScheduler::BeginPresentation(
     return;
   }
   mPresentationSerial = presentationSerial;
-  mExecutedDrawsThisPresentation.clear();
+  for (auto& [targetNamespace, draws] : mExecutedDrawsThisPresentation) {
+    draws.clear();
+  }
 }
 
-std::optional<Oot3dPicaVisualFrame> Oot3dPicaPresentationScheduler::TakeDependencyWork() {
-  return mAccumulator.Finish({}, true);
+bool Oot3dPicaPresentationScheduler::ViewDependencyWork(
+    Oot3dPicaVisualFrameViewSample& output) {
+  return mAccumulator.ViewDependencyWork(output);
 }
 
 Oot3dPicaPresentationSchedulerState
@@ -110,8 +113,8 @@ bool Oot3dPicaPresentationScheduler::Execute(
     SetError(error, "PICA presentation execution began without a host frame");
     return false;
   }
-  if (sample.MemoryFills == nullptr || sample.DisplayTransfers == nullptr ||
-      (sample.Draws.empty() && kind != Oot3dPicaPresentationExecutionKind::DependencyFlush)) {
+  if (sample.Draws.empty() && sample.DisplayTransfers.empty() &&
+      kind == Oot3dPicaPresentationExecutionKind::DependencyFlush) {
     SetError(error, "PICA presentation sample is incomplete");
     return false;
   }
@@ -121,19 +124,19 @@ bool Oot3dPicaPresentationScheduler::Execute(
                                   mTimings.ValidationSeconds);
     std::unordered_set<uint64_t> sampleDraws;
     sampleDraws.reserve(sample.Draws.size());
+    auto& executedDraws =
+        mExecutedDrawsThisPresentation[renderTargetNamespace];
     for (const auto &draw : sample.Draws) {
       if (draw.BasePlan == nullptr ||
           !sampleDraws.insert(draw.BasePlan->SubmissionId).second ||
-          mExecutedDrawsThisPresentation.contains(
-              draw.BasePlan->SubmissionId)) {
+          executedDraws.contains(draw.BasePlan->SubmissionId)) {
         ++mStats.DuplicateDrawAttempts;
         SetError(error,
                  "PICA draw would execute more than once in one presentation");
         return false;
       }
     }
-    mExecutedDrawsThisPresentation.insert(sampleDraws.begin(),
-                                          sampleDraws.end());
+    executedDraws.insert(sampleDraws.begin(), sampleDraws.end());
   }
   mStats.SelectedDraws += sample.Draws.size();
 
@@ -163,6 +166,7 @@ bool Oot3dPicaPresentationScheduler::Execute(
                     static_cast<uint8_t>(draw.Composition.Provenance)),
             .SourcePc = draw.Composition.SourcePc,
             .NativeValue = draw.Composition.NativeValue,
+            .NativeProjectedShadow = draw.Composition.NativeProjectedShadow,
         },
     });
   }
@@ -179,6 +183,11 @@ bool Oot3dPicaPresentationScheduler::Execute(
                     kPicaCompositionSequenceSchemaVersion,
                 .SequenceId = compositionSequenceId,
                 .Draws = mCompositionDrawScratch,
+                .Purpose =
+                    kind == Oot3dPicaPresentationExecutionKind::DependencyFlush ||
+                            kind == Oot3dPicaPresentationExecutionKind::NativeFrame
+                        ? Oot3d::Renderer::PicaCompositionPurpose::NativeMemory
+                        : Oot3d::Renderer::PicaCompositionPurpose::Presentation,
             },
             error)) {
       ++mStats.CompositionPublicationFailures;
@@ -200,6 +209,9 @@ bool Oot3dPicaPresentationScheduler::Execute(
   case Oot3dPicaPresentationExecutionKind::RepeatedFrame:
     ++mStats.RepeatedFrameLists;
     break;
+  case Oot3dPicaPresentationExecutionKind::NativeFrame:
+    ++mStats.NativeFrameLists;
+    break;
   case Oot3dPicaPresentationExecutionKind::DependencyFlush:
     ++mStats.DependencyFlushes;
     break;
@@ -209,8 +221,8 @@ bool Oot3dPicaPresentationScheduler::Execute(
   size_t fillIndex = 0;
   size_t transferIndex = 0;
   bool topSnapshotExecuted = false;
-  const auto &fills = *sample.MemoryFills;
-  const auto &transfers = *sample.DisplayTransfers;
+  const auto fills = sample.MemoryFills;
+  const auto transfers = sample.DisplayTransfers;
   const auto submitFill = [&](const Oot3dPicaMemoryFillSubmission &fill) {
     OptionalTimer timer(mTimings.Enabled, mTimings.MemoryFillSeconds);
     if (!SubmitOot3dPicaVulkanMemoryFill(backend, fill, error,
@@ -223,8 +235,15 @@ bool Oot3dPicaPresentationScheduler::Execute(
   const auto submitTransfer = [&](const Oot3dPicaDisplayTransferSubmission
                                       &transfer) {
     OptionalTimer timer(mTimings.Enabled, mTimings.SnapshotTransferSeconds);
+    // Real execution publishes byte visibility and discharges PPF, including
+    // guarded deferred RAM. Replayed/interpolated/restored transfers recreate
+    // only the GPU version; they never publish a second guest write.
+    const bool materializeGuest =
+        kind == Oot3dPicaPresentationExecutionKind::DependencyFlush &&
+        transfer.Transfer.TextureCopyBytes != 0U && transfer.SignalInterrupt;
     if (!SubmitOot3dPicaVulkanDisplayTransfer(backend, transfer, false, error,
-                                              renderTargetNamespace)) {
+                                              renderTargetNamespace,
+                                              materializeGuest)) {
       return false;
     }
     mSnapshotCompletions[MakeSnapshotTarget(transfer, renderTargetNamespace)] =
@@ -293,6 +312,7 @@ bool Oot3dPicaPresentationScheduler::Execute(
       SetError(error, "PICA dependency flush cannot present a scanout");
       return false;
     }
+    mAccumulator.CompleteDependencyWork();
     return true;
   }
   if (!topSnapshotExecuted) {

@@ -146,6 +146,7 @@ gtest_discover_tests(oot3d_vulkan_diagnostics_tests DISCOVERY_TIMEOUT 30)
 add_executable(oot3d_pica_scene_frame_tests
     oot3d_pica_scene_frame_tests.cpp
     ../src/fast/oot3d/directional_shadows.cpp
+    ../src/fast/renderer3ds/virtual_shadow_map.cpp
     ../src/fast/oot3d/native_scene_view.cpp
     ../src/fast/oot3d/pica_directional_shadow_semantics.cpp
     ../src/fast/oot3d/pica_scene_frame.cpp
@@ -170,6 +171,7 @@ gtest_discover_tests(oot3d_pica_scene_frame_tests DISCOVERY_TIMEOUT 30)
 add_executable(oot3d_pica_shader_pipeline_cache_tests
     oot3d_pica_shader_pipeline_cache_tests.cpp
     ../src/fast/oot3d/directional_shadows.cpp
+    ../src/fast/renderer3ds/virtual_shadow_map.cpp
     ../src/fast/oot3d/pica_ambient_occlusion_guide.cpp
     ../src/fast/oot3d/pica_directional_shadow_caster.cpp
     ../src/fast/oot3d/pica_directional_shadow_lighting.cpp
@@ -177,6 +179,9 @@ add_executable(oot3d_pica_shader_pipeline_cache_tests
     ../src/fast/oot3d/pica_reactive_mask.cpp
     ../src/fast/oot3d/pica_reflection_material.cpp
     ../src/fast/oot3d/pica_rigid_motion.cpp
+    ../src/fast/renderer3ds/pica_vertex_surface.cpp
+    ../src/fast/renderer3ds/pica_surface_lighting.cpp
+    ../src/fast/renderer3ds/pica_pbr_shading.cpp
     ../src/fast/oot3d/pica_scene_domain_guide.cpp
     ../src/fast/oot3d/pica_shader_instrumentation.cpp
     ../src/fast/oot3d/pica_shader_pipeline_cache.cpp
@@ -483,6 +488,7 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/ambient_occlusion_composite.cpp
     ../src/fast/oot3d/azahar_texture_pack.cpp
     ../src/fast/oot3d/cacao_normal_input.cpp
+    ../src/fast/oot3d/azahar_pbr_materials.cpp
     ../src/fast/oot3d/grass_async_placement_builder.cpp
     ../src/fast/oot3d/grass_static_placement_cache.cpp
     ../src/fast/oot3d/grass_shader_sources.cpp
@@ -506,6 +512,8 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/graphics_capabilities.cpp
     ../src/fast/oot3d/graphics_settings.cpp
     ../src/fast/oot3d/directional_shadows.cpp
+    ../src/fast/renderer3ds/virtual_shadow_map.cpp
+    ../src/fast/renderer3ds/pica_shadow_geometry.cpp
     ../src/fast/oot3d/graphics_settings_persistence.cpp
     ../src/fast/oot3d/graphics_settings_runtime.cpp
     ../src/fast/oot3d/texture_assignment_model.cpp
@@ -539,6 +547,9 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/pica_reactive_mask.cpp
     ../src/fast/oot3d/pica_reflection_material.cpp
     ../src/fast/oot3d/pica_rigid_motion.cpp
+    ../src/fast/renderer3ds/pica_vertex_surface.cpp
+    ../src/fast/renderer3ds/pica_surface_lighting.cpp
+    ../src/fast/renderer3ds/pica_pbr_shading.cpp
     ../src/fast/oot3d/pica_texture_decode.cpp
     ../src/fast/oot3d/pica_toon_shader.cpp
     ../src/fast/oot3d/pica_shader_instrumentation.cpp

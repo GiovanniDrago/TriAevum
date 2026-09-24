@@ -22,6 +22,7 @@ struct PicaSceneFrameStats;
 }
 namespace Renderer3ds {
 struct PicaCompositionScheduleStats;
+struct VirtualShadowPageStatistics;
 }
 
 struct Oot3dVulkanDiagnosticsConfig {
@@ -374,6 +375,14 @@ struct Oot3dVulkanFrameDiagnostics {
     float NriDirectionalShadowLightDirectionX = 0.0F;
     float NriDirectionalShadowLightDirectionY = 0.0F;
     float NriDirectionalShadowLightDirectionZ = 0.0F;
+    uint32_t NriVirtualShadowRequestedPageCount = 0;
+    uint32_t NriVirtualShadowResidentPageCount = 0;
+    uint32_t NriVirtualShadowReusedPageCount = 0;
+    uint32_t NriVirtualShadowUpdatedPageCount = 0;
+    uint32_t NriVirtualShadowEmptyPageCount = 0;
+    uint32_t NriVirtualShadowEvictedPageCount = 0;
+    uint32_t NriVirtualShadowUnmappedPageCount = 0;
+    uint64_t NriVirtualShadowAtlasBytes = 0;
     uint32_t NriDirectionalShadowReceiverEligibleDrawCount = 0;
     uint32_t NriDirectionalShadowReceiverLightingAvailableDrawCount = 0;
     uint32_t NriDirectionalShadowReceiverLightingEnabledDrawCount = 0;
@@ -658,6 +667,8 @@ class Oot3dVulkanDiagnostics {
         uint32_t candidateCount, uint32_t clusterCount,
         float geometryWeight, float directionX, float directionY,
         float directionZ);
+    void RecordNriVirtualShadowPages(const Renderer3ds::VirtualShadowPageStatistics& pages,
+                                    uint32_t updated, uint64_t atlasBytes);
     void RecordNriDirectionalShadowReceiver(bool eligible,
                                             bool lightingAvailable,
                                             bool lightingEnabled,

@@ -19,6 +19,7 @@ enum class Oot3dPicaPresentationExecutionKind : uint8_t {
   InterpolatedFrame,
   RepeatedFrame,
   DependencyFlush,
+  NativeFrame,
 };
 
 struct Oot3dPicaPresentationSchedulerStats {
@@ -34,6 +35,7 @@ struct Oot3dPicaPresentationSchedulerStats {
   uint64_t InterpolatedFrameLists = 0;
   uint64_t RepeatedFrameLists = 0;
   uint64_t DependencyFlushes = 0;
+  uint64_t NativeFrameLists = 0;
   uint64_t MemoryFillsExecuted = 0;
   uint64_t DisplaySnapshotsExecuted = 0;
   uint64_t PresentedTransfers = 0;
@@ -67,9 +69,9 @@ struct Oot3dPicaPresentationSchedulerState {
 };
 
 // Owns deferred PICA work between guest refreshes and host presentations.
-// A draw plan is captured once, then executed by exactly one selected list
-// during a host presentation. Guest-visible completion signaling remains the
-// caller's responsibility because it belongs to the CTR service contract.
+// A draw plan is captured once. Native dependency execution and visual samples
+// use distinct target namespaces; each executes a draw at most once per host
+// presentation. Raw-copy completion belongs only to the native dependency.
 class Oot3dPicaPresentationScheduler final {
 public:
   void Capture(Oot3dPicaVulkanDrawPlan plan);
@@ -78,9 +80,9 @@ public:
 
   std::optional<Oot3dPicaVisualFrame>
   FinishFrame(const Oot3dPicaDisplayTransferSubmission &topTransfer);
-  // GPU completion may be required before the guest can swap scanout buffers.
-  // This drains ordered offscreen work without manufacturing a presentation.
-  std::optional<Oot3dPicaVisualFrame> TakeDependencyWork();
+  // GPU completion may precede scanout. Retain the native prefix in the complete
+  // frame rather than consuming the only interpolation source.
+  bool ViewDependencyWork(Oot3dPicaVisualFrameViewSample& output);
 
   void BeginPresentation(uint64_t presentationSerial);
 
@@ -103,6 +105,12 @@ public:
   Oot3dPicaPresentationSchedulerState CaptureState() const;
   bool RestoreState(Oot3dPicaPresentationSchedulerState state);
   size_t PendingDrawCount() const;
+  // Live plans not yet published as a frame: their copy references still pin
+  // the GPU copy versions they sampled.
+  [[nodiscard]] std::span<const Oot3dPicaVulkanDrawPlan> PendingDraws()
+      const noexcept {
+    return mAccumulator.PendingDraws();
+  }
   // True while an ordered raw TextureCopy still owes the guest a PPF
   // completion and therefore needs a dependency flush.
   bool HasPendingRawCopyCompletion() const;
@@ -121,7 +129,8 @@ private:
   Oot3dPicaPresentationSchedulerTimings mTimings;
   std::optional<uint64_t> mPresentationSerial;
   uint64_t mNextCompositionSequenceId = 1U;
-  std::unordered_set<uint64_t> mExecutedDrawsThisPresentation;
+  std::map<uint64_t, std::unordered_set<uint64_t>>
+      mExecutedDrawsThisPresentation;
   std::vector<Oot3d::Renderer::PicaCompositionDrawReference>
       mCompositionDrawScratch;
   std::map<SnapshotTarget, uint64_t> mSnapshotCompletions;

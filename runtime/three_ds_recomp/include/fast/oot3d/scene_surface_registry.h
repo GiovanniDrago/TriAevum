@@ -22,7 +22,12 @@ enum class SceneSurfaceKind : uint8_t {
     Composite,
     Output,
     FogGuide,
-    OutlineGeometryGuide
+    OutlineGeometryGuide,
+    // Scene colour produced at a declared native boundary rather than at a
+    // presentation. A boundary composes the source's own domain, so its result
+    // is not the presentation's composite and must never be reused as one.
+    BoundaryComposition,
+    BoundaryWorkingColor,
 };
 
 struct SceneSurfaceKey {

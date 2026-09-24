@@ -1,5 +1,7 @@
 #pragma once
 
+#include "fast/renderer3ds/pica_light_binding.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <array>
@@ -149,6 +151,7 @@ struct Oot3dPicaCompositionAttribution {
         Oot3dPicaCompositionProvenance::Unknown;
     uint32_t SourcePc = 0;
     uint32_t NativeValue = 0;
+    bool NativeProjectedShadow = false;
 
     bool operator==(const Oot3dPicaCompositionAttribution&) const = default;
 };
@@ -160,6 +163,7 @@ struct Oot3dPicaCommandListCompositionSpan {
     uint32_t BeginAddress = 0;
     uint32_t EndAddress = 0;
     Oot3dPicaCompositionAttribution Attribution;
+    Fast::Renderer3ds::PicaNativeLightBinding LightBinding;
 };
 
 class Oot3dPicaCommandListCompositionProvider {
@@ -278,6 +282,7 @@ struct Oot3dPicaDrawPacket {
     Oot3dPicaCompositionDomain CompositionDomain =
         Oot3dPicaCompositionDomain::Unknown;
     Oot3dPicaCompositionAttribution Composition;
+    Fast::Renderer3ds::PicaNativeLightBinding LightBinding;
     bool Indexed = false;
     std::array<uint32_t, 0x300> Registers{};
     Oot3dPicaShaderState VertexShader;

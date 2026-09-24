@@ -7,12 +7,14 @@
 #include "fast/oot3d/native_scene_view.h"
 #include "fast/oot3d/pica_directional_shadow_lighting.h"
 #include "fast/renderer/extension_schedule.h"
+#include "fast/renderer3ds/pica_environment_lighting.h"
 
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <optional>
 
 namespace Fast::Oot3d {
 
@@ -37,6 +39,8 @@ struct NriDirectionalShadowExecuteDesc {
     ::Fast::Renderer::ExtensionPassAuthorization ScheduleAuthorization;
     ::Fast::Renderer::ExtensionSurfaceIdentity ExpectedSurface;
     DirectionalShadowSettings Settings;
+    std::optional<Renderer3ds::PicaEnvironmentDirectionalLight> EnvironmentKey;
+    float NativeDirectStrength = 1.0F;
 };
 
 struct NriDirectionalShadowHistorySnapshot {
@@ -57,6 +61,9 @@ struct NriDirectionalShadowLightTelemetry {
     uint32_t CandidateCount = 0U;
     uint32_t ClusterCount = 0U;
     float GeometryLightWeight = 0.0F;
+    Renderer3ds::VirtualShadowPageStatistics Pages;
+    uint32_t UpdatedPages = 0U;
+    uint64_t AtlasBytes = 0U;
 
     [[nodiscard]] bool Valid() const noexcept {
         return CandidateCount != 0U && ClusterCount != 0U &&
@@ -64,10 +71,10 @@ struct NriDirectionalShadowLightTelemetry {
     }
 };
 
-// Isolated NRI-owned enhanced shadow-map producer. Eligible native PICA
-// geometry is replayed into a two-slot temporal depth history. Visibility is
-// consumed separately at the typed PICA lighting hook; this module never
-// reads or rewrites the resolved scene color.
+// Graph-owned persistent virtual shadow atlas. Native receivers sample the
+// previously published immutable page table; the post-opaque anchor updates
+// dirty pages, then publishes the table for subsequent native draws/frames.
+// Scene color, native depth and canonical raster state are never modified.
 class NriDirectionalShadowPass final {
   public:
     NriDirectionalShadowPass();
@@ -82,7 +89,8 @@ class NriDirectionalShadowPass final {
     [[nodiscard]] NriDirectionalShadowHistorySnapshot
     FindLatestHistory(uint64_t renderTargetNamespace,
                       uint32_t colorPhysicalAddress,
-                      uint64_t beforeFrameId) const noexcept;
+                      uint64_t atFrameId) const noexcept;
+    void InvalidateHistory() noexcept;
     void InvalidateScreenResources();
     void Shutdown();
 

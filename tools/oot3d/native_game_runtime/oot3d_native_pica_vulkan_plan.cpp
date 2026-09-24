@@ -77,6 +77,11 @@ bool ResolveTextureContentIdentity(
         SetError(error, "native PICA texture identity has no payload");
         return false;
     }
+    if (!texture.CopyReferences.empty()) {
+        texture.NativeContentHash = texture.NativeBaseLevelContentHash = 0U;
+        texture.NativeContentHashAvailable = texture.NativeBaseLevelContentHashAvailable = false;
+        return true;
+    }
     if (!texture.NativeContentHashAvailable) {
         texture.NativeContentHash = HashGeometryBytes(bytes);
         texture.NativeContentHashAvailable = true;
@@ -305,6 +310,7 @@ bool BuildOot3dPicaVulkanDrawPlanImpl(
     plan.CommandListOffsetWords = submission.Packet.CommandListOffsetWords;
     plan.CompositionDomain = submission.Packet.CompositionDomain;
     plan.Composition = submission.Packet.Composition;
+    plan.LightBinding = submission.Packet.LightBinding;
     plan.LightingLuts = submission.Packet.LightingLuts;
     plan.State = submission.State;
     plan.Indexed = submission.State.VertexInput.Indexed;
@@ -516,6 +522,12 @@ bool BuildOot3dPicaVulkanDrawPlanImpl(
             resource->ContentHashAvailable;
         textureBinding.NativeBaseLevelContentHash = resource->BaseLevelContentHash;
         textureBinding.NativeBaseLevelContentHashAvailable = resource->BaseLevelContentHashAvailable;
+        if constexpr (ConsumeResources) {
+            textureBinding.CopyReferences =
+                std::move(resource->CopyReferences);
+        } else {
+            textureBinding.CopyReferences = resource->CopyReferences;
+        }
         if (!ResolveTextureContentIdentity(textureBinding, error)) {
             return false;
         }

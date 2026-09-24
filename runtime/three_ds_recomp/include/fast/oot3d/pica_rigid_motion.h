@@ -43,12 +43,15 @@ struct PicaRigidMotionShaderVariant {
     uint64_t FragmentKey = 0;
     bool Applied = false;
     bool UsedProvidedProgram = false;
+    bool TemporalApplied = false;
+    bool SurfaceApplied = false;
 };
 
 [[nodiscard]] PicaRigidMotionShaderVariant
-BuildPicaTemporalVertexInstrumentation(
+BuildPicaVertexInstrumentation(
     std::string_view source, uint64_t vertexKey,
-    const ::Oot3d::Renderer::PicaTemporalVertexProgramView& program);
+    const ::Oot3d::Renderer::PicaTemporalVertexProgramView& program,
+    bool temporal, bool surface);
 
 // Legacy compatibility/test API. Production instrumentation must use the
 // typed frontend program overload above and may not analyze generated GLSL.

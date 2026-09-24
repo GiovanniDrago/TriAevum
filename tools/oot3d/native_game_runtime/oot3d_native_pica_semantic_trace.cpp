@@ -31,6 +31,22 @@ bool SelectedDrawFrame(uint64_t frame) {
     return frame >= range[0] && frame <= range[1];
 }
 
+// Copy provenance of one sampled texture: the ordered producers whose GPU
+// version owns these bytes, never a byte hash. Empty for a CPU-owned texture.
+nlohmann::json CopyReferenceJson(
+    std::span<const Fast::Renderer3ds::PicaTextureCopyReference> references) {
+    nlohmann::json encoded = nlohmann::json::array();
+    for (const auto& reference : references) {
+        encoded.push_back({
+            {"completion_id", reference.CompletionId},
+            {"after_draw_submission_id", reference.AfterDrawSubmissionId},
+            {"physical_address", reference.PhysicalAddress},
+            {"byte_count", reference.ByteCount},
+        });
+    }
+    return encoded;
+}
+
 const char* CompositionDomainName(
     Oot3dPicaCompositionDomain domain) noexcept {
     switch (domain) {
@@ -431,13 +447,12 @@ void Oot3dPicaSemanticTraceWriter::RecordDraw(
     nlohmann::json textures = nlohmann::json::array();
     for (const auto& texture : plan.Textures) {
         const auto bytes = texture.ResolvedNativeBytes();
+        const bool cpuContent = texture.CopyReferences.empty();
         const uint64_t resourceHash = texture.NativeContentHashAvailable
-                                          ? texture.NativeContentHash
-                                          : HashOot3dPicaCanonicalBytes(bytes);
-        const uint64_t baseLevelHash =
-            texture.NativeBaseLevelContentHashAvailable
-                ? texture.NativeBaseLevelContentHash
-                : resourceHash;
+            ? texture.NativeContentHash
+            : cpuContent ? HashOot3dPicaCanonicalBytes(bytes) : 0U;
+        const uint64_t baseLevelHash = texture.NativeBaseLevelContentHashAvailable
+            ? texture.NativeBaseLevelContentHash : resourceHash;
         textures.push_back({
             {"slot", texture.Slot},
             {"physical_address", texture.State.PhysicalAddress},
@@ -458,9 +473,12 @@ void Oot3dPicaSemanticTraceWriter::RecordDraw(
             {"mip_level_count",
              Oot3dPicaTextureMipLevelCount(texture.State)},
             {"byte_count", bytes.size()},
+            {"content_hash_available", cpuContent},
             {"content_id", FormatOot3dPicaCanonicalId(baseLevelHash)},
             {"resource_content_id",
              FormatOot3dPicaCanonicalId(resourceHash)},
+            {"copy_references",
+             CopyReferenceJson(texture.CopyReferences)},
         });
     }
     nlohmann::json vertexBindings = nlohmann::json::array();
@@ -510,6 +528,39 @@ void Oot3dPicaSemanticTraceWriter::RecordDraw(
         });
     }
 
+    nlohmann::json selectedLights = nlohmann::json::array();
+    for (const auto& light : plan.LightBinding.Sources)
+        selectedLights.push_back({
+            {"kind", static_cast<uint32_t>(light.Kind)},
+            {"source_identity", light.SourceIdentity},
+            {"position_world", light.PositionWorld},
+            {"radius", light.Radius},
+        });
+    nlohmann::json scenePoints = nlohmann::json::array();
+    if (const auto& snapshot = plan.LightBinding.ScenePoints) {
+        for (uint32_t i = 0; i < snapshot->Count; ++i) {
+            const auto& light = snapshot->Lights[i];
+            scenePoints.push_back({
+                {"source_identity", light.SourceIdentity},
+                {"group", light.Group},
+                {"position_world", light.PositionWorld},
+                {"color", light.Color},
+                {"radius", light.Radius},
+            });
+        }
+    }
+    nlohmann::json sceneDirectionals = nlohmann::json::array();
+    if (const auto& snapshot = plan.LightBinding.SceneDirectionals) {
+        for (uint32_t i = 0; i < snapshot->Count; ++i) {
+            const auto& light = snapshot->Lights[i];
+            sceneDirectionals.push_back({
+                {"source_identity", light.SourceIdentity},
+                {"direction_toward_source", light.DirectionTowardSource},
+                {"color", light.Color},
+            });
+        }
+    }
+
     WriteEvent({
         {"event", "draw"},
         {"presentation_frame", presentationFrame},
@@ -526,6 +577,10 @@ void Oot3dPicaSemanticTraceWriter::RecordDraw(
          CompositionProvenanceName(plan.Composition.Provenance)},
         {"composition_source_pc", plan.Composition.SourcePc},
         {"composition_native_value", plan.Composition.NativeValue},
+        {"native_projected_shadow", plan.Composition.NativeProjectedShadow},
+        {"selected_native_lights", std::move(selectedLights)},
+        {"scene_point_lights", std::move(scenePoints)},
+        {"scene_directional_lights", std::move(sceneDirectionals)},
         {"identity", DrawIdentityJson(identity)},
         {"fragment_features", FragmentFeaturesJson(fragmentFeatures)},
         {"legacy_shader_keys",

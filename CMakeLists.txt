@@ -1824,7 +1824,8 @@ target_include_directories(oot3d_native_pica_transfer PUBLIC
     tools/oot3d/native_pica_frontend
 )
 target_link_libraries(oot3d_native_pica_transfer PUBLIC
-    oot3d_native_a32_process)
+    oot3d_native_a32_process
+    oot3d_renderer_contracts)
 target_compile_options(oot3d_native_pica_transfer PRIVATE "${WARNING_OVERRIDE}")
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
     target_compile_definitions(oot3d_native_pica_transfer PRIVATE NOMINMAX)
@@ -1879,7 +1880,12 @@ set_property(TARGET oot3d_native_pica_submission_tests PROPERTY FOLDER Tests)
 
 add_library(oot3d_native_pica_composition STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_pica_composition.cpp
+    tools/oot3d/native_game_runtime/oot3d_native_a32_lighting.cpp
 )
+set_source_files_properties(
+    tools/oot3d/native_game_runtime/oot3d_native_a32_lighting.cpp
+    tools/oot3d/native_game_runtime/oot3d_native_pica_composition_tests.cpp
+    PROPERTIES INCLUDE_DIRECTORIES "${OOT3D_ACTOR_UPDATE_ALL_SOURCE_IMPORT}/include")
 target_include_directories(oot3d_native_pica_composition PUBLIC
     tools/oot3d/native_game_runtime
     tools/oot3d/native_pica_frontend
@@ -3383,6 +3389,8 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
         tools/oot3d/native_game_runtime/oot3d_native_pcm_diagnostics.cpp
         tools/oot3d/native_game_runtime/oot3d_native_controls_settings_panel.cpp
         tools/oot3d/native_game_runtime/oot3d_game_language_panel.cpp
+        tools/oot3d/native_game_runtime/oot3d_scene_environment.cpp
+        tools/oot3d/native_game_runtime/oot3d_scene_environment_panel.cpp
         tools/oot3d/native_game_runtime/oot3d_top_screen_settings_panel.cpp)
     set_source_files_properties(tools/oot3d/native_game_runtime/oot3d_native_actor_interactions.cpp
         PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/tools/oot3d/source_imports/actor_update_all_449e219e/include")

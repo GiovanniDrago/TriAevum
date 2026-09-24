@@ -29,7 +29,7 @@ HEADERS = (
     / "include"
     / "fast"
     / "renderer3ds"
-    / "pica_texture_decode_gpu.h",
+    / "pica_texture_copy_derive_gpu.h",
 )
 GLSL_PATTERN = re.compile(r'R"glsl\((.*?)\)glsl"', re.S)
 
@@ -65,7 +65,7 @@ class PicaFramebufferEncodeGpuShaderTests(unittest.TestCase):
                     source = Path(directory) / f"{header.stem}.comp"
                     source.write_text(match.group(1), encoding="utf-8", newline="\n")
                     result = subprocess.run(
-                        [glslang, "-V", str(source)],
+                        [glslang, "-V", str(source), "-o", str(Path(directory) / f"{header.stem}.spv")],
                         capture_output=True,
                         text=True,
                         timeout=120,

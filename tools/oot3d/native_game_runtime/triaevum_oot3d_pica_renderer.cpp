@@ -109,7 +109,13 @@ bool TriAevumOot3dPicaRenderer::SubmitDraw(Oot3dPicaDrawSubmission& draw, std::s
 bool TriAevumOot3dPicaRenderer::SubmitDisplayTransfer(const Oot3dPicaDisplayTransferSubmission& transfer,
                                                       std::string* error) {
     const bool present = mOptions.ShouldPresentTransfer && mOptions.ShouldPresentTransfer(transfer);
-    if (!SubmitOot3dPicaVulkanDisplayTransfer(mBackend, transfer, present, error, mOptions.RenderTargetNamespace)) {
+    // Real ordered execution: a raw copy that still owes the guest its bytes
+    // materializes here; a restored or replayed transfer never does.
+    const bool materializeGuest =
+        transfer.Transfer.TextureCopyBytes != 0U && transfer.SignalInterrupt;
+    if (!SubmitOot3dPicaVulkanDisplayTransfer(mBackend, transfer, present, error,
+                                              mOptions.RenderTargetNamespace,
+                                              materializeGuest)) {
         return false;
     }
     mDisplayTransfersByOutput.insert_or_assign(transfer.Transfer.OutputAddress, transfer);

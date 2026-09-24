@@ -11,6 +11,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 
 namespace Fast::Renderer3ds {
 namespace {
@@ -47,7 +48,7 @@ struct PicaSurfaceLightingPass::Impl {
     VkRenderPass RenderPass{};
     VkSampler Sampler{};
     std::array<Slot, kSlots> Slots;
-    std::map<std::pair<uint64_t, uint64_t>, VkPipeline> Pipelines;
+    std::map<std::tuple<uint64_t, uint64_t, bool>, VkPipeline> Pipelines;
     std::set<uint64_t> ExportedMaterials;
 
     VkShaderModule Compile(std::string_view source, Renderer::SpirvStage stage, const char* name) {
@@ -60,16 +61,22 @@ struct PicaSurfaceLightingPass::Impl {
         return module;
     }
     VkPipeline Pipeline(const PicaResolvedDrawRecord& draw) {
-        if (!draw.VertexShader || !draw.VertexLayout || !draw.VertexShader->VertexHooksAvailable()) return {};
-        const auto key = std::pair{draw.VertexShader->Key, draw.VertexLayout->StructuralKey};
-        if (auto found = Pipelines.find(key); found != Pipelines.end()) return found->second;
-        auto source = BuildPicaSurfaceLightingVertexShader(draw.VertexShader->Source, draw.VertexShader->VertexHooks);
-        if (source.empty()) return {};
+        if (!draw.VertexShader || !draw.VertexLayout || !draw.VertexShader->VertexHooksAvailable())
+            return {};
+        const bool surfaceLighting = draw.SurfaceLightingUniformSize != 0;
+        const auto key = std::tuple{ draw.VertexShader->Key, draw.VertexLayout->StructuralKey, surfaceLighting };
+        if (auto found = Pipelines.find(key); found != Pipelines.end())
+            return found->second;
+        auto source = BuildPicaSurfaceLightingVertexShader(draw.VertexShader->Source, draw.VertexShader->VertexHooks,
+                                                           surfaceLighting);
+        if (source.empty())
+            return {};
         VkShaderModule vertex{}, fragment{};
         VkPipeline result{};
         try {
             vertex = Compile(source, Renderer::SpirvStage::Vertex, "native_surface_lighting.vert");
-            fragment = Compile(kPicaSurfaceLightingFragmentShader, Renderer::SpirvStage::Fragment, "native_surface_lighting.frag");
+            fragment = Compile(BuildPicaSurfaceLightingFragmentShader(surfaceLighting), Renderer::SpirvStage::Fragment,
+                               "native_surface_lighting.frag");
             std::vector<VkVertexInputBindingDescription> bindings;
             std::vector<VkVertexInputAttributeDescription> attributes;
             for (const auto& b : draw.VertexLayout->Bindings)
@@ -105,9 +112,7 @@ struct PicaSurfaceLightingPass::Impl {
             info.pMultisampleState = &samples; info.pViewportState = &viewportState;
             info.pColorBlendState = &blend; info.layout = Layout; info.renderPass = RenderPass;
             Check(vkCreateGraphicsPipelines(Device, {}, 1, &info, nullptr, &result));
-        } catch (const std::exception& e) {
-            std::fprintf(stderr, "Native surface lighting: %s\n", e.what());
-        }
+        } catch (const std::exception& e) { std::fprintf(stderr, "Native surface lighting: %s\n", e.what()); }
         if (vertex) vkDestroyShaderModule(Device, vertex, nullptr);
         if (fragment) vkDestroyShaderModule(Device, fragment, nullptr);
         Pipelines.emplace(key, result);
@@ -128,16 +133,26 @@ bool PicaSurfaceLightingPass::Initialize(VkPhysicalDevice physical, VkDevice dev
             if ((props.optimalTilingFeatures & required) == required) { p.Format = format; break; }
         }
         if (p.Format == VK_FORMAT_UNDEFINED) throw std::runtime_error("surface floating-point atlas unsupported");
-        VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
-        VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        dl.bindingCount = 1; dl.pBindings = &binding; Check(vkCreateDescriptorSetLayout(device, &dl, nullptr, &p.DescriptorLayout));
-        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, 16};
-        VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-        pl.setLayoutCount = 1; pl.pSetLayouts = &p.DescriptorLayout; pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &push;
+        const std::array<VkDescriptorSetLayoutBinding, 2> bindings{
+            { { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
+              { 16, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr } }
+        };
+        VkDescriptorSetLayoutCreateInfo dl{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        dl.bindingCount = static_cast<uint32_t>(bindings.size());
+        dl.pBindings = bindings.data();
+        Check(vkCreateDescriptorSetLayout(device, &dl, nullptr, &p.DescriptorLayout));
+        VkPushConstantRange push{ VK_SHADER_STAGE_VERTEX_BIT, 0, 16 };
+        VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        pl.setLayoutCount = 1;
+        pl.pSetLayouts = &p.DescriptorLayout;
+        pl.pushConstantRangeCount = 1;
+        pl.pPushConstantRanges = &push;
         Check(vkCreatePipelineLayout(device, &pl, nullptr, &p.Layout));
-        VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kSets * kSlots};
-        VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pool.maxSets = size.descriptorCount; pool.poolSizeCount = 1; pool.pPoolSizes = &size;
+        VkDescriptorPoolSize size{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kSets * kSlots * 2 };
+        VkDescriptorPoolCreateInfo pool{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        pool.maxSets = kSets * kSlots;
+        pool.poolSizeCount = 1;
+        pool.pPoolSizes = &size;
         Check(vkCreateDescriptorPool(device, &pool, nullptr, &p.Pool));
         VkAttachmentDescription attachment{}; attachment.format = p.Format; attachment.samples = VK_SAMPLE_COUNT_1_BIT;
         attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -227,25 +242,49 @@ bool PicaSurfaceLightingPass::Prepare(VkCommandBuffer command, uint32_t frameSlo
             }
         }
         if (!draw.VertexLayout) continue;
-        bool valid = draw.UniformBuffer.NativeHandle && draw.GeometryBuffer.NativeHandle &&
-            draw.VertexUniformSize && draw.VertexUniformOffset <= draw.UniformBuffer.Size &&
-            draw.VertexUniformSize <= draw.UniformBuffer.Size - draw.VertexUniformOffset;
+        bool valid = draw.UniformBuffer.NativeHandle && draw.GeometryBuffer.NativeHandle && draw.VertexUniformSize &&
+                     draw.VertexUniformOffset <= draw.UniformBuffer.Size &&
+                     draw.VertexUniformSize <= draw.UniformBuffer.Size - draw.VertexUniformOffset;
+        if (draw.SurfaceLightingUniformSize != 0)
+            valid &= draw.SurfaceLightingUniformSize == sizeof(PicaSurfaceLightingUniforms) &&
+                     draw.SurfaceLightingUniformOffset <= draw.UniformBuffer.Size &&
+                     draw.SurfaceLightingUniformSize <= draw.UniformBuffer.Size - draw.SurfaceLightingUniformOffset;
         const auto bindings = scene.BindingsFor(draw);
         valid &= !bindings.empty();
         for (const auto& b : bindings) {
             const auto layout = std::find_if(draw.VertexLayout->Bindings.begin(), draw.VertexLayout->Bindings.end(),
-                [&](const auto& l) { return l.Binding == b.Binding; });
-            if (layout == draw.VertexLayout->Bindings.end() || layout->ByteStride != b.Stride) { valid = false; break; }
-            const uint64_t count = layout != draw.VertexLayout->Bindings.end() && layout->PerInstance ? 1 : request.VertexCount;
-            valid &= b.Stride && b.Offset <= draw.GeometryBuffer.Size && b.Size <= draw.GeometryBuffer.Size - b.Offset && count <= b.Size / b.Stride;
+                                             [&](const auto& l) { return l.Binding == b.Binding; });
+            if (layout == draw.VertexLayout->Bindings.end() || layout->ByteStride != b.Stride) {
+                valid = false;
+                break;
+            }
+            const uint64_t count =
+                layout != draw.VertexLayout->Bindings.end() && layout->PerInstance ? 1 : request.VertexCount;
+            valid &= b.Stride && b.Offset <= draw.GeometryBuffer.Size &&
+                     b.Size <= draw.GeometryBuffer.Size - b.Offset && count <= b.Size / b.Stride;
         }
-        if (!valid) continue;
-        const auto pipeline = p.Pipeline(draw); if (!pipeline) continue;
-        VkDescriptorBufferInfo uniform{reinterpret_cast<VkBuffer>(draw.UniformBuffer.NativeHandle), draw.VertexUniformOffset, draw.VertexUniformSize};
+        if (!valid)
+            continue;
+        const auto pipeline = p.Pipeline(draw);
+        if (!pipeline)
+            continue;
+        VkDescriptorBufferInfo uniform{ reinterpret_cast<VkBuffer>(draw.UniformBuffer.NativeHandle),
+                                        draw.VertexUniformOffset, draw.VertexUniformSize };
         auto set = slot.Sets[slot.Used++];
-        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        write.dstSet = set; write.dstBinding = 0; write.descriptorCount = 1; write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        write.pBufferInfo = &uniform; vkUpdateDescriptorSets(p.Device, 1, &write, 0, nullptr);
+        VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        write.dstSet = set;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        write.pBufferInfo = &uniform;
+        vkUpdateDescriptorSets(p.Device, 1, &write, 0, nullptr);
+        if (draw.SurfaceLightingUniformSize != 0) {
+            const VkDescriptorBufferInfo surfaceUniform{ uniform.buffer, draw.SurfaceLightingUniformOffset,
+                                                         draw.SurfaceLightingUniformSize };
+            write.dstBinding = 16;
+            write.pBufferInfo = &surfaceUniform;
+            vkUpdateDescriptorSets(p.Device, 1, &write, 0, nullptr);
+        }
         vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 0, 1, &set, 0, nullptr);
         VkBuffer geometry = reinterpret_cast<VkBuffer>(draw.GeometryBuffer.NativeHandle);

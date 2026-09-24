@@ -40,11 +40,13 @@ struct PicaCompositionAttribution {
         PicaCompositionProvenance::Unknown;
     uint32_t SourcePc = 0;
     uint32_t NativeValue = 0;
+    // Title-proven native projected/blob shadow, not inferred from material.
+    bool NativeProjectedShadow = false;
 
     bool operator==(const PicaCompositionAttribution&) const = default;
 };
 
-inline constexpr uint32_t kPicaCompositionSequenceSchemaVersion = 1U;
+inline constexpr uint32_t kPicaCompositionSequenceSchemaVersion = 3U;
 
 struct PicaCompositionTargetReference {
     uint64_t RenderTargetNamespace = 0;
@@ -65,6 +67,13 @@ struct PicaCompositionDrawReference {
     PicaCompositionAttribution Composition;
 };
 
+// Native memory visibility uses canonical raster results. Presentation may
+// compose extensions and interpolate, but never writes those results to RAM.
+enum class PicaCompositionPurpose : uint8_t {
+    Presentation,
+    NativeMemory,
+};
+
 // Complete ordered metadata for one selected PICA visual sample. The title
 // frontend owns the span; a backend retaining the schedule copies only this
 // compact metadata surface.
@@ -72,6 +81,7 @@ struct PicaCompositionSequenceView {
     uint32_t SchemaVersion = kPicaCompositionSequenceSchemaVersion;
     uint64_t SequenceId = 0;
     std::span<const PicaCompositionDrawReference> Draws;
+    PicaCompositionPurpose Purpose = PicaCompositionPurpose::Presentation;
 };
 
 } // namespace Fast::Renderer3ds

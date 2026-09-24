@@ -19,8 +19,7 @@ bool IsMsaaCount(uint8_t samples) {
 }
 
 bool IsDirectionalShadowResolution(uint32_t resolution) {
-    return resolution == 512U || resolution == 1024U ||
-           resolution == 2048U || resolution == 4096U;
+    return resolution == 2048U || resolution == 4096U;
 }
 
 } // namespace
@@ -138,7 +137,7 @@ GraphicsSettings GraphicsSettingsService::Preset(GraphicsPreset preset) {
         value.AntiAliasing = AntiAliasingMode::Fxaa;
         value.FrameRate = FrameRateMode::Interpolated2x;
         value.Effects.DirectionalShadows.Mode =
-            DirectionalShadowMode::SingleCascade;
+            DirectionalShadowMode::VirtualShadowMaps;
         value.Effects.AmbientOcclusion = AmbientOcclusionMode::Cacao;
         value.Effects.AoQuality = 1;
         ApplyGrassQualityPreset(
@@ -198,6 +197,19 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
     value.TaaSharpness = std::clamp(value.TaaSharpness, 0.0F, 1.0F);
     value.UpscalerSharpness =
         std::clamp(value.UpscalerSharpness, 0.0F, 1.0F);
+    if (value.Effects.SurfaceLighting != SurfaceLightingMode::Native &&
+        !capabilities.Has(GraphicsCapability::NativeSurfaceLighting)) {
+        value.Effects.SurfaceLighting = SurfaceLightingMode::Native;
+        Correct(result.Issues, "Graphics.Effects.SurfaceLighting",
+                capabilities.Get(GraphicsCapability::NativeSurfaceLighting).Reason);
+    }
+    auto& pbr = value.Effects.Pbr;
+    pbr.NormalStrength = std::isfinite(pbr.NormalStrength)
+        ? std::clamp(pbr.NormalStrength, 0.0F, 8.0F) : 1.0F;
+    pbr.GlossinessStrength = std::isfinite(pbr.GlossinessStrength)
+        ? std::clamp(pbr.GlossinessStrength, 0.0F, 2.0F) : 1.0F;
+    if (pbr.DebugView > Renderer3ds::PicaPbrDebugView::Roughness)
+        pbr.DebugView = Renderer3ds::PicaPbrDebugView::Shaded;
     value.Effects.AoQuality = std::min<uint8_t>(value.Effects.AoQuality, 1U);
     value.Effects.AoRadius = std::clamp(value.Effects.AoRadius, 0.05F, 100.0F);
     value.Effects.AoStrength = std::clamp(value.Effects.AoStrength, 0.0F, 10.0F);
@@ -220,16 +232,12 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         std::clamp(value.Effects.AoDetailStrength, 0.0F, 10.0F);
     auto& directionalShadows = value.Effects.DirectionalShadows;
     if (!IsDirectionalShadowResolution(directionalShadows.Resolution)) {
-        directionalShadows.Resolution = 1024U;
+        directionalShadows.Resolution = 2048U;
     }
     directionalShadows.MaximumDistance =
         std::isfinite(directionalShadows.MaximumDistance)
-            ? std::clamp(directionalShadows.MaximumDistance, 50.0F, 20000.0F)
-            : 2400.0F;
-    directionalShadows.DepthPadding =
-        std::isfinite(directionalShadows.DepthPadding)
-            ? std::clamp(directionalShadows.DepthPadding, 0.0F, 5000.0F)
-            : 300.0F;
+            ? std::clamp(directionalShadows.MaximumDistance, 50.0F, 65536.0F)
+            : 65536.0F;
     directionalShadows.DepthBiasConstant =
         std::isfinite(directionalShadows.DepthBiasConstant)
             ? std::clamp(directionalShadows.DepthBiasConstant, 0.0F, 16.0F)
@@ -240,10 +248,10 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
             : 1.75F;
     directionalShadows.Strength =
         std::isfinite(directionalShadows.Strength)
-            ? std::clamp(directionalShadows.Strength, 0.0F, 1.0F)
+            ? std::clamp(directionalShadows.Strength, 0.0F, 4.0F)
             : 0.80F;
     if (directionalShadows.Mode ==
-            DirectionalShadowMode::SingleCascade &&
+            DirectionalShadowMode::VirtualShadowMaps &&
         !capabilities.Has(GraphicsCapability::NriDirectionalShadows)) {
         directionalShadows.Mode = DirectionalShadowMode::Off;
         Correct(result.Issues,

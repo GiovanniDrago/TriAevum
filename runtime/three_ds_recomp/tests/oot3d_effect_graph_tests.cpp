@@ -2050,4 +2050,309 @@ TEST(Oot3dEffectGraph, SelectsOnlyDeclaredPicaGuideSamplingBarriers) {
     EXPECT_EQ(incomplete.MissingCount, 1U);
 }
 
+[[nodiscard]] bool BoundaryReadsResource(const DisplayEffectPlan& plan,
+                                         DisplayEffectPass pass,
+                                         EffectResource resource) {
+    for (const auto& binding : plan.Bindings(pass)) {
+        if (binding.Resource == resource &&
+            ReadsEffectResource(binding.Access)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] bool BoundaryWritesResource(const DisplayEffectPlan& plan,
+                                          DisplayEffectPass pass,
+                                          EffectResource resource) {
+    for (const auto& binding : plan.Bindings(pass)) {
+        if (binding.Resource == resource &&
+            WritesEffectResource(binding.Access)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A world surface with AO, HiZ reflections and the toon outline: every
+// current scene stage applies. SMAA keeps the presentation stages free of
+// temporal metadata so the projection can be compared pass for pass.
+[[nodiscard]] DisplayEffectPlanInput BoundarySceneEffectInput() {
+    DisplayEffectPlanInput input{};
+    input.WorldSurface = true;
+    input.PerspectiveAvailable = true;
+    input.CameraAvailable = true;
+    input.SmaaAvailable = true;
+    input.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    input.Reflections = ReflectionMode::HiZ;
+    input.Toon = ToonMode::PicaMaterial;
+    input.OutlineEnabled = true;
+    input.AntiAliasing = AntiAliasingMode::Smaa1x;
+    return input;
+}
+
+[[nodiscard]] uint8_t BoundaryStageOrder(EffectStage stage) {
+    return static_cast<uint8_t>(stage);
+}
+
+// A native boundary resolves the scene at its own order, so every declared
+// scene stage is scheduled and nothing at or after the UI domain is. The
+// projection is by stage and resource reachability, not by effect name: a new
+// ordinary scene pass lands inside the boundary without a whitelist entry.
+TEST(Oot3dSceneBoundary,
+     NativeBoundarySchedulesEverySceneStageAndNoPresentation) {
+    auto input = BoundarySceneEffectInput();
+    const auto display = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(display.Graph.Valid()) << display.Graph.Error;
+
+    input.NativeSceneBoundary = true;
+    const auto boundary = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(boundary.Graph.Valid()) << boundary.Graph.Error;
+
+    uint32_t expectedScenePasses = 0U;
+    for (const auto& pass : display.Graph.Passes) {
+        if (BoundaryStageOrder(pass.Stage) <=
+            BoundaryStageOrder(EffectStage::AfterTransparent)) {
+            ++expectedScenePasses;
+        }
+    }
+    ASSERT_GT(expectedScenePasses, 0U);
+    // The boundary replaces the presentation terminal pass with its own
+    // declared consumer-facing output.
+    EXPECT_EQ(boundary.Graph.Passes.size(),
+              static_cast<size_t>(expectedScenePasses) + 1U);
+    for (const auto& pass : boundary.Graph.Passes) {
+        EXPECT_LE(BoundaryStageOrder(pass.Stage),
+                  BoundaryStageOrder(EffectStage::AfterTransparent))
+            << pass.Name;
+        for (const auto& use : pass.Resources) {
+            EXPECT_NE(use.Resource, EffectResource::PresentationOutput)
+                << pass.Name;
+        }
+    }
+
+    EXPECT_TRUE(boundary.Enabled(DisplayEffectPass::SceneComposition));
+    EXPECT_TRUE(
+        boundary.Graph.ExportsResource(EffectResource::SceneComposition));
+    EXPECT_FALSE(boundary.Enabled(DisplayEffectPass::Scanout));
+    EXPECT_FALSE(boundary.Enabled(DisplayEffectPass::Smaa));
+    EXPECT_FALSE(boundary.Enabled(DisplayEffectPass::Taa));
+    EXPECT_FALSE(boundary.Enabled(DisplayEffectPass::TemporalUpscaler));
+
+    // The scene stages themselves stay scheduled, and the boundary output is
+    // the composed colour rather than the base target.
+    EXPECT_TRUE(boundary.Enabled(DisplayEffectPass::Cacao));
+    EXPECT_TRUE(boundary.Enabled(DisplayEffectPass::Reflections));
+    EXPECT_TRUE(boundary.Enabled(DisplayEffectPass::Outline));
+    EXPECT_TRUE(boundary.Enabled(DisplayEffectPass::Composite));
+    EXPECT_EQ(boundary.SceneOutput, EffectResource::CompositeColor);
+    EXPECT_TRUE(BoundaryWritesResource(
+        boundary, DisplayEffectPass::SceneComposition,
+        EffectResource::SceneComposition));
+    EXPECT_TRUE(BoundaryReadsResource(
+        boundary, DisplayEffectPass::SceneComposition,
+        EffectResource::CompositeColor));
+
+    // Presentation keeps its own terminal pass and its own AA stage.
+    EXPECT_TRUE(display.Enabled(DisplayEffectPass::Scanout));
+    EXPECT_TRUE(display.Enabled(DisplayEffectPass::Smaa));
+    EXPECT_FALSE(display.Enabled(DisplayEffectPass::SceneComposition));
+    EXPECT_EQ(display.SceneOutput, EffectResource::CompositeColor);
+}
+
+TEST(Oot3dSceneBoundary, NativeMemoryKeepsCanonicalBytesAndVisualEffectsSeparate) {
+    auto input = BoundarySceneEffectInput();
+    input.NativeSceneBoundary = true;
+    input.ForceTaa = true;
+    input.ForceMotion = true;
+    input.Purpose = Fast::Renderer3ds::PicaCompositionPurpose::NativeMemory;
+    const auto native = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(native.Graph.Valid()) << native.Graph.Error;
+    EXPECT_EQ(native.SceneOutput, EffectResource::SceneColor);
+    EXPECT_TRUE(native.Graph.Attachments.NativeColorOnly());
+    EXPECT_FALSE(native.TemporalMetadata);
+    EXPECT_TRUE(BoundaryReadsResource(
+        native, DisplayEffectPass::SceneComposition, EffectResource::SceneColor));
+    for (const auto& pass : native.Graph.Passes) {
+        EXPECT_EQ(pass.Contract, EffectContractKind::ComposerPass);
+    }
+
+    input.Purpose = Fast::Renderer3ds::PicaCompositionPurpose::Presentation;
+    const auto visual = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(visual.Graph.Valid()) << visual.Graph.Error;
+    EXPECT_EQ(visual.SceneOutput, EffectResource::CompositeColor);
+    EXPECT_TRUE(visual.Cacao);
+    EXPECT_TRUE(visual.Reflections);
+    EXPECT_TRUE(visual.Outline);
+}
+
+// A display whose scene stages were already resolved by a declared boundary
+// runs only the presentation stages, and they read the resolved colour: the
+// scene effects are not applied a second time.
+TEST(Oot3dSceneBoundary,
+     ResolvedScenePresentationKeepsOnlyPresentationStages) {
+    auto input = BoundarySceneEffectInput();
+    const auto unresolved = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(unresolved.Graph.Valid()) << unresolved.Graph.Error;
+    ASSERT_TRUE(unresolved.Enabled(DisplayEffectPass::Cacao));
+    ASSERT_TRUE(unresolved.Enabled(DisplayEffectPass::Composite));
+
+    input.SceneEffectsResolved = true;
+    const auto resolved = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(resolved.Graph.Valid()) << resolved.Graph.Error;
+
+    EXPECT_FALSE(resolved.Enabled(DisplayEffectPass::Cacao));
+    EXPECT_FALSE(resolved.Enabled(DisplayEffectPass::Reflections));
+    EXPECT_FALSE(resolved.Enabled(DisplayEffectPass::Outline));
+    EXPECT_FALSE(resolved.Enabled(DisplayEffectPass::Composite));
+    EXPECT_FALSE(resolved.Enabled(DisplayEffectPass::WorkingColor));
+    for (const auto& pass : resolved.Graph.Passes) {
+        for (const auto& use : pass.Resources) {
+            if (!WritesEffectResource(use.Access)) {
+                continue;
+            }
+            EXPECT_NE(use.Resource, EffectResource::CompositeColor)
+                << pass.Name;
+            EXPECT_NE(use.Resource, EffectResource::AmbientOcclusion)
+                << pass.Name;
+            EXPECT_NE(use.Resource, EffectResource::ReflectionColor)
+                << pass.Name;
+        }
+    }
+
+    // Presentation stays scheduled and reads the resolved scene colour.
+    EXPECT_TRUE(resolved.Enabled(DisplayEffectPass::Smaa));
+    EXPECT_TRUE(resolved.Enabled(DisplayEffectPass::Scanout));
+    EXPECT_EQ(resolved.SceneOutput, EffectResource::SceneColor);
+    EXPECT_TRUE(BoundaryReadsResource(
+        resolved, DisplayEffectPass::Smaa, EffectResource::SceneColor));
+    EXPECT_FALSE(
+        resolved.Graph.ExportsResource(EffectResource::SceneComposition));
+}
+
+// An ordinary display with no boundary inputs keeps its canonical shape: one
+// scanout pass over the native scene colour, no boundary composition.
+TEST(Oot3dSceneBoundary, OrdinaryDisplayIsUnchanged) {
+    const auto plan = BuildDisplayEffectPlan({ .WorldSurface = true });
+    ASSERT_TRUE(plan.Graph.Valid()) << plan.Graph.Error;
+    EXPECT_EQ(plan.Graph.Order, (std::vector<std::string>{ "Scanout" }));
+    EXPECT_EQ(plan.SceneOutput, EffectResource::SceneColor);
+    EXPECT_FALSE(plan.Enabled(DisplayEffectPass::SceneComposition));
+    EXPECT_FALSE(plan.Graph.ExportsResource(EffectResource::SceneComposition));
+    EXPECT_TRUE(BoundaryReadsResource(
+        plan, DisplayEffectPass::Scanout, EffectResource::SceneColor));
+    EXPECT_TRUE(BoundaryWritesResource(
+        plan, DisplayEffectPass::Scanout,
+        EffectResource::PresentationOutput));
+
+    DisplayEffectPlanInput overlay{};
+    overlay.AlphaOverlay = true;
+    const auto overlayPlan = BuildDisplayEffectPlan(overlay);
+    ASSERT_TRUE(overlayPlan.Graph.Valid()) << overlayPlan.Graph.Error;
+    EXPECT_EQ(overlayPlan.Graph.Order,
+              (std::vector<std::string>{ "Scanout" }));
+    EXPECT_EQ(overlayPlan.SceneOutput, EffectResource::SceneColor);
+}
+
+// A pass joins a domain by declaring its stage and resources: nothing is
+// selected by name, so a new scene stage is resolved at a boundary and leaves a
+// resolved presentation without being listed anywhere.
+TEST(Oot3dSceneBoundary, ProjectsADeclaredDomainWithoutNamingPasses) {
+    EffectGraph graph;
+    graph.Add({ .Name = "Guides",
+                .Stage = EffectStage::NativeLighting,
+                .Contract = EffectContractKind::AuxiliaryOutput,
+                .Resources = { Write(EffectResource::NormalGuide) } });
+    graph.Add({ .Name = "HypotheticalSceneStage",
+                .DependsOn = { "Guides" },
+                .Stage = EffectStage::AfterTransparent,
+                .Contract = EffectContractKind::ComposerPass,
+                .Resources = { Read(EffectResource::NormalGuide),
+                               Read(EffectResource::SceneColor),
+                               Write(EffectResource::CompositeColor) } });
+    graph.Add({ .Name = "PresentationStage",
+                .DependsOn = { "HypotheticalSceneStage" },
+                .Stage = EffectStage::BeforeUi,
+                .Contract = EffectContractKind::ComposerPass,
+                .Resources = { Read(EffectResource::CompositeColor),
+                               Write(EffectResource::AntiAliasedColor) } });
+    graph.Add({ .Name = "Scanout",
+                .DependsOn = { "PresentationStage" },
+                .Stage = EffectStage::AfterUi,
+                .Contract = EffectContractKind::ComposerPass,
+                .Resources = { Read(EffectResource::AntiAliasedColor),
+                               Write(EffectResource::PresentationOutput) } });
+    const auto compiled = graph.Compile();
+    ASSERT_TRUE(compiled.Valid()) << compiled.Error;
+
+    const auto names = [](const std::vector<EffectPass>& passes) {
+        std::vector<std::string> ordered;
+        ordered.reserve(passes.size());
+        for (const auto& pass : passes) {
+            ordered.push_back(pass.Name);
+        }
+        return ordered;
+    };
+    const auto find = [](const std::vector<EffectPass>& passes,
+                         std::string_view name) -> const EffectPass* {
+        for (const auto& pass : passes) {
+            if (pass.Name == name) {
+                return &pass;
+            }
+        }
+        return nullptr;
+    };
+
+    // The scene domain keeps the unlisted scene stage and drops presentation.
+    const auto scene = ProjectDisplayEffectPasses(
+        compiled, DisplayEffectDomain::Scene, {},
+        EffectResource::SceneColor);
+    EXPECT_EQ(names(scene),
+              (std::vector<std::string>{ "Guides",
+                                         "HypotheticalSceneStage" }));
+
+    // A resolved presentation drops the unlisted scene stage because its colour
+    // output is already in the resolved colour, and reads that colour instead.
+    const std::array<EffectResource, 1> resolved{
+        EffectResource::CompositeColor};
+    const auto presentation = ProjectDisplayEffectPasses(
+        compiled, DisplayEffectDomain::Presentation, resolved,
+        EffectResource::SceneColor);
+    EXPECT_EQ(names(presentation),
+              (std::vector<std::string>{ "PresentationStage", "Scanout" }));
+    const auto* presentationStage = find(presentation, "PresentationStage");
+    ASSERT_NE(presentationStage, nullptr);
+    EXPECT_EQ(presentationStage->Resources,
+              (std::vector<EffectResourceUse>{
+                  Read(EffectResource::SceneColor),
+                  Write(EffectResource::AntiAliasedColor)}));
+
+    // Auxiliary scene data stays re-derivable: a presentation stage that needs
+    // the guide keeps the pass that produces it.
+    EffectGraph guideDependent;
+    guideDependent.Add({ .Name = "Guides",
+                         .Stage = EffectStage::NativeLighting,
+                         .Contract = EffectContractKind::AuxiliaryOutput,
+                         .Resources = { Write(EffectResource::NormalGuide) } });
+    guideDependent.Add({ .Name = "SceneColour",
+                         .Stage = EffectStage::AfterTransparent,
+                         .Contract = EffectContractKind::ComposerPass,
+                         .Resources = { Read(EffectResource::SceneColor),
+                                        Write(EffectResource::CompositeColor) } });
+    guideDependent.Add({ .Name = "PresentationStage",
+                         .DependsOn = { "SceneColour", "Guides" },
+                         .Stage = EffectStage::BeforeUi,
+                         .Contract = EffectContractKind::ComposerPass,
+                         .Resources = { Read(EffectResource::CompositeColor),
+                                        Read(EffectResource::NormalGuide),
+                                        Write(EffectResource::AntiAliasedColor) } });
+    const auto guideCompiled = guideDependent.Compile();
+    ASSERT_TRUE(guideCompiled.Valid()) << guideCompiled.Error;
+    const auto guided = ProjectDisplayEffectPasses(
+        guideCompiled, DisplayEffectDomain::Presentation, resolved,
+        EffectResource::SceneColor);
+    EXPECT_EQ(names(guided),
+              (std::vector<std::string>{ "Guides", "PresentationStage" }));
+}
+
 } // namespace

@@ -69,7 +69,7 @@ bool DrawAzaharTexturePackPanel(AzaharTexturePackSettings& settings, AzaharTextu
     auto& texturePacks = ::Oot3d::Renderer::AzaharTexturePackRuntime::Instance();
     if (ImGui::Button("Reload custom textures")) {
         texturePacks.Reload();
-        state.Status = "Custom texture index reloaded";
+        state.Status = "Custom texture and material reload requested";
     }
 
     const auto status = texturePacks.Snapshot();
@@ -80,6 +80,9 @@ bool DrawAzaharTexturePackPanel(AzaharTexturePackSettings& settings, AzaharTextu
         "Indexed: %zu  Loaded: %zu  Loading: %zu  Failed: %zu",
         status.IndexedTextures, status.LoadedTextures,
         status.PendingLoads, status.FailedLoads);
+    ImGui::Text("PBR materials: %zu indexed  %zu loaded  %zu failed",
+                status.IndexedMaterials, status.LoadedMaterials, status.FailedMaterials);
+    if (status.IndexPending) ImGui::TextDisabled("Indexing texture and material files...");
     ImGui::Text("Dumped: %zu  Pending dumps: %zu",
                 status.DumpedTextures, status.PendingDumps);
     if (status.UnsupportedTextureFiles != 0U) {

@@ -176,6 +176,7 @@ TEST_F(Oot3dAzaharTexturePackTest,
         .UserDirectory = Root,
         .LoadDirectory = loadDirectory,
     });
+    runtime.WaitForPendingLoads();
 
     const auto queued = runtime.ResolveOrQueue(request);
     EXPECT_EQ(
@@ -261,6 +262,115 @@ TEST_F(Oot3dAzaharTexturePackTest, HonorsPackJsonFilenameMappingAndFlipSemantics
             EXPECT_EQ((*replacement->Rgba8)[actual], rgba[expected]);
         }
     }
+}
+
+TEST_F(Oot3dAzaharTexturePackTest, MaterialReloadIsAtomicAndExplicitNullOverridesSuffixes) {
+    using namespace Oot3d::Renderer;
+    AzaharTexturePackRuntime runtime;
+    const auto dump = Root / "dump";
+    runtime.Configure({.DumpTextures = true, .UserDirectory = Root, .DumpDirectory = dump});
+    std::array<uint8_t, 256> native{};
+    std::array<uint8_t, 256> pixels{};
+    const auto makeImage = [&](uint8_t value) {
+        native.fill(value);
+        pixels.fill(value);
+        (void)runtime.ResolveAndMaybeDump({8, 8, 0, 0, native, pixels});
+        runtime.WaitForPendingDumps();
+        return dump / MakeAzaharTextureFilename(8, 8, AzaharCityHash64(native), 0, 0);
+    };
+    const auto normal = makeImage(127U);
+    const auto orm = makeImage(63U);
+    const auto emission = makeImage(191U);
+    native.fill(19U);
+    const auto hash = AzaharCityHash64(native);
+    std::ostringstream formatted;
+    formatted << std::uppercase << std::hex << std::setw(16) << std::setfill('0') << hash;
+    const auto name = formatted.str();
+    const auto pack = Root / "pack";
+    const auto materials = pack / "materials";
+    std::filesystem::create_directories(materials);
+    std::filesystem::copy_file(dump / "pack.json", pack / "pack.json");
+    std::filesystem::copy_file(normal, materials / (name + "_n.png"));
+    std::filesystem::copy_file(orm, materials / (name + "_orm.png"));
+    std::filesystem::copy_file(emission, materials / (name + "_e.png"));
+    runtime.Configure({.LoadCustomTextures = true, .UserDirectory = Root, .LoadDirectory = pack});
+    runtime.WaitForPendingLoads();
+    const auto generation = runtime.Generation();
+    EXPECT_EQ(runtime.ResolveOrQueue({8, 8, 0, 0, native, pixels}).State, AzaharTextureResolveState::Missing);
+    EXPECT_EQ(runtime.ResolveMaterialOrQueue(hash, generation).State, AzaharTextureResolveState::Pending);
+    runtime.WaitForPendingLoads();
+    const auto ready = runtime.ResolveMaterialOrQueue(hash, generation);
+    ASSERT_EQ(ready.State, AzaharTextureResolveState::Ready);
+    ASSERT_NE(ready.Material, nullptr);
+    for (const auto& texture : ready.Material->Textures) ASSERT_NE(texture, nullptr);
+    EXPECT_EQ((*ready.Material->Textures[0]->Rgba8)[0], 127U);
+    EXPECT_EQ((*ready.Material->Textures[1]->Rgba8)[0], 63U);
+    EXPECT_EQ((*ready.Material->Textures[2]->Rgba8)[0], 191U);
+    EXPECT_EQ(ready.Material->Identity.NativeHash, hash);
+    EXPECT_TRUE(ready.Material->Identity.UseNewHash);
+    const auto jsonPath = materials / (name + ".material.json");
+    nlohmann::json metadata{{"schema", "triaevum.pbr-material"}, {"version", 1},
+        {"orm", {{"texture", "missing.png"}}}};
+    { std::ofstream output(jsonPath); output << metadata; }
+    runtime.Reload();
+    runtime.WaitForPendingLoads();
+    const auto failed = runtime.ResolveMaterialOrQueue(hash, runtime.Generation());
+    ASSERT_NE(failed.Material, nullptr);
+    EXPECT_EQ(failed.Material->Generation, ready.Material->Generation);
+    EXPECT_EQ(runtime.Snapshot().FailedMaterials, 1U);
+    metadata["normal"] = nullptr;
+    metadata["orm"] = {{"texture", nullptr}, {"metallicFactor", 0.75F}};
+    { std::ofstream output(jsonPath); output << metadata; }
+    const auto colorPath = pack / MakeAzaharTextureFilename(8, 8, hash, 0, 0);
+    std::filesystem::copy_file(emission, colorPath);
+    runtime.Reload();
+    runtime.WaitForPendingLoads();
+    (void)runtime.ResolveMaterialOrQueue(hash, runtime.Generation());
+    runtime.WaitForPendingLoads();
+    const auto changed = runtime.ResolveMaterialOrQueue(hash, runtime.Generation());
+    ASSERT_NE(changed.Material, nullptr);
+    EXPECT_EQ(changed.Material->Textures[0], nullptr);
+    EXPECT_EQ(changed.Material->Textures[1], nullptr);
+    ASSERT_NE(changed.Material->Textures[2], nullptr);
+    ASSERT_NE(changed.Material->ColorReplacement, nullptr);
+    EXPECT_EQ((*changed.Material->ColorReplacement->Rgba8)[0], 191U);
+    EXPECT_EQ(changed.Material->Parameters.MetallicFactor, 0.75F);
+    EXPECT_GT(changed.Material->Generation, ready.Material->Generation);
+    EXPECT_EQ(runtime.ResolveMaterialOrQueue(hash, generation).State, AzaharTextureResolveState::Disabled);
+    { std::ofstream brokenColor(colorPath, std::ios::binary | std::ios::trunc); brokenColor << "invalid PNG"; }
+    runtime.Reload();
+    runtime.WaitForPendingLoads();
+    (void)runtime.ResolveMaterialOrQueue(hash, runtime.Generation());
+    runtime.WaitForPendingLoads();
+    const auto broken = runtime.ResolveMaterialOrQueue(hash, runtime.Generation());
+    ASSERT_NE(broken.Material, nullptr);
+    EXPECT_EQ(broken.Material->Generation, changed.Material->Generation);
+    EXPECT_EQ((*broken.Material->ColorReplacement->Rgba8)[0], 191U);
+    EXPECT_EQ(runtime.Snapshot().FailedMaterials, 1U);
+}
+
+TEST_F(Oot3dAzaharTexturePackTest, RejectsEscapingMaterialPathsAndNormalAlbedoCollisions) {
+    using namespace Oot3d::Renderer;
+    const auto pack = Root / "pack";
+    std::filesystem::create_directories(pack);
+    std::array<uint8_t, 256> native{};
+    const auto hash = ComputeAzaharTextureHash({8, 8, 0, 0, native, {}}, false);
+    std::ostringstream formatted;
+    formatted << std::hex << hash;
+    const auto name = formatted.str();
+    { std::ofstream image(pack / ("tex1_8x8_" + name + "_0_n.png")); image << "not albedo"; }
+    { std::ofstream outside(Root / "outside.png"); outside << "private"; }
+    {
+        std::ofstream metadata(pack / (name + ".material.json"));
+        metadata << nlohmann::json{{"schema", "triaevum.pbr-material"}, {"version", 1},
+            {"normal", {{"texture", "../outside.png"}}}};
+    }
+    AzaharTexturePackRuntime runtime;
+    runtime.Configure({.LoadCustomTextures = true, .UserDirectory = Root, .LoadDirectory = pack});
+    runtime.WaitForPendingLoads();
+    EXPECT_EQ(runtime.ResolveOrQueue({8, 8, 0, 0, native, {}}).State, AzaharTextureResolveState::Missing);
+    EXPECT_EQ(runtime.ResolveMaterialOrQueue(hash, runtime.Generation()).State, AzaharTextureResolveState::Failed);
+    EXPECT_EQ(runtime.Snapshot().LoadedMaterials, 0U);
 }
 
 } // namespace

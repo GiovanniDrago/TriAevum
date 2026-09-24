@@ -39,6 +39,7 @@ enum class GraphicsCapability : uint8_t {
     NriDlssUpscaler,
     PresentTearing,
     ExclusiveFullscreen,
+    NativeSurfaceLighting,
 };
 
 struct GraphicsCapabilityState {

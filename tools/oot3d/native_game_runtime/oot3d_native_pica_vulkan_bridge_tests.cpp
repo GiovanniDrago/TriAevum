@@ -64,6 +64,9 @@ class RecordingBackend final : public Oot3d::Renderer::PicaRenderBackend {
             draw.Textures[0].NativeBaseLevelContentHash;
         DrawTextureBaseLevelContentHashAvailable =
             draw.Textures[0].NativeBaseLevelContentHashAvailable;
+        DrawTextureCopyReferences.assign(
+            draw.Textures[0].CopyReferences.begin(),
+            draw.Textures[0].CopyReferences.end());
         return true;
     }
 
@@ -75,6 +78,8 @@ class RecordingBackend final : public Oot3d::Renderer::PicaRenderBackend {
             std::to_string(transfer.CompletionId));
         TransferCalled = true;
         Transfer = transfer;
+        if (transfer.TextureCopyBytes != 0U && transfer.MaterializeGuest)
+            ++GuestCopyCompletions;
         return true;
     }
 
@@ -118,8 +123,11 @@ class RecordingBackend final : public Oot3d::Renderer::PicaRenderBackend {
     uint64_t DrawTextureContentHash = 0;
     uint64_t DrawTextureBaseLevelContentHash = 0;
     bool DrawTextureBaseLevelContentHashAvailable = false;
+    std::vector<Fast::Renderer3ds::PicaTextureCopyReference>
+        DrawTextureCopyReferences;
     bool TransferCalled = false;
     Oot3d::Renderer::PicaDisplayTransferView Transfer;
+    uint64_t GuestCopyCompletions = 0U;
     bool ClearCalled = false;
     uint64_t ClearNamespace = 0;
     uint32_t ClearAddress = 0;
@@ -191,6 +199,10 @@ int main() {
     texture.NativeContentHashAvailable = true;
     texture.NativeBaseLevelContentHash = 103U;
     texture.NativeBaseLevelContentHashAvailable = true;
+    texture.CopyReferences = {
+        {31U, 29U, 0x18000000U, 64U},
+        {31U, 29U, 0x18000080U, 16U},
+    };
     plan.Textures.push_back(std::move(texture));
 
     std::string error;
@@ -258,6 +270,16 @@ int main() {
                 backend.DrawTextureContentHash == 101U &&
                 backend.DrawTextureBaseLevelContentHash == 103U &&
                 backend.DrawTextureBaseLevelContentHashAvailable &&
+                backend.DrawTextureCopyReferences.size() == 2U &&
+                backend.DrawTextureCopyReferences[0].CompletionId == 31U &&
+                backend.DrawTextureCopyReferences[0].AfterDrawSubmissionId ==
+                    29U &&
+                backend.DrawTextureCopyReferences[0].PhysicalAddress ==
+                    0x18000000U &&
+                backend.DrawTextureCopyReferences[0].ByteCount == 64U &&
+                backend.DrawTextureCopyReferences[1].PhysicalAddress ==
+                    0x18000080U &&
+                backend.DrawTextureCopyReferences[1].ByteCount == 16U &&
                 backend.DrawFragmentFeatures.Valid() &&
                 backend.DrawFragmentFeatures.SchemaVersion ==
                     Oot3d::Renderer::kPicaFragmentFeatureSchemaVersion &&
@@ -287,16 +309,41 @@ int main() {
     transfer.Transfer.OutputSize = 400U | (240U << 16U);
     transfer.Transfer.Flags = 1U << 24U;
     Require(Oot3dNativeGame::SubmitOot3dPicaVulkanDisplayTransfer(
-                backend, transfer, true, &error, 11,
+                backend, transfer, true, &error, 11, false,
                 Oot3d::Renderer::PicaPresentationMode::AlphaOverlay),
             error);
     Require(backend.TransferCalled && backend.Transfer.CompletionId == 23 &&
                 backend.Transfer.RenderTargetNamespace == 11 &&
                 backend.Transfer.OutputWidth == 200 &&
                 backend.Transfer.OutputHeight == 240 &&
+                !backend.Transfer.MaterializeGuest &&
                 backend.Transfer.PresentationMode ==
                     Oot3d::Renderer::PicaPresentationMode::AlphaOverlay,
             "native display transfer lost its source contract");
+
+    // Only the real ordered execution of a raw copy materializes guest memory;
+    // an interpolated or repeated replay recreates the GPU version only.
+    Oot3dNativeGame::Oot3dPicaDisplayTransferSubmission rawTransfer;
+    rawTransfer.CompletionId = 24;
+    rawTransfer.SignalInterrupt = true;
+    rawTransfer.InputPhysicalAddress = 0x18000000;
+    rawTransfer.OutputPhysicalAddress = 0x18100000;
+    rawTransfer.Transfer.OutputSize = 0x00000002U;
+    rawTransfer.Transfer.TextureCopyBytes = 32U;
+    Require(Oot3dNativeGame::SubmitOot3dPicaVulkanDisplayTransfer(
+                backend, rawTransfer, false, &error, 11, true),
+            error);
+    Require(backend.TransferCalled && backend.Transfer.MaterializeGuest &&
+                backend.Transfer.TextureCopyBytes == 32U &&
+                backend.Transfer.AfterDrawSubmissionId == 0U &&
+                backend.Transfer.OutputWidth == 2U &&
+                backend.Transfer.OutputHeight == 0U,
+            "real raw copy execution did not request guest materialization");
+    Require(Oot3dNativeGame::SubmitOot3dPicaVulkanDisplayTransfer(
+                backend, rawTransfer, false, &error, 11, false),
+            error);
+    Require(!backend.Transfer.MaterializeGuest,
+            "a replayed raw copy asked to materialize guest memory again");
 
     Oot3dNativeGame::Oot3dPicaMemoryFillSubmission fill;
     fill.StartPhysicalAddress = 0x18200000;
@@ -355,8 +402,8 @@ int main() {
             "presentation scheduler did not close a captured visual frame");
     Oot3dNativeGame::Oot3dPicaVisualFrameViewSample scheduledSample;
     scheduledSample.TopTransfer = scheduledFrame->TopTransfer;
-    scheduledSample.MemoryFills = &scheduledFrame->MemoryFills;
-    scheduledSample.DisplayTransfers = &scheduledFrame->DisplayTransfers;
+    scheduledSample.MemoryFills = scheduledFrame->MemoryFills;
+    scheduledSample.DisplayTransfers = scheduledFrame->DisplayTransfers;
     for (const auto& draw : scheduledFrame->Draws) {
         scheduledSample.Draws.push_back({.BasePlan = &draw});
     }
@@ -412,8 +459,8 @@ int main() {
     replacementFrame.Draws.resize(1U);
     Oot3dNativeGame::Oot3dPicaVisualFrameViewSample replacementSample;
     replacementSample.TopTransfer = replacementFrame.TopTransfer;
-    replacementSample.MemoryFills = &replacementFrame.MemoryFills;
-    replacementSample.DisplayTransfers = &replacementFrame.DisplayTransfers;
+    replacementSample.MemoryFills = replacementFrame.MemoryFills;
+    replacementSample.DisplayTransfers = replacementFrame.DisplayTransfers;
     replacementSample.Draws.push_back(
         {.BasePlan = &replacementFrame.Draws[0]});
     scheduler.BeginPresentation(102U);
@@ -444,11 +491,11 @@ int main() {
     copy.CompletionId = 51U;
     copy.Transfer = {0x1F2447C0U, 0x1F3E3300U, 0x3C0U, 0x4003C0U, 12U, 768000U};
     dependencyScheduler.Capture(copy);
-    auto dependency = dependencyScheduler.TakeDependencyWork();
-    Require(dependency.has_value() && dependency->Draws.empty() && dependency->DisplayTransfers.size() == 1,
-            "transfer-only GPU dependency was lost while awaiting scanout");
     Oot3dNativeGame::Oot3dPicaVisualFrameViewSample dependencySample;
-    (void)Oot3dNativeGame::ViewOot3dPicaVisualFrame(*dependency, dependencySample);
+    Require(dependencyScheduler.ViewDependencyWork(dependencySample) &&
+                dependencySample.Draws.empty() &&
+                dependencySample.DisplayTransfers.size() == 1,
+            "transfer-only GPU dependency was lost while awaiting scanout");
     dependencyScheduler.BeginPresentation(1U);
     backend.Operations.clear();
     Require(dependencyScheduler.Execute(backend, dependencySample, 7U,
@@ -458,7 +505,55 @@ int main() {
                 backend.Transfer.InputHeight == 0U && backend.Transfer.OutputWidth == 960U &&
                 backend.Transfer.OutputHeight == 64U && !backend.Transfer.Present,
             "dependency flush invented a scanout or changed raw width/gap fields");
-    Require(!dependencyScheduler.TakeDependencyWork().has_value(), "dependency executed twice");
+    Require(!dependencyScheduler.ViewDependencyWork(dependencySample),
+            "dependency executed twice");
+    // A native copy may unblock the guest in the middle of a frame. Its source
+    // must still participate in interpolation, without another guest write.
+    Oot3dNativeGame::Oot3dPicaPresentationScheduler splitScheduler;
+    RecordingBackend splitBackend;
+    splitScheduler.BeginPresentation(200U);
+    splitScheduler.Capture(firstPlan);
+    copy.AfterDrawSubmissionId = firstPlan.SubmissionId;
+    splitScheduler.Capture(copy);
+    Require(splitScheduler.ViewDependencyWork(dependencySample), "missing native prefix");
+    Require(splitScheduler.Execute(splitBackend, dependencySample, 1U,
+                Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::DependencyFlush,
+                false, &error), error);
+    Require(splitBackend.GuestCopyCompletions == 1U &&
+                !splitScheduler.HasPendingRawCopyCompletion(),
+            "native dependency did not discharge its single guest completion");
+    auto resumedSchedulerState = splitScheduler.CaptureState();
+    Require(splitScheduler.RestoreState(std::move(resumedSchedulerState)) &&
+                !splitScheduler.HasPendingRawCopyCompletion(),
+            "restoring a completed prefix manufactured another guest write");
+    splitScheduler.BeginPresentation(200U);
+    splitScheduler.Capture(secondPlan);
+    auto completedTransfer = topTransfer;
+    completedTransfer.CompletionId = 52U;
+    splitScheduler.Capture(completedTransfer);
+    auto completeFrame = splitScheduler.FinishFrame(completedTransfer);
+    Require(completeFrame && completeFrame->Draws.size() == 2U &&
+                completeFrame->Draws.front().SubmissionId == firstPlan.SubmissionId &&
+                completeFrame->Draws.back().SubmissionId == secondPlan.SubmissionId,
+            "dependency execution consumed the interpolation source");
+    Oot3dNativeGame::Oot3dPicaVisualFrameViewSample nativeRemainder;
+    Require(Oot3dNativeGame::ViewOot3dPicaVisualFrame(
+                *completeFrame, nativeRemainder, true) &&
+                nativeRemainder.Draws.size() == 1U &&
+                nativeRemainder.Draws.front().BasePlan->SubmissionId == secondPlan.SubmissionId,
+            "native continuation would redraw an already executed prefix");
+    Require(splitScheduler.Execute(splitBackend, nativeRemainder, 1U,
+                Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::NativeFrame,
+                false, &error), error);
+    Oot3dNativeGame::Oot3dPicaVisualFrameViewSample fullSample;
+    Require(Oot3dNativeGame::ViewOot3dPicaVisualFrame(*completeFrame, fullSample),
+            "complete visual sample missing");
+    Require(splitScheduler.Execute(splitBackend, fullSample, 2U,
+                Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::InterpolatedFrame,
+                true, &error), error);
+    Require(splitBackend.GuestCopyCompletions == 1U &&
+                splitScheduler.Stats().DuplicateDrawAttempts == 0U,
+            "visual replay duplicated native execution side effects");
     std::cout << "oot3d_native_pica_vulkan_bridge_tests: ok\n";
     return 0;
 }

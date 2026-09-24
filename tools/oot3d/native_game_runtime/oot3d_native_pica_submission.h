@@ -2,6 +2,8 @@
 
 #include "oot3d_native_pica_draw_state.h"
 
+#include "fast/renderer3ds/pica_native_state.h"
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -37,18 +39,34 @@ class Oot3dPicaPhysicalMemoryView {
         uint32_t guestAddress, size_t size)>;
     using WriteGeneration = std::function<std::optional<uint64_t>(
         uint32_t guestAddress, size_t size)>;
+    using MappingCheck = std::function<bool(uint32_t guestAddress, size_t size)>;
 
     Oot3dPicaPhysicalMemoryView(
         const NativeA32Memory& memory,
         std::vector<Oot3dPicaPhysicalMemoryRegion> regions);
     Oot3dPicaPhysicalMemoryView(
         std::vector<Oot3dPicaPhysicalMemoryRegion> regions,
-        ReadView readView, WriteGeneration writeGeneration = {});
+        ReadView readView, WriteGeneration writeGeneration = {},
+        MappingCheck mappingCheck = {});
 
     std::optional<uint32_t> Translate(uint32_t physicalAddress,
                                       size_t size) const;
     std::optional<uint32_t> TranslateGuest(uint32_t guestAddress,
                                            size_t size) const;
+    // Every guest alias of [physicalAddress, physicalAddress + size), in region
+    // order. PICA memory may be mapped more than once, so write observation has
+    // to cover all of them; an empty result means no guest can reach the range.
+    std::vector<uint32_t> GuestAliases(uint32_t physicalAddress,
+                                       size_t size) const;
+    // Longest mapped segment starting at guestAddress: a guest write may cross
+    // the boundary between two mapped views, and each segment still has to be
+    // attributed to its own physical range.
+    std::optional<std::pair<uint32_t, size_t>> GuestSegment(
+        uint32_t guestAddress, size_t size) const;
+    // Mirror a completed CPU write through its physical aliases before GPU
+    // ownership is invalidated. Never reads the untouched device-owned bytes.
+    bool SynchronizeGuestWrite(NativeA32Memory& memory,
+                               uint32_t guestAddress, size_t size) const;
     std::optional<std::span<const uint8_t>> View(
         uint32_t physicalAddress, size_t size) const;
     std::optional<uint64_t> RangeWriteGeneration(uint32_t physicalAddress,
@@ -66,6 +84,7 @@ class Oot3dPicaPhysicalMemoryView {
     std::vector<Oot3dPicaPhysicalMemoryRegion> mRegions;
     ReadView mReadView;
     WriteGeneration mWriteGeneration;
+    MappingCheck mMappingCheck;
 };
 
 enum class Oot3dPicaResourceKind : uint8_t {
@@ -90,6 +109,10 @@ struct Oot3dPicaResourceSnapshot {
     // Optional presentation texture extent; native decoded PICA state stays intact.
     uint16_t ReplacementWidth = 0;
     uint16_t ReplacementHeight = 0;
+    // Explicit GPU producers of this immutable snapshot. Referenced bytes are
+    // not CPU payload: their slots in ResolvedBytes are zeroed and must be
+    // replaced by the immutable GPU version. Only uncovered bytes come from RAM.
+    std::vector<Fast::Renderer3ds::PicaTextureCopyReference> CopyReferences;
 
     [[nodiscard]] std::span<const uint8_t> ResolvedBytes() const {
         return SharedBytes != nullptr
@@ -174,6 +197,8 @@ struct Oot3dPicaSubmissionRuntimeProfile {
     uint64_t GeometrySnapshotVersionMisses = 0;
     uint64_t GeometrySnapshotComparedBytes = 0;
     uint64_t GeometrySnapshotCopiedBytes = 0;
+    uint64_t TextureCopyReferences = 0;
+    uint64_t TextureCopyReferencedBytes = 0;
 };
 
 class Oot3dNativePicaSubmissionQueue final : public Oot3dPicaPacketSink {
@@ -193,6 +218,28 @@ class Oot3dNativePicaSubmissionQueue final : public Oot3dPicaPacketSink {
     void SetRuntimeProfilingEnabled(bool enabled);
     void SetTexturePayloadTransform(TexturePayloadTransform transform);
     Oot3dPicaSubmissionRuntimeProfile RuntimeProfile() const noexcept;
+
+    // Guest-write observation for raw copy destinations. `registrar` traps
+    // future writes into [guestAddress, guestAddress + byteCount) and returns
+    // false when an escaped mutable pointer makes that range unobservable.
+    // Without a registrar a raw copy cannot be assigned to the GPU: the queue
+    // reports the failure instead of assuming ownership.
+    using GuestWriteRegistrar =
+        std::function<bool(uint32_t guestAddress, size_t byteCount)>;
+    void BindGuestWriteObservation(GuestWriteRegistrar registrar);
+    [[nodiscard]] bool HasGuestWriteObservation() const noexcept;
+    // Entry point for the process memory's write observer. A guest write into a
+    // producer's owned subrange removes exactly the bytes it covers, including a
+    // same-value write, so a later snapshot never samples stale GPU bytes. Must
+    // not be reached from the renderer's own materialization: that scope is
+    // suppressed by the memory object.
+    void NotifyGuestWrite(uint32_t guestAddress, size_t byteCount);
+    // Appends the producers that still own copy destination bytes right now:
+    // the versions a future snapshot can reference. The caller combines them
+    // with the references of retained plans to pin the versions the backend
+    // must keep alive; a superseded or CPU-overwritten producer is absent.
+    void CollectLiveCopyReferences(
+        std::vector<Fast::Renderer3ds::PicaTextureCopyReference>& out) const;
 
     bool SubmitHardwareRegisterWrite(
         const Oot3dPicaHardwareRegisterWrite& write,
@@ -282,6 +329,40 @@ class Oot3dNativePicaSubmissionQueue final : public Oot3dPicaPacketSink {
         uint64_t BaseLevelContentHash = 0;
     };
 
+    // Ordered raw-copy producer: the physical destination subranges it still
+    // owns, in registration order. A newer copy truncates an older producer's
+    // overlapping subranges and a guest write truncates the bytes it covers, so
+    // the newest registration is always the owner of every byte it holds.
+    struct RawCopySpan {
+        uint32_t Address = 0;
+        uint32_t ByteCount = 0;
+    };
+
+    struct RawCopyProducer {
+        uint64_t CompletionId = 0;
+        uint64_t AfterDrawSubmissionId = 0;
+        std::vector<RawCopySpan> Owned;
+
+        bool operator==(const RawCopyProducer&) const = default;
+    };
+
+    // Removes [address, address + byteCount) from every span, keeping the parts
+    // a write or a newer copy did not touch.
+    static void SubtractOwnedSpan(std::vector<RawCopySpan>& spans,
+                                  uint32_t address, size_t byteCount);
+    // Traps future guest writes for one destination span. False means the range
+    // cannot be observed, so nothing may claim GPU ownership of its bytes.
+    bool ObserveRawCopySpan(uint32_t address, uint32_t byteCount);
+    bool RegisterRawCopyProducer(uint64_t completionId,
+                                 uint64_t afterDrawSubmissionId,
+                                 std::span<const RawCopySpan> destinations,
+                                 std::string* error);
+    void InvalidateRawCopyOwnership(uint32_t physicalAddress,
+                                    size_t byteCount);
+    void CollectCopyReferences(
+        uint64_t drawSubmissionId, uint32_t physicalAddress, size_t byteCount,
+        std::vector<Fast::Renderer3ds::PicaTextureCopyReference>& out) const;
+
     bool CaptureIndexAndVertexResources(Oot3dPicaDrawSubmission &submission,
                                         std::string *error);
     bool CaptureGeometryResource(Oot3dPicaResourceKind kind, uint8_t slot,
@@ -303,6 +384,8 @@ class Oot3dNativePicaSubmissionQueue final : public Oot3dPicaPacketSink {
     std::unordered_set<uint32_t> mInvalidatedColorRenderTargets;
     std::vector<Oot3dPicaDisplayTransferSubmission>
         mRestoredDisplayTransfersAwaitingTarget;
+    std::vector<RawCopyProducer> mRawCopyProducers;
+    GuestWriteRegistrar mGuestWriteRegistrar;
     bool mDeferGpuBackedDisplayTransfers = false;
     bool mRuntimeProfilingEnabled = false;
     TexturePayloadTransform mTexturePayloadTransform;

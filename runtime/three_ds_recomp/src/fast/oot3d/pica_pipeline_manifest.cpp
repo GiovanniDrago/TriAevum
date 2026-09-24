@@ -16,7 +16,7 @@ namespace {
 constexpr size_t kMaximumPipelineCount = 65536U;
 constexpr size_t kMaximumVertexBindings = 16U;
 constexpr size_t kMaximumVertexAttributes = 16U;
-constexpr uint32_t kAllInstrumentationFeatures = 0x7ffU;
+constexpr uint32_t kAllInstrumentationFeatures = 0x1fffU;
 
 void SetError(std::string* error, std::string message) {
     if (error != nullptr) {

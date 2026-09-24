@@ -1,5 +1,6 @@
 #include "oot3d/renderer/azahar_texture_pack.h"
 #include "fast/renderer/content_hash.h"
+#include "azahar_pbr_materials.h"
 
 #include <nlohmann/json.hpp>
 #include <stb_image.h>
@@ -369,20 +370,10 @@ struct IndexedTexture {
     bool FlipPngFiles = true;
 };
 
-std::optional<uint64_t> ParseFilenameHash(const std::filesystem::path& path) {
-    const std::string stem = path.stem().string();
-    unsigned int width = 0;
-    unsigned int height = 0;
-    unsigned int format = 0;
-    unsigned long long hash = 0;
-    if (std::sscanf(stem.c_str(), "tex1_%ux%u_%llX_%u", &width, &height, &hash, &format) != 4) {
-        return std::nullopt;
-    }
-    return static_cast<uint64_t>(hash);
-}
 
 std::unordered_map<uint64_t, IndexedTexture> IndexTexturePack(const std::filesystem::path& loadDirectory,
                                                               const PackState& pack, size_t& unsupportedFiles,
+                                                              std::unordered_map<uint64_t, IndexedAzaharPbrMaterial>& materials,
                                                               std::string* error) {
     std::unordered_map<uint64_t, IndexedTexture> index;
     unsupportedFiles = 0U;
@@ -407,13 +398,13 @@ std::unordered_map<uint64_t, IndexedTexture> IndexTexturePack(const std::filesys
         *error = "unable to scan Azahar texture pack: " + scanError.message();
     }
     std::sort(files.begin(), files.end());
+    materials = IndexAzaharPbrMaterials(loadDirectory, files, pack.MappedHashes);
     for (const auto& path : files) {
         const std::string extension = Lowercase(path.extension().string());
         if (extension != ".png" && extension != ".dds" && extension != ".ktx") {
             continue;
         }
-        const std::filesystem::path materialStem = path.stem();
-        if (Lowercase(materialStem.extension().string()) == ".norm") {
+        if (IsAzaharPbrSidecar(path)) {
             continue;
         }
 
@@ -422,7 +413,7 @@ std::unordered_map<uint64_t, IndexedTexture> IndexTexturePack(const std::filesys
         if (const auto mapped = pack.MappedHashes.find(filename); mapped != pack.MappedHashes.end()) {
             hashes = mapped->second;
         }
-        if (const auto parsed = ParseFilenameHash(path);
+        if (const auto parsed = ParseAzaharTextureFilenameHash(path);
             parsed.has_value() && std::find(hashes.begin(), hashes.end(), *parsed) == hashes.end()) {
             hashes.push_back(*parsed);
         }
@@ -440,7 +431,8 @@ std::unordered_map<uint64_t, IndexedTexture> IndexTexturePack(const std::filesys
     return index;
 }
 
-std::shared_ptr<const AzaharTextureReplacement> DecodeReplacement(const IndexedTexture& indexed, uint64_t hash) {
+std::shared_ptr<const AzaharTextureReplacement> DecodeReplacement(
+    const IndexedTexture& indexed, uint64_t hash, uint64_t generation) {
     const auto input = ReadBinaryFile(indexed.Path);
     int width = 0;
     int height = 0;
@@ -474,6 +466,8 @@ std::shared_ptr<const AzaharTextureReplacement> DecodeReplacement(const IndexedT
     replacement->Width = static_cast<uint32_t>(width);
     replacement->Height = static_cast<uint32_t>(height);
     replacement->NativeHash = hash;
+    replacement->PixelContentHash = AzaharCityHash64(*pixels);
+    replacement->Generation = generation;
     replacement->Rgba8 = std::move(pixels);
     replacement->SourcePath = indexed.Path;
     return replacement;
@@ -491,6 +485,8 @@ struct LoadJob {
     uint64_t Hash = 0;
     uint64_t Generation = 0;
     IndexedTexture Texture;
+    std::optional<IndexedAzaharPbrMaterial> Material;
+    AzaharMaterialIdentity Identity;
 };
 
 } // namespace
@@ -528,301 +524,144 @@ std::string MakeAzaharTextureFilename(uint16_t width, uint16_t height, uint64_t 
 
 class AzaharTexturePackRuntime::Impl {
   public:
-    Impl() {
-        // Constructor-body startup guarantees every queue and stop flag exists
-        // before WorkerMain can inspect them.
-        mWorker = std::thread([this] { WorkerMain(); });
-    }
-
+    Impl() { mWorker = std::thread([this] { WorkerMain(); }); }
     ~Impl() {
         {
             std::scoped_lock lock(mMutex);
             mStopping = true;
         }
         mWorkAvailable.notify_all();
-        if (mWorker.joinable()) {
-            mWorker.join();
-        }
+        mWorker.join();
     }
 
     void Configure(AzaharTexturePackConfiguration configuration) {
         configuration = NormalizeConfiguration(std::move(configuration));
         std::scoped_lock lock(mMutex);
-        if (mConfigured && configuration == mConfiguration) {
-            return;
-        }
+        if (mConfigured && configuration == mConfiguration) return;
         mConfiguration = std::move(configuration);
-        if (mConfigured) {
-            ++mGeneration;
-        } else {
-            mGeneration = 1U;
-            mConfigured = true;
-        }
-        try {
-            RebuildLocked();
-        } catch (const std::exception& exception) {
-            mIndex.clear();
-            mReplacementCache.clear();
-            mLastError = exception.what();
-        }
+        mConfigured = true;
+        ++mGeneration;
+        mIndexReady = false;
+        mIndex.clear();
+        mMaterialIndex.clear();
+        mReplacementCache.clear();
+        mMaterialCache.clear();
+        mFailedLoadHashes.clear();
+        mFailedMaterialHashes.clear();
+        mDumpedHashes.clear();
+        const auto title = Hex16(mConfiguration.TitleId);
+        mLoadDirectory = mConfiguration.LoadDirectory.empty()
+            ? mConfiguration.UserDirectory / "load" / "textures" / title : mConfiguration.LoadDirectory;
+        mDumpDirectory = mConfiguration.DumpDirectory.empty()
+            ? mConfiguration.UserDirectory / "dump" / "textures" / title : mConfiguration.DumpDirectory;
+        RequestRebuildLocked();
     }
 
     void Reload() {
         std::scoped_lock lock(mMutex);
-        if (!mConfigured) {
-            return;
-        }
-        ++mGeneration;
-        try {
-            RebuildLocked();
-        } catch (const std::exception& exception) {
-            mIndex.clear();
-            mReplacementCache.clear();
-            mLastError = exception.what();
-        }
+        if (mConfigured) RequestRebuildLocked();
     }
 
     std::shared_ptr<const AzaharTextureReplacement> ResolveAndMaybeDump(const AzaharTextureRequest& request) {
-        bool dumpEnabled = false;
-        bool loadEnabled = false;
-        bool dumpUsesNewHash = true;
-        bool loadUsesNewHash = true;
-        uint64_t generation = 0;
+        WaitForPendingLoads();
+        const auto result = ResolveOrQueue(request);
+        WaitForPendingLoads();
+        return PollQueued(result.NativeHash).Replacement;
+    }
+
+    AzaharTextureResolveResult ResolveOrQueue(const AzaharTextureRequest& request) {
+        bool dumpEnabled, loadEnabled, dumpUsesNewHash, loadUsesNewHash;
+        uint64_t generation;
         std::filesystem::path dumpDirectory;
         {
             std::scoped_lock lock(mMutex);
-            if (!mConfigured) {
-                return nullptr;
-            }
+            if (!mConfigured || (!mConfiguration.DumpTextures && !mConfiguration.LoadCustomTextures)) return {};
+            if (!mIndexReady) return {AzaharTextureResolveState::Pending, 0U, nullptr};
             dumpEnabled = mConfiguration.DumpTextures;
             loadEnabled = mConfiguration.LoadCustomTextures;
             dumpUsesNewHash = mDumpUsesNewHash;
             loadUsesNewHash = mPack.UseNewHash;
             generation = mGeneration;
-            dumpDirectory = mDumpDirectory;
+            if (dumpEnabled) dumpDirectory = mDumpDirectory;
         }
-        if (!dumpEnabled && !loadEnabled) {
-            return nullptr;
-        }
-
-        std::string hashError;
-        std::optional<uint64_t> modernHash;
-        std::optional<uint64_t> legacyHash;
-        const auto resolveHash = [&](bool useNewHash) {
-            std::optional<uint64_t>& cached = useNewHash ? modernHash : legacyHash;
-            if (!cached.has_value()) {
-                const uint64_t computed = ComputeAzaharTextureHash(request, useNewHash, &hashError);
-                if (!hashError.empty()) {
-                    return std::optional<uint64_t>{};
-                }
-                cached = computed;
-            }
-            return cached;
+        std::string error;
+        std::optional<uint64_t> modern, legacy;
+        const auto hashFor = [&](bool modernMode) {
+            auto& value = modernMode ? modern : legacy;
+            if (!value) value = ComputeAzaharTextureHash(request, modernMode, &error);
+            return *value;
         };
-
         if (dumpEnabled) {
-            const auto dumpHash = resolveHash(dumpUsesNewHash);
-            if (dumpHash.has_value()) {
-                try {
-                    QueueDump(request, *dumpHash, generation, dumpDirectory);
-                } catch (const std::exception& exception) { SetError(exception.what()); }
-            }
+            const auto hash = hashFor(dumpUsesNewHash);
+            if (error.empty()) QueueDump(request, hash, generation, dumpDirectory);
         }
-        if (!loadEnabled) {
-            if (!hashError.empty()) {
-                SetError(hashError);
-            }
-            return nullptr;
+        if (!error.empty()) {
+            SetError(std::move(error));
+            return {AzaharTextureResolveState::Failed, 0U, nullptr};
         }
-
-        const auto loadHash = resolveHash(loadUsesNewHash);
-        if (!loadHash.has_value()) {
-            if (!hashError.empty()) {
-                SetError(hashError);
-            }
-            return nullptr;
+        if (!loadEnabled) return {};
+        const auto hash = hashFor(loadUsesNewHash);
+        if (!error.empty()) {
+            SetError(std::move(error));
+            return {AzaharTextureResolveState::Failed, 0U, nullptr};
         }
-
-        IndexedTexture indexed;
-        {
-            std::scoped_lock lock(mMutex);
-            if (generation != mGeneration) {
-                return nullptr;
-            }
-            if (const auto cached = mReplacementCache.find(*loadHash); cached != mReplacementCache.end()) {
-                return cached->second;
-            }
-            const auto found = mIndex.find(*loadHash);
-            if (found == mIndex.end()) {
-                return nullptr;
-            }
-            indexed = found->second;
+        std::scoped_lock lock(mMutex);
+        if (generation != mGeneration || !mConfiguration.LoadCustomTextures) return {};
+        const auto indexed = mIndex.find(hash);
+        if (indexed == mIndex.end()) return {AzaharTextureResolveState::Missing, hash, nullptr};
+        const auto cached = mReplacementCache.find(hash);
+        if ((cached == mReplacementCache.end() || cached->second->Generation != mGeneration) &&
+            !mFailedLoadHashes.contains(hash) && !mPendingLoadGenerations.contains(hash)) {
+            mPendingLoadGenerations.emplace(hash, mGeneration);
+            LoadJob job;
+            job.Hash = hash;
+            job.Generation = mGeneration;
+            job.Texture = indexed->second;
+            mLoadJobs.push_back(std::move(job));
+            ++mPendingLoads;
+            mWorkAvailable.notify_one();
         }
-
-        try {
-            const auto replacement = DecodeReplacement(indexed, *loadHash);
-            std::scoped_lock lock(mMutex);
-            if (generation != mGeneration || !mConfiguration.LoadCustomTextures) {
-                return nullptr;
-            }
-            const auto [entry, inserted] = mReplacementCache.try_emplace(*loadHash, replacement);
-            return entry->second;
-        } catch (const std::exception& exception) {
-            SetError(exception.what());
-            return nullptr;
-        }
+        return PollLocked(hash);
     }
 
-    AzaharTextureResolveResult ResolveOrQueue(
-        const AzaharTextureRequest& request) {
-        bool dumpEnabled = false;
-        bool loadEnabled = false;
-        bool dumpUsesNewHash = true;
-        bool loadUsesNewHash = true;
-        uint64_t generation = 0;
-        std::filesystem::path dumpDirectory;
-        {
-            std::scoped_lock lock(mMutex);
-            if (!mConfigured) {
-                return {};
-            }
-            dumpEnabled = mConfiguration.DumpTextures;
-            loadEnabled = mConfiguration.LoadCustomTextures;
-            dumpUsesNewHash = mDumpUsesNewHash;
-            loadUsesNewHash = mPack.UseNewHash;
-            generation = mGeneration;
-            dumpDirectory = mDumpDirectory;
-        }
-        if (!dumpEnabled && !loadEnabled) {
-            return {};
-        }
-
-        std::string hashError;
-        std::optional<uint64_t> modernHash;
-        std::optional<uint64_t> legacyHash;
-        const auto resolveHash = [&](bool useNewHash) {
-            std::optional<uint64_t>& cached =
-                useNewHash ? modernHash : legacyHash;
-            if (!cached.has_value()) {
-                const uint64_t computed =
-                    ComputeAzaharTextureHash(
-                        request, useNewHash, &hashError);
-                if (!hashError.empty()) {
-                    return std::optional<uint64_t>{};
-                }
-                cached = computed;
-            }
-            return cached;
-        };
-
-        if (dumpEnabled) {
-            const auto dumpHash = resolveHash(dumpUsesNewHash);
-            if (dumpHash.has_value()) {
-                try {
-                    QueueDump(
-                        request, *dumpHash, generation,
-                        dumpDirectory);
-                } catch (const std::exception& exception) {
-                    SetError(exception.what());
-                }
-            }
-        }
-        if (!loadEnabled) {
-            if (!hashError.empty()) {
-                SetError(hashError);
-                return {
-                    AzaharTextureResolveState::Failed, 0U, nullptr};
-            }
-            return {};
-        }
-
-        const auto loadHash = resolveHash(loadUsesNewHash);
-        if (!loadHash.has_value()) {
-            if (!hashError.empty()) {
-                SetError(hashError);
-            }
-            return {
-                AzaharTextureResolveState::Failed, 0U, nullptr};
-        }
-
+    AzaharTextureResolveResult PollQueued(uint64_t hash) const {
         std::scoped_lock lock(mMutex);
-        if (generation != mGeneration ||
-            !mConfiguration.LoadCustomTextures) {
-            return {
-                AzaharTextureResolveState::Disabled,
-                *loadHash, nullptr};
-        }
-        if (const auto cached = mReplacementCache.find(*loadHash);
-            cached != mReplacementCache.end()) {
-            return {
-                AzaharTextureResolveState::Ready,
-                *loadHash, cached->second};
-        }
-        const auto indexed = mIndex.find(*loadHash);
-        if (indexed == mIndex.end()) {
-            return {
-                AzaharTextureResolveState::Missing,
-                *loadHash, nullptr};
-        }
-        if (mFailedLoadHashes.contains(*loadHash)) {
-            return {
-                AzaharTextureResolveState::Failed,
-                *loadHash, nullptr};
-        }
-        if (const auto pending =
-                mPendingLoadGenerations.find(*loadHash);
-            pending != mPendingLoadGenerations.end() &&
-            pending->second == generation) {
-            return {
-                AzaharTextureResolveState::Pending,
-                *loadHash, nullptr};
-        }
-
-        mPendingLoadGenerations.insert_or_assign(
-            *loadHash, generation);
-        mLoadJobs.push_back({
-            *loadHash, generation, indexed->second});
-        ++mPendingLoads;
-        mWorkAvailable.notify_one();
-        return {
-            AzaharTextureResolveState::Pending,
-            *loadHash, nullptr};
+        return PollLocked(hash);
     }
 
-    AzaharTextureResolveResult PollQueued(
-        uint64_t nativeHash) const {
+    AzaharMaterialResolveResult ResolveMaterialOrQueue(uint64_t hash, uint64_t expectedGeneration) {
         std::scoped_lock lock(mMutex);
-        if (!mConfigured ||
-            !mConfiguration.LoadCustomTextures) {
-            return {
-                AzaharTextureResolveState::Disabled,
-                nativeHash, nullptr};
+        if (!mConfiguration.LoadCustomTextures || expectedGeneration != mGeneration) return {};
+        if (!mIndexReady) return {AzaharTextureResolveState::Pending, nullptr};
+        const auto indexed = mMaterialIndex.find(hash);
+        if (indexed == mMaterialIndex.end()) return {AzaharTextureResolveState::Missing, nullptr};
+        const auto cached = mMaterialCache.find(hash);
+        if (!indexed->second.Error.empty()) {
+            mFailedMaterialHashes.insert(hash);
+        } else if ((cached == mMaterialCache.end() || cached->second->Generation != mGeneration) &&
+                   !mFailedMaterialHashes.contains(hash) && !mPendingMaterialGenerations.contains(hash)) {
+            LoadJob job;
+            job.Hash = hash;
+            job.Generation = mGeneration;
+            job.Texture.FlipPngFiles = mPack.FlipPngFiles;
+            job.Material = indexed->second;
+            job.Identity = {mConfiguration.TitleId, hash, mPack.UseNewHash};
+            if (const auto color = mIndex.find(hash); color != mIndex.end())
+                job.Texture = color->second;
+            mPendingMaterialGenerations.emplace(hash, mGeneration);
+            mLoadJobs.push_back(std::move(job));
+            ++mPendingLoads;
+            mWorkAvailable.notify_one();
         }
-        if (const auto cached =
-                mReplacementCache.find(nativeHash);
-            cached != mReplacementCache.end()) {
-            return {
-                AzaharTextureResolveState::Ready,
-                nativeHash, cached->second};
-        }
-        if (mFailedLoadHashes.contains(nativeHash)) {
-            return {
-                AzaharTextureResolveState::Failed,
-                nativeHash, nullptr};
-        }
-        if (const auto pending =
-                mPendingLoadGenerations.find(nativeHash);
-            pending != mPendingLoadGenerations.end() &&
-            pending->second == mGeneration) {
-            return {
-                AzaharTextureResolveState::Pending,
-                nativeHash, nullptr};
-        }
-        return {
-            mIndex.contains(nativeHash)
-                ? AzaharTextureResolveState::Failed
-                : AzaharTextureResolveState::Missing,
-            nativeHash, nullptr};
+        if (cached != mMaterialCache.end()) return {AzaharTextureResolveState::Ready, cached->second};
+        return {mFailedMaterialHashes.contains(hash) ? AzaharTextureResolveState::Failed : AzaharTextureResolveState::Pending, nullptr};
+    }
+
+    void ReportMaterialUploadFailure(uint64_t hash, uint64_t generation, std::string error) {
+        std::scoped_lock lock(mMutex);
+        if (generation != mGeneration) return;
+        mFailedMaterialHashes.insert(hash);
+        mLastError = std::move(error);
     }
 
     AzaharTexturePackStatus Snapshot() const {
@@ -840,222 +679,247 @@ class AzaharTexturePackRuntime::Impl {
         status.PendingLoads = mPendingLoads;
         status.FailedLoads = mFailedLoadHashes.size();
         status.UnsupportedTextureFiles = mUnsupportedFiles;
+        status.IndexPending = mRebuildRequested || mBuilding;
+        status.IndexedMaterials = mMaterialIndex.size();
+        status.LoadedMaterials = mMaterialCache.size();
+        status.FailedMaterials = mFailedMaterialHashes.size();
         status.LoadDirectory = mLoadDirectory;
         status.DumpDirectory = mDumpDirectory;
         status.LastError = mLastError;
         return status;
     }
-
     uint64_t Generation() const {
         std::scoped_lock lock(mMutex);
         return mGeneration;
     }
-
     void WaitForPendingDumps() {
         std::unique_lock lock(mMutex);
-        mIdle.wait(lock, [&] { return mPendingDumps == 0U; });
+        mIdle.wait(lock, [&] { return !mBuilding && !mRebuildRequested && mPendingDumps == 0U; });
     }
-
     void WaitForPendingLoads() {
         std::unique_lock lock(mMutex);
-        mIdle.wait(lock, [&] { return mPendingLoads == 0U; });
+        mIdle.wait(lock, [&] { return !mBuilding && !mRebuildRequested && mPendingLoads == 0U; });
     }
 
   private:
-    void RebuildLocked() {
-        mIndex.clear();
-        mReplacementCache.clear();
-        mFailedLoadHashes.clear();
-        mPendingLoadGenerations.clear();
-        mDumpedHashes.clear();
-        mLastError.clear();
-        mUnsupportedFiles = 0U;
-        const std::string title = Hex16(mConfiguration.TitleId);
-        mLoadDirectory = mConfiguration.LoadDirectory.empty()
-                             ? mConfiguration.UserDirectory / "load" / "textures" / title
-                             : mConfiguration.LoadDirectory;
-        mDumpDirectory = mConfiguration.DumpDirectory.empty()
-                             ? mConfiguration.UserDirectory / "dump" / "textures" / title
-                             : mConfiguration.DumpDirectory;
-        mPack = ReadPackState(mLoadDirectory / "pack.json", &mLastError);
-        std::string dumpPackError;
-        const auto dumpPack = ReadPackState(mDumpDirectory / "pack.json", &dumpPackError);
-        mDumpUsesNewHash = dumpPack.ConfigurationFound ? dumpPack.UseNewHash : true;
-        if (mLastError.empty() && !dumpPackError.empty()) {
-            mLastError = std::move(dumpPackError);
+    AzaharTextureResolveResult PollLocked(uint64_t hash) const {
+        if (!mConfigured || !mConfiguration.LoadCustomTextures) return {};
+        if (const auto cached = mReplacementCache.find(hash); cached != mReplacementCache.end())
+            return {AzaharTextureResolveState::Ready, hash, cached->second};
+        if (mFailedLoadHashes.contains(hash)) return {AzaharTextureResolveState::Failed, hash, nullptr};
+        if (!mIndexReady || mPendingLoadGenerations.contains(hash)) return {AzaharTextureResolveState::Pending, hash, nullptr};
+        return {AzaharTextureResolveState::Missing, hash, nullptr};
+    }
+    void RequestRebuildLocked() {
+        ++mRebuildSerial;
+        mRebuildRequested = true;
+        mWorkAvailable.notify_one();
+    }
+    void Rebuild(const AzaharTexturePackConfiguration& configuration, uint64_t serial,
+                 const std::filesystem::path& loadDirectory, const std::filesystem::path& dumpDirectory) {
+        PackState pack;
+        bool dumpModern = true;
+        size_t unsupported = 0;
+        std::string error;
+        std::unordered_map<uint64_t, IndexedTexture> index;
+        std::unordered_map<uint64_t, IndexedAzaharPbrMaterial> materials;
+        try {
+            pack = ReadPackState(loadDirectory / "pack.json", &error);
+            if (!error.empty()) throw std::runtime_error(error);
+            if (configuration.LoadCustomTextures)
+                index = IndexTexturePack(loadDirectory, pack, unsupported, materials, &error);
+            if (!error.empty()) throw std::runtime_error(error);
+            if (configuration.DumpTextures) {
+                const auto dumpPack = ReadPackState(dumpDirectory / "pack.json", &error);
+                if (!error.empty()) throw std::runtime_error(error);
+                dumpModern = dumpPack.ConfigurationFound ? dumpPack.UseNewHash : true;
+                EnsureDumpPack(dumpDirectory, dumpModern);
+            }
+        } catch (const std::exception& exception) { error = exception.what(); }
+        std::scoped_lock lock(mMutex);
+        mBuilding = false;
+        if (serial == mRebuildSerial) {
+            mLastError = error;
+            if (error.empty() || !mIndexReady) {
+                if (!error.empty()) { index.clear(); materials.clear(); }
+                if (mIndexReady && pack.UseNewHash != mPack.UseNewHash) {
+                    mReplacementCache.clear();
+                    mMaterialCache.clear();
+                }
+                mPack = std::move(pack);
+                mIndex = std::move(index);
+                mMaterialIndex = std::move(materials);
+                mDumpUsesNewHash = dumpModern;
+                mUnsupportedFiles = unsupported;
+                mIndexReady = true;
+                ++mGeneration;
+                mFailedLoadHashes.clear();
+                mFailedMaterialHashes.clear();
+                mPendingLoadGenerations.clear();
+                mPendingMaterialGenerations.clear();
+                std::erase_if(mReplacementCache, [&](const auto& entry) { return !mIndex.contains(entry.first); });
+                std::erase_if(mMaterialCache, [&](const auto& entry) { return !mMaterialIndex.contains(entry.first); });
+                uint64_t firstError = std::numeric_limits<uint64_t>::max();
+                for (const auto& [hash, material] : mMaterialIndex) {
+                    if (material.Error.empty()) continue;
+                    mFailedMaterialHashes.insert(hash);
+                    if (hash <= firstError) {
+                        firstError = hash;
+                        mLastError = "PBR material " + Hex16(hash) + ": " + material.Error;
+                    }
+                }
+            }
         }
-
-        if (mConfiguration.LoadCustomTextures) {
-            mIndex = IndexTexturePack(mLoadDirectory, mPack, mUnsupportedFiles, &mLastError);
-        }
-        if (mConfiguration.DumpTextures) {
-            try {
-                EnsureDumpPack(mDumpDirectory, mDumpUsesNewHash);
-            } catch (const std::exception& exception) { mLastError = exception.what(); }
-        }
+        mIdle.notify_all();
     }
 
     void QueueDump(const AzaharTextureRequest& request, uint64_t hash, uint64_t generation,
-                   const std::filesystem::path& dumpDirectory) {
-        if (!IsPowerOfTwo(request.Width) || !IsPowerOfTwo(request.Height)) {
-            return;
-        }
-        const size_t expected = static_cast<size_t>(request.Width) * request.Height * 4U;
-        if (request.NativeRgba8.size() != expected) {
+                   const std::filesystem::path& directory) {
+        if (!IsPowerOfTwo(request.Width) || !IsPowerOfTwo(request.Height)) return;
+        if (request.NativeRgba8.size() != static_cast<size_t>(request.Width) * request.Height * 4U) {
             SetError("Azahar texture dump requires decoded RGBA8 bytes");
             return;
         }
-        const auto destination = dumpDirectory / MakeAzaharTextureFilename(request.Width, request.Height, hash,
-                                                                           request.NativeFormat, request.MipLevel);
-
         std::scoped_lock lock(mMutex);
-        if (generation != mGeneration || !mConfiguration.DumpTextures || mDumpedHashes.contains(hash)) {
-            return;
-        }
-        mDumpedHashes.insert(hash);
-        std::error_code existsError;
-        if (std::filesystem::exists(destination, existsError)) {
-            return;
-        }
-        if (existsError) {
-            mDumpedHashes.erase(hash);
-            mLastError = "unable to inspect texture dump path: " + existsError.message();
-            return;
-        }
+        if (generation != mGeneration || !mConfiguration.DumpTextures || !mDumpedHashes.insert(hash).second) return;
         DumpJob job;
         job.Hash = hash;
         job.Width = request.Width;
         job.Height = request.Height;
-        job.Destination = destination;
+        job.Destination = directory / MakeAzaharTextureFilename(request.Width, request.Height, hash, request.NativeFormat, request.MipLevel);
         job.Rgba8.assign(request.NativeRgba8.begin(), request.NativeRgba8.end());
         mDumpJobs.push_back(std::move(job));
         ++mPendingDumps;
         mWorkAvailable.notify_one();
     }
-
     void SetError(std::string error) {
         std::scoped_lock lock(mMutex);
         mLastError = std::move(error);
     }
-
+    void Load(const LoadJob& job) {
+        std::shared_ptr<const AzaharTextureReplacement> replacement;
+        std::shared_ptr<const AzaharPbrMaterial> material;
+        std::string failure;
+        try {
+            if (job.Material) {
+                auto decoded = std::make_shared<AzaharPbrMaterial>();
+                decoded->Identity = job.Identity;
+                decoded->Generation = job.Generation;
+                decoded->Parameters = job.Material->Parameters;
+                if (!job.Texture.Path.empty()) {
+                    {
+                        std::scoped_lock lock(mMutex);
+                        const auto cached = mReplacementCache.find(job.Hash);
+                        if (cached != mReplacementCache.end() && cached->second->Generation == job.Generation)
+                            decoded->ColorReplacement = cached->second;
+                    }
+                    if (!decoded->ColorReplacement)
+                        decoded->ColorReplacement = DecodeReplacement(job.Texture, job.Hash, job.Generation);
+                }
+                for (size_t role = 0; role < decoded->Textures.size(); ++role) {
+                    if (job.Material->Textures[role].empty()) continue;
+                    decoded->Textures[role] = DecodeReplacement(
+                        {job.Material->Textures[role], job.Texture.FlipPngFiles}, job.Hash, job.Generation);
+                }
+                material = std::move(decoded);
+            } else {
+                replacement = DecodeReplacement(job.Texture, job.Hash, job.Generation);
+            }
+        } catch (const std::exception& exception) { failure = exception.what(); }
+        std::scoped_lock lock(mMutex);
+        auto& pending = job.Material ? mPendingMaterialGenerations : mPendingLoadGenerations;
+        auto& failed = job.Material ? mFailedMaterialHashes : mFailedLoadHashes;
+        const auto found = pending.find(job.Hash);
+        if (found != pending.end() && found->second == job.Generation) {
+            if (job.Generation == mGeneration && mConfiguration.LoadCustomTextures) {
+                if (material && material->ColorReplacement)
+                    mReplacementCache.insert_or_assign(job.Hash, material->ColorReplacement);
+                if (material) mMaterialCache.insert_or_assign(job.Hash, std::move(material));
+                if (replacement) mReplacementCache.insert_or_assign(job.Hash, std::move(replacement));
+                if (!failure.empty()) {
+                    failed.insert(job.Hash);
+                    mLastError = std::move(failure);
+                }
+            }
+            pending.erase(found);
+        }
+        --mPendingLoads;
+        mIdle.notify_all();
+    }
     void WorkerMain() {
         for (;;) {
-            LoadJob loadJob;
-            DumpJob job;
-            bool load = false;
+            LoadJob load;
+            DumpJob dump;
+            AzaharTexturePackConfiguration configuration;
+            std::filesystem::path loadDirectory, dumpDirectory;
+            uint64_t rebuild = 0;
+            bool loading = false;
             {
                 std::unique_lock lock(mMutex);
                 mWorkAvailable.wait(lock, [&] {
-                    return mStopping || !mLoadJobs.empty() ||
-                           !mDumpJobs.empty();
+                    return mStopping || mRebuildRequested || !mLoadJobs.empty() || !mDumpJobs.empty();
                 });
-                if (mLoadJobs.empty() && mDumpJobs.empty()) {
-                    if (mStopping) {
-                        return;
-                    }
-                    continue;
-                }
-                if (!mLoadJobs.empty()) {
-                    load = true;
-                    loadJob = std::move(mLoadJobs.front());
+                if (mRebuildRequested) {
+                    rebuild = mRebuildSerial;
+                    configuration = mConfiguration;
+                    loadDirectory = mLoadDirectory;
+                    dumpDirectory = mDumpDirectory;
+                    mRebuildRequested = false;
+                    mBuilding = true;
+                } else if (!mLoadJobs.empty()) {
+                    load = std::move(mLoadJobs.front());
                     mLoadJobs.pop_front();
-                } else {
-                    job = std::move(mDumpJobs.front());
-                    mDumpJobs.pop_front();
-                }
-            }
-
-            if (load) {
-                std::shared_ptr<const AzaharTextureReplacement>
-                    replacement;
-                std::string failure;
-                try {
-                    replacement = DecodeReplacement(
-                        loadJob.Texture, loadJob.Hash);
-                } catch (const std::exception& exception) {
-                    failure = exception.what();
-                }
-                {
-                    std::scoped_lock lock(mMutex);
-                    const auto pending =
-                        mPendingLoadGenerations.find(loadJob.Hash);
-                    const bool currentJob =
-                        pending != mPendingLoadGenerations.end() &&
-                        pending->second == loadJob.Generation;
-                    if (currentJob) {
-                        if (replacement != nullptr &&
-                            loadJob.Generation == mGeneration &&
-                            mConfiguration.LoadCustomTextures) {
-                            mReplacementCache.insert_or_assign(
-                                loadJob.Hash,
-                                std::move(replacement));
-                            mFailedLoadHashes.erase(loadJob.Hash);
-                        } else if (!failure.empty() &&
-                                   loadJob.Generation ==
-                                       mGeneration) {
-                            mFailedLoadHashes.insert(loadJob.Hash);
-                            mLastError = std::move(failure);
-                        }
-                        mPendingLoadGenerations.erase(pending);
-                    }
-                    if (mPendingLoads > 0U) {
+                    if (load.Generation != mGeneration) {
                         --mPendingLoads;
-                    }
-                    if (mPendingLoads == 0U) {
                         mIdle.notify_all();
+                        continue;
                     }
-                }
-                continue;
+                    loading = true;
+                } else if (!mDumpJobs.empty()) {
+                    dump = std::move(mDumpJobs.front());
+                    mDumpJobs.pop_front();
+                } else if (mStopping) return;
             }
-
-            bool success = false;
+            if (rebuild != 0) { Rebuild(configuration, rebuild, loadDirectory, dumpDirectory); continue; }
+            if (loading) { Load(load); continue; }
+            bool written = false;
             std::string failure;
             try {
-                WritePng(job.Destination, job.Width, job.Height, job.Rgba8);
-                success = true;
+                if (!std::filesystem::exists(dump.Destination)) {
+                    WritePng(dump.Destination, dump.Width, dump.Height, dump.Rgba8);
+                    written = true;
+                }
             } catch (const std::exception& exception) { failure = exception.what(); }
-
-            {
-                std::scoped_lock lock(mMutex);
-                if (success) {
-                    ++mDumpedCount;
-                } else {
-                    mDumpedHashes.erase(job.Hash);
-                    mLastError = std::move(failure);
-                }
-                if (mPendingDumps > 0U) {
-                    --mPendingDumps;
-                }
-                if (mPendingDumps == 0U) {
-                    mIdle.notify_all();
-                }
+            std::scoped_lock lock(mMutex);
+            if (written) ++mDumpedCount;
+            if (!failure.empty()) {
+                mDumpedHashes.erase(dump.Hash);
+                mLastError = std::move(failure);
             }
+            --mPendingDumps;
+            mIdle.notify_all();
         }
     }
 
     mutable std::mutex mMutex;
-    std::condition_variable mWorkAvailable;
-    std::condition_variable mIdle;
+    std::condition_variable mWorkAvailable, mIdle;
     std::thread mWorker;
-    bool mStopping = false;
-    bool mConfigured = false;
+    bool mStopping = false, mConfigured = false, mIndexReady = false;
+    bool mRebuildRequested = false, mBuilding = false;
+    uint64_t mGeneration = 1U, mRebuildSerial = 0U;
     AzaharTexturePackConfiguration mConfiguration;
-    uint64_t mGeneration = 1U;
-    std::filesystem::path mLoadDirectory;
-    std::filesystem::path mDumpDirectory;
+    std::filesystem::path mLoadDirectory, mDumpDirectory;
     PackState mPack;
     bool mDumpUsesNewHash = true;
     std::unordered_map<uint64_t, IndexedTexture> mIndex;
+    std::unordered_map<uint64_t, IndexedAzaharPbrMaterial> mMaterialIndex;
     std::unordered_map<uint64_t, std::shared_ptr<const AzaharTextureReplacement>> mReplacementCache;
-    std::unordered_map<uint64_t, uint64_t> mPendingLoadGenerations;
-    std::unordered_set<uint64_t> mFailedLoadHashes;
-    std::unordered_set<uint64_t> mDumpedHashes;
+    std::unordered_map<uint64_t, std::shared_ptr<const AzaharPbrMaterial>> mMaterialCache;
+    std::unordered_map<uint64_t, uint64_t> mPendingLoadGenerations, mPendingMaterialGenerations;
+    std::unordered_set<uint64_t> mFailedLoadHashes, mFailedMaterialHashes, mDumpedHashes;
     std::deque<LoadJob> mLoadJobs;
     std::deque<DumpJob> mDumpJobs;
-    size_t mPendingLoads = 0U;
-    size_t mPendingDumps = 0U;
-    size_t mDumpedCount = 0U;
-    size_t mUnsupportedFiles = 0U;
+    size_t mPendingLoads = 0U, mPendingDumps = 0U, mDumpedCount = 0U, mUnsupportedFiles = 0U;
     std::string mLastError;
 };
 
@@ -1092,6 +956,16 @@ AzaharTextureResolveResult
 AzaharTexturePackRuntime::PollQueued(
     uint64_t nativeHash) const {
     return mImpl->PollQueued(nativeHash);
+}
+
+AzaharMaterialResolveResult AzaharTexturePackRuntime::ResolveMaterialOrQueue(
+    uint64_t nativeHash, uint64_t expectedGeneration) {
+    return mImpl->ResolveMaterialOrQueue(nativeHash, expectedGeneration);
+}
+
+void AzaharTexturePackRuntime::ReportMaterialUploadFailure(
+    uint64_t nativeHash, uint64_t generation, std::string error) {
+    mImpl->ReportMaterialUploadFailure(nativeHash, generation, std::move(error));
 }
 
 AzaharTexturePackStatus AzaharTexturePackRuntime::Snapshot() const {

@@ -82,7 +82,6 @@ class NriEffectGraphTransientImageArena final {
     bool Configure(const EffectTransientAllocationPlan& plan);
     [[nodiscard]] bool ConfiguredFor(
         const EffectTransientAllocationPlan& plan) const noexcept;
-    [[nodiscard]] bool HasActiveResources() const noexcept;
     [[nodiscard]] const NriEffectGraphTransientImageBinding* Find(
         EffectResource resource) const noexcept;
     void InvalidateScreenResources();

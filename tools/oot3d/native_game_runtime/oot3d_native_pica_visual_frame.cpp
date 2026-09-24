@@ -571,6 +571,7 @@ struct VisualDrawDeltaFlags {
     bool FragmentUniforms = false;
     bool Viewport = false;
     bool BlendConstantColor = false;
+    bool LightBinding = false;
     bool PerInstanceVertex = false;
     bool PerVertex = false;
 };
@@ -908,9 +909,10 @@ AnalyzeVisualTransitionWithMatching(const Oot3dPicaVisualFrame& previous, const 
         delta.BlendConstantColor =
             previousDraw.State.OutputMerger.Blend.ConstantColor !=
             currentDraw.State.OutputMerger.Blend.ConstantColor;
+        delta.LightBinding = previousDraw.LightBinding != currentDraw.LightBinding;
         delta.Continuous = delta.PerInstanceVertex || delta.PerVertex ||
                            delta.VertexUniforms || delta.FragmentUniforms ||
-                           delta.Viewport || delta.BlendConstantColor;
+                           delta.Viewport || delta.BlendConstantColor || delta.LightBinding;
         if (delta.Continuous) {
             ++stats.ChangedContinuousDraws;
         }
@@ -961,6 +963,93 @@ AnalyzeVisualTransitionWithMatching(const Oot3dPicaVisualFrame& previous, const 
             stats.CameraDiscontinuousDraws * 2U >= stats.CameraMatchedDraws ? 1U : 0U);
     }
     return stats;
+}
+
+struct VisualSceneLightInterpolation {
+    using Snapshot = Fast::Renderer3ds::PicaScenePointLights;
+    std::shared_ptr<const Snapshot> Previous, Current, Sampled;
+    using DirectionalSnapshot = Fast::Renderer3ds::PicaSceneDirectionalLights;
+    std::shared_ptr<const DirectionalSnapshot> PreviousDirectionals, CurrentDirectionals, SampledDirectionals;
+
+    std::shared_ptr<const DirectionalSnapshot> ResolveDirectionals(
+        const std::shared_ptr<const DirectionalSnapshot>& previous,
+        const std::shared_ptr<const DirectionalSnapshot>& current, float alpha) {
+        if (!previous || !current || previous == current || alpha >= 1.0F) return current;
+        if (PreviousDirectionals == previous && CurrentDirectionals == current) return SampledDirectionals;
+        auto sample = std::make_shared<DirectionalSnapshot>(*current);
+        for (uint32_t i = 0; i < sample->Count; ++i) {
+            auto& light = sample->Lights[i];
+            const auto end = previous->Lights.begin() + previous->Count;
+            const auto found = std::find_if(previous->Lights.begin(), end, [&](const auto& before) {
+                return before.SourceIdentity == light.SourceIdentity;
+            });
+            if (found == end) continue;
+            for (size_t channel = 0; channel < 3; ++channel) {
+                light.DirectionTowardSource[channel] = InterpolateFinite(
+                    found->DirectionTowardSource[channel], light.DirectionTowardSource[channel], alpha);
+                light.Color[channel] = InterpolateFinite(found->Color[channel], light.Color[channel], alpha);
+            }
+        }
+        PreviousDirectionals = previous;
+        CurrentDirectionals = current;
+        SampledDirectionals = std::move(sample);
+        return SampledDirectionals;
+    }
+
+    std::shared_ptr<const Snapshot> Resolve(const std::shared_ptr<const Snapshot>& previous,
+                                          const std::shared_ptr<const Snapshot>& current, float alpha) {
+        if (!previous || !current || previous == current || alpha >= 1.0F) return current;
+        if (Previous == previous && Current == current) return Sampled;
+        auto sample = std::make_shared<Snapshot>(*current);
+        for (uint32_t i = 0; i < sample->Count; ++i) {
+            auto& light = sample->Lights[i];
+            const auto end = previous->Lights.begin() + previous->Count;
+            const auto found = std::find_if(previous->Lights.begin(), end, [&](const auto& before) {
+                return before.SourceIdentity == light.SourceIdentity && before.Group == light.Group;
+            });
+            if (found == end) continue;
+            for (size_t channel = 0; channel < 3; ++channel) {
+                light.PositionWorld[channel] = InterpolateFinite(found->PositionWorld[channel], light.PositionWorld[channel], alpha);
+                light.Color[channel] = InterpolateFinite(found->Color[channel], light.Color[channel], alpha);
+            }
+            light.Radius = InterpolateFinite(found->Radius, light.Radius, alpha);
+        }
+        Previous = previous;
+        Current = current;
+        Sampled = std::move(sample);
+        return Sampled;
+    }
+};
+
+void InterpolateVisualLightBinding(
+    const Fast::Renderer3ds::PicaNativeLightBinding& previous,
+    const Fast::Renderer3ds::PicaNativeLightBinding& current, float alpha,
+    Fast::Renderer3ds::PicaNativeLightBinding& output, VisualSceneLightInterpolation& scenePoints) {
+    output = current;
+    alpha = std::clamp(alpha, 0.0F, 1.0F);
+    output.ScenePoints = scenePoints.Resolve(previous.ScenePoints, current.ScenePoints, alpha);
+    output.SceneDirectionals = scenePoints.ResolveDirectionals(previous.SceneDirectionals, current.SceneDirectionals, alpha);
+    if (previous.WorldToView && current.WorldToView) {
+        for (size_t component = 0; component < output.WorldToView->size(); ++component)
+            (*output.WorldToView)[component] = InterpolateFinite(
+                (*previous.WorldToView)[component], (*current.WorldToView)[component], alpha);
+    } else {
+        // Do not associate an interpolated pose with an unpaired live camera.
+        output.WorldToView.reset();
+    }
+    for (size_t slot = 0; slot < output.Sources.size(); ++slot) {
+        const auto& before = previous.Sources[slot];
+        const auto& after = current.Sources[slot];
+        if (before.SourceIdentity == 0U || before.SourceIdentity != after.SourceIdentity ||
+            before.Kind != after.Kind) continue;
+        auto& light = output.Sources[slot];
+        for (size_t component = 0; component < 3U; ++component) {
+            light.PositionWorld[component] = InterpolateFinite(before.PositionWorld[component], after.PositionWorld[component], alpha);
+            light.UnattenuatedColor[component] = InterpolateFinite(before.UnattenuatedColor[component], after.UnattenuatedColor[component], alpha);
+            light.ReferenceColor[component] = InterpolateFinite(before.ReferenceColor[component], after.ReferenceColor[component], alpha);
+        }
+        light.Radius = InterpolateFinite(before.Radius, after.Radius, alpha);
+    }
 }
 
 void InterpolateVisualVertexUniforms(
@@ -1105,11 +1194,13 @@ void InterpolateCompatibleVisualRenderState(
 }
 
 void InterpolateCompatibleVisualDraw(const Oot3dPicaVulkanDrawPlan& previous, const Oot3dPicaVulkanDrawPlan& current,
-                                     float alpha, Oot3dPicaVulkanDrawPlan& output) {
+                                     float alpha, Oot3dPicaVulkanDrawPlan& output,
+                                     VisualSceneLightInterpolation& scenePoints) {
     output = current;
     InterpolateCompatibleVisualRenderState(previous, current, alpha, output.VertexShader.Uniforms,
                                            output.FragmentShader.Uniforms, output.State.Viewport,
                                            output.State.OutputMerger.Blend.ConstantColor);
+    InterpolateVisualLightBinding(previous.LightBinding, current.LightBinding, alpha, output.LightBinding, scenePoints);
     const bool perInstanceInterpolated = InterpolateVertexValues(
         previous, current, alpha, Oot3dPicaVertexInputRate::PerInstance,
         output.VertexBindings);
@@ -1139,6 +1230,7 @@ bool SampleVisualFrameWithMatching(const Oot3dPicaVisualFrame& previous, const O
     output.InterpolatedPerInstanceVertexDraws = 0;
     output.InterpolatedPerVertexDraws = 0;
     output.Draws.resize(current.Draws.size());
+    VisualSceneLightInterpolation scenePoints;
 
     for (size_t currentIndex = 0; currentIndex < current.Draws.size(); ++currentIndex) {
         const auto& currentDraw = current.Draws[currentIndex];
@@ -1146,7 +1238,7 @@ bool SampleVisualFrameWithMatching(const Oot3dPicaVisualFrame& previous, const O
         auto& sampled = output.Draws[currentIndex];
         if (match.has_value()) {
             const auto& previousDraw = previous.Draws[match->PreviousIndex];
-            InterpolateCompatibleVisualDraw(previousDraw, currentDraw, alpha, sampled);
+            InterpolateCompatibleVisualDraw(previousDraw, currentDraw, alpha, sampled, scenePoints);
             VisualDrawDeltaFlags delta;
             if (drawDeltas != nullptr) {
                 delta = (*drawDeltas)[currentIndex];
@@ -1170,10 +1262,11 @@ bool SampleVisualFrameWithMatching(const Oot3dPicaVisualFrame& previous, const O
                 delta.BlendConstantColor =
                     previousDraw.State.OutputMerger.Blend.ConstantColor !=
                     currentDraw.State.OutputMerger.Blend.ConstantColor;
+                delta.LightBinding = previousDraw.LightBinding != currentDraw.LightBinding;
                 delta.Continuous =
                     delta.PerInstanceVertex || delta.PerVertex ||
                     delta.VertexUniforms || delta.FragmentUniforms ||
-                    delta.Viewport || delta.BlendConstantColor;
+                    delta.Viewport || delta.BlendConstantColor || delta.LightBinding;
             }
             if (delta.Continuous) {
                 ++output.InterpolatedDraws;
@@ -1202,8 +1295,8 @@ bool SampleVisualFrameViewWithMatching(const Oot3dPicaVisualFrame& previous, con
                                        Oot3dPicaVisualFrameViewSample& output,
                                        const std::vector<VisualDrawDeltaFlags>& drawDeltas) {
     output.TopTransfer = current.TopTransfer;
-    output.MemoryFills = &current.MemoryFills;
-    output.DisplayTransfers = &current.DisplayTransfers;
+    output.MemoryFills = current.MemoryFills;
+    output.DisplayTransfers = current.DisplayTransfers;
     output.MatchedDraws = matching.StrictUniqueMatches + matching.StrictOrdinalMatches +
                           matching.StructuralOrdinalMatches + matching.PipelineOrdinalMatches;
     output.StrictUniqueMatchedDraws = matching.StrictUniqueMatches;
@@ -1214,6 +1307,7 @@ bool SampleVisualFrameViewWithMatching(const Oot3dPicaVisualFrame& previous, con
     output.InterpolatedPerInstanceVertexDraws = 0;
     output.InterpolatedPerVertexDraws = 0;
     output.Draws.resize(current.Draws.size());
+    VisualSceneLightInterpolation scenePoints;
 
     for (size_t currentIndex = 0; currentIndex < current.Draws.size(); ++currentIndex) {
         const auto& currentDraw = current.Draws[currentIndex];
@@ -1223,6 +1317,7 @@ bool SampleVisualFrameViewWithMatching(const Oot3dPicaVisualFrame& previous, con
         sampled.FragmentUniforms.reset();
         sampled.Viewport.reset();
         sampled.BlendConstantColor.reset();
+        sampled.LightBinding.reset();
         sampled.HasVertexBindingOverrides = false;
 
         const auto match = matching.PreviousByCurrent[currentIndex];
@@ -1231,6 +1326,11 @@ bool SampleVisualFrameViewWithMatching(const Oot3dPicaVisualFrame& previous, con
         }
         const auto& previousDraw = previous.Draws[match->PreviousIndex];
         const auto& delta = drawDeltas[currentIndex];
+        if (delta.LightBinding) {
+            sampled.LightBinding.emplace();
+            InterpolateVisualLightBinding(previousDraw.LightBinding, currentDraw.LightBinding,
+                                           alpha, *sampled.LightBinding, scenePoints);
+        }
         if (delta.VertexUniforms) {
             sampled.VertexUniforms.emplace(currentDraw.VertexShader.Uniforms);
             InterpolateVisualVertexUniforms(
@@ -1394,6 +1494,7 @@ Oot3dPicaVulkanDrawOverrides Oot3dPicaVisualDrawView::Overrides() const {
     overrides.FragmentUniforms = FragmentUniforms.has_value() ? &*FragmentUniforms : nullptr;
     overrides.Viewport = Viewport.has_value() ? &*Viewport : nullptr;
     overrides.BlendConstantColor = BlendConstantColor.has_value() ? &*BlendConstantColor : nullptr;
+    overrides.LightBinding = LightBinding.has_value() ? &*LightBinding : nullptr;
     overrides.VertexBindings = HasVertexBindingOverrides ? &VertexBindings : nullptr;
     return overrides;
 }
@@ -1406,6 +1507,7 @@ ComputeOot3dPicaVisualDrawIdentity(const Oot3dPicaVulkanDrawPlan& plan) {
     HashValue(hash, plan.Composition.Provenance);
     HashValue(hash, plan.Composition.SourcePc);
     HashValue(hash, plan.Composition.NativeValue);
+    HashValue(hash, plan.Composition.NativeProjectedShadow);
     HashValue(hash, plan.VertexShader.StateKey);
     HashValue(hash, plan.FragmentShader.StateKey);
     HashValue(hash, plan.Indexed);
@@ -1451,7 +1553,8 @@ bool InterpolateOot3dPicaVisualDraw(const Oot3dPicaVulkanDrawPlan& previous,
     if (!AreOot3dPicaVisualDrawsCompatible(previous, current)) {
         return false;
     }
-    InterpolateCompatibleVisualDraw(previous, current, alpha, output);
+    VisualSceneLightInterpolation scenePoints;
+    InterpolateCompatibleVisualDraw(previous, current, alpha, output, scenePoints);
     return true;
 }
 
@@ -1511,10 +1614,29 @@ bool AnalyzeAndSampleOot3dPicaVisualFrameView(const Oot3dPicaVisualFrame& previo
 
 bool ViewOot3dPicaVisualFrame(
     const Oot3dPicaVisualFrame& frame,
-    Oot3dPicaVisualFrameViewSample& output) {
+    Oot3dPicaVisualFrameViewSample& output, bool skipCompletedDependencies) {
     output.TopTransfer = frame.TopTransfer;
-    output.MemoryFills = &frame.MemoryFills;
-    output.DisplayTransfers = &frame.DisplayTransfers;
+    output.MemoryFills = frame.MemoryFills;
+    output.DisplayTransfers = frame.DisplayTransfers;
+    size_t firstDraw = 0U;
+    if (skipCompletedDependencies) {
+        for (size_t index = frame.DisplayTransfers.size(); index != 0U; --index) {
+            const auto& transfer = frame.DisplayTransfers[index - 1U];
+            if (transfer.Transfer.TextureCopyBytes == 0U ||
+                transfer.SignalInterrupt) continue;
+            const auto lastDraw = transfer.AfterDrawSubmissionId;
+            while (firstDraw < frame.Draws.size() &&
+                   frame.Draws[firstDraw].SubmissionId <= lastDraw) ++firstDraw;
+            const auto firstFill = std::find_if(
+                frame.MemoryFills.begin(), frame.MemoryFills.end(),
+                [lastDraw](const auto& fill) {
+                    return fill.BeforeDrawSubmissionId > lastDraw;
+                });
+            output.MemoryFills = {firstFill, frame.MemoryFills.end()};
+            output.DisplayTransfers = output.DisplayTransfers.subspan(index);
+            break;
+        }
+    }
     output.MatchedDraws = 0;
     output.StrictUniqueMatchedDraws = 0;
     output.StrictOrdinalMatchedDraws = 0;
@@ -1523,18 +1645,36 @@ bool ViewOot3dPicaVisualFrame(
     output.InterpolatedDraws = 0;
     output.InterpolatedPerInstanceVertexDraws = 0;
     output.InterpolatedPerVertexDraws = 0;
-    output.Draws.resize(frame.Draws.size());
-    for (size_t index = 0; index < frame.Draws.size(); ++index) {
+    output.Draws.resize(frame.Draws.size() - firstDraw);
+    for (size_t index = 0; index < output.Draws.size(); ++index) {
         auto& view = output.Draws[index];
-        view.BasePlan = &frame.Draws[index];
+        view.BasePlan = &frame.Draws[firstDraw + index];
         view.VertexUniforms.reset();
         view.FragmentUniforms.reset();
         view.Viewport.reset();
         view.BlendConstantColor.reset();
+        view.LightBinding.reset();
         view.VertexBindings.clear();
         view.HasVertexBindingOverrides = false;
     }
-    return !output.Draws.empty();
+    return !frame.Draws.empty();
+}
+
+void CollectOot3dPicaPlanCopyReferences(
+    const Oot3dPicaVulkanDrawPlan& plan,
+    std::vector<Fast::Renderer3ds::PicaTextureCopyReference>& out) {
+    for (const auto& texture : plan.Textures) {
+        out.insert(out.end(), texture.CopyReferences.begin(),
+                   texture.CopyReferences.end());
+    }
+}
+
+void CollectOot3dPicaFrameCopyReferences(
+    const Oot3dPicaVisualFrame& frame,
+    std::vector<Fast::Renderer3ds::PicaTextureCopyReference>& out) {
+    for (const auto& plan : frame.Draws) {
+        CollectOot3dPicaPlanCopyReferences(plan, out);
+    }
 }
 
 void Oot3dPicaVisualFrameAccumulator::Append(Oot3dPicaVulkanDrawPlan plan) {
@@ -1552,8 +1692,8 @@ void Oot3dPicaVisualFrameAccumulator::Append(
 }
 
 std::optional<Oot3dPicaVisualFrame> Oot3dPicaVisualFrameAccumulator::Finish(
-    const Oot3dPicaDisplayTransferSubmission& topTransfer, bool allowTransferOnly) {
-    if (mPendingDraws.empty() && (!allowTransferOnly || (mPendingMemoryFills.empty() && mPendingDisplayTransfers.empty()))) {
+    const Oot3dPicaDisplayTransferSubmission& topTransfer) {
+    if (mPendingDraws.empty()) {
         return std::nullopt;
     }
     Oot3dPicaVisualFrame frame;
@@ -1583,6 +1723,59 @@ bool Oot3dPicaVisualFrameAccumulator::HasPendingRawCopyCompletion() const {
             return transfer.SignalInterrupt &&
                    transfer.Transfer.TextureCopyBytes != 0U;
         });
+}
+
+bool Oot3dPicaVisualFrameAccumulator::ViewDependencyWork(
+    Oot3dPicaVisualFrameViewSample& output) {
+    size_t firstTransfer = 0U;
+    size_t endTransfer = 0U;
+    std::optional<uint64_t> completedDraw;
+    uint64_t lastDraw = 0U;
+    for (size_t index = 0U; index < mPendingDisplayTransfers.size(); ++index) {
+        const auto& transfer = mPendingDisplayTransfers[index];
+        if (transfer.Transfer.TextureCopyBytes == 0U) continue;
+        if (!transfer.SignalInterrupt) {
+            firstTransfer = index + 1U;
+            completedDraw = transfer.AfterDrawSubmissionId;
+        } else {
+            endTransfer = index + 1U;
+            lastDraw = transfer.AfterDrawSubmissionId;
+        }
+    }
+    if (endTransfer <= firstTransfer) return false;
+
+    output.TopTransfer = {};
+    output.Draws.clear();
+    for (const auto& draw : mPendingDraws) {
+        if ((!completedDraw || draw.SubmissionId > *completedDraw) &&
+            draw.SubmissionId <= lastDraw) {
+            output.Draws.push_back({.BasePlan = &draw});
+        }
+    }
+    const auto firstFill = std::find_if(
+        mPendingMemoryFills.begin(), mPendingMemoryFills.end(),
+        [completedDraw](const auto& fill) {
+            return !completedDraw || fill.BeforeDrawSubmissionId > *completedDraw;
+        });
+    const auto endFill = std::find_if(
+        firstFill, mPendingMemoryFills.end(),
+        [lastDraw](const auto& fill) {
+            return fill.BeforeDrawSubmissionId > lastDraw;
+        });
+    output.MemoryFills = {firstFill, endFill};
+    output.DisplayTransfers =
+        std::span<const Oot3dPicaDisplayTransferSubmission>(
+            mPendingDisplayTransfers).subspan(
+                firstTransfer, endTransfer - firstTransfer);
+    return true;
+}
+
+void Oot3dPicaVisualFrameAccumulator::CompleteDependencyWork() {
+    for (auto& transfer : mPendingDisplayTransfers) {
+        if (transfer.Transfer.TextureCopyBytes != 0U) {
+            transfer.SignalInterrupt = false;
+        }
+    }
 }
 
 Oot3dPicaVisualFrameAccumulatorState

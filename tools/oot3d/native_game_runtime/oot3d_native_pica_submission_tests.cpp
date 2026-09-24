@@ -261,7 +261,7 @@ int main() {
 
     const auto savedSubmissionState = queue.CaptureState();
     Require(savedSubmissionState.at("format") ==
-                "oot3d_native_pica_submission_state_v3" &&
+                "oot3d_native_pica_submission_state_v4" &&
                 !savedSubmissionState.at("geometry_snapshot_cache").empty() &&
                 !savedSubmissionState.at("texture_snapshot_cache").empty(),
             "portable PICA snapshot caches were not captured");
@@ -381,16 +381,223 @@ int main() {
 
     Oot3dNativeGame::Oot3dNativePicaSubmissionQueue copyQueue(
         Oot3dNativeGame::Oot3dPicaPhysicalMemoryView(memory, {{0x20000000U, 0x14000000U, 0x2000U}}), true);
+    copyQueue.BindGuestWriteObservation(
+        [](uint32_t, size_t) { return true; });
     Require(copyQueue.SubmitDrawPacket(packet, &error), error);
     Oot3dNativeGame::Oot3dNativePicaFrontend copyFrontend(&copyQueue);
     const Oot3dNativeGame::Oot3dGspCommandPacket rawCopy{
         4U, {0x14000200U, 0x14000500U, 64U, 0U, 0x00010002U, 12U, 0U}};
-    Require(copyFrontend.SubmitGspCommand(rawCopy, {}, &error, &deferredToGpu) && deferredToGpu, error);
+    Require(copyFrontend.SubmitGspCommand(rawCopy, {}, &error, &deferredToGpu) &&
+                deferredToGpu,
+            error);
     const auto rawTransfers = copyQueue.TakePendingDisplayTransfers();
     Require(rawTransfers.size() == 1 && rawTransfers[0].Transfer.TextureCopyBytes == 64U &&
                 rawTransfers[0].Transfer.InputSize == 0U && rawTransfers[0].Transfer.OutputSize == 0x00010002U &&
                 rawTransfers[0].AfterDrawSubmissionId == copyQueue.PendingDraws().front().Id,
             "raw copy lost its operation or command ordering");
+    // --- raw copy provenance: explicit producers through snapshot and restore ---
+    const auto textureReferences =
+        [](const Oot3dNativeGame::Oot3dPicaDrawSubmission& draw) {
+            return draw.Resources.back().CopyReferences;
+        };
+    Oot3dNativeGame::Oot3dNativePicaSubmissionQueue provenanceQueue(
+        Oot3dNativeGame::Oot3dPicaPhysicalMemoryView(
+            memory, {{0x20000000U, 0x14000000U, 0x2000U}}),
+        true);
+    std::vector<std::pair<uint32_t, size_t>> observedRanges;
+    bool observationAvailable = true;
+    provenanceQueue.BindGuestWriteObservation(
+        [&](uint32_t guestAddress, size_t byteCount) {
+            observedRanges.emplace_back(guestAddress, byteCount);
+            return observationAvailable;
+        });
+    Require(provenanceQueue.HasGuestWriteObservation(),
+            "raw copy write observation was not bound");
+
+    Require(provenanceQueue.SubmitDrawPacket(packet, &error), error);
+    Require(textureReferences(provenanceQueue.PendingDraws().front()).empty(),
+            "a draw before the raw copy claimed GPU copy provenance");
+    provenanceQueue.TakePendingDraws();
+
+    deferredToGpu = false;
+    Require(provenanceQueue.SubmitDisplayTransfer(
+                {0x14000200U, 0x14000A00U, 0U, 0x00010002U, 12U, 64U},
+                &deferredToGpu, &error) &&
+                deferredToGpu,
+            error);
+    Require(observedRanges ==
+                std::vector<std::pair<uint32_t, size_t>>{
+                    {0x14000A00U, 32U}, {0x14000A30U, 32U}},
+            "raw copy observation did not cover every written destination subrange");
+
+    Require(provenanceQueue.SubmitDrawPacket(packet, &error), error);
+    {
+        const auto references =
+            textureReferences(provenanceQueue.PendingDraws().front());
+        Require(references.size() == 2U && references[0].CompletionId == 1U &&
+                    references[0].AfterDrawSubmissionId == 1U &&
+                    references[0].PhysicalAddress == 0x20000A00U &&
+                    references[0].ByteCount == 32U &&
+                    references[1].CompletionId == 1U &&
+                    references[1].PhysicalAddress == 0x20000A30U &&
+                    references[1].ByteCount == 32U,
+                "a draw after the raw copy did not reference its exact "
+                "destination subranges");
+    }
+    provenanceQueue.TakePendingDraws();
+
+    // A byte-identical CPU write still owns its bytes: ownership is a write
+    // signal, never a byte comparison.
+    std::array<uint8_t, 16> sameValue{};
+    Require(memory.ReadBytes(0x14000A00U, sameValue),
+            "cannot read the raw copy destination");
+    Require(memory.WriteBytes(0x14000A00U, sameValue),
+            "cannot rewrite the raw copy destination");
+    provenanceQueue.NotifyGuestWrite(0x14000A00U, sameValue.size());
+    Require(provenanceQueue.SubmitDrawPacket(packet, &error), error);
+    {
+        const auto references =
+            textureReferences(provenanceQueue.PendingDraws().front());
+        Require(references.size() == 2U &&
+                    references[0].PhysicalAddress == 0x20000A10U &&
+                    references[0].ByteCount == 16U &&
+                    references[1].PhysicalAddress == 0x20000A30U &&
+                    references[1].ByteCount == 32U,
+                "a same-value CPU write did not invalidate exactly its own bytes");
+    }
+    provenanceQueue.TakePendingDraws();
+
+    deferredToGpu = false;
+    Require(provenanceQueue.SubmitDisplayTransfer(
+                {0x14000200U, 0x14000A00U, 0U, 0x00000002U, 12U, 32U},
+                &deferredToGpu, &error) &&
+                deferredToGpu,
+            error);
+    Require(provenanceQueue.SubmitDrawPacket(packet, &error), error);
+    {
+        const auto references =
+            textureReferences(provenanceQueue.PendingDraws().front());
+        Require(references.size() == 2U && references[0].CompletionId == 2U &&
+                    references[0].PhysicalAddress == 0x20000A00U &&
+                    references[0].ByteCount == 32U &&
+                    references[1].CompletionId == 1U &&
+                    references[1].PhysicalAddress == 0x20000A30U &&
+                    references[1].ByteCount == 32U,
+                "a newer raw copy did not take only its own bytes from the "
+                "older producer");
+    }
+    provenanceQueue.TakePendingDraws();
+
+    std::vector<Fast::Renderer3ds::PicaTextureCopyReference> liveReferences;
+    provenanceQueue.CollectLiveCopyReferences(liveReferences);
+    Require(liveReferences.size() == 2U &&
+                liveReferences[0].CompletionId == 2U &&
+                liveReferences[1].CompletionId == 1U,
+            "live copy ownership did not follow the newest producers");
+    const auto provenanceState = provenanceQueue.CaptureState();
+    Require(provenanceState.at("format") ==
+                    "oot3d_native_pica_submission_state_v4" &&
+                provenanceState.at("raw_copy_producers").size() == 2U,
+            "raw copy ownership was not persisted with the submission state");
+
+    Oot3dNativeGame::Oot3dNativePicaSubmissionQueue unobservedProvenanceQueue(
+        Oot3dNativeGame::Oot3dPicaPhysicalMemoryView(
+            memory, {{0x20000000U, 0x14000000U, 0x2000U}}),
+        true);
+    Require(!unobservedProvenanceQueue.RestoreState(provenanceState, &error) &&
+                !error.empty(),
+            "restore accepted copy ownership without write observation");
+    unobservedProvenanceQueue.BindGuestWriteObservation(
+        [](uint32_t, size_t) { return true; });
+    Require(unobservedProvenanceQueue.RestoreState(provenanceState, &error),
+            error);
+    Require(unobservedProvenanceQueue.SubmitDrawPacket(packet, &error), error);
+    {
+        const auto references = textureReferences(
+            unobservedProvenanceQueue.PendingDraws().front());
+        Require(references.size() == 2U && references[0].CompletionId == 2U &&
+                    references[1].CompletionId == 1U,
+                "restore lost the copy provenance of the sampled texture");
+    }
+    unobservedProvenanceQueue.TakePendingDraws();
+
+    observationAvailable = false;
+    deferredToGpu = false;
+    Require(!provenanceQueue.SubmitDisplayTransfer(
+                {0x14000200U, 0x14000A00U, 0U, 0x00000002U, 12U, 32U},
+                &deferredToGpu, &error) &&
+                !error.empty(),
+            "a raw copy destination that cannot be observed was accepted");
+    observationAvailable = true;
+
+    Oot3dNativeGame::Oot3dNativePicaSubmissionQueue unbindableQueue(
+        Oot3dNativeGame::Oot3dPicaPhysicalMemoryView(
+            memory, {{0x20000000U, 0x14000000U, 0x2000U}}),
+        true);
+    Require(unbindableQueue.SubmitDrawPacket(packet, &error), error);
+    deferredToGpu = false;
+    Require(!unbindableQueue.SubmitDisplayTransfer(
+                {0x14000200U, 0x14000A00U, 0U, 0x00000002U, 12U, 32U},
+                &deferredToGpu, &error) &&
+                !error.empty(),
+            "a GPU-backed raw copy was accepted without write observation");
+
+    // Real guarded memory, two virtual aliases, and an actual consumer
+    // snapshot: submission must not force CPU visibility for GPU sampling.
+    {
+        using namespace Oot3dNativeGame;
+        NativeA32Memory guarded(memory);
+        Require(guarded.MapRegion({"alias", 0x15000000U, 0x2000U, true, false, {}}, &error), error);
+        Oot3dPicaPhysicalMemoryView view(guarded, {
+            {0x20000000U, 0x14000000U, 0x2000U},
+            {0x20000000U, 0x15000000U, 0x2000U}});
+        Oot3dNativePicaSubmissionQueue deviceQueue(view, true);
+        guarded.SetWriteObserver([&](uint32_t address, size_t size) {
+            Require(view.SynchronizeGuestWrite(guarded, address, size), "alias write visibility");
+            deviceQueue.NotifyGuestWrite(address, size);
+        });
+        deviceQueue.BindGuestWriteObservation([&](uint32_t address, size_t size) {
+            return guarded.ObserveWrites(address, size);
+        });
+        Require(deviceQueue.SubmitDrawPacket(packet, &error), error);
+        deviceQueue.TakePendingDraws();
+        Require(deviceQueue.SubmitDisplayTransfer(
+                    {0x14000200U, 0x14000A00U, 0U, 0U, 12U, 64U},
+                    &deferredToGpu, &error) && deferredToGpu, error);
+        const std::array ranges{
+            std::pair<uint32_t, size_t>{0x14000A00U, 64U},
+            std::pair<uint32_t, size_t>{0x15000A00U, 64U}};
+        size_t fetched = 0;
+        Require(guarded.DeferWrites(ranges, [&](uint32_t, std::span<uint8_t> bytes) {
+            fetched += bytes.size();
+            std::fill(bytes.begin(), bytes.end(), 0x6DU);
+            return true;
+        }), "defer producer through both aliases");
+        Require(deviceQueue.SubmitDrawPacket(packet, &error) && fetched == 0, error);
+        const auto& resource = deviceQueue.PendingDraws().front().Resources.back();
+        Require(!resource.ContentHashAvailable && resource.CopyReferences.size() == 1U &&
+                    resource.CopyReferences.front().ByteCount == 64U,
+                "GPU sampler must not identify an incomplete CPU payload as native content");
+        Require(guarded.WriteFast<uint32_t>(0x15000A04U, 0U) && fetched == 0,
+                "same-value alias overwrite must discard only its own device bytes");
+        std::array<uint8_t, 64> primary{}, alias{};
+        Require(guarded.ReadBytes(0x14000A00U, primary) &&
+                    guarded.ReadBytes(0x15000A00U, alias) && primary == alias,
+                "both aliases must observe the same partial CPU overwrite");
+        std::array<uint8_t, 64> expected;
+        expected.fill(0x6D);
+        std::fill(expected.begin() + 4, expected.begin() + 8, 0U);
+        Require(primary == expected && fetched == 120U,
+                "alias materialization must retain untouched producer bytes only");
+        // A CPU/device-copy consumer really needs bytes and must serialize the
+        // producer before forwarding them; no stale-RAM shortcut for chains.
+        Require(guarded.WriteBytes(0x14000B00U, primary), "dependent copy");
+        std::array<uint8_t, 64> chained{};
+        Require(view.Read(0x20000B00U, chained) && chained == expected,
+                "a dependent byte copy must observe the same coherent result");
+        guarded.SetWriteObserver({});
+    }
+
     std::cout << "oot3d_native_pica_submission_tests: ok\n";
     return 0;
 }

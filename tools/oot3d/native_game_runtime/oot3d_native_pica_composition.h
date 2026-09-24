@@ -1,6 +1,7 @@
 #pragma once
 
 #include "oot3d_native_pica_frontend.h"
+#include "oot3d_native_a32_lighting.h"
 
 #include <cstdint>
 #include <deque>
@@ -39,6 +40,8 @@ inline constexpr uint32_t kOot3dEnvironmentRendererSubmitNormalizedColor4Entry =
 inline constexpr uint32_t kOot3dRendererCommandListExecuteEntry = 0x0035BF50U;
 inline constexpr uint32_t kOot3dKankyoEffectPrimitiveDrawEntry = 0x003FB5ECU;
 inline constexpr uint32_t kOot3dPicaPrimitivePacketBuilderEntry = 0x00313444U;
+inline constexpr uint32_t kOot3dGameplayDrawEntry = 0x002E25F0U;
+inline constexpr uint32_t kOot3dModelQueueSubmitEntry = 0x00372170U;
 
 std::span<const uint32_t> Oot3dNativePicaCompositionHookPcs() noexcept;
 
@@ -117,6 +120,7 @@ class Oot3dNativePicaCompositionTracker final
         uint32_t ReturnPc = 0;
         bool BeginAddressValid = false;
         Oot3dPicaCompositionAttribution Attribution;
+        Fast::Renderer3ds::PicaNativeLightBinding LightBinding;
     };
 
     bool RecordPendingSpan(Oot3dPicaCommandListCompositionSpan span);
@@ -124,6 +128,9 @@ class Oot3dNativePicaCompositionTracker final
     static constexpr size_t MaximumPendingSpans = 16384U;
 
     std::optional<uint8_t> mActiveCmbPass;
+    uint32_t mActiveCmbRenderer = 0;
+    std::vector<uint32_t> mProjectedShadowRenderers;
+    NativeA32LightingProbe mLighting;
     std::optional<uint32_t> mActiveCmbReturnPc;
     std::optional<ActiveAtmosphereScope> mActiveAtmosphereScope;
     std::optional<ActiveAtmosphereScope> mActiveUiScope;

@@ -81,6 +81,11 @@ set(Source_Files__Renderer3dsPica
     renderer3ds/pica_gl_shader_dialect.cpp
     renderer3ds/pica_scene_capabilities.cpp
     renderer3ds/pica_semantic_scene_view.cpp
+    renderer3ds/pica_vertex_surface.cpp
+    renderer3ds/pica_surface_lighting.cpp
+    renderer3ds/pica_pbr_shading.cpp
+    renderer3ds/virtual_shadow_map.cpp
+    renderer3ds/pica_shadow_geometry.cpp
 )
 add_library(renderer_3ds_pica_core STATIC
     ${Source_Files__Renderer3dsPica})

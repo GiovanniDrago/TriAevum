@@ -90,6 +90,9 @@ TEST(PicaPipelineManifest, StructuralIdentityIgnoresEvidence) {
 TEST(PicaPipelineManifest, RoundTripsTypedPipelineState) {
     const auto path = TemporaryPath("oot3d_pica_pipeline_roundtrip");
     auto entry = MakeEntry();
+    entry.RequestedFeatures = entry.AppliedFeatures =
+        PicaShaderInstrumentationFeature::NativePerPixelLighting |
+        PicaShaderInstrumentationFeature::PbrMaterial;
     entry.ObservationCount = 8U;
     entry.CanonicalPipelineIds = {0x1234U, 0x5678U};
     entry.SettingsRevisions = {2U, 4U};
@@ -106,6 +109,9 @@ TEST(PicaPipelineManifest, RoundTripsTypedPipelineState) {
     ASSERT_EQ(manifest.Entries().size(), 1U);
     const auto& loaded = manifest.Entries().front();
     EXPECT_TRUE(entry.StructurallyEquivalent(loaded));
+    EXPECT_TRUE(loaded.MatchesPrewarmProfile(entry.RequestedFeatures, false));
+    EXPECT_FALSE(loaded.MatchesPrewarmProfile(
+        PicaShaderInstrumentationFeature::NativePerPixelLighting, false));
     EXPECT_EQ(loaded.ObservationCount, 8U);
     EXPECT_EQ(loaded.CanonicalPipelineIds, entry.CanonicalPipelineIds);
     EXPECT_EQ(loaded.SettingsRevisions, entry.SettingsRevisions);

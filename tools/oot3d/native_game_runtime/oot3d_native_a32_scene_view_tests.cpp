@@ -68,6 +68,7 @@ void RunNativeA32SceneViewProbeTests() {
   }
 
   probe.ObservePlayState(playState);
+  memory.Write32(playState + 0x104U, 0x55U);
   memory.WriteFloat(view + 0x30U, 10.0F);
   memory.WriteFloat(view + 0x34U, 20.0F);
   memory.WriteFloat(view + 0x38U, 30.0F);
@@ -78,6 +79,7 @@ void RunNativeA32SceneViewProbeTests() {
   const auto snapshot = probe.Capture(memory);
   if (!snapshot.has_value() || snapshot->PlayStateAddress != playState ||
       !snapshot->CameraAvailable ||
+      snapshot->SceneId != 0x55U ||
       snapshot->GuestFunction != 0x002FDE9CU ||
       snapshot->GuestReturnAddress != 0x00300F50U || snapshot->Serial == 0U) {
     throw std::runtime_error("native scene-view identity mismatch");
@@ -94,6 +96,11 @@ void RunNativeA32SceneViewProbeTests() {
       probe.Stats().ReadFailures != 0U) {
     throw std::runtime_error("native scene-view probe stats mismatch");
   }
+
+  memory.Write32(playState + 0x104U, 0xFFFFU);
+  const auto unavailableScene = probe.Capture(memory);
+  if (!unavailableScene || unavailableScene->SceneId)
+    throw std::runtime_error("invalid native scene identity inherited the previous scene");
 
   probe.Reset();
   if (probe.Capture(memory).has_value()) {

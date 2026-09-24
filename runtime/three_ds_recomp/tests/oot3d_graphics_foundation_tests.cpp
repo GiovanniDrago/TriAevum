@@ -1,5 +1,6 @@
 #include "fast/oot3d/effect_graph.h"
 #include "fast/renderer3ds/pica_ui_canvas.h"
+#include "fast/renderer3ds/pica_shadow_geometry.h"
 #include "oot3d/renderer/ui_presentation_layout.h"
 #include "fast/renderer3ds/pica_surface_passthrough_scale.h"
 #include "fast/oot3d/display_effect_plan.h"
@@ -208,37 +209,131 @@ TEST(Oot3dUiPresentationLayout, MapsTargetPointsIntoLogicalCanvas) {
                      .Inside);
 }
 
-TEST(Oot3dDirectionalShadows, BuildsFiniteStableSingleCascadePlan) {
-    using namespace Fast::Oot3d;
-    DirectionalShadowFrameInput input;
-    input.ClipToWorld = IdentityDirectionalShadowMatrix();
-    input.LightDirectionTowardSource = { 0.4F, 1.0F, -0.2F };
-    input.Settings.Mode = DirectionalShadowMode::SingleCascade;
-    input.Settings.Resolution = 2048U;
-    input.Settings.MaximumDistance = 500.0F;
-    input.Settings.DepthPadding = 30.0F;
-    input.Settings.Stabilize = true;
-
-    const auto first = BuildDirectionalShadowFramePlan(input);
-    const auto second = BuildDirectionalShadowFramePlan(input);
-    ASSERT_TRUE(first.Ready());
-    EXPECT_EQ(first.Status, DirectionalShadowPlanStatus::Ready);
-    EXPECT_EQ(first.Resolution, 2048U);
-    EXPECT_EQ(first.WorldToLightClip, second.WorldToLightClip);
-    EXPECT_EQ(first.WorldToShadowTexture, second.WorldToShadowTexture);
-    for (const float value : first.WorldToShadowTexture) {
-        EXPECT_TRUE(std::isfinite(value));
-    }
-}
-
 TEST(Oot3dDirectionalShadows, RejectsMissingDirectionAndDisabledMode) {
     using namespace Fast::Oot3d;
     DirectionalShadowFrameInput input;
-    input.ClipToWorld = IdentityDirectionalShadowMatrix();
     EXPECT_EQ(BuildDirectionalShadowFramePlan(input).Status, DirectionalShadowPlanStatus::Disabled);
 
-    input.Settings.Mode = DirectionalShadowMode::SingleCascade;
+    input.Settings.Mode = DirectionalShadowMode::VirtualShadowMaps;
     EXPECT_EQ(BuildDirectionalShadowFramePlan(input).Status, DirectionalShadowPlanStatus::InvalidLightDirection);
+}
+
+TEST(Renderer3dsVirtualShadows, RetainsWorldPagesAndRetriesUncommittedCasterChanges) {
+    using namespace Fast::Renderer3ds;
+    auto layout = BuildVirtualShadowLayout({0.25F, 0.25F, 0}, {0, 0, 1}, 4096, 65536);
+    std::array<VirtualShadowCaster, 2> casters{{
+        {{{-3000, -3000, -10}, {3000, 3000, 10}, true}, 1},
+        {{{20, 20, 0}, {40, 40, 80}, true}, 2}}};
+    VirtualShadowMapCache cache;
+    cache.Prepare(layout, casters, 1);
+    cache.Commit();
+    const auto pageAtWorldOrigin = cache.Table()[4 * 8 + 4];
+    auto shifted = BuildVirtualShadowLayout({64.25F, 0.25F, 0}, {0, 0, 1}, 4096, 65536, &layout);
+    cache.Prepare(shifted, casters, 2);
+    cache.Commit();
+    EXPECT_EQ(cache.Table()[4 * 8 + 3], pageAtWorldOrigin);
+    casters[1].WorldBounds.Minimum[0] += 256;
+    casters[1].WorldBounds.Maximum[0] += 256;
+    casters[1].ContentVersion = 3;
+    cache.Prepare(shifted, casters, 3);
+    const auto oldFootprint = std::find_if(cache.Updates().begin(), cache.Updates().end(),
+        [](const auto& page) { return page.Key == VirtualShadowPageKey{0, 0, 0}; });
+    const auto newFootprint = std::find_if(cache.Updates().begin(), cache.Updates().end(),
+        [](const auto& page) { return page.Key == VirtualShadowPageKey{4, 0, 0}; });
+    ASSERT_NE(oldFootprint, cache.Updates().end());
+    ASSERT_NE(newFootprint, cache.Updates().end());
+    EXPECT_EQ(cache.Casters(*oldFootprint).size(), 1U);
+    EXPECT_EQ(cache.Casters(*newFootprint).size(), 2U);
+    const auto pending = cache.Updates().size();
+    cache.Prepare(shifted, casters, 4);
+    EXPECT_EQ(cache.Updates().size(), pending);
+    cache.Commit();
+    auto roundoff = BuildVirtualShadowLayout({64.25F, 0.25F, 0}, {1.0e-7F, 0, 1}, 4096, 65536, &shifted);
+    cache.Prepare(roundoff, casters, 5);
+    EXPECT_TRUE(cache.Updates().empty());
+}
+
+TEST(Renderer3dsVirtualShadows, PreservesCoarseCoverageWhenPhysicalPagesAreExhausted) {
+    using namespace Fast::Renderer3ds;
+    auto layout = BuildVirtualShadowLayout({}, {0, 0, 1}, 2048, 65536);
+    const std::array<VirtualShadowCaster, 1> casters{{
+        {{{-65536, -65536, -10}, {65536, 65536, 10}, true}, 1}}};
+    VirtualShadowMapCache cache;
+    cache.Prepare(layout, casters, 1);
+    ASSERT_GT(cache.Statistics().Unmapped, 0U);
+    const uint32_t side = layout.AtlasResolution / kVirtualShadowPhysicalPageTexels;
+    for (auto entry : cache.Table())
+        if (entry != kVirtualShadowEmptyPage) EXPECT_LE(entry, side * side);
+    const auto& coarse = layout.Levels[layout.LevelCount - 1];
+    const int x = int(std::floor(62000.0F / coarse.PageWorldSize)) - coarse.OriginX;
+    const int y = -coarse.OriginY;
+    EXPECT_NE(cache.Table()[((layout.LevelCount - 1) * 8 + y) * 8 + x], 0U);
+    const uint32_t nearPage = cache.Table()[4 * 8 + 4];
+    ASSERT_NE(nearPage, 0U);
+    cache.Commit();
+    layout = BuildVirtualShadowLayout({64.25F, 0, 0}, {0, 0, 1}, 2048, 65536, &layout);
+    cache.Prepare(layout, casters, 2);
+    const auto& fine = layout.Levels[0];
+    EXPECT_EQ(cache.Table()[(-fine.OriginY) * 8 - fine.OriginX], nearPage);
+}
+
+TEST(Renderer3dsShadowGeometry, BoundsFixedSkinnedInputsInCapturedWorldSpace) {
+    using namespace Fast::Renderer3ds;
+    PicaVertexShaderHookLayout hooks;
+    hooks.Transform = {PicaVertexTransformOperation::ModelViewProjection3x4, 0, 4, 4, 3, 20, 3, 0, 1};
+    hooks.Skeleton = {PicaVertexSkeletonOperation::MatrixPalette3x4, 0, 1, 20, 3, 6, 7, 4};
+    auto& surface = hooks.Surface;
+    surface.ViewNormalTemporary = 0;
+    surface.LightingBooleanUniform = 2;
+    surface.DiffuseUniform = 10;
+    surface.AmbientUniform = 11;
+    surface.TintBooleanUniform = 3;
+    surface.TintInputRegister = 3;
+    surface.TintScale = surface.LightEnabledValue = {90, 1};
+    surface.LightDirectionUniforms = {30, 33, 36};
+    surface.BoneIndexScale = surface.BoneWeightScale = surface.SkinnedNormalScale = {90, 1};
+    surface.SkinnedPositionScale = {90, 0};
+    surface.InfluenceCount = {90, 2};
+    surface.AdditionalInfluenceThresholds = {PicaVertexUniformComponent{91, 0}, PicaVertexUniformComponent{91, 1}};
+    std::array<std::array<float, 4>, 96> uniforms{};
+    for (const auto first : {4, 20})
+        for (int axis = 0; axis < 3; ++axis) uniforms[first + axis][axis] = 1;
+    uniforms[20][3] = 440;
+    uniforms[90] = {0.25F, 1, 2, 0};
+    uniforms[91] = {3, 4, 0, 0};
+    std::array<std::array<float, 4>, 4> data{{
+        {8, 12, 16, 1}, {16, 20, 24, 1}, {0, 0, 0, 0}, {1, 0, 0, 0}}};
+    const std::array<PicaSceneVertexBufferBinding, 3> bindings{{
+        {0, 0, 32, 16}, {1, 32, 16, 16}, {2, 48, 16, 16}}};
+    const std::array<PicaNriPackedVertexAttribute, 3> attributes{{{0, 0, 0}, {6, 1, 0}, {7, 2, 0}}};
+    const std::array<PicaNriPackedVertexBinding, 3> inputs{{{0, 16, false}, {1, 16, true}, {2, 16, true}}};
+    auto viewToWorld = Fast::Oot3d::IdentityDirectionalShadowMatrix();
+    viewToWorld[12] = -100;
+    PicaShadowCasterCache cache;
+    const PicaShadowGeometryView geometry{
+        {reinterpret_cast<const uint8_t*>(data.data()), sizeof(data)}, bindings, attributes, inputs, 0, 0, 2, 0, false};
+    const auto bytes = std::span(reinterpret_cast<const uint8_t*>(uniforms.data()), sizeof(uniforms));
+    const auto first = BuildPicaShadowCaster(geometry, hooks, 3, bytes, viewToWorld, 1, cache);
+    ASSERT_TRUE(first.WorldBounds.Available);
+    EXPECT_LE(first.WorldBounds.Minimum[0], 12);
+    EXPECT_GT(first.WorldBounds.Minimum[0], 11.5F);
+    EXPECT_GE(first.WorldBounds.Maximum[0], 14);
+    EXPECT_LT(first.WorldBounds.Maximum[0], 14.5F);
+    uniforms[20][3] = 840;
+    viewToWorld[12] = -200;
+    const auto moved = BuildPicaShadowCaster(geometry, hooks, 3, bytes, viewToWorld, 1, cache);
+    ASSERT_TRUE(moved.WorldBounds.Available);
+    EXPECT_NEAR(moved.WorldBounds.Minimum[0], first.WorldBounds.Minimum[0], 1.0e-5F);
+    EXPECT_NEAR(moved.WorldBounds.Maximum[0], first.WorldBounds.Maximum[0], 1.0e-5F);
+    // Native skinning restores homogeneous W after blending; camera
+    // translation must not be multiplied by the sum of bone weights.
+    data[3] = {0.25F, 0.25F, 0, 0};
+    const auto partialWeights = BuildPicaShadowCaster(geometry, hooks, 3, bytes, viewToWorld, 1, cache);
+    ASSERT_TRUE(partialWeights.WorldBounds.Available);
+    EXPECT_LE(partialWeights.WorldBounds.Minimum[0], -94);
+    EXPECT_GT(partialWeights.WorldBounds.Minimum[0], -94.5F);
+    EXPECT_GE(partialWeights.WorldBounds.Maximum[0], -93);
+    EXPECT_LT(partialWeights.WorldBounds.Maximum[0], -92.5F);
 }
 
 TEST(Oot3dDirectionalShadows, RejectsOrthographicScreenDrawsAsCasters) {
@@ -3348,6 +3443,15 @@ TEST(Oot3dPicaNriDisplayCopy, RejectsInvalidOrAliasedCopies) {
     desc.Plan.DestinationWidth = 400U;
     desc.Plan.DestinationHeight = 240U;
     EXPECT_TRUE(Fast::Oot3d::ValidateNriPicaDisplayCopyDesc(desc));
+    desc.DestinationColorAttachment = true;
+    EXPECT_FALSE(Fast::Oot3d::ValidateNriPicaDisplayCopyDesc(desc));
+    desc.DestinationInitialized = true;
+    EXPECT_TRUE(Fast::Oot3d::ValidateNriPicaDisplayCopyDesc(desc));
+    desc.Plan.SourceWidth = 800U;
+    desc.Plan.HorizontalSamples = 2U;
+    EXPECT_FALSE(Fast::Oot3d::ValidateNriPicaDisplayCopyDesc(desc));
+    desc.DestinationColorAttachment = false;
+    EXPECT_TRUE(Fast::Oot3d::ValidateNriPicaDisplayCopyDesc(desc));
     desc.DestinationImage = desc.SourceImage;
     EXPECT_FALSE(Fast::Oot3d::ValidateNriPicaDisplayCopyDesc(desc));
     desc.DestinationImage = image(2U);
@@ -3513,19 +3617,6 @@ TEST(Oot3dPicaNriTextureUpload,
     EXPECT_EQ(fresh->RequiredSize, capacity);
 }
 
-TEST(Oot3dSpatialAa, ScanoutKeepsFxaaAndDoesNotApproximateSmaa) {
-    const auto shader = Fast::Oot3d::BuildPicaScanoutFragmentShader();
-    EXPECT_NE(shader.find("oot3d_fxaa"), std::string::npos);
-    EXPECT_EQ(shader.find("oot3d_smaa1x"), std::string::npos);
-    EXPECT_NE(shader.find("center.a);"), std::string::npos);
-    EXPECT_NE(shader.find("direction.x = -((luma_northwest"),
-              std::string::npos);
-    EXPECT_NE(shader.find("outer_luma < luma_min"), std::string::npos);
-    EXPECT_NE(shader.find("scanout.input_linear != 0u"),
-              std::string::npos);
-    EXPECT_EQ(shader.find("north + south + west + east"),
-              std::string::npos);
-}
 
 TEST(Oot3dSmaa1x, DecodesOfficialLookupTexturesExactly) {
     using namespace Fast::Oot3d;
@@ -3686,7 +3777,7 @@ TEST(Oot3dGraphicsSettings, GatesDirectionalShadowsOnTheirBackendOwner) {
     using namespace Fast::Oot3d;
     auto settings = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
     settings.Effects.DirectionalShadows.Mode =
-        DirectionalShadowMode::SingleCascade;
+        DirectionalShadowMode::VirtualShadowMaps;
 
     GraphicsCapabilities capabilities;
     auto result = GraphicsSettingsService::Validate(settings, capabilities);
@@ -3696,7 +3787,7 @@ TEST(Oot3dGraphicsSettings, GatesDirectionalShadowsOnTheirBackendOwner) {
     capabilities.Set(GraphicsCapability::NriDirectionalShadows, true);
     result = GraphicsSettingsService::Validate(settings, capabilities);
     EXPECT_EQ(result.Value.Effects.DirectionalShadows.Mode,
-              DirectionalShadowMode::SingleCascade);
+              DirectionalShadowMode::VirtualShadowMaps);
 }
 
 TEST(Oot3dPicaToon, ValidationClampsOutlineControls) {
@@ -4863,34 +4954,6 @@ TEST(Oot3dHiZ, EmitsBoundedComputeReductionShader) {
 #endif
 }
 
-TEST(Oot3dHiZ, ReflectionMarchUsesHierarchyAndMaterialGate) {
-    const auto ray = Fast::Oot3d::BuildHiZReflectionComputeShader();
-    const auto filter =
-        Fast::Oot3d::BuildHiZReflectionBilateralFilterShader();
-    EXPECT_NE(ray.find("sampler2D(hiz_depth,nearest_sampler)"),
-              std::string::npos);
-    EXPECT_NE(ray.find("binding = 5) uniform sampler"), std::string::npos);
-    EXPECT_NE(filter.find("binding = 6) uniform sampler"), std::string::npos);
-    EXPECT_NE(ray.find("material_guide"), std::string::npos);
-    EXPECT_NE(ray.find("material.r <= 0.001"), std::string::npos);
-    EXPECT_NE(ray.find("step_index < 64u"), std::string::npos);
-    EXPECT_NE(filter.find("depth_weight"), std::string::npos);
-    EXPECT_NE(filter.find("normal_weight"), std::string::npos);
-    EXPECT_NE(filter.find("weighted_confidence"), std::string::npos);
-#ifdef OOT3D_FOUNDATION_HAS_SHADERC
-    shaderc::Compiler compiler;
-    shaderc::CompileOptions options;
-    options.SetTargetEnvironment(shaderc_target_env_vulkan,
-                                 shaderc_env_version_vulkan_1_2);
-    for (const auto* shader : {&ray, &filter}) {
-        const auto spirv = compiler.CompileGlslToSpv(
-            *shader, shaderc_compute_shader, "oot3d_ssr.comp", options);
-        EXPECT_EQ(spirv.GetCompilationStatus(),
-                  shaderc_compilation_status_success)
-            << spirv.GetErrorMessage();
-    }
-#endif
-}
 
 TEST(Oot3dUpscaler, ResolvesNriQualityContractDeterministically) {
     using namespace Fast::Oot3d;

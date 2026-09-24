@@ -45,7 +45,9 @@ struct PicaNriFragmentShaderExtensions {
 // lighting extension: history texture, split sampler and receiver state.
 // Bindings 13-14 are the native fragment-lighting LUT image and sampler.
 // Binding 15 is an optional surface-style constant buffer, not native PICA state.
-constexpr std::array<PicaNriDescriptorBinding, 16>
+// Binding 16 contains the selected native lights and unlit material inputs.
+// Bindings 17-23 carry opt-in PBR parameters and normal/ORM/emissive maps.
+constexpr std::array<PicaNriDescriptorBinding, 24>
     kPicaNriDescriptorBindings{{
         {0U, PicaNriDescriptorKind::ConstantBuffer,
          PicaNriShaderStage::Vertex},
@@ -78,6 +80,22 @@ constexpr std::array<PicaNriDescriptorBinding, 16>
         {14U, PicaNriDescriptorKind::Sampler,
          PicaNriShaderStage::Fragment},
         {15U, PicaNriDescriptorKind::ConstantBuffer,
+         PicaNriShaderStage::Fragment},
+        {16U, PicaNriDescriptorKind::ConstantBuffer,
+         PicaNriShaderStage::Fragment},
+        {17U, PicaNriDescriptorKind::ConstantBuffer,
+         PicaNriShaderStage::Fragment},
+        {18U, PicaNriDescriptorKind::Texture,
+         PicaNriShaderStage::Fragment},
+        {19U, PicaNriDescriptorKind::Texture,
+         PicaNriShaderStage::Fragment},
+        {20U, PicaNriDescriptorKind::Texture,
+         PicaNriShaderStage::Fragment},
+        {21U, PicaNriDescriptorKind::Sampler,
+         PicaNriShaderStage::Fragment},
+        {22U, PicaNriDescriptorKind::Sampler,
+         PicaNriShaderStage::Fragment},
+        {23U, PicaNriDescriptorKind::Sampler,
          PicaNriShaderStage::Fragment},
     }};
 

@@ -67,8 +67,17 @@ struct PicaScanoutPolicyInput {
 [[nodiscard]] PicaScanoutPushConstants BuildPicaScanoutPushConstants(
     const PicaScanoutPolicyInput& input);
 [[nodiscard]] std::string BuildPicaScanoutVertexShader();
+// The composed source domain decides the pixel mapping: presentation reads the
+// packed native display surface in its physical-screen orientation, while an
+// offscreen consumer samples the same surface domain its own source lives in.
+enum class PicaScanoutOrientation : uint8_t {
+    PhysicalScreen,
+    Surface,
+};
 [[nodiscard]] std::string BuildPicaScanoutFragmentShader(
     bool separateSampler = false,
-    std::optional<int> diagnosticMode = std::nullopt);
+    std::optional<int> diagnosticMode = std::nullopt,
+    PicaScanoutOrientation orientation =
+        PicaScanoutOrientation::PhysicalScreen);
 
 } // namespace Fast::Oot3d

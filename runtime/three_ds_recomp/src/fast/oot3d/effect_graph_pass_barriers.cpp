@@ -22,6 +22,7 @@ namespace {
         case EffectResource::DirectionalShadowMap:
             return ResourceAccess::DepthAttachment;
         case EffectResource::PresentationOutput:
+        case EffectResource::SceneComposition:
             return ResourceAccess::ColorAttachment;
         case EffectResource::PicaSceneFrame:
         case EffectResource::NativeSceneView:
@@ -58,6 +59,11 @@ namespace {
     bool downstreamRead) noexcept {
     if (resource == EffectResource::PresentationOutput) {
         return ResourceAccess::Present;
+    }
+    // A boundary composition is the sampled source of a native consumer, not a
+    // presented image, so it always retires readable.
+    if (resource == EffectResource::SceneComposition) {
+        return ResourceAccess::ShaderRead;
     }
     if (downstreamRead) {
         return ResourceAccess::ShaderRead;

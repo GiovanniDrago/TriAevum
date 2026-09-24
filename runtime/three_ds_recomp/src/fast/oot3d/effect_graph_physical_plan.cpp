@@ -59,6 +59,7 @@ EffectPhysicalResidency ClassifyEffectResourceResidency(
         case EffectResource::NativeDepth:
         case EffectResource::NativeShadow2D:
         case EffectResource::PresentationOutput:
+        case EffectResource::SceneComposition:
             return EffectPhysicalResidency::ExternalImage;
         case EffectResource::NormalGuide:
         case EffectResource::MaterialGuide:

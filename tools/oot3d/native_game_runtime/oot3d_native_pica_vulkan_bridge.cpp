@@ -232,7 +232,8 @@ bool SubmitOot3dPicaVulkanDrawPlan(
             texture.ResolvedNativeBytes(), texture.NativeContentHash,
             texture.NativeContentHashAvailable,
             texture.NativeBaseLevelContentHash,
-            texture.NativeBaseLevelContentHashAvailable};
+            texture.NativeBaseLevelContentHashAvailable,
+            texture.CopyReferences};
     }
 
     Oot3d::Renderer::PicaDrawView draw;
@@ -250,7 +251,10 @@ bool SubmitOot3dPicaVulkanDrawPlan(
             plan.Composition.Provenance),
         plan.Composition.SourcePc,
         plan.Composition.NativeValue,
+        plan.Composition.NativeProjectedShadow,
     };
+    draw.LightBinding = overrides != nullptr && overrides->LightBinding != nullptr
+        ? *overrides->LightBinding : plan.LightBinding;
     draw.CanonicalDescriptorSchemaVersion =
         plan.CanonicalIdentity.SchemaVersion;
     draw.CanonicalVertexProgramId =
@@ -412,6 +416,7 @@ bool SubmitOot3dPicaVulkanDisplayTransfer(
     Oot3d::Renderer::PicaRenderBackend& renderingApi,
     const Oot3dPicaDisplayTransferSubmission& submission,
     bool present, std::string* error, uint64_t renderTargetNamespace,
+    bool materializeGuest,
     Oot3d::Renderer::PicaPresentationMode presentationMode) {
     const auto& transfer = submission.Transfer;
     Oot3d::Renderer::PicaDisplayTransferView view;
@@ -433,6 +438,7 @@ bool SubmitOot3dPicaVulkanDisplayTransfer(
     view.Flags = transfer.Flags;
     view.TextureCopyBytes = transfer.TextureCopyBytes;
     view.AfterDrawSubmissionId = submission.AfterDrawSubmissionId;
+    view.MaterializeGuest = materializeGuest;
     if (transfer.TextureCopyBytes != 0U) {
         view.OutputWidth = declaredOutputWidth;
         view.OutputHeight = declaredOutputHeight;

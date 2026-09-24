@@ -33,6 +33,7 @@ class NativePresentationPolicy {
         effective.Effects.ToonStyle.OutlineEnabled = false;
         effective.Effects.AmbientOcclusion = AmbientOcclusionMode::Off;
         effective.Effects.Reflections = ReflectionMode::Off;
+        effective.Effects.DirectionalShadows.Mode = DirectionalShadowMode::Off;
     }
 
   private:

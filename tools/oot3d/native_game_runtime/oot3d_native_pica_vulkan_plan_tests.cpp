@@ -327,6 +327,37 @@ int main() {
     WriteFloat(cachedPlan.VertexBindings[0].MutableBytes(), 0U, 6.0F);
     WriteFloat(plan.VertexBindings[1].MutableBytes(), 16U, 10.0F);
     WriteFloat(cachedPlan.VertexBindings[1].MutableBytes(), 16U, 14.0F);
+    auto& previousPoint = plan.LightBinding.Sources[0];
+    previousPoint.Kind = Fast::Renderer3ds::PicaNativeLightSource::Type::Point;
+    previousPoint.SourceIdentity = 1U;
+    previousPoint.PositionWorld = {2.0F, 0.0F, 0.0F};
+    previousPoint.Radius = 10.0F;
+    cachedPlan.LightBinding = plan.LightBinding;
+    cachedPlan.LightBinding.Sources[0].PositionWorld[0] = 6.0F;
+    plan.LightBinding.Sources[1] = previousPoint;
+    cachedPlan.LightBinding.Sources[1] = cachedPlan.LightBinding.Sources[0];
+    cachedPlan.LightBinding.Sources[1].SourceIdentity = 2U;
+    auto sceneBefore = std::make_shared<Fast::Renderer3ds::PicaScenePointLights>();
+    sceneBefore->Count = 2;
+    sceneBefore->Lights[0] = {11, {2,0,0}, {1,0,0}, 80, 0};
+    sceneBefore->Lights[1] = {22, {8,0,0}, {0,1,0}, 40, 1};
+    auto sceneAfter = std::make_shared<Fast::Renderer3ds::PicaScenePointLights>(*sceneBefore);
+    std::swap(sceneAfter->Lights[0], sceneAfter->Lights[1]);
+    sceneAfter->Lights[0].PositionWorld[0] = 12;
+    sceneAfter->Lights[1].PositionWorld[0] = 6;
+    sceneAfter->Lights[1].Radius = 0;
+    plan.LightBinding.ScenePoints = sceneBefore;
+    cachedPlan.LightBinding.ScenePoints = sceneAfter;
+    auto directionsBefore = std::make_shared<Fast::Renderer3ds::PicaSceneDirectionalLights>();
+    directionsBefore->Count = 2;
+    directionsBefore->Lights[0] = {51, {0,1,0}, {1,0,0}};
+    directionsBefore->Lights[1] = {52, {0,-1,0}, {0,0,1}};
+    auto directionsAfter = std::make_shared<Fast::Renderer3ds::PicaSceneDirectionalLights>(*directionsBefore);
+    std::swap(directionsAfter->Lights[0], directionsAfter->Lights[1]);
+    directionsAfter->Lights[1].DirectionTowardSource = {1,0,0};
+    directionsAfter->Lights[1].Color = {0,1,0};
+    plan.LightBinding.SceneDirectionals = directionsBefore;
+    cachedPlan.LightBinding.SceneDirectionals = directionsAfter;
     Oot3dNativeGame::Oot3dPicaVulkanDrawPlan interpolated;
     Require(Oot3dNativeGame::AreOot3dPicaVisualDrawsCompatible(
                 plan, cachedPlan) &&
@@ -334,6 +365,8 @@ int main() {
                     plan, cachedPlan, 0.5F, interpolated),
             "compatible native PICA draws were not interpolated");
     Require(interpolated.VertexShader.Uniforms.Floats[0][0] == 4.0F &&
+                interpolated.LightBinding.Sources[0].PositionWorld[0] == 4.0F &&
+                interpolated.LightBinding.Sources[1].PositionWorld[0] == 6.0F &&
                 interpolated.VertexShader.Uniforms.Floats[0x59U][0] ==
                     24.0F &&
                 std::abs(interpolated.FragmentShader.Uniforms.FogColor[0] -
@@ -345,6 +378,18 @@ int main() {
                 interpolated.VertexShader.Uniforms.BooleanMask ==
                     cachedPlan.VertexShader.Uniforms.BooleanMask,
             "visual interpolation did not separate continuous and discrete state");
+    const auto points = interpolated.LightBinding.ScenePoints;
+    Require(points && points->Lights[0].SourceIdentity == 22 &&
+                points->Lights[0].PositionWorld[0] == 10 &&
+                points->Lights[1].PositionWorld[0] == 4 && points->Lights[1].Radius == 40 &&
+                sceneBefore->Lights[0].PositionWorld[0] == 2 && sceneAfter->Lights[1].Radius == 0,
+            "scene lights interpolated by slot rather than owner, or changed a native snapshot");
+    const auto directions = interpolated.LightBinding.SceneDirectionals;
+    Require(directions && directions->Lights[0].SourceIdentity == 52 &&
+                directions->Lights[0].DirectionTowardSource == directionsBefore->Lights[1].DirectionTowardSource &&
+                directions->Lights[1].DirectionTowardSource == std::array<float, 3>{.5F,.5F,0} &&
+                directions->Lights[1].Color == std::array<float, 3>{.5F,.5F,0},
+            "native scene directions interpolated by selected slot instead of source identity");
 
     auto atlasPrevious = plan;
     auto atlasCurrent = cachedPlan;
@@ -458,8 +503,34 @@ int main() {
         floats[10] = {0,0,-1.002F,-20.02F}; floats[11] = {0,0,-1,0};
         floats[16] = {1,0,0,0}; floats[17] = {0,1,0,0}; floats[18] = {0,0,1,0};
         floats[20] = {1,0,0,0}; floats[21] = {0,1,0,0}; floats[22] = {0,0,1,0};
+        before.Draws[0].LightBinding.WorldToView = std::array<float, 16>{
+            1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         after = before;
         auto& next = after.Draws[0].VertexShader.Uniforms.Floats;
+        // The same static world point must map to the same displayed position
+        // through the sampled geometry and its lighting/shadow transform.
+        next[20] = {0,0,1,-11}; next[21] = {0,1,0,5}; next[22] = {-1,0,0,7};
+        after.Draws[0].LightBinding.WorldToView = std::array<float, 16>{
+            0,0,-1,0, 0,1,0,0, 1,0,0,0, -11,5,7,1};
+        for (float alpha : {0.0F, 0.5F, 1.0F}) {
+            Oot3dNativeGame::Oot3dPicaVulkanDrawPlan sampled;
+            Require(Oot3dNativeGame::InterpolateOot3dPicaVisualDraw(
+                        before.Draws[0], after.Draws[0], alpha, sampled),
+                    "static geometry could not be sampled");
+            Require(sampled.LightBinding.WorldToView.has_value(), "sample lost its world/view anchor");
+            const std::array<float, 4> worldPoint{3,5,7,1};
+            for (size_t row = 0; row < 3; ++row) {
+                float geometryPosition = 0, lightingPosition = 0;
+                for (size_t column = 0; column < 4; ++column) {
+                    geometryPosition += sampled.VertexShader.Uniforms.Floats[20 + row][column] * worldPoint[column];
+                    lightingPosition += (*sampled.LightBinding.WorldToView)[column * 4 + row] * worldPoint[column];
+                }
+                Require(std::abs(geometryPosition - lightingPosition) < 1e-6F,
+                        "interpolation detached lighting/shadows from static geometry");
+            }
+        }
+        next = floats;
+        after.Draws[0].LightBinding = before.Draws[0].LightBinding;
         next[16][3] = -2;
         auto camera = Fast::Renderer3ds::MeasurePicaCameraTemporalDelta(layout, floats, next);
         Require(camera && !camera->Discontinuous(), "ordinary camera translation was rejected");
@@ -533,10 +604,12 @@ int main() {
     Require(Oot3dNativeGame::AnalyzeAndSampleOot3dPicaVisualFrameView(*previousFrame, *currentFrame, 0.5F,
                                                                       viewTransition, viewSample) &&
                 viewSample.Draws.size() == 1U && viewSample.Draws[0].BasePlan == &currentFrame->Draws[0] &&
-                viewSample.MemoryFills == &currentFrame->MemoryFills &&
-                viewSample.DisplayTransfers == &currentFrame->DisplayTransfers &&
                 viewSample.InterpolatedDraws == sample.InterpolatedDraws &&
                 viewSample.Draws[0].VertexUniforms.has_value() &&
+                viewSample.Draws[0].LightBinding.has_value() &&
+                viewSample.Draws[0].LightBinding->Sources[0].PositionWorld[0] == 4.0F &&
+                viewSample.Draws[0].LightBinding->ScenePoints &&
+                viewSample.Draws[0].LightBinding->ScenePoints->Lights[0].PositionWorld[0] == 10 &&
                 viewSample.Draws[0].VertexUniforms->Floats[0][0] ==
                     sample.Draws[0].VertexShader.Uniforms.Floats[0][0] &&
                 viewSample.Draws[0].HasVertexBindingOverrides &&

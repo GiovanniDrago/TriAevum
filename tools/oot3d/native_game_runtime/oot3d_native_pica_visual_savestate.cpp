@@ -25,6 +25,12 @@ constexpr uint32_t kVisualReplayMagicV10 = 0x41525650U; // PVRA
 constexpr uint32_t kVisualReplayMagicV11 = 0x42525650U; // PVRB
 constexpr uint32_t kVisualReplayMagicV12 = 0x43525650U; // PVRC
 constexpr uint32_t kVisualReplayMagicV13 = 0x44525650U; // PVRD: raw transfers
+constexpr uint32_t kVisualReplayMagicV14 = 0x45525650U; // PVRE: copy provenance
+constexpr uint32_t kVisualReplayMagicV15 = 0x46525650U; // PVRF: selected native light sources
+constexpr uint32_t kVisualReplayMagicV16 = 0x47525650U; // PVRG: geometry-synchronous world-to-view
+constexpr uint32_t kVisualReplayMagicV17 = 0x48525650U; // PVRH: native draw roles
+constexpr uint32_t kVisualReplayMagicV18 = 0x49525650U; // PVRI: native scene directionals
+constexpr uint32_t kMaximumCopyReferencesPerTexture = 4096U;
 constexpr uint32_t kMaximumPlans = 4096U;
 constexpr uint32_t kMaximumResources = 4096U;
 constexpr uint32_t kMaximumShaderBytes = 4U << 20U;
@@ -38,6 +44,8 @@ void SetError(std::string* error, std::string_view message) {
 
 class Writer final {
   public:
+    std::map<const Fast::Renderer3ds::PicaScenePointLights*, uint32_t> ScenePoints;
+    std::map<const Fast::Renderer3ds::PicaSceneDirectionalLights*, uint32_t> SceneDirectionals;
     void U8(uint8_t value) { mBytes.push_back(value); }
     void Bool(bool value) { U8(value ? 1U : 0U); }
     void U16(uint16_t value) {
@@ -78,6 +86,13 @@ class Reader final {
     bool HasLightingProgram = false;
     bool HasProcTexProgram = false;
     bool HasTextureCopy = false;
+    bool HasCopyReferences = false;
+    bool HasLightBinding = false;
+    bool HasWorldToView = false;
+    bool HasNativeDrawRoles = false;
+    bool HasSceneDirectionals = false;
+    std::vector<std::shared_ptr<const Fast::Renderer3ds::PicaScenePointLights>> ScenePoints;
+    std::vector<std::shared_ptr<const Fast::Renderer3ds::PicaSceneDirectionalLights>> SceneDirectionals;
     explicit Reader(std::span<const uint8_t> bytes) : mBytes(bytes) {}
 
     bool U8(uint8_t& value) {
@@ -717,6 +732,13 @@ void WritePlan(Writer& writer, const Oot3dPicaVulkanDrawPlan& value,
         writer.Bytes(texture.ResolvedNativeBytes());
         writer.U64(texture.NativeContentHash);
         writer.Bool(texture.NativeContentHashAvailable);
+        writer.U32(static_cast<uint32_t>(texture.CopyReferences.size()));
+        for (const auto& reference : texture.CopyReferences) {
+            writer.U64(reference.CompletionId);
+            writer.U64(reference.AfterDrawSubmissionId);
+            writer.U32(reference.PhysicalAddress);
+            writer.U32(reference.ByteCount);
+        }
     }
     writer.U64(value.GeometryIdentity);
     writer.U64(value.GeometryContentVersion);
@@ -726,6 +748,58 @@ void WritePlan(Writer& writer, const Oot3dPicaVulkanDrawPlan& value,
     WriteEnum(writer, value.Composition.Provenance);
     writer.U32(value.Composition.SourcePc);
     writer.U32(value.Composition.NativeValue);
+    writer.Bool(value.Composition.NativeProjectedShadow);
+    for (const auto& light : value.LightBinding.Sources) {
+        WriteEnum(writer, light.Kind);
+        writer.U64(light.SourceIdentity);
+        for (float component : light.PositionWorld) writer.Float(component);
+        for (float component : light.UnattenuatedColor) writer.Float(component);
+        for (float component : light.ReferenceColor) writer.Float(component);
+        writer.Float(light.Radius);
+    }
+    writer.Bool(value.LightBinding.WorldToView.has_value());
+    if (value.LightBinding.WorldToView)
+        for (float component : *value.LightBinding.WorldToView) writer.Float(component);
+    const auto& points = value.LightBinding.ScenePoints;
+    if (!points || points->Count == 0) {
+        writer.U32(0);
+    } else {
+        if (points->Count > points->Lights.size())
+            throw std::runtime_error("invalid scene point-light snapshot");
+        const auto [entry, inserted] = writer.ScenePoints.emplace(
+            points.get(), static_cast<uint32_t>(writer.ScenePoints.size() + 1U));
+        writer.U32(entry->second);
+        if (inserted) {
+            writer.U32(points->Count);
+            for (uint32_t i = 0; i < points->Count; ++i) {
+                const auto& light = points->Lights[i];
+                writer.U64(light.SourceIdentity);
+                writer.U32(light.Group);
+                for (float component : light.PositionWorld) writer.Float(component);
+                for (float component : light.Color) writer.Float(component);
+                writer.Float(light.Radius);
+            }
+        }
+    }
+    const auto& directionals = value.LightBinding.SceneDirectionals;
+    if (!directionals || directionals->Count == 0) {
+        writer.U32(0);
+    } else {
+        if (directionals->Count > directionals->Lights.size())
+            throw std::runtime_error("invalid scene directional-light snapshot");
+        const auto [entry, inserted] = writer.SceneDirectionals.emplace(
+            directionals.get(), static_cast<uint32_t>(writer.SceneDirectionals.size() + 1U));
+        writer.U32(entry->second);
+        if (inserted) {
+            writer.U32(directionals->Count);
+            for (uint32_t i = 0; i < directionals->Count; ++i) {
+                const auto& light = directionals->Lights[i];
+                writer.U64(light.SourceIdentity);
+                for (float component : light.DirectionTowardSource) writer.Float(component);
+                for (float component : light.Color) writer.Float(component);
+            }
+        }
+    }
     writer.Bool(value.LightingLuts != nullptr);
     if (value.LightingLuts != nullptr) {
         const uint64_t contentHash = value.LightingLuts->ContentHash;
@@ -742,7 +816,7 @@ bool ReadPlan(Reader& reader, Oot3dPicaVulkanDrawPlan& value,
               bool typedCompositionDomain,
               bool fragmentLighting, bool lightingLutReferences,
               bool shadowUniforms, bool fragmentLightingLayout,
-              bool typedCompositionLayer,
+              bool typedCompositionLayer, bool copyReferences,
               const LightingLutDictionary& lightingLuts) {
     if (!reader.U64(value.SubmissionId) || value.SubmissionId == 0U ||
         !reader.U32(value.CommandListAddress) ||
@@ -830,8 +904,30 @@ bool ReadPlan(Reader& reader, Oot3dPicaVulkanDrawPlan& value,
             !ReadTextureState(reader, texture.State, extended) ||
             !reader.Bytes(texture.NativeBytes, kMaximumResourceBytes) ||
             !reader.U64(texture.NativeContentHash) ||
-            !reader.Bool(texture.NativeContentHashAvailable) ||
-            !ResolveOot3dPicaTextureContentIdentity(texture)) {
+            !reader.Bool(texture.NativeContentHashAvailable)) {
+            return false;
+        }
+        if (copyReferences) {
+            uint32_t referenceCount = 0U;
+            if (!reader.U32(referenceCount) ||
+                referenceCount > kMaximumCopyReferencesPerTexture) {
+                return false;
+            }
+            texture.CopyReferences.resize(referenceCount);
+            for (auto& reference : texture.CopyReferences) {
+                if (!reader.U64(reference.CompletionId) ||
+                    !reader.U64(reference.AfterDrawSubmissionId) ||
+                    !reader.U32(reference.PhysicalAddress) ||
+                    !reader.U32(reference.ByteCount) ||
+                    reference.CompletionId == 0U ||
+                    reference.PhysicalAddress == 0U ||
+                    reference.ByteCount == 0U ||
+                    reference.ByteCount > texture.NativeBytes.size()) {
+                    return false;
+                }
+            }
+        }
+        if (!ResolveOot3dPicaTextureContentIdentity(texture)) {
             return false;
         }
     }
@@ -852,6 +948,73 @@ bool ReadPlan(Reader& reader, Oot3dPicaVulkanDrawPlan& value,
                !reader.U32(value.Composition.SourcePc) ||
                !reader.U32(value.Composition.NativeValue)) {
         return false;
+    }
+    if (reader.HasNativeDrawRoles &&
+        !reader.Bool(value.Composition.NativeProjectedShadow)) return false;
+    if (reader.HasLightBinding) {
+        for (auto& light : value.LightBinding.Sources) {
+            if (!ReadEnum(reader, light.Kind, 2U) || !reader.U64(light.SourceIdentity)) return false;
+            for (auto& component : light.PositionWorld)
+                if (!reader.Float(component) || !std::isfinite(component)) return false;
+            for (auto& component : light.UnattenuatedColor)
+                if (!reader.Float(component) || !std::isfinite(component) ||
+                    component < 0.0F || component > 1.0F) return false;
+            for (auto& component : light.ReferenceColor)
+                if (!reader.Float(component) || !std::isfinite(component) ||
+                    component < 0.0F || component > 1.0F) return false;
+            if (!reader.Float(light.Radius) || !std::isfinite(light.Radius) ||
+                light.Radius < 0.0F ||
+                (light.Kind == Fast::Renderer3ds::PicaNativeLightSource::Type::Point &&
+                 light.Radius == 0.0F)) return false;
+        }
+    }
+    if (reader.HasWorldToView) {
+        bool available = false;
+        if (!reader.Bool(available)) return false;
+        if (available) {
+            auto& matrix = value.LightBinding.WorldToView.emplace();
+            for (float& component : matrix)
+                if (!reader.Float(component) || !std::isfinite(component)) return false;
+        }
+    }
+    if (reader.HasNativeDrawRoles) {
+        uint32_t id = 0;
+        if (!reader.U32(id) || id > kMaximumResources || id > reader.ScenePoints.size() + 1U) return false;
+        if (id > reader.ScenePoints.size()) {
+            auto points = std::make_shared<Fast::Renderer3ds::PicaScenePointLights>();
+            if (!reader.U32(points->Count) || points->Count == 0 || points->Count > points->Lights.size()) return false;
+            for (uint32_t i = 0; i < points->Count; ++i) {
+                auto& light = points->Lights[i];
+                if (!reader.U64(light.SourceIdentity) || light.SourceIdentity == 0 ||
+                    !reader.U32(light.Group) || light.Group >= Fast::Renderer3ds::kPicaScenePointLightGroups) return false;
+                for (float& component : light.PositionWorld)
+                    if (!reader.Float(component) || !std::isfinite(component)) return false;
+                for (float& component : light.Color)
+                    if (!reader.Float(component) || !std::isfinite(component) || component < 0 || component > 1) return false;
+                if (!reader.Float(light.Radius) || !std::isfinite(light.Radius) || light.Radius < 0) return false;
+            }
+            reader.ScenePoints.push_back(std::move(points));
+        }
+        if (id != 0) value.LightBinding.ScenePoints = reader.ScenePoints[id - 1U];
+    }
+    if (reader.HasSceneDirectionals) {
+        uint32_t id = 0;
+        if (!reader.U32(id) || id > kMaximumResources || id > reader.SceneDirectionals.size() + 1U) return false;
+        if (id > reader.SceneDirectionals.size()) {
+            auto directionals = std::make_shared<Fast::Renderer3ds::PicaSceneDirectionalLights>();
+            if (!reader.U32(directionals->Count) || directionals->Count == 0 ||
+                directionals->Count > directionals->Lights.size()) return false;
+            for (uint32_t i = 0; i < directionals->Count; ++i) {
+                auto& light = directionals->Lights[i];
+                if (!reader.U64(light.SourceIdentity) || light.SourceIdentity == 0) return false;
+                for (float& component : light.DirectionTowardSource)
+                    if (!reader.Float(component) || !std::isfinite(component)) return false;
+                for (float& component : light.Color)
+                    if (!reader.Float(component) || !std::isfinite(component) || component < 0 || component > 1) return false;
+            }
+            reader.SceneDirectionals.push_back(std::move(directionals));
+        }
+        if (id != 0) value.LightBinding.SceneDirectionals = reader.SceneDirectionals[id - 1U];
     }
     if (!lightingLutReferences) return true;
     bool hasLightingLuts = false;
@@ -880,7 +1043,7 @@ bool ReadPlans(Reader& reader,
                bool typedCompositionDomain,
                bool fragmentLighting, bool lightingLutReferences,
                bool shadowUniforms, bool fragmentLightingLayout,
-               bool typedCompositionLayer,
+               bool typedCompositionLayer, bool copyReferences,
                const LightingLutDictionary& lightingLuts) {
     uint32_t count = 0U;
     if (!reader.U32(count) || count > kMaximumPlans) return false;
@@ -890,6 +1053,7 @@ bool ReadPlans(Reader& reader,
                       typedCompositionDomain, fragmentLighting,
                       lightingLutReferences, shadowUniforms,
                       fragmentLightingLayout, typedCompositionLayer,
+                      copyReferences,
                       lightingLuts)) return false;
     }
     return true;
@@ -949,7 +1113,7 @@ bool ReadFrame(Reader& reader, Oot3dPicaVisualFrame& value,
                bool typedCompositionDomain,
                bool fragmentLighting, bool lightingLutReferences,
                bool shadowUniforms, bool fragmentLightingLayout,
-               bool typedCompositionLayer,
+               bool typedCompositionLayer, bool copyReferences,
                const LightingLutDictionary& lightingLuts) {
     if (!reader.U64(value.Sequence) || value.Sequence == 0U ||
         !ReadTransfer(reader, value.TopTransfer) ||
@@ -957,6 +1121,7 @@ bool ReadFrame(Reader& reader, Oot3dPicaVisualFrame& value,
                    typedCompositionDomain, fragmentLighting,
                    lightingLutReferences, shadowUniforms,
                    fragmentLightingLayout, typedCompositionLayer,
+                   copyReferences,
                    lightingLuts)) {
         return false;
     }
@@ -985,7 +1150,7 @@ bool ReadOptionalFrame(Reader& reader,
                        bool typedCompositionDomain, bool fragmentLighting,
                        bool lightingLutReferences, bool shadowUniforms,
                        bool fragmentLightingLayout,
-                       bool typedCompositionLayer,
+                       bool typedCompositionLayer, bool copyReferences,
                        const LightingLutDictionary& lightingLuts) {
     bool available = false;
     if (!reader.Bool(available)) return false;
@@ -998,6 +1163,7 @@ bool ReadOptionalFrame(Reader& reader,
                    typedCompositionDomain, fragmentLighting,
                    lightingLutReferences, shadowUniforms,
                    fragmentLightingLayout, typedCompositionLayer,
+                   copyReferences,
                    lightingLuts)) return false;
     value = std::move(frame);
     return true;
@@ -1006,7 +1172,7 @@ bool ReadOptionalFrame(Reader& reader,
 void WriteReplayState(Writer& writer,
                       const Oot3dPicaVisualReplayState& value) {
     const auto lightingLuts = BuildLightingLutDictionary(value);
-    writer.U32(kVisualReplayMagicV13);
+    writer.U32(kVisualReplayMagicV18);
     WriteLightingLutDictionary(writer, lightingLuts);
     const auto& accumulator = value.Scheduler.Accumulator;
     writer.U64(accumulator.NextSequence);
@@ -1043,11 +1209,19 @@ bool ReadReplayState(Reader& reader, Oot3dPicaVisualReplayState& value) {
     uint32_t magic = 0U;
     auto& accumulator = value.Scheduler.Accumulator;
     if (!reader.U32(magic)) return false;
-    reader.HasTextureCopy = magic == kVisualReplayMagicV13;
+    reader.HasSceneDirectionals = magic == kVisualReplayMagicV18;
+    reader.HasNativeDrawRoles = magic == kVisualReplayMagicV17 || reader.HasSceneDirectionals;
+    reader.HasWorldToView = magic == kVisualReplayMagicV16 || reader.HasNativeDrawRoles;
+    reader.HasLightBinding = magic == kVisualReplayMagicV15 || reader.HasWorldToView;
+    reader.HasCopyReferences = magic == kVisualReplayMagicV14 || reader.HasLightBinding;
+    reader.HasTextureCopy = magic == kVisualReplayMagicV13 || reader.HasCopyReferences;
     reader.HasProcTexProgram = magic == kVisualReplayMagicV12 || reader.HasTextureCopy;
     reader.HasLightingProgram = magic == kVisualReplayMagicV11 || reader.HasProcTexProgram;
     reader.HasTevProgram = magic == kVisualReplayMagicV10 || reader.HasLightingProgram;
     // V10 adds TEV, V11 lighting/fog/alpha, V12 packed procedural data; all retain V9 features.
+    // V13 adds raw transfer operations, V14 adds their copy provenance; both retain V9 features.
+    // V15 retains those features and adds immutable per-draw light provenance.
+    // V16 retains the exact world/view transform paired with each draw.
     if (reader.HasTevProgram) magic = kVisualReplayMagicV9;
     if ((magic != kVisualReplayMagicV1 &&
          magic != kVisualReplayMagicV2 &&
@@ -1083,6 +1257,7 @@ bool ReadReplayState(Reader& reader, Oot3dPicaVisualReplayState& value) {
     const bool fragmentLightingLayout =
         magic == kVisualReplayMagicV8 || magic == kVisualReplayMagicV9;
     const bool typedCompositionLayer = magic == kVisualReplayMagicV9;
+    const bool copyReferences = reader.HasCopyReferences;
     LightingLutDictionary lightingLuts;
     if (lightingLutReferences &&
         !ReadLightingLutDictionary(reader, lightingLuts)) {
@@ -1095,6 +1270,7 @@ bool ReadReplayState(Reader& reader, Oot3dPicaVisualReplayState& value) {
                    typedFeatures, typedCompositionDomain, fragmentLighting,
                    lightingLutReferences, shadowUniforms,
                    fragmentLightingLayout, typedCompositionLayer,
+                   copyReferences,
                    lightingLuts) ||
         !ReadFills(reader, accumulator.PendingMemoryFills) ||
         !ReadTransfers(reader, accumulator.PendingDisplayTransfers)) {
@@ -1128,13 +1304,13 @@ bool ReadReplayState(Reader& reader, Oot3dPicaVisualReplayState& value) {
                            typedFeatures, typedCompositionDomain,
                            fragmentLighting, lightingLutReferences,
                            shadowUniforms, fragmentLightingLayout,
-                           typedCompositionLayer,
+                           typedCompositionLayer, copyReferences,
                            lightingLuts) ||
         !ReadOptionalFrame(reader, value.LatestFrame, extended,
                            typedFeatures, typedCompositionDomain,
                            fragmentLighting, lightingLutReferences,
                            shadowUniforms, fragmentLightingLayout,
-                           typedCompositionLayer,
+                           typedCompositionLayer, copyReferences,
                            lightingLuts) ||
         !reader.Bool(value.LatestTransitionContinuous)) {
         return false;

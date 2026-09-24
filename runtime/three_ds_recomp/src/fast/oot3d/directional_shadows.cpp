@@ -28,10 +28,6 @@ Vec3 Add(Vec3 left, Vec3 right) {
     return { left.X + right.X, left.Y + right.Y, left.Z + right.Z };
 }
 
-Vec3 Subtract(Vec3 left, Vec3 right) {
-    return { left.X - right.X, left.Y - right.Y, left.Z - right.Z };
-}
-
 Vec3 Scale(Vec3 value, float scale) {
     return { value.X * scale, value.Y * scale, value.Z * scale };
 }
@@ -119,60 +115,6 @@ bool Invert(const DirectionalShadowMatrix& matrix, DirectionalShadowMatrix& inve
     return true;
 }
 
-bool Unproject(const DirectionalShadowMatrix& clipToWorld, float x, float y, float z, Vec3& result) {
-    const Vec4 homogeneous = Transform(clipToWorld, { x, y, z, 1.0F });
-    if (!std::isfinite(homogeneous.W) || std::abs(homogeneous.W) <= kEpsilon) {
-        return false;
-    }
-    const float inverseW = 1.0F / homogeneous.W;
-    result = {
-        homogeneous.X * inverseW,
-        homogeneous.Y * inverseW,
-        homogeneous.Z * inverseW,
-    };
-    return std::isfinite(result.X) && std::isfinite(result.Y) && std::isfinite(result.Z);
-}
-
-DirectionalShadowMatrix BuildLightView(Vec3 eye, Vec3 center, Vec3 lightDirection) {
-    Vec3 forward = Subtract(center, eye);
-    Normalize(forward);
-    Vec3 up = std::abs(Dot(lightDirection, { 0.0F, 1.0F, 0.0F })) < 0.98F ? Vec3{ 0.0F, 1.0F, 0.0F }
-                                                                          : Vec3{ 0.0F, 0.0F, 1.0F };
-    Vec3 side = Cross(forward, up);
-    Normalize(side);
-    up = Cross(side, forward);
-
-    return {
-        side.X, up.X, -forward.X, 0.0F, side.Y,          up.Y,          -forward.Y,        0.0F,
-        side.Z, up.Z, -forward.Z, 0.0F, -Dot(side, eye), -Dot(up, eye), Dot(forward, eye), 1.0F,
-    };
-}
-
-DirectionalShadowMatrix BuildOrthographic(float minimumX, float maximumX, float minimumY, float maximumY,
-                                          float minimumZ, float maximumZ) {
-    const float inverseX = 1.0F / (maximumX - minimumX);
-    const float inverseY = 1.0F / (maximumY - minimumY);
-    const float inverseZ = 1.0F / (maximumZ - minimumZ);
-    return {
-        2.0F * inverseX,
-        0.0F,
-        0.0F,
-        0.0F,
-        0.0F,
-        2.0F * inverseY,
-        0.0F,
-        0.0F,
-        0.0F,
-        0.0F,
-        -inverseZ,
-        0.0F,
-        -(maximumX + minimumX) * inverseX,
-        -(maximumY + minimumY) * inverseY,
-        maximumZ * inverseZ,
-        1.0F,
-    };
-}
-
 } // namespace
 
 DirectionalShadowMatrix IdentityDirectionalShadowMatrix() noexcept {
@@ -181,9 +123,7 @@ DirectionalShadowMatrix IdentityDirectionalShadowMatrix() noexcept {
     };
 }
 
-bool InvertDirectionalShadowMatrix(
-    const DirectionalShadowMatrix& matrix,
-    DirectionalShadowMatrix& inverse) noexcept {
+bool InvertDirectionalShadowMatrix(const DirectionalShadowMatrix& matrix, DirectionalShadowMatrix& inverse) noexcept {
     return Invert(matrix, inverse);
 }
 
@@ -202,117 +142,25 @@ DirectionalShadowMatrix MultiplyDirectionalShadowMatrices(const DirectionalShado
 
 DirectionalShadowFramePlan BuildDirectionalShadowFramePlan(const DirectionalShadowFrameInput& input) noexcept {
     DirectionalShadowFramePlan plan;
-    if (input.Settings.Mode != DirectionalShadowMode::SingleCascade) {
+    if (input.Settings.Mode != DirectionalShadowMode::VirtualShadowMaps)
         return plan;
-    }
-
-    const DirectionalShadowMatrix& clipToWorld = input.ClipToWorld;
-
-    Vec3 lightDirection{
-        input.LightDirectionTowardSource[0],
-        input.LightDirectionTowardSource[1],
-        input.LightDirectionTowardSource[2],
-    };
-    if (!Normalize(lightDirection)) {
+    Vec3 direction{ input.LightDirectionTowardSource[0], input.LightDirectionTowardSource[1],
+                    input.LightDirectionTowardSource[2] };
+    if (!Normalize(direction)) {
         plan.Status = DirectionalShadowPlanStatus::InvalidLightDirection;
         return plan;
     }
-
-    std::array<Vec3, 8> corners{};
-    size_t cornerIndex = 0;
-    const float maximumDistance = std::max(input.Settings.MaximumDistance, 1.0F);
-    for (float y : { -1.0F, 1.0F }) {
-        for (float x : { -1.0F, 1.0F }) {
-            Vec3 nearCorner{};
-            Vec3 farCorner{};
-            if (!Unproject(clipToWorld, x, y, 0.0F, nearCorner) || !Unproject(clipToWorld, x, y, 1.0F, farCorner)) {
-                plan.Status = DirectionalShadowPlanStatus::InvalidProjection;
-                return plan;
-            }
-            Vec3 ray = Subtract(farCorner, nearCorner);
-            const float rayLength = Length(ray);
-            if (!std::isfinite(rayLength) || rayLength <= kEpsilon) {
-                plan.Status = DirectionalShadowPlanStatus::DegenerateFrustum;
-                return plan;
-            }
-            if (rayLength > maximumDistance) {
-                ray = Scale(ray, maximumDistance / rayLength);
-                farCorner = Add(nearCorner, ray);
-            }
-            corners[cornerIndex++] = nearCorner;
-            corners[cornerIndex++] = farCorner;
-        }
-    }
-
-    Vec3 center{};
-    for (const Vec3 corner : corners) {
-        center = Add(center, corner);
-    }
-    center = Scale(center, 1.0F / static_cast<float>(corners.size()));
-
-    float radius = 0.0F;
-    for (const Vec3 corner : corners) {
-        radius = std::max(radius, Length(Subtract(corner, center)));
-    }
-    if (!std::isfinite(radius) || radius <= kEpsilon) {
-        plan.Status = DirectionalShadowPlanStatus::DegenerateFrustum;
+    plan.Virtual = ::Fast::Renderer3ds::BuildVirtualShadowLayout(input.CameraWorld, input.LightDirectionTowardSource,
+                                                                 input.Settings.Resolution,
+                                                                 input.Settings.MaximumDistance, input.PreviousLayout);
+    if (!plan.Virtual.Valid()) {
+        plan.Status = DirectionalShadowPlanStatus::InvalidCamera;
         return plan;
     }
-
-    const float depthPadding = std::max(input.Settings.DepthPadding, 0.0F);
-    const Vec3 eye = Add(center, Scale(lightDirection, radius + depthPadding + 1.0F));
-    const DirectionalShadowMatrix lightView = BuildLightView(eye, center, lightDirection);
-
-    float minimumX = std::numeric_limits<float>::infinity();
-    float minimumY = std::numeric_limits<float>::infinity();
-    float minimumZ = std::numeric_limits<float>::infinity();
-    float maximumX = -std::numeric_limits<float>::infinity();
-    float maximumY = -std::numeric_limits<float>::infinity();
-    float maximumZ = -std::numeric_limits<float>::infinity();
-    for (const Vec3 corner : corners) {
-        const Vec4 lightSpace = Transform(lightView, { corner.X, corner.Y, corner.Z, 1.0F });
-        minimumX = std::min(minimumX, lightSpace.X);
-        minimumY = std::min(minimumY, lightSpace.Y);
-        minimumZ = std::min(minimumZ, lightSpace.Z);
-        maximumX = std::max(maximumX, lightSpace.X);
-        maximumY = std::max(maximumY, lightSpace.Y);
-        maximumZ = std::max(maximumZ, lightSpace.Z);
-    }
-
-    float halfExtent = 0.5F * std::max(maximumX - minimumX, maximumY - minimumY);
-    if (!std::isfinite(halfExtent) || halfExtent <= kEpsilon || maximumZ - minimumZ <= kEpsilon) {
-        plan.Status = DirectionalShadowPlanStatus::DegenerateFrustum;
-        return plan;
-    }
-    halfExtent = std::max(halfExtent, 1.0F);
-    float centerX = 0.5F * (minimumX + maximumX);
-    float centerY = 0.5F * (minimumY + maximumY);
-    const uint32_t resolution = std::max(input.Settings.Resolution, 1U);
-    if (input.Settings.Stabilize) {
-        const float texelWorldSize = (2.0F * halfExtent) / static_cast<float>(resolution);
-        centerX = std::round(centerX / texelWorldSize) * texelWorldSize;
-        centerY = std::round(centerY / texelWorldSize) * texelWorldSize;
-    }
-    minimumX = centerX - halfExtent;
-    maximumX = centerX + halfExtent;
-    minimumY = centerY - halfExtent;
-    maximumY = centerY + halfExtent;
-    minimumZ -= depthPadding;
-    maximumZ += depthPadding;
-
-    const DirectionalShadowMatrix lightProjection =
-        BuildOrthographic(minimumX, maximumX, minimumY, maximumY, minimumZ, maximumZ);
-    plan.WorldToLightClip = MultiplyDirectionalShadowMatrices(lightProjection, lightView);
-    const DirectionalShadowMatrix clipToTexture = {
-        0.5F, 0.0F, 0.0F, 0.0F, 0.0F, 0.5F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.5F, 0.5F, 0.0F, 1.0F,
-    };
-    plan.WorldToShadowTexture = MultiplyDirectionalShadowMatrices(clipToTexture, plan.WorldToLightClip);
-    plan.ClipToWorld = clipToWorld;
-    plan.LightDirectionTowardSource = { lightDirection.X, lightDirection.Y, lightDirection.Z };
-    plan.Resolution = resolution;
+    plan.LightDirectionTowardSource = plan.Virtual.LightDirection;
     plan.DepthBiasConstant = input.Settings.DepthBiasConstant;
     plan.DepthBiasSlope = input.Settings.DepthBiasSlope;
-    plan.Strength = std::clamp(input.Settings.Strength, 0.0F, 1.0F);
+    plan.Strength = std::clamp(input.Settings.Strength, 0.0F, 4.0F);
     plan.PcfRadius = std::min<uint8_t>(input.Settings.PcfRadius, 2U);
     plan.Status = DirectionalShadowPlanStatus::Ready;
     return plan;
@@ -328,8 +176,7 @@ bool UsesPicaPerspectiveProjection(std::span<const uint8_t> packedVertexUniforms
     }
     std::array<float, 4> homogeneousRow{};
     std::memcpy(homogeneousRow.data(), packedVertexUniforms.data() + offset, kVec4Bytes);
-    if (!std::all_of(homogeneousRow.begin(), homogeneousRow.end(),
-                     [](float value) { return std::isfinite(value); })) {
+    if (!std::all_of(homogeneousRow.begin(), homogeneousRow.end(), [](float value) { return std::isfinite(value); })) {
         return false;
     }
     return std::abs(homogeneousRow[0]) <= kEpsilon && std::abs(homogeneousRow[1]) <= kEpsilon &&
@@ -356,30 +203,25 @@ DirectionalShadowVector TransformPicaLightDirectionToWorld(const DirectionalShad
     return { world.X, world.Y, world.Z };
 }
 
-DirectionalShadowVector TransformPicaLightDirectionToWorld(
-    const DirectionalShadowVector& viewDirectionTowardSource,
-    const DirectionalShadowMatrix& viewToWorld) noexcept {
-    const Vec4 transformed = Transform(
-        viewToWorld,
-        {viewDirectionTowardSource[0], viewDirectionTowardSource[1],
-         viewDirectionTowardSource[2], 0.0F});
-    Vec3 world{transformed.X, transformed.Y, transformed.Z};
+DirectionalShadowVector TransformPicaLightDirectionToWorld(const DirectionalShadowVector& viewDirectionTowardSource,
+                                                           const DirectionalShadowMatrix& viewToWorld) noexcept {
+    const Vec4 transformed = Transform(viewToWorld, { viewDirectionTowardSource[0], viewDirectionTowardSource[1],
+                                                      viewDirectionTowardSource[2], 0.0F });
+    Vec3 world{ transformed.X, transformed.Y, transformed.Z };
     if (!Normalize(world)) {
         return {};
     }
-    return {world.X, world.Y, world.Z};
+    return { world.X, world.Y, world.Z };
 }
 
 std::string_view DirectionalShadowPlanStatusName(DirectionalShadowPlanStatus status) noexcept {
     switch (status) {
         case DirectionalShadowPlanStatus::Disabled:
             return "disabled";
-        case DirectionalShadowPlanStatus::InvalidProjection:
-            return "invalid_projection";
+        case DirectionalShadowPlanStatus::InvalidCamera:
+            return "invalid_camera";
         case DirectionalShadowPlanStatus::InvalidLightDirection:
             return "invalid_light_direction";
-        case DirectionalShadowPlanStatus::DegenerateFrustum:
-            return "degenerate_frustum";
         case DirectionalShadowPlanStatus::Ready:
             return "ready";
     }

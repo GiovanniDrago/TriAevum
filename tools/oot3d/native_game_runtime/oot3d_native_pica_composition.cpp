@@ -105,7 +105,7 @@ constexpr std::array kAtmosphereScopes{
 
 constexpr auto BuildCompositionHookPcs() {
     constexpr size_t count =
-        2U + kUiViews.size() * 2U + kCmbReturnPcs.size() +
+        4U + kUiViews.size() * 2U + kCmbReturnPcs.size() +
         (kObjectKankyoReturnPcs.size() + kSceneRendererReturnPcs.size() +
          kGameplayFadeReturnPcs.size() +
          kRandomizedOverlayReturnPcs.size() +
@@ -115,7 +115,8 @@ constexpr auto BuildCompositionHookPcs() {
          kNormalizedColorReturnPcs.size() +
          kGameplayAtmosphereQueueReturnPcs.size() +
          kKankyoEffectPrimitiveReturnPcs.size()) +
-        kAtmosphereScopes.size() + 1U + kPrimitivePacketReturnPcs.size();
+        kAtmosphereScopes.size() + 1U + kPrimitivePacketReturnPcs.size() +
+        kNativeA32LightingHookPcs.size();
     std::array<uint32_t, count> hooks{};
     size_t cursor = 0;
     for (const auto& [entry, returnPc] : kUiViews) {
@@ -124,6 +125,8 @@ constexpr auto BuildCompositionHookPcs() {
     }
     hooks[cursor++] = kOot3dCmbRendererSubmitDrawHandleEntry;
     hooks[cursor++] = kOot3dMeshCommandPacketSubmitEntry;
+    hooks[cursor++] = kOot3dGameplayDrawEntry;
+    hooks[cursor++] = kOot3dModelQueueSubmitEntry;
     for (const auto pc : kCmbReturnPcs) {
         hooks[cursor++] = pc;
     }
@@ -135,6 +138,9 @@ constexpr auto BuildCompositionHookPcs() {
     }
     hooks[cursor++] = kOot3dPicaPrimitivePacketBuilderEntry;
     for (const auto pc : kPrimitivePacketReturnPcs) {
+        hooks[cursor++] = pc;
+    }
+    for (const auto pc : kNativeA32LightingHookPcs) {
         hooks[cursor++] = pc;
     }
     return hooks;
@@ -238,7 +244,7 @@ bool Oot3dNativePicaCompositionTracker::RecordPendingSpan(
             continue;
         }
         if (SameAttribution(span.Attribution, it->Attribution) &&
-            (overlaps || adjacent)) {
+            span.LightBinding == it->LightBinding && (overlaps || adjacent)) {
             span.BeginAddress = std::min(span.BeginAddress, it->BeginAddress);
             span.EndAddress = std::max(span.EndAddress, it->EndAddress);
             it = mPendingSpans.erase(it);
@@ -262,6 +268,32 @@ bool Oot3dNativePicaCompositionTracker::RecordPendingSpan(
 void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
     uint32_t pc, const oot3d::recomp::a32::GuestState& state,
     oot3d::recomp::a32::MemoryBus& memory) {
+    mLighting.ObserveBlockEntry(pc, state, memory);
+    if (pc == kOot3dGameplayDrawEntry) {
+        mProjectedShadowRenderers.clear();
+        mLighting.CaptureSceneLights(state.r[0], memory);
+    } else if (pc == kOot3dModelQueueSubmitEntry &&
+               (state.r[14] == 0x001D04DCU || state.r[14] == 0x0033E684U ||
+                state.r[14] == 0x0033EA3CU)) {
+        // Exact BL continuations in ActorShadow_SubmitFootModel,
+        // ActorShadow_DrawFeet's floor-aligned helper and ActorShadow_Draw.
+        // Observe after their model allocation/selection.
+        // Player_DrawFeetShadow (00297E04) delegates to ActorShadow_DrawFeet
+        // (001D04F4), whose floor-aligned models queue from helper 0033E450.
+        // The queue consumer (002FAD2C) draws model+14/+18 CMB renderers;
+        // model+10 is a resource, not a renderer or a lighting context.
+        if (state.r[0] <= std::numeric_limits<uint32_t>::max() - 0x18U) {
+            for (uint32_t offset : {0x14U, 0x18U}) {
+                uint32_t renderer = 0;
+                if (memory.Read32(state.r[0] + offset, &renderer) && renderer != 0) {
+                    const auto at = std::lower_bound(
+                        mProjectedShadowRenderers.begin(), mProjectedShadowRenderers.end(), renderer);
+                    if (at == mProjectedShadowRenderers.end() || *at != renderer)
+                        mProjectedShadowRenderers.insert(at, renderer);
+                }
+            }
+        }
+    }
     const auto ui = std::find(kUiViews.begin(), kUiViews.end(), std::pair{pc, state.r[14]});
     if (ui != kUiViews.end() && !mActiveUiScope) {
         ActiveAtmosphereScope scope{};
@@ -362,6 +394,7 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
     if (mActiveCmbReturnPc.has_value() && pc == *mActiveCmbReturnPc) {
         mActiveCmbPass.reset();
         mActiveCmbReturnPc.reset();
+        mActiveCmbRenderer = 0;
         ++mStats.CmbPassExits;
         return;
     }
@@ -371,6 +404,7 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
         if (pass > 1U || !Contains(kCmbReturnPcs, state.r[14])) {
             mActiveCmbPass.reset();
             mActiveCmbReturnPc.reset();
+            mActiveCmbRenderer = 0;
             if (pass > 1U) {
                 ++mStats.InvalidCmbPassEntries;
             } else {
@@ -380,6 +414,7 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
         }
         mActiveCmbPass = static_cast<uint8_t>(pass);
         mActiveCmbReturnPc = state.r[14];
+        mActiveCmbRenderer = state.r[0];
         if (pass == 0U) {
             ++mStats.CmbOpaquePassEntries;
         } else {
@@ -408,7 +443,7 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
             ++mStats.InvalidPrimitivePacketRanges;
         } else if (RecordPendingSpan(
                        {packet.BeginAddress, endAddress,
-                        packet.Attribution})) {
+                        packet.Attribution, packet.LightBinding})) {
             ++mStats.PrimitivePacketSpans;
             mStats.PrimitivePacketBytes +=
                 endAddress - packet.BeginAddress;
@@ -449,8 +484,12 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
             packet.Attribution = AttributionForAtmosphere(
                 mActiveAtmosphereScope->SourcePc,
                 mActiveAtmosphereScope->NativeValue);
+            packet.LightBinding.WorldToView = NativeA32LightingProbe::CaptureWorldToView(memory);
         } else if (mActiveCmbPass.has_value()) {
             packet.Attribution = AttributionForCmbPass(*mActiveCmbPass);
+            packet.Attribution.NativeProjectedShadow = std::binary_search(
+                mProjectedShadowRenderers.begin(), mProjectedShadowRenderers.end(), mActiveCmbRenderer);
+            packet.LightBinding = mLighting.CaptureRenderer(mActiveCmbRenderer, memory);
         } else {
             packet.Attribution = {
                 Oot3dPicaCompositionLayer::Unknown,
@@ -498,12 +537,18 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
         span.Attribution = AttributionForAtmosphere(
             mActiveAtmosphereScope->SourcePc,
             mActiveAtmosphereScope->NativeValue);
+        span.LightBinding.WorldToView = NativeA32LightingProbe::CaptureWorldToView(memory);
         ++mStats.AtmospherePacketSpans;
         ++mStats.RecordedPacketSpans;
         mActiveAtmosphereScope->PacketSpans.push_back(std::move(span));
         return;
     } else {
         span.Attribution = AttributionForCmbPass(*mActiveCmbPass);
+        span.Attribution.NativeProjectedShadow = std::binary_search(
+            mProjectedShadowRenderers.begin(), mProjectedShadowRenderers.end(), mActiveCmbRenderer);
+        if (!mActiveUiScope) {
+            span.LightBinding = mLighting.CaptureRenderer(mActiveCmbRenderer, memory);
+        }
     }
     if (RecordPendingSpan(std::move(span))) {
         ++mStats.RecordedPacketSpans;
@@ -552,6 +597,9 @@ void Oot3dNativePicaCompositionTracker::Reset() noexcept {
     mActiveUiScope.reset();
     mActiveCmbPass.reset();
     mActiveCmbReturnPc.reset();
+    mActiveCmbRenderer = 0;
+    mProjectedShadowRenderers.clear();
+    mLighting.Reset();
     mActiveAtmosphereScope.reset();
     mActivePrimitivePacket.reset();
     mPendingSpans.clear();

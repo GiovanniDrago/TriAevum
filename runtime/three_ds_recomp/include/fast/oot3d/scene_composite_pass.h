@@ -23,7 +23,7 @@ class SceneCompositePass final {
     bool Initialize(VkPhysicalDevice physicalDevice, VkDevice device,
                     NriInteropContext& interop);
     bool Configure(const NriEffectGraphTransientImageBinding& output);
-    bool Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot, VkImage sceneColor, VkFormat sceneColorFormat,
+    bool Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot, uint64_t frameId, VkImage sceneColor, VkFormat sceneColorFormat,
                  VkImage cacaoVisibility, VkFormat cacaoFormat, VkImage reflection, VkFormat reflectionFormat,
                  VkImage materialGuide, VkFormat materialGuideFormat, VkImage normalGuide, VkFormat normalGuideFormat,
                  VkImage transparentDepthGuide, VkFormat transparentDepthGuideFormat, VkImage ambientGuide,

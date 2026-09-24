@@ -74,6 +74,14 @@ int main() {
         };
         plan.VertexShader.TemporalProgram = temporalProgram;
         plan.VertexShader.Uniforms.BooleanMask = (1U << 2U) | (1U << 3U);
+        Oot3dPicaVulkanTextureBinding tracedTexture;
+        tracedTexture.Slot = 0U;
+        tracedTexture.State.Enabled = true;
+        tracedTexture.State.Width = 8U;
+        tracedTexture.State.Height = 8U;
+        tracedTexture.NativeBytes.assign(256U, 0x2AU);
+        tracedTexture.CopyReferences = {{8U, 4U, 0x1F200000U, 256U}};
+        plan.Textures.push_back(std::move(tracedTexture));
         writer.RecordDraw(3U, 2U, draw, plan, false, false, false);
 
         Oot3dPicaDisplayTransferSubmission transfer;
@@ -147,6 +155,22 @@ int main() {
                 drawEvent->at("vertex_program_state").at("skeleton").at("multiple_influences").get<bool>() &&
                 drawEvent->at("vertex_program_state").at("skeleton").at("influence_count") == 4U,
             "draw-local vertex program state is missing");
+    Require(drawEvent->at("textures").size() == 1U &&
+                drawEvent->at("textures")[0].at("copy_references").size() ==
+                    1U &&
+                drawEvent->at("textures")[0]
+                        .at("copy_references")[0]
+                        .at("completion_id") == 8U &&
+                drawEvent->at("textures")[0]
+                        .at("copy_references")[0]
+                        .at("after_draw_submission_id") == 4U &&
+                drawEvent->at("textures")[0]
+                        .at("copy_references")[0]
+                        .at("physical_address") == 0x1F200000U &&
+                drawEvent->at("textures")[0]
+                        .at("copy_references")[0]
+                        .at("byte_count") == 256U,
+            "sampled texture copy provenance is missing from the trace");
     const auto transferEvent = std::find_if(
         events.begin(), events.end(), [](const auto& event) {
             return event.at("event") == "display_transfer";

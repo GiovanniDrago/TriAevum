@@ -44,6 +44,12 @@ enum class EffectResource : uint8_t {
     PresentationOutput,
     FogGuide,
     OutlineGeometryGuide,
+    // The composed scene colour of a declared native boundary: the terminal
+    // scene output a native consumer (immutable copy, native screen effect)
+    // samples at its own order boundary. A boundary pass materializes the
+    // remaining scene stages into it, so every scene effect participates
+    // through the same declared graph edge instead of a per-effect list.
+    SceneComposition,
     Count,
 };
 
@@ -67,6 +73,46 @@ struct EffectResourceUse {
 
 [[nodiscard]] constexpr bool WritesEffectResource(EffectResourceAccess access) noexcept {
     return ::Fast::Renderer::WritesExtensionResource(access);
+}
+
+// The declared linear working domain of the display graph. A pass that converts
+// scene colour into it is a domain conversion rather than a scene effect, so a
+// scene that a native boundary already resolved is still converted for the
+// stages that read this domain instead of receiving encoded colour.
+[[nodiscard]] constexpr bool IsLinearWorkingDomain(
+    EffectResource resource) noexcept {
+    return resource == EffectResource::LinearWorkingColor;
+}
+
+// Auxiliary scene data is consumed by scene or presentation stages for their
+// own algorithms and is never baked into scene colour, so a boundary that
+// resolves the scene leaves it re-derivable. Everything else the graph produces
+// is colour: a new scene pass's colour output is resolved by the boundary
+// without being declared here.
+[[nodiscard]] constexpr bool IsAuxiliarySceneData(
+    EffectResource resource) noexcept {
+    switch (resource) {
+        case EffectResource::PicaSceneFrame:
+        case EffectResource::NativeSceneView:
+        case EffectResource::ExtensionGeometry:
+        case EffectResource::NativeDepth:
+        case EffectResource::NativeShadow2D:
+        case EffectResource::DirectionalShadowHistory:
+        case EffectResource::DirectionalShadowMap:
+        case EffectResource::HierarchicalDepth:
+        case EffectResource::MotionVectors:
+        case EffectResource::ReactiveMask:
+        case EffectResource::NormalGuide:
+        case EffectResource::MaterialGuide:
+        case EffectResource::RigidMotionGuide:
+        case EffectResource::AmbientGuide:
+        case EffectResource::FogGuide:
+        case EffectResource::OutlineGeometryGuide:
+        case EffectResource::Count:
+            return true;
+        default:
+            return false;
+    }
 }
 
 struct EffectPass {

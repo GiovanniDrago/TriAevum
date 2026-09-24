@@ -47,6 +47,32 @@ PicaTevDecodeError DecodePicaTevProgram(std::span<const uint32_t> registers,
     return PicaTevDecodeError::None;
 }
 
+uint8_t PicaTevMaterialTextureMask(const PicaTevProgram& program) noexcept {
+    uint8_t previous = 0U, buffer = 0U, nextBuffer = 0U;
+    for (size_t stage = 0; stage < program.Stages.size(); ++stage) {
+        const auto& words = program.Stages[stage];
+        const auto operation = words[2] & 15U;
+        const auto inputs = operation == 0U ? 1U :
+            (operation == 4U || operation == 8U || operation == 9U) ? 3U : 2U;
+        uint8_t color = 0U;
+        for (uint32_t input = 0U; input < inputs; ++input) {
+            if (((words[1] >> (input * 4U)) & 14U) != 0U) continue;
+            auto source = (words[0] >> (input * 4U)) & 15U;
+            if (stage == 0U && input < 2U && source == 15U)
+                source = (words[0] >> 8U) & 15U;
+            if (source >= 3U && source <= 6U)
+                color |= static_cast<uint8_t>(1U << (source - 3U));
+            else if (source == 13U) color |= buffer;
+            else if (source == 15U) color |= previous;
+        }
+        previous = color;
+        buffer = nextBuffer;
+        if (stage < 4U && (program.Control[0] & (1U << (8U + stage))) != 0U)
+            nextBuffer = color;
+    }
+    return previous;
+}
+
 std::string_view PicaTevProgramGlsl() noexcept {
     return R"glsl(
 struct PicaTevProgram {

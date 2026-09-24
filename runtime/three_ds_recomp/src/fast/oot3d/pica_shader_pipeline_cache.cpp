@@ -75,6 +75,7 @@ struct InstrumentationKey {
     uint8_t ColorWriteMask = 0;
     uint8_t CompositionDomain = 0;
     uint8_t DepthCompare = 0;
+    uint8_t PbrState = 0;
 
     bool operator==(const InstrumentationKey&) const = default;
 };
@@ -94,6 +95,7 @@ struct InstrumentationKeyHash {
         HashCombine(result, key.ColorWriteMask);
         HashCombine(result, key.CompositionDomain);
         HashCombine(result, key.DepthCompare);
+        HashCombine(result, key.PbrState);
         return result;
     }
 };
@@ -109,7 +111,20 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
         request.Draw.CompositionDomain ==
         ::Oot3d::Renderer::PicaCompositionDomain::Scene;
     if (sceneDraw && request.Draw.FragmentOperationMode != 3U &&
-        effects.Toon != ToonMode::Off) {
+        request.Draw.PerspectiveProjection && request.SurfaceLightingAvailable &&
+        effects.SurfaceLighting != SurfaceLightingMode::Native &&
+        request.TemporalVertexProgram.Hooks.SurfaceProgram() != nullptr &&
+        request.FragmentShaderHooks.Supports(PicaShaderHook::PicaLighting) &&
+        request.FragmentShaderHooks.Supports(PicaShaderHook::AfterNativeTev) &&
+        request.FragmentShaderHooks.Has(PicaShaderSemantic::ViewVector) &&
+        request.FragmentShaderHooks.Has(PicaShaderSemantic::PrimaryColorInput)) {
+        features |= PicaShaderInstrumentationFeature::NativePerPixelLighting;
+        if (effects.SurfaceLighting == SurfaceLightingMode::PerPixelPbr && request.Pbr.TextureSlot < 3U)
+            features |= PicaShaderInstrumentationFeature::PbrMaterial;
+    }
+    if (sceneDraw && request.Draw.FragmentOperationMode != 3U &&
+        effects.Toon != ToonMode::Off &&
+        !HasPicaShaderInstrumentationFeature(features, PicaShaderInstrumentationFeature::PbrMaterial)) {
         features |= PicaShaderInstrumentationFeature::Toon;
     }
     if (sceneDraw && request.TemporalMotionEnabled) {
@@ -118,6 +133,7 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
         features |= PicaShaderInstrumentationFeature::RigidMotionGuide;
     }
     if (sceneDraw && request.Draw.DirectionalShadowReceiver &&
+        HasPicaShaderInstrumentationFeature(features, PicaShaderInstrumentationFeature::NativePerPixelLighting) &&
         request.Draw.FragmentOperationMode == 0U &&
         request.Draw.DepthTestEnabled && request.Draw.DepthWriteEnabled &&
         (request.Draw.ColorWriteMask & 0x7U) != 0U &&
@@ -174,6 +190,9 @@ InstrumentationKey BuildInstrumentationKey(
     key.CompositionDomain = static_cast<uint8_t>(
         request.Draw.CompositionDomain);
     key.DepthCompare = static_cast<uint8_t>(request.Draw.DepthCompare);
+    if (HasPicaShaderInstrumentationFeature(requestedFeatures, PicaShaderInstrumentationFeature::PbrMaterial))
+        key.PbrState = request.Pbr.TextureSlot | (request.Pbr.NativeFragmentLighting ? 4U : 0U) |
+            (request.Pbr.NativeAttenuationLuts ? 8U : 0U);
     const auto& blend = request.Draw.Blend;
     key.BlendStateBits =
         static_cast<uint32_t>(blend.EquationRgb) |
@@ -216,26 +235,34 @@ PicaShaderPipelineResult BuildInstrumentedVariant(
         result.Domain = PicaShaderDomain::Instrumented;
     };
 
-    if (HasPicaShaderInstrumentationFeature(
-            requestedFeatures,
-            PicaShaderInstrumentationFeature::TemporalVertex)) {
-        auto temporal = BuildPicaTemporalVertexInstrumentation(
+    const bool temporalRequested = HasPicaShaderInstrumentationFeature(
+        requestedFeatures, PicaShaderInstrumentationFeature::TemporalVertex);
+    const bool surfaceRequested = HasPicaShaderInstrumentationFeature(
+        requestedFeatures, PicaShaderInstrumentationFeature::NativePerPixelLighting);
+    auto fragmentFeatures = requestedFeatures;
+    if (temporalRequested || surfaceRequested) {
+        auto vertex = BuildPicaVertexInstrumentation(
             result.VertexShaderSource, result.VertexShaderKey,
-            request.TemporalVertexProgram);
-        result.TemporalVertexApplied = temporal.Applied;
-        result.DirectTemporalVertexProgramUsed =
-            temporal.UsedProvidedProgram;
-        if (temporal.Applied) {
-            result.VertexShaderSource = std::move(temporal.Source);
-            result.VertexShaderKey = temporal.FragmentKey;
-            apply(PicaShaderInstrumentationFeature::TemporalVertex);
+            request.TemporalVertexProgram, temporalRequested, surfaceRequested);
+        result.TemporalVertexApplied = vertex.TemporalApplied;
+        result.DirectTemporalVertexProgramUsed = temporalRequested && vertex.UsedProvidedProgram;
+        if (vertex.Applied) {
+            result.VertexShaderSource = std::move(vertex.Source);
+            result.VertexShaderKey = vertex.FragmentKey;
+            if (vertex.TemporalApplied) apply(PicaShaderInstrumentationFeature::TemporalVertex);
+        }
+        if (!vertex.SurfaceApplied) {
+            fragmentFeatures = static_cast<PicaShaderInstrumentationFeature>(
+                static_cast<uint32_t>(fragmentFeatures) &
+                ~static_cast<uint32_t>(PicaShaderInstrumentationFeature::NativePerPixelLighting |
+                                      PicaShaderInstrumentationFeature::PbrMaterial));
         }
     }
 
     const auto fragment = BuildPicaFragmentInstrumentationVariant({
         result.FragmentShaderSource,
         result.FragmentShaderKey,
-        requestedFeatures,
+        fragmentFeatures,
         {
             request.Draw.FramebufferWidth,
             request.Draw.FramebufferHeight,
@@ -260,6 +287,7 @@ PicaShaderPipelineResult BuildInstrumentedVariant(
         effects.Toon,
         &effects.ToonStyle,
         true,
+        request.Pbr,
     });
     result.ToonEligibility = fragment.ToonEligibility;
     result.ToonMaterialPath = fragment.ToonMaterialPath;
@@ -297,6 +325,12 @@ PicaShaderInstrumentationFeature ResolvePicaShaderProfileFeatures(
     bool directionalShadowLightingEnabled) noexcept {
     PicaShaderInstrumentationFeature features =
         PicaShaderInstrumentationFeature::None;
+    if (effects.SurfaceLighting != SurfaceLightingMode::Native) {
+        features |= PicaShaderInstrumentationFeature::NativePerPixelLighting;
+    }
+    if (effects.SurfaceLighting == SurfaceLightingMode::PerPixelPbr) {
+        features |= PicaShaderInstrumentationFeature::PbrMaterial;
+    }
     if (effects.Toon != ToonMode::Off) {
         features |= PicaShaderInstrumentationFeature::Toon;
     }
@@ -305,7 +339,7 @@ PicaShaderInstrumentationFeature ResolvePicaShaderProfileFeatures(
         features |= PicaShaderInstrumentationFeature::ReactiveMask;
         features |= PicaShaderInstrumentationFeature::RigidMotionGuide;
     }
-    if (directionalShadowLightingEnabled) {
+    if (directionalShadowLightingEnabled && effects.SurfaceLighting != SurfaceLightingMode::Native) {
         features |=
             PicaShaderInstrumentationFeature::DirectionalShadowLighting;
     }
@@ -398,6 +432,25 @@ class PicaShaderPipelineCache::Impl final {
                     request.FragmentShaderKey &&
                 entry->Result.VertexShaderSourceIdentity == vertexSource &&
                 entry->Result.FragmentShaderSourceIdentity == fragmentSource) {
+                if (!entry->Result.DirectCanonicalFragmentHooksUsed &&
+                    request.FragmentShaderHooks.ValidFor(request.FragmentShaderSource)) {
+                    if (request.FragmentShaderHooks.Outputs !=
+                        entry->Result.CanonicalFragmentHooks.Outputs) {
+                        ++CanonicalOutputContractRejects;
+                        throw std::logic_error(
+                            "typed PICA fragment hooks contradict audited native outputs");
+                    }
+                    // A restored replay can populate this source before the live
+                    // frontend supplies its authoritative semantic contract.
+                    entry->Result.CanonicalFragmentHooks = request.FragmentShaderHooks;
+                    entry->Result.DirectCanonicalFragmentHooksUsed = true;
+                    entry->Result.DirectFragmentHooksUsed = true;
+                    entry->Result.GrassTexture0Sampled =
+                        request.FragmentShaderHooks.SamplesTexture(0U);
+                    // Re-key derived variants without invalidating references
+                    // held by draws already recorded in the current frame.
+                    entry->Identity = NextCanonicalIdentity++;
+                }
                 ++CanonicalHits;
                 CanonicalSourceIdentityFastHits +=
                     suppliedVertexIdentity + suppliedFragmentIdentity;
@@ -432,25 +485,6 @@ class PicaShaderPipelineCache::Impl final {
         const bool directHooks =
             request.FragmentShaderHooks.ValidFor(
                 request.FragmentShaderSource);
-                if (!entry->Result.DirectCanonicalFragmentHooksUsed &&
-                    request.FragmentShaderHooks.ValidFor(request.FragmentShaderSource)) {
-                    if (request.FragmentShaderHooks.Outputs !=
-                        entry->Result.CanonicalFragmentHooks.Outputs) {
-                        ++CanonicalOutputContractRejects;
-                        throw std::logic_error(
-                            "typed PICA fragment hooks contradict audited native outputs");
-                    }
-                    // A restored replay can populate this source before the live
-                    // frontend supplies its authoritative semantic contract.
-                    entry->Result.CanonicalFragmentHooks = request.FragmentShaderHooks;
-                    entry->Result.DirectCanonicalFragmentHooksUsed = true;
-                    entry->Result.DirectFragmentHooksUsed = true;
-                    entry->Result.GrassTexture0Sampled =
-                        request.FragmentShaderHooks.SamplesTexture(0U);
-                    // Re-key derived variants without invalidating references
-                    // held by draws already recorded in the current frame.
-                    entry->Identity = NextCanonicalIdentity++;
-                }
         PicaShaderHookLayout canonicalHooks =
             directHooks
                 ? request.FragmentShaderHooks

@@ -20,6 +20,7 @@ int main() {
         configured.Effects.ToonStyle.OutlineEnabled = true;
         configured.Effects.AmbientOcclusion = AmbientOcclusionMode::Cacao;
         configured.Effects.Reflections = ReflectionMode::FidelityFxSssr;
+        configured.Effects.DirectionalShadows.Mode = DirectionalShadowMode::VirtualShadowMaps;
         configured.TexturePacks.Azahar.LoadCustomTextures = true;
 
         NativePresentationPolicy desktop(false), mobile(true);
@@ -33,7 +34,8 @@ int main() {
                         effective.Effects.Toon == ToonMode::Off &&
                         !effective.Effects.ToonStyle.OutlineEnabled &&
                         effective.Effects.AmbientOcclusion == AmbientOcclusionMode::Off &&
-                        effective.Effects.Reflections == ReflectionMode::Off, "F2 mask incomplete");
+                        effective.Effects.Reflections == ReflectionMode::Off &&
+                        effective.Effects.DirectionalShadows.Mode == DirectionalShadowMode::Off, "F2 mask incomplete");
             require(effective.Preset == configured.Preset && effective.FrameRate == configured.FrameRate &&
                         effective.FovMultiplier == configured.FovMultiplier &&
                         effective.AntiAliasing == configured.AntiAliasing && effective.MsaaSamples == 4 &&
@@ -43,7 +45,8 @@ int main() {
         require(desktop.Toggle() && !desktop.Active(), "F2 restoration");
         auto restored = configured;
         desktop.Apply(restored);
-        require(restored.Grass.Quality == GrassQuality::High && restored.Effects.ToonStyle.OutlineEnabled,
+        require(restored.Grass.Quality == GrassQuality::High && restored.Effects.ToonStyle.OutlineEnabled &&
+                    restored.Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps,
                 "configured effects not restored");
         NativePresentationPolicy compiled;
         require(compiled.Required() == BuildRequiresNativePresentation(), "build policy not applied");
