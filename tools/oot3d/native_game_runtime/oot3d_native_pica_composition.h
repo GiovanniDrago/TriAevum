@@ -42,6 +42,7 @@ inline constexpr uint32_t kOot3dKankyoEffectPrimitiveDrawEntry = 0x003FB5ECU;
 inline constexpr uint32_t kOot3dPicaPrimitivePacketBuilderEntry = 0x00313444U;
 inline constexpr uint32_t kOot3dGameplayDrawEntry = 0x002E25F0U;
 inline constexpr uint32_t kOot3dModelQueueSubmitEntry = 0x00372170U;
+inline constexpr uint32_t kOot3dModelQueueSetSlotEntry = 0x0031487CU;
 
 std::span<const uint32_t> Oot3dNativePicaCompositionHookPcs() noexcept;
 
@@ -126,6 +127,13 @@ class Oot3dNativePicaCompositionTracker final
     bool RecordPendingSpan(Oot3dPicaCommandListCompositionSpan span);
 
     static constexpr size_t MaximumPendingSpans = 16384U;
+    struct QueuedComposition {
+        uint32_t SlotAddress = 0;
+        Oot3dPicaCompositionAttribution Attribution;
+    };
+    std::vector<QueuedComposition> mQueuedComposition;
+    Oot3dPicaCompositionAttribution mActiveCmbAttribution;
+
 
     std::optional<uint8_t> mActiveCmbPass;
     uint32_t mActiveCmbRenderer = 0;

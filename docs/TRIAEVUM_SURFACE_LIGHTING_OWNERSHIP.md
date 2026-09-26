@@ -71,3 +71,37 @@ at a different frame, so this is diagnostic evidence, not an exact parity test.
 2026-09-26: implementation scoped; baseline worktree snapshots retained privately
 for selective commits. No implementation or new runtime qualification is claimed
 by this initial record.
+
+### Appearance increment
+
+Surface replacement now requires an explicit OpaqueWorld or TransparentWorld
+owner, both when preparing lighting and when resolving the pipeline variant.
+Atmosphere and unknown ownership keep their native appearance.
+
+The first runtime probe exposed a second, upstream defect: the configured sky
+producer queues models rather than emitting their CMB packets immediately.
+Native CMB pass 0/1 alone consequently mislabeled those later packets as world.
+The title adapter now carries the producer attribution on the exact eight-byte
+native queue slot. It observes `0031487C` (model in r2, slot in r1); the native
+`002FAD2C`, `002FAE10` and `003FE374` consumers identify that slot with r8+r4*8
+at their CMB calls. These registers were verified against the native ARM code
+and the read-only reconstructed producer. Model identity is deliberately not
+the key: another queue can submit the same model without inheriting its role.
+Slot replacement and a new gameplay frame invalidate old ownership.
+
+Verification:
+
+- 42 shader-pipeline/instrumentation tests passed, including world/atmosphere/
+  unknown admission using the same program contract.
+- Native composition regression passed, including deferred opaque/transparent
+  consumption, the same renderer in another slot, slot overwrite and frame reuse.
+- Deterministic Kokiri source sample 111550, host frame 30, 1280x720:
+  sky ROI `(620,5)-(780,30)` changed from black to the exact Native RGB values
+  with every native light gain zero and the authored key enabled. All 4,000
+  ROI pixels match; mean linear luminance is 0.7385199023.
+- Native framebuffer SHA-256 remains
+  `a12f2ecfc6bc30d7e5f2d78be74b309f3f0d92b5c177745edb6a79a836ac3f89`
+  before and after both the admission and deferred-ownership changes.
+- These are renderer framebuffer readbacks, not desktop screenshots. Grass
+  remained enabled in both captures. World brightness is intentionally not
+  claimed fixed by this increment; its independent reference is the next step.

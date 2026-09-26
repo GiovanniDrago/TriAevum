@@ -27,6 +27,12 @@ enum class PicaCompositionLayer : uint8_t {
     Ui = 4,
 };
 
+// Only proven world surfaces admit replacement illumination. Atmosphere owns
+// its authored appearance; unknown ownership is not evidence of a lit surface.
+constexpr bool PicaCompositionReceivesSurfaceLighting(PicaCompositionLayer layer) noexcept {
+    return layer == PicaCompositionLayer::OpaqueWorld || layer == PicaCompositionLayer::TransparentWorld;
+}
+
 enum class PicaCompositionProvenance : uint8_t {
     Unknown = 0,
     NativeCmbDrawPass = 1,

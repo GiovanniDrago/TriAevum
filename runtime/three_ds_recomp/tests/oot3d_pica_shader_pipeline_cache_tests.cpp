@@ -105,6 +105,7 @@ Fast::Oot3d::PicaShaderPipelineRequest BaseRequest() {
     request.Draw.PerspectiveProjection = true;
     request.Draw.CompositionDomain =
         Oot3d::Renderer::PicaCompositionDomain::Scene;
+    request.Draw.CompositionLayer = Fast::Renderer3ds::PicaCompositionLayer::OpaqueWorld;
     request.TemporalVertexProgram = BaseTemporalVertexProgram();
     request.FragmentShaderHooks =
         Fast::Oot3d::AnalyzePicaFragmentShaderHooks(kFragmentShader);
@@ -1295,6 +1296,44 @@ void helper() { }
     ASSERT_NE(assignment, std::string::npos);
     ASSERT_NE(composedHelper, std::string::npos);
     EXPECT_LT(assignment, composedHelper);
+}
+
+TEST(Oot3dPicaShaderPipelineCache, AtmosphereDoesNotInheritWorldRelightingFromSharedPrograms) {
+    using namespace Fast::Oot3d;
+    using namespace Fast::Renderer3ds;
+    auto request = BaseRequest();
+    request.SurfaceLightingAvailable = true;
+    request.Draw.DirectionalShadowReceiver = true;
+    request.Pbr.TextureSlot = 0;
+    auto& surface = request.TemporalVertexProgram.Hooks.Surface;
+    surface.ViewNormalTemporary = 14;
+    surface.LightingBooleanUniform = 9;
+    surface.DiffuseUniform = 8;
+    surface.AmbientUniform = 9;
+    surface.TintBooleanUniform = 5;
+    surface.TintInputRegister = 2;
+    surface.TintScale = {90, 2};
+    surface.LightEnabledValue = {93, 1};
+    surface.LightDirectionUniforms = {80, 83, 86};
+    request.FragmentShaderHooks.Offsets[static_cast<size_t>(PicaShaderHook::PicaLighting)] = 0;
+    request.FragmentShaderHooks.Offsets[static_cast<size_t>(PicaShaderHook::AfterNativeTev)] = 0;
+    request.FragmentShaderHooks.Semantics |= PicaShaderSemantic::PrimaryColorInput | PicaShaderSemantic::ViewVector;
+    EffectsSettings effects;
+    effects.SurfaceLighting = SurfaceLightingMode::PerPixelPbr;
+    const auto relights = [&] {
+        return HasPicaShaderInstrumentationFeature(ResolvePicaDrawInstrumentationFeatures(request, effects),
+                                                   PicaShaderInstrumentationFeature::NativePerPixelLighting);
+    };
+    ASSERT_TRUE(relights());
+    request.Draw.CompositionLayer = PicaCompositionLayer::Atmosphere;
+    const auto atmosphere = ResolvePicaDrawInstrumentationFeatures(request, effects);
+    EXPECT_FALSE(HasPicaShaderInstrumentationFeature(atmosphere, PicaShaderInstrumentationFeature::NativePerPixelLighting));
+    EXPECT_FALSE(HasPicaShaderInstrumentationFeature(atmosphere, PicaShaderInstrumentationFeature::PbrMaterial));
+    EXPECT_FALSE(HasPicaShaderInstrumentationFeature(atmosphere, PicaShaderInstrumentationFeature::DirectionalShadowLighting));
+    request.Draw.CompositionLayer = PicaCompositionLayer::TransparentWorld;
+    EXPECT_TRUE(relights());
+    request.Draw.CompositionLayer = PicaCompositionLayer::Unknown;
+    EXPECT_FALSE(relights());
 }
 
 TEST(Oot3dPicaShaderInstrumentation,

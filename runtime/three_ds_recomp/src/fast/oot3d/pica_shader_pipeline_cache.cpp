@@ -110,7 +110,8 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
     const bool sceneDraw =
         request.Draw.CompositionDomain ==
         ::Oot3d::Renderer::PicaCompositionDomain::Scene;
-    if (sceneDraw && request.Draw.FragmentOperationMode != 3U &&
+    if (sceneDraw && Renderer3ds::PicaCompositionReceivesSurfaceLighting(request.Draw.CompositionLayer) &&
+        request.Draw.FragmentOperationMode != 3U &&
         request.Draw.PerspectiveProjection && request.SurfaceLightingAvailable &&
         effects.SurfaceLighting != SurfaceLightingMode::Native &&
         request.TemporalVertexProgram.Hooks.SurfaceProgram() != nullptr &&

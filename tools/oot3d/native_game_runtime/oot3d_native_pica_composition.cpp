@@ -105,7 +105,7 @@ constexpr std::array kAtmosphereScopes{
 
 constexpr auto BuildCompositionHookPcs() {
     constexpr size_t count =
-        4U + kUiViews.size() * 2U + kCmbReturnPcs.size() +
+        5U + kUiViews.size() * 2U + kCmbReturnPcs.size() +
         (kObjectKankyoReturnPcs.size() + kSceneRendererReturnPcs.size() +
          kGameplayFadeReturnPcs.size() +
          kRandomizedOverlayReturnPcs.size() +
@@ -127,6 +127,7 @@ constexpr auto BuildCompositionHookPcs() {
     hooks[cursor++] = kOot3dMeshCommandPacketSubmitEntry;
     hooks[cursor++] = kOot3dGameplayDrawEntry;
     hooks[cursor++] = kOot3dModelQueueSubmitEntry;
+    hooks[cursor++] = kOot3dModelQueueSetSlotEntry;
     for (const auto pc : kCmbReturnPcs) {
         hooks[cursor++] = pc;
     }
@@ -271,6 +272,7 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
     mLighting.ObserveBlockEntry(pc, state, memory);
     if (pc == kOot3dGameplayDrawEntry) {
         mProjectedShadowRenderers.clear();
+        mQueuedComposition.clear();
         mLighting.CaptureSceneLights(state.r[0], memory);
     } else if (pc == kOot3dModelQueueSubmitEntry &&
                (state.r[14] == 0x001D04DCU || state.r[14] == 0x0033E684U ||
@@ -293,6 +295,24 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
                 }
             }
         }
+    }
+    if (pc == kOot3dModelQueueSetSlotEntry) {
+        // 0031487C stores model r2 in the exact eight-byte queue slot r1.
+        // Keep the producer's ownership on that slot, not on the model: the
+        // same model may also be submitted by an unrelated world/UI owner.
+        const auto at = std::lower_bound(mQueuedComposition.begin(), mQueuedComposition.end(), state.r[1],
+            [](const QueuedComposition& entry, uint32_t address) { return entry.SlotAddress < address; });
+        if (mActiveAtmosphereScope && !mActiveUiScope && state.r[2] != 0) {
+            const auto attribution = AttributionForAtmosphere(
+                mActiveAtmosphereScope->SourcePc, mActiveAtmosphereScope->NativeValue);
+            if (at != mQueuedComposition.end() && at->SlotAddress == state.r[1])
+                at->Attribution = attribution;
+            else
+                mQueuedComposition.insert(at, {state.r[1], attribution});
+        } else if (at != mQueuedComposition.end() && at->SlotAddress == state.r[1]) {
+            mQueuedComposition.erase(at);
+        }
+        return;
     }
     const auto ui = std::find(kUiViews.begin(), kUiViews.end(), std::pair{pc, state.r[14]});
     if (ui != kUiViews.end() && !mActiveUiScope) {
@@ -415,6 +435,17 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
         mActiveCmbPass = static_cast<uint8_t>(pass);
         mActiveCmbReturnPc = state.r[14];
         mActiveCmbRenderer = state.r[0];
+        mActiveCmbAttribution = AttributionForCmbPass(static_cast<uint8_t>(pass));
+        // The model-array consumers 002FAD2C, 002FAE10 and 003FE374 keep
+        // the array in r8 and its current index in r4 at these CMB calls.
+        // 002FEA30 uses a different layout and is deliberately excluded.
+        if (state.r[14] != 0x002FEA68U && state.r[14] != 0x002FEA74U) {
+            const uint64_t slot = uint64_t{state.r[8]} + uint64_t{state.r[4]} * 8U;
+            const auto at = std::lower_bound(mQueuedComposition.begin(), mQueuedComposition.end(), slot,
+                [](const QueuedComposition& entry, uint64_t address) { return entry.SlotAddress < address; });
+            if (at != mQueuedComposition.end() && at->SlotAddress == slot)
+                mActiveCmbAttribution = at->Attribution;
+        }
         if (pass == 0U) {
             ++mStats.CmbOpaquePassEntries;
         } else {
@@ -486,7 +517,7 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
                 mActiveAtmosphereScope->NativeValue);
             packet.LightBinding.WorldToView = NativeA32LightingProbe::CaptureWorldToView(memory);
         } else if (mActiveCmbPass.has_value()) {
-            packet.Attribution = AttributionForCmbPass(*mActiveCmbPass);
+            packet.Attribution = mActiveCmbAttribution;
             packet.Attribution.NativeProjectedShadow = std::binary_search(
                 mProjectedShadowRenderers.begin(), mProjectedShadowRenderers.end(), mActiveCmbRenderer);
             packet.LightBinding = mLighting.CaptureRenderer(mActiveCmbRenderer, memory);
@@ -543,7 +574,7 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
         mActiveAtmosphereScope->PacketSpans.push_back(std::move(span));
         return;
     } else {
-        span.Attribution = AttributionForCmbPass(*mActiveCmbPass);
+        span.Attribution = mActiveCmbAttribution;
         span.Attribution.NativeProjectedShadow = std::binary_search(
             mProjectedShadowRenderers.begin(), mProjectedShadowRenderers.end(), mActiveCmbRenderer);
         if (!mActiveUiScope) {
@@ -599,6 +630,8 @@ void Oot3dNativePicaCompositionTracker::Reset() noexcept {
     mActiveCmbReturnPc.reset();
     mActiveCmbRenderer = 0;
     mProjectedShadowRenderers.clear();
+    mQueuedComposition.clear();
+    mActiveCmbAttribution = {};
     mLighting.Reset();
     mActiveAtmosphereScope.reset();
     mActivePrimitivePacket.reset();

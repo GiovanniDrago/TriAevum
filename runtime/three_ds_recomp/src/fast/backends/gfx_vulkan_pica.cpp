@@ -4142,6 +4142,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         if (!nativeMemoryOnly && !mNativeFidelityProfile &&
             graphicsSettings.Effects.SurfaceLighting != Oot3d::SurfaceLightingMode::Native &&
             draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Scene &&
+            Renderer3ds::PicaCompositionReceivesSurfaceLighting(draw.Composition.Layer) &&
             grassPerspectiveProjection && draw.FragmentOperationMode != 3U &&
             draw.VertexUniformBytes.size() >= Oot3d::kPicaPackedVertexFloatOffset) {
             uint32_t booleanUniforms = 0U;
@@ -4307,6 +4308,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 directionalShadowReceiver,
                 draw.CompositionDomain,
                 draw.DepthCompare,
+                draw.Composition.Layer,
             },
             mTemporalMotionEnabled && !nativeMemoryOnly,
             resolvedReflectionMaterial.has_value()

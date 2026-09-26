@@ -191,6 +191,70 @@ void TestProjectedShadowOwnership() {
     }
 }
 
+void TestDeferredAtmosphereOwnership() {
+    using namespace Oot3dNativeGame;
+    NativeA32Memory memory;
+    Map(memory, 0x0054C000U, 0x1000U);
+    Map(memory, 0x10000000U, 0x1000U);
+    Require(memory.Write32(0x10000010U, 0x20U) &&
+            memory.Write32(0x0054CC4CU, 0x14001000U), "could not seed deferred model packets");
+    Oot3dNativePicaCompositionTracker tracker;
+    oot3d::recomp::a32::GuestState state{};
+    constexpr uint32_t queue = 0x10000400U, renderer = 0x10000600U;
+    const auto enqueueAtmosphere = [&] {
+        state.r[2] = 7;
+        state.r[3] = 2;
+        state.r[14] = 0x002E2B8CU;
+        tracker.ObserveBlockEntry(kOot3dSceneRendererSubmitConfiguredModelPassEntry, state, memory);
+        state.r[1] = queue;
+        state.r[2] = 0x10000800U;
+        tracker.ObserveBlockEntry(kOot3dModelQueueSetSlotEntry, state, memory);
+        tracker.ObserveBlockEntry(0x002E2B8CU, state, memory);
+    };
+    uint32_t cursor = 0x14001000U;
+    const auto emit = [&](uint32_t slot, uint32_t pass) {
+        state.r[0] = renderer;
+        state.r[1] = pass;
+        state.r[4] = 1;
+        state.r[8] = slot - 8U;
+        state.r[14] = pass == 0 ? 0x002FAED8U : 0x002FADF4U;
+        tracker.ObserveBlockEntry(kOot3dCmbRendererSubmitDrawHandleEntry, state, memory);
+        Require(memory.Write32(0x0054CC4CU, cursor), "could not move deferred packet cursor");
+        state.r[0] = 0x10000000U;
+        tracker.ObserveBlockEntry(kOot3dMeshCommandPacketSubmitEntry, state, memory);
+        tracker.ObserveBlockEntry(state.r[14], state, memory);
+        cursor += 0x20U;
+        Require(memory.Write32(0x0054CC4CU, cursor), "could not complete deferred packet");
+    };
+    enqueueAtmosphere();
+    emit(queue, 0);
+    emit(queue, 1);
+    emit(queue + 8U, 0); // The same renderer in another slot is ordinary world.
+    state.r[1] = queue;
+    state.r[2] = 0x10000800U;
+    tracker.ObserveBlockEntry(kOot3dModelQueueSetSlotEntry, state, memory);
+    emit(queue, 0); // Replacing a slot outside its old owner removes that role.
+    enqueueAtmosphere();
+    tracker.ObserveBlockEntry(kOot3dGameplayDrawEntry, state, memory);
+    emit(queue, 0); // Neither pointers nor queue slots retain roles next frame.
+    std::vector<Oot3dPicaCommandListCompositionSpan> spans;
+    std::string error;
+    Require(tracker.TakeCommandListCompositionSpans(0x14001000U, 0xA0U, spans, &error), error);
+    for (uint32_t i = 0; i < 5; ++i) {
+        const uint32_t address = 0x14001000U + i * 0x20U;
+        const auto found = std::find_if(spans.begin(), spans.end(), [&](const auto& span) {
+            return span.BeginAddress <= address && address < span.EndAddress;
+        });
+        const auto layer = i < 2 ? Oot3dPicaCompositionLayer::Atmosphere : Oot3dPicaCompositionLayer::OpaqueWorld;
+        Require(found != spans.end() && found->Attribution.Layer == layer,
+                "deferred atmosphere ownership was lost or leaked across queue slots/lifetimes");
+        if (i < 2)
+            Require(found->Attribution.SourcePc == kOot3dSceneRendererSubmitConfiguredModelPassEntry &&
+                    found->Attribution.NativeValue == 0x00020007U,
+                    "deferred atmosphere lost its native producer provenance");
+    }
+}
+
 void TestRestoredSceneLightOwnership() {
     using namespace Oot3dNativeGame;
     NativeA32Memory memory;
@@ -302,6 +366,7 @@ void TestRestoredNativeEnvironmentLights() {
 int main() {
     TestSelectedLightSnapshot();
     TestProjectedShadowOwnership();
+    TestDeferredAtmosphereOwnership();
     TestRestoredSceneLightOwnership();
     TestRestoredNativeEnvironmentLights();
     constexpr uint32_t kWriterWrapper = 0x10000200U;
