@@ -43,9 +43,9 @@ struct NativeA32DspHle::Impl {
         Sources.reserve(AudioCore::HLE::num_sources);
         for (size_t index = 0; index < AudioCore::HLE::num_sources; ++index) {
             Sources.emplace_back(index);
-            Sources.back().SetMemoryResolver([this](uint32_t address) {
+            Sources.back().SetMemoryResolver([this](uint32_t address, size_t size) {
                 return CurrentMemory != nullptr && CurrentMemory->ResolvePhysical
-                           ? CurrentMemory->ResolvePhysical(address)
+                           ? CurrentMemory->ResolvePhysical(address, size)
                            : nullptr;
             });
         }
@@ -191,10 +191,10 @@ bool NativeA32DspHle::RestoreState(const nlohmann::json& state,
         for (size_t index = 0; index < AudioCore::HLE::num_sources; ++index) {
             restoredSources.emplace_back(index);
             restoredSources.back().SetMemoryResolver([impl = mImpl.get()](
-                                                          uint32_t address) {
+                                                          uint32_t address, size_t size) {
                 return impl->CurrentMemory != nullptr &&
                                impl->CurrentMemory->ResolvePhysical
-                           ? impl->CurrentMemory->ResolvePhysical(address)
+                           ? impl->CurrentMemory->ResolvePhysical(address, size)
                            : nullptr;
             });
             if (!restoredSources.back().RestoreState(sources[index], error)) {

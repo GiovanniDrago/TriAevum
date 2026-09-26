@@ -22,7 +22,7 @@ struct NativeA32DspPhysicalRegion {
 struct NativeDspMemoryAccess {
     std::function<bool(uint32_t, std::span<uint8_t>)> Read;
     std::function<bool(uint32_t, std::span<const uint8_t>)> Write;
-    std::function<const uint8_t*(uint32_t)> ResolvePhysical;
+    std::function<const uint8_t*(uint32_t, size_t)> ResolvePhysical;
 };
 
 class NativeA32DspHle {

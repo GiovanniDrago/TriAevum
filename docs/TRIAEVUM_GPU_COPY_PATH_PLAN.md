@@ -31,7 +31,8 @@ Il sampler risolve le versioni GPU; gli alias fisici mantengono la medesima
 precedenza anche per scritture CPU parziali. I puntatori senza un contratto di
 rilascio impediscono ulteriori defer nello stesso intervallo; il fallback eager
 resta obbligatorio in quel caso e con l'oracolo encode esplicitamente abilitato.
-PICA usa viste sincrone con estensione esatta, senza puntatori persistenti.
+PICA e DSP usano invece viste sincrone con estensione esatta, senza puntatori
+persistenti. Il DSP dichiara l'intero buffer PCM/ADPCM, non il solo primo byte.
 
 PPF segnala una sola volta la disponibilità logica. L'ordine GPU soddisfa i
 consumer GPU; una lettura CPU forza submit/wait del producer prima di restituire
@@ -69,9 +70,15 @@ Prove sul checkpoint `sheik-near-copy`, Authentic, stessa timeline:
   zero errori, zero warning NRI, 11 warning Vulkan; non soppressi.
 - Avvio **5/5** e selezione file **6/6** framebuffer identici alle baseline.
   Suite host/memoria, submission/alias, bridge, visual-savestate, savestate,
-  semantic trace e planner verdi; foundation **291/291**.
-  Probe DLL reale: otto controlli ABI verdi,
+  semantic trace e planner verdi; foundation **291/291**. Audio: 7.776
+  confronti resampler e regressioni di buffer differiti PCM8, PCM16 stereo e
+  ADPCM con campione finale dispari. Probe DLL reale: otto controlli ABI verdi,
   inclusa una lettura compilata di memoria differita. Confine condiviso: 69 file.
+
+La riqualifica sorgenti del 2026-09-26 ripassa la suite audio, inclusi i buffer
+differiti e 7.776 confronti resampler, e osserva PCM non nullo nella runtime.
+È distinta dalle misure storiche di copia sopra:
+[`TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md`](TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md).
 
 Invocazioni, log, catture e ricevute restano fuori repository in
 `I:/_triaevum_work/deferred-copy/`: `before`, `after`, `final`, `smoke`,

@@ -45,9 +45,9 @@ public:
     void Sleep();
     void Wakeup();
 
-    using PhysicalMemoryResolver = std::function<const u8*(PAddr)>;
+    using PhysicalMemoryResolver = std::function<const u8*(PAddr, std::size_t)>;
 
-    /// Sets the physical-memory resolver used for source sample buffers.
+    /// Resolves the complete encoded buffer for immediate, synchronous decoding.
     void SetMemoryResolver(PhysicalMemoryResolver resolver);
 
     /**

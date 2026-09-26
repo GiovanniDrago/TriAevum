@@ -59,15 +59,15 @@ bool SourceDspMixer::ProcessFrame(
         std::memcpy(target.data(), input.data(), input.size());
         return true;
     };
-    access.ResolvePhysical = [this](std::uint32_t physicalAddress) {
+    access.ResolvePhysical = [this](std::uint32_t physicalAddress, std::size_t size) {
         for (const auto& mapping : mMappings) {
             if (physicalAddress < mapping.PhysicalAddress) continue;
             const std::uint64_t offset = physicalAddress - mapping.PhysicalAddress;
-            if (offset >= mapping.Size) continue;
+            if (offset >= mapping.Size || size > mapping.Size - offset) continue;
             const auto bytes = mMemory.ResolveRead(
                 mapping.VirtualAddress + static_cast<std::uint32_t>(offset),
-                mapping.Size - static_cast<std::size_t>(offset));
-            if (!bytes.empty()) {
+                size);
+            if (bytes.size() == size) {
                 return reinterpret_cast<const std::uint8_t*>(bytes.data());
             }
         }

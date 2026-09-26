@@ -31,13 +31,13 @@ bool NativeA32DspHle::ProcessFrame(
                              std::span<const uint8_t> input) {
         return memory.WriteBytes(address, input);
     };
-    access.ResolvePhysical = [this, &memory](uint32_t physicalAddress) {
+    access.ResolvePhysical = [this, &memory](uint32_t physicalAddress, size_t size) {
         for (const auto& region : PhysicalRegions()) {
             if (physicalAddress < region.PhysicalAddress) continue;
             const uint64_t offset = physicalAddress - region.PhysicalAddress;
-            if (offset < region.Size) {
-                return memory.GetReadPointer(
-                    region.VirtualAddress + static_cast<uint32_t>(offset));
+            if (offset < region.Size && size <= region.Size - offset) {
+                return memory.SynchronousReadView(
+                    region.VirtualAddress + static_cast<uint32_t>(offset), size).data();
             }
         }
         return static_cast<const uint8_t*>(nullptr);

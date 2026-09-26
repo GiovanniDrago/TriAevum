@@ -2,6 +2,8 @@
 #include "audio_core/codec.h"
 #include "audio_core/hle/source.h"
 #include "audio_core/interpolate.h"
+#include "oot3d_native_a32_dsp_hle.h"
+#include "oot3d_native_a32_memory.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <deque>
@@ -177,6 +179,74 @@ void SourceStateTest() {
     }
 }
 
+// A decoder consumes an entire encoded buffer, not just the byte at its pointer.
+// Keep the first byte resident and the remainder device-owned so a one-byte
+// pointer observation produces observably wrong source playback state.
+void DeferredDspBufferTest() {
+    using namespace Oot3dNativeGame;
+    using Configuration = AudioCore::HLE::SourceConfiguration::Configuration;
+    struct Case {
+        Configuration::Format Format;
+        Configuration::MonoOrStereo Channels;
+        uint32_t Samples;
+        size_t Bytes;
+    };
+    for (const auto test : {
+             Case{Configuration::Format::PCM8, Configuration::MonoOrStereo::Mono, 512, 512},
+             Case{Configuration::Format::PCM16, Configuration::MonoOrStereo::Stereo, 512, 2048},
+             Case{Configuration::Format::ADPCM, Configuration::MonoOrStereo::Mono, 511, 293}}) {
+        NativeA32Memory deferred;
+        AudioCore::HLE::SharedMemory shared{};
+        auto& config = shared.source_configurations.config[0];
+        shared.frame_counter = 1;
+        config.enable = 1;
+        config.enable_dirty.Assign(1);
+        config.rate_multiplier = 1.0f;
+        config.rate_multiplier_dirty.Assign(1);
+        config.interpolation_mode = Configuration::InterpolationMode::None;
+        config.interpolation_dirty.Assign(1);
+        config.physical_address = 0x20000003U; // Native DSP DMA aligns to four bytes.
+        config.length = test.Samples;
+        config.format.Assign(test.Format);
+        config.mono_or_stereo.Assign(test.Channels);
+        config.embedded_buffer_dirty.Assign(1);
+        const auto sharedBytes = std::span<const uint8_t>(
+            reinterpret_cast<const uint8_t*>(&shared), sizeof(shared));
+        std::string error;
+        Require(deferred.MapRegion({"dsp0", 0x1FF50000U, sizeof(shared), true, false, {}}, &error),
+                "map DSP region zero");
+        Require(deferred.MapRegion({"dsp1", 0x1FF70000U, sizeof(shared), true, false, sharedBytes}, &error),
+                "map DSP region one");
+        Require(deferred.MapRegion({"samples", 0x14000000U, 4096, true, false, {}}, &error),
+                "map DSP sample buffer");
+        Require(deferred.Write8(0x14000000U, 0x11), "seed first DSP byte");
+        NativeA32Memory eager = deferred;
+        std::vector<uint8_t> samples(test.Bytes, 0x11);
+        Require(eager.WriteBytes(0x14000000U, samples), "seed eager DSP buffer");
+        const std::array ranges{std::pair<uint32_t, size_t>{0x14000001U, test.Bytes - 1}};
+        size_t fetched = 0;
+        Require(deferred.DeferWrites(ranges, [&](uint32_t, std::span<uint8_t> output) {
+            std::fill(output.begin(), output.end(), 0x11);
+            fetched += output.size();
+            return true;
+        }), "publish deferred DSP buffer");
+        const std::array tail{std::pair<uint32_t, size_t>{
+            0x14000000U + static_cast<uint32_t>(test.Bytes), 8}};
+        Require(deferred.DeferWrites(tail, [](uint32_t, std::span<uint8_t>) { return false; }),
+                "publish unread DSP tail");
+        NativeA32DspHle actual({{0x20000000U, 0x14000000U, 4096}});
+        NativeA32DspHle expected({{0x20000000U, 0x14000000U, 4096}});
+        std::vector<int16_t> actualOutput, expectedOutput;
+        Require(actual.ProcessFrame(deferred, actualOutput, &error), "decode deferred DSP buffer");
+        Require(expected.ProcessFrame(eager, expectedOutput, &error), "decode eager DSP buffer");
+        Require(actualOutput == expectedOutput && actual.CaptureState() == expected.CaptureState(),
+                "device-owned DSP bytes changed decoded playback state");
+        Require(fetched == test.Bytes - 1, "DSP did not observe its exact encoded range");
+        Require(deferred.DeferWrites(ranges, [](uint32_t, std::span<uint8_t>) { return false; }),
+                "synchronous DSP decoder leaked a persistent raw pointer");
+    }
+}
+
 nlohmann::json ReadDspSnapshot(const char* path) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     Require(file.good(), "cannot open gameplay checkpoint");
@@ -209,6 +279,7 @@ int main(int argc, char** argv) {
         CodecTests();
         const auto calls = ResamplerTests();
         SourceStateTest();
+        DeferredDspBufferTest();
         std::cout << "audio storage: " << calls << " differential resampler calls, codecs, source playback/save/restore/sleep: PASS\n";
         if (argc == 3) {
             const auto before = ReadDspSnapshot(argv[1]);

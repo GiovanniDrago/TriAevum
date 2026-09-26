@@ -22,6 +22,24 @@ namespace {
 constexpr std::size_t kMaximumSerializedSourceBuffers = 1U << 16U;
 constexpr std::size_t kMaximumSerializedSourceSamples = 1U << 24U;
 
+std::size_t EncodedSourceBytes(SourceConfiguration::Configuration::Format format,
+                              SourceConfiguration::Configuration::MonoOrStereo channels,
+                              u32 samples) {
+    using Format = SourceConfiguration::Configuration::Format;
+    const std::size_t count = samples;
+    const std::size_t channel_count =
+        channels == SourceConfiguration::Configuration::MonoOrStereo::Stereo ? 2U : 1U;
+    switch (format) {
+    case Format::PCM8: return count * channel_count;
+    case Format::PCM16: return count * channel_count * sizeof(s16);
+    case Format::ADPCM:
+        // Codec consumes one header and two nibbles per encoded byte, including
+        // the final odd sample. No pointer beyond this range is handed out.
+        return count / 14U * 8U + (count % 14U ? 1U + (count % 14U + 1U) / 2U : 0U);
+    default: return 0U;
+    }
+}
+
 void SetStateError(std::string* error, const std::string& message) {
     if (error != nullptr) {
         *error = message;
@@ -431,8 +449,8 @@ void Source::ParseConfig(SourceConfiguration::Configuration& config,
         // whatever is in config, because that may be invalid.
         const u8* const memory =
             memory_resolver
-                ? memory_resolver(state.current_buffer_physical_address &
-                                  0xFFFFFFFC)
+                ? memory_resolver(state.current_buffer_physical_address & 0xFFFFFFFC,
+                                  EncodedSourceBytes(state.format, state.mono_or_stereo, config.length))
                 : nullptr;
 
         // TODO(xperia64): This could potentially be optimized by only decoding the new data and
@@ -635,7 +653,8 @@ bool Source::DequeueBuffer() {
     // firmware.
     const u8* const memory =
         memory_resolver
-            ? memory_resolver(buf.physical_address & 0xFFFFFFFC)
+            ? memory_resolver(buf.physical_address & 0xFFFFFFFC,
+                              EncodedSourceBytes(buf.format, buf.mono_or_stereo, buf.length))
             : nullptr;
     if (memory) {
         const unsigned num_channels = buf.mono_or_stereo == MonoOrStereo::Stereo ? 2 : 1;
