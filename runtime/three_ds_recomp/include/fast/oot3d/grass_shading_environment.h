@@ -50,7 +50,7 @@ struct GrassLightingResult {
 [[nodiscard]] GrassShadingEnvironment DecodeGrassShadingEnvironment(std::span<const uint8_t> packedVertexUniforms,
                                                                     std::span<const uint8_t> packedFragmentUniforms,
                                                                     const ::Fast::Renderer3ds::PicaFragmentFeatureView& fragmentFeatures,
-                                                                    const ::Fast::Renderer3ds::PicaPerspectiveCameraState& view) noexcept;
+                                                                    const std::array<float, 16>& viewToWorld) noexcept;
 
 [[nodiscard]] GrassLightingResult EvaluateGrassLighting(const GrassShadingEnvironment& environment,
                                                         const std::array<float, 3>& worldNormal) noexcept;

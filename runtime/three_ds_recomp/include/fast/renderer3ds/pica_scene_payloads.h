@@ -9,7 +9,7 @@
 
 namespace Fast::Renderer3ds {
 
-inline constexpr uint32_t kPicaPerspectiveCameraSchemaVersion = 1U;
+inline constexpr uint32_t kPicaPerspectiveCameraSchemaVersion = 3U;
 inline constexpr uint32_t kPicaSceneResolvedRasterStateSchemaVersion = 1U;
 inline constexpr uint32_t kPicaSceneRenderTargetStateSchemaVersion = 1U;
 inline constexpr uint32_t kPicaSceneResolvedMaterialStateSchemaVersion = 1U;

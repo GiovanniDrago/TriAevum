@@ -3912,7 +3912,6 @@ bool PublishNativePicaGrassSurface(
     const GfxNativePicaDrawView& draw, uint64_t frameId,
     std::unordered_map<uint64_t, uint32_t>& occurrences,
     const Oot3d::InteractiveGrassSettings& settings,
-    const Oot3d::PerspectiveViewState& perspective,
     bool worldSurface, bool fragmentUsesTexture0,
     bool perspectiveProjection,
     Oot3d::GrassGeometryRegistry& geometryRegistry);
@@ -4698,7 +4697,6 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 draw, mFrameCounter,
                 mGrassSurfaceOccurrencesThisFrame,
                 graphicsSettings.Grass,
-                *grassPerspective,
                 opaqueWorldDraw,
                 shaderVariant.GrassTexture0Sampled,
                 grassPerspectiveProjection,
@@ -10501,7 +10499,6 @@ bool PublishNativePicaGrassSurface(
     const GfxNativePicaDrawView& draw, uint64_t frameId,
     std::unordered_map<uint64_t, uint32_t>& occurrences,
     const Oot3d::InteractiveGrassSettings& settings,
-    const Oot3d::PerspectiveViewState& perspective,
     bool worldSurface, bool fragmentUsesTexture0,
     bool perspectiveProjection,
     Oot3d::GrassGeometryRegistry& geometryRegistry) {
@@ -10709,43 +10706,18 @@ bool PublishNativePicaGrassSurface(
     }
     const auto modelToView = multiply(viewTransform, modelTransform);
 
-    if (!perspective.CameraAvailable) {
-        return rejectConfiguredSource("camera unavailable");
+    Oot3d::DirectionalShadowMatrix capturedViewToWorld;
+    if (!draw.LightBinding.WorldToView ||
+        !Oot3d::InvertDirectionalShadowMatrix(*draw.LightBinding.WorldToView, capturedViewToWorld)) {
+        return rejectConfiguredSource("captured camera unavailable");
     }
-    const auto normalize = [](std::array<float, 3> value) {
-        const float length = std::sqrt(value[0] * value[0] +
-                                       value[1] * value[1] +
-                                       value[2] * value[2]);
-        if (length <= 1.0e-6F) return std::array<float, 3>{};
-        for (float& component : value) component /= length;
-        return value;
-    };
-    const auto cross = [](const std::array<float, 3>& left,
-                          const std::array<float, 3>& right) {
-        return std::array<float, 3>{
-            left[1] * right[2] - left[2] * right[1],
-            left[2] * right[0] - left[0] * right[2],
-            left[0] * right[1] - left[1] * right[0]};
-    };
-    const auto forward = normalize({
-        perspective.At[0] - perspective.Eye[0],
-        perspective.At[1] - perspective.Eye[1],
-        perspective.At[2] - perspective.Eye[2]});
-    const auto side = normalize(cross(forward, {0.0F, 1.0F, 0.0F}));
-    const auto up = cross(side, forward);
-    if (forward == std::array<float, 3>{} ||
-        side == std::array<float, 3>{}) {
-        return rejectConfiguredSource("degenerate camera basis");
-    }
-
-    // f[20..22] is model-to-view in the rigid CMB path. Undo the camera
-    // transform published by the guest runtime so placement persists in the
-    // room while the camera moves.
-    const std::array<float, 16> viewToWorld{
-        side[0], up[0], -forward[0], perspective.Eye[0],
-        side[1], up[1], -forward[1], perspective.Eye[1],
-        side[2], up[2], -forward[2], perspective.Eye[2],
-        0.0F, 0.0F, 0.0F, 1.0F};
+    // Placement and lighting must undo the camera paired with these exact
+    // vertex uniforms, not the later live gameplay camera (or an Eye/At
+    // reconstruction that loses roll).
+    std::array<float, 16> viewToWorld;
+    for (size_t row = 0; row < 4; ++row)
+        for (size_t column = 0; column < 4; ++column)
+            viewToWorld[row * 4 + column] = capturedViewToWorld[column * 4 + row];
     const auto modelToWorld = multiply(viewToWorld, modelToView);
     auto picaModelToClip = multiply(projection, modelToView);
     if (draw.FramebufferFlipped) {
@@ -10863,7 +10835,7 @@ bool PublishNativePicaGrassSurface(
     mesh.PicaModelToClipAvailable = true;
     mesh.Shading = Oot3d::DecodeGrassShadingEnvironment(
         draw.VertexUniformBytes, draw.FragmentUniformBytes,
-        draw.FragmentFeatures, perspective);
+        draw.FragmentFeatures, capturedViewToWorld);
     mesh.Vertices = grassGeometry.Vertices;
     mesh.Indices = grassGeometry.Indices;
     Oot3d::GrassSceneBridge::Instance().Publish(

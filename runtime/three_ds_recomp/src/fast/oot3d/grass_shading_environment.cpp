@@ -35,7 +35,7 @@ float Dot(const std::array<float, 3>& left, const std::array<float, 3>& right) {
 GrassShadingEnvironment DecodeGrassShadingEnvironment(std::span<const uint8_t> packedVertexUniforms,
                                                       std::span<const uint8_t> packedFragmentUniforms,
                                                       const ::Fast::Renderer3ds::PicaFragmentFeatureView& fragmentFeatures,
-                                                      const ::Fast::Renderer3ds::PicaPerspectiveCameraState& view) noexcept {
+                                                      const std::array<float, 16>& viewToWorld) noexcept {
     GrassShadingEnvironment result;
     const auto native = DecodePicaNativeDrawEnvironment(
         packedVertexUniforms, packedFragmentUniforms, fragmentFeatures);
@@ -48,7 +48,7 @@ GrassShadingEnvironment DecodeGrassShadingEnvironment(std::span<const uint8_t> p
              lightIndex < native.Lighting.ActiveLightCount; ++lightIndex) {
             const auto& nativeLight = native.Lighting.Lights[lightIndex];
             const auto worldTowardSource = TransformPicaLightDirectionToWorld(
-                nativeLight.DirectionViewTowardSource, view.Eye, view.At);
+                nativeLight.DirectionViewTowardSource, viewToWorld);
             if (worldTowardSource == std::array<float, 3>{}) {
                 continue;
             }

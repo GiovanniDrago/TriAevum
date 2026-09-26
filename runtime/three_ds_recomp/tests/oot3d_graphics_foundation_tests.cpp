@@ -1515,16 +1515,14 @@ TEST(Oot3dGrassShading, SamplesNativeFogAndCmbLights) {
                 pair * sizeof(packed),
             packed.data(), sizeof(packed));
     }
-    PerspectiveViewState view;
-    view.CameraAvailable = true;
-    view.Eye = {0.0F, 0.0F, 0.0F};
-    view.At = {0.0F, 0.0F, -1.0F};
+    const std::array<float, 16> viewToWorld{
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     const auto environment =
         DecodeGrassShadingEnvironment(
             vertexUniforms, fragmentUniforms,
             {Oot3d::Renderer::kPicaFragmentFeatureSchemaVersion,
              false, true, false, 5U},
-            view);
+            viewToWorld);
     ASSERT_EQ(environment.ActiveLightCount, 1U);
     EXPECT_TRUE(environment.Fog.Enabled);
     const auto lit = EvaluateGrassLighting(
@@ -1533,6 +1531,17 @@ TEST(Oot3dGrassShading, SamplesNativeFogAndCmbLights) {
     EXPECT_GT(lit.Rgb[0], ambient[0]);
     EXPECT_GT(SampleGrassPicaFog(environment.Fog, 0.75F),
               SampleGrassPicaFog(environment.Fog, 0.25F));
+    // A captured camera can roll without changing Eye/At. Native light
+    // directions must follow that full basis, independently of live input.
+    const std::array<float, 16> rolledViewToWorld{
+        0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 100, 200, 300, 1};
+    const auto rolled = DecodeGrassShadingEnvironment(
+        vertexUniforms, fragmentUniforms,
+        {Oot3d::Renderer::kPicaFragmentFeatureSchemaVersion, false, true, false, 5U},
+        rolledViewToWorld);
+    const auto rolledLit = EvaluateGrassLighting(rolled, {-1.0F, 0.0F, 0.0F});
+    for (size_t channel = 0; channel < 3; ++channel)
+        EXPECT_NEAR(rolledLit.Rgb[channel], lit.Rgb[channel], 1.0e-6F);
 }
 
 TEST(Oot3dGrassWind, RandomnessControlsPerBladePhase) {

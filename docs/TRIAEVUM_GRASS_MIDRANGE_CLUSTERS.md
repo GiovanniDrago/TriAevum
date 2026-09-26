@@ -310,3 +310,36 @@ emits/compacts individual child records on CPU/GPU each frame. Reusing compact
 cluster selections and reducing this per-child preparation is the remaining
 structural opportunity. Validate temporal handover and far silhouette before
 promoting the experimental path or adding user-facing controls.
+
+## Stable Selection and Occupancy Counting (2026-09-24)
+
+The cluster-owned selector now visits groups directly in immutable tree order,
+without allocating a candidate vector, and stops traversing once the visible
+budget is exhausted. Group ownership, sparse-mask acceptance, individual near
+geometry and whole-group budget admission remain unchanged.
+
+`RebaseGrassMidrangeDraws` validates the contiguous selected-root partition,
+then uses bounded stable occupancy counting instead of comparison sorting.
+Incoming root order supplies the secondary key, so the resulting
+`(member count, prepared root)` order is unchanged. Tests cover equal-occupancy
+ties and the 1/10,000-member boundaries as well as existing selection invariants.
+
+On the current saved Kokiri configuration, two balanced moving-camera pairs
+measure aggregate Grass CPU preparation at 2.876 -> 2.685 ms. This includes
+the accompanying captured-camera/lighting changes and is not an isolated
+counting-sort benchmark. Overall native throughput improves only about 1.3%
+under the controlled-priority protocol; normal-priority runs remain variable
+and include regressions. Density, visible budget, distances, geometry and
+product presets were not reduced. See the 2026-09-24 section in
+`OOT3D_NRI_FIDELITY_EXTENSION_ARCHITECTURE.md` for full limitations.
+
+## Source adoption qualification (2026-09-26)
+
+The isolated combined build passes the midrange-cluster, ordering, partition
+and spacing fixtures, including stable ties and the occupancy boundaries.
+Deterministic captures exercise Native and Per-pixel lighting and both CACAO
+and GTAO over dense Grass. Guest-memory bytes and native PICA submission state
+match the Grass-Off control. This is fresh correctness/integration evidence,
+not a rerun of the performance measurements above. See
+[`TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md`](TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md)
+for the bounded cases and the separate realtime validation limitation.

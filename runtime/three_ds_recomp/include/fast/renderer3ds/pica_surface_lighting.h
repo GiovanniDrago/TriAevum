@@ -43,7 +43,7 @@ struct alignas(16) PicaSurfaceLightingUniforms {
 
 static_assert(sizeof(PicaSurfaceLightingUniforms) == 1440U);
 
-// Authored lighting requires the column-major WorldToView captured with this
+// Scene lighting requires the column-major WorldToView captured with this
 // geometry sample. Neither a live camera nor a model/bone matrix is a substitute.
 // A validated camera snapshot may be shared by all materials in the same view.
 struct PicaSurfaceLightingView {

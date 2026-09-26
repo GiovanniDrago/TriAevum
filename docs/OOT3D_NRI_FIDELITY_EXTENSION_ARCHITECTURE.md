@@ -2423,6 +2423,63 @@ passes 4,676 assertions. Private evidence:
 Earlier captures preceding `corrected-still` are diagnostic iterations, not
 visual acceptance evidence; the old `baseline-orbit` was stationary.
 
+### Captured Grass Lighting and Shadow Precision (2026-09-24)
+
+Grass now derives its model/world transform and native light directions from
+the view matrix captured with the draw, including camera roll, rather than
+reconstructing a world-up basis from the live eye/at singleton.
+`PicaResolvedDrawStream` schema 4 and `PicaSceneFrame` schema 11 retain a
+validated GPU slice for the draw's effective surface-lighting uniforms.
+The shared surface-lighting atlas consumes that slice and the structurally
+recovered surface program in Per-pixel/PBR modes. Native continues to replay
+the canonical vertex lighting. This removes the native-only Grass lighting
+path under an authored Environment profile; it does not add Grass VSM
+receivers, change caster admission, or move composition anchors.
+
+PCF comparisons now evaluate receiver-plane depth at each gathered texel.
+Derivatives are taken in view space and transformed by the linear
+view-to-light matrix before normalized-depth translation; differentiating
+values near 0.5 introduced a visible precision grid on close geometry.
+A two-ULP D32/quarter-virtual-texel minimum allowance supplements the stored
+bias, including when the user bias is zero. The hair comparison retains
+world shadows without the previous dark striping or the diagnostic iteration's
+precision grid.
+
+CPU caster bounds resolve packed attribute streams once per draw and compose
+each used palette matrix once, retaining native post-skin homogeneous W even
+when weights do not sum to one. Grass selection emits directly during stable
+tree traversal and stops at the budget; bounded stable occupancy counting
+replaces repeated range sorting without changing roots, density or topology.
+Surface/PBR shaders skip native direct-light work when its contribution is
+zero, and skip the native light loop when both native contributions are zero.
+
+Verification uses the newly saved live checkpoint, original quality settings,
+4096 VSM, PCF 2 and strength 4. All 295 foundation, 40 shader-pipeline,
+18 scene-frame and 18 shared-capability tests pass, alongside cluster
+invariants, native frontend/presentation checks and the 82-file boundary audit.
+Native with Grass disabled is byte-identical to the previous executable and
+allocates no VSM pages. Native Grass and Per-pixel/PBR replay successfully;
+Vulkan validation reports no errors. Thirty-six framebuffer captures over
+600 orbit frames retain all requested surface-lighting sources and report
+no unmapped/evicted VSM pages, failed graph passes or missing resources.
+An Environment blackout also extinguishes Grass while leaving UI unaffected.
+
+Performance gains are **modest**, not a substantial FPS improvement.
+Two balanced before/after moving-camera pairs at AboveNormal benchmark-process
+priority average 40.625 -> 41.137 native throughput fps (+1.3%); Grass CPU
+preparation averages 2.876 -> 2.685 ms (-6.7%). Total GPU time is
+13.778 -> 13.887 ms, not an improvement. Whole-process CPU time, including
+startup and warmup, rises 24.016 -> 26.344 seconds.
+Normal-priority paired runs regress from 38.984 -> 35.572 fps static and
+24.950 -> 24.515 fps moving; earlier measurements were much faster.
+Three concurrent Node processes each occupied one logical CPU, and about
+9.2 GiB of GPU memory remained occupied with the game closed. These observations
+do not establish exclusive causation or justify discarding slower runs.
+No large FPS gain, 60-fps guarantee, or overall CPU reduction is claimed.
+Original30, VSync and user quality settings are restored for the live session;
+AboveNormal priority is confined to the explicitly labelled benchmark runs.
+Private evidence: `I:/_triaevum_work/vsm-stability/accepted-verification.json`.
+
 ## Per-pixel actor lighting and native UI boundaries (2026-09-24)
 
 - Native projected actor shadows are a typed composition role, not a texture,

@@ -251,22 +251,34 @@ inline void SortGrassMidrangeDraws(std::span<std::array<uint32_t, 2>> groups) {
 
 // The range emitter already knows group boundaries. Preserve this information
 // instead of looking up the owner of every selected root a second time.
-inline std::vector<std::array<uint32_t, 2>> RebaseGrassMidrangeDraws(
-    std::span<const std::array<uint32_t, 2>> ranges, uint32_t selectedCount, uint32_t preparedBase) {
-    std::vector<std::array<uint32_t, 2>> result;
-    result.reserve(ranges.size());
+inline std::vector<std::array<uint32_t, 2>> RebaseGrassMidrangeDraws(std::span<const std::array<uint32_t, 2>> ranges,
+                                                                     uint32_t selectedCount, uint32_t preparedBase) {
     uint32_t next = 0;
+    uint32_t maximumCount = 0;
     for (const auto& range : ranges) {
-        if (range[0] != next || range[1] == 0 || range[1] > kGrassMidrangeClusterCapacity ||
-            next > selectedCount || range[1] > selectedCount-next ||
-            uint64_t(preparedBase)+next+range[1] > uint64_t(UINT32_MAX)+1)
+        if (range[0] != next || range[1] == 0 || range[1] > kGrassMidrangeClusterCapacity || next > selectedCount ||
+            range[1] > selectedCount - next || uint64_t(preparedBase) + next + range[1] > uint64_t(UINT32_MAX) + 1)
             throw std::invalid_argument("Grass selected ranges do not partition their prepared roots");
-        result.push_back({preparedBase+next, range[1]});
+        maximumCount = std::max(maximumCount, range[1]);
         next += range[1];
     }
     if (next != selectedCount)
         throw std::invalid_argument("Grass selected ranges omit prepared roots");
-    SortGrassMidrangeDraws(result);
+    // Ranges arrive in increasing root order. A stable counting pass produces
+    // the same (occupancy, root) order without sorting every moving frame.
+    std::array<uint32_t, kGrassMidrangeClusterCapacity + 1U> offsets;
+    std::fill_n(offsets.begin(), maximumCount + 1U, 0U);
+    for (const auto& range : ranges)
+        ++offsets[range[1]];
+    uint32_t first = 0;
+    for (uint32_t count = 1; count <= maximumCount; ++count) {
+        const auto size = offsets[count];
+        offsets[count] = first;
+        first += size;
+    }
+    std::vector<std::array<uint32_t, 2>> result(ranges.size());
+    for (const auto& range : ranges)
+        result[offsets[range[1]]++] = { preparedBase + range[0], range[1] };
     return result;
 }
 

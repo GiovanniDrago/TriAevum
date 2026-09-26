@@ -108,6 +108,13 @@ int main() {
         Check(GrassClusterChildCount(50,200,500,2000,0.25F) == 50, "full medium cluster");
         const std::vector<std::array<uint32_t,2>> ranges{{0,2},{2,1},{3,1}};
         Check(RebaseGrassMidrangeDraws(ranges,4,10) == packed, "range descriptors equal rescanned owners");
+        const auto capacity = kGrassMidrangeClusterCapacity;
+        const std::array<std::array<uint32_t, 2>, 4> boundaryRanges{{
+            {0, capacity}, {capacity, 1}, {capacity + 1, capacity}, {2 * capacity + 1, 1}}};
+        const std::vector<std::array<uint32_t, 2>> boundaryExpected{
+            {capacity + 10, 1}, {2 * capacity + 11, 1}, {10, capacity}, {capacity + 11, capacity}};
+        Check(RebaseGrassMidrangeDraws(boundaryRanges, 2 * capacity + 2, 10) == boundaryExpected,
+              "capacity boundary and equal-occupancy ranges retain root order");
         rejected=false;
         try { (void)RebaseGrassMidrangeDraws(ranges,5,10); }
         catch (const std::invalid_argument&) { rejected=true; }

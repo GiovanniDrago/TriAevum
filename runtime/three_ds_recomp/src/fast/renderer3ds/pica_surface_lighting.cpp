@@ -61,6 +61,19 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
     result.Control[0] = (booleanUniforms >> surface->LightingBooleanUniform) & 1U;
     Vec4 enabledValue{};
     if (!ReadUniform(floatUniformBytes, surface->LightEnabledValue.Uniform, enabledValue)) return std::nullopt;
+    for (size_t slot = 0; slot < result.Lights.size(); ++slot) {
+        auto& light = result.Lights[slot];
+        const uint8_t first = surface->LightDirectionUniforms[slot];
+        Vec4 ambient{};
+        if (!ReadUniform(floatUniformBytes, first, light.DirectionEnabled) ||
+            !ReadUniform(floatUniformBytes, first + 1U, light.Diffuse) ||
+            !ReadUniform(floatUniformBytes, first + 2U, ambient)) return std::nullopt;
+        light.DirectionEnabled[3] = light.DirectionEnabled[3] == enabledValue[surface->LightEnabledValue.Component] ? 1.0F : 0.0F;
+        for (size_t component = 0; component < 3U; ++component) light.DirectionEnabled[component] = -light.DirectionEnabled[component];
+        if (result.Control[0] != 0U && light.DirectionEnabled[3] != 0.0F)
+            for (size_t channel = 0; channel < 3; ++channel)
+                result.ResolvedAmbient[channel] += ambient[channel] * result.MaterialAmbient[channel];
+    }
     std::span<const PicaScenePointLight> scenePoints;
     if (binding.ScenePoints) {
         if (binding.ScenePoints->Count > binding.ScenePoints->Lights.size()) return std::nullopt;
@@ -87,16 +100,6 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
     }
     for (size_t slot = 0; slot < result.Lights.size(); ++slot) {
         auto& light = result.Lights[slot];
-        const uint8_t first = surface->LightDirectionUniforms[slot];
-        Vec4 ambient{};
-        if (!ReadUniform(floatUniformBytes, first, light.DirectionEnabled) ||
-            !ReadUniform(floatUniformBytes, first + 1U, light.Diffuse) ||
-            !ReadUniform(floatUniformBytes, first + 2U, ambient)) return std::nullopt;
-        light.DirectionEnabled[3] = light.DirectionEnabled[3] == enabledValue[surface->LightEnabledValue.Component] ? 1.0F : 0.0F;
-        for (size_t component = 0; component < 3U; ++component) light.DirectionEnabled[component] = -light.DirectionEnabled[component];
-        if (result.Control[0] != 0U && light.DirectionEnabled[3] != 0.0F)
-            for (size_t channel = 0; channel < 3; ++channel)
-                result.ResolvedAmbient[channel] += ambient[channel] * result.MaterialAmbient[channel];
         const auto& source = binding.Sources[slot];
         const bool pointSource = source.Kind == PicaNativeLightSource::Type::Point && source.Radius > 0.0F;
         if (result.Control[0] == 0U || light.DirectionEnabled[3] == 0.0F ||
