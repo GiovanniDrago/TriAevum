@@ -123,7 +123,8 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
     // and ambient coefficients belong to their respective lighting terms;
     // an ambient-only material may legitimately have a black diffuse term.
     result.UnlitInputs = R"glsl(
-    if (pica_surface.control.x != 0u || pica_surface.environment_parameters.w != 0.0)
+    if (pica_surface.control.x != 0u ||
+        (pica_surface.environment_parameters.w != 0.0 && (pica_surface.control.w & 1u) == 0u))
         rounded_primary_color.rgb = byteround3(min(abs(pica_surface_tint.rgb), vec3(1.0)));
 )glsl";
     if (options.NativeFragmentLighting) {
@@ -149,7 +150,9 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
         pbr_srgb_to_linear(texture(pbr_emissive_map, pbr_uv).rgb) : vec3(1.0);
     pbr_emission *= pbr_material.emissive_normal_scale.rgb;
     vec3 pbr_direct = vec3(0.0), pbr_ambient = vec3(0.0);
-    bool pbr_native_direct = pica_surface.environment_parameters.w == 0.0 ||
+    bool pbr_unlit_reference = (pica_surface.control.w & 1u) != 0u &&
+        pica_surface.control.x == 0u && pbr_material.native_control.x == 0u;
+    bool pbr_native_direct = pbr_unlit_reference || pica_surface.environment_parameters.w == 0.0 ||
         (pica_surface.control.x != 0u || pbr_material.native_control.x != 0u
             ? pica_surface.environment_parameters.x : pica_surface.environment_parameters.y) != 0.0;
     bool pbr_native_ambient = pica_surface.environment_parameters.w == 0.0 ||
@@ -220,8 +223,9 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
     }
     result.ShadingBody += R"glsl(
     if (pica_surface.environment_parameters.w != 0.0) {
-        pbr_direct *= pica_surface.control.x != 0u || pbr_material.native_control.x != 0u
-            ? pica_surface.environment_parameters.x : pica_surface.environment_parameters.y;
+        if (!pbr_unlit_reference)
+            pbr_direct *= pica_surface.control.x != 0u || pbr_material.native_control.x != 0u
+                ? pica_surface.environment_parameters.x : pica_surface.environment_parameters.y;
         pbr_indirect *= pica_surface.environment_parameters.y;
         pbr_indirect += pica_surface.environment_ambient.rgb * pbr_albedo *
             (1.0 - pbr_metallic) * pbr_ao;

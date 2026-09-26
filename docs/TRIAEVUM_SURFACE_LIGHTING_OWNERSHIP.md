@@ -105,3 +105,43 @@ Verification:
 - These are renderer framebuffer readbacks, not desktop screenshots. Grass
   remained enabled in both captures. World brightness is intentionally not
   claimed fixed by this increment; its independent reference is the next step.
+
+### Independent brightness reference
+
+F1 Environment now owns **Preserve scene brightness**. It retains the native
+ambient/material reference independently of all three native source gains.
+Authored unlit primary color also remains a base appearance, not a light gain.
+Added ambient, key/fill and point lights remain additive and independently
+controllable. This deliberately preserves a baseline, not total irradiance:
+there is no image histogram, guessed light direction, automatic exposure,
+arbitrary minimum RGB or promise of identical world pixels.
+
+The CPU resolves the direction-independent ambient contribution once per
+surface input. With preservation enabled, the old ambient-light loop gain is
+zero; the retained reference travels in the shared environment ambient input
+used by Per-pixel, PBR and the Grass surface-lighting atlas. No original direct
+source is required to recover it. Disabling preservation restores authored-only
+lighting, including intentional black.
+
+Environment schema 4 persists `preserveSceneBrightness`. New profiles enable
+it. Versions 1–3 keep their authored-only choices and are not rewritten on load.
+The native ambient slider is inactive while the reference owns that baseline;
+its saved gain is retained. Native/Native+PBR, Authentic and F2 continue to bypass
+the authored profile.
+
+Verification:
+
+- 24 production GPU source/reference cases pass, including all native gains
+  zero, retained unlit appearance, authored-light response on that appearance,
+  dark material channels, updated native ambient and disabled point groups.
+- Production PBR GPU probes pass for triangle lists, indexed strips, alpha/base
+  invariance, tangent frames, normal/ORM/emission/height and seam boundaries.
+- 42 pipeline/instrumentation tests and 6,648 real F1 widget assertions pass.
+- At sample 111550, the fixed `(0,0)-(800,650)` framebuffer region measures
+  mean linear luminance 0.302808 Native versus 0.304710 with native gains,
+  authored ambient and key/fill all zero and the reference enabled. With the
+  authored key enabled it measures 0.322381. These regions are manual probes,
+  not semantic world masks or a claim of brightness parity in every scene.
+- Sky remains exact in both reference captures. All runs use private profiles;
+  textures, material packs, active profiles and the running user session are
+  untouched.

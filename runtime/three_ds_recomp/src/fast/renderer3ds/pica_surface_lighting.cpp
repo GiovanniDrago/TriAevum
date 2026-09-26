@@ -133,6 +133,9 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
     if (environment.Enabled) {
         result.EnvironmentParameters = {environment.NativeLocalStrength, environment.NativeAmbientStrength,
                                         environment.FogStrength, 1.0F};
+        const bool preserveReference = environment.PreserveSceneBrightness;
+        result.Control[3] = preserveReference ? 1U : 0U;
+        if (preserveReference) result.EnvironmentParameters[1] = 0.0F;
         // The profile replaces illumination, not material reflectance. Native
         // TEV gains still apply, so dropping these coefficients overexposes
         // materials authored with reduced diffuse/ambient response.
@@ -141,6 +144,15 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
         for (size_t channel = 0; channel < 3; ++channel)
             result.EnvironmentAmbient[channel] = environment.AmbientColor[channel] *
                 environment.AmbientIntensity * result.MaterialAmbient[channel];
+        if (preserveReference && result.Control[0] != 0U) {
+            // Ambient is a direction-independent scene reference, not a live
+            // direct source. Resolve it once before any native light is gated.
+            for (const auto& light : result.Lights) {
+                if (light.DirectionEnabled[3] == 0.0F) continue;
+                for (size_t channel = 0; channel < 3; ++channel)
+                    result.EnvironmentAmbient[channel] += light.Ambient[channel] * result.MaterialAmbient[channel];
+            }
+        }
         for (size_t slot = 0; slot < environment.Lights.size(); ++slot) {
             const auto& source = environment.Lights[slot];
             result.EnvironmentDirections[slot][3] = source.Intensity;
@@ -265,10 +277,13 @@ vec3 pica_surface_native_primary(vec3 normal_view) {
     return min(abs(color * pica_surface_tint.rgb), vec3(1.0));
 }
 vec3 pica_surface_primary(vec3 native_color, vec3 normal_view) {
-    if (pica_surface.control.x != 0u || pica_surface.environment_parameters.w != 0.0)
+    if (pica_surface.control.x != 0u ||
+        (pica_surface.environment_parameters.w != 0.0 && (pica_surface.control.w & 1u) == 0u))
         return pica_surface_native_primary(normal_view);
-    // A natively unlit material keeps its original base when there is no
-    // ambient/directional override; add scene-wide point/directional irradiance.
+    // Authored unlit color is appearance, not an ambient/direct-light gain.
+    // The scene reference keeps it intact even when the override is active.
+    if (pica_surface.environment_parameters.w != 0.0)
+        return min(native_color + pica_surface_native_primary(normal_view), vec3(1.0));
     return min(native_color + (pica_surface_scene_point_primary(normal_view) +
                pica_surface_scene_directional_primary(normal_view)) * pica_surface_tint.rgb, vec3(1.0));
 }

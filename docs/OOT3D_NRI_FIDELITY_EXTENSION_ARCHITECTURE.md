@@ -1906,9 +1906,10 @@ hexadecimal scene ID. The minimal complete schema is:
 ```json
 {
   "schema": "triaevum.scene-environment",
-  "version": 3,
+  "version": 4,
   "sceneId": 85,
   "enabled": true,
+  "preserveSceneBrightness": true,
   "nativeDirectStrength": 0.0,
   "nativeLocalStrength": 0.0,
   "nativeAmbientStrength": 0.0,
@@ -1939,8 +1940,15 @@ enable, intensity multiplier 0–8, radius multiplier 0.1–8 and linear RGB tin
 Version 1 profiles remain readable and acquire the default point-light groups.
 Version 3 separates the scene-wide native directional gain (`nativeDirectStrength`)
 from other native per-draw direct sources (`nativeLocalStrength`). Versions 1 and
-2 initialize both from their old direct gain; explicit saves write version 3.
+2 initialize both from their old direct gain; explicit saves write version 4.
 No existing file is rewritten merely by loading it.
+Version 4 adds `preserveSceneBrightness`. New profiles enable it; versions 1–3
+retain authored-only brightness until the user enables the new control.
+The reference keeps native ambient/material response and authored unlit color
+independent of native direct/local/ambient gains. It is not exposure or a lock
+on total image luminance: key/fill and point lights can add illumination.
+While enabled, it owns the ambient baseline; the saved native ambient gain is
+inactive and remains available again when the reference is disabled.
 
 
 F1 **Environment** is the sole owner of these controls and file operations.
@@ -1969,6 +1977,11 @@ Fog contribution scales the native fog blend; it does not invent a fog color.
 The optional graph still owns map scheduling/resources and scene/UI separation.
 Caster admission covers opaque, depth-writing, non-alpha-tested perspective
 geometry; alpha-cutout and transparent caster support is not claimed.
+Surface-lighting admission also requires typed world-layer ownership.
+Atmosphere and unknown owners retain native appearance, including sky models
+whose attribution travels through a deferred native queue. See
+[`TRIAEVUM_SURFACE_LIGHTING_OWNERSHIP.md`](TRIAEVUM_SURFACE_LIGHTING_OWNERSHIP.md)
+for the reference policy, queue provenance and current qualification evidence.
 
 Eleven deterministic Kokiri captures at guest frame 23399 passed. Disabled
 profiles with different parameters were byte-identical; Native mode with the

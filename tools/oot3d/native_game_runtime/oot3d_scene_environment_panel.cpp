@@ -127,6 +127,10 @@ public:
           "Inactive: choose Per-pixel or Per-pixel + PBR in Lighting, with F2 "
           "native override off and a supported renderer.");
     ImGui::BeginDisabled(!value.Enabled || !supported);
+    changed |= ImGui::Checkbox("Preserve scene brightness", &value.PreserveSceneBrightness);
+    ImGui::TextWrapped(
+        "Keep the native ambient reference and authored unlit color when native lights are off. "
+        "Added lights still add illumination; this is not automatic exposure.");
     changed |= ImGui::ColorEdit3("Ambient color", value.AmbientColor.data(),
                                  ImGuiColorEditFlags_Float);
     changed |=
@@ -143,9 +147,11 @@ public:
     ImGui::TextWrapped(
         "Scene direct uses the game's two environment directions on world and actors. "
         "Local keeps other native per-draw lights separate. Neither controls the added key/fill or fairy lights.");
+    ImGui::BeginDisabled(value.PreserveSceneBrightness);
     changed |= ImGui::SliderFloat("Native ambient contribution",
                                   &value.NativeAmbientStrength, 0.0F, 2.0F,
                                   "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
     changed |=
         ImGui::SliderFloat("Native fog contribution", &value.FogStrength, 0.0F,
                            1.0F, "%.2fx", ImGuiSliderFlags_AlwaysClamp);

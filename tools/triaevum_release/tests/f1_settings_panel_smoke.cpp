@@ -314,6 +314,8 @@ void CheckSceneEnvironment() {
     Check(graphics.SnapshotForRendering().Value.Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps,
           "per-pixel PBR lighting did not restore VSM");
     Click("Use scene environment");
+    Check(Find("Native ambient contribution").Disabled, "scene reference did not own the ambient baseline");
+    Click("Preserve scene brightness");
     EditScalar("Ambient intensity", "0.12");
     EditScalar("Native scene direct contribution", "0.25");
     EditScalar("Native local contribution", "0.7");
@@ -336,6 +338,10 @@ void CheckSceneEnvironment() {
     EditScalar("Navi intensity", "2.5");
     EditScalar("Fairy radius scale", "1.75");
     Click("Fairy point lights");
+    Click("Preserve scene brightness");
+    Check(graphics.SnapshotForRendering().Environment.PreserveSceneBrightness &&
+              Find("Native ambient contribution").Disabled,
+          "scene brightness reference did not apply independently of native source gains");
     Click("Save scene environment");
     const auto saved = environment->Snapshot();
     Check(saved.FileExists && !saved.Dirty && saved.Error.empty(), "scene environment was not saved");
@@ -379,17 +385,19 @@ void CheckSceneEnvironment() {
     Click("Reload scene environment");
     nlohmann::json originalProfile;
     { std::ifstream file(saved.Path); file >> originalProfile; }
-    for (int version : {1, 2}) {
+    for (int version : {1, 2, 3}) {
         auto legacy = originalProfile;
         legacy["version"] = version;
-        legacy.erase("nativeLocalStrength");
+        if (version < 3) legacy.erase("nativeLocalStrength");
+        legacy.erase("preserveSceneBrightness");
         if (version == 1) legacy.erase("pointLights");
         { std::ofstream file(saved.Path); file << legacy; }
         Click("Reload scene environment");
         const auto migrated = environment->Snapshot();
         Check(migrated.Error.empty() && !migrated.Dirty &&
                   migrated.Profile.NativeDirectStrength == 0.25F &&
-                  migrated.Profile.NativeLocalStrength == 0.25F,
+                  migrated.Profile.NativeLocalStrength == (version < 3 ? 0.25F : 0.7F) &&
+                  !migrated.Profile.PreserveSceneBrightness,
               "legacy profile lost its native direct/local gain");
         Check(migrated.Profile.PointLights[1].Enabled == (version == 1),
               "legacy profile lost point-group defaults or saved Off");

@@ -18,6 +18,7 @@ struct SceneDirectionalLight {
 };
 struct SceneEnvironmentProfile {
   bool Enabled = false;
+  bool PreserveSceneBrightness = true;
   float NativeDirectStrength = 0.0F;
   float NativeLocalStrength = 0.0F;
   float NativeAmbientStrength = 0.0F;

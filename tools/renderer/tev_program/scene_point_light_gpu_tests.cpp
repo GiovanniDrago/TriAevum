@@ -38,8 +38,8 @@ int main() {
             PicaSurfaceLightingUniforms Lighting;
             Vec4 View{}, Normal{ 0, 1, 0, 0 }, Base{ .2F, .3F, .4F, 1 };
         };
-        std::array<Case, 15> cases{};
-        const std::array<Vec4, 15> expected{ { { .575F, .2F, .2F, 1 },
+        std::array<Case, 22> cases{};
+        const std::array<Vec4, 22> expected{ { { .575F, .2F, .2F, 1 },
                                                { .2F, .2F, .2F, 1 },
                                                { .2F, .2F, .2F, 1 },
                                                { .2F, .3F, .4F, 1 },
@@ -53,7 +53,14 @@ int main() {
                                                { .3F, 0, 0, 1 },
                                                { .2F, .2F, .2F, 1 },
                                                { .5F, .3F, .4F, 1 },
-                                               { 0, 0, 0, 1 } } };
+                                               { 0, 0, 0, 1 },
+                                               { .2F, .2F, .2F, 1 },
+                                               { .2F, .3F, .4F, 1 },
+                                               { .2F, 0, .2F, 1 },
+                                               { .4F, .1F, .2F, 1 },
+                                               { .2F, .2F, .2F, 1 },
+                                               { .7F, .7F, .7F, 1 },
+                                               { .7F, .8F, .9F, 1 } } };
         for (size_t i = 0; i < cases.size(); ++i) {
             PicaNativeLightBinding binding;
             auto points = std::make_shared<PicaScenePointLights>();
@@ -67,6 +74,7 @@ int main() {
             selected.UnattenuatedColor = selected.ReferenceColor = { 1, 1, 1 };
             binding.ScenePoints = points;
             PicaEnvironmentLighting settings;
+            settings.PreserveSceneBrightness = false; // Existing probes explicitly exercise authored-only lighting.
             std::array<float, 16> camera{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
             if (i == 1)
                 settings.PointLights[0].Enabled = false;
@@ -119,9 +127,26 @@ int main() {
                     settings.NativeLocalStrength = 1;
                 }
             }
+            if (i >= 15) {
+                binding = {};
+                settings = {};
+                settings.Enabled = true;
+                settings.AmbientIntensity = 0;
+                uniforms = native;
+                if (i == 17) uniforms[9][1] = 0; // No invented brightness in an authored dark channel.
+                if (i == 18) uniforms[82] = {.8F, .2F, .4F, 0}; // A new native environment snapshot.
+                if (i == 19) {
+                    binding.ScenePoints = points;
+                    binding.Sources[0].Kind = PicaNativeLightSource::Type::Point;
+                    binding.Sources[0].SourceIdentity = 42;
+                    settings.PointLights[0].Enabled = false;
+                }
+                if (i == 20 || i == 21) settings.Lights[0].Intensity = 1;
+            }
             const auto lighting = BuildPicaSurfaceLightingUniforms(
-                hooks, i == 3 || i == 4 || i == 7 || i == 13 || i == 14 ? 0U : 1U << 9U,
-                { reinterpret_cast<const uint8_t*>(uniforms.data()), sizeof(uniforms) }, binding, settings, &camera);
+                hooks, i == 3 || i == 4 || i == 7 || i == 13 || i == 14 || i == 16 || i == 21 ? 0U : 1U << 9U,
+                { reinterpret_cast<const uint8_t*>(uniforms.data()), sizeof(uniforms) }, binding, settings,
+                &camera);
             if (!lighting)
                 throw std::runtime_error("Scene point-light surface rejected");
             cases[i].Lighting = *lighting;

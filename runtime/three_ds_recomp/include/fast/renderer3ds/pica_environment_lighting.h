@@ -26,6 +26,8 @@ struct PicaScenePointLightSettings {
 struct PicaEnvironmentLighting {
     uint64_t ScopeIdentity = 0;
     bool Enabled = false;
+    // Keep the native low-frequency reference independently of source gains.
+    bool PreserveSceneBrightness = true;
     float NativeDirectStrength = 0.0F;
     float NativeLocalStrength = 0.0F;
     float NativeAmbientStrength = 0.0F;

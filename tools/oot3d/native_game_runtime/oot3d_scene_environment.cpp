@@ -63,15 +63,20 @@ std::array<float, 3> Color(const Json &object, const char *key) {
 }
 SceneEnvironmentProfile Decode(const Json &doc, uint16_t scene) {
   if (doc.at("schema") != "triaevum.scene-environment" ||
-      (doc.at("version") != 1 && doc.at("version") != 2 && doc.at("version") != 3) ||
+      (doc.at("version") != 1 && doc.at("version") != 2 &&
+       doc.at("version") != 3 && doc.at("version") != 4) ||
       doc.at("sceneId") != scene)
     throw std::runtime_error(
         "Environment schema, version or scene identity mismatch");
   SceneEnvironmentProfile result;
   result.Enabled = doc.at("enabled").get<bool>();
+  // Legacy authored profiles retain their explicit black/ambient choices.
+  // Loading never rewrites them; new profiles use the scene reference.
+  result.PreserveSceneBrightness = doc.at("version") >= 4
+      ? doc.at("preserveSceneBrightness").get<bool>() : false;
   result.NativeDirectStrength = Scalar(doc, "nativeDirectStrength", 0.0F, 2.0F);
   // Older profiles used one gain for every selected native direct source.
-  result.NativeLocalStrength = doc.at("version") == 3
+  result.NativeLocalStrength = doc.at("version") >= 3
       ? Scalar(doc, "nativeLocalStrength", 0.0F, 2.0F) : result.NativeDirectStrength;
   result.NativeAmbientStrength =
       Scalar(doc, "nativeAmbientStrength", 0.0F, 2.0F);
@@ -117,9 +122,10 @@ Json Encode(const SceneEnvironmentProfile &value, uint16_t scene) {
                       {"radiusScale", light.RadiusScale},
                       {"colorTint", light.ColorTint}});
   return {{"schema", "triaevum.scene-environment"},
-          {"version", 3},
+          {"version", 4},
           {"sceneId", scene},
           {"enabled", value.Enabled},
+          {"preserveSceneBrightness", value.PreserveSceneBrightness},
           {"nativeDirectStrength", value.NativeDirectStrength},
           {"nativeLocalStrength", value.NativeLocalStrength},
           {"nativeAmbientStrength", value.NativeAmbientStrength},
@@ -224,6 +230,7 @@ void SceneEnvironmentRuntime::PublishLocked() {
     const auto &value = mState.Profile;
     result.ScopeIdentity = uint64_t(*mState.SceneId) + 1;
     result.Enabled = value.Enabled;
+    result.PreserveSceneBrightness = value.PreserveSceneBrightness;
     result.NativeDirectStrength = value.NativeDirectStrength;
     result.NativeLocalStrength = value.NativeLocalStrength;
     result.NativeAmbientStrength = value.NativeAmbientStrength;

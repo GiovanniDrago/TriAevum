@@ -398,6 +398,12 @@ also removes its old native vertex-light direct contribution in both per-pixel
 models, without removing the independent native ambient term. It does not
 silently fall back to the original vertex light.
 
+**Preserve scene brightness** keeps the native ambient reference and authored
+unlit color when original light gains are zero. It owns the ambient baseline,
+so **Native ambient contribution** is visibly inactive until preservation is
+disabled; its saved value is not erased. Added lights remain independent and
+can brighten the scene. This is not automatic exposure or a total-luminance lock.
+
 
 Profiles use `environments/scene-XXXX.environment.json` beside the global
 graphics configuration. Kokiri is `scene-0055.environment.json`, shared by all
@@ -405,7 +411,9 @@ rooms associated with `spot04_info.zsi`. No native ZSI is rewritten.
 Version 3 separates `nativeLocalStrength` from the scene-wide
 `nativeDirectStrength`. Versions 1 and 2 retain their old gain for both.
 Version 1 acquires default point groups; version 2 retains its saved groups.
-Loading does not rewrite the user's file; explicit saves write version 3.
+Version 4 adds `preserveSceneBrightness`: new profiles enable it, while versions
+1–3 keep authored-only brightness. Loading does not rewrite the user's file;
+explicit saves write version 4.
 **Save scene environment** persists the live preview atomically; **Reload
 scene environment** reads the file. The unsaved warning explicitly requires
 saving before leaving the scene. Save/reload errors are visible and a failed
@@ -426,6 +434,9 @@ normal-map response, key direction, ambient/fill, static-world shadows,
 disabled-path identity and unchanged native RGBA/alpha/depth/stencil.
 See the scene-environment section of the NRI architecture document for the
 schema, ranges, owning boundaries and capture evidence.
+The brightness-reference increment passes 6,648 actual-widget assertions,
+including the active control, ambient ownership, persistence, legacy versions
+1–3, F2/native bypass, scene transitions and visible save/reload failures.
 
 Final verification: 4,516 actual-widget assertions passed, including the
 inactive-profile rendering-input invariant. Two additional GPU runs compare
