@@ -130,16 +130,15 @@ Fast::Oot3d::GraphicsSettings CompleteSettings() {
     effects.DirectionalShadows.DepthBiasSlope = 2.25F;
     effects.DirectionalShadows.Strength = 3.25F;
     effects.DirectionalShadows.PcfRadius = 2U;
-    effects.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    effects.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     effects.AoQuality = 1U;
     effects.AoRadius = 4.25F;
+    effects.AoDetailRadius = 1.25F;
     effects.AoStrength = 1.35F;
     effects.AoShadowPower = 2.1F;
     effects.AoShadowClamp = 0.91F;
-    effects.AoHorizonAngleThreshold = 0.12F;
     effects.AoFadeOutFrom = 75.0F;
     effects.AoFadeOutTo = 1400.0F;
-    effects.AoBlurPassCount = 5U;
     effects.AoSharpness = 0.77F;
     effects.AoDetailStrength = 0.68F;
     effects.Reflections = ReflectionMode::FidelityFxSssr;
@@ -234,6 +233,42 @@ void DowngradeGrassDocumentToVersionNine(
         DowngradeGrassToVersionNine(
             document["GrassSavedPreset"]);
     }
+}
+
+TEST(Oot3dGraphicsSettingsPersistence, PreservesLegacyCacaoAndExistingGtaoChoices) {
+    using namespace Fast::Oot3d;
+    auto document = SerializeGraphicsSettings(CompleteSettings());
+    document["SchemaVersion"] = 12;
+    auto& ao = document["Effects"]["AO"];
+    ao["Mode"] = "CACAO";
+    ao["Radius"] = 8.0F;
+    ao["Strength"] = 2.0F;
+    ao["DetailStrength"] = 0.0F;
+    ao["HorizonAngleThreshold"] = 0.12F;
+    ao["BlurPassCount"] = 5;
+    ao.erase("DetailRadius");
+    const auto migrated = DeserializeGraphicsSettings(document);
+    EXPECT_TRUE(migrated.NeedsRewrite);
+    EXPECT_EQ(migrated.Value.Effects.AmbientOcclusion, AmbientOcclusionMode::Cacao);
+    EXPECT_FLOAT_EQ(migrated.Value.Effects.AoRadius, 8.0F);
+    EXPECT_FLOAT_EQ(migrated.Value.Effects.AoDetailRadius, 2.0F);
+    EXPECT_FLOAT_EQ(migrated.Value.Effects.AoStrength, 2.0F);
+    EXPECT_FLOAT_EQ(migrated.Value.Effects.AoDetailStrength, 0.0F);
+    auto saved = SerializeGraphicsSettings(migrated.Value);
+    EXPECT_EQ(saved["Effects"]["AO"]["Mode"], "CACAO");
+    EXPECT_FLOAT_EQ(migrated.Value.Effects.AoHorizonAngleThreshold, 0.12F);
+    EXPECT_EQ(migrated.Value.Effects.AoBlurPassCount, 5U);
+    saved["Effects"]["AO"]["DetailRadius"] = 1.25F;
+    const auto reloaded = DeserializeGraphicsSettings(saved);
+    EXPECT_FALSE(reloaded.NeedsRewrite);
+    EXPECT_EQ(SerializeGraphicsSettings(reloaded.Value)["Effects"]["AO"], saved["Effects"]["AO"]);
+    saved["SchemaVersion"] = 13;
+    saved["Effects"]["AO"]["Mode"] = "GTAO";
+    const auto gtao = DeserializeGraphicsSettings(saved);
+    EXPECT_EQ(gtao.Value.Effects.AmbientOcclusion, AmbientOcclusionMode::Gtao);
+    EXPECT_FLOAT_EQ(gtao.Value.Effects.AoDetailRadius, 1.25F);
+    ao["Mode"] = "Off";
+    EXPECT_EQ(DeserializeGraphicsSettings(document).Value.Effects.AmbientOcclusion, AmbientOcclusionMode::Off);
 }
 
 TEST(Oot3dGraphicsSettingsPersistence, MigratesSingleCascadeWithoutLosingTheOffChoiceOrLightResponse) {

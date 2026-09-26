@@ -143,7 +143,7 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
             PicaShaderInstrumentationFeature::DirectionalShadowLighting;
     }
     if (sceneDraw &&
-        effects.AmbientOcclusion == AmbientOcclusionMode::Cacao &&
+        effects.AmbientOcclusion != AmbientOcclusionMode::Off &&
         request.Draw.FragmentOperationMode == 0U &&
         request.Draw.DepthTestEnabled && request.Draw.DepthWriteEnabled &&
         (request.Draw.ColorWriteMask & 0x7U) != 0U) {
@@ -151,13 +151,13 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
             PicaShaderInstrumentationFeature::AmbientOcclusionGuide;
     }
     if (sceneDraw &&
-        (effects.AmbientOcclusion == AmbientOcclusionMode::Cacao ||
+        (effects.AmbientOcclusion != AmbientOcclusionMode::Off ||
          (effects.Toon != ToonMode::Off &&
           effects.ToonStyle.OutlineEnabled))) {
         features |= PicaShaderInstrumentationFeature::SceneDomainGuide;
     }
     if (sceneDraw &&
-        (effects.AmbientOcclusion == AmbientOcclusionMode::Cacao ||
+        (effects.AmbientOcclusion != AmbientOcclusionMode::Off ||
          (effects.Toon != ToonMode::Off &&
           effects.ToonStyle.OutlineEnabled) ||
          effects.Reflections != ReflectionMode::Off)) {
@@ -274,7 +274,7 @@ PicaShaderPipelineResult BuildInstrumentedVariant(
             request.Draw.PerspectiveProjection,
         },
         {
-            effects.AmbientOcclusion == AmbientOcclusionMode::Cacao,
+            effects.AmbientOcclusion != AmbientOcclusionMode::Off,
             effects.Toon != ToonMode::Off &&
                 effects.ToonStyle.OutlineEnabled,
         },
@@ -341,16 +341,16 @@ PicaShaderInstrumentationFeature ResolvePicaShaderProfileFeatures(
         features |=
             PicaShaderInstrumentationFeature::DirectionalShadowLighting;
     }
-    if (effects.AmbientOcclusion == AmbientOcclusionMode::Cacao) {
+    if (effects.AmbientOcclusion != AmbientOcclusionMode::Off) {
         features |=
             PicaShaderInstrumentationFeature::AmbientOcclusionGuide;
     }
-    if (effects.AmbientOcclusion == AmbientOcclusionMode::Cacao ||
+    if (effects.AmbientOcclusion != AmbientOcclusionMode::Off ||
         (effects.Toon != ToonMode::Off &&
          effects.ToonStyle.OutlineEnabled)) {
         features |= PicaShaderInstrumentationFeature::SceneDomainGuide;
     }
-    if (effects.AmbientOcclusion == AmbientOcclusionMode::Cacao ||
+    if (effects.AmbientOcclusion != AmbientOcclusionMode::Off ||
         (effects.Toon != ToonMode::Off &&
          effects.ToonStyle.OutlineEnabled) ||
         effects.Reflections != ReflectionMode::Off) {

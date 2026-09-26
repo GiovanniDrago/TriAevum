@@ -368,10 +368,10 @@ TEST(Oot3dVulkanDiagnostics, WritesBoundedAuthenticFrameTrace) {
         false, false, true);
     diagnostics.RecordSceneCompositePass(true, true, true);
     diagnostics.RecordSmaa1x(true, true, true, true, true);
-    diagnostics.RecordCacaoPass(true, true);
-    diagnostics.RecordCacaoAmbientGuideDraw(true);
-    diagnostics.RecordCacaoAmbientGuideDraw(false);
-    diagnostics.RecordCacaoAmbientComposite();
+    diagnostics.RecordAmbientOcclusionPass(true, true);
+    diagnostics.RecordAmbientOcclusionAmbientGuideDraw(true);
+    diagnostics.RecordAmbientOcclusionAmbientGuideDraw(false);
+    diagnostics.RecordAmbientOcclusionAmbientComposite();
     diagnostics.RecordToonDraw(true);
     Fast::Oot3d::RendererValidationSnapshot validation;
     validation.VulkanEnabled = true;
@@ -407,7 +407,7 @@ TEST(Oot3dVulkanDiagnostics, WritesBoundedAuthenticFrameTrace) {
     timings.FrameMilliseconds = 4.5;
     timings.NativePicaMilliseconds = 2.25;
     timings.ToonRasterMilliseconds = 1.5;
-    timings.CacaoMilliseconds = 0.75;
+    timings.AmbientOcclusionMilliseconds = 0.75;
     timings.DepthPreparationMilliseconds = 0.25;
     timings.ReflectionMilliseconds = 0.5;
     timings.AntiAliasingMilliseconds = 0.125;
@@ -959,12 +959,12 @@ TEST(Oot3dVulkanDiagnostics, WritesBoundedAuthenticFrameTrace) {
     EXPECT_TRUE(frame.at("scene_composite_output_nri_owned").get<bool>());
     EXPECT_TRUE(frame.at("scene_composite_compute_nri_owned").get<bool>());
     EXPECT_TRUE(frame.at("scene_composite_barriers_nri_owned").get<bool>());
-    EXPECT_TRUE(frame.at("cacao_output_nri_owned").get<bool>());
-    EXPECT_EQ(frame.at("cacao_normal_guide_pass_count"), 1U);
-    EXPECT_EQ(frame.at("cacao_ambient_guide_draw_count"), 2U);
-    EXPECT_EQ(frame.at("cacao_ambient_rgb_guide_draw_count"), 1U);
-    EXPECT_EQ(frame.at("cacao_ambient_fallback_guide_draw_count"), 1U);
-    EXPECT_EQ(frame.at("cacao_ambient_composite_count"), 1U);
+    EXPECT_TRUE(frame.at("ambient_occlusion_output_nri_owned").get<bool>());
+    EXPECT_EQ(frame.at("ambient_occlusion_normal_guide_pass_count"), 1U);
+    EXPECT_EQ(frame.at("ambient_occlusion_ambient_guide_draw_count"), 2U);
+    EXPECT_EQ(frame.at("ambient_occlusion_ambient_rgb_guide_draw_count"), 1U);
+    EXPECT_EQ(frame.at("ambient_occlusion_ambient_fallback_guide_draw_count"), 1U);
+    EXPECT_EQ(frame.at("ambient_occlusion_ambient_composite_count"), 1U);
     EXPECT_EQ(frame.at("toon_draw_count"), 1U);
     EXPECT_EQ(frame.at("pica_material_toon_draw_count"), 1U);
     EXPECT_TRUE(frame.at("vulkan_validation_enabled").get<bool>());
@@ -1145,7 +1145,7 @@ TEST(Oot3dVulkanDiagnostics, WritesBoundedAuthenticFrameTrace) {
     EXPECT_EQ(frame.at("last_depth_physical_address"), 0x4000U);
     EXPECT_DOUBLE_EQ(frame.at("gpu").at("frame_ms"), 4.5);
     EXPECT_DOUBLE_EQ(frame.at("gpu").at("toon_raster_ms"), 1.5);
-    EXPECT_DOUBLE_EQ(frame.at("gpu").at("cacao_ms"), 0.75);
+    EXPECT_DOUBLE_EQ(frame.at("gpu").at("ambient_occlusion_ms"), 0.75);
     EXPECT_DOUBLE_EQ(
         frame.at("gpu").at("depth_preparation_ms"), 0.25);
     EXPECT_DOUBLE_EQ(frame.at("gpu").at("reflection_ms"), 0.5);

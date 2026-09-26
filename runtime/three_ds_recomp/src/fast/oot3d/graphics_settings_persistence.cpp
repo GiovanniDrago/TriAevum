@@ -73,6 +73,7 @@ constexpr EnumNames<DirectionalShadowMode> kDirectionalShadowNames{
 };
 constexpr EnumNames<AmbientOcclusionMode> kAoNames{
     {AmbientOcclusionMode::Off, "Off"},
+    {AmbientOcclusionMode::Gtao, "GTAO"},
     {AmbientOcclusionMode::Cacao, "CACAO"},
 };
 constexpr EnumNames<ReflectionMode> kReflectionNames{
@@ -1232,14 +1233,14 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                             kAoNames)},
                   {"Quality", effects.AoQuality},
                   {"Radius", effects.AoRadius},
+                  {"DetailRadius", effects.AoDetailRadius},
                   {"Strength", effects.AoStrength},
                   {"ShadowPower", effects.AoShadowPower},
                   {"ShadowClamp", effects.AoShadowClamp},
-                  {"HorizonAngleThreshold",
-                   effects.AoHorizonAngleThreshold},
+                  {"HorizonAngleThreshold", effects.AoHorizonAngleThreshold},
+                  {"BlurPassCount", effects.AoBlurPassCount},
                   {"FadeOutFrom", effects.AoFadeOutFrom},
                   {"FadeOutTo", effects.AoFadeOutTo},
-                  {"BlurPassCount", effects.AoBlurPassCount},
                   {"Sharpness", effects.AoSharpness},
                   {"DetailStrength",
                    effects.AoDetailStrength},
@@ -1549,12 +1550,17 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                 RequireObject(*effects, "AO",
                               "Graphics.Effects.AO", result)) {
             ReadEnum(*ao, "Mode", value.AmbientOcclusion,
-                     kAoNames, "Graphics.Effects.AO.Mode",
-                     result);
+                     kAoNames, "Graphics.Effects.AO.Mode", result);
             ReadScalar(*ao, "Quality", value.AoQuality,
                        "Graphics.Effects.AO.Quality", result);
             ReadScalar(*ao, "Radius", value.AoRadius,
                        "Graphics.Effects.AO.Radius", result);
+            if (version < 13U) {
+                value.AoDetailRadius = value.AoRadius * 0.25F;
+            } else {
+                ReadScalar(*ao, "DetailRadius", value.AoDetailRadius,
+                           "Graphics.Effects.AO.DetailRadius", result);
+            }
             ReadScalar(*ao, "Strength", value.AoStrength,
                        "Graphics.Effects.AO.Strength", result);
             ReadScalar(*ao, "ShadowPower",
@@ -1563,18 +1569,15 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
             ReadScalar(*ao, "ShadowClamp",
                        value.AoShadowClamp,
                        "Graphics.Effects.AO.ShadowClamp", result);
-            ReadScalar(*ao, "HorizonAngleThreshold",
-                       value.AoHorizonAngleThreshold,
-                       "Graphics.Effects.AO.HorizonAngleThreshold",
-                       result);
+            ReadScalar(*ao, "HorizonAngleThreshold", value.AoHorizonAngleThreshold,
+                       "Graphics.Effects.AO.HorizonAngleThreshold", result);
+            ReadScalar(*ao, "BlurPassCount", value.AoBlurPassCount,
+                       "Graphics.Effects.AO.BlurPassCount", result);
             ReadScalar(*ao, "FadeOutFrom",
                        value.AoFadeOutFrom,
                        "Graphics.Effects.AO.FadeOutFrom", result);
             ReadScalar(*ao, "FadeOutTo", value.AoFadeOutTo,
                        "Graphics.Effects.AO.FadeOutTo", result);
-            ReadScalar(*ao, "BlurPassCount",
-                       value.AoBlurPassCount,
-                       "Graphics.Effects.AO.BlurPassCount", result);
             ReadScalar(*ao, "Sharpness", value.AoSharpness,
                        "Graphics.Effects.AO.Sharpness", result);
             ReadScalar(*ao, "DetailStrength",

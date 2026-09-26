@@ -25,7 +25,7 @@ struct HiZPyramidLayout {
 };
 
 // Converts the native depth sample to positive view-space distance. Keeping
-// this contract outside the Vulkan pass lets CACAO and SSR share the exact
+// this contract outside the Vulkan pass lets AO and SSR share the exact
 // same interpretation of PICA depth.
 [[nodiscard]] float LinearizeDepth(float sample, float nearPlane,
                                    float farPlane,

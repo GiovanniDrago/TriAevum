@@ -23,7 +23,7 @@
 #include <nlohmann/json.hpp>
 #include <imgui_impl_vulkan.h>
 #include "fast/oot3d/graphics_settings_runtime.h"
-#include "fast/oot3d/cacao_diagnostics.h"
+#include "fast/oot3d/ambient_occlusion_diagnostics.h"
 #include "fast/oot3d/display_diagnostics.h"
 #include "fast/oot3d/anti_aliasing_frame_policy.h"
 #include "fast/oot3d/renderer_presentation_controller.h"
@@ -902,9 +902,11 @@ void GfxRenderingAPIVulkan::Init() {
             "OOT3D Vulkan NRI PICA texture uploads unavailable: {}",
             mNriPicaTextureUploadPass.UnavailableReason());
     }
-    if (!mCacaoPass.Initialize(mPhysicalDevice, mDevice, mNriInterop)) {
-        SPDLOG_INFO("OOT3D Vulkan CACAO unavailable: {}", mCacaoPass.UnavailableReason());
+    if (!mAmbientOcclusionPass.Initialize(mPhysicalDevice, mDevice, mNriInterop)) {
+        SPDLOG_INFO("OOT3D Vulkan GTAO unavailable: {}", mAmbientOcclusionPass.UnavailableReason());
     }
+    if (!mCacaoPass.Initialize(mPhysicalDevice, mDevice, mNriInterop))
+        SPDLOG_INFO("OOT3D Vulkan CACAO unavailable: {}", mCacaoPass.UnavailableReason());
     if (!mHiZDepthPyramidPass.Initialize(
             mPhysicalDevice, mDevice, mNriInterop)) {
         SPDLOG_INFO("OOT3D Vulkan Hi-Z unavailable: {}",
@@ -979,6 +981,8 @@ void GfxRenderingAPIVulkan::Init() {
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::NormalGuide, true);
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::MaterialGuide, true);
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::NativeSurfaceLighting, true);
+    settingsRuntime.SetCapability(Oot3d::GraphicsCapability::FidelityFxCacao,
+                                  mCacaoPass.Available(), mCacaoPass.UnavailableReason());
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::MotionVectors,
                                   mMotionVectorPass.Available(),
                                   mMotionVectorPass.UnavailableReason());
@@ -1139,6 +1143,7 @@ void GfxRenderingAPIVulkan::Shutdown() {
         ShutdownImGuiBackend();
         mSceneSurfaces.Clear();
         mResourceStates.Clear();
+        mAmbientOcclusionPass.Shutdown();
         mCacaoPass.Shutdown();
         mFidelityFxSssrPass.Shutdown();
         mReflectionMaterialResolvePass.Shutdown();
@@ -1570,7 +1575,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
     std::erase_if(mHandledNativePicaTextureCopies,
                   [](const auto& entry) { return !entry.second.second; });
     auto& settingsRuntime = Oot3d::GraphicsSettingsRuntime::Instance();
-    Oot3d::TickCacaoDiagnostics(settingsRuntime, mFrameCounter);
+    Oot3d::TickAmbientOcclusionDiagnostics(settingsRuntime, mFrameCounter);
     Oot3d::TickDisplayDiagnostics(settingsRuntime, mFrameCounter);
     settingsRuntime.TickPresentation();
     const auto initialGraphicsSettings = settingsRuntime.Snapshot();
@@ -1607,7 +1612,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
                          presentationError);
         }
     }
-    mCacaoExecutedThisFrame = false;
+    mAmbientOcclusionExecutedThisFrame = false;
     mHiZExecutedThisFrame = false;
     mReflectionExecutedThisFrame = false;
     mReflectionProviderThisFrame =
@@ -1784,8 +1789,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
     const Oot3d::PicaAttachmentFeatureRequests extensionRequests{
         graphicsSettings.Effects.DirectionalShadows.Mode ==
             Oot3d::DirectionalShadowMode::VirtualShadowMaps,
-        graphicsSettings.Effects.AmbientOcclusion ==
-            Oot3d::AmbientOcclusionMode::Cacao,
+        graphicsSettings.Effects.AmbientOcclusion != Oot3d::AmbientOcclusionMode::Off,
         graphicsSettings.Effects.Toon != Oot3d::ToonMode::Off &&
             graphicsSettings.Effects.ToonStyle.OutlineEnabled,
         graphicsSettings.Effects.Reflections !=
@@ -1867,11 +1871,10 @@ void GfxRenderingAPIVulkan::StartFrame() {
         mTaaOutputValid = false;
         mTemporalAaPass.ResetHistory();
     }
-    if (graphicsSettings.Effects.AmbientOcclusion !=
-        Oot3d::AmbientOcclusionMode::Cacao) {
+    if (graphicsSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Off) {
         // The image may remain allocated for cheap re-enabling, but it must no
         // longer be eligible for scanout composition as soon as AO is Off.
-        mCacaoOutputValid = false;
+        mAmbientOcclusionOutputValid = false;
     }
     const float requestedInternalResolutionScale =
         Oot3d::ResolveInternalResolutionScale(graphicsSettings);
@@ -5008,7 +5011,7 @@ void GfxRenderingAPIVulkan::RecreateSwapchain() {
     StopPresentWorker();
     CheckVk(vkDeviceWaitIdle(mDevice), "vkDeviceWaitIdle(recreate swapchain)");
     // Native PICA targets are offscreen scene resources, not swapchain
-    // resources. Preserve them (and CACAO's depth bindings) across presentation
+    // resources. Preserve them (and AO depth bindings) across presentation
     // mode changes; their own reset path handles genuine scene invalidation.
     DestroySwapchainResources();
     CreateSwapchainResources();

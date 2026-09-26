@@ -13,7 +13,7 @@ namespace Fast::Oot3d {
 struct PicaScanoutPushConstants {
     uint32_t FlipY = 0;
     uint32_t AaMode = 0;
-    uint32_t Cacao = 0;
+    uint32_t AmbientOcclusion = 0;
     uint32_t Outline = 0;
     float InvWidth = 1.0F;
     float InvHeight = 1.0F;
@@ -51,7 +51,7 @@ struct PicaScanoutPolicyInput {
     uint32_t Width = 1;
     uint32_t Height = 1;
     uint32_t HiZMipCount = 1;
-    bool CacaoAvailable = false;
+    bool AmbientOcclusionAvailable = false;
     bool OutlineAvailable = false;
     bool ReflectionsAvailable = false;
     bool TemporalOutput = false;

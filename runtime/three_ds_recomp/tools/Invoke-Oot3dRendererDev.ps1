@@ -7,8 +7,8 @@ param(
     [switch]$BorderlessTransitionSmoke,
     [switch]$PresentationRollbackSmoke,
     [switch]$PresentationApplyFailureSmoke,
-    [switch]$CacaoTransitionSmoke,
-    [switch]$CacaoDisableTransitionSmoke,
+    [switch]$AoTransitionSmoke,
+    [switch]$AoDisableTransitionSmoke,
     [switch]$RenderScaleTransitionSmoke,
     [switch]$UpscalerQualityTransitionSmoke,
     [switch]$SavestateReloadSmoke,
@@ -118,17 +118,17 @@ if ($PresentationApplyFailureSmoke) {
     Remove-Item Env:OOT3D_GRAPHICS_TEST_FAIL_PRESENTATION_APPLY `
         -ErrorAction SilentlyContinue
 }
-if ($CacaoTransitionSmoke) {
-    $env:OOT3D_GRAPHICS_TEST_CACAO_AFTER_FRAMES = "4"
+if ($AoTransitionSmoke) {
+    $env:OOT3D_GRAPHICS_TEST_AO_AFTER_FRAMES = "4"
 } else {
-    Remove-Item Env:OOT3D_GRAPHICS_TEST_CACAO_AFTER_FRAMES `
+    Remove-Item Env:OOT3D_GRAPHICS_TEST_AO_AFTER_FRAMES `
         -ErrorAction SilentlyContinue
 }
-if ($CacaoDisableTransitionSmoke) {
-    $env:OOT3D_GRAPHICS_CACAO = "1"
-    $env:OOT3D_GRAPHICS_TEST_CACAO_OFF_AFTER_FRAMES = "40"
+if ($AoDisableTransitionSmoke) {
+    $env:OOT3D_GRAPHICS_AO = "1"
+    $env:OOT3D_GRAPHICS_TEST_AO_OFF_AFTER_FRAMES = "40"
 } else {
-    Remove-Item Env:OOT3D_GRAPHICS_TEST_CACAO_OFF_AFTER_FRAMES `
+    Remove-Item Env:OOT3D_GRAPHICS_TEST_AO_OFF_AFTER_FRAMES `
         -ErrorAction SilentlyContinue
 }
 if ($RenderScaleTransitionSmoke) {

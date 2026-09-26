@@ -27,7 +27,7 @@ enum class FrameRateMode : uint8_t {
     // fixed-60 presentation mode. Persistence emits Interpolated2x.
     Fixed60 = Interpolated2x,
 };
-enum class AmbientOcclusionMode : uint8_t { Off, Cacao };
+enum class AmbientOcclusionMode : uint8_t { Off, Gtao, Cacao };
 enum class ReflectionMode : uint8_t { Off, HiZ, FidelityFxSssr };
 enum class ToonMode : uint8_t { Off, PostProcessPreview, PicaMaterial };
 enum class SurfaceLightingMode : uint8_t { Native, PerPixel, PerPixelPbr, NativePbr };
@@ -147,13 +147,14 @@ struct EffectsSettings {
     AmbientOcclusionMode AmbientOcclusion = AmbientOcclusionMode::Off;
     uint8_t AoQuality = 0;
     float AoRadius = 1.0F;
+    float AoDetailRadius = 0.25F;
     float AoStrength = 1.0F;
     float AoShadowPower = 1.5F;
     float AoShadowClamp = 0.98F;
     float AoHorizonAngleThreshold = 0.06F;
+    uint32_t AoBlurPassCount = 2U;
     float AoFadeOutFrom = 50.0F;
     float AoFadeOutTo = 300.0F;
-    uint8_t AoBlurPassCount = 2;
     float AoSharpness = 0.98F;
     float AoDetailStrength = 0.5F;
     ReflectionMode Reflections = ReflectionMode::Off;

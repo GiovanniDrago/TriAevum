@@ -99,7 +99,7 @@ if (opts.grassTransitions === 'true') {
 }
 if (opts.implicitLayers === 'true') delete env.VK_LOADER_LAYERS_DISABLE;
 for (const key of Object.keys(env)) {
-    if (/^OOT3D_VULKAN_DIAGNOSTICS|^TRIAEVUM_CACAO_DIAGNOSTIC/.test(key)) delete env[key];
+    if (/^OOT3D_VULKAN_DIAGNOSTICS|^TRIAEVUM_AO_DIAGNOSTIC/.test(key)) delete env[key];
 }
 if (opts.diagnostics === 'true') {
     env.OOT3D_VULKAN_DIAGNOSTICS_PATH = path.join(output, 'vulkan.json');

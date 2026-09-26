@@ -1,5 +1,14 @@
 # CACAO and effect guide correction
 
+Historical CACAO diagnosis. CACAO has since been replaced by
+[multiscale GTAO](OOT3D_NRI_FIDELITY_EXTENSION_ARCHITECTURE.md#multiscale-gtao-and-reflection-performance).
+The shared guide/coordinate and SSSR corrections described here remain
+relevant; the CACAO provider, generator and CACAO-only tests are retired.
+Current GPU regression: `tools/renderer/tev_program/gtao_gpu_tests.cpp`.
+Current coordinate/graph checks:
+`tests/pica_surface_coordinates_tests.cpp` and
+`tests/ambient_occlusion_guide_tests.cpp` under the renderer runtime.
+
 Date: 2026-09-06. Worktree: `I:/oot3dre_work/triaevum-release`.
 Starting revisions: project `86fe95865`, renderer `eeb78ce3`.
 Renderer correction commit: `e33d7b20` (`fix/cacao-effect-guide-contracts`).
@@ -117,9 +126,10 @@ Silhouettes cross unrelated surfaces in the depth finite difference; a nonzero
 edge mismatch is not evidence for flipping those materials. It is not a claim
 of game-wide 98.4% fidelity.
 
-### Fast tests
+### Historical fast tests (retired CACAO tooling)
 
-From `runtime/three_ds_recomp/tools`:
+The following command and results describe the original correction, not a
+current build step:
 
 ```powershell
 python -m unittest test_generate_cacao_spirv -v
@@ -138,17 +148,19 @@ modules. Standalone C++ tests also pass:
 - The corresponding broader GTest normal-input test was updated, but that
   GTest target is not built by this product configuration.
 
-From the project root, bounded actual-game tests use:
+From the project root, the current GTAO bounded runner uses:
 
 ```powershell
-python -m tools.triaevum_release.validate_cacao_run --runtime I:/oot3dre_work/triaevum-direct-module-build/TriAevum.exe --profile I:/TriAevum-0.6.0-candidate-r1/TriAevum.launch.json --config I:/TriAevum-0.6.0-candidate-r1/data/config/TriAevum.json --output <new-directory> --quality -1 --live --live-start 40 --live-stride 15 --with-sssr --without-grass --seconds 40
+python -m tools.triaevum_release.validate_ambient_occlusion_run --runtime <developer-runtime> --profile <disposable-profile> --config <copied-config> --output <new-directory> --quality 0 --live --live-start 40 --live-stride 20 --with-sssr --seconds 45
 ```
 
 Replace `--with-sssr` with `--with-hiz-taa` for the other reflection path. Use
 `--quality 1 --guide-view 3` without live switching for geometric comparison;
-views 1/2 are linearized depth and normal RGB. The runner copies configuration,
-uses private empty save data, times out and reaps its own process. It does not
-modify the user's installation/configuration/saves. Validation is enabled:
+views 1/2 are linearized depth and normal RGB. The runner copies graphics
+configuration, uses private empty save data, times out and reaps its own process.
+The supplied profile must also reference disposable TopScreen and other mutable
+settings paths; do not pass an installed user profile directly. Grass remains
+enabled in this recipe. Validation is enabled:
 **these runs are not performance benchmarks**.
 
 ## Build and deployment

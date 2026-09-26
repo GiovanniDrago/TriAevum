@@ -11,7 +11,7 @@ enum class GpuProfileScope : uint8_t {
     NativePica,
     ToonRaster,
     Grass,
-    Cacao,
+    AmbientOcclusion,
     DepthPreparation,
     Reflection,
     MotionVectors,

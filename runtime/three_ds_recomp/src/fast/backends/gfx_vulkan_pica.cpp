@@ -808,6 +808,7 @@ void GfxRenderingAPIVulkan::ApplyNativePicaSampleCount(VkSampleCountFlagBits sam
                   "vkDeviceWaitIdle(native PICA MSAA transaction)");
     EndNativePicaRenderPass();
     ForgetNativePicaEffectNriTextures();
+    mAmbientOcclusionPass.InvalidateScreenResources();
     mCacaoPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
     mReflectionMaterialResolvePass.InvalidateScreenResources();
@@ -841,7 +842,7 @@ void GfxRenderingAPIVulkan::ApplyNativePicaSampleCount(VkSampleCountFlagBits sam
     }
     mTemporalAaPass.InvalidateScreenResources();
     mTaaOutputValid = false;
-    mCacaoOutputValid = false;
+    mAmbientOcclusionOutputValid = false;
     mHiZOutputValid = false;
     mInteractiveGrassPass.Shutdown();
     mTemporalHistory.Reset();
@@ -4478,7 +4479,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             shaderVariant.AmbientGuideEligibility ==
                 Oot3d::PicaAmbientOcclusionGuideEligibility::
                     AppliedFallback) {
-            mDiagnostics.RecordCacaoAmbientGuideDraw(
+            mDiagnostics.RecordAmbientOcclusionAmbientGuideDraw(
                 shaderVariant.AmbientGuideEligibility ==
                     Oot3d::PicaAmbientOcclusionGuideEligibility::
                         AppliedExact);
@@ -6655,11 +6656,11 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 effectPlan.Graph,
                 Oot3d::DisplayEffectPassName(
                     Oot3d::DisplayEffectPass::Motion));
-        const auto cacaoBarrierPlan =
+        const auto aoBarrierPlan =
             Oot3d::BuildEffectPassBarrierPlan(
                 effectPlan.Graph,
                 Oot3d::DisplayEffectPassName(
-                    Oot3d::DisplayEffectPass::Cacao));
+                    Oot3d::DisplayEffectPass::AmbientOcclusion));
         const auto hiZBarrierPlan =
             Oot3d::BuildEffectPassBarrierPlan(
                 effectPlan.Graph,
@@ -6757,8 +6758,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 effectPlan.DeclaredBindingCount(),
                 std::numeric_limits<uint32_t>::max())),
             static_cast<uint32_t>(effectPlan.Graph.Barriers.size()));
-        const bool wantsCacao = effectPlan.Enabled(
-            Oot3d::DisplayEffectPass::Cacao);
+        const bool wantsAmbientOcclusion = effectPlan.Enabled(
+            Oot3d::DisplayEffectPass::AmbientOcclusion);
         const bool wantsOutline = effectPlan.Enabled(
             Oot3d::DisplayEffectPass::Outline);
         const bool wantsReflections = effectPlan.Enabled(
@@ -6813,7 +6814,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         const Oot3d::NriEffectGraphTransientImageBinding*
             transientReactiveOutput = nullptr;
         const Oot3d::NriEffectGraphTransientImageBinding*
-            transientCacaoOutput = nullptr;
+            transientAmbientOcclusionOutput = nullptr;
         const Oot3d::NriEffectGraphTransientImageBinding*
             transientHiZOutput = nullptr;
         const Oot3d::NriEffectGraphTransientImageBinding*
@@ -6893,7 +6894,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 VK_FORMAT_R16_SFLOAT,
                 effectGuideTarget->Width, effectGuideTarget->Height);
         }
-        if (wantsCacao && effectGuideTarget != nullptr) {
+        if (wantsAmbientOcclusion && effectGuideTarget != nullptr) {
             requireImage(
                 Oot3d::EffectResource::AmbientOcclusion,
                 VK_FORMAT_R32_SFLOAT,
@@ -6967,7 +6968,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 transientReactiveOutput =
                     mNriEffectGraphTransientImageArena.Find(
                         Oot3d::EffectResource::ReactiveMask);
-                transientCacaoOutput =
+                transientAmbientOcclusionOutput =
                     mNriEffectGraphTransientImageArena.Find(
                         Oot3d::EffectResource::AmbientOcclusion);
                 transientHiZOutput =
@@ -7321,67 +7322,71 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
                     VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
         };
-        bool cacaoAttempted = false;
-        bool cacaoExecutedNow = false;
-        if (wantsCacao && effectGuideTarget != nullptr &&
-            !mCacaoExecutedThisFrame) {
-            cacaoAttempted = true;
-            mCacaoExecutedThisFrame = true;
-            const Oot3d::CacaoSettings cacaoSettings =
-                Oot3d::ResolveCacaoSettings(
-                    presentationSettings.Effects);
-            const auto cacaoReads = resolveEffectPassReads(
-                Oot3d::DisplayEffectPass::Cacao);
-            const auto& cacaoDepthBinding = requireEffectImageRead(
-                cacaoReads,
+        const bool cacao = presentationSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Cacao;
+        bool aoAttempted = false;
+        bool aoExecutedNow = false;
+        if (wantsAmbientOcclusion && effectGuideTarget != nullptr &&
+            !mAmbientOcclusionExecutedThisFrame) {
+            aoAttempted = true;
+            mAmbientOcclusionExecutedThisFrame = true;
+            const auto aoReads = resolveEffectPassReads(
+                Oot3d::DisplayEffectPass::AmbientOcclusion);
+            const auto& aoDepthBinding = requireEffectImageRead(
+                aoReads,
                 Oot3d::EffectResource::NativeDepth);
-            const auto& cacaoNormalBinding = requireEffectImageRead(
-                cacaoReads,
+            const auto& aoNormalBinding = requireEffectImageRead(
+                aoReads,
                 Oot3d::EffectResource::NormalGuide);
-            const VkImageView cacaoDepthView =
-                reinterpret_cast<VkImageView>(
-                    cacaoDepthBinding.NativeView);
-            const VkImageView cacaoNormalView =
-                reinterpret_cast<VkImageView>(
-                    cacaoNormalBinding.NativeView);
             transitionEffectPassGuides(
-                Oot3d::DisplayEffectPass::Cacao);
+                Oot3d::DisplayEffectPass::AmbientOcclusion);
             mGpuProfiler.BeginScope(
-                mCurrentFrame, Oot3d::GpuProfileScope::Cacao,
+                mCurrentFrame, Oot3d::GpuProfileScope::AmbientOcclusion,
                 command);
-            mCacaoOutputValid =
-                transientCacaoOutput != nullptr &&
-                mCacaoPass.Configure(
-                    *transientCacaoOutput, cacaoDepthView, cacaoNormalView,
-                    cacaoSettings) &&
-                mCacaoPass.Execute(
-                    command, presentationPerspective->Projection,
-                    cacaoBarrierPlan,
-                    Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
+            mAmbientOcclusionOutputValid = transientAmbientOcclusionOutput != nullptr;
+            if (mAmbientOcclusionOutputValid && cacao) {
+                mAmbientOcclusionOutputValid =
+                    mCacaoPass.Configure(*transientAmbientOcclusionOutput,
+                        reinterpret_cast<VkImageView>(aoDepthBinding.NativeView),
+                        reinterpret_cast<VkImageView>(aoNormalBinding.NativeView),
+                        Oot3d::ResolveCacaoSettings(presentationSettings.Effects)) &&
+                    mCacaoPass.Execute(command, presentationPerspective->Projection, aoBarrierPlan,
+                        Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
+            } else if (mAmbientOcclusionOutputValid) {
+                mAmbientOcclusionOutputValid =
+                    mAmbientOcclusionPass.Configure(*transientAmbientOcclusionOutput,
+                        reinterpret_cast<VkImage>(aoDepthBinding.NativeImage),
+                        static_cast<VkFormat>(aoDepthBinding.Format),
+                        reinterpret_cast<VkImage>(aoNormalBinding.NativeImage),
+                        static_cast<VkFormat>(aoNormalBinding.Format)) &&
+                    mAmbientOcclusionPass.Execute(mCurrentFrame, *presentationPerspective,
+                        effectGuideTarget->WBuffering, presentationSettings.Effects, aoBarrierPlan,
+                        Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
+            }
             mGpuProfiler.EndScope(
-                mCurrentFrame, Oot3d::GpuProfileScope::Cacao,
+                mCurrentFrame, Oot3d::GpuProfileScope::AmbientOcclusion,
                 command);
-            cacaoExecutedNow = mCacaoOutputValid;
-            if (mCacaoOutputValid) {
+            aoExecutedNow = mAmbientOcclusionOutputValid;
+            if (mAmbientOcclusionOutputValid) {
                 recordEffectPassTransitions(
-                    mCacaoPass.LastBarrierExecution());
-                mDiagnostics.RecordCacaoPass(
-                    mCacaoPass.OutputOwnedByNri(),
-                    mCacaoPass.UsesPicaNormalGuide());
-                mCacaoRenderTargetNamespace =
+                    cacao ? mCacaoPass.LastBarrierExecution() : mAmbientOcclusionPass.LastBarrierExecution());
+                mDiagnostics.RecordAmbientOcclusionPass(
+                    cacao ? mCacaoPass.OutputOwnedByNri() : mAmbientOcclusionPass.OutputOwnedByNri(),
+                    !cacao || mCacaoPass.UsesPicaNormalGuide());
+                mAmbientOcclusionRenderTargetNamespace =
                     transfer.RenderTargetNamespace;
-                mCacaoDisplayPhysicalAddress =
+                mAmbientOcclusionDisplayPhysicalAddress =
                     transfer.OutputPhysicalAddress;
             }
         }
-        const bool cacaoForDisplay =
-            mCacaoOutputValid && wantsCacao &&
-            mCacaoRenderTargetNamespace == transfer.RenderTargetNamespace &&
-            mCacaoDisplayPhysicalAddress == transfer.OutputPhysicalAddress;
-        if (cacaoForDisplay) {
+        const bool aoForDisplay =
+            mAmbientOcclusionOutputValid && wantsAmbientOcclusion &&
+            mAmbientOcclusionRenderTargetNamespace == transfer.RenderTargetNamespace &&
+            mAmbientOcclusionDisplayPhysicalAddress == transfer.OutputPhysicalAddress;
+        if (aoForDisplay) {
             bindEffectImage(
                 Oot3d::EffectResource::AmbientOcclusion,
-                mCacaoPass.OutputImage(), mCacaoPass.OutputView(),
+                cacao ? mCacaoPass.OutputImage() : mAmbientOcclusionPass.OutputImage(),
+                cacao ? mCacaoPass.OutputView() : mAmbientOcclusionPass.OutputView(),
                 VK_FORMAT_R32_SFLOAT, effectGuideTarget->Width,
                 effectGuideTarget->Height);
         }
@@ -8044,7 +8049,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                motionAvailableForDisplay) ||
               (wantsNis && !canReuseUpscaler) ||
               (wantsSmaa && !mSmaaExecutedThisFrame))) &&
-            (cacaoForDisplay || reflectionsForDisplay ||
+            (aoForDisplay || reflectionsForDisplay ||
              outlineForDisplay) &&
             mSceneCompositePass.Available();
         const bool compositeAttempted = compositeForTaa;
@@ -8089,9 +8094,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                               compositeReads, resource).Format)
                     : compositeColorFormat;
             };
-            const VkImage compositeCacaoImage = optionalCompositeImage(
+            const VkImage compositeAoImage = optionalCompositeImage(
                 Oot3d::EffectResource::AmbientOcclusion);
-            const VkFormat compositeCacaoFormat = optionalCompositeFormat(
+            const VkFormat compositeAoFormat = optionalCompositeFormat(
                 Oot3d::EffectResource::AmbientOcclusion);
             const VkImage compositeReflectionImage = optionalCompositeImage(
                 Oot3d::EffectResource::ReflectionColor);
@@ -8129,15 +8134,15 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             compositeForTaa =
                 transientCompositeOutput != nullptr && mSceneCompositePass.Configure(*transientCompositeOutput) &&
                 mSceneCompositePass.Execute(
-                    command, mCurrentFrame, mFrameCounter, compositeColorImage, compositeColorFormat, compositeCacaoImage,
-                    compositeCacaoFormat, compositeReflectionImage, compositeReflectionFormat, compositeMaterialImage,
+                    command, mCurrentFrame, mFrameCounter, compositeColorImage, compositeColorFormat, compositeAoImage,
+                    compositeAoFormat, compositeReflectionImage, compositeReflectionFormat, compositeMaterialImage,
                     compositeMaterialFormat, compositeNormalImage, compositeNormalFormat,
                     compositeTransparentDepthImage, compositeTransparentDepthFormat, compositeAmbientImage,
                     compositeAmbientFormat, compositeDepthImage, compositeDepthFormat,
                     optionalCompositeImage(Oot3d::EffectResource::FogGuide),
                     optionalCompositeFormat(Oot3d::EffectResource::FogGuide),
                     optionalCompositeImage(Oot3d::EffectResource::OutlineGeometryGuide),
-                    optionalCompositeFormat(Oot3d::EffectResource::OutlineGeometryGuide), cacaoForDisplay,
+                    optionalCompositeFormat(Oot3d::EffectResource::OutlineGeometryGuide), aoForDisplay,
                     reflectionsForDisplay, presentationSettings.Effects.ReflectionStrength,
                     presentationSettings.Effects.ReflectionDebugView, outlineForDisplay,
                     presentationSettings.Effects.ToonStyle, compositeInputEncoding, compositeBarrierPlan);
@@ -8199,8 +8204,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                                 linearWorkingColorForDisplay,
                                 canReuseWorkingColor));
             recordDeclared(
-                Oot3d::DisplayEffectPass::Cacao,
-                producedOutcome(cacaoAttempted, cacaoForDisplay));
+                Oot3d::DisplayEffectPass::AmbientOcclusion,
+                producedOutcome(aoAttempted, aoForDisplay));
             recordDeclared(
                 Oot3d::DisplayEffectPass::HiZ,
                 producedOutcome(hiZAttempted, hiZExecutedNow, canReuseHiZ));
@@ -8232,8 +8237,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             // copy: an enabled effect must never silently sample the base
             // colour target.
             const bool declaredSceneStageFailed =
-                (effectPlan.Enabled(Oot3d::DisplayEffectPass::Cacao) &&
-                 !cacaoForDisplay) ||
+                (effectPlan.Enabled(Oot3d::DisplayEffectPass::AmbientOcclusion) &&
+                 !aoForDisplay) ||
                 (effectPlan.Enabled(Oot3d::DisplayEffectPass::Reflections) &&
                  !reflectionsForDisplay) ||
                 (effectPlan.Enabled(Oot3d::DisplayEffectPass::Outline) &&
@@ -8840,7 +8845,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 mNriUpscalerPass.BarriersOwnedByNri());
         }
         const bool smaaEffectsNeedComposite =
-            cacaoForDisplay || reflectionsForDisplay ||
+            aoForDisplay || reflectionsForDisplay ||
             outlineForDisplay;
         const bool canReuseSmaa = wantsSmaa &&
             mSmaaExecutedThisFrame &&
@@ -8936,10 +8941,11 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 effectGuideTarget->Height,
                 Oot3d::SceneColorEncoding::Linear);
         }
-        if (cacaoForDisplay) {
+        if (aoForDisplay) {
             bindEffectImage(
                 Oot3d::EffectResource::AmbientOcclusion,
-                mCacaoPass.OutputImage(), mCacaoPass.OutputView(),
+                cacao ? mCacaoPass.OutputImage() : mAmbientOcclusionPass.OutputImage(),
+                cacao ? mCacaoPass.OutputView() : mAmbientOcclusionPass.OutputView(),
                 VK_FORMAT_R32_SFLOAT, effectGuideTarget->Width,
                 effectGuideTarget->Height);
         }
@@ -9140,7 +9146,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 display.Width,
                 display.Height,
                 mHiZDepthPyramidPass.MipCount(),
-                cacaoForDisplay,
+                aoForDisplay,
                 outlineForDisplay,
                 reflectionsForDisplay,
                 taaForDisplay || fsrForDisplay || dlssForDisplay,
@@ -9229,9 +9235,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             mDiagnostics.RecordLinearScanout(
                 scanout.EncodeSrgb != 0U);
         }
-        if (cacaoForDisplay && guideSampledResourceMask != 0U &&
+        if (aoForDisplay && guideSampledResourceMask != 0U &&
             (compositeForTaa || !effectsCompositedForScanout)) {
-            mDiagnostics.RecordCacaoAmbientComposite();
+            mDiagnostics.RecordAmbientOcclusionAmbientComposite();
         }
 
         if (effectPlan.Enabled(Oot3d::DisplayEffectPass::Guides)) {
@@ -9252,8 +9258,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 linearWorkingColorForDisplay,
                 canReuseWorkingColor));
         recordDeclared(
-            Oot3d::DisplayEffectPass::Cacao,
-            producedOutcome(cacaoAttempted, cacaoForDisplay));
+            Oot3d::DisplayEffectPass::AmbientOcclusion,
+            producedOutcome(aoAttempted, aoForDisplay));
         recordDeclared(
             Oot3d::DisplayEffectPass::HiZ,
             producedOutcome(hiZAttempted, hiZExecutedNow,
@@ -10376,7 +10382,8 @@ bool GfxRenderingAPIVulkan::ResetPicaState(
         CheckNativeVk(vkDeviceWaitIdle(mDevice),
                       "vkDeviceWaitIdle(native PICA state reset)");
         DestroyNativePicaGeometryResources();
-        ForgetNativePicaEffectNriTextures();
+            ForgetNativePicaEffectNriTextures();
+        mAmbientOcclusionPass.InvalidateScreenResources();
         mCacaoPass.InvalidateScreenResources();
         mFidelityFxSssrPass.InvalidateScreenResources();
         mReflectionMaterialResolvePass.InvalidateScreenResources();
@@ -10412,7 +10419,7 @@ bool GfxRenderingAPIVulkan::ResetPicaState(
         mTemporalAaPass.InvalidateScreenResources();
         mTaaOutputValid = false;
         mHiZOutputValid = false;
-        mCacaoOutputValid = false;
+        mAmbientOcclusionOutputValid = false;
         mInteractiveGrassPass.ResetTemporalState();
         Oot3d::GrassSceneBridge::Instance().Clear();
         mTemporalHistory.Reset();
@@ -10875,6 +10882,7 @@ void GfxRenderingAPIVulkan::ForgetNativePicaEffectNriTextures() {
 }
 
 void GfxRenderingAPIVulkan::ReleaseEffectGraphImageClients() {
+    mAmbientOcclusionPass.InvalidateScreenResources();
     mCacaoPass.InvalidateScreenResources();
     mHiZDepthPyramidPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
@@ -10907,7 +10915,7 @@ void GfxRenderingAPIVulkan::ReleaseEffectGraphImageClients() {
     }
     mTemporalAaPass.InvalidateScreenResources();
     mTaaOutputValid = false;
-    mCacaoOutputValid = false;
+    mAmbientOcclusionOutputValid = false;
     mHiZOutputValid = false;
     mTemporalHistory.Reset();
     mRigidMotionTracker.Reset();
@@ -10924,6 +10932,7 @@ void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayIma
     CheckNativeVk(vkDeviceWaitIdle(mDevice),
                   "vkDeviceWaitIdle(PICA render target reconfiguration)");
     ForgetNativePicaEffectNriTextures();
+    mAmbientOcclusionPass.InvalidateScreenResources();
     mCacaoPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
     mReflectionMaterialResolvePass.InvalidateScreenResources();
@@ -10958,7 +10967,7 @@ void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayIma
     mTemporalAaPass.InvalidateScreenResources();
     mTaaOutputValid = false;
     mHiZOutputValid = false;
-    mCacaoOutputValid = false;
+    mAmbientOcclusionOutputValid = false;
     mTemporalHistory.Reset();
     mRigidMotionTracker.Reset();
     mPreviousPicaVertexUniforms.clear();

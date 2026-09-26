@@ -59,9 +59,9 @@ struct PicaSceneDomainGuideVariant {
 };
 
 // Scene geometry writes guide coverage one. Scene-domain draws that do not
-// write depth attenuate that coverage by their output alpha, keeping
-// post-process effects below native overlays without inferring ownership
-// from framebuffer dimensions.
+// write depth publish their output alpha for coverage blending; the consuming
+// pipeline follows native RGB destination transmission to preserve additive
+// overlays without inferring ownership from framebuffer dimensions.
 [[nodiscard]] PicaSceneDomainGuideVariant
 BuildPicaSceneDomainGuideVariant(
     std::string_view source, uint64_t fragmentKey,

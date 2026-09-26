@@ -27,8 +27,8 @@ $environmentNames = @(
     "OOT3D_GRAPHICS_NIS",
     "OOT3D_GRAPHICS_FSR",
     "OOT3D_GRAPHICS_DLSS",
-    "OOT3D_GRAPHICS_CACAO",
-    "OOT3D_GRAPHICS_CACAO_QUALITY",
+    "OOT3D_GRAPHICS_AO",
+    "OOT3D_GRAPHICS_AO_QUALITY",
     "OOT3D_GRAPHICS_HIZ",
     "OOT3D_GRAPHICS_SSSR"
 )
@@ -92,8 +92,8 @@ function Assert-CleanValidation {
 
 try {
     $env:OOT3D_VULKAN_VALIDATION = "1"
-    $env:OOT3D_GRAPHICS_CACAO = "1"
-    $env:OOT3D_GRAPHICS_CACAO_QUALITY = "1"
+    $env:OOT3D_GRAPHICS_AO = "1"
+    $env:OOT3D_GRAPHICS_AO_QUALITY = "1"
 
     & $harness -SkipBuild:$SkipBuild `
         -Frames $Frames -MaxSeconds $MaxSeconds | Out-Host

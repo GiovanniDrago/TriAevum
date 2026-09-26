@@ -56,9 +56,9 @@ bool HasGraphicsEnvironmentOverride() {
         "OOT3D_GRAPHICS_FOV_MULTIPLIER",
         "OOT3D_GRAPHICS_GRASS_AUTO",
         "OOT3D_GRAPHICS_GRASS_HASH",
-        "OOT3D_GRAPHICS_CACAO",
-        "OOT3D_GRAPHICS_CACAO_QUALITY",
-        "OOT3D_GRAPHICS_CACAO_STRESS",
+        "OOT3D_GRAPHICS_AO",
+        "OOT3D_GRAPHICS_AO_QUALITY",
+        "OOT3D_GRAPHICS_AO_STRESS",
         "OOT3D_GRAPHICS_HIZ",
         "OOT3D_GRAPHICS_SSSR",
         "OOT3D_GRAPHICS_REFLECTION_TEXTURE_HASH",
@@ -78,8 +78,8 @@ bool HasGraphicsEnvironmentOverride() {
         "OOT3D_GRAPHICS_TEST_BORDERLESS_AFTER_FRAMES",
         "OOT3D_GRAPHICS_TEST_PRESENTATION_ROLLBACK_AFTER_FRAMES",
         "OOT3D_GRAPHICS_TEST_FAIL_PRESENTATION_APPLY",
-        "OOT3D_GRAPHICS_TEST_CACAO_AFTER_FRAMES",
-        "OOT3D_GRAPHICS_TEST_CACAO_OFF_AFTER_FRAMES",
+        "OOT3D_GRAPHICS_TEST_AO_AFTER_FRAMES",
+        "OOT3D_GRAPHICS_TEST_AO_OFF_AFTER_FRAMES",
         "OOT3D_GRAPHICS_TEST_RENDER_SCALE_AFTER_FRAMES",
         "OOT3D_GRAPHICS_TEST_UPSCALER_QUALITY_AFTER_FRAMES",
     };
@@ -252,15 +252,15 @@ GraphicsSettingsRuntime::GraphicsSettingsRuntime() {
             dumpDirectory;
         customized = true;
     }
-    if (const char* cacao = std::getenv("OOT3D_GRAPHICS_CACAO");
-        cacao != nullptr && std::string_view(cacao) == "1") {
-        initial.Effects.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    if (const char* ao = std::getenv("OOT3D_GRAPHICS_AO");
+        ao != nullptr && std::string_view(ao) == "1") {
+        initial.Effects.AmbientOcclusion = AmbientOcclusionMode::Gtao;
         customized = true;
     }
-    if (const char* cacaoQuality =
-            std::getenv("OOT3D_GRAPHICS_CACAO_QUALITY");
-        cacaoQuality != nullptr) {
-        const std::string_view quality(cacaoQuality);
+    if (const char* aoQuality =
+            std::getenv("OOT3D_GRAPHICS_AO_QUALITY");
+        aoQuality != nullptr) {
+        const std::string_view quality(aoQuality);
         if (quality == "0" || quality == "1") {
             initial.Effects.AoQuality =
                 quality == "1" ? 1U : 0U;
@@ -268,19 +268,18 @@ GraphicsSettingsRuntime::GraphicsSettingsRuntime() {
         }
     }
     if (const char* stress =
-            std::getenv("OOT3D_GRAPHICS_CACAO_STRESS");
+            std::getenv("OOT3D_GRAPHICS_AO_STRESS");
         stress != nullptr && std::string_view(stress) == "1") {
         initial.Effects.AmbientOcclusion =
-            AmbientOcclusionMode::Cacao;
+            AmbientOcclusionMode::Gtao;
         initial.Effects.AoQuality = 1U;
         initial.Effects.AoRadius = 12.0F;
         initial.Effects.AoStrength = 4.0F;
         initial.Effects.AoShadowPower = 4.0F;
         initial.Effects.AoShadowClamp = 0.72F;
-        initial.Effects.AoHorizonAngleThreshold = 0.20F;
+        initial.Effects.AoDetailRadius = 3.0F;
         initial.Effects.AoFadeOutFrom = 0.0F;
         initial.Effects.AoFadeOutTo = 5000.0F;
-        initial.Effects.AoBlurPassCount = 0U;
         initial.Effects.AoSharpness = 0.25F;
         initial.Effects.AoDetailStrength = 2.0F;
         customized = true;

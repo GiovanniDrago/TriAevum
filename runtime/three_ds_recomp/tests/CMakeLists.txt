@@ -16,6 +16,17 @@ target_compile_features(native_presentation_policy_tests PRIVATE cxx_std_20)
 target_include_directories(native_presentation_policy_tests PRIVATE ../include)
 add_test(NAME native_presentation_policy_tests COMMAND native_presentation_policy_tests)
 
+add_executable(pica_surface_coordinates_tests pica_surface_coordinates_tests.cpp)
+target_compile_features(pica_surface_coordinates_tests PRIVATE cxx_std_20)
+target_include_directories(pica_surface_coordinates_tests PRIVATE ../include)
+add_test(NAME pica_surface_coordinates_tests COMMAND pica_surface_coordinates_tests)
+
+add_executable(ambient_occlusion_guide_tests ambient_occlusion_guide_tests.cpp)
+target_compile_features(ambient_occlusion_guide_tests PRIVATE cxx_std_20)
+target_include_directories(ambient_occlusion_guide_tests PRIVATE ../include)
+target_link_libraries(ambient_occlusion_guide_tests PRIVATE three_ds_recomp_runtime)
+add_test(NAME ambient_occlusion_guide_tests COMMAND ambient_occlusion_guide_tests)
+
 add_executable(vulkan_present_dispatch_tests
     vulkan_present_dispatch_tests.cpp
     ../src/fast/oot3d/vulkan_adapter_policy.cpp)
@@ -488,7 +499,6 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/display_effect_resources.cpp
     ../src/fast/oot3d/ambient_occlusion_composite.cpp
     ../src/fast/oot3d/azahar_texture_pack.cpp
-    ../src/fast/oot3d/cacao_normal_input.cpp
     ../src/fast/oot3d/azahar_pbr_materials.cpp
     ../src/fast/oot3d/grass_async_placement_builder.cpp
     ../src/fast/oot3d/grass_static_placement_cache.cpp

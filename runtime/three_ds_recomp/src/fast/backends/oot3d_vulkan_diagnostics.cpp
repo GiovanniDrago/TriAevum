@@ -81,8 +81,8 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
                             frame.Gpu.ToonRasterMilliseconds);
     PutOptionalMilliseconds(gpu, "grass_ms",
                             frame.Gpu.GrassMilliseconds);
-    PutOptionalMilliseconds(gpu, "cacao_ms",
-                            frame.Gpu.CacaoMilliseconds);
+    PutOptionalMilliseconds(gpu, "ambient_occlusion_ms",
+                            frame.Gpu.AmbientOcclusionMilliseconds);
     PutOptionalMilliseconds(gpu, "depth_preparation_ms",
                             frame.Gpu.DepthPreparationMilliseconds);
     PutOptionalMilliseconds(gpu, "reflection_ms",
@@ -587,18 +587,18 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
         { "outline_occlusion_draw_count", frame.OutlineOcclusionDrawCount },
         { "pica_material_toon_draw_count",
           frame.PicaMaterialToonDrawCount },
-        { "cacao_pass_count", frame.CacaoPassCount },
-        { "cacao_output_nri_owned", frame.CacaoOutputNriOwned },
-        { "cacao_normal_guide_pass_count",
-          frame.CacaoNormalGuidePassCount },
-        { "cacao_ambient_guide_draw_count",
-          frame.CacaoAmbientGuideDrawCount },
-        { "cacao_ambient_rgb_guide_draw_count",
-          frame.CacaoAmbientRgbGuideDrawCount },
-        { "cacao_ambient_fallback_guide_draw_count",
-          frame.CacaoAmbientFallbackGuideDrawCount },
-        { "cacao_ambient_composite_count",
-          frame.CacaoAmbientCompositeCount },
+        { "ambient_occlusion_pass_count", frame.AmbientOcclusionPassCount },
+        { "ambient_occlusion_output_nri_owned", frame.AmbientOcclusionOutputNriOwned },
+        { "ambient_occlusion_normal_guide_pass_count",
+          frame.AmbientOcclusionNormalGuidePassCount },
+        { "ambient_occlusion_ambient_guide_draw_count",
+          frame.AmbientOcclusionAmbientGuideDrawCount },
+        { "ambient_occlusion_ambient_rgb_guide_draw_count",
+          frame.AmbientOcclusionAmbientRgbGuideDrawCount },
+        { "ambient_occlusion_ambient_fallback_guide_draw_count",
+          frame.AmbientOcclusionAmbientFallbackGuideDrawCount },
+        { "ambient_occlusion_ambient_composite_count",
+          frame.AmbientOcclusionAmbientCompositeCount },
         { "hiz_pass_count", frame.HiZPassCount },
         { "hiz_mip_count", frame.HiZMipCount },
         { "hiz_depth_convention", frame.HiZDepthConvention },
@@ -1908,33 +1908,33 @@ void Oot3dVulkanDiagnostics::RecordToonDraw(
     }
 }
 
-void Oot3dVulkanDiagnostics::RecordCacaoPass(bool outputNriOwned,
+void Oot3dVulkanDiagnostics::RecordAmbientOcclusionPass(bool outputNriOwned,
                                               bool picaNormalGuide) {
     if (mActiveFrame.has_value()) {
-        ++mActiveFrame->CacaoPassCount;
-        mActiveFrame->CacaoOutputNriOwned =
-            mActiveFrame->CacaoOutputNriOwned || outputNriOwned;
+        ++mActiveFrame->AmbientOcclusionPassCount;
+        mActiveFrame->AmbientOcclusionOutputNriOwned =
+            mActiveFrame->AmbientOcclusionOutputNriOwned || outputNriOwned;
         if (picaNormalGuide) {
-            ++mActiveFrame->CacaoNormalGuidePassCount;
+            ++mActiveFrame->AmbientOcclusionNormalGuidePassCount;
         }
     }
 }
 
-void Oot3dVulkanDiagnostics::RecordCacaoAmbientGuideDraw(
+void Oot3dVulkanDiagnostics::RecordAmbientOcclusionAmbientGuideDraw(
     bool exactRgb) {
     if (mActiveFrame.has_value()) {
-        ++mActiveFrame->CacaoAmbientGuideDrawCount;
+        ++mActiveFrame->AmbientOcclusionAmbientGuideDrawCount;
         if (exactRgb) {
-            ++mActiveFrame->CacaoAmbientRgbGuideDrawCount;
+            ++mActiveFrame->AmbientOcclusionAmbientRgbGuideDrawCount;
         } else {
-            ++mActiveFrame->CacaoAmbientFallbackGuideDrawCount;
+            ++mActiveFrame->AmbientOcclusionAmbientFallbackGuideDrawCount;
         }
     }
 }
 
-void Oot3dVulkanDiagnostics::RecordCacaoAmbientComposite() {
+void Oot3dVulkanDiagnostics::RecordAmbientOcclusionAmbientComposite() {
     if (mActiveFrame.has_value()) {
-        ++mActiveFrame->CacaoAmbientCompositeCount;
+        ++mActiveFrame->AmbientOcclusionAmbientCompositeCount;
     }
 }
 

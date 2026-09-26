@@ -189,13 +189,14 @@ if(THREE_DS_RECOMP_ENABLE_VULKAN)
                 OOT3D_NGX_RUNTIME_VERSION="${THREE_DS_RECOMP_NGX_VERSION}")
         endif()
     endif()
-    if(THREE_DS_RECOMP_ENABLE_CACAO)
-        target_link_libraries(three_ds_recomp_runtime PRIVATE oot3d_cacao)
-    endif()
     if(THREE_DS_RECOMP_ENABLE_SSSR)
         target_link_libraries(three_ds_recomp_runtime PRIVATE
             oot3d_ffx_sssr
             oot3d_ffx_sssr_backend_vk)
+    endif()
+    if(TARGET oot3d_cacao)
+        target_link_libraries(three_ds_recomp_runtime PRIVATE oot3d_cacao)
+        target_compile_definitions(three_ds_recomp_runtime PRIVATE ENABLE_OOT3D_CACAO)
     endif()
     if(THREE_DS_RECOMP_ENABLE_D3D12_NGX_PROVIDER)
         target_link_libraries(three_ds_recomp_runtime PRIVATE d3d12 dxgi)
@@ -219,7 +220,6 @@ target_compile_definitions(three_ds_recomp_runtime PRIVATE
     $<$<BOOL:${THREE_DS_RECOMP_ENABLE_NRI}>:ENABLE_OOT3D_NRI>
     $<$<BOOL:${THREE_DS_RECOMP_ENABLE_VULKAN}>:ENABLE_RENDERER3DS_VULKAN>
     $<$<BOOL:${THREE_DS_RECOMP_ENABLE_NRI}>:ENABLE_RENDERER3DS_NRI>
-    $<$<BOOL:${THREE_DS_RECOMP_ENABLE_CACAO}>:ENABLE_OOT3D_CACAO>
     $<$<BOOL:${THREE_DS_RECOMP_ENABLE_D3D12_NGX_PROVIDER}>:ENABLE_OOT3D_D3D12_NGX_PROVIDER>
 )
 

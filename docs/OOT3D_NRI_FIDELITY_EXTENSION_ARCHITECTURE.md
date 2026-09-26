@@ -4,6 +4,10 @@
 
 Build an NRI renderer that reproduces the native OOT3D/PICA output faithfully while exposing enough structured scene and pipeline data for future advanced rendering. Extensions must integrate at the correct rendering stage; they must not be limited to generic post-processing.
 
+AO offers [multiscale GTAO and the original FidelityFX CACAO](#multiscale-gtao-and-reflection-performance).
+Both providers share the scene graph, native guides and particle-coverage fix.
+The saved provider is preserved; selecting one does not migrate the other away.
+
 ## Non-Negotiable Rules
 
 1. The canonical PICA path is authoritative and has no dependency on extensions.
@@ -2474,7 +2478,14 @@ The final shadow trace identifies five projected-shadow draws; their removal
 is visible in both per-pixel modes, while Native remains byte-identical.
 With authored/native illumination off, the actors are dark; Navi-only,
 fairy-only and combined settings produce distinct local illumination.
-GPU regressions cover animated normals and independent point-light contributions.
+GPU regressions pass nine animated-normal cases, seven point-light cases and
+the native-RGB/particle-coverage checks. Both AO providers execute one NRI-owned
+AO pass per active frame with no failed or unresolved graph passes. Zero AO
+strength is byte-identical to Off, including the offscreen copy and native UI.
+The actual F1 widgets pass 5,022 assertions; a 180-frame run preserves the user's
+combined settings and completes without graph failures. These are bounded
+correctness checks, not a new performance benchmark or a claim that every
+optional pass is admissible on a non-contiguous opaque target.
 Private evidence is under `I:/_triaevum_work/surface-lighting/`; no save, capture
 or extracted title data belongs in a public package.
 
@@ -2564,6 +2575,127 @@ Guest memory content, memory state and process fingerprints match across all
 three models (`12296319316116986855`, `539994612170039003`,
 `3145733879543920988`). Evidence is in `staged-copy*-proof` and
 `copy-memory-proof.json`; the failed reproduction remains in `staged-copy-before`.
+
+## Multiscale GTAO and reflection performance
+
+The selector retains both providers. Multiscale GTAO uses shared kernels in
+`fast/renderer/gtao_shader.{h,cpp}` and the OOT3D/NRI adapter in
+`fast/oot3d/ambient_occlusion_pass.{h,cpp}`. Original FidelityFX CACAO uses
+`fast/oot3d/cacao_pass.{h,cpp}` and upstream revision
+`0ddca95e6714727a252ead345591ca8f2598f261`, with its MIT notice retained.
+The following estimator and performance details describe GTAO:
+
+- The graph declares native depth, the coverage-bearing normal guide and the
+  native scene view. It owns the published R32F AO image, scheduling and
+  external resource transitions. The provider owns only its half-resolution
+  RG16F scratch and its internal transitions.
+- Horizon integration operates at half extent in each axis, using original
+  FP32 depth rather than a half-precision depth reconstruction. Low uses
+  12 depth samples and Medium 24 per horizon pixel. Both use native normals,
+  the canonical negative-Z camera projection and explicit W-buffer handling.
+- Fine and broad occlusion share the samples. The broad control weights the
+  incremental broad contribution, not a second copy of fine occlusion.
+  A tiled bilateral resolve reconstructs the output. There is no AO history,
+  frame-index rotation or per-frame uniform-buffer ring.
+- Native RGB8 normal decoding has finite angular precision. A bound derived
+  from the input format rejects coplanar false horizons. The quantized-normal
+  GPU probe reproduced 0.0213 false occlusion on an empty sloped plane before
+  this correction and zero afterwards; the permanent GPU regression uses
+  actual RGBA8 UNORM input.
+- Coverage is valid when alpha is nonzero, including Grass's coverage marker.
+  No draw, asset, scene, Grass density, distance or topology is excluded to
+  obtain the measured speedup. Composition retains the existing scene-coverage
+  weighting of scene RGB before UI; it is not an ambient-light-only decomposition.
+- Native overlay coverage follows the native **RGB destination blend factor**,
+  not an unconditional `ONE_MINUS_SRC_ALPHA`. The latter erased AO across
+  additive particle quads, even where black texels contributed no native RGB.
+  This defect also appeared with CACAO. The GPU regression fails before the
+  correction and passes afterwards for additive, alpha-over and opaque
+  replacement, while checking actual native RGB. Matching saved-scene frames
+  384–386 no longer contain the rectangular AO holes; frame 385 restores
+  77,027 previously erased AO pixels. Validation reports zero errors.
+  This is a reproducible coverage defect, not proof that every intermittent
+  artifact in every scene has been eliminated.
+  Auxiliary coverage remains scalar, not an exact per-channel decomposition of
+  every native RGB blend equation.
+
+F1 **Lighting** owns **Off / Multiscale GTAO / FidelityFX CACAO** and
+**Low / Medium** quality. GTAO retains independent **Fine radius / Fine strength**
+and **Broad radius / Broad strength**, with fine radius no larger than broad.
+CACAO exposes its original radius, strength, detail strength, horizon-angle
+threshold and blur-pass controls. Power, clamp, fade and sharpness remain
+available with the selected provider's semantics.
+Schema 14 preserves saved `CACAO`, `GTAO` and `Off` choices and their numeric
+controls. Older profiles without a fine radius acquire one quarter of the
+broad radius; CACAO is not forcibly converted to GTAO. The two estimators do
+not promise pixel equivalence. Both consume the same corrected particle
+coverage and complete before native UI composition.
+
+Hi-Z reflection filtering now shares a 12-by-12 tile for each 8-by-8 workgroup,
+retaining the original 5-by-5 filter. Inactive groups and zero-contribution
+rough surfaces avoid unnecessary work; mip selection uses integer operations.
+The covered reflection-on framebuffer is byte-identical before/after, including
+508 pixels with an observable reflection contribution. The covered AO/SSR-off
+framebuffers are also byte-identical.
+
+### Measured cost and limits
+
+RTX 3060, 2560-by-1440 output, original saved scene, PBR, 4096 VSM/PCF 2 and
+unchanged dense Grass. Four balanced A/B/B/A runs use 600 fixed-1/30 frames each,
+discard 60 warmup frames, and disable VSync, capture and validation. AboveNormal
+priority applies only to these benchmark processes. The final-binary repeat
+below has 0.25% drift between the two baseline GPU-frame medians.
+
+| GPU scope, pooled median | CACAO baseline | GTAO runtime | Change |
+| --- | ---: | ---: | ---: |
+| AO, selected Low quality | 0.943 ms | 0.801 ms | -15.0% |
+| Hi-Z reflections | 1.451 ms | 1.294 ms | -10.8% |
+| Complete GPU frame | 11.949 ms | 11.594 ms | -3.0% |
+
+Mean AO cost is 0.972 to 0.824 ms. **No overall FPS improvement is established**:
+the final series measures 43.79 to 42.32 fps, with the two unchanged baseline
+runs themselves ranging from 45.17 to 42.50 fps. An earlier series measured
+40.43 to 41.49 fps. Pre-backend wall time remains around 12–13 ms.
+There is no general CPU-improvement or 60-fps-headroom claim.
+All runs and outliers remain in the private reports.
+
+An earlier final-binary repeat was **non-stationary**: the unchanged baseline moves from
+37.94 to 23.51 fps and from 12.47 to 32.26 ms mean GPU time within that A/B/B/A
+series. The two candidate runs reach 23.65 and 23.77 fps. A subsequent idle
+measurement reports 10,006 of 12,288 MiB allocated without the game running.
+Other user processes were not stopped. Consequently that series is retained,
+but its pooled total-frame/FPS deltas are not accepted as an optimization result.
+AO's pooled median remains 0.944 to 0.798 ms (-15.5%) in this final-binary check.
+
+Verification includes the native RGBA8 GPU regression, independent bands,
+zero identity, coverage, W-buffer, odd extents and identical-input repeatability;
+64 native lighting configurations; three 4,096-case TEV comparisons; and
+61,440 texture-copy pixels. The 59 built-in pass artifacts regenerate and pass
+`--check`. CPU regressions pass 292 foundation, 47 graph, six diagnostics and
+40 shader-cache tests. The actual F1 widgets pass 4,805 assertions.
+The corrected runtime also covers 40 native captures along a 400-frame camera
+orbit, plus the consecutive particle-defect frames 384–386. Live validation
+covers six Low/Medium/Off transitions with Hi-Z/TAA (769 frames), SSSR
+(336 frames, zero fallback) and Off (273 frames, zero AO/normal-guide passes).
+All three validation runs report zero Vulkan/NRI errors. Separate native
+captures distinguish fine/broad controls and prove zero-gain/Off identity.
+
+Current bounded runtime tooling is
+`python -m tools.triaevum_release.validate_ambient_occlusion_run`; use a
+disposable launch profile as well as disposable config/save paths.
+Diagnostics use `ambient_occlusion_*`, GPU timing `ambient_occlusion_ms`,
+and developer switches `OOT3D_GRAPHICS_AO*`. The live diagnostic sequence is
+`TRIAEVUM_AO_DIAGNOSTIC_SEQUENCE`. Legacy CACAO-named diagnostics and control
+scripts are replaced by these provider-neutral names. CACAO itself, its
+`THREE_DS_RECOMP_ENABLE_CACAO` build option and its shader generator remain
+supported alongside GTAO.
+Private captures, checkpoints, profiles and measurement reports remain under
+`I:/_triaevum_work/ao-stability/` and must never enter a public package.
+
+Fresh combined source adoption, deterministic framebuffer/state comparisons and
+the remaining realtime validation observation are recorded in
+[`TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md`](TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md).
+The measurements above remain historical, not a new performance qualification.
 
 ## Acceptance Gates
 

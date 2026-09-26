@@ -111,10 +111,10 @@ cmake_dependent_option(
 	ON
 	"WIN32;THREE_DS_RECOMP_ENABLE_VULKAN;THREE_DS_RECOMP_ENABLE_NRI"
 	OFF)
-option(THREE_DS_RECOMP_ENABLE_CACAO "Enable FidelityFX CACAO for the native 3DS Vulkan backend" ${THREE_DS_RECOMP_ENABLE_NRI})
 option(THREE_DS_RECOMP_ENABLE_SSSR "Enable FidelityFX SSSR for the native 3DS Vulkan backend" ${THREE_DS_RECOMP_ENABLE_NRI})
+option(THREE_DS_RECOMP_ENABLE_CACAO "Enable original FidelityFX CACAO alongside GTAO" ${THREE_DS_RECOMP_ENABLE_NRI})
+set(THREE_DS_RECOMP_CACAO_SOURCE_DIR "" CACHE PATH "Optional existing FidelityFX CACAO source directory")
 set(THREE_DS_RECOMP_NRI_SOURCE_DIR "" CACHE PATH "Optional existing NRI v180 source directory")
-set(THREE_DS_RECOMP_CACAO_SOURCE_DIR "" CACHE PATH "Optional existing FidelityFX CACAO v1.2 source directory")
 set(THREE_DS_RECOMP_NGX_VERSION "310.7.0" CACHE STRING
 	"Official NVIDIA DLSS/NGX SDK version used by the NRI Vulkan backend")
 set(THREE_DS_RECOMP_DLSS_RUNTIME "" CACHE FILEPATH
@@ -270,6 +270,9 @@ if(THREE_DS_RECOMP_ENABLE_VULKAN)
 		if(THREE_DS_RECOMP_ENABLE_SSSR)
 			include(cmake/dependencies/oot3d-sssr.cmake)
 		endif()
+		if(THREE_DS_RECOMP_ENABLE_CACAO)
+			include(cmake/dependencies/oot3d-cacao.cmake)
+		endif()
 		if(WIN32 AND NRI_ENABLE_FFX_SDK)
 			FetchContent_GetProperties(ffx)
 			set(THREE_DS_RECOMP_FFX_VK_DLL
@@ -320,9 +323,6 @@ if(THREE_DS_RECOMP_ENABLE_VULKAN)
 				COMMENT "Deploying DLSS Vulkan runtime for ${target_name}")
 		endif()
 	endfunction()
-	if(THREE_DS_RECOMP_ENABLE_CACAO)
-		include(cmake/dependencies/oot3d-cacao.cmake)
-	endif()
 endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Android")

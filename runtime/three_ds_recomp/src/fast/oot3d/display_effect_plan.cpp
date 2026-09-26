@@ -16,7 +16,7 @@ namespace {
 
 void PopulateCompatibilityProjections(
     DisplayEffectPlan& plan, const DisplayEffectPlanInput& input) {
-    plan.Cacao = plan.Enabled(DisplayEffectPass::Cacao);
+    plan.AmbientOcclusion = plan.Enabled(DisplayEffectPass::AmbientOcclusion);
     plan.Outline = plan.Enabled(DisplayEffectPass::Outline);
     plan.Reflections = plan.Enabled(DisplayEffectPass::Reflections);
     plan.FidelityFxSssr =
@@ -151,7 +151,7 @@ std::vector<EffectPass> ProjectDisplayEffectPasses(
 std::string_view DisplayEffectPassName(DisplayEffectPass pass) noexcept {
     switch (pass) {
         case DisplayEffectPass::Guides: return "Guides";
-        case DisplayEffectPass::Cacao: return "CACAO";
+        case DisplayEffectPass::AmbientOcclusion: return "AmbientOcclusion";
         case DisplayEffectPass::HiZ: return "HiZ";
         case DisplayEffectPass::Reflections: return "Reflections";
         case DisplayEffectPass::Outline: return "Outline";
@@ -291,8 +291,8 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     // by a list of names.
     const bool extensionWorld = input.WorldSurface &&
         input.Purpose == Renderer3ds::PicaCompositionPurpose::Presentation;
-    const bool cacao = extensionWorld &&
-                       input.AmbientOcclusion == AmbientOcclusionMode::Cacao &&
+    const bool ao = extensionWorld &&
+                       input.AmbientOcclusion != AmbientOcclusionMode::Off &&
                        input.PerspectiveAvailable;
     const bool outline = extensionWorld &&
                          input.Toon != ToonMode::Off &&
@@ -327,16 +327,16 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     // A native boundary materializes the composed scene for its consumer at
     // the boundary's own order, so the scene stages must actually be baked into
     // the boundary output rather than fused into presentation.
-    const bool composite = (cacao || outline || reflections) &&
+    const bool composite = (ao || outline || reflections) &&
                            (taa || temporalUpscaler || smaa || nis ||
                             input.NativeSceneBoundary);
     const bool workingColor = fidelityFxSssr ||
         ((taa || temporalUpscaler) && !composite);
 
-    const bool normalGuide = cacao || outline || reflections;
+    const bool normalGuide = ao || outline || reflections;
     const bool materialGuide = reflections || motionVectors;
     const bool rigidMotionGuide = motionVectors || outline;
-    const bool ambientGuide = cacao;
+    const bool ambientGuide = ao;
     std::vector<EffectResourceUse> guideOutputs;
     if (normalGuide) {
         guideOutputs.push_back(Write(EffectResource::NormalGuide));
@@ -367,9 +367,9 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
                 .Contract = EffectContractKind::ComposerPass,
                 .Resources = { Read(EffectResource::SceneColor),
                                Write(EffectResource::LinearWorkingColor) } });
-    graph.Add({ .Name = "CACAO",
+    graph.Add({ .Name = "AmbientOcclusion",
                 .DependsOn = { "Guides" },
-                .Enabled = cacao,
+                .Enabled = ao,
                 .Stage = EffectStage::AfterOpaque,
                 .Contract = EffectContractKind::ComposerPass,
                 .Resources = { Read(EffectResource::NativeSceneView), Read(EffectResource::NativeDepth),
@@ -429,7 +429,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
         ? EffectResource::LinearWorkingColor
         : EffectResource::SceneColor;
     std::vector<EffectResourceUse> compositeResources{ Read(baseColor) };
-    if (cacao) {
+    if (ao) {
         compositeResources.push_back(Read(EffectResource::AmbientOcclusion));
         compositeResources.push_back(Read(EffectResource::AmbientGuide));
     }
@@ -446,7 +446,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     }
     compositeResources.push_back(Write(EffectResource::CompositeColor));
     graph.Add({ .Name = "Composite",
-                .DependsOn = { "CACAO", "Reflections", "Outline",
+                .DependsOn = { "AmbientOcclusion", "Reflections", "Outline",
                                "WorkingColor" },
                 .Enabled = composite,
                 .Stage = EffectStage::AfterTransparent,
@@ -501,7 +501,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     if (smaa)
         finalColor = EffectResource::AntiAliasedColor;
     std::vector<EffectResourceUse> terminalResources{ Read(finalColor) };
-    if (!composite && cacao) {
+    if (!composite && ao) {
         terminalResources.push_back(Read(EffectResource::AmbientOcclusion));
         terminalResources.push_back(Read(EffectResource::AmbientGuide));
     }
@@ -516,7 +516,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
         terminalResources.push_back(Read(EffectResource::RigidMotionGuide));
         terminalResources.push_back(Read(EffectResource::FogGuide));
     }
-    if (input.GuideDiagnostics && cacao && (composite || !outline)) {
+    if (input.GuideDiagnostics && ao && (composite || !outline)) {
         terminalResources.push_back(Read(EffectResource::NativeDepth));
         terminalResources.push_back(Read(EffectResource::NormalGuide));
     }
@@ -526,7 +526,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     std::vector<EffectResourceUse> compositionResources = terminalResources;
     compositionResources.push_back(Write(EffectResource::SceneComposition));
     graph.Add({ .Name = "SceneComposition",
-                .DependsOn = { "CACAO", "Reflections", "Outline",
+                .DependsOn = { "AmbientOcclusion", "Reflections", "Outline",
                                "Composite", "WorkingColor" },
                 .Enabled = input.NativeSceneBoundary,
                 .Stage = EffectStage::AfterTransparent,
@@ -534,7 +534,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
                 .Resources = std::move(compositionResources) });
     terminalResources.push_back(Write(EffectResource::PresentationOutput));
     graph.Add({ .Name = "Scanout",
-                .DependsOn = { "CACAO", "Reflections", "Outline",
+                .DependsOn = { "AmbientOcclusion", "Reflections", "Outline",
                                "Composite", "TAA", "TemporalUpscaler",
                                "NIS", "SMAA", "WorkingColor" },
                 .Enabled = !input.NativeSceneBoundary,

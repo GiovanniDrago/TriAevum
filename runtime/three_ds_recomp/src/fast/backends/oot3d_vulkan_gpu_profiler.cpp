@@ -24,8 +24,8 @@ void StoreTiming(Oot3dVulkanGpuTimings& timings,
         case Oot3d::GpuProfileScope::Grass:
             timings.GrassMilliseconds = milliseconds;
             break;
-        case Oot3d::GpuProfileScope::Cacao:
-            timings.CacaoMilliseconds = milliseconds;
+        case Oot3d::GpuProfileScope::AmbientOcclusion:
+            timings.AmbientOcclusionMilliseconds = milliseconds;
             break;
         case Oot3d::GpuProfileScope::DepthPreparation:
             timings.DepthPreparationMilliseconds = milliseconds;

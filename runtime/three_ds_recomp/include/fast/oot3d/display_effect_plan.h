@@ -13,7 +13,7 @@ namespace Fast::Oot3d {
 
 enum class DisplayEffectPass : uint8_t {
     Guides,
-    Cacao,
+    AmbientOcclusion,
     HiZ,
     Reflections,
     Outline,
@@ -71,7 +71,7 @@ struct DisplayEffectPlan {
 
     // Compatibility projections. They are populated from Graph after it is
     // compiled and are never the authority used by renderer dispatch.
-    bool Cacao = false;
+    bool AmbientOcclusion = false;
     bool Outline = false;
     bool Reflections = false;
     bool FidelityFxSssr = false;

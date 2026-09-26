@@ -138,7 +138,7 @@ GraphicsSettings GraphicsSettingsService::Preset(GraphicsPreset preset) {
         value.FrameRate = FrameRateMode::Interpolated2x;
         value.Effects.DirectionalShadows.Mode =
             DirectionalShadowMode::VirtualShadowMaps;
-        value.Effects.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+        value.Effects.AmbientOcclusion = AmbientOcclusionMode::Gtao;
         value.Effects.AoQuality = 1;
         ApplyGrassQualityPreset(
             value.Grass, GrassQuality::Medium);
@@ -205,20 +205,22 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
     }
     value.Effects.AoQuality = std::min<uint8_t>(value.Effects.AoQuality, 1U);
     value.Effects.AoRadius = std::clamp(value.Effects.AoRadius, 0.05F, 100.0F);
+    value.Effects.AoDetailRadius = std::isfinite(value.Effects.AoDetailRadius)
+        ? std::clamp(value.Effects.AoDetailRadius, 0.01F, value.Effects.AoRadius)
+        : std::min(0.25F, value.Effects.AoRadius);
     value.Effects.AoStrength = std::clamp(value.Effects.AoStrength, 0.0F, 10.0F);
     value.Effects.AoShadowPower =
         std::clamp(value.Effects.AoShadowPower, 0.1F, 10.0F);
     value.Effects.AoShadowClamp =
         std::clamp(value.Effects.AoShadowClamp, 0.0F, 1.0F);
-    value.Effects.AoHorizonAngleThreshold =
-        std::clamp(value.Effects.AoHorizonAngleThreshold, 0.0F, 1.0F);
+    value.Effects.AoHorizonAngleThreshold = std::isfinite(value.Effects.AoHorizonAngleThreshold)
+        ? std::clamp(value.Effects.AoHorizonAngleThreshold, 0.0F, 0.2F) : 0.06F;
+    value.Effects.AoBlurPassCount = std::min(value.Effects.AoBlurPassCount, 8U);
     value.Effects.AoFadeOutFrom =
         std::clamp(value.Effects.AoFadeOutFrom, 0.0F, 100000.0F);
     value.Effects.AoFadeOutTo =
         std::clamp(value.Effects.AoFadeOutTo,
                    value.Effects.AoFadeOutFrom + 0.01F, 100000.0F);
-    value.Effects.AoBlurPassCount =
-        std::min<uint8_t>(value.Effects.AoBlurPassCount, 8U);
     value.Effects.AoSharpness =
         std::clamp(value.Effects.AoSharpness, 0.0F, 1.0F);
     value.Effects.AoDetailStrength =
@@ -657,13 +659,20 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         Correct(result.Issues, "Graphics.Presentation.VSync",
                 capabilities.Get(GraphicsCapability::PresentTearing).Reason);
     }
-    if (value.Effects.AmbientOcclusion == AmbientOcclusionMode::Cacao &&
+    if (value.Effects.AmbientOcclusion != AmbientOcclusionMode::Off &&
         (!capabilities.Has(GraphicsCapability::NriInterop) ||
          !capabilities.Has(GraphicsCapability::SampledDepth) ||
+         !capabilities.Has(GraphicsCapability::NormalGuide) ||
          !capabilities.Has(GraphicsCapability::ValidViewMetadata))) {
         value.Effects.AmbientOcclusion = AmbientOcclusionMode::Off;
         Correct(result.Issues, "Graphics.Effects.AO.Mode",
-                "CACAO requires NRI, sampled depth and valid view metadata");
+                "AO requires NRI, sampled depth, normals and valid view metadata");
+    }
+    if (value.Effects.AmbientOcclusion == AmbientOcclusionMode::Cacao &&
+        !capabilities.Has(GraphicsCapability::FidelityFxCacao)) {
+        value.Effects.AmbientOcclusion = AmbientOcclusionMode::Off;
+        Correct(result.Issues, "Graphics.Effects.AO.Mode",
+                capabilities.Get(GraphicsCapability::FidelityFxCacao).Reason);
     }
     if (value.Effects.Reflections != ReflectionMode::Off &&
         (!capabilities.Has(GraphicsCapability::NriInterop) ||

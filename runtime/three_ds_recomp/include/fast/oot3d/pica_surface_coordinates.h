@@ -38,9 +38,7 @@ struct PicaSurfaceCoordinates {
         }
         return matrix;
     }
-
-    // CACAO only reads diagonal FOV terms: express its camera in the storage
-    // basis (X = view Y, Y = +/-view X), then use positive-depth Z.
+    // CACAO reads diagonal FOV terms and reconstructs positive view depth.
     constexpr std::array<float, 16> CacaoProjection(std::array<float, 16> projection) const noexcept {
         const float x = projection[0];
         projection[0] = projection[5];
@@ -50,13 +48,13 @@ struct PicaSurfaceCoordinates {
 
     constexpr std::array<float, 16> CacaoNormalTransform(float clipWFromViewZ) const noexcept {
         const float z = clipWFromViewZ < 0.0F ? -1.0F : 1.0F;
-        // FFX uploads these bytes to a column-major HLSL matrix and evaluates
-        // mul(normal, matrix). Match that memory layout, not a CPU row matrix.
+        // FFX uploads a column-major HLSL matrix and evaluates mul(normal, matrix).
         return {0, 1, 0, 0,
                 FlipY ? 1.0F : -1.0F, 0, 0, 0,
                 0, 0, z, 0,
                 0, 0, 0, 1};
     }
+
 };
 
 inline constexpr std::string_view EffectSurfaceCoordinateShaderLibrary = R"glsl(

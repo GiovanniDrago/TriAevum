@@ -20,7 +20,7 @@ $artifactRoot = Join-Path $rendererRoot ".renderer-dev\artifacts"
 $diagnosticsPath = Join-Path $artifactRoot "vulkan-diagnostics.json"
 $screenshotPath = Join-Path $artifactRoot "native-game.bmp"
 $profileEnvironment = @(
-    "OOT3D_GRAPHICS_CACAO",
+    "OOT3D_GRAPHICS_AO",
     "OOT3D_GRAPHICS_HIZ",
     "OOT3D_GRAPHICS_SSSR",
     "OOT3D_GRAPHICS_TAA",
@@ -110,7 +110,7 @@ function Invoke-ProfileCase {
         Remove-Item "Env:$name" -ErrorAction SilentlyContinue
     }
     if ($Mode -eq "Advanced") {
-        $env:OOT3D_GRAPHICS_CACAO = "1"
+        $env:OOT3D_GRAPHICS_AO = "1"
         $env:OOT3D_GRAPHICS_HIZ = "1"
         $env:OOT3D_GRAPHICS_TAA = "1"
         $env:OOT3D_GRAPHICS_GRASS_AUTO = "1"
@@ -221,12 +221,12 @@ function Invoke-ProfileCase {
                 Measure-Object `
                     -Property pica_material_toon_draw_count -Sum
         ).Sum
-        $metrics["CacaoMs"] = Get-TimingAverage `
+        $metrics["AmbientOcclusionMs"] = Get-TimingAverage `
             -Frames $frameDiagnostics `
             -MaximumSettledFrame $maximumSettledFrame `
-            -CounterProperty "cacao_pass_count" `
-            -TimingProperty "cacao_ms" `
-            -Label "CACAO"
+            -CounterProperty "ambient_occlusion_pass_count" `
+            -TimingProperty "ambient_occlusion_ms" `
+            -Label "AO"
         $metrics["DepthPreparationMs"] = Get-TimingAverage `
             -Frames $frameDiagnostics `
             -MaximumSettledFrame $maximumSettledFrame `
@@ -296,7 +296,7 @@ try {
         ToonDrawCount = $advanced.ToonDrawCount
         PicaMaterialToonDrawCount =
             $advanced.PicaMaterialToonDrawCount
-        CacaoMs = $advanced.CacaoMs
+        AmbientOcclusionMs = $advanced.AmbientOcclusionMs
         DepthPreparationMs = $advanced.DepthPreparationMs
         ReflectionMs = $advanced.ReflectionMs
         MotionVectorsMs = $advanced.MotionVectorsMs

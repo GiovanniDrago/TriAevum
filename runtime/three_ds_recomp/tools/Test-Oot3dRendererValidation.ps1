@@ -24,8 +24,8 @@ $transitionCheckpoint = Join-Path `
     "timing_link_house_11800.oot3dsav"
 $environmentNames = @(
     "OOT3D_VULKAN_VALIDATION",
-    "OOT3D_GRAPHICS_CACAO",
-    "OOT3D_GRAPHICS_CACAO_QUALITY",
+    "OOT3D_GRAPHICS_AO",
+    "OOT3D_GRAPHICS_AO_QUALITY",
     "OOT3D_GRAPHICS_HIZ",
     "OOT3D_GRAPHICS_SSSR",
     "OOT3D_GRAPHICS_TAA",
@@ -49,8 +49,8 @@ function Invoke-ValidationCase {
     }
     $env:OOT3D_VULKAN_VALIDATION = "1"
     if ($Mode -eq "Advanced") {
-        $env:OOT3D_GRAPHICS_CACAO = "1"
-        $env:OOT3D_GRAPHICS_CACAO_QUALITY = "1"
+        $env:OOT3D_GRAPHICS_AO = "1"
+        $env:OOT3D_GRAPHICS_AO_QUALITY = "1"
         $env:OOT3D_GRAPHICS_HIZ = "1"
         $env:OOT3D_GRAPHICS_TAA = "1"
     }
@@ -133,32 +133,32 @@ function Invoke-ValidationCase {
         throw "$Mode broke native PICA/NRI draw parity"
     }
 
-    $cacaoCount = [uint64](
+    $aoCount = [uint64](
         $frameDiagnostics |
-            Measure-Object -Property cacao_pass_count -Sum
+            Measure-Object -Property ambient_occlusion_pass_count -Sum
     ).Sum
-    $cacaoAmbientCompositeCount = [uint64](
+    $aoAmbientCompositeCount = [uint64](
         $frameDiagnostics |
             Measure-Object -Property `
-                cacao_ambient_composite_count -Sum
+                ambient_occlusion_ambient_composite_count -Sum
     ).Sum
-    $cacaoAmbientGuideCount = [uint64](
+    $aoAmbientGuideCount = [uint64](
         $frameDiagnostics |
-            Measure-Object -Property cacao_ambient_guide_draw_count -Sum
+            Measure-Object -Property ambient_occlusion_ambient_guide_draw_count -Sum
     ).Sum
-    $cacaoAmbientRgbGuideCount = [uint64](
+    $aoAmbientRgbGuideCount = [uint64](
         $frameDiagnostics |
-            Measure-Object -Property cacao_ambient_rgb_guide_draw_count -Sum
+            Measure-Object -Property ambient_occlusion_ambient_rgb_guide_draw_count -Sum
     ).Sum
-    $cacaoAmbientFallbackGuideCount = [uint64](
-        $frameDiagnostics |
-            Measure-Object -Property `
-                cacao_ambient_fallback_guide_draw_count -Sum
-    ).Sum
-    $cacaoNormalGuideCount = [uint64](
+    $aoAmbientFallbackGuideCount = [uint64](
         $frameDiagnostics |
             Measure-Object -Property `
-                cacao_normal_guide_pass_count -Sum
+                ambient_occlusion_ambient_fallback_guide_draw_count -Sum
+    ).Sum
+    $aoNormalGuideCount = [uint64](
+        $frameDiagnostics |
+            Measure-Object -Property `
+                ambient_occlusion_normal_guide_pass_count -Sum
     ).Sum
     $hizCount = [uint64](
         $frameDiagnostics |
@@ -169,25 +169,25 @@ function Invoke-ValidationCase {
             Measure-Object -Property temporal_aa_pass_count -Sum
     ).Sum
     if ($Mode -eq "Advanced") {
-        if ($cacaoCount -eq 0 -or
-            $cacaoNormalGuideCount -eq 0 -or
-            $cacaoAmbientGuideCount -eq 0 -or
-            $cacaoAmbientCompositeCount -eq 0 -or
+        if ($aoCount -eq 0 -or
+            $aoNormalGuideCount -eq 0 -or
+            $aoAmbientGuideCount -eq 0 -or
+            $aoAmbientCompositeCount -eq 0 -or
             $hizCount -eq 0 -or
             $taaCount -eq 0) {
             throw "Advanced validation did not execute ambient-aware " +
-                "CACAO, Hi-Z and TAA"
+                "AO, Hi-Z and TAA"
         }
-        if ($cacaoAmbientGuideCount -ne
-            ($cacaoAmbientRgbGuideCount +
-             $cacaoAmbientFallbackGuideCount)) {
+        if ($aoAmbientGuideCount -ne
+            ($aoAmbientRgbGuideCount +
+             $aoAmbientFallbackGuideCount)) {
             throw "Advanced validation lost exact/fallback ambient " +
                 "guide attribution"
         }
-    } elseif ($cacaoCount -ne 0 -or
-              $cacaoNormalGuideCount -ne 0 -or
-              $cacaoAmbientGuideCount -ne 0 -or
-              $cacaoAmbientCompositeCount -ne 0 -or
+    } elseif ($aoCount -ne 0 -or
+              $aoNormalGuideCount -ne 0 -or
+              $aoAmbientGuideCount -ne 0 -or
+              $aoAmbientCompositeCount -ne 0 -or
               $hizCount -ne 0 -or
               $taaCount -ne 0) {
         throw "Authentic validation unexpectedly executed advanced effects"
@@ -207,14 +207,14 @@ function Invoke-ValidationCase {
                 Measure-Object -Property `
                     nri_validation_warning_count -Maximum
         ).Maximum
-        CacaoCount = $cacaoCount
-        CacaoNormalGuideCount = $cacaoNormalGuideCount
-        CacaoAmbientCompositeCount =
-            $cacaoAmbientCompositeCount
-        CacaoAmbientGuideCount = $cacaoAmbientGuideCount
-        CacaoAmbientRgbGuideCount = $cacaoAmbientRgbGuideCount
-        CacaoAmbientFallbackGuideCount =
-            $cacaoAmbientFallbackGuideCount
+        AmbientOcclusionCount = $aoCount
+        AmbientOcclusionNormalGuideCount = $aoNormalGuideCount
+        AmbientOcclusionAmbientCompositeCount =
+            $aoAmbientCompositeCount
+        AmbientOcclusionAmbientGuideCount = $aoAmbientGuideCount
+        AmbientOcclusionAmbientRgbGuideCount = $aoAmbientRgbGuideCount
+        AmbientOcclusionAmbientFallbackGuideCount =
+            $aoAmbientFallbackGuideCount
         HiZCount = $hizCount
         TaaCount = $taaCount
         ScreenshotSha256 = (
@@ -233,8 +233,8 @@ function Invoke-SavestateSceneTransitionCase {
         Remove-Item "Env:$name" -ErrorAction SilentlyContinue
     }
     $env:OOT3D_VULKAN_VALIDATION = "1"
-    $env:OOT3D_GRAPHICS_CACAO = "1"
-    $env:OOT3D_GRAPHICS_CACAO_QUALITY = "1"
+    $env:OOT3D_GRAPHICS_AO = "1"
+    $env:OOT3D_GRAPHICS_AO_QUALITY = "1"
     $env:OOT3D_GRAPHICS_HIZ = "1"
     $env:OOT3D_GRAPHICS_TAA = "1"
 
@@ -305,9 +305,9 @@ function Invoke-SavestateSceneTransitionCase {
         throw "Savestate scene transition did not reload the distinct quick checkpoint"
     }
 
-    $cacaoPasses = [uint64](
+    $aoPasses = [uint64](
         $frameDiagnostics |
-            Measure-Object -Property cacao_pass_count -Sum
+            Measure-Object -Property ambient_occlusion_pass_count -Sum
     ).Sum
     $hizPasses = [uint64](
         $frameDiagnostics |
@@ -317,7 +317,7 @@ function Invoke-SavestateSceneTransitionCase {
         $frameDiagnostics |
             Measure-Object -Property temporal_aa_pass_count -Sum
     ).Sum
-    if ($cacaoPasses -eq 0U -or $hizPasses -eq 0U -or
+    if ($aoPasses -eq 0U -or $hizPasses -eq 0U -or
         $taaPasses -eq 0U) {
         throw "Advanced effects did not survive the savestate scene transition"
     }
@@ -334,7 +334,7 @@ function Invoke-SavestateSceneTransitionCase {
         LoadCount = [uint64]$summary.savestates.load_count
         InitialCheckpoint = $initialPath
         ReloadCheckpoint = $quickPath
-        CacaoCount = $cacaoPasses
+        AmbientOcclusionCount = $aoPasses
         HiZCount = $hizPasses
         TaaCount = $taaPasses
     }
@@ -370,7 +370,7 @@ try {
             $transition.InitialCheckpoint
         TransitionReloadCheckpoint =
             $transition.ReloadCheckpoint
-        TransitionCacaoCount = $transition.CacaoCount
+        TransitionAmbientOcclusionCount = $transition.AmbientOcclusionCount
         TransitionHiZCount = $transition.HiZCount
         TransitionTaaCount = $transition.TaaCount
         VulkanWarnings = [Math]::Max(
@@ -379,17 +379,17 @@ try {
         NriWarnings = [Math]::Max(
             $authentic.NriWarnings,
             $advanced.NriWarnings)
-        AdvancedCacaoCount = $advanced.CacaoCount
-        AdvancedCacaoNormalGuideCount =
-            $advanced.CacaoNormalGuideCount
-        AdvancedCacaoAmbientCompositeCount =
-            $advanced.CacaoAmbientCompositeCount
-        AdvancedCacaoAmbientGuideCount =
-            $advanced.CacaoAmbientGuideCount
-        AdvancedCacaoAmbientRgbGuideCount =
-            $advanced.CacaoAmbientRgbGuideCount
-        AdvancedCacaoAmbientFallbackGuideCount =
-            $advanced.CacaoAmbientFallbackGuideCount
+        AdvancedAmbientOcclusionCount = $advanced.AmbientOcclusionCount
+        AdvancedAmbientOcclusionNormalGuideCount =
+            $advanced.AmbientOcclusionNormalGuideCount
+        AdvancedAmbientOcclusionAmbientCompositeCount =
+            $advanced.AmbientOcclusionAmbientCompositeCount
+        AdvancedAmbientOcclusionAmbientGuideCount =
+            $advanced.AmbientOcclusionAmbientGuideCount
+        AdvancedAmbientOcclusionAmbientRgbGuideCount =
+            $advanced.AmbientOcclusionAmbientRgbGuideCount
+        AdvancedAmbientOcclusionAmbientFallbackGuideCount =
+            $advanced.AmbientOcclusionAmbientFallbackGuideCount
         AdvancedHiZCount = $advanced.HiZCount
         AdvancedTaaCount = $advanced.TaaCount
         AuthenticScreenshotSha256 =

@@ -33,7 +33,7 @@ if (process.argv[3] === 'stress') {
     process.exit(0);
 }
 const fields = ['effect_geometry_executed_count', 'toon_draw_count',
-    'pica_material_toon_draw_count', 'cacao_pass_count', 'hiz_reflection_count', 'fidelityfx_sssr_count'];
+    'pica_material_toon_draw_count', 'ambient_occlusion_pass_count', 'hiz_reflection_count', 'fidelityfx_sssr_count'];
 function interval(name, from, to, off) {
     const samples = frames.filter(f => f.frame_index >= from && f.frame_index <= to);
     assert.equal(samples.length, to - from + 1, `missing ${name} frames`);
@@ -57,7 +57,7 @@ for (const frame of frames.filter(f => f.frame_index >= 100 && f.frame_index <= 
         `frame ${frame.frame_index}: effect toggle recreated native targets`);
 }
 assert(baseline.effect_geometry_executed_count > 0 && baseline.toon_draw_count > 0 &&
-    baseline.cacao_pass_count > 0, 'use a scene/profile with Grass, Toon and CACAO active');
+    baseline.ambient_occlusion_pass_count > 0, 'use a scene/profile with Grass, Toon and AO active');
 for (const segment of [segments[2], segments[4]]) {
     for (const field of fields) {
         if (baseline[field] > 0) assert(segment.passes[field] > 0, `${segment.name}: ${field} not restored`);

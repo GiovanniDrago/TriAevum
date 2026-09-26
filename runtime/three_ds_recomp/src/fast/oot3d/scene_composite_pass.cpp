@@ -19,7 +19,7 @@ namespace {
 constexpr uint32_t kFrameSlots = 2U;
 constexpr uint32_t kDescriptorSetsPerPool = 64U;
 struct CompositePush {
-    uint32_t Width = 0, Height = 0, Cacao = 0, Reflections = 0;
+    uint32_t Width = 0, Height = 0, AmbientOcclusion = 0, Reflections = 0;
     float ReflectionStrength = 0.0F;
     uint32_t ReflectionDebug = 0;
     uint32_t Outline = 0;
@@ -213,12 +213,12 @@ bool SceneCompositePass::Configure(
 }
 
 bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, uint64_t frameId, VkImage colorImage, VkFormat colorFormat,
-                                 VkImage cacaoImage, VkFormat cacaoFormat, VkImage reflectionImage,
+                                 VkImage aoImage, VkFormat aoFormat, VkImage reflectionImage,
                                  VkFormat reflectionFormat, VkImage materialImage, VkFormat materialFormat,
                                  VkImage normalImage, VkFormat normalFormat, VkImage transparentDepthImage,
                                  VkFormat transparentDepthFormat, VkImage ambientImage, VkFormat ambientFormat,
                                  VkImage depthImage, VkFormat depthFormat, VkImage fogImage, VkFormat fogFormat,
-                                 VkImage outlineGeometryImage, VkFormat outlineGeometryFormat, bool cacaoEnabled,
+                                 VkImage outlineGeometryImage, VkFormat outlineGeometryFormat, bool aoEnabled,
                                  bool reflectionsEnabled, float reflectionStrength, uint32_t reflectionDebug,
                                  bool outlineEnabled, const ToonStyleSettings& outlineSettings,
                                  SceneColorEncoding inputEncoding, const EffectPassBarrierPlan& barrierPlan) {
@@ -226,7 +226,7 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, ui
         EffectResource::CompositeColor);
     if (mImpl->Width == 0U || mImpl->OutputStates == nullptr ||
         colorImage == VK_NULL_HANDLE ||
-        cacaoImage == VK_NULL_HANDLE || reflectionImage == VK_NULL_HANDLE ||
+        aoImage == VK_NULL_HANDLE || reflectionImage == VK_NULL_HANDLE ||
         materialImage == VK_NULL_HANDLE ||
         normalImage == VK_NULL_HANDLE ||
         transparentDepthImage == VK_NULL_HANDLE ||
@@ -237,14 +237,14 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, ui
         outputBarrier == nullptr || !outputBarrier->Managed())
         return false;
 #ifndef ENABLE_OOT3D_NRI
-    (void)command; (void)frameSlot; (void)colorFormat; (void)cacaoFormat;
+    (void)command; (void)frameSlot; (void)colorFormat; (void)aoFormat;
     (void)frameId;
     (void)reflectionFormat; (void)materialFormat; (void)normalFormat;
     (void)transparentDepthFormat;
     (void)ambientFormat;
     (void)depthFormat; (void)outlineEnabled;
     (void)outlineSettings; (void)inputEncoding;
-    (void)cacaoEnabled;
+    (void)aoEnabled;
     (void)reflectionsEnabled; (void)reflectionStrength; (void)reflectionDebug;
     (void)barrierPlan;
     return false;
@@ -252,11 +252,11 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, ui
     nri::CommandBuffer* nriCommand =
         NriInteropAccess::CommandBuffer(*mImpl->Interop, frameSlot);
     if (nriCommand == nullptr) return false;
-    const std::array<VkImage, 10> images{ colorImage,  cacaoImage,          reflectionImage, materialImage,
+    const std::array<VkImage, 10> images{ colorImage,  aoImage,          reflectionImage, materialImage,
                                           normalImage, depthImage,          ambientImage,    transparentDepthImage,
                                           fogImage,    outlineGeometryImage };
     const std::array<VkFormat, 10> formats{
-        colorFormat, cacaoFormat,   reflectionFormat,       materialFormat, normalFormat,
+        colorFormat, aoFormat,   reflectionFormat,       materialFormat, normalFormat,
         depthFormat, ambientFormat, transparentDepthFormat, fogFormat,      outlineGeometryFormat
     };
     std::array<nri::Descriptor*, 10> sampledDescriptors{};
@@ -309,7 +309,7 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, ui
     mImpl->Core->UpdateDescriptorRanges(
         updates.data(), static_cast<uint32_t>(updates.size()));
     const CompositePush push{
-        mImpl->Width, mImpl->Height, static_cast<uint32_t>(cacaoEnabled),
+        mImpl->Width, mImpl->Height, static_cast<uint32_t>(aoEnabled),
         static_cast<uint32_t>(reflectionsEnabled), reflectionStrength,
         reflectionDebug, static_cast<uint32_t>(outlineEnabled),
         static_cast<uint32_t>(SceneColorIsLinear(inputEncoding)),

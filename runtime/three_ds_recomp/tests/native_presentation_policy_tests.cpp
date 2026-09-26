@@ -18,7 +18,7 @@ int main() {
         configured.Grass.Quality = GrassQuality::High;
         configured.Effects.Toon = ToonMode::PicaMaterial;
         configured.Effects.ToonStyle.OutlineEnabled = true;
-        configured.Effects.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+        configured.Effects.AmbientOcclusion = AmbientOcclusionMode::Gtao;
         configured.Effects.Reflections = ReflectionMode::FidelityFxSssr;
         configured.Effects.DirectionalShadows.Mode = DirectionalShadowMode::VirtualShadowMaps;
         configured.Effects.SurfaceLighting = SurfaceLightingMode::NativePbr;

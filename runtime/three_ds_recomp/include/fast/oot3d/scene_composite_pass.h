@@ -24,12 +24,12 @@ class SceneCompositePass final {
                     NriInteropContext& interop);
     bool Configure(const NriEffectGraphTransientImageBinding& output);
     bool Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot, uint64_t frameId, VkImage sceneColor, VkFormat sceneColorFormat,
-                 VkImage cacaoVisibility, VkFormat cacaoFormat, VkImage reflection, VkFormat reflectionFormat,
+                 VkImage aoVisibility, VkFormat aoFormat, VkImage reflection, VkFormat reflectionFormat,
                  VkImage materialGuide, VkFormat materialGuideFormat, VkImage normalGuide, VkFormat normalGuideFormat,
                  VkImage transparentDepthGuide, VkFormat transparentDepthGuideFormat, VkImage ambientGuide,
                  VkFormat ambientGuideFormat, VkImage depthGuide, VkFormat depthGuideFormat, VkImage fogGuide,
                  VkFormat fogGuideFormat, VkImage outlineGeometryGuide, VkFormat outlineGeometryGuideFormat,
-                 bool cacaoEnabled, bool reflectionsEnabled, float reflectionStrength, uint32_t reflectionDebug,
+                 bool aoEnabled, bool reflectionsEnabled, float reflectionStrength, uint32_t reflectionDebug,
                  bool outlineEnabled, const ToonStyleSettings& outlineSettings, SceneColorEncoding inputEncoding,
                  const EffectPassBarrierPlan& barrierPlan);
     void InvalidateScreenResources();

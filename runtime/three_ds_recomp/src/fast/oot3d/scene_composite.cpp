@@ -10,7 +10,7 @@ std::string BuildSceneCompositeComputeShader() {
     std::string source = R"glsl(#version 450
 layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
 layout(set=0,binding=0) uniform texture2D scene_color;
-layout(set=0,binding=1) uniform texture2D cacao_visibility;
+layout(set=0,binding=1) uniform texture2D ao_visibility;
 layout(set=0,binding=2) uniform texture2D filtered_reflection;
 layout(set=0,binding=3) uniform texture2D material_guide;
 layout(set=0,binding=4) uniform texture2D normal_guide;
@@ -23,7 +23,7 @@ layout(set=0,binding=10) uniform texture2D fog_guide;
 layout(set=0,binding=11) uniform texture2D outline_geometry_guide;
 layout(push_constant) uniform CompositeState {
     uvec2 extent;
-    uint cacao;
+    uint ambient_occlusion;
     uint reflections;
     float reflection_strength;
     uint reflection_debug;
@@ -48,13 +48,13 @@ void main(){
     if(any(greaterThanEqual(pixel,ivec2(state.extent)))) return;
     vec2 uv=(vec2(pixel)+0.5)/vec2(state.extent);
     vec4 color=texture(sampler2D(scene_color,composite_sampler),uv);
-    if(state.cacao!=0u) {
-        float cacao_value=texture(
-            sampler2D(cacao_visibility,composite_sampler),uv).r;
+    if(state.ambient_occlusion!=0u) {
+        float ao_value=texture(
+            sampler2D(ao_visibility,composite_sampler),uv).r;
         float scene_coverage=texture(
             sampler2D(ambient_guide,composite_sampler),uv).a;
         color.rgb*=oot3d_scene_ambient_occlusion_visibility(
-            cacao_value,scene_coverage);
+            ao_value,scene_coverage);
     }
     if(state.reflections!=0u){
         vec4 reflection=texture(sampler2D(filtered_reflection,composite_sampler),uv);

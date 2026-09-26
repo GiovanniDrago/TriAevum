@@ -532,7 +532,7 @@ TEST(Oot3dDisplayEffectPlan, DeclaresItsActualTypedInputs) {
     input.WorldSurface = true;
     input.PerspectiveAvailable = true;
     input.CameraAvailable = true;
-    input.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    input.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     input.Reflections = ReflectionMode::FidelityFxSssr;
     input.Toon = ToonMode::PicaMaterial;
     input.OutlineEnabled = true;
@@ -541,7 +541,7 @@ TEST(Oot3dDisplayEffectPlan, DeclaresItsActualTypedInputs) {
     const auto plan = BuildDisplayEffectPlan(input);
     ASSERT_TRUE(plan.Graph.Valid()) << plan.Graph.Error;
     EXPECT_TRUE(plan.RequiresGuideTarget);
-    EXPECT_TRUE(plan.Enabled(DisplayEffectPass::Cacao));
+    EXPECT_TRUE(plan.Enabled(DisplayEffectPass::AmbientOcclusion));
     EXPECT_TRUE(plan.Enabled(DisplayEffectPass::WorkingColor));
     EXPECT_TRUE(plan.Enabled(DisplayEffectPass::Reflections));
     EXPECT_TRUE(plan.Enabled(DisplayEffectPass::Motion));
@@ -551,8 +551,8 @@ TEST(Oot3dDisplayEffectPlan, DeclaresItsActualTypedInputs) {
     EXPECT_EQ(plan.Graph.Attachments.AuxiliaryOutputs, kAllPicaAuxiliaryOutputs);
     EXPECT_EQ(plan.Graph.FindPass("Guides")->Contract, EffectContractKind::AuxiliaryOutput);
     EXPECT_EQ(plan.Graph.FindPass("Scanout")->Stage, EffectStage::AfterUi);
-    ASSERT_EQ(plan.Bindings(DisplayEffectPass::Cacao).size(), 4U);
-    EXPECT_EQ(plan.Bindings(DisplayEffectPass::Cacao).front().Resource,
+    ASSERT_EQ(plan.Bindings(DisplayEffectPass::AmbientOcclusion).size(), 4U);
+    EXPECT_EQ(plan.Bindings(DisplayEffectPass::AmbientOcclusion).front().Resource,
               EffectResource::NativeSceneView);
     const auto reflections = plan.Bindings(
         DisplayEffectPass::Reflections);
@@ -626,19 +626,19 @@ TEST(Oot3dDisplayEffectPlan, DeclaresItsActualTypedInputs) {
               hiZReflections.end());
 
     input.Reflections = ReflectionMode::Off;
-    input.AmbientOcclusion = AmbientOcclusionMode::Cacao;
-    const auto directCacao = BuildDisplayEffectPlan(input);
-    ASSERT_TRUE(directCacao.Graph.Valid()) << directCacao.Graph.Error;
-    const auto directCacaoScanout = directCacao.Bindings(
+    input.AmbientOcclusion = AmbientOcclusionMode::Gtao;
+    const auto directAmbientOcclusion = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(directAmbientOcclusion.Graph.Valid()) << directAmbientOcclusion.Graph.Error;
+    const auto directAmbientOcclusionScanout = directAmbientOcclusion.Bindings(
         DisplayEffectPass::Scanout);
-    EXPECT_NE(std::find(directCacaoScanout.begin(),
-                        directCacaoScanout.end(),
+    EXPECT_NE(std::find(directAmbientOcclusionScanout.begin(),
+                        directAmbientOcclusionScanout.end(),
                         Read(EffectResource::AmbientOcclusion)),
-              directCacaoScanout.end());
-    EXPECT_NE(std::find(directCacaoScanout.begin(),
-                        directCacaoScanout.end(),
+              directAmbientOcclusionScanout.end());
+    EXPECT_NE(std::find(directAmbientOcclusionScanout.begin(),
+                        directAmbientOcclusionScanout.end(),
                         Read(EffectResource::AmbientGuide)),
-              directCacaoScanout.end());
+              directAmbientOcclusionScanout.end());
 
     input = {};
     input.AlphaOverlay = true;
@@ -646,10 +646,10 @@ TEST(Oot3dDisplayEffectPlan, DeclaresItsActualTypedInputs) {
     ASSERT_TRUE(overlay.Graph.Valid()) << overlay.Graph.Error;
     EXPECT_TRUE(overlay.Graph.Attachments.NativeColorOnly());
     EXPECT_FALSE(overlay.RequiresGuideTarget);
-    EXPECT_FALSE(overlay.Enabled(DisplayEffectPass::Cacao));
+    EXPECT_FALSE(overlay.Enabled(DisplayEffectPass::AmbientOcclusion));
     EXPECT_FALSE(overlay.Enabled(DisplayEffectPass::WorkingColor));
     EXPECT_TRUE(overlay.Enabled(DisplayEffectPass::Scanout));
-    EXPECT_TRUE(overlay.Bindings(DisplayEffectPass::Cacao).empty());
+    EXPECT_TRUE(overlay.Bindings(DisplayEffectPass::AmbientOcclusion).empty());
 }
 
 TEST(Oot3dDisplayEffectPlan, AccountsForEveryDeclaredExecutionOutcome) {
@@ -749,7 +749,7 @@ TEST(Oot3dDisplayEffectPlan, KeepsNonWorldDisplaysCanonical) {
     input.PerspectiveAvailable = true;
     input.CameraAvailable = true;
     input.ForceTaa = true;
-    input.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    input.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     input.Reflections = ReflectionMode::HiZ;
     input.Toon = ToonMode::PicaMaterial;
     input.OutlineEnabled = true;
@@ -1783,7 +1783,7 @@ TEST(Oot3dEffectPassBarrierPlan,
     input.WorldSurface = true;
     input.PerspectiveAvailable = true;
     input.CameraAvailable = true;
-    input.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    input.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     input.AntiAliasing = AntiAliasingMode::Taa;
     const auto displayPlan = BuildDisplayEffectPlan(input);
     ASSERT_TRUE(displayPlan.Graph.Valid()) << displayPlan.Graph.Error;
@@ -1814,29 +1814,29 @@ TEST(Oot3dEffectPassBarrierPlan,
 }
 
 TEST(Oot3dEffectPassBarrierPlan,
-     MapsCacaoOutputToFidelityFxProviderContract) {
+     MapsAmbientOcclusionOutputToProviderContract) {
     DisplayEffectPlanInput input;
     input.WorldSurface = true;
     input.PerspectiveAvailable = true;
     input.CameraAvailable = true;
-    input.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    input.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     const auto displayPlan = BuildDisplayEffectPlan(input);
     ASSERT_TRUE(displayPlan.Graph.Valid()) << displayPlan.Graph.Error;
 
-    const auto cacao = BuildEffectPassBarrierPlan(
+    const auto ao = BuildEffectPassBarrierPlan(
         displayPlan.Graph,
-        DisplayEffectPassName(DisplayEffectPass::Cacao));
-    ASSERT_TRUE(cacao.Valid());
-    EXPECT_EQ(cacao.OutputCount(), 1U);
-    EXPECT_EQ(cacao.ManagedOutputCount(), 1U);
-    EXPECT_EQ(cacao.ShaderReadableOutputCount(), 1U);
-    const auto* output = cacao.Find(EffectResource::AmbientOcclusion);
+        DisplayEffectPassName(DisplayEffectPass::AmbientOcclusion));
+    ASSERT_TRUE(ao.Valid());
+    EXPECT_EQ(ao.OutputCount(), 1U);
+    EXPECT_EQ(ao.ManagedOutputCount(), 1U);
+    EXPECT_EQ(ao.ShaderReadableOutputCount(), 1U);
+    const auto* output = ao.Find(EffectResource::AmbientOcclusion);
     ASSERT_NE(output, nullptr);
     EXPECT_EQ(output->DispatchAccess, ResourceAccess::ComputeWrite);
     EXPECT_EQ(output->CompletionAccess, ResourceAccess::ShaderRead);
     EXPECT_TRUE(output->DownstreamRead);
     EXPECT_EQ(
-        cacao.BeginOutputExecution(EffectResource::AmbientOcclusion)
+        ao.BeginOutputExecution(EffectResource::AmbientOcclusion)
             .PlannedGraphTransitionCount(),
         2U);
 }
@@ -1992,7 +1992,7 @@ TEST(Oot3dEffectGraph, SelectsOnlyDeclaredPicaGuideSamplingBarriers) {
     DisplayEffectPlanInput input;
     input.WorldSurface = true;
     input.PerspectiveAvailable = true;
-    input.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    input.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     const auto plan = BuildDisplayEffectPlan(input);
     ASSERT_TRUE(plan.Graph.Valid()) << plan.Graph.Error;
     DisplayEffectResourceTable resources;
@@ -2005,45 +2005,45 @@ TEST(Oot3dEffectGraph, SelectsOnlyDeclaredPicaGuideSamplingBarriers) {
     EXPECT_TRUE(resources.BindImage(
         EffectResource::AmbientGuide, 5U, 15U, 37U,
         400U, 240U, 1U));
-    const auto* cacao = plan.FindPass(DisplayEffectPass::Cacao);
-    ASSERT_NE(cacao, nullptr);
-    const auto cacaoSampling = BuildPicaGuideSamplingBarriers(
-        *cacao, resources, 0U);
-    ASSERT_EQ(cacaoSampling.Count, 2U);
-    EXPECT_TRUE(cacaoSampling.Complete());
-    EXPECT_EQ(cacaoSampling.DeclaredCount, 2U);
-    EXPECT_EQ(cacaoSampling.Images[0].image,
+    const auto* ao = plan.FindPass(DisplayEffectPass::AmbientOcclusion);
+    ASSERT_NE(ao, nullptr);
+    const auto aoSampling = BuildPicaGuideSamplingBarriers(
+        *ao, resources, 0U);
+    ASSERT_EQ(aoSampling.Count, 2U);
+    EXPECT_TRUE(aoSampling.Complete());
+    EXPECT_EQ(aoSampling.DeclaredCount, 2U);
+    EXPECT_EQ(aoSampling.Images[0].image,
               reinterpret_cast<VkImage>(1U));
-    EXPECT_EQ(cacaoSampling.Images[1].image,
+    EXPECT_EQ(aoSampling.Images[1].image,
               reinterpret_cast<VkImage>(2U));
-    const auto repeatedCacao = BuildPicaGuideSamplingBarriers(
-        *cacao, resources, cacaoSampling.ResourceMask);
-    EXPECT_TRUE(repeatedCacao.Complete());
-    EXPECT_EQ(repeatedCacao.DeclaredCount, 0U);
-    EXPECT_EQ(repeatedCacao.Count, 0U);
+    const auto repeatedAo = BuildPicaGuideSamplingBarriers(
+        *ao, resources, aoSampling.ResourceMask);
+    EXPECT_TRUE(repeatedAo.Complete());
+    EXPECT_EQ(repeatedAo.DeclaredCount, 0U);
+    EXPECT_EQ(repeatedAo.Count, 0U);
 
     const auto* scanout = plan.FindPass(DisplayEffectPass::Scanout);
     ASSERT_NE(scanout, nullptr);
     const auto scanoutSampling = BuildPicaGuideSamplingBarriers(
-        *scanout, resources, cacaoSampling.ResourceMask);
+        *scanout, resources, aoSampling.ResourceMask);
     ASSERT_EQ(scanoutSampling.Count, 1U);
     EXPECT_EQ(scanoutSampling.Images[0].image,
               reinterpret_cast<VkImage>(5U));
 
-    const uint32_t sampledMask = cacaoSampling.ResourceMask |
+    const uint32_t sampledMask = aoSampling.ResourceMask |
                                  scanoutSampling.ResourceMask;
     const auto toAttachments = BuildPicaGuideAttachmentBarriers(
         resources, sampledMask);
     ASSERT_EQ(toAttachments.Count, 3U);
     EXPECT_EQ(toAttachments.ResourceMask, sampledMask);
     EXPECT_EQ(toAttachments.Images[0].oldLayout,
-              cacaoSampling.Images[0].newLayout);
+              aoSampling.Images[0].newLayout);
     EXPECT_EQ(toAttachments.Images[0].newLayout,
-              cacaoSampling.Images[0].oldLayout);
+              aoSampling.Images[0].oldLayout);
 
     resources.Unbind(EffectResource::AmbientGuide);
     const auto incomplete = BuildPicaGuideSamplingBarriers(
-        *scanout, resources, cacaoSampling.ResourceMask);
+        *scanout, resources, aoSampling.ResourceMask);
     EXPECT_FALSE(incomplete.Complete());
     EXPECT_EQ(incomplete.DeclaredCount, 1U);
     EXPECT_EQ(incomplete.Count, 0U);
@@ -2083,7 +2083,7 @@ TEST(Oot3dEffectGraph, SelectsOnlyDeclaredPicaGuideSamplingBarriers) {
     input.PerspectiveAvailable = true;
     input.CameraAvailable = true;
     input.SmaaAvailable = true;
-    input.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    input.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     input.Reflections = ReflectionMode::HiZ;
     input.Toon = ToonMode::PicaMaterial;
     input.OutlineEnabled = true;
@@ -2141,7 +2141,7 @@ TEST(Oot3dSceneBoundary,
 
     // The scene stages themselves stay scheduled, and the boundary output is
     // the composed colour rather than the base target.
-    EXPECT_TRUE(boundary.Enabled(DisplayEffectPass::Cacao));
+    EXPECT_TRUE(boundary.Enabled(DisplayEffectPass::AmbientOcclusion));
     EXPECT_TRUE(boundary.Enabled(DisplayEffectPass::Reflections));
     EXPECT_TRUE(boundary.Enabled(DisplayEffectPass::Outline));
     EXPECT_TRUE(boundary.Enabled(DisplayEffectPass::Composite));
@@ -2181,7 +2181,7 @@ TEST(Oot3dSceneBoundary, NativeMemoryKeepsCanonicalBytesAndVisualEffectsSeparate
     const auto visual = BuildDisplayEffectPlan(input);
     ASSERT_TRUE(visual.Graph.Valid()) << visual.Graph.Error;
     EXPECT_EQ(visual.SceneOutput, EffectResource::CompositeColor);
-    EXPECT_TRUE(visual.Cacao);
+    EXPECT_TRUE(visual.AmbientOcclusion);
     EXPECT_TRUE(visual.Reflections);
     EXPECT_TRUE(visual.Outline);
 }
@@ -2194,14 +2194,14 @@ TEST(Oot3dSceneBoundary,
     auto input = BoundarySceneEffectInput();
     const auto unresolved = BuildDisplayEffectPlan(input);
     ASSERT_TRUE(unresolved.Graph.Valid()) << unresolved.Graph.Error;
-    ASSERT_TRUE(unresolved.Enabled(DisplayEffectPass::Cacao));
+    ASSERT_TRUE(unresolved.Enabled(DisplayEffectPass::AmbientOcclusion));
     ASSERT_TRUE(unresolved.Enabled(DisplayEffectPass::Composite));
 
     input.SceneEffectsResolved = true;
     const auto resolved = BuildDisplayEffectPlan(input);
     ASSERT_TRUE(resolved.Graph.Valid()) << resolved.Graph.Error;
 
-    EXPECT_FALSE(resolved.Enabled(DisplayEffectPass::Cacao));
+    EXPECT_FALSE(resolved.Enabled(DisplayEffectPass::AmbientOcclusion));
     EXPECT_FALSE(resolved.Enabled(DisplayEffectPass::Reflections));
     EXPECT_FALSE(resolved.Enabled(DisplayEffectPass::Outline));
     EXPECT_FALSE(resolved.Enabled(DisplayEffectPass::Composite));

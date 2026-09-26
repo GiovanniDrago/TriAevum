@@ -1,5 +1,26 @@
 # F1 settings rationalization
 
+Ambient occlusion lives in **Lighting** as
+**Off / Multiscale GTAO / FidelityFX CACAO**. GTAO exposes independent
+**Fine radius / Fine strength** and **Broad radius / Broad strength**;
+fine radius cannot exceed broad radius. Original CACAO exposes radius,
+strength, detail strength, horizon-angle threshold and blur passes.
+Quality remains **Low / Medium**. Both providers require native depth,
+normals and scene-view metadata; Off remains usable without those capabilities.
+
+Schema 14 preserves saved CACAO, GTAO and Off selections and their numeric
+settings. Missing fine radius defaults to one quarter of broad radius, but
+CACAO is no longer converted to GTAO. The actual-widget fixture passes
+**6,648 assertions** in the combined source qualification, including both providers, original CACAO controls,
+independent fairy controls, capability loss, persistence and Native/F2 restoration.
+Fresh runtime evidence and limits are recorded in
+[`TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md`](TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md).
+The earlier GTAO runtime verification also passed six live Low/Medium/Off transitions with Hi-Z/TAA,
+SSSR coexistence and an Off run with zero AO/normal-guide passes; all three
+report zero Vulkan/NRI validation errors. Native captures distinguish fine and
+broad contributions and preserve the original framebuffer with AO disabled.
+See the [GTAO architecture and measurements](OOT3D_NRI_FIDELITY_EXTENSION_ARCHITECTURE.md#multiscale-gtao-and-reflection-performance).
+
 Directional shadows now live only in **Environment**, above the per-scene
 profile controls, and offer **Off / Virtual Shadow Maps**. They are active only
 with **Per-pixel** or **Per-pixel + PBR** selected in Lighting. **Native** and
@@ -386,9 +407,10 @@ It uses a private ImGui build with assertions and item hooks, synthetic ImGui
 mouse events, and memory-only configuration. It requires neither a ROM nor a GPU.
 Its cached ImGui objects avoid recompiling the test framework on every iteration.
 
-Coverage: preset selection; capability loss and Off; CACAO quality; surface
-lighting/PBR and independent Navi/fairy controls; reflection, MSAA and upscaler
-selectors; toon-profile preservation; every top-level and nested
+Coverage: preset selection; capability loss and Off; GTAO and CACAO selection,
+quality and provider-specific controls; independent Navi/fairy controls;
+reflection, MSAA and upscaler selectors;
+toon-profile preservation; every top-level and nested
 tab; application preview and external-revision reconciliation; display confirmation
 from Grass; compact panel footers; deferred persistence and save failure/retry.
 The test also checks balanced UI scopes and finite geometry on every UI frame.
@@ -410,12 +432,14 @@ actual-widget smoke (1,618 assertions). See
 `TRIAEVUM_GRASS_SOFT_DISTANCE_LOD.md` for units, defaults, rendering contracts and
 the CPU/GPU and framebuffer verification results.
 
-The bounded Vulkan run uses `tools.triaevum_release.validate_cacao_run`, a private
-configuration/save directory, and the renderer's framebuffer capture:
-`I:/oot3dre_work/f1-menu-diagnostics/vulkan-menu/`.
-It completed normally with 213 recorded frames, 179 CACAO passes and zero
-Vulkan/NRI validation errors. The captured F1 panel is visible and legible.
-This is a smoke test with validation enabled, **not an FPS benchmark**.
+The current bounded Vulkan runner is
+`tools.triaevum_release.validate_ambient_occlusion_run`; select a disposable
+launch profile as well as private configuration/save paths.
+The earlier CACAO smoke under
+`I:/oot3dre_work/f1-menu-diagnostics/vulkan-menu/` completed with 213 recorded
+frames, 179 CACAO passes and zero Vulkan/NRI validation errors. Its captured
+F1 panel was visible and legible. That historical result is not GTAO validation
+or an FPS benchmark.
 
 ## Texture dropdown follow-up
 

@@ -41,7 +41,7 @@ struct Oot3dVulkanGpuTimings {
     std::optional<double> NativePicaMilliseconds;
     std::optional<double> ToonRasterMilliseconds;
     std::optional<double> GrassMilliseconds;
-    std::optional<double> CacaoMilliseconds;
+    std::optional<double> AmbientOcclusionMilliseconds;
     std::optional<double> DepthPreparationMilliseconds;
     std::optional<double> ReflectionMilliseconds;
     std::optional<double> MotionVectorsMilliseconds;
@@ -404,13 +404,13 @@ struct Oot3dVulkanFrameDiagnostics {
     uint32_t ToonDrawCount = 0;
     uint32_t OutlineOcclusionDrawCount = 0;
     uint32_t PicaMaterialToonDrawCount = 0;
-    uint32_t CacaoPassCount = 0;
-    bool CacaoOutputNriOwned = false;
-    uint32_t CacaoNormalGuidePassCount = 0;
-    uint32_t CacaoAmbientGuideDrawCount = 0;
-    uint32_t CacaoAmbientRgbGuideDrawCount = 0;
-    uint32_t CacaoAmbientFallbackGuideDrawCount = 0;
-    uint32_t CacaoAmbientCompositeCount = 0;
+    uint32_t AmbientOcclusionPassCount = 0;
+    bool AmbientOcclusionOutputNriOwned = false;
+    uint32_t AmbientOcclusionNormalGuidePassCount = 0;
+    uint32_t AmbientOcclusionAmbientGuideDrawCount = 0;
+    uint32_t AmbientOcclusionAmbientRgbGuideDrawCount = 0;
+    uint32_t AmbientOcclusionAmbientFallbackGuideDrawCount = 0;
+    uint32_t AmbientOcclusionAmbientCompositeCount = 0;
     uint32_t HiZPassCount = 0;
     uint32_t HiZMipCount = 0;
     uint32_t HiZDepthConvention = 0;
@@ -697,10 +697,10 @@ class Oot3dVulkanDiagnostics {
     void RecordMemoryFill();
     void RecordToonDraw(bool picaMaterialPath);
     void RecordOutlineOcclusionDraw();
-    void RecordCacaoPass(bool outputNriOwned = false,
-                         bool picaNormalGuide = false);
-    void RecordCacaoAmbientGuideDraw(bool exactRgb);
-    void RecordCacaoAmbientComposite();
+    void RecordAmbientOcclusionPass(bool outputNriOwned = false,
+                                   bool picaNormalGuide = false);
+    void RecordAmbientOcclusionAmbientGuideDraw(bool exactRgb);
+    void RecordAmbientOcclusionAmbientComposite();
     void RecordHiZPass(uint32_t mipCount, uint32_t depthConvention = 0U,
                        bool outputNriOwned = false,
                        bool computeNriOwned = false,

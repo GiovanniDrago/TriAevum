@@ -51,6 +51,7 @@ target_sources(three_ds_recomp_runtime PRIVATE ${Source_Files__Graphic})
 
 set(Source_Files__RendererExtensions
     renderer/cache_file.cpp
+    renderer/gtao_shader.cpp
     renderer/spirv_cache.cpp
     renderer/pipeline_preparation_job.cpp
     renderer/extension_resource_allocation.cpp

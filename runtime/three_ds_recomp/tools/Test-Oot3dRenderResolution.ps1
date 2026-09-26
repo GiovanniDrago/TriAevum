@@ -23,8 +23,8 @@ $diagnosticsPath = Join-Path $rendererRoot `
 
 $environmentNames = @(
     "OOT3D_GRAPHICS_RENDER_SCALE",
-    "OOT3D_GRAPHICS_CACAO",
-    "OOT3D_GRAPHICS_CACAO_QUALITY",
+    "OOT3D_GRAPHICS_AO",
+    "OOT3D_GRAPHICS_AO_QUALITY",
     "OOT3D_GRAPHICS_TAA",
     "OOT3D_VULKAN_VALIDATION"
 )
@@ -55,8 +55,8 @@ try {
     }
 
     $env:OOT3D_GRAPHICS_RENDER_SCALE = "1.0"
-    $env:OOT3D_GRAPHICS_CACAO = "1"
-    $env:OOT3D_GRAPHICS_CACAO_QUALITY = "1"
+    $env:OOT3D_GRAPHICS_AO = "1"
+    $env:OOT3D_GRAPHICS_AO_QUALITY = "1"
     $env:OOT3D_GRAPHICS_TAA = "1"
     $env:OOT3D_VULKAN_VALIDATION = "1"
     & $harness -SkipBuild -RenderScaleTransitionSmoke `
@@ -132,7 +132,7 @@ try {
         $activeFrames |
             Where-Object {
                 [double]$_.internal_resolution_scale -lt 1.01 -and
-                [uint64]$_.cacao_pass_count -gt 0U -and
+                [uint64]$_.ambient_occlusion_pass_count -gt 0U -and
                 [uint64]$_.temporal_aa_pass_count -gt 0U
             }
     )
@@ -140,12 +140,12 @@ try {
         $activeFrames |
             Where-Object {
                 [double]$_.internal_resolution_scale -gt 1.49 -and
-                [uint64]$_.cacao_pass_count -gt 0U -and
+                [uint64]$_.ambient_occlusion_pass_count -gt 0U -and
                 [uint64]$_.temporal_aa_pass_count -gt 0U
             }
     )
     if ($advancedBefore.Count -eq 0 -or $advancedAfter.Count -eq 0) {
-        throw "CACAO/TAA did not resume across the resolution transition"
+        throw "AO/TAA did not resume across the resolution transition"
     }
     $resolutionResets = @(
         $advancedAfter |

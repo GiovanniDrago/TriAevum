@@ -564,7 +564,7 @@ void main() {
 
     PicaShaderPipelineCache cache;
     EffectsSettings effects;
-    effects.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    effects.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     auto request = BaseRequest();
     request.FragmentShaderSource = kFragmentShader;
     request.FragmentShaderHooks =
@@ -1210,7 +1210,7 @@ TEST(Oot3dPicaShaderPipelineCache,
     EffectsSettings effects;
     effects.Toon = ToonMode::PicaMaterial;
     effects.ToonStyle.OutlineEnabled = true;
-    effects.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    effects.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     effects.Reflections = ReflectionMode::FidelityFxSssr;
     auto request = BaseRequest();
     request.Draw.CompositionDomain =
@@ -1236,7 +1236,7 @@ TEST(Oot3dPicaShaderInstrumentation,
     EffectsSettings effects;
     effects.Toon = ToonMode::PicaMaterial;
     effects.ToonStyle.OutlineEnabled = true;
-    effects.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    effects.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     effects.Reflections = ReflectionMode::FidelityFxSssr;
     effects.SurfaceLighting = SurfaceLightingMode::PerPixel;
     const auto features = ResolvePicaShaderProfileFeatures(

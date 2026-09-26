@@ -243,7 +243,7 @@ Renderer3ds::NriPicaGraphicsPipelineDesc BuildPicaNriPipelineState(
     const bool sceneDomainTransparentDepthOverlay =
         outputs.SceneDomainTransparentDepthOverlay;
     const auto configureOverlayCoverage =
-        [sceneDomainBlendedOverlay](
+        [sceneDomainBlendedOverlay, &draw](
             VkPipelineColorBlendAttachmentState& state) {
             state.colorWriteMask = VK_COLOR_COMPONENT_A_BIT;
             state.blendEnable =
@@ -251,8 +251,10 @@ Renderer3ds::NriPicaGraphicsPipelineDesc BuildPicaNriPipelineState(
             if (sceneDomainBlendedOverlay) {
                 state.alphaBlendOp = VK_BLEND_OP_ADD;
                 state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+                // Coverage follows native RGB destination transmission, not
+                // output opacity: additive particles must retain the scene.
                 state.dstAlphaBlendFactor =
-                    VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                    ToNativeVkBlendFactor(draw.Blend.DestRgb);
             }
         };
     if (sceneDomainNormalOverlay) {

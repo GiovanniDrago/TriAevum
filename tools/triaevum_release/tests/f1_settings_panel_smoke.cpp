@@ -781,7 +781,7 @@ int main() try {
             configured.Grass.Generation.InstancesPerSquareMeter = 1048.8F;
             configured.Effects.Toon = toon;
             configured.Effects.ToonStyle.OutlineEnabled = true;
-            configured.Effects.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+            configured.Effects.AmbientOcclusion = AmbientOcclusionMode::Gtao;
             configured.Effects.Reflections = reflections;
             configured.FrameRate = FrameRateMode::Interpolated2x;
             configured.FovMultiplier = 1.1F;
@@ -908,9 +908,40 @@ int main() try {
     Select("Ambient occlusion", "Off");
     Check(runtime.Snapshot().Effects.AmbientOcclusion == AmbientOcclusionMode::Off, "cannot disable AO");
     AllCapabilities(true);
-    Select("Ambient occlusion", "FidelityFX CACAO");
+    Select("Ambient occlusion", "Multiscale GTAO");
     Select("AO quality", "Medium");
     Check(runtime.Snapshot().Effects.AoQuality == 1, "AO quality not applied");
+    EditScalar("Broad radius", "8");
+    EditScalar("Fine radius", "1.25");
+    EditScalar("Fine strength", "0");
+    EditScalar("Broad strength", "2");
+    const auto ao = runtime.Snapshot().Effects;
+    Check(ao.AoRadius == 8.0F && ao.AoDetailRadius == 1.25F &&
+              ao.AoDetailStrength == 0.0F && ao.AoStrength == 2.0F,
+          "AO fine/broad controls are coupled or were not applied");
+    Select("Ambient occlusion", "FidelityFX CACAO");
+    Click("Advanced AO");
+    EditScalar("Horizon angle threshold", "0.12");
+    EditScalar("Blur passes", "5");
+    Check(runtime.Snapshot().Effects.AmbientOcclusion == AmbientOcclusionMode::Cacao &&
+              runtime.Snapshot().Effects.AoHorizonAngleThreshold == 0.12F &&
+              runtime.Snapshot().Effects.AoBlurPassCount == 5,
+          "original CACAO controls did not apply");
+    runtime.SetCapability(GraphicsCapability::FidelityFxCacao, false, "provider unavailable");
+    Frame();
+    Select("Ambient occlusion", "Off");
+    Click("Ambient occlusion");
+    Check(Find("FidelityFX CACAO").Disabled && !Find("Multiscale GTAO").Disabled,
+          "CACAO capability incorrectly disabled GTAO or allowed unsupported CACAO");
+    Click("Multiscale GTAO");
+    Check(runtime.Snapshot().Effects.AoDetailRadius == 1.25F,
+          "switching AO provider erased the GTAO fine radius");
+    runtime.SetCapability(GraphicsCapability::NormalGuide, false, "test unavailable");
+    Frame();
+    Select("Ambient occlusion", "Off");
+    Check(runtime.Snapshot().Effects.AmbientOcclusion == AmbientOcclusionMode::Off,
+          "cannot disable AO after normal-guide capability loss");
+    AllCapabilities(true);
     Click("Reflections");
     Select("Reflection provider", "FidelityFX SSSR");
     runtime.SetCapability(GraphicsCapability::NormalGuide, false, "test unavailable");

@@ -7,8 +7,6 @@
 #include "fast/oot3d/directional_shadows.h"
 #include "fast/oot3d/ambient_occlusion_composite.h"
 #include "fast/oot3d/anti_aliasing_frame_policy.h"
-#include "fast/oot3d/cacao_normal_input.h"
-#include "fast/oot3d/cacao_settings_profile.h"
 #include "fast/oot3d/graphics_settings.h"
 #include "fast/oot3d/gpu_profile_plan.h"
 #include "fast/oot3d/hiz_depth_pyramid.h"
@@ -1942,7 +1940,7 @@ TEST(Oot3dAmbientOcclusionComposite,
 }
 
 TEST(Oot3dAmbientOcclusionComposite,
-     AppliesCacaoAcrossSceneCoverageOnly) {
+     AppliesAcrossSceneCoverageOnly) {
     using namespace Fast::Oot3d;
     EXPECT_FLOAT_EQ(
         ResolveSceneAmbientOcclusionVisibility(0.2F, 0.0F),
@@ -1957,84 +1955,8 @@ TEST(Oot3dAmbientOcclusionComposite,
         ResolveSceneAmbientOcclusionVisibility(
             0.2F, std::numeric_limits<float>::quiet_NaN()),
         1.0F);
-    EXPECT_NE(
-        AmbientOcclusionCompositeShaderLibrary().find(
-            "oot3d_scene_ambient_occlusion_visibility"),
-        std::string_view::npos);
 }
 
-TEST(Oot3dCacaoNormalInput,
-     UsesPicaViewSpaceGuideOnlyForHigherQuality) {
-    using namespace Fast::Oot3d;
-    EXPECT_FALSE(
-        ResolveCacaoNormalInput(CacaoQuality::Low, true)
-            .UsesPicaGuide());
-    EXPECT_FALSE(
-        ResolveCacaoNormalInput(CacaoQuality::Medium, false)
-            .UsesPicaGuide());
-    const auto higherQuality =
-        ResolveCacaoNormalInput(CacaoQuality::Medium, true);
-    EXPECT_TRUE(higherQuality.UsesPicaGuide());
-    EXPECT_EQ(higherQuality.Source,
-              CacaoNormalSource::PicaViewSpaceGuide);
-
-}
-
-TEST(Oot3dCacaoNormalInput, MatchesPositiveDepthNormalsInsteadOfOccludingBackFaces) {
-    using namespace Fast::Oot3d;
-    // CACAO CalculateNormal uses cross(left - center, top - center).
-    // At positive depth a front-facing plane therefore has normal -Z.
-    const auto cross = [](const std::array<float, 3>& a, const std::array<float, 3>& b) {
-        return std::array<float, 3>{a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]};
-    };
-    const auto expected = cross({-1, 0, 0}, {0, 1, 0});
-    for (float handedness : {-1.0F, 1.0F}) {
-        std::array<float, 16> projection{};
-        projection[11] = handedness;
-        const auto transform = CacaoViewSpaceNormalTransform(projection);
-        const std::array<float, 3> nativeNormal{0, 0, -handedness};
-        const std::array<float, 3> converted{
-            nativeNormal[0] * transform[0], nativeNormal[1] * transform[5], nativeNormal[2] * transform[10]};
-        EXPECT_EQ(converted, expected);
-        EXPECT_FLOAT_EQ(transform[0], 1.0F);
-        EXPECT_FLOAT_EQ(transform[5], 1.0F);
-        EXPECT_FLOAT_EQ(transform[15], 1.0F);
-        // A sample in front of the surface must lie in its visible hemisphere.
-        EXPECT_GT(converted[2] * -1.0F, 0.0F);
-        EXPECT_LT(converted[2] * 1.0F, 0.0F);
-    }
-}
-
-TEST(Oot3dCacaoSettings,
-     MapsEveryAdvancedControlToThePassProfile) {
-    using namespace Fast::Oot3d;
-    EffectsSettings effects;
-    effects.AoQuality = 1U;
-    effects.AoRadius = 4.25F;
-    effects.AoStrength = 1.35F;
-    effects.AoShadowPower = 2.1F;
-    effects.AoShadowClamp = 0.91F;
-    effects.AoHorizonAngleThreshold = 0.12F;
-    effects.AoFadeOutFrom = 75.0F;
-    effects.AoFadeOutTo = 1400.0F;
-    effects.AoBlurPassCount = 5U;
-    effects.AoSharpness = 0.77F;
-    effects.AoDetailStrength = 0.68F;
-
-    const auto profile = ResolveCacaoSettings(effects);
-    EXPECT_EQ(profile.Quality, CacaoQuality::Medium);
-    EXPECT_FLOAT_EQ(profile.Radius, effects.AoRadius);
-    EXPECT_FLOAT_EQ(profile.Strength, effects.AoStrength);
-    EXPECT_FLOAT_EQ(profile.ShadowPower, effects.AoShadowPower);
-    EXPECT_FLOAT_EQ(profile.ShadowClamp, effects.AoShadowClamp);
-    EXPECT_FLOAT_EQ(profile.HorizonAngleThreshold,
-                    effects.AoHorizonAngleThreshold);
-    EXPECT_FLOAT_EQ(profile.FadeOutFrom, effects.AoFadeOutFrom);
-    EXPECT_FLOAT_EQ(profile.FadeOutTo, effects.AoFadeOutTo);
-    EXPECT_EQ(profile.BlurPassCount, effects.AoBlurPassCount);
-    EXPECT_FLOAT_EQ(profile.Sharpness, effects.AoSharpness);
-    EXPECT_FLOAT_EQ(profile.DetailStrength, effects.AoDetailStrength);
-}
 
 TEST(Oot3dPicaAmbientOcclusionGuide,
      PreservesNormalGuideAndMarksSceneCoverage) {
@@ -2835,19 +2757,19 @@ TEST(Oot3dPicaScanout, PolicySuppressesAllEffectsAlreadyComposited) {
     EXPECT_FALSE(Fast::Oot3d::ValidatePicaScanoutPolicyInput(input));
     input.InputEncoding = Fast::Oot3d::SceneColorEncoding::Srgb;
     EXPECT_TRUE(Fast::Oot3d::ValidatePicaScanoutPolicyInput(input));
-    input.CacaoAvailable = true;
+    input.AmbientOcclusionAvailable = true;
     input.OutlineAvailable = true;
     input.ReflectionsAvailable = true;
     input.TemporalOutput = true;
     input.EffectsComposited = true;
     auto output = Fast::Oot3d::BuildPicaScanoutPushConstants(input);
-    EXPECT_EQ(output.Cacao, 0U);
+    EXPECT_EQ(output.AmbientOcclusion, 0U);
     EXPECT_EQ(output.Reflections, 0U);
     EXPECT_EQ(output.Outline, 0U);
 
     input.EffectsComposited = false;
     output = Fast::Oot3d::BuildPicaScanoutPushConstants(input);
-    EXPECT_EQ(output.Cacao, 1U);
+    EXPECT_EQ(output.AmbientOcclusion, 1U);
     EXPECT_EQ(output.Reflections, 1U);
     EXPECT_EQ(output.Outline, 1U);
 
@@ -3257,7 +3179,7 @@ TEST(Oot3dPicaGuideSamplingBarriers,
     input.WorldSurface = true;
     input.PerspectiveAvailable = true;
     input.CameraAvailable = true;
-    input.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    input.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     input.Reflections = ReflectionMode::FidelityFxSssr;
     input.ForceMotion = true;
     const auto plan = BuildDisplayEffectPlan(input);
@@ -3274,26 +3196,26 @@ TEST(Oot3dPicaGuideSamplingBarriers,
     ASSERT_TRUE(bind(EffectResource::MaterialGuide, 3U, 13U));
     ASSERT_TRUE(bind(EffectResource::RigidMotionGuide, 4U, 14U));
     ASSERT_TRUE(bind(EffectResource::AmbientGuide, 5U, 15U));
-    const auto* cacao = plan.FindPass(DisplayEffectPass::Cacao);
+    const auto* ao = plan.FindPass(DisplayEffectPass::AmbientOcclusion);
     const auto* motion = plan.FindPass(DisplayEffectPass::Motion);
     const auto* scanout = plan.FindPass(DisplayEffectPass::Scanout);
-    ASSERT_NE(cacao, nullptr);
+    ASSERT_NE(ao, nullptr);
     ASSERT_NE(motion, nullptr);
     ASSERT_NE(scanout, nullptr);
-    const auto cacaoSampled = BuildPicaGuideSamplingBarriers(
-        *cacao, resources, 0U);
-    ASSERT_EQ(cacaoSampled.Count, 2U);
-    EXPECT_TRUE(cacaoSampled.Complete());
-    EXPECT_EQ(cacaoSampled.Images[0].image,
+    const auto aoSampled = BuildPicaGuideSamplingBarriers(
+        *ao, resources, 0U);
+    ASSERT_EQ(aoSampled.Count, 2U);
+    EXPECT_TRUE(aoSampled.Complete());
+    EXPECT_EQ(aoSampled.Images[0].image,
               reinterpret_cast<VkImage>(1U));
-    EXPECT_EQ(cacaoSampled.Images[0].oldLayout,
+    EXPECT_EQ(aoSampled.Images[0].oldLayout,
               VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-    EXPECT_EQ(cacaoSampled.Images[0].newLayout,
+    EXPECT_EQ(aoSampled.Images[0].newLayout,
               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     const auto motionSampled = BuildPicaGuideSamplingBarriers(
-        *motion, resources, cacaoSampled.ResourceMask);
+        *motion, resources, aoSampled.ResourceMask);
     ASSERT_EQ(motionSampled.Count, 2U);
-    const uint32_t firstFourMask = cacaoSampled.ResourceMask |
+    const uint32_t firstFourMask = aoSampled.ResourceMask |
                                    motionSampled.ResourceMask;
     const auto scanoutSampled = BuildPicaGuideSamplingBarriers(
         *scanout, resources, firstFourMask);
@@ -3302,10 +3224,10 @@ TEST(Oot3dPicaGuideSamplingBarriers,
               reinterpret_cast<VkImage>(5U));
     EXPECT_EQ(scanoutSampled.Images[0].subresourceRange.aspectMask,
               VK_IMAGE_ASPECT_COLOR_BIT);
-    EXPECT_NE(cacaoSampled.DestinationStages &
+    EXPECT_NE(aoSampled.DestinationStages &
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
               0U);
-    EXPECT_NE(cacaoSampled.DestinationStages &
+    EXPECT_NE(aoSampled.DestinationStages &
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
               0U);
 
@@ -3332,14 +3254,14 @@ TEST(Oot3dPicaGuideSamplingBarriers,
     input.ForceMotion = false;
     const auto selectedPlan = BuildDisplayEffectPlan(input);
     ASSERT_TRUE(selectedPlan.Graph.Valid()) << selectedPlan.Graph.Error;
-    const auto* selectedCacao = selectedPlan.FindPass(
-        DisplayEffectPass::Cacao);
+    const auto* selectedAo = selectedPlan.FindPass(
+        DisplayEffectPass::AmbientOcclusion);
     const auto* selectedScanout = selectedPlan.FindPass(
         DisplayEffectPass::Scanout);
-    ASSERT_NE(selectedCacao, nullptr);
+    ASSERT_NE(selectedAo, nullptr);
     ASSERT_NE(selectedScanout, nullptr);
     const auto selected = BuildPicaGuideSamplingBarriers(
-        *selectedCacao, resources, 0U);
+        *selectedAo, resources, 0U);
     ASSERT_EQ(selected.Count, 2U);
     EXPECT_EQ(selected.Images[0].image,
               reinterpret_cast<VkImage>(1U));
@@ -4098,7 +4020,7 @@ TEST(Oot3dGraphicsSettings, CapabilityGatesInvalidCombinations) {
     candidate.FrameRate = Fast::Oot3d::FrameRateMode::Uncapped;
     candidate.VSync = false;
     candidate.Effects.AmbientOcclusion =
-        Fast::Oot3d::AmbientOcclusionMode::Cacao;
+        Fast::Oot3d::AmbientOcclusionMode::Gtao;
     const auto result = Fast::Oot3d::GraphicsSettingsService::Validate(
         candidate, capabilities);
     EXPECT_EQ(result.Value.Window, Fast::Oot3d::WindowMode::Borderless);
@@ -4424,19 +4346,19 @@ TEST(Oot3dDisplayEffectPlan,
     input.WorldSurface = true;
     input.PerspectiveAvailable = true;
     input.CameraAvailable = true;
-    input.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    input.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     input.Reflections = ReflectionMode::FidelityFxSssr;
     input.Toon = ToonMode::PicaMaterial;
     input.OutlineEnabled = true;
     input.AntiAliasing = AntiAliasingMode::Taa;
     const auto plan = BuildDisplayEffectPlan(input);
-    EXPECT_TRUE(plan.Cacao);
+    EXPECT_TRUE(plan.AmbientOcclusion);
     EXPECT_TRUE(plan.FidelityFxSssr);
     EXPECT_TRUE(plan.MotionVectors);
     EXPECT_TRUE(plan.RequiresGuideTarget);
     ASSERT_TRUE(plan.Graph.Valid()) << plan.Graph.Error;
     const std::vector<std::string> expected{
-        "Guides", "WorkingColor", "CACAO", "HiZ", "Motion",
+        "Guides", "WorkingColor", "AmbientOcclusion", "HiZ", "Motion",
         "Reflections", "Outline", "Composite", "TAA", "Scanout"};
     EXPECT_EQ(plan.Graph.Order, expected);
 }
@@ -4448,10 +4370,10 @@ TEST(Oot3dDisplayEffectPlan,
     input.AlphaOverlay = true;
     input.PerspectiveAvailable = true;
     input.CameraAvailable = true;
-    input.AmbientOcclusion = AmbientOcclusionMode::Cacao;
+    input.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     input.AntiAliasing = AntiAliasingMode::Taa;
     const auto overlay = BuildDisplayEffectPlan(input);
-    EXPECT_FALSE(overlay.Cacao);
+    EXPECT_FALSE(overlay.AmbientOcclusion);
     EXPECT_FALSE(overlay.Taa);
     EXPECT_FALSE(overlay.RequiresGuideTarget);
     EXPECT_EQ(overlay.Graph.Order,
@@ -5034,18 +4956,18 @@ TEST(Oot3dGpuProfile, TracksOneClosedIntervalPerScopeAndFrame) {
     EXPECT_TRUE(plan.Open(GpuProfileScope::Frame));
     EXPECT_FALSE(plan.Begin(GpuProfileScope::Frame));
 
-    EXPECT_TRUE(plan.Begin(GpuProfileScope::Cacao));
-    EXPECT_TRUE(plan.End(GpuProfileScope::Cacao));
-    EXPECT_TRUE(plan.Written(GpuProfileScope::Cacao));
-    EXPECT_FALSE(plan.Begin(GpuProfileScope::Cacao));
-    EXPECT_FALSE(plan.End(GpuProfileScope::Cacao));
+    EXPECT_TRUE(plan.Begin(GpuProfileScope::AmbientOcclusion));
+    EXPECT_TRUE(plan.End(GpuProfileScope::AmbientOcclusion));
+    EXPECT_TRUE(plan.Written(GpuProfileScope::AmbientOcclusion));
+    EXPECT_FALSE(plan.Begin(GpuProfileScope::AmbientOcclusion));
+    EXPECT_FALSE(plan.End(GpuProfileScope::AmbientOcclusion));
 
     EXPECT_TRUE(plan.End(GpuProfileScope::Frame));
     EXPECT_TRUE(plan.Written(GpuProfileScope::Frame));
     plan.Reset();
     EXPECT_FALSE(plan.Open(GpuProfileScope::Frame));
     EXPECT_FALSE(plan.Written(GpuProfileScope::Frame));
-    EXPECT_TRUE(plan.Begin(GpuProfileScope::Cacao));
+    EXPECT_TRUE(plan.Begin(GpuProfileScope::AmbientOcclusion));
 }
 
 TEST(Oot3dRendererValidation, SeparatesThreadSafeApiCounters) {

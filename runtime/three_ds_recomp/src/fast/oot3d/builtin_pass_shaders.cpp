@@ -12,11 +12,14 @@
 #include "fast/oot3d/scene_composite.h"
 #include "fast/oot3d/smaa_1x.h"
 #include "fast/oot3d/temporal_aa.h"
+#include "fast/renderer/gtao_shader.h"
 
 namespace Fast::Oot3d {
 std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
     using enum Renderer::SpirvStage;
     return {
+        {"multiscale_gtao.comp", Compute, Renderer::BuildMultiscaleGtaoShader(), {}},
+        {"multiscale_gtao_resolve.comp", Compute, Renderer::BuildMultiscaleGtaoResolveShader(), {}},
         {"oot3d_pica_display_transfer.comp", Compute, BuildPicaDisplayTransferComputeShader(), {}},
         {"oot3d_hiz_reduce.comp", Compute, BuildHiZReductionComputeShader(), {}},
         {"oot3d_hiz_reflection.comp", Compute, BuildHiZReflectionComputeShader(), {}},

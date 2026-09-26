@@ -20,6 +20,7 @@
 #include "fast/backends/oot3d_vulkan_validation.h"
 #include "fast/backends/vulkan_scanout_probe.h"
 #include "fast/oot3d/nri_interop_context.h"
+#include "fast/oot3d/ambient_occlusion_pass.h"
 #include "fast/oot3d/cacao_pass.h"
 #if defined(_WIN32) && defined(ENABLE_OOT3D_D3D12_NGX_PROVIDER)
 #include "fast/oot3d/d3d12_ngx_provider.h"
@@ -1345,6 +1346,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::D3d12NgxProvider mD3d12NgxProvider;
 #endif
     Oot3d::NriInteropContext mNriInterop;
+    Oot3d::AmbientOcclusionPass mAmbientOcclusionPass;
     Oot3d::CacaoPass mCacaoPass;
     Oot3d::FidelityFxSssrPass mFidelityFxSssrPass;
     Oot3d::HiZDepthPyramidPass mHiZDepthPyramidPass;
@@ -1380,10 +1382,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::ReflectionMaterialResolvePass
         mReflectionMaterialResolvePass;
     Oot3d::TemporalAaPass mTemporalAaPass;
-    uint64_t mCacaoRenderTargetNamespace = 0;
-    uint32_t mCacaoDisplayPhysicalAddress = 0;
-    bool mCacaoOutputValid = false;
-    bool mCacaoExecutedThisFrame = false;
+    uint64_t mAmbientOcclusionRenderTargetNamespace = 0;
+    uint32_t mAmbientOcclusionDisplayPhysicalAddress = 0;
+    bool mAmbientOcclusionOutputValid = false;
+    bool mAmbientOcclusionExecutedThisFrame = false;
     bool mHiZExecutedThisFrame = false;
     uint64_t mHiZRenderTargetNamespace = 0;
     uint32_t mHiZDisplayPhysicalAddress = 0;

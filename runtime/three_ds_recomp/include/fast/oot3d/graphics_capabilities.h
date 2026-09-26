@@ -33,6 +33,7 @@ enum class GraphicsCapability : uint8_t {
     TemporalHistory,
     Smaa1x,
     FidelityFxSssr,
+    FidelityFxCacao,
     NriNisUpscaler,
     NriFsrUpscaler,
     NriXessUpscaler,
