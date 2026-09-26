@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterable
 
 from whole_aot_optimization_ir import Flag, analyze_function
+from whole_aot_memory_regions import carried_pair_copy, region_memory_safe
 
 
 PROGRAM_FORMAT = "oot3d_whole_aot_program_v1"
@@ -1844,6 +1845,8 @@ def _render_function(
     *,
     callback_free: bool = False,
     symbol_suffix: str = "",
+    memory_view: bool = False,
+    memory_copy: bool = False,
 ) -> list[str]:
     symbol = _symbol(function.name, function.entry) + symbol_suffix
     block_pcs = {block.pc for block in function.blocks}
@@ -1863,24 +1866,36 @@ def _render_function(
         "    Oot3dAotArchitecturalState& state,",
         "    uint32_t entryPc) {",
     ]
+    reference = "" if memory_view else "&"
     lines.extend(
-        f"    uint32_t& r{index} = state.R[{index}];"
+        f"    uint32_t{reference} r{index} = state.R[{index}];"
         for index in promoted_registers
     )
     if optimization.promoted_flags != Flag.NONE:
-        lines.append("    Oot3dAotLazyFlags& flags = state.Flags;")
-    # Every translated function shares the same promoted architectural state.
-    # References let direct guest calls cross the host ABI without copying the
-    # complete ARM register file into and out of both caller and callee.  The
-    # named no-op hooks keep external calls and block callbacks explicit: they
-    # still Flush/Reload the shared state around host code.
-    lines.append("    const auto commitState = []() noexcept {")
-    lines.extend(
-        [
-            "    };",
-            "    const auto reloadState = []() noexcept {",
-        ]
-    )
+        lines.append(f"    Oot3dAotLazyFlags{reference} flags = state.Flags;")
+    if memory_view:
+        lines.extend([
+            "    NativeA32UnobservedMemory regionMemory(context.Memory);",
+            "    uint32_t regionBlocksRemaining = context.BlocksRemaining;",
+            "    uint32_t regionBlocksConsumed = 0U;",
+            "    const auto commitState = [&]() noexcept {",
+        ])
+        lines.extend(f"        state.R[{index}] = r{index};" for index in promoted_registers)
+        if optimization.promoted_flags != Flag.NONE:
+            lines.append("        state.Flags = flags;")
+        lines.extend([
+            "        regionMemory.Commit();",
+            "        context.BlocksRemaining = regionBlocksRemaining;",
+            "        context.BlocksConsumed += regionBlocksConsumed;",
+        ])
+    else:
+        # Ordinary functions share promoted state by reference across calls.
+        # Closed memory regions instead commit their local state on every exit.
+        lines.append("    const auto commitState = []() noexcept {")
+    lines.extend([
+        "    };",
+        "    const auto reloadState = []() noexcept {",
+    ])
     lines.extend(
         [
             "    };",
@@ -1909,7 +1924,23 @@ def _render_function(
     for block in function.blocks:
         lines.append(f"block_{block.pc:08X}:")
         lines.append("    {")
+        copy = carried_pair_copy(block) if memory_copy else None
+        if copy is not None:
+            live = instruction_optimization[block.instructions[3].pc].required_flag_writes
+            registers = ", ".join(f"state.R[{index}]" for index in (
+                copy.source, copy.destination, copy.count, copy.carried, copy.scratch))
+            lines.extend([
+                "        {",
+                "            NativeA32UnobservedMemory copyMemory(context.Memory);",
+                f"            if (copyMemory.CopyPairs({registers},",
+                f"                    state.Flags, context, 0x{block.pc:08X}U, {_cpp_flag_mask(live)})) {{",
+                f"                if (state.R[{copy.count}] != 0U) goto block_{block.pc:08X};",
+                "                " + _goto(block.instructions[-1].pc + 4, block_pcs),
+                "            }",
+                "        }",
+            ])
         enter = (
+            "(regionBlocksRemaining != 0U)" if memory_view else
             "Oot3dAotConsumeBlock(context)" if callback_free else
             f"Oot3dAotEnterBlock(context, frame, state, 0x{block.pc:08X}U, commitState, reloadState)"
         )
@@ -1920,6 +1951,8 @@ def _render_function(
                 "        }",
             ]
         )
+        if memory_view:
+            lines.extend(["        --regionBlocksRemaining;", "        ++regionBlocksConsumed;"])
         for item in block.instructions[:-1]:
             live_flags = instruction_optimization[item.pc].required_flag_writes
             for emitted in _emit_non_control(item, live_flags):
@@ -1956,6 +1989,9 @@ def _render_function(
         line = line.replace(
             "(frame.Guest.cpsr & a32::kFlagC) != 0U", "state.Flags.C()"
         )
+        if memory_view:
+            line = line.replace("context.Memory.ReadFast<", "regionMemory.ReadFast<")
+            line = line.replace("context.Memory.WriteFast<", "regionMemory.WriteFast<")
         for helper in promoted_helpers:
             line = line.replace(f"{helper}(frame,", f"{helper}(state,")
         line = line.replace(
@@ -1977,8 +2013,12 @@ def _render_region_function(
     symbols: dict[int, str],
     external_entries: frozenset[int],
     region_entries: frozenset[int],
+    memory_entries: frozenset[int] = frozenset(),
 ) -> list[str]:
-    if function.entry not in region_entries:
+    memory = function.entry in memory_entries
+    if memory and any(carried_pair_copy(block) for block in function.blocks):
+        return _render_function(function, symbols, external_entries, memory_copy=True)
+    if function.entry not in region_entries and not memory:
         return _render_function(function, symbols, external_entries)
     pcs = {block.pc for block in function.blocks}
     # No guest call may change the callback configuration inside this region.
@@ -1993,11 +2033,13 @@ def _render_region_function(
         for block in function.blocks for item in block.instructions
     ):
         raise LoweringError(f"region 0x{function.entry:08X} is not a closed call-free CFG")
+    if memory and not region_memory_safe(function):
+        raise LoweringError(f"memory region 0x{function.entry:08X} contains an observable operation")
     symbol = _symbol(function.name, function.entry)
     lines = _render_function(function, symbols, external_entries,
                              symbol_suffix="_Observed")
     lines += _render_function(function, symbols, external_entries,
-                              callback_free=True, symbol_suffix="_Unobserved")
+                              callback_free=True, symbol_suffix="_Unobserved", memory_view=memory)
     # A conservative address interval is sufficient: false positives use the
     # unchanged path. Full tracing (an empty hook list) always uses that path.
     begin = min(pcs)
@@ -2012,6 +2054,10 @@ def _render_region_function(
         f"        const auto hook = std::lower_bound(context.BlockEntryPcs, end, 0x{begin:08X}U);",
         f"        observed = hook != end && *hook <= 0x{end:08X}U;",
         "    }",
+    ]
+    if memory:
+        lines.append("    observed = observed || !NativeA32UnobservedMemory::Eligible(context.Memory);")
+    lines += [
         f"    return observed ? Execute_{symbol}_Observed(frame, context, state, entryPc)",
         f"                    : Execute_{symbol}_Unobserved(frame, context, state, entryPc);",
         "}", "",
@@ -2054,6 +2100,7 @@ bool ExecuteOot3dWholeAotFunction(
 def _render_source(
     functions: tuple[Function, ...], external_entries: frozenset[int],
     region_entries: frozenset[int] = frozenset(),
+    memory_entries: frozenset[int] = frozenset(),
 ) -> str:
     functions_by_entry = {function.entry: function for function in functions}
     function_symbols = {
@@ -2077,6 +2124,8 @@ def _render_source(
         "    Oot3dWholeAotContext& context, Oot3dAotArchitecturalState& state);",
         "",
     ]
+    if memory_entries:
+        lines[2:2] = ['#include "oot3d_native_a32_memory_region.h"']
     for function in functions:
         lines.extend(
             [
@@ -2089,7 +2138,7 @@ def _render_source(
     lines.append("")
     for function in functions:
         lines.extend(
-            _render_region_function(function, function_symbols, external_entries, region_entries)
+            _render_region_function(function, function_symbols, external_entries, region_entries, memory_entries)
         )
     lines.extend(
         [
@@ -2272,6 +2321,7 @@ def _render_shard_source(
     external_entries: frozenset[int],
     declarations: tuple[Function, ...],
     region_entries: frozenset[int] = frozenset(),
+    memory_entries: frozenset[int] = frozenset(),
 ) -> str:
     lines = [
         f'#include "{INTERNAL_HEADER_NAME}"',
@@ -2283,10 +2333,12 @@ def _render_shard_source(
         "namespace a32 = oot3d::recomp::a32;",
         "",
     ]
+    if any(function.entry in memory_entries for function in functions):
+        lines[2:2] = ['#include "oot3d_native_a32_memory_region.h"']
     lines.extend(_render_function_declarations(declarations))
     lines.append("")
     for function in functions:
-        lines.extend(_render_region_function(function, all_symbols, external_entries, region_entries))
+        lines.extend(_render_region_function(function, all_symbols, external_entries, region_entries, memory_entries))
     lines.extend(["} // namespace Oot3dNativeGame::GeneratedWholeAot", ""])
     return "\n".join(lines)
 
@@ -2804,6 +2856,7 @@ def generate(
     shard_count: int = 1,
     shard_strategy: str = "stable",
     region_entries: frozenset[int] = frozenset(),
+    memory_entries: frozenset[int] = frozenset(),
 ) -> dict[str, object]:
     if shard_count <= 0:
         raise ValueError("whole-AOT shard count must be positive")
@@ -2819,6 +2872,12 @@ def generate(
     selection_sha256 = _sha256(selection_bytes)
     code_sha256 = _sha256(code)
     generator_sha256 = _sha256(Path(__file__).read_bytes())
+    memory_contract = ""
+    if memory_entries:
+        generator_sha256 = _sha256(
+            Path(__file__).read_bytes() + Path(__file__).with_name("whole_aot_memory_regions.py").read_bytes())
+        memory_contract = _sha256(
+            (Path(__file__).parents[1] / "native_game_runtime/oot3d_native_a32_memory_region.h").read_bytes())
     manifest_path = output / MANIFEST_NAME
     if manifest_path.is_file():
         try:
@@ -2834,6 +2893,8 @@ def generate(
             "shard_count": shard_count,
             "shard_strategy": shard_strategy,
             "callback_free_regions": sorted(region_entries),
+            "memory_regions": sorted(memory_entries),
+            "memory_region_contract_sha256": memory_contract,
         }
         files = cached.get("files", {})
         cached_shards = {
@@ -2855,12 +2916,14 @@ def generate(
     functions, external_entries = _load_functions(program, selection, code)
     if region_entries - {function.entry for function in functions}:
         raise ValueError("callback-free regions must be selected function entries")
+    if memory_entries - {function.entry for function in functions}:
+        raise ValueError("memory regions must be selected function entries")
     header = _render_header().encode("utf-8")
     generated_files: dict[str, bytes] = {HEADER_NAME: header}
     shard_records: list[dict[str, object]] = []
     if shard_count == 1:
         generated_files[SOURCE_NAME] = _render_source(
-            functions, external_entries, region_entries
+            functions, external_entries, region_entries, memory_entries
         ).encode("utf-8")
     else:
         function_symbols = {
@@ -2903,6 +2966,7 @@ def generate(
                 external_entries,
                 declarations,
                 region_entries,
+                memory_entries,
             ).encode("utf-8")
             shard_records.append(
                 {
@@ -2921,6 +2985,10 @@ def generate(
         generated_files[SOURCE_NAME] = _render_registry_source(functions).encode(
             "utf-8"
         )
+    if memory_entries:
+        for name, data in generated_files.items():
+            if b'#include "oot3d_native_a32_memory_region.h"' in data:
+                generated_files[name] = f"// memory-region contract: {memory_contract}\n".encode() + data
     manifest = {
         "format": OUTPUT_FORMAT,
         "program_sha256": program_sha256,
@@ -2930,6 +2998,8 @@ def generate(
         "shard_count": shard_count,
         "shard_strategy": shard_strategy,
         "callback_free_regions": sorted(region_entries),
+        "memory_regions": sorted(memory_entries),
+        "memory_region_contract_sha256": memory_contract,
         "shards": shard_records,
         "functions": [
             {

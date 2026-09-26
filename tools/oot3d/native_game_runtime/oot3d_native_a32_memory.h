@@ -74,6 +74,10 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     // Synchronous, read-only view: callers must finish consuming it before
     // executing guest code, device work, or another memory operation.
     std::span<const uint8_t> SynchronousReadView(uint32_t address, size_t size) const;
+    bool AllowsUnobservedAccess() const noexcept {
+        return !mTraceWriteFingerprint && !mWatchActive &&
+               mObservedWriteRanges.empty() && mDeferredWrites.empty();
+    }
 
     // Diagnostic guest-access watch for a small number of address ranges
     // (whole-AOT raw TextureCopy destinations, for example). Watched pages lose
@@ -251,6 +255,9 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
                     uint32_t* previous, uint32_t* faultAddress) override;
 
   private:
+    // A call-free AOT region may retain views until its next observable exit.
+    // This does not change the memory object layout or the title-module ABI.
+    friend class NativeA32UnobservedMemory;
     struct Region {
         std::string Name;
         uint32_t BaseAddress = 0;

@@ -203,9 +203,15 @@ def default_dependency_files(
     repo = repo_root.expanduser().resolve()
     generated = generated_directory.expanduser().resolve()
     nlohmann = nlohmann_include.expanduser().resolve()
+    manifest = load_json_object(generated / "whole_aot_cpp_manifest.json")
+    memory_headers = (
+        (repo / "tools/oot3d/native_game_runtime/oot3d_native_a32_memory_region.h",)
+        if manifest.get("memory_regions") else ()
+    )
     candidates = (
         repo / "tools/oot3d/native_game_runtime/oot3d_native_whole_aot_runtime.h",
         repo / "tools/oot3d/native_game_runtime/oot3d_native_a32_memory.h",
+        *memory_headers,
         repo / "tools/oot3d/native_a32_runtime/oot3d_aot_architectural_state.h",
         repo / "tools/oot3d/native_a32_runtime/oot3d_native_a32_vfp_ops.h",
         *(repo / "tools/oot3d/native_a32_runtime/upstream/recomp").glob("*.h"),
