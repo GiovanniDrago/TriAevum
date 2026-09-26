@@ -3,8 +3,10 @@
 ## Contract
 
 Per-pixel lighting replaces surface illumination, not the authored appearance of
-sky, backgrounds, atmosphere or UI. Native, NativeMemory, Authentic and F2 remain
-canonical. Native gameplay/environment updates continue; disabling native light
+sky, backgrounds, atmosphere or UI. Native, NativeMemory and Authentic remain
+canonical. F2 retains its existing native-presentation mask and suspends the
+authored environment; it does not force configured Per-pixel modes to Native.
+Native gameplay/environment updates continue: disabling native light
 contributions is a presentation decision, not a guest-state mutation.
 
 The implementation separates:
@@ -116,12 +118,13 @@ controllable. This deliberately preserves a baseline, not total irradiance:
 there is no image histogram, guessed light direction, automatic exposure,
 arbitrary minimum RGB or promise of identical world pixels.
 
-The CPU resolves the direction-independent ambient contribution once per
-surface input. With preservation enabled, the old ambient-light loop gain is
-zero; the retained reference travels in the shared environment ambient input
-used by Per-pixel, PBR and the Grass surface-lighting atlas. No original direct
-source is required to recover it. Disabling preservation restores authored-only
-lighting, including intentional black.
+The CPU resolves direction-independent vertex ambient, including material
+reflectance, once per surface input. It has its own shared `NativeAmbient`
+input; a single GLSL resolver combines it with the authored ambient policy for
+Per-pixel, PBR and the Grass surface-lighting atlas. Fragment-lit PBR retains
+its native global ambient without running the attenuated original-light loop.
+No original direct source is required to recover either baseline. Disabling
+preservation restores authored-only lighting, including intentional black.
 
 Environment schema 4 persists `preserveSceneBrightness`. New profiles enable
 it. Versions 1–3 keep their authored-only choices and are not rewritten on load.
@@ -145,3 +148,38 @@ Verification:
 - Sky remains exact in both reference captures. All runs use private profiles;
   textures, material packs, active profiles and the running user session are
   untouched.
+
+### Shared evaluation increment
+
+- Vertex-native ambient is no longer uploaded separately for each selected
+  light or accumulated again per fragment. The shared std140 block shrinks
+  from 1,472 to 1,440 bytes.
+- A validated camera snapshot owns the forward rows and inverse linear
+  transform. The renderer reuses it only when the captured matrix is equal;
+  no camera-independent or previous-frame illumination is cached.
+- Disabled selected-native sources are discarded only after extracting their
+  independent ambient. Zero-intensity authored sources skip preparation and
+  evaluation; PBR skips zero-radiance scene sources before the BRDF.
+- Identical adjacent surface blocks reuse their uniform allocation. A bounded
+  CPU snapshot avoids reading potentially write-combined upload memory.
+  Frame reuse and uniform-arena replacement invalidate the cached offset.
+  Grass keeps the same declared block and lifetime as its source draw.
+- Fragment-lit PBR with zero active native lights is not mistaken for authored
+  unlit appearance. Its global ambient uses the same policy resolver.
+
+Verification:
+
+- The exact staged headers, evaluator and 22-case committed fixture also pass
+  on the GPU; pre-existing working-tree material tests remain separate.
+- 42 pipeline/instrumentation tests and native composition regressions pass.
+- All 24 working-tree GPU source cases pass. Additional throwaway production
+  PBR vertex/fragment probes verify the reference with original gains zero,
+  intentional black with reference Off, a changed native ambient snapshot and
+  unchanged alpha. The pre-existing untracked material fixture is not adopted
+  into this change.
+- Native, reference-only Per-pixel, authored Per-pixel and authored Per-pixel+PBR
+  framebuffer SHA-256 values are exactly unchanged by this optimization.
+- Native savestates before/after are semantically equal, with zero differing
+  guest bytes; even the normally ignored memory write generation is equal.
+- Steady-state timing qualification is recorded separately below. Reduced
+  arithmetic and block size alone are not an FPS claim.

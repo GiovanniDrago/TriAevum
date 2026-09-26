@@ -21,14 +21,37 @@ Vec4 Cross(const Vec4& a, const Vec4& b) noexcept {
             a[0] * b[1] - a[1] * b[0], 0.0F};
 }
 
+bool InvertViewLinear(const std::array<Vec4, 3>& view, std::array<Vec4, 3>& inverse) noexcept {
+    const std::array<Vec4, 3> columns{Cross(view[1], view[2]), Cross(view[2], view[0]), Cross(view[0], view[1])};
+    const float determinant = view[0][0] * columns[0][0] + view[0][1] * columns[0][1] + view[0][2] * columns[0][2];
+    if (!std::isfinite(determinant) || std::abs(determinant) < 1.0e-12F) return false;
+    for (size_t row = 0; row < 3U; ++row)
+        for (size_t column = 0; column < 3U; ++column)
+            inverse[row][column] = columns[column][row] / determinant;
+    return true;
+}
+
 } // namespace
+
+std::optional<PicaSurfaceLightingView> BuildPicaSurfaceLightingView(
+    const std::array<float, 16>& worldToView) noexcept {
+    if (!std::all_of(worldToView.begin(), worldToView.end(),
+                     [](float value) { return std::isfinite(value); })) return std::nullopt;
+    PicaSurfaceLightingView result;
+    result.WorldToView = worldToView;
+    for (size_t row = 0; row < 3U; ++row)
+        for (size_t column = 0; column < 4U; ++column)
+            result.Rows[row][column] = worldToView[column * 4U + row];
+    if (!InvertViewLinear(result.Rows, result.ViewToWorldLinear)) return std::nullopt;
+    return result;
+}
 
 std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
     const PicaVertexShaderHookLayout& hooks, uint32_t booleanUniforms,
     std::span<const uint8_t> floatUniformBytes,
     const PicaNativeLightBinding& binding,
     const PicaEnvironmentLighting& environment,
-    const std::array<float, 16>* cameraWorldToView) noexcept {
+    const PicaSurfaceLightingView* cameraView) noexcept {
     const auto* surface = hooks.SurfaceProgram();
     const auto* transform = hooks.TransformProgram();
     if (surface == nullptr || transform == nullptr) return std::nullopt;
@@ -52,33 +75,35 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
         std::any_of(binding.Sources.begin(), binding.Sources.end(), [](const auto& light) {
             return light.Kind == PicaNativeLightSource::Type::Point;
         });
-    if (needsWorldView && cameraWorldToView == nullptr) return std::nullopt;
-    std::array<Vec4, 3> view{};
-    if (cameraWorldToView != nullptr) {
-        if (!std::all_of(cameraWorldToView->begin(), cameraWorldToView->end(),
-                         [](float value) { return std::isfinite(value); })) return std::nullopt;
-        for (size_t row = 0; row < 3U; ++row)
-            for (size_t column = 0; column < 4U; ++column)
-                view[row][column] = (*cameraWorldToView)[column * 4U + row];
+    if (needsWorldView && cameraView == nullptr) return std::nullopt;
+    std::array<Vec4, 3> localView{};
+    const auto& view = cameraView != nullptr ? cameraView->Rows : localView;
+    if (cameraView != nullptr) {
+        result.ViewToWorldLinear = cameraView->ViewToWorldLinear;
     } else {
         for (uint8_t row = 0; row < 3U; ++row)
-            if (!ReadUniform(floatUniformBytes, transform->ViewFirstUniform + row, view[row])) return std::nullopt;
+            if (!ReadUniform(floatUniformBytes, transform->ViewFirstUniform + row, localView[row])) return std::nullopt;
+        if (!InvertViewLinear(localView, result.ViewToWorldLinear)) return std::nullopt;
     }
-    const std::array<Vec4, 3> inverseColumns{Cross(view[1], view[2]), Cross(view[2], view[0]), Cross(view[0], view[1])};
-    const float determinant = view[0][0] * inverseColumns[0][0] + view[0][1] * inverseColumns[0][1] + view[0][2] * inverseColumns[0][2];
-    if (!std::isfinite(determinant) || std::abs(determinant) < 1.0e-12F) return std::nullopt;
-    for (size_t row = 0; row < 3U; ++row)
-        for (size_t column = 0; column < 3U; ++column)
-            result.ViewToWorldLinear[row][column] = inverseColumns[column][row] / determinant;
     for (size_t slot = 0; slot < result.Lights.size(); ++slot) {
         auto& light = result.Lights[slot];
         const uint8_t first = surface->LightDirectionUniforms[slot];
+        Vec4 ambient{};
         if (!ReadUniform(floatUniformBytes, first, light.DirectionEnabled) ||
             !ReadUniform(floatUniformBytes, first + 1U, light.Diffuse) ||
-            !ReadUniform(floatUniformBytes, first + 2U, light.Ambient)) return std::nullopt;
+            !ReadUniform(floatUniformBytes, first + 2U, ambient)) return std::nullopt;
         light.DirectionEnabled[3] = light.DirectionEnabled[3] == enabledValue[surface->LightEnabledValue.Component] ? 1.0F : 0.0F;
         for (size_t component = 0; component < 3U; ++component) light.DirectionEnabled[component] = -light.DirectionEnabled[component];
+        if (result.Control[0] != 0U && light.DirectionEnabled[3] != 0.0F)
+            for (size_t channel = 0; channel < 3; ++channel)
+                result.NativeAmbient[channel] += ambient[channel] * result.MaterialAmbient[channel];
         const auto& source = binding.Sources[slot];
+        const bool pointSource = source.Kind == PicaNativeLightSource::Type::Point && source.Radius > 0.0F;
+        if (result.Control[0] == 0U || light.DirectionEnabled[3] == 0.0F ||
+            (environment.Enabled && environment.NativeLocalStrength <= 0.0F)) {
+            light = {};
+            continue;
+        }
         if (source.SourceIdentity != 0 &&
             (std::any_of(scenePoints.begin(), scenePoints.end(),
                 [&](const auto& point) { return point.SourceIdentity == source.SourceIdentity; }) ||
@@ -86,10 +111,10 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
                 [&](const auto& directional) { return directional.SourceIdentity == source.SourceIdentity; }))) {
             // Remove only the duplicated direct source. Native slot zero may
             // also carry LightContext ambient, which does not belong to it.
-            light.Diffuse = {};
+            light = {};
             continue;
         }
-        if (source.Kind != PicaNativeLightSource::Type::Point || source.Radius <= 0.0F) continue;
+        if (!pointSource) continue;
         light.PositionRadius[3] = source.Radius;
         for (size_t component = 0; component < 3U; ++component) {
             light.PositionRadius[component] = view[component][3];
@@ -135,7 +160,6 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
                                         environment.FogStrength, 1.0F};
         const bool preserveReference = environment.PreserveSceneBrightness;
         result.Control[3] = preserveReference ? 1U : 0U;
-        if (preserveReference) result.EnvironmentParameters[1] = 0.0F;
         // The profile replaces illumination, not material reflectance. Native
         // TEV gains still apply, so dropping these coefficients overexposes
         // materials authored with reduced diffuse/ambient response.
@@ -144,17 +168,9 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
         for (size_t channel = 0; channel < 3; ++channel)
             result.EnvironmentAmbient[channel] = environment.AmbientColor[channel] *
                 environment.AmbientIntensity * result.MaterialAmbient[channel];
-        if (preserveReference && result.Control[0] != 0U) {
-            // Ambient is a direction-independent scene reference, not a live
-            // direct source. Resolve it once before any native light is gated.
-            for (const auto& light : result.Lights) {
-                if (light.DirectionEnabled[3] == 0.0F) continue;
-                for (size_t channel = 0; channel < 3; ++channel)
-                    result.EnvironmentAmbient[channel] += light.Ambient[channel] * result.MaterialAmbient[channel];
-            }
-        }
         for (size_t slot = 0; slot < environment.Lights.size(); ++slot) {
             const auto& source = environment.Lights[slot];
+            if (source.Intensity <= 0.0F) continue;
             result.EnvironmentDirections[slot][3] = source.Intensity;
             for (size_t row = 0; row < 3; ++row) {
                 for (size_t axis = 0; axis < 3; ++axis)
@@ -173,7 +189,6 @@ layout(location=10) in vec4 pica_surface_tint;
 struct PicaSurfaceLight {
     vec4 direction_enabled;
     vec4 diffuse;
-    vec4 ambient;
     vec4 position_radius;
 };
 struct PicaScenePointLight {
@@ -183,6 +198,7 @@ struct PicaScenePointLight {
 layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
     vec4 material_diffuse;
     vec4 material_ambient;
+    vec4 native_ambient;
     uvec4 control;
     vec4 view_to_world_linear[3];
     PicaSurfaceLight lights[3];
@@ -197,6 +213,11 @@ layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
 vec3 pica_surface_unit(vec3 value) {
     float squared = dot(value, value);
     return squared > 1.0e-20 ? value * inversesqrt(squared) : vec3(0.0);
+}
+vec3 pica_surface_resolved_ambient(vec3 native_ambient) {
+    if (pica_surface.environment_parameters.w == 0.0) return native_ambient;
+    float gain = (pica_surface.control.w & 1u) != 0u ? 1.0 : pica_surface.environment_parameters.y;
+    return native_ambient * gain + pica_surface.environment_ambient.rgb;
 }
 vec3 pica_surface_shadow(int slot);
 void pica_surface_light(int slot, out vec3 direction, out vec3 radiance) {
@@ -245,27 +266,23 @@ vec3 pica_surface_scene_directional_primary(vec3 normal_view) {
 }
 vec3 pica_surface_native_primary(vec3 normal_view) {
     vec3 direct = vec3(0.0);
-    vec3 ambient = vec3(0.0);
     bool native_direct = pica_surface.environment_parameters.w == 0.0 ||
         pica_surface.environment_parameters.x != 0.0;
-    bool native_ambient = pica_surface.environment_parameters.w == 0.0 ||
-        pica_surface.environment_parameters.y != 0.0;
-    for (int slot = 0; pica_surface.control.x != 0u && (native_direct || native_ambient) && slot < 3; ++slot) {
+    for (int slot = 0; pica_surface.control.x != 0u && native_direct && slot < 3; ++slot) {
         if (pica_surface.lights[slot].direction_enabled.w == 0.0) continue;
-        if (native_direct && any(notEqual(pica_surface.lights[slot].diffuse.rgb, vec3(0.0)))) {
+        if (any(notEqual(pica_surface.lights[slot].diffuse.rgb, vec3(0.0)))) {
         vec3 direction, radiance;
         pica_surface_light(slot, direction, radiance);
         direct += max(dot(normal_view, direction), 0.0) * radiance * pica_surface_shadow(slot);
         }
-        ambient += pica_surface.lights[slot].ambient.rgb;
     }
-    vec3 color = direct * pica_surface.material_diffuse.rgb +
-                 ambient * pica_surface.material_ambient.rgb;
+    vec3 color = direct * pica_surface.material_diffuse.rgb;
+    if (pica_surface.environment_parameters.w != 0.0)
+        color *= pica_surface.environment_parameters.x;
+    color += pica_surface_resolved_ambient(pica_surface.native_ambient.rgb);
     if (pica_surface.environment_parameters.w != 0.0) {
-        color = direct * pica_surface.material_diffuse.rgb * pica_surface.environment_parameters.x +
-                ambient * pica_surface.material_ambient.rgb * pica_surface.environment_parameters.y +
-                pica_surface.environment_ambient.rgb;
         for (int slot = 0; slot < 2; ++slot) {
+            if (pica_surface.environment_directions[slot].w <= 0.0) continue;
             vec3 direction = pica_surface_unit(pica_surface.environment_directions[slot].xyz);
             color += max(dot(normal_view, direction), 0.0) *
                 pica_surface.environment_colors[slot].rgb * pica_surface.environment_directions[slot].w *

@@ -2017,6 +2017,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
     mImagesInFlight[mCurrentImage] = mInFlightFences[mCurrentFrame];
     frame.VertexBytesUsed = 0;
     frame.UniformBytesUsed = 0;
+    frame.SurfaceLightingUniformOffset.reset();
     CheckVk(vkResetDescriptorPool(mDevice, frame.DescriptorPool, 0), "vkResetDescriptorPool");
     frame.TextureDescriptorSets.clear();
     CheckVk(vkResetFences(mDevice, 1, &mInFlightFences[mCurrentFrame]), "vkResetFences");
@@ -3753,6 +3754,7 @@ void GfxRenderingAPIVulkan::EnsureFrameUniformCapacity(
     frame.RetiredUniformBuffers.push_back(frame.UniformBuffer);
     frame.UniformBuffer = replacement;
     frame.UniformBytesUsed = 0;
+    frame.SurfaceLightingUniformOffset.reset();
     // Legacy descriptor keys contain textures, not the implicit uniform buffer.
     // Existing sets stay alive in the frame pool; new draws need fresh bindings.
     frame.TextureDescriptorSets.clear();

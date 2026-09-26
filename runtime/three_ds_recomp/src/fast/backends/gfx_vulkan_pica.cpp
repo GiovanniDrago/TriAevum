@@ -4148,11 +4148,14 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             uint32_t booleanUniforms = 0U;
             std::memcpy(&booleanUniforms, draw.VertexUniformBytes.data() +
                         Oot3d::kPicaPackedVertexBooleanMaskOffset, sizeof(booleanUniforms));
+            if (environmentWorldToView &&
+                (!mSurfaceLightingView || mSurfaceLightingView->WorldToView != *environmentWorldToView))
+                mSurfaceLightingView = Renderer3ds::BuildPicaSurfaceLightingView(*environmentWorldToView);
             surfaceLighting = Renderer3ds::BuildPicaSurfaceLightingUniforms(
                 draw.TemporalVertexProgram.Hooks, booleanUniforms,
                 draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset),
                 draw.LightBinding, mFrameEnvironment,
-                environmentWorldToView);
+                environmentWorldToView && mSurfaceLightingView ? &*mSurfaceLightingView : nullptr);
             if (surfaceLighting && environmentWorldToView && directionalShadowReceiver &&
                 !Oot3d::InvertDirectionalShadowMatrix(*environmentWorldToView, environmentViewToWorld))
                 surfaceLighting.reset();
@@ -5061,10 +5064,18 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             : directionalShadowUniformOffset;
         const VkDeviceSize toonUniformSize = uniformToon
             ? sizeof(toonUniforms) : directionalShadowUniformSize;
-        const VkDeviceSize surfaceUniformOffset = uniformSurface
-            ? uploadUniform(std::span<const uint8_t>(
-                reinterpret_cast<const uint8_t*>(&surfaceLighting.value()), sizeof(*surfaceLighting)))
-            : directionalShadowUniformOffset;
+        VkDeviceSize surfaceUniformOffset = directionalShadowUniformOffset;
+        if (uniformSurface) {
+            // Compare host-cached state, not potentially write-combined mapped
+            // upload memory. The offset belongs to this frame and arena only.
+            if (!frame.SurfaceLightingUniformOffset ||
+                std::memcmp(&frame.SurfaceLightingUniforms, &*surfaceLighting, sizeof(*surfaceLighting)) != 0) {
+                frame.SurfaceLightingUniformOffset = uploadUniform(std::span<const uint8_t>(
+                    reinterpret_cast<const uint8_t*>(&*surfaceLighting), sizeof(*surfaceLighting)));
+                frame.SurfaceLightingUniforms = *surfaceLighting;
+            }
+            surfaceUniformOffset = *frame.SurfaceLightingUniformOffset;
+        }
         const VkDeviceSize surfaceUniformSize = uniformSurface
             ? sizeof(*surfaceLighting) : directionalShadowUniformSize;
         const VkDeviceSize pbrUniformOffset = uniformPbr

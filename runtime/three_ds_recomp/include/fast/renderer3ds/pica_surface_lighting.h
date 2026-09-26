@@ -15,7 +15,6 @@ namespace Fast::Renderer3ds {
 struct alignas(16) PicaSurfaceLightUniforms {
     std::array<float, 4> DirectionEnabled{};
     std::array<float, 4> Diffuse{};
-    std::array<float, 4> Ambient{};
     // A positive radius identifies a point light; zero preserves the native direction.
     std::array<float, 4> PositionRadius{};
 };
@@ -28,6 +27,8 @@ struct alignas(16) PicaScenePointLightUniforms {
 struct alignas(16) PicaSurfaceLightingUniforms {
     std::array<float, 4> MaterialDiffuse{};
     std::array<float, 4> MaterialAmbient{};
+    // Material-weighted, direction-independent native reference, resolved once.
+    std::array<float, 4> NativeAmbient{};
     std::array<uint32_t, 4> Control{};
     std::array<std::array<float, 4>, 3> ViewToWorldLinear{};
     std::array<PicaSurfaceLightUniforms, 3> Lights{};
@@ -40,18 +41,28 @@ struct alignas(16) PicaSurfaceLightingUniforms {
     std::array<PicaScenePointLightUniforms, kMaximumPicaScenePointLights> ScenePoints{};
 };
 
-static_assert(sizeof(PicaSurfaceLightingUniforms) == 1472U);
+static_assert(sizeof(PicaSurfaceLightingUniforms) == 1440U);
+
+// Authored lighting requires the column-major WorldToView captured with this
+// geometry sample. Neither a live camera nor a model/bone matrix is a substitute.
+// A validated camera snapshot may be shared by all materials in the same view.
+struct PicaSurfaceLightingView {
+    std::array<float, 16> WorldToView{};
+    std::array<std::array<float, 4>, 3> Rows{};
+    std::array<std::array<float, 4>, 3> ViewToWorldLinear{};
+};
+
+std::optional<PicaSurfaceLightingView> BuildPicaSurfaceLightingView(
+    const std::array<float, 16>& worldToView) noexcept;
 
 // Float-uniform bytes contain consecutive native vec4 values. Their enclosing
 // packed-buffer layout belongs to the caller, not to the surface evaluator.
-// Authored lighting requires the column-major WorldToView captured with this
-// geometry sample. Neither a live camera nor a model/bone matrix is a substitute.
 [[nodiscard]] std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
     const PicaVertexShaderHookLayout& hooks, uint32_t booleanUniforms,
     std::span<const uint8_t> floatUniformBytes,
     const PicaNativeLightBinding& binding,
     const PicaEnvironmentLighting& environment,
-    const std::array<float, 16>* cameraWorldToView) noexcept;
+    const PicaSurfaceLightingView* cameraView) noexcept;
 
 [[nodiscard]] std::string_view PicaSurfaceLightingDeclarations() noexcept;
 [[nodiscard]] std::string_view PicaSurfaceLightingBody() noexcept;

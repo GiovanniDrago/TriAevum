@@ -150,13 +150,18 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
         pbr_srgb_to_linear(texture(pbr_emissive_map, pbr_uv).rgb) : vec3(1.0);
     pbr_emission *= pbr_material.emissive_normal_scale.rgb;
     vec3 pbr_direct = vec3(0.0), pbr_ambient = vec3(0.0);
-    bool pbr_unlit_reference = (pica_surface.control.w & 1u) != 0u &&
-        pica_surface.control.x == 0u && pbr_material.native_control.x == 0u;
+)glsl";
+    result.ShadingBody += options.NativeFragmentLighting
+        ? "    bool pbr_unlit_reference = false;\n"
+        : R"glsl(
+    bool pbr_unlit_reference = (pica_surface.control.w & 1u) != 0u && pica_surface.control.x == 0u;
+)glsl";
+    result.ShadingBody += R"glsl(
     bool pbr_native_direct = pbr_unlit_reference || pica_surface.environment_parameters.w == 0.0 ||
         (pica_surface.control.x != 0u || pbr_material.native_control.x != 0u
             ? pica_surface.environment_parameters.x : pica_surface.environment_parameters.y) != 0.0;
     bool pbr_native_ambient = pica_surface.environment_parameters.w == 0.0 ||
-        pica_surface.environment_parameters.y != 0.0;
+        ((pica_surface.control.w & 1u) == 0u && pica_surface.environment_parameters.y != 0.0);
 )glsl";
     if (options.NativeFragmentLighting) {
         result.ShadingBody += R"glsl(
@@ -193,17 +198,17 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
         vec3 radiance = fragment_uniforms.lighting_diffuse[i].rgb;
         pbr_direct += (diffuse + specular) * radiance * attenuation * pica_surface_shadow(int(i));
         }
-        pbr_ambient += fragment_uniforms.lighting_ambient[i].rgb * attenuation;
+        if (pbr_native_ambient)
+            pbr_ambient += fragment_uniforms.lighting_ambient[i].rgb * attenuation;
     }
     pbr_ambient += fragment_uniforms.lighting_global_ambient.rgb;
-    vec3 pbr_indirect = pbr_ambient * pbr_albedo * (1.0 - pbr_metallic) * pbr_ao;
 )glsl";
     } else {
         result.ShadingBody += R"glsl(
     if (pica_surface.control.x != 0u) {
-        for (int slot = 0; (pbr_native_direct || pbr_native_ambient) && slot < 3; ++slot) {
+        for (int slot = 0; pbr_native_direct && slot < 3; ++slot) {
             if (pica_surface.lights[slot].direction_enabled.w == 0.0) continue;
-            if (pbr_native_direct && any(notEqual(pica_surface.lights[slot].diffuse.rgb, vec3(0.0)))) {
+            if (any(notEqual(pica_surface.lights[slot].diffuse.rgb, vec3(0.0)))) {
             vec3 l, radiance;
             pica_surface_light(slot, l, radiance);
             vec3 diffuse, specular;
@@ -211,25 +216,23 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
                 pbr_roughness, pbr_metallic, false, diffuse, specular);
             pbr_direct += (diffuse + specular) * radiance * pica_surface.material_diffuse.rgb * pica_surface_shadow(slot);
             }
-            pbr_ambient += pica_surface.lights[slot].ambient.rgb;
         }
     } else if (pbr_native_direct) {
         // The native shader explicitly selected an unlit material.
         pbr_direct = pbr_albedo * pica_surface_shadow(-1);
     }
-    vec3 pbr_indirect = pbr_ambient * pica_surface.material_ambient.rgb *
-        pbr_albedo * (1.0 - pbr_metallic) * pbr_ao;
+    pbr_ambient = pica_surface.native_ambient.rgb;
 )glsl";
     }
     result.ShadingBody += R"glsl(
+    vec3 pbr_indirect = pica_surface_resolved_ambient(pbr_ambient) *
+        pbr_albedo * (1.0 - pbr_metallic) * pbr_ao;
     if (pica_surface.environment_parameters.w != 0.0) {
         if (!pbr_unlit_reference)
             pbr_direct *= pica_surface.control.x != 0u || pbr_material.native_control.x != 0u
                 ? pica_surface.environment_parameters.x : pica_surface.environment_parameters.y;
-        pbr_indirect *= pica_surface.environment_parameters.y;
-        pbr_indirect += pica_surface.environment_ambient.rgb * pbr_albedo *
-            (1.0 - pbr_metallic) * pbr_ao;
         for (int slot = 0; slot < 2; ++slot) {
+            if (pica_surface.environment_directions[slot].w <= 0.0) continue;
             vec3 diffuse, specular;
             pbr_ggx(pbr_normal, pbr_view,
                 pica_surface_unit(pica_surface.environment_directions[slot].xyz),
@@ -239,6 +242,7 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
         }
     }
     for (uint slot = 0u; slot < pica_surface.control.z; ++slot) {
+        if (all(equal(pica_surface.scene_directional_colors[slot].rgb, vec3(0.0)))) continue;
         vec3 diffuse, specular;
         pbr_ggx(pbr_normal, pbr_view,
             pica_surface_unit(pica_surface.scene_directions[slot].xyz),
@@ -249,6 +253,7 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
     for (uint slot = 0u; slot < pica_surface.control.y; ++slot) {
         vec3 direction, radiance, diffuse, specular;
         pica_surface_scene_point(int(slot), direction, radiance);
+        if (all(equal(radiance, vec3(0.0)))) continue;
         pbr_ggx(pbr_normal, pbr_view, direction, pbr_albedo,
             pbr_roughness, pbr_metallic, false, diffuse, specular);
         pbr_direct += (diffuse + specular) * radiance;

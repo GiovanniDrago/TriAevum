@@ -1416,7 +1416,9 @@ TEST(Oot3dPicaShaderInstrumentation, AuthoredLightStaysWorldFixedWithCameraFolde
         camera[0] = camera[10] = c;
         camera[2] = -s;
         camera[8] = s;
-        const auto light = BuildPicaSurfaceLightingUniforms(hooks, 0, bytes, {}, environment, &camera);
+        const auto view = BuildPicaSurfaceLightingView(camera);
+        ASSERT_TRUE(view);
+        const auto light = BuildPicaSurfaceLightingUniforms(hooks, 0, bytes, {}, environment, &*view);
         ASSERT_TRUE(light);
         const auto& direction = light->EnvironmentDirections[0];
         const float diffuse = c * direction[0] - s * direction[2];
@@ -1464,9 +1466,10 @@ TEST(Oot3dPicaShaderInstrumentation, AuthoredLightingPreservesNativeMaterialRefl
     environment.Lights[0].DirectionTowardSource = {1, 0, 0};
     environment.Lights[0].Color = {1.0F, 0.8F, 0.6F};
     environment.Lights[0].Intensity = 1.0F;
-    const auto view = Fast::Oot3d::IdentityDirectionalShadowMatrix();
+    const auto view = BuildPicaSurfaceLightingView(Fast::Oot3d::IdentityDirectionalShadowMatrix());
+    ASSERT_TRUE(view);
     const auto evaluate = [&] {
-        const auto light = BuildPicaSurfaceLightingUniforms(hooks, 512U, bytes, {}, environment, &view);
+        const auto light = BuildPicaSurfaceLightingUniforms(hooks, 512U, bytes, {}, environment, &*view);
         EXPECT_TRUE(light);
         std::array<float, 3> color{};
         if (light) {

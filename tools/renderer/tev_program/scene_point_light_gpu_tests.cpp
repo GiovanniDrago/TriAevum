@@ -143,10 +143,13 @@ int main() {
                 }
                 if (i == 20 || i == 21) settings.Lights[0].Intensity = 1;
             }
+            const auto view = BuildPicaSurfaceLightingView(camera);
+            if (!view)
+                throw std::runtime_error("Scene point-light view rejected");
             const auto lighting = BuildPicaSurfaceLightingUniforms(
                 hooks, i == 3 || i == 4 || i == 7 || i == 13 || i == 14 || i == 16 || i == 21 ? 0U : 1U << 9U,
                 { reinterpret_cast<const uint8_t*>(uniforms.data()), sizeof(uniforms) }, binding, settings,
-                &camera);
+                &*view);
             if (!lighting)
                 throw std::runtime_error("Scene point-light surface rejected");
             cases[i].Lighting = *lighting;

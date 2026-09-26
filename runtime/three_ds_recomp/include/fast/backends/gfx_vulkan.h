@@ -12,6 +12,7 @@
 #include "fast/renderer3ds/pica_program_preparation.h"
 #include "fast/renderer3ds/pica_texture_copy_plan.h"
 #include "fast/renderer3ds/pica_shadow_geometry.h"
+#include "fast/renderer3ds/pica_surface_lighting.h"
 #include "fast/backends/oot3d_vulkan_diagnostics.h"
 #include "fast/backends/oot3d_vulkan_gpu_profiler.h"
 #include "fast/backends/oot3d_vulkan_validation.h"
@@ -377,6 +378,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         BufferAllocation UniformBuffer;
         VkDeviceSize VertexBytesUsed = 0;
         VkDeviceSize UniformBytesUsed = 0;
+        std::optional<VkDeviceSize> SurfaceLightingUniformOffset;
+        Renderer3ds::PicaSurfaceLightingUniforms SurfaceLightingUniforms;
         VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
         std::map<TextureDescriptorKey, VkDescriptorSet> TextureDescriptorSets;
         std::vector<uint64_t> NativePicaCompletionIds;
@@ -924,6 +927,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     uint64_t mPicaPipelinePrewarmSkipped = 0U;
     Oot3d::GraphicsSettings mFrameGraphicsSettings;
     Renderer3ds::PicaEnvironmentLighting mFrameEnvironment;
+    std::optional<Renderer3ds::PicaSurfaceLightingView> mSurfaceLightingView;
     uint64_t mFrameGraphicsSettingsRevision = 0;
     uint64_t mAzaharConfiguredSettingsRevision = 0;
     std::optional<Oot3d::PicaAttachmentFeatureRequests>
