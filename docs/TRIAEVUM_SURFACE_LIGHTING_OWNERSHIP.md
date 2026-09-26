@@ -57,7 +57,8 @@ to conceal a missing sky contribution. Authored dark channels remain dark.
 - Brightness reference remains usable without evaluating original direct lights.
 - Key/fill, dynamic point groups and material controls remain independent.
 - Atmosphere, alpha, depth/stencil, native draw order and UI remain protected.
-- Native/F2 and native-memory outputs remain unchanged.
+- Native and native-memory outputs remain unchanged. F2 retains its existing
+  suppression policy; its sky correction is qualified separately below.
 - Room/time/environment transitions update the reference without camera pumping.
 - Performance claims require steady-state measurements, not capture wall time.
 
@@ -119,10 +120,11 @@ there is no image histogram, guessed light direction, automatic exposure,
 arbitrary minimum RGB or promise of identical world pixels.
 
 The CPU resolves direction-independent vertex ambient, including material
-reflectance, once per surface input. It has its own shared `NativeAmbient`
-input; a single GLSL resolver combines it with the authored ambient policy for
-Per-pixel, PBR and the Grass surface-lighting atlas. Fragment-lit PBR retains
-its native global ambient without running the attenuated original-light loop.
+reflectance and the authored ambient policy, once per surface input. Per-pixel,
+vertex-lit PBR and the Grass surface-lighting atlas consume the shared
+`ResolvedAmbient` value directly. Fragment-lit PBR retains its native global
+ambient without running the attenuated original-light loop when preservation
+owns the baseline; its ambient gain is resolved on the CPU.
 No original direct source is required to recover either baseline. Disabling
 preservation restores authored-only lighting, including intentional black.
 
@@ -165,7 +167,7 @@ Verification:
   Frame reuse and uniform-arena replacement invalidate the cached offset.
   Grass keeps the same declared block and lifetime as its source draw.
 - Fragment-lit PBR with zero active native lights is not mistaken for authored
-  unlit appearance. Its global ambient uses the same policy resolver.
+  unlit appearance. Its global ambient follows the same policy.
 
 Verification:
 
@@ -183,3 +185,122 @@ Verification:
   guest bytes; even the normally ignored memory write generation is equal.
 - Steady-state timing qualification is recorded separately below. Reduced
   arithmetic and block size alone are not an FPS claim.
+
+### CPU-resolved ambient policy
+
+The final increment also folds the reference/native gain and authored ambient
+addition into the CPU's `ResolvedAmbient`. Vertex-lit Per-pixel, PBR and Grass
+no longer branch on the environment policy or combine constant ambient RGB
+per pixel. Native-fragment PBR still accumulates pixel-dependent native ambient
+when requested, then applies the CPU-resolved gain and authored ambient once.
+An inactive environment supplies unit gain; preservation does not overwrite
+the profile's saved native-ambient strength.
+
+The production builder and vertex/fragment PBR shaders were exercised together
+with native gains zero, reference Off, environment disabled, changed native
+ambient, and mixed half-strength native plus authored ambient. The mixed case
+checks that the policy is not applied twice. Both shader paths preserve the
+tested material alpha. All 24 working-tree GPU cases, 42 pipeline/instrumentation
+tests and native composition regressions pass after this increment.
+
+## Deterministic qualification
+
+Qualification uses the actual Windows/Vulkan runtime on an RTX 3060 and
+i5-12400F, private environment profiles, framebuffer readback, serialized PICA
+targets and native submission diagnostics. It does not use desktop screenshots
+as fidelity evidence. No game-derived captures or checkpoints are committed.
+
+### Outdoor scene and canonical boundaries
+
+Kokiri scene `0x55` uses `fairies-visible.oot3dsav`, source sample 111550,
+host capture frame 30, at 1280×720. Native is byte-identical to the original
+pre-change runtime:
+
+`a12f2ecfc6bc30d7e5f2d78be74b309f3f0d92b5c177745edb6a79a836ac3f89`
+
+Native, reference-only Per-pixel, authored Per-pixel and authored Per-pixel+PBR
+retain identical native-memory target payloads and presentation depth. Guest
+memory, native PICA frontend and native submission state also remain unchanged.
+Across the four structural traces, all 3,484 native draws retain their order,
+raw output-merger registers and raster state. The trace digest is:
+
+`a173d058edf5a2506b345fe2d0d21883b8906c7b1a25ae96495726b3855cd8c4`
+
+The trace contains 589 atmosphere, 1,547 opaque-world, 775 transparent-world,
+476 UI and 97 unknown draws. The bottom-screen UI target is unchanged.
+Stencil is inactive in this scenario: zero enabled draws and zero serialized
+stencil bytes. This proves unchanged disabled stencil state, not live stencil
+output under an unexercised scene.
+
+The 4,000-pixel sky probe `(620,5)-(780,30)` is exact Native under all qualified
+surface-lighting variants. Its mean linear luminance is 0.738520. World shading
+is deliberately not pixel-identical: the wall probe changes from 0.180393 Native
+to 0.126651 with only the ambient reference, then 0.133034 with the authored key.
+Preservation is an ambient/material baseline, not normalized total irradiance.
+
+### Authentic and F2
+
+Authentic and F2 framebuffers are byte-identical across the shared-evaluation
+optimization. F2 retains its existing extension suppression mask and suspends
+the authored environment; it does not convert Per-pixel modes to Native.
+
+Compared with the original pre-change F2 runtime, 31,969 pixels intentionally
+change, all inside the half-open bounding rectangle `(0,0)-(1098,77)`.
+The sky probe changes from linear luminance 0.783748 to exact Native 0.738520.
+The qualified wall and ground probes are unchanged. Guest memory, native
+frontend/submission and native-memory target payloads are unchanged. Thus the
+whole original F2 framebuffer is **not** claimed identical: it inherits the
+sky-attribution correction.
+
+### Interior and explicit darkness
+
+Link's House, scene `0x34`, uses `timing_link_house_11800.oot3dsav` with an
+explicit private scene-`0x34` profile. All native source gains, authored ambient
+and key/fill intensities are zero:
+
+| Manual framebuffer region | Native | Reference On | Reference Off |
+| --- | ---: | ---: | ---: |
+| Room `(0,270)-(1280,720)` | 0.072517 | 0.065982 | 0.001604 |
+| Bed `(430,570)-(920,650)` | 0.255480 | 0.255523 | 0 |
+
+Values are mean linear luminance, not semantic masks. Reference On keeps the
+room visible; Off permits intentional black. Native-memory targets and
+presentation depth remain exact. The earlier `house-PerPixel` capture had no
+scene-`0x34` profile and is only an unprofiled baseline, not reference-On proof.
+Changed native ambient is also exercised directly through the production
+builder and both PBR shader paths; a live day/night traversal is not claimed.
+
+### Timing limits
+
+The shared-evaluation increment was measured with four before/four after
+throughput runs, 120 warmup plus 240 measured frames each, pacing and VSync
+disabled, without screenshot or semantic-trace capture. Trial order was A/B,
+A/B, B/A, B/A. No pipeline was created in the measured windows.
+
+| Trial | Before mean frame, ms | After mean frame, ms | Before backend CPU median, ms | After backend CPU median, ms |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 30.6091 | 29.1280 | 9.6216 | 7.5743 |
+| 2 | 29.4482 | 29.3918 | 9.0876 | 7.6947 |
+| 3 | 28.0692 | 28.7416 | 6.1783 | 6.2345 |
+| 4 | 27.9103 | 28.0027 | 6.0697 | 5.9552 |
+
+GPU-frame medians span 4.5376–5.2578 ms before and 5.2494–5.6574 ms after.
+These runs do **not** establish a stable FPS gain. The user's running session
+was left alone, so the machine was not isolated; neither the apparent early
+CPU improvement nor the GPU timing difference is assigned a causal speedup
+or regression. The later CPU-ambient increment removes constant per-pixel
+policy work, but arithmetic reduction alone is not a throughput guarantee.
+
+### Profile migration and evidence location
+
+For an existing schema-1–3 profile, enable **F1 → Environment → Preserve scene
+brightness** explicitly. Migration preserves the old authored-only choice;
+it does not silently edit the user's profile. New profiles default to On.
+Turning it Off restores intentional-dark workflows and the saved native
+ambient gain.
+
+Private evidence is retained under
+`I:/_triaevum_work/lighting-rationalization/`: `qualification-report.json`,
+per-capture receipts/configurations/framebuffers/diagnostics, and the final
+CPU-ambient parity and qualification reports. Temporary analysis sources are
+removed after verification; captures and recovery baselines remain private.

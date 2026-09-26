@@ -96,7 +96,7 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
         for (size_t component = 0; component < 3U; ++component) light.DirectionEnabled[component] = -light.DirectionEnabled[component];
         if (result.Control[0] != 0U && light.DirectionEnabled[3] != 0.0F)
             for (size_t channel = 0; channel < 3; ++channel)
-                result.NativeAmbient[channel] += ambient[channel] * result.MaterialAmbient[channel];
+                result.ResolvedAmbient[channel] += ambient[channel] * result.MaterialAmbient[channel];
         const auto& source = binding.Sources[slot];
         const bool pointSource = source.Kind == PicaNativeLightSource::Type::Point && source.Radius > 0.0F;
         if (result.Control[0] == 0U || light.DirectionEnabled[3] == 0.0F ||
@@ -155,8 +155,11 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
                 settings.Intensity * reflectance[row];
         }
     }
+    const float ambientGain = !environment.Enabled || environment.PreserveSceneBrightness
+        ? 1.0F : environment.NativeAmbientStrength;
+    result.EnvironmentParameters[1] = ambientGain;
     if (environment.Enabled) {
-        result.EnvironmentParameters = {environment.NativeLocalStrength, environment.NativeAmbientStrength,
+        result.EnvironmentParameters = {environment.NativeLocalStrength, ambientGain,
                                         environment.FogStrength, 1.0F};
         const bool preserveReference = environment.PreserveSceneBrightness;
         result.Control[3] = preserveReference ? 1U : 0U;
@@ -179,6 +182,9 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
             }
         }
     }
+    for (size_t channel = 0; channel < 3; ++channel)
+        result.ResolvedAmbient[channel] = result.ResolvedAmbient[channel] * ambientGain +
+                                          result.EnvironmentAmbient[channel];
     return result;
 }
 
@@ -198,7 +204,7 @@ struct PicaScenePointLight {
 layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
     vec4 material_diffuse;
     vec4 material_ambient;
-    vec4 native_ambient;
+    vec4 resolved_ambient;
     uvec4 control;
     vec4 view_to_world_linear[3];
     PicaSurfaceLight lights[3];
@@ -215,9 +221,7 @@ vec3 pica_surface_unit(vec3 value) {
     return squared > 1.0e-20 ? value * inversesqrt(squared) : vec3(0.0);
 }
 vec3 pica_surface_resolved_ambient(vec3 native_ambient) {
-    if (pica_surface.environment_parameters.w == 0.0) return native_ambient;
-    float gain = (pica_surface.control.w & 1u) != 0u ? 1.0 : pica_surface.environment_parameters.y;
-    return native_ambient * gain + pica_surface.environment_ambient.rgb;
+    return native_ambient * pica_surface.environment_parameters.y + pica_surface.environment_ambient.rgb;
 }
 vec3 pica_surface_shadow(int slot);
 void pica_surface_light(int slot, out vec3 direction, out vec3 radiance) {
@@ -279,7 +283,7 @@ vec3 pica_surface_native_primary(vec3 normal_view) {
     vec3 color = direct * pica_surface.material_diffuse.rgb;
     if (pica_surface.environment_parameters.w != 0.0)
         color *= pica_surface.environment_parameters.x;
-    color += pica_surface_resolved_ambient(pica_surface.native_ambient.rgb);
+    color += pica_surface.resolved_ambient.rgb;
     if (pica_surface.environment_parameters.w != 0.0) {
         for (int slot = 0; slot < 2; ++slot) {
             if (pica_surface.environment_directions[slot].w <= 0.0) continue;

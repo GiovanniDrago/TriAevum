@@ -202,6 +202,7 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
             pbr_ambient += fragment_uniforms.lighting_ambient[i].rgb * attenuation;
     }
     pbr_ambient += fragment_uniforms.lighting_global_ambient.rgb;
+    pbr_ambient = pica_surface_resolved_ambient(pbr_ambient);
 )glsl";
     } else {
         result.ShadingBody += R"glsl(
@@ -221,11 +222,11 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
         // The native shader explicitly selected an unlit material.
         pbr_direct = pbr_albedo * pica_surface_shadow(-1);
     }
-    pbr_ambient = pica_surface.native_ambient.rgb;
+    pbr_ambient = pica_surface.resolved_ambient.rgb;
 )glsl";
     }
     result.ShadingBody += R"glsl(
-    vec3 pbr_indirect = pica_surface_resolved_ambient(pbr_ambient) *
+    vec3 pbr_indirect = pbr_ambient *
         pbr_albedo * (1.0 - pbr_metallic) * pbr_ao;
     if (pica_surface.environment_parameters.w != 0.0) {
         if (!pbr_unlit_reference)

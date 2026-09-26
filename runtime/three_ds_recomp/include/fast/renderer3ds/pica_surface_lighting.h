@@ -27,12 +27,12 @@ struct alignas(16) PicaScenePointLightUniforms {
 struct alignas(16) PicaSurfaceLightingUniforms {
     std::array<float, 4> MaterialDiffuse{};
     std::array<float, 4> MaterialAmbient{};
-    // Material-weighted, direction-independent native reference, resolved once.
-    std::array<float, 4> NativeAmbient{};
+    // Material-weighted ambient with the environment policy already applied.
+    std::array<float, 4> ResolvedAmbient{};
     std::array<uint32_t, 4> Control{};
     std::array<std::array<float, 4>, 3> ViewToWorldLinear{};
     std::array<PicaSurfaceLightUniforms, 3> Lights{};
-    std::array<float, 4> EnvironmentParameters{}; // native local, native ambient, fog, enabled
+    std::array<float, 4> EnvironmentParameters{}; // native local, effective ambient gain, fog, enabled
     std::array<float, 4> EnvironmentAmbient{};
     std::array<std::array<float, 4>, 2> EnvironmentDirections{};
     std::array<std::array<float, 4>, 2> EnvironmentColors{};
