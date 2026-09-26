@@ -203,6 +203,17 @@ checks that the policy is not applied twice. Both shader paths preserve the
 tested material alpha. All 24 working-tree GPU cases, 42 pipeline/instrumentation
 tests and native composition regressions pass after this increment.
 
+Final runtime verification of this increment:
+
+- Eight framebuffer SHA-256 values match their pre-increment baselines exactly:
+  Native, reference-only Per-pixel, authored Per-pixel, authored Per-pixel+PBR,
+  Authentic, F2, and Link's House with the reference On and Off.
+- The Native serialized state is entirely equal before/after this increment.
+  Native frontend and submission state also match across the three qualified
+  non-native surface-lighting modes.
+- The exact staged headers/evaluator and committed 22-case GPU fixture pass.
+  The actual-widget F1 smoke passes again with 6,648 assertions.
+
 ## Deterministic qualification
 
 Qualification uses the actual Windows/Vulkan runtime on an RTX 3060 and
@@ -290,6 +301,17 @@ was left alone, so the machine was not isolated; neither the apparent early
 CPU improvement nor the GPU timing difference is assigned a causal speedup
 or regression. The later CPU-ambient increment removes constant per-pixel
 policy work, but arithmetic reduction alone is not a throughput guarantee.
+
+Two additional final-build throughput runs used 120 warmup plus 120 measured
+frames each, under the same non-isolated conditions:
+
+| Trial | Mean frame, ms | Backend CPU median, ms | Upload median, ms | GPU-frame median, ms |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 29.0004 | 6.0836 | 0.4129 | 6.2469 |
+| 2 | 30.9292 | 6.4024 | 0.4370 | 5.8146 |
+
+Neither window created a pipeline. These shorter, later runs are not paired
+controls and do not establish an FPS improvement for the final increment.
 
 ### Profile migration and evidence location
 
