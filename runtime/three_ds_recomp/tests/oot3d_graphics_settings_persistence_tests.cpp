@@ -32,9 +32,6 @@ Fast::Oot3d::GraphicsSettings CompleteSettings() {
     settings.TexturePacks.Azahar.DumpDirectory =
         "E:/texture-dumps/oot3d";
     settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixelPbr;
-    settings.Effects.Pbr.NormalStrength = 3.5F;
-    settings.Effects.Pbr.GlossinessStrength = 0.6F;
-    settings.Effects.Pbr.DebugView = Fast::Renderer3ds::PicaPbrDebugView::Roughness;
 
     auto& grass = settings.Grass;
     grass.Quality = GrassQuality::Custom;
@@ -295,7 +292,6 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsCompleteSettings) {
               document);
     EXPECT_EQ(loaded.Value.Effects.SurfaceLighting,
               Fast::Oot3d::SurfaceLightingMode::PerPixelPbr);
-    EXPECT_EQ(loaded.Value.Effects.Pbr, original.Effects.Pbr);
     ASSERT_EQ(loaded.Value.Grass.Rules.size(), 2U);
     EXPECT_EQ(loaded.Value.Grass.Rules[0].Target.Rgba8Hash,
               0xFEDCBA9876543210ULL);

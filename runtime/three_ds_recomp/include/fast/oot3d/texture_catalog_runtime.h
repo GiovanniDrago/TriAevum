@@ -13,6 +13,9 @@ struct TextureCatalogEntry {
     uint16_t Height = 0;
     uint8_t NativeFormat = 0;
     uint64_t Observations = 0;
+    uint64_t MaterialHash = 0;
+    bool MaterialHashAvailable = false;
+    bool MaterialUsesNewHash = true;
 };
 
 class TextureCatalogRuntime final {
@@ -20,6 +23,8 @@ class TextureCatalogRuntime final {
     static TextureCatalogRuntime& Instance();
     void Observe(uint64_t contentHash, uint32_t physicalAddress,
                  uint16_t width, uint16_t height, uint8_t nativeFormat);
+    void AssociateMaterial(uint64_t contentHash, uint16_t width, uint16_t height,
+                           uint8_t nativeFormat, uint64_t materialHash, bool useNewHash);
     [[nodiscard]] std::vector<TextureCatalogEntry> Snapshot() const;
     void Clear();
 

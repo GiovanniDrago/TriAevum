@@ -8,25 +8,20 @@ using SettingsUi::EnumCombo;
 bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, const GraphicsCapabilities& capabilities) {
     bool changed = false;
     ImGui::SeparatorText("Surface lighting");
-    const char* const surfaceLightingModes[] = {"Native", "Per-pixel", "Per-pixel + PBR"};
+    const char* const surfaceLightingModes[] = {"Native", "Per-pixel", "Per-pixel + PBR", "Native + PBR"};
     changed |= SettingsUi::ValidatedCombo<SurfaceLightingMode>(
         "Lighting model", settings, capabilities, surfaceLightingModes,
         [](auto& value, auto mode) { value.Effects.SurfaceLighting = mode; },
         [](const auto& value) { return value.Effects.SurfaceLighting; });
-    ImGui::TextWrapped("Uses native scene lights and selected local lights. Unsupported native materials keep their original shading.");
-    if (settings.Effects.SurfaceLighting == SurfaceLightingMode::PerPixelPbr) {
-        ImGui::TextWrapped("PBR uses Azahar material packs configured in Textures. Materials without a pack use native per-pixel lighting.");
-        auto& pbr = settings.Effects.Pbr;
-        changed |= ImGui::SliderFloat("Normal strength", &pbr.NormalStrength, 0.0F, 8.0F, "%.2fx");
-        changed |= ImGui::SliderFloat("Glossiness strength", &pbr.GlossinessStrength, 0.0F, 2.0F, "%.2fx");
-        const char* const materialViews[] = {"Shaded", "Surface normals", "Roughness"};
-        changed |= EnumCombo("Material view", pbr.DebugView, materialViews);
-        ImGui::TextWrapped("Live controls: 1x uses the pack; normal 0x flattens the normal map, glossy 0x makes the material rough. Reflection strength remains in Reflections.");
-        ImGui::TextWrapped("Normal detail needs direct light or reflections; ambient-only/baked materials may look unchanged. Material view shows only active PBR surfaces, without changing native coverage.");
-        if (ImGui::Button("Reset PBR controls")) {
-            pbr = {};
-            changed = true;
-        }
+    const bool nativePbr = settings.Effects.SurfaceLighting == SurfaceLightingMode::NativePbr;
+    ImGui::TextWrapped(nativePbr
+        ? "Uses native scene lights only on PBR materials. Other surfaces and projected shadows stay native. Scene environment overrides are inactive."
+        : "Uses native scene lights and selected local lights. Unsupported native materials keep their original shading.");
+    if (UsesPbrMaterials(settings.Effects.SurfaceLighting)) {
+        ImGui::TextWrapped(nativePbr
+            ? "PBR uses Azahar material packs configured in Textures. Surfaces without a supported material keep original native shading."
+            : "PBR uses Azahar material packs configured in Textures. Materials without a pack use native per-pixel lighting.");
+        ImGui::TextWrapped("Edit individual materials, maps and PBR response in the Material editor tab.");
     }
 
     ImGui::SeparatorText("Ambient occlusion");

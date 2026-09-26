@@ -295,6 +295,13 @@ void CheckSceneEnvironment() {
           "native lighting did not bypass VSM while preserving its preference");
     Click("Shadow mode");
     Check(Find("Virtual Shadow Maps").Disabled, "native lighting can enable VSM");
+    settings.Effects.SurfaceLighting = SurfaceLightingMode::NativePbr;
+    graphics.Apply(settings);
+    Frame();
+    Check(Find("Virtual Shadow Maps").Disabled &&
+              graphics.SnapshotForRendering().Value.Effects.DirectionalShadows.Mode == DirectionalShadowMode::Off &&
+              graphics.Snapshot().Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps,
+          "Native PBR enabled VSM or erased its saved preference");
     Click("Off");
     settings = graphics.Snapshot();
     settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixel;
@@ -359,6 +366,22 @@ void CheckSceneEnvironment() {
           "disabled profile edits changed rendering inputs and invalidated history");
     Click("Reload scene environment");
     Check(environment->Snapshot().Profile == saved.Profile, "scene profile reload lost authored settings");
+    settings = graphics.Snapshot();
+    settings.Effects.SurfaceLighting = SurfaceLightingMode::NativePbr;
+    graphics.Apply(settings);
+    const auto nativePbrEnvironment = graphics.SnapshotForRendering().Environment;
+    Check(!nativePbrEnvironment.Enabled && environment->Snapshot().Profile.Enabled,
+          "Native PBR applied the scene environment or erased its profile");
+    auto nativePbrEdit = saved.Profile;
+    nativePbrEdit.NativeDirectStrength = 0;
+    nativePbrEdit.NativeLocalStrength = 0;
+    nativePbrEdit.PointLights[0].Enabled = !nativePbrEdit.PointLights[0].Enabled;
+    environment->Preview(nativePbrEdit);
+    Check(graphics.SnapshotForRendering().Environment == nativePbrEnvironment,
+          "Native PBR consumed scene or fairy override edits");
+    environment->Preview(saved.Profile);
+    settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixelPbr;
+    graphics.Apply(settings);
     graphics.ToggleNativePresentationOverride();
     Check(!graphics.SnapshotForRendering().Environment.Enabled && environment->Snapshot().Profile.Enabled,
           "F2 did not bypass scene relighting without erasing its profile");
@@ -413,6 +436,250 @@ void CheckSceneEnvironment() {
           "capability loss prevented disabling Navi point lights");
     environment->ObserveScene(std::nullopt);
     AllCapabilities(true);
+}
+
+void CheckPbrMaterialEditor() {
+    using namespace ::Oot3d::Renderer;
+    auto& packs = AzaharTexturePackRuntime::Instance();
+    auto& catalog = TextureCatalogRuntime::Instance();
+    const auto root = std::filesystem::temp_directory_path() /
+        ("triaevum-material-editor-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto packRoot = root / "pack";
+    const auto inputs = root / "inputs";
+    std::filesystem::create_directories(packRoot);
+    std::filesystem::create_directory(inputs);
+    struct Cleanup {
+        std::filesystem::path Root;
+        ~Cleanup() {
+            auto& runtime = AzaharTexturePackRuntime::Instance();
+            runtime.Configure({});
+            runtime.WaitForPendingLoads();
+            TextureCatalogRuntime::Instance().Clear();
+            std::error_code error;
+            std::filesystem::remove_all(Root, error);
+        }
+    } cleanup{root};
+    const auto image = [&](const char* name, std::array<uint8_t, 4> pixel, uint32_t width = 2) {
+        std::vector<uint8_t> pixels(width * 2 * 4);
+        for (size_t offset = 0; offset < pixels.size(); offset += 4)
+            std::copy(pixel.begin(), pixel.end(), pixels.begin() + offset);
+        WriteAzaharTexturePng(inputs / name, width, 2, pixels);
+    };
+    image("normal.png", {128, 128, 255, 255});
+    image("orm.png", {255, 51, 0, 255});
+    image("base.png", {201, 127, 51, 255});
+    image("emissive.png", {25, 35, 45, 255});
+    image("height.png", {64, 64, 64, 255});
+    image("occlusion.png", {17, 23, 29, 255});
+    image("roughness.png", {41, 63, 47, 255});
+    image("metallic.png", {97, 101, 129, 255});
+    image("wrong-size.png", {7, 11, 13, 255}, 4);
+    {
+        std::ofstream other(packRoot / "000000000000DCBA.material.json");
+        other << R"({"schema":"triaevum.pbr-material","version":1,"specularLevel":0.25})";
+    }
+    packs.Configure({.LoadCustomTextures = true, .LoadDirectory = packRoot});
+    packs.WaitForPendingLoads();
+    catalog.Clear();
+    // Catalog/FNV identity deliberately differs from the Azahar/native-byte identity.
+    catalog.Observe(0x12345678, 0x1000, 32, 32, 0);
+    catalog.AssociateMaterial(0x12345678, 32, 32, 0, 0xABCD, packs.Snapshot().PackUsesNewHash);
+    size = ImVec2(1000, 1350);
+    Click("Material editor");
+    Click("Create from texture");
+    Click("Texture catalog selection");
+    ClickTexture(0x12345678);
+    Click("Create / edit selected texture");
+    Click("Material");
+    EditScalar("Normal strength", "3.5");
+    EditScalar("Glossiness strength", "0.6");
+    EditScalar("Minimum roughness", "0.4");
+    EditScalar("Dielectric reflectance", "1.5");
+    EditScalar("Specular weight", "0.4");
+    EditScalar("Screen-space reflection weight", "1.5");
+    EditScalar("Height depth (UV)", "0.05");
+    Click("UV seam softening");
+    Click("Enable UV seam softening");
+    EditScalar("Seam strength", "0.75");
+    EditScalar("Seam width (% edge)", "12.5");
+    Click("Soften normals");
+    Click("Soften emission");
+    Click("UV seam softening");
+    Click("Save material");
+    packs.WaitForPendingLoads();
+    Frame();
+    const auto descriptor = packRoot / "000000000000ABCD.material.json";
+    Check(std::filesystem::is_regular_file(descriptor) &&
+              !std::filesystem::exists(packRoot / "0000000012345678.material.json"),
+          "creation used the catalog hash instead of the native texture's Azahar identity");
+    const auto resolved = [&](uint64_t hash) {
+        (void)packs.ResolveMaterialOrQueue(hash, packs.Generation());
+        packs.WaitForPendingLoads();
+        return packs.ResolveMaterialOrQueue(hash, packs.Generation());
+    };
+    auto material = resolved(0xABCD);
+    Check(material.Material && material.Material->Parameters.NormalScale == 3.5F &&
+              material.Material->Parameters.GlossinessStrength == 0.6F &&
+              material.Material->Parameters.MinimumRoughness == 0.4F &&
+              material.Material->Parameters.SpecularLevel == 1.5F &&
+              material.Material->Parameters.SpecularWeight == 0.4F &&
+              material.Material->Parameters.ScreenSpaceReflectionWeight == 1.5F &&
+              material.Material->Parameters.HeightScale == 0.05F,
+          "saved editor parameters did not reach the material loader");
+    Check(material.Material->Parameters.SeamSoftening &&
+              material.Material->Parameters.SeamStrength == 0.75F &&
+              material.Material->Parameters.SeamWidth == 0.125F &&
+              material.Material->Parameters.SeamChannels == 62U,
+          "saved seam controls did not reach the material loader");
+    Click("UV seam softening");
+    EditScalar("Seam strength", "0");
+    Click("Soften height");
+    Click("UV seam softening");
+    EditScalar("Dielectric reflectance", "0.5");
+    EditScalar("Specular weight", "0");
+    EditScalar("Screen-space reflection weight", "2");
+    material = resolved(0xABCD);
+    Check(material.Preview && material.Preview->SpecularLevel == 0.5F &&
+              material.Preview->SpecularWeight == 0.0F &&
+              material.Preview->ScreenSpaceReflectionWeight == 2.0F &&
+              material.Material->Parameters.SpecularWeight == 0.4F &&
+              material.Material->Parameters.ScreenSpaceReflectionWeight == 1.5F &&
+              material.Material->Parameters.SpecularLevel == 1.5F,
+          "selected material preview either failed or wrote unsaved values to disk");
+    Check(material.Preview->SeamStrength == 0 && material.Preview->SeamChannels == 30U &&
+              material.Material->Parameters.SeamStrength == 0.75F &&
+              material.Material->Parameters.SeamChannels == 62U,
+          "live seam preview changed persisted channel selection or strength");
+    const auto other = resolved(0xDCBA);
+    Check(other.Material && !other.Preview && other.Material->Parameters.SpecularLevel == 0.25F &&
+              other.Material->Parameters.SpecularWeight == 1.0F &&
+              other.Material->Parameters.ScreenSpaceReflectionWeight == 1.0F,
+          "editing one material changed another material");
+    Select("Existing PBR material", "000000000000DCBA");
+    Click("Keep editing");
+    Click("Save material");
+    packs.WaitForPendingLoads();
+    Frame();
+    Select("Material view", "Roughness");
+    Check(resolved(0xABCD).Preview->DebugView == Fast::Renderer3ds::PicaPbrDebugView::Roughness,
+          "selected-material diagnostic preview was not published");
+    auto& graphics = GraphicsSettingsRuntime::Instance();
+    graphics.ToggleNativePresentationOverride();
+    Frame();
+    Check(graphics.SnapshotForRendering().Value.Effects.SurfaceLighting == SurfaceLightingMode::Native,
+          "F2 did not bypass material shading");
+    graphics.ToggleNativePresentationOverride();
+    Frame();
+    Check(resolved(0xABCD).Preview->SpecularLevel == 0.5F &&
+              resolved(0xABCD).Preview->SpecularWeight == 0.0F &&
+              resolved(0xABCD).Preview->ScreenSpaceReflectionWeight == 2.0F,
+          "F2 lost the authored material preview");
+    Select("Material view", "Shaded");
+    AllCapabilities(false);
+    Frame();
+    Check(!Find("Minimum roughness").Disabled, "material authoring disappeared when renderer capabilities were unavailable");
+    Click("UV seam softening");
+    Check(!Find("Enable UV seam softening").Disabled,
+          "seam Off control became inaccessible after capability loss");
+    Click("Enable UV seam softening");
+    Check(!resolved(0xABCD).Preview->SeamSoftening,
+          "seam Off control did not disable the material preview");
+    Click("UV seam softening");
+    AllCapabilities(true);
+    Click("Images");
+    Click("Base color");
+    Click("Browse image");
+    EditText("Folder", inputs.string().c_str());
+    Click("Open folder");
+    Click("base.png");
+    packs.WaitForPendingLoads();
+    Frame();
+    const auto loadImage = [&](const char* path) {
+        EditText("Image path", (inputs / path).string().c_str());
+        Click("Load image");
+        packs.WaitForPendingLoads();
+        Frame(); Frame();
+    };
+    Click("Normal"); loadImage("normal.png");
+    Click("Emissive"); loadImage("emissive.png");
+    Click("Height"); loadImage("height.png");
+    Click("ORM"); loadImage("orm.png");
+    Click("Save material");
+    packs.WaitForPendingLoads();
+    Frame();
+    material = resolved(0xABCD);
+    Check(material.Material->ColorReplacement && (*material.Material->ColorReplacement->Rgba8)[0] == 201 &&
+              (*material.Material->Textures[0]->Rgba8)[2] == 255 &&
+              (*material.Material->Textures[1]->Rgba8)[1] == 51 &&
+              (*material.Material->Textures[2]->Rgba8)[2] == 45 &&
+              (*material.Material->Textures[3]->Rgba8)[0] == 64,
+          "an imported PBR slot did not survive save and loader publication");
+    Select("ORM input", "Separate channels");
+    Click("Occlusion"); loadImage("occlusion.png"); Select("Source channel", "R");
+    Click("Roughness"); loadImage("roughness.png"); Select("Source channel", "G");
+    Click("Metallic"); loadImage("metallic.png"); Select("Source channel", "B");
+    Click("Preview packed ORM");
+    Click("Save material");
+    packs.WaitForPendingLoads();
+    Frame();
+    material = resolved(0xABCD);
+    const auto packed = material.Material->Textures[1];
+    Check(packed && (*packed->Rgba8)[0] == 17 && (*packed->Rgba8)[1] == 63 &&
+              (*packed->Rgba8)[2] == 129 && (*packed->Rgba8)[3] == 255,
+          "separate ORM channels were swizzled, gamma-converted, or not exported as one image");
+    auto readJson = [&] {
+        std::ifstream file(descriptor);
+        return nlohmann::json::parse(file);
+    };
+    const auto saved = readJson();
+    Check(std::filesystem::is_regular_file(descriptor.parent_path() / saved["orm"]["texture"].get<std::string>()),
+          "saved descriptor does not reference the packed ORM export");
+    loadImage("wrong-size.png");
+    Click("Save material");
+    Check(readJson() == saved, "mismatched ORM dimensions replaced the last valid material");
+    loadImage("metallic.png");
+    {
+        std::ofstream broken(inputs / "broken.png");
+        broken << "not an image";
+    }
+    loadImage("broken.png");
+    Click("Save material");
+    Check(readJson() == saved, "failed image import corrupted the material descriptor");
+    loadImage("metallic.png");
+    Click("Material");
+    EditScalar("Dielectric reflectance", "0.8");
+    std::filesystem::rename(descriptor, descriptor.string() + ".backup");
+    std::filesystem::create_directory(descriptor);
+    Click("Save material");
+    Check(resolved(0xABCD).Preview->SpecularLevel == 0.8F &&
+              std::filesystem::is_regular_file(descriptor.string() + ".backup"),
+          "failed descriptor write discarded the live draft");
+    std::filesystem::remove(descriptor);
+    std::filesystem::rename(descriptor.string() + ".backup", descriptor);
+    Click("Save material");
+    packs.WaitForPendingLoads();
+    Frame();
+    Check(resolved(0xABCD).Material->Parameters.SpecularLevel == 0.8F,
+          "retrying material save did not commit the retained draft");
+    Click("Reset material parameters");
+    Check(resolved(0xABCD).Preview->SpecularWeight == 1.0F &&
+              resolved(0xABCD).Preview->ScreenSpaceReflectionWeight == 1.0F,
+          "reset did not restore neutral material reflection weights");
+    Check(!resolved(0xABCD).Preview->SeamSoftening,
+          "reset left auxiliary seam blending enabled");
+    Select("Existing PBR material", "000000000000DCBA");
+    Click("Discard and select");
+    Check(resolved(0xABCD).Material->Parameters.SpecularLevel == 0.8F && !resolved(0xABCD).Preview,
+          "discarding a draft changed the saved material or left its preview active");
+    Select("Existing PBR material", "000000000000ABCD");
+    packs.WaitForPendingLoads();
+    Frame();
+    Check(resolved(0xABCD).Preview->MinimumRoughness == 0.4F,
+          "selecting an existing material lost its authored roughness floor");
+    Click("Renderer");
+    Click("Lighting");
+    size = ImVec2(760, 1100);
+    Frame(); Frame();
 }
 
 void CheckGameSurfaceMouseResume() {
@@ -613,28 +880,26 @@ int main() try {
     Select("Lighting model", "Per-pixel + PBR");
     Check(runtime.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::PerPixelPbr,
           "PBR lighting selection not applied");
-    EditScalar("Normal strength", "3.5");
-    EditScalar("Glossiness strength", "0.6");
-    Check(runtime.Snapshot().Effects.Pbr.NormalStrength == 3.5F,
-          "normal strength did not apply live");
-    Check(runtime.Snapshot().Effects.Pbr.GlossinessStrength == 0.6F,
-          "glossiness strength did not apply live");
-    Select("Material view", "Surface normals");
-    Check(runtime.Snapshot().Effects.Pbr.DebugView == Fast::Renderer3ds::PicaPbrDebugView::SurfaceNormals,
-          "normal diagnostic view did not apply");
-    Select("Material view", "Roughness");
-    Check(runtime.Snapshot().Effects.Pbr.DebugView == Fast::Renderer3ds::PicaPbrDebugView::Roughness,
-          "roughness diagnostic view did not apply");
-    Click("Reset PBR controls");
-    Check(runtime.Snapshot().Effects.Pbr == Fast::Renderer3ds::PicaPbrControls{},
-          "PBR controls did not reset");
+    Select("Lighting model", "Native + PBR");
+    Check(runtime.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::NativePbr,
+          "native PBR selection not applied");
+    const auto persistedNativePbr = DeserializeGraphicsSettings(store->Root["Graphics"]);
+    Check(persistedNativePbr.Value.Effects.SurfaceLighting == SurfaceLightingMode::NativePbr,
+          "native PBR lighting selection lost on reload");
+    runtime.ToggleNativePresentationOverride();
+    Check(runtime.SnapshotForRendering().Value.Effects.SurfaceLighting == SurfaceLightingMode::Native,
+          "F2 did not bypass native PBR");
+    runtime.ToggleNativePresentationOverride();
+    Check(runtime.SnapshotForRendering().Value.Effects.SurfaceLighting == SurfaceLightingMode::NativePbr,
+          "F2 did not restore native PBR");
+    CheckPbrMaterialEditor();
     runtime.SetCapability(GraphicsCapability::NativeSurfaceLighting, false, "test unavailable");
     Frame();
     Select("Lighting model", "Native");
     Check(runtime.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::Native,
           "cannot restore native lighting after capability loss");
     Click("Lighting model");
-    Check(Find("Per-pixel").Disabled && Find("Per-pixel + PBR").Disabled,
+    Check(Find("Per-pixel").Disabled && Find("Per-pixel + PBR").Disabled && Find("Native + PBR").Disabled,
           "unsupported lighting model selectable");
     Click("Native");
     AllCapabilities(true);

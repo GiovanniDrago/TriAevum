@@ -4,6 +4,7 @@
 #include "fast/oot3d/grass_settings_panel.h"
 #include "fast/oot3d/texture_catalog_selection.h"
 #include "fast/oot3d/graphics_settings.h"
+#include "fast/oot3d/pbr_material_editor.h"
 
 #include <memory>
 #include <array>
@@ -52,6 +53,7 @@ class GraphicsSettingsPanel final {
     bool mOutputResolutionEditing = false;
     GrassSettingsPanelState mGrassPanelState;
     AzaharTexturePackPanelState mTexturePackPanelState;
+    PbrMaterialEditorState mMaterialEditorState;
     TextureCatalogSelectionState mReflectionTextureSelection;
     std::string mReflectionAssignmentStatus;
     std::string mRendererStatus;

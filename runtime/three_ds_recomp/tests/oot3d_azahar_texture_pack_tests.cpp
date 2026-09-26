@@ -183,6 +183,8 @@ TEST_F(Oot3dAzaharTexturePackTest,
         queued.State,
         Oot3d::Renderer::AzaharTextureResolveState::Pending);
     EXPECT_EQ(queued.NativeHash, hash);
+    EXPECT_TRUE(queued.NativeHashAvailable);
+    EXPECT_TRUE(queued.UseNewHash);
     EXPECT_EQ(queued.Replacement, nullptr);
     runtime.WaitForPendingLoads();
 
@@ -195,6 +197,20 @@ TEST_F(Oot3dAzaharTexturePackTest,
     EXPECT_EQ(*ready.Replacement->Rgba8, rgba);
     EXPECT_EQ(runtime.Snapshot().PendingLoads, 0U);
     EXPECT_EQ(runtime.Snapshot().FailedLoads, 0U);
+
+    // Authoring still needs the native pack identity when replacement loading is off.
+    runtime.Configure({
+        .LoadCustomTextures = false,
+        .TitleId = titleId,
+        .UserDirectory = Root,
+        .LoadDirectory = loadDirectory,
+    });
+    runtime.WaitForPendingLoads();
+    const auto disabled = runtime.ResolveOrQueue(request);
+    EXPECT_EQ(disabled.State, Oot3d::Renderer::AzaharTextureResolveState::Disabled);
+    ASSERT_TRUE(disabled.NativeHashAvailable);
+    EXPECT_EQ(disabled.NativeHash, hash);
+    EXPECT_TRUE(disabled.UseNewHash);
 }
 
 TEST_F(Oot3dAzaharTexturePackTest, HonorsPackJsonFilenameMappingAndFlipSemantics) {
@@ -281,6 +297,7 @@ TEST_F(Oot3dAzaharTexturePackTest, MaterialReloadIsAtomicAndExplicitNullOverride
     const auto normal = makeImage(127U);
     const auto orm = makeImage(63U);
     const auto emission = makeImage(191U);
+    const auto height = makeImage(223U);
     native.fill(19U);
     const auto hash = AzaharCityHash64(native);
     std::ostringstream formatted;
@@ -293,6 +310,7 @@ TEST_F(Oot3dAzaharTexturePackTest, MaterialReloadIsAtomicAndExplicitNullOverride
     std::filesystem::copy_file(normal, materials / (name + "_n.png"));
     std::filesystem::copy_file(orm, materials / (name + "_orm.png"));
     std::filesystem::copy_file(emission, materials / (name + "_e.png"));
+    std::filesystem::copy_file(height, materials / (name + "_h.png"));
     runtime.Configure({.LoadCustomTextures = true, .UserDirectory = Root, .LoadDirectory = pack});
     runtime.WaitForPendingLoads();
     const auto generation = runtime.Generation();
@@ -306,6 +324,7 @@ TEST_F(Oot3dAzaharTexturePackTest, MaterialReloadIsAtomicAndExplicitNullOverride
     EXPECT_EQ((*ready.Material->Textures[0]->Rgba8)[0], 127U);
     EXPECT_EQ((*ready.Material->Textures[1]->Rgba8)[0], 63U);
     EXPECT_EQ((*ready.Material->Textures[2]->Rgba8)[0], 191U);
+    EXPECT_EQ((*ready.Material->Textures[3]->Rgba8)[0], 223U);
     EXPECT_EQ(ready.Material->Identity.NativeHash, hash);
     EXPECT_TRUE(ready.Material->Identity.UseNewHash);
     const auto jsonPath = materials / (name + ".material.json");
@@ -320,6 +339,7 @@ TEST_F(Oot3dAzaharTexturePackTest, MaterialReloadIsAtomicAndExplicitNullOverride
     EXPECT_EQ(runtime.Snapshot().FailedMaterials, 1U);
     metadata["normal"] = nullptr;
     metadata["orm"] = {{"texture", nullptr}, {"metallicFactor", 0.75F}};
+    metadata["height"] = nullptr;
     { std::ofstream output(jsonPath); output << metadata; }
     const auto colorPath = pack / MakeAzaharTextureFilename(8, 8, hash, 0, 0);
     std::filesystem::copy_file(emission, colorPath);
@@ -332,6 +352,7 @@ TEST_F(Oot3dAzaharTexturePackTest, MaterialReloadIsAtomicAndExplicitNullOverride
     EXPECT_EQ(changed.Material->Textures[0], nullptr);
     EXPECT_EQ(changed.Material->Textures[1], nullptr);
     ASSERT_NE(changed.Material->Textures[2], nullptr);
+    EXPECT_EQ(changed.Material->Textures[3], nullptr);
     ASSERT_NE(changed.Material->ColorReplacement, nullptr);
     EXPECT_EQ((*changed.Material->ColorReplacement->Rgba8)[0], 191U);
     EXPECT_EQ(changed.Material->Parameters.MetallicFactor, 0.75F);

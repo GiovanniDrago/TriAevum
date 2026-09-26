@@ -12,6 +12,7 @@ enum class PicaNriDescriptorKind : uint8_t {
     Texture,
     StorageTexture,
     Sampler,
+    StructuredBuffer,
 };
 
 enum class PicaNriShaderStage : uint8_t {
@@ -46,8 +47,9 @@ struct PicaNriFragmentShaderExtensions {
 // Bindings 13-14 are the native fragment-lighting LUT image and sampler.
 // Binding 15 is an optional surface-style constant buffer, not native PICA state.
 // Binding 16 contains the selected native lights and unlit material inputs.
-// Bindings 17-23 carry opt-in PBR parameters and normal/ORM/emissive maps.
-constexpr std::array<PicaNriDescriptorBinding, 24>
+// Bindings 17-25 carry opt-in PBR parameters and normal/ORM/emissive/height maps.
+// Binding 26 is read-only, geometry-owned UV-seam metadata.
+constexpr std::array<PicaNriDescriptorBinding, 27>
     kPicaNriDescriptorBindings{{
         {0U, PicaNriDescriptorKind::ConstantBuffer,
          PicaNriShaderStage::Vertex},
@@ -96,6 +98,12 @@ constexpr std::array<PicaNriDescriptorBinding, 24>
         {22U, PicaNriDescriptorKind::Sampler,
          PicaNriShaderStage::Fragment},
         {23U, PicaNriDescriptorKind::Sampler,
+         PicaNriShaderStage::Fragment},
+        {24U, PicaNriDescriptorKind::Texture,
+         PicaNriShaderStage::Fragment},
+        {25U, PicaNriDescriptorKind::Sampler,
+         PicaNriShaderStage::Fragment},
+        {26U, PicaNriDescriptorKind::StructuredBuffer,
          PicaNriShaderStage::Fragment},
     }};
 

@@ -1,5 +1,6 @@
 #include "fast/oot3d/hiz_reflection.h"
 #include "fast/oot3d/pica_surface_coordinates.h"
+#include "fast/renderer3ds/pica_material_guide.h"
 
 namespace Fast::Oot3d {
 
@@ -66,7 +67,8 @@ void main() {
     vec2 uv = (vec2(pixel) + 0.5) * pc.inverse_size;
     vec4 material = texture(sampler2D(material_guide,linear_sampler), uv);
     vec4 normal_sample = texture(sampler2D(normal_guide,linear_sampler), uv);
-    if (material.r <= 0.001 || normal_sample.a < 0.5) {
+    float roughness = clamp(material.g + pc.roughness_bias, 0.0, 1.0);
+    if (material.r <= 0.001 || normal_sample.a < 0.5 || roughness >= 1.0) {
         imageStore(reflection_output, pixel, vec4(0.0));
         return;
     }
@@ -101,8 +103,9 @@ void main() {
             any(greaterThanEqual(candidate_uv, vec2(1.0)))) break;
         float footprint = max(travelled * max(pc.inverse_size.x,
                                               pc.inverse_size.y), 1.0);
-        float mip = clamp(floor(log2(footprint)), 0.0,
-                          float(max(pc.hiz_mip_count, 1u) - 1u));
+        uint mip_index = min(uint(findMSB(uint(footprint))),
+                             max(pc.hiz_mip_count, 1u) - 1u);
+        float mip = float(mip_index);
         float scene_depth = textureLod(
             sampler2D(hiz_depth,nearest_sampler), candidate_uv, mip).r;
         float gap = ray_depth - scene_depth;
@@ -112,7 +115,7 @@ void main() {
             confidence = 1.0 - travelled / pc.max_distance;
             break;
         }
-        travelled += step_length * max(1.0, exp2(mip) * 0.5);
+        travelled += step_length * float(1u << max(int(mip_index) - 1, 0));
     }
     if (confidence <= 0.0) {
         imageStore(reflection_output, pixel, vec4(0.0));
@@ -121,7 +124,6 @@ void main() {
     vec2 edge_distance = min(hit_uv, vec2(1.0) - hit_uv);
     float edge = smoothstep(0.0, max(pc.edge_fade, 1.0e-4),
                             min(edge_distance.x, edge_distance.y));
-    float roughness = clamp(material.g + pc.roughness_bias, 0.0, 1.0);
     float grazing = 1.0 - abs(dot(normal, -incident));
     confidence *= edge * material.r * mix(0.35, 1.0, grazing) *
                   (1.0 - roughness);
@@ -145,36 +147,66 @@ layout(set = 0, binding = 5) uniform sampler linear_sampler;
 layout(set = 0, binding = 6) uniform sampler nearest_sampler;
 )glsl";
     source += kPushBlock;
+    source += Renderer3ds::PicaMaterialGuideShaderLibrary;
     source += R"glsl(
+// An 8x8 workgroup shares its two-texel halo. Keep the full 5x5 bilateral
+// kernel; only redundant guide/reflection fetches and normalization disappear.
+shared vec4 tile_reflection[144];
+shared vec4 tile_normal[144];
+shared float tile_depth[144];
+shared uint tile_active;
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    if (any(greaterThanEqual(pixel, ivec2(pc.extent)))) return;
+    if (gl_LocalInvocationIndex == 0u) tile_active = 0u;
+    barrier();
+    bool inside = all(lessThan(pixel, ivec2(pc.extent)));
     vec2 uv = (vec2(pixel) + 0.5) * pc.inverse_size;
-    vec4 material = texture(sampler2D(material_guide,linear_sampler), uv);
-    vec4 center_normal_sample = texture(
-        sampler2D(normal_guide,linear_sampler), uv);
-    if (material.r <= 0.001 || center_normal_sample.a < 0.5) {
+    vec4 material = textureLod(sampler2D(material_guide,linear_sampler), uv, 0.0);
+    vec4 center_guide = textureLod(sampler2D(normal_guide,linear_sampler), uv, 0.0);
+    float reflection_weight = pica_reflection_weight(material);
+    bool participates = inside && material.r > 0.001 && reflection_weight > 0.0 &&
+        center_guide.a >= 0.5;
+    if (participates) atomicOr(tile_active, 1u);
+    barrier();
+    if (tile_active == 0u) {
+        if (inside) imageStore(filtered_output, pixel, vec4(0.0));
+        return;
+    }
+    ivec2 origin = ivec2(gl_WorkGroupID.xy * 8u) - 2;
+    for (uint i = gl_LocalInvocationIndex; i < 144u; i += 64u) {
+        ivec2 q = origin + ivec2(int(i) % 12, int(i) / 12);
+        vec2 sample_uv = clamp((vec2(q) + 0.5) * pc.inverse_size,
+                               vec2(0.0), vec2(1.0));
+        tile_reflection[i] = textureLod(
+            sampler2D(raw_reflection,linear_sampler), sample_uv, 0.0);
+        vec4 normal = textureLod(
+            sampler2D(normal_guide,linear_sampler), sample_uv, 0.0);
+        tile_normal[i] = vec4(normalize(normal.xyz * 2.0 - 1.0), normal.a);
+        tile_depth[i] = textureLod(
+            sampler2D(hiz_depth,nearest_sampler), sample_uv, 0.0).r;
+    }
+    barrier();
+    if (any(greaterThanEqual(pixel, ivec2(pc.extent)))) return;
+    int center_index = (int(gl_LocalInvocationID.y) + 2) * 12 +
+                       int(gl_LocalInvocationID.x) + 2;
+    vec4 center_normal_sample = tile_normal[center_index];
+    if (!participates) {
         imageStore(filtered_output, pixel, vec4(0.0));
         return;
     }
-    float center_depth = textureLod(
-        sampler2D(hiz_depth,nearest_sampler), uv, 0.0).r;
-    vec3 center_normal = normalize(center_normal_sample.xyz * 2.0 - 1.0);
+    float center_depth = tile_depth[center_index];
+    vec3 center_normal = center_normal_sample.xyz;
     vec3 weighted_color = vec3(0.0);
     float weighted_confidence = 0.0;
     float total_weight = 0.0;
     float valid_weight = 0.0;
     for (int y = -2; y <= 2; ++y) {
         for (int x = -2; x <= 2; ++x) {
-            vec2 sample_uv = clamp(uv + vec2(x, y) * pc.inverse_size,
-                                   vec2(0.0), vec2(1.0));
-            vec4 reflection = texture(
-                sampler2D(raw_reflection,linear_sampler), sample_uv);
-            float sample_depth = textureLod(
-                sampler2D(hiz_depth,nearest_sampler), sample_uv, 0.0).r;
-            vec4 sample_normal_value = texture(
-                sampler2D(normal_guide,linear_sampler), sample_uv);
-            vec3 sample_normal = normalize(sample_normal_value.xyz * 2.0 - 1.0);
+            int index = center_index + y * 12 + x;
+            vec4 reflection = tile_reflection[index];
+            float sample_depth = tile_depth[index];
+            vec4 sample_normal_value = tile_normal[index];
+            vec3 sample_normal = sample_normal_value.xyz;
             float spatial_weight = exp(-0.5 * float(x * x + y * y));
             float depth_weight = exp(-abs(sample_depth - center_depth) /
                                      max(pc.thickness, 1.0e-3));
@@ -193,7 +225,7 @@ void main() {
         ? weighted_color / valid_weight : vec3(0.0);
     float confidence = total_weight > 1.0e-5
         ? weighted_confidence / total_weight : 0.0;
-    imageStore(filtered_output, pixel, vec4(color, confidence));
+    imageStore(filtered_output, pixel, vec4(color, confidence * reflection_weight));
 }
 )glsl";
     return source;

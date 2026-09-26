@@ -1723,8 +1723,6 @@ void GfxRenderingAPIVulkan::StartFrame() {
         (mFrameGraphicsSettings.Grass.Quality != nextGraphicsSettings.Grass.Quality ||
          mFrameGraphicsSettings.Effects.Toon != nextGraphicsSettings.Effects.Toon ||
          mFrameGraphicsSettings.Effects.SurfaceLighting != nextGraphicsSettings.Effects.SurfaceLighting ||
-         (nextGraphicsSettings.Effects.SurfaceLighting == Oot3d::SurfaceLightingMode::PerPixelPbr &&
-          mFrameGraphicsSettings.Effects.Pbr != nextGraphicsSettings.Effects.Pbr) ||
          mFrameGraphicsSettings.Effects.ToonStyle.OutlineEnabled != nextGraphicsSettings.Effects.ToonStyle.OutlineEnabled ||
          mFrameGraphicsSettings.Effects.AmbientOcclusion != nextGraphicsSettings.Effects.AmbientOcclusion ||
          mFrameGraphicsSettings.Effects.Reflections != nextGraphicsSettings.Effects.Reflections)) {
@@ -1757,6 +1755,13 @@ void GfxRenderingAPIVulkan::StartFrame() {
     }
     mFrameAzaharTextureGeneration =
         azaharTexturePacks.Generation();
+    const auto materialRevision = azaharTexturePacks.MaterialRevision();
+    if (mFrameMaterialRevision != materialRevision &&
+        Oot3d::UsesPbrMaterials(graphicsSettings.Effects.SurfaceLighting)) {
+        mTemporalAaPass.ResetHistory();
+        mTaaOutputValid = false;
+    }
+    mFrameMaterialRevision = materialRevision;
     const char* taaEnvironment = std::getenv("OOT3D_GRAPHICS_TAA");
     const char* motionEnvironment = std::getenv("OOT3D_GRAPHICS_MOTION");
     const Oot3d::AntiAliasingFrameCapabilities aaCapabilities{
@@ -2751,7 +2756,8 @@ void GfxRenderingAPIVulkan::PickPhysicalDevice() {
     mStorageBufferAlignment =
         std::max<VkDeviceSize>(16, properties.limits.minStorageBufferOffsetAlignment);
     mUniformBufferAlignment =
-        std::max<VkDeviceSize>(16, properties.limits.minUniformBufferOffsetAlignment);
+        std::max(mStorageBufferAlignment,
+                 std::max<VkDeviceSize>(16, properties.limits.minUniformBufferOffsetAlignment));
     SPDLOG_INFO("OOT3D Vulkan device [{}]: {} (api {}.{}.{})",
                  mVulkanAdapterIndex, properties.deviceName,
                  VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion),
@@ -3775,11 +3781,12 @@ void GfxRenderingAPIVulkan::CreateFrameResources() {
                                                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                          true);
-        const std::array<VkDescriptorPoolSize, 4> poolSizes = {
-            VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096 * 8 },
+        const std::array<VkDescriptorPoolSize, 5> poolSizes = {
+            VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096 * 9 },
             VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 4096 },
             VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4096 * 7 },
             VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4096 },
+            VkDescriptorPoolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096 },
         };
         VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         poolInfo.maxSets = 4096;

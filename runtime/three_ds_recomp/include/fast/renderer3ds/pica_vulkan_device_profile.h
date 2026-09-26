@@ -20,6 +20,8 @@ inline VkPhysicalDeviceFeatures PicaVulkanCoreFeatures(const VkPhysicalDeviceFea
     VkPhysicalDeviceFeatures enabled{};
     enabled.independentBlend = supported.independentBlend;
     enabled.multiViewport = supported.multiViewport;
+    // Fragment primitive IDs address opt-in per-primitive seam metadata.
+    enabled.geometryShader = supported.geometryShader;
     enabled.shaderImageGatherExtended = supported.shaderImageGatherExtended;
     enabled.shaderStorageImageWriteWithoutFormat = supported.shaderStorageImageWriteWithoutFormat;
     enabled.shaderStorageImageExtendedFormats = supported.shaderStorageImageExtendedFormats;

@@ -4,6 +4,7 @@
 
 #include "fast/renderer3ds/nri_pica_interop.h"
 #include "fast/renderer3ds/pica_attachment_contract.h"
+#include "fast/renderer3ds/pica_pbr_material.h"
 
 #include <vulkan/vulkan.h>
 
@@ -106,6 +107,8 @@ struct NriPicaOwnedDrawDesc {
     uint8_t* UniformMappedMemory = nullptr;
     // Vertex, fragment, previous-vertex, shadow, style, lighting and PBR UBOs.
     std::array<NriPicaUniformBindingDesc, kNriPicaUniformBindingCount> Uniforms{};
+    // Read-only seam data in the original mapped uniform/storage arena.
+    NriPicaUniformBindingDesc SeamGeometry{};
     VkBuffer VertexBuffer = VK_NULL_HANDLE;
     uint64_t VertexBufferSize = 0;
     uint8_t* VertexMappedMemory = nullptr;
@@ -118,7 +121,7 @@ struct NriPicaOwnedDrawDesc {
     std::array<NriPicaTextureBindingDesc, 3> Textures{};
     NriPicaTextureBindingDesc DirectionalShadowTexture;
     NriPicaTextureBindingDesc LightingLutTexture;
-    std::array<NriPicaTextureBindingDesc, 3> PbrTextures{};
+    std::array<NriPicaTextureBindingDesc, kPicaPbrTextureCount> PbrTextures{};
     VkImage StorageImage = VK_NULL_HANDLE;
     VkFormat StorageFormat = VK_FORMAT_UNDEFINED;
     uint32_t StorageWidth = 0;

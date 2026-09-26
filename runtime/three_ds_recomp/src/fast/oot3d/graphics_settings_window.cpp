@@ -135,6 +135,12 @@ void GraphicsSettingsPanel::Draw() {
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Material editor")) {
+            ImGui::BeginChild("##MaterialEditorContent");
+            DrawPbrMaterialEditor(mMaterialEditorState);
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
         for (const auto& tab : applicationTabs) {
             if (tab != nullptr && ImGui::BeginTabItem(tab->Label())) {
                 ImGui::PushID(tab->Label());

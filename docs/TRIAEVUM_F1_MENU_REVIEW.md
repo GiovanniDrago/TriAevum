@@ -2,8 +2,8 @@
 
 Directional shadows now live only in **Environment**, above the per-scene
 profile controls, and offer **Off / Virtual Shadow Maps**. They are active only
-with **Per-pixel** or **Per-pixel + PBR** selected in Lighting. Native lighting
-disables VSM selection with an explicit reason but keeps Off usable; switching
+with **Per-pixel** or **Per-pixel + PBR** selected in Lighting. **Native** and
+**Native + PBR** disable VSM with an explicit reason but keep Off usable; switching
 lighting or using F2 does not erase the saved preference.
 
 The global controls are **Shadow atlas budget** (2048/16 MiB or 4096/64 MiB),
@@ -25,7 +25,8 @@ output while preserving native-dependency color and alpha/depth/stencil.
 Existing values and the separate Toon shadow-tint control are unchanged.
 
 2026-09-23 surface lighting: Lighting owns the persistent **Lighting model**
-selector (**Native**, **Per-pixel**, **Per-pixel + PBR**). Native stays available
+selector (**Native**, **Per-pixel**, **Per-pixel + PBR**, **Native + PBR**).
+Native stays available
 when the renderer capability is missing; unsupported choices are disabled and
 capability loss normalizes the active mode. Texture packs retains the sole
 folder/load/reload controls, now with material counts, pending indexing and
@@ -34,9 +35,10 @@ including all three selections and capability loss. The Kokiri GPU captures
 and material format are documented in
 [`OOT3D_NRI_FIDELITY_EXTENSION_ARCHITECTURE.md`](OOT3D_NRI_FIDELITY_EXTENSION_ARCHITECTURE.md#native-per-pixel-lighting-and-material-packs-2026-09-23).
 
-2026-09-23 live PBR controls: Lighting additionally owns **Normal strength**
+2026-09-23 live PBR controls (historical; superseded by the material editor below):
+Lighting then owned **Normal strength**
 (0–8×), **Glossiness strength** (0–2×), **Material view** (Shaded / Surface
-normals / Roughness), and **Reset PBR controls**, visible under Per-pixel + PBR.
+normals / Roughness), and **Reset PBR controls**, shared by both PBR models.
 Both strengths default to 1; zero disables mapped-normal perturbation or makes
 the material matte, respectively. Changes persist and update live uniforms
 without reloading textures. Reflection intensity keeps its existing owner.
@@ -45,7 +47,157 @@ Actual-widget smoke now passes **4,200 assertions**, covering both sliders,
 both diagnostic selections and reset. Separate deterministic GPU captures prove
 normal strengths 0/1/4 and glossiness 0/1 change material output without changing
 native-memory RGBA or compared alpha/depth/stencil attachments. The architecture
-document above records the formula, captures and ambient-only lighting limit.
+document above records the formula, captures and source-lighting requirement.
+
+2026-09-24 **Native + PBR** limits relighting to supported authored materials.
+These use existing native scene lights, including on baked/ambient-only
+surfaces; other draws keep native lighting. Native projected shadows remain active,
+while VSM, scene Environment and fairy-group overrides are inactive without
+discarding saved preferences/profiles. F2 temporarily restores Native and
+restores the configured Native + PBR choice when released; Authentic remains
+canonical. Texture packs retains the sole material folder/load controls.
+
+Actual-widget smoke passes **5,111 assertions**, including the fourth selection,
+serialized `NativePBR`, shared material controls, capability loss, F2 restoration,
+inactive Environment edits and capability-safe VSM Off. Nine deterministic
+Kokiri captures verify normal and glossiness response in **Shaded**, exact
+native fallback, Environment isolation and Authentic. A further 180-frame run
+matches the prior Native framebuffer and guest state through deferred copies.
+The initial diagnostic-only checks did not establish visible shaded response;
+the corrected qualification does.
+See the [Native + PBR contract and evidence](OOT3D_NRI_FIDELITY_EXTENSION_ARCHITECTURE.md#native--pbr-2026-09-24).
+
+2026-09-25 global height control (historical; superseded below): **Height strength**
+in Lighting was shared by **Per-pixel + PBR** and **Native + PBR**. It accepted 0–4x, defaulted to 1x,
+and multiplies the material's height scale, with effective depth capped at
+0.1 UV. Zero disables parallax; a missing height map remains inert.
+The control persists as `Graphics.Effects.PBR.HeightStrength`, updates live
+without a texture reload, and participates in **Reset PBR controls** and
+temporal-history invalidation. F2 preserves the configured value.
+The actual-widget smoke passes **5,190 assertions**, including live edits,
+persistence, zero, range normalization, F2 restoration and reset.
+Three deterministic Shaded captures at 0/1/4x also verify the renderer consumer:
+0x exactly matches the previous no-height framebuffer, 1x preserves the pack,
+and 1x→4x changes 215,295 pixels. Compared native geometry, registers and lights
+stay identical. Vulkan/NRI report zero errors and the same 11 baseline Vulkan
+warnings. Private receipts are under `I:/_triaevum_work/f1-height/`.
+
+2026-09-25 global dielectric specular control (historical; superseded below):
+Lighting owned **Specular level**, persisted as `Graphics.Effects.PBR.SpecularLevel`. Range 0–2x
+maps dielectric F0 to 0–8%; 1x retains the previous 4%. Fully metallic response
+and roughness are unchanged. Zero is base reflectance zero, not a global
+specular-off switch: Schlick's grazing term remains. Direct lighting and the
+reflection guide share F0; the existing SSR/SSSR strength control stays separate.
+Changes apply live, invalidate PBR temporal history, survive F2, and reset to 1x
+with **Reset PBR controls**. Actual-widget smoke passes **5,269 assertions**,
+including persistence, live updates, range limits and restoration.
+Eight deterministic captures verify the shaded consumer and Hi-Z guide:
+the old profile without the new key is pixel-identical to the prior PBR build,
+Native remains pixel-identical at 2x, and fully metallic output is identical
+between 0x and 2x. Dielectric 0x→1x and 1x→2x change 205,239 and 201,630 pixels.
+The Hi-Z material debug view changes F0 from 4% to 8% in 262,711 pixels;
+the host's RGBA5551 screenshot readback expands those red values to 8 and 16,
+not the unquantized RGB8 values 10 and 20. Compared native draw state is unchanged.
+These eight runs have zero Vulkan/NRI errors, no failed or unresolved graph
+passes, and the same 11 baseline Vulkan warnings.
+SSSR runtime verification is blocked in this scenario: both the current build
+and the previous `bin-height-f1` build time out before a completed frame with
+Vulkan errors for resources destroyed while referenced by a command buffer.
+The shared guide producer is updated, but these runs do not establish successful
+SSSR execution or fallback-free SSSR behavior. Private captures, receipts and
+the paired failure logs are under `I:/_triaevum_work/f1-specular/`.
+
+2026-09-25 material editor: F1 now has an always-available **Material editor** tab.
+The scene-wide PBR controls are removed; the material JSON owns normal scale,
+glossiness, dielectric reflectance, height depth and the new **Minimum roughness**
+(0.045–1, default 0.045). Lighting retains the model selector; Textures retains
+the pack folder/load controls. Obsolete `Graphics.Effects.PBR` values are ignored,
+not copied into every material.
+
+Choose an existing material or create one from the shared Grass-style texture
+catalog. The editor uses the native Azahar hash, not the catalog content hash.
+It exposes base color, normal, ORM, emissive and height image slots with a file
+browser, plus packed ORM or separate occlusion/roughness/metallic inputs.
+Separate inputs select their source channel or a constant and save as one ORM
+PNG; mismatched dimensions are errors rather than implicit resampling.
+
+Numeric edits preview only the selected material. **Save material** commits its
+JSON and imported PNGs, then requests complete asynchronous bundle publication.
+Map edits apply after Save; diagnostic Material view is transient. Dirty switches
+require Save / Discard / Keep editing. Decode and atomic-write failures preserve
+the previous files and leave an explicit, retryable draft error.
+
+The real-widget smoke passes **6,294 assertions**, including texture-based
+creation, existing-material selection, every slot and the browser, ORM channel
+packing, per-material isolation, F2/capability loss, dirty switching, malformed
+images, mismatched channel dimensions, and failed-save recovery.
+Ten deterministic renderer captures preserve default PBR and Native output,
+exercise minimum roughness in shaded output and Hi-Z guides, and retain identical
+compared native draw state. All have zero Vulkan/NRI errors and the same 11
+baseline Vulkan warnings. Private evidence: `I:/_triaevum_work/material-editor/`.
+The SSSR limitation above is unchanged.
+
+2026-09-25 per-material reflection weights: **Material editor** adds **Specular
+weight** (0–1, default 1) and **Screen-space reflection weight** (0–2, default 1).
+The first scales complete direct and screen-space specular response, including
+metals and grazing Fresnel; zero leaves diffuse/emission intact. The second
+affects only screen-space reflections and multiplies the first. Both preview
+only the selected material and persist in its JSON as `specularWeight` and
+`screenSpaceReflectionWeight`. **Dielectric reflectance** is the clearer name
+for the existing `specularLevel` control; its F0 semantics and JSON key stay
+unchanged. Reset restores both weights to 1; old descriptors need no migration.
+
+The actual-widget smoke passes **6,395 assertions**, including the two weights'
+save, independent preview, F2 retention and reset. A production-kernel Vulkan
+regression checks zero/neutral/2x/fractional gain on adjacent pixels and partial
+workgroups in the Hi-Z filter and SSSR material resolve; zero does not acquire
+a neighbor's reflection and temporal reactivity is not mistaken for coverage.
+This qualifies the SSSR resolve consumer, not the previously failing full SSSR
+scenario. The complete provider's pre-existing qualification limit is unchanged.
+
+Eighteen deterministic 32-frame runs include a previous-executable Hi-Z reference
+and the staged private runtime. Neutral PBR/Hi-Z remain pixel-identical; Native
+bypass and direct-only lighting are unaffected by the screen-space weight.
+Specular zero affects dielectric and metallic materials, Hi-Z zero matches
+Reflections Off, and the combined specular-zero/reflection-2 guide remains zero.
+All 110 compared native draws retain composition, geometry, texture, light and
+raster state. Every run reports zero Vulkan/NRI errors, no failed/missing/
+unresolved graph passes/resources, and the same 11 baseline Vulkan warnings.
+Foundation, pipeline-cache and scene-frame suites pass 292/292, 41/41 and 19/19.
+Evidence and invocation recipes: `I:/_triaevum_work/material-weights/`.
+The private `Avvia-PBR-Height.cmd` now selects `bin-material-weights/TriAevum.exe`;
+the interactive profile, authored pack and already-running game are untouched.
+
+2026-09-25 auxiliary UV seams: **Material editor → Material → UV seam softening**
+adds per-material enable (default Off), strength 0–1, width 0.1–25% of the shared
+native edge, and independent normal/AO/roughness/metallic/emission/height channels.
+Default width is 5%; emission is excluded by default. Save writes the selected
+descriptor's `seamSoftening` object; live preview and Reset use the existing
+material owner. Off remains available when renderer capabilities are absent.
+The panel reports the selected material's last native-draw status.
+
+Only auxiliary maps are blended. Base color retains its original sampling and
+unsmoothed relief; native alpha remains native. Normals use each chart's posed
+tangent frame; emission mixes in linear space. Height smoothing affects only
+auxiliary-map relief. The renderer requires typed affine UVs and unambiguous,
+smooth manifold adjacency inside one resolved native geometry submission; it
+does not join separate draws, hard/open/non-manifold edges or opposing coplanar
+layers.
+
+Actual-widget smoke: **6,607 assertions**, including saved enable/strength/width/
+channels, isolated live edits, capability-safe Off and reset. Production Vulkan
+regressions cover rotated/mirrored charts, three-chart corners, scalar continuity,
+linear emission, height, exact base sampling, zero and unselected channels, and
+indexed strips with degenerates/base vertices. Eight deterministic 32-frame
+captures preserve the old framebuffer when disabled, and preserve zero-strength
+and Native bypass exactly. Width 1%/5%/15% changes 2,991/17,916/59,439 pixels at
+the wall's UV seams. Native state remains identical across all 110 compared draws.
+Every diagnostic frame has zero Vulkan/NRI and graph errors; the same 11 baseline
+warnings remain. The staged executable matches the qualified enabled image.
+Evidence: `I:/_triaevum_work/material-seams/`.
+
+`Avvia-PBR-Height.cmd` now selects `bin-material-seams/TriAevum.exe`. The user's
+interactive profile, material pack and existing game process are not modified.
 
 2026-09-17 camera/motion separation: free camera offers only disabled, digital
 look, mouse, right stick and automatic. Sensor sources and their camera-only

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "fast/renderer3ds/pica_pbr_material.h"
+#include "oot3d/renderer/azahar_texture_pack.h"
 
 #include <array>
 #include <filesystem>
@@ -12,12 +12,6 @@
 
 namespace Oot3d::Renderer {
 
-struct IndexedAzaharPbrMaterial {
-    Fast::Renderer3ds::PicaPbrMaterialParameters Parameters;
-    std::array<std::filesystem::path, 3> Textures;
-    std::filesystem::path ConfigurationPath;
-    std::string Error;
-};
 
 [[nodiscard]] std::optional<uint64_t> ParseAzaharTextureFilenameHash(const std::filesystem::path& path);
 [[nodiscard]] bool IsAzaharPbrSidecar(const std::filesystem::path& path);

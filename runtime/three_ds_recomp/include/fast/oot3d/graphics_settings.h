@@ -30,7 +30,14 @@ enum class FrameRateMode : uint8_t {
 enum class AmbientOcclusionMode : uint8_t { Off, Cacao };
 enum class ReflectionMode : uint8_t { Off, HiZ, FidelityFxSssr };
 enum class ToonMode : uint8_t { Off, PostProcessPreview, PicaMaterial };
-enum class SurfaceLightingMode : uint8_t { Native, PerPixel, PerPixelPbr };
+enum class SurfaceLightingMode : uint8_t { Native, PerPixel, PerPixelPbr, NativePbr };
+
+[[nodiscard]] constexpr bool UsesFullSceneLighting(SurfaceLightingMode mode) noexcept {
+    return mode == SurfaceLightingMode::PerPixel || mode == SurfaceLightingMode::PerPixelPbr;
+}
+[[nodiscard]] constexpr bool UsesPbrMaterials(SurfaceLightingMode mode) noexcept {
+    return mode == SurfaceLightingMode::PerPixelPbr || mode == SurfaceLightingMode::NativePbr;
+}
 enum class GrassQuality : uint8_t { Off, Low, Medium, High, Custom };
 
 inline constexpr uint8_t kMaximumToonLightBands = 6U;
@@ -136,7 +143,6 @@ void ApplyGrassQualityPreset(
 
 struct EffectsSettings {
     SurfaceLightingMode SurfaceLighting = SurfaceLightingMode::Native;
-    Renderer3ds::PicaPbrControls Pbr;
     DirectionalShadowSettings DirectionalShadows;
     AmbientOcclusionMode AmbientOcclusion = AmbientOcclusionMode::Off;
     uint8_t AoQuality = 0;

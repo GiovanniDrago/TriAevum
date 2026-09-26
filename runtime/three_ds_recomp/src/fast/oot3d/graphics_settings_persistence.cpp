@@ -89,11 +89,7 @@ constexpr EnumNames<SurfaceLightingMode> kSurfaceLightingNames{
     {SurfaceLightingMode::Native, "Native"},
     {SurfaceLightingMode::PerPixel, "PerPixel"},
     {SurfaceLightingMode::PerPixelPbr, "PerPixelPBR"},
-};
-constexpr EnumNames<Renderer3ds::PicaPbrDebugView> kPbrDebugNames{
-    {Renderer3ds::PicaPbrDebugView::Shaded, "Shaded"},
-    {Renderer3ds::PicaPbrDebugView::SurfaceNormals, "SurfaceNormals"},
-    {Renderer3ds::PicaPbrDebugView::Roughness, "Roughness"},
+    {SurfaceLightingMode::NativePbr, "NativePBR"},
 };
 constexpr EnumNames<GrassQuality> kGrassQualityNames{
     {GrassQuality::Off, "Off"},
@@ -1214,11 +1210,6 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
         {"Effects",
          {
              {"SurfaceLighting", EnumName(effects.SurfaceLighting, kSurfaceLightingNames)},
-             {"PBR", {
-                 {"NormalStrength", effects.Pbr.NormalStrength},
-                 {"GlossinessStrength", effects.Pbr.GlossinessStrength},
-                 {"DebugView", EnumName(effects.Pbr.DebugView, kPbrDebugNames)},
-             }},
              {"DirectionalShadows",
               {
                   {"Mode",
@@ -1501,16 +1492,6 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                      kSurfaceLightingNames, "Graphics.Effects.SurfaceLighting", result);
         } else {
             value.SurfaceLighting = SurfaceLightingMode::Native;
-        }
-        if (FindMember(*effects, "PBR")) {
-            if (const Json* pbr = RequireObject(*effects, "PBR", "Graphics.Effects.PBR", result)) {
-                ReadScalar(*pbr, "NormalStrength", value.Pbr.NormalStrength,
-                           "Graphics.Effects.PBR.NormalStrength", result);
-                ReadScalar(*pbr, "GlossinessStrength", value.Pbr.GlossinessStrength,
-                           "Graphics.Effects.PBR.GlossinessStrength", result);
-                ReadEnum(*pbr, "DebugView", value.Pbr.DebugView, kPbrDebugNames,
-                         "Graphics.Effects.PBR.DebugView", result);
-            }
         }
         if (version >= 3U) {
             if (const Json* shadows =

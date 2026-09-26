@@ -16,7 +16,6 @@ enum class ReflectionMaterialProfile : uint8_t {
 struct ReflectionMaterialParameters {
     float Reflectivity = 0.78F;
     float Roughness = 0.10F;
-    float MaterialClass = 0.625F;
 };
 
 struct ReflectionMaterialTextureSelector {

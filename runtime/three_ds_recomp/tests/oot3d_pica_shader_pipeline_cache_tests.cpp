@@ -925,7 +925,7 @@ TEST(Oot3dPicaShaderPipelineCache,
     effects.Reflections = ReflectionMode::HiZ;
     auto request = BaseRequest();
     request.ReflectionProfile =
-        ReflectionMaterialParameters{0.78F, 0.10F, 0.75F};
+        ReflectionMaterialParameters{0.78F, 0.10F};
     cache.BeginFrame(17U);
 
     const auto& reflected = cache.Resolve(request, effects);

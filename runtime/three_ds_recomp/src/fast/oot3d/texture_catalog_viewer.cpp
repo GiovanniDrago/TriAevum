@@ -39,67 +39,38 @@ std::string TagsForHash(
 }
 
 void DrawPreview(uint64_t hash) {
-    const auto preview =
-        GrassTextureSourceCache::Instance().AcquirePreview(hash);
-    if (preview.Rgba8.empty() || preview.Width == 0U ||
-        preview.Height == 0U) {
-        ImGui::TextDisabled(
-            "Texture preview is waiting for decoded RGBA pixels.");
-        return;
-    }
-    constexpr float maximumWidth = 260.0F;
-    constexpr float maximumHeight = 190.0F;
-    const float scale =
-        std::min(maximumWidth / preview.Width,
-                 maximumHeight / preview.Height);
-    const ImVec2 size{
-        std::max(1.0F, preview.Width * scale),
-        std::max(1.0F, preview.Height * scale)};
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    ImGui::PushID(
-        static_cast<int>(hash >> 32U));
+    const auto preview = GrassTextureSourceCache::Instance().AcquirePreview(hash);
+    ImGui::PushID(static_cast<int>(hash >> 32U));
     ImGui::PushID(static_cast<int>(hash & 0xFFFFFFFFU));
-    ImGui::InvisibleButton(
-        "##shared_texture_catalog_preview", size);
+    DrawTexturePixelPreview(preview.Rgba8, preview.Width, preview.Height);
     ImGui::PopID();
     ImGui::PopID();
-    auto* draw = ImGui::GetWindowDrawList();
-    constexpr uint32_t maximumCells = 56U;
-    const uint32_t cellsX =
-        std::min<uint32_t>(preview.Width, maximumCells);
-    const uint32_t cellsY =
-        std::min<uint32_t>(preview.Height, maximumCells);
-    for (uint32_t y = 0U; y < cellsY; ++y) {
-        for (uint32_t x = 0U; x < cellsX; ++x) {
-            const uint32_t sourceX =
-                x * preview.Width / cellsX;
-            const uint32_t sourceY =
-                y * preview.Height / cellsY;
-            const size_t offset =
-                (static_cast<size_t>(sourceY) *
-                     preview.Width +
-                 sourceX) *
-                4U;
-            const ImU32 color = IM_COL32(
-                preview.Rgba8[offset],
-                preview.Rgba8[offset + 1U],
-                preview.Rgba8[offset + 2U],
-                preview.Rgba8[offset + 3U]);
-            const ImVec2 cellMin{
-                origin.x + size.x * x / cellsX,
-                origin.y + size.y * y / cellsY};
-            const ImVec2 cellMax{
-                origin.x + size.x * (x + 1U) / cellsX,
-                origin.y + size.y * (y + 1U) / cellsY};
-            draw->AddRectFilled(cellMin, cellMax, color);
-        }
-    }
-    draw->AddRect(
-        origin, {origin.x + size.x, origin.y + size.y},
-        IM_COL32(255, 255, 255, 160));
 }
 
 } // namespace
+
+void DrawTexturePixelPreview(std::span<const uint8_t> rgba8, uint32_t width, uint32_t height) {
+    if (!width || !height || uint64_t(width) * height * 4U > rgba8.size()) {
+        ImGui::TextDisabled("Texture preview is waiting for decoded RGBA pixels.");
+        return;
+    }
+    const float scale = std::min(260.0F / width, 190.0F / height);
+    const ImVec2 size{std::max(1.0F, width * scale), std::max(1.0F, height * scale)};
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##shared_texture_catalog_preview", size);
+    auto* draw = ImGui::GetWindowDrawList();
+    const uint32_t cellsX = std::min<uint32_t>(width, 56U);
+    const uint32_t cellsY = std::min<uint32_t>(height, 56U);
+    for (uint32_t y = 0; y < cellsY; ++y) {
+        for (uint32_t x = 0; x < cellsX; ++x) {
+            const size_t offset = (size_t(y * height / cellsY) * width + x * width / cellsX) * 4U;
+            const auto color = IM_COL32(rgba8[offset], rgba8[offset + 1], rgba8[offset + 2], rgba8[offset + 3]);
+            draw->AddRectFilled({origin.x + size.x * x / cellsX, origin.y + size.y * y / cellsY},
+                {origin.x + size.x * (x + 1U) / cellsX, origin.y + size.y * (y + 1U) / cellsY}, color);
+        }
+    }
+    draw->AddRect(origin, {origin.x + size.x, origin.y + size.y}, IM_COL32(255, 255, 255, 160));
+}
 
 TextureCatalogViewerResult DrawTextureCatalogViewer(
     TextureCatalogSelectionState& state,

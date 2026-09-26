@@ -1,5 +1,6 @@
 #include "fast/oot3d/pica_shader_instrumentation.h"
 #include "fast/renderer3ds/pica_surface_lighting.h"
+#include "fast/renderer3ds/pica_material_guide.h"
 
 #include <algorithm>
 #include <array>
@@ -257,7 +258,6 @@ ReflectionMaterialParameters SanitizeProfile(const ReflectionMaterialParameters&
     return {
         finiteClamp(profile.Reflectivity, 0.0F, 1.0F, 0.0F),
         finiteClamp(profile.Roughness, 0.02F, 1.0F, 1.0F),
-        finiteClamp(profile.MaterialClass, 0.5F, 1.0F, 1.0F),
     };
 }
 
@@ -265,7 +265,7 @@ std::string BuildExplicitMaterialGuide(const ReflectionMaterialParameters& profi
     std::ostringstream stream;
     stream.imbue(std::locale::classic());
     stream << std::fixed << std::setprecision(6) << "pica_material_guide = vec4(" << profile.Reflectivity << ", "
-           << profile.Roughness << ", " << profile.MaterialClass << ", 0.0); // OOT3D explicit texture material";
+           << profile.Roughness << ", (127.0 / 255.0), 0.0); // OOT3D explicit texture material";
     return stream.str();
 }
 
@@ -284,7 +284,7 @@ std::string BuildCalibratedMaterialGuide() {
            "0.720, 0.160, oot3d_specular_response);\n"
            "    pica_material_guide = vec4("
            "oot3d_material_reflectivity, oot3d_material_roughness, "
-           "0.75, 0.0); // OOT3D calibrated specular material\n";
+           "(127.0 / 255.0), 0.0); // OOT3D calibrated specular material\n";
 }
 
 std::string Compose(std::string_view source,
@@ -592,6 +592,7 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
         vec4 next_combiner_buffer = fragment_uniforms.combiner_buffer_color;
         combiner_output = vec4(0.0);
 )glsl";
+        if (pbr) preserveAlpha += pbr->NativeCoordinates;
         preserveAlpha.append(request.Source.substr(tevBegin, tevEnd - tevBegin));
         preserveAlpha += "\n        combiner_output.rgb = surface_lit_rgb;\n    }\n";
         insertions.push_back({tevEnd, std::move(preserveAlpha)});
@@ -600,10 +601,11 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
         if (pbr) {
             declarations += pbr->Declarations;
             insertions.push_back({tevEnd, pbr->ShadingBody});
-            result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_PBR_GGX_V6");
+            result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_PBR_GGX_V11_UV_SEAMS");
             MixKey(result.FragmentKey, request.Pbr.TextureSlot);
             MixKey(result.FragmentKey, request.Pbr.NativeFragmentLighting);
             MixKey(result.FragmentKey, request.Pbr.NativeAttenuationLuts);
+            MixKey(result.FragmentKey, request.Pbr.SeamSoftening);
             result.AppliedFeatures |= PicaShaderInstrumentationFeature::PbrMaterial;
         }
         if (result.Hooks.Has(PicaShaderSemantic::NativeColorOutput))
@@ -938,9 +940,10 @@ vec3 pica_surface_shadow(int slot) {
             result.ReflectionEligibility == PicaReflectionMaterialEligibility::Eligible ||
             result.ReflectionEligibility == PicaReflectionMaterialEligibility::ExplicitTextureProfile;
         if (reflectionApplied && ensureMaterialGuide()) {
+            declarations += Renderer3ds::PicaMaterialGuideShaderLibrary;
             if (pbr) {
                 epilogue += "    pica_material_guide = vec4(pbr_reflectivity, pbr_roughness, "
-                    "pbr_metallic >= 0.5 ? 0.75 : 0.875, 0.0);\n";
+                    "pica_encode_reflection_weight(pbr_material.specular_reflection_weight.y), 0.0);\n";
                 apply(PicaShaderInstrumentationFeature::ReflectionMaterialGuide);
             } else if (request.ReflectionProfile != nullptr) {
                 const auto profile =
@@ -948,18 +951,16 @@ vec3 pica_surface_shadow(int slot) {
                 epilogue += "    ";
                 epilogue += BuildExplicitMaterialGuide(profile);
                 epilogue += "\n";
-                result.FragmentKey ^= 0x7265666c74787401ULL;
+                result.FragmentKey ^= 0x7265666c74787402ULL;
                 MixKey(result.FragmentKey,
                        std::bit_cast<uint32_t>(profile.Reflectivity));
                 MixKey(result.FragmentKey,
                        std::bit_cast<uint32_t>(profile.Roughness));
-                MixKey(result.FragmentKey,
-                       std::bit_cast<uint32_t>(profile.MaterialClass));
                 apply(PicaShaderInstrumentationFeature::
                           ReflectionMaterialGuide);
             } else {
                 epilogue += BuildCalibratedMaterialGuide();
-                result.FragmentKey ^= 0x7265666c6d617401ULL;
+                result.FragmentKey ^= 0x7265666c6d617402ULL;
                 apply(PicaShaderInstrumentationFeature::
                           ReflectionMaterialGuide);
             }

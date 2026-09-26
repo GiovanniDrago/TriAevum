@@ -200,6 +200,34 @@ if(WIN32)
 endif()
 add_test(NAME builtin_pass_artifacts COMMAND build_pass_artifacts --check)
 set_tests_properties(builtin_pass_artifacts PROPERTIES TIMEOUT 120)
+
+add_executable(reflection_weight_gpu_tests reflection_weight_gpu_tests.cpp
+    "${runtime}/src/fast/oot3d/hiz_reflection.cpp"
+    "${runtime}/src/fast/oot3d/reflection_ibl.cpp")
+target_compile_features(reflection_weight_gpu_tests PRIVATE cxx_std_20)
+target_include_directories(reflection_weight_gpu_tests PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")
+target_link_libraries(reflection_weight_gpu_tests PRIVATE Vulkan::Vulkan "${SHADERC_LIBRARY}")
+if(WIN32)
+    add_custom_command(TARGET reflection_weight_gpu_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${SHADERC_RUNTIME}" "$<TARGET_FILE_DIR:reflection_weight_gpu_tests>")
+endif()
+add_test(NAME reflection_weight_gpu_tests COMMAND reflection_weight_gpu_tests)
+set_tests_properties(reflection_weight_gpu_tests PROPERTIES TIMEOUT 120)
+
+add_executable(pbr_seam_gpu_tests pbr_seam_gpu_tests.cpp
+    "${runtime}/src/fast/renderer3ds/pica_pbr_seams.cpp"
+    "${runtime}/src/fast/renderer3ds/pica_pbr_seam_shader.cpp"
+    "${runtime}/src/fast/renderer3ds/pica_pbr_shading.cpp"
+    "${runtime}/src/fast/renderer3ds/pica_surface_lighting.cpp")
+target_compile_features(pbr_seam_gpu_tests PRIVATE cxx_std_20)
+target_include_directories(pbr_seam_gpu_tests PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")
+target_link_libraries(pbr_seam_gpu_tests PRIVATE Vulkan::Vulkan "${SHADERC_LIBRARY}")
+if(WIN32)
+    add_custom_command(TARGET pbr_seam_gpu_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${SHADERC_RUNTIME}" "$<TARGET_FILE_DIR:pbr_seam_gpu_tests>")
+endif()
+add_test(NAME pbr_seam_gpu_tests COMMAND pbr_seam_gpu_tests)
+set_tests_properties(pbr_seam_gpu_tests PROPERTIES TIMEOUT 120)
 add_executable(build_vertex_artifacts build_vertex_artifacts.cpp
     "${runtime}/src/fast/oot3d/pica_rigid_motion.cpp"
     "${frontend}/oot3d_native_pica_shader_gen.cpp"

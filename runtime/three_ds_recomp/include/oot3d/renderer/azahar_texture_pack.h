@@ -5,8 +5,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <future>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Oot3d::Renderer {
@@ -55,6 +58,8 @@ struct AzaharTextureResolveResult {
     AzaharTextureResolveState State = AzaharTextureResolveState::Disabled;
     uint64_t NativeHash = 0;
     std::shared_ptr<const AzaharTextureReplacement> Replacement;
+    bool NativeHashAvailable = false;
+    bool UseNewHash = true;
 };
 
 struct AzaharMaterialIdentity {
@@ -69,13 +74,37 @@ struct AzaharPbrMaterial {
     AzaharMaterialIdentity Identity;
     uint64_t Generation = 0;
     Fast::Renderer3ds::PicaPbrMaterialParameters Parameters;
-    std::array<std::shared_ptr<const AzaharTextureReplacement>, 3> Textures;
+    std::array<std::shared_ptr<const AzaharTextureReplacement>, Fast::Renderer3ds::kPicaPbrTextureCount> Textures;
     std::shared_ptr<const AzaharTextureReplacement> ColorReplacement;
+};
+struct IndexedAzaharPbrMaterial {
+    Fast::Renderer3ds::PicaPbrMaterialParameters Parameters;
+    std::array<std::filesystem::path, Fast::Renderer3ds::kPicaPbrTextureCount> Textures;
+    std::filesystem::path ConfigurationPath;
+    std::filesystem::path BaseColorTexture;
+    std::string Error;
+};
+
+struct AzaharMaterialCatalogEntry {
+    uint64_t NativeHash = 0;
+    IndexedAzaharPbrMaterial Definition;
+};
+
+struct AzaharImageLoadResult {
+    std::shared_ptr<const AzaharTextureReplacement> Image;
+    std::string Error;
+};
+
+struct AzaharMaterialParameterPreview {
+    uint64_t NativeHash = 0;
+    Fast::Renderer3ds::PicaPbrMaterialParameters Parameters;
+    bool operator==(const AzaharMaterialParameterPreview&) const = default;
 };
 
 struct AzaharMaterialResolveResult {
     AzaharTextureResolveState State = AzaharTextureResolveState::Disabled;
     std::shared_ptr<const AzaharPbrMaterial> Material;
+    std::optional<Fast::Renderer3ds::PicaPbrMaterialParameters> Preview;
 };
 
 struct AzaharTexturePackStatus {
@@ -111,6 +140,10 @@ struct AzaharTexturePackStatus {
 [[nodiscard]] std::string MakeAzaharTextureFilename(uint16_t width, uint16_t height, uint64_t hash,
                                                     uint8_t nativeFormat, uint32_t mipLevel);
 
+// Uses the same lossless PNG encoder as native texture dumps.
+void WriteAzaharTexturePng(const std::filesystem::path& path, uint32_t width,
+                          uint32_t height, std::span<const uint8_t> rgba8);
+
 class AzaharTexturePackRuntime final {
   public:
     AzaharTexturePackRuntime();
@@ -139,6 +172,14 @@ class AzaharTexturePackRuntime final {
     void ReportMaterialUploadFailure(uint64_t nativeHash, uint64_t generation, std::string error);
     [[nodiscard]] AzaharTexturePackStatus Snapshot() const;
     [[nodiscard]] uint64_t Generation() const;
+    [[nodiscard]] std::vector<AzaharMaterialCatalogEntry> MaterialCatalog() const;
+    // Image imports share the existing pack worker; no file decoding in UI/frame code.
+    [[nodiscard]] std::future<AzaharImageLoadResult> LoadEditorImage(std::filesystem::path path);
+    void SetMaterialPreview(std::optional<AzaharMaterialParameterPreview> preview);
+    [[nodiscard]] uint64_t MaterialRevision() const;
+    // Diagnostics only for the selected live material preview; no saved state.
+    void ReportMaterialSeams(uint64_t nativeHash, uint64_t generation, std::string_view status);
+    [[nodiscard]] std::string MaterialSeamStatus(uint64_t nativeHash) const;
 
     // Intended for deterministic tests and orderly shutdown, not frame code.
     void WaitForPendingDumps();

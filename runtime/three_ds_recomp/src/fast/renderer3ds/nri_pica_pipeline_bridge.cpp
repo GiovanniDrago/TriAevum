@@ -249,9 +249,10 @@ struct NriPicaPipelineBridge::Impl {
         pool.constantBufferMaxNum =
             static_cast<uint32_t>(std::tuple_size_v<decltype(NriPicaOwnedDrawDesc::Uniforms)>) *
             DescriptorSetsPerPool;
-        pool.textureMaxNum = 8U * DescriptorSetsPerPool;
+        pool.textureMaxNum = 9U * DescriptorSetsPerPool;
         pool.storageTextureMaxNum = DescriptorSetsPerPool;
-        pool.samplerMaxNum = 8U * DescriptorSetsPerPool;
+        pool.samplerMaxNum = 9U * DescriptorSetsPerPool;
+        pool.structuredBufferMaxNum = DescriptorSetsPerPool;
         if (core.CreateDescriptorPool(device, pool, block.Pool) != nri::Result::SUCCESS ||
             core.AllocateDescriptorSets(*block.Pool, *DescriptorLayout, 0,
                 block.Sets.data(), DescriptorSetsPerPool, 0) != nri::Result::SUCCESS) {
@@ -282,7 +283,7 @@ bool NriPicaPipelineBridge::Initialize(
 #else
     if (config.FrameSlotCount == 0U ||
         config.DescriptorSetsPerPool == 0U ||
-        config.DescriptorSetsPerPool > std::numeric_limits<uint32_t>::max() / 8U) {
+        config.DescriptorSetsPerPool > std::numeric_limits<uint32_t>::max() / 9U) {
         mImpl->Reason = "NRI PICA execution configuration is invalid";
         return false;
     }
@@ -300,6 +301,8 @@ bool NriPicaPipelineBridge::Initialize(
                 return nri::DescriptorType::STORAGE_TEXTURE;
             case PicaNriDescriptorKind::Sampler:
                 return nri::DescriptorType::SAMPLER;
+            case PicaNriDescriptorKind::StructuredBuffer:
+                return nri::DescriptorType::STRUCTURED_BUFFER;
         }
         return nri::DescriptorType::MUTABLE;
     };
@@ -756,14 +759,35 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
         frame.TransientViews.push_back(constantBuffers[index]);
     }
 
-    std::array<NriPicaTextureBindingDesc, 8> textureSources{};
+    // Keep the source arena for seam data even when the optional NRI upload
+    // arena owns the seven constant ranges. No second copy of geometry metadata.
+    nri::Descriptor* seamBuffer = nullptr;
+    if (desc.SeamGeometry.Size != 0) {
+        if (!mImpl->Interop->WrapBuffer(desc.UniformBuffer, desc.UniformBufferSize, desc.UniformMappedMemory))
+            return false;
+        const auto seamRange = desc.SeamGeometry;
+        if (seamRange.Offset > desc.UniformBufferSize ||
+            seamRange.Size > desc.UniformBufferSize - seamRange.Offset)
+            return false;
+        nri::BufferViewDesc seamView{};
+        seamView.buffer = mImpl->Interop->Buffer(desc.UniformBuffer);
+        seamView.type = nri::BufferView::STRUCTURED_BUFFER;
+        seamView.structureStride = 16;
+        seamView.offset = seamRange.Offset;
+        seamView.size = seamRange.Size;
+        if (core->CreateBufferView(seamView, seamBuffer) != nri::Result::SUCCESS)
+            return false;
+        frame.TransientViews.push_back(seamBuffer);
+    }
+
+    std::array<NriPicaTextureBindingDesc, 9> textureSources{};
     std::copy(desc.Textures.begin(), desc.Textures.end(),
               textureSources.begin());
     textureSources[3] = desc.DirectionalShadowTexture;
     textureSources[4] = desc.LightingLutTexture;
     std::copy(desc.PbrTextures.begin(), desc.PbrTextures.end(), textureSources.begin() + 5);
-    std::array<nri::Descriptor*, 8> textures{};
-    std::array<nri::Descriptor*, 8> samplers{};
+    std::array<nri::Descriptor*, 9> textures{};
+    std::array<nri::Descriptor*, 9> samplers{};
     for (size_t index = 0; index < textures.size(); ++index) {
         const auto& source = textureSources[index];
         if (source.Image == VK_NULL_HANDLE ||
@@ -824,7 +848,7 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
 
     nri::DescriptorSet* set =
         descriptorPool.Sets[frame.Used++ % mImpl->DescriptorSetsPerPool];
-    const std::array<nri::UpdateDescriptorRangeDesc, 24> updates{{
+    const std::array<nri::UpdateDescriptorRangeDesc, kPicaNriDescriptorBindings.size()> updates{{
         {set, 0, 0, &constantBuffers[0], 1},
         {set, 1, 0, &textures[0], 1},
         {set, 2, 0, &textures[1], 1},
@@ -849,9 +873,12 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
         {set, 21, 0, &samplers[5], 1},
         {set, 22, 0, &samplers[6], 1},
         {set, 23, 0, &samplers[7], 1},
+        {set, 24, 0, &textures[8], 1},
+        {set, 25, 0, &samplers[8], 1},
+        {set, 26, 0, &seamBuffer, 1},
     }};
     core->UpdateDescriptorRanges(
-        updates.data(), static_cast<uint32_t>(updates.size()));
+        updates.data(), static_cast<uint32_t>(updates.size() - (seamBuffer ? 0U : 1U)));
     core->CmdSetDescriptorPool(*command, *descriptorPool.Pool);
     core->CmdSetPipelineLayout(
         *command, nri::BindPoint::GRAPHICS,

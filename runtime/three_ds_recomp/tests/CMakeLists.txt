@@ -182,6 +182,7 @@ add_executable(oot3d_pica_shader_pipeline_cache_tests
     ../src/fast/renderer3ds/pica_vertex_surface.cpp
     ../src/fast/renderer3ds/pica_surface_lighting.cpp
     ../src/fast/renderer3ds/pica_pbr_shading.cpp
+    ../src/fast/renderer3ds/pica_pbr_seam_shader.cpp
     ../src/fast/oot3d/pica_scene_domain_guide.cpp
     ../src/fast/oot3d/pica_shader_instrumentation.cpp
     ../src/fast/oot3d/pica_shader_pipeline_cache.cpp
@@ -550,6 +551,8 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/renderer3ds/pica_vertex_surface.cpp
     ../src/fast/renderer3ds/pica_surface_lighting.cpp
     ../src/fast/renderer3ds/pica_pbr_shading.cpp
+    ../src/fast/renderer3ds/pica_pbr_seam_shader.cpp
+    ../src/fast/renderer3ds/pica_pbr_seams.cpp
     ../src/fast/oot3d/pica_texture_decode.cpp
     ../src/fast/oot3d/pica_toon_shader.cpp
     ../src/fast/oot3d/pica_shader_instrumentation.cpp

@@ -668,6 +668,9 @@ bool NriInteropContext::WrapBuffer(
     nri::BufferVKDesc desc{};
     desc.vkBuffer = reinterpret_cast<uint64_t>(buffer);
     desc.size = size;
+    // Four-byte structure support permits typed, raw and explicit-stride
+    // structured views of imported arenas without changing their Vulkan usage.
+    desc.structureStride = 4;
     desc.mappedMemory = mappedMemory;
     nri::Buffer* wrapped = nullptr;
     if (mImpl->Wrapper.CreateBufferVK(

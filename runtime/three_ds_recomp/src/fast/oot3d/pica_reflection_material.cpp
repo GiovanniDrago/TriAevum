@@ -35,7 +35,7 @@ constexpr std::string_view kCalibratedGuide =
     "0.720, 0.160, oot3d_specular_response);\n"
     "    pica_material_guide = vec4("
     "oot3d_material_reflectivity, oot3d_material_roughness, "
-    "0.75, 0.0); // OOT3D calibrated specular material\n";
+    "(127.0 / 255.0), 0.0); // OOT3D calibrated specular material\n";
 
 bool TevConsumesSpecular(std::string_view source) {
     const size_t lightingEnd = source.find(kLightingEndMarker);
@@ -60,9 +60,7 @@ std::string BuildExplicitGuide(
            << profile.Reflectivity
            << ", "
            << profile.Roughness
-           << ", "
-           << profile.MaterialClass
-           << ", 0.0); // OOT3D explicit texture material";
+           << ", (127.0 / 255.0), 0.0); // OOT3D explicit texture material";
     return stream.str();
 }
 
@@ -82,7 +80,6 @@ ReflectionMaterialParameters SanitizeProfile(
     return {
         finiteClamp(profile.Reflectivity, 0.0F, 1.0F, 0.0F),
         finiteClamp(profile.Roughness, 0.02F, 1.0F, 1.0F),
-        finiteClamp(profile.MaterialClass, 0.5F, 1.0F, 1.0F),
     };
 }
 
@@ -186,16 +183,13 @@ BuildPicaReflectionMaterialShaderVariant(
             BuildExplicitGuide(sanitizedProfile);
         result.Source.replace(
             guide, semicolon + 1U - guide, replacement);
-        result.FragmentKey ^= 0x7265666c74787401ULL;
+        result.FragmentKey ^= 0x7265666c74787402ULL;
         MixKey(result.FragmentKey,
                std::bit_cast<uint32_t>(
                    sanitizedProfile.Reflectivity));
         MixKey(result.FragmentKey,
                std::bit_cast<uint32_t>(
                    sanitizedProfile.Roughness));
-        MixKey(result.FragmentKey,
-               std::bit_cast<uint32_t>(
-                   sanitizedProfile.MaterialClass));
         return result;
     }
 
@@ -210,7 +204,7 @@ BuildPicaReflectionMaterialShaderVariant(
     }
     result.Source.replace(
         guide, original.size(), kCalibratedGuide);
-    result.FragmentKey ^= 0x7265666c6d617401ULL;
+    result.FragmentKey ^= 0x7265666c6d617402ULL;
     return result;
 }
 

@@ -1,4 +1,5 @@
 #include "fast/oot3d/pica_grass_texture_coordinates.h"
+#include "fast/renderer3ds/pica_texture_coordinates.h"
 
 #include <algorithm>
 #include <bit>
@@ -155,81 +156,25 @@ DecodePicaGrassTextureCoordinateTransform(
     const std::array<float, 4>* rowV = nullptr;
     float homogeneousConstant = 0.0F;
     if (typedVertexProgram) {
-        if ((booleanMask &
-             (1U << vertexLayout->EnableBooleanUniform)) == 0U) {
-            result.Eligibility =
-                PicaGrassTextureCoordinateEligibility::
-                    TextureCoordinatesDisabled;
-            return result;
+        const auto affine = Renderer3ds::DecodePicaAffineUv(
+            vertexLayout, booleanMask, vertexUniformBytes.subspan(80));
+        using Status = Renderer3ds::PicaAffineUvStatus;
+        using Eligibility = PicaGrassTextureCoordinateEligibility;
+        switch (affine.Status) {
+        case Status::Applied: result.Eligibility = Eligibility::Applied; break;
+        case Status::UnsupportedProgram: result.Eligibility = Eligibility::UnsupportedVertexProgram; break;
+        case Status::MissingUniforms: result.Eligibility = Eligibility::MissingUniforms; break;
+        case Status::Disabled: result.Eligibility = Eligibility::TextureCoordinatesDisabled; break;
+        case Status::Procedural: result.Eligibility = Eligibility::ProceduralCoordinates; break;
+        case Status::InvalidSource: result.Eligibility = Eligibility::UnsupportedCoordinateSource; break;
+        case Status::InvalidTransform: result.Eligibility = Eligibility::InvalidTransform; break;
         }
-        const float coordinateMode =
-            uniforms[vertexLayout->CoordinateModeUniform]
-                    [vertexLayout->CoordinateModeComponent];
-        const auto& modeConstants =
-            uniforms[vertexLayout->CoordinateModeConstantUniform];
-        if (Approximately(
-                coordinateMode,
-                modeConstants[vertexLayout->
-                                  CoordinateModeConstantComponents[0]]) ||
-            Approximately(
-                coordinateMode,
-                modeConstants[vertexLayout->
-                                  CoordinateModeConstantComponents[1]])) {
-            result.Eligibility =
-                PicaGrassTextureCoordinateEligibility::
-                    ProceduralCoordinates;
-            return result;
+        if (result.Eligibility == Eligibility::Applied) {
+            if (affine.InputRegister != texCoord0InputLocation)
+                result.Eligibility = Eligibility::UnsupportedCoordinateSource;
+            else result.RawToSample = affine.Rows;
         }
-
-        const float sourceSelector =
-            uniforms[vertexLayout->SourceSelectorUniform]
-                    [vertexLayout->SourceSelectorComponent];
-        const auto& selectorConstants =
-            uniforms[vertexLayout->SourceSelectorConstantUniform];
-        const bool selectsFirst = Approximately(
-            sourceSelector,
-            selectorConstants[vertexLayout->
-                                  SourceSelectorConstantComponents[0]]);
-        const bool selectsSecond = Approximately(
-            sourceSelector,
-            selectorConstants[vertexLayout->
-                                  SourceSelectorConstantComponents[1]]);
-        size_t sourceIndex = 0U;
-        if (selectsFirst && !selectsSecond) {
-            sourceIndex = 0U;
-        } else if (!selectsFirst && selectsSecond) {
-            sourceIndex = 1U;
-        } else if (!selectsFirst && !selectsSecond &&
-                   vertexLayout->SourceCount >= 3U) {
-            sourceIndex = 2U;
-        } else {
-            result.Eligibility =
-                PicaGrassTextureCoordinateEligibility::
-                    UnsupportedCoordinateSource;
-            return result;
-        }
-        if (sourceIndex >= vertexLayout->SourceCount) {
-            result.Eligibility =
-                PicaGrassTextureCoordinateEligibility::
-                    UnsupportedCoordinateSource;
-            return result;
-        }
-        const auto& source = vertexLayout->Sources[sourceIndex];
-        if (source.InputRegister != texCoord0InputLocation ||
-            (booleanMask &
-             (1U << source.EnableBooleanUniform)) == 0U) {
-            result.Eligibility =
-                PicaGrassTextureCoordinateEligibility::
-                    UnsupportedCoordinateSource;
-            return result;
-        }
-        inputScale =
-            uniforms[source.ScaleUniform][source.ScaleComponent];
-        rowU = &uniforms[vertexLayout->MatrixRowUUniform];
-        rowV = &uniforms[vertexLayout->MatrixRowVUniform];
-        homogeneousConstant =
-            uniforms[vertexLayout->HomogeneousUniform]
-                    [vertexLayout->HomogeneousComponent];
+        return result;
     } else {
         const auto& coordinateModes = uniforms[92U];
         const auto& modeConstants = uniforms[95U];

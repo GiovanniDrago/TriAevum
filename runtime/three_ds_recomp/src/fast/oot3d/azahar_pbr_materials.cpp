@@ -48,7 +48,7 @@ Sidecar Describe(const std::filesystem::path& path) {
         result.Hash = ParseAzaharTextureFilenameHash(path.stem());
         return result;
     }
-    constexpr std::array<std::string_view, 3> suffixes{"_n", "_orm", "_e"};
+    constexpr std::array<std::string_view, Fast::Renderer3ds::kPicaPbrTextureCount> suffixes{"_n", "_orm", "_e", "_h"};
     for (size_t role = 0; role < suffixes.size(); ++role) {
         if (!stem.ends_with(suffixes[role])) continue;
         result.Hash = ParseHash(std::string_view(stem).substr(0, stem.size() - suffixes[role].size()));
@@ -113,8 +113,8 @@ void Factor(const nlohmann::json& object, const char* name, std::array<float, N>
 
 struct Candidate {
     IndexedAzaharPbrMaterial Material;
-    std::array<bool, 3> Duplicate{};
-    std::array<bool, 3> InvalidName{};
+    std::array<bool, Fast::Renderer3ds::kPicaPbrTextureCount> Duplicate{};
+    std::array<bool, Fast::Renderer3ds::kPicaPbrTextureCount> InvalidName{};
     bool DuplicateJson = false;
 };
 
@@ -128,12 +128,12 @@ void Finish(const std::filesystem::path& root, Candidate& candidate) {
         std::ifstream stream(path);
         if (!stream) throw std::runtime_error("unable to open material JSON");
         document = nlohmann::json::parse(stream);
-        Fields(document, {"schema", "version", "shading", "baseColor", "normal", "orm", "emissive", "textureSlot"});
+        Fields(document, {"schema", "version", "shading", "baseColor", "normal", "orm", "emissive", "height", "textureSlot", "specularLevel", "specularWeight", "screenSpaceReflectionWeight", "seamSoftening"});
         if (document.at("schema") != "triaevum.pbr-material" || !document.at("version").is_number_integer() ||
             document.at("version") != 1 || document.value("shading", "metallic_roughness") != "metallic_roughness")
             throw std::runtime_error("unsupported material schema, version or shading model");
     }
-    constexpr std::array<const char*, 3> roles{"normal", "orm", "emissive"};
+    constexpr std::array<const char*, Fast::Renderer3ds::kPicaPbrTextureCount> roles{"normal", "orm", "emissive", "height"};
     for (size_t role = 0; role < roles.size(); ++role) {
         const auto section = document.find(roles[role]);
         if (section != document.end()) {
@@ -142,8 +142,9 @@ void Finish(const std::filesystem::path& root, Candidate& candidate) {
                 candidate.Duplicate[role] = candidate.InvalidName[role] = false;
             } else {
                 if (role == 0) Fields(*section, {"texture", "scale", "convention"});
-                if (role == 1) Fields(*section, {"texture", "occlusionStrength", "roughnessFactor", "metallicFactor"});
+                if (role == 1) Fields(*section, {"texture", "occlusionStrength", "roughnessFactor", "metallicFactor", "glossinessStrength", "minimumRoughness"});
                 if (role == 2) Fields(*section, {"texture", "factor"});
+                if (role == 3) Fields(*section, {"texture", "scale"});
                 if (const auto texture = section->find("texture"); texture != section->end()) {
                     candidate.Duplicate[role] = candidate.InvalidName[role] = false;
                     material.Textures[role].clear();
@@ -160,7 +161,7 @@ void Finish(const std::filesystem::path& root, Candidate& candidate) {
             }
         }
         if (candidate.Duplicate[role]) throw std::runtime_error(std::string("ambiguous ") + roles[role] + " maps; select one explicitly in JSON");
-        if (candidate.InvalidName[role]) throw std::runtime_error("PBR suffixes require HASH_n/orm/e.png, not tex1_..._n/orm/e.png");
+        if (candidate.InvalidName[role]) throw std::runtime_error("PBR suffixes require HASH_n/orm/e/h.png, not tex1_..._n/orm/e/h.png");
         if (!material.Textures[role].empty()) {
             material.Textures[role] = Sandboxed(root, material.Textures[role]);
             if (Lower(material.Textures[role].extension().string()) != ".png")
@@ -173,11 +174,23 @@ void Finish(const std::filesystem::path& root, Candidate& candidate) {
     parameters.MetallicFactor = material.Textures[1].empty() ? 0.0F : 1.0F;
     if (!material.Textures[2].empty()) parameters.EmissiveFactor.fill(1.0F);
     if (const auto base = document.find("baseColor"); base != document.end()) {
-        Fields(*base, {"source", "factor"});
+        Fields(*base, {"source", "factor", "texture"});
         if (base->value("source", "bound_texture") != "bound_texture")
-            throw std::runtime_error("baseColor.source must be bound_texture; color replacements use the Azahar catalog");
+            throw std::runtime_error("baseColor.source must be bound_texture");
         Factor(*base, "factor", parameters.BaseColorFactor);
         if (parameters.BaseColorFactor[3] != 1.0F) throw std::runtime_error("PBR factors cannot change native alpha");
+        if (const auto texture = base->find("texture"); texture != base->end() && !texture->is_null()) {
+            if (!texture->is_string()) throw std::runtime_error("baseColor.texture must be a relative PNG path or null");
+            const auto text = texture->get<std::string>();
+            const std::filesystem::path relative(std::u8string_view(
+                reinterpret_cast<const char8_t*>(text.data()), text.size()));
+            if (text.empty() || text.find('\0') != std::string::npos || relative.is_absolute() || relative.has_root_name())
+                throw std::runtime_error("baseColor.texture must be a relative PNG path inside the pack");
+            material.BaseColorTexture = Sandboxed(root, material.ConfigurationPath.parent_path() / relative);
+            if (Lower(material.BaseColorTexture.extension().string()) != ".png" ||
+                !std::filesystem::is_regular_file(material.BaseColorTexture))
+                throw std::runtime_error("baseColor.texture must name an existing PNG inside the pack");
+        }
     }
     if (const auto normal = document.find("normal"); normal != document.end() && !normal->is_null()) {
         parameters.NormalScale = Number(*normal, "scale", 1.0F, 8.0F);
@@ -189,9 +202,35 @@ void Finish(const std::filesystem::path& root, Candidate& candidate) {
         parameters.OcclusionStrength = Number(*orm, "occlusionStrength", 1.0F);
         parameters.RoughnessFactor = Number(*orm, "roughnessFactor", 1.0F);
         parameters.MetallicFactor = Number(*orm, "metallicFactor", parameters.MetallicFactor);
+        parameters.GlossinessStrength = Number(*orm, "glossinessStrength", 1.0F, 2.0F);
+        parameters.MinimumRoughness = Number(*orm, "minimumRoughness", 0.045F);
+        if (parameters.MinimumRoughness < 0.045F)
+            throw std::runtime_error("minimumRoughness must be at least 0.045");
     }
     if (const auto emission = document.find("emissive"); emission != document.end() && !emission->is_null())
         Factor(*emission, "factor", parameters.EmissiveFactor, 65504.0F);
+    if (const auto height = document.find("height"); height != document.end() && !height->is_null())
+        parameters.HeightScale = Number(*height, "scale", 0.02F, 0.1F);
+    parameters.SpecularLevel = Number(document, "specularLevel", 1.0F, 2.0F);
+    parameters.SpecularWeight = Number(document, "specularWeight", 1.0F);
+    parameters.ScreenSpaceReflectionWeight = Number(document, "screenSpaceReflectionWeight", 1.0F, 2.0F);
+    if (const auto seam = document.find("seamSoftening"); seam != document.end()) {
+        Fields(*seam, {"enabled", "strength", "width", "channels"});
+        parameters.SeamSoftening = seam->value("enabled", false);
+        parameters.SeamStrength = Number(*seam, "strength", 1.0F);
+        parameters.SeamWidth = Number(*seam, "width", 0.05F, 0.25F);
+        if (parameters.SeamWidth < 0.001F) throw std::runtime_error("seam width must be at least 0.001");
+        if (const auto channels = seam->find("channels"); channels != seam->end()) {
+            Fields(*channels, {"normal", "occlusion", "roughness", "metallic", "emissive", "height"});
+            constexpr const char* names[]{"normal", "occlusion", "roughness", "metallic", "emissive", "height"};
+            for (uint32_t i = 0; i < 6; ++i) {
+                const auto bit = 1U << i;
+                if (channels->value(names[i], (parameters.SeamChannels & bit) != 0))
+                    parameters.SeamChannels |= bit;
+                else parameters.SeamChannels &= ~bit;
+            }
+        }
+    }
     if (const auto slot = document.find("textureSlot"); slot != document.end()) {
         if (!slot->is_number_integer() || *slot < 0 || *slot > 2) throw std::runtime_error("textureSlot must be 0, 1 or 2");
         parameters.TextureSlot = slot->get<uint8_t>();

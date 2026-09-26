@@ -12,6 +12,8 @@
 #include "fast/renderer3ds/pica_program_preparation.h"
 #include "fast/renderer3ds/pica_texture_copy_plan.h"
 #include "fast/renderer3ds/pica_shadow_geometry.h"
+#include "fast/renderer3ds/pica_pbr_material.h"
+#include "fast/renderer3ds/pica_pbr_seams.h"
 #include "fast/renderer3ds/pica_surface_lighting.h"
 #include "fast/backends/oot3d_vulkan_diagnostics.h"
 #include "fast/backends/oot3d_vulkan_gpu_profiler.h"
@@ -330,9 +332,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
 
     struct NativePicaMaterialBundle {
         std::shared_ptr<const ::Oot3d::Renderer::AzaharPbrMaterial> Material;
-        // Normal, ORM, emissive, and optional color replacement publish together.
-        std::array<TextureRecord, 4> Images;
-        std::array<uint32_t, 4> UploadedRows{};
+        // All material maps and the optional color replacement publish together.
+        std::array<TextureRecord, Renderer3ds::kPicaPbrTextureCount + 1> Images;
+        std::array<uint32_t, Renderer3ds::kPicaPbrTextureCount + 1> UploadedRows{};
         uint8_t ReusedImages = 0;
     };
     struct NativePicaMaterialEntry {
@@ -414,6 +416,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         std::array<uint64_t, kFramesInFlight> ContentVersions{};
         std::array<uint64_t, kFramesInFlight> StructuralSignatures{};
         Renderer3ds::PicaShadowCasterCache ShadowCaster;
+        Renderer3ds::PicaPbrSeamCache Seams;
         uint64_t LastUsedFrame = 0;
     };
 
@@ -897,6 +900,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     std::map<NativePicaShaderModuleKey, NativePicaShaderProgram>
         mInstrumentedNativePicaShaders;
     Oot3d::PicaGeometryRegistry mPicaGeometryRegistry;
+    bool mPbrSeamsAvailable = false;
     Oot3d::PicaCompositionSchedule mNativePicaCompositionSchedule;
     Oot3d::PicaSceneFrame mPicaSceneFrame;
     Oot3d::NativeSceneView mNativeSceneView;
@@ -930,6 +934,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     std::optional<Renderer3ds::PicaSurfaceLightingView> mSurfaceLightingView;
     uint64_t mFrameGraphicsSettingsRevision = 0;
     uint64_t mAzaharConfiguredSettingsRevision = 0;
+    uint64_t mFrameMaterialRevision = 0;
     std::optional<Oot3d::PicaAttachmentFeatureRequests>
         mPicaExtensionRequests;
     Oot3d::CompiledEffectGraph mPicaExtensionGraph;

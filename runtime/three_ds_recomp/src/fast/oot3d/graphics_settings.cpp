@@ -203,13 +203,6 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         Correct(result.Issues, "Graphics.Effects.SurfaceLighting",
                 capabilities.Get(GraphicsCapability::NativeSurfaceLighting).Reason);
     }
-    auto& pbr = value.Effects.Pbr;
-    pbr.NormalStrength = std::isfinite(pbr.NormalStrength)
-        ? std::clamp(pbr.NormalStrength, 0.0F, 8.0F) : 1.0F;
-    pbr.GlossinessStrength = std::isfinite(pbr.GlossinessStrength)
-        ? std::clamp(pbr.GlossinessStrength, 0.0F, 2.0F) : 1.0F;
-    if (pbr.DebugView > Renderer3ds::PicaPbrDebugView::Roughness)
-        pbr.DebugView = Renderer3ds::PicaPbrDebugView::Shaded;
     value.Effects.AoQuality = std::min<uint8_t>(value.Effects.AoQuality, 1U);
     value.Effects.AoRadius = std::clamp(value.Effects.AoRadius, 0.05F, 100.0F);
     value.Effects.AoStrength = std::clamp(value.Effects.AoStrength, 0.0F, 10.0F);

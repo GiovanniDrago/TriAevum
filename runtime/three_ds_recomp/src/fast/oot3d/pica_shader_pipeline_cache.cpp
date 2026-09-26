@@ -65,7 +65,6 @@ struct InstrumentationKey {
     uint64_t CanonicalIdentity = 0;
     uint32_t ReflectionReflectivity = 0;
     uint32_t ReflectionRoughness = 0;
-    uint32_t ReflectionMaterialClass = 0;
     uint32_t RequestedFeatures = 0;
     uint16_t FramebufferWidth = 0;
     uint16_t FramebufferHeight = 0;
@@ -85,7 +84,6 @@ struct InstrumentationKeyHash {
         size_t result = std::hash<uint64_t>{}(key.CanonicalIdentity);
         HashCombine(result, key.ReflectionReflectivity);
         HashCombine(result, key.ReflectionRoughness);
-        HashCombine(result, key.ReflectionMaterialClass);
         HashCombine(result, key.RequestedFeatures);
         HashCombine(result, key.FramebufferWidth);
         HashCombine(result, key.FramebufferHeight);
@@ -113,14 +111,15 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
     if (sceneDraw && Renderer3ds::PicaCompositionReceivesSurfaceLighting(request.Draw.CompositionLayer) &&
         request.Draw.FragmentOperationMode != 3U &&
         request.Draw.PerspectiveProjection && request.SurfaceLightingAvailable &&
-        effects.SurfaceLighting != SurfaceLightingMode::Native &&
+        (UsesFullSceneLighting(effects.SurfaceLighting) ||
+         (effects.SurfaceLighting == SurfaceLightingMode::NativePbr && request.Pbr.TextureSlot < 3U)) &&
         request.TemporalVertexProgram.Hooks.SurfaceProgram() != nullptr &&
         request.FragmentShaderHooks.Supports(PicaShaderHook::PicaLighting) &&
         request.FragmentShaderHooks.Supports(PicaShaderHook::AfterNativeTev) &&
         request.FragmentShaderHooks.Has(PicaShaderSemantic::ViewVector) &&
         request.FragmentShaderHooks.Has(PicaShaderSemantic::PrimaryColorInput)) {
         features |= PicaShaderInstrumentationFeature::NativePerPixelLighting;
-        if (effects.SurfaceLighting == SurfaceLightingMode::PerPixelPbr && request.Pbr.TextureSlot < 3U)
+        if (UsesPbrMaterials(effects.SurfaceLighting) && request.Pbr.TextureSlot < 3U)
             features |= PicaShaderInstrumentationFeature::PbrMaterial;
     }
     if (sceneDraw && request.Draw.FragmentOperationMode != 3U &&
@@ -134,6 +133,7 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
         features |= PicaShaderInstrumentationFeature::RigidMotionGuide;
     }
     if (sceneDraw && request.Draw.DirectionalShadowReceiver &&
+        UsesFullSceneLighting(effects.SurfaceLighting) &&
         HasPicaShaderInstrumentationFeature(features, PicaShaderInstrumentationFeature::NativePerPixelLighting) &&
         request.Draw.FragmentOperationMode == 0U &&
         request.Draw.DepthTestEnabled && request.Draw.DepthWriteEnabled &&
@@ -193,7 +193,7 @@ InstrumentationKey BuildInstrumentationKey(
     key.DepthCompare = static_cast<uint8_t>(request.Draw.DepthCompare);
     if (HasPicaShaderInstrumentationFeature(requestedFeatures, PicaShaderInstrumentationFeature::PbrMaterial))
         key.PbrState = request.Pbr.TextureSlot | (request.Pbr.NativeFragmentLighting ? 4U : 0U) |
-            (request.Pbr.NativeAttenuationLuts ? 8U : 0U);
+            (request.Pbr.NativeAttenuationLuts ? 8U : 0U) | (request.Pbr.SeamSoftening ? 16U : 0U);
     const auto& blend = request.Draw.Blend;
     key.BlendStateBits =
         static_cast<uint32_t>(blend.EquationRgb) |
@@ -215,9 +215,6 @@ InstrumentationKey BuildInstrumentationKey(
                 request.ReflectionProfile->Reflectivity);
         key.ReflectionRoughness =
             std::bit_cast<uint32_t>(request.ReflectionProfile->Roughness);
-        key.ReflectionMaterialClass =
-            std::bit_cast<uint32_t>(
-                request.ReflectionProfile->MaterialClass);
     }
     return key;
 }
@@ -329,7 +326,7 @@ PicaShaderInstrumentationFeature ResolvePicaShaderProfileFeatures(
     if (effects.SurfaceLighting != SurfaceLightingMode::Native) {
         features |= PicaShaderInstrumentationFeature::NativePerPixelLighting;
     }
-    if (effects.SurfaceLighting == SurfaceLightingMode::PerPixelPbr) {
+    if (UsesPbrMaterials(effects.SurfaceLighting)) {
         features |= PicaShaderInstrumentationFeature::PbrMaterial;
     }
     if (effects.Toon != ToonMode::Off) {
@@ -340,7 +337,7 @@ PicaShaderInstrumentationFeature ResolvePicaShaderProfileFeatures(
         features |= PicaShaderInstrumentationFeature::ReactiveMask;
         features |= PicaShaderInstrumentationFeature::RigidMotionGuide;
     }
-    if (directionalShadowLightingEnabled && effects.SurfaceLighting != SurfaceLightingMode::Native) {
+    if (directionalShadowLightingEnabled && UsesFullSceneLighting(effects.SurfaceLighting)) {
         features |=
             PicaShaderInstrumentationFeature::DirectionalShadowLighting;
     }

@@ -38,8 +38,8 @@ int main() {
             PicaSurfaceLightingUniforms Lighting;
             Vec4 View{}, Normal{ 0, 1, 0, 0 }, Base{ .2F, .3F, .4F, 1 };
         };
-        std::array<Case, 22> cases{};
-        const std::array<Vec4, 22> expected{ { { .575F, .2F, .2F, 1 },
+        std::array<Case, 24> cases{};
+        const std::array<Vec4, 24> expected{ { { .575F, .2F, .2F, 1 },
                                                { .2F, .2F, .2F, 1 },
                                                { .2F, .2F, .2F, 1 },
                                                { .2F, .3F, .4F, 1 },
@@ -54,6 +54,8 @@ int main() {
                                                { .2F, .2F, .2F, 1 },
                                                { .5F, .3F, .4F, 1 },
                                                { 0, 0, 0, 1 },
+                                               { .5F, .2F, .2F, 1 },
+                                               { .2F, .2F, .6F, 1 },
                                                { .2F, .2F, .2F, 1 },
                                                { .2F, .3F, .4F, 1 },
                                                { .2F, 0, .2F, 1 },
@@ -127,27 +129,37 @@ int main() {
                     settings.NativeLocalStrength = 1;
                 }
             }
-            if (i >= 15) {
+            if (i >= 15 && i < 17) {
+                // Baked world materials have no native diffuse response or
+                // selected direct lights. Scene lights must still respond to
+                // the material normal without discarding native ambient.
+                binding.Sources = {};
+                settings = {};
+                uniforms[8] = {0, 0, 0, 1};
+                uniforms[81] = {};
+                if (i == 16) cases[i].Normal[1] = -1;
+            }
+            if (i >= 17) {
                 binding = {};
                 settings = {};
                 settings.Enabled = true;
                 settings.AmbientIntensity = 0;
                 uniforms = native;
-                if (i == 17) uniforms[9][1] = 0; // No invented brightness in an authored dark channel.
-                if (i == 18) uniforms[82] = {.8F, .2F, .4F, 0}; // A new native environment snapshot.
-                if (i == 19) {
+                if (i == 19) uniforms[9][1] = 0; // No invented brightness in an authored dark channel.
+                if (i == 20) uniforms[82] = {.8F, .2F, .4F, 0}; // A new native environment snapshot.
+                if (i == 21) {
                     binding.ScenePoints = points;
                     binding.Sources[0].Kind = PicaNativeLightSource::Type::Point;
                     binding.Sources[0].SourceIdentity = 42;
                     settings.PointLights[0].Enabled = false;
                 }
-                if (i == 20 || i == 21) settings.Lights[0].Intensity = 1;
+                if (i == 22 || i == 23) settings.Lights[0].Intensity = 1;
             }
             const auto view = BuildPicaSurfaceLightingView(camera);
             if (!view)
                 throw std::runtime_error("Scene point-light view rejected");
             const auto lighting = BuildPicaSurfaceLightingUniforms(
-                hooks, i == 3 || i == 4 || i == 7 || i == 13 || i == 14 || i == 16 || i == 21 ? 0U : 1U << 9U,
+                hooks, i == 3 || i == 4 || i == 7 || i == 13 || i == 14 || i == 18 || i == 23 ? 0U : 1U << 9U,
                 { reinterpret_cast<const uint8_t*>(uniforms.data()), sizeof(uniforms) }, binding, settings,
                 &*view);
             if (!lighting)

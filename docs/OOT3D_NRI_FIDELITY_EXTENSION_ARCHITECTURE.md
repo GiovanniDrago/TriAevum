@@ -1718,7 +1718,8 @@ historical measurements, not the current instrumented layout. See
 ### Native Per-Pixel Lighting and Material Packs (2026-09-23)
 
 - `Graphics.Effects.SurfaceLighting` has one F1 owner: **Lighting model** in
-  Lighting. Values are `Native` (default), `PerPixel`, and `PerPixelPBR`.
+  Lighting. Values are `Native` (default), `PerPixel`, `PerPixelPBR`, and
+  `NativePBR` (**Native + PBR**).
   Missing capability or unsupported typed shader metadata leaves the native
   path intact. PBR replaces toon lighting only on material-enabled draws;
   geometric outlines remain independent.
@@ -1740,26 +1741,79 @@ historical measurements, not the current instrumented layout. See
   emission. Mapped normals, roughness and reflectivity feed existing AO and
   reflection guides; the compiled graph continues to own pass order.
 
+#### Native + PBR (2026-09-24)
+
+`NativePBR` applies the existing material BRDF only to draws with a supported,
+loaded PBR material. Draws without a material or supported typed shader hooks
+retain their native lighting shaders, rather than falling back to Per-pixel.
+An optional material color replacement is bound only after PBR instrumentation
+has actually succeeded. Native projected/blob shadows remain in native order;
+VSM is inactive without erasing its saved preference.
+
+PBR-authored surfaces use the shared native scene-light evaluator, including
+native directional sources and reconstructed per-pixel point attenuation.
+Native source attribution and deduplication remain authoritative. This relights
+those surfaces, including baked/ambient-only world materials; it does not
+relight materials without a supported PBR pack. No synthetic lights or
+asset-specific corrections are added. `UsesFullSceneLighting` remains limited
+to Per-pixel and Per-pixel + PBR.
+
+Scene Environment overrides and fairy-group overrides are inactive in this
+mode; their saved profiles are retained. The F1 **Material editor** owns
+per-material parameters, diagnostic previews and temporal-history invalidation.
+Normal maps require existing direct light or reflections to affect shading.
+Authentic and NativeMemory remain canonical. F2 and mandatory mobile native
+presentation temporarily mask this new mode to Native, then restore the
+configured mode when the desktop override is released.
+
+The initial native-assignment-only implementation loaded the maps but left
+baked world surfaces without direct illumination. Its diagnostic material views
+did not establish a visible Shaded response. The corrected contract above was
+qualified with nine deterministic 32-frame Kokiri runs, all in **Shaded**, plus
+a 180-frame native-copy run against the previous Native reference.
+Native output and the no-pack/Authentic fallbacks matched the previous runtime
+byte-for-byte; extreme Environment changes were byte-inert. The material runs
+kept all 220 draws: 219 canonical and one instrumented material draw.
+Normal strength 0→1 changed 216,434 pixels and 1→8 changed 215,746.
+Glossiness 0→1 changed 171,114 pixels and 1→2 changed 198,148.
+All 466 sampled opaque heart pixels stayed exact.
+
+Guest memory/content/process fingerprints matched across the Kokiri variants.
+The native-copy scenario also matched the prior runtime's fingerprints and
+Native framebuffer, with 108 deferred copies, 216 GPU bindings, one final
+materialization and no prefix waits. Vulkan/NRI validation and graph checks
+recorded zero errors; the same 11 Vulkan warnings occurred in the old Native
+reference and new runs. The focused CPU suites passed 292/41/19 tests and
+native-presentation policy checks passed. Two ambient-only world cases failed
+before the fix; all 17 production lighting GPU cases passed afterward.
+Real F1 widgets passed 5,111 assertions. Private captures, isolated profiles
+and receipts remain under `I:/_triaevum_work/native-pbr/`, notably
+`corrected-proof-20260924-224119` and `corrected-copies-20260924-224222`;
+they are not release assets.
+
 #### Pack authoring
 
 Use the original Azahar texture hash, not a replacement image's pixel hash.
 The pack's existing `use_new_hash` and `flip_png_files` options also apply.
 Enable **Load custom textures**, select the pack directory in Texture packs,
-then select **Per-pixel + PBR** in Lighting.
+then select **Per-pixel + PBR** or **Native + PBR** in Lighting.
 
 | File | Meaning |
 | --- | --- |
 | `HASH_n.png` | Tangent-space normal; linear data, default `+Y` |
 | `HASH_orm.png` | Linear R=occlusion, G=roughness, B=metallic |
 | `HASH_e.png` | Emissive color, decoded from sRGB |
+| `HASH_h.png` | Linear height in R; white is the native surface, black recessed |
 | `HASH.material.json` | Optional parameters and explicit map paths |
 
 `HASH` is hexadecimal. Use the short hash suffix names above, not
 `tex1_..._n.png`. Existing Azahar `tex1_....norm.png` and mapped
 `custom.norm.png` normal sidecars are also recognized and never indexed as
-albedo replacements. Base color still uses the bound native texture or its
-ordinary Azahar color replacement. Maps alone are sufficient; absent ORM
-defaults to roughness 1 and metallic 0, and absent emission defaults to zero.
+albedo replacements. Base color defaults to the bound native texture or its
+ordinary Azahar color replacement. Optional `baseColor.texture` overrides it
+only in the PBR material bundle, without entering the ordinary color cache.
+Maps alone are sufficient; absent ORM defaults to roughness 1 and metallic 0,
+and absent emission defaults to zero.
 
 Example `0123456789ABCDEF.material.json`:
 
@@ -1768,7 +1822,19 @@ Example `0123456789ABCDEF.material.json`:
   "schema": "triaevum.pbr-material",
   "version": 1,
   "shading": "metallic_roughness",
-  "baseColor": { "source": "bound_texture", "factor": [1, 1, 1, 1] },
+  "baseColor": { "source": "bound_texture", "texture": null, "factor": [1, 1, 1, 1] },
+  "specularLevel": 1,
+  "specularWeight": 1,
+  "screenSpaceReflectionWeight": 1,
+  "seamSoftening": {
+    "enabled": false,
+    "strength": 1,
+    "width": 0.05,
+    "channels": {
+      "normal": true, "occlusion": true, "roughness": true,
+      "metallic": true, "emissive": false, "height": true
+    }
+  },
   "normal": {
     "texture": "0123456789ABCDEF_n.png",
     "scale": 1,
@@ -1778,11 +1844,17 @@ Example `0123456789ABCDEF.material.json`:
     "texture": "0123456789ABCDEF_orm.png",
     "occlusionStrength": 1,
     "roughnessFactor": 1,
-    "metallicFactor": 1
+    "metallicFactor": 1,
+    "glossinessStrength": 1,
+    "minimumRoughness": 0.045
   },
   "emissive": {
     "texture": "0123456789ABCDEF_e.png",
     "factor": [1, 1, 1]
+  },
+  "height": {
+    "texture": "0123456789ABCDEF_h.png",
+    "scale": 0.02
   }
 }
 ```
@@ -1793,10 +1865,60 @@ and unresolved duplicate maps are errors. A section or its `texture` set to
 `null` disables suffix discovery for that role. Normal scale accepts 0–8;
 normal convention accepts `+Y` or `-Y`. Base and ORM factors accept 0–1;
 base alpha must remain 1. Emissive factors accept 0–65504.
+Height scale accepts 0–0.1 in UV space, default 0.02 when a map is present.
 Optional `textureSlot` selects 0, 1 or 2 when native TEV uses multiple possible
 color samplers; without it, an unambiguous final-RGB sampler is required.
 Paint emissive coverage for the material's native blend mode: a uniformly
 emissive additive particle quad will also illuminate its otherwise black edges.
+
+Height uses bounded parallax occlusion mapping (8–32 view-ray steps, explicit
+texture gradients and a grazing-angle fade). Without seam softening, base color,
+normal, ORM and emission sample the same displaced UV; the tangent frame is derived
+from the original coordinates. Native TEV alpha is replayed with the original UV
+and lighting. This is surface relief, not geometry displacement: silhouettes,
+depth, collisions and cast-shadow geometry remain native. It does not invent
+ambient occlusion or light-ray self-shadowing from height. A missing/disabled
+height map, scale zero or white height leaves the surface coordinates unchanged.
+The material's **Height depth (UV)** directly edits `height.scale`; no scene-wide
+height multiplier remains.
+
+Optional `seamSoftening` blends auxiliary maps at geometric UV-chart boundaries;
+it never filters or blends base color. It defaults Off. Strength accepts 0–1;
+width accepts 0.001–0.25 of the shared native edge length, displayed in F1 as
+0.1–25%. It is not a pixel radius and does not change with camera distance.
+Channel selection is independent for normal, occlusion, roughness, metallic,
+emissive and height; all except emissive are selected by default. Missing maps
+remain inert. Height softening modifies only auxiliary-map parallax; base-color
+relief retains its original unsmoothed coordinates and native alpha retains its
+original replay.
+
+The shared 3DS renderer reconstructs adjacency within a resolved native geometry
+submission from exact positions, compatible bone data, smooth authored normals
+and opposite-oriented manifold edges. It does not join separate draws, open
+boundaries, non-manifold ownership, authored hard edges or opposing coplanar
+layers. Typed affine UV metadata is required; projected/procedural UVs are not
+guessed. Native indices, primitive order, strip degenerates, base vertices,
+depth/stencil/blending and transfers remain unchanged.
+
+`pica_pbr_seams` caches topology separately from pose. `pica_vertex_geometry`
+evaluates the same typed rigid/palette contract for seam frames and shadow bounds;
+`pica_texture_coordinates` is also the typed Grass affine decoder. Fragment
+primitive IDs select declared read-only binding 26: seven vec4 records per
+primitive, followed by packed corner-fan references. Immutable frame-arena slices
+retain the correct data when one geometry is submitted with multiple poses.
+The NRI and Vulkan paths share this ABI; the material UBO is 352 bytes.
+
+Edge targets sample both charts with explicit gradients. Normals are transformed
+through each posed geometric/UV frame before blending; ORM channels blend before
+their material factors, and emission blends in linear space. An interpolatory
+edge partition and shared corner-fan values handle overlapping seam bands and
+multi-chart junctions. Off/zero-strength/empty loaded-channel selection uses the
+existing shader variant without primitive-ID or seam-buffer reads. Unsupported
+GPU primitive-ID capability leaves the effect inactive. F1 reports the selected
+material's last native-draw status, including unavailable geometry/contracts.
+Enabled bands require additional samples of the selected maps. Selecting height
+can run a second parallax trace for auxiliary maps; it never reuses that trace
+for native color. Width and enabled channels therefore have a GPU cost.
 
 The existing asynchronous pack worker owns indexing, JSON parsing and PNG
 decoding. **Reload custom textures** requests a new generation; the old valid
@@ -1808,29 +1930,159 @@ oversize-image exception. GPU images are reused by decoded content and old
 images retire behind the frame fence. F1 reports pending indexing and material
 errors rather than claiming that an asynchronous reload already succeeded.
 
-#### Live material controls
+#### F1 Material editor (2026-09-25)
 
-Lighting also owns `Graphics.Effects.PBR`, shown only for **Per-pixel + PBR**:
+The top-level **Material editor** tab remains available without PBR capabilities,
+with texture loading disabled, and during Native/F2 bypass. Lighting owns only
+the lighting-model choice; Textures retains the sole pack folder/load controls.
+`Graphics.Effects.PBR` is no longer read or written. Existing material descriptors
+retain their authored values and neutral defaults; obsolete scene multipliers
+are not silently baked into every file in the pack.
 
-- **Normal strength** accepts 0–8 and multiplies the pack's normal scale.
-  Zero uses the geometric normal; 1 preserves the authored scale.
-- **Glossiness strength** accepts 0–2. Given authored roughness
-  `r = clamp(ORM.g * roughnessFactor, 0, 1)`, effective roughness is
-  `clamp(1 - (1 - r) * strength, 0.045, 1)`. Zero is matte, 1 preserves
-  the authored response, and values above 1 make the surface glossier.
-  Reflection strength remains owned by Reflections.
-- **Material view** selects **Shaded**, **Surface normals**, or **Roughness**.
-  Diagnostic RGB replaces the output of active PBR surfaces after native fog;
-  it is not a whole-screen filter. Alpha, depth/stencil, native blending/order
-  and UI composition remain native. Preview materials suppress their AO and
-  reflection response so those effects do not obscure the displayed data.
-- **Reset PBR controls** restores both strengths to 1 and the Shaded view.
+Select a descriptor or maps-only material in **Existing PBR material**, or open
+**Create from texture** and use the same observed-texture selector and preview
+as Grass. Creation uses the texture's actual Azahar identity and current pack
+hash mode, never the catalog's different FNV content hash. Identity remains
+available while replacement decoding is pending or loading is disabled.
+New materials become renderable on their first explicit **Save material**.
 
-These are persistent live uniforms, not texture reloads or per-strength shader
-variants. PBR control changes invalidate temporal history while PBR is active.
-Old profiles without the optional PBR object retain neutral defaults. Normal
-maps cannot invent direct lighting on ambient-only or baked surfaces; use the
-normal view to distinguish a loaded map from a weak shaded response.
+**Material** edits the selected material only:
+
+- **Normal strength** directly edits `normal.scale` (0–8); zero uses the geometric
+  normal. The separate normal convention supports `+Y` and `-Y`.
+- **Glossiness strength** edits `orm.glossinessStrength` (0–2, default 1).
+  With `r = clamp(ORM.g * roughnessFactor, 0, 1)`, effective roughness is
+  `clamp(1 - (1 - r) * glossinessStrength, minimumRoughness, 1)`.
+- **Minimum roughness** edits `orm.minimumRoughness` (0.045–1, default 0.045).
+  It limits the smoothest areas in both direct GGX lighting and reflection guides.
+- **Height depth (UV)** edits `height.scale` (0–0.1); zero disables parallax.
+  A height map is required; native geometry, collisions and alpha stay unchanged.
+- **Dielectric reflectance** edits the existing `specularLevel` (0–2, default 1):
+  `F0_dielectric = 0.04 * specularLevel`. The material mixes it with metallic base
+  color once; GGX/Fresnel and reflection guides share that result. Fully metallic
+  response is unchanged. Zero removes base reflectance, not grazing Fresnel.
+- **Specular weight** edits `specularWeight` (0–1, default 1). It multiplies the
+  complete direct GGX specular lobe after Fresnel and also the screen-space
+  reflection contribution. Zero removes both, including grazing and metallic
+  specular response, without changing diffuse or emission.
+- **Screen-space reflection weight** edits `screenSpaceReflectionWeight` (0–2,
+  default 1). It additionally scales only Hi-Z/SSSR reflection contribution, not
+  direct highlights. The effective local reflection gain is the product of both
+  weights. Reflections retains its separate scene-wide strength.
+- **UV seam softening** owns the per-material enable, strength, edge-relative width
+  and six channel selections described above. Off stays editable without renderer
+  capabilities; Reset disables seam blending. These controls persist only in the
+  selected descriptor's `seamSoftening` object.
+- Base color, occlusion, roughness, metallic and emissive factors, plus the native
+  texture-slot override, edit their existing descriptor fields.
+- **Material view** is a transient selected-material Shaded / Surface normals /
+  Roughness preview, not JSON state. Native alpha, blending, depth/stencil and
+  UI composition remain native. **Reset material parameters** resets this draft,
+  not other materials or scene settings.
+
+Numeric edits preview live without texture reloads or per-value shader variants;
+seam blending has a separate active/inactive specialization.
+The runtime overlays only the matching material identity. Switching dirty
+documents requires Save / Discard / Keep editing. Save persists the draft;
+Discard reloads the descriptor. Native/F2 bypasses these previews.
+
+The RGBA8 material guide carries reflectivity/F0 in R, roughness in G, encoded
+reflection gain in B, and temporal reactivity in A. B no longer stores a material
+class: byte 127 is neutral gain 1, byte 254 is gain 2, and zero is off
+(`encode = gain * 127 / 255`, `decode = B * 255 / 127`). This preserves exact
+neutral defaults with 1/127 gain precision. Native reflection profiles emit
+neutral gain; their reflectivity and roughness remain separate. Hi-Z applies the
+receiving pixel's gain after bilateral filtering so adjacent reflective pixels
+cannot leak into a zero-weight surface. SSSR applies it in the final material
+resolve, after denoising and BRDF weighting. Neither weight modifies F0,
+roughness, native draw order or UI composition.
+
+**Images** exposes Base color, Normal, ORM, Emissive and Height slots. Its file
+browser and path input accept PNG, JPEG, BMP and TGA, decoded asynchronously by
+the existing pack worker. Imports are copied into the pack as PNG on save.
+Existing PNG paths remain valid and relative to the descriptor.
+
+ORM accepts one packed image or three separate inputs. Each input selects R/G/B/A
+or uses a constant when absent (occlusion 1, roughness 1, metallic 0). Inputs must
+have identical dimensions; packing never silently resizes or gamma-converts
+them. The result is one RGBA8 PNG with R=occlusion, G=roughness, B=metallic, A=255.
+**Preview packed ORM** displays it before committing.
+
+Imported/generated images use immutable content-addressed names under
+`material-images/HASH/`. The descriptor is committed last through the existing
+atomic configuration writer. Decode, channel-size and write errors retain the
+previous descriptor and renderer bundle, keep the draft, and remain explicit
+in F1. Save requests the existing asynchronous complete CPU/GPU bundle reload;
+map edits do not become partially visible. Numeric revisions and completed GPU
+bundle publication invalidate PBR temporal history.
+
+Qualification: 6,395 real-widget assertions cover creation with distinct catalog
+and Azahar hashes, all image slots and the browser, packed/separate ORM, selected
+material isolation, weight persistence/preview/reset, capability loss, F2, dirty switching, corrupt images,
+dimension mismatch and retry after an atomic-write failure. Foundation,
+shader-pipeline and scene-frame suites pass 292/292, 41/41 and 19/19.
+
+Ten deterministic 32-frame Kokiri captures preserve the prior default PBR
+framebuffer exactly. Native remains pixel-identical with both modified parameters
+and a PBR-only base-color override. Raising minimum roughness to 0.75 changes
+128,034 shaded pixels and raises 219,450 Hi-Z roughness-guide pixels to the
+RGBA5551-expanded floor value 189. Specular, normal sign/zero and base-color
+changes affect their authored surface; all 256 compared native trace records
+remain identical. Every run reports zero Vulkan/NRI errors, zero failed/missing/
+unresolved graph resources or passes, and the same 11 baseline Vulkan warnings.
+Evidence is private under `I:/_triaevum_work/material-editor/`.
+SSSR was not requalified: the pre-existing scenario failure recorded in the F1
+review remains a limit; Hi-Z guide verification is not proof of SSSR execution.
+
+Per-material weight qualification: 18 deterministic 32-frame runs, including a
+previous-executable Hi-Z reference and the staged private runtime, preserve
+neutral PBR and Hi-Z framebuffers exactly. Native output is unchanged by either
+weight; screen-space weight 0/2 leaves direct-only shading identical. Specular
+weight 1→0 changes 211,099 pixels on the authored material, and 231,081 with a
+fully metallic ORM. Hi-Z weight zero matches Reflections Off; neutral→2 changes
+528 reflected pixels in this scene. Specular weight zero with reflection weight
+2 produces the same guide as reflection weight zero, without changing F0.
+Guide values on the wall away from HUD composition are the expected
+RGBA5551-expanded 0/123/255 for gain 0/1/2.
+
+All runs preserve the 110 compared native draws, including composition metadata,
+geometry, textures, light selection, targets and depth/stencil/blend state.
+Every run reports zero Vulkan/NRI errors and failed/missing/unresolved graph
+resources or passes, with the same 11 baseline Vulkan warnings. All 59 maintained
+pass artifacts were regenerated and checked. The production-kernel
+`reflection_weight_gpu_tests` Vulkan regression checks adjacent zero/neutral/2x/
+fractional weights, linear sampling and partial workgroups in both the Hi-Z
+filter and SSSR material resolve. This proves the SSSR resolve consumer, not the
+complete SSSR provider scenario. Private evidence, invocation recipes and
+comparison receipts: `I:/_triaevum_work/material-weights/`.
+
+UV-seam qualification (2026-09-25): `pbr_seam_gpu_tests` executes the production
+PBR shader and geometry cache on Vulkan. It verifies rotated/mirrored normal
+frames, scalar and linear-emission continuity, auxiliary-only height relief,
+exact base-UV/color/alpha invariance, zero strength, channel isolation, finite
+width, indexed strips with degenerate primitives and a nonzero base vertex, and
+three-chart corner consensus. Topology regressions reject hard/open/disconnected,
+non-manifold and opposing-overlap boundaries. The opposing-face case failed
+before the ownership correction and passes afterward.
+
+The actual F1 widget smoke passes 6,607 assertions, including seam enable,
+strength, width, channel persistence, independent live preview, capability-safe
+Off and Reset. Foundation, pipeline-cache, scene-frame and typed Grass-coordinate
+suites pass 292/292, 41/41, 19/19 and 2/2.
+
+Eight deterministic 32-frame native-runtime captures include the staged private
+executable. Off exactly matches the previous build; zero strength and Native
+bypass are pixel-identical to their controls. Widths 1%, 5% and 15% change 2,991,
+17,916 and 59,439 pixels respectively on the authored wall, localized to its UV
+seams. All captures preserve the 110 native draws across 21 compared state fields;
+all 32 diagnostic frames per run have zero Vulkan/NRI errors and zero failed,
+missing or unresolved graph passes/resources. The 11 baseline Vulkan warnings
+remain. The staged executable matches the qualified enabled framebuffer exactly.
+Evidence, invocation recipes and comparison receipts:
+`I:/_triaevum_work/material-seams/`. This qualification does not extend the
+existing full-provider SSSR claim.
+
+Historical global-control qualification, superseded by the editor above:
 
 The supplied `6CD66D0B74E16AEA` material was checked in six deterministic Kokiri
 GPU runs at guest frame 23339: normal view at strengths 0/1/4, roughness view

@@ -51,7 +51,7 @@ bool GraphicsSettingsPanel::DrawReflectionSettings(GraphicsSettings& settings, c
         changed |= ImGui::SliderFloat("Roughness bias",
             &settings.Effects.ReflectionRoughnessBias, -0.5F, 0.5F, "%.2f");
         const char* const reflectionDebugViews[] = {
-            "Off", "Material reflectivity/class", "Roughness proxy",
+            "Off", "Material reflectivity/weight", "Roughness proxy",
             "Filtered hit color", "Hit confidence"};
         int reflectionDebug = settings.Effects.ReflectionDebugView;
         if (ImGui::Combo("Reflection debug", &reflectionDebug,

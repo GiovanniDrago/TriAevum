@@ -1,5 +1,6 @@
 #include "fast/oot3d/reflection_ibl.h"
 #include "fast/oot3d/pica_surface_coordinates.h"
+#include "fast/renderer3ds/pica_material_guide.h"
 
 #include "fast/oot3d/pica_uniform_layout.h"
 
@@ -374,7 +375,8 @@ layout(push_constant) uniform ResolveState {
     float roughness_bias;
     uint surface_orientation;
 } state;
-)glsl" + std::string(EffectSurfaceCoordinateShaderLibrary) + R"glsl(
+)glsl" + std::string(EffectSurfaceCoordinateShaderLibrary) +
+        std::string(Renderer3ds::PicaMaterialGuideShaderLibrary) + R"glsl(
 
 void main() {
     ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
@@ -392,9 +394,8 @@ void main() {
     float roughness=clamp(material.g+state.roughness_bias,0.0,1.0);
     vec2 brdf=texture(sampler2D(brdf_lut,resolve_sampler),
                       vec2(n_dot_v,1.0-roughness)).rg;
-    float coverage=step(0.5,material.b);
     float reflectivity=clamp(material.r,0.0,1.0);
-    float weight=coverage*reflectivity*
+    float weight=pica_reflection_weight(material)*reflectivity*
                  clamp(brdf.x+brdf.y,0.0,1.0);
     imageStore(resolved_reflection,pixel,
                vec4(max(radiance.rgb,vec3(0.0)),weight));

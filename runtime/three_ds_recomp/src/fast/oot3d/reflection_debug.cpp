@@ -7,7 +7,7 @@ std::array<float, 3> ResolveReflectionDebugColor(
     const std::array<float, 4>& reflection) noexcept {
     switch (mode) {
         case 1U:
-            // R = calibrated reflectivity, G = material class/coverage.
+            // R = calibrated reflectivity, G = encoded reflection weight (127/255 = 1x).
             // Material alpha is reserved for the temporal reactive mask.
             return {material[0], material[2], 0.0F};
         case 2U:

@@ -21,6 +21,7 @@ int main() {
         configured.Effects.AmbientOcclusion = AmbientOcclusionMode::Cacao;
         configured.Effects.Reflections = ReflectionMode::FidelityFxSssr;
         configured.Effects.DirectionalShadows.Mode = DirectionalShadowMode::VirtualShadowMaps;
+        configured.Effects.SurfaceLighting = SurfaceLightingMode::NativePbr;
         configured.TexturePacks.Azahar.LoadCustomTextures = true;
 
         NativePresentationPolicy desktop(false), mobile(true);
@@ -30,6 +31,8 @@ int main() {
         for (const auto& policy : {desktop, mobile}) {
             auto effective = configured;
             policy.Apply(effective);
+            require(effective.Effects.SurfaceLighting == SurfaceLightingMode::Native,
+                    "native PBR escaped the native presentation mask");
             require(effective.Grass.Quality == GrassQuality::Off &&
                         effective.Effects.Toon == ToonMode::Off &&
                         !effective.Effects.ToonStyle.OutlineEnabled &&
@@ -45,6 +48,8 @@ int main() {
         require(desktop.Toggle() && !desktop.Active(), "F2 restoration");
         auto restored = configured;
         desktop.Apply(restored);
+        require(restored.Effects.SurfaceLighting == SurfaceLightingMode::NativePbr,
+                "native PBR preference was not restored");
         require(restored.Grass.Quality == GrassQuality::High && restored.Effects.ToonStyle.OutlineEnabled &&
                     restored.Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps,
                 "configured effects not restored");

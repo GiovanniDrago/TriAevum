@@ -487,6 +487,7 @@ struct LoadJob {
     IndexedTexture Texture;
     std::optional<IndexedAzaharPbrMaterial> Material;
     AzaharMaterialIdentity Identity;
+    std::shared_ptr<std::promise<AzaharImageLoadResult>> EditorImage;
 };
 
 } // namespace
@@ -541,6 +542,9 @@ class AzaharTexturePackRuntime::Impl {
         mConfiguration = std::move(configuration);
         mConfigured = true;
         ++mGeneration;
+        ++mMaterialRevision;
+        mPreview.reset();
+        mPreviewSeamStatus.clear();
         mIndexReady = false;
         mIndex.clear();
         mMaterialIndex.clear();
@@ -575,7 +579,7 @@ class AzaharTexturePackRuntime::Impl {
         std::filesystem::path dumpDirectory;
         {
             std::scoped_lock lock(mMutex);
-            if (!mConfigured || (!mConfiguration.DumpTextures && !mConfiguration.LoadCustomTextures)) return {};
+            if (!mConfigured) return {};
             if (!mIndexReady) return {AzaharTextureResolveState::Pending, 0U, nullptr};
             dumpEnabled = mConfiguration.DumpTextures;
             loadEnabled = mConfiguration.LoadCustomTextures;
@@ -599,16 +603,16 @@ class AzaharTexturePackRuntime::Impl {
             SetError(std::move(error));
             return {AzaharTextureResolveState::Failed, 0U, nullptr};
         }
-        if (!loadEnabled) return {};
         const auto hash = hashFor(loadUsesNewHash);
         if (!error.empty()) {
             SetError(std::move(error));
             return {AzaharTextureResolveState::Failed, 0U, nullptr};
         }
+        if (!loadEnabled) return {AzaharTextureResolveState::Disabled, hash, nullptr, true, loadUsesNewHash};
         std::scoped_lock lock(mMutex);
         if (generation != mGeneration || !mConfiguration.LoadCustomTextures) return {};
         const auto indexed = mIndex.find(hash);
-        if (indexed == mIndex.end()) return {AzaharTextureResolveState::Missing, hash, nullptr};
+        if (indexed == mIndex.end()) return {AzaharTextureResolveState::Missing, hash, nullptr, true, mPack.UseNewHash};
         const auto cached = mReplacementCache.find(hash);
         if ((cached == mReplacementCache.end() || cached->second->Generation != mGeneration) &&
             !mFailedLoadHashes.contains(hash) && !mPendingLoadGenerations.contains(hash)) {
@@ -648,12 +652,17 @@ class AzaharTexturePackRuntime::Impl {
             job.Identity = {mConfiguration.TitleId, hash, mPack.UseNewHash};
             if (const auto color = mIndex.find(hash); color != mIndex.end())
                 job.Texture = color->second;
+            if (!indexed->second.BaseColorTexture.empty())
+                job.Texture.Path = indexed->second.BaseColorTexture;
             mPendingMaterialGenerations.emplace(hash, mGeneration);
             mLoadJobs.push_back(std::move(job));
             ++mPendingLoads;
             mWorkAvailable.notify_one();
         }
-        if (cached != mMaterialCache.end()) return {AzaharTextureResolveState::Ready, cached->second};
+        if (cached != mMaterialCache.end())
+            return {AzaharTextureResolveState::Ready, cached->second,
+                    mPreview && mPreview->NativeHash == hash
+                        ? std::optional(mPreview->Parameters) : std::nullopt};
         return {mFailedMaterialHashes.contains(hash) ? AzaharTextureResolveState::Failed : AzaharTextureResolveState::Pending, nullptr};
     }
 
@@ -692,6 +701,48 @@ class AzaharTexturePackRuntime::Impl {
         std::scoped_lock lock(mMutex);
         return mGeneration;
     }
+    std::vector<AzaharMaterialCatalogEntry> MaterialCatalog() const {
+        std::scoped_lock lock(mMutex);
+        std::vector<AzaharMaterialCatalogEntry> result;
+        result.reserve(mMaterialIndex.size());
+        for (const auto& [hash, definition] : mMaterialIndex)
+            result.push_back({hash, definition});
+        std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) { return a.NativeHash < b.NativeHash; });
+        return result;
+    }
+    std::future<AzaharImageLoadResult> LoadEditorImage(std::filesystem::path path) {
+        LoadJob job;
+        job.Texture.Path = std::move(path);
+        job.EditorImage = std::make_shared<std::promise<AzaharImageLoadResult>>();
+        auto result = job.EditorImage->get_future();
+        std::scoped_lock lock(mMutex);
+        mLoadJobs.push_back(std::move(job));
+        ++mPendingLoads;
+        mWorkAvailable.notify_one();
+        return result;
+    }
+    void SetMaterialPreview(std::optional<AzaharMaterialParameterPreview> preview) {
+        std::scoped_lock lock(mMutex);
+        if (mPreview == preview) return;
+        mPreview = std::move(preview);
+        mPreviewSeamStatus.clear();
+        ++mMaterialRevision;
+    }
+    uint64_t MaterialRevision() const {
+        std::scoped_lock lock(mMutex);
+        return mMaterialRevision;
+    }
+    void ReportMaterialSeams(uint64_t hash, uint64_t generation, std::string_view status) {
+        std::scoped_lock lock(mMutex);
+        if (generation == mGeneration && mPreview && mPreview->NativeHash == hash &&
+            mPreviewSeamStatus != status)
+            mPreviewSeamStatus = status;
+    }
+    std::string MaterialSeamStatus(uint64_t hash) const {
+        std::scoped_lock lock(mMutex);
+        return mPreview && mPreview->NativeHash == hash && !mPreviewSeamStatus.empty()
+            ? mPreviewSeamStatus : "Awaiting a native draw with this material";
+    }
     void WaitForPendingDumps() {
         std::unique_lock lock(mMutex);
         mIdle.wait(lock, [&] { return !mBuilding && !mRebuildRequested && mPendingDumps == 0U; });
@@ -705,10 +756,10 @@ class AzaharTexturePackRuntime::Impl {
     AzaharTextureResolveResult PollLocked(uint64_t hash) const {
         if (!mConfigured || !mConfiguration.LoadCustomTextures) return {};
         if (const auto cached = mReplacementCache.find(hash); cached != mReplacementCache.end())
-            return {AzaharTextureResolveState::Ready, hash, cached->second};
-        if (mFailedLoadHashes.contains(hash)) return {AzaharTextureResolveState::Failed, hash, nullptr};
-        if (!mIndexReady || mPendingLoadGenerations.contains(hash)) return {AzaharTextureResolveState::Pending, hash, nullptr};
-        return {AzaharTextureResolveState::Missing, hash, nullptr};
+            return {AzaharTextureResolveState::Ready, hash, cached->second, true, mPack.UseNewHash};
+        if (mFailedLoadHashes.contains(hash)) return {AzaharTextureResolveState::Failed, hash, nullptr, true, mPack.UseNewHash};
+        if (!mIndexReady || mPendingLoadGenerations.contains(hash)) return {AzaharTextureResolveState::Pending, hash, nullptr, mIndexReady, mPack.UseNewHash};
+        return {AzaharTextureResolveState::Missing, hash, nullptr, true, mPack.UseNewHash};
     }
     void RequestRebuildLocked() {
         ++mRebuildSerial;
@@ -726,8 +777,7 @@ class AzaharTexturePackRuntime::Impl {
         try {
             pack = ReadPackState(loadDirectory / "pack.json", &error);
             if (!error.empty()) throw std::runtime_error(error);
-            if (configuration.LoadCustomTextures)
-                index = IndexTexturePack(loadDirectory, pack, unsupported, materials, &error);
+            index = IndexTexturePack(loadDirectory, pack, unsupported, materials, &error);
             if (!error.empty()) throw std::runtime_error(error);
             if (configuration.DumpTextures) {
                 const auto dumpPack = ReadPackState(dumpDirectory / "pack.json", &error);
@@ -753,6 +803,8 @@ class AzaharTexturePackRuntime::Impl {
                 mUnsupportedFiles = unsupported;
                 mIndexReady = true;
                 ++mGeneration;
+                mPreviewSeamStatus.clear();
+                ++mMaterialRevision;
                 mFailedLoadHashes.clear();
                 mFailedMaterialHashes.clear();
                 mPendingLoadGenerations.clear();
@@ -797,6 +849,16 @@ class AzaharTexturePackRuntime::Impl {
         mLastError = std::move(error);
     }
     void Load(const LoadJob& job) {
+        if (job.EditorImage) {
+            AzaharImageLoadResult result;
+            try { result.Image = DecodeReplacement(job.Texture, 0, 0); }
+            catch (const std::exception& exception) { result.Error = exception.what(); }
+            job.EditorImage->set_value(std::move(result));
+            std::scoped_lock lock(mMutex);
+            --mPendingLoads;
+            mIdle.notify_all();
+            return;
+        }
         std::shared_ptr<const AzaharTextureReplacement> replacement;
         std::shared_ptr<const AzaharPbrMaterial> material;
         std::string failure;
@@ -810,7 +872,8 @@ class AzaharTexturePackRuntime::Impl {
                     {
                         std::scoped_lock lock(mMutex);
                         const auto cached = mReplacementCache.find(job.Hash);
-                        if (cached != mReplacementCache.end() && cached->second->Generation == job.Generation)
+                        if (cached != mReplacementCache.end() && cached->second->Generation == job.Generation &&
+                            cached->second->SourcePath == job.Texture.Path)
                             decoded->ColorReplacement = cached->second;
                     }
                     if (!decoded->ColorReplacement)
@@ -832,7 +895,7 @@ class AzaharTexturePackRuntime::Impl {
         const auto found = pending.find(job.Hash);
         if (found != pending.end() && found->second == job.Generation) {
             if (job.Generation == mGeneration && mConfiguration.LoadCustomTextures) {
-                if (material && material->ColorReplacement)
+                if (material && material->ColorReplacement && job.Material->BaseColorTexture.empty())
                     mReplacementCache.insert_or_assign(job.Hash, material->ColorReplacement);
                 if (material) mMaterialCache.insert_or_assign(job.Hash, std::move(material));
                 if (replacement) mReplacementCache.insert_or_assign(job.Hash, std::move(replacement));
@@ -869,7 +932,7 @@ class AzaharTexturePackRuntime::Impl {
                 } else if (!mLoadJobs.empty()) {
                     load = std::move(mLoadJobs.front());
                     mLoadJobs.pop_front();
-                    if (load.Generation != mGeneration) {
+                    if (!load.EditorImage && load.Generation != mGeneration) {
                         --mPendingLoads;
                         mIdle.notify_all();
                         continue;
@@ -907,6 +970,9 @@ class AzaharTexturePackRuntime::Impl {
     bool mStopping = false, mConfigured = false, mIndexReady = false;
     bool mRebuildRequested = false, mBuilding = false;
     uint64_t mGeneration = 1U, mRebuildSerial = 0U;
+    uint64_t mMaterialRevision = 1U;
+    std::optional<AzaharMaterialParameterPreview> mPreview;
+    std::string mPreviewSeamStatus;
     AzaharTexturePackConfiguration mConfiguration;
     std::filesystem::path mLoadDirectory, mDumpDirectory;
     PackState mPack;
@@ -982,6 +1048,34 @@ void AzaharTexturePackRuntime::WaitForPendingDumps() {
 
 void AzaharTexturePackRuntime::WaitForPendingLoads() {
     mImpl->WaitForPendingLoads();
+}
+
+std::vector<AzaharMaterialCatalogEntry> AzaharTexturePackRuntime::MaterialCatalog() const {
+    return mImpl->MaterialCatalog();
+}
+
+std::future<AzaharImageLoadResult> AzaharTexturePackRuntime::LoadEditorImage(std::filesystem::path path) {
+    return mImpl->LoadEditorImage(std::move(path));
+}
+
+void AzaharTexturePackRuntime::SetMaterialPreview(std::optional<AzaharMaterialParameterPreview> preview) {
+    mImpl->SetMaterialPreview(std::move(preview));
+}
+
+void AzaharTexturePackRuntime::ReportMaterialSeams(uint64_t hash, uint64_t generation, std::string_view status) {
+    mImpl->ReportMaterialSeams(hash, generation, status);
+}
+std::string AzaharTexturePackRuntime::MaterialSeamStatus(uint64_t hash) const {
+    return mImpl->MaterialSeamStatus(hash);
+}
+
+uint64_t AzaharTexturePackRuntime::MaterialRevision() const {
+    return mImpl->MaterialRevision();
+}
+
+void WriteAzaharTexturePng(const std::filesystem::path& path, uint32_t width,
+                          uint32_t height, std::span<const uint8_t> rgba8) {
+    WritePng(path, width, height, rgba8);
 }
 
 } // namespace Oot3d::Renderer

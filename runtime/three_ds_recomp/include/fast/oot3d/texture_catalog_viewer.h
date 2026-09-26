@@ -29,4 +29,6 @@ struct TextureCatalogViewerResult {
     std::span<const TextureCatalogTag> tags,
     size_t maximumVisibleRows = 12U);
 
+void DrawTexturePixelPreview(std::span<const uint8_t> rgba8, uint32_t width, uint32_t height);
+
 } // namespace Fast::Oot3d

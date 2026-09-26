@@ -1,21 +1,32 @@
 #include "fast/renderer3ds/pica_pbr_shading.h"
+#include "fast/renderer3ds/pica_pbr_seams.h"
 
+#include <algorithm>
 #include <bit>
 
 namespace Fast::Renderer3ds {
 
 PicaPbrUniforms BuildPicaPbrUniforms(
     const PicaPbrMaterialParameters& parameters, uint8_t textureMask,
-    const PicaLightingProgram& nativeLighting, const PicaPbrControls& controls) noexcept {
+    const PicaLightingProgram& nativeLighting) noexcept {
     PicaPbrUniforms result;
-    result.BaseColorFactor = parameters.BaseColorFactor;
+    result.BaseColorDielectricF0 = {parameters.BaseColorFactor[0], parameters.BaseColorFactor[1],
+        parameters.BaseColorFactor[2], 0.04F * parameters.SpecularLevel};
     result.EmissiveNormalScale = {parameters.EmissiveFactor[0], parameters.EmissiveFactor[1],
-        parameters.EmissiveFactor[2], parameters.NormalScale * controls.NormalStrength};
-    result.OrmNormalY = {parameters.OcclusionStrength, parameters.RoughnessFactor,
-        parameters.MetallicFactor, parameters.NormalYSign};
+        parameters.EmissiveFactor[2], parameters.NormalScale * parameters.NormalYSign};
+    result.OrmMinimumRoughness = {parameters.OcclusionStrength, parameters.RoughnessFactor,
+        parameters.MetallicFactor, parameters.MinimumRoughness};
     result.Control[0] = textureMask;
-    result.Control[1] = std::bit_cast<uint32_t>(controls.GlossinessStrength);
-    result.Control[2] = static_cast<uint32_t>(controls.DebugView);
+    result.Control[1] = std::bit_cast<uint32_t>(parameters.GlossinessStrength);
+    result.Control[2] = static_cast<uint32_t>(parameters.DebugView);
+    result.Control[3] = std::bit_cast<uint32_t>(parameters.HeightScale);
+    result.SpecularReflectionWeight = {parameters.SpecularWeight,
+        parameters.SpecularWeight * parameters.ScreenSpaceReflectionWeight, 0.0F, 0.0F};
+    const uint32_t loadedChannels = ((textureMask & 1U) ? 1U : 0U) |
+        ((textureMask & 2U) ? 14U : 0U) | ((textureMask & 4U) ? 16U : 0U) |
+        ((textureMask & 8U) ? 32U : 0U);
+    result.SeamSettings = {parameters.SeamSoftening ? parameters.SeamStrength : 0.0F,
+        parameters.SeamWidth, std::bit_cast<float>(parameters.SeamChannels & loadedChannels), 0.0F};
     result.NativeLighting = nativeLighting;
     return result;
 }
@@ -33,10 +44,12 @@ std::optional<PicaPbrShader> BuildPicaPbrShader(
     PicaPbrShader result;
     result.Declarations = R"glsl(
 layout(set=0,binding=17,std140) uniform PicaPbrMaterial {
-    vec4 base_color_factor;
+    vec4 base_color_dielectric_f0;
     vec4 emissive_normal_scale;
-    vec4 orm_normal_y;
+    vec4 orm_minimum_roughness;
     uvec4 control;
+    vec4 specular_reflection_weight;
+    vec4 seam_settings;
     uvec4 native_control;
     uvec4 native_lights[8];
     vec4 native_luts[7];
@@ -44,6 +57,7 @@ layout(set=0,binding=17,std140) uniform PicaPbrMaterial {
 layout(set=0,binding=18) uniform sampler2D pbr_normal_map;
 layout(set=0,binding=19) uniform sampler2D pbr_orm_map;
 layout(set=0,binding=20) uniform sampler2D pbr_emissive_map;
+layout(set=0,binding=21) uniform sampler2D pbr_height_map;
 vec3 pbr_srgb_to_linear(vec3 value) {
     return mix(pow((value + 0.055) / 1.055, vec3(2.4)), value / 12.92,
                lessThanEqual(value, vec3(0.04045)));
@@ -53,34 +67,63 @@ vec3 pbr_linear_to_srgb(vec3 value) {
     return mix(1.055 * pow(value, vec3(1.0 / 2.4)) - 0.055, value * 12.92,
                lessThanEqual(value, vec3(0.0031308)));
 }
-vec3 pbr_surface_normal(vec2 uv, vec3 geometric, out vec3 tangent) {
+bool pbr_surface_frame(vec2 uv, vec3 geometric, out vec3 tangent, out vec3 bitangent) {
     vec3 dpdx = dFdx(-pica_view), dpdy = dFdy(-pica_view);
     vec2 duvdx = dFdx(uv), duvdy = dFdy(uv);
     float determinant = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
-    tangent = vec3(0.0);
-    if (abs(determinant) <= 1.0e-12) return geometric;
+    tangent = bitangent = vec3(0.0);
+    if (abs(determinant) <= 1.0e-12) return false;
     vec3 t = (dpdx * duvdy.y - dpdy * duvdx.y) * sign(determinant);
     vec3 b = (dpdy * duvdx.x - dpdx * duvdy.x) * sign(determinant);
     t -= geometric * dot(geometric, t);
-    if (dot(t, t) <= 1.0e-20 || dot(b, b) <= 1.0e-20) return geometric;
+    if (dot(t, t) <= 1.0e-20 || dot(b, b) <= 1.0e-20) return false;
     tangent = normalize(t);
-    vec3 bitangent = cross(geometric, tangent);
+    bitangent = cross(geometric, tangent);
     bitangent *= dot(bitangent, b) < 0.0 ? -1.0 : 1.0;
-    if ((pbr_material.control.x & 1u) == 0u || pbr_material.emissive_normal_scale.w <= 0.0) return geometric;
+    return true;
+}
+vec2 pbr_parallax_uv(vec2 uv, vec3 view_tangent, vec2 gradient_x, vec2 gradient_y,
+                     float seam_height, float seam_weight) {
+    float scale = uintBitsToFloat(pbr_material.control.w);
+    // Fade at grazing/back-facing angles instead of an unbounded UV offset.
+    scale *= smoothstep(0.05, 0.2, view_tangent.z);
+    if (scale <= 0.0) return uv;
+    float layers = mix(32.0, 8.0, clamp(view_tangent.z, 0.0, 1.0));
+    float step_depth = 1.0 / layers;
+    vec2 step_uv = view_tangent.xy / max(view_tangent.z, 0.2) * scale * step_depth;
+    vec2 current_uv = uv;
+    float ray_depth = 0.0;
+    float surface_depth = 1.0 - textureGrad(pbr_height_map, current_uv, gradient_x, gradient_y).r;
+    if (seam_weight > 0.0) surface_depth = mix(surface_depth, 1.0 - seam_height, seam_weight);
+    float previous_difference = surface_depth;
+    for (int step_index = 0; step_index < 32; ++step_index) {
+        if (ray_depth >= surface_depth) break;
+        previous_difference = surface_depth - ray_depth;
+        current_uv -= step_uv;
+        ray_depth += step_depth;
+        surface_depth = 1.0 - textureGrad(pbr_height_map, current_uv, gradient_x, gradient_y).r;
+        if (seam_weight > 0.0) surface_depth = mix(surface_depth, 1.0 - seam_height, seam_weight);
+    }
+    float difference = surface_depth - ray_depth;
+    float weight = clamp(-difference / max(previous_difference - difference, 1.0e-6), 0.0, 1.0);
+    return current_uv + step_uv * weight;
+}
+vec3 pbr_surface_normal(vec2 uv, vec3 geometric, vec3 tangent, vec3 bitangent, bool valid_frame) {
+    if (!valid_frame || (pbr_material.control.x & 1u) == 0u ||
+        pbr_material.emissive_normal_scale.w == 0.0) return geometric;
     vec3 mapped = texture(pbr_normal_map, uv).xyz * 2.0 - 1.0;
-    mapped.xy *= pbr_material.emissive_normal_scale.w;
-    mapped.y *= pbr_material.orm_normal_y.w;
+    mapped.xy *= vec2(abs(pbr_material.emissive_normal_scale.w),
+                      pbr_material.emissive_normal_scale.w);
     vec3 transformed = tangent * mapped.x + bitangent * mapped.y + geometric * mapped.z;
     return dot(transformed, transformed) > 1.0e-20 ? normalize(transformed) : geometric;
 }
-void pbr_ggx(vec3 n, vec3 v, vec3 l, vec3 albedo, float roughness, float metallic,
+void pbr_ggx(vec3 n, vec3 v, vec3 l, vec3 albedo, vec3 f0, float roughness, float metallic,
              bool two_sided, out vec3 diffuse, out vec3 specular) {
     float nl = two_sided ? abs(dot(n, l)) : max(dot(n, l), 0.0);
     float nv = two_sided ? abs(dot(n, v)) : max(dot(n, v), 0.0);
     vec3 h = pica_surface_unit(v + l);
     float nh = two_sided ? abs(dot(n, h)) : max(dot(n, h), 0.0);
     float vh = max(dot(v, h), 0.0);
-    vec3 f0 = mix(vec3(0.04), albedo, metallic);
     vec3 fresnel = f0 + (vec3(1.0) - f0) * pow(1.0 - vh, 5.0);
     float alpha = roughness * roughness;
     float alpha2 = alpha * alpha;
@@ -91,9 +134,11 @@ void pbr_ggx(vec3 n, vec3 v, vec3 l, vec3 albedo, float roughness, float metalli
     // Native light RGB is Lambert irradiance (the native model omits 1/pi).
     // Convert that convention once, rather than adding an artistic light gain.
     diffuse = (vec3(1.0) - fresnel) * (1.0 - metallic) * albedo * nl;
-    specular = fresnel * (3.14159265359 * distribution * visibility * nl);
+    specular = fresnel * (3.14159265359 * distribution * visibility * nl) *
+        pbr_material.specular_reflection_weight.x;
 }
 )glsl";
+    if (options.SeamSoftening) result.Declarations += PicaPbrSeamShaderLibrary();
     if (options.NativeFragmentLighting && options.NativeAttenuationLuts) {
         result.Declarations += R"glsl(
 float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
@@ -133,21 +178,74 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
     secondary_fragment_color.rgb = vec3(0.0);
 )glsl";
     }
-    result.ShadingBody = "\n    vec2 pbr_uv = " + uv + ";\n";
-    result.ShadingBody += R"glsl(
+    const std::string nativeCoordinate = "pica_texcoord" + coordinate;
+    result.UnlitInputs += "\n    vec2 pbr_native_coordinate = " + nativeCoordinate + ";\n"
+                          "    vec2 pbr_native_uv = " + uv + ";\n";
+    result.UnlitInputs += R"glsl(
     vec3 pbr_geometric_normal = pica_surface_unit(pica_surface_normal);
-    vec3 pbr_tangent;
-    vec3 pbr_normal = pbr_surface_normal(pbr_uv, pbr_geometric_normal, pbr_tangent);
     vec3 pbr_view = pica_surface_unit(pica_view);
+    vec3 pbr_tangent, pbr_bitangent;
+    bool pbr_valid_frame = pbr_surface_frame(pbr_native_uv, pbr_geometric_normal, pbr_tangent, pbr_bitangent);
+    vec2 pbr_gradient_x = dFdx(pbr_native_uv), pbr_gradient_y = dFdy(pbr_native_uv);
+    vec2 pbr_uv = pbr_native_uv;
+    bool pbr_relief = pbr_valid_frame && (pbr_material.control.x & 8u) != 0u &&
+        uintBitsToFloat(pbr_material.control.w) > 0.0;
+    if (pbr_relief)
+        pbr_uv = pbr_parallax_uv(pbr_native_uv,
+            vec3(dot(pbr_view, pbr_tangent), dot(pbr_view, pbr_bitangent), dot(pbr_view, pbr_geometric_normal)),
+            pbr_gradient_x, pbr_gradient_y, 0.0, 0.0);
+)glsl";
+    // Shadow only the typed coordinate used by this material, never edit the
+    // canonical shader. The native-alpha replay restores the original input.
+    result.UnlitInputs += "    vec2 " + nativeCoordinate + " = pbr_native_coordinate;\n"
+                          "    if (pbr_relief && any(notEqual(pbr_uv, pbr_native_uv))) " +
+                          nativeCoordinate + " = vec2(pbr_uv.x, 1.0 - pbr_uv.y)";
+    if (sample->Operation == PicaTextureCoordinateOperation::ProjectedNativeVFlip)
+        result.UnlitInputs += " * pica_texcoord0_w";
+    result.UnlitInputs += ";\n";
+    result.NativeCoordinates = "        vec2 " + nativeCoordinate + " = pbr_native_coordinate;\n";
+    if (options.SeamSoftening) result.UnlitInputs += R"glsl(
+    PbrSeamBlend pbr_seam = pbr_seam_blend(uint(gl_PrimitiveID), -pica_view,
+        pbr_geometric_normal, dFdx(-pica_view), dFdy(-pica_view));
+    uint pbr_seam_channels = floatBitsToUint(pbr_material.seam_settings.z);
+    // Native color keeps the original relief coordinates assigned above.
+    // Only the auxiliary maps consume the seam-smoothed height field.
+    if (pbr_relief && (pbr_seam_channels & 32u) != 0u && pbr_seam.weight > 0.0)
+        pbr_uv = pbr_parallax_uv(pbr_native_uv,
+            vec3(dot(pbr_view, pbr_tangent), dot(pbr_view, pbr_bitangent), dot(pbr_view, pbr_geometric_normal)),
+            pbr_gradient_x, pbr_gradient_y, pbr_seam.value.height, pbr_seam.weight);
+)glsl";
+    result.ShadingBody = R"glsl(
+    vec3 pbr_normal = pbr_surface_normal(pbr_uv, pbr_geometric_normal, pbr_tangent, pbr_bitangent, pbr_valid_frame);
     vec3 pbr_orm = (pbr_material.control.x & 2u) != 0u ? texture(pbr_orm_map, pbr_uv).rgb : vec3(1.0);
-    float pbr_ao = mix(1.0, pbr_orm.r, pbr_material.orm_normal_y.x);
-    float pbr_authored_roughness = clamp(pbr_orm.g * pbr_material.orm_normal_y.y, 0.0, 1.0);
+)glsl";
+    if (options.SeamSoftening) result.ShadingBody += R"glsl(
+    if (pbr_seam.weight > 0.0) {
+        if ((pbr_seam_channels & 1u) != 0u) {
+            vec3 blended = mix(pbr_normal, pbr_seam.value.normal, pbr_seam.weight);
+            pbr_normal = dot(blended, blended) > 1e-20 ? normalize(blended) : pbr_geometric_normal;
+        }
+        if ((pbr_seam_channels & 2u) != 0u) pbr_orm.r = mix(pbr_orm.r, pbr_seam.value.orm.r, pbr_seam.weight);
+        if ((pbr_seam_channels & 4u) != 0u) pbr_orm.g = mix(pbr_orm.g, pbr_seam.value.orm.g, pbr_seam.weight);
+        if ((pbr_seam_channels & 8u) != 0u) pbr_orm.b = mix(pbr_orm.b, pbr_seam.value.orm.b, pbr_seam.weight);
+    }
+)glsl";
+    result.ShadingBody += R"glsl(
+    float pbr_ao = mix(1.0, pbr_orm.r, pbr_material.orm_minimum_roughness.x);
+    float pbr_authored_roughness = clamp(pbr_orm.g * pbr_material.orm_minimum_roughness.y, 0.0, 1.0);
     float pbr_roughness = clamp(1.0 - (1.0 - pbr_authored_roughness) *
-        uintBitsToFloat(pbr_material.control.y), 0.045, 1.0);
-    float pbr_metallic = clamp(pbr_orm.b * pbr_material.orm_normal_y.z, 0.0, 1.0);
-    vec3 pbr_albedo = pbr_srgb_to_linear(clamp(combiner_output.rgb, 0.0, 1.0)) * pbr_material.base_color_factor.rgb;
+        uintBitsToFloat(pbr_material.control.y), pbr_material.orm_minimum_roughness.w, 1.0);
+    float pbr_metallic = clamp(pbr_orm.b * pbr_material.orm_minimum_roughness.z, 0.0, 1.0);
+    vec3 pbr_albedo = pbr_srgb_to_linear(clamp(combiner_output.rgb, 0.0, 1.0)) * pbr_material.base_color_dielectric_f0.rgb;
+    vec3 pbr_f0 = mix(vec3(pbr_material.base_color_dielectric_f0.w), pbr_albedo, pbr_metallic);
     vec3 pbr_emission = (pbr_material.control.x & 4u) != 0u ?
         pbr_srgb_to_linear(texture(pbr_emissive_map, pbr_uv).rgb) : vec3(1.0);
+)glsl";
+    if (options.SeamSoftening) result.ShadingBody += R"glsl(
+    if ((pbr_seam_channels & 16u) != 0u && pbr_seam.weight > 0.0)
+        pbr_emission = mix(pbr_emission, pbr_seam.value.emission, pbr_seam.weight);
+)glsl";
+    result.ShadingBody += R"glsl(
     pbr_emission *= pbr_material.emissive_normal_scale.rgb;
     vec3 pbr_direct = vec3(0.0), pbr_ambient = vec3(0.0);
 )glsl";
@@ -189,7 +287,7 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
         result.ShadingBody += R"glsl(
         if (pbr_native_direct) {
         vec3 diffuse, specular;
-        pbr_ggx(pbr_normal, pbr_view, l, pbr_albedo, pbr_roughness, pbr_metallic,
+        pbr_ggx(pbr_normal, pbr_view, l, pbr_albedo, pbr_f0, pbr_roughness, pbr_metallic,
                 two_sided, diffuse, specular);
         if ((flags & 16u) != 0u) {
             if ((pbr_material.native_control.w & 2u) != 0u) diffuse *= pica_shadow_factor.rgb;
@@ -213,7 +311,7 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
             vec3 l, radiance;
             pica_surface_light(slot, l, radiance);
             vec3 diffuse, specular;
-            pbr_ggx(pbr_normal, pbr_view, pica_surface_unit(l), pbr_albedo,
+            pbr_ggx(pbr_normal, pbr_view, pica_surface_unit(l), pbr_albedo, pbr_f0,
                 pbr_roughness, pbr_metallic, false, diffuse, specular);
             pbr_direct += (diffuse + specular) * radiance * pica_surface.material_diffuse.rgb * pica_surface_shadow(slot);
             }
@@ -237,7 +335,7 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
             vec3 diffuse, specular;
             pbr_ggx(pbr_normal, pbr_view,
                 pica_surface_unit(pica_surface.environment_directions[slot].xyz),
-                pbr_albedo, pbr_roughness, pbr_metallic, false, diffuse, specular);
+                pbr_albedo, pbr_f0, pbr_roughness, pbr_metallic, false, diffuse, specular);
             pbr_direct += (diffuse + specular) * pica_surface.environment_colors[slot].rgb *
                 pica_surface.environment_directions[slot].w * pica_surface_shadow(8 + slot);
         }
@@ -247,7 +345,7 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
         vec3 diffuse, specular;
         pbr_ggx(pbr_normal, pbr_view,
             pica_surface_unit(pica_surface.scene_directions[slot].xyz),
-            pbr_albedo, pbr_roughness, pbr_metallic, false, diffuse, specular);
+            pbr_albedo, pbr_f0, pbr_roughness, pbr_metallic, false, diffuse, specular);
         pbr_direct += (diffuse + specular) * pica_surface.scene_directional_colors[slot].rgb *
             pica_surface_shadow(10 + int(slot));
     }
@@ -255,13 +353,12 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
         vec3 direction, radiance, diffuse, specular;
         pica_surface_scene_point(int(slot), direction, radiance);
         if (all(equal(radiance, vec3(0.0)))) continue;
-        pbr_ggx(pbr_normal, pbr_view, direction, pbr_albedo,
+        pbr_ggx(pbr_normal, pbr_view, direction, pbr_albedo, pbr_f0,
             pbr_roughness, pbr_metallic, false, diffuse, specular);
         pbr_direct += (diffuse + specular) * radiance;
     }
     vec3 pbr_lit = max(pbr_direct + pbr_indirect + pbr_emission, vec3(0.0));
     vec3 pbr_ao_response = clamp(pbr_indirect / max(pbr_lit, vec3(1.0e-6)), 0.0, 1.0);
-    vec3 pbr_f0 = mix(vec3(0.04), pbr_albedo, pbr_metallic);
     float pbr_reflectivity = clamp(max(max(pbr_f0.r, pbr_f0.g), pbr_f0.b), 0.0, 1.0);
     combiner_output.rgb = clamp(pbr_linear_to_srgb(pbr_lit), 0.0, 1.0);
     if (pbr_material.control.z != 0u) {

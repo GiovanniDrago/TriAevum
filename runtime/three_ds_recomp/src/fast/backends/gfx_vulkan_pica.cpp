@@ -1,4 +1,5 @@
 #ifdef ENABLE_OOT3D_VULKAN
+#include <bit>
 #include "fast/oot3d/pica_guide_diagnostics.h"
 #include "fast/oot3d/outline_diagnostics.h"
 #include "fast/oot3d/outline_occlusion_pass.h"
@@ -343,7 +344,10 @@ bool BuildNativePicaMemoryFillSmoke(
 
 void GfxRenderingAPIVulkan::CreateNativePicaShaderResources() {
     CreateNativePicaRenderPass();
-    std::array<VkDescriptorSetLayoutBinding, 16> bindings{};
+    VkPhysicalDeviceFeatures seamFeatures{};
+    vkGetPhysicalDeviceFeatures(mPhysicalDevice, &seamFeatures);
+    mPbrSeamsAvailable = seamFeatures.geometryShader == VK_TRUE;
+    std::array<VkDescriptorSetLayoutBinding, 14 + Renderer3ds::kPicaPbrTextureCount> bindings{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                    VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     for (uint32_t binding = 1; binding <= 3; ++binding) {
@@ -369,9 +373,10 @@ void GfxRenderingAPIVulkan::CreateNativePicaShaderResources() {
                    VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[12] = {17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                     VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-    for (uint32_t index = 13U; index < 16U; ++index)
+    for (uint32_t index = 13U; index < 13U + Renderer3ds::kPicaPbrTextureCount; ++index)
         bindings[index] = {index + 5U, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                            1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings.back() = {26, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo descriptorInfo{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     descriptorInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -3080,6 +3085,10 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaTexture(
                                 std::span<const uint8_t>(pixels)
                                     .first(baseDecodedBytes),
                         });
+            if (baseLevelContentHash && replacementResult.NativeHashAvailable)
+                Oot3d::TextureCatalogRuntime::Instance().AssociateMaterial(
+                    *baseLevelContentHash, texture.Width, texture.Height, texture.NativeFormat,
+                    replacementResult.NativeHash, replacementResult.UseNewHash);
             if (replacementResult.State ==
                     ::Oot3d::Renderer::
                         AzaharTextureResolveState::Ready &&
@@ -3383,13 +3392,13 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaMaterial(
     if ((entry.Active.Material && entry.Active.Material->Generation == material->Generation) ||
         entry.FailedGeneration == material->Generation) return active();
     const auto sourceAt = [](const auto& source, size_t role) -> const auto& {
-        return role < 3U ? source.Textures[role] : source.ColorReplacement;
+        return role < source.Textures.size() ? source.Textures[role] : source.ColorReplacement;
     };
     if (!entry.Pending.Material || entry.Pending.Material->Generation != material->Generation) {
         RetireNativePicaMaterial(entry.Pending);
         entry.Pending.Material = material;
         if (entry.Active.Material) {
-            for (size_t role = 0U; role < 4U; ++role) {
+            for (size_t role = 0U; role < entry.Pending.Images.size(); ++role) {
                 const auto& old = sourceAt(*entry.Active.Material, role);
                 const auto& next = sourceAt(*material, role);
                 if (old && next && old->PixelContentHash == next->PixelContentHash &&
@@ -3399,7 +3408,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaMaterial(
         }
     }
     try {
-        for (size_t role = 0U; role < 4U; ++role) {
+        for (size_t role = 0U; role < entry.Pending.Images.size(); ++role) {
             const auto& source = sourceAt(*material, role);
             if (!source || (entry.Pending.ReusedImages & (1U << role)) != 0U) continue;
             auto& image = entry.Pending.Images[role];
@@ -3431,7 +3440,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaMaterial(
             image.CustomReplacementApplied = true;
             image.CustomReplacementReady = true;
         }
-        for (size_t role = 0U; role < 4U; ++role) {
+        for (size_t role = 0U; role < entry.Pending.Images.size(); ++role) {
             if ((entry.Pending.ReusedImages & (1U << role)) == 0U) continue;
             entry.Pending.Images[role] = std::move(entry.Active.Images[role]);
             entry.Active.Images[role] = {};
@@ -3439,6 +3448,8 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaMaterial(
         RetireNativePicaMaterial(entry.Active);
         entry.Active = std::move(entry.Pending);
         entry.Pending = {};
+        mTemporalAaPass.ResetHistory();
+        mTaaOutputValid = false;
         return &entry.Active;
     } catch (const std::exception& exception) {
         RetireNativePicaMaterial(entry.Pending);
@@ -4079,7 +4090,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         const auto& graphicsSettings = mFrameGraphicsSettings;
         if (!nativeMemoryOnly && !mNativeFidelityProfile && sceneDraw &&
             draw.Composition.NativeProjectedShadow &&
-            graphicsSettings.Effects.SurfaceLighting != Oot3d::SurfaceLightingMode::Native) {
+            Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting)) {
             // Consume native ordering and its graph boundaries, but do not
             // rasterize the legacy projected shadow into presentation or guides.
             // The canonical native-memory replay remains untouched.
@@ -4129,7 +4140,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             Oot3d::UsesPicaPerspectiveProjection(
                 draw.VertexUniformBytes);
         const bool directionalShadowReceiver = !nativeMemoryOnly &&
-            graphicsSettings.Effects.SurfaceLighting != Oot3d::SurfaceLightingMode::Native &&
+            Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
             mDirectionalShadowMapBarrierPlan.Valid() &&
             Oot3d::PicaExtensionPassEnabled(
                 mPicaExtensionGraph,
@@ -4224,11 +4235,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         NativePicaMaterialBundle* pbrMaterial = nullptr;
         Renderer3ds::PicaPbrShaderOptions pbrOptions;
         std::optional<Renderer3ds::PicaPbrUniforms> pbrUniforms;
-        std::array<TextureRecord*, 3> pbrTextures{
-            &mFallbackTexture, &mFallbackTexture, &mFallbackTexture};
+        std::optional<Renderer3ds::PicaPbrMaterialParameters> materialPreview;
+        std::array<TextureRecord*, Renderer3ds::kPicaPbrTextureCount> pbrTextures;
+        pbrTextures.fill(&mFallbackTexture);
         VkSampler pbrSampler = mFallbackTexture.Sampler;
         if (surfaceLighting &&
-            graphicsSettings.Effects.SurfaceLighting == Oot3d::SurfaceLightingMode::PerPixelPbr &&
+            Oot3d::UsesPbrMaterials(graphicsSettings.Effects.SurfaceLighting) &&
             draw.FragmentShaderHooks.ValidFor(draw.FragmentShaderSource) &&
             draw.FragmentShaderHooks.Supports(Renderer3ds::PicaShaderHook::AfterNativeTev) &&
             (!draw.FragmentFeatures.FragmentLightingEnabled ||
@@ -4250,13 +4262,15 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             for (uint8_t slot = 0; slot < 3U; ++slot) {
                 const auto* sample = draw.FragmentShaderHooks.TextureSample(slot);
                 if ((colorMask & (1U << slot)) == 0U || integerTextures[slot] || sample == nullptr ||
+                    sample->Coordinate > 2U ||
                     (sample->Operation != Renderer3ds::PicaTextureCoordinateOperation::NativeVFlip &&
                      sample->Operation != Renderer3ds::PicaTextureCoordinateOperation::ProjectedNativeVFlip))
                     continue;
                 const auto resolved = ::Oot3d::Renderer::AzaharTexturePackRuntime::Instance().
                     ResolveMaterialOrQueue(textures[slot]->CustomReplacementHash, azaharTextureGeneration);
                 if (!resolved.Material) continue;
-                const uint8_t explicitSlot = resolved.Material->Parameters.TextureSlot;
+                const uint8_t explicitSlot = resolved.Preview
+                    ? resolved.Preview->TextureSlot : resolved.Material->Parameters.TextureSlot;
                 if ((explicitSlot == 0xffU && automaticMask != (1U << slot)) ||
                     (explicitSlot != 0xffU && explicitSlot != slot)) continue;
                 if (selected) {
@@ -4264,6 +4278,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     break; // Two authored material selectors are ambiguous, not an ordering rule.
                 }
                 selected = resolved.Material;
+                materialPreview = resolved.Preview;
                 selectedSlot = slot;
             }
             if (selected) pbrMaterial = GetOrCreateNativePicaMaterial(selected);
@@ -4286,13 +4301,18 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     pbrTextures[role] = &pbrMaterial->Images[role];
                 }
                 pbrUniforms = Renderer3ds::BuildPicaPbrUniforms(
-                    pbrMaterial->Material->Parameters, mapMask, lighting, graphicsSettings.Effects.Pbr);
+                    materialPreview ? *materialPreview : pbrMaterial->Material->Parameters, mapMask, lighting);
+                pbrOptions.SeamSoftening = mPbrSeamsAvailable && pbrUniforms->SeamSettings[0] > 0 &&
+                    std::bit_cast<uint32_t>(pbrUniforms->SeamSettings[2]) != 0 &&
+                    draw.FragmentShaderHooks.TextureSample(selectedSlot)->Operation ==
+                        Renderer3ds::PicaTextureCoordinateOperation::NativeVFlip;
                 pbrSampler = nativeTextures[selectedSlot]->Sampler;
-                if (pbrMaterial->Material->ColorReplacement)
-                    textures[selectedSlot] = &pbrMaterial->Images[3];
                 resolvedReflectionMaterial.reset();
             }
         }
+        if (graphicsSettings.Effects.SurfaceLighting == Oot3d::SurfaceLightingMode::NativePbr &&
+            pbrMaterial == nullptr)
+            surfaceLighting.reset();
         finishCpuStage(cpuTimings.TextureMilliseconds);
         const Oot3d::PicaShaderPipelineRequest variantRequest{
             draw.VertexShaderSource,
@@ -4333,6 +4353,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 variantRequest,
                 nativeMemoryOnly ? nativeMemoryEffects : graphicsSettings.Effects,
                 &variantCacheHit);
+        if (pbrMaterial != nullptr && pbrMaterial->Material->ColorReplacement &&
+            Oot3d::HasPicaShaderInstrumentationFeature(
+                shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::PbrMaterial))
+            textures[pbrOptions.TextureSlot] = &pbrMaterial->Images[Renderer3ds::kPicaPbrTextureCount];
         const auto variantCacheStats =
             mPicaShaderPipelineCache.Stats();
         mDiagnostics.RecordPicaShaderSelection(
@@ -4823,7 +4847,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             draw.Indexed,
             draw.IndicesAre16Bit,
             draw.VertexCount,
-            nriDrawOwnership.Prepared || directionalShadowGeometry,
+            nriDrawOwnership.Prepared || directionalShadowGeometry || pbrOptions.SeamSoftening,
         });
         if (geometryResolution.Geometry == nullptr) {
             throw std::runtime_error("native PICA geometry preparation failed");
@@ -4834,6 +4858,54 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         const auto& geometry = *geometryResolution.Geometry;
         if (nriDrawOwnership.Prepared && !geometry.PackedValid) {
             nriDrawOwnership.Prepared = false;
+        }
+        Renderer3ds::PicaPbrSeamCache transientSeams;
+        const Renderer3ds::PicaPbrSeamData* seamData = nullptr;
+        if (pbrOptions.SeamSoftening && geometry.PackedValid &&
+            Oot3d::HasPicaShaderInstrumentationFeature(
+                shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::PbrMaterial)) {
+            std::array<Oot3d::PicaNriSourceVertexBinding, 16> sourceBindings{};
+            if (nriDrawSourceStreams.size() > sourceBindings.size())
+                throw std::runtime_error("PICA seam input exceeds native binding count");
+            for (size_t i = 0; i < nriDrawSourceStreams.size(); ++i)
+                sourceBindings[i] = nriDrawSourceStreams[i].Binding;
+            const auto layout = Oot3d::BuildPicaNriVertexInputLayout(
+                std::span(sourceBindings).first(nriDrawSourceStreams.size()), nriDrawSourceAttributes);
+            std::array<Renderer3ds::PicaSceneVertexBufferBinding, 16> bindings{};
+            if (geometry.PackedBindings.size() > bindings.size())
+                throw std::runtime_error("PICA seam geometry exceeds native binding count");
+            for (size_t i = 0; i < geometry.PackedBindings.size(); ++i) {
+                const auto& b = geometry.PackedBindings[i];
+                bindings[i] = {b.Binding, b.Offset, b.Size, b.Stride};
+            }
+            const Renderer3ds::PicaShadowGeometryView view{
+                geometry.Payload, std::span(bindings).first(geometry.PackedBindings.size()),
+                layout.Attributes, layout.Bindings, 0, geometry.IndexOffset,
+                geometry.VertexOrIndexCount, draw.BaseVertex, geometry.Indexed};
+            uint32_t booleans = 0;
+            std::memcpy(&booleans, draw.VertexUniformBytes.data() +
+                Oot3d::kPicaPackedVertexBooleanMaskOffset, sizeof(booleans));
+            auto& cache = geometryResolution.Cacheable
+                ? mNativePicaGeometryBuffers[geometry.Identity].Seams : transientSeams;
+            seamData = &cache.Resolve(view, draw.TemporalVertexProgram.Hooks, booleans,
+                draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset),
+                draw.FragmentShaderHooks.TextureSample(pbrOptions.TextureSlot)->Coordinate,
+                draw.Topology == GfxNativePicaTopology::TriangleStrip,
+                geometryResolution.Cacheable ? geometry.ContentVersion ^
+                    (geometry.StructuralSignature * 0x9e3779b97f4a7c15ULL) : 0);
+            pbrUniforms->SeamSettings[3] = std::bit_cast<float>(seamData->TriangleCount);
+        }
+        if (materialPreview && materialPreview->SeamSoftening && pbrMaterial) {
+            const std::string_view status = !mPbrSeamsAvailable
+                ? "Unavailable: GPU fragment primitive IDs are not supported"
+                : materialPreview->SeamStrength == 0 ? "Inactive: seam strength is zero"
+                : materialPreview->SeamChannels == 0 ? "Inactive: no seam channels selected"
+                : pbrUniforms && std::bit_cast<uint32_t>(pbrUniforms->SeamSettings[2]) == 0
+                    ? "Inactive: selected channels have no loaded auxiliary maps"
+                : seamData ? std::string_view(seamData->Status)
+                : "Unavailable: native geometry or shader contract is incompatible";
+            ::Oot3d::Renderer::AzaharTexturePackRuntime::Instance().ReportMaterialSeams(
+                pbrMaterial->Material->Identity.NativeHash, pbrMaterial->Material->Generation, status);
         }
         const auto geometryStats = mPicaGeometryRegistry.Stats();
         cpuTimings.GeometryRegistryHits = geometryResolution.CacheHit ? 1U : 0U;
@@ -5029,6 +5101,11 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         VkDeviceSize uniformBytes = 0;
         for (const auto size : uniformSizes)
             uniformBytes += (size + mUniformBufferAlignment - 1U) & ~(mUniformBufferAlignment - 1U);
+        const auto seamBytes = seamData && !seamData->Words.empty()
+            ? std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(seamData->Words.data()),
+                                      seamData->Words.size() * sizeof(seamData->Words[0]))
+            : std::span<const uint8_t>{};
+        uniformBytes += (seamBytes.size() + mUniformBufferAlignment - 1U) & ~(mUniformBufferAlignment - 1U);
         EnsureFrameUniformCapacity(uniformBytes, mUniformBufferAlignment);
 
         const auto uploadUniform = [&](std::span<const uint8_t> bytes) {
@@ -5083,6 +5160,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 reinterpret_cast<const uint8_t*>(&pbrUniforms.value()), sizeof(*pbrUniforms)))
             : directionalShadowUniformOffset;
         const VkDeviceSize pbrUniformSize = uniformPbr ? sizeof(*pbrUniforms) : directionalShadowUniformSize;
+        const VkDeviceSize seamOffset = seamBytes.empty() ? fragmentUniformOffset : uploadUniform(seamBytes);
+        const VkDeviceSize seamSize = seamBytes.empty() ? 16U : seamBytes.size();
         finishCpuStage(cpuTimings.UploadMilliseconds);
 
         const VkDescriptorSet descriptor = AllocateNativePicaDescriptorSet();
@@ -5105,7 +5184,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             frame.UniformBuffer.Buffer, surfaceUniformOffset, surfaceUniformSize};
         const VkDescriptorBufferInfo pbrUniform{
             frame.UniformBuffer.Buffer, pbrUniformOffset, pbrUniformSize};
-        std::array<VkDescriptorImageInfo, 3> pbrImageInfos{};
+        const VkDescriptorBufferInfo seamBuffer{frame.UniformBuffer.Buffer, seamOffset, seamSize};
+        std::array<VkDescriptorImageInfo, Renderer3ds::kPicaPbrTextureCount> pbrImageInfos{};
         for (size_t role = 0; role < pbrImageInfos.size(); ++role)
             pbrImageInfos[role] = {pbrSampler, pbrTextures[role]->View, pbrTextures[role]->ImageLayout};
         std::array<VkDescriptorImageInfo, 3> imageInfos{};
@@ -5129,7 +5209,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             lightingLutTexture->Sampler,
             lightingLutTexture->View,
             lightingLutTexture->ImageLayout};
-        std::array<VkWriteDescriptorSet, 16> writes{};
+        std::array<VkWriteDescriptorSet, 14 + Renderer3ds::kPicaPbrTextureCount> writes{};
         writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                      descriptor, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                      nullptr, &vertexUniform, nullptr};
@@ -5172,11 +5252,13 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         writes[12] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                       descriptor, 17, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                       nullptr, &pbrUniform, nullptr};
-        for (uint32_t role = 0; role < 3U; ++role)
+        for (uint32_t role = 0; role < pbrImageInfos.size(); ++role)
             writes[13U + role] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                 descriptor, 18U + role, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 &pbrImageInfos[role], nullptr, nullptr};
-        vkUpdateDescriptorSets(mDevice, static_cast<uint32_t>(writes.size()),
+        writes.back() = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+            descriptor, 26, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &seamBuffer, nullptr};
+        vkUpdateDescriptorSets(mDevice, static_cast<uint32_t>(writes.size() - (pbrOptions.SeamSoftening ? 0U : 1U)),
                                writes.data(), 0, nullptr);
         finishCpuStage(cpuTimings.DescriptorMilliseconds);
 
@@ -5366,6 +5448,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             nriDraw.UniformBufferSize = frame.UniformBuffer.Size;
             nriDraw.UniformMappedMemory =
                 static_cast<uint8_t*>(frame.UniformBuffer.Mapped);
+            nriDraw.SeamGeometry = {seamOffset, pbrOptions.SeamSoftening ? seamSize : 0U};
             nriDraw.Uniforms = {{
                 {vertexUniformOffset,
                  draw.VertexUniformBytes.size()},

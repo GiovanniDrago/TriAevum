@@ -29,6 +29,20 @@ void TextureCatalogRuntime::Observe(uint64_t contentHash,
                         nativeFormat, 1});
 }
 
+void TextureCatalogRuntime::AssociateMaterial(uint64_t contentHash, uint16_t width,
+                                              uint16_t height, uint8_t nativeFormat,
+                                              uint64_t materialHash, bool useNewHash) {
+    std::scoped_lock lock(mMutex);
+    for (auto& entry : mEntries) {
+        if (entry.ContentHash != contentHash || entry.Width != width ||
+            entry.Height != height || entry.NativeFormat != nativeFormat) continue;
+        entry.MaterialHash = materialHash;
+        entry.MaterialHashAvailable = true;
+        entry.MaterialUsesNewHash = useNewHash;
+        return;
+    }
+}
+
 std::vector<TextureCatalogEntry> TextureCatalogRuntime::Snapshot() const {
     std::scoped_lock lock(mMutex);
     auto result = mEntries;

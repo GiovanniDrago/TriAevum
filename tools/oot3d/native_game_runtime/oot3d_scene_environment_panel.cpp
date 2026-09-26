@@ -10,7 +10,7 @@ void DrawDirectionalShadows() {
     auto& runtime = GraphicsSettingsRuntime::Instance();
     auto settings = runtime.Snapshot();
     auto capabilities = runtime.Capabilities();
-    if (settings.Effects.SurfaceLighting == SurfaceLightingMode::Native)
+    if (!UsesFullSceneLighting(settings.Effects.SurfaceLighting))
         capabilities.Set(GraphicsCapability::NriDirectionalShadows, false,
                          "Choose Per-pixel or Per-pixel + PBR in Lighting.");
     bool changed = false;
@@ -119,8 +119,7 @@ public:
     bool changed = ImGui::Checkbox("Use scene environment", &value.Enabled);
     ImGui::EndDisabled();
     if (!supported ||
-        settings.Effects.SurfaceLighting ==
-            Fast::Oot3d::SurfaceLightingMode::Native ||
+        !Fast::Oot3d::UsesFullSceneLighting(settings.Effects.SurfaceLighting) ||
         settings.Preset == Fast::Oot3d::GraphicsPreset::Authentic ||
         graphics.NativePresentationOverrideActive())
       ImGui::TextWrapped(
