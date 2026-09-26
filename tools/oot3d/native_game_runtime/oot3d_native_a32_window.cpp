@@ -3902,7 +3902,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   }
 #endif
   auto &window = GetActiveFast3dWindowForDemo();
-  if (hostArgs.ThroughputBenchmark) {
+  // Interactive presentation is paced by NativeRealtimeRefreshPacer, not by a
+  // second software limiter in SDL. Bounded probes retain their existing policy.
+  if (hostArgs.ThroughputBenchmark || hostArgs.FrameLimit == 0U) {
     window.SetTargetFps(0);
   }
   auto &api = GetActiveRenderingApiForDemo(window);
@@ -4087,16 +4089,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               << "oot3d_native_game: legacy savestate has no gameplay clock; "
                  "starting at a quiescent logical-frame boundary\n";
         } else {
-          if (runtime.GameplayTiming != frameRateContract.Mode) {
-            throw std::runtime_error(
-                "savestate gameplay timing mode is " +
-                std::string(Oot3dNativeGame::GameplayTimingModeName(
-                    runtime.GameplayTiming)) +
-                ", requested runtime mode is " +
-                Oot3dNativeGame::GameplayTimingModeName(
-                    frameRateContract.Mode));
-          }
-          if (!frameRatePolicy.RestoreGameplayClock(runtime.GameplayClock)) {
+          if (!frameRatePolicy.RestoreGameplayClock(
+                  runtime.GameplayTiming, runtime.GameplayClock)) {
             throw std::runtime_error(
                 "savestate gameplay clock restore failed: " +
                 frameRatePolicy.LastError());

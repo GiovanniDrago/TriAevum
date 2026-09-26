@@ -591,7 +591,11 @@ void NativeFrameRatePolicy::ResetGameplayClock() {
 }
 
 bool NativeFrameRatePolicy::RestoreGameplayClock(
-    const NativeGameplayClockState& state) {
+    GameplayTimingMode sourceMode, const NativeGameplayClockState& state) {
+    if (SimulationRateForMode(sourceMode) != mContract.SimulationRateHz) {
+        mLastError = "savestate and runtime simulation rates differ";
+        return false;
+    }
     return mGameplayClock.Restore(state, &mLastError);
 }
 

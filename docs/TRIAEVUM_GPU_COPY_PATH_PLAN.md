@@ -162,6 +162,53 @@ le impostazioni della presentazione. Il compositore TopScreen interviene dopo
 il completamento canonico. Le copie visive vengono ricatturate per ogni
 presentazione, invece di congelare il primo campione di interpolazione.
 
+Original30 e Interpolated2x possono ripristinare lo stesso clock a 30 Hz senza
+modificare il checkpoint; Enhanced60 resta incompatibile. Nella sessione
+interattiva il pacer nativo è l'unico limitatore software: il limiter SDL
+precedentemente attivo in parallelo viene disabilitato. VSync resta configurato.
+
+Verifica storica Windows, stesso checkpoint, timeline scalata per lo stesso numero di
+refresh, 1280×720, scala 1×, erba/Toon/outline invariati:
+
+- x2, 2.200 presentazioni: **1.090 aggiornamenti e 1.090 snapshot completi**.
+  Nel confronto a delta fisso il p95 scende da **29,25 a 21 ms**; le medie sono
+  rispettivamente 60,005 e 58,599 presentazioni/s. Il run nuovo include quattro
+  catture sincrone: non è una misura di throughput puro.
+- Tempo reale, 45 s, warmup di 600 presentazioni, senza catture: **59,023 FPS**,
+  p95 **17,875 ms**, p99 **33,375 ms** su 1.790 campioni. Restano picchi:
+  una prova separata con warmup di 120 frame registra un frame di 3,211 s nel
+  backend visivo iniziale; non si dichiara eliminato lo stutter di avviamento.
+- Original30 e x2 dopo 2.200 refresh producono entrambi 1.090 aggiornamenti e
+  fingerprint della memoria guest **7236869805536561951**, identico anche con
+  validazione GPU attiva. Nessuna modifica ai byte del checkpoint.
+- x2 con validazione, 2.200 frame: **zero errori Vulkan/NRI**, 11 warning Vulkan,
+  zero warning NRI. Catture framebuffer verificano erba densa e flashback nativo
+  in bianco e nero. La cattura 240 coincide byte per byte fra smoke validato
+  e run non validato.
+- Il vecchio throughput Original30 di 102,829 FPS comprendeva soltanto 581
+  aggiornamenti e 68 snapshot su 1.100 presentazioni. Il nuovo run esegue
+  1.090 aggiornamenti a 46,926 presentazioni/s: quei contatori non rappresentano
+  lo stesso lavoro e non vanno presentati come confronto di velocità equivalente.
+
+Passano clock/restore, bridge, piani, composizione e savestate visivi, 291 test
+graphics foundation, 47 graph, 40 shader pipeline e 21 test shared PICA/cross-title.
+Il controllo del confine 3DS condiviso passa su 69 file. L'audit dipendenze
+generale non è verde: frontend legacy 13 file contro limite 8, adapter Fast3D
+11 contro 10; il core renderer non contiene dipendenze legacy/N64/Fast3D.
+Non è una qualifica globale della suite o degli altri preset.
+
+Evidenza privata: `I:/_triaevum_work/nri-interpolation-performance/`,
+`x2-before-optimization`, `x2-after-optimization`, `native-after-optimization`,
+`x2-final-validation`, `x2-realtime-after`, `x2-realtime-warm`, relativi
+`verification.json` e `renderer-dependency-audit.json`.
+
+La riqualifica del 2026-09-26 conferma il restore Original30/x2, 32 update con
+32/64 presentazioni e il solo pacer nativo nella sessione interattiva. Registra
+anche un errore Vulkan di lifetime al primo avvio x2, non attribuito né corretto
+da questo incremento; la coppia successiva sullo stesso checkpoint x2 passa.
+Dettagli e limiti:
+[`TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md`](TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md).
+
 ### Incremento precedente — collegamento diretto GPU verificato, 2026-09-23
 
 Il percorso visivo riusa la scena GPU già renderizzata: cattura immutabile al

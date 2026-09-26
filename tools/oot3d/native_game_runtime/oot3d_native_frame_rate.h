@@ -254,7 +254,9 @@ class NativeFrameRatePolicy {
     bool ApplyFramePacingDeadline(uint32_t framePacingStateAddress,
                                   oot3d::recomp::a32::MemoryBus& memory);
     void ResetGameplayClock();
-    bool RestoreGameplayClock(const NativeGameplayClockState& state);
+    // Presentation-only changes preserve the native simulation clock.
+    bool RestoreGameplayClock(GameplayTimingMode sourceMode,
+                              const NativeGameplayClockState& state);
     void ResetTemporalState() noexcept;
     bool RestoreTemporalState(
         const NativeFrameRatePolicyTemporalState& state,

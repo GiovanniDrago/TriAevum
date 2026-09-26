@@ -449,15 +449,63 @@ void RunNativeFrameRateTests() {
     const auto capturedClock = policy.GameplayClock().CaptureState();
     policy.ResetGameplayClock();
     if (policy.GameplayClock().Context().SimulationTick != 0U ||
-        !policy.RestoreGameplayClock(capturedClock) ||
+        !policy.RestoreGameplayClock(native60.Mode, capturedClock) ||
         policy.GameplayClock().Context().SimulationTick != 2U) {
         throw std::runtime_error("gameplay clock state restore mismatch");
     }
     auto invalidClock = capturedClock;
     invalidClock.CurrentLogicalFrame =
         invalidClock.PreviousLogicalFrame + 1.0;
-    if (policy.RestoreGameplayClock(invalidClock)) {
+    if (policy.RestoreGameplayClock(native60.Mode, invalidClock)) {
         throw std::runtime_error("invalid gameplay clock state was accepted");
+    }
+
+    for (const auto sourceMode : {
+             Oot3dNativeGame::GameplayTimingMode::Native30NoInterpolation,
+             Oot3dNativeGame::GameplayTimingMode::Native30Interpolated}) {
+        const auto destinationMode =
+            sourceMode ==
+                    Oot3dNativeGame::GameplayTimingMode::Native30NoInterpolation
+                ? Oot3dNativeGame::GameplayTimingMode::Native30Interpolated
+                : Oot3dNativeGame::GameplayTimingMode::Native30NoInterpolation;
+        Oot3dNativeGame::NativeGameplayClock sourceClock(
+            Oot3dNativeGame::ResolveNativeFrameRateContract(sourceMode, 60U));
+        sourceClock.Advance();
+        sourceClock.Advance();
+        Oot3dNativeGame::NativeFrameRatePolicy restoredPolicy(
+            Oot3dNativeGame::ResolveNativeFrameRateContract(destinationMode, 60U));
+        TestMemoryBus restoredMemory;
+        restoredMemory.Bytes[updateRate] = 2U;
+        if (!restoredPolicy.RestoreGameplayClock(
+                sourceMode, sourceClock.CaptureState()) ||
+            !restoredPolicy.ApplyNativeTimeScaleAtGameStateUpdate(
+                gameState, restoredMemory)) {
+            throw std::runtime_error(
+                "presentation-only mode change failed to resume gameplay");
+        }
+        const auto& next = restoredPolicy.GameplayClock().Context();
+        const auto& uninterrupted = sourceClock.Advance();
+        if (next.SimulationTick != uninterrupted.SimulationTick ||
+            next.CurrentLogicalFrame != uninterrupted.CurrentLogicalFrame ||
+            next.DeltaSeconds != uninterrupted.DeltaSeconds ||
+            restoredMemory.Bytes[updateRate] != 2U) {
+            throw std::runtime_error(
+                "presentation-only restore changed native gameplay progression");
+        }
+        const auto nativeState = restoredPolicy.GameplayClock().CaptureState();
+        if (restoredPolicy.RestoreGameplayClock(native60.Mode, capturedClock) ||
+            restoredPolicy.GameplayClock().Context().SimulationTick !=
+                nativeState.SimulationTick ||
+            restoredPolicy.GameplayClock().Context().CurrentLogicalFrame !=
+                nativeState.CurrentLogicalFrame ||
+            policy.RestoreGameplayClock(sourceMode, nativeState) ||
+            policy.GameplayClock().Context().SimulationTick !=
+                capturedClock.SimulationTick ||
+            policy.GameplayClock().Context().CurrentLogicalFrame !=
+                capturedClock.CurrentLogicalFrame) {
+            throw std::runtime_error(
+                "incompatible simulation restore changed a running clock");
+        }
     }
     const auto& stats = policy.Stats();
     if (stats.GameStateUpdatesObserved != 2U || stats.UpdateRateWrites != 1U ||
