@@ -30,6 +30,8 @@ build-integration edits were removed from the working tree; the verified
 baseline remains the source implementation. Private binaries and receipts
 preserve the results, not a new default. The user's subsequent request redirects
 the work to structural diagnosis before further speculative variants.
+The only subsequent runtime correction is diagnostic attribution for synchronous
+invocations; it does not change guest execution or the disabled profiler path.
 
 ## Implementation sequence
 
@@ -247,3 +249,138 @@ qualify a performance regression. Its receipts are
 `cpu-combined-copy/equivalence.json`. The operation-local MXCSR implementation
 is not adopted. Its exact semantic boundary cases remain useful regression
 guards for any future backend.
+
+### Contained-function evaluation
+
+The executed analysis now uses the generator's normalized functions and actual
+terminal emitter, rather than instruction-address containment alone. Of 429
+candidates, 52 would change native control transfer. For example, child entry
+`0x0016ED70` inside `0x0016ECD4` returns a branch to `0x0016ED8C` at block
+`0x0016ED78`; merging into the container turns that exit into an internal goto.
+That changes unwinding/dispatch behavior, not just code duplication.
+
+The remaining 377 candidates cover 26,055 of 963,498 instruction occurrences
+(2.70%). They pass this control-shape screen but are not proven equivalent for
+liveness and observable exits. Nor is that percentage a binary-size or CPU
+gain: native prologues, register pressure, ICF sharing and hot layout differ.
+No containment rewrite is adopted. It cannot safely be used as an automatic
+offset for the hot-path code-size increase.
+Evidence: `containment-contract.json`, with per-candidate rejection details.
+
+### Dynarmic static-emission decision
+
+The read-only donor is `azahar-emu/dynarmic` at
+`526227eebe1efff3fb14dbf494b9c5b44c2e9c1f`.
+Its [x64 emitter](https://github.com/azahar-emu/dynarmic/blob/526227eebe1efff3fb14dbf494b9c5b44c2e9c1f/src/dynarmic/backend/x64/a32_emit_x64.h)
+takes `BlockOfCode`, runtime configuration and a `Jit*`; emitted blocks contain
+process-local code pointers, runtime patch records and exception-handler state.
+That is not a COFF/ELF static-object interface. Persisting those pointers or
+invoking the JIT during installation would violate the precompiled release
+contract. A static backend needs explicit symbols/relocations and our complete
+observable-state and memory contracts; no donor runtime path is integrated.
+
+The [donor pipeline](https://github.com/azahar-emu/dynarmic/blob/526227eebe1efff3fb14dbf494b9c5b44c2e9c1f/src/dynarmic/backend/x64/a32_interface.cpp)
+disables Get/Set elimination when memory-access halt observation is enabled.
+The same five-block frontend experiment was therefore executed without that
+pass: 432 IR operations become 356, GPR reads 106 become 105 and all 56 GPR
+writes remain. The 18 memory reads and 61 writes remain unchanged. This sharply
+limits the earlier 106-to-57 register-read result under the stricter boundary.
+Receipt: `observable-frontend/results.json`.
+
+Both frontend probes use only CPSR `0x10` and FPSCR `0`. FPSCR control bits are
+part of Dynarmic's location identity, so neither probe qualifies runtime VMSR
+mode changes, a whole-title static backend, or machine-code performance.
+Decision: retain the verified static C++ baseline for now. Neither a static
+Dynarmic wrapper nor the slower exact hardware VFP candidate is adopted.
+No new donor code or runtime dependency is shipped.
+
+### Structural diagnosis requested by the user
+
+The earlier clean benchmark's `guest_seconds` is not exclusive AOT CPU time:
+its declared scope includes GSP/PICA, and
+`thread_cpu_ledger.available_in_build` is false. The intrusive RIP profile also
+contains 1,988 unresolved host samples out of 5,397 total; its 1,971 title-module
+samples are not a complete attribution of the main thread or exclusive time.
+This is a methodology gap, not evidence that fidelity explains the difference
+from the emulator.
+
+A new executed analysis follows sampled function `0x004A0338` in the exact
+profiled control image. Its 143 ARM instructions, 16 basic blocks and 15
+dispatch entries occupy a 9,840-byte native symbol with 2,420 static x86
+instructions and 117 call sites: 16 block-entry, 51 classified memory-read,
+22 classified memory-write and 28 other calls. The full symbol is disassembled,
+not the earlier truncated 8 KiB window. These counts include cold paths and
+are not dynamic instruction counts or a whole-title speed prediction.
+Evidence: `structural-diagnosis/execution-shape.json`.
+
+The inspected emulator configures Dynarmic's page table and leaves
+`all_safe_optimizations`, `unsafe_optimizations = false` and
+`check_halt_on_memory_access = false` at their defaults. Its
+[`BlockOfCode` FP transitions](https://github.com/azahar-emu/dynarmic/blob/526227eebe1efff3fb14dbf494b9c5b44c2e9c1f/src/dynarmic/backend/x64/block_of_code.cpp)
+switch MXCSR at guest entry/exit rather than around every scalar arithmetic
+helper. The execution model is materially different; merely substituting an
+SSE instruction inside the existing helper ABI does not reproduce it.
+
+The existing exclusive ledger was enabled in a separate developer host, not
+in the public/default build. It also exposed a real coverage defect:
+`NativeA32Process::InvokeFunctionWithState` did not enter the AOT/SVC phases,
+so synchronous guest work inherited its caller's phase. The owning method now
+uses the same scopes as normal `Run`. No caller signatures or behavior change.
+A real generated-module invocation reproduces correct guest results but zero
+AOT intervals before the fix; after relinking the process library it has one
+AOT interval and restores the caller phase. Evidence:
+`synchronous-cpu-before/receipt.json` and `synchronous-cpu-after/receipt.json`.
+This is a diagnostic correction, not a speed optimization.
+
+The corrected Field run measures 720 frames after 180 warmup frames:
+
+| Exclusive phase | Wall ms/frame | Thread cycles/frame |
+| --- | ---: | ---: |
+| AOT | 6.9291 | 16,889,928 |
+| PICA frontend | 0.7435 | 1,780,461 |
+| PICA plan | 1.0795 | 2,632,502 |
+| PICA queue | 0.6571 | 1,601,550 |
+| Vertex capture | 0.2900 | 690,363 |
+| Texture capture | 0.1064 | 221,229 |
+| Queue lock | 0.0489 | 94,536 |
+| Visual presentation/backend execution | 3.7065 | 9,034,425 |
+| Renderer start | 1.5829 | 265,176 |
+
+The whole window is 16.6615 ms/frame wall and 14.8003 ms/frame main-thread CPU.
+AOT accounts for 45.82% of main-thread cycles and 62.30% of pre-NRI cycles;
+PICA/queue/capture phases total 2.9254 wall ms/frame. Phase wall times are not
+exclusive CPU seconds, and cycles must not be converted to seconds using an
+assumed frequency. The pre-NRI CPU bound is 9.2841–11.1897 ms/frame; its
+off-CPU upper bound includes preemption, not only deliberate waits.
+
+The inactive-probe control measures 10.8585 ms pre-backend, versus 11.2216
+with the original ledger and 11.1926 with corrected coverage. These are
+single diagnostic windows, not ABBA proof of a speed change. All three have
+identical memory content/state, process state, frame/refresh count, 85,500
+draws, 1,800 transfers and empty queues. Both active runs have 87,297 AOT
+intervals: the synchronous-call attribution defect does **not** explain this
+Field workload's performance gap.
+
+Evidence: `structural-diagnosis/qualification.json` and
+`structural-ledger-{off,on,fixed}/measurements.json`. The corrected diagnostic
+host SHA-256 is
+`a3cea39ab29160af8e25db4e3bff353021755d31fa1237aae9e48ff7af3fea94`.
+`TriAevum.exe` remains unchanged at
+`1176593d834f57b2313a5c4c36a830ff1bec7140ec1d50914752cda45335742f`.
+
+Conclusion: the generated execution model is expensive, but it is not the
+entire measured frame. The evidence supports investigating register/state,
+memory and FP boundaries at execution-region granularity, with the same
+captured guest invocations, rather than treating helper substitution as a
+backend optimization. A matched native-code/cycle comparison must precede
+another whole-title variant. It must preserve observable exits and compare
+the same guest work, not assume that emulator FPS and presented-frame FPS are
+identical units. No quantified emulator/AOT speed ratio is claimed here.
+
+Final qualification: the restored baseline plus the diagnostic correction
+passes native architecture/FP, memory-only process, PICA submission and ledger
+checks; 36 generator and nine source-archive tests; three CPU-budget analyzer
+tests; and all seven real generated-DLL boundary checks. Field and Raw Copy
+again match all five framebuffer captures and structural/state contracts:
+`cpu-diagnostic-final-{field,copy}/equivalence.json`.
+The known unrelated full-process fixture limitation remains unchanged.

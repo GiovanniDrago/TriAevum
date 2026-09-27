@@ -708,6 +708,7 @@ bool NativeA32Process::InvokeFunctionWithState(
     uint32_t entryAddress, oot3d::recomp::a32::GuestState& state,
     uint32_t returnAddress, std::string* error,
     uint32_t blockLimitPerDispatch, uint32_t maxHostTransitions) {
+    CpuPhaseProbe::Scope cpuInvoke(CpuPhaseProbe::Phase::GuestScheduler);
     if (!mMemory.IsExecutable(entryAddress, 1U)) {
         SetError(error, "native A32 function entry is not executable");
         return false;
@@ -738,6 +739,7 @@ bool NativeA32Process::InvokeFunctionWithState(
 
     for (uint32_t transition = 0U; transition < maxHostTransitions;
          ++transition) {
+        CpuPhaseProbe::Scope cpuDispatch(CpuPhaseProbe::Phase::Aot);
         const auto exit =
 #if defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
             DispatchWholeAotProduct(
@@ -754,6 +756,7 @@ bool NativeA32Process::InvokeFunctionWithState(
             invokeCallbackPcs.data(), invokeCallbackPcs.size(),
             mNativeBlockCallback, mNativeBlockUser);
 #endif
+        cpuDispatch.Stop();
 #if defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
         if ((exit.kind == oot3d::recomp::a32::ExitKind::Branch ||
              exit.kind == oot3d::recomp::a32::ExitKind::Fallthrough) &&
@@ -768,8 +771,10 @@ bool NativeA32Process::InvokeFunctionWithState(
 #endif
         if (exit.kind == oot3d::recomp::a32::ExitKind::Svc) {
             NativeA32HostContext context{*this, mCurrentThreadId};
+            CpuPhaseProbe::Scope cpuSvc(CpuPhaseProbe::Phase::Svc);
             auto hostResult =
                 mHostServices.HandleSvc(exit.detail, state, mMemory, context);
+            cpuSvc.Stop();
             if (hostResult.Action == NativeA32HostAction::Resume) {
                 state.r[15] = hostResult.ResumePc.value_or(exit.pc + 4U);
                 continue;

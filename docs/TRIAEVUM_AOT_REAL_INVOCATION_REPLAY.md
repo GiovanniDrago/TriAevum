@@ -453,3 +453,10 @@ Their completed JSON receipts, exact compiler/linker/launch commands, generated
 sources, binaries, order file and deterministic capture evidence remain in the
 private evidence tree. The reusable replay, boundary-probe and comparison tools
 remain in the repository. No public package or title catalogue was replaced.
+
+## Dedicated CPU optimization branch
+
+Subsequent hot/cold helper and exact hardware VFP development is recorded in
+[AOT CPU optimization development](TRIAEVUM_AOT_CPU_OPTIMIZATION.md).
+Its new correctness and timing evidence does not retroactively qualify the
+rejected residency, support-ThinLTO or layout experiments above.
