@@ -119,18 +119,6 @@ int main() {
         }
     }
 
-    bool dismissedScopeCommitted = false;
-    {
-        Oot3dNativeGame::Oot3dAotScopeExit dismissedScope(
-            [&dismissedScopeCommitted]() noexcept {
-                dismissedScopeCommitted = true;
-            });
-        dismissedScope.Dismiss();
-    }
-    if (dismissedScopeCommitted) {
-        std::cerr << "dismissed AOT scope committed stale state\n";
-        return 1;
-    }
 
     oot3d::recomp::a32::GuestState observableState{};
     observableState.r[0] = 0x51A7E123U;

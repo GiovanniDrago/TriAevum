@@ -35,8 +35,9 @@ struct Oot3dWholeAotProgramV2 final {
   Oot3dWholeAotObservableExitV2 ObservableExit = nullptr;
   // Optional tail, gated by StructSize. Generated code uses checked memory
   // helpers from its own support library, not the host executable's helpers.
-  // Version 2 also resolves deferred device writes on reads, atomics and
-  // pointer handout. A version-1 module cannot execute with deferred RAM.
+  // Version 3 includes native per-page write generations and a new fast-page
+  // stride. Recompile every shard and its support library; older modules are
+  // rejected rather than allowed to bypass cache invalidation.
   uint32_t MemoryWriteObservationVersion = 0U;
 };
 

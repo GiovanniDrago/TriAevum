@@ -30,14 +30,12 @@ bool Oot3dPicaPhysicalMemoryView::SynchronizeGuestWrite(
         const size_t count = static_cast<size_t>(high - low);
         const uint32_t physical = region.PhysicalBaseAddress +
                                   static_cast<uint32_t>(low - region.GuestBaseAddress);
-        const auto aliases = GuestAliases(physical, count);
-        if (aliases.size() < 2U) continue;
         const auto source = memory.SynchronousReadView(static_cast<uint32_t>(low), count);
         if (source.size() != count) return false;
         NativeA32Memory::RangeWatchSuppression materialization(memory);
-        for (const auto alias : aliases) {
-            if (alias != low && !memory.WriteHostBytes(alias, source)) return false;
-        }
+        if (!ForEachGuestAlias(physical, count, [&](uint32_t alias, size_t) {
+                return alias == low || memory.WriteHostBytes(alias, source);
+            })) return false;
     }
     return true;
 }

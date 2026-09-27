@@ -129,29 +129,6 @@ class Oot3dAotLazyFlags {
     bool mV = false;
 };
 
-template <typename Function>
-class Oot3dAotScopeExit final {
-  public:
-    explicit Oot3dAotScopeExit(Function function) noexcept
-        : mFunction(function) {
-    }
-    Oot3dAotScopeExit(const Oot3dAotScopeExit&) = delete;
-    Oot3dAotScopeExit& operator=(const Oot3dAotScopeExit&) = delete;
-    ~Oot3dAotScopeExit() noexcept {
-        if (mActive) {
-            mFunction();
-        }
-    }
-
-    void Dismiss() noexcept { mActive = false; }
-
-  private:
-    Function mFunction;
-    bool mActive = true;
-};
-
-template <typename Function>
-Oot3dAotScopeExit(Function) -> Oot3dAotScopeExit<Function>;
 
 class Oot3dAotArchitecturalState {
   public:

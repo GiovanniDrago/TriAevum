@@ -1,4 +1,5 @@
 #include "oot3d_native_a32_process.h"
+#include "oot3d_native_a32_memory_region.h"
 #include "oot3d_native_compiled_functions.h"
 #include "oot3d_native_owner_call_adapter.h"
 #include "oot3d_native_true_aot_blocks.h"
@@ -713,6 +714,92 @@ void TestMemoryContract() {
     Expect(memory.StoreExclusive(0x2000U, 4, 13U, token, nullptr) ==
                oot3d::recomp::a32::ExclusiveStoreResult::ReservationLost,
            "intervening write must invalidate exclusive token");
+}
+
+void TestMemoryRangeGenerations() {
+    using Oot3dNativeGame::NativeA32Memory;
+    NativeA32Memory memory;
+    std::string error;
+    Expect(memory.MapRegion({"data", 0x1101U, 0x3000U, true, false, {}}, &error),
+           "map partial boundary pages");
+    const auto first = memory.RangeWriteGeneration(0x1200U, 4U);
+    const auto second = memory.RangeWriteGeneration(0x2200U, 4U);
+    Expect(first && second, "mapped ranges provide certificates");
+    Expect(memory.WriteFast<uint32_t>(0x2200U, 17U) &&
+               memory.RangeWriteGeneration(0x1200U, 4U) == first &&
+               memory.RangeWriteGeneration(0x2200U, 4U) != second,
+           "a native store must invalidate only its page");
+    const auto beforeCrossing = memory.RangeWriteGeneration(0x2000U, 4U);
+    Expect(memory.WriteFast<uint16_t>(0x1FFFU, 0x1234U) &&
+               memory.RangeWriteGeneration(0x1200U, 4U) != first &&
+               memory.RangeWriteGeneration(0x2000U, 4U) != beforeCrossing,
+           "a checked crossing-page store must invalidate both pages");
+
+    auto saved = memory.CaptureState();
+    Expect(memory.Write32(0x2200U, 29U), "change snapshot bytes");
+    const auto replaced = memory.RangeWriteGeneration(0x2200U, 4U);
+    const auto architecturalGeneration = saved.at("write_generation").get<uint64_t>();
+    Expect(memory.RestoreState(saved, &error) &&
+               memory.WriteGeneration() == architecturalGeneration &&
+               memory.RangeWriteGeneration(0x2200U, 4U) != replaced,
+           "restore invalidates certificates without changing architectural generation");
+    uint32_t word = 0;
+    Expect(memory.Read32(0x2200U, &word) && word == 17U, "restore original bytes");
+
+    const auto beforeDevice = memory.RangeWriteGeneration(0x3000U, 4U);
+    const std::array ranges{std::pair<uint32_t, size_t>{0x3000U, 4U}};
+    Expect(memory.DeferWrites(ranges, [](uint32_t, std::span<uint8_t> bytes) {
+               std::fill(bytes.begin(), bytes.end(), 0x5AU);
+               return true;
+           }) && memory.RangeWriteGeneration(0x3000U, 4U) != beforeDevice &&
+               memory.Read32(0x3000U, &word) && word == 0x5A5A5A5AU,
+           "logical device publication invalidates before lazy readback");
+    auto* escaped = memory.GetWritePointer(0x2200U, 4U);
+    Expect(escaped && !memory.RangeWriteGeneration(0x2200U, 4U),
+           "an escaped writable pointer cannot yield an unchanged certificate");
+    escaped[0] = 0x2CU;
+    Expect(!memory.RangeWriteGeneration(0x2200U, 4U) &&
+               memory.Read32(0x2200U, &word) && word == 0x2CU,
+           "later untracked writes remain uncertified and visible");
+
+    NativeA32Memory replacement;
+    NativeA32Memory destination;
+    Expect(replacement.MapRegion({"move", 0x1000U, 4096U, true, false, {}}, &error) &&
+               destination.MapRegion({"move", 0x1000U, 4096U, true, false, {}}, &error) &&
+               replacement.Write32(0x1000U, 11U) && destination.Write32(0x1000U, 22U),
+           "prepare different images with identical architectural generations");
+    const auto beforeMove = destination.RangeWriteGeneration(0x1000U, 4U);
+    const auto movedGeneration = replacement.WriteGeneration();
+    destination = std::move(replacement);
+    Expect(destination.Read32(0x1000U, &word) && word == 11U &&
+               destination.WriteGeneration() == movedGeneration &&
+               destination.RangeWriteGeneration(0x1000U, 4U) != beforeMove,
+           "moving a replacement image must invalidate destination certificates");
+    Expect(replacement.MapRegion({"reused", 0x1000U, 4096U, true, false, {}}, &error) &&
+               replacement.RangeWriteGeneration(0x1000U, 4U) != beforeMove,
+           "reusing a moved-from image must not revive its certificates");
+
+    NativeA32Memory batched;
+    Expect(batched.MapRegion({"batch", 0x1000U, 0x3000U, true, false, {}}, &error),
+           "map batched memory");
+    const auto untouched = batched.RangeWriteGeneration(0x1000U, 4U);
+    const auto crossing = batched.RangeWriteGeneration(0x2FFFU, 2U);
+    const auto beforeBatch = batched.WriteGeneration();
+    {
+        Oot3dNativeGame::NativeA32UnobservedMemory region(batched);
+        Expect(region.WriteFast<uint16_t>(0x2FFFU, 0x1234U) &&
+                   region.WriteFast<uint32_t>(0x2000U, 17U),
+               "batched stores across a page boundary");
+        Expect(!region.ReadFast<uint32_t>(0U, &word),
+               "a checked fault must commit preceding batched stores");
+    }
+    uint16_t halfword = 0;
+    Expect(batched.Read16(0x2FFFU, &halfword) && halfword == 0x1234U &&
+               batched.Read32(0x2000U, &word) && word == 17U &&
+               batched.WriteGeneration() == beforeBatch + 2U &&
+               batched.RangeWriteGeneration(0x1000U, 4U) == untouched &&
+               batched.RangeWriteGeneration(0x2FFFU, 2U) != crossing,
+           "batched fault exits preserve bytes, write counts and range-local invalidation");
 }
 
 #if defined(OOT3D_NATIVE_A32_AOT_TESTS)
@@ -1728,12 +1815,19 @@ void TestTrueAotNativeCurveType2Scan() {
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--memory-only") {
+            TestMemoryContract();
+            TestMemoryRangeGenerations();
+            std::cout << "oot3d_native_a32_process_tests: memory ok\n";
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--tls-only") {
             TestPrioritySchedulerAndTls(false);
             std::cout << "oot3d_native_a32_process_tests: TLS ok\n";
             return 0;
         }
         TestMemoryContract();
+        TestMemoryRangeGenerations();
 #if defined(OOT3D_NATIVE_A32_AOT_TESTS)
         TestWholeAotShiftAndFlagSemantics();
 #if defined(OOT3D_NATIVE_WHOLE_AOT_TESTS)

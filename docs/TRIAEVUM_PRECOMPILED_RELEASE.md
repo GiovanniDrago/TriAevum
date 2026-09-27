@@ -50,9 +50,11 @@ their complete-file identities. Prepared files retain their actual hashes and
 are revalidated against the module-bound family before activation.
 Hash validation is integrity checking, not cryptographic publisher authentication.
 
-Deferred device-owned memory additionally requires the whole-AOT descriptor's
-`MemoryWriteObservationVersion` to equal **2**. Despite the historical field
-name, version 2 covers compiled reads, writes, atomics and escaped pointers.
+Deferred device-owned memory and resource snapshots require the whole-AOT
+descriptor's `MemoryWriteObservationVersion` to equal **3**. Despite the
+historical field name, this covers compiled reads, writes, atomics, escaped
+pointers and native per-page write epochs. Version 3 changes the fast-page
+layout: rebuild every title shard, not just its wrapper or support archive.
 The runtime rejects older or truncated descriptors before title execution:
 publish a matching runtime/title-module pair and its corresponding source.
 Forge must not repair this package mismatch by generating IR or compiling.

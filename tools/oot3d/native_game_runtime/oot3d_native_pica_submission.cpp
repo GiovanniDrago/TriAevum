@@ -115,12 +115,10 @@ std::optional<uint32_t> Oot3dPicaPhysicalMemoryView::TranslateGuest(
     return std::nullopt;
 }
 
-std::vector<uint32_t> Oot3dPicaPhysicalMemoryView::GuestAliases(
-    uint32_t physicalAddress, size_t size) const {
-    std::vector<uint32_t> aliases;
-    if (!RangeFits(physicalAddress, size)) {
-        return aliases;
-    }
+bool Oot3dPicaPhysicalMemoryView::ForEachGuestAlias(
+    uint32_t physicalAddress, size_t size, const GuestAliasVisitor& visitor) const {
+    bool found = false;
+    if (!RangeFits(physicalAddress, size)) return false;
     for (const auto& region : mRegions) {
         if (!RangeFits(region.PhysicalBaseAddress, region.Size) ||
             !RangeFits(region.GuestBaseAddress, region.Size) ||
@@ -137,10 +135,11 @@ std::vector<uint32_t> Oot3dPicaPhysicalMemoryView::GuestAliases(
             region.GuestBaseAddress + static_cast<uint32_t>(offset);
         if (mMappingCheck ? mMappingCheck(guestAddress, size)
                           : mReadView(guestAddress, size).size() == size) {
-            aliases.push_back(guestAddress);
+            found = true;
+            if (!visitor(guestAddress, size)) return false;
         }
     }
-    return aliases;
+    return found;
 }
 
 std::optional<std::pair<uint32_t, size_t>>
@@ -180,10 +179,18 @@ std::optional<std::span<const uint8_t>> Oot3dPicaPhysicalMemoryView::View(
 std::optional<uint64_t>
 Oot3dPicaPhysicalMemoryView::RangeWriteGeneration(uint32_t physicalAddress,
                                                   size_t size) const {
-  const auto guestAddress = Translate(physicalAddress, size);
-  return guestAddress.has_value() && mWriteGeneration
-             ? mWriteGeneration(*guestAddress, size)
-             : std::nullopt;
+  if (!mWriteGeneration) return std::nullopt;
+  std::optional<uint64_t> generation;
+  const bool certified = ForEachGuestAlias(physicalAddress, size,
+      [&](uint32_t guest, size_t bytes) {
+          const auto alias = mWriteGeneration(guest, bytes);
+          if (!alias || !*alias || (generation && *generation != *alias)) return false;
+          generation = alias;
+          return true;
+      });
+  // Providers may use independent opaque tokens for aliases. Unequal tokens
+  // cannot be reduced with max/hash into a collision-free certificate.
+  return certified ? generation : std::nullopt;
 }
 
 bool Oot3dPicaPhysicalMemoryView::Read(
@@ -284,7 +291,7 @@ bool Oot3dNativePicaSubmissionQueue::CaptureGeometryResource(
 
   const GeometrySnapshotKey key{kind, slot, physicalAddress, byteCount};
   const auto sourceWriteGeneration =
-      mMemory.RangeWriteGeneration(physicalAddress, byteCount);
+      SnapshotWriteGeneration(physicalAddress, byteCount);
   auto cached = mGeometrySnapshotCache.find(key);
   const bool cacheEntryAvailable = cached != mGeometrySnapshotCache.end();
   const bool versionHit =
@@ -348,9 +355,7 @@ bool Oot3dNativePicaSubmissionQueue::CaptureGeometryResource(
           std::make_shared<const std::vector<uint8_t>>(source->begin(),
                                                        source->end());
     }
-    if (sourceWriteGeneration.has_value()) {
-      cached->second.SourceWriteGeneration = *sourceWriteGeneration;
-    }
+    cached->second.SourceWriteGeneration = sourceWriteGeneration.value_or(0U);
   }
   cached->second.LastUsedSequence = ++mGeometrySnapshotSequence;
 
@@ -445,6 +450,7 @@ void Oot3dNativePicaSubmissionQueue::BindGuestWriteObservation(
     GuestWriteRegistrar registrar) {
     std::lock_guard guard(mQueueMutex);
     mGuestWriteRegistrar = std::move(registrar);
+    ResetSnapshotObservation();
 }
 
 bool Oot3dNativePicaSubmissionQueue::HasGuestWriteObservation() const noexcept {
@@ -481,13 +487,15 @@ void Oot3dNativePicaSubmissionQueue::NotifyGuestWrite(uint32_t guestAddress,
         current += static_cast<uint32_t>(segment->second);
         remaining -= segment->second;
     }
-    if (!attributed) {
+    if (!attributed || remaining != 0U) {
         // A write that cannot be attributed to any physical range may still
         // cover an owned subrange: ownership that cannot be certified is
         // dropped instead of being assumed.
         mRawCopyProducers.clear();
+        ResetSnapshotObservation();
     }
 }
+
 
 void Oot3dNativePicaSubmissionQueue::CollectLiveCopyReferences(
     std::vector<Fast::Renderer3ds::PicaTextureCopyReference>& out) const {
@@ -503,27 +511,32 @@ void Oot3dNativePicaSubmissionQueue::CollectLiveCopyReferences(
     }
 }
 
-bool Oot3dNativePicaSubmissionQueue::ObserveRawCopySpan(uint32_t address,
-                                                        uint32_t byteCount) {
-    if (byteCount == 0U) {
-        return true;
-    }
-    if (!mGuestWriteRegistrar) {
-        return false;
-    }
-    // Every guest alias has to be trapped: the title can write the destination
-    // through any mapping of the same physical memory.
-    const auto aliases = mMemory.GuestAliases(address, byteCount);
-    if (aliases.empty()) {
-        return false;
-    }
-    for (const uint32_t guestAddress : aliases) {
-        if (!mGuestWriteRegistrar(guestAddress, byteCount)) {
-            return false;
-        }
-    }
-    return true;
+bool Oot3dNativePicaSubmissionQueue::ObservePhysicalWriteSpan(
+    uint32_t address, size_t byteCount) {
+    return mGuestWriteRegistrar &&
+        mMemory.ForEachGuestAlias(address, byteCount, mGuestWriteRegistrar);
 }
+
+void Oot3dNativePicaSubmissionQueue::ResetSnapshotObservation() {
+    for (auto& [key, entry] : mGeometrySnapshotCache) entry.SourceWriteGeneration = 0;
+    for (auto& [key, entry] : mTextureSnapshotCache) entry.SourceWriteGeneration = 0;
+}
+
+std::optional<uint64_t> Oot3dNativePicaSubmissionQueue::SnapshotWriteGeneration(
+    uint32_t address, size_t byteCount) {
+    std::optional<uint32_t> first;
+    bool aliased = false;
+    if (!mMemory.ForEachGuestAlias(address, byteCount, [&](uint32_t guest, size_t) {
+            aliased = aliased || (first && *first != guest);
+            first = guest;
+            return true;
+        })) return std::nullopt;
+    // Distinct backing aliases still need byte synchronization. A single
+    // mapping needs no callback or write trap for cache version tracking.
+    if (aliased && !ObservePhysicalWriteSpan(address, byteCount)) return std::nullopt;
+    return mMemory.RangeWriteGeneration(address, byteCount);
+}
+
 
 void Oot3dNativePicaSubmissionQueue::SubtractOwnedSpan(
     std::vector<RawCopySpan>& spans, uint32_t address, size_t byteCount) {
@@ -590,7 +603,7 @@ bool Oot3dNativePicaSubmissionQueue::RegisterRawCopyProducer(
         if (span.ByteCount == 0U) {
             continue;
         }
-        if (!ObserveRawCopySpan(span.Address, span.ByteCount)) {
+        if (!ObservePhysicalWriteSpan(span.Address, span.ByteCount)) {
             SetError(error,
                      "raw PICA texture copy destination cannot be observed: an "
                      "escaped writable pointer overlaps it");
@@ -738,19 +751,26 @@ bool Oot3dNativePicaSubmissionQueue::CaptureTextureResources(
             texture.MinMipLevel,
             texture.MaxMipLevel,
         };
+        const auto sourceWriteGeneration =
+            SnapshotWriteGeneration(resource.PhysicalAddress, *byteCount);
         auto cached = mTextureSnapshotCache.find(key);
         const bool cacheMetadataAvailable =
             cached != mTextureSnapshotCache.end();
-        const bool cacheHit =
-            cacheMetadataAvailable &&
-            ((cached->second.SourceBytes != nullptr &&
-              cached->second.SourceBytes->size() == source->size() &&
-              std::memcmp(cached->second.SourceBytes->data(),
-                          source->data(), source->size()) == 0) ||
-             (cached->second.SourceBytes == nullptr &&
-              cached->second.SourceHash == HashSnapshotBytes(*source)));
+        const bool versionHit = cacheMetadataAvailable && sourceWriteGeneration.has_value() &&
+            cached->second.SourceBytes != nullptr &&
+            cached->second.SourceBytes->size() == source->size() &&
+            cached->second.SourceWriteGeneration == *sourceWriteGeneration;
+        const bool compared = cacheMetadataAvailable && !versionHit;
+        const bool cacheHit = versionHit ||
+            (compared &&
+             ((cached->second.SourceBytes != nullptr &&
+               cached->second.SourceBytes->size() == source->size() &&
+               std::memcmp(cached->second.SourceBytes->data(),
+                           source->data(), source->size()) == 0) ||
+              (cached->second.SourceBytes == nullptr &&
+               cached->second.SourceHash == HashSnapshotBytes(*source))));
         if (mRuntimeProfilingEnabled) {
-            mRuntimeProfile.TextureSnapshotComparedBytes += source->size();
+            if (compared) mRuntimeProfile.TextureSnapshotComparedBytes += source->size();
             if (cacheHit) {
                 ++mRuntimeProfile.TextureSnapshotCacheHits;
             } else {
@@ -798,6 +818,7 @@ bool Oot3dNativePicaSubmissionQueue::CaptureTextureResources(
             cached = mTextureSnapshotCache.insert_or_assign(
                 key, std::move(entry)).first;
         }
+        cached->second.SourceWriteGeneration = sourceWriteGeneration.value_or(0U);
         resource.SharedBytes = cached->second.ResolvedBytes;
         resource.ContentHash = cached->second.ContentHash;
         resource.ContentHashAvailable = true;
@@ -1568,7 +1589,7 @@ bool Oot3dNativePicaSubmissionQueue::RestoreState(
         // dropping certified ranges.
         for (const auto& producer : rawCopyProducers) {
             for (const auto& span : producer.Owned) {
-                if (!ObserveRawCopySpan(span.Address, span.ByteCount)) {
+                if (!ObservePhysicalWriteSpan(span.Address, span.ByteCount)) {
                     if (error != nullptr) {
                         *error =
                             "native PICA raw copy producer cannot be observed "
@@ -1596,6 +1617,7 @@ bool Oot3dNativePicaSubmissionQueue::RestoreState(
             std::move(restoredTransfers);
         mTextureSnapshotCache = std::move(textureSnapshotCache);
         mGeometrySnapshotCache = std::move(geometrySnapshotCache);
+        ResetSnapshotObservation();
         mNextGeometryContentVersion = nextGeometryContentVersion;
         mGeometrySnapshotSequence = geometrySnapshotSequence;
         mNextSubmissionId = nextSubmissionId;

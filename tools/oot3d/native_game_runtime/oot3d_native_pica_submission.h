@@ -40,6 +40,7 @@ class Oot3dPicaPhysicalMemoryView {
     using WriteGeneration = std::function<std::optional<uint64_t>(
         uint32_t guestAddress, size_t size)>;
     using MappingCheck = std::function<bool(uint32_t guestAddress, size_t size)>;
+    using GuestAliasVisitor = std::function<bool(uint32_t guestAddress, size_t size)>;
 
     Oot3dPicaPhysicalMemoryView(
         const NativeA32Memory& memory,
@@ -53,11 +54,10 @@ class Oot3dPicaPhysicalMemoryView {
                                       size_t size) const;
     std::optional<uint32_t> TranslateGuest(uint32_t guestAddress,
                                            size_t size) const;
-    // Every guest alias of [physicalAddress, physicalAddress + size), in region
-    // order. PICA memory may be mapped more than once, so write observation has
-    // to cover all of them; an empty result means no guest can reach the range.
-    std::vector<uint32_t> GuestAliases(uint32_t physicalAddress,
-                                       size_t size) const;
+    // Visit every mapped alias without allocating. False means no alias exists
+    // or a visitor rejected one; observation must cover every alias.
+    bool ForEachGuestAlias(uint32_t physicalAddress, size_t size,
+                           const GuestAliasVisitor& visitor) const;
     // Longest mapped segment starting at guestAddress: a guest write may cross
     // the boundary between two mapped views, and each segment still has to be
     // attributed to its own physical range.
@@ -327,6 +327,7 @@ class Oot3dNativePicaSubmissionQueue final : public Oot3dPicaPacketSink {
         uint64_t SourceHash = 0;
         uint64_t ContentHash = 0;
         uint64_t BaseLevelContentHash = 0;
+        uint64_t SourceWriteGeneration = 0;
     };
 
     // Ordered raw-copy producer: the physical destination subranges it still
@@ -350,9 +351,10 @@ class Oot3dNativePicaSubmissionQueue final : public Oot3dPicaPacketSink {
     // a write or a newer copy did not touch.
     static void SubtractOwnedSpan(std::vector<RawCopySpan>& spans,
                                   uint32_t address, size_t byteCount);
-    // Traps future guest writes for one destination span. False means the range
-    // cannot be observed, so nothing may claim GPU ownership of its bytes.
-    bool ObserveRawCopySpan(uint32_t address, uint32_t byteCount);
+    // Certify all aliases, including pointers that escaped since the last draw.
+    bool ObservePhysicalWriteSpan(uint32_t address, size_t byteCount);
+    std::optional<uint64_t> SnapshotWriteGeneration(uint32_t address, size_t byteCount);
+    void ResetSnapshotObservation();
     bool RegisterRawCopyProducer(uint64_t completionId,
                                  uint64_t afterDrawSubmissionId,
                                  std::span<const RawCopySpan> destinations,

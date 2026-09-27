@@ -64,12 +64,15 @@ NativeA32Memory& NativeA32Memory::operator=(const NativeA32Memory& other) {
     if (this != &other) {
         if (!other.MaterializeDeferredWrites())
             throw std::runtime_error("cannot copy deferred guest memory");
+        const auto nextRangeGeneration = CurrentRangeGeneration() + 1U;
         mDeferredWrites.clear();
         mDeferredPages.clear();
         mEscapedReadPointers.clear();
         mEscapedWritePointers.clear();
         mRegions = other.mRegions;
         mWriteGeneration = other.mWriteGeneration;
+        mRangeGenerationBias = nextRangeGeneration - mWriteGeneration;
+        mRangeVersionsValid = mRangeVersionsValid && nextRangeGeneration != 0U;
         mWriteTraceFingerprint = other.mWriteTraceFingerprint;
         mTraceWriteFingerprint = other.mTraceWriteFingerprint;
         mFastReadMismatchCount = other.mFastReadMismatchCount;
@@ -78,6 +81,52 @@ NativeA32Memory& NativeA32Memory::operator=(const NativeA32Memory& other) {
         mLastCheckedReadMismatchValue = other.mLastCheckedReadMismatchValue;
         RebuildPageTable();
     }
+    return *this;
+}
+
+NativeA32Memory::NativeA32Memory(NativeA32Memory&& other) noexcept {
+    *this = std::move(other);
+}
+
+NativeA32Memory& NativeA32Memory::operator=(NativeA32Memory&& other) noexcept {
+    if (this == &other) return *this;
+    const auto nextRangeGeneration = CurrentRangeGeneration() + 1U;
+    const bool versionsValid =
+        mRangeVersionsValid && other.mRangeVersionsValid && nextRangeGeneration != 0U;
+    mRegions = std::move(other.mRegions);
+    mPageRegions = std::move(other.mPageRegions);
+    mFastPageGroups = std::move(other.mFastPageGroups);
+    mWriteGeneration = other.mWriteGeneration;
+    mRangeGenerationBias = nextRangeGeneration - mWriteGeneration;
+    mRangeVersionsValid = versionsValid;
+    mWriteTraceFingerprint = other.mWriteTraceFingerprint;
+    mTraceWriteFingerprint = other.mTraceWriteFingerprint;
+    mFastReadMismatchCount = other.mFastReadMismatchCount;
+    mLastFastReadMismatchAddress = other.mLastFastReadMismatchAddress;
+    mLastFastReadMismatchValue = other.mLastFastReadMismatchValue;
+    mLastCheckedReadMismatchValue = other.mLastCheckedReadMismatchValue;
+    mPendingTracedPointerWrites = std::move(other.mPendingTracedPointerWrites);
+    mWatchRanges = std::move(other.mWatchRanges);
+    mTrappedPages = std::move(other.mTrappedPages);
+    mWatchCounters = other.mWatchCounters;
+    mWatchActive = other.mWatchActive;
+    mWatchSuppressed = other.mWatchSuppressed;
+    mWriteObserver = std::move(other.mWriteObserver);
+    mObservedWriteRanges = std::move(other.mObservedWriteRanges);
+    mObservedWritePages = std::move(other.mObservedWritePages);
+    mEscapedWritePointers = std::move(other.mEscapedWritePointers);
+    mEscapedReadPointers = std::move(other.mEscapedReadPointers);
+    mDeferredWrites = std::move(other.mDeferredWrites);
+    mDeferredPages = std::move(other.mDeferredPages);
+    // Backing allocations and their fast pointers move together. Only the
+    // destination's certificate epoch changes; no page-table allocation.
+    for (auto& group : mFastPageGroups) {
+        if (!group) continue;
+        for (size_t page = 0; page < FastGroupPageCount; ++page)
+            group[page].WriteGeneration = nextRangeGeneration;
+    }
+    // A reused moved-from image must not revive its old certificates either.
+    other.mRangeVersionsValid = false;
     return *this;
 }
 
@@ -152,6 +201,10 @@ void NativeA32Memory::RebuildPageTable() {
             } else if (entry != pageValue) {
                 entry = AmbiguousPage;
             }
+            auto& group = mFastPageGroups[page / FastGroupPageCount];
+            if (!group) group = std::make_unique<FastPage[]>(FastGroupPageCount);
+            auto& fastPage = group[page & FastGroupPageMask];
+            fastPage.WriteGeneration = CurrentRangeGeneration();
 
             const uint64_t pageAddress =
                 static_cast<uint64_t>(page) << PageShift;
@@ -160,14 +213,6 @@ void NativeA32Memory::RebuildPageTable() {
                 region.Bytes.size();
             if (pageAddress >= region.BaseAddress &&
                 pageAddress + PageSize <= regionEnd) {
-                const size_t groupIndex = page / FastGroupPageCount;
-                const size_t groupPage = page & FastGroupPageMask;
-                auto& group = mFastPageGroups[groupIndex];
-                if (group == nullptr) {
-                    group = std::make_unique<FastPage[]>(
-                        FastGroupPageCount);
-                }
-                auto& fastPage = group[groupPage];
                 const size_t offset = static_cast<size_t>(
                     pageAddress - region.BaseAddress);
                 // Watched pages keep no fast entry: typed accesses then take
@@ -256,13 +301,16 @@ uint64_t NativeA32Memory::WriteGeneration() const {
 std::optional<uint64_t>
 NativeA32Memory::RangeWriteGeneration(uint32_t address,
                                       size_t size) const noexcept {
-  if (FindRegion(address, size) == nullptr) {
-    return std::nullopt;
+  if (!mRangeVersionsValid || FindRegion(address, size) == nullptr ||
+      HasEscapedWritePointer(address, size)) return std::nullopt;
+  uint64_t generation = 0;
+  const size_t last = (uint64_t{address} + size - 1U) >> PageShift;
+  for (size_t page = address >> PageShift; page <= last; ++page) {
+      const auto& group = mFastPageGroups[page / FastGroupPageCount];
+      if (!group || !group[page & FastGroupPageMask].WriteGeneration) return std::nullopt;
+      generation = std::max(generation, group[page & FastGroupPageMask].WriteGeneration);
   }
-
-  // Whole-AOT writers already advance this token. Keeping invalidation
-  // conservative preserves their precompiled NativeA32Memory ABI.
-  return mWriteGeneration;
+  return generation;
 }
 
 void NativeA32Memory::EnableWriteTraceFingerprint(bool enabled) noexcept {
@@ -435,11 +483,6 @@ bool NativeA32Memory::RestoreState(const nlohmann::json& state,
         staged.mTraceWriteFingerprint = mTraceWriteFingerprint;
         staged.PreserveAccessObserversFrom(*this);
         *this = std::move(staged);
-        // Fast-page entries contain pointers into region backing storage.
-        // Rebind them after replacing the complete memory image so restoring a
-        // savestate cannot retain pointers owned by the staged instance.
-        RebuildPageTable();
-        // Observer traps are rebuilt together with the replacement image.
         return true;
     } catch (const std::exception& exception) {
         if (error != nullptr) {
@@ -489,9 +532,6 @@ void NativeA32Memory::ClearRangeWatch() {
     }
 }
 
-uint32_t NativeA32Memory::WriteObservationAbiVersion() noexcept {
-    return 2U;
-}
 
 void NativeA32Memory::SetWriteObserver(WriteObserver observer) {
     mWriteObserver = std::move(observer);
@@ -510,6 +550,12 @@ bool NativeA32Memory::HasEscapedWritePointer(uint32_t address, size_t size) cons
 bool NativeA32Memory::ObserveWrites(uint32_t address, size_t size) {
     if (!mWriteObserver || !RangeFits(address, size) ||
         !IsMapped(address, size) || HasEscapedWritePointer(address, size)) return false;
+    const auto covered = std::lower_bound(mObservedWriteRanges.begin(), mObservedWriteRanges.end(),
+        address, [](const auto& range, uint32_t value) {
+            return uint64_t{range.first} + range.second <= value;
+        });
+    if (covered != mObservedWriteRanges.end() && covered->first <= address &&
+        uint64_t{covered->first} + covered->second >= uint64_t{address} + size) return true;
     AddWriteRange(mObservedWriteRanges, address, size);
     const size_t first = address >> PageShift;
     const size_t last = (uint64_t{address} + size - 1) >> PageShift;
@@ -525,9 +571,12 @@ bool NativeA32Memory::ObserveWrites(uint32_t address, size_t size) {
 
 void NativeA32Memory::NotifyObservedWrite(uint32_t address, size_t size) {
     DiscardDeferredWrites(address, size);
-    if (mWriteObserver && !mWatchSuppressed &&
-        std::any_of(mObservedWriteRanges.begin(), mObservedWriteRanges.end(),
-            [&](const auto& range) { return RangesOverlap(address, size, range.first, range.second); }))
+    if (!mWriteObserver || mWatchSuppressed) return;
+    const auto overlap = std::lower_bound(mObservedWriteRanges.begin(), mObservedWriteRanges.end(),
+        address, [](const auto& range, uint32_t value) {
+            return uint64_t{range.first} + range.second <= value;
+        });
+    if (overlap != mObservedWriteRanges.end() && overlap->first < uint64_t{address} + size)
         mWriteObserver(address, size);
 }
 
@@ -610,10 +659,14 @@ bool NativeA32Memory::DeferWrites(
             const auto at = std::lower_bound(mDeferredPages.begin(), mDeferredPages.end(), page);
             if (at == mDeferredPages.end() || *at != page) mDeferredPages.insert(at, page);
             auto& group = mFastPageGroups[page / FastGroupPageCount];
-            if (group) group[page & FastGroupPageMask] = {};
+            if (group) {
+                group[page & FastGroupPageMask].Read = nullptr;
+                group[page & FastGroupPageMask].Write = nullptr;
+            }
         }
         // A logical device write invalidates exclusives now, not at readback.
         ++mWriteGeneration;
+        MarkRangeWritten(address, size, CurrentRangeGeneration());
     }
     return true;
 }
@@ -714,6 +767,7 @@ uint8_t* NativeA32Memory::GetWritePointer(uint32_t address, size_t size) {
     AddWriteRange(mEscapedWritePointers, address, size);
     NotifyObservedWrite(address, size);
     ++mWriteGeneration;
+    MarkRangeWritten(address, size, CurrentRangeGeneration());
     return destination;
 }
 
@@ -774,6 +828,7 @@ bool NativeA32Memory::WriteBytes(uint32_t address,
         RecordTracedWrite(address, bytes);
     }
     ++mWriteGeneration;
+    MarkRangeWritten(address, bytes.size(), CurrentRangeGeneration());
     NotifyObservedWrite(address, bytes.size());
     return true;
 }
@@ -794,6 +849,7 @@ bool NativeA32Memory::WriteHostBytes(
         RecordTracedWrite(address, bytes);
     }
     ++mWriteGeneration;
+    MarkRangeWritten(address, bytes.size(), CurrentRangeGeneration());
     if (!mWatchSuppressed && Watches(address, bytes.size())) [[unlikely]] {
         ++mWatchCounters.HostByteWrites;
     }
@@ -818,6 +874,7 @@ bool NativeA32Memory::Fill(uint32_t address, size_t size, uint8_t value) {
             std::span<const uint8_t>(region->Bytes.data() + offset, size));
     }
     ++mWriteGeneration;
+    MarkRangeWritten(address, size, CurrentRangeGeneration());
     if (!mWatchSuppressed && Watches(address, size)) [[unlikely]] {
         ++mWatchCounters.Fills;
     }
@@ -874,9 +931,11 @@ bool NativeA32Memory::WriteSized(uint32_t address, uint8_t size,
         return false;
     }
     const size_t offset = static_cast<size_t>(address - region->BaseAddress);
-    for (uint8_t index = 0; index < size; ++index) {
-        region->Bytes[offset + index] =
-            static_cast<uint8_t>(value >> (index * 8U));
+    switch (size) {
+    case 1: std::memcpy(region->Bytes.data() + offset, &value, 1); break;
+    case 2: std::memcpy(region->Bytes.data() + offset, &value, 2); break;
+    case 4: std::memcpy(region->Bytes.data() + offset, &value, 4); break;
+    case 8: std::memcpy(region->Bytes.data() + offset, &value, 8); break;
     }
     if (mTraceWriteFingerprint) [[unlikely]] {
         RecordTracedWrite(
@@ -884,6 +943,7 @@ bool NativeA32Memory::WriteSized(uint32_t address, uint8_t size,
             std::span<const uint8_t>(region->Bytes.data() + offset, size));
     }
     ++mWriteGeneration;
+    MarkRangeWritten(address, size, CurrentRangeGeneration());
     if (Watches(address, size)) [[unlikely]] {
         NoteWatchedWrite(address, size);
     }

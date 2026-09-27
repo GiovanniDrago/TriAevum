@@ -22,6 +22,7 @@ def main():
     p.add_argument("--jobs", type=int, default=2)
     p.add_argument("--object-cache", type=Path)
     p.add_argument("--max-new-objects", type=int)
+    p.add_argument("--timeout-seconds", type=int, default=600)
     args = p.parse_args()
     repo = TOOLS.parent
     args.output.mkdir(parents=True, exist_ok=True)
@@ -67,12 +68,25 @@ def main():
     link_command = [str(args.compiler), "--target=x86_64-pc-windows-msvc", "/nologo",
         "/LD", "/MT", f"/Fe{dll}", str(obj), archive["archive"], str(args.support),
         "-fuse-ld=lld", "/link", "/NOIMPLIB", "/OPT:REF", "/OPT:ICF",
-        "/INCREMENTAL:NO", "/Brepro", f"/threads:{args.jobs}", f"/MAP:{args.output / 'title.map'}"]
+        "/INCREMENTAL:NO", "/Brepro", f"/threads:{args.jobs}",
+        f"/OPT:LLDLTOJOBS={args.jobs}", f"/lldltocache:{args.output / 'thinlto-cache'}",
+        f"/MAP:{args.output / 'title.map'}"]
     for label, command in (("wrapper", compile_command), ("link", link_command)):
         print(f"Starting {label}", flush=True)
-        result = subprocess.run(command, capture_output=True, text=True, timeout=600)
-        (args.output / f"{label}.log").write_text(result.stdout + result.stderr)
-        result.check_returncode()
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            stdout, stderr = process.communicate(timeout=args.timeout_seconds)
+        except subprocess.TimeoutExpired:
+            # clang-cl owns an lld child. Killing only the driver leaves a
+            # memory-heavy linker running after the experiment has failed.
+            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                           capture_output=True, check=False)
+            stdout, stderr = process.communicate()
+            (args.output / f"{label}.log").write_text(stdout + stderr)
+            raise RuntimeError(f"{label} exceeded {args.timeout_seconds} seconds")
+        (args.output / f"{label}.log").write_text(stdout + stderr)
+        if process.returncode:
+            raise subprocess.CalledProcessError(process.returncode, command)
     print(f"Built {dll}: {dll.stat().st_size} bytes", flush=True)
 
 

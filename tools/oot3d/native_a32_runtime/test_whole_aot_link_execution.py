@@ -29,7 +29,6 @@ struct Context {
     struct { unsigned IndirectCalls = 0; } Stats;
     Oot3dWholeAotFlow Reply{Oot3dWholeAotFlowKind::Returned, 0x1008};
     uint32_t Target = 0;
-    bool Dismissed = false;
 };
 Oot3dWholeAotFlow ExecuteOot3dWholeAotIndirect(uint32_t target, Frame&, Context& c, State&) {
     c.Target = target; return c.Reply;
@@ -38,7 +37,6 @@ Oot3dWholeAotFlow Run(Context& context, State& state) {
     Frame frame;
     auto commitState = [] {};
     auto reloadState = [] {};
-    struct Commit { Context& C; void Dismiss() { C.Dismissed = true; } } stateCommit{context};
 """ + body + r"""
 block_00001004: return {Oot3dWholeAotFlowKind::Returned, 0x1004};
 block_00001008: return {Oot3dWholeAotFlowKind::Returned, 0x1008};
@@ -52,7 +50,6 @@ int main() {
         assert(result.Pc == (skip ? 0x1004U : fault ? 0x3000U : 0x1008U));
         assert(c.Stats.IndirectCalls == unsigned(!skip));
         assert(c.Target == (skip ? 0U : 0x2020U));
-        assert(c.Dismissed == (!skip && fault));
         assert(s.R[14] == 0x1008);
     }
 }

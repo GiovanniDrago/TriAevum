@@ -39,7 +39,11 @@ def main():
     p.add_argument('--entry', type=lambda s: int(s, 16))
     p.add_argument('--selection', type=Path, help='Batch qualification, two replicas per root; not timing')
     p.add_argument('--occurrence', type=int, default=64)
+    p.add_argument('--dynarmic-bridge', type=Path, help='Independent developer CPU bridge; no JIT in the product')
+    p.add_argument('--timeout-seconds', type=int, default=120)
     args = p.parse_args()
+    if not 40 <= args.timeout_seconds <= 1800:
+        p.error('Timeout must be between 40 and 1800 seconds')
     targets = []
     if args.selection:
         if args.entry:
@@ -79,6 +83,9 @@ def main():
                TRIAEVUM_INVOCATION_OUTPUT=str(report))
     env.pop('TRIAEVUM_INVOCATION_CANDIDATE', None)
     env.pop('TRIAEVUM_INVOCATION_TARGETS', None)
+    env.pop('TRIAEVUM_DYNARMIC_REPLAY', None)
+    if args.dynarmic_bridge:
+        env['TRIAEVUM_DYNARMIC_REPLAY'] = str(args.dynarmic_bridge.resolve())
     if targets:
         env['TRIAEVUM_INVOCATION_TARGETS'] = ','.join(f'{e:08X}' for e in targets)
     if args.candidate:
@@ -88,6 +95,10 @@ def main():
         env['TRIAEVUM_FAMILY_ORACLE'] = str(args.oracle.resolve())
     files = [source, args.baseline, args.support, args.executable, args.invocation, dll,
              runtime / 'oot3d_native_a32_memory.h', runtime / 'triaevum_title_whole_aot_abi.h']
+    if args.dynarmic_bridge:
+        files.extend([args.dynarmic_bridge, here / 'dynarmic_replay_bridge.h'])
+        files.append(here / 'summarize_aot_abba.py')
+        files.append(here / 'aot_replay_memory.h')
     if args.candidate:
         files.append(args.candidate)
     if args.oracle:
@@ -102,10 +113,30 @@ def main():
                 'build_commands': commands,
                 'sha256': {str(f): digest(f) for f in files}}
     (args.output / 'provenance.json').write_text(json.dumps(metadata, indent=2))
-    subprocess.run([sys.executable, str(here / 'measure_prebackend.py'),
+    run = subprocess.run([sys.executable, str(here / 'measure_prebackend.py'),
         '--invocation', str(args.invocation), '--executable', str(args.executable),
         '--diagnostic-plugin', str(dll), '--frames', '360', '--runs', '1',
-        '--output', str(args.output / 'game')], env=env, check=True, timeout=150)
+        '--timeout-seconds', str(args.timeout_seconds),
+        '--output', str(args.output / 'game')], env=env, timeout=args.timeout_seconds + 30)
+    if args.dynarmic_bridge:
+        reports = []
+        for entry in targets or [args.entry]:
+            path = Path(str(report) + (f'.{entry}.csv' if targets else '') + '.cpu.json')
+            reports.append(json.loads(path.read_text()) if path.exists() else
+                           {'entry': entry, 'uncaptured': True})
+        (args.output / 'cpu-comparison.json').write_text(json.dumps(reports, indent=2))
+        from summarize_aot_abba import summarize_cpu
+        summary = summarize_cpu(reports)
+        summary['runtime_completed'] = run.returncode == 0
+        (args.output / 'cpu-summary.json').write_text(json.dumps(summary, indent=2))
+        passed = [r for r in reports if r.get('matched') and r.get('original_memory_untouched')]
+        print(json.dumps({'architecturally_qualified': len(passed), 'requested': len(reports),
+                          'not_gameplay_timing': True}))
+        if len(passed) != len(reports):
+            raise RuntimeError('CPU replay excluded, mismatched or uncaptured inputs; inspect report')
+        run.check_returncode()
+        return
+    run.check_returncode()
     if targets:
         passed, rejected, missing, visited = [], [], [], set()
         for entry in targets:

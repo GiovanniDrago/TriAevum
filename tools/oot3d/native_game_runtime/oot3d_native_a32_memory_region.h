@@ -63,6 +63,8 @@ class NativeA32UnobservedMemory final {
             if (auto* bytes = Resolve(address, sizeof(T), true)) {
                 std::memcpy(bytes, &value, sizeof(T));
                 ++mWrites;
+                mMemory.MarkRangeWritten(address, sizeof(T),
+                    mMemory.CurrentRangeGeneration() + mWrites);
                 return true;
             }
         }
@@ -121,6 +123,8 @@ class NativeA32UnobservedMemory final {
         context.BlocksRemaining -= iterations;
         context.BlocksConsumed += iterations;
         mWrites += uint64_t{iterations} * 2U;
+        mMemory.MarkRangeWritten(static_cast<uint32_t>(writeBegin), size_t(length),
+            mMemory.CurrentRangeGeneration() + mWrites);
         if (mCounters) {
             ++mCounters->CopyChunks;
             mCounters->CopyIterations += iterations;

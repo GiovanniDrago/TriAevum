@@ -35,8 +35,8 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     NativeA32Memory() = default;
     NativeA32Memory(const NativeA32Memory& other);
     NativeA32Memory& operator=(const NativeA32Memory& other);
-    NativeA32Memory(NativeA32Memory&& other) noexcept = default;
-    NativeA32Memory& operator=(NativeA32Memory&& other) noexcept = default;
+    NativeA32Memory(NativeA32Memory&& other) noexcept;
+    NativeA32Memory& operator=(NativeA32Memory&& other) noexcept;
 
     bool MapRegion(const NativeA32MemoryRegionConfig& config,
                    std::string* error = nullptr);
@@ -57,7 +57,7 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     // GPU ownership is invalidated by writes, including same-value writes.
     // ObserveWrites traps only write fast-path entries for registered ranges.
     using WriteObserver = std::function<void(uint32_t, size_t)>;
-    static uint32_t WriteObservationAbiVersion() noexcept;
+    static constexpr uint32_t WriteObservationAbiVersion() noexcept { return 3U; }
     void SetWriteObserver(WriteObserver observer);
     bool ObserveWrites(uint32_t address, size_t size);
     bool HasEscapedWritePointer(uint32_t address, size_t size) const noexcept;
@@ -214,7 +214,8 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
         const size_t offset = address & PageMask;
         if (offset <= PageSize - sizeof(T) &&
             mFastPageGroups[group] != nullptr) {
-            uint8_t* destination = mFastPageGroups[group][page].Write;
+            auto& entry = mFastPageGroups[group][page];
+            uint8_t* destination = entry.Write;
             if (destination != nullptr) {
                 std::memcpy(destination + offset, &value, sizeof(T));
                 if (mTraceWriteFingerprint) [[unlikely]] {
@@ -225,6 +226,8 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
                             sizeof(value)));
                 }
                 ++mWriteGeneration;
+                entry.WriteGeneration = CurrentRangeGeneration();
+                if (entry.WriteGeneration == 0U) [[unlikely]] mRangeVersionsValid = false;
                 return true;
             }
         }
@@ -269,6 +272,7 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     struct FastPage {
         const uint8_t* Read = nullptr;
         uint8_t* Write = nullptr;
+        uint64_t WriteGeneration = 0;
     };
 
     Region* FindRegion(uint32_t address, size_t size);
@@ -316,6 +320,18 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     void FlushTracedPointerWrites() noexcept;
     static void SetError(std::string* error, std::string_view message);
     void NotifyObservedWrite(uint32_t address, size_t size);
+    uint64_t CurrentRangeGeneration() const noexcept {
+        return mWriteGeneration + mRangeGenerationBias;
+    }
+    void MarkRangeWritten(uint32_t address, size_t size, uint64_t generation) noexcept {
+        if (generation == 0U || generation < CurrentRangeGeneration()) [[unlikely]]
+            mRangeVersionsValid = false;
+        const size_t last = (uint64_t{address} + size - 1U) >> PageShift;
+        for (size_t page = address >> PageShift; page <= last; ++page) {
+            auto& group = mFastPageGroups[page / FastGroupPageCount];
+            if (group) group[page & FastGroupPageMask].WriteGeneration = generation;
+        }
+    }
 
     mutable std::vector<Region> mRegions;
     static constexpr uint32_t PageShift = 12U;
@@ -332,6 +348,10 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
     std::vector<uint16_t> mPageRegions;
     std::array<std::unique_ptr<FastPage[]>, FastGroupCount> mFastPageGroups;
     uint64_t mWriteGeneration = 1;
+    // Cache certificates are not serialized. Replacing an image advances this
+    // epoch without changing the architectural write/exclusive generation.
+    uint64_t mRangeGenerationBias = 0;
+    bool mRangeVersionsValid = true;
     uint64_t mWriteTraceFingerprint = 14695981039346656037ULL;
     bool mTraceWriteFingerprint = false;
     mutable uint64_t mFastReadMismatchCount = 0;

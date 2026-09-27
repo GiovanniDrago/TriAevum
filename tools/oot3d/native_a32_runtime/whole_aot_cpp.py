@@ -1399,10 +1399,11 @@ def _emit_vfp(item: Instruction) -> list[str]:
         0x0E300A40: "VfpBinary32Subtract",
         0x0E800A00: "VfpBinary32Divide",
     }.get(ternary)
-    body.append(
-        "if ((frame.Guest.fpscr & 0x00379F00U) != 0U) "
-        f"return {{Oot3dWholeAotFlowKind::Unsupported, 0x{pc:08X}U, 0x{raw:08X}U}};"
-    )
+    body.extend([
+        "if ((frame.Guest.fpscr & 0x00379F00U) != 0U) {",
+        f"    return {{Oot3dWholeAotFlowKind::Unsupported, 0x{pc:08X}U, 0x{raw:08X}U}};",
+        "}",
+    ])
     if operation is not None:
         arguments = [
             _lane(destination),
@@ -1667,7 +1668,6 @@ def _emit_terminal(
                 *call_suffix,
                 "if (callFlow.Kind != Oot3dWholeAotFlowKind::Returned ||",
                 f"    callFlow.Pc != 0x{return_pc:08X}U) {{",
-                "    stateCommit.Dismiss();",
                 "    return callFlow;",
                 "}",
             ]
@@ -1692,7 +1692,7 @@ def _emit_terminal(
             return [branch]
         fallthrough = pc + 4
         return [
-            f"if ({_condition(raw)}) {{ {branch} }}",
+            *_conditional(raw, [branch]),
             _goto(fallthrough, block_pcs),
         ]
     if (raw & 0x0FFFFFF0) == 0x012FFF10:
@@ -1705,7 +1705,7 @@ def _emit_terminal(
         if ((raw >> 28) & 0xF) == 0xE:
             return [transfer]
         return [
-            f"if ({_condition(raw)}) {{ {transfer} }}",
+            *_conditional(raw, [transfer]),
             _goto(pc + 4, block_pcs),
         ]
     if (raw & 0x0FFFFFF0) == 0x012FFF30:
@@ -1720,7 +1720,6 @@ def _emit_terminal(
             "reloadState();",
             "if (callFlow.Kind != Oot3dWholeAotFlowKind::Returned ||",
             f"    callFlow.Pc != 0x{pc + 4:08X}U) {{",
-            "    stateCommit.Dismiss();",
             "    return callFlow;",
             "}",
         ]
@@ -1755,7 +1754,6 @@ def _emit_terminal(
                 "reloadState();",
                 "if (callFlow.Kind != Oot3dWholeAotFlowKind::Returned ||",
                 f"    callFlow.Pc != 0x{return_pc:08X}U) {{",
-                "    stateCommit.Dismiss();",
                 "    return callFlow;",
                 "}",
             ]
@@ -1767,7 +1765,7 @@ def _emit_terminal(
         if ((raw >> 28) & 0xF) == 0xE:
             return [transfer]
         return [
-            f"if ({_condition(raw)}) {{ {transfer} }}",
+            *_conditional(raw, [transfer]),
             _goto(pc + 4, block_pcs),
         ]
     if (
@@ -1785,7 +1783,7 @@ def _emit_terminal(
         if ((raw >> 28) & 0xF) == 0xE:
             return [transfer]
         return [
-            f"if ({_condition(raw)}) {{ {transfer} }}",
+            *_conditional(raw, [transfer]),
             _goto(pc + 4, block_pcs),
         ]
     if (
@@ -1860,46 +1858,52 @@ def _render_function(
         index for index in range(15)
         if optimization.promoted_gprs & (1 << index)
     )
+    # Broad residency regressed the matched full-title workload. Keep local
+    # state only at the existing explicitly selected callback-free boundaries.
+    local_state = callback_free or memory_view
     lines = [
         f"Oot3dWholeAotFlow Execute_{symbol}(",
         "    Oot3dWholeAotFrame& frame, Oot3dWholeAotContext& context,",
         "    Oot3dAotArchitecturalState& state,",
         "    uint32_t entryPc) {",
     ]
-    reference = "" if memory_view else "&"
     lines.extend(
-        f"    uint32_t{reference} r{index} = state.R[{index}];"
+        f"    uint32_t{' ' if local_state else '& '}r{index} = state.R[{index}];"
         for index in promoted_registers
     )
     if optimization.promoted_flags != Flag.NONE:
-        lines.append(f"    Oot3dAotLazyFlags{reference} flags = state.Flags;")
+        lines.append("    Oot3dAotLazyFlags flags = state.Flags;" if local_state
+                     else "    auto& flags = state.Flags;")
     if memory_view:
         lines.extend([
             "    NativeA32UnobservedMemory regionMemory(context.Memory);",
             "    uint32_t regionBlocksRemaining = context.BlocksRemaining;",
             "    uint32_t regionBlocksConsumed = 0U;",
-            "    const auto commitState = [&]() noexcept {",
         ])
+    # Calls and observers commit before they can unwind. Ordinary exits commit
+    # explicitly below: no caller cleanup may overwrite newer callee state.
+    lines.append("    const auto commitState = [&]() noexcept {")
+    if local_state:
         lines.extend(f"        state.R[{index}] = r{index};" for index in promoted_registers)
         if optimization.promoted_flags != Flag.NONE:
             lines.append("        state.Flags = flags;")
+    if memory_view:
         lines.extend([
             "        regionMemory.Commit();",
             "        context.BlocksRemaining = regionBlocksRemaining;",
             "        context.BlocksConsumed += regionBlocksConsumed;",
         ])
-    else:
-        # Ordinary functions share promoted state by reference across calls.
-        # Closed memory regions instead commit their local state on every exit.
-        lines.append("    const auto commitState = []() noexcept {")
     lines.extend([
         "    };",
-        "    const auto reloadState = []() noexcept {",
+        "    const auto reloadState = [&]() noexcept {",
     ])
+    if local_state:
+        lines.extend(f"        r{index} = state.R[{index}];" for index in promoted_registers)
+        if optimization.promoted_flags != Flag.NONE:
+            lines.append("        flags = state.Flags;")
     lines.extend(
         [
             "    };",
-            "    Oot3dAotScopeExit stateCommit(commitState);",
             "    switch (entryPc) {",
         ]
     )
@@ -1982,7 +1986,7 @@ def _render_function(
         "Oot3dAotSetLogicalFlags", "Oot3dAotSetSubtractFlags",
         "Oot3dAotSetAddFlags", "Oot3dAotAddWithCarry",
     )
-    body_start = lines.index("    Oot3dAotScopeExit stateCommit(commitState);") + 1
+    body_start = lines.index("    switch (entryPc) {")
     for index in range(body_start, len(lines)):
         line = lines[index]
         line = re.sub(r"frame\.Guest\.r\[(\d+)\]", r"state.R[\1]", line)
@@ -2005,7 +2009,16 @@ def _render_function(
             for helper in promoted_helpers:
                 line = line.replace(f"{helper}(state,", f"{helper}(flags,")
         lines[index] = line
-    return lines
+    committed = lines[:body_start]
+    for line in lines[body_start:]:
+        if line.lstrip().startswith("return "):
+            committed.append(line[:len(line) - len(line.lstrip())] + "commitState();")
+        elif re.search(r"\breturn\b", line):
+            raise LoweringError(
+                f"function 0x{function.entry:08X}: return must be standalone: {line.strip()}"
+            )
+        committed.append(line)
+    return committed
 
 
 def _render_region_function(

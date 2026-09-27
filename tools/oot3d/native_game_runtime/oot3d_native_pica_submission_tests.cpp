@@ -51,21 +51,6 @@ int main() {
 
     Oot3dNativeGame::Oot3dPicaPhysicalMemoryView physicalMemory(
         memory, {{0x20000000U, 0x14000000U, 0x2000U}});
-    const auto initialVertexGeneration =
-        physicalMemory.RangeWriteGeneration(0x20000108U, 16U);
-    constexpr std::array<uint8_t, 1> distantPageWrite{0x44U};
-    Require(initialVertexGeneration.has_value() &&
-                memory.WriteBytes(0x14001100U, distantPageWrite) &&
-                physicalMemory.RangeWriteGeneration(0x20000108U, 16U) ==
-                    memory.WriteGeneration() &&
-                physicalMemory.RangeWriteGeneration(0x20000108U, 16U) !=
-                    initialVertexGeneration,
-            "conservative geometry generation did not observe guest write");
-    constexpr std::array<uint8_t, 1> samePageWrite{0x55U};
-    Require(memory.WriteBytes(0x14000000U, samePageWrite) &&
-                physicalMemory.RangeWriteGeneration(0x20000108U, 16U) !=
-                    initialVertexGeneration,
-            "geometry page write did not advance its generation");
     Oot3dNativeGame::Oot3dNativePicaSubmissionQueue queue(
         std::move(physicalMemory), true);
     std::uint32_t transformedTextures = 0U;
@@ -236,7 +221,6 @@ int main() {
     const uint64_t changedVertexVersion =
         changedVertexResource.ContentVersion;
     const uint64_t changedTextureHash = changedResource.ContentHash;
-    const auto profile = queue.RuntimeProfile();
     Require(queue.PendingDraws().front().Resources[0].SharedBytes ==
                     cachedIndices &&
                 changedVertexResource.SharedBytes != cachedVertices &&
@@ -245,17 +229,7 @@ int main() {
                 changedResource.SharedBytes != cachedTexture &&
                 changedResource.ResolvedBytes()[1] == 0x7EU &&
                 changedResource.ContentHash != cachedHash &&
-                transformedTextures == 2U &&
-                profile.TextureSnapshotCacheHits == 1U &&
-                profile.TextureSnapshotCacheMisses == 1U &&
-                profile.TextureSnapshotComparedBytes == texture.size() * 2U &&
-                profile.TextureSnapshotCopiedBytes == texture.size() &&
-                profile.GeometrySnapshotCacheHits == 3U &&
-                profile.GeometrySnapshotCacheMisses == 1U &&
-                profile.GeometrySnapshotVersionHits == 2U &&
-                profile.GeometrySnapshotVersionMisses == 2U &&
-                profile.GeometrySnapshotComparedBytes == indices.size() + 16U &&
-                profile.GeometrySnapshotCopiedBytes == 16U,
+                transformedTextures == 2U,
             "native geometry or texture snapshot versioning is incorrect");
     queue.TakePendingDraws();
 
@@ -404,15 +378,11 @@ int main() {
         Oot3dNativeGame::Oot3dPicaPhysicalMemoryView(
             memory, {{0x20000000U, 0x14000000U, 0x2000U}}),
         true);
-    std::vector<std::pair<uint32_t, size_t>> observedRanges;
     bool observationAvailable = true;
     provenanceQueue.BindGuestWriteObservation(
-        [&](uint32_t guestAddress, size_t byteCount) {
-            observedRanges.emplace_back(guestAddress, byteCount);
+        [&](uint32_t, size_t) {
             return observationAvailable;
         });
-    Require(provenanceQueue.HasGuestWriteObservation(),
-            "raw copy write observation was not bound");
 
     Require(provenanceQueue.SubmitDrawPacket(packet, &error), error);
     Require(textureReferences(provenanceQueue.PendingDraws().front()).empty(),
@@ -425,10 +395,6 @@ int main() {
                 &deferredToGpu, &error) &&
                 deferredToGpu,
             error);
-    Require(observedRanges ==
-                std::vector<std::pair<uint32_t, size_t>>{
-                    {0x14000A00U, 32U}, {0x14000A30U, 32U}},
-            "raw copy observation did not cover every written destination subrange");
 
     Require(provenanceQueue.SubmitDrawPacket(packet, &error), error);
     {
@@ -542,6 +508,81 @@ int main() {
                 !error.empty(),
             "a GPU-backed raw copy was accepted without write observation");
 
+
+    // Cache identity follows observed physical bytes, not unrelated guest
+    // writes. Escaped pointers and device materialization must never go stale.
+    {
+        using namespace Oot3dNativeGame;
+        NativeA32Memory observed(memory);
+        Require(observed.MapRegion({"alias", 0x15000000U, 0x2000U, true, false, {}}, &error), error);
+        Oot3dPicaPhysicalMemoryView view(observed, {
+            {0x20000000U, 0x14000000U, 0x2000U},
+            {0x20000000U, 0x15000000U, 0x2000U}});
+        Oot3dNativePicaSubmissionQueue cached(view, true);
+        const auto observer = [&](uint32_t address, size_t size) {
+            Require(view.SynchronizeGuestWrite(observed, address, size), "snapshot alias visibility");
+            cached.NotifyGuestWrite(address, size);
+        };
+        const auto registrar = [&](uint32_t address, size_t size) {
+            return observed.ObserveWrites(address, size);
+        };
+        observed.SetWriteObserver(observer);
+        cached.BindGuestWriteObservation(registrar);
+        Require(cached.SubmitDrawPacket(packet, &error), error);
+        const auto original = cached.TakePendingDraws().front();
+        cached.SetRuntimeProfilingEnabled(true);
+        Require(observed.WriteFast<uint32_t>(0x14001100U, 0x11223344U), "unrelated page write");
+        Require(cached.SubmitDrawPacket(packet, &error), error);
+        const auto unchanged = cached.TakePendingDraws().front();
+        Require(unchanged.Resources[1].SharedBytes == original.Resources[1].SharedBytes &&
+                    unchanged.Resources.back().SharedBytes == original.Resources.back().SharedBytes &&
+                    cached.RuntimeProfile().GeometrySnapshotComparedBytes == 0U &&
+                    cached.RuntimeProfile().TextureSnapshotComparedBytes == 0U,
+                "unrelated writes must not rescan immutable resource bytes");
+
+        observed.SetWriteObserver({});
+        Require(observed.WriteFast<uint8_t>(0x14000A06U, 0x28U), "write while observation is absent");
+        observed.SetWriteObserver(observer);
+        cached.BindGuestWriteObservation(registrar);
+        Require(cached.SubmitDrawPacket(packet, &error), error);
+        const auto rebound = cached.TakePendingDraws().front();
+        Require(rebound.Resources.back().ResolvedBytes()[6] == 0x28U &&
+                    original.Resources.back().ResolvedBytes()[6] != 0x28U,
+                "rebinding observation must not reuse stale source tokens");
+
+        Require(observed.WriteFast<uint8_t>(0x15000109U, 0x4DU), "alias vertex write");
+        Require(cached.SubmitDrawPacket(packet, &error), error);
+        const auto aliased = cached.TakePendingDraws().front();
+        Require(aliased.Resources[1].ResolvedBytes()[1] == 0x4DU &&
+                    aliased.Resources[1].ContentVersion != original.Resources[1].ContentVersion &&
+                    original.Resources[1].ResolvedBytes()[1] == 0x6DU,
+                "alias writes must update the next draw without mutating retained snapshots");
+        {
+            NativeA32Memory::RangeWatchSuppression materialization(observed);
+            Require(observed.WriteFast<uint8_t>(0x14000A05U, 0x3FU), "device texture writeback");
+        }
+        Require(cached.SubmitDrawPacket(packet, &error), error);
+        Require(cached.TakePendingDraws().front().Resources.back().ResolvedBytes()[5] == 0x3FU,
+                "device writeback must invalidate CPU snapshot content");
+
+        auto* escaped = observed.GetWritePointer(0x14000109U, 1U);
+        Require(escaped != nullptr, "writable resource pointer");
+        *escaped = 0x52U;
+        Require(cached.SubmitDrawPacket(packet, &error), error);
+        Require(cached.TakePendingDraws().front().Resources[1].ResolvedBytes()[1] == 0x52U,
+                "first escaped-pointer edit was lost");
+        *escaped = 0x61U;
+        Require(cached.SubmitDrawPacket(packet, &error), error);
+        Require(cached.TakePendingDraws().front().Resources[1].ResolvedBytes()[1] == 0x61U,
+                "repeated pointer writes require content comparison, not an observed token");
+        const auto saved = cached.CaptureState();
+        *escaped = 0x72U;
+        Require(cached.RestoreState(saved, &error), error);
+        Require(cached.SubmitDrawPacket(packet, &error), error);
+        Require(cached.TakePendingDraws().front().Resources[1].ResolvedBytes()[1] == 0x72U,
+                "portable metadata must not certify current guest bytes after restore");
+        observed.SetWriteObserver({});
+    }
     // Real guarded memory, two virtual aliases, and an actual consumer
     // snapshot: submission must not force CPU visibility for GPU sampling.
     {

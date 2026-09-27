@@ -4460,14 +4460,14 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         const Oot3dNativeGame::NativeA32Memory::RangeWatchSuppression suppressed(
             process.Memory());
         for (const auto& write : writes) {
-          const auto aliases = picaMemoryView.GuestAliases(write.Address, write.Bytes.size());
-          if (aliases.empty()) return false;
-          for (const auto address : aliases)
-            if (!process.Memory().IsWritable(address, write.Bytes.size())) return false;
+          if (!picaMemoryView.ForEachGuestAlias(write.Address, write.Bytes.size(),
+              [&](uint32_t address, size_t size) { return process.Memory().IsWritable(address, size); }))
+            return false;
         }
         for (const auto& write : writes) {
-          for (const auto address : picaMemoryView.GuestAliases(write.Address, write.Bytes.size()))
-            if (!process.Memory().WriteBytes(address, write.Bytes)) return false;
+          if (!picaMemoryView.ForEachGuestAlias(write.Address, write.Bytes.size(),
+              [&](uint32_t address, size_t) { return process.Memory().WriteBytes(address, write.Bytes); }))
+            return false;
         }
         }
         return true;
@@ -4476,9 +4476,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           Fast::Renderer3ds::PicaRenderBackend::PhysicalMemoryRead reader) {
         std::vector<std::pair<uint32_t, size_t>> ranges;
         for (const auto& span : spans) {
-          const auto aliases = picaMemoryView.GuestAliases(span.DestinationAddress, span.ByteCount);
-          if (aliases.empty()) return false;
-          for (const auto address : aliases) ranges.emplace_back(address, span.ByteCount);
+          if (!picaMemoryView.ForEachGuestAlias(span.DestinationAddress, span.ByteCount,
+              [&](uint32_t address, size_t size) { ranges.emplace_back(address, size); return true; }))
+            return false;
         }
         return process.Memory().DeferWrites(ranges,
             [&, reader = std::move(reader)](uint32_t address, std::span<uint8_t> bytes) {
