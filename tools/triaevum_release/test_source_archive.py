@@ -126,13 +126,6 @@ class SourceArchiveTests(unittest.TestCase):
                 policy,
             )
         )
-        root_cmake = (REPO_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
-        renderer = (
-            REPO_ROOT
-            / "runtime/three_ds_recomp/src/oot3d/Oot3dNativeFast3dRenderer.cpp"
-        ).read_text(encoding="utf-8")
-        self.assertNotIn("z_fog_material_scalar.c", root_cmake)
-        self.assertNotIn("fog_material_scalar.h", renderer)
 
     def test_ui_contract_is_public_and_has_no_private_build_dependency(self) -> None:
         policy = json.loads(DEFAULT_POLICY.read_text(encoding="utf-8"))

@@ -24,6 +24,13 @@ The matched reference is the existing ABI-3 module
 ThinLTO and function ordering did not establish a qualified improvement; they
 are not defaults for this work.
 
+Current decision: **no optimization candidate is promoted**. The measured
+forced-inline and operation-local-MXCSR variants regress. Their runtime and
+build-integration edits were removed from the working tree; the verified
+baseline remains the source implementation. Private binaries and receipts
+preserve the results, not a new default. The user's subsequent request redirects
+the work to structural diagnosis before further speculative variants.
+
 ## Implementation sequence
 
 1. Separate normal typed memory access and block-entry checks from diagnostic,
@@ -115,3 +122,128 @@ The real generated-DLL boundary probe passes nested return/flags, observer
 reload, snapshotless unwind, callee memory fault, conditional return and compiled
 page epochs. Receipt: `branch-baseline-boundaries/receipt.json` under the private
 CPU evidence root. This does not remove the historical full-process-test limit.
+
+### Hot/cold separation
+
+The first candidate inlined budget consumption, first-entry state and the
+constant-PC filter check. Exact PC lookup and callback/state materialization
+remained shared out-of-line paths. Empty PC lists still mean
+unfiltered callbacks; filter collisions never substitute for exact membership.
+Budget exhaustion precedes notification, including the next block of a
+partially executed function.
+
+Its typed reads and writes inlined page lookup, access and write-epoch stamping.
+Checked access and trace comparison/fingerprinting had shared cold bodies.
+The candidate kept memory layout and memory-observation ABI version 3. Its
+title-cache dependencies included the experimental compiler-attribute header.
+
+Executed checks: 2,376 read-path comparisons; 36 generator tests; seven actual
+generated-DLL state-boundary checks, including hook/budget precedence and a
+deliberate filter collision. Evidence: `hotpaths-memory-smoke/receipt.json` and
+`hotpaths-split-boundaries/receipt.json`. The initial zero-budget fixture was
+incorrect: the public executor rejects zero before entry, in both baseline and
+candidate. Exhaustion is tested inside execution instead. Full-title scene and
+performance qualification is separate from these boundary checks.
+
+The complete 12,439-function module passes Field (360 native updates) and Raw
+Copy (400): all five captured framebuffers, memory content/state, process state,
+draw/transfer counts and drained queues match the ABI-3 control. Receipts:
+`hotpaths-field/equivalence.json` and `hotpaths-copy/equivalence.json`.
+The code-size cost is material: `.text` grows from 75,096,922 to 127,352,618 bytes.
+The timing qualification below rejects this tradeoff.
+
+The clean A/A gate passes: paired pre-backend ratio 1.02425 and guest ratio
+1.02850, within the predeclared 5% median/20% individual-pair limits.
+The following ABBA rejects forced inlining: pre-backend 10.8334 to 11.3064 ms,
+paired ratio 1.04393; guest excluding clock 8.3314 to 8.7898 ms, ratio 1.05538.
+Both pairs worsen. Memory fingerprints and 720 measured updates match in every
+run. Evidence: `hotpaths-performance.json`.
+
+A second candidate shared the normal typed-memory and block-entry gates out
+of line. Its full-title build was cancelled after the user's request for
+structural diagnosis. It has no qualified speed or scene-equivalence result.
+An untested binary64-intermediate VFP draft was also set aside. Their source
+is preserved in `unpromoted-cpu-experiments.patch` and the companion
+`unpromoted-oot3d_aot_compiler.h`, outside the repository. Neither remains in
+the runtime implementation.
+
+### Flat read-table decision
+
+Retain the sparse ABI-3 table in this cutover; do not infer a flat-table win
+from the old out-of-line read-helper profile. On x64, a flat 32-bit-address-space
+read table at 4 KiB granularity occupies 8 MiB per memory image. The current
+top-level table occupies 32 KiB, plus 6 KiB per populated 1 MiB group: for a
+contiguous 128 MiB mapping, 800 KiB of fast metadata. A heap-resident flat table
+also retains a root-pointer load; its gains would come from removing the
+group-selection branch, denser read metadata and invariant-root hoisting, not
+from eliminating every dependent pointer load.
+
+Correct replacement requires one owner for map/reset/copy/move rebuilding,
+partial pages and protections, watch traps, deferred-write installation and
+release, and observer restoration after snapshot replacement. Public escaped
+read pointers are not a legal way to build a private flat cache: they prevent
+deferred GPU ownership. Writes still need per-page epochs and alias-aware
+observation; they cannot use an upstream-style raw writable table.
+
+No flat-table implementation or performance improvement is claimed. The
+evaluation identifies a memory-contract redesign, not evidence that flattening
+the table alone closes the emulator performance gap.
+
+### Exact hardware VFP design
+
+The first candidate used operation-local SSE2 environments, not a guest-wide
+floating-point mode. Each helper saved/restored the entire host MXCSR, masked
+host traps, applied guest rounding and returned newly raised guest flags.
+Callbacks and memory boundaries did not inherit guest FP state; VMSR/VMRS and
+eager guest FPSCR updates needed no new context fields or ABI.
+
+The fast domain is normal/zero binary32 inputs, safely bounded normal/zero
+results and no host exception other than inexact. NaNs, infinities, denormals,
+underflow/overflow boundaries and exceptional arithmetic use the unchanged
+integer implementation. MLA/MLS and negative variants retain two rounded
+operations and the union of their flags, never a fused FMA. Binary64, comparisons
+and float-to-integer conversion retain the exact existing implementation.
+The candidate enabled SSE2 for x64 Clang/MSVC with strict floating-environment
+pragmas; other compiler/architecture combinations retained integer execution.
+
+A standalone strategy probe executed 9,600,000 comparisons across six operations
+and all 16 rounding/FZ/DN combinations. All 7,387,521 accepted hardware results
+matched bits and exception flags; the complete host environment was preserved.
+This qualifies the strategy, not the production integration or its speed.
+Evidence: `hardware-vfp-strategy/receipt.json`.
+
+Production-helper qualification then executed 19,200,000 comparisons against
+the pinned instruction-level scalar oracle: 12 operations, all 16 control
+combinations, boundary vectors and deterministic random operands. Result bits,
+new exception flags and the complete host MXCSR match; incoming sticky FPSCR
+flags do not contaminate the returned operation flags. The helper translation
+unit was compiled without a command-line `/fp:strict` override, exercising its
+own strict-environment pragmas. Receipt: `hardware-vfp-qualified/receipt.json`.
+
+The rebuilt native architecture test passes rounding, non-fused accumulation,
+intermediate underflow, FZ/DN, signaling NaN and signed/unsigned conversion
+boundaries under a deliberately different host environment. The native process
+memory-only suite also passes; the unrelated historical full-process fixture
+limitation remains.
+
+The FP-only title relink replaces exactly the scalar VFP archive member; the
+other four support objects are byte-identical to the frozen control. Field and
+Raw Copy again match all captured framebuffers and structural/state contracts.
+Receipts: `hardware-vfp-title/receipt.json`,
+`hardware-fp-only-field/equivalence.json` and
+`hardware-fp-only-copy/equivalence.json`.
+
+The isolated FP-only ABBA rejects this implementation despite correctness:
+pre-backend 13.5698 to 19.2172 ms, paired ratio 1.41681 (individual ratios
+1.38530 and 1.44832). The combined new-host/new-title variant also regresses:
+paired pre-backend ratio 1.37301. Both campaigns preserve the same memory
+fingerprint and 720 measured updates. These are within-campaign comparisons,
+not a claim that the earlier A/A establishes an unchanged noise floor across
+all later runs. Evidence: `cpu-performance.json`.
+
+The combined host also passes both native scenes, but correctness cannot
+qualify a performance regression. Its receipts are
+`cpu-combined-field/equivalence.json` and
+`cpu-combined-copy/equivalence.json`. The operation-local MXCSR implementation
+is not adopted. Its exact semantic boundary cases remain useful regression
+guards for any future backend.

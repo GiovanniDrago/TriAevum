@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <iostream>
 #include <memory>
+#include <vector>
 
 using namespace Oot3dNativeGame;
 namespace a32 = oot3d::recomp::a32;
@@ -18,6 +19,10 @@ void Observe(uint32_t pc, a32::GuestState& guest, a32::MemoryBus&, void* user) {
     observer.SawCalleeState = pc == 0x1084 && guest.r[0] == 7;
     if (observer.Exit) observer.Program->ObservableExit(pc, nullptr);
     guest.r[0] = 20;
+}
+
+void RecordHook(uint32_t pc, a32::GuestState&, a32::MemoryBus&, void* user) {
+    static_cast<std::vector<uint32_t>*>(user)->push_back(pc);
 }
 
 int wmain(int argc, wchar_t** argv) {
@@ -102,8 +107,55 @@ int wmain(int argc, wchar_t** argv) {
             return 20;
         }
     }
+    // Budget exhaustion wins over notification. Skip-first applies only to
+    // the first consumed block, and a filter collision is not an exact hook.
+    uint32_t collision = 0x10C4;
+    while (Oot3dAotBlockEntryFilter::BitIndex(collision) !=
+           Oot3dAotBlockEntryFilter::BitIndex(0x10C0)) {
+        collision += 4;
+    }
+    struct HookCase {
+        uint32_t Budget;
+        bool SkipFirst;
+        bool Filtered;
+        std::vector<uint32_t> Expected;
+        uint32_t ExitPc;
+    };
+    const HookCase hookCases[] = {
+        {1, true, false, {}, 0x10CC},
+        {2, true, false, {0x10CC}, 0x2000},
+        {2, false, false, {0x10C0, 0x10CC}, 0x2000},
+        {2, false, true, {}, 0x2000},
+    };
+    for (const auto& scenario : hookCases) {
+        a32::GuestState guest{};
+        guest.cpsr = 0x10;
+        guest.r[0] = 2;
+        guest.r[14] = 0x2000;
+        a32::ExecutionResult result{};
+        Oot3dWholeAotStats stats{};
+        uint32_t consumed = 0;
+        std::vector<uint32_t> observed;
+        Oot3dAotBlockEntryFilter filter;
+        if (scenario.Filtered) filter.Insert(collision);
+        const bool handled = program->Execute(
+            0x10C0, guest, *memory, &result, &stats, nullptr,
+            scenario.Budget, &consumed, RecordHook, &observed,
+            scenario.Filtered ? &collision : nullptr, scenario.Filtered ? 1 : 0,
+            &filter, scenario.SkipFirst, 0x2000);
+        if (!handled || consumed != scenario.Budget ||
+            observed != scenario.Expected || result.pc != scenario.ExitPc ||
+            guest.r[0] != 2 || guest.r[1] != (scenario.Budget == 2 ? 99U : 0U)) {
+            std::cerr << "block budget or hook precedence changed: budget="
+                      << scenario.Budget << " consumed=" << consumed
+                      << " skip=" << scenario.SkipFirst << " filtered=" << scenario.Filtered
+                      << " hooks=" << observed.size() << " pc=" << result.pc << '\n';
+            return 21;
+        }
+    }
     std::cout << "{\"nested_return_and_flags\":true,\"observer_reload\":true,"
                  "\"snapshotless_unwind\":true,\"callee_memory_fault\":true,"
-                 "\"conditional_return\":true,\"compiled_page_epochs\":true}\n";
+                 "\"conditional_return\":true,\"compiled_page_epochs\":true,"
+                 "\"block_hook_budget_boundaries\":true}\n";
     FreeLibrary(module);
 }

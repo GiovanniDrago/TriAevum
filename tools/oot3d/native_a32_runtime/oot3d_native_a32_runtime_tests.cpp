@@ -6,6 +6,9 @@
 #include <array>
 #include <cstdint>
 #include <iostream>
+#if defined(_M_X64) || defined(__x86_64__)
+#include <immintrin.h>
+#endif
 
 namespace {
 
@@ -332,6 +335,45 @@ int main() {
                    0x40000000U) ||
         !expectVfp(VfpBinary32FromUnsigned(3U, 0U), 0x40400000U)) {
         std::cerr << "named binary32 AOT primitive test failed\n";
+        return 1;
+    }
+    // Guest rounding and cumulative flags must not inherit or change the host
+    // environment. These boundaries also distinguish ARM MLA from an FMA.
+#if defined(_M_X64) || defined(__x86_64__)
+    const uint32_t hostMxcsr = _mm_getcsr();
+    constexpr uint32_t testMxcsr = 0xFFE5U;
+    _mm_setcsr(testMxcsr);
+#endif
+    const auto exactVfp = [](VfpBinary32Result result, uint32_t bits, uint32_t flags) {
+        return result.value == bits && result.exception_flags == flags;
+    };
+    bool exactVfpBoundaries =
+        exactVfp(VfpBinary32Add(0x3F800000U, 0x33800000U, 0x9FU),
+                 0x3F800000U, 0x10U) &&
+        exactVfp(VfpBinary32Add(0x3F800000U, 0x33800000U, 1U << 22U),
+                 0x3F800001U, 0x10U) &&
+        exactVfp(VfpBinary32MultiplyAccumulate(
+                     0xBF800000U, 0x3F800001U, 0x3F7FFFFFU, 0U),
+                 0U, 0x10U) &&
+        exactVfp(VfpBinary32MultiplyAccumulate(
+                     0x3F800000U, 0x00800000U, 0x00800000U, 0U),
+                 0x3F800000U, 0x18U) &&
+        exactVfp(VfpBinary32Add(1U, 0x00800000U, 1U << 24U),
+                 0x00800000U, 0x80U) &&
+        exactVfp(VfpBinary32Multiply(0x00800000U, 0x3F000000U, 1U << 24U),
+                 0U, 0x08U) &&
+        exactVfp(VfpBinary32Add(0x7FC01234U, 0x3F800000U, 1U << 25U),
+                 0x7FC00000U, 0U) &&
+        exactVfp(VfpBinary32Multiply(0x7F801234U, 0x3F800000U, 0U),
+                 0x7FC01234U, 1U) &&
+        exactVfp(VfpBinary32FromSigned(0xFFFFFFFFU, 0U), 0xBF800000U, 0U) &&
+        exactVfp(VfpBinary32FromUnsigned(0xFFFFFFFFU, 0U), 0x4F800000U, 0x10U);
+#if defined(_M_X64) || defined(__x86_64__)
+    exactVfpBoundaries = exactVfpBoundaries && _mm_getcsr() == testMxcsr;
+    _mm_setcsr(hostMxcsr);
+#endif
+    if (!exactVfpBoundaries) {
+        std::cerr << "exact binary32 environment or boundary test failed\n";
         return 1;
     }
     std::cout << "pinned A32 runtime smoke test passed\n";
