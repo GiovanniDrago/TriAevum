@@ -384,3 +384,12 @@ tests; and all seven real generated-DLL boundary checks. Field and Raw Copy
 again match all five framebuffer captures and structural/state contracts:
 `cpu-diagnostic-final-{field,copy}/equivalence.json`.
 The known unrelated full-process fixture limitation remains unchanged.
+
+### Evidence retirement
+
+After qualification, 22 owned one-off drivers/probe sources were archived as
+`cpu-hotpaths-development-drivers.zip` and removed from the active work tree.
+`development-cleanup.json` records every member checksum and verified archive
+integrity. Receipts, exact commands, frozen binaries, disassembly, captures and
+the unpromoted experimental patch remain private. No user input, unrelated
+development file or public package was removed or replaced.
