@@ -29,10 +29,20 @@ release catalogue, installed modules and Forge are unchanged.
 | Audio kernels, memory-region lowering | `--memory-region` for `00466E2C`, `004A022C`, `004A0338` (views, local registers, local budget) | 0.996 (0.98-1.03) | 0.997 | identical | rejected: no gain; hand-written natives of the same shape are not pursued |
 
 PGO whole-frame ratio 0.901 (about 110 to 122 fps in this configuration).
-The PGO module is 197,840,896 bytes versus 87,777,792 for the control; package
-size and load time must be reviewed before release. Framebuffer qualification
-of the PGO module (Field and Raw Copy captures) is still required by
-`AGENTS.md` before any promotion.
+
+### PGO qualification
+
+| Check | Result |
+| --- | --- |
+| Field, 360 updates, captures at 120/240 | both framebuffers byte-identical to the control; memory content/state, process state, 34,200 draws, 720 transfers, empty queues and PCM FNV identical |
+| Sheik raw copy, 400 updates, captures at 120/240/360 | all three framebuffers byte-identical; memory/process state, 41,671 draws, 1,118 transfers, empty queues and PCM identical |
+| Cross-check with history | memory fingerprints equal the 2026-09-27 ABI-3 qualification (`6672342775686176555`, `17615798149623760801`) |
+| Untrained scene (`native-child-field`, ABBA, no-present) | pre-NRI **0.872** (0.868-0.880), guest **0.834**, whole frame 0.908; fingerprint identical |
+| Startup | process CPU including startup 10.55-10.94 s (PGO) versus 11.36-13.42 s (control) per run; no load-time penalty observed |
+
+The PGO module is 197,840,896 bytes versus 87,777,792 for the control. This is
+the only open release question besides builder support: the profile and its
+receipt become a versioned developer input of the precompiled title module.
 
 ### PGO training set
 
@@ -61,6 +71,6 @@ Its `DISPOSABLES.md` lists every artifact and its removal condition.
 
 ## Not yet done
 
-- Framebuffer/PCM qualification of the PGO module; release-builder PGO support.
+- Release-builder PGO support and a decision on the module size.
 - PICA plan/queue off the guest critical path; block-entry contract changes;
   further call-free leaf functions.
