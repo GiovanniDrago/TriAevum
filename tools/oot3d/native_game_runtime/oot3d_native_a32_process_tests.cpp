@@ -716,6 +716,97 @@ void TestMemoryContract() {
            "intervening write must invalidate exclusive token");
 }
 
+void TestMemoryFastBlockEquivalence() {
+    using Oot3dNativeGame::NativeA32Memory;
+    std::string error;
+    const auto prepare = [&](NativeA32Memory& memory) {
+        Expect(memory.MapRegion({"data", 0x1101U, 0x4000U, true, false, {}}, &error) &&
+                   memory.MapRegion({"rom", 0x8000U, 0x1000U, false, false, {}}, &error),
+               "map fast-block memory");
+        for (uint32_t address = 0x2000U; address < 0x5000U; address += 4U) {
+            Expect(memory.Write32(address, address * 2654435761U), "seed memory");
+        }
+    };
+    const auto sameState = [&](NativeA32Memory& checked, NativeA32Memory& fast,
+                               const char* label) {
+        Expect(checked.WriteGeneration() == fast.WriteGeneration() &&
+                   checked.ContentFingerprint() == fast.ContentFingerprint() &&
+                   checked.StateFingerprint() == fast.StateFingerprint(),
+               label);
+        for (uint32_t page = 0x2000U; page < 0x5000U; page += 0x1000U) {
+            Expect(checked.RangeWriteGeneration(page, 4U) ==
+                       fast.RangeWriteGeneration(page, 4U),
+                   label);
+        }
+    };
+    std::array<uint8_t, 48> block{};
+    for (size_t index = 0; index < block.size(); ++index) {
+        block[index] = static_cast<uint8_t>(0xA0U + index);
+    }
+
+    NativeA32Memory checked;
+    NativeA32Memory fast;
+    prepare(checked);
+    prepare(fast);
+    Expect(fast.SpanOnFastReadPage(0x2100U, 48U) &&
+               fast.SpanOnFastWritePage(0x2100U, 48U) &&
+               checked.WriteBytes(0x2100U, block) &&
+               fast.WriteBytesFast(0x2100U, block),
+           "an in-page block takes the fast form");
+    sameState(checked, fast, "a fast block write equals the checked write");
+    std::array<uint8_t, 48> readChecked{};
+    std::array<uint8_t, 48> readFast{};
+    Expect(checked.ReadBytes(0x2100U, readChecked) &&
+               fast.ReadBytesFast(0x2100U, readFast) && readChecked == readFast &&
+               readFast == block,
+           "a fast block read equals the checked read");
+
+    const auto declines = [&](NativeA32Memory& memory, uint32_t address,
+                              size_t size, const char* label) {
+        const uint64_t generation = memory.WriteGeneration();
+        const uint64_t content = memory.ContentFingerprint();
+        std::vector<uint8_t> bytes(size, 0xEEU);
+        Expect(!memory.WriteBytesFast(address, bytes) &&
+                   memory.WriteGeneration() == generation &&
+                   memory.ContentFingerprint() == content,
+               label);
+    };
+    declines(fast, 0x2FF0U, 48U, "a page-crossing block declines without effect");
+    declines(fast, 0x1100U, 8U, "a partially mapped page declines");
+    declines(fast, 0x8000U, 8U, "a read-only page declines writes");
+    declines(fast, 0x9000U, 8U, "an unmapped page declines");
+    declines(fast, 0x2100U, 0U, "an empty block declines");
+    Expect(fast.SpanOnFastReadPage(0x8000U, 8U) &&
+               !fast.SpanOnFastWritePage(0x8000U, 8U) &&
+               !fast.SpanOnFastReadPage(0x9000U, 8U) &&
+               !fast.ReadBytesFast(0x2FF0U, readFast),
+           "fast span queries follow their pages");
+
+    fast.EnableWriteTraceFingerprint(true);
+    declines(fast, 0x2100U, 8U, "write tracing keeps the checked path");
+    fast.EnableWriteTraceFingerprint(false);
+
+    fast.SetWriteObserver([](uint32_t, size_t) {});
+    Expect(fast.ObserveWrites(0x3100U, 16U), "observe a range");
+    declines(fast, 0x3000U, 8U, "an observed page declines");
+
+    const std::array ranges{std::pair<uint32_t, size_t>{0x4100U, 16U}};
+    Expect(fast.DeferWrites(ranges, [](uint32_t, std::span<uint8_t> bytes) {
+               std::fill(bytes.begin(), bytes.end(), 0x5AU);
+               return true;
+           }),
+           "defer a device range");
+    Expect(!fast.SpanOnFastReadPage(0x4000U, 4U) &&
+               !fast.ReadBytesFast(0x4000U, std::span<uint8_t>(readFast.data(), 4U)),
+           "a deferred page keeps the checked read");
+    // Fingerprinting materializes deferred bytes, so probe the write first.
+    const uint64_t beforeDeferredWrite = fast.WriteGeneration();
+    const std::array<uint8_t, 4> deferredBytes{1U, 2U, 3U, 4U};
+    Expect(!fast.WriteBytesFast(0x4000U, deferredBytes) &&
+               fast.WriteGeneration() == beforeDeferredWrite,
+           "a deferred page declines writes");
+}
+
 void TestMemoryRangeGenerations() {
     using Oot3dNativeGame::NativeA32Memory;
     NativeA32Memory memory;
@@ -1817,6 +1908,7 @@ int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--memory-only") {
             TestMemoryContract();
+            TestMemoryFastBlockEquivalence();
             TestMemoryRangeGenerations();
             std::cout << "oot3d_native_a32_process_tests: memory ok\n";
             return 0;
@@ -1827,6 +1919,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         TestMemoryContract();
+        TestMemoryFastBlockEquivalence();
         TestMemoryRangeGenerations();
 #if defined(OOT3D_NATIVE_A32_AOT_TESTS)
         TestWholeAotShiftAndFlagSemantics();

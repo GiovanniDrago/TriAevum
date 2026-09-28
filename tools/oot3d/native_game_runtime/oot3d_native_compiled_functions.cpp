@@ -277,6 +277,33 @@ bool MutableRangeDoesNotOverlapMetadata(uint32_t address, size_t size,
            !RangesOverlap(address, size, channelsAddress, 16U);
 }
 
+// Native helpers take the single-page fast form first. Each fast call is an
+// exact equivalent of its checked counterpart and has no effect when it
+// declines, so falling back preserves the checked behavior bit for bit.
+bool NativeSpanMapped(const NativeA32Memory& memory, uint32_t address,
+                      size_t size) {
+    return memory.SpanOnFastReadPage(address, size) ||
+           memory.IsMapped(address, size);
+}
+
+bool NativeSpanWritable(const NativeA32Memory& memory, uint32_t address,
+                        size_t size) {
+    return memory.SpanOnFastWritePage(address, size) ||
+           memory.IsWritable(address, size);
+}
+
+bool NativeReadBytes(const NativeA32Memory& memory, uint32_t address,
+                     std::span<uint8_t> bytes) {
+    return memory.ReadBytesFast(address, bytes) ||
+           memory.ReadBytes(address, bytes);
+}
+
+bool NativeWriteBytes(NativeA32Memory& memory, uint32_t address,
+                      std::span<const uint8_t> bytes) {
+    return memory.WriteBytesFast(address, bytes) ||
+           memory.WriteBytes(address, bytes);
+}
+
 bool CompleteNativeCall(
     uint32_t entry,
     oot3d::recomp::a32::GuestState& state,
@@ -325,18 +352,18 @@ bool ExecutePicaCommandWriterWriteRegisterRange(
             addressSpaceSize ||
         RangesOverlap(valuesAddress, valueBytes, commandAddress,
                       commandBytes) ||
-        !memory.IsWritable(commandAddress, commandBytes) ||
-        !memory.IsWritable(state.r[0] + 8U, sizeof(uint32_t))) {
+        !NativeSpanWritable(memory, commandAddress, commandBytes) ||
+        !NativeSpanWritable(memory, state.r[0] + 8U, sizeof(uint32_t))) {
         ++gStats.RetainedArmFallbacks;
         return false;
     }
 
     thread_local std::vector<uint8_t> command;
     command.assign(commandBytes, 0U);
-    if (!memory.ReadBytes(valuesAddress,
+    if (!NativeReadBytes(memory, valuesAddress,
                           std::span<uint8_t>(command.data(), 4U)) ||
         (count > 1 &&
-         !memory.ReadBytes(
+         !NativeReadBytes(memory,
              valuesAddress + 4U,
              std::span<uint8_t>(command.data() + 8U, valueBytes - 4U)))) {
         ++gStats.RetainedArmFallbacks;
@@ -350,7 +377,7 @@ bool ExecutePicaCommandWriterWriteRegisterRange(
     command[5] = static_cast<uint8_t>(header >> 8U);
     command[6] = static_cast<uint8_t>(header >> 16U);
     command[7] = static_cast<uint8_t>(header >> 24U);
-    if (!memory.WriteBytes(commandAddress, command) ||
+    if (!NativeWriteBytes(memory, commandAddress, command) ||
         !memory.Write32(state.r[0] + 8U,
                         commandAddress + static_cast<uint32_t>(commandBytes))) {
         ++gStats.RetainedArmFallbacks;
@@ -586,20 +613,20 @@ bool ExecuteMtx3x4Multiply(
     oot3d::recomp::a32::ExecutionResult* result) {
     constexpr size_t matrixWords = 12U;
     constexpr size_t matrixBytes = matrixWords * sizeof(uint32_t);
-    if (!memory.IsMapped(state.r[1], matrixBytes) ||
-        !memory.IsMapped(state.r[2], matrixBytes) ||
-        !memory.IsWritable(state.r[0], matrixBytes)) {
+    if (!NativeSpanMapped(memory, state.r[1], matrixBytes) ||
+        !NativeSpanMapped(memory, state.r[2], matrixBytes) ||
+        !NativeSpanWritable(memory, state.r[0], matrixBytes)) {
         ++gStats.RetainedArmFallbacks;
         return false;
     }
     std::array<uint32_t, matrixWords> left{};
     std::array<uint32_t, matrixWords> right{};
     std::array<uint32_t, matrixWords> output{};
-    if (!memory.ReadBytes(
+    if (!NativeReadBytes(memory,
             state.r[1],
             std::span<uint8_t>(reinterpret_cast<uint8_t*>(left.data()),
                                matrixBytes)) ||
-        !memory.ReadBytes(
+        !NativeReadBytes(memory,
             state.r[2],
             std::span<uint8_t>(reinterpret_cast<uint8_t*>(right.data()),
                                matrixBytes))) {
@@ -627,7 +654,7 @@ bool ExecuteMtx3x4Multiply(
         ComputeSoftMtx3x4Multiply(left, right, state.fpscr, &output,
                                   &exceptionFlags);
     }
-    if (!memory.WriteBytes(
+    if (!NativeWriteBytes(memory,
             state.r[0],
             std::span<const uint8_t>(
                 reinterpret_cast<const uint8_t*>(output.data()),
@@ -651,14 +678,14 @@ bool ExecuteMtx3x4CopyIfDistinct(
     if (state.r[0] == state.r[1]) {
         return CompleteNativeCall(kMtx3x4CopyIfDistinct, state, result, 0U);
     }
-    if (!memory.IsMapped(state.r[1], matrixBytes) ||
-        !memory.IsWritable(state.r[0], matrixBytes)) {
+    if (!NativeSpanMapped(memory, state.r[1], matrixBytes) ||
+        !NativeSpanWritable(memory, state.r[0], matrixBytes)) {
         ++gStats.RetainedArmFallbacks;
         return false;
     }
     std::array<uint8_t, matrixBytes> matrix{};
-    if (!memory.ReadBytes(state.r[1], matrix) ||
-        !memory.WriteBytes(state.r[0], matrix)) {
+    if (!NativeReadBytes(memory, state.r[1], matrix) ||
+        !NativeWriteBytes(memory, state.r[0], matrix)) {
         ++gStats.RetainedArmFallbacks;
         return false;
     }
@@ -1030,6 +1057,8 @@ Oot3dWholeAotFlow ExecuteWholeAotExternalCall(
     auto& state = frame.Guest;
     state.r[15] = entry;
     oot3d::recomp::a32::ExecutionResult result{};
+#if !defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
+    // The product has no source overlay; skip its per-call lookup there.
     if (ExecuteOot3dSourceOverlay(entry, state, memory, &result)) {
         switch (result.kind) {
         case oot3d::recomp::a32::ExitKind::Branch:
@@ -1047,6 +1076,7 @@ Oot3dWholeAotFlow ExecuteWholeAotExternalCall(
             break;
         }
     }
+#endif
     const bool sampleTiming =
         !gExternalTargetCounts.empty() &&
         ((++gExternalTimingCounter & kExternalTimingSampleMask) == 0U);

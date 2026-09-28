@@ -239,6 +239,40 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
         return Watches(address, size);
     }
 
+    // Exact single-page equivalents of IsMapped/IsWritable, ReadBytes and
+    // WriteBytes for host-native title helpers. A fast page lies wholly in one
+    // region and is neither watched nor deferred; a fast write page is also
+    // writable and unobserved. On such a page the checked calls reduce to a
+    // copy plus, for writes, one generation step. False means the span needs
+    // the checked path, and then nothing was read or written.
+    bool SpanOnFastReadPage(uint32_t address, size_t size) const noexcept {
+        return FastPageFor(address, size) != nullptr &&
+               FastPageFor(address, size)->Read != nullptr;
+    }
+    bool SpanOnFastWritePage(uint32_t address, size_t size) const noexcept {
+        return !mTraceWriteFingerprint && FastPageFor(address, size) != nullptr &&
+               FastPageFor(address, size)->Write != nullptr;
+    }
+    bool ReadBytesFast(uint32_t address, std::span<uint8_t> bytes) const noexcept {
+        const FastPage* page = FastPageFor(address, bytes.size());
+        if (page == nullptr || page->Read == nullptr) {
+            return false;
+        }
+        std::memcpy(bytes.data(), page->Read + (address & PageMask), bytes.size());
+        return true;
+    }
+    bool WriteBytesFast(uint32_t address, std::span<const uint8_t> bytes) noexcept {
+        FastPage* page = const_cast<FastPage*>(FastPageFor(address, bytes.size()));
+        if (mTraceWriteFingerprint || page == nullptr || page->Write == nullptr) {
+            return false;
+        }
+        std::memcpy(page->Write + (address & PageMask), bytes.data(), bytes.size());
+        ++mWriteGeneration;
+        page->WriteGeneration = CurrentRangeGeneration();
+        if (page->WriteGeneration == 0U) [[unlikely]] mRangeVersionsValid = false;
+        return true;
+    }
+
     bool Read8(uint32_t address, uint8_t* value) override;
     bool Read16(uint32_t address, uint16_t* value) override;
     bool Read32(uint32_t address, uint32_t* value) override;
@@ -277,6 +311,15 @@ class NativeA32Memory final : public oot3d::recomp::a32::MemoryBus {
 
     Region* FindRegion(uint32_t address, size_t size);
     const Region* FindRegion(uint32_t address, size_t size) const;
+    // Null for empty spans and spans that leave their first page.
+    const FastPage* FastPageFor(uint32_t address, size_t size) const noexcept {
+        const size_t offset = address & PageMask;
+        if (size == 0U || size > PageSize - offset) {
+            return nullptr;
+        }
+        const auto& group = mFastPageGroups[address >> FastGroupShift];
+        return group ? &group[(address >> PageShift) & FastGroupPageMask] : nullptr;
+    }
     void RebuildPageTable();
     [[nodiscard]] bool Watches(uint32_t address, size_t size) const noexcept {
         if (!mWatchActive) {
