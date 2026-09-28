@@ -59,6 +59,10 @@ class WholeAotPluginToolchain:
     target_triple: str = release_platform.WINDOWS.target
     profile: str = release_platform.WINDOWS.profile
     sysroot: Path | None = None
+    # Merged LLVM instrumentation profile recorded from real workloads by a
+    # developer. It is a code-generation input of the precompiled module, never
+    # produced or required on the user's machine.
+    profile_data: Path | None = None
 
     @property
     def platform(self) -> release_platform.ReleasePlatform:
@@ -182,6 +186,10 @@ def build_whole_aot_plugin(
         "whole-AOT builder identity",
     )
     support = _regular_file(toolchain.support_library, "whole-AOT support library")
+    profile_data = (_regular_file(toolchain.profile_data, "whole-AOT profile data")
+                    if toolchain.profile_data is not None else None)
+    profile_records = (
+        (("profile-data", sha256_file(profile_data)),) if profile_data else ())
     nlohmann = _directory(toolchain.nlohmann_include, "nlohmann include root")
     if windows:
         sysroot = compiler_sysroot(compiler, toolchain.sysroot, verified=sysroot_contract)
@@ -214,7 +222,7 @@ def build_whole_aot_plugin(
     if sysroot:
         records = [("generation", generation_key), ("sysroot", sysroot.identity),
                    ("target", toolchain.target_triple), ("profile", toolchain.profile),
-                   ("python", sys.version)]
+                   ("python", sys.version), *profile_records]
         for role, path in (("compiler", compiler), ("archiver", archiver),
                            ("linker", linker), ("support", support), ("wrapper", wrapper)):
             records.append((role, sha256_file(path)))
@@ -274,6 +282,8 @@ def build_whole_aot_plugin(
                 target_triple=toolchain.target_triple,
                 profile=toolchain.profile,
                 sysroot=toolchain.sysroot,
+                profile_instrumentation="use" if profile_data else "none",
+                profile_data=profile_data,
             ),
             jobs=jobs,
             sysroot_contract=sysroot,
@@ -307,6 +317,7 @@ def build_whole_aot_plugin(
             ("target", toolchain.target_triple),
             ("profile", toolchain.profile),
             ("sysroot", sysroot.identity if sysroot else "host-discovery"),
+            *profile_records,
         )
     )
     cache_key = _identity(
@@ -465,6 +476,7 @@ def build_whole_aot_plugin(
             "target": toolchain.target_triple,
             "cache_key": cache_key,
             "toolchain_identity_sha256": toolchain_identity,
+            "profile_data_sha256": profile_records[0][1] if profile_records else None,
             "translator_identity_sha256": _identity(
                 (("generation", generation_key), ("toolchain", toolchain_identity))
             ),

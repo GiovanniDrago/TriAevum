@@ -109,6 +109,22 @@ library CMake target and wrapper/link flags in `whole_aot_plugin_backend.py`.
 The original `build-title` developer path remains the end-to-end rebuild recipe
 from ROM. Byte-identical builds across different toolchains are not promised.
 
+### Profile-guided title builds
+
+A title module may be built with LLVM instrumentation PGO:
+`build-title --profile-data <title.profdata>`. The merged profile is recorded by
+the developer with `tools/renderer/tev_program/collect_aot_profile.py` from
+real checkpoints; users never generate, download or apply it, and Forge's
+install path is unchanged. The profile is a code-generation input: its SHA-256
+joins the object, toolchain and plugin cache identities and is written to
+`whole-aot-plugin.json` as `profile_data_sha256`. Preserve the profile and its
+collection receipt with the title build snapshot and the generated C++, because
+they are needed to rebuild that module. The profile holds only counters for the
+generated title functions, not ROM bytes or assets. Packaging it with the
+corresponding title source and allowing it in the release audit is still to be
+implemented in `prepare_release`; until then a profiled module must not be
+published. Measurements and qualification: `TRIAEVUM_AOT_LEVERS_RESULTS.md`.
+
 ## Qualification
 
 Run release unit tests and the allowlist audit; install from a fresh copied

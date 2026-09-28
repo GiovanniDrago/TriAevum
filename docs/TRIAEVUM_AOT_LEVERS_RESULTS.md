@@ -40,9 +40,9 @@ PGO whole-frame ratio 0.901 (about 110 to 122 fps in this configuration).
 | Untrained scene (`native-child-field`, ABBA, no-present) | pre-NRI **0.872** (0.868-0.880), guest **0.834**, whole frame 0.908; fingerprint identical |
 | Startup | process CPU including startup 10.55-10.94 s (PGO) versus 11.36-13.42 s (control) per run; no load-time penalty observed |
 
-The PGO module is 197,840,896 bytes versus 87,777,792 for the control. This is
-the only open release question besides builder support: the profile and its
-receipt become a versioned developer input of the precompiled title module.
+The PGO module is 197,840,896 bytes versus 87,777,792 for the control; the
+maintainer accepted this size. The release builder now takes the profile
+(`build-title --profile-data`), see `TRIAEVUM_PRECOMPILED_RELEASE.md`.
 
 ### PGO training set
 
@@ -71,6 +71,6 @@ Its `DISPOSABLES.md` lists every artifact and its removal condition.
 
 ## Not yet done
 
-- Release-builder PGO support and a decision on the module size.
+- `prepare_release` packaging and audit allowance for the title profile.
 - PICA plan/queue off the guest critical path; block-entry contract changes;
   further call-free leaf functions.

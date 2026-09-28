@@ -841,6 +841,7 @@ def build_private_whole_aot(
     jobs: int = 8,
     sysroot: Path | None = None,
     target_triple: str = WINDOWS.target,
+    profile_data: Path | None = None,
 ) -> dict[str, Any]:
     """Build the direct generated-C++ plugin consumed by the mature runtime."""
     platform = for_target(target_triple)
@@ -882,6 +883,7 @@ def build_private_whole_aot(
                 sysroot=sysroot,
                 target_triple=platform.target,
                 profile=platform.profile,
+                profile_data=profile_data,
             ),
             shard_count=shard_count,
             jobs=jobs,
@@ -898,6 +900,7 @@ def build_private_whole_aot(
             "plugin_sha256",
             "cache_key",
             "translator_identity_sha256",
+            "profile_data_sha256",
             "functions",
             "shards",
             "objects_compiled",
@@ -1215,6 +1218,7 @@ def build_private_title(
     shard_count: int = 256,
     jobs: int = 8,
     sysroot: Path | None = None,
+    profile_data: Path | None = None,
 ) -> dict[str, Any]:
     prepared = load_prepared_content(
         prepared_directory, required_inputs=("code", "exheader")
@@ -1237,6 +1241,7 @@ def build_private_title(
         target_triple=target_triple,
         shard_count=shard_count,
         jobs=jobs,
+        profile_data=profile_data,
     )
     with activation_transaction(runtime_plugin.resolve().parent, [
         runtime_plugin, launch_profile, active_title_state,
@@ -1409,6 +1414,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     title_parser.add_argument("--sysroot", type=Path,
                               help="Use a verified private Windows sysroot instead of host discovery")
     title_parser.add_argument(
+        "--profile-data", type=Path,
+        help="Developer PGO: merged LLVM profile applied to the title module")
+    title_parser.add_argument(
         "--target-triple", default=host_platform().target
     )
     title_parser.add_argument(
@@ -1575,6 +1583,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 shard_count=args.shards,
                 jobs=args.jobs,
                 sysroot=args.sysroot,
+                profile_data=args.profile_data,
             )
         else:
             recipe = load_recipe(args.recipes, args.recipe)

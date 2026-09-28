@@ -144,12 +144,40 @@ class WholeAotPluginBackendTests(unittest.TestCase):
                 with self.assertRaisesRegex(backend.WholeAotPluginError, "cache changed"):
                     backend.build_whole_aot_plugin(**arguments)
 
+                # A developer PGO profile is a code-generation input: it reaches
+                # the object cache in "use" mode and separates module identities.
+                profile = root / "title.profdata"
+                profile.write_bytes(b"merged profile v1")
+                profiled_arguments = {**arguments, "toolchain": backend.WholeAotPluginToolchain(
+                    compiler=compiler, archiver=archiver, support_library=support,
+                    nlohmann_include=nlohmann, target_triple=release_platform.WINDOWS.target,
+                    profile=release_platform.WINDOWS.profile, profile_data=profile)}
+                with patch.object(backend, "build_generated_cpp_archive",
+                                  return_value=archive_result) as profiled_archive:
+                    profiled = backend.build_whole_aot_plugin(**profiled_arguments)
+                native = profiled_archive.call_args.kwargs["toolchain"]
+                self.assertEqual(native.profile_instrumentation, "use")
+                self.assertEqual(native.profile_data, profile.resolve())
+                self.assertEqual(profiled["profile_data_sha256"], backend.sha256_file(profile))
+                self.assertIsNone(recovered["profile_data_sha256"])
+                self.assertNotEqual(profiled["cache_key"], recovered["cache_key"])
+                profile.write_bytes(b"merged profile v2")
+                reprofiled = backend.build_whole_aot_plugin(**profiled_arguments)
+                self.assertNotEqual(reprofiled["cache_key"], profiled["cache_key"])
+                missing = {**profiled_arguments, "toolchain": backend.WholeAotPluginToolchain(
+                    compiler=compiler, archiver=archiver, support_library=support,
+                    nlohmann_include=nlohmann, target_triple=release_platform.WINDOWS.target,
+                    profile=release_platform.WINDOWS.profile, profile_data=root / "missing")}
+                with self.assertRaisesRegex(backend.WholeAotPluginError, "profile data"):
+                    backend.build_whole_aot_plugin(**missing)
+
             self.assertEqual(built["status"], "built")
             self.assertEqual(built["backend"], "generated_cpp_whole_aot_plugin_v2")
             self.assertEqual(built["functions"], 2)
             self.assertEqual(reused["status"], "reused")
             self.assertEqual(reused["plugin_sha256"], built["plugin_sha256"])
-            self.assertEqual(len(commands), 8)
+            # Four earlier links plus the two profiled builds (wrapper + link each).
+            self.assertEqual(len(commands), 12)
             self.assertNotEqual(relinked["cache_key"], built["cache_key"])
             self.assertTrue(Path(str(reused["plugin"])).is_file())
 
