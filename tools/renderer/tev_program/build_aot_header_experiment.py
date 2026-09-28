@@ -23,11 +23,19 @@ def main():
     p.add_argument("--object-cache", type=Path)
     p.add_argument("--max-new-objects", type=int)
     p.add_argument("--timeout-seconds", type=int, default=600)
+    pgo = p.add_mutually_exclusive_group()
+    pgo.add_argument("--pgo-generate", action="store_true",
+                     help="instrument the module; LLVM_PROFILE_FILE names the .profraw output")
+    pgo.add_argument("--pgo-use", type=Path, help="merged .profdata from real workloads")
     args = p.parse_args()
     repo = TOOLS.parent
     args.output.mkdir(parents=True, exist_ok=True)
     cache_root = args.object_cache or args.output / "objects"
-    toolchain = NativeToolchain(compiler=args.compiler, archiver=args.archiver)
+    profile_mode = "generate" if args.pgo_generate else "use" if args.pgo_use else "none"
+    toolchain = NativeToolchain(compiler=args.compiler, archiver=args.archiver,
+                                profile_instrumentation=profile_mode,
+                                profile_data=args.pgo_use.resolve() if args.pgo_use else None)
+    profile_flags = cache._profile_arguments(toolchain)
     if args.max_new_objects is not None:
         # Preflight uses the same identities as the builder. Refuse accidental
         # full rebuilds when measuring a small emitter-only experiment.
@@ -62,11 +70,13 @@ def main():
     compile_command = [str(args.compiler), "--target=x86_64-pc-windows-msvc",
         "/nologo", "/TP", "/EHsc", "/O2", "/Ob2", "/DNDEBUG", "/std:c++20",
         "/MT", "/bigobj", "/fp:strict", "/w", "/Zc:preprocessor", "/Brepro",
-        "/DNOMINMAX", "/DOOT3D_NATIVE_GENERATED_WHOLE_AOT=1",
+        "/DNOMINMAX", "/DOOT3D_NATIVE_GENERATED_WHOLE_AOT=1", *profile_flags,
         *(f"/I{x}" for x in (args.generated, runtime, a32, a32 / "upstream", args.include)),
         "/c", f"/Fo{obj}", str(runtime / "triaevum_title_whole_aot_plugin.cpp")]
     link_command = [str(args.compiler), "--target=x86_64-pc-windows-msvc", "/nologo",
         "/LD", "/MT", f"/Fe{dll}", str(obj), archive["archive"], str(args.support),
+        # The driver adds the profile runtime only when generating counters.
+        *(("-fprofile-instr-generate",) if args.pgo_generate else ()),
         "-fuse-ld=lld", "/link", "/NOIMPLIB", "/OPT:REF", "/OPT:ICF",
         "/INCREMENTAL:NO", "/Brepro", f"/threads:{args.jobs}",
         f"/OPT:LLDLTOJOBS={args.jobs}", f"/lldltocache:{args.output / 'thinlto-cache'}",

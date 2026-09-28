@@ -188,6 +188,57 @@ class WholeAotObjectCacheTests(unittest.TestCase):
                 )
             )
 
+    def windows_toolchain(self, **overrides) -> NativeToolchain:
+        return NativeToolchain(self.compiler, self.archiver,
+                               target_triple=release_platform.WINDOWS.target,
+                               profile=release_platform.WINDOWS.profile, **overrides)
+
+    def test_profile_instrumentation_has_separate_object_identities(self) -> None:
+        plain = self.build()
+        profile = self.root / "title.profdata"
+        profile.write_bytes(b"merged profile v1")
+        self.runner.commands.clear()
+        generated = self.build(toolchain=self.windows_toolchain(
+            profile_instrumentation="generate"))
+        self.assertEqual(generated["objects_compiled"], 3)
+        self.assertNotEqual(generated["archive_cache_key"], plain["archive_cache_key"])
+        self.assertTrue(all("-fprofile-instr-generate" in command
+                            for command in self.runner.commands[:-1]))
+        self.runner.commands.clear()
+        used = self.build(toolchain=self.windows_toolchain(
+            profile_instrumentation="use", profile_data=profile))
+        self.assertEqual(used["objects_compiled"], 3)
+        self.assertTrue(all(f"-fprofile-instr-use={profile.resolve()}" in command
+                            for command in self.runner.commands[:-1]))
+        # A different profile is a different code-generation input.
+        profile.write_bytes(b"merged profile v2")
+        self.runner.commands.clear()
+        changed = self.build(toolchain=self.windows_toolchain(
+            profile_instrumentation="use", profile_data=profile))
+        self.assertEqual(changed["objects_compiled"], 3)
+        self.assertNotEqual(changed["archive_cache_key"], used["archive_cache_key"])
+        # Returning to no instrumentation reuses the original objects.
+        self.runner.commands.clear()
+        again = self.build()
+        self.assertEqual(again["objects_compiled"], 0)
+        self.assertEqual(again["archive_cache_key"], plain["archive_cache_key"])
+
+    def test_rejects_inconsistent_profile_instrumentation(self) -> None:
+        profile = self.root / "title.profdata"
+        profile.write_bytes(b"merged profile")
+        cases = (
+            ({"profile_instrumentation": "sample"}, "unsupported profile instrumentation"),
+            ({"profile_instrumentation": "use"}, "requires merged profile data"),
+            ({"profile_instrumentation": "generate", "profile_data": profile},
+             "only valid in profile use"),
+            ({"profile_instrumentation": "use", "profile_data": self.root / "missing"},
+             "profile data is not a regular file"),
+        )
+        for overrides, message in cases:
+            with self.subTest(overrides=overrides):
+                with self.assertRaisesRegex(WholeAotObjectError, message):
+                    self.build(toolchain=self.windows_toolchain(**overrides))
+
     def test_linux_target_uses_elf_recipes(self) -> None:
         result = self.build(toolchain=NativeToolchain(
             self.compiler, self.archiver,
