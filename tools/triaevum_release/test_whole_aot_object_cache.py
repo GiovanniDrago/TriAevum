@@ -205,6 +205,13 @@ class WholeAotObjectCacheTests(unittest.TestCase):
         self.assertTrue(all("-fprofile-instr-generate" in command
                             for command in self.runner.commands[:-1]))
         self.runner.commands.clear()
+        ir = self.build(toolchain=self.windows_toolchain(
+            profile_instrumentation="generate-ir"))
+        self.assertEqual(ir["objects_compiled"], 3)
+        self.assertNotEqual(ir["archive_cache_key"], generated["archive_cache_key"])
+        self.assertTrue(all("-fprofile-generate" in command
+                            for command in self.runner.commands[:-1]))
+        self.runner.commands.clear()
         used = self.build(toolchain=self.windows_toolchain(
             profile_instrumentation="use", profile_data=profile))
         self.assertEqual(used["objects_compiled"], 3)

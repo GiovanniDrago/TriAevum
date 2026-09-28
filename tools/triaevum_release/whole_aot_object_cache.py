@@ -59,9 +59,11 @@ class NativeToolchain:
     target_triple: str = release_platform.WINDOWS.target
     profile: str = release_platform.WINDOWS.profile
     sysroot: Path | None = None
-    # Developer-side LLVM instrumentation PGO. "generate" emits counters;
-    # "use" consumes a merged .profdata recorded from real workloads. Both
-    # change code generation only, so they are part of the object identity.
+    # Developer-side LLVM instrumentation PGO. "generate" emits front-end
+    # counters, "generate-ir" emits IR-level counters (required for
+    # context-sensitive PGO); "use" consumes a merged .profdata of either
+    # kind, which clang detects from the profile header. All change code
+    # generation only, so they are part of the object identity.
     profile_instrumentation: str = "none"
     profile_data: Path | None = None
 
@@ -70,12 +72,14 @@ class NativeToolchain:
         return release_platform.for_target(self.target_triple)
 
 
-PROFILE_INSTRUMENTATION_MODES = ("none", "generate", "use")
+PROFILE_INSTRUMENTATION_MODES = ("none", "generate", "generate-ir", "use")
 
 
 def _profile_arguments(toolchain: NativeToolchain) -> tuple[str, ...]:
     if toolchain.profile_instrumentation == "generate":
         return ("-fprofile-instr-generate",)
+    if toolchain.profile_instrumentation == "generate-ir":
+        return ("-fprofile-generate",)
     if toolchain.profile_instrumentation == "use":
         assert toolchain.profile_data is not None
         return (f"-fprofile-instr-use={toolchain.profile_data}",)

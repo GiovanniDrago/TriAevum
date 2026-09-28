@@ -26,6 +26,8 @@ def main():
     pgo = p.add_mutually_exclusive_group()
     pgo.add_argument("--pgo-generate", action="store_true",
                      help="instrument the module; LLVM_PROFILE_FILE names the .profraw output")
+    pgo.add_argument("--pgo-generate-ir", action="store_true",
+                     help="like --pgo-generate with IR-level counters; its profile enables CS-PGO")
     pgo.add_argument("--pgo-use", type=Path, help="merged .profdata from real workloads")
     # Context-sensitive PGO runs in the ThinLTO backend after inlining, so it
     # changes only the link: objects compiled with --pgo-use are reused.
@@ -40,7 +42,8 @@ def main():
     repo = TOOLS.parent
     args.output.mkdir(parents=True, exist_ok=True)
     cache_root = args.object_cache or args.output / "objects"
-    profile_mode = "generate" if args.pgo_generate else "use" if args.pgo_use else "none"
+    profile_mode = ("generate" if args.pgo_generate else "generate-ir" if args.pgo_generate_ir
+                    else "use" if args.pgo_use else "none")
     toolchain = NativeToolchain(compiler=args.compiler, archiver=args.archiver,
                                 profile_instrumentation=profile_mode,
                                 profile_data=args.pgo_use.resolve() if args.pgo_use else None)
@@ -86,6 +89,7 @@ def main():
         "/LD", "/MT", f"/Fe{dll}", str(obj), archive["archive"], str(args.support),
         # The driver adds the profile runtime only when generating counters.
         *(("-fprofile-instr-generate",) if args.pgo_generate or args.cspgo_generate else ()),
+        *(("-fprofile-generate",) if args.pgo_generate_ir else ()),
         "-fuse-ld=lld", "/link", "/NOIMPLIB", "/OPT:REF", "/OPT:ICF",
         "/INCREMENTAL:NO", "/Brepro", f"/threads:{args.jobs}",
         f"/OPT:LLDLTOJOBS={args.jobs}", f"/lldltocache:{args.output / 'thinlto-cache'}",
