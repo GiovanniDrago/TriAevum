@@ -558,6 +558,19 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 endif()
 set_property(TARGET oot3d_native_a32_runtime_tests PROPERTY FOLDER Tests)
 
+add_executable(oot3d_native_a32_vfp_fast_tests EXCLUDE_FROM_ALL
+    tools/oot3d/native_a32_runtime/oot3d_native_a32_vfp_fast_tests.cpp
+)
+target_link_libraries(oot3d_native_a32_vfp_fast_tests PRIVATE
+    oot3d_native_a32_runtime)
+target_compile_options(oot3d_native_a32_vfp_fast_tests PRIVATE "${WARNING_OVERRIDE}"
+    $<IF:$<CXX_COMPILER_FRONTEND_VARIANT:MSVC>,/fp:strict,-ffp-model=strict>)
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_compile_definitions(oot3d_native_a32_vfp_fast_tests PRIVATE NOMINMAX)
+    set_property(TARGET oot3d_native_a32_vfp_fast_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+set_property(TARGET oot3d_native_a32_vfp_fast_tests PROPERTY FOLDER Tests)
+
 if (NOT TARGET nlohmann_json::nlohmann_json)
     find_package(nlohmann_json REQUIRED)
 endif()

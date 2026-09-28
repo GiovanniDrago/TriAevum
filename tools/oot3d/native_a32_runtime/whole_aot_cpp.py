@@ -1388,16 +1388,18 @@ def _emit_vfp(item: Instruction) -> list[str]:
     left = _vfp_lane(raw, 16, 7)
     right = _vfp_lane(raw, 0, 5)
     ternary = raw & 0x0FB00F50
+    # Oot3dVfp* are inline host-float fast paths with the software operation
+    # as their exact fallback (oot3d_native_a32_vfp_fast.h).
     operation = {
-        0x0E000A00: "VfpBinary32MultiplyAccumulate",
-        0x0E000A40: "VfpBinary32MultiplySubtract",
-        0x0E100A40: "VfpBinary32NegativeMultiplyAccumulate",
-        0x0E100A00: "VfpBinary32NegativeMultiplySubtract",
-        0x0E200A00: "VfpBinary32Multiply",
-        0x0E200A40: "VfpBinary32NegativeMultiply",
-        0x0E300A00: "VfpBinary32Add",
-        0x0E300A40: "VfpBinary32Subtract",
-        0x0E800A00: "VfpBinary32Divide",
+        0x0E000A00: "Oot3dVfpMultiplyAccumulate",
+        0x0E000A40: "Oot3dVfpMultiplySubtract",
+        0x0E100A40: "Oot3dVfpNegativeMultiplyAccumulate",
+        0x0E100A00: "Oot3dVfpNegativeMultiplySubtract",
+        0x0E200A00: "Oot3dVfpMultiply",
+        0x0E200A40: "Oot3dVfpNegativeMultiply",
+        0x0E300A00: "Oot3dVfpAdd",
+        0x0E300A40: "Oot3dVfpSubtract",
+        0x0E800A00: "a32::VfpBinary32Divide",
     }.get(ternary)
     body.extend([
         "if ((frame.Guest.fpscr & 0x00379F00U) != 0U) {",
@@ -1416,7 +1418,7 @@ def _emit_vfp(item: Instruction) -> list[str]:
         body.append(
             f"Oot3dAotCommitVfp({_lane(destination)}, frame.Guest.fpscr,"
         )
-        body.append(f"    a32::{operation}({', '.join(arguments)}));")
+        body.append(f"    {operation}({', '.join(arguments)}));")
         return _conditional(raw, body)
 
     unary = raw & 0x0FBF0FD0
@@ -1444,13 +1446,13 @@ def _emit_vfp(item: Instruction) -> list[str]:
         )
     elif unary in {0x0EB80AC0, 0x0EB80A40}:
         operation = (
-            "VfpBinary32FromSigned" if unary == 0x0EB80AC0
-            else "VfpBinary32FromUnsigned"
+            "Oot3dVfpFromSigned" if unary == 0x0EB80AC0
+            else "a32::VfpBinary32FromUnsigned"
         )
         body.extend(
             [
                 f"Oot3dAotCommitVfp({_lane(destination)}, frame.Guest.fpscr,",
-                f"    a32::{operation}({_lane(right)}, frame.Guest.fpscr));",
+                f"    {operation}({_lane(right)}, frame.Guest.fpscr));",
             ]
         )
     elif unary == 0x0EBC0AC0:
@@ -1844,6 +1846,7 @@ def _render_function(
     callback_free: bool = False,
     symbol_suffix: str = "",
     memory_view: bool = False,
+    local_state: bool = False,
     memory_copy: bool = False,
 ) -> list[str]:
     symbol = _symbol(function.name, function.entry) + symbol_suffix
@@ -1860,7 +1863,7 @@ def _render_function(
     )
     # Broad residency regressed the matched full-title workload. Keep local
     # state only at the existing explicitly selected callback-free boundaries.
-    local_state = callback_free or memory_view
+    local_state = local_state or callback_free or memory_view
     lines = [
         f"Oot3dWholeAotFlow Execute_{symbol}(",
         "    Oot3dWholeAotFrame& frame, Oot3dWholeAotContext& context,",
@@ -2027,12 +2030,14 @@ def _render_region_function(
     external_entries: frozenset[int],
     region_entries: frozenset[int],
     memory_entries: frozenset[int] = frozenset(),
+    local_state: bool = False,
 ) -> list[str]:
     memory = function.entry in memory_entries
     if memory and any(carried_pair_copy(block) for block in function.blocks):
         return _render_function(function, symbols, external_entries, memory_copy=True)
     if function.entry not in region_entries and not memory:
-        return _render_function(function, symbols, external_entries)
+        return _render_function(function, symbols, external_entries,
+                                local_state=local_state)
     pcs = {block.pc for block in function.blocks}
     # No guest call may change the callback configuration inside this region.
     if function.direct_calls or not function.blocks or any(
@@ -2114,6 +2119,7 @@ def _render_source(
     functions: tuple[Function, ...], external_entries: frozenset[int],
     region_entries: frozenset[int] = frozenset(),
     memory_entries: frozenset[int] = frozenset(),
+    local_state: bool = False,
 ) -> str:
     functions_by_entry = {function.entry: function for function in functions}
     function_symbols = {
@@ -2151,7 +2157,7 @@ def _render_source(
     lines.append("")
     for function in functions:
         lines.extend(
-            _render_region_function(function, function_symbols, external_entries, region_entries, memory_entries)
+            _render_region_function(function, function_symbols, external_entries, region_entries, memory_entries, local_state)
         )
     lines.extend(
         [
@@ -2335,6 +2341,7 @@ def _render_shard_source(
     declarations: tuple[Function, ...],
     region_entries: frozenset[int] = frozenset(),
     memory_entries: frozenset[int] = frozenset(),
+    local_state: bool = False,
 ) -> str:
     lines = [
         f'#include "{INTERNAL_HEADER_NAME}"',
@@ -2351,7 +2358,7 @@ def _render_shard_source(
     lines.extend(_render_function_declarations(declarations))
     lines.append("")
     for function in functions:
-        lines.extend(_render_region_function(function, all_symbols, external_entries, region_entries, memory_entries))
+        lines.extend(_render_region_function(function, all_symbols, external_entries, region_entries, memory_entries, local_state))
     lines.extend(["} // namespace Oot3dNativeGame::GeneratedWholeAot", ""])
     return "\n".join(lines)
 
@@ -2870,6 +2877,7 @@ def generate(
     shard_strategy: str = "stable",
     region_entries: frozenset[int] = frozenset(),
     memory_entries: frozenset[int] = frozenset(),
+    local_state: bool = False,
 ) -> dict[str, object]:
     if shard_count <= 0:
         raise ValueError("whole-AOT shard count must be positive")
@@ -2908,6 +2916,7 @@ def generate(
             "callback_free_regions": sorted(region_entries),
             "memory_regions": sorted(memory_entries),
             "memory_region_contract_sha256": memory_contract,
+            **({"local_state": True} if local_state else {}),
         }
         files = cached.get("files", {})
         cached_shards = {
@@ -2936,7 +2945,8 @@ def generate(
     shard_records: list[dict[str, object]] = []
     if shard_count == 1:
         generated_files[SOURCE_NAME] = _render_source(
-            functions, external_entries, region_entries, memory_entries
+            functions, external_entries, region_entries, memory_entries,
+            local_state,
         ).encode("utf-8")
     else:
         function_symbols = {
@@ -2980,6 +2990,7 @@ def generate(
                 declarations,
                 region_entries,
                 memory_entries,
+                local_state,
             ).encode("utf-8")
             shard_records.append(
                 {
@@ -3013,6 +3024,7 @@ def generate(
         "callback_free_regions": sorted(region_entries),
         "memory_regions": sorted(memory_entries),
         "memory_region_contract_sha256": memory_contract,
+        **({"local_state": True} if local_state else {}),
         "shards": shard_records,
         "functions": [
             {

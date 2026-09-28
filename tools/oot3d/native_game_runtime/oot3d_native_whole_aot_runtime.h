@@ -3,6 +3,7 @@
 #include "recomp/a32_runtime.h"
 #include "recomp/a32_vfp_binary64.h"
 #include "oot3d_aot_architectural_state.h"
+#include "oot3d_native_a32_vfp_fast.h"
 #include "oot3d_native_a32_vfp_ops.h"
 
 #include <algorithm>

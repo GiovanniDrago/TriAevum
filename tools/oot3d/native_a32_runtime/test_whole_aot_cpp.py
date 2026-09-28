@@ -303,6 +303,26 @@ class WholeAotCppTests(unittest.TestCase):
             source = (output / SOURCE_NAME).read_text(encoding="utf-8")
             self.assertIn("VfpBinary32ToSigned", source)
 
+    def test_emits_inline_vfp_fast_paths_with_exact_fallbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inputs = self.write_inputs(
+                root,
+                # VADD, VMLA, VDIV, VCVT.F32.S32 and VCVT.F32.U32 (all s0).
+                words(0xEE300A00, 0xEE000A00, 0xEE800A00, 0xEEB80AC0,
+                      0xEEB80A40, 0xE12FFF1E),
+            )
+            output = root / "output"
+            generate(*inputs, output)
+            source = (output / SOURCE_NAME).read_text(encoding="utf-8")
+            self.assertIn("Oot3dVfpAdd(", source)
+            self.assertIn("Oot3dVfpMultiplyAccumulate(", source)
+            self.assertIn("Oot3dVfpFromSigned(", source)
+            # No exact host-float form: stay on the software implementation.
+            self.assertIn("a32::VfpBinary32Divide(", source)
+            self.assertIn("a32::VfpBinary32FromUnsigned(", source)
+            self.assertNotIn("a32::VfpBinary32Add(", source)
+
     def test_emits_exact_vfp_square_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
