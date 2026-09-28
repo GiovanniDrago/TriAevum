@@ -1950,7 +1950,12 @@ void GfxRenderingAPIVulkan::StartFrame() {
     markStart(4);
     bool nriAcquire = false;
     VkResult acquire = VK_NOT_READY;
-    for (;;) {
+    if (mBenchmarkNoPresent) {
+        // Private targets, one per frame in flight, guarded by the frame fence.
+        mCurrentImage = mCurrentFrame;
+        acquire = VK_SUCCESS;
+    }
+    for (; !mBenchmarkNoPresent;) {
         if (mNriSwapchain.Active()) {
             const auto result =
                 mNriSwapchain.Acquire(mCurrentFrame, mCurrentImage);
@@ -2031,7 +2036,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
     CheckVk(vkResetFences(mDevice, 1, &mInFlightFences[mCurrentFrame]), "vkResetFences");
     CheckVk(vkResetCommandBuffer(mCommandBuffers[mCurrentFrame], 0), "vkResetCommandBuffer");
 
-    mFrameAcquirePending = true;
+    mFrameAcquirePending = !mBenchmarkNoPresent;
     mFrameExternalComputeSplit = false;
     mFrameExternalWaitSemaphore = VK_NULL_HANDLE;
     mFrameExternalWaitValue = 0U;
@@ -2155,7 +2160,9 @@ void GfxRenderingAPIVulkan::FinishRender() {
         return;
     }
     bool nriPresented = false;
-    if (mNriSwapchain.Active()) {
+    if (mBenchmarkNoPresent) {
+        // Throughput benchmark: the frame is complete once submitted.
+    } else if (mNriSwapchain.Active()) {
         const auto result = mNriSwapchain.Present(mCurrentImage);
         if (result == Oot3d::NriSwapchainOperationResult::OutOfDate) {
             mSwapchainDirty = true;
@@ -4674,6 +4681,59 @@ void GfxRenderingAPIVulkan::DestroyNativePicaPipelines() {
     mPicaPipelinePrewarmedProfiles.clear();
 }
 
+void GfxRenderingAPIVulkan::CreateNoPresentTargets(VkFormat format,
+                                                   VkExtent2D extent) {
+    const uint32_t count = kFramesInFlight;
+    mSwapchainImages.assign(count, VK_NULL_HANDLE);
+    mSwapchainImageViews.assign(count, VK_NULL_HANDLE);
+    mNoPresentMemories.assign(count, VK_NULL_HANDLE);
+    for (uint32_t index = 0; index < count; ++index) {
+        VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = format;
+        imageInfo.extent = {extent.width, extent.height, 1U};
+        imageInfo.mipLevels = 1U;
+        imageInfo.arrayLayers = 1U;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                          VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        CheckVk(vkCreateImage(mDevice, &imageInfo, nullptr,
+                              &mSwapchainImages[index]),
+                "vkCreateImage(no-present target)");
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(mDevice, mSwapchainImages[index],
+                                     &requirements);
+        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = FindMemoryType(
+            requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        CheckVk(vkAllocateMemory(mDevice, &allocation, nullptr,
+                                 &mNoPresentMemories[index]),
+                "vkAllocateMemory(no-present target)");
+        CheckVk(vkBindImageMemory(mDevice, mSwapchainImages[index],
+                                  mNoPresentMemories[index], 0),
+                "vkBindImageMemory(no-present target)");
+        VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        viewInfo.image = mSwapchainImages[index];
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = format;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.layerCount = 1;
+        CheckVk(vkCreateImageView(mDevice, &viewInfo, nullptr,
+                                  &mSwapchainImageViews[index]),
+                "vkCreateImageView(no-present target)");
+    }
+    // No binary semaphores: nothing acquires or presents these images.
+    mRenderFinishedSemaphores.assign(count, VK_NULL_HANDLE);
+    mSwapchainFormat = format;
+    mSwapchainExtent = extent;
+}
+
 void GfxRenderingAPIVulkan::CreateSwapchainResources() {
     const auto support = QuerySwapchainSupport(mPhysicalDevice);
     const VkSurfaceFormatKHR surfaceFormat = ChooseSurfaceFormat(support.Formats);
@@ -4688,8 +4748,10 @@ void GfxRenderingAPIVulkan::CreateSwapchainResources() {
     if (support.Capabilities.maxImageCount > 0) {
         imageCount = std::min(imageCount, support.Capabilities.maxImageCount);
     }
+    const char* noPresent = std::getenv("TRIAEVUM_BENCHMARK_NO_PRESENT");
+    mBenchmarkNoPresent = noPresent != nullptr && std::string_view(noPresent) == "1";
     const bool nriCreated =
-        mNriSwapchain.Supported() &&
+        !mBenchmarkNoPresent && mNriSwapchain.Supported() &&
         mNriSwapchain.Create({
             ResolveNriNativeWindow(mWindowBackend),
             extent.width,
@@ -4727,6 +4789,11 @@ void GfxRenderingAPIVulkan::CreateSwapchainResources() {
         for (uint32_t index = 0; index < imageCount; ++index)
             mRenderFinishedSemaphores[index] =
                 mNriSwapchain.ReleaseSemaphore(index);
+    } else if (mBenchmarkNoPresent) {
+        SPDLOG_WARN("OOT3D Vulkan benchmark no-present mode: frames are rendered "
+                    "but never presented");
+        CreateNoPresentTargets(surfaceFormat.format, extent);
+        imageCount = static_cast<uint32_t>(mSwapchainImages.size());
     } else {
         if (mNriSwapchain.Supported()) {
             mDiagnostics.SetVulkanPresentationFallback(
@@ -4968,6 +5035,13 @@ void GfxRenderingAPIVulkan::DestroySwapchainResources() {
     if (!nriOwned) {
         for (VkImageView view : mSwapchainImageViews)
             vkDestroyImageView(mDevice, view, nullptr);
+    }
+    if (!mNoPresentMemories.empty()) {
+        for (VkImage image : mSwapchainImages)
+            vkDestroyImage(mDevice, image, nullptr);
+        for (VkDeviceMemory memory : mNoPresentMemories)
+            vkFreeMemory(mDevice, memory, nullptr);
+        mNoPresentMemories.clear();
     }
     mSwapchainImageViews.clear();
     mSwapchainImages.clear();

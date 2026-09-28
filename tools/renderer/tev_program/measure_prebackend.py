@@ -41,6 +41,8 @@ def main():
     parser.add_argument("--baseline-plugin", type=Path, help="Explicit control module for matched-source comparisons")
     parser.add_argument("--sample-map", type=Path, help="Link map belonging exactly to diagnostic-plugin")
     parser.add_argument("--stack-sampler", type=Path, help="External Windows stack sampler (diagnostic only)")
+    parser.add_argument("--no-present", action="store_true",
+                        help="Developer throughput mode: render but never present, so display refresh cannot pace frames")
     parser.add_argument("--sample-delay", type=float, default=10, help="Seconds before diagnostic sampling")
     args = parser.parse_args()
     if not 40 <= args.timeout_seconds <= 1800:
@@ -107,6 +109,9 @@ def main():
         env.pop("TRIAEVUM_PROFILE_CPU_LEDGER", None)
         if args.thread_cpu_ledger:
             env["TRIAEVUM_PROFILE_CPU_LEDGER"] = "1"
+        env.pop("TRIAEVUM_BENCHMARK_NO_PRESENT", None)
+        if args.no_present:
+            env["TRIAEVUM_BENCHMARK_NO_PRESENT"] = "1"
         with (root / "stdout.log").open("w") as out, (root / "stderr.log").open("w") as err:
             process = subprocess.Popen(command, cwd=root, env=env, stdout=out, stderr=err)
             try:
@@ -149,6 +154,7 @@ def main():
                         "diagnostic_plugin": str(args.diagnostic_plugin) if args.diagnostic_plugin else None,
                         "intrusive_native_sampling": args.sample_map is not None,
                         "thread_cpu_ledger": args.thread_cpu_ledger,
+                        "no_present": args.no_present,
                         "memory_fingerprint": data["memory_content_fingerprint"]})
         (args.output / "measurements.json").write_text(json.dumps(results, indent=2))
         print(json.dumps({"run": run, "whole_fps": window["frames_per_second"], "pre_backend": budget}), flush=True)

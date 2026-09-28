@@ -807,6 +807,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     std::string BuildFragmentShaderSource(uint64_t shaderId0, uint64_t shaderId1) const;
     static VulkanShaderProgram BuildShaderProgram(uint64_t shaderId0, uint64_t shaderId1);
     void CreateDepthResources();
+    void CreateNoPresentTargets(VkFormat format, VkExtent2D extent);
     void BeginRenderPassIfNeeded();
     void ApplyDynamicViewportAndScissor();
     void DrawTrianglesFromBuffer(VkBuffer vertexBuffer, VkDeviceSize vertexOffset,
@@ -847,6 +848,11 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     VkFormat mDepthFormat = VK_FORMAT_UNDEFINED;
     std::vector<VkImage> mDepthImages;
     std::vector<VkDeviceMemory> mDepthMemories;
+    // Developer throughput benchmarks only (TRIAEVUM_BENCHMARK_NO_PRESENT=1):
+    // frames render into private images of the surface format and extent and
+    // are never presented, so display refresh cannot pace GPU completion.
+    bool mBenchmarkNoPresent = false;
+    std::vector<VkDeviceMemory> mNoPresentMemories;
     std::vector<VkImageView> mDepthImageViews;
     VkRenderPass mRenderPass = VK_NULL_HANDLE;
     VkRenderPass mOverlayRenderPass = VK_NULL_HANDLE;
