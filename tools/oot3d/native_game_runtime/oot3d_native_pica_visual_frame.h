@@ -189,6 +189,16 @@ class Oot3dPicaVisualFrameAccumulator final {
     void Append(Oot3dPicaDisplayTransferSubmission transfer);
     std::optional<Oot3dPicaVisualFrame>
     Finish(const Oot3dPicaDisplayTransferSubmission& topTransfer);
+    // Closes the pending work as one visual frame per completed guest frame,
+    // oldest first. When the host falls behind, several guest refreshes
+    // accumulate: an earlier snapshot of the selected transfer's source into a
+    // known top-screen display framebuffer (displayOutputs) ends one guest
+    // frame. Other transfers of that source (captures into other buffers)
+    // stay inside their frame. Work of the guest's next frame, drawn after the
+    // selected snapshot into its source, stays pending for the next call.
+    std::vector<Oot3dPicaVisualFrame>
+    FinishFrames(const Oot3dPicaDisplayTransferSubmission& topTransfer,
+                 std::span<const uint32_t> displayOutputs);
     size_t PendingDrawCount() const;
     // Live plans the accumulator has not published as a frame yet. They still
     // pin the copy versions their textures reference.

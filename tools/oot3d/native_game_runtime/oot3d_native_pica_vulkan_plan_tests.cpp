@@ -448,6 +448,95 @@ int main() {
                 currentFrame->Sequence == 2U &&
                 accumulator.PendingDrawCount() == 0U,
             "native PICA visual frame boundaries were not retained");
+    {
+        // Two guest frames accumulated before the host selected the second:
+        // one visual frame each, split at the earlier snapshot into a known
+        // display framebuffer; a capture into another buffer stays in its frame.
+        Oot3dNativeGame::Oot3dPicaVisualFrameAccumulator behind;
+        auto first = plan;
+        first.SubmissionId = 100U;
+        auto second = cachedPlan;
+        second.SubmissionId = 101U;
+        Oot3dNativeGame::Oot3dPicaDisplayTransferSubmission firstTop;
+        firstTop.CompletionId = 10U;
+        firstTop.InputPhysicalAddress = 0x18000000U;
+        firstTop.OutputPhysicalAddress = 0x18460000U;
+        firstTop.AfterDrawSubmissionId = first.SubmissionId;
+        auto capture = firstTop;
+        capture.CompletionId = 11U;
+        capture.OutputPhysicalAddress = 0x18700000U;
+        auto secondTop = firstTop;
+        secondTop.CompletionId = 12U;
+        secondTop.OutputPhysicalAddress = 0x184A0000U;
+        secondTop.AfterDrawSubmissionId = second.SubmissionId;
+        auto secondFill = fill;
+        secondFill.BeforeDrawSubmissionId = second.SubmissionId;
+        behind.Append(first);
+        behind.Append(capture);
+        behind.Append(firstTop);
+        behind.Append(secondFill);
+        behind.Append(second);
+        behind.Append(secondTop);
+        const std::array<uint32_t, 2> outputs{0x18460000U, 0x184A0000U};
+        auto frames = behind.FinishFrames(secondTop, outputs);
+        Require(frames.size() == 2U && frames[0].Draws.size() == 1U &&
+                    frames[0].Draws[0].SubmissionId == first.SubmissionId &&
+                    frames[0].TopTransfer.CompletionId == firstTop.CompletionId &&
+                    frames[0].DisplayTransfers.size() == 2U && frames[0].MemoryFills.empty() &&
+                    frames[1].Draws.size() == 1U &&
+                    frames[1].Draws[0].SubmissionId == second.SubmissionId &&
+                    frames[1].TopTransfer.CompletionId == secondTop.CompletionId &&
+                    frames[1].DisplayTransfers.size() == 1U && frames[1].MemoryFills.size() == 1U &&
+                    frames[1].Sequence == frames[0].Sequence + 1U &&
+                    behind.PendingDrawCount() == 0U,
+                "accumulated guest frames were not separated");
+        behind.Append(first);
+        behind.Append(capture);
+        behind.Append(second);
+        behind.Append(secondTop);
+        frames = behind.FinishFrames(secondTop, outputs);
+        Require(frames.size() == 1U && frames[0].Draws.size() == 2U,
+                "a capture into a non-display buffer split a guest frame");
+        behind.Append(first);
+        behind.Append(firstTop);
+        behind.Append(second);
+        behind.Append(secondTop);
+        frames = behind.FinishFrames(secondTop, {});
+        Require(frames.size() == 1U && frames[0].Draws.size() == 2U,
+                "a frame was split without known display framebuffers");
+
+        // The guest drew its next frame before the host selected the first:
+        // that work stays pending; the first frame's bottom-screen draw after
+        // its top snapshot stays with it.
+        auto bottom = cachedPlan;
+        bottom.SubmissionId = 200U;
+        bottom.State.Framebuffer.ColorPhysicalAddress = 0x18300000U;
+        auto nextWorld = plan;
+        nextWorld.SubmissionId = 201U;
+        auto nextFill = fill;
+        nextFill.BeforeDrawSubmissionId = nextWorld.SubmissionId;
+        auto nextTop = secondTop;
+        nextTop.CompletionId = 13U;
+        nextTop.AfterDrawSubmissionId = nextWorld.SubmissionId;
+        behind.Append(first);
+        behind.Append(firstTop);
+        behind.Append(bottom);
+        behind.Append(nextFill);
+        behind.Append(nextWorld);
+        behind.Append(nextTop);
+        frames = behind.FinishFrames(firstTop, outputs);
+        Require(frames.size() == 1U && frames[0].Draws.size() == 2U &&
+                    frames[0].Draws.back().SubmissionId == bottom.SubmissionId &&
+                    frames[0].MemoryFills.empty() && frames[0].DisplayTransfers.size() == 1U &&
+                    behind.PendingDrawCount() == 1U,
+                "the guest's next frame was merged into the selected one");
+        frames = behind.FinishFrames(nextTop, outputs);
+        Require(frames.size() == 1U && frames[0].Draws.size() == 1U &&
+                    frames[0].Draws[0].SubmissionId == nextWorld.SubmissionId &&
+                    frames[0].MemoryFills.size() == 1U && frames[0].DisplayTransfers.size() == 1U &&
+                    behind.PendingDrawCount() == 0U,
+                "retained next-frame work was not closed with its own snapshot");
+    }
     const auto transition =
         Oot3dNativeGame::AnalyzeOot3dPicaVisualTransition(
             *previousFrame, *currentFrame);

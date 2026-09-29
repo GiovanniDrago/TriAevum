@@ -71,6 +71,15 @@ std::optional<Oot3dPicaVisualFrame> Oot3dPicaPresentationScheduler::FinishFrame(
   return frame;
 }
 
+std::vector<Oot3dPicaVisualFrame> Oot3dPicaPresentationScheduler::FinishFrames(
+    const Oot3dPicaDisplayTransferSubmission &topTransfer,
+    std::span<const uint32_t> displayOutputs) {
+  auto frames = mAccumulator.FinishFrames(topTransfer, displayOutputs);
+  mStats.CompletedVisualFrames += frames.size();
+  mStats.SupersededVisualFrames += frames.empty() ? 0U : frames.size() - 1U;
+  return frames;
+}
+
 void Oot3dPicaPresentationScheduler::BeginPresentation(
     uint64_t presentationSerial) {
   if (mPresentationSerial == presentationSerial) {

@@ -4377,6 +4377,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   uint64_t visualReusedSnapshotPresentations = 0;
   uint64_t visualDiscontinuityCount = 0;
   uint64_t visualNamespaceResyncCount = 0;
+  // Output addresses of selected top-screen transfers (the display
+  // framebuffers): an earlier snapshot into one ends a superseded guest frame.
+  std::vector<uint32_t> topDisplayOutputs;
   uint64_t visualSampleDrawCount = 0;
   uint64_t visualInterpolatedDrawCount = 0;
   uint64_t visualInterpolatedPerInstanceVertexDrawCount = 0;
@@ -6199,6 +6202,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               const auto topSelection = selected->second;
               std::shared_ptr<Oot3dNativeGame::Oot3dPicaVisualFrame>
                   completedFrame;
+              // Guest frames completed before the selected one while the host
+              // fell behind: canonical work and interpolation history only.
+              std::shared_ptr<std::vector<Oot3dNativeGame::Oot3dPicaVisualFrame>>
+                  supersededFrames;
               std::vector<Fast::Oot3d::GrassInteractor> frameActors;
               bool suppressTopScreenBackdrop = false;
               if (topSelection.CompletionId !=
@@ -6206,8 +6213,23 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                 lastSelectedTopTransferCompletionId =
                     topSelection.CompletionId;
                 ++selectedTopTransferCount;
-                auto finished =
-                    picaPresentationScheduler.FinishFrame(topSelection);
+                auto finishedFrames = picaPresentationScheduler.FinishFrames(
+                    topSelection, topDisplayOutputs);
+                if (std::find(topDisplayOutputs.begin(), topDisplayOutputs.end(),
+                              topSelection.OutputPhysicalAddress) == topDisplayOutputs.end()) {
+                  if (topDisplayOutputs.size() == 4U)
+                    topDisplayOutputs.erase(topDisplayOutputs.begin());
+                  topDisplayOutputs.push_back(topSelection.OutputPhysicalAddress);
+                }
+                std::optional<Oot3dNativeGame::Oot3dPicaVisualFrame> finished;
+                if (!finishedFrames.empty()) {
+                  finished = std::move(finishedFrames.back());
+                  finishedFrames.pop_back();
+                  if (!finishedFrames.empty())
+                    supersededFrames = std::make_shared<
+                        std::vector<Oot3dNativeGame::Oot3dPicaVisualFrame>>(
+                        std::move(finishedFrames));
+                }
                 if (finished.has_value()) {
                   frameActors = Oot3dNativeGame::CollectNativeActorInteractions(
                       process.Memory(),
@@ -6223,7 +6245,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                           std::move(*finished));
                 }
               }
-              renderStream.Submit([&, topSelection, completedFrame,
+              renderStream.Submit([&, topSelection, completedFrame, supersededFrames,
                                    frameActors, suppressTopScreenBackdrop,
                                    presentationElapsedSeconds,
                                    visualInterpolationAlpha, frameCount,
@@ -6234,6 +6256,33 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               bool presentedVisualSample = false;
               bool selectedNewVisualFrame = false;
               {
+                if (completedFrame != nullptr && supersededFrames != nullptr) {
+                  for (auto &superseded : *supersededFrames) {
+                    auto &sample = visualFrameSampleScratch;
+                    (void)Oot3dNativeGame::ViewOot3dPicaVisualFrame(
+                        superseded, sample, true);
+                    const auto nativeTemporalSample =
+                        Fast::Oot3d::BuildNativeFrameTemporalSample(
+                            frameCompositionPolicy,
+                            Fast::Oot3d::NativeFrameTemporalSampleKind::
+                                Authoritative,
+                            superseded.Sequence, superseded.Sequence,
+                            visualContinuityEpoch, 1.0F,
+                            static_cast<float>(presentationElapsedSeconds));
+                    executeVisualSample(
+                        sample,
+                        Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::
+                            NativeFrame,
+                        false, nativeTemporalSample,
+                        kNativeDependencyRenderTargetNamespace);
+                    if (visualInterpolationEnabled) {
+                      preparedVisualTransition.Reset();
+                      if (latestVisualFrame.has_value())
+                        previousVisualFrame = std::move(latestVisualFrame);
+                      latestVisualFrame = std::move(superseded);
+                    }
+                  }
+                }
                 if (completedFrame != nullptr) {
                   std::optional<Oot3dNativeGame::Oot3dPicaVisualFrame>
                       currentVisualFrame(std::move(*completedFrame));
@@ -7998,6 +8047,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                       stats.CapturedDisplayTransfers},
                      {"completed_visual_frames",
                       stats.CompletedVisualFrames},
+                     {"superseded_visual_frames",
+                      stats.SupersededVisualFrames},
                      {"selected_draws", stats.SelectedDraws},
                      {"executed_draws", stats.ExecutedDraws},
                      {"interpolated_draws", stats.InterpolatedDraws},

@@ -1693,26 +1693,112 @@ void Oot3dPicaVisualFrameAccumulator::Append(
 
 std::optional<Oot3dPicaVisualFrame> Oot3dPicaVisualFrameAccumulator::Finish(
     const Oot3dPicaDisplayTransferSubmission& topTransfer) {
-    if (mPendingDraws.empty()) {
+    auto frames = FinishFrames(topTransfer, {});
+    if (frames.empty()) {
         return std::nullopt;
     }
-    Oot3dPicaVisualFrame frame;
-    frame.Sequence = mNextSequence++;
-    frame.TopTransfer = topTransfer;
-    frame.Draws = std::move(mPendingDraws);
-    frame.StrictDrawIdentities.reserve(frame.Draws.size());
-    for (const auto& draw : frame.Draws) {
-        frame.StrictDrawIdentities.push_back(ComputeOot3dPicaVisualDrawIdentity(draw));
+    return std::move(frames.back());
+}
+
+std::vector<Oot3dPicaVisualFrame> Oot3dPicaVisualFrameAccumulator::FinishFrames(
+    const Oot3dPicaDisplayTransferSubmission& topTransfer,
+    std::span<const uint32_t> displayOutputs) {
+    std::vector<Oot3dPicaVisualFrame> frames;
+    if (mPendingDraws.empty()) {
+        return frames;
     }
-    frame.MemoryFills = std::move(mPendingMemoryFills);
-    frame.DisplayTransfers = std::move(mPendingDisplayTransfers);
-    mPendingDraws.clear();
-    mPendingMemoryFills.clear();
-    mPendingDisplayTransfers.clear();
+    // The guest may already have drawn its next frame into the other display
+    // buffer: from the first later draw into the selected transfer's source,
+    // the work belongs to the next visual frame and stays pending (the
+    // selected frame's later draws into other targets, such as the bottom
+    // screen, remain in it).
+    std::vector<Oot3dPicaVulkanDrawPlan> nextDraws;
+    std::vector<Oot3dPicaMemoryFillSubmission> nextFills;
+    std::vector<Oot3dPicaDisplayTransferSubmission> nextTransfers;
+    const auto next = std::find_if(mPendingDraws.begin(), mPendingDraws.end(), [&](const auto& draw) {
+        return draw.SubmissionId > topTransfer.AfterDrawSubmissionId &&
+               draw.State.Framebuffer.ColorPhysicalAddress == topTransfer.InputPhysicalAddress;
+    });
+    if (next != mPendingDraws.begin() && next != mPendingDraws.end()) {
+        const uint64_t nextStart = next->SubmissionId;
+        nextDraws.assign(std::make_move_iterator(next), std::make_move_iterator(mPendingDraws.end()));
+        mPendingDraws.erase(next, mPendingDraws.end());
+        const auto fill = std::find_if(mPendingMemoryFills.begin(), mPendingMemoryFills.end(),
+                                       [&](const auto& item) { return item.BeforeDrawSubmissionId >= nextStart; });
+        nextFills.assign(fill, mPendingMemoryFills.end());
+        mPendingMemoryFills.erase(fill, mPendingMemoryFills.end());
+        const auto transfer = std::find_if(mPendingDisplayTransfers.begin(), mPendingDisplayTransfers.end(),
+                                           [&](const auto& item) { return item.AfterDrawSubmissionId >= nextStart; });
+        nextTransfers.assign(transfer, mPendingDisplayTransfers.end());
+        mPendingDisplayTransfers.erase(transfer, mPendingDisplayTransfers.end());
+    }
+    // Ends of earlier guest frames: their snapshot of the same source into a
+    // display framebuffer, each followed by at least one draw.
+    std::vector<const Oot3dPicaDisplayTransferSubmission*> boundaries;
+    for (const auto& transfer : mPendingDisplayTransfers) {
+        if (transfer.Transfer.TextureCopyBytes != 0U ||
+            transfer.CompletionId == topTransfer.CompletionId ||
+            transfer.InputPhysicalAddress != topTransfer.InputPhysicalAddress ||
+            transfer.AfterDrawSubmissionId >= topTransfer.AfterDrawSubmissionId ||
+            std::find(displayOutputs.begin(), displayOutputs.end(),
+                      transfer.OutputPhysicalAddress) == displayOutputs.end()) {
+            continue;
+        }
+        const uint64_t previousEnd = boundaries.empty() ? 0U : boundaries.back()->AfterDrawSubmissionId;
+        const bool drawsBefore = std::any_of(mPendingDraws.begin(), mPendingDraws.end(), [&](const auto& draw) {
+            return draw.SubmissionId > previousEnd && draw.SubmissionId <= transfer.AfterDrawSubmissionId;
+        });
+        if (drawsBefore) boundaries.push_back(&transfer);
+    }
+    std::vector<uint64_t> ends;
+    for (const auto* boundary : boundaries) ends.push_back(boundary->AfterDrawSubmissionId);
+    const bool drawsAfter = !ends.empty() &&
+        std::any_of(mPendingDraws.begin(), mPendingDraws.end(),
+                    [&](const auto& draw) { return draw.SubmissionId > ends.back(); });
+    if (!drawsAfter) {
+        boundaries.clear();
+        ends.clear();
+    }
+    std::vector<Oot3dPicaDisplayTransferSubmission> tops;
+    for (const auto* boundary : boundaries) tops.push_back(*boundary);
+    tops.push_back(topTransfer);
+    ends.push_back(UINT64_MAX);
+
+    size_t draw = 0U, fill = 0U, transfer = 0U;
+    for (size_t segment = 0U; segment < ends.size(); ++segment) {
+        const uint64_t end = ends[segment];
+        Oot3dPicaVisualFrame frame;
+        frame.Sequence = mNextSequence++;
+        frame.TopTransfer = tops[segment];
+        const size_t firstDraw = draw;
+        while (draw < mPendingDraws.size() && mPendingDraws[draw].SubmissionId <= end) ++draw;
+        frame.Draws.assign(std::make_move_iterator(mPendingDraws.begin() + firstDraw),
+                           std::make_move_iterator(mPendingDraws.begin() + draw));
+        frame.StrictDrawIdentities.reserve(frame.Draws.size());
+        for (const auto& plan : frame.Draws) {
+            frame.StrictDrawIdentities.push_back(ComputeOot3dPicaVisualDrawIdentity(plan));
+        }
+        // A fill precedes its draw; a transfer follows its draw.
+        const size_t firstFill = fill;
+        while (fill < mPendingMemoryFills.size() && mPendingMemoryFills[fill].BeforeDrawSubmissionId <= end) ++fill;
+        frame.MemoryFills.assign(mPendingMemoryFills.begin() + firstFill, mPendingMemoryFills.begin() + fill);
+        const size_t firstTransfer = transfer;
+        while (transfer < mPendingDisplayTransfers.size() &&
+               mPendingDisplayTransfers[transfer].AfterDrawSubmissionId <= end) ++transfer;
+        frame.DisplayTransfers.assign(mPendingDisplayTransfers.begin() + firstTransfer,
+                                      mPendingDisplayTransfers.begin() + transfer);
+        frames.push_back(std::move(frame));
+    }
+    const size_t largest = std::max_element(frames.begin(), frames.end(), [](const auto& a, const auto& b) {
+        return a.Draws.size() < b.Draws.size();
+    })->Draws.size();
+    mPendingDraws = std::move(nextDraws);
+    mPendingMemoryFills = std::move(nextFills);
+    mPendingDisplayTransfers = std::move(nextTransfers);
     // Draw plans are several kilobytes each. Starting the next frame at this
     // frame's size avoids regrowing the vector and moving every plan again.
-    mPendingDraws.reserve(frame.Draws.size());
-    return frame;
+    mPendingDraws.reserve(largest);
+    return frames;
 }
 
 size_t Oot3dPicaVisualFrameAccumulator::PendingDrawCount() const {

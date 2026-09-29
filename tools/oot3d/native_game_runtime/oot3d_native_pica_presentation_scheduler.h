@@ -27,6 +27,10 @@ struct Oot3dPicaPresentationSchedulerStats {
   uint64_t CapturedMemoryFills = 0;
   uint64_t CapturedDisplayTransfers = 0;
   uint64_t CompletedVisualFrames = 0;
+  // Guest frames completed before the selected one within one host frame:
+  // executed for the canonical target and kept as interpolation history,
+  // never presented.
+  uint64_t SupersededVisualFrames = 0;
   uint64_t SelectedDraws = 0;
   uint64_t ExecutedDraws = 0;
   uint64_t InterpolatedDraws = 0;
@@ -80,6 +84,11 @@ public:
 
   std::optional<Oot3dPicaVisualFrame>
   FinishFrame(const Oot3dPicaDisplayTransferSubmission &topTransfer);
+  // One visual frame per guest frame completed since the last call, oldest
+  // first (see Oot3dPicaVisualFrameAccumulator::FinishFrames).
+  std::vector<Oot3dPicaVisualFrame>
+  FinishFrames(const Oot3dPicaDisplayTransferSubmission &topTransfer,
+               std::span<const uint32_t> displayOutputs);
   // GPU completion may precede scanout. Retain the native prefix in the complete
   // frame rather than consuming the only interpolation source.
   bool ViewDependencyWork(Oot3dPicaVisualFrameViewSample& output);
