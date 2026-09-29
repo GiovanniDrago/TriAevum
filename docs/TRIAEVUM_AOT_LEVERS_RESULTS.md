@@ -29,6 +29,10 @@ release catalogue, installed modules and Forge are unchanged.
 | Inline host-float VFP | exact SSE fast paths for add/sub/mul/multiply-accumulate/int-to-float, software fallback | **0.924** (0.89-1.00) | **0.946** | identical | **kept** |
 | Inline host-float VFP + its own PGO profile, vs PGO | same training set | **0.916** (0.88-0.95) | **0.926** (0.91-0.93, all pairs) | identical | **candidate for promotion**, 204 MB module |
 | Host: draw-plan vector capacity, allocation-free vertex layout | accumulator reserves the previous frame's draw count; `BuildPicaNriVertexInputLayout` drops per-draw `std::set`s and regrowth | **0.934** (0.87-0.95) | 0.989 | identical | **kept**; whole frame **0.919** (all pairs <= 0.93), same module both arms |
+| Host: incremental register-file ID | FNV-1a fold state kept per 32-word block, resumed from the first changed block | 0.983 (0.96-0.99) | 0.985 | identical | **kept**; whole frame 0.980 |
+| Host: fragment lighting decode reuse | per-thread memo on the registers the decoder reads | **0.955** (0.92-1.00) | 0.976 | identical | **kept**; whole frame 0.960 |
+| Host: snapshot reserve, per-slot sampler memo | resource vector reserved once; last sampler per texture slot | 0.984 (0.97-1.00) | 0.981 | identical | **kept**; whole frame 0.992 |
+| Host: SVC event names without streams | hex helper + `std::to_string` for ArbitrateAddress/WaitSynchronizationN | 0.982 (0.96-0.99) | 0.976 | identical | **kept**; runtime.json SVC text identical |
 | IR-level PGO instead of front-end PGO | `-fprofile-generate`, same training set | 1.016 (0.97-1.05) | 1.015 | identical | rejected: no gain over front-end PGO |
 | Context-sensitive PGO on the IR profile | IR profile + CS counters (2,404 functions) merged, `/lto-cs-profile-file` | 1.004 (A/A) | - | identical | not applied: module byte-identical to IR PGO; cause not investigated |
 | Context-sensitive PGO on the front-end profile | `/lto-cs-profile-generate`, merged profile at compile and link | - | - | - | inapplicable: CS-PGO needs an IR-level profile; the module was byte-identical to PGO (its ABBA, 0.966 pre-NRI, is an A/A reference) |
@@ -97,7 +101,8 @@ probe settings as the PGO qualification and compared with the control hashes
 recorded there: Field (captures at 120/240) and Sheik raw copy (120/240/360)
 framebuffers byte-identical; memory content/state, process state, draw and
 transfer counts, empty queues and PCM identical.
-The host allocation changes were qualified the same way (new host with
+The host allocation changes, and each later host step (register-file ID,
+lighting reuse, sampler memo, SVC names), were qualified the same way (new host with
 `mod-vfp-pgo`): all captures and contracts identical to the control.
 
 ## Reproduction
