@@ -1,6 +1,6 @@
 # FidelityFX Brixelizer GI: design
 
-Status: phases 1-2 done (debug view pending); phase 3 (diffuse GI) next. Owner surface: F1 **Lighting**.
+Status: phases 1-2 done; phase 3 (diffuse GI) next. Owner surface: F1 **Lighting**.
 
 ## Goal
 
@@ -185,8 +185,35 @@ the material guide (F0, roughness, reflection gain), filling SSSR misses only.
   KiB; free bricks 262,144 -> 197,770. GPU scratch is 268 MiB with the initial
   budgets (to reduce). With the switch off, Field and Sheik copy stay identical
   to the Interpolated2x baseline.
-- Not done yet: the SDF debug view (Brixelizer's debug visualization into an
-  inspectable image) and a GPU cost measurement of the update.
+- Debug view: `OOT3D_GRAPHICS_BRIXELIZER_DEBUG=<directory>` renders
+  Brixelizer's ray-marched debug visualization (mode from
+  `OOT3D_GRAPHICS_BRIXELIZER_DEBUG_MODE`, default 3 = normals) with the scene
+  camera every 150 updates into a private RGBA16F image and writes it as
+  `sdf-u<update>-m<mode>.ppm` once the GPU has finished (read back after the
+  frame slots retire). It uses the FidelityFX clip matrices of the other
+  FidelityFX passes, so the image is in the storage orientation of the scene
+  guides (rotate by 90 degrees to compare with a capture). Ray marching must
+  use the *merged* cascades: static, dynamic and merged cascades are indexed
+  [0, n), [n, 2n) and [2n, 3n); the static range alone shows only part of the
+  field. In Field the merged view matches the capture (gate, walls, benches,
+  steps, Link with shield and legs).
+- GPU cost (timestamp queries around the update, RTX 3060, no validation
+  layer): Field about 0.69 ms per update in steady state (windowed means of
+  updates 151-450), one update per native frame; the first full bake costs
+  35 ms once. Sheik copy about 2.9 ms per update (dense fluted interior).
+  The update is not yet split or skipped when nothing changes.
+- Budgets sized from measured peaks: 2M references (peaks 77k Field, 192k
+  Sheik copy), 4 MiB triangle swap (peaks 145 KB / 371 KB), 16k bricks per
+  bake. Bricks per bake is a throttle: a voxel whose brick cannot be
+  allocated stays uninitialized and is baked by a later update of the
+  cascade, so the Sheik copy's 35k-brick first bake spreads over updates.
+  `overflows` in the diagnostic line counts updates over the reference or
+  swap budget (zero in both scenes). GPU scratch 268 -> 93 MiB.
+- Diagnostics line: `TRIAEVUM_SCENE_DISTANCE_FIELD ... peak_references
+  peak_triangles (swap bytes) peak_bricks overflows gpu_ms_mean gpu_ms_max`.
+- Qualification: Field under the Khronos validation layer with debug view and
+  timestamps, zero errors; with the switch off, Field and Sheik copy identical
+  to the Interpolated2x baseline (contract and captures).
 
 ## Risks
 

@@ -14,7 +14,10 @@
 #define OOT3D_HAS_FFX_BRIXELIZER 0
 #endif
 
+#include "fast/oot3d/temporal_history_manager.h"
+
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -40,9 +43,15 @@ constexpr uint64_t kDynamicTrianglesPerUpdate = 262144;
 constexpr uint64_t kEvictAfterCollections = 600;
 constexpr VkDeviceSize kVertexArenaBytes = 96ULL << 20;
 constexpr VkDeviceSize kIndexArenaBytes = 64ULL << 20;
-constexpr uint32_t kMaxReferences = 8U << 20;
-constexpr uint32_t kTriangleSwapBytes = 64U << 20;
-constexpr uint32_t kMaxBricksPerBake = 1U << 13;
+// Scratch budgets of one cascade update. Peaks (Interpolated2x, 8 cascades
+// from 4 units): Field 77k references / 145 KB triangle swap, Sheik copy
+// 192k / 371 KB; BudgetOverflows reports an update that exceeded either.
+// Bricks per bake is a throttle, not a limit: voxels whose brick could not be
+// allocated stay uninitialized and are baked by later updates of the cascade
+// (Field asks up to 15.4k bricks on the first bake, Sheik copy 35k).
+constexpr uint32_t kMaxReferences = 2U << 20;
+constexpr uint32_t kTriangleSwapBytes = 4U << 20;
+constexpr uint32_t kMaxBricksPerBake = 1U << 14;
 
 // First-fit range allocator with coalescing.
 class RangeAllocator {
@@ -121,6 +130,38 @@ void RowMajor3x4(const Renderer3ds::ShadowMatrix& columnMajor, float (&out)[12])
         for (uint32_t col = 0; col < 4; ++col) out[row * 4 + col] = columnMajor[col * 4 + row];
 }
 
+float HalfToFloat(uint16_t half) {
+    const uint32_t sign = (half & 0x8000U) << 16U;
+    const uint32_t exponent = (half >> 10U) & 0x1FU;
+    uint32_t mantissa = half & 0x3FFU;
+    uint32_t bits = 0;
+    if (exponent == 0) {
+        if (mantissa != 0) { // subnormal
+            int shift = 0;
+            while ((mantissa & 0x400U) == 0) {
+                mantissa <<= 1U;
+                ++shift;
+            }
+            bits = sign | uint32_t(113 - shift) << 23U | (mantissa & 0x3FFU) << 13U;
+        } else {
+            bits = sign;
+        }
+    } else if (exponent == 31) {
+        bits = sign | 0x7F800000U | mantissa << 13U;
+    } else {
+        bits = sign | (exponent + 112U) << 23U | mantissa << 13U;
+    }
+    return std::bit_cast<float>(bits);
+}
+
+std::array<float, 16> MultiplyColumnMajor(const std::array<float, 16>& a, const std::array<float, 16>& b) {
+    std::array<float, 16> out{};
+    for (uint32_t col = 0; col < 4; ++col)
+        for (uint32_t row = 0; row < 4; ++row)
+            for (uint32_t k = 0; k < 4; ++k) out[col * 4 + row] += a[k * 4 + row] * b[col * 4 + k];
+    return out;
+}
+
 } // namespace
 #endif
 
@@ -152,6 +193,15 @@ struct BrixelizerScene::Impl {
     uint32_t IndexBufferIndex = 0;
     RangeAllocator VertexArena;
     RangeAllocator IndexArena;
+
+    // Developer debug view (BrixelizerDebugView) and GPU timing.
+    Image DebugImage;
+    bool DebugImageInitialized = false;
+    Buffer DebugReadback;
+    bool DebugPending = false;
+    VkQueryPool Timestamps = VK_NULL_HANDLE;
+    double TimestampPeriodNs = 0.0;
+    std::vector<bool> SlotTimed;
 
     struct MeshResidency {
         std::shared_ptr<const Renderer3ds::PicaGiTriangleMesh> Mesh;
@@ -212,6 +262,23 @@ struct BrixelizerScene::Impl {
         if (buffer.Memory != VK_NULL_HANDLE) vkFreeMemory(Device, buffer.Memory, nullptr);
         buffer = {};
     }
+    void AllocateImage(Image& image, const char* what) {
+        if (vkCreateImage(Device, &image.Info, nullptr, &image.Handle) != VK_SUCCESS)
+            throw std::runtime_error(std::string("Brixelizer: ") + what + " creation failed");
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(Device, image.Handle, &requirements);
+        VkMemoryAllocateInfo allocate{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        allocate.allocationSize = requirements.size;
+        allocate.memoryTypeIndex = FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(Device, &allocate, nullptr, &image.Memory) != VK_SUCCESS ||
+            vkBindImageMemory(Device, image.Handle, image.Memory, 0) != VK_SUCCESS)
+            throw std::runtime_error(std::string("Brixelizer: ") + what + " memory allocation failed");
+    }
+    void Destroy(Image& image) {
+        if (image.Handle != VK_NULL_HANDLE) vkDestroyImage(Device, image.Handle, nullptr);
+        if (image.Memory != VK_NULL_HANDLE) vkFreeMemory(Device, image.Memory, nullptr);
+        image = {};
+    }
     void CreateAtlas() {
         const uint32_t size = FFX_BRIXELIZER_STATIC_CONFIG_SDF_ATLAS_SIZE;
         Atlas.Info.imageType = VK_IMAGE_TYPE_3D;
@@ -224,17 +291,92 @@ struct BrixelizerScene::Impl {
         Atlas.Info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         Atlas.Info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         Atlas.Info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (vkCreateImage(Device, &Atlas.Info, nullptr, &Atlas.Handle) != VK_SUCCESS)
-            throw std::runtime_error("Brixelizer: SDF atlas creation failed");
-        VkMemoryRequirements requirements{};
-        vkGetImageMemoryRequirements(Device, Atlas.Handle, &requirements);
-        VkMemoryAllocateInfo allocate{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-        allocate.allocationSize = requirements.size;
-        allocate.memoryTypeIndex = FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(Device, &allocate, nullptr, &Atlas.Memory) != VK_SUCCESS ||
-            vkBindImageMemory(Device, Atlas.Handle, Atlas.Memory, 0) != VK_SUCCESS)
-            throw std::runtime_error("Brixelizer: SDF atlas memory allocation failed");
+        AllocateImage(Atlas, "SDF atlas");
     }
+    // Prepares the debug image of `view`'s size; false while a readback is
+    // still in flight (one inspection at a time).
+    bool PrepareDebugImage(VkCommandBuffer commandBuffer, const BrixelizerDebugView& view) {
+        if (DebugPending || view.Width == 0 || view.Height == 0) return false;
+        if (DebugImage.Handle != VK_NULL_HANDLE &&
+            (DebugImage.Info.extent.width != view.Width || DebugImage.Info.extent.height != view.Height)) {
+            // No readback is pending, so the last debug update has retired.
+            Destroy(DebugImage);
+            Destroy(DebugReadback);
+            DebugImageInitialized = false;
+        }
+        if (DebugImage.Handle == VK_NULL_HANDLE) {
+            DebugImage.Info.imageType = VK_IMAGE_TYPE_2D;
+            DebugImage.Info.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            DebugImage.Info.extent = { view.Width, view.Height, 1 };
+            DebugImage.Info.mipLevels = 1;
+            DebugImage.Info.arrayLayers = 1;
+            DebugImage.Info.samples = VK_SAMPLE_COUNT_1_BIT;
+            DebugImage.Info.tiling = VK_IMAGE_TILING_OPTIMAL;
+            DebugImage.Info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            DebugImage.Info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            DebugImage.Info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            AllocateImage(DebugImage, "debug view");
+            DebugReadback = CreateBuffer(VkDeviceSize(view.Width) * view.Height * 8U, 0, true);
+        }
+        VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        barrier.oldLayout = DebugImageInitialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = DebugImage.Handle;
+        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        barrier.srcAccessMask = DebugImageInitialized ? VK_ACCESS_TRANSFER_READ_BIT : 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(commandBuffer,
+                             DebugImageInitialized ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        DebugImageInitialized = true;
+        return true;
+    }
+    void ReadDebugImage(VkCommandBuffer commandBuffer, std::string path) {
+        VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        barrier.oldLayout = barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = DebugImage.Handle;
+        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                             nullptr, 0, nullptr, 1, &barrier);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        copy.imageExtent = DebugImage.Info.extent;
+        vkCmdCopyImageToBuffer(commandBuffer, DebugImage.Handle, VK_IMAGE_LAYOUT_GENERAL, DebugReadback.Handle, 1,
+                               &copy);
+        VkBufferMemoryBarrier host{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+        host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        host.buffer = DebugReadback.Handle;
+        host.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr,
+                             1, &host, 0, nullptr);
+        DebugPending = true;
+        const uint32_t width = DebugImage.Info.extent.width, height = DebugImage.Info.extent.height;
+        Retire([this, width, height, path = std::move(path)] {
+            DebugPending = false;
+            std::FILE* file = std::fopen(path.c_str(), "wb");
+            if (file == nullptr) return;
+            std::fprintf(file, "P6\n%u %u\n255\n", width, height);
+            const auto* texels = static_cast<const uint16_t*>(DebugReadback.Mapped);
+            std::vector<uint8_t> row(size_t(width) * 3U);
+            for (uint32_t y = 0; y < height; ++y) {
+                for (uint32_t x = 0; x < width; ++x)
+                    for (uint32_t c = 0; c < 3; ++c) {
+                        const float value =
+                            std::clamp(HalfToFloat(texels[(size_t(y) * width + x) * 4U + c]), 0.0F, 1.0F);
+                        row[size_t(x) * 3U + c] = static_cast<uint8_t>(value * 255.0F + 0.5F);
+                    }
+                std::fwrite(row.data(), 1, row.size(), file);
+            }
+            std::fclose(file);
+        });
+    }
+
     FfxResource BufferResource(const Buffer& buffer, const wchar_t* name, uint32_t stride = 4) const {
         auto description = ffxGetBufferResourceDescriptionVK(buffer.Handle, buffer.Info, FFX_RESOURCE_USAGE_UAV);
         description.stride = stride;
@@ -337,6 +479,17 @@ bool BrixelizerScene::Initialize(VkPhysicalDevice physicalDevice, VkDevice devic
             throw std::runtime_error("FidelityFX Vulkan backend initialization failed");
 
         impl.CreateAtlas();
+        VkPhysicalDeviceProperties deviceProperties{};
+        vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+        if (deviceProperties.limits.timestampComputeAndGraphics && deviceProperties.limits.timestampPeriod > 0.0F) {
+            VkQueryPoolCreateInfo queries{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+            queries.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            queries.queryCount = impl.FrameSlots * 2U;
+            if (vkCreateQueryPool(device, &queries, nullptr, &impl.Timestamps) == VK_SUCCESS) {
+                impl.TimestampPeriodNs = deviceProperties.limits.timestampPeriod;
+                impl.SlotTimed.assign(impl.FrameSlots, false);
+            }
+        }
         constexpr VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         impl.BrickAabbs = impl.CreateBuffer(FFX_BRIXELIZER_BRICK_AABBS_SIZE, storage, false);
@@ -411,6 +564,13 @@ void BrixelizerScene::Shutdown() {
     if (impl.Atlas.Memory != VK_NULL_HANDLE) vkFreeMemory(impl.Device, impl.Atlas.Memory, nullptr);
     impl.Atlas = {};
     impl.AtlasReady = false;
+    impl.Destroy(impl.DebugImage);
+    impl.Destroy(impl.DebugReadback);
+    impl.DebugImageInitialized = false;
+    impl.DebugPending = false;
+    if (impl.Timestamps != VK_NULL_HANDLE) vkDestroyQueryPool(impl.Device, impl.Timestamps, nullptr);
+    impl.Timestamps = VK_NULL_HANDLE;
+    impl.SlotTimed.clear();
     impl.Initialized = false;
     impl.Device = VK_NULL_HANDLE;
     impl.Stats = {};
@@ -445,14 +605,14 @@ void BrixelizerScene::Submit(const Renderer3ds::PicaGiInstance& instance) {
 }
 
 bool BrixelizerScene::Update(VkCommandBuffer commandBuffer, uint32_t frameSlot,
-                             const std::array<float, 3>& center) {
+                             const std::array<float, 3>& center, const BrixelizerDebugView* debug) {
 #if !OOT3D_HAS_FFX_BRIXELIZER
     (void)commandBuffer;
     (void)frameSlot;
     (void)center;
+    (void)debug;
     return false;
 #else
-    (void)frameSlot;
     auto& impl = *mImpl;
     if (!impl.Initialized || !impl.CollectionOpen) return false;
     // The collected native frame is consumed once; interpolated samples of
@@ -587,6 +747,52 @@ bool BrixelizerScene::Update(VkCommandBuffer commandBuffer, uint32_t frameSlot,
     size_t scratchBytes = 0;
     update.outScratchBufferSize = &scratchBytes;
     update.outStats = &ffxStats;
+    FfxBrixelizerDebugVisualizationDescription debugDescription{};
+    bool debugRequested = false;
+    if (debug != nullptr) {
+        std::array<float, 16> inverseProjection{}, inverseWorldToClip{};
+        if (InvertTemporalMatrix(debug->Projection, inverseProjection) &&
+            InvertTemporalMatrix(debug->WorldToClip, inverseWorldToClip) &&
+            impl.PrepareDebugImage(commandBuffer, *debug)) {
+            // inverse(view) = inverse(projection^-1 * worldToClip)
+            const auto inverseView = MultiplyColumnMajor(inverseWorldToClip, debug->Projection);
+            std::memcpy(debugDescription.inverseViewMatrix, inverseView.data(), sizeof(inverseView));
+            std::memcpy(debugDescription.inverseProjectionMatrix, inverseProjection.data(),
+                        sizeof(inverseProjection));
+            debugDescription.debugState = static_cast<FfxBrixelizerTraceDebugModes>(debug->Mode);
+            // Static, dynamic and merged cascades are indexed [0, n), [n, 2n)
+            // and [2n, 3n); the merged ones hold the whole field.
+            debugDescription.startCascadeIndex = kMergedCascadeBase;
+            debugDescription.endCascadeIndex = kMergedCascadeBase + kCascadeCount - 1;
+            debugDescription.sdfSolveEps = kBaseVoxelSize * 0.125F;
+            debugDescription.tMin = 0.0F;
+            debugDescription.tMax = 1.0e5F;
+            debugDescription.renderWidth = debug->Width;
+            debugDescription.renderHeight = debug->Height;
+            debugDescription.output = ffxGetResourceVK(
+                reinterpret_cast<void*>(impl.DebugImage.Handle),
+                ffxGetImageResourceDescriptionVK(impl.DebugImage.Handle, impl.DebugImage.Info, FFX_RESOURCE_USAGE_UAV),
+                L"Brixelizer debug view", FFX_RESOURCE_STATE_UNORDERED_ACCESS);
+            update.debugVisualizationDesc = &debugDescription;
+            debugRequested = true;
+        }
+    }
+    const bool timed = impl.Timestamps != VK_NULL_HANDLE && frameSlot < impl.FrameSlots;
+    if (timed) {
+        // The slot's previous submission has completed (its fence was waited).
+        uint64_t ticks[2]{};
+        if (impl.SlotTimed[frameSlot] &&
+            vkGetQueryPoolResults(impl.Device, impl.Timestamps, frameSlot * 2U, 2U, sizeof(ticks), ticks,
+                                  sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
+            ticks[1] >= ticks[0]) {
+            stats.GpuMilliseconds = double(ticks[1] - ticks[0]) * impl.TimestampPeriodNs * 1.0e-6;
+            stats.GpuMillisecondsMax = std::max(stats.GpuMillisecondsMax, stats.GpuMilliseconds);
+            stats.GpuMillisecondsTotal += stats.GpuMilliseconds;
+            ++stats.GpuSamples;
+        }
+        vkCmdResetQueryPool(commandBuffer, impl.Timestamps, frameSlot * 2U, 2U);
+        vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, impl.Timestamps, frameSlot * 2U);
+    }
     if (!impl.Baked) impl.Baked = std::make_unique<FfxBrixelizerBakedUpdateDescription>();
     auto& baked = *impl.Baked;
     bool updated = false;
@@ -607,8 +813,13 @@ bool BrixelizerScene::Update(VkCommandBuffer commandBuffer, uint32_t frameSlot,
                                 ffxGetCommandListVK(commandBuffer)) != FFX_OK)
             throw std::runtime_error("Brixelizer update failed");
         updated = true;
+        if (debugRequested) impl.ReadDebugImage(commandBuffer, debug->Path);
     } catch (const std::exception& exception) {
         impl.Reason = exception.what();
+    }
+    if (timed) {
+        vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, impl.Timestamps, frameSlot * 2U + 1U);
+        impl.SlotTimed[frameSlot] = true;
     }
     // Transient dynamic geometry is released after this update retires.
     for (const auto* mesh : transientMeshes) impl.Release(mesh);
@@ -622,6 +833,17 @@ bool BrixelizerScene::Update(VkCommandBuffer commandBuffer, uint32_t frameSlot,
     stats.FreeBricks = ffxStats.contextStats.freeBricks;
     stats.StaticBricksAllocated = ffxStats.staticCascadeStats.bricksAllocated;
     stats.DynamicBricksAllocated = ffxStats.dynamicCascadeStats.bricksAllocated;
+    stats.PeakReferences = std::max({ stats.PeakReferences, ffxStats.staticCascadeStats.referencesAllocated,
+                                      ffxStats.dynamicCascadeStats.referencesAllocated });
+    stats.PeakTriangles = std::max({ stats.PeakTriangles, ffxStats.staticCascadeStats.trianglesAllocated,
+                                     ffxStats.dynamicCascadeStats.trianglesAllocated });
+    stats.PeakBricks = std::max({ stats.PeakBricks, ffxStats.staticCascadeStats.bricksAllocated,
+                                  ffxStats.dynamicCascadeStats.bricksAllocated });
+    if (std::max(ffxStats.staticCascadeStats.referencesAllocated, ffxStats.dynamicCascadeStats.referencesAllocated) >
+            kMaxReferences ||
+        std::max(ffxStats.staticCascadeStats.trianglesAllocated, ffxStats.dynamicCascadeStats.trianglesAllocated) >
+            kTriangleSwapBytes)
+        ++stats.BudgetOverflows;
     return updated;
 #endif
 }

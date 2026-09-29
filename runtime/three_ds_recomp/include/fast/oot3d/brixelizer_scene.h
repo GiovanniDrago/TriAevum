@@ -30,6 +30,31 @@ struct BrixelizerSceneStats {
     uint32_t FreeBricks = 0;
     uint32_t StaticBricksAllocated = 0;
     uint32_t DynamicBricksAllocated = 0;
+    // Largest per-cascade demand seen so far (sizes the update budgets).
+    uint32_t PeakReferences = 0;
+    uint32_t PeakTriangles = 0; // bytes of triangle swap
+    uint32_t PeakBricks = 0;
+    uint64_t BudgetOverflows = 0; // updates whose demand exceeded a scratch budget
+    // GPU time of the update (timestamp queries): last, maximum and sum over
+    // GpuSamples measured updates. Debug-view updates are included.
+    double GpuMilliseconds = 0.0;
+    double GpuMillisecondsMax = 0.0;
+    double GpuMillisecondsTotal = 0.0;
+    uint64_t GpuSamples = 0;
+};
+
+// Developer inspection of the field: Brixelizer's ray-marched debug
+// visualization rendered with the scene camera into a private image, then
+// written to `Path` (binary PPM) once the GPU has finished. Matrices are the
+// FidelityFX clip-space ones used by the other FidelityFX passes
+// (PicaSurfaceCoordinates::FidelityFxClip), column-major.
+struct BrixelizerDebugView {
+    std::array<float, 16> Projection{};
+    std::array<float, 16> WorldToClip{};
+    uint32_t Width = 0;
+    uint32_t Height = 0;
+    uint32_t Mode = 3; // FFX_BRIXELIZER_TRACE_DEBUG_MODE_*: 0 distance, 3 normals, 5 cascade
+    std::string Path;
 };
 
 // Provider-private owner of the FidelityFX Brixelizer context: the sparse
@@ -46,6 +71,8 @@ class BrixelizerScene final {
     static constexpr uint32_t kCascadeCount = 8;
     // Edge of a cascade-0 voxel in native world units; each cascade doubles.
     static constexpr float kBaseVoxelSize = 4.0F;
+    // First merged (static + dynamic) cascade: the one ray marching uses.
+    static constexpr uint32_t kMergedCascadeBase = 2 * kCascadeCount;
 
     BrixelizerScene();
     ~BrixelizerScene();
@@ -65,7 +92,7 @@ class BrixelizerScene final {
     // work into `commandBuffer` outside any render pass; returns false when
     // nothing was pending or the update failed (see UnavailableReason).
     bool Update(VkCommandBuffer commandBuffer, uint32_t frameSlot,
-                const std::array<float, 3>& center);
+                const std::array<float, 3>& center, const BrixelizerDebugView* debug = nullptr);
     // Scene change or state load: every instance leaves the field.
     void Reset();
 

@@ -5649,13 +5649,14 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     const uint64_t giVersion = geometryResolution.Cacheable
                         ? geometry.ContentVersion ^ (geometry.StructuralSignature * 0x9e3779b97f4a7c15ULL) ^
                           geometry.Identity ^ draw.VertexShaderKey : 0;
-                    mBrixelizerScene.Submit(Renderer3ds::BuildPicaGiInstance(
+                    const auto giInstance = Renderer3ds::BuildPicaGiInstance(
                         {geometry.Payload, sceneVertexBindings, sceneVertexLayout.Attributes,
                          sceneVertexLayout.Bindings, geometryBaseOffset, geometry.IndexOffset,
                          geometry.VertexOrIndexCount, draw.BaseVertex, geometry.Indexed},
                         ToPicaSceneTopology(draw.Topology), draw.TemporalVertexProgram.Hooks, booleanUniforms,
                         draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset),
-                        giViewToWorld, giVersion, giCache));
+                        giViewToWorld, giVersion, giCache);
+                    mBrixelizerScene.Submit(giInstance);
                 }
             }
             std::array<Oot3d::PicaSceneTextureBinding, 3>
@@ -7365,14 +7366,36 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             Oot3d::PicaExtensionPassEnabled(
                 mPicaExtensionGraph, Oot3d::PicaExtensionPass::SceneDistanceField)) {
             mSceneDistanceFieldUpdatedThisFrame = true;
-            if (mBrixelizerScene.Update(command, mCurrentFrame, presentationPerspective->Eye)) {
+            // Developer inspection: OOT3D_GRAPHICS_BRIXELIZER_DEBUG=<directory>
+            // writes the field's debug view every 150 updates, in the storage
+            // orientation of the scene guides (OOT3D_GRAPHICS_BRIXELIZER_DEBUG_MODE,
+            // FFX_BRIXELIZER_TRACE_DEBUG_MODE_*, default 3 = normals).
+            std::optional<Oot3d::BrixelizerDebugView> debugView;
+            if (const char* directory = std::getenv("OOT3D_GRAPHICS_BRIXELIZER_DEBUG");
+                directory != nullptr && *directory != '\0' && transfer.InputWidth != 0U &&
+                (mBrixelizerScene.Stats().Updates + 1U) % 150U == 0U) {
+                const auto coordinates = Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags);
+                auto& view = debugView.emplace();
+                view.Projection = coordinates.FidelityFxClip(presentationPerspective->Projection);
+                view.WorldToClip = coordinates.FidelityFxClip(presentationPerspective->WorldToClip);
+                // Native storage extent at 3x (scene guides may not exist).
+                view.Width = transfer.InputWidth * 3U;
+                view.Height = transfer.InputHeight * 3U;
+                if (const char* mode = std::getenv("OOT3D_GRAPHICS_BRIXELIZER_DEBUG_MODE"); mode != nullptr)
+                    view.Mode = static_cast<uint32_t>(std::strtoul(mode, nullptr, 10));
+                view.Path = std::string(directory) + "/sdf-u" +
+                    std::to_string(mBrixelizerScene.Stats().Updates + 1U) + "-m" + std::to_string(view.Mode) + ".ppm";
+            }
+            if (mBrixelizerScene.Update(command, mCurrentFrame, presentationPerspective->Eye,
+                                        debugView ? &*debugView : nullptr)) {
                 const auto& field = mBrixelizerScene.Stats();
                 if (field.Updates % 150U == 1U) {
                     std::fprintf(stderr,
                         "TRIAEVUM_SCENE_DISTANCE_FIELD update=%llu collected=%llu rejected=%llu static=%u "
                         "created=%llu evicted=%llu dynamic=%u dynamic_triangles=%llu meshes=%u "
                         "arena_vertex_kib=%llu arena_index_kib=%llu scratch_mib=%llu free_bricks=%u "
-                        "static_bricks=%u dynamic_bricks=%u\n",
+                        "static_bricks=%u dynamic_bricks=%u peak_references=%u peak_triangles=%u "
+                        "peak_bricks=%u overflows=%llu gpu_ms_mean=%.3f gpu_ms_max=%.3f\n",
                         (unsigned long long)field.Updates, (unsigned long long)field.CollectedInstances,
                         (unsigned long long)field.RejectedInstances, field.StaticInstances,
                         (unsigned long long)field.StaticInstancesCreated,
@@ -7381,7 +7404,10 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                         (unsigned long long)(field.ArenaVertexBytes >> 10),
                         (unsigned long long)(field.ArenaIndexBytes >> 10),
                         (unsigned long long)(field.GpuScratchBytes >> 20), field.FreeBricks,
-                        field.StaticBricksAllocated, field.DynamicBricksAllocated);
+                        field.StaticBricksAllocated, field.DynamicBricksAllocated, field.PeakReferences,
+                        field.PeakTriangles, field.PeakBricks, (unsigned long long)field.BudgetOverflows,
+                        field.GpuSamples != 0U ? field.GpuMillisecondsTotal / double(field.GpuSamples) : 0.0,
+                        field.GpuMillisecondsMax);
                 }
             } else if (!mBrixelizerScene.UnavailableReason().empty()) {
                 std::fprintf(stderr, "TRIAEVUM_SCENE_DISTANCE_FIELD error=\"%s\"\n",
