@@ -218,6 +218,7 @@ layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
     vec4 scene_directions[2];
     vec4 scene_directional_colors[2];
     PicaScenePointLight scene_points[32];
+    vec4 gi_sources;
 } pica_surface;
 vec3 pica_surface_unit(vec3 value) {
     float squared = dot(value, value);
@@ -298,6 +299,34 @@ vec3 pica_surface_native_primary(vec3 normal_view) {
     }
     color += pica_surface_scene_point_primary(normal_view);
     color += pica_surface_scene_directional_primary(normal_view);
+    return min(abs(color * pica_surface_tint.rgb), vec3(1.0));
+}
+// Direct light that seeds global illumination: the native scene directionals
+// (gi_sources.x), the added key (y) and the dynamic lights (z: native local
+// lights, Navi and fairies), shadowed. Ambient and the added fill are never
+// sources: OoT bakes its fill light into the native colour.
+vec3 pica_surface_gi_direct(vec3 normal_view) {
+    vec3 native_direct = vec3(0.0);
+    bool native_enabled = pica_surface.environment_parameters.w == 0.0 ||
+        pica_surface.environment_parameters.x != 0.0;
+    for (int slot = 0; pica_surface.control.x != 0u && native_enabled && slot < 3; ++slot) {
+        if (pica_surface.lights[slot].direction_enabled.w == 0.0) continue;
+        vec3 direction, radiance;
+        pica_surface_light(slot, direction, radiance);
+        float source = pica_surface.lights[slot].position_radius.w > 0.0
+            ? pica_surface.gi_sources.z : pica_surface.gi_sources.x;
+        native_direct += max(dot(normal_view, direction), 0.0) * radiance * pica_surface_shadow(slot) * source;
+    }
+    vec3 color = native_direct * pica_surface.material_diffuse.rgb;
+    if (pica_surface.environment_parameters.w != 0.0) {
+        color *= pica_surface.environment_parameters.x;
+        if (pica_surface.environment_directions[0].w > 0.0)
+            color += max(dot(normal_view, pica_surface_unit(pica_surface.environment_directions[0].xyz)), 0.0) *
+                pica_surface.environment_colors[0].rgb * pica_surface.environment_directions[0].w *
+                pica_surface_shadow(8) * pica_surface.gi_sources.y;
+    }
+    color += pica_surface_scene_point_primary(normal_view) * pica_surface.gi_sources.z;
+    color += pica_surface_scene_directional_primary(normal_view) * pica_surface.gi_sources.x;
     return min(abs(color * pica_surface_tint.rgb), vec3(1.0));
 }
 vec3 pica_surface_primary(vec3 native_color, vec3 normal_view) {

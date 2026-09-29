@@ -50,19 +50,13 @@ struct GlobalIlluminationSettings {
     GlobalIlluminationMode Mode = GlobalIlluminationMode::Off;
     GlobalIlluminationResolution Resolution = GlobalIlluminationResolution::Half;
     float DiffuseIntensity = 1.0F;
-    // Composition over the baked native lighting: GI adds its difference to
-    // a reference irradiance, the mean over a screen neighbourhood of this
-    // radius (fraction of the height) blended towards the native ambient by
-    // Additive (0 local contrast only, 1 all traced light added).
-    float ReferenceRadius = 0.25F;
-    float Additive = 0.0F;
-    // Separate gains for light added (bounce) and removed (occlusion).
-    float BounceStrength = 1.0F;
-    float OcclusionStrength = 1.0F;
-    // Sky light: the GI environment is the native sky colour (from the fog
-    // and ambient profile) times this. Open surfaces receive it, corners and
-    // covered surfaces lose it; 0 leaves only light bounced by the scene.
-    float SkyLight = 1.0F;
+    // Sources of the bounced light (gains on their direct light): the native
+    // scene directionals, the added key light, and the dynamic lights (native
+    // local lights, Navi and fairies). Ambient and fill light are never
+    // sources: OoT bakes them into the native colour.
+    float SceneLight = 1.0F;
+    float KeyLight = 1.0F;
+    float DynamicLights = 1.0F;
     // Specular GI is a reflection source: composed through the material
     // guide like screen-space reflections, which own the term when enabled.
     bool Specular = false;

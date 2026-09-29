@@ -597,12 +597,12 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
         preserveAlpha.append(request.Source.substr(tevBegin, tevEnd - tevBegin));
         preserveAlpha += "\n        combiner_output.rgb = surface_lit_rgb;\n    }\n";
         insertions.push_back({tevEnd, std::move(preserveAlpha)});
-        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_NATIVE_PER_PIXEL_LIGHTING_V7");
+        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_NATIVE_PER_PIXEL_LIGHTING_V8_GI_SOURCES");
         result.AppliedFeatures |= PicaShaderInstrumentationFeature::NativePerPixelLighting;
         if (pbr) {
             declarations += pbr->Declarations;
             insertions.push_back({tevEnd, pbr->ShadingBody});
-            result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_PBR_GGX_V11_UV_SEAMS");
+            result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_PBR_GGX_V12_GI_SOURCES");
             MixKey(result.FragmentKey, request.Pbr.TextureSlot);
             MixKey(result.FragmentKey, request.Pbr.NativeFragmentLighting);
             MixKey(result.FragmentKey, request.Pbr.NativeAttenuationLuts);
@@ -771,9 +771,11 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
         apply(PicaShaderInstrumentationFeature::OutlineGeometryGuide);
     }
 
-    // Global illumination albedo: opaque, RGB-replacing, depth-writing scene
-    // surfaces publish it (zero when their albedo is unknown, so a surface in
-    // front removes GI); overlays attenuate its alpha (scene-domain guide).
+    // Global illumination surface guide: opaque, RGB-replacing, depth-writing
+    // scene surfaces publish it (zero when their albedo is unknown, so a
+    // surface in front removes GI); overlays attenuate its alpha (scene-domain
+    // guide). Each 16-bit RGB channel packs the sRGB albedo (high byte) and
+    // the sRGB direct radiance that seeds the trace (low byte).
     if (HasPicaShaderInstrumentationFeature(request.RequestedFeatures,
                                             PicaShaderInstrumentationFeature::DiffuseAlbedoGuide) &&
         result.Hooks.Valid() && request.Draw.DepthTestEnabled && request.Draw.DepthWriteEnabled &&
@@ -785,13 +787,13 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
         if (request.Draw.DepthCompare == ::Oot3d::Renderer::PicaCompareFunction::Always) {
             epilogue += "    pica_diffuse_albedo_guide = vec4(0.0);\n";
         } else if (pbr) {
-            epilogue += "    pica_diffuse_albedo_guide = vec4(pow(clamp(pbr_albedo, 0.0, 1.0), vec3(1.0 / 2.2)), 1.0);\n";
+            epilogue += "    pica_diffuse_albedo_guide = vec4((floor(clamp(pbr_linear_to_srgb(clamp(pbr_albedo, 0.0, 1.0)), 0.0, 1.0) * 255.0 + 0.5) * 256.0 + floor(clamp(pbr_linear_to_srgb(pbr_gi_radiance), 0.0, 1.0) * 255.0 + 0.5)) / 65535.0, 1.0);\n";
         } else if (surfaceLighting) {
-            epilogue += "    pica_diffuse_albedo_guide = vec4(surface_gi_albedo, 1.0);\n";
+            epilogue += "    pica_diffuse_albedo_guide = vec4((floor(surface_gi_albedo * 255.0 + 0.5) * 256.0 + floor(clamp(surface_gi_albedo * pica_surface_gi_direct(pica_surface_unit(pica_surface_normal)), 0.0, 1.0) * 255.0 + 0.5)) / 65535.0, 1.0);\n";
         } else {
             epilogue += "    pica_diffuse_albedo_guide = vec4(0.0);\n";
         }
-        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_DIFFUSE_ALBEDO_GUIDE_V1");
+        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_DIFFUSE_ALBEDO_GUIDE_V2_DIRECT");
         result.Outputs.WritesDiffuseAlbedoGuide = true;
         apply(PicaShaderInstrumentationFeature::DiffuseAlbedoGuide);
     }

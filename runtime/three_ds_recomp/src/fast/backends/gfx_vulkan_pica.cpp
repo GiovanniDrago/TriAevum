@@ -2374,7 +2374,7 @@ void GfxRenderingAPIVulkan::BeginNativePicaRenderPass(
         renderingTarget.ColorFormats = { VK_FORMAT_R8G8B8A8_UNORM,     VK_FORMAT_R8G8B8A8_UNORM,
                                          VK_FORMAT_R8G8B8A8_UNORM,     VK_FORMAT_R16G16B16A16_SFLOAT,
                                          VK_FORMAT_R8G8B8A8_UNORM,     VK_FORMAT_R8G8B8A8_UNORM,
-                                         VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM };
+                                         VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R16G16B16A16_UNORM };
         renderingTarget.DepthFormat = mDepthFormat;
         renderingTarget.ColorAttachmentCount =
             mFramePicaAttachmentRequirements.ColorAttachmentCount();
@@ -4213,6 +4213,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset),
                 draw.LightBinding, mFrameEnvironment,
                 environmentWorldToView && mSurfaceLightingView ? &*mSurfaceLightingView : nullptr);
+            if (surfaceLighting) {
+                const auto& gi = graphicsSettings.Effects.GlobalIllumination;
+                surfaceLighting->GlobalIlluminationSources = {gi.SceneLight, gi.KeyLight, gi.DynamicLights, 0.0F};
+            }
             if (surfaceLighting && environmentWorldToView && directionalShadowReceiver &&
                 !Oot3d::InvertDirectionalShadowMatrix(*environmentWorldToView, environmentViewToWorld))
                 surfaceLighting.reset();
@@ -7261,7 +7265,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             bindGuide(Oot3d::EffectResource::OutlineGeometryGuide, effectGuideTarget->OutlineGeometryGuideImage,
                       effectGuideTarget->OutlineGeometryGuideView, VK_FORMAT_R32G32B32A32_SFLOAT);
             bindGuide(Oot3d::EffectResource::DiffuseAlbedoGuide, effectGuideTarget->DiffuseAlbedoGuideImage,
-                      effectGuideTarget->DiffuseAlbedoGuideView, VK_FORMAT_R8G8B8A8_UNORM);
+                      effectGuideTarget->DiffuseAlbedoGuideView, VK_FORMAT_R16G16B16A16_UNORM);
         }
         const auto resolveEffectPassReads = [
             &effectPlan, &effectResources, this](
@@ -7701,19 +7705,6 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         // perspective depth exist; otherwise the declared output is zero
         // irradiance, so the composite adds nothing and the graph stays whole.
         bool giForDisplay = false;
-        // Linear sky light: the GI environment (what open surfaces receive
-        // and occluded ones lose) and the composite's open-sky reference.
-        // The native fragment ambient is not usable here: OoT bakes its fill
-        // light into vertex colours, leaving that ambient near zero, so the
-        // traced irradiance of every upward surface was zero.
-        std::array<float, 3> giAmbient{};
-        if (wantsGlobalIllumination && effectGuideTarget != nullptr) {
-            const auto sky = effectGuideTarget->ReflectionEnvironment.Resolve(mFrameCounter).Sky;
-            const float skyLight = presentationSettings.Effects.GlobalIllumination.SkyLight;
-            for (size_t i = 0; i < giAmbient.size(); ++i)
-                giAmbient[i] = skyLight * std::pow(std::clamp(sky[i], 0.0F, 1.0F), 2.2F);
-            mBrixelizerGiPass.SetEnvironmentRadiance(giAmbient);
-        }
         if (wantsGlobalIllumination && effectGuideTarget != nullptr &&
             transientDiffuseIllumination != nullptr &&
             ((!effectPlan.ReflectionsFromGlobalIllumination &&
@@ -7732,7 +7723,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 Oot3d::BrixelizerGiInputs giInputs{};
                 giInputs.Width = effectGuideTarget->Width;
                 giInputs.Height = effectGuideTarget->Height;
-                std::tie(giInputs.SceneColor, giInputs.SceneColorFormat) = image(Oot3d::EffectResource::SceneColor);
+                std::tie(giInputs.SurfaceGuide, giInputs.SurfaceGuideFormat) =
+                    image(Oot3d::EffectResource::DiffuseAlbedoGuide);
                 std::tie(giInputs.Depth, giInputs.DepthFormat) = image(Oot3d::EffectResource::NativeDepth);
                 std::tie(giInputs.NormalGuide, giInputs.NormalGuideFormat) = image(Oot3d::EffectResource::NormalGuide);
                 std::tie(giInputs.MaterialGuide, giInputs.MaterialGuideFormat) =
@@ -8537,8 +8529,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     optionalCompositeFormat(Oot3d::EffectResource::DiffuseIllumination),
                     optionalCompositeImage(Oot3d::EffectResource::DiffuseAlbedoGuide),
                     optionalCompositeFormat(Oot3d::EffectResource::DiffuseAlbedoGuide), giForDisplay,
-                    presentationSettings.Effects.GlobalIllumination.DiffuseIntensity, giAmbient,
-                    presentationSettings.Effects.GlobalIllumination, aoForDisplay,
+                    presentationSettings.Effects.GlobalIllumination.DiffuseIntensity, aoForDisplay,
                     reflectionsForDisplay,
                     giReflections ? presentationSettings.Effects.GlobalIllumination.SpecularIntensity
                                   : presentationSettings.Effects.ReflectionStrength,

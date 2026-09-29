@@ -555,7 +555,7 @@ TEST(Oot3dDisplayEffectPlan, GlobalIlluminationComposesThroughTheSceneComposite)
     EXPECT_TRUE(plan.Graph.Attachments.Requires(PicaAuxiliaryOutput::DiffuseAlbedoGuide));
     EXPECT_TRUE(plan.Graph.Attachments.Requires(PicaAuxiliaryOutput::NormalGuide));
     const auto gi = plan.Bindings(DisplayEffectPass::GlobalIllumination);
-    for (const auto use : {Read(EffectResource::SceneColor), Read(EffectResource::NativeDepth),
+    for (const auto use : {Read(EffectResource::DiffuseAlbedoGuide), Read(EffectResource::NativeDepth),
                            Read(EffectResource::NormalGuide), Read(EffectResource::MaterialGuide),
                            Read(EffectResource::MotionVectors), Write(EffectResource::DiffuseIllumination)})
         EXPECT_NE(std::find(gi.begin(), gi.end(), use), gi.end());

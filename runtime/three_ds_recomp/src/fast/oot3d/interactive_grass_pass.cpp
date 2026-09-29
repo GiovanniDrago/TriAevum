@@ -754,7 +754,7 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
             const std::array<VkFormat, kPicaColorAttachmentCount> colorFormats{
                 VK_FORMAT_R8G8B8A8_UNORM,      VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
                 VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
-                VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM
+                VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R16G16B16A16_UNORM
             };
             VkPipelineRenderingCreateInfoKHR rendering{
                 VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR};

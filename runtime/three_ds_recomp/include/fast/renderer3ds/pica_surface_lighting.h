@@ -39,9 +39,13 @@ struct alignas(16) PicaSurfaceLightingUniforms {
     std::array<std::array<float, 4>, kMaximumPicaSceneDirectionalLights> SceneDirections{};
     std::array<std::array<float, 4>, kMaximumPicaSceneDirectionalLights> SceneDirectionalColors{};
     std::array<PicaScenePointLightUniforms, kMaximumPicaScenePointLights> ScenePoints{};
+    // Gains of the direct light that seeds global illumination: native scene
+    // directionals, added key light, dynamic lights (native local lights,
+    // Navi and fairies). Written by the renderer; zero publishes no source.
+    std::array<float, 4> GlobalIlluminationSources{};
 };
 
-static_assert(sizeof(PicaSurfaceLightingUniforms) == 1440U);
+static_assert(sizeof(PicaSurfaceLightingUniforms) == 1456U);
 
 // Scene lighting requires the column-major WorldToView captured with this
 // geometry sample. Neither a live camera nor a model/bone matrix is a substitute.

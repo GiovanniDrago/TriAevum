@@ -39,17 +39,13 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
             changed = true;
         }
         changed |= ImGui::SliderFloat("GI diffuse intensity", &globalIllumination.DiffuseIntensity,
-                                      0.0F, 4.0F, "%.2f");
-        changed |= ImGui::SliderFloat("GI bounce strength", &globalIllumination.BounceStrength, 0.0F, 4.0F, "%.2f");
-        changed |= ImGui::SliderFloat("GI occlusion strength", &globalIllumination.OcclusionStrength,
-                                      0.0F, 4.0F, "%.2f");
-        changed |= ImGui::SliderFloat("GI reference radius", &globalIllumination.ReferenceRadius, 0.05F, 0.5F,
-                                      "%.2f");
-        changed |= ImGui::SliderFloat("GI sky light", &globalIllumination.SkyLight, 0.0F, 4.0F, "%.2f");
-        changed |= ImGui::SliderFloat("GI additive", &globalIllumination.Additive, 0.0F, 1.0F, "%.2f");
-        ImGui::TextWrapped("OoT lighting is baked: GI adds its difference to a reference, the mean irradiance "
-                           "within the reference radius (additive 0) or the open-sky light (additive 1). Sky light "
-                           "is what corners and covered surfaces lose; larger radius spreads the effect.");
+                                      0.0F, 8.0F, "%.2f");
+        changed |= ImGui::SliderFloat("GI native scene light", &globalIllumination.SceneLight, 0.0F, 4.0F, "%.2f");
+        changed |= ImGui::SliderFloat("GI key light", &globalIllumination.KeyLight, 0.0F, 4.0F, "%.2f");
+        changed |= ImGui::SliderFloat("GI dynamic lights", &globalIllumination.DynamicLights, 0.0F, 4.0F, "%.2f");
+        ImGui::TextWrapped("GI bounces the direct light of the native scene directionals, the added key light "
+                           "and dynamic lights (native local lights, Navi, fairies). Ambient and fill light are "
+                           "baked into OoT's colours and are never bounced.");
         changed |= ImGui::Checkbox("GI specular reflections", &globalIllumination.Specular);
         if (globalIllumination.Specular) {
             changed |= ImGui::SliderFloat("GI specular intensity", &globalIllumination.SpecularIntensity,

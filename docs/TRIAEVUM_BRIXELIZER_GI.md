@@ -485,6 +485,39 @@ and corners had no sky light to lose.
   Settings tuned for the previous model (e.g. intensity 4) are much stronger
   now; defaults are the starting point.
 
+## Direct-light sources (2026-09-30)
+
+User direction: GI must come from the native scene direct light, the added
+key light and dynamic lights, never from sky, ambient or fill. The previous
+models (local-contrast reference, sky light with ratio occlusion) are retired
+together with their controls (reference radius, additive, bounce, occlusion,
+sky light); files that still carry them are rewritten on the next save.
+
+- **Surface guide.** The GI albedo guide is now R16G16B16A16 UNORM: each RGB
+  channel packs the sRGB albedo (high byte) and the sRGB direct radiance
+  (low byte); A stays the coverage written by overlays. Per-pixel lighting
+  computes the direct radiance in the same pass (`pica_surface_gi_direct`,
+  shadowed): native scene directionals, the added key (environment slot 0),
+  native local lights, Navi and fairies. Per-pixel + PBR accumulates the
+  diffuse terms of the same sources. Ambient, the added fill, emission and
+  specular are not sources. Under MSAA the averaged resolve keeps the high
+  bytes and mixes the low ones at polygon edges.
+- **Sources per draw.** The surface-lighting uniforms gain
+  `GlobalIlluminationSources` (scene, key, dynamic gains), written by the
+  renderer from `GlobalIllumination.SceneLight/KeyLight/DynamicLights`
+  (0-4, F1 "GI native scene light", "GI key light", "GI dynamic lights").
+- **Trace.** Brixelizer's lit history is the decoded direct radiance instead
+  of the scene colour, and the environment is black: rays that leave the
+  scene receive nothing.
+- **Composition.** Additive, `albedo x irradiance x intensity` (0-8), AO
+  attenuated. Debug view 5 now shows the direct radiance that seeds the trace.
+- Validated on the Kokiri reference: sunlit path light bounces onto the rock
+  wall and Link; GI off pixel-identical to the pre-GI build; core validation
+  clean; F1 smoke 6,948 assertions. Evidence `qualify/gi-evidence/direct-sources.png`.
+- The flicker reported under interpolation was not in GI itself but in
+  frames presented without effects; see "Visual frames when the host falls
+  behind" in `OOT3D_NATIVE_RENDERER_INTEGRATION.md`.
+
 ## Screen-space effects under interpolation (GTAO, SSSR, TAA, GI)
 
 Measured in the Sheik copy cutscene (Interpolated2x, camera pan, per presented

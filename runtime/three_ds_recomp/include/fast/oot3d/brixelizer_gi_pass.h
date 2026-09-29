@@ -27,8 +27,10 @@ struct NriEffectGraphTransientImageBinding;
 struct BrixelizerGiInputs {
     uint32_t Width = 0;
     uint32_t Height = 0;
-    VkImage SceneColor = VK_NULL_HANDLE; // native colour (sRGB encoded): lit history
-    VkFormat SceneColorFormat = VK_FORMAT_UNDEFINED;
+    // Packed surface guide: its direct radiance (low bytes, sRGB) is the lit
+    // history, the only light the trace bounces.
+    VkImage SurfaceGuide = VK_NULL_HANDLE;
+    VkFormat SurfaceGuideFormat = VK_FORMAT_UNDEFINED;
     VkImage Depth = VK_NULL_HANDLE; // native perspective depth (D3D [0, 1])
     VkFormat DepthFormat = VK_FORMAT_UNDEFINED;
     VkImage NormalGuide = VK_NULL_HANDLE; // view-space normal, 0.5 n + 0.5
@@ -68,7 +70,6 @@ class BrixelizerGiPass final {
     // Selects (or creates) the instance of these inputs for frame `frameId`.
     // Linear radiance of the uniform environment rays escape to (the native
     // ambient light: open surfaces then receive what native ambient gives).
-    void SetEnvironmentRadiance(const std::array<float, 3>& radiance);
     // `specular` traces the specular term as well (another context).
     bool Configure(uint64_t frameId, const BrixelizerGiInputs& inputs,
                    GlobalIlluminationResolution resolution, bool specular);

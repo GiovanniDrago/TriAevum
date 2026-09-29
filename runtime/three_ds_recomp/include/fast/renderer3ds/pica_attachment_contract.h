@@ -22,9 +22,12 @@ enum class PicaColorAttachment : uint8_t {
     // Native scene unit normal (RGB) and window depth (A), never written by
     // extension geometry. Float32 preserves depth-test precision.
     OutlineGeometryGuide,
-    // Diffuse albedo (RGB, sRGB-encoded) and validity (A) of the opaque scene
-    // surface, for global illumination. Present only while GI requests it:
-    // the instrumented layout otherwise keeps seven attachments.
+    // Global illumination surface guide (R16G16B16A16 UNORM): each RGB channel
+    // packs the sRGB albedo (high byte) and the sRGB direct radiance (low
+    // byte) of the opaque scene surface; A is validity. Present only while GI
+    // requests it: the instrumented layout otherwise keeps seven attachments.
+    // Under MSAA the averaged resolve keeps the high bytes and mixes the low
+    // ones at polygon edges.
     DiffuseAlbedoGuide,
     Count,
 };

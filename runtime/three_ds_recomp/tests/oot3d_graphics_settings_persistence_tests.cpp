@@ -829,28 +829,33 @@ TEST(Oot3dGraphicsSettingsPersistence, GlobalIlluminationSpecular) {
     EXPECT_FALSE(legacy.Value.Effects.GlobalIllumination.Specular);
     EXPECT_FLOAT_EQ(legacy.Value.Effects.GlobalIllumination.SpecularIntensity, 1.0F);
     EXPECT_TRUE(legacy.NeedsRewrite);
-    EXPECT_FLOAT_EQ(legacy.Value.Effects.GlobalIllumination.ReferenceRadius, 0.25F);
+    EXPECT_FLOAT_EQ(legacy.Value.Effects.GlobalIllumination.KeyLight, 1.0F);
 
-    // Composition controls round-trip and clamp.
-    settings.Effects.GlobalIllumination.ReferenceRadius = 0.4F;
-    settings.Effects.GlobalIllumination.Additive = 0.3F;
-    settings.Effects.GlobalIllumination.BounceStrength = 2.0F;
-    settings.Effects.GlobalIllumination.OcclusionStrength = 0.5F;
-    settings.Effects.GlobalIllumination.SkyLight = 0.6F;
+    // Source gains round-trip and clamp.
+    settings.Effects.GlobalIllumination.SceneLight = 0.4F;
+    settings.Effects.GlobalIllumination.KeyLight = 2.0F;
+    settings.Effects.GlobalIllumination.DynamicLights = 0.5F;
     const auto composed = DeserializeGraphicsSettings(SerializeGraphicsSettings(settings));
-    EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.ReferenceRadius, 0.4F);
-    EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.Additive, 0.3F);
-    EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.BounceStrength, 2.0F);
-    EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.OcclusionStrength, 0.5F);
-    EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.SkyLight, 0.6F);
-    EXPECT_FLOAT_EQ(legacy.Value.Effects.GlobalIllumination.SkyLight, 1.0F);
-    settings.Effects.GlobalIllumination.ReferenceRadius = 3.0F;
-    settings.Effects.GlobalIllumination.Additive = -1.0F;
-    settings.Effects.GlobalIllumination.SkyLight = 9.0F;
+    EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.SceneLight, 0.4F);
+    EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.KeyLight, 2.0F);
+    EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.DynamicLights, 0.5F);
+    settings.Effects.GlobalIllumination.SceneLight = -1.0F;
+    settings.Effects.GlobalIllumination.DynamicLights = 9.0F;
+    settings.Effects.GlobalIllumination.DiffuseIntensity = 20.0F;
     const auto limited = GraphicsSettingsService::Validate(settings, {});
-    EXPECT_FLOAT_EQ(limited.Value.Effects.GlobalIllumination.ReferenceRadius, 0.5F);
-    EXPECT_FLOAT_EQ(limited.Value.Effects.GlobalIllumination.Additive, 0.0F);
-    EXPECT_FLOAT_EQ(limited.Value.Effects.GlobalIllumination.SkyLight, 4.0F);
+    EXPECT_FLOAT_EQ(limited.Value.Effects.GlobalIllumination.SceneLight, 0.0F);
+    EXPECT_FLOAT_EQ(limited.Value.Effects.GlobalIllumination.DynamicLights, 4.0F);
+    EXPECT_FLOAT_EQ(limited.Value.Effects.GlobalIllumination.DiffuseIntensity, 8.0F);
+
+    // Controls of the retired reference composition are dropped on rewrite.
+    auto retired = SerializeGraphicsSettings(composed.Value);
+    retired["Effects"]["GlobalIllumination"]["SkyLight"] = 1.0;
+    retired["Effects"]["GlobalIllumination"]["Additive"] = 0.5;
+    const auto dropped = DeserializeGraphicsSettings(retired);
+    EXPECT_TRUE(dropped.NeedsRewrite);
+    EXPECT_FLOAT_EQ(dropped.Value.Effects.GlobalIllumination.KeyLight, 2.0F);
+    const auto rewritten = SerializeGraphicsSettings(dropped.Value);
+    EXPECT_FALSE(rewritten["Effects"]["GlobalIllumination"].contains("SkyLight"));
     for (const auto& issue : legacy.Issues)
         EXPECT_EQ(issue.Field.find("GlobalIllumination"), std::string::npos) << issue.Field;
 }

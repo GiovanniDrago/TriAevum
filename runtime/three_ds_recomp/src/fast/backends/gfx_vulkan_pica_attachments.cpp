@@ -81,7 +81,7 @@ void GfxRenderingAPIVulkan::PrepareNativePicaDiffuseAlbedoGuide(NativePicaRender
         mRenderPassActive = false;
         mOverlayRenderPassActive = false;
     }
-    constexpr VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+    constexpr VkFormat format = VK_FORMAT_R16G16B16A16_UNORM;
     const bool msaa = mNativePicaSampleCount != VK_SAMPLE_COUNT_1_BIT;
     if (allocate) {
         AllocateNativePicaAuxiliaryImage(target, format, VK_SAMPLE_COUNT_1_BIT, target.DiffuseAlbedoGuideImage,

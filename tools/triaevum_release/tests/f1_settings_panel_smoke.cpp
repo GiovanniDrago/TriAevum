@@ -907,16 +907,13 @@ int main() try {
     Select("Global illumination", "Brixelizer GI");
     Select("GI resolution", "Quarter");
     EditScalar("GI diffuse intensity", "2.5");
-    EditScalar("GI reference radius", "0.4");
-    EditScalar("GI bounce strength", "1.5");
-    EditScalar("GI occlusion strength", "0.5");
-    EditScalar("GI additive", "0.2");
-    EditScalar("GI sky light", "0.6");
+    EditScalar("GI native scene light", "0.4");
+    EditScalar("GI key light", "1.5");
+    EditScalar("GI dynamic lights", "0.5");
     {
         const auto gi = runtime.Snapshot().Effects.GlobalIllumination;
-        Check(gi.ReferenceRadius == 0.4F && gi.BounceStrength == 1.5F && gi.OcclusionStrength == 0.5F &&
-                  gi.Additive == 0.2F && gi.SkyLight == 0.6F,
-              "GI composition controls did not apply");
+        Check(gi.SceneLight == 0.4F && gi.KeyLight == 1.5F && gi.DynamicLights == 0.5F,
+              "GI source controls did not apply");
     }
     Click("GI specular reflections");
     EditScalar("GI specular intensity", "0.75");

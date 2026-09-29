@@ -446,7 +446,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
                 .Contract = EffectContractKind::ComposerPass,
                 .Resources = std::move(reflectionResources) });
     std::vector<EffectResourceUse> globalIlluminationResources{
-        Read(EffectResource::NativeSceneView), Read(EffectResource::SceneColor),
+        Read(EffectResource::NativeSceneView), Read(EffectResource::DiffuseAlbedoGuide),
         Read(EffectResource::NativeDepth), Read(EffectResource::NormalGuide),
         Read(EffectResource::MaterialGuide), Read(EffectResource::MotionVectors),
         Write(EffectResource::DiffuseIllumination) };
@@ -481,13 +481,10 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     if (globalIllumination) {
         compositeResources.push_back(Read(EffectResource::DiffuseIllumination));
         compositeResources.push_back(Read(EffectResource::DiffuseAlbedoGuide));
-        // The GI reference compares surfaces of similar orientation.
-        compositeResources.push_back(Read(EffectResource::NormalGuide));
     }
     if (outline) {
         compositeResources.push_back(Read(EffectResource::NativeDepth));
-        if (!globalIllumination)
-            compositeResources.push_back(Read(EffectResource::NormalGuide));
+        compositeResources.push_back(Read(EffectResource::NormalGuide));
         compositeResources.push_back(Read(EffectResource::OutlineGeometryGuide));
         compositeResources.push_back(Read(EffectResource::RigidMotionGuide));
         compositeResources.push_back(Read(EffectResource::FogGuide));

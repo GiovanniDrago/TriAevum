@@ -26,12 +26,19 @@
 namespace Fast::Oot3d {
 namespace {
 
-// Linear lit colour, depth and world normals of one presented sample: the
-// current inputs of the GI dispatch and, one sample later, its histories.
+// Linear direct radiance, depth and world normals of one presented sample:
+// the current inputs of the GI dispatch and, one sample later, its histories.
+// The radiance is the guide's direct light only (native scene directionals,
+// key, dynamic lights): ambient and fill are baked into OoT's colours and
+// would be bounced twice.
+// Rays that leave the scene receive nothing: sky and ambient light are baked
+// into the native colour, not GI sources.
+constexpr std::array<float, 3> kNoEnvironment{};
+
 constexpr const char* kPrepareShader = R"glsl(#version 450
 #extension GL_EXT_samplerless_texture_functions : require
 layout(local_size_x=8,local_size_y=8) in;
-layout(set=0,binding=0) uniform texture2D scene_color;
+layout(set=0,binding=0) uniform texture2D surface_guide;
 layout(set=0,binding=1) uniform texture2D native_depth;
 layout(set=0,binding=2) uniform texture2D normal_guide;
 layout(set=0,binding=3,rgba16f) uniform writeonly image2D lit_output;
@@ -46,8 +53,8 @@ void main() {
     ivec2 p=ivec2(gl_GlobalInvocationID.xy);
     ivec2 extent=imageSize(lit_output);
     if(any(greaterThanEqual(p,extent))) return;
-    ivec2 colorTexel=ivec2((vec2(p)+0.5)*vec2(textureSize(scene_color,0))/vec2(extent));
-    imageStore(lit_output,p,vec4(srgb_to_linear(texelFetch(scene_color,colorTexel,0).rgb),1.0));
+    vec3 packed_bits=floor(texelFetch(surface_guide,p,0).rgb*65535.0+0.5);
+    imageStore(lit_output,p,vec4(srgb_to_linear(mod(packed_bits,256.0)/255.0),1.0));
     imageStore(depth_output,p,vec4(texelFetch(native_depth,p,0).r));
     vec3 n=texelFetch(normal_guide,p,0).xyz*2.0-1.0;
     n=normalize(mat3(pc.view_to_world)*n);
@@ -117,7 +124,6 @@ struct BrixelizerGiPass::Impl {
     BrixelizerGiInstance* Active = nullptr;
     EffectPassBarrierExecution LastBarriers;
     BrixelizerGiStats Stats;
-    std::array<float, 3> Environment{};
     NriStorageClearBinding Clear;
     bool Initialized = false;
     std::string Reason = "Brixelizer GI is not initialized";
@@ -157,7 +163,7 @@ struct BrixelizerGiPass::Impl {
         }
         allocate(instance.SpecularOutput, VK_FORMAT_R16G16B16A16_SFLOAT);
         allocate(instance.Output, VK_FORMAT_R16G16B16A16_SFLOAT);
-        for (const auto& [image, format] : {std::pair{in.SceneColor, in.SceneColorFormat},
+        for (const auto& [image, format] : {std::pair{in.SurfaceGuide, in.SurfaceGuideFormat},
                                             std::pair{in.Depth, in.DepthFormat},
                                             std::pair{in.NormalGuide, in.NormalGuideFormat}})
             if (!Interop->WrapTexture(image, format, VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT, in.Width,
@@ -174,7 +180,7 @@ struct BrixelizerGiPass::Impl {
             throw std::runtime_error("Brixelizer GI descriptor allocation failed");
         for (uint32_t i = 0; i < 2; ++i) {
             std::array<nri::Descriptor*, 6> views{
-                NriInteropAccess::TextureView(*Interop, in.SceneColor, false),
+                NriInteropAccess::TextureView(*Interop, in.SurfaceGuide, false),
                 NriInteropAccess::TextureView(*Interop, in.Depth, false),
                 NriInteropAccess::TextureView(*Interop, in.NormalGuide, false),
                 NriInteropAccess::TextureView(*Interop, instance.Lit[i].Image, true),
@@ -268,7 +274,7 @@ bool BrixelizerGiPass::Initialize(VkPhysicalDevice physicalDevice, VkDevice devi
 bool BrixelizerGiPass::Configure(uint64_t frameId, const BrixelizerGiInputs& inputs,
                                  GlobalIlluminationResolution resolution, bool specular) {
     mImpl->Active = nullptr;
-    if (!mImpl->Initialized || inputs.Width == 0U || inputs.Height == 0U || inputs.SceneColor == VK_NULL_HANDLE ||
+    if (!mImpl->Initialized || inputs.Width == 0U || inputs.Height == 0U || inputs.SurfaceGuide == VK_NULL_HANDLE ||
         inputs.Depth == VK_NULL_HANDLE || inputs.NormalGuide == VK_NULL_HANDLE ||
         inputs.MaterialGuide == VK_NULL_HANDLE || inputs.Motion == VK_NULL_HANDLE) {
         mImpl->Reason = "Brixelizer GI inputs are unavailable";
@@ -421,7 +427,7 @@ bool BrixelizerGiPass::Trace(BrixelizerGiInstance& instance, VkCommandBuffer com
         return false;
     }
     FfxBrixelizerGIDispatchDescription dispatch{};
-    if (!BrixelizerSceneGiAccess::Bind(*mImpl->Scene, commandBuffer, frameId, mImpl->Environment, dispatch)) {
+    if (!BrixelizerSceneGiAccess::Bind(*mImpl->Scene, commandBuffer, frameId, kNoEnvironment, dispatch)) {
         mImpl->Reason = "the scene distance field has no data yet";
         return false;
     }
@@ -577,9 +583,6 @@ void BrixelizerGiPass::Shutdown() {
 
 bool BrixelizerGiPass::Available() const { return mImpl->Initialized; }
 const BrixelizerGiStats& BrixelizerGiPass::Stats() const { return mImpl->Stats; }
-void BrixelizerGiPass::SetEnvironmentRadiance(const std::array<float, 3>& radiance) {
-    mImpl->Environment = radiance;
-}
 const EffectPassBarrierExecution& BrixelizerGiPass::LastBarrierExecution() const { return mImpl->LastBarriers; }
 const std::string& BrixelizerGiPass::UnavailableReason() const { return mImpl->Reason; }
 

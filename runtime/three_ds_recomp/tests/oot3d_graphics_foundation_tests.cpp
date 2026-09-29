@@ -3800,7 +3800,7 @@ TEST(Oot3dGraphicsSettings, GatesGlobalIlluminationOnItsInputsAndProvider) {
     using namespace Fast::Oot3d;
     auto settings = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
     settings.Effects.GlobalIllumination.Mode = GlobalIlluminationMode::BrixelizerGi;
-    settings.Effects.GlobalIllumination.DiffuseIntensity = 9.0F;
+    settings.Effects.GlobalIllumination.DiffuseIntensity = 9.0F; // above the 8 limit
 
     GraphicsCapabilities capabilities;
     for (const auto capability :
@@ -3813,7 +3813,7 @@ TEST(Oot3dGraphicsSettings, GatesGlobalIlluminationOnItsInputsAndProvider) {
     EXPECT_EQ(result.Value.Effects.GlobalIllumination.Mode, GlobalIlluminationMode::Off);
     ASSERT_FALSE(result.Issues.empty());
     EXPECT_EQ(result.Issues.back().Message, "not built");
-    EXPECT_FLOAT_EQ(result.Value.Effects.GlobalIllumination.DiffuseIntensity, 4.0F);
+    EXPECT_FLOAT_EQ(result.Value.Effects.GlobalIllumination.DiffuseIntensity, 8.0F);
 
     capabilities.Set(GraphicsCapability::BrixelizerGlobalIllumination, true);
     result = GraphicsSettingsService::Validate(settings, capabilities);
