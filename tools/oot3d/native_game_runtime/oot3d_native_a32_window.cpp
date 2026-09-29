@@ -4424,8 +4424,15 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   FramebufferScreenshotState screenshotState;
   uint64_t lastPublishedSceneViewSerial = 0;
   uint64_t publishedSceneViewCount = 0;
+  // Renderer work of the loop, in program order. Inline: runs at submission.
+  // Declared after every object its commands touch, so destruction drains it
+  // first.
+  Oot3dNativeGame::NativeRenderCommandStream renderStream;
   const auto publishNativeSceneView = [&]() {
-    const auto snapshot = sceneViewProbe.Capture(process.Memory());
+    // Guest memory is read here; the scene environment, the duplicate check
+    // and the publish belong to the renderer and run in its order.
+    auto snapshot = sceneViewProbe.Capture(process.Memory());
+    renderStream.Submit([&, snapshot] {
     sceneEnvironment->ObserveScene(snapshot ? snapshot->SceneId : std::nullopt);
     if (!snapshot.has_value() ||
         snapshot->Serial == lastPublishedSceneViewSerial) {
@@ -4449,6 +4456,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       lastPublishedSceneViewSerial = snapshot->Serial;
       ++publishedSceneViewCount;
     }
+    });
   };
   picaPresentationScheduler.SetTimingEnabled(launch.ExtendedDiagnostics);
   api.SetPicaPhysicalMemoryAccess(
@@ -4537,16 +4545,22 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       };
   Oot3dNativeGame::Oot3dPicaVisualFrameViewSample dependencySampleScratch;
   const auto flushNativeDependencies = [&]() {
-    if (!picaPresentationScheduler.ViewDependencyWork(dependencySampleScratch))
-      return false;
-    pinGpuCopyResources(dependencySampleScratch);
-    if (!picaPresentationScheduler.Execute(
-            api, dependencySampleScratch, kNativeDependencyRenderTargetNamespace,
-            Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::DependencyFlush,
-            false, &error)) {
-      throw std::runtime_error("native PICA dependency flush failed: " + error);
-    }
-    return true;
+    // Synchronous: raw copies read and write guest memory and signal PPF
+    // while the guest waits, and the accumulator it views is guest-owned.
+    bool flushed = false;
+    renderStream.Run([&] {
+      if (!picaPresentationScheduler.ViewDependencyWork(dependencySampleScratch))
+        return;
+      pinGpuCopyResources(dependencySampleScratch);
+      if (!picaPresentationScheduler.Execute(
+              api, dependencySampleScratch, kNativeDependencyRenderTargetNamespace,
+              Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::DependencyFlush,
+              false, &error)) {
+        throw std::runtime_error("native PICA dependency flush failed: " + error);
+      }
+      flushed = true;
+    });
+    return flushed;
   };
   const auto executeVisualSample =
       [&](const Oot3dNativeGame::Oot3dPicaVisualFrameViewSample &sample,
@@ -4573,8 +4587,17 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         phaseTiming.VisualReplaySeconds += elapsed;
       };
   Oot3dNativeGame::Oot3dPicaVisualFrameViewSample visualFrameSampleScratch;
-  // Renderer work of the loop, in program order. Inline: runs at submission.
-  Oot3dNativeGame::NativeRenderCommandStream renderStream;
+  // Declared after every renderer-owned local the commands reference: leaving
+  // the loop (normally or by exception) stops the worker before they die.
+  struct RenderStreamStop {
+    Oot3dNativeGame::NativeRenderCommandStream& Stream;
+    ~RenderStreamStop() {
+      try {
+        Stream.SetMode(Oot3dNativeGame::NativeRenderCommandStream::Mode::Inline);
+      } catch (...) {
+      }
+    }
+  } renderStreamStop{renderStream};
   std::vector<Oot3dNativeGame::Oot3dPicaDrawSubmission> drainedDraws;
   bool quickSaveKeyWasDown = false;
   bool quickLoadKeyWasDown = false;
@@ -4584,6 +4607,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   std::optional<uint32_t> automatedStateSavedAtGuestFrame;
 
   const auto saveState = [&](const std::filesystem::path &path) {
+    // Barrier: the savestate captures renderer-owned replay state.
+    renderStream.Drain();
     // Host-owned continuation registers must never escape into a standalone savestate.
     if (ocarinaText.Pending()) return false;
     const auto started = std::chrono::steady_clock::now();
@@ -4718,6 +4743,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     return true;
   };
   const auto loadState = [&](const std::filesystem::path &path) {
+    // Barrier: loading resets renderer-owned state.
+    renderStream.Drain();
     const auto started = std::chrono::steady_clock::now();
     Oot3dNativeGame::NativeA32SavestateRuntimeState runtime;
     Oot3dNativeGame::NativeA32SavestateIoResult ioResult;
@@ -4945,7 +4972,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     phaseStart = std::chrono::steady_clock::now();
     window.GetMouseStateManager()->StartFrame();
     gui->StartDraw();
-    window.StartFrame();
+    renderStream.Submit([&] { window.StartFrame(); });
     phaseTiming.HostFrameStartSeconds += SecondsSince(phaseStart);
     const auto inputPhaseStart = std::chrono::steady_clock::now();
     const bool quickSaveKeyDown = window.IsKeyDown(Ship::KbScancode::LUS_KB_F5);
@@ -5010,28 +5037,34 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     phaseTiming.InputPollSeconds += SecondsSince(inputPhaseStart);
     const auto rendererFrameStart = std::chrono::steady_clock::now();
     CpuProbe::Scope cpuRendererStart(CpuProbe::Phase::RendererStart);
-    api.UpdateFramebufferParameters(0, width, height, 1, false, true, true,
-                                    true);
-    api.StartFrame();
-    if (!api.HasActiveFrame()) {
+    bool rendererFrameActive = false;
+    renderStream.Run([&, width, height,
+                      presentationSerial = presentationFrameCount] {
+      api.UpdateFramebufferParameters(0, width, height, 1, false, true, true,
+                                      true);
+      api.StartFrame();
+      rendererFrameActive = api.HasActiveFrame();
+      if (!rendererFrameActive) return;
+      picaPresentationScheduler.BeginPresentation(presentationSerial);
+      api.StartDrawToFramebuffer(0, 1.0F);
+      api.SetClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+      api.ClearFramebuffer(true, true);
+      api.SetViewport(0, 0, static_cast<int>(width), static_cast<int>(height));
+      api.SetScissor(0, 0, static_cast<int>(width), static_cast<int>(height));
+    });
+    if (!rendererFrameActive) {
       // A minimized or changing surface is not a guest/PICA failure. Keep events
       // and UI balanced, but do not consume guest time without an acquired frame.
       if (!presentationScheduler.Restore(presentationStateBeforeFrame, &error)) {
         throw std::runtime_error("cannot restore suspended presentation clock: " + error);
       }
       gui->EndDraw();
-      window.EndFrame();
+      renderStream.Submit([&] { window.EndFrame(); }, true);
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       realtimePacer.ResetDeadline();
       lastPresentationTime = std::chrono::steady_clock::now();
       continue;
     }
-    picaPresentationScheduler.BeginPresentation(presentationFrameCount);
-    api.StartDrawToFramebuffer(0, 1.0F);
-    api.SetClearColor(0.0F, 0.0F, 0.0F, 1.0F);
-    api.ClearFramebuffer(true, true);
-    api.SetViewport(0, 0, static_cast<int>(width), static_cast<int>(height));
-    api.SetScissor(0, 0, static_cast<int>(width), static_cast<int>(height));
     phaseTiming.RendererFrameStartSeconds += SecondsSince(rendererFrameStart);
     cpuRendererStart.Stop();
     phaseTiming.FrameStartSeconds += SecondsSince(phaseStart);
@@ -6016,7 +6049,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                 }
               }
               renderStream.Submit([&, topSelection, completedFrame,
-                                   frameActors, suppressTopScreenBackdrop] {
+                                   frameActors, suppressTopScreenBackdrop,
+                                   presentationElapsedSeconds,
+                                   visualInterpolationAlpha] {
               bool presentedVisualSample = false;
               bool selectedNewVisualFrame = false;
               {
@@ -6374,27 +6409,33 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           topScreenPresentation
               ? oot3d::ui::N64UiCanvasMode::NativeTopScreen400x240
               : oot3d::ui::N64UiCanvasMode::Widescreen16x9;
-      if (!n64UiRenderer.Render(primitives, width, height, canvasMode,
-                                &error)) {
-        throw std::runtime_error("integrated N64 UI presentation failed: " +
-                                 error);
-      }
+      renderStream.Submit([&, primitives = std::move(primitives), width,
+                           height, canvasMode] {
+        if (!n64UiRenderer.Render(primitives, width, height, canvasMode,
+                                  &error)) {
+          throw std::runtime_error("integrated N64 UI presentation failed: " +
+                                   error);
+        }
+      });
     }
 
     phaseStart = std::chrono::steady_clock::now();
     CpuProbe::Scope cpuPresent(CpuProbe::Phase::Present);
     gui->EndDraw();
-    MaybeWriteFramebufferScreenshot(
-        hostArgs, api, width, height,
-        static_cast<uint32_t>(presentationFrameCount), screenshotState,
-        capturedTemporalSample ? &*capturedTemporalSample : nullptr);
-    capturedTemporalSample.reset();
-    const auto waitStart = std::chrono::steady_clock::now();
-    CpuProbe::Scope cpuPacing(CpuProbe::Phase::Pacing);
-    realtimePacer.WaitForNextRefresh();
-    cpuPacing.Stop();
-    phaseTiming.PacingWaitSeconds += SecondsSince(waitStart);
-    window.EndFrame();
+    renderStream.Submit([&, width, height,
+                         presentationSerial = presentationFrameCount] {
+      MaybeWriteFramebufferScreenshot(
+          hostArgs, api, width, height,
+          static_cast<uint32_t>(presentationSerial), screenshotState,
+          capturedTemporalSample ? &*capturedTemporalSample : nullptr);
+      capturedTemporalSample.reset();
+      const auto waitStart = std::chrono::steady_clock::now();
+      CpuProbe::Scope cpuPacing(CpuProbe::Phase::Pacing);
+      realtimePacer.WaitForNextRefresh();
+      cpuPacing.Stop();
+      phaseTiming.PacingWaitSeconds += SecondsSince(waitStart);
+      window.EndFrame();
+    }, true);
     picaSemanticTrace.RecordFrameBoundary(
         presentationFrameCount, frameCount, guestRefreshesDue != 0U);
     phaseTiming.PresentSeconds += SecondsSince(phaseStart);
