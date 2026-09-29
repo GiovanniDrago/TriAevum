@@ -25,6 +25,21 @@ DROP_WITH_VALUE = {"--frames", "--max-seconds", "--output", "--renderer-cache-di
 DROP_FLAG = {"--throughput-benchmark", "--profile-a32-runtime"}
 
 
+def foreground_pid() -> int | None:
+    """Process id owning the current foreground window (Windows only)."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return None
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
+
+
 def contract(data: dict) -> dict:
     result = {key: data.get(key) for key in CONTRACT_FIELDS}
     result["visual_interpolation"] = {
@@ -48,6 +63,8 @@ def main():
     p.add_argument("--comparison-plugin", type=Path)
     p.add_argument("--comparison-env", action="append", default=[],
                    help="NAME=VALUE set only in comparison runs")
+    p.add_argument("--comparison-window", choices=("normal", "background", "minimized"), default="normal",
+                   help="start comparison runs without activation: background (visible, same size) or minimized")
     p.add_argument("--frame-rate-mode", default="Interpolated2x")
     p.add_argument("--presentation-rate", type=int, default=60)
     p.add_argument("--frames", type=int, default=1800)
@@ -101,9 +118,27 @@ def main():
         env = dict(os.environ, DISABLE_VULKAN_OBS_CAPTURE="1", TRIAEVUM_BENCHMARK_NO_PRESENT="1")
         if comparison:
             env.update(item.split("=", 1) for item in args.comparison_env)
+        startup = None
+        show = {"minimized": 7, "background": 4}.get(args.comparison_window) if comparison else None
+        if show is not None:
+            startup = subprocess.STARTUPINFO()
+            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startup.wShowWindow = show  # SW_SHOWMINNOACTIVE / SW_SHOWNOACTIVATE
         with (root / "stdout.log").open("w") as out, (root / "stderr.log").open("w") as err:
-            code = subprocess.run(command, cwd=root, env=env, stdout=out, stderr=err,
-                                  timeout=args.timeout_seconds).returncode
+            process = subprocess.Popen(command, cwd=root, env=env, stdout=out, stderr=err,
+                                       startupinfo=startup)
+            foreground_samples = []
+            try:
+                while process.poll() is None:
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        foreground_samples.append(foreground_pid() == process.pid)
+                code = process.returncode
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
         if code:
             raise RuntimeError(f"run {run} failed with {code}: {root}")
         data = json.loads((root / "runtime.json").read_text())
@@ -111,10 +146,14 @@ def main():
         record = {"run": run, "comparison": comparison,
                   "ms_per_presentation": 1000.0 / window["frames_per_second"],
                   "measured_frames": window["measured_frames"],
+                  # Share of 2 s samples in which the game window was the
+                  # foreground window: focus changes the measured speed.
+                  "foreground_share": (sum(foreground_samples) / len(foreground_samples)
+                                       if foreground_samples else None),
                   "contract": contract(data)}
         runs.append(record)
-        print(json.dumps({k: record[k] for k in ("run", "comparison", "ms_per_presentation")}),
-              flush=True)
+        print(json.dumps({k: record[k] for k in ("run", "comparison", "ms_per_presentation",
+                                                  "foreground_share")}), flush=True)
 
     ratios = []
     for base in range(0, len(runs) - 3, 4):
