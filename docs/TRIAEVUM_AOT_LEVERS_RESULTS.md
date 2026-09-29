@@ -41,6 +41,11 @@ release catalogue, installed modules and Forge are unchanged.
 
 PGO whole-frame ratio 0.901 (about 110 to 122 fps in this configuration).
 
+Cumulative, 2026-09-29: control host and module against the current host
+(fca3e07) with `mod-vfp-pgo`, one ABBA: pre-NRI 6.84 -> 4.92 ms (0.726),
+guest 5.20 -> 3.76 ms (0.731), whole frame 9.39 -> 7.08 ms (0.760, about
+107 to 141 fps); fingerprint identical, all pairs 0.71-0.77.
+
 ### PGO qualification
 
 | Check | Result |
