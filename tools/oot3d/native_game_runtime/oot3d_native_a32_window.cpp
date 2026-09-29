@@ -4508,21 +4508,31 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   } physicalMemoryAccessLifetime{api};
   std::optional<Fast::Oot3d::NativeFrameTemporalSample> capturedTemporalSample;
   std::vector<Fast::Renderer3ds::PicaTextureCopyReference> pinnedCopyReferences;
+  // Renderer-side state written only by render commands (or at a drain).
+  // Inline mode points the timings at the loop's own phase timing.
+  NativeFramePhaseTiming workerPhaseTiming;
+  NativeFramePhaseTiming* rendererTiming = &phaseTiming;
+  std::string renderError;
+  // Copy references still owned by the guest side (submission queue and the
+  // accumulator), snapshotted where the serial loop read them.
+  std::vector<Fast::Renderer3ds::PicaTextureCopyReference> guestCopyReferences;
+  const auto collectGuestCopyReferences = [&]() {
+    std::vector<Fast::Renderer3ds::PicaTextureCopyReference> references;
+    submissionQueue.CollectLiveCopyReferences(references);
+    for (const auto& draw : submissionQueue.PendingDraws()) {
+      for (const auto& resource : draw.Resources) {
+        references.insert(references.end(), resource.CopyReferences.begin(),
+                          resource.CopyReferences.end());
+      }
+    }
+    for (const auto& plan : picaPresentationScheduler.PendingDraws()) {
+      Oot3dNativeGame::CollectOot3dPicaPlanCopyReferences(plan, references);
+    }
+    return references;
+  };
   const auto pinGpuCopyResources =
       [&](const Oot3dNativeGame::Oot3dPicaVisualFrameViewSample& sample) {
-        pinnedCopyReferences.clear();
-        submissionQueue.CollectLiveCopyReferences(pinnedCopyReferences);
-        for (const auto& draw : submissionQueue.PendingDraws()) {
-          for (const auto& resource : draw.Resources) {
-            pinnedCopyReferences.insert(pinnedCopyReferences.end(),
-                                        resource.CopyReferences.begin(),
-                                        resource.CopyReferences.end());
-          }
-        }
-        for (const auto& plan : picaPresentationScheduler.PendingDraws()) {
-          Oot3dNativeGame::CollectOot3dPicaPlanCopyReferences(
-              plan, pinnedCopyReferences);
-        }
+        pinnedCopyReferences = guestCopyReferences;
         if (previousVisualFrame) {
           Oot3dNativeGame::CollectOot3dPicaFrameCopyReferences(
               *previousVisualFrame, pinnedCopyReferences);
@@ -4539,8 +4549,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                 *draw.BasePlan, pinnedCopyReferences);
           }
         }
-        if (!api.SetPinnedPicaTextureCopies(pinnedCopyReferences, &error)) {
-          throw std::runtime_error("native PICA copy retention failed: " + error);
+        if (!api.SetPinnedPicaTextureCopies(pinnedCopyReferences, &renderError)) {
+          throw std::runtime_error("native PICA copy retention failed: " + renderError);
         }
       };
   Oot3dNativeGame::Oot3dPicaVisualFrameViewSample dependencySampleScratch;
@@ -4551,12 +4561,13 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     renderStream.Run([&] {
       if (!picaPresentationScheduler.ViewDependencyWork(dependencySampleScratch))
         return;
+      guestCopyReferences = collectGuestCopyReferences();
       pinGpuCopyResources(dependencySampleScratch);
       if (!picaPresentationScheduler.Execute(
               api, dependencySampleScratch, kNativeDependencyRenderTargetNamespace,
               Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::DependencyFlush,
-              false, &error)) {
-        throw std::runtime_error("native PICA dependency flush failed: " + error);
+              false, &renderError)) {
+        throw std::runtime_error("native PICA dependency flush failed: " + renderError);
       }
       flushed = true;
     });
@@ -4575,16 +4586,16 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         pinGpuCopyResources(sample);
         if (!picaPresentationScheduler.Execute(
                 api, sample, renderTargetNamespace, kind,
-                present, &error)) {
+                present, &renderError)) {
           throw std::runtime_error(
-              "native PICA scheduled presentation failed: " + error);
+              "native PICA scheduled presentation failed: " + renderError);
         }
         const double elapsed = SecondsSince(started);
         if (present) {
           capturedTemporalSample = temporalSample;
         }
-        phaseTiming.PicaBackendSeconds += elapsed;
-        phaseTiming.VisualReplaySeconds += elapsed;
+        rendererTiming->PicaBackendSeconds += elapsed;
+        rendererTiming->VisualReplaySeconds += elapsed;
       };
   Oot3dNativeGame::Oot3dPicaVisualFrameViewSample visualFrameSampleScratch;
   // Declared after every renderer-owned local the commands reference: leaving
@@ -4922,10 +4933,15 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           frameCompositionPolicy.FixedSampleMultiplier !=
               requestedCompositionPolicy.FixedSampleMultiplier;
       presentationPacingPolicy = requestedPresentationPolicy;
+      renderStream.Submit([&, requestedPresentationPolicy,
+                           requestedCompositionPolicy,
+                           requestedInterpolationEnabled,
+                           previousInterpolationEnabled,
+                           compositionModeChanged] {
       frameCompositionPolicy = requestedCompositionPolicy;
-      realtimePacer.Configure(presentationPacingPolicy.Enabled &&
+      realtimePacer.Configure(requestedPresentationPolicy.Enabled &&
                                   !hostArgs.ThroughputBenchmark,
-                              presentationPacingPolicy.TargetRateHz);
+                              requestedPresentationPolicy.TargetRateHz);
       visualSampleCadence.Configure(
           frameCompositionPolicy.FixedMultiplier()
               ? frameCompositionPolicy.FixedSampleMultiplier
@@ -4942,6 +4958,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         latestVisualTransitionContinuous = false;
         visualSampleCadence.Reset();
       }
+      });
     }
     const auto presentationTime = std::chrono::steady_clock::now();
     realtimePacer.ObservePresentation(presentationTime);
@@ -6051,7 +6068,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               renderStream.Submit([&, topSelection, completedFrame,
                                    frameActors, suppressTopScreenBackdrop,
                                    presentationElapsedSeconds,
-                                   visualInterpolationAlpha] {
+                                   visualInterpolationAlpha, frameCount,
+                                   guestReferences =
+                                       collectGuestCopyReferences()] {
+              guestCopyReferences = guestReferences;
               bool presentedVisualSample = false;
               bool selectedNewVisualFrame = false;
               {
@@ -6313,11 +6333,12 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                 const auto started = std::chrono::steady_clock::now();
                 if (!picaPresentationScheduler.PresentExisting(
                         api, topSelection,
-                        presentationRenderTargetNamespace, &error)) {
+                        presentationRenderTargetNamespace, &renderError)) {
                   throw std::runtime_error(
-                      "native top-screen scheduled scanout failed: " + error);
+                      "native top-screen scheduled scanout failed: " +
+                      renderError);
                 }
-                phaseTiming.VisualReplaySeconds += SecondsSince(started);
+                rendererTiming->VisualReplaySeconds += SecondsSince(started);
                 ++visualReusedSnapshotPresentations;
               }
               });
@@ -6353,10 +6374,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                     }
                     if (!picaPresentationScheduler.PresentExisting(
                             api, bottomSelection,
-                            presentationRenderTargetNamespace, &error)) {
+                            presentationRenderTargetNamespace, &renderError)) {
                       throw std::runtime_error(
                           "native bottom-screen frontend presentation "
-                          "failed: " + error);
+                          "failed: " + renderError);
                     }
                     ++nativeBottomFrontendPresentationCount;
                   });
@@ -6412,9 +6433,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       renderStream.Submit([&, primitives = std::move(primitives), width,
                            height, canvasMode] {
         if (!n64UiRenderer.Render(primitives, width, height, canvasMode,
-                                  &error)) {
+                                  &renderError)) {
           throw std::runtime_error("integrated N64 UI presentation failed: " +
-                                   error);
+                                   renderError);
         }
       });
     }
@@ -6433,7 +6454,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       CpuProbe::Scope cpuPacing(CpuProbe::Phase::Pacing);
       realtimePacer.WaitForNextRefresh();
       cpuPacing.Stop();
-      phaseTiming.PacingWaitSeconds += SecondsSince(waitStart);
+      rendererTiming->PacingWaitSeconds += SecondsSince(waitStart);
       window.EndFrame();
     }, true);
     picaSemanticTrace.RecordFrameBoundary(
