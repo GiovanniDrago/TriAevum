@@ -4,8 +4,10 @@
 #include "oot3d_native_pica_proctex.h"
 #include "fast/oot3d/pica_fragment_lighting.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
+#include <cstring>
 #include <iomanip>
 #include <sstream>
 #include <string_view>
@@ -15,6 +17,8 @@ namespace {
 
 constexpr uint64_t kFnvOffset = CanonicalHashDetail::OffsetBasis;
 constexpr uint64_t kFnvPrime = CanonicalHashDetail::Prime;
+constexpr size_t kOot3dPicaRegisterWords =
+    std::tuple_size_v<decltype(Oot3dPicaDrawPacket::Registers)>;
 
 constexpr std::array<uint16_t, 6> kTevStageBases{
     0x0C0U, 0x0C8U, 0x0D0U, 0x0D8U, 0x0F0U, 0x0F8U};
@@ -102,6 +106,15 @@ class CanonicalHashBuilder {
 
     uint64_t Finish() const {
         return mHash == 0U ? 1U : mHash;
+    }
+
+    // The fold state, for resuming a hash whose prefix is known.
+    uint64_t State() const {
+        return mHash;
+    }
+
+    void Resume(uint64_t state) {
+        mHash = state;
     }
 
   private:
@@ -347,9 +360,58 @@ uint64_t BuildDynamicStateId(const Oot3dPicaDrawPacket& packet,
     return hash.Finish();
 }
 
+// Hashing the 3 KB register file byte by byte is a serial chain on every
+// draw, while consecutive draws change few registers. FNV-1a is a left fold,
+// so the state after a prefix depends only on that prefix: keep the previous
+// file with the fold state at every block boundary and resume from the first
+// block that changed. The result equals hashing the whole file. The cache is
+// per thread, so concurrent callers never share it.
+uint64_t HashRegisterFile(
+    const std::array<uint32_t, kOot3dPicaRegisterWords>& words) {
+    constexpr size_t kBlockWords = 32U;
+    constexpr size_t kBlocks = kOot3dPicaRegisterWords / kBlockWords;
+    static_assert(kOot3dPicaRegisterWords % kBlockWords == 0U);
+    struct Cache {
+        bool Valid = false;
+        std::array<uint32_t, kOot3dPicaRegisterWords> Words{};
+        // States[b] is the fold state before block b; States[kBlocks] is final.
+        std::array<uint64_t, kBlocks + 1U> States{};
+    };
+    thread_local Cache cache;
+
+    size_t first = 0U;
+    if (cache.Valid) {
+        first = kBlocks;
+        for (size_t block = 0; block < kBlocks; ++block) {
+            if (std::memcmp(words.data() + block * kBlockWords,
+                            cache.Words.data() + block * kBlockWords,
+                            kBlockWords * sizeof(uint32_t)) != 0) {
+                first = block;
+                break;
+            }
+        }
+    } else {
+        CanonicalHashBuilder prefix("oot3d.pica.register_file");
+        prefix.AppendU32(static_cast<uint32_t>(kOot3dPicaRegisterWords));
+        cache.States[0] = prefix.State();
+        cache.Valid = true;
+    }
+    uint64_t state = cache.States[first];
+    for (size_t block = first; block < kBlocks; ++block) {
+        for (size_t word = block * kBlockWords;
+             word < (block + 1U) * kBlockWords; ++word) {
+            state = CanonicalHashDetail::AppendWord(state, words[word]);
+        }
+        cache.States[block + 1U] = state;
+    }
+    std::copy(words.begin() + first * kBlockWords, words.end(),
+              cache.Words.begin() + first * kBlockWords);
+    return cache.States[kBlocks];
+}
+
 uint64_t BuildFullRegisterStateId(const Oot3dPicaDrawPacket& packet) {
     CanonicalHashBuilder hash("oot3d.pica.register_file");
-    hash.AppendWords(packet.Registers);
+    hash.Resume(HashRegisterFile(packet.Registers));
     if (packet.LightingLuts != nullptr &&
         packet.LightingLuts->ContentHashAvailable) {
         hash.AppendU64(packet.LightingLuts->ContentHash);

@@ -127,11 +127,72 @@ void TestCanonicalHashZeroRuns() {
               << " byte-stream differential cases passed\n";
 }
 
+// The register-file ID resumes from the previous draw's fold state. Every
+// value must still equal a bytewise FNV-1a of the whole file, whatever
+// changed in between.
+void TestIncrementalRegisterFileHash() {
+    using namespace Oot3dNativeGame;
+    const auto reference = [](const Oot3dPicaDrawPacket& packet) {
+        uint64_t hash = 1469598103934665603ULL;
+        const auto appendByte = [&](uint8_t byte) {
+            hash = (hash ^ byte) * 1099511628211ULL;
+        };
+        const auto appendWord = [&](uint32_t word) {
+            for (unsigned shift = 0; shift < 32U; shift += 8U) {
+                appendByte(static_cast<uint8_t>(word >> shift));
+            }
+        };
+        constexpr std::string_view domain = "oot3d.pica.register_file";
+        appendWord(kOot3dPicaProgramDescriptorSchemaVersion);
+        appendWord(static_cast<uint32_t>(domain.size()));
+        for (const char c : domain) appendByte(static_cast<uint8_t>(c));
+        appendWord(static_cast<uint32_t>(packet.Registers.size()));
+        for (const uint32_t word : packet.Registers) appendWord(word);
+        return hash == 0U ? 1U : hash;
+    };
+    uint32_t random = 0x9E3779B9U;
+    const auto next = [&] {
+        random ^= random << 13;
+        random ^= random >> 17;
+        random ^= random << 5;
+        return random;
+    };
+    auto packet = MakePacket();
+    const auto state = MakeState();
+    const auto original = packet.Registers;
+    for (int draw = 0; draw < 3000; ++draw) {
+        switch (next() % 6U) {
+        case 0:
+            break;  // unchanged file
+        case 1:
+            packet.Registers[0] ^= next() | 1U;  // first block
+            break;
+        case 2:
+            packet.Registers.back() = next();  // last block
+            break;
+        case 3:
+            packet.Registers = original;  // back to a state seen before
+            break;
+        default:
+            for (uint32_t n = next() % 4U; n != 0U; --n) {
+                packet.Registers[next() % packet.Registers.size()] =
+                    next() % 3U == 0U ? 0U : next();
+            }
+            break;
+        }
+        Require(BuildOot3dPicaCanonicalDrawIdentity(packet, state)
+                        .FullRegisterStateId == reference(packet),
+                "incremental register-file ID differs from a full bytewise hash");
+    }
+    std::cout << "register-file ID: 3000 incremental draws match full hashes\n";
+}
+
 } // namespace
 
 int main() {
     using namespace Oot3dNativeGame;
     TestCanonicalHashZeroRuns();
+    TestIncrementalRegisterFileHash();
     auto packet = MakePacket();
     auto state = MakeState();
     const auto baseline = BuildOot3dPicaCanonicalDrawIdentity(packet, state);
