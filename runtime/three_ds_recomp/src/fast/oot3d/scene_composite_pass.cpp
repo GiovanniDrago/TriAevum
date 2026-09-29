@@ -38,8 +38,10 @@ struct CompositePush {
     float DiffuseIntensity = 0.0F;
     uint32_t GlobalIlluminationDebug = 0;
     uint32_t Reserved = 0;
+    float AmbientRadiance[3]{};
+    float Padding = 0.0F;
 };
-static_assert(sizeof(CompositePush) == 96U);
+static_assert(sizeof(CompositePush) == 112U);
 
 // Developer inspection (OOT3D_GRAPHICS_GI_DEBUG): 1 irradiance, 2 albedo,
 // 3 coverage, 4 the added bounce light. Replaces the composed colour.
@@ -235,7 +237,8 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, ui
                                  VkImage outlineGeometryImage, VkFormat outlineGeometryFormat,
                                  VkImage diffuseIlluminationImage, VkFormat diffuseIlluminationFormat,
                                  VkImage diffuseAlbedoImage, VkFormat diffuseAlbedoFormat,
-                                 bool globalIlluminationEnabled, float diffuseIntensity, bool aoEnabled,
+                                 bool globalIlluminationEnabled, float diffuseIntensity,
+                                 const std::array<float, 3>& ambientRadiance, bool aoEnabled,
                                  bool reflectionsEnabled, float reflectionStrength, uint32_t reflectionDebug,
                                  bool outlineEnabled, const ToonStyleSettings& outlineSettings,
                                  SceneColorEncoding inputEncoding, const EffectPassBarrierPlan& barrierPlan) {
@@ -265,7 +268,7 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, ui
     (void)aoEnabled;
     (void)reflectionsEnabled; (void)reflectionStrength; (void)reflectionDebug;
     (void)barrierPlan; (void)diffuseIlluminationFormat; (void)diffuseAlbedoFormat;
-    (void)globalIlluminationEnabled; (void)diffuseIntensity;
+    (void)globalIlluminationEnabled; (void)diffuseIntensity; (void)ambientRadiance;
     return false;
 #else
     nri::CommandBuffer* nriCommand =
@@ -350,7 +353,9 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, ui
         static_cast<uint32_t>(globalIlluminationEnabled),
         diffuseIntensity,
         globalIlluminationEnabled ? GlobalIlluminationDebugView() : 0U,
-        0U};
+        0U,
+        {ambientRadiance[0], ambientRadiance[1], ambientRadiance[2]},
+        0.0F};
     mImpl->Core->CmdSetDescriptorPool(*nriCommand, *descriptorPool.Pool);
     mImpl->Core->CmdSetPipelineLayout(
         *nriCommand, nri::BindPoint::COMPUTE, *mImpl->PipelineLayout);

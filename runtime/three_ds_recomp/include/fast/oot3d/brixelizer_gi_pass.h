@@ -10,6 +10,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -65,6 +66,9 @@ class BrixelizerGiPass final {
     bool Initialize(VkPhysicalDevice physicalDevice, VkDevice device,
                     NriInteropContext& interop, BrixelizerScene& scene);
     // Selects (or creates) the instance of these inputs for frame `frameId`.
+    // Linear radiance of the uniform environment rays escape to (the native
+    // ambient light: open surfaces then receive what native ambient gives).
+    void SetEnvironmentRadiance(const std::array<float, 3>& radiance);
     // `specular` traces the specular term as well (another context).
     bool Configure(uint64_t frameId, const BrixelizerGiInputs& inputs,
                    GlobalIlluminationResolution resolution, bool specular);

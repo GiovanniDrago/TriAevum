@@ -417,6 +417,34 @@ manifest and key). Field check (GI debug view 3): fractional coverage only
 on the moat water and the torch flames; core validation clean (Field 300,
 Sheik copy 600 frames).
 
+## Composition model revised on a user reference (2026-09-29)
+
+A user reference (Kokiri Forest, PerPixel+PBR, CACAO, VSM, custom grass,
+2560x1440) showed a poor overall result. Findings, against the pre-GI build
+(33dfd88, pixel-identical to the current build with GI off) and GI debug
+views:
+
+- **Double counting.** OoT3D's fill light is baked into vertex colours and
+  textures; the fragment-lighting ambient is almost zero (0.039 in the
+  forest). Adding `albedo x irradiance` on top lit shadowed surfaces as if
+  they were in the sun (a shaded rock next to the camera became as bright as
+  the sunlit path) and flattened the native contrast. Neither the native
+  ambient nor the haze colour is a usable reference: the first is ~0, the
+  second (0.9) is far brighter than the baked lighting.
+- **Composition now adds local variation only:**
+  `albedo x (E - E_local) x intensity`, with `E_local` the mean irradiance of
+  16 taps on two rings (4.5% and 9% of the height) over valid albedo pixels,
+  never below the native ambient. The average brightness stays native
+  (mean luma 122.3 off, 122.4 on); occlusion darkens and nearby lit surfaces
+  add their colour. The GI environment is the native ambient radiance
+  (`NativeAmbient`: global ambient plus the ambient of the lights the draw
+  evaluates) instead of black.
+- **Self-hits.** A push-off of half a voxel let rays re-hit their own surface
+  (Link lit the ground around him with his own colour); the solve epsilon
+  (1/8 voxel) missed thin geometry. Now one voxel and half a voxel.
+- Checked on the reference walk (410 frames): GI off identical to before,
+  core validation clean. Debug view 5 shows the removed light.
+
 ## Screen-space effects under interpolation (GTAO, SSSR, TAA, GI)
 
 Measured in the Sheik copy cutscene (Interpolated2x, camera pan, per presented

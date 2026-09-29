@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <string>
 
 namespace Fast::Oot3d {
 namespace {
@@ -79,6 +80,7 @@ void PicaReflectionEnvironmentAccumulator::Observe(
         mFrameId = renderedFrameId;
         mFogSum = {};
         mAmbientSum = {};
+        mNativeAmbientSum = {};
         mFogCount = 0;
         mAmbientCount = 0;
     }
@@ -100,8 +102,24 @@ void PicaReflectionEnvironmentAccumulator::Observe(
             fragmentUniformBytes,
             kPicaPackedFragmentLightingGlobalAmbientOffset, valid);
         if (valid) {
-            for (size_t i = 0; i < ambient.size(); ++i)
+            std::array<float, 3> total = ambient;
+            // Directional OoT lights: their ambient reaches every surface.
+            for (size_t light = 0; light < 8U; ++light) {
+                const std::string reference =
+                    "fragment_uniforms.lighting_ambient[" + std::to_string(light) + "]";
+                if (fragmentShaderSource.find(reference) == std::string_view::npos) continue;
+                bool lightValid = false;
+                const auto lightAmbient = ReadColor(
+                    fragmentUniformBytes,
+                    kPicaPackedFragmentLightingAmbientOffset + light * kPicaPackedVec4Bytes,
+                    lightValid);
+                if (lightValid)
+                    for (size_t i = 0; i < total.size(); ++i) total[i] += lightAmbient[i];
+            }
+            for (size_t i = 0; i < ambient.size(); ++i) {
                 mAmbientSum[i] += ambient[i];
+                mNativeAmbientSum[i] += total[i];
+            }
             ++mAmbientCount;
         }
     }
@@ -126,6 +144,9 @@ PicaReflectionEnvironmentAccumulator::Resolve(uint64_t renderedFrameId) {
             : fog[i] * 0.25F;
     }
     for (size_t i = 0; i < 3; ++i) {
+        profile.NativeAmbient[i] = mAmbientCount != 0U
+            ? static_cast<float>(mNativeAmbientSum[i] / mAmbientCount)
+            : 0.0F;
         profile.Horizon[i] = mFogCount != 0U ? fog[i] : ambient[i];
         profile.Sky[i] =
             profile.Horizon[i] * 0.75F + ambient[i] * 0.25F;

@@ -42,6 +42,10 @@ layout(push_constant) uniform CompositeState {
     float diffuse_intensity;
     uint global_illumination_debug;
     uint reserved;
+    float ambient_r;
+    float ambient_g;
+    float ambient_b;
+    float padding;
 } state;
 
 vec3 oot3d_gi_srgb_to_linear(vec3 value) {
@@ -71,23 +75,46 @@ void main(){
         color.rgb*=oot3d_scene_ambient_occlusion_visibility(
             ao_value,scene_coverage);
     }
-    // Diffuse GI: albedo * irradiance in linear light where the albedo guide
-    // is valid (opaque scene surfaces; zero on clear, HUD and surfaces that
-    // replace it), attenuated by AO like ambient light.
+    // Diffuse GI replaces the native ambient light: the irradiance traced
+    // with the ambient as its environment equals it on open surfaces, is
+    // lower where the surface is occluded and higher near lit surfaces.
+    // albedo * (irradiance - ambient) in linear light, where the albedo guide
+    // is valid (coverage: zero on clear, HUD and replacing surfaces, the
+    // transmission under overlays), attenuated by AO.
     if(state.global_illumination!=0u) {
         vec4 albedo=texture(sampler2D(diffuse_albedo_guide,composite_sampler),uv);
         vec3 irradiance=texture(sampler2D(diffuse_illumination,composite_sampler),uv).rgb;
         float coverage=clamp(albedo.a,0.0,1.0);
         float visibility=state.ambient_occlusion!=0u
             ? clamp(texture(sampler2D(ao_visibility,composite_sampler),uv).r,0.0,1.0) : 1.0;
+        // The native lighting is baked (vertex colours, textures) and already
+        // holds the scene's average indirect light: GI contributes its local
+        // variation only, irradiance minus its wide neighbourhood mean
+        // (occlusion darkens, nearby lit surfaces add their colour).
+        vec3 neighbourhood=vec3(0.0);
+        float taps=0.0;
+        for(int ring=1;ring<=2;++ring){
+            vec2 radius=vec2(float(ring)*0.045)*vec2(float(state.extent.y)/float(state.extent.x),1.0);
+            for(int k=0;k<8;++k){
+                float angle=6.2831853*(float(k)+0.5*float(ring))/8.0;
+                vec2 tap=clamp(uv+radius*vec2(cos(angle),sin(angle)),vec2(0.0),vec2(1.0));
+                float valid=texture(sampler2D(diffuse_albedo_guide,composite_sampler),tap).a;
+                neighbourhood+=valid*max(texture(sampler2D(diffuse_illumination,composite_sampler),tap).rgb,vec3(0.0));
+                taps+=valid;
+            }
+        }
+        vec3 reference=taps>0.5 ? neighbourhood/taps : max(irradiance,vec3(0.0));
+        reference=max(reference,vec3(state.ambient_r,state.ambient_g,state.ambient_b));
         vec3 bounce=coverage*visibility*state.diffuse_intensity*
-            oot3d_gi_srgb_to_linear(albedo.rgb)*max(irradiance,vec3(0.0));
-        color.rgb=state.input_linear!=0u ? color.rgb+bounce
-            : oot3d_gi_linear_to_srgb(oot3d_gi_srgb_to_linear(color.rgb)+bounce);
+            oot3d_gi_srgb_to_linear(albedo.rgb)*(max(irradiance,vec3(0.0))-reference);
+        color.rgb=state.input_linear!=0u ? max(color.rgb+bounce,vec3(0.0))
+            : oot3d_gi_linear_to_srgb(max(oot3d_gi_srgb_to_linear(color.rgb)+bounce,vec3(0.0)));
         if(state.global_illumination_debug!=0u) {
             vec3 view=state.global_illumination_debug==1u ? irradiance
                 : state.global_illumination_debug==2u ? albedo.rgb
-                : state.global_illumination_debug==3u ? vec3(coverage) : bounce;
+                : state.global_illumination_debug==3u ? vec3(coverage)
+                : state.global_illumination_debug==4u ? max(bounce,vec3(0.0))
+                : max(-bounce,vec3(0.0));
             color=vec4(state.input_linear!=0u || state.global_illumination_debug==2u
                 ? view : oot3d_gi_linear_to_srgb(view),1.0);
         }

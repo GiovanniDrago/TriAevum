@@ -7701,6 +7701,15 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         // perspective depth exist; otherwise the declared output is zero
         // irradiance, so the composite adds nothing and the graph stays whole.
         bool giForDisplay = false;
+        // Linear native ambient the GI replaces (its environment and the
+        // composite's reference).
+        std::array<float, 3> giAmbient{};
+        if (wantsGlobalIllumination && effectGuideTarget != nullptr) {
+            const auto ambient = effectGuideTarget->ReflectionEnvironment.Resolve(mFrameCounter).NativeAmbient;
+            for (size_t i = 0; i < giAmbient.size(); ++i)
+                giAmbient[i] = std::pow(std::clamp(ambient[i], 0.0F, 4.0F), 2.2F);
+            mBrixelizerGiPass.SetEnvironmentRadiance(giAmbient);
+        }
         if (wantsGlobalIllumination && effectGuideTarget != nullptr &&
             transientDiffuseIllumination != nullptr &&
             ((!effectPlan.ReflectionsFromGlobalIllumination &&
@@ -8524,7 +8533,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     optionalCompositeFormat(Oot3d::EffectResource::DiffuseIllumination),
                     optionalCompositeImage(Oot3d::EffectResource::DiffuseAlbedoGuide),
                     optionalCompositeFormat(Oot3d::EffectResource::DiffuseAlbedoGuide), giForDisplay,
-                    presentationSettings.Effects.GlobalIllumination.DiffuseIntensity, aoForDisplay,
+                    presentationSettings.Effects.GlobalIllumination.DiffuseIntensity, giAmbient, aoForDisplay,
                     reflectionsForDisplay,
                     giReflections ? presentationSettings.Effects.GlobalIllumination.SpecularIntensity
                                   : presentationSettings.Effects.ReflectionStrength,

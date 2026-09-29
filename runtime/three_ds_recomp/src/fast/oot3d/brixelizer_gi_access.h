@@ -19,7 +19,10 @@ struct BrixelizerSceneGiAccess {
     // `frameIndex` into `dispatch`, recording the one-time initialization of
     // the constant GI inputs into `commandBuffer`. False before the field's
     // first update (its resources hold no data yet).
+    // `environment` is the linear radiance of the (uniform) environment:
+    // rays that leave the field see it.
     static bool Bind(BrixelizerScene& scene, VkCommandBuffer commandBuffer, uint64_t frameIndex,
+                     const std::array<float, 3>& environment,
                      FfxBrixelizerGIDispatchDescription& dispatch);
 };
 

@@ -117,6 +117,7 @@ struct BrixelizerGiPass::Impl {
     BrixelizerGiInstance* Active = nullptr;
     EffectPassBarrierExecution LastBarriers;
     BrixelizerGiStats Stats;
+    std::array<float, 3> Environment{};
     NriStorageClearBinding Clear;
     bool Initialized = false;
     std::string Reason = "Brixelizer GI is not initialized";
@@ -420,7 +421,7 @@ bool BrixelizerGiPass::Trace(BrixelizerGiInstance& instance, VkCommandBuffer com
         return false;
     }
     FfxBrixelizerGIDispatchDescription dispatch{};
-    if (!BrixelizerSceneGiAccess::Bind(*mImpl->Scene, commandBuffer, frameId, dispatch)) {
+    if (!BrixelizerSceneGiAccess::Bind(*mImpl->Scene, commandBuffer, frameId, mImpl->Environment, dispatch)) {
         mImpl->Reason = "the scene distance field has no data yet";
         return false;
     }
@@ -487,9 +488,11 @@ bool BrixelizerGiPass::Trace(BrixelizerGiInstance& instance, VkCommandBuffer com
     dispatch.cameraPosition[2] = inverseView[14];
     dispatch.startCascade = BrixelizerScene::kMergedCascadeBase;
     dispatch.endCascade = BrixelizerScene::kMergedCascadeBase + BrixelizerScene::kCascadeCount - 1;
-    // Native world units: offsets follow the finest voxel.
-    dispatch.rayPushoff = BrixelizerScene::kBaseVoxelSize * 0.5F;
-    dispatch.sdfSolveEps = BrixelizerScene::kBaseVoxelSize * 0.125F;
+    // Native world units, relative to the finest voxel. A push-off below one
+    // voxel let rays re-hit their own surface (Link lit his surroundings with
+    // his own colour); a tight solve epsilon missed thin native geometry.
+    dispatch.rayPushoff = BrixelizerScene::kBaseVoxelSize;
+    dispatch.sdfSolveEps = BrixelizerScene::kBaseVoxelSize * 0.5F;
     dispatch.specularRayPushoff = dispatch.rayPushoff;
     dispatch.specularSDFSolveEps = dispatch.sdfSolveEps;
     dispatch.tMin = 0.0F;
@@ -499,7 +502,7 @@ bool BrixelizerGiPass::Trace(BrixelizerGiInstance& instance, VkCommandBuffer com
     dispatch.isRoughnessPerceptual = true;
     dispatch.roughnessChannel = 1U;
     dispatch.roughnessThreshold = 0.9F;
-    dispatch.environmentMapIntensity = 0.0F;
+    dispatch.environmentMapIntensity = 1.0F;
     dispatch.motionVectorScale = {1.0F, 1.0F};
     if (ffxBrixelizerGIContextDispatch(&instance.Context, &dispatch, ffxGetCommandListVK(commandBuffer)) != FFX_OK) {
         mImpl->Reason = "Brixelizer GI dispatch failed";
@@ -574,6 +577,9 @@ void BrixelizerGiPass::Shutdown() {
 
 bool BrixelizerGiPass::Available() const { return mImpl->Initialized; }
 const BrixelizerGiStats& BrixelizerGiPass::Stats() const { return mImpl->Stats; }
+void BrixelizerGiPass::SetEnvironmentRadiance(const std::array<float, 3>& radiance) {
+    mImpl->Environment = radiance;
+}
 const EffectPassBarrierExecution& BrixelizerGiPass::LastBarrierExecution() const { return mImpl->LastBarriers; }
 const std::string& BrixelizerGiPass::UnavailableReason() const { return mImpl->Reason; }
 

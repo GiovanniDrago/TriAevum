@@ -9,6 +9,10 @@
 namespace Fast::Oot3d {
 
 struct ReflectionEnvironmentProfile {
+    // Native ambient light of opaque world draws (fragment-lighting global
+    // ambient plus the ambient of the lights they evaluate), PICA encoded.
+    // Not part of the IBL signature.
+    std::array<float, 3> NativeAmbient{};
     std::array<float, 3> Sky{};
     std::array<float, 3> Horizon{};
     std::array<float, 3> Ground{};
@@ -34,6 +38,7 @@ class PicaReflectionEnvironmentAccumulator final {
     uint64_t mFrameId = 0;
     std::array<double, 3> mFogSum{};
     std::array<double, 3> mAmbientSum{};
+    std::array<double, 3> mNativeAmbientSum{};
     uint32_t mFogCount = 0;
     uint32_t mAmbientCount = 0;
     ReflectionEnvironmentProfile mLastProfile{};

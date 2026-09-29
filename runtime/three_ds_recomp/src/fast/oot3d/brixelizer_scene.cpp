@@ -201,6 +201,7 @@ struct BrixelizerScene::Impl {
     // geometry or clear colour, never an IBL probe) and per-frame noise,
     // generated here rather than shipped as media.
     Image Environment;
+    std::array<float, 3> EnvironmentValue{};
     std::array<Image, 16> Noise;
     Buffer NoiseUpload;
     bool GiInputsReady = false;
@@ -913,6 +914,7 @@ FfxInterface* BrixelizerSceneGiAccess::Backend(BrixelizerScene& scene) {
 }
 
 bool BrixelizerSceneGiAccess::Bind(BrixelizerScene& scene, VkCommandBuffer commandBuffer, uint64_t frameIndex,
+                                   const std::array<float, 3>& environment,
                                    FfxBrixelizerGIDispatchDescription& dispatch) {
     auto& impl = *scene.mImpl;
     // The field's resources hold data only after its first update.
@@ -996,6 +998,35 @@ bool BrixelizerSceneGiAccess::Bind(BrixelizerScene& scene, VkCommandBuffer comma
         vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
                              nullptr, 0, nullptr, uint32_t(barriers.size()), barriers.data());
         impl.GiInputsReady = true;
+        impl.EnvironmentValue = {-1.0F, -1.0F, -1.0F};
+    }
+    if (environment != impl.EnvironmentValue) {
+        const auto barrier = [&](VkImageLayout from, VkImageLayout to, VkAccessFlags source,
+                                 VkAccessFlags destination, VkPipelineStageFlags sourceStage,
+                                 VkPipelineStageFlags destinationStage) {
+            VkImageMemoryBarrier value{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            value.oldLayout = from;
+            value.newLayout = to;
+            value.srcQueueFamilyIndex = value.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            value.image = impl.Environment.Handle;
+            value.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6 };
+            value.srcAccessMask = source;
+            value.dstAccessMask = destination;
+            vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &value);
+        };
+        barrier(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkClearColorValue radiance{};
+        for (size_t i = 0; i < 3; ++i) radiance.float32[i] = std::max(environment[i], 0.0F);
+        radiance.float32[3] = 1.0F;
+        const VkImageSubresourceRange faces{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6 };
+        vkCmdClearColorImage(commandBuffer, impl.Environment.Handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             &radiance, 1, &faces);
+        barrier(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        impl.EnvironmentValue = environment;
     }
     const auto image = [](const Image& image, const wchar_t* name) {
         return ffxGetResourceVK(reinterpret_cast<void*>(image.Handle),
