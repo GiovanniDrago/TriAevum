@@ -8,7 +8,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -949,6 +951,33 @@ int main() {
                 NativeA32HostAction::Resume &&
                 state.r[0] == 0 && state.r[1] == 0,
             "WaitSynchronizationN did not acquire the available APT lock");
+    {
+        // Event names are built without streams; they must keep the text
+        // the stream formatting produced.
+        std::ostringstream expected;
+        expected << "WaitSynchronizationN:any:0x" << std::hex << std::setw(8)
+                 << std::setfill('0') << lockHandle << "=";
+        const std::string& name = host.SvcEvents().back().Name;
+        Require(name.rfind(expected.str(), 0) == 0 &&
+                    name.size() > expected.str().size(),
+                "WaitSynchronizationN event name changed format");
+        const std::array<uint32_t, 4> saved{
+            state.r[0], state.r[1], state.r[2], state.r[3]};
+        state.r[0] = 0xFFFFFFF0U;  // no such arbiter: the call waits
+        state.r[1] = 0x0000ABCDU;
+        state.r[2] = 3U;
+        state.r[3] = static_cast<uint32_t>(-5);
+        Require(host.HandleSvc(0x22, state, memory, context).Action ==
+                    NativeA32HostAction::Wait,
+                "ArbitrateAddress on an invalid handle did not wait");
+        std::ostringstream arbitrate;
+        arbitrate << "ArbitrateAddress:address=0x" << std::hex << std::setw(8)
+                  << std::setfill('0') << 0x0000ABCDU << ":type=" << std::dec
+                  << 3U << ":value=" << -5;
+        Require(host.SvcEvents().back().Name == arbitrate.str(),
+                "ArbitrateAddress event name changed format");
+        std::copy(saved.begin(), saved.end(), state.r.begin());
+    }
 
     Require(memory.Write32(0x1FF82080, 0x00020080) &&
                 memory.Write32(0x1FF82084, 0x300) &&

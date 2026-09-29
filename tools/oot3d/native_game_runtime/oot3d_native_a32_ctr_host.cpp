@@ -24,6 +24,16 @@
 namespace Oot3dNativeGame {
 namespace {
 
+// Same text as `std::hex << std::setw(8) << std::setfill('0') << value`,
+// without constructing a stream: the event names of frequent SVCs are built
+// on every call.
+void AppendHex8(std::string& out, uint32_t value) {
+    constexpr char kDigits[] = "0123456789abcdef";
+    for (int shift = 28; shift >= 0; shift -= 4) {
+        out.push_back(kDigits[(value >> shift) & 0xFU]);
+    }
+}
+
 constexpr uint32_t kResultSuccess = 0;
 using RuntimeProfileClock = std::chrono::steady_clock;
 
@@ -1228,13 +1238,10 @@ NativeA32HostResult NativeA32CtrHostServices::HandleSvc(
         const uint32_t type = state.r[2];
         const int32_t value = static_cast<int32_t>(state.r[3]);
         event.Detail = type;
-        {
-            std::ostringstream detail;
-            detail << ":address=0x" << std::hex << std::setw(8)
-                   << std::setfill('0') << address << ":type=" << std::dec
-                   << type << ":value=" << value;
-            event.Name += detail.str();
-        }
+        event.Name += ":address=0x";
+        AppendHex8(event.Name, address);
+        event.Name += ":type=" + std::to_string(type) +
+                      ":value=" + std::to_string(value);
         if (record == nullptr || record->Object->Type != "address_arbiter" ||
             type > 4U || !memory.IsMapped(address, sizeof(uint32_t))) {
             mSvcEvents.push_back(std::move(event));
@@ -1335,8 +1342,7 @@ NativeA32HostResult NativeA32CtrHostServices::HandleSvc(
         }
         std::vector<const HandleRecord*> handles;
         handles.reserve(handleCount);
-        std::ostringstream detail;
-        detail << (waitAll ? ":all" : ":any");
+        std::string detail = waitAll ? ":all" : ":any";
         for (uint32_t index = 0; index < handleCount; ++index) {
             uint32_t handle = 0;
             if (!memory.Read32(handlesAddress + index * sizeof(uint32_t),
@@ -1344,10 +1350,11 @@ NativeA32HostResult NativeA32CtrHostServices::HandleSvc(
                 mSvcEvents.push_back(std::move(event));
                 return {NativeA32HostAction::Wait};
             }
-            detail << (index == 0 ? ":" : ",") << "0x" << std::hex
-                   << std::setw(8) << std::setfill('0') << handle;
+            detail += index == 0 ? ":0x" : ",0x";
+            AppendHex8(detail, handle);
             const auto type = LookupHandleType(handle);
-            detail << "=" << type.value_or("invalid");
+            detail += "=";
+            detail += type.value_or("invalid");
             const auto* record = LookupHandle(handle);
             if (record == nullptr) {
                 mSvcEvents.push_back(std::move(event));
@@ -1358,7 +1365,7 @@ NativeA32HostResult NativeA32CtrHostServices::HandleSvc(
                 event.Detail = handle;
             }
         }
-        event.Name += detail.str();
+        event.Name += detail;
         const auto isReady = [&](const HandleRecord* record) {
             return IsKernelObjectReady(*record->Object, context.ThreadId,
                                        context.Process);
