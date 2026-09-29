@@ -3065,6 +3065,17 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 endif()
 set_property(TARGET oot3d_native_a32_ctr_host_tests PROPERTY FOLDER Tests)
 
+add_executable(oot3d_native_render_command_stream_tests EXCLUDE_FROM_ALL
+    tools/oot3d/native_game_runtime/oot3d_native_render_command_stream_tests.cpp
+    tools/oot3d/native_game_runtime/oot3d_native_render_command_stream.cpp
+)
+target_compile_features(oot3d_native_render_command_stream_tests PRIVATE cxx_std_20)
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_compile_definitions(oot3d_native_render_command_stream_tests PRIVATE NOMINMAX)
+    set_property(TARGET oot3d_native_render_command_stream_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+set_property(TARGET oot3d_native_render_command_stream_tests PROPERTY FOLDER Tests)
+
 add_executable(ctr_y2r_service_tests EXCLUDE_FROM_ALL
     tools/ctr_services/y2r_service_tests.cpp
 )
@@ -3410,6 +3421,7 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
     OOT3D_DIRECT_AOT_PLUGIN)
     target_sources(oot3d_native_game PRIVATE
         tools/oot3d/native_game_runtime/oot3d_native_a32_window.cpp
+        tools/oot3d/native_game_runtime/oot3d_native_render_command_stream.cpp
         tools/oot3d/native_game_runtime/oot3d_top_screen_ocarina_text_runtime.cpp
         tools/oot3d/native_game_runtime/oot3d_native_actor_interactions.cpp
         tools/oot3d/native_game_runtime/oot3d_native_pcm_diagnostics.cpp
