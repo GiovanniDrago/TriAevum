@@ -232,6 +232,8 @@ struct NriPicaPipelineBridge::Impl {
     };
     std::vector<FrameDescriptors> Frames;
     std::map<NriPicaSamplerKey, nri::Descriptor*> Samplers;
+    // Last sampler per texture slot in BindOwnedDraw.
+    std::array<std::pair<NriPicaSamplerKey, nri::Descriptor*>, 9> RecentSamplers{};
     bool OwnedDraws = false;
     bool PreferOwnedUploads = false;
     bool PipelineLibrariesEnabled = false;
@@ -807,6 +809,15 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
             source.MinFilter, source.MagFilter, source.MipmapMode,
             source.AddressU, source.AddressV, source.MipBias,
             source.MinLod, source.MaxLod, source.Integer};
+        // Consecutive draws mostly repeat each slot's sampler. Equal keys are
+        // equivalent under the map's ordering, and map entries live until
+        // Shutdown resets the whole Impl, so the remembered descriptor is the
+        // one the lookup would return.
+        auto& recent = mImpl->RecentSamplers[index];
+        if (recent.second != nullptr && recent.first == key) {
+            samplers[index] = recent.second;
+            continue;
+        }
         auto [sampler, inserted] =
             mImpl->Samplers.try_emplace(key, nullptr);
         if (inserted) {
@@ -834,6 +845,7 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
             }
         }
         samplers[index] = sampler->second;
+        recent = {key, sampler->second};
     }
 
     if (!mImpl->Interop->WrapTexture(

@@ -376,6 +376,12 @@ bool Oot3dNativePicaSubmissionQueue::CaptureIndexAndVertexResources(
     return true;
   }
 
+  // Index buffer, vertex loaders and the textures captured next: one
+  // allocation instead of regrowing the snapshot vector on every draw.
+  submission.Resources.reserve(submission.Resources.size() + 1U +
+                               vertex.Loaders.size() +
+                               submission.State.Textures.size());
+
   uint32_t minimumIndex = vertex.VertexOffset;
   uint32_t maximumIndex = 0;
   if (vertex.Indexed) {
