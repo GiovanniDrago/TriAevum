@@ -445,6 +445,20 @@ views:
 - Checked on the reference walk (410 frames): GI off identical to before,
   core validation clean. Debug view 5 shows the removed light.
 
+## Composition controls (2026-09-29)
+
+The first local-contrast reference (rings at 4.5% and 9% of the height)
+followed the irradiance too closely, so GI acted only at a few edges. The
+reference is now the mean over three rings out to `ReferenceRadius`
+(default 25% of the height), and F1 Lighting > Global illumination adds:
+**GI bounce strength** (light added, 0-4), **GI occlusion strength** (light
+removed, 0-4), **GI reference radius** (0.05-0.5) and **GI additive** (0 local
+contrast only, 1 all traced light added over the native ambient). Persisted
+without a schema change (absent fields keep defaults); actual-widget smoke
+6,973 assertions. On the user reference walk the changed area grows to 33%
+of the scene pixels at the rock (mean luma 78.2 off, 78.7 on); core
+validation clean.
+
 ## Screen-space effects under interpolation (GTAO, SSSR, TAA, GI)
 
 Measured in the Sheik copy cutscene (Interpolated2x, camera pan, per presented

@@ -265,6 +265,13 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         std::isfinite(globalIllumination.SpecularIntensity)
             ? std::clamp(globalIllumination.SpecularIntensity, 0.0F, 2.0F)
             : 1.0F;
+    const auto clampOr = [](float value, float low, float high, float fallback) {
+        return std::isfinite(value) ? std::clamp(value, low, high) : fallback;
+    };
+    globalIllumination.ReferenceRadius = clampOr(globalIllumination.ReferenceRadius, 0.05F, 0.5F, 0.25F);
+    globalIllumination.Additive = clampOr(globalIllumination.Additive, 0.0F, 1.0F, 0.0F);
+    globalIllumination.BounceStrength = clampOr(globalIllumination.BounceStrength, 0.0F, 4.0F, 1.0F);
+    globalIllumination.OcclusionStrength = clampOr(globalIllumination.OcclusionStrength, 0.0F, 4.0F, 1.0F);
     if (globalIllumination.Resolution > GlobalIlluminationResolution::Quarter)
         globalIllumination.Resolution = GlobalIlluminationResolution::Half;
     if (globalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi &&

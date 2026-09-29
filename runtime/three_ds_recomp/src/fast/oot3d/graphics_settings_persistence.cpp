@@ -1241,6 +1241,10 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                   {"DiffuseIntensity", effects.GlobalIllumination.DiffuseIntensity},
                   {"Specular", effects.GlobalIllumination.Specular},
                   {"SpecularIntensity", effects.GlobalIllumination.SpecularIntensity},
+                  {"ReferenceRadius", effects.GlobalIllumination.ReferenceRadius},
+                  {"Additive", effects.GlobalIllumination.Additive},
+                  {"BounceStrength", effects.GlobalIllumination.BounceStrength},
+                  {"OcclusionStrength", effects.GlobalIllumination.OcclusionStrength},
               }},
              {"AO",
               {
@@ -1584,6 +1588,17 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                            "Graphics.Effects.GlobalIllumination.SpecularIntensity", result);
             else
                 result.NeedsRewrite = true;
+            // Composition controls arrived later: absent fields keep defaults.
+            for (const auto& [name, field] :
+                 {std::pair{"ReferenceRadius", &settings.ReferenceRadius}, std::pair{"Additive", &settings.Additive},
+                  std::pair{"BounceStrength", &settings.BounceStrength},
+                  std::pair{"OcclusionStrength", &settings.OcclusionStrength}}) {
+                if (FindMember(*gi, name) != nullptr)
+                    ReadScalar(*gi, name, *field,
+                               std::string("Graphics.Effects.GlobalIllumination.") + name, result);
+                else
+                    result.NeedsRewrite = true;
+            }
         } else {
             value.GlobalIllumination = {};
             result.NeedsRewrite = true;

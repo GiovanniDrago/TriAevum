@@ -907,6 +907,16 @@ int main() try {
     Select("Global illumination", "Brixelizer GI");
     Select("GI resolution", "Quarter");
     EditScalar("GI diffuse intensity", "2.5");
+    EditScalar("GI reference radius", "0.4");
+    EditScalar("GI bounce strength", "1.5");
+    EditScalar("GI occlusion strength", "0.5");
+    EditScalar("GI additive", "0.2");
+    {
+        const auto gi = runtime.Snapshot().Effects.GlobalIllumination;
+        Check(gi.ReferenceRadius == 0.4F && gi.BounceStrength == 1.5F && gi.OcclusionStrength == 0.5F &&
+                  gi.Additive == 0.2F,
+              "GI composition controls did not apply");
+    }
     Click("GI specular reflections");
     EditScalar("GI specular intensity", "0.75");
     {

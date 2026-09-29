@@ -50,6 +50,15 @@ struct GlobalIlluminationSettings {
     GlobalIlluminationMode Mode = GlobalIlluminationMode::Off;
     GlobalIlluminationResolution Resolution = GlobalIlluminationResolution::Half;
     float DiffuseIntensity = 1.0F;
+    // Composition over the baked native lighting: GI adds its difference to
+    // a reference irradiance, the mean over a screen neighbourhood of this
+    // radius (fraction of the height) blended towards the native ambient by
+    // Additive (0 local contrast only, 1 all traced light added).
+    float ReferenceRadius = 0.25F;
+    float Additive = 0.0F;
+    // Separate gains for light added (bounce) and removed (occlusion).
+    float BounceStrength = 1.0F;
+    float OcclusionStrength = 1.0F;
     // Specular GI is a reflection source: composed through the material
     // guide like screen-space reflections, which own the term when enabled.
     bool Specular = false;

@@ -39,9 +39,13 @@ struct CompositePush {
     uint32_t GlobalIlluminationDebug = 0;
     uint32_t Reserved = 0;
     float AmbientRadiance[3]{};
+    float ReferenceRadius = 0.25F;
+    float Additive = 0.0F;
+    float BounceStrength = 1.0F;
+    float OcclusionStrength = 1.0F;
     float Padding = 0.0F;
 };
-static_assert(sizeof(CompositePush) == 112U);
+static_assert(sizeof(CompositePush) == 128U);
 
 // Developer inspection (OOT3D_GRAPHICS_GI_DEBUG): 1 irradiance, 2 albedo,
 // 3 coverage, 4 the added bounce light. Replaces the composed colour.
@@ -238,7 +242,8 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, ui
                                  VkImage diffuseIlluminationImage, VkFormat diffuseIlluminationFormat,
                                  VkImage diffuseAlbedoImage, VkFormat diffuseAlbedoFormat,
                                  bool globalIlluminationEnabled, float diffuseIntensity,
-                                 const std::array<float, 3>& ambientRadiance, bool aoEnabled,
+                                 const std::array<float, 3>& ambientRadiance,
+                                 const GlobalIlluminationSettings& globalIllumination, bool aoEnabled,
                                  bool reflectionsEnabled, float reflectionStrength, uint32_t reflectionDebug,
                                  bool outlineEnabled, const ToonStyleSettings& outlineSettings,
                                  SceneColorEncoding inputEncoding, const EffectPassBarrierPlan& barrierPlan) {
@@ -268,7 +273,7 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, ui
     (void)aoEnabled;
     (void)reflectionsEnabled; (void)reflectionStrength; (void)reflectionDebug;
     (void)barrierPlan; (void)diffuseIlluminationFormat; (void)diffuseAlbedoFormat;
-    (void)globalIlluminationEnabled; (void)diffuseIntensity; (void)ambientRadiance;
+    (void)globalIlluminationEnabled; (void)diffuseIntensity; (void)ambientRadiance; (void)globalIllumination;
     return false;
 #else
     nri::CommandBuffer* nriCommand =
@@ -355,6 +360,10 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, ui
         globalIlluminationEnabled ? GlobalIlluminationDebugView() : 0U,
         0U,
         {ambientRadiance[0], ambientRadiance[1], ambientRadiance[2]},
+        globalIllumination.ReferenceRadius,
+        globalIllumination.Additive,
+        globalIllumination.BounceStrength,
+        globalIllumination.OcclusionStrength,
         0.0F};
     mImpl->Core->CmdSetDescriptorPool(*nriCommand, *descriptorPool.Pool);
     mImpl->Core->CmdSetPipelineLayout(

@@ -45,6 +45,10 @@ layout(push_constant) uniform CompositeState {
     float ambient_r;
     float ambient_g;
     float ambient_b;
+    float reference_radius;
+    float additive;
+    float bounce_strength;
+    float occlusion_strength;
     float padding;
 } state;
 
@@ -93,10 +97,12 @@ void main(){
         // (occlusion darkens, nearby lit surfaces add their colour).
         vec3 neighbourhood=vec3(0.0);
         float taps=0.0;
-        for(int ring=1;ring<=2;++ring){
-            vec2 radius=vec2(float(ring)*0.045)*vec2(float(state.extent.y)/float(state.extent.x),1.0);
+        // Three rings out to the reference radius (fraction of the height).
+        for(int ring=1;ring<=3;++ring){
+            vec2 radius=vec2(state.reference_radius*float(ring)/3.0)*
+                vec2(float(state.extent.y)/float(state.extent.x),1.0);
             for(int k=0;k<8;++k){
-                float angle=6.2831853*(float(k)+0.5*float(ring))/8.0;
+                float angle=6.2831853*(float(k)+0.37*float(ring))/8.0;
                 vec2 tap=clamp(uv+radius*vec2(cos(angle),sin(angle)),vec2(0.0),vec2(1.0));
                 float valid=texture(sampler2D(diffuse_albedo_guide,composite_sampler),tap).a;
                 neighbourhood+=valid*max(texture(sampler2D(diffuse_illumination,composite_sampler),tap).rgb,vec3(0.0));
@@ -104,9 +110,13 @@ void main(){
             }
         }
         vec3 reference=taps>0.5 ? neighbourhood/taps : max(irradiance,vec3(0.0));
-        reference=max(reference,vec3(state.ambient_r,state.ambient_g,state.ambient_b));
+        vec3 ambient=vec3(state.ambient_r,state.ambient_g,state.ambient_b);
+        reference=mix(max(reference,ambient),ambient,clamp(state.additive,0.0,1.0));
+        vec3 difference=max(irradiance,vec3(0.0))-reference;
+        difference=max(difference,vec3(0.0))*state.bounce_strength+
+                   min(difference,vec3(0.0))*state.occlusion_strength;
         vec3 bounce=coverage*visibility*state.diffuse_intensity*
-            oot3d_gi_srgb_to_linear(albedo.rgb)*(max(irradiance,vec3(0.0))-reference);
+            oot3d_gi_srgb_to_linear(albedo.rgb)*difference;
         color.rgb=state.input_linear!=0u ? max(color.rgb+bounce,vec3(0.0))
             : oot3d_gi_linear_to_srgb(max(oot3d_gi_srgb_to_linear(color.rgb)+bounce,vec3(0.0)));
         if(state.global_illumination_debug!=0u) {

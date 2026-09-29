@@ -34,6 +34,7 @@ class SceneCompositePass final {
                  VkFormat diffuseAlbedoGuideFormat, bool globalIlluminationEnabled, float diffuseIntensity,
                  // Linear native ambient radiance the GI replaces.
                  const std::array<float, 3>& ambientRadiance,
+                 const GlobalIlluminationSettings& globalIllumination,
                  bool aoEnabled, bool reflectionsEnabled, float reflectionStrength, uint32_t reflectionDebug,
                  bool outlineEnabled, const ToonStyleSettings& outlineSettings, SceneColorEncoding inputEncoding,
                  const EffectPassBarrierPlan& barrierPlan);

@@ -40,6 +40,15 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
         }
         changed |= ImGui::SliderFloat("GI diffuse intensity", &globalIllumination.DiffuseIntensity,
                                       0.0F, 4.0F, "%.2f");
+        changed |= ImGui::SliderFloat("GI bounce strength", &globalIllumination.BounceStrength, 0.0F, 4.0F, "%.2f");
+        changed |= ImGui::SliderFloat("GI occlusion strength", &globalIllumination.OcclusionStrength,
+                                      0.0F, 4.0F, "%.2f");
+        changed |= ImGui::SliderFloat("GI reference radius", &globalIllumination.ReferenceRadius, 0.05F, 0.5F,
+                                      "%.2f");
+        changed |= ImGui::SliderFloat("GI additive", &globalIllumination.Additive, 0.0F, 1.0F, "%.2f");
+        ImGui::TextWrapped("OoT lighting is baked: GI adds its difference to the mean irradiance within the "
+                           "reference radius. Larger radius spreads bounce and occlusion over more of the image; "
+                           "additive 1 adds all traced light.");
         changed |= ImGui::Checkbox("GI specular reflections", &globalIllumination.Specular);
         if (globalIllumination.Specular) {
             changed |= ImGui::SliderFloat("GI specular intensity", &globalIllumination.SpecularIntensity,
