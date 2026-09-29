@@ -130,7 +130,7 @@ bool AmbientOcclusionPass::Configure(const NriEffectGraphTransientImageBinding& 
 #ifndef ENABLE_OOT3D_NRI
     return false;
 #else
-    if (mImpl->Width != 0 && vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS)
+    if (mImpl->Width != 0 && !mImpl->Interop->CompleteRecordedWork())
         return false;
     InvalidateScreenResources();
     try {

@@ -155,7 +155,7 @@ bool TemporalAaPass::Configure(uint32_t width, uint32_t height) {
 #ifndef ENABLE_OOT3D_NRI
     return false;
 #else
-    if (mImpl->Width != 0U && vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS)
+    if (mImpl->Width != 0U && !mImpl->Interop->CompleteRecordedWork())
         return false;
     InvalidateScreenResources();
     try {

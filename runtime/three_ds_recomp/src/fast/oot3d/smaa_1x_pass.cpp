@@ -255,7 +255,7 @@ bool Smaa1xPass::Configure(
     return false;
 #else
     if (mImpl->Width != 0U &&
-        vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS) {
+        !mImpl->Interop->CompleteRecordedWork()) {
         return false;
     }
     InvalidateScreenResources();

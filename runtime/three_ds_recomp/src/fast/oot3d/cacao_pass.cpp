@@ -123,7 +123,7 @@ bool CacaoPass::Configure(
         // in an older frame. A scene transition is rare; synchronize here
         // before replacing descriptors/images rather than risking use-after-free.
         if (mImpl->ScreenConfigured &&
-            vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS) {
+            !mImpl->Interop->CompleteRecordedWork()) {
             return false;
         }
         InvalidateScreenResources();

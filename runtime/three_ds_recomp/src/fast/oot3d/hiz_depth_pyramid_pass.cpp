@@ -189,7 +189,7 @@ bool HiZDepthPyramidPass::Configure(
         return true;
     }
     if (mImpl->Image != VK_NULL_HANDLE &&
-        vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS)
+        !mImpl->Interop->CompleteRecordedWork())
         return false;
     if (outputMatches) {
         if (!mImpl->Interop->WrapTexture(

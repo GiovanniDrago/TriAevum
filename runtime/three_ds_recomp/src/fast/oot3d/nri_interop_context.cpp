@@ -25,6 +25,8 @@ namespace Fast::Oot3d {
 struct NriInteropContext::Impl {
     std::string Reason = "NRI support was not compiled into this build";
     RendererValidationTelemetry* ValidationTelemetry = nullptr;
+    VkDevice VulkanDevice = VK_NULL_HANDLE;
+    std::function<bool()> RecordedWorkBoundary;
 #ifdef ENABLE_OOT3D_NRI
     nri::Device* Device = nullptr;
     nri::CoreInterface Core{};
@@ -465,6 +467,7 @@ bool NriInteropContext::Initialize(VkInstance instance, VkPhysicalDevice physica
     }
     desc.vkInstance = instance;
     desc.vkPhysicalDevice = physicalDevice;
+    mImpl->VulkanDevice = device;
     desc.vkDevice = device;
     desc.queueFamilies = &queueFamily;
     desc.queueFamilyNum = 1;
@@ -1273,6 +1276,16 @@ bool NriInteropContext::Available() const {
 }
 
 const std::string& NriInteropContext::UnavailableReason() const { return mImpl->Reason; }
+
+void NriInteropContext::SetRecordedWorkBoundary(std::function<bool()> boundary) {
+    mImpl->RecordedWorkBoundary = std::move(boundary);
+}
+
+bool NriInteropContext::CompleteRecordedWork() {
+    if (mImpl->RecordedWorkBoundary) return mImpl->RecordedWorkBoundary();
+    return mImpl->VulkanDevice == VK_NULL_HANDLE ||
+           vkDeviceWaitIdle(mImpl->VulkanDevice) == VK_SUCCESS;
+}
 
 } // namespace Fast::Oot3d
 

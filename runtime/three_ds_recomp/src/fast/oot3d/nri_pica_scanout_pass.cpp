@@ -176,7 +176,7 @@ bool NriPicaScanoutPass::Impl::ConfigureTarget(
     VkFormat format, PicaScanoutOrientation orientation,
     VkFormat& formatSlot, nri::Pipeline*& base, nri::Pipeline** overlay) {
     if (formatSlot != VK_FORMAT_UNDEFINED &&
-        vkDeviceWaitIdle(Device) != VK_SUCCESS)
+        !Interop->CompleteRecordedWork())
         return false;
     if (base != nullptr) Core->DestroyPipeline(base);
     if (overlay != nullptr && *overlay != nullptr)

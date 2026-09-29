@@ -189,7 +189,7 @@ bool ReflectionMaterialResolvePass::Configure(
     return false;
 #else
     if (mImpl->Width != 0U &&
-        vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS) {
+        !mImpl->Interop->CompleteRecordedWork()) {
         mImpl->Reason =
             "reflection material resolve resize wait failed";
         return false;

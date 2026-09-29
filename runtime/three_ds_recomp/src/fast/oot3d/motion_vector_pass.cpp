@@ -253,7 +253,7 @@ bool MotionVectorPass::Configure(
     (void)depthFormat; (void)materialGuideFormat; (void)rigidMotionGuideFormat;
     return false;
 #else
-    if (mImpl->Width != 0 && vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS)
+    if (mImpl->Width != 0 && !mImpl->Interop->CompleteRecordedWork())
         return false;
     InvalidateScreenResources();
     try {

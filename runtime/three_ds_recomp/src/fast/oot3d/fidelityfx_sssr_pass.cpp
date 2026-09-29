@@ -280,7 +280,7 @@ bool FidelityFxSssrPass::Configure(
             mImpl->Reason = "FidelityFX SSSR has no free surface instance this frame";
             return false;
         }
-        if (vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS) {
+        if (!mImpl->Interop->CompleteRecordedWork()) {
             mImpl->Reason = "FidelityFX SSSR retirement wait failed";
             return false;
         }

@@ -7026,9 +7026,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         }
         // An inactive graph declares no new bindings; it does not retire the
         // resources used by an earlier native composition anchor. Those
-        // commands may still be recorded in this frame, so even DeviceWaitIdle
-        // cannot authorize destroying their images and descriptor pools.
-        // Keep the allocation cache inert until a real reconfiguration/reset.
+        // commands may still be recorded in this frame, so DeviceWaitIdle alone
+        // cannot authorize destroying their images and descriptor pools: a
+        // real reconfiguration first completes the recorded frame prefix.
         if (requirementCount != 0U) {
             const std::span<const Oot3d::EffectTransientImageRequirement>
                 activeRequirements(requirements.data(), requirementCount);
@@ -7037,9 +7037,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     effectPlan.Graph, activeRequirements);
             if (!mNriEffectGraphTransientImageArena.ConfiguredFor(
                     allocationPlan)) {
-                CheckNativeVk(
-                    vkDeviceWaitIdle(mDevice),
-                    "vkDeviceWaitIdle(effect graph image clients)");
+                if (!mNriInterop.CompleteRecordedWork())
+                    throw std::runtime_error(
+                        "effect graph image clients: recorded work did not complete");
                 ReleaseEffectGraphImageClients();
             }
             const bool arenaConfigured =

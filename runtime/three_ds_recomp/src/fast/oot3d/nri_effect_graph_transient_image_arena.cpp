@@ -211,7 +211,7 @@ bool NriEffectGraphTransientImageArena::Configure(
     }
 
     if (mImpl->SlotCount != 0U &&
-        vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS) {
+        !mImpl->Interop->CompleteRecordedWork()) {
         for (size_t index = 0U; index < createdCount; ++index) {
             mImpl->Interop->DestroyOwnedTexture(newTextures[index].Image);
         }

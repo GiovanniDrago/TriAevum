@@ -293,15 +293,22 @@ command buffer being recorded still referenced; the driver then faulted in
 `vkQueueSubmit` (reproducible with SSSR in the Sheik copy, also before these
 changes). SSSR now keeps one instance (context, output, temporal history) per
 composed surface, retiring the least recently used one only when this frame
-does not use it. The same single-configuration pattern (reconfigure with
-`vkDeviceWaitIdle` + destroy/update in place) exists in GTAO, CACAO, HiZ,
-linear scene colour, motion vectors, reflection resolve, TAA, SMAA, scanout
-and the transient image arena: a reconfiguration in the middle of a frame
-still invalidates the recording command buffer (GTAO + SSSR in Sheik copy
-still faults). Open: a common retirement contract (flush the recorded prefix,
-as `FlushGpuTextureCopyPrefix` does, before destroying) or per-surface
-instances for those passes; the GI pass is being written per surface from the
-start.
+does not use it. The same single-configuration pattern (reconfigure, then destroy or update in
+place) exists in GTAO, CACAO, HiZ, linear scene colour, motion vectors,
+reflection resolve, TAA, SMAA, scanout and the transient image arena, and the
+backend releases every effect-graph image client when the transient
+allocation plan changes. `vkDeviceWaitIdle` does not cover commands still
+being recorded in the current frame. Retirement contract:
+`NriInteropContext::CompleteRecordedWork()` is the single boundary every such
+reconfiguration calls; the backend installs it as "submit and complete the
+recorded frame prefix (`FlushGpuTextureCopyPrefix`), wait for the device,
+continue recording in the same frame". GTAO + SSSR in the Sheik copy now runs
+to completion with core validation clean; effects-off Field and Sheik copy
+remain identical to the baseline.
+
+GTAO reconstructs view-space positions from depth and the projection only, so
+the camera mismatch never affected it (old/new captures are bit-identical);
+its interpolation failure was the mid-frame reconfiguration fault above.
 
 ## Risks
 

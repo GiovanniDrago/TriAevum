@@ -11,6 +11,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -124,6 +125,14 @@ class NriInteropContext final {
 
     [[nodiscard]] bool Available() const;
     [[nodiscard]] const std::string& UnavailableReason() const;
+
+    // Retirement boundary for screen resources. A pass that replaces images,
+    // views or pipelines outside its own frame slot calls CompleteRecordedWork
+    // first: every command recorded so far, including the current frame's
+    // prefix, has then executed and recording continues in the same frame.
+    // The backend installs the boundary; without one it waits for the device.
+    void SetRecordedWorkBoundary(std::function<bool()> boundary);
+    [[nodiscard]] bool CompleteRecordedWork();
 
   private:
     friend class NriInteropAccess;

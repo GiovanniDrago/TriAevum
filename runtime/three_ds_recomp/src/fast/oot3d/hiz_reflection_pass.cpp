@@ -184,7 +184,7 @@ bool HiZReflectionPass::Configure(
 #ifndef ENABLE_OOT3D_NRI
     return false;
 #else
-    if (mImpl->Width != 0U && vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS)
+    if (mImpl->Width != 0U && !mImpl->Interop->CompleteRecordedWork())
         return false;
     InvalidateScreenResources();
     try {
