@@ -40,6 +40,14 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
         }
         changed |= ImGui::SliderFloat("GI diffuse intensity", &globalIllumination.DiffuseIntensity,
                                       0.0F, 4.0F, "%.2f");
+        changed |= ImGui::Checkbox("GI specular reflections", &globalIllumination.Specular);
+        if (globalIllumination.Specular) {
+            changed |= ImGui::SliderFloat("GI specular intensity", &globalIllumination.SpecularIntensity,
+                                          0.0F, 2.0F, "%.2f");
+            if (settings.Effects.Reflections != ReflectionMode::Off)
+                ImGui::TextWrapped("Screen-space reflections are enabled and provide the reflections; "
+                                   "GI specular applies when they are off.");
+        }
         if (!UsesFullSceneLighting(settings.Effects.SurfaceLighting))
             ImGui::TextWrapped("Active only with Per-pixel or Per-pixel + PBR lighting.");
     }

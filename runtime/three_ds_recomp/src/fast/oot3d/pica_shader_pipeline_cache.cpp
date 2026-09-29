@@ -174,7 +174,10 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
         features |=
             PicaShaderInstrumentationFeature::NativeFogGuide | PicaShaderInstrumentationFeature::OutlineGeometryGuide;
     }
-    if (sceneDraw && effects.Reflections != ReflectionMode::Off) {
+    // GI specular is a reflection source resolved through the same guide.
+    if (sceneDraw && (effects.Reflections != ReflectionMode::Off ||
+                      (effects.GlobalIllumination.Mode != GlobalIlluminationMode::Off &&
+                       effects.GlobalIllumination.Specular))) {
         features |=
             PicaShaderInstrumentationFeature::ReflectionMaterialGuide;
     }
@@ -370,7 +373,9 @@ PicaShaderInstrumentationFeature ResolvePicaShaderProfileFeatures(
         features |=
             PicaShaderInstrumentationFeature::NativeFogGuide | PicaShaderInstrumentationFeature::OutlineGeometryGuide;
     }
-    if (effects.Reflections != ReflectionMode::Off) {
+    if (effects.Reflections != ReflectionMode::Off ||
+        (effects.GlobalIllumination.Mode != GlobalIlluminationMode::Off &&
+         effects.GlobalIllumination.Specular)) {
         features |=
             PicaShaderInstrumentationFeature::ReflectionMaterialGuide;
     }

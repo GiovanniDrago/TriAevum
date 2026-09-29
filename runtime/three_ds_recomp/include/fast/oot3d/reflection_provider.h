@@ -10,6 +10,9 @@ enum class ReflectionProvider : uint8_t {
     Off,
     HiZ,
     FidelityFxSssr,
+    // Brixelizer GI specular resolved through the material guide (selected
+    // by the display plan, never by SelectReflectionProvider).
+    GlobalIllumination,
 };
 
 struct ReflectionProviderAvailability {

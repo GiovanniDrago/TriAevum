@@ -1,6 +1,6 @@
 # FidelityFX Brixelizer GI: design
 
-Status: phases 1-3 done (diffuse GI); phase 4 (history and resets) done; F1 qualification and specular (phase 5) open. Owner surface: F1 **Lighting**.
+Status: phases 1-5 done (diffuse GI, history and resets, F1 live qualification, specular GI as a reflection source). Owner surface: F1 **Lighting**.
 
 ## Goal
 
@@ -342,6 +342,54 @@ persisted): Field, Interpolated2x, GI Half on, Off at frame 200, on again at
 run with GI never enabled, so the pipelines, guides and targets return to
 the canonical ones; after re-enabling and after the resolution change the
 GI contribution starts from zero and accumulates again (no stale history).
+
+## Phase 5 result (2026-09-29): specular GI
+
+- Settings: `GlobalIllumination.Specular` (off by default) and
+  `SpecularIntensity` (0-2), persisted without a schema change (absent fields
+  keep the defaults and are rewritten); F1 Lighting > Global illumination:
+  "GI specular reflections" and "GI specular intensity" (actual-widget smoke:
+  6,872 assertions).
+- Specular GI is a **reflection source**. When no screen-space provider is
+  selected, the display plan routes the `Reflections` pass to it: the GI
+  pass also writes `SpecularIllumination` (transient RGBA16F; the context is
+  created without `DISABLE_SPECULAR`), and `Reflections` resolves it through
+  the existing material resolve (reflectivity, reflection gain and split-sum
+  BRDF from the material guide) into `ReflectionColor`, which the composite
+  mixes with the GI specular intensity like any reflection. No HiZ pyramid or
+  scene-colour read is declared for it. Instances are keyed by specular too;
+  toggling it replaces the surface's instance.
+- A selected screen-space provider (HiZ, FidelityFX SSSR) owns the term and
+  GI specular is not traced. Filling only screen-space misses needs a
+  per-pixel hit confidence that FidelityFX SSSR does not expose (it shades
+  misses with its IBL).
+- Misses: the GI specular trace has no environment of its own; the SDK fills
+  missed rays with probe irradiance along the reflected direction (the
+  environment intensity stays 0, so no sky is invented). Without GI for a
+  sample the reflection is not composed (a cleared image would darken every
+  reflective surface).
+- Materials: the material guide and the texture material rules also apply
+  when only GI specular is enabled. With no configured material, only draws
+  whose native TEV reads the specular colour are reflective (calibrated
+  guide); the Field and the Sheik copy have none, so specular GI changes
+  nothing there until a material rule or PBR pack makes a surface
+  reflective. Checked with a polished rule on Link's texture: the reflection
+  follows Link exactly.
+- Guide fix found on the way (affects every reflection provider and TAA
+  reactivity): opaque guide writers have the material attachment in their
+  write mask, but draws without a material of their own had no location-2
+  output, and guides are cleared only with the native colour. Under
+  Interpolated2x the synthetic sample therefore kept the previous sample's
+  reflectivity and reactivity where Link had just been (a displaced dark
+  silhouette on the grass). Such draws now write the neutral baseline
+  (`PicaShaderInstrumentationFeature::MaterialGuideBaseline`, applied only
+  while a material consumer is active); effects-off captures stay
+  byte-identical to the Interpolated2x baseline (Field and Sheik copy).
+- Measured (Field, 1920x1600 target, Half): GI dispatch 2.80 -> 3.35 ms with
+  specular, resolve 0.13 ms; frame GPU 6.47 -> 7.14 ms. Core validation clean
+  (Field 400 frames with the polished rule, Sheik copy 600 frames). The
+  reflection debug views (probe `--debug-view 1/3/4`: material, radiance,
+  weight) apply to the GI source as well.
 
 ## Screen-space effects under interpolation (GTAO, SSSR, TAA, GI)
 

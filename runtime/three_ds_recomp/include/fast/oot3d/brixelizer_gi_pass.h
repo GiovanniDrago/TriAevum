@@ -39,21 +39,22 @@ struct BrixelizerGiInputs {
     bool operator==(const BrixelizerGiInputs&) const = default;
 };
 
-// Diffuse global illumination traced through the scene distance field
-// (FidelityFX Brixelizer GI) into the graph's DiffuseIllumination image.
+// Lifetime counters (totals since initialization).
+struct BrixelizerGiStats {
+    uint64_t InstancesCreated = 0;
+    uint64_t InstancesRetired = 0; // resolution or specular change, or least recently used
+    uint64_t WorldResets = 0;
+};
+
+// Global illumination traced through the scene distance field (FidelityFX
+// Brixelizer GI) into the graph's DiffuseIllumination image and, when
+// requested, its SpecularIllumination image (a reflection source).
 //
 // Each composed scene surface (presentation target, native boundary source)
 // has its own instance: GI context, prepared inputs and their one-frame
 // histories (depth, world normals, linear lit colour). Several surfaces can
 // be composed within one command buffer, so an instance used this frame is
 // never retired. Nothing here changes native targets.
-// Lifetime counters (totals since initialization).
-struct BrixelizerGiStats {
-    uint64_t InstancesCreated = 0;
-    uint64_t InstancesRetired = 0; // resolution change or least recently used
-    uint64_t WorldResets = 0;
-};
-
 class BrixelizerGiPass final {
   public:
     BrixelizerGiPass();
@@ -64,17 +65,23 @@ class BrixelizerGiPass final {
     bool Initialize(VkPhysicalDevice physicalDevice, VkDevice device,
                     NriInteropContext& interop, BrixelizerScene& scene);
     // Selects (or creates) the instance of these inputs for frame `frameId`.
+    // `specular` traces the specular term as well (another context).
     bool Configure(uint64_t frameId, const BrixelizerGiInputs& inputs,
-                   GlobalIlluminationResolution resolution);
+                   GlobalIlluminationResolution resolution, bool specular);
+    // `specularOutput` is the declared SpecularIllumination image, or null
+    // when the pass does not declare it.
     bool Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot, uint64_t frameId,
                  const TemporalViewState& temporal, const PerspectiveViewState& view,
                  PicaSurfaceCoordinates coordinates,
                  const NriEffectGraphTransientImageBinding& output,
+                 const NriEffectGraphTransientImageBinding* specularOutput,
                  const EffectPassBarrierPlan& barriers);
     // No GI for this sample (the field has no data yet, W-buffer depth, a
-    // failed dispatch): the declared output holds zero irradiance, so the
-    // composite adds nothing and the graph stays complete.
+    // failed dispatch): the declared outputs hold zero radiance, so the
+    // composite and the reflection resolve add nothing and the graph stays
+    // complete.
     bool ClearOutput(uint32_t frameSlot, const NriEffectGraphTransientImageBinding& output,
+                     const NriEffectGraphTransientImageBinding* specularOutput,
                      const EffectPassBarrierPlan& barriers);
     // Callers have completed the GPU work that references the instances.
     void InvalidateScreenResources();

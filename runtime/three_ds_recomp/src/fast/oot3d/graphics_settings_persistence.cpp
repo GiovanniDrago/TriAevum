@@ -1239,6 +1239,8 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                   {"Resolution",
                    EnumName(effects.GlobalIllumination.Resolution, kGlobalIlluminationResolutionNames)},
                   {"DiffuseIntensity", effects.GlobalIllumination.DiffuseIntensity},
+                  {"Specular", effects.GlobalIllumination.Specular},
+                  {"SpecularIntensity", effects.GlobalIllumination.SpecularIntensity},
               }},
              {"AO",
               {
@@ -1570,6 +1572,18 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                      "Graphics.Effects.GlobalIllumination.Resolution", result);
             ReadScalar(*gi, "DiffuseIntensity", settings.DiffuseIntensity,
                        "Graphics.Effects.GlobalIllumination.DiffuseIntensity", result);
+            // Specular GI arrived after the object: absent fields keep the
+            // defaults (off) and are written on the next save.
+            if (FindMember(*gi, "Specular") != nullptr)
+                ReadScalar(*gi, "Specular", settings.Specular,
+                           "Graphics.Effects.GlobalIllumination.Specular", result);
+            else
+                result.NeedsRewrite = true;
+            if (FindMember(*gi, "SpecularIntensity") != nullptr)
+                ReadScalar(*gi, "SpecularIntensity", settings.SpecularIntensity,
+                           "Graphics.Effects.GlobalIllumination.SpecularIntensity", result);
+            else
+                result.NeedsRewrite = true;
         } else {
             value.GlobalIllumination = {};
             result.NeedsRewrite = true;

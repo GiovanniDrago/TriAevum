@@ -23,6 +23,8 @@ void PopulateCompatibilityProjections(
     plan.FidelityFxSssr =
         plan.Reflections &&
         plan.ReflectionProvider == ReflectionMode::FidelityFxSssr;
+    plan.ReflectionsFromGlobalIllumination =
+        plan.Reflections && plan.ReflectionProvider == ReflectionMode::Off;
     plan.TemporalMetadata =
         input.WorldSurface && input.PerspectiveAvailable &&
         input.CameraAvailable &&
@@ -299,16 +301,21 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     const bool outline = extensionWorld &&
                          input.Toon != ToonMode::Off &&
                          input.OutlineEnabled;
-    const bool reflections = extensionWorld &&
-                             input.Reflections != ReflectionMode::Off &&
-                             input.PerspectiveAvailable;
-    const bool fidelityFxSssr = reflections && input.Reflections == ReflectionMode::FidelityFxSssr;
+    const bool screenSpaceReflections = extensionWorld &&
+                                        input.Reflections != ReflectionMode::Off &&
+                                        input.PerspectiveAvailable;
+    const bool fidelityFxSssr = screenSpaceReflections && input.Reflections == ReflectionMode::FidelityFxSssr;
     const bool temporalMetadata = extensionWorld &&
                                   input.PerspectiveAvailable &&
                                   input.CameraAvailable;
     // GI keeps a temporal history (motion vectors) and adds light in the
     // linear domain through the composite.
     const bool globalIllumination = temporalMetadata && input.GlobalIllumination;
+    // GI specular is a reflection source: the Reflections pass resolves it
+    // through the material guide and the composite mixes it like any
+    // reflection. A selected screen-space provider owns the term.
+    const bool giSpecular = globalIllumination && input.GlobalIlluminationSpecular && !screenSpaceReflections;
+    const bool reflections = screenSpaceReflections || giSpecular;
     // A native boundary has no presentation stages, so its inputs never declare
     // them: the domain projection below is what enforces that structurally, and
     // these keep the boundary's derived requirements free of presentation
@@ -324,7 +331,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     const bool fsr = temporalMetadata && upscaler && input.Upscaler == UpscalerProvider::Fsr;
     const bool dlss = temporalMetadata && upscaler && input.Upscaler == UpscalerProvider::Dlss;
     const bool temporalUpscaler = fsr || dlss;
-    const bool hiZ = reflections || fsr;
+    const bool hiZ = screenSpaceReflections || fsr;
     const bool motionVectors =
         temporalMetadata && (taa || temporalUpscaler || fidelityFxSssr || globalIllumination ||
                              (!input.NativeSceneBoundary && input.ForceMotion));
@@ -418,21 +425,30 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
         reflectionResources.push_back(Read(EffectResource::MotionVectors));
     }
     reflectionResources.push_back(Write(EffectResource::ReflectionColor));
+    if (giSpecular) {
+        reflectionDependencies = { "Guides", "GlobalIllumination" };
+        reflectionResources = { Read(EffectResource::NativeSceneView), Read(EffectResource::NormalGuide),
+                                Read(EffectResource::MaterialGuide), Read(EffectResource::SpecularIllumination),
+                                Write(EffectResource::ReflectionColor) };
+    }
     graph.Add({ .Name = "Reflections",
                 .DependsOn = std::move(reflectionDependencies),
                 .Enabled = reflections,
                 .Stage = EffectStage::AfterOpaque,
                 .Contract = EffectContractKind::ComposerPass,
                 .Resources = std::move(reflectionResources) });
+    std::vector<EffectResourceUse> globalIlluminationResources{
+        Read(EffectResource::NativeSceneView), Read(EffectResource::SceneColor),
+        Read(EffectResource::NativeDepth), Read(EffectResource::NormalGuide),
+        Read(EffectResource::MaterialGuide), Read(EffectResource::MotionVectors),
+        Write(EffectResource::DiffuseIllumination) };
+    if (giSpecular) globalIlluminationResources.push_back(Write(EffectResource::SpecularIllumination));
     graph.Add({ .Name = "GlobalIllumination",
                 .DependsOn = { "Guides", "Motion" },
                 .Enabled = globalIllumination,
                 .Stage = EffectStage::AfterOpaque,
                 .Contract = EffectContractKind::ComposerPass,
-                .Resources = { Read(EffectResource::NativeSceneView), Read(EffectResource::SceneColor),
-                               Read(EffectResource::NativeDepth), Read(EffectResource::NormalGuide),
-                               Read(EffectResource::MaterialGuide), Read(EffectResource::MotionVectors),
-                               Write(EffectResource::DiffuseIllumination) } });
+                .Resources = std::move(globalIlluminationResources) });
     graph.Add({ .Name = "Outline",
                 .DependsOn = { "Guides" },
                 .Enabled = outline,

@@ -83,12 +83,14 @@ VkImageCreateInfo ImageInfo(uint32_t width, uint32_t height, VkFormat format, Vk
 struct BrixelizerGiInstance {
     BrixelizerGiInputs Inputs;
     GlobalIlluminationResolution Resolution = GlobalIlluminationResolution::Half;
+    bool Specular = false;
     // Prepared inputs, alternating: [Current] this sample, the other the history.
     std::array<NriOwnedTexture2D, 2> Lit{};
     std::array<NriOwnedTexture2D, 2> Depth{};
     std::array<NriOwnedTexture2D, 2> Normal{};
-    // Required by the dispatch even with specular disabled.
-    NriOwnedTexture2D Specular{};
+    // Specular GI of the latest sample (required by the dispatch even with
+    // specular disabled).
+    NriOwnedTexture2D SpecularOutput{};
     // GI of this surface's latest sample. The GI context runs once per
     // presented frame (its history and the backend's per-dispatch resource
     // views assume it); every composition of the surface copies this.
@@ -134,10 +136,11 @@ struct BrixelizerGiPass::Impl {
         for (auto* textures : {&instance.Lit, &instance.Depth, &instance.Normal})
             for (auto& texture : *textures)
                 if (texture.Image != VK_NULL_HANDLE) Interop->DestroyOwnedTexture(texture.Image);
-        if (instance.Specular.Image != VK_NULL_HANDLE) Interop->DestroyOwnedTexture(instance.Specular.Image);
+        if (instance.SpecularOutput.Image != VK_NULL_HANDLE)
+            Interop->DestroyOwnedTexture(instance.SpecularOutput.Image);
         if (instance.Output.Image != VK_NULL_HANDLE) Interop->DestroyOwnedTexture(instance.Output.Image);
         instance.Lit = instance.Depth = instance.Normal = {};
-        instance.Specular = instance.Output = {};
+        instance.SpecularOutput = instance.Output = {};
         instance.States.Clear();
     }
     void Create(BrixelizerGiInstance& instance, FfxInterface& backend) {
@@ -151,7 +154,7 @@ struct BrixelizerGiPass::Impl {
             allocate(instance.Depth[i], VK_FORMAT_R32_SFLOAT);
             allocate(instance.Normal[i], VK_FORMAT_R16G16B16A16_SFLOAT);
         }
-        allocate(instance.Specular, VK_FORMAT_R16G16B16A16_SFLOAT);
+        allocate(instance.SpecularOutput, VK_FORMAT_R16G16B16A16_SFLOAT);
         allocate(instance.Output, VK_FORMAT_R16G16B16A16_SFLOAT);
         for (const auto& [image, format] : {std::pair{in.SceneColor, in.SceneColorFormat},
                                             std::pair{in.Depth, in.DepthFormat},
@@ -184,7 +187,8 @@ struct BrixelizerGiPass::Impl {
             Core->UpdateDescriptorRanges(updates.data(), static_cast<uint32_t>(updates.size()));
         }
         FfxBrixelizerGIContextDescription description{};
-        description.flags = FFX_BRIXELIZER_GI_FLAG_DISABLE_SPECULAR;
+        description.flags = instance.Specular ? static_cast<FfxBrixelizerGIFlags>(0)
+                                              : FFX_BRIXELIZER_GI_FLAG_DISABLE_SPECULAR;
         description.internalResolution = instance.Resolution == GlobalIlluminationResolution::Quarter
                                              ? FFX_BRIXELIZER_GI_INTERNAL_RESOLUTION_25_PERCENT
                                              : FFX_BRIXELIZER_GI_INTERNAL_RESOLUTION_50_PERCENT;
@@ -261,7 +265,7 @@ bool BrixelizerGiPass::Initialize(VkPhysicalDevice physicalDevice, VkDevice devi
 }
 
 bool BrixelizerGiPass::Configure(uint64_t frameId, const BrixelizerGiInputs& inputs,
-                                 GlobalIlluminationResolution resolution) {
+                                 GlobalIlluminationResolution resolution, bool specular) {
     mImpl->Active = nullptr;
     if (!mImpl->Initialized || inputs.Width == 0U || inputs.Height == 0U || inputs.SceneColor == VK_NULL_HANDLE ||
         inputs.Depth == VK_NULL_HANDLE || inputs.NormalGuide == VK_NULL_HANDLE ||
@@ -270,7 +274,7 @@ bool BrixelizerGiPass::Configure(uint64_t frameId, const BrixelizerGiInputs& inp
         return false;
     }
     for (auto& instance : mImpl->Instances) {
-        if (instance->Inputs == inputs && instance->Resolution == resolution) {
+        if (instance->Inputs == inputs && instance->Resolution == resolution && instance->Specular == specular) {
             instance->LastUsedFrame = frameId;
             mImpl->Active = instance.get();
             return true;
@@ -285,7 +289,7 @@ bool BrixelizerGiPass::Configure(uint64_t frameId, const BrixelizerGiInputs& inp
         mImpl->Reason = "the scene distance field is unavailable";
         return false;
     }
-    // A resolution change replaces the surface's instance; otherwise, when
+    // A resolution or specular change replaces the surface's instance; otherwise, when
     // full, the least recently used surface retires. Never one this frame's
     // command buffer already references.
     auto retired = std::find_if(mImpl->Instances.begin(), mImpl->Instances.end(),
@@ -309,6 +313,7 @@ bool BrixelizerGiPass::Configure(uint64_t frameId, const BrixelizerGiInputs& inp
     auto instance = std::make_unique<BrixelizerGiInstance>();
     instance->Inputs = inputs;
     instance->Resolution = resolution;
+    instance->Specular = specular;
     instance->LastUsedFrame = frameId;
     try {
         mImpl->Create(*instance, *backend);
@@ -328,25 +333,31 @@ bool BrixelizerGiPass::Configure(uint64_t frameId, const BrixelizerGiInputs& inp
 bool BrixelizerGiPass::Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot, uint64_t frameId,
                                const TemporalViewState& temporal, const PerspectiveViewState& view,
                                PicaSurfaceCoordinates coordinates, const NriEffectGraphTransientImageBinding& output,
+                               const NriEffectGraphTransientImageBinding* specularOutput,
                                const EffectPassBarrierPlan& barriers) {
     mImpl->LastBarriers = {};
 #if !OOT3D_HAS_BRIXELIZER_GI_PASS
     (void)commandBuffer, (void)frameSlot, (void)frameId, (void)temporal, (void)view, (void)coordinates, (void)output,
-        (void)barriers;
+        (void)specularOutput, (void)barriers;
     return false;
 #else
-    const auto* outputBarrier = barriers.Find(EffectResource::DiffuseIllumination);
+    const auto declared = [&](const NriEffectGraphTransientImageBinding& binding, EffectResource resource) {
+        const auto* barrier = barriers.Find(resource);
+        return barrier != nullptr && barrier->Managed() && binding.Valid() && binding.Resource == resource &&
+               binding.Format == VK_FORMAT_R16G16B16A16_SFLOAT && binding.Width == mImpl->Active->Inputs.Width &&
+               binding.Height == mImpl->Active->Inputs.Height;
+    };
     if (mImpl->Active == nullptr || !mImpl->Active->ContextCreated || commandBuffer == VK_NULL_HANDLE ||
-        !barriers.Valid() || outputBarrier == nullptr || !outputBarrier->Managed() || !output.Valid() ||
-        output.Resource != EffectResource::DiffuseIllumination || output.Format != VK_FORMAT_R16G16B16A16_SFLOAT ||
-        output.Width != mImpl->Active->Inputs.Width || output.Height != mImpl->Active->Inputs.Height) {
+        !barriers.Valid() || !declared(output, EffectResource::DiffuseIllumination) ||
+        (specularOutput != nullptr && !declared(*specularOutput, EffectResource::SpecularIllumination)) ||
+        mImpl->Active->Specular != (specularOutput != nullptr)) {
         mImpl->Reason = "Brixelizer GI output is not declared";
         return false;
     }
     auto& instance = *mImpl->Active;
     auto* command = NriInteropAccess::CommandBuffer(*mImpl->Interop, frameSlot);
     if (command == nullptr) return false;
-    mImpl->LastBarriers = barriers.BeginOutputExecution(EffectResource::DiffuseIllumination);
+    mImpl->LastBarriers = barriers.BeginExecution();
     const auto privateTransition = [&](VkImage image, ResourceAccess access) {
         const auto change = instance.States.PlanTransition(reinterpret_cast<uintptr_t>(image), {access, 0});
         if (!NriInteropAccess::CmdTextureBarrier(*mImpl->Interop, frameSlot, image, change))
@@ -354,13 +365,22 @@ bool BrixelizerGiPass::Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot
         instance.States.Commit(change);
         mImpl->LastBarriers.RecordPrivateTransition(change);
     };
-    const auto graphTransition = [&](ResourceAccess access) {
+    const auto graphTransition = [&](const NriEffectGraphTransientImageBinding& target, ResourceAccess access) {
         const auto change =
-            output.StateTracker->PlanTransition(reinterpret_cast<uintptr_t>(output.Texture.Image), {access, 0});
-        if (!NriInteropAccess::CmdTextureBarrier(*mImpl->Interop, frameSlot, output.Texture.Image, change))
+            target.StateTracker->PlanTransition(reinterpret_cast<uintptr_t>(target.Texture.Image), {access, 0});
+        if (!NriInteropAccess::CmdTextureBarrier(*mImpl->Interop, frameSlot, target.Texture.Image, change))
             throw std::runtime_error("Brixelizer GI output transition failed");
-        output.StateTracker->Commit(change);
+        target.StateTracker->Commit(change);
         mImpl->LastBarriers.RecordGraphTransition(change);
+    };
+    const auto copy = [&](const NriOwnedTexture2D& source, const NriEffectGraphTransientImageBinding& target) {
+        privateTransition(source.Image, ResourceAccess::TransferRead);
+        graphTransition(target, ResourceAccess::TransferWrite);
+        auto* from = NriInteropAccess::Texture(*mImpl->Interop, source.Image);
+        auto* to = NriInteropAccess::Texture(*mImpl->Interop, target.Texture.Image);
+        if (from == nullptr || to == nullptr) throw std::runtime_error("Brixelizer GI copy textures unavailable");
+        mImpl->Core->CmdCopyTexture(*command, *to, nullptr, *from, nullptr);
+        graphTransition(target, barriers.Find(target.Resource)->CompletionAccess);
     };
     if (instance.LastTracedFrame != frameId || !instance.Traced) {
         if (!Trace(instance, commandBuffer, frameSlot, frameId, temporal, view, coordinates, privateTransition))
@@ -369,13 +389,8 @@ bool BrixelizerGiPass::Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot
         instance.Traced = true;
     }
     try {
-        privateTransition(instance.Output.Image, ResourceAccess::TransferRead);
-        graphTransition(ResourceAccess::TransferWrite);
-        auto* source = NriInteropAccess::Texture(*mImpl->Interop, instance.Output.Image);
-        auto* destination = NriInteropAccess::Texture(*mImpl->Interop, output.Texture.Image);
-        if (source == nullptr || destination == nullptr) throw std::runtime_error("Brixelizer GI copy textures unavailable");
-        mImpl->Core->CmdCopyTexture(*command, *destination, nullptr, *source, nullptr);
-        graphTransition(outputBarrier->CompletionAccess);
+        copy(instance.Output, output);
+        if (specularOutput != nullptr) copy(instance.SpecularOutput, *specularOutput);
     } catch (const std::exception& exception) {
         mImpl->Reason = exception.what();
         return false;
@@ -425,7 +440,7 @@ bool BrixelizerGiPass::Trace(BrixelizerGiInstance& instance, VkCommandBuffer com
         for (auto* texture : {&instance.Lit[current], &instance.Depth[current], &instance.Normal[current],
                               &instance.Lit[history], &instance.Depth[history], &instance.Normal[history]})
             privateTransition(texture->Image, ResourceAccess::ShaderRead);
-        privateTransition(instance.Specular.Image, ResourceAccess::ComputeWrite);
+        privateTransition(instance.SpecularOutput.Image, ResourceAccess::ComputeWrite);
         privateTransition(instance.Output.Image, ResourceAccess::ComputeWrite);
     } catch (const std::exception& exception) {
         mImpl->Reason = exception.what();
@@ -459,7 +474,7 @@ bool BrixelizerGiPass::Trace(BrixelizerGiInstance& instance, VkCommandBuffer com
                                       L"OOT3D_GI_Motion");
     dispatch.outputDiffuseGI = owned(instance.Output, VK_FORMAT_R16G16B16A16_SFLOAT, L"OOT3D_GI_Diffuse",
                                      FFX_RESOURCE_STATE_UNORDERED_ACCESS);
-    dispatch.outputSpecularGI = owned(instance.Specular, VK_FORMAT_R16G16B16A16_SFLOAT, L"OOT3D_GI_Specular",
+    dispatch.outputSpecularGI = owned(instance.SpecularOutput, VK_FORMAT_R16G16B16A16_SFLOAT, L"OOT3D_GI_Specular",
                                       FFX_RESOURCE_STATE_UNORDERED_ACCESS);
 
     const auto projection = coordinates.FidelityFxClip(view.Projection);
@@ -497,29 +512,34 @@ bool BrixelizerGiPass::Trace(BrixelizerGiInstance& instance, VkCommandBuffer com
 #endif
 
 bool BrixelizerGiPass::ClearOutput(uint32_t frameSlot, const NriEffectGraphTransientImageBinding& output,
+                                   const NriEffectGraphTransientImageBinding* specularOutput,
                                    const EffectPassBarrierPlan& barriers) {
     mImpl->LastBarriers = {};
 #if !OOT3D_HAS_BRIXELIZER_GI_PASS
-    (void)frameSlot, (void)output, (void)barriers;
+    (void)frameSlot, (void)output, (void)specularOutput, (void)barriers;
     return false;
 #else
-    const auto* outputBarrier = barriers.Find(EffectResource::DiffuseIllumination);
-    if (!mImpl->Initialized || !barriers.Valid() || outputBarrier == nullptr || !outputBarrier->Managed() ||
-        !output.Valid() || output.Resource != EffectResource::DiffuseIllumination)
-        return false;
-    mImpl->LastBarriers = barriers.BeginOutputExecution(EffectResource::DiffuseIllumination);
-    const auto transition = [&](ResourceAccess access) {
-        const auto change =
-            output.StateTracker->PlanTransition(reinterpret_cast<uintptr_t>(output.Texture.Image), {access, 0});
-        if (!NriInteropAccess::CmdTextureBarrier(*mImpl->Interop, frameSlot, output.Texture.Image, change))
+    if (!mImpl->Initialized || !barriers.Valid()) return false;
+    mImpl->LastBarriers = barriers.BeginExecution();
+    const auto clear = [&](const NriEffectGraphTransientImageBinding& target, EffectResource resource) {
+        const auto* barrier = barriers.Find(resource);
+        if (barrier == nullptr || !barrier->Managed() || !target.Valid() || target.Resource != resource)
             return false;
-        output.StateTracker->Commit(change);
-        mImpl->LastBarriers.RecordGraphTransition(change);
-        return true;
+        const auto transition = [&](ResourceAccess access) {
+            const auto change =
+                target.StateTracker->PlanTransition(reinterpret_cast<uintptr_t>(target.Texture.Image), {access, 0});
+            if (!NriInteropAccess::CmdTextureBarrier(*mImpl->Interop, frameSlot, target.Texture.Image, change))
+                return false;
+            target.StateTracker->Commit(change);
+            mImpl->LastBarriers.RecordGraphTransition(change);
+            return true;
+        };
+        return transition(ResourceAccess::StorageClear) &&
+               mImpl->Clear.ClearUint32(frameSlot, target.Texture.Image, 0U) &&
+               transition(barrier->CompletionAccess);
     };
-    return transition(ResourceAccess::StorageClear) &&
-           mImpl->Clear.ClearUint32(frameSlot, output.Texture.Image, 0U) &&
-           transition(outputBarrier->CompletionAccess);
+    return clear(output, EffectResource::DiffuseIllumination) &&
+           (specularOutput == nullptr || clear(*specularOutput, EffectResource::SpecularIllumination));
 #endif
 }
 

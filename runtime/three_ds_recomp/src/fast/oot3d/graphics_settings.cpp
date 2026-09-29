@@ -261,6 +261,10 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         std::isfinite(globalIllumination.DiffuseIntensity)
             ? std::clamp(globalIllumination.DiffuseIntensity, 0.0F, 4.0F)
             : 1.0F;
+    globalIllumination.SpecularIntensity =
+        std::isfinite(globalIllumination.SpecularIntensity)
+            ? std::clamp(globalIllumination.SpecularIntensity, 0.0F, 2.0F)
+            : 1.0F;
     if (globalIllumination.Resolution > GlobalIlluminationResolution::Quarter)
         globalIllumination.Resolution = GlobalIlluminationResolution::Half;
     if (globalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi &&

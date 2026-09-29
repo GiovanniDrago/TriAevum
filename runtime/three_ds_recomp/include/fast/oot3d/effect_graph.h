@@ -59,6 +59,9 @@ enum class EffectResource : uint8_t {
     // Diffuse irradiance traced through the scene distance field (linear,
     // RGBA16F); the composite multiplies it by the diffuse albedo.
     DiffuseIllumination,
+    // Specular radiance traced through the scene distance field (linear,
+    // RGBA16F); a reflection source resolved through the material guide.
+    SpecularIllumination,
     Count,
 };
 // Resource sets are 32-bit masks in the barrier and residency plans.

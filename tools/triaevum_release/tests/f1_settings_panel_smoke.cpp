@@ -907,11 +907,18 @@ int main() try {
     Select("Global illumination", "Brixelizer GI");
     Select("GI resolution", "Quarter");
     EditScalar("GI diffuse intensity", "2.5");
+    Click("GI specular reflections");
+    EditScalar("GI specular intensity", "0.75");
     {
         const auto gi = runtime.Snapshot().Effects.GlobalIllumination;
         Check(gi.Mode == GlobalIlluminationMode::BrixelizerGi &&
                   gi.Resolution == GlobalIlluminationResolution::Quarter && gi.DiffuseIntensity == 2.5F,
               "global illumination controls did not apply");
+        Check(gi.Specular && gi.SpecularIntensity == 0.75F, "GI specular controls did not apply");
+        const auto persistedSpecular = DeserializeGraphicsSettings(store->Root["Graphics"]);
+        Check(persistedSpecular.Value.Effects.GlobalIllumination.Specular &&
+                  persistedSpecular.Value.Effects.GlobalIllumination.SpecularIntensity == 0.75F,
+              "GI specular selection lost on reload");
         Check(runtime.SnapshotForRendering().Value.Effects.GlobalIllumination.Mode == GlobalIlluminationMode::Off,
               "global illumination rendered without per-pixel lighting");
         const auto persistedGi = DeserializeGraphicsSettings(store->Root["Graphics"]);

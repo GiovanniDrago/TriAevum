@@ -50,6 +50,10 @@ struct GlobalIlluminationSettings {
     GlobalIlluminationMode Mode = GlobalIlluminationMode::Off;
     GlobalIlluminationResolution Resolution = GlobalIlluminationResolution::Half;
     float DiffuseIntensity = 1.0F;
+    // Specular GI is a reflection source: composed through the material
+    // guide like screen-space reflections, which own the term when enabled.
+    bool Specular = false;
+    float SpecularIntensity = 1.0F;
 };
 
 inline constexpr uint8_t kMaximumToonLightBands = 6U;

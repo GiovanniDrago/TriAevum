@@ -4142,9 +4142,14 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         }
         const uint64_t azaharTextureGeneration =
             mFrameAzaharTextureGeneration;
+        // Material guide values: screen-space reflections or GI specular
+        // (a reflection source resolved through the same guide).
         const bool reflectionsEnabled = !nativeMemoryOnly &&
-            graphicsSettings.Effects.Reflections !=
-            Oot3d::ReflectionMode::Off;
+            (graphicsSettings.Effects.Reflections !=
+                 Oot3d::ReflectionMode::Off ||
+             (graphicsSettings.Effects.GlobalIllumination.Mode !=
+                  Oot3d::GlobalIlluminationMode::Off &&
+              graphicsSettings.Effects.GlobalIllumination.Specular));
         std::array<Oot3d::ReflectionMaterialTextureIdentity, 3U>
             reflectionTextureIdentities{};
         size_t reflectionTextureCount = 0U;
@@ -6736,6 +6741,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 presentationSettings.Effects.GlobalIllumination.Mode ==
                     Oot3d::GlobalIlluminationMode::BrixelizerGi &&
                 mBrixelizerGiPass.Available() && mBrixelizerScene.Available(),
+            .GlobalIlluminationSpecular = presentationSettings.Effects.GlobalIllumination.Specular,
             .Toon = presentationSettings.Effects.Toon,
             .OutlineEnabled =
                 presentationSettings.Effects.ToonStyle.OutlineEnabled,
@@ -6926,6 +6932,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         const Oot3d::NriEffectGraphTransientImageBinding*
             transientDiffuseIllumination = nullptr;
         const Oot3d::NriEffectGraphTransientImageBinding*
+            transientSpecularIllumination = nullptr;
+        const Oot3d::NriEffectGraphTransientImageBinding*
             transientCompositeOutput = nullptr;
         const Oot3d::NriEffectGraphTransientImageBinding*
             transientAntiAliasedOutput = nullptr;
@@ -6957,7 +6965,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             plannedUpscalerContract.Output.Width;
         const uint32_t plannedUpscalerHeight =
             plannedUpscalerContract.Output.Height;
-        std::array<Oot3d::EffectTransientImageRequirement, 10U>
+        std::array<Oot3d::EffectTransientImageRequirement, 11U>
             requirements{};
         size_t requirementCount = 0U;
         const auto requireImageWithMips = [
@@ -7027,6 +7035,10 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             requireRgba16f(
                 Oot3d::EffectResource::DiffuseIllumination,
                 effectGuideTarget->Width, effectGuideTarget->Height);
+            if (effectPlan.ReflectionsFromGlobalIllumination)
+                requireRgba16f(
+                    Oot3d::EffectResource::SpecularIllumination,
+                    effectGuideTarget->Width, effectGuideTarget->Height);
         }
         if (effectPlan.Enabled(Oot3d::DisplayEffectPass::Composite) &&
             effectGuideTarget != nullptr) {
@@ -7092,6 +7104,11 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 transientDiffuseIllumination =
                     mNriEffectGraphTransientImageArena.Find(
                         Oot3d::EffectResource::DiffuseIllumination);
+                transientSpecularIllumination =
+                    effectPlan.ReflectionsFromGlobalIllumination
+                        ? mNriEffectGraphTransientImageArena.Find(
+                              Oot3d::EffectResource::SpecularIllumination)
+                        : nullptr;
                 transientCompositeOutput =
                     mNriEffectGraphTransientImageArena.Find(
                         Oot3d::EffectResource::CompositeColor);
@@ -7683,7 +7700,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         // irradiance, so the composite adds nothing and the graph stays whole.
         bool giForDisplay = false;
         if (wantsGlobalIllumination && effectGuideTarget != nullptr &&
-            transientDiffuseIllumination != nullptr) {
+            transientDiffuseIllumination != nullptr &&
+            (!effectPlan.ReflectionsFromGlobalIllumination || transientSpecularIllumination != nullptr)) {
             const bool giAttempted = motionAvailableForDisplay && temporalState.has_value() &&
                                      !effectGuideTarget->WBuffering;
             const auto giCoordinates = Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags);
@@ -7707,10 +7725,12 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 mGpuProfiler.BeginScope(mCurrentFrame, Oot3d::GpuProfileScope::GlobalIllumination, command);
                 giForDisplay =
                     mBrixelizerGiPass.Configure(mFrameCounter, giInputs,
-                                                presentationSettings.Effects.GlobalIllumination.Resolution) &&
+                                                presentationSettings.Effects.GlobalIllumination.Resolution,
+                                                transientSpecularIllumination != nullptr) &&
                     mBrixelizerGiPass.Execute(command, mCurrentFrame, mFrameCounter, *temporalState,
                                               *presentationPerspective, giCoordinates,
-                                              *transientDiffuseIllumination, globalIlluminationBarrierPlan);
+                                              *transientDiffuseIllumination, transientSpecularIllumination,
+                                              globalIlluminationBarrierPlan);
                 mGpuProfiler.EndScope(mCurrentFrame, Oot3d::GpuProfileScope::GlobalIllumination, command);
             }
             if (!giForDisplay) {
@@ -7722,7 +7742,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                                                                                : "motion vectors unavailable")
                                               : mBrixelizerGiPass.UnavailableReason().c_str());
                 if (!mBrixelizerGiPass.ClearOutput(mCurrentFrame, *transientDiffuseIllumination,
-                                                   globalIlluminationBarrierPlan))
+                                                   transientSpecularIllumination, globalIlluminationBarrierPlan))
                     throw std::runtime_error("global illumination output could not be cleared");
             }
             if (const auto& gi = mBrixelizerGiPass.Stats();
@@ -7743,12 +7763,19 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                             transientDiffuseIllumination->Texture.SampledView,
                             VK_FORMAT_R16G16B16A16_SFLOAT, effectGuideTarget->Width,
                             effectGuideTarget->Height);
+            if (transientSpecularIllumination != nullptr)
+                bindEffectImage(Oot3d::EffectResource::SpecularIllumination,
+                                transientSpecularIllumination->Texture.Image,
+                                transientSpecularIllumination->Texture.SampledView,
+                                VK_FORMAT_R16G16B16A16_SFLOAT, effectGuideTarget->Width,
+                                effectGuideTarget->Height);
         }
         const bool giComposed = wantsGlobalIllumination && effectGuideTarget != nullptr &&
                                 transientDiffuseIllumination != nullptr;
         bool linearDepthForFsr = wantsFsr && effectGuideTarget != nullptr;
+        const bool giReflections = effectPlan.ReflectionsFromGlobalIllumination;
         const bool hiZRequested =
-            reflectionsForDisplay || linearDepthForFsr;
+            (reflectionsForDisplay && !giReflections) || linearDepthForFsr;
         const bool canReuseHiZ =
             hiZRequested && mHiZExecutedThisFrame && mHiZOutputValid &&
             mHiZRenderTargetNamespace == transfer.RenderTargetNamespace &&
@@ -7809,7 +7836,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             mHiZOutputValid && effectGuideTarget != nullptr &&
             mHiZRenderTargetNamespace == transfer.RenderTargetNamespace &&
             mHiZDisplayPhysicalAddress == transfer.OutputPhysicalAddress;
-        reflectionsForDisplay = reflectionsForDisplay && hiZForDisplay;
+        reflectionsForDisplay = reflectionsForDisplay && (giReflections || hiZForDisplay);
         linearDepthForFsr = linearDepthForFsr && hiZForDisplay;
         if (hiZForDisplay) {
             bindEffectImage(
@@ -7932,7 +7959,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             reflectionOutputEncoding =
                 mReflectionOutputEncodingThisFrame;
             if (activeReflectionProvider ==
-                    Oot3d::ReflectionProvider::FidelityFxSssr) {
+                    Oot3d::ReflectionProvider::FidelityFxSssr ||
+                activeReflectionProvider ==
+                    Oot3d::ReflectionProvider::GlobalIllumination) {
                 activeReflectionImage =
                     mReflectionMaterialResolvePass.OutputImage();
                 activeReflectionView =
@@ -7949,6 +7978,72 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     Oot3d::ReflectionProvider::Off &&
                 activeReflectionImage != VK_NULL_HANDLE &&
                 activeReflectionView != VK_NULL_HANDLE;
+        } else if (reflectionsAttempted && giReflections) {
+            // GI specular is the reflection radiance: the material resolve
+            // weights it by reflectivity, gain and the split-sum BRDF exactly
+            // as it weights a screen-space trace.
+            if (mHiZReflectionSurface.has_value() &&
+                *mHiZReflectionSurface != *reflectionKey) {
+                mSceneSurfaces.Retire(*mHiZReflectionSurface);
+                mHiZReflectionSurface.reset();
+            }
+            const auto reflectionReads = resolveEffectPassReads(
+                Oot3d::DisplayEffectPass::Reflections);
+            const auto& normalBinding = requireEffectImageRead(
+                reflectionReads, Oot3d::EffectResource::NormalGuide);
+            const auto& materialBinding = requireEffectImageRead(
+                reflectionReads, Oot3d::EffectResource::MaterialGuide);
+            const auto& specularBinding = requireEffectImageRead(
+                reflectionReads, Oot3d::EffectResource::SpecularIllumination);
+            transitionEffectPassGuides(Oot3d::DisplayEffectPass::Reflections);
+            mGpuProfiler.BeginScope(mCurrentFrame, Oot3d::GpuProfileScope::Reflection, command);
+            const bool iblExecuted =
+                giForDisplay && mReflectionIblPass.Available() &&
+                mReflectionIblPass.Execute(
+                    mCurrentFrame,
+                    effectGuideTarget->ReflectionEnvironment.Resolve(mFrameCounter));
+            if (iblExecuted)
+                recordEffectPassTransitions(mReflectionIblPass.LastBarrierExecution());
+            const bool resolved =
+                iblExecuted && transientReflectionOutput != nullptr &&
+                mReflectionMaterialResolvePass.Configure(*transientReflectionOutput) &&
+                mReflectionMaterialResolvePass.Execute(
+                    mCurrentFrame,
+                    reinterpret_cast<VkImage>(specularBinding.NativeImage),
+                    static_cast<VkFormat>(specularBinding.Format),
+                    reinterpret_cast<VkImage>(normalBinding.NativeImage),
+                    static_cast<VkFormat>(normalBinding.Format),
+                    reinterpret_cast<VkImage>(materialBinding.NativeImage),
+                    static_cast<VkFormat>(materialBinding.Format),
+                    mReflectionIblPass.BrdfImage(), VK_FORMAT_R16G16_SFLOAT,
+                    *presentationPerspective, 0.0F, reflectionBarrierPlan,
+                    Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
+            if (resolved) {
+                recordEffectPassTransitions(mReflectionMaterialResolvePass.LastBarrierExecution());
+                activeReflectionProvider = Oot3d::ReflectionProvider::GlobalIllumination;
+                activeReflectionImage = mReflectionMaterialResolvePass.OutputImage();
+                activeReflectionView = mReflectionMaterialResolvePass.OutputView();
+                reflectionOutputEncoding = Oot3d::SceneColorEncoding::Linear;
+            }
+            // Without GI for this sample nothing is composed: a cleared
+            // specular image would darken every reflective surface.
+            reflectionsForDisplay = resolved;
+            mGpuProfiler.EndScope(mCurrentFrame, Oot3d::GpuProfileScope::Reflection, command);
+            if (reflectionsForDisplay) {
+                mSceneSurfaces.Publish({*reflectionKey,
+                    reinterpret_cast<uintptr_t>(activeReflectionImage),
+                    effectGuideTarget->Width, effectGuideTarget->Height,
+                    static_cast<uint32_t>(VK_FORMAT_R16G16B16A16_SFLOAT),
+                    0, true, reflectionOutputEncoding});
+                reflectionNriWrapped = mNriInterop.WrapTexture(
+                    activeReflectionImage, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_TYPE_2D,
+                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    effectGuideTarget->Width, effectGuideTarget->Height);
+                mHiZReflectionSurface = *reflectionKey;
+                mReflectionExecutedThisFrame = true;
+                mReflectionProviderThisFrame = activeReflectionProvider;
+                mReflectionOutputEncodingThisFrame = reflectionOutputEncoding;
+            }
         } else if (reflectionsAttempted) {
             if (mHiZReflectionSurface.has_value() &&
                 *mHiZReflectionSurface != *reflectionKey) {
@@ -8394,7 +8489,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     optionalCompositeImage(Oot3d::EffectResource::DiffuseAlbedoGuide),
                     optionalCompositeFormat(Oot3d::EffectResource::DiffuseAlbedoGuide), giForDisplay,
                     presentationSettings.Effects.GlobalIllumination.DiffuseIntensity, aoForDisplay,
-                    reflectionsForDisplay, presentationSettings.Effects.ReflectionStrength,
+                    reflectionsForDisplay,
+                    giReflections ? presentationSettings.Effects.GlobalIllumination.SpecularIntensity
+                                  : presentationSettings.Effects.ReflectionStrength,
                     presentationSettings.Effects.ReflectionDebugView, outlineForDisplay,
                     presentationSettings.Effects.ToonStyle, compositeInputEncoding, compositeBarrierPlan);
             mGpuProfiler.EndScope(
@@ -9568,7 +9665,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             mLastPresentedNativePicaDisplayTransfer = transfer;
         }
         mNativePicaPresentedThisFrame = true;
-        if (reflectionsForDisplay && reflectionsAttempted) {
+        if (reflectionsForDisplay && reflectionsAttempted &&
+            activeReflectionProvider != Oot3d::ReflectionProvider::GlobalIllumination) {
             if (activeReflectionProvider ==
                 Oot3d::ReflectionProvider::HiZ) {
                 mDiagnostics.RecordHiZReflection(

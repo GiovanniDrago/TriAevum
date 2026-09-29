@@ -77,6 +77,7 @@ EffectPhysicalResidency ClassifyEffectResourceResidency(
         case EffectResource::HierarchicalDepth:
         case EffectResource::AmbientOcclusion:
         case EffectResource::DiffuseIllumination:
+        case EffectResource::SpecularIllumination:
         case EffectResource::ReflectionColor:
         case EffectResource::OutlineColor:
         case EffectResource::MotionVectors:
@@ -102,6 +103,7 @@ EffectTransientStorageClass ClassifyEffectTransientStorage(
             return EffectTransientStorageClass::DepthPyramid;
         case EffectResource::AmbientOcclusion:
         case EffectResource::DiffuseIllumination:
+        case EffectResource::SpecularIllumination:
         case EffectResource::ReflectionColor:
         case EffectResource::OutlineColor:
         case EffectResource::MotionVectors:

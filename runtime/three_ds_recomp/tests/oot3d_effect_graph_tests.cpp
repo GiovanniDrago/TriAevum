@@ -576,6 +576,53 @@ TEST(Oot3dDisplayEffectPlan, GlobalIlluminationComposesThroughTheSceneComposite)
     EXPECT_FALSE(BuildDisplayEffectPlan(input).Enabled(DisplayEffectPass::GlobalIllumination));
 }
 
+TEST(Oot3dDisplayEffectPlan, GlobalIlluminationSpecularIsAReflectionSource) {
+    DisplayEffectPlanInput input;
+    input.WorldSurface = true;
+    input.PerspectiveAvailable = true;
+    input.CameraAvailable = true;
+    input.GlobalIllumination = true;
+    input.GlobalIlluminationSpecular = true;
+
+    const auto plan = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(plan.Graph.Valid()) << plan.Graph.Error;
+    EXPECT_TRUE(plan.Reflections);
+    EXPECT_TRUE(plan.ReflectionsFromGlobalIllumination);
+    EXPECT_FALSE(plan.FidelityFxSssr);
+    // The resolve needs no depth pyramid or scene colour.
+    EXPECT_FALSE(plan.Enabled(DisplayEffectPass::HiZ));
+    const auto gi = plan.Bindings(DisplayEffectPass::GlobalIllumination);
+    EXPECT_NE(std::find(gi.begin(), gi.end(), Write(EffectResource::SpecularIllumination)), gi.end());
+    const auto reflections = plan.Bindings(DisplayEffectPass::Reflections);
+    for (const auto use : {Read(EffectResource::SpecularIllumination), Read(EffectResource::NormalGuide),
+                           Read(EffectResource::MaterialGuide), Write(EffectResource::ReflectionColor)})
+        EXPECT_NE(std::find(reflections.begin(), reflections.end(), use), reflections.end());
+    EXPECT_EQ(std::find(reflections.begin(), reflections.end(), Read(EffectResource::HierarchicalDepth)),
+              reflections.end());
+    const auto order = [&plan](std::string_view name) {
+        return std::find(plan.Graph.Order.begin(), plan.Graph.Order.end(), name) - plan.Graph.Order.begin();
+    };
+    EXPECT_LT(order("GlobalIllumination"), order("Reflections"));
+    EXPECT_LT(order("Reflections"), order("Composite"));
+
+    // A screen-space provider owns the reflection term.
+    input.Reflections = ReflectionMode::FidelityFxSssr;
+    const auto sssr = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(sssr.Graph.Valid()) << sssr.Graph.Error;
+    EXPECT_TRUE(sssr.FidelityFxSssr);
+    EXPECT_FALSE(sssr.ReflectionsFromGlobalIllumination);
+    const auto sssrGi = sssr.Bindings(DisplayEffectPass::GlobalIllumination);
+    EXPECT_EQ(std::find(sssrGi.begin(), sssrGi.end(), Write(EffectResource::SpecularIllumination)),
+              sssrGi.end());
+
+    // Diffuse only: no reflection pass.
+    input.Reflections = ReflectionMode::Off;
+    input.GlobalIlluminationSpecular = false;
+    const auto diffuse = BuildDisplayEffectPlan(input);
+    EXPECT_FALSE(diffuse.Reflections);
+    EXPECT_FALSE(diffuse.ReflectionsFromGlobalIllumination);
+}
+
 TEST(Oot3dDisplayEffectPlan, DeclaresItsActualTypedInputs) {
     DisplayEffectPlanInput input;
     input.WorldSurface = true;

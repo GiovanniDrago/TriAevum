@@ -807,3 +807,28 @@ TEST(Oot3dGraphicsSettingsPersistence, GrassVisibilityMigratesAndDecouplesFallof
 }
 
 } // namespace
+
+TEST(Oot3dGraphicsSettingsPersistence, GlobalIlluminationSpecular) {
+    using namespace Fast::Oot3d;
+    auto settings = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
+    settings.Effects.GlobalIllumination.Specular = true;
+    settings.Effects.GlobalIllumination.SpecularIntensity = 7.0F;
+    const auto clamped = GraphicsSettingsService::Validate(settings, {});
+    EXPECT_FLOAT_EQ(clamped.Value.Effects.GlobalIllumination.SpecularIntensity, 2.0F);
+
+    settings.Effects.GlobalIllumination.SpecularIntensity = 0.5F;
+    auto document = SerializeGraphicsSettings(settings);
+    const auto loaded = DeserializeGraphicsSettings(document);
+    EXPECT_TRUE(loaded.Value.Effects.GlobalIllumination.Specular);
+    EXPECT_FLOAT_EQ(loaded.Value.Effects.GlobalIllumination.SpecularIntensity, 0.5F);
+
+    // Written before specular GI existed: defaults, no correction reported.
+    document["Effects"]["GlobalIllumination"].erase("Specular");
+    document["Effects"]["GlobalIllumination"].erase("SpecularIntensity");
+    const auto legacy = DeserializeGraphicsSettings(document);
+    EXPECT_FALSE(legacy.Value.Effects.GlobalIllumination.Specular);
+    EXPECT_FLOAT_EQ(legacy.Value.Effects.GlobalIllumination.SpecularIntensity, 1.0F);
+    EXPECT_TRUE(legacy.NeedsRewrite);
+    for (const auto& issue : legacy.Issues)
+        EXPECT_EQ(issue.Field.find("GlobalIllumination"), std::string::npos) << issue.Field;
+}

@@ -45,6 +45,9 @@ struct DisplayEffectPlanInput {
     ReflectionMode Reflections = ReflectionMode::Off;
     // Diffuse GI is requested and its provider is available.
     bool GlobalIllumination = false;
+    // Specular GI is requested; it becomes the reflection source when no
+    // screen-space reflection provider is selected.
+    bool GlobalIlluminationSpecular = false;
     ToonMode Toon = ToonMode::Off;
     bool OutlineEnabled = false;
     AntiAliasingMode AntiAliasing = AntiAliasingMode::Off;
@@ -78,6 +81,8 @@ struct DisplayEffectPlan {
     bool Outline = false;
     bool Reflections = false;
     bool GlobalIllumination = false;
+    // The Reflections pass resolves GI specular instead of a screen-space trace.
+    bool ReflectionsFromGlobalIllumination = false;
     bool FidelityFxSssr = false;
     bool TemporalMetadata = false;
     bool Taa = false;
