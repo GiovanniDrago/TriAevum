@@ -6,6 +6,7 @@
 #include "fast/renderer/slow_frame_samples.h"
 #include "fast/renderer3ds/pica_program_preparation.h"
 #include "oot3d_game_language_panel.h"
+#include "oot3d_graphics_settings_schedule.h"
 #include "oot3d_scene_environment.h"
 #ifdef OOT3D_WHOLE_AOT_PRODUCT_MODE
 #include "oot3d_native_crash_diagnostics.h"
@@ -82,6 +83,7 @@
 
 #include "fast/Fast3dGui.h"
 #include "fast/Fast3dWindow.h"
+#include "fast/oot3d/graphics_settings_persistence.h"
 #include "fast/oot3d/graphics_settings_runtime.h"
 #include "fast/oot3d/graphics_settings_window.h"
 #include "fast/oot3d/perspective_fov_policy.h"
@@ -3946,6 +3948,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   window.SetTextureFilter(Fast::FILTER_LINEAR);
   const auto inputTimeline = Oot3dNativeGame::NativeA32InputTimeline::LoadFile(
       launch.Host.InputTimelinePath);
+  auto graphicsSettingsSchedule =
+      Oot3dNativeGame::GraphicsSettingsSchedule::LoadFile(
+          launch.Host.GraphicsSettingsSchedulePath);
 #if defined(__SWITCH__)
   WriteSwitchBootStage("ui_runtime_initialized");
 #endif
@@ -5125,6 +5130,26 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     if (physicalInputFrame.Exit) {
       window.Close();
       break;
+    }
+    // Developer qualification: scheduled settings take the F1 commit path
+    // (applied, not persisted) before this frame is rendered.
+    for (const auto *step : graphicsSettingsSchedule.TakeDue(runFrameCount)) {
+      auto &graphicsSettings = Fast::Oot3d::GraphicsSettingsRuntime::Instance();
+      const auto current = graphicsSettings.Snapshot();
+      const auto decoded = Fast::Oot3d::DeserializeGraphicsSettings(
+          Oot3dNativeGame::MergeScheduledGraphics(
+              Fast::Oot3d::SerializeGraphicsSettings(current), step->Graphics),
+          current);
+      const auto applied = graphicsSettings.Apply(decoded.Value, false);
+      std::fprintf(stderr,
+                   "TRIAEVUM_GRAPHICS_SETTINGS_SCHEDULE frame=%u accepted=%d "
+                   "decode_issues=%zu apply_issues=%zu\n",
+                   step->Frame, applied.Accepted() ? 1 : 0,
+                   decoded.Issues.size(), applied.Issues.size());
+      if (decoded.UnsupportedFutureVersion || !applied.Accepted())
+        throw std::runtime_error(
+            "graphics settings schedule step at frame " +
+            std::to_string(step->Frame) + " was rejected");
     }
     if (!inputTimeline.Enabled()) {
       const uint32_t start = Oot3dNativeGame::NativeA32HidButtonMask(

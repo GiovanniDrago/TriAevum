@@ -103,6 +103,8 @@ struct Args {
     double MaxSeconds = 0.0;
     double FixedDeltaSeconds = 0.0;
     std::filesystem::path InputTimelinePath;
+    // Developer qualification: oot3d_graphics_settings_schedule.h.
+    std::filesystem::path GraphicsSettingsSchedulePath;
     double MaterialAnimationFrame = 0.0;
     uint32_t Width = 1280;
     uint32_t Height = 720;

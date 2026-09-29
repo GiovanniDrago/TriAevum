@@ -85,6 +85,13 @@ Three mechanisms, in increasing order of effort:
    select, to an existing save, to a second slot, to empty-slot name entry,
    empty slot to name entry, new-file intro, ladder interaction, cutscene
    dialogue advance, no input. Used with `--input-timeline`.
+   Graphics settings can change at run frames with
+   `--graphics-settings-schedule <schedule.json>` (developer qualification;
+   schema `oot3d.graphics_settings_schedule.v1`, steps of `frame` plus a
+   partial `graphics` block merged onto the current settings and applied
+   through the F1 commit path without persisting; stderr
+   `TRIAEVUM_GRAPHICS_SETTINGS_SCHEDULE`). See
+   `tools/oot3d/native_game_runtime/oot3d_graphics_settings_schedule.h`.
 2. **Structural scenario catalog (scenes without a savestate per scene).**
    One quiescent gameplay state is used only as a live anchor; the original game
    code then performs the transition, so scene, room, actors, camera, lighting

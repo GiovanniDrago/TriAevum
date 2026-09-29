@@ -504,7 +504,8 @@ void PrintOot3dNativeGameUsage() {
                  "[--throughput-benchmark] "
                  "[--max-seconds <seconds>] "
                  "[--fixed-delta-seconds <seconds>] "
-                 "[--input-timeline <timeline.json>] [--width "
+                 "[--input-timeline <timeline.json>] "
+                 "[--graphics-settings-schedule <schedule.json>] [--width "
                  "<pixels>] [--height <pixels>]\n";
 }
 
@@ -748,6 +749,8 @@ bool ParseOot3dNativeGameArgs(int argc, char** argv, Oot3dNativeGameLaunch& laun
             }
         } else if (arg == "--input-timeline" && index + 1 < argc) {
             launch.Host.InputTimelinePath = argv[++index];
+        } else if (arg == "--graphics-settings-schedule" && index + 1 < argc) {
+            launch.Host.GraphicsSettingsSchedulePath = argv[++index];
         } else if (arg == "--width" && index + 1 < argc) {
             launch.Host.Width = std::max<uint32_t>(1, ParseU32(argv[++index], "width"));
         } else if (arg == "--height" && index + 1 < argc) {

@@ -3388,6 +3388,23 @@ endif()
 set_property(TARGET oot3d_native_game_launch_profile_tests PROPERTY
     FOLDER Tests)
 
+add_executable(oot3d_graphics_settings_schedule_tests EXCLUDE_FROM_ALL
+    tools/oot3d/native_game_runtime/oot3d_graphics_settings_schedule.cpp
+    tools/oot3d/native_game_runtime/oot3d_graphics_settings_schedule_tests.cpp
+)
+target_include_directories(oot3d_graphics_settings_schedule_tests PRIVATE
+    tools/oot3d/native_game_runtime)
+target_link_libraries(oot3d_graphics_settings_schedule_tests PRIVATE
+    nlohmann_json::nlohmann_json)
+target_compile_options(oot3d_graphics_settings_schedule_tests PRIVATE
+    "${WARNING_OVERRIDE}")
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set_property(TARGET oot3d_graphics_settings_schedule_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+set_property(TARGET oot3d_graphics_settings_schedule_tests PROPERTY
+    FOLDER Tests)
+
 add_library(oot3d_native_crash_diagnostics STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_crash_diagnostics.cpp
 )
@@ -3442,7 +3459,8 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
         tools/oot3d/native_game_runtime/oot3d_game_language_panel.cpp
         tools/oot3d/native_game_runtime/oot3d_scene_environment.cpp
         tools/oot3d/native_game_runtime/oot3d_scene_environment_panel.cpp
-        tools/oot3d/native_game_runtime/oot3d_top_screen_settings_panel.cpp)
+        tools/oot3d/native_game_runtime/oot3d_top_screen_settings_panel.cpp
+        tools/oot3d/native_game_runtime/oot3d_graphics_settings_schedule.cpp)
     set_source_files_properties(tools/oot3d/native_game_runtime/oot3d_native_actor_interactions.cpp
         PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/tools/oot3d/source_imports/actor_update_all_449e219e/include")
     target_link_libraries(oot3d_native_game PRIVATE

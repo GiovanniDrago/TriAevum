@@ -331,8 +331,17 @@ the transition (frame 81); the field went from the forest's placements to
 the interior's (59 created, 14 resident, none left from the forest, which
 would otherwise have stayed until the 600-frame eviction). Interior GI
 renders; core validation clean (300 frames). Navi flight (Kokiri, no scene
-change): no reset. The GI-disabled path is exercised by the F1
-qualification.
+change): no reset.
+
+Live settings changes (`--graphics-settings-schedule`, which applies a
+partial Graphics block at a run frame through the F1 commit call, not
+persisted): Field, Interpolated2x, GI Half on, Off at frame 200, on again at
+350, Quarter at 500. The disable reset and both instance replacements run
+(`instances_created=3 retired=1 world_resets=1`); core validation clean over
+650 frames. Every capture while GI is off (220-345) is byte-identical to a
+run with GI never enabled, so the pipelines, guides and targets return to
+the canonical ones; after re-enabling and after the resolution change the
+GI contribution starts from zero and accumulates again (no stale history).
 
 ## Screen-space effects under interpolation (GTAO, SSSR, TAA, GI)
 
