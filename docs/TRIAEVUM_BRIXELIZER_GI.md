@@ -262,6 +262,47 @@ the material guide (F0, roughness, reflection gain), filling SSSR misses only.
   enumerator (a new capability was silently missing from the permissive
   load-time set).
 
+## Screen-space effects under interpolation (GTAO, SSSR, TAA, GI)
+
+Measured in the Sheik copy cutscene (Interpolated2x, camera pan, per presented
+sample): the camera the scene effects used (`LatestPerspective()`, published
+by the guest camera hook once per native step) disagreed with the camera the
+geometry was rendered with. Static frames agree exactly; during the pan the
+guest eye was 8-19 native units away on real samples (the guest camera is one
+simulation step ahead of the replayed geometry) and 10-25 units on synthetic
+samples (the geometry is interpolated half a step); a camera cut moved the
+guest camera 323 units one sample before the geometry. Every consumer that
+reconstructs or reprojects positions from the rendered depth (GTAO, SSSR,
+motion vectors / TAA / upscalers, grass, the distance-field centre and GI)
+therefore sampled a displaced world.
+
+Fix (sample view): each target accumulates the captured native world-to-view
+of its opaque world draws for the presented frame (`SampleViewAccumulator`,
+majority view; interpolated with the geometry for synthetic samples), and
+every `NativeSceneView` publication uses `ResolveSamplePerspective`: the guest
+projection with that view (WorldToClip, eye, look direction). A target without
+such draws keeps the guest camera. The resolved perspective carries no guest
+serial, so interpolated samples of one native step are distinct perspectives
+and the previous-view history advances per sample. With effects off, Field and
+Sheik copy stay identical to the Interpolated2x baseline.
+
+Second defect found on the way: in scenes that compose more than one scene
+surface per frame (a native copy boundary plus the presentation, Sheik copy),
+FidelityFX SSSR reconfigured its single context and destroyed resources the
+command buffer being recorded still referenced; the driver then faulted in
+`vkQueueSubmit` (reproducible with SSSR in the Sheik copy, also before these
+changes). SSSR now keeps one instance (context, output, temporal history) per
+composed surface, retiring the least recently used one only when this frame
+does not use it. The same single-configuration pattern (reconfigure with
+`vkDeviceWaitIdle` + destroy/update in place) exists in GTAO, CACAO, HiZ,
+linear scene colour, motion vectors, reflection resolve, TAA, SMAA, scanout
+and the transient image arena: a reconfiguration in the middle of a frame
+still invalidates the recording command buffer (GTAO + SSSR in Sheik copy
+still faults). Open: a common retirement contract (flush the recorded prefix,
+as `FlushGpuTextureCopyPrefix` does, before destroying) or per-surface
+instances for those passes; the GI pass is being written per surface from the
+start.
+
 ## Risks
 
 - **Geometry fidelity.** Programs without a typed transform hook are not

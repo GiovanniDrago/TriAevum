@@ -881,6 +881,15 @@ void GfxRenderingAPIVulkan::ApplyNativePicaSampleCount(VkSampleCountFlagBits sam
                 static_cast<uint32_t>(mNativePicaSampleCount));
 }
 
+std::optional<Oot3d::PerspectiveViewState> GfxRenderingAPIVulkan::SamplePerspective(
+    const NativePicaRenderTarget* target) const {
+    auto perspective = Oot3d::SceneViewRuntime::Instance().LatestPerspective();
+    if (!perspective.has_value() || target == nullptr) return perspective;
+    if (const auto view = target->SampleView.Resolve(mFrameCounter))
+        return Oot3d::ResolveSamplePerspective(*perspective, *view);
+    return perspective;
+}
+
 GfxRenderingAPIVulkan::NativePicaRenderTarget&
 GfxRenderingAPIVulkan::GetOrCreateNativePicaRenderTarget(
     const GfxNativePicaDrawView& draw,
@@ -4706,9 +4715,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         finishCpuStage(cpuTimings.ShaderCacheMilliseconds);
 
         if (!nativeMemoryOnly && mInteractiveGrassProviderPlan.Valid() && opaqueWorldDraw) {
-            const auto latestGrassPerspective =
+            auto latestGrassPerspective =
                 Oot3d::SceneViewRuntime::Instance()
                     .LatestPerspective();
+            if (latestGrassPerspective && draw.LightBinding.WorldToView)
+                latestGrassPerspective = Oot3d::ResolveSamplePerspective(
+                    *latestGrassPerspective, *draw.LightBinding.WorldToView);
             (void)mNativeSceneView.Publish(
                 mFrameCounter, mPicaSceneFrame,
                 latestGrassPerspective);
@@ -5648,6 +5660,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset),
                     shadowViewToWorld, version, shadowCache);
             }
+            if (opaqueWorldDraw && draw.LightBinding.WorldToView)
+                renderTarget.SampleView.Observe(mFrameCounter, *draw.LightBinding.WorldToView);
             // Native frame geometry for the scene distance field: the shadow
             // caster admission, from the first non-synthetic execution.
             const bool sceneDistanceFieldGeometry =
@@ -6052,8 +6066,7 @@ bool GfxRenderingAPIVulkan::TryRenderInteractiveGrass(
     NativePicaRenderTarget& target,
     const Oot3d::GraphicsSettings& settings,
     Oot3d::EffectGeometryProviderInvocationKind invocationKind) {
-    const auto latestPerspective =
-        Oot3d::SceneViewRuntime::Instance().LatestPerspective();
+    const auto latestPerspective = SamplePerspective(&target);
     (void)mNativeSceneView.Publish(
         mFrameCounter, mPicaSceneFrame, latestPerspective);
     (void)mPicaScenePublications.Publish(
@@ -6250,8 +6263,7 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
         boundary.Kind ==
             ::Fast::Renderer::ExtensionScheduleBoundaryKind::SurfaceEnd);
 
-    const auto latestPerspective =
-        Oot3d::SceneViewRuntime::Instance().LatestPerspective();
+    const auto latestPerspective = SamplePerspective(&target);
     (void)mNativeSceneView.Publish(
         mFrameCounter, mPicaSceneFrame, latestPerspective);
     EndNativePicaRenderPass();
@@ -6428,8 +6440,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
 
             const auto& graphicsSettings =
                 mFrameGraphicsSettings;
-            const auto perspective =
-                Oot3d::SceneViewRuntime::Instance().LatestPerspective();
+            const auto perspective = SamplePerspective(source);
             (void)mNativeSceneView.Publish(
                 mFrameCounter, mPicaSceneFrame, perspective);
             const ::Oot3d::Renderer::PicaCompositionTargetReference
@@ -6662,9 +6673,18 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
 
         const auto& presentationSettings =
             mFrameGraphicsSettings;
-        auto& sceneViewRuntime = Oot3d::SceneViewRuntime::Instance();
-        const auto latestPerspective =
-            sceneViewRuntime.LatestPerspective();
+        // The camera of the scene this boundary or transfer composes.
+        const NativePicaRenderTarget* sceneViewTarget = copySource;
+        if (copyOutput == nullptr) {
+            sceneViewTarget = nullptr;
+            const auto depthAssociation = mNativePicaDisplayDepthTargets.find(
+                std::make_pair(transfer.RenderTargetNamespace, transfer.OutputPhysicalAddress));
+            if (depthAssociation != mNativePicaDisplayDepthTargets.end()) {
+                const auto target = mNativePicaRenderTargets.find(depthAssociation->second);
+                if (target != mNativePicaRenderTargets.end()) sceneViewTarget = &target->second;
+            }
+        }
+        const auto latestPerspective = SamplePerspective(sceneViewTarget);
         (void)mNativeSceneView.Publish(
             mFrameCounter, mPicaSceneFrame, latestPerspective);
         const auto& presentationPerspective =
@@ -7976,6 +7996,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     reflectionIblReady &&
                     linearWorkingColorForDisplay &&
                     mFidelityFxSssrPass.Configure(
+                        mFrameCounter,
                         effectGuideTarget->Width,
                         effectGuideTarget->Height,
                         reflectionSceneImage,
@@ -9481,8 +9502,7 @@ bool GfxRenderingAPIVulkan::ComposeNativePicaSceneForCopy(
             error, "native scene boundary has no composable frame state");
         return false;
     }
-    const auto perspective =
-        Oot3d::SceneViewRuntime::Instance().LatestPerspective();
+    const auto perspective = SamplePerspective(&source);
     (void)mNativeSceneView.Publish(
         mFrameCounter, mPicaSceneFrame, perspective);
     const ::Oot3d::Renderer::PicaCompositionTargetReference compositionTarget{

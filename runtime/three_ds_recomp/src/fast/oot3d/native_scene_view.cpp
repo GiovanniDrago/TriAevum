@@ -12,7 +12,8 @@ namespace {
     return left.GuestFunction == right.GuestFunction && left.GuestReturnAddress == right.GuestReturnAddress &&
            left.Left == right.Left && left.Right == right.Right && left.Bottom == right.Bottom &&
            left.Top == right.Top && left.NearPlane == right.NearPlane && left.FarPlane == right.FarPlane &&
-           left.Eye == right.Eye && left.At == right.At && left.CameraAvailable == right.CameraAvailable;
+           left.Eye == right.Eye && left.At == right.At && left.WorldToClip == right.WorldToClip &&
+           left.CameraAvailable == right.CameraAvailable;
 }
 
 [[nodiscard]] bool SamePerspective(

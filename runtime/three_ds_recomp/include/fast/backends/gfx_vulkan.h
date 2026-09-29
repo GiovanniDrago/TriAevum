@@ -21,6 +21,7 @@
 #include "fast/backends/vulkan_scanout_probe.h"
 #include "fast/oot3d/nri_interop_context.h"
 #include "fast/oot3d/brixelizer_scene.h"
+#include "fast/oot3d/sample_view.h"
 #include "fast/renderer3ds/pica_gi_geometry.h"
 #include "fast/oot3d/ambient_occlusion_pass.h"
 #include "fast/oot3d/cacao_pass.h"
@@ -558,6 +559,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         // mFramePicaAttachmentRequirements selects the active draw bindings.
         VkFramebuffer Framebuffer = VK_NULL_HANDLE;
         VkFramebuffer CanonicalFramebuffer = VK_NULL_HANDLE;
+        // Camera of the opaque world geometry drawn into this target during
+        // each presented frame (see SamplePerspective).
+        Oot3d::SampleViewAccumulator SampleView;
         bool AuxiliaryNeedsClear = false;
         bool WBuffering = false;
         bool NriOwned = false;
@@ -675,6 +679,11 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         uint32_t restoredWidth = 0U, uint32_t restoredHeight = 0U);
     void DestroyNativePicaRenderTarget(NativePicaRenderTarget& target);
     void PrepareNativePicaTargetAttachments(NativePicaRenderTarget& target);
+    // The scene camera of the presented sample: the guest projection with the
+    // world-to-view the target's geometry was rendered with this frame, or
+    // the latest guest camera when the target recorded none.
+    [[nodiscard]] std::optional<Oot3d::PerspectiveViewState> SamplePerspective(
+        const NativePicaRenderTarget* target) const;
     void PrepareNativePicaBaseGuides(NativePicaRenderTarget& target);
     void PrepareNativePicaDiffuseAlbedoGuide(NativePicaRenderTarget& target, bool clear);
     void AllocateNativePicaAuxiliaryImage(NativePicaRenderTarget& target, VkFormat format,

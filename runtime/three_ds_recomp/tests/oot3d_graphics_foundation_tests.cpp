@@ -5,6 +5,7 @@
 #include "fast/renderer3ds/pica_surface_passthrough_scale.h"
 #include "fast/oot3d/display_effect_plan.h"
 #include "fast/oot3d/directional_shadows.h"
+#include "fast/oot3d/sample_view.h"
 #include "fast/oot3d/ambient_occlusion_composite.h"
 #include "fast/oot3d/anti_aliasing_frame_policy.h"
 #include "fast/oot3d/graphics_settings.h"
@@ -3753,6 +3754,46 @@ TEST(Oot3dGraphicsSettings, GatesDirectionalShadowsOnTheirBackendOwner) {
     result = GraphicsSettingsService::Validate(settings, capabilities);
     EXPECT_EQ(result.Value.Effects.DirectionalShadows.Mode,
               DirectionalShadowMode::VirtualShadowMaps);
+}
+
+TEST(Oot3dSampleView, UsesTheRenderedCameraAndTheMajorityView) {
+    using namespace Fast::Oot3d;
+    // Guest camera: eye (0,0,10) looking at the origin, one step ahead.
+    PerspectiveViewState guest{};
+    guest.Serial = 7U;
+    guest.NearPlane = 1.0F;
+    guest.FarPlane = 100.0F;
+    guest.Projection = { 1.5F, 0, 0, 0, 0, 2.0F, 0, 0, 0, 0, -1.01F, -1.0F, 0, 0, -1.01F, 0 };
+    guest.Eye = { 0.0F, 0.0F, 10.0F };
+    guest.At = { 0.0F, 0.0F, 0.0F };
+    guest.CameraAvailable = true;
+    // Rendered geometry: translated camera at (3,0,8), same orientation.
+    const SampleViewMatrix rendered{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -3, 0, -8, 1 };
+    const SampleViewMatrix stray{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    SampleViewAccumulator accumulator;
+    accumulator.Observe(5U, stray);
+    accumulator.Observe(5U, rendered);
+    accumulator.Observe(5U, rendered);
+    ASSERT_TRUE(accumulator.Resolve(5U).has_value());
+    EXPECT_EQ(*accumulator.Resolve(5U), rendered);
+    EXPECT_EQ(accumulator.DistinctViews(5U), 2U);
+    EXPECT_FALSE(accumulator.Resolve(6U).has_value());
+    accumulator.Observe(6U, stray);
+    EXPECT_EQ(*accumulator.Resolve(6U), stray);
+
+    const auto sample = ResolveSamplePerspective(guest, rendered);
+    EXPECT_EQ(sample.Serial, 0U);
+    EXPECT_FLOAT_EQ(sample.Eye[0], 3.0F);
+    EXPECT_FLOAT_EQ(sample.Eye[2], 8.0F);
+    EXPECT_FLOAT_EQ(sample.At[2], 8.0F - 10.0F); // guest look distance, rendered direction
+    // WorldToClip = Projection * WorldToView: the world point (3,0,0) lies on
+    // the rendered view axis, 8 units ahead.
+    const float x = 3.0F, z = 0.0F;
+    const float clipX = sample.WorldToClip[0] * x + sample.WorldToClip[8] * z + sample.WorldToClip[12];
+    const float clipW = sample.WorldToClip[3] * x + sample.WorldToClip[11] * z + sample.WorldToClip[15];
+    EXPECT_NEAR(clipX, 0.0F, 1.0e-5F);
+    EXPECT_NEAR(clipW, 8.0F, 1.0e-5F);
+    EXPECT_EQ(sample.Projection, guest.Projection);
 }
 
 TEST(Oot3dGraphicsSettings, GatesGlobalIlluminationOnItsInputsAndProvider) {

@@ -34,7 +34,9 @@ class FidelityFxSssrPass final {
                          uint32_t environmentSize,
                          uint32_t environmentMipCount,
                          VkImage brdfImage, uint32_t brdfSize);
-    bool Configure(uint32_t width, uint32_t height,
+    // Selects (or creates) the instance of one composed scene surface for
+    // frame `frameId`; Execute and the output accessors use it.
+    bool Configure(uint64_t frameId, uint32_t width, uint32_t height,
                    VkImage colorImage, VkFormat colorFormat,
                    VkImage depthImage, VkFormat depthFormat,
                    VkImage motionImage, VkFormat motionFormat,

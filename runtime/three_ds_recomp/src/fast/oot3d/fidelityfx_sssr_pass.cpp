@@ -109,33 +109,60 @@ void ClearForShaderRead(VkCommandBuffer command, VkImage image,
 
 } // namespace
 
-struct FidelityFxSssrPass::Impl {
-    VkPhysicalDevice PhysicalDevice = VK_NULL_HANDLE;
-    VkDevice Device = VK_NULL_HANDLE;
-    NriInteropContext* Interop = nullptr;
+// One scene surface a frame composes (a presented target or a native
+// boundary's source): its own context, output and temporal history. Several
+// surfaces can be composed within one command buffer, so reconfiguring a
+// single context would destroy resources that buffer still references.
+struct FidelityFxSssrInstance {
     NriOwnedTexture2D Output{};
     NormalSpacePass WorldNormals;
-    VkImage Environment = VK_NULL_HANDLE;
-    VkImage Brdf = VK_NULL_HANDLE;
-    VkImageCreateInfo EnvironmentInfo{};
-    VkImageCreateInfo BrdfInfo{};
     std::array<VkImage, 5> Inputs{};
     std::array<VkFormat, 5> InputFormats{};
     std::array<VkImageCreateInfo, 5> InputInfos{};
     VkImageCreateInfo OutputInfo{};
     uint32_t Width = 0;
     uint32_t Height = 0;
-    bool Initialized = false;
     bool OutputInitialized = false;
+    uint64_t LastUsedFrame = 0;
+#if OOT3D_HAS_FFX_SSSR
+    FfxSssrContext Context{};
+    bool ContextCreated = false;
+#endif
+};
+
+struct FidelityFxSssrPass::Impl {
+    // Distinct scene surfaces composed per frame (presentation and native
+    // boundaries); the least recently used one retires beyond this.
+    static constexpr size_t kMaxInstances = 3;
+    VkPhysicalDevice PhysicalDevice = VK_NULL_HANDLE;
+    VkDevice Device = VK_NULL_HANDLE;
+    NriInteropContext* Interop = nullptr;
+    VkImage Environment = VK_NULL_HANDLE;
+    VkImage Brdf = VK_NULL_HANDLE;
+    VkImageCreateInfo EnvironmentInfo{};
+    VkImageCreateInfo BrdfInfo{};
+    std::vector<std::unique_ptr<FidelityFxSssrInstance>> Instances;
+    FidelityFxSssrInstance* Active = nullptr;
+    bool Initialized = false;
     EffectPassBarrierExecution LastBarrierExecution;
     std::string Reason = "FidelityFX SSSR is not initialized";
 #if OOT3D_HAS_FFX_SSSR
     std::vector<uint8_t> Scratch;
     VkDeviceContext DeviceContext{};
     FfxInterface Backend{};
-    FfxSssrContext Context{};
-    bool ContextCreated = false;
 #endif
+    void Destroy(FidelityFxSssrInstance& instance) {
+#if OOT3D_HAS_FFX_SSSR
+        if (instance.ContextCreated) {
+            ffxSssrContextDestroy(&instance.Context);
+            instance.ContextCreated = false;
+        }
+#endif
+        instance.WorldNormals.Invalidate();
+        if (Interop != nullptr && instance.Output.Image != VK_NULL_HANDLE)
+            Interop->DestroyOwnedTexture(instance.Output.Image);
+        instance.Output = {};
+    }
 };
 
 FidelityFxSssrPass::FidelityFxSssrPass()
@@ -158,7 +185,6 @@ bool FidelityFxSssrPass::Initialize(VkPhysicalDevice physicalDevice,
     return false;
 #else
     try {
-        mImpl->WorldNormals.Initialize(interop);
         VkFormatProperties properties{};
         vkGetPhysicalDeviceFormatProperties(
             physicalDevice, VK_FORMAT_R16G16B16A16_SFLOAT, &properties);
@@ -167,7 +193,7 @@ bool FidelityFxSssrPass::Initialize(VkPhysicalDevice physicalDevice,
             throw std::runtime_error(
                 "FidelityFX SSSR RGBA16F storage is unavailable");
         }
-        constexpr size_t contextCount = FFX_SSSR_CONTEXT_COUNT;
+        constexpr size_t contextCount = FFX_SSSR_CONTEXT_COUNT * Impl::kMaxInstances;
         mImpl->Scratch.resize(
             ffxGetScratchMemorySizeVK(physicalDevice, contextCount));
         mImpl->DeviceContext = {
@@ -217,7 +243,7 @@ bool FidelityFxSssrPass::SetIblResources(
 }
 
 bool FidelityFxSssrPass::Configure(
-    uint32_t width, uint32_t height,
+    uint64_t frameId, uint32_t width, uint32_t height,
     VkImage colorImage, VkFormat colorFormat,
     VkImage depthImage, VkFormat depthFormat,
     VkImage motionImage, VkFormat motionFormat,
@@ -227,24 +253,43 @@ bool FidelityFxSssrPass::Configure(
         colorImage, depthImage, motionImage, normalImage, materialImage};
     const std::array<VkFormat, 5> formats{
         colorFormat, depthFormat, motionFormat, normalFormat, materialFormat};
+    mImpl->Active = nullptr;
     if (!mImpl->Initialized || mImpl->Environment == VK_NULL_HANDLE ||
         mImpl->Brdf == VK_NULL_HANDLE || width == 0U || height == 0U)
         return false;
     for (VkImage image : inputs)
         if (image == VK_NULL_HANDLE) return false;
-    if (mImpl->Width == width && mImpl->Height == height &&
-        mImpl->Inputs == inputs && mImpl->InputFormats == formats)
-        return true;
+    for (auto& instance : mImpl->Instances) {
+        if (instance->Width == width && instance->Height == height &&
+            instance->Inputs == inputs && instance->InputFormats == formats) {
+            instance->LastUsedFrame = frameId;
+            mImpl->Active = instance.get();
+            return true;
+        }
+    }
 #if !OOT3D_HAS_FFX_SSSR
     return false;
 #else
-    if ((mImpl->ContextCreated || mImpl->Output.Image != VK_NULL_HANDLE) &&
-        vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS) {
-        mImpl->Reason = "FidelityFX SSSR resize wait failed";
-        return false;
+    if (mImpl->Instances.size() >= Impl::kMaxInstances) {
+        // Retire the least recently used surface, never one this frame's
+        // command buffer already references.
+        auto oldest = std::min_element(
+            mImpl->Instances.begin(), mImpl->Instances.end(),
+            [](const auto& a, const auto& b) { return a->LastUsedFrame < b->LastUsedFrame; });
+        if ((*oldest)->LastUsedFrame >= frameId) {
+            mImpl->Reason = "FidelityFX SSSR has no free surface instance this frame";
+            return false;
+        }
+        if (vkDeviceWaitIdle(mImpl->Device) != VK_SUCCESS) {
+            mImpl->Reason = "FidelityFX SSSR retirement wait failed";
+            return false;
+        }
+        mImpl->Destroy(**oldest);
+        mImpl->Instances.erase(oldest);
     }
-    InvalidateScreenResources();
+    auto instance = std::make_unique<FidelityFxSssrInstance>();
     try {
+        instance->WorldNormals.Initialize(*mImpl->Interop);
         NriOwnedTexture2DDesc outputDesc{};
         outputDesc.Width = width;
         outputDesc.Height = height;
@@ -253,14 +298,14 @@ bool FidelityFxSssrPass::Configure(
                            VK_IMAGE_USAGE_SAMPLED_BIT |
                            VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if (!mImpl->Interop->CreateOwnedTexture2D(
-                outputDesc, mImpl->Output)) {
+                outputDesc, instance->Output)) {
             throw std::runtime_error(
                 "FidelityFX SSSR output allocation failed");
         }
-        mImpl->OutputInfo = ImageInfo(
+        instance->OutputInfo = ImageInfo(
             width, height, outputDesc.Format, outputDesc.Usage);
-        mImpl->WorldNormals.Configure(width, height, normalImage, normalFormat);
-        mImpl->InputInfos = {
+        instance->WorldNormals.Configure(width, height, normalImage, normalFormat);
+        instance->InputInfos = {
             ImageInfo(width, height, colorFormat,
                       VK_IMAGE_USAGE_SAMPLED_BIT),
             ImageInfo(width, height, depthFormat,
@@ -280,21 +325,23 @@ bool FidelityFxSssrPass::Configure(
         description.normalsHistoryBufferFormat =
             ffxGetSurfaceFormatVK(VK_FORMAT_R16G16B16A16_SFLOAT);
         description.backendInterface = mImpl->Backend;
-        if (ffxSssrContextCreate(&mImpl->Context, &description) != FFX_OK) {
+        if (ffxSssrContextCreate(&instance->Context, &description) != FFX_OK) {
             throw std::runtime_error(
                 "FidelityFX SSSR context creation failed");
         }
-        mImpl->ContextCreated = true;
-        mImpl->Width = width;
-        mImpl->Height = height;
-        mImpl->Inputs = inputs;
-        mImpl->InputFormats = formats;
-        mImpl->OutputInitialized = false;
+        instance->ContextCreated = true;
+        instance->Width = width;
+        instance->Height = height;
+        instance->Inputs = inputs;
+        instance->InputFormats = formats;
+        instance->LastUsedFrame = frameId;
+        mImpl->Active = instance.get();
+        mImpl->Instances.push_back(std::move(instance));
         mImpl->Reason.clear();
         return true;
     } catch (const std::exception& exception) {
         mImpl->Reason = exception.what();
-        InvalidateScreenResources();
+        mImpl->Destroy(*instance);
         return false;
     }
 #endif
@@ -313,8 +360,9 @@ bool FidelityFxSssrPass::Execute(
     (void)settings;
     return false;
 #else
-    if (!mImpl->ContextCreated || commandBuffer == VK_NULL_HANDLE)
+    if (mImpl->Active == nullptr || !mImpl->Active->ContextCreated || commandBuffer == VK_NULL_HANDLE)
         return false;
+    auto& instance = *mImpl->Active;
     mImpl->LastBarrierExecution = {};
     std::array<float, 16> inverseProjection{};
     if (!InvertTemporalMatrix(view.Projection, inverseProjection)) {
@@ -340,14 +388,14 @@ bool FidelityFxSssrPass::Execute(
         mImpl->Reason = "FidelityFX SSSR storage projection is not invertible";
         return false;
     }
-    mImpl->WorldNormals.Execute(frameSlot, inverseView, mImpl->LastBarrierExecution);
+    instance.WorldNormals.Execute(frameSlot, inverseView, mImpl->LastBarrierExecution);
 
     VkClearColorValue transparent{};
-    ClearForShaderRead(commandBuffer, mImpl->Output.Image,
+    ClearForShaderRead(commandBuffer, instance.Output.Image,
                        VK_IMAGE_ASPECT_COLOR_BIT, 1U,
-                       mImpl->OutputInitialized, transparent,
+                       instance.OutputInitialized, transparent,
                        mImpl->LastBarrierExecution);
-    mImpl->OutputInitialized = true;
+    instance.OutputInitialized = true;
 
     const auto resource = [](VkImage image,
                              const VkImageCreateInfo& info,
@@ -363,22 +411,22 @@ bool FidelityFxSssrPass::Execute(
     FfxSssrDispatchDescription dispatch{};
     dispatch.commandList = ffxGetCommandListVK(commandBuffer);
     dispatch.color = resource(
-        mImpl->Inputs[0], mImpl->InputInfos[0], L"OOT3D_SSSR_Color");
+        instance.Inputs[0], instance.InputInfos[0], L"OOT3D_SSSR_Color");
     dispatch.depth = resource(
-        mImpl->Inputs[1], mImpl->InputInfos[1], L"OOT3D_SSSR_Depth");
+        instance.Inputs[1], instance.InputInfos[1], L"OOT3D_SSSR_Depth");
     dispatch.motionVectors = resource(
-        mImpl->Inputs[2], mImpl->InputInfos[2], L"OOT3D_SSSR_Motion");
+        instance.Inputs[2], instance.InputInfos[2], L"OOT3D_SSSR_Motion");
     dispatch.normal = resource(
-        mImpl->WorldNormals.OutputImage(), mImpl->InputInfos[3], L"OOT3D_SSSR_WorldNormal");
+        instance.WorldNormals.OutputImage(), instance.InputInfos[3], L"OOT3D_SSSR_WorldNormal");
     dispatch.materialParameters = resource(
-        mImpl->Inputs[4], mImpl->InputInfos[4], L"OOT3D_SSSR_Material");
+        instance.Inputs[4], instance.InputInfos[4], L"OOT3D_SSSR_Material");
     dispatch.environmentMap = resource(
         mImpl->Environment, mImpl->EnvironmentInfo,
         L"OOT3D_SSSR_PicaEnvironment");
     dispatch.brdfTexture = resource(
         mImpl->Brdf, mImpl->BrdfInfo, L"OOT3D_SSSR_GgxBrdf");
     dispatch.output = resource(
-        mImpl->Output.Image, mImpl->OutputInfo, L"OOT3D_SSSR_Output",
+        instance.Output.Image, instance.OutputInfo, L"OOT3D_SSSR_Output",
         FFX_RESOURCE_USAGE_UAV);
     std::memcpy(dispatch.invViewProjection,
                 storageInverseWorldToClip.data(),
@@ -393,7 +441,7 @@ bool FidelityFxSssrPass::Execute(
     std::memcpy(dispatch.prevViewProjection,
                 storagePreviousWorldToClip.data(),
                 sizeof(dispatch.prevViewProjection));
-    dispatch.renderSize = {mImpl->Width, mImpl->Height};
+    dispatch.renderSize = {instance.Width, instance.Height};
     dispatch.motionVectorScale = {1.0F, 1.0F};
     dispatch.iblFactor = 1.0F;
     dispatch.normalUnPackMul = 2.0F;
@@ -414,7 +462,7 @@ bool FidelityFxSssrPass::Execute(
     dispatch.samplesPerQuad = 1U;
     dispatch.temporalVarianceGuidedTracingEnabled =
         temporal.HistoryValid ? 1U : 0U;
-    if (ffxSssrContextDispatch(&mImpl->Context, &dispatch) != FFX_OK) {
+    if (ffxSssrContextDispatch(&instance.Context, &dispatch) != FFX_OK) {
         mImpl->Reason = "FidelityFX SSSR dispatch failed";
         return false;
     }
@@ -424,26 +472,9 @@ bool FidelityFxSssrPass::Execute(
 }
 
 void FidelityFxSssrPass::InvalidateScreenResources() {
-#if OOT3D_HAS_FFX_SSSR
-    if (mImpl->ContextCreated) {
-        ffxSssrContextDestroy(&mImpl->Context);
-        std::memset(&mImpl->Context, 0, sizeof(mImpl->Context));
-        mImpl->ContextCreated = false;
-    }
-#endif
-    mImpl->WorldNormals.Invalidate();
-    if (mImpl->Interop != nullptr &&
-        mImpl->Output.Image != VK_NULL_HANDLE) {
-        mImpl->Interop->DestroyOwnedTexture(mImpl->Output.Image);
-    }
-    mImpl->Output = {};
-    mImpl->Inputs = {};
-    mImpl->InputFormats = {};
-    mImpl->InputInfos = {};
-    mImpl->OutputInfo = {};
-    mImpl->Width = 0;
-    mImpl->Height = 0;
-    mImpl->OutputInitialized = false;
+    for (auto& instance : mImpl->Instances) mImpl->Destroy(*instance);
+    mImpl->Instances.clear();
+    mImpl->Active = nullptr;
     mImpl->LastBarrierExecution = {};
 }
 
@@ -456,18 +487,18 @@ bool FidelityFxSssrPass::Available() const {
     return mImpl->Initialized;
 }
 VkImage FidelityFxSssrPass::OutputImage() const {
-    return mImpl->Output.Image;
+    return mImpl->Active != nullptr ? mImpl->Active->Output.Image : VK_NULL_HANDLE;
 }
 VkImageView FidelityFxSssrPass::OutputView() const {
-    return mImpl->Output.SampledView;
+    return mImpl->Active != nullptr ? mImpl->Active->Output.SampledView : VK_NULL_HANDLE;
 }
 bool FidelityFxSssrPass::OutputOwnedByNri() const {
-    return mImpl->Interop != nullptr &&
-           mImpl->Interop->OwnsTexture(mImpl->Output.Image);
+    return mImpl->Interop != nullptr && mImpl->Active != nullptr &&
+           mImpl->Interop->OwnsTexture(mImpl->Active->Output.Image);
 }
 bool FidelityFxSssrPass::FidelityFxBackendActive() const {
 #if OOT3D_HAS_FFX_SSSR
-    return mImpl->ContextCreated;
+    return mImpl->Active != nullptr && mImpl->Active->ContextCreated;
 #else
     return false;
 #endif
