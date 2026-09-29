@@ -1364,6 +1364,11 @@ void GfxRenderingAPIVulkan::OnResize() {
 
 bool GfxRenderingAPIVulkan::PublishSceneView(
     const Oot3d::TitleSceneViewSubmission& view) {
+    if (view.WorldIdentity != 0U) {
+        if (mTitleWorldIdentity != 0U && mTitleWorldIdentity != view.WorldIdentity)
+            mTitleWorldChanged = true;
+        mTitleWorldIdentity = view.WorldIdentity;
+    }
     if (view.CameraAvailable) {
         Oot3d::SceneViewRuntime::Instance().PublishPerspectiveCamera(
             view.GuestFunction, view.GuestReturnAddress,
@@ -1865,6 +1870,13 @@ void GfxRenderingAPIVulkan::StartFrame() {
             !interactiveGrassProvider.Valid()) {
             throw std::runtime_error(
                 "PICA extension graph did not compile the interactive grass geometry-provider contract");
+        }
+        // Disabling the field (GI off) releases its world: re-enabling it
+        // later must not trace geometry of a world seen before.
+        if (Oot3d::PicaExtensionPassEnabled(mPicaExtensionGraph, Oot3d::PicaExtensionPass::SceneDistanceField) &&
+            !Oot3d::PicaExtensionPassEnabled(graph, Oot3d::PicaExtensionPass::SceneDistanceField)) {
+            mBrixelizerGiPass.ResetHistory();
+            mBrixelizerScene.Reset();
         }
         mPicaExtensionRequests = extensionRequests;
         mPicaExtensionGraph = std::move(graph);

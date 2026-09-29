@@ -4456,6 +4456,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         snapshot->Eye,
         snapshot->At,
         snapshot->CameraAvailable,
+        // Rooms share their scene's coordinates; another scene is another world.
+        snapshot->SceneId.has_value() ? uint64_t{*snapshot->SceneId} + 1U : 0U,
     };
     if (titleRenderBackend != nullptr &&
         titleRenderBackend->PublishSceneView(view)) {

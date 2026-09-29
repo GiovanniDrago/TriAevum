@@ -114,6 +114,7 @@ struct BrixelizerGiPass::Impl {
     std::vector<std::unique_ptr<BrixelizerGiInstance>> Instances;
     BrixelizerGiInstance* Active = nullptr;
     EffectPassBarrierExecution LastBarriers;
+    BrixelizerGiStats Stats;
     NriStorageClearBinding Clear;
     bool Initialized = false;
     std::string Reason = "Brixelizer GI is not initialized";
@@ -284,12 +285,16 @@ bool BrixelizerGiPass::Configure(uint64_t frameId, const BrixelizerGiInputs& inp
         mImpl->Reason = "the scene distance field is unavailable";
         return false;
     }
-    if (mImpl->Instances.size() >= BrixelizerScene::kMaxGiSurfaces) {
-        // Retire the least recently used surface, never one this frame's
-        // command buffer already references.
-        auto oldest = std::min_element(mImpl->Instances.begin(), mImpl->Instances.end(),
-                                       [](const auto& a, const auto& b) { return a->LastUsedFrame < b->LastUsedFrame; });
-        if ((*oldest)->LastUsedFrame >= frameId) {
+    // A resolution change replaces the surface's instance; otherwise, when
+    // full, the least recently used surface retires. Never one this frame's
+    // command buffer already references.
+    auto retired = std::find_if(mImpl->Instances.begin(), mImpl->Instances.end(),
+                                [&](const auto& instance) { return instance->Inputs == inputs; });
+    if (retired == mImpl->Instances.end() && mImpl->Instances.size() >= BrixelizerScene::kMaxGiSurfaces)
+        retired = std::min_element(mImpl->Instances.begin(), mImpl->Instances.end(),
+                                   [](const auto& a, const auto& b) { return a->LastUsedFrame < b->LastUsedFrame; });
+    if (retired != mImpl->Instances.end()) {
+        if ((*retired)->LastUsedFrame >= frameId) {
             mImpl->Reason = "Brixelizer GI has no free surface instance this frame";
             return false;
         }
@@ -297,8 +302,9 @@ bool BrixelizerGiPass::Configure(uint64_t frameId, const BrixelizerGiInputs& inp
             mImpl->Reason = "Brixelizer GI retirement wait failed";
             return false;
         }
-        mImpl->Destroy(**oldest);
-        mImpl->Instances.erase(oldest);
+        mImpl->Destroy(**retired);
+        mImpl->Instances.erase(retired);
+        ++mImpl->Stats.InstancesRetired;
     }
     auto instance = std::make_unique<BrixelizerGiInstance>();
     instance->Inputs = inputs;
@@ -313,6 +319,7 @@ bool BrixelizerGiPass::Configure(uint64_t frameId, const BrixelizerGiInputs& inp
     }
     mImpl->Active = instance.get();
     mImpl->Instances.push_back(std::move(instance));
+    ++mImpl->Stats.InstancesCreated;
     mImpl->Reason.clear();
     return true;
 #endif
@@ -525,6 +532,14 @@ void BrixelizerGiPass::InvalidateScreenResources() {
     mImpl->LastBarriers = {};
 }
 
+void BrixelizerGiPass::ResetHistory() {
+    if (mImpl->Instances.empty()) return;
+    if (!mImpl->Interop->CompleteRecordedWork())
+        throw std::runtime_error("Brixelizer GI reset wait failed");
+    InvalidateScreenResources();
+    ++mImpl->Stats.WorldResets;
+}
+
 void BrixelizerGiPass::Shutdown() {
     InvalidateScreenResources();
     mImpl->Clear.Shutdown();
@@ -538,6 +553,7 @@ void BrixelizerGiPass::Shutdown() {
 }
 
 bool BrixelizerGiPass::Available() const { return mImpl->Initialized; }
+const BrixelizerGiStats& BrixelizerGiPass::Stats() const { return mImpl->Stats; }
 const EffectPassBarrierExecution& BrixelizerGiPass::LastBarrierExecution() const { return mImpl->LastBarriers; }
 const std::string& BrixelizerGiPass::UnavailableReason() const { return mImpl->Reason; }
 

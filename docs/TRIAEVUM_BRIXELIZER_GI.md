@@ -1,6 +1,6 @@
 # FidelityFX Brixelizer GI: design
 
-Status: phases 1-2 done; phase 3 (diffuse GI) in progress: settings and F1 control done. Owner surface: F1 **Lighting**.
+Status: phases 1-3 done (diffuse GI); phase 4 (history and resets) done; F1 qualification and specular (phase 5) open. Owner surface: F1 **Lighting**.
 
 ## Goal
 
@@ -289,8 +289,7 @@ the material guide (F0, roughness, reflection gain), filling SSSR misses only.
 - Composite: `color += albedo * irradiance * intensity * aoVisibility` in
   linear light where the albedo guide is valid (alpha). The ambient guide's
   coverage is written only by the AO instrumentation, so GI uses the albedo
-  validity; under translucent overlays GI is therefore not attenuated (open,
-  phase 4). Developer view `OOT3D_GRAPHICS_GI_DEBUG`: 1 irradiance, 2 albedo,
+  validity; under translucent overlays GI is therefore not attenuated (open). Developer view `OOT3D_GRAPHICS_GI_DEBUG`: 1 irradiance, 2 albedo,
   3 coverage, 4 added light.
 - Instrumentation: GI requests the normal guide and the temporal vertex
   instrumentation (object motion). A draw without the typed frontend vertex
@@ -304,6 +303,36 @@ the material guide (F0, roughness, reflection gain), filling SSSR misses only.
   Interpolated2x baseline. Field daylight: a warm bounce from the grass onto
   walls and Link (+2 levels mean); UI pixels change only where translucent
   HUD elements show the scene.
+
+## Phase 4 result (2026-09-29): history and resets
+
+Brixelizer GI keeps world-space state (screen probes matched by world
+position, a radiance cache attached to the field's bricks) besides its
+screen histories, so resets follow the world, not the camera:
+
+| Event | Field | GI instances |
+|---|---|---|
+| Camera cut, projection change, continuity break (resync, interpolation mode) | kept | kept; the context rejects history by world position and normal, the real previous sample stays the history |
+| Another scene (`TitleSceneViewSubmission::WorldIdentity`, from the PlayState scene id; rooms share their scene's coordinates) | `Reset` at the next field update | `ResetHistory`: recorded work completed, every instance dropped |
+| Savestate load (`ResetPicaState`) | `Reset` | dropped (after the device wait) |
+| Resize, internal resolution, MSAA, render-target reconfiguration | kept | dropped with the screen resources |
+| GI resolution setting | kept | the surface's instance is replaced |
+| GI disabled (field pass leaves the extension graph) | `Reset` | `ResetHistory`, so re-enabling never traces a world seen before |
+| Surface not composed for a while | kept | kept up to `kMaxGiSurfaces`, least recently used retired |
+
+Per-sample behavior under Interpolated2x is unchanged: the field updates
+once per native frame, GI traces once per presented frame and surface.
+stderr `TRIAEVUM_GLOBAL_ILLUMINATION frame= instances_created= retired=
+world_resets=` reports lifecycle events.
+
+Measured: structural scenario `link_info_entry_00bb` (Kokiri Forest anchor,
+native transition into Link's house, GI Half, 1600x960): one world reset at
+the transition (frame 81); the field went from the forest's placements to
+the interior's (59 created, 14 resident, none left from the forest, which
+would otherwise have stayed until the 600-frame eviction). Interior GI
+renders; core validation clean (300 frames). Navi flight (Kokiri, no scene
+change): no reset. The GI-disabled path is exercised by the F1
+qualification.
 
 ## Screen-space effects under interpolation (GTAO, SSSR, TAA, GI)
 

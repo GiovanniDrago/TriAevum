@@ -47,6 +47,13 @@ struct BrixelizerGiInputs {
 // histories (depth, world normals, linear lit colour). Several surfaces can
 // be composed within one command buffer, so an instance used this frame is
 // never retired. Nothing here changes native targets.
+// Lifetime counters (totals since initialization).
+struct BrixelizerGiStats {
+    uint64_t InstancesCreated = 0;
+    uint64_t InstancesRetired = 0; // resolution change or least recently used
+    uint64_t WorldResets = 0;
+};
+
 class BrixelizerGiPass final {
   public:
     BrixelizerGiPass();
@@ -69,10 +76,18 @@ class BrixelizerGiPass final {
     // composite adds nothing and the graph stays complete.
     bool ClearOutput(uint32_t frameSlot, const NriEffectGraphTransientImageBinding& output,
                      const EffectPassBarrierPlan& barriers);
+    // Callers have completed the GPU work that references the instances.
     void InvalidateScreenResources();
+    // The world changed (another scene, GI disabled): completes the recorded
+    // work and drops every surface instance, so no screen probe, radiance
+    // cache or history of the previous world survives. Camera cuts and
+    // continuity breaks inside one world keep them; the GI context rejects
+    // history by world position.
+    void ResetHistory();
     void Shutdown();
 
     [[nodiscard]] bool Available() const;
+    [[nodiscard]] const BrixelizerGiStats& Stats() const;
     [[nodiscard]] const EffectPassBarrierExecution& LastBarrierExecution() const;
     [[nodiscard]] const std::string& UnavailableReason() const;
 

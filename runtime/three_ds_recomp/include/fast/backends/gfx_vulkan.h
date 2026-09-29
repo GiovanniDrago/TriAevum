@@ -954,6 +954,12 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::BrixelizerGiPass mBrixelizerGiPass;
     bool mBrixelizerInitializationAttempted = false;
     bool mSceneDistanceFieldUpdatedThisFrame = false;
+    // Title world identity (TitleSceneViewSubmission::WorldIdentity); a change
+    // resets the scene distance field and GI before the next field update.
+    uint64_t mTitleWorldIdentity = 0;
+    bool mTitleWorldChanged = false;
+    uint64_t mReportedGiInstances = 0;
+    uint64_t mReportedGiResets = 0;
     std::array<std::vector<BufferAllocation>, kFramesInFlight> mRetiredNativePicaGeometryBuffers;
     Oot3d::PicaShaderPipelineCache mPicaShaderPipelineCache;
     Oot3d::PicaAotShaderPack mPicaAotShaderPack;

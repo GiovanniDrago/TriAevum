@@ -7444,6 +7444,13 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             Oot3d::PicaExtensionPassEnabled(
                 mPicaExtensionGraph, Oot3d::PicaExtensionPass::SceneDistanceField)) {
             mSceneDistanceFieldUpdatedThisFrame = true;
+            if (mTitleWorldChanged) {
+                // Another world: the field and every GI history start over
+                // (this frame's collection too; the next frame refills it).
+                mTitleWorldChanged = false;
+                mBrixelizerGiPass.ResetHistory();
+                mBrixelizerScene.Reset();
+            }
             // Developer inspection: OOT3D_GRAPHICS_BRIXELIZER_DEBUG=<directory>
             // writes the field's debug view every 150 updates, in the storage
             // orientation of the scene guides (OOT3D_GRAPHICS_BRIXELIZER_DEBUG_MODE,
@@ -7717,6 +7724,16 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 if (!mBrixelizerGiPass.ClearOutput(mCurrentFrame, *transientDiffuseIllumination,
                                                    globalIlluminationBarrierPlan))
                     throw std::runtime_error("global illumination output could not be cleared");
+            }
+            if (const auto& gi = mBrixelizerGiPass.Stats();
+                gi.InstancesCreated != mReportedGiInstances || gi.WorldResets != mReportedGiResets) {
+                mReportedGiInstances = gi.InstancesCreated;
+                mReportedGiResets = gi.WorldResets;
+                std::fprintf(stderr,
+                             "TRIAEVUM_GLOBAL_ILLUMINATION frame=%llu instances_created=%llu retired=%llu "
+                             "world_resets=%llu\n",
+                             (unsigned long long)mFrameCounter, (unsigned long long)gi.InstancesCreated,
+                             (unsigned long long)gi.InstancesRetired, (unsigned long long)gi.WorldResets);
             }
             recordEffectPassTransitions(mBrixelizerGiPass.LastBarrierExecution());
             recordDeclared(Oot3d::DisplayEffectPass::GlobalIllumination,
