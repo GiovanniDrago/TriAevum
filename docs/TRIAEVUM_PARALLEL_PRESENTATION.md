@@ -243,16 +243,19 @@ thread-safety checks.
 Throughput (`measure_interpolated.py`, Interpolated2x, unpaced, no-present,
 background window, ms per presented frame, ABBA):
 
-| Baseline | Comparison | Pairs | Median ratio | Range |
-|---|---|---|---|---|
-| p3 inline | p3 worker | 4 | 0.862 | 0.839-0.875 |
-| host6 (fca3e07) | p3 worker | 6 | 0.908 | 0.878-0.928 |
-| host6 (fca3e07) | p3 inline | 4 | 1.038 | 0.969-1.050 |
+| Scene | Baseline | Comparison | Pairs | Median ratio | Range | ms/frame |
+|---|---|---|---|---|---|---|
+| Field | host6 (fca3e07) | worker | 4 | 0.616 | 0.605-0.651 | 5.61 -> 3.46 |
+| Sheik copy | host6 (fca3e07) | worker | 4 | 0.768 | 0.635-0.779 | 12.79 -> 9.83 |
 
-The worker removes about 14% of the serial frame. Against the previous best
-host the gain is about 9%: the inline stream itself appears to cost a few
-percent (to be located; the command closures and the per-presentation
-copy-reference snapshot are the first suspects).
+The first worker build reached only 0.908 on Field: per-thread cycle counts
+showed the guest at 0.59 and the renderer at 0.55 of a core. The dependency
+flush issued a `Run` (a full drain) at every guest refresh and PICA drain
+pass, work or not. The guest now checks for dependency work in its own
+accumulator first; with that, 0.88 and 0.79 of a core. The Sheik copy scene
+flushes raw copies in most frames, so it keeps more synchronization.
+An inline build against host6 measured 1.038 (0.969-1.050, four pairs); a
+stack profile of both showed the same area split within sampling noise.
 
 Remaining shared state, accepted: `GraphicsSettingsRuntime` and
 `GrassInteractionBridge` are mutex-protected; the scheduler's statistics are

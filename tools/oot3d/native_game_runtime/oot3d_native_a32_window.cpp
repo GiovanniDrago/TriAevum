@@ -4593,15 +4593,17 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       };
   Oot3dNativeGame::Oot3dPicaVisualFrameViewSample dependencySampleScratch;
   const auto flushNativeDependencies = [&]() {
+    // The accumulator is guest-owned, so whether there is dependency work is
+    // known here; only real work waits for the renderer.
+    if (!picaPresentationScheduler.ViewDependencyWork(dependencySampleScratch))
+      return false;
     // Synchronous: raw copies read and write guest memory and signal PPF
-    // while the guest waits, and the accumulator it views is guest-owned.
+    // while the guest waits.
     bool flushed = false;
     renderStream.Run([&] {
       // Without an acquired image the flush waits; PPF arrives later, as it
       // may on hardware.
       if (rendererFrameSkipped) return;
-      if (!picaPresentationScheduler.ViewDependencyWork(dependencySampleScratch))
-        return;
       guestCopyReferences = collectGuestCopyReferences();
       pinGpuCopyResources(dependencySampleScratch);
       if (!picaPresentationScheduler.Execute(
