@@ -25,17 +25,16 @@ static_assert(offsetof(Oot3dActor, colChkInfo) == 0xA0);
 static_assert(offsetof(Oot3dActor, next) == 0x130);
 } // namespace
 
-void PublishNativeActorInteractions(const NativeA32Memory &memory,
-                                    uint32_t playState, uint64_t sourceFrame) {
+std::vector<Fast::Oot3d::GrassInteractor>
+CollectNativeActorInteractions(const NativeA32Memory &memory,
+                               uint32_t playState, uint64_t sourceFrame) {
   std::vector<Fast::Oot3d::GrassInteractor> actors;
   Oot3dActorContext context{};
   if (playState == 0 ||
       playState > std::numeric_limits<uint32_t>::max() -
                       OOT3D_ACTOR_CONTEXT_PLAY_OFFSET ||
       !Read(memory, playState + OOT3D_ACTOR_CONTEXT_PLAY_OFFSET, context)) {
-    Fast::Oot3d::GrassInteractionBridge::Instance().PublishFrame(sourceFrame,
-                                                                 actors);
-    return;
+    return actors;
   }
   std::unordered_set<uint32_t> visited;
   const bool diagnostic = std::getenv("OOT3D_GRASS_DIAGNOSTICS") != nullptr &&
@@ -81,7 +80,13 @@ void PublishNativeActorInteractions(const NativeA32Memory &memory,
       address = actor.next;
     }
   }
-  Fast::Oot3d::GrassInteractionBridge::Instance().PublishFrame(sourceFrame,
-                                                               actors);
+  return actors;
+}
+
+void PublishNativeActorInteractions(const NativeA32Memory &memory,
+                                    uint32_t playState, uint64_t sourceFrame) {
+  Fast::Oot3d::GrassInteractionBridge::Instance().PublishFrame(
+      sourceFrame,
+      CollectNativeActorInteractions(memory, playState, sourceFrame));
 }
 } // namespace Oot3dNativeGame
