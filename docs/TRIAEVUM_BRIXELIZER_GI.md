@@ -289,7 +289,7 @@ the material guide (F0, roughness, reflection gain), filling SSSR misses only.
 - Composite: `color += albedo * irradiance * intensity * aoVisibility` in
   linear light where the albedo guide is valid (alpha). The ambient guide's
   coverage is written only by the AO instrumentation, so GI uses the albedo
-  validity; under translucent overlays GI is therefore not attenuated (open). Developer view `OOT3D_GRAPHICS_GI_DEBUG`: 1 irradiance, 2 albedo,
+  validity; overlay attenuation followed (see "Translucent overlays"). Developer view `OOT3D_GRAPHICS_GI_DEBUG`: 1 irradiance, 2 albedo,
   3 coverage, 4 added light.
 - Instrumentation: GI requests the normal guide and the temporal vertex
   instrumentation (object motion). A draw without the typed frontend vertex
@@ -400,6 +400,22 @@ GI contribution starts from zero and accumulates again (no stale history).
   (Field 400 frames with the polished rule, Sheik copy 600 frames). The
   reflection debug views (probe `--debug-view 1/3/4`: material, radiance,
   weight) apply to the GI source as well.
+
+## Translucent overlays (2026-09-29)
+
+GI is light on the opaque surface below an overlay, so an overlay transmits
+only its native destination factor of it. With GI enabled, the scene-domain
+guide instrumentation (the mechanism AO uses for its ambient coverage)
+includes the diffuse albedo guide: blended scene overlays write
+`pica_diffuse_albedo_guide = vec4(0, 0, 0, pica_color.a)` through an
+alpha-only coverage blend (source factor zero, destination factor the draw's
+native `DestRgb`), and opaque overlays that do not write depth write alpha 0.
+The albedo guide's alpha is therefore validity x transmission, and the
+composite's existing `coverage = albedo.a` attenuates GI under water, flames
+and other overlays. Output flag `SceneDomainAlbedoOverlay` (pipeline
+manifest and key). Field check (GI debug view 3): fractional coverage only
+on the moat water and the torch flames; core validation clean (Field 300,
+Sheik copy 600 frames).
 
 ## Screen-space effects under interpolation (GTAO, SSSR, TAA, GI)
 

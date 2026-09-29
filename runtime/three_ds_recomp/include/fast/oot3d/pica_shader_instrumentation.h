@@ -93,6 +93,8 @@ struct PicaFragmentInstrumentationOutputLayout {
     bool SceneDomainNormalOverlay = false;
     bool SceneDomainAmbientOverlay = false;
     bool SceneDomainTransparentDepthOverlay = false;
+    // The diffuse albedo guide's alpha carries the overlay's transmission.
+    bool SceneDomainAlbedoOverlay = false;
     bool WritesAmbientGuide = false;
     bool WritesFogGuide = false;
     bool WritesOutlineGeometryGuide = false;

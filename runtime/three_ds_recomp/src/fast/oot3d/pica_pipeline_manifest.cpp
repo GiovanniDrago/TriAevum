@@ -251,6 +251,7 @@ nlohmann::json EntryJson(
             {"writes_fog_guide", outputs.WritesFogGuide},
             {"writes_outline_geometry_guide", outputs.WritesOutlineGeometryGuide},
             {"writes_diffuse_albedo_guide", outputs.WritesDiffuseAlbedoGuide},
+            {"scene_domain_albedo_overlay", outputs.SceneDomainAlbedoOverlay},
         }},
     };
 }
@@ -471,6 +472,9 @@ bool ReadEntry(const nlohmann::json& value,
          !ReadBool(value["shader_outputs"], "writes_outline_geometry_guide", entry.ShaderOutputs.WritesOutlineGeometryGuide)) ||
         (value["shader_outputs"].contains("writes_diffuse_albedo_guide") &&
          !ReadBool(value["shader_outputs"], "writes_diffuse_albedo_guide", entry.ShaderOutputs.WritesDiffuseAlbedoGuide)) ||
+        (value["shader_outputs"].contains("scene_domain_albedo_overlay") &&
+         !ReadBool(value["shader_outputs"], "scene_domain_albedo_overlay",
+                   entry.ShaderOutputs.SceneDomainAlbedoOverlay)) ||
         !ReadBool(value["shader_outputs"], "writes_ambient_guide",
                   entry.ShaderOutputs.WritesAmbientGuide)) {
         return false;
@@ -710,6 +714,7 @@ uint64_t PicaGraphicsPipelineManifestEntry::StructuralId() const noexcept {
     if (ShaderOutputs.WritesFogGuide) HashValue(hash, ShaderOutputs.WritesFogGuide);
     if (ShaderOutputs.WritesOutlineGeometryGuide) HashValue(hash, ShaderOutputs.WritesOutlineGeometryGuide);
     if (ShaderOutputs.WritesDiffuseAlbedoGuide) HashValue(hash, ShaderOutputs.WritesDiffuseAlbedoGuide);
+    if (ShaderOutputs.SceneDomainAlbedoOverlay) HashValue(hash, ShaderOutputs.SceneDomainAlbedoOverlay);
     return hash;
 }
 

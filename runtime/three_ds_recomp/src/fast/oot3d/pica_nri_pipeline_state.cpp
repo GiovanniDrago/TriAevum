@@ -310,7 +310,10 @@ Renderer3ds::NriPicaGraphicsPipelineDesc BuildPicaNriPipelineState(
     VkPipelineColorBlendAttachmentState fogAttachment{};
     fogAttachment.colorWriteMask = outputs.WritesFogGuide ? 0xfU : 0U;
     VkPipelineColorBlendAttachmentState albedoAttachment{};
-    albedoAttachment.colorWriteMask = outputs.WritesDiffuseAlbedoGuide ? 0xfU : 0U;
+    if (outputs.SceneDomainAlbedoOverlay)
+        configureOverlayCoverage(albedoAttachment);
+    else
+        albedoAttachment.colorWriteMask = outputs.WritesDiffuseAlbedoGuide ? 0xfU : 0U;
     std::array<VkPipelineColorBlendAttachmentState, kPicaColorAttachmentCount> colorAttachments{
         attachment,        guideAttachment, materialAttachment,       rigidMotionAttachment,
         ambientAttachment, fogAttachment,   outlineGeometryAttachment, albedoAttachment

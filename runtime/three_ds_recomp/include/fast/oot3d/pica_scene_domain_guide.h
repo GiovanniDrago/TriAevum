@@ -30,6 +30,8 @@ struct PicaSceneDomainDrawInfo {
 struct PicaSceneDomainGuideFeatures {
     bool AmbientOcclusion = false;
     bool Outline = false;
+    // Overlays attenuate the diffuse albedo guide's alpha (GI coverage).
+    bool GlobalIllumination = false;
 };
 
 enum class PicaSceneDomainGuideEligibility : uint8_t {

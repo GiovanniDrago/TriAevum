@@ -243,6 +243,7 @@ uint64_t SceneDomainVariantKey(uint64_t original, const PicaSceneDomainGuideFeat
     mix(features.AmbientOcclusion ? 1U : 0U);
     mix(features.Outline ? 1U : 0U);
     mix(blended ? 1U : 0U);
+    if (features.GlobalIllumination) mix(3U);
     return hash;
 }
 
@@ -772,7 +773,7 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
 
     // Global illumination albedo: opaque, RGB-replacing, depth-writing scene
     // surfaces publish it (zero when their albedo is unknown, so a surface in
-    // front removes GI); translucent draws leave the surface below.
+    // front removes GI); overlays attenuate its alpha (scene-domain guide).
     if (HasPicaShaderInstrumentationFeature(request.RequestedFeatures,
                                             PicaShaderInstrumentationFeature::DiffuseAlbedoGuide) &&
         result.Hooks.Valid() && request.Draw.DepthTestEnabled && request.Draw.DepthWriteEnabled &&
@@ -891,7 +892,7 @@ vec3 pica_surface_shadow(int slot) {
                                             PicaShaderInstrumentationFeature::SceneDomainGuide)) {
         const auto& draw = request.Draw;
         const auto& features = request.SceneDomainFeatures;
-        if (!features.AmbientOcclusion && !features.Outline) {
+        if (!features.AmbientOcclusion && !features.Outline && !features.GlobalIllumination) {
             result.SceneDomainEligibility = PicaSceneDomainGuideEligibility::Disabled;
         } else if (draw.CompositionDomain !=
                    ::Oot3d::Renderer::PicaCompositionDomain::Scene) {
@@ -909,7 +910,8 @@ vec3 pica_surface_shadow(int slot) {
             }
         } else if (!result.Hooks.Valid() || !result.Hooks.Has(PicaShaderSemantic::NativeColorOutput) ||
                    (features.Outline && !normalAvailable) ||
-                   (features.AmbientOcclusion && !ambientAvailable && HasOutputAtLocation(request.Source, 4U))) {
+                   (features.AmbientOcclusion && !ambientAvailable && HasOutputAtLocation(request.Source, 4U)) ||
+                   (features.GlobalIllumination && HasOutputAtLocation(request.Source, 7U))) {
             result.SceneDomainEligibility = PicaSceneDomainGuideEligibility::UnsupportedShader;
         } else {
             if (features.AmbientOcclusion && !ambientAvailable) {
@@ -952,6 +954,14 @@ vec3 pica_surface_shadow(int slot) {
                 epilogue += alpha;
                 epilogue += "); // OOT3D_SCENE_DOMAIN_AMBIENT_OVERLAY\n";
             }
+            // GI is light on the surface below: an overlay transmits only its
+            // native destination factor of it (the alpha-only coverage blend).
+            if (features.GlobalIllumination) {
+                declarations += "layout(location=7) out vec4 pica_diffuse_albedo_guide;\n";
+                epilogue += "    pica_diffuse_albedo_guide = vec4(0.0, 0.0, 0.0, ";
+                epilogue += alpha;
+                epilogue += "); // OOT3D_SCENE_DOMAIN_ALBEDO_OVERLAY\n";
+            }
             result.FragmentKey = SceneDomainVariantKey(result.FragmentKey, features, draw.Blend.Enabled);
             result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_NATIVE_OCCLUSION_DEPTH_V2");
             result.SceneDomainEligibility = draw.Blend.Enabled ? PicaSceneDomainGuideEligibility::AppliedBlendedOverlay
@@ -963,6 +973,7 @@ vec3 pica_surface_shadow(int slot) {
                 features.AmbientOcclusion;
             result.Outputs.SceneDomainTransparentDepthOverlay =
                 transparentDepthAvailable;
+            result.Outputs.SceneDomainAlbedoOverlay = features.GlobalIllumination;
             result.Outputs.WritesAmbientGuide |=
                 features.AmbientOcclusion;
             apply(PicaShaderInstrumentationFeature::SceneDomainGuide);

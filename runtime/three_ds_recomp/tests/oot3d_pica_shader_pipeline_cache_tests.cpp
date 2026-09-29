@@ -1094,6 +1094,51 @@ TEST(Oot3dPicaShaderInstrumentation,
 }
 
 TEST(Oot3dPicaShaderInstrumentation,
+     OverlaysAttenuateTheGlobalIlluminationCoverage) {
+    using namespace Fast::Oot3d;
+    static constexpr std::string_view kFragmentShader = R"glsl(#version 450
+layout(location=0) out vec4 pica_color;
+void main() {
+    vec3 normal = vec3(0.0, 0.0, 1.0);
+    // OOT3D_PICA_MATERIAL_TOON_POINT
+    pica_color = vec4(1.0, 1.0, 1.0, 0.5);
+}
+)glsl";
+    const auto hooks = AnalyzePicaFragmentShaderHooks(kFragmentShader);
+    PicaFragmentInstrumentationRequest request{
+        kFragmentShader,
+        92U,
+        PicaShaderInstrumentationFeature::SceneDomainGuide,
+        {320U, 240U, 0U, true, false, SourceAlphaBlend(), 0x0fU,
+         Oot3d::Renderer::PicaCompositionDomain::Scene},
+        {false, false, true},
+        nullptr,
+        &hooks,
+    };
+    const auto blended = BuildPicaFragmentInstrumentationVariant(request);
+    ASSERT_TRUE(blended.Applied());
+    EXPECT_TRUE(blended.Outputs.SceneDomainAlbedoOverlay);
+    EXPECT_FALSE(blended.Outputs.SceneDomainAmbientOverlay);
+    EXPECT_NE(blended.Source.find("layout(location=7) out vec4 pica_diffuse_albedo_guide"), std::string::npos);
+    EXPECT_NE(blended.Source.find("pica_diffuse_albedo_guide = vec4(0.0, 0.0, 0.0, pica_color.a)"),
+              std::string::npos);
+
+    // An opaque overlay (no depth write) replaces the surface: coverage 0.
+    request.Draw.Blend = {};
+    const auto opaque = BuildPicaFragmentInstrumentationVariant(request);
+    EXPECT_TRUE(opaque.Outputs.SceneDomainAlbedoOverlay);
+    EXPECT_NE(opaque.Source.find("pica_diffuse_albedo_guide = vec4(0.0, 0.0, 0.0, 0.0)"), std::string::npos);
+    EXPECT_NE(opaque.FragmentKey, blended.FragmentKey);
+
+    // Without GI the overlay leaves the albedo guide alone.
+    request.SceneDomainFeatures = {true, false, false};
+    request.Draw.Blend = SourceAlphaBlend();
+    const auto ambientOnly = BuildPicaFragmentInstrumentationVariant(request);
+    EXPECT_FALSE(ambientOnly.Outputs.SceneDomainAlbedoOverlay);
+    EXPECT_EQ(ambientOnly.Source.find("pica_diffuse_albedo_guide"), std::string::npos);
+}
+
+TEST(Oot3dPicaShaderInstrumentation,
      PublishesTypedSceneOverlayOutputs) {
     using namespace Fast::Oot3d;
     static constexpr std::string_view kFragmentShader = R"glsl(#version 450

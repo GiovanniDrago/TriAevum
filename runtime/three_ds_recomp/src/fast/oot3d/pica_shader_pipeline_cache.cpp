@@ -154,10 +154,12 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
         features |=
             PicaShaderInstrumentationFeature::AmbientOcclusionGuide;
     }
+    // GI coverage: overlays attenuate the albedo guide's alpha.
     if (sceneDraw &&
         (effects.AmbientOcclusion != AmbientOcclusionMode::Off ||
          (effects.Toon != ToonMode::Off &&
-          effects.ToonStyle.OutlineEnabled))) {
+          effects.ToonStyle.OutlineEnabled) ||
+         effects.GlobalIllumination.Mode != GlobalIlluminationMode::Off)) {
         features |= PicaShaderInstrumentationFeature::SceneDomainGuide;
     }
     // GI traces from the normal guide.
@@ -289,6 +291,7 @@ PicaShaderPipelineResult BuildInstrumentedVariant(
             effects.AmbientOcclusion != AmbientOcclusionMode::Off,
             effects.Toon != ToonMode::Off &&
                 effects.ToonStyle.OutlineEnabled,
+            effects.GlobalIllumination.Mode != GlobalIlluminationMode::Off,
         },
         request.ReflectionProfile.has_value()
             ? &*request.ReflectionProfile
@@ -359,7 +362,8 @@ PicaShaderInstrumentationFeature ResolvePicaShaderProfileFeatures(
     }
     if (effects.AmbientOcclusion != AmbientOcclusionMode::Off ||
         (effects.Toon != ToonMode::Off &&
-         effects.ToonStyle.OutlineEnabled)) {
+         effects.ToonStyle.OutlineEnabled) ||
+        effects.GlobalIllumination.Mode != GlobalIlluminationMode::Off) {
         features |= PicaShaderInstrumentationFeature::SceneDomainGuide;
     }
     if (effects.AmbientOcclusion != AmbientOcclusionMode::Off ||
