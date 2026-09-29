@@ -26,6 +26,12 @@ release catalogue, installed modules and Forge are unchanged.
 | --- | --- | ---: | ---: | --- | --- |
 | Host helper fast memory | exact single-page `ReadBytes`/`WriteBytes` forms, product skips overlay stub | 0.999 (0.94-1.04) | - | identical | kept: exact, no measurable gain |
 | PGO | instrumentation profile from 7 non-Field workloads, `-fprofile-instr-use` | **0.864** (0.836-0.871) | **0.822** | identical | **candidate for promotion** |
+| Inline host-float VFP | exact SSE fast paths for add/sub/mul/multiply-accumulate/int-to-float, software fallback | **0.924** (0.89-1.00) | **0.946** | identical | **kept** |
+| Inline host-float VFP + its own PGO profile, vs PGO | same training set | **0.916** (0.88-0.95) | **0.926** (0.91-0.93, all pairs) | identical | **candidate for promotion**, 204 MB module |
+| IR-level PGO instead of front-end PGO | `-fprofile-generate`, same training set | 1.016 (0.97-1.05) | 1.015 | identical | rejected: no gain over front-end PGO |
+| Context-sensitive PGO on the IR profile | IR profile + CS counters (2,404 functions) merged, `/lto-cs-profile-file` | 1.004 (A/A) | - | identical | not applied: module byte-identical to IR PGO; cause not investigated |
+| Context-sensitive PGO on the front-end profile | `/lto-cs-profile-generate`, merged profile at compile and link | - | - | - | inapplicable: CS-PGO needs an IR-level profile; the module was byte-identical to PGO (its ABBA, 0.966 pre-NRI, is an A/A reference) |
+| Local registers for every function + PGO | generator `--local-state`, same training set | 1.000 (0.96-1.05, 3 clean pairs) | 1.020 | identical | rejected: no gain, 318 MB module |
 | Audio kernels, memory-region lowering | `--memory-region` for `00466E2C`, `004A022C`, `004A0338` (views, local registers, local budget) | 0.996 (0.98-1.03) | 0.997 | identical | rejected: no gain; hand-written natives of the same shape are not pursued |
 
 PGO whole-frame ratio 0.901 (about 110 to 122 fps in this configuration).
@@ -53,6 +59,29 @@ each. `win-items` was excluded: the checkpoint no longer restores on this host
 ("display transfer source has no Vulkan render target"). The measured Field
 scene is deliberately not in the training set. Merged profile SHA-256
 `7804e25b3d311100fd8b72525cd2c7820b482705e782e67bf75616366eac28ce`.
+
+### Where the guest thread spends time
+
+User-mode RIP sampling of the PGO module on Field (`measure_prebackend.py
+--sample-map`, 5,462 samples of the guest thread, cold renderer cache) put 29%
+of samples in the title module. Within the module, 22% were the software
+binary32 helpers (`RoundFinite` 10%, `F32Mul` 3.8%, `F32Add` 2.8%, other
+`VfpBinary32*` 2%); translated bodies with their inlined memory helpers were
+75%; block-entry helpers 1%. Front-end PGO counters are pre-inlining call
+counts and do not measure cost: `Oot3dAotFlagLive` has the highest count but
+folds to nothing.
+
+This motivated exact inline host-float VFP fast paths
+(`oot3d_native_a32_vfp_fast.h`, differential test
+`oot3d_native_a32_vfp_fast_tests`).
+
+### Inline VFP qualification
+
+`mod-vfp-pgo` (inline VFP with its own profile) was captured with the same
+probe settings as the PGO qualification and compared with the control hashes
+recorded there: Field (captures at 120/240) and Sheik raw copy (120/240/360)
+framebuffers byte-identical; memory content/state, process state, draw and
+transfer counts, empty queues and PCM identical.
 
 ## Reproduction
 
