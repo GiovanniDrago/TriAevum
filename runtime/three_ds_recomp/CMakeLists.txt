@@ -113,6 +113,12 @@ cmake_dependent_option(
 	OFF)
 option(THREE_DS_RECOMP_ENABLE_SSSR "Enable FidelityFX SSSR for the native 3DS Vulkan backend" ${THREE_DS_RECOMP_ENABLE_NRI})
 option(THREE_DS_RECOMP_ENABLE_CACAO "Enable original FidelityFX CACAO alongside GTAO" ${THREE_DS_RECOMP_ENABLE_NRI})
+# Brixelizer GI shares the pinned SDK and Vulkan backend with SSSR. Shader
+# permutations are compiled with the Windows FidelityFX compiler; portable
+# shader bundles do not carry them yet.
+cmake_dependent_option(THREE_DS_RECOMP_ENABLE_BRIXELIZER_GI
+	"Enable FidelityFX Brixelizer GI for the native 3DS Vulkan backend"
+	ON "WIN32;THREE_DS_RECOMP_ENABLE_SSSR" OFF)
 set(THREE_DS_RECOMP_CACAO_SOURCE_DIR "" CACHE PATH "Optional existing FidelityFX CACAO source directory")
 set(THREE_DS_RECOMP_NRI_SOURCE_DIR "" CACHE PATH "Optional existing NRI v180 source directory")
 set(THREE_DS_RECOMP_NGX_VERSION "310.7.0" CACHE STRING

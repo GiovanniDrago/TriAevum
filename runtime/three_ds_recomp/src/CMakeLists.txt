@@ -194,6 +194,12 @@ if(THREE_DS_RECOMP_ENABLE_VULKAN)
             oot3d_ffx_sssr
             oot3d_ffx_sssr_backend_vk)
     endif()
+    if(THREE_DS_RECOMP_ENABLE_BRIXELIZER_GI)
+        target_link_libraries(three_ds_recomp_runtime PRIVATE
+            oot3d_ffx_brixelizergi)
+        target_compile_definitions(three_ds_recomp_runtime PRIVATE
+            ENABLE_OOT3D_BRIXELIZER_GI)
+    endif()
     if(TARGET oot3d_cacao)
         target_link_libraries(three_ds_recomp_runtime PRIVATE oot3d_cacao)
         target_compile_definitions(three_ds_recomp_runtime PRIVATE ENABLE_OOT3D_CACAO)

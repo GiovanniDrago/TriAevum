@@ -1,0 +1,167 @@
+# FidelityFX Brixelizer GI: design
+
+Status: phase 1 (build integration) done; phase 2 (geometry) next. Owner surface: F1 **Lighting**.
+
+## Goal
+
+Add dynamic diffuse (and later specular) global illumination to the NRI
+renderer with AMD FidelityFX Brixelizer (sparse distance fields built from
+scene triangles) and Brixelizer GI (screen probes, a world-space radiance and
+SH irradiance cache, temporal denoising). It must follow
+`OOT3D_NRI_FIDELITY_EXTENSION_ARCHITECTURE.md`: optional, declared in the
+compiled effect graph, inert when disabled, and never part of the canonical
+PICA path.
+
+## Source and license
+
+FidelityFX SDK v1.1.4, already pinned for SSSR
+(`cmake/dependencies/oot3d-sssr.cmake`): `sdk/src/components/brixelizer`
+(Brixelizer 1.0) and `sdk/src/components/brixelizergi` (Brixelizer GI 1.0.1),
+with GLSL shaders for the Vulkan backend under
+`sdk/src/backends/vk/shaders/brixelizer{,gi}`. MIT; the donor notices travel
+with the generated shader headers exactly as for SSSR.
+
+## Scope and product surface
+
+- **Modes.** Per-pixel and Per-pixel + PBR only, like directional shadows.
+  Native lighting, Authentic, F2 and native-memory rendering never run it; the
+  stored preference survives them and their effective snapshots disable it.
+- **F1 Lighting > Global illumination:** Off (default) / Brixelizer GI;
+  quality (internal resolution 1/2 or 1/4, cascade count); diffuse intensity;
+  specular on/off (phase 5). Off remains selectable when capabilities are
+  missing; the reason is shown. One owner: the graphics settings runtime.
+- **Off is inert.** No context, no geometry export, no guide MRT, no graph pass,
+  no allocation; framebuffers byte-identical to the current build.
+
+## Inputs (Brixelizer GI dispatch)
+
+| GI input | Source in this renderer |
+|---|---|
+| depth, history depth | native depth; previous frame retained by the graph (history read, as VSM) |
+| normal, history normal | normal guide through `NormalSpacePass` to world space; `normalsUnpackMul/Add` 2/-1 |
+| roughness | material guide G, perceptual (`isRoughnessPerceptual = true`, channel 1) |
+| motion vectors | `MotionVectors` (graph resource, same producer as TAA/SSSR) |
+| prevLitOutput | previous linear scene color (`linear_scene_color`), before UI |
+| environment map | the IBL environment already prepared for SSSR, or black with intensity 0 |
+| noise texture | fixed blue-noise texture generated at build time (no media download) |
+| view/projection, previous | `NativeSceneView` captured camera; canonical negative-Z projection |
+| SDF atlas, brick AABBs, cascade trees/maps | Brixelizer context outputs |
+
+The depth convention (W-buffer, inverted or not) is resolved explicitly per
+frame from the captured projection, as GTAO and SSSR already do; it selects
+the `FFX_BRIXELIZER_GI_OPTION_DEPTH_INVERTED` permutation.
+
+## Scene geometry for Brixelizer
+
+Brixelizer voxelizes triangles from GPU vertex/index buffers
+(RGBA16F/RGBA32F positions with a stride, 16/32-bit indices, per-instance
+AABB and transform; static instances persist, dynamic instances are
+resubmitted every update).
+
+PICA vertex data is not world-space: positions are produced by the draw's
+vertex program. The renderer already reproduces them for shadows: virtual
+shadow maps replay native draws with the captured view-to-world transform and
+the typed transform/skeleton hook layout (`PicaVertexShaderHookLayout`,
+`BuildPicaShadowCaster`). GI geometry uses the same contract:
+
+1. **Admission.** Identical to shadow casters: opaque, depth-writing,
+   non-alpha-tested native *scene-domain* geometry with a typed transform
+   hook. UI, frontend, transparent and unknown programs are excluded (no
+   guessing, no per-scene lists).
+2. **Position export.** A world-position export variant of the native vertex
+   program (typed hook, separate cache key, never the canonical shader) runs
+   once per admitted draw version and writes RGBA32F world positions into a
+   persistent GI geometry arena; indices are copied once per geometry
+   version. It changes no native attachment.
+3. **Instances.** Rigid geometry (stable geometry identity, content version
+   and quantized pose, the VSM reuse rule) becomes a Brixelizer *static*
+   instance and persists across frames; its removal or change deletes it.
+   Skinned/animated or unproven content becomes a *dynamic* instance,
+   resubmitted each update under a per-frame triangle budget.
+4. **Cascades.** Camera-centred cascades scrolled by Brixelizer; world units
+   follow the VSM clipmap scale (native units).
+
+The Brixelizer update runs once per *native* frame (a new guest frame), not
+per interpolated sample: samples reuse the SDF, since geometry positions are
+the native frame's. GI dispatch runs per presented sample (its own history).
+
+## Composition
+
+Diffuse GI is irradiance; it needs diffuse albedo, which the canonical guides
+do not carry (the ambient guide's RGB is the ambient response consumed by AO).
+A new auxiliary output **DiffuseAlbedoGuide** (RGBA8, location 5, declared only
+when GI is active) is written by the per-pixel lighting shaders from the albedo
+they already resolve. The composer (the same fused scene composite as AO and
+reflections, before UI) adds
+
+`color += coverage * albedo * diffuseGI * intensity * aoVisibility`
+
+where `coverage` is the existing scene-coverage weight (clear/HUD zero,
+fractional under translucent overlays). Native draw order, depth, blending and
+UI composition are unchanged. Specular GI (phase 5) composes like SSSR through
+the material guide (F0, roughness, reflection gain), filling SSSR misses only.
+
+## Scheduling (effect graph)
+
+- `BrixelizerUpdate` (compute, after the native opaque prefix of a native
+  frame; reads the GI geometry arena; writes the SDF resources, persistent).
+- `BrixelizerGi` (compute, after motion and normal-space; reads depth,
+  normals, material, motion, previous lit colour, SDF; writes DiffuseGI,
+  SpecularGI; owns its internal histories).
+- Composite reads DiffuseGI and DiffuseAlbedoGuide. All transitions are
+  graph-declared; the FFX backend's own barriers stay inside its dispatch, as
+  with SSSR.
+
+## Phases
+
+1. **Build.** Compile Brixelizer and Brixelizer GI host components and their
+   Vulkan shader permutations with the pinned `FidelityFX_SC`; add both effects
+   to the shared FFX Vulkan backend. Windows only at first (Linux needs the
+   shader bundle to carry the new headers). Acceptance: libraries link; a GPU
+   probe creates and destroys both contexts on the device.
+2. **Geometry.** Admission, position-export variant, geometry arena, static
+   and dynamic instances, Brixelizer update pass, debug visualization
+   (Brixelizer's SDF view) under a developer switch. Acceptance: SDF debug view
+   matches the scene; zero validation errors; Off byte-identical.
+3. **Diffuse GI.** Dispatch, DiffuseAlbedoGuide, composition, F1 controls.
+   Acceptance: deterministic captures (On differs only in scene domain, UI
+   pixels unchanged), Off byte-identical, validation clean, GPU cost measured.
+4. **Interpolation and history.** Correct behavior with Interpolated2x samples
+   (SDF per native frame, GI per sample), resize, settings changes,
+   savestate/load, scene transitions (history and instances reset).
+5. **Specular GI.** Composition with SSSR.
+
+## Phase 1 result (2026-09-29)
+
+- `THREE_DS_RECOMP_ENABLE_BRIXELIZER_GI` (Windows, requires SSSR, default
+  ON) compiles 31 Brixelizer and 19 Brixelizer GI Vulkan shaders (four
+  variants each; GI with its depth-inverted, disable-specular and
+  disable-denoiser permutations), the host components
+  `oot3d_ffx_brixelizer` / `oot3d_ffx_brixelizergi`, and adds both effects to
+  the shared FidelityFX Vulkan backend. The runtime links them and defines
+  `ENABLE_OOT3D_BRIXELIZER_GI`; nothing calls them yet.
+- `oot3d_brixelizer_gi_context_probe` creates and destroys a four-cascade
+  Brixelizer context and a 50%-resolution GI context through one backend
+  interface on the RTX 3060.
+- Under the Khronos validation layer the probe exposed a donor defect: the
+  per-effect bindless descriptor pool lacks `FREE_DESCRIPTOR_SET_BIT` although
+  its sets are freed individually, and its `maxSets` counts pool sizes (3)
+  while four sets are allocated. The checked, idempotent
+  `patches/oot3d_fidelityfx_vk_bindless_pool.cmake` corrects both; the probe is
+  then validation-clean. Only bindless effects (Brixelizer) use that pool.
+- The runtime with the rebuilt backend is identical to the Interpolated2x
+  baseline (Field, Sheik copy).
+
+## Risks
+
+- **Geometry fidelity.** Programs without a typed transform hook are not
+  voxelized; their surfaces neither occlude nor bounce. This is visible as
+  missing bounce, never as wrong native output.
+- **Cost.** Brixelizer update and GI dispatch are GPU compute; the RTX 3060
+  budget must be measured (target: GI at 1/2 resolution within ~2 ms at
+  1440p). Dynamic instances are budgeted.
+- **Radiance feedback.** GI feeds on the previous lit output; interpolated
+  samples and UI must not enter it (linear scene colour before UI only).
+- **Portability.** The GI shaders need Vulkan 1.2 and subgroup/int64-free
+  paths as compiled by the SDK; unsupported devices report the capability as
+  unavailable instead of falling back silently.

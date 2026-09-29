@@ -84,6 +84,10 @@ execute_process(COMMAND ${CMAKE_COMMAND}
     -DFFX_SOURCE_DIR=${ffx_SOURCE_DIR}
     -P ${CMAKE_CURRENT_LIST_DIR}/../patches/oot3d_fidelityfx_vk_scratch_alignment.cmake
     COMMAND_ERROR_IS_FATAL ANY)
+execute_process(COMMAND ${CMAKE_COMMAND}
+    -DFFX_SOURCE_DIR=${ffx_SOURCE_DIR}
+    -P ${CMAKE_CURRENT_LIST_DIR}/../patches/oot3d_fidelityfx_vk_bindless_pool.cmake
+    COMMAND_ERROR_IS_FATAL ANY)
 
 function(_oot3d_ffx_compile_shader shader effect_define output_list)
     get_filename_component(_shader_name "${shader}" NAME_WE)
@@ -139,6 +143,65 @@ function(_oot3d_ffx_compile_shader shader effect_define output_list)
     set(${output_list} ${${output_list}} ${_outputs} PARENT_SCOPE)
 endfunction()
 
+# Compiles one backend shader into the four FidelityFX variants (base, wave64,
+# 16-bit, wave64 16-bit). PERMUTATIONS are -D arguments with {..} value sets.
+function(_oot3d_ffx_compile_effect_shader shader output_list)
+    cmake_parse_arguments(PARSE_ARGV 2 _ARG "" "" "PERMUTATIONS;INCLUDES")
+    get_filename_component(_shader_name "${shader}" NAME_WE)
+    set(_outputs
+        "${_ffx_generated}/${_shader_name}_permutations.h"
+        "${_ffx_generated}/${_shader_name}_wave64_permutations.h"
+        "${_ffx_generated}/${_shader_name}_16bit_permutations.h"
+        "${_ffx_generated}/${_shader_name}_wave64_16bit_permutations.h")
+    set(_variant_names
+        "${_shader_name}"
+        "${_shader_name}_wave64"
+        "${_shader_name}_16bit"
+        "${_shader_name}_wave64_16bit")
+    set(_half_values 0 0 1 1)
+    if(THREE_DS_RECOMP_FFX_SHADER_BUNDLE)
+        foreach(_output IN LISTS _outputs)
+            if(NOT EXISTS "${_output}")
+                message(FATAL_ERROR "Missing FidelityFX shader permutation: ${_output}")
+            endif()
+        endforeach()
+        set(${output_list} ${${output_list}} ${_outputs} PARENT_SCOPE)
+        return()
+    endif()
+    set(_include_args)
+    foreach(_include IN LISTS _ARG_INCLUDES)
+        list(APPEND _include_args "-I${_include}")
+    endforeach()
+    foreach(_index RANGE 0 3)
+        list(GET _outputs ${_index} _output)
+        list(GET _variant_names ${_index} _variant)
+        list(GET _half_values ${_index} _half)
+        add_custom_command(
+            OUTPUT "${_output}"
+            COMMAND "${_ffx_sc}"
+                -reflection
+                -deps=gcc
+                -DFFX_GPU=1
+                -compiler=glslang
+                -e CS
+                --target-env vulkan1.2
+                -S comp
+                -Os
+                -DFFX_GLSL=1
+                ${_ARG_PERMUTATIONS}
+                "-name=${_variant}"
+                "-DFFX_HALF=${_half}"
+                "-I${_ffx_include}/FidelityFX/gpu"
+                ${_include_args}
+                "-output=${_ffx_generated}"
+                "${shader}"
+            DEPENDS "${shader}"
+            DEPFILE "${_output}.d"
+            VERBATIM)
+    endforeach()
+    set(${output_list} ${${output_list}} ${_outputs} PARENT_SCOPE)
+endfunction()
+
 file(GLOB _ffx_sssr_shaders
     "${_ffx_backend_vk}/shaders/sssr/*.glsl")
 file(GLOB _ffx_denoiser_shaders
@@ -152,6 +215,33 @@ foreach(_shader IN LISTS _ffx_denoiser_shaders)
     _oot3d_ffx_compile_shader(
         "${_shader}" FFX_DENOISER_OPTION_INVERTED_DEPTH _ffx_shader_outputs)
 endforeach()
+if(THREE_DS_RECOMP_ENABLE_BRIXELIZER_GI)
+    # Recipes: sdk/include/FidelityFX/gpu/brixelizer{,gi}/CMakeCompile*.txt.
+    file(GLOB _ffx_brixelizer_shaders
+        "${_ffx_backend_vk}/shaders/brixelizer/*.glsl")
+    file(GLOB _ffx_brixelizergi_shaders
+        "${_ffx_backend_vk}/shaders/brixelizergi/*.glsl")
+    list(LENGTH _ffx_brixelizer_shaders _brixelizer_count)
+    list(LENGTH _ffx_brixelizergi_shaders _brixelizergi_count)
+    if(NOT _brixelizer_count EQUAL 31 OR NOT _brixelizergi_count EQUAL 19)
+        message(FATAL_ERROR "Brixelizer shader set changed: "
+            "${_brixelizer_count}/31 and ${_brixelizergi_count}/19")
+    endif()
+    foreach(_shader IN LISTS _ffx_brixelizer_shaders)
+        _oot3d_ffx_compile_effect_shader("${_shader}" _ffx_shader_outputs
+            INCLUDES "${_ffx_include}/FidelityFX/gpu/brixelizer")
+    endforeach()
+    foreach(_shader IN LISTS _ffx_brixelizergi_shaders)
+        _oot3d_ffx_compile_effect_shader("${_shader}" _ffx_shader_outputs
+            PERMUTATIONS
+                "-DFFX_BRIXELIZER_GI_OPTION_DEPTH_INVERTED={0,1}"
+                "-DFFX_BRIXELIZER_GI_OPTION_DISABLE_SPECULAR={0,1}"
+                "-DFFX_BRIXELIZER_GI_OPTION_DISABLE_DENOISER={0,1}"
+            INCLUDES
+                "${_ffx_include}/FidelityFX/gpu/brixelizer"
+                "${_ffx_include}/FidelityFX/gpu/brixelizergi")
+    endforeach()
+endif()
 add_custom_target(oot3d_ffx_sssr_shaders DEPENDS ${_ffx_shader_outputs})
 
 file(GLOB _ffx_shared_sources "${_ffx_shared}/*.cpp")
@@ -200,11 +290,42 @@ target_include_directories(oot3d_ffx_sssr_backend_vk PUBLIC
 target_link_libraries(oot3d_ffx_sssr_backend_vk PUBLIC Vulkan::Vulkan)
 set_property(TARGET oot3d_ffx_sssr_backend_vk PROPERTY CXX_STANDARD 17)
 
+set(_ffx_effect_targets oot3d_ffx_denoiser oot3d_ffx_sssr oot3d_ffx_sssr_backend_vk)
+if(THREE_DS_RECOMP_ENABLE_BRIXELIZER_GI)
+    # One Vulkan backend serves every FidelityFX effect of the renderer.
+    target_sources(oot3d_ffx_sssr_backend_vk PRIVATE
+        "${_ffx_backend_shared}/blob_accessors/ffx_brixelizer_shaderblobs.cpp"
+        "${_ffx_backend_shared}/blob_accessors/ffx_brixelizergi_shaderblobs.cpp")
+    target_compile_definitions(oot3d_ffx_sssr_backend_vk PRIVATE
+        FFX_BRIXELIZER
+        FFX_BRIXELIZER_GI)
+    add_library(oot3d_ffx_brixelizer STATIC
+        ${_ffx_shared_sources}
+        "${_ffx_components}/brixelizer/ffx_brixelizer.cpp"
+        "${_ffx_components}/brixelizer/ffx_brixelizer_raw.cpp")
+    target_include_directories(oot3d_ffx_brixelizer PUBLIC
+        "${_ffx_include}"
+        PRIVATE "${_ffx_shared}" "${_ffx_components}")
+    set_property(TARGET oot3d_ffx_brixelizer PROPERTY CXX_STANDARD 17)
+    add_library(oot3d_ffx_brixelizergi STATIC
+        ${_ffx_shared_sources}
+        "${_ffx_components}/brixelizergi/ffx_brixelizergi.cpp")
+    target_include_directories(oot3d_ffx_brixelizergi PUBLIC
+        "${_ffx_include}"
+        PRIVATE "${_ffx_shared}" "${_ffx_components}")
+    target_link_libraries(oot3d_ffx_brixelizergi PUBLIC oot3d_ffx_brixelizer)
+    set_property(TARGET oot3d_ffx_brixelizergi PROPERTY CXX_STANDARD 17)
+    list(APPEND _ffx_effect_targets oot3d_ffx_brixelizer oot3d_ffx_brixelizergi)
+    # GPU probe (no game data): both contexts on the local Vulkan device.
+    add_executable(oot3d_brixelizer_gi_context_probe EXCLUDE_FROM_ALL
+        "${CMAKE_CURRENT_LIST_DIR}/../../tests/oot3d_brixelizer_gi_context_probe.cpp")
+    target_link_libraries(oot3d_brixelizer_gi_context_probe PRIVATE
+        oot3d_ffx_brixelizergi oot3d_ffx_sssr_backend_vk Vulkan::Vulkan)
+    set_property(TARGET oot3d_brixelizer_gi_context_probe PROPERTY CXX_STANDARD 17)
+endif()
+
 if(MSVC)
-    foreach(_target
-            oot3d_ffx_denoiser
-            oot3d_ffx_sssr
-            oot3d_ffx_sssr_backend_vk)
+    foreach(_target IN LISTS _ffx_effect_targets)
         target_compile_options(${_target} PRIVATE
             /wd4100
             /wd4244
@@ -247,10 +368,7 @@ if(NOT WIN32)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    foreach(_target
-            oot3d_ffx_denoiser
-            oot3d_ffx_sssr
-            oot3d_ffx_sssr_backend_vk)
+    foreach(_target IN LISTS _ffx_effect_targets)
         target_compile_options(${_target} PRIVATE
             -Wno-c++11-narrowing)
     endforeach()
