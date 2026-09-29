@@ -1040,6 +1040,22 @@ vec3 pica_surface_shadow(int slot) {
         }
     }
 
+    // Every opaque guide-writing draw has the material attachment in its
+    // write mask (pica_nri_pipeline_state). Guides are cleared only with the
+    // native colour, so a draw that leaves location 2 unwritten keeps the
+    // value of an earlier presented sample: an interpolated sample showed the
+    // previous sample's reflectivity and reactivity on the ground Link had
+    // just left. Such draws write the neutral baseline.
+    if ((HasPicaShaderInstrumentationFeature(request.RequestedFeatures,
+                                             PicaShaderInstrumentationFeature::ReflectionMaterialGuide) ||
+         HasPicaShaderInstrumentationFeature(request.RequestedFeatures,
+                                             PicaShaderInstrumentationFeature::ReactiveMask)) &&
+        !materialAvailable && request.Draw.DepthTestEnabled && request.Draw.DepthWriteEnabled &&
+        (request.Draw.ColorWriteMask & 7U) != 0U && ensureMaterialGuide()) {
+        result.FragmentKey ^= 0x6d61746c62617365ULL;
+        apply(PicaShaderInstrumentationFeature::MaterialGuideBaseline);
+    }
+
     if (rigidMotionWillApply) {
         declarations +=
             "layout(location=3) out vec4 pica_rigid_motion_guide;\n"

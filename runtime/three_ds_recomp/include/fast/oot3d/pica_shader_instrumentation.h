@@ -32,6 +32,10 @@ enum class PicaShaderInstrumentationFeature : uint32_t {
     NativePerPixelLighting = 1U << 11U,
     PbrMaterial = 1U << 12U,
     DiffuseAlbedoGuide = 1U << 13U,
+    // Applied only (never requested): an opaque guide writer without a
+    // material of its own overwrites the material guide with the neutral
+    // baseline, so no earlier sample's value survives under it.
+    MaterialGuideBaseline = 1U << 14U,
 };
 
 constexpr PicaShaderInstrumentationFeature operator|(PicaShaderInstrumentationFeature left,

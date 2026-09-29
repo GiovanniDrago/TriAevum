@@ -926,6 +926,46 @@ TEST(Oot3dPicaShaderPipelineCache,
 }
 
 TEST(Oot3dPicaShaderPipelineCache,
+     OpaqueGuideWritersOverwriteTheMaterialGuide) {
+    // The material attachment is in every opaque guide writer's write mask;
+    // a draw without reflectivity must still overwrite it, or an earlier
+    // presented sample's values survive where it draws.
+    using namespace Fast::Oot3d;
+    PicaShaderPipelineCache cache;
+    EffectsSettings effects;
+    effects.Reflections = ReflectionMode::HiZ;
+    auto request = BaseRequest();
+    // A typed fragment whose TEV never reads the specular colour.
+    static constexpr std::string_view kFragment =
+        "#version 450\n"
+        "layout(location=0) out vec4 pica_color;\n"
+        "void main() {\n"
+        "    vec4 secondary_fragment_color = vec4(0.25);\n"
+        "    vec4 combiner_output = vec4(0.5);\n"
+        "    pica_color = combiner_output;\n"
+        "}\n";
+    request.FragmentShaderSource = kFragment;
+    request.FragmentShaderHooks = AnalyzePicaFragmentShaderHooks(kFragment);
+    cache.BeginFrame(18U);
+    const auto& opaque = cache.Resolve(request, effects);
+    EXPECT_NE(opaque.ReflectionEligibility, PicaReflectionMaterialEligibility::Eligible);
+    EXPECT_NE(opaque.FragmentShaderSource.find("layout(location=2) out vec4 pica_material_guide"),
+              std::string::npos);
+    EXPECT_NE(opaque.FragmentShaderSource.find("OOT3D material guide baseline"), std::string::npos);
+    const uint64_t opaqueKey = opaque.FragmentShaderKey;
+
+    // Nothing to overwrite without depth writes; no material consumer, no output.
+    request.Draw.DepthWriteEnabled = false;
+    EXPECT_EQ(cache.Resolve(request, effects).FragmentShaderSource.find("pica_material_guide"),
+              std::string::npos);
+    request.Draw.DepthWriteEnabled = true;
+    effects.Reflections = ReflectionMode::Off;
+    const auto& plain = cache.Resolve(request, effects);
+    EXPECT_EQ(plain.FragmentShaderSource.find("pica_material_guide"), std::string::npos);
+    EXPECT_NE(plain.FragmentShaderKey, opaqueKey);
+}
+
+TEST(Oot3dPicaShaderPipelineCache,
      ExplicitReflectionProfileDoesNotRequireTevSpecular) {
     using namespace Fast::Oot3d;
     PicaShaderPipelineCache cache;
