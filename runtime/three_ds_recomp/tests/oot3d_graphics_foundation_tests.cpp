@@ -3061,6 +3061,47 @@ TEST(Oot3dPicaNri, CanonicalVertexInputPreservesScaledValuesAndDefaults) {
     EXPECT_FLOAT_EQ(values[7], 1.0F);
 }
 
+TEST(Oot3dPicaNri, VertexInputLayoutOrdersBindingsAndRejectsDuplicates) {
+    using namespace Fast::Oot3d;
+    const std::array<PicaNriSourceVertexBinding, 2> bindings{{
+        {3U, 12U, false},
+        {1U, 4U, true},
+    }};
+    const std::array<PicaNriSourceVertexAttribute, 3> attributes{{
+        {7U, 1U, PicaNriVertexScalar::UnsignedByte, 4U, 0U},
+        {4U, 3U, PicaNriVertexScalar::Float, 1U, 8U},
+        {2U, 3U, PicaNriVertexScalar::Float, 2U, 0U},
+    }};
+    const auto layout = BuildPicaNriVertexInputLayout(bindings, attributes);
+    ASSERT_TRUE(layout.Valid()) << layout.Error;
+    // Bindings keep input order; attributes are grouped per binding and
+    // sorted by location inside it.
+    ASSERT_EQ(layout.Bindings.size(), 2U);
+    EXPECT_EQ(layout.Bindings[0].Binding, 3U);
+    EXPECT_EQ(layout.Bindings[0].ByteStride, 32U);
+    EXPECT_EQ(layout.Bindings[1].Binding, 1U);
+    EXPECT_TRUE(layout.Bindings[1].PerInstance);
+    ASSERT_EQ(layout.Attributes.size(), 3U);
+    EXPECT_EQ(layout.Attributes[0].Location, 2U);
+    EXPECT_EQ(layout.Attributes[1].Location, 4U);
+    EXPECT_EQ(layout.Attributes[1].ByteOffset, 16U);
+    EXPECT_EQ(layout.Attributes[2].Location, 7U);
+    EXPECT_EQ(layout.Attributes[2].Binding, 1U);
+
+    const std::array<PicaNriSourceVertexBinding, 2> duplicateBindings{{
+        {3U, 12U, false},
+        {3U, 8U, false},
+    }};
+    EXPECT_EQ(BuildPicaNriVertexInputLayout(duplicateBindings, attributes).Error,
+              "invalid or duplicate PICA vertex binding");
+    const std::array<PicaNriSourceVertexAttribute, 2> duplicateLocations{{
+        {4U, 3U, PicaNriVertexScalar::Float, 1U, 0U},
+        {4U, 1U, PicaNriVertexScalar::UnsignedByte, 1U, 0U},
+    }};
+    EXPECT_EQ(BuildPicaNriVertexInputLayout(bindings, duplicateLocations).Error,
+              "invalid PICA vertex attribute");
+}
+
 TEST(Oot3dPicaNri, BuildsCanonicalVertexStreamsForSubmission) {
     using namespace Fast::Oot3d;
     const std::array<uint8_t, 8> source{{

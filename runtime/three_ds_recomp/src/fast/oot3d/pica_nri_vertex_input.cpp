@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <set>
 
 namespace Fast::Oot3d {
 namespace {
@@ -54,38 +53,52 @@ void SetError(std::string* error, std::string message) {
 PicaNriVertexInputLayout BuildPicaNriVertexInputLayout(
     std::span<const PicaNriSourceVertexBinding> bindings,
     std::span<const PicaNriSourceVertexAttribute> attributes) {
+    // Runs for every draw. PICA has at most 12 bindings and 16 attributes, so
+    // duplicate checks scan the already-validated prefix instead of building
+    // node-based sets, and one scratch vector serves every binding.
     PicaNriVertexInputLayout result;
-    std::set<uint32_t> bindingIds;
-    for (const auto& binding : bindings) {
+    for (size_t index = 0; index < bindings.size(); ++index) {
+        const auto& binding = bindings[index];
+        const auto previous = bindings.first(index);
         if (binding.ByteStride == 0U ||
-            !bindingIds.insert(binding.Binding).second) {
+            std::any_of(previous.begin(), previous.end(),
+                        [&](const auto& other) {
+                            return other.Binding == binding.Binding;
+                        })) {
             result.Error = "invalid or duplicate PICA vertex binding";
             return result;
         }
     }
 
-    std::set<uint32_t> locations;
     result.Attributes.reserve(attributes.size());
-    for (const auto& attribute : attributes) {
+    for (size_t index = 0; index < attributes.size(); ++index) {
+        const auto& attribute = attributes[index];
         const auto binding = std::find_if(
             bindings.begin(), bindings.end(),
             [&](const auto& candidate) {
                 return candidate.Binding == attribute.Binding;
             });
         const uint32_t scalarSize = ScalarSize(attribute.Scalar);
+        const auto previous = attributes.first(index);
         if (binding == bindings.end() || attribute.ComponentCount == 0U ||
             attribute.ComponentCount > 4U || scalarSize == 0U ||
             attribute.ByteOffset +
                     scalarSize * attribute.ComponentCount >
                 binding->ByteStride ||
-            !locations.insert(attribute.Location).second) {
+            std::any_of(previous.begin(), previous.end(),
+                        [&](const auto& other) {
+                            return other.Location == attribute.Location;
+                        })) {
             result.Error = "invalid PICA vertex attribute";
             return result;
         }
     }
 
+    result.Bindings.reserve(bindings.size());
+    std::vector<PicaNriSourceVertexAttribute> local;
+    local.reserve(attributes.size());
     for (const auto& binding : bindings) {
-        std::vector<PicaNriSourceVertexAttribute> local;
+        local.clear();
         for (const auto& attribute : attributes)
             if (attribute.Binding == binding.Binding)
                 local.push_back(attribute);

@@ -1709,6 +1709,9 @@ std::optional<Oot3dPicaVisualFrame> Oot3dPicaVisualFrameAccumulator::Finish(
     mPendingDraws.clear();
     mPendingMemoryFills.clear();
     mPendingDisplayTransfers.clear();
+    // Draw plans are several kilobytes each. Starting the next frame at this
+    // frame's size avoids regrowing the vector and moving every plan again.
+    mPendingDraws.reserve(frame.Draws.size());
     return frame;
 }
 
