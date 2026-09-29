@@ -272,6 +272,7 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
     globalIllumination.Additive = clampOr(globalIllumination.Additive, 0.0F, 1.0F, 0.0F);
     globalIllumination.BounceStrength = clampOr(globalIllumination.BounceStrength, 0.0F, 4.0F, 1.0F);
     globalIllumination.OcclusionStrength = clampOr(globalIllumination.OcclusionStrength, 0.0F, 4.0F, 1.0F);
+    globalIllumination.SkyLight = clampOr(globalIllumination.SkyLight, 0.0F, 4.0F, 1.0F);
     if (globalIllumination.Resolution > GlobalIlluminationResolution::Quarter)
         globalIllumination.Resolution = GlobalIlluminationResolution::Half;
     if (globalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi &&

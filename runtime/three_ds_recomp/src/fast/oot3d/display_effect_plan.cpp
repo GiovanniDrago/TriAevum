@@ -481,10 +481,13 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     if (globalIllumination) {
         compositeResources.push_back(Read(EffectResource::DiffuseIllumination));
         compositeResources.push_back(Read(EffectResource::DiffuseAlbedoGuide));
+        // The GI reference compares surfaces of similar orientation.
+        compositeResources.push_back(Read(EffectResource::NormalGuide));
     }
     if (outline) {
         compositeResources.push_back(Read(EffectResource::NativeDepth));
-        compositeResources.push_back(Read(EffectResource::NormalGuide));
+        if (!globalIllumination)
+            compositeResources.push_back(Read(EffectResource::NormalGuide));
         compositeResources.push_back(Read(EffectResource::OutlineGeometryGuide));
         compositeResources.push_back(Read(EffectResource::RigidMotionGuide));
         compositeResources.push_back(Read(EffectResource::FogGuide));

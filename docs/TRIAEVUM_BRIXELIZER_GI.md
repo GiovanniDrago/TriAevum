@@ -459,6 +459,32 @@ without a schema change (absent fields keep defaults); actual-widget smoke
 of the scene pixels at the rock (mean luma 78.2 off, 78.7 on); core
 validation clean.
 
+## Sky light and ratio occlusion (2026-09-30)
+
+User report: GI did not reach corners or Link's legs. The irradiance debug
+view (`OOT3D_GRAPHICS_GI_DEBUG=1`) on the reference was exactly zero on the
+ground and grass and ~0.005 on Link: the GI environment was the native
+fragment ambient (~0.0008 linear in the forest, because OoT bakes fill light
+into vertex colours), so every surface that sees the sky received nothing
+and corners had no sky light to lose.
+
+- **Sky light.** The GI environment is now the native sky colour of the
+  reflection profile (fog and ambient), linearised, times
+  `GlobalIllumination.SkyLight` (0-4, default 1, F1 "GI sky light"). Open
+  ground now receives ~0.37, Link ~0.24.
+- **Occlusion is a ratio.** The absolute `albedo x (E - reference)` removed
+  more than the native light of dark surfaces (Link went black). Occlusion now
+  scales the native colour by `(luma(E) / luma(reference)) ^ (occlusion x
+  intensity)`, never below black, like AO; bounce stays additive:
+  `albedo x max(E - reference, 0) x bounce x intensity`.
+- **Orientation-aware reference.** The local mean weights each tap by
+  `dot(n, n_tap)^4`, so vertical surfaces (walls, characters) are compared
+  with similar surfaces rather than the open ground. The composite reads the
+  normal guide whenever GI is on. Additive 1 uses the open sky as reference.
+- Validated on the reference: GI debug views, core validation clean, F1 smoke.
+  Settings tuned for the previous model (e.g. intensity 4) are much stronger
+  now; defaults are the starting point.
+
 ## Screen-space effects under interpolation (GTAO, SSSR, TAA, GI)
 
 Measured in the Sheik copy cutscene (Interpolated2x, camera pan, per presented

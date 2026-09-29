@@ -79,12 +79,12 @@ void main(){
         color.rgb*=oot3d_scene_ambient_occlusion_visibility(
             ao_value,scene_coverage);
     }
-    // Diffuse GI replaces the native ambient light: the irradiance traced
-    // with the ambient as its environment equals it on open surfaces, is
-    // lower where the surface is occluded and higher near lit surfaces.
-    // albedo * (irradiance - ambient) in linear light, where the albedo guide
-    // is valid (coverage: zero on clear, HUD and replacing surfaces, the
-    // transmission under overlays), attenuated by AO.
+    // Diffuse GI over OoT's baked lighting, where the albedo guide is valid
+    // (coverage: zero on clear, HUD and replacing surfaces, the transmission
+    // under overlays), attenuated by AO. The irradiance is traced with the
+    // native sky as environment and compared with a reference: occlusion
+    // scales the native colour by the irradiance ratio (never below black,
+    // like AO), bounce adds albedo times the excess light.
     if(state.global_illumination!=0u) {
         vec4 albedo=texture(sampler2D(diffuse_albedo_guide,composite_sampler),uv);
         vec3 irradiance=texture(sampler2D(diffuse_illumination,composite_sampler),uv).rgb;
@@ -92,9 +92,11 @@ void main(){
         float visibility=state.ambient_occlusion!=0u
             ? clamp(texture(sampler2D(ao_visibility,composite_sampler),uv).r,0.0,1.0) : 1.0;
         // The native lighting is baked (vertex colours, textures) and already
-        // holds the scene's average indirect light: GI contributes its local
-        // variation only, irradiance minus its wide neighbourhood mean
-        // (occlusion darkens, nearby lit surfaces add their colour).
+        // holds the scene's average indirect light: the local reference is the
+        // mean irradiance of neighbouring surfaces with a similar orientation
+        // (a wall or a character is not compared with the open ground).
+        vec3 center_normal=texture(sampler2D(normal_guide,composite_sampler),uv).xyz*2.0-1.0;
+        center_normal*=inversesqrt(max(dot(center_normal,center_normal),1.0e-6));
         vec3 neighbourhood=vec3(0.0);
         float taps=0.0;
         // Three rings out to the reference radius (fraction of the height).
@@ -104,27 +106,37 @@ void main(){
             for(int k=0;k<8;++k){
                 float angle=6.2831853*(float(k)+0.37*float(ring))/8.0;
                 vec2 tap=clamp(uv+radius*vec2(cos(angle),sin(angle)),vec2(0.0),vec2(1.0));
-                float valid=texture(sampler2D(diffuse_albedo_guide,composite_sampler),tap).a;
+                vec3 tap_normal=texture(sampler2D(normal_guide,composite_sampler),tap).xyz*2.0-1.0;
+                tap_normal*=inversesqrt(max(dot(tap_normal,tap_normal),1.0e-6));
+                float similar=max(dot(center_normal,tap_normal),0.0);
+                similar*=similar;
+                float valid=similar*similar*
+                    texture(sampler2D(diffuse_albedo_guide,composite_sampler),tap).a;
                 neighbourhood+=valid*max(texture(sampler2D(diffuse_illumination,composite_sampler),tap).rgb,vec3(0.0));
                 taps+=valid;
             }
         }
-        vec3 reference=taps>0.5 ? neighbourhood/taps : max(irradiance,vec3(0.0));
-        vec3 ambient=vec3(state.ambient_r,state.ambient_g,state.ambient_b);
-        reference=mix(max(reference,ambient),ambient,clamp(state.additive,0.0,1.0));
-        vec3 difference=max(irradiance,vec3(0.0))-reference;
-        difference=max(difference,vec3(0.0))*state.bounce_strength+
-                   min(difference,vec3(0.0))*state.occlusion_strength;
-        vec3 bounce=coverage*visibility*state.diffuse_intensity*
-            oot3d_gi_srgb_to_linear(albedo.rgb)*difference;
-        color.rgb=state.input_linear!=0u ? max(color.rgb+bounce,vec3(0.0))
-            : oot3d_gi_linear_to_srgb(max(oot3d_gi_srgb_to_linear(color.rgb)+bounce,vec3(0.0)));
+        vec3 received=max(irradiance,vec3(0.0));
+        vec3 reference=taps>0.5 ? neighbourhood/taps : received;
+        // Additive 1: the reference is the open sky itself.
+        vec3 sky=vec3(state.ambient_r,state.ambient_g,state.ambient_b);
+        reference=mix(reference,sky,clamp(state.additive,0.0,1.0));
+        const vec3 luma=vec3(0.2126,0.7152,0.0722);
+        float ratio=clamp(dot(received,luma)/max(dot(reference,luma),1.0e-4),0.0,1.0);
+        float occlusion=1.0-pow(ratio,max(state.occlusion_strength*state.diffuse_intensity,0.0));
+        occlusion*=coverage;
+        vec3 bounce=coverage*visibility*state.diffuse_intensity*state.bounce_strength*
+            oot3d_gi_srgb_to_linear(albedo.rgb)*max(received-reference,vec3(0.0));
+        vec3 native_linear=state.input_linear!=0u ? color.rgb : oot3d_gi_srgb_to_linear(color.rgb);
+        vec3 removed=native_linear*occlusion;
+        vec3 composed=native_linear-removed+bounce;
+        color.rgb=state.input_linear!=0u ? composed : oot3d_gi_linear_to_srgb(composed);
         if(state.global_illumination_debug!=0u) {
             vec3 view=state.global_illumination_debug==1u ? irradiance
                 : state.global_illumination_debug==2u ? albedo.rgb
                 : state.global_illumination_debug==3u ? vec3(coverage)
-                : state.global_illumination_debug==4u ? max(bounce,vec3(0.0))
-                : max(-bounce,vec3(0.0));
+                : state.global_illumination_debug==4u ? bounce
+                : removed;
             color=vec4(state.input_linear!=0u || state.global_illumination_debug==2u
                 ? view : oot3d_gi_linear_to_srgb(view),1.0);
         }

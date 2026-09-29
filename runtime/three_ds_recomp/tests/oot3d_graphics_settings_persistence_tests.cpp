@@ -836,16 +836,21 @@ TEST(Oot3dGraphicsSettingsPersistence, GlobalIlluminationSpecular) {
     settings.Effects.GlobalIllumination.Additive = 0.3F;
     settings.Effects.GlobalIllumination.BounceStrength = 2.0F;
     settings.Effects.GlobalIllumination.OcclusionStrength = 0.5F;
+    settings.Effects.GlobalIllumination.SkyLight = 0.6F;
     const auto composed = DeserializeGraphicsSettings(SerializeGraphicsSettings(settings));
     EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.ReferenceRadius, 0.4F);
     EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.Additive, 0.3F);
     EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.BounceStrength, 2.0F);
     EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.OcclusionStrength, 0.5F);
+    EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.SkyLight, 0.6F);
+    EXPECT_FLOAT_EQ(legacy.Value.Effects.GlobalIllumination.SkyLight, 1.0F);
     settings.Effects.GlobalIllumination.ReferenceRadius = 3.0F;
     settings.Effects.GlobalIllumination.Additive = -1.0F;
+    settings.Effects.GlobalIllumination.SkyLight = 9.0F;
     const auto limited = GraphicsSettingsService::Validate(settings, {});
     EXPECT_FLOAT_EQ(limited.Value.Effects.GlobalIllumination.ReferenceRadius, 0.5F);
     EXPECT_FLOAT_EQ(limited.Value.Effects.GlobalIllumination.Additive, 0.0F);
+    EXPECT_FLOAT_EQ(limited.Value.Effects.GlobalIllumination.SkyLight, 4.0F);
     for (const auto& issue : legacy.Issues)
         EXPECT_EQ(issue.Field.find("GlobalIllumination"), std::string::npos) << issue.Field;
 }

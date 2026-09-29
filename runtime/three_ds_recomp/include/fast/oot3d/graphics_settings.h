@@ -59,6 +59,10 @@ struct GlobalIlluminationSettings {
     // Separate gains for light added (bounce) and removed (occlusion).
     float BounceStrength = 1.0F;
     float OcclusionStrength = 1.0F;
+    // Sky light: the GI environment is the native sky colour (from the fog
+    // and ambient profile) times this. Open surfaces receive it, corners and
+    // covered surfaces lose it; 0 leaves only light bounced by the scene.
+    float SkyLight = 1.0F;
     // Specular GI is a reflection source: composed through the material
     // guide like screen-space reflections, which own the term when enabled.
     bool Specular = false;

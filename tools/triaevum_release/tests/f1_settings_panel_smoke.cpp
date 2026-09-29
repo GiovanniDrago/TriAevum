@@ -911,10 +911,11 @@ int main() try {
     EditScalar("GI bounce strength", "1.5");
     EditScalar("GI occlusion strength", "0.5");
     EditScalar("GI additive", "0.2");
+    EditScalar("GI sky light", "0.6");
     {
         const auto gi = runtime.Snapshot().Effects.GlobalIllumination;
         Check(gi.ReferenceRadius == 0.4F && gi.BounceStrength == 1.5F && gi.OcclusionStrength == 0.5F &&
-                  gi.Additive == 0.2F,
+                  gi.Additive == 0.2F && gi.SkyLight == 0.6F,
               "GI composition controls did not apply");
     }
     Click("GI specular reflections");

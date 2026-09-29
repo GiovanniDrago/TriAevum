@@ -7701,13 +7701,17 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         // perspective depth exist; otherwise the declared output is zero
         // irradiance, so the composite adds nothing and the graph stays whole.
         bool giForDisplay = false;
-        // Linear native ambient the GI replaces (its environment and the
-        // composite's reference).
+        // Linear sky light: the GI environment (what open surfaces receive
+        // and occluded ones lose) and the composite's open-sky reference.
+        // The native fragment ambient is not usable here: OoT bakes its fill
+        // light into vertex colours, leaving that ambient near zero, so the
+        // traced irradiance of every upward surface was zero.
         std::array<float, 3> giAmbient{};
         if (wantsGlobalIllumination && effectGuideTarget != nullptr) {
-            const auto ambient = effectGuideTarget->ReflectionEnvironment.Resolve(mFrameCounter).NativeAmbient;
+            const auto sky = effectGuideTarget->ReflectionEnvironment.Resolve(mFrameCounter).Sky;
+            const float skyLight = presentationSettings.Effects.GlobalIllumination.SkyLight;
             for (size_t i = 0; i < giAmbient.size(); ++i)
-                giAmbient[i] = std::pow(std::clamp(ambient[i], 0.0F, 4.0F), 2.2F);
+                giAmbient[i] = skyLight * std::pow(std::clamp(sky[i], 0.0F, 1.0F), 2.2F);
             mBrixelizerGiPass.SetEnvironmentRadiance(giAmbient);
         }
         if (wantsGlobalIllumination && effectGuideTarget != nullptr &&

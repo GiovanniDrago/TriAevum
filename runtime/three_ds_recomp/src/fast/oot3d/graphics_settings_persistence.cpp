@@ -1245,6 +1245,7 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                   {"Additive", effects.GlobalIllumination.Additive},
                   {"BounceStrength", effects.GlobalIllumination.BounceStrength},
                   {"OcclusionStrength", effects.GlobalIllumination.OcclusionStrength},
+                  {"SkyLight", effects.GlobalIllumination.SkyLight},
               }},
              {"AO",
               {
@@ -1592,7 +1593,8 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
             for (const auto& [name, field] :
                  {std::pair{"ReferenceRadius", &settings.ReferenceRadius}, std::pair{"Additive", &settings.Additive},
                   std::pair{"BounceStrength", &settings.BounceStrength},
-                  std::pair{"OcclusionStrength", &settings.OcclusionStrength}}) {
+                  std::pair{"OcclusionStrength", &settings.OcclusionStrength},
+                  std::pair{"SkyLight", &settings.SkyLight}}) {
                 if (FindMember(*gi, name) != nullptr)
                     ReadScalar(*gi, name, *field,
                                std::string("Graphics.Effects.GlobalIllumination.") + name, result);

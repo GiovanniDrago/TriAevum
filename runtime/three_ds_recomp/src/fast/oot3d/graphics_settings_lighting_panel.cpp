@@ -45,10 +45,11 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
                                       0.0F, 4.0F, "%.2f");
         changed |= ImGui::SliderFloat("GI reference radius", &globalIllumination.ReferenceRadius, 0.05F, 0.5F,
                                       "%.2f");
+        changed |= ImGui::SliderFloat("GI sky light", &globalIllumination.SkyLight, 0.0F, 4.0F, "%.2f");
         changed |= ImGui::SliderFloat("GI additive", &globalIllumination.Additive, 0.0F, 1.0F, "%.2f");
-        ImGui::TextWrapped("OoT lighting is baked: GI adds its difference to the mean irradiance within the "
-                           "reference radius. Larger radius spreads bounce and occlusion over more of the image; "
-                           "additive 1 adds all traced light.");
+        ImGui::TextWrapped("OoT lighting is baked: GI adds its difference to a reference, the mean irradiance "
+                           "within the reference radius (additive 0) or the open-sky light (additive 1). Sky light "
+                           "is what corners and covered surfaces lose; larger radius spreads the effect.");
         changed |= ImGui::Checkbox("GI specular reflections", &globalIllumination.Specular);
         if (globalIllumination.Specular) {
             changed |= ImGui::SliderFloat("GI specular intensity", &globalIllumination.SpecularIntensity,
