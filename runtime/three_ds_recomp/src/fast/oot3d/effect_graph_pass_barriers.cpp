@@ -16,6 +16,7 @@ namespace {
         case EffectResource::AmbientGuide:
         case EffectResource::FogGuide:
         case EffectResource::OutlineGeometryGuide:
+        case EffectResource::DiffuseAlbedoGuide:
             return ResourceAccess::ColorAttachment;
         case EffectResource::NativeDepth:
         case EffectResource::NativeShadow2D:

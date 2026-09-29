@@ -16,7 +16,8 @@ namespace {
 [[nodiscard]] constexpr bool IsPicaGuideOutput(EffectResource resource) noexcept {
     return resource == EffectResource::NormalGuide || resource == EffectResource::MaterialGuide ||
            resource == EffectResource::RigidMotionGuide || resource == EffectResource::AmbientGuide ||
-           resource == EffectResource::FogGuide || resource == EffectResource::OutlineGeometryGuide;
+           resource == EffectResource::FogGuide || resource == EffectResource::OutlineGeometryGuide ||
+           resource == EffectResource::DiffuseAlbedoGuide;
 }
 
 [[nodiscard]] constexpr bool IsExternalResource(EffectResource resource) noexcept {
@@ -86,6 +87,8 @@ BuildEffectResourceDeclaration(EffectResource resource) noexcept {
             return PicaAuxiliaryOutput::FogGuide;
         case EffectResource::OutlineGeometryGuide:
             return PicaAuxiliaryOutput::OutlineGeometryGuide;
+        case EffectResource::DiffuseAlbedoGuide:
+            return PicaAuxiliaryOutput::DiffuseAlbedoGuide;
         default:
             return PicaAuxiliaryOutput::None;
     }
@@ -431,10 +434,11 @@ bool PicaExtensionPassEnabled(const CompiledEffectGraph& graph,
 CompiledEffectGraph BuildPicaExtensionGraph(const PicaAttachmentFeatureRequests& requests) {
     EffectGraph graph;
     std::vector<EffectResourceUse> guideOutputs;
-    if (requests.AmbientOcclusion || requests.ToonOutline || requests.Reflections) {
+    if (requests.AmbientOcclusion || requests.ToonOutline || requests.Reflections ||
+        requests.GlobalIllumination) {
         guideOutputs.push_back(Write(EffectResource::NormalGuide));
     }
-    if (requests.Reflections || requests.TemporalReconstruction) {
+    if (requests.Reflections || requests.TemporalReconstruction || requests.GlobalIllumination) {
         guideOutputs.push_back(Write(EffectResource::MaterialGuide));
     }
     if (requests.TemporalReconstruction || requests.ToonOutline) {
@@ -446,6 +450,9 @@ CompiledEffectGraph BuildPicaExtensionGraph(const PicaAttachmentFeatureRequests&
     if (requests.ToonOutline) {
         guideOutputs.push_back(Write(EffectResource::FogGuide));
         guideOutputs.push_back(Write(EffectResource::OutlineGeometryGuide));
+    }
+    if (requests.GlobalIllumination) {
+        guideOutputs.push_back(Write(EffectResource::DiffuseAlbedoGuide));
     }
     graph.Add({ .Name = std::string(PicaExtensionPassName(PicaExtensionPass::Guides)),
                 .Enabled = !guideOutputs.empty(),

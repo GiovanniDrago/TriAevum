@@ -228,7 +228,12 @@ TEST(Oot3dPicaAttachmentContract,
         PicaAuxiliaryOutput::RigidMotionGuide));
     EXPECT_FALSE(requirements.Requires(PicaAuxiliaryOutput::AmbientGuide));
     EXPECT_EQ(requirements.ColorAttachmentCount(),
-              Fast::Oot3d::kPicaColorAttachmentCount);
+              Fast::Oot3d::kPicaBaseInstrumentedColorAttachmentCount);
+    // The GI albedo guide extends the layout only while requested.
+    const Fast::Oot3d::PicaAttachmentRequirements withAlbedo{
+        PicaAuxiliaryOutput::NormalGuide | PicaAuxiliaryOutput::DiffuseAlbedoGuide};
+    EXPECT_EQ(withAlbedo.ColorAttachmentCount(), Fast::Oot3d::kPicaColorAttachmentCount);
+    EXPECT_EQ(withAlbedo.BaseGuides(), requirements);
 }
 
 TEST(Oot3dPicaAttachmentContract,

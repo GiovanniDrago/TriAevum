@@ -10,6 +10,8 @@ using Renderer3ds::PicaAttachmentRequirements;
 using Renderer3ds::PicaAuxiliaryOutput;
 using Renderer3ds::PicaColorAttachment;
 using Renderer3ds::kAllPicaAuxiliaryOutputs;
+using Renderer3ds::kExtendedPicaAuxiliaryOutputs;
+using Renderer3ds::kPicaBaseInstrumentedColorAttachmentCount;
 using Renderer3ds::kPicaColorAttachmentCount;
 using Renderer3ds::operator|;
 using Renderer3ds::operator|=;

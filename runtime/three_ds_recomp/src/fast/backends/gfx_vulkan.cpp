@@ -983,12 +983,6 @@ void GfxRenderingAPIVulkan::Init() {
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::NativeSurfaceLighting, true);
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::FidelityFxCacao,
                                   mCacaoPass.Available(), mCacaoPass.UnavailableReason());
-    {
-        std::string reason;
-        const bool supported = Oot3d::BrixelizerScene::Supported(mPhysicalDevice, reason);
-        settingsRuntime.SetCapability(Oot3d::GraphicsCapability::BrixelizerGlobalIllumination,
-                                      supported, reason);
-    }
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::MotionVectors,
                                   mMotionVectorPass.Available(),
                                   mMotionVectorPass.UnavailableReason());
@@ -1113,6 +1107,18 @@ void GfxRenderingAPIVulkan::Init() {
             picaDynamicRenderingEnabled)) {
         SPDLOG_INFO("OOT3D Vulkan PICA dynamic rendering unavailable: {}",
                     mPicaDynamicRenderingScope.UnavailableReason());
+    }
+    {
+        // The GI albedo guide is an eighth colour attachment, bound only
+        // through dynamic rendering.
+        std::string reason;
+        bool supported = Oot3d::BrixelizerScene::Supported(mPhysicalDevice, reason);
+        if (supported && !mPicaDynamicRenderingScope.Available()) {
+            supported = false;
+            reason = "global illumination requires PICA dynamic rendering";
+        }
+        Oot3d::GraphicsSettingsRuntime::Instance().SetCapability(
+            Oot3d::GraphicsCapability::BrixelizerGlobalIllumination, supported, reason);
     }
     if (!mInteractiveGrassPass.Initialize(mPhysicalDevice, mDevice,
                                           mNriInterop.Shaders(),

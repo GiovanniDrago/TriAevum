@@ -368,6 +368,15 @@ TEST(Oot3dEffectGraph, DerivesFrameAttachmentsFromExtensionContracts) {
     EXPECT_EQ(reflections.Attachments.AuxiliaryOutputs,
               PicaAuxiliaryOutput::NormalGuide | PicaAuxiliaryOutput::MaterialGuide);
 
+    const auto gi = BuildPicaExtensionGraph({ .GlobalIllumination = true });
+    ASSERT_TRUE(gi.Valid()) << gi.Error;
+    EXPECT_EQ(gi.Attachments.AuxiliaryOutputs,
+              PicaAuxiliaryOutput::NormalGuide | PicaAuxiliaryOutput::MaterialGuide |
+                  PicaAuxiliaryOutput::DiffuseAlbedoGuide);
+    EXPECT_EQ(gi.Attachments.ColorAttachmentCount(), kPicaColorAttachmentCount);
+    EXPECT_TRUE(PicaExtensionPassEnabled(gi, PicaExtensionPass::SceneDistanceField));
+    EXPECT_EQ(extended.Attachments.ColorAttachmentCount(), kPicaBaseInstrumentedColorAttachmentCount);
+
     const auto temporal = BuildPicaExtensionGraph({ .TemporalReconstruction = true });
     ASSERT_TRUE(temporal.Valid()) << temporal.Error;
     EXPECT_EQ(temporal.Attachments.AuxiliaryOutputs,

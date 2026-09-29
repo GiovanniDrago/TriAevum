@@ -793,7 +793,8 @@ void GfxRenderingAPIVulkan::CreateNativePicaRenderPass() {
         CheckNativeVk(createRenderPass2(mDevice, &info, nullptr, &renderPass), "vkCreateRenderPass2(native PICA)");
     };
     createRenderPass(1U, mNativePicaCanonicalRenderPass);
-    createRenderPass(static_cast<uint32_t>(Oot3d::kPicaColorAttachmentCount), mNativePicaRenderPass);
+    // The legacy render pass has no albedo guide; GI requires dynamic rendering.
+    createRenderPass(static_cast<uint32_t>(Oot3d::kPicaBaseInstrumentedColorAttachmentCount), mNativePicaRenderPass);
 }
 
 void GfxRenderingAPIVulkan::ApplyNativePicaSampleCount(VkSampleCountFlagBits sampleCount) {
@@ -915,7 +916,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaRenderTarget(
     target.Key = key;
     target.Width = targetExtent.Width;
     target.Height = targetExtent.Height;
-    target.Attachments = mFramePicaAttachmentRequirements;
+    target.Attachments = mFramePicaAttachmentRequirements.BaseGuides();
     const bool instrumented = !target.Attachments.NativeColorOnly();
     VkFormatProperties shadowFormatProperties{};
     vkGetPhysicalDeviceFormatProperties(mPhysicalDevice, VK_FORMAT_R32_UINT,
@@ -1603,7 +1604,8 @@ void GfxRenderingAPIVulkan::DestroyNativePicaRenderTarget(
            target.RigidMotionGuideImage, target.AmbientGuideImage, target.FogGuideImage,
            target.OutlineGeometryGuideImage, target.ShadowImage, target.MsaaColorImage, target.MsaaNormalGuideImage,
            target.MsaaMaterialGuideImage, target.MsaaRigidMotionGuideImage, target.MsaaAmbientGuideImage,
-           target.MsaaFogGuideImage, target.MsaaOutlineGeometryGuideImage, target.MsaaDepthImage }) {
+           target.MsaaFogGuideImage, target.MsaaOutlineGeometryGuideImage, target.MsaaDepthImage,
+           target.DiffuseAlbedoGuideImage, target.MsaaDiffuseAlbedoGuideImage }) {
         if (image == VK_NULL_HANDLE) continue;
         mNriPicaDisplayCopyPass.ForgetTexture(image);
         mResourceStates.Forget(reinterpret_cast<uintptr_t>(image));
@@ -1631,6 +1633,8 @@ void GfxRenderingAPIVulkan::DestroyNativePicaRenderTarget(
                             target.Key.ColorPhysicalAddress, Oot3d::SceneSurfaceKind::FogGuide });
     mSceneSurfaces.Retire({ target.Key.RenderTargetNamespace, target.Key.ColorPhysicalAddress,
                             Oot3d::SceneSurfaceKind::OutlineGeometryGuide });
+    mSceneSurfaces.Retire({ target.Key.RenderTargetNamespace, target.Key.ColorPhysicalAddress,
+                            Oot3d::SceneSurfaceKind::DiffuseAlbedoGuide });
     if (target.Framebuffer != VK_NULL_HANDLE) {
         vkDestroyFramebuffer(mDevice, target.Framebuffer, nullptr);
     }
@@ -1666,8 +1670,21 @@ void GfxRenderingAPIVulkan::DestroyNativePicaRenderTarget(
     }
     for (VkImageView view : { target.MsaaColorView, target.MsaaNormalGuideView, target.MsaaMaterialGuideView,
                               target.MsaaRigidMotionGuideView, target.MsaaAmbientGuideView, target.MsaaFogGuideView,
-                              target.MsaaOutlineGeometryGuideView, target.MsaaDepthView }) {
+                              target.MsaaOutlineGeometryGuideView, target.MsaaDepthView,
+                              target.DiffuseAlbedoGuideView, target.MsaaDiffuseAlbedoGuideView }) {
         if (view != VK_NULL_HANDLE) vkDestroyImageView(mDevice, view, nullptr);
+    }
+    // The albedo guide is grown outside the target owner's image set.
+    for (const auto& [image, memory] :
+         { std::pair{ target.DiffuseAlbedoGuideImage, target.DiffuseAlbedoGuideMemory },
+           std::pair{ target.MsaaDiffuseAlbedoGuideImage, target.MsaaDiffuseAlbedoGuideMemory } }) {
+        if (image == VK_NULL_HANDLE) continue;
+        if (target.NriOwned) {
+            mNriInterop.DestroyOwnedTexture(image);
+        } else {
+            vkDestroyImage(mDevice, image, nullptr);
+            if (memory != VK_NULL_HANDLE) vkFreeMemory(mDevice, memory, nullptr);
+        }
     }
     if (target.NriOwned) {
         mNriPicaRenderTargetOwner.Destroy({
@@ -2289,14 +2306,16 @@ void GfxRenderingAPIVulkan::BeginNativePicaRenderPass(
                                                                              target.MsaaRigidMotionGuideView,
                                                                              target.MsaaAmbientGuideView,
                                                                              target.MsaaFogGuideView,
-                                                                             target.MsaaOutlineGeometryGuideView }
+                                                                             target.MsaaOutlineGeometryGuideView,
+                                                                             target.MsaaDiffuseAlbedoGuideView }
                 : std::array<VkImageView, Oot3d::kPicaColorAttachmentCount>{ target.ColorView,
                                                                              target.NormalGuideView,
                                                                              target.MaterialGuideView,
                                                                              target.RigidMotionGuideView,
                                                                              target.AmbientGuideView,
                                                                              target.FogGuideView,
-                                                                             target.OutlineGeometryGuideView };
+                                                                             target.OutlineGeometryGuideView,
+                                                                             target.DiffuseAlbedoGuideView };
         renderingTarget.Resolves =
             multisampled ? std::array<VkImageView, Oot3d::kPicaColorAttachmentCount>{ target.ColorView,
                                                                                       target.NormalGuideView,
@@ -2304,7 +2323,8 @@ void GfxRenderingAPIVulkan::BeginNativePicaRenderPass(
                                                                                       target.RigidMotionGuideView,
                                                                                       target.AmbientGuideView,
                                                                                       target.FogGuideView,
-                                                                                      target.OutlineGeometryGuideView }
+                                                                                      target.OutlineGeometryGuideView,
+                                                                                      target.DiffuseAlbedoGuideView }
                          : std::array<VkImageView, Oot3d::kPicaColorAttachmentCount>{};
         renderingTarget.Depth =
             multisampled ? target.MsaaDepthView : target.DepthView;
@@ -2317,14 +2337,16 @@ void GfxRenderingAPIVulkan::BeginNativePicaRenderPass(
                                                                                   target.MsaaRigidMotionGuideImage,
                                                                                   target.MsaaAmbientGuideImage,
                                                                                   target.MsaaFogGuideImage,
-                                                                                  target.MsaaOutlineGeometryGuideImage }
+                                                                                  target.MsaaOutlineGeometryGuideImage,
+                                                                                  target.MsaaDiffuseAlbedoGuideImage }
                          : std::array<VkImage, Oot3d::kPicaColorAttachmentCount>{ target.ColorImage,
                                                                                   target.NormalGuideImage,
                                                                                   target.MaterialGuideImage,
                                                                                   target.RigidMotionGuideImage,
                                                                                   target.AmbientGuideImage,
                                                                                   target.FogGuideImage,
-                                                                                  target.OutlineGeometryGuideImage };
+                                                                                  target.OutlineGeometryGuideImage,
+                                                                                  target.DiffuseAlbedoGuideImage };
         renderingTarget.ResolveImages =
             multisampled ? std::array<VkImage, Oot3d::kPicaColorAttachmentCount>{ target.ColorImage,
                                                                                   target.NormalGuideImage,
@@ -2332,7 +2354,8 @@ void GfxRenderingAPIVulkan::BeginNativePicaRenderPass(
                                                                                   target.RigidMotionGuideImage,
                                                                                   target.AmbientGuideImage,
                                                                                   target.FogGuideImage,
-                                                                                  target.OutlineGeometryGuideImage }
+                                                                                  target.OutlineGeometryGuideImage,
+                                                                                  target.DiffuseAlbedoGuideImage }
                          : std::array<VkImage, Oot3d::kPicaColorAttachmentCount>{};
         renderingTarget.DepthImage =
             multisampled ? target.MsaaDepthImage : target.DepthImage;
@@ -2341,7 +2364,7 @@ void GfxRenderingAPIVulkan::BeginNativePicaRenderPass(
         renderingTarget.ColorFormats = { VK_FORMAT_R8G8B8A8_UNORM,     VK_FORMAT_R8G8B8A8_UNORM,
                                          VK_FORMAT_R8G8B8A8_UNORM,     VK_FORMAT_R16G16B16A16_SFLOAT,
                                          VK_FORMAT_R8G8B8A8_UNORM,     VK_FORMAT_R8G8B8A8_UNORM,
-                                         VK_FORMAT_R32G32B32A32_SFLOAT };
+                                         VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM };
         renderingTarget.DepthFormat = mDepthFormat;
         renderingTarget.ColorAttachmentCount =
             mFramePicaAttachmentRequirements.ColorAttachmentCount();
@@ -2533,6 +2556,13 @@ void GfxRenderingAPIVulkan::ApplyPendingNativePicaMemoryFills(NativePicaRenderTa
                 guide.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
                 guide.colorAttachment = static_cast<uint32_t>(Oot3d::PicaColorAttachment::OutlineGeometryGuide);
                 guide.clearValue.color = {{0, 0, 0, 1}};
+            }
+            if (coversColor &&
+                mFramePicaAttachmentRequirements.Requires(Oot3d::PicaAuxiliaryOutput::DiffuseAlbedoGuide)) {
+                auto& guide = attachments[attachmentCount++];
+                guide.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                guide.colorAttachment = static_cast<uint32_t>(Oot3d::PicaColorAttachment::DiffuseAlbedoGuide);
+                guide.clearValue.color = {};
             }
             if (coversDepth) {
                 auto& attachment = attachments[attachmentCount++];
@@ -6078,7 +6108,7 @@ bool GfxRenderingAPIVulkan::TryRenderInteractiveGrass(
             mCommandBuffers[mCurrentFrame],
             target.Width, target.Height,
             mInteractiveGrassProviderPlan,
-            target.Attachments);
+            mFramePicaAttachmentRequirements);
     }
     mGpuProfiler.EndScope(
         mCurrentFrame, Oot3d::GpuProfileScope::Grass,

@@ -425,7 +425,9 @@ struct InteractiveGrassPass::Impl {
     VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
     std::array<VkDescriptorSet, 2> DescriptorSets{};
     VkPipelineLayout PipelineLayout = VK_NULL_HANDLE;
-    std::array<VkPipeline, 2> Pipelines{};
+    // Canonical, instrumented, instrumented with the GI albedo guide
+    // (dynamic rendering only; grass leaves the albedo below it).
+    std::array<VkPipeline, 3> Pipelines{};
     struct BufferSlot {
         VkBuffer Buffer = VK_NULL_HANDLE;
         VkDeviceMemory Memory = VK_NULL_HANDLE;
@@ -726,6 +728,7 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                 attachments{attachment, guideAttachment,
                             guideAttachment, motionAttachment,
                             guideAttachment};
+            static_assert(kPicaColorAttachmentCount == kPicaBaseInstrumentedColorAttachmentCount + 1U);
             VkPipelineColorBlendStateCreateInfo blend{
                 VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
             blend.pAttachments = attachments.data();
@@ -751,7 +754,7 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
             const std::array<VkFormat, kPicaColorAttachmentCount> colorFormats{
                 VK_FORMAT_R8G8B8A8_UNORM,      VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
                 VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
-                VK_FORMAT_R32G32B32A32_SFLOAT
+                VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM
             };
             VkPipelineRenderingCreateInfoKHR rendering{
                 VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR};
@@ -768,12 +771,14 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                 pipeline.pNext = &rendering;
                 pipeline.renderPass = VK_NULL_HANDLE;
             }
-            const std::array<uint32_t, 2> attachmentCounts{
-                1U, static_cast<uint32_t>(colorFormats.size())};
+            const std::array<uint32_t, 3> attachmentCounts{
+                1U, static_cast<uint32_t>(kPicaBaseInstrumentedColorAttachmentCount),
+                static_cast<uint32_t>(kPicaColorAttachmentCount)};
             const std::array<VkRenderPass, 2> renderPasses{
                 canonicalRenderPass, instrumentedRenderPass};
             for (size_t index = 0U; index < mImpl->Pipelines.size(); ++index) {
-                stages[1].module = fragments[index];
+                if (index == 2U && !dynamicRendering) break;
+                stages[1].module = fragments[std::min<size_t>(index, 1U)];
                 blend.attachmentCount = attachmentCounts[index];
                 if (dynamicRendering) {
                     rendering.colorAttachmentCount = attachmentCounts[index];
@@ -1520,7 +1525,8 @@ bool InteractiveGrassPass::DrawPrepared(
     VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
     const EffectGeometryProviderPlan& providerPlan,
     const PicaAttachmentRequirements& attachments) {
-    const size_t pipelineIndex = attachments.NativeColorOnly() ? 0U : 1U;
+    const size_t pipelineIndex = attachments.NativeColorOnly() ? 0U
+        : attachments.Requires(PicaAuxiliaryOutput::DiffuseAlbedoGuide) ? 2U : 1U;
     const VkPipeline pipeline = mImpl->Pipelines[pipelineIndex];
     if (!providerPlan.Valid() ||
         providerPlan.Stage() != EffectStage::BeforeTransparent ||

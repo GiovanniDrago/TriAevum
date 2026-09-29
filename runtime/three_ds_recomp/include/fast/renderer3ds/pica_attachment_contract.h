@@ -22,11 +22,19 @@ enum class PicaColorAttachment : uint8_t {
     // Native scene unit normal (RGB) and window depth (A), never written by
     // extension geometry. Float32 preserves depth-test precision.
     OutlineGeometryGuide,
+    // Diffuse albedo (RGB, sRGB-encoded) and validity (A) of the opaque scene
+    // surface, for global illumination. Present only while GI requests it:
+    // the instrumented layout otherwise keeps seven attachments.
+    DiffuseAlbedoGuide,
     Count,
 };
 
+// Capacity of every attachment array (the extended instrumented layout).
 inline constexpr size_t kPicaColorAttachmentCount =
     static_cast<size_t>(PicaColorAttachment::Count);
+// The instrumented layout without the global-illumination albedo guide.
+inline constexpr size_t kPicaBaseInstrumentedColorAttachmentCount =
+    static_cast<size_t>(PicaColorAttachment::DiffuseAlbedoGuide);
 
 enum class PicaAuxiliaryOutput : uint8_t {
     None = 0,
@@ -36,6 +44,7 @@ enum class PicaAuxiliaryOutput : uint8_t {
     AmbientGuide = 1U << 3U,
     FogGuide = 1U << 4U,
     OutlineGeometryGuide = 1U << 5U,
+    DiffuseAlbedoGuide = 1U << 6U,
 };
 
 constexpr PicaAuxiliaryOutput operator|(
@@ -50,9 +59,13 @@ constexpr PicaAuxiliaryOutput& operator|=(
     return left;
 }
 
+// The base instrumented guides, allocated together with an instrumented
+// target. The albedo guide is extension storage grown on demand.
 inline constexpr PicaAuxiliaryOutput kAllPicaAuxiliaryOutputs =
     PicaAuxiliaryOutput::NormalGuide | PicaAuxiliaryOutput::MaterialGuide | PicaAuxiliaryOutput::RigidMotionGuide |
     PicaAuxiliaryOutput::AmbientGuide | PicaAuxiliaryOutput::FogGuide | PicaAuxiliaryOutput::OutlineGeometryGuide;
+inline constexpr PicaAuxiliaryOutput kExtendedPicaAuxiliaryOutputs =
+    kAllPicaAuxiliaryOutputs | PicaAuxiliaryOutput::DiffuseAlbedoGuide;
 
 struct PicaAttachmentFeatureRequests {
     bool DirectionalShadows = false;
@@ -78,12 +91,20 @@ struct PicaAttachmentRequirements {
                 static_cast<uint8_t>(output)) != 0U;
     }
 
-    // Instrumented shaders use fixed output locations 1-6. Keep that layout
-    // stable while making the canonical path a true color-only contract.
+    // Instrumented shaders use fixed output locations 1-6 (7 with the GI
+    // albedo guide). Keep that layout stable while making the canonical path
+    // a true color-only contract.
     [[nodiscard]] constexpr uint32_t ColorAttachmentCount() const noexcept {
-        return NativeColorOnly()
-            ? 1U
-            : static_cast<uint32_t>(kPicaColorAttachmentCount);
+        if (NativeColorOnly()) return 1U;
+        return Requires(PicaAuxiliaryOutput::DiffuseAlbedoGuide)
+            ? static_cast<uint32_t>(kPicaColorAttachmentCount)
+            : static_cast<uint32_t>(kPicaBaseInstrumentedColorAttachmentCount);
+    }
+    // The same requirements without the on-demand albedo guide.
+    [[nodiscard]] constexpr PicaAttachmentRequirements BaseGuides() const noexcept {
+        return {static_cast<PicaAuxiliaryOutput>(
+            static_cast<uint8_t>(AuxiliaryOutputs) &
+            static_cast<uint8_t>(kAllPicaAuxiliaryOutputs))};
     }
 
     [[nodiscard]] constexpr uint8_t Key() const noexcept {

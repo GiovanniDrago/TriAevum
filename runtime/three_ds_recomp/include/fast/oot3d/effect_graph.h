@@ -53,8 +53,13 @@ enum class EffectResource : uint8_t {
     // Provider-owned persistent distance field of the scene's native opaque
     // geometry (Brixelizer). Semantic: no image transitions in the graph.
     SceneDistanceField,
+    // Diffuse albedo of the opaque scene surface (auxiliary PICA output,
+    // written only while global illumination requests it).
+    DiffuseAlbedoGuide,
     Count,
 };
+// Resource sets are 32-bit masks in the barrier and residency plans.
+static_assert(static_cast<uint32_t>(EffectResource::Count) <= 32U);
 
 [[nodiscard]] ::Fast::Renderer::ExtensionResourceIdentity
 BuildOot3dEffectResourceIdentity(EffectResource resource) noexcept;
@@ -111,6 +116,7 @@ struct EffectResourceUse {
         case EffectResource::AmbientGuide:
         case EffectResource::FogGuide:
         case EffectResource::OutlineGeometryGuide:
+        case EffectResource::DiffuseAlbedoGuide:
         case EffectResource::Count:
             return true;
         default:

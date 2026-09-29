@@ -172,6 +172,9 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
         features |=
             PicaShaderInstrumentationFeature::ReflectionMaterialGuide;
     }
+    if (sceneDraw && effects.GlobalIllumination.Mode != GlobalIlluminationMode::Off) {
+        features |= PicaShaderInstrumentationFeature::DiffuseAlbedoGuide;
+    }
     return features;
 }
 
@@ -363,6 +366,9 @@ PicaShaderInstrumentationFeature ResolvePicaShaderProfileFeatures(
     if (effects.Reflections != ReflectionMode::Off) {
         features |=
             PicaShaderInstrumentationFeature::ReflectionMaterialGuide;
+    }
+    if (effects.GlobalIllumination.Mode != GlobalIlluminationMode::Off) {
+        features |= PicaShaderInstrumentationFeature::DiffuseAlbedoGuide;
     }
     return features;
 }

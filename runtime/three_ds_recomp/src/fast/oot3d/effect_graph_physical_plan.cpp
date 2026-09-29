@@ -68,6 +68,7 @@ EffectPhysicalResidency ClassifyEffectResourceResidency(
         case EffectResource::AmbientGuide:
         case EffectResource::FogGuide:
         case EffectResource::OutlineGeometryGuide:
+        case EffectResource::DiffuseAlbedoGuide:
             return EffectPhysicalResidency::NativeAttachment;
         case EffectResource::TemporalColor:
         case EffectResource::DirectionalShadowHistory:

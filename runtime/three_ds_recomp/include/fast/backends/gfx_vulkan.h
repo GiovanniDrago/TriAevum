@@ -507,6 +507,14 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         VkImage OutlineGeometryGuideImage = VK_NULL_HANDLE;
         VkDeviceMemory OutlineGeometryGuideMemory = VK_NULL_HANDLE;
         VkImageView OutlineGeometryGuideView = VK_NULL_HANDLE;
+        // Global-illumination albedo guide: grown on demand, never part of
+        // the target's creation-time storage.
+        VkImage DiffuseAlbedoGuideImage = VK_NULL_HANDLE;
+        VkDeviceMemory DiffuseAlbedoGuideMemory = VK_NULL_HANDLE;
+        VkImageView DiffuseAlbedoGuideView = VK_NULL_HANDLE;
+        VkImage MsaaDiffuseAlbedoGuideImage = VK_NULL_HANDLE;
+        VkDeviceMemory MsaaDiffuseAlbedoGuideMemory = VK_NULL_HANDLE;
+        VkImageView MsaaDiffuseAlbedoGuideView = VK_NULL_HANDLE;
         VkImage ShadowImage = VK_NULL_HANDLE;
         VkDeviceMemory ShadowMemory = VK_NULL_HANDLE;
         VkImageView ShadowView = VK_NULL_HANDLE;
@@ -667,6 +675,11 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         uint32_t restoredWidth = 0U, uint32_t restoredHeight = 0U);
     void DestroyNativePicaRenderTarget(NativePicaRenderTarget& target);
     void PrepareNativePicaTargetAttachments(NativePicaRenderTarget& target);
+    void PrepareNativePicaBaseGuides(NativePicaRenderTarget& target);
+    void PrepareNativePicaDiffuseAlbedoGuide(NativePicaRenderTarget& target, bool clear);
+    void AllocateNativePicaAuxiliaryImage(NativePicaRenderTarget& target, VkFormat format,
+                                          VkSampleCountFlagBits samples, VkImage& image,
+                                          VkDeviceMemory& memory, VkImageView& view);
     VkFramebuffer NativePicaFramebuffer(NativePicaRenderTarget& target, bool canonical);
     NativePicaDisplayImage& GetOrCreateNativePicaDisplayImage(
         uint64_t renderTargetNamespace, uint32_t physicalAddress,

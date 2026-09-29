@@ -31,6 +31,7 @@ enum class PicaShaderInstrumentationFeature : uint32_t {
     OutlineGeometryGuide = 1U << 10U,
     NativePerPixelLighting = 1U << 11U,
     PbrMaterial = 1U << 12U,
+    DiffuseAlbedoGuide = 1U << 13U,
 };
 
 constexpr PicaShaderInstrumentationFeature operator|(PicaShaderInstrumentationFeature left,
@@ -91,6 +92,7 @@ struct PicaFragmentInstrumentationOutputLayout {
     bool WritesAmbientGuide = false;
     bool WritesFogGuide = false;
     bool WritesOutlineGeometryGuide = false;
+    bool WritesDiffuseAlbedoGuide = false;
 
     auto operator<=>(
         const PicaFragmentInstrumentationOutputLayout&) const = default;

@@ -20,7 +20,125 @@ void CheckAttachmentVk(VkResult result, const char* operation) {
 void GfxRenderingAPIVulkan::PrepareNativePicaTargetAttachments(NativePicaRenderTarget& target) {
     if (mFramePicaAttachmentRequirements.NativeColorOnly())
         return;
-    const bool allocate = target.Attachments.NativeColorOnly();
+    // A cleared base means stale extension storage too.
+    const bool clearExtensions = target.AuxiliaryNeedsClear;
+    PrepareNativePicaBaseGuides(target);
+    if (mFramePicaAttachmentRequirements.Requires(Oot3d::PicaAuxiliaryOutput::DiffuseAlbedoGuide))
+        PrepareNativePicaDiffuseAlbedoGuide(target, clearExtensions);
+}
+
+void GfxRenderingAPIVulkan::AllocateNativePicaAuxiliaryImage(NativePicaRenderTarget& target, VkFormat format,
+                                                             VkSampleCountFlagBits samples, VkImage& image,
+                                                             VkDeviceMemory& memory, VkImageView& view) {
+    const bool msaa = samples != VK_SAMPLE_COUNT_1_BIT;
+    const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                    (msaa ? 0U : VK_IMAGE_USAGE_SAMPLED_BIT);
+    if (target.NriOwned) {
+        Oot3d::NriOwnedTexture2DDesc desc;
+        desc.Width = target.Width;
+        desc.Height = target.Height;
+        desc.Format = format;
+        desc.Usage = usage;
+        desc.Samples = samples;
+        Oot3d::NriOwnedTexture2D texture;
+        if (!mNriInterop.CreateOwnedTexture2D(desc, texture))
+            throw std::runtime_error("NRI auxiliary PICA image allocation failed");
+        image = texture.Image;
+    } else {
+        VkImageCreateInfo desc{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        desc.imageType = VK_IMAGE_TYPE_2D;
+        desc.format = format;
+        desc.extent = { target.Width, target.Height, 1 };
+        desc.mipLevels = desc.arrayLayers = 1;
+        desc.samples = samples;
+        desc.tiling = VK_IMAGE_TILING_OPTIMAL;
+        desc.usage = usage;
+        CheckAttachmentVk(vkCreateImage(mDevice, &desc, nullptr, &image), "create PICA auxiliary image");
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(mDevice, image, &requirements);
+        VkMemoryAllocateInfo allocation{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        CheckAttachmentVk(vkAllocateMemory(mDevice, &allocation, nullptr, &memory), "allocate PICA auxiliary memory");
+        CheckAttachmentVk(vkBindImageMemory(mDevice, image, memory, 0), "bind PICA auxiliary memory");
+    }
+    VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    viewInfo.image = image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    CheckAttachmentVk(vkCreateImageView(mDevice, &viewInfo, nullptr, &view), "create PICA auxiliary view");
+    mNriInterop.WrapTexture(image, format, VK_IMAGE_TYPE_2D, usage, target.Width, target.Height, 1, 1, samples);
+}
+
+void GfxRenderingAPIVulkan::PrepareNativePicaDiffuseAlbedoGuide(NativePicaRenderTarget& target, bool clear) {
+    const bool allocate = target.DiffuseAlbedoGuideImage == VK_NULL_HANDLE;
+    if (!allocate && !clear)
+        return;
+    EndNativePicaRenderPass();
+    if (mRenderPassActive) {
+        vkCmdEndRenderPass(mCommandBuffers[mCurrentFrame]);
+        mRenderPassActive = false;
+        mOverlayRenderPassActive = false;
+    }
+    constexpr VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+    const bool msaa = mNativePicaSampleCount != VK_SAMPLE_COUNT_1_BIT;
+    if (allocate) {
+        AllocateNativePicaAuxiliaryImage(target, format, VK_SAMPLE_COUNT_1_BIT, target.DiffuseAlbedoGuideImage,
+                                         target.DiffuseAlbedoGuideMemory, target.DiffuseAlbedoGuideView);
+        if (msaa)
+            AllocateNativePicaAuxiliaryImage(target, format, mNativePicaSampleCount,
+                                             target.MsaaDiffuseAlbedoGuideImage,
+                                             target.MsaaDiffuseAlbedoGuideMemory,
+                                             target.MsaaDiffuseAlbedoGuideView);
+        mSceneSurfaces.Publish({ { target.Key.RenderTargetNamespace, target.Key.ColorPhysicalAddress,
+                                   Oot3d::SceneSurfaceKind::DiffuseAlbedoGuide },
+                                 reinterpret_cast<uintptr_t>(target.DiffuseAlbedoGuideImage),
+                                 target.Width,
+                                 target.Height,
+                                 static_cast<uint32_t>(format),
+                                 0,
+                                 true });
+    }
+    // Zero albedo: no surface receives GI until a writer publishes one.
+    std::array<VkImage, 2> images{ target.DiffuseAlbedoGuideImage, target.MsaaDiffuseAlbedoGuideImage };
+    const uint32_t count = msaa ? 2U : 1U;
+    std::array<VkImageMemoryBarrier, 2> barriers{};
+    for (uint32_t index = 0; index < count; ++index) {
+        auto& barrier = barriers[index];
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = images[index];
+        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    }
+    auto command = mFrameActive ? mCommandBuffers[mCurrentFrame] : BeginImmediateCommands();
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                         nullptr, count, barriers.data());
+    const VkClearColorValue zero{};
+    for (uint32_t index = 0; index < count; ++index) {
+        vkCmdClearColorImage(command, images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1,
+                             &barriers[index].subresourceRange);
+        auto& barrier = barriers[index];
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        mResourceStates.Transition(reinterpret_cast<uintptr_t>(images[index]),
+                                   { Oot3d::ResourceAccess::ColorAttachment, mGraphicsQueueFamily });
+    }
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
+                         nullptr, 0, nullptr, count, barriers.data());
+    if (!mFrameActive)
+        EndImmediateCommands(command);
+    target.Attachments.AuxiliaryOutputs |= Oot3d::PicaAuxiliaryOutput::DiffuseAlbedoGuide;
+}
+
+void GfxRenderingAPIVulkan::PrepareNativePicaBaseGuides(NativePicaRenderTarget& target) {
+    const bool allocate = target.Attachments.BaseGuides().NativeColorOnly();
     if (!allocate && !target.AuxiliaryNeedsClear)
         return;
     EndNativePicaRenderPass();
@@ -76,48 +194,8 @@ void GfxRenderingAPIVulkan::PrepareNativePicaTargetAttachments(NativePicaRenderT
         auto& slot = slots[index];
         const bool msaa = index >= 6U;
         const auto samples = msaa ? mNativePicaSampleCount : VK_SAMPLE_COUNT_1_BIT;
-        const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                        (msaa ? 0U : VK_IMAGE_USAGE_SAMPLED_BIT);
         if (slot.Image == VK_NULL_HANDLE) {
-            if (target.NriOwned) {
-                Oot3d::NriOwnedTexture2DDesc desc;
-                desc.Width = target.Width;
-                desc.Height = target.Height;
-                desc.Format = slot.Format;
-                desc.Usage = usage;
-                desc.Samples = samples;
-                Oot3d::NriOwnedTexture2D texture;
-                if (!mNriInterop.CreateOwnedTexture2D(desc, texture))
-                    throw std::runtime_error("NRI auxiliary PICA image allocation failed");
-                slot.Image = texture.Image;
-            } else {
-                VkImageCreateInfo desc{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-                desc.imageType = VK_IMAGE_TYPE_2D;
-                desc.format = slot.Format;
-                desc.extent = { target.Width, target.Height, 1 };
-                desc.mipLevels = desc.arrayLayers = 1;
-                desc.samples = samples;
-                desc.tiling = VK_IMAGE_TILING_OPTIMAL;
-                desc.usage = usage;
-                CheckAttachmentVk(vkCreateImage(mDevice, &desc, nullptr, &slot.Image), "create PICA auxiliary image");
-                VkMemoryRequirements requirements{};
-                vkGetImageMemoryRequirements(mDevice, slot.Image, &requirements);
-                VkMemoryAllocateInfo memory{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-                memory.allocationSize = requirements.size;
-                memory.memoryTypeIndex =
-                    FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-                CheckAttachmentVk(vkAllocateMemory(mDevice, &memory, nullptr, &slot.Memory),
-                                  "allocate PICA auxiliary memory");
-                CheckAttachmentVk(vkBindImageMemory(mDevice, slot.Image, slot.Memory, 0), "bind PICA auxiliary memory");
-            }
-            VkImageViewCreateInfo view{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-            view.image = slot.Image;
-            view.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            view.format = slot.Format;
-            view.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-            CheckAttachmentVk(vkCreateImageView(mDevice, &view, nullptr, &slot.View), "create PICA auxiliary view");
-            mNriInterop.WrapTexture(slot.Image, slot.Format, VK_IMAGE_TYPE_2D, usage, target.Width, target.Height, 1, 1,
-                                    samples);
+            AllocateNativePicaAuxiliaryImage(target, slot.Format, samples, slot.Image, slot.Memory, slot.View);
             if (!msaa) {
                 mSceneSurfaces.Publish(
                     { { target.Key.RenderTargetNamespace, target.Key.ColorPhysicalAddress, slot.Kind },
@@ -158,7 +236,7 @@ void GfxRenderingAPIVulkan::PrepareNativePicaTargetAttachments(NativePicaRenderT
                          nullptr, 0, nullptr, count, barriers.data());
     if (!mFrameActive)
         EndImmediateCommands(command);
-    target.Attachments = { Oot3d::kAllPicaAuxiliaryOutputs };
+    target.Attachments.AuxiliaryOutputs |= Oot3d::kAllPicaAuxiliaryOutputs;
     target.AuxiliaryNeedsClear = false;
     if (allocate)
         mDiagnostics.RecordNriPicaRenderTarget(target.NriOwned, count);

@@ -240,6 +240,24 @@ the material guide (F0, roughness, reflection gain), filling SSSR misses only.
   resolution, GI diffuse intensity, with the unavailability reason. The
   actual-widget smoke covers selection, persistence, the per-pixel and F2
   rendering gates and capability loss (6,833 assertions).
+- DiffuseAlbedoGuide (phase 3b): `PicaColorAttachment::DiffuseAlbedoGuide`
+  (index 7) and `PicaAuxiliaryOutput::DiffuseAlbedoGuide`; the extension graph
+  requests it (with the normal and material guides) only for GI, and
+  `ColorAttachmentCount()` is 8 only then (7 otherwise). The image is grown on
+  demand by `PrepareNativePicaTargetAttachments` (not part of creation-time
+  target storage), cleared to zero, and bound through dynamic rendering only:
+  the legacy render pass keeps seven attachments and the GI capability
+  requires dynamic rendering. Grass gains a third pipeline for the extended
+  layout (mask 0: it leaves the albedo below it) and selects its pipeline
+  from the frame's active bindings rather than the target's allocated
+  storage. The instrumented fragment variant (`PICA_DIFFUSE_ALBEDO_GUIDE_V1`)
+  writes it for opaque, RGB-replacing, depth-writing scene draws; manifest
+  entries carry `writes_diffuse_albedo_guide` (optional on read).
+- Verification: unit suites (effect graph 47, foundation 296, pipeline cache
+  42, manifest 8) pass; GI off stays identical to the Interpolated2x baseline
+  (Field, Sheik copy); GI on (8 attachments, validation layer: zero errors)
+  produces captures identical to Per-pixel without GI, since nothing reads the
+  guide yet.
 - `kLastGraphicsCapability` replaces two loops that ended at a hard-coded
   enumerator (a new capability was silently missing from the permissive
   load-time set).

@@ -610,6 +610,27 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
         }
         if (result.Hooks.Has(PicaShaderSemantic::NativeColorOutput))
             insertions.push_back({tevEnd, "\n    vec3 surface_before_fog = combiner_output.rgb;\n"});
+        if (!pbr && HasPicaShaderInstrumentationFeature(
+                request.RequestedFeatures, PicaShaderInstrumentationFeature::DiffuseAlbedoGuide)) {
+            // Diffuse albedo: the native TEV under unit lighting (primary 1,
+            // secondary 0), i.e. textures times material colour without the
+            // lighting. The lit result is restored untouched.
+            std::string albedo = R"glsl(
+    vec3 surface_gi_albedo;
+    {
+        vec4 surface_gi_saved = combiner_output;
+        vec4 rounded_primary_color = vec4(vec3(1.0), surface_native_primary.a);
+        vec4 primary_fragment_color = vec4(vec3(1.0), surface_native_fragment.a);
+        vec4 secondary_fragment_color = vec4(vec3(0.0), surface_native_secondary.a);
+        vec4 combiner_buffer = vec4(0.0);
+        vec4 next_combiner_buffer = fragment_uniforms.combiner_buffer_color;
+        combiner_output = vec4(0.0);
+)glsl";
+            albedo.append(request.Source.substr(tevBegin, tevEnd - tevBegin));
+            albedo += "\n        surface_gi_albedo = clamp(combiner_output.rgb, 0.0, 1.0);\n"
+                      "        combiner_output = surface_gi_saved;\n    }\n";
+            insertions.push_back({tevEnd, std::move(albedo)});
+        }
     }
     bool normalAvailable = result.Hooks.Has(PicaShaderSemantic::NormalGuideOutput);
     bool ambientAvailable = result.Hooks.Has(PicaShaderSemantic::AmbientGuideOutput);
@@ -747,6 +768,31 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
         }
         result.Outputs.WritesOutlineGeometryGuide = true;
         apply(PicaShaderInstrumentationFeature::OutlineGeometryGuide);
+    }
+
+    // Global illumination albedo: opaque, RGB-replacing, depth-writing scene
+    // surfaces publish it (zero when their albedo is unknown, so a surface in
+    // front removes GI); translucent draws leave the surface below.
+    if (HasPicaShaderInstrumentationFeature(request.RequestedFeatures,
+                                            PicaShaderInstrumentationFeature::DiffuseAlbedoGuide) &&
+        result.Hooks.Valid() && request.Draw.DepthTestEnabled && request.Draw.DepthWriteEnabled &&
+        replacesDestinationRgb && request.Draw.FragmentOperationMode == 0U &&
+        (request.Draw.ColorWriteMask & 7U) != 0U &&
+        request.Draw.CompositionDomain == ::Oot3d::Renderer::PicaCompositionDomain::Scene &&
+        !HasOutputAtLocation(request.Source, 7U)) {
+        declarations += "layout(location=7) out vec4 pica_diffuse_albedo_guide;\n";
+        if (request.Draw.DepthCompare == ::Oot3d::Renderer::PicaCompareFunction::Always) {
+            epilogue += "    pica_diffuse_albedo_guide = vec4(0.0);\n";
+        } else if (pbr) {
+            epilogue += "    pica_diffuse_albedo_guide = vec4(pow(clamp(pbr_albedo, 0.0, 1.0), vec3(1.0 / 2.2)), 1.0);\n";
+        } else if (surfaceLighting) {
+            epilogue += "    pica_diffuse_albedo_guide = vec4(surface_gi_albedo, 1.0);\n";
+        } else {
+            epilogue += "    pica_diffuse_albedo_guide = vec4(0.0);\n";
+        }
+        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_DIFFUSE_ALBEDO_GUIDE_V1");
+        result.Outputs.WritesDiffuseAlbedoGuide = true;
+        apply(PicaShaderInstrumentationFeature::DiffuseAlbedoGuide);
     }
 
     bool surfaceShadow = false;

@@ -309,9 +309,11 @@ Renderer3ds::NriPicaGraphicsPipelineDesc BuildPicaNriPipelineState(
     outlineGeometryAttachment.colorWriteMask = outputs.WritesOutlineGeometryGuide ? 0xfU : 0U;
     VkPipelineColorBlendAttachmentState fogAttachment{};
     fogAttachment.colorWriteMask = outputs.WritesFogGuide ? 0xfU : 0U;
+    VkPipelineColorBlendAttachmentState albedoAttachment{};
+    albedoAttachment.colorWriteMask = outputs.WritesDiffuseAlbedoGuide ? 0xfU : 0U;
     std::array<VkPipelineColorBlendAttachmentState, kPicaColorAttachmentCount> colorAttachments{
         attachment,        guideAttachment, materialAttachment,       rigidMotionAttachment,
-        ambientAttachment, fogAttachment,   outlineGeometryAttachment
+        ambientAttachment, fogAttachment,   outlineGeometryAttachment, albedoAttachment
     };
     if (outlineOcclusionOnly) ConfigureOutlineOcclusionPass(depthStencil, colorAttachments);
 
@@ -338,7 +340,7 @@ Renderer3ds::NriPicaGraphicsPipelineDesc BuildPicaNriPipelineState(
     result.ColorFormats = {
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
         VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM,
-        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R32G32B32A32_SFLOAT};
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM};
     result.ColorAttachmentCount = attachments.ColorAttachmentCount();
     result.DepthStencilFormat = depthFormat;
     return result;

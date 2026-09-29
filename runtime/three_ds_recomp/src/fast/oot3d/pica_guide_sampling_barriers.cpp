@@ -57,7 +57,7 @@ PicaGuideSamplingBarrierBatch BuildBarriers(
         ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-    const std::array<std::pair<EffectResource, VkImageAspectFlags>, 7> candidates{ {
+    const std::array<std::pair<EffectResource, VkImageAspectFlags>, 8> candidates{ {
         { EffectResource::NativeDepth, VK_IMAGE_ASPECT_DEPTH_BIT },
         { EffectResource::NormalGuide, VK_IMAGE_ASPECT_COLOR_BIT },
         { EffectResource::MaterialGuide, VK_IMAGE_ASPECT_COLOR_BIT },
@@ -65,6 +65,7 @@ PicaGuideSamplingBarrierBatch BuildBarriers(
         { EffectResource::AmbientGuide, VK_IMAGE_ASPECT_COLOR_BIT },
         { EffectResource::FogGuide, VK_IMAGE_ASPECT_COLOR_BIT },
         { EffectResource::OutlineGeometryGuide, VK_IMAGE_ASPECT_COLOR_BIT },
+        { EffectResource::DiffuseAlbedoGuide, VK_IMAGE_ASPECT_COLOR_BIT },
     } };
     for (const auto& [resource, aspect] : candidates) {
         const uint32_t bit = ResourceBit(resource);

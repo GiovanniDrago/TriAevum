@@ -16,7 +16,7 @@ namespace {
 constexpr size_t kMaximumPipelineCount = 65536U;
 constexpr size_t kMaximumVertexBindings = 16U;
 constexpr size_t kMaximumVertexAttributes = 16U;
-constexpr uint32_t kAllInstrumentationFeatures = 0x1fffU;
+constexpr uint32_t kAllInstrumentationFeatures = 0x3fffU;
 
 void SetError(std::string* error, std::string message) {
     if (error != nullptr) {
@@ -250,6 +250,7 @@ nlohmann::json EntryJson(
             {"writes_ambient_guide", outputs.WritesAmbientGuide},
             {"writes_fog_guide", outputs.WritesFogGuide},
             {"writes_outline_geometry_guide", outputs.WritesOutlineGeometryGuide},
+            {"writes_diffuse_albedo_guide", outputs.WritesDiffuseAlbedoGuide},
         }},
     };
 }
@@ -468,6 +469,8 @@ bool ReadEntry(const nlohmann::json& value,
          !ReadBool(value["shader_outputs"], "writes_fog_guide", entry.ShaderOutputs.WritesFogGuide)) ||
         (value["shader_outputs"].contains("writes_outline_geometry_guide") &&
          !ReadBool(value["shader_outputs"], "writes_outline_geometry_guide", entry.ShaderOutputs.WritesOutlineGeometryGuide)) ||
+        (value["shader_outputs"].contains("writes_diffuse_albedo_guide") &&
+         !ReadBool(value["shader_outputs"], "writes_diffuse_albedo_guide", entry.ShaderOutputs.WritesDiffuseAlbedoGuide)) ||
         !ReadBool(value["shader_outputs"], "writes_ambient_guide",
                   entry.ShaderOutputs.WritesAmbientGuide)) {
         return false;
@@ -560,7 +563,7 @@ bool PicaGraphicsPipelineManifestEntry::Valid() const noexcept {
         !ValidSource(FragmentSource) ||
         (NriFragmentAvailable && !ValidSource(NriFragmentSource)) ||
         (AttachmentRequirementsKey &
-         ~static_cast<uint8_t>(kAllPicaAuxiliaryOutputs)) != 0U ||
+         ~static_cast<uint8_t>(kExtendedPicaAuxiliaryOutputs)) != 0U ||
         (requestedFeatures & ~kAllInstrumentationFeatures) != 0U ||
         (appliedFeatures & ~requestedFeatures) != 0U ||
         (Domain == PicaGraphicsPipelineDomain::Canonical &&
@@ -706,6 +709,7 @@ uint64_t PicaGraphicsPipelineManifestEntry::StructuralId() const noexcept {
     HashValue(hash, ShaderOutputs.WritesAmbientGuide);
     if (ShaderOutputs.WritesFogGuide) HashValue(hash, ShaderOutputs.WritesFogGuide);
     if (ShaderOutputs.WritesOutlineGeometryGuide) HashValue(hash, ShaderOutputs.WritesOutlineGeometryGuide);
+    if (ShaderOutputs.WritesDiffuseAlbedoGuide) HashValue(hash, ShaderOutputs.WritesDiffuseAlbedoGuide);
     return hash;
 }
 

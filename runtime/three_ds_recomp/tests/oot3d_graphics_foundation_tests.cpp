@@ -2176,6 +2176,39 @@ TEST(Oot3dOutlineGeometryGuide, PreservesNativeDepthAndColorInBothDepthModes) {
     }
 }
 
+TEST(Oot3dDiffuseAlbedoGuide, OpaqueSceneSurfacesPublishItAndTranslucentOnesLeaveIt) {
+    using namespace Fast::Oot3d;
+    shaderc::Compiler compiler;
+    const std::string source = "#version 450\nlayout(location=5) in vec4 pica_normquat;\n"
+                               "layout(location=0) out vec4 pica_color;\n"
+                               "void main() { pica_color=vec4(0.2,0.4,0.8,1.0);\n}\n";
+    PicaFragmentInstrumentationRequest request;
+    request.Source = source;
+    request.Draw.CompositionDomain = Oot3d::Renderer::PicaCompositionDomain::Scene;
+    request.Draw.DepthTestEnabled = true;
+    request.Draw.DepthWriteEnabled = true;
+    request.Draw.ColorWriteMask = 0xFU;
+    request.RequestedFeatures = PicaShaderInstrumentationFeature::DiffuseAlbedoGuide;
+    const auto variant = BuildPicaFragmentInstrumentationVariant(request);
+    ASSERT_TRUE(variant.Outputs.WritesDiffuseAlbedoGuide);
+    EXPECT_NE(variant.Source.find("layout(location=7) out vec4 pica_diffuse_albedo_guide"), std::string::npos);
+    // Without per-pixel lighting the albedo is unknown: publish zero.
+    EXPECT_NE(variant.Source.find("pica_diffuse_albedo_guide = vec4(0.0);"), std::string::npos);
+    EXPECT_NE(variant.Source.find("pica_color=vec4(0.2,0.4,0.8,1.0);"), std::string::npos);
+    const auto compiled = compiler.CompileGlslToSpv(variant.Source, shaderc_fragment_shader, "albedo_guide.frag");
+    EXPECT_EQ(compiled.GetCompilationStatus(), shaderc_compilation_status_success) << compiled.GetErrorMessage();
+    request.Draw.Blend.Enabled = true;
+    request.Draw.Blend.SourceRgb = Oot3d::Renderer::NativeBlendFactor::SourceAlpha;
+    request.Draw.Blend.DestRgb = Oot3d::Renderer::NativeBlendFactor::OneMinusSourceAlpha;
+    EXPECT_FALSE(BuildPicaFragmentInstrumentationVariant(request).Outputs.WritesDiffuseAlbedoGuide);
+    request.Draw.Blend = {};
+    request.Draw.CompositionDomain = Oot3d::Renderer::PicaCompositionDomain::Ui;
+    EXPECT_FALSE(BuildPicaFragmentInstrumentationVariant(request).Outputs.WritesDiffuseAlbedoGuide);
+    request.Draw.CompositionDomain = Oot3d::Renderer::PicaCompositionDomain::Scene;
+    request.Draw.DepthWriteEnabled = false;
+    EXPECT_FALSE(BuildPicaFragmentInstrumentationVariant(request).Outputs.WritesDiffuseAlbedoGuide);
+}
+
 TEST(Oot3dNativeFogGuide, CopiesNativeFogResultWithoutChangingNativeColorOrDepth) {
     using namespace Fast::Oot3d;
     constexpr std::string_view source = R"glsl(#version 450
@@ -3137,7 +3170,9 @@ TEST(Oot3dPicaNri, BuildsCanonicalVertexStreamsForSubmission) {
 }
 
 TEST(Oot3dPicaRendering, ValidatesSingleAndMultisampleAttachmentContracts) {
-    EXPECT_EQ(Fast::Oot3d::kPicaColorAttachmentCount, 7U);
+    EXPECT_EQ(Fast::Oot3d::kPicaColorAttachmentCount, 8U);
+    EXPECT_EQ(Fast::Oot3d::kPicaBaseInstrumentedColorAttachmentCount, 7U);
+    EXPECT_EQ(Fast::Oot3d::PicaAttachmentIndex(Fast::Oot3d::PicaColorAttachment::DiffuseAlbedoGuide), 7U);
     EXPECT_EQ(Fast::Oot3d::PicaAttachmentIndex(Fast::Oot3d::PicaColorAttachment::FogGuide), 5U);
     EXPECT_EQ(Fast::Oot3d::PicaAttachmentIndex(
                   Fast::Oot3d::PicaColorAttachment::AmbientGuide),

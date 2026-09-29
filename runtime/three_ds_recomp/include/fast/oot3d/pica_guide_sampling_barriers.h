@@ -10,7 +10,7 @@
 namespace Fast::Oot3d {
 
 struct PicaGuideSamplingBarrierBatch {
-    std::array<VkImageMemoryBarrier, 7> Images{};
+    std::array<VkImageMemoryBarrier, 8> Images{};
     uint32_t Count = 0;
     uint32_t DeclaredCount = 0;
     uint32_t MissingCount = 0;
