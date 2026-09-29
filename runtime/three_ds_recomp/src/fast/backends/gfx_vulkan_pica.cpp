@@ -5618,6 +5618,46 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset),
                     shadowViewToWorld, version, shadowCache);
             }
+            // Native frame geometry for the scene distance field: the shadow
+            // caster admission, from the first non-synthetic execution.
+            const bool sceneDistanceFieldGeometry =
+                Oot3d::PicaExtensionPassEnabled(
+                    mPicaExtensionGraph, Oot3d::PicaExtensionPass::SceneDistanceField) &&
+                opaqueWorldDraw && sceneVertexLayout.Valid() && !sceneVertexLayout.Bindings.empty() &&
+                draw.FragmentOperationMode == 0U && draw.DepthTestEnabled && draw.DepthWriteEnabled &&
+                !draw.AlphaTestEnabled && (draw.ColorWriteMask & 0x7U) != 0U &&
+                draw.LightBinding.WorldToView &&
+                draw.VertexUniformBytes.size() >= Oot3d::kPicaPackedVertexFloatOffset;
+            if (sceneDistanceFieldGeometry) {
+                if (!mBrixelizerScene.Available() && !mBrixelizerInitializationAttempted) {
+                    mBrixelizerInitializationAttempted = true;
+                    if (!mBrixelizerScene.Initialize(mPhysicalDevice, mDevice, kFramesInFlight))
+                        std::fprintf(stderr, "TRIAEVUM_SCENE_DISTANCE_FIELD unavailable=\"%s\"\n",
+                                     mBrixelizerScene.UnavailableReason().c_str());
+                }
+                const auto& sample = mPicaSceneFrame.TemporalSample();
+                Oot3d::DirectionalShadowMatrix giViewToWorld;
+                if (!sample.Synthetic &&
+                    mBrixelizerScene.AcceptsExecution(sample.CurrentSourceFrameId, draw.RenderTargetNamespace) &&
+                    Oot3d::InvertDirectionalShadowMatrix(*draw.LightBinding.WorldToView, giViewToWorld)) {
+                    uint32_t booleanUniforms = 0;
+                    std::memcpy(&booleanUniforms, draw.VertexUniformBytes.data() +
+                                Oot3d::kPicaPackedVertexBooleanMaskOffset, sizeof(booleanUniforms));
+                    Renderer3ds::PicaGiGeometryCache transientGiCache;
+                    auto& giCache = geometryResolution.Cacheable
+                        ? mNativePicaGeometryBuffers.at(geometry.Identity).GiGeometry : transientGiCache;
+                    const uint64_t giVersion = geometryResolution.Cacheable
+                        ? geometry.ContentVersion ^ (geometry.StructuralSignature * 0x9e3779b97f4a7c15ULL) ^
+                          geometry.Identity ^ draw.VertexShaderKey : 0;
+                    mBrixelizerScene.Submit(Renderer3ds::BuildPicaGiInstance(
+                        {geometry.Payload, sceneVertexBindings, sceneVertexLayout.Attributes,
+                         sceneVertexLayout.Bindings, geometryBaseOffset, geometry.IndexOffset,
+                         geometry.VertexOrIndexCount, draw.BaseVertex, geometry.Indexed},
+                        ToPicaSceneTopology(draw.Topology), draw.TemporalVertexProgram.Hooks, booleanUniforms,
+                        draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset),
+                        giViewToWorld, giVersion, giCache));
+                }
+            }
             std::array<Oot3d::PicaSceneTextureBinding, 3>
                 sceneTextures{};
             for (size_t slot = 0; slot < sceneTextures.size(); ++slot) {
@@ -7320,6 +7360,34 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
                     VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
         };
+        if (presentationPerspective.has_value() && !mSceneDistanceFieldUpdatedThisFrame &&
+            mBrixelizerScene.Available() &&
+            Oot3d::PicaExtensionPassEnabled(
+                mPicaExtensionGraph, Oot3d::PicaExtensionPass::SceneDistanceField)) {
+            mSceneDistanceFieldUpdatedThisFrame = true;
+            if (mBrixelizerScene.Update(command, mCurrentFrame, presentationPerspective->Eye)) {
+                const auto& field = mBrixelizerScene.Stats();
+                if (field.Updates % 150U == 1U) {
+                    std::fprintf(stderr,
+                        "TRIAEVUM_SCENE_DISTANCE_FIELD update=%llu collected=%llu rejected=%llu static=%u "
+                        "created=%llu evicted=%llu dynamic=%u dynamic_triangles=%llu meshes=%u "
+                        "arena_vertex_kib=%llu arena_index_kib=%llu scratch_mib=%llu free_bricks=%u "
+                        "static_bricks=%u dynamic_bricks=%u\n",
+                        (unsigned long long)field.Updates, (unsigned long long)field.CollectedInstances,
+                        (unsigned long long)field.RejectedInstances, field.StaticInstances,
+                        (unsigned long long)field.StaticInstancesCreated,
+                        (unsigned long long)field.StaticInstancesEvicted, field.DynamicInstances,
+                        (unsigned long long)field.DynamicTriangles, field.ResidentMeshes,
+                        (unsigned long long)(field.ArenaVertexBytes >> 10),
+                        (unsigned long long)(field.ArenaIndexBytes >> 10),
+                        (unsigned long long)(field.GpuScratchBytes >> 20), field.FreeBricks,
+                        field.StaticBricksAllocated, field.DynamicBricksAllocated);
+                }
+            } else if (!mBrixelizerScene.UnavailableReason().empty()) {
+                std::fprintf(stderr, "TRIAEVUM_SCENE_DISTANCE_FIELD error=\"%s\"\n",
+                             mBrixelizerScene.UnavailableReason().c_str());
+            }
+        }
         const bool cacao = presentationSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Cacao;
         bool aoAttempted = false;
         bool aoExecutedNow = false;
@@ -10379,6 +10447,7 @@ bool GfxRenderingAPIVulkan::ResetPicaState(
         EndNativePicaRenderPass();
         CheckNativeVk(vkDeviceWaitIdle(mDevice),
                       "vkDeviceWaitIdle(native PICA state reset)");
+        mBrixelizerScene.Reset();
         DestroyNativePicaGeometryResources();
             ForgetNativePicaEffectNriTextures();
         mAmbientOcclusionPass.InvalidateScreenResources();

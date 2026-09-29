@@ -61,6 +61,7 @@ struct PicaAttachmentFeatureRequests {
     bool Reflections = false;
     bool TemporalReconstruction = false;
     bool InteractiveGrass = false;
+    bool GlobalIllumination = false;
     bool operator==(const PicaAttachmentFeatureRequests&) const = default;
 };
 

@@ -27,6 +27,7 @@ namespace {
         case EffectResource::PicaSceneFrame:
         case EffectResource::NativeSceneView:
         case EffectResource::ExtensionGeometry:
+        case EffectResource::SceneDistanceField:
         case EffectResource::Count:
             return ResourceAccess::Undefined;
         default:

@@ -54,6 +54,7 @@ EffectPhysicalResidency ClassifyEffectResourceResidency(
         case EffectResource::PicaSceneFrame:
         case EffectResource::NativeSceneView:
         case EffectResource::ExtensionGeometry:
+        case EffectResource::SceneDistanceField:
             return EffectPhysicalResidency::Semantic;
         case EffectResource::SceneColor:
         case EffectResource::NativeDepth:

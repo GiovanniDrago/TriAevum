@@ -50,6 +50,9 @@ enum class EffectResource : uint8_t {
     // remaining scene stages into it, so every scene effect participates
     // through the same declared graph edge instead of a per-effect list.
     SceneComposition,
+    // Provider-owned persistent distance field of the scene's native opaque
+    // geometry (Brixelizer). Semantic: no image transitions in the graph.
+    SceneDistanceField,
     Count,
 };
 
@@ -190,6 +193,7 @@ enum class PicaExtensionPass : uint8_t {
     TemporalReconstruction,
     InteractiveGrass,
     ToonOutline,
+    SceneDistanceField,
     Count,
 };
 

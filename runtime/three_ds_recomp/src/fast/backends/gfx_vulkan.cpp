@@ -1140,6 +1140,7 @@ void GfxRenderingAPIVulkan::Shutdown() {
         StopPresentWorker();
         vkDeviceWaitIdle(mDevice);
         StorePipelineCache();
+        mBrixelizerScene.Shutdown();
         ShutdownImGuiBackend();
         mSceneSurfaces.Clear();
         mResourceStates.Clear();
@@ -1613,6 +1614,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
         }
     }
     mAmbientOcclusionExecutedThisFrame = false;
+    mSceneDistanceFieldUpdatedThisFrame = false;
     mHiZExecutedThisFrame = false;
     mReflectionExecutedThisFrame = false;
     mReflectionProviderThisFrame =
@@ -1796,6 +1798,12 @@ void GfxRenderingAPIVulkan::StartFrame() {
             Oot3d::ReflectionMode::Off,
         mTemporalMotionEnabled,
         graphicsSettings.Grass.Quality != Oot3d::GrassQuality::Off,
+        // Phase 2 developer switch; the F1 control follows with the GI pass.
+        [&] {
+            const char* gi = std::getenv("OOT3D_GRAPHICS_BRIXELIZER");
+            return gi != nullptr && std::string_view(gi) == "1" && !mNativeFidelityProfile &&
+                   Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting);
+        }(),
     };
     if (!mPicaExtensionRequests.has_value() ||
         *mPicaExtensionRequests != extensionRequests) {

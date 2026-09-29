@@ -20,6 +20,8 @@
 #include "fast/backends/oot3d_vulkan_validation.h"
 #include "fast/backends/vulkan_scanout_probe.h"
 #include "fast/oot3d/nri_interop_context.h"
+#include "fast/oot3d/brixelizer_scene.h"
+#include "fast/renderer3ds/pica_gi_geometry.h"
 #include "fast/oot3d/ambient_occlusion_pass.h"
 #include "fast/oot3d/cacao_pass.h"
 #if defined(_WIN32) && defined(ENABLE_OOT3D_D3D12_NGX_PROVIDER)
@@ -424,6 +426,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         std::array<uint64_t, kFramesInFlight> ContentVersions{};
         std::array<uint64_t, kFramesInFlight> StructuralSignatures{};
         Renderer3ds::PicaShadowCasterCache ShadowCaster;
+        Renderer3ds::PicaGiGeometryCache GiGeometry;
         Renderer3ds::PicaPbrSeamCache Seams;
         uint64_t LastUsedFrame = 0;
     };
@@ -921,6 +924,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::PicaScenePublicationAdapter mPicaScenePublications;
     Oot3d::GrassGeometryRegistry mGrassGeometryRegistry;
     std::unordered_map<uint64_t, NativePicaGeometryBuffer> mNativePicaGeometryBuffers;
+    // Distance field of the native opaque geometry (global illumination).
+    Oot3d::BrixelizerScene mBrixelizerScene;
+    bool mBrixelizerInitializationAttempted = false;
+    bool mSceneDistanceFieldUpdatedThisFrame = false;
     std::array<std::vector<BufferAllocation>, kFramesInFlight> mRetiredNativePicaGeometryBuffers;
     Oot3d::PicaShaderPipelineCache mPicaShaderPipelineCache;
     Oot3d::PicaAotShaderPack mPicaAotShaderPack;

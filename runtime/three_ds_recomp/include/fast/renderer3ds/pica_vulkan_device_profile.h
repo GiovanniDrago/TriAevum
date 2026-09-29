@@ -38,6 +38,13 @@ inline VkPhysicalDeviceVulkan12Features PicaVulkan12Features(const VkPhysicalDev
     enabled.shaderFloat16 = supported.shaderFloat16;
     enabled.descriptorBindingSampledImageUpdateAfterBind = supported.descriptorBindingSampledImageUpdateAfterBind;
     enabled.descriptorBindingStorageImageUpdateAfterBind = supported.descriptorBindingStorageImageUpdateAfterBind;
+    // FidelityFX Brixelizer binds its geometry arenas and bricks through
+    // partially bound, non-uniformly indexed descriptor arrays.
+    enabled.descriptorBindingPartiallyBound = supported.descriptorBindingPartiallyBound;
+    enabled.runtimeDescriptorArray = supported.runtimeDescriptorArray;
+    enabled.shaderStorageBufferArrayNonUniformIndexing = supported.shaderStorageBufferArrayNonUniformIndexing;
+    enabled.shaderSampledImageArrayNonUniformIndexing = supported.shaderSampledImageArrayNonUniformIndexing;
+    enabled.shaderStorageImageArrayNonUniformIndexing = supported.shaderStorageImageArrayNonUniformIndexing;
     return enabled;
 }
 

@@ -1,6 +1,6 @@
 # FidelityFX Brixelizer GI: design
 
-Status: phase 1 (build integration) done; phase 2 (geometry) next. Owner surface: F1 **Lighting**.
+Status: phases 1-2 done (debug view pending); phase 3 (diffuse GI) next. Owner surface: F1 **Lighting**.
 
 ## Goal
 
@@ -151,6 +151,42 @@ the material guide (F0, roughness, reflection gain), filling SSSR misses only.
   then validation-clean. Only bindless effects (Brixelizer) use that pool.
 - The runtime with the rebuilt backend is identical to the Interpolated2x
   baseline (Field, Sheik copy).
+
+## Phase 2 result (2026-09-29)
+
+- `renderer3ds/pica_gi_geometry` (shared 3DS layer) turns one native draw into
+  a triangle-list mesh with the shadow-caster contract (`VertexGeometry::Pose`):
+  rigid draws keep a model-space mesh shared per geometry version plus the
+  draw's model-to-world transform and a quantized placement signature; skinned
+  or non-homogeneous draws carry world positions. Strips become lists,
+  degenerate joints are dropped, unknown programs yield nothing.
+  `pica_gi_geometry_tests` covers these cases.
+- `oot3d/brixelizer_scene` owns the context, the 512^3 R8 atlas, brick and
+  cascade buffers, host-visible vertex/index arenas registered once, and the
+  instance lifecycle: a rigid placement seen in two consecutive native frames
+  becomes static; others are dynamic each update (triangle budget); static
+  placements unseen for 600 native frames are evicted; `ResetPicaState`
+  clears the field. The ~8 MB baked update description lives on the heap
+  (it overflowed the render thread's stack).
+- The PICA extension graph declares `SceneDistanceField` (Observer, AfterOpaque,
+  reads PicaSceneFrame and NativeSceneView). Geometry is collected at the draw
+  record site from the first non-synthetic execution of each native frame; the
+  update runs once per frame before the display effects.
+- Developer switch until the F1 control (phase 3): `OOT3D_GRAPHICS_BRIXELIZER=1`
+  with Per-pixel or Per-pixel + PBR lighting. Diagnostics:
+  `TRIAEVUM_SCENE_DISTANCE_FIELD` lines on stderr every 150 updates.
+- The renderer's Vulkan 1.2 profile now also enables descriptorBindingPartiallyBound,
+  runtimeDescriptorArray and non-uniform indexing of storage/sampled/storage-image
+  arrays (required by Brixelizer's shaders); arena and scratch buffers carry
+  transfer usage for FidelityFX's readback copies. Under the Khronos layer the
+  Field run then reports zero validation errors.
+- Field (Interpolated2x, Per-pixel): 64 admitted draws per native frame; 68 static
+  and 22 dynamic instances after 150 updates, 81 static after 300; arenas 205/154
+  KiB; free bricks 262,144 -> 197,770. GPU scratch is 268 MiB with the initial
+  budgets (to reduce). With the switch off, Field and Sheik copy stay identical
+  to the Interpolated2x baseline.
+- Not done yet: the SDF debug view (Brixelizer's debug visualization into an
+  inspectable image) and a GPU cost measurement of the update.
 
 ## Risks
 

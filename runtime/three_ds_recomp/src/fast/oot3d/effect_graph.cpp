@@ -28,7 +28,7 @@ namespace {
 
 [[nodiscard]] constexpr bool IsSemanticResource(EffectResource resource) noexcept {
     return resource == EffectResource::PicaSceneFrame || resource == EffectResource::NativeSceneView ||
-           resource == EffectResource::ExtensionGeometry;
+           resource == EffectResource::ExtensionGeometry || resource == EffectResource::SceneDistanceField;
 }
 
 inline constexpr uint64_t kOot3dEffectResourceNamespace =
@@ -417,6 +417,7 @@ std::string_view PicaExtensionPassName(PicaExtensionPass pass) noexcept {
         case PicaExtensionPass::TemporalReconstruction: return "TemporalReconstruction";
         case PicaExtensionPass::InteractiveGrass: return "InteractiveGrass";
         case PicaExtensionPass::ToonOutline: return "ToonOutline";
+        case PicaExtensionPass::SceneDistanceField: return "SceneDistanceField";
         case PicaExtensionPass::Count: return {};
     }
     return {};
@@ -508,6 +509,13 @@ CompiledEffectGraph BuildPicaExtensionGraph(const PicaAttachmentFeatureRequests&
                 .Contract = EffectContractKind::ComposerPass,
                 .Resources = { Read(EffectResource::NativeDepth), Read(EffectResource::OutlineGeometryGuide),
                                Read(EffectResource::NormalGuide), Read(EffectResource::RigidMotionGuide) } });
+    // The distance field voxelizes the native opaque geometry of the frame; it
+    // changes no native target and publishes a persistent field.
+    graph.Add({ .Name = std::string(PicaExtensionPassName(PicaExtensionPass::SceneDistanceField)),
+                .Enabled = requests.GlobalIllumination,
+                .Stage = EffectStage::AfterOpaque,
+                .Contract = EffectContractKind::Observer,
+                .Resources = { Read(EffectResource::PicaSceneFrame), Read(EffectResource::NativeSceneView) } });
     return graph.Compile();
 }
 
