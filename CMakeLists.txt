@@ -571,6 +571,19 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 endif()
 set_property(TARGET oot3d_native_a32_vfp_fast_tests PROPERTY FOLDER Tests)
 
+add_executable(pica_fragment_lighting_memo_tests EXCLUDE_FROM_ALL
+    runtime/three_ds_recomp/tests/pica_fragment_lighting_memo_tests.cpp
+    runtime/three_ds_recomp/src/fast/oot3d/pica_fragment_lighting.cpp
+)
+target_include_directories(pica_fragment_lighting_memo_tests PRIVATE
+    runtime/three_ds_recomp/include)
+target_compile_features(pica_fragment_lighting_memo_tests PRIVATE cxx_std_20)
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_compile_definitions(pica_fragment_lighting_memo_tests PRIVATE NOMINMAX)
+    set_property(TARGET pica_fragment_lighting_memo_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+set_property(TARGET pica_fragment_lighting_memo_tests PROPERTY FOLDER Tests)
+
 if (NOT TARGET nlohmann_json::nlohmann_json)
     find_package(nlohmann_json REQUIRED)
 endif()

@@ -81,15 +81,16 @@ uint64_t HashWord(uint64_t hash, uint32_t word) {
     return hash;
 }
 
-} // namespace
+// The decoder reads 0x08F and the contiguous range [0x140, 0x1D9] only.
+constexpr size_t kEnableRegister = 0x08FU;
+constexpr size_t kFirstLightingRegister = kLightBase;
+constexpr size_t kLastLightingRegister = 0x1D9U;
+constexpr size_t kLightingRegisterCount =
+    kLastLightingRegister - kFirstLightingRegister + 1U;
+static_assert(kLightBase + 8U * kLightStride <= 0x1C0U);
 
-PicaFragmentLightingState DecodePicaFragmentLighting(
-    std::span<const uint32_t> registers) {
+PicaFragmentLightingState DecodeUncached(std::span<const uint32_t> registers) {
     PicaFragmentLightingState state;
-    if (registers.size() < kRegisterCount) {
-        return state;
-    }
-
     state.Enabled = (Register(registers, 0x08FU) & 1U) != 0U &&
                     (Register(registers, 0x1C6U) & 1U) == 0U;
     state.ActiveLightCount = state.Enabled
@@ -166,6 +167,37 @@ PicaFragmentLightingState DecodePicaFragmentLighting(
             static_cast<uint8_t>((scale >> shift) & 7U));
     }
     return state;
+}
+
+} // namespace
+
+// One draw decodes the same registers several times (feature analysis,
+// shader key, identity, uniforms). The decode is a pure function of the
+// registers named above, so a per-thread copy of those registers and the
+// last result returns exactly what decoding again would.
+PicaFragmentLightingState DecodePicaFragmentLighting(
+    std::span<const uint32_t> registers) {
+    if (registers.size() < kRegisterCount) {
+        return {};
+    }
+    struct Cache {
+        bool Valid = false;
+        uint32_t Enable = 0;
+        std::array<uint32_t, kLightingRegisterCount> Lighting{};
+        PicaFragmentLightingState State;
+    };
+    thread_local Cache cache;
+    const auto lighting =
+        registers.subspan(kFirstLightingRegister, kLightingRegisterCount);
+    if (cache.Valid && cache.Enable == registers[kEnableRegister] &&
+        std::equal(lighting.begin(), lighting.end(), cache.Lighting.begin())) {
+        return cache.State;
+    }
+    cache.State = DecodeUncached(registers);
+    cache.Enable = registers[kEnableRegister];
+    std::copy(lighting.begin(), lighting.end(), cache.Lighting.begin());
+    cache.Valid = true;
+    return cache.State;
 }
 
 PicaLightingLutWriteCursor DecodePicaLightingLutWriteCursor(uint32_t value) {
