@@ -39,7 +39,9 @@ exactly that boundary.
 
 Per host frame, the loop in `RunOot3dNativeA32Window` does:
 
-1. frame start: SDL events and input, ImGui `StartDraw`, `api.StartFrame`;
+1. frame start: SDL events and input, ImGui `StartDraw`, `api.StartFrame`
+   (the frame is open before the guest refresh, because dependency flushes
+   record into it);
 2. guest refresh (when due): guest execution, SVCs, audio, PICA drain, draw
    plans captured into the presentation scheduler's accumulator, dependency
    flushes for raw copies;
@@ -95,9 +97,10 @@ capture both halves at a barrier.
    only inside such a flush; anything else is a hard error, not a race.
 2. **Savestate save/load, quick save/load.** Barrier: drain R, capture or
    restore both halves, resume.
-3. **Graphics settings, resize, F1 menu or any ImGui window visible.** ImGui is
-   started by G and rendered by R today. While any GUI is visible the loop runs
-   serially (barrier every frame); the pipeline resumes when it closes.
+3. **Graphics settings changes and resize.** They reconfigure the renderer:
+   barrier, apply in R, resume. ImGui itself needs no barrier: in this host
+   `Gui::ImGuiRenderDrawData`, `DrawGame` and `DrawFloatingWindows` are empty,
+   so `StartDraw`/`EndDraw` are CPU-only ImGui state and stay in G.
 4. **Deterministic captures (`--screenshot*`), probes, semantic traces.**
    Screenshots are ordered in R. Traces that record at presentation time run
    serially unless proven order-independent.
