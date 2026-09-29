@@ -492,6 +492,24 @@ void Fast3dGui::ImGuiBackendShutdown() {
     }
 }
 
+void Fast3dGui::SetRendererRouting(RendererRouting routing) {
+    mRendererRouting = std::move(routing);
+}
+
+namespace {
+
+// Owns a copy of one frame's draw lists for rendering after ImGui moved on.
+std::shared_ptr<ImDrawData> CloneImGuiDrawData(const ImDrawData* source) {
+    std::shared_ptr<ImDrawData> copy(new ImDrawData(*source), [](ImDrawData* data) {
+        for (ImDrawList* list : data->CmdLists) IM_DELETE(list);
+        delete data;
+    });
+    for (ImDrawList*& list : copy->CmdLists) list = list->CloneOutput();
+    return copy;
+}
+
+} // namespace
+
 void Fast3dGui::ImGuiBackendNewFrame() {
     switch (mImpl.Backend) {
 #ifdef ENABLE_OPENGL
@@ -520,7 +538,13 @@ void Fast3dGui::ImGuiBackendNewFrame() {
     if (mImpl.Backend == WindowBackend::FAST3D_SDL_OOT3D_VULKAN) {
         if (auto interpreter = mInterpreter.lock()) {
             auto* api = dynamic_cast<GfxRenderingAPIVulkan*>(interpreter->GetCurrentRenderingAPI());
-            if (api != nullptr) api->NewImGuiFrame();
+            if (api != nullptr && !mRendererRouting.Synchronous) {
+                api->NewImGuiFrame();
+            } else if (api != nullptr && !api->ImGuiBackendReady()) {
+                // Initialization and the font upload record GPU work. Once
+                // ready, the backend's new-frame step has nothing to do.
+                mRendererRouting.Synchronous([api] { api->NewImGuiFrame(); });
+            }
         }
     }
 #endif
@@ -603,7 +627,12 @@ void Fast3dGui::ImGuiRenderDrawData(ImDrawData* data) {
     if (mImpl.Backend == WindowBackend::FAST3D_SDL_OOT3D_VULKAN) {
         if (auto interpreter = mInterpreter.lock()) {
             auto* api = dynamic_cast<GfxRenderingAPIVulkan*>(interpreter->GetCurrentRenderingAPI());
-            if (api != nullptr) api->RenderImGuiDrawData(data);
+            if (api != nullptr && mRendererRouting.Deferred && data != nullptr) {
+                mRendererRouting.Deferred(
+                    [api, copy = CloneImGuiDrawData(data)] { api->RenderImGuiDrawData(copy.get()); });
+            } else if (api != nullptr) {
+                api->RenderImGuiDrawData(data);
+            }
         }
     }
 #endif

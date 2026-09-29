@@ -1,6 +1,8 @@
 #pragma once
 #include <SDL2/SDL.h>
 
+#include <functional>
+
 #include "Fast3dWindow.h"
 #include "ship/window/gui/Gui.h"
 #include "fast/WindowEvent.h"
@@ -84,6 +86,22 @@ class Fast3dGui : public Ship::Gui {
     void HandleWindowEvents(Fast::WindowEvent event);
 
     /**
+     * @brief Routes the renderer side of ImGui through a host render thread.
+     *
+     * Without routing, backend frame setup and draw-data rendering run on the
+     * calling (ImGui) thread. A host that renders on another thread supplies
+     * Synchronous (run once the renderer is idle, and wait) and Deferred (queue
+     * after the renderer work already submitted). Deferred rendering receives
+     * a copy of the frame's draw data, since the next ImGui frame reuses it.
+     * An empty routing restores direct calls.
+     */
+    struct RendererRouting {
+        std::function<void(std::function<void()>)> Synchronous;
+        std::function<void(std::function<void()>)> Deferred;
+    };
+    void SetRendererRouting(RendererRouting routing);
+
+    /**
      * @brief Loads an image from an archive path and caches it under the given name.
      * @param name Path/texture name used to reference the texture in GetTextureByName().
      * @param path Virtual resource path of the source image.
@@ -161,6 +179,7 @@ class Fast3dGui : public Ship::Gui {
 
     std::weak_ptr<Interpreter> mInterpreter; ///< Weak reference to the Fast3D scripting interpreter.
     GuiWindowInitData mImpl;                 ///< Backend-specific window/context handles passed to Init().
+    RendererRouting mRendererRouting;        ///< Optional host render-thread routing.
 
   private:
     void SyncOot3dVulkanMousePosition();

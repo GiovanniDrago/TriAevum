@@ -1577,14 +1577,14 @@ void GfxRenderingAPIVulkan::StartFrame() {
     auto& settingsRuntime = Oot3d::GraphicsSettingsRuntime::Instance();
     Oot3d::TickAmbientOcclusionDiagnostics(settingsRuntime, mFrameCounter);
     Oot3d::TickDisplayDiagnostics(settingsRuntime, mFrameCounter);
-    settingsRuntime.TickPresentation();
+    if (!mPresentationSettingsHeld) settingsRuntime.TickPresentation();
     const auto initialGraphicsSettings = settingsRuntime.Snapshot();
     const auto presentationRequest =
         Oot3d::ResolveRendererPresentationRequest(
             initialGraphicsSettings,
             settingsRuntime.PresentationStatus(),
             mPresentationSettingsApplied);
-    if (presentationRequest.has_value()) {
+    if (presentationRequest.has_value() && !mPresentationSettingsHeld) {
         const auto& value = presentationRequest->Value;
         const Oot3d::TitlePresentationSettingsView view{
             static_cast<uint8_t>(value.Window),

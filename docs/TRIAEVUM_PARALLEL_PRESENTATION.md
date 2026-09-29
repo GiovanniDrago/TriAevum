@@ -133,9 +133,11 @@ capture both halves at a barrier.
 2. **Savestate save/load, quick save/load.** Barrier: drain R, capture or
    restore both halves, resume.
 3. **Graphics settings changes and resize.** They reconfigure the renderer:
-   barrier, apply in R, resume. ImGui itself needs no barrier: in this host
-   `Gui::ImGuiRenderDrawData`, `DrawGame` and `DrawFloatingWindows` are empty,
-   so `StartDraw`/`EndDraw` are CPU-only ImGui state and stay in G.
+   barrier, apply in R, resume. (This section first assumed ImGui to be
+   CPU-only because the base `Gui` render hooks are empty. It is not:
+   `Fast3dGui` overrides them, and `RenderImGuiDrawData` also triggers the
+   final display composition through `PrepareOverlay`. See "Phase 3 as
+   implemented".)
 4. **Deterministic captures (`--screenshot*`), probes, semantic traces.**
    Screenshots are ordered in R. Traces that record at presentation time run
    serially unless proven order-independent.
@@ -171,6 +173,91 @@ measured.
 3. Worker thread, depth-one queue, barriers, serial fallback, option
    `--parallel-presentation` (off by default). Qualify and measure.
 4. Transition preparation off the critical path, if R becomes the bottleneck.
+
+## Phase 3 as implemented
+
+`--parallel-presentation` (or `TRIAEVUM_PARALLEL_PRESENTATION=1` for
+harnesses) switches `NativeRenderCommandStream` to its worker. Without it the
+stream runs every command at submission, which is the serial loop.
+
+- **Frames in flight: one.** The guest may submit frame f+1 while the worker
+  runs frame f. The end-of-frame command (screenshot, pacing, `EndFrame`) is
+  the frame boundary.
+- **`Run` executes on the caller.** It drains the worker and then runs the
+  command on the guest thread. The renderer is still used by one thread at a
+  time, and thread-affine work stays on the thread that owns the window:
+  Windows delivers window operations (`SetWindowPos` from display settings)
+  to that thread, so running them on the worker while the guest waited
+  deadlocked the first frame.
+- **Display settings.** `TitleRenderBackend::SetPresentationSettingsHeld`:
+  a frame begun on the worker holds display-setting application and the
+  confirmation timeout; the guest begins synchronously while a presentation
+  transaction is active, and that frame applies them.
+- **ImGui.** `Fast3dGui::SetRendererRouting`: backend initialization and the
+  font upload run through `Run` (only while the backend is not ready), and
+  `RenderImGuiDrawData` (which also runs `PrepareOverlay`, the display
+  composition and scanout) is queued in renderer order with a copy of the
+  frame's draw lists. Found with the Vulkan validation layer's thread-safety
+  checks: the guest thread recorded barriers on the renderer's command pool.
+- **Frame begin.** Asynchronous, except when it can reconfigure the renderer
+  or must stop the guest: the first frame, a window size change, a graphics
+  settings revision change, a native-presentation override toggle, or a
+  previous renderer frame without an acquired image. Those use `Run`: after a
+  resize the renderer recreates PICA targets and reads GPU copies back into
+  guest memory, which is only legal while the guest waits.
+- **Frame without an image, discovered late.** The worker marks the frame
+  skipped: drawing commands (top and bottom presentation, UI, screenshot) do
+  nothing, `EndFrame` and the pacing reset still run, the UI keeps its
+  prepared textures, and a dependency flush waits (PPF is delivered at the
+  next flush, as a slow GPU would deliver it). The guest sees the flag at its
+  next frame begin and takes the synchronous path until frames are active
+  again. The serial loop never advances the guest in such a frame; the worker
+  mode advances it by at most one frame. Minimizing is the only practical
+  trigger.
+- **Guest state from the renderer.** Every guest-memory callback registered
+  with `SetPicaPhysicalMemoryAccess` (read, write-back, deferred write, PPF,
+  materialization) checks `InSynchronousCommand()`: it runs only inline or
+  inside `Run`, otherwise it throws. Deferred copy bytes read by the guest go
+  the other way: the reader runs in the renderer through `Run`.
+- **UI textures.** `N64UiFast3dRenderer::PrepareTextures` reads texture
+  payloads (guest memory, via the ocarina text and native texture
+  providers) on the guest side; `Render` consumes them. The first use of a
+  key is prepared at the same point the serial loop resolved it.
+- **Policy.** The guest keeps copies of the composition policy and the
+  interpolation flag for change detection; the renderer owns the live
+  values. The realtime pacer is renderer-owned (observe, wait, reset).
+- **Timing.** Renderer timings go to a separate `NativeFramePhaseTiming` and
+  merge after the final drain; per-frame benchmark phases then exclude
+  renderer work, and frame times are guest-loop times (bounded by the
+  renderer through the frame limit).
+- **Reports.** The loop ends with a drain; every renderer-owned counter is
+  read after it.
+
+Qualification (2026-09-29, host with `mod-vfp-pgo`): Interpolated2x Field
+and Sheik copy, inline and worker, identical to the phase 0 baseline
+(framebuffers, guest contract, interpolation and frame-rate counters);
+native-fidelity Field and copy, inline and worker, identical to the control
+hashes. The worker run was also clean under the Vulkan validation layer's
+thread-safety checks.
+
+Throughput (`measure_interpolated.py`, Interpolated2x, unpaced, no-present,
+background window, ms per presented frame, ABBA):
+
+| Baseline | Comparison | Pairs | Median ratio | Range |
+|---|---|---|---|---|
+| p3 inline | p3 worker | 4 | 0.862 | 0.839-0.875 |
+| host6 (fca3e07) | p3 worker | 6 | 0.908 | 0.878-0.928 |
+| host6 (fca3e07) | p3 inline | 4 | 1.038 | 0.969-1.050 |
+
+The worker removes about 14% of the serial frame. Against the previous best
+host the gain is about 9%: the inline stream itself appears to cost a few
+percent (to be located; the command closures and the per-presentation
+copy-reference snapshot are the first suspects).
+
+Remaining shared state, accepted: `GraphicsSettingsRuntime` and
+`GrassInteractionBridge` are mutex-protected; the scheduler's statistics are
+separate fields per side; the SDL window size/position queries and the vsync
+console variable read in `EndFrame` are read-only on the worker.
 
 ## Risks
 

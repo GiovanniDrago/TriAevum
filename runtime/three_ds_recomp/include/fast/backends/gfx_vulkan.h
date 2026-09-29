@@ -213,6 +213,13 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     bool ApplyPresentationSettings(
         const Oot3d::TitlePresentationSettingsView& settings,
         std::string* error = nullptr) override;
+    // Readable from the ImGui thread while the renderer runs elsewhere.
+    bool ImGuiBackendReady() const noexcept {
+        return mImGuiInitialized.load(std::memory_order_acquire);
+    }
+    void SetPresentationSettingsHeld(bool held) override {
+        mPresentationSettingsHeld = held;
+    }
     bool PublishSceneView(
         const Oot3d::TitleSceneViewSubmission& view) override;
     bool ResetTitleState(std::string* error = nullptr) override;
@@ -1295,6 +1302,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     bool mVsyncEnabled = true;
     float mInternalResolutionScale = 1.0F;
     bool mPresentationSettingsApplied = false;
+    bool mPresentationSettingsHeld = false;
     uint8_t mAppliedWindowMode = 0;
     uint32_t mAppliedOutputWidth = 0;
     uint32_t mAppliedOutputHeight = 0;
@@ -1305,7 +1313,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     VkSampleCountFlagBits mNativePicaSampleCount = VK_SAMPLE_COUNT_1_BIT;
     VkResolveModeFlagBits mNativePicaDepthResolveMode = VK_RESOLVE_MODE_NONE;
     bool mFrameSubmitted = false;
-    bool mImGuiInitialized = false;
+    std::atomic<bool> mImGuiInitialized{false};
     VkViewport mViewport{};
     VkRect2D mScissor{};
     bool mViewportSet = false;

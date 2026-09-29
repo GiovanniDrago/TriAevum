@@ -47,6 +47,12 @@ class TitleRenderBackend {
         }
         return false;
     }
+    // Display settings (window mode, size, position, and the confirmation
+    // timeout that may roll them back) are window operations, which belong to
+    // the thread that owns the window. A host that begins some frames on
+    // another thread holds them there; the next frame begun on the owning
+    // thread applies them.
+    virtual void SetPresentationSettingsHeld(bool) {}
     virtual bool PublishSceneView(const TitleSceneViewSubmission&) {
         return false;
     }

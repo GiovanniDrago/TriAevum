@@ -53,6 +53,8 @@ struct Oot3dNativeGameLaunch {
     std::vector<int32_t> RoomRequestSmokeSequence;
     bool ValidateOnly = false;
     bool ExtendedDiagnostics = false;
+    // Presents frame N on a render thread while the guest simulates N+1.
+    bool ParallelPresentation = false;
     Oot3dNativeGame::GameplayTimingMode GameplayTiming =
         Oot3dNativeGame::GameplayTimingMode::Native30Interpolated;
     // Legacy aliases retained for existing launch scripts. Parsing resolves

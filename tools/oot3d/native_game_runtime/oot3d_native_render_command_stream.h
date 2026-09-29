@@ -22,11 +22,19 @@ namespace Oot3dNativeGame {
 // Contract in worker mode:
 // - Submit queues a command; at most MaxFramesInFlight frames (commands
 //   submitted with EndsFrame) are pending, beyond that Submit waits.
-// - Run executes a command synchronously after everything before it.
+// - Run executes a command synchronously after everything before it, on the
+//   calling thread once the worker is idle. Thread-affine work (window
+//   operations, which Windows delivers to the window's thread) therefore
+//   stays on the submitter, and the renderer is never used by two threads at
+//   once.
 // - An exception thrown by a command stops the worker from running further
 //   commands and is rethrown to the submitter by the next Submit, Run or
 //   Drain. Pending commands are discarded.
 // - Drain waits until the stream is empty.
+// - A command may touch guest-owned state (guest memory, guest interrupts)
+//   only while the submitter is known to be stopped: inline, or inside Run.
+//   InSynchronousCommand tells the two cases apart; commands that may reach
+//   guest state check it and fail instead of racing the guest.
 class NativeRenderCommandStream final {
   public:
     enum class Mode : uint8_t { Inline, Worker };
@@ -51,14 +59,19 @@ class NativeRenderCommandStream final {
     // True on the worker thread while it executes a command, and on the
     // submitting thread while an inline command runs.
     [[nodiscard]] bool InCommand() const noexcept;
+    // True while a command runs and its submitter waits for it: every inline
+    // command, and a Run command in worker mode.
+    [[nodiscard]] bool InSynchronousCommand() const noexcept;
     [[nodiscard]] uint64_t ExecutedCommands() const noexcept;
 
   private:
     struct Entry {
         Command Work;
         bool EndsFrame = false;
+        bool Synchronous = false;
     };
 
+    void Enqueue(Command command, bool endsFrame, bool synchronous);
     void StartWorker();
     void StopWorker();
     void WorkerLoop();

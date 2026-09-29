@@ -114,6 +114,26 @@ void TestModeSwitchDrainsAndDestructorRunsPending() {
     }
 }
 
+// Only commands whose submitter waits for them may reach guest state.
+void TestSynchronousCommandsAreDistinguished() {
+    for (const Mode mode : {Mode::Inline, Mode::Worker}) {
+        NativeRenderCommandStream stream(mode);
+        bool submitted = true;
+        bool ran = false;
+        stream.Submit([&] { submitted = stream.InSynchronousCommand(); });
+        std::thread::id runThread;
+        stream.Run([&] {
+            ran = stream.InSynchronousCommand();
+            runThread = std::this_thread::get_id();
+        });
+        Require(runThread == std::this_thread::get_id(),
+                "Run did not execute on the calling thread");
+        Require(submitted == (mode == Mode::Inline) && ran &&
+                    !stream.InSynchronousCommand(),
+                "stream misreported a synchronous command");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -122,6 +142,7 @@ int main() {
     TestFramesInFlightBound();
     TestWorkerFailureIsRethrownOnce();
     TestModeSwitchDrainsAndDestructorRunsPending();
+    TestSynchronousCommandsAreDistinguished();
     std::cout << "oot3d_native_render_command_stream_tests: ok\n";
     return 0;
 }

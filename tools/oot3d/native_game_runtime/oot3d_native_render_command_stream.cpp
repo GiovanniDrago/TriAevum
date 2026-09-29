@@ -7,10 +7,17 @@ namespace Oot3dNativeGame {
 namespace {
 
 thread_local bool tInCommand = false;
+thread_local bool tSynchronous = false;
 
 struct CommandScope {
-    CommandScope() { tInCommand = true; }
-    ~CommandScope() { tInCommand = false; }
+    explicit CommandScope(bool synchronous) {
+        tInCommand = true;
+        tSynchronous = synchronous;
+    }
+    ~CommandScope() {
+        tInCommand = false;
+        tSynchronous = false;
+    }
 };
 
 } // namespace
@@ -35,15 +42,24 @@ bool NativeRenderCommandStream::InCommand() const noexcept {
     return tInCommand;
 }
 
+bool NativeRenderCommandStream::InSynchronousCommand() const noexcept {
+    return tInCommand && tSynchronous;
+}
+
 uint64_t NativeRenderCommandStream::ExecutedCommands() const noexcept {
     std::lock_guard lock(mMutex);
     return mExecuted;
 }
 
 void NativeRenderCommandStream::Submit(Command command, bool endsFrame) {
+    Enqueue(std::move(command), endsFrame, false);
+}
+
+void NativeRenderCommandStream::Enqueue(Command command, bool endsFrame,
+                                        bool synchronous) {
     if (mMode == Mode::Inline) {
         {
-            CommandScope scope;
+            CommandScope scope(true);
             command();
         }
         std::lock_guard lock(mMutex);
@@ -61,23 +77,20 @@ void NativeRenderCommandStream::Submit(Command command, bool endsFrame) {
         RethrowPendingFailureLocked(lock);
         ++mFramesQueued;
     }
-    mQueue.push_back({std::move(command), endsFrame});
+    mQueue.push_back({std::move(command), endsFrame, synchronous});
     ++mSubmitted;
     mWork.notify_one();
 }
 
 void NativeRenderCommandStream::Run(Command command) {
-    if (mMode == Mode::Inline) {
-        Submit(std::move(command));
-        return;
+    Drain();
+    {
+        CommandScope scope(true);
+        command();
     }
-    Submit(std::move(command));
-    std::unique_lock lock(mMutex);
-    const uint64_t ticket = mSubmitted;
-    mProgress.wait(lock, [&] {
-        return mFailure != nullptr || mExecuted >= ticket;
-    });
-    RethrowPendingFailureLocked(lock);
+    std::lock_guard lock(mMutex);
+    ++mSubmitted;
+    ++mExecuted;
 }
 
 void NativeRenderCommandStream::Drain() {
@@ -128,7 +141,7 @@ void NativeRenderCommandStream::WorkerLoop() {
         lock.unlock();
         std::exception_ptr failure;
         try {
-            CommandScope scope;
+            CommandScope scope(entry.Synchronous);
             entry.Work();
         } catch (...) {
             failure = std::current_exception();

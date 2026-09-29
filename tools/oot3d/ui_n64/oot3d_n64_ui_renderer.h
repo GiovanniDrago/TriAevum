@@ -51,6 +51,19 @@ class UiTextureProvider {
                          std::string* error = nullptr) const = 0;
 };
 
+// A texture payload read from its provider ahead of the Render that first
+// uses it. Resolution reads the running process, so a threaded host prepares
+// on the guest side and the renderer only consumes the result.
+struct PreparedUiTexture {
+    enum class Status : std::uint8_t { Resolved, MissingProvider, Invalid };
+    std::string key;
+    Status status = Status::Invalid;
+    bool native = false;
+    UiTexturePixels pixels;
+    std::string error;
+};
+using PreparedUiTextures = std::vector<PreparedUiTexture>;
+
 std::uint64_t N64UiSolidShaderId0() noexcept;
 std::uint64_t N64UiTexturedShaderId0() noexcept;
 std::uint64_t N64UiShaderId1() noexcept;
@@ -74,6 +87,19 @@ class N64UiFast3dRenderer {
                 std::uint32_t framebufferWidth,
                 std::uint32_t framebufferHeight, N64UiCanvasMode canvasMode,
                 std::string* error = nullptr);
+    // Resolves every texture a Render of these primitives would resolve for
+    // the first time. Prepared keys are remembered (until Release), so each
+    // payload is read once, as Render alone would.
+    [[nodiscard]] PreparedUiTextures
+    PrepareTextures(std::span<const UiPrimitive> primitives);
+    // Hands prepared payloads to the renderer without drawing (a frame that
+    // renders nothing still owns them for its next Render).
+    void Stage(PreparedUiTextures prepared);
+    // Render without reading the provider: first uses consume `prepared`.
+    bool Render(std::span<const UiPrimitive> primitives,
+                std::uint32_t framebufferWidth,
+                std::uint32_t framebufferHeight, N64UiCanvasMode canvasMode,
+                PreparedUiTextures prepared, std::string* error = nullptr);
     void SetTextureProvider(const UiTextureProvider* textureProvider) noexcept;
     void Release() noexcept;
 
@@ -92,6 +118,10 @@ class N64UiFast3dRenderer {
     const UiTextureProvider* texture_provider_ = nullptr;
     std::unordered_map<std::string, ResidentTexture> textures_;
     std::unordered_set<std::string> failed_textures_;
+    // Preparing side: keys already handed to the renderer.
+    std::unordered_set<std::string> prepared_keys_;
+    // Rendering side: prepared payloads not consumed yet.
+    std::unordered_map<std::string, PreparedUiTexture> staged_textures_;
     N64UiRendererStats stats_;
 };
 

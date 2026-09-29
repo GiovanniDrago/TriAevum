@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -15,6 +16,100 @@ void Require(bool condition, std::string_view message) {
     if (!condition) {
         Fail(message);
     }
+}
+
+class RecordingBackend final : public Oot3d::Renderer::UiRenderBackend {
+  public:
+    bool PrepareUiOverlay(const Oot3d::Renderer::UiOverlayViewport&,
+                          std::string*) override {
+        return true;
+    }
+    bool IsUiFramebufferYInverted() const noexcept override { return false; }
+    uint32_t CreateUiTexture(std::span<const uint8_t>, uint16_t, uint16_t,
+                             std::string*) override {
+        return ++created;
+    }
+    void DeleteUiTexture(uint32_t) noexcept override {}
+    bool DrawUiTriangles(std::span<const Oot3d::Renderer::UiOverlayVertex>,
+                         uint32_t textureId, std::string*) override {
+        drawnTextures.push_back(textureId);
+        return true;
+    }
+    uint32_t created = 0;
+    std::vector<uint32_t> drawnTextures;
+};
+
+class CountingProvider final : public oot3d::ui::UiTextureProvider {
+  public:
+    bool Resolve(const oot3d::ui::UiTextureIdentity& identity,
+                 oot3d::ui::UiTexturePixels& pixels,
+                 std::string* error) const override {
+        ++calls;
+        if (identity.semantic_name == "oot3d/native/broken") {
+            if (error != nullptr) *error = "broken payload";
+            return false;
+        }
+        pixels.width = 2;
+        pixels.height = 1;
+        pixels.rgba8.assign(8, 0xFF);
+        return true;
+    }
+    mutable int calls = 0;
+};
+
+oot3d::ui::UiPrimitive TexturedPrimitive(std::string_view name) {
+    oot3d::ui::UiPrimitive primitive;
+    primitive.texture.semantic_name = std::string(name);
+    primitive.destination = {0.0F, 0.0F, 8.0F, 8.0F};
+    return primitive;
+}
+
+// Prepared rendering reads the provider only while preparing, once per key,
+// and renders exactly what the reading Render renders.
+void TestPreparedTextures() {
+    using namespace oot3d::ui;
+    const std::vector<UiPrimitive> primitives = {
+        TexturedPrimitive("oot3d/native/a"), TexturedPrimitive("oot3d/native/b"),
+        TexturedPrimitive("oot3d/native/a"),
+        TexturedPrimitive("oot3d/native/broken")};
+    CountingProvider readingProvider;
+    RecordingBackend readingBackend;
+    std::string readingError;
+    {
+        N64UiFast3dRenderer renderer(readingBackend, &readingProvider);
+        Require(!renderer.Render(primitives, 400, 240,
+                                 N64UiCanvasMode::NativeTopScreen400x240,
+                                 &readingError),
+                "a broken UI texture was not reported");
+    }
+    CountingProvider provider;
+    RecordingBackend backend;
+    N64UiFast3dRenderer renderer(backend, &provider);
+    auto prepared = renderer.PrepareTextures(primitives);
+    Require(prepared.size() == 3U && provider.calls == 3,
+            "UI texture preparation did not resolve each key once");
+    std::string error;
+    Require(!renderer.Render(primitives, 400, 240,
+                             N64UiCanvasMode::NativeTopScreen400x240,
+                             std::move(prepared), &error),
+            "a prepared broken UI texture was not reported");
+    Require(provider.calls == 3,
+            "prepared UI rendering read the texture provider");
+    Require(backend.drawnTextures == readingBackend.drawnTextures &&
+                backend.created == readingBackend.created &&
+                error == readingError && error == "broken payload",
+            "prepared UI rendering differs from reading rendering");
+    Require(renderer.PrepareTextures(primitives).empty() && provider.calls == 3,
+            "UI texture preparation repeated a prepared key");
+    const auto stats = renderer.Stats();
+    Require(stats.native_texture_resolves == 3U &&
+                stats.native_texture_failures == 1U &&
+                stats.texture_uploads == 2U,
+            "prepared UI texture statistics changed");
+    renderer.Release();
+    Require(renderer.PrepareTextures(primitives).size() == 3U &&
+                provider.calls == 6,
+            "Release kept prepared UI texture keys");
 }
 
 } // namespace
@@ -63,6 +158,7 @@ int main() {
     Require(BuildUiTextureCacheKey(archiveIdentity) ==
                 archiveIdentity.semantic_name,
             "archive texture cache identity unexpectedly changed");
+    TestPreparedTextures();
     std::cout << "oot3d_n64_ui_renderer_tests: ok\n";
     return 0;
 }
