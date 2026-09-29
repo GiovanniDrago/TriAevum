@@ -1,6 +1,6 @@
 # FidelityFX Brixelizer GI: design
 
-Status: phases 1-2 done; phase 3 (diffuse GI) next. Owner surface: F1 **Lighting**.
+Status: phases 1-2 done; phase 3 (diffuse GI) in progress: settings and F1 control done. Owner surface: F1 **Lighting**.
 
 ## Goal
 
@@ -89,9 +89,16 @@ the native frame's. GI dispatch runs per presented sample (its own history).
 
 Diffuse GI is irradiance; it needs diffuse albedo, which the canonical guides
 do not carry (the ambient guide's RGB is the ambient response consumed by AO).
-A new auxiliary output **DiffuseAlbedoGuide** (RGBA8, location 5, declared only
-when GI is active) is written by the per-pixel lighting shaders from the albedo
-they already resolve. The composer (the same fused scene composite as AO and
+A new auxiliary output **DiffuseAlbedoGuide** (RGBA8, location 7, declared only
+when GI is active) carries it. Locations 5 and 6 already hold the fog and
+outline-geometry guides, so it is the eighth colour attachment (the common
+`maxColorAttachments`); the instrumented ABI keeps seven attachments whenever
+GI is off, so existing pipelines, manifests and prewarm are unchanged. Writers:
+per-pixel lit draws re-evaluate the native TEV region with unit lighting
+(primary 1, secondary 0) and store the result, i.e. texture times material
+colour without the vertex-baked lighting; PBR draws store `pbr_albedo`
+(returned to sRGB); other opaque, RGB-replacing scene draws store zero so a
+surface in front removes GI; translucent draws leave it. Alpha is validity. The composer (the same fused scene composite as AO and
 reflections, before UI) adds
 
 `color += coverage * albedo * diffuseGI * intensity * aoVisibility`
@@ -173,7 +180,8 @@ the material guide (F0, roughness, reflection gain), filling SSSR misses only.
   record site from the first non-synthetic execution of each native frame; the
   update runs once per frame before the display effects.
 - Developer switch until the F1 control (phase 3): `OOT3D_GRAPHICS_BRIXELIZER=1`
-  with Per-pixel or Per-pixel + PBR lighting. Diagnostics:
+  with Per-pixel or Per-pixel + PBR lighting (replaced in phase 3 by the
+  setting below). Diagnostics:
   `TRIAEVUM_SCENE_DISTANCE_FIELD` lines on stderr every 150 updates.
 - The renderer's Vulkan 1.2 profile now also enables descriptorBindingPartiallyBound,
   runtimeDescriptorArray and non-uniform indexing of storage/sampled/storage-image
@@ -214,6 +222,27 @@ the material guide (F0, roughness, reflection gain), filling SSSR misses only.
 - Qualification: Field under the Khronos validation layer with debug view and
   timestamps, zero errors; with the switch off, Field and Sheik copy identical
   to the Interpolated2x baseline (contract and captures).
+
+## Phase 3 progress
+
+- Settings (graphics settings runtime is the single owner):
+  `Graphics.Effects.GlobalIllumination {Mode Off|BrixelizerGI, Resolution
+  Half|Quarter, DiffuseIntensity 0..4}`; an older file without the object
+  loads Off and is rewritten. Validation turns the mode Off (with the reason)
+  without NRI, sampled depth, normal/material guides, motion vectors, view
+  metadata or the `BrixelizerGlobalIllumination` capability, which the
+  renderer reports from `BrixelizerScene::Supported` (compiled SDK, R8
+  storage images, descriptor indexing). The rendering snapshot disables GI
+  outside Per-pixel / Per-pixel + PBR lighting and under F2/Authentic; the
+  stored preference survives. The scene distance field now follows the
+  setting (the environment switch is gone).
+- F1 Lighting > Global illumination: mode (capability-safe Off), GI
+  resolution, GI diffuse intensity, with the unavailability reason. The
+  actual-widget smoke covers selection, persistence, the per-pixel and F2
+  rendering gates and capability loss (6,833 assertions).
+- `kLastGraphicsCapability` replaces two loops that ended at a hard-coded
+  enumerator (a new capability was silently missing from the permissive
+  load-time set).
 
 ## Risks
 

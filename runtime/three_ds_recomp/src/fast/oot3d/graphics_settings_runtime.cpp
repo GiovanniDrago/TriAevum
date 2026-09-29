@@ -400,8 +400,10 @@ VersionedGraphicsSettings GraphicsSettingsRuntime::SnapshotForRendering() const 
     std::scoped_lock lock(mMutex);
     VersionedGraphicsSettings result{mService.Current(), mRevision};
     mNativePresentation.Apply(result.Value);
-    if (!UsesFullSceneLighting(result.Value.Effects.SurfaceLighting))
+    if (!UsesFullSceneLighting(result.Value.Effects.SurfaceLighting)) {
         result.Value.Effects.DirectionalShadows.Mode = DirectionalShadowMode::Off;
+        result.Value.Effects.GlobalIllumination.Mode = GlobalIlluminationMode::Off;
+    }
     // Inactive directional/ambient edits must not invalidate histories.
     // Point-light groups remain independently controllable in per-pixel modes.
     if (!mNativePresentation.Active() && result.Value.Preset != GraphicsPreset::Authentic &&

@@ -3720,6 +3720,34 @@ TEST(Oot3dGraphicsSettings, GatesDirectionalShadowsOnTheirBackendOwner) {
               DirectionalShadowMode::VirtualShadowMaps);
 }
 
+TEST(Oot3dGraphicsSettings, GatesGlobalIlluminationOnItsInputsAndProvider) {
+    using namespace Fast::Oot3d;
+    auto settings = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
+    settings.Effects.GlobalIllumination.Mode = GlobalIlluminationMode::BrixelizerGi;
+    settings.Effects.GlobalIllumination.DiffuseIntensity = 9.0F;
+
+    GraphicsCapabilities capabilities;
+    for (const auto capability :
+         {GraphicsCapability::NriInterop, GraphicsCapability::SampledDepth, GraphicsCapability::NormalGuide,
+          GraphicsCapability::MaterialGuide, GraphicsCapability::MotionVectors,
+          GraphicsCapability::ValidViewMetadata})
+        capabilities.Set(capability, true);
+    capabilities.Set(GraphicsCapability::BrixelizerGlobalIllumination, false, "not built");
+    auto result = GraphicsSettingsService::Validate(settings, capabilities);
+    EXPECT_EQ(result.Value.Effects.GlobalIllumination.Mode, GlobalIlluminationMode::Off);
+    ASSERT_FALSE(result.Issues.empty());
+    EXPECT_EQ(result.Issues.back().Message, "not built");
+    EXPECT_FLOAT_EQ(result.Value.Effects.GlobalIllumination.DiffuseIntensity, 4.0F);
+
+    capabilities.Set(GraphicsCapability::BrixelizerGlobalIllumination, true);
+    result = GraphicsSettingsService::Validate(settings, capabilities);
+    EXPECT_EQ(result.Value.Effects.GlobalIllumination.Mode, GlobalIlluminationMode::BrixelizerGi);
+
+    capabilities.Set(GraphicsCapability::MotionVectors, false, "no motion");
+    result = GraphicsSettingsService::Validate(settings, capabilities);
+    EXPECT_EQ(result.Value.Effects.GlobalIllumination.Mode, GlobalIlluminationMode::Off);
+}
+
 TEST(Oot3dPicaToon, ValidationClampsOutlineControls) {
     Fast::Oot3d::GraphicsCapabilities capabilities;
     auto settings = Fast::Oot3d::GraphicsSettingsService::Preset(

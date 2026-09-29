@@ -79,6 +79,10 @@ class BrixelizerScene final {
     BrixelizerScene(const BrixelizerScene&) = delete;
     BrixelizerScene& operator=(const BrixelizerScene&) = delete;
 
+    // Whether this build and device can run Brixelizer (compiled SDK, R8
+    // storage images, the descriptor-indexing features its shaders use).
+    [[nodiscard]] static bool Supported(VkPhysicalDevice physicalDevice, std::string& reason);
+
     bool Initialize(VkPhysicalDevice physicalDevice, VkDevice device, uint32_t frameSlots);
     void Shutdown();
 

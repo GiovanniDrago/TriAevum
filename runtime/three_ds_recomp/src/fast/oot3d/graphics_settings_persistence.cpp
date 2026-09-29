@@ -71,6 +71,14 @@ constexpr EnumNames<DirectionalShadowMode> kDirectionalShadowNames{
     {DirectionalShadowMode::Off, "Off"},
     {DirectionalShadowMode::VirtualShadowMaps, "VirtualShadowMaps"},
 };
+constexpr EnumNames<GlobalIlluminationMode> kGlobalIlluminationNames{
+    {GlobalIlluminationMode::Off, "Off"},
+    {GlobalIlluminationMode::BrixelizerGi, "BrixelizerGI"},
+};
+constexpr EnumNames<GlobalIlluminationResolution> kGlobalIlluminationResolutionNames{
+    {GlobalIlluminationResolution::Half, "Half"},
+    {GlobalIlluminationResolution::Quarter, "Quarter"},
+};
 constexpr EnumNames<AmbientOcclusionMode> kAoNames{
     {AmbientOcclusionMode::Off, "Off"},
     {AmbientOcclusionMode::Gtao, "GTAO"},
@@ -880,8 +888,7 @@ GraphicsCapabilities PermissiveCapabilities() {
     GraphicsCapabilities capabilities;
     for (uint8_t value =
              static_cast<uint8_t>(GraphicsCapability::NriInterop);
-         value <= static_cast<uint8_t>(
-                      GraphicsCapability::NativeSurfaceLighting);
+         value <= static_cast<uint8_t>(kLastGraphicsCapability);
          ++value) {
         capabilities.Set(
             static_cast<GraphicsCapability>(value), true);
@@ -1226,6 +1233,13 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                   {"Strength", directionalShadows.Strength},
                   {"PcfRadius", directionalShadows.PcfRadius},
               }},
+             {"GlobalIllumination",
+              {
+                  {"Mode", EnumName(effects.GlobalIllumination.Mode, kGlobalIlluminationNames)},
+                  {"Resolution",
+                   EnumName(effects.GlobalIllumination.Resolution, kGlobalIlluminationResolutionNames)},
+                  {"DiffuseIntensity", effects.GlobalIllumination.DiffuseIntensity},
+              }},
              {"AO",
               {
                   {"Mode",
@@ -1545,6 +1559,20 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
             }
         } else {
             value.DirectionalShadows = {};
+        }
+        // Added without a schema change: an absent object keeps the default
+        // (Off) and is written on the next save.
+        if (const Json* gi = FindMember(*effects, "GlobalIllumination"); gi != nullptr && gi->is_object()) {
+            auto& settings = value.GlobalIllumination;
+            ReadEnum(*gi, "Mode", settings.Mode, kGlobalIlluminationNames,
+                     "Graphics.Effects.GlobalIllumination.Mode", result);
+            ReadEnum(*gi, "Resolution", settings.Resolution, kGlobalIlluminationResolutionNames,
+                     "Graphics.Effects.GlobalIllumination.Resolution", result);
+            ReadScalar(*gi, "DiffuseIntensity", settings.DiffuseIntensity,
+                       "Graphics.Effects.GlobalIllumination.DiffuseIntensity", result);
+        } else {
+            value.GlobalIllumination = {};
+            result.NeedsRewrite = true;
         }
         if (const Json* ao =
                 RequireObject(*effects, "AO",

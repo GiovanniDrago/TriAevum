@@ -40,6 +40,18 @@ enum class SurfaceLightingMode : uint8_t { Native, PerPixel, PerPixelPbr, Native
 }
 enum class GrassQuality : uint8_t { Off, Low, Medium, High, Custom };
 
+// Dynamic diffuse global illumination from the scene's distance field
+// (FidelityFX Brixelizer GI). Per-pixel lighting modes only.
+enum class GlobalIlluminationMode : uint8_t { Off, BrixelizerGi };
+// Internal resolution of the GI solve relative to the scene guides.
+enum class GlobalIlluminationResolution : uint8_t { Half, Quarter };
+
+struct GlobalIlluminationSettings {
+    GlobalIlluminationMode Mode = GlobalIlluminationMode::Off;
+    GlobalIlluminationResolution Resolution = GlobalIlluminationResolution::Half;
+    float DiffuseIntensity = 1.0F;
+};
+
 inline constexpr uint8_t kMaximumToonLightBands = 6U;
 
 struct ToonStyleSettings {
@@ -144,6 +156,7 @@ void ApplyGrassQualityPreset(
 struct EffectsSettings {
     SurfaceLightingMode SurfaceLighting = SurfaceLightingMode::Native;
     DirectionalShadowSettings DirectionalShadows;
+    GlobalIlluminationSettings GlobalIllumination;
     AmbientOcclusionMode AmbientOcclusion = AmbientOcclusionMode::Off;
     uint8_t AoQuality = 0;
     float AoRadius = 1.0F;

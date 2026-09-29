@@ -451,6 +451,34 @@ struct BrixelizerScene::Impl {
 };
 
 BrixelizerScene::BrixelizerScene() : mImpl(std::make_unique<Impl>()) {}
+
+bool BrixelizerScene::Supported(VkPhysicalDevice physicalDevice, std::string& reason) {
+#if !OOT3D_HAS_FFX_BRIXELIZER
+    (void)physicalDevice;
+    reason = "FidelityFX Brixelizer is not built into this renderer";
+    return false;
+#else
+    VkFormatProperties format{};
+    vkGetPhysicalDeviceFormatProperties(physicalDevice, VK_FORMAT_R8_UNORM, &format);
+    if ((format.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) == 0U) {
+        reason = "R8 storage images are unavailable";
+        return false;
+    }
+    VkPhysicalDeviceVulkan12Features features12{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+    VkPhysicalDeviceFeatures2 features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+    features.pNext = &features12;
+    vkGetPhysicalDeviceFeatures2(physicalDevice, &features);
+    if (!features12.descriptorBindingPartiallyBound || !features12.runtimeDescriptorArray ||
+        !features12.shaderStorageBufferArrayNonUniformIndexing ||
+        !features12.shaderSampledImageArrayNonUniformIndexing ||
+        !features12.shaderStorageImageArrayNonUniformIndexing) {
+        reason = "the device lacks the descriptor indexing Brixelizer requires";
+        return false;
+    }
+    reason.clear();
+    return true;
+#endif
+}
 BrixelizerScene::~BrixelizerScene() { Shutdown(); }
 
 bool BrixelizerScene::Initialize(VkPhysicalDevice physicalDevice, VkDevice device, uint32_t frameSlots) {

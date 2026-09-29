@@ -130,6 +130,9 @@ Fast::Oot3d::GraphicsSettings CompleteSettings() {
     effects.DirectionalShadows.DepthBiasSlope = 2.25F;
     effects.DirectionalShadows.Strength = 3.25F;
     effects.DirectionalShadows.PcfRadius = 2U;
+    effects.GlobalIllumination.Mode = GlobalIlluminationMode::BrixelizerGi;
+    effects.GlobalIllumination.Resolution = GlobalIlluminationResolution::Quarter;
+    effects.GlobalIllumination.DiffuseIntensity = 1.75F;
     effects.AmbientOcclusion = AmbientOcclusionMode::Gtao;
     effects.AoQuality = 1U;
     effects.AoRadius = 4.25F;
@@ -347,6 +350,23 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsCompleteSettings) {
         loaded.Value.GrassSavedPreset.DrawDistance, 930.0F);
     EXPECT_FLOAT_EQ(
         loaded.Value.GrassSavedPreset.WindStrength, 0.27F);
+    EXPECT_EQ(loaded.Value.Effects.GlobalIllumination.Mode,
+              Fast::Oot3d::GlobalIlluminationMode::BrixelizerGi);
+    EXPECT_FLOAT_EQ(loaded.Value.Effects.GlobalIllumination.DiffuseIntensity, 1.75F);
+}
+
+TEST(Oot3dGraphicsSettingsPersistence, AddsGlobalIlluminationOffToOlderFiles) {
+    using namespace Fast::Oot3d;
+    auto document = SerializeGraphicsSettings(CompleteSettings());
+    EXPECT_EQ(document["Effects"]["GlobalIllumination"]["Mode"], "BrixelizerGI");
+    EXPECT_EQ(document["Effects"]["GlobalIllumination"]["Resolution"], "Quarter");
+    document["Effects"].erase("GlobalIllumination");
+    const auto loaded = DeserializeGraphicsSettings(document);
+    EXPECT_TRUE(loaded.NeedsRewrite);
+    EXPECT_TRUE(loaded.Issues.empty());
+    EXPECT_EQ(loaded.Value.Effects.GlobalIllumination.Mode, GlobalIlluminationMode::Off);
+    EXPECT_EQ(loaded.Value.Effects.GlobalIllumination.Resolution, GlobalIlluminationResolution::Half);
+    EXPECT_FLOAT_EQ(loaded.Value.Effects.GlobalIllumination.DiffuseIntensity, 1.0F);
 }
 
 TEST(Oot3dGraphicsSettingsPersistence, AddsSoftGrassLodDefaultsWithoutMovingExistingDistances) {

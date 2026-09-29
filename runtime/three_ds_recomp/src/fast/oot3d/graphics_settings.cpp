@@ -256,6 +256,30 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
     }
     directionalShadows.PcfRadius =
         std::min<uint8_t>(directionalShadows.PcfRadius, 2U);
+    auto& globalIllumination = value.Effects.GlobalIllumination;
+    globalIllumination.DiffuseIntensity =
+        std::isfinite(globalIllumination.DiffuseIntensity)
+            ? std::clamp(globalIllumination.DiffuseIntensity, 0.0F, 4.0F)
+            : 1.0F;
+    if (globalIllumination.Resolution > GlobalIlluminationResolution::Quarter)
+        globalIllumination.Resolution = GlobalIlluminationResolution::Half;
+    if (globalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi &&
+        (!capabilities.Has(GraphicsCapability::NriInterop) ||
+         !capabilities.Has(GraphicsCapability::SampledDepth) ||
+         !capabilities.Has(GraphicsCapability::NormalGuide) ||
+         !capabilities.Has(GraphicsCapability::MaterialGuide) ||
+         !capabilities.Has(GraphicsCapability::MotionVectors) ||
+         !capabilities.Has(GraphicsCapability::ValidViewMetadata))) {
+        globalIllumination.Mode = GlobalIlluminationMode::Off;
+        Correct(result.Issues, "Graphics.Effects.GlobalIllumination.Mode",
+                "Global illumination requires NRI, sampled depth, normal/material guides, "
+                "motion vectors and view metadata");
+    } else if (globalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi &&
+               !capabilities.Has(GraphicsCapability::BrixelizerGlobalIllumination)) {
+        globalIllumination.Mode = GlobalIlluminationMode::Off;
+        Correct(result.Issues, "Graphics.Effects.GlobalIllumination.Mode",
+                capabilities.Get(GraphicsCapability::BrixelizerGlobalIllumination).Reason);
+    }
     value.Effects.ReflectionStrength =
         std::clamp(value.Effects.ReflectionStrength, 0.0F, 2.0F);
     value.Effects.ReflectionMaxDistance =

@@ -183,7 +183,7 @@ void ClickTexture(uint64_t hash, bool reorderDuringClick = false) {
 }
 void AllCapabilities(bool available) {
     auto& runtime = GraphicsSettingsRuntime::Instance();
-    for (unsigned value = 0; value <= static_cast<unsigned>(GraphicsCapability::NativeSurfaceLighting); ++value)
+    for (unsigned value = 0; value <= static_cast<unsigned>(kLastGraphicsCapability); ++value)
         runtime.SetCapability(static_cast<GraphicsCapability>(value), available, "test capability");
 }
 
@@ -902,6 +902,39 @@ int main() try {
     Check(Find("Per-pixel").Disabled && Find("Per-pixel + PBR").Disabled && Find("Native + PBR").Disabled,
           "unsupported lighting model selectable");
     Click("Native");
+    AllCapabilities(true);
+    Frame();
+    Select("Global illumination", "Brixelizer GI");
+    Select("GI resolution", "Quarter");
+    EditScalar("GI diffuse intensity", "2.5");
+    {
+        const auto gi = runtime.Snapshot().Effects.GlobalIllumination;
+        Check(gi.Mode == GlobalIlluminationMode::BrixelizerGi &&
+                  gi.Resolution == GlobalIlluminationResolution::Quarter && gi.DiffuseIntensity == 2.5F,
+              "global illumination controls did not apply");
+        Check(runtime.SnapshotForRendering().Value.Effects.GlobalIllumination.Mode == GlobalIlluminationMode::Off,
+              "global illumination rendered without per-pixel lighting");
+        const auto persistedGi = DeserializeGraphicsSettings(store->Root["Graphics"]);
+        Check(persistedGi.Value.Effects.GlobalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi &&
+                  persistedGi.Value.Effects.GlobalIllumination.DiffuseIntensity == 2.5F,
+              "global illumination selection lost on reload");
+    }
+    Select("Lighting model", "Per-pixel");
+    Check(runtime.SnapshotForRendering().Value.Effects.GlobalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi,
+          "per-pixel lighting did not activate the stored global illumination");
+    runtime.ToggleNativePresentationOverride();
+    Check(runtime.SnapshotForRendering().Value.Effects.GlobalIllumination.Mode == GlobalIlluminationMode::Off,
+          "F2 did not bypass global illumination");
+    runtime.ToggleNativePresentationOverride();
+    runtime.SetCapability(GraphicsCapability::BrixelizerGlobalIllumination, false, "provider unavailable");
+    Frame();
+    Select("Global illumination", "Off");
+    Check(runtime.Snapshot().Effects.GlobalIllumination.Mode == GlobalIlluminationMode::Off,
+          "cannot disable global illumination after capability loss");
+    Click("Global illumination");
+    Check(Find("Brixelizer GI").Disabled, "unsupported global illumination selectable");
+    Click("Off");
+    Select("Lighting model", "Native");
     AllCapabilities(true);
     runtime.SetCapability(GraphicsCapability::ValidViewMetadata, false, "test unavailable");
     Frame();

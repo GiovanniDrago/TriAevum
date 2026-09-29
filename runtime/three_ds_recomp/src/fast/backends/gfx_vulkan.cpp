@@ -983,6 +983,12 @@ void GfxRenderingAPIVulkan::Init() {
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::NativeSurfaceLighting, true);
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::FidelityFxCacao,
                                   mCacaoPass.Available(), mCacaoPass.UnavailableReason());
+    {
+        std::string reason;
+        const bool supported = Oot3d::BrixelizerScene::Supported(mPhysicalDevice, reason);
+        settingsRuntime.SetCapability(Oot3d::GraphicsCapability::BrixelizerGlobalIllumination,
+                                      supported, reason);
+    }
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::MotionVectors,
                                   mMotionVectorPass.Available(),
                                   mMotionVectorPass.UnavailableReason());
@@ -1798,12 +1804,11 @@ void GfxRenderingAPIVulkan::StartFrame() {
             Oot3d::ReflectionMode::Off,
         mTemporalMotionEnabled,
         graphicsSettings.Grass.Quality != Oot3d::GrassQuality::Off,
-        // Phase 2 developer switch; the F1 control follows with the GI pass.
-        [&] {
-            const char* gi = std::getenv("OOT3D_GRAPHICS_BRIXELIZER");
-            return gi != nullptr && std::string_view(gi) == "1" && !mNativeFidelityProfile &&
-                   Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting);
-        }(),
+        // The rendering snapshot already disables GI outside per-pixel
+        // lighting and under native presentation.
+        graphicsSettings.Effects.GlobalIllumination.Mode ==
+                Oot3d::GlobalIlluminationMode::BrixelizerGi &&
+            !mNativeFidelityProfile,
     };
     if (!mPicaExtensionRequests.has_value() ||
         *mPicaExtensionRequests != extensionRequests) {

@@ -24,6 +24,29 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
         ImGui::TextWrapped("Edit individual materials, maps and PBR response in the Material editor tab.");
     }
 
+    ImGui::SeparatorText("Global illumination");
+    const char* const giModes[] = {"Off", "Brixelizer GI"};
+    changed |= SettingsUi::ValidatedCombo<GlobalIlluminationMode>(
+        "Global illumination", settings, capabilities, giModes,
+        [](auto& value, auto mode) { value.Effects.GlobalIllumination.Mode = mode; },
+        [](const auto& value) { return value.Effects.GlobalIllumination.Mode; });
+    auto& globalIllumination = settings.Effects.GlobalIllumination;
+    if (globalIllumination.Mode != GlobalIlluminationMode::Off) {
+        int resolution = static_cast<int>(globalIllumination.Resolution);
+        const char* const resolutionNames[] = {"Half", "Quarter"};
+        if (ImGui::Combo("GI resolution", &resolution, resolutionNames, 2)) {
+            globalIllumination.Resolution = static_cast<GlobalIlluminationResolution>(resolution);
+            changed = true;
+        }
+        changed |= ImGui::SliderFloat("GI diffuse intensity", &globalIllumination.DiffuseIntensity,
+                                      0.0F, 4.0F, "%.2f");
+        if (!UsesFullSceneLighting(settings.Effects.SurfaceLighting))
+            ImGui::TextWrapped("Active only with Per-pixel or Per-pixel + PBR lighting.");
+    }
+    if (!capabilities.Has(GraphicsCapability::BrixelizerGlobalIllumination))
+        ImGui::TextWrapped("Brixelizer GI unavailable: %s",
+                           capabilities.Get(GraphicsCapability::BrixelizerGlobalIllumination).Reason.c_str());
+
     ImGui::SeparatorText("Ambient occlusion");
     const bool aoReady = capabilities.Has(GraphicsCapability::NriInterop) &&
                          capabilities.Has(GraphicsCapability::SampledDepth) &&

@@ -34,6 +34,7 @@ class NativePresentationPolicy {
         effective.Effects.AmbientOcclusion = AmbientOcclusionMode::Off;
         effective.Effects.Reflections = ReflectionMode::Off;
         effective.Effects.DirectionalShadows.Mode = DirectionalShadowMode::Off;
+        effective.Effects.GlobalIllumination.Mode = GlobalIlluminationMode::Off;
         if (effective.Effects.SurfaceLighting == SurfaceLightingMode::NativePbr)
             effective.Effects.SurfaceLighting = SurfaceLightingMode::Native;
     }
