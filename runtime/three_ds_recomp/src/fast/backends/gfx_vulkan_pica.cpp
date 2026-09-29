@@ -7035,7 +7035,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             requireRgba16f(
                 Oot3d::EffectResource::DiffuseIllumination,
                 effectGuideTarget->Width, effectGuideTarget->Height);
-            if (effectPlan.ReflectionsFromGlobalIllumination)
+            if (effectPlan.ReflectionsFromGlobalIllumination ||
+                effectPlan.ReflectionMissesFromGlobalIllumination)
                 requireRgba16f(
                     Oot3d::EffectResource::SpecularIllumination,
                     effectGuideTarget->Width, effectGuideTarget->Height);
@@ -7105,7 +7106,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     mNriEffectGraphTransientImageArena.Find(
                         Oot3d::EffectResource::DiffuseIllumination);
                 transientSpecularIllumination =
-                    effectPlan.ReflectionsFromGlobalIllumination
+                    effectPlan.ReflectionsFromGlobalIllumination ||
+                            effectPlan.ReflectionMissesFromGlobalIllumination
                         ? mNriEffectGraphTransientImageArena.Find(
                               Oot3d::EffectResource::SpecularIllumination)
                         : nullptr;
@@ -7701,7 +7703,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         bool giForDisplay = false;
         if (wantsGlobalIllumination && effectGuideTarget != nullptr &&
             transientDiffuseIllumination != nullptr &&
-            (!effectPlan.ReflectionsFromGlobalIllumination || transientSpecularIllumination != nullptr)) {
+            ((!effectPlan.ReflectionsFromGlobalIllumination &&
+          !effectPlan.ReflectionMissesFromGlobalIllumination) ||
+         transientSpecularIllumination != nullptr)) {
             const bool giAttempted = motionAvailableForDisplay && temporalState.has_value() &&
                                      !effectGuideTarget->WBuffering;
             const auto giCoordinates = Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags);
@@ -8300,6 +8304,38 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                         reflectionSceneBinding == nullptr
                             ? Oot3d::NativePicaSceneColorEncoding()
                             : reflectionSceneBinding->ColorEncoding;
+                    // GI specular fills what the screen-space trace missed,
+                    // in place, weighted by the same material resolve.
+                    if (effectPlan.ReflectionMissesFromGlobalIllumination && giForDisplay &&
+                        mReflectionIblPass.Available() &&
+                        mReflectionMaterialResolvePass.Available()) {
+                        const auto& specularBinding = requireEffectImageRead(
+                            reflectionReads, Oot3d::EffectResource::SpecularIllumination);
+                        const bool iblExecuted = mReflectionIblPass.Execute(
+                            mCurrentFrame,
+                            effectGuideTarget->ReflectionEnvironment.Resolve(mFrameCounter));
+                        if (iblExecuted)
+                            recordEffectPassTransitions(mReflectionIblPass.LastBarrierExecution());
+                        const float screenSpaceStrength =
+                            std::max(presentationSettings.Effects.ReflectionStrength, 0.01F);
+                        if (iblExecuted &&
+                            mReflectionMaterialResolvePass.Configure(*transientReflectionOutput) &&
+                            mReflectionMaterialResolvePass.Execute(
+                                mCurrentFrame,
+                                reinterpret_cast<VkImage>(specularBinding.NativeImage),
+                                static_cast<VkFormat>(specularBinding.Format),
+                                reflectionNormalImage, reflectionNormalFormat,
+                                reflectionMaterialImage, reflectionMaterialFormat,
+                                mReflectionIblPass.BrdfImage(), VK_FORMAT_R16G16_SFLOAT,
+                                *presentationPerspective, 0.0F, reflectionBarrierPlan,
+                                Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags),
+                                {true,
+                                 presentationSettings.Effects.GlobalIllumination.SpecularIntensity /
+                                     screenSpaceStrength,
+                                 reflectionOutputEncoding == Oot3d::SceneColorEncoding::Srgb}))
+                            recordEffectPassTransitions(
+                                mReflectionMaterialResolvePass.LastBarrierExecution());
+                    }
                 } else {
                     activeReflectionProvider =
                         Oot3d::ReflectionProvider::Off;

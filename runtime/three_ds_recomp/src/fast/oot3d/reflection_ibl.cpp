@@ -367,13 +367,17 @@ layout(set=0,binding=0) uniform texture2D reflection_radiance;
 layout(set=0,binding=1) uniform texture2D normal_guide;
 layout(set=0,binding=2) uniform texture2D material_guide;
 layout(set=0,binding=3) uniform texture2D brdf_lut;
-layout(set=0,binding=4,rgba16f) uniform writeonly image2D resolved_reflection;
+layout(set=0,binding=4,rgba16f) uniform image2D resolved_reflection;
 layout(set=0,binding=5) uniform sampler resolve_sampler;
 layout(push_constant) uniform ResolveState {
     mat4 inverse_projection;
     uvec2 extent;
     float roughness_bias;
     uint surface_orientation;
+    uint fill_screen_space_misses;
+    float fallback_scale;
+    uint output_srgb;
+    uint reserved;
 } state;
 )glsl" + std::string(EffectSurfaceCoordinateShaderLibrary) +
         std::string(Renderer3ds::PicaMaterialGuideShaderLibrary) + R"glsl(
@@ -397,8 +401,24 @@ void main() {
     float reflectivity=clamp(material.r,0.0,1.0);
     float weight=pica_reflection_weight(material)*reflectivity*
                  clamp(brdf.x+brdf.y,0.0,1.0);
-    imageStore(resolved_reflection,pixel,
-               vec4(max(radiance.rgb,vec3(0.0)),weight));
+    vec4 result=vec4(max(radiance.rgb,vec3(0.0)),weight);
+    if(state.fill_screen_space_misses!=0u){
+        // The screen-space hits stay; this radiance fills the weight they
+        // leave uncovered (misses, low confidence, screen edges).
+        vec4 screen_space=imageLoad(resolved_reflection,pixel);
+        float covered=clamp(screen_space.a,0.0,1.0);
+        float fill=clamp(weight*state.fallback_scale,0.0,1.0);
+        float total=max(fill,covered);
+        vec3 radiance_rgb=result.rgb;
+        if(state.output_srgb!=0u)
+            radiance_rgb=mix(radiance_rgb*12.92,
+                             1.055*pow(max(radiance_rgb,vec3(0.0)),vec3(1.0/2.4))-0.055,
+                             step(vec3(0.0031308),radiance_rgb));
+        result=total>1.0e-5
+            ? vec4((screen_space.rgb*covered+radiance_rgb*(total-covered))/total,total)
+            : vec4(0.0);
+    }
+    imageStore(resolved_reflection,pixel,result);
 }
 )glsl";
 }

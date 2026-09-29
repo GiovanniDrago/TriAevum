@@ -25,6 +25,9 @@ void PopulateCompatibilityProjections(
         plan.ReflectionProvider == ReflectionMode::FidelityFxSssr;
     plan.ReflectionsFromGlobalIllumination =
         plan.Reflections && plan.ReflectionProvider == ReflectionMode::Off;
+    plan.ReflectionMissesFromGlobalIllumination =
+        plan.Reflections && plan.GlobalIllumination && input.GlobalIlluminationSpecular &&
+        plan.ReflectionProvider == ReflectionMode::HiZ;
     plan.TemporalMetadata =
         input.WorldSurface && input.PerspectiveAvailable &&
         input.CameraAvailable &&
@@ -313,8 +316,10 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     const bool globalIllumination = temporalMetadata && input.GlobalIllumination;
     // GI specular is a reflection source: the Reflections pass resolves it
     // through the material guide and the composite mixes it like any
-    // reflection. A selected screen-space provider owns the term.
-    const bool giSpecular = globalIllumination && input.GlobalIlluminationSpecular && !screenSpaceReflections;
+    // reflection. With HiZ it fills the misses (HiZ reports its hit
+    // confidence); FidelityFX SSSR shades its own misses and owns the term.
+    const bool giSpecular = globalIllumination && input.GlobalIlluminationSpecular &&
+                            (!screenSpaceReflections || input.Reflections == ReflectionMode::HiZ);
     const bool reflections = screenSpaceReflections || giSpecular;
     // A native boundary has no presentation stages, so its inputs never declare
     // them: the domain projection below is what enforces that structurally, and
@@ -425,7 +430,10 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
         reflectionResources.push_back(Read(EffectResource::MotionVectors));
     }
     reflectionResources.push_back(Write(EffectResource::ReflectionColor));
-    if (giSpecular) {
+    if (giSpecular && screenSpaceReflections) {
+        reflectionDependencies.push_back("GlobalIllumination");
+        reflectionResources.insert(reflectionResources.end() - 1, Read(EffectResource::SpecularIllumination));
+    } else if (giSpecular) {
         reflectionDependencies = { "Guides", "GlobalIllumination" };
         reflectionResources = { Read(EffectResource::NativeSceneView), Read(EffectResource::NormalGuide),
                                 Read(EffectResource::MaterialGuide), Read(EffectResource::SpecularIllumination),

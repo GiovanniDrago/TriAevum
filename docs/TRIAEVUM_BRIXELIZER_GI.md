@@ -359,10 +359,20 @@ GI contribution starts from zero and accumulates again (no stale history).
   mixes with the GI specular intensity like any reflection. No HiZ pyramid or
   scene-colour read is declared for it. Instances are keyed by specular too;
   toggling it replaces the surface's instance.
-- A selected screen-space provider (HiZ, FidelityFX SSSR) owns the term and
-  GI specular is not traced. Filling only screen-space misses needs a
-  per-pixel hit confidence that FidelityFX SSSR does not expose (it shades
-  misses with its IBL).
+- With **HiZ** reflections, GI specular fills the screen-space misses: HiZ
+  stores hit confidence x material weight in alpha, and the material resolve
+  (`ReflectionResolveLayering`) then runs in place over the HiZ output,
+  adding GI radiance only for the weight the hits leave uncovered
+  (`a = max(w_gi, a_hiz)`, encoded to the HiZ output's sRGB). The plan
+  declares `SpecularIllumination` as a Reflections read and orders the pass
+  after GlobalIllumination (`ReflectionMissesFromGlobalIllumination`).
+  Polished-Link check: HiZ alone hits little of the body (mean weight 0.5 in
+  the crop), with the fill the whole material reflects (21.8); core
+  validation clean (Field 400 frames, Sheik copy 600).
+- **FidelityFX SSSR** keeps the term: its intersect shades misses inside the
+  shader (`lerp(environment, hit, confidence)`) and its denoiser carries no
+  confidence, so filling its misses would need a fork of SSSR and its
+  denoiser; GI specular is not traced with it.
 - Misses: the GI specular trace has no environment of its own; the SDK fills
   missed rays with probe irradiance along the reflected direction (the
   environment intensity stays 0, so no sky is invented). Without GI for a

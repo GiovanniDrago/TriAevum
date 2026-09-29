@@ -29,8 +29,12 @@ struct ResolvePush {
     uint32_t Height = 0;
     float RoughnessBias = 0.0F;
     uint32_t SurfaceOrientation = 0;
+    uint32_t FillScreenSpaceMisses = 0;
+    float FallbackScale = 1.0F;
+    uint32_t OutputSrgb = 0;
+    uint32_t Reserved = 0;
 };
-static_assert(sizeof(ResolvePush) == 80U);
+static_assert(sizeof(ResolvePush) == 96U);
 
 std::vector<uint32_t> Compile(Renderer::CachedPassShaderCompiler& shaders) {
     return shaders.Resolve(BuildReflectionMaterialResolveComputeShader(), Renderer::SpirvStage::Compute, "oot3d_reflection_material_resolve.comp");
@@ -242,7 +246,8 @@ bool ReflectionMaterialResolvePass::Execute(
     VkImage brdfImage, VkFormat brdfFormat,
     const PerspectiveViewState& view, float roughnessBias,
     const EffectPassBarrierPlan& barrierPlan,
-    std::optional<PicaSurfaceCoordinates> coordinates) {
+    std::optional<PicaSurfaceCoordinates> coordinates,
+    ReflectionResolveLayering layering) {
     const auto* outputBarrier = barrierPlan.Find(
         EffectResource::ReflectionColor);
     if (mImpl->Width == 0U || mImpl->States == nullptr ||
@@ -340,6 +345,9 @@ bool ReflectionMaterialResolvePass::Execute(
     push.Width = mImpl->Width;
     push.Height = mImpl->Height;
     push.RoughnessBias = roughnessBias;
+    push.FillScreenSpaceMisses = layering.FillScreenSpaceMisses ? 1U : 0U;
+    push.FallbackScale = layering.FallbackScale;
+    push.OutputSrgb = layering.OutputSrgb ? 1U : 0U;
     mImpl->Core->CmdSetDescriptorPool(*command, *mImpl->Pool);
     mImpl->Core->CmdSetPipelineLayout(
         *command, nri::BindPoint::COMPUTE, *mImpl->Layout);

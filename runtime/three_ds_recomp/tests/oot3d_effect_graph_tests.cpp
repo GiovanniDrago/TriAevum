@@ -605,7 +605,23 @@ TEST(Oot3dDisplayEffectPlan, GlobalIlluminationSpecularIsAReflectionSource) {
     EXPECT_LT(order("GlobalIllumination"), order("Reflections"));
     EXPECT_LT(order("Reflections"), order("Composite"));
 
-    // A screen-space provider owns the reflection term.
+    // HiZ reports its hit confidence: GI specular fills its misses.
+    input.Reflections = ReflectionMode::HiZ;
+    const auto hiZ = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(hiZ.Graph.Valid()) << hiZ.Graph.Error;
+    EXPECT_FALSE(hiZ.ReflectionsFromGlobalIllumination);
+    EXPECT_TRUE(hiZ.ReflectionMissesFromGlobalIllumination);
+    EXPECT_TRUE(hiZ.Enabled(DisplayEffectPass::HiZ));
+    const auto hiZReflections = hiZ.Bindings(DisplayEffectPass::Reflections);
+    for (const auto use : {Read(EffectResource::SpecularIllumination), Read(EffectResource::HierarchicalDepth),
+                           Write(EffectResource::ReflectionColor)})
+        EXPECT_NE(std::find(hiZReflections.begin(), hiZReflections.end(), use), hiZReflections.end());
+    const auto hiZOrder = [&hiZ](std::string_view name) {
+        return std::find(hiZ.Graph.Order.begin(), hiZ.Graph.Order.end(), name) - hiZ.Graph.Order.begin();
+    };
+    EXPECT_LT(hiZOrder("GlobalIllumination"), hiZOrder("Reflections"));
+
+    // FidelityFX SSSR shades its own misses and owns the reflection term.
     input.Reflections = ReflectionMode::FidelityFxSssr;
     const auto sssr = BuildDisplayEffectPlan(input);
     ASSERT_TRUE(sssr.Graph.Valid()) << sssr.Graph.Error;

@@ -17,8 +17,21 @@ namespace Fast::Oot3d {
 class NriInteropContext;
 struct NriEffectGraphTransientImageBinding;
 
-// Converts raw FidelityFX radiance into the common reflection contract:
-// RGB radiance plus a material-gated BRDF weight in alpha.
+// Layering over a screen-space reflection already in the output (HiZ: RGB in
+// the output's encoding, alpha = hit confidence x material weight). The
+// resolved radiance then fills only the weight the screen-space hits leave
+// uncovered: a = max(w, a_ss), rgb = (a_ss rgb_ss + (a - a_ss) rgb) / a.
+struct ReflectionResolveLayering {
+    bool FillScreenSpaceMisses = false;
+    // The resolved term's weight relative to the screen-space strength.
+    float FallbackScale = 1.0F;
+    // The screen-space layer is sRGB encoded; the fill is encoded to match.
+    bool OutputSrgb = false;
+};
+
+// Converts raw radiance (FidelityFX SSSR, Brixelizer GI specular) into the
+// common reflection contract: RGB radiance plus a material-gated BRDF weight
+// in alpha.
 class ReflectionMaterialResolvePass final {
   public:
     ReflectionMaterialResolvePass();
@@ -39,7 +52,8 @@ class ReflectionMaterialResolvePass final {
                  const PerspectiveViewState& view,
                  float roughnessBias,
                  const EffectPassBarrierPlan& barrierPlan,
-                 std::optional<PicaSurfaceCoordinates> coordinates = std::nullopt);
+                 std::optional<PicaSurfaceCoordinates> coordinates = std::nullopt,
+                 ReflectionResolveLayering layering = {});
     void InvalidateScreenResources();
     void Shutdown();
 
