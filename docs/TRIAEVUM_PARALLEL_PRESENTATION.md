@@ -79,6 +79,41 @@ G hands R one **presentation packet** per host frame, by value:
 R keeps every piece of interpolation state it owns today and consumes packets
 in order, so the sequence of renderer calls is the serial sequence.
 
+## Render command stream
+
+The packet above is carried by a more general mechanism: an ordered **render
+command stream**. Every piece of R work is a command (a closure that owns
+copies of its inputs) submitted by G in program order:
+
+- `BeginFrame`: `window.StartFrame` (renderer framebuffers), framebuffer
+  parameters, `api.StartFrame`, `BeginPresentation`, clear; applies a pending
+  pacing/composition policy change to R-owned interpolation state.
+- In-refresh commands, where the serial loop calls the renderer during the
+  guest refresh: `PublishSceneView` (from `publishNativeSceneView`),
+  `GrassInteractionBridge::PublishFrame` (guest memory is read by G, only the
+  publish is deferred), and synchronous dependency flushes.
+- `Present`: the presentation packet, N64 UI rendering from G-built
+  primitives, screenshot, pacing and `window.EndFrame`.
+
+In **inline mode** each command runs at submission, which is exactly today's
+order: phase 1 and 2 can be qualified against the serial loop by
+construction. In **worker mode** one thread executes the stream in order;
+`Run` (synchronous) waits for completion; at most one frame is in flight; an
+exception in the worker is rethrown in G at the next submission; `Drain`
+waits for an empty stream. Counters and phase timings written by commands
+live in R-owned structures and are merged into the report after a drain.
+
+Two serial-loop behaviours need an explicit rule in worker mode:
+
+- **No acquired frame** (`api.HasActiveFrame()` false: minimized window or a
+  surface change). The serial loop skips the guest refresh for that frame.
+  Worker mode learns it one frame late; it then drains and returns to inline
+  mode until frames are acquired again. At most one extra guest refresh runs
+  in that transition; deterministic captures never minimize.
+- **SDL calls from R.** `Interpreter::StartFrame` reads the window size and
+  the Vulkan window backend's swap calls do no SDL work; this is safe on
+  Windows. Other platforms stay inline until verified.
+
 ## Presentation scheduler split
 
 `Oot3dPicaPresentationScheduler` holds both the accumulator (`Capture`,
