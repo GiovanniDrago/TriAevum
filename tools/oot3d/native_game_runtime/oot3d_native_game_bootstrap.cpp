@@ -456,7 +456,7 @@ void PrintOot3dNativeGameUsage() {
                  "[--screenshot-sequence] [--screenshot-interval <frames>] "
                  "[--screenshot-start-frame <frame>] "
                  "[--room-request-smoke <room-index>] "
-                 "[--extended-diagnostics] [--parallel-presentation] "
+                 "[--extended-diagnostics] [--serial-presentation] "
                  "[--gameplay-timing <native30_interpolated|"
                  "native30_no_interpolation|enhanced60>] "
                  "[--simulation-rate <hz>] "
@@ -581,6 +581,8 @@ bool ParseOot3dNativeGameArgs(int argc, char** argv, Oot3dNativeGameLaunch& laun
             launch.ExtendedDiagnostics = true;
         } else if (arg == "--parallel-presentation") {
             launch.ParallelPresentation = true;
+        } else if (arg == "--serial-presentation") {
+            launch.ParallelPresentation = false;
         } else if (arg == "--gameplay-timing" && index + 1 < argc) {
             if (!Oot3dNativeGame::ParseGameplayTimingMode(
                     argv[++index], &launch.GameplayTiming)) {

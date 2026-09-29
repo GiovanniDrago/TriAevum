@@ -127,11 +127,12 @@ Its `DISPOSABLES.md` lists every artifact and its removal condition.
 
 ## Parallel presentation (product mode)
 
-`--parallel-presentation` presents frame f on a render thread while the guest
+Parallel presentation presents frame f on a render thread while the guest
 simulates f+1 (design, qualification and measurements in
 `TRIAEVUM_PARALLEL_PRESENTATION.md`). Interpolated2x, unpaced, no-present,
 against host6 (fca3e07) with `mod-vfp-pgo`: Field 0.616 (5.61 -> 3.46 ms per
-presented frame), Sheik copy 0.768 (12.79 -> 9.83 ms). Off by default.
+presented frame), Sheik copy 0.768 (12.79 -> 9.83 ms). On by default;
+`--serial-presentation` disables it.
 
 ## Not yet done
 

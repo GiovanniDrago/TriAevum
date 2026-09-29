@@ -176,9 +176,10 @@ measured.
 
 ## Phase 3 as implemented
 
-`--parallel-presentation` (or `TRIAEVUM_PARALLEL_PRESENTATION=1` for
-harnesses) switches `NativeRenderCommandStream` to its worker. Without it the
-stream runs every command at submission, which is the serial loop.
+Parallel presentation is the default (since the user decision of
+2026-09-29). `--serial-presentation` selects the single-threaded loop, in which
+the stream runs every command at submission; `TRIAEVUM_PARALLEL_PRESENTATION`
+set to `0` or `1` overrides the launch choice for harnesses.
 
 - **Frames in flight: one.** The guest may submit frame f+1 while the worker
   runs frame f. The end-of-frame command (screenshot, pacing, `EndFrame`) is

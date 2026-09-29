@@ -54,7 +54,8 @@ struct Oot3dNativeGameLaunch {
     bool ValidateOnly = false;
     bool ExtendedDiagnostics = false;
     // Presents frame N on a render thread while the guest simulates N+1.
-    bool ParallelPresentation = false;
+    // --serial-presentation restores the single-threaded loop.
+    bool ParallelPresentation = true;
     Oot3dNativeGame::GameplayTimingMode GameplayTiming =
         Oot3dNativeGame::GameplayTimingMode::Native30Interpolated;
     // Legacy aliases retained for existing launch scripts. Parsing resolves

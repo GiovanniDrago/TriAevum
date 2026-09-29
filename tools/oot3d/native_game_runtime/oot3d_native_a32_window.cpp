@@ -4947,10 +4947,13 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   bool guestFrameBeginNativePresentation = false;
   const char* parallelPresentationEnvironment =
       std::getenv("TRIAEVUM_PARALLEL_PRESENTATION");
+  // Harnesses override the launch choice: "0" serial, "1" parallel.
   const bool parallelPresentation =
-      launch.ParallelPresentation ||
-      (parallelPresentationEnvironment != nullptr &&
-       std::string_view(parallelPresentationEnvironment) == "1");
+      parallelPresentationEnvironment != nullptr &&
+              (std::string_view(parallelPresentationEnvironment) == "0" ||
+               std::string_view(parallelPresentationEnvironment) == "1")
+          ? std::string_view(parallelPresentationEnvironment) == "1"
+          : launch.ParallelPresentation;
   auto* const fast3dGui = dynamic_cast<Fast::Fast3dGui*>(gui.get());
   if (parallelPresentation) {
     // Renderer timings accumulate apart and merge once the stream drains.
@@ -7286,7 +7289,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               {"sdl_frame_limiter_enabled",
                !hostArgs.ThroughputBenchmark &&
                    window.GetTargetFps() > 0},
-              {"pacing_enabled", realtimePacer.Enabled()}}},
+              {"pacing_enabled", realtimePacer.Enabled()},
+              {"parallel_presentation", parallelPresentation}}},
             {"frame_rate",
              [&]() {
                 const auto &contract = frameRatePolicy.Contract();
