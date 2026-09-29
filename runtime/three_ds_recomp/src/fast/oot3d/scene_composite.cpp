@@ -21,6 +21,8 @@ layout(set=0,binding=8) uniform sampler composite_sampler;
 layout(set=0,binding=9) uniform texture2D transparent_depth_guide;
 layout(set=0,binding=10) uniform texture2D fog_guide;
 layout(set=0,binding=11) uniform texture2D outline_geometry_guide;
+layout(set=0,binding=12) uniform texture2D diffuse_illumination;
+layout(set=0,binding=13) uniform texture2D diffuse_albedo_guide;
 layout(push_constant) uniform CompositeState {
     uvec2 extent;
     uint ambient_occlusion;
@@ -36,7 +38,20 @@ layout(push_constant) uniform CompositeState {
     float outline_softness;
     vec3 outline_color;
     float outline_opacity;
+    uint global_illumination;
+    float diffuse_intensity;
+    uint global_illumination_debug;
+    uint reserved;
 } state;
+
+vec3 oot3d_gi_srgb_to_linear(vec3 value) {
+    value=max(value,vec3(0.0));
+    return mix(pow((value+0.055)/1.055,vec3(2.4)),value/12.92,lessThanEqual(value,vec3(0.04045)));
+}
+vec3 oot3d_gi_linear_to_srgb(vec3 value) {
+    value=max(value,vec3(0.0));
+    return mix(1.055*pow(value,vec3(1.0/2.4))-0.055,value*12.92,lessThanEqual(value,vec3(0.0031308)));
+}
 )glsl";
     source += AmbientOcclusionCompositeShaderLibrary();
     source += ReflectionDebugShaderLibrary();
@@ -55,6 +70,27 @@ void main(){
             sampler2D(ambient_guide,composite_sampler),uv).a;
         color.rgb*=oot3d_scene_ambient_occlusion_visibility(
             ao_value,scene_coverage);
+    }
+    // Diffuse GI: albedo * irradiance in linear light where the albedo guide
+    // is valid (opaque scene surfaces; zero on clear, HUD and surfaces that
+    // replace it), attenuated by AO like ambient light.
+    if(state.global_illumination!=0u) {
+        vec4 albedo=texture(sampler2D(diffuse_albedo_guide,composite_sampler),uv);
+        vec3 irradiance=texture(sampler2D(diffuse_illumination,composite_sampler),uv).rgb;
+        float coverage=clamp(albedo.a,0.0,1.0);
+        float visibility=state.ambient_occlusion!=0u
+            ? clamp(texture(sampler2D(ao_visibility,composite_sampler),uv).r,0.0,1.0) : 1.0;
+        vec3 bounce=coverage*visibility*state.diffuse_intensity*
+            oot3d_gi_srgb_to_linear(albedo.rgb)*max(irradiance,vec3(0.0));
+        color.rgb=state.input_linear!=0u ? color.rgb+bounce
+            : oot3d_gi_linear_to_srgb(oot3d_gi_srgb_to_linear(color.rgb)+bounce);
+        if(state.global_illumination_debug!=0u) {
+            vec3 view=state.global_illumination_debug==1u ? irradiance
+                : state.global_illumination_debug==2u ? albedo.rgb
+                : state.global_illumination_debug==3u ? vec3(coverage) : bounce;
+            color=vec4(state.input_linear!=0u || state.global_illumination_debug==2u
+                ? view : oot3d_gi_linear_to_srgb(view),1.0);
+        }
     }
     if(state.reflections!=0u){
         vec4 reflection=texture(sampler2D(filtered_reflection,composite_sampler),uv);

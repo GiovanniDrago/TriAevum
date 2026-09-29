@@ -26,6 +26,7 @@ enum class DisplayEffectPass : uint8_t {
     Scanout,
     WorkingColor,
     SceneComposition,
+    GlobalIllumination,
     Count,
 };
 
@@ -42,6 +43,8 @@ struct DisplayEffectPlanInput {
     bool ForceMotion = false;
     AmbientOcclusionMode AmbientOcclusion = AmbientOcclusionMode::Off;
     ReflectionMode Reflections = ReflectionMode::Off;
+    // Diffuse GI is requested and its provider is available.
+    bool GlobalIllumination = false;
     ToonMode Toon = ToonMode::Off;
     bool OutlineEnabled = false;
     AntiAliasingMode AntiAliasing = AntiAliasingMode::Off;
@@ -74,6 +77,7 @@ struct DisplayEffectPlan {
     bool AmbientOcclusion = false;
     bool Outline = false;
     bool Reflections = false;
+    bool GlobalIllumination = false;
     bool FidelityFxSssr = false;
     bool TemporalMetadata = false;
     bool Taa = false;

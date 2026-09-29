@@ -929,6 +929,9 @@ void GfxRenderingAPIVulkan::Init() {
         SPDLOG_INFO("OOT3D Vulkan FidelityFX SSSR unavailable: {}",
                     mFidelityFxSssrPass.UnavailableReason());
     }
+    if (!mBrixelizerGiPass.Initialize(mPhysicalDevice, mDevice, mNriInterop, mBrixelizerScene)) {
+        SPDLOG_INFO("OOT3D Vulkan Brixelizer GI unavailable: {}", mBrixelizerGiPass.UnavailableReason());
+    }
     if (!mReflectionIblPass.Initialize(
             mPhysicalDevice, mDevice, mNriInterop)) {
         SPDLOG_INFO("OOT3D Vulkan reflection IBL unavailable: {}",
@@ -1159,6 +1162,7 @@ void GfxRenderingAPIVulkan::Shutdown() {
         StopPresentWorker();
         vkDeviceWaitIdle(mDevice);
         StorePipelineCache();
+        mBrixelizerGiPass.Shutdown();
         mBrixelizerScene.Shutdown();
         ShutdownImGuiBackend();
         mSceneSurfaces.Clear();
@@ -1805,8 +1809,14 @@ void GfxRenderingAPIVulkan::StartFrame() {
         graphicsSettings.Preset == Oot3d::GraphicsPreset::Authentic;
     mTemporalJitterEnabled =
         !mNativeFidelityProfile && aaPolicy.TemporalJitter;
+    // The rendering snapshot already disables GI outside per-pixel lighting
+    // and under native presentation.
+    const bool globalIlluminationRequested =
+        graphicsSettings.Effects.GlobalIllumination.Mode == Oot3d::GlobalIlluminationMode::BrixelizerGi &&
+        !mNativeFidelityProfile;
+    // GI reprojects its history with the scene's motion vectors.
     mTemporalMotionEnabled =
-        !mNativeFidelityProfile && aaPolicy.TemporalMotion;
+        !mNativeFidelityProfile && (aaPolicy.TemporalMotion || globalIlluminationRequested);
     const Oot3d::PicaAttachmentFeatureRequests extensionRequests{
         graphicsSettings.Effects.DirectionalShadows.Mode ==
             Oot3d::DirectionalShadowMode::VirtualShadowMaps,
@@ -1817,11 +1827,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
             Oot3d::ReflectionMode::Off,
         mTemporalMotionEnabled,
         graphicsSettings.Grass.Quality != Oot3d::GrassQuality::Off,
-        // The rendering snapshot already disables GI outside per-pixel
-        // lighting and under native presentation.
-        graphicsSettings.Effects.GlobalIllumination.Mode ==
-                Oot3d::GlobalIlluminationMode::BrixelizerGi &&
-            !mNativeFidelityProfile,
+        globalIlluminationRequested,
     };
     if (!mPicaExtensionRequests.has_value() ||
         *mPicaExtensionRequests != extensionRequests) {

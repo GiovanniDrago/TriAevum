@@ -262,6 +262,49 @@ the material guide (F0, roughness, reflection gain), filling SSSR misses only.
   enumerator (a new capability was silently missing from the permissive
   load-time set).
 
+## Phase 3c/3d result (2026-09-29)
+
+- Graph: `EffectResource::DiffuseIllumination` (transient RGBA16F) and the
+  display pass `GlobalIllumination` (after Motion, before Composite; reads
+  NativeSceneView, SceneColor, NativeDepth, NormalGuide, MaterialGuide,
+  MotionVectors). GI declares Motion and the diffuse albedo and normal guides,
+  and forces the dedicated scene composite, so the scanout's fused path is
+  unchanged. The composer runs at the native pre-UI boundary like AO and
+  reflections (the pre-UI trigger now includes GI).
+- Provider: `BrixelizerGiPass`, one instance per composed scene surface (at
+  most `BrixelizerScene::kMaxGiSurfaces` = 3, sharing the field's FidelityFX
+  backend, which is sized for them). A prepare compute writes, per sample,
+  R32F depth, world normals and the sRGB-decoded scene colour into ping-pong
+  images, so depth, normal and lit colour have one-frame histories. The GI
+  context runs at most once per presented frame and surface into the
+  instance's own output; each composition copies it into the graph image (a
+  surface composed twice in one frame no longer advances the history twice
+  or recycles the backend's per-dispatch views while they are in flight).
+  Black environment cube and 16 white-noise layers are generated in code.
+  Depth is the native perspective depth: the guest projection is already the
+  D3D [0, 1] form (`f/(n-f)`, `w = -z`). W-buffer surfaces are not traced.
+- Without GI for a sample (no field data yet, W-buffer, a failed dispatch) the
+  declared output is cleared to zero irradiance, so the graph stays complete
+  and the composite adds nothing.
+- Composite: `color += albedo * irradiance * intensity * aoVisibility` in
+  linear light where the albedo guide is valid (alpha). The ambient guide's
+  coverage is written only by the AO instrumentation, so GI uses the albedo
+  validity; under translucent overlays GI is therefore not attenuated (open,
+  phase 4). Developer view `OOT3D_GRAPHICS_GI_DEBUG`: 1 irradiance, 2 albedo,
+  3 coverage, 4 added light.
+- Instrumentation: GI requests the normal guide and the temporal vertex
+  instrumentation (object motion). A draw without the typed frontend vertex
+  program (frames restored from a visual savestate, which does not store it)
+  is now resolved without temporal instrumentation instead of failing the
+  presentation; this also fixes TAA in the Sheik copy.
+- Measured (RTX 3060, 1600x960 window, 1920x1600 guide target, Half):
+  GI dispatch 2.85 ms mean / 3.5 ms p95 in Field, 2.70 / 3.49 in the Sheik
+  copy (`global_illumination_ms`); frame GPU time 3.37 -> 6.75 ms with the
+  field update. Validation (core) clean in both. GI off stays identical to the
+  Interpolated2x baseline. Field daylight: a warm bounce from the grass onto
+  walls and Link (+2 levels mean); UI pixels change only where translucent
+  HUD elements show the scene.
+
 ## Screen-space effects under interpolation (GTAO, SSSR, TAA, GI)
 
 Measured in the Sheik copy cutscene (Interpolated2x, camera pan, per presented

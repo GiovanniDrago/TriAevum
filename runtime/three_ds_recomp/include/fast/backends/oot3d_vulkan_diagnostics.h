@@ -44,6 +44,7 @@ struct Oot3dVulkanGpuTimings {
     std::optional<double> AmbientOcclusionMilliseconds;
     std::optional<double> DepthPreparationMilliseconds;
     std::optional<double> ReflectionMilliseconds;
+    std::optional<double> GlobalIlluminationMilliseconds;
     std::optional<double> MotionVectorsMilliseconds;
     std::optional<double> SceneCompositeMilliseconds;
     std::optional<double> AntiAliasingMilliseconds;

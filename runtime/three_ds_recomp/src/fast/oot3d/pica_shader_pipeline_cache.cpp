@@ -127,7 +127,11 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
         !HasPicaShaderInstrumentationFeature(features, PicaShaderInstrumentationFeature::PbrMaterial)) {
         features |= PicaShaderInstrumentationFeature::Toon;
     }
-    if (sceneDraw && request.TemporalMotionEnabled) {
+    // Temporal instrumentation replays the previous vertex program, which only
+    // the typed frontend program provides. A draw without one (a frame
+    // restored from a visual savestate) keeps the camera's motion only.
+    if (sceneDraw && request.TemporalMotionEnabled &&
+        request.TemporalVertexProgram.ValidFor(request.VertexShaderSource)) {
         features |= PicaShaderInstrumentationFeature::TemporalVertex;
         features |= PicaShaderInstrumentationFeature::ReactiveMask;
         features |= PicaShaderInstrumentationFeature::RigidMotionGuide;
@@ -156,11 +160,13 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
           effects.ToonStyle.OutlineEnabled))) {
         features |= PicaShaderInstrumentationFeature::SceneDomainGuide;
     }
+    // GI traces from the normal guide.
     if (sceneDraw &&
         (effects.AmbientOcclusion != AmbientOcclusionMode::Off ||
          (effects.Toon != ToonMode::Off &&
           effects.ToonStyle.OutlineEnabled) ||
-         effects.Reflections != ReflectionMode::Off)) {
+         effects.Reflections != ReflectionMode::Off ||
+         effects.GlobalIllumination.Mode != GlobalIlluminationMode::Off)) {
         features |= PicaShaderInstrumentationFeature::NormalGuide;
     }
     if (sceneDraw && request.Draw.DepthWriteEnabled && effects.Toon != ToonMode::Off &&
@@ -356,7 +362,8 @@ PicaShaderInstrumentationFeature ResolvePicaShaderProfileFeatures(
     if (effects.AmbientOcclusion != AmbientOcclusionMode::Off ||
         (effects.Toon != ToonMode::Off &&
          effects.ToonStyle.OutlineEnabled) ||
-        effects.Reflections != ReflectionMode::Off) {
+        effects.Reflections != ReflectionMode::Off ||
+        effects.GlobalIllumination.Mode != GlobalIlluminationMode::Off) {
         features |= PicaShaderInstrumentationFeature::NormalGuide;
     }
     if (effects.Toon != ToonMode::Off && effects.ToonStyle.OutlineEnabled) {
@@ -556,15 +563,11 @@ const PicaShaderPipelineResult& PicaShaderPipelineCache::Resolve(
     const PicaShaderInstrumentationFeature requestedFeatures =
         ResolvePicaDrawInstrumentationFeatures(request, effects);
 
-    if (HasPicaShaderInstrumentationFeature(
-            requestedFeatures,
-            PicaShaderInstrumentationFeature::TemporalVertex) &&
+    if (request.TemporalMotionEnabled &&
+        request.Draw.CompositionDomain == ::Oot3d::Renderer::PicaCompositionDomain::Scene &&
         !request.TemporalVertexProgram.ValidFor(
             request.VertexShaderSource)) {
         ++mImpl->TypedInstrumentationContractRejects;
-        throw std::logic_error(
-            "temporal PICA instrumentation requires the typed "
-            "frontend vertex program");
     }
 
     if (request.RequireNativeFidelity) {

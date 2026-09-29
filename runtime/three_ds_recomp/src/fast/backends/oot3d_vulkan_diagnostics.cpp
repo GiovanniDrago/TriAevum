@@ -87,6 +87,8 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
                             frame.Gpu.DepthPreparationMilliseconds);
     PutOptionalMilliseconds(gpu, "reflection_ms",
                             frame.Gpu.ReflectionMilliseconds);
+    PutOptionalMilliseconds(gpu, "global_illumination_ms",
+                            frame.Gpu.GlobalIlluminationMilliseconds);
     PutOptionalMilliseconds(gpu, "motion_vectors_ms",
                             frame.Gpu.MotionVectorsMilliseconds);
     PutOptionalMilliseconds(gpu, "scene_composite_ms",

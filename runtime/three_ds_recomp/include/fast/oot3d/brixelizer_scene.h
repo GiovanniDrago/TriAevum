@@ -73,6 +73,9 @@ class BrixelizerScene final {
     static constexpr float kBaseVoxelSize = 4.0F;
     // First merged (static + dynamic) cascade: the one ray marching uses.
     static constexpr uint32_t kMergedCascadeBase = 2 * kCascadeCount;
+    // Diffuse GI contexts (one per composed scene surface) that trace this
+    // field through its FidelityFX backend.
+    static constexpr uint32_t kMaxGiSurfaces = 3;
 
     BrixelizerScene();
     ~BrixelizerScene();
@@ -105,6 +108,7 @@ class BrixelizerScene final {
     [[nodiscard]] const std::string& UnavailableReason() const noexcept;
 
   private:
+    friend struct BrixelizerSceneGiAccess;
     struct Impl;
     std::unique_ptr<Impl> mImpl;
 };

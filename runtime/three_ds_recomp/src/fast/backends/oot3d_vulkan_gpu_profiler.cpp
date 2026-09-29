@@ -54,6 +54,9 @@ void StoreTiming(Oot3dVulkanGpuTimings& timings,
         case Oot3d::GpuProfileScope::Overlay:
             timings.OverlayMilliseconds = milliseconds;
             break;
+        case Oot3d::GpuProfileScope::GlobalIllumination:
+            timings.GlobalIlluminationMilliseconds = milliseconds;
+            break;
         case Oot3d::GpuProfileScope::Count:
             break;
     }

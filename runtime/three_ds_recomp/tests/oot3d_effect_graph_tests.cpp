@@ -536,6 +536,46 @@ TEST(Oot3dGeometryProviderPlan,
     EXPECT_TRUE(summary.Successful());
 }
 
+TEST(Oot3dDisplayEffectPlan, GlobalIlluminationComposesThroughTheSceneComposite) {
+    DisplayEffectPlanInput input;
+    input.WorldSurface = true;
+    input.PerspectiveAvailable = true;
+    input.CameraAvailable = true;
+    input.GlobalIllumination = true;
+
+    const auto plan = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(plan.Graph.Valid()) << plan.Graph.Error;
+    EXPECT_TRUE(plan.GlobalIllumination);
+    EXPECT_TRUE(plan.Enabled(DisplayEffectPass::GlobalIllumination));
+    // Its history follows the motion vectors; the light is added in the
+    // scene composite even without anti-aliasing.
+    EXPECT_TRUE(plan.Enabled(DisplayEffectPass::Motion));
+    EXPECT_TRUE(plan.Enabled(DisplayEffectPass::Composite));
+    EXPECT_FALSE(plan.Enabled(DisplayEffectPass::AmbientOcclusion));
+    EXPECT_TRUE(plan.Graph.Attachments.Requires(PicaAuxiliaryOutput::DiffuseAlbedoGuide));
+    EXPECT_TRUE(plan.Graph.Attachments.Requires(PicaAuxiliaryOutput::NormalGuide));
+    const auto gi = plan.Bindings(DisplayEffectPass::GlobalIllumination);
+    for (const auto use : {Read(EffectResource::SceneColor), Read(EffectResource::NativeDepth),
+                           Read(EffectResource::NormalGuide), Read(EffectResource::MaterialGuide),
+                           Read(EffectResource::MotionVectors), Write(EffectResource::DiffuseIllumination)})
+        EXPECT_NE(std::find(gi.begin(), gi.end(), use), gi.end());
+    const auto composite = plan.Bindings(DisplayEffectPass::Composite);
+    for (const auto use : {Read(EffectResource::DiffuseIllumination), Read(EffectResource::DiffuseAlbedoGuide)})
+        EXPECT_NE(std::find(composite.begin(), composite.end(), use), composite.end());
+    const auto order = [&plan](std::string_view name) {
+        return std::find(plan.Graph.Order.begin(), plan.Graph.Order.end(), name) - plan.Graph.Order.begin();
+    };
+    EXPECT_LT(order("Motion"), order("GlobalIllumination"));
+    EXPECT_LT(order("GlobalIllumination"), order("Composite"));
+
+    // No camera, no temporal history: nothing is declared.
+    input.CameraAvailable = false;
+    EXPECT_FALSE(BuildDisplayEffectPlan(input).Enabled(DisplayEffectPass::GlobalIllumination));
+    input.CameraAvailable = true;
+    input.WorldSurface = false;
+    EXPECT_FALSE(BuildDisplayEffectPlan(input).Enabled(DisplayEffectPass::GlobalIllumination));
+}
+
 TEST(Oot3dDisplayEffectPlan, DeclaresItsActualTypedInputs) {
     DisplayEffectPlanInput input;
     input.WorldSurface = true;

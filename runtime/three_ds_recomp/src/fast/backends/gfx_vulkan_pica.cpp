@@ -812,6 +812,7 @@ void GfxRenderingAPIVulkan::ApplyNativePicaSampleCount(VkSampleCountFlagBits sam
     mAmbientOcclusionPass.InvalidateScreenResources();
     mCacaoPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
+    mBrixelizerGiPass.InvalidateScreenResources();
     mReflectionMaterialResolvePass.InvalidateScreenResources();
     mLinearSceneColorPass.InvalidateScreenResources();
     mHiZDepthPyramidPass.InvalidateScreenResources();
@@ -4023,6 +4024,7 @@ void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
     const auto& effects = mFrameGraphicsSettings.Effects;
     const bool sceneEffects = effects.AmbientOcclusion != Oot3d::AmbientOcclusionMode::Off ||
         effects.Reflections != Oot3d::ReflectionMode::Off ||
+        effects.GlobalIllumination.Mode != Oot3d::GlobalIlluminationMode::Off ||
         (effects.Toon != Oot3d::ToonMode::Off && effects.ToonStyle.OutlineEnabled);
     if (!mNativeFidelityProfile && sceneEffects &&
         draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui) {
@@ -6730,6 +6732,10 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             .AmbientOcclusion =
                 presentationSettings.Effects.AmbientOcclusion,
             .Reflections = presentationSettings.Effects.Reflections,
+            .GlobalIllumination =
+                presentationSettings.Effects.GlobalIllumination.Mode ==
+                    Oot3d::GlobalIlluminationMode::BrixelizerGi &&
+                mBrixelizerGiPass.Available() && mBrixelizerScene.Available(),
             .Toon = presentationSettings.Effects.Toon,
             .OutlineEnabled =
                 presentationSettings.Effects.ToonStyle.OutlineEnabled,
@@ -6770,6 +6776,11 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 effectPlan.Graph,
                 Oot3d::DisplayEffectPassName(
                     Oot3d::DisplayEffectPass::Composite));
+        const auto globalIlluminationBarrierPlan =
+            Oot3d::BuildEffectPassBarrierPlan(
+                effectPlan.Graph,
+                Oot3d::DisplayEffectPassName(
+                    Oot3d::DisplayEffectPass::GlobalIllumination));
         const auto taaBarrierPlan =
             Oot3d::BuildEffectPassBarrierPlan(
                 effectPlan.Graph,
@@ -6875,6 +6886,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             effectPlan.Upscaler == Oot3d::UpscalerProvider::Dlss;
         const bool wantsMotionVectors = effectPlan.Enabled(
             Oot3d::DisplayEffectPass::Motion);
+        const bool wantsGlobalIllumination = effectPlan.Enabled(
+            Oot3d::DisplayEffectPass::GlobalIllumination);
         NativePicaRenderTarget* effectGuideTarget = nullptr;
         if (copyBoundary) {
             // A boundary declares its own source: the target whose scene it
@@ -6911,6 +6924,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         const Oot3d::NriEffectGraphTransientImageBinding*
             transientReflectionOutput = nullptr;
         const Oot3d::NriEffectGraphTransientImageBinding*
+            transientDiffuseIllumination = nullptr;
+        const Oot3d::NriEffectGraphTransientImageBinding*
             transientCompositeOutput = nullptr;
         const Oot3d::NriEffectGraphTransientImageBinding*
             transientAntiAliasedOutput = nullptr;
@@ -6942,7 +6957,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             plannedUpscalerContract.Output.Width;
         const uint32_t plannedUpscalerHeight =
             plannedUpscalerContract.Output.Height;
-        std::array<Oot3d::EffectTransientImageRequirement, 9U>
+        std::array<Oot3d::EffectTransientImageRequirement, 10U>
             requirements{};
         size_t requirementCount = 0U;
         const auto requireImageWithMips = [
@@ -7008,6 +7023,11 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 Oot3d::EffectResource::ReflectionColor,
                 effectGuideTarget->Width, effectGuideTarget->Height);
         }
+        if (wantsGlobalIllumination && effectGuideTarget != nullptr) {
+            requireRgba16f(
+                Oot3d::EffectResource::DiffuseIllumination,
+                effectGuideTarget->Width, effectGuideTarget->Height);
+        }
         if (effectPlan.Enabled(Oot3d::DisplayEffectPass::Composite) &&
             effectGuideTarget != nullptr) {
             requireRgba16f(
@@ -7069,6 +7089,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 transientReflectionOutput =
                     mNriEffectGraphTransientImageArena.Find(
                         Oot3d::EffectResource::ReflectionColor);
+                transientDiffuseIllumination =
+                    mNriEffectGraphTransientImageArena.Find(
+                        Oot3d::EffectResource::DiffuseIllumination);
                 transientCompositeOutput =
                     mNriEffectGraphTransientImageArena.Find(
                         Oot3d::EffectResource::CompositeColor);
@@ -7113,6 +7136,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                         break;
                     case Oot3d::EffectResource::OutlineGeometryGuide:
                         guidesMaterialized = effectGuideTarget->OutlineGeometryGuideView != VK_NULL_HANDLE;
+                        break;
+                    case Oot3d::EffectResource::DiffuseAlbedoGuide:
+                        guidesMaterialized = effectGuideTarget->DiffuseAlbedoGuideView != VK_NULL_HANDLE;
                         break;
                     default:
                         guidesMaterialized = false;
@@ -7215,6 +7241,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 VK_FORMAT_R8G8B8A8_UNORM);
             bindGuide(Oot3d::EffectResource::OutlineGeometryGuide, effectGuideTarget->OutlineGeometryGuideImage,
                       effectGuideTarget->OutlineGeometryGuideView, VK_FORMAT_R32G32B32A32_SFLOAT);
+            bindGuide(Oot3d::EffectResource::DiffuseAlbedoGuide, effectGuideTarget->DiffuseAlbedoGuideImage,
+                      effectGuideTarget->DiffuseAlbedoGuideView, VK_FORMAT_R8G8B8A8_UNORM);
         }
         const auto resolveEffectPassReads = [
             &effectPlan, &effectResources, this](
@@ -7643,6 +7671,64 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 VK_FORMAT_R16_SFLOAT,
                 effectGuideTarget->Width, effectGuideTarget->Height);
         }
+        // Diffuse GI: traced where the field, the motion vectors and a
+        // perspective depth exist; otherwise the declared output is zero
+        // irradiance, so the composite adds nothing and the graph stays whole.
+        bool giForDisplay = false;
+        if (wantsGlobalIllumination && effectGuideTarget != nullptr &&
+            transientDiffuseIllumination != nullptr) {
+            const bool giAttempted = motionAvailableForDisplay && temporalState.has_value() &&
+                                     !effectGuideTarget->WBuffering;
+            const auto giCoordinates = Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags);
+            if (giAttempted) {
+                const auto giReads = resolveEffectPassReads(Oot3d::DisplayEffectPass::GlobalIllumination);
+                const auto image = [&](Oot3d::EffectResource resource) {
+                    const auto& binding = requireEffectImageRead(giReads, resource);
+                    return std::pair{reinterpret_cast<VkImage>(binding.NativeImage),
+                                     static_cast<VkFormat>(binding.Format)};
+                };
+                Oot3d::BrixelizerGiInputs giInputs{};
+                giInputs.Width = effectGuideTarget->Width;
+                giInputs.Height = effectGuideTarget->Height;
+                std::tie(giInputs.SceneColor, giInputs.SceneColorFormat) = image(Oot3d::EffectResource::SceneColor);
+                std::tie(giInputs.Depth, giInputs.DepthFormat) = image(Oot3d::EffectResource::NativeDepth);
+                std::tie(giInputs.NormalGuide, giInputs.NormalGuideFormat) = image(Oot3d::EffectResource::NormalGuide);
+                std::tie(giInputs.MaterialGuide, giInputs.MaterialGuideFormat) =
+                    image(Oot3d::EffectResource::MaterialGuide);
+                std::tie(giInputs.Motion, giInputs.MotionFormat) = image(Oot3d::EffectResource::MotionVectors);
+                transitionEffectPassGuides(Oot3d::DisplayEffectPass::GlobalIllumination);
+                mGpuProfiler.BeginScope(mCurrentFrame, Oot3d::GpuProfileScope::GlobalIllumination, command);
+                giForDisplay =
+                    mBrixelizerGiPass.Configure(mFrameCounter, giInputs,
+                                                presentationSettings.Effects.GlobalIllumination.Resolution) &&
+                    mBrixelizerGiPass.Execute(command, mCurrentFrame, mFrameCounter, *temporalState,
+                                              *presentationPerspective, giCoordinates,
+                                              *transientDiffuseIllumination, globalIlluminationBarrierPlan);
+                mGpuProfiler.EndScope(mCurrentFrame, Oot3d::GpuProfileScope::GlobalIllumination, command);
+            }
+            if (!giForDisplay) {
+                static uint64_t giFallbacks = 0;
+                if (giFallbacks++ % 300U == 0U)
+                    std::fprintf(stderr, "TRIAEVUM_GLOBAL_ILLUMINATION fallback=%llu reason=\"%s\"\n",
+                                 (unsigned long long)giFallbacks,
+                                 !giAttempted ? (effectGuideTarget->WBuffering ? "W-buffer depth"
+                                                                               : "motion vectors unavailable")
+                                              : mBrixelizerGiPass.UnavailableReason().c_str());
+                if (!mBrixelizerGiPass.ClearOutput(mCurrentFrame, *transientDiffuseIllumination,
+                                                   globalIlluminationBarrierPlan))
+                    throw std::runtime_error("global illumination output could not be cleared");
+            }
+            recordEffectPassTransitions(mBrixelizerGiPass.LastBarrierExecution());
+            recordDeclared(Oot3d::DisplayEffectPass::GlobalIllumination,
+                           giForDisplay ? EffectOutcome::Executed : EffectOutcome::Skipped);
+            bindEffectImage(Oot3d::EffectResource::DiffuseIllumination,
+                            transientDiffuseIllumination->Texture.Image,
+                            transientDiffuseIllumination->Texture.SampledView,
+                            VK_FORMAT_R16G16B16A16_SFLOAT, effectGuideTarget->Width,
+                            effectGuideTarget->Height);
+        }
+        const bool giComposed = wantsGlobalIllumination && effectGuideTarget != nullptr &&
+                                transientDiffuseIllumination != nullptr;
         bool linearDepthForFsr = wantsFsr && effectGuideTarget != nullptr;
         const bool hiZRequested =
             reflectionsForDisplay || linearDepthForFsr;
@@ -8191,9 +8277,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 (wantsTemporalUpscaler && !canReuseUpscaler)) &&
                motionAvailableForDisplay) ||
               (wantsNis && !canReuseUpscaler) ||
-              (wantsSmaa && !mSmaaExecutedThisFrame))) &&
+              (wantsSmaa && !mSmaaExecutedThisFrame) || giComposed)) &&
             (aoForDisplay || reflectionsForDisplay ||
-             outlineForDisplay) &&
+             outlineForDisplay || giComposed) &&
             mSceneCompositePass.Available();
         const bool compositeAttempted = compositeForTaa;
         Oot3d::SceneColorEncoding compositeInputEncoding =
@@ -8285,7 +8371,12 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     optionalCompositeImage(Oot3d::EffectResource::FogGuide),
                     optionalCompositeFormat(Oot3d::EffectResource::FogGuide),
                     optionalCompositeImage(Oot3d::EffectResource::OutlineGeometryGuide),
-                    optionalCompositeFormat(Oot3d::EffectResource::OutlineGeometryGuide), aoForDisplay,
+                    optionalCompositeFormat(Oot3d::EffectResource::OutlineGeometryGuide),
+                    optionalCompositeImage(Oot3d::EffectResource::DiffuseIllumination),
+                    optionalCompositeFormat(Oot3d::EffectResource::DiffuseIllumination),
+                    optionalCompositeImage(Oot3d::EffectResource::DiffuseAlbedoGuide),
+                    optionalCompositeFormat(Oot3d::EffectResource::DiffuseAlbedoGuide), giForDisplay,
+                    presentationSettings.Effects.GlobalIllumination.DiffuseIntensity, aoForDisplay,
                     reflectionsForDisplay, presentationSettings.Effects.ReflectionStrength,
                     presentationSettings.Effects.ReflectionDebugView, outlineForDisplay,
                     presentationSettings.Effects.ToonStyle, compositeInputEncoding, compositeBarrierPlan);
@@ -10529,6 +10620,7 @@ bool GfxRenderingAPIVulkan::ResetPicaState(
         mAmbientOcclusionPass.InvalidateScreenResources();
         mCacaoPass.InvalidateScreenResources();
         mFidelityFxSssrPass.InvalidateScreenResources();
+        mBrixelizerGiPass.InvalidateScreenResources();
         mReflectionMaterialResolvePass.InvalidateScreenResources();
         mReflectionIblPass.InvalidateProfile();
         mLinearSceneColorPass.InvalidateScreenResources();
@@ -11003,6 +11095,7 @@ void GfxRenderingAPIVulkan::ReleaseEffectGraphImageClients() {
     mCacaoPass.InvalidateScreenResources();
     mHiZDepthPyramidPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
+    mBrixelizerGiPass.InvalidateScreenResources();
     mReflectionMaterialResolvePass.InvalidateScreenResources();
     mLinearSceneColorPass.InvalidateScreenResources();
     if (mHiZReflectionSurface.has_value()) {
@@ -11052,6 +11145,7 @@ void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayIma
     mAmbientOcclusionPass.InvalidateScreenResources();
     mCacaoPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
+    mBrixelizerGiPass.InvalidateScreenResources();
     mReflectionMaterialResolvePass.InvalidateScreenResources();
     mLinearSceneColorPass.InvalidateScreenResources();
     mHiZDepthPyramidPass.InvalidateScreenResources();

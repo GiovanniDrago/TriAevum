@@ -1,0 +1,91 @@
+#pragma once
+
+#ifdef ENABLE_OOT3D_VULKAN
+
+#include "fast/oot3d/effect_graph_pass_barriers.h"
+#include "fast/oot3d/graphics_settings.h"
+#include "fast/oot3d/pica_surface_coordinates.h"
+#include "fast/oot3d/scene_view_runtime.h"
+#include "fast/oot3d/temporal_history_manager.h"
+
+#include <vulkan/vulkan.h>
+
+#include <cstdint>
+#include <memory>
+#include <string>
+
+namespace Fast::Oot3d {
+
+class BrixelizerScene;
+class NriInteropContext;
+struct BrixelizerGiInstance;
+struct NriEffectGraphTransientImageBinding;
+
+// Declared reads of the GlobalIllumination display pass, at the scene
+// surface's extent.
+struct BrixelizerGiInputs {
+    uint32_t Width = 0;
+    uint32_t Height = 0;
+    VkImage SceneColor = VK_NULL_HANDLE; // native colour (sRGB encoded): lit history
+    VkFormat SceneColorFormat = VK_FORMAT_UNDEFINED;
+    VkImage Depth = VK_NULL_HANDLE; // native perspective depth (D3D [0, 1])
+    VkFormat DepthFormat = VK_FORMAT_UNDEFINED;
+    VkImage NormalGuide = VK_NULL_HANDLE; // view-space normal, 0.5 n + 0.5
+    VkFormat NormalGuideFormat = VK_FORMAT_UNDEFINED;
+    VkImage MaterialGuide = VK_NULL_HANDLE; // G: perceptual roughness
+    VkFormat MaterialGuideFormat = VK_FORMAT_UNDEFINED;
+    VkImage Motion = VK_NULL_HANDLE;
+    VkFormat MotionFormat = VK_FORMAT_UNDEFINED;
+    bool operator==(const BrixelizerGiInputs&) const = default;
+};
+
+// Diffuse global illumination traced through the scene distance field
+// (FidelityFX Brixelizer GI) into the graph's DiffuseIllumination image.
+//
+// Each composed scene surface (presentation target, native boundary source)
+// has its own instance: GI context, prepared inputs and their one-frame
+// histories (depth, world normals, linear lit colour). Several surfaces can
+// be composed within one command buffer, so an instance used this frame is
+// never retired. Nothing here changes native targets.
+class BrixelizerGiPass final {
+  public:
+    BrixelizerGiPass();
+    ~BrixelizerGiPass();
+    BrixelizerGiPass(const BrixelizerGiPass&) = delete;
+    BrixelizerGiPass& operator=(const BrixelizerGiPass&) = delete;
+
+    bool Initialize(VkPhysicalDevice physicalDevice, VkDevice device,
+                    NriInteropContext& interop, BrixelizerScene& scene);
+    // Selects (or creates) the instance of these inputs for frame `frameId`.
+    bool Configure(uint64_t frameId, const BrixelizerGiInputs& inputs,
+                   GlobalIlluminationResolution resolution);
+    bool Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot, uint64_t frameId,
+                 const TemporalViewState& temporal, const PerspectiveViewState& view,
+                 PicaSurfaceCoordinates coordinates,
+                 const NriEffectGraphTransientImageBinding& output,
+                 const EffectPassBarrierPlan& barriers);
+    // No GI for this sample (the field has no data yet, W-buffer depth, a
+    // failed dispatch): the declared output holds zero irradiance, so the
+    // composite adds nothing and the graph stays complete.
+    bool ClearOutput(uint32_t frameSlot, const NriEffectGraphTransientImageBinding& output,
+                     const EffectPassBarrierPlan& barriers);
+    void InvalidateScreenResources();
+    void Shutdown();
+
+    [[nodiscard]] bool Available() const;
+    [[nodiscard]] const EffectPassBarrierExecution& LastBarrierExecution() const;
+    [[nodiscard]] const std::string& UnavailableReason() const;
+
+  private:
+    template <typename Transition>
+    bool Trace(BrixelizerGiInstance& instance, VkCommandBuffer commandBuffer, uint32_t frameSlot,
+               uint64_t frameId, const TemporalViewState& temporal, const PerspectiveViewState& view,
+               PicaSurfaceCoordinates coordinates, const Transition& privateTransition);
+
+    struct Impl;
+    std::unique_ptr<Impl> mImpl;
+};
+
+} // namespace Fast::Oot3d
+
+#endif

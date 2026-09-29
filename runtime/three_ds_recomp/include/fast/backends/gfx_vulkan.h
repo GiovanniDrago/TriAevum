@@ -20,6 +20,7 @@
 #include "fast/backends/oot3d_vulkan_validation.h"
 #include "fast/backends/vulkan_scanout_probe.h"
 #include "fast/oot3d/nri_interop_context.h"
+#include "fast/oot3d/brixelizer_gi_pass.h"
 #include "fast/oot3d/brixelizer_scene.h"
 #include "fast/oot3d/sample_view.h"
 #include "fast/renderer3ds/pica_gi_geometry.h"
@@ -948,6 +949,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     std::unordered_map<uint64_t, NativePicaGeometryBuffer> mNativePicaGeometryBuffers;
     // Distance field of the native opaque geometry (global illumination).
     Oot3d::BrixelizerScene mBrixelizerScene;
+    // Diffuse GI traced through mBrixelizerScene (declared after it: its
+    // contexts use the field's backend and are destroyed first).
+    Oot3d::BrixelizerGiPass mBrixelizerGiPass;
     bool mBrixelizerInitializationAttempted = false;
     bool mSceneDistanceFieldUpdatedThisFrame = false;
     std::array<std::vector<BufferAllocation>, kFramesInFlight> mRetiredNativePicaGeometryBuffers;

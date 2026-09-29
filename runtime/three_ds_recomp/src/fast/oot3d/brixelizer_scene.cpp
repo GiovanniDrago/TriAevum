@@ -15,6 +15,9 @@
 #endif
 
 #include "fast/oot3d/temporal_history_manager.h"
+#if OOT3D_HAS_FFX_BRIXELIZER
+#include "brixelizer_gi_access.h"
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -193,6 +196,14 @@ struct BrixelizerScene::Impl {
     uint32_t IndexBufferIndex = 0;
     RangeAllocator VertexArena;
     RangeAllocator IndexArena;
+
+    // Constant inputs of the GI passes: a black environment (the sky is native
+    // geometry or clear colour, never an IBL probe) and per-frame noise,
+    // generated here rather than shipped as media.
+    Image Environment;
+    std::array<Image, 16> Noise;
+    Buffer NoiseUpload;
+    bool GiInputsReady = false;
 
     // Developer debug view (BrixelizerDebugView) and GPU timing.
     Image DebugImage;
@@ -499,7 +510,8 @@ bool BrixelizerScene::Initialize(VkPhysicalDevice physicalDevice, VkDevice devic
         vkGetPhysicalDeviceFormatProperties(physicalDevice, VK_FORMAT_R8_UNORM, &properties);
         if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) == 0U)
             throw std::runtime_error("R8 storage images are unavailable");
-        constexpr size_t contexts = FFX_BRIXELIZER_CONTEXT_COUNT + FFX_BRIXELIZER_GI_CONTEXT_COUNT;
+        constexpr size_t contexts =
+            FFX_BRIXELIZER_CONTEXT_COUNT + size_t(kMaxGiSurfaces) * FFX_BRIXELIZER_GI_CONTEXT_COUNT;
         impl.BackendScratch.assign(ffxGetScratchMemorySizeVK(physicalDevice, contexts), 0);
         impl.DeviceContext = { device, physicalDevice, vkGetDeviceProcAddr };
         if (ffxGetInterfaceVK(&impl.Backend, ffxGetDeviceVK(&impl.DeviceContext), impl.BackendScratch.data(),
@@ -592,6 +604,10 @@ void BrixelizerScene::Shutdown() {
     if (impl.Atlas.Memory != VK_NULL_HANDLE) vkFreeMemory(impl.Device, impl.Atlas.Memory, nullptr);
     impl.Atlas = {};
     impl.AtlasReady = false;
+    impl.Destroy(impl.Environment);
+    for (auto& noise : impl.Noise) impl.Destroy(noise);
+    impl.Destroy(impl.NoiseUpload);
+    impl.GiInputsReady = false;
     impl.Destroy(impl.DebugImage);
     impl.Destroy(impl.DebugReadback);
     impl.DebugImageInitialized = false;
@@ -890,6 +906,118 @@ void BrixelizerScene::Reset() {
     impl.SourceFrame = 0;
 #endif
 }
+
+#if OOT3D_HAS_FFX_BRIXELIZER
+FfxInterface* BrixelizerSceneGiAccess::Backend(BrixelizerScene& scene) {
+    return scene.mImpl->Initialized ? &scene.mImpl->Backend : nullptr;
+}
+
+bool BrixelizerSceneGiAccess::Bind(BrixelizerScene& scene, VkCommandBuffer commandBuffer, uint64_t frameIndex,
+                                   FfxBrixelizerGIDispatchDescription& dispatch) {
+    auto& impl = *scene.mImpl;
+    // The field's resources hold data only after its first update.
+    if (!impl.Initialized || !impl.ContextCreated || !impl.AtlasReady) return false;
+    constexpr uint32_t kNoiseSize = 128;
+    if (!impl.GiInputsReady) {
+        const auto describe = [](Image& image, VkFormat format, uint32_t size, uint32_t layers,
+                                 VkImageCreateFlags flags) {
+            image.Info.flags = flags;
+            image.Info.imageType = VK_IMAGE_TYPE_2D;
+            image.Info.format = format;
+            image.Info.extent = { size, size, 1 };
+            image.Info.mipLevels = 1;
+            image.Info.arrayLayers = layers;
+            image.Info.samples = VK_SAMPLE_COUNT_1_BIT;
+            image.Info.tiling = VK_IMAGE_TILING_OPTIMAL;
+            image.Info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            image.Info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            image.Info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        };
+        try {
+            describe(impl.Environment, VK_FORMAT_R16G16B16A16_SFLOAT, 1, 6, VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
+            impl.AllocateImage(impl.Environment, "GI environment");
+            const VkDeviceSize layerBytes = VkDeviceSize(kNoiseSize) * kNoiseSize * 4U;
+            impl.NoiseUpload = impl.CreateBuffer(layerBytes * impl.Noise.size(), 0, true);
+            auto* texels = static_cast<uint8_t*>(impl.NoiseUpload.Mapped);
+            for (size_t layer = 0; layer < impl.Noise.size(); ++layer) {
+                describe(impl.Noise[layer], VK_FORMAT_R8G8B8A8_UNORM, kNoiseSize, 1, 0);
+                impl.AllocateImage(impl.Noise[layer], "GI noise");
+                // Uniform white noise per texel and layer (splitmix64).
+                for (uint64_t texel = 0; texel < uint64_t(kNoiseSize) * kNoiseSize; ++texel) {
+                    uint64_t value = (uint64_t(layer) << 32U | texel) + 0x9E3779B97F4A7C15ULL;
+                    value = (value ^ (value >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+                    value = (value ^ (value >> 27U)) * 0x94D049BB133111EBULL;
+                    value ^= value >> 31U;
+                    std::memcpy(texels + layer * layerBytes + texel * 4U, &value, 4U);
+                }
+            }
+        } catch (const std::exception& exception) {
+            impl.Reason = exception.what();
+            return false;
+        }
+        std::vector<VkImageMemoryBarrier> barriers;
+        const auto transition = [&barriers](VkImage image, uint32_t layers, VkImageLayout from, VkImageLayout to,
+                                            VkAccessFlags source, VkAccessFlags destination) {
+            VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            barrier.oldLayout = from;
+            barrier.newLayout = to;
+            barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = image;
+            barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers };
+            barrier.srcAccessMask = source;
+            barrier.dstAccessMask = destination;
+            barriers.push_back(barrier);
+        };
+        transition(impl.Environment.Handle, 6, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                   VK_ACCESS_TRANSFER_WRITE_BIT);
+        for (auto& noise : impl.Noise)
+            transition(noise.Handle, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                       VK_ACCESS_TRANSFER_WRITE_BIT);
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                             nullptr, 0, nullptr, uint32_t(barriers.size()), barriers.data());
+        const VkClearColorValue black{};
+        const VkImageSubresourceRange faces{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6 };
+        vkCmdClearColorImage(commandBuffer, impl.Environment.Handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1,
+                             &faces);
+        for (size_t layer = 0; layer < impl.Noise.size(); ++layer) {
+            VkBufferImageCopy copy{};
+            copy.bufferOffset = layer * VkDeviceSize(kNoiseSize) * kNoiseSize * 4U;
+            copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+            copy.imageExtent = { kNoiseSize, kNoiseSize, 1 };
+            vkCmdCopyBufferToImage(commandBuffer, impl.NoiseUpload.Handle, impl.Noise[layer].Handle,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        }
+        barriers.clear();
+        transition(impl.Environment.Handle, 6, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+        for (auto& noise : impl.Noise)
+            transition(noise.Handle, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                             nullptr, 0, nullptr, uint32_t(barriers.size()), barriers.data());
+        impl.GiInputsReady = true;
+    }
+    const auto image = [](const Image& image, const wchar_t* name) {
+        return ffxGetResourceVK(reinterpret_cast<void*>(image.Handle),
+                                ffxGetImageResourceDescriptionVK(image.Handle, image.Info), name,
+                                FFX_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+    };
+    dispatch.environmentMap = image(impl.Environment, L"Brixelizer GI environment");
+    dispatch.noiseTexture = image(impl.Noise[frameIndex % impl.Noise.size()], L"Brixelizer GI noise");
+    // The field's resources stay in their update state (unordered access);
+    // FidelityFX transitions them for tracing and back.
+    dispatch.sdfAtlas = ffxGetResourceVK(
+        reinterpret_cast<void*>(impl.Atlas.Handle),
+        ffxGetImageResourceDescriptionVK(impl.Atlas.Handle, impl.Atlas.Info, FFX_RESOURCE_USAGE_UAV),
+        L"Brixelizer SDF atlas", FFX_RESOURCE_STATE_UNORDERED_ACCESS);
+    dispatch.bricksAABBs = impl.BufferResource(impl.BrickAabbs, L"Brixelizer brick AABBs");
+    for (uint32_t i = 0; i < FFX_BRIXELIZER_MAX_CASCADES; ++i) {
+        dispatch.cascadeAABBTrees[i] = impl.BufferResource(impl.AabbTrees[i], L"Brixelizer cascade AABB tree");
+        dispatch.cascadeBrickMaps[i] = impl.BufferResource(impl.BrickMaps[i], L"Brixelizer cascade brick map");
+    }
+    return ffxBrixelizerGetRawContext(impl.Context.get(), &dispatch.brixelizerContext) == FFX_OK;
+}
+#endif
 
 bool BrixelizerScene::Available() const noexcept { return mImpl->Initialized; }
 const BrixelizerSceneStats& BrixelizerScene::Stats() const noexcept { return mImpl->Stats; }

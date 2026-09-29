@@ -495,7 +495,7 @@ void main() {
 }
 
 TEST(Oot3dPicaShaderPipelineCache,
-     RejectsTemporalInstrumentationWithoutTypedFrontendProgram) {
+     OmitsTemporalInstrumentationWithoutTypedFrontendProgram) {
     Fast::Oot3d::PicaShaderPipelineCache cache;
     Fast::Oot3d::EffectsSettings effects;
     auto request = BaseRequest();
@@ -503,8 +503,11 @@ TEST(Oot3dPicaShaderPipelineCache,
     request.TemporalVertexProgram = {};
     cache.BeginFrame(1U);
 
-    EXPECT_THROW((void)cache.Resolve(request, effects),
-                 std::logic_error);
+    const auto& result = cache.Resolve(request, effects);
+    EXPECT_FALSE(Fast::Oot3d::HasPicaShaderInstrumentationFeature(
+        result.AppliedFeatures, Fast::Oot3d::PicaShaderInstrumentationFeature::TemporalVertex));
+    EXPECT_FALSE(Fast::Oot3d::HasPicaShaderInstrumentationFeature(
+        result.AppliedFeatures, Fast::Oot3d::PicaShaderInstrumentationFeature::RigidMotionGuide));
     EXPECT_EQ(cache.Stats().TypedInstrumentationContractRejects, 1U);
 }
 

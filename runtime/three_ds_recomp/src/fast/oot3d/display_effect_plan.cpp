@@ -19,6 +19,7 @@ void PopulateCompatibilityProjections(
     plan.AmbientOcclusion = plan.Enabled(DisplayEffectPass::AmbientOcclusion);
     plan.Outline = plan.Enabled(DisplayEffectPass::Outline);
     plan.Reflections = plan.Enabled(DisplayEffectPass::Reflections);
+    plan.GlobalIllumination = plan.Enabled(DisplayEffectPass::GlobalIllumination);
     plan.FidelityFxSssr =
         plan.Reflections &&
         plan.ReflectionProvider == ReflectionMode::FidelityFxSssr;
@@ -165,6 +166,7 @@ std::string_view DisplayEffectPassName(DisplayEffectPass pass) noexcept {
         case DisplayEffectPass::Scanout: return "Scanout";
         case DisplayEffectPass::WorkingColor: return "WorkingColor";
         case DisplayEffectPass::SceneComposition: return "SceneComposition";
+        case DisplayEffectPass::GlobalIllumination: return "GlobalIllumination";
         case DisplayEffectPass::Count: return {};
     }
     return {};
@@ -304,6 +306,9 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     const bool temporalMetadata = extensionWorld &&
                                   input.PerspectiveAvailable &&
                                   input.CameraAvailable;
+    // GI keeps a temporal history (motion vectors) and adds light in the
+    // linear domain through the composite.
+    const bool globalIllumination = temporalMetadata && input.GlobalIllumination;
     // A native boundary has no presentation stages, so its inputs never declare
     // them: the domain projection below is what enforces that structurally, and
     // these keep the boundary's derived requirements free of presentation
@@ -321,19 +326,19 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     const bool temporalUpscaler = fsr || dlss;
     const bool hiZ = reflections || fsr;
     const bool motionVectors =
-        temporalMetadata && (taa || temporalUpscaler || fidelityFxSssr ||
+        temporalMetadata && (taa || temporalUpscaler || fidelityFxSssr || globalIllumination ||
                              (!input.NativeSceneBoundary && input.ForceMotion));
 
     // A native boundary materializes the composed scene for its consumer at
     // the boundary's own order, so the scene stages must actually be baked into
     // the boundary output rather than fused into presentation.
-    const bool composite = (ao || outline || reflections) &&
+    const bool composite = (ao || outline || reflections || globalIllumination) &&
                            (taa || temporalUpscaler || smaa || nis ||
-                            input.NativeSceneBoundary);
+                            input.NativeSceneBoundary || globalIllumination);
     const bool workingColor = fidelityFxSssr ||
         ((taa || temporalUpscaler) && !composite);
 
-    const bool normalGuide = ao || outline || reflections;
+    const bool normalGuide = ao || outline || reflections || globalIllumination;
     const bool materialGuide = reflections || motionVectors;
     const bool rigidMotionGuide = motionVectors || outline;
     const bool ambientGuide = ao;
@@ -353,6 +358,9 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     if (outline) {
         guideOutputs.push_back(Write(EffectResource::FogGuide));
         guideOutputs.push_back(Write(EffectResource::OutlineGeometryGuide));
+    }
+    if (globalIllumination) {
+        guideOutputs.push_back(Write(EffectResource::DiffuseAlbedoGuide));
     }
 
     EffectGraph graph;
@@ -416,6 +424,15 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
                 .Stage = EffectStage::AfterOpaque,
                 .Contract = EffectContractKind::ComposerPass,
                 .Resources = std::move(reflectionResources) });
+    graph.Add({ .Name = "GlobalIllumination",
+                .DependsOn = { "Guides", "Motion" },
+                .Enabled = globalIllumination,
+                .Stage = EffectStage::AfterOpaque,
+                .Contract = EffectContractKind::ComposerPass,
+                .Resources = { Read(EffectResource::NativeSceneView), Read(EffectResource::SceneColor),
+                               Read(EffectResource::NativeDepth), Read(EffectResource::NormalGuide),
+                               Read(EffectResource::MaterialGuide), Read(EffectResource::MotionVectors),
+                               Write(EffectResource::DiffuseIllumination) } });
     graph.Add({ .Name = "Outline",
                 .DependsOn = { "Guides" },
                 .Enabled = outline,
@@ -437,6 +454,10 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
         compositeResources.push_back(Read(EffectResource::ReflectionColor));
         compositeResources.push_back(Read(EffectResource::MaterialGuide));
     }
+    if (globalIllumination) {
+        compositeResources.push_back(Read(EffectResource::DiffuseIllumination));
+        compositeResources.push_back(Read(EffectResource::DiffuseAlbedoGuide));
+    }
     if (outline) {
         compositeResources.push_back(Read(EffectResource::NativeDepth));
         compositeResources.push_back(Read(EffectResource::NormalGuide));
@@ -447,7 +468,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     compositeResources.push_back(Write(EffectResource::CompositeColor));
     graph.Add({ .Name = "Composite",
                 .DependsOn = { "AmbientOcclusion", "Reflections", "Outline",
-                               "WorkingColor" },
+                               "WorkingColor", "GlobalIllumination" },
                 .Enabled = composite,
                 .Stage = EffectStage::AfterTransparent,
                 .Contract = EffectContractKind::ComposerPass,

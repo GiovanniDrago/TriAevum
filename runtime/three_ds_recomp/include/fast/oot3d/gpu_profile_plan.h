@@ -21,6 +21,7 @@ enum class GpuProfileScope : uint8_t {
     DisplayTransfer,
     Scanout,
     Overlay,
+    GlobalIllumination,
     Count,
 };
 
