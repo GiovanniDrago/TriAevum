@@ -566,6 +566,20 @@ change of the mix, moving lights such as Navi, time of day) is set by the
 averaging constants in the Brixelizer GI shaders. Faster response would need
 patched copies of those shaders.
 
+## Blended surfaces that write depth (2026-09-30)
+
+User report on the second Kokiri reference (`qualify/ref-kokiri2`): GI made a
+Kokiri girl look transparent. OoT draws NPCs with alpha blending (their
+distance fade) and depth writes. The guide writer accepted only surfaces that
+replace the colour, and the overlay path only surfaces without depth, so her
+draw published nothing: the GI traced her own depth and normal but multiplied
+the light by the albedo of the ground left underneath (debug view 2 showed the
+ground through her, view 4 its texture on her dress). A depth-writing scene
+surface now always publishes the guide; when blended, the packed value is
+still replaced (it cannot be blended) and the coverage is the share of the
+native colour it replaces (source alpha; zero for additive). Core validation
+clean, GI off identical, evidence in `qualify/ref-kokiri2`.
+
 ## Screen-space effects under interpolation (GTAO, SSSR, TAA, GI)
 
 Measured in the Sheik copy cutscene (Interpolated2x, camera pan, per presented

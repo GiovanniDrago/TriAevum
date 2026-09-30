@@ -2183,7 +2183,7 @@ TEST(Oot3dOutlineGeometryGuide, PreservesNativeDepthAndColorInBothDepthModes) {
     }
 }
 
-TEST(Oot3dDiffuseAlbedoGuide, OpaqueSceneSurfacesPublishItAndTranslucentOnesLeaveIt) {
+TEST(Oot3dDiffuseAlbedoGuide, DepthWritingSceneSurfacesPublishItAndOverlaysLeaveIt) {
     using namespace Fast::Oot3d;
     shaderc::Compiler compiler;
     const std::string source = "#version 450\nlayout(location=5) in vec4 pica_normquat;\n"
@@ -2204,10 +2204,22 @@ TEST(Oot3dDiffuseAlbedoGuide, OpaqueSceneSurfacesPublishItAndTranslucentOnesLeav
     EXPECT_NE(variant.Source.find("pica_color=vec4(0.2,0.4,0.8,1.0);"), std::string::npos);
     const auto compiled = compiler.CompileGlslToSpv(variant.Source, shaderc_fragment_shader, "albedo_guide.frag");
     EXPECT_EQ(compiled.GetCompilationStatus(), shaderc_compilation_status_success) << compiled.GetErrorMessage();
+    // A blended surface that writes depth (a fading NPC) owns the depth and
+    // normal the trace reads: it replaces the guide below it.
     request.Draw.Blend.Enabled = true;
     request.Draw.Blend.SourceRgb = Oot3d::Renderer::NativeBlendFactor::SourceAlpha;
     request.Draw.Blend.DestRgb = Oot3d::Renderer::NativeBlendFactor::OneMinusSourceAlpha;
+    const auto blended = BuildPicaFragmentInstrumentationVariant(request);
+    EXPECT_TRUE(blended.Outputs.WritesDiffuseAlbedoGuide);
+    EXPECT_FALSE(blended.Outputs.SceneDomainAlbedoOverlay);
+    EXPECT_NE(blended.FragmentKey, variant.FragmentKey);
+    const auto blendedCompiled = compiler.CompileGlslToSpv(blended.Source, shaderc_fragment_shader, "albedo_blended.frag");
+    EXPECT_EQ(blendedCompiled.GetCompilationStatus(), shaderc_compilation_status_success)
+        << blendedCompiled.GetErrorMessage();
+    // Without depth it is an overlay: the surface below keeps its guide.
+    request.Draw.DepthWriteEnabled = false;
     EXPECT_FALSE(BuildPicaFragmentInstrumentationVariant(request).Outputs.WritesDiffuseAlbedoGuide);
+    request.Draw.DepthWriteEnabled = true;
     request.Draw.Blend = {};
     request.Draw.CompositionDomain = Oot3d::Renderer::PicaCompositionDomain::Ui;
     EXPECT_FALSE(BuildPicaFragmentInstrumentationVariant(request).Outputs.WritesDiffuseAlbedoGuide);

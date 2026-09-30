@@ -771,29 +771,38 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
         apply(PicaShaderInstrumentationFeature::OutlineGeometryGuide);
     }
 
-    // Global illumination surface guide: opaque, RGB-replacing, depth-writing
-    // scene surfaces publish it (zero when their albedo is unknown, so a
-    // surface in front removes GI); overlays attenuate its alpha (scene-domain
-    // guide). Each 16-bit RGB channel packs the sRGB albedo (high byte) and
-    // the sRGB direct radiance that seeds the trace (low byte).
+    // Global illumination surface guide: depth-writing scene surfaces publish
+    // it (zero when their albedo is unknown, so a surface in front removes
+    // GI); overlays that leave depth attenuate its alpha (scene-domain guide).
+    // Each 16-bit RGB channel packs the sRGB albedo (high byte) and the sRGB
+    // direct radiance that seeds the trace (low byte), so it is replaced, never
+    // blended: a blended surface that writes depth (a fading NPC) owns the
+    // depth and normal the trace reads, and its coverage is the share of the
+    // native colour it replaces.
     if (HasPicaShaderInstrumentationFeature(request.RequestedFeatures,
                                             PicaShaderInstrumentationFeature::DiffuseAlbedoGuide) &&
         result.Hooks.Valid() && request.Draw.DepthTestEnabled && request.Draw.DepthWriteEnabled &&
-        replacesDestinationRgb && request.Draw.FragmentOperationMode == 0U &&
+        request.Draw.FragmentOperationMode == 0U &&
         (request.Draw.ColorWriteMask & 7U) != 0U &&
         request.Draw.CompositionDomain == ::Oot3d::Renderer::PicaCompositionDomain::Scene &&
         !HasOutputAtLocation(request.Source, 7U)) {
+        std::string coverage = "1.0";
+        if (!replacesDestinationRgb)
+            coverage = blend.DestRgb == ::Oot3d::Renderer::NativeBlendFactor::One ? "0.0"
+                                                                                  : "clamp(pica_color.a, 0.0, 1.0)";
         declarations += "layout(location=7) out vec4 pica_diffuse_albedo_guide;\n";
         if (request.Draw.DepthCompare == ::Oot3d::Renderer::PicaCompareFunction::Always) {
             epilogue += "    pica_diffuse_albedo_guide = vec4(0.0);\n";
         } else if (pbr) {
-            epilogue += "    pica_diffuse_albedo_guide = vec4((floor(clamp(pbr_linear_to_srgb(clamp(pbr_albedo, 0.0, 1.0)), 0.0, 1.0) * 255.0 + 0.5) * 256.0 + floor(clamp(pbr_linear_to_srgb(pbr_gi_radiance), 0.0, 1.0) * 255.0 + 0.5)) / 65535.0, 1.0);\n";
+            epilogue += "    pica_diffuse_albedo_guide = vec4((floor(clamp(pbr_linear_to_srgb(clamp(pbr_albedo, 0.0, 1.0)), 0.0, 1.0) * 255.0 + 0.5) * 256.0 + floor(clamp(pbr_linear_to_srgb(pbr_gi_radiance), 0.0, 1.0) * 255.0 + 0.5)) / 65535.0, " + coverage + ");\n";
         } else if (surfaceLighting) {
-            epilogue += "    pica_diffuse_albedo_guide = vec4((floor(surface_gi_albedo * 255.0 + 0.5) * 256.0 + floor(clamp(surface_gi_albedo * pica_surface_gi_direct(pica_surface_unit(pica_surface_normal)), 0.0, 1.0) * 255.0 + 0.5)) / 65535.0, 1.0);\n";
+            epilogue += "    pica_diffuse_albedo_guide = vec4((floor(surface_gi_albedo * 255.0 + 0.5) * 256.0 + floor(clamp(surface_gi_albedo * pica_surface_gi_direct(pica_surface_unit(pica_surface_normal)), 0.0, 1.0) * 255.0 + 0.5)) / 65535.0, " + coverage + ");\n";
         } else {
             epilogue += "    pica_diffuse_albedo_guide = vec4(0.0);\n";
         }
         result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_DIFFUSE_ALBEDO_GUIDE_V2_DIRECT");
+        if (!replacesDestinationRgb)
+            result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_DIFFUSE_ALBEDO_GUIDE_BLENDED_COVERAGE_V1");
         result.Outputs.WritesDiffuseAlbedoGuide = true;
         apply(PicaShaderInstrumentationFeature::DiffuseAlbedoGuide);
     }
@@ -958,7 +967,9 @@ vec3 pica_surface_shadow(int slot) {
             }
             // GI is light on the surface below: an overlay transmits only its
             // native destination factor of it (the alpha-only coverage blend).
-            if (features.GlobalIllumination) {
+            // A depth-writing surface already published its own guide.
+            const bool albedoOverlay = features.GlobalIllumination && !result.Outputs.WritesDiffuseAlbedoGuide;
+            if (albedoOverlay) {
                 declarations += "layout(location=7) out vec4 pica_diffuse_albedo_guide;\n";
                 epilogue += "    pica_diffuse_albedo_guide = vec4(0.0, 0.0, 0.0, ";
                 epilogue += alpha;
@@ -975,7 +986,7 @@ vec3 pica_surface_shadow(int slot) {
                 features.AmbientOcclusion;
             result.Outputs.SceneDomainTransparentDepthOverlay =
                 transparentDepthAvailable;
-            result.Outputs.SceneDomainAlbedoOverlay = features.GlobalIllumination;
+            result.Outputs.SceneDomainAlbedoOverlay = albedoOverlay;
             result.Outputs.WritesAmbientGuide |=
                 features.AmbientOcclusion;
             apply(PicaShaderInstrumentationFeature::SceneDomainGuide);
