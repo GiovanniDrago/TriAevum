@@ -1244,6 +1244,7 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                   {"SceneLight", effects.GlobalIllumination.SceneLight},
                   {"KeyLight", effects.GlobalIllumination.KeyLight},
                   {"DynamicLights", effects.GlobalIllumination.DynamicLights},
+                  {"SkyLight", effects.GlobalIllumination.SkyLight},
               }},
              {"AO",
               {
@@ -1590,7 +1591,8 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
             // Source gains arrived later: absent fields keep defaults.
             for (const auto& [name, field] :
                  {std::pair{"SceneLight", &settings.SceneLight}, std::pair{"KeyLight", &settings.KeyLight},
-                  std::pair{"DynamicLights", &settings.DynamicLights}}) {
+                  std::pair{"DynamicLights", &settings.DynamicLights},
+                  std::pair{"SkyLight", &settings.SkyLight}}) {
                 if (FindMember(*gi, name) != nullptr)
                     ReadScalar(*gi, name, *field,
                                std::string("Graphics.Effects.GlobalIllumination.") + name, result);
@@ -1600,7 +1602,7 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
             // Controls of the retired reference composition are dropped on
             // the next save.
             for (const char* retired :
-                 {"ReferenceRadius", "Additive", "BounceStrength", "OcclusionStrength", "SkyLight"})
+                 {"ReferenceRadius", "Additive", "BounceStrength", "OcclusionStrength"})
                 if (FindMember(*gi, retired) != nullptr) result.NeedsRewrite = true;
         } else {
             value.GlobalIllumination = {};

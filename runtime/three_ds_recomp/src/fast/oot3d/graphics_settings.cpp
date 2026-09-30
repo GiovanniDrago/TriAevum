@@ -10,19 +10,19 @@ namespace Fast::Oot3d {
 
 GlobalIlluminationSourceMix ResolveGlobalIlluminationSources(const GlobalIlluminationSettings& settings) noexcept {
     const auto gain = [](float value) { return std::isfinite(value) ? std::max(value, 0.0F) : 0.0F; };
-    const std::array<float, 3> gains{gain(settings.SceneLight), gain(settings.KeyLight),
-                                     gain(settings.DynamicLights)};
+    const std::array<float, 4> gains{gain(settings.SceneLight), gain(settings.KeyLight),
+                                     gain(settings.DynamicLights), gain(settings.SkyLight)};
     GlobalIlluminationSourceMix mix;
-    mix.Gain = std::max({gains[0], gains[1], gains[2]});
+    mix.Gain = std::max({gains[0], gains[1], gains[2], gains[3]});
     if (mix.Gain > 0.0F)
         for (size_t source = 0; source < gains.size(); ++source) mix.Weights[source] = gains[source] / mix.Gain;
     return mix;
 }
 
-bool RestartsGlobalIlluminationHistory(const std::array<float, 3>& previous,
-                                       const std::array<float, 3>& next) noexcept {
+bool RestartsGlobalIlluminationHistory(const std::array<float, 4>& previous,
+                                       const std::array<float, 4>& next) noexcept {
     if (previous == next) return false;
-    if (previous == std::array<float, 3>{}) return true;
+    if (previous == std::array<float, 4>{}) return true;
     for (size_t source = 0; source < previous.size(); ++source)
         if (previous[source] > 0.0F && next[source] == 0.0F) return true;
     return false;
@@ -291,6 +291,7 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
     globalIllumination.SceneLight = clampOr(globalIllumination.SceneLight, 0.0F, 4.0F, 1.0F);
     globalIllumination.KeyLight = clampOr(globalIllumination.KeyLight, 0.0F, 4.0F, 1.0F);
     globalIllumination.DynamicLights = clampOr(globalIllumination.DynamicLights, 0.0F, 4.0F, 1.0F);
+    globalIllumination.SkyLight = clampOr(globalIllumination.SkyLight, 0.0F, 4.0F, 0.25F);
     if (globalIllumination.Resolution > GlobalIlluminationResolution::Quarter)
         globalIllumination.Resolution = GlobalIlluminationResolution::Half;
     if (globalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi &&

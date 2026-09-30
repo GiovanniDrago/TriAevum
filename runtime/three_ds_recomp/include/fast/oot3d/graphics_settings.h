@@ -57,6 +57,10 @@ struct GlobalIlluminationSettings {
     float SceneLight = 1.0F;
     float KeyLight = 1.0F;
     float DynamicLights = 1.0F;
+    // Sky light: traced rays that leave the scene receive the native sky
+    // colour, so open surfaces are lit and occluded ones are not. At 1 every
+    // open surface receives the full sky colour on top of its native colour.
+    float SkyLight = 0.25F;
     // Specular GI is a reflection source: composed through the material
     // guide like screen-space reflections, which own the term when enabled.
     bool Specular = false;
@@ -69,7 +73,7 @@ struct GlobalIlluminationSettings {
 // GI's radiance cache follows a change of the weights only over seconds, so
 // the pass restarts its history when they change.
 struct GlobalIlluminationSourceMix {
-    std::array<float, 3> Weights{}; // native scene light, key light, dynamic lights
+    std::array<float, 4> Weights{}; // native scene light, key light, dynamic lights, sky light
     float Gain = 0.0F;
     bool operator==(const GlobalIlluminationSourceMix&) const = default;
 };
@@ -80,8 +84,8 @@ struct GlobalIlluminationSourceMix {
 // returning to a history that held none, or a source switched off (its light
 // would linger). A restarted history fills at once; for other changes a
 // restart would only add a dark dip.
-[[nodiscard]] bool RestartsGlobalIlluminationHistory(const std::array<float, 3>& previous,
-                                                     const std::array<float, 3>& next) noexcept;
+[[nodiscard]] bool RestartsGlobalIlluminationHistory(const std::array<float, 4>& previous,
+                                                     const std::array<float, 4>& next) noexcept;
 
 inline constexpr uint8_t kMaximumToonLightBands = 6U;
 

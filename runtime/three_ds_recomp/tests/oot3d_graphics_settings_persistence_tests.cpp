@@ -835,7 +835,9 @@ TEST(Oot3dGraphicsSettingsPersistence, GlobalIlluminationSpecular) {
     settings.Effects.GlobalIllumination.SceneLight = 0.4F;
     settings.Effects.GlobalIllumination.KeyLight = 2.0F;
     settings.Effects.GlobalIllumination.DynamicLights = 0.5F;
+    settings.Effects.GlobalIllumination.SkyLight = 0.6F;
     const auto composed = DeserializeGraphicsSettings(SerializeGraphicsSettings(settings));
+    EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.SkyLight, 0.6F);
     EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.SceneLight, 0.4F);
     EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.KeyLight, 2.0F);
     EXPECT_FLOAT_EQ(composed.Value.Effects.GlobalIllumination.DynamicLights, 0.5F);
@@ -849,13 +851,13 @@ TEST(Oot3dGraphicsSettingsPersistence, GlobalIlluminationSpecular) {
 
     // Controls of the retired reference composition are dropped on rewrite.
     auto retired = SerializeGraphicsSettings(composed.Value);
-    retired["Effects"]["GlobalIllumination"]["SkyLight"] = 1.0;
     retired["Effects"]["GlobalIllumination"]["Additive"] = 0.5;
     const auto dropped = DeserializeGraphicsSettings(retired);
     EXPECT_TRUE(dropped.NeedsRewrite);
     EXPECT_FLOAT_EQ(dropped.Value.Effects.GlobalIllumination.KeyLight, 2.0F);
     const auto rewritten = SerializeGraphicsSettings(dropped.Value);
-    EXPECT_FALSE(rewritten["Effects"]["GlobalIllumination"].contains("SkyLight"));
+    EXPECT_FALSE(rewritten["Effects"]["GlobalIllumination"].contains("Additive"));
+    EXPECT_TRUE(rewritten["Effects"]["GlobalIllumination"].contains("SkyLight"));
     for (const auto& issue : legacy.Issues)
         EXPECT_EQ(issue.Field.find("GlobalIllumination"), std::string::npos) << issue.Field;
 }

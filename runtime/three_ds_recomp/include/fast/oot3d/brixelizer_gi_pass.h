@@ -79,7 +79,7 @@ class BrixelizerGiPass final {
     // otherwise the new weights blend in.
     bool Configure(uint64_t frameId, const BrixelizerGiInputs& inputs,
                    GlobalIlluminationResolution resolution, bool specular,
-                   const std::array<float, 3>& sourceWeights);
+                   const std::array<float, 4>& sourceWeights);
     // `specularOutput` is the declared SpecularIllumination image, or null
     // when the pass does not declare it.
     bool Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot, uint64_t frameId,
@@ -87,6 +87,9 @@ class BrixelizerGiPass final {
                  PicaSurfaceCoordinates coordinates,
                  const NriEffectGraphTransientImageBinding& output,
                  const NriEffectGraphTransientImageBinding* specularOutput,
+                 // Linear radiance rays receive when they leave the scene (the
+                 // sky light at its source weight).
+                 const std::array<float, 3>& environment,
                  const EffectPassBarrierPlan& barriers);
     // No GI for this sample (the field has no data yet, W-buffer depth, a
     // failed dispatch): the declared outputs hold zero radiance, so the
@@ -114,7 +117,8 @@ class BrixelizerGiPass final {
     template <typename Transition>
     bool Trace(BrixelizerGiInstance& instance, VkCommandBuffer commandBuffer, uint32_t frameSlot,
                uint64_t frameId, const TemporalViewState& temporal, const PerspectiveViewState& view,
-               PicaSurfaceCoordinates coordinates, const Transition& privateTransition);
+               PicaSurfaceCoordinates coordinates, const std::array<float, 3>& environment,
+               const Transition& privateTransition);
 
     struct Impl;
     std::unique_ptr<Impl> mImpl;

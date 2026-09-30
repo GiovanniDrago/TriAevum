@@ -641,3 +641,16 @@ its interpolation failure was the mid-frame reconfiguration fault above.
 - **Portability.** The GI shaders need Vulkan 1.2 and subgroup/int64-free
   paths as compiled by the SDK; unsupported devices report the capability as
   unavailable instead of falling back silently.
+
+## Sky light returns as a source (2026-09-30)
+
+User direction: GI includes the sky again. `GlobalIllumination.SkyLight`
+(0-4, default 0.25, F1 "GI sky light") is a fourth source of the mix: traced
+rays that leave the scene receive the native sky colour (linear) at its
+weight, and its gain joins the others (largest gain applied when composed,
+the same restart rules). Open surfaces, which received nothing from direct
+light alone, are now lit by the sky and occluded ones are not. Additive over
+the native colour: at 1 the full sky colour saturated the sunlit Kokiri path
+(mean +64 levels over GI off); 0.25 gives +21 with the fill reaching walls
+and characters. Persisted (files without the field take the default); F1
+smoke 6,975; core validation clean.

@@ -915,9 +915,10 @@ int main() try {
     EditScalar("GI native scene light", "0.4");
     EditScalar("GI key light", "1.5");
     EditScalar("GI dynamic lights", "0.5");
+    EditScalar("GI sky light", "0.6");
     {
         const auto gi = runtime.Snapshot().Effects.GlobalIllumination;
-        Check(gi.SceneLight == 0.4F && gi.KeyLight == 1.5F && gi.DynamicLights == 0.5F,
+        Check(gi.SceneLight == 0.4F && gi.KeyLight == 1.5F && gi.DynamicLights == 0.5F && gi.SkyLight == 0.6F,
               "GI source controls did not apply");
     }
     Click("GI specular reflections");

@@ -7759,6 +7759,12 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     image(Oot3d::EffectResource::MaterialGuide);
                 std::tie(giInputs.Motion, giInputs.MotionFormat) = image(Oot3d::EffectResource::MotionVectors);
                 transitionEffectPassGuides(Oot3d::DisplayEffectPass::GlobalIllumination);
+                // Sky light: rays leaving the scene receive the native sky
+                // colour (linear) at its source weight.
+                std::array<float, 3> giSky{};
+                const auto sky = effectGuideTarget->ReflectionEnvironment.Resolve(mFrameCounter).Sky;
+                for (size_t channel = 0; channel < giSky.size(); ++channel)
+                    giSky[channel] = giSources.Weights[3] * std::pow(std::clamp(sky[channel], 0.0F, 1.0F), 2.2F);
                 mGpuProfiler.BeginScope(mCurrentFrame, Oot3d::GpuProfileScope::GlobalIllumination, command);
                 giForDisplay =
                     mBrixelizerGiPass.Configure(mFrameCounter, giInputs,
@@ -7767,7 +7773,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     mBrixelizerGiPass.Execute(command, mCurrentFrame, mFrameCounter, *temporalState,
                                               *presentationPerspective, giCoordinates,
                                               *transientDiffuseIllumination, transientSpecularIllumination,
-                                              globalIlluminationBarrierPlan);
+                                              giSky, globalIlluminationBarrierPlan);
                 mGpuProfiler.EndScope(mCurrentFrame, Oot3d::GpuProfileScope::GlobalIllumination, command);
             }
             if (!giForDisplay) {

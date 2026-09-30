@@ -33,7 +33,6 @@ namespace {
 // would be bounced twice.
 // Rays that leave the scene receive nothing: sky and ambient light are baked
 // into the native colour, not GI sources.
-constexpr std::array<float, 3> kNoEnvironment{};
 
 constexpr const char* kPrepareShader = R"glsl(#version 450
 #extension GL_EXT_samplerless_texture_functions : require
@@ -92,7 +91,7 @@ struct BrixelizerGiInstance {
     GlobalIlluminationResolution Resolution = GlobalIlluminationResolution::Half;
     bool Specular = false;
     // Source weights of the light injected by the latest configuration.
-    std::array<float, 3> SourceWeights{};
+    std::array<float, 4> SourceWeights{};
     // Prepared inputs, alternating: [Current] this sample, the other the history.
     std::array<NriOwnedTexture2D, 2> Lit{};
     std::array<NriOwnedTexture2D, 2> Depth{};
@@ -275,7 +274,7 @@ bool BrixelizerGiPass::Initialize(VkPhysicalDevice physicalDevice, VkDevice devi
 
 bool BrixelizerGiPass::Configure(uint64_t frameId, const BrixelizerGiInputs& inputs,
                                  GlobalIlluminationResolution resolution, bool specular,
-                                 const std::array<float, 3>& sourceWeights) {
+                                 const std::array<float, 4>& sourceWeights) {
     mImpl->Active = nullptr;
     if (!mImpl->Initialized || inputs.Width == 0U || inputs.Height == 0U || inputs.SurfaceGuide == VK_NULL_HANDLE ||
         inputs.Depth == VK_NULL_HANDLE || inputs.NormalGuide == VK_NULL_HANDLE ||
@@ -350,7 +349,7 @@ bool BrixelizerGiPass::Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot
                                const TemporalViewState& temporal, const PerspectiveViewState& view,
                                PicaSurfaceCoordinates coordinates, const NriEffectGraphTransientImageBinding& output,
                                const NriEffectGraphTransientImageBinding* specularOutput,
-                               const EffectPassBarrierPlan& barriers) {
+                               const std::array<float, 3>& environment, const EffectPassBarrierPlan& barriers) {
     mImpl->LastBarriers = {};
 #if !OOT3D_HAS_BRIXELIZER_GI_PASS
     (void)commandBuffer, (void)frameSlot, (void)frameId, (void)temporal, (void)view, (void)coordinates, (void)output,
@@ -399,7 +398,8 @@ bool BrixelizerGiPass::Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot
         graphTransition(target, barriers.Find(target.Resource)->CompletionAccess);
     };
     if (instance.LastTracedFrame != frameId || !instance.Traced) {
-        if (!Trace(instance, commandBuffer, frameSlot, frameId, temporal, view, coordinates, privateTransition))
+        if (!Trace(instance, commandBuffer, frameSlot, frameId, temporal, view, coordinates, environment,
+                   privateTransition))
             return false;
         instance.LastTracedFrame = frameId;
         instance.Traced = true;
@@ -420,7 +420,8 @@ bool BrixelizerGiPass::Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot
 template <typename Transition>
 bool BrixelizerGiPass::Trace(BrixelizerGiInstance& instance, VkCommandBuffer commandBuffer, uint32_t frameSlot,
                              uint64_t frameId, const TemporalViewState& temporal, const PerspectiveViewState& view,
-                             PicaSurfaceCoordinates coordinates, const Transition& privateTransition) {
+                             PicaSurfaceCoordinates coordinates, const std::array<float, 3>& environment,
+                             const Transition& privateTransition) {
     auto* command = NriInteropAccess::CommandBuffer(*mImpl->Interop, frameSlot);
     // view = projection^-1 * worldToClip; the storage orientation rotates
     // clip XY only (as for SSSR), so the view basis stays unrotated.
@@ -436,7 +437,7 @@ bool BrixelizerGiPass::Trace(BrixelizerGiInstance& instance, VkCommandBuffer com
         return false;
     }
     FfxBrixelizerGIDispatchDescription dispatch{};
-    if (!BrixelizerSceneGiAccess::Bind(*mImpl->Scene, commandBuffer, frameId, kNoEnvironment, dispatch)) {
+    if (!BrixelizerSceneGiAccess::Bind(*mImpl->Scene, commandBuffer, frameId, environment, dispatch)) {
         mImpl->Reason = "the scene distance field has no data yet";
         return false;
     }

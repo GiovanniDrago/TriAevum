@@ -3810,7 +3810,7 @@ TEST(Oot3dGraphicsSettings, GlobalIlluminationSourcesSplitIntoWeightsAndGain) {
     GlobalIlluminationSettings gi;
     auto mix = ResolveGlobalIlluminationSources(gi);
     EXPECT_FLOAT_EQ(mix.Gain, 1.0F);
-    EXPECT_EQ(mix.Weights, (std::array<float, 3>{1.0F, 1.0F, 1.0F}));
+    EXPECT_EQ(mix.Weights, (std::array<float, 4>{1.0F, 1.0F, 1.0F, 0.25F}));
 
     // The largest gain applies when composed; the guide carries the rest
     // relative to it, never above one.
@@ -3819,12 +3819,12 @@ TEST(Oot3dGraphicsSettings, GlobalIlluminationSourcesSplitIntoWeightsAndGain) {
     gi.DynamicLights = 0.0F;
     mix = ResolveGlobalIlluminationSources(gi);
     EXPECT_FLOAT_EQ(mix.Gain, 2.0F);
-    EXPECT_EQ(mix.Weights, (std::array<float, 3>{0.25F, 1.0F, 0.0F}));
+    EXPECT_EQ(mix.Weights, (std::array<float, 4>{0.25F, 1.0F, 0.0F, 0.125F})); // sky light 0.25
 
     // A single source changes its gain without changing the weights (no
     // history restart).
     gi = {};
-    gi.KeyLight = gi.DynamicLights = 0.0F;
+    gi.KeyLight = gi.DynamicLights = gi.SkyLight = 0.0F;
     gi.SceneLight = 3.0F;
     const auto before = ResolveGlobalIlluminationSources(gi);
     gi.SceneLight = 0.75F;
@@ -3835,12 +3835,12 @@ TEST(Oot3dGraphicsSettings, GlobalIlluminationSourcesSplitIntoWeightsAndGain) {
     gi.SceneLight = 0.0F;
     mix = ResolveGlobalIlluminationSources(gi);
     EXPECT_FLOAT_EQ(mix.Gain, 0.0F);
-    EXPECT_EQ(mix.Weights, (std::array<float, 3>{}));
+    EXPECT_EQ(mix.Weights, (std::array<float, 4>{}));
 }
 
 TEST(Oot3dGraphicsSettings, GlobalIlluminationHistoryRestartsOnlyWhereBlendingWouldLinger) {
     using Fast::Oot3d::RestartsGlobalIlluminationHistory;
-    using Weights = std::array<float, 3>;
+    using Weights = std::array<float, 4>;
     EXPECT_FALSE(RestartsGlobalIlluminationHistory({1.0F, 0.5F, 0.0F}, {1.0F, 0.5F, 0.0F}));
     // Light returning to an empty history.
     EXPECT_TRUE(RestartsGlobalIlluminationHistory(Weights{}, {1.0F, 0.0F, 0.0F}));
