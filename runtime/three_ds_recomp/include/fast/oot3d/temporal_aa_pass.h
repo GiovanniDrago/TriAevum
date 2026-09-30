@@ -16,10 +16,13 @@ class TemporalAaPass final {
     bool Initialize(VkPhysicalDevice physicalDevice, VkDevice device,
                     NriInteropContext& interop);
     bool Configure(uint32_t width, uint32_t height);
+    // Width x height (Configure) is the colour's extent; the motion surface
+    // keeps its own and is read at normalized positions.
     bool Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot,
                  uint64_t renderedFrameId,
                  VkImage currentColor, VkFormat currentColorFormat,
                  VkImage motionSurface, VkFormat motionFormat,
+                 uint32_t motionWidth, uint32_t motionHeight,
                  bool historyValid,
                  float historyWeight, float clampExpansion, float sharpness,
                  SceneColorEncoding inputEncoding,
@@ -31,6 +34,8 @@ class TemporalAaPass final {
     [[nodiscard]] VkImage OutputImage() const;
     [[nodiscard]] std::array<VkImage, 2> OutputImages() const;
     [[nodiscard]] VkImageView OutputView() const;
+    [[nodiscard]] uint32_t Width() const;
+    [[nodiscard]] uint32_t Height() const;
     [[nodiscard]] bool HistoryUsedLastExecute() const;
     [[nodiscard]] bool HistoryOwnedByNri() const;
     [[nodiscard]] bool ComputeOwnedByNri() const;

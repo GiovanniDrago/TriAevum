@@ -1,4 +1,5 @@
 #include "fast/oot3d/nri_effect_graph_transient_image_arena.h"
+#include "fast/oot3d/effect_transient_configuration_cache.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
 
@@ -30,92 +31,63 @@ constexpr size_t kCapacity = EffectTransientAllocationPlan::kCapacity;
     }
 }
 
-[[nodiscard]] bool SameSlot(
-    const EffectTransientAllocationSlot& lhs,
-    const EffectTransientAllocationSlot& rhs) noexcept {
-    return lhs.StorageClass == rhs.StorageClass &&
-           lhs.Format == rhs.Format && lhs.Width == rhs.Width &&
-           lhs.Height == rhs.Height && lhs.MipLevels == rhs.MipLevels &&
-           lhs.Layers == rhs.Layers && lhs.Samples == rhs.Samples &&
-           lhs.Usage == rhs.Usage && lhs.ResourceMask == rhs.ResourceMask &&
-           lhs.ResourceCount == rhs.ResourceCount &&
-           lhs.FirstUse == rhs.FirstUse && lhs.LastUse == rhs.LastUse;
-}
-
-[[nodiscard]] bool SameRequirement(
-    const EffectTransientImageRequirement& lhs,
-    const EffectTransientImageRequirement& rhs) noexcept {
-    return lhs.Resource == rhs.Resource && lhs.Format == rhs.Format &&
-           lhs.Width == rhs.Width && lhs.Height == rhs.Height &&
-           lhs.MipLevels == rhs.MipLevels && lhs.Layers == rhs.Layers &&
-           lhs.Samples == rhs.Samples && lhs.Usage == rhs.Usage;
-}
-
-[[nodiscard]] bool SameResource(
-    const EffectTransientAllocationResource& lhs,
-    const EffectTransientAllocationResource& rhs) noexcept {
-    return SameRequirement(lhs.Requirement, rhs.Requirement) &&
-           lhs.StorageClass == rhs.StorageClass &&
-           lhs.FirstUse == rhs.FirstUse && lhs.LastUse == rhs.LastUse &&
-           lhs.Slot == rhs.Slot;
-}
-
 } // namespace
 
-struct NriEffectGraphTransientImageArena::Impl {
-    VkDevice Device = VK_NULL_HANDLE;
-    NriInteropContext* Interop = nullptr;
+// The images of one allocation plan. Bindings point at its state trackers,
+// so a configuration never moves.
+struct EffectTransientConfiguration {
     std::array<NriOwnedTexture2D, kCapacity> Textures{};
-    std::array<EffectTransientAllocationSlot, kCapacity> Slots{};
-    std::array<EffectTransientAllocationResource, kCapacity> Resources{};
     std::array<NriEffectGraphTransientImageBinding, kCapacity> Bindings{};
     std::array<std::vector<ResourceStateTracker>, kCapacity> MipStates{};
     ResourceStateTracker States;
     size_t SlotCount = 0U;
     size_t ResourceCount = 0U;
+};
+
+struct NriEffectGraphTransientImageArena::Impl {
+    VkDevice Device = VK_NULL_HANDLE;
+    NriInteropContext* Interop = nullptr;
+    std::array<EffectTransientConfiguration, EffectTransientConfigurationCache::kCapacity> Configurations{};
+    EffectTransientConfigurationCache Cache;
+    EffectTransientConfiguration* Current = nullptr;
     bool Ready = false;
     NriEffectGraphTransientImageArenaStats Statistics{};
     std::string Reason = "effect-graph transient image arena is not initialized";
 
-    [[nodiscard]] bool SamePlan(
-        const EffectTransientAllocationPlan& plan) const noexcept {
-        if (SlotCount != plan.SlotCount() ||
-            ResourceCount != plan.ResourceCount()) {
-            return false;
-        }
-        for (size_t index = 0U; index < SlotCount; ++index) {
-            if (!SameSlot(Slots[index], plan.SlotAt(index))) return false;
-        }
-        for (size_t index = 0U; index < ResourceCount; ++index) {
-            if (!SameResource(Resources[index], plan.ResourceAt(index))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    void DestroyTextures() noexcept {
+    void Destroy(EffectTransientConfiguration& configuration) noexcept {
         if (Interop != nullptr) {
-            for (size_t index = 0U; index < SlotCount; ++index) {
-                if (Textures[index].Image != VK_NULL_HANDLE) {
-                    Interop->DestroyOwnedTexture(Textures[index].Image);
+            for (size_t index = 0U; index < configuration.SlotCount; ++index) {
+                if (configuration.Textures[index].Image != VK_NULL_HANDLE) {
+                    Interop->DestroyOwnedTexture(configuration.Textures[index].Image);
                 }
             }
         }
-        Textures = {};
-        Slots = {};
-        Resources = {};
-        Bindings = {};
-        for (auto& states : MipStates) states.clear();
-        States.Clear();
-        SlotCount = 0U;
-        ResourceCount = 0U;
+        configuration.Textures = {};
+        configuration.Bindings = {};
+        for (auto& states : configuration.MipStates) states.clear();
+        configuration.States.Clear();
+        configuration.SlotCount = 0U;
+        configuration.ResourceCount = 0U;
+        if (Current == &configuration) Current = nullptr;
+    }
+
+    void DestroyAll() noexcept {
+        for (auto& configuration : Configurations) Destroy(configuration);
+        Cache.Clear();
         Statistics.ActiveResourceCount = 0U;
         Statistics.PhysicalSlotCount = 0U;
         Statistics.AliasOpportunityCount = 0U;
         Statistics.PeakLiveResourceCount = 0U;
         Statistics.LastAllocatedSlotCount = 0U;
         Statistics.LastConfigurationReused = false;
+    }
+
+    void Summarize(const EffectTransientAllocationPlan& plan) noexcept {
+        const auto& summary = plan.Summary();
+        Statistics.ActiveResourceCount = summary.PlannedResourceCount;
+        Statistics.PhysicalSlotCount = summary.PhysicalSlotCount;
+        Statistics.AliasOpportunityCount = summary.AliasOpportunityCount;
+        Statistics.PeakLiveResourceCount = summary.PeakLiveResourceCount;
     }
 };
 
@@ -153,16 +125,12 @@ bool NriEffectGraphTransientImageArena::Configure(
             : "effect-graph transient allocation plan is incomplete";
         return false;
     }
-    if (mImpl->SamePlan(plan)) {
-        const auto& summary = plan.Summary();
-        mImpl->Statistics.ActiveResourceCount =
-            summary.PlannedResourceCount;
-        mImpl->Statistics.PhysicalSlotCount =
-            summary.PhysicalSlotCount;
-        mImpl->Statistics.AliasOpportunityCount =
-            summary.AliasOpportunityCount;
-        mImpl->Statistics.PeakLiveResourceCount =
-            summary.PeakLiveResourceCount;
+    const auto selection = mImpl->Cache.Select(plan);
+    auto& configuration = mImpl->Configurations[selection.Index];
+    if (selection.Hit) {
+        mImpl->Cache.Commit(selection.Index, plan);
+        mImpl->Current = &configuration;
+        mImpl->Summarize(plan);
         mImpl->Statistics.LastConfigurationReused = true;
         ++mImpl->Statistics.ReusedConfigurationCount;
         return true;
@@ -210,40 +178,38 @@ bool NriEffectGraphTransientImageArena::Configure(
         return false;
     }
 
-    if (mImpl->SlotCount != 0U &&
-        !mImpl->Interop->CompleteRecordedWork()) {
+    // Recorded commands may still use the replaced configuration's images.
+    if (selection.Evicts && !mImpl->Interop->CompleteRecordedWork()) {
         for (size_t index = 0U; index < createdCount; ++index) {
             mImpl->Interop->DestroyOwnedTexture(newTextures[index].Image);
         }
         mImpl->Reason = "Vulkan device wait failed while replacing transient images";
         return false;
     }
-    mImpl->DestroyTextures();
-    mImpl->Textures = newTextures;
-    mImpl->MipStates = std::move(newMipStates);
-    mImpl->SlotCount = plan.SlotCount();
-    mImpl->ResourceCount = plan.ResourceCount();
-    for (size_t index = 0U; index < mImpl->SlotCount; ++index) {
-        mImpl->Slots[index] = plan.SlotAt(index);
-    }
-    for (size_t index = 0U; index < mImpl->ResourceCount; ++index) {
+    mImpl->Destroy(configuration);
+    mImpl->Cache.Remove(selection.Index);
+    const auto fail = [&](const char* reason) {
+        mImpl->Reason = reason;
+        mImpl->Destroy(configuration);
+        return false;
+    };
+    configuration.Textures = newTextures;
+    configuration.MipStates = std::move(newMipStates);
+    configuration.SlotCount = plan.SlotCount();
+    configuration.ResourceCount = plan.ResourceCount();
+    for (size_t index = 0U; index < configuration.ResourceCount; ++index) {
         const auto& resource = plan.ResourceAt(index);
-        mImpl->Resources[index] = resource;
-        if (resource.Slot >= mImpl->SlotCount) {
-            mImpl->Reason = "effect-graph transient resource slot is invalid";
-            mImpl->DestroyTextures();
-            return false;
+        if (resource.Slot >= configuration.SlotCount) {
+            return fail("effect-graph transient resource slot is invalid");
         }
         const auto& requirement = resource.Requirement;
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
         if (!DecodeSampleCount(requirement.Samples, samples)) {
-            mImpl->Reason = "effect-graph transient resource sample count is invalid";
-            mImpl->DestroyTextures();
-            return false;
+            return fail("effect-graph transient resource sample count is invalid");
         }
-        auto& binding = mImpl->Bindings[index];
+        auto& binding = configuration.Bindings[index];
         binding.Resource = requirement.Resource;
-        binding.Texture = mImpl->Textures[resource.Slot];
+        binding.Texture = configuration.Textures[resource.Slot];
         binding.Format = static_cast<VkFormat>(requirement.Format);
         binding.Width = requirement.Width;
         binding.Height = requirement.Height;
@@ -254,25 +220,20 @@ bool NriEffectGraphTransientImageArena::Configure(
             static_cast<VkImageUsageFlags>(requirement.Usage);
         binding.Slot = resource.Slot;
         if (requirement.MipLevels == 1U) {
-            binding.StateTracker = &mImpl->States;
+            binding.StateTracker = &configuration.States;
         } else {
-            auto& mipStates = mImpl->MipStates[resource.Slot];
+            auto& mipStates = configuration.MipStates[resource.Slot];
             binding.MipStateTrackers = mipStates.data();
             binding.MipStateTrackerCount =
                 static_cast<uint32_t>(mipStates.size());
         }
         if (!binding.Valid()) {
-            mImpl->Reason =
-                "effect-graph transient image binding is incomplete";
-            mImpl->DestroyTextures();
-            return false;
+            return fail("effect-graph transient image binding is incomplete");
         }
     }
-    const auto& summary = plan.Summary();
-    mImpl->Statistics.ActiveResourceCount = summary.PlannedResourceCount;
-    mImpl->Statistics.PhysicalSlotCount = summary.PhysicalSlotCount;
-    mImpl->Statistics.AliasOpportunityCount = summary.AliasOpportunityCount;
-    mImpl->Statistics.PeakLiveResourceCount = summary.PeakLiveResourceCount;
+    mImpl->Cache.Commit(selection.Index, plan);
+    mImpl->Current = &configuration;
+    mImpl->Summarize(plan);
     mImpl->Statistics.LastAllocatedSlotCount =
         static_cast<uint32_t>(createdCount);
     mImpl->Statistics.TotalAllocatedSlotCount += createdCount;
@@ -282,16 +243,23 @@ bool NriEffectGraphTransientImageArena::Configure(
 
 bool NriEffectGraphTransientImageArena::ConfiguredFor(
     const EffectTransientAllocationPlan& plan) const noexcept {
-    return mImpl->Ready && plan.Complete() && mImpl->SamePlan(plan);
+    return mImpl->Ready && plan.Complete() && mImpl->Cache.Select(plan).Hit;
+}
+
+bool NriEffectGraphTransientImageArena::ReplacesConfigurationFor(
+    const EffectTransientAllocationPlan& plan) const noexcept {
+    return mImpl->Ready && plan.Complete() && mImpl->Cache.Select(plan).Evicts;
 }
 
 
 const NriEffectGraphTransientImageBinding*
 NriEffectGraphTransientImageArena::Find(
     EffectResource resource) const noexcept {
-    const auto end = mImpl->Bindings.begin() + mImpl->ResourceCount;
+    if (mImpl->Current == nullptr) return nullptr;
+    const auto& bindings = mImpl->Current->Bindings;
+    const auto end = bindings.begin() + mImpl->Current->ResourceCount;
     const auto found = std::find_if(
-        mImpl->Bindings.begin(), end,
+        bindings.begin(), end,
         [resource](const NriEffectGraphTransientImageBinding& binding) {
             return binding.Resource == resource;
         });
@@ -299,10 +267,10 @@ NriEffectGraphTransientImageArena::Find(
 }
 
 void NriEffectGraphTransientImageArena::InvalidateScreenResources() {
-    if (mImpl->SlotCount != 0U && mImpl->Device != VK_NULL_HANDLE) {
+    if (mImpl->Cache.Count() != 0U && mImpl->Device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(mImpl->Device);
     }
-    mImpl->DestroyTextures();
+    mImpl->DestroyAll();
 }
 
 void NriEffectGraphTransientImageArena::Shutdown() {

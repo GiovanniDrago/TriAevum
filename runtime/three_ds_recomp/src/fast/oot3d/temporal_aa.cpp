@@ -50,7 +50,12 @@ void main(){
     float relative_luma_span=(maximum_luma-minimum_luma)/
         max(maximum_luma,0.08);
     float edge_support=smoothstep(0.025,0.125,relative_luma_span);
-    vec4 motion=texelFetch(sampler2D(motion_surface,taa_sampler),pixel,0);
+    // Motion lives in the scene target, which a native display transfer may
+    // downscale (OoT3D renders its top screen twice as wide): read it at this
+    // pixel's normalized position, the same texel when the extents match.
+    ivec2 motion_extent=textureSize(sampler2D(motion_surface,taa_sampler),0);
+    vec4 motion=texelFetch(sampler2D(motion_surface,taa_sampler),
+        min(ivec2(uv*vec2(motion_extent)),motion_extent-1),0);
     vec2 history_uv=uv+motion.xy;
     bool inside=all(greaterThanEqual(history_uv,vec2(0.0))) &&
                 all(lessThanEqual(history_uv,vec2(1.0)));

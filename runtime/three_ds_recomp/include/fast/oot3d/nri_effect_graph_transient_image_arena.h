@@ -67,8 +67,9 @@ struct NriEffectGraphTransientImageArenaStats {
     bool LastConfigurationReused = false;
 };
 
-// Owns transient images selected by the compiled effect graph. Providers
-// borrow bindings and retain ownership only of pipelines and descriptors.
+// Owns transient images selected by the compiled effect graph, one
+// configuration per recurring allocation plan. Providers borrow bindings and
+// retain ownership only of pipelines and descriptors.
 class NriEffectGraphTransientImageArena final {
   public:
     NriEffectGraphTransientImageArena();
@@ -79,8 +80,15 @@ class NriEffectGraphTransientImageArena final {
         const NriEffectGraphTransientImageArena&) = delete;
 
     bool Initialize(VkDevice device, NriInteropContext& interop);
+    // Selects the plan's images: a cached configuration when the plan recurs
+    // (several display-graph invocations per frame), otherwise a free or the
+    // least recently used one.
     bool Configure(const EffectTransientAllocationPlan& plan);
     [[nodiscard]] bool ConfiguredFor(
+        const EffectTransientAllocationPlan& plan) const noexcept;
+    // Configuring the plan destroys another plan's images, which recorded
+    // commands and provider descriptors may still use.
+    [[nodiscard]] bool ReplacesConfigurationFor(
         const EffectTransientAllocationPlan& plan) const noexcept;
     [[nodiscard]] const NriEffectGraphTransientImageBinding* Find(
         EffectResource resource) const noexcept;

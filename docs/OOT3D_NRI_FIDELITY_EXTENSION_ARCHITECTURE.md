@@ -3070,10 +3070,9 @@ temporal upscalers, GI and the planned temporal AO) keep their history on grass.
   Kokiri reference walk has no camera for its presented view, so TAA, the
   upscalers and the motion pass do not run there in either build. In Hyrule
   Field with the Kokiri grass settings TAA and the motion pass run (357 of 360
-  frames, up to 9,984 blades with exact motion), but the TAA history is reset in
-  every frame in both builds: three display-graph invocations per frame alternate
-  their transient plans, and each transient-arena reconfiguration releases the
-  effect images and the temporal history. Its captures are therefore identical.
+  frames, up to 9,984 blades with exact motion), but its TAA history was reset in
+  every frame in both builds (see the next section), so those captures were
+  identical.
 - Cost (Kokiri walk, ~199k blades, 2560x1440, RTX 3060, A/B/B/A medians of 480
   frames): with temporal motion the grass pass takes 3.45 instead of 3.26 ms
   (+0.19 ms, frame +0.21 ms); without it the grass pass and the frame are
@@ -3081,6 +3080,40 @@ temporal upscalers, GI and the planned temporal AO) keep their history on grass.
 - The built-in pass artifacts are regenerated; the committed catalogue was also
   stale for the grass shadow grid, surface-lighting and reflection passes.
   `build_pass_artifacts --check` passes with 64 artifacts.
+
+### Temporal history across display-graph invocations
+
+Two defects kept TAA from working in Hyrule Field (both predate the grass
+motion work above):
+
+- **Transient-arena thrash.** A frame there runs three display-graph invocations:
+  the native boundary (AO and its composite colour), the presentation (motion
+  vectors and reactive mask for TAA) and the interpolated presentation. The
+  transient image arena held one configuration, so the first two replaced each
+  other in every frame; each replacement completed the recorded work and released
+  every effect provider together with the temporal history, and TAA started from
+  a first frame each time. The arena now keeps one configuration per recurring
+  plan (`EffectTransientConfigurationCache`, four, least recently used); only
+  replacing one releases the providers. Field TAA: two allocations per run
+  instead of two per frame, history valid in 354 of 360 frames instead of none,
+  and the GPU frame takes 3.02 instead of 11.36 ms (A/B/B/A medians of 480
+  frames, 1600x960, RTX 3060); the field with AO alone is unchanged (2.55 vs
+  2.58 ms).
+- **TAA extent.** OoT3D renders its top screen twice as wide as it presents
+  (480x400 physical, 1920x1600 here) and the native display transfer halves it.
+  TAA resolves the presented scene colour (960x1600) but was sized for the target,
+  so it read past the colour's width and the scanout showed the scene squeezed
+  into half of the screen. TAA now takes its colour's extent and reads motion,
+  which stays at the target extent, at the same normalized position (the same
+  texel when the extents match).
+- Captures are byte-identical to the previous build where neither applies
+  (Kokiri walk, field with AO only); field TAA and grass TAA now resolve the full
+  frame. Zero Vulkan/NRI errors.
+- Still open, outside this change: the temporal upscalers receive the halved
+  colour with target-sized depth and motion, and NRI rejects their dispatch in
+  the field (`currentResolution is below the minimum render resolution`, both
+  builds); and the Kokiri reference walk presents without a resolved scene, so
+  its presentation has no camera and runs no temporal passes.
 
 Fresh combined source adoption, deterministic framebuffer/state comparisons and
 the remaining realtime validation observation are recorded in

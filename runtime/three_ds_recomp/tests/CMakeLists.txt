@@ -453,6 +453,7 @@ add_executable(oot3d_effect_graph_tests
     ../src/fast/oot3d/effect_graph.cpp
     ../src/fast/oot3d/effect_graph_pass_barriers.cpp
     ../src/fast/oot3d/effect_graph_physical_plan.cpp
+    ../src/fast/oot3d/effect_transient_configuration_cache.cpp
     ../src/fast/oot3d/hiz_depth_pyramid.cpp
     ../src/fast/oot3d/display_effect_plan.cpp
     ../src/fast/oot3d/display_effect_resources.cpp

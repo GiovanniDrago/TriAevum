@@ -4,6 +4,7 @@
 #include "fast/oot3d/effect_graph.h"
 #include "fast/oot3d/effect_graph_pass_barriers.h"
 #include "fast/oot3d/effect_graph_physical_plan.h"
+#include "fast/oot3d/effect_transient_configuration_cache.h"
 #include "fast/oot3d/hiz_depth_pyramid.h"
 #include "fast/oot3d/pica_composition_schedule.h"
 #include "fast/oot3d/pica_display_composition.h"
@@ -1731,6 +1732,108 @@ TEST(Oot3dEffectGraphPhysicalPlan,
                   (1U << static_cast<uint32_t>(
                        EffectResource::MotionVectors)),
               0U);
+}
+
+// A native boundary composes AO; the presentation of the same frame writes
+// motion vectors. Their plans alternate in every frame.
+CompiledEffectGraph AlternatingPlansGraph() {
+    EffectGraph graph;
+    graph.Add({ .Name = "write",
+                .Stage = EffectStage::AfterOpaque,
+                .Contract = EffectContractKind::ComposerPass,
+                .Resources = {
+                    Write(EffectResource::AmbientOcclusion),
+                    Write(EffectResource::MotionVectors),
+                } });
+    graph.Add({ .Name = "read",
+                .DependsOn = { "write" },
+                .Stage = EffectStage::BeforeUi,
+                .Contract = EffectContractKind::ComposerPass,
+                .Resources = {
+                    Read(EffectResource::AmbientOcclusion),
+                    Read(EffectResource::MotionVectors),
+                } });
+    return graph.Compile();
+}
+
+EffectTransientAllocationPlan AlternatingPlan(
+    const CompiledEffectGraph& graph, EffectResource resource, uint32_t width) {
+    const std::array<EffectTransientImageRequirement, 1> requirements{{
+        {resource, 97U, width, 240U, 1U, 1U, 1U, 0x3U},
+    }};
+    return BuildEffectTransientAllocationPlan(graph, requirements);
+}
+
+TEST(Oot3dEffectTransientConfigurationCache,
+     KeepsOneConfigurationPerRecurringPlan) {
+    const auto graph = AlternatingPlansGraph();
+    ASSERT_TRUE(graph.Valid()) << graph.Error;
+    const auto boundary = AlternatingPlan(graph, EffectResource::AmbientOcclusion, 400U);
+    const auto presentation = AlternatingPlan(graph, EffectResource::MotionVectors, 400U);
+    ASSERT_TRUE(boundary.Complete());
+    ASSERT_TRUE(presentation.Complete());
+    EXPECT_TRUE(SameEffectTransientAllocation(
+        boundary, AlternatingPlan(graph, EffectResource::AmbientOcclusion, 400U)));
+    EXPECT_FALSE(SameEffectTransientAllocation(boundary, presentation));
+    EXPECT_FALSE(SameEffectTransientAllocation(
+        boundary, AlternatingPlan(graph, EffectResource::AmbientOcclusion, 401U)));
+
+    EffectTransientConfigurationCache cache;
+    auto selection = cache.Select(boundary);
+    EXPECT_FALSE(selection.Hit);
+    EXPECT_FALSE(selection.Evicts);
+    cache.Commit(selection.Index, boundary);
+    const size_t boundaryIndex = selection.Index;
+    selection = cache.Select(presentation);
+    EXPECT_FALSE(selection.Hit);
+    EXPECT_FALSE(selection.Evicts);
+    EXPECT_NE(selection.Index, boundaryIndex);
+    cache.Commit(selection.Index, presentation);
+    const size_t presentationIndex = selection.Index;
+    // Frame after frame, both plans find their own images.
+    for (int frame = 0; frame < 3; ++frame) {
+        selection = cache.Select(boundary);
+        EXPECT_TRUE(selection.Hit);
+        EXPECT_EQ(selection.Index, boundaryIndex);
+        cache.Commit(selection.Index, boundary);
+        selection = cache.Select(presentation);
+        EXPECT_TRUE(selection.Hit);
+        EXPECT_EQ(selection.Index, presentationIndex);
+        cache.Commit(selection.Index, presentation);
+    }
+    EXPECT_EQ(cache.Count(), 2U);
+}
+
+TEST(Oot3dEffectTransientConfigurationCache,
+     ReplacesTheLeastRecentlyUsedPlanOnlyWhenFull) {
+    const auto graph = AlternatingPlansGraph();
+    ASSERT_TRUE(graph.Valid()) << graph.Error;
+    EffectTransientConfigurationCache cache;
+    std::vector<size_t> indices;
+    for (uint32_t plan = 0U; plan < EffectTransientConfigurationCache::kCapacity; ++plan) {
+        const auto selection = cache.Select(
+            AlternatingPlan(graph, EffectResource::AmbientOcclusion, 400U + plan));
+        EXPECT_FALSE(selection.Hit);
+        EXPECT_FALSE(selection.Evicts);
+        cache.Commit(selection.Index, AlternatingPlan(graph, EffectResource::AmbientOcclusion, 400U + plan));
+        indices.push_back(selection.Index);
+    }
+    // The first plan is used again: the second is now the least recent.
+    const auto first = AlternatingPlan(graph, EffectResource::AmbientOcclusion, 400U);
+    ASSERT_TRUE(cache.Select(first).Hit);
+    cache.Commit(indices[0], first);
+    const auto another = AlternatingPlan(graph, EffectResource::AmbientOcclusion, 500U);
+    auto selection = cache.Select(another);
+    EXPECT_FALSE(selection.Hit);
+    EXPECT_TRUE(selection.Evicts);
+    EXPECT_EQ(selection.Index, indices[1]);
+    cache.Remove(selection.Index);
+    selection = cache.Select(another);
+    EXPECT_FALSE(selection.Evicts);
+    EXPECT_EQ(selection.Index, indices[1]);
+    cache.Clear();
+    EXPECT_EQ(cache.Count(), 0U);
+    EXPECT_FALSE(cache.Select(first).Hit);
 }
 
 TEST(Oot3dEffectGraphPhysicalPlan,

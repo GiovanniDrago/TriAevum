@@ -7114,17 +7114,19 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 plannedUpscalerWidth, plannedUpscalerHeight);
         }
         // An inactive graph declares no new bindings; it does not retire the
-        // resources used by an earlier native composition anchor. Those
-        // commands may still be recorded in this frame, so DeviceWaitIdle alone
-        // cannot authorize destroying their images and descriptor pools: a
-        // real reconfiguration first completes the recorded frame prefix.
+        // resources used by an earlier native composition anchor. Each plan
+        // that recurs (a native boundary and the presentations of one frame)
+        // keeps its own images. Replacing a cached configuration destroys
+        // images that recorded commands may still use, so DeviceWaitIdle alone
+        // cannot authorize it: it first completes the recorded frame prefix
+        // and releases the providers' descriptors.
         if (requirementCount != 0U) {
             const std::span<const Oot3d::EffectTransientImageRequirement>
                 activeRequirements(requirements.data(), requirementCount);
             const auto allocationPlan =
                 Oot3d::BuildEffectTransientAllocationPlan(
                     effectPlan.Graph, activeRequirements);
-            if (!mNriEffectGraphTransientImageArena.ConfiguredFor(
+            if (mNriEffectGraphTransientImageArena.ReplacesConfigurationFor(
                     allocationPlan)) {
                 if (!mNriInterop.CompleteRecordedWork())
                     throw std::runtime_error(
@@ -8954,12 +8956,15 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 mCurrentFrame,
                 Oot3d::GpuProfileScope::AntiAliasing,
                 command);
+            // TAA resolves its colour input, which a native display
+            // transfer may have downscaled from the scene target.
             taaForDisplay = mTemporalAaPass.Configure(
-                    effectGuideTarget->Width, effectGuideTarget->Height) &&
+                    colorBinding->Width, colorBinding->Height) &&
                 mTemporalAaPass.Execute(
                     command, mCurrentFrame, mFrameCounter,
                     taaInputImage, taaInputFormat,
                     taaMotionImage, taaMotionFormat,
+                    motionBinding.Width, motionBinding.Height,
                     temporalState->HistoryValid,
                     presentationSettings.TaaHistoryWeight,
                     presentationSettings.TaaClampExpansion,
@@ -8974,14 +8979,14 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 const VkImage taaImage = mTemporalAaPass.OutputImage();
                 mSceneSurfaces.Publish({*taaKey,
                     reinterpret_cast<uintptr_t>(taaImage),
-                    effectGuideTarget->Width, effectGuideTarget->Height,
+                    mTemporalAaPass.Width(), mTemporalAaPass.Height(),
                     static_cast<uint32_t>(VK_FORMAT_R16G16B16A16_SFLOAT),
                     0, true, mTemporalAaPass.OutputEncoding()});
                 taaNriWrapped = mNriInterop.WrapTexture(
                     taaImage, VK_FORMAT_R16G16B16A16_SFLOAT,
                     VK_IMAGE_TYPE_2D,
                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    effectGuideTarget->Width, effectGuideTarget->Height);
+                    mTemporalAaPass.Width(), mTemporalAaPass.Height());
                 mTaaSurface = *taaKey;
                 mTaaExecutedThisFrame = true;
                 mTaaOutputValid = true;
@@ -8995,8 +9000,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     mTemporalAaPass.OutputImage(),
                     mTemporalAaPass.OutputView(),
                     VK_FORMAT_R16G16B16A16_SFLOAT,
-                    effectGuideTarget->Width,
-                    effectGuideTarget->Height,
+                    mTemporalAaPass.Width(),
+                    mTemporalAaPass.Height(),
                     mTaaOutputEncodingThisFrame);
             }
             mDiagnostics.RecordTemporalAa(
@@ -9012,7 +9017,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 mTemporalAaPass.OutputImage(),
                 mTemporalAaPass.OutputView(),
                 VK_FORMAT_R16G16B16A16_SFLOAT,
-                effectGuideTarget->Width, effectGuideTarget->Height,
+                mTemporalAaPass.Width(), mTemporalAaPass.Height(),
                 mTaaOutputEncodingThisFrame);
         }
         const auto retainUpscalerOutput = [this, &effectPlan, &transfer](
@@ -9463,7 +9468,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 mTemporalAaPass.OutputImage(),
                 mTemporalAaPass.OutputView(),
                 VK_FORMAT_R16G16B16A16_SFLOAT,
-                effectGuideTarget->Width, effectGuideTarget->Height,
+                mTemporalAaPass.Width(), mTemporalAaPass.Height(),
                 mTaaOutputEncodingThisFrame);
         }
         if (fsrForDisplay || dlssForDisplay || nisForDisplay) {
