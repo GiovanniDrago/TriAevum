@@ -6174,7 +6174,7 @@ bool GfxRenderingAPIVulkan::TryRenderInteractiveGrass(
         mFrameCounter, target.Key.RenderTargetNamespace,
         target.Key.ColorPhysicalAddress, mCurrentFrame,
         mInteractiveGrassProviderPlan, grassShadowHistory,
-        mTemporalJitterPixels, mTemporalJitterEnabled);
+        mTemporalJitterPixels, mTemporalJitterEnabled, mTemporalMotionEnabled);
     bool executed = false;
     if (prepared) {
         BeginNativePicaRenderPass(target);

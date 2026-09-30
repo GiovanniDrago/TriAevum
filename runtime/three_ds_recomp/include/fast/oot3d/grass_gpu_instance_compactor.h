@@ -19,6 +19,8 @@ namespace Fast::Oot3d {
 struct GrassGpuInstanceCompactionRequest {
     VkCommandBuffer CommandBuffer = VK_NULL_HANDLE;
     uint32_t FrameSlot = 0U;
+    // Consecutive frame ids keep each blade's previous interaction bend.
+    uint64_t FrameId = 0U;
     uint64_t StaticRevision = 0U;
     std::span<const GrassWorldAnchor> StaticAnchors;
     std::span<const uint32_t> VisibleAnchorIndices;
@@ -33,6 +35,9 @@ struct GrassGpuInstanceCompactionResult {
     uint64_t DynamicUploadedBytes = 0U;
     uint64_t StaticUploadedBytes = 0U;
     VkBuffer VisibleIndicesBuffer = VK_NULL_HANDLE;
+    // One vec2 per instance: the interaction bend the previous frame drew,
+    // or the current one where the blade has no previous frame.
+    VkBuffer PreviousBendBuffer = VK_NULL_HANDLE;
 };
 
 class GrassGpuInstanceCompactor final {
@@ -46,6 +51,8 @@ class GrassGpuInstanceCompactor final {
                     Renderer::CachedPassShaderCompiler& shaders);
     [[nodiscard]] bool Compact(const GrassGpuInstanceCompactionRequest& request,
                                GrassGpuInstanceCompactionResult& result);
+    // Forget every previous bend (savestates, scene transitions).
+    void ResetHistory();
     void Shutdown();
 
     [[nodiscard]] const std::string& UnavailableReason() const;

@@ -48,7 +48,8 @@ class InteractiveGrassPass final {
                  const EffectGeometryProviderPlan& providerPlan,
                  const NriDirectionalShadowHistorySnapshot& shadowHistory,
                  const std::array<float, 2>& jitterPixels = {},
-                 bool temporalJitter = false);
+                 bool temporalJitter = false,
+                 bool temporalMotion = false);
     bool DrawPrepared(VkCommandBuffer commandBuffer, uint32_t width,
                       uint32_t height,
                       const EffectGeometryProviderPlan& providerPlan,

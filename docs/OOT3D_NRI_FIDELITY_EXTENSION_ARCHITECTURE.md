@@ -3027,8 +3027,60 @@ checkpoint, 2560x1440, RTX 3060 (single validated runs; timing medians of
 - Motion vectors already cover these draws: with forced motion, every
   depth-writing scene draw has its exact previous-frame vertex program except in
   the frame it first appears (Kokiri walk 20 of 240 frames with a new draw;
-  castle town none). Grass blades write no motion of their own: the motion pass
-  gives them the camera's motion and the reactive mask rejects their history.
+  castle town none). Grass blades had no motion of their own (the camera's
+  motion, and the reactive mask rejected their history); see *Grass motion
+  vectors*.
+
+### Grass motion vectors
+
+Grass blades write exact motion into the rigid-motion guide, like the native
+draws with their previous vertex uniforms, so temporal consumers (TAA, the
+temporal upscalers, GI and the planned temporal AO) keep their history on grass.
+
+- **Previous frame per placement.** The pass keeps what each placement drew with
+  (world-to-clip, jitter, camera position, wind time), keyed by the world
+  placement and render target, and uses it only in the next frame, as the native
+  draws do. The environment record carries it (`PreviousPositionToClip`,
+  `PreviousCameraTime`, `MotionState`; the record and the push constants now live
+  in `grass_draw_state.h`).
+- **Same code, both frames.** The vertex shader evaluates the blade point with
+  `grass_blade_position` twice: with the current camera (single-plane blades
+  face it, far tufts spread with its distance), wind time and interaction bend,
+  and with the previous ones. The fragment writes previous minus current UV with
+  the valid flag and clears the reactive mask. Without a previous frame the blade
+  keeps the former contract: camera motion from depth and a reactive pixel.
+- **Exact interaction bend.** The instance compactor keeps, per static anchor,
+  the last bend with the frame stamp that wrote it and the bend it replaced
+  (16 bytes per anchor), and writes each instance's previous bend. A frame gap, a
+  temporal reset (`ResetTemporalState`) or a new static set clears it; a second
+  grass invocation in the same frame reads the stored pair. The CPU fallback keeps
+  no history and reuses the current bend.
+- With temporal motion off the programs take the former path. Kokiri captures are
+  byte-identical to the previous build with motion off and with forced motion
+  (which has no consumer there, see below), as are the field captures with grass.
+- `grass_motion_gpu_tests` renders the shipped SPIR-V: the second of two frames
+  (camera, jitter and wind time changed, an actor sweeping through the blades)
+  reprojects its blade pixels with their motion onto the first frame's blades at
+  the same height (grey encodes height) for 99.9% of them, mean height error
+  0.0025; camera-only motion lands 50.5% and no motion 40.6%, for both fixed and
+  camera-facing planes. The bend history is checked for consecutive frames, a
+  repeated invocation, a gap, a reset and a new static set.
+- Kokiri walk with forced motion: up to 198,673 blades per frame carry exact
+  motion, in 354 of 360 frames (the first frames have no previous frame). The
+  Kokiri reference walk has no camera for its presented view, so TAA, the
+  upscalers and the motion pass do not run there in either build. In Hyrule
+  Field with the Kokiri grass settings TAA and the motion pass run (357 of 360
+  frames, up to 9,984 blades with exact motion), but the TAA history is reset in
+  every frame in both builds: three display-graph invocations per frame alternate
+  their transient plans, and each transient-arena reconfiguration releases the
+  effect images and the temporal history. Its captures are therefore identical.
+- Cost (Kokiri walk, ~199k blades, 2560x1440, RTX 3060, A/B/B/A medians of 480
+  frames): with temporal motion the grass pass takes 3.45 instead of 3.26 ms
+  (+0.19 ms, frame +0.21 ms); without it the grass pass and the frame are
+  unchanged (1.97–2.04 vs 1.99–2.01 ms).
+- The built-in pass artifacts are regenerated; the committed catalogue was also
+  stale for the grass shadow grid, surface-lighting and reflection passes.
+  `build_pass_artifacts --check` passes with 64 artifacts.
 
 Fresh combined source adoption, deterministic framebuffer/state comparisons and
 the remaining realtime validation observation are recorded in

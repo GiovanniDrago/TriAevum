@@ -104,10 +104,14 @@ struct GrassEnvironmentRecord {
     ToonSurfaceParameters toon;
     uvec4 native_lighting;
     vec4 rim_distance;
+    mat4 previous_position_to_clip;
+    vec4 previous_camera_time;
+    vec4 motion_state;
 };
 layout(std430, set=0, binding=0) readonly buffer GrassEnvironmentState {
     GrassEnvironmentRecord records[];
 } environment_state;
+layout(std430,set=0,binding=8) readonly buffer GrassPreviousBends { vec2 values[]; } previous_bends;
 layout(push_constant) uniform GrassState {
     mat4 position_to_clip;
     vec4 jitter_ndc;
@@ -121,6 +125,8 @@ layout(location=3) out vec4 tuft_sample;
 layout(location=4) flat out float lod_visibility;
 layout(location=6) out vec3 blade_view_direction;
 layout(location=7) flat out float blade_rim_weight;
+layout(location=8) out vec4 blade_current_clip;
+layout(location=9) out vec4 blade_previous_clip;
 
 void evaluate_shading(
     uint environment_index, vec3 world_normal,
@@ -207,10 +213,11 @@ vec3 evaluate_blade_color(
 
 vec2 evaluate_wind(
     uint environment_index,
-    vec3 world_position, float anchor_phase) {
+    vec3 world_position, float anchor_phase, float time) {
     vec4 wind_direction_time =
         environment_state.records[
             environment_index].wind_direction_time;
+    wind_direction_time.z = time;
     vec4 wind_primary =
         environment_state.records[
             environment_index].wind_primary;
@@ -259,6 +266,82 @@ vec2 evaluate_wind(
     return bend;
 }
 
+// Far tufts spread their blades with the camera distance.
+float grass_tuft_coverage(float tuft_weight, float lod_seed, vec4 lod, vec4 tuft_style) {
+    float choice = grass_lod_choice(lod_seed);
+    float growth = clamp((tuft_weight-choice)/max(1.0-choice,1.0e-6),0.0,1.0);
+    return 1.0 + (lod.z-1.0) * growth * tuft_style.x;
+}
+
+// A blade point for one frame's camera (single-plane blades face it), wind
+// time and interaction bend. Everything else about the blade is fixed.
+vec3 grass_blade_position(
+    uint environment_index, vec3 camera, float wind_time,
+    vec2 dynamic_bend, float tuft_coverage, vec4 base_height,
+    vec4 bend_half_width, vec2 root_axis, bool tuft, uint plane,
+    float height_factor, float width_sign) {
+    vec2 width_axis = root_axis;
+    if (grass.flags.z == 1u) {
+        vec2 camera_delta = base_height.xz - camera.xz;
+        float camera_distance = length(camera_delta);
+        width_axis = camera_distance > 1.0e-6
+            ? vec2(
+                  camera_delta.y / camera_distance,
+                  -camera_delta.x / camera_distance)
+            : vec2(1.0, 0.0);
+    } else {
+        width_axis = normalize(width_axis);
+    }
+    if (plane != 0u)
+        width_axis = vec2(-width_axis.y, width_axis.x);
+    float bend_factor =
+        height_factor * (0.65 + 0.35 * height_factor);
+    float width_factor =
+        tuft ? tuft_coverage : height_factor >= 1.0 ? 0.0 :
+        1.0 - 0.75 * height_factor;
+    vec2 normalized_bend =
+        evaluate_wind(
+            environment_index, base_height.xyz,
+            bend_half_width.w, wind_time) +
+        dynamic_bend;
+    float bend_length = length(normalized_bend);
+    float maximum_bend =
+        environment_state.records[
+            environment_index].wind_detail.z;
+    if (bend_length > maximum_bend &&
+        bend_length > 1.0e-6)
+        normalized_bend *=
+            maximum_bend / bend_length;
+    vec2 bend = normalized_bend * base_height.w;
+    float twist;
+    vec3 shape = grass_blade_shape(
+        height_factor, bend_half_width.w, normalize(root_axis),
+        environment_state.records[environment_index].blade_shape, twist);
+    if (!tuft) width_axis = mat2(cos(twist), sin(twist), -sin(twist), cos(twist)) * width_axis;
+    vec3 position = base_height.xyz;
+    position += shape * base_height.w;
+    position.xz += bend * bend_factor;
+    position.xz += width_axis * bend_half_width.z *
+                   width_factor * width_sign;
+    return position;
+}
+
+vec4 grass_clip_position(mat4 position_to_clip, vec3 position, vec2 jitter_ndc) {
+    vec4 clip = position_to_clip * vec4(position, 1.0);
+    vec4 result;
+    if (grass.flags.x != 0u) {
+        // Match the generated PICA vertex shader exactly. Its projection is
+        // already rotated for the physical CTR framebuffer.
+        result = vec4(clip.x, clip.y, -clip.z, clip.w);
+    } else {
+        // Renderer-owned world projections are logical/unrotated and must be
+        // transposed into the physical top framebuffer before scanout.
+        result = vec4(clip.y, clip.x, clip.z, clip.w);
+    }
+    result.xy += jitter_ndc * result.w;
+    return result;
+}
+
 void main() {
     bool grouped = (grass.flags.y & 0x80000000u) != 0u;
     uint segment_mode = grass.flags.y & 0x7fffffffu;
@@ -296,7 +379,6 @@ void main() {
     float height_factor;
     float width_sign;
     grass_indexed_vertex(vertex, segments, tuft, plane, height_factor, width_sign);
-    float tuft_coverage = 1.0;
     vec4 lod = environment_state.records[grass.flags.w].tuft_lod;
     vec4 distance_lod = environment_state.records[grass.flags.w].distance_lod;
     vec4 tuft_style = environment_state.records[grass.flags.w].tuft_style;
@@ -308,71 +390,35 @@ void main() {
         retention *= grass_tuft_retention_scale(tuft_weight,lod.z,tuft_style.y);
     lod_visibility = grass_visibility_fade(clamp(retention,0.0,1.0),visibility_seed,distance_lod.w);
     lod_visibility *= 1.0-grass_tuft_weight(distance,distance_lod.x*(1.0-tuft_style.z),distance_lod.x);
-    if (tuft) {
-        float choice = grass_lod_choice(in_world_normal.w);
-        float growth = clamp((tuft_weight-choice)/max(1.0-choice,1.0e-6),0.0,1.0);
-        tuft_coverage += (lod.z-1.0) * growth * tuft_style.x;
-    }
+    float tuft_coverage = tuft ? grass_tuft_coverage(tuft_weight, in_world_normal.w, lod, tuft_style) : 1.0;
     tuft_sample = vec4(width_sign, height_factor, tuft_coverage, in_bend_half_width.w);
 
-    vec2 width_axis = in_width_axis;
-    if (grass.flags.z == 1u) {
-        vec2 camera_delta =
-            in_base_height.xz -
-            environment_state.records[
-                grass.flags.w].camera_position.xz;
-        float camera_distance = length(camera_delta);
-        width_axis = camera_distance > 1.0e-6
-            ? vec2(
-                  camera_delta.y / camera_distance,
-                  -camera_delta.x / camera_distance)
-            : vec2(1.0, 0.0);
-    } else {
-        width_axis = normalize(width_axis);
+    vec3 position = grass_blade_position(
+        grass.flags.w, environment_state.records[grass.flags.w].camera_position.xyz,
+        environment_state.records[grass.flags.w].wind_direction_time.z,
+        in_bend_half_width.xy, tuft_coverage, in_base_height, in_bend_half_width,
+        in_width_axis, tuft, plane, height_factor, width_sign);
+    gl_Position = grass_clip_position(grass.position_to_clip, position, grass.jitter_ndc.xy);
+    // Exact motion, like the native draws' rigid motion guide: the same blade
+    // point with the previous frame's camera, jitter, wind time and bend.
+    blade_current_clip = vec4(0.0);
+    blade_previous_clip = vec4(0.0);
+    vec4 motion_state = environment_state.records[grass.flags.w].motion_state;
+    if (motion_state.z > 0.5) {
+        vec4 previous_camera_time = environment_state.records[grass.flags.w].previous_camera_time;
+        float previous_coverage = tuft ? grass_tuft_coverage(grass_tuft_weight(
+            length(visibility_position - previous_camera_time.xyz)/max(lod.y,1.0e-6), lod.x, lod.x+lod.w),
+            in_world_normal.w, lod, tuft_style) : 1.0;
+        vec2 previous_bend = motion_state.w > 0.5 ? previous_bends.values[root_index] : in_bend_half_width.xy;
+        vec3 previous_position = grass_blade_position(
+            grass.flags.w, previous_camera_time.xyz, previous_camera_time.w,
+            previous_bend, previous_coverage, in_base_height, in_bend_half_width,
+            in_width_axis, tuft, plane, height_factor, width_sign);
+        blade_current_clip = gl_Position;
+        blade_previous_clip = grass_clip_position(
+            environment_state.records[grass.flags.w].previous_position_to_clip,
+            previous_position, motion_state.xy);
     }
-    if (plane != 0u)
-        width_axis = vec2(-width_axis.y, width_axis.x);
-    float bend_factor =
-        height_factor * (0.65 + 0.35 * height_factor);
-    float width_factor =
-        tuft ? tuft_coverage : height_factor >= 1.0 ? 0.0 :
-        1.0 - 0.75 * height_factor;
-    vec2 normalized_bend =
-        evaluate_wind(
-            grass.flags.w, in_base_height.xyz,
-            in_bend_half_width.w) +
-        in_bend_half_width.xy;
-    float bend_length = length(normalized_bend);
-    float maximum_bend =
-        environment_state.records[
-            grass.flags.w].wind_detail.z;
-    if (bend_length > maximum_bend &&
-        bend_length > 1.0e-6)
-        normalized_bend *=
-            maximum_bend / bend_length;
-    vec2 bend = normalized_bend * in_base_height.w;
-    float twist;
-    vec3 shape = grass_blade_shape(
-        height_factor, in_bend_half_width.w, normalize(in_width_axis),
-        environment_state.records[grass.flags.w].blade_shape, twist);
-    if (!tuft) width_axis = mat2(cos(twist), sin(twist), -sin(twist), cos(twist)) * width_axis;
-    vec3 position = in_base_height.xyz;
-    position += shape * in_base_height.w;
-    position.xz += bend * bend_factor;
-    position.xz += width_axis * in_bend_half_width.z *
-                   width_factor * width_sign;
-
-    vec4 clip = grass.position_to_clip * vec4(position, 1.0);
-    if (grass.flags.x != 0u) {
-        // Match the generated PICA vertex shader exactly. Its projection is
-        // already rotated for the physical CTR framebuffer.
-        gl_Position = vec4(clip.x, clip.y, -clip.z, clip.w);
-    } else {
-        // Renderer-owned world projections are logical/unrotated and must be
-        // transposed into the physical top framebuffer before scanout.
-        gl_Position = vec4(clip.y, clip.x, clip.z, clip.w);
-    }
-    gl_Position.xy += grass.jitter_ndc.xy * gl_Position.w;
     vec3 world_normal = normalize(in_world_normal.xyz);
     vec3 lighting;
     vec3 ambient_response;
@@ -486,6 +532,9 @@ struct GrassEnvironmentRecord {
     ToonSurfaceParameters toon;
     uvec4 native_lighting;
     vec4 rim_distance;
+    mat4 previous_position_to_clip;
+    vec4 previous_camera_time;
+    vec4 motion_state;
 };
 layout(std430, set=0, binding=0) readonly buffer GrassEnvironmentState {
     GrassEnvironmentRecord records[];
@@ -498,6 +547,8 @@ layout(push_constant) uniform GrassState {
 } grass;
 layout(location=0) out vec4 out_color;
 #if GRASS_AUXILIARY_OUTPUTS
+layout(location=8) in vec4 blade_current_clip;
+layout(location=9) in vec4 blade_previous_clip;
 layout(location=1) out vec4 out_normal_guide;
 layout(location=2) out vec4 out_material_guide;
 layout(location=3) out vec4 out_rigid_motion;
@@ -523,12 +574,20 @@ void main() {
             oot3d_toon_rim(blade_normal_guide.xyz * 2.0 - 1.0, blade_view_direction, toon), 0.0, 1.0);
 #if GRASS_AUXILIARY_OUTPUTS
     out_normal_guide = blade_normal_guide;
-    // Grass topology, LOD and wind can change every presentation. Let the
-    // motion pass reconstruct camera motion from depth and reject temporal
-    // history for these pixels instead of emitting unstable rigid vectors.
-    out_material_guide = vec4(0.0, 1.0, 0.0, 1.0);
+    // With the placement's previous frame the blade writes exact motion and
+    // keeps its temporal history. Without it, the motion pass reconstructs
+    // camera motion from depth and the reactive mask rejects the history,
+    // since wind and interaction still move the blade.
+    bool exact_motion = environment_state.records[grass.flags.w].motion_state.z > 0.5 &&
+        blade_current_clip.w > 1.0e-7 && blade_previous_clip.w > 1.0e-7;
+    out_material_guide = vec4(0.0, 1.0, 0.0, exact_motion ? 0.0 : 1.0);
     out_ambient_guide = blade_ambient_guide;
     out_rigid_motion = vec4(0.0);
+    if (exact_motion) {
+        vec2 current_uv = blade_current_clip.xy / blade_current_clip.w * 0.5 + 0.5;
+        vec2 previous_uv = blade_previous_clip.xy / blade_previous_clip.w * 0.5 + 0.5;
+        out_rigid_motion.xyz = vec3(previous_uv - current_uv, 1.0);
+    }
 #endif
     float resolved_depth = gl_FragCoord.z;
     if (grass.depth_state.w > 0.5) {
@@ -601,12 +660,22 @@ struct ActorCollider {
 layout(std430, set=0, binding=4) readonly buffer Actors {
     ActorCollider values[];
 } actors;
+// Per static anchor: the last bend (XY bits), the frame stamp that wrote it and
+// the bend it replaced (half precision).
+layout(std430, set=0, binding=5) buffer BendHistory {
+    uvec4 values[];
+} bend_history;
+layout(std430, set=0, binding=6) writeonly buffer PreviousBends {
+    vec2 values[];
+} previous_bends;
 
 layout(push_constant) uniform CompactionState {
     uvec4 counts_flags;
     vec4 interaction;
     vec4 collision;
     vec4 bend;
+    // current frame stamp, previous frame stamp (0 without continuity)
+    uvec4 history;
 } state;
 
 vec2 sample_interaction(vec3 base) {
@@ -760,6 +829,19 @@ void main() {
     float bend_length = length(dynamic_bend);
     if (bend_length > state.bend.x && bend_length > 0.0)
         dynamic_bend *= state.bend.x / bend_length;
+    // Motion vectors place the blade where the previous frame drew it. A
+    // later invocation in the same frame reads the bend this frame replaced.
+    uvec4 history = bend_history.values[static_index];
+    vec2 previous_bend = dynamic_bend;
+    if (history.z == state.history.x) {
+        previous_bend = unpackHalf2x16(history.w);
+    } else {
+        if (state.history.y != 0u && history.z == state.history.y)
+            previous_bend = uintBitsToFloat(history.xy);
+        bend_history.values[static_index] = uvec4(
+            floatBitsToUint(dynamic_bend), state.history.x, packHalf2x16(previous_bend));
+    }
+    previous_bends.values[visible_index] = previous_bend;
 
     uint destination = visible_index * GRASS_INSTANCE_WORDS;
     output_instances.words[destination + 0u] =

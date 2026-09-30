@@ -18,8 +18,8 @@ struct Gpu {
     uint32_t Family{};
     VkPhysicalDeviceMemoryProperties Memory{};
     struct Buffer { VkBuffer Handle{}; VkDeviceMemory Memory{}; void* Mapped{}; };
-    explicit Gpu(const VkPhysicalDeviceFeatures& features = {}) {
-        VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO}; app.apiVersion = VK_API_VERSION_1_1;
+    explicit Gpu(const VkPhysicalDeviceFeatures& features = {}, uint32_t apiVersion = VK_API_VERSION_1_1) {
+        VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO}; app.apiVersion = apiVersion;
         VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO}; info.pApplicationInfo = &app;
         Check(vkCreateInstance(&info, nullptr, &Instance));
         uint32_t count = 0; Check(vkEnumeratePhysicalDevices(Instance, &count, nullptr));

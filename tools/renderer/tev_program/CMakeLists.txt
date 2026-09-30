@@ -238,6 +238,21 @@ endif()
 add_test(NAME builtin_pass_artifacts COMMAND build_pass_artifacts --check)
 set_tests_properties(builtin_pass_artifacts PROPERTIES TIMEOUT 120)
 
+add_executable(grass_motion_gpu_tests grass_motion_gpu_tests.cpp
+    "${runtime}/src/fast/oot3d/grass_gpu_instance_compactor.cpp"
+    "${runtime}/src/fast/oot3d/grass_interaction_field.cpp")
+triaevum_add_pass_shader_sources(grass_motion_gpu_tests)
+target_compile_features(grass_motion_gpu_tests PRIVATE cxx_std_20)
+target_compile_definitions(grass_motion_gpu_tests PRIVATE ENABLE_OOT3D_VULKAN)
+target_include_directories(grass_motion_gpu_tests PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")
+target_link_libraries(grass_motion_gpu_tests PRIVATE Vulkan::Vulkan "${SHADERC_LIBRARY}" ${CMAKE_DL_LIBS})
+if(WIN32)
+    add_custom_command(TARGET grass_motion_gpu_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${SHADERC_RUNTIME}" "$<TARGET_FILE_DIR:grass_motion_gpu_tests>")
+endif()
+add_test(NAME grass_motion_gpu COMMAND grass_motion_gpu_tests)
+set_tests_properties(grass_motion_gpu PROPERTIES TIMEOUT 120)
+
 add_executable(reflection_weight_gpu_tests reflection_weight_gpu_tests.cpp
     "${runtime}/src/fast/oot3d/hiz_reflection.cpp"
     "${runtime}/src/fast/oot3d/reflection_ibl.cpp")
