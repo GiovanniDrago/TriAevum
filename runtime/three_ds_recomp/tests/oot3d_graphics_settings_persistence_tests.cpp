@@ -274,6 +274,32 @@ TEST(Oot3dGraphicsSettingsPersistence, PreservesLegacyCacaoAndExistingGtaoChoice
     EXPECT_EQ(DeserializeGraphicsSettings(document).Value.Effects.AmbientOcclusion, AmbientOcclusionMode::Off);
 }
 
+TEST(Oot3dGraphicsSettingsPersistence, RoundTripsMxaoAndAddsItsDefaultsToOlderFiles) {
+    using namespace Fast::Oot3d;
+    auto settings = CompleteSettings();
+    settings.Effects.AmbientOcclusion = AmbientOcclusionMode::Mxao;
+    settings.Effects.MxaoMethod = MxaoEstimator::SolidAngle;
+    settings.Effects.MxaoQuality = 4;
+    settings.Effects.MxaoFilter = 2;
+    const auto saved = SerializeGraphicsSettings(settings);
+    EXPECT_EQ(saved["Effects"]["AO"]["Mode"], "MXAO");
+    EXPECT_EQ(saved["Effects"]["AO"]["Mxao"]["Method"], "SolidAngle");
+    const auto loaded = DeserializeGraphicsSettings(saved);
+    EXPECT_FALSE(loaded.NeedsRewrite);
+    EXPECT_EQ(loaded.Value.Effects.AmbientOcclusion, AmbientOcclusionMode::Mxao);
+    EXPECT_EQ(loaded.Value.Effects.MxaoMethod, MxaoEstimator::SolidAngle);
+    EXPECT_EQ(loaded.Value.Effects.MxaoQuality, 4U);
+    EXPECT_EQ(loaded.Value.Effects.MxaoFilter, 2U);
+    auto older = saved;
+    older["Effects"]["AO"].erase("Mxao");
+    const auto defaults = DeserializeGraphicsSettings(older);
+    EXPECT_TRUE(defaults.NeedsRewrite);
+    EXPECT_EQ(defaults.Value.Effects.AmbientOcclusion, AmbientOcclusionMode::Mxao);
+    EXPECT_EQ(defaults.Value.Effects.MxaoMethod, MxaoEstimator::VisibilityBitmask);
+    EXPECT_EQ(defaults.Value.Effects.MxaoQuality, 1U);
+    EXPECT_EQ(defaults.Value.Effects.MxaoFilter, 1U);
+}
+
 TEST(Oot3dGraphicsSettingsPersistence, MigratesSingleCascadeWithoutLosingTheOffChoiceOrLightResponse) {
     using namespace Fast::Oot3d;
     auto document = SerializeGraphicsSettings(CompleteSettings());

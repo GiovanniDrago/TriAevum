@@ -4173,6 +4173,31 @@ TEST(Oot3dGraphicsSettings, CapabilityGatesInvalidCombinations) {
     EXPECT_EQ(result.Issues.size(), 3U);
 }
 
+TEST(Oot3dGraphicsSettings, MxaoRequiresItsProviderAndClampsItsControls) {
+    using namespace Fast::Oot3d;
+    GraphicsCapabilities capabilities;
+    for (const auto capability : {GraphicsCapability::NriInterop, GraphicsCapability::SampledDepth,
+                                  GraphicsCapability::NormalGuide, GraphicsCapability::ValidViewMetadata,
+                                  GraphicsCapability::ImmerseMxao})
+        capabilities.Set(capability, true);
+    auto candidate = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
+    candidate.Effects.AmbientOcclusion = AmbientOcclusionMode::Mxao;
+    candidate.Effects.MxaoMethod = static_cast<MxaoEstimator>(9);
+    candidate.Effects.MxaoQuality = 9;
+    candidate.Effects.MxaoFilter = 7;
+    auto result = GraphicsSettingsService::Validate(candidate, capabilities);
+    EXPECT_EQ(result.Value.Effects.AmbientOcclusion, AmbientOcclusionMode::Mxao);
+    EXPECT_EQ(result.Value.Effects.MxaoMethod, MxaoEstimator::VisibilityBitmask);
+    EXPECT_EQ(result.Value.Effects.MxaoQuality, 5U);
+    EXPECT_EQ(result.Value.Effects.MxaoFilter, 2U);
+    capabilities.Set(GraphicsCapability::ImmerseMxao, false, "provider unavailable");
+    result = GraphicsSettingsService::Validate(candidate, capabilities);
+    EXPECT_EQ(result.Value.Effects.AmbientOcclusion, AmbientOcclusionMode::Off);
+    EXPECT_TRUE(std::any_of(result.Issues.begin(), result.Issues.end(), [](const auto& issue) {
+        return issue.Field == "Graphics.Effects.AO.Mode" && issue.Message == "provider unavailable";
+    }));
+}
+
 TEST(Oot3dGraphicsSettings, AcceptsHiZOnlyWithMaterialAndViewContract) {
     Fast::Oot3d::GraphicsCapabilities capabilities;
     using Capability = Fast::Oot3d::GraphicsCapability;

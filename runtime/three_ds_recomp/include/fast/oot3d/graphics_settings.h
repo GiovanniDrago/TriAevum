@@ -27,7 +27,10 @@ enum class FrameRateMode : uint8_t {
     // fixed-60 presentation mode. Persistence emits Interpolated2x.
     Fixed60 = Interpolated2x,
 };
-enum class AmbientOcclusionMode : uint8_t { Off, Gtao, Cacao };
+enum class AmbientOcclusionMode : uint8_t { Off, Gtao, Cacao, Mxao };
+// iMMERSE MXAO estimators: ground-truth horizons, solid angle, and the
+// visibility bitmask with a cosine-weighted or solid-angle integral.
+enum class MxaoEstimator : uint8_t { GroundTruth, SolidAngle, VisibilityBitmask, VisibilityBitmaskSolidAngle };
 enum class ReflectionMode : uint8_t { Off, HiZ, FidelityFxSssr };
 enum class ToonMode : uint8_t { Off, PostProcessPreview, PicaMaterial };
 enum class SurfaceLightingMode : uint8_t { Native, PerPixel, PerPixelPbr, NativePbr };
@@ -205,6 +208,10 @@ struct EffectsSettings {
     float AoFadeOutTo = 300.0F;
     float AoSharpness = 0.98F;
     float AoDetailStrength = 0.5F;
+    // MXAO's own controls; radius, strength and fade are the shared AO values.
+    MxaoEstimator MxaoMethod = MxaoEstimator::VisibilityBitmask;
+    uint8_t MxaoQuality = 1;
+    uint8_t MxaoFilter = 1;
     ReflectionMode Reflections = ReflectionMode::Off;
     float ReflectionStrength = 0.65F;
     float ReflectionMaxDistance = 1500.0F;

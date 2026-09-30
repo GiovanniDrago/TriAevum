@@ -70,14 +70,19 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
                          capabilities.Has(GraphicsCapability::SampledDepth) &&
                          capabilities.Has(GraphicsCapability::NormalGuide) &&
                          capabilities.Has(GraphicsCapability::ValidViewMetadata);
-    const char* const aoModes[] = {"Off", "Multiscale GTAO", "FidelityFX CACAO"};
+    const char* const aoModes[] = {"Off", "Multiscale GTAO", "FidelityFX CACAO", "iMMERSE MXAO"};
     changed |= SettingsUi::ValidatedCombo<AmbientOcclusionMode>(
         "Ambient occlusion", settings, capabilities, aoModes,
         [](auto& value, auto mode) { value.Effects.AmbientOcclusion = mode; },
         [](const auto& value) { return value.Effects.AmbientOcclusion; });
     const bool cacao = settings.Effects.AmbientOcclusion == AmbientOcclusionMode::Cacao;
+    const bool mxao = settings.Effects.AmbientOcclusion == AmbientOcclusionMode::Mxao;
     const bool ao = settings.Effects.AmbientOcclusion != AmbientOcclusionMode::Off;
-    if (ao) {
+    if (mxao) {
+        ImGui::BeginDisabled(!aoReady || !capabilities.Has(GraphicsCapability::ImmerseMxao));
+        changed |= DrawMxaoSettings(settings.Effects);
+        ImGui::EndDisabled();
+    } else if (ao) {
         ImGui::BeginDisabled(!aoReady || (cacao && !capabilities.Has(GraphicsCapability::FidelityFxCacao)));
         int quality = settings.Effects.AoQuality;
         const char* const qualityNames[] = {"Low", "Medium"};
@@ -130,7 +135,42 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
     }
     if (!capabilities.Has(GraphicsCapability::FidelityFxCacao))
         ImGui::TextWrapped("CACAO unavailable: %s", capabilities.Get(GraphicsCapability::FidelityFxCacao).Reason.c_str());
+    if (!capabilities.Has(GraphicsCapability::ImmerseMxao))
+        ImGui::TextWrapped("MXAO unavailable: %s", capabilities.Get(GraphicsCapability::ImmerseMxao).Reason.c_str());
 
+    return changed;
+}
+
+bool GraphicsSettingsPanel::DrawMxaoSettings(EffectsSettings& effects) {
+    bool changed = false;
+    int quality = effects.MxaoQuality;
+    const char* const qualityNames[] = {"Low", "Medium", "High", "Very high", "Ultra", "Extreme"};
+    if (ImGui::Combo("MXAO quality", &quality, qualityNames, 6)) {
+        effects.MxaoQuality = static_cast<uint8_t>(quality);
+        changed = true;
+    }
+    int method = static_cast<int>(effects.MxaoMethod);
+    const char* const methodNames[] = {"Ground truth", "Solid angle", "Visibility bitmask",
+                                       "Visibility bitmask, solid angle"};
+    if (ImGui::Combo("MXAO method", &method, methodNames, 4)) {
+        effects.MxaoMethod = static_cast<MxaoEstimator>(method);
+        changed = true;
+    }
+    changed |= ImGui::SliderFloat("MXAO radius", &effects.AoRadius, 0.05F, 100.0F, "%.2f",
+                                  ImGuiSliderFlags_Logarithmic);
+    changed |= ImGui::SliderFloat("MXAO amount", &effects.AoStrength, 0.0F, 2.0F, "%.2f");
+    int filter = effects.MxaoFilter;
+    if (ImGui::SliderInt("MXAO filter quality", &filter, 0, 2)) {
+        effects.MxaoFilter = static_cast<uint8_t>(filter);
+        changed = true;
+    }
+    ImGui::TextWrapped("iMMERSE MXAO by Pascal Gilcher (martysmods.com), used with the author's permission. "
+                       "The radius uses native scene units; above 1 the amount deepens occlusion.");
+    if (ImGui::TreeNode("Advanced AO")) {
+        changed |= ImGui::DragFloat("Fade start", &effects.AoFadeOutFrom, 1.0F, 0.0F, 100000.0F, "%.1f");
+        changed |= ImGui::DragFloat("Fade end", &effects.AoFadeOutTo, 1.0F, 0.01F, 100000.0F, "%.1f");
+        ImGui::TreePop();
+    }
     return changed;
 }
 } // namespace Fast::Oot3d

@@ -914,6 +914,8 @@ void GfxRenderingAPIVulkan::Init() {
     }
     if (!mCacaoPass.Initialize(mPhysicalDevice, mDevice, mNriInterop))
         SPDLOG_INFO("OOT3D Vulkan CACAO unavailable: {}", mCacaoPass.UnavailableReason());
+    if (!mMxaoPass.Initialize(mPhysicalDevice, mDevice, mNriInterop))
+        SPDLOG_INFO("OOT3D Vulkan MXAO unavailable: {}", mMxaoPass.UnavailableReason());
     if (!mHiZDepthPyramidPass.Initialize(
             mPhysicalDevice, mDevice, mNriInterop)) {
         SPDLOG_INFO("OOT3D Vulkan Hi-Z unavailable: {}",
@@ -993,6 +995,8 @@ void GfxRenderingAPIVulkan::Init() {
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::NativeSurfaceLighting, true);
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::FidelityFxCacao,
                                   mCacaoPass.Available(), mCacaoPass.UnavailableReason());
+    settingsRuntime.SetCapability(Oot3d::GraphicsCapability::ImmerseMxao,
+                                  mMxaoPass.Available(), mMxaoPass.UnavailableReason());
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::MotionVectors,
                                   mMotionVectorPass.Available(),
                                   mMotionVectorPass.UnavailableReason());
@@ -1169,6 +1173,7 @@ void GfxRenderingAPIVulkan::Shutdown() {
         mResourceStates.Clear();
         mAmbientOcclusionPass.Shutdown();
         mCacaoPass.Shutdown();
+        mMxaoPass.Shutdown();
         mFidelityFxSssrPass.Shutdown();
         mReflectionMaterialResolvePass.Shutdown();
         mReflectionIblPass.Shutdown();

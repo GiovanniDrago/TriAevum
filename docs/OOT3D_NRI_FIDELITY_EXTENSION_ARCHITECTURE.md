@@ -4,9 +4,10 @@
 
 Build an NRI renderer that reproduces the native OOT3D/PICA output faithfully while exposing enough structured scene and pipeline data for future advanced rendering. Extensions must integrate at the correct rendering stage; they must not be limited to generic post-processing.
 
-AO offers [multiscale GTAO and the original FidelityFX CACAO](#multiscale-gtao-and-reflection-performance).
-Both providers share the scene graph, native guides and particle-coverage fix.
-The saved provider is preserved; selecting one does not migrate the other away.
+AO offers [multiscale GTAO and the original FidelityFX CACAO](#multiscale-gtao-and-reflection-performance),
+plus [iMMERSE MXAO](#immerse-mxao) when built with its author's permission.
+All providers share the scene graph, native guides and particle-coverage fix.
+The saved provider is preserved; selecting one does not migrate the others away.
 
 ## Non-Negotiable Rules
 
@@ -2927,6 +2928,37 @@ scripts are replaced by these provider-neutral names. CACAO itself, its
 supported alongside GTAO.
 Private captures, checkpoints, profiles and measurement reports remain under
 `I:/_triaevum_work/ao-stability/` and must never enter a public package.
+
+### iMMERSE MXAO
+
+`fast/immerse/mxao_shader.{h,cpp}` ports MXAO from Pascal Gilcher's iMMERSE
+(revision `f57d3af`), integrated and modified with the author's permission and
+compiled only with `THREE_DS_RECOMP_ENABLE_IMMERSE`; see `THIRD_PARTY_NOTICES.md`.
+`fast/oot3d/mxao_pass.{h,cpp}` is the NRI adapter. The graph contract is GTAO's:
+native FP32 depth and the coverage-bearing normal guide in, the published R32F
+visibility out, composited before UI. There is no history.
+
+- Kept from the original: 4x4 depth deinterleaving, the Low-Extreme slice/step
+  presets, per-tile jitter, the ground-truth, solid-angle and visibility-bitmask
+  estimators with the original thickness heuristic, and the two-iteration
+  depth-guided regression filter (F1 filter quality 0-2).
+- Changed: the renderer's exact projection replaces ReShade's assumed 60-degree
+  field of view; native normals replace depth-derived ones, with the RGB8 bound of
+  the GTAO kernels; fade uses native distances; each slice is normalized against
+  its own unoccluded integral and occlusion (not visibility) is stored.
+  `mxao_gpu_tests` failed before the last two changes: the ground-truth estimator
+  darkened an empty RGB8 plane by 0.163, and stored visibility lost one truncated
+  half-precision step on every estimator.
+- F1 **Lighting** adds **iMMERSE MXAO** to the provider list with MXAO quality,
+  method, radius, amount (above 1 the original gamma response) and filter quality;
+  fade start/end sit under Advanced AO. The settings object `AO.Mxao` was added
+  without a schema change.
+- Single 600-frame runs on the Kokiri reference walk, 2560x1440, RTX 3060: the
+  AO scope median is 1.13 ms for multiscale GTAO Medium, 2.96 ms for MXAO
+  visibility bitmask Medium with one filter iteration, and 5.07 ms for High with
+  two. MXAO works at full resolution; its reduced shading rate needs temporal
+  reprojection, which is not implemented yet. Validated runs report zero
+  Vulkan/NRI errors.
 
 Fresh combined source adoption, deterministic framebuffer/state comparisons and
 the remaining realtime validation observation are recorded in

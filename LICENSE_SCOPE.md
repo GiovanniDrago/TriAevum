@@ -31,6 +31,8 @@ No permission is granted here for:
 - generated or translated title modules and decompiled title source;
 - patches, textures or payloads from the TopScreen mod or another mod unless
   their respective author has granted redistribution permission;
+- iMMERSE-derived effect code (Pascal Gilcher), used under the author's separate
+  permission (see `THIRD_PARTY_NOTICES.md`);
 - proprietary SDKs, redistributable libraries or model files whose own terms
   do not permit inclusion.
 

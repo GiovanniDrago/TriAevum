@@ -811,6 +811,7 @@ void GfxRenderingAPIVulkan::ApplyNativePicaSampleCount(VkSampleCountFlagBits sam
     ForgetNativePicaEffectNriTextures();
     mAmbientOcclusionPass.InvalidateScreenResources();
     mCacaoPass.InvalidateScreenResources();
+    mMxaoPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
     mBrixelizerGiPass.InvalidateScreenResources();
     mReflectionMaterialResolvePass.InvalidateScreenResources();
@@ -7538,6 +7539,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             }
         }
         const bool cacao = presentationSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Cacao;
+        const bool mxao = presentationSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Mxao;
         bool aoAttempted = false;
         bool aoExecutedNow = false;
         if (wantsAmbientOcclusion && effectGuideTarget != nullptr &&
@@ -7566,6 +7568,16 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                         Oot3d::ResolveCacaoSettings(presentationSettings.Effects)) &&
                     mCacaoPass.Execute(command, presentationPerspective->Projection, aoBarrierPlan,
                         Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
+            } else if (mAmbientOcclusionOutputValid && mxao) {
+                mAmbientOcclusionOutputValid =
+                    mMxaoPass.Configure(*transientAmbientOcclusionOutput,
+                        reinterpret_cast<VkImage>(aoDepthBinding.NativeImage),
+                        static_cast<VkFormat>(aoDepthBinding.Format),
+                        reinterpret_cast<VkImage>(aoNormalBinding.NativeImage),
+                        static_cast<VkFormat>(aoNormalBinding.Format)) &&
+                    mMxaoPass.Execute(mCurrentFrame, *presentationPerspective,
+                        effectGuideTarget->WBuffering, presentationSettings.Effects, aoBarrierPlan,
+                        Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
             } else if (mAmbientOcclusionOutputValid) {
                 mAmbientOcclusionOutputValid =
                     mAmbientOcclusionPass.Configure(*transientAmbientOcclusionOutput,
@@ -7583,9 +7595,13 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             aoExecutedNow = mAmbientOcclusionOutputValid;
             if (mAmbientOcclusionOutputValid) {
                 recordEffectPassTransitions(
-                    cacao ? mCacaoPass.LastBarrierExecution() : mAmbientOcclusionPass.LastBarrierExecution());
+                    cacao  ? mCacaoPass.LastBarrierExecution()
+                    : mxao ? mMxaoPass.LastBarrierExecution()
+                           : mAmbientOcclusionPass.LastBarrierExecution());
                 mDiagnostics.RecordAmbientOcclusionPass(
-                    cacao ? mCacaoPass.OutputOwnedByNri() : mAmbientOcclusionPass.OutputOwnedByNri(),
+                    cacao  ? mCacaoPass.OutputOwnedByNri()
+                    : mxao ? mMxaoPass.OutputOwnedByNri()
+                           : mAmbientOcclusionPass.OutputOwnedByNri(),
                     !cacao || mCacaoPass.UsesPicaNormalGuide());
                 mAmbientOcclusionRenderTargetNamespace =
                     transfer.RenderTargetNamespace;
@@ -7600,8 +7616,12 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         if (aoForDisplay) {
             bindEffectImage(
                 Oot3d::EffectResource::AmbientOcclusion,
-                cacao ? mCacaoPass.OutputImage() : mAmbientOcclusionPass.OutputImage(),
-                cacao ? mCacaoPass.OutputView() : mAmbientOcclusionPass.OutputView(),
+                cacao  ? mCacaoPass.OutputImage()
+                : mxao ? mMxaoPass.OutputImage()
+                       : mAmbientOcclusionPass.OutputImage(),
+                cacao  ? mCacaoPass.OutputView()
+                : mxao ? mMxaoPass.OutputView()
+                       : mAmbientOcclusionPass.OutputView(),
                 VK_FORMAT_R32_SFLOAT, effectGuideTarget->Width,
                 effectGuideTarget->Height);
         }
@@ -9355,8 +9375,12 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         if (aoForDisplay) {
             bindEffectImage(
                 Oot3d::EffectResource::AmbientOcclusion,
-                cacao ? mCacaoPass.OutputImage() : mAmbientOcclusionPass.OutputImage(),
-                cacao ? mCacaoPass.OutputView() : mAmbientOcclusionPass.OutputView(),
+                cacao  ? mCacaoPass.OutputImage()
+                : mxao ? mMxaoPass.OutputImage()
+                       : mAmbientOcclusionPass.OutputImage(),
+                cacao  ? mCacaoPass.OutputView()
+                : mxao ? mMxaoPass.OutputView()
+                       : mAmbientOcclusionPass.OutputView(),
                 VK_FORMAT_R32_SFLOAT, effectGuideTarget->Width,
                 effectGuideTarget->Height);
         }
@@ -10797,6 +10821,7 @@ bool GfxRenderingAPIVulkan::ResetPicaState(
             ForgetNativePicaEffectNriTextures();
         mAmbientOcclusionPass.InvalidateScreenResources();
         mCacaoPass.InvalidateScreenResources();
+        mMxaoPass.InvalidateScreenResources();
         mFidelityFxSssrPass.InvalidateScreenResources();
         mBrixelizerGiPass.InvalidateScreenResources();
         mReflectionMaterialResolvePass.InvalidateScreenResources();
@@ -11271,6 +11296,7 @@ void GfxRenderingAPIVulkan::ForgetNativePicaEffectNriTextures() {
 void GfxRenderingAPIVulkan::ReleaseEffectGraphImageClients() {
     mAmbientOcclusionPass.InvalidateScreenResources();
     mCacaoPass.InvalidateScreenResources();
+    mMxaoPass.InvalidateScreenResources();
     mHiZDepthPyramidPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
     mBrixelizerGiPass.InvalidateScreenResources();
@@ -11322,6 +11348,7 @@ void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayIma
     ForgetNativePicaEffectNriTextures();
     mAmbientOcclusionPass.InvalidateScreenResources();
     mCacaoPass.InvalidateScreenResources();
+    mMxaoPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
     mBrixelizerGiPass.InvalidateScreenResources();
     mReflectionMaterialResolvePass.InvalidateScreenResources();

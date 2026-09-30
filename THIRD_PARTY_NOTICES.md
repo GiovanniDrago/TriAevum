@@ -183,6 +183,27 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## iMMERSE (Pascal Gilcher)
+
+The optional MXAO ambient-occlusion provider in
+`runtime/three_ds_recomp/src/fast/immerse/` is ported from `Shaders/MartysMods_MXAO.fx`
+of [iMMERSE](https://github.com/martymcmodding/iMMERSE) at revision
+`f57d3afa1ebe5d1fd6152d4f6fb9a2e75bd1d1cb`, by Pascal Gilcher
+([Marty's Mods](https://martysmods.com)). Its changes are listed in the file header.
+
+iMMERSE is not under an open-source license: "Copyright (c) Pascal Gilcher. All
+rights reserved." Its terms forbid public redistribution, public modified versions,
+use of its parts in another project and monetization unless the author gives
+explicit permission, and require clear credit of the project, its author and the
+parts used. The maintainer reports the author's explicit permission to integrate
+and modify MXAO, LAUNCHPAD and SOLARIS in TriAevum (2026-09-30).
+
+This material is not an original TriAevum contribution and is not covered by the
+GPL grant in `LICENSE_SCOPE.md`. It is compiled only with
+`THREE_DS_RECOMP_ENABLE_IMMERSE`. Before a public source or binary package includes
+it, record the written permission and confirm that it covers distribution of source
+and binaries together with the GPL-licensed runtime.
+
 ## TopScreen single-screen modifications
 
 The required title-owned UI contract is published in

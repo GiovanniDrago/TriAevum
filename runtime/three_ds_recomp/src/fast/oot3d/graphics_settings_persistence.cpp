@@ -83,6 +83,13 @@ constexpr EnumNames<AmbientOcclusionMode> kAoNames{
     {AmbientOcclusionMode::Off, "Off"},
     {AmbientOcclusionMode::Gtao, "GTAO"},
     {AmbientOcclusionMode::Cacao, "CACAO"},
+    {AmbientOcclusionMode::Mxao, "MXAO"},
+};
+constexpr EnumNames<MxaoEstimator> kMxaoMethodNames{
+    {MxaoEstimator::GroundTruth, "GroundTruth"},
+    {MxaoEstimator::SolidAngle, "SolidAngle"},
+    {MxaoEstimator::VisibilityBitmask, "VisibilityBitmask"},
+    {MxaoEstimator::VisibilityBitmaskSolidAngle, "VisibilityBitmaskSolidAngle"},
 };
 constexpr EnumNames<ReflectionMode> kReflectionNames{
     {ReflectionMode::Off, "Off"},
@@ -1264,6 +1271,12 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                   {"Sharpness", effects.AoSharpness},
                   {"DetailStrength",
                    effects.AoDetailStrength},
+                  {"Mxao",
+                   {
+                       {"Method", EnumName(effects.MxaoMethod, kMxaoMethodNames)},
+                       {"Quality", effects.MxaoQuality},
+                       {"Filter", effects.MxaoFilter},
+                   }},
               }},
              {"Reflections",
               {
@@ -1646,6 +1659,18 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                        value.AoDetailStrength,
                        "Graphics.Effects.AO.DetailStrength",
                        result);
+            // Added without a schema change: an absent object keeps the
+            // defaults and is written on the next save.
+            if (const Json* mxao = FindMember(*ao, "Mxao"); mxao != nullptr && mxao->is_object()) {
+                ReadEnum(*mxao, "Method", value.MxaoMethod, kMxaoMethodNames,
+                         "Graphics.Effects.AO.Mxao.Method", result);
+                ReadScalar(*mxao, "Quality", value.MxaoQuality,
+                           "Graphics.Effects.AO.Mxao.Quality", result);
+                ReadScalar(*mxao, "Filter", value.MxaoFilter,
+                           "Graphics.Effects.AO.Mxao.Filter", result);
+            } else {
+                result.NeedsRewrite = true;
+            }
         }
         if (const Json* reflections =
                 RequireObject(*effects, "Reflections",

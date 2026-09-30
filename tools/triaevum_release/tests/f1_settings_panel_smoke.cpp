@@ -981,6 +981,26 @@ int main() try {
               runtime.Snapshot().Effects.AoHorizonAngleThreshold == 0.12F &&
               runtime.Snapshot().Effects.AoBlurPassCount == 5,
           "original CACAO controls did not apply");
+    Select("Ambient occlusion", "iMMERSE MXAO");
+    Select("MXAO quality", "High");
+    Select("MXAO method", "Solid angle");
+    EditScalar("MXAO radius", "2.5");
+    EditScalar("MXAO amount", "1.5");
+    EditScalar("MXAO filter quality", "2");
+    const auto mxao = runtime.Snapshot().Effects;
+    Check(mxao.AmbientOcclusion == AmbientOcclusionMode::Mxao && mxao.MxaoQuality == 2 &&
+              mxao.MxaoMethod == MxaoEstimator::SolidAngle && mxao.AoRadius == 2.5F && mxao.AoStrength == 1.5F &&
+              mxao.MxaoFilter == 2 && mxao.AoHorizonAngleThreshold == 0.12F,
+          "MXAO controls did not apply or disturbed the CACAO controls");
+    runtime.SetCapability(GraphicsCapability::ImmerseMxao, false, "provider unavailable");
+    Frame();
+    Select("Ambient occlusion", "Off");
+    Click("Ambient occlusion");
+    Check(Find("iMMERSE MXAO").Disabled && !Find("Multiscale GTAO").Disabled,
+          "MXAO capability incorrectly disabled GTAO or allowed unsupported MXAO");
+    Click("Off");
+    runtime.SetCapability(GraphicsCapability::ImmerseMxao, true);
+    Frame();
     runtime.SetCapability(GraphicsCapability::FidelityFxCacao, false, "provider unavailable");
     Frame();
     Select("Ambient occlusion", "Off");

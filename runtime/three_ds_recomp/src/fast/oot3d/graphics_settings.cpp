@@ -245,6 +245,10 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         std::clamp(value.Effects.AoSharpness, 0.0F, 1.0F);
     value.Effects.AoDetailStrength =
         std::clamp(value.Effects.AoDetailStrength, 0.0F, 10.0F);
+    if (value.Effects.MxaoMethod > MxaoEstimator::VisibilityBitmaskSolidAngle)
+        value.Effects.MxaoMethod = MxaoEstimator::VisibilityBitmask;
+    value.Effects.MxaoQuality = std::min<uint8_t>(value.Effects.MxaoQuality, 5U);
+    value.Effects.MxaoFilter = std::min<uint8_t>(value.Effects.MxaoFilter, 2U);
     auto& directionalShadows = value.Effects.DirectionalShadows;
     if (!IsDirectionalShadowResolution(directionalShadows.Resolution)) {
         directionalShadows.Resolution = 2048U;
@@ -728,6 +732,12 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         value.Effects.AmbientOcclusion = AmbientOcclusionMode::Off;
         Correct(result.Issues, "Graphics.Effects.AO.Mode",
                 capabilities.Get(GraphicsCapability::FidelityFxCacao).Reason);
+    }
+    if (value.Effects.AmbientOcclusion == AmbientOcclusionMode::Mxao &&
+        !capabilities.Has(GraphicsCapability::ImmerseMxao)) {
+        value.Effects.AmbientOcclusion = AmbientOcclusionMode::Off;
+        Correct(result.Issues, "Graphics.Effects.AO.Mode",
+                capabilities.Get(GraphicsCapability::ImmerseMxao).Reason);
     }
     if (value.Effects.Reflections != ReflectionMode::Off &&
         (!capabilities.Has(GraphicsCapability::NriInterop) ||

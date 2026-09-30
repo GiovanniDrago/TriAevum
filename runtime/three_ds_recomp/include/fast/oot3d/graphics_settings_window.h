@@ -42,6 +42,7 @@ class GraphicsSettingsPanel final {
     bool DrawDisplaySettings(GraphicsSettings&, const GraphicsCapabilities&);
     bool DrawAntialiasingSettings(GraphicsSettings&, const GraphicsCapabilities&);
     bool DrawLightingSettings(GraphicsSettings&, const GraphicsCapabilities&);
+    bool DrawMxaoSettings(EffectsSettings&);
     bool DrawReflectionSettings(GraphicsSettings&, const GraphicsCapabilities&);
     bool DrawToonSettings(GraphicsSettings&);
     void DrawGrassSettings();

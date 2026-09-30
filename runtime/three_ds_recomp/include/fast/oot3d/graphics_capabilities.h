@@ -42,11 +42,12 @@ enum class GraphicsCapability : uint8_t {
     ExclusiveFullscreen,
     NativeSurfaceLighting,
     BrixelizerGlobalIllumination,
+    ImmerseMxao,
 };
 
 // Last enumerator, for code that visits every capability.
 inline constexpr GraphicsCapability kLastGraphicsCapability =
-    GraphicsCapability::BrixelizerGlobalIllumination;
+    GraphicsCapability::ImmerseMxao;
 
 struct GraphicsCapabilityState {
     bool Available = false;
