@@ -7,6 +7,26 @@
 #include <limits>
 
 namespace Fast::Oot3d {
+
+GlobalIlluminationSourceMix ResolveGlobalIlluminationSources(const GlobalIlluminationSettings& settings) noexcept {
+    const auto gain = [](float value) { return std::isfinite(value) ? std::max(value, 0.0F) : 0.0F; };
+    const std::array<float, 3> gains{gain(settings.SceneLight), gain(settings.KeyLight),
+                                     gain(settings.DynamicLights)};
+    GlobalIlluminationSourceMix mix;
+    mix.Gain = std::max({gains[0], gains[1], gains[2]});
+    if (mix.Gain > 0.0F)
+        for (size_t source = 0; source < gains.size(); ++source) mix.Weights[source] = gains[source] / mix.Gain;
+    return mix;
+}
+
+bool RestartsGlobalIlluminationHistory(const std::array<float, 3>& previous,
+                                       const std::array<float, 3>& next) noexcept {
+    if (previous == next) return false;
+    if (previous == std::array<float, 3>{}) return true;
+    for (size_t source = 0; source < previous.size(); ++source)
+        if (previous[source] > 0.0F && next[source] == 0.0F) return true;
+    return false;
+}
 namespace {
 
 void Correct(std::vector<GraphicsSettingsIssue>& issues, std::string field,

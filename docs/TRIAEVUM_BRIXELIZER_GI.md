@@ -518,6 +518,54 @@ sky light); files that still carry them are rewritten on the next save.
   frames presented without effects; see "Visual frames when the host falls
   behind" in `OOT3D_NATIVE_RENDERER_INTEGRATION.md`.
 
+## Responsive source controls (2026-09-30)
+
+User report: the GI controls did nothing visible; at times only "GI diffuse
+intensity" worked. Measured on the user's save, configuration and scene
+environment profile, changing the sliders at run time through
+`--graphics-settings-schedule` (the runtime path F1 uses) and comparing every
+capture with GI off:
+
+- The source gains changed the light injected into the trace, and Brixelizer
+  GI's radiance cache averages that light over seconds: up to 64 samples per
+  brick (more in coarser cascades), radiance emitted with weights from 1/8
+  down to 1/1024 in the coarsest cascade. Native scene light 1 -> 4 moved the
+  mean difference from +2.7 to only +6.3 levels over 200 steps; set to 0, the
+  old light was still +23 levels 200 steps later. Only the intensity, applied
+  when composing, acted at once.
+- The probe runner rewrote the configuration into its output directory but
+  left the scene environment profiles (`environments/`, read next to the
+  configuration) behind, so earlier probes lit the scene with the default
+  environment, not the user's. `probe_renderer.py` now copies them.
+
+Model now:
+
+- `ResolveGlobalIlluminationSources` splits the gains into the weights the
+  surface guide carries (relative to the largest gain, as before) and that
+  largest gain, which now multiplies the traced light when it is composed
+  (diffuse composite, GI reflections, GI fill of HiZ misses) instead of the
+  injected light. The strongest source and the intensity act in the same
+  frame.
+- `RestartsGlobalIlluminationHistory`: light returning to an empty history
+  (every weight zero) or a source switched off restarts the surface's GI
+  instance, which then fills at once. Other changes of the mix blend in over
+  the cache's window; restarting on them only added a dark dip (measured).
+  stderr `TRIAEVUM_GLOBAL_ILLUMINATION ... source_resets=`.
+- F1 states which changes are immediate.
+
+Kokiri, user profile, mean difference from GI off in 8-bit levels: native
+scene light 1 -> 4 gives +2.7 -> +7.5 in the same step; intensity 8 applies
+immediately; native scene light 0 (dynamic lights alone, none nearby) is 0 in
+the same step, equal to a run started with those settings; all sources from 0
+to 1 reaches +1.26 after 40 steps (was +0.23). Defaults converge to +4.0
+levels, about 10 s after a cold start. GI off stays identical; core validation
+clean with two runtime restarts; F1 smoke 6,950 assertions.
+
+Still bounded by the SDK: how fast GI follows any lighting change (a partial
+change of the mix, moving lights such as Navi, time of day) is set by the
+averaging constants in the Brixelizer GI shaders. Faster response would need
+patched copies of those shaders.
+
 ## Screen-space effects under interpolation (GTAO, SSSR, TAA, GI)
 
 Measured in the Sheik copy cutscene (Interpolated2x, camera pan, per presented

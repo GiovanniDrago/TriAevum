@@ -4214,12 +4214,11 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 environmentWorldToView && mSurfaceLightingView ? &*mSurfaceLightingView : nullptr);
             if (surfaceLighting) {
                 // Relative source weights (the guide's 8-bit radiance would
-                // clip gains above one); the GI pass applies the largest gain.
-                const auto& gi = graphicsSettings.Effects.GlobalIllumination;
-                const float strongest = std::max({gi.SceneLight, gi.KeyLight, gi.DynamicLights});
-                if (strongest > 0.0F)
-                    surfaceLighting->GlobalIlluminationSources = {gi.SceneLight / strongest, gi.KeyLight / strongest,
-                                                                  gi.DynamicLights / strongest, 0.0F};
+                // clip gains above one); the gain applies when GI is composed.
+                const auto sources =
+                    Oot3d::ResolveGlobalIlluminationSources(graphicsSettings.Effects.GlobalIllumination);
+                surfaceLighting->GlobalIlluminationSources = {sources.Weights[0], sources.Weights[1],
+                                                              sources.Weights[2], 0.0F};
             }
             if (surfaceLighting && environmentWorldToView && directionalShadowReceiver &&
                 !Oot3d::InvertDirectionalShadowMatrix(*environmentWorldToView, environmentViewToWorld))
@@ -6696,6 +6695,10 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
 
         const auto& presentationSettings =
             mFrameGraphicsSettings;
+        // The traced GI light carries the sources' relative weights; their
+        // largest gain applies when it is composed.
+        const auto giSources =
+            Oot3d::ResolveGlobalIlluminationSources(presentationSettings.Effects.GlobalIllumination);
         // The camera of the scene this boundary or transfer composes.
         const NativePicaRenderTarget* sceneViewTarget = copySource;
         if (copyOutput == nullptr) {
@@ -7747,13 +7750,10 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 giForDisplay =
                     mBrixelizerGiPass.Configure(mFrameCounter, giInputs,
                                                 presentationSettings.Effects.GlobalIllumination.Resolution,
-                                                transientSpecularIllumination != nullptr) &&
+                                                transientSpecularIllumination != nullptr, giSources.Weights) &&
                     mBrixelizerGiPass.Execute(command, mCurrentFrame, mFrameCounter, *temporalState,
                                               *presentationPerspective, giCoordinates,
                                               *transientDiffuseIllumination, transientSpecularIllumination,
-                                              std::max({presentationSettings.Effects.GlobalIllumination.SceneLight,
-                                                        presentationSettings.Effects.GlobalIllumination.KeyLight,
-                                                        presentationSettings.Effects.GlobalIllumination.DynamicLights}),
                                               globalIlluminationBarrierPlan);
                 mGpuProfiler.EndScope(mCurrentFrame, Oot3d::GpuProfileScope::GlobalIllumination, command);
             }
@@ -7775,9 +7775,10 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 mReportedGiResets = gi.WorldResets;
                 std::fprintf(stderr,
                              "TRIAEVUM_GLOBAL_ILLUMINATION frame=%llu instances_created=%llu retired=%llu "
-                             "world_resets=%llu\n",
+                             "world_resets=%llu source_resets=%llu\n",
                              (unsigned long long)mFrameCounter, (unsigned long long)gi.InstancesCreated,
-                             (unsigned long long)gi.InstancesRetired, (unsigned long long)gi.WorldResets);
+                             (unsigned long long)gi.InstancesRetired, (unsigned long long)gi.WorldResets,
+                             (unsigned long long)gi.SourceResets);
             }
             recordEffectPassTransitions(mBrixelizerGiPass.LastBarrierExecution());
             recordDeclared(Oot3d::DisplayEffectPass::GlobalIllumination,
@@ -8350,8 +8351,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                                 *presentationPerspective, 0.0F, reflectionBarrierPlan,
                                 Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags),
                                 {true,
-                                 presentationSettings.Effects.GlobalIllumination.SpecularIntensity /
-                                     screenSpaceStrength,
+                                 presentationSettings.Effects.GlobalIllumination.SpecularIntensity *
+                                     giSources.Gain / screenSpaceStrength,
                                  reflectionOutputEncoding == Oot3d::SceneColorEncoding::Srgb}))
                             recordEffectPassTransitions(
                                 mReflectionMaterialResolvePass.LastBarrierExecution());
@@ -8544,9 +8545,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     optionalCompositeFormat(Oot3d::EffectResource::DiffuseIllumination),
                     optionalCompositeImage(Oot3d::EffectResource::DiffuseAlbedoGuide),
                     optionalCompositeFormat(Oot3d::EffectResource::DiffuseAlbedoGuide), giForDisplay,
-                    presentationSettings.Effects.GlobalIllumination.DiffuseIntensity, aoForDisplay,
+                    presentationSettings.Effects.GlobalIllumination.DiffuseIntensity * giSources.Gain, aoForDisplay,
                     reflectionsForDisplay,
-                    giReflections ? presentationSettings.Effects.GlobalIllumination.SpecularIntensity
+                    giReflections ? presentationSettings.Effects.GlobalIllumination.SpecularIntensity * giSources.Gain
                                   : presentationSettings.Effects.ReflectionStrength,
                     presentationSettings.Effects.ReflectionDebugView, outlineForDisplay,
                     presentationSettings.Effects.ToonStyle, compositeInputEncoding, compositeBarrierPlan);

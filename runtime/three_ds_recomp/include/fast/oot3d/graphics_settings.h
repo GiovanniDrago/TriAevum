@@ -63,6 +63,26 @@ struct GlobalIlluminationSettings {
     float SpecularIntensity = 1.0F;
 };
 
+// How the GI sources reach the trace. The surface guide carries each source's
+// weight relative to the largest gain (so its 8-bit radiance never clips) and
+// the traced light is scaled by that gain when it is composed, at once. The
+// GI's radiance cache follows a change of the weights only over seconds, so
+// the pass restarts its history when they change.
+struct GlobalIlluminationSourceMix {
+    std::array<float, 3> Weights{}; // native scene light, key light, dynamic lights
+    float Gain = 0.0F;
+    bool operator==(const GlobalIlluminationSourceMix&) const = default;
+};
+[[nodiscard]] GlobalIlluminationSourceMix ResolveGlobalIlluminationSources(
+    const GlobalIlluminationSettings& settings) noexcept;
+// Whether a change of the source weights restarts the GI history instead of
+// blending in over the radiance cache's averaging window (seconds): light
+// returning to a history that held none, or a source switched off (its light
+// would linger). A restarted history fills at once; for other changes a
+// restart would only add a dark dip.
+[[nodiscard]] bool RestartsGlobalIlluminationHistory(const std::array<float, 3>& previous,
+                                                     const std::array<float, 3>& next) noexcept;
+
 inline constexpr uint8_t kMaximumToonLightBands = 6U;
 
 struct ToonStyleSettings {

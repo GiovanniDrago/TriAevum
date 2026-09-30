@@ -47,6 +47,7 @@ struct BrixelizerGiStats {
     uint64_t InstancesCreated = 0;
     uint64_t InstancesRetired = 0; // resolution or specular change, or least recently used
     uint64_t WorldResets = 0;
+    uint64_t SourceResets = 0; // RestartsGlobalIlluminationHistory
 };
 
 // Global illumination traced through the scene distance field (FidelityFX
@@ -71,8 +72,14 @@ class BrixelizerGiPass final {
     // Linear radiance of the uniform environment rays escape to (the native
     // ambient light: open surfaces then receive what native ambient gives).
     // `specular` traces the specular term as well (another context).
+    // `sourceWeights` are the weights the surface guide's direct radiance
+    // carries (GlobalIlluminationSourceMix). The radiance cache averages its
+    // samples over seconds (up to 64 per brick, more in coarser cascades):
+    // when RestartsGlobalIlluminationHistory the instance starts over,
+    // otherwise the new weights blend in.
     bool Configure(uint64_t frameId, const BrixelizerGiInputs& inputs,
-                   GlobalIlluminationResolution resolution, bool specular);
+                   GlobalIlluminationResolution resolution, bool specular,
+                   const std::array<float, 3>& sourceWeights);
     // `specularOutput` is the declared SpecularIllumination image, or null
     // when the pass does not declare it.
     bool Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot, uint64_t frameId,
@@ -80,9 +87,6 @@ class BrixelizerGiPass final {
                  PicaSurfaceCoordinates coordinates,
                  const NriEffectGraphTransientImageBinding& output,
                  const NriEffectGraphTransientImageBinding* specularOutput,
-                 // Gain on the decoded direct radiance: the guide stores the
-                 // sources' relative weights, so larger gains never clip.
-                 float directScale,
                  const EffectPassBarrierPlan& barriers);
     // No GI for this sample (the field has no data yet, W-buffer depth, a
     // failed dispatch): the declared outputs hold zero radiance, so the
@@ -110,7 +114,7 @@ class BrixelizerGiPass final {
     template <typename Transition>
     bool Trace(BrixelizerGiInstance& instance, VkCommandBuffer commandBuffer, uint32_t frameSlot,
                uint64_t frameId, const TemporalViewState& temporal, const PerspectiveViewState& view,
-               PicaSurfaceCoordinates coordinates, float directScale, const Transition& privateTransition);
+               PicaSurfaceCoordinates coordinates, const Transition& privateTransition);
 
     struct Impl;
     std::unique_ptr<Impl> mImpl;

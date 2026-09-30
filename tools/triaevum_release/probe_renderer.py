@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 
@@ -154,6 +155,10 @@ def main():
             "Roughness": 0.15}]
     config_path = output / "config.json"
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    # Scene environment profiles are read next to the configuration: keep them with it.
+    environments = Path(arguments[config_index]).parent / "environments"
+    if environments.is_dir():
+        shutil.copytree(environments, output / "environments")
     arguments[config_index] = config_path.as_posix()
     # A probe may persist settings or save data: isolate both, including TopScreen.
     for option in ("--topscreen-config",):

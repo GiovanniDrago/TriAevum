@@ -3793,6 +3793,53 @@ TEST(Oot3dGraphicsSettings, GatesGlobalIlluminationOnItsInputsAndProvider) {
     EXPECT_EQ(result.Value.Effects.GlobalIllumination.Mode, GlobalIlluminationMode::Off);
 }
 
+TEST(Oot3dGraphicsSettings, GlobalIlluminationSourcesSplitIntoWeightsAndGain) {
+    using namespace Fast::Oot3d;
+    GlobalIlluminationSettings gi;
+    auto mix = ResolveGlobalIlluminationSources(gi);
+    EXPECT_FLOAT_EQ(mix.Gain, 1.0F);
+    EXPECT_EQ(mix.Weights, (std::array<float, 3>{1.0F, 1.0F, 1.0F}));
+
+    // The largest gain applies when composed; the guide carries the rest
+    // relative to it, never above one.
+    gi.SceneLight = 0.5F;
+    gi.KeyLight = 2.0F;
+    gi.DynamicLights = 0.0F;
+    mix = ResolveGlobalIlluminationSources(gi);
+    EXPECT_FLOAT_EQ(mix.Gain, 2.0F);
+    EXPECT_EQ(mix.Weights, (std::array<float, 3>{0.25F, 1.0F, 0.0F}));
+
+    // A single source changes its gain without changing the weights (no
+    // history restart).
+    gi = {};
+    gi.KeyLight = gi.DynamicLights = 0.0F;
+    gi.SceneLight = 3.0F;
+    const auto before = ResolveGlobalIlluminationSources(gi);
+    gi.SceneLight = 0.75F;
+    const auto after = ResolveGlobalIlluminationSources(gi);
+    EXPECT_EQ(before.Weights, after.Weights);
+    EXPECT_FLOAT_EQ(after.Gain, 0.75F);
+
+    gi.SceneLight = 0.0F;
+    mix = ResolveGlobalIlluminationSources(gi);
+    EXPECT_FLOAT_EQ(mix.Gain, 0.0F);
+    EXPECT_EQ(mix.Weights, (std::array<float, 3>{}));
+}
+
+TEST(Oot3dGraphicsSettings, GlobalIlluminationHistoryRestartsOnlyWhereBlendingWouldLinger) {
+    using Fast::Oot3d::RestartsGlobalIlluminationHistory;
+    using Weights = std::array<float, 3>;
+    EXPECT_FALSE(RestartsGlobalIlluminationHistory({1.0F, 0.5F, 0.0F}, {1.0F, 0.5F, 0.0F}));
+    // Light returning to an empty history.
+    EXPECT_TRUE(RestartsGlobalIlluminationHistory(Weights{}, {1.0F, 0.0F, 0.0F}));
+    // A source switched off: its light would linger for seconds.
+    EXPECT_TRUE(RestartsGlobalIlluminationHistory({1.0F, 0.25F, 0.25F}, {0.0F, 0.0F, 1.0F}));
+    EXPECT_TRUE(RestartsGlobalIlluminationHistory({1.0F, 1.0F, 1.0F}, Weights{}));
+    // Other changes blend in (a restart would only add a dark dip).
+    EXPECT_FALSE(RestartsGlobalIlluminationHistory({1.0F, 1.0F, 1.0F}, {1.0F, 0.25F, 0.25F}));
+    EXPECT_FALSE(RestartsGlobalIlluminationHistory({1.0F, 0.0F, 0.0F}, {0.5F, 0.0F, 1.0F}));
+}
+
 TEST(Oot3dPicaToon, ValidationClampsOutlineControls) {
     Fast::Oot3d::GraphicsCapabilities capabilities;
     auto settings = Fast::Oot3d::GraphicsSettingsService::Preset(

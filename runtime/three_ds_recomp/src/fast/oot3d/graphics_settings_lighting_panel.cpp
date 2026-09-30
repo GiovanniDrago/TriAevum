@@ -46,6 +46,8 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
         ImGui::TextWrapped("GI bounces the direct light of the native scene directionals, the added key light "
                            "and dynamic lights (native local lights, Navi, fairies). Ambient and fill light are "
                            "baked into OoT's colours and are never bounced.");
+        ImGui::TextWrapped("Intensity, the strongest source and switching a source off apply at once; other "
+                           "changes of the source mix settle over a few seconds.");
         changed |= ImGui::Checkbox("GI specular reflections", &globalIllumination.Specular);
         if (globalIllumination.Specular) {
             changed |= ImGui::SliderFloat("GI specular intensity", &globalIllumination.SpecularIntensity,
