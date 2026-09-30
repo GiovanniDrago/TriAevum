@@ -597,7 +597,7 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
         preserveAlpha.append(request.Source.substr(tevBegin, tevEnd - tevBegin));
         preserveAlpha += "\n        combiner_output.rgb = surface_lit_rgb;\n    }\n";
         insertions.push_back({tevEnd, std::move(preserveAlpha)});
-        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_NATIVE_PER_PIXEL_LIGHTING_V8_GI_SOURCES");
+        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_NATIVE_PER_PIXEL_LIGHTING_V9_GI_LINEAR_WEIGHTS");
         result.AppliedFeatures |= PicaShaderInstrumentationFeature::NativePerPixelLighting;
         if (pbr) {
             declarations += pbr->Declarations;

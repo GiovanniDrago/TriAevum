@@ -4213,8 +4213,13 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 draw.LightBinding, mFrameEnvironment,
                 environmentWorldToView && mSurfaceLightingView ? &*mSurfaceLightingView : nullptr);
             if (surfaceLighting) {
+                // Relative source weights (the guide's 8-bit radiance would
+                // clip gains above one); the GI pass applies the largest gain.
                 const auto& gi = graphicsSettings.Effects.GlobalIllumination;
-                surfaceLighting->GlobalIlluminationSources = {gi.SceneLight, gi.KeyLight, gi.DynamicLights, 0.0F};
+                const float strongest = std::max({gi.SceneLight, gi.KeyLight, gi.DynamicLights});
+                if (strongest > 0.0F)
+                    surfaceLighting->GlobalIlluminationSources = {gi.SceneLight / strongest, gi.KeyLight / strongest,
+                                                                  gi.DynamicLights / strongest, 0.0F};
             }
             if (surfaceLighting && environmentWorldToView && directionalShadowReceiver &&
                 !Oot3d::InvertDirectionalShadowMatrix(*environmentWorldToView, environmentViewToWorld))
@@ -7746,6 +7751,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     mBrixelizerGiPass.Execute(command, mCurrentFrame, mFrameCounter, *temporalState,
                                               *presentationPerspective, giCoordinates,
                                               *transientDiffuseIllumination, transientSpecularIllumination,
+                                              std::max({presentationSettings.Effects.GlobalIllumination.SceneLight,
+                                                        presentationSettings.Effects.GlobalIllumination.KeyLight,
+                                                        presentationSettings.Effects.GlobalIllumination.DynamicLights}),
                                               globalIlluminationBarrierPlan);
                 mGpuProfiler.EndScope(mCurrentFrame, Oot3d::GpuProfileScope::GlobalIllumination, command);
             }

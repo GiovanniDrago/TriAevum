@@ -80,6 +80,9 @@ class BrixelizerGiPass final {
                  PicaSurfaceCoordinates coordinates,
                  const NriEffectGraphTransientImageBinding& output,
                  const NriEffectGraphTransientImageBinding* specularOutput,
+                 // Gain on the decoded direct radiance: the guide stores the
+                 // sources' relative weights, so larger gains never clip.
+                 float directScale,
                  const EffectPassBarrierPlan& barriers);
     // No GI for this sample (the field has no data yet, W-buffer depth, a
     // failed dispatch): the declared outputs hold zero radiance, so the
@@ -107,7 +110,7 @@ class BrixelizerGiPass final {
     template <typename Transition>
     bool Trace(BrixelizerGiInstance& instance, VkCommandBuffer commandBuffer, uint32_t frameSlot,
                uint64_t frameId, const TemporalViewState& temporal, const PerspectiveViewState& view,
-               PicaSurfaceCoordinates coordinates, const Transition& privateTransition);
+               PicaSurfaceCoordinates coordinates, float directScale, const Transition& privateTransition);
 
     struct Impl;
     std::unique_ptr<Impl> mImpl;

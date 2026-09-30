@@ -44,7 +44,7 @@ layout(set=0,binding=2) uniform texture2D normal_guide;
 layout(set=0,binding=3,rgba16f) uniform writeonly image2D lit_output;
 layout(set=0,binding=4,r32f) uniform writeonly image2D depth_output;
 layout(set=0,binding=5,rgba16f) uniform writeonly image2D normal_output;
-layout(push_constant) uniform Prepare { mat4 view_to_world; } pc;
+layout(push_constant) uniform Prepare { mat4 view_to_world; vec4 source; } pc;
 vec3 srgb_to_linear(vec3 value) {
     value=max(value,vec3(0.0));
     return mix(pow((value+0.055)/1.055,vec3(2.4)),value/12.92,lessThanEqual(value,vec3(0.04045)));
@@ -54,7 +54,7 @@ void main() {
     ivec2 extent=imageSize(lit_output);
     if(any(greaterThanEqual(p,extent))) return;
     vec3 packed_bits=floor(texelFetch(surface_guide,p,0).rgb*65535.0+0.5);
-    imageStore(lit_output,p,vec4(srgb_to_linear(mod(packed_bits,256.0)/255.0),1.0));
+    imageStore(lit_output,p,vec4(srgb_to_linear(mod(packed_bits,256.0)/255.0)*pc.source.x,1.0));
     imageStore(depth_output,p,vec4(texelFetch(native_depth,p,0).r));
     vec3 n=texelFetch(normal_guide,p,0).xyz*2.0-1.0;
     n=normalize(mat3(pc.view_to_world)*n);
@@ -240,7 +240,7 @@ bool BrixelizerGiPass::Initialize(VkPhysicalDevice physicalDevice, VkDevice devi
         set.ranges = ranges.data();
         set.rangeNum = static_cast<uint32_t>(ranges.size());
         nri::RootConstantDesc root{};
-        root.size = sizeof(float) * 16;
+        root.size = sizeof(float) * 20;
         root.shaderStages = nri::StageBits::COMPUTE_SHADER;
         nri::PipelineLayoutDesc layout{};
         layout.rootConstants = &root;
@@ -341,7 +341,7 @@ bool BrixelizerGiPass::Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot
                                const TemporalViewState& temporal, const PerspectiveViewState& view,
                                PicaSurfaceCoordinates coordinates, const NriEffectGraphTransientImageBinding& output,
                                const NriEffectGraphTransientImageBinding* specularOutput,
-                               const EffectPassBarrierPlan& barriers) {
+                               float directScale, const EffectPassBarrierPlan& barriers) {
     mImpl->LastBarriers = {};
 #if !OOT3D_HAS_BRIXELIZER_GI_PASS
     (void)commandBuffer, (void)frameSlot, (void)frameId, (void)temporal, (void)view, (void)coordinates, (void)output,
@@ -390,7 +390,7 @@ bool BrixelizerGiPass::Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot
         graphTransition(target, barriers.Find(target.Resource)->CompletionAccess);
     };
     if (instance.LastTracedFrame != frameId || !instance.Traced) {
-        if (!Trace(instance, commandBuffer, frameSlot, frameId, temporal, view, coordinates, privateTransition))
+        if (!Trace(instance, commandBuffer, frameSlot, frameId, temporal, view, coordinates, directScale, privateTransition))
             return false;
         instance.LastTracedFrame = frameId;
         instance.Traced = true;
@@ -411,7 +411,8 @@ bool BrixelizerGiPass::Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot
 template <typename Transition>
 bool BrixelizerGiPass::Trace(BrixelizerGiInstance& instance, VkCommandBuffer commandBuffer, uint32_t frameSlot,
                              uint64_t frameId, const TemporalViewState& temporal, const PerspectiveViewState& view,
-                             PicaSurfaceCoordinates coordinates, const Transition& privateTransition) {
+                             PicaSurfaceCoordinates coordinates, float directScale,
+                             const Transition& privateTransition) {
     auto* command = NriInteropAccess::CommandBuffer(*mImpl->Interop, frameSlot);
     // view = projection^-1 * worldToClip; the storage orientation rotates
     // clip XY only (as for SSSR), so the view basis stays unrotated.
@@ -441,7 +442,10 @@ bool BrixelizerGiPass::Trace(BrixelizerGiInstance& instance, VkCommandBuffer com
         mImpl->Core->CmdSetPipelineLayout(*command, nri::BindPoint::COMPUTE, *mImpl->Layout);
         mImpl->Core->CmdSetPipeline(*command, *mImpl->Pipeline);
         mImpl->Core->CmdSetDescriptorSet(*command, {0, instance.Sets[current]});
-        mImpl->Core->CmdSetRootConstants(*command, {0, inverseView.data(), sizeof(inverseView)});
+        std::array<float, 20> constants{};
+        std::copy(inverseView.begin(), inverseView.end(), constants.begin());
+        constants[16] = std::max(directScale, 0.0F);
+        mImpl->Core->CmdSetRootConstants(*command, {0, constants.data(), sizeof(constants)});
         mImpl->Core->CmdDispatch(*command,
                                  {(instance.Inputs.Width + 7) / 8, (instance.Inputs.Height + 7) / 8, 1});
         for (auto* texture : {&instance.Lit[current], &instance.Depth[current], &instance.Normal[current],

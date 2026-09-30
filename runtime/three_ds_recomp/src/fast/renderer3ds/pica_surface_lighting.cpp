@@ -331,6 +331,8 @@ vec3 pica_surface_native_primary(vec3 normal_view) {
 // lights, Navi and fairies), shadowed. Ambient and the added fill are never
 // sources: OoT bakes its fill light into the native colour.
 vec3 pica_surface_gi_direct(vec3 normal_view) {
+    // PICA lighting is gamma encoded: a linear weight w is w^(1/2.2) here.
+    vec3 weight = pow(max(pica_surface.gi_sources.xyz, vec3(0.0)), vec3(1.0 / 2.2));
     vec3 native_direct = vec3(0.0);
     bool native_enabled = pica_surface.environment_parameters.w == 0.0 ||
         pica_surface.environment_parameters.x != 0.0;
@@ -339,7 +341,7 @@ vec3 pica_surface_gi_direct(vec3 normal_view) {
         vec3 direction, radiance;
         pica_surface_light(slot, direction, radiance);
         float source = pica_surface.lights[slot].position_radius.w > 0.0
-            ? pica_surface.gi_sources.z : pica_surface.gi_sources.x;
+            ? weight.z : weight.x;
         native_direct += max(dot(normal_view, direction), 0.0) * radiance * pica_surface_shadow(slot) * source;
     }
     vec3 color = native_direct * pica_surface.material_diffuse.rgb;
@@ -348,10 +350,10 @@ vec3 pica_surface_gi_direct(vec3 normal_view) {
         if (pica_surface.environment_directions[0].w > 0.0)
             color += max(dot(normal_view, pica_surface_unit(pica_surface.environment_directions[0].xyz)), 0.0) *
                 pica_surface.environment_colors[0].rgb * pica_surface.environment_directions[0].w *
-                pica_surface_shadow(8) * pica_surface.gi_sources.y;
+                pica_surface_shadow(8) * weight.y;
     }
-    color += pica_surface_scene_point_primary(normal_view) * pica_surface.gi_sources.z;
-    color += pica_surface_scene_directional_primary(normal_view) * pica_surface.gi_sources.x;
+    color += pica_surface_scene_point_primary(normal_view) * weight.z;
+    color += pica_surface_scene_directional_primary(normal_view) * weight.x;
     return min(abs(color * pica_surface_tint.rgb), vec3(1.0));
 }
 vec3 pica_surface_primary(vec3 native_color, vec3 normal_view) {
