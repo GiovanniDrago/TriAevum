@@ -249,6 +249,8 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         value.Effects.MxaoMethod = MxaoEstimator::VisibilityBitmask;
     value.Effects.MxaoQuality = std::min<uint8_t>(value.Effects.MxaoQuality, 5U);
     value.Effects.MxaoFilter = std::min<uint8_t>(value.Effects.MxaoFilter, 2U);
+    if (value.Effects.AoRelief > AoTextureRelief::Strong)
+        value.Effects.AoRelief = AoTextureRelief::Off;
     auto& directionalShadows = value.Effects.DirectionalShadows;
     if (!IsDirectionalShadowResolution(directionalShadows.Resolution)) {
         directionalShadows.Resolution = 2048U;

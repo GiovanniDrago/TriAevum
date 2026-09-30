@@ -91,6 +91,12 @@ constexpr EnumNames<MxaoEstimator> kMxaoMethodNames{
     {MxaoEstimator::VisibilityBitmask, "VisibilityBitmask"},
     {MxaoEstimator::VisibilityBitmaskSolidAngle, "VisibilityBitmaskSolidAngle"},
 };
+constexpr EnumNames<AoTextureRelief> kAoReliefNames{
+    {AoTextureRelief::Off, "Off"},
+    {AoTextureRelief::Subtle, "Subtle"},
+    {AoTextureRelief::Medium, "Medium"},
+    {AoTextureRelief::Strong, "Strong"},
+};
 constexpr EnumNames<ReflectionMode> kReflectionNames{
     {ReflectionMode::Off, "Off"},
     {ReflectionMode::HiZ, "HiZ"},
@@ -1277,6 +1283,7 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                        {"Quality", effects.MxaoQuality},
                        {"Filter", effects.MxaoFilter},
                    }},
+                  {"TextureRelief", EnumName(effects.AoRelief, kAoReliefNames)},
               }},
              {"Reflections",
               {
@@ -1671,6 +1678,11 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
             } else {
                 result.NeedsRewrite = true;
             }
+            if (FindMember(*ao, "TextureRelief") != nullptr)
+                ReadEnum(*ao, "TextureRelief", value.AoRelief, kAoReliefNames,
+                         "Graphics.Effects.AO.TextureRelief", result);
+            else
+                result.NeedsRewrite = true;
         }
         if (const Json* reflections =
                 RequireObject(*effects, "Reflections",

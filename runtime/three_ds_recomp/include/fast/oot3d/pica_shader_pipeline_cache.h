@@ -56,6 +56,9 @@ struct PicaShaderPipelineRequest {
     ::Oot3d::Renderer::PicaShaderSourceIdentity FragmentShaderSourceIdentity;
     bool SurfaceLightingAvailable = false;
     Renderer3ds::PicaPbrShaderOptions Pbr;
+    // The texture unit whose colour the draw's TEV passes to its output, when
+    // exactly one does (AO texture relief); 0xff otherwise.
+    uint8_t ReliefTexture = 0xffU;
 };
 
 struct PicaShaderPipelineResult {
@@ -88,6 +91,7 @@ struct PicaShaderPipelineResult {
         PicaReactiveCoverage::None;
     bool Reactive = false;
     bool RigidMotionApplied = false;
+    bool TypedNormalGuide = false;
     bool DirectFragmentHooksUsed = false;
     bool GrassTexture0Sampled = false;
     PicaFragmentInstrumentationOutputLayout FragmentOutputs;

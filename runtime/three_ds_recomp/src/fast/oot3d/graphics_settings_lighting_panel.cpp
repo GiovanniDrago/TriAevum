@@ -130,6 +130,18 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
         }
         ImGui::EndDisabled();
     }
+    if (ao) {
+        ImGui::BeginDisabled(!aoReady);
+        int relief = static_cast<int>(settings.Effects.AoRelief);
+        const char* const reliefNames[] = {"Off", "Subtle", "Medium", "Strong"};
+        if (ImGui::Combo("AO texture relief", &relief, reliefNames, 4)) {
+            settings.Effects.AoRelief = static_cast<AoTextureRelief>(relief);
+            changed = true;
+        }
+        ImGui::TextWrapped("Relief from each world material's colour texture, added to the scene normals the AO "
+                           "reads (reflections and GI read the same normals).");
+        ImGui::EndDisabled();
+    }
     if (!aoReady) {
         ImGui::TextWrapped("AO unavailable: NRI, depth, normals or camera metadata missing.");
     }

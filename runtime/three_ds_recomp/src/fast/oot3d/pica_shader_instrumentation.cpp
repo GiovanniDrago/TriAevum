@@ -666,6 +666,7 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
         }
         declarations +=
             "layout(location=1) out vec4 pica_normal_guide;\n";
+        const bool typedNormal = !surfaceLighting && !materialNormal && request.SurfaceNormalInput;
         if (pbr) {
             epilogue += "    pica_normal_guide = vec4(pbr_normal * 0.5 + 0.5, 1.0);\n";
         } else if (surfaceLighting) {
@@ -675,6 +676,8 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
             epilogue +=
                 "    pica_normal_guide = vec4(normal * 0.5 + 0.5, 1.0);\n";
         } else {
+            if (typedNormal)
+                declarations += "layout(location=9) in vec3 pica_surface_normal;\n";
             declarations += R"glsl(
 vec3 oot3d_normal_guide_rotate_z(vec4 q) {
     float qlen = dot(q, q);
@@ -699,10 +702,26 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
 }
 )glsl";
             }
-            epilogue +=
-                result.Hooks.Has(PicaShaderSemantic::ViewVector)
-                    ? "    pica_normal_guide = vec4(oot3d_normal_guide_surface(pica_normquat, pica_view) * 0.5 + 0.5, 1.0);\n"
-                    : "    pica_normal_guide = vec4(oot3d_normal_guide_rotate_z(pica_normquat) * 0.5 + 0.5, 1.0);\n";
+            const std::string native = result.Hooks.Has(PicaShaderSemantic::ViewVector)
+                ? "oot3d_normal_guide_surface(pica_normquat, pica_view)"
+                : "oot3d_normal_guide_rotate_z(pica_normquat)";
+            if (typedNormal) {
+                // The authored vertex normal, interpolated like the native
+                // lighting's; the program's own quaternion or the geometric
+                // normal remain for a draw whose normal is degenerate.
+                declarations += R"glsl(
+vec3 oot3d_normal_guide_typed(vec3 authored, vec3 native_normal) {
+    float length2 = dot(authored, authored);
+    return length2 > 1.0e-20 ? authored * inversesqrt(length2) : native_normal;
+}
+)glsl";
+                epilogue += "    pica_normal_guide = vec4(oot3d_normal_guide_typed(pica_surface_normal, " + native +
+                            ") * 0.5 + 0.5, 1.0);\n";
+                result.FragmentKey = SaltedVariantKey(result.FragmentKey, "OOT3D_PICA_TYPED_NORMAL_GUIDE_V1");
+                result.TypedNormalGuide = true;
+            } else {
+                epilogue += "    pica_normal_guide = vec4(" + native + " * 0.5 + 0.5, 1.0);\n";
+            }
         }
         normalAvailable = true;
         return true;
@@ -744,6 +763,75 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
         ensureNormalGuide()) {
         result.FragmentKey = NormalGuideVariantKey(result.FragmentKey);
         apply(PicaShaderInstrumentationFeature::NormalGuide);
+        const auto* relief = request.ReliefTexture < 3U ? result.Hooks.TextureSample(request.ReliefTexture) : nullptr;
+        if (HasPicaShaderInstrumentationFeature(request.RequestedFeatures,
+                                                PicaShaderInstrumentationFeature::NormalGuideTextureRelief) &&
+            !pbr && relief != nullptr && relief->Coordinate < 3U &&
+            relief->Operation == PicaTextureCoordinateOperation::NativeVFlip &&
+            request.Source.find("usampler2D pica_texture" + std::to_string(request.ReliefTexture)) ==
+                std::string_view::npos &&
+            std::isfinite(request.ReliefGain) && request.ReliefGain > 0.0F &&
+            result.Hooks.Supports(PicaShaderHook::MainPrologue) &&
+            result.Hooks.Has(PicaShaderSemantic::ViewVector)) {
+            const std::string unit = std::to_string(request.ReliefTexture);
+            const std::string coordinate = "pica_texcoord" + std::to_string(relief->Coordinate);
+            std::ostringstream gain;
+            gain.imbue(std::locale::classic());
+            gain << std::fixed << std::setprecision(6) << request.ReliefGain;
+            declarations += R"glsl(
+// Relative contrast (log2 luminance): a dark texture's detail carries the
+// same relief as a bright one's; the offset bounds near-black texels.
+float oot3d_relief_height(vec4 texel) {
+    return log2(dot(texel.rgb, vec3(0.2126, 0.7152, 0.0722)) + 0.0625);
+}
+// Bends the guide normal against the colour texture's luminance slope (per
+// texel along the texture's u and v axes) in the surface's tangent plane.
+vec3 oot3d_relief_normal(vec3 n, vec2 slope, vec3 dpdx, vec3 dpdy, vec2 duvdx, vec2 duvdy) {
+    float determinant = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
+    float length2 = dot(n, n);
+    if (abs(determinant) <= 1.0e-20 || length2 <= 1.0e-12) return n;
+    n *= inversesqrt(length2);
+    vec3 axis_u = (dpdx * duvdy.y - dpdy * duvdx.y) * sign(determinant);
+    vec3 axis_v = (dpdy * duvdx.x - dpdx * duvdy.x) * sign(determinant);
+    axis_u -= n * dot(n, axis_u);
+    axis_v -= n * dot(n, axis_v);
+    if (dot(axis_u, axis_u) <= 1.0e-20 || dot(axis_v, axis_v) <= 1.0e-20) return n;
+    return normalize(n - )glsl" + gain.str() + R"glsl( *
+        (slope.x * normalize(axis_u) + slope.y * normalize(axis_v)));
+}
+)glsl";
+            // Taps and derivatives come before the native alpha test can end
+            // an invocation of the quad; the texture is sampled at the LOD
+            // and wrap of the native sample, one texel of that LOD apart.
+            insertions.push_back({result.Hooks.Offset(PicaShaderHook::MainPrologue),
+                "\n    // OOT3D_AO_TEXTURE_RELIEF\n"
+                "    vec2 oot3d_relief_uv = vec2(" + coordinate + ".x, 1.0 - " + coordinate + ".y);\n"
+                "    vec2 oot3d_relief_size = vec2(textureSize(pica_texture" + unit + ", 0));\n"
+                "    float oot3d_relief_lod = max(pica_texture_lod(oot3d_relief_uv, oot3d_relief_size) +\n"
+                "        fragment_uniforms.texture_lod_bias[" + unit + "], 0.0);\n"
+                "    vec2 oot3d_relief_step = exp2(oot3d_relief_lod) / oot3d_relief_size;\n"
+                "    vec2 oot3d_relief_slope = 0.5 * vec2(\n"
+                "        oot3d_relief_height(textureLod(pica_texture" + unit +
+                    ", oot3d_relief_uv + vec2(oot3d_relief_step.x, 0.0), oot3d_relief_lod)) -\n"
+                "        oot3d_relief_height(textureLod(pica_texture" + unit +
+                    ", oot3d_relief_uv - vec2(oot3d_relief_step.x, 0.0), oot3d_relief_lod)),\n"
+                "        oot3d_relief_height(textureLod(pica_texture" + unit +
+                    ", oot3d_relief_uv + vec2(0.0, oot3d_relief_step.y), oot3d_relief_lod)) -\n"
+                "        oot3d_relief_height(textureLod(pica_texture" + unit +
+                    ", oot3d_relief_uv - vec2(0.0, oot3d_relief_step.y), oot3d_relief_lod)));\n"
+                "    vec3 oot3d_relief_dpdx = -dFdx(pica_view), oot3d_relief_dpdy = -dFdy(pica_view);\n"
+                "    vec2 oot3d_relief_duvdx = dFdx(oot3d_relief_uv), oot3d_relief_duvdy = dFdy(oot3d_relief_uv);\n"});
+            // After every reader of the unbent guide (the outline geometry).
+            deferredEpilogue +=
+                "    pica_normal_guide.rgb = oot3d_relief_normal(pica_normal_guide.rgb * 2.0 - 1.0,\n"
+                "        oot3d_relief_slope, oot3d_relief_dpdx, oot3d_relief_dpdy, oot3d_relief_duvdx,\n"
+                "        oot3d_relief_duvdy) * 0.5 + 0.5;\n";
+            result.FragmentKey = SaltedVariantKey(result.FragmentKey, "OOT3D_AO_TEXTURE_RELIEF_V1");
+            MixKey(result.FragmentKey, request.ReliefTexture);
+            MixKey(result.FragmentKey, relief->Coordinate);
+            MixKey(result.FragmentKey, std::bit_cast<uint32_t>(request.ReliefGain));
+            apply(PicaShaderInstrumentationFeature::NormalGuideTextureRelief);
+        }
     }
 
     if (HasPicaShaderInstrumentationFeature(request.RequestedFeatures,
@@ -1116,6 +1204,7 @@ vec3 pica_surface_shadow(int slot) {
             result.ReactiveCoverage = PicaReactiveCoverage::None;
             result.Reactive = false;
             result.RigidMotionApplied = false;
+            result.TypedNormalGuide = false;
         }
     }
     return result;

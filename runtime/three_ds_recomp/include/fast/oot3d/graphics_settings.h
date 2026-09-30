@@ -31,6 +31,19 @@ enum class AmbientOcclusionMode : uint8_t { Off, Gtao, Cacao, Mxao };
 // iMMERSE MXAO estimators: ground-truth horizons, solid angle, and the
 // visibility bitmask with a cosine-weighted or solid-angle integral.
 enum class MxaoEstimator : uint8_t { GroundTruth, SolidAngle, VisibilityBitmask, VisibilityBitmaskSolidAngle };
+// Relief the AO providers read from each world material's colour texture: its
+// luminance slope bends the scene's normal guide (and so every guide reader).
+enum class AoTextureRelief : uint8_t { Off, Subtle, Medium, Strong };
+// Normal tilt per unit change of log2 luminance across one texel.
+[[nodiscard]] constexpr float AoTextureReliefGain(AoTextureRelief relief) noexcept {
+    switch (relief) {
+    case AoTextureRelief::Subtle: return 1.0F;
+    case AoTextureRelief::Medium: return 2.0F;
+    case AoTextureRelief::Strong: return 3.0F;
+    case AoTextureRelief::Off: break;
+    }
+    return 0.0F;
+}
 enum class ReflectionMode : uint8_t { Off, HiZ, FidelityFxSssr };
 enum class ToonMode : uint8_t { Off, PostProcessPreview, PicaMaterial };
 enum class SurfaceLightingMode : uint8_t { Native, PerPixel, PerPixelPbr, NativePbr };
@@ -212,6 +225,7 @@ struct EffectsSettings {
     MxaoEstimator MxaoMethod = MxaoEstimator::VisibilityBitmask;
     uint8_t MxaoQuality = 1;
     uint8_t MxaoFilter = 1;
+    AoTextureRelief AoRelief = AoTextureRelief::Off;
     ReflectionMode Reflections = ReflectionMode::Off;
     float ReflectionStrength = 0.65F;
     float ReflectionMaxDistance = 1500.0F;

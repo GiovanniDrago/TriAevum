@@ -791,7 +791,13 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
         { "rigid_motion_draw_count", frame.RigidMotionDrawCount },
         { "exact_motion_draw_count", frame.ExactMotionDrawCount },
         { "deformed_motion_draw_count", frame.DeformedMotionDrawCount },
+        { "repeated_identity_motion_draw_count", frame.RepeatedIdentityMotionDrawCount },
         { "grass_motion_blade_count", frame.GrassMotionBladeCount },
+        { "normal_guide_draw_count", frame.NormalGuideDrawCount },
+        { "typed_normal_guide_draw_count", frame.TypedNormalGuideDrawCount },
+        { "ao_relief_candidate_draw_count", frame.AoReliefCandidateDrawCount },
+        { "ao_relief_texture_draw_count", frame.AoReliefTextureDrawCount },
+        { "ao_relief_applied_draw_count", frame.AoReliefAppliedDrawCount },
         { "first_submission_id", frame.FirstSubmissionId },
         { "last_submission_id", frame.LastSubmissionId },
         { "last_render_target_namespace", frame.LastRenderTargetNamespace },
@@ -1879,13 +1885,28 @@ void Oot3dVulkanDiagnostics::SetPresentationState(
 }
 
 void Oot3dVulkanDiagnostics::RecordTemporalDraw(
-    bool rigidMotionValid, bool exactMotionValid, bool deformedMotionValid) {
+    bool rigidMotionValid, bool exactMotionValid, bool deformedMotionValid,
+    bool repeatedIdentity) {
     if (!mActiveFrame.has_value()) return;
     ++mActiveFrame->TemporalJitterDrawCount;
     mActiveFrame->RigidMotionDrawCount += rigidMotionValid ? 1U : 0U;
     mActiveFrame->ExactMotionDrawCount += exactMotionValid ? 1U : 0U;
     mActiveFrame->DeformedMotionDrawCount +=
         deformedMotionValid ? 1U : 0U;
+    mActiveFrame->RepeatedIdentityMotionDrawCount += repeatedIdentity ? 1U : 0U;
+}
+
+void Oot3dVulkanDiagnostics::RecordNormalGuideDraw(bool typedNormal, bool relief) {
+    if (!mActiveFrame.has_value()) return;
+    ++mActiveFrame->NormalGuideDrawCount;
+    mActiveFrame->TypedNormalGuideDrawCount += typedNormal ? 1U : 0U;
+    mActiveFrame->AoReliefAppliedDrawCount += relief ? 1U : 0U;
+}
+
+void Oot3dVulkanDiagnostics::RecordAoReliefDraw(bool reliefTexture) {
+    if (!mActiveFrame.has_value()) return;
+    ++mActiveFrame->AoReliefCandidateDrawCount;
+    mActiveFrame->AoReliefTextureDrawCount += reliefTexture ? 1U : 0U;
 }
 
 void Oot3dVulkanDiagnostics::RecordGrassMotion(uint32_t bladeCount) {

@@ -2960,6 +2960,76 @@ visibility out, composited before UI. There is no history.
   reprojection, which is not implemented yet. Validated runs report zero
   Vulkan/NRI errors.
 
+### Native AO normals
+
+Every AO provider (GTAO, CACAO, MXAO) reads its normals from the scene's normal
+guide. The guide is fed from native data rather than rebuilt from depth or from
+the final image. A port of iMMERSE LAUNCHPAD's normal smoothing and textured
+normals (cd7cfe5, b87c0b5) was removed in 21bf907: it reconstructed in screen
+space what the draws already carry, for 3–4 ms, and its smoothing changed the AO
+of 0.1–0.3% of the pixels.
+
+- **Authored normals in every lighting mode.** OoT3D's CMB vertex program exposes
+  its transform, normal input and skinning to the typed frontend. Whenever a
+  guide reader (AO, outlines, reflections, GI) requests the normal guide, the
+  vertex stage also emits the authored normal (`pica_surface_normal`, the same
+  transform and skinning the per-pixel lighting uses), and the guide reads it.
+  With Native lighting, vertex-lit programs have no normal quaternion; the guide
+  previously fell back to the flat normal of the view vector's screen
+  derivatives, a per-triangle reconstruction from depth. That fallback now
+  remains only for programs without a typed normal, and for a degenerate
+  authored normal.
+- **No mesh smoothing.** A survey of the Kokiri and castle-town geometry (every
+  normal-guide draw's vertex and index data, temporary instrumentation) found
+  the authored normals already shared across 99% of the welded vertices; the
+  remaining splits are authored hard edges, which also match the faceted depth
+  the AO estimators integrate against.
+- **AO texture relief** (F1 Lighting, *AO texture relief* Off / Subtle / Medium /
+  Strong, `AO.TextureRelief`, no schema change). The draw's colour texture is the
+  one texture unit its TEV passes to the output colour
+  (`PicaTevMaterialTextureMask`, excluding the bump and integer shadow units);
+  a draw with several colour textures gets no relief rather than a guessed
+  layer. That texture is sampled at the LOD and wrap of the native sample, one
+  texel of that LOD apart on each axis, and the slope of its log2 luminance bends
+  the guide normal along the surface's texture axes (tangent frame from screen
+  derivatives of position and texture coordinates). Taps and derivatives are
+  taken at the start of the fragment program, before the native alpha test can
+  end an invocation of the quad; the bend follows the outline geometry guide,
+  which keeps the unbent normal. PBR materials keep their authored normal maps.
+  The relief is written into the shared guide, so reflections and GI see it
+  while AO is enabled.
+- Off, and with AO disabled, the programs are unchanged: Kokiri captures are
+  byte-identical to the previous build with AO off (relief set to Strong) and with
+  PerPixelPBR GTAO, whose per-pixel lighting already supplied the authored normals.
+
+Measured on the Kokiri reference walk and the castle-town drawbridge
+checkpoint, 2560x1440, RTX 3060 (single validated runs; timing medians of
+480 frames):
+
+- Native lighting: all 127 normal-guide draws per frame read the authored normal
+  (`typed_normal_guide_draw_count`). The frame changes on 1.2% of its pixels with
+  GTAO and 0.15% with MXAO, mostly on Link, darker in creases the flat facets
+  had hidden. The world pass costs the same (1.86 vs 1.88 ms).
+- PerPixelPBR: 96 of 122 guide draws take the new path (draws outside the
+  per-pixel relighting); the captures are byte-identical to the previous build.
+- Texture relief: 80 of 83 depth-writing draws in Kokiri and 55 of 65 in castle
+  town have one colour texture; the others have several and get none. With the
+  AO faded far enough to reach the walls (MXAO radius 20, fade to 4000), Medium
+  darkens brick mortar and cobblestone joints on 12.8% of the castle-town frame.
+  A coarser LOD (one level up) softened the joints without adding depth and was
+  not kept. Strong costs 0.33 ms in the world pass and 0.63 ms per frame
+  (A/B/B/A: 10.42 → 11.05 ms); the AO passes are unchanged. LAUNCHPAD's
+  texture detail cost 3.0–3.5 ms.
+- Validated runs report zero Vulkan/NRI errors (the 11 pre-existing warnings).
+  Tests: pipeline-cache cases for the typed guide in Native lighting and for the
+  relief variants and exclusions (both compiled with shaderc), settings
+  validation and persistence, and the F1 actual-widget smoke (7,308 assertions).
+- Motion vectors already cover these draws: with forced motion, every
+  depth-writing scene draw has its exact previous-frame vertex program except in
+  the frame it first appears (Kokiri walk 20 of 240 frames with a new draw;
+  castle town none). Grass blades write no motion of their own: the motion pass
+  gives them the camera's motion and the reactive mask rejects their history.
+
 Fresh combined source adoption, deterministic framebuffer/state comparisons and
 the remaining realtime validation observation are recorded in
 [`TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md`](TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md).

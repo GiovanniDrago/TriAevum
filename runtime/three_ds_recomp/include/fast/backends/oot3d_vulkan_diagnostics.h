@@ -550,7 +550,17 @@ struct Oot3dVulkanFrameDiagnostics {
     uint32_t RigidMotionDrawCount = 0;
     uint32_t ExactMotionDrawCount = 0;
     uint32_t DeformedMotionDrawCount = 0;
+    // Temporal draws whose geometry was already drawn this frame: their
+    // history is matched by occurrence order.
+    uint32_t RepeatedIdentityMotionDrawCount = 0;
     uint32_t GrassMotionBladeCount = 0;
+    // Normal guide sources: draws that write it and those that read the
+    // authored vertex normal; AO texture relief candidates and appliers.
+    uint32_t NormalGuideDrawCount = 0;
+    uint32_t TypedNormalGuideDrawCount = 0;
+    uint32_t AoReliefCandidateDrawCount = 0;
+    uint32_t AoReliefTextureDrawCount = 0;
+    uint32_t AoReliefAppliedDrawCount = 0;
     uint64_t FirstSubmissionId = 0;
     uint64_t LastSubmissionId = 0;
     uint64_t LastRenderTargetNamespace = 0;
@@ -782,8 +792,10 @@ class Oot3dVulkanDiagnostics {
     void SetPresentationState(
         Oot3dVulkanPresentationStateDiagnostics state);
     void RecordTemporalDraw(bool rigidMotionValid, bool exactMotionValid,
-                            bool deformedMotionValid);
+                            bool deformedMotionValid, bool repeatedIdentity = false);
     void RecordGrassMotion(uint32_t bladeCount);
+    void RecordNormalGuideDraw(bool typedNormal, bool relief);
+    void RecordAoReliefDraw(bool reliefTexture);
     void EndFrame();
     void SetGpuTimings(uint64_t frameIndex,
                        const Oot3dVulkanGpuTimings& timings);

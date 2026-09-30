@@ -4198,6 +4198,25 @@ TEST(Oot3dGraphicsSettings, MxaoRequiresItsProviderAndClampsItsControls) {
     }));
 }
 
+TEST(Oot3dGraphicsSettings, AoTextureReliefKeepsItsLevelAndResetsUnknownOnes) {
+    using namespace Fast::Oot3d;
+    GraphicsCapabilities capabilities;
+    for (const auto capability : {GraphicsCapability::NriInterop, GraphicsCapability::SampledDepth,
+                                  GraphicsCapability::NormalGuide, GraphicsCapability::ValidViewMetadata})
+        capabilities.Set(capability, true);
+    auto candidate = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
+    candidate.Effects.AmbientOcclusion = AmbientOcclusionMode::Gtao;
+    candidate.Effects.AoRelief = AoTextureRelief::Subtle;
+    EXPECT_EQ(GraphicsSettingsService::Validate(candidate, capabilities).Value.Effects.AoRelief,
+              AoTextureRelief::Subtle);
+    candidate.Effects.AoRelief = static_cast<AoTextureRelief>(7);
+    EXPECT_EQ(GraphicsSettingsService::Validate(candidate, capabilities).Value.Effects.AoRelief,
+              AoTextureRelief::Off);
+    EXPECT_EQ(AoTextureReliefGain(AoTextureRelief::Off), 0.0F);
+    EXPECT_LT(AoTextureReliefGain(AoTextureRelief::Subtle), AoTextureReliefGain(AoTextureRelief::Medium));
+    EXPECT_LT(AoTextureReliefGain(AoTextureRelief::Medium), AoTextureReliefGain(AoTextureRelief::Strong));
+}
+
 TEST(Oot3dGraphicsSettings, AcceptsHiZOnlyWithMaterialAndViewContract) {
     Fast::Oot3d::GraphicsCapabilities capabilities;
     using Capability = Fast::Oot3d::GraphicsCapability;

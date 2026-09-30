@@ -300,6 +300,29 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsMxaoAndAddsItsDefaultsToOlderFi
     EXPECT_EQ(defaults.Value.Effects.MxaoFilter, 1U);
 }
 
+TEST(Oot3dGraphicsSettingsPersistence, RoundTripsAoTextureReliefAndDefaultsOlderFilesToOff) {
+    using namespace Fast::Oot3d;
+    auto settings = CompleteSettings();
+    settings.Effects.AmbientOcclusion = AmbientOcclusionMode::Mxao;
+    settings.Effects.AoRelief = AoTextureRelief::Strong;
+    const auto saved = SerializeGraphicsSettings(settings);
+    EXPECT_EQ(saved["Effects"]["AO"]["TextureRelief"], "Strong");
+    const auto loaded = DeserializeGraphicsSettings(saved);
+    EXPECT_FALSE(loaded.NeedsRewrite);
+    EXPECT_EQ(loaded.Value.Effects.AoRelief, AoTextureRelief::Strong);
+    auto older = saved;
+    older["Effects"]["AO"].erase("TextureRelief");
+    const auto defaults = DeserializeGraphicsSettings(older);
+    EXPECT_TRUE(defaults.NeedsRewrite);
+    EXPECT_TRUE(defaults.Issues.empty());
+    EXPECT_EQ(defaults.Value.Effects.AoRelief, AoTextureRelief::Off);
+    auto unknown = saved;
+    unknown["Effects"]["AO"]["TextureRelief"] = "Extreme";
+    const auto corrected = DeserializeGraphicsSettings(unknown);
+    EXPECT_EQ(corrected.Value.Effects.AoRelief, AoTextureRelief::Off);
+    EXPECT_FALSE(corrected.Issues.empty());
+}
+
 TEST(Oot3dGraphicsSettingsPersistence, MigratesSingleCascadeWithoutLosingTheOffChoiceOrLightResponse) {
     using namespace Fast::Oot3d;
     auto document = SerializeGraphicsSettings(CompleteSettings());

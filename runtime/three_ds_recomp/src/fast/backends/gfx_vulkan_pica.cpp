@@ -4367,6 +4367,33 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         if (graphicsSettings.Effects.SurfaceLighting == Oot3d::SurfaceLightingMode::NativePbr &&
             pbrMaterial == nullptr)
             surfaceLighting.reset();
+        // AO texture relief reads the one texture whose colour the draw's TEV
+        // passes to its output (never a bump or shadow unit); several colour
+        // textures leave the draw without relief rather than guess a layer.
+        uint8_t reliefTexture = 0xffU;
+        if (!nativeMemoryOnly && sceneDraw && draw.DepthWriteEnabled &&
+            graphicsSettings.Effects.AmbientOcclusion != Oot3d::AmbientOcclusionMode::Off &&
+            graphicsSettings.Effects.AoRelief != Oot3d::AoTextureRelief::Off &&
+            draw.FragmentUniformBytes.size() >= Oot3d::kPicaPackedFragmentTevProgramOffset +
+                sizeof(Renderer3ds::PicaTevProgram)) {
+            Renderer3ds::PicaTevProgram tev;
+            std::memcpy(&tev, draw.FragmentUniformBytes.data() +
+                Oot3d::kPicaPackedFragmentTevProgramOffset, sizeof(tev));
+            uint8_t colorTextures = Renderer3ds::PicaTevMaterialTextureMask(tev) & 7U;
+            if (draw.FragmentFeatures.FragmentLighting.BumpMode != Renderer3ds::PicaFragmentLightingBumpMode::None)
+                colorTextures &= static_cast<uint8_t>(
+                    ~(1U << draw.FragmentFeatures.FragmentLighting.BumpTextureUnit));
+            for (uint8_t slot = 0; slot < 3U; ++slot)
+                if (integerTextures[slot]) colorTextures &= static_cast<uint8_t>(~(1U << slot));
+            if (std::has_single_bit(colorTextures)) {
+                const auto slot = static_cast<uint8_t>(std::countr_zero(colorTextures));
+                const auto* sample = draw.FragmentShaderHooks.TextureSample(slot);
+                if (sample != nullptr &&
+                    sample->Operation == Renderer3ds::PicaTextureCoordinateOperation::NativeVFlip)
+                    reliefTexture = slot;
+            }
+            mDiagnostics.RecordAoReliefDraw(reliefTexture < 3U);
+        }
         finishCpuStage(cpuTimings.TextureMilliseconds);
         const Oot3d::PicaShaderPipelineRequest variantRequest{
             draw.VertexShaderSource,
@@ -4399,6 +4426,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             draw.FragmentShaderSourceIdentity,
             surfaceLighting.has_value(),
             pbrOptions,
+            reliefTexture,
         };
         static const Oot3d::EffectsSettings nativeMemoryEffects;
         bool variantCacheHit = false;
@@ -4526,6 +4554,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     snapshot.Count(Oot3d::PicaToonEligibility::UnsupportedShader));
             }
         }
+        if (Oot3d::HasPicaShaderInstrumentationFeature(
+                shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::NormalGuide))
+            mDiagnostics.RecordNormalGuideDraw(
+                shaderVariant.TypedNormalGuide,
+                Oot3d::HasPicaShaderInstrumentationFeature(
+                    shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::NormalGuideTextureRelief));
         if (shaderVariant.AmbientGuideEligibility ==
                 Oot3d::PicaAmbientOcclusionGuideEligibility::
                     AppliedExact ||
@@ -4797,6 +4831,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             draw.FragmentOperationMode == 0U &&
             draw.DepthTestEnabled && draw.DepthWriteEnabled;
         uint64_t temporalIdentity = draw.GeometryIdentityAvailable ? draw.GeometryIdentity : draw.VertexShaderKey;
+        bool repeatedTemporalIdentity = false;
         if (temporalEligible) {
             const auto mixIdentity = [&temporalIdentity](uint64_t value) {
                 temporalIdentity ^= value + 0x9e3779b97f4a7c15ULL +
@@ -4814,6 +4849,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             const uint32_t occurrence =
                 mRigidMotionOccurrencesThisFrame[temporalIdentity]++;
             mixIdentity(occurrence);
+            repeatedTemporalIdentity = occurrence != 0U;
             mixIdentity(draw.RenderTargetNamespace);
             if (temporalIdentity == 0U) temporalIdentity = 1U;
         }
@@ -5492,7 +5528,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         if (temporalEligible)
             mDiagnostics.RecordTemporalDraw(
                 rigidMotion.Valid, exactMotionHistory,
-                exactMotionHistory && !rigidEligible);
+                exactMotionHistory && !rigidEligible, repeatedTemporalIdentity);
 
         Oot3d::NriPicaOwnedDrawDesc nriDraw;
         Oot3d::PicaNriVertexInputLayout sceneVertexLayout;

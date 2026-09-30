@@ -36,6 +36,9 @@ enum class PicaShaderInstrumentationFeature : uint32_t {
     // material of its own overwrites the material guide with the neutral
     // baseline, so no earlier sample's value survives under it.
     MaterialGuideBaseline = 1U << 14U,
+    // AO texture relief: the luminance slope of the material's colour texture
+    // bends the normal guide along the surface's texture axes.
+    NormalGuideTextureRelief = 1U << 15U,
 };
 
 constexpr PicaShaderInstrumentationFeature operator|(PicaShaderInstrumentationFeature left,
@@ -86,6 +89,13 @@ struct PicaFragmentInstrumentationRequest {
     const ToonStyleSettings* ToonStyle = nullptr;
     bool ToonParametersUniform = false;
     Renderer3ds::PicaPbrShaderOptions Pbr;
+    // The vertex stage outputs the typed authored normal (pica_surface_normal,
+    // location 9); the normal guide reads it in every lighting mode.
+    bool SurfaceNormalInput = false;
+    // NormalGuideTextureRelief: the colour texture unit and the relief gain
+    // (normal tilt per unit change of log2 luminance across one texel).
+    uint8_t ReliefTexture = 0xffU;
+    float ReliefGain = 0.0F;
 };
 
 struct PicaFragmentInstrumentationOutputLayout {
@@ -122,6 +132,8 @@ struct PicaFragmentInstrumentationResult {
     bool Reactive = false;
     bool RigidMotionApplied = false;
     bool UsedProvidedHooks = false;
+    // The normal guide reads the authored vertex normal (SurfaceNormalInput).
+    bool TypedNormalGuide = false;
     PicaFragmentInstrumentationOutputLayout Outputs;
 
     [[nodiscard]] bool Applied() const noexcept {

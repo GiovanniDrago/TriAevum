@@ -992,6 +992,18 @@ int main() try {
               mxao.MxaoMethod == MxaoEstimator::SolidAngle && mxao.AoRadius == 2.5F && mxao.AoStrength == 1.5F &&
               mxao.MxaoFilter == 2 && mxao.AoHorizonAngleThreshold == 0.12F,
           "MXAO controls did not apply or disturbed the CACAO controls");
+    Select("AO texture relief", "Strong");
+    Check(runtime.Snapshot().Effects.AoRelief == AoTextureRelief::Strong &&
+              runtime.Snapshot().Effects.MxaoQuality == 2,
+          "AO texture relief did not apply or disturbed the MXAO controls");
+    Select("Ambient occlusion", "Multiscale GTAO");
+    Select("AO texture relief", "Subtle");
+    Check(runtime.Snapshot().Effects.AoRelief == AoTextureRelief::Subtle &&
+              runtime.Snapshot().Effects.AmbientOcclusion == AmbientOcclusionMode::Gtao,
+          "AO texture relief is not shared by the AO providers");
+    Select("AO texture relief", "Off");
+    Select("Ambient occlusion", "iMMERSE MXAO");
+    Check(runtime.Snapshot().Effects.AoRelief == AoTextureRelief::Off, "cannot disable AO texture relief");
     runtime.SetCapability(GraphicsCapability::ImmerseMxao, false, "provider unavailable");
     Frame();
     Select("Ambient occlusion", "Off");

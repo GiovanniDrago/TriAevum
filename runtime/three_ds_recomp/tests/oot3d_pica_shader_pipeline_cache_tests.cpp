@@ -605,6 +605,199 @@ void main() {
 #endif
 }
 
+// A typed CMB-like program: the transform and surface layouts name the normal
+// input and the uniforms the native program transforms it with.
+constexpr std::string_view kTypedVertexShader = R"glsl(#version 450
+layout(location=0) in vec4 pica_input0;
+layout(location=1) in vec4 pica_input1;
+layout(location=2) in vec4 pica_input2;
+layout(set=0,binding=0,std140) uniform PicaVertexUniforms {
+    uint b; int flip_viewport; uvec4 i[4]; vec4 f[96];
+} uniforms;
+vec4 pica_output0 = vec4(0.0);
+void main() { pica_output0 = pica_input0; gl_Position = pica_output0; }
+)glsl";
+
+Oot3d::Renderer::PicaTemporalVertexProgramView TypedVertexProgram() {
+    using namespace Oot3d::Renderer;
+    const size_t state = kTypedVertexShader.find("vec4 pica_output0 =");
+    const size_t main = kTypedVertexShader.find("void main()");
+    PicaVertexShaderHookLayout hooks;
+    hooks.SchemaVersion = kPicaShaderHookSchemaVersion;
+    hooks.SourceSize = kTypedVertexShader.size();
+    hooks.Offsets[static_cast<size_t>(PicaVertexShaderHook::GlobalDeclarations)] = state;
+    hooks.Offsets[static_cast<size_t>(PicaVertexShaderHook::RegisterStateBegin)] = state;
+    hooks.Offsets[static_cast<size_t>(PicaVertexShaderHook::RegisterStateEnd)] = main;
+    hooks.Offsets[static_cast<size_t>(PicaVertexShaderHook::MainBodyBegin)] = kTypedVertexShader.find('{', main) + 1U;
+    hooks.Offsets[static_cast<size_t>(PicaVertexShaderHook::MainBodyEnd)] = kTypedVertexShader.find_last_of('}');
+    hooks.Semantics = PicaVertexShaderSemantic::PicaRegisterState | PicaVertexShaderSemantic::VertexUniformState |
+                      PicaVertexShaderSemantic::ClipPositionOutput | PicaVertexShaderSemantic::TransformProgram |
+                      PicaVertexShaderSemantic::SurfaceProgram;
+    hooks.Transform = {PicaVertexTransformOperation::ModelViewProjection3x4, 0, 4, 4, 3, 20, 3, 0, 1};
+    hooks.Surface.ViewNormalTemporary = 14;
+    hooks.Surface.LightingBooleanUniform = 9;
+    hooks.Surface.DiffuseUniform = 8;
+    hooks.Surface.AmbientUniform = 9;
+    hooks.Surface.TintBooleanUniform = 5;
+    hooks.Surface.TintInputRegister = 2;
+    hooks.Surface.TintScale = {90, 2};
+    hooks.Surface.LightEnabledValue = {93, 1};
+    hooks.Surface.LightDirectionUniforms = {80, 83, 86};
+    return {hooks, "vec4 pica_output0_previous = vec4(0.0);\n", " gl_Position = pica_output0_previous; "};
+}
+
+// A vertex-lit world material: one colour texture, native LOD sampling, the
+// quaternion and view inputs every frontend program declares.
+constexpr std::string_view kVertexLitFragmentShader = R"glsl(#version 450
+layout(location=0) in vec4 pica_primary_color;
+layout(location=1) in vec2 pica_texcoord0;
+layout(location=5) in vec4 pica_normquat;
+layout(location=6) in vec3 pica_view;
+layout(set=0,binding=1) uniform sampler2D pica_texture0;
+layout(set=0,binding=4,std140) uniform PicaFragmentUniforms { vec4 texture_lod_bias; } fragment_uniforms;
+layout(location=0) out vec4 pica_color;
+float pica_texture_lod(vec2 coord, vec2 size) {
+    vec2 scaled = coord * size;
+    vec2 delta = max(abs(dFdx(scaled)), abs(dFdy(scaled)));
+    return log2(max(delta.x, delta.y));
+}
+vec4 pica_sample_texture0(vec2 coord) {
+    float lod = pica_texture_lod(coord, vec2(textureSize(pica_texture0, 0)));
+    return textureLod(pica_texture0, coord, lod + fragment_uniforms.texture_lod_bias[0]);
+}
+void main() {
+    vec4 combiner_output = pica_sample_texture0(vec2(pica_texcoord0.x, 1.0 - pica_texcoord0.y)) * pica_primary_color;
+    if (combiner_output.a < 0.5) discard;
+    pica_color = combiner_output;
+}
+)glsl";
+
+Fast::Oot3d::PicaShaderPipelineRequest VertexLitWorldRequest() {
+    auto request = BaseRequest();
+    request.VertexShaderSource = kTypedVertexShader;
+    request.TemporalVertexProgram = TypedVertexProgram();
+    request.FragmentShaderSource = kVertexLitFragmentShader;
+    request.FragmentShaderHooks = Fast::Oot3d::AnalyzePicaFragmentShaderHooks(kVertexLitFragmentShader);
+    return request;
+}
+
+#ifdef OOT3D_PIPELINE_CACHE_HAS_SHADERC
+void ExpectCompiles(const std::string& source, shaderc_shader_kind kind, const char* name) {
+    shaderc::Compiler compiler;
+    const auto compiled = compiler.CompileGlslToSpv(source, kind, name);
+    EXPECT_EQ(compiled.GetCompilationStatus(), shaderc_compilation_status_success) << compiled.GetErrorMessage();
+}
+#endif
+
+TEST(Oot3dPicaShaderPipelineCache, NormalGuideReadsTheAuthoredVertexNormalInEveryLightingMode) {
+    using namespace Fast::Oot3d;
+    PicaShaderPipelineCache cache;
+    EffectsSettings effects;
+    effects.AmbientOcclusion = AmbientOcclusionMode::Mxao;
+    auto request = VertexLitWorldRequest();
+    cache.BeginFrame(1U);
+    const auto typed = cache.Resolve(request, effects);
+    // Native lighting: no per-pixel relighting, yet the guide no longer falls
+    // back to the geometric normal of the depth derivatives.
+    EXPECT_FALSE(HasPicaShaderInstrumentationFeature(typed.AppliedFeatures,
+                                                     PicaShaderInstrumentationFeature::NativePerPixelLighting));
+    EXPECT_TRUE(typed.TypedNormalGuide);
+    EXPECT_NE(typed.VertexShaderSource.find("layout(location=9) out vec3 pica_surface_normal"), std::string::npos);
+    EXPECT_NE(typed.FragmentShaderSource.find("layout(location=9) in vec3 pica_surface_normal"), std::string::npos);
+    EXPECT_NE(typed.FragmentShaderSource.find(
+                  "oot3d_normal_guide_typed(pica_surface_normal, oot3d_normal_guide_surface(pica_normquat, pica_view))"),
+              std::string::npos);
+    // The native colour path is untouched.
+    EXPECT_NE(typed.FragmentShaderSource.find("pica_color = combiner_output;"), std::string::npos);
+#ifdef OOT3D_PIPELINE_CACHE_HAS_SHADERC
+    ExpectCompiles(typed.VertexShaderSource, shaderc_vertex_shader, "typed_normal_guide.vert");
+    ExpectCompiles(typed.FragmentShaderSource, shaderc_fragment_shader, "typed_normal_guide.frag");
+#endif
+
+    // An untyped program keeps the quaternion/geometric guide and its key.
+    auto untyped = request;
+    untyped.TemporalVertexProgram = BaseTemporalVertexProgram();
+    untyped.VertexShaderSource = BaseRequest().VertexShaderSource;
+    const auto& fallback = cache.Resolve(untyped, effects);
+    EXPECT_FALSE(fallback.TypedNormalGuide);
+    EXPECT_NE(fallback.FragmentShaderSource.find(
+                  "pica_normal_guide = vec4(oot3d_normal_guide_surface(pica_normquat, pica_view) * 0.5 + 0.5, 1.0);"),
+              std::string::npos);
+    EXPECT_EQ(fallback.FragmentShaderSource.find("pica_surface_normal"), std::string::npos);
+    EXPECT_NE(fallback.FragmentShaderKey, typed.FragmentShaderKey);
+
+    // Without a normal-guide reader the program stays canonical.
+    effects.AmbientOcclusion = AmbientOcclusionMode::Off;
+    cache.BeginFrame(2U);
+    const auto& canonical = cache.Resolve(request, effects);
+    EXPECT_TRUE(canonical.IsCanonical());
+    EXPECT_EQ(canonical.VertexShaderSource, kTypedVertexShader);
+}
+
+TEST(Oot3dPicaShaderPipelineCache, AoTextureReliefBendsTheGuideFromTheColourTexture) {
+    using namespace Fast::Oot3d;
+    PicaShaderPipelineCache cache;
+    EffectsSettings effects;
+    effects.AmbientOcclusion = AmbientOcclusionMode::Gtao;
+    effects.AoRelief = AoTextureRelief::Medium;
+    auto request = VertexLitWorldRequest();
+    request.ReliefTexture = 0U;
+    cache.BeginFrame(1U);
+    const auto relief = cache.Resolve(request, effects);
+    ASSERT_TRUE(HasPicaShaderInstrumentationFeature(relief.AppliedFeatures,
+                                                    PicaShaderInstrumentationFeature::NormalGuideTextureRelief));
+    const auto& source = relief.FragmentShaderSource;
+    const size_t taps = source.find("// OOT3D_AO_TEXTURE_RELIEF");
+    const size_t alphaTest = source.find("discard;");
+    const size_t bend = source.find("pica_normal_guide.rgb = oot3d_relief_normal(");
+    ASSERT_NE(taps, std::string::npos);
+    ASSERT_NE(bend, std::string::npos);
+    // Taps and derivatives precede the native alpha test; the bend follows
+    // the guide assignment it modifies.
+    EXPECT_LT(taps, alphaTest);
+    EXPECT_LT(source.find("pica_normal_guide = vec4("), bend);
+    EXPECT_NE(source.find("fragment_uniforms.texture_lod_bias[0]"), std::string::npos);
+    EXPECT_NE(source.find("2.000000 *"), std::string::npos);
+#ifdef OOT3D_PIPELINE_CACHE_HAS_SHADERC
+    ExpectCompiles(source, shaderc_fragment_shader, "ao_texture_relief.frag");
+#endif
+
+    // Each level is its own variant; Off, no colour texture, a disabled AO,
+    // a blended surface or an integer texture add nothing.
+    effects.AoRelief = AoTextureRelief::Strong;
+    cache.BeginFrame(2U);
+    const auto strongKey = cache.Resolve(request, effects).FragmentShaderKey;
+    EXPECT_NE(strongKey, relief.FragmentShaderKey);
+    effects.AoRelief = AoTextureRelief::Off;
+    cache.BeginFrame(3U);
+    const auto off = cache.Resolve(request, effects);
+    EXPECT_FALSE(HasPicaShaderInstrumentationFeature(off.RequestedFeatures,
+                                                     PicaShaderInstrumentationFeature::NormalGuideTextureRelief));
+    EXPECT_EQ(off.FragmentShaderSource.find("oot3d_relief"), std::string::npos);
+    effects.AoRelief = AoTextureRelief::Medium;
+    cache.BeginFrame(4U);
+    auto without = request;
+    without.ReliefTexture = 0xffU;
+    EXPECT_EQ(cache.Resolve(without, effects).FragmentShaderSource, off.FragmentShaderSource);
+    auto blended = request;
+    blended.Draw.DepthWriteEnabled = false;
+    blended.Draw.Blend = SourceAlphaBlend();
+    EXPECT_FALSE(HasPicaShaderInstrumentationFeature(cache.Resolve(blended, effects).RequestedFeatures,
+                                                     PicaShaderInstrumentationFeature::NormalGuideTextureRelief));
+    auto integer = request;
+    std::string integerSource(kVertexLitFragmentShader);
+    integerSource.replace(integerSource.find("uniform sampler2D pica_texture0"), 31, "uniform usampler2D pica_texture0");
+    integer.FragmentShaderSource = integerSource;
+    integer.FragmentShaderHooks = AnalyzePicaFragmentShaderHooks(integerSource);
+    EXPECT_FALSE(HasPicaShaderInstrumentationFeature(cache.Resolve(integer, effects).AppliedFeatures,
+                                                     PicaShaderInstrumentationFeature::NormalGuideTextureRelief));
+    effects.AmbientOcclusion = AmbientOcclusionMode::Off;
+    effects.Reflections = ReflectionMode::HiZ;
+    cache.BeginFrame(5U);
+    EXPECT_FALSE(HasPicaShaderInstrumentationFeature(cache.Resolve(request, effects).RequestedFeatures,
+                                                     PicaShaderInstrumentationFeature::NormalGuideTextureRelief));
+}
+
 TEST(Oot3dPicaShaderPipelineCache,
      OutlineFogGuideBelongsOnlyToDepthWritingWorldDraws) {
     using namespace Fast::Oot3d;
