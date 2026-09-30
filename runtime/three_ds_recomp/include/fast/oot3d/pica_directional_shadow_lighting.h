@@ -14,10 +14,6 @@ namespace Fast::Oot3d {
 inline constexpr uint32_t kPicaDirectionalShadowTextureBinding = 10U;
 inline constexpr uint32_t kPicaDirectionalShadowSamplerBinding = 11U;
 inline constexpr uint32_t kPicaDirectionalShadowUniformBinding = 12U;
-// Receiver flags (Extent.w): bound; the previous-frame clip position of the
-// surface locates it in the map (PreviousViewToLight).
-inline constexpr uint32_t kPicaDirectionalShadowReceiverBound = 1U;
-inline constexpr uint32_t kPicaDirectionalShadowPreviousFrameReceiver = 2U;
 
 enum class PicaDirectionalShadowLightingEligibility : uint8_t {
     Disabled,
@@ -28,9 +24,6 @@ enum class PicaDirectionalShadowLightingEligibility : uint8_t {
 
 struct alignas(16) PicaDirectionalShadowReceiverUniforms {
     std::array<float, 16> ViewToLight{};
-    // Previous-frame view-space position to the map's light space: the map a
-    // receiver samples was rendered from the previous frame's casters.
-    std::array<float, 16> PreviousViewToLight{};
     // strength, inverse atlas resolution, reserved, finest-level depth bias
     std::array<float, 4> ShadowState{};
     // RGB: native direct fraction; W: selected shader-light mask for surface lighting.
@@ -44,7 +37,7 @@ struct alignas(16) PicaDirectionalShadowReceiverUniforms {
     std::array<uint32_t, Renderer3ds::kVirtualShadowTableEntries> PageTable{};
 };
 
-static_assert(sizeof(PicaDirectionalShadowReceiverUniforms) == 2912U);
+static_assert(sizeof(PicaDirectionalShadowReceiverUniforms) == 2848U);
 
 
 struct PicaDirectionalShadowReceiverBinding {
@@ -85,28 +78,14 @@ struct PicaDirectionalShadowLightingInstrumentation {
     }
 };
 
-// `previousFrameReceiver`: the fragment shader has the temporal inputs
-// (oot3d_previous_clip, oot3d_draw) declared before these declarations.
 [[nodiscard]] PicaDirectionalShadowLightingInstrumentation
 BuildPicaDirectionalShadowLightingInstrumentation(
     uint64_t originalFragmentKey, bool enabled,
-    const ::Oot3d::Renderer::PicaShaderHookLayout& hooks,
-    bool previousFrameReceiver = false);
+    const ::Oot3d::Renderer::PicaShaderHookLayout& hooks);
 
 [[nodiscard]] PicaDirectionalShadowReceiverUniforms PackPicaDirectionalShadowReceiverUniforms(
     const DirectionalShadowMatrix& viewToWorld, const PicaDirectionalShadowHistoryState& history) noexcept;
 
-
-// The map receivers sample is the previous frame's (it is rendered after the
-// opaque surfaces, from their casters). A surface that moved since (an
-// animated actor) samples it where it was then, so it meets its own caster
-// depth of that frame instead of a displaced one: self-shadows stay in place.
-// `previousViewToWorld` is the draw's previous-frame view-to-world; the
-// previous view position comes from the vertex shader's previous body, the
-// same quantity (and math) the casters of that frame used.
-void AlignPicaDirectionalShadowReceiverToPreviousFrame(
-    PicaDirectionalShadowReceiverUniforms& uniforms, const DirectionalShadowMatrix& previousViewToWorld,
-    const PicaDirectionalShadowHistoryState& history) noexcept;
 
 [[nodiscard]] PicaDirectionalShadowReceiverBinding
 BuildPicaSurfaceShadowReceiverBinding(

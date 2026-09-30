@@ -9,11 +9,10 @@
 namespace Fast::Oot3d {
 namespace {
 
-uint64_t LightingVariantKey(uint64_t original, bool fragmentPrimary, bool previousFrameReceiver) {
+uint64_t LightingVariantKey(uint64_t original, bool fragmentPrimary) {
     constexpr uint64_t kOffset = 1469598103934665603ULL;
     constexpr uint64_t kPrime = 1099511628211ULL;
-    const std::string_view kSalt = previousFrameReceiver ? "OOT3D_PICA_VIRTUAL_SHADOW_LIGHTING_V7_PREVIOUS_VIEW"
-                                                         : "OOT3D_PICA_VIRTUAL_SHADOW_LIGHTING_V5";
+    constexpr std::string_view kSalt = "OOT3D_PICA_VIRTUAL_SHADOW_LIGHTING_V5";
     uint64_t hash = kOffset;
     for (unsigned shift = 0U; shift < 64U; shift += 8U) {
         hash ^= static_cast<uint8_t>(original >> shift);
@@ -27,9 +26,8 @@ uint64_t LightingVariantKey(uint64_t original, bool fragmentPrimary, bool previo
     return hash * kPrime;
 }
 
-std::string LightingDeclarations(bool previousFrameReceiver) {
-    if (!previousFrameReceiver)
-        return std::string(Renderer3ds::VirtualShadowReceiverShader()) + R"glsl(
+std::string LightingDeclarations() {
+    return std::string(Renderer3ds::VirtualShadowReceiverShader()) + R"glsl(
 vec3 oot3d_directional_shadow_visibility() {
     if ((pica_vsm.extent.w & 1u) == 0u) return vec3(1.0);
     vec4 position = pica_vsm.input_to_light * vec4(-pica_view, 1.0);
@@ -37,27 +35,6 @@ vec3 oot3d_directional_shadow_visibility() {
     // Differentiate before normalized-depth translation to retain D32 slopes.
     vec3 dx = mat3(pica_vsm.input_to_light) * dFdx(-pica_view);
     vec3 dy = mat3(pica_vsm.input_to_light) * dFdy(-pica_view);
-    return vec3(pica_vsm_visibility(position.xyz / position.w, pica_vsm_depth_gradient(dx, dy)));
-}
-)glsl";
-    // The map was rendered from the previous frame's casters: a surface with
-    // an exact previous frame (oot3d_draw.rigid_motion.w) samples it at its
-    // previous-frame view position (the casters' own math), so an animated
-    // actor meets its own caster depth of that frame. Derivatives stay in
-    // uniform control flow.
-    return std::string(Renderer3ds::VirtualShadowReceiverShader()) + R"glsl(
-vec3 oot3d_directional_shadow_visibility() {
-    if ((pica_vsm.extent.w & 1u) == 0u) return vec3(1.0);
-    vec4 position = pica_vsm.input_to_light * vec4(-pica_view, 1.0);
-    vec3 dx = mat3(pica_vsm.input_to_light) * dFdx(-pica_view);
-    vec3 dy = mat3(pica_vsm.input_to_light) * dFdy(-pica_view);
-    vec4 previous = pica_vsm.previous_view_to_light * vec4(-oot3d_previous_view, 1.0);
-    vec3 previous_light = previous.xyz / (abs(previous.w) > 1.0e-7 ? previous.w : 1.0);
-    vec3 previous_dx = mat3(pica_vsm.previous_view_to_light) * dFdx(-oot3d_previous_view);
-    vec3 previous_dy = mat3(pica_vsm.previous_view_to_light) * dFdy(-oot3d_previous_view);
-    if ((pica_vsm.extent.w & 2u) != 0u && oot3d_draw.rigid_motion.w > 0.5 && abs(previous.w) > 1.0e-7)
-        return vec3(pica_vsm_visibility(previous_light, pica_vsm_depth_gradient(previous_dx, previous_dy)));
-    if (abs(position.w) <= 1.0e-7) return vec3(1.0);
     return vec3(pica_vsm_visibility(position.xyz / position.w, pica_vsm_depth_gradient(dx, dy)));
 }
 )glsl";
@@ -87,8 +64,7 @@ PicaDirectionalShadowReceiverUniforms PackPicaDirectionalShadowReceiverUniforms(
 
 PicaDirectionalShadowLightingInstrumentation
 BuildPicaDirectionalShadowLightingInstrumentation(uint64_t originalFragmentKey, bool enabled,
-                                                  const ::Oot3d::Renderer::PicaShaderHookLayout& hooks,
-                                                  bool previousFrameReceiver) {
+                                                  const ::Oot3d::Renderer::PicaShaderHookLayout& hooks) {
     using ::Oot3d::Renderer::PicaShaderHook;
     using ::Oot3d::Renderer::PicaShaderSemantic;
 
@@ -112,8 +88,8 @@ BuildPicaDirectionalShadowLightingInstrumentation(uint64_t originalFragmentKey, 
         return result;
     }
 
-    result.Declarations = LightingDeclarations(previousFrameReceiver);
-    result.FragmentKey = LightingVariantKey(originalFragmentKey, fragmentPrimary, previousFrameReceiver);
+    result.Declarations = LightingDeclarations();
+    result.FragmentKey = LightingVariantKey(originalFragmentKey, fragmentPrimary);
     result.Eligibility = fragmentPrimary ? PicaDirectionalShadowLightingEligibility::FragmentPrimary
                                          : PicaDirectionalShadowLightingEligibility::VertexPrimary;
     return result;
@@ -135,15 +111,6 @@ BuildPicaSurfaceShadowReceiverBinding(const DirectionalShadowMatrix& currentView
     result.Uniforms = PackPicaDirectionalShadowReceiverUniforms(currentViewToWorld, history);
     result.Uniforms.ShadowedDirectFraction[3] = static_cast<float>(mask);
     return result;
-}
-
-void AlignPicaDirectionalShadowReceiverToPreviousFrame(
-    PicaDirectionalShadowReceiverUniforms& uniforms, const DirectionalShadowMatrix& previousViewToWorld,
-    const PicaDirectionalShadowHistoryState& history) noexcept {
-    if ((uniforms.Extent[3] & kPicaDirectionalShadowReceiverBound) == 0U || !history.Valid())
-        return;
-    uniforms.PreviousViewToLight = MultiplyDirectionalShadowMatrices(history.Virtual.WorldToLight, previousViewToWorld);
-    uniforms.Extent[3] |= kPicaDirectionalShadowPreviousFrameReceiver;
 }
 
 } // namespace Fast::Oot3d

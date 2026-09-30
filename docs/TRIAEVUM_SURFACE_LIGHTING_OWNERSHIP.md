@@ -326,29 +326,3 @@ Private evidence is retained under
 per-capture receipts/configurations/framebuffers/diagnostics, and the final
 CPU-ambient parity and qualification reports. Temporary analysis sources are
 removed after verification; captures and recovery baselines remain private.
-
-## Directional shadow receivers on moving surfaces (2026-09-30)
-
-The virtual shadow map is rendered at the after-opaque anchor from the frame's
-casters, so the opaque receivers drawn before it sample the previous frame's
-map. A moving actor was therefore shadowed by its own previous pose: dark
-patches on Link's cap while walking (none standing still, none with shadows
-off; Strength 4 made every partial occlusion black). A receiver-side normal
-offset did not help: it was a displacement, not acne.
-
-Receivers now sample the map where they were when it was rendered: the
-temporal vertex variant exports the previous body's view vector
-(`oot3d_previous_view`, the same quantity the casters transform), and the
-receiver uniforms carry `PreviousViewToLight` (the map's world-to-light times
-the draw's previous view-to-world decoded from its previous PICA registers).
-Used only with an exact previous frame for both the draw and the map
-(`rigid_motion.w`, map produced one frame earlier); otherwise the current
-position as before. Self-shadows and actor shadows stay, at the cost of one
-extra matrix product per shaded pixel and the temporal vertex variant, now
-enabled whenever virtual shadow maps are. A clip-space reconstruction was
-tried first and rejected: depth rebuilt from perspective clip coordinates
-speckled every surface.
-
-Kokiri walk (`qualify/ref-kokiri2`, user settings, with and without
-interpolation, GI on and off): cap patches gone, no speckle; core validation
-clean.

@@ -5109,19 +5109,6 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                         directionalShadowBinding = Oot3d::BuildPicaSurfaceShadowReceiverBinding(
                             receiverViewToWorld,
                             lights, directionalShadowHistory.State);
-                        // The map is the previous frame's: with the draw's exact
-                        // previous frame the receiver samples it there.
-                        if (directionalShadowBinding.Bound() && exactMotionHistory &&
-                            shaderVariant.RigidMotionApplied &&
-                            directionalShadowHistory.State.ProducedFrameId + 1U == mFrameCounter) {
-                            const auto previousVertex = Oot3d::DecodePicaNativeVertexState(
-                                draw.VertexUniformBytes, previousVertexUniformBytes, true,
-                                draw.TemporalVertexProgram.Hooks);
-                            if (previousVertex.Transform.PreviousViewToWorldAvailable)
-                                Oot3d::AlignPicaDirectionalShadowReceiverToPreviousFrame(
-                                    directionalShadowBinding.Uniforms, previousVertex.Transform.PreviousViewToWorld,
-                                    directionalShadowHistory.State);
-                        }
                     }
                 }
             }

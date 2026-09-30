@@ -1819,13 +1819,9 @@ void GfxRenderingAPIVulkan::StartFrame() {
     const bool globalIlluminationRequested =
         graphicsSettings.Effects.GlobalIllumination.Mode == Oot3d::GlobalIlluminationMode::BrixelizerGi &&
         !mNativeFidelityProfile;
-    // GI reprojects its history with the scene's motion vectors; directional
-    // shadow receivers locate themselves at their previous-frame position
-    // (the map they sample is the previous frame's).
+    // GI reprojects its history with the scene's motion vectors.
     mTemporalMotionEnabled =
-        !mNativeFidelityProfile &&
-        (aaPolicy.TemporalMotion || globalIlluminationRequested ||
-         graphicsSettings.Effects.DirectionalShadows.Mode == Oot3d::DirectionalShadowMode::VirtualShadowMaps);
+        !mNativeFidelityProfile && (aaPolicy.TemporalMotion || globalIlluminationRequested);
     const Oot3d::PicaAttachmentFeatureRequests extensionRequests{
         graphicsSettings.Effects.DirectionalShadows.Mode ==
             Oot3d::DirectionalShadowMode::VirtualShadowMaps,
