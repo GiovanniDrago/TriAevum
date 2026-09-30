@@ -812,8 +812,6 @@ void GfxRenderingAPIVulkan::ApplyNativePicaSampleCount(VkSampleCountFlagBits sam
     mAmbientOcclusionPass.InvalidateScreenResources();
     mCacaoPass.InvalidateScreenResources();
     mMxaoPass.InvalidateScreenResources();
-    mLaunchpadNormalsPass.InvalidateScreenResources();
-    mLaunchpadAlbedoPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
     mBrixelizerGiPass.InvalidateScreenResources();
     mReflectionMaterialResolvePass.InvalidateScreenResources();
@@ -6758,9 +6756,6 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             .ForceMotion = environmentEnabled("OOT3D_GRAPHICS_MOTION"),
             .AmbientOcclusion =
                 presentationSettings.Effects.AmbientOcclusion,
-            .AmbientOcclusionTextureDetail =
-                Oot3d::TexturesAoNormals(presentationSettings.Effects.AoNormals) &&
-                mLaunchpadNormalsPass.Available() && mLaunchpadAlbedoPass.Available(),
             .Reflections = presentationSettings.Effects.Reflections,
             .GlobalIllumination =
                 presentationSettings.Effects.GlobalIllumination.Mode ==
@@ -7565,54 +7560,11 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 mCurrentFrame, Oot3d::GpuProfileScope::AmbientOcclusion,
                 command);
             mAmbientOcclusionOutputValid = transientAmbientOcclusionOutput != nullptr;
-            // iMMERSE LAUNCHPAD smoothing refines the declared normal guide into
-            // a private guide with the same encoding; the provider reads the
-            // one the AO normals setting selects.
-            auto aoNormalImage = reinterpret_cast<VkImage>(aoNormalBinding.NativeImage);
-            auto aoNormalFormat = static_cast<VkFormat>(aoNormalBinding.Format);
-            auto aoNormalView = reinterpret_cast<VkImageView>(aoNormalBinding.NativeView);
-            if (mAmbientOcclusionOutputValid &&
-                presentationSettings.Effects.AoNormals != Oot3d::AoNormalSource::Native) {
-                const uint32_t aoWidth = transientAmbientOcclusionOutput->Width;
-                const uint32_t aoHeight = transientAmbientOcclusionOutput->Height;
-                // Texture detail differentiates the albedo estimate of the scene
-                // colour the plan declared for this stage.
-                VkImage albedoImage = VK_NULL_HANDLE;
-                const auto* aoSceneBinding = aoReads.Find(Oot3d::EffectResource::SceneColor);
-                if (Oot3d::TexturesAoNormals(presentationSettings.Effects.AoNormals) &&
-                    aoSceneBinding != nullptr &&
-                    aoSceneBinding->Kind == Oot3d::EffectResourceBindingKind::Image) {
-                    const auto scenePolicy = Oot3d::BuildLinearSceneColorPolicy(aoSceneBinding->ColorEncoding);
-                    if (scenePolicy.Valid &&
-                        mLaunchpadAlbedoPass.Configure(aoWidth, aoHeight,
-                            reinterpret_cast<VkImage>(aoSceneBinding->NativeImage),
-                            static_cast<VkFormat>(aoSceneBinding->Format), aoSceneBinding->Width,
-                            aoSceneBinding->Height) &&
-                        mLaunchpadAlbedoPass.Execute(mCurrentFrame, !scenePolicy.DecodeSrgb)) {
-                        recordEffectPassTransitions(mLaunchpadAlbedoPass.LastBarrierExecution());
-                        albedoImage = mLaunchpadAlbedoPass.OutputImage();
-                    }
-                }
-                if (mLaunchpadNormalsPass.Configure(aoWidth, aoHeight,
-                        reinterpret_cast<VkImage>(aoDepthBinding.NativeImage),
-                        static_cast<VkFormat>(aoDepthBinding.Format), aoNormalImage, aoNormalFormat, albedoImage) &&
-                    mLaunchpadNormalsPass.Execute(mCurrentFrame, *presentationPerspective,
-                        effectGuideTarget->WBuffering, Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags),
-                        presentationSettings.Effects)) {
-                    recordEffectPassTransitions(mLaunchpadNormalsPass.LastBarrierExecution());
-                    aoNormalImage = mLaunchpadNormalsPass.OutputImage();
-                    aoNormalFormat = mLaunchpadNormalsPass.OutputFormat();
-                    aoNormalView = mLaunchpadNormalsPass.OutputView();
-                } else if (!mLaunchpadNormalsWarned) {
-                    mLaunchpadNormalsWarned = true;
-                    SPDLOG_WARN("OOT3D LAUNCHPAD normals skipped, AO reads the native guide: {}",
-                                mLaunchpadNormalsPass.UnavailableReason());
-                }
-            }
             if (mAmbientOcclusionOutputValid && cacao) {
                 mAmbientOcclusionOutputValid =
                     mCacaoPass.Configure(*transientAmbientOcclusionOutput,
-                        reinterpret_cast<VkImageView>(aoDepthBinding.NativeView), aoNormalView,
+                        reinterpret_cast<VkImageView>(aoDepthBinding.NativeView),
+                        reinterpret_cast<VkImageView>(aoNormalBinding.NativeView),
                         Oot3d::ResolveCacaoSettings(presentationSettings.Effects)) &&
                     mCacaoPass.Execute(command, presentationPerspective->Projection, aoBarrierPlan,
                         Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
@@ -7620,7 +7572,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 mAmbientOcclusionOutputValid =
                     mMxaoPass.Configure(*transientAmbientOcclusionOutput,
                         reinterpret_cast<VkImage>(aoDepthBinding.NativeImage),
-                        static_cast<VkFormat>(aoDepthBinding.Format), aoNormalImage, aoNormalFormat) &&
+                        static_cast<VkFormat>(aoDepthBinding.Format),
+                        reinterpret_cast<VkImage>(aoNormalBinding.NativeImage),
+                        static_cast<VkFormat>(aoNormalBinding.Format)) &&
                     mMxaoPass.Execute(mCurrentFrame, *presentationPerspective,
                         effectGuideTarget->WBuffering, presentationSettings.Effects, aoBarrierPlan,
                         Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
@@ -7628,7 +7582,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 mAmbientOcclusionOutputValid =
                     mAmbientOcclusionPass.Configure(*transientAmbientOcclusionOutput,
                         reinterpret_cast<VkImage>(aoDepthBinding.NativeImage),
-                        static_cast<VkFormat>(aoDepthBinding.Format), aoNormalImage, aoNormalFormat) &&
+                        static_cast<VkFormat>(aoDepthBinding.Format),
+                        reinterpret_cast<VkImage>(aoNormalBinding.NativeImage),
+                        static_cast<VkFormat>(aoNormalBinding.Format)) &&
                     mAmbientOcclusionPass.Execute(mCurrentFrame, *presentationPerspective,
                         effectGuideTarget->WBuffering, presentationSettings.Effects, aoBarrierPlan,
                         Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
@@ -10866,8 +10822,6 @@ bool GfxRenderingAPIVulkan::ResetPicaState(
         mAmbientOcclusionPass.InvalidateScreenResources();
         mCacaoPass.InvalidateScreenResources();
         mMxaoPass.InvalidateScreenResources();
-        mLaunchpadNormalsPass.InvalidateScreenResources();
-        mLaunchpadAlbedoPass.InvalidateScreenResources();
         mFidelityFxSssrPass.InvalidateScreenResources();
         mBrixelizerGiPass.InvalidateScreenResources();
         mReflectionMaterialResolvePass.InvalidateScreenResources();
@@ -11343,8 +11297,6 @@ void GfxRenderingAPIVulkan::ReleaseEffectGraphImageClients() {
     mAmbientOcclusionPass.InvalidateScreenResources();
     mCacaoPass.InvalidateScreenResources();
     mMxaoPass.InvalidateScreenResources();
-    mLaunchpadNormalsPass.InvalidateScreenResources();
-    mLaunchpadAlbedoPass.InvalidateScreenResources();
     mHiZDepthPyramidPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
     mBrixelizerGiPass.InvalidateScreenResources();
@@ -11397,8 +11349,6 @@ void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayIma
     mAmbientOcclusionPass.InvalidateScreenResources();
     mCacaoPass.InvalidateScreenResources();
     mMxaoPass.InvalidateScreenResources();
-    mLaunchpadNormalsPass.InvalidateScreenResources();
-    mLaunchpadAlbedoPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
     mBrixelizerGiPass.InvalidateScreenResources();
     mReflectionMaterialResolvePass.InvalidateScreenResources();

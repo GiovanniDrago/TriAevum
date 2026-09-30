@@ -31,17 +31,6 @@ enum class AmbientOcclusionMode : uint8_t { Off, Gtao, Cacao, Mxao };
 // iMMERSE MXAO estimators: ground-truth horizons, solid angle, and the
 // visibility bitmask with a cosine-weighted or solid-angle integral.
 enum class MxaoEstimator : uint8_t { GroundTruth, SolidAngle, VisibilityBitmask, VisibilityBitmaskSolidAngle };
-// Normals the AO providers read: the native guide or its iMMERSE LAUNCHPAD
-// refinement: smoothing (a surface-aware regression that hides faceted
-// geometry), texture detail (relief from the lighting-equalized scene colour),
-// or both.
-enum class AoNormalSource : uint8_t { Native, Smoothed, Textured, SmoothedTextured };
-[[nodiscard]] constexpr bool SmoothsAoNormals(AoNormalSource source) noexcept {
-    return source == AoNormalSource::Smoothed || source == AoNormalSource::SmoothedTextured;
-}
-[[nodiscard]] constexpr bool TexturesAoNormals(AoNormalSource source) noexcept {
-    return source == AoNormalSource::Textured || source == AoNormalSource::SmoothedTextured;
-}
 enum class ReflectionMode : uint8_t { Off, HiZ, FidelityFxSssr };
 enum class ToonMode : uint8_t { Off, PostProcessPreview, PicaMaterial };
 enum class SurfaceLightingMode : uint8_t { Native, PerPixel, PerPixelPbr, NativePbr };
@@ -223,11 +212,6 @@ struct EffectsSettings {
     MxaoEstimator MxaoMethod = MxaoEstimator::VisibilityBitmask;
     uint8_t MxaoQuality = 1;
     uint8_t MxaoFilter = 1;
-    AoNormalSource AoNormals = AoNormalSource::Native;
-    // LAUNCHPAD texture detail: quality Low..Ultra, radius and intensity 0..1.
-    uint8_t AoTextureDetailQuality = 2;
-    float AoTextureDetailRadius = 0.5F;
-    float AoTextureDetailIntensity = 0.5F;
     ReflectionMode Reflections = ReflectionMode::Off;
     float ReflectionStrength = 0.65F;
     float ReflectionMaxDistance = 1500.0F;

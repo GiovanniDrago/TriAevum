@@ -916,10 +916,6 @@ void GfxRenderingAPIVulkan::Init() {
         SPDLOG_INFO("OOT3D Vulkan CACAO unavailable: {}", mCacaoPass.UnavailableReason());
     if (!mMxaoPass.Initialize(mPhysicalDevice, mDevice, mNriInterop))
         SPDLOG_INFO("OOT3D Vulkan MXAO unavailable: {}", mMxaoPass.UnavailableReason());
-    if (!mLaunchpadNormalsPass.Initialize(mPhysicalDevice, mDevice, mNriInterop))
-        SPDLOG_INFO("OOT3D Vulkan LAUNCHPAD normals unavailable: {}", mLaunchpadNormalsPass.UnavailableReason());
-    if (!mLaunchpadAlbedoPass.Initialize(mPhysicalDevice, mDevice, mNriInterop))
-        SPDLOG_INFO("OOT3D Vulkan LAUNCHPAD albedo unavailable: {}", mLaunchpadAlbedoPass.UnavailableReason());
     if (!mHiZDepthPyramidPass.Initialize(
             mPhysicalDevice, mDevice, mNriInterop)) {
         SPDLOG_INFO("OOT3D Vulkan Hi-Z unavailable: {}",
@@ -1001,10 +997,6 @@ void GfxRenderingAPIVulkan::Init() {
                                   mCacaoPass.Available(), mCacaoPass.UnavailableReason());
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::ImmerseMxao,
                                   mMxaoPass.Available(), mMxaoPass.UnavailableReason());
-    settingsRuntime.SetCapability(Oot3d::GraphicsCapability::ImmerseNormals,
-                                  mLaunchpadNormalsPass.Available() && mLaunchpadAlbedoPass.Available(),
-                                  !mLaunchpadNormalsPass.Available() ? mLaunchpadNormalsPass.UnavailableReason()
-                                                                     : mLaunchpadAlbedoPass.UnavailableReason());
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::MotionVectors,
                                   mMotionVectorPass.Available(),
                                   mMotionVectorPass.UnavailableReason());
@@ -1182,8 +1174,6 @@ void GfxRenderingAPIVulkan::Shutdown() {
         mAmbientOcclusionPass.Shutdown();
         mCacaoPass.Shutdown();
         mMxaoPass.Shutdown();
-        mLaunchpadNormalsPass.Shutdown();
-        mLaunchpadAlbedoPass.Shutdown();
         mFidelityFxSssrPass.Shutdown();
         mReflectionMaterialResolvePass.Shutdown();
         mReflectionIblPass.Shutdown();

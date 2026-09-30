@@ -130,33 +130,6 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
         }
         ImGui::EndDisabled();
     }
-    if (ao) {
-        ImGui::BeginDisabled(!aoReady);
-        const char* const normalSources[] = {"Native", "Smoothed (LAUNCHPAD)", "Texture detail (LAUNCHPAD)",
-                                             "Smoothed + texture detail (LAUNCHPAD)"};
-        changed |= SettingsUi::ValidatedCombo<AoNormalSource>(
-            "AO normals", settings, capabilities, normalSources,
-            [](auto& value, auto source) { value.Effects.AoNormals = source; },
-            [](const auto& value) { return value.Effects.AoNormals; });
-        auto& effects = settings.Effects;
-        if (TexturesAoNormals(effects.AoNormals)) {
-            int quality = effects.AoTextureDetailQuality;
-            const char* const qualityNames[] = {"Low", "Medium", "High", "Very high", "Ultra"};
-            if (ImGui::Combo("Texture detail quality", &quality, qualityNames, 5)) {
-                effects.AoTextureDetailQuality = static_cast<uint8_t>(quality);
-                changed = true;
-            }
-            changed |= ImGui::SliderFloat("Texture detail radius", &effects.AoTextureDetailRadius, 0.0F, 1.0F,
-                                          "%.2f");
-            changed |= ImGui::SliderFloat("Texture detail intensity", &effects.AoTextureDetailIntensity, 0.0F,
-                                          1.0F, "%.2f");
-        }
-        ImGui::EndDisabled();
-        if (effects.AoNormals != AoNormalSource::Native)
-            ImGui::TextWrapped("Smoothing softens faceted geometry and keeps creases; texture detail adds surface "
-                               "relief from the scene's textures. From iMMERSE LAUNCHPAD by Pascal Gilcher "
-                               "(martysmods.com), used with the author's permission.");
-    }
     if (!aoReady) {
         ImGui::TextWrapped("AO unavailable: NRI, depth, normals or camera metadata missing.");
     }
@@ -164,9 +137,6 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
         ImGui::TextWrapped("CACAO unavailable: %s", capabilities.Get(GraphicsCapability::FidelityFxCacao).Reason.c_str());
     if (!capabilities.Has(GraphicsCapability::ImmerseMxao))
         ImGui::TextWrapped("MXAO unavailable: %s", capabilities.Get(GraphicsCapability::ImmerseMxao).Reason.c_str());
-    if (!capabilities.Has(GraphicsCapability::ImmerseNormals))
-        ImGui::TextWrapped("LAUNCHPAD normals unavailable: %s",
-                           capabilities.Get(GraphicsCapability::ImmerseNormals).Reason.c_str());
 
     return changed;
 }

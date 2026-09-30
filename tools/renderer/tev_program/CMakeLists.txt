@@ -140,28 +140,6 @@ if(WIN32)
 endif()
 add_test(NAME mxao_gpu COMMAND mxao_gpu_tests)
 set_tests_properties(mxao_gpu PROPERTIES TIMEOUT 120)
-add_executable(launchpad_normals_gpu_tests launchpad_normals_gpu_tests.cpp
-    "${runtime}/src/fast/immerse/launchpad_normals_shader.cpp")
-target_compile_features(launchpad_normals_gpu_tests PRIVATE cxx_std_20)
-target_include_directories(launchpad_normals_gpu_tests PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")
-target_link_libraries(launchpad_normals_gpu_tests PRIVATE Vulkan::Vulkan "${SHADERC_LIBRARY}")
-if(WIN32)
-    add_custom_command(TARGET launchpad_normals_gpu_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${SHADERC_RUNTIME}" "$<TARGET_FILE_DIR:launchpad_normals_gpu_tests>")
-endif()
-add_test(NAME launchpad_normals_gpu COMMAND launchpad_normals_gpu_tests)
-set_tests_properties(launchpad_normals_gpu PROPERTIES TIMEOUT 120)
-add_executable(launchpad_albedo_gpu_tests launchpad_albedo_gpu_tests.cpp
-    "${runtime}/src/fast/immerse/launchpad_albedo_shader.cpp")
-target_compile_features(launchpad_albedo_gpu_tests PRIVATE cxx_std_20)
-target_include_directories(launchpad_albedo_gpu_tests PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")
-target_link_libraries(launchpad_albedo_gpu_tests PRIVATE Vulkan::Vulkan "${SHADERC_LIBRARY}")
-if(WIN32)
-    add_custom_command(TARGET launchpad_albedo_gpu_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${SHADERC_RUNTIME}" "$<TARGET_FILE_DIR:launchpad_albedo_gpu_tests>")
-endif()
-add_test(NAME launchpad_albedo_gpu COMMAND launchpad_albedo_gpu_tests)
-set_tests_properties(launchpad_albedo_gpu PROPERTIES TIMEOUT 120)
 add_executable(scene_coverage_gpu_tests scene_coverage_gpu_tests.cpp
     "${runtime}/src/fast/oot3d/pica_nri_pipeline_state.cpp")
 target_compile_features(scene_coverage_gpu_tests PRIVATE cxx_std_20)
