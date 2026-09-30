@@ -48,11 +48,14 @@ struct PicaCompositionAttribution {
     uint32_t NativeValue = 0;
     // Title-proven native projected/blob shadow, not inferred from material.
     bool NativeProjectedShadow = false;
+    // Native actor draw ownership, independent of skinning and material.
+    bool NativeActorGeometry = false;
+    uint64_t NativeActorIdentity = 0;
 
     bool operator==(const PicaCompositionAttribution&) const = default;
 };
 
-inline constexpr uint32_t kPicaCompositionSequenceSchemaVersion = 3U;
+inline constexpr uint32_t kPicaCompositionSequenceSchemaVersion = 4U;
 
 struct PicaCompositionTargetReference {
     uint64_t RenderTargetNamespace = 0;

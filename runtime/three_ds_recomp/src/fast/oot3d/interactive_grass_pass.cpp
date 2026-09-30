@@ -16,6 +16,7 @@
 #include "fast/oot3d/grass_selection_budget.h"
 #include "fast/oot3d/grass_collision_resolver.h"
 #include "fast/oot3d/grass_gpu_instance_compactor.h"
+#include "fast/oot3d/grass_shadow_grid_pass.h"
 #include "fast/oot3d/grass_interaction_bridge.h"
 #include "fast/oot3d/grass_render_telemetry.h"
 #include "fast/oot3d/grass_scene_bridge.h"
@@ -85,6 +86,7 @@ struct alignas(16) GrassEnvironmentRecord {
     std::array<float, 4> TuftStyle{};
     ToonSurfaceParameters Toon;
     std::array<uint32_t, 4> NativeLighting{};
+    // Rim start/end, enabled, VSM receiver strength.
     std::array<float, 4> RimDistance{};
 };
 static_assert(offsetof(GrassEnvironmentRecord, Toon) == 1424U);
@@ -413,10 +415,55 @@ std::array<float, 3> Cross(const std::array<float, 3>& left,
     };
 }
 
+std::array<Renderer3ds::ShadowBounds, 2> ResolveShadowFocus(
+    std::span<const GrassInteractor> actors, const Renderer3ds::PicaResolvedDrawStreamView& scene,
+    uint64_t renderTargetNamespace, uint32_t colorPhysicalAddress) {
+    std::array<const GrassInteractor*, 2> selected{};
+    for (const auto& actor : actors)
+        if (actor.Type == GrassInteractor::Kind::PlayerLink &&
+            (!selected[0] || actor.StableId < selected[0]->StableId))
+            selected[0] = &actor;
+    float nearest = std::numeric_limits<float>::infinity();
+    for (const auto& actor : actors) {
+        if (actor.Type != GrassInteractor::Kind::Epona) continue;
+        float distance = 0;
+        if (selected[0])
+            for (size_t axis = 0; axis < 3; ++axis) {
+                const float delta = actor.Position[axis] - selected[0]->Position[axis];
+                distance += delta * delta;
+            }
+        if (!selected[1] || distance < nearest ||
+            (distance == nearest && actor.StableId < selected[1]->StableId)) {
+            selected[1] = &actor;
+            nearest = distance;
+        }
+    }
+    std::array<Renderer3ds::ShadowBounds, 2> result{};
+    for (const auto& draw : scene.Draws) {
+        const auto& caster = draw.ShadowCaster;
+        if (!caster.WorldBounds.Available ||
+            draw.RenderTarget.RenderTargetNamespace != renderTargetNamespace ||
+            draw.RenderTarget.ColorPhysicalAddress != colorPhysicalAddress) continue;
+        for (size_t slot = 0; slot < selected.size(); ++slot) {
+            if (!selected[slot] || caster.OwnerIdentity != selected[slot]->StableId) continue;
+            auto& bounds = result[slot];
+            if (!bounds.Available) bounds = caster.WorldBounds;
+            else
+                for (size_t axis = 0; axis < 3; ++axis) {
+                    bounds.Minimum[axis] = std::min(bounds.Minimum[axis], caster.WorldBounds.Minimum[axis]);
+                    bounds.Maximum[axis] = std::max(bounds.Maximum[axis], caster.WorldBounds.Maximum[axis]);
+                }
+        }
+    }
+    return result;
+}
+
 } // namespace
 
 struct InteractiveGrassPass::Impl {
     ::Fast::Renderer3ds::PicaSurfaceLightingPass SurfaceLighting;
+    ::Fast::Renderer3ds::PicaSurfaceLightingPass ShadowSurfaceLighting;
+    GrassShadowGridPass ShadowGrid;
     Renderer::CachedPassShaderCompiler* SurfaceShaders = nullptr;
     std::vector<::Fast::Renderer3ds::PicaSurfaceLightingRequest> LightingRequests;
     VkPhysicalDevice PhysicalDevice = VK_NULL_HANDLE;
@@ -424,6 +471,17 @@ struct InteractiveGrassPass::Impl {
     VkDescriptorSetLayout DescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
     std::array<VkDescriptorSet, 2> DescriptorSets{};
+    struct DescriptorInvocation {
+        VkDescriptorPool Pool = VK_NULL_HANDLE;
+        VkDescriptorSet Set = VK_NULL_HANDLE;
+    };
+    struct DescriptorFrame {
+        uint64_t FrameId = 0;
+        size_t Used = 0;
+        std::vector<DescriptorInvocation> Additional;
+    };
+    std::array<DescriptorFrame, 2> DescriptorFrames;
+    VkDescriptorSet PreparedDescriptorSet = VK_NULL_HANDLE;
     VkPipelineLayout PipelineLayout = VK_NULL_HANDLE;
     // Canonical, instrumented, instrumented with the GI albedo guide
     // (dynamic rendering only; grass leaves the albedo below it).
@@ -437,6 +495,7 @@ struct InteractiveGrassPass::Impl {
     std::array<BufferSlot, 2> InstanceBuffers{};
     std::array<BufferSlot, 2> EnvironmentBuffers{};
     std::array<BufferSlot, 2> GroupBuffers{};
+    std::array<BufferSlot, 2> ShadowVisibleIndices{};
     std::vector<std::array<uint32_t, 2>> DrawGroups;
     BufferSlot IndexBuffer;
     GrassIndexedTopology IndexedTopology;
@@ -449,6 +508,9 @@ struct InteractiveGrassPass::Impl {
     std::array<std::vector<std::array<uint32_t, 2>>, kGrassLodBinCount> SelectedClusterRanges;
     std::vector<uint32_t> VisibleAnchorIndices;
     std::vector<GrassWorldAnchor> StaticAnchors;
+    std::vector<GrassShadowGridPoint> ShadowPoints;
+    std::vector<GrassShadowGridReference> ShadowReferences;
+    std::vector<GrassShadowSurface> ShadowSurfaces;
     std::vector<GrassClusterWork> ClusterWork;
     std::vector<uint32_t> SelectionRoots;
     std::vector<std::vector<GrassClusterWork>> SelectionOutputs;
@@ -474,9 +536,37 @@ struct InteractiveGrassPass::Impl {
     uint32_t LastBlades = 0;
     uint32_t LastMotionBlades = 0;
     VkBuffer PreparedInstanceBuffer = VK_NULL_HANDLE;
-    uint32_t PreparedFrameSlot = 0U;
     bool Prepared = false;
     std::string Reason;
+    VkDescriptorSet AcquireDescriptorSet(size_t slotIndex, uint64_t frameId) {
+        auto& frame = DescriptorFrames[slotIndex];
+        if (frame.FrameId != frameId) {
+            frame.FrameId = frameId;
+            frame.Used = 0;
+        }
+        if (frame.Used++ == 0) return DescriptorSets[slotIndex];
+        const size_t index = frame.Used - 2;
+        if (index == frame.Additional.size()) frame.Additional.emplace_back();
+        auto& invocation = frame.Additional[index];
+        if (invocation.Set == VK_NULL_HANDLE) {
+            const std::array<VkDescriptorPoolSize, 2> sizes{{
+                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}}};
+            VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+            pool.maxSets = 1; pool.poolSizeCount = static_cast<uint32_t>(sizes.size()); pool.pPoolSizes = sizes.data();
+            if (vkCreateDescriptorPool(Device, &pool, nullptr, &invocation.Pool) != VK_SUCCESS)
+                throw std::runtime_error("cannot create Grass invocation descriptor pool");
+            VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+            allocation.descriptorPool = invocation.Pool;
+            allocation.descriptorSetCount = 1; allocation.pSetLayouts = &DescriptorSetLayout;
+            if (vkAllocateDescriptorSets(Device, &allocation, &invocation.Set) != VK_SUCCESS) {
+                vkDestroyDescriptorPool(Device, invocation.Pool, nullptr);
+                invocation.Pool = VK_NULL_HANDLE;
+                throw std::runtime_error("cannot allocate Grass invocation descriptors");
+            }
+        }
+        return invocation.Set;
+    }
+
 
     size_t WorkerCount() {
         if (WorkerPool == nullptr) {
@@ -600,11 +690,15 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                 shaders, device, fragmentSource.c_str(), Renderer::SpirvStage::Fragment,
                 "interactive_grass_instrumented.frag",
                 "GRASS_AUXILIARY_OUTPUTS", "1");
-            const std::array<VkDescriptorSetLayoutBinding, 4> environmentBindings{{
+            const std::array<VkDescriptorSetLayoutBinding, 8> environmentBindings{{
                 {0U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
                 {1U, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
                 {2U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
-                {3U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr}}};
+                {3U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+                {4U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+                {5U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+                {6U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+                {7U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr}}};
             VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo{
                 VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
             descriptorLayoutInfo.bindingCount = static_cast<uint32_t>(environmentBindings.size());
@@ -616,7 +710,7 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                     "cannot create interactive grass descriptor layout");
             }
             const std::array<VkDescriptorPoolSize, 2> poolSizes{{
-                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}}};
+                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 14}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}}};
             VkDescriptorPoolCreateInfo poolInfo{
                 VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
             poolInfo.maxSets =
@@ -834,6 +928,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                                    uint64_t frameId, uint64_t renderTargetNamespace,
                                    uint32_t framebufferColorPhysicalAddress, uint32_t frameSlot,
                                    const EffectGeometryProviderPlan& providerPlan,
+                                   const NriDirectionalShadowHistorySnapshot& shadowHistory,
                                    const std::array<float, 2>& jitterPixels, bool temporalJitter) {
     mImpl->Prepared = false;
     mImpl->PreparedInstanceBuffer = VK_NULL_HANDLE;
@@ -898,6 +993,10 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         return finish(GrassRenderStatus::NoBudget, false);
     }
     try {
+        const bool receiveShadows = settings.Appearance.ReceiveLighting &&
+            providerPlan.Requires(EffectResource::DirectionalShadowHistory) && shadowHistory.Valid() &&
+            shadowHistory.State.ProducedFrameId <= frameId && shadowHistory.State.Strength > 0.0F;
+        auto& surfaceLighting = receiveShadows ? mImpl->ShadowSurfaceLighting : mImpl->SurfaceLighting;
         const auto actors = GrassInteractionBridge::Instance().LatestActors();
         const auto clock = VisualClock::Instance().Snapshot();
         float deltaSeconds = 0.0F;
@@ -997,6 +1096,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 placementRequest.MidrangeAdaptiveCapacity = settings.MidrangeAdaptiveCapacity;
                 placementRequest.HeightScale =
                     settings.Appearance.HeightScale;
+                placementRequest.ShadowGrid = receiveShadows;
                 GrassPushConstants push = ProjectionForMesh(mesh, view);
                 push.JitterNdc[0] = currentJitterNdc[0];
                 push.JitterNdc[1] = currentJitterNdc[1];
@@ -1025,16 +1125,17 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
 
         const auto placementStart = std::chrono::steady_clock::now();
         auto placements = mImpl->PlacementBuilder.Resolve(placementRequests);
-        if (!mImpl->SurfaceLighting.Sampler() && !mImpl->SurfaceLighting.Initialize(
-                mImpl->PhysicalDevice, mImpl->Device, *mImpl->SurfaceShaders))
+        if (!surfaceLighting.Sampler() && !surfaceLighting.Initialize(
+                mImpl->PhysicalDevice, mImpl->Device, *mImpl->SurfaceShaders, receiveShadows))
             return finish(GrassRenderStatus::PipelineUnavailable, false);
-        if (!mImpl->SurfaceLighting.Prepare(commandBuffer, frameSlot, frameId, scene, mImpl->LightingRequests))
+        if (!surfaceLighting.Prepare(commandBuffer, frameSlot, frameId, scene, mImpl->LightingRequests,
+                shadowHistory.State.WorldLightDirectionTowardSource))
             return finish(GrassRenderStatus::PipelineUnavailable, false);
         size_t nativeLit = 0;
         for (size_t i = 0; i < preparedPlacements.size(); ++i) {
             const auto& source = mImpl->LightingRequests[i];
             if (source.Available && settings.Appearance.ReceiveLighting) {
-                preparedPlacements[i].Environment.NativeLighting = {source.AtlasBase, 1,
+                preparedPlacements[i].Environment.NativeLighting = {source.AtlasBase, receiveShadows ? 3U : 1U,
                     ::Fast::Renderer3ds::PicaSurfacePassthroughScale(source.ColorResponse.PackedScales),
                     source.ColorResponse.Available ? 1U : 0U};
                 preparedPlacements[i].Environment.Toon.Flags[1] = 1;
@@ -1101,8 +1202,33 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         if (activePlacements != mImpl->ActivePlacements) {
             mImpl->ActivePlacements = std::move(activePlacements);
             mImpl->StaticAnchors.clear();
+            mImpl->ShadowPoints.clear();
+            mImpl->ShadowReferences.clear();
+            mImpl->ShadowSurfaces.clear();
             mImpl->StaticAnchors.reserve(totalStaticAnchors);
             for (const auto& prepared : preparedPlacements) {
+                if (receiveShadows) {
+                    if (prepared.World->ShadowReferences.size() != prepared.World->Anchors.size() ||
+                        prepared.World->ShadowPoints.empty() || prepared.World->ShadowSurfaces.empty())
+                        throw std::runtime_error("grass shadow grid does not cover the immutable placement");
+                    const auto pointBase = static_cast<uint32_t>(mImpl->ShadowPoints.size());
+                    if (prepared.World->ShadowPoints.size() > std::numeric_limits<uint32_t>::max() - pointBase)
+                        throw std::runtime_error("grass shadow grid address overflow");
+                    const auto surfaceBase = static_cast<uint32_t>(mImpl->ShadowSurfaces.size());
+                    if (prepared.World->ShadowSurfaces.size() > std::numeric_limits<uint32_t>::max() - surfaceBase)
+                        throw std::runtime_error("grass shadow surface address overflow");
+                    for (auto point : prepared.World->ShadowPoints) {
+                        point.Normal[3] = std::bit_cast<float>(std::bit_cast<uint32_t>(point.Normal[3]) + surfaceBase);
+                        mImpl->ShadowPoints.push_back(point);
+                    }
+                    mImpl->ShadowSurfaces.insert(mImpl->ShadowSurfaces.end(),
+                        prepared.World->ShadowSurfaces.begin(), prepared.World->ShadowSurfaces.end());
+                    for (auto reference : prepared.World->ShadowReferences) {
+                        reference.First += pointBase;
+                        reference.Second += pointBase;
+                        mImpl->ShadowReferences.push_back(reference);
+                    }
+                }
                 mImpl->StaticAnchors.insert(mImpl->StaticAnchors.end(), prepared.World->Anchors.begin(),
                                             prepared.World->Anchors.end());
             }
@@ -1467,20 +1593,69 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             dynamicUploadedBytes = static_cast<uint64_t>(instanceBytes);
         }
 
+        // Disabled receivers reuse an already valid descriptor without a shadow
+        // allocation, upload or dispatch. The shader never reads these bindings.
+        const VkDescriptorBufferInfo unusedShadow{mImpl->PreparedInstanceBuffer, 0, sizeof(GrassInstance)};
+        std::array<VkDescriptorBufferInfo, 4> shadowBuffers{unusedShadow, unusedShadow, unusedShadow, unusedShadow};
+        if (receiveShadows) {
+            if (!mImpl->ShadowGrid.Available())
+                mImpl->ShadowGrid.Initialize(mImpl->PhysicalDevice, mImpl->Device, *mImpl->SurfaceShaders);
+            const auto focus = shadowHistory.State.ProducedFrameId == frameId && scene.FrameId == frameId
+                ? ResolveShadowFocus(actors, scene, renderTargetNamespace, framebufferColorPhysicalAddress)
+                : std::array<Renderer3ds::ShadowBounds, 2>{};
+            const auto grid = mImpl->ShadowGrid.Execute(commandBuffer, frameSlot, frameId, mImpl->StaticRevision,
+                mImpl->ShadowPoints, mImpl->ShadowReferences, mImpl->ShadowSurfaces, focus, providerPlan, shadowHistory);
+            shadowBuffers[0] = grid.Visibility;
+            shadowBuffers[1] = grid.References;
+            shadowBuffers[3] = grid.Patches;
+            const VkDeviceSize visibleBytes = mImpl->VisibleAnchorIndices.size() * sizeof(uint32_t);
+            staticUploadedBytes += grid.StaticUploadedBytes;
+            dynamicUploadedBytes += grid.DynamicUploadedBytes;
+            if (gpuCompacted) {
+                shadowBuffers[2] = {compaction.VisibleIndicesBuffer, 0, visibleBytes};
+            } else {
+                auto& visible = mImpl->ShadowVisibleIndices[slotIndex];
+                mImpl->EnsureBuffer(visible, visibleBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                std::memcpy(visible.Mapped, mImpl->VisibleAnchorIndices.data(), static_cast<size_t>(visibleBytes));
+                shadowBuffers[2] = {visible.Buffer, 0, visibleBytes};
+                dynamicUploadedBytes += visibleBytes;
+            }
+            if (std::getenv("OOT3D_GRASS_DIAGNOSTICS") && frameId % 30 == 0)
+                std::fprintf(stderr, "[grass-shadow-grid] frame=%llu history=%llu points=%u roots=%u placements=%zu "
+                    "refined=%u patches=%u cell=%.1f link=%d epona=%d\n",
+                    static_cast<unsigned long long>(frameId),
+                    static_cast<unsigned long long>(shadowHistory.State.ProducedFrameId),
+                    grid.PointCount, instanceCount, preparedPlacements.size(),
+                    grid.RefinementPointCount, grid.RefinementPatchCount, grid.RefinementCellSize,
+                    focus[0].Available, focus[1].Available);
+        }
+        // Updating a set already recorded at another native anchor would make
+        // the earlier draw read the later invocation's history/grid buffers.
+        const auto descriptorSet = mImpl->AcquireDescriptorSet(slotIndex, frameId);
+        std::array<VkWriteDescriptorSet, 4> shadowWrites{};
+        for (uint32_t index = 0; index < shadowWrites.size(); ++index) {
+            auto& write = shadowWrites[index];
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = descriptorSet; write.dstBinding = 4U + index;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; write.descriptorCount = 1;
+            write.pBufferInfo = &shadowBuffers[index];
+        }
+        vkUpdateDescriptorSets(mImpl->Device, static_cast<uint32_t>(shadowWrites.size()), shadowWrites.data(), 0, nullptr);
+
         const VkDeviceSize environmentBytes = environmentRecords.size() * sizeof(GrassEnvironmentRecord);
         auto& environmentBuffer = mImpl->EnvironmentBuffers[slotIndex];
         mImpl->EnsureBuffer(environmentBuffer, environmentBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         std::memcpy(environmentBuffer.Mapped, environmentRecords.data(), static_cast<size_t>(environmentBytes));
         const VkDescriptorBufferInfo environmentBufferInfo{ environmentBuffer.Buffer, 0U, environmentBytes };
         const VkWriteDescriptorSet environmentWrite{
-            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, mImpl->DescriptorSets[slotIndex], 0U,     0U, 1U,
+            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet, 0U, 0U, 1U,
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,      nullptr, &environmentBufferInfo,           nullptr
         };
         vkUpdateDescriptorSets(mImpl->Device, 1U, &environmentWrite, 0U, nullptr);
-        VkDescriptorImageInfo nativeLightingImage{mImpl->SurfaceLighting.Sampler(), mImpl->SurfaceLighting.View(frameSlot),
+        VkDescriptorImageInfo nativeLightingImage{surfaceLighting.Sampler(), surfaceLighting.View(frameSlot),
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet lightingWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        lightingWrite.dstSet = mImpl->DescriptorSets[slotIndex]; lightingWrite.dstBinding = 1;
+        lightingWrite.dstSet = descriptorSet; lightingWrite.dstBinding = 1;
         lightingWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; lightingWrite.descriptorCount = 1;
         lightingWrite.pImageInfo = &nativeLightingImage;
         vkUpdateDescriptorSets(mImpl->Device, 1, &lightingWrite, 0, nullptr);
@@ -1494,7 +1669,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             {groupBuffer.Buffer, 0, groupBytes}}};
         for (uint32_t index = 0; index < 2; ++index) {
             VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-            write.dstSet = mImpl->DescriptorSets[slotIndex]; write.dstBinding = index+2;
+            write.dstSet = descriptorSet; write.dstBinding = index+2;
             write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; write.descriptorCount = 1;
             write.pBufferInfo = &clusterBuffers[index];
             vkUpdateDescriptorSets(mImpl->Device, 1, &write, 0, nullptr);
@@ -1511,7 +1686,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         telemetry.GpuCompaction = gpuCompacted;
         telemetry.UploadMilliseconds +=
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - uploadStart).count();
-        mImpl->PreparedFrameSlot = static_cast<uint32_t>(slotIndex);
+        mImpl->PreparedDescriptorSet = descriptorSet;
         mImpl->Prepared = true;
         return finish(GrassRenderStatus::Drawn, true);
     } catch (const std::exception& exception) {
@@ -1538,10 +1713,9 @@ bool InteractiveGrassPass::DrawPrepared(
         commandBuffer == VK_NULL_HANDLE) {
         return false;
     }
-    const size_t slotIndex = mImpl->PreparedFrameSlot % mImpl->DescriptorSets.size();
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, mImpl->PipelineLayout, 0U, 1U,
-                            &mImpl->DescriptorSets[slotIndex], 0U, nullptr);
+                            &mImpl->PreparedDescriptorSet, 0U, nullptr);
     const VkDeviceSize offset = 0U;
     vkCmdBindVertexBuffers(commandBuffer, 0U, 1U, &mImpl->PreparedInstanceBuffer, &offset);
     vkCmdBindIndexBuffer(commandBuffer, mImpl->IndexBuffer.Buffer, 0, VK_INDEX_TYPE_UINT32);
@@ -1578,6 +1752,8 @@ void InteractiveGrassPass::Shutdown() {
     mImpl->WorkerOutputs.clear();
     mImpl->InstanceCompactor.Shutdown();
     mImpl->SurfaceLighting.Shutdown();
+    mImpl->ShadowSurfaceLighting.Shutdown();
+    mImpl->ShadowGrid.Shutdown();
     mImpl->GpuCompactorAvailable = false;
     if (mImpl->Device != VK_NULL_HANDLE) {
         mImpl->DestroyBuffer(mImpl->IndexBuffer);
@@ -1587,6 +1763,8 @@ void InteractiveGrassPass::Shutdown() {
             mImpl->DestroyBuffer(buffer);
         for (auto& buffer : mImpl->GroupBuffers)
             mImpl->DestroyBuffer(buffer);
+        for (auto& buffer : mImpl->ShadowVisibleIndices)
+            mImpl->DestroyBuffer(buffer);
         for (const auto pipeline : mImpl->Pipelines) {
             if (pipeline != VK_NULL_HANDLE) {
                 vkDestroyPipeline(mImpl->Device, pipeline, nullptr);
@@ -1594,6 +1772,11 @@ void InteractiveGrassPass::Shutdown() {
         }
         if (mImpl->PipelineLayout != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(mImpl->Device, mImpl->PipelineLayout, nullptr);
+        for (auto& frame : mImpl->DescriptorFrames) {
+            for (const auto& invocation : frame.Additional)
+                if (invocation.Pool) vkDestroyDescriptorPool(mImpl->Device, invocation.Pool, nullptr);
+            frame = {};
+        }
         if (mImpl->DescriptorPool != VK_NULL_HANDLE)
             vkDestroyDescriptorPool(
                 mImpl->Device, mImpl->DescriptorPool, nullptr);
@@ -1606,6 +1789,7 @@ void InteractiveGrassPass::Shutdown() {
     mImpl->DescriptorPool = VK_NULL_HANDLE;
     mImpl->DescriptorSetLayout = VK_NULL_HANDLE;
     mImpl->DescriptorSets = {};
+    mImpl->PreparedDescriptorSet = VK_NULL_HANDLE;
     mImpl->Batches.clear();
     mImpl->SelectionCache.Reset();
     mImpl->IndexedTopology = {};
@@ -1618,13 +1802,15 @@ void InteractiveGrassPass::Shutdown() {
     for (auto& ranges : mImpl->SelectedClusterRanges) ranges.clear();
     mImpl->VisibleAnchorIndices.clear();
     mImpl->StaticAnchors.clear();
+    mImpl->ShadowPoints.clear();
+    mImpl->ShadowReferences.clear();
+    mImpl->ShadowSurfaces.clear();
     mImpl->ActivePlacements.clear();
     mImpl->ClusterWork.clear();
     mImpl->SelectionRoots.clear();
     mImpl->SelectionOutputs.clear();
     mImpl->StaticRevision = 0U;
     mImpl->PreparedInstanceBuffer = VK_NULL_HANDLE;
-    mImpl->PreparedFrameSlot = 0U;
     mImpl->Prepared = false;
     mImpl->PlacementBuilder.Clear();
     ResetTemporalState();

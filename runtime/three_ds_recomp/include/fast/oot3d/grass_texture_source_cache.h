@@ -32,6 +32,21 @@ struct GrassTextureColorGrid {
     std::array<std::array<float, 3>, Side * Side> Rgb{};
 };
 
+// Shared interpolation stencil. Points are in the wrapped 4x4 grid's
+// coordinate system (including repeat-border neighbours); Indices address RGB.
+struct GrassTextureGridSample {
+    std::array<std::array<int32_t, 2>, 2> Points{};
+    std::array<uint32_t, 2> Indices{};
+    float Weight = 0.0F;
+    bool Valid = false;
+};
+
+[[nodiscard]] GrassTextureGridSample ResolveGrassTextureGridSample(
+    float u, float v, GrassTextureWrap wrapS, GrassTextureWrap wrapT) noexcept;
+[[nodiscard]] std::array<float, 2> UnwrapGrassTextureGridPoint(
+    const std::array<int32_t, 2>& point, const std::array<float, 2>& uv,
+    GrassTextureWrap wrapS, GrassTextureWrap wrapT) noexcept;
+
 struct GrassTextureColorSource {
     std::shared_ptr<const GrassTextureColorGrid> Grid;
 
@@ -40,6 +55,7 @@ struct GrassTextureColorSource {
     // Inverse-distance RGB from the two nearest grid points. High byte is validity.
     [[nodiscard]] uint32_t SamplePacked(float u, float v,
         GrassTextureWrap wrapS, GrassTextureWrap wrapT) const noexcept;
+    [[nodiscard]] uint32_t SamplePacked(const GrassTextureGridSample& sample) const noexcept;
 };
 
 class GrassTextureSourceCache final {

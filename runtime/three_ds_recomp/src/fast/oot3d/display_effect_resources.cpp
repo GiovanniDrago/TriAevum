@@ -8,9 +8,9 @@ namespace {
     return static_cast<size_t>(resource);
 }
 
-[[nodiscard]] constexpr uint32_t ResourceBit(
+[[nodiscard]] constexpr uint64_t ResourceBit(
     EffectResource resource) noexcept {
-    return 1U << static_cast<uint32_t>(resource);
+    return uint64_t{1} << static_cast<uint32_t>(resource);
 }
 
 inline constexpr uint64_t kOot3dImageObjectNamespace =
@@ -219,7 +219,7 @@ DisplayEffectResourceTable::ValidateReads(
         if (portableUseCount == portableUses.size()) {
             flushPortableUses();
         }
-        const uint32_t bit = ResourceBit(use.Resource);
+        const uint64_t bit = ResourceBit(use.Resource);
         result.DeclaredReadMask |= bit;
         if (portableBindings.Find(
                 BuildOot3dEffectResourceIdentity(use.Resource)) !=

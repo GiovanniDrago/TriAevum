@@ -9,6 +9,7 @@
 #include <limits>
 #include <numeric>
 #include <unordered_map>
+#include <stdexcept>
 #include <utility>
 
 namespace Fast::Oot3d {
@@ -29,6 +30,7 @@ uint64_t TransformVersion(const GrassWorldPlacementRequest& request) noexcept {
     HashValue(hash, request.ColorSource.ContentVersion());
     HashValue(hash, request.ColorWrapS);
     HashValue(hash, request.ColorWrapT);
+    if (request.ShadowGrid) HashValue(hash, request.ShadowGrid);
     for (const float value : request.ModelToWorld) {
         HashValue(hash, std::bit_cast<uint32_t>(value));
     }
@@ -159,6 +161,137 @@ void BuildVisibilityIndex(GrassWorldPlacement& placement) {
     if (!order.empty()) build(build, 0U, static_cast<uint32_t>(order.size()));
 }
 
+// A colour texel is reusable across repetitions; a shadow receiver is not.
+// Key each sample by its source triangle and unwrapped UV point, within this
+// immutable world placement. UV seams/overlapping islands never alias.
+class ShadowGridBuilder {
+    struct Triangle {
+        std::array<std::array<float, 3>, 3> Position{};
+        std::array<std::array<float, 2>, 3> Uv{};
+        std::array<float, 3> Normal{};
+        double Determinant = 0.0;
+        uint32_t SurfaceIndex = 0;
+    };
+    struct Key {
+        uint64_t TriangleId = 0;
+        uint64_t Uv = 0;
+        bool operator==(const Key&) const = default;
+    };
+    struct Hash {
+        size_t operator()(const Key& key) const noexcept {
+            uint64_t hash = kFnvOffset;
+            HashValue(hash, key.TriangleId);
+            HashValue(hash, key.Uv);
+            return static_cast<size_t>(hash);
+        }
+    };
+    const GrassWorldPlacementRequest& Request;
+    std::vector<GrassShadowGridPoint>& Points;
+    std::vector<GrassShadowSurface>& Surfaces;
+    std::unordered_map<uint64_t, Triangle> Triangles;
+    std::unordered_map<Key, uint32_t, Hash> Samples;
+
+    static std::array<double, 3> Weights(const Triangle& triangle, const std::array<float, 2>& uv) {
+        const auto& p = triangle.Uv;
+        if (std::abs(triangle.Determinant) <= 1.0e-12)
+            return {1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0};
+        const double x = double(uv[0]) - p[0][0], y = double(uv[1]) - p[0][1];
+        const double b = (x * (double(p[2][1]) - p[0][1]) - y * (double(p[2][0]) - p[0][0])) / triangle.Determinant;
+        const double c = ((double(p[1][0]) - p[0][0]) * y - (double(p[1][1]) - p[0][1]) * x) / triangle.Determinant;
+        if (b >= 0 && c >= 0 && b + c <= 1) return {1 - b - c, b, c};
+        // Grid centres beyond a triangle must stay on its real surface, not
+        // extrapolate across a cliff or into another overlapping UV island.
+        double nearest = std::numeric_limits<double>::max();
+        std::array<double, 3> result{};
+        for (size_t edge = 0; edge < 3; ++edge) {
+            const size_t next = (edge + 1) % 3;
+            const double dx = double(p[next][0]) - p[edge][0], dy = double(p[next][1]) - p[edge][1];
+            const double squared = dx * dx + dy * dy;
+            const double t = squared > 0 ? std::clamp(
+                ((double(uv[0]) - p[edge][0]) * dx + (double(uv[1]) - p[edge][1]) * dy) / squared, 0.0, 1.0) : 0.0;
+            const double ex = p[edge][0] + t * dx - uv[0], ey = p[edge][1] + t * dy - uv[1];
+            if (ex * ex + ey * ey < nearest) {
+                nearest = ex * ex + ey * ey;
+                result = {};
+                result[edge] = 1 - t;
+                result[next] = t;
+            }
+        }
+        return result;
+    }
+
+  public:
+    ShadowGridBuilder(const GrassWorldPlacementRequest& request, std::vector<GrassShadowGridPoint>& points,
+                      std::vector<GrassShadowSurface>& surfaces)
+        : Request(request), Points(points), Surfaces(surfaces) {}
+
+    GrassShadowGridReference Resolve(const GrassAnchor& anchor, const GrassTextureGridSample& sample) {
+        if (!sample.Valid) throw std::runtime_error("grass shadow grid requires finite texture coordinates");
+        const uint64_t triangleId = uint64_t(anchor.SurfaceReference[0]) |
+            (uint64_t(anchor.SurfaceReference[1] & 65535U) << 32U);
+        auto [entry, inserted] = Triangles.try_emplace(triangleId);
+        auto& triangle = entry->second;
+        if (inserted) {
+            const std::array<uint32_t, 3> indices{
+                anchor.SurfaceReference[0] & 65535U, anchor.SurfaceReference[0] >> 16U,
+                anchor.SurfaceReference[1] & 65535U};
+            for (size_t i = 0; i < 3; ++i) {
+                if (indices[i] >= Request.SourceVertices.size())
+                    throw std::runtime_error("grass shadow grid source triangle is unavailable");
+                const auto& vertex = Request.SourceVertices[indices[i]];
+                triangle.Position[i] = TransformPoint(Request, vertex.Position);
+                triangle.Uv[i] = vertex.Uv;
+            }
+            const auto& uv = triangle.Uv;
+            triangle.Determinant = (double(uv[1][0]) - uv[0][0]) * (double(uv[2][1]) - uv[0][1]) -
+                (double(uv[1][1]) - uv[0][1]) * (double(uv[2][0]) - uv[0][0]);
+            std::array<float, 3> a{}, b{};
+            for (size_t axis = 0; axis < 3; ++axis) {
+                a[axis] = triangle.Position[1][axis] - triangle.Position[0][axis];
+                b[axis] = triangle.Position[2][axis] - triangle.Position[0][axis];
+            }
+            triangle.Normal = Normalize({a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]});
+            if (Surfaces.size() >= std::numeric_limits<uint32_t>::max())
+                throw std::runtime_error("grass shadow surfaces exceed uint32 addressing");
+            triangle.SurfaceIndex = static_cast<uint32_t>(Surfaces.size());
+            GrassShadowSurface surface;
+            for (size_t vertex = 0; vertex < 3; ++vertex)
+                std::copy(triangle.Position[vertex].begin(), triangle.Position[vertex].end(),
+                          surface.Position[vertex].begin());
+            std::copy(triangle.Normal.begin(), triangle.Normal.end(), surface.Normal.begin());
+            Surfaces.push_back(surface);
+        }
+        std::array<uint32_t, 2> indices{};
+        for (size_t i = 0; i < 2; ++i) {
+            auto uv = UnwrapGrassTextureGridPoint(sample.Points[i], anchor.Uv, Request.ColorWrapS, Request.ColorWrapT);
+            // A collapsed UV triangle has no spatial texture gradient. Its
+            // single receiver is the actual geometric centroid, not a root.
+            if (std::abs(triangle.Determinant) <= 1.0e-12) uv = {};
+            const Key key{triangleId, uint64_t(std::bit_cast<uint32_t>(uv[0])) |
+                (uint64_t(std::bit_cast<uint32_t>(uv[1])) << 32U)};
+            auto [point, created] = Samples.try_emplace(key, static_cast<uint32_t>(Points.size()));
+            if (created) {
+                if (Points.size() >= std::numeric_limits<uint32_t>::max())
+                    throw std::runtime_error("grass shadow grid exceeds uint32 addressing");
+                const auto weights = Weights(triangle, uv);
+                GrassShadowGridPoint value;
+                for (size_t axis = 0; axis < 3; ++axis) {
+                    value.Position[axis] = static_cast<float>(
+                        triangle.Position[0][axis] * weights[0] +
+                        triangle.Position[1][axis] * weights[1] +
+                        triangle.Position[2][axis] * weights[2]);
+                    value.Normal[axis] = triangle.Normal[axis];
+                }
+                value.Position[3] = 1.0F;
+                value.Normal[3] = std::bit_cast<float>(triangle.SurfaceIndex);
+                Points.push_back(value);
+            }
+            indices[i] = point->second;
+        }
+        return {indices[0], indices[1], sample.Weight};
+    }
+};
+
 GrassWorldPlacement BuildPlacement(const GrassWorldPlacementRequest& request, uint64_t transformVersion) {
     GrassWorldPlacement result;
     result.Identity = request.Identity;
@@ -169,6 +302,8 @@ GrassWorldPlacement BuildPlacement(const GrassWorldPlacementRequest& request, ui
     result.LastUsedFrame = request.FrameId;
     result.Anchors.resize(request.Anchors.size());
     result.CullingAnchors.resize(request.Anchors.size());
+    ShadowGridBuilder shadowGrid(request, result.ShadowPoints, result.ShadowSurfaces);
+    if (request.ShadowGrid) result.ShadowReferences.resize(request.Anchors.size());
     for (size_t index = 0U; index < request.Anchors.size(); ++index) {
         const auto& source = request.Anchors[index];
         auto base = TransformPoint(request, source.LocalPosition);
@@ -186,8 +321,15 @@ GrassWorldPlacement BuildPlacement(const GrassWorldPlacementRequest& request, ui
         destination.PackedWorldNormal = PackGrassNormal(normal);
         destination.StableId = source.StableId;
         destination.SurfaceReference = source.SurfaceReference;
-        destination.SurfaceColor = request.ColorSource.SamplePacked(
-            source.Uv[0], source.Uv[1], request.ColorWrapS, request.ColorWrapT);
+        if (request.ShadowGrid) {
+            const auto sample = ResolveGrassTextureGridSample(
+                source.Uv[0], source.Uv[1], request.ColorWrapS, request.ColorWrapT);
+            destination.SurfaceColor = request.ColorSource.SamplePacked(sample);
+            result.ShadowReferences[index] = shadowGrid.Resolve(source, sample);
+        } else {
+            destination.SurfaceColor = request.ColorSource.SamplePacked(
+                source.Uv[0], source.Uv[1], request.ColorWrapS, request.ColorWrapT);
+        }
         result.CullingAnchors[index] = {
             { destination.BaseHeight[0], destination.BaseHeight[1], destination.BaseHeight[2] },
             GrassStableVisibilityValue(source.StableId),

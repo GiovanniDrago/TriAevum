@@ -140,8 +140,10 @@ size_t VirtualShadowMapCache::KeyHash::operator()(const VirtualShadowPageKey& ke
 }
 
 void VirtualShadowMapCache::Invalidate() noexcept {
-    for (auto& page : mPages)
+    for (auto& page : mPages) {
         page.Valid = false;
+        page.StaticValid = false;
+    }
 }
 
 void VirtualShadowMapCache::Prepare(const VirtualShadowLayout& layout, std::span<const VirtualShadowCaster> casters,
@@ -149,7 +151,8 @@ void VirtualShadowMapCache::Prepare(const VirtualShadowLayout& layout, std::span
     mStatistics = {};
     mTable.fill(0);
     mUpdates.clear();
-    mCasterIndices.clear();
+    mStaticCasterIndices.clear();
+    mDynamicCasterIndices.clear();
     if (!layout.Valid() || frameId == 0)
         return;
     if (mResolution != layout.AtlasResolution) {
@@ -223,17 +226,26 @@ void VirtualShadowMapCache::Prepare(const VirtualShadowLayout& layout, std::span
                                             grid.OriginY + static_cast<int32_t>(y), level };
             const float worldX = static_cast<float>(key.X) * size;
             const float worldY = static_cast<float>(key.Y) * size;
-            const uint32_t first = static_cast<uint32_t>(mCasterIndices.size());
-            uint64_t signature = 0;
+            const uint32_t firstStatic = static_cast<uint32_t>(mStaticCasterIndices.size());
+            const uint32_t firstDynamic = static_cast<uint32_t>(mDynamicCasterIndices.size());
+            uint64_t staticSignature = 0, dynamicSignature = 0;
             for (uint32_t caster = 0; caster < casters.size(); ++caster) {
                 if (!Overlaps(mLightBounds[caster], worldX, worldY, size, guard))
                     continue;
-                mCasterIndices.push_back(caster);
                 const uint64_t version = casters[caster].ContentVersion;
-                signature += Mix(version != 0 ? version : Mix(frameId) ^ Mix(caster + 1));
+                if (casters[caster].Dynamic || version == 0) {
+                    mDynamicCasterIndices.push_back(caster);
+                    dynamicSignature += Mix(version != 0 ? version : Mix(frameId) ^ Mix(caster + 1));
+                } else {
+                    mStaticCasterIndices.push_back(caster);
+                    staticSignature += Mix(version);
+                }
             }
-            const uint32_t count = static_cast<uint32_t>(mCasterIndices.size()) - first;
-            signature = Mix(signature ^ Mix(count));
+            const uint32_t staticCount = static_cast<uint32_t>(mStaticCasterIndices.size()) - firstStatic;
+            const uint32_t dynamicCount = static_cast<uint32_t>(mDynamicCasterIndices.size()) - firstDynamic;
+            staticSignature = Mix(staticSignature ^ Mix(staticCount));
+            dynamicSignature = Mix(dynamicSignature ^ Mix(dynamicCount));
+            const uint64_t signature = Mix(staticSignature) ^ dynamicSignature;
             auto found = mResidency.find(key);
             uint32_t physical = 0;
             if (found != mResidency.end())
@@ -254,7 +266,8 @@ void VirtualShadowMapCache::Prepare(const VirtualShadowLayout& layout, std::span
                 }
                 if (selected == mPages.size()) {
                     ++mStatistics.Unmapped;
-                    mCasterIndices.resize(first);
+                    mStaticCasterIndices.resize(firstStatic);
+                    mDynamicCasterIndices.resize(firstDynamic);
                     continue;
                 }
                 physical = static_cast<uint32_t>(selected);
@@ -263,20 +276,34 @@ void VirtualShadowMapCache::Prepare(const VirtualShadowLayout& layout, std::span
                     mResidency.erase(page.Key);
                     ++mStatistics.Evicted;
                 }
-                page = { key, 0, 0, 0, true, false };
+                page = {};
+                page.Key = key;
+                page.Occupied = true;
                 mResidency.emplace(key, physical);
             }
             auto& page = mPages[physical];
             page.LastUsed = frameId;
             page.PendingSignature = signature;
+            page.PendingStaticSignature = staticSignature;
             mTable[tableIndex] = physical + 1;
             ++mStatistics.Resident;
+            const bool refreshStatic = !page.StaticValid || page.StaticSignature != staticSignature;
+            if (refreshStatic)
+                ++mStatistics.StaticUpdated;
+            else
+                ++mStatistics.StaticReused;
             if (page.Valid && page.Signature == signature) {
                 ++mStatistics.Reused;
-                mCasterIndices.resize(first);
+                mStaticCasterIndices.resize(firstStatic);
+                mDynamicCasterIndices.resize(firstDynamic);
             } else {
                 page.Valid = false;
-                mUpdates.push_back({ key, physical, first, count });
+                if (refreshStatic)
+                    page.StaticValid = false;
+                else
+                    mStaticCasterIndices.resize(firstStatic);
+                mUpdates.push_back({ key, physical, firstStatic, refreshStatic ? staticCount : 0U,
+                                     firstDynamic, dynamicCount, refreshStatic });
             }
         }
     }
@@ -286,6 +313,10 @@ void VirtualShadowMapCache::Commit() noexcept {
     for (const auto& update : mUpdates) {
         auto& page = mPages[update.PhysicalPage];
         page.Signature = page.PendingSignature;
+        if (update.RefreshStatic) {
+            page.StaticSignature = page.PendingStaticSignature;
+            page.StaticValid = true;
+        }
         page.Valid = true;
     }
 }

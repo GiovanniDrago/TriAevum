@@ -263,16 +263,27 @@ vec3 pica_surface_scene_point_primary(vec3 normal_view) {
     }
     return color;
 }
-vec3 pica_surface_scene_directional_primary(vec3 normal_view) {
+vec3 pica_surface_scene_directional_response(vec3 normal_view, uint capture_mask, out vec3 captured) {
+    captured = vec3(0.0);
     vec3 color = vec3(0.0);
     for (uint slot = 0u; slot < pica_surface.control.z; ++slot) {
         vec3 direction = pica_surface_unit(pica_surface.scene_directions[slot].xyz);
-        color += max(dot(normal_view, direction), 0.0) *
+        vec3 response = max(dot(normal_view, direction), 0.0) *
             pica_surface.scene_directional_colors[slot].rgb * pica_surface_shadow(10 + int(slot));
+        color += response;
+        if ((capture_mask & (1u << (10u + slot))) != 0u) captured += response;
     }
     return color;
 }
-vec3 pica_surface_native_primary(vec3 normal_view) {
+vec3 pica_surface_scene_directional_primary(vec3 normal_view) {
+    vec3 unused;
+    return pica_surface_scene_directional_response(normal_view, 0u, unused);
+}
+// Raw radiance and the selected directional contribution, before tint,
+// abs/clamp and native colour quantization. A zero capture mask eliminates
+// the extra accumulation in ordinary native receiver shaders.
+vec3 pica_surface_native_response(vec3 normal_view, uint capture_mask, out vec3 captured) {
+    captured = vec3(0.0);
     vec3 direct = vec3(0.0);
     bool native_direct = pica_surface.environment_parameters.w == 0.0 ||
         pica_surface.environment_parameters.x != 0.0;
@@ -281,24 +292,38 @@ vec3 pica_surface_native_primary(vec3 normal_view) {
         if (any(notEqual(pica_surface.lights[slot].diffuse.rgb, vec3(0.0)))) {
         vec3 direction, radiance;
         pica_surface_light(slot, direction, radiance);
-        direct += max(dot(normal_view, direction), 0.0) * radiance * pica_surface_shadow(slot);
+        vec3 response = max(dot(normal_view, direction), 0.0) * radiance * pica_surface_shadow(slot);
+        direct += response;
+        if ((capture_mask & (1u << uint(slot))) != 0u) captured += response;
         }
     }
     vec3 color = direct * pica_surface.material_diffuse.rgb;
-    if (pica_surface.environment_parameters.w != 0.0)
+    captured *= pica_surface.material_diffuse.rgb;
+    if (pica_surface.environment_parameters.w != 0.0) {
         color *= pica_surface.environment_parameters.x;
+        captured *= pica_surface.environment_parameters.x;
+    }
     color += pica_surface.resolved_ambient.rgb;
     if (pica_surface.environment_parameters.w != 0.0) {
         for (int slot = 0; slot < 2; ++slot) {
             if (pica_surface.environment_directions[slot].w <= 0.0) continue;
             vec3 direction = pica_surface_unit(pica_surface.environment_directions[slot].xyz);
-            color += max(dot(normal_view, direction), 0.0) *
+            vec3 response = max(dot(normal_view, direction), 0.0) *
                 pica_surface.environment_colors[slot].rgb * pica_surface.environment_directions[slot].w *
                 pica_surface_shadow(8 + slot);
+            color += response;
+            if ((capture_mask & (1u << uint(8 + slot))) != 0u) captured += response;
         }
     }
     color += pica_surface_scene_point_primary(normal_view);
-    color += pica_surface_scene_directional_primary(normal_view);
+    vec3 scene_captured;
+    color += pica_surface_scene_directional_response(normal_view, capture_mask, scene_captured);
+    captured += scene_captured;
+    return color;
+}
+vec3 pica_surface_native_primary(vec3 normal_view) {
+    vec3 unused;
+    vec3 color = pica_surface_native_response(normal_view, 0u, unused);
     return min(abs(color * pica_surface_tint.rgb), vec3(1.0));
 }
 // Direct light that seeds global illumination: the native scene directionals

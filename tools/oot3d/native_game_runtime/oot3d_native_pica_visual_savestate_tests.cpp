@@ -33,6 +33,8 @@ int main() {
         1U,
     };
     draw.Composition.NativeProjectedShadow = true;
+    draw.Composition.NativeActorGeometry = true;
+    draw.Composition.NativeActorIdentity = 0x1409001234ULL;
     auto scenePoints = std::make_shared<Fast::Renderer3ds::PicaScenePointLights>();
     scenePoints->Count = 2;
     scenePoints->Lights[0] = {42, {3,5,7}, {1,.5F,.25F}, 0, 0};
@@ -209,6 +211,9 @@ int main() {
                 decoded.Scheduler.Accumulator.PendingDraws[0].LightBinding.Sources == draw.LightBinding.Sources &&
                 decoded.Scheduler.Accumulator.PendingDraws[0].LightBinding.WorldToView == draw.LightBinding.WorldToView &&
                 decoded.Scheduler.Accumulator.PendingDraws[0].Composition.NativeProjectedShadow &&
+                decoded.Scheduler.Accumulator.PendingDraws[0].Composition.NativeActorGeometry &&
+                decoded.Scheduler.Accumulator.PendingDraws[0].Composition.NativeActorIdentity ==
+                    draw.Composition.NativeActorIdentity &&
                 decoded.Scheduler.Accumulator.PendingDraws[0].LightBinding.ScenePoints &&
                 *decoded.Scheduler.Accumulator.PendingDraws[0].LightBinding.ScenePoints == *scenePoints &&
                 decoded.Scheduler.Accumulator.PendingDraws[0].LightBinding.SceneDirectionals &&

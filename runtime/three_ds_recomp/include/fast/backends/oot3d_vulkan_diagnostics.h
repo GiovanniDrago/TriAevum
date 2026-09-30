@@ -231,14 +231,14 @@ struct Oot3dVulkanFrameDiagnostics {
     uint32_t DisplayEffectGraphDeclaredReadCount = 0;
     uint32_t DisplayEffectGraphResolvedReadCount = 0;
     uint32_t DisplayEffectGraphMissingReadCount = 0;
-    uint32_t DisplayEffectGraphMissingReadMask = 0;
+    uint64_t DisplayEffectGraphMissingReadMask = 0;
     uint32_t DisplayEffectGraphBindingFallbackCount = 0;
     uint32_t DisplayEffectPhysicalPlanInvocationCount = 0;
     uint32_t DisplayEffectPhysicalPlanCompleteCount = 0;
     uint32_t DisplayEffectPhysicalDeclaredResourceCount = 0;
     uint32_t DisplayEffectPhysicalResolvedResourceCount = 0;
     uint32_t DisplayEffectPhysicalMissingResourceCount = 0;
-    uint32_t DisplayEffectPhysicalMissingResourceMask = 0;
+    uint64_t DisplayEffectPhysicalMissingResourceMask = 0;
     uint32_t DisplayEffectPhysicalSemanticResourceCount = 0;
     uint32_t DisplayEffectPhysicalExternalImageResourceCount = 0;
     uint32_t DisplayEffectPhysicalNativeAttachmentResourceCount = 0;
@@ -380,6 +380,8 @@ struct Oot3dVulkanFrameDiagnostics {
     uint32_t NriVirtualShadowResidentPageCount = 0;
     uint32_t NriVirtualShadowReusedPageCount = 0;
     uint32_t NriVirtualShadowUpdatedPageCount = 0;
+    uint32_t NriVirtualShadowStaticUpdatedPageCount = 0;
+    uint32_t NriVirtualShadowStaticReusedPageCount = 0;
     uint32_t NriVirtualShadowEmptyPageCount = 0;
     uint32_t NriVirtualShadowEvictedPageCount = 0;
     uint32_t NriVirtualShadowUnmappedPageCount = 0;

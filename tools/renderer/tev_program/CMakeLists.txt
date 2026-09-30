@@ -188,6 +188,11 @@ target_include_directories(build_fragment_artifacts PRIVATE "${frontend}" "${run
     "${SHADERC_INCLUDE_DIR}" "${CMAKE_CURRENT_LIST_DIR}/../../triaevum_release/vendor/include")
 target_link_libraries(build_fragment_artifacts PRIVATE pica_tev_program "${SHADERC_LIBRARY}")
 target_sources(build_fragment_artifacts PRIVATE
+    "${runtime}/src/fast/renderer3ds/pica_pbr_seam_shader.cpp"
+    "${runtime}/src/fast/renderer3ds/pica_pbr_shading.cpp"
+    "${runtime}/src/fast/renderer3ds/pica_surface_lighting.cpp"
+    "${runtime}/src/fast/renderer3ds/pica_vertex_surface.cpp"
+    "${runtime}/src/fast/renderer3ds/virtual_shadow_map.cpp"
     "${runtime}/src/fast/oot3d/directional_shadows.cpp"
     "${runtime}/src/fast/oot3d/pica_directional_shadow_caster.cpp"
     "${runtime}/src/fast/oot3d/pica_directional_shadow_lighting.cpp"

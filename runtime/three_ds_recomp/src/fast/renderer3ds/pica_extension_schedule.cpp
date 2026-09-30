@@ -70,4 +70,13 @@ BuildPicaExtensionScheduleBoundary(
     };
 }
 
+const Renderer3ds::PicaCompositionStageAnchor* FindPicaEffectPassAnchor(
+    const Renderer3ds::PicaCompositionSchedule& schedule,
+    const ::Fast::Renderer::ExtensionPassSchedulePlan& plan,
+    const Renderer3ds::PicaCompositionTargetReference& target) noexcept {
+    if (!schedule.Valid() || !plan.Valid()) return nullptr;
+    if (const auto* anchor = schedule.FindAnchor(plan.Stage(), target)) return anchor;
+    return plan.FallbackStage() ? schedule.FindAnchor(*plan.FallbackStage(), target) : nullptr;
+}
+
 } // namespace Fast::Renderer3ds

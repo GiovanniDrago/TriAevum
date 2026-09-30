@@ -55,7 +55,7 @@ struct EffectTransientAliasSlot {
     uint32_t Height = 0U;
     size_t FirstUse = 0U;
     size_t LastUse = 0U;
-    uint32_t ResourceMask = 0U;
+    uint64_t ResourceMask = 0U;
     uint32_t ResourceCount = 0U;
 };
 
@@ -63,7 +63,7 @@ struct EffectPhysicalPlanSummary {
     uint32_t DeclaredResourceCount = 0U;
     uint32_t ResolvedResourceCount = 0U;
     uint32_t MissingResourceCount = 0U;
-    uint32_t MissingResourceMask = 0U;
+    uint64_t MissingResourceMask = 0U;
     uint32_t SemanticResourceCount = 0U;
     uint32_t ExternalImageResourceCount = 0U;
     uint32_t NativeAttachmentResourceCount = 0U;
@@ -160,7 +160,7 @@ struct EffectTransientAllocationSlot {
     uint32_t Usage = 0U;
     size_t FirstUse = 0U;
     size_t LastUse = 0U;
-    uint32_t ResourceMask = 0U;
+    uint64_t ResourceMask = 0U;
     uint32_t ResourceCount = 0U;
 };
 

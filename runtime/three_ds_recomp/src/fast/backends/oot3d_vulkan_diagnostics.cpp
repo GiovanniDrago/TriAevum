@@ -549,6 +549,8 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
         {"nri_vsm_resident_pages", frame.NriVirtualShadowResidentPageCount},
         {"nri_vsm_reused_pages", frame.NriVirtualShadowReusedPageCount},
         {"nri_vsm_updated_pages", frame.NriVirtualShadowUpdatedPageCount},
+        {"nri_vsm_static_updated_pages", frame.NriVirtualShadowStaticUpdatedPageCount},
+        {"nri_vsm_static_reused_pages", frame.NriVirtualShadowStaticReusedPageCount},
         {"nri_vsm_empty_pages", frame.NriVirtualShadowEmptyPageCount},
         {"nri_vsm_evicted_pages", frame.NriVirtualShadowEvictedPageCount},
         {"nri_vsm_unmapped_pages", frame.NriVirtualShadowUnmappedPageCount},
@@ -1586,6 +1588,8 @@ void Oot3dVulkanDiagnostics::RecordNriVirtualShadowPages(
     frame.NriVirtualShadowResidentPageCount += pages.Resident;
     frame.NriVirtualShadowReusedPageCount += pages.Reused;
     frame.NriVirtualShadowUpdatedPageCount += updated;
+    frame.NriVirtualShadowStaticUpdatedPageCount += pages.StaticUpdated;
+    frame.NriVirtualShadowStaticReusedPageCount += pages.StaticReused;
     frame.NriVirtualShadowEmptyPageCount += pages.Empty;
     frame.NriVirtualShadowEvictedPageCount += pages.Evicted;
     frame.NriVirtualShadowUnmappedPageCount += pages.Unmapped;

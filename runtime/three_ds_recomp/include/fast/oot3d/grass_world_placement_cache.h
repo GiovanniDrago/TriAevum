@@ -56,6 +56,26 @@ struct GrassClusterVisibilityNode {
     float MinimumStableVisibility = 0.0F;
 };
 
+struct GrassShadowSurface {
+    std::array<std::array<float, 4>, 3> Position{};
+    std::array<float, 4> Normal{};
+};
+static_assert(sizeof(GrassShadowSurface) == 64U);
+
+struct GrassShadowGridPoint {
+    std::array<float, 4> Position{};
+    // xyz = plane normal; w = uint32 source-surface index bits.
+    std::array<float, 4> Normal{};
+};
+static_assert(sizeof(GrassShadowGridPoint) == 32U);
+
+struct GrassShadowGridReference {
+    uint32_t First = 0U;
+    uint32_t Second = 0U;
+    float Weight = 0.0F;
+};
+static_assert(sizeof(GrassShadowGridReference) == 12U);
+
 struct GrassWorldPlacement {
     uint64_t Identity = 0U;
     uint64_t ContentVersion = 0U;
@@ -68,6 +88,9 @@ struct GrassWorldPlacement {
     std::vector<uint32_t> VisibilityClusterOrder;
     std::vector<GrassClusterVisibilityNode> VisibilityNodes;
     GrassMidrangeClusters Midrange;
+    std::vector<GrassShadowGridPoint> ShadowPoints;
+    std::vector<GrassShadowGridReference> ShadowReferences;
+    std::vector<GrassShadowSurface> ShadowSurfaces;
 };
 
 struct GrassWorldPlacementRequest {
@@ -79,6 +102,9 @@ struct GrassWorldPlacementRequest {
     uint64_t FrameId = 0U;
     std::span<const GrassAnchor> Anchors;
     std::span<const GrassAnchorCluster> Clusters;
+    // Optional spatial instances of the texture-colour grid. Never part of RGB.
+    bool ShadowGrid = false;
+    std::span<const GrassSourceVertex> SourceVertices;
     std::array<float, 16> ModelToWorld{};
     bool TransformBakedIntoVertices = true;
     float NormalOffset = 0.0F;

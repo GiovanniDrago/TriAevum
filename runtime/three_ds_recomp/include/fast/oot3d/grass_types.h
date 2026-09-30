@@ -51,7 +51,7 @@ struct GrassGenerationSettings {
 };
 
 struct GrassInteractor {
-    enum class Kind : uint8_t { PlayerLink, SceneActor };
+    enum class Kind : uint8_t { PlayerLink, SceneActor, Epona };
     Kind Type = Kind::PlayerLink;
     uint64_t StableId = 1;
     uint64_t ContextId = 0;

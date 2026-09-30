@@ -255,6 +255,76 @@ void TestDeferredAtmosphereOwnership() {
     }
 }
 
+void TestDeferredActorOwnership() {
+    using namespace Oot3dNativeGame;
+    NativeA32Memory memory;
+    Map(memory, 0x0054C000U, 0x1000U);
+    Map(memory, 0x10000000U, 0x1000U);
+    Require(memory.Write32(0x10000010U, 0x20U), "could not seed actor packet");
+    Oot3dNativePicaCompositionTracker tracker;
+    oot3d::recomp::a32::GuestState state{};
+    constexpr uint32_t queue = 0x10000400U, renderer = 0x10000600U;
+    constexpr uint32_t player = 0x10000900U, horse = 0x10000B00U;
+    Require(memory.Write16(player, 0) && memory.Write16(horse, 0x14U), "could not seed actor identities");
+    const auto enqueue = [&](uint32_t slot) {
+        state.r[1] = slot;
+        state.r[2] = 0x10000800U;
+        tracker.ObserveBlockEntry(kOot3dModelQueueSetSlotEntry, state, memory);
+    };
+    uint32_t cursor = 0x14001000U;
+    const auto emit = [&](uint32_t slot, uint32_t pass) {
+        state.r[0] = renderer;
+        state.r[1] = pass;
+        state.r[4] = 1;
+        state.r[8] = slot - 8U;
+        state.r[14] = pass == 0 ? 0x002FAED8U : 0x002FADF4U;
+        tracker.ObserveBlockEntry(kOot3dCmbRendererSubmitDrawHandleEntry, state, memory);
+        Require(memory.Write32(0x0054CC4CU, cursor), "could not move actor packet cursor");
+        state.r[0] = 0x10000000U;
+        tracker.ObserveBlockEntry(kOot3dMeshCommandPacketSubmitEntry, state, memory);
+        tracker.ObserveBlockEntry(state.r[14], state, memory);
+        cursor += 0x20U;
+    };
+    state.r[1] = player;
+    tracker.ObserveBlockEntry(kOot3dActorDrawEntry, state, memory);
+    enqueue(queue);
+    tracker.ObserveBlockEntry(kOot3dActorDrawCallbackReturn, state, memory);
+    emit(queue, 0);
+    emit(queue, 1);
+    emit(queue + 8U, 0); // The same renderer is not inherently an actor.
+    enqueue(queue);
+    emit(queue, 0); // Slot replacement removes its prior native owner.
+    state.r[1] = player;
+    tracker.ObserveBlockEntry(kOot3dActorDrawEntry, state, memory);
+    state.r[1] = horse;
+    tracker.ObserveBlockEntry(kOot3dActorDrawEntry, state, memory);
+    enqueue(queue);
+    tracker.ObserveBlockEntry(kOot3dActorDrawCallbackReturn, state, memory);
+    enqueue(queue + 8U); // Returning from a child preserves the parent scope.
+    tracker.ObserveBlockEntry(kOot3dActorDrawCallbackReturn, state, memory);
+    emit(queue, 0);
+    emit(queue + 8U, 0);
+    tracker.ObserveBlockEntry(kOot3dGameplayDrawEntry, state, memory);
+    emit(queue, 0);
+    std::vector<Oot3dPicaCommandListCompositionSpan> spans;
+    std::string error;
+    Require(tracker.TakeCommandListCompositionSpans(0x14001000U, 0xE0U, spans, &error), error);
+    const std::array expected{true, true, false, false, true, true, false};
+    const std::array<uint64_t, 7> owners{player, player, 0, 0, (uint64_t{0x14} << 32U) | horse, player, 0};
+    for (size_t i = 0; i < expected.size(); ++i) {
+        const auto address = 0x14001000U + static_cast<uint32_t>(i) * 0x20U;
+        const auto found = std::find_if(spans.begin(), spans.end(), [&](const auto& span) {
+            return span.BeginAddress <= address && address < span.EndAddress;
+        });
+        const auto layer = i == 1 ? Oot3dPicaCompositionLayer::TransparentWorld
+                                  : Oot3dPicaCompositionLayer::OpaqueWorld;
+        Require(found != spans.end() && found->Attribution.NativeActorGeometry == expected[i] &&
+                    found->Attribution.NativeActorIdentity == owners[i] &&
+                    found->Attribution.Layer == layer,
+                "actor ownership was lost, leaked across queue lifetimes, or replaced native pass order");
+    }
+}
+
 void TestRestoredSceneLightOwnership() {
     using namespace Oot3dNativeGame;
     NativeA32Memory memory;
@@ -367,6 +437,7 @@ int main() {
     TestSelectedLightSnapshot();
     TestProjectedShadowOwnership();
     TestDeferredAtmosphereOwnership();
+    TestDeferredActorOwnership();
     TestRestoredSceneLightOwnership();
     TestRestoredNativeEnvironmentLights();
     constexpr uint32_t kWriterWrapper = 0x10000200U;

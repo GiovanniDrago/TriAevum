@@ -314,7 +314,12 @@ void CheckSceneEnvironment() {
     Check(graphics.SnapshotForRendering().Value.Effects.DirectionalShadows.Mode == DirectionalShadowMode::Off &&
           graphics.Snapshot().Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps,
           "F2 did not bypass VSM without erasing its preference");
+    Check(graphics.SnapshotForRendering().Value.Effects.SurfaceLighting == SurfaceLightingMode::Native &&
+              graphics.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::PerPixel,
+          "F2 did not force Native lighting while preserving the configured model");
     graphics.ToggleNativePresentationOverride();
+    Check(graphics.SnapshotForRendering().Value.Effects.SurfaceLighting == SurfaceLightingMode::PerPixel,
+          "F2 did not restore per-pixel lighting");
     settings = graphics.Snapshot();
     settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixelPbr;
     graphics.Apply(settings);

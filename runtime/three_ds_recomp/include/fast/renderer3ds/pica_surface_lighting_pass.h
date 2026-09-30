@@ -24,9 +24,11 @@ class PicaSurfaceLightingPass final {
   public:
     PicaSurfaceLightingPass();
     ~PicaSurfaceLightingPass();
-    bool Initialize(VkPhysicalDevice physical, VkDevice device, Renderer::CachedPassShaderCompiler& shaders);
+    bool Initialize(VkPhysicalDevice physical, VkDevice device, Renderer::CachedPassShaderCompiler& shaders,
+                    bool shadowCoefficients = false);
     bool Prepare(VkCommandBuffer command, uint32_t frameSlot, uint64_t frameId,
-        PicaResolvedDrawStreamView scene, std::span<PicaSurfaceLightingRequest> requests);
+        PicaResolvedDrawStreamView scene, std::span<PicaSurfaceLightingRequest> requests,
+        const std::array<float, 3>& shadowDirection = {});
     VkImageView View(uint32_t frameSlot) const;
     VkSampler Sampler() const;
     void Shutdown();

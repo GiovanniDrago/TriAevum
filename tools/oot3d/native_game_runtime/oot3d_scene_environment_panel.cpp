@@ -41,7 +41,7 @@ void DrawDirectionalShadows() {
             }
         }
         const char* const resolutionNames[] = {
-            "2048 (16 MiB)", "4096 (64 MiB)" };
+            "2048 (32 MiB)", "4096 (128 MiB)" };
         if (ImGui::Combo("Shadow atlas budget", &resolutionIndex,
                          resolutionNames,
                          static_cast<int>(
@@ -65,7 +65,7 @@ void DrawDirectionalShadows() {
                 static_cast<uint8_t>(pcfRadius);
             changed = true;
         }
-        ImGui::TextWrapped("World-anchored virtual pages; unchanged pages are reused. Atlas budget controls residency, not near-field texel size.");
+        ImGui::TextWrapped("World-anchored virtual pages; unchanged pages are reused. Budget includes the static cache and composed atlas, and controls residency rather than near-field texel size.");
         if (ImGui::TreeNode("Advanced directional shadows")) {
             changed |= ImGui::DragFloat(
                 "Shadow constant bias",

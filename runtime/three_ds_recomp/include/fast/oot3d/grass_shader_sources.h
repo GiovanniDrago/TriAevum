@@ -5,4 +5,5 @@ namespace Fast::Oot3d {
 std::string BuildGrassVertexShader();
 std::string BuildGrassFragmentShader();
 std::string BuildGrassCompactionComputeShader();
+std::string BuildGrassShadowGridComputeShader();
 }

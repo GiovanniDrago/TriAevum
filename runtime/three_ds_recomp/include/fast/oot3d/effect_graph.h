@@ -62,10 +62,13 @@ enum class EffectResource : uint8_t {
     // Specular radiance traced through the scene distance field (linear,
     // RGBA16F); a reflection source resolved through the material guide.
     SpecularIllumination,
+    // Persistent depth backing restored into dirty final pages before actors.
+    DirectionalShadowStaticCache,
+    DirectionalShadowStaticHistory,
     Count,
 };
 // Resource sets are 32-bit masks in the barrier and residency plans.
-static_assert(static_cast<uint32_t>(EffectResource::Count) <= 32U);
+static_assert(static_cast<uint32_t>(EffectResource::Count) <= 64U);
 
 [[nodiscard]] ::Fast::Renderer::ExtensionResourceIdentity
 BuildOot3dEffectResourceIdentity(EffectResource resource) noexcept;
@@ -113,6 +116,8 @@ struct EffectResourceUse {
         case EffectResource::NativeShadow2D:
         case EffectResource::DirectionalShadowHistory:
         case EffectResource::DirectionalShadowMap:
+        case EffectResource::DirectionalShadowStaticCache:
+        case EffectResource::DirectionalShadowStaticHistory:
         case EffectResource::HierarchicalDepth:
         case EffectResource::MotionVectors:
         case EffectResource::ReactiveMask:
@@ -137,6 +142,8 @@ struct EffectPass {
     EffectStage Stage = EffectStage::AfterOpaque;
     EffectContractKind Contract = EffectContractKind::ComposerPass;
     std::vector<EffectResourceUse> Resources;
+    // Late native anchor for an auxiliary export with no same-frame consumers.
+    std::optional<EffectStage> FallbackStage;
 };
 
 struct CompiledEffectPass {
@@ -144,6 +151,7 @@ struct CompiledEffectPass {
     EffectStage Stage = EffectStage::AfterOpaque;
     EffectContractKind Contract = EffectContractKind::ComposerPass;
     std::vector<EffectResourceUse> Resources;
+    std::optional<EffectStage> FallbackStage;
 
     [[nodiscard]] bool ReadsResource(
         EffectResource resource) const noexcept;

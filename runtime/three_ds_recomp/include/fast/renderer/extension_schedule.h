@@ -2,6 +2,7 @@
 
 #include "fast/renderer/extension_contract.h"
 
+#include <optional>
 #include <cstdint>
 #include <string_view>
 
@@ -75,15 +76,17 @@ class ExtensionPassSchedulePlan final {
     [[nodiscard]] bool Valid() const noexcept;
     [[nodiscard]] uint64_t PassId() const noexcept;
     [[nodiscard]] ExtensionStage Stage() const noexcept;
+    [[nodiscard]] std::optional<ExtensionStage> FallbackStage() const noexcept;
     [[nodiscard]] ExtensionPassScheduleDecision Resolve(
         const ExtensionScheduleBoundary& boundary) const noexcept;
 
   private:
     friend ExtensionPassSchedulePlan BuildExtensionPassSchedulePlan(
-        uint64_t, ExtensionStage) noexcept;
+        uint64_t, ExtensionStage, std::optional<ExtensionStage>) noexcept;
 
     uint64_t mPassId = 0U;
     ExtensionStage mStage = ExtensionStage::SceneResolved;
+    std::optional<ExtensionStage> mFallbackStage;
     bool mValid = false;
 };
 
@@ -91,6 +94,6 @@ class ExtensionPassSchedulePlan final {
     std::string_view name) noexcept;
 
 [[nodiscard]] ExtensionPassSchedulePlan BuildExtensionPassSchedulePlan(
-    uint64_t passId, ExtensionStage stage) noexcept;
+    uint64_t passId, ExtensionStage stage, std::optional<ExtensionStage> fallbackStage) noexcept;
 
 } // namespace Fast::Renderer

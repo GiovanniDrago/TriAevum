@@ -4003,11 +4003,10 @@ void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
     const bool timed = mDiagnostics.Enabled();
     using Clock = std::chrono::steady_clock;
     auto begin = timed ? Clock::now() : Clock::time_point{};
-    if (mDirectionalShadowSchedulePlan.Valid() && mNativePicaCompositionSchedule.Valid()) {
-        if (const auto* anchor = mNativePicaCompositionSchedule.FindAnchorBeforeDraw(
-                Oot3d::EffectStage::AfterOpaque, reference.Target, draw.SubmissionId))
-            TryRenderDirectionalShadowMap(target, mFrameGraphicsSettings, *anchor);
-    }
+    if (const auto* anchor = Oot3d::FindPicaEffectPassAnchor(
+            mNativePicaCompositionSchedule, mDirectionalShadowSchedulePlan, reference.Target);
+        anchor != nullptr && !anchor->AtTargetEnd && anchor->BeforeSubmissionId == draw.SubmissionId)
+        TryRenderDirectionalShadowMap(target, mFrameGraphicsSettings, *anchor);
     if (timed) {
         const auto now = Clock::now();
         shadowMilliseconds += std::chrono::duration<double, std::milli>(now - begin).count();
@@ -5671,6 +5670,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset),
                     shadowViewToWorld, version, shadowCache);
             }
+            shadowCaster.Dynamic = draw.Composition.NativeActorGeometry;
+            shadowCaster.OwnerIdentity = draw.Composition.NativeActorIdentity;
             if (opaqueWorldDraw && draw.LightBinding.WorldToView)
                 renderTarget.SampleView.Observe(mFrameCounter, *draw.LightBinding.WorldToView);
             // Native frame geometry for the scene distance field: the shadow
@@ -6116,6 +6117,14 @@ bool GfxRenderingAPIVulkan::TryRenderInteractiveGrass(
     mGpuProfiler.BeginScope(
         mCurrentFrame, Oot3d::GpuProfileScope::Grass,
         mCommandBuffers[mCurrentFrame]);
+    Oot3d::NriDirectionalShadowHistorySnapshot grassShadowHistory;
+    if (settings.Grass.Appearance.ReceiveLighting &&
+        mInteractiveGrassProviderPlan.Requires(Oot3d::EffectResource::DirectionalShadowHistory)) {
+        // Resolve atlas and page-table version together at the declared native
+        // insertion anchor, just like other receivers at this boundary.
+        grassShadowHistory = mNriDirectionalShadowPass.FindLatestHistory(
+            target.Key.RenderTargetNamespace, target.Key.ColorPhysicalAddress, mFrameCounter);
+    }
     const bool prepared = mInteractiveGrassPass.Prepare(
         mCommandBuffers[mCurrentFrame], target.Width,
         target.Height, *perspective, settings.Grass,
@@ -6123,7 +6132,7 @@ bool GfxRenderingAPIVulkan::TryRenderInteractiveGrass(
         mPicaSceneFrame.ResolvedDrawStream(),
         mFrameCounter, target.Key.RenderTargetNamespace,
         target.Key.ColorPhysicalAddress, mCurrentFrame,
-        mInteractiveGrassProviderPlan,
+        mInteractiveGrassProviderPlan, grassShadowHistory,
         mTemporalJitterPixels, mTemporalJitterEnabled);
     bool executed = false;
     if (prepared) {
@@ -6343,8 +6352,8 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
 namespace {
 
 // The declared end-of-target providers of one composition target: the shadow
-// map at the post-opaque anchor and the interactive geometry published for the
-// target. Both the display transfer boundary and a native copy boundary compose
+// map at its graph-authorized native anchor and the interactive geometry
+// published for the target. Both the display transfer and native copy boundaries compose
 // the same scene, so the providers and their anchors live here once instead of
 // in two lists.
 struct NativePicaTargetEndDispatch {
@@ -6360,7 +6369,8 @@ struct NativePicaTargetEndDispatch {
 // once the sequence has passed its insertion point - including a target-end
 // anchor, which is reached only after every draw of the sequence.
 [[nodiscard]] NativePicaTargetEndDispatch ResolveNativePicaTargetEndDispatch(
-    const Oot3d::PicaCompositionSchedule& schedule, bool shadowScheduleValid,
+    const Oot3d::PicaCompositionSchedule& schedule,
+    const ::Fast::Renderer::ExtensionPassSchedulePlan& shadowSchedule,
     bool geometryProviderValid,
     const ::Oot3d::Renderer::PicaCompositionTargetReference& target,
     uint64_t submissionId, bool geometryTargetPublished,
@@ -6369,13 +6379,10 @@ struct NativePicaTargetEndDispatch {
     if (!schedule.Valid()) {
         return dispatch;
     }
-    if (shadowScheduleValid) {
-        const auto* anchor = submissionId == 0U
-            ? schedule.FindTargetEndAnchor(Oot3d::EffectStage::AfterOpaque,
-                                           target)
-            : schedule.FindAnchor(Oot3d::EffectStage::AfterOpaque, target);
-        if (anchor != nullptr &&
-            (submissionId == 0U || schedule.Reached(*anchor))) {
+    if (shadowSchedule.Valid()) {
+        const auto* anchor = Oot3d::FindPicaEffectPassAnchor(schedule, shadowSchedule, target);
+        if (anchor != nullptr && schedule.Reached(*anchor) &&
+            (submissionId != 0U || anchor->AtTargetEnd)) {
             dispatch.ShadowAnchor = anchor;
         }
     }
@@ -6466,7 +6473,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                 };
             const auto targetEnd = ResolveNativePicaTargetEndDispatch(
                 mNativePicaCompositionSchedule,
-                mDirectionalShadowSchedulePlan.Valid(),
+                mDirectionalShadowSchedulePlan,
                 mInteractiveGrassProviderPlan.Valid(), compositionTarget,
                 /*submissionId=*/0U,
                 mGrassWorldTargetsThisFrame.contains(source->Key),
@@ -7340,7 +7347,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             effectGuideTarget->NormalGuideView != VK_NULL_HANDLE &&
             effectGuideTarget->MaterialGuideView != VK_NULL_HANDLE;
         bool reflectionNriWrapped = false;
-        uint32_t guideSampledResourceMask = 0U;
+        uint64_t guideSampledResourceMask = 0U;
         const auto transitionEffectPassGuides = [
             &effectPlan, &effectResources, &guideSampledResourceMask,
             &command, this](Oot3d::DisplayEffectPass pass) {
@@ -9776,7 +9783,7 @@ bool GfxRenderingAPIVulkan::ComposeNativePicaSceneForCopy(
     // composition, and transparent/UI content stays after it.
     const auto targetEnd = ResolveNativePicaTargetEndDispatch(
         mNativePicaCompositionSchedule,
-        mDirectionalShadowSchedulePlan.Valid(),
+        mDirectionalShadowSchedulePlan,
         mInteractiveGrassProviderPlan.Valid(), compositionTarget,
         afterDrawSubmissionId,
         mGrassWorldTargetsThisFrame.contains(source.Key),

@@ -15,6 +15,8 @@ struct EffectPassOutputBarrier {
     ResourceAccess DispatchAccess = ResourceAccess::Undefined;
     ResourceAccess CompletionAccess = ResourceAccess::Undefined;
     bool DownstreamRead = false;
+    // Graph-declared producer phase between initialization and publication.
+    ResourceAccess IntermediateAccess = ResourceAccess::Undefined;
 
     [[nodiscard]] bool Managed() const noexcept {
         return Resource != EffectResource::Count &&
@@ -74,6 +76,7 @@ class EffectPassBarrierPlan final {
     uint32_t mManagedOutputCount = 0U;
     uint32_t mShaderReadableOutputCount = 0U;
     uint32_t mWriteOnlyOutputCount = 0U;
+    uint32_t mGraphTransitionCount = 0U;
     bool mValid = false;
 };
 

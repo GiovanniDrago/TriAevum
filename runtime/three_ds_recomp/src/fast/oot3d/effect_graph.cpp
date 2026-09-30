@@ -24,7 +24,8 @@ namespace {
     return resource == EffectResource::PicaSceneFrame || resource == EffectResource::NativeSceneView ||
            resource == EffectResource::SceneColor || resource == EffectResource::NativeDepth ||
            resource == EffectResource::NativeShadow2D ||
-           resource == EffectResource::DirectionalShadowHistory;
+           resource == EffectResource::DirectionalShadowHistory ||
+           resource == EffectResource::DirectionalShadowStaticHistory;
 }
 
 [[nodiscard]] constexpr bool IsSemanticResource(EffectResource resource) noexcept {
@@ -95,6 +96,14 @@ BuildEffectResourceDeclaration(EffectResource resource) noexcept {
 }
 
 [[nodiscard]] bool ValidateContract(const EffectPass& pass, std::string& error) {
+    if (pass.FallbackStage &&
+        (pass.Contract != EffectContractKind::AuxiliaryOutput ||
+         StageOrder(pass.Stage) < StageOrder(EffectStage::AfterOpaque) ||
+         StageOrder(*pass.FallbackStage) <= StageOrder(pass.Stage) ||
+         StageOrder(*pass.FallbackStage) > StageOrder(EffectStage::BeforeUi))) {
+        error = "invalid auxiliary export fallback stage: " + pass.Name;
+        return false;
+    }
     bool writesResource = false;
     std::unordered_set<EffectResource> declaredResources;
     for (const auto& use : pass.Resources) {
@@ -270,6 +279,30 @@ CompiledEffectGraph EffectGraph::Compile() const {
         if (pass.Enabled && !ValidateContract(pass, result.Error)) {
             return result;
         }
+        if (!pass.Enabled || !pass.FallbackStage) continue;
+        // Imports remain externally owned and exports remain live through graph
+        // completion. A delayed producer must not invalidate a same-frame read
+        // or a transient resource lifetime compiled at its primary stage.
+        for (const auto& use : pass.Resources) {
+            if ((ReadsEffectResource(use.Access) && !IsExternalResource(use.Resource)) ||
+                (WritesEffectResource(use.Access) &&
+                 (!IsAuxiliarySceneData(use.Resource) ||
+                  std::find(mExports.begin(), mExports.end(), use.Resource) == mExports.end()))) {
+                result.Error = "fallback pass requires imported inputs and auxiliary exports: " + name;
+                return result;
+            }
+            if (!WritesEffectResource(use.Access)) continue;
+            for (const auto& [otherName, other] : mPasses) {
+                if (!other.Enabled || otherName == name) continue;
+                if (std::any_of(other.Resources.begin(), other.Resources.end(),
+                                [&](const EffectResourceUse& read) {
+                                    return read.Resource == use.Resource && ReadsEffectResource(read.Access);
+                                })) {
+                    result.Error = "fallback export has a same-frame consumer: " + name;
+                    return result;
+                }
+            }
+        }
     }
 
     std::vector<std::string> schedule;
@@ -302,7 +335,8 @@ CompiledEffectGraph EffectGraph::Compile() const {
                 return false;
             }
             if (dependencyPass->second.Enabled &&
-                StageOrder(dependencyPass->second.Stage) > StageOrder(found->second.Stage)) {
+                StageOrder(dependencyPass->second.FallbackStage.value_or(dependencyPass->second.Stage)) >
+                    StageOrder(found->second.Stage)) {
                 result.Error = "effect dependency crosses stages " + dependency + " -> " + name;
                 return false;
             }
@@ -311,7 +345,8 @@ CompiledEffectGraph EffectGraph::Compile() const {
         }
         mark = Mark::Visited;
         result.Order.push_back(name);
-        result.Passes.push_back({ name, found->second.Stage, found->second.Contract, found->second.Resources });
+        result.Passes.push_back({ name, found->second.Stage, found->second.Contract, found->second.Resources,
+                                  found->second.FallbackStage });
         return true;
     };
 
@@ -471,9 +506,13 @@ CompiledEffectGraph BuildPicaExtensionGraph(const PicaAttachmentFeatureRequests&
                 .Contract = EffectContractKind::AuxiliaryOutput,
                 .Resources = { Read(EffectResource::PicaSceneFrame), Read(EffectResource::NativeSceneView),
                                Read(EffectResource::DirectionalShadowHistory),
-                               Write(EffectResource::DirectionalShadowMap) } });
+                               Read(EffectResource::DirectionalShadowStaticHistory),
+                               Write(EffectResource::DirectionalShadowStaticCache),
+                               Write(EffectResource::DirectionalShadowMap) },
+                .FallbackStage = EffectStage::BeforeUi });
     if (requests.DirectionalShadows) {
         graph.Export(EffectResource::DirectionalShadowMap);
+        graph.Export(EffectResource::DirectionalShadowStaticCache);
     }
     graph.Add({ .Name = std::string(PicaExtensionPassName(PicaExtensionPass::AmbientOcclusion)),
                 .DependsOn = { std::string(PicaExtensionPassName(PicaExtensionPass::Guides)) },
@@ -500,12 +539,16 @@ CompiledEffectGraph BuildPicaExtensionGraph(const PicaAttachmentFeatureRequests&
                                Read(EffectResource::MaterialGuide), Read(EffectResource::RigidMotionGuide),
                                Write(EffectResource::MotionVectors),
                                Write(EffectResource::ReactiveMask) } });
+    std::vector<EffectResourceUse> grassResources{
+        Read(EffectResource::PicaSceneFrame), Read(EffectResource::NativeSceneView),
+        Write(EffectResource::ExtensionGeometry)};
+    if (requests.DirectionalShadows)
+        grassResources.push_back(Read(EffectResource::DirectionalShadowHistory));
     graph.Add({ .Name = std::string(PicaExtensionPassName(PicaExtensionPass::InteractiveGrass)),
                 .Enabled = requests.InteractiveGrass,
                 .Stage = EffectStage::BeforeTransparent,
                 .Contract = EffectContractKind::GeometryProvider,
-                .Resources = { Read(EffectResource::PicaSceneFrame), Read(EffectResource::NativeSceneView),
-                               Write(EffectResource::ExtensionGeometry) } });
+                .Resources = std::move(grassResources) });
     if (requests.InteractiveGrass) {
         graph.Export(EffectResource::ExtensionGeometry);
     }

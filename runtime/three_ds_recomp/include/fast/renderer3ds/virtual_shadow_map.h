@@ -31,6 +31,11 @@ struct VirtualShadowCaster {
     // Includes geometry, the world-space deformation, and raster state. Zero
     // means that reuse cannot be proved and this caster invalidates its pages.
     uint64_t ContentVersion = 0;
+    // Native actor ownership remains dynamic even for rigid, cacheable meshes.
+    // Unproven deformation (ContentVersion == 0) is also always dynamic.
+    bool Dynamic = false;
+    // Opaque native owner, shared with captured composition metadata.
+    uint64_t OwnerIdentity = 0;
 };
 
 struct VirtualShadowLevel {
@@ -74,9 +79,11 @@ struct VirtualShadowPageKey {
 struct VirtualShadowPageUpdate {
     VirtualShadowPageKey Key;
     uint32_t PhysicalPage = 0;
-    // Index into the immutable, frame-local caster list.
-    uint32_t FirstCaster = 0;
-    uint32_t CasterCount = 0;
+    uint32_t FirstStaticCaster = 0;
+    uint32_t StaticCasterCount = 0;
+    uint32_t FirstDynamicCaster = 0;
+    uint32_t DynamicCasterCount = 0;
+    bool RefreshStatic = false;
 };
 
 struct VirtualShadowPageStatistics {
@@ -86,11 +93,14 @@ struct VirtualShadowPageStatistics {
     uint32_t Empty = 0;
     uint32_t Evicted = 0;
     uint32_t Unmapped = 0;
+    uint32_t StaticUpdated = 0;
+    uint32_t StaticReused = 0;
 };
 
-// CPU-owned residency metadata. The graph-owned atlas is the only GPU resource;
-// the immutable table is uploaded with the receiver uniform snapshot. Prepare
-// never claims dirty pages as valid cache entries until Commit succeeds.
+// CPU-owned residency shared by graph-owned static and composed depth atlases.
+// Every update restores static depth before drawing current dynamic casters,
+// including pages whose last dynamic caster disappeared. Prepare never claims
+// either image valid until recording succeeds and Commit is called.
 class VirtualShadowMapCache final {
   public:
     void Prepare(const VirtualShadowLayout& layout, std::span<const VirtualShadowCaster> casters, uint64_t frameId);
@@ -102,8 +112,11 @@ class VirtualShadowMapCache final {
     [[nodiscard]] std::span<const VirtualShadowPageUpdate> Updates() const noexcept {
         return mUpdates;
     }
-    [[nodiscard]] std::span<const uint32_t> Casters(const VirtualShadowPageUpdate& page) const noexcept {
-        return std::span(mCasterIndices).subspan(page.FirstCaster, page.CasterCount);
+    [[nodiscard]] std::span<const uint32_t> StaticCasters(const VirtualShadowPageUpdate& page) const noexcept {
+        return std::span(mStaticCasterIndices).subspan(page.FirstStaticCaster, page.StaticCasterCount);
+    }
+    [[nodiscard]] std::span<const uint32_t> DynamicCasters(const VirtualShadowPageUpdate& page) const noexcept {
+        return std::span(mDynamicCasterIndices).subspan(page.FirstDynamicCaster, page.DynamicCasterCount);
     }
     [[nodiscard]] const VirtualShadowPageStatistics& Statistics() const noexcept {
         return mStatistics;
@@ -117,9 +130,12 @@ class VirtualShadowMapCache final {
         VirtualShadowPageKey Key;
         uint64_t Signature = 0;
         uint64_t PendingSignature = 0;
+        uint64_t StaticSignature = 0;
+        uint64_t PendingStaticSignature = 0;
         uint64_t LastUsed = 0;
         bool Occupied = false;
         bool Valid = false;
+        bool StaticValid = false;
     };
     ShadowMatrix mWorldToLight{};
     uint32_t mResolution = 0;
@@ -127,7 +143,8 @@ class VirtualShadowMapCache final {
     std::unordered_map<VirtualShadowPageKey, uint32_t, KeyHash> mResidency;
     std::array<uint32_t, kVirtualShadowTableEntries> mTable{};
     std::vector<VirtualShadowPageUpdate> mUpdates;
-    std::vector<uint32_t> mCasterIndices;
+    std::vector<uint32_t> mStaticCasterIndices;
+    std::vector<uint32_t> mDynamicCasterIndices;
     std::vector<ShadowBounds> mLightBounds;
     VirtualShadowPageStatistics mStatistics;
 };

@@ -33,6 +33,7 @@ struct PicaSurfaceLightingPass::Impl {
         VkDeviceMemory Memory{};
         VkImageView View{};
         VkFramebuffer Framebuffer{};
+        std::array<VkImageView, 3> Attachments{};
         std::array<VkDescriptorSet, kSets> Sets{};
         uint64_t FrameId = ~uint64_t{};
         uint32_t Used = 0;
@@ -40,6 +41,8 @@ struct PicaSurfaceLightingPass::Impl {
     };
     VkPhysicalDevice Physical{};
     VkFormat Format = VK_FORMAT_UNDEFINED;
+    bool ShadowCoefficients = false;
+    uint32_t Layers = 1;
     VkDevice Device{};
     Renderer::CachedPassShaderCompiler* Shaders = nullptr;
     VkDescriptorSetLayout DescriptorLayout{};
@@ -75,7 +78,7 @@ struct PicaSurfaceLightingPass::Impl {
         VkPipeline result{};
         try {
             vertex = Compile(source, Renderer::SpirvStage::Vertex, "native_surface_lighting.vert");
-            fragment = Compile(BuildPicaSurfaceLightingFragmentShader(surfaceLighting), Renderer::SpirvStage::Fragment,
+            fragment = Compile(BuildPicaSurfaceLightingFragmentShader(surfaceLighting, ShadowCoefficients), Renderer::SpirvStage::Fragment,
                                "native_surface_lighting.frag");
             std::vector<VkVertexInputBindingDescription> bindings;
             std::vector<VkVertexInputAttributeDescription> attributes;
@@ -97,9 +100,10 @@ struct PicaSurfaceLightingPass::Impl {
             VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
             viewportState.viewportCount = viewportState.scissorCount = 1;
             viewportState.pViewports = &viewport; viewportState.pScissors = &scissor;
-            VkPipelineColorBlendAttachmentState attachment{}; attachment.colorWriteMask = 15;
+            std::array<VkPipelineColorBlendAttachmentState, 3> attachments{};
+            for (auto& attachment : attachments) attachment.colorWriteMask = 15;
             VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-            blend.attachmentCount = 1; blend.pAttachments = &attachment;
+            blend.attachmentCount = Layers; blend.pAttachments = attachments.data();
             std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
             for (size_t i = 0; i < stages.size(); ++i) {
                 stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -122,9 +126,12 @@ struct PicaSurfaceLightingPass::Impl {
 
 PicaSurfaceLightingPass::PicaSurfaceLightingPass() : mImpl(std::make_unique<Impl>()) {}
 PicaSurfaceLightingPass::~PicaSurfaceLightingPass() { Shutdown(); }
-bool PicaSurfaceLightingPass::Initialize(VkPhysicalDevice physical, VkDevice device, Renderer::CachedPassShaderCompiler& shaders) {
+bool PicaSurfaceLightingPass::Initialize(VkPhysicalDevice physical, VkDevice device, Renderer::CachedPassShaderCompiler& shaders,
+                                         bool shadowCoefficients) {
     Shutdown();
     auto& p = *mImpl; p.Physical = physical; p.Device = device; p.Shaders = &shaders;
+    p.ShadowCoefficients = shadowCoefficients;
+    p.Layers = shadowCoefficients ? 3U : 1U;
     try {
         constexpr auto required = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
         for (auto format : {VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT}) {
@@ -141,7 +148,8 @@ bool PicaSurfaceLightingPass::Initialize(VkPhysicalDevice physical, VkDevice dev
         dl.bindingCount = static_cast<uint32_t>(bindings.size());
         dl.pBindings = bindings.data();
         Check(vkCreateDescriptorSetLayout(device, &dl, nullptr, &p.DescriptorLayout));
-        VkPushConstantRange push{ VK_SHADER_STAGE_VERTEX_BIT, 0, 16 };
+        VkPushConstantRange push{ VK_SHADER_STAGE_VERTEX_BIT |
+            (shadowCoefficients ? VK_SHADER_STAGE_FRAGMENT_BIT : 0U), 0, shadowCoefficients ? 32U : 16U };
         VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
         pl.setLayoutCount = 1;
         pl.pSetLayouts = &p.DescriptorLayout;
@@ -154,15 +162,20 @@ bool PicaSurfaceLightingPass::Initialize(VkPhysicalDevice physical, VkDevice dev
         pool.poolSizeCount = 1;
         pool.pPoolSizes = &size;
         Check(vkCreateDescriptorPool(device, &pool, nullptr, &p.Pool));
-        VkAttachmentDescription attachment{}; attachment.format = p.Format; attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        attachment.initialLayout = attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        VkAttachmentReference color{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        std::array<VkAttachmentDescription, 3> attachments{};
+        std::array<VkAttachmentReference, 3> colors{};
+        for (uint32_t layer = 0; layer < p.Layers; ++layer) {
+            auto& attachment = attachments[layer];
+            attachment.format = p.Format; attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+            attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            attachment.initialLayout = attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colors[layer] = {layer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        }
         VkSubpassDescription subpass{}; subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 1; subpass.pColorAttachments = &color;
+        subpass.colorAttachmentCount = p.Layers; subpass.pColorAttachments = colors.data();
         VkRenderPassCreateInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-        rp.attachmentCount = 1; rp.pAttachments = &attachment; rp.subpassCount = 1; rp.pSubpasses = &subpass;
+        rp.attachmentCount = p.Layers; rp.pAttachments = attachments.data(); rp.subpassCount = 1; rp.pSubpasses = &subpass;
         Check(vkCreateRenderPass(device, &rp, nullptr, &p.RenderPass));
         VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         sampler.magFilter = sampler.minFilter = VK_FILTER_NEAREST;
@@ -175,7 +188,7 @@ bool PicaSurfaceLightingPass::Initialize(VkPhysicalDevice physical, VkDevice dev
             Check(vkAllocateDescriptorSets(device, &alloc, slot.Sets.data()));
             VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
             image.imageType = VK_IMAGE_TYPE_2D; image.format = p.Format; image.extent = {kWidth, kHeight, 1};
-            image.mipLevels = image.arrayLayers = 1; image.samples = VK_SAMPLE_COUNT_1_BIT;
+            image.mipLevels = 1; image.arrayLayers = p.Layers; image.samples = VK_SAMPLE_COUNT_1_BIT;
             image.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             Check(vkCreateImage(device, &image, nullptr, &slot.Image));
             VkMemoryRequirements req{}; vkGetImageMemoryRequirements(device, slot.Image, &req);
@@ -183,11 +196,17 @@ bool PicaSurfaceLightingPass::Initialize(VkPhysicalDevice physical, VkDevice dev
             memory.allocationSize = req.size; memory.memoryTypeIndex = MemoryType(physical, req.memoryTypeBits);
             Check(vkAllocateMemory(device, &memory, nullptr, &slot.Memory)); Check(vkBindImageMemory(device, slot.Image, slot.Memory, 0));
             VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-            view.image = slot.Image; view.viewType = VK_IMAGE_VIEW_TYPE_2D; view.format = p.Format;
-            view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            view.image = slot.Image; view.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY; view.format = p.Format;
+            view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, p.Layers};
             Check(vkCreateImageView(device, &view, nullptr, &slot.View));
+            view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            view.subresourceRange.layerCount = 1;
+            for (uint32_t layer = 0; layer < p.Layers; ++layer) {
+                view.subresourceRange.baseArrayLayer = layer;
+                Check(vkCreateImageView(device, &view, nullptr, &slot.Attachments[layer]));
+            }
             VkFramebufferCreateInfo fb{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-            fb.renderPass = p.RenderPass; fb.attachmentCount = 1; fb.pAttachments = &slot.View;
+            fb.renderPass = p.RenderPass; fb.attachmentCount = p.Layers; fb.pAttachments = slot.Attachments.data();
             fb.width = kWidth; fb.height = kHeight; fb.layers = 1;
             Check(vkCreateFramebuffer(device, &fb, nullptr, &slot.Framebuffer));
         }
@@ -196,7 +215,8 @@ bool PicaSurfaceLightingPass::Initialize(VkPhysicalDevice physical, VkDevice dev
 }
 
 bool PicaSurfaceLightingPass::Prepare(VkCommandBuffer command, uint32_t frameSlot, uint64_t frameId,
-    PicaResolvedDrawStreamView scene, std::span<PicaSurfaceLightingRequest> requests) {
+    PicaResolvedDrawStreamView scene, std::span<PicaSurfaceLightingRequest> requests,
+    const std::array<float, 3>& shadowDirection) {
     auto& p = *mImpl;
     if (!p.Device) return false;
     auto& slot = p.Slots[frameSlot % kSlots];
@@ -207,13 +227,13 @@ bool PicaSurfaceLightingPass::Prepare(VkCommandBuffer command, uint32_t frameSlo
     barrier.oldLayout = slot.Initialized ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
     barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = slot.Image; barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    barrier.image = slot.Image; barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, p.Layers};
     vkCmdPipelineBarrier(command, slot.Initialized ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-    VkClearValue clear{};
+    std::array<VkClearValue, 3> clear{};
     VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     begin.renderPass = p.RenderPass; begin.framebuffer = slot.Framebuffer; begin.renderArea.extent = {kWidth, kHeight};
-    begin.clearValueCount = 1; begin.pClearValues = &clear;
+    begin.clearValueCount = p.Layers; begin.pClearValues = clear.data();
     vkCmdBeginRenderPass(command, &begin, VK_SUBPASS_CONTENTS_INLINE);
     uint32_t base = 0;
     for (auto& request : requests) {
@@ -289,8 +309,12 @@ bool PicaSurfaceLightingPass::Prepare(VkCommandBuffer command, uint32_t frameSlo
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 0, 1, &set, 0, nullptr);
         VkBuffer geometry = reinterpret_cast<VkBuffer>(draw.GeometryBuffer.NativeHandle);
         for (const auto& b : bindings) { VkDeviceSize offset = b.Offset; vkCmdBindVertexBuffers(command, b.Binding, 1, &geometry, &offset); }
-        std::array<uint32_t, 4> push{base, kWidth, kHeight, 0};
-        vkCmdPushConstants(command, p.Layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, push.data());
+        struct Push {
+            std::array<uint32_t, 4> Allocation;
+            std::array<float, 4> ShadowDirection;
+        } push{{base, kWidth, kHeight, 0}, {shadowDirection[0], shadowDirection[1], shadowDirection[2], 0}};
+        vkCmdPushConstants(command, p.Layout, VK_SHADER_STAGE_VERTEX_BIT |
+            (p.ShadowCoefficients ? VK_SHADER_STAGE_FRAGMENT_BIT : 0U), 0, p.ShadowCoefficients ? 32U : 16U, &push);
         vkCmdDraw(command, request.VertexCount, 1, 0, 0);
         request.AtlasBase = base; request.Available = true; base += request.VertexCount;
         request.ColorResponse = draw.Material.FragmentFeatures.SurfaceColorResponse;
@@ -312,6 +336,7 @@ void PicaSurfaceLightingPass::Shutdown() {
         for (auto& slot : p.Slots) {
             if (slot.Framebuffer) vkDestroyFramebuffer(p.Device, slot.Framebuffer, nullptr);
             if (slot.View) vkDestroyImageView(p.Device, slot.View, nullptr);
+            for (auto attachment : slot.Attachments) if (attachment) vkDestroyImageView(p.Device, attachment, nullptr);
             if (slot.Image) vkDestroyImage(p.Device, slot.Image, nullptr);
             if (slot.Memory) vkFreeMemory(p.Device, slot.Memory, nullptr);
         }

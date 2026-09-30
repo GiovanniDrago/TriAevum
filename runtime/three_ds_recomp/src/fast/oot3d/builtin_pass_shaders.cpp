@@ -13,6 +13,7 @@
 #include "fast/oot3d/smaa_1x.h"
 #include "fast/oot3d/temporal_aa.h"
 #include "fast/renderer/gtao_shader.h"
+#include "fast/renderer3ds/pica_surface_lighting_shader.h"
 
 namespace Fast::Oot3d {
 std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
@@ -40,6 +41,11 @@ std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
         {"interactive_grass_canonical.frag", Fragment, BuildGrassFragmentShader(), {{"GRASS_AUXILIARY_OUTPUTS", "0"}}},
         {"interactive_grass_instrumented.frag", Fragment, BuildGrassFragmentShader(), {{"GRASS_AUXILIARY_OUTPUTS", "1"}}},
         {"grass_instance_compactor.comp", Compute, BuildGrassCompactionComputeShader(), {}},
+        {"grass_shadow_grid.comp", Compute, BuildGrassShadowGridComputeShader(), {}},
+        {"pica_surface_lighting_native.frag", Fragment, Renderer3ds::BuildPicaSurfaceLightingFragmentShader(false), {}},
+        {"pica_surface_lighting.frag", Fragment, Renderer3ds::BuildPicaSurfaceLightingFragmentShader(true), {}},
+        {"pica_surface_lighting_native_coefficients.frag", Fragment, Renderer3ds::BuildPicaSurfaceLightingFragmentShader(false, true), {}},
+        {"pica_surface_lighting_coefficients.frag", Fragment, Renderer3ds::BuildPicaSurfaceLightingFragmentShader(true, true), {}},
         {"normal_space.comp", Compute, kNormalSpaceComputeShader, {}},
         {"oot3d_nri_directional_shadow.frag", Fragment, kPicaDirectionalShadowFragmentShader, {}},
     };

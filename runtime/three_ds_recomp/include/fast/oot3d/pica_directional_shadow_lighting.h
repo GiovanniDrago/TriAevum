@@ -83,6 +83,9 @@ BuildPicaDirectionalShadowLightingInstrumentation(
     uint64_t originalFragmentKey, bool enabled,
     const ::Oot3d::Renderer::PicaShaderHookLayout& hooks);
 
+[[nodiscard]] PicaDirectionalShadowReceiverUniforms PackPicaDirectionalShadowReceiverUniforms(
+    const DirectionalShadowMatrix& viewToWorld, const PicaDirectionalShadowHistoryState& history) noexcept;
+
 
 [[nodiscard]] PicaDirectionalShadowReceiverBinding
 BuildPicaSurfaceShadowReceiverBinding(

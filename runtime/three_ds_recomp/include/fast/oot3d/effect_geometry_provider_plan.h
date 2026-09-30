@@ -63,7 +63,7 @@ class EffectGeometryProviderPlan final {
     friend EffectGeometryProviderPlan BuildEffectGeometryProviderPlan(
         const CompiledEffectGraph&, std::string_view) noexcept;
 
-    uint32_t mReadMask = 0U;
+    uint64_t mReadMask = 0U;
     ::Fast::Renderer3ds::PicaGeometryProviderAuthorizationPlan
         mAuthorization;
     bool mProducesExtensionGeometry = false;

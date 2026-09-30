@@ -105,7 +105,7 @@ constexpr std::array kAtmosphereScopes{
 
 constexpr auto BuildCompositionHookPcs() {
     constexpr size_t count =
-        5U + kUiViews.size() * 2U + kCmbReturnPcs.size() +
+        6U + kUiViews.size() * 2U + kCmbReturnPcs.size() +
         (kObjectKankyoReturnPcs.size() + kSceneRendererReturnPcs.size() +
          kGameplayFadeReturnPcs.size() +
          kRandomizedOverlayReturnPcs.size() +
@@ -128,6 +128,7 @@ constexpr auto BuildCompositionHookPcs() {
     hooks[cursor++] = kOot3dGameplayDrawEntry;
     hooks[cursor++] = kOot3dModelQueueSubmitEntry;
     hooks[cursor++] = kOot3dModelQueueSetSlotEntry;
+    hooks[cursor++] = kOot3dActorDrawEntry;
     for (const auto pc : kCmbReturnPcs) {
         hooks[cursor++] = pc;
     }
@@ -270,9 +271,23 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
     uint32_t pc, const oot3d::recomp::a32::GuestState& state,
     oot3d::recomp::a32::MemoryBus& memory) {
     mLighting.ObserveBlockEntry(pc, state, memory);
+    // Actor_Draw(play, actor) invokes actor+140 and resumes at 002D6314.
+    // Tag the producer's queue slots; rigid actor meshes are not static world.
+    if (pc == kOot3dActorDrawEntry) {
+        uint16_t actorId = 0;
+        uint64_t identity = 0;
+        if (memory.Read16(state.r[1], &actorId))
+            identity = (uint64_t{actorId} << 32U) | state.r[1];
+        else
+            ++mStats.ReadFailures;
+        mActorDrawStack.push_back(identity);
+    } else if (pc == kOot3dActorDrawCallbackReturn && !mActorDrawStack.empty()) {
+        mActorDrawStack.pop_back();
+    }
     if (pc == kOot3dGameplayDrawEntry) {
         mProjectedShadowRenderers.clear();
         mQueuedComposition.clear();
+        mActorDrawStack.clear();
         mLighting.CaptureSceneLights(state.r[0], memory);
     } else if (pc == kOot3dModelQueueSubmitEntry &&
                (state.r[14] == 0x001D04DCU || state.r[14] == 0x0033E684U ||
@@ -302,9 +317,12 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
         // same model may also be submitted by an unrelated world/UI owner.
         const auto at = std::lower_bound(mQueuedComposition.begin(), mQueuedComposition.end(), state.r[1],
             [](const QueuedComposition& entry, uint32_t address) { return entry.SlotAddress < address; });
-        if (mActiveAtmosphereScope && !mActiveUiScope && state.r[2] != 0) {
-            const auto attribution = AttributionForAtmosphere(
-                mActiveAtmosphereScope->SourcePc, mActiveAtmosphereScope->NativeValue);
+        if ((mActiveAtmosphereScope || !mActorDrawStack.empty()) && !mActiveUiScope && state.r[2] != 0) {
+            auto attribution = mActiveAtmosphereScope
+                ? AttributionForAtmosphere(mActiveAtmosphereScope->SourcePc, mActiveAtmosphereScope->NativeValue)
+                : Oot3dPicaCompositionAttribution{};
+            attribution.NativeActorGeometry = !mActorDrawStack.empty();
+            attribution.NativeActorIdentity = mActorDrawStack.empty() ? 0 : mActorDrawStack.back();
             if (at != mQueuedComposition.end() && at->SlotAddress == state.r[1])
                 at->Attribution = attribution;
             else
@@ -436,6 +454,9 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
         mActiveCmbReturnPc = state.r[14];
         mActiveCmbRenderer = state.r[0];
         mActiveCmbAttribution = AttributionForCmbPass(static_cast<uint8_t>(pass));
+        mActiveCmbAttribution.NativeActorGeometry = !mActorDrawStack.empty() && !mActiveUiScope;
+        mActiveCmbAttribution.NativeActorIdentity =
+            mActiveCmbAttribution.NativeActorGeometry ? mActorDrawStack.back() : 0;
         // The model-array consumers 002FAD2C, 002FAE10 and 003FE374 keep
         // the array in r8 and its current index in r4 at these CMB calls.
         // 002FEA30 uses a different layout and is deliberately excluded.
@@ -443,8 +464,14 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
             const uint64_t slot = uint64_t{state.r[8]} + uint64_t{state.r[4]} * 8U;
             const auto at = std::lower_bound(mQueuedComposition.begin(), mQueuedComposition.end(), slot,
                 [](const QueuedComposition& entry, uint64_t address) { return entry.SlotAddress < address; });
-            if (at != mQueuedComposition.end() && at->SlotAddress == slot)
-                mActiveCmbAttribution = at->Attribution;
+            if (at != mQueuedComposition.end() && at->SlotAddress == slot) {
+                if (at->Attribution.Layer != Oot3dPicaCompositionLayer::Unknown)
+                    mActiveCmbAttribution = at->Attribution;
+                else {
+                    mActiveCmbAttribution.NativeActorGeometry = at->Attribution.NativeActorGeometry;
+                    mActiveCmbAttribution.NativeActorIdentity = at->Attribution.NativeActorIdentity;
+                }
+            }
         }
         if (pass == 0U) {
             ++mStats.CmbOpaquePassEntries;
@@ -631,6 +658,7 @@ void Oot3dNativePicaCompositionTracker::Reset() noexcept {
     mActiveCmbRenderer = 0;
     mProjectedShadowRenderers.clear();
     mQueuedComposition.clear();
+    mActorDrawStack.clear();
     mActiveCmbAttribution = {};
     mLighting.Reset();
     mActiveAtmosphereScope.reset();

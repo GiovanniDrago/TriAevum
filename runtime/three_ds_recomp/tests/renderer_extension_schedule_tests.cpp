@@ -10,7 +10,7 @@ TEST(RendererExtensionSchedule,
      AuthorizesOnlyReachedBoundariesAtTheDeclaredStage) {
     const auto plan = BuildExtensionPassSchedulePlan(
         StableExtensionPassId("portable-shadow-map"),
-        ExtensionStage::AfterOpaque);
+        ExtensionStage::AfterOpaque, std::nullopt);
     ASSERT_TRUE(plan.Valid());
 
     ExtensionScheduleBoundary boundary{

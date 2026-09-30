@@ -817,7 +817,7 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
     if (surfaceLighting) {
         declarations += surfaceShadow ? R"glsl(
 vec3 pica_surface_shadow(int slot) {
-    uint selected = uint(oot3d_directional_shadow.shadowed_direct_fraction.w);
+    uint selected = uint(pica_vsm.shadowed_direct_fraction.w);
     if (slot < 0) return vec3(1.0);
     return (selected & (1u << uint(slot))) != 0u
         ? oot3d_directional_shadow_visibility() : vec3(1.0);

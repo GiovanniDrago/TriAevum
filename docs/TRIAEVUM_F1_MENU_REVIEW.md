@@ -11,7 +11,7 @@ normals and scene-view metadata; Off remains usable without those capabilities.
 Schema 14 preserves saved CACAO, GTAO and Off selections and their numeric
 settings. Missing fine radius defaults to one quarter of broad radius, but
 CACAO is no longer converted to GTAO. The actual-widget fixture passes
-**6,648 assertions** in the combined source qualification, including both providers, original CACAO controls,
+**6,650 assertions** in the combined source qualification, including both providers, original CACAO controls,
 independent fairy controls, capability loss, persistence and Native/F2 restoration.
 Fresh runtime evidence and limits are recorded in
 [`TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md`](TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md).
@@ -26,15 +26,21 @@ profile controls, and offer **Off / Virtual Shadow Maps**. They are active only
 with **Per-pixel** or **Per-pixel + PBR** selected in Lighting. **Native** and
 **Native + PBR** disable VSM with an explicit reason but keep Off usable; switching
 lighting or using F2 does not erase the saved preference.
+F2 temporarily forces **Native** from every lighting model, including both
+Per-pixel choices; the next toggle restores the configured choice. The actual
+window/framebuffer verification is recorded in
+[`TRIAEVUM_F2_NATIVE_PRESENTATION.md`](TRIAEVUM_F2_NATIVE_PRESENTATION.md).
 
-The global controls are **Shadow atlas budget** (2048/16 MiB or 4096/64 MiB),
+The global controls are **Shadow atlas budget** (2048/32 MiB or 4096/128 MiB,
+including the static depth cache and composed atlas),
 distance (50–65,536 native world units), strength (0–4x), PCF radius (0–2),
 and advanced constant/slope bias. Stabilization is inherent to world-fixed
 virtual pages, not a toggle. These settings save automatically and are not
 part of **Save scene environment**. Schema 12 migrates the old single-cascade
 choice and removes its depth-padding/stabilization fields. Actual-widget smoke
-passes **4,676 assertions**, covering gating, persistence, capability-safe Off
-and F2 restoration. The NRI architecture document records GPU/camera evidence.
+passes **6,650 assertions**, covering gating, persistence, capability-safe Off,
+the two-atlas memory budget and F2 lighting restoration.
+The NRI architecture document records GPU/camera evidence.
 
 2026-09-23 amplified directional shadows: Lighting **Shadow strength** now
 accepts **0–4x**, including persistence, cascade planning and GPU receiver

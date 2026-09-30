@@ -14,7 +14,7 @@ using Renderer3ds::ValidatePicaNriDescriptorContract;
 inline PicaNriFragmentShaderVariant BuildPicaNriFragmentShaderVariant(
     std::string_view source) {
     return Renderer3ds::BuildPicaNriFragmentShaderVariant(
-        source, { "oot3d_directional_shadow_map" });
+        source, { "pica_vsm_atlas" });
 }
 
 } // namespace Fast::Oot3d

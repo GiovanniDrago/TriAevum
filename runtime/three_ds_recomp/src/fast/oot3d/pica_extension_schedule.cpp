@@ -14,7 +14,7 @@ BuildPicaEffectPassSchedulePlan(
         return {};
     }
     return ::Fast::Renderer::BuildExtensionPassSchedulePlan(
-        ::Fast::Renderer::StableExtensionPassId(pass->Name), pass->Stage);
+        ::Fast::Renderer::StableExtensionPassId(pass->Name), pass->Stage, pass->FallbackStage);
 }
 
 } // namespace Fast::Oot3d

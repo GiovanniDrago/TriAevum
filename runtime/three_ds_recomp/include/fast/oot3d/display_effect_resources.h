@@ -55,9 +55,9 @@ struct EffectResourceBinding {
 };
 
 struct EffectResourceBindingValidation {
-    uint32_t DeclaredReadMask = 0;
-    uint32_t ResolvedReadMask = 0;
-    uint32_t MissingReadMask = 0;
+    uint64_t DeclaredReadMask = 0;
+    uint64_t ResolvedReadMask = 0;
+    uint64_t MissingReadMask = 0;
     uint32_t DeclaredReadCount = 0;
     uint32_t ResolvedReadCount = 0;
     uint32_t MissingReadCount = 0;
@@ -127,7 +127,7 @@ class DisplayEffectResourceTable final {
   private:
     static constexpr size_t kResourceCount =
         static_cast<size_t>(EffectResource::Count);
-    static_assert(kResourceCount <= 32U);
+    static_assert(kResourceCount <= 64U);
 
     std::array<EffectResourceBinding, kResourceCount> mBindings{};
     std::array<::Fast::Renderer::ExtensionResourceBinding,

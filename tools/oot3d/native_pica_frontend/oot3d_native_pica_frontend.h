@@ -152,6 +152,8 @@ struct Oot3dPicaCompositionAttribution {
     uint32_t SourcePc = 0;
     uint32_t NativeValue = 0;
     bool NativeProjectedShadow = false;
+    bool NativeActorGeometry = false;
+    uint64_t NativeActorIdentity = 0;
 
     bool operator==(const Oot3dPicaCompositionAttribution&) const = default;
 };

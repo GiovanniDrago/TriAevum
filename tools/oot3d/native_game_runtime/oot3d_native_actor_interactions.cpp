@@ -64,7 +64,16 @@ CollectNativeActorInteractions(const NativeA32Memory &memory,
       if (actor.update != 0 && actor.draw != 0 &&
           collision.cylinderRadius > 0 && collision.cylinderHeight > 0) {
         Fast::Oot3d::GrassInteractor next;
-        next.Type = Fast::Oot3d::GrassInteractor::Kind::SceneActor;
+        // Native actor-profile IDs: Player, En_Horse, En_Horse_Link_Child.
+        // En_Horse's initialized variant byte distinguishes Epona from Ingo.
+        // Renderer code receives typed roles and opaque identities, not IDs.
+        uint8_t horseVariant = 1;
+        const bool adultEpona = actor.id == 0x0014 &&
+            Read(memory, address + 0x1B0, horseVariant) && horseVariant == 0;
+        using Kind = Fast::Oot3d::GrassInteractor::Kind;
+        next.Type = actor.id == 0x0000 ? Kind::PlayerLink
+                  : adultEpona || actor.id == 0x009A ? Kind::Epona
+                  : Kind::SceneActor;
         next.StableId =
             (uint64_t{static_cast<uint16_t>(actor.id)} << 32) | address;
         next.ContextId = playState;

@@ -20,8 +20,10 @@ namespace {
             return ResourceAccess::ColorAttachment;
         case EffectResource::NativeDepth:
         case EffectResource::NativeShadow2D:
-        case EffectResource::DirectionalShadowMap:
+        case EffectResource::DirectionalShadowStaticCache:
             return ResourceAccess::DepthAttachment;
+        case EffectResource::DirectionalShadowMap:
+            return ResourceAccess::TransferWrite;
         case EffectResource::PresentationOutput:
         case EffectResource::SceneComposition:
             return ResourceAccess::ColorAttachment;
@@ -59,6 +61,8 @@ namespace {
 [[nodiscard]] ResourceAccess CompletionAccessFor(
     EffectResource resource, ResourceAccess dispatchAccess,
     bool downstreamRead) noexcept {
+    if (resource == EffectResource::DirectionalShadowStaticCache)
+        return ResourceAccess::TransferRead;
     if (resource == EffectResource::PresentationOutput) {
         return ResourceAccess::Present;
     }
@@ -74,9 +78,8 @@ namespace {
 }
 
 [[nodiscard]] uint32_t PlannedTransitionCount(
-    uint32_t outputCount, uint32_t physicalMultiplicity) noexcept {
-    const uint64_t count = static_cast<uint64_t>(outputCount) * 2U *
-                           physicalMultiplicity;
+    uint32_t transitionCount, uint32_t physicalMultiplicity) noexcept {
+    const uint64_t count = static_cast<uint64_t>(transitionCount) * physicalMultiplicity;
     return static_cast<uint32_t>(std::min<uint64_t>(
         count, std::numeric_limits<uint32_t>::max()));
 }
@@ -169,7 +172,7 @@ EffectPassBarrierExecution EffectPassBarrierPlan::BeginExecution(
     EffectPassBarrierExecution execution;
     if (mValid) {
         execution.mPlannedGraphTransitions = PlannedTransitionCount(
-            mManagedOutputCount, physicalMultiplicity);
+            mGraphTransitionCount, physicalMultiplicity);
     }
     return execution;
 }
@@ -180,7 +183,7 @@ EffectPassBarrierExecution EffectPassBarrierPlan::BeginOutputExecution(
     const auto* output = Find(resource);
     if (mValid && output != nullptr && output->Managed()) {
         execution.mPlannedGraphTransitions = PlannedTransitionCount(
-            1U, physicalMultiplicity);
+            2U + (output->IntermediateAccess != ResourceAccess::Undefined), physicalMultiplicity);
     }
     return execution;
 }
@@ -213,12 +216,15 @@ EffectPassBarrierPlan BuildEffectPassBarrierPlan(
             graph, passIndex, use.Resource);
         const ResourceAccess completion = CompletionAccessFor(
             use.Resource, dispatch, downstreamRead);
+        const ResourceAccess intermediate = use.Resource == EffectResource::DirectionalShadowMap
+            ? ResourceAccess::DepthAttachment : ResourceAccess::Undefined;
         plan.mOutputs[plan.mOutputCount++] = {
-            use.Resource, dispatch, completion, downstreamRead};
+            use.Resource, dispatch, completion, downstreamRead, intermediate};
         if (dispatch == ResourceAccess::Undefined) {
             continue;
         }
         ++plan.mManagedOutputCount;
+        plan.mGraphTransitionCount += 2U + (intermediate != ResourceAccess::Undefined);
         if (completion == ResourceAccess::ShaderRead) {
             ++plan.mShaderReadableOutputCount;
         } else if (completion == dispatch) {

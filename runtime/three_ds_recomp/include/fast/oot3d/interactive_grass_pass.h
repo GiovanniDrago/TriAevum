@@ -20,6 +20,8 @@
 
 namespace Fast::Oot3d {
 
+struct NriDirectionalShadowHistorySnapshot;
+
 class InteractiveGrassPass final {
   public:
     InteractiveGrassPass();
@@ -44,6 +46,7 @@ class InteractiveGrassPass final {
                  uint32_t framebufferColorPhysicalAddress,
                  uint32_t frameSlot,
                  const EffectGeometryProviderPlan& providerPlan,
+                 const NriDirectionalShadowHistorySnapshot& shadowHistory,
                  const std::array<float, 2>& jitterPixels = {},
                  bool temporalJitter = false);
     bool DrawPrepared(VkCommandBuffer commandBuffer, uint32_t width,

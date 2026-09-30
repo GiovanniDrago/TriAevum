@@ -32,6 +32,7 @@ struct GrassGpuInstanceCompactionResult {
     uint32_t InstanceCount = 0U;
     uint64_t DynamicUploadedBytes = 0U;
     uint64_t StaticUploadedBytes = 0U;
+    VkBuffer VisibleIndicesBuffer = VK_NULL_HANDLE;
 };
 
 class GrassGpuInstanceCompactor final {

@@ -41,6 +41,10 @@ ExtensionStage ExtensionPassSchedulePlan::Stage() const noexcept {
     return mStage;
 }
 
+std::optional<ExtensionStage> ExtensionPassSchedulePlan::FallbackStage() const noexcept {
+    return mFallbackStage;
+}
+
 ExtensionPassScheduleDecision ExtensionPassSchedulePlan::Resolve(
     const ExtensionScheduleBoundary& boundary) const noexcept {
     if (!mValid) {
@@ -49,7 +53,7 @@ ExtensionPassScheduleDecision ExtensionPassSchedulePlan::Resolve(
     if (!boundary.StructurallyValid()) {
         return {ExtensionPassScheduleDecisionReason::BoundaryUnavailable, {}};
     }
-    if (boundary.Stage != mStage) {
+    if (boundary.Stage != mStage && boundary.Stage != mFallbackStage) {
         return {ExtensionPassScheduleDecisionReason::StageMismatch, {}};
     }
     if (!boundary.Reached) {
@@ -80,13 +84,15 @@ uint64_t StableExtensionPassId(std::string_view name) noexcept {
 }
 
 ExtensionPassSchedulePlan BuildExtensionPassSchedulePlan(
-    uint64_t passId, ExtensionStage stage) noexcept {
+    uint64_t passId, ExtensionStage stage, std::optional<ExtensionStage> fallbackStage) noexcept {
     ExtensionPassSchedulePlan result;
-    if (passId == 0U || !IsValidExtensionStage(stage)) {
+    if (passId == 0U || !IsValidExtensionStage(stage) ||
+        (fallbackStage && (!IsValidExtensionStage(*fallbackStage) || *fallbackStage <= stage))) {
         return result;
     }
     result.mPassId = passId;
     result.mStage = stage;
+    result.mFallbackStage = fallbackStage;
     result.mValid = true;
     return result;
 }

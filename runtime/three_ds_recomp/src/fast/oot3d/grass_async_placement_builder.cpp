@@ -58,6 +58,7 @@ uint64_t GrassPlacementSourceVersion(const GrassAsyncPlacementRequest& request) 
 namespace {
 uint64_t TransformVersion(const GrassAsyncPlacementRequest& request) noexcept {
     uint64_t hash = GrassPlacementSourceVersion(request);
+    if (request.ShadowGrid) HashValue(hash, request.ShadowGrid);
     HashValue(hash, request.Budget);
     HashValue(hash, request.PlacementView.Enabled);
     if (request.PlacementView.Enabled) {
@@ -129,6 +130,8 @@ std::shared_ptr<const GrassWorldPlacement> Build(const GrassAsyncPlacementReques
     world.FrameId = request.FrameId;
     world.Anchors = local.Anchors;
     world.Clusters = local.Clusters;
+    world.ShadowGrid = request.ShadowGrid;
+    world.SourceVertices = surface.Vertices;
     world.ModelToWorld = request.ModelToWorld;
     world.TransformBakedIntoVertices = request.TransformBakedIntoVertices;
     world.NormalOffset = request.NormalOffset;
@@ -269,6 +272,9 @@ struct GrassAsyncPlacementBuilder::Impl {
             return p.Anchors.capacity()*sizeof(GrassWorldAnchor)+p.CullingAnchors.capacity()*sizeof(GrassWorldCullingAnchor)+
                 p.Clusters.capacity()*sizeof(GrassWorldCluster)+p.VisibilityNodes.capacity()*sizeof(GrassClusterVisibilityNode)+
                 p.VisibilityClusterOrder.capacity()*sizeof(uint32_t)+
+                p.ShadowPoints.capacity()*sizeof(GrassShadowGridPoint)+
+                p.ShadowReferences.capacity()*sizeof(GrassShadowGridReference)+
+                p.ShadowSurfaces.capacity()*sizeof(GrassShadowSurface)+
                 (p.Midrange.Members.capacity()+p.Midrange.GroupForRoot.capacity()+p.Midrange.GroupOrder.capacity())*sizeof(uint32_t)+
                 p.Midrange.Groups.capacity()*sizeof(GrassMidrangeCluster)+
                 p.Midrange.Nodes.capacity()*sizeof(GrassMidrangeClusters::Node);

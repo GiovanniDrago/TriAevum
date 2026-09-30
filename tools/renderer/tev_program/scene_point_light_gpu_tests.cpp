@@ -1,4 +1,5 @@
 #include "fast/renderer3ds/pica_surface_lighting.h"
+#include "fast/renderer3ds/pica_surface_lighting_shader.h"
 #include "vulkan_compute_test.h"
 #include <array>
 #include <cmath>
@@ -199,6 +200,62 @@ void main() {
                     ++failures;
                 }
         std::cout << "Scene lighting: " << cases.size() << " GPU cases, " << failures << " failures\n";
+        // Execute the coefficient producer and consumer, not a CPU facsimile.
+        // These cases distinguish selected sun from points/fill, preserve native
+        // unlit appearance, and expose post-clamp shadowing and view-space bugs.
+        struct ShadowCase { Case Surface; Vec4 Shadow{0,1,0,0}; };
+        std::array<ShadowCase, 10> shadows{};
+        const std::array<size_t, 8> selected{0, 7, 10, 13, 15, 16, 22, 23};
+        for (size_t i = 0; i < selected.size(); ++i) shadows[i].Surface = cases[selected[i]];
+        shadows[8].Surface = cases[22];
+        shadows[8].Surface.Lighting.EnvironmentDirections[1] = {0,1,0,1};
+        shadows[8].Surface.Lighting.EnvironmentColors[1] = {0,.1F,0,0};
+        shadows[9].Surface = cases[22];
+        shadows[9].Shadow[3] = .5F;
+        shadows[9].Surface.Normal = {1,0,0,0};
+        shadows[9].Surface.Lighting.EnvironmentDirections[0] = {1,0,0,2.4F};
+        shadows[9].Surface.Lighting.ViewToWorldLinear = {{{0,-1,0,0},{1,0,0,0},{0,0,1,0}}};
+        const std::array<Vec4, shadows.size()> shadowExpected{{
+            {.575F,.2F,.2F,1}, {0,0,0,1}, {0,.15F,0,1}, {.2F,.3F,.4F,1},
+            {.2F,.2F,.2F,1}, {.2F,.2F,.6F,1}, {.2F,.2F,.2F,1}, {.2F,.3F,.4F,1},
+            {.2F,.3F,.2F,1}, {.8F,.8F,.8F,1}}};
+        auto coefficients = BuildPicaSurfaceLightingCoefficientsShader(true);
+        coefficients.erase(0, coefficients.find('\n') + 1); // Compute stage owns #version.
+        coefficients = std::regex_replace(coefficients, std::regex(R"(layout\([^)]*\)\s*)"), "");
+        coefficients = std::regex_replace(coefficients,
+            std::regex(R"((^|\n)(in|out) (vec[234] \w+;))"), "$1$3");
+        coefficients = std::regex_replace(coefficients, std::regex(R"(\buniform\b)"), "struct");
+        const std::string shadowShader = "#version 450\nlayout(local_size_x=1) in;\n"
+            "#define main coefficients_main\n" + coefficients + "\n#undef main\n" +
+            std::string(kPicaSurfaceLightingRecomposeShader) + R"glsl(
+struct ShadowCase { PicaSurfaceLighting lighting; vec4 view; vec4 normal; vec4 base; vec4 shadow; };
+layout(set=0,binding=0,std430) readonly buffer Cases { ShadowCase cases[]; } inputs;
+layout(set=0,binding=1,std430) writeonly buffer Results { vec4 values[]; } outputs;
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    pica_surface = inputs.cases[index].lighting;
+    pica_view = inputs.cases[index].view.xyz;
+    pica_surface_normal = inputs.cases[index].normal.xyz;
+    pica_surface_tint = vec4(1.0);
+    pica_primary_color = inputs.cases[index].base;
+    surface_atlas.shadow_direction = inputs.cases[index].shadow;
+    coefficients_main();
+    outputs.values[index] = vec4(pica_surface_recompose(surface_primary, surface_raw.rgb,
+        surface_directional.rgb, inputs.cases[index].shadow.w), 1.0);
+}
+)glsl";
+        std::array<Vec4, shadows.size()> shadowOutput{};
+        RunComputeTest(shadowShader, std::as_bytes(std::span(shadows)),
+            std::as_writable_bytes(std::span(shadowOutput)), shadows.size());
+        for (size_t i = 0; i < shadows.size(); ++i)
+            for (size_t c = 0; c < 3; ++c)
+                if (!std::isfinite(shadowOutput[i][c]) ||
+                    std::abs(shadowOutput[i][c] - shadowExpected[i][c]) > 2e-5F) {
+                    std::cerr << "shadow case=" << i << " channel=" << c << " actual=" << shadowOutput[i][c]
+                              << " expected=" << shadowExpected[i][c] << '\n';
+                    ++failures;
+                }
+        std::cout << "Shadow lighting: " << shadows.size() << " GPU cases, " << failures << " total failures\n";
         return failures ? 1 : 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -16,7 +16,7 @@
 
 namespace Fast::Renderer3ds {
 
-inline constexpr uint32_t kPicaResolvedDrawStreamSchemaVersion = 5U;
+inline constexpr uint32_t kPicaResolvedDrawStreamSchemaVersion = 6U;
 
 struct PicaResolvedVertexLayout {
     uint64_t StructuralKey = 0U;

@@ -45,6 +45,7 @@ struct GrassAsyncPlacementRequest {
     bool MidrangeAdaptive = false;
     uint32_t MidrangeAdaptiveCapacity = kGrassDefaultAdaptiveClusterCapacity;
     GrassPlacementView PlacementView;
+    bool ShadowGrid = false;
 };
 
 struct GrassPlacementCompletion {

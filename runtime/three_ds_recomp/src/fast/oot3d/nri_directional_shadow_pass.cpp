@@ -122,6 +122,7 @@ struct NriDirectionalShadowPass::Impl {
 
     struct TargetHistory {
         HistorySlot Slot;
+        NriOwnedTexture2D StaticTexture;
         Renderer3ds::VirtualShadowMapCache Cache;
         uint32_t Resolution = 0U;
         uint64_t LastUsedFrameId = 0U;
@@ -164,10 +165,11 @@ struct NriDirectionalShadowPass::Impl {
 #endif
 
     void Retire(TargetHistory& history, uint64_t frameId) {
-        auto& slot = history.Slot;
-        if (slot.Texture.Image != VK_NULL_HANDLE) {
-            OwnedStates.Forget(reinterpret_cast<uintptr_t>(slot.Texture.Image));
-            RetiredTextures.push_back({ slot.Texture, frameId });
+        for (const auto* texture : { &history.Slot.Texture, &history.StaticTexture }) {
+            if (texture->Image != VK_NULL_HANDLE) {
+                OwnedStates.Forget(reinterpret_cast<uintptr_t>(texture->Image));
+                RetiredTextures.push_back({ *texture, frameId });
+            }
         }
         history = {};
     }
@@ -177,6 +179,7 @@ struct NriDirectionalShadowPass::Impl {
             for (auto& [key, history] : Histories) {
                 (void)key;
                 Interop->DestroyOwnedTexture(history.Slot.Texture.Image);
+                Interop->DestroyOwnedTexture(history.StaticTexture.Image);
             }
             for (auto& texture : RetiredTextures) {
                 Interop->DestroyOwnedTexture(texture.Texture.Image);
@@ -211,9 +214,16 @@ struct NriDirectionalShadowPass::Impl {
         textureDesc.Width = resolution;
         textureDesc.Height = resolution;
         textureDesc.Format = VK_FORMAT_D32_SFLOAT;
-        textureDesc.Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        textureDesc.Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if (!Interop->CreateOwnedTexture2D(textureDesc, replacement.Slot.Texture))
             return nullptr;
+        textureDesc.Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        if (!Interop->CreateOwnedTexture2D(textureDesc, replacement.StaticTexture)) {
+            Interop->DestroyOwnedTexture(replacement.Slot.Texture.Image);
+            return nullptr;
+        }
 
         if (found != Histories.end()) {
             Retire(found->second, frameId);
@@ -481,17 +491,22 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     return false;
 #else
     const auto* mapBarrier = shadowMapBarrierPlan.Find(EffectResource::DirectionalShadowMap);
+    const auto* staticBarrier = shadowMapBarrierPlan.Find(EffectResource::DirectionalShadowStaticCache);
     const auto expectedPassId =
         ::Fast::Renderer::StableExtensionPassId(PicaExtensionPassName(PicaExtensionPass::DirectionalShadowMap));
     if (!Available() ||
-        !desc.ScheduleAuthorization.Matches(expectedPassId, EffectStage::AfterOpaque, desc.ExpectedSurface) ||
+        (!desc.ScheduleAuthorization.Matches(expectedPassId, EffectStage::AfterOpaque, desc.ExpectedSurface) &&
+         !desc.ScheduleAuthorization.Matches(expectedPassId, EffectStage::BeforeUi, desc.ExpectedSurface)) ||
         desc.ExpectedSurface.Namespace != desc.RenderTargetNamespace ||
         desc.ExpectedSurface.Resource != desc.ColorPhysicalAddress ||
         desc.Settings.Mode != DirectionalShadowMode::VirtualShadowMaps || !sceneView.Active() ||
         sceneView.FrameId() != desc.FrameId || sceneView.PicaFrame() == nullptr || !sceneView.PicaFrame()->Active() ||
         sceneView.PicaFrame()->FrameId() != desc.FrameId || sceneView.PicaFrame()->FrameSlot() != desc.FrameSlot ||
-        !shadowMapBarrierPlan.Valid() || mapBarrier == nullptr ||
-        mapBarrier->DispatchAccess != ResourceAccess::DepthAttachment ||
+        !shadowMapBarrierPlan.Valid() || mapBarrier == nullptr || staticBarrier == nullptr ||
+        staticBarrier->DispatchAccess != ResourceAccess::DepthAttachment ||
+        staticBarrier->CompletionAccess != ResourceAccess::TransferRead ||
+        mapBarrier->DispatchAccess != ResourceAccess::TransferWrite ||
+        mapBarrier->IntermediateAccess != ResourceAccess::DepthAttachment ||
         mapBarrier->CompletionAccess != ResourceAccess::ShaderRead || !mapBarrier->DownstreamRead)
         return false;
     mImpl->LastStage = NriDirectionalShadowExecutionStage::InputAccepted;
@@ -566,7 +581,8 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     target->Cache.Prepare(plan.Virtual, std::span(geometry).first(casterCount), desc.FrameId);
     mImpl->LastLight.Pages = target->Cache.Statistics();
     mImpl->LastLight.UpdatedPages = static_cast<uint32_t>(target->Cache.Updates().size());
-    mImpl->LastLight.AtlasBytes = uint64_t(plan.Virtual.AtlasResolution) * plan.Virtual.AtlasResolution * sizeof(float);
+    mImpl->LastLight.AtlasBytes =
+        uint64_t(plan.Virtual.AtlasResolution) * plan.Virtual.AtlasResolution * sizeof(float) * 2U;
 
     auto* command = NriInteropAccess::CommandBuffer(*mImpl->Interop, desc.FrameSlot);
     auto& frame = mImpl->Frames[desc.FrameSlot % kFrameSlots];
@@ -586,9 +602,12 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     };
     std::array<PreparedCaster, kMaximumCasters> prepared{};
     std::array<bool, kMaximumCasters> required{};
-    for (const auto& page : target->Cache.Updates())
-        for (auto index : target->Cache.Casters(page))
+    for (const auto& page : target->Cache.Updates()) {
+        for (auto index : target->Cache.StaticCasters(page))
             required[index] = true;
+        for (auto index : target->Cache.DynamicCasters(page))
+            required[index] = true;
+    }
     for (size_t index = 0; index < casterCount; ++index) {
         if (!required[index])
             continue;
@@ -638,17 +657,20 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         mImpl->Core->UpdateDescriptorRanges(updates.data(), static_cast<uint32_t>(updates.size()));
     }
 
-    const auto shadowKey = reinterpret_cast<uintptr_t>(history.Texture.Image);
-    mImpl->LastShadowMapBarrierExecution =
-        shadowMapBarrierPlan.BeginOutputExecution(EffectResource::DirectionalShadowMap);
-    const auto write = mImpl->OwnedStates.PlanTransition(shadowKey, { mapBarrier->DispatchAccess, 0 });
-    if (!NriInteropAccess::CmdTextureBarrier(*mImpl->Interop, desc.FrameSlot, history.Texture.Image, write))
-        return false;
-    mImpl->LastShadowMapBarrierExecution.RecordGraphTransition(write);
-    mImpl->OwnedStates.Commit(write);
-    if (!target->Cache.Updates().empty()) {
+    mImpl->LastShadowMapBarrierExecution = shadowMapBarrierPlan.BeginExecution();
+    const auto transition = [&](VkImage image, ResourceAccess access) {
+        const auto change = mImpl->OwnedStates.PlanTransition(reinterpret_cast<uintptr_t>(image), { access, 0 });
+        if (!NriInteropAccess::CmdTextureBarrier(*mImpl->Interop, desc.FrameSlot, image, change))
+            return false;
+        mImpl->LastShadowMapBarrierExecution.RecordGraphTransition(change);
+        mImpl->OwnedStates.Commit(change);
+        return true;
+    };
+    constexpr uint32_t pageSize = Renderer3ds::kVirtualShadowPhysicalPageTexels;
+    const uint32_t pagesAcross = plan.Virtual.AtlasResolution / pageSize;
+    const auto rasterize = [&](VkImage image, bool staticLayer) {
         nri::RenderingDesc rendering{};
-        rendering.depth.descriptor = NriInteropAccess::DepthAttachmentView(*mImpl->Interop, history.Texture.Image);
+        rendering.depth.descriptor = NriInteropAccess::DepthAttachmentView(*mImpl->Interop, image);
         if (rendering.depth.descriptor == nullptr)
             return false;
         rendering.depth.loadOp = nri::LoadOp::LOAD;
@@ -656,17 +678,19 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         mImpl->Core->CmdSetDescriptorPool(*command, *frame.CasterPool);
         mImpl->Core->CmdBeginRendering(*command, rendering);
         mImpl->Core->CmdSetPipelineLayout(*command, nri::BindPoint::GRAPHICS, *mImpl->ShadowLayout);
-        constexpr uint32_t pageSize = Renderer3ds::kVirtualShadowPhysicalPageTexels;
-        const uint32_t pagesAcross = plan.Virtual.AtlasResolution / pageSize;
         nri::Pipeline* boundPipeline = nullptr;
         for (const auto& page : target->Cache.Updates()) {
+            if (staticLayer ? !page.RefreshStatic : page.DynamicCasterCount == 0)
+                continue;
             const uint32_t x = (page.PhysicalPage % pagesAcross) * pageSize;
             const uint32_t y = (page.PhysicalPage / pagesAcross) * pageSize;
             const nri::Rect scissor{ static_cast<int32_t>(x), static_cast<int32_t>(y), pageSize, pageSize };
-            nri::ClearAttachmentDesc clear{};
-            clear.planes = nri::PlaneBits::DEPTH;
-            clear.value.depthStencil.depth = 1;
-            mImpl->Core->CmdClearAttachments(*command, &clear, 1, &scissor, 1);
+            if (staticLayer) {
+                nri::ClearAttachmentDesc clear{};
+                clear.planes = nri::PlaneBits::DEPTH;
+                clear.value.depthStencil.depth = 1;
+                mImpl->Core->CmdClearAttachments(*command, &clear, 1, &scissor, 1);
+            }
             const nri::Viewport viewport{ float(x), float(y), float(pageSize), float(pageSize), 0, 1, true };
             mImpl->Core->CmdSetViewports(*command, &viewport, 1);
             mImpl->Core->CmdSetScissors(*command, &scissor, 1);
@@ -676,7 +700,9 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
                                                       (-2.0F * float(page.Key.Y) - 1.0F) * coverage };
             const nri::SetRootConstantsDesc constants{ 0, pageTransform.data(), sizeof(pageTransform) };
             mImpl->Core->CmdSetRootConstants(*command, constants);
-            for (auto index : target->Cache.Casters(page)) {
+            const auto indices =
+                staticLayer ? target->Cache.StaticCasters(page) : target->Cache.DynamicCasters(page);
+            for (auto index : indices) {
                 const auto& caster = *casters[index];
                 const auto& draw = prepared[index];
                 if (boundPipeline != draw.Pipeline) {
@@ -702,13 +728,40 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
             }
         }
         mImpl->Core->CmdEndRendering(*command);
+        return true;
+    };
+    if (target->Cache.Statistics().StaticUpdated != 0 &&
+        (!transition(target->StaticTexture.Image, staticBarrier->DispatchAccess) ||
+         !rasterize(target->StaticTexture.Image, true)))
+        return false;
+    if (!target->Cache.Updates().empty()) {
+        auto* source = NriInteropAccess::Texture(*mImpl->Interop, target->StaticTexture.Image);
+        auto* destination = NriInteropAccess::Texture(*mImpl->Interop, history.Texture.Image);
+        if (source == nullptr || destination == nullptr ||
+            !transition(target->StaticTexture.Image, staticBarrier->CompletionAccess) ||
+            !transition(history.Texture.Image, mapBarrier->DispatchAccess))
+            return false;
+        // Restore every changed page, even when its last actor has left.
+        // Unchanged final pages remain untouched and retain their exact depth.
+        bool dynamicDraws = false;
+        for (const auto& page : target->Cache.Updates()) {
+            nri::TextureRegionDesc region{};
+            region.x = static_cast<nri::Dim_t>((page.PhysicalPage % pagesAcross) * pageSize);
+            region.y = static_cast<nri::Dim_t>((page.PhysicalPage / pagesAcross) * pageSize);
+            region.width = region.height = pageSize;
+            region.depth = 1;
+            region.planes = nri::PlaneBits::DEPTH;
+            mImpl->Core->CmdCopyTexture(*command, *destination, &region, *source, &region);
+            dynamicDraws |= page.DynamicCasterCount != 0;
+        }
+        if (dynamicDraws &&
+            (!transition(history.Texture.Image, mapBarrier->IntermediateAccess) ||
+             !rasterize(history.Texture.Image, false)))
+            return false;
     }
     mImpl->LastStage = NriDirectionalShadowExecutionStage::ShadowRasterized;
-    const auto read = mImpl->OwnedStates.PlanTransition(shadowKey, { mapBarrier->CompletionAccess, 0 });
-    if (!NriInteropAccess::CmdTextureBarrier(*mImpl->Interop, desc.FrameSlot, history.Texture.Image, read))
+    if (!transition(history.Texture.Image, mapBarrier->CompletionAccess))
         return false;
-    mImpl->LastShadowMapBarrierExecution.RecordGraphTransition(read);
-    mImpl->OwnedStates.Commit(read);
     target->Cache.Commit();
     history.State.Virtual = plan.Virtual;
     history.State.PageTable = target->Cache.Table();

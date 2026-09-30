@@ -1,13 +1,15 @@
 # F2 Native Presentation Override
 
-Date: 2026-09-07. Owner: shared renderer settings runtime; keyboard routing belongs
-to the NRI window host. No gameplay, title module, asset or PICA semantic changes.
+Date: 2026-09-07. Updated: 2026-09-26. Owner: shared renderer settings runtime;
+keyboard routing belongs to the NRI window host. No gameplay, title module,
+asset or PICA semantic changes.
 
 ## Behavior
 
 - F1 starts closed on every launch, including configs saved with that window open.
-- F2 toggles a session-only override of Grass, Toon including outline, CACAO,
-  and both reflection providers. These effects remain Off until F2 is pressed again.
+- F2 toggles a session-only override: lighting becomes **Native**, while Grass,
+  Toon including outline, both AO providers, both reflection providers and
+  directional shadows remain Off until F2 is pressed again.
 - No saved values, presets, mask rules, material assignments or settings files are
   changed by the toggle. F1 edits and profile changes still update the configured
   state while effects are suspended. Restoring uses those latest values, not an
@@ -15,8 +17,7 @@ to the NRI window host. No gameplay, title module, asset or PICA semantic change
 - The fixed header above all F1 tabs explains F2 and explicitly shows ACTIVE or
   inactive status. ACTIVE is highlighted, not communicated by color alone.
 - This is **not** the Authentic/Native Fidelity preset: interpolation, FOV,
-  resolution, AA/upscaling, TopScreen, texture packs and directional shadows are
-  unchanged. Only the four effect categories requested for comparison are disabled.
+  resolution, AA/upscaling, TopScreen and texture packs are unchanged.
 
 ## Implementation Boundaries
 
@@ -26,6 +27,8 @@ Paths below are relative to `runtime/three_ds_recomp/`.
   `src/fast/oot3d/`: `Snapshot()` and `SnapshotWithRevision()` retain configured
   values. `SnapshotForRendering()` applies the temporary mask to a copy under the
   same lock. A toggle increments the revision without staging or persisting values.
+  `include/fast/oot3d/native_presentation_policy.h` owns the mask shared by the
+  desktop override and mandatory mobile native presentation.
 - `src/fast/backends/gfx_vulkan.cpp`: takes the effective snapshot once per frame,
   before extension-graph, shader and provider decisions. Existing Off paths own
   resource reuse and native composition. Changes in effect activation reset TAA
@@ -65,6 +68,36 @@ without F1 despite `menu=true`; frame 720 shows the active header; frame 900 sho
 restored Grass/outline with no F1 overlay. Release logging filters INFO, so the test
 must not use informational toggle messages as proof of rendering or input delivery.
 Synchronous captures and validation are not performance measurements.
+
+## Lighting and mixed-scene shadow correction — 2026-09-26
+
+F2 now forces Native from every lighting model, including Per-pixel and
+Per-pixel + PBR. The previous mask handled only Native + PBR. The policy
+regression fails before this correction; configured values survive the mask
+and are restored on the next toggle.
+
+The directional-shadow producer also declares a late `BeforeUi` anchor in the
+compiled graph. Native interleaved opaque/transparent draws can remove
+`AfterOpaque`, previously leaving the published VSM frozen while Navi was
+visible. The renderer prefers the real opaque boundary and uses the declared
+late boundary only when it is absent. No draw is reordered or classified by
+actor identity; scene color, native depth and UI are not shadow-map inputs.
+
+Verification: 296 graphics, 47 graph and two portable-schedule tests pass, plus
+the native-presentation policy fixture and **6,650 actual-widget assertions**.
+A real F2 tap in the native Vulkan window produces a byte-identical framebuffer
+to an explicit Native reference at host frame 62; all 64 F2 frames execute zero
+VSM passes and the saved lighting model remains `PerPixelPBR`.
+
+The fairy checkpoint completes 320 frames with moving Link and no missed VSM
+update after warmup. A separate 112-frame walk crosses mixed native sequences
+at renderer frames 2–30 and 67–85; every post-warmup frame publishes one shadow
+map, with 18–65 updated pages. Typed light samples at host frames 16–48 confirm
+active, moving Navi. Paired VSM/Off framebuffers and structural diagnostics
+are retained under `J:/TriAevum-diagnostics/f2-navi-fix/`; no renderer validation
+or graph errors occur in these completed runs. A first trace attempt exhausted
+the diagnostic volume and is excluded; the repeat bounds semantic tracing.
+These are correctness probes, not performance measurements.
 
 ## Repeated-toggle Lifetime Repair
 

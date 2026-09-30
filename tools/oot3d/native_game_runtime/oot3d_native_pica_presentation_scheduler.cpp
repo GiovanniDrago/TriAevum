@@ -176,6 +176,8 @@ bool Oot3dPicaPresentationScheduler::Execute(
             .SourcePc = draw.Composition.SourcePc,
             .NativeValue = draw.Composition.NativeValue,
             .NativeProjectedShadow = draw.Composition.NativeProjectedShadow,
+            .NativeActorGeometry = draw.Composition.NativeActorGeometry,
+            .NativeActorIdentity = draw.Composition.NativeActorIdentity,
         },
     });
   }

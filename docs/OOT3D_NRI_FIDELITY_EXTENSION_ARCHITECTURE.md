@@ -117,6 +117,13 @@ An extension may use only explicit contracts:
 
 Supported scheduling points are `SceneResolved`, `BeforeDepth`, `AfterDepth`, `BeforeOpaque`, `NativeLighting`, `AfterOpaque`, `BeforeTransparent`, `AfterTransparent`, `Atmosphere`, `BeforeUi` and `AfterUi`.
 
+An auxiliary export may declare a later fallback anchor through `BeforeUi`.
+The compiler restricts such passes to imported inputs and exported auxiliary
+outputs without same-frame consumers; explicit dependencies cannot cross the
+latest declared stage. This preserves resource lifetimes and barriers when the
+native sequence lacks the primary anchor. The shared 3DS scheduler selects a
+real primary anchor first, never a fabricated opaque boundary.
+
 Published geometry may use the separately declared end-of-first-opaque-prefix
 boundary even when later native draws contain another opaque group. That contract
 authorizes only geometry already published at the boundary, not whole-scene
@@ -2362,7 +2369,8 @@ rotation does not refit the projection; translation scrolls integer page keys.
 Float32 view/inverse-view light-direction roundoff does not reset the cache.
 Real light changes and incompatible layouts invalidate it.
 
-A persistent D32 atlas has 2048/4096 extents (16/64 MiB), with 128-texel pages
+Two persistent D32 atlases retain static depth and final composed depth.
+Their 2048/4096 extents consume 32/128 MiB total per target, with 128-texel pages
 and three-texel resident PCF borders. Residency reserves coarse fallback,
 prioritizes the receiver LOD rings and their blend regions from near to far,
 then spends remaining capacity on additional pages. Surviving selected pages
@@ -2378,11 +2386,17 @@ as well as new ones. Failed recording cannot commit a dirty page as valid.
 Caster admission remains opaque, depth-writing, non-alpha-tested native scene
 geometry; transparent and alpha-cutout caster support is not claimed.
 
-The compiled graph declares history reads and the AfterOpaque map output and
-owns both image transitions. Early receivers consume prior history; the queued
-map update preserves native draw order. Rasterization loads the existing atlas,
-clears only dirty tiles and replays overlapping casters in their native order.
-The per-draw page table is immutable. Receivers use 1/4/9 gather operations for
+The compiled graph declares both histories and the `AfterOpaque` outputs, with
+`BeforeUi` as the shadow producer's late anchor for mixed native sequences, and
+owns attachment, transfer and receiver transitions. Early receivers consume
+prior composed history; the queued update preserves native draw order. The
+Grass insertion point is unchanged; late history is published for subsequent
+native draws/frames rather than moving Grass across transparency.
+Dirty static tiles replay static casters. Each dirty final tile first copies
+its cached static depth, including PCF borders, then replays current dynamic
+casters. Departed actors therefore cannot leave old depth behind.
+The per-draw page table is immutable. Receivers sample only the composed atlas,
+using 1/4/9 gather operations for
 PCF radii 0/1/2 and a narrow continuous LOD transition. NRI's bottom-left
 viewport flag produces positive Vulkan viewport height: physical Y must not
 be mirrored. Scene/UI composition and canonical shaders remain unchanged.
@@ -2432,9 +2446,10 @@ reconstructing a world-up basis from the live eye/at singleton.
 validated GPU slice for the draw's effective surface-lighting uniforms.
 The shared surface-lighting atlas consumes that slice and the structurally
 recovered surface program in Per-pixel/PBR modes. Native continues to replay
-the canonical vertex lighting. This removes the native-only Grass lighting
-path under an authored Environment profile; it does not add Grass VSM
-receivers, change caster admission, or move composition anchors.
+the canonical vertex lighting. That change removed the native-only Grass
+lighting path under an authored Environment profile without adding Grass VSM
+receivers, changing caster admission, or moving composition anchors. Grid-based
+Grass reception is described below.
 
 PCF comparisons now evaluate receiver-plane depth at each gathered texel.
 Derivatives are taken in view space and transformed by the linear
@@ -2480,6 +2495,163 @@ Original30, VSync and user quality settings are restored for the live session;
 AboveNormal priority is confined to the explicitly labelled benchmark runs.
 Private evidence: `I:/_triaevum_work/vsm-stability/accepted-verification.json`.
 
+### Grass VSM Reception on the Texture-Colour Grid
+
+Grass reuses the existing 4x4 texture-colour stencil: the same two nearest nodes
+and blend weight, not a second bilinear grid. Spatial identity includes the
+source triangle and unwrapped UV occurrence within each transformed placement.
+Repeats, mirrored tiles and overlapping UV islands therefore cannot share an
+unrelated world-space receiver. Nodes outside the triangle project onto its UV
+boundary; degenerate UV triangles use their real geometric centroid. Sampling
+uses the native surface plane, not the cosmetic Grass normal offset.
+
+Immutable points and root references belong to the placement cache and its
+memory accounting. A private compute pass evaluates VSM visibility once per
+shared spatial node, using the same page lookup, coarse fallback, PCF, receiver
+plane bias and distance fade as native receivers. Strength and clamping apply
+at the nodes before interpolation, preserving the colour-grid gradients even
+above strength one. Roots consume two visibility values and their existing
+blend weight; they do not sample the VSM atlas. Static GPU data uploads only
+when placement membership changes; per-invocation uniforms remain dynamic.
+
+The optional surface-lighting atlas retains appearance, unclamped lighting and
+the selected directional coefficient. Grass attenuates only that coefficient,
+then applies the original absolute value, tint and clamp rules before native
+vertex interpolation. Ambient, point lights and Environment fill are not
+multiplied by shadow visibility. The captured view transform resolves native
+light directions; an authored key is matched in the same world-space contract.
+
+The compiled graph declares the history read at the existing BeforeTransparent
+Grass anchor. The OOT3D adapter supplies the coherent target-scoped snapshot;
+private buffers and descriptor sets are isolated by in-flight frame and graph
+invocation. Atlas transitions remain graph-owned. No caster admission, native
+ordering, canonical native shader or UI composition changes are introduced.
+Off, zero strength, Native lighting, disabled Grass ReceiveLighting and absent
+history do not execute the grid path. Existing settings retain their owners;
+there is no additional F1 control.
+
+At 2560x1440 on the frozen Kokiri checkpoint, 7,590 shared samples serve the
+170,401-blade Grass draw counters, with 28 draws unchanged. Steady static uploads
+are zero; dynamic uploads add one 2,848-byte receiver block. Deterministic
+comparisons retain byte-identical Off, zero-strength, Native, unlit and
+missing-history framebuffers. The enabled comparison changes 37,883 pixels,
+all darker, confined to Grass in the inspected difference image.
+
+Verification passes 293 foundation, 47 effect-graph, 42 shader-pipeline and
+19 scene-frame tests, plus 24 existing and 10 coefficient/recomposition GPU
+cases. The 64 fixed pass artifacts include the grid compute and surface-lighting
+variants; canonical, temporal, toon and pass artifact checks pass. The corrected
+2048-atlas orbit records 180 active camera calls with coherent Grass history;
+all acceptance captures report zero Vulkan/NRI errors, failed graph passes,
+missing reads or native composition mismatches. The earlier `orbit-2048` probe
+had free camera disabled and is not moving-camera evidence.
+Both the retained baseline and the candidate report 11 Vulkan warnings and no
+NRI warnings. At 2048, physical budget pressure leaves up to 146 fine pages
+unmapped and evicts up to 35 pages; the shared receiver retains native coarse
+fallback rather than claiming full fine-page residency.
+
+A same-executable ABBA comparison isolates Grass reception while global VSM
+remains active: RTX 3060, 2560x1440, atlas 4096, PCF 2, strength 4, normal process
+priority, validation and Grass logging disabled, 60 warmup plus 360 timed native
+frames per run (358 valid GPU timestamp samples). GPU mean is **8.377 -> 8.879 ms**
+(+0.502 ms), with Grass **1.431 -> 1.854 ms** (+0.423 ms). GPU p95 is
+8.953/9.002 ms in the controls and 9.518/9.496 ms with reception. Uncapped native
+throughput is **43.061 -> 39.858 fps (-7.44%)**; individual controls range from
+41.794 to 44.407 fps. This is a measured cost, not a free effect or a claim of
+unchanged CPU throughput. The private control was removed after measurement.
+Results and exact invocations: `I:/_triaevum_work/grass-vsm-grid/performance.json`.
+The rebuilt binary without that control produces a byte-identical enabled
+framebuffer; its executable hash is recorded in the verification receipt.
+
+The base colour grid intentionally trades per-root shadow edges for spatially
+coarse detail. The bounded actor-local refinement below improves nearby detail
+without changing that base grid. Private evidence for the original coarse path:
+`I:/_triaevum_work/grass-vsm-grid/verification.json`.
+
+### Static VSM Cache and Local Actor Grass Refinement
+
+Static and final page signatures are independent. Actor animation or movement
+can invalidate final pages without re-rasterizing unchanged world geometry.
+Eviction, genuine light/layout changes and failed recording retain conservative
+invalidation; dirty pages become reusable only after successful recording.
+Native actor ownership comes from the title adapter's nested Actor_Draw scope
+and survives deferred model queues. The reusable renderer consumes typed actor
+identity and captured geometry/pose bounds, not title addresses, texture names,
+collision-cylinder shadow proxies or per-scene exceptions.
+
+Grass keeps its existing two-nearest-node colour/shadow grid. Immutable native
+triangles and their real world-space planes additionally support local grids
+around Link and the nearest native Epona. Child Epona and the adult Epona
+variant are identified in the adapter; other horse variants do not acquire
+that role. Current target-scoped caster bounds project along the actual light
+direction onto admitted native receiver triangles.
+
+Local nodes use a world-fixed four-unit lattice with an eight-unit transition
+back to the coarse result. Selection is bounded to 128 native-surface patches
+per actor and 4,096 additional shared samples per graph invocation; spacing
+coarsens by powers of two when necessary. Contained rider/horse grids share
+sample storage without merging their independent transition footprints.
+The planner traverses retained native surfaces, not individual Grass roots.
+GPU sampling clamps to the actual triangle boundary, including sloped and
+stacked surfaces, rather than extrapolating an invented ground plane.
+
+The compute pass applies the existing page lookup, PCF, bias and strength rules
+once per shared node. Grass vertices interpolate local visibility and blend
+back to the coarse result; they do not read VSM depth per root or apply a second
+shadow multiplier. Stale history does not supply current-pose refinement.
+Buffers and descriptor sets remain invocation/fence scoped. Native draw order,
+caster admission, ambient/point-light terms, UI composition and settings
+ownership are unchanged. There is no additional F1 control.
+
+On the deterministic 2560x1440 Kokiri capture, cache separation alone preserves
+the baseline framebuffer byte-for-byte. Local refinement changes 15,851 of
+3,686,400 pixels, confined to the inspected Grass region around Link.
+At frame 60 it adds 361 samples to the existing 7,590-node grid for 170,401
+visible blades. Halving density to 512 produces 85,916 visible blades while
+retaining the same 361 local samples. A native-input walk changes 12,115 pixels
+against its matching baseline, confined to Link's final local Grass region;
+the old location and the rest of the framebuffer remain identical.
+Off remains byte-identical and allocates zero VSM atlas bytes.
+These captures report zero Vulkan/NRI validation errors and no failed graph
+passes or missing resources. The nested rider/horse regression reproduces
+646 redundant samples before sharing and 525 afterward.
+
+A private native Ranch fixture additionally verifies child Epona in view with
+Link and Malon, including native movement/camera input and animated poses.
+At frame 60, six local patches use 1,104 additional samples for 44,601 visible
+blades. Against the retained baseline, the framed comparison changes only 660
+pixels on the inspected blade beneath Epona's rear hoof; the rest of the
+framebuffer is byte-identical. Fixture setup uses native story state and
+coherent saved player positions, not runtime scene corrections. Its two
+native Grass source selections remain private; user settings are untouched.
+This is child-Epona runtime evidence, not a mounted adult playthrough.
+
+Verification passes 296 foundation, 47 graph, 19 scene-frame and 42 shader-cache
+tests, native composition and visual-savestate checks, 34 lighting/shadow GPU
+cases, and all four shader artifact families. The F1 atlas labels now include
+both depth images; the actual-widget smoke passes 6,648 assertions.
+The final formatted/rebuilt executable preserves the approved enabled Kokiri
+framebuffer byte-for-byte. Test receipts are retained alongside the captures.
+
+A retained-executable ABBA comparison measures the complete change on RTX 3060:
+2560x1440, 4096 atlas, PCF 2, strength 4, density 1024, normal priority,
+validation/Grass logging disabled, 60 warmup plus 360 timed native frames
+(358 completed GPU timestamps per run). Mean GPU time is **8.710 -> 8.971 ms**
+(+0.261 ms); Grass is **1.730 -> 1.806 ms** (+0.076 ms). GPU p95 is
+9.693/9.683 ms in the baselines and 9.923/9.757 ms in the candidate runs.
+Average uncapped throughput is **36.156 -> 37.468 fps**, but the baselines span
+32.499–39.813 fps versus 37.232–37.704 fps for the candidate. That spread does
+not establish a reliable FPS gain, and neither GPU nor tail latency improves.
+The measured host-frame means are 27.944 and 26.690 ms, respectively.
+Steady candidate samples re-use all 371 static pages with no static refresh;
+up to 48 final pages are recomposed. The explicit memory tradeoff is
+**64 -> 128 MiB** of atlas depth at 4096 per target.
+Exact invocations, executable hashes and per-run timing distributions:
+`I:/_triaevum_work/actor-shadow-refinement/performance.json`.
+
+Private deterministic captures, exact invocations and structural counters:
+`I:/_triaevum_work/actor-shadow-refinement/verification.json`.
+
 ## Per-pixel actor lighting and native UI boundaries (2026-09-24)
 
 - Native projected actor shadows are a typed composition role, not a texture,
@@ -2500,9 +2672,10 @@ Private evidence: `I:/_triaevum_work/vsm-stability/accepted-verification.json`.
   direct terms even when a point group is Off, preserving the independent native
   ambient term. They evaluate the replacement points per fragment in
   world-distance units; PBR uses its GGX response. Group controls do not depend
-  on enabling authored ambient/directional lighting. Replay V18 retains the
-  snapshots and shadow role; V17 and V16 remain readable. Visual sampling
-  interpolates matching source identities without inventing emitter lifetimes.
+  on enabling authored ambient/directional lighting. Replay V19 retains the
+  snapshots, projected-shadow role and native actor ownership; V18, V17 and V16
+  remain readable. Visual sampling interpolates matching source identities
+  without inventing emitter lifetimes.
 - Surface normals transform each authored normal by each bone's inverse
   transpose before applying native weights, then transform to view space.
   Inverting the blended bone matrix caused singularities during animation.
@@ -2519,6 +2692,12 @@ Private evidence: `I:/_triaevum_work/vsm-stability/accepted-verification.json`.
   `AfterOpaque` anchor or changing native order. Interleaved UI followed by more
   scene draws has no such boundary. Once UI is consumed, the target is no longer
   an eligible unresolved scene input.
+- The VSM producer uses that graph-declared `BeforeUi` boundary when
+  `AfterOpaque` is absent. This prevents Navi's interleaved transparent draws
+  from stopping shadow updates. Only imported caster/view/history data and
+  exported shadow atlases participate; no UI or scene-color input is added.
+  The 2026-09-26 runtime and regression evidence is recorded in
+  [`TRIAEVUM_F2_NATIVE_PRESENTATION.md`](TRIAEVUM_F2_NATIVE_PRESENTATION.md#lighting-and-mixed-scene-shadow-correction--2026-09-26).
 - At that anchor, the compiled scene graph resolves into its declared output.
   The native UI consumer commits it by an exact, initialized, same-extent NRI
   image copy. Offscreen composition retains storage orientation; physical
@@ -2560,9 +2739,9 @@ records, including native environment updates, never static scene-file guesses.
 
 Immutable directional snapshots are independent of moving fairy snapshots.
 The captured world/view transform accompanies geometry, replay and interpolation.
-Replay V18 deduplicates both snapshot types; sampling pairs source identities
-rather than selected slot numbers. Resolved draw-stream schema 5 retains the
-scene directions for shadow selection.
+Replay V19 retains the snapshot deduplication introduced in V18; sampling pairs
+source identities rather than selected slot numbers. Resolved draw-stream
+schema 6 retains scene directions and native actor ownership for shadows.
 
 Both native directionals illuminate eligible world and actor surfaces. Matching
 selected native direct terms are removed by source identity, without discarding

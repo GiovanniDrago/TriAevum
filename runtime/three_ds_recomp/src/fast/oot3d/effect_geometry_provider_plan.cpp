@@ -8,9 +8,9 @@
 namespace Fast::Oot3d {
 namespace {
 
-[[nodiscard]] constexpr uint32_t ResourceBit(
+[[nodiscard]] constexpr uint64_t ResourceBit(
     EffectResource resource) noexcept {
-    return 1U << static_cast<uint32_t>(resource);
+    return uint64_t{1} << static_cast<uint32_t>(resource);
 }
 
 [[nodiscard]] constexpr bool IsInputUnavailable(

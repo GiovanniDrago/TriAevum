@@ -30,6 +30,7 @@ constexpr uint32_t kVisualReplayMagicV15 = 0x46525650U; // PVRF: selected native
 constexpr uint32_t kVisualReplayMagicV16 = 0x47525650U; // PVRG: geometry-synchronous world-to-view
 constexpr uint32_t kVisualReplayMagicV17 = 0x48525650U; // PVRH: native draw roles
 constexpr uint32_t kVisualReplayMagicV18 = 0x49525650U; // PVRI: native scene directionals
+constexpr uint32_t kVisualReplayMagicV19 = 0x4A525650U; // PVRJ: native actor geometry ownership
 constexpr uint32_t kMaximumCopyReferencesPerTexture = 4096U;
 constexpr uint32_t kMaximumPlans = 4096U;
 constexpr uint32_t kMaximumResources = 4096U;
@@ -91,6 +92,7 @@ class Reader final {
     bool HasWorldToView = false;
     bool HasNativeDrawRoles = false;
     bool HasSceneDirectionals = false;
+    bool HasNativeActorGeometry = false;
     std::vector<std::shared_ptr<const Fast::Renderer3ds::PicaScenePointLights>> ScenePoints;
     std::vector<std::shared_ptr<const Fast::Renderer3ds::PicaSceneDirectionalLights>> SceneDirectionals;
     explicit Reader(std::span<const uint8_t> bytes) : mBytes(bytes) {}
@@ -749,6 +751,8 @@ void WritePlan(Writer& writer, const Oot3dPicaVulkanDrawPlan& value,
     writer.U32(value.Composition.SourcePc);
     writer.U32(value.Composition.NativeValue);
     writer.Bool(value.Composition.NativeProjectedShadow);
+    writer.Bool(value.Composition.NativeActorGeometry);
+    writer.U64(value.Composition.NativeActorIdentity);
     for (const auto& light : value.LightBinding.Sources) {
         WriteEnum(writer, light.Kind);
         writer.U64(light.SourceIdentity);
@@ -951,6 +955,9 @@ bool ReadPlan(Reader& reader, Oot3dPicaVulkanDrawPlan& value,
     }
     if (reader.HasNativeDrawRoles &&
         !reader.Bool(value.Composition.NativeProjectedShadow)) return false;
+    if (reader.HasNativeActorGeometry &&
+        (!reader.Bool(value.Composition.NativeActorGeometry) ||
+         !reader.U64(value.Composition.NativeActorIdentity))) return false;
     if (reader.HasLightBinding) {
         for (auto& light : value.LightBinding.Sources) {
             if (!ReadEnum(reader, light.Kind, 2U) || !reader.U64(light.SourceIdentity)) return false;
@@ -1172,7 +1179,7 @@ bool ReadOptionalFrame(Reader& reader,
 void WriteReplayState(Writer& writer,
                       const Oot3dPicaVisualReplayState& value) {
     const auto lightingLuts = BuildLightingLutDictionary(value);
-    writer.U32(kVisualReplayMagicV18);
+    writer.U32(kVisualReplayMagicV19);
     WriteLightingLutDictionary(writer, lightingLuts);
     const auto& accumulator = value.Scheduler.Accumulator;
     writer.U64(accumulator.NextSequence);
@@ -1209,7 +1216,8 @@ bool ReadReplayState(Reader& reader, Oot3dPicaVisualReplayState& value) {
     uint32_t magic = 0U;
     auto& accumulator = value.Scheduler.Accumulator;
     if (!reader.U32(magic)) return false;
-    reader.HasSceneDirectionals = magic == kVisualReplayMagicV18;
+    reader.HasNativeActorGeometry = magic == kVisualReplayMagicV19;
+    reader.HasSceneDirectionals = magic == kVisualReplayMagicV18 || reader.HasNativeActorGeometry;
     reader.HasNativeDrawRoles = magic == kVisualReplayMagicV17 || reader.HasSceneDirectionals;
     reader.HasWorldToView = magic == kVisualReplayMagicV16 || reader.HasNativeDrawRoles;
     reader.HasLightBinding = magic == kVisualReplayMagicV15 || reader.HasWorldToView;

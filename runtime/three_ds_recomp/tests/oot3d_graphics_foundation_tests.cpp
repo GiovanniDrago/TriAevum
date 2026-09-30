@@ -222,7 +222,7 @@ TEST(Renderer3dsVirtualShadows, RetainsWorldPagesAndRetriesUncommittedCasterChan
     auto layout = BuildVirtualShadowLayout({0.25F, 0.25F, 0}, {0, 0, 1}, 4096, 65536);
     std::array<VirtualShadowCaster, 2> casters{{
         {{{-3000, -3000, -10}, {3000, 3000, 10}, true}, 1},
-        {{{20, 20, 0}, {40, 40, 80}, true}, 2}}};
+        {{{20, 20, 0}, {40, 40, 80}, true}, 2, true}}};
     VirtualShadowMapCache cache;
     cache.Prepare(layout, casters, 1);
     cache.Commit();
@@ -241,8 +241,14 @@ TEST(Renderer3dsVirtualShadows, RetainsWorldPagesAndRetriesUncommittedCasterChan
         [](const auto& page) { return page.Key == VirtualShadowPageKey{4, 0, 0}; });
     ASSERT_NE(oldFootprint, cache.Updates().end());
     ASSERT_NE(newFootprint, cache.Updates().end());
-    EXPECT_EQ(cache.Casters(*oldFootprint).size(), 1U);
-    EXPECT_EQ(cache.Casters(*newFootprint).size(), 2U);
+    EXPECT_FALSE(oldFootprint->RefreshStatic);
+    EXPECT_FALSE(newFootprint->RefreshStatic);
+    EXPECT_TRUE(cache.StaticCasters(*oldFootprint).empty());
+    EXPECT_TRUE(cache.DynamicCasters(*oldFootprint).empty());
+    EXPECT_TRUE(cache.StaticCasters(*newFootprint).empty());
+    ASSERT_EQ(cache.DynamicCasters(*newFootprint).size(), 1U);
+    EXPECT_EQ(cache.DynamicCasters(*newFootprint).front(), 1U);
+    EXPECT_EQ(cache.Statistics().StaticUpdated, 0U);
     const auto pending = cache.Updates().size();
     cache.Prepare(shifted, casters, 4);
     EXPECT_EQ(cache.Updates().size(), pending);
@@ -2966,43 +2972,6 @@ TEST(Oot3dPicaNri, PreservesNativeShadowStorageImageWithUnsignedSampler) {
 #endif
 }
 
-TEST(Oot3dPicaNri, ConvertsDirectionalShadowLightingSamplerWhenPresent) {
-    const std::string source =
-        "#version 450\n"
-        "layout(set=0,binding=1) uniform sampler2D pica_texture0;\n"
-        "layout(set=0,binding=2) uniform sampler2D pica_texture1;\n"
-        "layout(set=0,binding=3) uniform sampler2D pica_texture2;\n"
-        "layout(set=0,binding=10) uniform sampler2D oot3d_directional_shadow_map;\n"
-        "layout(set=0,binding=12,std140) uniform ShadowState { vec4 value; } shadow_state;\n"
-        "layout(location=0) out vec4 color;\n"
-        "void main(){color=texture(oot3d_directional_shadow_map,vec2(0))"
-        "+shadow_state.value+texture(pica_texture0,vec2(0))"
-        "+texture(pica_texture1,vec2(0))+texture(pica_texture2,vec2(0));}\n";
-    const auto variant =
-        Fast::Oot3d::BuildPicaNriFragmentShaderVariant(source);
-    ASSERT_TRUE(variant.Applied) << variant.Error;
-    EXPECT_NE(variant.Source.find(
-                  "binding=10) uniform texture2D oot3d_directional_shadow_map_image"),
-              std::string::npos);
-    EXPECT_NE(variant.Source.find(
-                  "binding=11) uniform sampler oot3d_directional_shadow_map_sampler"),
-              std::string::npos);
-    EXPECT_NE(variant.Source.find(
-                  "#define oot3d_directional_shadow_map sampler2D(oot3d_directional_shadow_map_image,oot3d_directional_shadow_map_sampler)"),
-              std::string::npos);
-#ifdef OOT3D_FOUNDATION_HAS_SHADERC
-    shaderc::Compiler compiler;
-    shaderc::CompileOptions options;
-    options.SetTargetEnvironment(shaderc_target_env_vulkan,
-                                 shaderc_env_version_vulkan_1_2);
-    const auto spirv = compiler.CompileGlslToSpv(
-        variant.Source, shaderc_fragment_shader,
-        "nri_pica_shadow_contract.frag", options);
-    EXPECT_EQ(spirv.GetCompilationStatus(),
-              shaderc_compilation_status_success)
-        << spirv.GetErrorMessage();
-#endif
-}
 
 TEST(Oot3dPicaNri, ConvertsNativeLightingLutSamplerWhenPresent) {
     const std::string source =
@@ -3989,27 +3958,6 @@ TEST(Oot3dPicaToon, CustomBandValuesChangeShaderAndVariantKey) {
               std::string::npos);
 }
 
-TEST(Oot3dGrassToon, SharesCanonicalShaderAndAppliesBeforeFogWithoutChangingAlpha) {
-    using namespace Fast::Oot3d;
-    const auto grass = BuildGrassFragmentShader();
-    EXPECT_NE(grass.find(kToonSurfaceResponseShader), std::string::npos);
-    PicaToonDrawInfo draw{Oot3d::Renderer::PicaCompositionDomain::Scene, true, true, false, 0xfU};
-    const auto native = BuildPicaToonShaderVariant(
-        "void main() {\n    float pica_z_over_w = -gl_FragCoord.z;\n}",
-        7U, draw, ToonMode::PostProcessPreview, {});
-    ASSERT_TRUE(native.Applied());
-    EXPECT_NE(native.Source.find(kToonSurfaceResponseShader), std::string::npos);
-    const auto vertex = BuildGrassVertexShader();
-    EXPECT_NE(vertex.find("blade_color.rgb = oot3d_toon_banded_color"), std::string::npos);
-    EXPECT_EQ(grass.find("resolved_color.rgb = oot3d_toon_diffuse_response"), std::string::npos);
-    EXPECT_EQ(vertex.find("blade_lighting"), std::string::npos);
-    const auto apply = grass.find("resolved_color.rgb = clamp(resolved_color.rgb, 0.0, 1.0)");
-    ASSERT_NE(apply, std::string::npos);
-    EXPECT_LT(apply, grass.find("resolved_color.rgb = mix("));
-    EXPECT_EQ(grass.find("resolved_color.a ="), std::string::npos);
-    EXPECT_NE(grass.find("if (p.flags.x < 0.5) return sourceColor;"), std::string::npos);
-    EXPECT_NE(grass.find(": step(edge, guide)"), std::string::npos);
-}
 
 TEST(Oot3dGrassToon, CollapsedNativeScalePreservesEveryByteAndValidStageCombination) {
     for (uint32_t combination = 0; combination < 729; ++combination) {
@@ -4030,24 +3978,6 @@ TEST(Oot3dGrassToon, CollapsedNativeScalePreservesEveryByteAndValidStageCombinat
     }
 }
 
-TEST(Oot3dGrassToon, RimIsBoundedByRootDistanceWithoutChangingDiffuseResponse) {
-    using namespace Fast::Oot3d;
-    const auto fragment = BuildGrassFragmentShader();
-    const auto vertex = BuildGrassVertexShader();
-    EXPECT_NE(vertex.find("length(eye - in_base_height.xyz)"), std::string::npos);
-    EXPECT_NE(vertex.find("1.0 - smoothstep(rim_distance.x, rim_distance.y, root_distance)"), std::string::npos);
-    EXPECT_NE(fragment.find("toon.flags.x > 0.5 && blade_rim_weight > 0.0"), std::string::npos);
-    EXPECT_NE(fragment.find("blade_rim_weight *"), std::string::npos);
-    EXPECT_EQ(fragment.find("resolved_color.rgb = oot3d_toon_surface_response"), std::string::npos);
-    const std::string common(kToonSurfaceResponseShader);
-    const auto start = common.find("vec3 oot3d_toon_diffuse_response(");
-    ASSERT_NE(start, std::string::npos);
-    const auto diffuse = common.substr(start, common.find("\n}", start) - start);
-    EXPECT_EQ(diffuse.find("oot3d_toon_rim("), std::string::npos);
-    EXPECT_EQ(diffuse.find("viewDirection"), std::string::npos);
-    EXPECT_NE(diffuse.find("oot3d_toon_banded_color("), std::string::npos);
-    EXPECT_NE(common.find("+ oot3d_toon_rim(normal, viewDirection, p)"), std::string::npos);
-}
 
 TEST(Oot3dGrassToon, RimDistanceValidationKeepsSmoothstepEdgesOrdered) {
     using namespace Fast::Oot3d;

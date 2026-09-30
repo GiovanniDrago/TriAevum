@@ -14,7 +14,7 @@ struct PicaGuideSamplingBarrierBatch {
     uint32_t Count = 0;
     uint32_t DeclaredCount = 0;
     uint32_t MissingCount = 0;
-    uint32_t ResourceMask = 0;
+    uint64_t ResourceMask = 0;
     VkPipelineStageFlags SourceStages = 0;
     VkPipelineStageFlags DestinationStages = 0;
 
@@ -29,13 +29,13 @@ struct PicaGuideSamplingBarrierBatch {
 BuildPicaGuideSamplingBarriers(
     const CompiledEffectPass& pass,
     const DisplayEffectResourceTable& resources,
-    uint32_t sampledResourceMask) noexcept;
+    uint64_t sampledResourceMask) noexcept;
 
 // Restores exactly the resources transitioned during pass execution. The
 // reverse dependency covers compute and fragment reads.
 [[nodiscard]] PicaGuideSamplingBarrierBatch
 BuildPicaGuideAttachmentBarriers(
     const DisplayEffectResourceTable& resources,
-    uint32_t sampledResourceMask) noexcept;
+    uint64_t sampledResourceMask) noexcept;
 
 } // namespace Fast::Oot3d

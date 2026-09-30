@@ -26,9 +26,9 @@ VkImageMemoryBarrier MakeBarrier(
     return barrier;
 }
 
-[[nodiscard]] constexpr uint32_t ResourceBit(
+[[nodiscard]] constexpr uint64_t ResourceBit(
     EffectResource resource) noexcept {
-    return 1U << static_cast<uint32_t>(resource);
+    return uint64_t{1} << static_cast<uint32_t>(resource);
 }
 
 PicaGuideSamplingBarrierBatch BuildBarriers(
@@ -68,7 +68,7 @@ PicaGuideSamplingBarrierBatch BuildBarriers(
         { EffectResource::DiffuseAlbedoGuide, VK_IMAGE_ASPECT_COLOR_BIT },
     } };
     for (const auto& [resource, aspect] : candidates) {
-        const uint32_t bit = ResourceBit(resource);
+        const uint64_t bit = ResourceBit(resource);
         const bool requested = toShaderRead
             ? pass != nullptr && pass->ReadsResource(resource) &&
                   (resourceMask & bit) == 0U
@@ -125,7 +125,7 @@ PicaGuideSamplingBarrierBatch
 BuildPicaGuideSamplingBarriers(
     const CompiledEffectPass& pass,
     const DisplayEffectResourceTable& resources,
-    uint32_t sampledResourceMask) noexcept {
+    uint64_t sampledResourceMask) noexcept {
     return BuildBarriers(
         resources, &pass, sampledResourceMask, true);
 }
@@ -133,7 +133,7 @@ BuildPicaGuideSamplingBarriers(
 PicaGuideSamplingBarrierBatch
 BuildPicaGuideAttachmentBarriers(
     const DisplayEffectResourceTable& resources,
-    uint32_t sampledResourceMask) noexcept {
+    uint64_t sampledResourceMask) noexcept {
     return BuildBarriers(
         resources, nullptr, sampledResourceMask, false);
 }

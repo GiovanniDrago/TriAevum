@@ -20,6 +20,7 @@ namespace Oot3dNativeGame {
 inline constexpr uint32_t kOot3dCmbRendererSubmitDrawHandleEntry =
     0x0030F4D0U;
 inline constexpr uint32_t kOot3dObjectKankyoDrawEntry = 0x00297508U;
+inline constexpr uint32_t kOot3dActorDrawEntry = 0x002D5F68U;
 inline constexpr uint32_t kOot3dActorDrawCallbackReturn = 0x002D6314U;
 inline constexpr uint32_t kOot3dSceneRendererSubmitConfiguredModelPassEntry =
     0x002D9664U;
@@ -133,6 +134,7 @@ class Oot3dNativePicaCompositionTracker final
     };
     std::vector<QueuedComposition> mQueuedComposition;
     Oot3dPicaCompositionAttribution mActiveCmbAttribution;
+    std::vector<uint64_t> mActorDrawStack;
 
 
     std::optional<uint8_t> mActiveCmbPass;

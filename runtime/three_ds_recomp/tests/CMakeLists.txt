@@ -507,6 +507,7 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/grass_collision_resolver.cpp
     ../src/fast/oot3d/grass_geometry_registry.cpp
     ../src/fast/oot3d/grass_world_placement_cache.cpp
+    ../src/fast/oot3d/grass_shadow_refinement.cpp
     ../src/fast/oot3d/grass_interaction_bridge.cpp
     ../src/fast/oot3d/grass_interaction_field.cpp
     ../src/fast/oot3d/grass_motion.cpp

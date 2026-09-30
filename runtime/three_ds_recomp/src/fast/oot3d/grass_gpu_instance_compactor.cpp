@@ -438,7 +438,7 @@ bool GrassGpuInstanceCompactor::Compact(const GrassGpuInstanceCompactionRequest&
                              staticChanged ? VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT |
                                                  VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
                                            : VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0U, 0U, nullptr, barrierCount, barriers.data(), 0U,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0U, 0U, nullptr, barrierCount, barriers.data(), 0U,
                              nullptr);
 
         GrassGpuCompactionPush push;
@@ -491,6 +491,7 @@ bool GrassGpuInstanceCompactor::Compact(const GrassGpuInstanceCompactionRequest&
 
         result.InstanceBuffer = mImpl->OutputInstances[slot].Handle;
         result.InstanceCount = push.CountsFlags[0];
+        result.VisibleIndicesBuffer = mImpl->VisibleIndices[slot].Handle;
         result.DynamicUploadedBytes = static_cast<uint64_t>(visibleBytes + interactionBytes + actorBytes);
         mImpl->Reason.clear();
         return true;
