@@ -200,6 +200,7 @@ static PicaRigidMotionShaderVariant BuildTemporalVertexVariantImpl(
     if (temporal) result.Source.append(
         "layout(location=7) out vec4 oot3d_current_clip;\n"
         "layout(location=8) out vec4 oot3d_previous_clip;\n"
+        "layout(location=11) out vec3 oot3d_previous_view;\n"
         "layout(set=0,binding=6,std140) uniform PicaPreviousVertexUniforms {\n"
         "    uint b; int flip_viewport; uvec4 i[4]; vec4 f[96];\n"
         "} uniforms_previous;\n"
@@ -210,6 +211,11 @@ static PicaRigidMotionShaderVariant BuildTemporalVertexVariantImpl(
     if (temporal) {
         result.Source.append(previousMain);
         result.Source.append("    vec4 oot3d_previous_position = gl_Position;\n");
+        // The previous body writes the shared outputs: its view vector is the
+        // previous-frame position a shadow receiver locates itself with.
+        result.Source.append(source.find("out vec3 pica_view;") != std::string_view::npos
+                                 ? "    vec3 oot3d_previous_view_value = pica_view;\n"
+                                 : "    vec3 oot3d_previous_view_value = vec3(0.0);\n");
     }
     result.Source.append(currentMain);
     result.Source.append(surfaceProgram.MainBody);
@@ -217,9 +223,10 @@ static PicaRigidMotionShaderVariant BuildTemporalVertexVariantImpl(
         "    gl_Position.xy += oot3d_draw.jitter.xy * gl_Position.w;\n"
         "    oot3d_previous_position.xy += oot3d_draw.jitter.zw * oot3d_previous_position.w;\n"
         "    oot3d_current_clip = gl_Position;\n"
-        "    oot3d_previous_clip = oot3d_previous_position;\n");
+        "    oot3d_previous_clip = oot3d_previous_position;\n"
+        "    oot3d_previous_view = oot3d_previous_view_value;\n");
     result.Source.append("}\n");
-    result.FragmentKey = vertexKey ^ (temporal ? 0x54454d504a495454ULL : 0ULL) ^
+    result.FragmentKey = vertexKey ^ (temporal ? 0x54454d5056494557ULL : 0ULL) ^
                          (surfaceProgram.Available ? 0x5355524641434532ULL : 0ULL);
     result.TemporalApplied = temporal;
     result.SurfaceApplied = surfaceProgram.Available;

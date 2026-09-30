@@ -15,6 +15,7 @@ inline std::string_view VirtualShadowReceiverShader() noexcept {
 layout(set=0,binding=10) uniform sampler2D pica_vsm_atlas;
 layout(set=0,binding=12,std140) uniform PicaVirtualShadowReceiver {
     mat4 input_to_light;
+    mat4 previous_view_to_light;
     vec4 shadow_state;
     vec4 shadowed_direct_fraction;
     uvec4 extent;

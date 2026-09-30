@@ -807,15 +807,28 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
         apply(PicaShaderInstrumentationFeature::DiffuseAlbedoGuide);
     }
 
+    // Temporal inputs of the rigid-motion vertex variant, declared once for
+    // every consumer (the directional shadow receiver and the motion guide).
+    bool temporalInputsDeclared = false;
+    const auto declareTemporalInputs = [&]() {
+        if (temporalInputsDeclared) return;
+        declarations +=
+            "layout(location=7) in vec4 oot3d_current_clip;\n"
+            "layout(location=8) in vec4 oot3d_previous_clip;\n"
+            "layout(location=11) in vec3 oot3d_previous_view;\n"
+            "layout(push_constant) uniform Oot3dDrawState { vec4 rigid_motion; vec4 jitter; } oot3d_draw;\n";
+        temporalInputsDeclared = true;
+    };
     bool surfaceShadow = false;
     if (surfaceLighting && HasPicaShaderInstrumentationFeature(
             request.RequestedFeatures,
             PicaShaderInstrumentationFeature::DirectionalShadowLighting)) {
         const auto shadow =
             BuildPicaDirectionalShadowLightingInstrumentation(
-                result.FragmentKey, true, result.Hooks);
+                result.FragmentKey, true, result.Hooks, rigidMotionWillApply);
         result.DirectionalShadowEligibility = shadow.Eligibility;
         if (shadow.Applied()) {
+            if (rigidMotionWillApply) declareTemporalInputs();
             declarations += shadow.Declarations;
             surfaceShadow = surfaceLighting;
             result.FragmentKey = shadow.FragmentKey;
@@ -1081,11 +1094,8 @@ vec3 pica_surface_shadow(int slot) {
     }
 
     if (rigidMotionWillApply) {
-        declarations +=
-            "layout(location=3) out vec4 pica_rigid_motion_guide;\n"
-            "layout(location=7) in vec4 oot3d_current_clip;\n"
-            "layout(location=8) in vec4 oot3d_previous_clip;\n"
-            "layout(push_constant) uniform Oot3dDrawState { vec4 rigid_motion; vec4 jitter; } oot3d_draw;\n";
+        declareTemporalInputs();
+        declarations += "layout(location=3) out vec4 pica_rigid_motion_guide;\n";
         epilogue += "    vec4 oot3d_motion = oot3d_draw.rigid_motion;\n"
                     "    if (oot3d_draw.rigid_motion.a > 0.5 &&\n"
                     "        oot3d_current_clip.w > 1.0e-7 && oot3d_previous_clip.w > 1.0e-7) {\n"
