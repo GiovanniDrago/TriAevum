@@ -513,7 +513,9 @@ sky light); files that still carry them are rewritten on the next save.
   attenuated. Debug view 5 now shows the direct radiance that seeds the trace.
 - Validated on the Kokiri reference: sunlit path light bounces onto the rock
   wall and Link; GI off pixel-identical to the pre-GI build; core validation
-  clean; F1 smoke 6,948 assertions. Evidence `qualify/gi-evidence/direct-sources.png`.
+  clean; F1 smoke 6,948 assertions. The private capture
+  `qualify/gi-evidence/direct-sources.png` was deleted in the 2026-09-30
+  workspace cleanup.
 - The flicker reported under interpolation was not in GI itself but in
   frames presented without effects; see "Visual frames when the host falls
   behind" in `OOT3D_NATIVE_RENDERER_INTEGRATION.md`.
