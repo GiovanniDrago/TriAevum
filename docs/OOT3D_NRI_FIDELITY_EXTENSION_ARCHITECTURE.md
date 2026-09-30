@@ -2960,6 +2960,50 @@ visibility out, composited before UI. There is no history.
   reprojection, which is not implemented yet. Validated runs report zero
   Vulkan/NRI errors.
 
+### iMMERSE LAUNCHPAD normals
+
+`fast/immerse/launchpad_normals_shader.{h,cpp}` ports LAUNCHPAD's normal
+smoothing (`smooth_normals_mkii`) under the same permission and build option;
+`fast/oot3d/launchpad_normals_pass.{h,cpp}` is the NRI adapter. Vertex-lit PICA
+programs that do not emit the normal quaternion get the geometric fallback of the
+normal guide, one flat normal per triangle, so low-poly surfaces reach AO faceted.
+
+- F1 **Lighting** > **AO normals** (Native, Smoothed) is one setting for all three
+  providers (`AO.Normals.Source`, added without a schema change; capability
+  `ImmerseNormals`). Native reads the declared guide exactly as before.
+- Smoothed runs inside the AO stage on that stage's declared depth and normal guide.
+  Its RGBA16F result keeps the guide's encoding and coverage, stays private to the
+  stage (no graph resource, no history) and is what the provider reads; GTAO and
+  MXAO then apply their RGBA16F decoding bound.
+- Kept from the original: the half-height G-buffer, the two iterations (4
+  directions x 6 steps at 4% of the screen on every other row, then 6 x 3 at 0.8%
+  per pixel), the tangent-plane regression of neighbouring normals' lean evaluated
+  at the centre, and its 30/45-degree normal, plane-distance and distance weights
+  in near-plane units.
+- Changed: native normals and exact projection instead of depth-derived normals and
+  an assumed field of view; pixels without a native surface keep the guide; the
+  kernel samples fixed screen directions, isotropic in pixels and sized on the
+  shorter screen side; the G-buffer and the wide result pack a 16-bit octahedral
+  normal with 32-bit depth (RG32UI). The original's projected tangent directions
+  differ between neighbouring pixels whose normals differ: on a 2560x1440 fixture
+  with normals tilted at random by up to 25 degrees they cost 4.7 ms against 2.8 ms
+  for fixed directions, which also smooth facet steps more.
+- `launchpad_normals_gpu_tests`: facing and oblique planes and a 50-degree crease
+  keep their normals within 0.1 degree; prisms of 48 and 24 facets drop their
+  largest step from 7.7 to 0.5 and from 15.0 to 0.8 degrees and their mean error
+  against the round cylinder from 1.9 to 0.5 and from 3.8 to 2.2 degrees;
+  uncovered texels and sky pass through; perspective and W-buffer agree.
+  `--benchmark` times the passes at 2560x1440.
+- Kokiri reference walk, 2560x1440, RTX 3060: with AO off and with native normals
+  GTAO and MXAO captures are byte-identical to the previous build, and validated
+  runs report zero Vulkan/NRI errors. Smoothed changes the AO term on 0.3% of the
+  pixels with GTAO and 0.25% with MXAO under per-pixel PBR lighting (0.2% and 0.1%
+  under native lighting): the guide there already carries interpolated vertex
+  normals, so the smoothing mostly softens character creases. It adds 4.2 ms to the
+  AO scope with GTAO (1.14 -> 5.30 ms) and 4.4 ms with MXAO (2.66 -> 7.03 ms),
+  unvalidated medians of 600 frames. Faceted guides come from vertex-lit programs
+  without the normal quaternion.
+
 Fresh combined source adoption, deterministic framebuffer/state comparisons and
 the remaining realtime validation observation are recorded in
 [`TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md`](TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md).

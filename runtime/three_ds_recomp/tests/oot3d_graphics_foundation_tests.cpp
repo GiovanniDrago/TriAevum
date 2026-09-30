@@ -4198,6 +4198,35 @@ TEST(Oot3dGraphicsSettings, MxaoRequiresItsProviderAndClampsItsControls) {
     }));
 }
 
+TEST(Oot3dGraphicsSettings, SmoothedAoNormalsRequireLaunchpadAndKeepTheProvider) {
+    using namespace Fast::Oot3d;
+    GraphicsCapabilities capabilities;
+    for (const auto capability : {GraphicsCapability::NriInterop, GraphicsCapability::SampledDepth,
+                                  GraphicsCapability::NormalGuide, GraphicsCapability::ValidViewMetadata,
+                                  GraphicsCapability::ImmerseNormals})
+        capabilities.Set(capability, true);
+    auto candidate = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
+    EXPECT_EQ(candidate.Effects.AoNormals, AoNormalSource::Native);
+    candidate.Effects.AmbientOcclusion = AmbientOcclusionMode::Gtao;
+    candidate.Effects.AoNormals = AoNormalSource::Smoothed;
+    auto result = GraphicsSettingsService::Validate(candidate, capabilities);
+    EXPECT_EQ(result.Value.Effects.AoNormals, AoNormalSource::Smoothed);
+    EXPECT_TRUE(std::none_of(result.Issues.begin(), result.Issues.end(), [](const auto& issue) {
+        return issue.Field == "Graphics.Effects.AO.Normals";
+    }));
+    candidate.Effects.AoNormals = static_cast<AoNormalSource>(9);
+    result = GraphicsSettingsService::Validate(candidate, capabilities);
+    EXPECT_EQ(result.Value.Effects.AoNormals, AoNormalSource::Native);
+    candidate.Effects.AoNormals = AoNormalSource::Smoothed;
+    capabilities.Set(GraphicsCapability::ImmerseNormals, false, "smoothing unavailable");
+    result = GraphicsSettingsService::Validate(candidate, capabilities);
+    EXPECT_EQ(result.Value.Effects.AoNormals, AoNormalSource::Native);
+    EXPECT_EQ(result.Value.Effects.AmbientOcclusion, AmbientOcclusionMode::Gtao);
+    EXPECT_TRUE(std::any_of(result.Issues.begin(), result.Issues.end(), [](const auto& issue) {
+        return issue.Field == "Graphics.Effects.AO.Normals" && issue.Message == "smoothing unavailable";
+    }));
+}
+
 TEST(Oot3dGraphicsSettings, AcceptsHiZOnlyWithMaterialAndViewContract) {
     Fast::Oot3d::GraphicsCapabilities capabilities;
     using Capability = Fast::Oot3d::GraphicsCapability;

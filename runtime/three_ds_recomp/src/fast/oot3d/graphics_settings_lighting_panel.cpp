@@ -130,6 +130,18 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
         }
         ImGui::EndDisabled();
     }
+    if (ao) {
+        ImGui::BeginDisabled(!aoReady);
+        const char* const normalSources[] = {"Native", "Smoothed (LAUNCHPAD)"};
+        changed |= SettingsUi::ValidatedCombo<AoNormalSource>(
+            "AO normals", settings, capabilities, normalSources,
+            [](auto& value, auto source) { value.Effects.AoNormals = source; },
+            [](const auto& value) { return value.Effects.AoNormals; });
+        ImGui::EndDisabled();
+        if (settings.Effects.AoNormals == AoNormalSource::Smoothed)
+            ImGui::TextWrapped("Smooths faceted geometry while keeping creases, from iMMERSE LAUNCHPAD by "
+                               "Pascal Gilcher (martysmods.com), used with the author's permission.");
+    }
     if (!aoReady) {
         ImGui::TextWrapped("AO unavailable: NRI, depth, normals or camera metadata missing.");
     }
@@ -137,6 +149,9 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
         ImGui::TextWrapped("CACAO unavailable: %s", capabilities.Get(GraphicsCapability::FidelityFxCacao).Reason.c_str());
     if (!capabilities.Has(GraphicsCapability::ImmerseMxao))
         ImGui::TextWrapped("MXAO unavailable: %s", capabilities.Get(GraphicsCapability::ImmerseMxao).Reason.c_str());
+    if (!capabilities.Has(GraphicsCapability::ImmerseNormals))
+        ImGui::TextWrapped("LAUNCHPAD normals unavailable: %s",
+                           capabilities.Get(GraphicsCapability::ImmerseNormals).Reason.c_str());
 
     return changed;
 }

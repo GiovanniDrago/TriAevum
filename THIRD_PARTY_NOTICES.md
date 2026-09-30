@@ -185,11 +185,14 @@ SOFTWARE.
 
 ## iMMERSE (Pascal Gilcher)
 
-The optional MXAO ambient-occlusion provider in
-`runtime/three_ds_recomp/src/fast/immerse/` is ported from `Shaders/MartysMods_MXAO.fx`
-of [iMMERSE](https://github.com/martymcmodding/iMMERSE) at revision
+The optional MXAO ambient-occlusion provider and the optional AO normal
+smoothing in `runtime/three_ds_recomp/src/fast/immerse/` are ported from
+`Shaders/MartysMods_MXAO.fx` and the normal smoothing of
+`Shaders/MartysMods_LAUNCHPAD.fx` of
+[iMMERSE](https://github.com/martymcmodding/iMMERSE) at revision
 `f57d3afa1ebe5d1fd6152d4f6fb9a2e75bd1d1cb`, by Pascal Gilcher
-([Marty's Mods](https://martysmods.com)). Its changes are listed in the file header.
+([Marty's Mods](https://martysmods.com)). Their changes are listed in the file
+headers.
 
 iMMERSE is not under an open-source license: "Copyright (c) Pascal Gilcher. All
 rights reserved." Its terms forbid public redistribution, public modified versions,

@@ -31,6 +31,9 @@ enum class AmbientOcclusionMode : uint8_t { Off, Gtao, Cacao, Mxao };
 // iMMERSE MXAO estimators: ground-truth horizons, solid angle, and the
 // visibility bitmask with a cosine-weighted or solid-angle integral.
 enum class MxaoEstimator : uint8_t { GroundTruth, SolidAngle, VisibilityBitmask, VisibilityBitmaskSolidAngle };
+// Normals the AO providers read: the native guide, or its iMMERSE LAUNCHPAD
+// smoothing (surface-aware regression that hides faceted geometry).
+enum class AoNormalSource : uint8_t { Native, Smoothed };
 enum class ReflectionMode : uint8_t { Off, HiZ, FidelityFxSssr };
 enum class ToonMode : uint8_t { Off, PostProcessPreview, PicaMaterial };
 enum class SurfaceLightingMode : uint8_t { Native, PerPixel, PerPixelPbr, NativePbr };
@@ -212,6 +215,7 @@ struct EffectsSettings {
     MxaoEstimator MxaoMethod = MxaoEstimator::VisibilityBitmask;
     uint8_t MxaoQuality = 1;
     uint8_t MxaoFilter = 1;
+    AoNormalSource AoNormals = AoNormalSource::Native;
     ReflectionMode Reflections = ReflectionMode::Off;
     float ReflectionStrength = 0.65F;
     float ReflectionMaxDistance = 1500.0F;

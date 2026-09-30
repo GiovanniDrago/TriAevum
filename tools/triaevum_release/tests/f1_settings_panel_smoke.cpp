@@ -992,6 +992,22 @@ int main() try {
               mxao.MxaoMethod == MxaoEstimator::SolidAngle && mxao.AoRadius == 2.5F && mxao.AoStrength == 1.5F &&
               mxao.MxaoFilter == 2 && mxao.AoHorizonAngleThreshold == 0.12F,
           "MXAO controls did not apply or disturbed the CACAO controls");
+    Select("AO normals", "Smoothed (LAUNCHPAD)");
+    Check(runtime.Snapshot().Effects.AoNormals == AoNormalSource::Smoothed &&
+              runtime.Snapshot().Effects.AmbientOcclusion == AmbientOcclusionMode::Mxao,
+          "AO normal smoothing did not apply or changed the provider");
+    runtime.SetCapability(GraphicsCapability::ImmerseNormals, false, "smoothing unavailable");
+    Frame();
+    Select("AO normals", "Native");
+    Check(runtime.Snapshot().Effects.AoNormals == AoNormalSource::Native &&
+              runtime.Snapshot().Effects.AmbientOcclusion == AmbientOcclusionMode::Mxao,
+          "cannot return to native AO normals, or losing smoothing disabled the provider");
+    Click("AO normals");
+    Check(Find("Smoothed (LAUNCHPAD)").Disabled && !Find("Native").Disabled,
+          "unsupported AO normal smoothing selectable");
+    Click("Native");
+    runtime.SetCapability(GraphicsCapability::ImmerseNormals, true);
+    Frame();
     runtime.SetCapability(GraphicsCapability::ImmerseMxao, false, "provider unavailable");
     Frame();
     Select("Ambient occlusion", "Off");

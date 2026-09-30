@@ -91,6 +91,10 @@ constexpr EnumNames<MxaoEstimator> kMxaoMethodNames{
     {MxaoEstimator::VisibilityBitmask, "VisibilityBitmask"},
     {MxaoEstimator::VisibilityBitmaskSolidAngle, "VisibilityBitmaskSolidAngle"},
 };
+constexpr EnumNames<AoNormalSource> kAoNormalNames{
+    {AoNormalSource::Native, "Native"},
+    {AoNormalSource::Smoothed, "Smoothed"},
+};
 constexpr EnumNames<ReflectionMode> kReflectionNames{
     {ReflectionMode::Off, "Off"},
     {ReflectionMode::HiZ, "HiZ"},
@@ -1277,6 +1281,10 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                        {"Quality", effects.MxaoQuality},
                        {"Filter", effects.MxaoFilter},
                    }},
+                  {"Normals",
+                   {
+                       {"Source", EnumName(effects.AoNormals, kAoNormalNames)},
+                   }},
               }},
              {"Reflections",
               {
@@ -1668,6 +1676,12 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                            "Graphics.Effects.AO.Mxao.Quality", result);
                 ReadScalar(*mxao, "Filter", value.MxaoFilter,
                            "Graphics.Effects.AO.Mxao.Filter", result);
+            } else {
+                result.NeedsRewrite = true;
+            }
+            if (const Json* normals = FindMember(*ao, "Normals"); normals != nullptr && normals->is_object()) {
+                ReadEnum(*normals, "Source", value.AoNormals, kAoNormalNames,
+                         "Graphics.Effects.AO.Normals.Source", result);
             } else {
                 result.NeedsRewrite = true;
             }

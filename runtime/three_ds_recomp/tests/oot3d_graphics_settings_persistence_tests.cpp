@@ -300,6 +300,25 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsMxaoAndAddsItsDefaultsToOlderFi
     EXPECT_EQ(defaults.Value.Effects.MxaoFilter, 1U);
 }
 
+TEST(Oot3dGraphicsSettingsPersistence, RoundTripsAoNormalsAndDefaultsOlderFilesToNative) {
+    using namespace Fast::Oot3d;
+    auto settings = CompleteSettings();
+    settings.Effects.AoNormals = AoNormalSource::Smoothed;
+    const auto saved = SerializeGraphicsSettings(settings);
+    EXPECT_EQ(saved["Effects"]["AO"]["Normals"]["Source"], "Smoothed");
+    const auto loaded = DeserializeGraphicsSettings(saved);
+    EXPECT_FALSE(loaded.NeedsRewrite);
+    EXPECT_EQ(loaded.Value.Effects.AoNormals, AoNormalSource::Smoothed);
+    auto older = saved;
+    older["Effects"]["AO"].erase("Normals");
+    const auto defaults = DeserializeGraphicsSettings(older);
+    EXPECT_TRUE(defaults.NeedsRewrite);
+    EXPECT_EQ(defaults.Value.Effects.AoNormals, AoNormalSource::Native);
+    auto unknown = saved;
+    unknown["Effects"]["AO"]["Normals"]["Source"] = "Bumpy";
+    EXPECT_FALSE(DeserializeGraphicsSettings(unknown).Issues.empty());
+}
+
 TEST(Oot3dGraphicsSettingsPersistence, MigratesSingleCascadeWithoutLosingTheOffChoiceOrLightResponse) {
     using namespace Fast::Oot3d;
     auto document = SerializeGraphicsSettings(CompleteSettings());
