@@ -15,9 +15,13 @@ def qm_fixture():
     return bytes(data)
 
 
-def romfs_fixture():
-    # Small synthetic tree: /message/us/us.qm and /misc/us/texture.bin.
-    names = ('', 'message', 'us', 'misc', 'us')
+USA_MOVIES = ('hint182.moflex', 'hint186.moflex', 'hint188.moflex')
+
+
+def romfs_fixture(movies=USA_MOVIES):
+    # Small synthetic tree: /message/us/us.qm, /misc/us/texture.bin and
+    # the language hint movies in /misc/hint/movie.
+    names = ('', 'message', 'us', 'misc', 'us', 'hint', 'movie')
     dirs, offsets = bytearray(), []
     for name in names:
         offsets.append(len(dirs))
@@ -27,16 +31,20 @@ def romfs_fixture():
     files = bytearray()
     payload = bytearray()
     foffsets = []
-    for parent, name, data in ((2, 'us.qm', qm_fixture()), (4, 'texture.bin', b'unchanged texture')):
+    entries = ((2, 'us.qm', qm_fixture()), (4, 'texture.bin', b'unchanged texture'),
+               *((6, movie, movie.encode()+b' payload') for movie in movies))
+    for parent, name, data in entries:
         foffsets.append(len(files))
         encoded = name.encode('utf-16-le')
         files.extend(struct.pack('<IIQQII', offsets[parent], INVALID, len(payload), len(data), INVALID, len(encoded)))
         files.extend(encoded)
         files.extend(bytes(-len(files) % 4))
         payload.extend(data)
+    for index in range(2, len(entries)-1):  # Movies share a directory: sibling file chain.
+        struct.pack_into('<I', files, foffsets[index]+4, foffsets[index+1])
     # parent, sibling, first child directory, first child file
     tree = ((0, None, 1, None), (0, 3, 2, None), (1, None, None, 0),
-            (0, None, 4, None), (3, None, None, 1))
+            (0, None, 4, None), (3, 5, None, 1), (3, None, 6, None), (5, None, None, 2))
     for index, (parent, sibling, child, file) in enumerate(tree):
         struct.pack_into('<6I', dirs, offsets[index], offsets[parent],
                          offsets[sibling] if sibling is not None else INVALID,
@@ -121,9 +129,24 @@ class RegionAssetTests(unittest.TestCase):
                 self.assertEqual(lookup(data, 'misc/eu/texture.bin'), b'unchanged texture')
                 with self.assertRaises(KeyError):
                     lookup(data, 'message/us/us.qm')
-                self.assertEqual(result['files'], 2)
+                for usa, eur in ((182, 183), (186, 185), (188, 187)):
+                    self.assertEqual(lookup(data, f'misc/hint/movie/hint{eur}.moflex'),
+                                     f'hint{usa}.moflex payload'.encode())
+                    with self.assertRaises(KeyError):
+                        lookup(data, f'misc/hint/movie/hint{usa}.moflex')
+                self.assertEqual(result['files'], 5)
+                self.assertEqual(result['renamed_files'], 4)
                 with self.assertRaises(ValueError):
                     normalize_romfs(source, output)
+
+    def test_hint_movies_require_the_usa_names_only(self):
+        for movies in (USA_MOVIES[:2], USA_MOVIES+('hint183.moflex',)):
+            with self.subTest(movies=movies), tempfile.TemporaryDirectory() as temp:
+                source, output = Path(temp)/'source', Path(temp)/'output'
+                source.write_bytes(romfs_fixture(movies))
+                with self.assertRaisesRegex(ValueError, 'hint movies'):
+                    normalize_romfs(source, output)
+                self.assertFalse(output.exists())
 
     def test_malformed_romfs_does_not_publish_output(self):
         for damage in ('cycle', 'overlap', 'data', 'truncated'):

@@ -29,6 +29,11 @@ The public alpha.1c package is the read-only evidence source. Recovered data:
 - No ROM, executable game bytes, extracted assets, signatures, keys or older
   runtime binaries are imported into the source tree.
 
+Amended on 2026-09-30: USA resource algorithm v2 renames the language hint
+movies, so the USA execution RomFS identities in `coverage.json` are the v2
+values ([adapter](TRIAEVUM_ROM_INPUT_ADAPTER.md)). The USA source identities
+and the COPY program are unchanged.
+
 Owner: tools/triaevum_release/qualified_input_coverage.py, with reviewed data
 under tools/triaevum_release/input_coverage/.
 

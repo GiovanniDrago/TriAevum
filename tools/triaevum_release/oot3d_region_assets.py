@@ -3,10 +3,11 @@
 
 """Offline USA resource service-view adaptation for the canonical EUR module.
 
-File payloads remain those of the input ROM. Only same-size region names,
-RomFS hash chains and QM language slot references change. The output is a
-Level-3 service view, not an IVFC image with invalid integrity hashes.
-RomFS hash semantics follow Azahar's layered_fs.cpp (GPL-2.0-or-later).
+File payloads remain those of the input ROM. Only same-size region and
+language names, RomFS hash chains and QM language slot references change.
+The output is a Level-3 service view, not an IVFC image with invalid
+integrity hashes. RomFS hash semantics follow Azahar's layered_fs.cpp
+(GPL-2.0-or-later).
 """
 
 from __future__ import annotations
@@ -18,7 +19,13 @@ import struct
 import tempfile
 
 INVALID = 0xFFFFFFFF
-ALGORITHM = 'oot3d_usa_resources_to_eur_v1'
+ALGORITHM = 'oot3d_usa_resources_to_eur_v2'
+# The EUR executable opens hint movie 181 + its language index (English 2,
+# French 4, Spanish 6); the USA ROM stores the same movies under 1, 5 and 7.
+HINT_MOVIES = {'misc/hint/movie/hint182.moflex': 'hint183.moflex',
+               'misc/hint/movie/hint186.moflex': 'hint185.moflex',
+               'misc/hint/movie/hint188.moflex': 'hint187.moflex'}
+FILE_RENAMES = {'message/us/us.qm': 'eu.qm', **HINT_MOVIES}
 
 
 def name_hash(parent: int, encoded: bytes) -> int:
@@ -135,6 +142,11 @@ def normalize_romfs(source: Path, destination: Path) -> dict:
             raise ValueError('missing USA resource directories')
         if {'message/eu', 'misc/eu'} & {r[2] for r in dir_records.values()}:
             raise ValueError('EU resource directories already exist')
+        file_paths = {r[2] for r in file_records.values()}
+        if not set(HINT_MOVIES) <= file_paths:
+            raise ValueError('missing USA hint movies')
+        if {path.rsplit('/', 1)[0]+'/'+name for path, name in HINT_MOVIES.items()} & file_paths:
+            raise ValueError('EU hint movies already exist')
         qm = [r for r in file_records.values() if r[2] == 'message/us/us.qm']
         if len(qm) != 1:
             raise ValueError('missing USA message container')
@@ -153,8 +165,8 @@ def normalize_romfs(source: Path, destination: Path) -> dict:
             struct.pack_into('<I', dirs, offset+16, directory_hashes[bucket])
             directory_hashes[bucket] = offset
         for offset, (parent, name, path, _, _) in sorted(file_records.items()):
-            if path == 'message/us/us.qm':
-                name = 'eu.qm'.encode('utf-16-le')
+            if path in FILE_RENAMES:
+                name = FILE_RENAMES[path].encode('utf-16-le')
                 files[offset+32:offset+32+len(name)] = name
             bucket = name_hash(parent, name) % len(file_hashes)
             struct.pack_into('<I', files, offset+24, file_hashes[bucket])
@@ -175,6 +187,7 @@ def normalize_romfs(source: Path, destination: Path) -> dict:
             os.replace(temporary, destination)
         finally:
             Path(temporary).unlink(missing_ok=True)
-    return {'files':len(file_records), 'renamed_directories':2, 'renamed_files':1,
+    return {'files':len(file_records), 'renamed_directories':2, 'renamed_files':len(FILE_RENAMES),
             'qm_records':count, 'language_slots':{'2':1, '4':5, '6':7},
+            'hint_movies':{'183':182, '185':186, '187':188},
             'output_format':'romfs_level3_service_view', 'payloads_replaced':0}

@@ -29,6 +29,7 @@ Rev 1. The existing EUR import path remains available and unchanged.
 | RomFS | Produce a Level-3 service view; do not pretend the modified image retains valid IVFC integrity hashes. |
 | Regional paths | Rename `message/us` and `misc/us` to `eu`, and `us.qm` to `eu.qm`; rebuild the RomFS hash chains. |
 | QM language table | EU slots 2/4/6 reference the original USA English/French/Spanish payloads in slots 1/5/7. |
+| Language hint movies | The EUR executable opens hint movie 181 + its language index. Rename the USA English/French/Spanish movies `hint182/186/188` to the EU names `hint183/185/187`. |
 | Models, scenes, textures, audio, dialogue payloads | Retain USA file payloads; no replacements from an EUR ROM. |
 
 The current code recipe contains 55,745 COPY operations and is 1,825,834
@@ -37,9 +38,14 @@ bytes. This is whole-image normalization, **not a claim that only a handful of
 instructions differ**. The publisher uses both images to construct the recipe;
 the end user needs only their matching USA ROM and the packaged recipe.
 
-Do not synthesize missing German/Italian dialogue. Some regional hint-movie
-paths also differ and still need scenario qualification. A successful boot
-does not prove those paths, all saves, or every localized gameplay flow.
+Do not synthesize missing German/Italian dialogue or hint movies
+(`hint184/189`). The hint movie names were corrected on 2026-09-30 (resource
+algorithm v2): for movie IDs 0xb5-0xbd the functions at `0x0040a7f4` and
+`0x0040feb0` substitute 0xb5 + the language index before the existence check
+at `0x003066dc`, so under v1 the English, French and Spanish movies were
+never found.
+Playback at a Sheikah Stone still needs scenario qualification. A successful
+boot does not prove all saves or every localized gameplay flow.
 
 ## Code boundaries
 
@@ -69,11 +75,22 @@ output; it does not activate anything or touch the user's ROM/saves.
   `16a6b0aa4c4784680220a6f780f7f8a73cfb205557aa9f9f0e705179e0613220`.
 - Unchanged USA ExHeader SHA-256:
   `dbe5fa0174d73bffb75d7cf0fbaa05d3e0ee080df0e257afc58b6c45ae5de3d0`.
-- Adapted Level-3 RomFS, 473,522,176 bytes, SHA-256:
-  `011c0b6933f3932c704ff1c6ab562023f407c2929661a6d54ecea1ca81072f99`.
-- Independently resolved all 1,944 output file paths. 1,943 file payloads
-  match USA byte for byte. The sole changed file is QM: only the three slot
-  references per record change; all 2,510 records and dialogue payloads were checked.
+- Adapted Level-3 RomFS (resource algorithm v2), 473,522,176 bytes, SHA-256:
+  `dae620379c805e96a6187c212dc2b177cf5fdb0c184d526a06ebaeeaa481aa56`;
+  logical execution identity
+  `5c7c8d1638dcec8e2647315994f0d8a3db01cef7d1d7c2becb4b081101f2aa08`.
+  Algorithm v1, without the hint movie names, produced `011c0b69...` and
+  `74a5744c...`; the same code reproduces both values.
+- Independently resolved all 1,944 output file paths through the hashed
+  Level-3 lookup. 1,943 file payloads match USA byte for byte, including the
+  three renamed hint movies; their USA names no longer resolve. The sole
+  changed file is QM: only the three slot references per record change; all
+  2,510 records and dialogue payloads were checked.
+- With v2 data and the executable used for the v1 captures, boot into an
+  existing save and five native scene transitions (Link's house, Hyrule Field,
+  Lon Lon Ranch, Gerudo Valley, Kokiri Forest) match v1 byte for byte in all
+  27 captured frames, with zero whole-AOT memory faults. This shows the renames
+  disturb nothing else; no hint movie was played.
 - Frozen Forge installed from the supplied ROM in **27.14 seconds**, including
   **14.02 seconds** for adaptation and hash verification. No game compilation;
   official TopScreen ZIP already present, so no network-download time included.
@@ -123,20 +140,22 @@ python -m unittest test_input_adapters test_input_copy_adapter `
   test_forge test_topscreen_assets test_bundle_paths -q
 ```
 
-70 tests pass: source/output mismatch rejection, COPY bounds and no literals,
-path/hash reconstruction, QM slot semantics, payload preservation, rollback,
-publication/reuse, unchanged EUR path, precompiled identity and release auditing.
+85 tests pass (2026-09-30): source/output mismatch rejection, COPY bounds and
+no literals, path/hash reconstruction, QM slot semantics, hint movie names,
+payload preservation, rollback, publication/reuse, unchanged EUR path,
+precompiled identity and release auditing.
 
 Local private evidence is under `I:/oot3dre_work/usa-rev1-port/`:
 `forge-install.log`, `payload-conservation.json`, `boot-probe/`,
 `forge-boot-menu-probe/` and `candidate-installation/`. The latter is installed
 with fresh saves and can be tested without changing the published installation.
+The v2 checks are under `I:/_triaevum_work/perf-levers/qualify/usa-hint-movies/`.
 
 ## Before general release support
 
 1. Qualify new-game creation, playable Kokiri, saving/reopening, pause/input and
    representative scene transitions using the adapted installation.
-2. Exercise English/French/Spanish dialogue and regional hint resources. Fix
+2. Exercise English/French/Spanish dialogue and hint movie playback. Fix
    only evidenced offline input contracts; do not add per-scene runtime patches.
 3. Check repeat-install and EUR-install behavior, package/source correspondence
    and the existing release audit before publishing a new package.

@@ -25,7 +25,7 @@ SOURCE_INPUTS = {
     'exheader': {'bytes': 2048, 'sha256': 'dbe5fa0174d73bffb75d7cf0fbaa05d3e0ee080df0e257afc58b6c45ae5de3d0'},
     'romfs': {'bytes': 473526272, 'sha256': 'dd6def65af151d40fcbba7202c36bbdd8ed5b5b431373dc6a8c89bfd708af690'},
 }
-RESOURCE_OUTPUT = {'bytes': 473522176, 'sha256': '011c0b6933f3932c704ff1c6ab562023f407c2929661a6d54ecea1ca81072f99'}
+RESOURCE_OUTPUT = {'bytes': 473522176, 'sha256': 'dae620379c805e96a6187c212dc2b177cf5fdb0c184d526a06ebaeeaa481aa56'}
 
 
 def build_overlay(package: Path, source_inputs: Path, canonical_code: Path, output: Path) -> list[dict]:

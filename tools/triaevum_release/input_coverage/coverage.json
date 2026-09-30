@@ -28,7 +28,7 @@
               "directories": 50,
               "files": 1944,
               "payload_bytes": 469654431,
-              "sha256": "74a5744c9718319922fb63e7f8e7a4959af4e90d1d8409a4e99ba47d92c0a715"
+              "sha256": "5c7c8d1638dcec8e2647315994f0d8a3db01cef7d1d7c2becb4b081101f2aa08"
             }
           },
           "format": "triaevum_content_family_v1",
@@ -59,7 +59,7 @@
             "sha256": "3a7771a365157c6a2a26ce6916a3a3437a15384a98c39c130cd16a98d2dd9519"
           },
           "format": "triaevum_revision_input_adapter_v1",
-          "resource_algorithm": "oot3d_usa_resources_to_eur_v1",
+          "resource_algorithm": "oot3d_usa_resources_to_eur_v2",
           "source_inputs": {
             "code": {
               "bytes": 4567040,
@@ -86,7 +86,7 @@
           },
           "romfs": {
             "bytes": 473522176,
-            "sha256": "011c0b6933f3932c704ff1c6ab562023f407c2929661a6d54ecea1ca81072f99"
+            "sha256": "dae620379c805e96a6187c212dc2b177cf5fdb0c184d526a06ebaeeaa481aa56"
           }
         },
         "region": "USA input, canonical EUR runtime"
