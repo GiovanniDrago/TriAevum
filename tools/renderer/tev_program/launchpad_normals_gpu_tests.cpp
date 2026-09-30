@@ -19,7 +19,8 @@ struct Image {
     VkDeviceMemory Memory{};
 };
 
-enum : uint32_t { kDepth, kNormals, kGbuffer, kWide, kOutput, kImageCount };
+enum : uint32_t { kDepth, kNormals, kGbuffer, kWide, kOutput, kAlbedo, kImageCount };
+constexpr uint32_t kBindingCount = 7;
 enum : uint32_t { kGbufferProgram, kWideProgram, kNarrowProgram, kProgramCount };
 
 using Vec3 = std::array<float, 3>;
@@ -44,10 +45,24 @@ float Half(uint16_t bits) {
     return (bits & 0x8000U) != 0U ? -value : value;
 }
 
-// A synthetic native frame: view depth (0 = sky) and the RGBA8 guide.
+uint16_t ToHalf(float value) {
+    // Round to nearest for the 0..1 range the albedo estimate uses.
+    if (value <= 0.0F)
+        return 0;
+    int exponent = 0;
+    const float mantissa = std::frexp(value, &exponent);
+    const int biased = exponent + 14;
+    if (biased <= 0)
+        return uint16_t(std::lround(value * 16777216.0F));
+    return uint16_t((biased << 10) | (uint32_t(std::lround(mantissa * 2048.0F)) - 1024U));
+}
+
+// A synthetic native frame: view depth (0 = sky), the RGBA8 guide and an
+// albedo estimate for the texture detail (empty: uniform).
 struct Scene {
     std::vector<float> Depth;
     std::vector<std::array<uint8_t, 4>> Guide;
+    std::vector<float> Albedo;
 };
 
 // Production LAUNCHPAD smoothing on native RGBA8 normals. The odd extents
@@ -63,8 +78,8 @@ struct LaunchpadFixture {
     // once clocks have settled.
     std::array<double, 2> LastMilliseconds{};
     std::array<Image, kImageCount> Images{};
-    Gpu::Buffer Depths{}, Normals{}, Result{};
-    VkSampler Sampler{};
+    Gpu::Buffer Depths{}, Normals{}, Albedos{}, Result{};
+    VkSampler Sampler{}, LinearSampler{};
     VkDescriptorSetLayout SetLayout{};
     VkDescriptorPool Pool{};
     // Sets pair the packed surfaces (binding 2) with an output (binding 3), as
@@ -118,19 +133,22 @@ struct LaunchpadFixture {
         Images = { MakeImage(VK_FORMAT_R32_SFLOAT, Width, Height), MakeImage(VK_FORMAT_R8G8B8A8_UNORM, Width, Height),
                    MakeImage(VK_FORMAT_R32G32_UINT, Width, HalfHeight),
                    MakeImage(VK_FORMAT_R32G32_UINT, Width, HalfHeight),
-                   MakeImage(VK_FORMAT_R16G16B16A16_SFLOAT, Width, Height) };
+                   MakeImage(VK_FORMAT_R16G16B16A16_SFLOAT, Width, Height), MakeImage(VK_FORMAT_R16_SFLOAT, Width, Height) };
         Depths = Device.MakeBuffer(Width * Height * sizeof(float), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         Normals = Device.MakeBuffer(Width * Height * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        Albedos = Device.MakeBuffer(Width * Height * 2, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         Result = Device.MakeBuffer(Width * Height * 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         VkSamplerCreateInfo sampler{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
         sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         Check(vkCreateSampler(Device.Device, &sampler, nullptr, &Sampler));
-        std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
+        sampler.magFilter = sampler.minFilter = VK_FILTER_LINEAR;
+        Check(vkCreateSampler(Device.Device, &sampler, nullptr, &LinearSampler));
+        std::array<VkDescriptorSetLayoutBinding, kBindingCount> bindings{};
         for (uint32_t i = 0; i < bindings.size(); ++i) {
             bindings[i].binding = i;
             bindings[i].descriptorCount = 1;
             bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-            bindings[i].descriptorType = i == 4   ? VK_DESCRIPTOR_TYPE_SAMPLER
+            bindings[i].descriptorType = i == 4 || i == 6 ? VK_DESCRIPTOR_TYPE_SAMPLER
                                          : i == 3 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
                                                   : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
         }
@@ -138,9 +156,9 @@ struct LaunchpadFixture {
         setLayout.bindingCount = static_cast<uint32_t>(bindings.size());
         setLayout.pBindings = bindings.data();
         Check(vkCreateDescriptorSetLayout(Device.Device, &setLayout, nullptr, &SetLayout));
-        const std::array<VkDescriptorPoolSize, 3> sizes{ { { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3 * kProgramCount },
+        const std::array<VkDescriptorPoolSize, 3> sizes{ { { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4 * kProgramCount },
                                                            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kProgramCount },
-                                                           { VK_DESCRIPTOR_TYPE_SAMPLER, kProgramCount } } };
+                                                           { VK_DESCRIPTOR_TYPE_SAMPLER, 2 * kProgramCount } } };
         VkDescriptorPoolCreateInfo pool{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         pool.maxSets = kProgramCount;
         pool.poolSizeCount = static_cast<uint32_t>(sizes.size());
@@ -154,14 +172,18 @@ struct LaunchpadFixture {
         allocation.pSetLayouts = layouts.data();
         Check(vkAllocateDescriptorSets(Device.Device, &allocation, Sets.data()));
         for (uint32_t set = 0; set < Sets.size(); ++set) {
-            std::array<VkDescriptorImageInfo, 5> images{};
-            std::array<VkWriteDescriptorSet, 5> writes{};
-            for (uint32_t binding = 0; binding < 5; ++binding) {
-                const uint32_t index = binding == 2 ? kPairs[set][0] : binding == 3 ? kPairs[set][1] : binding;
-                images[binding].imageView = binding == 4 ? VK_NULL_HANDLE : Images[index].View;
+            std::array<VkDescriptorImageInfo, kBindingCount> images{};
+            std::array<VkWriteDescriptorSet, kBindingCount> writes{};
+            for (uint32_t binding = 0; binding < kBindingCount; ++binding) {
+                const uint32_t index = binding == 2   ? kPairs[set][0]
+                                       : binding == 3 ? kPairs[set][1]
+                                       : binding == 5 ? uint32_t(kAlbedo)
+                                                      : binding;
+                const bool isSampler = binding == 4 || binding == 6;
+                images[binding].imageView = isSampler ? VK_NULL_HANDLE : Images[index].View;
                 images[binding].imageLayout =
                     binding == 3 ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                images[binding].sampler = binding == 4 ? Sampler : VK_NULL_HANDLE;
+                images[binding].sampler = binding == 4 ? Sampler : binding == 6 ? LinearSampler : VK_NULL_HANDLE;
                 writes[binding] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
                 writes[binding].dstSet = Sets[set];
                 writes[binding].dstBinding = binding;
@@ -233,16 +255,19 @@ struct LaunchpadFixture {
             encodedDepth[i] = z <= 0 ? 1.0F : wBuffer ? (z - 1) / 99 : (100 - 100 / z) / 99;
         }
         std::memcpy(Normals.Mapped, scene.Guide.data(), scene.Guide.size() * 4);
+        auto* encodedAlbedo = static_cast<uint16_t*>(Albedos.Mapped);
+        for (size_t i = 0; i < scene.Depth.size(); ++i)
+            encodedAlbedo[i] = ToHalf(scene.Albedo.empty() ? 0.5F : scene.Albedo[i]);
         Check(vkResetCommandPool(Device.Device, Commands, 0));
         VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         Check(vkBeginCommandBuffer(Command, &begin));
-        for (uint32_t i : { kDepth, kNormals }) {
+        for (uint32_t i : { kDepth, kNormals, kAlbedo }) {
             Barrier(Images[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
             VkBufferImageCopy copy{};
             copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
             copy.imageExtent = { Width, Height, 1 };
-            vkCmdCopyBufferToImage(Command, i == kDepth ? Depths.Handle : Normals.Handle, Images[i].Handle,
+            vkCmdCopyBufferToImage(Command, i == kDepth ? Depths.Handle : i == kNormals ? Normals.Handle : Albedos.Handle, Images[i].Handle,
                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
             Barrier(Images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -323,8 +348,10 @@ struct LaunchpadFixture {
         vkDestroyDescriptorPool(Device.Device, Pool, nullptr);
         vkDestroyDescriptorSetLayout(Device.Device, SetLayout, nullptr);
         vkDestroySampler(Device.Device, Sampler, nullptr);
+        vkDestroySampler(Device.Device, LinearSampler, nullptr);
         Device.Free(Depths);
         Device.Free(Normals);
+        Device.Free(Albedos);
         Device.Free(Result);
         for (const auto& image : Images) {
             vkDestroyImageView(Device.Device, image.View, nullptr);
@@ -555,8 +582,43 @@ int main(int argc, char** argv) try {
                 Require(std::abs(kept[i][3] - guide[3] / 255.0F) < 5.0e-4F, "coverage was not preserved");
             }
         }
-    std::cout << "LAUNCHPAD normals GPU: planes, crease, faceted cylinders, coverage, sky, W-buffer, odd extents and "
-                 "repeatability passed\n";
+    // Texture detail with the original's defaults (radius and intensity 0.5,
+    // High) on the far/near ratio of its default linearization.
+    auto detail = constants;
+    detail.Texture = Fast::Immerse::LaunchpadTextureParameters(1000.0F, 0.5F, 0.5F, 2);
+    detail.Flags = Fast::Immerse::kLaunchpadTextured | Fast::Immerse::kLaunchpadSkipSmoothing;
+    Require(MaxDeviation(facing, gpu.Run(facing, detail)) < .1F, "a uniform albedo adds relief");
+    const auto facetedPrism = Prism(48);
+    Require(MaxDeviation(facetedPrism, gpu.Run(facetedPrism, detail)) < .1F,
+            "texture detail without smoothing changed the native normals");
+    auto striped = facing;
+    striped.Albedo.resize(size_t(W) * H);
+    for (uint32_t y = 0; y < H; ++y)
+        for (uint32_t x = 0; x < W; ++x)
+            striped.Albedo[size_t(y) * W + x] = (x / 32U) % 2U == 0U ? .3F : .7F;
+    const auto relief = gpu.Run(striped, detail);
+    float strongest = 0;
+    bool leansDownhill = true;
+    for (uint32_t y = 8; y + 8 < H; ++y)
+        for (uint32_t x = 40; x + 40 < W; ++x) {
+            const size_t i = size_t(y) * W + x;
+            strongest = std::max(strongest, Degrees(DecodeOutput(relief[i]), DecodeGuide(striped.Guide[i])));
+            // Rising edges (dark to bright along +x) lean the normal towards -x.
+            if (x % 64U == 32U && DecodeOutput(relief[i])[0] >= 0.0F)
+                leansDownhill = false;
+        }
+    std::cout << "texture detail: strongest tilt " << strongest << " degrees on 0.3/0.7 stripes\n";
+    Require(strongest > 5.0F, "stripes add no relief");
+    Require(leansDownhill, "relief leans uphill");
+    auto flat = detail;
+    flat.Texture[1] = 0;
+    Require(MaxDeviation(striped, gpu.Run(striped, flat)) < .1F, "zero intensity adds relief");
+    auto both = detail;
+    both.Flags = Fast::Immerse::kLaunchpadTextured;
+    Require(MaxDifference(relief, gpu.Run(striped, both)) < .002F,
+            "smoothing a plane changed its texture detail");
+    std::cout << "LAUNCHPAD normals GPU: planes, crease, faceted cylinders, coverage, sky, W-buffer, odd extents, "
+                 "repeatability and texture detail passed\n";
 } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return 1;

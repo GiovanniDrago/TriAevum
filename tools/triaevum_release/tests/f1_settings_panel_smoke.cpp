@@ -1008,6 +1008,25 @@ int main() try {
     Click("Native");
     runtime.SetCapability(GraphicsCapability::ImmerseNormals, true);
     Frame();
+    Select("AO normals", "Texture detail (LAUNCHPAD)");
+    Select("Texture detail quality", "Ultra");
+    EditScalar("Texture detail radius", "0.25");
+    EditScalar("Texture detail intensity", "0.75");
+    const auto detail = runtime.Snapshot().Effects;
+    Check(detail.AoNormals == AoNormalSource::Textured && detail.AoTextureDetailQuality == 4 &&
+              detail.AoTextureDetailRadius == 0.25F && detail.AoTextureDetailIntensity == 0.75F &&
+              detail.AmbientOcclusion == AmbientOcclusionMode::Mxao,
+          "AO texture detail controls did not apply or changed the provider");
+    runtime.SetCapability(GraphicsCapability::SampledSceneColor, false, "no scene colour");
+    Frame();
+    Select("AO normals", "Smoothed (LAUNCHPAD)");
+    Click("AO normals");
+    Check(Find("Texture detail (LAUNCHPAD)").Disabled && Find("Smoothed + texture detail (LAUNCHPAD)").Disabled &&
+              !Find("Smoothed (LAUNCHPAD)").Disabled,
+          "texture detail selectable without the scene colour, or smoothing wrongly disabled");
+    Click("Native");
+    runtime.SetCapability(GraphicsCapability::SampledSceneColor, true);
+    Frame();
     runtime.SetCapability(GraphicsCapability::ImmerseMxao, false, "provider unavailable");
     Frame();
     Select("Ambient occlusion", "Off");

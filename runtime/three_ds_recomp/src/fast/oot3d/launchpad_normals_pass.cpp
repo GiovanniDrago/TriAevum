@@ -27,6 +27,7 @@ struct LaunchpadNormalsPass::Impl {
     nri::PipelineLayout* Layout = nullptr;
     std::array<nri::Pipeline*, kProgramCount> Pipelines{};
     nri::Descriptor* Sampler = nullptr;
+    nri::Descriptor* LinearSampler = nullptr;
     nri::DescriptorPool* Pool = nullptr;
     std::array<nri::DescriptorSet*, kProgramCount> Sets{};
 #endif
@@ -36,6 +37,7 @@ struct LaunchpadNormalsPass::Impl {
     NriOwnedTexture2D Output;
     std::array<VkImage, 2> Inputs{};
     std::array<VkFormat, 2> Formats{};
+    VkImage Albedo = VK_NULL_HANDLE;
     uint32_t Width = 0, Height = 0;
     bool Ready = false;
     ResourceStateTracker States;
@@ -79,12 +81,14 @@ bool LaunchpadNormalsPass::Initialize(VkPhysicalDevice physical, VkDevice device
         mImpl->Core = NriInteropAccess::Core(interop);
         if (nriDevice == nullptr || mImpl->Core == nullptr)
             throw std::runtime_error("LAUNCHPAD normals NRI device unavailable");
-        const std::array<nri::DescriptorRangeDesc, 5> ranges{
+        const std::array<nri::DescriptorRangeDesc, 7> ranges{
             { { 0, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER },
               { 1, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER },
               { 2, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER },
               { 3, 1, nri::DescriptorType::STORAGE_TEXTURE, nri::StageBits::COMPUTE_SHADER },
-              { 4, 1, nri::DescriptorType::SAMPLER, nri::StageBits::COMPUTE_SHADER } }
+              { 4, 1, nri::DescriptorType::SAMPLER, nri::StageBits::COMPUTE_SHADER },
+              { 5, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER },
+              { 6, 1, nri::DescriptorType::SAMPLER, nri::StageBits::COMPUTE_SHADER } }
         };
         nri::DescriptorSetDesc set{};
         set.ranges = ranges.data();
@@ -123,6 +127,9 @@ bool LaunchpadNormalsPass::Initialize(VkPhysicalDevice physical, VkDevice device
                                  nri::AddressMode::CLAMP_TO_EDGE };
         if (mImpl->Core->CreateSampler(*nriDevice, sampler, mImpl->Sampler) != nri::Result::SUCCESS)
             throw std::runtime_error("LAUNCHPAD normals sampler failed");
+        sampler.filters = { nri::Filter::LINEAR, nri::Filter::LINEAR, nri::Filter::NEAREST };
+        if (mImpl->Core->CreateSampler(*nriDevice, sampler, mImpl->LinearSampler) != nri::Result::SUCCESS)
+            throw std::runtime_error("LAUNCHPAD normals sampler failed");
         mImpl->Ready = true;
         mImpl->Reason.clear();
         return true;
@@ -134,12 +141,13 @@ bool LaunchpadNormalsPass::Initialize(VkPhysicalDevice physical, VkDevice device
 }
 
 bool LaunchpadNormalsPass::Configure(uint32_t width, uint32_t height, VkImage depth, VkFormat depthFormat,
-                                     VkImage normal, VkFormat normalFormat) {
+                                     VkImage normal, VkFormat normalFormat, VkImage albedo) {
     const std::array inputs{ depth, normal };
     const std::array formats{ depthFormat, normalFormat };
     if (!Available() || width == 0 || height == 0 || depth == VK_NULL_HANDLE || normal == VK_NULL_HANDLE)
         return false;
-    if (mImpl->Width == width && mImpl->Height == height && mImpl->Inputs == inputs && mImpl->Formats == formats)
+    if (mImpl->Width == width && mImpl->Height == height && mImpl->Inputs == inputs && mImpl->Formats == formats &&
+        mImpl->Albedo == albedo)
         return true;
 #if !defined(ENABLE_OOT3D_NRI) || !defined(ENABLE_OOT3D_IMMERSE)
     return false;
@@ -172,9 +180,9 @@ bool LaunchpadNormalsPass::Configure(uint32_t width, uint32_t height, VkImage de
         }
         nri::DescriptorPoolDesc pool{};
         pool.descriptorSetMaxNum = kProgramCount;
-        pool.textureMaxNum = 3 * kProgramCount;
+        pool.textureMaxNum = 4 * kProgramCount;
         pool.storageTextureMaxNum = kProgramCount;
-        pool.samplerMaxNum = kProgramCount;
+        pool.samplerMaxNum = 2 * kProgramCount;
         auto* device = NriInteropAccess::Device(*mImpl->Interop);
         if (mImpl->Core->CreateDescriptorPool(*device, pool, mImpl->Pool) != nri::Result::SUCCESS ||
             mImpl->Core->AllocateDescriptorSets(*mImpl->Pool, *mImpl->Layout, 0, mImpl->Sets.data(), kProgramCount,
@@ -188,27 +196,38 @@ bool LaunchpadNormalsPass::Configure(uint32_t width, uint32_t height, VkImage de
         };
         // Binding 2 holds the packed surfaces a program reads. The G-buffer
         // program reads none; it binds the wide result so the unused descriptor
-        // still has a valid layout.
+        // still has a valid layout. Without an albedo estimate the native guide
+        // stands in for it at binding 5; the shader then leaves it unread.
         const std::array<std::pair<nri::Descriptor*, nri::Descriptor*>, kProgramCount> pairs{ {
             { view(mImpl->Wide.Image, false), view(mImpl->Gbuffer.Image, true) },
             { view(mImpl->Gbuffer.Image, false), view(mImpl->Wide.Image, true) },
             { view(mImpl->Wide.Image, false), view(mImpl->Output.Image, true) },
         } };
+        nri::Descriptor* detail = sources[1];
+        if (albedo != VK_NULL_HANDLE) {
+            if (!mImpl->Interop->WrapTexture(albedo, VK_FORMAT_R16_SFLOAT, VK_IMAGE_TYPE_2D,
+                                             VK_IMAGE_USAGE_SAMPLED_BIT, width, height))
+                throw std::runtime_error("LAUNCHPAD normals albedo wrapping failed");
+            detail = view(albedo, false);
+        }
         for (size_t i = 0; i < kProgramCount; ++i) {
             auto* set = mImpl->Sets[i];
             auto* surfaces = pairs[i].first;
             auto* destination = pairs[i].second;
-            const std::array<nri::UpdateDescriptorRangeDesc, 5> updates{ { { set, 0, 0, &sources[0], 1 },
+            const std::array<nri::UpdateDescriptorRangeDesc, 7> updates{ { { set, 0, 0, &sources[0], 1 },
                                                                            { set, 1, 0, &sources[1], 1 },
                                                                            { set, 2, 0, &surfaces, 1 },
                                                                            { set, 3, 0, &destination, 1 },
-                                                                           { set, 4, 0, &mImpl->Sampler, 1 } } };
+                                                                           { set, 4, 0, &mImpl->Sampler, 1 },
+                                                                           { set, 5, 0, &detail, 1 },
+                                                                           { set, 6, 0, &mImpl->LinearSampler, 1 } } };
             mImpl->Core->UpdateDescriptorRanges(updates.data(), uint32_t(updates.size()));
         }
         mImpl->Width = width;
         mImpl->Height = height;
         mImpl->Inputs = inputs;
         mImpl->Formats = formats;
+        mImpl->Albedo = albedo;
         mImpl->Reason.clear();
         return true;
     } catch (const std::exception& error) {
@@ -220,9 +239,11 @@ bool LaunchpadNormalsPass::Configure(uint32_t width, uint32_t height, VkImage de
 }
 
 bool LaunchpadNormalsPass::Execute(uint32_t frameSlot, const PerspectiveViewState& view, bool wBuffer,
-                                   PicaSurfaceCoordinates coordinates) {
+                                   PicaSurfaceCoordinates coordinates, const EffectsSettings& settings) {
     mImpl->LastBarriers = {};
-    if (mImpl->Width == 0 || view.NearPlane <= 0 || view.FarPlane <= view.NearPlane)
+    const bool smooth = SmoothsAoNormals(settings.AoNormals);
+    const bool detail = TexturesAoNormals(settings.AoNormals) && mImpl->Albedo != VK_NULL_HANDLE;
+    if (mImpl->Width == 0 || (!smooth && !detail) || view.NearPlane <= 0 || view.FarPlane <= view.NearPlane)
         return false;
 #if !defined(ENABLE_OOT3D_NRI) || !defined(ENABLE_OOT3D_IMMERSE)
     (void)frameSlot;
@@ -247,6 +268,10 @@ bool LaunchpadNormalsPass::Execute(uint32_t frameSlot, const PerspectiveViewStat
                    view.FarPlane - view.NearPlane, wBuffer ? 1.0F : 0.0F };
     const float side = float(std::min(mImpl->Width, mImpl->Height));
     push.Scale = { view.NearPlane, Immerse::kLaunchpadWideRadius * side, Immerse::kLaunchpadNarrowRadius * side, 0 };
+    push.Flags = (detail ? Immerse::kLaunchpadTextured : 0U) | (smooth ? 0U : Immerse::kLaunchpadSkipSmoothing);
+    push.Texture = Immerse::LaunchpadTextureParameters(view.FarPlane / view.NearPlane, settings.AoTextureDetailRadius,
+                                                       settings.AoTextureDetailIntensity,
+                                                       settings.AoTextureDetailQuality);
     const auto transition = [&](VkImage image, ResourceAccess access) {
         const auto change = mImpl->States.PlanTransition(reinterpret_cast<uintptr_t>(image), { access, 0 });
         if (!NriInteropAccess::CmdTextureBarrier(*mImpl->Interop, frameSlot, image, change))
@@ -267,13 +292,17 @@ bool LaunchpadNormalsPass::Execute(uint32_t frameSlot, const PerspectiveViewStat
         mImpl->Core->CmdDispatch(*command, { (width + 7) / 8, (height + 7) / 8, 1 });
     };
     const uint32_t halfHeight = Immerse::LaunchpadHalfHeight(mImpl->Height);
-    if (!transition(mImpl->Gbuffer.Image, ResourceAccess::ComputeWrite))
-        return false;
-    dispatch(kGbufferProgram, mImpl->Width, halfHeight);
-    if (!transition(mImpl->Gbuffer.Image, ResourceAccess::ShaderRead) ||
-        !transition(mImpl->Wide.Image, ResourceAccess::ComputeWrite))
-        return false;
-    dispatch(kWideProgram, mImpl->Width, halfHeight);
+    if (smooth) {
+        if (!transition(mImpl->Gbuffer.Image, ResourceAccess::ComputeWrite))
+            return false;
+        dispatch(kGbufferProgram, mImpl->Width, halfHeight);
+        if (!transition(mImpl->Gbuffer.Image, ResourceAccess::ShaderRead) ||
+            !transition(mImpl->Wide.Image, ResourceAccess::ComputeWrite))
+            return false;
+        dispatch(kWideProgram, mImpl->Width, halfHeight);
+    }
+    // Without the smoothing the narrow program leaves the wide result unread,
+    // but its descriptor still needs a shader-readable layout.
     if (!transition(mImpl->Wide.Image, ResourceAccess::ShaderRead) ||
         !transition(mImpl->Output.Image, ResourceAccess::ComputeWrite))
         return false;
@@ -300,6 +329,7 @@ void LaunchpadNormalsPass::InvalidateScreenResources() {
     mImpl->Width = mImpl->Height = 0;
     mImpl->Inputs = {};
     mImpl->Formats = {};
+    mImpl->Albedo = VK_NULL_HANDLE;
     mImpl->States.Clear();
     mImpl->LastBarriers = {};
 }
@@ -309,6 +339,8 @@ void LaunchpadNormalsPass::Shutdown() {
     if (mImpl->Core) {
         if (mImpl->Sampler)
             mImpl->Core->DestroyDescriptor(mImpl->Sampler);
+        if (mImpl->LinearSampler)
+            mImpl->Core->DestroyDescriptor(mImpl->LinearSampler);
         for (auto* pipeline : mImpl->Pipelines)
             if (pipeline)
                 mImpl->Core->DestroyPipeline(pipeline);

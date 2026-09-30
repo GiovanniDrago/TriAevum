@@ -387,13 +387,19 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
                 .Contract = EffectContractKind::ComposerPass,
                 .Resources = { Read(EffectResource::SceneColor),
                                Write(EffectResource::LinearWorkingColor) } });
+    std::vector<EffectResourceUse> aoResources{ Read(EffectResource::NativeSceneView),
+                                                Read(EffectResource::NativeDepth),
+                                                Read(EffectResource::NormalGuide) };
+    if (input.AmbientOcclusionTextureDetail) {
+        aoResources.push_back(Read(EffectResource::SceneColor));
+    }
+    aoResources.push_back(Write(EffectResource::AmbientOcclusion));
     graph.Add({ .Name = "AmbientOcclusion",
                 .DependsOn = { "Guides" },
                 .Enabled = ao,
                 .Stage = EffectStage::AfterOpaque,
                 .Contract = EffectContractKind::ComposerPass,
-                .Resources = { Read(EffectResource::NativeSceneView), Read(EffectResource::NativeDepth),
-                               Read(EffectResource::NormalGuide), Write(EffectResource::AmbientOcclusion) } });
+                .Resources = std::move(aoResources) });
     graph.Add({ .Name = "HiZ",
                 .Enabled = hiZ,
                 .Stage = EffectStage::AfterOpaque,

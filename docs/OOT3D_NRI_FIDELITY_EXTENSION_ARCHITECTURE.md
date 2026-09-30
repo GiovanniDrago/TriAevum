@@ -3003,6 +3003,33 @@ normal guide, one flat normal per triangle, so low-poly surfaces reach AO facete
   AO scope with GTAO (1.14 -> 5.30 ms) and 4.4 ms with MXAO (2.66 -> 7.03 ms),
   unvalidated medians of 600 frames. Faceted guides come from vertex-lit programs
   without the normal quaternion.
+- Texture detail ("textured normals") adds relief from the scene's textures. **AO
+  normals** also offers Texture detail and Smoothed + texture detail, with texture
+  detail quality (Low-Ultra), radius and intensity (`AO.Normals.TextureDetail*`,
+  added without a schema change). Only then does the plan add `SceneColor` to the
+  AO stage's reads; validation keeps the smoothing and drops the detail when the
+  scene colour cannot be sampled.
+- `fast/immerse/launchpad_albedo_shader` and `fast/oot3d/launchpad_albedo_pass`
+  port LAUNCHPAD's albedo estimate: a half-resolution log-luminance pyramid with
+  variance-weighted separable (Kuwahara-like) downsampling, edge-stopping fusion,
+  guided upsampling and the multiscattering inversion. It is stored as its R16F
+  channel mean, the only quantity the detail reads, and re-encodes a linear scene
+  colour to the display encoding the original expects. The narrow iteration fits
+  the estimate's gradient in the tangent plane from a golden-angle spiral of taps
+  and bends the normal against it; texture detail alone skips the smoothing
+  passes. As with the smoothing, the spiral is laid out on screen (the original's
+  tangent-plane step over the pixel footprint) instead of being projected from each
+  pixel's tangent plane.
+- `launchpad_albedo_gpu_tests`: a flat colour gives a uniform estimate; a 2.39x
+  lighting ramp over a fine checker leaves 1.16x while the checker keeps 99% of its
+  contrast. The normals test adds uniform-albedo, zero-intensity, detail-only and
+  downhill-lean cases.
+- Kokiri reference walk: with AO off, Texture detail leaves the captures
+  byte-identical, and native GTAO is unchanged. Texture detail changes the AO term on
+  3.1% of the pixels with GTAO (2.5% darker: occlusion in texture creases) and on
+  about 1% with MXAO, with zero Vulkan/NRI errors. It adds 3.0 ms to the AO scope with
+  GTAO (1.14 -> 4.16 ms) and 3.5 ms with MXAO (2.66 -> 6.16 ms); the screen-laid
+  spiral saved 0.7 ms against the tangent-plane one.
 
 Fresh combined source adoption, deterministic framebuffer/state comparisons and
 the remaining realtime validation observation are recorded in

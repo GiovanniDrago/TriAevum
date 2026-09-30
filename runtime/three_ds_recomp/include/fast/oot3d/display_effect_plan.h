@@ -42,6 +42,9 @@ struct DisplayEffectPlanInput {
     bool ForceTaa = false;
     bool ForceMotion = false;
     AmbientOcclusionMode AmbientOcclusion = AmbientOcclusionMode::Off;
+    // The AO normals take texture detail from the scene colour, which the AO
+    // stage then reads.
+    bool AmbientOcclusionTextureDetail = false;
     ReflectionMode Reflections = ReflectionMode::Off;
     // Diffuse GI is requested and its provider is available.
     bool GlobalIllumination = false;

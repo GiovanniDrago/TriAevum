@@ -249,8 +249,11 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         value.Effects.MxaoMethod = MxaoEstimator::VisibilityBitmask;
     value.Effects.MxaoQuality = std::min<uint8_t>(value.Effects.MxaoQuality, 5U);
     value.Effects.MxaoFilter = std::min<uint8_t>(value.Effects.MxaoFilter, 2U);
-    if (value.Effects.AoNormals > AoNormalSource::Smoothed)
+    if (value.Effects.AoNormals > AoNormalSource::SmoothedTextured)
         value.Effects.AoNormals = AoNormalSource::Native;
+    value.Effects.AoTextureDetailQuality = std::min<uint8_t>(value.Effects.AoTextureDetailQuality, 4U);
+    value.Effects.AoTextureDetailRadius = std::clamp(value.Effects.AoTextureDetailRadius, 0.0F, 1.0F);
+    value.Effects.AoTextureDetailIntensity = std::clamp(value.Effects.AoTextureDetailIntensity, 0.0F, 1.0F);
     auto& directionalShadows = value.Effects.DirectionalShadows;
     if (!IsDirectionalShadowResolution(directionalShadows.Resolution)) {
         directionalShadows.Resolution = 2048U;
@@ -746,6 +749,14 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         value.Effects.AoNormals = AoNormalSource::Native;
         Correct(result.Issues, "Graphics.Effects.AO.Normals",
                 capabilities.Get(GraphicsCapability::ImmerseNormals).Reason);
+    }
+    // Texture detail reads the scene colour; without it the smoothing stays.
+    if (TexturesAoNormals(value.Effects.AoNormals) &&
+        !capabilities.Has(GraphicsCapability::SampledSceneColor)) {
+        value.Effects.AoNormals = SmoothsAoNormals(value.Effects.AoNormals) ? AoNormalSource::Smoothed
+                                                                            : AoNormalSource::Native;
+        Correct(result.Issues, "Graphics.Effects.AO.Normals",
+                "AO texture detail requires the sampled scene colour");
     }
     if (value.Effects.Reflections != ReflectionMode::Off &&
         (!capabilities.Has(GraphicsCapability::NriInterop) ||

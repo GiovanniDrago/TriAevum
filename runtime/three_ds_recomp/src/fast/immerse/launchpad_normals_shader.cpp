@@ -25,6 +25,12 @@
 // pixels, its radius a fraction of the shorter screen side; the half-height
 // G-buffer and the wide result pack a 16-bit octahedral normal with 32-bit
 // depth instead of RGBA16F, and taps use the position of the texel they read.
+// Texture detail ("textured normals") can also refine the native normal
+// without the smoothing; its spiral is laid out on screen (the original's
+// tangent-plane step over the pixel footprint) rather than projected from the
+// tangent plane; it reads the albedo estimate's channel mean and the native
+// depth of the nearest pixel instead of depth packed in the albedo, and skips
+// samples off screen or on the sky, which the original only weighs down.
 
 namespace Fast::Immerse {
 namespace {
@@ -36,14 +42,18 @@ layout(set=0,binding=1) uniform texture2D view_normals;
 // Half-height packed surfaces: the G-buffer, or the wide iteration's result.
 layout(set=0,binding=2) uniform utexture2D surfaces;
 layout(set=0,binding=4) uniform sampler point_sampler;
+// Texture detail: the albedo estimate's channel mean, sampled bilinearly.
+layout(set=0,binding=5) uniform texture2D albedo;
+layout(set=0,binding=6) uniform sampler linear_sampler;
 layout(push_constant) uniform LaunchpadState {
     uvec2 extent;
     uint iteration;
-    uint reserved;
+    uint flags;
     vec4 view_x;
     vec4 view_y;
     vec4 depth;
     vec4 scale;
+    vec4 detail;
 } pc;
 const float tau=6.28318530717958647692;
 const float sky_z=1.0e8;
@@ -237,6 +247,57 @@ std::string BuildLaunchpadSmoothNarrowShader() {
     std::string source = kCommon;
     source += R"glsl(
 layout(set=0,binding=3,rgba16f) uniform writeonly image2D destination;
+vec3 uv_position(vec2 uv,float z) {
+    vec3 s=vec3(uv,1.0);
+    return vec3(dot(pc.view_x.xyz,s),dot(pc.view_y.xyz,s),1.0)*z;
+}
+float albedo_mean(vec2 uv) {
+    return textureLod(sampler2D(albedo,linear_sampler),uv,0.0).r;
+}
+// Surface relief from the albedo estimate: a weighted least-squares fit of its
+// gradient over a golden-angle spiral in the tangent plane, subtracted from the
+// normal as a height map's gradient is.
+vec3 textured_normal(ivec2 pixel,vec3 p,vec3 n) {
+    float center_luma=albedo_mean((vec2(pixel)+0.5)/vec2(pc.extent));
+    // The screen-x neighbour two pixels away orients the tangent frame.
+    ivec2 side=pixel.x+2<int(pc.extent.x) ? pixel+ivec2(2,0) : pixel-ivec2(2,0);
+    float side_z=view_depth(side);
+    vec3 e_x=p-proj_position(side,side_z<sky_z ? side_z/pc.scale.x : p.z);
+    vec3 t_x=e_x-n*dot(n,e_x);
+    float t_length2=dot(t_x,t_x);
+    if(t_length2<1.0e-20) return n;
+    t_x*=inversesqrt(t_length2);
+    vec3 t_y=cross(n,t_x);
+    vec3 m_parametric=vec3(0.0);
+    vec2 m_height=vec2(0.0);
+    int samples=int(pc.detail.z);
+    // The spiral is laid out on screen, its step the original's tangent-plane
+    // step over the pixel footprint at this depth: neighbouring pixels read
+    // the same offsets, and the fit uses where each tap actually lies.
+    float footprint=length(proj_position(pixel+ivec2(1,0),p.z)-proj_position(pixel,p.z));
+    float step_pixels=pc.detail.x/max(footprint,1.0e-8);
+    vec2 center=vec2(pixel)+0.5;
+    for(int j=1;j<=samples;++j) {
+        float angle=2.39996*float(j);
+        vec2 position=center+vec2(cos(angle),sin(angle))*(step_pixels*float(j));
+        vec2 tuv=position/vec2(pc.extent);
+        ivec2 tap=ivec2(floor(position));
+        if(any(lessThan(tap,ivec2(0))) || any(greaterThanEqual(tap,ivec2(pc.extent)))) continue;
+        float z=view_depth(tap);
+        if(z>=sky_z) continue;
+        // Project the surface point actually seen there onto the tangent plane.
+        vec3 delta=uv_position(tuv,z/pc.scale.x)-p;
+        vec2 axis=vec2(dot(delta,t_x),dot(delta,t_y));
+        float w=1.0/(0.05+abs(dot(n,delta)))/float(j*j);
+        float h=albedo_mean(tuv)-center_luma;
+        m_parametric+=axis.xxy*axis.xyy*w;
+        m_height+=axis*h*w;
+    }
+    float det=m_parametric.x*m_parametric.z-m_parametric.y*m_parametric.y;
+    vec2 grad=(m_parametric.zx*m_height.xy-m_parametric.yy*m_height.yx)/(det+1.0e-6);
+    grad*=pc.detail.y;
+    return normalize(n-grad.x*t_x-grad.y*t_y);
+}
 void main() {
     ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
     if(any(greaterThanEqual(pixel,ivec2(pc.extent)))) return;
@@ -246,9 +307,10 @@ void main() {
         imageStore(destination,pixel,guide);
         return;
     }
-    vec3 smoothed=smooth_normal(pixel,p,n,true);
-    smoothed.z=-smoothed.z;
-    imageStore(destination,pixel,vec4(smoothed*0.5+0.5,guide.a));
+    vec3 refined=(pc.flags&2u)!=0u ? n : smooth_normal(pixel,p,n,true);
+    if((pc.flags&1u)!=0u) refined=textured_normal(pixel,p,refined);
+    refined.z=-refined.z;
+    imageStore(destination,pixel,vec4(refined*0.5+0.5,guide.a));
 }
 )glsl";
     return source;

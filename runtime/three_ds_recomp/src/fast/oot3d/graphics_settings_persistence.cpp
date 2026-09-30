@@ -94,6 +94,8 @@ constexpr EnumNames<MxaoEstimator> kMxaoMethodNames{
 constexpr EnumNames<AoNormalSource> kAoNormalNames{
     {AoNormalSource::Native, "Native"},
     {AoNormalSource::Smoothed, "Smoothed"},
+    {AoNormalSource::Textured, "Textured"},
+    {AoNormalSource::SmoothedTextured, "SmoothedTextured"},
 };
 constexpr EnumNames<ReflectionMode> kReflectionNames{
     {ReflectionMode::Off, "Off"},
@@ -1284,6 +1286,9 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                   {"Normals",
                    {
                        {"Source", EnumName(effects.AoNormals, kAoNormalNames)},
+                       {"TextureDetailQuality", effects.AoTextureDetailQuality},
+                       {"TextureDetailRadius", effects.AoTextureDetailRadius},
+                       {"TextureDetailIntensity", effects.AoTextureDetailIntensity},
                    }},
               }},
              {"Reflections",
@@ -1682,6 +1687,18 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
             if (const Json* normals = FindMember(*ao, "Normals"); normals != nullptr && normals->is_object()) {
                 ReadEnum(*normals, "Source", value.AoNormals, kAoNormalNames,
                          "Graphics.Effects.AO.Normals.Source", result);
+                // The texture-detail controls followed the source without a
+                // schema change: absent ones keep their defaults.
+                if (FindMember(*normals, "TextureDetailQuality") != nullptr) {
+                    ReadScalar(*normals, "TextureDetailQuality", value.AoTextureDetailQuality,
+                               "Graphics.Effects.AO.Normals.TextureDetailQuality", result);
+                    ReadScalar(*normals, "TextureDetailRadius", value.AoTextureDetailRadius,
+                               "Graphics.Effects.AO.Normals.TextureDetailRadius", result);
+                    ReadScalar(*normals, "TextureDetailIntensity", value.AoTextureDetailIntensity,
+                               "Graphics.Effects.AO.Normals.TextureDetailIntensity", result);
+                } else {
+                    result.NeedsRewrite = true;
+                }
             } else {
                 result.NeedsRewrite = true;
             }

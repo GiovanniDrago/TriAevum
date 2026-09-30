@@ -4227,6 +4227,37 @@ TEST(Oot3dGraphicsSettings, SmoothedAoNormalsRequireLaunchpadAndKeepTheProvider)
     }));
 }
 
+TEST(Oot3dGraphicsSettings, AoTextureDetailNeedsSceneColourAndClampsItsControls) {
+    using namespace Fast::Oot3d;
+    GraphicsCapabilities capabilities;
+    for (const auto capability : {GraphicsCapability::NriInterop, GraphicsCapability::SampledDepth,
+                                  GraphicsCapability::NormalGuide, GraphicsCapability::ValidViewMetadata,
+                                  GraphicsCapability::ImmerseNormals, GraphicsCapability::SampledSceneColor})
+        capabilities.Set(capability, true);
+    auto candidate = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
+    candidate.Effects.AmbientOcclusion = AmbientOcclusionMode::Mxao;
+    capabilities.Set(GraphicsCapability::ImmerseMxao, true);
+    candidate.Effects.AoNormals = AoNormalSource::SmoothedTextured;
+    candidate.Effects.AoTextureDetailQuality = 9;
+    candidate.Effects.AoTextureDetailRadius = 3.0F;
+    candidate.Effects.AoTextureDetailIntensity = -1.0F;
+    auto result = GraphicsSettingsService::Validate(candidate, capabilities);
+    EXPECT_EQ(result.Value.Effects.AoNormals, AoNormalSource::SmoothedTextured);
+    EXPECT_EQ(result.Value.Effects.AoTextureDetailQuality, 4U);
+    EXPECT_FLOAT_EQ(result.Value.Effects.AoTextureDetailRadius, 1.0F);
+    EXPECT_FLOAT_EQ(result.Value.Effects.AoTextureDetailIntensity, 0.0F);
+    capabilities.Set(GraphicsCapability::SampledSceneColor, false, "no scene colour");
+    result = GraphicsSettingsService::Validate(candidate, capabilities);
+    EXPECT_EQ(result.Value.Effects.AoNormals, AoNormalSource::Smoothed);
+    candidate.Effects.AoNormals = AoNormalSource::Textured;
+    result = GraphicsSettingsService::Validate(candidate, capabilities);
+    EXPECT_EQ(result.Value.Effects.AoNormals, AoNormalSource::Native);
+    EXPECT_EQ(result.Value.Effects.AmbientOcclusion, AmbientOcclusionMode::Mxao);
+    EXPECT_TRUE(std::any_of(result.Issues.begin(), result.Issues.end(), [](const auto& issue) {
+        return issue.Field == "Graphics.Effects.AO.Normals";
+    }));
+}
+
 TEST(Oot3dGraphicsSettings, AcceptsHiZOnlyWithMaterialAndViewContract) {
     Fast::Oot3d::GraphicsCapabilities capabilities;
     using Capability = Fast::Oot3d::GraphicsCapability;

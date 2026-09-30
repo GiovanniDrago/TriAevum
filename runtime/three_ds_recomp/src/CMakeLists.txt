@@ -207,7 +207,8 @@ if(THREE_DS_RECOMP_ENABLE_VULKAN)
     if(THREE_DS_RECOMP_ENABLE_IMMERSE)
         target_sources(three_ds_recomp_runtime PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/fast/immerse/mxao_shader.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/fast/immerse/launchpad_normals_shader.cpp")
+            "${CMAKE_CURRENT_SOURCE_DIR}/fast/immerse/launchpad_normals_shader.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/fast/immerse/launchpad_albedo_shader.cpp")
         target_compile_definitions(three_ds_recomp_runtime PRIVATE ENABLE_OOT3D_IMMERSE)
     endif()
     if(THREE_DS_RECOMP_ENABLE_D3D12_NGX_PROVIDER)

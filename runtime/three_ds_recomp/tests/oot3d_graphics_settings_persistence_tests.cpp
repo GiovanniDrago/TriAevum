@@ -319,6 +319,34 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsAoNormalsAndDefaultsOlderFilesT
     EXPECT_FALSE(DeserializeGraphicsSettings(unknown).Issues.empty());
 }
 
+TEST(Oot3dGraphicsSettingsPersistence, RoundTripsAoTextureDetailAndDefaultsItForSourceOnlyFiles) {
+    using namespace Fast::Oot3d;
+    auto settings = CompleteSettings();
+    settings.Effects.AoNormals = AoNormalSource::Textured;
+    settings.Effects.AoTextureDetailQuality = 4;
+    settings.Effects.AoTextureDetailRadius = 0.25F;
+    settings.Effects.AoTextureDetailIntensity = 0.75F;
+    const auto saved = SerializeGraphicsSettings(settings);
+    EXPECT_EQ(saved["Effects"]["AO"]["Normals"]["Source"], "Textured");
+    const auto loaded = DeserializeGraphicsSettings(saved);
+    EXPECT_FALSE(loaded.NeedsRewrite);
+    EXPECT_EQ(loaded.Value.Effects.AoNormals, AoNormalSource::Textured);
+    EXPECT_EQ(loaded.Value.Effects.AoTextureDetailQuality, 4U);
+    EXPECT_FLOAT_EQ(loaded.Value.Effects.AoTextureDetailRadius, 0.25F);
+    EXPECT_FLOAT_EQ(loaded.Value.Effects.AoTextureDetailIntensity, 0.75F);
+    auto sourceOnly = saved;
+    auto& normals = sourceOnly["Effects"]["AO"]["Normals"];
+    normals.erase("TextureDetailQuality");
+    normals.erase("TextureDetailRadius");
+    normals.erase("TextureDetailIntensity");
+    const auto defaults = DeserializeGraphicsSettings(sourceOnly);
+    EXPECT_TRUE(defaults.NeedsRewrite);
+    EXPECT_EQ(defaults.Value.Effects.AoNormals, AoNormalSource::Textured);
+    EXPECT_EQ(defaults.Value.Effects.AoTextureDetailQuality, 2U);
+    EXPECT_FLOAT_EQ(defaults.Value.Effects.AoTextureDetailRadius, 0.5F);
+    EXPECT_FLOAT_EQ(defaults.Value.Effects.AoTextureDetailIntensity, 0.5F);
+}
+
 TEST(Oot3dGraphicsSettingsPersistence, MigratesSingleCascadeWithoutLosingTheOffChoiceOrLightResponse) {
     using namespace Fast::Oot3d;
     auto document = SerializeGraphicsSettings(CompleteSettings());

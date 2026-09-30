@@ -645,6 +645,26 @@ TEST(Oot3dDisplayEffectPlan, GlobalIlluminationSpecularIsAReflectionSource) {
     EXPECT_FALSE(diffuse.ReflectionsFromGlobalIllumination);
 }
 
+TEST(Oot3dDisplayEffectPlan, AoReadsSceneColourOnlyForTextureDetail) {
+    DisplayEffectPlanInput input;
+    input.WorldSurface = true;
+    input.PerspectiveAvailable = true;
+    input.AmbientOcclusion = AmbientOcclusionMode::Mxao;
+    const auto native = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(native.Graph.Valid()) << native.Graph.Error;
+    ASSERT_NE(native.Graph.FindPass("AmbientOcclusion"), nullptr);
+    EXPECT_FALSE(native.Graph.FindPass("AmbientOcclusion")->ReadsResource(EffectResource::SceneColor));
+    input.AmbientOcclusionTextureDetail = true;
+    const auto detail = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(detail.Graph.Valid()) << detail.Graph.Error;
+    const auto* pass = detail.Graph.FindPass("AmbientOcclusion");
+    ASSERT_NE(pass, nullptr);
+    EXPECT_TRUE(pass->ReadsResource(EffectResource::SceneColor));
+    EXPECT_TRUE(pass->ReadsResource(EffectResource::NormalGuide));
+    EXPECT_EQ(detail.Bindings(DisplayEffectPass::AmbientOcclusion).size(),
+              native.Bindings(DisplayEffectPass::AmbientOcclusion).size() + 1U);
+}
+
 TEST(Oot3dDisplayEffectPlan, DeclaresItsActualTypedInputs) {
     DisplayEffectPlanInput input;
     input.WorldSurface = true;

@@ -28,6 +28,7 @@
 #include "fast/oot3d/cacao_pass.h"
 #include "fast/oot3d/mxao_pass.h"
 #include "fast/oot3d/launchpad_normals_pass.h"
+#include "fast/oot3d/launchpad_albedo_pass.h"
 #if defined(_WIN32) && defined(ENABLE_OOT3D_D3D12_NGX_PROVIDER)
 #include "fast/oot3d/d3d12_ngx_provider.h"
 #endif
@@ -1405,6 +1406,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::CacaoPass mCacaoPass;
     Oot3d::MxaoPass mMxaoPass;
     Oot3d::LaunchpadNormalsPass mLaunchpadNormalsPass;
+    Oot3d::LaunchpadAlbedoPass mLaunchpadAlbedoPass;
     bool mLaunchpadNormalsWarned = false;
     Oot3d::FidelityFxSssrPass mFidelityFxSssrPass;
     Oot3d::HiZDepthPyramidPass mHiZDepthPyramidPass;
