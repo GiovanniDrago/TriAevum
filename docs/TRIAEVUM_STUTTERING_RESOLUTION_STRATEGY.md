@@ -1187,3 +1187,66 @@ Open, pre-existing in the previous build:
 Remaining costs: Grass selection (the render thread waits ~2.6 ms for its jobs;
 per-anchor LOD evaluation includes `logf`/`log1pf`), DLSS transformer
 4.7-5.3 ms and Grass 1.9-2.2 ms of GPU work, render command recording ~1 ms.
+
+## Residual shader stutter in the Enhanced profile (2026-10-02)
+
+Goal set by the maintainer: zero shader stutter without losing performance.
+
+Measured sources, the user's own sessions (`play-kokiri/game-20261001*.err.log`,
+warm application and driver caches, renderer and caches on a 5400 rpm HDD):
+
+| Per session | Count | Time |
+| --- | ---: | ---: |
+| NRI pipelines created on the render thread | 185-316 | 2.8-41.0 s |
+| Runtime GLSL->SPIR-V compilations | 41 | 3.9 s |
+| SPIR-V cache reads (HDD, ~16 ms each) | 148 | 2.35 s |
+| Pass shader compilations | 6 | 0.8 s |
+| Collected AOT pack hits | 0 of 193 | - |
+
+The bundled/collected pack is keyed by generated source text, so every
+generator or effect change makes it stale (the J: pack predates the current
+instrumentation). Cold Kokiri walk (420 frames, empty application cache):
+73 SPIR-V (13.8 s), 14 passes (3.0 s), 136 pipelines (26.7 s), all synchronous;
+53 of the 72 programs are instrumented (effect) variants, which Forge never
+prepares. Warm: 136 pipelines still cost 0.46 s in the first frames.
+
+Fixed passes absent from the built-in catalogue (Enhanced, now reported by
+`TRIAEVUM_PASS_ARTIFACT_MISS`): the six iMMERSE MXAO programs (their artifacts
+must stay under `fast/immerse`), `brixelizer_gi_prepare.comp`,
+`oot3d_pica_texture_copy_derive.comp`, the scanout orientation variants,
+`native_surface_lighting.vert` and the shadow caster programs derived from the
+maintained vertex family (directional/point vertex, alpha caster fragment).
+
+Parametric TEV (`--pica-parametric-tev`) makes the native list finite (8
+structural fragment configurations, 6 vertex programs, built in), and reduces the
+cold walk to 28 SPIR-V and 107 pipelines (11 instrumented programs in steady
+play; 17 more are one-shot specialized sources embedded in the visual
+savestate). It is NOT adoptable as is:
+
+- GPU cost: paired no-presentation runs, frame 11.1-11.8 ms specialized versus
+  17.3-17.9 ms parametric (`native_pica_ms` 0.33 -> 2.2 ms). The evaluator is an
+  uber-shader at the Enhanced internal resolution.
+- Exactness: the TEV core is bit-identical to the canonical emitter (4,096 GPU
+  cases, now checked bit for bit in `pica_tev_gpu_tests`), but parametric
+  lighting differs from the specialized emission by 1 ulp in 71 of 512 channels
+  (`pica_lighting_gpu_tests` uses a 1e-5 tolerance). After 8-bit rounding this
+  flips one step on 1-4 pixels in some frames; DLSS/MXAO accumulation spreads it
+  to ~0.5% of pixels. One parametric run also differed from another by 2 pixels.
+
+Plan (keeps specialized programs, so no GPU cost):
+
+A. Preparation journal: record every program/pipeline created during play with
+   its complete description (SPIR-V included) in the renderer cache; at launch,
+   background threads recreate them and hand them to the draw path, so warm
+   content costs no compilation, cache read or pipeline creation on the render
+   thread. Tag with the descriptor contract; age out unused entries.
+B. Regenerate from inputs: record PICA registers/state and the draw-class
+   variant request instead of text, so a renderer update regenerates everything
+   at launch with the current generator and settings.
+C. Forge: seed B from the existing register snapshots (Azahar/Citra) and the
+   TAS corpus, re-expressed as inputs, so never-visited content is prepared too.
+D. For draws still unseen: an exact-enough immediate fallback while the
+   specialized program compiles in the background, limited to those draws.
+
+Also outside shaders: Grass placement (1.4 s at area entry), texture pack and
+cache reads from the HDD.

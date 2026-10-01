@@ -9,6 +9,7 @@
 #include <shaderc/shaderc.hpp>
 
 #include <algorithm>
+#include <cstdio>
 #include <array>
 #include <cctype>
 #include <fstream>
@@ -167,6 +168,9 @@ std::vector<uint32_t> CachedPassShaderCompiler::Resolve(
         ++mBuiltinArtifactHits;
         return {artifact.begin(), artifact.end()};
     }
+    // A fixed pass absent from the built-in catalogue (resolved once per pipeline).
+    std::fprintf(stderr, "TRIAEVUM_PASS_ARTIFACT_MISS name=%s stage=%d defines=%zu\n",
+                 name != nullptr ? name : "", static_cast<int>(stage), defines.size());
     std::string variant = "/pass-vulkan1.2/performance/main/v1";
     for (const auto& [key, value] : defines)
         variant += "/" + std::to_string(key.size()) + ":" + key +

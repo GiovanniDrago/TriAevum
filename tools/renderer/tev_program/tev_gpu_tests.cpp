@@ -1,4 +1,5 @@
 #include "fast/renderer3ds/pica_tev_program.h"
+#include <bit>
 #include <shaderc/shaderc.hpp>
 #include <vulkan/vulkan.h>
 #include <algorithm>
@@ -243,7 +244,12 @@ layout(location=0) out vec4 color;
         for (unsigned c = 0; c < 4; ++c) {
             const float error = std::abs(expected[c] - pixels[i][c]);
             maxError = std::max(error, maxError);
-            if (!std::isfinite(pixels[i][c]) || error > 0.00001F) {
+            // Canonical and parametric programs must agree bit for bit: a
+            // tolerance hides differences that flip a later 8-bit rounding.
+            const bool differs = canonicalExpected
+                ? std::bit_cast<uint32_t>(expected[c]) != std::bit_cast<uint32_t>(pixels[i][c])
+                : error > 0.00001F;
+            if (!std::isfinite(pixels[i][c]) || differs) {
                 if (failures < 8) std::cerr << "case " << i << " channel " << c << " expected " << expected[c] << " got " << pixels[i][c] << '\n';
                 ++failures;
             }
