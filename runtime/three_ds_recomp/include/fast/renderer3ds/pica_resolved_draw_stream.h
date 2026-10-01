@@ -16,7 +16,7 @@
 
 namespace Fast::Renderer3ds {
 
-inline constexpr uint32_t kPicaResolvedDrawStreamSchemaVersion = 6U;
+inline constexpr uint32_t kPicaResolvedDrawStreamSchemaVersion = 7U;
 
 struct PicaResolvedVertexLayout {
     uint64_t StructuralKey = 0U;
@@ -80,6 +80,9 @@ struct PicaResolvedDrawRecord {
     int32_t BaseVertex = 0;
     std::array<PicaSceneTextureBinding, 3U> Textures{};
     uint8_t BoundTextureMask = 0U;
+    // Native fragment-lighting LUT image (R32Uint), bound only when the draw's
+    // fragment program samples one.
+    PicaSceneTextureBinding LightingLut;
 
     bool PerspectiveProjection = false;
     PicaNativeLightingState NativeLighting;

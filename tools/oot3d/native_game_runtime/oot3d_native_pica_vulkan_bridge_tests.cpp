@@ -572,11 +572,27 @@ int main() {
                                              "present:63"} &&
                 preparedDraws == 1U,
             "presentation preparation was not selected, ordered or counted");
+    // The alpha-tested caster runs its native alpha test in the map, so its
+    // preparation carries the fragment uniforms and textures.
     Require(preparingBackend.PreparedVertexUniformBytes != 0U &&
-                preparingBackend.PreparedFragmentUniformBytes == 0U &&
-                preparingBackend.PreparedTextureCount == 0U &&
+                preparingBackend.PreparedFragmentUniformBytes ==
+                    Fast::Oot3d::kPicaPackedFragmentUniformSize &&
+                preparingBackend.PreparedTextureCount == plan.Textures.size() &&
                 preparingBackend.PreparedAlphaTestEnabled,
-            "a prepared draw carried fragment state or lost its alpha test");
+            "an alpha-tested prepared draw lost its fragment state or alpha test");
+    opaquePlan.FragmentShader.Uniforms.FragmentControl[1] = 0x7F60U;
+    RecordingBackend opaqueBackend;
+    opaqueBackend.PreparedLayer =
+        Oot3d::Renderer::PicaCompositionLayer::OpaqueWorld;
+    executePrepared(opaqueBackend,
+                    Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::CurrentFrame,
+                    true, preparedDraws);
+    Require(preparedDraws == 1U &&
+                opaqueBackend.PreparedVertexUniformBytes != 0U &&
+                opaqueBackend.PreparedFragmentUniformBytes == 0U &&
+                opaqueBackend.PreparedTextureCount == 0U &&
+                !opaqueBackend.PreparedAlphaTestEnabled,
+            "a prepared draw without an alpha test carried fragment state");
     RecordingBackend nativeMemoryBackend;
     nativeMemoryBackend.PreparedLayer =
         Oot3d::Renderer::PicaCompositionLayer::OpaqueWorld;

@@ -10,11 +10,19 @@ namespace Fast::Oot3d {
 
 inline constexpr const char* kPicaDirectionalShadowFragmentShader = "#version 450\nvoid main(){}\n";
 
+// Caster transform block. It sits outside the canonical PICA binding contract
+// (0-26), so an alpha-tested caster keeps the native texture and fragment
+// uniform bindings of its own program.
+inline constexpr uint32_t kPicaShadowCasterTransformBinding = 27U;
+
 enum class PicaDirectionalShadowCasterShaderStatus : uint8_t {
     Applied,
     EmptySource,
     InvalidHookContract,
     MissingViewPosition,
+    MissingAlphaTest,
+    SamplerContract,
+    OutputContract,
 };
 
 struct PicaDirectionalShadowCasterShader {
@@ -34,5 +42,16 @@ struct PicaDirectionalShadowCasterShader {
 BuildPicaDirectionalShadowCasterShader(
     std::string_view source, uint64_t vertexKey,
     const ::Fast::Renderer3ds::PicaVertexShaderHookLayout& hooks);
+
+// Alpha-tested caster fragment program: the canonical program up to its
+// BeforeDepth hook, which follows the native TEV and alpha test, so the map
+// discards exactly the fragments the native draw discards. Nothing after the
+// hook runs (no depth, fog or colour output); the rasterized light depth is
+// written. The native colour output (published at location 0) is no longer
+// exported, and combined samplers are split to the NRI binding contract.
+[[nodiscard]] PicaDirectionalShadowCasterShader
+BuildPicaShadowCasterAlphaFragmentShader(
+    std::string_view source, uint64_t fragmentKey,
+    const ::Fast::Renderer3ds::PicaShaderHookLayout& hooks);
 
 } // namespace Fast::Oot3d

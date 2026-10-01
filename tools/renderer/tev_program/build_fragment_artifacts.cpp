@@ -4,6 +4,7 @@
 #include "fast/renderer3ds/pica_fragment_artifact.h"
 #include "fast/renderer3ds/pica_native_fragment_binaries.h"
 #include "fast/renderer3ds/pica_nri_shader_contract.h"
+#include "fast/oot3d/pica_directional_shadow_caster.h"
 #include "fast/oot3d/pica_shader_instrumentation.h"
 #include "fast/oot3d/pica_shader_pipeline_cache.h"
 #include "fast/oot3d/toon_surface_response.h"
@@ -103,6 +104,16 @@ int main(int argc, char** argv) try {
             Check(candidate.Hooks.Has(::Oot3d::Renderer::PicaShaderSemantic::NativeFogFactor) &&
                   shader.Hooks.Has(::Oot3d::Renderer::PicaShaderSemantic::NativeFogFactor),
                   "parametric fog hook changed with material activation");
+        }
+        if (verify && !temporal && !toon && !shadowWrite) {
+            // Alpha-tested shadow casters run this program up to its alpha test.
+            const auto caster = Fast::Oot3d::BuildPicaShadowCasterAlphaFragmentShader(
+                shader.Source, shader.StateKey, shader.Hooks);
+            Check(caster.Applied(), "alpha-tested shadow caster variant was not built");
+            const auto binary = compiler.CompileGlslToSpv(caster.Source, shaderc_fragment_shader,
+                                                          "alpha_shadow_caster.frag", options);
+            Check(binary.GetCompilationStatus() == shaderc_compilation_status_success,
+                  "alpha-tested shadow caster variant: " + binary.GetErrorMessage());
         }
         if (toon && primaryColor != 0) {
             // Native TEV may omit vertex color. It is a discrete toon response

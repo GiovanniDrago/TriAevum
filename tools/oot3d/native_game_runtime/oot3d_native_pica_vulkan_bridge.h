@@ -32,7 +32,8 @@ bool SubmitOot3dPicaVulkanDrawPlan(
     Oot3dPicaVulkanDrawBridgeTiming* timing = nullptr);
 
 // Hands a draw of the published sequence to the backend ahead of execution
-// (vertex side only); the draw is still submitted later in native order.
+// (vertex side; fragment uniforms and textures too when the alpha test is
+// enabled); the draw is still submitted later in native order.
 bool PrepareOot3dPicaVulkanSequenceDraw(
     Oot3d::Renderer::PicaRenderBackend& renderingApi,
     const Oot3dPicaVulkanDrawPlan& plan,

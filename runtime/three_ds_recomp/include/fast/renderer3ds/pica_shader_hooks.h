@@ -98,6 +98,7 @@ struct PicaTextureSampleLayout {
         return Coordinate != UnavailableCoordinate &&
                Operation != PicaTextureCoordinateOperation::Unavailable;
     }
+    bool operator==(const PicaTextureSampleLayout&) const = default;
 };
 
 constexpr PicaShaderSemantic operator|(PicaShaderSemantic left, PicaShaderSemantic right) noexcept {
@@ -160,6 +161,7 @@ struct PicaShaderHookLayout {
     [[nodiscard]] bool ValidFor(std::string_view source) const noexcept {
         return Valid() && SourceSize == source.size();
     }
+    bool operator==(const PicaShaderHookLayout&) const = default;
 };
 
 enum class PicaVertexShaderHook : uint8_t {

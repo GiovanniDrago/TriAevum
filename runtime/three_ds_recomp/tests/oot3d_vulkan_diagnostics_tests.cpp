@@ -351,7 +351,7 @@ TEST(Oot3dVulkanDiagnostics, WritesBoundedAuthenticFrameTrace) {
         true, 11U, 12U);
     diagnostics.RecordNriPicaDisplayCopy(true, 4U);
     diagnostics.RecordNriPicaMemoryFillClear(true, true, 2U);
-    diagnostics.RecordNriDirectionalShadow(37U, true);
+    diagnostics.RecordNriDirectionalShadow(37U, true, 5U);
     diagnostics.RecordNriDirectionalShadowAttempt(41U, 19U, 7U);
     diagnostics.RecordNriDirectionalShadowLightSelection(
         19U, 3U, 97.5F, 0.25F, 0.75F, -0.5F);
@@ -369,6 +369,9 @@ TEST(Oot3dVulkanDiagnostics, WritesBoundedAuthenticFrameTrace) {
     diagnostics.RecordNriDirectionalShadowPreparation(true, false);
     diagnostics.RecordNriDirectionalShadowPreparation(true, true);
     diagnostics.RecordNriDirectionalShadowPreparation(false, false);
+    diagnostics.RecordNriDirectionalShadowPreparedAlpha(true);
+    diagnostics.RecordNriDirectionalShadowPreparedAlpha(true);
+    diagnostics.RecordNriDirectionalShadowPreparedAlpha(false);
     diagnostics.RecordNriDirectionalShadowPreparedReuse();
     diagnostics.RecordNriDirectionalShadowPreparedMap(true);
     diagnostics.RecordNriDirectionalShadowPreparedMap(false);
@@ -771,6 +774,9 @@ TEST(Oot3dVulkanDiagnostics, WritesBoundedAuthenticFrameTrace) {
     EXPECT_EQ(
         frame.at("nri_directional_shadow_prepared_map_before_opaque_count"),
         1U);
+    EXPECT_EQ(frame.at("nri_directional_shadow_prepared_alpha_caster_count"), 2U);
+    EXPECT_EQ(frame.at("nri_directional_shadow_prepared_alpha_rejected_count"), 1U);
+    EXPECT_EQ(frame.at("nri_directional_shadow_alpha_caster_draw_count"), 5U);
     EXPECT_EQ(
         frame.at("nri_directional_shadow_receiver_eligible_draw_count"),
         2U);

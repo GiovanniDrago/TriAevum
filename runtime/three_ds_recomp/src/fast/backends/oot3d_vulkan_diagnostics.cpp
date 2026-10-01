@@ -595,6 +595,12 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
           frame.NriDirectionalShadowPreparedMapCount },
         { "nri_directional_shadow_prepared_map_before_opaque_count",
           frame.NriDirectionalShadowPreparedMapBeforeOpaqueCount },
+        { "nri_directional_shadow_prepared_alpha_caster_count",
+          frame.NriDirectionalShadowPreparedAlphaCasterCount },
+        { "nri_directional_shadow_prepared_alpha_rejected_count",
+          frame.NriDirectionalShadowPreparedAlphaRejectedCount },
+        { "nri_directional_shadow_alpha_caster_draw_count",
+          frame.NriDirectionalShadowAlphaCasterDrawCount },
         { "display_transfer_count", frame.DisplayTransferCount },
         { "scanout_count", frame.ScanoutCount },
         { "overlay_count", frame.OverlayCount },
@@ -1557,12 +1563,14 @@ void Oot3dVulkanDiagnostics::RecordPicaShaderSelection(
         typedInstrumentationContractRejects);
 }
 
-void Oot3dVulkanDiagnostics::RecordNriDirectionalShadow(uint32_t casterCount, bool nativeLight) {
+void Oot3dVulkanDiagnostics::RecordNriDirectionalShadow(uint32_t casterCount, bool nativeLight,
+                                                        uint32_t alphaCasterCount) {
     if (!mActiveFrame.has_value()) {
         return;
     }
     ++mActiveFrame->NriDirectionalShadowPassCount;
     mActiveFrame->NriDirectionalShadowCasterCount += casterCount;
+    mActiveFrame->NriDirectionalShadowAlphaCasterDrawCount += alphaCasterCount;
     mActiveFrame->NriDirectionalShadowNativeLight |= nativeLight;
 }
 
@@ -1684,6 +1692,17 @@ void Oot3dVulkanDiagnostics::RecordNriDirectionalShadowPreparation(
     mActiveFrame->NriDirectionalShadowPreparedCasterCount += caster ? 1U : 0U;
     mActiveFrame->NriDirectionalShadowPreparedTransientCount +=
         transient ? 1U : 0U;
+}
+
+void Oot3dVulkanDiagnostics::RecordNriDirectionalShadowPreparedAlpha(bool prepared) {
+    if (!mActiveFrame.has_value()) {
+        return;
+    }
+    if (prepared) {
+        ++mActiveFrame->NriDirectionalShadowPreparedAlphaCasterCount;
+    } else {
+        ++mActiveFrame->NriDirectionalShadowPreparedAlphaRejectedCount;
+    }
 }
 
 void Oot3dVulkanDiagnostics::RecordNriDirectionalShadowPreparedReuse() {

@@ -80,6 +80,84 @@ template <typename T> uint64_t HashValue(uint64_t hash, const T& value) {
     return HashBytes(hash, &value, sizeof(value));
 }
 
+using ::Fast::Renderer3ds::PicaCompareFunction;
+using ::Fast::Renderer3ds::PicaSceneTextureBinding;
+using ::Fast::Renderer3ds::PicaSceneTextureImageFormat;
+
+// Descriptor ranges of the caster layout: the canonical program's own
+// bindings (vertex uniforms 0, textures 1-3, fragment uniforms 4, split
+// samplers 7-9, lighting LUT 13-14) plus the caster transform. Opaque casters
+// write only the vertex uniforms and the transform.
+enum CasterRange : uint32_t {
+    VertexUniformRange,
+    TransformRange,
+    Texture0Range,
+    Texture1Range,
+    Texture2Range,
+    FragmentUniformRange,
+    Sampler0Range,
+    Sampler1Range,
+    Sampler2Range,
+    LightingLutRange,
+    LightingLutSamplerRange,
+    CasterRangeCount,
+};
+
+// An alpha-tested caster runs its canonical fragment program up to the native
+// alpha test; "Always" passes every fragment and stays a depth-only caster.
+bool UsesAlphaCasterProgram(const PicaSceneDrawRecord& caster) noexcept {
+    return caster.Material.AlphaTestEnabled && caster.Material.AlphaCompare != PicaCompareFunction::Always &&
+           caster.FragmentShader != nullptr && caster.FragmentShader->FragmentHooksAvailable() &&
+           caster.FragmentUniformSize != 0U;
+}
+
+VkFormat CasterTextureFormat(const PicaSceneTextureBinding& texture) noexcept {
+    return texture.ImageFormat == PicaSceneTextureImageFormat::R32Uint ? VK_FORMAT_R32_UINT
+                                                                        : VK_FORMAT_R8G8B8A8_UNORM;
+}
+
+#ifdef ENABLE_OOT3D_NRI
+// The sampler the ordered draw binds for this texture: native filters (a mip
+// filter only with more than one uploaded level), PICA wrap modes and the
+// native LOD clamp within the uploaded chain. The LOD bias stays in the program.
+nri::SamplerDesc CasterSamplerDesc(const PicaSceneTextureBinding& texture) noexcept {
+    const auto address = [](uint8_t wrap) {
+        switch (wrap) {
+            case 2U:
+            case 6U:
+            case 7U:
+                return nri::AddressMode::REPEAT;
+            case 3U:
+                return nri::AddressMode::MIRRORED_REPEAT;
+            default:
+                return nri::AddressMode::CLAMP_TO_EDGE;
+        }
+    };
+    const uint32_t highestMip = texture.MipLevels > 0U ? texture.MipLevels - 1U : 0U;
+    nri::SamplerDesc desc{};
+    desc.filters = { texture.MinLinear ? nri::Filter::LINEAR : nri::Filter::NEAREST,
+                     texture.MagLinear ? nri::Filter::LINEAR : nri::Filter::NEAREST,
+                     texture.MipLinear && texture.MipLevels > 1U ? nri::Filter::LINEAR : nri::Filter::NEAREST };
+    desc.mipMin = static_cast<float>(std::min<uint32_t>(texture.MinMipLevel, highestMip));
+    desc.mipMax = static_cast<float>(std::min<uint32_t>(texture.MaxMipLevel, highestMip));
+    desc.addressModes = { address(texture.NativeWrapS), address(texture.NativeWrapT), nri::AddressMode::REPEAT };
+    desc.isInteger = texture.ImageFormat == PicaSceneTextureImageFormat::R32Uint;
+    return desc;
+}
+
+uint64_t CasterSamplerKey(const nri::SamplerDesc& desc) noexcept {
+    uint64_t hash = 1469598103934665603ULL;
+    hash = HashValue(hash, desc.filters.min);
+    hash = HashValue(hash, desc.filters.mag);
+    hash = HashValue(hash, desc.filters.mip);
+    hash = HashValue(hash, desc.mipMin);
+    hash = HashValue(hash, desc.mipMax);
+    hash = HashValue(hash, desc.addressModes.u);
+    hash = HashValue(hash, desc.addressModes.v);
+    return HashValue(hash, desc.isInteger);
+}
+#endif
+
 #ifdef ENABLE_OOT3D_NRI
 nri::Topology ToNriTopology(PicaSceneTopology topology) {
     switch (topology) {
@@ -141,6 +219,7 @@ struct NriDirectionalShadowPass::Impl {
     ResourceStateTracker OwnedStates;
     bool LastNativeLight = false;
     uint32_t LastCasters = 0U;
+    uint32_t LastAlphaCasters = 0U;
     NriDirectionalShadowLightTelemetry LastLight;
     NriDirectionalShadowExecutionStage LastStage = NriDirectionalShadowExecutionStage::NotAttempted;
     EffectPassBarrierExecution LastShadowMapBarrierExecution;
@@ -162,6 +241,7 @@ struct NriDirectionalShadowPass::Impl {
     std::array<FrameDescriptors, kFrameSlots> Frames;
     std::unordered_map<uint64_t, nri::Pipeline*> ShadowPipelines;
     std::unordered_set<uint64_t> FailedShadowPipelines;
+    std::unordered_map<uint64_t, nri::Descriptor*> CasterSamplers;
 #endif
 
     void Retire(TargetHistory& history, uint64_t frameId) {
@@ -252,7 +332,30 @@ struct NriDirectionalShadowPass::Impl {
         hash = HashValue(hash, plan.DepthBiasConstant);
         hash = HashValue(hash, plan.DepthBiasSlope);
         hash = HashValue(hash, caster.VertexLayout->StructuralKey);
+        if (UsesAlphaCasterProgram(caster))
+            hash = HashValue(hash, caster.FragmentShader->Key);
         return hash;
+    }
+
+    nri::Descriptor* SampledView(const PicaSceneTextureBinding& texture) {
+        const auto image = FromSceneNativeHandle<VkImage>(texture.NativeImageHandle);
+        if (image == VK_NULL_HANDLE || texture.ImageWidth == 0U || texture.ImageHeight == 0U ||
+            texture.MipLevels == 0U ||
+            !Interop->WrapTexture(image, CasterTextureFormat(texture), VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT,
+                                  texture.ImageWidth, texture.ImageHeight, texture.MipLevels))
+            return nullptr;
+        return NriInteropAccess::TextureView(*Interop, image, false);
+    }
+
+    nri::Descriptor* Sampler(const PicaSceneTextureBinding& texture) {
+        const auto desc = CasterSamplerDesc(texture);
+        auto [found, inserted] = CasterSamplers.try_emplace(CasterSamplerKey(desc), nullptr);
+        if (inserted &&
+            Core->CreateSampler(*NriInteropAccess::Device(*Interop), desc, found->second) != nri::Result::SUCCESS) {
+            CasterSamplers.erase(found);
+            return nullptr;
+        }
+        return found->second;
     }
 
     nri::Pipeline* GetOrCreatePipeline(const PicaSceneDrawRecord& caster, const DirectionalShadowFramePlan& plan) {
@@ -317,8 +420,18 @@ struct NriDirectionalShadowPass::Impl {
             }
             vertex = Compile(Interop->Shaders(), casterShader.Source, Renderer::SpirvStage::Vertex,
                              "oot3d_nri_directional_shadow.vert");
-            fragment = Compile(Interop->Shaders(), kPicaDirectionalShadowFragmentShader, Renderer::SpirvStage::Fragment,
-                               "oot3d_nri_directional_shadow.frag");
+            if (UsesAlphaCasterProgram(caster)) {
+                const auto alphaShader = BuildPicaShadowCasterAlphaFragmentShader(
+                    caster.FragmentShader->Source, caster.FragmentShader->Key, caster.FragmentShader->FragmentHooks);
+                if (!alphaShader.Applied()) {
+                    return reject();
+                }
+                fragment = Compile(Interop->Shaders(), alphaShader.Source, Renderer::SpirvStage::Fragment,
+                                   "oot3d_nri_shadow_caster_alpha.frag");
+            } else {
+                fragment = Compile(Interop->Shaders(), kPicaDirectionalShadowFragmentShader,
+                                   Renderer::SpirvStage::Fragment, "oot3d_nri_directional_shadow.frag");
+            }
         } catch (const std::exception&) { return reject(); }
         const std::array<nri::ShaderDesc, 2> shaders{ {
             { nri::StageBits::VERTEX_SHADER, vertex.data(), vertex.size() * sizeof(uint32_t) },
@@ -397,9 +510,19 @@ bool NriDirectionalShadowPass::Initialize(VkPhysicalDevice physicalDevice, VkDev
             throw std::runtime_error("NRI directional shadow device is unavailable");
         }
 
-        const std::array<nri::DescriptorRangeDesc, 2> ranges{ {
+        const std::array<nri::DescriptorRangeDesc, CasterRangeCount> ranges{ {
             { 0, 1, nri::DescriptorType::CONSTANT_BUFFER, nri::StageBits::VERTEX_SHADER },
-            { 1, 1, nri::DescriptorType::CONSTANT_BUFFER, nri::StageBits::VERTEX_SHADER },
+            { kPicaShadowCasterTransformBinding, 1, nri::DescriptorType::CONSTANT_BUFFER,
+              nri::StageBits::VERTEX_SHADER },
+            { 1, 1, nri::DescriptorType::TEXTURE, nri::StageBits::FRAGMENT_SHADER },
+            { 2, 1, nri::DescriptorType::TEXTURE, nri::StageBits::FRAGMENT_SHADER },
+            { 3, 1, nri::DescriptorType::TEXTURE, nri::StageBits::FRAGMENT_SHADER },
+            { 4, 1, nri::DescriptorType::CONSTANT_BUFFER, nri::StageBits::FRAGMENT_SHADER },
+            { 7, 1, nri::DescriptorType::SAMPLER, nri::StageBits::FRAGMENT_SHADER },
+            { 8, 1, nri::DescriptorType::SAMPLER, nri::StageBits::FRAGMENT_SHADER },
+            { 9, 1, nri::DescriptorType::SAMPLER, nri::StageBits::FRAGMENT_SHADER },
+            { 13, 1, nri::DescriptorType::TEXTURE, nri::StageBits::FRAGMENT_SHADER },
+            { 14, 1, nri::DescriptorType::SAMPLER, nri::StageBits::FRAGMENT_SHADER },
         } };
         nri::DescriptorSetDesc descriptorSet{};
         descriptorSet.ranges = ranges.data();
@@ -458,7 +581,9 @@ bool NriDirectionalShadowPass::Initialize(VkPhysicalDevice physicalDevice, VkDev
 
             nri::DescriptorPoolDesc pool{};
             pool.descriptorSetMaxNum = kMaximumCasters;
-            pool.constantBufferMaxNum = 2U * kMaximumCasters;
+            pool.constantBufferMaxNum = 3U * kMaximumCasters;
+            pool.textureMaxNum = 4U * kMaximumCasters;
+            pool.samplerMaxNum = 4U * kMaximumCasters;
             frame.CasterSets.resize(kMaximumCasters);
             if (mImpl->Core->CreateDescriptorPool(*nriDevice, pool, frame.CasterPool) != nri::Result::SUCCESS ||
                 mImpl->Core->AllocateDescriptorSets(*frame.CasterPool, *mImpl->ShadowLayout, 0, frame.CasterSets.data(),
@@ -481,6 +606,7 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
                                           const EffectPassBarrierPlan& shadowMapBarrierPlan) {
     mImpl->LastNativeLight = false;
     mImpl->LastCasters = 0;
+    mImpl->LastAlphaCasters = 0;
     mImpl->LastLight = {};
     mImpl->LastStage = NriDirectionalShadowExecutionStage::NotAttempted;
     mImpl->LastShadowMapBarrierExecution = {};
@@ -564,6 +690,24 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         return false;
     mImpl->LastLight.WorldDirectionTowardSource = plan.LightDirectionTowardSource;
     mImpl->LastStage = NriDirectionalShadowExecutionStage::FramePlanReady;
+    // A caster whose program cannot be built casts nothing; it never fails
+    // the map for the others. A discarding alpha test without its program
+    // never becomes a solid caster.
+    std::array<nri::Pipeline*, kMaximumCasters> pipelines{};
+    size_t drawableCount = 0;
+    for (size_t index = 0; index < casterCount; ++index) {
+        const auto& material = casterStorage[index]->Material;
+        if (material.AlphaTestEnabled && material.AlphaCompare != PicaCompareFunction::Always &&
+            !UsesAlphaCasterProgram(*casterStorage[index]))
+            continue;
+        auto* pipeline = mImpl->GetOrCreatePipeline(*casterStorage[index], plan);
+        if (pipeline == nullptr)
+            continue;
+        pipelines[drawableCount] = pipeline;
+        casterStorage[drawableCount++] = casterStorage[index];
+    }
+    casterCount = drawableCount;
+    const auto drawable = std::span(casterStorage).first(casterCount);
     auto* target = mImpl->EnsureTarget({ desc.RenderTargetNamespace, desc.ColorPhysicalAddress },
                                        plan.Virtual.AtlasResolution, desc.FrameId);
     if (target == nullptr)
@@ -573,10 +717,10 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     mImpl->LastStage = NriDirectionalShadowExecutionStage::ResourcesReady;
     std::array<Renderer3ds::VirtualShadowCaster, kMaximumCasters> geometry{};
     for (size_t index = 0; index < casterCount; ++index) {
-        geometry[index] = casters[index]->ShadowCaster;
+        geometry[index] = drawable[index]->ShadowCaster;
         if (geometry[index].ContentVersion != 0)
             geometry[index].ContentVersion =
-                HashValue(geometry[index].ContentVersion, mImpl->PipelineKey(*casters[index], plan));
+                HashValue(geometry[index].ContentVersion, mImpl->PipelineKey(*drawable[index], plan));
     }
     target->Cache.Prepare(plan.Virtual, std::span(geometry).first(casterCount), desc.FrameId);
     mImpl->LastLight.Pages = target->Cache.Statistics();
@@ -611,13 +755,13 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     for (size_t index = 0; index < casterCount; ++index) {
         if (!required[index])
             continue;
-        const auto& caster = *casters[index];
+        const auto& caster = *drawable[index];
         if (frame.CastersUsed == frame.CasterSets.size())
             return false;
         const auto uniforms = FromSceneNativeHandle<VkBuffer>(caster.UniformBuffer.NativeHandle);
         const auto vertices = FromSceneNativeHandle<VkBuffer>(caster.GeometryBuffer.NativeHandle);
         auto& draw = prepared[index];
-        draw.Pipeline = mImpl->GetOrCreatePipeline(caster, plan);
+        draw.Pipeline = pipelines[index];
         if (draw.Pipeline == nullptr || !mImpl->Interop->WrapBuffer(uniforms, caster.UniformBuffer.Size) ||
             !mImpl->Interop->WrapBuffer(vertices, caster.GeometryBuffer.Size))
             return false;
@@ -651,10 +795,48 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         const uint32_t slot = frame.CastersUsed++;
         std::memcpy(frame.ShadowUniformMapped + frame.ShadowUniformStride * slot, &transform, sizeof(transform));
         draw.Set = frame.CasterSets[slot];
-        const std::array<nri::UpdateDescriptorRangeDesc, 2> updates{
-            { { draw.Set, 0, 0, &vertexUniform, 1 }, { draw.Set, 1, 0, &frame.ShadowUniformViews[slot], 1 } }
-        };
-        mImpl->Core->UpdateDescriptorRanges(updates.data(), static_cast<uint32_t>(updates.size()));
+        std::array<nri::UpdateDescriptorRangeDesc, CasterRangeCount> updates{};
+        uint32_t updateCount = 0;
+        updates[updateCount++] = { draw.Set, VertexUniformRange, 0, &vertexUniform, 1 };
+        updates[updateCount++] = { draw.Set, TransformRange, 0, &frame.ShadowUniformViews[slot], 1 };
+        // The alpha program reads its native textures, samplers, fragment
+        // uniforms and, when declared, the lighting LUT, as the ordered draw does.
+        std::array<nri::Descriptor*, 3> textures{};
+        std::array<nri::Descriptor*, 3> samplers{};
+        nri::Descriptor* fragmentUniform = nullptr;
+        nri::Descriptor* lightingLut = nullptr;
+        nri::Descriptor* lightingLutSampler = nullptr;
+        if (UsesAlphaCasterProgram(caster)) {
+            if (caster.FragmentUniformOffset > caster.UniformBuffer.Size ||
+                caster.FragmentUniformSize > caster.UniformBuffer.Size - caster.FragmentUniformOffset)
+                return false;
+            nri::BufferViewDesc fragmentView{};
+            fragmentView.buffer = uniformBuffer;
+            fragmentView.type = nri::BufferView::CONSTANT_BUFFER;
+            fragmentView.offset = caster.FragmentUniformOffset;
+            fragmentView.size = caster.FragmentUniformSize;
+            if (mImpl->Core->CreateBufferView(fragmentView, fragmentUniform) != nri::Result::SUCCESS)
+                return false;
+            frame.TransientViews.push_back(fragmentUniform);
+            for (size_t unit = 0; unit < textures.size(); ++unit) {
+                textures[unit] = mImpl->SampledView(caster.Textures[unit]);
+                samplers[unit] = mImpl->Sampler(caster.Textures[unit]);
+                if (textures[unit] == nullptr || samplers[unit] == nullptr)
+                    return false;
+                updates[updateCount++] = { draw.Set, static_cast<uint32_t>(Texture0Range + unit), 0, &textures[unit], 1 };
+                updates[updateCount++] = { draw.Set, static_cast<uint32_t>(Sampler0Range + unit), 0, &samplers[unit], 1 };
+            }
+            updates[updateCount++] = { draw.Set, FragmentUniformRange, 0, &fragmentUniform, 1 };
+            if (caster.LightingLut.Bound) {
+                lightingLut = mImpl->SampledView(caster.LightingLut);
+                lightingLutSampler = mImpl->Sampler(caster.LightingLut);
+                if (lightingLut == nullptr || lightingLutSampler == nullptr)
+                    return false;
+                updates[updateCount++] = { draw.Set, LightingLutRange, 0, &lightingLut, 1 };
+                updates[updateCount++] = { draw.Set, LightingLutSamplerRange, 0, &lightingLutSampler, 1 };
+            }
+        }
+        mImpl->Core->UpdateDescriptorRanges(updates.data(), updateCount);
     }
 
     mImpl->LastShadowMapBarrierExecution = shadowMapBarrierPlan.BeginExecution();
@@ -703,7 +885,7 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
             const auto indices =
                 staticLayer ? target->Cache.StaticCasters(page) : target->Cache.DynamicCasters(page);
             for (auto index : indices) {
-                const auto& caster = *casters[index];
+                const auto& caster = *drawable[index];
                 const auto& draw = prepared[index];
                 if (boundPipeline != draw.Pipeline) {
                     mImpl->Core->CmdSetPipeline(*command, *draw.Pipeline);
@@ -725,6 +907,8 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
                     mImpl->Core->CmdDraw(*command, nativeDraw);
                 }
                 ++mImpl->LastCasters;
+                if (UsesAlphaCasterProgram(caster))
+                    ++mImpl->LastAlphaCasters;
             }
         }
         mImpl->Core->CmdEndRendering(*command);
@@ -837,6 +1021,10 @@ void NriDirectionalShadowPass::Shutdown() {
             (void)key;
             mImpl->Core->DestroyPipeline(pipeline);
         }
+        for (auto& [key, sampler] : mImpl->CasterSamplers) {
+            (void)key;
+            mImpl->Core->DestroyDescriptor(sampler);
+        }
         if (mImpl->ShadowLayout != nullptr) {
             mImpl->Core->DestroyPipelineLayout(mImpl->ShadowLayout);
         }
@@ -864,6 +1052,10 @@ bool NriDirectionalShadowPass::LastExecutionUsedNativeLight() const {
 
 uint32_t NriDirectionalShadowPass::LastCasterCount() const {
     return mImpl->LastCasters;
+}
+
+uint32_t NriDirectionalShadowPass::LastAlphaCasterCount() const {
+    return mImpl->LastAlphaCasters;
 }
 
 const NriDirectionalShadowLightTelemetry& NriDirectionalShadowPass::LastLightTelemetry() const {

@@ -148,6 +148,63 @@ bool AdmitsOpaqueSceneGeometry(const GfxNativePicaDrawView& draw) noexcept {
            !draw.AlphaTestEnabled && (draw.ColorWriteMask & 0x7U) != 0U;
 }
 
+// An alpha test that can discard fragments; "Always" passes every fragment.
+bool RunsDiscardingAlphaTest(const GfxNativePicaDrawView& draw) noexcept {
+    return draw.AlphaTestEnabled && draw.AlphaCompare != GfxNativePicaCompareFunction::Always;
+}
+
+// Shadow-caster admission: depth-writing, colour-writing geometry. An
+// alpha-tested caster runs its native alpha test in the map, which needs the
+// published fragment hooks, the fragment uniforms and directly sampled native
+// textures (no packed shadow image or GPU-produced copy). A test that never
+// passes casts nothing.
+bool AdmitsShadowCasterGeometry(const GfxNativePicaDrawView& draw) noexcept {
+    if (draw.FragmentOperationMode != 0U || !draw.DepthTestEnabled || !draw.DepthWriteEnabled ||
+        (draw.ColorWriteMask & 0x7U) == 0U)
+        return false;
+    if (!RunsDiscardingAlphaTest(draw))
+        return true;
+    return draw.AlphaCompare != GfxNativePicaCompareFunction::Never &&
+           draw.FragmentShaderHooks.ValidFor(draw.FragmentShaderSource) &&
+           draw.FragmentShaderHooks.Supports(Renderer3ds::PicaShaderHook::AfterNativeTev) &&
+           draw.FragmentShaderHooks.Supports(Renderer3ds::PicaShaderHook::BeforeDepth) &&
+           draw.FragmentUniformBytes.size() == Oot3d::kPicaPackedFragmentUniformSize &&
+           std::all_of(draw.Textures.begin(), draw.Textures.end(), [](const auto& texture) {
+               return texture.Slot < 3U && texture.CopyReferences.empty() &&
+                      (texture.NativeType == 0U || (texture.Slot == 0U && texture.NativeType == 3U));
+           });
+}
+
+// Native state that shapes an alpha-tested caster: TEV stages, constants and
+// combiner buffer, the alpha test, texture LOD bias, the lighting and
+// procedural-texture programs and the sampled contents. Light and fog values
+// leave the cutout unchanged, so they do not invalidate cached pages.
+uint64_t HashAlphaCasterMaterial(const GfxNativePicaDrawView& draw,
+                                 const std::array<uint64_t, 3>& replacementHashes) {
+    const auto bytes = draw.FragmentUniformBytes;
+    uint64_t hash = HashNativeBytes(bytes.first(Oot3d::kPicaPackedFragmentDepthScaleOffset));
+    const auto mix = [&hash](uint64_t value) {
+        hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6U) + (hash >> 2U);
+    };
+    mix(HashNativeBytes(bytes.subspan(Oot3d::kPicaPackedFragmentTextureLodBiasOffset, 16U)));
+    mix(HashNativeBytes(bytes.subspan(Oot3d::kPicaPackedFragmentTevProgramOffset,
+                                      Oot3d::kPicaPackedFragmentProcTexOffset -
+                                          Oot3d::kPicaPackedFragmentTevProgramOffset)));
+    uint32_t textureConfig = 0;
+    std::memcpy(&textureConfig, bytes.data() + Oot3d::kPicaPackedFragmentControlOffset + 8U, sizeof(textureConfig));
+    if ((textureConfig & (1U << 10U)) != 0U)
+        mix(HashNativeBytes(bytes.subspan(Oot3d::kPicaPackedFragmentProcTexOffset)));
+    for (const auto& texture : draw.Textures) {
+        mix(texture.Slot);
+        mix(texture.NativeContentHash);
+        mix(replacementHashes[texture.Slot]);
+        mix(uint64_t{texture.NativeWrapS} | uint64_t{texture.NativeWrapT} << 8U |
+            uint64_t{texture.MinLinear} << 16U | uint64_t{texture.MagLinear} << 17U |
+            uint64_t{texture.MipLinear} << 18U);
+    }
+    return hash;
+}
+
 VkFormat ToNativeVkVertexFormat(GfxNativePicaVertexFormat format,
                                 uint8_t components) {
     if (components == 0 || components > 4) {
@@ -4206,11 +4263,11 @@ bool GfxRenderingAPIVulkan::PreparePicaSequenceDraw(
         if (!WantsPicaSequenceDrawPreparation(Renderer3ds::BuildPicaCompositionDrawReference(draw))) {
             return true;
         }
-        // The ordered submission's caster admission: opaque perspective
-        // geometry with its captured view.
+        // Caster admission: depth-writing perspective geometry with its
+        // captured view; an alpha-tested caster also needs its alpha test.
         Oot3d::DirectionalShadowMatrix viewToWorld;
         const bool admitted =
-            AdmitsOpaqueSceneGeometry(draw) &&
+            AdmitsShadowCasterGeometry(draw) &&
             draw.Topology != GfxNativePicaTopology::TriangleFan && !draw.VertexShaderSource.empty() &&
             !draw.FragmentShaderSource.empty() && draw.VertexCount != 0U && !draw.VertexBindings.empty() &&
             !draw.VertexAttributes.empty() && draw.VertexUniformBytes.size() >= Oot3d::kPicaPackedVertexFloatOffset &&
@@ -4258,6 +4315,33 @@ bool GfxRenderingAPIVulkan::PreparePicaSequenceDraw(
         }
         const auto& geometry = *resolution.Geometry;
         auto& frame = mFrameResources[mCurrentFrame];
+        // An alpha-tested caster samples the textures and lighting LUT the
+        // ordered draw resolves, through the same cache (custom replacements
+        // included); a texture that cannot be resolved leaves it out of the map.
+        const bool alphaTested = RunsDiscardingAlphaTest(draw);
+        std::array<TextureRecord*, 3> casterTextures{ &mFallbackTexture, &mFallbackTexture, &mFallbackTexture };
+        TextureRecord* casterLightingLut = nullptr;
+        if (alphaTested) {
+            std::string textureError;
+            bool resolved = true;
+            for (const auto& texture : draw.Textures) {
+                TextureRecord* record = GetOrCreateNativePicaTexture(
+                    texture, &textureError, mFrameAzaharTextureGeneration, draw.RenderTargetNamespace,
+                    texture.NativeContentHashAvailable ? &texture.NativeContentHash : nullptr);
+                resolved = resolved && record != nullptr;
+                if (record != nullptr)
+                    casterTextures[texture.Slot] = record;
+            }
+            if (resolved && !draw.LightingLut.PackedEntries.empty()) {
+                casterLightingLut = GetOrCreateNativePicaLightingLut(draw.LightingLut, &textureError);
+                resolved = casterLightingLut != nullptr;
+            }
+            mDiagnostics.RecordNriDirectionalShadowPreparedAlpha(resolved);
+            if (!resolved) {
+                mDiagnostics.RecordNriDirectionalShadowPreparation(false, !resolution.Cacheable);
+                return true;
+            }
+        }
         // The ordered submission owns the transient arena: a caster that does
         // not fit stays out of this sample's map rather than exhausting it.
         const bool placeable = resolution.Cacheable ||
@@ -4273,16 +4357,23 @@ bool GfxRenderingAPIVulkan::PreparePicaSequenceDraw(
         for (const auto& binding : geometry.PackedBindings) {
             bindings.push_back({ binding.Binding, placement.BaseOffset + binding.Offset, binding.Size, binding.Stride });
         }
-        // The map reads these vertex uniforms before the ordered submission
-        // uploads its own copy.
+        // The map reads these uniforms before the ordered submission uploads
+        // its own copy. Both blocks are reserved first: growth replaces the arena.
+        const auto alignedUniform = [this](VkDeviceSize bytes) {
+            return (bytes + mUniformBufferAlignment - 1U) & ~(mUniformBufferAlignment - 1U);
+        };
         EnsureFrameUniformCapacity(
-            (draw.VertexUniformBytes.size() + mUniformBufferAlignment - 1U) & ~(mUniformBufferAlignment - 1U),
+            alignedUniform(draw.VertexUniformBytes.size()) +
+                (alphaTested ? alignedUniform(draw.FragmentUniformBytes.size()) : 0U),
             mUniformBufferAlignment);
-        const VkDeviceSize vertexUniformOffset =
-            (frame.UniformBytesUsed + mUniformBufferAlignment - 1U) & ~(mUniformBufferAlignment - 1U);
-        std::memcpy(static_cast<uint8_t*>(frame.UniformBuffer.Mapped) + vertexUniformOffset,
-                    draw.VertexUniformBytes.data(), draw.VertexUniformBytes.size());
-        frame.UniformBytesUsed = vertexUniformOffset + draw.VertexUniformBytes.size();
+        const auto uploadUniform = [&](std::span<const uint8_t> bytes) {
+            const VkDeviceSize offset = alignedUniform(frame.UniformBytesUsed);
+            std::memcpy(static_cast<uint8_t*>(frame.UniformBuffer.Mapped) + offset, bytes.data(), bytes.size());
+            frame.UniformBytesUsed = offset + bytes.size();
+            return offset;
+        };
+        const VkDeviceSize vertexUniformOffset = uploadUniform(draw.VertexUniformBytes);
+        const VkDeviceSize fragmentUniformOffset = alphaTested ? uploadUniform(draw.FragmentUniformBytes) : 0U;
 
         uint32_t booleanUniforms = 0;
         std::memcpy(&booleanUniforms, draw.VertexUniformBytes.data() + Oot3d::kPicaPackedVertexBooleanMaskOffset,
@@ -4300,11 +4391,62 @@ bool GfxRenderingAPIVulkan::PreparePicaSequenceDraw(
             draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset), viewToWorld, version, shadowCache);
         shadowCaster.Dynamic = draw.Composition.NativeActorGeometry;
         shadowCaster.OwnerIdentity = draw.Composition.NativeActorIdentity;
+        std::array<Oot3d::PicaSceneTextureBinding, 3> sceneTextures{};
+        Oot3d::PicaSceneTextureBinding sceneLightingLut;
+        if (alphaTested) {
+            std::array<uint64_t, 3> replacementHashes{};
+            for (size_t slot = 0; slot < sceneTextures.size(); ++slot) {
+                const auto* texture = casterTextures[slot];
+                auto& destination = sceneTextures[slot];
+                destination.NativeImageHandle = ToPicaSceneNativeHandle(texture->NriImage);
+                destination.ReplacementContentHash = texture->CustomReplacementPixelHash;
+                destination.ImageWidth = texture->Width;
+                destination.ImageHeight = texture->Height;
+                destination.MipLevels = texture->UploadedMipLevels;
+                destination.Slot = static_cast<uint8_t>(slot);
+                destination.CustomReplacement = texture->CustomReplacementApplied;
+                replacementHashes[slot] = texture->CustomReplacementPixelHash;
+            }
+            for (const auto& texture : draw.Textures) {
+                auto& destination = sceneTextures[texture.Slot];
+                destination.NativeContentHash = texture.NativeContentHash;
+                destination.NativeContentHashAvailable = texture.NativeContentHashAvailable;
+                destination.PhysicalAddress = texture.PhysicalAddress;
+                destination.SourceWidth = texture.Width;
+                destination.SourceHeight = texture.Height;
+                destination.LodBiasRaw = texture.LodBiasRaw;
+                destination.NativeFormat = texture.NativeFormat;
+                destination.NativeType = texture.NativeType;
+                destination.NativeWrapS = texture.NativeWrapS;
+                destination.NativeWrapT = texture.NativeWrapT;
+                destination.MinMipLevel = texture.MinMipLevel;
+                destination.MaxMipLevel = texture.MaxMipLevel;
+                destination.MinLinear = texture.MinLinear;
+                destination.MagLinear = texture.MagLinear;
+                destination.MipLinear = texture.MipLinear;
+                destination.Bound = true;
+            }
+            if (casterLightingLut != nullptr) {
+                sceneLightingLut.NativeImageHandle = ToPicaSceneNativeHandle(casterLightingLut->NriImage);
+                sceneLightingLut.ImageWidth = casterLightingLut->Width;
+                sceneLightingLut.ImageHeight = casterLightingLut->Height;
+                sceneLightingLut.MipLevels = 1U;
+                sceneLightingLut.ImageFormat = Oot3d::PicaSceneTextureImageFormat::R32Uint;
+                sceneLightingLut.Bound = true;
+            }
+            // The cutout is part of the caster's content: a changed texture or
+            // alpha state invalidates the pages it touches.
+            if (shadowCaster.ContentVersion != 0U) {
+                shadowCaster.ContentVersion ^= HashAlphaCasterMaterial(draw, replacementHashes) +
+                    0x9e3779b97f4a7c15ULL + (shadowCaster.ContentVersion << 6U) + (shadowCaster.ContentVersion >> 2U);
+            }
+        }
 
         // Only what the map consumes is recorded: the canonical programs stand
-        // in for the effective ones, and no fragment state, texture or resolved
-        // raster/target value is known before the ordered submission.
-        const auto status = mPreparedShadowCasterFrame.Record({
+        // in for the effective ones. Fragment state and textures are recorded
+        // for an alpha-tested caster only; no resolved raster/target value is
+        // known before the ordered submission.
+        Oot3d::PicaSceneDrawRecordDesc record{
             .SubmissionId = draw.SubmissionId,
             .CommandListAddress = draw.CommandListAddress,
             .CommandListOffsetWords = draw.CommandListOffsetWords,
@@ -4401,7 +4543,16 @@ bool GfxRenderingAPIVulkan::PreparePicaSequenceDraw(
             .FragmentSourceIdentity = draw.FragmentShaderSourceIdentity,
             .EffectiveVertexSourceIdentity = draw.VertexShaderSourceIdentity,
             .EffectiveFragmentSourceIdentity = draw.FragmentShaderSourceIdentity,
-        });
+        };
+        if (alphaTested) {
+            record.FragmentUniformOffset = fragmentUniformOffset;
+            record.FragmentUniformSize = draw.FragmentUniformBytes.size();
+            record.Textures = sceneTextures;
+            record.LightingLut = sceneLightingLut;
+            record.FragmentShaderHooks = draw.FragmentShaderHooks;
+            record.PackedFragmentUniforms = draw.FragmentUniformBytes;
+        }
+        const auto status = mPreparedShadowCasterFrame.Record(record);
         const bool caster = status == Oot3d::PicaSceneRecordStatus::Recorded &&
             mPreparedShadowCasterFrame.DirectionalShadowCaster(mPreparedShadowCasterFrame.Draws().size() - 1U);
         if (caster) {
@@ -6143,6 +6294,15 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 destination.MagLinear = texture.MagLinear;
                 destination.MipLinear = texture.MipLinear;
             }
+            Oot3d::PicaSceneTextureBinding orderedLightingLut;
+            if (lightingLutInteger) {
+                orderedLightingLut.NativeImageHandle = ToPicaSceneNativeHandle(lightingLutTexture->NriImage);
+                orderedLightingLut.ImageWidth = lightingLutTexture->Width;
+                orderedLightingLut.ImageHeight = lightingLutTexture->Height;
+                orderedLightingLut.MipLevels = 1U;
+                orderedLightingLut.ImageFormat = Oot3d::PicaSceneTextureImageFormat::R32Uint;
+                orderedLightingLut.Bound = true;
+            }
             const Oot3d::PicaSceneCullMode sceneCull = ToPicaSceneCullMode(draw);
             const Oot3d::PicaSceneFrontFace sceneFront = ToPicaSceneFrontFace(draw);
             mPicaSceneFrame.Record({
@@ -6300,10 +6460,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     draw.Indexed ? indexCount : draw.VertexCount,
                 .BaseVertex = draw.BaseVertex,
                 .Textures = sceneTextures,
+                .LightingLut = orderedLightingLut,
                 .PerspectiveProjection = grassPerspectiveProjection,
                 .DirectionalShadowCaster = directionalShadowCaster,
                 .VertexShaderHooks =
                     draw.TemporalVertexProgram.Hooks,
+                .FragmentShaderHooks = draw.FragmentShaderHooks,
                 .PackedVertexUniforms = draw.VertexUniformBytes,
                 .PackedPreviousVertexUniforms =
                     exactMotionHistory
@@ -6715,7 +6877,8 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
             lightTelemetry.WorldDirectionTowardSource[2]);
         mDiagnostics.RecordNriDirectionalShadow(
             mNriDirectionalShadowPass.LastCasterCount(),
-            mNriDirectionalShadowPass.LastExecutionUsedNativeLight());
+            mNriDirectionalShadowPass.LastExecutionUsedNativeLight(),
+            mNriDirectionalShadowPass.LastAlphaCasterCount());
     }
     return executed;
 }

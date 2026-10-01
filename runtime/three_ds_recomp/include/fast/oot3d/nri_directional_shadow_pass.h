@@ -100,6 +100,8 @@ class NriDirectionalShadowPass final {
     [[nodiscard]] bool Available() const;
     [[nodiscard]] bool LastExecutionUsedNativeLight() const;
     [[nodiscard]] uint32_t LastCasterCount() const;
+    // Caster draws of the last update that ran their native alpha test.
+    [[nodiscard]] uint32_t LastAlphaCasterCount() const;
     [[nodiscard]] const NriDirectionalShadowLightTelemetry&
     LastLightTelemetry() const;
     [[nodiscard]] NriDirectionalShadowExecutionStage LastExecutionStage() const;

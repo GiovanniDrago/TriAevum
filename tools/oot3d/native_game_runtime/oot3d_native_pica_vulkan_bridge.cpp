@@ -152,8 +152,8 @@ PackFragmentUniforms(
 }
 
 // Builds the backend view of a plan and hands it to `consume`; the view and
-// the packed state it references live only for that call. A preparation view
-// carries the vertex side only (no fragment uniforms or textures).
+// the packed state it references live only for that call. A view without
+// fragment state carries no fragment uniforms or textures.
 template <typename Consume>
 bool WithOot3dPicaVulkanDrawView(
     const Oot3dPicaVulkanDrawPlan& plan, std::string* error,
@@ -450,8 +450,15 @@ bool PrepareOot3dPicaVulkanSequenceDraw(
     const Oot3dPicaVulkanDrawPlan& plan, std::string* error,
     uint64_t renderTargetNamespace,
     const Oot3dPicaVulkanDrawOverrides* overrides) {
+    // An alpha-tested caster runs its native alpha test in the map, so its
+    // preparation carries the fragment uniforms and textures; others carry
+    // the vertex side only.
+    const auto& fragmentUniforms = overrides != nullptr && overrides->FragmentUniforms != nullptr
+                                       ? *overrides->FragmentUniforms
+                                       : plan.FragmentShader.Uniforms;
+    const bool alphaTested = DecodeOot3dPicaAlphaTest(fragmentUniforms.FragmentControl[1]).Enabled;
     return WithOot3dPicaVulkanDrawView(
-        plan, error, renderTargetNamespace, overrides, nullptr, false,
+        plan, error, renderTargetNamespace, overrides, nullptr, alphaTested,
         [&](const Oot3d::Renderer::PicaDrawView& draw) {
             return renderingApi.PreparePicaSequenceDraw(draw, error);
         });

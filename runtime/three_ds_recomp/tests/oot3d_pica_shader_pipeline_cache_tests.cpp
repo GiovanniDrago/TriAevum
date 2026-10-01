@@ -209,6 +209,134 @@ TEST(Oot3dPicaDirectionalShadowCaster,
                   InvalidHookContract);
 }
 
+// Canonical-shaped fragment program: native samplers and fragment uniforms,
+// TEV, the native alpha test, then depth and colour after BeforeDepth.
+constexpr std::string_view kAlphaCasterFragmentShader =
+    "#version 450\n"
+    "layout(location=1) in vec2 pica_texcoord0;\n"
+    "layout(set=0,binding=1) uniform sampler2D pica_texture0;\n"
+    "layout(set=0,binding=2) uniform sampler2D pica_texture1;\n"
+    "layout(set=0,binding=3) uniform sampler2D pica_texture2;\n"
+    "layout(set=0,binding=4,std140) uniform PicaFragmentUniforms {\n"
+    "    vec4 tev_constants[6];\n"
+    "    int alpha_reference;\n"
+    "    float depth_scale;\n"
+    "} fragment_uniforms;\n"
+    "layout(location=0) out vec4 pica_color;\n"
+    "void main() {\n"
+    "    vec4 combiner_output = texture(pica_texture0, pica_texcoord0);\n"
+    "    // AFTER_TEV\n"
+    "    int alpha_byte = int(combiner_output.a * 255.0);\n"
+    "    if (alpha_byte < fragment_uniforms.alpha_reference) discard;\n"
+    "    // BEFORE_DEPTH\n"
+    "    gl_FragDepth = gl_FragCoord.z * fragment_uniforms.depth_scale;\n"
+    "    // BEFORE_COLOR\n"
+    "    pica_color = combiner_output + texture(pica_texture1, pica_texcoord0) +\n"
+    "        texture(pica_texture2, pica_texcoord0);\n"
+    "    // EPILOGUE\n"
+    "}\n";
+
+Oot3d::Renderer::PicaShaderHookLayout AlphaCasterFragmentHooks(std::string_view source) {
+    using Oot3d::Renderer::PicaShaderHook;
+    Oot3d::Renderer::PicaShaderHookLayout hooks;
+    hooks.SchemaVersion = Oot3d::Renderer::kPicaShaderHookSchemaVersion;
+    hooks.SourceSize = source.size();
+    hooks.Outputs = {Oot3d::Renderer::kPicaFragmentOutputContractSchemaVersion, 1U, 0U,
+                     Oot3d::Renderer::PicaFragmentDepthOutput::ExplicitNative, false, false};
+    const auto at = [&](PicaShaderHook hook, std::string_view marker) {
+        hooks.Offsets[static_cast<size_t>(hook)] = source.find(marker);
+    };
+    at(PicaShaderHook::GlobalDeclarations, "void main()");
+    at(PicaShaderHook::MainPrologue, "    vec4 combiner_output");
+    at(PicaShaderHook::AfterNativeTev, "    // AFTER_TEV");
+    at(PicaShaderHook::BeforeDepth, "    // BEFORE_DEPTH");
+    at(PicaShaderHook::BeforeNativeColor, "    // BEFORE_COLOR");
+    at(PicaShaderHook::MainEpilogue, "    // EPILOGUE");
+    return hooks;
+}
+
+TEST(Oot3dPicaDirectionalShadowCaster, CasterTransformLeavesTheNativeBindingsFree) {
+    using namespace Fast::Oot3d;
+    const auto result = BuildPicaDirectionalShadowCasterShader(
+        kShadowCasterVertexShader, 0x1234U, ShadowCasterHooks());
+    ASSERT_TRUE(result.Applied());
+    EXPECT_EQ(kPicaShadowCasterTransformBinding, 27U);
+    EXPECT_NE(result.Source.find("layout(set=0,binding=27,std140) uniform Oot3dDirectionalShadowTransform"),
+              std::string::npos);
+    EXPECT_EQ(result.Source.find("binding=1,std140"), std::string::npos);
+}
+
+TEST(Oot3dPicaDirectionalShadowCaster, AlphaCasterRunsTheNativeProgramUpToItsAlphaTest) {
+    using namespace Fast::Oot3d;
+    const auto hooks = AlphaCasterFragmentHooks(kAlphaCasterFragmentShader);
+    ASSERT_TRUE(hooks.ValidFor(kAlphaCasterFragmentShader));
+    const auto result = BuildPicaShadowCasterAlphaFragmentShader(kAlphaCasterFragmentShader, 0x77U, hooks);
+    ASSERT_TRUE(result.Applied());
+    EXPECT_NE(result.Key, 0x77U);
+    // TEV and alpha test kept; nothing from the depth hook on.
+    EXPECT_NE(result.Source.find("if (alpha_byte < fragment_uniforms.alpha_reference) discard;"),
+              std::string::npos);
+    EXPECT_EQ(result.Source.find("gl_FragDepth"), std::string::npos);
+    EXPECT_EQ(result.Source.find("pica_color ="), std::string::npos);
+    EXPECT_EQ(result.Source.find("BEFORE_DEPTH"), std::string::npos);
+    EXPECT_TRUE(result.Source.ends_with("}\n"));
+    // The map has no colour attachment: the native output is not exported.
+    EXPECT_EQ(result.Source.find("out vec4 pica_color"), std::string::npos);
+    EXPECT_NE(result.Source.find("\nvec4 pica_color;"), std::string::npos);
+    // Native samplers follow the NRI split: textures 1-3, samplers 7-9.
+    EXPECT_EQ(result.Source.find("uniform sampler2D pica_texture0;"), std::string::npos);
+    EXPECT_NE(result.Source.find("binding=7"), std::string::npos);
+    EXPECT_NE(result.Source.find("layout(set=0,binding=4,std140) uniform PicaFragmentUniforms"),
+              std::string::npos);
+#ifdef OOT3D_PIPELINE_CACHE_HAS_SHADERC
+    shaderc::Compiler compiler;
+    const auto compiled = compiler.CompileGlslToSpv(
+        result.Source, shaderc_fragment_shader, "alpha_shadow_caster.frag");
+    EXPECT_EQ(compiled.GetCompilationStatus(), shaderc_compilation_status_success)
+        << compiled.GetErrorMessage();
+#endif
+}
+
+TEST(Oot3dPicaDirectionalShadowCaster, AlphaCasterRequiresPublishedHooks) {
+    using namespace Fast::Oot3d;
+    using Oot3d::Renderer::PicaShaderHook;
+    const std::string_view source = kAlphaCasterFragmentShader;
+    auto hooks = AlphaCasterFragmentHooks(source);
+    hooks.Offsets[static_cast<size_t>(PicaShaderHook::BeforeDepth)] =
+        Oot3d::Renderer::PicaShaderHookLayout::Unavailable;
+    EXPECT_EQ(BuildPicaShadowCasterAlphaFragmentShader(source, 1U, hooks).Status,
+              PicaDirectionalShadowCasterShaderStatus::MissingAlphaTest);
+
+    hooks = AlphaCasterFragmentHooks(source);
+    ++hooks.SourceSize;
+    EXPECT_EQ(BuildPicaShadowCasterAlphaFragmentShader(source, 1U, hooks).Status,
+              PicaDirectionalShadowCasterShaderStatus::InvalidHookContract);
+
+    hooks = AlphaCasterFragmentHooks(source);
+    std::swap(hooks.Offsets[static_cast<size_t>(PicaShaderHook::AfterNativeTev)],
+              hooks.Offsets[static_cast<size_t>(PicaShaderHook::BeforeDepth)]);
+    EXPECT_EQ(BuildPicaShadowCasterAlphaFragmentShader(source, 1U, hooks).Status,
+              PicaDirectionalShadowCasterShaderStatus::InvalidHookContract);
+
+    // Only the canonical native colour output can stay unexported.
+    hooks = AlphaCasterFragmentHooks(source);
+    hooks.Outputs.ColorLocationMask = 3U;
+    EXPECT_EQ(BuildPicaShadowCasterAlphaFragmentShader(source, 1U, hooks).Status,
+              PicaDirectionalShadowCasterShaderStatus::OutputContract);
+    constexpr std::string_view kOutput = "layout(location=0) out vec4 pica_color;\n";
+    std::string undeclared(source);
+    undeclared.erase(undeclared.find(kOutput), kOutput.size());
+    EXPECT_EQ(BuildPicaShadowCasterAlphaFragmentShader(undeclared, 1U, AlphaCasterFragmentHooks(undeclared)).Status,
+              PicaDirectionalShadowCasterShaderStatus::OutputContract);
+
+    // Without a native sampler the NRI binding contract cannot be met.
+    constexpr std::string_view kTexture2 = "layout(set=0,binding=3) uniform sampler2D pica_texture2;\n";
+    std::string unsampled(source);
+    unsampled.erase(unsampled.find(kTexture2), kTexture2.size());
+    EXPECT_EQ(BuildPicaShadowCasterAlphaFragmentShader(unsampled, 1U, AlphaCasterFragmentHooks(unsampled)).Status,
+              PicaDirectionalShadowCasterShaderStatus::SamplerContract);
+}
+
 TEST(Oot3dPicaAttachmentContract, CanonicalRenderingDeclaresOnlyNativeColor) {
     const Fast::Oot3d::PicaAttachmentRequirements requirements;
     EXPECT_TRUE(requirements.NativeColorOnly());

@@ -2239,8 +2239,9 @@ Thus those materials still receive directional light without whitening lit
 materials or losing black diffuse channels. Painted lighting in albedo remains.
 Fog contribution scales the native fog blend; it does not invent a fog color.
 The optional graph still owns map scheduling/resources and scene/UI separation.
-Caster admission covers opaque, depth-writing, non-alpha-tested perspective
-geometry; alpha-cutout and transparent caster support is not claimed.
+Caster admission covers depth-writing perspective geometry; alpha-tested
+casters run their native alpha test (see Alpha-Tested Shadow Casters below).
+Transparent, non-depth-writing caster support is not claimed.
 Surface-lighting admission also requires typed world-layer ownership.
 Atmosphere and unknown owners retain native appearance, including sky models
 whose attribution travels through a deferred native queue. See
@@ -2384,8 +2385,9 @@ fixed/per-instance inputs, position scale and skeleton palette as native replay.
 Rigid geometry/pose/raster identities permit reuse; unproven animated content
 invalidates its intersected pages. Movement/removal invalidates old footprints
 as well as new ones. Failed recording cannot commit a dirty page as valid.
-Caster admission remains opaque, depth-writing, non-alpha-tested native scene
-geometry; transparent and alpha-cutout caster support is not claimed.
+Caster admission covers depth-writing native scene geometry; an alpha-tested
+caster keeps its native cutout (see Alpha-Tested Shadow Casters below).
+Transparent, non-depth-writing caster support is not claimed.
 
 The compiled graph declares both histories and the outputs of the
 `BeforeOpaque` producer (see Current-Sample Shadow Casters below), with
@@ -2686,9 +2688,10 @@ opaque receiver of its own sample.
   transparent draws interleave the opaque world keep the early update while
   the later stage anchors stay withheld.
 - **Alpha test.** The native runtime now declares the PICA alpha test
-  (register `0x104`) in the draw view. The documented admission therefore
-  excludes alpha-cutout casters and distance-field geometry; before, the flag
-  was never set and cutouts entered both as solid quads. With MSAA the existing
+  (register `0x104`) in the draw view. Distance-field geometry excludes
+  alpha-cutout draws; before, the flag was never set and cutouts entered both
+  the map and the field as solid quads. Shadow casters keep their cutout
+  through the alpha-tested caster program below. With MSAA the existing
   alpha-to-coverage policy now applies to those draws; at 1x nothing changes.
   Pipeline manifest keys include the flag, so a manifest recorded earlier misses
   alpha-tested pipelines once.
@@ -2711,6 +2714,70 @@ opaque receiver of its own sample.
   handed-over draws, including the bounds the ordered draw no longer
   computes); GPU frame time shows no change beyond run-to-run noise.
   Receipts: `I:/_triaevum_work/perf-levers/qualify/shadow-prepass/`.
+
+### Alpha-Tested Shadow Casters (2026-10-01)
+
+An alpha-tested caster (foliage, grass tufts, fences, hedges) casts the shape
+its native draw shows: the map runs the draw's own canonical fragment program,
+with the same textures and fragment uniforms, up to the native alpha test.
+
+- **Admission.** A depth- and colour-writing draw whose alpha test can discard
+  (compare other than "Always") is a caster when the map can run that test:
+  the frontend published its fragment hooks (`AfterNativeTev`, `BeforeDepth`),
+  the packed fragment uniforms are complete and every texture is sampled
+  directly (no packed Shadow2D image, no GPU-produced copy, which may not exist
+  yet when the map runs). A test that never passes casts nothing. "Always"
+  remains a depth-only caster.
+- **Preparation.** The scheduler hands an alpha-tested draw over with its
+  fragment uniforms and textures; other draws still carry the vertex side
+  only. The backend resolves the textures and the native lighting LUT through
+  the ordered draw's cache (custom texture replacements included), uploads the
+  fragment uniforms next to the vertex uniforms (both blocks reserved before
+  either upload, since growth replaces the arena) and records them with the
+  caster. A texture that cannot be resolved leaves the draw out of the map.
+- **Records.** `PicaSceneShaderProgram` retains the fragment program's
+  published hook offsets (`FragmentHooks`), and the resolved draw record a
+  `LightingLut` binding (R32Uint, bound only when the program samples it).
+  The ordered scene frame publishes both too. Schemas: resolved draw stream 7,
+  scene frame 12.
+- **Caster program.** `BuildPicaShadowCasterAlphaFragmentShader` keeps the
+  canonical program up to its `BeforeDepth` hook, which follows the TEV and
+  the alpha test, and closes `main` there: no depth, fog or colour is written,
+  only the rasterized light depth. The map has no colour attachment, so the
+  native colour output (published at location 0) is declared as a private
+  variable instead of an output. Combined samplers are split to the NRI
+  contract. The caster transform moved to binding 27, outside the canonical
+  contract (0-26), so one layout serves both caster kinds: depth-only casters
+  write the vertex uniforms and the transform; alpha-tested casters also the
+  textures, samplers (7-9), fragment uniforms (4) and the LUT (13-14). The
+  sampler mirrors the ordered draw's: native filters, PICA wrap modes and LOD
+  clamp within the uploaded chain. A caster whose program cannot be built is
+  dropped from the map instead of failing it, and a discarding alpha test is
+  never drawn as a solid caster.
+- **Pages.** The cutout is part of the caster's content: its version includes
+  the TEV stages and constants, the alpha test, the texture LOD bias, the
+  lighting and procedural-texture programs and the sampled contents. Light
+  and fog values do not invalidate cached pages.
+- **Diagnostics.** `nri_directional_shadow_prepared_alpha_caster_count`,
+  `_prepared_alpha_rejected_count` and `nri_directional_shadow_alpha_caster_draw_count`.
+- **Verification.** Reference Kokiri walk (420 frames, GI off): 8.95 alpha-tested
+  casters prepared per frame, none rejected; queued casters return from 44.1 to
+  53.1 per frame and 31.4 caster draws per frame run the alpha test. Static page
+  reuse holds (4.54 -> 4.63 static pages refreshed per frame).
+  With strength 1 and PCF 0 the new shadows show the cutouts: blade spikes of a
+  grass tuft on a hedge face, fence posts and rails, grass fringes. At the
+  user's strength 4 and PCF 2 the filtered partial coverage saturates, so a
+  dense tuft reads as an almost solid patch. The real generator family
+  compiles the caster program (`build_fragment_artifacts --check`); canonical
+  artifacts are unchanged. ABBA timing (360 frames): GPU frame median
+  8.28-8.39 ms in all four runs; map recording 0.76-0.77 -> 0.83-0.87 ms CPU
+  median; preparation 0.45 -> 0.50 s per run. Alpha caster programs compile
+  once per fragment program and persist in the pass shader cache. Vulkan and
+  NRI validation report no error and only the 11 startup warnings of the
+  baseline (an exported but unattached colour output had added ten), and the
+  validated run is byte-identical to an unvalidated one (12/12 captures).
+  Receipts: `I:/_triaevum_work/perf-levers/qualify/shadow-prepass/`
+  (`alpha-*`, `crisp-*`, `t-alpha-*`, `crops-alpha/`).
 
 ## Per-pixel actor lighting and native UI boundaries (2026-09-24)
 

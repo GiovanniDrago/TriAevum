@@ -96,10 +96,14 @@ struct PicaSceneDrawRecordDesc {
     uint32_t VertexOrIndexCount = 0;
     int32_t BaseVertex = 0;
     std::span<const PicaSceneTextureBinding> Textures;
+    // Bound only when the fragment program samples the native lighting LUT.
+    PicaSceneTextureBinding LightingLut;
 
     bool PerspectiveProjection = false;
     bool DirectionalShadowCaster = false;
     ::Fast::Renderer3ds::PicaVertexShaderHookLayout VertexShaderHooks;
+    // Offsets of the canonical fragment program, when its producer published them.
+    ::Fast::Renderer3ds::PicaShaderHookLayout FragmentShaderHooks;
     std::span<const uint8_t> PackedVertexUniforms;
     std::span<const uint8_t> PackedPreviousVertexUniforms;
     std::span<const uint8_t> PackedFragmentUniforms;
@@ -171,7 +175,7 @@ struct PicaSceneFrameStats {
 // metadata is retained. Shader sources and layouts are interned across frames.
 class PicaSceneFrame final {
   public:
-    static constexpr uint32_t kSchemaVersion = 11U;
+    static constexpr uint32_t kSchemaVersion = 12U;
 
     PicaSceneFrame();
     ~PicaSceneFrame();

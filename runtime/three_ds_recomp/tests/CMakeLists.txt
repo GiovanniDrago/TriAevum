@@ -185,6 +185,7 @@ add_executable(oot3d_pica_shader_pipeline_cache_tests
     ../src/fast/renderer3ds/virtual_shadow_map.cpp
     ../src/fast/oot3d/pica_ambient_occlusion_guide.cpp
     ../src/fast/oot3d/pica_directional_shadow_caster.cpp
+    ../src/fast/renderer3ds/pica_nri_shader_contract.cpp
     ../src/fast/oot3d/pica_directional_shadow_lighting.cpp
     ../src/fast/oot3d/pica_directional_shadow_semantics.cpp
     ../src/fast/oot3d/pica_reactive_mask.cpp

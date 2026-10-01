@@ -638,6 +638,70 @@ TEST(Oot3dPicaSceneFrame, RetainsCanonicalMaterialAndResolvedTextureBindings) {
     EXPECT_EQ(frame.Stats().ResolvedMaterialStateCount, 1U);
 }
 
+TEST(Oot3dPicaSceneFrame, RetainsFragmentHooksAndTheNativeLightingLut) {
+    using namespace Fast::Oot3d;
+    using Oot3d::Renderer::PicaShaderHook;
+    const std::array<PicaNriPackedVertexBinding, 1> layoutBindings{ {
+        { 0U, 16U, false },
+    } };
+    const std::array<PicaNriPackedVertexAttribute, 1> layoutAttributes{ {
+        { 0U, 0U, 0U, PicaNriVertexScalar::Float, 4U, 0U },
+    } };
+    const std::array<PicaSceneVertexBufferBinding, 1> vertexBindings{ {
+        { 0U, 0U, 4096U, 16U },
+    } };
+    constexpr std::string_view kFragment = "void main() { // TEV\n // DEPTH\n}\n";
+    Oot3d::Renderer::PicaShaderHookLayout hooks;
+    hooks.SchemaVersion = Oot3d::Renderer::kPicaShaderHookSchemaVersion;
+    hooks.SourceSize = kFragment.size();
+    hooks.Outputs = {Oot3d::Renderer::kPicaFragmentOutputContractSchemaVersion, 1U, 0U,
+                     Oot3d::Renderer::PicaFragmentDepthOutput::ExplicitNative, false, false};
+    hooks.Offsets[static_cast<size_t>(PicaShaderHook::GlobalDeclarations)] = 0U;
+    hooks.Offsets[static_cast<size_t>(PicaShaderHook::AfterNativeTev)] = kFragment.find("// TEV");
+    hooks.Offsets[static_cast<size_t>(PicaShaderHook::BeforeDepth)] = kFragment.find(" // DEPTH");
+    hooks.Offsets[static_cast<size_t>(PicaShaderHook::MainEpilogue)] = kFragment.find('}');
+    ASSERT_TRUE(hooks.ValidFor(kFragment));
+
+    PicaSceneFrame frame;
+    frame.BeginFrame(0U, 15U);
+    auto draw = BuildDraw("native vertex", layoutBindings, layoutAttributes, vertexBindings);
+    draw.FragmentShaderSource = kFragment;
+    draw.EffectiveFragmentShaderSource = kFragment;
+    draw.FragmentShaderHooks = hooks;
+    draw.LightingLut = {
+        .NativeImageHandle = 0x4000U,
+        .ImageWidth = 256U,
+        .ImageHeight = 24U,
+        .MipLevels = 1U,
+        .ImageFormat = PicaSceneTextureImageFormat::R32Uint,
+        .Bound = true,
+    };
+    ASSERT_EQ(frame.Record(draw), PicaSceneRecordStatus::Recorded);
+    const auto& recorded = frame.Draws().front();
+    ASSERT_NE(recorded.FragmentShader, nullptr);
+    EXPECT_TRUE(recorded.FragmentShader->FragmentHooksAvailable());
+    EXPECT_EQ(recorded.FragmentShader->FragmentHooks, hooks);
+    EXPECT_FALSE(recorded.FragmentShader->VertexHooksAvailable());
+    EXPECT_TRUE(recorded.LightingLut.Bound);
+    EXPECT_EQ(recorded.LightingLut.NativeImageHandle, 0x4000U);
+
+    // The same program with different published offsets is a conflict, and a
+    // LUT must be a complete integer image.
+    auto conflicting = draw;
+    conflicting.SubmissionId = 18U;
+    ++conflicting.FragmentShaderHooks.Offsets[static_cast<size_t>(PicaShaderHook::BeforeDepth)];
+    EXPECT_EQ(frame.Record(conflicting), PicaSceneRecordStatus::ShaderIdentityConflict);
+    auto missingLut = draw;
+    missingLut.SubmissionId = 19U;
+    missingLut.LightingLut.NativeImageHandle = 0U;
+    EXPECT_EQ(frame.Record(missingLut), PicaSceneRecordStatus::InvalidTextureBinding);
+    auto colourLut = draw;
+    colourLut.SubmissionId = 20U;
+    colourLut.LightingLut.ImageFormat = PicaSceneTextureImageFormat::Rgba8;
+    EXPECT_EQ(frame.Record(colourLut), PicaSceneRecordStatus::InvalidTextureBinding);
+    EXPECT_EQ(frame.Draws().size(), 1U);
+}
+
 TEST(Oot3dPicaSceneFrame,
      PublishesTypedNativeEnvironmentAndVersionedUniformSlices) {
     using namespace Fast::Oot3d;
