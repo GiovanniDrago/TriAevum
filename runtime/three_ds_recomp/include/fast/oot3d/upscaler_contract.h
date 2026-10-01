@@ -15,6 +15,10 @@ enum class UpscalerQuality : uint8_t {
     UltraPerformance,
 };
 
+// The DLSS network: the runtime's default, the transformer (preset K), or the
+// convolutional one (preset F at Ultra Performance, E otherwise).
+enum class DlssModel : uint8_t { Default, Transformer, Cnn };
+
 struct UpscalerExtent {
     uint32_t Width = 0;
     uint32_t Height = 0;
@@ -39,5 +43,7 @@ struct UpscalerContract {
     UpscalerProvider provider, UpscalerQuality quality,
     uint32_t renderWidth, uint32_t renderHeight);
 [[nodiscard]] bool IsTemporalUpscaler(UpscalerProvider provider);
+// NGX render preset (0 default, 1 = A ... 11 = K) of a model at a quality.
+[[nodiscard]] uint8_t DlssRenderPreset(DlssModel model, UpscalerQuality quality);
 
 } // namespace Fast::Oot3d

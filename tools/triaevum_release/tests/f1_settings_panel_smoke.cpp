@@ -1121,6 +1121,9 @@ int main() try {
     Select("Mode", "NRI Upscaler");
     Select("Provider", "NVIDIA DLSS");
     Check(runtime.Snapshot().Upscaler == UpscalerProvider::Dlss, "provider not applied");
+    Select("DLSS model", "CNN (E/F)");
+    Check(runtime.Snapshot().UpscalerDlssModel == DlssModel::Cnn, "DLSS model not applied");
+    Select("DLSS model", "Default");
     Check(std::none_of(items.begin(), items.end(), [](const auto& pair) { return pair.second.Label == "Sharpness"; }),
           "unused DLSS sharpness exposed");
 

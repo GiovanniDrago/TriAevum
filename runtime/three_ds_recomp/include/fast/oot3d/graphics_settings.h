@@ -304,6 +304,7 @@ struct GraphicsSettings {
     UpscalerProvider Upscaler = UpscalerProvider::Nis;
     UpscalerQuality UpscalerMode = UpscalerQuality::Quality;
     float UpscalerSharpness = 0.35F;
+    DlssModel UpscalerDlssModel = DlssModel::Default;
     FrameRateMode FrameRate = FrameRateMode::Original30;
     bool VSync = true;
     float FovMultiplier = 1.0F;

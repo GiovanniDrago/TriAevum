@@ -56,6 +56,14 @@ bool GraphicsSettingsPanel::DrawAntialiasingSettings(
             });
         const char* const qualities[] = {"Native", "Ultra quality", "Quality", "Balanced", "Performance", "Ultra performance"};
         changed |= SettingsUi::EnumCombo("Quality", settings.UpscalerMode, qualities);
+        if (settings.Upscaler == UpscalerProvider::Dlss) {
+            const char* const models[] = {"Default", "Transformer (K)", "CNN (E/F)"};
+            changed |= SettingsUi::EnumCombo("DLSS model", settings.UpscalerDlssModel, models);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Transformer: the sharpest, most stable image. CNN: the convolutional network "
+                                  "(preset F at Ultra performance), about half the transformer's cost. Default: "
+                                  "the runtime's choice, the most expensive on the RTX 3060 measured.");
+        }
         // Only NIS and FSR consume this setting. DLSS and XeSS do not.
         if (settings.Upscaler == UpscalerProvider::Nis || settings.Upscaler == UpscalerProvider::Fsr)
             changed |= ImGui::SliderFloat("Sharpness", &settings.UpscalerSharpness, 0.0F, 1.0F, "%.2f");

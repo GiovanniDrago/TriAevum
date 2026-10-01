@@ -17,6 +17,15 @@ float UpscalerScalingFactor(UpscalerQuality quality) {
     return 1.0F;
 }
 
+uint8_t DlssRenderPreset(DlssModel model, UpscalerQuality quality) {
+    switch (model) {
+        case DlssModel::Transformer: return 11U;
+        case DlssModel::Cnn: return quality == UpscalerQuality::UltraPerformance ? 6U : 5U;
+        case DlssModel::Default: break;
+    }
+    return 0U;
+}
+
 bool IsTemporalUpscaler(UpscalerProvider provider) {
     return provider != UpscalerProvider::Nis;
 }

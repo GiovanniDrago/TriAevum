@@ -49,6 +49,7 @@ struct NriInteropContext::Impl {
     uint32_t DlssHeight = 0;
     UpscalerQuality DlssQuality = UpscalerQuality::Quality;
     bool DlssInputSrgb = true;
+    uint8_t DlssPreset = 0;
     std::string DlssReason = "NRI DLSS support is unavailable";
     bool DynamicRendering = false;
     std::unordered_map<uint32_t, nri::CommandBuffer*> CommandBuffers;
@@ -1200,7 +1201,7 @@ bool NriInteropContext::DispatchDlss(
     if (mImpl->Dlss == nullptr || mImpl->DlssWidth != desc.OutputWidth ||
         mImpl->DlssHeight != desc.OutputHeight ||
         mImpl->DlssQuality != desc.Quality ||
-        mImpl->DlssInputSrgb != inputSrgb) {
+        mImpl->DlssInputSrgb != inputSrgb || mImpl->DlssPreset != desc.DlssPreset) {
         if (mImpl->Dlss != nullptr)
             mImpl->UpscalerInterface.DestroyUpscaler(mImpl->Dlss);
         mImpl->Dlss = nullptr;
@@ -1218,6 +1219,7 @@ bool NriInteropContext::DispatchDlss(
         // NGX records feature-creation commands into the already-open frame
         // command buffer, avoiding an out-of-band queue submission.
         upscaler.commandBuffer = command->second;
+        upscaler.preset = desc.DlssPreset;
         if (mImpl->UpscalerInterface.CreateUpscaler(
                 *mImpl->Device, upscaler, mImpl->Dlss) !=
             nri::Result::SUCCESS) {
@@ -1229,6 +1231,7 @@ bool NriInteropContext::DispatchDlss(
         mImpl->DlssHeight = desc.OutputHeight;
         mImpl->DlssQuality = desc.Quality;
         mImpl->DlssInputSrgb = inputSrgb;
+        mImpl->DlssPreset = desc.DlssPreset;
     }
 
     nri::DispatchUpscaleDesc dispatch{};

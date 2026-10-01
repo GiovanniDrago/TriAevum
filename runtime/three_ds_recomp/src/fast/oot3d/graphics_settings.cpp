@@ -219,6 +219,8 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
     value.TaaSharpness = std::clamp(value.TaaSharpness, 0.0F, 1.0F);
     value.UpscalerSharpness =
         std::clamp(value.UpscalerSharpness, 0.0F, 1.0F);
+    if (value.UpscalerDlssModel > DlssModel::Cnn)
+        value.UpscalerDlssModel = DlssModel::Default;
     if (value.Effects.SurfaceLighting != SurfaceLightingMode::Native &&
         !capabilities.Has(GraphicsCapability::NativeSurfaceLighting)) {
         value.Effects.SurfaceLighting = SurfaceLightingMode::Native;

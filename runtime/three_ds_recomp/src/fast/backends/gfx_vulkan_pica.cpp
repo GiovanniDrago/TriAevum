@@ -9690,6 +9690,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             dlss.InputHeight = dlssInputBinding->Height;
             dlss.Quality = presentationSettings.UpscalerMode;
             dlss.ResetHistory = !temporalState->HistoryValid || temporalState->CameraCut;
+            dlss.DlssPreset = Oot3d::DlssRenderPreset(presentationSettings.UpscalerDlssModel,
+                                                      presentationSettings.UpscalerMode);
             transitionEffectPassGuides(Oot3d::DisplayEffectPass::TemporalUpscaler);
             const bool dlssGuidesReady = prepareUpscalerGuides(dlss);
             bool d3d12FrameDlss = false;

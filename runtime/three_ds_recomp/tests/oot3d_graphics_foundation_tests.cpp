@@ -3894,6 +3894,11 @@ TEST(Oot3dGraphicsSettings, EnhancedIsTheCapturedProfileAndToonKeepsItsBase) {
     EXPECT_EQ(enhanced.Effects.PointShadows.Mode, PointShadowMode::CubeMaps);
     EXPECT_EQ(enhanced.FrameRate, FrameRateMode::Interpolated2x);
     EXPECT_EQ(enhanced.Grass.Quality, GrassQuality::Custom);
+    EXPECT_EQ(enhanced.UpscalerDlssModel, DlssModel::Transformer);
+    EXPECT_EQ(DlssRenderPreset(DlssModel::Transformer, UpscalerQuality::UltraPerformance), 11U);
+    EXPECT_EQ(DlssRenderPreset(DlssModel::Cnn, UpscalerQuality::UltraPerformance), 6U);
+    EXPECT_EQ(DlssRenderPreset(DlssModel::Cnn, UpscalerQuality::Quality), 5U);
+    EXPECT_EQ(DlssRenderPreset(DlssModel::Default, UpscalerQuality::Performance), 0U);
     // Every captured field survives decoding: re-encoding the preset gives the
     // document back.
     const auto document = nlohmann::json::parse(EnhancedPresetDocument());

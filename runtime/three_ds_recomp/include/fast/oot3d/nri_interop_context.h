@@ -64,6 +64,8 @@ struct NriTemporalUpscaleDispatchDesc {
     float FrameTimeMilliseconds = 16.6667F;
     float ViewUnitsPerMeter = 1.0F;
     float Sharpness = 0.0F;
+    // DLSS render preset (DlssRenderPreset); 0 the runtime's default.
+    uint8_t DlssPreset = 0;
     bool ResetHistory = false;
     SceneColorEncoding InputEncoding = SceneColorEncoding::Unknown;
 };

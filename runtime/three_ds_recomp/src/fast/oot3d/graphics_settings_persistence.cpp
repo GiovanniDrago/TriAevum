@@ -153,6 +153,11 @@ constexpr EnumNames<UpscalerProvider> kUpscalerProviderNames{
     {UpscalerProvider::Xess, "XeSS"},
     {UpscalerProvider::Dlss, "DLSS"},
 };
+constexpr EnumNames<DlssModel> kDlssModelNames{
+    {DlssModel::Default, "Default"},
+    {DlssModel::Transformer, "Transformer"},
+    {DlssModel::Cnn, "CNN"},
+};
 constexpr EnumNames<UpscalerQuality> kUpscalerQualityNames{
     {UpscalerQuality::Native, "Native"},
     {UpscalerQuality::UltraQuality, "UltraQuality"},
@@ -1175,6 +1180,7 @@ std::string_view EnhancedPresetDocument() noexcept {
       "Sharpness": 0.10000000149011612
     },
     "Upscaler": {
+      "DlssModel": "Transformer",
       "Provider": "DLSS",
       "Quality": "UltraPerformance",
       "Sharpness": 0.3499999940395355
@@ -1450,6 +1456,7 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                    EnumName(settings.UpscalerMode,
                             kUpscalerQualityNames)},
                   {"Sharpness", settings.UpscalerSharpness},
+                  {"DlssModel", EnumName(settings.UpscalerDlssModel, kDlssModelNames)},
               }},
          }},
         {"FrameRate",
@@ -1695,6 +1702,12 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
             ReadScalar(*upscaler, "Sharpness",
                        result.Value.UpscalerSharpness,
                        "Graphics.AA.Upscaler.Sharpness", result);
+            // Added without a schema change: absent, the runtime's default.
+            if (FindMember(*upscaler, "DlssModel") != nullptr)
+                ReadEnum(*upscaler, "DlssModel", result.Value.UpscalerDlssModel, kDlssModelNames,
+                         "Graphics.AA.Upscaler.DlssModel", result);
+            else
+                result.NeedsRewrite = true;
         }
     }
     if (const Json* frameRate =
