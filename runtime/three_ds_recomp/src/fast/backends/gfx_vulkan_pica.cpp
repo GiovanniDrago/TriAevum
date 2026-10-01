@@ -5366,7 +5366,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             (draw.ColorWriteMask & 0x7U) != 0U;
         renderTarget.ReflectionEnvironment.Observe(
             mFrameCounter, draw.FragmentShaderSource,
-            draw.FragmentUniformBytes, reflectionEnvironmentEligible);
+            draw.FragmentUniformBytes, reflectionEnvironmentEligible, draw.FragmentShaderKey);
         finishCpuStage(cpuTimings.ReflectionEnvironmentMilliseconds);
         cpuTimings.SceneStateMilliseconds =
             cpuTimings.RenderTargetStateMilliseconds +

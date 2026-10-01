@@ -1,5 +1,6 @@
 #pragma once
 
+#include <unordered_map>
 #include <array>
 #include <cstdint>
 #include <span>
@@ -26,15 +27,25 @@ struct ReflectionEnvironmentProfile {
 // drive the fallback probe without inventing a PBR sky for OoT3D.
 class PicaReflectionEnvironmentAccumulator final {
   public:
+    // `sourceKey` identifies the fragment program (0: none); the uniform
+    // terms its source reads are found once per program, not per draw.
     void Observe(uint64_t renderedFrameId,
                  std::string_view fragmentShaderSource,
                  std::span<const uint8_t> fragmentUniformBytes,
-                 bool eligibleWorldDraw);
+                 bool eligibleWorldDraw, uint64_t sourceKey = 0U);
     [[nodiscard]] ReflectionEnvironmentProfile Resolve(
         uint64_t renderedFrameId);
     void Reset();
 
   private:
+    // The fog and ambient terms a fragment program reads.
+    struct SourceTerms {
+        bool Fog = false;
+        bool GlobalAmbient = false;
+        uint8_t LightAmbientMask = 0;
+    };
+    [[nodiscard]] static SourceTerms AnalyzeSource(std::string_view source);
+    std::unordered_map<uint64_t, SourceTerms> mSourceTerms;
     uint64_t mFrameId = 0;
     std::array<double, 3> mFogSum{};
     std::array<double, 3> mAmbientSum{};

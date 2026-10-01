@@ -71,11 +71,33 @@ float GeometrySchlickGgx(float nDotV, float roughness) {
 
 } // namespace
 
+PicaReflectionEnvironmentAccumulator::SourceTerms
+PicaReflectionEnvironmentAccumulator::AnalyzeSource(std::string_view source) {
+    SourceTerms terms;
+    terms.Fog = source.find("fog_factor") != std::string_view::npos;
+    terms.GlobalAmbient = source.find("lighting_global_ambient") != std::string_view::npos;
+    for (size_t light = 0; light < 8U && terms.GlobalAmbient; ++light) {
+        const std::string reference = "fragment_uniforms.lighting_ambient[" + std::to_string(light) + "]";
+        if (source.find(reference) != std::string_view::npos)
+            terms.LightAmbientMask |= static_cast<uint8_t>(1U << light);
+    }
+    return terms;
+}
+
 void PicaReflectionEnvironmentAccumulator::Observe(
     uint64_t renderedFrameId, std::string_view fragmentShaderSource,
     std::span<const uint8_t> fragmentUniformBytes,
-    bool eligibleWorldDraw) {
+    bool eligibleWorldDraw, uint64_t sourceKey) {
     if (!eligibleWorldDraw || renderedFrameId == 0U) return;
+    SourceTerms terms;
+    if (sourceKey == 0U) {
+        terms = AnalyzeSource(fragmentShaderSource);
+    } else {
+        auto found = mSourceTerms.find(sourceKey);
+        if (found == mSourceTerms.end())
+            found = mSourceTerms.emplace(sourceKey, AnalyzeSource(fragmentShaderSource)).first;
+        terms = found->second;
+    }
     if (mFrameId != renderedFrameId) {
         mFrameId = renderedFrameId;
         mFogSum = {};
@@ -85,8 +107,7 @@ void PicaReflectionEnvironmentAccumulator::Observe(
         mAmbientCount = 0;
     }
 
-    if (fragmentShaderSource.find("fog_factor") !=
-        std::string_view::npos) {
+    if (terms.Fog) {
         bool valid = false;
         const auto fog = ReadColor(
             fragmentUniformBytes, kPicaPackedFragmentFogColorOffset, valid);
@@ -95,8 +116,7 @@ void PicaReflectionEnvironmentAccumulator::Observe(
             ++mFogCount;
         }
     }
-    if (fragmentShaderSource.find("lighting_global_ambient") !=
-        std::string_view::npos) {
+    if (terms.GlobalAmbient) {
         bool valid = false;
         const auto ambient = ReadColor(
             fragmentUniformBytes,
@@ -105,9 +125,7 @@ void PicaReflectionEnvironmentAccumulator::Observe(
             std::array<float, 3> total = ambient;
             // Directional OoT lights: their ambient reaches every surface.
             for (size_t light = 0; light < 8U; ++light) {
-                const std::string reference =
-                    "fragment_uniforms.lighting_ambient[" + std::to_string(light) + "]";
-                if (fragmentShaderSource.find(reference) == std::string_view::npos) continue;
+                if ((terms.LightAmbientMask & (1U << light)) == 0U) continue;
                 bool lightValid = false;
                 const auto lightAmbient = ReadColor(
                     fragmentUniformBytes,

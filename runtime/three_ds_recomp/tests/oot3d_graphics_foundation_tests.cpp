@@ -608,6 +608,14 @@ TEST(Oot3dReflectionIbl, DerivesStableEnvironmentFromPicaUniforms) {
     accumulator.Observe(
         9U, "fog_factor lighting_global_ambient", uniforms, false);
     EXPECT_EQ(accumulator.Resolve(9U).Signature, profile.Signature);
+
+    // A program key analyzes its source once: the keyed path gives the same
+    // profile, and a later draw of that program reuses the terms.
+    Fast::Oot3d::PicaReflectionEnvironmentAccumulator keyed;
+    keyed.Observe(7U, "fog_factor lighting_global_ambient", uniforms, true, 0x1234U);
+    EXPECT_EQ(keyed.Resolve(7U).Signature, profile.Signature);
+    keyed.Observe(10U, "", uniforms, true, 0x1234U);
+    EXPECT_EQ(keyed.Resolve(10U).ObservationCount, 2U);
 }
 
 TEST(Oot3dReflectionIbl, SplitSumBrdfIsFiniteAndMaterialDependent) {
