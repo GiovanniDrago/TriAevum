@@ -21,6 +21,7 @@ namespace {
         case EffectResource::NativeDepth:
         case EffectResource::NativeShadow2D:
         case EffectResource::DirectionalShadowStaticCache:
+        case EffectResource::PointShadowMap:
             return ResourceAccess::DepthAttachment;
         case EffectResource::DirectionalShadowMap:
             return ResourceAccess::TransferWrite;

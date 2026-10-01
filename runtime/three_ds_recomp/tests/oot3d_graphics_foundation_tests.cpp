@@ -3852,6 +3852,30 @@ TEST(Oot3dGraphicsSettings, GatesDirectionalShadowsOnTheirBackendOwner) {
               DirectionalShadowMode::VirtualShadowMaps);
 }
 
+TEST(Oot3dGraphicsSettings, GatesAndClampsPointShadows) {
+    using namespace Fast::Oot3d;
+    auto settings = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
+    EXPECT_EQ(settings.Effects.PointShadows.Mode, PointShadowMode::Off);
+    settings.Effects.PointShadows.Mode = PointShadowMode::CubeMaps;
+    settings.Effects.PointShadows.Resolution = 300U;
+    settings.Effects.PointShadows.MaxLights = 12U;
+    settings.Effects.PointShadows.Range = 0.1F;
+    settings.Effects.PointShadows.Strength = 3.0F;
+
+    GraphicsCapabilities capabilities;
+    auto result = GraphicsSettingsService::Validate(settings, capabilities);
+    EXPECT_EQ(result.Value.Effects.PointShadows.Mode, PointShadowMode::Off);
+
+    capabilities.Set(GraphicsCapability::NriDirectionalShadows, true);
+    result = GraphicsSettingsService::Validate(settings, capabilities);
+    const auto& points = result.Value.Effects.PointShadows;
+    EXPECT_EQ(points.Mode, PointShadowMode::CubeMaps);
+    EXPECT_EQ(points.Resolution, PointShadowSettings{}.Resolution);
+    EXPECT_EQ(points.MaxLights, 8U);
+    EXPECT_FLOAT_EQ(points.Range, 0.25F);
+    EXPECT_FLOAT_EQ(points.Strength, 1.0F);
+}
+
 TEST(Oot3dSampleView, UsesTheRenderedCameraAndTheMajorityView) {
     using namespace Fast::Oot3d;
     // Guest camera: eye (0,0,10) looking at the origin, one step ahead.

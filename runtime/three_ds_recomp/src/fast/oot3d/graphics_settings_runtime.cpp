@@ -402,6 +402,7 @@ VersionedGraphicsSettings GraphicsSettingsRuntime::SnapshotForRendering() const 
     mNativePresentation.Apply(result.Value);
     if (!UsesFullSceneLighting(result.Value.Effects.SurfaceLighting)) {
         result.Value.Effects.DirectionalShadows.Mode = DirectionalShadowMode::Off;
+        result.Value.Effects.PointShadows.Mode = PointShadowMode::Off;
         result.Value.Effects.GlobalIllumination.Mode = GlobalIlluminationMode::Off;
     }
     // Inactive directional/ambient edits must not invalidate histories.

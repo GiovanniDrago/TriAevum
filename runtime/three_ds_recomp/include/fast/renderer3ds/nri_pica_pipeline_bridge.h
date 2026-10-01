@@ -121,6 +121,8 @@ struct NriPicaOwnedDrawDesc {
     std::array<NriPicaTextureBindingDesc, 3> Textures{};
     NriPicaTextureBindingDesc DirectionalShadowTexture;
     NriPicaTextureBindingDesc LightingLutTexture;
+    // Point-shadow atlas; a neutral image when the draw receives none.
+    NriPicaTextureBindingDesc PointShadowTexture;
     std::array<NriPicaTextureBindingDesc, kPicaPbrTextureCount> PbrTextures{};
     VkImage StorageImage = VK_NULL_HANDLE;
     VkFormat StorageFormat = VK_FORMAT_UNDEFINED;

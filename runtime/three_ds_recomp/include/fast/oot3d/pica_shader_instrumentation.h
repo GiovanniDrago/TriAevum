@@ -39,6 +39,8 @@ enum class PicaShaderInstrumentationFeature : uint32_t {
     // AO texture relief: the luminance slope of the material's colour texture
     // bends the normal guide along the surface's texture axes.
     NormalGuideTextureRelief = 1U << 15U,
+    // Point lights attenuated by their shadow cube maps (per-pixel lighting).
+    PointShadowLighting = 1U << 16U,
 };
 
 constexpr PicaShaderInstrumentationFeature operator|(PicaShaderInstrumentationFeature left,

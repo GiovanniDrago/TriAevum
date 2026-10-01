@@ -2746,8 +2746,8 @@ with the same textures and fragment uniforms, up to the native alpha test.
   only the rasterized light depth. The map has no colour attachment, so the
   native colour output (published at location 0) is declared as a private
   variable instead of an output. Combined samplers are split to the NRI
-  contract. The caster transform moved to binding 27, outside the canonical
-  contract (0-26), so one layout serves both caster kinds: depth-only casters
+  contract. The caster transform moved outside the canonical contract (to
+  27, then to 30 when point shadows took 27/28), so one layout serves both caster kinds: depth-only casters
   write the vertex uniforms and the transform; alpha-tested casters also the
   textures, samplers (7-9), fragment uniforms (4) and the LUT (13-14). The
   sampler mirrors the ordered draw's: native filters, PICA wrap modes and LOD
@@ -2778,6 +2778,82 @@ with the same textures and fragment uniforms, up to the native alpha test.
   validated run is byte-identical to an unvalidated one (12/12 captures).
   Receipts: `I:/_triaevum_work/perf-levers/qualify/shadow-prepass/`
   (`alpha-*`, `crisp-*`, `t-alpha-*`, `crops-alpha/`).
+
+### Point-Light Shadow Cube Maps (2026-10-01)
+
+Dynamic point lights (Navi, fairies, native local point lights) cast shadows
+from the same prepared casters as the directional map, and only within their
+own reach: a light's far plane is its lighting radius times the shadow reach.
+
+- **Setting.** `Graphics.Effects.PointShadows` (`fast/oot3d/point_shadows.h`):
+  Mode `Off | CubeMaps` (default Off), face resolution 256/512/1024 (default
+  512), shadowed lights 1-8 (default 4), reach 0.25-1.0 of the light radius
+  (default 1.0) and strength 0-1. One owner and one control surface: F1 >
+  Environment > Point light shadows. Gated like the directional map: the NRI
+  shadow pass capability, Per-pixel or Per-pixel + PBR lighting, forced Off by
+  the native fidelity profile, Native lighting and F2, preference preserved.
+  Persisted as `PointShadows`; a missing object loads the defaults.
+- **Graph.** External `PointShadowHistory` and written `PointShadowMap`
+  (ShadowDepth, dispatch DepthAttachment, completion ShaderRead, exported);
+  passes `PointShadowMap` (auxiliary output, BeforeOpaque with BeforeUi
+  fallback, reads PreparedShadowCasters) and `PointShadowLighting` (lighting
+  contributor, reads the history). `PicaAttachmentFeatureRequests.PointShadows`
+  requests them; Off compiles neither pass, so no map is scheduled and no
+  receiver requests the feature. The owned-draw layout always carries 27/28
+  (fallback texture when Off) and surface lighting always calls the stub,
+  which returns exactly 1.
+- **Lights.** Prepared and ordered draw records carry the lights their
+  lighting sees (`ScenePoints`, `NativeLightSources`; resolved draw stream 8,
+  scene frame 13). Scene points use the group's enable, intensity and radius
+  scale; native point sources are skipped when the scene environment removes
+  native local light, and a native source that is also a scene point counts
+  once. Selection keeps at most N lights, nearest first by the camera's
+  distance to the light's reach, then brighter first; a light that stays
+  selected keeps its atlas row.
+- **Atlas.** One 2D D32 atlas per target (namespace + colour address): a row
+  per light, six face tiles per row. A tile is the face plus a two-texel
+  border rendered with the same projection (tangent half-extent = tile/face),
+  so the receiver's 3x3 gather never leaves its tile. Face basis, matrices and
+  receiver share one table (`renderer3ds/point_shadow_map.h`). Depth is
+  perspective, Vulkan 0..1, near plane = far/64. A row renders again only when
+  its light, reach or a caster in reach changed (dynamic or unversioned casters
+  always re-render it); its six tiles are cleared first.
+- **Casters.** The directional caster programs plus a point vertex variant
+  whose face transform is a 64-byte root constant; alpha-tested casters keep
+  their cutout. Culling: sphere(light, far) and the face frustum. Cull mode
+  none, slope bias 2. The caster transform block moved to binding 30, outside
+  the PICA contract (0-28). The per-frame caster descriptor pool covers both
+  the directional and the point bindings.
+- **Receivers.** NRI-owned scene draws with full scene lighting and native
+  per-pixel lighting request `PointShadowLighting`. Rows of the published
+  history are matched to the draw's lights by source identity (surface light
+  `Diffuse.w`, scene point `Color.w`; negative = none), with
+  `point_shadow` (reach, strength, face texels, border) and
+  `point_shadow_atlas` (1/width, 1/height, near fraction, enabled) appended to
+  the surface-lighting block (1488 bytes). `pica_point_shadow` selects the
+  face, applies a 1.5-texel receiver offset, filters 3x3 (as VSM PCF 1) and
+  fades out over the last tenth of the reach. The atlas is bound at 27/28
+  (`PointShadowSampler` NRI extension); draws without the feature bind the
+  fallback texture and read a stub that returns 1. Native PBR fragment-light
+  units and grass are not shadowed by point lights.
+- **Diagnostics.** `nri_point_shadow_map_attempt_count`, `_map_count`,
+  `_candidate_light_count`, `_light_count`, `_rendered_light_count`,
+  `_caster_draw_count`, `_alpha_caster_draw_count`, `_receiver_draw_count`,
+  `_receiver_bound_draw_count`.
+- **Verification.** Reference Kokiri walk (420 frames, GI off, VSM at the
+  user's settings, scene points enabled, native local light 0). Off: 12/12
+  captures byte-identical to the build before this change. On (512, 4 lights,
+  reach 1, strength 1): 3.97 lights per frame from 5.68 candidates (Navi and
+  the Kokiri fairies), 3.97 rows rendered per frame (moving lights rarely reuse
+  a row), 315 caster draws per frame of which 99 run the alpha test, 76 of 94
+  requesting receivers bound. Link and the Kokiri cast soft shadows on the
+  ground from Navi and their fairies; the differences on the bodies follow the
+  geometry, without acne. Vulkan and NRI validation: no error, only the 11
+  startup warnings of the baseline; validated and plain runs are
+  byte-identical (12/12). ABBA timing (360 frames, medians): GPU frame
+  6.54/6.41 -> 6.97/6.96 ms; shadow anchor CPU 0.41/0.44 -> 0.64/0.68 ms.
+  Receipts: `I:/_triaevum_work/perf-levers/qualify/shadow-prepass/`
+  (`pt-*`, `t-pt-*`, `crops-pt/`).
 
 ## Per-pixel actor lighting and native UI boundaries (2026-09-24)
 

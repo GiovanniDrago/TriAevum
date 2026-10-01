@@ -601,6 +601,15 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
           frame.NriDirectionalShadowPreparedAlphaRejectedCount },
         { "nri_directional_shadow_alpha_caster_draw_count",
           frame.NriDirectionalShadowAlphaCasterDrawCount },
+        { "nri_point_shadow_map_attempt_count", frame.NriPointShadowMapAttemptCount },
+        { "nri_point_shadow_map_count", frame.NriPointShadowMapCount },
+        { "nri_point_shadow_candidate_light_count", frame.NriPointShadowCandidateLightCount },
+        { "nri_point_shadow_light_count", frame.NriPointShadowLightCount },
+        { "nri_point_shadow_rendered_light_count", frame.NriPointShadowRenderedLightCount },
+        { "nri_point_shadow_caster_draw_count", frame.NriPointShadowCasterDrawCount },
+        { "nri_point_shadow_alpha_caster_draw_count", frame.NriPointShadowAlphaCasterDrawCount },
+        { "nri_point_shadow_receiver_draw_count", frame.NriPointShadowReceiverDrawCount },
+        { "nri_point_shadow_receiver_bound_draw_count", frame.NriPointShadowReceiverBoundDrawCount },
         { "display_transfer_count", frame.DisplayTransferCount },
         { "scanout_count", frame.ScanoutCount },
         { "overlay_count", frame.OverlayCount },
@@ -1572,6 +1581,32 @@ void Oot3dVulkanDiagnostics::RecordNriDirectionalShadow(uint32_t casterCount, bo
     mActiveFrame->NriDirectionalShadowCasterCount += casterCount;
     mActiveFrame->NriDirectionalShadowAlphaCasterDrawCount += alphaCasterCount;
     mActiveFrame->NriDirectionalShadowNativeLight |= nativeLight;
+}
+
+void Oot3dVulkanDiagnostics::RecordNriPointShadowMap(bool executed, uint32_t candidateLights,
+                                                     uint32_t lights, uint32_t renderedLights,
+                                                     uint32_t casterDraws, uint32_t alphaCasterDraws) {
+    if (!mActiveFrame.has_value()) {
+        return;
+    }
+    ++mActiveFrame->NriPointShadowMapAttemptCount;
+    mActiveFrame->NriPointShadowCandidateLightCount += candidateLights;
+    if (!executed) {
+        return;
+    }
+    ++mActiveFrame->NriPointShadowMapCount;
+    mActiveFrame->NriPointShadowLightCount += lights;
+    mActiveFrame->NriPointShadowRenderedLightCount += renderedLights;
+    mActiveFrame->NriPointShadowCasterDrawCount += casterDraws;
+    mActiveFrame->NriPointShadowAlphaCasterDrawCount += alphaCasterDraws;
+}
+
+void Oot3dVulkanDiagnostics::RecordNriPointShadowReceiver(bool bound) {
+    if (!mActiveFrame.has_value()) {
+        return;
+    }
+    ++mActiveFrame->NriPointShadowReceiverDrawCount;
+    mActiveFrame->NriPointShadowReceiverBoundDrawCount += bound ? 1U : 0U;
 }
 
 void Oot3dVulkanDiagnostics::RecordNriDirectionalShadowAttempt(uint32_t queuedCasters,

@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <iterator>
 #include <stdexcept>
 #include <string_view>
@@ -32,6 +33,9 @@ namespace {
 
 constexpr uint32_t kFrameSlots = 2U;
 constexpr uint32_t kMaximumCasters = 512U;
+// Caster descriptor sets of one frame slot: the directional map and the
+// point maps each bind a caster once.
+constexpr uint32_t kCasterBindingsPerFrame = 2U * kMaximumCasters;
 constexpr size_t kMaximumShadowTargets = 8U;
 
 uint64_t AlignUp(uint64_t value, uint64_t alignment) {
@@ -216,6 +220,19 @@ struct NriDirectionalShadowPass::Impl {
         uint64_t FrameId;
     };
     std::vector<RetiredTexture> RetiredTextures;
+    // Point-light cube atlases, one per target.
+    struct PointTarget {
+        NriOwnedTexture2D Texture;
+        Renderer3ds::PointShadowLayout Layout;
+        Renderer3ds::PointShadowSlots Slots{};
+        std::array<uint64_t, Renderer3ds::kMaximumPointShadowLights> Signatures{};
+        float Range = 0.0F;
+        float Strength = 0.0F;
+        uint64_t ProducedFrameId = 0U;
+        uint64_t LastUsedFrameId = 0U;
+    };
+    std::unordered_map<ShadowTargetKey, PointTarget, ShadowTargetKeyHash> PointTargets;
+    NriPointShadowTelemetry LastPoint;
     ResourceStateTracker OwnedStates;
     bool LastNativeLight = false;
     uint32_t LastCasters = 0U;
@@ -241,6 +258,8 @@ struct NriDirectionalShadowPass::Impl {
     std::array<FrameDescriptors, kFrameSlots> Frames;
     std::unordered_map<uint64_t, nri::Pipeline*> ShadowPipelines;
     std::unordered_set<uint64_t> FailedShadowPipelines;
+    std::unordered_map<uint64_t, nri::Pipeline*> PointPipelines;
+    std::unordered_set<uint64_t> FailedPointPipelines;
     std::unordered_map<uint64_t, nri::Descriptor*> CasterSamplers;
 #endif
 
@@ -264,8 +283,13 @@ struct NriDirectionalShadowPass::Impl {
             for (auto& texture : RetiredTextures) {
                 Interop->DestroyOwnedTexture(texture.Texture.Image);
             }
+            for (auto& [key, point] : PointTargets) {
+                (void)key;
+                Interop->DestroyOwnedTexture(point.Texture.Image);
+            }
         }
         Histories.clear();
+        PointTargets.clear();
         RetiredTextures.clear();
         OwnedStates.Clear();
     }
@@ -463,6 +487,225 @@ struct NriDirectionalShadowPass::Impl {
         ShadowPipelines.emplace(key, result);
         return result;
     }
+
+    PointTarget* EnsurePointTarget(const ShadowTargetKey& key, const Renderer3ds::PointShadowLayout& layout,
+                                   uint64_t frameId) {
+        auto found = PointTargets.find(key);
+        if (found != PointTargets.end() && found->second.Layout.Width == layout.Width &&
+            found->second.Layout.Height == layout.Height && found->second.Texture.Image != VK_NULL_HANDLE) {
+            found->second.LastUsedFrameId = frameId;
+            return &found->second;
+        }
+        PointTarget replacement;
+        replacement.Layout = layout;
+        replacement.LastUsedFrameId = frameId;
+        NriOwnedTexture2DDesc textureDesc;
+        textureDesc.Width = layout.Width;
+        textureDesc.Height = layout.Height;
+        textureDesc.Format = VK_FORMAT_D32_SFLOAT;
+        textureDesc.Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (!Interop->CreateOwnedTexture2D(textureDesc, replacement.Texture))
+            return nullptr;
+        if (found != PointTargets.end()) {
+            OwnedStates.Forget(reinterpret_cast<uintptr_t>(found->second.Texture.Image));
+            RetiredTextures.push_back({ found->second.Texture, frameId });
+            found->second = std::move(replacement);
+            return &found->second;
+        }
+        if (PointTargets.size() >= kMaximumShadowTargets) {
+            const auto oldest = std::min_element(PointTargets.begin(), PointTargets.end(), [](const auto& l, const auto& r) {
+                return l.second.LastUsedFrameId < r.second.LastUsedFrameId;
+            });
+            OwnedStates.Forget(reinterpret_cast<uintptr_t>(oldest->second.Texture.Image));
+            RetiredTextures.push_back({ oldest->second.Texture, frameId });
+            PointTargets.erase(oldest);
+        }
+        return &PointTargets.emplace(key, std::move(replacement)).first->second;
+    }
+
+    nri::Pipeline* GetOrCreatePointPipeline(const PicaSceneDrawRecord& caster) {
+        uint64_t key = 0x504f494e54534844ULL;
+        key = HashValue(key, caster.VertexShader->Key);
+        key = HashValue(key, caster.Material.Topology);
+        key = HashValue(key, caster.VertexLayout->StructuralKey);
+        if (UsesAlphaCasterProgram(caster))
+            key = HashValue(key, caster.FragmentShader->Key);
+        if (const auto found = PointPipelines.find(key); found != PointPipelines.end())
+            return found->second;
+        if (FailedPointPipelines.contains(key))
+            return nullptr;
+        const auto reject = [this, key]() -> nri::Pipeline* {
+            FailedPointPipelines.insert(key);
+            return nullptr;
+        };
+        const nri::Topology topology = ToNriTopology(caster.Material.Topology);
+        if (topology == nri::Topology::MAX_NUM || caster.VertexShader == nullptr ||
+            !caster.VertexShader->VertexHooksAvailable())
+            return reject();
+        std::vector<nri::VertexStreamDesc> streams;
+        for (const auto& source : caster.VertexLayout->Bindings) {
+            if (source.Binding > std::numeric_limits<uint16_t>::max() ||
+                source.ByteStride > std::numeric_limits<uint16_t>::max())
+                return reject();
+            streams.push_back({ static_cast<uint16_t>(source.Binding),
+                                source.PerInstance ? nri::VertexStreamStepRate::PER_INSTANCE
+                                                   : nri::VertexStreamStepRate::PER_VERTEX,
+                                static_cast<uint16_t>(source.ByteStride) });
+        }
+        std::vector<nri::VertexAttributeDesc> attributes;
+        for (const auto& source : caster.VertexLayout->Attributes) {
+            if (source.Location > std::numeric_limits<uint16_t>::max() ||
+                source.Binding > std::numeric_limits<uint16_t>::max())
+                return reject();
+            nri::VertexAttributeDesc attribute{};
+            attribute.vk.location = source.Location;
+            attribute.offset = source.ByteOffset;
+            attribute.format = nri::Format::RGBA32_SFLOAT;
+            attribute.streamIndex = static_cast<uint16_t>(source.Binding);
+            attributes.push_back(attribute);
+        }
+        const nri::VertexInputDesc vertexInput{ attributes.data(), static_cast<uint8_t>(attributes.size()),
+                                                streams.data(), static_cast<uint8_t>(streams.size()) };
+        std::vector<uint32_t> vertex;
+        std::vector<uint32_t> fragment;
+        try {
+            const auto casterShader = BuildPicaPointShadowCasterShader(
+                caster.VertexShader->Source, caster.VertexShader->Key, caster.VertexShader->VertexHooks);
+            if (!casterShader.Applied())
+                return reject();
+            vertex = Compile(Interop->Shaders(), casterShader.Source, Renderer::SpirvStage::Vertex,
+                             "oot3d_nri_point_shadow.vert");
+            if (UsesAlphaCasterProgram(caster)) {
+                const auto alphaShader = BuildPicaShadowCasterAlphaFragmentShader(
+                    caster.FragmentShader->Source, caster.FragmentShader->Key, caster.FragmentShader->FragmentHooks);
+                if (!alphaShader.Applied())
+                    return reject();
+                fragment = Compile(Interop->Shaders(), alphaShader.Source, Renderer::SpirvStage::Fragment,
+                                   "oot3d_nri_shadow_caster_alpha.frag");
+            } else {
+                fragment = Compile(Interop->Shaders(), kPicaDirectionalShadowFragmentShader,
+                                   Renderer::SpirvStage::Fragment, "oot3d_nri_directional_shadow.frag");
+            }
+        } catch (const std::exception&) { return reject(); }
+        const std::array<nri::ShaderDesc, 2> shaders{ {
+            { nri::StageBits::VERTEX_SHADER, vertex.data(), vertex.size() * sizeof(uint32_t) },
+            { nri::StageBits::FRAGMENT_SHADER, fragment.data(), fragment.size() * sizeof(uint32_t) },
+        } };
+        nri::MultisampleDesc multisample{};
+        multisample.sampleMask = 0xFFFFFFFFU;
+        multisample.sampleNum = 1;
+        nri::GraphicsPipelineDesc pipeline{};
+        pipeline.pipelineLayout = ShadowLayout;
+        pipeline.vertexInput = &vertexInput;
+        pipeline.inputAssembly.topology = topology;
+        pipeline.rasterization.fillMode = nri::FillMode::SOLID;
+        pipeline.rasterization.cullMode = nri::CullMode::NONE;
+        pipeline.rasterization.depthBias = { 0.0F, 0.0F, 2.0F };
+        pipeline.multisample = &multisample;
+        pipeline.outputMerger.depth.compareOp = nri::CompareOp::LESS_EQUAL;
+        pipeline.outputMerger.depth.write = true;
+        pipeline.outputMerger.depthStencilFormat = nri::Format::D32_SFLOAT;
+        pipeline.shaders = shaders.data();
+        pipeline.shaderNum = static_cast<uint32_t>(shaders.size());
+        nri::Pipeline* result = nullptr;
+        if (Core->CreateGraphicsPipeline(*NriInteropAccess::Device(*Interop), pipeline, result) != nri::Result::SUCCESS)
+            return reject();
+        PointPipelines.emplace(key, result);
+        return result;
+    }
+
+    struct PreparedCaster {
+        nri::Pipeline* Pipeline = nullptr;
+        nri::Buffer* Geometry = nullptr;
+        nri::DescriptorSet* Set = nullptr;
+    };
+
+    // Descriptors of one caster in this frame slot: vertex uniforms, the
+    // caster transform and, for an alpha-tested caster, its native fragment
+    // state. The set stays valid for every map recorded in the frame.
+    bool BindCaster(FrameDescriptors& frame, const PicaSceneFrame& sceneFrame, const PicaSceneDrawRecord& caster,
+                    const DirectionalShadowMatrix& worldToLightClip, PreparedCaster& draw) {
+        if (frame.CastersUsed == frame.CasterSets.size())
+            return false;
+        const auto uniforms = FromSceneNativeHandle<VkBuffer>(caster.UniformBuffer.NativeHandle);
+        const auto vertices = FromSceneNativeHandle<VkBuffer>(caster.GeometryBuffer.NativeHandle);
+        if (!Interop->WrapBuffer(uniforms, caster.UniformBuffer.Size) ||
+            !Interop->WrapBuffer(vertices, caster.GeometryBuffer.Size))
+            return false;
+        auto* uniformBuffer = NriInteropAccess::Buffer(*Interop, uniforms);
+        draw.Geometry = NriInteropAccess::Buffer(*Interop, vertices);
+        if (uniformBuffer == nullptr || draw.Geometry == nullptr ||
+            caster.VertexUniformOffset > caster.UniformBuffer.Size ||
+            caster.VertexUniformSize > caster.UniformBuffer.Size - caster.VertexUniformOffset)
+            return false;
+        for (const auto& binding : sceneFrame.VertexBindings(caster))
+            if (binding.Size == 0 || binding.Stride == 0 || binding.Offset > caster.GeometryBuffer.Size ||
+                binding.Size > caster.GeometryBuffer.Size - binding.Offset)
+                return false;
+        if (caster.Indexed &&
+            (caster.IndexOffset > caster.GeometryBuffer.Size ||
+             uint64_t(caster.VertexOrIndexCount) * sizeof(uint16_t) > caster.GeometryBuffer.Size - caster.IndexOffset))
+            return false;
+        ShadowTransformUniforms transform;
+        if (!InvertDirectionalShadowMatrix(*caster.LightingWorldToView, transform.ViewToWorld))
+            return false;
+        transform.WorldToLightClip = worldToLightClip;
+        nri::BufferViewDesc uniformView{};
+        uniformView.buffer = uniformBuffer;
+        uniformView.type = nri::BufferView::CONSTANT_BUFFER;
+        uniformView.offset = caster.VertexUniformOffset;
+        uniformView.size = caster.VertexUniformSize;
+        nri::Descriptor* vertexUniform = nullptr;
+        if (Core->CreateBufferView(uniformView, vertexUniform) != nri::Result::SUCCESS)
+            return false;
+        frame.TransientViews.push_back(vertexUniform);
+        const uint32_t slot = frame.CastersUsed++;
+        std::memcpy(frame.ShadowUniformMapped + frame.ShadowUniformStride * slot, &transform, sizeof(transform));
+        draw.Set = frame.CasterSets[slot];
+        std::array<nri::UpdateDescriptorRangeDesc, CasterRangeCount> updates{};
+        uint32_t updateCount = 0;
+        updates[updateCount++] = { draw.Set, VertexUniformRange, 0, &vertexUniform, 1 };
+        updates[updateCount++] = { draw.Set, TransformRange, 0, &frame.ShadowUniformViews[slot], 1 };
+        // The alpha program reads its native textures, samplers, fragment
+        // uniforms and, when declared, the lighting LUT, as the ordered draw does.
+        std::array<nri::Descriptor*, 3> textures{};
+        std::array<nri::Descriptor*, 3> samplers{};
+        nri::Descriptor* fragmentUniform = nullptr;
+        nri::Descriptor* lightingLut = nullptr;
+        nri::Descriptor* lightingLutSampler = nullptr;
+        if (UsesAlphaCasterProgram(caster)) {
+            if (caster.FragmentUniformOffset > caster.UniformBuffer.Size ||
+                caster.FragmentUniformSize > caster.UniformBuffer.Size - caster.FragmentUniformOffset)
+                return false;
+            nri::BufferViewDesc fragmentView{};
+            fragmentView.buffer = uniformBuffer;
+            fragmentView.type = nri::BufferView::CONSTANT_BUFFER;
+            fragmentView.offset = caster.FragmentUniformOffset;
+            fragmentView.size = caster.FragmentUniformSize;
+            if (Core->CreateBufferView(fragmentView, fragmentUniform) != nri::Result::SUCCESS)
+                return false;
+            frame.TransientViews.push_back(fragmentUniform);
+            for (size_t unit = 0; unit < textures.size(); ++unit) {
+                textures[unit] = SampledView(caster.Textures[unit]);
+                samplers[unit] = Sampler(caster.Textures[unit]);
+                if (textures[unit] == nullptr || samplers[unit] == nullptr)
+                    return false;
+                updates[updateCount++] = { draw.Set, static_cast<uint32_t>(Texture0Range + unit), 0, &textures[unit], 1 };
+                updates[updateCount++] = { draw.Set, static_cast<uint32_t>(Sampler0Range + unit), 0, &samplers[unit], 1 };
+            }
+            updates[updateCount++] = { draw.Set, FragmentUniformRange, 0, &fragmentUniform, 1 };
+            if (caster.LightingLut.Bound) {
+                lightingLut = SampledView(caster.LightingLut);
+                lightingLutSampler = Sampler(caster.LightingLut);
+                if (lightingLut == nullptr || lightingLutSampler == nullptr)
+                    return false;
+                updates[updateCount++] = { draw.Set, LightingLutRange, 0, &lightingLut, 1 };
+                updates[updateCount++] = { draw.Set, LightingLutSamplerRange, 0, &lightingLutSampler, 1 };
+            }
+        }
+        Core->UpdateDescriptorRanges(updates.data(), updateCount);
+        return true;
+    }
 #endif
 };
 
@@ -528,7 +771,7 @@ bool NriDirectionalShadowPass::Initialize(VkPhysicalDevice physicalDevice, VkDev
         descriptorSet.ranges = ranges.data();
         descriptorSet.rangeNum = static_cast<uint32_t>(ranges.size());
         nri::PipelineLayoutDesc layout{};
-        const nri::RootConstantDesc pageConstants{ 0, sizeof(float) * 4, nri::StageBits::VERTEX_SHADER };
+        const nri::RootConstantDesc pageConstants{ 0, sizeof(float) * 16, nri::StageBits::VERTEX_SHADER };
         layout.rootConstants = &pageConstants;
         layout.rootConstantNum = 1;
         layout.descriptorSets = &descriptorSet;
@@ -556,7 +799,7 @@ bool NriDirectionalShadowPass::Initialize(VkPhysicalDevice physicalDevice, VkDev
         for (auto& frame : mImpl->Frames) {
             frame.ShadowUniformStride = AlignUp(sizeof(ShadowTransformUniforms), uniformAlignment);
             nri::BufferDesc bufferDesc{};
-            bufferDesc.size = frame.ShadowUniformStride * kMaximumCasters;
+            bufferDesc.size = frame.ShadowUniformStride * kCasterBindingsPerFrame;
             bufferDesc.usage = nri::BufferUsageBits::CONSTANT_BUFFER;
             if (mImpl->Core->CreateCommittedBuffer(*nriDevice, nri::MemoryLocation::HOST_UPLOAD, 0.0F, bufferDesc,
                                                    frame.ShadowUniformBuffer) != nri::Result::SUCCESS) {
@@ -567,8 +810,8 @@ bool NriDirectionalShadowPass::Initialize(VkPhysicalDevice physicalDevice, VkDev
             if (frame.ShadowUniformMapped == nullptr) {
                 throw std::runtime_error("NRI directional shadow uniform arena mapping failed");
             }
-            frame.ShadowUniformViews.resize(kMaximumCasters, nullptr);
-            for (uint32_t index = 0U; index < kMaximumCasters; ++index) {
+            frame.ShadowUniformViews.resize(kCasterBindingsPerFrame, nullptr);
+            for (uint32_t index = 0U; index < kCasterBindingsPerFrame; ++index) {
                 nri::BufferViewDesc view{};
                 view.buffer = frame.ShadowUniformBuffer;
                 view.type = nri::BufferView::CONSTANT_BUFFER;
@@ -580,14 +823,14 @@ bool NriDirectionalShadowPass::Initialize(VkPhysicalDevice physicalDevice, VkDev
             }
 
             nri::DescriptorPoolDesc pool{};
-            pool.descriptorSetMaxNum = kMaximumCasters;
-            pool.constantBufferMaxNum = 3U * kMaximumCasters;
-            pool.textureMaxNum = 4U * kMaximumCasters;
-            pool.samplerMaxNum = 4U * kMaximumCasters;
-            frame.CasterSets.resize(kMaximumCasters);
+            pool.descriptorSetMaxNum = kCasterBindingsPerFrame;
+            pool.constantBufferMaxNum = 3U * kCasterBindingsPerFrame;
+            pool.textureMaxNum = 4U * kCasterBindingsPerFrame;
+            pool.samplerMaxNum = 4U * kCasterBindingsPerFrame;
+            frame.CasterSets.resize(kCasterBindingsPerFrame);
             if (mImpl->Core->CreateDescriptorPool(*nriDevice, pool, frame.CasterPool) != nri::Result::SUCCESS ||
                 mImpl->Core->AllocateDescriptorSets(*frame.CasterPool, *mImpl->ShadowLayout, 0, frame.CasterSets.data(),
-                                                    kMaximumCasters, 0) != nri::Result::SUCCESS) {
+                                                    kCasterBindingsPerFrame, 0) != nri::Result::SUCCESS) {
                 throw std::runtime_error("NRI directional shadow caster descriptors failed");
             }
         }
@@ -739,12 +982,7 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         frame.FrameId = desc.FrameId;
         frame.CastersUsed = 0;
     }
-    struct PreparedCaster {
-        nri::Pipeline* Pipeline = nullptr;
-        nri::Buffer* Geometry = nullptr;
-        nri::DescriptorSet* Set = nullptr;
-    };
-    std::array<PreparedCaster, kMaximumCasters> prepared{};
+    std::array<Impl::PreparedCaster, kMaximumCasters> prepared{};
     std::array<bool, kMaximumCasters> required{};
     for (const auto& page : target->Cache.Updates()) {
         for (auto index : target->Cache.StaticCasters(page))
@@ -756,87 +994,10 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         if (!required[index])
             continue;
         const auto& caster = *drawable[index];
-        if (frame.CastersUsed == frame.CasterSets.size())
-            return false;
-        const auto uniforms = FromSceneNativeHandle<VkBuffer>(caster.UniformBuffer.NativeHandle);
-        const auto vertices = FromSceneNativeHandle<VkBuffer>(caster.GeometryBuffer.NativeHandle);
         auto& draw = prepared[index];
         draw.Pipeline = pipelines[index];
-        if (draw.Pipeline == nullptr || !mImpl->Interop->WrapBuffer(uniforms, caster.UniformBuffer.Size) ||
-            !mImpl->Interop->WrapBuffer(vertices, caster.GeometryBuffer.Size))
+        if (draw.Pipeline == nullptr || !mImpl->BindCaster(frame, sceneFrame, caster, plan.Virtual.WorldToLight, draw))
             return false;
-        auto* uniformBuffer = NriInteropAccess::Buffer(*mImpl->Interop, uniforms);
-        draw.Geometry = NriInteropAccess::Buffer(*mImpl->Interop, vertices);
-        if (uniformBuffer == nullptr || draw.Geometry == nullptr ||
-            caster.VertexUniformOffset > caster.UniformBuffer.Size ||
-            caster.VertexUniformSize > caster.UniformBuffer.Size - caster.VertexUniformOffset)
-            return false;
-        for (const auto& binding : sceneFrame.VertexBindings(caster))
-            if (binding.Size == 0 || binding.Stride == 0 || binding.Offset > caster.GeometryBuffer.Size ||
-                binding.Size > caster.GeometryBuffer.Size - binding.Offset)
-                return false;
-        if (caster.Indexed &&
-            (caster.IndexOffset > caster.GeometryBuffer.Size ||
-             uint64_t(caster.VertexOrIndexCount) * sizeof(uint16_t) > caster.GeometryBuffer.Size - caster.IndexOffset))
-            return false;
-        ShadowTransformUniforms transform;
-        if (!InvertDirectionalShadowMatrix(*caster.LightingWorldToView, transform.ViewToWorld))
-            return false;
-        transform.WorldToLightClip = plan.Virtual.WorldToLight;
-        nri::BufferViewDesc uniformView{};
-        uniformView.buffer = uniformBuffer;
-        uniformView.type = nri::BufferView::CONSTANT_BUFFER;
-        uniformView.offset = caster.VertexUniformOffset;
-        uniformView.size = caster.VertexUniformSize;
-        nri::Descriptor* vertexUniform = nullptr;
-        if (mImpl->Core->CreateBufferView(uniformView, vertexUniform) != nri::Result::SUCCESS)
-            return false;
-        frame.TransientViews.push_back(vertexUniform);
-        const uint32_t slot = frame.CastersUsed++;
-        std::memcpy(frame.ShadowUniformMapped + frame.ShadowUniformStride * slot, &transform, sizeof(transform));
-        draw.Set = frame.CasterSets[slot];
-        std::array<nri::UpdateDescriptorRangeDesc, CasterRangeCount> updates{};
-        uint32_t updateCount = 0;
-        updates[updateCount++] = { draw.Set, VertexUniformRange, 0, &vertexUniform, 1 };
-        updates[updateCount++] = { draw.Set, TransformRange, 0, &frame.ShadowUniformViews[slot], 1 };
-        // The alpha program reads its native textures, samplers, fragment
-        // uniforms and, when declared, the lighting LUT, as the ordered draw does.
-        std::array<nri::Descriptor*, 3> textures{};
-        std::array<nri::Descriptor*, 3> samplers{};
-        nri::Descriptor* fragmentUniform = nullptr;
-        nri::Descriptor* lightingLut = nullptr;
-        nri::Descriptor* lightingLutSampler = nullptr;
-        if (UsesAlphaCasterProgram(caster)) {
-            if (caster.FragmentUniformOffset > caster.UniformBuffer.Size ||
-                caster.FragmentUniformSize > caster.UniformBuffer.Size - caster.FragmentUniformOffset)
-                return false;
-            nri::BufferViewDesc fragmentView{};
-            fragmentView.buffer = uniformBuffer;
-            fragmentView.type = nri::BufferView::CONSTANT_BUFFER;
-            fragmentView.offset = caster.FragmentUniformOffset;
-            fragmentView.size = caster.FragmentUniformSize;
-            if (mImpl->Core->CreateBufferView(fragmentView, fragmentUniform) != nri::Result::SUCCESS)
-                return false;
-            frame.TransientViews.push_back(fragmentUniform);
-            for (size_t unit = 0; unit < textures.size(); ++unit) {
-                textures[unit] = mImpl->SampledView(caster.Textures[unit]);
-                samplers[unit] = mImpl->Sampler(caster.Textures[unit]);
-                if (textures[unit] == nullptr || samplers[unit] == nullptr)
-                    return false;
-                updates[updateCount++] = { draw.Set, static_cast<uint32_t>(Texture0Range + unit), 0, &textures[unit], 1 };
-                updates[updateCount++] = { draw.Set, static_cast<uint32_t>(Sampler0Range + unit), 0, &samplers[unit], 1 };
-            }
-            updates[updateCount++] = { draw.Set, FragmentUniformRange, 0, &fragmentUniform, 1 };
-            if (caster.LightingLut.Bound) {
-                lightingLut = mImpl->SampledView(caster.LightingLut);
-                lightingLutSampler = mImpl->Sampler(caster.LightingLut);
-                if (lightingLut == nullptr || lightingLutSampler == nullptr)
-                    return false;
-                updates[updateCount++] = { draw.Set, LightingLutRange, 0, &lightingLut, 1 };
-                updates[updateCount++] = { draw.Set, LightingLutSamplerRange, 0, &lightingLutSampler, 1 };
-            }
-        }
-        mImpl->Core->UpdateDescriptorRanges(updates.data(), updateCount);
     }
 
     mImpl->LastShadowMapBarrierExecution = shadowMapBarrierPlan.BeginExecution();
@@ -961,6 +1122,262 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
 #endif
 }
 
+bool NriDirectionalShadowPass::ExecutePointMaps(const NriPointShadowExecuteDesc& desc,
+                                                const NativeSceneView& sceneView,
+                                                const EffectPassBarrierPlan& pointShadowMapBarrierPlan) {
+    mImpl->LastPoint = {};
+#ifndef ENABLE_OOT3D_NRI
+    (void)desc;
+    (void)sceneView;
+    (void)pointShadowMapBarrierPlan;
+    return false;
+#else
+    using namespace ::Fast::Renderer3ds;
+    const auto* mapBarrier = pointShadowMapBarrierPlan.Find(EffectResource::PointShadowMap);
+    const auto passId =
+        ::Fast::Renderer::StableExtensionPassId(PicaExtensionPassName(PicaExtensionPass::PointShadowMap));
+    if (!Available() ||
+        (!desc.ScheduleAuthorization.Matches(passId, EffectStage::BeforeOpaque, desc.ExpectedSurface) &&
+         !desc.ScheduleAuthorization.Matches(passId, EffectStage::BeforeUi, desc.ExpectedSurface)) ||
+        desc.ExpectedSurface.Namespace != desc.RenderTargetNamespace ||
+        desc.ExpectedSurface.Resource != desc.ColorPhysicalAddress ||
+        desc.Settings.Mode != PointShadowMode::CubeMaps || !sceneView.Active() ||
+        sceneView.FrameId() != desc.FrameId || sceneView.PicaFrame() == nullptr ||
+        !sceneView.PicaFrame()->Active() || sceneView.PicaFrame()->FrameId() != desc.FrameId ||
+        sceneView.PicaFrame()->FrameSlot() != desc.FrameSlot || !pointShadowMapBarrierPlan.Valid() ||
+        mapBarrier == nullptr || mapBarrier->DispatchAccess != ResourceAccess::DepthAttachment ||
+        mapBarrier->CompletionAccess != ResourceAccess::ShaderRead || !mapBarrier->DownstreamRead)
+        return false;
+
+    // Casters of this target and the point lights their lighting sees.
+    const auto& sceneFrame = *sceneView.PicaFrame();
+    std::vector<const PicaSceneDrawRecord*> casters;
+    std::vector<nri::Pipeline*> pipelines;
+    std::array<PointShadowLight, 64> candidates{};
+    size_t candidateCount = 0;
+    const auto addCandidate = [&](const PointShadowLight& light) {
+        if (light.SourceIdentity == 0U || light.Radius <= 0.0F || candidateCount == candidates.size() ||
+            std::any_of(candidates.begin(), candidates.begin() + candidateCount,
+                        [&](const auto& existing) { return existing.SourceIdentity == light.SourceIdentity; }))
+            return;
+        candidates[candidateCount++] = light;
+    };
+    const auto& environment = desc.Environment;
+    std::optional<ShadowVector> camera;
+    const auto draws = sceneFrame.Draws();
+    for (size_t index = 0; index < draws.size(); ++index) {
+        const auto& draw = draws[index];
+        if (draw.RenderTarget.RenderTargetNamespace != desc.RenderTargetNamespace ||
+            draw.RenderTarget.ColorPhysicalAddress != desc.ColorPhysicalAddress || !draw.LightingWorldToView)
+            continue;
+        DirectionalShadowMatrix viewToWorld;
+        if (!camera && InvertDirectionalShadowMatrix(*draw.LightingWorldToView, viewToWorld))
+            camera = ShadowVector{ viewToWorld[12], viewToWorld[13], viewToWorld[14] };
+        if (draw.ScenePoints) {
+            for (uint32_t light = 0; light < std::min<uint32_t>(draw.ScenePoints->Count, kMaximumPicaScenePointLights); ++light) {
+                const auto& point = draw.ScenePoints->Lights[light];
+                if (point.Group >= environment.PointLights.size()) continue;
+                const auto& group = environment.PointLights[point.Group];
+                if (!group.Enabled || group.Intensity <= 0.0F || point.Radius <= 0.0F) continue;
+                addCandidate({ point.SourceIdentity, point.PositionWorld, point.Radius * group.RadiusScale,
+                               std::max({ point.Color[0], point.Color[1], point.Color[2] }) * group.Intensity });
+            }
+        }
+        if (!environment.Enabled || environment.NativeLocalStrength > 0.0F) {
+            for (const auto& source : draw.NativeLightSources) {
+                if (source.Kind != PicaNativeLightSource::Type::Point || source.Radius <= 0.0F) continue;
+                const bool scenePoint = draw.ScenePoints &&
+                    std::any_of(draw.ScenePoints->Lights.begin(), draw.ScenePoints->Lights.begin() + draw.ScenePoints->Count,
+                                [&](const auto& point) { return point.SourceIdentity == source.SourceIdentity; });
+                if (!scenePoint)
+                    addCandidate({ source.SourceIdentity, source.PositionWorld, source.Radius,
+                                   std::max({ source.UnattenuatedColor[0], source.UnattenuatedColor[1],
+                                              source.UnattenuatedColor[2] }) });
+            }
+        }
+        if (!sceneFrame.DirectionalShadowCaster(index) || !draw.NativeTransform.CurrentViewToWorldAvailable ||
+            !draw.NativeTransform.CurrentClipToWorldAvailable)
+            continue;
+        const auto& material = draw.Material;
+        if (material.AlphaTestEnabled && material.AlphaCompare != PicaCompareFunction::Always &&
+            !UsesAlphaCasterProgram(draw))
+            continue;
+        auto* pipeline = mImpl->GetOrCreatePointPipeline(draw);
+        if (pipeline == nullptr || casters.size() == kMaximumCasters)
+            continue;
+        casters.push_back(&draw);
+        pipelines.push_back(pipeline);
+    }
+    mImpl->LastPoint.CandidateLights = static_cast<uint32_t>(candidateCount);
+    const auto layout = BuildPointShadowLayout(desc.Settings.Resolution, desc.Settings.MaxLights);
+    if (!camera || !layout.Valid())
+        return false;
+    auto* target = mImpl->EnsurePointTarget({ desc.RenderTargetNamespace, desc.ColorPhysicalAddress }, layout, desc.FrameId);
+    if (target == nullptr)
+        return false;
+    const bool fresh = target->ProducedFrameId == 0U;
+    const auto slots = SelectPointShadowSlots(std::span(candidates).first(candidateCount), *camera,
+                                              desc.Settings.Range, layout.SlotCount, target->Slots);
+
+    // A row is re-rendered unless its light, reach and static casters are
+    // unchanged; an actor or an unproven caster in reach renders it again.
+    std::array<bool, kMaximumPointShadowLights> render{};
+    std::array<uint64_t, kMaximumPointShadowLights> signatures{};
+    for (uint32_t row = 0; row < layout.SlotCount; ++row) {
+        const auto& slot = slots[row];
+        if (!slot.Valid()) continue;
+        ++mImpl->LastPoint.Lights;
+        uint64_t signature = HashValue(1469598103934665603ULL, slot);
+        bool dynamic = false;
+        for (const auto* caster : casters) {
+            const auto& bounds = caster->ShadowCaster.WorldBounds;
+            bool reached = false;
+            for (uint32_t face = 0; face < kPointShadowFaceCount && !reached; ++face)
+                reached = PointShadowFaceIntersects(slot, face, layout, bounds);
+            if (!reached) continue;
+            dynamic |= caster->ShadowCaster.Dynamic || caster->ShadowCaster.ContentVersion == 0U;
+            signature = HashValue(signature, caster->ShadowCaster.ContentVersion);
+        }
+        signatures[row] = dynamic ? 0U : signature;
+        render[row] = fresh || dynamic || signatures[row] != target->Signatures[row];
+    }
+
+    auto* command = NriInteropAccess::CommandBuffer(*mImpl->Interop, desc.FrameSlot);
+    auto& frame = mImpl->Frames[desc.FrameSlot % kFrameSlots];
+    if (command == nullptr || frame.CasterPool == nullptr || frame.ShadowUniformMapped == nullptr)
+        return false;
+    if (frame.FrameId != desc.FrameId) {
+        for (auto* view : frame.TransientViews)
+            mImpl->Core->DestroyDescriptor(view);
+        frame.TransientViews.clear();
+        frame.FrameId = desc.FrameId;
+        frame.CastersUsed = 0;
+    }
+    const auto transition = [&](VkImage image, ResourceAccess access) {
+        const auto change = mImpl->OwnedStates.PlanTransition(reinterpret_cast<uintptr_t>(image), { access, 0 });
+        if (!NriInteropAccess::CmdTextureBarrier(*mImpl->Interop, desc.FrameSlot, image, change))
+            return false;
+        mImpl->OwnedStates.Commit(change);
+        return true;
+    };
+    if (!transition(target->Texture.Image, mapBarrier->DispatchAccess))
+        return false;
+    nri::RenderingDesc rendering{};
+    rendering.depth.descriptor = NriInteropAccess::DepthAttachmentView(*mImpl->Interop, target->Texture.Image);
+    if (rendering.depth.descriptor == nullptr)
+        return false;
+    rendering.depth.loadOp = nri::LoadOp::LOAD;
+    rendering.depth.storeOp = nri::StoreOp::STORE;
+    mImpl->Core->CmdSetDescriptorPool(*command, *frame.CasterPool);
+    mImpl->Core->CmdBeginRendering(*command, rendering);
+    mImpl->Core->CmdSetPipelineLayout(*command, nri::BindPoint::GRAPHICS, *mImpl->ShadowLayout);
+    const uint32_t tile = layout.TileTexels;
+    if (fresh) {
+        // A new atlas holds no depth yet: every row reads as unoccluded.
+        nri::ClearAttachmentDesc clear{};
+        clear.planes = nri::PlaneBits::DEPTH;
+        clear.value.depthStencil.depth = 1;
+        const nri::Rect whole{ 0, 0, static_cast<nri::Dim_t>(layout.Width), static_cast<nri::Dim_t>(layout.Height) };
+        mImpl->Core->CmdClearAttachments(*command, &clear, 1, &whole, 1);
+    }
+    std::vector<Impl::PreparedCaster> prepared(casters.size());
+    std::vector<bool> bound(casters.size(), false);
+    nri::Pipeline* boundPipeline = nullptr;
+    bool failed = false;
+    for (uint32_t row = 0; row < layout.SlotCount && !failed; ++row) {
+        if (!render[row]) continue;
+        const auto& slot = slots[row];
+        ++mImpl->LastPoint.RenderedLights;
+        nri::ClearAttachmentDesc clear{};
+        clear.planes = nri::PlaneBits::DEPTH;
+        clear.value.depthStencil.depth = 1;
+        const nri::Rect rowRect{ 0, static_cast<int32_t>(row * tile), static_cast<nri::Dim_t>(layout.Width),
+                                 static_cast<nri::Dim_t>(tile) };
+        mImpl->Core->CmdClearAttachments(*command, &clear, 1, &rowRect, 1);
+        for (uint32_t face = 0; face < kPointShadowFaceCount && !failed; ++face) {
+            const nri::Rect scissor{ static_cast<int32_t>(face * tile), static_cast<int32_t>(row * tile),
+                                     static_cast<nri::Dim_t>(tile), static_cast<nri::Dim_t>(tile) };
+            const nri::Viewport viewport{ float(face * tile), float(row * tile), float(tile), float(tile), 0, 1, true };
+            mImpl->Core->CmdSetViewports(*command, &viewport, 1);
+            mImpl->Core->CmdSetScissors(*command, &scissor, 1);
+            const auto faceMatrix = BuildPointShadowFaceMatrix(slot, face, layout);
+            const nri::SetRootConstantsDesc constants{ 0, faceMatrix.data(), sizeof(faceMatrix) };
+            mImpl->Core->CmdSetRootConstants(*command, constants);
+            for (size_t index = 0; index < casters.size(); ++index) {
+                const auto& caster = *casters[index];
+                if (!PointShadowFaceIntersects(slot, face, layout, caster.ShadowCaster.WorldBounds)) continue;
+                auto& draw = prepared[index];
+                if (!bound[index]) {
+                    draw.Pipeline = pipelines[index];
+                    if (!mImpl->BindCaster(frame, sceneFrame, caster, IdentityDirectionalShadowMatrix(), draw)) {
+                        failed = true;
+                        break;
+                    }
+                    bound[index] = true;
+                }
+                if (boundPipeline != draw.Pipeline) {
+                    mImpl->Core->CmdSetPipeline(*command, *draw.Pipeline);
+                    boundPipeline = draw.Pipeline;
+                }
+                const nri::SetDescriptorSetDesc set{ 0, draw.Set, nri::BindPoint::GRAPHICS };
+                mImpl->Core->CmdSetDescriptorSet(*command, set);
+                for (const auto& binding : sceneFrame.VertexBindings(caster)) {
+                    const nri::VertexBufferDesc vertex{ draw.Geometry, binding.Offset, binding.Stride };
+                    mImpl->Core->CmdSetVertexBuffers(*command, binding.Binding, &vertex, 1);
+                }
+                if (caster.Indexed) {
+                    mImpl->Core->CmdSetIndexBuffer(*command, *draw.Geometry, caster.IndexOffset, nri::IndexType::UINT16);
+                    const nri::DrawIndexedDesc nativeDraw{ caster.VertexOrIndexCount, 1, 0, caster.BaseVertex, 0 };
+                    mImpl->Core->CmdDrawIndexed(*command, nativeDraw);
+                } else {
+                    const nri::DrawDesc nativeDraw{ caster.VertexOrIndexCount, 1, 0, 0 };
+                    mImpl->Core->CmdDraw(*command, nativeDraw);
+                }
+                ++mImpl->LastPoint.CasterDraws;
+                if (UsesAlphaCasterProgram(caster))
+                    ++mImpl->LastPoint.AlphaCasterDraws;
+            }
+        }
+    }
+    mImpl->Core->CmdEndRendering(*command);
+    if (!transition(target->Texture.Image, mapBarrier->CompletionAccess) || failed) {
+        target->ProducedFrameId = 0U;
+        target->Signatures.fill(0U);
+        return false;
+    }
+    target->Slots = slots;
+    target->Signatures = signatures;
+    target->Range = desc.Settings.Range;
+    target->Strength = desc.Settings.Strength;
+    target->ProducedFrameId = desc.FrameId;
+    target->LastUsedFrameId = desc.FrameId;
+    mImpl->LastPoint.AtlasBytes = uint64_t(layout.Width) * layout.Height * sizeof(float);
+    return true;
+#endif
+}
+
+NriPointShadowHistorySnapshot NriDirectionalShadowPass::FindLatestPointHistory(
+    uint64_t renderTargetNamespace, uint32_t colorPhysicalAddress, uint64_t atFrameId) const noexcept {
+    NriPointShadowHistorySnapshot result;
+    const auto found = mImpl->PointTargets.find({ renderTargetNamespace, colorPhysicalAddress });
+    if (!Available() || atFrameId == 0U || found == mImpl->PointTargets.end())
+        return result;
+    const auto& target = found->second;
+    if (target.ProducedFrameId == 0U || target.ProducedFrameId > atFrameId)
+        return result;
+    result.Image = target.Texture.Image;
+    result.Layout = target.Layout;
+    result.Slots = target.Slots;
+    result.Range = target.Range;
+    result.Strength = target.Strength;
+    result.ProducedFrameId = target.ProducedFrameId;
+    return result.Valid() ? result : NriPointShadowHistorySnapshot{};
+}
+
+const NriPointShadowTelemetry& NriDirectionalShadowPass::LastPointTelemetry() const {
+    return mImpl->LastPoint;
+}
+
 NriDirectionalShadowHistorySnapshot NriDirectionalShadowPass::FindLatestHistory(uint64_t renderTargetNamespace,
                                                                                 uint32_t colorPhysicalAddress,
                                                                                 uint64_t atFrameId) const noexcept {
@@ -984,6 +1401,11 @@ void NriDirectionalShadowPass::InvalidateHistory() noexcept {
     for (auto& [key, history] : mImpl->Histories) {
         history.Slot.State = {};
         history.Cache.Invalidate();
+    }
+    for (auto& [key, point] : mImpl->PointTargets) {
+        (void)key;
+        point.ProducedFrameId = 0U;
+        point.Signatures.fill(0U);
     }
 }
 
@@ -1018,6 +1440,10 @@ void NriDirectionalShadowPass::Shutdown() {
             }
         }
         for (auto& [key, pipeline] : mImpl->ShadowPipelines) {
+            (void)key;
+            mImpl->Core->DestroyPipeline(pipeline);
+        }
+        for (auto& [key, pipeline] : mImpl->PointPipelines) {
             (void)key;
             mImpl->Core->DestroyPipeline(pipeline);
         }

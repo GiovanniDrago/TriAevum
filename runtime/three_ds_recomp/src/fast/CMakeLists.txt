@@ -88,6 +88,7 @@ set(Source_Files__Renderer3dsPica
     renderer3ds/pica_pbr_seams.cpp
     renderer3ds/pica_pbr_seam_shader.cpp
     renderer3ds/virtual_shadow_map.cpp
+    renderer3ds/point_shadow_map.cpp
     renderer3ds/pica_shadow_geometry.cpp
     renderer3ds/pica_gi_geometry.cpp
 )

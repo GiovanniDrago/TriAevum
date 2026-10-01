@@ -4113,6 +4113,10 @@ void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
             mNativePicaCompositionSchedule, mDirectionalShadowSchedulePlan, reference.Target);
         anchor != nullptr && !anchor->AtTargetEnd && anchor->BeforeSubmissionId == draw.SubmissionId)
         TryRenderDirectionalShadowMap(target, mFrameGraphicsSettings, *anchor);
+    if (const auto* anchor = Oot3d::FindPicaEffectPassAnchor(
+            mNativePicaCompositionSchedule, mPointShadowSchedulePlan, reference.Target);
+        anchor != nullptr && !anchor->AtTargetEnd && anchor->BeforeSubmissionId == draw.SubmissionId)
+        TryRenderPointShadowMaps(target, mFrameGraphicsSettings, *anchor);
     if (timed) {
         const auto now = Clock::now();
         shadowMilliseconds += std::chrono::duration<double, std::milli>(now - begin).count();
@@ -4241,12 +4245,17 @@ GfxRenderingAPIVulkan::NativePicaGeometryPlacement GfxRenderingAPIVulkan::PlaceN
 
 bool GfxRenderingAPIVulkan::WantsPicaSequenceDrawPreparation(
     const Renderer3ds::PicaCompositionDrawReference& draw) const {
-    // The directional-shadow map runs at the opaque boundary of this sample,
-    // so it needs the sample's opaque world before native order reaches it.
+    // The directional and point shadow maps run at the opaque boundary of
+    // this sample, so they need its opaque world before native order reaches it.
+    const bool directionalMap =
+        mDirectionalShadowMapBarrierPlan.Valid() && mDirectionalShadowSchedulePlan.Valid() &&
+        Oot3d::PicaExtensionPassEnabled(mPicaExtensionGraph, Oot3d::PicaExtensionPass::DirectionalShadowLighting);
+    const bool pointMaps =
+        mPointShadowMapBarrierPlan.Valid() && mPointShadowSchedulePlan.Valid() &&
+        Oot3d::PicaExtensionPassEnabled(mPicaExtensionGraph, Oot3d::PicaExtensionPass::PointShadowLighting);
     return mFrameActive && mNativePicaCompositionSchedule.Valid() &&
            mNativePicaCompositionSchedule.Purpose() == Renderer3ds::PicaCompositionPurpose::Presentation &&
-           mDirectionalShadowMapBarrierPlan.Valid() && mDirectionalShadowSchedulePlan.Valid() &&
-           Oot3d::PicaExtensionPassEnabled(mPicaExtensionGraph, Oot3d::PicaExtensionPass::DirectionalShadowLighting) &&
+           (directionalMap || pointMaps) &&
            mNriPicaPipelineBridge.OwnedDrawsEnabled() &&
            draw.Domain == Renderer3ds::PicaCompositionDomain::Scene &&
            draw.Composition.Layer == Renderer3ds::PicaCompositionLayer::OpaqueWorld &&
@@ -4454,6 +4463,8 @@ bool GfxRenderingAPIVulkan::PreparePicaSequenceDraw(
             .Composition = draw.Composition,
             .LightingWorldToView = draw.LightBinding.WorldToView,
             .SceneDirectionals = draw.LightBinding.SceneDirectionals,
+            .ScenePoints = draw.LightBinding.ScenePoints,
+            .NativeLightSources = draw.LightBinding.Sources,
             .ShadowCaster = shadowCaster,
             .Raster = {
                 .SchemaVersion = Oot3d::kPicaSceneResolvedRasterStateSchemaVersion,
@@ -4708,6 +4719,33 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 mPicaExtensionGraph,
                 Oot3d::PicaExtensionPass::DirectionalShadowLighting) &&
             grassPerspectiveProjection;
+        // Point lights with a cube map: only NRI-owned draws bind the atlas.
+        const bool pointShadowReceiver = !nativeMemoryOnly && !mNativeFidelityProfile &&
+            graphicsSettings.Effects.PointShadows.Mode == Oot3d::PointShadowMode::CubeMaps &&
+            Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
+            mPointShadowMapBarrierPlan.Valid() &&
+            Oot3d::PicaExtensionPassEnabled(
+                mPicaExtensionGraph, Oot3d::PicaExtensionPass::PointShadowLighting) &&
+            mNriPicaPipelineBridge.OwnedDrawsEnabled() && grassPerspectiveProjection;
+        Oot3d::NriPointShadowHistorySnapshot pointShadowHistory;
+        Renderer3ds::PicaPointShadowAssignment pointShadowAssignment;
+        if (pointShadowReceiver) {
+            pointShadowHistory = mNriDirectionalShadowPass.FindLatestPointHistory(
+                draw.RenderTargetNamespace, draw.FramebufferColorPhysicalAddress, mFrameCounter);
+            if (pointShadowHistory.Valid()) {
+                const auto& layout = pointShadowHistory.Layout;
+                for (uint32_t row = 0; row < layout.SlotCount; ++row)
+                    if (pointShadowHistory.Slots[row].Valid())
+                        pointShadowAssignment.Identities[row] = pointShadowHistory.Slots[row].SourceIdentity;
+                pointShadowAssignment.Parameters = {
+                    pointShadowHistory.Range, pointShadowHistory.Strength,
+                    static_cast<float>(layout.FaceTexels),
+                    static_cast<float>(Renderer3ds::kPointShadowBorderTexels) };
+                pointShadowAssignment.Atlas = {
+                    1.0F / static_cast<float>(layout.Width), 1.0F / static_cast<float>(layout.Height),
+                    Renderer3ds::kPointShadowNearFraction, 1.0F };
+            }
+        }
         std::optional<Renderer3ds::PicaSurfaceLightingUniforms> surfaceLighting;
         const auto* environmentWorldToView = draw.LightBinding.WorldToView
             ? &*draw.LightBinding.WorldToView : nullptr;
@@ -4728,7 +4766,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 draw.TemporalVertexProgram.Hooks, booleanUniforms,
                 draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset),
                 draw.LightBinding, mFrameEnvironment,
-                environmentWorldToView && mSurfaceLightingView ? &*mSurfaceLightingView : nullptr);
+                environmentWorldToView && mSurfaceLightingView ? &*mSurfaceLightingView : nullptr,
+                pointShadowHistory.Valid() ? &pointShadowAssignment : nullptr);
             if (surfaceLighting) {
                 // Relative source weights (the guide's 8-bit radiance would
                 // clip gains above one); the gain applies when GI is composed.
@@ -4929,6 +4968,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 draw.CompositionDomain,
                 draw.DepthCompare,
                 draw.Composition.Layer,
+                pointShadowReceiver && surfaceLighting.has_value(),
             },
             mTemporalMotionEnabled && !nativeMemoryOnly,
             resolvedReflectionMaterial.has_value()
@@ -6105,6 +6145,29 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 destination.Integer = false;
             }
             {
+                // The cube atlas only where the variant reads it.
+                const bool pointShadowBound = pointShadowHistory.Valid() &&
+                    Oot3d::HasPicaShaderInstrumentationFeature(
+                        shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::PointShadowLighting);
+                if (pointShadowReceiver)
+                    mDiagnostics.RecordNriPointShadowReceiver(pointShadowBound);
+                auto& destination = nriDraw.PointShadowTexture;
+                destination.Image = pointShadowBound ? pointShadowHistory.Image : mFallbackTexture.NriImage;
+                destination.Format = pointShadowBound ? pointShadowHistory.Format : VK_FORMAT_R8G8B8A8_UNORM;
+                destination.Usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+                destination.Width = pointShadowBound ? pointShadowHistory.Layout.Width : mFallbackTexture.Width;
+                destination.Height = pointShadowBound ? pointShadowHistory.Layout.Height : mFallbackTexture.Height;
+                destination.MipLevels = 1U;
+                destination.MinFilter = VK_FILTER_NEAREST;
+                destination.MagFilter = VK_FILTER_NEAREST;
+                destination.MipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+                destination.AddressU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                destination.AddressV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                destination.MinLod = 0.0F;
+                destination.MaxLod = 0.0F;
+                destination.Integer = false;
+            }
+            {
                 auto& destination = nriDraw.LightingLutTexture;
                 destination.Image = lightingLutTexture->NriImage;
                 destination.Format = lightingLutInteger
@@ -6313,6 +6376,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 .Composition = draw.Composition,
                 .LightingWorldToView = draw.LightBinding.WorldToView,
                 .SceneDirectionals = draw.LightBinding.SceneDirectionals,
+                .ScenePoints = draw.LightBinding.ScenePoints,
+                .NativeLightSources = draw.LightBinding.Sources,
                 .ShadowCaster = shadowCaster,
                 .Raster = {
                     .SchemaVersion =
@@ -6883,6 +6948,48 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
     return executed;
 }
 
+bool GfxRenderingAPIVulkan::TryRenderPointShadowMaps(
+    NativePicaRenderTarget& target,
+    const Oot3d::GraphicsSettings& settings,
+    const Oot3d::PicaCompositionStageAnchor& anchor) {
+    const auto boundary = Oot3d::BuildPicaExtensionScheduleBoundary(
+        mNativePicaCompositionSchedule, anchor);
+    const auto decision = mPointShadowSchedulePlan.Resolve(boundary);
+    if (!decision.Authorized() ||
+        !mPointShadowInsertionAttemptedTargetsThisFrame.insert({boundary.ScheduleId, target.Key}).second)
+        return false;
+    // The same prepared casters as the directional map, complete at the
+    // opaque boundary before any of their receivers draws.
+    (void)mPreparedShadowCasterView.Publish(
+        mFrameCounter, mPreparedShadowCasterFrame, SamplePerspective(&target));
+    if (!mPreparedShadowCasterView.Active())
+        return false;
+    EndNativePicaRenderPass();
+    if (mRenderPassActive) {
+        vkCmdEndRenderPass(mCommandBuffers[mCurrentFrame]);
+        mRenderPassActive = false;
+        mOverlayRenderPassActive = false;
+    }
+    const bool executed = mNriDirectionalShadowPass.ExecutePointMaps(
+        {
+            mCurrentFrame,
+            mFrameCounter,
+            target.Key.RenderTargetNamespace,
+            target.Key.ColorPhysicalAddress,
+            decision.Authorization,
+            boundary.Surface,
+            settings.Effects.PointShadows,
+            mFrameEnvironment,
+        },
+        mPreparedShadowCasterView,
+        mPointShadowMapBarrierPlan);
+    const auto& telemetry = mNriDirectionalShadowPass.LastPointTelemetry();
+    mDiagnostics.RecordNriPointShadowMap(
+        executed, telemetry.CandidateLights, telemetry.Lights, telemetry.RenderedLights,
+        telemetry.CasterDraws, telemetry.AlphaCasterDraws);
+    return executed;
+}
+
 namespace {
 
 // The declared end-of-target providers of one composition target: the shadow
@@ -6892,6 +6999,7 @@ namespace {
 // in two lists.
 struct NativePicaTargetEndDispatch {
     const Oot3d::PicaCompositionStageAnchor* ShadowAnchor = nullptr;
+    const Oot3d::PicaCompositionStageAnchor* PointShadowAnchor = nullptr;
     bool DispatchGeometry = false;
 };
 
@@ -6905,6 +7013,7 @@ struct NativePicaTargetEndDispatch {
 [[nodiscard]] NativePicaTargetEndDispatch ResolveNativePicaTargetEndDispatch(
     const Oot3d::PicaCompositionSchedule& schedule,
     const ::Fast::Renderer::ExtensionPassSchedulePlan& shadowSchedule,
+    const ::Fast::Renderer::ExtensionPassSchedulePlan& pointShadowSchedule,
     bool geometryProviderValid,
     const ::Oot3d::Renderer::PicaCompositionTargetReference& target,
     uint64_t submissionId, bool geometryTargetPublished,
@@ -6918,6 +7027,13 @@ struct NativePicaTargetEndDispatch {
         if (anchor != nullptr && schedule.Reached(*anchor) &&
             (submissionId != 0U || anchor->AtTargetEnd)) {
             dispatch.ShadowAnchor = anchor;
+        }
+    }
+    if (pointShadowSchedule.Valid()) {
+        const auto* anchor = Oot3d::FindPicaEffectPassAnchor(schedule, pointShadowSchedule, target);
+        if (anchor != nullptr && schedule.Reached(*anchor) &&
+            (submissionId != 0U || anchor->AtTargetEnd)) {
+            dispatch.PointShadowAnchor = anchor;
         }
     }
     if (geometryProviderValid) {
@@ -7008,6 +7124,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
             const auto targetEnd = ResolveNativePicaTargetEndDispatch(
                 mNativePicaCompositionSchedule,
                 mDirectionalShadowSchedulePlan,
+                mPointShadowSchedulePlan,
                 mInteractiveGrassProviderPlan.Valid(), compositionTarget,
                 /*submissionId=*/0U,
                 mGrassWorldTargetsThisFrame.contains(source->Key),
@@ -7016,6 +7133,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
             if (targetEnd.ShadowAnchor != nullptr) {
                 TryRenderDirectionalShadowMap(
                     *source, graphicsSettings, *targetEnd.ShadowAnchor);
+            }
+            if (targetEnd.PointShadowAnchor != nullptr) {
+                TryRenderPointShadowMaps(
+                    *source, graphicsSettings, *targetEnd.PointShadowAnchor);
             }
             if (targetEnd.DispatchGeometry) {
                 TryRenderInteractiveGrass(
@@ -10597,6 +10718,7 @@ bool GfxRenderingAPIVulkan::ComposeNativePicaSceneForCopy(
     const auto targetEnd = ResolveNativePicaTargetEndDispatch(
         mNativePicaCompositionSchedule,
         mDirectionalShadowSchedulePlan,
+        mPointShadowSchedulePlan,
         mInteractiveGrassProviderPlan.Valid(), compositionTarget,
         afterDrawSubmissionId,
         mGrassWorldTargetsThisFrame.contains(source.Key),
@@ -10607,6 +10729,10 @@ bool GfxRenderingAPIVulkan::ComposeNativePicaSceneForCopy(
     if (presentation && targetEnd.ShadowAnchor != nullptr) {
         TryRenderDirectionalShadowMap(
             source, mFrameGraphicsSettings, *targetEnd.ShadowAnchor);
+    }
+    if (presentation && targetEnd.PointShadowAnchor != nullptr) {
+        TryRenderPointShadowMaps(
+            source, mFrameGraphicsSettings, *targetEnd.PointShadowAnchor);
     }
     if (presentation && targetEnd.DispatchGeometry) {
         TryRenderInteractiveGrass(

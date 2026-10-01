@@ -14,6 +14,7 @@ namespace Fast::Renderer3ds {
 
 struct alignas(16) PicaSurfaceLightUniforms {
     std::array<float, 4> DirectionEnabled{};
+    // RGB diffuse; W: point-shadow atlas row of a point light, negative for none.
     std::array<float, 4> Diffuse{};
     // A positive radius identifies a point light; zero preserves the native direction.
     std::array<float, 4> PositionRadius{};
@@ -21,7 +22,18 @@ struct alignas(16) PicaSurfaceLightUniforms {
 
 struct alignas(16) PicaScenePointLightUniforms {
     std::array<float, 4> PositionRadius{};
+    // RGB colour; W: point-shadow atlas row, negative for none.
     std::array<float, 4> Color{};
+};
+
+// Point lights with a shadow cube map this sample: atlas row i belongs to
+// Identities[i] (zero for an empty row).
+struct PicaPointShadowAssignment {
+    std::array<uint64_t, 8> Identities{};
+    // range (fraction of the radius), strength, face texels, border texels
+    std::array<float, 4> Parameters{};
+    // 1/width, 1/height, near-plane fraction of the far plane, enabled
+    std::array<float, 4> Atlas{};
 };
 
 struct alignas(16) PicaSurfaceLightingUniforms {
@@ -43,9 +55,12 @@ struct alignas(16) PicaSurfaceLightingUniforms {
     // directionals, added key light, dynamic lights (native local lights,
     // Navi and fairies). Written by the renderer; zero publishes no source.
     std::array<float, 4> GlobalIlluminationSources{};
+    // Point-shadow parameters and atlas of the assigned rows (zero: none).
+    std::array<float, 4> PointShadow{};
+    std::array<float, 4> PointShadowAtlas{};
 };
 
-static_assert(sizeof(PicaSurfaceLightingUniforms) == 1456U);
+static_assert(sizeof(PicaSurfaceLightingUniforms) == 1488U);
 
 // Scene lighting requires the column-major WorldToView captured with this
 // geometry sample. Neither a live camera nor a model/bone matrix is a substitute.
@@ -66,7 +81,8 @@ std::optional<PicaSurfaceLightingView> BuildPicaSurfaceLightingView(
     std::span<const uint8_t> floatUniformBytes,
     const PicaNativeLightBinding& binding,
     const PicaEnvironmentLighting& environment,
-    const PicaSurfaceLightingView* cameraView) noexcept;
+    const PicaSurfaceLightingView* cameraView,
+    const PicaPointShadowAssignment* pointShadows = nullptr) noexcept;
 
 [[nodiscard]] std::string_view PicaSurfaceLightingDeclarations() noexcept;
 [[nodiscard]] std::string_view PicaSurfaceLightingBody() noexcept;

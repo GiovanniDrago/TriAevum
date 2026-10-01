@@ -352,6 +352,10 @@ TEST(Oot3dVulkanDiagnostics, WritesBoundedAuthenticFrameTrace) {
     diagnostics.RecordNriPicaDisplayCopy(true, 4U);
     diagnostics.RecordNriPicaMemoryFillClear(true, true, 2U);
     diagnostics.RecordNriDirectionalShadow(37U, true, 5U);
+    diagnostics.RecordNriPointShadowMap(true, 6U, 4U, 2U, 31U, 3U);
+    diagnostics.RecordNriPointShadowMap(false, 1U, 9U, 9U, 9U, 9U);
+    diagnostics.RecordNriPointShadowReceiver(true);
+    diagnostics.RecordNriPointShadowReceiver(false);
     diagnostics.RecordNriDirectionalShadowAttempt(41U, 19U, 7U);
     diagnostics.RecordNriDirectionalShadowLightSelection(
         19U, 3U, 97.5F, 0.25F, 0.75F, -0.5F);
@@ -777,6 +781,15 @@ TEST(Oot3dVulkanDiagnostics, WritesBoundedAuthenticFrameTrace) {
     EXPECT_EQ(frame.at("nri_directional_shadow_prepared_alpha_caster_count"), 2U);
     EXPECT_EQ(frame.at("nri_directional_shadow_prepared_alpha_rejected_count"), 1U);
     EXPECT_EQ(frame.at("nri_directional_shadow_alpha_caster_draw_count"), 5U);
+    EXPECT_EQ(frame.at("nri_point_shadow_map_attempt_count"), 2U);
+    EXPECT_EQ(frame.at("nri_point_shadow_map_count"), 1U);
+    EXPECT_EQ(frame.at("nri_point_shadow_candidate_light_count"), 7U);
+    EXPECT_EQ(frame.at("nri_point_shadow_light_count"), 4U);
+    EXPECT_EQ(frame.at("nri_point_shadow_rendered_light_count"), 2U);
+    EXPECT_EQ(frame.at("nri_point_shadow_caster_draw_count"), 31U);
+    EXPECT_EQ(frame.at("nri_point_shadow_alpha_caster_draw_count"), 3U);
+    EXPECT_EQ(frame.at("nri_point_shadow_receiver_draw_count"), 2U);
+    EXPECT_EQ(frame.at("nri_point_shadow_receiver_bound_draw_count"), 1U);
     EXPECT_EQ(
         frame.at("nri_directional_shadow_receiver_eligible_draw_count"),
         2U);

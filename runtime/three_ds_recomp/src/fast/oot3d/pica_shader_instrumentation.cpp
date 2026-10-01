@@ -1,4 +1,5 @@
 #include "fast/oot3d/pica_shader_instrumentation.h"
+#include "fast/renderer3ds/point_shadow_map.h"
 #include "fast/renderer3ds/pica_surface_lighting.h"
 #include "fast/renderer3ds/pica_material_guide.h"
 
@@ -920,6 +921,16 @@ vec3 pica_surface_shadow(int slot) {
         ? oot3d_directional_shadow_visibility() : vec3(1.0);
 }
 )glsl" : "\nvec3 pica_surface_shadow(int slot) { return vec3(1.0); }\n";
+        // Point lights read their cube map only when this sample has one.
+        const bool pointShadow = HasPicaShaderInstrumentationFeature(
+            request.RequestedFeatures, PicaShaderInstrumentationFeature::PointShadowLighting);
+        if (pointShadow) {
+            declarations += Renderer3ds::PointShadowReceiverShader();
+            result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_POINT_SHADOW_V1");
+            apply(PicaShaderInstrumentationFeature::PointShadowLighting);
+        } else {
+            declarations += "\nfloat pica_point_shadow(float slot, vec3 light_to_fragment, float radius) { return 1.0; }\n";
+        }
     }
 
     if (!pbr && HasPicaShaderInstrumentationFeature(

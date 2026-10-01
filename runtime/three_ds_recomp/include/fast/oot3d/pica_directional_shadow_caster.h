@@ -10,10 +10,10 @@ namespace Fast::Oot3d {
 
 inline constexpr const char* kPicaDirectionalShadowFragmentShader = "#version 450\nvoid main(){}\n";
 
-// Caster transform block. It sits outside the canonical PICA binding contract
-// (0-26), so an alpha-tested caster keeps the native texture and fragment
-// uniform bindings of its own program.
-inline constexpr uint32_t kPicaShadowCasterTransformBinding = 27U;
+// Caster transform block. It sits outside the PICA binding contract (0-28),
+// so an alpha-tested caster keeps the native texture and fragment uniform
+// bindings of its own program.
+inline constexpr uint32_t kPicaShadowCasterTransformBinding = 30U;
 
 enum class PicaDirectionalShadowCasterShaderStatus : uint8_t {
     Applied,
@@ -40,6 +40,13 @@ struct PicaDirectionalShadowCasterShader {
 // offsets and semantics. It never discovers or rewrites a GLSL main function.
 [[nodiscard]] PicaDirectionalShadowCasterShader
 BuildPicaDirectionalShadowCasterShader(
+    std::string_view source, uint64_t vertexKey,
+    const ::Fast::Renderer3ds::PicaVertexShaderHookLayout& hooks);
+
+// Point-light cube-face variant: the face's world-to-clip transform arrives
+// as a 64-byte push constant; the caster block supplies view-to-world.
+[[nodiscard]] PicaDirectionalShadowCasterShader
+BuildPicaPointShadowCasterShader(
     std::string_view source, uint64_t vertexKey,
     const ::Fast::Renderer3ds::PicaVertexShaderHookLayout& hooks);
 

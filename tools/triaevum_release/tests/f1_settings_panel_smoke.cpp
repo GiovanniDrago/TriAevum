@@ -325,6 +325,34 @@ void CheckSceneEnvironment() {
     graphics.Apply(settings);
     Check(graphics.SnapshotForRendering().Value.Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps,
           "per-pixel PBR lighting did not restore VSM");
+    Select("Point shadow mode", "Cube maps");
+    Check(graphics.SnapshotForRendering().Value.Effects.PointShadows.Mode == PointShadowMode::CubeMaps,
+          "point shadows did not enable live");
+    Select("Point shadow face resolution", "1024 (24 MiB per light)");
+    EditScalar("Shadowed point lights", "6");
+    EditScalar("Point shadow reach", "50");
+    EditScalar("Point shadow strength", "0.25");
+    {
+        const auto points = graphics.Snapshot().Effects.PointShadows;
+        Check(points.Resolution == 1024U && points.MaxLights == 6U && std::abs(points.Range - 0.5F) < 1.0e-5F &&
+                  std::abs(points.Strength - 0.25F) < 1.0e-5F,
+              "point shadow controls did not apply live");
+    }
+    settings = graphics.Snapshot();
+    settings.Effects.SurfaceLighting = SurfaceLightingMode::Native;
+    graphics.Apply(settings);
+    Frame();
+    Check(graphics.Snapshot().Effects.PointShadows.Mode == PointShadowMode::CubeMaps &&
+              graphics.SnapshotForRendering().Value.Effects.PointShadows.Mode == PointShadowMode::Off,
+          "native lighting did not bypass point shadows while preserving their preference");
+    Click("Point shadow mode");
+    Check(Find("Cube maps").Disabled, "native lighting can enable point shadows");
+    Click("Off");
+    Check(graphics.Snapshot().Effects.PointShadows.Mode == PointShadowMode::Off, "cannot disable unsupported point shadows");
+    settings = graphics.Snapshot();
+    settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixelPbr;
+    graphics.Apply(settings);
+    Frame();
     Click("Use scene environment");
     Check(Find("Native ambient contribution").Disabled, "scene reference did not own the ambient baseline");
     Click("Preserve scene brightness");

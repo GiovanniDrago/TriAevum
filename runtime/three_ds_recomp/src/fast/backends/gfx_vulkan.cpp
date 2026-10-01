@@ -1692,6 +1692,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
     mGrassInsertionAttemptedTargetsThisFrame.clear();
     mGrassWorldTargetsThisFrame.clear();
     mDirectionalShadowInsertionAttemptedTargetsThisFrame.clear();
+    mPointShadowInsertionAttemptedTargetsThisFrame.clear();
     mGrassSurfaceOccurrencesThisFrame.clear();
     mRigidMotionOccurrencesThisFrame.clear();
     mNativePicaDepthWritingDrawsThisFrame = 0;
@@ -1768,6 +1769,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
         mFrameEnvironment = graphicsSnapshot.Environment;
     }
     if (mFrameGraphicsSettings.Effects.DirectionalShadows.Mode != nextGraphicsSettings.Effects.DirectionalShadows.Mode ||
+        mFrameGraphicsSettings.Effects.PointShadows.Mode != nextGraphicsSettings.Effects.PointShadows.Mode ||
         mFrameGraphicsSettings.Effects.SurfaceLighting != nextGraphicsSettings.Effects.SurfaceLighting)
         mNriDirectionalShadowPass.InvalidateHistory();
     if (mFrameGraphicsSettingsRevision != 0 &&
@@ -1859,6 +1861,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
         mTemporalMotionEnabled,
         graphicsSettings.Grass.Quality != Oot3d::GrassQuality::Off,
         globalIlluminationRequested,
+        graphicsSettings.Effects.PointShadows.Mode == Oot3d::PointShadowMode::CubeMaps,
     };
     if (!mPicaExtensionRequests.has_value() ||
         *mPicaExtensionRequests != extensionRequests) {
@@ -1878,6 +1881,16 @@ void GfxRenderingAPIVulkan::StartFrame() {
                 Oot3d::PicaExtensionPassName(
                     Oot3d::PicaExtensionPass::DirectionalShadowMap),
                 Oot3d::EffectContractKind::AuxiliaryOutput);
+        auto pointShadowMapBarriers = Oot3d::BuildEffectPassBarrierPlan(
+            graph, Oot3d::PicaExtensionPassName(Oot3d::PicaExtensionPass::PointShadowMap));
+        auto pointShadowSchedule = Oot3d::BuildPicaEffectPassSchedulePlan(
+            graph, Oot3d::PicaExtensionPassName(Oot3d::PicaExtensionPass::PointShadowMap),
+            Oot3d::EffectContractKind::AuxiliaryOutput);
+        if (extensionRequests.PointShadows &&
+            (!pointShadowMapBarriers.Valid() || !pointShadowSchedule.Valid() ||
+             !Oot3d::PicaExtensionPassEnabled(graph, Oot3d::PicaExtensionPass::PointShadowLighting))) {
+            throw std::runtime_error("PICA extension graph did not compile point shadow contracts");
+        }
         auto interactiveGrassProvider =
             Oot3d::BuildEffectGeometryProviderPlan(
                 graph,
@@ -1912,6 +1925,8 @@ void GfxRenderingAPIVulkan::StartFrame() {
             std::move(directionalShadowMapBarriers);
         mDirectionalShadowSchedulePlan =
             std::move(directionalShadowSchedule);
+        mPointShadowMapBarrierPlan = std::move(pointShadowMapBarriers);
+        mPointShadowSchedulePlan = std::move(pointShadowSchedule);
     }
     mInteractiveGrassProviderExecution.Reset(
         mInteractiveGrassProviderPlan);

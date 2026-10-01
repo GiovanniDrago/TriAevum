@@ -260,8 +260,8 @@ TEST(Oot3dPicaDirectionalShadowCaster, CasterTransformLeavesTheNativeBindingsFre
     const auto result = BuildPicaDirectionalShadowCasterShader(
         kShadowCasterVertexShader, 0x1234U, ShadowCasterHooks());
     ASSERT_TRUE(result.Applied());
-    EXPECT_EQ(kPicaShadowCasterTransformBinding, 27U);
-    EXPECT_NE(result.Source.find("layout(set=0,binding=27,std140) uniform Oot3dDirectionalShadowTransform"),
+    EXPECT_EQ(kPicaShadowCasterTransformBinding, 30U);
+    EXPECT_NE(result.Source.find("layout(set=0,binding=30,std140) uniform Oot3dDirectionalShadowTransform"),
               std::string::npos);
     EXPECT_EQ(result.Source.find("binding=1,std140"), std::string::npos);
 }

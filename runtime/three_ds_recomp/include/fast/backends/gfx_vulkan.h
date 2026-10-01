@@ -756,6 +756,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         NativePicaRenderTarget& target,
         const Oot3d::GraphicsSettings& settings,
         const Oot3d::PicaCompositionStageAnchor& anchor);
+    bool TryRenderPointShadowMaps(
+        NativePicaRenderTarget& target,
+        const Oot3d::GraphicsSettings& settings,
+        const Oot3d::PicaCompositionStageAnchor& anchor);
     void ReleaseEffectGraphImageClients();
     void ApplyInternalResolutionScale(float scale);
     void ResetNativePicaRenderTargets(bool preserveDisplayImages = false);
@@ -1038,6 +1042,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::EffectPassBarrierPlan mDirectionalShadowMapBarrierPlan;
     ::Fast::Renderer::ExtensionPassSchedulePlan
         mDirectionalShadowSchedulePlan;
+    Oot3d::EffectPassBarrierPlan mPointShadowMapBarrierPlan;
+    ::Fast::Renderer::ExtensionPassSchedulePlan
+        mPointShadowSchedulePlan;
     uint64_t mFrameAzaharTextureGeneration = 0;
     uint64_t mCustomTextureUploadBytesThisFrame = 0;
     std::map<std::vector<uint8_t>, Renderer3ds::PicaDevicePipelineRecord> mNativePicaPipelines;
@@ -1559,6 +1566,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         mGrassWorldTargetsThisFrame;
     std::set<std::pair<uint64_t, NativePicaRenderTargetKey>>
         mDirectionalShadowInsertionAttemptedTargetsThisFrame;
+    std::set<std::pair<uint64_t, NativePicaRenderTargetKey>>
+        mPointShadowInsertionAttemptedTargetsThisFrame;
     std::unordered_map<uint64_t, uint32_t>
         mGrassSurfaceOccurrencesThisFrame;
     std::unordered_map<uint64_t, uint32_t>

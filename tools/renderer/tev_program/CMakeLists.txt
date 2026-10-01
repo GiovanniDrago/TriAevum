@@ -110,7 +110,8 @@ endif()
 add_test(NAME surface_normal_gpu COMMAND surface_normal_gpu_tests)
 set_tests_properties(surface_normal_gpu PROPERTIES TIMEOUT 60)
 add_executable(scene_point_light_gpu_tests scene_point_light_gpu_tests.cpp
-    "${runtime}/src/fast/renderer3ds/pica_surface_lighting.cpp")
+    "${runtime}/src/fast/renderer3ds/pica_surface_lighting.cpp"
+    "${runtime}/src/fast/renderer3ds/point_shadow_map.cpp")
 target_compile_features(scene_point_light_gpu_tests PRIVATE cxx_std_20)
 target_include_directories(scene_point_light_gpu_tests PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")
 target_link_libraries(scene_point_light_gpu_tests PRIVATE Vulkan::Vulkan "${SHADERC_LIBRARY}")
@@ -201,6 +202,7 @@ target_sources(build_fragment_artifacts PRIVATE
     "${runtime}/src/fast/renderer3ds/pica_pbr_seam_shader.cpp"
     "${runtime}/src/fast/renderer3ds/pica_pbr_shading.cpp"
     "${runtime}/src/fast/renderer3ds/pica_surface_lighting.cpp"
+    "${runtime}/src/fast/renderer3ds/point_shadow_map.cpp"
     "${runtime}/src/fast/renderer3ds/pica_vertex_surface.cpp"
     "${runtime}/src/fast/renderer3ds/virtual_shadow_map.cpp"
     "${runtime}/src/fast/oot3d/directional_shadows.cpp"
@@ -270,7 +272,8 @@ add_executable(pbr_seam_gpu_tests pbr_seam_gpu_tests.cpp
     "${runtime}/src/fast/renderer3ds/pica_pbr_seams.cpp"
     "${runtime}/src/fast/renderer3ds/pica_pbr_seam_shader.cpp"
     "${runtime}/src/fast/renderer3ds/pica_pbr_shading.cpp"
-    "${runtime}/src/fast/renderer3ds/pica_surface_lighting.cpp")
+    "${runtime}/src/fast/renderer3ds/pica_surface_lighting.cpp"
+    "${runtime}/src/fast/renderer3ds/point_shadow_map.cpp")
 target_compile_features(pbr_seam_gpu_tests PRIVATE cxx_std_20)
 target_include_directories(pbr_seam_gpu_tests PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")
 target_link_libraries(pbr_seam_gpu_tests PRIVATE Vulkan::Vulkan "${SHADERC_LIBRARY}")

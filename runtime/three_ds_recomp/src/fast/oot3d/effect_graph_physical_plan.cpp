@@ -77,6 +77,8 @@ EffectPhysicalResidency ClassifyEffectResourceResidency(
         case EffectResource::DirectionalShadowMap:
         case EffectResource::DirectionalShadowStaticCache:
         case EffectResource::DirectionalShadowStaticHistory:
+        case EffectResource::PointShadowHistory:
+        case EffectResource::PointShadowMap:
             return EffectPhysicalResidency::TemporalHistory;
         case EffectResource::HierarchicalDepth:
         case EffectResource::AmbientOcclusion:
@@ -104,6 +106,8 @@ EffectTransientStorageClass ClassifyEffectTransientStorage(
         case EffectResource::DirectionalShadowHistory:
         case EffectResource::DirectionalShadowStaticCache:
         case EffectResource::DirectionalShadowStaticHistory:
+        case EffectResource::PointShadowHistory:
+        case EffectResource::PointShadowMap:
             return EffectTransientStorageClass::ShadowDepth;
         case EffectResource::HierarchicalDepth:
             return EffectTransientStorageClass::DepthPyramid;

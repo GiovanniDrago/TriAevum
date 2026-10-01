@@ -387,6 +387,8 @@ PicaSceneRecordStatus PicaSceneFrame::Record(
     record.Composition = desc.Composition;
     record.LightingWorldToView = desc.LightingWorldToView;
     record.SceneDirectionals = desc.SceneDirectionals;
+    record.ScenePoints = desc.ScenePoints;
+    record.NativeLightSources = desc.NativeLightSources;
     record.ShadowCaster = desc.ShadowCaster;
     record.Raster = desc.Raster;
     record.RenderTarget = desc.RenderTarget;

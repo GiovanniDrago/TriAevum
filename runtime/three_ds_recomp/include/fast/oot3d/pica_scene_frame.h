@@ -51,6 +51,10 @@ struct PicaSceneDrawRecordDesc {
     ::Fast::Renderer3ds::PicaCompositionAttribution Composition;
     std::optional<std::array<float, 16>> LightingWorldToView;
     std::shared_ptr<const ::Fast::Renderer3ds::PicaSceneDirectionalLights> SceneDirectionals;
+    // Point lights the draw's lighting sees: the shared scene snapshot and its
+    // own selected native sources (in shader slot order).
+    std::shared_ptr<const ::Fast::Renderer3ds::PicaScenePointLights> ScenePoints;
+    std::array<::Fast::Renderer3ds::PicaNativeLightSource, 3> NativeLightSources{};
     ::Fast::Renderer3ds::VirtualShadowCaster ShadowCaster;
     PicaSceneResolvedRasterState Raster;
     PicaSceneRenderTargetState RenderTarget;
@@ -175,7 +179,7 @@ struct PicaSceneFrameStats {
 // metadata is retained. Shader sources and layouts are interned across frames.
 class PicaSceneFrame final {
   public:
-    static constexpr uint32_t kSchemaVersion = 12U;
+    static constexpr uint32_t kSchemaVersion = 13U;
 
     PicaSceneFrame();
     ~PicaSceneFrame();

@@ -136,6 +136,20 @@ PicaNriFragmentShaderVariant BuildPicaNriFragmentShaderVariant(
         }
     }
 
+    if (!extensions.PointShadowSampler.empty()) {
+        const std::string samplerName(extensions.PointShadowSampler);
+        const std::string declaration =
+            "layout(set=0,binding=27) uniform sampler2D " + samplerName + ";";
+        const CombinedSamplerDeclaration point{
+            declaration, {}, extensions.PointShadowSampler, 27U, 28U, false};
+        if (result.Source.find(point.SignedDeclaration) != std::string::npos &&
+            !ReplaceOnce(result.Source, point.SignedDeclaration, BuildSeparateDeclaration(point, false))) {
+            result.Error = "combined extension sampler declaration is not unique: " + samplerName;
+            result.Source.assign(source);
+            return result;
+        }
+    }
+
     result.Applied = true;
     return result;
 }

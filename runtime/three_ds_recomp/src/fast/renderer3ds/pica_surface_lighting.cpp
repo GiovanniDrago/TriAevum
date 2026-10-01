@@ -51,7 +51,14 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
     std::span<const uint8_t> floatUniformBytes,
     const PicaNativeLightBinding& binding,
     const PicaEnvironmentLighting& environment,
-    const PicaSurfaceLightingView* cameraView) noexcept {
+    const PicaSurfaceLightingView* cameraView,
+    const PicaPointShadowAssignment* pointShadows) noexcept {
+    const auto pointShadowRow = [pointShadows](uint64_t identity) {
+        if (pointShadows == nullptr || identity == 0U) return -1.0F;
+        for (size_t row = 0; row < pointShadows->Identities.size(); ++row)
+            if (pointShadows->Identities[row] == identity) return static_cast<float>(row);
+        return -1.0F;
+    };
     const auto* surface = hooks.SurfaceProgram();
     const auto* transform = hooks.TransformProgram();
     if (surface == nullptr || transform == nullptr) return std::nullopt;
@@ -119,6 +126,7 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
         }
         if (!pointSource) continue;
         light.PositionRadius[3] = source.Radius;
+        light.Diffuse[3] = pointShadowRow(source.SourceIdentity);
         for (size_t component = 0; component < 3U; ++component) {
             light.PositionRadius[component] = view[component][3];
             for (size_t axis = 0; axis < 3U; ++axis)
@@ -150,6 +158,7 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
         if (!settings.Enabled || settings.Intensity <= 0 || source.Radius <= 0) continue;
         auto& point = result.ScenePoints[result.Control[1]++];
         point.PositionRadius[3] = source.Radius * settings.RadiusScale;
+        point.Color[3] = pointShadowRow(source.SourceIdentity);
         for (size_t row = 0; row < 3; ++row) {
             point.PositionRadius[row] = view[row][3];
             for (size_t axis = 0; axis < 3; ++axis)
@@ -188,6 +197,10 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
     for (size_t channel = 0; channel < 3; ++channel)
         result.ResolvedAmbient[channel] = result.ResolvedAmbient[channel] * ambientGain +
                                           result.EnvironmentAmbient[channel];
+    if (pointShadows != nullptr) {
+        result.PointShadow = pointShadows->Parameters;
+        result.PointShadowAtlas = pointShadows->Atlas;
+    }
     return result;
 }
 
@@ -219,6 +232,8 @@ layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
     vec4 scene_directional_colors[2];
     PicaScenePointLight scene_points[32];
     vec4 gi_sources;
+    vec4 point_shadow;
+    vec4 point_shadow_atlas;
 } pica_surface;
 vec3 pica_surface_unit(vec3 value) {
     float squared = dot(value, value);
@@ -228,6 +243,7 @@ vec3 pica_surface_resolved_ambient(vec3 native_ambient) {
     return native_ambient * pica_surface.environment_parameters.y + pica_surface.environment_ambient.rgb;
 }
 vec3 pica_surface_shadow(int slot);
+float pica_point_shadow(float slot, vec3 light_to_fragment, float radius);
 void pica_surface_light(int slot, out vec3 direction, out vec3 radiance) {
     PicaSurfaceLight light = pica_surface.lights[slot];
     direction = light.direction_enabled.xyz;
@@ -240,7 +256,7 @@ void pica_surface_light(int slot, out vec3 direction, out vec3 radiance) {
         float attenuation = max(0.0, 1.0 - dot(world_delta, world_delta) /
                                 (light.position_radius.w * light.position_radius.w));
         direction = pica_surface_unit(delta);
-        radiance *= attenuation;
+        radiance *= attenuation * pica_point_shadow(light.diffuse.w, -world_delta, light.position_radius.w);
     }
 }
 void pica_surface_scene_point(int slot, out vec3 direction, out vec3 radiance) {
@@ -252,7 +268,7 @@ void pica_surface_scene_point(int slot, out vec3 direction, out vec3 radiance) {
     float attenuation = max(0.0, 1.0 - dot(world_delta, world_delta) /
                             (light.position_radius.w * light.position_radius.w));
     direction = pica_surface_unit(delta);
-    radiance = light.color.rgb * attenuation;
+    radiance = light.color.rgb * attenuation * pica_point_shadow(light.color.w, -world_delta, light.position_radius.w);
 }
 vec3 pica_surface_scene_point_primary(vec3 normal_view) {
     vec3 color = vec3(0.0);

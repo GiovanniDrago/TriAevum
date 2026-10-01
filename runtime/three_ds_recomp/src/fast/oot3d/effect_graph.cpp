@@ -27,7 +27,8 @@ namespace {
            resource == EffectResource::NativeDepth ||
            resource == EffectResource::NativeShadow2D ||
            resource == EffectResource::DirectionalShadowHistory ||
-           resource == EffectResource::DirectionalShadowStaticHistory;
+           resource == EffectResource::DirectionalShadowStaticHistory ||
+           resource == EffectResource::PointShadowHistory;
 }
 
 [[nodiscard]] constexpr bool IsSemanticResource(EffectResource resource) noexcept {
@@ -455,6 +456,8 @@ std::string_view PicaExtensionPassName(PicaExtensionPass pass) noexcept {
         case PicaExtensionPass::Guides: return "PicaAuxiliaryOutputs";
         case PicaExtensionPass::DirectionalShadowLighting: return "DirectionalShadowLighting";
         case PicaExtensionPass::DirectionalShadowMap: return "DirectionalShadowMap";
+        case PicaExtensionPass::PointShadowLighting: return "PointShadowLighting";
+        case PicaExtensionPass::PointShadowMap: return "PointShadowMap";
         case PicaExtensionPass::AmbientOcclusion: return "AmbientOcclusion";
         case PicaExtensionPass::Reflections: return "Reflections";
         case PicaExtensionPass::TemporalReconstruction: return "TemporalReconstruction";
@@ -521,6 +524,25 @@ CompiledEffectGraph BuildPicaExtensionGraph(const PicaAttachmentFeatureRequests&
     if (requests.DirectionalShadows) {
         graph.Export(EffectResource::DirectionalShadowMap);
         graph.Export(EffectResource::DirectionalShadowStaticCache);
+    }
+    // Point lights: receivers read the published cube atlas; the producer
+    // renders it from the same prepared casters at the opaque boundary.
+    graph.Add({ .Name = std::string(PicaExtensionPassName(PicaExtensionPass::PointShadowLighting)),
+                .Enabled = requests.PointShadows,
+                .Stage = EffectStage::NativeLighting,
+                .Contract = EffectContractKind::LightingContributor,
+                .Resources = { Read(EffectResource::NativeSceneView),
+                               Read(EffectResource::PointShadowHistory) } });
+    graph.Add({ .Name = std::string(PicaExtensionPassName(PicaExtensionPass::PointShadowMap)),
+                .Enabled = requests.PointShadows,
+                .Stage = EffectStage::BeforeOpaque,
+                .Contract = EffectContractKind::AuxiliaryOutput,
+                .Resources = { Read(EffectResource::PreparedShadowCasters),
+                               Read(EffectResource::PointShadowHistory),
+                               Write(EffectResource::PointShadowMap) },
+                .FallbackStage = EffectStage::BeforeUi });
+    if (requests.PointShadows) {
+        graph.Export(EffectResource::PointShadowMap);
     }
     graph.Add({ .Name = std::string(PicaExtensionPassName(PicaExtensionPass::AmbientOcclusion)),
                 .DependsOn = { std::string(PicaExtensionPassName(PicaExtensionPass::Guides)) },

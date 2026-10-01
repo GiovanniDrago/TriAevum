@@ -2,6 +2,7 @@
 
 #include "fast/oot3d/directional_shadows.h"
 #include "fast/oot3d/graphics_capabilities.h"
+#include "fast/oot3d/point_shadows.h"
 #include "fast/oot3d/grass_types.h"
 #include "fast/oot3d/reflection_material_profile.h"
 #include "fast/oot3d/upscaler_contract.h"
@@ -207,6 +208,7 @@ void ApplyGrassQualityPreset(
 struct EffectsSettings {
     SurfaceLightingMode SurfaceLighting = SurfaceLightingMode::Native;
     DirectionalShadowSettings DirectionalShadows;
+    PointShadowSettings PointShadows;
     GlobalIlluminationSettings GlobalIllumination;
     AmbientOcclusionMode AmbientOcclusion = AmbientOcclusionMode::Off;
     uint8_t AoQuality = 0;

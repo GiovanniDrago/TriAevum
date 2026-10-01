@@ -179,6 +179,7 @@ struct Case { PicaSurfaceLighting lighting; vec4 view; vec4 normal; vec4 base; }
 layout(set=0,binding=0,std430) readonly buffer Cases { Case cases[]; } inputs;
 layout(set=0,binding=1,std430) writeonly buffer Results { vec4 values[]; } outputs;
 vec3 pica_surface_shadow(int slot) { return vec3(1.0); }
+float pica_point_shadow(float slot, vec3 light_to_fragment, float radius) { return 1.0; }
 void main() {
     uint index = gl_GlobalInvocationID.x;
     pica_surface = inputs.cases[index].lighting;

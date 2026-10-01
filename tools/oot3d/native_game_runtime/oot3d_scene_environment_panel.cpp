@@ -92,6 +92,62 @@ void DrawDirectionalShadows() {
     }
 }
 
+void DrawPointShadows() {
+    using namespace Fast::Oot3d;
+    auto& runtime = GraphicsSettingsRuntime::Instance();
+    auto settings = runtime.Snapshot();
+    auto capabilities = runtime.Capabilities();
+    if (!UsesFullSceneLighting(settings.Effects.SurfaceLighting))
+        capabilities.Set(GraphicsCapability::NriDirectionalShadows, false,
+                         "Choose Per-pixel or Per-pixel + PBR in Lighting.");
+    bool changed = false;
+    ImGui::SeparatorText("Point light shadows");
+    auto& pointShadows = settings.Effects.PointShadows;
+    const auto& capability = capabilities.Get(GraphicsCapability::NriDirectionalShadows);
+    const char* const modes[] = { "Off", "Cube maps" };
+    changed |= SettingsUi::ValidatedCombo<PointShadowMode>(
+        "Point shadow mode", settings, capabilities, modes,
+        [](auto& value, auto mode) { value.Effects.PointShadows.Mode = mode; },
+        [](const auto& value) { return value.Effects.PointShadows.Mode; });
+    if (pointShadows.Mode == PointShadowMode::CubeMaps) {
+        if (!capability.Available) ImGui::BeginDisabled();
+        constexpr uint32_t resolutions[] = { 256U, 512U, 1024U };
+        int resolutionIndex = 1;
+        for (size_t index = 0; index < std::size(resolutions); ++index)
+            if (resolutions[index] == pointShadows.Resolution) resolutionIndex = static_cast<int>(index);
+        const char* const resolutionNames[] = {
+            "256 (1.5 MiB per light)", "512 (6.1 MiB per light)", "1024 (24 MiB per light)" };
+        if (ImGui::Combo("Point shadow face resolution", &resolutionIndex, resolutionNames,
+                         static_cast<int>(std::size(resolutionNames)))) {
+            pointShadows.Resolution = resolutions[resolutionIndex];
+            changed = true;
+        }
+        int maxLights = pointShadows.MaxLights;
+        if (ImGui::SliderInt("Shadowed point lights", &maxLights, 1, 8)) {
+            pointShadows.MaxLights = static_cast<uint8_t>(maxLights);
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The lights nearest the camera cast shadows; the others stay unshadowed.");
+        float reach = pointShadows.Range * 100.0F;
+        if (ImGui::SliderFloat("Point shadow reach", &reach, 25.0F, 100.0F, "%.0f%% of light radius",
+                               ImGuiSliderFlags_AlwaysClamp)) {
+            pointShadows.Range = reach / 100.0F;
+            changed = true;
+        }
+        changed |= ImGui::SliderFloat("Point shadow strength", &pointShadows.Strength, 0.0F, 1.0F, "%.2f",
+                                      ImGuiSliderFlags_AlwaysClamp);
+        ImGui::TextWrapped("Navi, fairies and native local lights shadow only within their own radius. Rows of unchanged static lights are reused.");
+        if (!capability.Available) ImGui::EndDisabled();
+    }
+    if (!capability.Available)
+        ImGui::TextDisabled("Unavailable: %s", capability.Reason.c_str());
+    if (changed) {
+        settings.Preset = GraphicsPreset::Custom;
+        runtime.Apply(std::move(settings));
+    }
+}
+
 class EnvironmentPanel final : public Fast::Oot3d::GraphicsSettingsPanelTab {
 public:
   explicit EnvironmentPanel(std::shared_ptr<SceneEnvironmentRuntime> runtime)
@@ -99,6 +155,7 @@ public:
   const char *Label() const noexcept override { return "Environment"; }
   void Draw() override {
     DrawDirectionalShadows();
+    DrawPointShadows();
     ImGui::SeparatorText("Scene environment");
     const auto state = mRuntime->Snapshot();
     if (!state.SceneId) {

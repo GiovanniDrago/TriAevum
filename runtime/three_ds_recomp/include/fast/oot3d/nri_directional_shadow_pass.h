@@ -6,6 +6,8 @@
 #include "fast/oot3d/effect_graph_pass_barriers.h"
 #include "fast/oot3d/native_scene_view.h"
 #include "fast/oot3d/pica_directional_shadow_lighting.h"
+#include "fast/oot3d/point_shadows.h"
+#include "fast/renderer3ds/point_shadow_map.h"
 #include "fast/renderer/extension_schedule.h"
 #include "fast/renderer3ds/pica_environment_lighting.h"
 
@@ -56,6 +58,43 @@ struct NriDirectionalShadowHistorySnapshot {
     }
 };
 
+struct NriPointShadowExecuteDesc {
+    uint32_t FrameSlot = 0;
+    uint64_t FrameId = 0;
+    uint64_t RenderTargetNamespace = 0;
+    uint32_t ColorPhysicalAddress = 0;
+    ::Fast::Renderer::ExtensionPassAuthorization ScheduleAuthorization;
+    ::Fast::Renderer::ExtensionSurfaceIdentity ExpectedSurface;
+    PointShadowSettings Settings;
+    // Point-light groups (enable, intensity, radius scale) and the native
+    // local-light gain, exactly as the receivers' lighting applies them.
+    Renderer3ds::PicaEnvironmentLighting Environment;
+};
+
+// The published cube atlas of one target: its rows, and the light of each.
+struct NriPointShadowHistorySnapshot {
+    VkImage Image = VK_NULL_HANDLE;
+    VkFormat Format = VK_FORMAT_D32_SFLOAT;
+    Renderer3ds::PointShadowLayout Layout;
+    Renderer3ds::PointShadowSlots Slots{};
+    float Range = 0.0F;
+    float Strength = 0.0F;
+    uint64_t ProducedFrameId = 0U;
+
+    [[nodiscard]] bool Valid() const noexcept {
+        return Image != VK_NULL_HANDLE && Layout.Valid() && ProducedFrameId != 0U;
+    }
+};
+
+struct NriPointShadowTelemetry {
+    uint32_t CandidateLights = 0U;
+    uint32_t Lights = 0U;
+    uint32_t RenderedLights = 0U;
+    uint32_t CasterDraws = 0U;
+    uint32_t AlphaCasterDraws = 0U;
+    uint64_t AtlasBytes = 0U;
+};
+
 struct NriDirectionalShadowLightTelemetry {
     DirectionalShadowVector WorldDirectionTowardSource{};
     uint32_t CandidateCount = 0U;
@@ -93,6 +132,15 @@ class NriDirectionalShadowPass final {
     FindLatestHistory(uint64_t renderTargetNamespace,
                       uint32_t colorPhysicalAddress,
                       uint64_t atFrameId) const noexcept;
+    // Point-light cube maps from the same prepared casters, one atlas row per
+    // selected light; a light shadows only within its radius times the range.
+    bool ExecutePointMaps(const NriPointShadowExecuteDesc& desc,
+                          const NativeSceneView& sceneView,
+                          const EffectPassBarrierPlan& pointShadowMapBarrierPlan);
+    [[nodiscard]] NriPointShadowHistorySnapshot
+    FindLatestPointHistory(uint64_t renderTargetNamespace, uint32_t colorPhysicalAddress,
+                           uint64_t atFrameId) const noexcept;
+    [[nodiscard]] const NriPointShadowTelemetry& LastPointTelemetry() const;
     void InvalidateHistory() noexcept;
     void InvalidateScreenResources();
     void Shutdown();

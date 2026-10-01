@@ -71,6 +71,7 @@ layout(push_constant) uniform SurfaceAtlas {
     result += PicaSurfaceLightingDeclarations();
     result += R"glsl(
 vec3 pica_surface_shadow(int slot) { return vec3(1.0); }
+float pica_point_shadow(float slot, vec3 light_to_fragment, float radius) { return 1.0; }
 bool pica_surface_matches_shadow(vec3 direction) {
     vec3 world = vec3(dot(pica_surface.view_to_world_linear[0].xyz, direction),
                       dot(pica_surface.view_to_world_linear[1].xyz, direction),
@@ -132,6 +133,7 @@ inline std::string BuildPicaSurfaceLightingFragmentShader(bool surfaceLighting, 
     result += PicaSurfaceLightingDeclarations();
     result += R"glsl(
 vec3 pica_surface_shadow(int slot) { return vec3(1.0); }
+float pica_point_shadow(float slot, vec3 light_to_fragment, float radius) { return 1.0; }
 void main() {
     vec3 color = pica_primary_color.rgb;
     if (pica_surface.control.x != 0u || pica_surface.environment_parameters.w != 0.0 ||

@@ -74,6 +74,10 @@ enum class EffectResource : uint8_t {
     // imported: a pass at the opaque boundary reads this sample's casters
     // without waiting for, or reordering, the draws that record them.
     PreparedShadowCasters,
+    // Persistent cube-map depth atlas of point lights, read by receivers, and
+    // the atlas a producer writes for the current sample.
+    PointShadowHistory,
+    PointShadowMap,
     Count,
 };
 // Resource sets are 32-bit masks in the barrier and residency plans.
@@ -128,6 +132,8 @@ struct EffectResourceUse {
         case EffectResource::DirectionalShadowMap:
         case EffectResource::DirectionalShadowStaticCache:
         case EffectResource::DirectionalShadowStaticHistory:
+        case EffectResource::PointShadowHistory:
+        case EffectResource::PointShadowMap:
         case EffectResource::HierarchicalDepth:
         case EffectResource::MotionVectors:
         case EffectResource::ReactiveMask:
@@ -224,6 +230,8 @@ enum class PicaExtensionPass : uint8_t {
     InteractiveGrass,
     ToonOutline,
     SceneDistanceField,
+    PointShadowLighting,
+    PointShadowMap,
     Count,
 };
 

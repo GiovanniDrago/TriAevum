@@ -130,6 +130,11 @@ Fast::Oot3d::GraphicsSettings CompleteSettings() {
     effects.DirectionalShadows.DepthBiasSlope = 2.25F;
     effects.DirectionalShadows.Strength = 3.25F;
     effects.DirectionalShadows.PcfRadius = 2U;
+    effects.PointShadows.Mode = PointShadowMode::CubeMaps;
+    effects.PointShadows.Resolution = 1024U;
+    effects.PointShadows.MaxLights = 6U;
+    effects.PointShadows.Range = 0.75F;
+    effects.PointShadows.Strength = 0.5F;
     effects.GlobalIllumination.Mode = GlobalIlluminationMode::BrixelizerGi;
     effects.GlobalIllumination.Resolution = GlobalIlluminationResolution::Quarter;
     effects.GlobalIllumination.DiffuseIntensity = 1.75F;
@@ -614,6 +619,28 @@ TEST(Oot3dGraphicsSettingsPersistence,
     EXPECT_FLOAT_EQ(style.LightBandLevels[4], 1.0F);
     EXPECT_FLOAT_EQ(style.LightBandThresholds[0], 0.125F);
     EXPECT_FLOAT_EQ(style.LightBandThresholds[3], 0.875F);
+}
+
+TEST(Oot3dGraphicsSettingsPersistence, PointShadowsRoundTripAndDefaultWhenAbsent) {
+    const auto settings = CompleteSettings();
+    auto document = Fast::Oot3d::SerializeGraphicsSettings(settings);
+    const auto& saved = document["Effects"]["PointShadows"];
+    EXPECT_EQ(saved["Mode"], "CubeMaps");
+    EXPECT_EQ(saved["Resolution"], 1024U);
+    EXPECT_EQ(saved["MaxLights"], 6U);
+    const auto loaded = Fast::Oot3d::DeserializeGraphicsSettings(document);
+    ASSERT_TRUE(loaded.Found);
+    EXPECT_EQ(loaded.Value.Effects.PointShadows.Mode, Fast::Oot3d::PointShadowMode::CubeMaps);
+    EXPECT_EQ(loaded.Value.Effects.PointShadows.Resolution, 1024U);
+    EXPECT_EQ(loaded.Value.Effects.PointShadows.MaxLights, 6U);
+    EXPECT_FLOAT_EQ(loaded.Value.Effects.PointShadows.Range, 0.75F);
+    EXPECT_FLOAT_EQ(loaded.Value.Effects.PointShadows.Strength, 0.5F);
+
+    document["Effects"].erase("PointShadows");
+    const auto absent = Fast::Oot3d::DeserializeGraphicsSettings(document);
+    ASSERT_TRUE(absent.Found);
+    EXPECT_EQ(absent.Value.Effects.PointShadows.Mode, Fast::Oot3d::PointShadowMode::Off);
+    EXPECT_EQ(absent.Value.Effects.PointShadows.Resolution, Fast::Oot3d::PointShadowSettings{}.Resolution);
 }
 
 TEST(Oot3dGraphicsSettingsPersistence,

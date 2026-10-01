@@ -148,6 +148,13 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
         features |=
             PicaShaderInstrumentationFeature::DirectionalShadowLighting;
     }
+    if (sceneDraw && request.Draw.PointShadowReceiver &&
+        effects.PointShadows.Mode == PointShadowMode::CubeMaps &&
+        UsesFullSceneLighting(effects.SurfaceLighting) &&
+        HasPicaShaderInstrumentationFeature(features, PicaShaderInstrumentationFeature::NativePerPixelLighting) &&
+        request.Draw.PerspectiveProjection) {
+        features |= PicaShaderInstrumentationFeature::PointShadowLighting;
+    }
     if (sceneDraw &&
         effects.AmbientOcclusion != AmbientOcclusionMode::Off &&
         request.Draw.FragmentOperationMode == 0U &&

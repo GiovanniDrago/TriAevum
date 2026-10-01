@@ -67,6 +67,10 @@ constexpr EnumNames<FrameRateMode> kFrameRateNames{
     {FrameRateMode::Uncapped, "Uncapped"},
     {FrameRateMode::Interpolated2x, "Fixed60"},
 };
+constexpr EnumNames<PointShadowMode> kPointShadowNames{
+    {PointShadowMode::Off, "Off"},
+    {PointShadowMode::CubeMaps, "CubeMaps"},
+};
 constexpr EnumNames<DirectionalShadowMode> kDirectionalShadowNames{
     {DirectionalShadowMode::Off, "Off"},
     {DirectionalShadowMode::VirtualShadowMaps, "VirtualShadowMaps"},
@@ -1246,6 +1250,14 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                   {"Strength", directionalShadows.Strength},
                   {"PcfRadius", directionalShadows.PcfRadius},
               }},
+             {"PointShadows",
+              {
+                  {"Mode", EnumName(effects.PointShadows.Mode, kPointShadowNames)},
+                  {"Resolution", effects.PointShadows.Resolution},
+                  {"MaxLights", effects.PointShadows.MaxLights},
+                  {"Range", effects.PointShadows.Range},
+                  {"Strength", effects.PointShadows.Strength},
+              }},
              {"GlobalIllumination",
               {
                   {"Mode", EnumName(effects.GlobalIllumination.Mode, kGlobalIlluminationNames)},
@@ -1589,6 +1601,19 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
         }
         // Added without a schema change: an absent object keeps the default
         // (Off) and is written on the next save.
+        if (const Json* points = FindMember(*effects, "PointShadows"); points != nullptr && points->is_object()) {
+            auto& settings = value.PointShadows;
+            ReadEnum(*points, "Mode", settings.Mode, kPointShadowNames,
+                     "Graphics.Effects.PointShadows.Mode", result);
+            ReadScalar(*points, "Resolution", settings.Resolution,
+                       "Graphics.Effects.PointShadows.Resolution", result);
+            ReadScalar(*points, "MaxLights", settings.MaxLights,
+                       "Graphics.Effects.PointShadows.MaxLights", result);
+            ReadScalar(*points, "Range", settings.Range,
+                       "Graphics.Effects.PointShadows.Range", result);
+            ReadScalar(*points, "Strength", settings.Strength,
+                       "Graphics.Effects.PointShadows.Strength", result);
+        }
         if (const Json* gi = FindMember(*effects, "GlobalIllumination"); gi != nullptr && gi->is_object()) {
             auto& settings = value.GlobalIllumination;
             ReadEnum(*gi, "Mode", settings.Mode, kGlobalIlluminationNames,

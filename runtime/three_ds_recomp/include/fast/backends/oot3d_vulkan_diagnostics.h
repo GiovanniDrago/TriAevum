@@ -410,6 +410,15 @@ struct Oot3dVulkanFrameDiagnostics {
     uint32_t NriDirectionalShadowPreparedAlphaCasterCount = 0;
     uint32_t NriDirectionalShadowPreparedAlphaRejectedCount = 0;
     uint32_t NriDirectionalShadowAlphaCasterDrawCount = 0;
+    uint32_t NriPointShadowMapAttemptCount = 0;
+    uint32_t NriPointShadowMapCount = 0;
+    uint32_t NriPointShadowCandidateLightCount = 0;
+    uint32_t NriPointShadowLightCount = 0;
+    uint32_t NriPointShadowRenderedLightCount = 0;
+    uint32_t NriPointShadowCasterDrawCount = 0;
+    uint32_t NriPointShadowAlphaCasterDrawCount = 0;
+    uint32_t NriPointShadowReceiverDrawCount = 0;
+    uint32_t NriPointShadowReceiverBoundDrawCount = 0;
     uint32_t DisplayTransferCount = 0;
     uint32_t ScanoutCount = 0;
     uint32_t OverlayCount = 0;
@@ -702,6 +711,10 @@ class Oot3dVulkanDiagnostics {
     void RecordNriDirectionalShadow(uint32_t casterCount,
                                     bool nativeLight,
                                     uint32_t alphaCasterCount = 0U);
+    void RecordNriPointShadowMap(bool executed, uint32_t candidateLights, uint32_t lights,
+                                 uint32_t renderedLights, uint32_t casterDraws,
+                                 uint32_t alphaCasterDraws);
+    void RecordNriPointShadowReceiver(bool bound);
     void RecordNriDirectionalShadowAttempt(uint32_t queuedCasters,
                                            uint32_t queuedNativeLights,
                                            uint32_t executionStage);

@@ -154,6 +154,19 @@ if(MSVC)
 endif()
 gtest_discover_tests(oot3d_vulkan_diagnostics_tests DISCOVERY_TIMEOUT 30)
 
+add_executable(renderer3ds_point_shadow_map_tests
+    renderer3ds_point_shadow_map_tests.cpp
+    ../src/fast/renderer3ds/point_shadow_map.cpp
+)
+set_property(TARGET renderer3ds_point_shadow_map_tests PROPERTY CXX_STANDARD 20)
+target_include_directories(renderer3ds_point_shadow_map_tests PRIVATE ../include)
+target_link_libraries(renderer3ds_point_shadow_map_tests PRIVATE gtest_main)
+if(MSVC)
+    target_compile_definitions(renderer3ds_point_shadow_map_tests PRIVATE NOMINMAX)
+    target_compile_options(renderer3ds_point_shadow_map_tests PRIVATE /utf-8)
+endif()
+gtest_discover_tests(renderer3ds_point_shadow_map_tests DISCOVERY_TIMEOUT 30)
+
 add_executable(oot3d_pica_scene_frame_tests
     oot3d_pica_scene_frame_tests.cpp
     ../src/fast/oot3d/directional_shadows.cpp
@@ -193,6 +206,7 @@ add_executable(oot3d_pica_shader_pipeline_cache_tests
     ../src/fast/oot3d/pica_rigid_motion.cpp
     ../src/fast/renderer3ds/pica_vertex_surface.cpp
     ../src/fast/renderer3ds/pica_surface_lighting.cpp
+    ../src/fast/renderer3ds/point_shadow_map.cpp
     ../src/fast/renderer3ds/pica_pbr_shading.cpp
     ../src/fast/renderer3ds/pica_pbr_seam_shader.cpp
     ../src/fast/oot3d/pica_scene_domain_guide.cpp
@@ -579,6 +593,7 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/pica_rigid_motion.cpp
     ../src/fast/renderer3ds/pica_vertex_surface.cpp
     ../src/fast/renderer3ds/pica_surface_lighting.cpp
+    ../src/fast/renderer3ds/point_shadow_map.cpp
     ../src/fast/renderer3ds/pica_pbr_shading.cpp
     ../src/fast/renderer3ds/pica_pbr_seam_shader.cpp
     ../src/fast/renderer3ds/pica_pbr_seams.cpp

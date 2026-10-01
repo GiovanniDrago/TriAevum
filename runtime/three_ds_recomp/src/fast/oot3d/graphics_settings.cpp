@@ -282,6 +282,22 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
     }
     directionalShadows.PcfRadius =
         std::min<uint8_t>(directionalShadows.PcfRadius, 2U);
+    auto& pointShadows = value.Effects.PointShadows;
+    if (!IsPointShadowResolution(pointShadows.Resolution)) {
+        pointShadows.Resolution = PointShadowSettings{}.Resolution;
+    }
+    pointShadows.MaxLights = std::clamp<uint8_t>(pointShadows.MaxLights, 1U, 8U);
+    pointShadows.Range = std::isfinite(pointShadows.Range)
+        ? std::clamp(pointShadows.Range, 0.25F, 1.0F) : 1.0F;
+    pointShadows.Strength = std::isfinite(pointShadows.Strength)
+        ? std::clamp(pointShadows.Strength, 0.0F, 1.0F) : 1.0F;
+    // The cube maps share the directional map's NRI shadow pass.
+    if (pointShadows.Mode == PointShadowMode::CubeMaps &&
+        !capabilities.Has(GraphicsCapability::NriDirectionalShadows)) {
+        pointShadows.Mode = PointShadowMode::Off;
+        Correct(result.Issues, "Graphics.Effects.PointShadows.Mode",
+                capabilities.Get(GraphicsCapability::NriDirectionalShadows).Reason);
+    }
     auto& globalIllumination = value.Effects.GlobalIllumination;
     globalIllumination.DiffuseIntensity =
         std::isfinite(globalIllumination.DiffuseIntensity)

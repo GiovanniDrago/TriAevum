@@ -434,7 +434,8 @@ layout(location=2) out vec4 auxiliary;layout(location=3) out vec4 relief;
 vec3 byteround3(vec3 v){return round(v*255.0)/255.0;}
 )glsl";
     source += PicaSurfaceLightingDeclarations();
-    source += "\nvec3 pica_surface_shadow(int slot){return vec3(1);}\n";
+    source += "\nvec3 pica_surface_shadow(int slot){return vec3(1);}\n"
+              "float pica_point_shadow(float s,vec3 v,float r){return 1.0;}\n";
     source += material->Declarations;
     source += "\nvoid main(){vec4 rounded_primary_color=vec4(1);\n";
     source += material->UnlitInputs;
