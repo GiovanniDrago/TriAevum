@@ -3141,14 +3141,16 @@ native FP32 depth and the coverage-bearing normal guide in, the published R32F
 visibility out, composited before UI. By default there is no history; the
 optional [temporal mode](#temporal-mxao) accumulates it over frames.
 
-- Kept from the original: 4x4 depth deinterleaving, the Low-Extreme slice/step
+- Kept from the original: 4x4 depth deinterleaving, the Low-IDGAF slice/step
   presets, per-tile jitter, the ground-truth, solid-angle and visibility-bitmask
   estimators with the original thickness heuristic, and the two-iteration
   depth-guided regression filter (F1 filter quality 0-2).
 - Changed: the renderer's exact projection replaces ReShade's assumed 60-degree
-  field of view; native normals replace depth-derived ones, with the RGB8 bound of
-  the GTAO kernels; fade uses native distances; each slice is normalized against
-  its own unoccluded integral and occlusion (not visibility) is stored.
+  field of view; the renderer's normals are selectable besides the depth-derived
+  ones (see [Original options](#mxao-original-options-and-debug-views)), with the
+  RGB8 bound of the GTAO kernels; fade uses native distances; each slice is
+  normalized against its own unoccluded integral and occlusion (not visibility)
+  is stored.
   `mxao_gpu_tests` failed before the last two changes: the ground-truth estimator
   darkened an empty RGB8 plane by 0.163, and stored visibility lost one truncated
   half-precision step on every estimator.
@@ -3221,10 +3223,78 @@ occlusion and the regression filter, which then filters the accumulation.
   with a revealed column. Diagnostics: `mxao_temporal_pass_count`,
   `mxao_temporal_history_valid_count`.
 
+#### MXAO original options and debug views
+
+Every option of the original is exposed (F1 **Lighting**, iMMERSE MXAO), and the
+debug views show what the renderer passes to MXAO and the terms of its estimate.
+
+- **Normals** (`AO.Mxao.Normals`: `Depth` default, `Renderer`). The original's
+  `MXAO_USE_LAUNCHPAD_NORMALS`: from depth, the four neighbour cross products
+  weighted against the depth steps they span, exactly as the original (at the
+  image border the clamped neighbour is replaced by the mirrored opposite one);
+  or the renderer's normal guide. Only the depth normal is the plane of the
+  depth samples MXAO tests. The guide holds shading normals: interpolated vertex
+  normals, which across a sharp corner tilt up to half the corner angle from
+  both faces, PBR normal maps and AO texture relief; and the interactive grass
+  writes no normal, so its blades carry the ground's normal underneath. Where
+  the guide tilts from the depth surface the surface rises above its own tangent
+  plane and occludes itself: on the Kokiri walk (user settings: solid angle, Low,
+  filter 2, temporal, radius 1.54, amount 2) depth normals brighten 6-15% of each
+  frame by more than 8 levels (mean +1.3 to +3.4 luma) and darken under 1%,
+  mostly the grass blades, creases and Link. `mxao_gpu_tests`: a plane tilted 39
+  degrees under a facing shading normal keeps 0.77 visibility with renderer
+  normals and 1.0 with depth normals. Renderer normals reproduce the previous
+  build byte for byte (12/12 captures). AO texture relief bends only the
+  renderer normals.
+- **Sample quality** adds the original's IDGAF preset (8 slices, 20 steps).
+- **Shading rate** (`AO.Mxao.ShadingRate` full / half / quarter): 50% or 25% of
+  the pixels, by deinterleaved tile parity, are estimated per frame; the others
+  keep their previous estimate (stale while moving, as in the original). The
+  pattern is the even one of the original's pixel-shader path. A frame after the
+  estimate image is created always runs at full rate.
+- **Increase radius with distance** (`AO.Mxao.IncreaseRadiusWithDistance`,
+  `ScreenRadius` 0.5-10, default 2.5): a constant screen radius of 3% of the
+  width per unit, along each slice's screen direction; the world radius at the
+  pixel's depth drives the falloff and the bitmask thickness. Otherwise the
+  native world radius (`AO.Radius`).
+- **Original fade** (`AO.Mxao.OriginalFade`, `FadeDistance` 0-1): the original's
+  `saturate(1 - d^2) * exp2(-(d / distance)^2)` over depth normalized by the far
+  plane, instead of the native fade start and end.
+- **Debug view** (not saved; `OOT3D_GRAPHICS_MXAO_DEBUG=1..10` for captures):
+  ambient occlusion (the original's Show Raw AO), unfiltered occlusion (the filter
+  input, the accumulation when temporal), normals in use, renderer normals, depth
+  normals (view space: X right, Y up, Z toward the viewer), normal disagreement
+  (black equal, white 90 degrees apart), depth over the fade range, the filter's
+  edge weight, fade and temporal history length. A debug program
+  (`BuildMxaoDebugShader`) replaces the resolve and writes the view into the R32F
+  visibility: scalars in [0, 1], normals as 8/8/7 bits in the mantissa of a float
+  in [1, 2) (`AmbientOcclusionDebugShaderLibrary`); the scene composite shows the
+  output texel for texel in place of the image, before UI. Off, the composite's
+  arithmetic is unchanged.
+- An active debug view never reaches scanout as occlusion: the scanout path
+  (effects not composited) leaves AO out while one is selected.
+- Debug views on the Kokiri walk (`crops-mxao/` receipts): the renderer normals
+  show the ground's normal under the grass blades, the depth normals each
+  blade's own; the disagreement view is white on the blades and grey on the
+  smooth-shaded cliff and Link. Validated run (depth normals, packed normal
+  view): no Vulkan/NRI error, the 11 baseline warnings. Cost: AO scope medians
+  of interleaved 360-frame runs (user settings, 2560x1440, RTX 3060) are 3.88 /
+  4.08 ms with renderer normals, 4.58 / 4.00 ms with depth normals and 4.27 ms
+  for the previous build: the run-to-run spread exceeds any difference.
+- The temporal history restarts when the normal source, radius mode, fade mode
+  or relief changes. Settings were added to `AO.Mxao` without a schema change;
+  files without them get the defaults and are rewritten.
+- Tests: `mxao_gpu_tests` (depth normals on tilted and sloped planes with all
+  filters, IDGAF, screen radius 1 / 2.5 / 10, original fade, quarter and half
+  shading rates against exact references, renderer / depth / in-use normal views,
+  disagreement equal to the slope angle, depth and fade views), settings
+  validation and persistence, and the F1 actual-widget smoke (7,783 assertions).
+
 ### Native AO normals
 
-Every AO provider (GTAO, CACAO, MXAO) reads its normals from the scene's normal
-guide. The guide is fed from native data rather than rebuilt from depth or from
+GTAO and CACAO read their normals from the scene's normal guide, as MXAO does
+with its Renderer normal source (its default reconstructs them from depth, see
+[MXAO original options](#mxao-original-options-and-debug-views)). The guide is fed from native data rather than rebuilt from depth or from
 the final image. A port of iMMERSE LAUNCHPAD's normal smoothing and textured
 normals (cd7cfe5, b87c0b5) was removed in 21bf907: it reconstructed in screen
 space what the draws already carry, for 3–4 ms, and its smoothing changed the AO

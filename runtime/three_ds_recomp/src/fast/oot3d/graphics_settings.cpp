@@ -247,8 +247,17 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         std::clamp(value.Effects.AoDetailStrength, 0.0F, 10.0F);
     if (value.Effects.MxaoMethod > MxaoEstimator::VisibilityBitmaskSolidAngle)
         value.Effects.MxaoMethod = MxaoEstimator::VisibilityBitmask;
-    value.Effects.MxaoQuality = std::min<uint8_t>(value.Effects.MxaoQuality, 5U);
+    value.Effects.MxaoQuality = std::min<uint8_t>(value.Effects.MxaoQuality, 6U);
     value.Effects.MxaoFilter = std::min<uint8_t>(value.Effects.MxaoFilter, 2U);
+    if (value.Effects.MxaoNormals > MxaoNormalSource::Renderer)
+        value.Effects.MxaoNormals = MxaoNormalSource::Depth;
+    value.Effects.MxaoShadingRate = std::min<uint8_t>(value.Effects.MxaoShadingRate, 2U);
+    value.Effects.MxaoScreenRadius = std::isfinite(value.Effects.MxaoScreenRadius)
+        ? std::clamp(value.Effects.MxaoScreenRadius, 0.5F, 10.0F) : 2.5F;
+    value.Effects.MxaoFadeDistance = std::isfinite(value.Effects.MxaoFadeDistance)
+        ? std::clamp(value.Effects.MxaoFadeDistance, 0.0F, 1.0F) : 0.25F;
+    if (value.Effects.MxaoDebug > MxaoDebugView::HistoryLength)
+        value.Effects.MxaoDebug = MxaoDebugView::Off;
     if (value.Effects.AoRelief > AoTextureRelief::Strong)
         value.Effects.AoRelief = AoTextureRelief::Off;
     auto& directionalShadows = value.Effects.DirectionalShadows;

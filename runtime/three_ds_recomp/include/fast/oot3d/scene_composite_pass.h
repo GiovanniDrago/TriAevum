@@ -32,7 +32,7 @@ class SceneCompositePass final {
                  VkFormat fogGuideFormat, VkImage outlineGeometryGuide, VkFormat outlineGeometryGuideFormat,
                  VkImage diffuseIllumination, VkFormat diffuseIlluminationFormat, VkImage diffuseAlbedoGuide,
                  VkFormat diffuseAlbedoGuideFormat, bool globalIlluminationEnabled, float diffuseIntensity,
-                 bool aoEnabled, bool reflectionsEnabled, float reflectionStrength, uint32_t reflectionDebug,
+                 bool aoEnabled, uint32_t aoDebugView, bool reflectionsEnabled, float reflectionStrength, uint32_t reflectionDebug,
                  bool outlineEnabled, const ToonStyleSettings& outlineSettings, SceneColorEncoding inputEncoding,
                  const EffectPassBarrierPlan& barrierPlan);
     void InvalidateScreenResources();

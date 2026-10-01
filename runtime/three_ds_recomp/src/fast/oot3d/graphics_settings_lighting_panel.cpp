@@ -1,6 +1,7 @@
 #include "fast/oot3d/graphics_settings_window.h"
 #include "fast/oot3d/graphics_settings_runtime.h"
 #include "fast/oot3d/settings_panel_widgets.h"
+#include <type_traits>
 
 namespace Fast::Oot3d {
 using SettingsUi::EnumCombo;
@@ -155,22 +156,50 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
 
 bool GraphicsSettingsPanel::DrawMxaoSettings(EffectsSettings& effects) {
     bool changed = false;
-    int quality = effects.MxaoQuality;
-    const char* const qualityNames[] = {"Low", "Medium", "High", "Very high", "Ultra", "Extreme"};
-    if (ImGui::Combo("MXAO quality", &quality, qualityNames, 6)) {
-        effects.MxaoQuality = static_cast<uint8_t>(quality);
-        changed = true;
-    }
-    int method = static_cast<int>(effects.MxaoMethod);
+    const auto combo = [&](const char* label, auto& field, const char* const* names, int count,
+                           const char* tooltip) {
+        int index = static_cast<int>(field);
+        // Every entry visible: a scrolled list hides the first ones.
+        if (ImGui::Combo(label, &index, names, count, count)) {
+            field = static_cast<std::remove_reference_t<decltype(field)>>(index);
+            changed = true;
+        }
+        if (tooltip != nullptr && ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", tooltip);
+    };
+    const char* const qualityNames[] = {"Low", "Medium", "High", "Very high", "Ultra", "Extreme", "IDGAF"};
+    combo("MXAO quality", effects.MxaoQuality, qualityNames, 7,
+          "Global quality control, main performance knob. Higher radii might require higher quality.");
+    const char* const shadingRates[] = {"Full rate", "Half rate", "Quarter rate"};
+    combo("MXAO shading rate", effects.MxaoShadingRate, shadingRates, 3,
+          "Full: every pixel each frame. Half / Quarter: 50% / 25% of the pixels each frame; the others keep "
+          "their previous estimate, which trails moving content.");
     const char* const methodNames[] = {"Ground truth", "Solid angle", "Visibility bitmask",
                                        "Visibility bitmask, solid angle"};
-    if (ImGui::Combo("MXAO method", &method, methodNames, 4)) {
-        effects.MxaoMethod = static_cast<MxaoEstimator>(method);
-        changed = true;
-    }
-    changed |= ImGui::SliderFloat("MXAO radius", &effects.AoRadius, 0.05F, 100.0F, "%.2f",
-                                  ImGuiSliderFlags_Logarithmic);
+    combo("MXAO method", effects.MxaoMethod, methodNames, 4,
+          "Ground truth: high contrast. Solid angle: smoother. Visibility bitmask: highest quality, slower. "
+          "Bitmask with solid angle: like the bitmask, smoother.");
+    const char* const normalNames[] = {"From depth (original)", "Renderer normals"};
+    combo("MXAO normals", effects.MxaoNormals, normalNames, 2,
+          "From depth: the plane of the depth samples MXAO tests, as the original computes it. Renderer normals: "
+          "interpolated vertex normals, PBR normal maps and texture relief (like Launchpad's smooth normals); "
+          "where they tilt away from the surface, as across sharp corners, the surface occludes itself and "
+          "darkens.");
+    changed |= ImGui::Checkbox("Increase radius with distance", &effects.MxaoRadiusGrowsWithDistance);
+    if (effects.MxaoRadiusGrowsWithDistance)
+        changed |= ImGui::SliderFloat("MXAO sample radius", &effects.MxaoScreenRadius, 0.5F, 10.0F, "%.2f");
+    else
+        changed |= ImGui::SliderFloat("MXAO radius", &effects.AoRadius, 0.05F, 100.0F, "%.2f",
+                                      ImGuiSliderFlags_Logarithmic);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(effects.MxaoRadiusGrowsWithDistance
+            ? "The original's sample radius: a constant screen radius (3% of the width per unit), so the "
+              "world radius grows with distance."
+            : "World radius in native scene units: higher means more large-scale occlusion with less "
+              "fine-scale detail.");
     changed |= ImGui::SliderFloat("MXAO amount", &effects.AoStrength, 0.0F, 2.0F, "%.2f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Intensity of the AO. Above 1 the original switches to a gamma response.");
     int filter = effects.MxaoFilter;
     if (ImGui::SliderInt("MXAO filter quality", &filter, 0, 2)) {
         effects.MxaoFilter = static_cast<uint8_t>(filter);
@@ -181,12 +210,27 @@ bool GraphicsSettingsPanel::DrawMxaoSettings(EffectsSettings& effects) {
         ImGui::TextWrapped("Each frame samples other directions and the scene's motion vectors carry the "
                            "result over frames: a lower quality preset gives a stable image.");
     ImGui::TextWrapped("iMMERSE MXAO by Pascal Gilcher (martysmods.com), used with the author's permission. "
-                       "The radius uses native scene units; above 1 the amount deepens occlusion.");
+                       "AO texture relief bends only the renderer normals.");
     if (ImGui::TreeNode("Advanced AO")) {
-        changed |= ImGui::DragFloat("Fade start", &effects.AoFadeOutFrom, 1.0F, 0.0F, 100000.0F, "%.1f");
-        changed |= ImGui::DragFloat("Fade end", &effects.AoFadeOutTo, 1.0F, 0.01F, 100000.0F, "%.1f");
+        changed |= ImGui::Checkbox("Original fade", &effects.MxaoOriginalFade);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The original's exponential Fade Out Distance, over depth normalized by the far "
+                              "plane, instead of the fade start and end.");
+        if (effects.MxaoOriginalFade) {
+            changed |= ImGui::SliderFloat("Fade out distance", &effects.MxaoFadeDistance, 0.0F, 1.0F, "%.3f");
+        } else {
+            changed |= ImGui::DragFloat("Fade start", &effects.AoFadeOutFrom, 1.0F, 0.0F, 100000.0F, "%.1f");
+            changed |= ImGui::DragFloat("Fade end", &effects.AoFadeOutTo, 1.0F, 0.01F, 100000.0F, "%.1f");
+        }
         ImGui::TreePop();
     }
+    const char* const debugViews[] = {"Off", "Ambient occlusion", "Unfiltered occlusion", "Normals in use",
+                                      "Renderer normals", "Depth normals", "Normal disagreement", "Depth",
+                                      "Edge weight", "Fade", "Temporal history"};
+    combo("MXAO debug view", effects.MxaoDebug, debugViews, 11,
+          "Replaces the image. Ambient occlusion is the original's Show Raw AO; the others show the depth and "
+          "normals the renderer passes and the estimate's terms. Normals: view space (X right, Y up, Z toward "
+          "the viewer). Disagreement: black = equal, white = 90 degrees apart. Not saved.");
     return changed;
 }
 } // namespace Fast::Oot3d

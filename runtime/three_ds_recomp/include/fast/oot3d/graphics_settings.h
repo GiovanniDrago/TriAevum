@@ -32,6 +32,26 @@ enum class AmbientOcclusionMode : uint8_t { Off, Gtao, Cacao, Mxao };
 // iMMERSE MXAO estimators: ground-truth horizons, solid angle, and the
 // visibility bitmask with a cosine-weighted or solid-angle integral.
 enum class MxaoEstimator : uint8_t { GroundTruth, SolidAngle, VisibilityBitmask, VisibilityBitmaskSolidAngle };
+// The surface normal MXAO integrates against: reconstructed from depth, as the
+// original computes it, or the renderer's normal guide (interpolated vertex
+// normals, PBR normal maps and texture relief), like the original's Launchpad
+// normals. Only the depth normal is the plane of the depth samples it tests.
+enum class MxaoNormalSource : uint8_t { Depth, Renderer };
+// MXAO debug views, shown by the scene composite in place of the image. Not
+// saved. Normals are shown in view space (X right, Y up, Z toward the viewer).
+enum class MxaoDebugView : uint8_t {
+    Off,
+    AmbientOcclusion,    // the original's "Show Raw AO": the published visibility
+    UnfilteredOcclusion, // the estimate before the filter (accumulated when temporal)
+    Normals,             // the normals in use
+    RendererNormals,     // the renderer's normal guide
+    DepthNormals,        // normals reconstructed from depth
+    NormalDisagreement,  // angle between the two, 0 to 90 degrees
+    Depth,               // depth over the fade range
+    EdgeWeight,          // the filter's silhouette / grazing weight
+    Fade,                // distance fade
+    HistoryLength,       // temporal accumulation length
+};
 // Relief the AO providers read from each world material's colour texture: its
 // luminance slope bends the scene's normal guide (and so every guide reader).
 enum class AoTextureRelief : uint8_t { Off, Subtle, Medium, Strong };
@@ -225,10 +245,24 @@ struct EffectsSettings {
     float AoDetailStrength = 0.5F;
     // MXAO's own controls; radius, strength and fade are the shared AO values.
     MxaoEstimator MxaoMethod = MxaoEstimator::VisibilityBitmask;
+    // Low through IDGAF (0-6).
     uint8_t MxaoQuality = 1;
     uint8_t MxaoFilter = 1;
     // Accumulates MXAO over frames with the scene's motion vectors.
     bool MxaoTemporal = false;
+    MxaoNormalSource MxaoNormals = MxaoNormalSource::Depth;
+    // The original's Shading Rate: 0 full, 1 half, 2 quarter of the pixels
+    // estimated per frame; the others keep their previous estimate.
+    uint8_t MxaoShadingRate = 0;
+    // The original's "Increase Radius with Distance": a constant screen radius
+    // (MxaoScreenRadius, the original's Sample Radius) instead of AoRadius.
+    bool MxaoRadiusGrowsWithDistance = false;
+    float MxaoScreenRadius = 2.5F;
+    // The original's exponential Fade Out Distance (depth over the far plane)
+    // instead of the native fade start/end.
+    bool MxaoOriginalFade = false;
+    float MxaoFadeDistance = 0.25F;
+    MxaoDebugView MxaoDebug = MxaoDebugView::Off;
     AoTextureRelief AoRelief = AoTextureRelief::Off;
     ReflectionMode Reflections = ReflectionMode::Off;
     float ReflectionStrength = 0.65F;

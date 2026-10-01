@@ -2949,6 +2949,14 @@ TEST(Oot3dPicaScanout, PolicySuppressesAllEffectsAlreadyComposited) {
     EXPECT_EQ(output.Reflections, 1U);
     EXPECT_EQ(output.Outline, 1U);
 
+    // An MXAO debug view is shown only by the scene composite, never applied
+    // as occlusion at scanout.
+    input.Effects.AmbientOcclusion = Fast::Oot3d::AmbientOcclusionMode::Mxao;
+    input.Effects.MxaoDebug = Fast::Oot3d::MxaoDebugView::DepthNormals;
+    EXPECT_EQ(Fast::Oot3d::BuildPicaScanoutPushConstants(input).AmbientOcclusion, 0U);
+    input.Effects.MxaoDebug = Fast::Oot3d::MxaoDebugView::Off;
+    EXPECT_EQ(Fast::Oot3d::BuildPicaScanoutPushConstants(input).AmbientOcclusion, 1U);
+
     input.InputEncoding = Fast::Oot3d::SceneColorEncoding::Linear;
     input.TargetSrgb = false;
     output = Fast::Oot3d::BuildPicaScanoutPushConstants(input);
@@ -3852,6 +3860,26 @@ TEST(Oot3dGraphicsSettings, GatesDirectionalShadowsOnTheirBackendOwner) {
               DirectionalShadowMode::VirtualShadowMaps);
 }
 
+TEST(Oot3dGraphicsSettings, ClampsTheOriginalMxaoOptions) {
+    using namespace Fast::Oot3d;
+    auto settings = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
+    EXPECT_EQ(settings.Effects.MxaoNormals, MxaoNormalSource::Depth);
+    EXPECT_EQ(settings.Effects.MxaoDebug, MxaoDebugView::Off);
+    settings.Effects.MxaoQuality = 9U;
+    settings.Effects.MxaoShadingRate = 7U;
+    settings.Effects.MxaoScreenRadius = 40.0F;
+    settings.Effects.MxaoFadeDistance = -1.0F;
+    settings.Effects.MxaoNormals = static_cast<MxaoNormalSource>(9);
+    settings.Effects.MxaoDebug = static_cast<MxaoDebugView>(42);
+    const auto value = GraphicsSettingsService::Validate(settings, GraphicsCapabilities{}).Value.Effects;
+    EXPECT_EQ(value.MxaoQuality, 6U);
+    EXPECT_EQ(value.MxaoShadingRate, 2U);
+    EXPECT_FLOAT_EQ(value.MxaoScreenRadius, 10.0F);
+    EXPECT_FLOAT_EQ(value.MxaoFadeDistance, 0.0F);
+    EXPECT_EQ(value.MxaoNormals, MxaoNormalSource::Depth);
+    EXPECT_EQ(value.MxaoDebug, MxaoDebugView::Off);
+}
+
 TEST(Oot3dGraphicsSettings, GatesAndClampsPointShadows) {
     using namespace Fast::Oot3d;
     auto settings = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
@@ -4327,7 +4355,7 @@ TEST(Oot3dGraphicsSettings, MxaoRequiresItsProviderAndClampsItsControls) {
     auto result = GraphicsSettingsService::Validate(candidate, capabilities);
     EXPECT_EQ(result.Value.Effects.AmbientOcclusion, AmbientOcclusionMode::Mxao);
     EXPECT_EQ(result.Value.Effects.MxaoMethod, MxaoEstimator::VisibilityBitmask);
-    EXPECT_EQ(result.Value.Effects.MxaoQuality, 5U);
+    EXPECT_EQ(result.Value.Effects.MxaoQuality, 6U);
     EXPECT_EQ(result.Value.Effects.MxaoFilter, 2U);
     capabilities.Set(GraphicsCapability::ImmerseMxao, false, "provider unavailable");
     result = GraphicsSettingsService::Validate(candidate, capabilities);

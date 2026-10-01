@@ -28,6 +28,10 @@
 // exactly zero through half-precision storage and the filter. An optional
 // temporal mode rotates the jitter phase every frame and accumulates the
 // occlusion with the renderer's motion vectors before the filter.
+// The original's own normals from depth remain selectable, as do its shading
+// rate (the evenly distributed pattern of its pixel-shader path), radius
+// growing with distance and exponential fade. A debug program shows the
+// inputs and terms of the estimate.
 
 namespace Fast::Immerse {
 namespace {
@@ -79,6 +83,61 @@ vec3 proj_position(ivec2 pixel,float z) {
     vec3 uv=vec3(pixel_uv(pixel),1.0);
     return vec3(dot(pc.view_x.xyz,uv)*z,dot(pc.view_y.xyz,uv)*z,z);
 }
+vec3 unit_normal(vec3 encoded) {
+    vec3 n=encoded*2.0-1.0;
+    return n*inversesqrt(max(dot(n,n),1.0e-12));
+}
+// Neighbour depths (left, right, top, bottom) and the original's inverse
+// weights of the two depth steps around each diagonal; the edge weight marks
+// silhouettes and grazing surfaces, which the filter smooths more. Steps are
+// in MXAO's normalization (per mille of the far plane).
+vec4 neighbour_depths(ivec2 pixel) {
+    return vec4(view_depth(pixel-ivec2(1,0)),view_depth(pixel+ivec2(1,0)),
+                view_depth(pixel-ivec2(0,1)),view_depth(pixel+ivec2(0,1)));
+}
+vec4 neighbour_weights(vec4 neighbours,float z) {
+    vec4 steps=abs(neighbours-z)*(1000.0*pc.response.y);
+    vec4 w=steps.xzyw+steps.zywx;
+    return 1.0/(0.001+w*w);
+}
+// The original's normal from depth: the four cross products of neighbour
+// deltas, each weighted against the depth steps it spans.
+vec3 depth_normal(ivec2 pixel,vec3 center,vec4 neighbours,vec4 w) {
+    vec3 dl=proj_position(pixel-ivec2(1,0),neighbours.x)-center;
+    vec3 dr=proj_position(pixel+ivec2(1,0),neighbours.y)-center;
+    vec3 dt=proj_position(pixel-ivec2(0,1),neighbours.z)-center;
+    vec3 db=proj_position(pixel+ivec2(0,1),neighbours.w)-center;
+    // At the image border the clamped neighbour repeats this depth: the
+    // opposite side, mirrored, continues the surface instead.
+    ivec2 last=ivec2(pc.extent)-1;
+    if(pixel.x==0) dl=-dr;
+    if(pixel.x==last.x) dr=-dl;
+    if(pixel.y==0) dt=-db;
+    if(pixel.y==last.y) db=-dt;
+    vec3 n0=cross(dt,dl);
+    vec3 n1=cross(dr,dt);
+    vec3 n2=cross(db,dr);
+    vec3 n3=cross(dl,db);
+    vec4 weight=w*inversesqrt(max(vec4(dot(n0,n0),dot(n1,n1),dot(n2,n2),dot(n3,n3)),1.0e-30));
+    vec3 n=n0*weight.x+n1*weight.y+n2*weight.z+n3*weight.w;
+    return n*inversesqrt(dot(n,n)+1.0e-8);
+}
+// The renderer's normal in MXAO's projection space (view space mirrored along Z).
+vec3 renderer_normal(vec4 guide) {
+    vec3 n=unit_normal(guide.xyz);
+    n.z=-n.z;
+    return n;
+}
+float fade_factor(float z) {
+    if((pc.flags&65536u)!=0u) {
+        // The original: zero at the far plane, exponential beyond the distance.
+        float d=z*pc.response.y;
+        float fade=clamp(1.0-d*d,0.0,1.0);
+        d/=max(pc.radius_fade.z,1.0e-4);
+        return fade*clamp(exp2(-d*d),0.0,1.0);
+    }
+    return clamp((pc.radius_fade.w-z)/max(pc.radius_fade.w-pc.radius_fade.z,1.0e-5),0.0,1.0);
+}
 )glsl";
 } // namespace
 
@@ -104,13 +163,14 @@ std::string BuildMxaoOcclusionShader() {
 layout(local_size_x=16,local_size_y=16,local_size_z=1) in;
 layout(set=0,binding=3,rg16f) uniform writeonly image2D raw_occlusion;
 //  slices/steps    preset      samples
-const uvec2 presets[6]=uvec2[6](
+const uvec2 presets[7]=uvec2[7](
     uvec2(2,2),     // Low        8
     uvec2(2,4),     // Medium     16
     uvec2(2,10),    // High       40
     uvec2(3,12),    // Very High  72
     uvec2(4,14),    // Ultra      112
-    uvec2(6,16));   // Extreme    192
+    uvec2(6,16),    // Extreme    192
+    uvec2(8,20));   // IDGAF      320
 float fast_acos(float x) {
     float o=sqrt(max(abs(x)*(abs(x)*0.5405464-3.0079475)+2.4674011,0.0));
     return x<0.0 ? pi-o : o;
@@ -118,36 +178,36 @@ float fast_acos(float x) {
 vec2 fast_acos(vec2 x) {
     return vec2(fast_acos(x.x),fast_acos(x.y));
 }
-vec3 unit_normal(vec3 encoded) {
-    vec3 n=encoded*2.0-1.0;
-    return n*inversesqrt(max(dot(n,n),1.0e-12));
-}
 void main() {
     ivec2 tiled=ivec2(gl_GlobalInvocationID.xy);
     if(any(greaterThanEqual(tiled,tile_size()*tiles))) return;
     ivec2 pixel=reinterleave(tiled);
     if(any(greaterThanEqual(pixel,ivec2(pc.extent)))) return;
+    // Shading rate: this frame estimates one tile parity class, the others
+    // keep their previous estimate.
+    uint shading_rate=(pc.flags>>12u)&3u;
+    if(shading_rate!=0u) {
+        uvec2 tile=uvec2(pixel%tiles);
+        uint shading_phase=(pc.flags>>14u)&3u;
+        if(shading_rate==1u ? ((tile.x+tile.y)&1u)!=(shading_phase&1u)
+                            : (tile.x&1u)+(tile.y&1u)*2u!=shading_phase) return;
+    }
     float z=texelFetch(sampler2D(intermediate,point_sampler),tiled,0).r;
     float depth=z>=sky_z ? 1.0 : clamp(z*pc.response.y,0.0,1.0);
     vec4 guide=texelFetch(sampler2D(view_normals,point_sampler),pixel,0);
-    float fade=clamp((pc.radius_fade.w-z)/max(pc.radius_fade.w-pc.radius_fade.z,1.0e-5),0.0,1.0);
+    float fade=fade_factor(z);
     if(z>=sky_z || z<=0.0 || guide.a<=0.0 || fade<0.001 || pc.response.x<=0.0) {
         imageStore(raw_occlusion,pixel,vec4(0.0,depth,0.0,0.0));
         return;
     }
 
-    // Depth steps in MXAO's normalization (per mille of the far plane) mark
-    // silhouettes and grazing surfaces; the filter smooths those more.
-    vec4 neighbours=vec4(view_depth(pixel-ivec2(1,0)),view_depth(pixel+ivec2(1,0)),
-                         view_depth(pixel-ivec2(0,1)),view_depth(pixel+ivec2(0,1)));
-    vec4 steps=abs(neighbours-z)*(1000.0*pc.response.y);
-    vec4 w=steps.xzyw+steps.zywx;
-    w=1.0/(0.001+w*w);
+    vec4 neighbours=neighbour_depths(pixel);
+    vec4 w=neighbour_weights(neighbours,z);
     float edge_weight=clamp(1.0-dot(w,vec4(1.0)),0.0,1.0);
 
     vec3 p=proj_position(pixel,z);
-    vec3 n=unit_normal(guide.xyz);
-    n.z=-n.z;
+    bool from_depth=(pc.flags&64u)!=0u;
+    vec3 n=from_depth ? depth_normal(pixel,p,neighbours,w) : renderer_normal(guide);
     p*=0.996;
     vec3 v=normalize(-p);
     if(dot(n,v)<0.0) n=-n;
@@ -168,9 +228,16 @@ void main() {
     mat2 projection=mat2(pc.view_x.x,pc.view_y.x,pc.view_x.y,pc.view_y.y);
     mat2 unprojection=inverse(projection);
 
-    float radius=max(pc.radius_fade.x,1.0e-4);
-    float thickness=pc.radius_fade.y;
+    // Increase Radius with Distance: a constant screen radius; its world
+    // radius at this depth drives the falloff and the bitmask thickness.
+    bool screen_radius=(pc.flags&128u)!=0u;
+    float radius=screen_radius ? max(pc.response.w*p.z*length(vec2(pc.view_x.x,pc.view_y.x)),1.0e-4)
+                               : max(pc.radius_fade.x,1.0e-4);
+    float thickness=screen_radius ? log(1.0+radius)/3.0 : pc.radius_fade.y;
     float falloff_factor=1.0/(radius*radius);
+    // Taps within the normal's angular uncertainty of its tangent plane are
+    // not occluders: the guide's decoding bound, which also covers the
+    // rounding of depth normals reconstructed from neighbouring samples.
     float normal_error=pc.response.z;
     vec2 vcrossn_xy=v.yz*n.zx-v.zx*n.yz;
     float ndotv=dot(n,v);
@@ -182,7 +249,11 @@ void main() {
     for(uint slice=0u;slice<slice_count;++slice) {
         slice_dir=vec2(slice_dir.x*rotation_cos+slice_dir.y*rotation_sin,
                        -slice_dir.x*rotation_sin+slice_dir.y*rotation_cos);
-        vec2 radius_pixels=(unprojection*(slice_dir*(radius/p.z)))*vec2(pc.extent);
+        // The screen radius is a circle of response.w widths, as the original's
+        // aspect-corrected offset, along this slice's screen direction.
+        vec2 radius_pixels=screen_radius
+            ? normalize((unprojection*slice_dir)*vec2(pc.extent))*(pc.response.w*float(pc.extent.x))
+            : (unprojection*(slice_dir*(radius/p.z)))*vec2(pc.extent);
 
         float sdotv=dot(slice_dir,v.xy);
         float sdotn=dot(slice_dir,n.xy);
@@ -313,6 +384,54 @@ void main() {
 )glsl";
     source += finalPass ? "    imageStore(filtered,pixel,vec4(1.0-result.x));\n}\n"
                         : "    imageStore(filtered,pixel,vec4(result,0.0,0.0));\n}\n";
+    return source;
+}
+
+std::string BuildMxaoDebugShader(std::string_view packNormal) {
+    std::string source = kCommon;
+    source += "layout(set=0,binding=3,r32f) uniform writeonly image2D debug_view;\n";
+    source.append(packNormal);
+    source += R"glsl(
+layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
+void main() {
+    ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
+    if(any(greaterThanEqual(pixel,ivec2(pc.extent)))) return;
+    uint view=(pc.flags>>20u)&15u;
+    float z=view_depth(pixel);
+    vec4 guide=texelFetch(sampler2D(view_normals,point_sampler),pixel,0);
+    float value=0.0;
+    if(view==8u) {
+        // Accumulated frames over the maximum history length.
+        vec4 accumulated=texelFetch(sampler2D(intermediate,point_sampler),pixel,0);
+        value=clamp(accumulated.b/max(pc.temporal.y,1.0),0.0,1.0);
+    } else if(view==5u) {
+        // Depth over the fade range (the original fade: over the far plane).
+        value=z>=sky_z ? 1.0 : clamp((pc.flags&65536u)!=0u ? z*pc.response.y : z/max(pc.radius_fade.w,1.0e-5),
+                                     0.0,1.0);
+    } else if(view==7u) {
+        value=z>=sky_z ? 0.0 : fade_factor(z);
+    } else if(z<sky_z && z>0.0) {
+        vec3 p=proj_position(pixel,z);
+        vec4 neighbours=neighbour_depths(pixel);
+        vec4 w=neighbour_weights(neighbours,z);
+        vec3 v=normalize(-p);
+        vec3 from_depth=depth_normal(pixel,p,neighbours,w);
+        vec3 from_renderer=renderer_normal(guide);
+        if(dot(from_depth,v)<0.0) from_depth=-from_depth;
+        if(dot(from_renderer,v)<0.0) from_renderer=-from_renderer;
+        vec3 used=(pc.flags&64u)!=0u ? from_depth : from_renderer;
+        // Displayed in view space (Z toward the viewer).
+        vec3 shown=view==1u ? used : view==2u ? from_renderer : from_depth;
+        if(view<=3u)
+            value=mxao_debug_pack_normal(vec3(shown.xy,-shown.z));
+        else if(view==4u)
+            value=clamp(acos(clamp(dot(from_depth,from_renderer),-1.0,1.0))/(0.5*pi),0.0,1.0);
+        else if(view==6u)
+            value=clamp(1.0-dot(w,vec4(1.0)),0.0,1.0);
+    }
+    imageStore(debug_view,pixel,vec4(value));
+}
+)glsl";
     return source;
 }
 

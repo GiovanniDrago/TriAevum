@@ -27,8 +27,12 @@ PicaScanoutPushConstants BuildPicaScanoutPushConstants(
     output.EncodeSrgb = static_cast<uint32_t>(
         inputLinear && !input.TargetSrgb);
     const bool effectsBaked = input.EffectsComposited;
+    // An MXAO debug view replaces the visibility; only the scene composite
+    // shows it, so scanout never applies it as occlusion.
+    const bool aoDebug = input.Effects.AmbientOcclusion == AmbientOcclusionMode::Mxao &&
+                         input.Effects.MxaoDebug != MxaoDebugView::Off;
     output.AmbientOcclusion =
-        static_cast<uint32_t>(input.AmbientOcclusionAvailable && !effectsBaked);
+        static_cast<uint32_t>(input.AmbientOcclusionAvailable && !effectsBaked && !aoDebug);
     output.Outline = static_cast<uint32_t>(
         input.OutlineAvailable && !effectsBaked);
     output.InvWidth =

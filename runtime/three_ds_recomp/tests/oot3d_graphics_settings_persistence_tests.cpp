@@ -287,7 +287,17 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsMxaoAndAddsItsDefaultsToOlderFi
     settings.Effects.MxaoQuality = 4;
     settings.Effects.MxaoFilter = 2;
     settings.Effects.MxaoTemporal = true;
+    settings.Effects.MxaoNormals = MxaoNormalSource::Renderer;
+    settings.Effects.MxaoShadingRate = 2;
+    settings.Effects.MxaoRadiusGrowsWithDistance = true;
+    settings.Effects.MxaoScreenRadius = 4.5F;
+    settings.Effects.MxaoOriginalFade = true;
+    settings.Effects.MxaoFadeDistance = 0.4F;
+    settings.Effects.MxaoDebug = MxaoDebugView::NormalDisagreement;
     const auto saved = SerializeGraphicsSettings(settings);
+    EXPECT_EQ(saved["Effects"]["AO"]["Mxao"]["Normals"], "Renderer");
+    EXPECT_EQ(saved["Effects"]["AO"]["Mxao"]["ShadingRate"], 2U);
+    EXPECT_FALSE(saved["Effects"]["AO"]["Mxao"].contains("Debug"));
     EXPECT_EQ(saved["Effects"]["AO"]["Mode"], "MXAO");
     EXPECT_EQ(saved["Effects"]["AO"]["Mxao"]["Method"], "SolidAngle");
     EXPECT_EQ(saved["Effects"]["AO"]["Mxao"]["Temporal"], true);
@@ -298,6 +308,29 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsMxaoAndAddsItsDefaultsToOlderFi
     EXPECT_EQ(loaded.Value.Effects.MxaoQuality, 4U);
     EXPECT_EQ(loaded.Value.Effects.MxaoFilter, 2U);
     EXPECT_TRUE(loaded.Value.Effects.MxaoTemporal);
+    EXPECT_EQ(loaded.Value.Effects.MxaoNormals, MxaoNormalSource::Renderer);
+    EXPECT_EQ(loaded.Value.Effects.MxaoShadingRate, 2U);
+    EXPECT_TRUE(loaded.Value.Effects.MxaoRadiusGrowsWithDistance);
+    EXPECT_FLOAT_EQ(loaded.Value.Effects.MxaoScreenRadius, 4.5F);
+    EXPECT_TRUE(loaded.Value.Effects.MxaoOriginalFade);
+    EXPECT_FLOAT_EQ(loaded.Value.Effects.MxaoFadeDistance, 0.4F);
+    // Debug views are not saved.
+    EXPECT_EQ(loaded.Value.Effects.MxaoDebug, MxaoDebugView::Off);
+    // Files written before the original's remaining options get its defaults
+    // (normals from depth) and are rewritten.
+    auto withoutOptions = saved;
+    for (const char* name : { "Normals", "ShadingRate", "IncreaseRadiusWithDistance", "ScreenRadius",
+                              "OriginalFade", "FadeDistance" })
+        withoutOptions["Effects"]["AO"]["Mxao"].erase(name);
+    const auto optionDefaults = DeserializeGraphicsSettings(withoutOptions);
+    EXPECT_TRUE(optionDefaults.NeedsRewrite);
+    EXPECT_EQ(optionDefaults.Value.Effects.MxaoNormals, MxaoNormalSource::Depth);
+    EXPECT_EQ(optionDefaults.Value.Effects.MxaoShadingRate, 0U);
+    EXPECT_FALSE(optionDefaults.Value.Effects.MxaoRadiusGrowsWithDistance);
+    EXPECT_FLOAT_EQ(optionDefaults.Value.Effects.MxaoScreenRadius, 2.5F);
+    EXPECT_FALSE(optionDefaults.Value.Effects.MxaoOriginalFade);
+    EXPECT_FLOAT_EQ(optionDefaults.Value.Effects.MxaoFadeDistance, 0.25F);
+    EXPECT_TRUE(optionDefaults.Value.Effects.MxaoTemporal);
     // Files written before temporal accumulation keep it off and are rewritten.
     auto spatial = saved;
     spatial["Effects"]["AO"]["Mxao"].erase("Temporal");

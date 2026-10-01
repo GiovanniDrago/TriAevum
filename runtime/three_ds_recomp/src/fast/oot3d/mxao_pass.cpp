@@ -1,5 +1,6 @@
 #include "fast/oot3d/mxao_pass.h"
 #ifdef ENABLE_OOT3D_VULKAN
+#include "fast/oot3d/ambient_occlusion_composite.h"
 #include "fast/oot3d/nri_effect_graph_transient_image_arena.h"
 #include "fast/oot3d/nri_interop_context.h"
 #include "fast/oot3d/resource_state_tracker.h"
@@ -31,7 +32,15 @@ enum : size_t {
     kResolveAccumulatedSet = kFilterAccumulatedSet + 2,
     kSetCount = kResolveAccumulatedSet + 2
 };
-enum : size_t { kDeinterleaveProgram, kOcclusionProgram, kFilterProgram, kResolveProgram, kTemporalProgram, kProgramCount };
+enum : size_t {
+    kDeinterleaveProgram,
+    kOcclusionProgram,
+    kFilterProgram,
+    kResolveProgram,
+    kTemporalProgram,
+    kDebugProgram,
+    kProgramCount
+};
 } // namespace
 #endif
 
@@ -61,7 +70,11 @@ struct MxaoPass::Impl {
     bool HistoryValid = false;
     uint64_t HistoryFrameId = 0;
     float HistoryFarPlane = 0.0F;
-    std::array<float, 8> HistorySettings{};
+    std::array<float, 13> HistorySettings{};
+    // Shading rate: the raw estimate holds every pixel once a full-rate frame
+    // has written it; executions count the rotating phase.
+    bool RawComplete = false;
+    uint32_t ShadingFrame = 0;
     bool LastHistoryValid = false;
     bool Ready = false;
     ResourceStateTracker PrivateStates;
@@ -139,10 +152,10 @@ bool MxaoPass::Initialize(VkPhysicalDevice physical, VkDevice device, NriInterop
         const std::array<std::string, kProgramCount> sources{
             Immerse::BuildMxaoDeinterleaveShader(), Immerse::BuildMxaoOcclusionShader(),
             Immerse::BuildMxaoFilterShader(false), Immerse::BuildMxaoFilterShader(true),
-            Immerse::BuildMxaoTemporalShader() };
+            Immerse::BuildMxaoTemporalShader(), Immerse::BuildMxaoDebugShader(AmbientOcclusionDebugShaderLibrary()) };
         constexpr std::array<const char*, kProgramCount> names{
             "immerse_mxao_deinterleave.comp", "immerse_mxao_occlusion.comp", "immerse_mxao_filter.comp",
-            "immerse_mxao_resolve.comp", "immerse_mxao_temporal.comp" };
+            "immerse_mxao_resolve.comp", "immerse_mxao_temporal.comp", "immerse_mxao_debug.comp" };
         for (size_t i = 0; i < sources.size(); ++i) {
             const auto spirv = interop.Shaders().Resolve(sources[i], Renderer::SpirvStage::Compute, names[i]);
             nri::ComputePipelineDesc pipeline{};
@@ -329,6 +342,17 @@ bool MxaoPass::Execute(uint32_t frameSlot, const PerspectiveViewState& view, boo
     push.Height = mImpl->Height;
     push.Method = std::min<uint32_t>(uint32_t(settings.MxaoMethod), 3U);
     const uint32_t quality = std::min<uint32_t>(settings.MxaoQuality, Immerse::kMxaoQualityPresets - 1U);
+    // The original's options: normal source, screen radius, fade and shading
+    // rate. A skipped pixel needs an estimate from an earlier frame.
+    const bool depthNormals = settings.MxaoNormals == MxaoNormalSource::Depth;
+    const bool screenRadius = settings.MxaoRadiusGrowsWithDistance;
+    const uint32_t shadingRate = mImpl->RawComplete ? std::min<uint32_t>(settings.MxaoShadingRate, 2U) : 0U;
+    const uint32_t shadingPhase = mImpl->ShadingFrame++ & 3U;
+    const uint32_t options = (depthNormals ? Immerse::kMxaoDepthNormals : 0U) |
+                             (screenRadius ? Immerse::kMxaoScreenRadius : 0U) |
+                             (settings.MxaoOriginalFade ? Immerse::kMxaoOriginalFade : 0U) |
+                             (shadingRate << Immerse::kMxaoShadingRateShift) |
+                             (shadingPhase << Immerse::kMxaoShadingPhaseShift);
     const auto zero = coordinates.StorageToViewNdc({ 0, 0 });
     const auto x = coordinates.StorageToViewNdc({ 1, 0 });
     const auto y = coordinates.StorageToViewNdc({ 0, 1 });
@@ -340,20 +364,27 @@ bool MxaoPass::Execute(uint32_t frameSlot, const PerspectiveViewState& view, boo
                    view.FarPlane - view.NearPlane, wBuffer ? 1.0F : 0.0F };
     // The original's thickness heuristic for the visibility bitmask.
     const float radius = std::max(settings.AoRadius, 1.0e-4F);
-    push.RadiusFade = { radius, std::log(1.0F + radius) / 3.0F, settings.AoFadeOutFrom, settings.AoFadeOutTo };
+    push.RadiusFade = { radius, std::log(1.0F + radius) / 3.0F,
+                        settings.MxaoOriginalFade ? settings.MxaoFadeDistance : settings.AoFadeOutFrom,
+                        settings.MxaoOriginalFade ? 0.0F : settings.AoFadeOutTo };
     // Decoding and renormalizing RGB8 normals introduces at most
     // sqrt(3)/(255-sqrt(3)) angular error; use the GTAO kernels' 2/255 bound.
     const float normalError =
         mImpl->Formats[1] == VK_FORMAT_R8G8B8A8_UNORM || mImpl->Formats[1] == VK_FORMAT_B8G8R8A8_UNORM ? 2.0F / 255.0F
         : mImpl->Formats[1] == VK_FORMAT_R16G16B16A16_SFLOAT                                           ? 1.0F / 1024.0F
                                                                                                        : 0.0F;
-    push.Response = { settings.AoStrength, 1.0F / view.FarPlane, normalError * normalError, 0 };
+    // The original's screen radius: 3% of the width per unit of its Sample Radius.
+    push.Response = { settings.AoStrength, 1.0F / view.FarPlane, normalError * normalError,
+                      screenRadius ? settings.MxaoScreenRadius * 0.03F : 0.0F };
     // Temporal mode: the history continues only from the directly preceding
     // frame of the same view and settings; the jitter phase rotates per frame.
     const bool temporalFrame = accumulates && temporal != nullptr && temporal->View != nullptr;
-    const std::array<float, 8> historySettings{ float(push.Method), float(quality), radius, settings.AoStrength,
-                                                settings.AoFadeOutFrom, settings.AoFadeOutTo,
-                                                wBuffer ? 1.0F : 0.0F, normalError };
+    const std::array<float, 13> historySettings{ float(push.Method), float(quality), radius, settings.AoStrength,
+                                                 settings.AoFadeOutFrom, settings.AoFadeOutTo,
+                                                 wBuffer ? 1.0F : 0.0F, normalError, depthNormals ? 1.0F : 0.0F,
+                                                 screenRadius ? settings.MxaoScreenRadius : 0.0F,
+                                                 settings.MxaoOriginalFade ? 1.0F : 0.0F, settings.MxaoFadeDistance,
+                                                 float(settings.AoRelief) };
     uint32_t phase = 0U;
     if (temporalFrame) {
         const auto& state = *temporal->View;
@@ -384,7 +415,7 @@ bool MxaoPass::Execute(uint32_t frameSlot, const PerspectiveViewState& view, boo
     mImpl->Core->CmdSetPipelineLayout(*command, nri::BindPoint::COMPUTE, *mImpl->Layout);
     const auto dispatch = [&](size_t program, size_t set, uint32_t flags, uint32_t width, uint32_t height,
                               uint32_t group) {
-        push.Flags = quality | (phase << Immerse::kMxaoJitterPhaseShift) | flags;
+        push.Flags = quality | (phase << Immerse::kMxaoJitterPhaseShift) | options | flags;
         mImpl->Core->CmdSetPipeline(*command, *mImpl->Pipelines[program]);
         const nri::SetDescriptorSetDesc descriptors{ 0, mImpl->Sets[set] };
         mImpl->Core->CmdSetDescriptorSet(*command, descriptors);
@@ -401,6 +432,7 @@ bool MxaoPass::Execute(uint32_t frameSlot, const PerspectiveViewState& view, boo
         !transition(mImpl->Raw.Image, mImpl->PrivateStates, ResourceAccess::ComputeWrite, false))
         return false;
     dispatch(kOcclusionProgram, kOcclusionSet, 0, tiledWidth, tiledHeight, 16);
+    mImpl->RawComplete = true;
     if (!transition(mImpl->Raw.Image, mImpl->PrivateStates, ResourceAccess::ShaderRead, false))
         return false;
     // The filter reads this frame's raw estimate, or its accumulation.
@@ -425,8 +457,11 @@ bool MxaoPass::Execute(uint32_t frameSlot, const PerspectiveViewState& view, boo
         mImpl->HistoryValid = false;
     }
     // Filter quality 2 runs both regression iterations, 1 only the mirrored
-    // one, 0 publishes the raw estimate.
-    const uint32_t filter = std::min<uint32_t>(settings.MxaoFilter, 2U);
+    // one, 0 publishes the raw estimate. The unfiltered debug view publishes
+    // the filter's input; the other views replace the resolve.
+    const auto debug = settings.MxaoDebug;
+    const uint32_t filter = debug == MxaoDebugView::UnfilteredOcclusion ? 0U : std::min<uint32_t>(settings.MxaoFilter, 2U);
+    const size_t inputSet = resolveSet;
     if (filter == 2U) {
         if (!transition(mImpl->Filtered.Image, mImpl->PrivateStates, ResourceAccess::ComputeWrite, false))
             return false;
@@ -437,8 +472,17 @@ bool MxaoPass::Execute(uint32_t frameSlot, const PerspectiveViewState& view, boo
     }
     if (!transition(mImpl->Output.Image, *mImpl->OutputStates, output->DispatchAccess, true))
         return false;
-    dispatch(kResolveProgram, resolveSet,
-             filter == 0U ? Immerse::kMxaoFilterCopy : Immerse::kMxaoFilterMirrored, mImpl->Width, mImpl->Height, 8);
+    if (debug >= MxaoDebugView::Normals) {
+        // The history view reads the accumulation, the others the raw estimate.
+        const uint32_t view = uint32_t(debug) - uint32_t(MxaoDebugView::Normals) + 1U;
+        const bool history = debug == MxaoDebugView::HistoryLength && temporalFrame;
+        dispatch(kDebugProgram, history ? inputSet : kResolveRawSet, view << Immerse::kMxaoDebugViewShift,
+                 mImpl->Width, mImpl->Height, 8);
+    } else {
+        dispatch(kResolveProgram, resolveSet,
+                 filter == 0U ? Immerse::kMxaoFilterCopy : Immerse::kMxaoFilterMirrored, mImpl->Width,
+                 mImpl->Height, 8);
+    }
     return transition(mImpl->Output.Image, *mImpl->OutputStates, output->CompletionAccess, true);
 #endif
 }
@@ -470,6 +514,7 @@ void MxaoPass::InvalidateScreenResources() {
     mImpl->NextHistory = 0;
     mImpl->HistoryValid = false;
     mImpl->LastHistoryValid = false;
+    mImpl->RawComplete = false;
     mImpl->PrivateStates.Clear();
     mImpl->LastBarriers = {};
 }

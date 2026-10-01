@@ -1,4 +1,5 @@
 #include "fast/immerse/mxao_shader.h"
+#include "fast/oot3d/ambient_occlusion_composite.h"
 #include "vulkan_test_device.h"
 
 #include <algorithm>
@@ -16,7 +17,7 @@ struct Image {
 };
 
 enum : uint32_t { kDepth, kNormals, kTiled, kRaw, kFiltered, kOutput, kMotion, kHistory0, kHistory1, kImageCount };
-enum : uint32_t { kDeinterleave, kOcclusion, kFilter, kResolve, kTemporal, kProgramCount };
+enum : uint32_t { kDeinterleave, kOcclusion, kFilter, kResolve, kTemporal, kDebug, kProgramCount };
 // The descriptor sets of MxaoPass: input (binding 2), output (binding 3) and
 // history (binding 6); binding 5 is always the motion vectors.
 enum : uint32_t {
@@ -191,7 +192,8 @@ struct MxaoFixture {
         Check(vkCreatePipelineLayout(Device.Device, &layout, nullptr, &Layout));
         const std::array sources{ Fast::Immerse::BuildMxaoDeinterleaveShader(), Fast::Immerse::BuildMxaoOcclusionShader(),
                                   Fast::Immerse::BuildMxaoFilterShader(false), Fast::Immerse::BuildMxaoFilterShader(true),
-                                  Fast::Immerse::BuildMxaoTemporalShader() };
+                                  Fast::Immerse::BuildMxaoTemporalShader(),
+                                  Fast::Immerse::BuildMxaoDebugShader(Fast::Oot3d::AmbientOcclusionDebugShaderLibrary()) };
         for (uint32_t program = 0; program < kProgramCount; ++program) {
             const auto shader = Device.Shader(sources[program], shaderc_compute_shader);
             VkComputePipelineCreateInfo pipeline{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
@@ -264,6 +266,12 @@ struct MxaoFixture {
                 VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     }
 
+    // The raw estimate survives into the next Run (shading rate), and a
+    // nonzero debug view replaces the resolve with the debug program.
+    bool KeepRaw = false;
+    bool RawWritten = false;
+    uint32_t DebugView = 0;
+
     // One frame. With `motion` the frame accumulates (temporal program) into
     // the next history image, reading the other one; Constants.Temporal says
     // whether that history is valid. `accumulation` receives the written
@@ -291,8 +299,12 @@ struct MxaoFixture {
         Upload(Normals, kNormals);
         Upload(Motion, kMotion);
         for (uint32_t i : { kTiled, kRaw, kFiltered, kOutput })
-            Barrier(Images[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_SHADER_WRITE_BIT,
-                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+            Barrier(Images[i],
+                    i == kRaw && KeepRaw && RawWritten ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                                       : VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        RawWritten = true;
         const uint32_t tiledWidth = Fast::Immerse::MxaoTiledExtent(Width);
         const uint32_t tiledHeight = Fast::Immerse::MxaoTiledExtent(Height);
         Dispatch(kDeinterleave, kDeinterleaveSet, constants, 0, tiledWidth, tiledHeight, 8);
@@ -324,8 +336,13 @@ struct MxaoFixture {
             WrittenToRead(kFiltered);
             resolveSet = kResolveFilteredSet;
         }
-        Dispatch(kResolve, resolveSet, constants,
-                 filter == 0 ? Fast::Immerse::kMxaoFilterCopy : Fast::Immerse::kMxaoFilterMirrored, Width, Height, 8);
+        if (DebugView != 0)
+            Dispatch(kDebug, motion != nullptr ? kResolveAccumulatedSet + written : kResolveRawSet, constants,
+                     DebugView << Fast::Immerse::kMxaoDebugViewShift, Width, Height, 8);
+        else
+            Dispatch(kResolve, resolveSet, constants,
+                     filter == 0 ? Fast::Immerse::kMxaoFilterCopy : Fast::Immerse::kMxaoFilterMirrored, Width, Height,
+                     8);
         Barrier(Images[kOutput], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -349,8 +366,10 @@ struct MxaoFixture {
         Check(vkQueueWaitIdle(Device.Queue));
         std::vector<float> values(depth.size());
         std::memcpy(values.data(), Result.Mapped, values.size() * sizeof(float));
+        const bool packed = DebugView >= 1 && DebugView <= 3;
         for (float value : values)
-            Require(std::isfinite(value) && value >= 0 && value <= 1, "nonfinite or out-of-range MXAO visibility");
+            Require(std::isfinite(value) && value >= 0 && value <= (packed ? 2.0F : 1.0F),
+                    "nonfinite or out-of-range MXAO visibility");
         if (motion != nullptr && accumulation != nullptr) {
             const auto* halves = static_cast<const uint16_t*>(Accumulation.Mapped);
             accumulation->resize(depth.size());
@@ -396,6 +415,151 @@ float MeanDifference(const std::vector<float>& a, const std::vector<float>& b) {
 }
 float Minimum(const std::vector<float>& values) {
     return *std::min_element(values.begin(), values.end());
+}
+// The display colour of a packed debug normal (AmbientOcclusionDebugShaderLibrary).
+std::array<float, 3> Unpack(float value) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return { float((bits >> 15) & 255U) / 255.0F, float((bits >> 7) & 255U) / 255.0F, float(bits & 127U) / 127.0F };
+}
+
+// The original's options and the debug views: normals from depth ignore a
+// shading normal that tilts away from the depth surface (the renderer's then
+// darken the plane), IDGAF, a screen radius, the exponential fade, the shading
+// rate keeping skipped pixels, and the views of the inputs.
+void TestOriginalOptions(MxaoFixture& gpu, MxaoConstants constants, const std::vector<float>& flat,
+                         const std::vector<float>& sloped, const std::vector<float>& scene) {
+    using namespace Fast::Immerse;
+    const std::vector<float> identity(flat.size(), 1);
+    constexpr uint32_t W = MxaoFixture::Width, H = MxaoFixture::Height;
+    // A plane tilted 39 degrees whose shading normal faces the viewer (an
+    // interpolated normal across a corner): the renderer normal puts half the
+    // plane above its tangent plane; the depth normal is the plane's own.
+    auto steep = flat;
+    for (uint32_t y = 0; y < H; ++y)
+        for (uint32_t x = 0; x < W; ++x)
+            steep[y * W + x] = 10 / (1 - .8F * (2 * (x + .5F) / W - 1));
+    const auto interior = [&](const std::vector<float>& values) {
+        float minimum = 1;
+        for (uint32_t y = 2; y + 2 < H; ++y)
+            for (uint32_t x = 2; x + 2 < W; ++x)
+                minimum = std::min(minimum, values[y * W + x]);
+        return minimum;
+    };
+    auto rendererNormals = constants;
+    rendererNormals.Flags = 3; // Very high
+    auto depthNormals = rendererNormals;
+    depthNormals.Flags |= kMxaoDepthNormals;
+    const float tilted = interior(gpu.Run(steep, rendererNormals, 0, 255, 0));
+    const float reconstructed = interior(gpu.Run(steep, depthNormals, 0, 255, 0));
+    std::cout << "plane under a facing shading normal: minimum visibility " << tilted << " renderer normals, "
+              << reconstructed << " depth normals\n";
+    Require(tilted < .95F, "a tilted renderer normal does not self-occlude");
+    Require(reconstructed > .998F, "depth normals darken a sloped plane");
+    for (uint32_t filter = 0; filter < 3; ++filter) {
+        const float gentle = Minimum(gpu.Run(sloped, depthNormals, filter, 255, 0));
+        std::cout << "16.7 degree plane, depth normals, filter " << filter << ": minimum visibility " << gentle << '\n';
+        Require(gentle > .998F, "depth normals darken a sloped plane");
+    }
+    Require(Difference(gpu.Run(flat, depthNormals, 2), identity) < .0002F, "depth normals darken a flat plane");
+    Require(Minimum(gpu.Run(scene, depthNormals, 1)) < .9F, "depth normals miss the steps");
+
+    auto idgaf = constants;
+    idgaf.Flags = 6;
+    Require(Difference(gpu.Run(flat, idgaf, 2), identity) < .0002F, "IDGAF darkens an empty plane");
+    Require(Minimum(gpu.Run(scene, idgaf, 2)) < .9F, "IDGAF misses the steps");
+
+    auto screen = constants;
+    screen.Flags |= kMxaoScreenRadius;
+    screen.Response[3] = 2.5F * .03F;
+    Require(Difference(gpu.Run(flat, screen, 1), identity) < .0002F, "a screen radius darkens an empty plane");
+    // The original's radius 1 / 2.5 / 10: 3.9 / 9.7 / 39 pixels at any depth.
+    std::array<float, 3> screenMinimum{};
+    for (size_t i = 0; i < 3; ++i) {
+        screen.Response[3] = std::array{ 1.0F, 2.5F, 10.0F }[i] * .03F;
+        screenMinimum[i] = Minimum(gpu.Run(scene, screen, 1));
+    }
+    std::cout << "screen radius 1 / 2.5 / 10: minimum visibility " << screenMinimum[0] << " / " << screenMinimum[1]
+              << " / " << screenMinimum[2] << '\n';
+    Require(screenMinimum[2] < .8F && screenMinimum[1] < screenMinimum[0] && screenMinimum[2] < screenMinimum[1],
+            "a screen radius misses the steps");
+
+    // Depth 10 of far 100 is 0.1: a 0.01 fade distance removes it, 1.0 keeps it.
+    auto faded = constants;
+    faded.Flags |= kMxaoOriginalFade;
+    faded.RadiusFade[2] = .01F;
+    Require(Difference(gpu.Run(scene, faded, 1), identity) == 0, "the original fade keeps a distant surface");
+    faded.RadiusFade[2] = 1;
+    Require(Minimum(gpu.Run(scene, faded, 1)) < .9F, "the original fade removes a near surface");
+
+    // Quarter rate after a full frame: phase 0 updates the tiles with even x
+    // and y, every other pixel keeps the previous frame's estimate.
+    const auto flatReference = gpu.Run(flat, constants, 0);
+    gpu.KeepRaw = true;
+    const auto shadingRate = [&](uint32_t rate, uint32_t phase, auto estimated) {
+        const auto before = gpu.Run(scene, constants, 0);
+        auto partial = constants;
+        partial.Flags |= rate << kMxaoShadingRateShift | phase << kMxaoShadingPhaseShift;
+        const auto after = gpu.Run(flat, partial, 0);
+        size_t correct = 0, updated = 0;
+        for (uint32_t y = 0; y < H; ++y)
+            for (uint32_t x = 0; x < W; ++x) {
+                const size_t i = y * W + x;
+                const bool fresh = estimated(x % 4, y % 4);
+                updated += fresh ? 1 : 0;
+                correct += after[i] == (fresh ? flatReference[i] : before[i]) ? 1 : 0;
+            }
+        return updated != 0 && updated != W * H && correct == W * H;
+    };
+    Require(shadingRate(2, 0, [](uint32_t x, uint32_t y) { return (x & 1) + (y & 1) * 2 == 0; }),
+            "the quarter shading rate, phase 0");
+    Require(shadingRate(2, 3, [](uint32_t x, uint32_t y) { return (x & 1) + (y & 1) * 2 == 3; }),
+            "the quarter shading rate, phase 3");
+    Require(shadingRate(1, 1, [](uint32_t x, uint32_t y) { return ((x + y) & 1) == 1; }),
+            "the half shading rate");
+    gpu.KeepRaw = false;
+
+    // Debug views. On the sloped plane with its true normal, the renderer and
+    // depth normals agree with the encoded guide; with a facing guide they
+    // disagree by the slope angle.
+    const float length = std::sqrt(1 + .3F * .3F);
+    const std::array<float, 3> expected{ .5F + .5F * .3F / length, .5F, .5F + .5F / length };
+    size_t checked = 0;
+    for (uint32_t view : { 2U, 3U }) {
+        gpu.DebugView = view;
+        const auto normals = gpu.Run(sloped, depthNormals, 0, 255, .3F);
+        for (uint32_t y = 2; y + 2 < H; ++y)
+            for (uint32_t x = 2; x + 2 < W; ++x) {
+                const auto color = Unpack(normals[y * W + x]);
+                for (size_t c = 0; c < 3; ++c)
+                    Require(std::abs(color[c] - expected[c]) < (c == 2 ? 3.0F / 127 : 3.0F / 255),
+                            view == 2 ? "renderer normal view" : "depth normal view");
+                ++checked;
+            }
+    }
+    gpu.DebugView = 1;
+    const auto used = gpu.Run(sloped, depthNormals, 0, 255, 0);
+    Require(std::abs(Unpack(used[(H / 2) * W + W / 2])[0] - expected[0]) < 3.0F / 255,
+            "the normals in use are not the selected source");
+    gpu.DebugView = 4;
+    const auto agree = gpu.Run(sloped, depthNormals, 0, 255, .3F);
+    const auto disagree = gpu.Run(sloped, depthNormals, 0, 255, 0);
+    const float angle = std::atan(.3F) / (3.14159265F * .5F);
+    Require(agree[(H / 2) * W + W / 2] < .02F, "agreeing normals disagree");
+    Require(std::abs(disagree[(H / 2) * W + W / 2] - angle) < .02F, "the disagreement is not the slope angle");
+    // Depth 10 inside a 0..50 fade: 0.8 faded, 0.2 of the range.
+    auto fadeView = constants;
+    fadeView.RadiusFade[2] = 0;
+    fadeView.RadiusFade[3] = 50;
+    gpu.DebugView = 7;
+    Require(Difference(gpu.Run(flat, fadeView, 0), std::vector<float>(flat.size(), .8F)) < 1e-5F,
+            "the fade view");
+    gpu.DebugView = 5;
+    Require(Difference(gpu.Run(flat, fadeView, 0), std::vector<float>(flat.size(), .2F)) < 1e-5F,
+            "the depth view");
+    gpu.DebugView = 0;
+    std::cout << "original options: depth normals, IDGAF, screen radius, exponential fade, shading rates and "
+              << checked << " debug normals passed\n";
 }
 
 // Temporal accumulation: an invalid history reproduces the original filter
@@ -579,6 +743,7 @@ int main() try {
         Require(Difference(base, gpu.Run(scene, wBuffer, 1)) < .002F, "W-buffer and perspective reconstruction disagree");
     }
     TestTemporal(gpu, constants, scene);
+    TestOriginalOptions(gpu, constants, flat, sloped, scene);
     std::cout << "MXAO GPU: RGB8 planes, occlusion for four methods and three filters, coverage, amount, fade, "
                  "W-buffer, odd extents, repeatability and temporal accumulation passed\n";
 } catch (const std::exception& error) {

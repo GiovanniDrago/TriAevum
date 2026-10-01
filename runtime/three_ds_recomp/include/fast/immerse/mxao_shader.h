@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace Fast::Immerse {
 
@@ -22,14 +23,43 @@ enum class MxaoMethod : uint32_t {
     VisibilityBitmaskSolidAngle = 3,
 };
 
-// Slice/step presets of the original, Low through Extreme.
-inline constexpr uint32_t kMxaoQualityPresets = 6U;
+// Slice/step presets of the original, Low through IDGAF.
+inline constexpr uint32_t kMxaoQualityPresets = 7U;
 
 // Filter flags of the regression passes.
 inline constexpr uint32_t kMxaoFilterMirrored = 1U << 4U;
 inline constexpr uint32_t kMxaoFilterCopy = 1U << 5U;
+// Normals reconstructed from depth, as the original computes them
+// (MXAO_USE_LAUNCHPAD_NORMALS 0); without it the renderer's normal guide.
+inline constexpr uint32_t kMxaoDepthNormals = 1U << 6U;
+// "Increase Radius with Distance": a constant screen radius, Response.w as a
+// fraction of the width, instead of the world radius RadiusFade.x.
+inline constexpr uint32_t kMxaoScreenRadius = 1U << 7U;
 // Bits 8-11: temporal jitter phase added to every pixel's interleaved jitter.
 inline constexpr uint32_t kMxaoJitterPhaseShift = 8U;
+// Bits 12-13: shading rate (0 full, 1 half, 2 quarter); bits 14-15: this
+// frame's phase. A skipped pixel keeps its previous estimate.
+inline constexpr uint32_t kMxaoShadingRateShift = 12U;
+inline constexpr uint32_t kMxaoShadingPhaseShift = 14U;
+// The original's exponential fade: RadiusFade.z is its Fade Out Distance in
+// depth normalized by the far plane (RadiusFade.w unused).
+inline constexpr uint32_t kMxaoOriginalFade = 1U << 16U;
+// Bits 20-23: the view of the debug program (MxaoDebugProgramView).
+inline constexpr uint32_t kMxaoDebugViewShift = 20U;
+
+// Views written by the debug program into the visibility output: scalars in
+// [0, 1], or a normal packed by the adapter's encoding (see
+// BuildMxaoDebugShader).
+enum class MxaoDebugProgramView : uint32_t {
+    UsedNormals = 1,
+    RendererNormals = 2,
+    DepthNormals = 3,
+    NormalDisagreement = 4,
+    Depth = 5,
+    EdgeWeight = 6,
+    Fade = 7,
+    HistoryLength = 8,
+};
 
 // Temporal accumulation: the history length an estimate converges to, the
 // shortest one it keeps while moving, and the relative depth tolerance of a
@@ -60,7 +90,7 @@ struct MxaoConstants {
     // World-space radius, bitmask thickness, fade start, fade end (view units).
     std::array<float, 4> RadiusFade{};
     // Amount, 1 / far plane (the filter's normalized depth), squared normal
-    // decoding uncertainty, unused.
+    // decoding uncertainty, screen radius (fraction of the width).
     std::array<float, 4> Response{};
     // Temporal mode: history valid, maximum history length, relative depth
     // tolerance, minimum history length while moving. Zero outside the
@@ -107,6 +137,12 @@ static_assert(sizeof(MxaoConstants) == 128);
 // MXAO's depth-guided regression filter. The intermediate pass keeps the RG16F
 // layout; the final pass writes the published R32F visibility (1 - occlusion).
 [[nodiscard]] std::string BuildMxaoFilterShader(bool finalPass);
+// Debug views of the inputs the renderer passes and of the estimate's terms
+// (not part of the original, whose only view is the AO itself). Binding 2 is
+// the raw estimate, or the accumulation for the history view. `packNormal`
+// supplies `float mxao_debug_pack_normal(vec3 view_normal)`, the display
+// encoding of a normal in the R32F output.
+[[nodiscard]] std::string BuildMxaoDebugShader(std::string_view packNormal);
 // Temporal accumulation of the per-pixel occlusion (not part of the original):
 // reprojects the previous accumulation with the scene's motion vectors,
 // rejects it where the surface's previous depth disagrees, clamps it to this

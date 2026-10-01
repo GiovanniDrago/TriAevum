@@ -95,6 +95,10 @@ constexpr EnumNames<MxaoEstimator> kMxaoMethodNames{
     {MxaoEstimator::VisibilityBitmask, "VisibilityBitmask"},
     {MxaoEstimator::VisibilityBitmaskSolidAngle, "VisibilityBitmaskSolidAngle"},
 };
+constexpr EnumNames<MxaoNormalSource> kMxaoNormalNames{
+    {MxaoNormalSource::Depth, "Depth"},
+    {MxaoNormalSource::Renderer, "Renderer"},
+};
 constexpr EnumNames<AoTextureRelief> kAoReliefNames{
     {AoTextureRelief::Off, "Off"},
     {AoTextureRelief::Subtle, "Subtle"},
@@ -1295,6 +1299,12 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                        {"Quality", effects.MxaoQuality},
                        {"Filter", effects.MxaoFilter},
                        {"Temporal", effects.MxaoTemporal},
+                       {"Normals", EnumName(effects.MxaoNormals, kMxaoNormalNames)},
+                       {"ShadingRate", effects.MxaoShadingRate},
+                       {"IncreaseRadiusWithDistance", effects.MxaoRadiusGrowsWithDistance},
+                       {"ScreenRadius", effects.MxaoScreenRadius},
+                       {"OriginalFade", effects.MxaoOriginalFade},
+                       {"FadeDistance", effects.MxaoFadeDistance},
                    }},
                   {"TextureRelief", EnumName(effects.AoRelief, kAoReliefNames)},
               }},
@@ -1706,6 +1716,25 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                                "Graphics.Effects.AO.Mxao.Temporal", result);
                 else
                     result.NeedsRewrite = true;
+                // The original's remaining options; absent ones keep their
+                // defaults and are written on the next save.
+                if (FindMember(*mxao, "Normals") != nullptr)
+                    ReadEnum(*mxao, "Normals", value.MxaoNormals, kMxaoNormalNames,
+                             "Graphics.Effects.AO.Mxao.Normals", result);
+                else
+                    result.NeedsRewrite = true;
+                const auto readOptional = [&](const char* name, auto& field, const char* path) {
+                    if (FindMember(*mxao, name) != nullptr)
+                        ReadScalar(*mxao, name, field, path, result);
+                    else
+                        result.NeedsRewrite = true;
+                };
+                readOptional("ShadingRate", value.MxaoShadingRate, "Graphics.Effects.AO.Mxao.ShadingRate");
+                readOptional("IncreaseRadiusWithDistance", value.MxaoRadiusGrowsWithDistance,
+                             "Graphics.Effects.AO.Mxao.IncreaseRadiusWithDistance");
+                readOptional("ScreenRadius", value.MxaoScreenRadius, "Graphics.Effects.AO.Mxao.ScreenRadius");
+                readOptional("OriginalFade", value.MxaoOriginalFade, "Graphics.Effects.AO.Mxao.OriginalFade");
+                readOptional("FadeDistance", value.MxaoFadeDistance, "Graphics.Effects.AO.Mxao.FadeDistance");
             } else {
                 result.NeedsRewrite = true;
             }

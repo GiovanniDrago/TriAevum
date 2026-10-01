@@ -33,4 +33,12 @@ ResolveAmbientOcclusionVisibilityRgb(
 [[nodiscard]] std::string_view
 AmbientOcclusionCompositeShaderLibrary() noexcept;
 
+// AO debug views (MxaoDebugView): the provider writes a scalar in [0, 1] into
+// its R32F visibility output, or for a normal view the display colour
+// n * 0.5 + 0.5 packed as 8/8/7 bits in the mantissa of a float in [1, 2).
+// `mxao_debug_pack_normal(vec3)` packs; `oot3d_ambient_occlusion_debug_color(
+// uint view, float value)` gives the colour the scene composite shows.
+[[nodiscard]] std::string_view
+AmbientOcclusionDebugShaderLibrary() noexcept;
+
 } // namespace Fast::Oot3d

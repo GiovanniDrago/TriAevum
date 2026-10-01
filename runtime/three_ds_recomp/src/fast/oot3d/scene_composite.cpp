@@ -41,7 +41,7 @@ layout(push_constant) uniform CompositeState {
     uint global_illumination;
     float diffuse_intensity;
     uint global_illumination_debug;
-    uint reserved;
+    uint ambient_occlusion_debug;
 } state;
 
 vec3 oot3d_gi_srgb_to_linear(vec3 value) {
@@ -54,6 +54,7 @@ vec3 oot3d_gi_linear_to_srgb(vec3 value) {
 }
 )glsl";
     source += AmbientOcclusionCompositeShaderLibrary();
+    source += AmbientOcclusionDebugShaderLibrary();
     source += ReflectionDebugShaderLibrary();
     source += ToonOutlineComputeShaderLibrary();
     source += R"glsl(
@@ -126,6 +127,15 @@ void main(){
         vec3 tint=state.input_linear!=0u
             ? oot3d_outline_srgb_to_linear(nativeTint) : nativeTint;
         color.rgb=mix(color.rgb,tint,edge);
+    }
+    // AO debug view: the provider's output itself, texel for texel (packed
+    // views must not be filtered), as display values.
+    if(state.ambient_occlusion!=0u && state.ambient_occlusion_debug!=0u) {
+        ivec2 ao_size=textureSize(sampler2D(ao_visibility,composite_sampler),0);
+        float value=texelFetch(sampler2D(ao_visibility,composite_sampler),
+            clamp(ivec2(uv*vec2(ao_size)),ivec2(0),ao_size-1),0).r;
+        vec3 view=oot3d_ambient_occlusion_debug_color(state.ambient_occlusion_debug,value);
+        color=vec4(state.input_linear!=0u ? oot3d_gi_srgb_to_linear(view) : view,1.0);
     }
     imageStore(composite_output,pixel,color);
 }

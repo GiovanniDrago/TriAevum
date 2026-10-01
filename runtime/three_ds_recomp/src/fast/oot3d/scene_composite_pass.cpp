@@ -37,7 +37,7 @@ struct CompositePush {
     uint32_t GlobalIllumination = 0;
     float DiffuseIntensity = 0.0F;
     uint32_t GlobalIlluminationDebug = 0;
-    uint32_t Reserved = 0;
+    uint32_t AmbientOcclusionDebug = 0;
 };
 static_assert(sizeof(CompositePush) == 96U);
 
@@ -236,7 +236,7 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, ui
                                  VkImage diffuseIlluminationImage, VkFormat diffuseIlluminationFormat,
                                  VkImage diffuseAlbedoImage, VkFormat diffuseAlbedoFormat,
                                  bool globalIlluminationEnabled, float diffuseIntensity, bool aoEnabled,
-                                 bool reflectionsEnabled, float reflectionStrength, uint32_t reflectionDebug,
+                                 uint32_t aoDebugView, bool reflectionsEnabled, float reflectionStrength, uint32_t reflectionDebug,
                                  bool outlineEnabled, const ToonStyleSettings& outlineSettings,
                                  SceneColorEncoding inputEncoding, const EffectPassBarrierPlan& barrierPlan) {
     const auto* outputBarrier = barrierPlan.Find(
@@ -262,7 +262,7 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, ui
     (void)ambientFormat;
     (void)depthFormat; (void)outlineEnabled;
     (void)outlineSettings; (void)inputEncoding;
-    (void)aoEnabled;
+    (void)aoEnabled; (void)aoDebugView;
     (void)reflectionsEnabled; (void)reflectionStrength; (void)reflectionDebug;
     (void)barrierPlan; (void)diffuseIlluminationFormat; (void)diffuseAlbedoFormat;
     (void)globalIlluminationEnabled; (void)diffuseIntensity; 
@@ -350,7 +350,7 @@ bool SceneCompositePass::Execute(VkCommandBuffer command, uint32_t frameSlot, ui
         static_cast<uint32_t>(globalIlluminationEnabled),
         diffuseIntensity,
         globalIlluminationEnabled ? GlobalIlluminationDebugView() : 0U,
-        0U};
+        aoEnabled ? aoDebugView : 0U};
     mImpl->Core->CmdSetDescriptorPool(*nriCommand, *descriptorPool.Pool);
     mImpl->Core->CmdSetPipelineLayout(
         *nriCommand, nri::BindPoint::COMPUTE, *mImpl->PipelineLayout);

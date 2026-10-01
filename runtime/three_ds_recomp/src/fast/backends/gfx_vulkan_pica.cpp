@@ -9362,6 +9362,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     optionalCompositeImage(Oot3d::EffectResource::DiffuseAlbedoGuide),
                     optionalCompositeFormat(Oot3d::EffectResource::DiffuseAlbedoGuide), giForDisplay,
                     presentationSettings.Effects.GlobalIllumination.DiffuseIntensity * giSources.Gain, aoForDisplay,
+                    presentationSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Mxao
+                        ? static_cast<uint32_t>(presentationSettings.Effects.MxaoDebug) : 0U,
                     reflectionsForDisplay,
                     giReflections ? presentationSettings.Effects.GlobalIllumination.SpecularIntensity * giSources.Gain
                                   : presentationSettings.Effects.ReflectionStrength,

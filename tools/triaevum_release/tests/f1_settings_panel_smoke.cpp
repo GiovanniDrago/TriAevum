@@ -1024,6 +1024,38 @@ int main() try {
     Check(runtime.Snapshot().Effects.MxaoTemporal && runtime.Snapshot().Effects.MxaoQuality == 2 &&
               runtime.Snapshot().Effects.MxaoFilter == 2,
           "MXAO temporal accumulation did not apply or disturbed the MXAO controls");
+    // The original's remaining options and the debug views.
+    Select("MXAO quality", "IDGAF");
+    Select("MXAO shading rate", "Quarter rate");
+    Select("MXAO normals", "Renderer normals");
+    Click("Increase radius with distance");
+    EditScalar("MXAO sample radius", "4");
+    Click("Original fade");
+    EditScalar("Fade out distance", "0.5");
+    Select("MXAO debug view", "Normal disagreement");
+    {
+        const auto options = runtime.Snapshot().Effects;
+        Check(options.MxaoQuality == 6 && options.MxaoShadingRate == 2 &&
+                  options.MxaoNormals == MxaoNormalSource::Renderer && options.MxaoRadiusGrowsWithDistance &&
+                  options.MxaoScreenRadius == 4.0F && options.MxaoOriginalFade && options.MxaoFadeDistance == 0.5F &&
+                  options.MxaoDebug == MxaoDebugView::NormalDisagreement && options.AoRadius == 2.5F &&
+                  options.MxaoTemporal,
+              "the original MXAO options did not apply or disturbed the other MXAO controls");
+    }
+    Select("MXAO debug view", "Off");
+    Click("Original fade");
+    Click("Increase radius with distance");
+    Select("MXAO normals", "From depth (original)");
+    Select("MXAO shading rate", "Full rate");
+    Select("MXAO quality", "High");
+    {
+        const auto restored = runtime.Snapshot().Effects;
+        Check(restored.MxaoDebug == MxaoDebugView::Off, "the MXAO debug view cannot be turned off");
+        Check(restored.MxaoNormals == MxaoNormalSource::Depth, "MXAO depth normals cannot be restored");
+        Check(!restored.MxaoRadiusGrowsWithDistance, "MXAO increase radius with distance cannot be cleared");
+        Check(!restored.MxaoOriginalFade, "the MXAO original fade cannot be cleared");
+        Check(restored.MxaoShadingRate == 0, "the MXAO full shading rate cannot be restored");
+    }
     Select("AO texture relief", "Strong");
     Check(runtime.Snapshot().Effects.AoRelief == AoTextureRelief::Strong &&
               runtime.Snapshot().Effects.MxaoQuality == 2,

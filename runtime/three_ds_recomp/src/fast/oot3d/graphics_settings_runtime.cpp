@@ -330,6 +330,16 @@ GraphicsSettingsRuntime::GraphicsSettingsRuntime() {
             customized = true;
         }
     }
+    // Developer inspection of MXAO (MxaoDebugView 1-10); never saved.
+    if (const char* debug = std::getenv("OOT3D_GRAPHICS_MXAO_DEBUG")) {
+        char* end = nullptr;
+        const long parsed = std::strtol(debug, &end, 10);
+        if (end != debug && *end == '\0' && parsed >= 0 &&
+            parsed <= static_cast<long>(MxaoDebugView::HistoryLength)) {
+            initial.Effects.MxaoDebug = static_cast<MxaoDebugView>(parsed);
+            customized = true;
+        }
+    }
     if (const char* toon = std::getenv("OOT3D_GRAPHICS_TOON");
         toon != nullptr && std::string_view(toon) == "1") {
         initial.Effects.Toon = ToonMode::PostProcessPreview;

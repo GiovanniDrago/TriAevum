@@ -112,4 +112,22 @@ float oot3d_scene_ambient_occlusion_visibility(
 )glsl";
 }
 
+std::string_view
+AmbientOcclusionDebugShaderLibrary() noexcept {
+    return R"glsl(
+float mxao_debug_pack_normal(vec3 n) {
+    uvec3 q=uvec3(round(clamp(n*0.5+0.5,0.0,1.0)*vec3(255.0,255.0,127.0)));
+    return uintBitsToFloat(0x3F800000u|(q.x<<15u)|(q.y<<7u)|q.z);
+}
+// Views 3-5 (normals in use, renderer, depth) are packed colours.
+vec3 oot3d_ambient_occlusion_debug_color(uint view, float value) {
+    if(view>=3u && view<=5u) {
+        uint bits=floatBitsToUint(value);
+        return vec3(float((bits>>15u)&255u)/255.0,float((bits>>7u)&255u)/255.0,float(bits&127u)/127.0);
+    }
+    return vec3(clamp(value,0.0,1.0));
+}
+)glsl";
+}
+
 } // namespace Fast::Oot3d
