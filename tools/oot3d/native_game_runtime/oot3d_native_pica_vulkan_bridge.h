@@ -15,6 +15,14 @@ struct Oot3dPicaVulkanDrawBridgeTiming {
     double BackendSubmissionSeconds = 0.0;
 };
 
+// PICA alpha-test register (0x104): enable bit, compare function, reference.
+struct Oot3dPicaAlphaTest {
+    bool Enabled = false;
+    uint8_t Compare = 1U; // Always
+    uint8_t Reference = 0U;
+};
+Oot3dPicaAlphaTest DecodeOot3dPicaAlphaTest(uint32_t alphaTestRegister);
+
 bool SubmitOot3dPicaVulkanDrawPlan(
     Oot3d::Renderer::PicaRenderBackend& renderingApi,
     const Oot3dPicaVulkanDrawPlan& plan,
@@ -22,6 +30,15 @@ bool SubmitOot3dPicaVulkanDrawPlan(
     uint64_t renderTargetNamespace = 0,
     const Oot3dPicaVulkanDrawOverrides* overrides = nullptr,
     Oot3dPicaVulkanDrawBridgeTiming* timing = nullptr);
+
+// Hands a draw of the published sequence to the backend ahead of execution
+// (vertex side only); the draw is still submitted later in native order.
+bool PrepareOot3dPicaVulkanSequenceDraw(
+    Oot3d::Renderer::PicaRenderBackend& renderingApi,
+    const Oot3dPicaVulkanDrawPlan& plan,
+    std::string* error = nullptr,
+    uint64_t renderTargetNamespace = 0,
+    const Oot3dPicaVulkanDrawOverrides* overrides = nullptr);
 
 bool SubmitOot3dPicaVulkanDisplayTransfer(
     Oot3d::Renderer::PicaRenderBackend& renderingApi,

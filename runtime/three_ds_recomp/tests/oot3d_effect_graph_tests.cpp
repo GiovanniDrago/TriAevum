@@ -289,6 +289,23 @@ TEST(Oot3dEffectGraph, ExportsExtensionOwnedAuxiliaryOutputs) {
     EXPECT_FALSE(graph.Compile().Valid());
 }
 
+TEST(Oot3dEffectGraph, FallbackProducerAtOpaqueBoundaryReadsOnlyImports) {
+    const auto compile = [](EffectStage stage, EffectResource read) {
+        EffectGraph graph;
+        graph.Add({ .Name = "early-producer",
+                    .Stage = stage,
+                    .Contract = EffectContractKind::AuxiliaryOutput,
+                    .Resources = { Read(read), Write(EffectResource::DirectionalShadowMap) },
+                    .FallbackStage = EffectStage::BeforeUi });
+        EXPECT_TRUE(graph.Export(EffectResource::DirectionalShadowMap));
+        return graph.Compile();
+    };
+    const auto prepared = compile(EffectStage::BeforeOpaque, EffectResource::PreparedShadowCasters);
+    EXPECT_TRUE(prepared.Valid()) << prepared.Error;
+    EXPECT_FALSE(compile(EffectStage::AfterDepth, EffectResource::PreparedShadowCasters).Valid());
+    EXPECT_FALSE(compile(EffectStage::BeforeOpaque, EffectResource::AmbientOcclusion).Valid());
+}
+
 TEST(Oot3dEffectGraph, CompiledPassReportsOnlyDeclaredReads) {
     EffectGraph graph;
     graph.Add({ .Name = "producer",
@@ -365,8 +382,11 @@ TEST(Oot3dEffectGraph, DerivesFrameAttachmentsFromExtensionContracts) {
     const auto* shadowMap = shadows.FindPass(PicaExtensionPassName(
         PicaExtensionPass::DirectionalShadowMap));
     ASSERT_NE(shadowMap, nullptr);
-    EXPECT_EQ(shadowMap->Stage, EffectStage::AfterOpaque);
+    EXPECT_EQ(shadowMap->Stage, EffectStage::BeforeOpaque);
+    EXPECT_TRUE(shadowMap->FallbackStage == EffectStage::BeforeUi);
     EXPECT_EQ(shadowMap->Contract, EffectContractKind::AuxiliaryOutput);
+    EXPECT_TRUE(shadowMap->ReadsResource(EffectResource::PreparedShadowCasters));
+    EXPECT_FALSE(shadowMap->ReadsResource(EffectResource::PicaSceneFrame));
     EXPECT_TRUE(shadows.ExportsResource(
         EffectResource::DirectionalShadowMap));
 
@@ -1193,14 +1213,36 @@ TEST(Oot3dCompositionSchedule,
     ASSERT_TRUE(schedule.ConsumeDraw(draws[2], &error));
     EXPECT_TRUE(ResolvePicaDisplayComposition(schedule, target).SceneResolved);
     EXPECT_EQ(schedule.FindAnchor(EffectStage::AfterOpaque, target), nullptr);
+    // Where opaque drawing starts is exact without contiguity: the shadow map
+    // keeps its opaque boundary in a mixed sequence.
     const auto shadowGraph = BuildPicaExtensionGraph({.DirectionalShadows = true});
     const auto shadowPlan = BuildPicaEffectPassSchedulePlan(
         shadowGraph, PicaExtensionPassName(PicaExtensionPass::DirectionalShadowMap),
         EffectContractKind::AuxiliaryOutput);
+    const auto* beforeOpaque = schedule.FindAnchor(EffectStage::BeforeOpaque, target);
+    ASSERT_NE(beforeOpaque, nullptr);
+    EXPECT_EQ(beforeOpaque->BeforeSubmissionId, 20U);
+    EXPECT_FALSE(beforeOpaque->AtTargetEnd);
+    EXPECT_EQ(FindPicaEffectPassAnchor(schedule, shadowPlan, target), beforeOpaque);
+    EXPECT_TRUE(shadowPlan.Resolve(BuildPicaExtensionScheduleBoundary(schedule, *beforeOpaque)).Authorized());
+
+    // A producer whose primary boundary is withheld uses its declared late anchor.
+    EffectGraph lateGraph;
+    lateGraph.Add({ .Name = "late-producer",
+                    .Stage = EffectStage::AfterOpaque,
+                    .Contract = EffectContractKind::AuxiliaryOutput,
+                    .Resources = { Read(EffectResource::PreparedShadowCasters),
+                                   Write(EffectResource::DirectionalShadowMap) },
+                    .FallbackStage = EffectStage::BeforeUi });
+    ASSERT_TRUE(lateGraph.Export(EffectResource::DirectionalShadowMap));
+    const auto lateCompiled = lateGraph.Compile();
+    ASSERT_TRUE(lateCompiled.Valid()) << lateCompiled.Error;
+    const auto latePlan = BuildPicaEffectPassSchedulePlan(
+        lateCompiled, "late-producer", EffectContractKind::AuxiliaryOutput);
     const auto* shadowEnd = schedule.FindTargetEndAnchor(EffectStage::BeforeUi, target);
     ASSERT_NE(shadowEnd, nullptr);
-    EXPECT_EQ(FindPicaEffectPassAnchor(schedule, shadowPlan, target), shadowEnd);
-    EXPECT_TRUE(shadowPlan.Resolve(BuildPicaExtensionScheduleBoundary(schedule, *shadowEnd)).Authorized());
+    EXPECT_EQ(FindPicaEffectPassAnchor(schedule, latePlan, target), shadowEnd);
+    EXPECT_TRUE(latePlan.Resolve(BuildPicaExtensionScheduleBoundary(schedule, *shadowEnd)).Authorized());
 
     auto withUi = draws;
     withUi.push_back(CompositionDraw(23U, target, PicaCompositionDomain::Ui,
@@ -1211,21 +1253,26 @@ TEST(Oot3dCompositionSchedule,
     ASSERT_NE(beforeUi, nullptr);
     EXPECT_EQ(beforeUi->BeforeSubmissionId, 23U);
     EXPECT_FALSE(beforeUi->AtTargetEnd);
-    EXPECT_EQ(FindPicaEffectPassAnchor(schedule, shadowPlan, target), beforeUi);
-    EXPECT_FALSE(shadowPlan.Resolve(BuildPicaExtensionScheduleBoundary(schedule, *beforeUi)).Authorized());
+    EXPECT_EQ(FindPicaEffectPassAnchor(schedule, latePlan, target), beforeUi);
+    EXPECT_FALSE(latePlan.Resolve(BuildPicaExtensionScheduleBoundary(schedule, *beforeUi)).Authorized());
     for (const auto& draw : draws) ASSERT_TRUE(schedule.ConsumeDraw(draw, &error));
     EXPECT_TRUE(ResolvePicaDisplayComposition(schedule, target).SceneResolved);
     EXPECT_TRUE(schedule.Reached(*beforeUi));
-    EXPECT_TRUE(shadowPlan.Resolve(BuildPicaExtensionScheduleBoundary(schedule, *beforeUi)).Authorized());
+    EXPECT_TRUE(latePlan.Resolve(BuildPicaExtensionScheduleBoundary(schedule, *beforeUi)).Authorized());
     EXPECT_EQ(schedule.FindAnchor(EffectStage::AfterOpaque, target), nullptr);
     ASSERT_TRUE(schedule.ConsumeDraw(withUi.back(), &error));
     EXPECT_FALSE(ResolvePicaDisplayComposition(schedule, target).SceneResolved);
 
+    // UI between scene draws withholds the late anchor, not the opaque start.
     std::swap(withUi[2].Domain, withUi[3].Domain);
     std::swap(withUi[2].Composition, withUi[3].Composition);
     ASSERT_TRUE(schedule.Compile({.SequenceId = 95U, .Draws = withUi}, &error));
     EXPECT_EQ(schedule.FindAnchor(EffectStage::BeforeUi, target), nullptr);
-    EXPECT_EQ(FindPicaEffectPassAnchor(schedule, shadowPlan, target), nullptr);
+    EXPECT_EQ(FindPicaEffectPassAnchor(schedule, latePlan, target), nullptr);
+    const auto* interleavedStart = FindPicaEffectPassAnchor(schedule, shadowPlan, target);
+    ASSERT_NE(interleavedStart, nullptr);
+    EXPECT_EQ(interleavedStart->Stage, EffectStage::BeforeOpaque);
+    EXPECT_EQ(interleavedStart->BeforeSubmissionId, 20U);
     for (const auto& draw : withUi) ASSERT_TRUE(schedule.ConsumeDraw(draw, &error));
     EXPECT_FALSE(ResolvePicaDisplayComposition(schedule, target).SceneResolved);
 
@@ -1236,6 +1283,7 @@ TEST(Oot3dCompositionSchedule,
     }, &error)) << error;
     EXPECT_EQ(schedule.Targets()[0].WorldStageIssue,
               PicaCompositionScheduleIssue::UnknownLayer);
+    EXPECT_EQ(schedule.FindAnchor(EffectStage::BeforeOpaque, target), nullptr);
     EXPECT_EQ(schedule.FindPublishedGeometryAnchor(target), nullptr);
     EXPECT_EQ(schedule.FindAnchor(
                   EffectStage::BeforeTransparent, target),
@@ -1292,6 +1340,10 @@ TEST(Oot3dCompositionSchedule,
     const PicaCompositionTargetReference target{
         9U, 0x1B000000U, 0x1B100000U, 400U, 240U, 0U, 3U};
     const std::vector<PicaCompositionDrawReference> draws{
+        CompositionDraw(39U, target, PicaCompositionDomain::Scene,
+                        PicaCompositionLayer::Atmosphere,
+                        PicaCompositionProvenance::NativeControlFlow,
+                        0x003FB5ECU),
         CompositionDraw(40U, target, PicaCompositionDomain::Scene,
                         PicaCompositionLayer::OpaqueWorld,
                         PicaCompositionProvenance::NativeCmbDrawPass,
@@ -1307,7 +1359,7 @@ TEST(Oot3dCompositionSchedule,
                                  &error))
         << error;
     const auto* anchor = schedule.FindAnchorBeforeDraw(
-        EffectStage::AfterOpaque, target, 41U);
+        EffectStage::BeforeOpaque, target, 40U);
     ASSERT_NE(anchor, nullptr);
 
     const auto graph = BuildPicaExtensionGraph({.DirectionalShadows = true});
@@ -1316,7 +1368,7 @@ TEST(Oot3dCompositionSchedule,
         PicaExtensionPassName(PicaExtensionPass::DirectionalShadowMap),
         EffectContractKind::AuxiliaryOutput);
     ASSERT_TRUE(plan.Valid());
-    EXPECT_EQ(plan.Stage(), EffectStage::AfterOpaque);
+    EXPECT_EQ(plan.Stage(), EffectStage::BeforeOpaque);
     EXPECT_EQ(FindPicaEffectPassAnchor(schedule, plan, target), anchor);
 
     auto boundary = BuildPicaExtensionScheduleBoundary(schedule, *anchor);

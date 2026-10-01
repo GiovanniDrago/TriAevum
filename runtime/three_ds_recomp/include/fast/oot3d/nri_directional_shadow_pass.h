@@ -72,9 +72,11 @@ struct NriDirectionalShadowLightTelemetry {
 };
 
 // Graph-owned persistent virtual shadow atlas. Native receivers sample the
-// previously published immutable page table; the declared native anchor updates
+// latest published immutable page table; the declared native anchor updates
 // dirty pages, then publishes the table for subsequent native draws/frames.
-// Mixed native sequences use the graph's BeforeUi anchor instead of AfterOpaque.
+// The scene view holds the sample's casters prepared ahead of native order, so
+// the BeforeOpaque anchor publishes them before the first opaque receiver; a
+// target without that boundary uses the graph's BeforeUi anchor.
 // Scene color, native depth and canonical raster state are never modified.
 class NriDirectionalShadowPass final {
   public:

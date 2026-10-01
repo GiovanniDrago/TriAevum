@@ -33,6 +33,8 @@ struct Oot3dPicaPresentationSchedulerStats {
   uint64_t SupersededVisualFrames = 0;
   uint64_t SelectedDraws = 0;
   uint64_t ExecutedDraws = 0;
+  // Draws handed to the backend before their presentation sequence executed.
+  uint64_t PreparedDraws = 0;
   uint64_t InterpolatedDraws = 0;
   uint64_t ExecutionLists = 0;
   uint64_t CurrentFrameLists = 0;
@@ -57,6 +59,7 @@ struct Oot3dPicaPresentationSchedulerTimings {
   double ExecuteSeconds = 0.0;
   double ValidationSeconds = 0.0;
   double CompositionPublicationSeconds = 0.0;
+  double DrawPreparationSeconds = 0.0;
   double DrawSubmissionSeconds = 0.0;
   double DrawUniformPackingSeconds = 0.0;
   double DrawViewConstructionSeconds = 0.0;

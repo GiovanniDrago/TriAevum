@@ -29,6 +29,7 @@ namespace {
             return ResourceAccess::ColorAttachment;
         case EffectResource::PicaSceneFrame:
         case EffectResource::NativeSceneView:
+        case EffectResource::PreparedShadowCasters:
         case EffectResource::ExtensionGeometry:
         case EffectResource::SceneDistanceField:
         case EffectResource::Count:

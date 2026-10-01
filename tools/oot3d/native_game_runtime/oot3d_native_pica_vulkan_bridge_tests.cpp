@@ -3,9 +3,11 @@
 
 #include "fast/oot3d/pica_uniform_layout.h"
 
+#include <algorithm>
 #include <cstring>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -67,6 +69,24 @@ class RecordingBackend final : public Oot3d::Renderer::PicaRenderBackend {
         DrawTextureCopyReferences.assign(
             draw.Textures[0].CopyReferences.begin(),
             draw.Textures[0].CopyReferences.end());
+        DrawAlphaTestEnabled = draw.AlphaTestEnabled;
+        DrawAlphaCompare = draw.AlphaCompare;
+        DrawAlphaReference = draw.AlphaReference;
+        return true;
+    }
+
+    bool WantsPicaSequenceDrawPreparation(
+        const Oot3d::Renderer::PicaCompositionDrawReference& draw) const override {
+        return PreparedLayer.has_value() && draw.Composition.Layer == *PreparedLayer;
+    }
+
+    bool PreparePicaSequenceDraw(
+        const Oot3d::Renderer::PicaDrawView& draw, std::string*) override {
+        Operations.push_back("prepare:" + std::to_string(draw.SubmissionId));
+        PreparedVertexUniformBytes = draw.VertexUniformBytes.size();
+        PreparedFragmentUniformBytes = draw.FragmentUniformBytes.size();
+        PreparedTextureCount = draw.Textures.size();
+        PreparedAlphaTestEnabled = draw.AlphaTestEnabled;
         return true;
     }
 
@@ -125,6 +145,15 @@ class RecordingBackend final : public Oot3d::Renderer::PicaRenderBackend {
     bool DrawTextureBaseLevelContentHashAvailable = false;
     std::vector<Fast::Renderer3ds::PicaTextureCopyReference>
         DrawTextureCopyReferences;
+    bool DrawAlphaTestEnabled = false;
+    Oot3d::Renderer::PicaCompareFunction DrawAlphaCompare =
+        Oot3d::Renderer::PicaCompareFunction::Always;
+    uint8_t DrawAlphaReference = 0U;
+    std::optional<Oot3d::Renderer::PicaCompositionLayer> PreparedLayer;
+    size_t PreparedVertexUniformBytes = 0U;
+    size_t PreparedFragmentUniformBytes = 0U;
+    size_t PreparedTextureCount = 0U;
+    bool PreparedAlphaTestEnabled = false;
     bool TransferCalled = false;
     Oot3d::Renderer::PicaDisplayTransferView Transfer;
     uint64_t GuestCopyCompletions = 0U;
@@ -173,6 +202,8 @@ int main() {
     plan.FragmentShader.Uniforms.ShadowOrthographic = 1;
     plan.FragmentShader.Uniforms.ShadowBiasConstant = 0.75F;
     plan.FragmentShader.Uniforms.ShadowBiasLinear = 0.125F;
+    // Register 0x104: alpha test enabled, Greater (6), reference 0x7F.
+    plan.FragmentShader.Uniforms.FragmentControl[1] = 0x7F61U;
     plan.State.Topology =
         Oot3dNativeGame::Oot3dPicaPrimitiveTopology::TriangleStrip;
     plan.State.Framebuffer.ColorPhysicalAddress = 0x18000000U;
@@ -204,6 +235,13 @@ int main() {
         {31U, 29U, 0x18000080U, 16U},
     };
     plan.Textures.push_back(std::move(texture));
+
+    const auto alphaTest = Oot3dNativeGame::DecodeOot3dPicaAlphaTest(0x7F61U);
+    const auto alphaTestDisabled = Oot3dNativeGame::DecodeOot3dPicaAlphaTest(0xFF10U);
+    Require(alphaTest.Enabled && alphaTest.Compare == 6U && alphaTest.Reference == 0x7FU &&
+                !alphaTestDisabled.Enabled && alphaTestDisabled.Compare == 1U &&
+                alphaTestDisabled.Reference == 0xFFU,
+            "PICA alpha-test register was decoded incorrectly");
 
     std::string error;
     Require(Oot3dNativeGame::SubmitOot3dPicaVulkanDrawPlan(
@@ -298,7 +336,11 @@ int main() {
                 packedShadowTextureBias == 0x123456 &&
                 packedShadowOrthographic == 1 &&
                 packedShadowBiasConstant == 0.75F &&
-                packedShadowBiasLinear == 0.125F,
+                packedShadowBiasLinear == 0.125F &&
+                backend.DrawAlphaTestEnabled &&
+                backend.DrawAlphaCompare ==
+                    Oot3d::Renderer::PicaCompareFunction::Greater &&
+                backend.DrawAlphaReference == 0x7FU,
             "native draw plan was not translated through the neutral backend");
 
     Oot3dNativeGame::Oot3dPicaDisplayTransferSubmission transfer;
@@ -483,8 +525,71 @@ int main() {
                 schedulerStats.ReusedSnapshots == 1U &&
                 schedulerStats.CompositionSequencesPublished == 2U &&
                 schedulerStats.CompositionDrawReferencesPublished == 3U &&
-                schedulerStats.CompositionPublicationFailures == 0U,
+                schedulerStats.CompositionPublicationFailures == 0U &&
+                schedulerStats.PreparedDraws == 0U,
             "presentation scheduler exactly-once counters are incorrect");
+
+    // A backend that prepares receives the draws it selects after the sequence
+    // is published and before it executes; each draw is still submitted once,
+    // in native order. Native-memory execution never prepares.
+    auto opaquePlan = plan;
+    opaquePlan.SubmissionId = 61U;
+    opaquePlan.Composition.Layer =
+        Oot3dNativeGame::Oot3dPicaCompositionLayer::OpaqueWorld;
+    auto transparentPlan = plan;
+    transparentPlan.SubmissionId = 62U;
+    auto preparedTop = topTransfer;
+    preparedTop.CompletionId = 63U;
+    preparedTop.AfterDrawSubmissionId = transparentPlan.SubmissionId;
+    const auto executePrepared =
+        [&](RecordingBackend& target,
+            Oot3dNativeGame::Oot3dPicaPresentationExecutionKind kind,
+            bool present, uint64_t& preparedDraws) {
+            Oot3dNativeGame::Oot3dPicaPresentationScheduler preparing;
+            preparing.Capture(opaquePlan);
+            preparing.Capture(transparentPlan);
+            preparing.Capture(preparedTop);
+            const auto frame = preparing.FinishFrame(preparedTop);
+            Oot3dNativeGame::Oot3dPicaVisualFrameViewSample sample;
+            Require(frame.has_value() &&
+                        Oot3dNativeGame::ViewOot3dPicaVisualFrame(*frame, sample),
+                    "preparation fixture has no visual sample");
+            preparing.BeginPresentation(300U);
+            Require(preparing.Execute(target, sample, 7U, kind, present, &error),
+                    error);
+            preparedDraws = preparing.Stats().PreparedDraws;
+        };
+    RecordingBackend preparingBackend;
+    preparingBackend.PreparedLayer =
+        Oot3d::Renderer::PicaCompositionLayer::OpaqueWorld;
+    uint64_t preparedDraws = 0U;
+    executePrepared(preparingBackend,
+                    Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::CurrentFrame,
+                    true, preparedDraws);
+    Require(preparingBackend.Operations ==
+                    std::vector<std::string>{"composition:1:2", "prepare:61",
+                                             "draw:61", "draw:62", "transfer:63",
+                                             "present:63"} &&
+                preparedDraws == 1U,
+            "presentation preparation was not selected, ordered or counted");
+    Require(preparingBackend.PreparedVertexUniformBytes != 0U &&
+                preparingBackend.PreparedFragmentUniformBytes == 0U &&
+                preparingBackend.PreparedTextureCount == 0U &&
+                preparingBackend.PreparedAlphaTestEnabled,
+            "a prepared draw carried fragment state or lost its alpha test");
+    RecordingBackend nativeMemoryBackend;
+    nativeMemoryBackend.PreparedLayer =
+        Oot3d::Renderer::PicaCompositionLayer::OpaqueWorld;
+    executePrepared(nativeMemoryBackend,
+                    Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::NativeFrame,
+                    false, preparedDraws);
+    Require(preparedDraws == 0U &&
+                std::none_of(nativeMemoryBackend.Operations.begin(),
+                             nativeMemoryBackend.Operations.end(),
+                             [](const std::string& operation) {
+                                 return operation.starts_with("prepare:");
+                             }),
+            "native-memory execution prepared a draw");
 
     Oot3dNativeGame::Oot3dPicaPresentationScheduler dependencyScheduler;
     auto copy = topTransfer;

@@ -186,6 +186,11 @@ bool PicaCompositionSchedule::Compile(
 
         const size_t firstOpaquePosition = opaquePositions.front();
         const size_t lastOpaquePosition = opaquePositions.back();
+        // Where opaque world drawing starts needs no contiguity: it names the
+        // target's first opaque draw, not the end of an opaque segment, so it
+        // is published even when later stage anchors are withheld.
+        addAnchor(CompositionStage::BeforeOpaque, target.Target,
+                  targetDraws[firstOpaquePosition], false);
         // Completion of a scene prefix does not require opaque/transparent
         // contiguity. Publish its native UI boundary only when no scene draw
         // follows UI on this target; effects must never consume UI pixels.
@@ -265,14 +270,11 @@ bool PicaCompositionSchedule::Compile(
         }
 
         target.WorldStageIssue = PicaCompositionScheduleIssue::None;
-        const size_t beforeOpaque = targetDraws[firstOpaquePosition];
         const bool opaqueAtTargetEnd =
             lastOpaquePosition + 1U == targetDraws.size();
         const size_t afterOpaque = opaqueAtTargetEnd
             ? mDraws.size()
             : targetDraws[lastOpaquePosition + 1U];
-        addAnchor(CompositionStage::BeforeOpaque, target.Target, beforeOpaque,
-                  false);
         addAnchor(CompositionStage::AfterOpaque, target.Target, afterOpaque,
                   opaqueAtTargetEnd);
         addAnchor(CompositionStage::BeforeTransparent, target.Target, afterOpaque,

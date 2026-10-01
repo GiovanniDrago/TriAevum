@@ -129,6 +129,25 @@ Oot3d::PicaSceneTopology ToPicaSceneTopology(
     throw std::runtime_error("invalid native PICA topology");
 }
 
+Oot3d::PicaSceneCullMode ToPicaSceneCullMode(const GfxNativePicaDrawView& draw) noexcept {
+    return draw.CullMode == GfxNativeCullMode::KeepAll ? Oot3d::PicaSceneCullMode::None
+        : draw.FramebufferFlipped                      ? Oot3d::PicaSceneCullMode::Front
+                                                       : Oot3d::PicaSceneCullMode::Back;
+}
+
+Oot3d::PicaSceneFrontFace ToPicaSceneFrontFace(const GfxNativePicaDrawView& draw) noexcept {
+    return draw.CullMode == GfxNativeCullMode::KeepCounterClockwise ? Oot3d::PicaSceneFrontFace::Clockwise
+                                                                     : Oot3d::PicaSceneFrontFace::CounterClockwise;
+}
+
+// Opaque-geometry admission from the draw's own state, shared by shadow
+// casters and the scene distance field: depth-writing, colour-writing and
+// without an alpha cutout, which a depth-only caster would draw solid.
+bool AdmitsOpaqueSceneGeometry(const GfxNativePicaDrawView& draw) noexcept {
+    return draw.FragmentOperationMode == 0U && draw.DepthTestEnabled && draw.DepthWriteEnabled &&
+           !draw.AlphaTestEnabled && (draw.ColorWriteMask & 0x7U) != 0U;
+}
+
 VkFormat ToNativeVkVertexFormat(GfxNativePicaVertexFormat format,
                                 uint8_t components) {
     if (components == 0 || components > 4) {
@@ -567,6 +586,9 @@ void GfxRenderingAPIVulkan::DestroyNativePicaGeometryResources() {
     mPicaGeometryRegistry.Clear();
     mPicaSceneFrame.Reset();
     mNativeSceneView.Reset();
+    mPreparedShadowCasterFrame.Reset();
+    mPreparedShadowCasterView.Reset();
+    mPreparedShadowCasters.clear();
     mPicaScenePublications.Reset();
     mGrassGeometryRegistry.Clear();
     Oot3d::GrassSceneBridge::Instance().Clear();
@@ -4009,6 +4031,9 @@ bool GfxRenderingAPIVulkan::PublishPicaCompositionSequence(
                 compileError);
         }
         mNativePicaCompositionSchedule = std::move(compiled);
+        // Prepared casters belong to exactly one published sequence.
+        mPreparedShadowCasterFrame.BeginFrame(mCurrentFrame, mFrameCounter);
+        mPreparedShadowCasters.clear();
         mDiagnostics.RecordPicaCompositionSchedule(
             mNativePicaCompositionSchedule.Stats());
         return true;
@@ -4106,6 +4131,287 @@ void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
                 mDiagnostics.RecordSceneBeforeUi(true, false);
             }
         }
+    }
+}
+
+GfxRenderingAPIVulkan::NativePicaGeometryPlacement GfxRenderingAPIVulkan::PlaceNativePicaGeometry(
+    const Oot3d::PicaGeometryResolveResult& resolution, Oot3dVulkanNativePicaCpuTimings* cpuTimings) {
+    const auto& geometry = *resolution.Geometry;
+    auto& frame = mFrameResources[mCurrentFrame];
+    if (resolution.Cacheable) {
+        auto& cached = mNativePicaGeometryBuffers[geometry.Identity];
+        auto& buffer = cached.Buffers[mCurrentFrame];
+        const VkDeviceSize payloadSize = static_cast<VkDeviceSize>(geometry.Payload.size());
+        if (buffer.Buffer == VK_NULL_HANDLE || buffer.Size < payloadSize) {
+            if (buffer.Buffer != VK_NULL_HANDLE) {
+                mNriInterop.ForgetBuffer(buffer.Buffer);
+            }
+            DestroyBuffer(buffer);
+            buffer = CreateBuffer(payloadSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true);
+            cached.ContentVersions[mCurrentFrame] = 0U;
+            cached.StructuralSignatures[mCurrentFrame] = 0U;
+        }
+        if (cached.ContentVersions[mCurrentFrame] != geometry.ContentVersion ||
+            cached.StructuralSignatures[mCurrentFrame] != geometry.StructuralSignature) {
+            std::memcpy(buffer.Mapped, geometry.Payload.data(), geometry.Payload.size());
+            if (cpuTimings != nullptr) {
+                cpuTimings->GeometryPersistentUploadBytes += geometry.Payload.size();
+            }
+            cached.ContentVersions[mCurrentFrame] = geometry.ContentVersion;
+            cached.StructuralSignatures[mCurrentFrame] = geometry.StructuralSignature;
+        }
+        cached.LastUsedFrame = mFrameCounter;
+        if (cpuTimings != nullptr) {
+            cpuTimings->GeometryPersistentDraws = 1U;
+        }
+        return { buffer.Buffer, buffer.Size, static_cast<uint8_t*>(buffer.Mapped), 0U, true };
+    }
+    const VkDeviceSize baseOffset = (frame.VertexBytesUsed + 15U) & ~VkDeviceSize(15U);
+    if (baseOffset + geometry.Payload.size() > frame.VertexBuffer.Size) {
+        throw std::runtime_error("native PICA transient geometry arena exhausted");
+    }
+    std::memcpy(static_cast<uint8_t*>(frame.VertexBuffer.Mapped) + baseOffset, geometry.Payload.data(),
+                geometry.Payload.size());
+    frame.VertexBytesUsed = baseOffset + geometry.Payload.size();
+    if (cpuTimings != nullptr) {
+        cpuTimings->GeometryTransientUploadBytes += geometry.Payload.size();
+        cpuTimings->GeometryTransientDraws = 1U;
+    }
+    return { frame.VertexBuffer.Buffer, frame.VertexBuffer.Size, static_cast<uint8_t*>(frame.VertexBuffer.Mapped),
+             baseOffset, false };
+}
+
+bool GfxRenderingAPIVulkan::WantsPicaSequenceDrawPreparation(
+    const Renderer3ds::PicaCompositionDrawReference& draw) const {
+    // The directional-shadow map runs at the opaque boundary of this sample,
+    // so it needs the sample's opaque world before native order reaches it.
+    return mFrameActive && mNativePicaCompositionSchedule.Valid() &&
+           mNativePicaCompositionSchedule.Purpose() == Renderer3ds::PicaCompositionPurpose::Presentation &&
+           mDirectionalShadowMapBarrierPlan.Valid() && mDirectionalShadowSchedulePlan.Valid() &&
+           Oot3d::PicaExtensionPassEnabled(mPicaExtensionGraph, Oot3d::PicaExtensionPass::DirectionalShadowLighting) &&
+           mNriPicaPipelineBridge.OwnedDrawsEnabled() &&
+           draw.Domain == Renderer3ds::PicaCompositionDomain::Scene &&
+           draw.Composition.Layer == Renderer3ds::PicaCompositionLayer::OpaqueWorld &&
+           !draw.Composition.NativeProjectedShadow;
+}
+
+bool GfxRenderingAPIVulkan::PreparePicaSequenceDraw(
+    const GfxNativePicaDrawView& draw, std::string* error) {
+    try {
+        if (!mFrameActive || !mNativePicaCompositionSchedule.Valid() || !mPreparedShadowCasterFrame.Active() ||
+            mPreparedShadowCasterFrame.FrameId() != mFrameCounter) {
+            throw std::runtime_error("native PICA draw prepared outside its published sequence");
+        }
+        if (!WantsPicaSequenceDrawPreparation(Renderer3ds::BuildPicaCompositionDrawReference(draw))) {
+            return true;
+        }
+        // The ordered submission's caster admission: opaque perspective
+        // geometry with its captured view.
+        Oot3d::DirectionalShadowMatrix viewToWorld;
+        const bool admitted =
+            AdmitsOpaqueSceneGeometry(draw) &&
+            draw.Topology != GfxNativePicaTopology::TriangleFan && !draw.VertexShaderSource.empty() &&
+            !draw.FragmentShaderSource.empty() && draw.VertexCount != 0U && !draw.VertexBindings.empty() &&
+            !draw.VertexAttributes.empty() && draw.VertexUniformBytes.size() >= Oot3d::kPicaPackedVertexFloatOffset &&
+            Oot3d::UsesPicaPerspectiveProjection(draw.VertexUniformBytes) && draw.LightBinding.WorldToView &&
+            Oot3d::InvertDirectionalShadowMatrix(*draw.LightBinding.WorldToView, viewToWorld);
+        if (!admitted) {
+            mDiagnostics.RecordNriDirectionalShadowPreparation(false, false);
+            return true;
+        }
+
+        std::vector<Oot3d::PicaNriSourceVertexStream> streams;
+        std::vector<Oot3d::PicaNriSourceVertexBinding> sourceBindings;
+        std::vector<Oot3d::PicaNriSourceVertexAttribute> attributes;
+        streams.reserve(draw.VertexBindings.size());
+        sourceBindings.reserve(draw.VertexBindings.size());
+        for (const auto& binding : draw.VertexBindings) {
+            streams.push_back({ { binding.Binding, binding.ByteStride, binding.PerInstance }, binding.Bytes });
+            sourceBindings.push_back({ binding.Binding, binding.ByteStride, binding.PerInstance });
+        }
+        attributes.reserve(draw.VertexAttributes.size());
+        for (const auto& attribute : draw.VertexAttributes) {
+            attributes.push_back({ attribute.Location, attribute.Binding,
+                                   static_cast<Oot3d::PicaNriVertexScalar>(attribute.Format),
+                                   attribute.ComponentCount, attribute.ByteOffset });
+        }
+        const auto layout = Oot3d::BuildPicaNriVertexInputLayout(sourceBindings, attributes);
+        const auto resolution = mPicaGeometryRegistry.Resolve({
+            draw.GeometryIdentity,
+            draw.GeometryContentVersion,
+            draw.GeometryIdentityAvailable,
+            mFrameCounter,
+            streams,
+            attributes,
+            draw.IndexBytes,
+            draw.Indexed,
+            draw.IndicesAre16Bit,
+            draw.VertexCount,
+            true,
+        });
+        if (resolution.Geometry == nullptr) {
+            throw std::runtime_error("native PICA geometry preparation failed");
+        }
+        for (const uint64_t evicted : mPicaGeometryRegistry.TakeEvictedIdentities()) {
+            RetireNativePicaGeometry(evicted);
+        }
+        const auto& geometry = *resolution.Geometry;
+        auto& frame = mFrameResources[mCurrentFrame];
+        // The ordered submission owns the transient arena: a caster that does
+        // not fit stays out of this sample's map rather than exhausting it.
+        const bool placeable = resolution.Cacheable ||
+            ((frame.VertexBytesUsed + 15U) & ~VkDeviceSize(15U)) + geometry.Payload.size() <= frame.VertexBuffer.Size;
+        if (!geometry.PackedValid || !layout.Valid() || layout.Bindings.empty() || layout.Attributes.empty() ||
+            !placeable) {
+            mDiagnostics.RecordNriDirectionalShadowPreparation(false, !resolution.Cacheable);
+            return true;
+        }
+        const auto placement = PlaceNativePicaGeometry(resolution, nullptr);
+        std::vector<Oot3d::PicaSceneVertexBufferBinding> bindings;
+        bindings.reserve(geometry.PackedBindings.size());
+        for (const auto& binding : geometry.PackedBindings) {
+            bindings.push_back({ binding.Binding, placement.BaseOffset + binding.Offset, binding.Size, binding.Stride });
+        }
+        // The map reads these vertex uniforms before the ordered submission
+        // uploads its own copy.
+        EnsureFrameUniformCapacity(
+            (draw.VertexUniformBytes.size() + mUniformBufferAlignment - 1U) & ~(mUniformBufferAlignment - 1U),
+            mUniformBufferAlignment);
+        const VkDeviceSize vertexUniformOffset =
+            (frame.UniformBytesUsed + mUniformBufferAlignment - 1U) & ~(mUniformBufferAlignment - 1U);
+        std::memcpy(static_cast<uint8_t*>(frame.UniformBuffer.Mapped) + vertexUniformOffset,
+                    draw.VertexUniformBytes.data(), draw.VertexUniformBytes.size());
+        frame.UniformBytesUsed = vertexUniformOffset + draw.VertexUniformBytes.size();
+
+        uint32_t booleanUniforms = 0;
+        std::memcpy(&booleanUniforms, draw.VertexUniformBytes.data() + Oot3d::kPicaPackedVertexBooleanMaskOffset,
+                    sizeof(booleanUniforms));
+        Renderer3ds::PicaShadowCasterCache transientCache;
+        auto& shadowCache = resolution.Cacheable
+            ? mNativePicaGeometryBuffers.at(geometry.Identity).ShadowCaster : transientCache;
+        const uint64_t version = resolution.Cacheable
+            ? geometry.ContentVersion ^ (geometry.StructuralSignature * 0x9e3779b97f4a7c15ULL) ^
+              geometry.Identity ^ draw.VertexShaderKey : 0;
+        auto shadowCaster = Renderer3ds::BuildPicaShadowCaster(
+            {geometry.Payload, bindings, layout.Attributes, layout.Bindings, placement.BaseOffset,
+             geometry.IndexOffset, geometry.VertexOrIndexCount, draw.BaseVertex, geometry.Indexed},
+            draw.TemporalVertexProgram.Hooks, booleanUniforms,
+            draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset), viewToWorld, version, shadowCache);
+        shadowCaster.Dynamic = draw.Composition.NativeActorGeometry;
+        shadowCaster.OwnerIdentity = draw.Composition.NativeActorIdentity;
+
+        // Only what the map consumes is recorded: the canonical programs stand
+        // in for the effective ones, and no fragment state, texture or resolved
+        // raster/target value is known before the ordered submission.
+        const auto status = mPreparedShadowCasterFrame.Record({
+            .SubmissionId = draw.SubmissionId,
+            .CommandListAddress = draw.CommandListAddress,
+            .CommandListOffsetWords = draw.CommandListOffsetWords,
+            .CompositionDomain = draw.CompositionDomain,
+            .Composition = draw.Composition,
+            .LightingWorldToView = draw.LightBinding.WorldToView,
+            .SceneDirectionals = draw.LightBinding.SceneDirectionals,
+            .ShadowCaster = shadowCaster,
+            .Raster = {
+                .SchemaVersion = Oot3d::kPicaSceneResolvedRasterStateSchemaVersion,
+                .NativeViewportX = draw.ViewportX,
+                .NativeViewportY = draw.ViewportY,
+                .NativeViewportWidth = draw.ViewportWidth,
+                .NativeViewportHeight = draw.ViewportHeight,
+                .DepthRange = draw.DepthRange,
+                .NearPlane = draw.NearPlane,
+                .ScissorMode = draw.ScissorMode,
+                .NativeScissorX1 = draw.ScissorX1,
+                .NativeScissorY1 = draw.ScissorY1,
+                .NativeScissorX2 = draw.ScissorX2,
+                .NativeScissorY2 = draw.ScissorY2,
+                .WBuffering = draw.WBuffering,
+                .FramebufferFlipped = draw.FramebufferFlipped,
+            },
+            .RenderTarget = {
+                .SchemaVersion = Oot3d::kPicaSceneRenderTargetStateSchemaVersion,
+                .RenderTargetNamespace = draw.RenderTargetNamespace,
+                .ColorPhysicalAddress = draw.FramebufferColorPhysicalAddress,
+                .DepthPhysicalAddress = draw.FramebufferDepthPhysicalAddress,
+                .NativeWidth = draw.FramebufferWidth,
+                .NativeHeight = draw.FramebufferHeight,
+                .NativeColorFormat = draw.FramebufferColorFormat,
+                .NativeDepthFormat = draw.FramebufferDepthFormat,
+                .SampleCount = static_cast<uint32_t>(mNativePicaSampleCount),
+            },
+            .CanonicalDescriptorSchemaVersion = draw.CanonicalDescriptorSchemaVersion,
+            .CanonicalVertexProgramId = draw.CanonicalVertexProgramId,
+            .CanonicalFragmentProgramId = draw.CanonicalFragmentProgramId,
+            .CanonicalRasterStateId = draw.CanonicalRasterStateId,
+            .CanonicalPipelineId = draw.CanonicalPipelineId,
+            .CanonicalDynamicStateId = draw.CanonicalDynamicStateId,
+            .CanonicalFullRegisterStateId = draw.CanonicalFullRegisterStateId,
+            .VertexShaderKey = draw.VertexShaderKey,
+            .VertexShaderSource = draw.VertexShaderSource,
+            .FragmentShaderKey = draw.FragmentShaderKey,
+            .FragmentShaderSource = draw.FragmentShaderSource,
+            .EffectiveVertexShaderKey = draw.VertexShaderKey,
+            .EffectiveVertexShaderSource = draw.VertexShaderSource,
+            .EffectiveFragmentShaderKey = draw.FragmentShaderKey,
+            .EffectiveFragmentShaderSource = draw.FragmentShaderSource,
+            .GeometryIdentity = draw.GeometryIdentity,
+            .GeometryContentVersion = draw.GeometryContentVersion,
+            .GeometryIdentityAvailable = draw.GeometryIdentityAvailable,
+            .VertexLayoutBindings = layout.Bindings,
+            .VertexLayoutAttributes = layout.Attributes,
+            .Material = {
+                .SchemaVersion = Oot3d::kPicaSceneResolvedMaterialStateSchemaVersion,
+                .Topology = ToPicaSceneTopology(draw.Topology),
+                .CullMode = ToPicaSceneCullMode(draw),
+                .FrontFace = ToPicaSceneFrontFace(draw),
+                .FragmentOperationMode = draw.FragmentOperationMode,
+                .ColorWriteMask = draw.ColorWriteMask,
+                .LogicOperation = draw.LogicOperation,
+                .Blend = draw.Blend,
+                .AlphaTestEnabled = draw.AlphaTestEnabled,
+                .AlphaCompare = draw.AlphaCompare,
+                .AlphaReference = draw.AlphaReference,
+                .DepthTestEnabled = draw.DepthTestEnabled,
+                .DepthWriteEnabled = draw.DepthWriteEnabled,
+                .DepthCompare = draw.DepthCompare,
+                .Stencil = draw.Stencil,
+                .FragmentFeatures = draw.FragmentFeatures,
+            },
+            .UniformBuffer = {
+                ToPicaSceneNativeHandle(frame.UniformBuffer.Buffer),
+                frame.UniformBuffer.Size,
+            },
+            .VertexUniformOffset = vertexUniformOffset,
+            .VertexUniformSize = draw.VertexUniformBytes.size(),
+            .GeometryBuffer = {
+                ToPicaSceneNativeHandle(placement.Buffer),
+                placement.Size,
+            },
+            .VertexBindings = bindings,
+            .Indexed = draw.Indexed,
+            .IndexOffset = placement.BaseOffset + geometry.IndexOffset,
+            .VertexOrIndexCount = draw.Indexed ? geometry.VertexOrIndexCount : draw.VertexCount,
+            .BaseVertex = draw.BaseVertex,
+            .PerspectiveProjection = true,
+            .DirectionalShadowCaster = true,
+            .VertexShaderHooks = draw.TemporalVertexProgram.Hooks,
+            .PackedVertexUniforms = draw.VertexUniformBytes,
+            .VertexSourceIdentity = draw.VertexShaderSourceIdentity,
+            .FragmentSourceIdentity = draw.FragmentShaderSourceIdentity,
+            .EffectiveVertexSourceIdentity = draw.VertexShaderSourceIdentity,
+            .EffectiveFragmentSourceIdentity = draw.FragmentShaderSourceIdentity,
+        });
+        const bool caster = status == Oot3d::PicaSceneRecordStatus::Recorded &&
+            mPreparedShadowCasterFrame.DirectionalShadowCaster(mPreparedShadowCasterFrame.Draws().size() - 1U);
+        if (caster) {
+            mPreparedShadowCasters.insert_or_assign(draw.SubmissionId, shadowCaster);
+        }
+        mDiagnostics.RecordNriDirectionalShadowPreparation(caster, !resolution.Cacheable);
+        return true;
+    } catch (const std::exception& exception) {
+        SetNativeError(error, exception.what());
+        return false;
     }
 }
 
@@ -5068,52 +5374,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
 
         auto& frame = mFrameResources[mCurrentFrame];
         VkCommandBuffer commandBuffer = mCommandBuffers[mCurrentFrame];
-        VkBuffer geometryBuffer = VK_NULL_HANDLE;
-        VkDeviceSize geometryBufferSize = 0U;
-        uint8_t* geometryMappedMemory = nullptr;
-        VkDeviceSize geometryBaseOffset = 0U;
-        bool persistentGeometry = false;
-        if (geometryResolution.Cacheable) {
-            auto& cached = mNativePicaGeometryBuffers[geometry.Identity];
-            auto& buffer = cached.Buffers[mCurrentFrame];
-            const VkDeviceSize payloadSize = static_cast<VkDeviceSize>(geometry.Payload.size());
-            if (buffer.Buffer == VK_NULL_HANDLE || buffer.Size < payloadSize) {
-                if (buffer.Buffer != VK_NULL_HANDLE) {
-                    mNriInterop.ForgetBuffer(buffer.Buffer);
-                }
-                DestroyBuffer(buffer);
-                buffer = CreateBuffer(payloadSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true);
-                cached.ContentVersions[mCurrentFrame] = 0U;
-                cached.StructuralSignatures[mCurrentFrame] = 0U;
-            }
-            if (cached.ContentVersions[mCurrentFrame] != geometry.ContentVersion ||
-                cached.StructuralSignatures[mCurrentFrame] != geometry.StructuralSignature) {
-                std::memcpy(buffer.Mapped, geometry.Payload.data(), geometry.Payload.size());
-                cpuTimings.GeometryPersistentUploadBytes += geometry.Payload.size();
-                cached.ContentVersions[mCurrentFrame] = geometry.ContentVersion;
-                cached.StructuralSignatures[mCurrentFrame] = geometry.StructuralSignature;
-            }
-            cached.LastUsedFrame = mFrameCounter;
-            geometryBuffer = buffer.Buffer;
-            geometryBufferSize = buffer.Size;
-            geometryMappedMemory = static_cast<uint8_t*>(buffer.Mapped);
-            persistentGeometry = true;
-            cpuTimings.GeometryPersistentDraws = 1U;
-        } else {
-            geometryBaseOffset = (frame.VertexBytesUsed + 15U) & ~VkDeviceSize(15U);
-            if (geometryBaseOffset + geometry.Payload.size() > frame.VertexBuffer.Size) {
-                throw std::runtime_error("native PICA transient geometry arena exhausted");
-            }
-            std::memcpy(static_cast<uint8_t*>(frame.VertexBuffer.Mapped) + geometryBaseOffset, geometry.Payload.data(),
-                        geometry.Payload.size());
-            frame.VertexBytesUsed = geometryBaseOffset + geometry.Payload.size();
-            cpuTimings.GeometryTransientUploadBytes += geometry.Payload.size();
-            cpuTimings.GeometryTransientDraws = 1U;
-            geometryBuffer = frame.VertexBuffer.Buffer;
-            geometryBufferSize = frame.VertexBuffer.Size;
-            geometryMappedMemory = static_cast<uint8_t*>(frame.VertexBuffer.Mapped);
-        }
+        const auto placement = PlaceNativePicaGeometry(geometryResolution, &cpuTimings);
+        const VkBuffer geometryBuffer = placement.Buffer;
+        const VkDeviceSize geometryBufferSize = placement.Size;
+        uint8_t* const geometryMappedMemory = placement.Mapped;
+        const VkDeviceSize geometryBaseOffset = placement.BaseOffset;
+        const bool persistentGeometry = placement.Persistent;
 
         std::vector<std::pair<uint32_t, VkDeviceSize>> bindingOffsets;
         bindingOffsets.reserve(geometry.SourceBindings.size());
@@ -5743,8 +6009,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             Oot3d::PicaExtensionPassEnabled(
                 mPicaExtensionGraph,
                 Oot3d::PicaExtensionPass::DirectionalShadowLighting) &&
-            draw.FragmentOperationMode == 0U && draw.DepthTestEnabled && draw.DepthWriteEnabled &&
-            !draw.AlphaTestEnabled && (draw.ColorWriteMask & 0x7U) != 0U;
+            AdmitsOpaqueSceneGeometry(draw);
         if (nriOwnedDraw && !nativeMemoryOnly) {
             std::vector<Oot3d::PicaSceneVertexBufferBinding>
                 sceneVertexBindings;
@@ -5756,7 +6021,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             }
             Renderer3ds::VirtualShadowCaster shadowCaster;
             Oot3d::DirectionalShadowMatrix shadowViewToWorld;
-            if (directionalShadowCaster && draw.LightBinding.WorldToView &&
+            const auto prepared = mPreparedShadowCasters.find(draw.SubmissionId);
+            if (directionalShadowCaster && prepared != mPreparedShadowCasters.end()) {
+                // Prepared from the same inputs for this sample's map.
+                shadowCaster = prepared->second;
+                mDiagnostics.RecordNriDirectionalShadowPreparedReuse();
+            } else if (directionalShadowCaster && draw.LightBinding.WorldToView &&
                 draw.VertexUniformBytes.size() >= Oot3d::kPicaPackedVertexFloatOffset &&
                 Oot3d::InvertDirectionalShadowMatrix(*draw.LightBinding.WorldToView, shadowViewToWorld)) {
                 uint32_t booleanUniforms = 0;
@@ -5786,9 +6056,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 Oot3d::PicaExtensionPassEnabled(
                     mPicaExtensionGraph, Oot3d::PicaExtensionPass::SceneDistanceField) &&
                 opaqueWorldDraw && sceneVertexLayout.Valid() && !sceneVertexLayout.Bindings.empty() &&
-                draw.FragmentOperationMode == 0U && draw.DepthTestEnabled && draw.DepthWriteEnabled &&
-                !draw.AlphaTestEnabled && (draw.ColorWriteMask & 0x7U) != 0U &&
-                draw.LightBinding.WorldToView &&
+                AdmitsOpaqueSceneGeometry(draw) && draw.LightBinding.WorldToView &&
                 draw.VertexUniformBytes.size() >= Oot3d::kPicaPackedVertexFloatOffset;
             if (sceneDistanceFieldGeometry) {
                 if (!mBrixelizerScene.Available() && !mBrixelizerInitializationAttempted) {
@@ -5875,17 +6143,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 destination.MagLinear = texture.MagLinear;
                 destination.MipLinear = texture.MipLinear;
             }
-            const Oot3d::PicaSceneCullMode sceneCull =
-                draw.CullMode == GfxNativeCullMode::KeepAll
-                    ? Oot3d::PicaSceneCullMode::None
-                    : (draw.FramebufferFlipped
-                           ? Oot3d::PicaSceneCullMode::Front
-                           : Oot3d::PicaSceneCullMode::Back);
-            const Oot3d::PicaSceneFrontFace sceneFront =
-                draw.CullMode ==
-                        GfxNativeCullMode::KeepCounterClockwise
-                    ? Oot3d::PicaSceneFrontFace::Clockwise
-                    : Oot3d::PicaSceneFrontFace::CounterClockwise;
+            const Oot3d::PicaSceneCullMode sceneCull = ToPicaSceneCullMode(draw);
+            const Oot3d::PicaSceneFrontFace sceneFront = ToPicaSceneFrontFace(draw);
             mPicaSceneFrame.Record({
                 .SubmissionId = draw.SubmissionId,
                 .CommandListAddress = draw.CommandListAddress,
@@ -6392,6 +6651,12 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
     const auto latestPerspective = SamplePerspective(&target);
     (void)mNativeSceneView.Publish(
         mFrameCounter, mPicaSceneFrame, latestPerspective);
+    // The map reads this sample's prepared casters, complete at the opaque
+    // boundary before any of their receivers draws.
+    (void)mPreparedShadowCasterView.Publish(
+        mFrameCounter, mPreparedShadowCasterFrame, latestPerspective);
+    mDiagnostics.RecordNriDirectionalShadowPreparedMap(
+        boundary.Stage == Oot3d::EffectStage::BeforeOpaque);
     EndNativePicaRenderPass();
     if (mRenderPassActive) {
         vkCmdEndRenderPass(mCommandBuffers[mCurrentFrame]);
@@ -6399,7 +6664,7 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
         mOverlayRenderPassActive = false;
     }
 
-    const bool executionRequested = mNativeSceneView.Active();
+    const bool executionRequested = mPreparedShadowCasterView.Active();
     const bool executed =
         executionRequested &&
         mNriDirectionalShadowPass.ExecuteMap(
@@ -6415,7 +6680,7 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
                     ? std::optional(mFrameEnvironment.Lights[0]) : std::nullopt,
                 mFrameEnvironment.Enabled ? mFrameEnvironment.NativeDirectStrength : 1.0F,
             },
-            mNativeSceneView,
+            mPreparedShadowCasterView,
             mDirectionalShadowMapBarrierPlan);
     if (executionRequested) {
         const auto& shadowMapTransitions =
@@ -6430,7 +6695,7 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
             shadowMapTransitions.EmittedGraphTransitionCount());
     }
 
-    const auto sceneStats = mPicaSceneFrame.Stats();
+    const auto sceneStats = mPreparedShadowCasterFrame.Stats();
     mDiagnostics.RecordNriDirectionalShadowAttempt(
         sceneStats.DirectionalShadowCasterCount,
         sceneStats.DirectionalShadowNativeLightCasterCount,
@@ -11262,6 +11527,7 @@ bool GfxRenderingAPIVulkan::ResetTitleState(std::string* error) {
         Oot3d::VisualClock::Instance().Reset();
         Oot3d::SceneViewRuntime::Instance().Reset();
         mNativeSceneView.Reset();
+        mPreparedShadowCasterView.Reset();
         mPicaScenePublications.Reset();
         return true;
     } catch (const std::exception& exception) {

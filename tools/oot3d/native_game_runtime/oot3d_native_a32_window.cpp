@@ -8036,6 +8036,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                  const double measuredSeconds =
                      timings.ValidationSeconds +
                      timings.CompositionPublicationSeconds +
+                     timings.DrawPreparationSeconds +
                      timings.DrawSubmissionSeconds +
                      timings.MemoryFillSeconds +
                      timings.SnapshotTransferSeconds +
@@ -8051,6 +8052,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                       stats.SupersededVisualFrames},
                      {"selected_draws", stats.SelectedDraws},
                      {"executed_draws", stats.ExecutedDraws},
+                     {"prepared_draws", stats.PreparedDraws},
                      {"interpolated_draws", stats.InterpolatedDraws},
                      {"execution_lists", stats.ExecutionLists},
                      {"current_frame_lists", stats.CurrentFrameLists},
@@ -8081,6 +8083,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                      {"validation_seconds", timings.ValidationSeconds},
                      {"composition_publication_seconds",
                       timings.CompositionPublicationSeconds},
+                     {"draw_preparation_seconds",
+                      timings.DrawPreparationSeconds},
                      {"draw_submission_seconds",
                       timings.DrawSubmissionSeconds},
                      {"draw_uniform_packing_seconds",

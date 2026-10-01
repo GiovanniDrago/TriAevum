@@ -177,6 +177,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         std::string* error = nullptr) override;
     bool SubmitPicaDraw(const GfxNativePicaDrawView& draw,
                         std::string* error = nullptr) override;
+    [[nodiscard]] bool WantsPicaSequenceDrawPreparation(
+        const ::Fast::Renderer3ds::PicaCompositionDrawReference& draw) const override;
+    bool PreparePicaSequenceDraw(const GfxNativePicaDrawView& draw,
+                                 std::string* error = nullptr) override;
     bool SubmitPicaDisplayTransfer(
         const GfxNativePicaDisplayTransferView& transfer,
         std::string* error = nullptr) override;
@@ -434,6 +438,15 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         Renderer3ds::PicaGiGeometryCache GiGeometry;
         Renderer3ds::PicaPbrSeamCache Seams;
         uint64_t LastUsedFrame = 0;
+    };
+
+    // Where this frame's GPU copy of one resolved geometry lives.
+    struct NativePicaGeometryPlacement {
+        VkBuffer Buffer = VK_NULL_HANDLE;
+        VkDeviceSize Size = 0U;
+        uint8_t* Mapped = nullptr;
+        VkDeviceSize BaseOffset = 0U;
+        bool Persistent = false;
     };
 
     struct NativePicaTextureKey {
@@ -750,6 +763,12 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     void ApplyPendingNativePicaMemoryFills(NativePicaRenderTarget& target);
     void CreateFrameResources();
     void EnsureFrameUniformCapacity(VkDeviceSize bytes, VkDeviceSize alignment);
+    // Cacheable geometry uses its per-identity buffer, uploaded once per
+    // content version and frame slot; other geometry is copied into the
+    // frame's transient arena.
+    NativePicaGeometryPlacement PlaceNativePicaGeometry(
+        const Oot3d::PicaGeometryResolveResult& resolution,
+        Oot3dVulkanNativePicaCpuTimings* cpuTimings);
     void CreateFallbackTexture();
     void CreateOot3dShadow2dRenderPass();
     void CreateOot3dShadow2dDepthEncodePipeline();
@@ -959,6 +978,12 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::PicaCompositionSchedule mNativePicaCompositionSchedule;
     Oot3d::PicaSceneFrame mPicaSceneFrame;
     Oot3d::NativeSceneView mNativeSceneView;
+    // Directional-shadow casters of the published presentation sequence,
+    // prepared before it executes: the map reads them at the opaque boundary,
+    // and the ordered submission of each draw reuses its prepared bounds.
+    Oot3d::PicaSceneFrame mPreparedShadowCasterFrame;
+    Oot3d::NativeSceneView mPreparedShadowCasterView;
+    std::unordered_map<uint64_t, Renderer3ds::VirtualShadowCaster> mPreparedShadowCasters;
     Oot3d::PicaScenePublicationAdapter mPicaScenePublications;
     Oot3d::GrassGeometryRegistry mGrassGeometryRegistry;
     std::unordered_map<uint64_t, NativePicaGeometryBuffer> mNativePicaGeometryBuffers;

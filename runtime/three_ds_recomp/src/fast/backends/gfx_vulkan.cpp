@@ -2127,6 +2127,8 @@ void GfxRenderingAPIVulkan::StartFrame() {
     mActiveNativePicaRenderTarget = nullptr;
     mNativePicaPresentedThisFrame = false;
     mPicaSceneFrame.BeginFrame(mCurrentFrame, mFrameCounter);
+    mPreparedShadowCasterFrame.BeginFrame(mCurrentFrame, mFrameCounter);
+    mPreparedShadowCasters.clear();
     mPicaScenePublications.Reset();
     mDiagnostics.BeginFrame(mFrameCounter);
     mDiagnostics.RecordPicaShaderProfile(mNativeFidelityProfile);

@@ -2387,12 +2387,13 @@ as well as new ones. Failed recording cannot commit a dirty page as valid.
 Caster admission remains opaque, depth-writing, non-alpha-tested native scene
 geometry; transparent and alpha-cutout caster support is not claimed.
 
-The compiled graph declares both histories and the `AfterOpaque` outputs, with
-`BeforeUi` as the shadow producer's late anchor for mixed native sequences, and
-owns attachment, transfer and receiver transitions. Early receivers consume
-prior composed history; the queued update preserves native draw order. The
-Grass insertion point is unchanged; late history is published for subsequent
-native draws/frames rather than moving Grass across transparency.
+The compiled graph declares both histories and the outputs of the
+`BeforeOpaque` producer (see Current-Sample Shadow Casters below), with
+`BeforeUi` as its late anchor, and owns attachment, transfer and receiver
+transitions. Receivers sample the map composed from their own sample's
+casters; the update preserves native draw order. The Grass insertion point is
+unchanged; a late update is published for subsequent native draws/frames
+rather than moving Grass across transparency.
 Dirty static tiles replay static casters. Each dirty final tile first copies
 its cached static depth, including PCF borders, then replays current dynamic
 casters. Departed actors therefore cannot leave old depth behind.
@@ -2652,6 +2653,64 @@ Exact invocations, executable hashes and per-run timing distributions:
 
 Private deterministic captures, exact invocations and structural counters:
 `I:/_triaevum_work/actor-shadow-refinement/verification.json`.
+
+### Current-Sample Shadow Casters (2026-10-01)
+
+Receivers drawn before the old `AfterOpaque` update sampled the previous
+sample's map, so moving actors were shadowed by their previous pose (patches
+under Link's cap while walking). The map is now complete before the first
+opaque receiver of its own sample.
+
+- **Preparation.** After publishing a presentation sequence, the scheduler
+  hands the backend the draws it selects from the published metadata
+  (`WantsPicaSequenceDrawPreparation`: opaque-world scene draws while
+  directional shadows are enabled), then executes the sequence in native
+  order. Preparing never rasterizes, consumes the sequence or replaces the
+  ordered submission; native-memory execution never prepares.
+- **Prepared casters.** Preparation applies the ordered submission's caster
+  admission, places the geometry with the same helper as the ordered draw
+  (per-identity buffer or transient arena; a transient caster that does not
+  fit stays out of the map instead of exhausting the arena), uploads the vertex
+  uniforms and records the caster in its own `PicaSceneFrame`. Only what the
+  map consumes is recorded: canonical programs stand in for the effective
+  ones; no fragment state, texture or resolved raster/target value is
+  invented. The ordered submission reuses the prepared bounds instead of
+  transforming skinned vertices twice.
+- **Graph and anchors.** The graph imports the result as
+  `PreparedShadowCasters` (external, semantic). `DirectionalShadowMap` runs at
+  `BeforeOpaque` and reads it instead of the scene frame; `BeforeUi` remains
+  its late anchor. A fallback producer may start at the opaque boundary
+  because it reads only imported data. The composition schedule publishes
+  `BeforeOpaque` for every target with opaque world draws and known layers:
+  the first opaque draw needs no contiguity, so sequences where Navi's
+  transparent draws interleave the opaque world keep the early update while
+  the later stage anchors stay withheld.
+- **Alpha test.** The native runtime now declares the PICA alpha test
+  (register `0x104`) in the draw view. The documented admission therefore
+  excludes alpha-cutout casters and distance-field geometry; before, the flag
+  was never set and cutouts entered both as solid quads. With MSAA the existing
+  alpha-to-coverage policy now applies to those draws; at 1x nothing changes.
+  Pipeline manifest keys include the flag, so a manifest recorded earlier misses
+  alpha-tested pipelines once.
+- **Diagnostics.** `nri_directional_shadow_prepared_draw_count`,
+  `_caster_count`, `_transient_count`, `_reuse_count`, `_map_count` and
+  `_map_before_opaque_count`; the scheduler reports `prepared_draws` and
+  `draw_preparation_seconds`.
+- **Verification.** Reference Kokiri walk (GI off, the user's shadow
+  settings, interpolated presentation, RTX 3060 at 2560x1440, 420 frames with
+  Navi in view): all 417 map updates run at `BeforeOpaque`; every eligible
+  receiver binds a map (23,344; the previous build left 45 unbound); 44.1
+  casters per frame are prepared and all are reused by their ordered
+  submission, none from the transient arena. The cap patches are gone: at
+  frame 210 the cap is uniformly lit (7,509 brighter and 129 darker pixels in
+  its region). Excluding cutouts lowers the queued casters from 53.1 to 44.1
+  per frame; their rectangular shadows (for example on a hedge under its
+  grass ledge) disappear. A repeated run is byte-identical (12/12 captures).
+  Vulkan and NRI validation report no error, and no pass fails or misses a
+  read. Preparation takes 0.33 s over the run (about 0.8 ms per frame for 53.7
+  handed-over draws, including the bounds the ordered draw no longer
+  computes); GPU frame time shows no change beyond run-to-run noise.
+  Receipts: `I:/_triaevum_work/perf-levers/qualify/shadow-prepass/`.
 
 ## Per-pixel actor lighting and native UI boundaries (2026-09-24)
 

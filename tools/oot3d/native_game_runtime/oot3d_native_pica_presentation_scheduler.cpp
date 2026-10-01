@@ -185,6 +185,9 @@ bool Oot3dPicaPresentationScheduler::Execute(
   if (mNextCompositionSequenceId == 0U) {
     mNextCompositionSequenceId = 1U;
   }
+  const bool presentation =
+      kind != Oot3dPicaPresentationExecutionKind::DependencyFlush &&
+      kind != Oot3dPicaPresentationExecutionKind::NativeFrame;
   {
     OptionalTimer timer(mTimings.Enabled,
                         mTimings.CompositionPublicationSeconds);
@@ -195,10 +198,9 @@ bool Oot3dPicaPresentationScheduler::Execute(
                 .SequenceId = compositionSequenceId,
                 .Draws = mCompositionDrawScratch,
                 .Purpose =
-                    kind == Oot3dPicaPresentationExecutionKind::DependencyFlush ||
-                            kind == Oot3dPicaPresentationExecutionKind::NativeFrame
-                        ? Oot3d::Renderer::PicaCompositionPurpose::NativeMemory
-                        : Oot3d::Renderer::PicaCompositionPurpose::Presentation,
+                    presentation
+                        ? Oot3d::Renderer::PicaCompositionPurpose::Presentation
+                        : Oot3d::Renderer::PicaCompositionPurpose::NativeMemory,
             },
             error)) {
       ++mStats.CompositionPublicationFailures;
@@ -208,6 +210,28 @@ bool Oot3dPicaPresentationScheduler::Execute(
   ++mStats.CompositionSequencesPublished;
   mStats.CompositionDrawReferencesPublished +=
       mCompositionDrawScratch.size();
+
+  // Presentation work the backend needs ahead of native order (this sample's
+  // shadow casters before their receivers) receives the draws it selects
+  // first; every draw is still submitted below, in native order, exactly once.
+  // Native-memory execution keeps its canonical sequence untouched.
+  if (presentation) {
+    OptionalTimer timer(mTimings.Enabled, mTimings.DrawPreparationSeconds);
+    for (size_t index = 0; index < sample.Draws.size(); ++index) {
+      if (!backend.WantsPicaSequenceDrawPreparation(
+              mCompositionDrawScratch[index])) {
+        continue;
+      }
+      const auto &drawView = sample.Draws[index];
+      const auto overrides = drawView.Overrides();
+      if (!PrepareOot3dPicaVulkanSequenceDraw(backend, *drawView.BasePlan,
+                                              error, renderTargetNamespace,
+                                              &overrides)) {
+        return false;
+      }
+      ++mStats.PreparedDraws;
+    }
+  }
 
   ++mStats.ExecutionLists;
   switch (kind) {

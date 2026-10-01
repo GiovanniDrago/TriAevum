@@ -583,6 +583,18 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
           frame.NriDirectionalShadowScheduleDuplicateCount },
         { "nri_directional_shadow_schedule_surface_end_count",
           frame.NriDirectionalShadowScheduleSurfaceEndCount },
+        { "nri_directional_shadow_prepared_draw_count",
+          frame.NriDirectionalShadowPreparedDrawCount },
+        { "nri_directional_shadow_prepared_caster_count",
+          frame.NriDirectionalShadowPreparedCasterCount },
+        { "nri_directional_shadow_prepared_transient_count",
+          frame.NriDirectionalShadowPreparedTransientCount },
+        { "nri_directional_shadow_prepared_reuse_count",
+          frame.NriDirectionalShadowPreparedReuseCount },
+        { "nri_directional_shadow_prepared_map_count",
+          frame.NriDirectionalShadowPreparedMapCount },
+        { "nri_directional_shadow_prepared_map_before_opaque_count",
+          frame.NriDirectionalShadowPreparedMapBeforeOpaqueCount },
         { "display_transfer_count", frame.DisplayTransferCount },
         { "scanout_count", frame.ScanoutCount },
         { "overlay_count", frame.OverlayCount },
@@ -1661,6 +1673,34 @@ void Oot3dVulkanDiagnostics::RecordNriDirectionalShadowSchedule(
         duplicate ? 1U : 0U;
     mActiveFrame->NriDirectionalShadowScheduleSurfaceEndCount +=
         surfaceEnd ? 1U : 0U;
+}
+
+void Oot3dVulkanDiagnostics::RecordNriDirectionalShadowPreparation(
+    bool caster, bool transient) {
+    if (!mActiveFrame.has_value()) {
+        return;
+    }
+    ++mActiveFrame->NriDirectionalShadowPreparedDrawCount;
+    mActiveFrame->NriDirectionalShadowPreparedCasterCount += caster ? 1U : 0U;
+    mActiveFrame->NriDirectionalShadowPreparedTransientCount +=
+        transient ? 1U : 0U;
+}
+
+void Oot3dVulkanDiagnostics::RecordNriDirectionalShadowPreparedReuse() {
+    if (!mActiveFrame.has_value()) {
+        return;
+    }
+    ++mActiveFrame->NriDirectionalShadowPreparedReuseCount;
+}
+
+void Oot3dVulkanDiagnostics::RecordNriDirectionalShadowPreparedMap(
+    bool beforeOpaque) {
+    if (!mActiveFrame.has_value()) {
+        return;
+    }
+    ++mActiveFrame->NriDirectionalShadowPreparedMapCount;
+    mActiveFrame->NriDirectionalShadowPreparedMapBeforeOpaqueCount +=
+        beforeOpaque ? 1U : 0U;
 }
 
 void Oot3dVulkanDiagnostics::RecordDisplayTransfer(bool present, uint32_t spatialAaMode, uint32_t msaaSamples) {

@@ -69,6 +69,11 @@ enum class EffectResource : uint8_t {
     // UI, transferred like the display. An upscaler reconstructs it and lays
     // the display's UI over its output, so the UI never enters the upscaler.
     SceneBeforeUi,
+    // Shadow casters of the executing composition sequence, prepared from its
+    // published draws before native order reaches them. Semantic and
+    // imported: a pass at the opaque boundary reads this sample's casters
+    // without waiting for, or reordering, the draws that record them.
+    PreparedShadowCasters,
     Count,
 };
 // Resource sets are 32-bit masks in the barrier and residency plans.
@@ -115,6 +120,7 @@ struct EffectResourceUse {
     switch (resource) {
         case EffectResource::PicaSceneFrame:
         case EffectResource::NativeSceneView:
+        case EffectResource::PreparedShadowCasters:
         case EffectResource::ExtensionGeometry:
         case EffectResource::NativeDepth:
         case EffectResource::NativeShadow2D:

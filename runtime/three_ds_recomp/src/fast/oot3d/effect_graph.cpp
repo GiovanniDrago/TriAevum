@@ -22,6 +22,7 @@ namespace {
 
 [[nodiscard]] constexpr bool IsExternalResource(EffectResource resource) noexcept {
     return resource == EffectResource::PicaSceneFrame || resource == EffectResource::NativeSceneView ||
+           resource == EffectResource::PreparedShadowCasters ||
            resource == EffectResource::SceneColor || resource == EffectResource::SceneBeforeUi ||
            resource == EffectResource::NativeDepth ||
            resource == EffectResource::NativeShadow2D ||
@@ -31,6 +32,7 @@ namespace {
 
 [[nodiscard]] constexpr bool IsSemanticResource(EffectResource resource) noexcept {
     return resource == EffectResource::PicaSceneFrame || resource == EffectResource::NativeSceneView ||
+           resource == EffectResource::PreparedShadowCasters ||
            resource == EffectResource::ExtensionGeometry || resource == EffectResource::SceneDistanceField;
 }
 
@@ -97,9 +99,11 @@ BuildEffectResourceDeclaration(EffectResource resource) noexcept {
 }
 
 [[nodiscard]] bool ValidateContract(const EffectPass& pass, std::string& error) {
+    // A fallback producer reads only imported data (checked at compile), so
+    // its primary anchor may be as early as the opaque boundary.
     if (pass.FallbackStage &&
         (pass.Contract != EffectContractKind::AuxiliaryOutput ||
-         StageOrder(pass.Stage) < StageOrder(EffectStage::AfterOpaque) ||
+         StageOrder(pass.Stage) < StageOrder(EffectStage::BeforeOpaque) ||
          StageOrder(*pass.FallbackStage) <= StageOrder(pass.Stage) ||
          StageOrder(*pass.FallbackStage) > StageOrder(EffectStage::BeforeUi))) {
         error = "invalid auxiliary export fallback stage: " + pass.Name;
@@ -501,11 +505,14 @@ CompiledEffectGraph BuildPicaExtensionGraph(const PicaAttachmentFeatureRequests&
                 .Contract = EffectContractKind::LightingContributor,
                 .Resources = { Read(EffectResource::NativeSceneView),
                                Read(EffectResource::DirectionalShadowHistory) } });
+    // This sample's casters are prepared before the sequence executes, so the
+    // map is complete before the first opaque receiver samples it. The late
+    // anchor remains for targets that publish no opaque boundary.
     graph.Add({ .Name = std::string(PicaExtensionPassName(PicaExtensionPass::DirectionalShadowMap)),
                 .Enabled = requests.DirectionalShadows,
-                .Stage = EffectStage::AfterOpaque,
+                .Stage = EffectStage::BeforeOpaque,
                 .Contract = EffectContractKind::AuxiliaryOutput,
-                .Resources = { Read(EffectResource::PicaSceneFrame), Read(EffectResource::NativeSceneView),
+                .Resources = { Read(EffectResource::PreparedShadowCasters),
                                Read(EffectResource::DirectionalShadowHistory),
                                Read(EffectResource::DirectionalShadowStaticHistory),
                                Write(EffectResource::DirectionalShadowStaticCache),

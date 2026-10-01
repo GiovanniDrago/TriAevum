@@ -400,6 +400,13 @@ struct Oot3dVulkanFrameDiagnostics {
     uint32_t NriDirectionalShadowScheduleRejectedCount = 0;
     uint32_t NriDirectionalShadowScheduleDuplicateCount = 0;
     uint32_t NriDirectionalShadowScheduleSurfaceEndCount = 0;
+    // Casters prepared from the published sequence before it executed.
+    uint32_t NriDirectionalShadowPreparedDrawCount = 0;
+    uint32_t NriDirectionalShadowPreparedCasterCount = 0;
+    uint32_t NriDirectionalShadowPreparedTransientCount = 0;
+    uint32_t NriDirectionalShadowPreparedReuseCount = 0;
+    uint32_t NriDirectionalShadowPreparedMapCount = 0;
+    uint32_t NriDirectionalShadowPreparedMapBeforeOpaqueCount = 0;
     uint32_t DisplayTransferCount = 0;
     uint32_t ScanoutCount = 0;
     uint32_t OverlayCount = 0;
@@ -712,6 +719,14 @@ class Oot3dVulkanDiagnostics {
     void RecordNriDirectionalShadowSchedule(bool authorized,
                                             bool duplicate,
                                             bool surfaceEnd);
+    // One draw handed over before its sequence executed: whether it became a
+    // prepared caster, and whether its geometry used the transient arena.
+    void RecordNriDirectionalShadowPreparation(bool caster, bool transient);
+    // An ordered submission reused the bounds of its prepared caster.
+    void RecordNriDirectionalShadowPreparedReuse();
+    // An authorized map update from the prepared casters, at the opaque
+    // boundary or at the late fallback anchor.
+    void RecordNriDirectionalShadowPreparedMap(bool beforeOpaque);
     void RecordDisplayTransfer(bool present, uint32_t spatialAaMode = 0U,
                                uint32_t msaaSamples = 1U);
     void RecordSmaa1x(bool outputsNriOwned,

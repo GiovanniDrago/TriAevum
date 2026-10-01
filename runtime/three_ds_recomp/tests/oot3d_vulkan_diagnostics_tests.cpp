@@ -366,6 +366,12 @@ TEST(Oot3dVulkanDiagnostics, WritesBoundedAuthenticFrameTrace) {
         true, true, true);
     diagnostics.RecordNriDirectionalShadowSchedule(
         false, false, true);
+    diagnostics.RecordNriDirectionalShadowPreparation(true, false);
+    diagnostics.RecordNriDirectionalShadowPreparation(true, true);
+    diagnostics.RecordNriDirectionalShadowPreparation(false, false);
+    diagnostics.RecordNriDirectionalShadowPreparedReuse();
+    diagnostics.RecordNriDirectionalShadowPreparedMap(true);
+    diagnostics.RecordNriDirectionalShadowPreparedMap(false);
     diagnostics.RecordSceneCompositePass(true, true, true);
     diagnostics.RecordSmaa1x(true, true, true, true, true);
     diagnostics.RecordAmbientOcclusionPass(true, true);
@@ -757,6 +763,14 @@ TEST(Oot3dVulkanDiagnostics, WritesBoundedAuthenticFrameTrace) {
         frame.at("nri_directional_shadow_schedule_duplicate_count"), 1U);
     EXPECT_EQ(
         frame.at("nri_directional_shadow_schedule_surface_end_count"), 2U);
+    EXPECT_EQ(frame.at("nri_directional_shadow_prepared_draw_count"), 3U);
+    EXPECT_EQ(frame.at("nri_directional_shadow_prepared_caster_count"), 2U);
+    EXPECT_EQ(frame.at("nri_directional_shadow_prepared_transient_count"), 1U);
+    EXPECT_EQ(frame.at("nri_directional_shadow_prepared_reuse_count"), 1U);
+    EXPECT_EQ(frame.at("nri_directional_shadow_prepared_map_count"), 2U);
+    EXPECT_EQ(
+        frame.at("nri_directional_shadow_prepared_map_before_opaque_count"),
+        1U);
     EXPECT_EQ(
         frame.at("nri_directional_shadow_receiver_eligible_draw_count"),
         2U);

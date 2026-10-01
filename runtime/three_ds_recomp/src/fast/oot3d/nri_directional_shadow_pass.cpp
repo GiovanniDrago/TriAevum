@@ -495,7 +495,7 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     const auto expectedPassId =
         ::Fast::Renderer::StableExtensionPassId(PicaExtensionPassName(PicaExtensionPass::DirectionalShadowMap));
     if (!Available() ||
-        (!desc.ScheduleAuthorization.Matches(expectedPassId, EffectStage::AfterOpaque, desc.ExpectedSurface) &&
+        (!desc.ScheduleAuthorization.Matches(expectedPassId, EffectStage::BeforeOpaque, desc.ExpectedSurface) &&
          !desc.ScheduleAuthorization.Matches(expectedPassId, EffectStage::BeforeUi, desc.ExpectedSurface)) ||
         desc.ExpectedSurface.Namespace != desc.RenderTargetNamespace ||
         desc.ExpectedSurface.Resource != desc.ColorPhysicalAddress ||

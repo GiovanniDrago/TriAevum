@@ -315,6 +315,21 @@ class PicaRenderBackend {
 
     virtual bool SubmitPicaDraw(
         const PicaDrawView& draw, std::string* error = nullptr) = 0;
+    // Draws of the published composition sequence can be handed over before
+    // the sequence executes, for backend work that must consume them ahead of
+    // their native order (geometry another pass needs before the draws that
+    // depend on it). The backend selects them from the published metadata.
+    // Preparing never rasterizes, consumes the sequence or replaces the later
+    // ordered submission of the same draw. A backend that does not prepare
+    // keeps the default: no draw is handed over.
+    [[nodiscard]] virtual bool WantsPicaSequenceDrawPreparation(
+        const PicaCompositionDrawReference&) const {
+        return false;
+    }
+    virtual bool PreparePicaSequenceDraw(
+        const PicaDrawView&, std::string* = nullptr) {
+        return true;
+    }
     virtual bool SubmitPicaDisplayTransfer(
         const PicaDisplayTransferView& transfer,
         std::string* error = nullptr) = 0;

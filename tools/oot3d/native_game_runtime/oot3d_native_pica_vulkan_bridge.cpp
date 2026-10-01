@@ -151,14 +151,16 @@ PackFragmentUniforms(
     return bytes;
 }
 
-} // namespace
-
-bool SubmitOot3dPicaVulkanDrawPlan(
-    Oot3d::Renderer::PicaRenderBackend& renderingApi,
+// Builds the backend view of a plan and hands it to `consume`; the view and
+// the packed state it references live only for that call. A preparation view
+// carries the vertex side only (no fragment uniforms or textures).
+template <typename Consume>
+bool WithOot3dPicaVulkanDrawView(
     const Oot3dPicaVulkanDrawPlan& plan, std::string* error,
     uint64_t renderTargetNamespace,
     const Oot3dPicaVulkanDrawOverrides* overrides,
-    Oot3dPicaVulkanDrawBridgeTiming* timing) {
+    Oot3dPicaVulkanDrawBridgeTiming* timing, bool fragmentState,
+    Consume&& consume) {
     using Clock = std::chrono::steady_clock;
     auto phaseStart =
         timing != nullptr ? Clock::now() : Clock::time_point{};
@@ -176,8 +178,9 @@ bool SubmitOot3dPicaVulkanDrawPlan(
                                          ? *overrides->BlendConstantColor
                                          : plan.State.OutputMerger.Blend.ConstantColor;
     const auto vertexUniforms = PackVertexUniforms(vertexUniformState, plan.State.Framebuffer.Flipped);
-    const auto fragmentUniforms =
-        PackFragmentUniforms(fragmentUniformState, viewport);
+    const auto fragmentUniforms = fragmentState
+        ? PackFragmentUniforms(fragmentUniformState, viewport)
+        : std::array<uint8_t, Fast::Oot3d::kPicaPackedFragmentUniformSize>{};
     if (timing != nullptr) {
         const auto now = Clock::now();
         timing->UniformPackingSeconds +=
@@ -222,6 +225,7 @@ bool SubmitOot3dPicaVulkanDrawPlan(
     }
     size_t textureCount = 0;
     for (const auto& texture : plan.Textures) {
+        if (!fragmentState) break;
         textures[textureCount++] = {
             texture.Slot, texture.State.Width, texture.State.Height,
             texture.State.Format, texture.State.Type, texture.State.WrapS,
@@ -300,7 +304,7 @@ bool SubmitOot3dPicaVulkanDrawPlan(
     draw.FragmentFeatures.FragmentLighting =
         plan.FragmentFeatures.FragmentLighting;
     draw.VertexUniformBytes = vertexUniforms;
-    draw.FragmentUniformBytes = fragmentUniforms;
+    if (fragmentState) draw.FragmentUniformBytes = fragmentUniforms;
     draw.VertexBindings =
         std::span<const Oot3d::Renderer::PicaVertexBindingView>(
         bindings.data(), bindingCount);
@@ -381,6 +385,11 @@ bool SubmitOot3dPicaVulkanDrawPlan(
         plan.State.OutputMerger.Blend.DestinationAlpha);
     std::copy(blendConstantColor.begin(), blendConstantColor.end(),
               draw.Blend.ConstantColor);
+    const auto alphaTest = DecodeOot3dPicaAlphaTest(fragmentUniformState.FragmentControl[1]);
+    draw.AlphaTestEnabled = alphaTest.Enabled;
+    draw.AlphaCompare =
+        SameValueEnum<Oot3d::Renderer::PicaCompareFunction>(alphaTest.Compare);
+    draw.AlphaReference = alphaTest.Reference;
     draw.DepthTestEnabled = plan.State.OutputMerger.Depth.TestEnabled;
     draw.DepthWriteEnabled = plan.State.OutputMerger.Depth.WriteEnabled;
     draw.DepthCompare =
@@ -405,13 +414,47 @@ bool SubmitOot3dPicaVulkanDrawPlan(
             std::chrono::duration<double>(now - phaseStart).count();
         phaseStart = now;
     }
-    const bool submitted =
-        renderingApi.SubmitPicaDraw(draw, error);
+    const bool submitted = consume(draw);
     if (timing != nullptr) {
         timing->BackendSubmissionSeconds +=
             std::chrono::duration<double>(Clock::now() - phaseStart).count();
     }
     return submitted;
+}
+
+} // namespace
+
+Oot3dPicaAlphaTest DecodeOot3dPicaAlphaTest(uint32_t alphaTestRegister) {
+    return {
+        (alphaTestRegister & 1U) != 0U,
+        static_cast<uint8_t>((alphaTestRegister >> 4U) & 7U),
+        static_cast<uint8_t>((alphaTestRegister >> 8U) & 0xFFU),
+    };
+}
+
+bool SubmitOot3dPicaVulkanDrawPlan(
+    Oot3d::Renderer::PicaRenderBackend& renderingApi,
+    const Oot3dPicaVulkanDrawPlan& plan, std::string* error,
+    uint64_t renderTargetNamespace,
+    const Oot3dPicaVulkanDrawOverrides* overrides,
+    Oot3dPicaVulkanDrawBridgeTiming* timing) {
+    return WithOot3dPicaVulkanDrawView(
+        plan, error, renderTargetNamespace, overrides, timing, true,
+        [&](const Oot3d::Renderer::PicaDrawView& draw) {
+            return renderingApi.SubmitPicaDraw(draw, error);
+        });
+}
+
+bool PrepareOot3dPicaVulkanSequenceDraw(
+    Oot3d::Renderer::PicaRenderBackend& renderingApi,
+    const Oot3dPicaVulkanDrawPlan& plan, std::string* error,
+    uint64_t renderTargetNamespace,
+    const Oot3dPicaVulkanDrawOverrides* overrides) {
+    return WithOot3dPicaVulkanDrawView(
+        plan, error, renderTargetNamespace, overrides, nullptr, false,
+        [&](const Oot3d::Renderer::PicaDrawView& draw) {
+            return renderingApi.PreparePicaSequenceDraw(draw, error);
+        });
 }
 
 bool SubmitOot3dPicaVulkanDisplayTransfer(
