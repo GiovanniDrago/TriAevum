@@ -77,6 +77,12 @@ struct GrassPreparedPlacement {
 inline constexpr size_t kGrassLodBinCount =
     static_cast<size_t>(kMaximumGrassBladeSegments) * 2U + 1U;
 inline constexpr size_t kGrassAnchorsPerWorker = 8192U;
+
+// Read once: the CRT environment lookup locks and scans per call.
+bool GrassDiagnosticsEnabled() {
+    static const bool enabled = std::getenv("OOT3D_GRASS_DIAGNOSTICS") != nullptr;
+    return enabled;
+}
 inline constexpr size_t kGrassClustersForParallelSelection = 8192U;
 inline constexpr uint64_t kGrassIdentityFnvOffset =
     14695981039346656037ULL;
@@ -1108,7 +1114,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 ++nativeLit;
             }
         }
-        if (std::getenv("OOT3D_GRASS_DIAGNOSTICS") && frameId % 30 == 0)
+        if (GrassDiagnosticsEnabled() && frameId % 30 == 0)
             std::fprintf(stderr, "Grass native surface lighting: frame=%llu available=%zu requested=%zu\n",
                 static_cast<unsigned long long>(frameId), nativeLit, preparedPlacements.size());
         telemetry.PlacementMilliseconds += std::chrono::duration<double, std::milli>(
@@ -1416,7 +1422,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 telemetry.SelectionMilliseconds +=
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - selectionStart)
                         .count();
-                if (std::getenv("OOT3D_GRASS_DIAGNOSTICS") != nullptr && frameId % 60 == 0) {
+                if (GrassDiagnosticsEnabled() && frameId % 60 == 0) {
                     std::fprintf(stderr, "[grass-selection] frame=%llu source=%u clusters=%zu candidates=%llu cluster_ms=%.3f evaluate_ms=%.3f\n",
                         static_cast<unsigned long long>(frameId), placementIndex, clusterWork.size(),
                         static_cast<unsigned long long>(retainedCandidates),
@@ -1490,7 +1496,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         }
 
         const uint32_t instanceCount = static_cast<uint32_t>(mImpl->VisibleAnchorIndices.size());
-        if (std::getenv("OOT3D_GRASS_DIAGNOSTICS") != nullptr && frameId % 60 == 0) {
+        if (GrassDiagnosticsEnabled() && frameId % 60 == 0) {
             size_t contacts = 0;
             float maxBend = 0;
             const size_t step = std::max<size_t>(1, mImpl->VisibleAnchorIndices.size() / 4096);
@@ -1615,7 +1621,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 shadowBuffers[2] = {visible.Buffer, 0, visibleBytes};
                 dynamicUploadedBytes += visibleBytes;
             }
-            if (std::getenv("OOT3D_GRASS_DIAGNOSTICS") && frameId % 30 == 0)
+            if (GrassDiagnosticsEnabled() && frameId % 30 == 0)
                 std::fprintf(stderr, "[grass-shadow-grid] frame=%llu history=%llu points=%u roots=%u placements=%zu "
                     "refined=%u patches=%u cell=%.1f link=%d epona=%d\n",
                     static_cast<unsigned long long>(frameId),

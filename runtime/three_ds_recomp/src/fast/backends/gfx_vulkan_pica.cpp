@@ -5194,10 +5194,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                             : 1.0F);
                 }
             }
-            if (const char* diagnostics = std::getenv(
-                    "OOT3D_GRAPHICS_REFLECTION_MATERIAL_DIAGNOSTICS");
-                diagnostics != nullptr &&
-                std::string_view(diagnostics) == "1") {
+            // Read once: the CRT environment lookup locks and scans per call.
+            static const bool reflectionMaterialDiagnostics = [] {
+                const char* value = std::getenv("OOT3D_GRAPHICS_REFLECTION_MATERIAL_DIAGNOSTICS");
+                return value != nullptr && std::string_view(value) == "1";
+            }();
+            if (reflectionMaterialDiagnostics) {
                 static uint32_t reflectionMaterialDiagnosticCount = 0;
                 const bool explicitProfileMatched =
                     resolvedReflectionMaterial.has_value();
@@ -11877,7 +11879,7 @@ bool PublishNativePicaGrassSurface(
     };
     const bool eligible =
         Oot3d::IsGrassSurfaceDrawEligible(eligibility);
-    const bool diagnostics =
+    static const bool diagnostics =
         std::getenv("OOT3D_GRASS_DIAGNOSTICS") != nullptr;
     if (!eligible && !diagnostics) {
         return false;

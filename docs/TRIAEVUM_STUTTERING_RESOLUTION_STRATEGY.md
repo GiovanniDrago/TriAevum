@@ -1124,3 +1124,66 @@ expire, so the commands, fixture identity, hashes and measured limits recorded
 here are the handoff, not an assumption that `%TEMP%` remains available.
 
 Do not restart this backlog automatically during unrelated feature work.
+
+## Enhanced profile frame flow (2026-10-01)
+
+Requested optimization phase for the built-in Enhanced preset (DLSS Ultra
+Performance with the transformer model, 4K windowed, VSync on), on the Kokiri
+walk fixture (`ref-kokiri2`), RTX 3060, 6 cores / 12 threads.
+
+Measurement correction. `(host_seconds - largest interval) / frames` overstates
+the frame time: the window contains several preparation stalls, not one. Use the
+`benchmark_window.frame_times` percentiles (`TRIAEVUM_PACING_TRACE=1`) and the GPU
+timeline. `TRIAEVUM_GPU_GAP_TRACE=1` prints, every 60 frames, the GPU's busy
+time per frame (the frame scope's timestamps) and its idle time between
+consecutive frames, which separates GPU-bound, CPU-bound and presentation-bound
+frames. `gpu.frame_ms` alone cannot: it excludes the gaps.
+
+| Mode | Frame time | GPU busy / idle per frame |
+| --- | --- | --- |
+| VSync on (user setting) | p50 15.6-16.1 ms, p95 ~25 ms, 13-20/420 over 33.3 ms | ~11 ms / remainder of 16.7 ms |
+| VSync off, windowed | 16.7 ms (compositor cadence) | 10.7 / 6.0 ms |
+| No presentation (`TRIAEVUM_BENCHMARK_NO_PRESENT=1`) | ~11 ms | 10.5 / <1 ms |
+
+Without presentation the walk is GPU-bound: the DLSS CNN model removes 2.5 ms of
+GPU work and 2.45 ms of frame time. A user-mode stack sampler on the render
+thread (no administrator rights needed) attributed ~30% of its time to Grass:
+selection jobs it waits for (~15%), the interaction field's spring integration
+over all 256x256 cells (~7%), shadow refinement and copies. A further 3.6% was the
+CRT `getenv` (lock and scan) called per draw for diagnostics switches.
+
+Retained:
+
+- The interaction field integrates, shifts and stamps only the active columns of
+  each row. Cells evolve independently and a cell at rest (+0 displacement and
+  velocity, no height) stays at rest, so the field is bit-identical: a
+  differential harness against the previous implementation matched 36,000
+  updates (64/256 resolution, per-frame recentring, teleports, context changes,
+  zero steps).
+- Diagnostics switches in per-draw and per-source paths are read once.
+
+Paired no-presentation A/B: renderer CPU frame 8.40 -> 7.35 ms
+(`grass_render` 2.93 -> 2.20 ms); throughput is unchanged because the GPU bounds
+it. Deterministic captures are 12/12 identical to the previous build.
+
+Observed, not retained: for one period during a remote-desktop session, VSync
+presentation fell to p50 30 ms. The render thread waited 24.6 ms for the
+in-flight fence while the GPU idled ~16 ms per frame, because the frame's single
+submission waits for the swapchain image at `ALL_COMMANDS`, holding all of the
+frame's GPU work behind the acquisition. Submitting the work recorded before the
+first swapchain access separately removed that wait (sync validation clean,
+captures identical), but paired A/B after the throttling stopped showed no
+difference (p50 15.6-16.1 ms either way). Following the rejected-submission rule
+above it was removed. Revisit only with a reproducible throttled-presentation
+fixture.
+
+Open, pre-existing in the previous build:
+
+- Enhanced captures vary between runs in late frames (previous build against
+  itself: 10/12, frames 360/390, up to 6.9% of pixels at 330 in another pair).
+- Synchronization validation reports `WRITE_AFTER_WRITE` between a colour clear
+  and a layout transition of one effect image.
+
+Remaining costs: Grass selection (the render thread waits ~2.6 ms for its jobs;
+per-anchor LOD evaluation includes `logf`/`log1pf`), DLSS transformer
+4.7-5.3 ms and Grass 1.9-2.2 ms of GPU work, render command recording ~1 ms.
