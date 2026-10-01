@@ -975,6 +975,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     bool mTitleWorldChanged = false;
     uint64_t mReportedGiInstances = 0;
     uint64_t mReportedGiResets = 0;
+    uint64_t mReportedGiCreationFailures = 0;
     std::array<std::vector<BufferAllocation>, kFramesInFlight> mRetiredNativePicaGeometryBuffers;
     Oot3d::PicaShaderPipelineCache mPicaShaderPipelineCache;
     Oot3d::PicaAotShaderPack mPicaAotShaderPack;

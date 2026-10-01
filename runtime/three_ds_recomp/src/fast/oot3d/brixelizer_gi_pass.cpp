@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -123,6 +124,8 @@ struct BrixelizerGiPass::Impl {
     BrixelizerScene* Scene = nullptr;
     std::vector<std::unique_ptr<BrixelizerGiInstance>> Instances;
     BrixelizerGiInstance* Active = nullptr;
+    // First frame that may attempt a creation again after one failed.
+    uint64_t CreationRetryFrame = 0;
     EffectPassBarrierExecution LastBarriers;
     BrixelizerGiStats Stats;
     NriStorageClearBinding Clear;
@@ -202,8 +205,20 @@ struct BrixelizerGiPass::Impl {
                                              : FFX_BRIXELIZER_GI_INTERNAL_RESOLUTION_50_PERCENT;
         description.displaySize = {in.Width, in.Height};
         description.backendInterface = backend;
-        if (ffxBrixelizerGIContextCreate(&instance.Context, &description) != FFX_OK)
-            throw std::runtime_error("Brixelizer GI context creation failed");
+        if (const FfxErrorCode error = ffxBrixelizerGIContextCreate(&instance.Context, &description);
+            error != FFX_OK) {
+            // The SDK checks its arguments before it takes a backend context
+            // and releases nothing after that. Its destroy frees the context and
+            // whatever pipelines and resources were created (it skips the rest),
+            // so a failed attempt never keeps one of the backend's GI contexts.
+            if (error != FFX_ERROR_INVALID_POINTER && error != FFX_ERROR_INCOMPLETE_INTERFACE &&
+                error != FFX_ERROR_INVALID_ARGUMENT)
+                (void)ffxBrixelizerGIContextDestroy(&instance.Context);
+            char code[16];
+            std::snprintf(code, sizeof(code), "0x%08x", static_cast<unsigned>(error));
+            throw std::runtime_error(std::string("Brixelizer GI context creation failed (FidelityFX error ") + code +
+                                     ")");
+        }
         instance.ContextCreated = true;
     }
 #endif
@@ -302,6 +317,8 @@ bool BrixelizerGiPass::Configure(uint64_t frameId, const BrixelizerGiInputs& inp
         mImpl->Reason = "the scene distance field is unavailable";
         return false;
     }
+    // Reason still names the failure that deferred the attempt.
+    if (frameId < mImpl->CreationRetryFrame) return false;
     // A resolution, specular or source change replaces the surface's instance; otherwise, when
     // full, the least recently used surface retires. Never one this frame's
     // command buffer already references.
@@ -334,6 +351,8 @@ bool BrixelizerGiPass::Configure(uint64_t frameId, const BrixelizerGiInputs& inp
     } catch (const std::exception& exception) {
         mImpl->Reason = exception.what();
         mImpl->Destroy(*instance);
+        mImpl->CreationRetryFrame = frameId + kCreationRetryFrames;
+        ++mImpl->Stats.CreationFailures;
         return false;
     }
     mImpl->Active = instance.get();

@@ -54,6 +54,11 @@ class ReflectionMaterialResolvePass final {
                  const EffectPassBarrierPlan& barrierPlan,
                  std::optional<PicaSurfaceCoordinates> coordinates = std::nullopt,
                  ReflectionResolveLayering layering = {});
+    // Writes the configured output as no reflection (zero radiance and
+    // weight), for a source with no data this sample: the declared output
+    // stays complete and composes as nothing.
+    bool ClearOutput(uint32_t frameIndex,
+                     const EffectPassBarrierPlan& barrierPlan);
     void InvalidateScreenResources();
     void Shutdown();
 

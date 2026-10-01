@@ -4,6 +4,7 @@
 
 #include "fast/oot3d/nri_interop_context.h"
 #include "fast/oot3d/nri_effect_graph_transient_image_arena.h"
+#include "fast/oot3d/nri_storage_clear_binding.h"
 #include "fast/oot3d/reflection_ibl.h"
 #include "fast/oot3d/reflection_ibl_pass.h"
 #include "fast/oot3d/resource_state_tracker.h"
@@ -55,6 +56,7 @@ struct ReflectionMaterialResolvePass::Impl {
 #endif
     NriOwnedTexture2D Output{};
     ResourceStateTracker* States = nullptr;
+    NriStorageClearBinding Clear;
     uint32_t Width = 0;
     uint32_t Height = 0;
     bool Ready = false;
@@ -160,6 +162,8 @@ bool ReflectionMaterialResolvePass::Initialize(
             nri::Result::SUCCESS)
             throw std::runtime_error(
                 "reflection material resolve sampler creation failed");
+        if (!mImpl->Clear.Initialize(interop))
+            throw std::runtime_error(mImpl->Clear.UnavailableReason());
         mImpl->Ready = true;
         mImpl->Reason.clear();
         return true;
@@ -380,6 +384,49 @@ bool ReflectionMaterialResolvePass::Execute(
 #endif
 }
 
+bool ReflectionMaterialResolvePass::ClearOutput(
+    uint32_t frameIndex, const EffectPassBarrierPlan& barrierPlan) {
+    const auto* outputBarrier = barrierPlan.Find(
+        EffectResource::ReflectionColor);
+    if (mImpl->Width == 0U || mImpl->States == nullptr ||
+        !barrierPlan.Valid() || outputBarrier == nullptr ||
+        !outputBarrier->Managed()) {
+        mImpl->Reason =
+            "reflection material resolve output is not configured";
+        return false;
+    }
+#ifndef ENABLE_OOT3D_NRI
+    (void)frameIndex;
+    return false;
+#else
+    mImpl->BarriersUsed = false;
+    mImpl->LastBarrierExecution = barrierPlan.BeginOutputExecution(
+        EffectResource::ReflectionColor);
+    const auto transition = [&](ResourceAccess access) {
+        const auto change = mImpl->States->PlanTransition(
+            reinterpret_cast<uintptr_t>(mImpl->Output.Image),
+            {access, 0});
+        if (!NriInteropAccess::CmdTextureBarrier(
+                *mImpl->Interop, frameIndex, mImpl->Output.Image,
+                change))
+            return false;
+        mImpl->LastBarrierExecution.RecordGraphTransition(change);
+        mImpl->States->Commit(change);
+        return true;
+    };
+    if (!transition(ResourceAccess::StorageClear) ||
+        !mImpl->Clear.ClearUint32(frameIndex, mImpl->Output.Image, 0U) ||
+        !transition(outputBarrier->CompletionAccess)) {
+        mImpl->Reason =
+            "reflection material resolve output clear failed";
+        return false;
+    }
+    mImpl->BarriersUsed = true;
+    mImpl->Reason.clear();
+    return true;
+#endif
+}
+
 void ReflectionMaterialResolvePass::InvalidateScreenResources() {
 #ifdef ENABLE_OOT3D_NRI
     if (mImpl->Core != nullptr && mImpl->Pool != nullptr)
@@ -397,6 +444,7 @@ void ReflectionMaterialResolvePass::InvalidateScreenResources() {
 
 void ReflectionMaterialResolvePass::Shutdown() {
     InvalidateScreenResources();
+    mImpl->Clear.Shutdown();
 #ifdef ENABLE_OOT3D_NRI
     if (mImpl->Core != nullptr) {
         if (mImpl->Sampler != nullptr)

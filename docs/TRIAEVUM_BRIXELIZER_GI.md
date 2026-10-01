@@ -283,9 +283,10 @@ the material guide (F0, roughness, reflection gain), filling SSSR misses only.
   Black environment cube and 16 white-noise layers are generated in code.
   Depth is the native perspective depth: the guest projection is already the
   D3D [0, 1] form (`f/(n-f)`, `w = -z`). W-buffer surfaces are not traced.
-- Without GI for a sample (no field data yet, W-buffer, a failed dispatch) the
-  declared output is cleared to zero irradiance, so the graph stays complete
-  and the composite adds nothing.
+- Without GI for a sample (no field data yet, W-buffer, a failed dispatch or
+  context creation) the declared output is cleared to zero irradiance, so the
+  graph stays complete and the composite adds nothing. GI-sourced reflections
+  do the same with their `ReflectionColor` (phase 5).
 - Composite: `color += albedo * irradiance * intensity * aoVisibility` in
   linear light where the albedo guide is valid (alpha). The ambient guide's
   coverage is written only by the AO instrumentation, so GI uses the albedo
@@ -319,6 +320,7 @@ screen histories, so resets follow the world, not the camera:
 | GI resolution setting | kept | the surface's instance is replaced |
 | GI disabled (field pass leaves the extension graph) | `Reset` | `ResetHistory`, so re-enabling never traces a world seen before |
 | Surface not composed for a while | kept | kept up to `kMaxGiSurfaces`, least recently used retired |
+| Context creation fails | kept | none; the SDK's partial context is released and the next attempt waits `kCreationRetryFrames` (120) frames, with zero irradiance meanwhile |
 
 Per-sample behavior under Interpolated2x is unchanged: the field updates
 once per native frame, GI traces once per presented frame and surface.
@@ -376,8 +378,12 @@ GI contribution starts from zero and accumulates again (no stale history).
 - Misses: the GI specular trace has no environment of its own; the SDK fills
   missed rays with probe irradiance along the reflected direction (the
   environment intensity stays 0, so no sky is invented). Without GI for a
-  sample the reflection is not composed (a cleared image would darken every
-  reflective surface).
+  sample the reflection is not composed: resolving the cleared specular image
+  would darken every reflective surface, so the declared `ReflectionColor` is
+  written as no reflection instead (zero radiance and weight,
+  `ReflectionMaterialResolvePass::ClearOutput`) and `Reflections` is recorded
+  `Skipped`, like the GI's zero irradiance. Until 2026-10-01 it was left
+  unbound, which ended the presentation (see "Samples without GI").
 - Materials: the material guide and the texture material rules also apply
   when only GI specular is enabled. With no configured material, only draws
   whose native TEV reads the specular colour are reflective (calibrated
@@ -656,3 +662,48 @@ the native colour: at 1 the full sky colour saturated the sunlit Kokiri path
 (mean +64 levels over GI off); 0.25 gives +21 with the fill reaching walls
 and characters. Persisted (files without the field take the default); F1
 smoke 6,975; core validation clean.
+
+## Samples without GI (2026-10-01)
+
+User report: the game closed when MXAO was switched off in F1 (Kokiri, GI Half
+with specular, reflections Off, AA Off). stderr:
+`TRIAEVUM_GLOBAL_ILLUMINATION fallback=1 reason="Brixelizer GI context
+creation failed"`, then `native PICA scheduled presentation failed: display
+effect pass has unresolved declared reads: Composite`.
+
+- The AO change replaces the plan's transient images, which drops the GI
+  instances with the screen resources; creating the next context failed. GI
+  then composed zero irradiance as designed, but the GI-sourced `Reflections`
+  skipped the material resolve and left `ReflectionColor` unbound, while the
+  `Composite` (forced by GI) requires every declared read. Any sample without
+  GI under GI specular (W-buffer, no field data, a failed dispatch or
+  creation) ended the presentation the same way.
+- Fix: `ReflectionColor` is written as no reflection (phase 5); the boundary
+  accepts that output like the GI's zero irradiance.
+- Creation failures: the SDK takes its backend context before anything can
+  fail and releases nothing on failure (and its Vulkan backend hands a
+  creation without a free context the scene's context 0). The pass now
+  destroys the partial context (except after the argument errors returned
+  before that context is taken), so a failed attempt never keeps one of the
+  three GI contexts. The reason carries the FidelityFX error, the next attempt
+  waits `kCreationRetryFrames` (120) frames instead of rebuilding images,
+  pipelines and resources every frame, and the lifecycle line reports
+  `creation_failures=`.
+- Why the reported creation failed is unknown: no error code was logged then,
+  and the system was short of resources (commit near its 67.5 GB limit, C:
+  full). The code is logged now.
+- Fault injection, probe-only (`forcefail.py` patches the entry of the
+  FidelityFX `CreatePipelineVK` with `mov eax, 0x8000000d; ret` inside the
+  probe's own process, from frame 100 to 450; MXAO off at frame 150, Kokiri
+  quick save, the reported settings). A debugger cannot be used: the runtime
+  handles guest memory through exceptions. Before: the reported failure at
+  frame 151, exit 1. After: creation fails at frames 151, 271 and 391
+  (`0x8000000d`) and GI is recreated at 511, a fourth context, so the failed
+  attempts released theirs; the 360 frames without GI record GlobalIllumination
+  and Reflections `Skipped`, with zero failed passes, missing reads or
+  resources; core validation 0 errors (the 11 warnings of the startup
+  baseline, none later).
+- Identity: with GI off, the MXAO-off captures are byte-identical before and
+  after the change (8/8). With GI on, captures are not repeatable run to run:
+  two runs of the old build differ as much as old against new (1-3% of
+  pixels, at most 25 levels).

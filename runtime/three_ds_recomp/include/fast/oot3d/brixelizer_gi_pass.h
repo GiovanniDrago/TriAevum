@@ -48,6 +48,7 @@ struct BrixelizerGiStats {
     uint64_t InstancesRetired = 0; // resolution or specular change, or least recently used
     uint64_t WorldResets = 0;
     uint64_t SourceResets = 0; // RestartsGlobalIlluminationHistory
+    uint64_t CreationFailures = 0; // instances whose creation failed (retried later)
 };
 
 // Global illumination traced through the scene distance field (FidelityFX
@@ -76,7 +77,10 @@ class BrixelizerGiPass final {
     // carries (GlobalIlluminationSourceMix). The radiance cache averages its
     // samples over seconds (up to 64 per brick, more in coarser cascades):
     // when RestartsGlobalIlluminationHistory the instance starts over,
-    // otherwise the new weights blend in.
+    // otherwise the new weights blend in. After a failed creation no instance
+    // is created for kCreationRetryFrames frames (each attempt allocates the
+    // surface's images and the SDK's pipelines and resources).
+    static constexpr uint64_t kCreationRetryFrames = 120;
     bool Configure(uint64_t frameId, const BrixelizerGiInputs& inputs,
                    GlobalIlluminationResolution resolution, bool specular,
                    const std::array<float, 4>& sourceWeights);

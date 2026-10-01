@@ -7550,6 +7550,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             wantsReflections && effectGuideTarget != nullptr &&
             effectGuideTarget->NormalGuideView != VK_NULL_HANDLE &&
             effectGuideTarget->MaterialGuideView != VK_NULL_HANDLE;
+        // GI-sourced reflections without GI for this sample: the declared
+        // reflection holds no reflection and is not composed.
+        bool reflectionsSkipped = false;
         bool reflectionNriWrapped = false;
         uint64_t guideSampledResourceMask = 0U;
         const auto transitionEffectPassGuides = [
@@ -8015,15 +8018,17 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     throw std::runtime_error("global illumination output could not be cleared");
             }
             if (const auto& gi = mBrixelizerGiPass.Stats();
-                gi.InstancesCreated != mReportedGiInstances || gi.WorldResets != mReportedGiResets) {
+                gi.InstancesCreated != mReportedGiInstances || gi.WorldResets != mReportedGiResets ||
+                gi.CreationFailures != mReportedGiCreationFailures) {
                 mReportedGiInstances = gi.InstancesCreated;
                 mReportedGiResets = gi.WorldResets;
+                mReportedGiCreationFailures = gi.CreationFailures;
                 std::fprintf(stderr,
                              "TRIAEVUM_GLOBAL_ILLUMINATION frame=%llu instances_created=%llu retired=%llu "
-                             "world_resets=%llu source_resets=%llu\n",
+                             "world_resets=%llu source_resets=%llu creation_failures=%llu\n",
                              (unsigned long long)mFrameCounter, (unsigned long long)gi.InstancesCreated,
                              (unsigned long long)gi.InstancesRetired, (unsigned long long)gi.WorldResets,
-                             (unsigned long long)gi.SourceResets);
+                             (unsigned long long)gi.SourceResets, (unsigned long long)gi.CreationFailures);
             }
             recordEffectPassTransitions(mBrixelizerGiPass.LastBarrierExecution());
             recordDeclared(Oot3d::DisplayEffectPass::GlobalIllumination,
@@ -8300,9 +8305,20 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 activeReflectionImage = mReflectionMaterialResolvePass.OutputImage();
                 activeReflectionView = mReflectionMaterialResolvePass.OutputView();
                 reflectionOutputEncoding = Oot3d::SceneColorEncoding::Linear;
+            } else if (!giForDisplay && transientReflectionOutput != nullptr &&
+                       mReflectionMaterialResolvePass.Configure(*transientReflectionOutput) &&
+                       mReflectionMaterialResolvePass.ClearOutput(mCurrentFrame, reflectionBarrierPlan)) {
+                // Without GI for this sample nothing is composed: resolving the
+                // cleared specular image would darken every reflective surface.
+                // The declared reflection still exists, as no reflection (zero
+                // weight) like the GI pass's zero irradiance, so its readers
+                // resolve and the graph stays complete.
+                recordEffectPassTransitions(mReflectionMaterialResolvePass.LastBarrierExecution());
+                activeReflectionImage = mReflectionMaterialResolvePass.OutputImage();
+                activeReflectionView = mReflectionMaterialResolvePass.OutputView();
+                reflectionOutputEncoding = Oot3d::SceneColorEncoding::Linear;
+                reflectionsSkipped = true;
             }
-            // Without GI for this sample nothing is composed: a cleared
-            // specular image would darken every reflective surface.
             reflectionsForDisplay = resolved;
             mGpuProfiler.EndScope(mCurrentFrame, Oot3d::GpuProfileScope::Reflection, command);
             if (reflectionsForDisplay) {
@@ -8644,7 +8660,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     reflectionOutputEncoding;
             }
         }
-        if (reflectionsForDisplay) {
+        if (reflectionsForDisplay || reflectionsSkipped) {
             bindEffectImage(
                 Oot3d::EffectResource::ReflectionColor,
                 activeReflectionImage, activeReflectionView,
@@ -9381,8 +9397,10 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 producedOutcome(hiZAttempted, hiZExecutedNow, canReuseHiZ));
             recordDeclared(
                 Oot3d::DisplayEffectPass::Reflections,
-                producedOutcome(reflectionsAttempted, reflectionsForDisplay,
-                                canReuseReflections));
+                reflectionsSkipped
+                    ? EffectOutcome::Skipped
+                    : producedOutcome(reflectionsAttempted, reflectionsForDisplay,
+                                      canReuseReflections));
             recordDeclared(
                 Oot3d::DisplayEffectPass::Motion,
                 producedOutcome(motionAttempted, motionForDisplay,
@@ -9416,12 +9434,13 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             }
             // A declared scene stage that did not produce its output fails the
             // copy: an enabled effect must never silently sample the base
-            // colour target.
+            // colour target. GI-sourced reflections without GI for this sample
+            // produced theirs (no reflection), like the GI's zero irradiance.
             const bool declaredSceneStageFailed =
                 (effectPlan.Enabled(Oot3d::DisplayEffectPass::AmbientOcclusion) &&
                  !aoForDisplay) ||
                 (effectPlan.Enabled(Oot3d::DisplayEffectPass::Reflections) &&
-                 !reflectionsForDisplay) ||
+                 !reflectionsForDisplay && !reflectionsSkipped) ||
                 (effectPlan.Enabled(Oot3d::DisplayEffectPass::Outline) &&
                  !outlineForDisplay) ||
                 (effectPlan.Enabled(Oot3d::DisplayEffectPass::WorkingColor) &&
@@ -9680,7 +9699,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 VK_FORMAT_R32_SFLOAT, effectGuideTarget->Width,
                 effectGuideTarget->Height);
         }
-        if (reflectionsForDisplay) {
+        if (reflectionsForDisplay || reflectionsSkipped) {
             bindEffectImage(
                 Oot3d::EffectResource::ReflectionColor,
                 activeReflectionImage, activeReflectionView,
@@ -10026,9 +10045,11 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                             canReuseHiZ));
         recordDeclared(
             Oot3d::DisplayEffectPass::Reflections,
-            producedOutcome(reflectionsAttempted,
-                            reflectionsForDisplay,
-                            canReuseReflections));
+            reflectionsSkipped
+                ? EffectOutcome::Skipped
+                : producedOutcome(reflectionsAttempted,
+                                  reflectionsForDisplay,
+                                  canReuseReflections));
         if (effectPlan.Enabled(Oot3d::DisplayEffectPass::Outline)) {
             EffectOutcome outlineOutcome = EffectOutcome::Skipped;
             if (outlineForDisplay && !guidesMaterialized) {
