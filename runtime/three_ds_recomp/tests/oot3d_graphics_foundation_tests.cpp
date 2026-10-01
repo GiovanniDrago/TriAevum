@@ -1843,6 +1843,27 @@ TEST(Oot3dRenderResolution,
         ResolveInternalResolutionScale(settings),
         1.0F / UpscalerScalingFactor(UpscalerQuality::Performance));
     EXPECT_FLOAT_EQ(settings.InternalResolutionScale, 1.75F);
+
+    // Every quality's output is the display extent: Ultra Performance renders a
+    // third of it per axis (a 0.5 floor made its output 1.5x the display).
+    for (const auto quality : { UpscalerQuality::Native, UpscalerQuality::UltraQuality, UpscalerQuality::Quality,
+                                UpscalerQuality::Balanced, UpscalerQuality::Performance,
+                                UpscalerQuality::UltraPerformance }) {
+        settings.UpscalerMode = quality;
+        const auto render = ResolveNativePicaRenderExtent({480U, 400U}, {3840U, 2160U},
+                                                          ResolveInternalResolutionScale(settings));
+        // The upscaler reads one eye of the stereo top-screen target.
+        const auto contract = ResolveUpscalerContractFromRender(UpscalerProvider::Dlss, quality, render.Width / 2U,
+                                                                render.Height);
+        EXPECT_NEAR(double(contract.Output.Width), 2160.0, 2.0) << int(quality);
+        EXPECT_NEAR(double(contract.Output.Height), 3840.0, 2.0) << int(quality);
+    }
+    settings.UpscalerMode = UpscalerQuality::UltraPerformance;
+    EXPECT_FLOAT_EQ(ResolveInternalResolutionScale(settings), 1.0F / 3.0F);
+    // The user's own scale keeps its range.
+    settings.AntiAliasing = AntiAliasingMode::Taa;
+    settings.InternalResolutionScale = 0.25F;
+    EXPECT_FLOAT_EQ(ResolveInternalResolutionScale(settings), 0.5F);
 }
 
 TEST(Oot3dAntiAliasingFramePolicy,
