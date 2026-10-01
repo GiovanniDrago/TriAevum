@@ -89,6 +89,7 @@
 #include "fast/oot3d/pica_reflection_material.h"
 #include "fast/oot3d/reflection_material_profile.h"
 #include "fast/oot3d/toon_outline_shader.h"
+#include "fast/oot3d/upscaler_guides.h"
 
 #include <gtest/gtest.h>
 #ifdef OOT3D_FOUNDATION_HAS_SHADERC
@@ -1853,6 +1854,7 @@ TEST(Oot3dAntiAliasingFramePolicy,
         ResolveAntiAliasingFramePolicy(settings, capabilities);
     EXPECT_EQ(policy.SpatialAaMode, 1U);
     EXPECT_FALSE(policy.TemporalJitter);
+    EXPECT_FALSE(policy.PresentationWorldSurface);
     EXPECT_EQ(policy.MsaaSamples, 1U);
 
     settings.AntiAliasing = AntiAliasingMode::Taa;
@@ -1862,11 +1864,22 @@ TEST(Oot3dAntiAliasingFramePolicy,
     EXPECT_TRUE(policy.TemporalMotion);
     EXPECT_EQ(policy.TemporalJitterPhases, 8U);
 
+    EXPECT_TRUE(policy.PresentationWorldSurface);
+
+    settings.AntiAliasing = AntiAliasingMode::Smaa1x;
+    policy = ResolveAntiAliasingFramePolicy(settings, capabilities);
+    EXPECT_FALSE(policy.TemporalJitter);
+    EXPECT_TRUE(policy.PresentationWorldSurface);
+    settings.AntiAliasing = AntiAliasingMode::Off;
+    EXPECT_FALSE(ResolveAntiAliasingFramePolicy(settings, capabilities).PresentationWorldSurface);
+    EXPECT_TRUE(ResolveAntiAliasingFramePolicy(settings, capabilities, false, true).PresentationWorldSurface);
+
     settings.AntiAliasing = AntiAliasingMode::Msaa;
     settings.MsaaSamples = 4U;
     policy = ResolveAntiAliasingFramePolicy(settings, capabilities);
     EXPECT_EQ(policy.MsaaSamples, 4U);
     EXPECT_FALSE(policy.TemporalJitter);
+    EXPECT_FALSE(policy.PresentationWorldSurface);
     settings.MsaaSamples = 8U;
     policy = ResolveAntiAliasingFramePolicy(settings, capabilities);
     EXPECT_EQ(policy.MsaaSamples, 1U);
@@ -1875,17 +1888,70 @@ TEST(Oot3dAntiAliasingFramePolicy,
     settings.Upscaler = UpscalerProvider::Nis;
     policy = ResolveAntiAliasingFramePolicy(settings, capabilities);
     EXPECT_FALSE(policy.TemporalJitter);
+    EXPECT_TRUE(policy.PresentationWorldSurface);
     settings.Upscaler = UpscalerProvider::Fsr;
     settings.UpscalerMode = UpscalerQuality::Quality;
     policy = ResolveAntiAliasingFramePolicy(settings, capabilities);
     EXPECT_TRUE(policy.TemporalJitter);
     EXPECT_TRUE(policy.TemporalMotion);
+    EXPECT_TRUE(policy.PresentationWorldSurface);
     EXPECT_EQ(
         policy.TemporalJitterPhases,
         ResolveUpscalerContract(
             UpscalerProvider::Fsr, UpscalerQuality::Quality, 1U, 1U)
             .MinimumJitterPhases);
 }
+
+TEST(Oot3dUpscalerGuides, CoverTheDisplayTransferFootprint) {
+    using namespace Fast::Oot3d;
+    // The native top-screen transfer halves the target's first axis: each
+    // colour texel covers two guide texels, the second axis maps 1:1.
+    for (uint32_t pixel = 0U; pixel < 640U; ++pixel) {
+        const auto span = ResolveUpscalerGuideSpan(pixel, 640U, 1280U);
+        EXPECT_EQ(span.First, 2U * pixel);
+        EXPECT_EQ(span.Last, 2U * pixel + 1U);
+        const auto same = ResolveUpscalerGuideSpan(pixel, 640U, 640U);
+        EXPECT_EQ(same.First, pixel);
+        EXPECT_EQ(same.Last, pixel);
+    }
+    // Fractional ratios cover every texel the output texel overlaps, and the
+    // spans tile the source without gaps.
+    uint32_t next = 0U;
+    for (uint32_t pixel = 0U; pixel < 960U; ++pixel) {
+        const auto span = ResolveUpscalerGuideSpan(pixel, 960U, 1280U);
+        EXPECT_LE(span.First, next);
+        EXPECT_GE(span.Last + 1U, next);
+        EXPECT_LE(span.Last - span.First + 1U, 2U);
+        next = span.Last + 1U;
+    }
+    EXPECT_EQ(next, 1280U);
+    // A larger guide is bounded, an upsampled one repeats its texel.
+    const auto wide = ResolveUpscalerGuideSpan(1U, 10U, 100U);
+    EXPECT_EQ(wide.First, 10U);
+    EXPECT_EQ(wide.Last, 10U + kUpscalerGuideMaxSpan - 1U);
+    const auto upsampled = ResolveUpscalerGuideSpan(3U, 1280U, 640U);
+    EXPECT_EQ(upsampled.First, 1U);
+    EXPECT_EQ(upsampled.Last, 1U);
+    EXPECT_EQ(ResolveUpscalerGuideSpan(1279U, 1280U, 640U).Last, 639U);
+
+    EXPECT_TRUE(UpscalerGuidesNeedResample(640U, 1067U, 1280U, 1067U));
+    EXPECT_FALSE(UpscalerGuidesNeedResample(1280U, 1067U, 1280U, 1067U));
+    // Jitter applied in target pixels is half a colour texel per target texel.
+    const auto jitter = UpscalerJitterInInputPixels({0.5F, -0.25F}, 1280U, 1067U, 640U, 1067U);
+    EXPECT_FLOAT_EQ(jitter[0], 0.25F);
+    EXPECT_FLOAT_EQ(jitter[1], -0.25F);
+}
+
+#ifdef OOT3D_FOUNDATION_HAS_SHADERC
+TEST(Oot3dUpscalerGuides, ResampleShaderCompiles) {
+    shaderc::Compiler compiler;
+    const auto result = compiler.CompileGlslToSpv(
+        Fast::Oot3d::BuildUpscalerGuideResampleShader(), shaderc_compute_shader,
+        "oot3d_upscaler_guides.comp");
+    EXPECT_EQ(result.GetCompilationStatus(), shaderc_compilation_status_success)
+        << result.GetErrorMessage();
+}
+#endif
 
 TEST(Oot3dPicaAlphaCoveragePolicy,
      EnablesOnlyMultisampledOpaqueAlphaTestedWorldDraws) {

@@ -42,6 +42,8 @@ struct DisplayEffectPlanInput {
     bool ForceTaa = false;
     bool ForceMotion = false;
     AmbientOcclusionMode AmbientOcclusion = AmbientOcclusionMode::Off;
+    // The AO provider accumulates over frames with the scene's motion vectors.
+    bool AmbientOcclusionTemporal = false;
     ReflectionMode Reflections = ReflectionMode::Off;
     // Diffuse GI is requested and its provider is available.
     bool GlobalIllumination = false;

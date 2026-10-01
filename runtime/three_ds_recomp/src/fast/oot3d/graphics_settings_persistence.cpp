@@ -1282,6 +1282,7 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                        {"Method", EnumName(effects.MxaoMethod, kMxaoMethodNames)},
                        {"Quality", effects.MxaoQuality},
                        {"Filter", effects.MxaoFilter},
+                       {"Temporal", effects.MxaoTemporal},
                    }},
                   {"TextureRelief", EnumName(effects.AoRelief, kAoReliefNames)},
               }},
@@ -1675,6 +1676,11 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                            "Graphics.Effects.AO.Mxao.Quality", result);
                 ReadScalar(*mxao, "Filter", value.MxaoFilter,
                            "Graphics.Effects.AO.Mxao.Filter", result);
+                if (FindMember(*mxao, "Temporal") != nullptr)
+                    ReadScalar(*mxao, "Temporal", value.MxaoTemporal,
+                               "Graphics.Effects.AO.Mxao.Temporal", result);
+                else
+                    result.NeedsRewrite = true;
             } else {
                 result.NeedsRewrite = true;
             }

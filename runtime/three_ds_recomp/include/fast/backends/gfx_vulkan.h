@@ -54,6 +54,7 @@
 #include "fast/oot3d/nri_pica_texture_upload_pass.h"
 #include "fast/oot3d/nri_swapchain.h"
 #include "fast/oot3d/nri_upscaler_pass.h"
+#include "fast/oot3d/upscaler_guide_pass.h"
 #include "fast/oot3d/pica_dynamic_rendering_scope.h"
 #include "fast/oot3d/pica_aot_shader_pack.h"
 #include "fast/oot3d/pica_composition_schedule.h"
@@ -1429,6 +1430,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::NriSwapchain mNriSwapchain;
     Oot3d::PicaDynamicRenderingScope mPicaDynamicRenderingScope;
     Oot3d::NriUpscalerPass mNriUpscalerPass;
+    Oot3d::UpscalerGuidePass mUpscalerGuidePass;
     Oot3d::TemporalHistoryManager mTemporalHistory;
     Oot3d::PicaRigidMotionTracker mRigidMotionTracker;
     Oot3d::SceneCompositePass mSceneCompositePass;
@@ -1486,6 +1488,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     uint32_t mSmaaHeight = 0;
     bool mTemporalMotionEnabled = false;
     bool mTemporalJitterEnabled = false;
+    // AA stages that present the world surface are configured this frame.
+    bool mPresentationWorldSurface = false;
     bool mNativeFidelityProfile = false;
     Oot3d::PicaAttachmentRequirements mFramePicaAttachmentRequirements;
     std::array<float, 2> mTemporalJitterPixels{};

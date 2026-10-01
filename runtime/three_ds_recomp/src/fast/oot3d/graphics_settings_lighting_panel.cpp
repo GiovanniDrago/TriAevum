@@ -176,6 +176,10 @@ bool GraphicsSettingsPanel::DrawMxaoSettings(EffectsSettings& effects) {
         effects.MxaoFilter = static_cast<uint8_t>(filter);
         changed = true;
     }
+    changed |= ImGui::Checkbox("MXAO temporal accumulation", &effects.MxaoTemporal);
+    if (effects.MxaoTemporal)
+        ImGui::TextWrapped("Each frame samples other directions and the scene's motion vectors carry the "
+                           "result over frames: a lower quality preset gives a stable image.");
     ImGui::TextWrapped("iMMERSE MXAO by Pascal Gilcher (martysmods.com), used with the author's permission. "
                        "The radius uses native scene units; above 1 the amount deepens occlusion.");
     if (ImGui::TreeNode("Advanced AO")) {

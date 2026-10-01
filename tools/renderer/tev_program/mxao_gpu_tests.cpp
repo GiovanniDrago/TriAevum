@@ -15,8 +15,44 @@ struct Image {
     VkDeviceMemory Memory{};
 };
 
-enum : uint32_t { kDepth, kNormals, kTiled, kRaw, kFiltered, kOutput, kImageCount };
-enum : uint32_t { kDeinterleave, kOcclusion, kFilter, kResolve, kProgramCount };
+enum : uint32_t { kDepth, kNormals, kTiled, kRaw, kFiltered, kOutput, kMotion, kHistory0, kHistory1, kImageCount };
+enum : uint32_t { kDeinterleave, kOcclusion, kFilter, kResolve, kTemporal, kProgramCount };
+// The descriptor sets of MxaoPass: input (binding 2), output (binding 3) and
+// history (binding 6); binding 5 is always the motion vectors.
+enum : uint32_t {
+    kDeinterleaveSet,
+    kOcclusionSet,
+    kFilterSet,
+    kResolveRawSet,
+    kResolveFilteredSet,
+    kTemporalSet,
+    kFilterAccumulatedSet = kTemporalSet + 2,
+    kResolveAccumulatedSet = kFilterAccumulatedSet + 2,
+    kSetCount = kResolveAccumulatedSet + 2
+};
+
+float HalfToFloat(uint16_t half) {
+    const uint32_t sign = uint32_t(half >> 15) << 31;
+    const uint32_t exponent = (half >> 10) & 0x1F;
+    const uint32_t mantissa = half & 0x3FF;
+    uint32_t bits = sign;
+    if (exponent == 0 && mantissa != 0) {
+        int shift = 0;
+        uint32_t m = mantissa;
+        while ((m & 0x400) == 0) {
+            m <<= 1;
+            ++shift;
+        }
+        bits |= uint32_t(127 - 15 - shift + 1) << 23 | (m & 0x3FF) << 13;
+    } else if (exponent == 31) {
+        bits |= 0x7F800000U | mantissa << 13;
+    } else if (exponent != 0) {
+        bits |= (exponent + 127 - 15) << 23 | mantissa << 13;
+    }
+    float value;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
 
 // Production MXAO kernels on native RGB8 normals. Odd extents exercise the
 // padded tile grid and partial workgroups of every program.
@@ -24,21 +60,29 @@ struct MxaoFixture {
     static constexpr uint32_t Width = 129, Height = 97;
     Gpu Device{ VkPhysicalDeviceFeatures{ .shaderStorageImageExtendedFormats = VK_TRUE } };
     std::array<Image, kImageCount> Images{};
-    Gpu::Buffer Depths{}, Normals{}, Result{};
+    Gpu::Buffer Depths{}, Normals{}, Motion{}, Result{}, Accumulation{};
     VkSampler Sampler{};
     VkDescriptorSetLayout SetLayout{};
     VkDescriptorPool Pool{};
-    // Sets pair an input (binding 2) with an output (binding 3), as in MxaoPass.
-    static constexpr std::array<std::array<uint32_t, 2>, 5> kPairs{ { { kDepth, kTiled },
-                                                                      { kTiled, kRaw },
-                                                                      { kRaw, kFiltered },
-                                                                      { kRaw, kOutput },
-                                                                      { kFiltered, kOutput } } };
-    std::array<VkDescriptorSet, 5> Sets{};
+    static constexpr std::array<std::array<uint32_t, 3>, kSetCount> kSets{ { { kDepth, kTiled, kDepth },
+                                                                             { kTiled, kRaw, kDepth },
+                                                                             { kRaw, kFiltered, kDepth },
+                                                                             { kRaw, kOutput, kDepth },
+                                                                             { kFiltered, kOutput, kDepth },
+                                                                             { kRaw, kHistory0, kHistory1 },
+                                                                             { kRaw, kHistory1, kHistory0 },
+                                                                             { kHistory0, kFiltered, kDepth },
+                                                                             { kHistory1, kFiltered, kDepth },
+                                                                             { kHistory0, kOutput, kDepth },
+                                                                             { kHistory1, kOutput, kDepth } } };
+    std::array<VkDescriptorSet, kSetCount> Sets{};
     VkPipelineLayout Layout{};
     std::array<VkPipeline, kProgramCount> Pipelines{};
     VkCommandPool Commands{};
     VkCommandBuffer Command{};
+    // Temporal state: the accumulation written next and the history layouts.
+    uint32_t NextHistory = 0;
+    std::array<VkImageLayout, 2> HistoryLayouts{ VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
 
     Image MakeImage(VkFormat format, uint32_t width, uint32_t height) {
         Image image;
@@ -71,17 +115,24 @@ struct MxaoFixture {
     MxaoFixture() {
         const uint32_t tiledWidth = Fast::Immerse::MxaoTiledExtent(Width);
         const uint32_t tiledHeight = Fast::Immerse::MxaoTiledExtent(Height);
-        Images = { MakeImage(VK_FORMAT_R32_SFLOAT, Width, Height), MakeImage(VK_FORMAT_R8G8B8A8_UNORM, Width, Height),
+        Images = { MakeImage(VK_FORMAT_R32_SFLOAT, Width, Height),
+                   MakeImage(VK_FORMAT_R8G8B8A8_UNORM, Width, Height),
                    MakeImage(VK_FORMAT_R32_SFLOAT, tiledWidth, tiledHeight),
-                   MakeImage(VK_FORMAT_R16G16_SFLOAT, Width, Height), MakeImage(VK_FORMAT_R16G16_SFLOAT, Width, Height),
-                   MakeImage(VK_FORMAT_R32_SFLOAT, Width, Height) };
+                   MakeImage(VK_FORMAT_R16G16_SFLOAT, Width, Height),
+                   MakeImage(VK_FORMAT_R16G16_SFLOAT, Width, Height),
+                   MakeImage(VK_FORMAT_R32_SFLOAT, Width, Height),
+                   MakeImage(VK_FORMAT_R32G32B32A32_SFLOAT, Width, Height),
+                   MakeImage(VK_FORMAT_R16G16B16A16_SFLOAT, Width, Height),
+                   MakeImage(VK_FORMAT_R16G16B16A16_SFLOAT, Width, Height) };
         Depths = Device.MakeBuffer(Width * Height * sizeof(float), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         Normals = Device.MakeBuffer(Width * Height * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        Motion = Device.MakeBuffer(Width * Height * 4 * sizeof(float), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         Result = Device.MakeBuffer(Width * Height * sizeof(float), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        Accumulation = Device.MakeBuffer(Width * Height * 4 * sizeof(uint16_t), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         VkSamplerCreateInfo sampler{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
         sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         Check(vkCreateSampler(Device.Device, &sampler, nullptr, &Sampler));
-        std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
+        std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
         for (uint32_t i = 0; i < bindings.size(); ++i) {
             bindings[i].binding = i;
             bindings[i].descriptorCount = 1;
@@ -94,15 +145,15 @@ struct MxaoFixture {
         setLayout.bindingCount = static_cast<uint32_t>(bindings.size());
         setLayout.pBindings = bindings.data();
         Check(vkCreateDescriptorSetLayout(Device.Device, &setLayout, nullptr, &SetLayout));
-        const std::array<VkDescriptorPoolSize, 3> sizes{ { { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 15 },
-                                                           { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5 },
-                                                           { VK_DESCRIPTOR_TYPE_SAMPLER, 5 } } };
+        const std::array<VkDescriptorPoolSize, 3> sizes{ { { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 5 * kSetCount },
+                                                           { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kSetCount },
+                                                           { VK_DESCRIPTOR_TYPE_SAMPLER, kSetCount } } };
         VkDescriptorPoolCreateInfo pool{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         pool.maxSets = static_cast<uint32_t>(Sets.size());
         pool.poolSizeCount = static_cast<uint32_t>(sizes.size());
         pool.pPoolSizes = sizes.data();
         Check(vkCreateDescriptorPool(Device.Device, &pool, nullptr, &Pool));
-        std::array<VkDescriptorSetLayout, 5> layouts{};
+        std::array<VkDescriptorSetLayout, kSetCount> layouts{};
         layouts.fill(SetLayout);
         VkDescriptorSetAllocateInfo allocation{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
         allocation.descriptorPool = Pool;
@@ -110,10 +161,14 @@ struct MxaoFixture {
         allocation.pSetLayouts = layouts.data();
         Check(vkAllocateDescriptorSets(Device.Device, &allocation, Sets.data()));
         for (uint32_t set = 0; set < Sets.size(); ++set) {
-            std::array<VkDescriptorImageInfo, 5> images{};
-            std::array<VkWriteDescriptorSet, 5> writes{};
-            for (uint32_t binding = 0; binding < 5; ++binding) {
-                const uint32_t index = binding == 2 ? kPairs[set][0] : binding == 3 ? kPairs[set][1] : binding;
+            std::array<VkDescriptorImageInfo, 7> images{};
+            std::array<VkWriteDescriptorSet, 7> writes{};
+            for (uint32_t binding = 0; binding < 7; ++binding) {
+                const uint32_t index = binding == 2   ? kSets[set][0]
+                                       : binding == 3 ? kSets[set][1]
+                                       : binding == 5 ? uint32_t(kMotion)
+                                       : binding == 6 ? kSets[set][2]
+                                                      : binding;
                 images[binding].imageView = binding == 4 ? VK_NULL_HANDLE : Images[index].View;
                 images[binding].imageLayout =
                     binding == 3 ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -135,7 +190,8 @@ struct MxaoFixture {
         layout.pPushConstantRanges = &push;
         Check(vkCreatePipelineLayout(Device.Device, &layout, nullptr, &Layout));
         const std::array sources{ Fast::Immerse::BuildMxaoDeinterleaveShader(), Fast::Immerse::BuildMxaoOcclusionShader(),
-                                  Fast::Immerse::BuildMxaoFilterShader(false), Fast::Immerse::BuildMxaoFilterShader(true) };
+                                  Fast::Immerse::BuildMxaoFilterShader(false), Fast::Immerse::BuildMxaoFilterShader(true),
+                                  Fast::Immerse::BuildMxaoTemporalShader() };
         for (uint32_t program = 0; program < kProgramCount; ++program) {
             const auto shader = Device.Shader(sources[program], shaderc_compute_shader);
             VkComputePipelineCreateInfo pipeline{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
@@ -184,9 +240,38 @@ struct MxaoFixture {
         vkCmdPushConstants(Command, Layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants), &constants);
         vkCmdDispatch(Command, (width + group - 1) / group, (height + group - 1) / group, 1);
     }
+    void Upload(const Gpu::Buffer& buffer, uint32_t image) {
+        Barrier(Images[image], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        copy.imageExtent = { Width, Height, 1 };
+        vkCmdCopyBufferToImage(Command, buffer.Handle, Images[image].Handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                               &copy);
+        Barrier(Images[image], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    }
+    void Download(uint32_t image, VkImageLayout layout, const Gpu::Buffer& buffer) {
+        Barrier(Images[image], layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
+                VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        copy.imageExtent = { Width, Height, 1 };
+        vkCmdCopyImageToBuffer(Command, Images[image].Handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer.Handle, 1,
+                               &copy);
+        Barrier(Images[image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, layout, VK_ACCESS_TRANSFER_READ_BIT,
+                VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    }
 
+    // One frame. With `motion` the frame accumulates (temporal program) into
+    // the next history image, reading the other one; Constants.Temporal says
+    // whether that history is valid. `accumulation` receives the written
+    // RGBA16F accumulation.
     std::vector<float> Run(const std::vector<float>& depth, const MxaoConstants& constants, uint32_t filter,
-                           uint8_t coverage = 255, float slope = 0) {
+                           uint8_t coverage = 255, float slope = 0,
+                           const std::vector<std::array<float, 4>>* motion = nullptr,
+                           std::vector<std::array<float, 4>>* accumulation = nullptr) {
         auto* encodedDepth = static_cast<float*>(Depths.Mapped);
         auto* encodedNormals = static_cast<std::array<uint8_t, 4>*>(Normals.Mapped);
         const float length = std::sqrt(1 + slope * slope);
@@ -197,35 +282,49 @@ struct MxaoFixture {
             encodedDepth[i] = constants.Depth[3] != 0 ? (depth[i] - 1) / 99 : (100 - 100 / depth[i]) / 99;
             encodedNormals[i] = normal;
         }
+        if (motion != nullptr)
+            std::memcpy(Motion.Mapped, motion->data(), motion->size() * sizeof((*motion)[0]));
         Check(vkResetCommandPool(Device.Device, Commands, 0));
         VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         Check(vkBeginCommandBuffer(Command, &begin));
-        for (uint32_t i : { kDepth, kNormals }) {
-            Barrier(Images[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-            VkBufferImageCopy copy{};
-            copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-            copy.imageExtent = { Width, Height, 1 };
-            vkCmdCopyBufferToImage(Command, i == kDepth ? Depths.Handle : Normals.Handle, Images[i].Handle,
-                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-            Barrier(Images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-        }
+        Upload(Depths, kDepth);
+        Upload(Normals, kNormals);
+        Upload(Motion, kMotion);
         for (uint32_t i : { kTiled, kRaw, kFiltered, kOutput })
             Barrier(Images[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_SHADER_WRITE_BIT,
                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         const uint32_t tiledWidth = Fast::Immerse::MxaoTiledExtent(Width);
         const uint32_t tiledHeight = Fast::Immerse::MxaoTiledExtent(Height);
-        Dispatch(kDeinterleave, 0, constants, 0, tiledWidth, tiledHeight, 8);
+        Dispatch(kDeinterleave, kDeinterleaveSet, constants, 0, tiledWidth, tiledHeight, 8);
         WrittenToRead(kTiled);
-        Dispatch(kOcclusion, 1, constants, 0, tiledWidth, tiledHeight, 16);
+        Dispatch(kOcclusion, kOcclusionSet, constants, 0, tiledWidth, tiledHeight, 16);
         WrittenToRead(kRaw);
-        if (filter == 2) {
-            Dispatch(kFilter, 2, constants, 0, Width, Height, 8);
-            WrittenToRead(kFiltered);
+        uint32_t filterSet = kFilterSet;
+        uint32_t resolveSet = kResolveRawSet;
+        const uint32_t written = NextHistory;
+        if (motion != nullptr) {
+            const uint32_t writtenImage = kHistory0 + written, historyImage = kHistory0 + (1 - written);
+            Barrier(Images[writtenImage], HistoryLayouts[written], VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT,
+                    VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+            if (HistoryLayouts[1 - written] != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                Barrier(Images[historyImage], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0,
+                        VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+            HistoryLayouts[1 - written] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            Dispatch(kTemporal, kTemporalSet + written, constants, 0, Width, Height, 8);
+            WrittenToRead(writtenImage);
+            HistoryLayouts[written] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            filterSet = kFilterAccumulatedSet + written;
+            resolveSet = kResolveAccumulatedSet + written;
+            NextHistory = 1 - written;
         }
-        Dispatch(kResolve, filter == 2 ? 4 : 3, constants,
+        if (filter == 2) {
+            Dispatch(kFilter, filterSet, constants, 0, Width, Height, 8);
+            WrittenToRead(kFiltered);
+            resolveSet = kResolveFilteredSet;
+        }
+        Dispatch(kResolve, resolveSet, constants,
                  filter == 0 ? Fast::Immerse::kMxaoFilterCopy : Fast::Immerse::kMxaoFilterMirrored, Width, Height, 8);
         Barrier(Images[kOutput], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -235,6 +334,8 @@ struct MxaoFixture {
         copy.imageExtent = { Width, Height, 1 };
         vkCmdCopyImageToBuffer(Command, Images[kOutput].Handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, Result.Handle, 1,
                                &copy);
+        if (motion != nullptr && accumulation != nullptr)
+            Download(kHistory0 + written, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, Accumulation);
         VkMemoryBarrier host{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
         host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
@@ -250,6 +351,13 @@ struct MxaoFixture {
         std::memcpy(values.data(), Result.Mapped, values.size() * sizeof(float));
         for (float value : values)
             Require(std::isfinite(value) && value >= 0 && value <= 1, "nonfinite or out-of-range MXAO visibility");
+        if (motion != nullptr && accumulation != nullptr) {
+            const auto* halves = static_cast<const uint16_t*>(Accumulation.Mapped);
+            accumulation->resize(depth.size());
+            for (size_t i = 0; i < depth.size(); ++i)
+                for (size_t c = 0; c < 4; ++c)
+                    (*accumulation)[i][c] = HalfToFloat(halves[i * 4 + c]);
+        }
         return values;
     }
 
@@ -263,7 +371,9 @@ struct MxaoFixture {
         vkDestroySampler(Device.Device, Sampler, nullptr);
         Device.Free(Depths);
         Device.Free(Normals);
+        Device.Free(Motion);
         Device.Free(Result);
+        Device.Free(Accumulation);
         for (const auto& image : Images) {
             vkDestroyImageView(Device.Device, image.View, nullptr);
             vkDestroyImage(Device.Device, image.Handle, nullptr);
@@ -278,8 +388,137 @@ float Difference(const std::vector<float>& a, const std::vector<float>& b) {
         difference = std::max(difference, std::abs(a[i] - b[i]));
     return difference;
 }
+float MeanDifference(const std::vector<float>& a, const std::vector<float>& b) {
+    double sum = 0;
+    for (size_t i = 0; i < a.size(); ++i)
+        sum += std::abs(a[i] - b[i]);
+    return float(sum / double(a.size()));
+}
 float Minimum(const std::vector<float>& values) {
     return *std::min_element(values.begin(), values.end());
+}
+
+// Temporal accumulation: an invalid history reproduces the original filter
+// input, a static view converges towards more samples, a mismatched depth or
+// an exceeded neighbourhood is rejected, and motion reprojects the history.
+void TestTemporal(MxaoFixture& gpu, MxaoConstants constants, const std::vector<float>& scene) {
+    using namespace Fast::Immerse;
+    constexpr size_t count = MxaoFixture::Width * MxaoFixture::Height;
+    const std::vector<std::array<float, 4>> still(count, { 0, 0, 0, 0 });
+    std::vector<std::array<float, 4>> accumulation;
+    // The identity transform: a static camera keeps each point's depth.
+    std::array<float, 16> identity{};
+    for (size_t i = 0; i < 4; ++i)
+        identity[i * 5] = 1;
+    std::array<float, 16> projection = identity;
+    projection[10] = -1;
+    projection[11] = -1;
+    projection[14] = 0;
+    projection[15] = 0;
+    const auto row = MxaoPreviousDepthRow(identity, identity, projection, 100);
+    // Clip w of view z is -z; MXAO's p.z is -z: the row returns p.z / far.
+    Require(row[0] == 0 && row[1] == 0 && std::abs(row[2] - .01F) < 1e-7F && row[3] == 0,
+            "previous depth row of a static view");
+    Require(MxaoTemporalPhase(0) == 0 && MxaoTemporalPhase(1) == 8 && MxaoTemporalPhase(2) == 4 &&
+                MxaoTemporalPhase(15) == 15 && MxaoTemporalPhase(16) == 0,
+            "bit-reversed jitter phases");
+
+    auto first = constants;
+    first.Temporal = { 0, kMxaoTemporalHistoryLength, kMxaoTemporalDepthTolerance, kMxaoTemporalMovingHistoryLength };
+    first.PreviousDepth = row;
+    for (uint32_t filter = 0; filter < 3; ++filter) {
+        Require(Difference(gpu.Run(scene, first, filter, 255, 0, &still, &accumulation), gpu.Run(scene, constants, filter)) ==
+                    0,
+                "an invalid history changes the filtered estimate");
+        for (const auto& texel : accumulation)
+            Require(texel[2] == 1, "an invalid history is not restarted");
+    }
+
+    // A static view: the rotating phases alone flicker from frame to frame,
+    // their accumulation settles; both are compared with a dense estimate.
+    auto reference = constants;
+    reference.Flags = 5; // Extreme
+    const auto dense = gpu.Run(scene, reference, 2);
+    std::vector<float> single, accumulated, previousSingle, previousAccumulated;
+    float singleFlicker = 0, accumulatedFlicker = 0;
+    for (uint32_t frame = 0; frame < 24; ++frame) {
+        auto rotated = constants;
+        rotated.Flags = constants.Flags | MxaoTemporalPhase(frame) << kMxaoJitterPhaseShift;
+        auto temporal = first;
+        temporal.Temporal[0] = frame == 0 ? 0.0F : 1.0F;
+        temporal.Flags = rotated.Flags;
+        single = gpu.Run(scene, rotated, 2);
+        accumulated = gpu.Run(scene, temporal, 2, 255, 0, &still, &accumulation);
+        if (frame >= 16) {
+            singleFlicker += MeanDifference(single, previousSingle);
+            accumulatedFlicker += MeanDifference(accumulated, previousAccumulated);
+        }
+        previousSingle = single;
+        previousAccumulated = accumulated;
+    }
+    size_t full = 0;
+    for (const auto& texel : accumulation)
+        full += texel[2] == kMxaoTemporalHistoryLength ? 1 : 0;
+    const float singleError = MeanDifference(single, dense), temporalError = MeanDifference(accumulated, dense);
+    std::cout << "temporal: history full on " << full << " of " << count << " pixels; frame-to-frame change "
+              << singleFlicker / 8 << " rotating, " << accumulatedFlicker / 8 << " accumulated; mean error to "
+              << "Extreme " << singleError << " single, " << temporalError << " accumulated\n";
+    Require(full > count * 9 / 10, "a static view does not accumulate");
+    Require(accumulatedFlicker < singleFlicker * .25F, "accumulation does not settle the rotating phases");
+    Require(temporalError <= singleError, "accumulation moves away from the dense estimate");
+
+    // A history at another depth (the scene moved 3 units away) is rejected.
+    auto farther = scene;
+    for (auto& value : farther)
+        value += 3;
+    auto rejected = first;
+    rejected.Temporal[0] = 1;
+    gpu.Run(farther, rejected, 1, 255, 0, &still, &accumulation);
+    size_t restarted = 0;
+    for (const auto& texel : accumulation)
+        restarted += texel[2] == 1 ? 1 : 0;
+    Require(restarted > count * 99 / 100, "a history at another depth is reused");
+
+    // A fully occluded history over an unoccluded plane at the same depth is
+    // clamped to this frame's range instead of being blended in.
+    const std::vector<float> flat(count, 10);
+    auto occluding = first;
+    occluding.Response[0] = 2;
+    gpu.Run(scene, occluding, 1, 255, 0, &still, &accumulation);
+    auto open = first;
+    open.Temporal[0] = 1;
+    open.Response[0] = 0;
+    gpu.Run(scene, open, 1, 255, 0, &still, &accumulation);
+    for (const auto& texel : accumulation)
+        Require(texel[0] == 0, "an occluded history survives an unoccluded frame");
+
+    // Motion: the scene moves two texels right; its history follows it, the
+    // revealed column restarts.
+    auto shifted = scene;
+    for (uint32_t y = 0; y < MxaoFixture::Height; ++y)
+        for (uint32_t x = 0; x < MxaoFixture::Width; ++x)
+            shifted[y * MxaoFixture::Width + x] = scene[y * MxaoFixture::Width + (x >= 2 ? x - 2 : 0)];
+    std::vector<std::array<float, 4>> moving(count, { -2.0F / MxaoFixture::Width, 0, 0, 0 });
+    for (uint32_t y = 0; y < MxaoFixture::Height; ++y)
+        for (uint32_t x = 0; x < 2; ++x)
+            moving[y * MxaoFixture::Width + x] = { 0, 0, 1, 0 };
+    gpu.Run(scene, first, 1, 255, 0, &still, &accumulation);
+    auto follow = first;
+    follow.Temporal[0] = 1;
+    gpu.Run(shifted, follow, 1, 255, 0, &moving, &accumulation);
+    size_t followed = 0, interior = 0, revealed = 0;
+    for (uint32_t y = 1; y + 1 < MxaoFixture::Height; ++y)
+        for (uint32_t x = 0; x < MxaoFixture::Width; ++x) {
+            const float history = accumulation[y * MxaoFixture::Width + x][2];
+            if (x < 2)
+                revealed += history == 1 ? 1 : 0;
+            else if (x + 1 < MxaoFixture::Width) {
+                ++interior;
+                followed += history == 2 ? 1 : 0;
+            }
+        }
+    Require(revealed == 2 * (MxaoFixture::Height - 2), "the revealed column reuses a history");
+    Require(followed > interior * 95 / 100, "the moved scene loses its history");
 }
 } // namespace
 
@@ -339,8 +578,9 @@ int main() try {
         wBuffer.Depth = { 1, 100, 99, 1 };
         Require(Difference(base, gpu.Run(scene, wBuffer, 1)) < .002F, "W-buffer and perspective reconstruction disagree");
     }
+    TestTemporal(gpu, constants, scene);
     std::cout << "MXAO GPU: RGB8 planes, occlusion for four methods and three filters, coverage, amount, fade, "
-                 "W-buffer, odd extents and repeatability passed\n";
+                 "W-buffer, odd extents, repeatability and temporal accumulation passed\n";
 } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return 1;

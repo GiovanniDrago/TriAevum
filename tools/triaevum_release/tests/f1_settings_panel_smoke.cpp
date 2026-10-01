@@ -992,6 +992,10 @@ int main() try {
               mxao.MxaoMethod == MxaoEstimator::SolidAngle && mxao.AoRadius == 2.5F && mxao.AoStrength == 1.5F &&
               mxao.MxaoFilter == 2 && mxao.AoHorizonAngleThreshold == 0.12F,
           "MXAO controls did not apply or disturbed the CACAO controls");
+    Click("MXAO temporal accumulation");
+    Check(runtime.Snapshot().Effects.MxaoTemporal && runtime.Snapshot().Effects.MxaoQuality == 2 &&
+              runtime.Snapshot().Effects.MxaoFilter == 2,
+          "MXAO temporal accumulation did not apply or disturbed the MXAO controls");
     Select("AO texture relief", "Strong");
     Check(runtime.Snapshot().Effects.AoRelief == AoTextureRelief::Strong &&
               runtime.Snapshot().Effects.MxaoQuality == 2,
@@ -1003,7 +1007,8 @@ int main() try {
           "AO texture relief is not shared by the AO providers");
     Select("AO texture relief", "Off");
     Select("Ambient occlusion", "iMMERSE MXAO");
-    Check(runtime.Snapshot().Effects.AoRelief == AoTextureRelief::Off, "cannot disable AO texture relief");
+    Check(runtime.Snapshot().Effects.AoRelief == AoTextureRelief::Off && runtime.Snapshot().Effects.MxaoTemporal,
+          "cannot disable AO texture relief, or another provider dropped MXAO accumulation");
     runtime.SetCapability(GraphicsCapability::ImmerseMxao, false, "provider unavailable");
     Frame();
     Select("Ambient occlusion", "Off");

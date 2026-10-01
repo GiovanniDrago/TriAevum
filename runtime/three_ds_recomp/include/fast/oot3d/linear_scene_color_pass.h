@@ -39,6 +39,8 @@ class LinearSceneColorPass final {
     [[nodiscard]] bool Available() const;
     [[nodiscard]] VkImage OutputImage() const;
     [[nodiscard]] VkImageView OutputView() const;
+    [[nodiscard]] uint32_t Width() const;
+    [[nodiscard]] uint32_t Height() const;
     [[nodiscard]] bool OutputOwnedByNri() const;
     [[nodiscard]] bool ComputeOwnedByNri() const;
     [[nodiscard]] bool BarriersOwnedByNri() const;

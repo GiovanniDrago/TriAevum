@@ -2936,7 +2936,8 @@ Private captures, checkpoints, profiles and measurement reports remain under
 compiled only with `THREE_DS_RECOMP_ENABLE_IMMERSE`; see `THIRD_PARTY_NOTICES.md`.
 `fast/oot3d/mxao_pass.{h,cpp}` is the NRI adapter. The graph contract is GTAO's:
 native FP32 depth and the coverage-bearing normal guide in, the published R32F
-visibility out, composited before UI. There is no history.
+visibility out, composited before UI. By default there is no history; the
+optional [temporal mode](#temporal-mxao) accumulates it over frames.
 
 - Kept from the original: 4x4 depth deinterleaving, the Low-Extreme slice/step
   presets, per-tile jitter, the ground-truth, solid-angle and visibility-bitmask
@@ -2956,9 +2957,56 @@ visibility out, composited before UI. There is no history.
 - Single 600-frame runs on the Kokiri reference walk, 2560x1440, RTX 3060: the
   AO scope median is 1.13 ms for multiscale GTAO Medium, 2.96 ms for MXAO
   visibility bitmask Medium with one filter iteration, and 5.07 ms for High with
-  two. MXAO works at full resolution; its reduced shading rate needs temporal
-  reprojection, which is not implemented yet. Validated runs report zero
-  Vulkan/NRI errors.
+  two. MXAO works at full resolution. Validated runs report zero Vulkan/NRI
+  errors.
+
+#### Temporal MXAO
+
+F1 **MXAO temporal accumulation** (`AO.Mxao.Temporal`, default off) accumulates the
+per-pixel occlusion over frames with the scene's motion vectors. It is not part of
+the original; it lives with the port in `fast/immerse` and runs between the
+occlusion and the regression filter, which then filters the accumulation.
+
+- The AO pass declares a `MotionVectors` read and depends on `Motion`, so the
+  native boundary that composes AO also derives that frame's motion (the backend
+  runs the motion block before AO); presentation reuses it for TAA or upscalers.
+  The setting enables the draws' motion guides as GI does. Off, the plan, the
+  shaders' arithmetic and the output are unchanged (byte-identical captures).
+- Each frame adds a bit-reversed phase (`MxaoTemporalPhase`) to every pixel's
+  interleaved jitter, so a pixel visits all sixteen slice directions and step
+  offsets in sixteen frames.
+- The history (two RGBA16F images written alternately: occlusion, signed depth,
+  length) is read at the texel under `uv + motion`. It is rejected where the
+  motion marks a disocclusion or the stored depth differs from this surface
+  point's depth in the previous view: `MxaoPreviousDepthRow` maps MXAO's view
+  position through `Previous * inverse(Current) * Projection` to the previous clip
+  w, with a tolerance of 2% plus the local depth slope (the smaller one-sided
+  step, so silhouettes do not widen it). The history is clamped to the range of
+  this frame's 4x4 window, which holds all sixteen phases, and blended with weight
+  1/length; the length grows to 16 and, while moving, is capped at
+  `16 / (1 + pixels per frame)`, never below 4. A camera cut, a temporal reset, a
+  non-consecutive frame or changed MXAO settings restart it.
+- Bilinear history taps with a fixed length of 16 were measured first: on the
+  Kokiri walk with a pronounced AO (radius 24) they raised the High preset's
+  error to an Extreme reference from 0.0207 to 0.0247 by blurring fine grass
+  occlusion. The nearest texel with the moving cap brings it to 0.0217 (the cap
+  alone 0.0218, the nearest texel alone 0.0236, a fixed length of 8 0.0232).
+- Measured effect (AO term = capture / AO-off capture of the same frame): a
+  static Kokiri view flickers 32% less from frame to frame (0.00142 -> 0.00096)
+  with the same mean; while walking, fine-scale variation drops 6% (High) to 9%
+  (Medium). Accumulation does not recover the occlusion a higher preset finds:
+  the visibility bitmask unions the sectors of one frame's steps, so averaging
+  sparse frames converges to the sparse estimate (Medium stays 0.049 from
+  Extreme). It is a stability option, not a substitute for a higher preset.
+- Cost in the field (1280x1067 target, RTX 3060, medians of three 600-frame
+  runs, A/B/B/A): the GPU frame goes from 3.16 to 4.06 ms. The AO scope grows
+  from 0.85 to 1.28 ms, the boundary's motion vectors add 0.11 ms and the native
+  draws 0.35 ms for the motion guides they now write.
+- `mxao_gpu_tests` cover an invalid history (identical to the non-temporal
+  filter input), a static view (frame-to-frame change 11x lower, slightly closer
+  to Extreme), depth rejection, the neighbourhood clamp and motion reprojection
+  with a revealed column. Diagnostics: `mxao_temporal_pass_count`,
+  `mxao_temporal_history_valid_count`.
 
 ### Native AO normals
 
@@ -3109,11 +3157,57 @@ motion work above):
 - Captures are byte-identical to the previous build where neither applies
   (Kokiri walk, field with AO only); field TAA and grass TAA now resolve the full
   frame. Zero Vulkan/NRI errors.
-- Still open, outside this change: the temporal upscalers receive the halved
-  colour with target-sized depth and motion, and NRI rejects their dispatch in
-  the field (`currentResolution is below the minimum render resolution`, both
-  builds); and the Kokiri reference walk presents without a resolved scene, so
-  its presentation has no camera and runs no temporal passes.
+- The two defects left open here are resolved below:
+  [upscaler render resolution](#upscaler-render-resolution-and-guide-extent) and
+  [presentation stages under native UI](#presentation-stages-under-native-ui).
+
+### Upscaler render resolution and guide extent
+
+The temporal upscalers were configured from the scene target's extent while they
+read the presented colour, which the native display transfer had halved: in the
+field FSR got 640x1067 colour for a 1920x1601 output planned from the 1280x1067
+target, and NRI rejected every dispatch (`currentResolution is below the minimum
+render resolution`, 357 of 360 frames; the scene was black). DLSS failed alike.
+
+- An upscaler's render resolution is now the extent of the colour it declares:
+  the display image (`SceneColor`), the working colour, or a composition on the
+  scene target. The working colour converts the scene colour at that colour's
+  extent unless a scene stage traced on the guide target (SSSR) reads it.
+- Depth, motion and reactive guides keep the target's extent. When it differs,
+  `UpscalerGuidePass` resamples them into private images at the colour's extent
+  inside the upscaler pass: each colour texel covers its footprint of guide
+  texels (`ResolveUpscalerGuideSpan`) and takes the depth and motion of the
+  nearest one and the largest reactive value. FSR (NRI), DLSS (NRI) and the D3D12
+  DLSS bridge consume them; the jitter, applied in target pixels, is passed in
+  input pixels.
+- Field FSR now dispatches 357/357 frames at 640x1067 -> 960x1601 with zero NRI
+  errors (63,903 before), resampling the 1280x1067 guides every frame; field DLSS
+  dispatches 357/357. On the Kokiri walk FSR reads the working colour at the
+  display extent (960x1707 -> 1440x2561) instead of the target's 1920 width.
+  The field FSR frame takes 2.35 ms, the upscaler scope (with the resampling)
+  0.74 ms. Diagnostics: `upscaler_guide_resample_count`,
+  `upscaler_guide_width/height`.
+
+### Presentation stages under native UI
+
+On the Kokiri walk the HUD reaches the scene target before its display transfer,
+so the transfer sees no unresolved scene (`SceneResolved` false) and, without a
+scene effect, nothing recorded the scene's completion either: presentation had
+no world surface, no depth association and no camera, and TAA, SMAA and the
+upscalers never ran (motion and TAA passes: 0 of 360 frames).
+
+- `AntiAliasingFramePolicy::PresentationWorldSurface` names the presentation
+  stages that read the world surface (TAA, SMAA, NIS/FSR/DLSS, forced motion).
+  When one is configured, the target's `BeforeUi` boundary records the scene's
+  completion even if no scene stage composes there: the target's content at that
+  boundary already is the scene, before any UI. Native UI preserves that record,
+  so the display transfer resolves the world surface and camera exactly as after
+  an AO composition.
+- Kokiri walk: TAA 358/360 frames (history valid 354), SMAA 358, FSR 358, from 0.
+  Captures without those stages (effects off, MXAO without AA, field AO and TAA)
+  are byte-identical to the previous build.
+- These stages still process the display image, which carries the native HUD,
+  as they already did in the field after an AO composition.
 
 Fresh combined source adoption, deterministic framebuffer/state comparisons and
 the remaining realtime validation observation are recorded in

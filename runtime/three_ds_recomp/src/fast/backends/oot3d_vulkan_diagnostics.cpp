@@ -727,6 +727,11 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
         { "fsr_output_height", frame.FsrOutputHeight },
         { "fsr_history_reset_count", frame.FsrHistoryResetCount },
         { "fsr_nri_dispatched", frame.FsrNriDispatched },
+        { "upscaler_guide_resample_count", frame.UpscalerGuideResampleCount },
+        { "mxao_temporal_pass_count", frame.MxaoTemporalPassCount },
+        { "mxao_temporal_history_valid_count", frame.MxaoTemporalHistoryValidCount },
+        { "upscaler_guide_width", frame.UpscalerGuideWidth },
+        { "upscaler_guide_height", frame.UpscalerGuideHeight },
         { "dlss_upscale_pass_count", frame.DlssUpscalePassCount },
         { "dlss_input_width", frame.DlssInputWidth },
         { "dlss_input_height", frame.DlssInputHeight },
@@ -1782,6 +1787,20 @@ void Oot3dVulkanDiagnostics::RecordFsrUpscale(
     mActiveFrame->FsrOutputWidth = outputWidth;
     mActiveFrame->FsrOutputHeight = outputHeight;
     mActiveFrame->FsrNriDispatched |= executed;
+}
+
+void Oot3dVulkanDiagnostics::RecordUpscalerGuides(
+    bool resampled, uint32_t guideWidth, uint32_t guideHeight) {
+    if (!mActiveFrame.has_value()) return;
+    if (resampled) ++mActiveFrame->UpscalerGuideResampleCount;
+    mActiveFrame->UpscalerGuideWidth = guideWidth;
+    mActiveFrame->UpscalerGuideHeight = guideHeight;
+}
+
+void Oot3dVulkanDiagnostics::RecordMxaoTemporal(bool temporal, bool historyValid) {
+    if (!mActiveFrame.has_value()) return;
+    if (temporal) ++mActiveFrame->MxaoTemporalPassCount;
+    if (temporal && historyValid) ++mActiveFrame->MxaoTemporalHistoryValidCount;
 }
 
 void Oot3dVulkanDiagnostics::RecordDlssUpscale(

@@ -504,6 +504,15 @@ struct Oot3dVulkanFrameDiagnostics {
     uint32_t FsrOutputHeight = 0;
     uint32_t FsrHistoryResetCount = 0;
     bool FsrNriDispatched = false;
+    // Temporal-upscaler guides resampled from the scene target's extent to the
+    // colour input's (the extent they were read at).
+    uint32_t UpscalerGuideResampleCount = 0;
+    // MXAO executions that accumulated over frames, and those that reprojected
+    // a valid history.
+    uint32_t MxaoTemporalPassCount = 0;
+    uint32_t MxaoTemporalHistoryValidCount = 0;
+    uint32_t UpscalerGuideWidth = 0;
+    uint32_t UpscalerGuideHeight = 0;
     uint32_t DlssUpscalePassCount = 0;
     uint32_t DlssInputWidth = 0;
     uint32_t DlssInputHeight = 0;
@@ -770,6 +779,9 @@ class Oot3dVulkanDiagnostics {
     void RecordFsrUpscale(bool executed, bool historyReset,
                           uint32_t inputWidth, uint32_t inputHeight,
                           uint32_t outputWidth, uint32_t outputHeight);
+    void RecordUpscalerGuides(bool resampled, uint32_t guideWidth,
+                              uint32_t guideHeight);
+    void RecordMxaoTemporal(bool temporal, bool historyValid);
     void RecordDlssUpscale(bool executed, bool historyReset,
                            uint32_t inputWidth, uint32_t inputHeight,
                            uint32_t outputWidth, uint32_t outputHeight);

@@ -12,6 +12,7 @@
 #include "fast/oot3d/scene_composite.h"
 #include "fast/oot3d/smaa_1x.h"
 #include "fast/oot3d/temporal_aa.h"
+#include "fast/oot3d/upscaler_guides.h"
 #include "fast/renderer/gtao_shader.h"
 #include "fast/renderer3ds/pica_surface_lighting_shader.h"
 
@@ -31,6 +32,7 @@ std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
         {"oot3d_linear_scene_color.comp", Compute, BuildLinearSceneColorComputeShader(), {}},
         {"oot3d_motion_vectors.comp", Compute, BuildCameraMotionComputeShader(), {}},
         {"oot3d_temporal_aa.comp", Compute, BuildTemporalAaComputeShader(), {}},
+        {"oot3d_upscaler_guides.comp", Compute, BuildUpscalerGuideResampleShader(), {}},
         {"oot3d_scene_composite.comp", Compute, BuildSceneCompositeComputeShader(), {}},
         {"oot3d_smaa_edges.comp", Compute, BuildSmaa1xComputeShader(Smaa1xStage::EdgeDetection), {}},
         {"oot3d_smaa_blend_weights.comp", Compute, BuildSmaa1xComputeShader(Smaa1xStage::BlendWeightCalculation), {}},

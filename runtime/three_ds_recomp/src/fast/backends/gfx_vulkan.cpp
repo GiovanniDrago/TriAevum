@@ -981,6 +981,10 @@ void GfxRenderingAPIVulkan::Init() {
         SPDLOG_INFO("OOT3D Vulkan NIS unavailable: {}",
                     mNriUpscalerPass.UnavailableReason());
     }
+    if (!mUpscalerGuidePass.Initialize(mPhysicalDevice, mDevice, mNriInterop)) {
+        SPDLOG_INFO("OOT3D Vulkan upscaler guide resampling unavailable: {}",
+                    mUpscalerGuidePass.UnavailableReason());
+    }
     auto& settingsRuntime = Oot3d::GraphicsSettingsRuntime::Instance();
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::NriInterop,
                                   mNriInterop.Available(), mNriInterop.UnavailableReason());
@@ -1184,6 +1188,7 @@ void GfxRenderingAPIVulkan::Shutdown() {
         mNriDirectionalShadowPass.Shutdown();
         mNriPicaScanoutPass.Shutdown();
         mNriUpscalerPass.Shutdown();
+        mUpscalerGuidePass.Shutdown();
         mSceneCompositePass.Shutdown();
         mSmaa1xPass.Shutdown();
         mNriEffectGraphTransientImageArena.Shutdown();
@@ -1819,14 +1824,21 @@ void GfxRenderingAPIVulkan::StartFrame() {
         graphicsSettings.Preset == Oot3d::GraphicsPreset::Authentic;
     mTemporalJitterEnabled =
         !mNativeFidelityProfile && aaPolicy.TemporalJitter;
+    mPresentationWorldSurface =
+        !mNativeFidelityProfile && aaPolicy.PresentationWorldSurface;
     // The rendering snapshot already disables GI outside per-pixel lighting
     // and under native presentation.
     const bool globalIlluminationRequested =
         graphicsSettings.Effects.GlobalIllumination.Mode == Oot3d::GlobalIlluminationMode::BrixelizerGi &&
         !mNativeFidelityProfile;
-    // GI reprojects its history with the scene's motion vectors.
+    // GI and temporal MXAO reproject their history with the scene's motion
+    // vectors.
+    const bool temporalAmbientOcclusionRequested =
+        graphicsSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Mxao &&
+        graphicsSettings.Effects.MxaoTemporal;
     mTemporalMotionEnabled =
-        !mNativeFidelityProfile && (aaPolicy.TemporalMotion || globalIlluminationRequested);
+        !mNativeFidelityProfile &&
+        (aaPolicy.TemporalMotion || globalIlluminationRequested || temporalAmbientOcclusionRequested);
     const Oot3d::PicaAttachmentFeatureRequests extensionRequests{
         graphicsSettings.Effects.DirectionalShadows.Mode ==
             Oot3d::DirectionalShadowMode::VirtualShadowMaps,

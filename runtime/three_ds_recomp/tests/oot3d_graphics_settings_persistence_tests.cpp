@@ -281,15 +281,25 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsMxaoAndAddsItsDefaultsToOlderFi
     settings.Effects.MxaoMethod = MxaoEstimator::SolidAngle;
     settings.Effects.MxaoQuality = 4;
     settings.Effects.MxaoFilter = 2;
+    settings.Effects.MxaoTemporal = true;
     const auto saved = SerializeGraphicsSettings(settings);
     EXPECT_EQ(saved["Effects"]["AO"]["Mode"], "MXAO");
     EXPECT_EQ(saved["Effects"]["AO"]["Mxao"]["Method"], "SolidAngle");
+    EXPECT_EQ(saved["Effects"]["AO"]["Mxao"]["Temporal"], true);
     const auto loaded = DeserializeGraphicsSettings(saved);
     EXPECT_FALSE(loaded.NeedsRewrite);
     EXPECT_EQ(loaded.Value.Effects.AmbientOcclusion, AmbientOcclusionMode::Mxao);
     EXPECT_EQ(loaded.Value.Effects.MxaoMethod, MxaoEstimator::SolidAngle);
     EXPECT_EQ(loaded.Value.Effects.MxaoQuality, 4U);
     EXPECT_EQ(loaded.Value.Effects.MxaoFilter, 2U);
+    EXPECT_TRUE(loaded.Value.Effects.MxaoTemporal);
+    // Files written before temporal accumulation keep it off and are rewritten.
+    auto spatial = saved;
+    spatial["Effects"]["AO"]["Mxao"].erase("Temporal");
+    const auto withoutTemporal = DeserializeGraphicsSettings(spatial);
+    EXPECT_TRUE(withoutTemporal.NeedsRewrite);
+    EXPECT_FALSE(withoutTemporal.Value.Effects.MxaoTemporal);
+    EXPECT_EQ(withoutTemporal.Value.Effects.MxaoQuality, 4U);
     auto older = saved;
     older["Effects"]["AO"].erase("Mxao");
     const auto defaults = DeserializeGraphicsSettings(older);
@@ -298,6 +308,7 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsMxaoAndAddsItsDefaultsToOlderFi
     EXPECT_EQ(defaults.Value.Effects.MxaoMethod, MxaoEstimator::VisibilityBitmask);
     EXPECT_EQ(defaults.Value.Effects.MxaoQuality, 1U);
     EXPECT_EQ(defaults.Value.Effects.MxaoFilter, 1U);
+    EXPECT_FALSE(defaults.Value.Effects.MxaoTemporal);
 }
 
 TEST(Oot3dGraphicsSettingsPersistence, RoundTripsAoTextureReliefAndDefaultsOlderFilesToOff) {

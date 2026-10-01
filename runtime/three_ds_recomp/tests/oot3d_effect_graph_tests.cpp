@@ -583,6 +583,53 @@ TEST(Oot3dDisplayEffectPlan, GlobalIlluminationComposesThroughTheSceneComposite)
     EXPECT_FALSE(BuildDisplayEffectPlan(input).Enabled(DisplayEffectPass::GlobalIllumination));
 }
 
+TEST(Oot3dDisplayEffectPlan, TemporalAmbientOcclusionReadsTheBoundaryMotion) {
+    DisplayEffectPlanInput input;
+    input.WorldSurface = true;
+    input.PerspectiveAvailable = true;
+    input.CameraAvailable = true;
+    input.AmbientOcclusion = AmbientOcclusionMode::Mxao;
+    input.NativeSceneBoundary = true;
+
+    // Without accumulation AO reads no motion and none is declared.
+    const auto spatial = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(spatial.Graph.Valid()) << spatial.Graph.Error;
+    EXPECT_TRUE(spatial.Enabled(DisplayEffectPass::AmbientOcclusion));
+    EXPECT_FALSE(spatial.Enabled(DisplayEffectPass::Motion));
+    const auto spatialAo = spatial.Bindings(DisplayEffectPass::AmbientOcclusion);
+    EXPECT_EQ(std::find(spatialAo.begin(), spatialAo.end(), Read(EffectResource::MotionVectors)), spatialAo.end());
+
+    // Accumulating, the boundary derives this frame's motion before AO.
+    input.AmbientOcclusionTemporal = true;
+    const auto temporal = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(temporal.Graph.Valid()) << temporal.Graph.Error;
+    EXPECT_TRUE(temporal.Enabled(DisplayEffectPass::Motion));
+    const auto ao = temporal.Bindings(DisplayEffectPass::AmbientOcclusion);
+    EXPECT_NE(std::find(ao.begin(), ao.end(), Read(EffectResource::MotionVectors)), ao.end());
+    const auto order = [&temporal](std::string_view name) {
+        return std::find(temporal.Graph.Order.begin(), temporal.Graph.Order.end(), name) - temporal.Graph.Order.begin();
+    };
+    EXPECT_LT(order("Motion"), order("AmbientOcclusion"));
+    EXPECT_TRUE(temporal.Graph.Attachments.Requires(PicaAuxiliaryOutput::RigidMotionGuide));
+
+    // A presentation whose scene stages were resolved at that boundary keeps
+    // no AO and derives no motion for it.
+    input.NativeSceneBoundary = false;
+    input.SceneEffectsResolved = true;
+    const auto presentation = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(presentation.Graph.Valid()) << presentation.Graph.Error;
+    EXPECT_FALSE(presentation.Enabled(DisplayEffectPass::AmbientOcclusion));
+    EXPECT_FALSE(presentation.Enabled(DisplayEffectPass::Motion));
+
+    // No camera, no history: AO stays spatial.
+    input.NativeSceneBoundary = true;
+    input.SceneEffectsResolved = false;
+    input.CameraAvailable = false;
+    const auto noCamera = BuildDisplayEffectPlan(input);
+    EXPECT_TRUE(noCamera.Enabled(DisplayEffectPass::AmbientOcclusion));
+    EXPECT_FALSE(noCamera.Enabled(DisplayEffectPass::Motion));
+}
+
 TEST(Oot3dDisplayEffectPlan, GlobalIlluminationSpecularIsAReflectionSource) {
     DisplayEffectPlanInput input;
     input.WorldSurface = true;

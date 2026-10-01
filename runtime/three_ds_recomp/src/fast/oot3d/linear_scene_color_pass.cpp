@@ -355,6 +355,14 @@ void LinearSceneColorPass::Shutdown() {
 }
 
 bool LinearSceneColorPass::Available() const { return mImpl->Ready; }
+uint32_t LinearSceneColorPass::Width() const {
+    return mImpl->Width;
+}
+
+uint32_t LinearSceneColorPass::Height() const {
+    return mImpl->Height;
+}
+
 VkImage LinearSceneColorPass::OutputImage() const {
     return mImpl->Output.Image;
 }

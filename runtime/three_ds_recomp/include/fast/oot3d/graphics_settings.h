@@ -225,6 +225,8 @@ struct EffectsSettings {
     MxaoEstimator MxaoMethod = MxaoEstimator::VisibilityBitmask;
     uint8_t MxaoQuality = 1;
     uint8_t MxaoFilter = 1;
+    // Accumulates MXAO over frames with the scene's motion vectors.
+    bool MxaoTemporal = false;
     AoTextureRelief AoRelief = AoTextureRelief::Off;
     ReflectionMode Reflections = ReflectionMode::Off;
     float ReflectionStrength = 0.65F;

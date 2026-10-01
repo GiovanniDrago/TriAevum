@@ -42,6 +42,7 @@
 #include "fast/oot3d/pica_scene_semantics.h"
 #include "fast/oot3d/pica_alpha_coverage_policy.h"
 #include "fast/oot3d/linear_scene_color.h"
+#include "fast/oot3d/upscaler_guides.h"
 #include "fast/oot3d/pica_reflection_material.h"
 #include "fast/oot3d/reflection_provider.h"
 #include "fast/oot3d/pica_texture_decode.h"
@@ -832,6 +833,7 @@ void GfxRenderingAPIVulkan::ApplyNativePicaSampleCount(VkSampleCountFlagBits sam
         mLinearColorSurface.reset();
     }
     mNriUpscalerPass.InvalidateScreenResources();
+    mUpscalerGuidePass.InvalidateScreenResources();
     if (mCompositeSurface.has_value()) {
         mSceneSurfaces.Retire(*mCompositeSurface);
         mCompositeSurface.reset();
@@ -4026,16 +4028,26 @@ void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
         effects.Reflections != Oot3d::ReflectionMode::Off ||
         effects.GlobalIllumination.Mode != Oot3d::GlobalIlluminationMode::Off ||
         (effects.Toon != Oot3d::ToonMode::Off && effects.ToonStyle.OutlineEnabled);
-    if (!mNativeFidelityProfile && sceneEffects &&
+    // Presentation stages (AA, upscalers) read the display's world surface.
+    // When native UI reaches the target before its transfer, that surface is
+    // proven only by the scene completion recorded at this boundary.
+    if (!mNativeFidelityProfile && (sceneEffects || mPresentationWorldSurface) &&
         draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui) {
         const auto* beforeUi = mNativePicaCompositionSchedule.FindAnchorBeforeDraw(
             Oot3d::EffectStage::BeforeUi, reference.Target, draw.SubmissionId);
         if (beforeUi != nullptr) {
             GpuTextureCopySourceImport composed;
-            std::string error;
-            if (!ComposeNativePicaSceneForCopy(target, draw.SubmissionId, composed, &error, beforeUi))
-                throw std::runtime_error(error);
-            if (composed.Image != target.ColorImage) {
+            if (sceneEffects) {
+                std::string error;
+                if (!ComposeNativePicaSceneForCopy(target, draw.SubmissionId, composed, &error, beforeUi))
+                    throw std::runtime_error(error);
+            }
+            if (composed.Image == VK_NULL_HANDLE || composed.Image == target.ColorImage) {
+                // No scene stage was composed here: the target's current
+                // content is already the scene as of this boundary, before UI.
+                if (mPresentationWorldSurface)
+                    target.SceneEffectsResolvedSerial = target.ContentWriteSerial;
+            } else {
                 if (!mNriPicaDisplayCopyPass.Execute({
                         mCurrentFrame, mFrameCounter, composed.Image, target.ColorImage,
                         composed.Format, {target.Width, target.Height, target.Width, target.Height},
@@ -6792,6 +6804,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             .ForceMotion = environmentEnabled("OOT3D_GRAPHICS_MOTION"),
             .AmbientOcclusion =
                 presentationSettings.Effects.AmbientOcclusion,
+            .AmbientOcclusionTemporal =
+                presentationSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Mxao &&
+                presentationSettings.Effects.MxaoTemporal && mMxaoPass.Available(),
             .Reflections = presentationSettings.Effects.Reflections,
             .GlobalIllumination =
                 presentationSettings.Effects.GlobalIllumination.Mode ==
@@ -7005,14 +7020,41 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             smaaReadsComposite && effectGuideTarget != nullptr
                 ? effectGuideTarget->Height
                 : display.Height;
-        const bool upscalerReadsGuideDomain = effectGuideTarget != nullptr &&
-            (wantsTemporalUpscaler ||
-             (wantsNis && effectPlan.Enabled(
-                 Oot3d::DisplayEffectPass::Composite)));
-        const uint32_t plannedUpscalerInputWidth = upscalerReadsGuideDomain
+        // The working colour converts the scene colour at that colour's
+        // extent, unless a scene stage traced on the guide target (SSSR)
+        // reads it; a native display transfer may have resized the colour.
+        const bool workingColorOnGuideTarget =
+            effectGuideTarget != nullptr && wantsFidelityFxSssr;
+        const uint32_t plannedWorkingColorWidth = workingColorOnGuideTarget
             ? effectGuideTarget->Width : display.Width;
-        const uint32_t plannedUpscalerInputHeight = upscalerReadsGuideDomain
+        const uint32_t plannedWorkingColorHeight = workingColorOnGuideTarget
             ? effectGuideTarget->Height : display.Height;
+        // An upscaler's render resolution is its colour input's extent: the
+        // display (SceneColor), the working colour, or a composition
+        // allocated on the scene target.
+        const auto colorInput = [&effectPlan](Oot3d::DisplayEffectPass pass) {
+            for (const auto& use : effectPlan.Bindings(pass)) {
+                if (Oot3d::ReadsEffectResource(use.Access) &&
+                    Oot3d::EffectResourceCarriesColor(use.Resource))
+                    return use.Resource;
+            }
+            return Oot3d::EffectResource::SceneColor;
+        };
+        const auto upscalerColor = colorInput(wantsTemporalUpscaler
+            ? Oot3d::DisplayEffectPass::TemporalUpscaler
+            : Oot3d::DisplayEffectPass::Nis);
+        const bool upscalerReadsGuideDomain = effectGuideTarget != nullptr &&
+            (wantsTemporalUpscaler || wantsNis) &&
+            upscalerColor != Oot3d::EffectResource::SceneColor &&
+            upscalerColor != Oot3d::EffectResource::LinearWorkingColor;
+        const uint32_t plannedUpscalerInputWidth = upscalerReadsGuideDomain
+            ? effectGuideTarget->Width
+            : upscalerColor == Oot3d::EffectResource::LinearWorkingColor
+                ? plannedWorkingColorWidth : display.Width;
+        const uint32_t plannedUpscalerInputHeight = upscalerReadsGuideDomain
+            ? effectGuideTarget->Height
+            : upscalerColor == Oot3d::EffectResource::LinearWorkingColor
+                ? plannedWorkingColorHeight : display.Height;
         const auto plannedUpscalerContract =
             Oot3d::ResolveUpscalerContractFromRender(
                 effectPlan.Upscaler, presentationSettings.UpscalerMode,
@@ -7080,7 +7122,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         if (wantsWorkingColor && effectGuideTarget != nullptr) {
             requireRgba16f(
                 Oot3d::EffectResource::LinearWorkingColor,
-                effectGuideTarget->Width, effectGuideTarget->Height);
+                plannedWorkingColorWidth, plannedWorkingColorHeight);
         }
         if (wantsReflections && effectGuideTarget != nullptr) {
             requireRgba16f(
@@ -7576,93 +7618,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                              mBrixelizerScene.UnavailableReason().c_str());
             }
         }
-        const bool cacao = presentationSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Cacao;
-        const bool mxao = presentationSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Mxao;
-        bool aoAttempted = false;
-        bool aoExecutedNow = false;
-        if (wantsAmbientOcclusion && effectGuideTarget != nullptr &&
-            !mAmbientOcclusionExecutedThisFrame) {
-            aoAttempted = true;
-            mAmbientOcclusionExecutedThisFrame = true;
-            const auto aoReads = resolveEffectPassReads(
-                Oot3d::DisplayEffectPass::AmbientOcclusion);
-            const auto& aoDepthBinding = requireEffectImageRead(
-                aoReads,
-                Oot3d::EffectResource::NativeDepth);
-            const auto& aoNormalBinding = requireEffectImageRead(
-                aoReads,
-                Oot3d::EffectResource::NormalGuide);
-            transitionEffectPassGuides(
-                Oot3d::DisplayEffectPass::AmbientOcclusion);
-            mGpuProfiler.BeginScope(
-                mCurrentFrame, Oot3d::GpuProfileScope::AmbientOcclusion,
-                command);
-            mAmbientOcclusionOutputValid = transientAmbientOcclusionOutput != nullptr;
-            if (mAmbientOcclusionOutputValid && cacao) {
-                mAmbientOcclusionOutputValid =
-                    mCacaoPass.Configure(*transientAmbientOcclusionOutput,
-                        reinterpret_cast<VkImageView>(aoDepthBinding.NativeView),
-                        reinterpret_cast<VkImageView>(aoNormalBinding.NativeView),
-                        Oot3d::ResolveCacaoSettings(presentationSettings.Effects)) &&
-                    mCacaoPass.Execute(command, presentationPerspective->Projection, aoBarrierPlan,
-                        Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
-            } else if (mAmbientOcclusionOutputValid && mxao) {
-                mAmbientOcclusionOutputValid =
-                    mMxaoPass.Configure(*transientAmbientOcclusionOutput,
-                        reinterpret_cast<VkImage>(aoDepthBinding.NativeImage),
-                        static_cast<VkFormat>(aoDepthBinding.Format),
-                        reinterpret_cast<VkImage>(aoNormalBinding.NativeImage),
-                        static_cast<VkFormat>(aoNormalBinding.Format)) &&
-                    mMxaoPass.Execute(mCurrentFrame, *presentationPerspective,
-                        effectGuideTarget->WBuffering, presentationSettings.Effects, aoBarrierPlan,
-                        Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
-            } else if (mAmbientOcclusionOutputValid) {
-                mAmbientOcclusionOutputValid =
-                    mAmbientOcclusionPass.Configure(*transientAmbientOcclusionOutput,
-                        reinterpret_cast<VkImage>(aoDepthBinding.NativeImage),
-                        static_cast<VkFormat>(aoDepthBinding.Format),
-                        reinterpret_cast<VkImage>(aoNormalBinding.NativeImage),
-                        static_cast<VkFormat>(aoNormalBinding.Format)) &&
-                    mAmbientOcclusionPass.Execute(mCurrentFrame, *presentationPerspective,
-                        effectGuideTarget->WBuffering, presentationSettings.Effects, aoBarrierPlan,
-                        Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
-            }
-            mGpuProfiler.EndScope(
-                mCurrentFrame, Oot3d::GpuProfileScope::AmbientOcclusion,
-                command);
-            aoExecutedNow = mAmbientOcclusionOutputValid;
-            if (mAmbientOcclusionOutputValid) {
-                recordEffectPassTransitions(
-                    cacao  ? mCacaoPass.LastBarrierExecution()
-                    : mxao ? mMxaoPass.LastBarrierExecution()
-                           : mAmbientOcclusionPass.LastBarrierExecution());
-                mDiagnostics.RecordAmbientOcclusionPass(
-                    cacao  ? mCacaoPass.OutputOwnedByNri()
-                    : mxao ? mMxaoPass.OutputOwnedByNri()
-                           : mAmbientOcclusionPass.OutputOwnedByNri(),
-                    !cacao || mCacaoPass.UsesPicaNormalGuide());
-                mAmbientOcclusionRenderTargetNamespace =
-                    transfer.RenderTargetNamespace;
-                mAmbientOcclusionDisplayPhysicalAddress =
-                    transfer.OutputPhysicalAddress;
-            }
-        }
-        const bool aoForDisplay =
-            mAmbientOcclusionOutputValid && wantsAmbientOcclusion &&
-            mAmbientOcclusionRenderTargetNamespace == transfer.RenderTargetNamespace &&
-            mAmbientOcclusionDisplayPhysicalAddress == transfer.OutputPhysicalAddress;
-        if (aoForDisplay) {
-            bindEffectImage(
-                Oot3d::EffectResource::AmbientOcclusion,
-                cacao  ? mCacaoPass.OutputImage()
-                : mxao ? mMxaoPass.OutputImage()
-                       : mAmbientOcclusionPass.OutputImage(),
-                cacao  ? mCacaoPass.OutputView()
-                : mxao ? mMxaoPass.OutputView()
-                       : mAmbientOcclusionPass.OutputView(),
-                VK_FORMAT_R32_SFLOAT, effectGuideTarget->Width,
-                effectGuideTarget->Height);
-        }
+        // Motion vectors precede the scene stages that read them: temporal AO
+        // and GI reproject their history with this frame's motion.
         bool motionNriWrapped = false;
         std::optional<Oot3d::SceneSurfaceKey> motionKey;
         if (effectGuideTarget != nullptr) {
@@ -7773,6 +7730,115 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 mMotionVectorPass.ReactiveView(),
                 VK_FORMAT_R16_SFLOAT,
                 effectGuideTarget->Width, effectGuideTarget->Height);
+        }
+        const bool cacao = presentationSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Cacao;
+        const bool mxao = presentationSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Mxao;
+        bool aoAttempted = false;
+        bool aoExecutedNow = false;
+        // An AO that declares the motion vectors (temporal MXAO) runs with them.
+        const auto aoBindings = effectPlan.Bindings(Oot3d::DisplayEffectPass::AmbientOcclusion);
+        const bool aoReadsMotion = std::any_of(
+            aoBindings.begin(), aoBindings.end(), [](const Oot3d::EffectResourceUse& use) {
+                return Oot3d::ReadsEffectResource(use.Access) &&
+                       use.Resource == Oot3d::EffectResource::MotionVectors;
+            });
+        if (wantsAmbientOcclusion && effectGuideTarget != nullptr &&
+            !mAmbientOcclusionExecutedThisFrame &&
+            (!aoReadsMotion || motionAvailableForDisplay)) {
+            aoAttempted = true;
+            mAmbientOcclusionExecutedThisFrame = true;
+            const auto aoReads = resolveEffectPassReads(
+                Oot3d::DisplayEffectPass::AmbientOcclusion);
+            const auto& aoDepthBinding = requireEffectImageRead(
+                aoReads,
+                Oot3d::EffectResource::NativeDepth);
+            const auto& aoNormalBinding = requireEffectImageRead(
+                aoReads,
+                Oot3d::EffectResource::NormalGuide);
+            transitionEffectPassGuides(
+                Oot3d::DisplayEffectPass::AmbientOcclusion);
+            mGpuProfiler.BeginScope(
+                mCurrentFrame, Oot3d::GpuProfileScope::AmbientOcclusion,
+                command);
+            mAmbientOcclusionOutputValid = transientAmbientOcclusionOutput != nullptr;
+            if (mAmbientOcclusionOutputValid && cacao) {
+                mAmbientOcclusionOutputValid =
+                    mCacaoPass.Configure(*transientAmbientOcclusionOutput,
+                        reinterpret_cast<VkImageView>(aoDepthBinding.NativeView),
+                        reinterpret_cast<VkImageView>(aoNormalBinding.NativeView),
+                        Oot3d::ResolveCacaoSettings(presentationSettings.Effects)) &&
+                    mCacaoPass.Execute(command, presentationPerspective->Projection, aoBarrierPlan,
+                        Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
+            } else if (mAmbientOcclusionOutputValid && mxao) {
+                // Temporal MXAO reprojects its history with the declared
+                // motion vectors of this frame.
+                const auto* aoMotion = aoReads.Find(Oot3d::EffectResource::MotionVectors);
+                const bool mxaoTemporal = aoMotion != nullptr &&
+                    aoMotion->Kind == Oot3d::EffectResourceBindingKind::Image && temporalState.has_value();
+                const Oot3d::MxaoMotionInput mxaoMotion = mxaoTemporal
+                    ? Oot3d::MxaoMotionInput{reinterpret_cast<VkImage>(aoMotion->NativeImage),
+                                             static_cast<VkFormat>(aoMotion->Format), aoMotion->Width,
+                                             aoMotion->Height}
+                    : Oot3d::MxaoMotionInput{};
+                const Oot3d::MxaoTemporalFrame mxaoFrame{mxaoTemporal ? &*temporalState : nullptr, mFrameCounter};
+                mAmbientOcclusionOutputValid =
+                    mMxaoPass.Configure(*transientAmbientOcclusionOutput,
+                        reinterpret_cast<VkImage>(aoDepthBinding.NativeImage),
+                        static_cast<VkFormat>(aoDepthBinding.Format),
+                        reinterpret_cast<VkImage>(aoNormalBinding.NativeImage),
+                        static_cast<VkFormat>(aoNormalBinding.Format),
+                        mxaoTemporal ? &mxaoMotion : nullptr) &&
+                    mMxaoPass.Execute(mCurrentFrame, *presentationPerspective,
+                        effectGuideTarget->WBuffering, presentationSettings.Effects, aoBarrierPlan,
+                        Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags),
+                        mxaoTemporal ? &mxaoFrame : nullptr);
+                mDiagnostics.RecordMxaoTemporal(mxaoTemporal, mMxaoPass.LastHistoryValid());
+            } else if (mAmbientOcclusionOutputValid) {
+                mAmbientOcclusionOutputValid =
+                    mAmbientOcclusionPass.Configure(*transientAmbientOcclusionOutput,
+                        reinterpret_cast<VkImage>(aoDepthBinding.NativeImage),
+                        static_cast<VkFormat>(aoDepthBinding.Format),
+                        reinterpret_cast<VkImage>(aoNormalBinding.NativeImage),
+                        static_cast<VkFormat>(aoNormalBinding.Format)) &&
+                    mAmbientOcclusionPass.Execute(mCurrentFrame, *presentationPerspective,
+                        effectGuideTarget->WBuffering, presentationSettings.Effects, aoBarrierPlan,
+                        Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
+            }
+            mGpuProfiler.EndScope(
+                mCurrentFrame, Oot3d::GpuProfileScope::AmbientOcclusion,
+                command);
+            aoExecutedNow = mAmbientOcclusionOutputValid;
+            if (mAmbientOcclusionOutputValid) {
+                recordEffectPassTransitions(
+                    cacao  ? mCacaoPass.LastBarrierExecution()
+                    : mxao ? mMxaoPass.LastBarrierExecution()
+                           : mAmbientOcclusionPass.LastBarrierExecution());
+                mDiagnostics.RecordAmbientOcclusionPass(
+                    cacao  ? mCacaoPass.OutputOwnedByNri()
+                    : mxao ? mMxaoPass.OutputOwnedByNri()
+                           : mAmbientOcclusionPass.OutputOwnedByNri(),
+                    !cacao || mCacaoPass.UsesPicaNormalGuide());
+                mAmbientOcclusionRenderTargetNamespace =
+                    transfer.RenderTargetNamespace;
+                mAmbientOcclusionDisplayPhysicalAddress =
+                    transfer.OutputPhysicalAddress;
+            }
+        }
+        const bool aoForDisplay =
+            mAmbientOcclusionOutputValid && wantsAmbientOcclusion &&
+            mAmbientOcclusionRenderTargetNamespace == transfer.RenderTargetNamespace &&
+            mAmbientOcclusionDisplayPhysicalAddress == transfer.OutputPhysicalAddress;
+        if (aoForDisplay) {
+            bindEffectImage(
+                Oot3d::EffectResource::AmbientOcclusion,
+                cacao  ? mCacaoPass.OutputImage()
+                : mxao ? mMxaoPass.OutputImage()
+                       : mAmbientOcclusionPass.OutputImage(),
+                cacao  ? mCacaoPass.OutputView()
+                : mxao ? mMxaoPass.OutputView()
+                       : mAmbientOcclusionPass.OutputView(),
+                VK_FORMAT_R32_SFLOAT, effectGuideTarget->Width,
+                effectGuideTarget->Height);
         }
         // Diffuse GI: traced where the field, the motion vectors and a
         // perspective depth exist; otherwise the declared output is zero
@@ -7997,8 +8063,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     *linearKey,
                     reinterpret_cast<uintptr_t>(
                         mLinearSceneColorPass.OutputImage()),
-                    effectGuideTarget->Width,
-                    effectGuideTarget->Height,
+                    mLinearSceneColorPass.Width(),
+                    mLinearSceneColorPass.Height(),
                     static_cast<uint32_t>(
                         VK_FORMAT_R16G16B16A16_SFLOAT),
                     0, true, Oot3d::SceneColorEncoding::Linear});
@@ -8017,8 +8083,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 mLinearSceneColorPass.OutputImage(),
                 mLinearSceneColorPass.OutputView(),
                 VK_FORMAT_R16G16B16A16_SFLOAT,
-                effectGuideTarget->Width,
-                effectGuideTarget->Height,
+                mLinearSceneColorPass.Width(),
+                mLinearSceneColorPass.Height(),
                 Oot3d::SceneColorEncoding::Linear);
         }
         VkImage activeReflectionImage = VK_NULL_HANDLE;
@@ -9034,6 +9100,36 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             mUpscalerOutputWidth = width;
             mUpscalerOutputHeight = height;
         };
+        // A temporal upscaler reconstructs at its colour input's extent. Its
+        // guides keep the scene target's, which differs when the native display
+        // transfer resized the colour: they are then resampled to the colour's
+        // extent, and the jitter (applied in target pixels) is given in input
+        // pixels.
+        const auto prepareUpscalerGuides = [&](Oot3d::NriTemporalUpscaleDispatchDesc& desc) {
+            const uint32_t guideWidth = effectGuideTarget->Width;
+            const uint32_t guideHeight = effectGuideTarget->Height;
+            desc.JitterPixels = Oot3d::UpscalerJitterInInputPixels(
+                mTemporalJitterPixels, guideWidth, guideHeight, desc.InputWidth, desc.InputHeight);
+            const bool resample = Oot3d::UpscalerGuidesNeedResample(
+                desc.InputWidth, desc.InputHeight, guideWidth, guideHeight);
+            mDiagnostics.RecordUpscalerGuides(resample, guideWidth, guideHeight);
+            if (!resample)
+                return true;
+            if (!mUpscalerGuidePass.Execute(
+                    mCurrentFrame,
+                    {desc.DepthImage, desc.DepthFormat, desc.MotionImage, desc.MotionFormat,
+                     desc.ReactiveImage, desc.ReactiveFormat, guideWidth, guideHeight},
+                    desc.InputWidth, desc.InputHeight))
+                return false;
+            recordEffectPassTransitions(mUpscalerGuidePass.LastBarrierExecution());
+            desc.DepthImage = mUpscalerGuidePass.DepthImage();
+            desc.DepthFormat = VK_FORMAT_R32_SFLOAT;
+            desc.MotionImage = mUpscalerGuidePass.MotionImage();
+            desc.MotionFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+            desc.ReactiveImage = mUpscalerGuidePass.ReactiveImage();
+            desc.ReactiveFormat = VK_FORMAT_R16_SFLOAT;
+            return true;
+        };
         bool fsrForDisplay = wantsFsr && canReuseUpscaler;
         bool fsrAttempted = false;
         uint32_t fsrOutputWidth = canReuseUpscaler
@@ -9086,7 +9182,6 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             fsr.InputWidth = fsrInputBinding->Width;
             fsr.InputHeight = fsrInputBinding->Height;
             fsr.Quality = presentationSettings.UpscalerMode;
-            fsr.JitterPixels = mTemporalJitterPixels;
             fsr.NearPlane = presentationPerspective->NearPlane;
             fsr.FarPlane = presentationPerspective->FarPlane;
             fsr.VerticalFovRadians = 2.0F * std::atan(
@@ -9108,6 +9203,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 Oot3d::GpuProfileScope::Upscaler,
                 command);
             fsrForDisplay = transientUpscaledOutput != nullptr &&
+                prepareUpscalerGuides(fsr) &&
                 mNriUpscalerPass.Configure(*transientUpscaledOutput) &&
                 mNriUpscalerPass.ExecuteFsr(
                     command, fsr, temporalUpscalerBarrierPlan);
@@ -9165,9 +9261,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             dlss.InputWidth = dlssInputBinding->Width;
             dlss.InputHeight = dlssInputBinding->Height;
             dlss.Quality = presentationSettings.UpscalerMode;
-            dlss.JitterPixels = mTemporalJitterPixels;
             dlss.ResetHistory = !temporalState->HistoryValid || temporalState->CameraCut;
             transitionEffectPassGuides(Oot3d::DisplayEffectPass::TemporalUpscaler);
+            const bool dlssGuidesReady = prepareUpscalerGuides(dlss);
             bool d3d12FrameDlss = false;
             bool d3d12FrameContractReady = false;
             bool d3d12FramePrepared = false;
@@ -9176,7 +9272,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             bool d3d12OutputAcquired = false;
             uint64_t d3d12FrameDispatchCount = 0U;
 #if defined(_WIN32) && defined(ENABLE_OOT3D_D3D12_NGX_PROVIDER)
-            if (d3d12FrameDlssRequested) {
+            if (d3d12FrameDlssRequested && dlssGuidesReady) {
+                const bool dlssGuidesResampled =
+                    dlss.DepthImage != reinterpret_cast<VkImage>(dlssDepthBinding.NativeImage);
                 const Oot3d::D3d12NgxFrameContract contract{
                     dlss.InputWidth,
                     dlss.InputHeight,
@@ -9198,11 +9296,15 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 d3d12FrameContractReady = mD3d12NgxProvider.ConfiguredForFrameContract(contract);
                 Oot3d::D3d12NgxFrameInputs bridgeInputs{
                     reinterpret_cast<VkImageView>(dlssInputBinding->NativeView),
-                    reinterpret_cast<VkImageView>(dlssDepthBinding.NativeView),
-                    reinterpret_cast<VkImageView>(dlssMotionBinding.NativeView),
-                    reinterpret_cast<VkImageView>(dlssReactiveBinding.NativeView),
+                    dlssGuidesResampled ? mUpscalerGuidePass.DepthView()
+                                        : reinterpret_cast<VkImageView>(dlssDepthBinding.NativeView),
+                    dlssGuidesResampled ? mUpscalerGuidePass.MotionView()
+                                        : reinterpret_cast<VkImageView>(dlssMotionBinding.NativeView),
+                    dlssGuidesResampled ? mUpscalerGuidePass.ReactiveView()
+                                        : reinterpret_cast<VkImageView>(dlssReactiveBinding.NativeView),
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                    dlssGuidesResampled ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                        : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     dlss.JitterPixels,
@@ -9230,7 +9332,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             d3d12FrameDispatchCount = mD3d12NgxProvider.Status().FrameDispatchCount;
 #endif
             dlssForDisplay = d3d12FrameDlss;
-            if (!dlssForDisplay && mNriUpscalerPass.DlssAvailable()) {
+            if (!dlssForDisplay && dlssGuidesReady && mNriUpscalerPass.DlssAvailable()) {
                 mGpuProfiler.BeginScope(mCurrentFrame, Oot3d::GpuProfileScope::Upscaler, command);
                 dlssForDisplay = transientUpscaledOutput != nullptr &&
                                  mNriUpscalerPass.Configure(*transientUpscaledOutput) &&
@@ -9409,8 +9511,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 mLinearSceneColorPass.OutputImage(),
                 mLinearSceneColorPass.OutputView(),
                 VK_FORMAT_R16G16B16A16_SFLOAT,
-                effectGuideTarget->Width,
-                effectGuideTarget->Height,
+                mLinearSceneColorPass.Width(),
+                mLinearSceneColorPass.Height(),
                 Oot3d::SceneColorEncoding::Linear);
         }
         if (aoForDisplay) {
@@ -10884,6 +10986,7 @@ bool GfxRenderingAPIVulkan::ResetPicaState(
             mLinearColorSurface.reset();
         }
         mNriUpscalerPass.InvalidateScreenResources();
+        mUpscalerGuidePass.InvalidateScreenResources();
         if (mCompositeSurface.has_value()) {
             mSceneSurfaces.Retire(*mCompositeSurface);
             mCompositeSurface.reset();
@@ -11358,6 +11461,7 @@ void GfxRenderingAPIVulkan::ReleaseEffectGraphImageClients() {
         mLinearColorSurface.reset();
     }
     mNriUpscalerPass.InvalidateScreenResources();
+    mUpscalerGuidePass.InvalidateScreenResources();
     if (mCompositeSurface.has_value()) {
         mSceneSurfaces.Retire(*mCompositeSurface);
         mCompositeSurface.reset();
@@ -11410,6 +11514,7 @@ void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayIma
         mLinearColorSurface.reset();
     }
     mNriUpscalerPass.InvalidateScreenResources();
+    mUpscalerGuidePass.InvalidateScreenResources();
     if (mCompositeSurface.has_value()) {
         mSceneSurfaces.Retire(*mCompositeSurface);
         mCompositeSurface.reset();

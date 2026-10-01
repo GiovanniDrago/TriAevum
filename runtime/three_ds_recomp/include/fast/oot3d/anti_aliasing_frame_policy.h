@@ -16,6 +16,9 @@ struct AntiAliasingFrameCapabilities {
 struct AntiAliasingFramePolicy {
     bool TemporalJitter = false;
     bool TemporalMotion = false;
+    // Presentation stages read the display's world surface: TAA, SMAA, the
+    // upscalers and forced motion vectors (FXAA and MSAA do not).
+    bool PresentationWorldSurface = false;
     uint32_t TemporalJitterPhases = 8U;
     uint32_t SpatialAaMode = 0U;
     uint8_t MsaaSamples = 1U;
@@ -34,6 +37,9 @@ ResolveAntiAliasingFramePolicy(
         settings.AntiAliasing == AntiAliasingMode::Taa ||
         temporalUpscaler || forceTaa;
     policy.TemporalMotion = policy.TemporalJitter || forceMotion;
+    policy.PresentationWorldSurface = policy.TemporalMotion ||
+        settings.AntiAliasing == AntiAliasingMode::Smaa1x ||
+        settings.AntiAliasing == AntiAliasingMode::Upscaler;
     policy.TemporalJitterPhases = temporalUpscaler
         ? ResolveUpscalerContract(
               settings.Upscaler, settings.UpscalerMode, 1U, 1U)

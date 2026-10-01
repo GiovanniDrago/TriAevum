@@ -25,7 +25,9 @@
 // against its own unoccluded integral (the original's ground-truth mode
 // normalized by the slice count and darkened empty oblique planes), and
 // occlusion rather than visibility is stored so an unoccluded pixel stays
-// exactly zero through half-precision storage and the filter.
+// exactly zero through half-precision storage and the filter. An optional
+// temporal mode rotates the jitter phase every frame and accumulates the
+// occlusion with the renderer's motion vectors before the filter.
 
 namespace Fast::Immerse {
 namespace {
@@ -34,6 +36,8 @@ layout(set=0,binding=0) uniform texture2D native_depth;
 layout(set=0,binding=1) uniform texture2D view_normals;
 layout(set=0,binding=2) uniform texture2D intermediate;
 layout(set=0,binding=4) uniform sampler point_sampler;
+layout(set=0,binding=5) uniform texture2D motion_vectors;
+layout(set=0,binding=6) uniform texture2D history;
 layout(push_constant) uniform MxaoState {
     uvec2 extent;
     uint method;
@@ -43,6 +47,8 @@ layout(push_constant) uniform MxaoState {
     vec4 depth;
     vec4 radius_fade;
     vec4 response;
+    vec4 temporal;
+    vec4 previous_depth;
 } pc;
 const int tiles=4;
 const float pi=3.14159265358979323846;
@@ -151,7 +157,7 @@ void main() {
     uint sample_count=presets[preset_index].y;
 
     uint jitter_index=uint(pixel.x%tiles)+uint(tiles)*uint(pixel.y%tiles);
-    jitter_index*=11u;
+    jitter_index=jitter_index*11u+((pc.flags>>8u)&15u);
     float jitter=(float(jitter_index%uint(tiles*tiles))+0.5)/float(tiles*tiles);
 
     vec2 slice_dir=vec2(sin(jitter*pi*(6.0/float(slice_count))),cos(jitter*pi*(6.0/float(slice_count))));
@@ -307,6 +313,70 @@ void main() {
 )glsl";
     source += finalPass ? "    imageStore(filtered,pixel,vec4(1.0-result.x));\n}\n"
                         : "    imageStore(filtered,pixel,vec4(result,0.0,0.0));\n}\n";
+    return source;
+}
+
+std::string BuildMxaoTemporalShader() {
+    std::string source = kCommon;
+    source += R"glsl(
+layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
+layout(set=0,binding=3,rgba16f) uniform writeonly image2D accumulated;
+vec2 raw_occlusion(ivec2 pixel) {
+    pixel=clamp(pixel,ivec2(0),ivec2(pc.extent)-1);
+    return texelFetch(sampler2D(intermediate,point_sampler),pixel,0).rg;
+}
+void main() {
+    ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
+    if(any(greaterThanEqual(pixel,ivec2(pc.extent)))) return;
+    vec2 current=raw_occlusion(pixel);
+    float depth=abs(current.y);
+    vec4 result=vec4(current,1.0,0.0);
+    if(pc.temporal.x>0.5 && depth<1.0) {
+        vec2 uv=pixel_uv(pixel);
+        // The motion vectors keep the scene target's extent.
+        ivec2 motion_extent=textureSize(sampler2D(motion_vectors,point_sampler),0);
+        vec4 motion=texelFetch(sampler2D(motion_vectors,point_sampler),
+            min(ivec2(uv*vec2(motion_extent)),motion_extent-1),0);
+        vec2 history_uv=uv+motion.xy;
+        if(motion.b<0.5 && all(greaterThanEqual(history_uv,vec2(0.0))) &&
+           all(lessThanEqual(history_uv,vec2(1.0)))) {
+            // This surface point's depth in the previous view. The tolerance
+            // follows the surface's own slope (the smaller one-sided step, so
+            // a silhouette does not widen it) over the bilinear footprint.
+            float expected=dot(pc.previous_depth,vec4(proj_position(pixel,depth/pc.response.y),1.0));
+            float slope_x=min(abs(abs(raw_occlusion(pixel+ivec2(1,0)).y)-depth),
+                              abs(depth-abs(raw_occlusion(pixel-ivec2(1,0)).y)));
+            float slope_y=min(abs(abs(raw_occlusion(pixel+ivec2(0,1)).y)-depth),
+                              abs(depth-abs(raw_occlusion(pixel-ivec2(0,1)).y)));
+            float tolerance=pc.temporal.z*expected+2.0*max(slope_x,slope_y);
+            // The history texel under the reprojected position: resampling it
+            // bilinearly every frame would blur fine occlusion while the view
+            // moves.
+            ivec2 tap=clamp(ivec2(floor(history_uv*vec2(pc.extent))),ivec2(0),ivec2(pc.extent)-1);
+            vec4 h=texelFetch(sampler2D(history,point_sampler),tap,0);
+            if(h.b>0.0 && abs(abs(h.g)-expected)<=tolerance) {
+                // Every 4x4 window holds all sixteen jitter phases of this
+                // frame: the converged occlusion lies within their range.
+                float low=current.x, high=current.x;
+                for(int y=-1;y<3;++y) {
+                    for(int x=-1;x<3;++x) {
+                        float o=raw_occlusion(pixel+ivec2(x,y)).x;
+                        low=min(low,o);
+                        high=max(high,o);
+                    }
+                }
+                float history_occlusion=clamp(h.r,low,high);
+                // Moving content keeps a shorter history, down to the
+                // minimum at a few pixels per frame: it lags its motion less.
+                float speed=length(motion.xy*vec2(pc.extent));
+                float history_length=min(h.b+1.0,max(pc.temporal.w,pc.temporal.y/(1.0+speed)));
+                result=vec4(mix(history_occlusion,current.x,1.0/history_length),current.y,history_length,0.0);
+            }
+        }
+    }
+    imageStore(accumulated,pixel,result);
+}
+)glsl";
     return source;
 }
 

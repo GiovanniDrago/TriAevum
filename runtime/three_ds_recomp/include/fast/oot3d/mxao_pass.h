@@ -6,16 +6,36 @@
 #include "fast/oot3d/pica_surface_coordinates.h"
 #include "fast/oot3d/scene_view_runtime.h"
 #include <vulkan/vulkan.h>
+#include <array>
 #include <memory>
 #include <string>
 
 namespace Fast::Oot3d {
 class NriInteropContext;
 struct NriEffectGraphTransientImageBinding;
+struct TemporalViewState;
+
+// The declared motion vectors a temporal MXAO reprojects its history with, at
+// their own extent.
+struct MxaoMotionInput {
+    VkImage Image = VK_NULL_HANDLE;
+    VkFormat Format = VK_FORMAT_UNDEFINED;
+    uint32_t Width = 0U;
+    uint32_t Height = 0U;
+};
+
+// One frame of temporal MXAO: the view's current and previous transforms and
+// the rendered frame, which must directly follow the history's own.
+struct MxaoTemporalFrame {
+    const TemporalViewState* View = nullptr;
+    uint64_t FrameId = 0U;
+};
 
 // iMMERSE MXAO provider (see fast/immerse/mxao_shader.h). It reads the same
 // native depth and normal guide as GTAO and publishes the same R32F ambient
-// visibility; there is no history, so a frame depends only on its own inputs.
+// visibility. Without motion vectors there is no history, so a frame depends
+// only on its own inputs; with them the per-pixel occlusion accumulates over
+// frames, with a rotating jitter phase, before the filter.
 class MxaoPass final {
   public:
     MxaoPass();
@@ -24,15 +44,18 @@ class MxaoPass final {
     MxaoPass& operator=(const MxaoPass&) = delete;
     bool Initialize(VkPhysicalDevice physicalDevice, VkDevice device, NriInteropContext& interop);
     bool Configure(const NriEffectGraphTransientImageBinding& output, VkImage depth, VkFormat depthFormat,
-                   VkImage normal, VkFormat normalFormat);
+                   VkImage normal, VkFormat normalFormat, const MxaoMotionInput* motion = nullptr);
     bool Execute(uint32_t frameSlot, const PerspectiveViewState& view, bool wBuffer, const EffectsSettings& settings,
-                 const EffectPassBarrierPlan& barriers, PicaSurfaceCoordinates coordinates);
+                 const EffectPassBarrierPlan& barriers, PicaSurfaceCoordinates coordinates,
+                 const MxaoTemporalFrame* temporal = nullptr);
     void InvalidateScreenResources();
     void Shutdown();
     [[nodiscard]] bool Available() const;
     [[nodiscard]] VkImage OutputImage() const;
     [[nodiscard]] VkImageView OutputView() const;
     [[nodiscard]] bool OutputOwnedByNri() const;
+    // The last execution accumulated over a reprojected history.
+    [[nodiscard]] bool LastHistoryValid() const;
     [[nodiscard]] const EffectPassBarrierExecution& LastBarrierExecution() const;
     [[nodiscard]] const std::string& UnavailableReason() const;
 
@@ -40,5 +63,6 @@ class MxaoPass final {
     struct Impl;
     std::unique_ptr<Impl> mImpl;
 };
+
 } // namespace Fast::Oot3d
 #endif

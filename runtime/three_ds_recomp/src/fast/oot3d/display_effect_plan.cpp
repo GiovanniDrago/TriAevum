@@ -311,6 +311,8 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     const bool temporalMetadata = extensionWorld &&
                                   input.PerspectiveAvailable &&
                                   input.CameraAvailable;
+    // Temporal AO reprojects its history with the scene's motion vectors.
+    const bool temporalAo = ao && temporalMetadata && input.AmbientOcclusionTemporal;
     // GI keeps a temporal history (motion vectors) and adds light in the
     // linear domain through the composite.
     const bool globalIllumination = temporalMetadata && input.GlobalIllumination;
@@ -338,7 +340,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     const bool temporalUpscaler = fsr || dlss;
     const bool hiZ = screenSpaceReflections || fsr;
     const bool motionVectors =
-        temporalMetadata && (taa || temporalUpscaler || fidelityFxSssr || globalIllumination ||
+        temporalMetadata && (taa || temporalUpscaler || fidelityFxSssr || globalIllumination || temporalAo ||
                              (!input.NativeSceneBoundary && input.ForceMotion));
 
     // A native boundary materializes the composed scene for its consumer at
@@ -387,13 +389,19 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
                 .Contract = EffectContractKind::ComposerPass,
                 .Resources = { Read(EffectResource::SceneColor),
                                Write(EffectResource::LinearWorkingColor) } });
+    std::vector<EffectResourceUse> aoResources{ Read(EffectResource::NativeSceneView),
+                                                Read(EffectResource::NativeDepth),
+                                                Read(EffectResource::NormalGuide) };
+    if (temporalAo)
+        aoResources.push_back(Read(EffectResource::MotionVectors));
+    aoResources.push_back(Write(EffectResource::AmbientOcclusion));
     graph.Add({ .Name = "AmbientOcclusion",
-                .DependsOn = { "Guides" },
+                .DependsOn = temporalAo ? std::vector<std::string>{ "Guides", "Motion" }
+                                        : std::vector<std::string>{ "Guides" },
                 .Enabled = ao,
                 .Stage = EffectStage::AfterOpaque,
                 .Contract = EffectContractKind::ComposerPass,
-                .Resources = { Read(EffectResource::NativeSceneView), Read(EffectResource::NativeDepth),
-                               Read(EffectResource::NormalGuide), Write(EffectResource::AmbientOcclusion) } });
+                .Resources = std::move(aoResources) });
     graph.Add({ .Name = "HiZ",
                 .Enabled = hiZ,
                 .Stage = EffectStage::AfterOpaque,
