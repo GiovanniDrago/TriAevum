@@ -1163,6 +1163,247 @@ GraphicsSettingsLoadResult MigrateLegacy(
 
 } // namespace
 
+std::string_view EnhancedPresetDocument() noexcept {
+    // Captured 2026-10-01 from the Kokiri play configuration ("enhanced").
+    return R"json({
+  "AA": {
+    "Mode": "Upscaler",
+    "MsaaSamples": 1,
+    "TAA": {
+      "ClampExpansion": 0.05000000074505806,
+      "HistoryWeight": 0.8999999761581421,
+      "Sharpness": 0.10000000149011612
+    },
+    "Upscaler": {
+      "Provider": "DLSS",
+      "Quality": "UltraPerformance",
+      "Sharpness": 0.3499999940395355
+    }
+  },
+  "Effects": {
+    "AO": {
+      "BlurPassCount": 2,
+      "DetailRadius": 0.05000000074505806,
+      "DetailStrength": 0.5,
+      "FadeOutFrom": 0.0,
+      "FadeOutTo": 3000.0,
+      "HorizonAngleThreshold": 0.05999999865889549,
+      "Mode": "MXAO",
+      "Mxao": {
+        "FadeDistance": 0.35899999737739563,
+        "Filter": 2,
+        "IncreaseRadiusWithDistance": true,
+        "Method": "SolidAngle",
+        "Normals": "Depth",
+        "OriginalFade": false,
+        "Quality": 0,
+        "ScreenRadius": 2.5,
+        "ShadingRate": 1,
+        "Temporal": false
+      },
+      "Quality": 1,
+      "Radius": 1.5399999618530273,
+      "ShadowClamp": 0.9800000190734863,
+      "ShadowPower": 1.5,
+      "Sharpness": 0.9800000190734863,
+      "Strength": 1.0,
+      "TextureRelief": "Off"
+    },
+    "DirectionalShadows": {
+      "DepthBiasConstant": 1.25,
+      "DepthBiasSlope": 1.75,
+      "MaximumDistance": 6550.0,
+      "Mode": "VirtualShadowMaps",
+      "PcfRadius": 2,
+      "Resolution": 2048,
+      "Strength": 1.0
+    },
+    "GlobalIllumination": {
+      "DiffuseIntensity": 0.8100000023841858,
+      "DynamicLights": 1.0,
+      "KeyLight": 1.0,
+      "Mode": "Off",
+      "Resolution": "Half",
+      "SceneLight": 1.0,
+      "SkyLight": 0.25,
+      "Specular": true,
+      "SpecularIntensity": 0.0
+    },
+    "PointShadows": {
+      "MaxLights": 4,
+      "Mode": "CubeMaps",
+      "Range": 1.0,
+      "Resolution": 512,
+      "Strength": 1.0
+    },
+    "Reflections": {
+      "DebugView": 0,
+      "EdgeFade": 0.07999999821186066,
+      "MaxDistance": 1500.0,
+      "MaxSteps": 40,
+      "Mode": "Off",
+      "RoughnessBias": 0.0,
+      "Strength": 0.6499999761581421,
+      "Thickness": 8.0
+    },
+    "SurfaceLighting": "PerPixelPBR",
+    "Toon": {
+      "BandSoftness": 0.2280000001192093,
+      "CustomLightBands": false,
+      "LightBandLevels": [
+        0.0,
+        0.3333333432674408,
+        0.6666666865348816,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "LightBandThresholds": [
+        0.1666666716337204,
+        0.5,
+        0.8333333134651184,
+        1.0,
+        1.0
+      ],
+      "LightBands": 4,
+      "Mode": "Off",
+      "OutlineDepthSensitivity": 1.0,
+      "OutlineEnabled": false,
+      "OutlineNormalSensitivity": 1.0,
+      "OutlineOpacity": 0.8500000238418579,
+      "OutlineSoftness": 1.0,
+      "OutlineTint": [
+        0.029999999329447746,
+        0.03999999910593033,
+        0.05999999865889549
+      ],
+      "OutlineWidth": 1.25,
+      "RimStrength": 0.3400000035762787,
+      "RimTint": [
+        1.0,
+        0.9300000071525574,
+        0.7200000286102295
+      ],
+      "RimWidth": 3.1700000762939453,
+      "Saturation": 1.090000033378601,
+      "ShadowStrength": 1.0,
+      "ShadowTint": [
+        0.47999998927116394,
+        0.5600000023841858,
+        0.7200000286102295
+      ]
+    }
+  },
+  "FrameRate": {
+    "Mode": "Interpolated2x"
+  },
+  "Grass": {
+    "Appearance": {
+      "BladeCurvature": 0.6399999856948853,
+      "BladeDroop": 0.3499999940395355,
+      "BladeSegments": 5,
+      "BladeTwistDegrees": 141.0,
+      "HeightScale": 1.149999976158142,
+      "ReceiveFog": true,
+      "ReceiveLighting": true,
+      "RootColor": [
+        0.09882351756095886,
+        0.1899999976158142,
+        0.03500000014901161
+      ],
+      "ShapeVariation": 0.3799999952316284,
+      "TextureColorInfluence": 0.2199999988079071,
+      "TextureRootBrightness": 2.869999885559082,
+      "TextureTipBrightness": 4.0,
+      "TipColor": [
+        0.4200000464916229,
+        0.7200000286102295,
+        0.12000001966953278
+      ],
+      "ToonRimEnabled": true,
+      "ToonRimFadeEnd": 800.0,
+      "ToonRimFadeStart": 200.0
+    },
+    "Budget": {
+      "DrawDistance": 50000.0,
+      "MaxInstancesPerRoom": 500000
+    },
+    "Generation": {
+      "BladeHeightMax": 12.510000228881836,
+      "BladeHeightMin": 7.679999828338623,
+      "BladeWidthMax": 1.940000057220459,
+      "BladeWidthMin": 1.7999999523162842,
+      "ClusterCoverage": 0.6499999761581421,
+      "ClusterScale": 300.0,
+      "ClusterStrength": 0.0,
+      "IndividualRandomness": 0.0,
+      "InstancesPerSquareMeter": 1048.800048828125,
+      "MinimumSpacing": 0.6000000238418579,
+      "Seed": 1
+    },
+    "LinkInteraction": {
+      "ColliderHeightMultiplier": 1.690000057220459,
+      "ColliderRadiusMultiplier": 1.190000057220459,
+      "CollisionPush": 1.659999966621399,
+      "Damping": 1.4600000381469727,
+      "FieldRadius": 600.0,
+      "FieldResolution": 256,
+      "MaximumBend": 0.8500000238418579,
+      "RecoverySeconds": 1.0,
+      "VelocityResponse": 0.8700000047683716,
+      "VerticalMargin": 69.0
+    },
+    "Performance": {
+      "CullingClusterSize": 25.0,
+      "DensityFadeFraction": 1.0,
+      "DrawFadeFraction": 0.15000000596046448,
+      "FarBladeSegments": 1,
+      "FarDensity": 1.0,
+      "FarTuftBladeCount": 4,
+      "FarTuftDensity": 2.0,
+      "FarTuftSpread": 1.0,
+      "FarTuftsEnabled": true,
+      "FrustumCulling": true,
+      "LodEndFraction": 0.3199999928474426,
+      "LodReferenceDistance": 2282.0,
+      "LodStartFraction": 0.3199999928474426,
+      "MidrangeAdaptiveCapacity": 128,
+      "MidrangeAdaptiveEnabled": false,
+      "MidrangeClusterCellExtent": 22.0,
+      "MidrangeClustersEnabled": false,
+      "MidrangeFarBladeFraction": 0.25,
+      "SegmentLodEndDistance": 1000.0,
+      "SegmentLodSoftness": 0.75,
+      "SegmentLodStartDistance": 501.0,
+      "TuftTransitionFraction": 0.47999998927116394
+    },
+    "Quality": "Custom",
+    "Wind": {
+      "DirectionDegrees": 0.0,
+      "GustFrequency": 0.3499999940395355,
+      "GustStrength": 0.3499999940395355,
+      "Randomness": 0.4399999976158142,
+      "SpatialScale": 1.0,
+      "Speed": 2.8399999141693115,
+      "Strength": 0.5600000023841858,
+      "Turbulence": 0.41999998688697815
+    }
+  },
+  "Preset": "Enhanced",
+  "RenderScale": 1.0,
+  "SchemaVersion": 14
+})json";
+}
+
+const GraphicsSettings& EnhancedPresetSettings() {
+    static const GraphicsSettings settings = [] {
+        auto loaded = DeserializeGraphicsSettings(nlohmann::json::parse(EnhancedPresetDocument()));
+        loaded.Value.Preset = GraphicsPreset::Enhanced;
+        return loaded.Value;
+    }();
+    return settings;
+}
+
 nlohmann::json
 SerializeGraphicsSettings(const GraphicsSettings& settings) {
     Json reflectionRules = Json::array();

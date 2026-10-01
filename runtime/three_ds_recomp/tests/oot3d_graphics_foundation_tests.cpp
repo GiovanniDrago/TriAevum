@@ -9,6 +9,8 @@
 #include "fast/oot3d/ambient_occlusion_composite.h"
 #include "fast/oot3d/anti_aliasing_frame_policy.h"
 #include "fast/oot3d/graphics_settings.h"
+#include "fast/oot3d/graphics_settings_persistence.h"
+#include <nlohmann/json.hpp>
 #include "fast/oot3d/gpu_profile_plan.h"
 #include "fast/oot3d/hiz_depth_pyramid.h"
 #include "fast/oot3d/hiz_reflection.h"
@@ -3858,6 +3860,53 @@ TEST(Oot3dGraphicsSettings, GatesDirectionalShadowsOnTheirBackendOwner) {
     result = GraphicsSettingsService::Validate(settings, capabilities);
     EXPECT_EQ(result.Value.Effects.DirectionalShadows.Mode,
               DirectionalShadowMode::VirtualShadowMaps);
+}
+
+TEST(Oot3dGraphicsSettings, EnhancedIsTheCapturedProfileAndToonKeepsItsBase) {
+    using namespace Fast::Oot3d;
+    const auto enhanced = GraphicsSettingsService::Preset(GraphicsPreset::Enhanced);
+    EXPECT_EQ(enhanced.Preset, GraphicsPreset::Enhanced);
+    EXPECT_EQ(enhanced.Effects.SurfaceLighting, SurfaceLightingMode::PerPixelPbr);
+    EXPECT_EQ(enhanced.Effects.AmbientOcclusion, AmbientOcclusionMode::Mxao);
+    EXPECT_EQ(enhanced.Effects.MxaoNormals, MxaoNormalSource::Depth);
+    EXPECT_EQ(enhanced.Effects.DirectionalShadows.Mode, DirectionalShadowMode::VirtualShadowMaps);
+    EXPECT_EQ(enhanced.Effects.PointShadows.Mode, PointShadowMode::CubeMaps);
+    EXPECT_EQ(enhanced.FrameRate, FrameRateMode::Interpolated2x);
+    EXPECT_EQ(enhanced.Grass.Quality, GrassQuality::Custom);
+    // Every captured field survives decoding: re-encoding the preset gives the
+    // document back.
+    const auto document = nlohmann::json::parse(EnhancedPresetDocument());
+    const auto encoded = SerializeGraphicsSettings(enhanced);
+    for (const auto& [key, value] : document.items()) {
+        if (key == "Grass") {
+            for (const auto& [field, entry] : value.items())
+                EXPECT_EQ(encoded["Grass"][field], entry) << "Grass." << field;
+        } else if (key == "Effects") {
+            for (const auto& [field, entry] : value.items()) {
+                if (field == "Reflections") {
+                    for (const auto& [option, setting] : entry.items())
+                        EXPECT_EQ(encoded["Effects"]["Reflections"][option], setting) << option;
+                } else {
+                    EXPECT_EQ(encoded["Effects"][field], entry) << "Effects." << field;
+                }
+            }
+        } else {
+            EXPECT_EQ(encoded[key], value) << key;
+        }
+    }
+    // A preset keeps the user's own state.
+    auto current = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
+    current.FovMultiplier = 1.2F;
+    current.TexturePacks.Azahar.LoadCustomTextures = true;
+    const auto chosen = GraphicsSettingsService::PresetForCurrent(GraphicsPreset::Enhanced, current);
+    EXPECT_FLOAT_EQ(chosen.FovMultiplier, 1.2F);
+    EXPECT_TRUE(chosen.TexturePacks.Azahar.LoadCustomTextures);
+    EXPECT_EQ(chosen.Grass.Rules.size(), current.Grass.Rules.size());
+    const auto toon = GraphicsSettingsService::Preset(GraphicsPreset::Toon);
+    EXPECT_EQ(toon.AntiAliasing, AntiAliasingMode::Fxaa);
+    EXPECT_EQ(toon.Effects.AmbientOcclusion, AmbientOcclusionMode::Gtao);
+    EXPECT_EQ(toon.Effects.Toon, ToonMode::PostProcessPreview);
+    EXPECT_EQ(toon.Effects.SurfaceLighting, SurfaceLightingMode::Native);
 }
 
 TEST(Oot3dGraphicsSettings, ClampsTheOriginalMxaoOptions) {

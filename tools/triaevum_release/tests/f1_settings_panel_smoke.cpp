@@ -870,6 +870,20 @@ int main() try {
     Select("Mode", "FXAA");
     Check(runtime.Snapshot().AntiAliasing == AntiAliasingMode::Fxaa, "cannot customize Authentic");
     Check(runtime.Snapshot().Preset == GraphicsPreset::Custom, "manual edits must become Custom");
+    {
+        auto withPack = runtime.Snapshot();
+        withPack.TexturePacks.Azahar.LoadCustomTextures = true;
+        withPack.TexturePacks.Azahar.LoadDirectory = "pack";
+        runtime.Apply(withPack);
+        Frame();
+    }
+    Select("Preset", "Enhanced");
+    Check(runtime.Snapshot().Preset == GraphicsPreset::Enhanced &&
+              runtime.Snapshot().Effects.AmbientOcclusion == AmbientOcclusionMode::Mxao &&
+              runtime.Snapshot().Effects.MxaoNormals == MxaoNormalSource::Depth &&
+              runtime.Snapshot().TexturePacks.Azahar.LoadCustomTextures &&
+              runtime.Snapshot().TexturePacks.Azahar.LoadDirectory == "pack",
+          "Enhanced is not the captured profile or replaced the texture pack");
     Select("Preset", "Toon");
     const auto beforeCustom = runtime.Snapshot();
     Select("Preset", "Custom");

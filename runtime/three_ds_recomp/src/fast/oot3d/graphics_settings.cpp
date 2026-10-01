@@ -1,4 +1,5 @@
 #include "fast/oot3d/graphics_settings.h"
+#include "fast/oot3d/graphics_settings_persistence.h"
 #include "fast/oot3d/grass_blade_geometry.h"
 
 #include <algorithm>
@@ -154,6 +155,10 @@ GraphicsSettings GraphicsSettingsService::Preset(GraphicsPreset preset) {
     GraphicsSettings value;
     value.Preset = preset;
     if (preset == GraphicsPreset::Enhanced) {
+        // A tuned play configuration (EnhancedPresetDocument).
+        value = EnhancedPresetSettings();
+    } else if (preset == GraphicsPreset::Toon) {
+        // The toon look keeps its own base: FXAA, VSM, GTAO and Medium grass.
         value.AntiAliasing = AntiAliasingMode::Fxaa;
         value.FrameRate = FrameRateMode::Interpolated2x;
         value.Effects.DirectionalShadows.Mode =
@@ -165,9 +170,6 @@ GraphicsSettings GraphicsSettingsService::Preset(GraphicsPreset preset) {
         value.Grass.WindDirectionDegrees = 35.0F;
         value.Grass.WindStrength = 0.35F;
         value.Grass.WindSpeed = 1.2F;
-    } else if (preset == GraphicsPreset::Toon) {
-        value = Preset(GraphicsPreset::Enhanced);
-        value.Preset = GraphicsPreset::Toon;
         value.Effects.Toon = ToonMode::PostProcessPreview;
     } else if (preset == GraphicsPreset::Custom) {
         value.Preset = GraphicsPreset::Custom;

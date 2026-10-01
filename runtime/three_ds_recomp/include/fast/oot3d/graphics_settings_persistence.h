@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string_view>
 #include "fast/oot3d/graphics_settings.h"
 
 #include <cstdint>
@@ -31,6 +32,12 @@ SerializeGraphicsSettings(const GraphicsSettings& settings);
 [[nodiscard]] GraphicsSettingsLoadResult DeserializeGraphicsSettings(
     const nlohmann::json& document,
     GraphicsSettings fallback = {});
+
+// The Enhanced preset: a tuned play configuration's "Graphics" block, without
+// the state a preset never sets (window, output, presentation, camera, texture
+// packs, grass sources, reflection materials, the saved grass preset).
+[[nodiscard]] std::string_view EnhancedPresetDocument() noexcept;
+[[nodiscard]] const GraphicsSettings& EnhancedPresetSettings();
 
 // Loads the top-level "Graphics" block from a runtime config document.
 // When it is absent, legacy Window.* and CVars.* values are migrated once.

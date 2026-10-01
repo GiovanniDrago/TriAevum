@@ -627,3 +627,19 @@ baseline at the same persisted 1920×1080 output extent. Native-memory RGBA and
 all compared alpha/depth/stencil attachments remain exact. The real-time
 interactive runtime also survived framebuffer readback and the following
 20 seconds; its fresh renderer framebuffer was inspected.
+
+## Enhanced Preset Profile (2026-10-01)
+
+The **Enhanced** preset is the user's tuned Kokiri play configuration
+("enhanced"): Per-pixel + PBR lighting, virtual shadow maps, point-light cube
+shadows, MXAO from depth normals, the custom grass profile, DLSS and fixed-60
+presentation. `EnhancedPresetDocument()` (graphics settings persistence) holds
+its "Graphics" block and the preset decodes it once. As for every preset,
+choosing it keeps the user's own state: window, output, presentation, camera,
+texture packs, grass sources, reflection materials and the saved grass preset.
+Scene lighting profiles are per-scene files and are not part of it. **Toon**
+keeps its own base (FXAA, VSM, GTAO, Medium grass) instead of following
+Enhanced. Tests: re-encoding the preset gives the captured document back,
+ownership and Toon base unit cases, and the actual-widget smoke selecting
+Enhanced with a texture pack (7,811 assertions).
+
