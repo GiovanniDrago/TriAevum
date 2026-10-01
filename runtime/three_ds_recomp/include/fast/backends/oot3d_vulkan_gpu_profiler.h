@@ -43,10 +43,19 @@ class Oot3dVulkanGpuProfiler {
     [[nodiscard]] std::optional<double> ReadMilliseconds(
         uint32_t slot, Oot3d::GpuProfileScope scope) const;
 
+    // Developer trace (TRIAEVUM_GPU_GAP_TRACE=1): the GPU's busy time per
+    // frame and its idle time between consecutive frames.
+    void TraceFrameGap(uint32_t slot);
+
     VkDevice mDevice = VK_NULL_HANDLE;
     VkQueryPool mPool = VK_NULL_HANDLE;
     double mNanosecondsPerTick = 0.0;
     std::array<FrameState, kFramesInFlight> mFrames{};
+    bool mGapTrace = false;
+    uint64_t mGapTraceLastEnd = 0;
+    double mGapTraceBusy = 0.0;
+    double mGapTraceIdle = 0.0;
+    uint32_t mGapTraceFrames = 0;
 };
 
 } // namespace Fast

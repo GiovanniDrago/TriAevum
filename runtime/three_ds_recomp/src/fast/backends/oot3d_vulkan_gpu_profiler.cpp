@@ -3,6 +3,9 @@
 #ifdef ENABLE_OOT3D_VULKAN
 
 #include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <string_view>
 #include <vector>
 
 namespace Fast {
@@ -99,6 +102,28 @@ void Oot3dVulkanGpuProfiler::Initialize(
     }
     mDevice = device;
     mNanosecondsPerTick = properties.limits.timestampPeriod;
+    const char* gapTrace = std::getenv("TRIAEVUM_GPU_GAP_TRACE");
+    mGapTrace = gapTrace != nullptr && std::string_view(gapTrace) == "1";
+}
+
+void Oot3dVulkanGpuProfiler::TraceFrameGap(uint32_t slot) {
+    std::array<uint64_t, 2> ticks{};
+    if (vkGetQueryPoolResults(mDevice, mPool, Query(slot, Oot3d::GpuProfileScope::Frame, false), 2U,
+                              sizeof(ticks), ticks.data(), sizeof(uint64_t),
+                              VK_QUERY_RESULT_64_BIT) != VK_SUCCESS || ticks[1] < ticks[0])
+        return;
+    const double milliseconds = mNanosecondsPerTick / 1'000'000.0;
+    if (mGapTraceLastEnd != 0U && ticks[0] >= mGapTraceLastEnd) {
+        mGapTraceBusy += static_cast<double>(ticks[1] - ticks[0]) * milliseconds;
+        mGapTraceIdle += static_cast<double>(ticks[0] - mGapTraceLastEnd) * milliseconds;
+        if (++mGapTraceFrames == 60U) {
+            std::fprintf(stderr, "[gpu-gap] frames=60 busy_ms=%.3f idle_ms=%.3f\n",
+                         mGapTraceBusy / 60.0, mGapTraceIdle / 60.0);
+            mGapTraceBusy = mGapTraceIdle = 0.0;
+            mGapTraceFrames = 0U;
+        }
+    }
+    mGapTraceLastEnd = ticks[1];
 }
 
 void Oot3dVulkanGpuProfiler::Shutdown() {
@@ -163,6 +188,7 @@ Oot3dVulkanGpuProfiler::BeginFrame(
         if (anyTiming) {
             result = timings;
         }
+        if (mGapTrace && frame.Plan.Written(Oot3d::GpuProfileScope::Frame)) TraceFrameGap(slot);
     }
 
     frame = {};
