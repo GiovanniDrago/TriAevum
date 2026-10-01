@@ -475,6 +475,21 @@ if(MSVC)
 endif()
 gtest_discover_tests(oot3d_effect_graph_tests DISCOVERY_TIMEOUT 30)
 
+# Diffuse GI reference integrator (M1, docs/TRIAEVUM_SCREEN_SPACE_GI.md):
+# title-neutral, no Vulkan, not yet part of any runtime library.
+add_executable(renderer_diffuse_gi_reference_tests
+    renderer_diffuse_gi_reference_tests.cpp
+    ../src/fast/renderer/diffuse_gi_reference.cpp
+)
+set_property(TARGET renderer_diffuse_gi_reference_tests PROPERTY CXX_STANDARD 20)
+target_include_directories(renderer_diffuse_gi_reference_tests PRIVATE ../include)
+target_link_libraries(renderer_diffuse_gi_reference_tests PRIVATE gtest_main)
+if(MSVC)
+    target_compile_definitions(renderer_diffuse_gi_reference_tests PRIVATE NOMINMAX)
+    target_compile_options(renderer_diffuse_gi_reference_tests PRIVATE /utf-8)
+endif()
+gtest_discover_tests(renderer_diffuse_gi_reference_tests DISCOVERY_TIMEOUT 30)
+
 add_executable(oot3d_grass_midrange_clusters_tests oot3d_grass_midrange_clusters_tests.cpp
     ../src/fast/oot3d/grass_visibility.cpp)
 target_include_directories(oot3d_grass_midrange_clusters_tests PRIVATE ../include)
