@@ -18,6 +18,7 @@ using EffectResourceBindingKind =
     EffectResource resource) noexcept {
     switch (resource) {
         case EffectResource::SceneColor:
+        case EffectResource::SceneBeforeUi:
         case EffectResource::LinearWorkingColor:
         case EffectResource::ReflectionColor:
         case EffectResource::CompositeColor:

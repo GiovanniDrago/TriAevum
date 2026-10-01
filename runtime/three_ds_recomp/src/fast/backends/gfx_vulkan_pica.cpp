@@ -468,6 +468,7 @@ void GfxRenderingAPIVulkan::DestroyNativePicaShaderResources() {
         DestroyNativePicaDisplayImage(image);
     }
     mNativePicaDisplayImages.clear();
+    DestroyNativePicaSceneBeforeUiImages();
     const auto destroyShaderCache = [this](auto& cache) {
         for (auto& [key, shader] : cache) {
             (void)key;
@@ -834,6 +835,7 @@ void GfxRenderingAPIVulkan::ApplyNativePicaSampleCount(VkSampleCountFlagBits sam
     }
     mNriUpscalerPass.InvalidateScreenResources();
     mUpscalerGuidePass.InvalidateScreenResources();
+    mNativeUiOverlayPass.InvalidateScreenResources();
     if (mCompositeSurface.has_value()) {
         mSceneSurfaces.Retire(*mCompositeSurface);
         mCompositeSurface.reset();
@@ -1746,15 +1748,35 @@ GfxRenderingAPIVulkan::NativePicaDisplayImage&
 GfxRenderingAPIVulkan::GetOrCreateNativePicaDisplayImage(
     uint64_t renderTargetNamespace, uint32_t physicalAddress,
     uint32_t width, uint32_t height) {
+    return GetOrCreateNativePicaDisplayImage(
+        mNativePicaDisplayImages, renderTargetNamespace, physicalAddress,
+        width, height);
+}
+
+void GfxRenderingAPIVulkan::DestroyNativePicaSceneBeforeUiImages() {
+    for (auto* images : {&mNativePicaSceneBeforeUiTargets,
+                         &mNativePicaSceneBeforeUiDisplays}) {
+        for (auto& [key, image] : *images) {
+            DestroyNativePicaDisplayImage(image);
+        }
+        images->clear();
+    }
+}
+
+GfxRenderingAPIVulkan::NativePicaDisplayImage&
+GfxRenderingAPIVulkan::GetOrCreateNativePicaDisplayImage(
+    std::map<std::pair<uint64_t, uint32_t>, NativePicaDisplayImage>& images,
+    uint64_t renderTargetNamespace, uint32_t physicalAddress,
+    uint32_t width, uint32_t height) {
     const auto key = std::make_pair(renderTargetNamespace, physicalAddress);
-    auto found = mNativePicaDisplayImages.find(key);
-    if (found != mNativePicaDisplayImages.end() &&
+    auto found = images.find(key);
+    if (found != images.end() &&
         found->second.Width == width && found->second.Height == height) {
         return found->second;
     }
-    if (found != mNativePicaDisplayImages.end()) {
+    if (found != images.end()) {
         DestroyNativePicaDisplayImage(found->second);
-        mNativePicaDisplayImages.erase(found);
+        images.erase(found);
     }
 
     NativePicaDisplayImage image;
@@ -1812,8 +1834,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaDisplayImage(
             vkCreateImageView(mDevice, &view, nullptr, &image.View),
             "vkCreateImageView(native PICA display transfer)");
     }
-    return mNativePicaDisplayImages.emplace(key, std::move(image))
-        .first->second;
+    return images.emplace(key, std::move(image)).first->second;
 }
 
 void GfxRenderingAPIVulkan::DestroyNativePicaDisplayImage(
@@ -4061,6 +4082,29 @@ void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
                 target.ContentWriteSerial = ++mGpuTextureCopyWriteSerial;
                 target.SceneEffectsResolvedSerial = target.ContentWriteSerial;
             }
+            // An upscaler changes the extent, so it cannot resolve here: keep
+            // the scene this boundary completed, which the display transfer
+            // transfers beside the display for the upscaler to reconstruct.
+            if (mPresentationUpscaler && target.SceneEffectsResolvedSerial != 0U &&
+                target.SceneEffectsResolvedSerial == target.ContentWriteSerial) {
+                EndNativePicaRenderPass();
+                if (mRenderPassActive) {
+                    vkCmdEndRenderPass(mCommandBuffers[mCurrentFrame]);
+                    mRenderPassActive = false;
+                    mOverlayRenderPassActive = false;
+                }
+                auto& snapshot = GetOrCreateNativePicaDisplayImage(
+                    mNativePicaSceneBeforeUiTargets, target.Key.RenderTargetNamespace,
+                    target.Key.ColorPhysicalAddress, target.Width, target.Height);
+                if (!mNriPicaDisplayCopyPass.Execute({
+                        mCurrentFrame, mFrameCounter, target.ColorImage, snapshot.Image,
+                        VK_FORMAT_R8G8B8A8_UNORM, {target.Width, target.Height, target.Width, target.Height},
+                        false, snapshot.Initialized}))
+                    throw std::runtime_error("native scene before UI snapshot failed");
+                snapshot.Initialized = true;
+                target.SceneBeforeUiSerial = target.ContentWriteSerial;
+                mDiagnostics.RecordSceneBeforeUi(true, false);
+            }
         }
     }
 }
@@ -5481,9 +5525,15 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui &&
                 renderTarget.SceneEffectsResolvedSerial != 0U &&
                 renderTarget.SceneEffectsResolvedSerial == renderTarget.ContentWriteSerial;
+            const bool retainSceneBeforeUi =
+                draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui &&
+                renderTarget.SceneBeforeUiSerial != 0U &&
+                renderTarget.SceneBeforeUiSerial == renderTarget.ContentWriteSerial;
             renderTarget.ContentWriteSerial = ++mGpuTextureCopyWriteSerial;
             if (retainResolvedScene)
                 renderTarget.SceneEffectsResolvedSerial = renderTarget.ContentWriteSerial;
+            if (retainSceneBeforeUi)
+                renderTarget.SceneBeforeUiSerial = renderTarget.ContentWriteSerial;
             const bool fullTargetRaster =
                 compositionDomain ==
                     ::Fast::Renderer3ds::PicaCompositionDomain::Screen &&
@@ -6708,6 +6758,29 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                     static_cast<uint32_t>(fromTransfer.size()),
                     fromTransfer.data());
             }
+            // The scene this display showed before native UI, transferred
+            // exactly as the display: an upscaler reconstructs it and lays the
+            // display's UI over its output.
+            display.SceneBeforeUi = false;
+            if (mPresentationUpscaler && nriDisplayCopy && display.SceneEffectsResolved &&
+                source->SceneBeforeUiSerial != 0U &&
+                source->SceneBeforeUiSerial == source->ContentWriteSerial) {
+                const auto snapshot = mNativePicaSceneBeforeUiTargets.find(
+                    {source->Key.RenderTargetNamespace, source->Key.ColorPhysicalAddress});
+                if (snapshot != mNativePicaSceneBeforeUiTargets.end() && snapshot->second.Initialized &&
+                    snapshot->second.Width == source->Width && snapshot->second.Height == source->Height) {
+                    auto& beforeUi = GetOrCreateNativePicaDisplayImage(
+                        mNativePicaSceneBeforeUiDisplays, transfer.RenderTargetNamespace,
+                        transfer.OutputPhysicalAddress, transferPlan->DestinationWidth,
+                        transferPlan->DestinationHeight);
+                    display.SceneBeforeUi = mNriPicaDisplayCopyPass.Execute({
+                        mCurrentFrame, mFrameCounter, snapshot->second.Image, beforeUi.Image,
+                        VK_FORMAT_R8G8B8A8_UNORM, *transferPlan, true, beforeUi.Initialized});
+                    if (display.SceneBeforeUi)
+                        beforeUi.Initialized = true;
+                    mDiagnostics.RecordSceneBeforeUi(false, display.SceneBeforeUi);
+                }
+            }
             mGpuProfiler.EndScope(
                 mCurrentFrame,
                 Oot3d::GpuProfileScope::DisplayTransfer,
@@ -6797,6 +6870,15 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             display.CompositionDomain ==
                 ::Oot3d::Renderer::PicaCompositionDomain::Scene &&
             (display.SceneResolved || display.SceneEffectsResolved);
+        // The scene before native UI transferred beside this display.
+        const NativePicaDisplayImage* sceneBeforeUi = nullptr;
+        if (!copyBoundary && display.SceneBeforeUi) {
+            const auto found = mNativePicaSceneBeforeUiDisplays.find(
+                {transfer.RenderTargetNamespace, transfer.OutputPhysicalAddress});
+            if (found != mNativePicaSceneBeforeUiDisplays.end() && found->second.Initialized &&
+                found->second.Width == display.Width && found->second.Height == display.Height)
+                sceneBeforeUi = &found->second;
+        }
         // One scene surface per frame owns the anti-aliasing history and
         // output. A boundary before native UI of another surface in the same
         // frame composes its other scene stages without them.
@@ -6841,6 +6923,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             .NativeSceneBoundary = copyBoundary,
             .BeforeNativeUi = copyBoundary && beforeNativeUi && antiAliasingAvailableHere,
             .SceneEffectsResolved = display.SceneEffectsResolved,
+            .SceneBeforeUi = sceneBeforeUi != nullptr,
             .Purpose = mNativePicaCompositionSchedule.Purpose(),
         });
         const auto motionBarrierPlan =
@@ -7063,9 +7146,13 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         const auto upscalerColor = colorInput(wantsTemporalUpscaler
             ? Oot3d::DisplayEffectPass::TemporalUpscaler
             : Oot3d::DisplayEffectPass::Nis);
+        // The display and its scene before native UI share the display's
+        // extent; the working colour has its planned one; a composition on the
+        // scene target has the target's.
         const bool upscalerReadsGuideDomain = effectGuideTarget != nullptr &&
             (wantsTemporalUpscaler || wantsNis) &&
             upscalerColor != Oot3d::EffectResource::SceneColor &&
+            upscalerColor != Oot3d::EffectResource::SceneBeforeUi &&
             upscalerColor != Oot3d::EffectResource::LinearWorkingColor;
         const uint32_t plannedUpscalerInputWidth = upscalerReadsGuideDomain
             ? effectGuideTarget->Width
@@ -7319,6 +7406,14 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             VK_FORMAT_R8G8B8A8_UNORM,
             display.Width, display.Height,
             Oot3d::NativePicaSceneColorEncoding());
+        if (sceneBeforeUi != nullptr) {
+            bindEffectImage(
+                Oot3d::EffectResource::SceneBeforeUi,
+                sceneBeforeUi->Image, sceneBeforeUi->View,
+                VK_FORMAT_R8G8B8A8_UNORM,
+                sceneBeforeUi->Width, sceneBeforeUi->Height,
+                Oot3d::NativePicaSceneColorEncoding());
+        }
         bindEffectImage(
             Oot3d::EffectResource::PresentationOutput,
             mSwapchainImages[mCurrentImage],
@@ -8043,9 +8138,15 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         if (workingColorAttempted) {
             const auto workingColorReads = resolveEffectPassReads(
                 Oot3d::DisplayEffectPass::WorkingColor);
-            const auto& workingColorSourceBinding = requireEffectImageRead(
-                workingColorReads,
-                Oot3d::EffectResource::SceneColor);
+            const auto* workingColorSourceRead = findEffectColorRead(
+                workingColorReads, Oot3d::DisplayEffectPass::WorkingColor);
+            if (workingColorSourceRead == nullptr ||
+                workingColorSourceRead->Kind !=
+                    Oot3d::EffectResourceBindingKind::Image) {
+                throw std::runtime_error(
+                    "working colour pass has no declared color input");
+            }
+            const auto& workingColorSourceBinding = *workingColorSourceRead;
             const VkImage workingColorSourceImage =
                 reinterpret_cast<VkImage>(
                     workingColorSourceBinding.NativeImage);
@@ -9632,6 +9733,45 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     mD3d12NgxProvider.FrameOutputView(mCurrentFrame);
             }
             #endif
+            if (effectPlan.NativeUiOverlay) {
+                // The upscaler reconstructed the scene before native UI: lay
+                // the display's UI over it (once per frame, reused with it).
+                bool overlaid = canReuseUpscaler && mNativeUiOverlayExecutedThisFrame;
+                if (!overlaid) {
+                    const auto overlayReads = resolveEffectPassReads(
+                        wantsNis ? Oot3d::DisplayEffectPass::Nis
+                                 : Oot3d::DisplayEffectPass::TemporalUpscaler);
+                    const auto& shown = requireEffectImageRead(
+                        overlayReads, Oot3d::EffectResource::SceneColor);
+                    const auto* beforeUiBinding = &requireEffectImageRead(
+                        overlayReads, Oot3d::EffectResource::SceneBeforeUi);
+                    mGpuProfiler.BeginScope(
+                        mCurrentFrame, Oot3d::GpuProfileScope::Upscaler, command);
+                    overlaid = mNativeUiOverlayPass.Execute(
+                        mCurrentFrame, mFrameCounter,
+                        {reinterpret_cast<VkImage>(shown.NativeImage),
+                         static_cast<VkFormat>(shown.Format),
+                         reinterpret_cast<VkImage>(beforeUiBinding->NativeImage),
+                         static_cast<VkFormat>(beforeUiBinding->Format),
+                         shown.Width, shown.Height,
+                         upscaledImage, VK_FORMAT_R16G16B16A16_SFLOAT,
+                         outputWidth, outputHeight,
+                         Oot3d::SceneColorIsLinear(mUpscalerOutputEncodingThisFrame)});
+                    mGpuProfiler.EndScope(
+                        mCurrentFrame, Oot3d::GpuProfileScope::Upscaler, command);
+                    if (!overlaid) {
+                        throw std::runtime_error(
+                            "native UI overlay failed: " +
+                            mNativeUiOverlayPass.UnavailableReason());
+                    }
+                    recordEffectPassTransitions(
+                        mNativeUiOverlayPass.LastBarrierExecution());
+                    mNativeUiOverlayExecutedThisFrame = true;
+                    mDiagnostics.RecordNativeUiOverlay();
+                }
+                upscaledImage = mNativeUiOverlayPass.OutputImage();
+                upscaledView = mNativeUiOverlayPass.OutputView();
+            }
             bindEffectImage(
                 Oot3d::EffectResource::UpscaledColor,
                 upscaledImage, upscaledView,
@@ -10969,6 +11109,7 @@ bool GfxRenderingAPIVulkan::RestorePicaPresentationState(
             DestroyNativePicaDisplayImage(image);
         }
         mNativePicaDisplayImages.clear();
+        DestroyNativePicaSceneBeforeUiImages();
         mNativePicaDisplayDepthTargets.clear();
         mLastPresentedNativePicaDisplayTransfer.reset();
         SetNativeError(error, exception.what());
@@ -11030,6 +11171,7 @@ bool GfxRenderingAPIVulkan::ResetPicaState(
         }
         mNriUpscalerPass.InvalidateScreenResources();
         mUpscalerGuidePass.InvalidateScreenResources();
+        mNativeUiOverlayPass.InvalidateScreenResources();
         if (mCompositeSurface.has_value()) {
             mSceneSurfaces.Retire(*mCompositeSurface);
             mCompositeSurface.reset();
@@ -11070,6 +11212,7 @@ bool GfxRenderingAPIVulkan::ResetPicaState(
             DestroyNativePicaDisplayImage(image);
         }
         mNativePicaDisplayImages.clear();
+        DestroyNativePicaSceneBeforeUiImages();
         mInvalidatedNativePicaRenderTargetAddresses.clear();
         mLastPresentedNativePicaDisplayTransfer.reset();
         mPendingNativePicaMemoryFills.clear();
@@ -11505,6 +11648,7 @@ void GfxRenderingAPIVulkan::ReleaseEffectGraphImageClients() {
     }
     mNriUpscalerPass.InvalidateScreenResources();
     mUpscalerGuidePass.InvalidateScreenResources();
+    mNativeUiOverlayPass.InvalidateScreenResources();
     if (mCompositeSurface.has_value()) {
         mSceneSurfaces.Retire(*mCompositeSurface);
         mCompositeSurface.reset();
@@ -11558,6 +11702,7 @@ void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayIma
     }
     mNriUpscalerPass.InvalidateScreenResources();
     mUpscalerGuidePass.InvalidateScreenResources();
+    mNativeUiOverlayPass.InvalidateScreenResources();
     if (mCompositeSurface.has_value()) {
         mSceneSurfaces.Retire(*mCompositeSurface);
         mCompositeSurface.reset();
@@ -11591,6 +11736,9 @@ void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayIma
     }
     mNativePicaRenderTargets.clear();
     mNativePicaDisplayDepthTargets.clear();
+    // The scenes before UI belong to the targets' frames and are retired with
+    // them, whatever happens to the presented pixels.
+    DestroyNativePicaSceneBeforeUiImages();
     if (!preserveDisplayImages) {
         for (auto& [key, image] : mNativePicaDisplayImages) {
             DestroyNativePicaDisplayImage(image);

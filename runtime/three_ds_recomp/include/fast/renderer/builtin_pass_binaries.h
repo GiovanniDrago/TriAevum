@@ -1622,6 +1622,95 @@ inline constexpr uint32_t kPassWords12[] = {
 };
 inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines12{{}};
 inline constexpr uint32_t kPassWords13[] = {
+0x7230203U,0x10500U,0xd000bU,0x153U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
+0x0U,0x3000eU,0x0U,0x1U,0xc000fU,0x5U,0x4U,0x6e69616dU,0x0U,0x36U,0x3eU,0x4fU,
+0x53U,0x9aU,0xa3U,0xfcU,0x60010U,0x4U,0x11U,0x8U,0x8U,0x1U,0x40047U,0x36U,
+0xbU,0x1cU,0x30047U,0x3cU,0x2U,0x50048U,0x3cU,0x0U,0x23U,0x0U,0x50048U,0x3cU,
+0x1U,0x23U,0x8U,0x50048U,0x3cU,0x2U,0x23U,0x10U,0x50048U,0x3cU,0x3U,0x23U,
+0x14U,0x50048U,0x3cU,0x4U,0x23U,0x18U,0x50048U,0x3cU,0x5U,0x23U,0x1cU,0x40047U,
+0x4fU,0x21U,0x2U,0x40047U,0x4fU,0x22U,0x0U,0x40047U,0x53U,0x21U,0x4U,0x40047U,
+0x53U,0x22U,0x0U,0x40047U,0x9aU,0x21U,0x0U,0x40047U,0x9aU,0x22U,0x0U,0x40047U,
+0xa3U,0x21U,0x1U,0x40047U,0xa3U,0x22U,0x0U,0x30047U,0xfcU,0x19U,0x40047U,0xfcU,
+0x21U,0x3U,0x40047U,0xfcU,0x22U,0x0U,0x40047U,0x101U,0xbU,0x19U,0x20013U,0x2U,
+0x30021U,0x3U,0x2U,0x30016U,0x6U,0x20U,0x40017U,0x7U,0x6U,0x3U,0x4002bU,0x6U,
+0xeU,0x0U,0x6002cU,0x7U,0xfU,0xeU,0xeU,0xeU,0x20014U,0x11U,0x40017U,0x12U,
+0x11U,0x3U,0x4002bU,0x6U,0x16U,0x3d25aee6U,0x6002cU,0x7U,0x17U,0x16U,0x16U,0x16U,
+0x4002bU,0x6U,0x20U,0x3d6147aeU,0x4002bU,0x6U,0x26U,0x4019999aU,0x6002cU,0x7U,0x27U,0x26U,
+0x26U,0x26U,0x40015U,0x2fU,0x20U,0x1U,0x40017U,0x30U,0x2fU,0x2U,0x40015U,0x33U,
+0x20U,0x0U,0x40017U,0x34U,0x33U,0x3U,0x40020U,0x35U,0x1U,0x34U,0x4003bU,0x35U,
+0x36U,0x1U,0x40017U,0x37U,0x33U,0x2U,0x8001eU,0x3cU,0x37U,0x37U,0x33U,0x33U,
+0x33U,0x33U,0x40020U,0x3dU,0x9U,0x3cU,0x4003bU,0x3dU,0x3eU,0x9U,0x4002bU,0x2fU,
+0x3fU,0x0U,0x40020U,0x40U,0x9U,0x37U,0x40017U,0x44U,0x11U,0x2U,0x40017U,0x4aU,
+0x6U,0x4U,0x90019U,0x4dU,0x6U,0x1U,0x0U,0x0U,0x0U,0x1U,0x0U,0x40020U,
+0x4eU,0x0U,0x4dU,0x4003bU,0x4eU,0x4fU,0x0U,0x2001aU,0x51U,0x40020U,0x52U,0x0U,
+0x51U,0x4003bU,0x52U,0x53U,0x0U,0x3001bU,0x55U,0x4dU,0x40017U,0x5aU,0x6U,0x2U,
+0x4002bU,0x6U,0x5fU,0x3f000000U,0x4002bU,0x2fU,0x62U,0x1U,0x4002bU,0x2fU,0x85U,0x2U,
+0x5002cU,0x30U,0x96U,0x3fU,0x3fU,0x4003bU,0x4eU,0x9aU,0x0U,0x4003bU,0x4eU,0xa3U,
+0x0U,0x4002bU,0x6U,0xb7U,0x3f800000U,0x4002bU,0x33U,0xb8U,0x0U,0x4002bU,0x33U,0xc5U,
+0x1U,0x40020U,0xcfU,0x9U,0x33U,0x90019U,0xfaU,0x6U,0x1U,0x0U,0x0U,0x0U,
+0x2U,0x2U,0x40020U,0xfbU,0x0U,0xfaU,0x4003bU,0xfbU,0xfcU,0x0U,0x4002bU,0x33U,
+0x100U,0x8U,0x6002cU,0x34U,0x101U,0x100U,0x100U,0xc5U,0x5002cU,0x5aU,0x149U,0x5fU,
+0x5fU,0x5002cU,0x30U,0x14aU,0x62U,0x62U,0x6002cU,0x7U,0x14dU,0x20U,0x20U,0x20U,
+0x4002bU,0x6U,0x14fU,0x3d9e8391U,0x6002cU,0x7U,0x150U,0x14fU,0x14fU,0x14fU,0x4002bU,0x6U,
+0x151U,0x3f72a76fU,0x6002cU,0x7U,0x152U,0x151U,0x151U,0x151U,0x50036U,0x2U,0x4U,0x0U,
+0x3U,0x200f8U,0x5U,0x300f7U,0x102U,0x0U,0x300fbU,0xb8U,0x103U,0x200f8U,0x103U,0x4003dU,
+0x34U,0x38U,0x36U,0x7004fU,0x37U,0x39U,0x38U,0x38U,0x0U,0x1U,0x4007cU,0x30U,
+0x3aU,0x39U,0x50041U,0x40U,0x41U,0x3eU,0x3fU,0x4003dU,0x37U,0x42U,0x41U,0x4007cU,
+0x30U,0x43U,0x42U,0x500afU,0x44U,0x45U,0x3aU,0x43U,0x4009aU,0x11U,0x46U,0x45U,
+0x300f7U,0x48U,0x0U,0x400faU,0x46U,0x47U,0x48U,0x200f8U,0x47U,0x200f9U,0x102U,0x200f8U,
+0x48U,0x4003dU,0x4dU,0x50U,0x4fU,0x4003dU,0x51U,0x54U,0x53U,0x50056U,0x55U,0x56U,
+0x50U,0x54U,0x40064U,0x4dU,0x58U,0x56U,0x7005fU,0x4aU,0x59U,0x58U,0x3aU,0x2U,
+0x3fU,0x4006fU,0x5aU,0x5eU,0x3aU,0x50081U,0x5aU,0x61U,0x5eU,0x149U,0x50041U,0x40U,
+0x63U,0x3eU,0x62U,0x4003dU,0x37U,0x64U,0x63U,0x40070U,0x5aU,0x65U,0x64U,0x50085U,
+0x5aU,0x66U,0x61U,0x65U,0x40070U,0x5aU,0x69U,0x42U,0x50088U,0x5aU,0x6aU,0x66U,
+0x69U,0x50083U,0x5aU,0x6cU,0x6aU,0x149U,0x6000cU,0x5aU,0x6fU,0x1U,0x8U,0x6cU,
+0x50083U,0x5aU,0x73U,0x6cU,0x6fU,0x4007cU,0x30U,0x77U,0x64U,0x50082U,0x30U,0x79U,
+0x77U,0x14aU,0x200f9U,0x7fU,0x200f8U,0x7fU,0x700f5U,0x7U,0x12bU,0xfU,0x48U,0x136U,
+0x82U,0x700f5U,0x6U,0x129U,0xeU,0x48U,0x13aU,0x82U,0x700f5U,0x2fU,0x128U,0x3fU,
+0x48U,0xe5U,0x82U,0x500b1U,0x11U,0x86U,0x128U,0x85U,0x400f6U,0x81U,0x82U,0x0U,
+0x400faU,0x86U,0x80U,0x81U,0x200f8U,0x80U,0x200f9U,0x88U,0x200f8U,0x88U,0x700f5U,0x6U,
+0x13aU,0x129U,0x80U,0x148U,0x8bU,0x700f5U,0x7U,0x136U,0x12bU,0x80U,0x147U,0x8bU,
+0x700f5U,0x2fU,0x12dU,0x3fU,0x80U,0xe3U,0x8bU,0x500b1U,0x11U,0x8eU,0x12dU,0x85U,
+0x400f6U,0x8aU,0x8bU,0x0U,0x400faU,0x8eU,0x89U,0x8aU,0x200f8U,0x89U,0x4006eU,0x30U,
+0x91U,0x6fU,0x50050U,0x30U,0x94U,0x12dU,0x128U,0x50080U,0x30U,0x95U,0x91U,0x94U,
+0x8000cU,0x30U,0x98U,0x1U,0x2dU,0x95U,0x96U,0x79U,0x4003dU,0x4dU,0x9bU,0x9aU,
+0x4003dU,0x51U,0x9cU,0x53U,0x50056U,0x55U,0x9dU,0x9bU,0x9cU,0x40064U,0x4dU,0x9fU,
+0x9dU,0x7005fU,0x4aU,0xa0U,0x9fU,0x98U,0x2U,0x3fU,0x8004fU,0x7U,0xa1U,0xa0U,
+0xa0U,0x0U,0x1U,0x2U,0x4003dU,0x4dU,0xa4U,0xa3U,0x4003dU,0x51U,0xa5U,0x53U,
+0x50056U,0x55U,0xa6U,0xa4U,0xa5U,0x40064U,0x4dU,0xa8U,0xa6U,0x7005fU,0x4aU,0xa9U,
+0xa8U,0x98U,0x2U,0x3fU,0x8004fU,0x7U,0xaaU,0xa9U,0xa9U,0x0U,0x1U,0x2U,
+0x500b7U,0x12U,0xadU,0xa1U,0xaaU,0x4009aU,0x11U,0xaeU,0xadU,0x300f7U,0xb0U,0x0U,
+0x400faU,0xaeU,0xafU,0xb0U,0x200f8U,0xafU,0x500aaU,0x11U,0xb3U,0x12dU,0x3fU,0x300f7U,
+0xb6U,0x0U,0x400faU,0xb3U,0xb5U,0xbcU,0x200f8U,0xb5U,0x50051U,0x6U,0xbaU,0x73U,
+0x0U,0x50083U,0x6U,0xbbU,0xb7U,0xbaU,0x200f9U,0xb6U,0x200f8U,0xbcU,0x50051U,0x6U,
+0xbeU,0x73U,0x0U,0x200f9U,0xb6U,0x200f8U,0xb6U,0x700f5U,0x6U,0x12fU,0xbbU,0xb5U,
+0xbeU,0xbcU,0x500aaU,0x11U,0xc1U,0x128U,0x3fU,0x300f7U,0xc4U,0x0U,0x400faU,0xc1U,
+0xc3U,0xc9U,0x200f8U,0xc3U,0x50051U,0x6U,0xc7U,0x73U,0x1U,0x50083U,0x6U,0xc8U,
+0xb7U,0xc7U,0x200f9U,0xc4U,0x200f8U,0xc9U,0x50051U,0x6U,0xcbU,0x73U,0x1U,0x200f9U,
+0xc4U,0x200f8U,0xc4U,0x700f5U,0x6U,0x131U,0xc8U,0xc3U,0xcbU,0xc9U,0x50085U,0x6U,
+0xcdU,0x12fU,0x131U,0x50041U,0xcfU,0xd0U,0x3eU,0x85U,0x4003dU,0x33U,0xd1U,0xd0U,
+0x500abU,0x11U,0xd2U,0xd1U,0xb8U,0x300f7U,0xd5U,0x0U,0x400faU,0xd2U,0xd4U,0xd9U,
+0x200f8U,0xd4U,0x7000cU,0x7U,0x10eU,0x1U,0x28U,0xa1U,0xfU,0x500bcU,0x12U,0x110U,
+0x10eU,0x17U,0x50085U,0x7U,0x113U,0x10eU,0x150U,0x50081U,0x7U,0x116U,0x10eU,0x14dU,
+0x50085U,0x7U,0x118U,0x116U,0x152U,0x7000cU,0x7U,0x119U,0x1U,0x1aU,0x118U,0x27U,
+0x600a9U,0x7U,0x11dU,0x110U,0x113U,0x119U,0x200f9U,0xd5U,0x200f8U,0xd9U,0x200f9U,0xd5U,
+0x200f8U,0xd5U,0x700f5U,0x7U,0x132U,0x11dU,0xd4U,0xa1U,0xd9U,0x5008eU,0x7U,0xdcU,
+0x132U,0xcdU,0x50081U,0x7U,0xdeU,0x136U,0xdcU,0x50081U,0x6U,0xe1U,0x13aU,0xcdU,
+0x200f9U,0xb0U,0x200f8U,0xb0U,0x700f5U,0x6U,0x148U,0x13aU,0x89U,0xe1U,0xd5U,0x700f5U,
+0x7U,0x147U,0x136U,0x89U,0xdeU,0xd5U,0x200f9U,0x8bU,0x200f8U,0x8bU,0x50080U,0x2fU,
+0xe3U,0x12dU,0x62U,0x200f9U,0x88U,0x200f8U,0x8aU,0x200f9U,0x82U,0x200f8U,0x82U,0x50080U,
+0x2fU,0xe5U,0x128U,0x62U,0x200f9U,0x7fU,0x200f8U,0x81U,0x500baU,0x11U,0xe7U,0x129U,
+0xeU,0x300f7U,0xe9U,0x0U,0x400faU,0xe7U,0xe8U,0xe9U,0x200f8U,0xe8U,0x8004fU,0x7U,
+0xebU,0x59U,0x59U,0x0U,0x1U,0x2U,0x60050U,0x7U,0xeeU,0x129U,0x129U,0x129U,
+0x50088U,0x7U,0xefU,0x12bU,0xeeU,0x8000cU,0x7U,0xf2U,0x1U,0x2eU,0xebU,0xefU,
+0xeeU,0x50051U,0x6U,0xf4U,0xf2U,0x0U,0x60052U,0x4aU,0x123U,0xf4U,0x59U,0x0U,
+0x50051U,0x6U,0xf6U,0xf2U,0x1U,0x60052U,0x4aU,0x125U,0xf6U,0x123U,0x1U,0x50051U,
+0x6U,0xf9U,0xf2U,0x2U,0x60052U,0x4aU,0x127U,0xf9U,0x125U,0x2U,0x200f9U,0xe9U,
+0x200f8U,0xe9U,0x700f5U,0x4aU,0x12cU,0x59U,0x81U,0x127U,0xe8U,0x4003dU,0xfaU,0xfdU,
+0xfcU,0x40063U,0xfdU,0x3aU,0x12cU,0x200f9U,0x102U,0x200f8U,0x102U,0x100fdU,0x10038U,
+};
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines13{{}};
+inline constexpr uint32_t kPassWords14[] = {
 0x7230203U,0x10500U,0xd000bU,0xa90U,0x0U,0x20011U,0x1U,0x20011U,0x32U,0x6000bU,0x1U,0x4c534c47U,
 0x6474732eU,0x3035342eU,0x0U,0x3000eU,0x0U,0x1U,0x15000fU,0x5U,0x4U,0x6e69616dU,0x0U,0xe0U,
 0xe4U,0xffU,0x116U,0x12dU,0x382U,0x38aU,0x39fU,0x3acU,0x3b4U,0x3d0U,0x3fdU,0x49fU,
@@ -2044,8 +2133,8 @@ inline constexpr uint32_t kPassWords13[] = {
 0x18U,0xa46U,0xa24U,0x49dU,0x9aaU,0x50eU,0x4003dU,0x521U,0x524U,0x523U,0x40063U,0x524U,
 0x386U,0xa46U,0x200f9U,0x528U,0x200f8U,0x528U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines13{{}};
-inline constexpr uint32_t kPassWords14[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines14{{}};
+inline constexpr uint32_t kPassWords15[] = {
 0x7230203U,0x10500U,0xd000bU,0x22dU,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0xa000fU,0x5U,0x4U,0x6e69616dU,0x0U,0x20U,0x69U,0x109U,
 0x127U,0x12fU,0x60010U,0x4U,0x11U,0x8U,0x8U,0x1U,0x30047U,0x1eU,0x2U,0x50048U,
@@ -2133,8 +2222,8 @@ inline constexpr uint32_t kPassWords14[] = {
 0x133U,0x134U,0x30U,0x42U,0x40063U,0x130U,0x10cU,0x135U,0x200f9U,0x139U,0x200f8U,0x139U,
 0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines14{{}};
-inline constexpr uint32_t kPassWords15[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines15{{}};
+inline constexpr uint32_t kPassWords16[] = {
 0x7230203U,0x10500U,0xd000bU,0xe51U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0xc000fU,0x5U,0x4U,0x6e69616dU,0x0U,0x98U,0x143U,0x5c3U,
 0x5e2U,0x5e3U,0x5e4U,0x5efU,0x60010U,0x4U,0x11U,0x8U,0x8U,0x1U,0x30047U,0x96U,
@@ -2515,8 +2604,8 @@ inline constexpr uint32_t kPassWords15[] = {
 0x200f8U,0x729U,0x700f5U,0x12U,0xe27U,0xe25U,0x6d3U,0xd22U,0xb6dU,0x4003dU,0x5edU,0x5f0U,
 0x5efU,0x40063U,0x5f0U,0x5c6U,0xe27U,0x200f9U,0x5f6U,0x200f8U,0x5f6U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines15{{}};
-inline constexpr uint32_t kPassWords16[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines16{{}};
+inline constexpr uint32_t kPassWords17[] = {
 0x7230203U,0x10500U,0xd000bU,0x287U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0xb000fU,0x5U,0x4U,0x6e69616dU,0x0U,0x60U,0x7bU,0x116U,
 0x133U,0x134U,0x13cU,0x60010U,0x4U,0x11U,0x8U,0x8U,0x1U,0x30047U,0x5eU,0x2U,
@@ -2598,8 +2687,8 @@ inline constexpr uint32_t kPassWords16[] = {
 0x4003dU,0x13aU,0x13dU,0x13cU,0x40063U,0x13dU,0x119U,0x282U,0x200f9U,0x143U,0x200f8U,0x143U,
 0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines16{{}};
-inline constexpr uint32_t kPassWords17[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines17{{}};
+inline constexpr uint32_t kPassWords18[] = {
 0x7230203U,0x10500U,0xd000bU,0x32U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x0U,0x4U,0x6e69616dU,0x0U,0x15U,0x20U,0x2bU,
 0x40047U,0x15U,0xbU,0x2aU,0x30047U,0x18U,0x18U,0x30047U,0x1eU,0x2U,0x50048U,0x1eU,
@@ -2623,8 +2712,8 @@ inline constexpr uint32_t kPassWords17[] = {
 0x5008eU,0x7U,0x2eU,0x1aU,0x2dU,0x50081U,0x7U,0x30U,0x2eU,0x31U,0x3003eU,0x2bU,
 0x30U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines17{{}};
-inline constexpr uint32_t kPassWords18[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines18{{}};
+inline constexpr uint32_t kPassWords19[] = {
 0x7230203U,0x10500U,0xd000bU,0x3c54U,0x0U,0x20011U,0x1U,0x20011U,0x32U,0x6000bU,0x1U,0x4c534c47U,
 0x6474732eU,0x3035342eU,0x0U,0x3000eU,0x0U,0x1U,0x13000fU,0x4U,0x4U,0x6e69616dU,0x0U,0xc3U,
 0xc7U,0xe3U,0xfaU,0x111U,0x3a3U,0x3abU,0x3b4U,0x3bcU,0x3d8U,0x3e5U,0x431U,0x668U,
@@ -5195,8 +5284,8 @@ inline constexpr uint32_t kPassWords18[] = {
 0x6b0U,0x50041U,0x6acU,0x6b1U,0x689U,0x383U,0x50051U,0x6U,0x6b2U,0x32f9U,0x2U,0x3003eU,
 0x6b1U,0x6b2U,0x200f9U,0x6a7U,0x200f8U,0x6a7U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines18{{}};
-inline constexpr uint32_t kPassWords19[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines19{{}};
+inline constexpr uint32_t kPassWords20[] = {
 0x7230203U,0x10500U,0xd000bU,0x1871U,0x0U,0x20011U,0x1U,0x20011U,0x32U,0x6000bU,0x1U,0x4c534c47U,
 0x6474732eU,0x3035342eU,0x0U,0x3000eU,0x0U,0x1U,0x21000fU,0x0U,0x4U,0x6e69616dU,0x0U,0x350U,
 0x3ccU,0x409U,0x4b8U,0x608U,0x705U,0x709U,0x70eU,0x711U,0x715U,0x718U,0x71cU,0x720U,
@@ -6088,8 +6177,8 @@ inline constexpr uint32_t kPassWords19[] = {
 0x50083U,0x6U,0xa6eU,0xf9U,0xa6dU,0x50085U,0x6U,0xa6fU,0xa67U,0xa6eU,0x3003eU,0xa65U,
 0xa6fU,0x200f9U,0xa70U,0x200f8U,0xa70U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines19{{}};
-inline constexpr uint32_t kPassWords20[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines20{{}};
+inline constexpr uint32_t kPassWords21[] = {
 0x7230203U,0x10500U,0xd000bU,0x2a9U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x10000fU,0x4U,0x4U,0x6e69616dU,0x0U,0xb8U,0xc1U,0xe5U,
 0xf8U,0x111U,0x130U,0x139U,0x140U,0x153U,0x1beU,0x1c1U,0x30010U,0x4U,0x7U,0x30010U,
@@ -6259,8 +6348,8 @@ inline constexpr uint32_t kPassWords20[] = {
 0x29eU,0x29bU,0x15bU,0x281U,0x18eU,0x3003eU,0x1beU,0x29eU,0x8000cU,0x6U,0x1c3U,0x1U,
 0x2bU,0x296U,0x2aU,0x2bU,0x3003eU,0x1c1U,0x1c3U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,1> kPassDefines20{{{"GRASS_AUXILIARY_OUTPUTS","0"},}};
-inline constexpr uint32_t kPassWords21[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,1> kPassDefines21{{{"GRASS_AUXILIARY_OUTPUTS","0"},}};
+inline constexpr uint32_t kPassWords22[] = {
 0x7230203U,0x10500U,0xd000bU,0x2f6U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x17000fU,0x4U,0x4U,0x6e69616dU,0x0U,0xb8U,0xc1U,0xe5U,
 0xf8U,0x111U,0x130U,0x139U,0x140U,0x153U,0x15fU,0x167U,0x16cU,0x170U,0x171U,0x173U,
@@ -6458,8 +6547,8 @@ inline constexpr uint32_t kPassWords21[] = {
 0x205U,0x50083U,0x6U,0x209U,0x2bU,0x208U,0x50041U,0x192U,0x20aU,0x173U,0x4aU,0x3003eU,
 0x20aU,0x209U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,1> kPassDefines21{{{"GRASS_AUXILIARY_OUTPUTS","1"},}};
-inline constexpr uint32_t kPassWords22[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,1> kPassDefines22{{{"GRASS_AUXILIARY_OUTPUTS","1"},}};
+inline constexpr uint32_t kPassWords23[] = {
 0x7230203U,0x10500U,0xd000bU,0x602U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0xe000fU,0x5U,0x4U,0x6e69616dU,0x0U,0x1eU,0x11bU,0x21fU,
 0x22eU,0x242U,0x2cbU,0x2f4U,0x325U,0x331U,0x60010U,0x4U,0x11U,0x100U,0x1U,0x1U,
@@ -6737,8 +6826,8 @@ inline constexpr uint32_t kPassWords22[] = {
 0x39dU,0x242U,0x20U,0x39cU,0x4003dU,0x18U,0x39eU,0x39dU,0x60041U,0x230U,0x39fU,0x331U,
 0x20U,0x39aU,0x3003eU,0x39fU,0x39eU,0x200f9U,0x3a2U,0x200f8U,0x3a2U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines22{{}};
-inline constexpr uint32_t kPassWords23[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines23{{}};
+inline constexpr uint32_t kPassWords24[] = {
 0x7230203U,0x10500U,0xd000bU,0xb5aU,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0xd000fU,0x5U,0x4U,0x6e69616dU,0x0U,0x4eU,0x1edU,0x3c2U,
 0x3c8U,0x3e2U,0x3eeU,0x413U,0x4a8U,0x60010U,0x4U,0x11U,0x40U,0x1U,0x1U,0x40047U,
@@ -7161,8 +7250,8 @@ inline constexpr uint32_t kPassWords23[] = {
 0x59U,0x3ccU,0x40190U,0x4a4U,0x4b0U,0x4adU,0x3003eU,0x4afU,0x4b0U,0x200f9U,0x4b3U,0x200f8U,
 0x4b3U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines23{{}};
-inline constexpr uint32_t kPassWords24[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines24{{}};
+inline constexpr uint32_t kPassWords25[] = {
 0x7230203U,0x10500U,0xd000bU,0x14U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x9U,0xbU,0x30010U,
 0x4U,0x7U,0x40047U,0x9U,0x1eU,0x0U,0x40047U,0xbU,0x1eU,0x0U,0x20013U,0x2U,
@@ -7173,8 +7262,8 @@ inline constexpr uint32_t kPassWords24[] = {
 0x11U,0xdU,0x1U,0x50051U,0x6U,0x12U,0xdU,0x2U,0x70050U,0x7U,0x13U,0x10U,
 0x11U,0x12U,0xfU,0x3003eU,0x9U,0x13U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines24{{}};
-inline constexpr uint32_t kPassWords25[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines25{{}};
+inline constexpr uint32_t kPassWords26[] = {
 0x7230203U,0x10500U,0xd000bU,0x7ddU,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0xb000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x62U,0x7dU,0x20fU,
 0x24dU,0x26aU,0x273U,0x30010U,0x4U,0x7U,0x40047U,0x55U,0x6U,0x10U,0x50048U,0x56U,
@@ -7492,8 +7581,8 @@ inline constexpr uint32_t kPassWords25[] = {
 0x0U,0x50051U,0x6U,0x276U,0x799U,0x1U,0x50051U,0x6U,0x277U,0x799U,0x2U,0x70050U,
 0x4fU,0x278U,0x275U,0x276U,0x277U,0x94U,0x3003eU,0x273U,0x278U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines25{{}};
-inline constexpr uint32_t kPassWords26[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines26{{}};
+inline constexpr uint32_t kPassWords27[] = {
 0x7230203U,0x10500U,0xd000bU,0x18U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x9000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x9U,0xbU,0x14U,
 0x15U,0x30010U,0x4U,0x7U,0x40047U,0x9U,0x1eU,0x0U,0x40047U,0xbU,0x1eU,0x0U,
@@ -7507,8 +7596,8 @@ inline constexpr uint32_t kPassWords26[] = {
 0x2U,0x70050U,0x7U,0x13U,0x10U,0x11U,0x12U,0xfU,0x3003eU,0x9U,0x13U,0x3003eU,
 0x15U,0x17U,0x3003eU,0x14U,0x17U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines26{{}};
-inline constexpr uint32_t kPassWords27[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines27{{}};
+inline constexpr uint32_t kPassWords28[] = {
 0x7230203U,0x10500U,0xd000bU,0x96eU,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0xe000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x5eU,0x79U,0x21bU,
 0x280U,0x288U,0x2d1U,0x2d8U,0x2daU,0x2e2U,0x30010U,0x4U,0x7U,0x40047U,0x51U,0x6U,
@@ -7929,8 +8018,8 @@ inline constexpr uint32_t kPassWords27[] = {
 0x1U,0x50051U,0x6U,0x2e9U,0x2e6U,0x2U,0x70050U,0x4bU,0x2eaU,0x2e7U,0x2e8U,0x2e9U,
 0x46U,0x3003eU,0x2e2U,0x2eaU,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines27{{}};
-inline constexpr uint32_t kPassWords28[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines28{{}};
+inline constexpr uint32_t kPassWords29[] = {
 0x7230203U,0x10500U,0xd000bU,0x62U,0x0U,0x20011U,0x1U,0x20011U,0x32U,0x6000bU,0x1U,0x4c534c47U,
 0x6474732eU,0x3035342eU,0x0U,0x3000eU,0x0U,0x1U,0x9000fU,0x5U,0x4U,0x6e69616dU,0x0U,0xdU,
 0x16U,0x25U,0x37U,0x60010U,0x4U,0x11U,0x8U,0x8U,0x1U,0x40047U,0xdU,0xbU,
@@ -7969,15 +8058,15 @@ inline constexpr uint32_t kPassWords28[] = {
 0x54U,0x51U,0x52U,0x53U,0x50U,0x40063U,0x46U,0x11U,0x54U,0x200f9U,0x58U,0x200f8U,
 0x58U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines28{{}};
-inline constexpr uint32_t kPassWords29[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines29{{}};
+inline constexpr uint32_t kPassWords30[] = {
 0x7230203U,0x10500U,0xd000bU,0x6U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x5000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x30010U,0x4U,0x7U,
 0x20013U,0x2U,0x30021U,0x3U,0x2U,0x50036U,0x2U,0x4U,0x0U,0x3U,0x200f8U,0x5U,
 0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines29{{}};
-inline constexpr uint32_t kPassWords30[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines30{{}};
+inline constexpr uint32_t kPassWords31[] = {
 0x7230203U,0x10300U,0xd000bU,0x32U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x0U,0x4U,0x6e69616dU,0x0U,0x15U,0x20U,0x2bU,
 0x40047U,0x15U,0xbU,0x2aU,0x30047U,0x1eU,0x2U,0x50048U,0x1eU,0x0U,0xbU,0x0U,
@@ -8001,8 +8090,8 @@ inline constexpr uint32_t kPassWords30[] = {
 0x7U,0x2eU,0x1aU,0x2dU,0x50081U,0x7U,0x30U,0x2eU,0x31U,0x3003eU,0x2bU,0x30U,
 0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines30{{}};
-inline constexpr uint32_t kPassWords31[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines31{{}};
+inline constexpr uint32_t kPassWords32[] = {
 0x7230203U,0x10300U,0xd000bU,0x3a2fU,0x0U,0x20011U,0x1U,0x20011U,0x32U,0x6000bU,0x1U,0x4c534c47U,
 0x6474732eU,0x3035342eU,0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x644U,
 0x665U,0x30010U,0x4U,0x7U,0x40047U,0xc4U,0x21U,0x2U,0x40047U,0xc4U,0x22U,0x0U,
@@ -10376,8 +10465,8 @@ inline constexpr uint32_t kPassWords31[] = {
 0x68cU,0x50041U,0x688U,0x68dU,0x665U,0x370U,0x50051U,0x6U,0x68eU,0x30d4U,0x2U,0x3003eU,
 0x68dU,0x68eU,0x200f9U,0x683U,0x200f8U,0x683U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines31{{}};
-inline constexpr uint32_t kPassWords32[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines32{{}};
+inline constexpr uint32_t kPassWords33[] = {
 0x7230203U,0x10300U,0xd000bU,0x23U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x9000fU,0x0U,0x4U,0x6e69616dU,0x0U,0xdU,0x18U,0x1fU,
 0x21U,0x30047U,0xbU,0x2U,0x50048U,0xbU,0x0U,0xbU,0x0U,0x50048U,0xbU,0x1U,
@@ -10398,8 +10487,8 @@ inline constexpr uint32_t kPassWords32[] = {
 0x3003eU,0x1cU,0x1aU,0x4003dU,0x1dU,0x22U,0x21U,0x3003eU,0x1fU,0x22U,0x100fdU,0x10038U,
 
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines32{{}};
-inline constexpr uint32_t kPassWords33[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines33{{}};
+inline constexpr uint32_t kPassWords34[] = {
 0x7230203U,0x10300U,0xd000bU,0x65U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x42U,0x53U,0x30010U,
 0x4U,0x7U,0x40047U,0x42U,0x1eU,0x5U,0x40047U,0x53U,0x1eU,0x0U,0x20013U,0x2U,
@@ -10415,8 +10504,8 @@ inline constexpr uint32_t kPassWords33[] = {
 0x0U,0x50051U,0x6U,0x56U,0x51U,0x1U,0x50051U,0x6U,0x57U,0x51U,0x2U,0x70050U,
 0x1eU,0x58U,0x55U,0x56U,0x57U,0x3cU,0x3003eU,0x53U,0x58U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines33{{}};
-inline constexpr uint32_t kPassWords34[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines34{{}};
+inline constexpr uint32_t kPassWords35[] = {
 0x7230203U,0x10300U,0xd000bU,0xb0U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x6fU,0x80U,0x30010U,
 0x4U,0x7U,0x40047U,0x6fU,0x1eU,0x5U,0x40047U,0x80U,0x1eU,0x0U,0x20013U,0x2U,
@@ -10443,8 +10532,8 @@ inline constexpr uint32_t kPassWords34[] = {
 0x50051U,0x6U,0xaaU,0xa6U,0x1U,0x50051U,0x6U,0xabU,0xa6U,0x2U,0x70050U,0xdU,
 0xacU,0xa9U,0xaaU,0xabU,0xa8U,0x3003eU,0x80U,0xacU,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines34{{}};
-inline constexpr uint32_t kPassWords35[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines35{{}};
+inline constexpr uint32_t kPassWords36[] = {
 0x7230203U,0x10300U,0xd000bU,0x20U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x9000fU,0x0U,0x4U,0x6e69616dU,0x0U,0xdU,0x18U,0x1dU,
 0x1eU,0x30047U,0xbU,0x2U,0x50048U,0xbU,0x0U,0xbU,0x0U,0x50048U,0xbU,0x1U,
@@ -10464,8 +10553,8 @@ inline constexpr uint32_t kPassWords35[] = {
 0x3003eU,0x1cU,0x1aU,0x4003dU,0x7U,0x1fU,0x1eU,0x3003eU,0x1dU,0x1fU,0x100fdU,0x10038U,
 
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines35{{}};
-inline constexpr uint32_t kPassWords36[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines36{{}};
+inline constexpr uint32_t kPassWords37[] = {
 0x7230203U,0x10300U,0xd000bU,0x61U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x42U,0x53U,0x30010U,
 0x4U,0x7U,0x40047U,0x42U,0x1eU,0x5U,0x40047U,0x53U,0x1eU,0x0U,0x20013U,0x2U,
@@ -10480,8 +10569,8 @@ inline constexpr uint32_t kPassWords36[] = {
 0x8000cU,0x1eU,0x51U,0x1U,0x2bU,0x4dU,0x5fU,0x60U,0x3003eU,0x53U,0x51U,0x100fdU,
 0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines36{{}};
-inline constexpr uint32_t kPassWords37[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines37{{}};
+inline constexpr uint32_t kPassWords38[] = {
 0x7230203U,0x10300U,0xd000bU,0xabU,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x6eU,0x7fU,0x30010U,
 0x4U,0x7U,0x40047U,0x6eU,0x1eU,0x5U,0x40047U,0x7fU,0x1eU,0x0U,0x20013U,0x2U,
@@ -10507,8 +10596,8 @@ inline constexpr uint32_t kPassWords37[] = {
 0x6U,0xa6U,0xa1U,0x2U,0x70050U,0xdU,0xa7U,0xa4U,0xa5U,0xa6U,0xa3U,0x3003eU,
 0x7fU,0xa7U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines37{{}};
-inline constexpr uint32_t kPassWords38[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines38{{}};
+inline constexpr uint32_t kPassWords39[] = {
 0x7230203U,0x10300U,0xd000bU,0x29U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0xb000fU,0x0U,0x4U,0x6e69616dU,0x0U,0xdU,0x18U,0x1fU,
 0x21U,0x25U,0x27U,0x30047U,0xbU,0x2U,0x50048U,0xbU,0x0U,0xbU,0x0U,0x50048U,
@@ -10532,8 +10621,8 @@ inline constexpr uint32_t kPassWords38[] = {
 0x21U,0x3003eU,0x1fU,0x22U,0x4003dU,0x23U,0x28U,0x27U,0x3003eU,0x25U,0x28U,0x100fdU,
 0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines38{{}};
-inline constexpr uint32_t kPassWords39[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines39{{}};
+inline constexpr uint32_t kPassWords40[] = {
 0x7230203U,0x10300U,0xd000bU,0x70U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x4dU,0x5eU,0x30010U,
 0x4U,0x7U,0x40047U,0x4dU,0x1eU,0x5U,0x40047U,0x5eU,0x1eU,0x0U,0x20013U,0x2U,
@@ -10549,8 +10638,8 @@ inline constexpr uint32_t kPassWords39[] = {
 0x0U,0x50051U,0x6U,0x61U,0x5cU,0x1U,0x50051U,0x6U,0x62U,0x5cU,0x2U,0x70050U,
 0x1eU,0x63U,0x60U,0x61U,0x62U,0x3cU,0x3003eU,0x5eU,0x63U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines39{{}};
-inline constexpr uint32_t kPassWords40[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines40{{}};
+inline constexpr uint32_t kPassWords41[] = {
 0x7230203U,0x10300U,0xd000bU,0xbaU,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x79U,0x8aU,0x30010U,
 0x4U,0x7U,0x40047U,0x79U,0x1eU,0x5U,0x40047U,0x8aU,0x1eU,0x0U,0x20013U,0x2U,
@@ -10577,8 +10666,8 @@ inline constexpr uint32_t kPassWords40[] = {
 0x50051U,0x6U,0xb4U,0xb0U,0x1U,0x50051U,0x6U,0xb5U,0xb0U,0x2U,0x70050U,0xdU,
 0xb6U,0xb3U,0xb4U,0xb5U,0xb2U,0x3003eU,0x8aU,0xb6U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines40{{}};
-inline constexpr uint32_t kPassWords41[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines41{{}};
+inline constexpr uint32_t kPassWords42[] = {
 0x7230203U,0x10300U,0xd000bU,0x26U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0xb000fU,0x0U,0x4U,0x6e69616dU,0x0U,0xdU,0x18U,0x1fU,
 0x21U,0x23U,0x24U,0x30047U,0xbU,0x2U,0x50048U,0xbU,0x0U,0xbU,0x0U,0x50048U,
@@ -10601,8 +10690,8 @@ inline constexpr uint32_t kPassWords41[] = {
 0x21U,0x3003eU,0x1fU,0x22U,0x4003dU,0x7U,0x25U,0x24U,0x3003eU,0x23U,0x25U,0x100fdU,
 0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines41{{}};
-inline constexpr uint32_t kPassWords42[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines42{{}};
+inline constexpr uint32_t kPassWords43[] = {
 0x7230203U,0x10300U,0xd000bU,0x74U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x48U,0x4cU,0x65U,
 0x30010U,0x4U,0x7U,0x40047U,0x45U,0x21U,0x0U,0x40047U,0x45U,0x22U,0x0U,0x40047U,
@@ -10624,8 +10713,8 @@ inline constexpr uint32_t kPassWords42[] = {
 0x5aU,0x8000cU,0x1eU,0x63U,0x1U,0x2bU,0x5fU,0x72U,0x73U,0x3003eU,0x65U,0x63U,
 0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines42{{}};
-inline constexpr uint32_t kPassWords43[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines43{{}};
+inline constexpr uint32_t kPassWords44[] = {
 0x7230203U,0x10300U,0xd000bU,0xbdU,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x74U,0x78U,0x90U,
 0x30010U,0x4U,0x7U,0x40047U,0x71U,0x21U,0x0U,0x40047U,0x71U,0x22U,0x0U,0x40047U,
@@ -10658,8 +10747,8 @@ inline constexpr uint32_t kPassWords43[] = {
 0x50051U,0x6U,0xb7U,0xb2U,0x2U,0x70050U,0xdU,0xb8U,0xb5U,0xb6U,0xb7U,0xb4U,
 0x3003eU,0x90U,0xb8U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines43{{}};
-inline constexpr uint32_t kPassWords44[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines44{{}};
+inline constexpr uint32_t kPassWords45[] = {
 0x7230203U,0x10300U,0xd000bU,0x78U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x48U,0x4cU,0x68U,
 0x30010U,0x4U,0x7U,0x40047U,0x45U,0x21U,0x0U,0x40047U,0x45U,0x22U,0x0U,0x40047U,
@@ -10682,8 +10771,8 @@ inline constexpr uint32_t kPassWords44[] = {
 0x1eU,0x66U,0x1U,0x2bU,0x62U,0x76U,0x77U,0x3003eU,0x68U,0x66U,0x100fdU,0x10038U,
 
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines44{{}};
-inline constexpr uint32_t kPassWords45[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines45{{}};
+inline constexpr uint32_t kPassWords46[] = {
 0x7230203U,0x10300U,0xd000bU,0xc1U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x74U,0x78U,0x93U,
 0x30010U,0x4U,0x7U,0x40047U,0x71U,0x21U,0x0U,0x40047U,0x71U,0x22U,0x0U,0x40047U,
@@ -10717,8 +10806,8 @@ inline constexpr uint32_t kPassWords45[] = {
 0xbaU,0xb5U,0x2U,0x70050U,0xdU,0xbbU,0xb8U,0xb9U,0xbaU,0xb7U,0x3003eU,0x93U,
 0xbbU,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines45{{}};
-inline constexpr uint32_t kPassWords46[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines46{{}};
+inline constexpr uint32_t kPassWords47[] = {
 0x7230203U,0x10300U,0xd000bU,0x71U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x48U,0x5fU,0x30010U,
 0x4U,0x7U,0x40047U,0x45U,0x21U,0x0U,0x40047U,0x45U,0x22U,0x0U,0x40047U,0x48U,
@@ -10739,8 +10828,8 @@ inline constexpr uint32_t kPassWords46[] = {
 0x70050U,0x1eU,0x64U,0x61U,0x62U,0x63U,0x3cU,0x3003eU,0x5fU,0x64U,0x100fdU,0x10038U,
 
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines46{{}};
-inline constexpr uint32_t kPassWords47[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines47{{}};
+inline constexpr uint32_t kPassWords48[] = {
 0x7230203U,0x10300U,0xd000bU,0xbbU,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x74U,0x8bU,0x30010U,
 0x4U,0x7U,0x40047U,0x71U,0x21U,0x0U,0x40047U,0x71U,0x22U,0x0U,0x40047U,0x74U,
@@ -10771,8 +10860,8 @@ inline constexpr uint32_t kPassWords47[] = {
 0x0U,0x50051U,0x6U,0xb5U,0xb1U,0x1U,0x50051U,0x6U,0xb6U,0xb1U,0x2U,0x70050U,
 0xdU,0xb7U,0xb4U,0xb5U,0xb6U,0xb3U,0x3003eU,0x8bU,0xb7U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines47{{}};
-inline constexpr uint32_t kPassWords48[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines48{{}};
+inline constexpr uint32_t kPassWords49[] = {
 0x7230203U,0x10300U,0xd000bU,0x74U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x48U,0x4cU,0x65U,
 0x30010U,0x4U,0x7U,0x40047U,0x45U,0x21U,0x0U,0x40047U,0x45U,0x22U,0x0U,0x40047U,
@@ -10794,8 +10883,8 @@ inline constexpr uint32_t kPassWords48[] = {
 0x5aU,0x8000cU,0x1eU,0x63U,0x1U,0x2bU,0x5fU,0x72U,0x73U,0x3003eU,0x65U,0x63U,
 0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines48{{}};
-inline constexpr uint32_t kPassWords49[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines49{{}};
+inline constexpr uint32_t kPassWords50[] = {
 0x7230203U,0x10300U,0xd000bU,0xbdU,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x74U,0x78U,0x90U,
 0x30010U,0x4U,0x7U,0x40047U,0x71U,0x21U,0x0U,0x40047U,0x71U,0x22U,0x0U,0x40047U,
@@ -10828,8 +10917,8 @@ inline constexpr uint32_t kPassWords49[] = {
 0x50051U,0x6U,0xb7U,0xb2U,0x2U,0x70050U,0xdU,0xb8U,0xb5U,0xb6U,0xb7U,0xb4U,
 0x3003eU,0x90U,0xb8U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines49{{}};
-inline constexpr uint32_t kPassWords50[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines50{{}};
+inline constexpr uint32_t kPassWords51[] = {
 0x7230203U,0x10300U,0xd000bU,0x23U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x9000fU,0x0U,0x4U,0x6e69616dU,0x0U,0xdU,0x18U,0x1fU,
 0x21U,0x30047U,0xbU,0x2U,0x50048U,0xbU,0x0U,0xbU,0x0U,0x50048U,0xbU,0x1U,
@@ -10850,8 +10939,8 @@ inline constexpr uint32_t kPassWords50[] = {
 0x3003eU,0x1cU,0x1aU,0x4003dU,0x1dU,0x22U,0x21U,0x3003eU,0x1fU,0x22U,0x100fdU,0x10038U,
 
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines50{{}};
-inline constexpr uint32_t kPassWords51[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines51{{}};
+inline constexpr uint32_t kPassWords52[] = {
 0x7230203U,0x10300U,0xd000bU,0x6dU,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x48U,0x5bU,0x30010U,
 0x4U,0x7U,0x40047U,0x45U,0x21U,0x0U,0x40047U,0x45U,0x22U,0x0U,0x40047U,0x48U,
@@ -10872,8 +10961,8 @@ inline constexpr uint32_t kPassWords51[] = {
 0x70050U,0x1eU,0x60U,0x5dU,0x5eU,0x5fU,0x3cU,0x3003eU,0x5bU,0x60U,0x100fdU,0x10038U,
 
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines51{{}};
-inline constexpr uint32_t kPassWords52[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines52{{}};
+inline constexpr uint32_t kPassWords53[] = {
 0x7230203U,0x10300U,0xd000bU,0xb7U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x74U,0x87U,0x30010U,
 0x4U,0x7U,0x40047U,0x71U,0x21U,0x0U,0x40047U,0x71U,0x22U,0x0U,0x40047U,0x74U,
@@ -10904,8 +10993,8 @@ inline constexpr uint32_t kPassWords52[] = {
 0x0U,0x50051U,0x6U,0xb1U,0xadU,0x1U,0x50051U,0x6U,0xb2U,0xadU,0x2U,0x70050U,
 0xdU,0xb3U,0xb0U,0xb1U,0xb2U,0xafU,0x3003eU,0x87U,0xb3U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines52{{}};
-inline constexpr uint32_t kPassWords53[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines53{{}};
+inline constexpr uint32_t kPassWords54[] = {
 0x7230203U,0x10300U,0xd000bU,0x68U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x48U,0x5aU,0x30010U,
 0x4U,0x7U,0x40047U,0x45U,0x21U,0x0U,0x40047U,0x45U,0x22U,0x0U,0x40047U,0x48U,
@@ -10923,8 +11012,8 @@ inline constexpr uint32_t kPassWords53[] = {
 0x50081U,0x1eU,0x54U,0x53U,0x4fU,0x8000cU,0x1eU,0x58U,0x1U,0x2bU,0x54U,0x66U,
 0x67U,0x3003eU,0x5aU,0x58U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines53{{}};
-inline constexpr uint32_t kPassWords54[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines54{{}};
+inline constexpr uint32_t kPassWords55[] = {
 0x7230203U,0x10300U,0xd000bU,0xb2U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x7000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x74U,0x86U,0x30010U,
 0x4U,0x7U,0x40047U,0x71U,0x21U,0x0U,0x40047U,0x71U,0x22U,0x0U,0x40047U,0x74U,
@@ -10953,8 +11042,8 @@ inline constexpr uint32_t kPassWords54[] = {
 0x6U,0xacU,0xa8U,0x1U,0x50051U,0x6U,0xadU,0xa8U,0x2U,0x70050U,0xdU,0xaeU,
 0xabU,0xacU,0xadU,0xaaU,0x3003eU,0x86U,0xaeU,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines54{{}};
-inline constexpr uint32_t kPassWords55[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines55{{}};
+inline constexpr uint32_t kPassWords56[] = {
 0x7230203U,0x10300U,0xd000bU,0x78U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x48U,0x4cU,0x68U,
 0x30010U,0x4U,0x7U,0x40047U,0x45U,0x21U,0x0U,0x40047U,0x45U,0x22U,0x0U,0x40047U,
@@ -10977,8 +11066,8 @@ inline constexpr uint32_t kPassWords55[] = {
 0x1eU,0x66U,0x1U,0x2bU,0x62U,0x76U,0x77U,0x3003eU,0x68U,0x66U,0x100fdU,0x10038U,
 
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines55{{}};
-inline constexpr uint32_t kPassWords56[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines56{{}};
+inline constexpr uint32_t kPassWords57[] = {
 0x7230203U,0x10300U,0xd000bU,0xc1U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x74U,0x78U,0x93U,
 0x30010U,0x4U,0x7U,0x40047U,0x71U,0x21U,0x0U,0x40047U,0x71U,0x22U,0x0U,0x40047U,
@@ -11012,8 +11101,8 @@ inline constexpr uint32_t kPassWords56[] = {
 0xbaU,0xb5U,0x2U,0x70050U,0xdU,0xbbU,0xb8U,0xb9U,0xbaU,0xb7U,0x3003eU,0x93U,
 0xbbU,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines56{{}};
-inline constexpr uint32_t kPassWords57[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines57{{}};
+inline constexpr uint32_t kPassWords58[] = {
 0x7230203U,0x10300U,0xd000bU,0x73U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x48U,0x4dU,0x61U,
 0x30010U,0x4U,0x7U,0x40047U,0x45U,0x21U,0x0U,0x40047U,0x45U,0x22U,0x0U,0x40047U,
@@ -11035,8 +11124,8 @@ inline constexpr uint32_t kPassWords57[] = {
 0x50051U,0x6U,0x64U,0x5fU,0x1U,0x50051U,0x6U,0x65U,0x5fU,0x2U,0x70050U,0x1eU,
 0x66U,0x63U,0x64U,0x65U,0x3cU,0x3003eU,0x61U,0x66U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines57{{}};
-inline constexpr uint32_t kPassWords58[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines58{{}};
+inline constexpr uint32_t kPassWords59[] = {
 0x7230203U,0x10300U,0xd000bU,0xbdU,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x74U,0x79U,0x8dU,
 0x30010U,0x4U,0x7U,0x40047U,0x71U,0x21U,0x0U,0x40047U,0x71U,0x22U,0x0U,0x40047U,
@@ -11069,8 +11158,8 @@ inline constexpr uint32_t kPassWords58[] = {
 0x6U,0xb7U,0xb3U,0x1U,0x50051U,0x6U,0xb8U,0xb3U,0x2U,0x70050U,0xdU,0xb9U,
 0xb6U,0xb7U,0xb8U,0xb5U,0x3003eU,0x8dU,0xb9U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines58{{}};
-inline constexpr uint32_t kPassWords59[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines59{{}};
+inline constexpr uint32_t kPassWords60[] = {
 0x7230203U,0x10300U,0xd000bU,0x77U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x48U,0x4cU,0x68U,
 0x30010U,0x4U,0x7U,0x40047U,0x45U,0x21U,0x0U,0x40047U,0x45U,0x22U,0x0U,0x40047U,
@@ -11094,8 +11183,8 @@ inline constexpr uint32_t kPassWords59[] = {
 0x61U,0x5dU,0x8000cU,0x1eU,0x66U,0x1U,0x2bU,0x62U,0x75U,0x76U,0x3003eU,0x68U,
 0x66U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines59{{}};
-inline constexpr uint32_t kPassWords60[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines60{{}};
+inline constexpr uint32_t kPassWords61[] = {
 0x7230203U,0x10300U,0xd000bU,0xc0U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x74U,0x78U,0x93U,
 0x30010U,0x4U,0x7U,0x40047U,0x71U,0x21U,0x0U,0x40047U,0x71U,0x22U,0x0U,0x40047U,
@@ -11130,8 +11219,8 @@ inline constexpr uint32_t kPassWords60[] = {
 0xb5U,0x2U,0x70050U,0xdU,0xbbU,0xb8U,0xb9U,0xbaU,0xb7U,0x3003eU,0x93U,0xbbU,
 0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines60{{}};
-inline constexpr uint32_t kPassWords61[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines61{{}};
+inline constexpr uint32_t kPassWords62[] = {
 0x7230203U,0x10300U,0xd000bU,0x77U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x48U,0x4cU,0x68U,
 0x30010U,0x4U,0x7U,0x40047U,0x45U,0x21U,0x0U,0x40047U,0x45U,0x22U,0x0U,0x40047U,
@@ -11155,8 +11244,8 @@ inline constexpr uint32_t kPassWords61[] = {
 0x61U,0x5dU,0x8000cU,0x1eU,0x66U,0x1U,0x2bU,0x62U,0x75U,0x76U,0x3003eU,0x68U,
 0x66U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines61{{}};
-inline constexpr uint32_t kPassWords62[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines62{{}};
+inline constexpr uint32_t kPassWords63[] = {
 0x7230203U,0x10300U,0xd000bU,0xc0U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x74U,0x78U,0x93U,
 0x30010U,0x4U,0x7U,0x40047U,0x71U,0x21U,0x0U,0x40047U,0x71U,0x22U,0x0U,0x40047U,
@@ -11191,8 +11280,8 @@ inline constexpr uint32_t kPassWords62[] = {
 0xb5U,0x2U,0x70050U,0xdU,0xbbU,0xb8U,0xb9U,0xbaU,0xb7U,0x3003eU,0x93U,0xbbU,
 0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines62{{}};
-inline constexpr uint32_t kPassWords63[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines63{{}};
+inline constexpr uint32_t kPassWords64[] = {
 0x7230203U,0x10300U,0xd000bU,0x6dU,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x48U,0x4cU,0x5fU,
 0x30010U,0x4U,0x7U,0x40047U,0x45U,0x21U,0x0U,0x40047U,0x45U,0x22U,0x0U,0x40047U,
@@ -11212,8 +11301,8 @@ inline constexpr uint32_t kPassWords63[] = {
 0x59U,0x58U,0x54U,0x8000cU,0x1eU,0x5dU,0x1U,0x2bU,0x59U,0x6bU,0x6cU,0x3003eU,
 0x5fU,0x5dU,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines63{{}};
-inline constexpr uint32_t kPassWords64[] = {
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines64{{}};
+inline constexpr uint32_t kPassWords65[] = {
 0x7230203U,0x10300U,0xd000bU,0xb7U,0x0U,0x20011U,0x1U,0x6000bU,0x1U,0x4c534c47U,0x6474732eU,0x3035342eU,
 0x0U,0x3000eU,0x0U,0x1U,0x8000fU,0x4U,0x4U,0x6e69616dU,0x0U,0x74U,0x78U,0x8bU,
 0x30010U,0x4U,0x7U,0x40047U,0x71U,0x21U,0x0U,0x40047U,0x71U,0x22U,0x0U,0x40047U,
@@ -11244,7 +11333,7 @@ inline constexpr uint32_t kPassWords64[] = {
 0xadU,0x1U,0x50051U,0x6U,0xb2U,0xadU,0x2U,0x70050U,0xdU,0xb3U,0xb0U,0xb1U,
 0xb2U,0xafU,0x3003eU,0x8bU,0xb3U,0x100fdU,0x10038U,
 };
-inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines64{{}};
+inline constexpr std::array<std::pair<std::string_view,std::string_view>,0> kPassDefines65{{}};
 inline const PassShaderArtifact kBuiltinPassArtifacts[] = {
 {static_cast<SpirvStage>(3),R"passsrc(#version 450
 layout(set=0,binding=0) uniform texture2D native_depth;
@@ -12266,6 +12355,60 @@ void main(){
 )passsrc",kPassDefines12,kPassWords12,2},
 {static_cast<SpirvStage>(3),R"passsrc(#version 450
 layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
+layout(set=0,binding=0) uniform texture2D display_ui;
+layout(set=0,binding=1) uniform texture2D display_scene;
+layout(set=0,binding=2) uniform texture2D upscaled;
+layout(set=0,binding=3,rgba16f) uniform writeonly image2D composed;
+layout(set=0,binding=4) uniform sampler point_sampler;
+layout(push_constant) uniform OverlayState {
+    uvec2 extent;
+    uvec2 display_extent;
+    uint linear_output;
+    uint reserved0;
+    uint reserved1;
+    uint reserved2;
+} pc;
+
+vec3 oot3d_srgb_to_linear(vec3 value) {
+    value=max(value,vec3(0.0));
+    bvec3 cutoff=lessThanEqual(value,vec3(0.04045));
+    vec3 lower=value/12.92;
+    vec3 higher=pow((value+0.055)/1.055,vec3(2.4));
+    return mix(higher,lower,cutoff);
+}
+
+void main(){
+    ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
+    if(any(greaterThanEqual(pixel,ivec2(pc.extent)))) return;
+    vec4 color=texelFetch(sampler2D(upscaled,point_sampler),pixel,0);
+    // The bilinear footprint of this texel in the display
+    // (ResolveNativeUiOverlayTap): its texels the UI changed carry the UI.
+    vec2 position=(vec2(pixel)+0.5)*vec2(pc.display_extent)/vec2(pc.extent)-0.5;
+    vec2 first=floor(position);
+    vec2 fraction=position-first;
+    ivec2 limit=ivec2(pc.display_extent)-1;
+    vec3 ui=vec3(0.0);
+    float coverage=0.0;
+    for(int y=0;y<2;++y){
+        for(int x=0;x<2;++x){
+            ivec2 texel=clamp(ivec2(first)+ivec2(x,y),ivec2(0),limit);
+            vec3 shown=texelFetch(sampler2D(display_ui,point_sampler),texel,0).rgb;
+            vec3 scene=texelFetch(sampler2D(display_scene,point_sampler),texel,0).rgb;
+            if(any(notEqual(shown,scene))){
+                float weight=(x==0 ? 1.0-fraction.x : fraction.x)*(y==0 ? 1.0-fraction.y : fraction.y);
+                ui+=weight*(pc.linear_output!=0u ? oot3d_srgb_to_linear(shown) : shown);
+                coverage+=weight;
+            }
+        }
+    }
+    // Where the UI changed nothing the upscaled scene is kept as it is.
+    if(coverage>0.0)
+        color.rgb=mix(color.rgb,ui/coverage,coverage);
+    imageStore(composed,pixel,color);
+}
+)passsrc",kPassDefines13,kPassWords13,2},
+{static_cast<SpirvStage>(3),R"passsrc(#version 450
+layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
 layout(set=0,binding=0) uniform texture2D scene_color;
 layout(set=0,binding=1) uniform texture2D ao_visibility;
 layout(set=0,binding=2) uniform texture2D filtered_reflection;
@@ -12603,7 +12746,7 @@ void main(){
     }
     imageStore(composite_output,pixel,color);
 }
-)passsrc",kPassDefines13,kPassWords13,2},
+)passsrc",kPassDefines14,kPassWords14,2},
 {static_cast<SpirvStage>(3),R"passsrc(#version 450
 layout(push_constant) uniform SmaaState {
     uvec2 extent;
@@ -13993,7 +14136,7 @@ void main() {
         uv,offset,smaa_color);
     imageStore(smaa_edges,pixel,vec4(edges,0.0,1.0));
 }
-)passsrc",kPassDefines14,kPassWords14,2},
+)passsrc",kPassDefines15,kPassWords15,2},
 {static_cast<SpirvStage>(3),R"passsrc(#version 450
 layout(push_constant) uniform SmaaState {
     uvec2 extent;
@@ -15388,7 +15531,7 @@ void main() {
         vec4(0.0));
     imageStore(smaa_weights,pixel,weights);
 }
-)passsrc",kPassDefines15,kPassWords15,2},
+)passsrc",kPassDefines16,kPassWords16,2},
 {static_cast<SpirvStage>(3),R"passsrc(#version 450
 layout(push_constant) uniform SmaaState {
     uvec2 extent;
@@ -16779,7 +16922,7 @@ void main() {
         uv,offset,smaa_color,smaa_weights);
     imageStore(smaa_output,pixel,color);
 }
-)passsrc",kPassDefines16,kPassWords16,2},
+)passsrc",kPassDefines17,kPassWords17,2},
 {static_cast<SpirvStage>(1),R"passsrc(
 #version 450
 layout(location = 0) out vec2 output_uv;
@@ -16790,7 +16933,7 @@ void main() {
     gl_Position = vec4(position, 0.0, 1.0);
     output_uv = position * 0.5 + 0.5;
 }
-)passsrc",kPassDefines17,kPassWords17,2},
+)passsrc",kPassDefines18,kPassWords18,2},
 {static_cast<SpirvStage>(2),R"passsrc(
 #version 450
 layout(set = 0, binding = 0) uniform texture2D physical_scanout;
@@ -17211,7 +17354,7 @@ void main() {
     if(scanout.encode_srgb!=0u)
         output_color.rgb=oot3d_linear_to_srgb(output_color.rgb);
 }
-)passsrc",kPassDefines18,kPassWords18,2},
+)passsrc",kPassDefines19,kPassWords19,2},
 {static_cast<SpirvStage>(1),R"passsrc(#version 450
 
 struct ToonSurfaceParameters {
@@ -17849,260 +17992,6 @@ void main() {
     float root_distance = length(eye - in_base_height.xyz);
     blade_rim_weight = rim_distance.z * (1.0 - smoothstep(rim_distance.x, rim_distance.y, root_distance));
 }
-)passsrc",kPassDefines19,kPassWords19,2},
-{static_cast<SpirvStage>(2),R"passsrc(#version 450
-
-struct ToonSurfaceParameters {
-    vec4 control;
-    vec4 shadow;
-    vec4 rim;
-    vec4 flags;
-    vec4 levels[2];
-    vec4 thresholds[2];
-};
-
-float oot3d_toon_transition(float edge, float softness, float guide) {
-    // GLSL smoothstep has undefined results for equal edges (hard bands).
-    return softness > 0.0 ? smoothstep(edge - softness, edge + softness, guide)
-                          : step(edge, guide);
-}
-
-float oot3d_toon_band_luminance(float guide, ToonSurfaceParameters p) {
-    if (p.control.w < 0.5) {
-        float scaled = guide * p.control.x;
-        return (floor(scaled) + oot3d_toon_transition(0.5, p.control.y, fract(scaled))) / p.control.x;
-    }
-    int count = int(p.control.x);
-    float bandLuminance = p.levels[0][0];
-    for (int i = 0; i < count; ++i) {
-        float edge = p.thresholds[i / 4][i % 4];
-        float spacing = 1.0;
-        if (count > 1) {
-            int previous = max(i - 1, 0), next = min(i + 1, count - 1);
-            float before = edge - p.thresholds[previous / 4][previous % 4];
-            float after = p.thresholds[next / 4][next % 4] - edge;
-            spacing = i == 0 ? after : (i == count - 1 ? before : min(before, after));
-        }
-        float delta = p.levels[(i + 1) / 4][(i + 1) % 4] - p.levels[i / 4][i % 4];
-        bandLuminance += delta * oot3d_toon_transition(edge, p.control.y * max(spacing, 0.001), guide);
-    }
-    return clamp(bandLuminance, 0.0, 1.0);
-}
-
-vec3 oot3d_toon_banded_color(vec3 sourceColor, vec3 lighting,
-                            float hasLighting, bool shadowTint, ToonSurfaceParameters p) {
-    const vec3 lumaWeights = vec3(0.2126, 0.7152, 0.0722);
-    float guide = clamp(dot(lighting, lumaWeights), 0.0, 1.0);
-    float bandLuminance = oot3d_toon_band_luminance(guide, p);
-    float lightingScale = mix(1.0, clamp(bandLuminance / max(guide, 0.05), 0.0, 2.0), hasLighting);
-    vec3 banded = sourceColor * lightingScale;
-    banded = mix(vec3(dot(banded, lumaWeights)), banded, p.control.z);
-    if (shadowTint) {
-        float shadowMask = (1.0 - smoothstep(0.0, 0.55, bandLuminance)) * hasLighting;
-        banded = mix(banded, banded * p.shadow.rgb, shadowMask * p.shadow.w);
-    }
-    return banded;
-}
-
-vec3 oot3d_toon_rim(vec3 normal, vec3 viewDirection, ToonSurfaceParameters p) {
-    normal = dot(normal, normal) > 0.000001 ? normalize(normal) : vec3(0.0, 0.0, 1.0);
-    viewDirection = dot(viewDirection, viewDirection) > 0.000001
-        ? normalize(viewDirection) : vec3(0.0, 0.0, 1.0);
-    float rim = pow(clamp(1.0 - abs(dot(normal, viewDirection)), 0.0, 1.0), p.flags.z);
-    return p.rim.rgb * (rim * p.rim.w);
-}
-
-vec3 oot3d_toon_surface_response(vec3 sourceColor, vec3 lighting,
-                                vec3 normal, vec3 viewDirection, ToonSurfaceParameters p) {
-    if (p.flags.x < 0.5) return sourceColor;
-    return clamp(oot3d_toon_banded_color(sourceColor, lighting, p.flags.y, true, p)
-        + oot3d_toon_rim(normal, viewDirection, p), 0.0, 1.0);
-}
-
-// Terrain-cover extensions inherit diffuse bands, not an independent rim.
-// The response intentionally has no normal or viewing-direction argument.
-vec3 oot3d_toon_diffuse_response(vec3 sourceColor, vec3 lighting, ToonSurfaceParameters p) {
-    if (p.flags.x < 0.5) return sourceColor;
-    return clamp(oot3d_toon_banded_color(sourceColor, lighting, p.flags.y, true, p), 0.0, 1.0);
-}
-
-float grass_tuft_weight(float normalized_distance, float start, float end) {
-    float t = start < end ? clamp((normalized_distance-start)/(end-start),0.0,1.0)
-                          : step(start, normalized_distance);
-    return t*t*(3.0-2.0*t);
-}
-float grass_tuft_mean_growth(float weight) {
-    if (weight<=0.0) return 0.0;
-    if (weight>=1.0) return 1.0;
-    if (weight<0.01) return weight*weight*(0.5+weight*(1.0/6.0+weight*(1.0/12.0+weight*0.05)));
-    return weight+(1.0-weight)*log(1.0-weight);
-}
-float grass_tuft_retention_scale(float weight, float blades, float density) {
-    return (1.0+(density-1.0)*weight)/(1.0+(blades-1.0)*grass_tuft_mean_growth(weight));
-}
-float grass_lod_choice(float stable_visibility) {
-    uint value=uint(stable_visibility*16777216.0);
-    value ^= value >> 16u;
-    value *= 0x7feb352du;
-    value ^= value >> 15u;
-    value *= 0x846ca68bu;
-    value ^= value >> 16u;
-    return float(value >> 8u)/16777216.0;
-}
-float grass_density_retention(float normalized_distance, float start, float far_density) {
-    if (normalized_distance <= start) return 1.0;
-    if (normalized_distance > 1.0) return far_density/(normalized_distance*normalized_distance);
-    float remaining=clamp((1.0-normalized_distance)/max(1.0-start,1.0e-6),0.0,1.0);
-    float squared=remaining*remaining;
-    return far_density+(1.0-far_density)*squared*squared;
-}
-float grass_visibility_fade(float retention, float stable_visibility, float softness) {
-    if (retention<=0.0 || stable_visibility>retention) return 0.0;
-    if (softness<=0.0 || retention>=1.0) return 1.0;
-    return grass_tuft_weight(retention-stable_visibility,0.0,min(retention*softness,1.0-retention));
-}
-bool grass_tuft_covered(vec4 sample_data, uint blades, float spread) {
-    float weight = (sample_data.z-1.0)/max((float(blades)-1.0)*spread,0.000001);
-    float x = sample_data.x * sample_data.z;
-    for (uint i=0u; i<blades; ++i) {
-        float seed = fract(sin(float(i)*17.17 + sample_data.w*6.2831853)*43758.5453);
-        float height = mix(1.0, 0.75+0.25*seed, weight);
-        float y = sample_data.y / height;
-        float center = (float(i)-0.5*(float(blades)-1.0))*2.0*weight*spread;
-        center += (seed-0.5)*y*y*weight;
-        if (y <= 1.0 && abs(x-center) <= 1.0-y) return true;
-    }
-    return false;
-}
-
-layout(location=0) in vec4 blade_color;
-layout(location=1) in vec4 blade_normal_guide;
-layout(location=2) in vec4 blade_ambient_guide;
-layout(location=3) in vec4 tuft_sample;
-layout(location=4) flat in float lod_visibility;
-layout(location=6) in vec3 blade_view_direction;
-layout(location=7) flat in float blade_rim_weight;
-struct GrassEnvironmentRecord {
-    vec4 color_and_mode;
-    vec2 lut[128];
-    vec4 wind_direction_time;
-    vec4 wind_primary;
-    vec4 wind_detail;
-    vec4 camera_position;
-    vec4 appearance_root;
-    vec4 appearance_tip;
-    vec4 texture_color;
-    vec4 texture_brightness_flags;
-    vec4 light_directions[3];
-    vec4 light_diffuse[3];
-    vec4 light_ambient[3];
-    vec4 view_forward;
-    vec4 view_side;
-    vec4 view_up;
-    vec4 blade_shape;
-    vec4 tuft_lod;
-    vec4 distance_lod;
-    vec4 tuft_style;
-    ToonSurfaceParameters toon;
-    uvec4 native_lighting;
-    vec4 rim_distance;
-    mat4 previous_position_to_clip;
-    vec4 previous_camera_time;
-    vec4 motion_state;
-};
-layout(std430, set=0, binding=0) readonly buffer GrassEnvironmentState {
-    GrassEnvironmentRecord records[];
-} environment_state;
-layout(push_constant) uniform GrassState {
-    mat4 position_to_clip;
-    vec4 jitter_ndc;
-    vec4 depth_state;
-    uvec4 flags;
-} grass;
-layout(location=0) out vec4 out_color;
-#if GRASS_AUXILIARY_OUTPUTS
-layout(location=8) in vec4 blade_current_clip;
-layout(location=9) in vec4 blade_previous_clip;
-layout(location=1) out vec4 out_normal_guide;
-layout(location=2) out vec4 out_material_guide;
-layout(location=3) out vec4 out_rigid_motion;
-layout(location=4) out vec4 out_ambient_guide;
-#endif
-void main() {
-    // Blade-local stipple, not frame/screen-space noise. Discard before every
-    // guide/depth write; fading geometry cannot leave invisible occluders.
-    if (lod_visibility < 1.0) {
-        vec2 cell = floor(vec2(tuft_sample.x*tuft_sample.z,tuft_sample.y)*32.0);
-        float threshold = fract(sin(dot(cell,vec2(12.9898,78.233))+tuft_sample.w*37.719)*43758.5453);
-        if (lod_visibility <= threshold) discard;
-    }
-    if (grass.flags.y == 0u && !grass_tuft_covered(tuft_sample,
-            uint(environment_state.records[grass.flags.w].tuft_lod.z),
-            environment_state.records[grass.flags.w].tuft_style.x)) discard;
-    vec4 resolved_color = blade_color;
-    ToonSurfaceParameters toon = environment_state.records[grass.flags.w].toon;
-    if (toon.flags.x > 0.5)
-        resolved_color.rgb = clamp(resolved_color.rgb, 0.0, 1.0);
-    if (toon.flags.x > 0.5 && blade_rim_weight > 0.0)
-        resolved_color.rgb = clamp(resolved_color.rgb + blade_rim_weight *
-            oot3d_toon_rim(blade_normal_guide.xyz * 2.0 - 1.0, blade_view_direction, toon), 0.0, 1.0);
-#if GRASS_AUXILIARY_OUTPUTS
-    out_normal_guide = blade_normal_guide;
-    // With the placement's previous frame the blade writes exact motion and
-    // keeps its temporal history. Without it, the motion pass reconstructs
-    // camera motion from depth and the reactive mask rejects the history,
-    // since wind and interaction still move the blade.
-    bool exact_motion = environment_state.records[grass.flags.w].motion_state.z > 0.5 &&
-        blade_current_clip.w > 1.0e-7 && blade_previous_clip.w > 1.0e-7;
-    out_material_guide = vec4(0.0, 1.0, 0.0, exact_motion ? 0.0 : 1.0);
-    out_ambient_guide = blade_ambient_guide;
-    out_rigid_motion = vec4(0.0);
-    if (exact_motion) {
-        vec2 current_uv = blade_current_clip.xy / blade_current_clip.w * 0.5 + 0.5;
-        vec2 previous_uv = blade_previous_clip.xy / blade_previous_clip.w * 0.5 + 0.5;
-        out_rigid_motion.xyz = vec3(previous_uv - current_uv, 1.0);
-    }
-#endif
-    float resolved_depth = gl_FragCoord.z;
-    if (grass.depth_state.w > 0.5) {
-        float pica_z_over_w =
-            grass.flags.x != 0u ? -gl_FragCoord.z : gl_FragCoord.z;
-        resolved_depth =
-            pica_z_over_w * grass.depth_state.x +
-            grass.depth_state.y;
-        if (grass.depth_state.z > 0.5)
-            resolved_depth /= max(gl_FragCoord.w, 1.0e-7);
-    }
-    vec4 fog_color_and_mode =
-        environment_state.records[
-            grass.flags.w].color_and_mode;
-    if (fog_color_and_mode.w > 0.5) {
-        float fog_depth =
-            fog_color_and_mode.w > 1.5
-                ? 1.0 - resolved_depth
-                : resolved_depth;
-        float fog_index = fog_depth * 128.0;
-        float floor_index = clamp(floor(fog_index), 0.0, 127.0);
-        vec2 sample_pair =
-            environment_state.records[
-                grass.flags.w].lut[
-                uint(floor_index)];
-        float fog_factor = clamp(
-            sample_pair.x +
-                sample_pair.y * (fog_index - floor_index),
-            0.0, 1.0);
-        resolved_color.rgb = mix(
-            fog_color_and_mode.rgb,
-            resolved_color.rgb, fog_factor);
-    }
-    out_color = resolved_color;
-    gl_FragDepth = clamp(resolved_depth, 0.0, 1.0);
-#if GRASS_AUXILIARY_OUTPUTS
-    // Only rasterized, depth-visible blades/tufts occlude native contours.
-    // The separate native geometry guide remains untouched.
-    out_rigid_motion.a = 1.0 - gl_FragDepth;
-#endif
-}
 )passsrc",kPassDefines20,kPassWords20,2},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
 
@@ -18358,6 +18247,260 @@ void main() {
 #endif
 }
 )passsrc",kPassDefines21,kPassWords21,2},
+{static_cast<SpirvStage>(2),R"passsrc(#version 450
+
+struct ToonSurfaceParameters {
+    vec4 control;
+    vec4 shadow;
+    vec4 rim;
+    vec4 flags;
+    vec4 levels[2];
+    vec4 thresholds[2];
+};
+
+float oot3d_toon_transition(float edge, float softness, float guide) {
+    // GLSL smoothstep has undefined results for equal edges (hard bands).
+    return softness > 0.0 ? smoothstep(edge - softness, edge + softness, guide)
+                          : step(edge, guide);
+}
+
+float oot3d_toon_band_luminance(float guide, ToonSurfaceParameters p) {
+    if (p.control.w < 0.5) {
+        float scaled = guide * p.control.x;
+        return (floor(scaled) + oot3d_toon_transition(0.5, p.control.y, fract(scaled))) / p.control.x;
+    }
+    int count = int(p.control.x);
+    float bandLuminance = p.levels[0][0];
+    for (int i = 0; i < count; ++i) {
+        float edge = p.thresholds[i / 4][i % 4];
+        float spacing = 1.0;
+        if (count > 1) {
+            int previous = max(i - 1, 0), next = min(i + 1, count - 1);
+            float before = edge - p.thresholds[previous / 4][previous % 4];
+            float after = p.thresholds[next / 4][next % 4] - edge;
+            spacing = i == 0 ? after : (i == count - 1 ? before : min(before, after));
+        }
+        float delta = p.levels[(i + 1) / 4][(i + 1) % 4] - p.levels[i / 4][i % 4];
+        bandLuminance += delta * oot3d_toon_transition(edge, p.control.y * max(spacing, 0.001), guide);
+    }
+    return clamp(bandLuminance, 0.0, 1.0);
+}
+
+vec3 oot3d_toon_banded_color(vec3 sourceColor, vec3 lighting,
+                            float hasLighting, bool shadowTint, ToonSurfaceParameters p) {
+    const vec3 lumaWeights = vec3(0.2126, 0.7152, 0.0722);
+    float guide = clamp(dot(lighting, lumaWeights), 0.0, 1.0);
+    float bandLuminance = oot3d_toon_band_luminance(guide, p);
+    float lightingScale = mix(1.0, clamp(bandLuminance / max(guide, 0.05), 0.0, 2.0), hasLighting);
+    vec3 banded = sourceColor * lightingScale;
+    banded = mix(vec3(dot(banded, lumaWeights)), banded, p.control.z);
+    if (shadowTint) {
+        float shadowMask = (1.0 - smoothstep(0.0, 0.55, bandLuminance)) * hasLighting;
+        banded = mix(banded, banded * p.shadow.rgb, shadowMask * p.shadow.w);
+    }
+    return banded;
+}
+
+vec3 oot3d_toon_rim(vec3 normal, vec3 viewDirection, ToonSurfaceParameters p) {
+    normal = dot(normal, normal) > 0.000001 ? normalize(normal) : vec3(0.0, 0.0, 1.0);
+    viewDirection = dot(viewDirection, viewDirection) > 0.000001
+        ? normalize(viewDirection) : vec3(0.0, 0.0, 1.0);
+    float rim = pow(clamp(1.0 - abs(dot(normal, viewDirection)), 0.0, 1.0), p.flags.z);
+    return p.rim.rgb * (rim * p.rim.w);
+}
+
+vec3 oot3d_toon_surface_response(vec3 sourceColor, vec3 lighting,
+                                vec3 normal, vec3 viewDirection, ToonSurfaceParameters p) {
+    if (p.flags.x < 0.5) return sourceColor;
+    return clamp(oot3d_toon_banded_color(sourceColor, lighting, p.flags.y, true, p)
+        + oot3d_toon_rim(normal, viewDirection, p), 0.0, 1.0);
+}
+
+// Terrain-cover extensions inherit diffuse bands, not an independent rim.
+// The response intentionally has no normal or viewing-direction argument.
+vec3 oot3d_toon_diffuse_response(vec3 sourceColor, vec3 lighting, ToonSurfaceParameters p) {
+    if (p.flags.x < 0.5) return sourceColor;
+    return clamp(oot3d_toon_banded_color(sourceColor, lighting, p.flags.y, true, p), 0.0, 1.0);
+}
+
+float grass_tuft_weight(float normalized_distance, float start, float end) {
+    float t = start < end ? clamp((normalized_distance-start)/(end-start),0.0,1.0)
+                          : step(start, normalized_distance);
+    return t*t*(3.0-2.0*t);
+}
+float grass_tuft_mean_growth(float weight) {
+    if (weight<=0.0) return 0.0;
+    if (weight>=1.0) return 1.0;
+    if (weight<0.01) return weight*weight*(0.5+weight*(1.0/6.0+weight*(1.0/12.0+weight*0.05)));
+    return weight+(1.0-weight)*log(1.0-weight);
+}
+float grass_tuft_retention_scale(float weight, float blades, float density) {
+    return (1.0+(density-1.0)*weight)/(1.0+(blades-1.0)*grass_tuft_mean_growth(weight));
+}
+float grass_lod_choice(float stable_visibility) {
+    uint value=uint(stable_visibility*16777216.0);
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    value *= 0x846ca68bu;
+    value ^= value >> 16u;
+    return float(value >> 8u)/16777216.0;
+}
+float grass_density_retention(float normalized_distance, float start, float far_density) {
+    if (normalized_distance <= start) return 1.0;
+    if (normalized_distance > 1.0) return far_density/(normalized_distance*normalized_distance);
+    float remaining=clamp((1.0-normalized_distance)/max(1.0-start,1.0e-6),0.0,1.0);
+    float squared=remaining*remaining;
+    return far_density+(1.0-far_density)*squared*squared;
+}
+float grass_visibility_fade(float retention, float stable_visibility, float softness) {
+    if (retention<=0.0 || stable_visibility>retention) return 0.0;
+    if (softness<=0.0 || retention>=1.0) return 1.0;
+    return grass_tuft_weight(retention-stable_visibility,0.0,min(retention*softness,1.0-retention));
+}
+bool grass_tuft_covered(vec4 sample_data, uint blades, float spread) {
+    float weight = (sample_data.z-1.0)/max((float(blades)-1.0)*spread,0.000001);
+    float x = sample_data.x * sample_data.z;
+    for (uint i=0u; i<blades; ++i) {
+        float seed = fract(sin(float(i)*17.17 + sample_data.w*6.2831853)*43758.5453);
+        float height = mix(1.0, 0.75+0.25*seed, weight);
+        float y = sample_data.y / height;
+        float center = (float(i)-0.5*(float(blades)-1.0))*2.0*weight*spread;
+        center += (seed-0.5)*y*y*weight;
+        if (y <= 1.0 && abs(x-center) <= 1.0-y) return true;
+    }
+    return false;
+}
+
+layout(location=0) in vec4 blade_color;
+layout(location=1) in vec4 blade_normal_guide;
+layout(location=2) in vec4 blade_ambient_guide;
+layout(location=3) in vec4 tuft_sample;
+layout(location=4) flat in float lod_visibility;
+layout(location=6) in vec3 blade_view_direction;
+layout(location=7) flat in float blade_rim_weight;
+struct GrassEnvironmentRecord {
+    vec4 color_and_mode;
+    vec2 lut[128];
+    vec4 wind_direction_time;
+    vec4 wind_primary;
+    vec4 wind_detail;
+    vec4 camera_position;
+    vec4 appearance_root;
+    vec4 appearance_tip;
+    vec4 texture_color;
+    vec4 texture_brightness_flags;
+    vec4 light_directions[3];
+    vec4 light_diffuse[3];
+    vec4 light_ambient[3];
+    vec4 view_forward;
+    vec4 view_side;
+    vec4 view_up;
+    vec4 blade_shape;
+    vec4 tuft_lod;
+    vec4 distance_lod;
+    vec4 tuft_style;
+    ToonSurfaceParameters toon;
+    uvec4 native_lighting;
+    vec4 rim_distance;
+    mat4 previous_position_to_clip;
+    vec4 previous_camera_time;
+    vec4 motion_state;
+};
+layout(std430, set=0, binding=0) readonly buffer GrassEnvironmentState {
+    GrassEnvironmentRecord records[];
+} environment_state;
+layout(push_constant) uniform GrassState {
+    mat4 position_to_clip;
+    vec4 jitter_ndc;
+    vec4 depth_state;
+    uvec4 flags;
+} grass;
+layout(location=0) out vec4 out_color;
+#if GRASS_AUXILIARY_OUTPUTS
+layout(location=8) in vec4 blade_current_clip;
+layout(location=9) in vec4 blade_previous_clip;
+layout(location=1) out vec4 out_normal_guide;
+layout(location=2) out vec4 out_material_guide;
+layout(location=3) out vec4 out_rigid_motion;
+layout(location=4) out vec4 out_ambient_guide;
+#endif
+void main() {
+    // Blade-local stipple, not frame/screen-space noise. Discard before every
+    // guide/depth write; fading geometry cannot leave invisible occluders.
+    if (lod_visibility < 1.0) {
+        vec2 cell = floor(vec2(tuft_sample.x*tuft_sample.z,tuft_sample.y)*32.0);
+        float threshold = fract(sin(dot(cell,vec2(12.9898,78.233))+tuft_sample.w*37.719)*43758.5453);
+        if (lod_visibility <= threshold) discard;
+    }
+    if (grass.flags.y == 0u && !grass_tuft_covered(tuft_sample,
+            uint(environment_state.records[grass.flags.w].tuft_lod.z),
+            environment_state.records[grass.flags.w].tuft_style.x)) discard;
+    vec4 resolved_color = blade_color;
+    ToonSurfaceParameters toon = environment_state.records[grass.flags.w].toon;
+    if (toon.flags.x > 0.5)
+        resolved_color.rgb = clamp(resolved_color.rgb, 0.0, 1.0);
+    if (toon.flags.x > 0.5 && blade_rim_weight > 0.0)
+        resolved_color.rgb = clamp(resolved_color.rgb + blade_rim_weight *
+            oot3d_toon_rim(blade_normal_guide.xyz * 2.0 - 1.0, blade_view_direction, toon), 0.0, 1.0);
+#if GRASS_AUXILIARY_OUTPUTS
+    out_normal_guide = blade_normal_guide;
+    // With the placement's previous frame the blade writes exact motion and
+    // keeps its temporal history. Without it, the motion pass reconstructs
+    // camera motion from depth and the reactive mask rejects the history,
+    // since wind and interaction still move the blade.
+    bool exact_motion = environment_state.records[grass.flags.w].motion_state.z > 0.5 &&
+        blade_current_clip.w > 1.0e-7 && blade_previous_clip.w > 1.0e-7;
+    out_material_guide = vec4(0.0, 1.0, 0.0, exact_motion ? 0.0 : 1.0);
+    out_ambient_guide = blade_ambient_guide;
+    out_rigid_motion = vec4(0.0);
+    if (exact_motion) {
+        vec2 current_uv = blade_current_clip.xy / blade_current_clip.w * 0.5 + 0.5;
+        vec2 previous_uv = blade_previous_clip.xy / blade_previous_clip.w * 0.5 + 0.5;
+        out_rigid_motion.xyz = vec3(previous_uv - current_uv, 1.0);
+    }
+#endif
+    float resolved_depth = gl_FragCoord.z;
+    if (grass.depth_state.w > 0.5) {
+        float pica_z_over_w =
+            grass.flags.x != 0u ? -gl_FragCoord.z : gl_FragCoord.z;
+        resolved_depth =
+            pica_z_over_w * grass.depth_state.x +
+            grass.depth_state.y;
+        if (grass.depth_state.z > 0.5)
+            resolved_depth /= max(gl_FragCoord.w, 1.0e-7);
+    }
+    vec4 fog_color_and_mode =
+        environment_state.records[
+            grass.flags.w].color_and_mode;
+    if (fog_color_and_mode.w > 0.5) {
+        float fog_depth =
+            fog_color_and_mode.w > 1.5
+                ? 1.0 - resolved_depth
+                : resolved_depth;
+        float fog_index = fog_depth * 128.0;
+        float floor_index = clamp(floor(fog_index), 0.0, 127.0);
+        vec2 sample_pair =
+            environment_state.records[
+                grass.flags.w].lut[
+                uint(floor_index)];
+        float fog_factor = clamp(
+            sample_pair.x +
+                sample_pair.y * (fog_index - floor_index),
+            0.0, 1.0);
+        resolved_color.rgb = mix(
+            fog_color_and_mode.rgb,
+            resolved_color.rgb, fog_factor);
+    }
+    out_color = resolved_color;
+    gl_FragDepth = clamp(resolved_depth, 0.0, 1.0);
+#if GRASS_AUXILIARY_OUTPUTS
+    // Only rasterized, depth-visible blades/tufts occlude native contours.
+    // The separate native geometry guide remains untouched.
+    out_rigid_motion.a = 1.0 - gl_FragDepth;
+#endif
+}
+)passsrc",kPassDefines22,kPassWords22,2},
 {static_cast<SpirvStage>(3),R"passsrc(#version 450
 #define GRASS_ANCHOR_WORDS 12u
 #define GRASS_INSTANCE_WORDS 17u
@@ -18601,7 +18744,7 @@ void main() {
     output_instances.words[destination + 15u] = static_anchors.words[source + 10u];
     output_instances.words[destination + 16u] = static_anchors.words[source + 11u];
 }
-)passsrc",kPassDefines22,kPassWords22,2},
+)passsrc",kPassDefines23,kPassWords23,2},
 {static_cast<SpirvStage>(3),R"passsrc(#version 450
 
 layout(set=0,binding=10) uniform sampler2D pica_vsm_atlas;
@@ -18790,12 +18933,12 @@ void main() {
     float value = abs(light.w) > 1.0e-7 ? pica_vsm_visibility(light.xyz / light.w, gradient) : 1.0;
     visibility.values[index] = GrassShadowVisibility(value, packed_patches);
 }
-)passsrc",kPassDefines23,kPassWords23,2},
+)passsrc",kPassDefines24,kPassWords24,2},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
 layout(location=0) in vec4 pica_primary_color;
 layout(location=0) out vec4 surface_primary;
 void main() { surface_primary = vec4(pica_primary_color.rgb, 1.0); }
-)passsrc",kPassDefines24,kPassWords24,2},
+)passsrc",kPassDefines25,kPassWords25,2},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
 layout(location=0) in vec4 pica_primary_color;
 layout(location=6) in vec3 pica_view;
@@ -18984,7 +19127,7 @@ void main() {
         color = pica_surface_primary(color, pica_surface_unit(pica_surface_normal));
     surface_primary = vec4(color, 1.0);
 }
-)passsrc",kPassDefines25,kPassWords25,2},
+)passsrc",kPassDefines26,kPassWords26,2},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
 layout(location=0) in vec4 pica_primary_color;
 layout(location=0) out vec4 surface_primary;
@@ -18995,7 +19138,7 @@ void main() {
     surface_primary = vec4(pica_primary_color.rgb, 4.0);
     surface_raw = surface_directional = vec4(0.0);
 }
-)passsrc",kPassDefines26,kPassWords26,2},
+)passsrc",kPassDefines27,kPassWords27,2},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
 layout(location=0) in vec4 pica_primary_color;
 layout(location=0) out vec4 surface_primary;
@@ -19230,7 +19373,7 @@ void main() {
     surface_raw = vec4(raw * pica_surface_tint.rgb, 0.0);
     surface_directional = vec4(directional * pica_surface_tint.rgb, 0.0);
 }
-)passsrc",kPassDefines27,kPassWords27,2},
+)passsrc",kPassDefines28,kPassWords28,2},
 {static_cast<SpirvStage>(3),R"passsrc(#version 450
 #extension GL_EXT_samplerless_texture_functions : require
 layout(local_size_x=8,local_size_y=8) in;
@@ -19245,10 +19388,10 @@ void main() {
     n=normalize(mat3(pc.normal_to_output)*n);
     imageStore(output_normal,p,vec4(n*0.5+0.5,guide.a));
 }
-)passsrc",kPassDefines28,kPassWords28,2},
+)passsrc",kPassDefines29,kPassWords29,2},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
 void main(){}
-)passsrc",kPassDefines29,kPassWords29,2},
+)passsrc",kPassDefines30,kPassWords30,2},
 {static_cast<SpirvStage>(1),R"passsrc(
 #version 450
 layout(location = 0) out vec2 output_uv;
@@ -19259,7 +19402,7 @@ void main() {
     gl_Position = vec4(position, 0.0, 1.0);
     output_uv = position * 0.5 + 0.5;
 }
-)passsrc",kPassDefines30,kPassWords30,1},
+)passsrc",kPassDefines31,kPassWords31,1},
 {static_cast<SpirvStage>(2),R"passsrc(
 #version 450
 layout(set = 0, binding = 0) uniform sampler2D physical_scanout;
@@ -19679,7 +19822,7 @@ void main() {
     if(scanout.encode_srgb!=0u)
         output_color.rgb=oot3d_linear_to_srgb(output_color.rgb);
 }
-)passsrc",kPassDefines31,kPassWords31,1},
+)passsrc",kPassDefines32,kPassWords32,1},
 {static_cast<SpirvStage>(1),R"passsrc(#version 450
 layout(location = 0) in vec4 aPosition;
 layout(push_constant) uniform TransformState {
@@ -19690,78 +19833,6 @@ layout(location = 5) out vec3 vInput1;
 void main() {
     gl_Position = transformState.modelViewProjection * aPosition;
     vInput1 = aInput1;
-}
-)passsrc",kPassDefines32,kPassWords32,1},
-{static_cast<SpirvStage>(2),R"passsrc(#version 450
-layout(location = 5) in vec3 vInput1;
-
-layout(std430, set = 0, binding = 4) readonly buffer DrawUniformState {
-    ivec4 textureWidth;
-    ivec4 textureHeight;
-    ivec4 textureFiltering;
-    uint frameCount;
-    float noiseScale;
-    float primDepth;
-    int fogFlip;
-    int alphaTestEnabled;
-    int alphaTestFunction;
-    int alphaTestReference;
-    int shadowTextureBias;
-    int shadowOrthographic;
-    int shadowInvert;
-    int reserved;
-    uint fogLut[128];
-} draw;
-layout(location = 0) out vec4 outColor;
-
-float randomValue(vec3 value) {
-    float randomSeed = dot(sin(value), vec3(12.9898, 78.233, 37.719));
-    return fract(sin(randomSeed) * 143758.5453);
-}
-
-vec3 picaByteRound(vec3 value) {
-    return round(value * 255.0) * (1.0 / 255.0);
-}
-
-vec4 picaByteRound(vec4 value) {
-    return round(value * 255.0) * (1.0 / 255.0);
-}
-
-vec4 fromLinear(vec4 linearRgb) {
-    bvec3 cutoff = lessThan(linearRgb.rgb, vec3(0.0031308));
-    vec3 higher = vec3(1.055) * pow(linearRgb.rgb, vec3(1.0 / 2.4)) - vec3(0.055);
-    vec3 lower = linearRgb.rgb * vec3(12.92);
-    return vec4(mix(higher, lower, cutoff), linearRgb.a);
-}
-
-float decodePicaFogValue(uint word) {
-    return float((word >> 13u) & 0x7FFu) * (1.0 / 2048.0);
-}
-
-float decodePicaFogDiff(uint word) {
-    uint raw = word & 0x1FFFu;
-    uint encoded = raw < 4096u ? raw + 4096u : raw - 4096u;
-    return float(encoded) * (1.0 / 2048.0) - 2.0;
-}
-
-float samplePicaFogFactor() {
-    float depth = clamp(gl_FragCoord.z, 0.0, 1.0);
-    float lutIndex = (draw.fogFlip != 0 ? 1.0 - depth : depth) * 128.0;
-    float lutFloor = clamp(floor(lutIndex), 0.0, 127.0);
-    uint word = draw.fogLut[int(lutFloor)];
-    return clamp(decodePicaFogValue(word) +
-                 decodePicaFogDiff(word) * (lutIndex - lutFloor), 0.0, 1.0);
-}
-
-
-void main() {
-    float drawRandom = (randomValue(vec3(floor(gl_FragCoord.xy * draw.noiseScale),
-                                           float(draw.frameCount))) + 1.0) / 2.0;
-    vec3 input1 = vInput1;
-    vec3 texel;
-    texel = input1;
-    texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
-    outColor = vec4(texel, 1.0);
 }
 )passsrc",kPassDefines33,kPassWords33,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -19834,23 +19905,10 @@ void main() {
     texel = input1;
     texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
     outColor = vec4(texel, 1.0);
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines34,kPassWords34,1},
-{static_cast<SpirvStage>(1),R"passsrc(#version 450
-layout(location = 0) in vec4 aPosition;
-layout(push_constant) uniform TransformState {
-    mat4 modelViewProjection;
-} transformState;
-layout(location = 6) in vec4 aInput1;
-layout(location = 5) out vec4 vInput1;
-void main() {
-    gl_Position = transformState.modelViewProjection * aPosition;
-    vInput1 = aInput1;
-}
-)passsrc",kPassDefines35,kPassWords35,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
-layout(location = 5) in vec4 vInput1;
+layout(location = 5) in vec3 vInput1;
 
 layout(std430, set = 0, binding = 4) readonly buffer DrawUniformState {
     ivec4 textureWidth;
@@ -19914,11 +19972,24 @@ float samplePicaFogFactor() {
 void main() {
     float drawRandom = (randomValue(vec3(floor(gl_FragCoord.xy * draw.noiseScale),
                                            float(draw.frameCount))) + 1.0) / 2.0;
-    vec4 input1 = vInput1;
-    vec4 texel;
+    vec3 input1 = vInput1;
+    vec3 texel;
     texel = input1;
-    texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
-    outColor = texel;
+    texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
+    outColor = vec4(texel, 1.0);
+    outColor = fromLinear(outColor);
+}
+)passsrc",kPassDefines35,kPassWords35,1},
+{static_cast<SpirvStage>(1),R"passsrc(#version 450
+layout(location = 0) in vec4 aPosition;
+layout(push_constant) uniform TransformState {
+    mat4 modelViewProjection;
+} transformState;
+layout(location = 6) in vec4 aInput1;
+layout(location = 5) out vec4 vInput1;
+void main() {
+    gl_Position = transformState.modelViewProjection * aPosition;
+    vInput1 = aInput1;
 }
 )passsrc",kPassDefines36,kPassWords36,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -19991,28 +20062,10 @@ void main() {
     texel = input1;
     texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
     outColor = texel;
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines37,kPassWords37,1},
-{static_cast<SpirvStage>(1),R"passsrc(#version 450
-layout(location = 0) in vec4 aPosition;
-layout(push_constant) uniform TransformState {
-    mat4 modelViewProjection;
-} transformState;
-layout(location = 1) in vec2 aTexCoord0;
-layout(location = 0) out vec2 vTexCoord0;
-layout(location = 6) in vec3 aInput1;
-layout(location = 5) out vec3 vInput1;
-void main() {
-    gl_Position = transformState.modelViewProjection * aPosition;
-    vTexCoord0 = aTexCoord0;
-    vInput1 = aInput1;
-}
-)passsrc",kPassDefines38,kPassWords38,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
-layout(set = 0, binding = 0) uniform sampler2D uTex0;
-layout(location = 0) in vec2 vTexCoord0;
-layout(location = 5) in vec3 vInput1;
+layout(location = 5) in vec4 vInput1;
 
 layout(std430, set = 0, binding = 4) readonly buffer DrawUniformState {
     ivec4 textureWidth;
@@ -20076,12 +20129,27 @@ float samplePicaFogFactor() {
 void main() {
     float drawRandom = (randomValue(vec3(floor(gl_FragCoord.xy * draw.noiseScale),
                                            float(draw.frameCount))) + 1.0) / 2.0;
-    vec4 texVal0 = texture(uTex0, vTexCoord0);
-    vec3 input1 = vInput1;
-    vec3 texel;
+    vec4 input1 = vInput1;
+    vec4 texel;
     texel = input1;
-    texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
-    outColor = vec4(texel, 1.0);
+    texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
+    outColor = texel;
+    outColor = fromLinear(outColor);
+}
+)passsrc",kPassDefines38,kPassWords38,1},
+{static_cast<SpirvStage>(1),R"passsrc(#version 450
+layout(location = 0) in vec4 aPosition;
+layout(push_constant) uniform TransformState {
+    mat4 modelViewProjection;
+} transformState;
+layout(location = 1) in vec2 aTexCoord0;
+layout(location = 0) out vec2 vTexCoord0;
+layout(location = 6) in vec3 aInput1;
+layout(location = 5) out vec3 vInput1;
+void main() {
+    gl_Position = transformState.modelViewProjection * aPosition;
+    vTexCoord0 = aTexCoord0;
+    vInput1 = aInput1;
 }
 )passsrc",kPassDefines39,kPassWords39,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -20157,28 +20225,12 @@ void main() {
     texel = input1;
     texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
     outColor = vec4(texel, 1.0);
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines40,kPassWords40,1},
-{static_cast<SpirvStage>(1),R"passsrc(#version 450
-layout(location = 0) in vec4 aPosition;
-layout(push_constant) uniform TransformState {
-    mat4 modelViewProjection;
-} transformState;
-layout(location = 1) in vec2 aTexCoord0;
-layout(location = 0) out vec2 vTexCoord0;
-layout(location = 6) in vec4 aInput1;
-layout(location = 5) out vec4 vInput1;
-void main() {
-    gl_Position = transformState.modelViewProjection * aPosition;
-    vTexCoord0 = aTexCoord0;
-    vInput1 = aInput1;
-}
-)passsrc",kPassDefines41,kPassWords41,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
 layout(set = 0, binding = 0) uniform sampler2D uTex0;
 layout(location = 0) in vec2 vTexCoord0;
-layout(location = 5) in vec4 vInput1;
+layout(location = 5) in vec3 vInput1;
 
 layout(std430, set = 0, binding = 4) readonly buffer DrawUniformState {
     ivec4 textureWidth;
@@ -20243,11 +20295,27 @@ void main() {
     float drawRandom = (randomValue(vec3(floor(gl_FragCoord.xy * draw.noiseScale),
                                            float(draw.frameCount))) + 1.0) / 2.0;
     vec4 texVal0 = texture(uTex0, vTexCoord0);
-    vec4 input1 = vInput1;
-    vec4 texel;
-    texel = vec4(input1.rgb, texVal0.a);
-    texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
-    outColor = texel;
+    vec3 input1 = vInput1;
+    vec3 texel;
+    texel = input1;
+    texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
+    outColor = vec4(texel, 1.0);
+    outColor = fromLinear(outColor);
+}
+)passsrc",kPassDefines41,kPassWords41,1},
+{static_cast<SpirvStage>(1),R"passsrc(#version 450
+layout(location = 0) in vec4 aPosition;
+layout(push_constant) uniform TransformState {
+    mat4 modelViewProjection;
+} transformState;
+layout(location = 1) in vec2 aTexCoord0;
+layout(location = 0) out vec2 vTexCoord0;
+layout(location = 6) in vec4 aInput1;
+layout(location = 5) out vec4 vInput1;
+void main() {
+    gl_Position = transformState.modelViewProjection * aPosition;
+    vTexCoord0 = aTexCoord0;
+    vInput1 = aInput1;
 }
 )passsrc",kPassDefines42,kPassWords42,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -20323,7 +20391,6 @@ void main() {
     texel = vec4(input1.rgb, texVal0.a);
     texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
     outColor = texel;
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines43,kPassWords43,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -20396,9 +20463,10 @@ void main() {
     vec4 texVal0 = texture(uTex0, vTexCoord0);
     vec4 input1 = vInput1;
     vec4 texel;
-    texel = vec4(input1.rgb, texVal0.a * input1.a);
+    texel = vec4(input1.rgb, texVal0.a);
     texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
     outColor = texel;
+    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines44,kPassWords44,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -20474,13 +20542,12 @@ void main() {
     texel = vec4(input1.rgb, texVal0.a * input1.a);
     texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
     outColor = texel;
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines45,kPassWords45,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
 layout(set = 0, binding = 0) uniform sampler2D uTex0;
 layout(location = 0) in vec2 vTexCoord0;
-layout(location = 5) in vec3 vInput1;
+layout(location = 5) in vec4 vInput1;
 
 layout(std430, set = 0, binding = 4) readonly buffer DrawUniformState {
     ivec4 textureWidth;
@@ -20545,11 +20612,12 @@ void main() {
     float drawRandom = (randomValue(vec3(floor(gl_FragCoord.xy * draw.noiseScale),
                                            float(draw.frameCount))) + 1.0) / 2.0;
     vec4 texVal0 = texture(uTex0, vTexCoord0);
-    vec3 input1 = vInput1;
-    vec3 texel;
-    texel = texVal0.rgb;
-    texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
-    outColor = vec4(texel, 1.0);
+    vec4 input1 = vInput1;
+    vec4 texel;
+    texel = vec4(input1.rgb, texVal0.a * input1.a);
+    texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
+    outColor = texel;
+    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines46,kPassWords46,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -20625,13 +20693,12 @@ void main() {
     texel = texVal0.rgb;
     texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
     outColor = vec4(texel, 1.0);
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines47,kPassWords47,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
 layout(set = 0, binding = 0) uniform sampler2D uTex0;
 layout(location = 0) in vec2 vTexCoord0;
-layout(location = 5) in vec4 vInput1;
+layout(location = 5) in vec3 vInput1;
 
 layout(std430, set = 0, binding = 4) readonly buffer DrawUniformState {
     ivec4 textureWidth;
@@ -20696,11 +20763,12 @@ void main() {
     float drawRandom = (randomValue(vec3(floor(gl_FragCoord.xy * draw.noiseScale),
                                            float(draw.frameCount))) + 1.0) / 2.0;
     vec4 texVal0 = texture(uTex0, vTexCoord0);
-    vec4 input1 = vInput1;
-    vec4 texel;
-    texel = vec4(texVal0.rgb, input1.a);
-    texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
-    outColor = texel;
+    vec3 input1 = vInput1;
+    vec3 texel;
+    texel = texVal0.rgb;
+    texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
+    outColor = vec4(texel, 1.0);
+    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines48,kPassWords48,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -20776,24 +20844,12 @@ void main() {
     texel = vec4(texVal0.rgb, input1.a);
     texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
     outColor = texel;
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines49,kPassWords49,1},
-{static_cast<SpirvStage>(1),R"passsrc(#version 450
-layout(location = 0) in vec4 aPosition;
-layout(push_constant) uniform TransformState {
-    mat4 modelViewProjection;
-} transformState;
-layout(location = 1) in vec2 aTexCoord0;
-layout(location = 0) out vec2 vTexCoord0;
-void main() {
-    gl_Position = transformState.modelViewProjection * aPosition;
-    vTexCoord0 = aTexCoord0;
-}
-)passsrc",kPassDefines50,kPassWords50,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
 layout(set = 0, binding = 0) uniform sampler2D uTex0;
 layout(location = 0) in vec2 vTexCoord0;
+layout(location = 5) in vec4 vInput1;
 
 layout(std430, set = 0, binding = 4) readonly buffer DrawUniformState {
     ivec4 textureWidth;
@@ -20858,10 +20914,24 @@ void main() {
     float drawRandom = (randomValue(vec3(floor(gl_FragCoord.xy * draw.noiseScale),
                                            float(draw.frameCount))) + 1.0) / 2.0;
     vec4 texVal0 = texture(uTex0, vTexCoord0);
-    vec3 texel;
-    texel = texVal0.rgb;
-    texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
-    outColor = vec4(texel, 1.0);
+    vec4 input1 = vInput1;
+    vec4 texel;
+    texel = vec4(texVal0.rgb, input1.a);
+    texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
+    outColor = texel;
+    outColor = fromLinear(outColor);
+}
+)passsrc",kPassDefines50,kPassWords50,1},
+{static_cast<SpirvStage>(1),R"passsrc(#version 450
+layout(location = 0) in vec4 aPosition;
+layout(push_constant) uniform TransformState {
+    mat4 modelViewProjection;
+} transformState;
+layout(location = 1) in vec2 aTexCoord0;
+layout(location = 0) out vec2 vTexCoord0;
+void main() {
+    gl_Position = transformState.modelViewProjection * aPosition;
+    vTexCoord0 = aTexCoord0;
 }
 )passsrc",kPassDefines51,kPassWords51,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -20935,7 +21005,6 @@ void main() {
     texel = texVal0.rgb;
     texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
     outColor = vec4(texel, 1.0);
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines52,kPassWords52,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -21005,10 +21074,11 @@ void main() {
     float drawRandom = (randomValue(vec3(floor(gl_FragCoord.xy * draw.noiseScale),
                                            float(draw.frameCount))) + 1.0) / 2.0;
     vec4 texVal0 = texture(uTex0, vTexCoord0);
-    vec4 texel;
-    texel = texVal0;
-    texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
-    outColor = texel;
+    vec3 texel;
+    texel = texVal0.rgb;
+    texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
+    outColor = vec4(texel, 1.0);
+    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines53,kPassWords53,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -21082,13 +21152,11 @@ void main() {
     texel = texVal0;
     texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
     outColor = texel;
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines54,kPassWords54,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
 layout(set = 0, binding = 0) uniform sampler2D uTex0;
 layout(location = 0) in vec2 vTexCoord0;
-layout(location = 5) in vec4 vInput1;
 
 layout(std430, set = 0, binding = 4) readonly buffer DrawUniformState {
     ivec4 textureWidth;
@@ -21153,11 +21221,11 @@ void main() {
     float drawRandom = (randomValue(vec3(floor(gl_FragCoord.xy * draw.noiseScale),
                                            float(draw.frameCount))) + 1.0) / 2.0;
     vec4 texVal0 = texture(uTex0, vTexCoord0);
-    vec4 input1 = vInput1;
     vec4 texel;
-    texel = vec4(texVal0.rgb, texVal0.a * input1.a);
+    texel = texVal0;
     texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
     outColor = texel;
+    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines55,kPassWords55,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -21233,13 +21301,12 @@ void main() {
     texel = vec4(texVal0.rgb, texVal0.a * input1.a);
     texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
     outColor = texel;
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines56,kPassWords56,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
 layout(set = 0, binding = 0) uniform sampler2D uTex0;
 layout(location = 0) in vec2 vTexCoord0;
-layout(location = 5) in vec3 vInput1;
+layout(location = 5) in vec4 vInput1;
 
 layout(std430, set = 0, binding = 4) readonly buffer DrawUniformState {
     ivec4 textureWidth;
@@ -21304,11 +21371,12 @@ void main() {
     float drawRandom = (randomValue(vec3(floor(gl_FragCoord.xy * draw.noiseScale),
                                            float(draw.frameCount))) + 1.0) / 2.0;
     vec4 texVal0 = texture(uTex0, vTexCoord0);
-    vec3 input1 = vInput1;
-    vec3 texel;
-    texel = texVal0.rgb * input1;
-    texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
-    outColor = vec4(texel, 1.0);
+    vec4 input1 = vInput1;
+    vec4 texel;
+    texel = vec4(texVal0.rgb, texVal0.a * input1.a);
+    texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
+    outColor = texel;
+    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines57,kPassWords57,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -21384,13 +21452,12 @@ void main() {
     texel = texVal0.rgb * input1;
     texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
     outColor = vec4(texel, 1.0);
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines58,kPassWords58,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
 layout(set = 0, binding = 0) uniform sampler2D uTex0;
 layout(location = 0) in vec2 vTexCoord0;
-layout(location = 5) in vec4 vInput1;
+layout(location = 5) in vec3 vInput1;
 
 layout(std430, set = 0, binding = 4) readonly buffer DrawUniformState {
     ivec4 textureWidth;
@@ -21455,11 +21522,12 @@ void main() {
     float drawRandom = (randomValue(vec3(floor(gl_FragCoord.xy * draw.noiseScale),
                                            float(draw.frameCount))) + 1.0) / 2.0;
     vec4 texVal0 = texture(uTex0, vTexCoord0);
-    vec4 input1 = vInput1;
-    vec4 texel;
-    texel = vec4(texVal0.rgb * input1.rgb, input1.a);
-    texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
-    outColor = texel;
+    vec3 input1 = vInput1;
+    vec3 texel;
+    texel = texVal0.rgb * input1;
+    texel = clamp(mod(texel - vec3(-0.51), vec3(2.02)) + vec3(-0.51), 0.0, 1.0);
+    outColor = vec4(texel, 1.0);
+    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines59,kPassWords59,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -21535,7 +21603,6 @@ void main() {
     texel = vec4(texVal0.rgb * input1.rgb, input1.a);
     texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
     outColor = texel;
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines60,kPassWords60,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -21608,9 +21675,10 @@ void main() {
     vec4 texVal0 = texture(uTex0, vTexCoord0);
     vec4 input1 = vInput1;
     vec4 texel;
-    texel = vec4(texVal0.rgb * input1.rgb, texVal0.a);
+    texel = vec4(texVal0.rgb * input1.rgb, input1.a);
     texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
     outColor = texel;
+    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines61,kPassWords61,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -21686,7 +21754,6 @@ void main() {
     texel = vec4(texVal0.rgb * input1.rgb, texVal0.a);
     texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
     outColor = texel;
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines62,kPassWords62,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -21759,9 +21826,10 @@ void main() {
     vec4 texVal0 = texture(uTex0, vTexCoord0);
     vec4 input1 = vInput1;
     vec4 texel;
-    texel = texVal0 * input1;
+    texel = vec4(texVal0.rgb * input1.rgb, texVal0.a);
     texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
     outColor = texel;
+    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines63,kPassWords63,1},
 {static_cast<SpirvStage>(2),R"passsrc(#version 450
@@ -21837,8 +21905,83 @@ void main() {
     texel = texVal0 * input1;
     texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
     outColor = texel;
-    outColor = fromLinear(outColor);
 }
 )passsrc",kPassDefines64,kPassWords64,1},
+{static_cast<SpirvStage>(2),R"passsrc(#version 450
+layout(set = 0, binding = 0) uniform sampler2D uTex0;
+layout(location = 0) in vec2 vTexCoord0;
+layout(location = 5) in vec4 vInput1;
+
+layout(std430, set = 0, binding = 4) readonly buffer DrawUniformState {
+    ivec4 textureWidth;
+    ivec4 textureHeight;
+    ivec4 textureFiltering;
+    uint frameCount;
+    float noiseScale;
+    float primDepth;
+    int fogFlip;
+    int alphaTestEnabled;
+    int alphaTestFunction;
+    int alphaTestReference;
+    int shadowTextureBias;
+    int shadowOrthographic;
+    int shadowInvert;
+    int reserved;
+    uint fogLut[128];
+} draw;
+layout(location = 0) out vec4 outColor;
+
+float randomValue(vec3 value) {
+    float randomSeed = dot(sin(value), vec3(12.9898, 78.233, 37.719));
+    return fract(sin(randomSeed) * 143758.5453);
+}
+
+vec3 picaByteRound(vec3 value) {
+    return round(value * 255.0) * (1.0 / 255.0);
+}
+
+vec4 picaByteRound(vec4 value) {
+    return round(value * 255.0) * (1.0 / 255.0);
+}
+
+vec4 fromLinear(vec4 linearRgb) {
+    bvec3 cutoff = lessThan(linearRgb.rgb, vec3(0.0031308));
+    vec3 higher = vec3(1.055) * pow(linearRgb.rgb, vec3(1.0 / 2.4)) - vec3(0.055);
+    vec3 lower = linearRgb.rgb * vec3(12.92);
+    return vec4(mix(higher, lower, cutoff), linearRgb.a);
+}
+
+float decodePicaFogValue(uint word) {
+    return float((word >> 13u) & 0x7FFu) * (1.0 / 2048.0);
+}
+
+float decodePicaFogDiff(uint word) {
+    uint raw = word & 0x1FFFu;
+    uint encoded = raw < 4096u ? raw + 4096u : raw - 4096u;
+    return float(encoded) * (1.0 / 2048.0) - 2.0;
+}
+
+float samplePicaFogFactor() {
+    float depth = clamp(gl_FragCoord.z, 0.0, 1.0);
+    float lutIndex = (draw.fogFlip != 0 ? 1.0 - depth : depth) * 128.0;
+    float lutFloor = clamp(floor(lutIndex), 0.0, 127.0);
+    uint word = draw.fogLut[int(lutFloor)];
+    return clamp(decodePicaFogValue(word) +
+                 decodePicaFogDiff(word) * (lutIndex - lutFloor), 0.0, 1.0);
+}
+
+
+void main() {
+    float drawRandom = (randomValue(vec3(floor(gl_FragCoord.xy * draw.noiseScale),
+                                           float(draw.frameCount))) + 1.0) / 2.0;
+    vec4 texVal0 = texture(uTex0, vTexCoord0);
+    vec4 input1 = vInput1;
+    vec4 texel;
+    texel = texVal0 * input1;
+    texel = clamp(mod(texel - vec4(-0.51), vec4(2.02)) + vec4(-0.51), 0.0, 1.0);
+    outColor = texel;
+    outColor = fromLinear(outColor);
+}
+)passsrc",kPassDefines65,kPassWords65,1},
 };
 }

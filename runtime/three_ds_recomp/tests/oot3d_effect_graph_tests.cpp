@@ -2616,6 +2616,91 @@ TEST(Oot3dSceneBoundary,
         upscaled, DisplayEffectPass::Nis, EffectResource::SceneColor));
 }
 
+// An upscaler changes the extent, so it runs at presentation. When the display
+// carries its resolved scene before native UI, the upscaler reconstructs that
+// scene and reads the display only to lay its UI over the output.
+TEST(Oot3dSceneBoundary, UpscalersReconstructTheSceneBeforeNativeUi) {
+    const auto firstColorRead = [](const DisplayEffectPlan& plan,
+                                   DisplayEffectPass pass) {
+        for (const auto& use : plan.Bindings(pass)) {
+            if (ReadsEffectResource(use.Access) &&
+                EffectResourceCarriesColor(use.Resource)) {
+                return use.Resource;
+            }
+        }
+        return EffectResource::Count;
+    };
+    auto input = BoundarySceneEffectInput();
+    input.AntiAliasing = AntiAliasingMode::Upscaler;
+    input.Upscaler = UpscalerProvider::Fsr;
+    input.SceneEffectsResolved = true;
+    const auto withUi = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(withUi.Graph.Valid()) << withUi.Graph.Error;
+    EXPECT_FALSE(withUi.NativeUiOverlay);
+    EXPECT_EQ(firstColorRead(withUi, DisplayEffectPass::TemporalUpscaler),
+              EffectResource::SceneColor);
+
+    input.SceneBeforeUi = true;
+    const auto fsr = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(fsr.Graph.Valid()) << fsr.Graph.Error;
+    EXPECT_TRUE(fsr.NativeUiOverlay);
+    EXPECT_FALSE(fsr.Enabled(DisplayEffectPass::Composite));
+    EXPECT_EQ(firstColorRead(fsr, DisplayEffectPass::TemporalUpscaler),
+              EffectResource::SceneBeforeUi);
+    EXPECT_TRUE(BoundaryReadsResource(fsr, DisplayEffectPass::TemporalUpscaler,
+                                      EffectResource::SceneColor));
+    EXPECT_TRUE(BoundaryReadsResource(fsr, DisplayEffectPass::Scanout,
+                                      EffectResource::UpscaledColor));
+
+    // Without scene stages the upscaler's linear working colour converts the
+    // scene before UI, never the display.
+    DisplayEffectPlanInput plain{};
+    plain.WorldSurface = true;
+    plain.PerspectiveAvailable = true;
+    plain.CameraAvailable = true;
+    plain.AntiAliasing = AntiAliasingMode::Upscaler;
+    plain.Upscaler = UpscalerProvider::Fsr;
+    plain.SceneEffectsResolved = true;
+    plain.SceneBeforeUi = true;
+    const auto linear = BuildDisplayEffectPlan(plain);
+    ASSERT_TRUE(linear.Graph.Valid()) << linear.Graph.Error;
+    EXPECT_TRUE(linear.NativeUiOverlay);
+    EXPECT_EQ(firstColorRead(linear, DisplayEffectPass::WorkingColor),
+              EffectResource::SceneBeforeUi);
+    EXPECT_EQ(firstColorRead(linear, DisplayEffectPass::TemporalUpscaler),
+              EffectResource::LinearWorkingColor);
+    EXPECT_TRUE(BoundaryReadsResource(linear, DisplayEffectPass::TemporalUpscaler,
+                                      EffectResource::SceneColor));
+    EXPECT_TRUE(BoundaryReadsResource(linear, DisplayEffectPass::TemporalUpscaler,
+                                      EffectResource::SceneBeforeUi));
+
+    plain.Upscaler = UpscalerProvider::Nis;
+    const auto nis = BuildDisplayEffectPlan(plain);
+    ASSERT_TRUE(nis.Graph.Valid()) << nis.Graph.Error;
+    EXPECT_TRUE(nis.NativeUiOverlay);
+    EXPECT_EQ(firstColorRead(nis, DisplayEffectPass::Nis),
+              EffectResource::SceneBeforeUi);
+    EXPECT_TRUE(BoundaryReadsResource(nis, DisplayEffectPass::Nis,
+                                      EffectResource::SceneColor));
+
+    // The scene before UI is a resolved scene's: an unresolved display, a
+    // boundary, or same-extent AA never declare it.
+    plain.SceneEffectsResolved = false;
+    EXPECT_FALSE(BuildDisplayEffectPlan(plain).NativeUiOverlay);
+    plain.SceneEffectsResolved = true;
+    plain.AntiAliasing = AntiAliasingMode::Taa;
+    const auto taa = BuildDisplayEffectPlan(plain);
+    EXPECT_FALSE(taa.NativeUiOverlay);
+    for (const auto& pass : taa.Graph.Passes) {
+        for (const auto& use : pass.Resources) {
+            EXPECT_NE(use.Resource, EffectResource::SceneBeforeUi) << pass.Name;
+        }
+    }
+    input.NativeSceneBoundary = true;
+    input.BeforeNativeUi = true;
+    EXPECT_FALSE(BuildDisplayEffectPlan(input).NativeUiOverlay);
+}
+
 // An ordinary display with no boundary inputs keeps its canonical shape: one
 // scanout pass over the native scene colour, no boundary composition.
 TEST(Oot3dSceneBoundary, OrdinaryDisplayIsUnchanged) {

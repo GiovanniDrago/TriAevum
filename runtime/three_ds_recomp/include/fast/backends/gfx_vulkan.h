@@ -55,6 +55,7 @@
 #include "fast/oot3d/nri_swapchain.h"
 #include "fast/oot3d/nri_upscaler_pass.h"
 #include "fast/oot3d/upscaler_guide_pass.h"
+#include "fast/oot3d/native_ui_overlay_pass.h"
 #include "fast/oot3d/pica_dynamic_rendering_scope.h"
 #include "fast/oot3d/pica_aot_shader_pack.h"
 #include "fast/oot3d/pica_composition_schedule.h"
@@ -534,6 +535,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         // the first.
         uint64_t ContentWriteSerial = 0;
         uint64_t SceneEffectsResolvedSerial = 0;
+        // The content serial whose scene, before native UI, the boundary
+        // before UI kept for an upscaler; native UI writes carry it like the
+        // resolved serial, any other write ends it.
+        uint64_t SceneBeforeUiSerial = 0;
         VkImage MsaaColorImage = VK_NULL_HANDLE;
         VkDeviceMemory MsaaColorMemory = VK_NULL_HANDLE;
         VkImageView MsaaColorView = VK_NULL_HANDLE;
@@ -588,6 +593,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         // effects for its boundary, so a later display of it must not re-run
         // the scene stages.
         bool SceneEffectsResolved = false;
+        // The same transfer of the scene before native UI was made this frame
+        // (mNativePicaSceneBeforeUiDisplays).
+        bool SceneBeforeUi = false;
     };
 
     struct PresentRequest {
@@ -696,7 +704,12 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     NativePicaDisplayImage& GetOrCreateNativePicaDisplayImage(
         uint64_t renderTargetNamespace, uint32_t physicalAddress,
         uint32_t width, uint32_t height);
+    NativePicaDisplayImage& GetOrCreateNativePicaDisplayImage(
+        std::map<std::pair<uint64_t, uint32_t>, NativePicaDisplayImage>& images,
+        uint64_t renderTargetNamespace, uint32_t physicalAddress,
+        uint32_t width, uint32_t height);
     void DestroyNativePicaDisplayImage(NativePicaDisplayImage& image);
+    void DestroyNativePicaSceneBeforeUiImages();
     std::vector<uint8_t> CaptureNativePicaImageBytes(
         VkImage image, uint32_t width, uint32_t height,
         uint32_t bytesPerPixel,
@@ -1318,6 +1331,12 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         mNativePicaRenderTargets;
     std::map<std::pair<uint64_t, uint32_t>, NativePicaDisplayImage>
         mNativePicaDisplayImages;
+    // The scene before native UI a target's boundary before UI kept for an
+    // upscaler (by colour target), and its transfer for each display.
+    std::map<std::pair<uint64_t, uint32_t>, NativePicaDisplayImage>
+        mNativePicaSceneBeforeUiTargets;
+    std::map<std::pair<uint64_t, uint32_t>, NativePicaDisplayImage>
+        mNativePicaSceneBeforeUiDisplays;
     std::map<std::pair<uint64_t, uint32_t>, NativePicaRenderTargetKey>
         mNativePicaDisplayDepthTargets;
     std::set<uint32_t> mInvalidatedNativePicaRenderTargetAddresses;
@@ -1434,6 +1453,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::PicaDynamicRenderingScope mPicaDynamicRenderingScope;
     Oot3d::NriUpscalerPass mNriUpscalerPass;
     Oot3d::UpscalerGuidePass mUpscalerGuidePass;
+    Oot3d::NativeUiOverlayPass mNativeUiOverlayPass;
     Oot3d::TemporalHistoryManager mTemporalHistory;
     Oot3d::PicaRigidMotionTracker mRigidMotionTracker;
     Oot3d::SceneCompositePass mSceneCompositePass;
@@ -1496,6 +1516,11 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     // TAA or SMAA is configured: a target's boundary before native UI resolves
     // it into the scene it commits.
     bool mSceneAntiAliasing = false;
+    // An upscaler is configured: a target's boundary before native UI keeps
+    // the scene it completed (SceneBeforeUi) for it.
+    bool mPresentationUpscaler = false;
+    // The native UI overlay of this frame's upscaled display (reused with it).
+    bool mNativeUiOverlayExecutedThisFrame = false;
     bool mNativeFidelityProfile = false;
     Oot3d::PicaAttachmentRequirements mFramePicaAttachmentRequirements;
     std::array<float, 2> mTemporalJitterPixels{};

@@ -985,6 +985,10 @@ void GfxRenderingAPIVulkan::Init() {
         SPDLOG_INFO("OOT3D Vulkan upscaler guide resampling unavailable: {}",
                     mUpscalerGuidePass.UnavailableReason());
     }
+    if (!mNativeUiOverlayPass.Initialize(mPhysicalDevice, mDevice, mNriInterop)) {
+        SPDLOG_INFO("OOT3D Vulkan native UI overlay unavailable: {}",
+                    mNativeUiOverlayPass.UnavailableReason());
+    }
     auto& settingsRuntime = Oot3d::GraphicsSettingsRuntime::Instance();
     settingsRuntime.SetCapability(Oot3d::GraphicsCapability::NriInterop,
                                   mNriInterop.Available(), mNriInterop.UnavailableReason());
@@ -1189,6 +1193,7 @@ void GfxRenderingAPIVulkan::Shutdown() {
         mNriPicaScanoutPass.Shutdown();
         mNriUpscalerPass.Shutdown();
         mUpscalerGuidePass.Shutdown();
+        mNativeUiOverlayPass.Shutdown();
         mSceneCompositePass.Shutdown();
         mSmaa1xPass.Shutdown();
         mNriEffectGraphTransientImageArena.Shutdown();
@@ -1663,6 +1668,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
     mLinearColorExecutedThisFrame = false;
     mMotionExecutedThisFrame = false;
     mUpscalerExecutedThisFrame = false;
+    mNativeUiOverlayExecutedThisFrame = false;
     mUpscalerUsedD3d12ThisFrame = false;
     mUpscalerOutputEncodingThisFrame =
         Oot3d::SceneColorEncoding::Unknown;
@@ -1827,6 +1833,8 @@ void GfxRenderingAPIVulkan::StartFrame() {
     mPresentationWorldSurface =
         !mNativeFidelityProfile && aaPolicy.PresentationWorldSurface;
     mSceneAntiAliasing = !mNativeFidelityProfile && aaPolicy.SceneAntiAliasing;
+    mPresentationUpscaler = !mNativeFidelityProfile && aaPolicy.PresentationUpscaler &&
+                            mNativeUiOverlayPass.Available();
     // The rendering snapshot already disables GI outside per-pixel lighting
     // and under native presentation.
     const bool globalIlluminationRequested =

@@ -732,6 +732,9 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
         { "mxao_temporal_history_valid_count", frame.MxaoTemporalHistoryValidCount },
         { "before_ui_anti_aliasing_count", frame.BeforeUiAntiAliasingCount },
         { "before_ui_anti_aliasing_unavailable_count", frame.BeforeUiAntiAliasingUnavailableCount },
+        { "scene_before_ui_snapshot_count", frame.SceneBeforeUiSnapshotCount },
+        { "scene_before_ui_transfer_count", frame.SceneBeforeUiTransferCount },
+        { "native_ui_overlay_count", frame.NativeUiOverlayCount },
         { "upscaler_guide_width", frame.UpscalerGuideWidth },
         { "upscaler_guide_height", frame.UpscalerGuideHeight },
         { "dlss_upscale_pass_count", frame.DlssUpscalePassCount },
@@ -1809,6 +1812,17 @@ void Oot3dVulkanDiagnostics::RecordBeforeUiAntiAliasing(bool applied, bool unava
     if (!mActiveFrame.has_value()) return;
     if (applied) ++mActiveFrame->BeforeUiAntiAliasingCount;
     if (unavailable) ++mActiveFrame->BeforeUiAntiAliasingUnavailableCount;
+}
+
+void Oot3dVulkanDiagnostics::RecordSceneBeforeUi(bool snapshot, bool transferred) {
+    if (!mActiveFrame.has_value()) return;
+    if (snapshot) ++mActiveFrame->SceneBeforeUiSnapshotCount;
+    if (transferred) ++mActiveFrame->SceneBeforeUiTransferCount;
+}
+
+void Oot3dVulkanDiagnostics::RecordNativeUiOverlay() {
+    if (!mActiveFrame.has_value()) return;
+    ++mActiveFrame->NativeUiOverlayCount;
 }
 
 void Oot3dVulkanDiagnostics::RecordDlssUpscale(

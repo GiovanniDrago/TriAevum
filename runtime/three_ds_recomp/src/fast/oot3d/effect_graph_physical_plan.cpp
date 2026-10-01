@@ -57,6 +57,7 @@ EffectPhysicalResidency ClassifyEffectResourceResidency(
         case EffectResource::SceneDistanceField:
             return EffectPhysicalResidency::Semantic;
         case EffectResource::SceneColor:
+        case EffectResource::SceneBeforeUi:
         case EffectResource::NativeDepth:
         case EffectResource::NativeShadow2D:
         case EffectResource::PresentationOutput:

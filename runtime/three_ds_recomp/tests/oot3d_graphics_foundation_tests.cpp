@@ -90,6 +90,7 @@
 #include "fast/oot3d/reflection_material_profile.h"
 #include "fast/oot3d/toon_outline_shader.h"
 #include "fast/oot3d/upscaler_guides.h"
+#include "fast/oot3d/native_ui_overlay.h"
 
 #include <gtest/gtest.h>
 #ifdef OOT3D_FOUNDATION_HAS_SHADERC
@@ -1868,6 +1869,7 @@ TEST(Oot3dAntiAliasingFramePolicy,
     EXPECT_TRUE(policy.PresentationWorldSurface);
     // Same-extent AA resolves with the scene, before native UI.
     EXPECT_TRUE(policy.SceneAntiAliasing);
+    EXPECT_FALSE(policy.PresentationUpscaler);
 
     settings.AntiAliasing = AntiAliasingMode::Smaa1x;
     policy = ResolveAntiAliasingFramePolicy(settings, capabilities);
@@ -1895,6 +1897,7 @@ TEST(Oot3dAntiAliasingFramePolicy,
     policy = ResolveAntiAliasingFramePolicy(settings, capabilities);
     EXPECT_FALSE(policy.TemporalJitter);
     EXPECT_TRUE(policy.PresentationWorldSurface);
+    EXPECT_TRUE(policy.PresentationUpscaler);
     settings.Upscaler = UpscalerProvider::Fsr;
     settings.UpscalerMode = UpscalerQuality::Quality;
     policy = ResolveAntiAliasingFramePolicy(settings, capabilities);
@@ -1903,6 +1906,7 @@ TEST(Oot3dAntiAliasingFramePolicy,
     EXPECT_TRUE(policy.PresentationWorldSurface);
     // Upscalers change the extent and stay with the presentation.
     EXPECT_FALSE(policy.SceneAntiAliasing);
+    EXPECT_TRUE(policy.PresentationUpscaler);
     EXPECT_EQ(
         policy.TemporalJitterPhases,
         ResolveUpscalerContract(
@@ -1956,6 +1960,43 @@ TEST(Oot3dUpscalerGuides, ResampleShaderCompiles) {
     const auto result = compiler.CompileGlslToSpv(
         Fast::Oot3d::BuildUpscalerGuideResampleShader(), shaderc_compute_shader,
         "oot3d_upscaler_guides.comp");
+    EXPECT_EQ(result.GetCompilationStatus(), shaderc_compilation_status_success)
+        << result.GetErrorMessage();
+}
+#endif
+
+TEST(Oot3dNativeUiOverlay, MapsTheUpscaledTexelOntoItsDisplayFootprint) {
+    using namespace Fast::Oot3d;
+    // An identity extent lands on the texel itself with no neighbour weight.
+    for (uint32_t pixel = 0U; pixel < 16U; ++pixel) {
+        const auto tap = ResolveNativeUiOverlayTap(pixel, 16U, 16U);
+        EXPECT_EQ(tap.First, int32_t(pixel));
+        EXPECT_FLOAT_EQ(tap.Fraction, 0.0F);
+    }
+    // FSR Quality (1.5x): output texel centres fall between display texels,
+    // and the footprint never skips a display texel.
+    int32_t previous = -1;
+    for (uint32_t pixel = 0U; pixel < 1440U; ++pixel) {
+        const auto tap = ResolveNativeUiOverlayTap(pixel, 1440U, 960U);
+        EXPECT_GE(tap.Fraction, 0.0F);
+        EXPECT_LT(tap.Fraction, 1.0F);
+        EXPECT_LE(tap.First - previous, 1);
+        previous = tap.First;
+    }
+    const auto first = ResolveNativeUiOverlayTap(0U, 1440U, 960U);
+    EXPECT_EQ(first.First, -1); // clamped to the edge by the shader
+    EXPECT_NEAR(first.Fraction, 5.0F / 6.0F, 1.0e-6F);
+    const auto exact = ResolveNativeUiOverlayTap(1U, 3U, 2U);
+    EXPECT_EQ(exact.First, 0);
+    EXPECT_NEAR(exact.Fraction, 0.5F, 1.0e-6F);
+}
+
+#ifdef OOT3D_FOUNDATION_HAS_SHADERC
+TEST(Oot3dNativeUiOverlay, ShaderCompiles) {
+    shaderc::Compiler compiler;
+    const auto result = compiler.CompileGlslToSpv(
+        Fast::Oot3d::BuildNativeUiOverlayShader(), shaderc_compute_shader,
+        "oot3d_native_ui_overlay.comp");
     EXPECT_EQ(result.GetCompilationStatus(), shaderc_compilation_status_success)
         << result.GetErrorMessage();
 }

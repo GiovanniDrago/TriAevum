@@ -42,6 +42,12 @@ void PopulateCompatibilityProjections(
     plan.Dlss = plan.TemporalUpscaler &&
                 plan.Upscaler == UpscalerProvider::Dlss;
     plan.MotionVectors = plan.Enabled(DisplayEffectPass::Motion);
+    const auto readsSceneBeforeUi = [&plan](DisplayEffectPass pass) {
+        const auto* compiled = plan.FindPass(pass);
+        return compiled != nullptr && compiled->ReadsResource(EffectResource::SceneBeforeUi);
+    };
+    plan.NativeUiOverlay = readsSceneBeforeUi(DisplayEffectPass::TemporalUpscaler) ||
+                           readsSceneBeforeUi(DisplayEffectPass::Nis);
     plan.RequiresGuideTarget =
         !plan.Graph.Attachments.NativeColorOnly();
 }
@@ -344,6 +350,15 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     const bool fsr = temporalMetadata && upscaler && input.Upscaler == UpscalerProvider::Fsr;
     const bool dlss = temporalMetadata && upscaler && input.Upscaler == UpscalerProvider::Dlss;
     const bool temporalUpscaler = fsr || dlss;
+    // An upscaler changes the extent, so it cannot resolve before native UI
+    // like TAA and SMAA. When the display also carries its resolved scene
+    // before that UI, the upscaler reconstructs that scene instead of the
+    // display and the display's UI is laid over its output: the UI never enters
+    // it. Every read of the display's scene colour then reads that scene.
+    const bool nativeUiOverlay = input.SceneBeforeUi && input.SceneEffectsResolved && input.WorldSurface &&
+                                 !input.NativeSceneBoundary && (temporalUpscaler || nis);
+    const EffectResource displayScene =
+        nativeUiOverlay ? EffectResource::SceneBeforeUi : EffectResource::SceneColor;
     const bool hiZ = screenSpaceReflections || fsr;
     const bool motionVectors =
         temporalMetadata && (taa || temporalUpscaler || fidelityFxSssr || globalIllumination || temporalAo ||
@@ -393,7 +408,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
                 .Enabled = workingColor,
                 .Stage = EffectStage::AfterOpaque,
                 .Contract = EffectContractKind::ComposerPass,
-                .Resources = { Read(EffectResource::SceneColor),
+                .Resources = { Read(displayScene),
                                Write(EffectResource::LinearWorkingColor) } });
     std::vector<EffectResourceUse> aoResources{ Read(EffectResource::NativeSceneView),
                                                 Read(EffectResource::NativeDepth),
@@ -482,7 +497,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
 
     const EffectResource baseColor = workingColor
         ? EffectResource::LinearWorkingColor
-        : EffectResource::SceneColor;
+        : displayScene;
     std::vector<EffectResourceUse> compositeResources{ Read(baseColor) };
     if (ao) {
         compositeResources.push_back(Read(EffectResource::AmbientOcclusion));
@@ -532,8 +547,21 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
                  : EffectResource::NativeDepth),
         Read(EffectResource::MotionVectors),
         Read(EffectResource::ReactiveMask),
-        Write(EffectResource::UpscaledColor),
     };
+    // The display's UI laid over the upscaled scene: where the display differs
+    // from its scene before UI.
+    const auto readUi = [&](std::vector<EffectResourceUse>& resources) {
+        if (!nativeUiOverlay)
+            return;
+        resources.push_back(Read(EffectResource::SceneColor));
+        if (sourceColor != EffectResource::SceneBeforeUi)
+            resources.push_back(Read(EffectResource::SceneBeforeUi));
+    };
+    readUi(temporalUpscalerResources);
+    temporalUpscalerResources.push_back(Write(EffectResource::UpscaledColor));
+    std::vector<EffectResourceUse> nisResources{ Read(sourceColor) };
+    readUi(nisResources);
+    nisResources.push_back(Write(EffectResource::UpscaledColor));
     graph.Add({ .Name = "TemporalUpscaler",
                 .DependsOn = { "Composite", "Motion", "HiZ",
                                "WorkingColor" },
@@ -546,7 +574,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
                 .Enabled = nis,
                 .Stage = EffectStage::BeforeUi,
                 .Contract = EffectContractKind::ComposerPass,
-                .Resources = { Read(sourceColor), Write(EffectResource::UpscaledColor) } });
+                .Resources = std::move(nisResources) });
     graph.Add({ .Name = "SMAA",
                 .DependsOn = { "Composite" },
                 .Enabled = smaa,
@@ -648,8 +676,9 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
         // A composed scene that was built from the linear working domain is
         // still read in that domain: the conversion is not a scene effect, so
         // the resolved colour is converted for the stages that declared it
-        // instead of being handed encoded colour.
-        EffectResource resolvedSceneInput = EffectResource::SceneColor;
+        // instead of being handed encoded colour. The resolved colour is the
+        // scene before native UI when an upscaler lays the UI over its output.
+        EffectResource resolvedSceneInput = displayScene;
         if (sceneEffectsResolved) {
             for (const auto& pass : plan.Graph.Passes) {
                 const bool writesComposedScene = std::any_of(

@@ -515,6 +515,11 @@ struct Oot3dVulkanFrameDiagnostics {
     // not because another surface owned them this frame.
     uint32_t BeforeUiAntiAliasingCount = 0;
     uint32_t BeforeUiAntiAliasingUnavailableCount = 0;
+    // Scenes before native UI kept by a boundary for an upscaler, their
+    // transfers beside a display, and the UI laid over an upscaled scene.
+    uint32_t SceneBeforeUiSnapshotCount = 0;
+    uint32_t SceneBeforeUiTransferCount = 0;
+    uint32_t NativeUiOverlayCount = 0;
     uint32_t UpscalerGuideWidth = 0;
     uint32_t UpscalerGuideHeight = 0;
     uint32_t DlssUpscalePassCount = 0;
@@ -787,6 +792,8 @@ class Oot3dVulkanDiagnostics {
                               uint32_t guideHeight);
     void RecordMxaoTemporal(bool temporal, bool historyValid);
     void RecordBeforeUiAntiAliasing(bool applied, bool unavailable);
+    void RecordSceneBeforeUi(bool snapshot, bool transferred);
+    void RecordNativeUiOverlay();
     void RecordDlssUpscale(bool executed, bool historyReset,
                            uint32_t inputWidth, uint32_t inputHeight,
                            uint32_t outputWidth, uint32_t outputHeight);

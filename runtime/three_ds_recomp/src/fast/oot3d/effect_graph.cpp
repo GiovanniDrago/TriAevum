@@ -22,7 +22,8 @@ namespace {
 
 [[nodiscard]] constexpr bool IsExternalResource(EffectResource resource) noexcept {
     return resource == EffectResource::PicaSceneFrame || resource == EffectResource::NativeSceneView ||
-           resource == EffectResource::SceneColor || resource == EffectResource::NativeDepth ||
+           resource == EffectResource::SceneColor || resource == EffectResource::SceneBeforeUi ||
+           resource == EffectResource::NativeDepth ||
            resource == EffectResource::NativeShadow2D ||
            resource == EffectResource::DirectionalShadowHistory ||
            resource == EffectResource::DirectionalShadowStaticHistory;

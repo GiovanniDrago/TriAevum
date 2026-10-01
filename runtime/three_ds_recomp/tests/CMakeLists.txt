@@ -579,6 +579,7 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/temporal_aa.cpp
     ../src/fast/oot3d/upscaler_contract.cpp
     ../src/fast/oot3d/upscaler_guides.cpp
+    ../src/fast/oot3d/native_ui_overlay.cpp
     ../src/fast/oot3d/pica_shadow2d.cpp
     ../src/fast/oot3d/scene_view_bridge.cpp
     ../src/fast/oot3d/scene_surface_registry.cpp

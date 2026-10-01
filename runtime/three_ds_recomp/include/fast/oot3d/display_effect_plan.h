@@ -71,6 +71,10 @@ struct DisplayEffectPlanInput {
     // run and they read the resolved colour instead of re-applying the scene
     // effects a second time.
     bool SceneEffectsResolved = false;
+    // The display also carries its resolved scene before native UI
+    // (SceneBeforeUi). An upscaler then reconstructs that scene and lays the
+    // display's UI over its output instead of upscaling the UI with it.
+    bool SceneBeforeUi = false;
     Renderer3ds::PicaCompositionPurpose Purpose =
         Renderer3ds::PicaCompositionPurpose::Presentation;
 };
@@ -102,6 +106,9 @@ struct DisplayEffectPlan {
     bool Fsr = false;
     bool Dlss = false;
     bool TemporalUpscaler = false;
+    // The upscaler reads the scene before native UI and lays the display's UI
+    // over its output (it also reads SceneColor for that UI).
+    bool NativeUiOverlay = false;
     bool MotionVectors = false;
     bool RequiresGuideTarget = false;
     CompiledEffectGraph Graph;

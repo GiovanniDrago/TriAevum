@@ -65,6 +65,10 @@ enum class EffectResource : uint8_t {
     // Persistent depth backing restored into dirty final pages before actors.
     DirectionalShadowStaticCache,
     DirectionalShadowStaticHistory,
+    // The display's scene before native UI: its target at the boundary before
+    // UI, transferred like the display. An upscaler reconstructs it and lays
+    // the display's UI over its output, so the UI never enters the upscaler.
+    SceneBeforeUi,
     Count,
 };
 // Resource sets are 32-bit masks in the barrier and residency plans.

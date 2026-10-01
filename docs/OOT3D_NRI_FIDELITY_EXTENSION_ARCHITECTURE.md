@@ -3217,8 +3217,8 @@ upscalers never ran (motion and TAA passes: 0 of 360 frames).
 - Kokiri walk: TAA 358/360 frames (history valid 354), SMAA 358, FSR 358, from 0.
   Captures without those stages (effects off, MXAO without AA, field AO and TAA)
   are byte-identical to the previous build.
-- Same-extent anti-aliasing now resolves before that UI; see below. The
-  upscalers still process the display image, which carries the native HUD.
+- Same-extent anti-aliasing now resolves before that UI and the upscalers
+  reconstruct the scene before it; see below.
 
 #### Anti-aliasing before native UI
 
@@ -3255,8 +3255,36 @@ with the world's motion and blended its history (the Kokiri walk showed doubled
   count (TAA 0.37 -> 0.63 ms, SMAA 0.47 -> 0.90 ms) and the boundary composition
   adds 0.17-0.18 ms; the Kokiri frame stays within run-to-run variation (TAA
   11.2 -> 10.6 ms, SMAA 8.3 -> 8.5 ms).
-- The upscalers change the extent, so they stay at presentation and still
-  receive the HUD: FSR visibly degrades the HUD text while the camera moves.
+#### Upscalers and native UI
+
+The upscalers change the extent, so they stay at presentation; they used to
+receive the display with its HUD, and FSR/DLSS reprojected and jittered the HUD
+with the scene (the Kokiri "Attack" text ghosted and broke up while walking).
+
+- With an upscaler configured (`AntiAliasingFramePolicy::PresentationUpscaler`)
+  the boundary before native UI keeps the scene it completed: one copy of the
+  target (`SceneBeforeUiSerial`, carried by native UI writes like the resolved
+  serial). The display transfer then transfers it exactly as the display
+  (`mNativePicaSceneBeforeUiDisplays`), so where the UI drew nothing the two
+  images are bit-identical.
+- `EffectResource::SceneBeforeUi` declares that scene. With a resolved scene
+  (`DisplayEffectPlanInput::SceneBeforeUi`) every presentation read of the
+  display's scene colour reads it instead (the working colour converts it, or
+  the upscaler reads it), and FSR, DLSS and NIS also read `SceneColor` and
+  `SceneBeforeUi` to lay the UI over their output (`NativeUiOverlay`).
+- `NativeUiOverlayPass` (in the upscaler pass, `oot3d_native_ui_overlay.comp`)
+  takes, for each output texel, the display texels of its bilinear footprint
+  that the UI changed and blends them in with their coverage, decoded to the
+  upscaled colour's encoding; elsewhere the upscaled scene is kept exactly. The
+  UI keeps the display's resolution (bilinear), and translucent UI shows the
+  display's scene behind it.
+- Kokiri walk: FSR, DLSS and NIS overlay the UI in 358 of 360 frames (357 scenes
+  kept and transferred), field FSR and DLSS in 357; zero Vulkan/NRI errors. The
+  constant HUD pixels equal the AA-off capture in 94% of cases (FSR/DLSS; the
+  rest is the display's lower resolution, maximum difference 33) against 90.6%
+  and a maximum of 140 before. Captures without an upscaler are byte-identical.
+- Cost (Kokiri FSR, A/B/B/A medians of 600 frames): the frame goes from 8.20 to
+  8.34 ms for the kept scene, its transfer and the overlay.
 
 Fresh combined source adoption, deterministic framebuffer/state comparisons and
 the remaining realtime validation observation are recorded in
