@@ -2397,10 +2397,15 @@ TEST(Oot3dSceneBoundary,
     const auto boundary = BuildDisplayEffectPlan(input);
     ASSERT_TRUE(boundary.Graph.Valid()) << boundary.Graph.Error;
 
+    // A raw-copy boundary is not the scene's completion before native UI, so
+    // it never runs the same-extent anti-aliasing (one scene version is
+    // anti-aliased once per frame).
     uint32_t expectedScenePasses = 0U;
     for (const auto& pass : display.Graph.Passes) {
         if (BoundaryStageOrder(pass.Stage) <=
-            BoundaryStageOrder(EffectStage::AfterTransparent)) {
+                BoundaryStageOrder(EffectStage::AfterTransparent) &&
+            pass.Name != DisplayEffectPassName(DisplayEffectPass::Smaa) &&
+            pass.Name != DisplayEffectPassName(DisplayEffectPass::Taa)) {
             ++expectedScenePasses;
         }
     }
@@ -2441,11 +2446,92 @@ TEST(Oot3dSceneBoundary,
         boundary, DisplayEffectPass::SceneComposition,
         EffectResource::CompositeColor));
 
-    // Presentation keeps its own terminal pass and its own AA stage.
+    // A display without a boundary before its UI keeps its own terminal pass
+    // and anti-aliases the scene itself.
     EXPECT_TRUE(display.Enabled(DisplayEffectPass::Scanout));
     EXPECT_TRUE(display.Enabled(DisplayEffectPass::Smaa));
     EXPECT_FALSE(display.Enabled(DisplayEffectPass::SceneComposition));
     EXPECT_EQ(display.SceneOutput, EffectResource::CompositeColor);
+}
+
+// The boundary that completes the scene before native UI resolves the
+// same-extent anti-aliasing into its composition, so the UI drawn after it is
+// never anti-aliased (or reprojected) with the scene; the presentation of that
+// scene then leaves it alone. Upscalers change the extent and stay with the
+// presentation.
+TEST(Oot3dSceneBoundary, BoundaryBeforeNativeUiResolvesSameExtentAntiAliasing) {
+    auto input = BoundarySceneEffectInput();
+    input.NativeSceneBoundary = true;
+    input.BeforeNativeUi = true;
+    const auto smaa = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(smaa.Graph.Valid()) << smaa.Graph.Error;
+    EXPECT_TRUE(smaa.Enabled(DisplayEffectPass::Smaa));
+    EXPECT_TRUE(smaa.Enabled(DisplayEffectPass::Composite));
+    EXPECT_FALSE(smaa.Enabled(DisplayEffectPass::Scanout));
+    EXPECT_TRUE(BoundaryReadsResource(smaa, DisplayEffectPass::Smaa,
+                                      EffectResource::CompositeColor));
+    EXPECT_TRUE(BoundaryReadsResource(smaa, DisplayEffectPass::SceneComposition,
+                                      EffectResource::AntiAliasedColor));
+    EXPECT_EQ(smaa.SceneOutput, EffectResource::AntiAliasedColor);
+    for (const auto& pass : smaa.Graph.Passes) {
+        for (const auto& use : pass.Resources) {
+            EXPECT_NE(use.Resource, EffectResource::PresentationOutput)
+                << pass.Name;
+        }
+    }
+
+    // SMAA alone still composes: the boundary output is the anti-aliased
+    // colour, not the native target.
+    DisplayEffectPlanInput smaaOnly{};
+    smaaOnly.WorldSurface = true;
+    smaaOnly.PerspectiveAvailable = true;
+    smaaOnly.CameraAvailable = true;
+    smaaOnly.SmaaAvailable = true;
+    smaaOnly.AntiAliasing = AntiAliasingMode::Smaa1x;
+    smaaOnly.NativeSceneBoundary = true;
+    smaaOnly.BeforeNativeUi = true;
+    const auto alone = BuildDisplayEffectPlan(smaaOnly);
+    ASSERT_TRUE(alone.Graph.Valid()) << alone.Graph.Error;
+    EXPECT_TRUE(BoundaryReadsResource(alone, DisplayEffectPass::Smaa,
+                                      EffectResource::SceneColor));
+    EXPECT_EQ(alone.SceneOutput, EffectResource::AntiAliasedColor);
+
+    input.AntiAliasing = AntiAliasingMode::Taa;
+    const auto taa = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(taa.Graph.Valid()) << taa.Graph.Error;
+    EXPECT_TRUE(taa.Enabled(DisplayEffectPass::Taa));
+    EXPECT_TRUE(taa.Enabled(DisplayEffectPass::Motion));
+    EXPECT_TRUE(BoundaryReadsResource(taa, DisplayEffectPass::SceneComposition,
+                                      EffectResource::TemporalColor));
+    EXPECT_EQ(taa.SceneOutput, EffectResource::TemporalColor);
+
+    // The presentation of the scene this boundary resolved scans it out as it
+    // is; without the boundary it anti-aliases the display itself.
+    input.NativeSceneBoundary = false;
+    input.BeforeNativeUi = false;
+    input.SceneEffectsResolved = true;
+    const auto resolved = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(resolved.Graph.Valid()) << resolved.Graph.Error;
+    EXPECT_EQ(resolved.Graph.Order, (std::vector<std::string>{ "Scanout" }));
+    EXPECT_TRUE(BoundaryReadsResource(resolved, DisplayEffectPass::Scanout,
+                                      EffectResource::SceneColor));
+    input.SceneEffectsResolved = false;
+    const auto unresolved = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(unresolved.Graph.Valid()) << unresolved.Graph.Error;
+    EXPECT_TRUE(unresolved.Enabled(DisplayEffectPass::Taa));
+    EXPECT_TRUE(BoundaryReadsResource(unresolved, DisplayEffectPass::Scanout,
+                                      EffectResource::TemporalColor));
+
+    // Upscalers change the extent: the boundary leaves them to presentation.
+    input.NativeSceneBoundary = true;
+    input.BeforeNativeUi = true;
+    input.AntiAliasing = AntiAliasingMode::Upscaler;
+    input.Upscaler = UpscalerProvider::Fsr;
+    const auto upscaled = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(upscaled.Graph.Valid()) << upscaled.Graph.Error;
+    EXPECT_FALSE(upscaled.Enabled(DisplayEffectPass::TemporalUpscaler));
+    EXPECT_FALSE(upscaled.Enabled(DisplayEffectPass::Taa));
+    EXPECT_EQ(upscaled.SceneOutput, EffectResource::CompositeColor);
 }
 
 TEST(Oot3dSceneBoundary, NativeMemoryKeepsCanonicalBytesAndVisualEffectsSeparate) {
@@ -2508,14 +2594,26 @@ TEST(Oot3dSceneBoundary,
         }
     }
 
-    // Presentation stays scheduled and reads the resolved scene colour.
-    EXPECT_TRUE(resolved.Enabled(DisplayEffectPass::Smaa));
+    // The same-extent anti-aliasing resolved with the scene; presentation
+    // scans out the resolved scene colour.
+    EXPECT_FALSE(resolved.Enabled(DisplayEffectPass::Smaa));
     EXPECT_TRUE(resolved.Enabled(DisplayEffectPass::Scanout));
     EXPECT_EQ(resolved.SceneOutput, EffectResource::SceneColor);
     EXPECT_TRUE(BoundaryReadsResource(
-        resolved, DisplayEffectPass::Smaa, EffectResource::SceneColor));
+        resolved, DisplayEffectPass::Scanout, EffectResource::SceneColor));
     EXPECT_FALSE(
         resolved.Graph.ExportsResource(EffectResource::SceneComposition));
+
+    // A presentation stage that changes the extent stays scheduled and reads
+    // the resolved scene colour.
+    input.AntiAliasing = AntiAliasingMode::Upscaler;
+    input.Upscaler = UpscalerProvider::Nis;
+    const auto upscaled = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(upscaled.Graph.Valid()) << upscaled.Graph.Error;
+    EXPECT_FALSE(upscaled.Enabled(DisplayEffectPass::Composite));
+    EXPECT_TRUE(upscaled.Enabled(DisplayEffectPass::Nis));
+    EXPECT_TRUE(BoundaryReadsResource(
+        upscaled, DisplayEffectPass::Nis, EffectResource::SceneColor));
 }
 
 // An ordinary display with no boundary inputs keeps its canonical shape: one

@@ -1855,6 +1855,7 @@ TEST(Oot3dAntiAliasingFramePolicy,
     EXPECT_EQ(policy.SpatialAaMode, 1U);
     EXPECT_FALSE(policy.TemporalJitter);
     EXPECT_FALSE(policy.PresentationWorldSurface);
+    EXPECT_FALSE(policy.SceneAntiAliasing);
     EXPECT_EQ(policy.MsaaSamples, 1U);
 
     settings.AntiAliasing = AntiAliasingMode::Taa;
@@ -1865,14 +1866,19 @@ TEST(Oot3dAntiAliasingFramePolicy,
     EXPECT_EQ(policy.TemporalJitterPhases, 8U);
 
     EXPECT_TRUE(policy.PresentationWorldSurface);
+    // Same-extent AA resolves with the scene, before native UI.
+    EXPECT_TRUE(policy.SceneAntiAliasing);
 
     settings.AntiAliasing = AntiAliasingMode::Smaa1x;
     policy = ResolveAntiAliasingFramePolicy(settings, capabilities);
     EXPECT_FALSE(policy.TemporalJitter);
     EXPECT_TRUE(policy.PresentationWorldSurface);
+    EXPECT_TRUE(policy.SceneAntiAliasing);
     settings.AntiAliasing = AntiAliasingMode::Off;
     EXPECT_FALSE(ResolveAntiAliasingFramePolicy(settings, capabilities).PresentationWorldSurface);
     EXPECT_TRUE(ResolveAntiAliasingFramePolicy(settings, capabilities, false, true).PresentationWorldSurface);
+    EXPECT_FALSE(ResolveAntiAliasingFramePolicy(settings, capabilities, false, true).SceneAntiAliasing);
+    EXPECT_TRUE(ResolveAntiAliasingFramePolicy(settings, capabilities, true, false).SceneAntiAliasing);
 
     settings.AntiAliasing = AntiAliasingMode::Msaa;
     settings.MsaaSamples = 4U;
@@ -1895,6 +1901,8 @@ TEST(Oot3dAntiAliasingFramePolicy,
     EXPECT_TRUE(policy.TemporalJitter);
     EXPECT_TRUE(policy.TemporalMotion);
     EXPECT_TRUE(policy.PresentationWorldSurface);
+    // Upscalers change the extent and stay with the presentation.
+    EXPECT_FALSE(policy.SceneAntiAliasing);
     EXPECT_EQ(
         policy.TemporalJitterPhases,
         ResolveUpscalerContract(

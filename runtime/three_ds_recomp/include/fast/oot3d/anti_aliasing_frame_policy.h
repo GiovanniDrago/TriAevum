@@ -19,6 +19,9 @@ struct AntiAliasingFramePolicy {
     // Presentation stages read the display's world surface: TAA, SMAA, the
     // upscalers and forced motion vectors (FXAA and MSAA do not).
     bool PresentationWorldSurface = false;
+    // Same-extent anti-aliasing (TAA, SMAA) is a scene stage: a target's
+    // boundary before native UI resolves it, so the UI draws over the result.
+    bool SceneAntiAliasing = false;
     uint32_t TemporalJitterPhases = 8U;
     uint32_t SpatialAaMode = 0U;
     uint8_t MsaaSamples = 1U;
@@ -40,6 +43,9 @@ ResolveAntiAliasingFramePolicy(
     policy.PresentationWorldSurface = policy.TemporalMotion ||
         settings.AntiAliasing == AntiAliasingMode::Smaa1x ||
         settings.AntiAliasing == AntiAliasingMode::Upscaler;
+    policy.SceneAntiAliasing =
+        settings.AntiAliasing == AntiAliasingMode::Taa || forceTaa ||
+        settings.AntiAliasing == AntiAliasingMode::Smaa1x;
     policy.TemporalJitterPhases = temporalUpscaler
         ? ResolveUpscalerContract(
               settings.Upscaler, settings.UpscalerMode, 1U, 1U)

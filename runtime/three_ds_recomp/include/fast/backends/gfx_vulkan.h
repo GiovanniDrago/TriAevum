@@ -1300,14 +1300,17 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     // The display graph body, shared between presentation and the raw copy's
     // scene-source composition so the graph is executed exactly once and in the
     // same order in both cases. `copyOutput` (and the `copySource` it belongs
-    // to) is non-null only for the raw-copy boundary: the shared body then stops
+    // to) is non-null only for a native boundary: the shared body then stops
     // before scanout and declares the sampled source it reached. Presentation
-    // passes null pointers. Implemented in the display-graph region.
+    // passes null pointers. `beforeNativeUi` marks the boundary that commits the
+    // scene before native UI, where same-extent AA resolves. Implemented in the
+    // display-graph region.
     bool ExecuteNativePicaDisplayGraph(
         const GfxNativePicaDisplayTransferView& transfer,
         const NativePicaDisplayImage& display,
         NativePicaRenderTarget* copySource,
-        GpuTextureCopySourceImport* copyOutput, std::string* error);
+        GpuTextureCopySourceImport* copyOutput, std::string* error,
+        bool beforeNativeUi = false);
     bool SubmitNativePicaTextureCopy(const GfxNativePicaDisplayTransferView& transfer, std::string* error);
     std::map<uint64_t, NativePicaLightingLutTexture>
         mNativePicaLightingLuts;
@@ -1490,6 +1493,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     bool mTemporalJitterEnabled = false;
     // AA stages that present the world surface are configured this frame.
     bool mPresentationWorldSurface = false;
+    // TAA or SMAA is configured: a target's boundary before native UI resolves
+    // it into the scene it commits.
+    bool mSceneAntiAliasing = false;
     bool mNativeFidelityProfile = false;
     Oot3d::PicaAttachmentRequirements mFramePicaAttachmentRequirements;
     std::array<float, 2> mTemporalJitterPixels{};

@@ -323,15 +323,21 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     const bool giSpecular = globalIllumination && input.GlobalIlluminationSpecular &&
                             (!screenSpaceReflections || input.Reflections == ReflectionMode::HiZ);
     const bool reflections = screenSpaceReflections || giSpecular;
+    // Same-extent anti-aliasing is a scene stage: it resolves the scene before
+    // native UI, at the target's boundary before that UI when there is one
+    // (the UI then draws over the resolved scene), otherwise in the
+    // presentation of a display that carries no UI. A raw-copy boundary never
+    // runs it, so a frame anti-aliases one scene version once.
+    const bool sceneAntiAliasing = !input.NativeSceneBoundary || input.BeforeNativeUi;
+    const bool taa = sceneAntiAliasing && temporalMetadata &&
+        (input.AntiAliasing == AntiAliasingMode::Taa || input.ForceTaa);
+    const bool smaa = sceneAntiAliasing && extensionWorld &&
+                      input.AntiAliasing == AntiAliasingMode::Smaa1x &&
+                      input.SmaaAvailable;
     // A native boundary has no presentation stages, so its inputs never declare
     // them: the domain projection below is what enforces that structurally, and
     // these keep the boundary's derived requirements free of presentation
     // resources.
-    const bool taa = !input.NativeSceneBoundary && temporalMetadata &&
-        (input.AntiAliasing == AntiAliasingMode::Taa || input.ForceTaa);
-    const bool smaa = !input.NativeSceneBoundary && extensionWorld &&
-                      input.AntiAliasing == AntiAliasingMode::Smaa1x &&
-                      input.SmaaAvailable;
     const bool upscaler = !input.NativeSceneBoundary && extensionWorld &&
                           input.AntiAliasing == AntiAliasingMode::Upscaler;
     const bool nis = upscaler && input.Upscaler == UpscalerProvider::Nis;
@@ -509,10 +515,13 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
         ? EffectResource::CompositeColor
         : baseColor;
     plan.SceneOutput = sourceColor;
+    // Same-extent anti-aliasing completes the scene (see sceneAntiAliasing):
+    // a boundary before native UI resolves it into its composition, and a
+    // display whose scene that boundary resolved finds it already applied.
     graph.Add({ .Name = "TAA",
                 .DependsOn = { "Composite", "Motion", "WorkingColor" },
                 .Enabled = taa,
-                .Stage = EffectStage::BeforeUi,
+                .Stage = EffectStage::AfterTransparent,
                 .Contract = EffectContractKind::ComposerPass,
                 .Resources = { Read(sourceColor), Read(EffectResource::NativeDepth),
                                Read(EffectResource::MotionVectors), Write(EffectResource::TemporalColor) } });
@@ -541,7 +550,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     graph.Add({ .Name = "SMAA",
                 .DependsOn = { "Composite" },
                 .Enabled = smaa,
-                .Stage = EffectStage::BeforeUi,
+                .Stage = EffectStage::AfterTransparent,
                 .Contract = EffectContractKind::ComposerPass,
                 .Resources = { Read(sourceColor), Write(EffectResource::AntiAliasedColor) } });
 
@@ -580,7 +589,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     compositionResources.push_back(Write(EffectResource::SceneComposition));
     graph.Add({ .Name = "SceneComposition",
                 .DependsOn = { "AmbientOcclusion", "Reflections", "Outline",
-                               "Composite", "WorkingColor" },
+                               "Composite", "TAA", "SMAA", "WorkingColor" },
                 .Enabled = input.NativeSceneBoundary,
                 .Stage = EffectStage::AfterTransparent,
                 .Contract = EffectContractKind::ComposerPass,
@@ -685,6 +694,10 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
             // the version this plan consumes already carries them, so the native
             // target itself is the composed scene.
             plan.SceneOutput = EffectResource::SceneColor;
+        } else {
+            // The colour the boundary's composition reads: the scene stages'
+            // colour, anti-aliased when the boundary precedes native UI.
+            plan.SceneOutput = finalColor;
         }
         plan.Graph = projected.Compile();
     }

@@ -511,6 +511,10 @@ struct Oot3dVulkanFrameDiagnostics {
     // a valid history.
     uint32_t MxaoTemporalPassCount = 0;
     uint32_t MxaoTemporalHistoryValidCount = 0;
+    // Boundaries before native UI that resolved TAA/SMAA, and those that could
+    // not because another surface owned them this frame.
+    uint32_t BeforeUiAntiAliasingCount = 0;
+    uint32_t BeforeUiAntiAliasingUnavailableCount = 0;
     uint32_t UpscalerGuideWidth = 0;
     uint32_t UpscalerGuideHeight = 0;
     uint32_t DlssUpscalePassCount = 0;
@@ -782,6 +786,7 @@ class Oot3dVulkanDiagnostics {
     void RecordUpscalerGuides(bool resampled, uint32_t guideWidth,
                               uint32_t guideHeight);
     void RecordMxaoTemporal(bool temporal, bool historyValid);
+    void RecordBeforeUiAntiAliasing(bool applied, bool unavailable);
     void RecordDlssUpscale(bool executed, bool historyReset,
                            uint32_t inputWidth, uint32_t inputHeight,
                            uint32_t outputWidth, uint32_t outputHeight);

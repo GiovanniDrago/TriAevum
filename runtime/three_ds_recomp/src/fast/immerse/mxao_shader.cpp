@@ -321,14 +321,26 @@ std::string BuildMxaoTemporalShader() {
     source += R"glsl(
 layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
 layout(set=0,binding=3,rgba16f) uniform writeonly image2D accumulated;
-vec2 raw_occlusion(ivec2 pixel) {
-    pixel=clamp(pixel,ivec2(0),ivec2(pc.extent)-1);
-    return texelFetch(sampler2D(intermediate,point_sampler),pixel,0).rg;
+// The group's raw occlusion and depth, edge-clamped, with the border its
+// pixels read: one texel for the depth slope, the 4x4 window (-1..+2) for the
+// clamp. Each texel is fetched once instead of up to twenty times.
+shared vec2 tile[11][11];
+vec2 raw_occlusion(ivec2 local) {
+    return tile[local.y+1][local.x+1];
 }
 void main() {
-    ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
+    ivec2 origin=ivec2(gl_WorkGroupID.xy)*8;
+    for(uint i=gl_LocalInvocationIndex;i<121u;i+=64u) {
+        ivec2 t=ivec2(int(i%11u),int(i/11u));
+        ivec2 source=clamp(origin+t-1,ivec2(0),ivec2(pc.extent)-1);
+        tile[t.y][t.x]=texelFetch(sampler2D(intermediate,point_sampler),source,0).rg;
+    }
+    memoryBarrierShared();
+    barrier();
+    ivec2 local=ivec2(gl_LocalInvocationID.xy);
+    ivec2 pixel=origin+local;
     if(any(greaterThanEqual(pixel,ivec2(pc.extent)))) return;
-    vec2 current=raw_occlusion(pixel);
+    vec2 current=raw_occlusion(local);
     float depth=abs(current.y);
     vec4 result=vec4(current,1.0,0.0);
     if(pc.temporal.x>0.5 && depth<1.0) {
@@ -344,10 +356,10 @@ void main() {
             // follows the surface's own slope (the smaller one-sided step, so
             // a silhouette does not widen it) over the bilinear footprint.
             float expected=dot(pc.previous_depth,vec4(proj_position(pixel,depth/pc.response.y),1.0));
-            float slope_x=min(abs(abs(raw_occlusion(pixel+ivec2(1,0)).y)-depth),
-                              abs(depth-abs(raw_occlusion(pixel-ivec2(1,0)).y)));
-            float slope_y=min(abs(abs(raw_occlusion(pixel+ivec2(0,1)).y)-depth),
-                              abs(depth-abs(raw_occlusion(pixel-ivec2(0,1)).y)));
+            float slope_x=min(abs(abs(raw_occlusion(local+ivec2(1,0)).y)-depth),
+                              abs(depth-abs(raw_occlusion(local-ivec2(1,0)).y)));
+            float slope_y=min(abs(abs(raw_occlusion(local+ivec2(0,1)).y)-depth),
+                              abs(depth-abs(raw_occlusion(local-ivec2(0,1)).y)));
             float tolerance=pc.temporal.z*expected+2.0*max(slope_x,slope_y);
             // The history texel under the reprojected position: resampling it
             // bilinearly every frame would blur fine occlusion while the view
@@ -360,7 +372,7 @@ void main() {
                 float low=current.x, high=current.x;
                 for(int y=-1;y<3;++y) {
                     for(int x=-1;x<3;++x) {
-                        float o=raw_occlusion(pixel+ivec2(x,y)).x;
+                        float o=raw_occlusion(local+ivec2(x,y)).x;
                         low=min(low,o);
                         high=max(high,o);
                     }

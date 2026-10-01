@@ -57,9 +57,15 @@ struct DisplayEffectPlanInput {
     bool GuideDiagnostics = false;
     // This boundary composes the scene inside the frame, at the native
     // consumer's own order, instead of at presentation. Only scene stages may
-    // run: presentation stages (AA, upscalers, scanout) belong to the display
-    // that later presents this scene.
+    // run: presentation stages (upscalers, scanout) belong to the display that
+    // later presents this scene.
     bool NativeSceneBoundary = false;
+    // This native boundary is the scene's completion before native UI on its
+    // target: its composition is written back into the target and the UI draws
+    // over it. Same-extent anti-aliasing (TAA, SMAA) is a scene stage that
+    // resolves here, so native UI never enters it; raw-copy boundaries never
+    // run it, and a display without this boundary runs it at presentation.
+    bool BeforeNativeUi = false;
     // This boundary's scene stages were already resolved for this scene
     // identity by an earlier declared boundary, so only presentation stages may
     // run and they read the resolved colour instead of re-applying the scene
@@ -73,8 +79,9 @@ struct DisplayEffectPlan {
     ReflectionMode ReflectionProvider = ReflectionMode::Off;
     UpscalerProvider Upscaler = UpscalerProvider::Nis;
     // The declared scene colour of this boundary before any presentation stage:
-    // the resource a native consumer samples. It stays SceneColor when no scene
-    // stage applies, so the native target is already the composed scene.
+    // the resource a native consumer samples, anti-aliased at a boundary before
+    // native UI. It stays SceneColor when no scene stage applies, so the native
+    // target is already the composed scene.
     EffectResource SceneOutput = EffectResource::SceneColor;
 
     // Compatibility projections. They are populated from Graph after it is

@@ -4024,10 +4024,13 @@ void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
     if (timed)
         grassMilliseconds += std::chrono::duration<double, std::milli>(Clock::now() - begin).count();
     const auto& effects = mFrameGraphicsSettings.Effects;
+    // Scene stages, same-extent anti-aliasing included: it resolves the scene
+    // here so the UI that follows is drawn over the result, never through it.
     const bool sceneEffects = effects.AmbientOcclusion != Oot3d::AmbientOcclusionMode::Off ||
         effects.Reflections != Oot3d::ReflectionMode::Off ||
         effects.GlobalIllumination.Mode != Oot3d::GlobalIlluminationMode::Off ||
-        (effects.Toon != Oot3d::ToonMode::Off && effects.ToonStyle.OutlineEnabled);
+        (effects.Toon != Oot3d::ToonMode::Off && effects.ToonStyle.OutlineEnabled) ||
+        mSceneAntiAliasing;
     // Presentation stages (AA, upscalers) read the display's world surface.
     // When native UI reaches the target before its transfer, that surface is
     // proven only by the scene completion recorded at this boundary.
@@ -6740,7 +6743,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
     const GfxNativePicaDisplayTransferView& transfer,
     const NativePicaDisplayImage& display,
     NativePicaRenderTarget* copySource,
-    GpuTextureCopySourceImport* copyOutput, std::string* error) {
+    GpuTextureCopySourceImport* copyOutput, std::string* error,
+    bool beforeNativeUi) {
 
         const auto& presentationSettings =
             mFrameGraphicsSettings;
@@ -6793,6 +6797,21 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             display.CompositionDomain ==
                 ::Oot3d::Renderer::PicaCompositionDomain::Scene &&
             (display.SceneResolved || display.SceneEffectsResolved);
+        // One scene surface per frame owns the anti-aliasing history and
+        // output. A boundary before native UI of another surface in the same
+        // frame composes its other scene stages without them.
+        const bool antiAliasingAvailableHere = [&] {
+            if (!copyBoundary || !beforeNativeUi || copySource == nullptr) return true;
+            const Oot3d::SceneSurfaceKey surface{
+                transfer.RenderTargetNamespace, copySource->Key.ColorPhysicalAddress,
+                Oot3d::SceneSurfaceKind::Output};
+            const bool taaTaken = mTaaExecutedThisFrame && mTaaSurface.has_value() &&
+                *mTaaSurface != surface;
+            const bool smaaTaken = mSmaaExecutedThisFrame &&
+                (mSmaaRenderTargetNamespace != transfer.RenderTargetNamespace ||
+                 mSmaaDisplayPhysicalAddress != copySource->Key.ColorPhysicalAddress);
+            return !taaTaken && !smaaTaken;
+        }();
         const auto effectPlan = Oot3d::BuildDisplayEffectPlan({
             .AlphaOverlay = alphaOverlay,
             .WorldSurface = worldSurface,
@@ -6820,6 +6839,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             .Upscaler = presentationSettings.Upscaler,
             .GuideDiagnostics = Oot3d::PicaGuideDiagnosticMode() != 0,
             .NativeSceneBoundary = copyBoundary,
+            .BeforeNativeUi = copyBoundary && beforeNativeUi && antiAliasingAvailableHere,
             .SceneEffectsResolved = display.SceneEffectsResolved,
             .Purpose = mNativePicaCompositionSchedule.Purpose(),
         });
@@ -8723,266 +8743,6 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     mSceneCompositePass.OutputEncoding());
             }
         }
-        if (copyBoundary) {
-            // A native boundary stops here: the scene stages are resolved and
-            // the boundary's declared output is what the native consumer
-            // samples. Presentation AA/upscale/scanout belong to the display
-            // that later presents this scene, and this frame never presents.
-            if (effectPlan.Enabled(Oot3d::DisplayEffectPass::Guides)) {
-                recordDeclared(Oot3d::DisplayEffectPass::Guides,
-                               guidesMaterialized ? EffectOutcome::Fused
-                                                  : EffectOutcome::Failed);
-            }
-            recordDeclared(
-                Oot3d::DisplayEffectPass::WorkingColor,
-                producedOutcome(workingColorAttempted,
-                                linearWorkingColorForDisplay,
-                                canReuseWorkingColor));
-            recordDeclared(
-                Oot3d::DisplayEffectPass::AmbientOcclusion,
-                producedOutcome(aoAttempted, aoForDisplay));
-            recordDeclared(
-                Oot3d::DisplayEffectPass::HiZ,
-                producedOutcome(hiZAttempted, hiZExecutedNow, canReuseHiZ));
-            recordDeclared(
-                Oot3d::DisplayEffectPass::Reflections,
-                producedOutcome(reflectionsAttempted, reflectionsForDisplay,
-                                canReuseReflections));
-            recordDeclared(
-                Oot3d::DisplayEffectPass::Motion,
-                producedOutcome(motionAttempted, motionForDisplay,
-                                canReuseMotion));
-            if (effectPlan.Enabled(Oot3d::DisplayEffectPass::Outline)) {
-                // The outline is fused into the composition at a boundary:
-                // there is no presentation pass left to apply it in.
-                EffectOutcome outlineOutcome = EffectOutcome::Skipped;
-                if (outlineForDisplay && !guidesMaterialized) {
-                    outlineOutcome = EffectOutcome::Failed;
-                } else if (outlineForDisplay && compositeForTaa) {
-                    outlineOutcome = EffectOutcome::Fused;
-                }
-                recordDeclared(Oot3d::DisplayEffectPass::Outline,
-                               outlineOutcome);
-            }
-            recordDeclared(
-                Oot3d::DisplayEffectPass::Composite,
-                producedOutcome(compositeAttempted, compositeForTaa,
-                                canReuseComposite));
-            // A declared scene stage that did not produce its output fails the
-            // copy: an enabled effect must never silently sample the base
-            // colour target.
-            const bool declaredSceneStageFailed =
-                (effectPlan.Enabled(Oot3d::DisplayEffectPass::AmbientOcclusion) &&
-                 !aoForDisplay) ||
-                (effectPlan.Enabled(Oot3d::DisplayEffectPass::Reflections) &&
-                 !reflectionsForDisplay) ||
-                (effectPlan.Enabled(Oot3d::DisplayEffectPass::Outline) &&
-                 !outlineForDisplay) ||
-                (effectPlan.Enabled(Oot3d::DisplayEffectPass::WorkingColor) &&
-                 !linearWorkingColorForDisplay) ||
-                (effectPlan.Enabled(Oot3d::DisplayEffectPass::Composite) &&
-                 !compositeForTaa);
-            if (declaredSceneStageFailed) {
-                mDiagnostics.RecordDisplayEffectGraphExecution(
-                    effectExecution.Summary());
-                // A declared stage that did not produce its output is a fatal
-                // boundary failure, not a fallback to the base colour target.
-                restoreEffectPassGuides();
-                restoreBoundarySourceColor();
-                SetNativeError(
-                    error,
-                    "native scene boundary did not resolve every declared "
-                    "scene stage");
-                return false;
-            }
-            // The declared scene colour, not an effect name, decides whether
-            // this boundary composed anything: when no scene stage applies, the
-            // native target already is the composed scene.
-            const bool composedScene =
-                effectPlan.SceneOutput != Oot3d::EffectResource::SceneColor;
-            const auto compositionPass = effectPlan.FindPass(
-                Oot3d::DisplayEffectPass::SceneComposition);
-            if (compositionPass == nullptr || copySource == nullptr) {
-                throw std::runtime_error(
-                    "native scene boundary has no declared composition pass");
-            }
-            const auto compositionReads = resolveEffectPassReads(
-                Oot3d::DisplayEffectPass::SceneComposition);
-            const auto* compositionSource = findEffectColorRead(
-                compositionReads,
-                Oot3d::DisplayEffectPass::SceneComposition);
-            if (compositionSource == nullptr ||
-                compositionSource->Kind !=
-                    Oot3d::EffectResourceBindingKind::Image ||
-                !Oot3d::IsKnownSceneColorEncoding(
-                    compositionSource->ColorEncoding)) {
-                throw std::runtime_error(
-                    "native scene boundary composition source is incomplete");
-            }
-            const uint32_t compositionWidth = copySource->Width;
-            const uint32_t compositionHeight = copySource->Height;
-            if (compositionWidth == 0U || compositionHeight == 0U) {
-                throw std::runtime_error(
-                    "native scene boundary source has no internal extent");
-            }
-            if (!composedScene) {
-                // No scene stage applies to this version: either none is
-                // declared, or the colour the source target already holds
-                // carries them. The identity import of that target is the
-                // composed scene, and it keeps the version's own provenance so
-                // a consumer of this copy does not resolve the scene again.
-                recordDeclared(Oot3d::DisplayEffectPass::SceneComposition,
-                               EffectOutcome::Skipped);
-                copyOutput->Image = copySource->ColorImage;
-                copyOutput->Format = VK_FORMAT_R8G8B8A8_UNORM;
-                copyOutput->Width = compositionWidth;
-                copyOutput->Height = compositionHeight;
-                copyOutput->ShaderRead = false;
-                copyOutput->Encoding = Oot3d::NativePicaSceneColorEncoding();
-                copyOutput->SceneEffectsResolved =
-                    display.SceneEffectsResolved;
-                mDiagnostics.RecordDisplayEffectGraphExecution(
-                    effectExecution.Summary());
-                restoreEffectPassGuides();
-                restoreBoundarySourceColor();
-                return true;
-            }
-            // The composed scene is materialized once, at the source's own
-            // internal extent, in the encoded domain the native consumer
-            // samples. The target is offscreen: no swapchain, no present, and
-            // the pixel domain is the source's own, so the composition is a
-            // format/encode conversion and not a resample.
-            // ponytail: one reusable canvas per extent; a device wait on extent
-            // change is the ceiling. Key it per extent if copy resolutions ever
-            // thrash within a frame.
-            if (mNativePicaSceneCopyCanvas.Image == VK_NULL_HANDLE ||
-                mNativePicaSceneCopyCanvasWidth != compositionWidth ||
-                mNativePicaSceneCopyCanvasHeight != compositionHeight) {
-                if (mNativePicaSceneCopyCanvas.Image != VK_NULL_HANDLE) {
-                    CheckNativeVk(
-                        vkDeviceWaitIdle(mDevice),
-                        "vkDeviceWaitIdle(native scene composition canvas)");
-                    // The canvas is an NRI-owned texture, so the owned path
-                    // releases its views and image together.
-                    mNriInterop.DestroyOwnedTexture(
-                        mNativePicaSceneCopyCanvas.Image);
-                    mNativePicaSceneCopyCanvas = {};
-                }
-                Oot3d::NriOwnedTexture2DDesc canvas{};
-                canvas.Width = compositionWidth;
-                canvas.Height = compositionHeight;
-                canvas.Format = VK_FORMAT_R8G8B8A8_UNORM;
-                canvas.Usage =
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-                if (!mNriInterop.CreateOwnedTexture2D(
-                        canvas, mNativePicaSceneCopyCanvas)) {
-                    throw std::runtime_error(
-                        "native scene composition canvas is unavailable");
-                }
-                mNativePicaSceneCopyCanvasWidth = compositionWidth;
-                mNativePicaSceneCopyCanvasHeight = compositionHeight;
-            }
-            bindEffectImage(
-                Oot3d::EffectResource::SceneComposition,
-                mNativePicaSceneCopyCanvas.Image,
-                mNativePicaSceneCopyCanvas.ColorAttachmentView,
-                VK_FORMAT_R8G8B8A8_UNORM, compositionWidth,
-                compositionHeight);
-            const VkImage composedImage = reinterpret_cast<VkImage>(
-                compositionSource->NativeImage);
-            const VkFormat composedFormat =
-                static_cast<VkFormat>(compositionSource->Format);
-            std::array<VkImage, 11> compositionImages{};
-            std::array<VkFormat, 11> compositionFormats{};
-            compositionImages.fill(composedImage);
-            compositionFormats.fill(composedFormat);
-            Oot3d::PicaScanoutPolicyInput compositionPolicy{};
-            compositionPolicy.TransferFlags = 0U;
-            compositionPolicy.AaMode = 0U;
-            compositionPolicy.Width = compositionWidth;
-            compositionPolicy.Height = compositionHeight;
-            compositionPolicy.EffectsComposited = true;
-            compositionPolicy.InputEncoding =
-                compositionSource->ColorEncoding;
-            compositionPolicy.TargetSrgb = false;
-            if (!Oot3d::ValidatePicaScanoutPolicyInput(compositionPolicy)) {
-                throw std::runtime_error(
-                    "native scene composition color policy is invalid");
-            }
-            const Oot3d::PicaScanoutPushConstants composition =
-                Oot3d::BuildPicaScanoutPushConstants(compositionPolicy);
-            // The composition samples the same guide attachments the scene
-            // stages do, through the same declared graph edges.
-            transitionEffectPassGuides(
-                Oot3d::DisplayEffectPass::SceneComposition);
-            mGpuProfiler.BeginScope(
-                mCurrentFrame, Oot3d::GpuProfileScope::SceneComposite,
-                command);
-            const bool nriComposition =
-                mNriPicaScanoutPass.ConfigureOffscreen(
-                    VK_FORMAT_R8G8B8A8_UNORM) &&
-                mNriPicaScanoutPass.Execute(
-                    {
-                        .FrameSlot = mCurrentFrame,
-                        .FrameId = mFrameCounter,
-                        .CommandBuffer = command,
-                        .TargetImage = mNativePicaSceneCopyCanvas.Image,
-                        .TargetView =
-                            mNativePicaSceneCopyCanvas.ColorAttachmentView,
-                        .TargetFormat = VK_FORMAT_R8G8B8A8_UNORM,
-                        .TargetWidth = compositionWidth,
-                        .TargetHeight = compositionHeight,
-                        .InputImages = compositionImages,
-                        .InputFormats = compositionFormats,
-                        .Push = composition,
-                        .ViewportX = 0.0F,
-                        .ViewportY = 0.0F,
-                        .ViewportWidth =
-                            static_cast<float>(compositionWidth),
-                        .ViewportHeight =
-                            static_cast<float>(compositionHeight),
-                        .ScissorX = 0,
-                        .ScissorY = 0,
-                        .ScissorWidth = compositionWidth,
-                        .ScissorHeight = compositionHeight,
-                        .ClearColor = {},
-                        .Overlay = false,
-                        .OffscreenTarget = true,
-                    },
-                    sceneCompositionBarrierPlan);
-            mGpuProfiler.EndScope(
-                mCurrentFrame, Oot3d::GpuProfileScope::SceneComposite,
-                command);
-            if (!nriComposition) {
-                // Without the materialization there is no composed source, and
-                // sampling the base target instead would silently drop the
-                // enabled effects.
-                restoreEffectPassGuides();
-                restoreBoundarySourceColor();
-                SetNativeError(
-                    error, "native scene composition pass is unavailable");
-                return false;
-            }
-            recordDeclared(Oot3d::DisplayEffectPass::SceneComposition,
-                           EffectOutcome::Executed);
-            recordEffectPassTransitions(
-                mNriPicaScanoutPass.LastBarrierExecution());
-            copyOutput->Image = mNativePicaSceneCopyCanvas.Image;
-            copyOutput->Format = VK_FORMAT_R8G8B8A8_UNORM;
-            copyOutput->Width = compositionWidth;
-            copyOutput->Height = compositionHeight;
-            copyOutput->ShaderRead = true;
-            // The materialization wrote the encoded display domain: the
-            // composed colour is what a display-encoded native target holds.
-            copyOutput->Encoding = Oot3d::NativePicaSceneColorEncoding();
-            copyOutput->SceneEffectsResolved = true;
-            mDiagnostics.RecordDisplayEffectGraphExecution(
-                effectExecution.Summary());
-            restoreEffectPassGuides();
-            restoreBoundarySourceColor();
-            return true;
-        }
         bool taaNriWrapped = false;
         bool taaForDisplay = canReuseTaa;
         bool taaAttempted = false;
@@ -9495,6 +9255,288 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     mSmaa1xPass.BarriersOwnedByNri(),
                     mSmaa1xPass.LookupUploadOwnedByNri());
             }
+        }
+        if (copyBoundary) {
+            // A native boundary stops here: the scene stages are resolved, with
+            // the same-extent anti-aliasing of a boundary before native UI, and
+            // the boundary's declared output is what the native consumer
+            // samples. Upscaling and scanout belong to the display that later
+            // presents this scene, and this frame never presents.
+            if (effectPlan.Enabled(Oot3d::DisplayEffectPass::Guides)) {
+                recordDeclared(Oot3d::DisplayEffectPass::Guides,
+                               guidesMaterialized ? EffectOutcome::Fused
+                                                  : EffectOutcome::Failed);
+            }
+            recordDeclared(
+                Oot3d::DisplayEffectPass::WorkingColor,
+                producedOutcome(workingColorAttempted,
+                                linearWorkingColorForDisplay,
+                                canReuseWorkingColor));
+            recordDeclared(
+                Oot3d::DisplayEffectPass::AmbientOcclusion,
+                producedOutcome(aoAttempted, aoForDisplay));
+            recordDeclared(
+                Oot3d::DisplayEffectPass::HiZ,
+                producedOutcome(hiZAttempted, hiZExecutedNow, canReuseHiZ));
+            recordDeclared(
+                Oot3d::DisplayEffectPass::Reflections,
+                producedOutcome(reflectionsAttempted, reflectionsForDisplay,
+                                canReuseReflections));
+            recordDeclared(
+                Oot3d::DisplayEffectPass::Motion,
+                producedOutcome(motionAttempted, motionForDisplay,
+                                canReuseMotion));
+            if (effectPlan.Enabled(Oot3d::DisplayEffectPass::Outline)) {
+                // The outline is fused into the composition at a boundary:
+                // there is no presentation pass left to apply it in.
+                EffectOutcome outlineOutcome = EffectOutcome::Skipped;
+                if (outlineForDisplay && !guidesMaterialized) {
+                    outlineOutcome = EffectOutcome::Failed;
+                } else if (outlineForDisplay && compositeForTaa) {
+                    outlineOutcome = EffectOutcome::Fused;
+                }
+                recordDeclared(Oot3d::DisplayEffectPass::Outline,
+                               outlineOutcome);
+            }
+            recordDeclared(
+                Oot3d::DisplayEffectPass::Composite,
+                producedOutcome(compositeAttempted, compositeForTaa,
+                                canReuseComposite));
+            recordDeclared(
+                Oot3d::DisplayEffectPass::Taa,
+                producedOutcome(taaAttempted, taaForDisplay, canReuseTaa));
+            recordDeclared(
+                Oot3d::DisplayEffectPass::Smaa,
+                producedOutcome(smaaAttempted, smaaForDisplay, canReuseSmaa));
+            if (beforeNativeUi) {
+                mDiagnostics.RecordBeforeUiAntiAliasing(
+                    taaForDisplay || smaaForDisplay,
+                    !antiAliasingAvailableHere);
+            }
+            // A declared scene stage that did not produce its output fails the
+            // copy: an enabled effect must never silently sample the base
+            // colour target.
+            const bool declaredSceneStageFailed =
+                (effectPlan.Enabled(Oot3d::DisplayEffectPass::AmbientOcclusion) &&
+                 !aoForDisplay) ||
+                (effectPlan.Enabled(Oot3d::DisplayEffectPass::Reflections) &&
+                 !reflectionsForDisplay) ||
+                (effectPlan.Enabled(Oot3d::DisplayEffectPass::Outline) &&
+                 !outlineForDisplay) ||
+                (effectPlan.Enabled(Oot3d::DisplayEffectPass::WorkingColor) &&
+                 !linearWorkingColorForDisplay) ||
+                (effectPlan.Enabled(Oot3d::DisplayEffectPass::Composite) &&
+                 !compositeForTaa) ||
+                (wantsTaa && !taaForDisplay) ||
+                (wantsSmaa && !smaaForDisplay);
+            if (declaredSceneStageFailed) {
+                mDiagnostics.RecordDisplayEffectGraphExecution(
+                    effectExecution.Summary());
+                // A declared stage that did not produce its output is a fatal
+                // boundary failure, not a fallback to the base colour target.
+                restoreEffectPassGuides();
+                restoreBoundarySourceColor();
+                SetNativeError(
+                    error,
+                    "native scene boundary did not resolve every declared "
+                    "scene stage");
+                return false;
+            }
+            // The declared scene colour, not an effect name, decides whether
+            // this boundary composed anything: when no scene stage applies, the
+            // native target already is the composed scene.
+            const bool composedScene =
+                effectPlan.SceneOutput != Oot3d::EffectResource::SceneColor;
+            const auto compositionPass = effectPlan.FindPass(
+                Oot3d::DisplayEffectPass::SceneComposition);
+            if (compositionPass == nullptr || copySource == nullptr) {
+                throw std::runtime_error(
+                    "native scene boundary has no declared composition pass");
+            }
+            if (smaaForDisplay) {
+                bindEffectImage(
+                    Oot3d::EffectResource::AntiAliasedColor,
+                    mSmaa1xPass.OutputImage(), mSmaa1xPass.OutputView(),
+                    VK_FORMAT_R16G16B16A16_SFLOAT,
+                    mSmaaWidth, mSmaaHeight,
+                    mSmaaOutputEncodingThisFrame);
+            }
+            const auto compositionReads = resolveEffectPassReads(
+                Oot3d::DisplayEffectPass::SceneComposition);
+            const auto* compositionSource = findEffectColorRead(
+                compositionReads,
+                Oot3d::DisplayEffectPass::SceneComposition);
+            if (compositionSource == nullptr ||
+                compositionSource->Kind !=
+                    Oot3d::EffectResourceBindingKind::Image ||
+                !Oot3d::IsKnownSceneColorEncoding(
+                    compositionSource->ColorEncoding)) {
+                throw std::runtime_error(
+                    "native scene boundary composition source is incomplete");
+            }
+            const uint32_t compositionWidth = copySource->Width;
+            const uint32_t compositionHeight = copySource->Height;
+            if (compositionWidth == 0U || compositionHeight == 0U) {
+                throw std::runtime_error(
+                    "native scene boundary source has no internal extent");
+            }
+            if (!composedScene) {
+                // No scene stage applies to this version: either none is
+                // declared, or the colour the source target already holds
+                // carries them. The identity import of that target is the
+                // composed scene, and it keeps the version's own provenance so
+                // a consumer of this copy does not resolve the scene again.
+                recordDeclared(Oot3d::DisplayEffectPass::SceneComposition,
+                               EffectOutcome::Skipped);
+                copyOutput->Image = copySource->ColorImage;
+                copyOutput->Format = VK_FORMAT_R8G8B8A8_UNORM;
+                copyOutput->Width = compositionWidth;
+                copyOutput->Height = compositionHeight;
+                copyOutput->ShaderRead = false;
+                copyOutput->Encoding = Oot3d::NativePicaSceneColorEncoding();
+                copyOutput->SceneEffectsResolved =
+                    display.SceneEffectsResolved;
+                mDiagnostics.RecordDisplayEffectGraphExecution(
+                    effectExecution.Summary());
+                restoreEffectPassGuides();
+                restoreBoundarySourceColor();
+                return true;
+            }
+            // The composed scene is materialized once, at the source's own
+            // internal extent, in the encoded domain the native consumer
+            // samples. The target is offscreen: no swapchain, no present, and
+            // the pixel domain is the source's own, so the composition is a
+            // format/encode conversion and not a resample.
+            // ponytail: one reusable canvas per extent; a device wait on extent
+            // change is the ceiling. Key it per extent if copy resolutions ever
+            // thrash within a frame.
+            if (mNativePicaSceneCopyCanvas.Image == VK_NULL_HANDLE ||
+                mNativePicaSceneCopyCanvasWidth != compositionWidth ||
+                mNativePicaSceneCopyCanvasHeight != compositionHeight) {
+                if (mNativePicaSceneCopyCanvas.Image != VK_NULL_HANDLE) {
+                    CheckNativeVk(
+                        vkDeviceWaitIdle(mDevice),
+                        "vkDeviceWaitIdle(native scene composition canvas)");
+                    // The canvas is an NRI-owned texture, so the owned path
+                    // releases its views and image together.
+                    mNriInterop.DestroyOwnedTexture(
+                        mNativePicaSceneCopyCanvas.Image);
+                    mNativePicaSceneCopyCanvas = {};
+                }
+                Oot3d::NriOwnedTexture2DDesc canvas{};
+                canvas.Width = compositionWidth;
+                canvas.Height = compositionHeight;
+                canvas.Format = VK_FORMAT_R8G8B8A8_UNORM;
+                canvas.Usage =
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+                if (!mNriInterop.CreateOwnedTexture2D(
+                        canvas, mNativePicaSceneCopyCanvas)) {
+                    throw std::runtime_error(
+                        "native scene composition canvas is unavailable");
+                }
+                mNativePicaSceneCopyCanvasWidth = compositionWidth;
+                mNativePicaSceneCopyCanvasHeight = compositionHeight;
+            }
+            bindEffectImage(
+                Oot3d::EffectResource::SceneComposition,
+                mNativePicaSceneCopyCanvas.Image,
+                mNativePicaSceneCopyCanvas.ColorAttachmentView,
+                VK_FORMAT_R8G8B8A8_UNORM, compositionWidth,
+                compositionHeight);
+            const VkImage composedImage = reinterpret_cast<VkImage>(
+                compositionSource->NativeImage);
+            const VkFormat composedFormat =
+                static_cast<VkFormat>(compositionSource->Format);
+            std::array<VkImage, 11> compositionImages{};
+            std::array<VkFormat, 11> compositionFormats{};
+            compositionImages.fill(composedImage);
+            compositionFormats.fill(composedFormat);
+            Oot3d::PicaScanoutPolicyInput compositionPolicy{};
+            compositionPolicy.TransferFlags = 0U;
+            compositionPolicy.AaMode = 0U;
+            compositionPolicy.Width = compositionWidth;
+            compositionPolicy.Height = compositionHeight;
+            compositionPolicy.EffectsComposited = true;
+            compositionPolicy.InputEncoding =
+                compositionSource->ColorEncoding;
+            compositionPolicy.TargetSrgb = false;
+            if (!Oot3d::ValidatePicaScanoutPolicyInput(compositionPolicy)) {
+                throw std::runtime_error(
+                    "native scene composition color policy is invalid");
+            }
+            const Oot3d::PicaScanoutPushConstants composition =
+                Oot3d::BuildPicaScanoutPushConstants(compositionPolicy);
+            // The composition samples the same guide attachments the scene
+            // stages do, through the same declared graph edges.
+            transitionEffectPassGuides(
+                Oot3d::DisplayEffectPass::SceneComposition);
+            mGpuProfiler.BeginScope(
+                mCurrentFrame, Oot3d::GpuProfileScope::SceneComposite,
+                command);
+            const bool nriComposition =
+                mNriPicaScanoutPass.ConfigureOffscreen(
+                    VK_FORMAT_R8G8B8A8_UNORM) &&
+                mNriPicaScanoutPass.Execute(
+                    {
+                        .FrameSlot = mCurrentFrame,
+                        .FrameId = mFrameCounter,
+                        .CommandBuffer = command,
+                        .TargetImage = mNativePicaSceneCopyCanvas.Image,
+                        .TargetView =
+                            mNativePicaSceneCopyCanvas.ColorAttachmentView,
+                        .TargetFormat = VK_FORMAT_R8G8B8A8_UNORM,
+                        .TargetWidth = compositionWidth,
+                        .TargetHeight = compositionHeight,
+                        .InputImages = compositionImages,
+                        .InputFormats = compositionFormats,
+                        .Push = composition,
+                        .ViewportX = 0.0F,
+                        .ViewportY = 0.0F,
+                        .ViewportWidth =
+                            static_cast<float>(compositionWidth),
+                        .ViewportHeight =
+                            static_cast<float>(compositionHeight),
+                        .ScissorX = 0,
+                        .ScissorY = 0,
+                        .ScissorWidth = compositionWidth,
+                        .ScissorHeight = compositionHeight,
+                        .ClearColor = {},
+                        .Overlay = false,
+                        .OffscreenTarget = true,
+                    },
+                    sceneCompositionBarrierPlan);
+            mGpuProfiler.EndScope(
+                mCurrentFrame, Oot3d::GpuProfileScope::SceneComposite,
+                command);
+            if (!nriComposition) {
+                // Without the materialization there is no composed source, and
+                // sampling the base target instead would silently drop the
+                // enabled effects.
+                restoreEffectPassGuides();
+                restoreBoundarySourceColor();
+                SetNativeError(
+                    error, "native scene composition pass is unavailable");
+                return false;
+            }
+            recordDeclared(Oot3d::DisplayEffectPass::SceneComposition,
+                           EffectOutcome::Executed);
+            recordEffectPassTransitions(
+                mNriPicaScanoutPass.LastBarrierExecution());
+            copyOutput->Image = mNativePicaSceneCopyCanvas.Image;
+            copyOutput->Format = VK_FORMAT_R8G8B8A8_UNORM;
+            copyOutput->Width = compositionWidth;
+            copyOutput->Height = compositionHeight;
+            copyOutput->ShaderRead = true;
+            // The materialization wrote the encoded display domain: the
+            // composed colour is what a display-encoded native target holds.
+            copyOutput->Encoding = Oot3d::NativePicaSceneColorEncoding();
+            copyOutput->SceneEffectsResolved = true;
+            mDiagnostics.RecordDisplayEffectGraphExecution(
+                effectExecution.Summary());
+            restoreEffectPassGuides();
+            restoreBoundarySourceColor();
+            return true;
         }
         const bool effectsCompositedForScanout =
             smaaForDisplay
@@ -10021,7 +10063,8 @@ bool GfxRenderingAPIVulkan::ComposeNativePicaSceneForCopy(
             source.Key.RenderTargetNamespace,
             source.Key.ColorPhysicalAddress);
     if (!ExecuteNativePicaDisplayGraph(
-            boundary, boundaryImage, &source, &output, error)) {
+            boundary, boundaryImage, &source, &output, error,
+            beforeUi != nullptr)) {
         output = {};
         return false;
     }

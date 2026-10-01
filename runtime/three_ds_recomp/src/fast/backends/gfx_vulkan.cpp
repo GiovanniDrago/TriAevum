@@ -1826,6 +1826,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
         !mNativeFidelityProfile && aaPolicy.TemporalJitter;
     mPresentationWorldSurface =
         !mNativeFidelityProfile && aaPolicy.PresentationWorldSurface;
+    mSceneAntiAliasing = !mNativeFidelityProfile && aaPolicy.SceneAntiAliasing;
     // The rendering snapshot already disables GI outside per-pixel lighting
     // and under native presentation.
     const bool globalIlluminationRequested =

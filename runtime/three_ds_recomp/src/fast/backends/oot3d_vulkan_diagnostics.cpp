@@ -730,6 +730,8 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
         { "upscaler_guide_resample_count", frame.UpscalerGuideResampleCount },
         { "mxao_temporal_pass_count", frame.MxaoTemporalPassCount },
         { "mxao_temporal_history_valid_count", frame.MxaoTemporalHistoryValidCount },
+        { "before_ui_anti_aliasing_count", frame.BeforeUiAntiAliasingCount },
+        { "before_ui_anti_aliasing_unavailable_count", frame.BeforeUiAntiAliasingUnavailableCount },
         { "upscaler_guide_width", frame.UpscalerGuideWidth },
         { "upscaler_guide_height", frame.UpscalerGuideHeight },
         { "dlss_upscale_pass_count", frame.DlssUpscalePassCount },
@@ -1801,6 +1803,12 @@ void Oot3dVulkanDiagnostics::RecordMxaoTemporal(bool temporal, bool historyValid
     if (!mActiveFrame.has_value()) return;
     if (temporal) ++mActiveFrame->MxaoTemporalPassCount;
     if (temporal && historyValid) ++mActiveFrame->MxaoTemporalHistoryValidCount;
+}
+
+void Oot3dVulkanDiagnostics::RecordBeforeUiAntiAliasing(bool applied, bool unavailable) {
+    if (!mActiveFrame.has_value()) return;
+    if (applied) ++mActiveFrame->BeforeUiAntiAliasingCount;
+    if (unavailable) ++mActiveFrame->BeforeUiAntiAliasingUnavailableCount;
 }
 
 void Oot3dVulkanDiagnostics::RecordDlssUpscale(

@@ -3002,6 +3002,17 @@ occlusion and the regression filter, which then filters the accumulation.
   runs, A/B/B/A): the GPU frame goes from 3.16 to 4.06 ms. The AO scope grows
   from 0.85 to 1.28 ms, the boundary's motion vectors add 0.11 ms and the native
   draws 0.35 ms for the motion guides they now write.
+- Attribution of the AO share (temporary switches, removed): a temporal frame
+  that rotates the jitter phase but skips the accumulation costs what the
+  non-temporal AO does (0.85 ms), and an accumulation that only copies the
+  current estimate costs almost as much as the full one. The cost is the extra
+  full-resolution pass (its RGBA16F history write and the filter reading it), not
+  the rotation, the reprojection or the history tests. The temporal program
+  reads its group's raw estimate once into an 11x11 shared tile (depth slope and
+  the 4x4 clamp window) instead of up to twenty fetches per pixel: identical
+  output (`mxao_gpu_tests` metrics and field/Kokiri captures byte-identical) and
+  1.275 -> 1.25 ms for the AO scope (A/B/B/A). Run-to-run variation of the game
+  probes is about +-0.15 ms on this machine, so smaller differences need A/B/B/A.
 - `mxao_gpu_tests` cover an invalid history (identical to the non-temporal
   filter input), a static view (frame-to-frame change 11x lower, slightly closer
   to Extreme), depth rejection, the neighbourhood clamp and motion reprojection
@@ -3206,8 +3217,46 @@ upscalers never ran (motion and TAA passes: 0 of 360 frames).
 - Kokiri walk: TAA 358/360 frames (history valid 354), SMAA 358, FSR 358, from 0.
   Captures without those stages (effects off, MXAO without AA, field AO and TAA)
   are byte-identical to the previous build.
-- These stages still process the display image, which carries the native HUD,
-  as they already did in the field after an AO composition.
+- Same-extent anti-aliasing now resolves before that UI; see below. The
+  upscalers still process the display image, which carries the native HUD.
+
+#### Anti-aliasing before native UI
+
+TAA and SMAA keep the scene's extent, so they are scene stages (declared at
+`AfterTransparent`): the boundary that completes a target's scene before its
+native UI (`DisplayEffectPlanInput::BeforeNativeUi`) resolves them into the
+composition it commits, and the HUD is drawn over the result. At presentation
+they used to process the display image, HUD included: TAA reprojected the HUD
+with the world's motion and blended its history (the Kokiri walk showed doubled
+"Attack" button text), and SMAA filtered the HUD's edges.
+
+- Only that boundary runs them (`ExecuteNativePicaDisplayGraph(...,
+  beforeNativeUi)`); a raw-copy boundary does not, so one scene version is
+  anti-aliased once. A display whose target had no such boundary (no UI on it,
+  or UI interleaved with scene draws) still anti-aliases at presentation, and a
+  presentation of a scene the boundary resolved scans it out as it is (the
+  declared domain projection drops the resolved stages).
+- The boundary composes when TAA or SMAA is configured
+  (`AntiAliasingFramePolicy::SceneAntiAliasing`); its exit now follows TAA and
+  SMAA, whose outcomes join the declared-stage failure check. One scene surface
+  per frame owns the AA history and output: a second boundary before UI of
+  another surface in the same frame composes its other stages without them
+  (`before_ui_anti_aliasing_unavailable_count`; 0 in the covered runs).
+- TAA works at the target's extent, where the jitter is defined, and reads
+  motion without resampling; SMAA also runs on the target before the transfer
+  halves it.
+- Kokiri walk (2560x1440): TAA at the boundary in 357 of 360 frames (history
+  valid 354), SMAA 357; field TAA 356; zero Vulkan/NRI errors. Pixels of the
+  HUD that stay constant over the walk (an AA-off mask) equal the AA-off capture
+  in 99.9% (TAA) and about 100% (SMAA) of cases, against 90.8% (mean difference
+  3.1, maximum 99) and 99.6% before. Captures without TAA/SMAA (effects off,
+  field AO, MXAO, temporal MXAO, FSR) are byte-identical to the previous build.
+- Cost (A/B/B/A medians, 600 frames): the AA scope doubles with the pixel
+  count (TAA 0.37 -> 0.63 ms, SMAA 0.47 -> 0.90 ms) and the boundary composition
+  adds 0.17-0.18 ms; the Kokiri frame stays within run-to-run variation (TAA
+  11.2 -> 10.6 ms, SMAA 8.3 -> 8.5 ms).
+- The upscalers change the extent, so they stay at presentation and still
+  receive the HUD: FSR visibly degrades the HUD text while the camera moves.
 
 Fresh combined source adoption, deterministic framebuffer/state comparisons and
 the remaining realtime validation observation are recorded in
