@@ -7,12 +7,97 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
+#include <numbers>
 
 namespace Oot3dNativeGame {
 namespace {
 
 using LightSource = Fast::Renderer3ds::PicaNativeLightSource;
+
+// EUR Environment_Update (0045DD50): the environment context is PlayState +
+// 0x3190 and the clock is gSaveContext (00587958) + 0xC. With lightMode
+// (+0x20) zero and no setting override (+0xA7 == 0xFF) the update derives
+// the first light's direction from the clock (0045E438..0045E4A0: -sin,
+// cos and cos of clock - 0x8000, times 120, 120 and 20, truncated to bytes)
+// and the second light is its negation; otherwise it copies light setting
+// +0xA5, blended from +0xA6 by the weight at +0xC8 while +0xA4 is set.
+constexpr uint32_t kEnvironmentContextOffset = 0x3190U;
+constexpr uint32_t kSaveContextDayTime = 0x00587964U;
+
+std::optional<NativeEnvironmentState> ReadNativeEnvironmentState(uint32_t playState,
+                                                                 oot3d::recomp::a32::MemoryBus& memory) {
+    if (playState == 0 || playState > std::numeric_limits<uint32_t>::max() - kEnvironmentContextOffset - 0xCCU)
+        return std::nullopt;
+    const uint32_t environment = playState + kEnvironmentContextOffset;
+    NativeEnvironmentState state;
+    uint32_t weight = 0;
+    if (!memory.Read16(playState + 0x104U, &state.Scene) || !memory.Read16(kSaveContextDayTime, &state.DayTime) ||
+        !memory.Read8(environment + 0x20U, &state.LightMode) ||
+        !memory.Read8(environment + 0xA7U, &state.SettingOverride) ||
+        !memory.Read8(environment + 0xA5U, &state.Setting) ||
+        !memory.Read8(environment + 0xA6U, &state.PreviousSetting) ||
+        !memory.Read8(environment + 0xA4U, &state.Blending) || !memory.Read32(environment + 0xC8U, &weight))
+        return std::nullopt;
+    state.BlendWeight = std::bit_cast<float>(weight);
+    return state;
+}
+
+// The bytes the time-driven update stores for this clock, up to the guest's
+// sine table: a component may differ by one unit at a truncation boundary.
+std::array<int, 3> ClockLightBytes(uint16_t dayTime) {
+    const double angle = double(std::bit_cast<int16_t>(uint16_t(dayTime - 0x8000U))) *
+        (2.0 * std::numbers::pi / 65536.0);
+    return {int(-std::sin(angle) * 120.0), int(std::cos(angle) * 120.0), int(std::cos(angle) * 20.0)};
+}
+
+// TRIAEVUM_SCENE_LIGHT_TRACE=1: one stderr line per guest frame whose native
+// environment light state changed (scene, mode, clock, settings, both
+// directional records), with whether the records match the clock.
+void TraceSceneLights(uint64_t frame, uint32_t playState, oot3d::recomp::a32::MemoryBus& memory,
+                      NativeSceneLightTraceRecord& last) {
+    static const bool enabled = std::getenv("TRIAEVUM_SCENE_LIGHT_TRACE") != nullptr;
+    if (!enabled) return;
+    const auto environment = ReadNativeEnvironmentState(playState, memory);
+    if (!environment) return;
+    NativeSceneLightTraceRecord record{*environment};
+    for (uint32_t i = 0; i < 2U; ++i) {
+        const uint32_t info = playState + (i == 0U ? 0x31BCU : 0x31D4U);
+        uint8_t kind = 0;
+        if (!memory.Read8(info, &kind) || kind != 1U) continue;
+        bool valid = true;
+        for (uint32_t b = 0; valid && b < 6U; ++b) valid = memory.Read8(info + 4U + b, &record.Lights[i][b]);
+        if (valid) record.LightCount |= 1U << i;
+    }
+    if (record == last) return;
+    last = record;
+    const auto& e = record.Environment;
+    const auto expected = ClockLightBytes(e.DayTime);
+    bool clockMatch = (record.LightCount & 3U) == 3U;
+    for (uint32_t axis = 0; clockMatch && axis < 3U; ++axis) {
+        const int first = std::bit_cast<int8_t>(record.Lights[0][axis]);
+        const int second = std::bit_cast<int8_t>(record.Lights[1][axis]);
+        clockMatch = std::abs(first - expected[axis]) <= 1 && second == -first;
+    }
+    std::fprintf(stderr,
+                 "TRIAEVUM_SCENE_LIGHT_TRACE frame=%llu scene=%04x mode=%s light_mode=%u override=%u setting=%u "
+                 "previous=%u blending=%u weight=%.4f clock=%04x clock_match=%d",
+                 static_cast<unsigned long long>(frame), e.Scene, e.TimeDriven() ? "time" : "settings", e.LightMode,
+                 e.SettingOverride, e.Setting, e.PreviousSetting, e.Blending, e.BlendWeight, e.DayTime,
+                 clockMatch ? 1 : 0);
+    for (uint32_t i = 0; i < 2U; ++i) {
+        const auto& l = record.Lights[i];
+        if ((record.LightCount & (1U << i)) == 0U) {
+            std::fprintf(stderr, " L%u=none", i);
+            continue;
+        }
+        std::fprintf(stderr, " L%u=%d,%d,%d/%u,%u,%u", i, std::bit_cast<int8_t>(l[0]), std::bit_cast<int8_t>(l[1]),
+                     std::bit_cast<int8_t>(l[2]), l[3], l[4], l[5]);
+    }
+    std::fprintf(stderr, "\n");
+}
 
 bool ReadColor(oot3d::recomp::a32::MemoryBus& memory, uint32_t address, std::array<float, 3>& color) {
     for (uint32_t channel = 0; channel < 3U; ++channel) {
@@ -173,6 +258,7 @@ void NativeA32LightingProbe::ObserveBlockEntry(uint32_t pc, const oot3d::recomp:
 
 void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recomp::a32::MemoryBus& memory) {
     using namespace Fast::Renderer3ds;
+    TraceSceneLights(++mSceneLightFrames, playState, memory, mSceneLightTrace);
     PicaSceneDirectionalLights directionals;
     // EUR Gameplay_Init (00449218..00449228) passes PlayState+3190 to
     // Environment_Init, which inserts LightInfo records at +2C and +44.
@@ -321,6 +407,7 @@ void NativeA32LightingProbe::Reset() noexcept {
     mRenderStates.clear();
     mScenePoints.reset();
     mSceneDirectionals.reset();
+    mSceneLightTrace = {};
 }
 
 } // namespace Oot3dNativeGame

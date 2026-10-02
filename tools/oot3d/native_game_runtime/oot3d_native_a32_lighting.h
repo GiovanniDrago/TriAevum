@@ -20,6 +20,30 @@ namespace Oot3dNativeGame {
 inline constexpr std::array kNativeA32LightingHookPcs{ 0x00213DFCU, 0x00253A74U, 0x002CF63CU, 0x0035BFB4U, 0x0035BBE0U,
                                                        0x00340F44U, 0x00310F7CU, 0x0033D174U, 0x0033D14CU };
 
+// The native environment's light state for one guest frame (EUR, read at
+// the start of Gameplay_Draw, after Environment_Update).
+struct NativeEnvironmentState {
+    uint16_t Scene = 0;
+    uint16_t DayTime = 0;
+    uint8_t LightMode = 0;
+    uint8_t SettingOverride = 0;
+    uint8_t Setting = 0;
+    uint8_t PreviousSetting = 0;
+    uint8_t Blending = 0;
+    float BlendWeight = 0.0F;
+    bool operator==(const NativeEnvironmentState&) const = default;
+
+    // The lights follow the clock: lightMode zero, no light setting override.
+    [[nodiscard]] bool TimeDriven() const noexcept { return LightMode == 0U && SettingOverride == 0xFFU; }
+};
+
+struct NativeSceneLightTraceRecord {
+    NativeEnvironmentState Environment;
+    std::array<std::array<uint8_t, 6>, 2> Lights{};
+    uint32_t LightCount = 0;
+    bool operator==(const NativeSceneLightTraceRecord&) const = default;
+};
+
 class NativeA32LightingProbe {
   public:
     void ObserveBlockEntry(uint32_t pc, const oot3d::recomp::a32::GuestState& state,
@@ -44,6 +68,8 @@ class NativeA32LightingProbe {
     std::unordered_map<uint32_t, Fast::Renderer3ds::PicaNativeLightBinding> mRenderStates;
     std::shared_ptr<const Fast::Renderer3ds::PicaScenePointLights> mScenePoints;
     std::shared_ptr<const Fast::Renderer3ds::PicaSceneDirectionalLights> mSceneDirectionals;
+    uint64_t mSceneLightFrames = 0;
+    NativeSceneLightTraceRecord mSceneLightTrace;
 };
 
 } // namespace Oot3dNativeGame

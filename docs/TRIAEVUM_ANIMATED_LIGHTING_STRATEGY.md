@@ -104,7 +104,8 @@ Consequences:
   clock has 65,536 positions per turn (0.0055 degrees).
 - The engine itself knows whether its lights are **sky lights** (time mode) or
   **authored fixed lights** (settings mode). No heuristic can replace this: a
-  fixed pair such as `(73,73,73)` / `(-73,-73,-73)` is also exactly opposite.
+  fixed pair such as `(72,-72,72)` / `(-72,72,-72)` is also exactly opposite
+  (the nightmare cutscene, 3.5).
 
 The read-only decompilation evidence (`I:/oot3decomp`, never copied) confirms
 that cutscenes carry set-time and lighting commands; both act on the state
@@ -142,6 +143,37 @@ therefore the fallback, not the main path (5.2).
 - Scene lights are paired by source identity for interpolated presentation.
 - Native light changes do not reset temporal history; only a profile change
   does (`mFrameEnvironment`).
+
+### 3.5 P0 probes (2026-10-02)
+
+`TRIAEVUM_SCENE_LIGHT_TRACE=1` prints, for every guest frame whose native
+environment light state changed, the scene, the mode (`light_mode`, `override`),
+the light setting and its blend, the clock, both directional records and
+whether the records equal the clock-derived bytes (`clock_match`).
+`qualify/intro-lights/p0_analyze.py` classifies each guest frame by section
+4.2. Probes in `qualify/intro-lights` (`run_p0.sh`, `run_p0_save.sh`):
+
+| Probe | Scene, mode | Clock | Finding |
+|---|---|---|---|
+| `p0-boot`: title intro, no input | `006B` time | +3 or +6 per guest frame | 2,423 of 2,423 frames match the clock; demo scene `0017` is settings mode (`light_mode=1`, `override=9`) |
+| `p0-field`: Hyrule Field from noon, 3,800 guest frames | `0051` time | +7 per update (+14 when a draw is skipped); one day is about 9,400 updates | 3,800 of 3,800 match; dusk handover at `CAE4` with the sun 12 degrees below the horizon; 192 frames below |
+| `p0-dawn`: field from 02:00 (state saved by `p0-field-night`) | `0051` time | as above | handover at `36AE` (05:08) with the sun below the horizon; 165 frames below |
+| `p0-house`: Kokiri, into Link's house | `0055`, `0034` time | stopped (`8000`, noon) | time mode with a still clock: class S; the scene change is a cut |
+| `p0-kakariko-night`: structural scenario `spot01_info_entry_00db` from the 02:00 field state | `0052` time | stopped | towns keep their time; the moon is the main light |
+| `p0-dream`: new-game nightmare (`link_dream_start`) | `0051` settings | `E000`, not used | lights constant over 827 frames; the brightest light (`72,-72,72`) comes **from below**, the other from above; the blend runs between two identical settings |
+
+Every time-mode frame of every probe satisfies `clock_match`: the published
+direction is the clock's, with no other writer. The fixed-time places measured
+so far are time mode with a still clock, not settings mode; settings mode was
+met in cutscene scenes. Not yet traced: the Sun's Song (needs an ocarina input
+sequence), weather, lightning, and a blend between two different settings.
+
+Reproducing a probe from a state saved at internal scale 1000 with the
+Enhanced (DLSS) settings exposed a regression of `2f53274`: the restore applied
+the settings' scale first, and the saved targets no longer matched. The restore
+now uses the saved scale, or the settings' own scale when the two agree; a
+state saved at another scale restores as before that commit, and the first
+frame replaces its targets.
 
 ## 4. Governing principle: one signal, classified by shape
 
@@ -184,19 +216,19 @@ section 7; none of these rows needs its own code.
 
 | Situation | Engine path | Classes | Status |
 |---|---|---|---|
-| Time passing in open areas | time mode, clock advances | A + D + E at dawn and dusk | expected (P-field) |
+| Time passing in open areas | time mode, clock advances | A + D + E at dawn and dusk | **measured** (`p0-field`, `p0-dawn`) |
 | Sun's Song where time flows | time mode, clock advances fast | B + D + E | expected (P-song-flow) |
 | Sun's Song where time is fixed | fade, scene reload at the new time | C | expected (P-song-fixed) |
-| Title intro, attract demos, credits time-lapses | time mode driven by cutscene | A/B + D + E, C at camera cuts | **measured** |
+| Title intro, attract demos, credits time-lapses | time mode driven by cutscene | A/B + D + E, C at camera cuts | **measured** (`p0-boot`) |
 | Cutscene set-time command | clock rewritten | C (or A if below the cut angle) | measured once (15 degree skip) |
-| Cutscene lighting command, with or without blend | settings mode, blend weight | D, A for blended directions, C without blend | expected (P-intro-new-game) |
-| Entering or leaving an area that picks a day or night variant | scene load | C | expected (P-town) |
+| Cutscene lighting command, with or without blend | settings mode, blend weight | D, A for blended directions, C without blend | settings mode **measured** (`p0-dream`, constant); a blend between different settings expected |
+| Entering or leaving an area that picks a day or night variant | scene load | C | **measured** (`p0-kakariko-night`) |
 | Gate and drawbridge sequences at dusk and dawn | time mode plus cutscene | A + D + E, C at cuts | expected (P-field) |
-| Fixed-time scenes (towns, interiors, dungeons) | settings mode, constant | S | measured (Kokiri, Link's house) |
+| Fixed-time scenes (towns, interiors) | time mode, clock stopped | S | **measured** (Kokiri, Link's house, Kakariko at night) |
 | Light settings changing between rooms | settings mode, blend | D, A | expected (P-interior) |
 | Weather onset and clearing | time mode, table blend | D | expected (P-weather) |
 | Lightning, flashes, boss effects | colour adjustments | D with event pass-through | expected (P-intro-new-game) |
-| Warps, death, continue, loading a save | scene load | C | expected (P-town) |
+| Warps, death, continue, loading a save | scene load | C | scene loads **measured** as cuts |
 | Loading a TriAevum state | continuity epoch | C | measured mechanism (state load exists) |
 | Pause, dialogue, menus | clock stops | S | expected |
 
