@@ -1289,6 +1289,10 @@ void GfxRenderingAPIVulkan::Shutdown() {
         WaitForAllPresents();
         StopPresentWorker();
         vkDeviceWaitIdle(mDevice);
+        // Preparation still running finishes first: what it creates belongs
+        // in the persisted pipeline caches.
+        JoinStartupPreparation();
+        if (mPreparationQueue) mPreparationQueue->Drain();
         StorePipelineCache();
         mBrixelizerGiPass.Shutdown();
         mBrixelizerScene.Shutdown();
