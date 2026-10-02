@@ -557,6 +557,11 @@ void Oot3dPicaSemanticTraceWriter::RecordDraw(
                 {"source_identity", light.SourceIdentity},
                 {"direction_toward_source", light.DirectionTowardSource},
                 {"color", light.Color},
+                {"sky_light", light.SkyLight},
+                {"shadow_caster", light.SourceIdentity == snapshot->ShadowCasterIdentity},
+                {"shadow_strength", light.SourceIdentity == snapshot->ShadowCasterIdentity
+                                        ? snapshot->ShadowStrength : 0.0F},
+                {"continuity_epoch", snapshot->ContinuityEpoch},
             });
         }
     }

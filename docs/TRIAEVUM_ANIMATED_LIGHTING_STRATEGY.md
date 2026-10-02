@@ -291,8 +291,11 @@ With `up` the published world up and `e` the elevation of a light
   shadow map.
 - **Shadow strength (all lights).** `shadow(e) = smoothstep(sin 1 deg, sin 8 deg, sin e)`
   (*initial*): shadows lengthen and fade toward the horizon instead of ending.
-- **Direct light (sky lights only).** `direct(e) = smoothstep(sin -1 deg, sin 4 deg, sin e)`
-  (*initial*) multiplies the light's direct term.
+- **Direct light (sky lights only).** `direct(e) = smoothstep(sin -4 deg, 0, sin e)`
+  multiplies the light's direct term: full at and above the horizon, as the
+  title lights its sunrise and sunset, none from 4 degrees below. (A first
+  window, -1 to +4 degrees, also dimmed the sun just above the horizon and
+  darkened the title's sunrise; P1 captures.)
 
 Why the attenuation is limited to sky lights: a sun below the horizon is
 hidden by the ground, but fixed-mode scenes place lights below the horizon on
@@ -487,9 +490,38 @@ F1 changes.
 - Tests: dequantiser unit tests on the recorded trace (uniform speed, bounded
   band, event pass-through, cut snap); horizon and handover unit tests;
   composition tests for the adapter's clock check.
-- **Exit:** R1, R3, R4, R6 for light; R7; R8. The shadow map still redraws on
-  every change (cost unchanged or worse: the light now moves every frame). P1
-  is therefore not shippable alone on moving scenes; P2 follows directly.
+- **Exit:** R1, R3, R4, R6 for light; R7; R8. Until P2, the shadow map keeps
+  its layout until the light has turned 0.25 degrees from it, so a light that
+  moves in every frame does not redraw every page in every frame.
+
+**Done (2026-10-02).** `renderer3ds/pica_scene_light_continuity.h`
+(`PicaSteppedSignal`, `PicaSceneShadowCasterTracker`), horizon functions and
+the main-light rule in `pica_light_binding.h`, the adapter's
+`ContinueSceneLights` (clock direction, ramps, cuts, caster decision, trace
+`TRIAEVUM_SCENE_LIGHT_CONTINUITY`), surface lighting (sky direct horizon),
+shadow selection and pass (published strength, 0.25 degree layout step),
+presented-sample interpolation (no interpolation across an epoch, strength
+interpolated), visual replay V20 (sky flag, up, epoch, caster, strength).
+Probes (`qualify/intro-lights`, `p1_analyze.py`):
+
+| Probe | Moving frames | Largest step | Jumps | Casting below the horizon | Largest strength change per frame | Handovers |
+|---|---|---|---|---|---|---|
+| `p1-boot` | 2,421 of 2,423 time-mode frames | 0.034 deg | 0 | 0 (was 1,317) | 0.007 | 1, at strength 0 (sunrise) |
+| `p1-field` | 3,799 of 3,799 | 0.078 deg | 0 | 0 (was 192) | 0.017 | 1, at strength 0 (dusk) |
+| `p1-dawn` | 1,999 of 1,999 | 0.078 deg | 0 | 0 (was 165) | 0.017 | 1, at strength 0 (dawn) |
+| `p1-dream` | lights still | - | 0 | 0 | 0 | 0; the light from above casts |
+
+The step of the native clock changes once per transition, not every frame:
++7 per update by day and +14 by night in Hyrule Field (time runs twice as
+fast at night), +6 then +3 in the title intro. These single speed changes are
+the largest change of step (0.039 degrees, with the sun at the horizon); no
+clock smoothing is needed.
+
+With the user's Enhanced configuration and profiles (Kokiri and Link's house,
+time stopped at noon), P1 against P0 is 20/20 identical over the house entry
+and exit captures (the first-run outlier at frame 40 aside, as before). Tests:
+5 continuity tests in the foundation suite (314/314), the adapter's clock path
+in the composition tests, the visual replay round trip, scene-frame 20/20.
 
 ### P2. Continuous shadows
 
@@ -538,16 +570,16 @@ F1 changes.
 
 ### Metrics and thresholds
 
-| Metric | Today (P-boot) | Target |
-|---|---|---|
-| Guest frames in which a moving light moves | 74 of 900 | all |
-| Largest change of angular step between frames | 0.68 deg | <= 0.01 deg outside cuts |
-| Direction jumps outside cuts | 2 (the 180 degree flips) | 0 |
-| Frames with the shadow light below the horizon | 1,317 of 3,800 | 0 |
-| Pages rendered in one frame by a moving light | 215 of 220 | <= budget (16) plus dynamic pages |
-| GPU frame time on moving frames against still frames | 9.8 against 6.5 ms, 15.5 max | within noise plus two-layout sampling |
-| Shadow edge position across consecutive captures | steps | monotonic, even |
-| Native / Authentic / F2 captures | - | byte-identical to the baseline |
+| Metric | Before (P-boot) | After P1 | Target |
+|---|---|---|---|
+| Guest frames in which a moving light moves | 74 of 900 | all | all |
+| Largest change of angular step between frames | 0.68 deg | 0.039 deg, once per native speed change | <= 0.01 deg outside cuts and native speed changes |
+| Direction jumps outside cuts | 2 (the 180 degree flips) | 0 | 0 |
+| Frames with the shadow light below the horizon | 1,317 of 3,800 | 0 | 0 |
+| Pages rendered in one frame by a moving light | 215 of 220 | 215 of 220, every 0.25 deg | <= budget (16) plus dynamic pages |
+| GPU frame time on moving frames against still frames | 9.8 against 6.5 ms, 15.5 max | relayout frames 1,055 -> 765 in the field probe | within noise plus two-layout sampling |
+| Shadow edge position across consecutive captures | steps | steps of 0.25 deg | monotonic, even |
+| Native / Authentic / F2 captures | - | not read by these modes | byte-identical to the baseline |
 
 All timing comparisons use interleaved rounds; the GPU is shared on the
 development machine.

@@ -1,6 +1,7 @@
 #include "fast/oot3d/effect_graph.h"
 #include "fast/renderer3ds/pica_ui_canvas.h"
 #include "fast/renderer3ds/pica_shadow_geometry.h"
+#include "fast/renderer3ds/pica_scene_light_continuity.h"
 #include "oot3d/renderer/ui_presentation_layout.h"
 #include "fast/renderer3ds/pica_surface_passthrough_scale.h"
 #include "fast/oot3d/display_effect_plan.h"
@@ -5572,6 +5573,142 @@ TEST(Oot3dTexturePreviewArtifact,
     EXPECT_TRUE(
         Fast::Oot3d::EncodeTexturePreviewBmp(
             2U, 2U, rgba).empty());
+}
+
+// Continuous scene light (docs/TRIAEVUM_ANIMATED_LIGHTING_STRATEGY.md).
+Fast::Renderer3ds::PicaSceneDirectionalLights SunAndMoon(float sunElevationDegrees, bool sky,
+                                                         std::array<float, 3> sunColor = {1.0F, 0.9F, 0.8F},
+                                                         std::array<float, 3> moonColor = {0.3F, 0.3F, 0.5F}) {
+    const float radians = sunElevationDegrees * 3.14159265F / 180.0F;
+    Fast::Renderer3ds::PicaSceneDirectionalLights lights;
+    lights.Count = 2;
+    lights.Lights[0] = {10, {std::cos(radians), std::sin(radians), 0.0F}, sunColor, sky};
+    lights.Lights[1] = {20, {-std::cos(radians), -std::sin(radians), 0.0F}, moonColor, sky};
+    return lights;
+}
+
+TEST(PicaSceneLightContinuity, HorizonFadesShadowsAndSkyLightOnly) {
+    using namespace Fast::Renderer3ds;
+    const auto elevation = [](float degrees) { return std::sin(degrees * 3.14159265F / 180.0F); };
+    EXPECT_EQ(PicaSceneShadowHorizon(elevation(-5.0F)), 0.0F);
+    EXPECT_EQ(PicaSceneShadowHorizon(elevation(0.5F)), 0.0F);
+    EXPECT_GT(PicaSceneShadowHorizon(elevation(4.0F)), 0.0F);
+    EXPECT_LT(PicaSceneShadowHorizon(elevation(4.0F)), 1.0F);
+    EXPECT_EQ(PicaSceneShadowHorizon(elevation(10.0F)), 1.0F);
+    auto lights = SunAndMoon(-10.0F, true);
+    const std::array<float, 3> up{0.0F, 1.0F, 0.0F};
+    EXPECT_EQ(PicaSceneDirectHorizon(lights.Lights[0], up), 0.0F);
+    EXPECT_EQ(PicaSceneDirectHorizon(lights.Lights[1], up), 1.0F);
+    lights = SunAndMoon(-10.0F, false);
+    // A scene's own light below the horizon keeps its light.
+    EXPECT_EQ(PicaSceneDirectHorizon(lights.Lights[0], up), 1.0F);
+}
+
+TEST(PicaSceneLightContinuity, MainLightIsTheStrongestAboveTheHorizon) {
+    using namespace Fast::Renderer3ds;
+    // Dawn: the sun is brighter but still below; the moon keeps the shadow.
+    auto lights = SunAndMoon(-12.0F, true, {0.5F, 0.4F, 0.4F}, {0.3F, 0.2F, 0.3F});
+    ASSERT_NE(FindPicaSceneMainDirectional(lights), nullptr);
+    EXPECT_EQ(FindPicaSceneMainDirectional(lights)->SourceIdentity, 20U);
+    EXPECT_EQ(PicaSceneMainShadowStrength(lights, *FindPicaSceneMainDirectional(lights)), 1.0F);
+    // A scene light from below, brighter than the one from above, lights but
+    // does not cast.
+    lights = SunAndMoon(-45.0F, false, {0.9F, 0.9F, 0.9F}, {0.4F, 0.4F, 0.4F});
+    EXPECT_EQ(FindPicaSceneMainDirectional(lights)->SourceIdentity, 20U);
+    // A published decision wins.
+    lights.ShadowCasterIdentity = 10;
+    lights.ShadowStrength = 0.25F;
+    EXPECT_EQ(FindPicaSceneMainDirectional(lights)->SourceIdentity, 10U);
+    EXPECT_EQ(PicaSceneMainShadowStrength(lights, *FindPicaSceneMainDirectional(lights)), 0.25F);
+}
+
+TEST(PicaSceneLightContinuity, SteppedSignalMovesInEveryFrame) {
+    Fast::Renderer3ds::PicaSteppedSignal signal;
+    float native = 100.0F;
+    float previous = signal.Update(native, 1.0F, true);
+    EXPECT_EQ(previous, 100.0F);
+    uint32_t moving = 0;
+    for (uint32_t frame = 1; frame <= 140; ++frame) {
+        if (frame % 7 == 0) native += 1.0F;
+        const float output = signal.Update(native, 1.0F, true);
+        EXPECT_LE(std::abs(output - native), 1.0F);
+        EXPECT_GE(output, previous);
+        if (frame > 14 && output > previous) ++moving;
+        previous = output;
+    }
+    // After the cadence is known, the value moves in every frame.
+    EXPECT_EQ(moving, 126U);
+    // A flash is taken at once; so is a discontinuity.
+    EXPECT_EQ(signal.Update(native + 40.0F, 1.0F, true), native + 40.0F);
+    EXPECT_EQ(signal.Update(native + 41.0F, 1.0F, false), native + 41.0F);
+}
+
+TEST(PicaSceneLightContinuity, SkyCasterHandsOverAtTheHorizonContinuously) {
+    using namespace Fast::Renderer3ds;
+    PicaSceneShadowCasterTracker tracker;
+    float previousStrength = -1.0F;
+    uint64_t previousCaster = 0;
+    uint32_t handovers = 0;
+    // The sun sets from 30 degrees to -30 in 0.1-degree steps.
+    for (int step = 0; step <= 600; ++step) {
+        auto lights = SunAndMoon(30.0F - 0.1F * float(step), true);
+        tracker.Update(lights, 1.0F / 30.0F, step != 0);
+        ASSERT_NE(lights.ShadowCasterIdentity, 0U);
+        const auto* caster = FindPicaSceneMainDirectional(lights);
+        ASSERT_NE(caster, nullptr);
+        if (lights.ShadowStrength > 0.0F) {
+            EXPECT_GT(caster->DirectionTowardSource[1], 0.0F) << "a light below the horizon casts at step " << step;
+        }
+        if (previousStrength >= 0.0F) EXPECT_LE(std::abs(lights.ShadowStrength - previousStrength), 0.05F);
+        if (previousCaster != 0 && previousCaster != lights.ShadowCasterIdentity) {
+            ++handovers;
+            EXPECT_EQ(previousStrength, 0.0F);
+            EXPECT_EQ(lights.ShadowStrength, 0.0F);
+        }
+        previousStrength = lights.ShadowStrength;
+        previousCaster = lights.ShadowCasterIdentity;
+    }
+    EXPECT_EQ(handovers, 1U);
+    EXPECT_EQ(previousCaster, 20U);
+    EXPECT_EQ(previousStrength, 1.0F);
+}
+
+TEST(PicaSceneLightContinuity, FixedCastersHandOverThroughAFade) {
+    using namespace Fast::Renderer3ds;
+    PicaSceneShadowCasterTracker tracker;
+    const auto scene = [](float first, float second) {
+        PicaSceneDirectionalLights lights;
+        lights.Count = 2;
+        lights.Lights[0] = {10, {0.0F, 1.0F, 0.0F}, {first, first, first}, false};
+        lights.Lights[1] = {20, {0.6F, 0.8F, 0.0F}, {second, second, second}, false};
+        return lights;
+    };
+    auto lights = scene(0.8F, 0.2F);
+    tracker.Update(lights, 1.0F / 30.0F, false);
+    EXPECT_EQ(lights.ShadowCasterIdentity, 10U);
+    EXPECT_EQ(lights.ShadowStrength, 1.0F);
+    // Inside the margin the caster stays.
+    lights = scene(0.8F, 0.85F);
+    tracker.Update(lights, 1.0F / 30.0F, true);
+    EXPECT_EQ(lights.ShadowCasterIdentity, 10U);
+    EXPECT_EQ(lights.ShadowStrength, 1.0F);
+    // A clearly stronger light takes over: out, change at zero, in.
+    float previous = 1.0F;
+    uint32_t frames = 0;
+    bool changed = false;
+    while (frames++ < 30) {
+        lights = scene(0.5F, 0.9F);
+        tracker.Update(lights, 1.0F / 30.0F, true);
+        EXPECT_LE(std::abs(lights.ShadowStrength - previous), 0.17F);
+        if (lights.ShadowCasterIdentity == 20U && !changed) {
+            changed = true;
+            EXPECT_EQ(lights.ShadowStrength, 0.0F);
+        }
+        previous = lights.ShadowStrength;
+    }
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(lights.ShadowCasterIdentity, 20U);
+    EXPECT_EQ(lights.ShadowStrength, 1.0F);
 }
 
 } // namespace

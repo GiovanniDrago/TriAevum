@@ -145,10 +145,13 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
     if (sceneDirectStrength > 0.0F) {
         for (const auto& source : sceneDirectionals) {
             const uint32_t slot = result.Control[2]++;
+            // A sky light below the horizon lights nothing directly.
+            const float horizon = PicaSceneDirectHorizon(source, binding.SceneDirectionals->WorldUp);
             for (size_t row = 0; row < 3; ++row) {
                 for (size_t axis = 0; axis < 3; ++axis)
                     result.SceneDirections[slot][row] += view[row][axis] * source.DirectionTowardSource[axis];
-                result.SceneDirectionalColors[slot][row] = source.Color[row] * sceneDirectStrength * reflectance[row];
+                result.SceneDirectionalColors[slot][row] =
+                    source.Color[row] * sceneDirectStrength * horizon * reflectance[row];
             }
         }
     }

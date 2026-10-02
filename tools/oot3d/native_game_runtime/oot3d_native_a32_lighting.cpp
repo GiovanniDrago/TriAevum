@@ -53,13 +53,18 @@ std::array<int, 3> ClockLightBytes(uint16_t dayTime) {
     return {int(-std::sin(angle) * 120.0), int(std::cos(angle) * 120.0), int(std::cos(angle) * 20.0)};
 }
 
+bool SceneLightTraceEnabled() {
+    static const bool enabled = std::getenv("TRIAEVUM_SCENE_LIGHT_TRACE") != nullptr;
+    return enabled;
+}
+
 // TRIAEVUM_SCENE_LIGHT_TRACE=1: one stderr line per guest frame whose native
 // environment light state changed (scene, mode, clock, settings, both
-// directional records), with whether the records match the clock.
+// directional records), with whether the records match the clock; and one
+// line per guest frame with the continuous lights published for it.
 void TraceSceneLights(uint64_t frame, uint32_t playState, oot3d::recomp::a32::MemoryBus& memory,
                       NativeSceneLightTraceRecord& last) {
-    static const bool enabled = std::getenv("TRIAEVUM_SCENE_LIGHT_TRACE") != nullptr;
-    if (!enabled) return;
+    if (!SceneLightTraceEnabled()) return;
     const auto environment = ReadNativeEnvironmentState(playState, memory);
     if (!environment) return;
     NativeSceneLightTraceRecord record{*environment};
@@ -256,6 +261,118 @@ void NativeA32LightingProbe::ObserveBlockEntry(uint32_t pc, const oot3d::recomp:
     }
 }
 
+void NativeA32LightingProbe::ContinueSceneLights(Fast::Renderer3ds::PicaSceneDirectionalLights& lights,
+                                                 uint32_t playState,
+                                                 const std::optional<NativeEnvironmentState>& environment) {
+    using namespace Fast::Renderer3ds;
+    // Continuous scene light (docs/TRIAEVUM_ANIMATED_LIGHTING_STRATEGY.md,
+    // 5.1-5.4), advanced once per guest frame. OOT3D's world is Y-up.
+    lights.WorldUp = { 0.0F, 1.0F, 0.0F };
+    const uint32_t count = std::min<uint32_t>(lights.Count, kMaximumPicaSceneDirectionalLights);
+    const bool timeDriven = environment && environment->TimeDriven();
+    // The native records in byte units (directions /127, colours /255).
+    std::array<std::array<float, 3>, kMaximumPicaSceneDirectionalLights> directionBytes{};
+    std::array<std::array<float, 3>, kMaximumPicaSceneDirectionalLights> colourBytes{};
+    for (uint32_t i = 0; i < count; ++i) {
+        lights.Lights[i].SkyLight = timeDriven;
+        for (size_t axis = 0; axis < 3U; ++axis) {
+            directionBytes[i][axis] = std::round(lights.Lights[i].DirectionTowardSource[axis] * 127.0F);
+            colourBytes[i][axis] = std::round(lights.Lights[i].Color[axis] * 255.0F);
+        }
+    }
+    // A time-driven environment's lights are the sun (the first record) and
+    // its opposite, from the clock. Publish the clock's direction, in the
+    // records' scale, unless another writer changed the records.
+    std::array<std::optional<std::array<float, 3>>, kMaximumPicaSceneDirectionalLights> exact{};
+    if (timeDriven && count == 2U) {
+        const uint64_t sunIdentity = uint64_t{playState} + 0x31BCU + 4U;
+        const int sun = lights.Lights[0].SourceIdentity == sunIdentity ? 0
+            : lights.Lights[1].SourceIdentity == sunIdentity          ? 1
+                                                                       : -1;
+        const auto expected = ClockLightBytes(environment->DayTime);
+        bool match = sun >= 0;
+        for (size_t axis = 0; match && axis < 3U; ++axis)
+            match = std::abs(directionBytes[sun][axis] - float(expected[axis])) <= 1.0F &&
+                directionBytes[1 - sun][axis] == -directionBytes[sun][axis];
+        if (match) {
+            const double angle = double(std::bit_cast<int16_t>(uint16_t(environment->DayTime - 0x8000U))) *
+                (2.0 * std::numbers::pi / 65536.0);
+            const std::array<float, 3> value{ float(-std::sin(angle) * 120.0 / 127.0),
+                                              float(std::cos(angle) * 120.0 / 127.0),
+                                              float(std::cos(angle) * 20.0 / 127.0) };
+            exact[sun] = value;
+            exact[1 - sun] = std::array<float, 3>{ -value[0], -value[1], -value[2] };
+        }
+    }
+    // A discontinuity: another play state, scene or light mode, other
+    // records, or a direction that turned more than kCutDegrees in a frame.
+    constexpr float kCutCosine = 0.990268F; // cos(8 degrees)
+    bool continuous = playState != 0 && playState == mContinuityPlayState && environment &&
+        mContinuityEnvironment && environment->Scene == mContinuityEnvironment->Scene &&
+        timeDriven == mContinuityEnvironment->TimeDriven() && count == mContinuityCount;
+    std::array<ContinuityLight, kMaximumPicaSceneDirectionalLights> next{};
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint64_t identity = lights.Lights[i].SourceIdentity;
+        const auto found = std::find_if(mContinuityLights.begin(), mContinuityLights.begin() + mContinuityCount,
+                                        [&](const auto& light) { return light.Identity == identity; });
+        std::array<float, 3> direction = exact[i] ? *exact[i]
+            : std::array<float, 3>{ directionBytes[i][0] / 127.0F, directionBytes[i][1] / 127.0F,
+                                    directionBytes[i][2] / 127.0F };
+        if (found == mContinuityLights.begin() + mContinuityCount) {
+            continuous = false;
+        } else {
+            next[i] = *found;
+            const auto unit = [](std::array<float, 3> value) {
+                const float length = std::sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2]);
+                if (length > 1.0e-6F) for (float& component : value) component /= length;
+                return value;
+            };
+            const auto before = unit(found->Direction);
+            const auto after = unit(direction);
+            if (before[0] * after[0] + before[1] * after[1] + before[2] * after[2] < kCutCosine) continuous = false;
+        }
+        next[i].Identity = identity;
+        next[i].Direction = direction;
+    }
+    if (!continuous) ++mContinuityEpoch;
+    for (uint32_t i = 0; i < count; ++i) {
+        auto& light = lights.Lights[i];
+        auto& signals = next[i].Signals;
+        for (size_t axis = 0; axis < 3U; ++axis) {
+            if (exact[i]) {
+                light.DirectionTowardSource[axis] = (*exact[i])[axis];
+                signals[axis].Update((*exact[i])[axis] * 127.0F, 1.0F, false);
+            } else {
+                light.DirectionTowardSource[axis] =
+                    signals[axis].Update(directionBytes[i][axis], 1.0F, continuous) / 127.0F;
+            }
+            light.Color[axis] = signals[3U + axis].Update(colourBytes[i][axis], 1.0F, continuous) / 255.0F;
+        }
+    }
+    mContinuityLights = next;
+    mContinuityCount = count;
+    mContinuityPlayState = playState;
+    mContinuityEnvironment = environment;
+    lights.ContinuityEpoch = mContinuityEpoch;
+    // One guest frame of OOT3D's 30 Hz update.
+    mShadowCaster.Update(lights, 1.0F / 30.0F, continuous);
+    if (SceneLightTraceEnabled()) {
+        std::fprintf(stderr,
+                     "TRIAEVUM_SCENE_LIGHT_CONTINUITY frame=%llu epoch=%llu continuous=%d caster=%llx strength=%.4f",
+                     static_cast<unsigned long long>(mSceneLightFrames),
+                     static_cast<unsigned long long>(lights.ContinuityEpoch), continuous ? 1 : 0,
+                     static_cast<unsigned long long>(lights.ShadowCasterIdentity), lights.ShadowStrength);
+        for (uint32_t i = 0; i < count; ++i) {
+            const auto& light = lights.Lights[i];
+            std::fprintf(stderr, " L%u=%llx/%.6f,%.6f,%.6f/%.4f,%.4f,%.4f/sky=%d/exact=%d", i,
+                         static_cast<unsigned long long>(light.SourceIdentity), light.DirectionTowardSource[0],
+                         light.DirectionTowardSource[1], light.DirectionTowardSource[2], light.Color[0],
+                         light.Color[1], light.Color[2], light.SkyLight ? 1 : 0, exact[i] ? 1 : 0);
+        }
+        std::fprintf(stderr, "\n");
+    }
+}
+
 void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recomp::a32::MemoryBus& memory) {
     using namespace Fast::Renderer3ds;
     TraceSceneLights(++mSceneLightFrames, playState, memory, mSceneLightTrace);
@@ -295,6 +412,7 @@ void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recom
             }
         }
     }
+    ContinueSceneLights(directionals, playState, ReadNativeEnvironmentState(playState, memory));
     if (directionals.Count == 0)
         mSceneDirectionals.reset();
     else if (!mSceneDirectionals || *mSceneDirectionals != directionals)
@@ -408,6 +526,12 @@ void NativeA32LightingProbe::Reset() noexcept {
     mScenePoints.reset();
     mSceneDirectionals.reset();
     mSceneLightTrace = {};
+    // A state load is a discontinuity.
+    mContinuityPlayState = 0;
+    mContinuityEnvironment.reset();
+    mContinuityCount = 0;
+    ++mContinuityEpoch;
+    mShadowCaster.Reset();
 }
 
 } // namespace Oot3dNativeGame

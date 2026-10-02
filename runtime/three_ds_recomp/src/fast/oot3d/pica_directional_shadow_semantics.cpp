@@ -67,6 +67,7 @@ ResolvePicaDirectionalShadowLightSelection(
             result.ReferenceDraw = draw;
             result.ReferenceLightIndex = static_cast<uint8_t>(main - snapshot.Lights.data());
             result.GeometryLightWeight = Renderer3ds::PicaSceneDirectionalEnergy(*main);
+            result.ShadowStrength = Renderer3ds::PicaSceneMainShadowStrength(snapshot, *main);
         }
         result.ClusterCount = result.CandidateCount;
         return result;

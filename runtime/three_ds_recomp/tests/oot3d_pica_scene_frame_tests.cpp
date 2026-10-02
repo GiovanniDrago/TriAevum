@@ -1346,8 +1346,10 @@ TEST(Oot3dDirectionalShadowSemantics,
     EXPECT_NEAR(selection.WorldDirectionTowardSource[2], 0.0F, 1.0e-5F);
 }
 
-TEST(Oot3dDirectionalShadowSemantics, NativeEnvironmentUsesDominantSourceWithoutActorSlots) {
+TEST(Oot3dDirectionalShadowSemantics, NativeEnvironmentCastsFromStrongestSourceAboveHorizon) {
     using namespace Fast::Oot3d;
+    // The brighter source lights from below the horizon: it lights, but the
+    // shadow comes from the source above.
     auto sources = std::make_shared<Fast::Renderer3ds::PicaSceneDirectionalLights>();
     sources->Count = 2;
     sources->Lights[0] = {51, {0,1,0}, {1,0,0}};
@@ -1357,13 +1359,18 @@ TEST(Oot3dDirectionalShadowSemantics, NativeEnvironmentUsesDominantSourceWithout
     const std::array<const PicaSceneDrawRecord*, 1> draws{&world};
     const auto selected = ResolvePicaDirectionalShadowLightSelection(draws);
     ASSERT_TRUE(selected.Valid());
-    EXPECT_EQ(selected.WorldDirectionTowardSource, (DirectionalShadowVector{0,-1,0}));
+    EXPECT_EQ(selected.WorldDirectionTowardSource, (DirectionalShadowVector{0,1,0}));
+    EXPECT_EQ(selected.ShadowStrength, 1.0F);
     const std::array<PicaSurfaceShadowLight, 2> receiverLights{{
         {{0,1,0}, 10, true, false},
         {{0,-1,0}, 11, true, false},
     }};
     EXPECT_EQ(ResolvePicaSurfaceDirectionalShadowMask(receiverLights, IdentityDirectionalShadowMatrix(),
-                  selected.WorldDirectionTowardSource), 1U << 11U);
+                  selected.WorldDirectionTowardSource), 1U << 10U);
+    // A published decision carries its strength.
+    sources->ShadowCasterIdentity = 51;
+    sources->ShadowStrength = 0.5F;
+    EXPECT_EQ(ResolvePicaDirectionalShadowLightSelection(draws).ShadowStrength, 0.5F);
 }
 
 TEST(Oot3dDirectionalShadowSemantics,

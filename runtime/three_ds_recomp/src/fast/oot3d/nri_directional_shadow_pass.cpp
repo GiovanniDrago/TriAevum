@@ -909,8 +909,13 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         if (desc.Environment != nullptr) {
             const auto caster = std::find_if(casters.begin(), casters.end(),
                                              [](const auto* draw) { return draw->SceneDirectionals != nullptr; });
-            light.WorldDirectionTowardSource = Renderer3ds::ResolvePicaEnvironmentKeyDirection(
-                *desc.Environment, caster != casters.end() ? (*caster)->SceneDirectionals.get() : nullptr);
+            const auto* scene = caster != casters.end() ? (*caster)->SceneDirectionals.get() : nullptr;
+            light.WorldDirectionTowardSource = Renderer3ds::ResolvePicaEnvironmentKeyDirection(*desc.Environment, scene);
+            // A key that follows the scene's lights shows its main light's
+            // shadow strength (horizon, handover).
+            if (scene != nullptr && desc.Environment->KeyDirection != Renderer3ds::PicaEnvironmentKeyDirection::Authored)
+                if (const auto* main = Renderer3ds::FindPicaSceneMainDirectional(*scene))
+                    light.ShadowStrength = Renderer3ds::PicaSceneMainShadowStrength(*scene, *main);
         }
         light.ReferenceDraw = casters.front();
         light.CandidateCount = light.ClusterCount = 1;
@@ -935,8 +940,18 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     input.LightDirectionTowardSource = light.WorldDirectionTowardSource;
     input.Settings = desc.Settings;
     const auto previous = mImpl->Histories.find({ desc.RenderTargetNamespace, desc.ColorPhysicalAddress });
-    if (previous != mImpl->Histories.end() && previous->second.Slot.State.Valid())
+    if (previous != mImpl->Histories.end() && previous->second.Slot.State.Valid()) {
         input.PreviousLayout = &previous->second.Slot.State.Virtual;
+        // A light that moves every frame relayouts (redraws every page) only
+        // once it has turned kLayoutStepCosine from the layout's direction.
+        constexpr float kLayoutStepCosine = 0.99999048F; // cos(0.25 degrees)
+        const auto& held = input.PreviousLayout->LightDirection;
+        auto moving = light.WorldDirectionTowardSource;
+        const float length = std::sqrt(moving[0] * moving[0] + moving[1] * moving[1] + moving[2] * moving[2]);
+        if (length > 1.0e-6F &&
+            (held[0] * moving[0] + held[1] * moving[1] + held[2] * moving[2]) / length >= kLayoutStepCosine)
+            input.LightDirectionTowardSource = held;
+    }
     const auto plan = BuildDirectionalShadowFramePlan(input);
     if (!plan.Ready())
         return false;
@@ -1121,7 +1136,7 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     history.State.PageTable = target->Cache.Table();
     history.State.WorldLightDirectionTowardSource = plan.LightDirectionTowardSource;
     history.State.ProducedFrameId = desc.FrameId;
-    history.State.Strength = plan.Strength;
+    history.State.Strength = plan.Strength * std::clamp(light.ShadowStrength, 0.0F, 1.0F);
     history.State.DepthBias = std::max(plan.DepthBiasConstant, 0.0F) * 0.5F / (2.0F * plan.Virtual.DepthExtent);
     history.State.PcfRadius = plan.PcfRadius;
     target->LastUsedFrameId = desc.FrameId;

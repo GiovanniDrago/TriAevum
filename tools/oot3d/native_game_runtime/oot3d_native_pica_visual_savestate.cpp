@@ -31,6 +31,7 @@ constexpr uint32_t kVisualReplayMagicV16 = 0x47525650U; // PVRG: geometry-synchr
 constexpr uint32_t kVisualReplayMagicV17 = 0x48525650U; // PVRH: native draw roles
 constexpr uint32_t kVisualReplayMagicV18 = 0x49525650U; // PVRI: native scene directionals
 constexpr uint32_t kVisualReplayMagicV19 = 0x4A525650U; // PVRJ: native actor geometry ownership
+constexpr uint32_t kVisualReplayMagicV20 = 0x4B525650U; // PVRK: continuous scene light
 constexpr uint32_t kMaximumCopyReferencesPerTexture = 4096U;
 constexpr uint32_t kMaximumPlans = 4096U;
 constexpr uint32_t kMaximumResources = 4096U;
@@ -93,6 +94,7 @@ class Reader final {
     bool HasNativeDrawRoles = false;
     bool HasSceneDirectionals = false;
     bool HasNativeActorGeometry = false;
+    bool HasContinuousSceneLight = false;
     std::vector<std::shared_ptr<const Fast::Renderer3ds::PicaScenePointLights>> ScenePoints;
     std::vector<std::shared_ptr<const Fast::Renderer3ds::PicaSceneDirectionalLights>> SceneDirectionals;
     explicit Reader(std::span<const uint8_t> bytes) : mBytes(bytes) {}
@@ -801,7 +803,12 @@ void WritePlan(Writer& writer, const Oot3dPicaVulkanDrawPlan& value,
                 writer.U64(light.SourceIdentity);
                 for (float component : light.DirectionTowardSource) writer.Float(component);
                 for (float component : light.Color) writer.Float(component);
+                writer.Bool(light.SkyLight);
             }
+            for (float component : directionals->WorldUp) writer.Float(component);
+            writer.U64(directionals->ContinuityEpoch);
+            writer.U64(directionals->ShadowCasterIdentity);
+            writer.Float(directionals->ShadowStrength);
         }
     }
     writer.Bool(value.LightingLuts != nullptr);
@@ -1019,6 +1026,15 @@ bool ReadPlan(Reader& reader, Oot3dPicaVulkanDrawPlan& value,
                     if (!reader.Float(component) || !std::isfinite(component)) return false;
                 for (float& component : light.Color)
                     if (!reader.Float(component) || !std::isfinite(component) || component < 0 || component > 1) return false;
+                if (reader.HasContinuousSceneLight && !reader.Bool(light.SkyLight)) return false;
+            }
+            if (reader.HasContinuousSceneLight) {
+                for (float& component : directionals->WorldUp)
+                    if (!reader.Float(component) || !std::isfinite(component)) return false;
+                if (!reader.U64(directionals->ContinuityEpoch) || !reader.U64(directionals->ShadowCasterIdentity) ||
+                    !reader.Float(directionals->ShadowStrength) || !std::isfinite(directionals->ShadowStrength) ||
+                    directionals->ShadowStrength < 0 || directionals->ShadowStrength > 1)
+                    return false;
             }
             reader.SceneDirectionals.push_back(std::move(directionals));
         }
@@ -1180,7 +1196,7 @@ bool ReadOptionalFrame(Reader& reader,
 void WriteReplayState(Writer& writer,
                       const Oot3dPicaVisualReplayState& value) {
     const auto lightingLuts = BuildLightingLutDictionary(value);
-    writer.U32(kVisualReplayMagicV19);
+    writer.U32(kVisualReplayMagicV20);
     WriteLightingLutDictionary(writer, lightingLuts);
     const auto& accumulator = value.Scheduler.Accumulator;
     writer.U64(accumulator.NextSequence);
@@ -1217,7 +1233,8 @@ bool ReadReplayState(Reader& reader, Oot3dPicaVisualReplayState& value) {
     uint32_t magic = 0U;
     auto& accumulator = value.Scheduler.Accumulator;
     if (!reader.U32(magic)) return false;
-    reader.HasNativeActorGeometry = magic == kVisualReplayMagicV19;
+    reader.HasContinuousSceneLight = magic == kVisualReplayMagicV20;
+    reader.HasNativeActorGeometry = magic == kVisualReplayMagicV19 || reader.HasContinuousSceneLight;
     reader.HasSceneDirectionals = magic == kVisualReplayMagicV18 || reader.HasNativeActorGeometry;
     reader.HasNativeDrawRoles = magic == kVisualReplayMagicV17 || reader.HasSceneDirectionals;
     reader.HasWorldToView = magic == kVisualReplayMagicV16 || reader.HasNativeDrawRoles;

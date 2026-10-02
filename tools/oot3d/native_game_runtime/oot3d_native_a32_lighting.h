@@ -1,6 +1,7 @@
 #pragma once
 
 #include "fast/renderer3ds/pica_light_binding.h"
+#include "fast/renderer3ds/pica_scene_light_continuity.h"
 
 #include <array>
 #include <cstdint>
@@ -63,6 +64,8 @@ class NativeA32LightingProbe {
     void ObserveAcceptedLight(uint32_t lights, uint32_t source, uint32_t record, bool point,
                               oot3d::recomp::a32::MemoryBus& memory);
     void ObserveAssignment(const oot3d::recomp::a32::GuestState& state, oot3d::recomp::a32::MemoryBus& memory);
+    void ContinueSceneLights(Fast::Renderer3ds::PicaSceneDirectionalLights& lights, uint32_t playState,
+                             const std::optional<NativeEnvironmentState>& environment);
 
     std::unordered_map<uint32_t, BoundLights> mBoundLights;
     std::unordered_map<uint32_t, Fast::Renderer3ds::PicaNativeLightBinding> mRenderStates;
@@ -70,6 +73,20 @@ class NativeA32LightingProbe {
     std::shared_ptr<const Fast::Renderer3ds::PicaSceneDirectionalLights> mSceneDirectionals;
     uint64_t mSceneLightFrames = 0;
     NativeSceneLightTraceRecord mSceneLightTrace;
+    // Continuous scene light (docs/TRIAEVUM_ANIMATED_LIGHTING_STRATEGY.md):
+    // the previous guest frame's native lights, the stepped-value ramps of
+    // each light (direction, then colour) and the shadow caster decision.
+    struct ContinuityLight {
+        uint64_t Identity = 0;
+        std::array<float, 3> Direction{};
+        std::array<Fast::Renderer3ds::PicaSteppedSignal, 6> Signals{};
+    };
+    uint32_t mContinuityPlayState = 0;
+    std::optional<NativeEnvironmentState> mContinuityEnvironment;
+    std::array<ContinuityLight, Fast::Renderer3ds::kMaximumPicaSceneDirectionalLights> mContinuityLights{};
+    uint32_t mContinuityCount = 0;
+    uint64_t mContinuityEpoch = 0;
+    Fast::Renderer3ds::PicaSceneShadowCasterTracker mShadowCaster;
 };
 
 } // namespace Oot3dNativeGame

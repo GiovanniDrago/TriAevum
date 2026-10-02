@@ -975,8 +975,12 @@ struct VisualSceneLightInterpolation {
         const std::shared_ptr<const DirectionalSnapshot>& previous,
         const std::shared_ptr<const DirectionalSnapshot>& current, float alpha) {
         if (!previous || !current || previous == current || alpha >= 1.0F) return current;
+        // Never across a discontinuity of the scene's light.
+        if (previous->ContinuityEpoch != current->ContinuityEpoch) return current;
         if (PreviousDirectionals == previous && CurrentDirectionals == current) return SampledDirectionals;
         auto sample = std::make_shared<DirectionalSnapshot>(*current);
+        if (previous->ShadowCasterIdentity == current->ShadowCasterIdentity)
+            sample->ShadowStrength = InterpolateFinite(previous->ShadowStrength, current->ShadowStrength, alpha);
         for (uint32_t i = 0; i < sample->Count; ++i) {
             auto& light = sample->Lights[i];
             const auto end = previous->Lights.begin() + previous->Count;

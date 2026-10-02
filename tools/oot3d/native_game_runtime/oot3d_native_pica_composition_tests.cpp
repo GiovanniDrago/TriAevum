@@ -434,6 +434,79 @@ void TestRestoredNativeEnvironmentLights() {
             "native environment leaked after leaving gameplay");
 }
 
+void TestTimeDrivenEnvironmentLights() {
+    using namespace Oot3dNativeGame;
+    NativeA32Memory memory;
+    constexpr uint32_t play = 0x10000000U, nodes = play + 0x8000U, environment = play + 0x3190U;
+    constexpr uint32_t dayTime = 0x00587964U;
+    Map(memory, play, 0x10000U);
+    Map(memory, 0x00587000U, 0x1000U);
+    const std::array infos{play + 0x31BCU, play + 0x31D4U};
+    Require(memory.Write32(play + 0xA70U, nodes) && memory.Write8(environment + 0x20U, 0U) &&
+                memory.Write8(environment + 0xA7U, 0xFFU),
+            "could not seed a time-driven environment");
+    for (uint32_t i = 0; i < infos.size(); ++i)
+        Require(memory.Write32(nodes + i * 12U, infos[i]) &&
+                    memory.Write32(nodes + i * 12U + 8U, i == 0 ? nodes + 12U : 0U) &&
+                    memory.Write8(infos[i], 1U) && memory.Write8(infos[i] + 7U, 200U) &&
+                    memory.Write8(infos[i] + 8U, 180U) && memory.Write8(infos[i] + 9U, 160U),
+                "could not seed native environment light");
+    // The records the clock gives, as Environment_Update stores them.
+    const auto seed = [&](uint16_t clock) {
+        const double angle = double(std::bit_cast<int16_t>(uint16_t(clock - 0x8000U))) * (2.0 * std::numbers::pi / 65536.0);
+        const std::array<int, 3> bytes{int(-std::sin(angle) * 120.0), int(std::cos(angle) * 120.0),
+                                       int(std::cos(angle) * 20.0)};
+        bool written = memory.Write16(dayTime, clock);
+        for (uint32_t axis = 0; axis < 3U; ++axis)
+            written = written && memory.Write8(infos[0] + 4U + axis, uint8_t(int8_t(bytes[axis]))) &&
+                memory.Write8(infos[1] + 4U + axis, uint8_t(int8_t(-bytes[axis])));
+        Require(written, "could not seed the clock and its records");
+        return angle;
+    };
+    NativeA32LightingProbe probe;
+    double angle = seed(0x5123U);
+    probe.CaptureSceneLights(play, memory);
+    auto lights = probe.CaptureRenderer(0, memory).SceneDirectionals;
+    Require(lights && lights->Count == 2 && lights->Lights[0].SkyLight && lights->Lights[1].SkyLight,
+            "time-driven environment lights were not published as sky lights");
+    const auto& sun = lights->Lights[0].SourceIdentity == infos[0] + 4U ? lights->Lights[0] : lights->Lights[1];
+    const auto& moon = &sun == &lights->Lights[0] ? lights->Lights[1] : lights->Lights[0];
+    Require(std::abs(sun.DirectionTowardSource[0] - float(-std::sin(angle) * 120.0 / 127.0)) < 1.0e-6F &&
+                std::abs(sun.DirectionTowardSource[1] - float(std::cos(angle) * 120.0 / 127.0)) < 1.0e-6F &&
+                moon.DirectionTowardSource[1] == -sun.DirectionTowardSource[1],
+            "the sun did not take the clock's exact direction");
+    Require(lights->ShadowCasterIdentity == (sun.DirectionTowardSource[1] > 0 ? sun : moon).SourceIdentity,
+            "the light above the horizon does not cast");
+    const uint64_t epoch = lights->ContinuityEpoch;
+    // The next update: the direction moves, in the same epoch.
+    seed(0x5123U + 7U);
+    probe.CaptureSceneLights(play, memory);
+    auto next = probe.CaptureRenderer(0, memory).SceneDirectionals;
+    const auto& nextSun = next->Lights[0].SourceIdentity == infos[0] + 4U ? next->Lights[0] : next->Lights[1];
+    Require(next->ContinuityEpoch == epoch && nextSun.DirectionTowardSource != sun.DirectionTowardSource,
+            "continuous clock motion did not move the sun within its epoch");
+    // A set-time jump is a discontinuity.
+    seed(0x5123U + 0x2000U);
+    probe.CaptureSceneLights(play, memory);
+    Require(probe.CaptureRenderer(0, memory).SceneDirectionals->ContinuityEpoch != epoch,
+            "a jump of the clock did not start a new epoch");
+    // Another writer: the records no longer match the clock; their bytes apply.
+    seed(0x5123U + 0x2007U);
+    Require(memory.Write8(infos[0] + 4U, 5U) && memory.Write8(infos[1] + 4U, uint8_t(int8_t(-5))),
+            "could not override the sun record");
+    probe.CaptureSceneLights(play, memory);
+    lights = probe.CaptureRenderer(0, memory).SceneDirectionals;
+    const auto& written = lights->Lights[0].SourceIdentity == infos[0] + 4U ? lights->Lights[0] : lights->Lights[1];
+    Require(written.SkyLight && written.DirectionTowardSource[0] == 5.0F / 127.0F,
+            "records written over the clock did not take their own bytes");
+    // A light setting override: the environment's own fixed lights.
+    Require(memory.Write8(environment + 0xA7U, 3U), "could not override the light setting");
+    probe.CaptureSceneLights(play, memory);
+    lights = probe.CaptureRenderer(0, memory).SceneDirectionals;
+    Require(!lights->Lights[0].SkyLight && !lights->Lights[1].SkyLight,
+            "fixed light settings were published as sky lights");
+}
+
 void TestEnvironmentKeyDirection() {
     using namespace Fast::Renderer3ds;
     const auto near = [](const std::array<float, 3>& value, const std::array<float, 3>& expected) {
@@ -478,6 +551,7 @@ int main() {
     TestDeferredActorOwnership();
     TestRestoredSceneLightOwnership();
     TestRestoredNativeEnvironmentLights();
+    TestTimeDrivenEnvironmentLights();
     TestEnvironmentKeyDirection();
     constexpr uint32_t kWriterWrapper = 0x10000200U;
     constexpr uint32_t kWriterContext = 0x10000300U;

@@ -42,8 +42,12 @@ int main() {
     draw.LightBinding.ScenePoints = scenePoints;
     auto sceneDirectionals = std::make_shared<Fast::Renderer3ds::PicaSceneDirectionalLights>();
     sceneDirectionals->Count = 2;
-    sceneDirectionals->Lights[0] = {51, {0,1,0}, {.6F,.4F,.2F}};
-    sceneDirectionals->Lights[1] = {52, {0,-1,0}, {.2F,.4F,.6F}};
+    sceneDirectionals->Lights[0] = {51, {0,1,0}, {.6F,.4F,.2F}, true};
+    sceneDirectionals->Lights[1] = {52, {0,-1,0}, {.2F,.4F,.6F}, true};
+    sceneDirectionals->WorldUp = {0, 0, 1};
+    sceneDirectionals->ContinuityEpoch = 7;
+    sceneDirectionals->ShadowCasterIdentity = 51;
+    sceneDirectionals->ShadowStrength = 0.375F;
     draw.LightBinding.SceneDirectionals = sceneDirectionals;
     auto& pointLight = draw.LightBinding.Sources[2];
     pointLight.Kind = Fast::Renderer3ds::PicaNativeLightSource::Type::Point;
