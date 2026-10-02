@@ -1499,3 +1499,37 @@ programs (about 580 draws warm) until the specialized ones are linked, and the
 upscaler carries those frames' residual in its history. Accepted threshold for
 upscaled output: under 2 %. The earlier statement that warm `hybrid` captures
 equal `sync` captures held for that build and is superseded by this one.
+
+### Initial preparation (2026-10-02)
+
+The game starts behind a preparation screen (`NativePreparationScreen`, drawn
+on the ImGui foreground over everything else; captures read framebuffer 0
+before it and are unaffected):
+
+1. The guest waits, its clock stopped and its frames not counted, until the
+   renderer's startup preparation is ready
+   (`PicaProgramPreparationBackend::PreparationStatus`): every startup program
+   part, and the DLSS feature of the last run. The DLSS feature depends only on
+   its output size, quality, input encoding and preset; the backend records the
+   key of the feature it last created in the renderer cache
+   (`dlss_feature.txt`) and creates it on the first active frame when the
+   settings and swapchain still match (`NriInteropContext::PrepareDlss`, the
+   same creation the dispatch runs; the dispatch reuses a matching feature).
+2. The first guest frames render under the screen until ten in a row take
+   less than 100 ms (at most 30 s): what is left of the first-use costs, such
+   as the first scene's grass placements, a DLSS feature for new parameters or
+   cold caster pipelines on a first launch, is paid there.
+
+The benchmark window starts after the preparation; `runtime.json` reports it
+(`initial_preparation`: startup and wait seconds, first frames and their
+seconds) and `TRIAEVUM_INITIAL_PREPARATION` prints it. Kokiri Enhanced with
+grass:
+
+| run | guest waited | first frames under the screen | longest measured frame |
+|---|---|---|---|
+| empty caches (first launch) | 46.1 s (programs) | 17 frames, 6.1 s (DLSS 1.65 s, casters 2.1 s, grass 1.4 s) | 105 ms (was 11.4 s) |
+| warm caches | 0 s (DLSS created in the first frame begin, 1.6 s) | 17 frames, 2.0 s (grass 1.1 s) | 40 ms (was 2.7 s) |
+
+Captures are unchanged: `sync` against `sync` 12/12. Scenes entered later
+still build their grass placements on their first grass frame (about 1 s for
+Kokiri), as before.

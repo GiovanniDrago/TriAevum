@@ -1181,6 +1181,74 @@ const std::string& NriInteropContext::DlssUnavailableReason() const {
 #endif
 }
 
+bool NriInteropContext::EnsureDlssFeature(uint32_t frameIndex,
+                                          const NriDlssFeatureKey& key) {
+#ifdef ENABLE_OOT3D_NRI
+    if (mImpl->Dlss != nullptr && DlssFeature() == key) return true;
+    const auto command = mImpl->CommandBuffers.find(frameIndex);
+    if (command == mImpl->CommandBuffers.end()) return false;
+    if (mImpl->Dlss != nullptr)
+        mImpl->UpscalerInterface.DestroyUpscaler(mImpl->Dlss);
+    mImpl->Dlss = nullptr;
+    nri::UpscalerDesc upscaler{};
+    upscaler.upscaleResolution = {
+        static_cast<nri::Dim_t>(key.OutputWidth),
+        static_cast<nri::Dim_t>(key.OutputHeight)};
+    upscaler.type = nri::UpscalerType::DLSR;
+    upscaler.mode = ToNriUpscalerMode(key.Quality);
+    upscaler.flags =
+        (key.InputSrgb ? nri::UpscalerBits::SRGB
+                       : nri::UpscalerBits::HDR) |
+        nri::UpscalerBits::USE_REACTIVE |
+        nri::UpscalerBits::MV_JITTERED;
+    // NGX records feature-creation commands into the already-open frame
+    // command buffer, avoiding an out-of-band queue submission.
+    upscaler.commandBuffer = command->second;
+    upscaler.preset = key.Preset;
+    if (mImpl->UpscalerInterface.CreateUpscaler(
+            *mImpl->Device, upscaler, mImpl->Dlss) !=
+        nri::Result::SUCCESS) {
+        mImpl->Dlss = nullptr;
+        mImpl->DlssReason =
+            "NRI failed to create DLSS (NGX runtime or GPU support unavailable)";
+        return false;
+    }
+    mImpl->DlssWidth = key.OutputWidth;
+    mImpl->DlssHeight = key.OutputHeight;
+    mImpl->DlssQuality = key.Quality;
+    mImpl->DlssInputSrgb = key.InputSrgb;
+    mImpl->DlssPreset = key.Preset;
+    return true;
+#else
+    (void)frameIndex;
+    (void)key;
+    return false;
+#endif
+}
+
+bool NriInteropContext::PrepareDlss(uint32_t frameIndex,
+                                    const NriDlssFeatureKey& key) {
+#ifdef ENABLE_OOT3D_NRI
+    if (!DlssAvailable() || key.OutputWidth == 0U || key.OutputHeight == 0U)
+        return false;
+    return EnsureDlssFeature(frameIndex, key);
+#else
+    (void)frameIndex;
+    (void)key;
+    return false;
+#endif
+}
+
+std::optional<NriDlssFeatureKey> NriInteropContext::DlssFeature() const {
+#ifdef ENABLE_OOT3D_NRI
+    if (mImpl->Dlss == nullptr) return std::nullopt;
+    return NriDlssFeatureKey{mImpl->DlssWidth, mImpl->DlssHeight, mImpl->DlssQuality,
+                             mImpl->DlssInputSrgb, mImpl->DlssPreset};
+#else
+    return std::nullopt;
+#endif
+}
+
 bool NriInteropContext::DispatchDlss(
     const NriTemporalUpscaleDispatchDesc& desc) {
 #ifdef ENABLE_OOT3D_NRI
@@ -1209,41 +1277,9 @@ bool NriInteropContext::DispatchDlss(
                      desc.OutputWidth, desc.OutputHeight))
         return false;
 
-    if (mImpl->Dlss == nullptr || mImpl->DlssWidth != desc.OutputWidth ||
-        mImpl->DlssHeight != desc.OutputHeight ||
-        mImpl->DlssQuality != desc.Quality ||
-        mImpl->DlssInputSrgb != inputSrgb || mImpl->DlssPreset != desc.DlssPreset) {
-        if (mImpl->Dlss != nullptr)
-            mImpl->UpscalerInterface.DestroyUpscaler(mImpl->Dlss);
-        mImpl->Dlss = nullptr;
-        nri::UpscalerDesc upscaler{};
-        upscaler.upscaleResolution = {
-            static_cast<nri::Dim_t>(desc.OutputWidth),
-            static_cast<nri::Dim_t>(desc.OutputHeight)};
-        upscaler.type = nri::UpscalerType::DLSR;
-        upscaler.mode = ToNriUpscalerMode(desc.Quality);
-        upscaler.flags =
-            (inputSrgb ? nri::UpscalerBits::SRGB
-                       : nri::UpscalerBits::HDR) |
-            nri::UpscalerBits::USE_REACTIVE |
-            nri::UpscalerBits::MV_JITTERED;
-        // NGX records feature-creation commands into the already-open frame
-        // command buffer, avoiding an out-of-band queue submission.
-        upscaler.commandBuffer = command->second;
-        upscaler.preset = desc.DlssPreset;
-        if (mImpl->UpscalerInterface.CreateUpscaler(
-                *mImpl->Device, upscaler, mImpl->Dlss) !=
-            nri::Result::SUCCESS) {
-            mImpl->DlssReason =
-                "NRI failed to create DLSS (NGX runtime or GPU support unavailable)";
-            return false;
-        }
-        mImpl->DlssWidth = desc.OutputWidth;
-        mImpl->DlssHeight = desc.OutputHeight;
-        mImpl->DlssQuality = desc.Quality;
-        mImpl->DlssInputSrgb = inputSrgb;
-        mImpl->DlssPreset = desc.DlssPreset;
-    }
+    if (!EnsureDlssFeature(desc.FrameIndex, {desc.OutputWidth, desc.OutputHeight,
+                                             desc.Quality, inputSrgb, desc.DlssPreset}))
+        return false;
 
     nri::DispatchUpscaleDesc dispatch{};
     dispatch.output =

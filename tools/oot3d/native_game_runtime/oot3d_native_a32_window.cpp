@@ -6,6 +6,7 @@
 #include "fast/renderer/slow_frame_samples.h"
 #include "fast/renderer3ds/pica_program_preparation.h"
 #include "fast/renderer3ds/slow_step_trace.h"
+#include "oot3d_native_preparation_screen.h"
 #include "oot3d_game_language_panel.h"
 #include "oot3d_graphics_settings_schedule.h"
 #include "oot3d_scene_environment.h"
@@ -3927,6 +3928,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     programPreparation->PrepareNativePicaPrograms(
         Oot3dNativeGame::NativePicaVertexProgramFamily());
   }
+  // Initial preparation: from here until the renderer's startup work is ready
+  // and the first frames run within budget, the window shows its progress.
+  Oot3dNativeGame::NativePreparationScreen preparationScreen(
+      std::chrono::steady_clock::now());
   api.SetNativePicaGeometryCacheEnabled(
       !launch.DisableOpenGlPicaGeometryCache);
   auto *const titleRenderBackend =
@@ -4953,14 +4958,13 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   const bool measurePacing = pacingTrace && std::string_view(pacingTrace) == "1";
   auto benchmarkFrameTimes = (hostArgs.ThroughputBenchmark || measurePacing)
       ? std::make_unique<Fast::Renderer::FrameTimeDistribution>() : nullptr;
-  bool benchmarkMeasurementStarted =
-      hostArgs.BenchmarkWarmupFrames == 0U;
+  // Measurement starts after the initial preparation and the warm-up frames.
+  bool benchmarkMeasurementStarted = false;
+  auto lastCompletedFrameTime = std::chrono::steady_clock::now();
   const char* cpuProbeEnvironment = std::getenv("TRIAEVUM_PROFILE_CPU_LEDGER");
   const bool cpuProbeRequested = CpuProbe::BuildEnabled && cpuProbeEnvironment &&
       std::string_view(cpuProbeEnvironment) == "1";
   CpuProbe::Totals benchmarkCpuPhases{};
-  if (cpuProbeRequested && benchmarkMeasurementStarted)
-    CpuProbe::Thread.StartAt(CpuProbe::Read());
 
   uint32_t guestFrameBeginWidth = 0;
   uint32_t guestFrameBeginHeight = 0;
@@ -5256,6 +5260,25 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       renderStream.Submit([&] { realtimePacer.ResetDeadline(); });
       lastPresentationTime = std::chrono::steady_clock::now();
+      continue;
+    }
+    const auto preparationStatus = programPreparation != nullptr
+        ? programPreparation->PreparationStatus()
+        : Fast::Renderer3ds::PicaPreparationStatus{};
+    if (preparationScreen.HoldsGuest(preparationStatus,
+                                     std::chrono::steady_clock::now())) {
+      // The guest waits for the initial preparation: its clock does not run
+      // and the frame shows the progress instead of a game image.
+      if (!presentationScheduler.Restore(presentationStateBeforeFrame, &error)) {
+        throw std::runtime_error("cannot restore the presentation clock during preparation: " + error);
+      }
+      preparationScreen.Draw(preparationStatus);
+      gui->EndDraw();
+      renderStream.Submit([&] { window.EndFrame(); }, true);
+      std::this_thread::sleep_for(std::chrono::milliseconds(15));
+      renderStream.Submit([&] { realtimePacer.ResetDeadline(); });
+      lastPresentationTime = std::chrono::steady_clock::now();
+      lastCompletedFrameTime = lastPresentationTime;
       continue;
     }
     phaseTiming.RendererFrameStartSeconds += SecondsSince(rendererFrameStart);
@@ -6675,6 +6698,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     phaseStart = std::chrono::steady_clock::now();
     CpuProbe::Scope cpuPresent(CpuProbe::Phase::Present);
     Fast::Renderer3ds::SlowStepTrace presentSteps("present");
+    // The first frames render under the preparation screen.
+    preparationScreen.Draw(preparationStatus);
     gui->EndDraw();
     presentSteps.Mark("gui_end_draw");
     renderStream.Submit([&, width, height,
@@ -6734,7 +6759,21 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     }
 #endif
     const auto completedFrameTime = std::chrono::steady_clock::now();
-    if (!benchmarkMeasurementStarted &&
+    if (!preparationScreen.Done()) {
+      preparationScreen.ObserveFrame(
+          std::chrono::duration<double, std::milli>(completedFrameTime - lastCompletedFrameTime).count(),
+          completedFrameTime);
+      if (preparationScreen.Done()) {
+        std::fprintf(stderr,
+                     "TRIAEVUM_INITIAL_PREPARATION parts=%zu startup_seconds=%.3f wait_seconds=%.3f "
+                     "first_frames=%u first_frames_seconds=%.3f\n",
+                     preparationScreen.Parts(), preparationScreen.StartupSeconds(),
+                     preparationScreen.WaitSeconds(),
+                     preparationScreen.FirstFrames(), preparationScreen.FirstFramesSeconds());
+      }
+    }
+    lastCompletedFrameTime = completedFrameTime;
+    if (!benchmarkMeasurementStarted && preparationScreen.Done() &&
         runFrameCount >= hostArgs.BenchmarkWarmupFrames) {
       benchmarkMeasurementStart = completedFrameTime;
       benchmarkMeasurementEnd = completedFrameTime;
@@ -7303,6 +7342,15 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               {"maximum_vblank_deadline_overshoot_seconds",
                static_cast<double>(maximumVblankDeadlineOvershootTicks) /
                    static_cast<double>(kCtrArm11TicksPerSecond)}}},
+            {"initial_preparation",
+             {{"parts", preparationScreen.Parts()},
+              {"startup_seconds", preparationScreen.StartupSeconds()},
+              {"wait_seconds", preparationScreen.WaitSeconds()},
+              {"first_frames", preparationScreen.FirstFrames()},
+              {"first_frames_seconds", preparationScreen.FirstFramesSeconds()},
+              {"completed", preparationScreen.Done()},
+              {"note", "The guest waits for the startup preparation; the first frames render under the "
+                       "preparation screen until they run within budget. The benchmark window starts after it."}}},
             {"benchmark_window",
              {{"warmup_frames_requested",
                hostArgs.BenchmarkWarmupFrames},

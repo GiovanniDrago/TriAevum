@@ -146,6 +146,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     void PrepareNativePicaPrograms(std::span<const Renderer3ds::PicaVertexArtifact> vertices) override;
     [[nodiscard]] bool UsesAlwaysAvailablePrograms() const override;
     void RegisterTitlePassPrograms(std::span<const Renderer::PassShaderArtifact> programs) override;
+    [[nodiscard]] Renderer3ds::PicaPreparationStatus PreparationStatus() const override;
 
     const char* GetName() override;
     int GetMaxTextureSize() override;
@@ -1000,6 +1001,23 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     bool mAllNativePipelinesUseLibraries = false;
     NativePicaPreparationMode mNativePicaPreparationMode = NativePicaPreparationMode::Synchronous;
     bool mNativePicaProgramsPrepared = false;
+    // Startup preparation progress (PrepareNativePicaPrograms parts).
+    std::atomic<size_t> mStartupParts{0};
+    std::atomic<size_t> mStartupPreparedParts{0};
+    // The DLSS feature of the last run (renderer cache): created on the first
+    // active frame when the settings still select it, so the first upscaled
+    // frame does not create it.
+    struct DlssFeatureRecord {
+        Oot3d::NriDlssFeatureKey Key;
+        uint32_t SwapchainWidth = 0;
+        uint32_t SwapchainHeight = 0;
+        bool operator==(const DlssFeatureRecord&) const = default;
+    };
+    std::optional<DlssFeatureRecord> mDlssFeatureRecord;
+    std::atomic<bool> mDlssPreparationPending{false};
+    void LoadDlssFeatureRecord();
+    void PrepareRecordedDlssFeature();
+    void StoreDlssFeatureRecord();
     NativePicaPreparationCounters mNativePicaPreparationCounters;
     bool mNativePicaPreparationSummaryLogged = false;
     bool mNisVulkanFeaturesEnabled = false;

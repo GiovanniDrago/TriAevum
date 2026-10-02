@@ -780,6 +780,8 @@ void GfxRenderingAPIVulkan::PrepareNativePicaPrograms(
     std::fprintf(stderr, "TRIAEVUM_NATIVE_PROGRAM_PREPARATION_BEGIN parts=%zu background=%u\n",
                  items.size(), mPreparationQueue ? 1U : 0U);
     JoinStartupPreparation();
+    mStartupPreparedParts = 0;
+    mStartupParts = items.size();
     const auto finished = [start, count = items.size(), samples](size_t failures) {
         const auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - start).count();
@@ -788,8 +790,10 @@ void GfxRenderingAPIVulkan::PrepareNativePicaPrograms(
     };
     mNativePicaProgramsPrepared = true;
     if (!mPreparationQueue) {
-        for (const auto& item : items)
+        for (const auto& item : items) {
             if (!prepare(item)) throw std::runtime_error("native program preparation failed");
+            ++mStartupPreparedParts;
+        }
         finished(0);
         return;
     }
@@ -812,14 +816,95 @@ void GfxRenderingAPIVulkan::PrepareNativePicaPrograms(
     // draw waiting for it) several times slower for no added throughput.
     const unsigned threads = std::clamp(std::thread::hardware_concurrency() / 2U, 2U, 9U) - 1U;
     for (unsigned thread = 0; thread < threads; ++thread) {
-        mStartupPreparationThreads.emplace_back([prepare, progress, finished] {
+        mStartupPreparationThreads.emplace_back([this, prepare, progress, finished] {
             Renderer3ds::LowerPicaPreparationThreadPriority();
             for (size_t index; (index = progress->Next++) < progress->Items.size();) {
                 if (!prepare(progress->Items[index])) ++progress->Failures;
+                // A failed part is not prepared, but it is no longer pending.
+                ++mStartupPreparedParts;
                 if (--progress->Remaining == 0) finished(progress->Failures);
             }
         });
     }
+}
+
+Renderer3ds::PicaPreparationStatus GfxRenderingAPIVulkan::PreparationStatus() const {
+    Renderer3ds::PicaPreparationStatus status;
+    status.Parts = mStartupParts.load();
+    status.PreparedParts = std::min(mStartupPreparedParts.load(), status.Parts);
+    status.ProgramsReady = status.PreparedParts == status.Parts;
+    status.UpscalerReady = !mDlssPreparationPending.load();
+    return status;
+}
+
+namespace {
+constexpr std::string_view kDlssFeatureRecordTag = "triaevum-dlss-feature-v1";
+
+std::filesystem::path DlssFeatureRecordPath() {
+    const auto directory = VulkanShaderCacheDirectory();
+    return directory.empty() ? std::filesystem::path{} : directory / "dlss_feature.txt";
+}
+} // namespace
+
+void GfxRenderingAPIVulkan::LoadDlssFeatureRecord() {
+    mDlssFeatureRecord.reset();
+    mDlssPreparationPending = false;
+    const auto path = DlssFeatureRecordPath();
+    if (path.empty() || !mNriInterop.DlssAvailable()) return;
+    std::ifstream input(path);
+    std::string tag;
+    uint32_t width = 0, height = 0, quality = 0, srgb = 0, preset = 0, swapchainWidth = 0,
+             swapchainHeight = 0;
+    if (!(input >> tag >> width >> height >> quality >> srgb >> preset >> swapchainWidth >>
+          swapchainHeight) || tag != kDlssFeatureRecordTag || width == 0U || height == 0U ||
+        quality > static_cast<uint32_t>(Oot3d::UpscalerQuality::UltraPerformance) || srgb > 1U ||
+        preset > 0xFFU)
+        return;
+    mDlssFeatureRecord = DlssFeatureRecord{
+        {width, height, static_cast<Oot3d::UpscalerQuality>(quality), srgb != 0U,
+         static_cast<uint8_t>(preset)},
+        swapchainWidth, swapchainHeight};
+    mDlssPreparationPending = true;
+}
+
+void GfxRenderingAPIVulkan::PrepareRecordedDlssFeature() {
+    if (!mDlssPreparationPending.load()) return;
+    // One attempt: a mismatch leaves the creation to the first dispatch.
+    mDlssPreparationPending = false;
+    const auto settings = Oot3d::GraphicsSettingsRuntime::Instance().Snapshot();
+    const auto& record = *mDlssFeatureRecord;
+    if (settings.AntiAliasing != Oot3d::AntiAliasingMode::Upscaler ||
+        settings.Upscaler != Oot3d::UpscalerProvider::Dlss ||
+        settings.UpscalerMode != record.Key.Quality ||
+        Oot3d::DlssRenderPreset(settings.UpscalerDlssModel, settings.UpscalerMode) != record.Key.Preset ||
+        mSwapchainExtent.width != record.SwapchainWidth ||
+        mSwapchainExtent.height != record.SwapchainHeight)
+        return;
+#if defined(_WIN32) && defined(ENABLE_OOT3D_D3D12_NGX_PROVIDER)
+    if (mD3d12NgxProvider.FrameDispatchRequested()) return;
+#endif
+    const auto start = std::chrono::steady_clock::now();
+    const bool prepared = mNriInterop.PrepareDlss(mCurrentFrame, record.Key);
+    std::fprintf(stderr, "TRIAEVUM_DLSS_FEATURE_PREPARED prepared=%d output=%ux%u ms=%.1f\n",
+                 prepared ? 1 : 0, record.Key.OutputWidth, record.Key.OutputHeight,
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+}
+
+void GfxRenderingAPIVulkan::StoreDlssFeatureRecord() {
+    const auto feature = mNriInterop.DlssFeature();
+    if (!feature.has_value()) return;
+    const DlssFeatureRecord record{*feature, mSwapchainExtent.width, mSwapchainExtent.height};
+    if (mDlssFeatureRecord == record) return;
+    mDlssFeatureRecord = record;
+    const auto path = DlssFeatureRecordPath();
+    if (path.empty()) return;
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    std::ofstream output(path, std::ios::trunc);
+    output << kDlssFeatureRecordTag << ' ' << record.Key.OutputWidth << ' ' << record.Key.OutputHeight << ' '
+           << static_cast<uint32_t>(record.Key.Quality) << ' ' << (record.Key.InputSrgb ? 1 : 0) << ' '
+           << static_cast<uint32_t>(record.Key.Preset) << ' ' << record.SwapchainWidth << ' '
+           << record.SwapchainHeight << '\n';
 }
 
 void GfxRenderingAPIVulkan::JoinStartupPreparation() {
@@ -967,6 +1052,7 @@ void GfxRenderingAPIVulkan::Init() {
         SPDLOG_INFO("NRI PICA pipeline cache: initialized={}, accepted {} bytes", initialized,
                     mNriPicaPipelineBridge.PipelineStatistics().InitialCacheBytes);
     }
+    LoadDlssFeatureRecord();
     if ((mNativePicaPreparationMode == NativePicaPreparationMode::Hybrid ||
          mNativePicaPreparationMode == NativePicaPreparationMode::Uber) &&
         (!mGraphicsPipelineLibrariesEnabled || !mNriPicaPipelineBridge.OwnedDrawsEnabled())) {
@@ -2268,6 +2354,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
         SPDLOG_WARN("OOT3D Vulkan NRI could not wrap frame command buffer {}", mCurrentFrame);
     }
     mFrameActive = true;
+    PrepareRecordedDlssFeature();
     ++mFrameCounter;
     mDrawCallCountThisFrame = 0;
     mRenderPassActive = false;
@@ -2337,6 +2424,7 @@ void GfxRenderingAPIVulkan::EndFrame() {
     if (!mFrameActive) {
         return;
     }
+    StoreDlssFeatureRecord();
     if (mOot3dShadow2dPassActive) {
         EndOot3dShadow2dDepthEncodePass();
     }

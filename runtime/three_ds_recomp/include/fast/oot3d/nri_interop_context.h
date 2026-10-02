@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace Fast::Oot3d {
@@ -70,6 +71,17 @@ struct NriTemporalUpscaleDispatchDesc {
     SceneColorEncoding InputEncoding = SceneColorEncoding::Unknown;
 };
 
+// What a DLSS feature is created for. A dispatch reuses the live feature when
+// its key matches, including one created ahead of its first dispatch.
+struct NriDlssFeatureKey {
+    uint32_t OutputWidth = 0;
+    uint32_t OutputHeight = 0;
+    UpscalerQuality Quality = UpscalerQuality::Quality;
+    bool InputSrgb = true;
+    uint8_t Preset = 0;
+    bool operator==(const NriDlssFeatureKey&) const = default;
+};
+
 // Owns NRI wrapper objects plus resources explicitly created through the
 // owned-resource API. Wrapped Vulkan objects remain owned by the backend.
 class NriInteropContext final {
@@ -124,6 +136,11 @@ class NriInteropContext final {
     [[nodiscard]] bool DlssAvailable() const;
     [[nodiscard]] const std::string& DlssUnavailableReason() const;
     bool DispatchDlss(const NriTemporalUpscaleDispatchDesc& desc);
+    // Creates the DLSS feature for `key` ahead of its first dispatch,
+    // recording into the frame's command buffer as the dispatch would.
+    bool PrepareDlss(uint32_t frameIndex, const NriDlssFeatureKey& key);
+    // The live feature's key; none before the first creation.
+    [[nodiscard]] std::optional<NriDlssFeatureKey> DlssFeature() const;
 
     [[nodiscard]] bool Available() const;
     [[nodiscard]] const std::string& UnavailableReason() const;
@@ -137,6 +154,8 @@ class NriInteropContext final {
     [[nodiscard]] bool CompleteRecordedWork();
 
   private:
+    bool EnsureDlssFeature(uint32_t frameIndex, const NriDlssFeatureKey& key);
+
     friend class NriInteropAccess;
     struct Impl;
     std::unique_ptr<Impl> mImpl;

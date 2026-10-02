@@ -2,9 +2,24 @@
 #include "pica_vertex_artifact.h"
 #include "fast/renderer/pass_shader_artifact.h"
 
+#include <cstddef>
 #include <span>
 
 namespace Fast::Renderer3ds {
+// Work a renderer completes before gameplay so that no first use pays for it:
+// the startup program parts and resources whose creation stalls a frame.
+struct PicaPreparationStatus {
+    size_t Parts = 0;
+    size_t PreparedParts = 0;
+    // Every startup part exists (or none were requested).
+    bool ProgramsReady = true;
+    // The upscaler the settings use exists for the parameters it last ran with
+    // (or there is nothing to create ahead of its first dispatch).
+    bool UpscalerReady = true;
+
+    [[nodiscard]] bool Ready() const noexcept { return ProgramsReady && UpscalerReady; }
+};
+
 // Explicit loading boundary. Calls complete before gameplay; no draw packet or
 // borrowed asynchronous work survives the call. Other backends may omit it.
 class PicaProgramPreparationBackend {
@@ -17,5 +32,8 @@ class PicaProgramPreparationBackend {
     // Pass programs a title derives from its own programs (shadow casters,
     // surface lighting), built with its vertex family at development time.
     virtual void RegisterTitlePassPrograms(std::span<const Renderer::PassShaderArtifact> programs) { (void)programs; }
+    // Thread-safe. Progress of the work above; the host keeps the guest waiting
+    // (and shows it) until Ready().
+    [[nodiscard]] virtual PicaPreparationStatus PreparationStatus() const { return {}; }
 };
 }
