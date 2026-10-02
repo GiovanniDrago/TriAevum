@@ -2165,7 +2165,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
     }
     mTemporalJitterPixels = mTemporalJitterEnabled
         ? Oot3d::TemporalJitterForFrame(
-              mFrameCounter,
+              mTemporalJitterSequence,
               aaPolicy.TemporalJitterPhases).PixelOffset
         : std::array<float, 2>{};
     if (!mTemporalMotionEnabled) {
@@ -2450,6 +2450,7 @@ void GfxRenderingAPIVulkan::EndFrame() {
         mOverlayRenderPassActive = false;
     }
     const auto sceneFrameStats = mPicaSceneFrame.Stats();
+    if (sceneFrameStats.DrawCount != 0U) ++mTemporalJitterSequence;
     mScanoutProbe.Record(mCommandBuffers[mCurrentFrame], mSwapchainImages[mCurrentImage],
                          mSwapchainFormat, mSwapchainExtent, mCurrentFrame, mCurrentImage,
                          mFrameCounter, mNativePicaPresentedThisFrame);

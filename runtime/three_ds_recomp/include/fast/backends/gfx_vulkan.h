@@ -1695,6 +1695,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     bool mNativeFidelityProfile = false;
     Oot3d::PicaAttachmentRequirements mFramePicaAttachmentRequirements;
     std::array<float, 2> mTemporalJitterPixels{};
+    // Frames that drew the PICA scene: the jitter phase. Frames without the
+    // scene (the host holding the guest for its initial preparation) do not
+    // advance it, so the images do not depend on how long that took.
+    uint64_t mTemporalJitterSequence = 0;
     bool mGrassExecutedThisFrame = false;
     std::set<NativePicaRenderTargetKey>
         mGrassRenderedTargetsThisFrame;
