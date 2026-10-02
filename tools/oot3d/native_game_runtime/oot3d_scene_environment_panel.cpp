@@ -245,13 +245,15 @@ public:
           }
           ImGui::TextWrapped(
               value.KeyDirection == KeyDirection::SceneMain
-                  ? "Follows the scene's main light (the brightest environment light, "
-                    "the sun or the moon outdoors), turned by a fixed offset. The "
-                    "native per-pixel shadow path of the engine defines no direction "
-                    "of its own."
+                  ? "Follows the scene's main light (the strongest environment light "
+                    "above the horizon, the sun or the moon outdoors), turned by a "
+                    "fixed offset. It also takes that light's colour and brightness: "
+                    "the colour above tints it and the intensity scales it (white "
+                    "and 1 give the game's own light)."
               : value.KeyDirection == KeyDirection::SceneAmbient
                   ? "Follows the axis of the scene's other environment light, always "
-                    "pointing to the main light's side."
+                    "pointing to the main light's side, with the main light's colour "
+                    "and brightness, tinted and scaled as above."
                   : "Uses the azimuth and elevation below.");
         }
         changed |=

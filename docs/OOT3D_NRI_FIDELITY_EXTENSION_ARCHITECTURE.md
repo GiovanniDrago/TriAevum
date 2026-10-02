@@ -3616,3 +3616,12 @@ outdoor environment pair: the second light, turned to the main light's side,
 coincides with it). Authored cold against warm cache differs by 1.2% (known
 hybrid noise). F1 smoke: 7,988 assertions. Receipts:
 `I:/_triaevum_work/perf-levers/qualify/shadow-prepass/key-*`.
+
+Since 2026-10-02 (animated lighting, docs/TRIAEVUM_ANIMATED_LIGHTING_STRATEGY.md)
+a key that follows the scene (`scene_main`, `scene_ambient`) also takes its main
+light's colour and brightness (`ResolvePicaEnvironmentKeyColor`): the authored
+colour tints it and the intensity scales it, so white and 1 give the title's
+own sun or moon, including sunrise colours and night. The main light is the
+strongest environment light above the horizon (the published shadow caster).
+An authored (`Manual`) key keeps its own colour.
+

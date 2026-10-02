@@ -65,6 +65,25 @@ struct PicaEnvironmentLighting {
     bool operator==(const PicaEnvironmentLighting&) const = default;
 };
 
+// Light 0's colour for a draw with this scene snapshot. A key that follows
+// the scene's lights also takes its main light's colour and brightness (after
+// that light's direct horizon), its authored colour tinting it: white and an
+// intensity of one give the title's own light, so sunrise, night and every
+// native colour change carry over. An authored key, or a draw without a scene
+// snapshot, keeps its own colour; a snapshot with no emitting light gives none.
+[[nodiscard]] inline std::array<float, 3> ResolvePicaEnvironmentKeyColor(
+    const PicaEnvironmentLighting& environment, const PicaSceneDirectionalLights* scene) noexcept {
+    const auto authored = environment.Lights[0].Color;
+    if (environment.KeyDirection == PicaEnvironmentKeyDirection::Authored || scene == nullptr || scene->Count == 0)
+        return authored;
+    const auto* main = FindPicaSceneMainDirectional(*scene);
+    if (main == nullptr) return {};
+    const float horizon = PicaSceneDirectHorizon(*main, scene->WorldUp);
+    return { authored[0] * std::max(main->Color[0], 0.0F) * horizon,
+             authored[1] * std::max(main->Color[1], 0.0F) * horizon,
+             authored[2] * std::max(main->Color[2], 0.0F) * horizon };
+}
+
 // Light 0's direction toward its source for a draw with this scene snapshot.
 [[nodiscard]] inline std::array<float, 3> ResolvePicaEnvironmentKeyDirection(
     const PicaEnvironmentLighting& environment, const PicaSceneDirectionalLights* scene) noexcept {

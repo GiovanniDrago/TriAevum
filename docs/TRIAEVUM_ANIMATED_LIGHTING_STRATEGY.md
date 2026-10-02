@@ -523,6 +523,14 @@ and exit captures (the first-run outlier at frame 40 aside, as before). Tests:
 5 continuity tests in the foundation suite (314/314), the adapter's clock path
 in the composition tests, the visual replay round trip, scene-frame 20/20.
 
+**Key colour (2026-10-02, ahead of P3).** A scene-following key (`scene_main`,
+`scene_ambient`) takes the main light's colour and brightness, its authored
+colour as a tint and its intensity as a gain (`ResolvePicaEnvironmentKeyColor`;
+composition test; F1 smoke 7,988 assertions). Reported by the user: with a
+title-scene profile the key stayed white at intensity 1 through night and
+sunrise. A profile that zeroes the native ambient keeps its constant added
+ambient at night; P3's ambient gain addresses that.
+
 ### P2. Continuous shadows
 
 - Three layouts per target, budgeted construction, receivers with two layouts

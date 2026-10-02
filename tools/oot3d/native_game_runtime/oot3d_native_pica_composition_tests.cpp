@@ -537,9 +537,24 @@ void TestEnvironmentKeyDirection() {
             "the ambient light axis was not turned to the main light's side");
     Require(near(ResolvePicaEnvironmentKeyDirection(environment, nullptr), {1.0F, 0.0F, 0.0F}),
             "a draw without a scene snapshot lost the authored key direction");
+    // The key takes the main light's colour, tinted by its own.
+    environment.Lights[0].Color = {1.0F, 0.5F, 1.0F};
+    Require(near(ResolvePicaEnvironmentKeyColor(environment, &scene), {1.0F, 0.5F, 1.0F}),
+            "a scene-following key did not take the main light's colour");
+    scene.Lights[1].Color = {0.2F, 0.3F, 0.5F};
+    Require(near(ResolvePicaEnvironmentKeyColor(environment, &scene), {0.2F, 0.15F, 0.5F}),
+            "the key's colour did not follow the scene light's colour");
+    Require(near(ResolvePicaEnvironmentKeyColor(environment, nullptr), {1.0F, 0.5F, 1.0F}),
+            "a draw without a scene snapshot lost the authored key colour");
+    environment.KeyDirection = PicaEnvironmentKeyDirection::Authored;
+    Require(near(ResolvePicaEnvironmentKeyColor(environment, &scene), {1.0F, 0.5F, 1.0F}),
+            "an authored key took the scene's colour");
+    environment.KeyDirection = PicaEnvironmentKeyDirection::SceneAmbient;
     scene.Lights[0].Color = scene.Lights[1].Color = {};
     Require(near(ResolvePicaEnvironmentKeyDirection(environment, &scene), {1.0F, 0.0F, 0.0F}),
             "a scene without an emitting light replaced the authored key direction");
+    Require(near(ResolvePicaEnvironmentKeyColor(environment, &scene), {0.0F, 0.0F, 0.0F}),
+            "a scene without an emitting light still lit the key");
 }
 
 } // namespace

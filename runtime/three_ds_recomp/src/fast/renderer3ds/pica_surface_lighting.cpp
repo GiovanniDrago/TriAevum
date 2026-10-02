@@ -192,11 +192,14 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
             const auto direction = slot == 0
                 ? ResolvePicaEnvironmentKeyDirection(environment, binding.SceneDirectionals.get())
                 : source.DirectionTowardSource;
+            const auto colour = slot == 0
+                ? ResolvePicaEnvironmentKeyColor(environment, binding.SceneDirectionals.get())
+                : source.Color;
             result.EnvironmentDirections[slot][3] = source.Intensity;
             for (size_t row = 0; row < 3; ++row) {
                 for (size_t axis = 0; axis < 3; ++axis)
                     result.EnvironmentDirections[slot][row] += view[row][axis] * direction[axis];
-                result.EnvironmentColors[slot][row] = source.Color[row] * reflectance[row];
+                result.EnvironmentColors[slot][row] = colour[row] * reflectance[row];
             }
         }
     }
