@@ -1490,3 +1490,12 @@ accepted when an upscaler is involved. GPU cost, interleaved warm rounds
 (Kokiri Enhanced with grass, GPU shared with a streaming client): mean GPU busy
 11.00 ms per frame before, 11.18 ms after, within the 0.6-0.8 ms spread of each
 build's rounds.
+
+Real use after these changes (Kokiri Enhanced with grass, DLSS, 12 captures):
+`sync` against `sync` and `hybrid` against `hybrid` are identical (12/12);
+`sync` against `hybrid` differs in 1.16-1.2 % of pixels (max 41-58), warm or
+cold. Hybrid draws its first frames after a load with always-available
+programs (about 580 draws warm) until the specialized ones are linked, and the
+upscaler carries those frames' residual in its history. Accepted threshold for
+upscaled output: under 2 %. The earlier statement that warm `hybrid` captures
+equal `sync` captures held for that build and is superseded by this one.
