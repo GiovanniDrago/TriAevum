@@ -8,8 +8,10 @@
 #include "fast/MouseCapturePolicy.h"
 #include <imgui_internal.h>
 #include <nlohmann/json.hpp>
+#include <array>
 #include <cmath>
 #include <chrono>
+#include <numbers>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -374,6 +376,25 @@ void CheckSceneEnvironment() {
           std::abs(rendered.Lights[0].DirectionTowardSource[1] - 0.5F) < 0.0001F &&
           std::abs(rendered.Lights[0].DirectionTowardSource[2]) < 0.0001F,
           "scene light direction does not follow the displayed world axes");
+    using KeyDirection = Fast::Renderer3ds::PicaEnvironmentKeyDirection;
+    Click("Key light direction"); Click("Ambient light orientation");
+    Check(graphics.SnapshotForRendering().Environment.KeyDirection == KeyDirection::SceneAmbient,
+          "key light did not follow the ambient light orientation");
+    Click("Key light direction"); Click("Main scene light");
+    EditScalar("Azimuth offset", "30");
+    EditScalar("Elevation offset", "-10");
+    EditScalar("Fallback elevation", "30");
+    {
+        const auto keyed = graphics.SnapshotForRendering().Environment;
+        const float degree = std::numbers::pi_v<float> / 180.0F;
+        Check(keyed.KeyDirection == KeyDirection::SceneMain &&
+                  std::abs(keyed.KeyAzimuthOffset - 30.0F * degree) < 0.0001F &&
+                  std::abs(keyed.KeyElevationOffset + 10.0F * degree) < 0.0001F &&
+                  keyed.WorldUp == std::array{0.0F, 1.0F, 0.0F} &&
+                  keyed.WorldAzimuthZero == std::array{0.0F, 0.0F, 1.0F} &&
+                  std::abs(keyed.Lights[0].DirectionTowardSource[1] - 0.5F) < 0.0001F,
+              "key light offsets, axes or fallback did not reach the rendering snapshot");
+    }
     Click("Fill light"); EditScalar("Light intensity", "0.3");
     EditScalar("Navi intensity", "2.5");
     EditScalar("Fairy radius scale", "1.75");
@@ -385,6 +406,9 @@ void CheckSceneEnvironment() {
     Click("Save scene environment");
     const auto saved = environment->Snapshot();
     Check(saved.FileExists && !saved.Dirty && saved.Error.empty(), "scene environment was not saved");
+    Check(saved.Profile.KeyDirection == KeyDirection::SceneMain && saved.Profile.KeyAzimuthOffset == 30.0F &&
+              saved.Profile.KeyElevationOffset == -10.0F,
+          "the saved profile lost the key light direction");
     Click("Use native environment");
     Check(!graphics.SnapshotForRendering().Environment.Enabled, "native environment restore was not immediate");
     Check(graphics.SnapshotForRendering().Environment.PointLights[0].Intensity == 2.5F &&

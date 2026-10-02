@@ -3576,3 +3576,43 @@ The measurements above remain historical, not a new performance qualification.
 - Fixed x2 preserves the 30-Hz simulation while sustaining 60 presentations per
   second. Fixed x3 must preserve the same simulation while sustaining 90 with
   sufficient stereo headroom before it can be used as a VR presentation mode.
+
+### Key light direction from the scene lights (2026-10-02)
+
+The authored key light (the one shadow map) can take its direction from the
+native environment lights instead of its own azimuth/elevation. Scene profile
+version 5 adds `keyLightDirection`:
+
+- `authored`: its own azimuth/elevation (versions 1-4 load as this).
+- `scene_main`: the scene's main light, the brightest native environment
+  directional (the one the native directional shadows follow without an
+  authored key), turned by `keyLightAzimuthOffset` (-180-180 degrees) and
+  `keyLightElevationOffset` (-90-90 degrees) around the profile's axes.
+- `scene_ambient`: the axis of the other environment directional, its sense
+  taken from the main light (positive dot product). The light itself is never
+  modified; only its direction serves as the reference.
+
+The renderer resolves it per draw from that draw's scene snapshot
+(`ResolvePicaEnvironmentKeyDirection`), in the surface lighting and in the
+shadow map, so it follows the sun without republishing the profile (which
+resets temporal history). While a snapshot has no emitting environment light,
+the authored direction applies. The main-light rule is one owner
+(`FindPicaSceneMainDirectional`), shared with the native shadow selection.
+The title publishes its axes (`WorldUp` +Y, `WorldAzimuthZero` +Z).
+
+Why not the native shadow direction: the engine's per-pixel Shadow2D receive
+path exists (per-model render context `+0x1A8` shadow map, `+0x1B5` enable;
+material compile `003F9B5C` binds texture unit 0 as Shadow2D in `003FA198` and
+takes texture coordinate 0's 4x4 light projection from the shadow map object
+in `003F9F68`), but OOT3D never creates or fills that object: its constructor
+(`00347258`) zeroes both fields and only the context copy (`00310F7C`) writes
+them; lighting defaults (`00410C68`) disable the shadow factor and every
+light's shadow; no CMB material carries per-light shadow flags. There is no
+native shadow direction to recover.
+
+Kokiri Enhanced (DLSS, grass): `scene_main` against the authored key changes
+47% of pixels; `scene_main` against `scene_ambient` is 12/12 identical (the
+outdoor environment pair: the second light, turned to the main light's side,
+coincides with it). Authored cold against warm cache differs by 1.2% (known
+hybrid noise). F1 smoke: 7,988 assertions. Receipts:
+`I:/_triaevum_work/perf-levers/qualify/shadow-prepass/key-*`.

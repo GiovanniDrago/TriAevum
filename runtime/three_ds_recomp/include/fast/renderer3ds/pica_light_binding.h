@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -60,6 +62,47 @@ struct PicaSceneDirectionalLights {
     uint32_t Count = 0;
     bool operator==(const PicaSceneDirectionalLights&) const = default;
 };
+
+// Rec. 709 luminance of a source's color.
+[[nodiscard]] inline float PicaSceneDirectionalEnergy(const PicaSceneDirectionalLight& light) noexcept {
+    return 0.2126F * std::max(light.Color[0], 0.0F) + 0.7152F * std::max(light.Color[1], 0.0F) +
+           0.0722F * std::max(light.Color[2], 0.0F);
+}
+
+// The unit direction of a source that emits light, if it has one.
+[[nodiscard]] inline std::optional<std::array<float, 3>> PicaSceneDirectionalDirection(
+    const PicaSceneDirectionalLight& light) noexcept {
+    constexpr float kMinimum = 1.0e-6F;
+    const float energy = PicaSceneDirectionalEnergy(light);
+    auto direction = light.DirectionTowardSource;
+    const float lengthSquared =
+        direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2];
+    if (!std::isfinite(energy) || energy <= kMinimum || !std::isfinite(lengthSquared) ||
+        lengthSquared <= kMinimum)
+        return std::nullopt;
+    const float inverseLength = 1.0F / std::sqrt(lengthSquared);
+    for (float& component : direction) component *= inverseLength;
+    return direction;
+}
+
+// The scene's main directional light: the brightest source with a direction,
+// the lower identity on a tie. The native directional shadows follow it.
+[[nodiscard]] inline const PicaSceneDirectionalLight* FindPicaSceneMainDirectional(
+    const PicaSceneDirectionalLights& lights) noexcept {
+    if (lights.Count > lights.Lights.size()) return nullptr;
+    const PicaSceneDirectionalLight* main = nullptr;
+    float best = 0.0F;
+    for (uint32_t i = 0; i < lights.Count; ++i) {
+        const auto& light = lights.Lights[i];
+        if (!PicaSceneDirectionalDirection(light)) continue;
+        const float energy = PicaSceneDirectionalEnergy(light);
+        if (energy > best || (energy == best && main != nullptr && light.SourceIdentity < main->SourceIdentity)) {
+            main = &light;
+            best = energy;
+        }
+    }
+    return main;
+}
 
 struct PicaNativeLightBinding {
     std::array<PicaNativeLightSource, 3> Sources{};

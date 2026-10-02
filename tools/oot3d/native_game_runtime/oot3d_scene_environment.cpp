@@ -31,6 +31,10 @@ void Validate(const SceneEnvironmentProfile &profile) {
     for (float value : light.Color)
       scalar(value, 0.0F, 1.0F);
   }
+  scalar(profile.KeyAzimuthOffset, -180.0F, 180.0F);
+  scalar(profile.KeyElevationOffset, -90.0F, 90.0F);
+  if (profile.KeyDirection > Fast::Renderer3ds::PicaEnvironmentKeyDirection::SceneAmbient)
+    throw std::runtime_error("Unknown key light direction");
   for (const auto &light : profile.PointLights) {
     scalar(light.Intensity, 0.0F, 8.0F);
     scalar(light.RadiusScale, 0.1F, 8.0F);
@@ -61,10 +65,32 @@ std::array<float, 3> Color(const Json &object, const char *key) {
   }
   return result;
 }
+using KeyDirection = Fast::Renderer3ds::PicaEnvironmentKeyDirection;
+KeyDirection DecodeKeyDirection(const std::string &value) {
+  if (value == "authored")
+    return KeyDirection::Authored;
+  if (value == "scene_main")
+    return KeyDirection::SceneMain;
+  if (value == "scene_ambient")
+    return KeyDirection::SceneAmbient;
+  throw std::runtime_error("Unknown key light direction: " + value);
+}
+const char *EncodeKeyDirection(KeyDirection value) {
+  switch (value) {
+  case KeyDirection::SceneMain:
+    return "scene_main";
+  case KeyDirection::SceneAmbient:
+    return "scene_ambient";
+  case KeyDirection::Authored:
+    break;
+  }
+  return "authored";
+}
 SceneEnvironmentProfile Decode(const Json &doc, uint16_t scene) {
   if (doc.at("schema") != "triaevum.scene-environment" ||
       (doc.at("version") != 1 && doc.at("version") != 2 &&
-       doc.at("version") != 3 && doc.at("version") != 4) ||
+       doc.at("version") != 3 && doc.at("version") != 4 &&
+       doc.at("version") != 5) ||
       doc.at("sceneId") != scene)
     throw std::runtime_error(
         "Environment schema, version or scene identity mismatch");
@@ -94,6 +120,12 @@ SceneEnvironmentProfile Decode(const Json &doc, uint16_t scene) {
     light.Intensity = Scalar(lights[i], "intensity", 0.0F, 4.0F);
     light.Color = Color(lights[i], "color");
   }
+  if (doc.at("version") >= 5) {
+    const auto &key = doc.at("keyLightDirection");
+    result.KeyDirection = DecodeKeyDirection(key.get<std::string>());
+    result.KeyAzimuthOffset = Scalar(doc, "keyLightAzimuthOffset", -180.0F, 180.0F);
+    result.KeyElevationOffset = Scalar(doc, "keyLightElevationOffset", -90.0F, 90.0F);
+  }
   if (doc.at("version") >= 2) {
     const auto &points = doc.at("pointLights");
     if (!points.is_array() || points.size() != result.PointLights.size())
@@ -122,7 +154,7 @@ Json Encode(const SceneEnvironmentProfile &value, uint16_t scene) {
                       {"radiusScale", light.RadiusScale},
                       {"colorTint", light.ColorTint}});
   return {{"schema", "triaevum.scene-environment"},
-          {"version", 4},
+          {"version", 5},
           {"sceneId", scene},
           {"enabled", value.Enabled},
           {"preserveSceneBrightness", value.PreserveSceneBrightness},
@@ -133,7 +165,10 @@ Json Encode(const SceneEnvironmentProfile &value, uint16_t scene) {
           {"ambientIntensity", value.AmbientIntensity},
           {"fogStrength", value.FogStrength},
           {"pointLights", std::move(points)},
-          {"directionalLights", std::move(lights)}};
+          {"directionalLights", std::move(lights)},
+          {"keyLightDirection", EncodeKeyDirection(value.KeyDirection)},
+          {"keyLightAzimuthOffset", value.KeyAzimuthOffset},
+          {"keyLightElevationOffset", value.KeyElevationOffset}};
 }
 } // namespace
 
@@ -238,6 +273,14 @@ void SceneEnvironmentRuntime::PublishLocked() {
     result.AmbientIntensity = value.AmbientIntensity;
     result.FogStrength = value.FogStrength;
     result.PointLights = value.PointLights;
+    result.KeyDirection = value.KeyDirection;
+    result.KeyAzimuthOffset =
+        value.KeyAzimuthOffset * std::numbers::pi_v<float> / 180.0F;
+    result.KeyElevationOffset =
+        value.KeyElevationOffset * std::numbers::pi_v<float> / 180.0F;
+    // The same axes as the authored azimuth/elevation below.
+    result.WorldUp = {0.0F, 1.0F, 0.0F};
+    result.WorldAzimuthZero = {0.0F, 0.0F, 1.0F};
     for (size_t i = 0; i < value.Lights.size(); ++i) {
       const auto &light = value.Lights[i];
       const float azimuth = light.Azimuth * std::numbers::pi_v<float> / 180.0F;

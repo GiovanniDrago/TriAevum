@@ -643,3 +643,11 @@ Enhanced. Tests: re-encoding the preset gives the captured document back,
 ownership and Toon base unit cases, and the actual-widget smoke selecting
 Enhanced with a texture pack (7,811 assertions).
 
+## Key light direction (2026-10-02)
+
+Environment > Key light adds **Key light direction**: *Manual*, *Main scene
+light* (with **Azimuth offset** and **Elevation offset**) or *Ambient light
+orientation*. Outside Manual the azimuth/elevation sliders become the fallback
+used while the scene has no environment light. Saved in scene profile version
+5. Actual-widget smoke: **7,988 assertions**, including the three modes, the
+offsets reaching the rendering snapshot and the saved profile.

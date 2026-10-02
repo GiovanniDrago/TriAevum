@@ -1933,6 +1933,9 @@ void GfxRenderingAPIVulkan::StartFrame() {
         // Never use a previous scene/sun's depth map for a new lighting direction.
         if (mFrameEnvironment.ScopeIdentity != graphicsSnapshot.Environment.ScopeIdentity ||
             mFrameEnvironment.Enabled != graphicsSnapshot.Environment.Enabled ||
+            mFrameEnvironment.KeyDirection != graphicsSnapshot.Environment.KeyDirection ||
+            mFrameEnvironment.KeyAzimuthOffset != graphicsSnapshot.Environment.KeyAzimuthOffset ||
+            mFrameEnvironment.KeyElevationOffset != graphicsSnapshot.Environment.KeyElevationOffset ||
             mFrameEnvironment.Lights[0].DirectionTowardSource !=
                 graphicsSnapshot.Environment.Lights[0].DirectionTowardSource)
             mNriDirectionalShadowPass.InvalidateHistory();

@@ -43,6 +43,8 @@ struct NriDirectionalShadowExecuteDesc {
     DirectionalShadowSettings Settings;
     std::optional<Renderer3ds::PicaEnvironmentDirectionalLight> EnvironmentKey;
     float NativeDirectStrength = 1.0F;
+    // Resolves the key's direction from the casters' scene snapshot.
+    const Renderer3ds::PicaEnvironmentLighting* Environment = nullptr;
 };
 
 struct NriDirectionalShadowHistorySnapshot {

@@ -7122,6 +7122,7 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
                 mFrameEnvironment.Enabled
                     ? std::optional(mFrameEnvironment.Lights[0]) : std::nullopt,
                 mFrameEnvironment.Enabled ? mFrameEnvironment.NativeDirectStrength : 1.0F,
+                mFrameEnvironment.Enabled ? &mFrameEnvironment : nullptr,
             },
             mPreparedShadowCasterView,
             mDirectionalShadowMapBarrierPlan);

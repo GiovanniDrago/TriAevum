@@ -59,21 +59,14 @@ ResolvePicaDirectionalShadowLightSelection(
         const auto& snapshot = *draw->SceneDirectionals;
         if (snapshot.Count > snapshot.Lights.size()) return {};
         PicaDirectionalShadowLightSelection result;
-        uint64_t identity = 0;
-        for (uint32_t i = 0; i < snapshot.Count; ++i) {
-            const auto& source = snapshot.Lights[i];
-            auto direction = source.DirectionTowardSource;
-            const float energy = Luminance(source.Color);
-            if (!std::isfinite(energy) || energy <= kMinimumLightEnergy || !Normalize(direction)) continue;
-            ++result.CandidateCount;
-            if (energy > result.GeometryLightWeight ||
-                (energy == result.GeometryLightWeight && source.SourceIdentity < identity)) {
-                result.WorldDirectionTowardSource = direction;
-                result.ReferenceDraw = draw;
-                result.ReferenceLightIndex = static_cast<uint8_t>(i);
-                result.GeometryLightWeight = energy;
-                identity = source.SourceIdentity;
-            }
+        for (uint32_t i = 0; i < snapshot.Count; ++i)
+            if (Renderer3ds::PicaSceneDirectionalDirection(snapshot.Lights[i])) ++result.CandidateCount;
+        // The scene's main light, as the environment key light resolves it.
+        if (const auto* main = Renderer3ds::FindPicaSceneMainDirectional(snapshot)) {
+            result.WorldDirectionTowardSource = *Renderer3ds::PicaSceneDirectionalDirection(*main);
+            result.ReferenceDraw = draw;
+            result.ReferenceLightIndex = static_cast<uint8_t>(main - snapshot.Lights.data());
+            result.GeometryLightWeight = Renderer3ds::PicaSceneDirectionalEnergy(*main);
         }
         result.ClusterCount = result.CandidateCount;
         return result;

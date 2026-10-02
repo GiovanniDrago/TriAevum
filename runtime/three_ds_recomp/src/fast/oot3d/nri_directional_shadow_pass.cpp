@@ -905,6 +905,13 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     const bool authoredKey = desc.EnvironmentKey && desc.EnvironmentKey->Intensity > 0.0F;
     if (authoredKey) {
         light.WorldDirectionTowardSource = desc.EnvironmentKey->DirectionTowardSource;
+        // The same direction the surface lighting resolves for these draws.
+        if (desc.Environment != nullptr) {
+            const auto caster = std::find_if(casters.begin(), casters.end(),
+                                             [](const auto* draw) { return draw->SceneDirectionals != nullptr; });
+            light.WorldDirectionTowardSource = Renderer3ds::ResolvePicaEnvironmentKeyDirection(
+                *desc.Environment, caster != casters.end() ? (*caster)->SceneDirectionals.get() : nullptr);
+        }
         light.ReferenceDraw = casters.front();
         light.CandidateCount = light.ClusterCount = 1;
         light.GeometryLightWeight = desc.EnvironmentKey->Intensity;

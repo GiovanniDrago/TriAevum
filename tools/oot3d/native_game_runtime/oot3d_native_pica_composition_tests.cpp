@@ -1,4 +1,5 @@
 #include "oot3d_native_pica_composition.h"
+#include "fast/renderer3ds/pica_environment_lighting.h"
 
 #include "oot3d_native_a32_memory.h"
 #include "oot3d_typed_gameplay_bridge.h"
@@ -9,7 +10,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstdlib>
+#include <numbers>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -431,6 +434,41 @@ void TestRestoredNativeEnvironmentLights() {
             "native environment leaked after leaving gameplay");
 }
 
+void TestEnvironmentKeyDirection() {
+    using namespace Fast::Renderer3ds;
+    const auto near = [](const std::array<float, 3>& value, const std::array<float, 3>& expected) {
+        for (size_t axis = 0; axis < 3; ++axis)
+            if (std::abs(value[axis] - expected[axis]) > 1.0e-5F) return false;
+        return true;
+    };
+    PicaSceneDirectionalLights scene;
+    scene.Count = 2;
+    scene.Lights[0] = {2, {0.0F, -1.6F, -1.2F}, {0.2F, 0.2F, 0.2F}};
+    scene.Lights[1] = {1, {0.0F, 0.6F, 0.8F}, {1.0F, 1.0F, 1.0F}};
+    PicaEnvironmentLighting environment;
+    environment.Lights[0].DirectionTowardSource = {1.0F, 0.0F, 0.0F};
+    Require(near(ResolvePicaEnvironmentKeyDirection(environment, &scene), {1.0F, 0.0F, 0.0F}),
+            "an authored key light followed the scene");
+    environment.KeyDirection = PicaEnvironmentKeyDirection::SceneMain;
+    Require(FindPicaSceneMainDirectional(scene) == &scene.Lights[1] &&
+                near(ResolvePicaEnvironmentKeyDirection(environment, &scene), {0.0F, 0.6F, 0.8F}),
+            "the key light did not take the brightest scene light");
+    environment.KeyAzimuthOffset = std::numbers::pi_v<float> / 2.0F;
+    Require(near(ResolvePicaEnvironmentKeyDirection(environment, &scene), {0.8F, 0.6F, 0.0F}),
+            "the azimuth offset did not turn toward +X from +Z");
+    environment.KeyElevationOffset = -std::asin(0.6F);
+    Require(near(ResolvePicaEnvironmentKeyDirection(environment, &scene), {1.0F, 0.0F, 0.0F}),
+            "the elevation offset did not lower the key light");
+    environment.KeyDirection = PicaEnvironmentKeyDirection::SceneAmbient;
+    Require(near(ResolvePicaEnvironmentKeyDirection(environment, &scene), {0.0F, 0.8F, 0.6F}),
+            "the ambient light axis was not turned to the main light's side");
+    Require(near(ResolvePicaEnvironmentKeyDirection(environment, nullptr), {1.0F, 0.0F, 0.0F}),
+            "a draw without a scene snapshot lost the authored key direction");
+    scene.Lights[0].Color = scene.Lights[1].Color = {};
+    Require(near(ResolvePicaEnvironmentKeyDirection(environment, &scene), {1.0F, 0.0F, 0.0F}),
+            "a scene without an emitting light replaced the authored key direction");
+}
+
 } // namespace
 
 int main() {
@@ -440,6 +478,7 @@ int main() {
     TestDeferredActorOwnership();
     TestRestoredSceneLightOwnership();
     TestRestoredNativeEnvironmentLights();
+    TestEnvironmentKeyDirection();
     constexpr uint32_t kWriterWrapper = 0x10000200U;
     constexpr uint32_t kWriterContext = 0x10000300U;
 

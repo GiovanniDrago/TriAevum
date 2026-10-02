@@ -28,6 +28,14 @@ struct SceneEnvironmentProfile {
   std::array<SceneDirectionalLight, 2> Lights{
       {{45.0F, 45.0F, {1.0F, 1.0F, 1.0F}, 1.0F},
        {-135.0F, 30.0F, {1.0F, 1.0F, 1.0F}, 0.0F}}};
+  // Where the key light points: its own azimuth/elevation, the scene's main
+  // light turned by the offsets below, or the axis of the scene's other
+  // (ambient) light on the main light's side. Its own direction applies
+  // while the scene has no main directional light.
+  Fast::Renderer3ds::PicaEnvironmentKeyDirection KeyDirection =
+      Fast::Renderer3ds::PicaEnvironmentKeyDirection::Authored;
+  float KeyAzimuthOffset = 0.0F;
+  float KeyElevationOffset = 0.0F;
   std::array<Fast::Renderer3ds::PicaScenePointLightSettings,
              Fast::Renderer3ds::kPicaScenePointLightGroups> PointLights{};
   bool operator==(const SceneEnvironmentProfile &) const = default;

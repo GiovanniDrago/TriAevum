@@ -224,12 +224,47 @@ public:
         changed |=
             ImGui::SliderFloat("Light intensity", &light.Intensity, 0.0F, 4.0F,
                                "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        using KeyDirection = Fast::Renderer3ds::PicaEnvironmentKeyDirection;
+        const bool scene = i == 0 && value.KeyDirection != KeyDirection::Authored;
+        if (i == 0) {
+          const char *directions[] = {"Manual", "Main scene light",
+                                      "Ambient light orientation"};
+          int direction = static_cast<int>(value.KeyDirection);
+          if (ImGui::Combo("Key light direction", &direction, directions,
+                           IM_ARRAYSIZE(directions))) {
+            value.KeyDirection = static_cast<KeyDirection>(direction);
+            changed = true;
+          }
+          if (value.KeyDirection == KeyDirection::SceneMain) {
+            changed |= ImGui::SliderFloat("Azimuth offset", &value.KeyAzimuthOffset,
+                                          -180.0F, 180.0F, "%.1f deg",
+                                          ImGuiSliderFlags_AlwaysClamp);
+            changed |= ImGui::SliderFloat("Elevation offset", &value.KeyElevationOffset,
+                                          -90.0F, 90.0F, "%.1f deg",
+                                          ImGuiSliderFlags_AlwaysClamp);
+          }
+          ImGui::TextWrapped(
+              value.KeyDirection == KeyDirection::SceneMain
+                  ? "Follows the scene's main light (the brightest environment light, "
+                    "the sun or the moon outdoors), turned by a fixed offset. The "
+                    "native per-pixel shadow path of the engine defines no direction "
+                    "of its own."
+              : value.KeyDirection == KeyDirection::SceneAmbient
+                  ? "Follows the axis of the scene's other environment light, always "
+                    "pointing to the main light's side."
+                  : "Uses the azimuth and elevation below.");
+        }
         changed |=
-            ImGui::SliderFloat("Azimuth", &light.Azimuth, -180.0F, 180.0F,
+            ImGui::SliderFloat(scene ? "Fallback azimuth" : "Azimuth",
+                               &light.Azimuth, -180.0F, 180.0F,
                                "%.1f deg", ImGuiSliderFlags_AlwaysClamp);
         changed |=
-            ImGui::SliderFloat("Elevation", &light.Elevation, -90.0F, 90.0F,
+            ImGui::SliderFloat(scene ? "Fallback elevation" : "Elevation",
+                               &light.Elevation, -90.0F, 90.0F,
                                "%.1f deg", ImGuiSliderFlags_AlwaysClamp);
+        if (scene)
+          ImGui::TextWrapped("The fallback direction applies while the scene has "
+                             "no environment light.");
         ImGui::TextWrapped(
             i == 0 ? "Key light casts directional shadows when Shadow mode is "
                      "enabled above. It lights actors and static world surfaces."
