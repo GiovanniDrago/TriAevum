@@ -161,9 +161,20 @@ bool CachedPassShaderCompiler::Enabled() const {
     return !mDirectory.empty() && !ShadercCompilerContract().empty();
 }
 
+void CachedPassShaderCompiler::AddArtifacts(std::span<const PassShaderArtifact> artifacts) {
+    if (artifacts.empty()) return;
+    for (const auto& [data, size] : mArtifacts)
+        if (data == artifacts.data()) return;
+    mArtifacts.emplace_back(artifacts.data(), artifacts.size());
+}
+
 std::vector<uint32_t> CachedPassShaderCompiler::Resolve(
     std::string_view source, SpirvStage stage, const char* name, const ShaderDefines& defines) {
-    const auto artifact = FindBuiltinPassShaderSpirv(source, stage, defines);
+    auto artifact = FindBuiltinPassShaderSpirv(source, stage, defines);
+    for (const auto& [data, size] : mArtifacts) {
+        if (!artifact.empty()) break;
+        artifact = FindPassShaderArtifact(std::span(data, size), source, stage, defines);
+    }
     if (!artifact.empty()) {
         ++mBuiltinArtifactHits;
         return {artifact.begin(), artifact.end()};

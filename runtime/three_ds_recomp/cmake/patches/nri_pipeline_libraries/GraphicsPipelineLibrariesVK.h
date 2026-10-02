@@ -4,6 +4,7 @@
 #include <array>
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -16,15 +17,27 @@ struct ProgramBytes { const void* Data; size_t Size; };
 
 // One owner per NRI pipeline layout. Libraries never outlive its device, and
 // layout handle recycling cannot alias another descriptor contract.
+//
+// Threads create different parts concurrently: the mutex guards only lookup
+// and bookkeeping. The first requester of a part creates it outside the lock;
+// later requesters wait for that part alone. A part in use by a link is never
+// evicted.
 class GraphicsPipelineLibraries {
     using Key = std::vector<uint64_t>;
-    struct Part { VkPipeline Handle; uint64_t LastUse; };
+    struct Part {
+        VkPipeline Handle = VK_NULL_HANDLE;
+        uint64_t LastUse = 0;
+        uint32_t Users = 0;
+        bool Ready = false;
+        VkResult Result = VK_SUCCESS;
+    };
     std::array<std::map<Key, Part>, 4> mParts;
     std::map<std::vector<uint32_t>, uint64_t> mPrograms;
     std::array<uint64_t, 4> mCreated{}, mReused{}, mNanoseconds{};
     uint64_t mClock = 0, mLinks = 0, mLinkNanoseconds = 0, mMaxLinkNanoseconds = 0;
     uint64_t mRejected = 0;
     std::mutex mMutex;
+    std::condition_variable mPartReady;
 
     static uint64_t Now() {
         return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -110,7 +123,7 @@ class GraphicsPipelineLibraries {
         PFN_vkDestroyPipeline destroy, const VkAllocationCallbacks* allocator,
         VkPipelineCache cache, const VkGraphicsPipelineCreateInfo& in,
         const ProgramBytes* programs, VkPipeline* out) {
-        std::lock_guard<std::mutex> lock(mMutex);
+        std::unique_lock<std::mutex> lock(mMutex);
         if (!Supported(in, programs)) { ++mRejected; return VK_ERROR_FEATURE_NOT_PRESENT; }
         const auto& rendering = *Rendering(in);
         const auto& vi = *in.pVertexInputState;
@@ -210,12 +223,20 @@ class GraphicsPipelineLibraries {
             VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT,
             VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT,
             VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT};
+        // Claim every part: the first requester creates it, a link pins it.
+        std::array<std::map<Key, Part>::iterator, 4> parts;
+        std::array<bool, 4> owner{};
         for (size_t p = 0; p < 4; ++p) {
-            auto& entries = mParts[p];
-            if (const auto found = entries.find(keys[p]); found != entries.end()) {
-                libraries[p] = found->second.Handle; found->second.LastUse = ++mClock; ++mReused[p];
-                continue;
-            }
+            auto [entry, inserted] = mParts[p].try_emplace(keys[p]);
+            parts[p] = entry;
+            owner[p] = inserted;
+            if (!inserted) ++mReused[p];
+            ++entry->second.Users;
+            entry->second.LastUse = ++mClock;
+        }
+        lock.unlock();
+        for (size_t p = 0; p < 4; ++p) {
+            if (!owner[p]) continue;
             VkPipelineRenderingCreateInfo formats = rendering;
             if (p != 3) {
                 formats.colorAttachmentCount = 0; formats.pColorAttachmentFormats = nullptr;
@@ -236,36 +257,67 @@ class GraphicsPipelineLibraries {
             if (p == 2) part.pDepthStencilState = &depth;
             if (p == 2 || p == 3) part.pMultisampleState = &ms;
             if (p == 3) part.pColorBlendState = &blend;
+            VkPipeline handle = VK_NULL_HANDLE;
             const auto start = Now();
-            const auto result = create(device, cache, 1, &part, allocator, &libraries[p]);
-            mNanoseconds[p] += Now() - start;
-            if (result != VK_SUCCESS) {
-                if (libraries[p]) destroy(device, libraries[p], allocator);
-                return result;
-            }
-            ++mCreated[p];
-            if (p == 1 || p == 2)
+            const auto result = create(device, cache, 1, &part, allocator, &handle);
+            const auto elapsed = Now() - start;
+            if (result != VK_SUCCESS && handle) { destroy(device, handle, allocator); handle = VK_NULL_HANDLE; }
+            lock.lock();
+            parts[p]->second.Handle = handle;
+            parts[p]->second.Result = result;
+            parts[p]->second.Ready = true;
+            mNanoseconds[p] += elapsed;
+            if (result == VK_SUCCESS) ++mCreated[p];
+            lock.unlock();
+            mPartReady.notify_all();
+            if (result == VK_SUCCESS && (p == 1 || p == 2))
                 std::fprintf(stderr, "TRIAEVUM_NRI_GPL_SHADER_PART_CREATED part=%zu\n", p);
-            entries.emplace(std::move(keys[p]), Part{libraries[p], ++mClock});
-            // Final linked executables do not require the library handles to
-            // survive. Bound retained libraries per subset; no in-flight draw
-            // can reference a non-executable library directly.
-            if (entries.size() > 128) {
-                auto oldest = entries.begin();
+        }
+        // Parts other threads create: wait for those alone.
+        VkResult result = VK_SUCCESS;
+        lock.lock();
+        mPartReady.wait(lock, [&] {
+            for (const auto& entry : parts)
+                if (!entry->second.Ready) return false;
+            return true;
+        });
+        for (size_t p = 0; p < 4; ++p) {
+            libraries[p] = parts[p]->second.Handle;
+            if (parts[p]->second.Result != VK_SUCCESS) result = parts[p]->second.Result;
+        }
+        lock.unlock();
+        if (result == VK_SUCCESS) {
+            VkPipelineLibraryCreateInfoKHR link{VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR};
+            link.libraryCount = uint32_t(libraries.size()); link.pLibraries = libraries.data();
+            VkGraphicsPipelineCreateInfo executable{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+            executable.pNext = &link; executable.layout = in.layout; executable.basePipelineIndex = -1;
+            const auto start = Now();
+            result = create(device, cache, 1, &executable, allocator, out);
+            const auto elapsed = Now() - start;
+            lock.lock();
+            ++mLinks; mLinkNanoseconds += elapsed;
+            if (elapsed > mMaxLinkNanoseconds) mMaxLinkNanoseconds = elapsed;
+        } else {
+            lock.lock();
+        }
+        // Release the pins. A failed part is forgotten once unused so a later
+        // request retries it. Final linked executables do not require the
+        // library handles to survive: bound the retained libraries per subset.
+        for (size_t p = 0; p < 4; ++p) {
+            auto& entries = mParts[p];
+            const auto entry = parts[p];
+            --entry->second.Users;
+            if (entry->second.Result != VK_SUCCESS && entry->second.Users == 0) entries.erase(entry);
+            while (entries.size() > 128) {
+                auto oldest = entries.end();
                 for (auto it = entries.begin(); it != entries.end(); ++it)
-                    if (it->second.LastUse < oldest->second.LastUse) oldest = it;
+                    if (it->second.Ready && it->second.Users == 0 &&
+                        (oldest == entries.end() || it->second.LastUse < oldest->second.LastUse))
+                        oldest = it;
+                if (oldest == entries.end()) break;
                 destroy(device, oldest->second.Handle, allocator); entries.erase(oldest);
             }
         }
-        VkPipelineLibraryCreateInfoKHR link{VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR};
-        link.libraryCount = uint32_t(libraries.size()); link.pLibraries = libraries.data();
-        VkGraphicsPipelineCreateInfo executable{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-        executable.pNext = &link; executable.layout = in.layout; executable.basePipelineIndex = -1;
-        const auto start = Now();
-        const auto result = create(device, cache, 1, &executable, allocator, out);
-        const auto elapsed = Now() - start;
-        ++mLinks; mLinkNanoseconds += elapsed;
-        if (elapsed > mMaxLinkNanoseconds) mMaxLinkNanoseconds = elapsed;
         return result;
     }
 
@@ -281,7 +333,8 @@ class GraphicsPipelineLibraries {
                 static_cast<unsigned long long>(mMaxLinkNanoseconds), static_cast<unsigned long long>(mRejected));
         }
         for (auto& parts : mParts) {
-            for (const auto& entry : parts) destroy(device, entry.second.Handle, allocator);
+            for (const auto& entry : parts)
+                if (entry.second.Handle) destroy(device, entry.second.Handle, allocator);
             parts.clear();
         }
         mPrograms.clear();

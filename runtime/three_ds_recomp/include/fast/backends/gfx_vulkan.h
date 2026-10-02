@@ -88,6 +88,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <tuple>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -144,6 +145,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     ~GfxRenderingAPIVulkan() override;
     void PrepareNativePicaPrograms(std::span<const Renderer3ds::PicaVertexArtifact> vertices) override;
     [[nodiscard]] bool UsesAlwaysAvailablePrograms() const override;
+    void RegisterTitlePassPrograms(std::span<const Renderer::PassShaderArtifact> programs) override;
 
     const char* GetName() override;
     int GetMaxTextureSize() override;
@@ -502,6 +504,12 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         double CompleteMilliseconds = 0.0;
         double MaximumCompleteMilliseconds = 0.0;
         uint64_t UberPrograms = 0;
+        // Render-thread time acquiring always-available pipelines (a link,
+        // or a wait for a part still being prepared).
+        double UberAcquireMilliseconds = 0.0;
+        double MaximumUberAcquireMilliseconds = 0.0;
+        // Always-available draws per effect branch taken (coverage evidence).
+        uint64_t UberSurfaceDraws = 0, UberPbrDraws = 0, UberReliefDraws = 0, UberToonDraws = 0;
     };
 
     struct NativePicaGeometryBuffer {
@@ -1069,8 +1077,19 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         mCanonicalNativePicaShaders;
     std::map<NativePicaShaderModuleKey, NativePicaShaderProgram>
         mInstrumentedNativePicaShaders;
-    std::map<NativePicaShaderModuleKey, NativePicaShaderProgram>
+    // Keyed by the specialized variant and the base of its pair.
+    std::map<std::pair<NativePicaShaderModuleKey, std::tuple<uint64_t, uint64_t, uint64_t>>,
+             NativePicaShaderProgram>
         mUberNativePicaShaders;
+    // The superset program of one parametric base and vertex interface:
+    // composed and identified once, shared by every variant of the base.
+    struct UberSupersetArtifact {
+        std::span<const uint32_t> Fragment;
+        Oot3d::PicaAotShaderSourceIdentity NriSource{};
+        bool NriApplied = false;
+    };
+    std::map<std::tuple<uint64_t, uint64_t, uint64_t, uint8_t>, UberSupersetArtifact>
+        mUberSupersetArtifacts;
     Oot3d::PicaGeometryRegistry mPicaGeometryRegistry;
     bool mPbrSeamsAvailable = false;
     Oot3d::PicaCompositionSchedule mNativePicaCompositionSchedule;
@@ -1552,6 +1571,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
 #endif
     // Destroyed after the NRI objects whose background creation it runs.
     std::unique_ptr<Renderer3ds::PicaPreparationQueue> mPreparationQueue;
+    // Startup preparation of the always-available parts: threads of its own,
+    // so specialized programs never queue behind it.
+    std::vector<std::thread> mStartupPreparationThreads;
+    void JoinStartupPreparation();
     Oot3d::NriInteropContext mNriInterop;
     Oot3d::AmbientOcclusionPass mAmbientOcclusionPass;
     Oot3d::CacaoPass mCacaoPass;

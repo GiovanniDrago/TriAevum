@@ -105,11 +105,15 @@ size_t PicaPreparationQueue::Pending() const {
     return mQueue.size() + mRunning;
 }
 
-void PicaPreparationQueue::Worker() {
+void LowerPicaPreparationThreadPriority() {
 #ifdef _WIN32
     // Preparation must never take a core from the guest or render threads.
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 #endif
+}
+
+void PicaPreparationQueue::Worker() {
+    LowerPicaPreparationThreadPriority();
     for (;;) {
         std::shared_ptr<PicaPreparationTask> task;
         {

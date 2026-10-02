@@ -12,6 +12,10 @@
 
 namespace Fast::Immerse {
 
+// The six MXAO programs (deinterleave, occlusion, filter, resolve, temporal,
+// debug) in pass order; debugLibrary is the AO debug view library.
+[[nodiscard]] std::array<std::string, 6> BuildMxaoPassShaders(std::string_view debugLibrary);
+
 // Pixels are deinterleaved into kMxaoTiles x kMxaoTiles tiles: a tile holds
 // every fourth pixel of each axis, so the taps of one tile stay cache local.
 inline constexpr uint32_t kMxaoTiles = 4U;

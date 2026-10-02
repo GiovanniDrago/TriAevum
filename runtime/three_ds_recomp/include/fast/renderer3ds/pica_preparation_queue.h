@@ -31,6 +31,9 @@ class PicaPreparationTask final {
     std::atomic<State> mState{State::Queued};
 };
 
+// Preparation threads run below normal priority (the calling thread).
+void LowerPicaPreparationThreadPriority();
+
 // A small pool of below-normal-priority threads. The render thread submits
 // owned-input tasks and polls them; a task it cannot draw without is run on
 // the calling thread if no worker has started it yet (Complete).

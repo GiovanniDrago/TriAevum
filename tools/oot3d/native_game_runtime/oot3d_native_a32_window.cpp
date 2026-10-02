@@ -3918,6 +3918,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   const bool alwaysAvailablePrograms =
       programPreparation != nullptr &&
       programPreparation->UsesAlwaysAvailablePrograms();
+  if (programPreparation != nullptr)
+    programPreparation->RegisterTitlePassPrograms(
+        Oot3dNativeGame::NativePicaTitlePassPrograms());
   if (programPreparation != nullptr &&
       (launch.PicaParametricTev || alwaysAvailablePrograms)) {
     programPreparation->PrepareNativePicaPrograms(

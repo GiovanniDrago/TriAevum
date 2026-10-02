@@ -2,7 +2,12 @@
 #include "fast/renderer3ds/pica_pbr_seams.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
+#include <cctype>
+#include <initializer_list>
+#include <stdexcept>
+#include <vector>
 
 namespace Fast::Renderer3ds {
 
@@ -31,18 +36,11 @@ PicaPbrUniforms BuildPicaPbrUniforms(
     return result;
 }
 
-std::optional<PicaPbrShader> BuildPicaPbrShader(
-    const PicaShaderHookLayout& hooks, const PicaPbrShaderOptions& options) {
-    const auto* sample = hooks.TextureSample(options.TextureSlot);
-    if (sample == nullptr || sample->Coordinate > 2U ||
-        (sample->Operation != PicaTextureCoordinateOperation::NativeVFlip &&
-         sample->Operation != PicaTextureCoordinateOperation::ProjectedNativeVFlip)) return std::nullopt;
-    const auto coordinate = std::to_string(sample->Coordinate);
-    const std::string uv = sample->Operation == PicaTextureCoordinateOperation::ProjectedNativeVFlip
-        ? "vec2(pica_texcoord0.x / pica_texcoord0_w, 1.0 - pica_texcoord0.y / pica_texcoord0_w)"
-        : "vec2(pica_texcoord" + coordinate + ".x, 1.0 - pica_texcoord" + coordinate + ".y)";
-    PicaPbrShader result;
-    result.Declarations = R"glsl(
+namespace {
+
+// The specialized material program is assembled from these; the superset
+// program shares them with draw-time controls (BuildPicaPbrUberShader).
+constexpr std::string_view kPbrDeclarations = R"glsl(
 layout(set=0,binding=17,std140) uniform PicaPbrMaterial {
     vec4 base_color_dielectric_f0;
     vec4 emissive_normal_scale;
@@ -138,9 +136,7 @@ void pbr_ggx(vec3 n, vec3 v, vec3 l, vec3 albedo, vec3 f0, float roughness, floa
         pbr_material.specular_reflection_weight.x;
 }
 )glsl";
-    if (options.SeamSoftening) result.Declarations += PicaPbrSeamShaderLibrary();
-    if (options.NativeFragmentLighting && options.NativeAttenuationLuts) {
-        result.Declarations += R"glsl(
+constexpr std::string_view kPbrNativeSpot = R"glsl(
 float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
                       vec3 l, vec3 h, vec3 spot) {
     vec4 config = pbr_material.native_luts[2];
@@ -163,25 +159,16 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
     return config.z * pica_lighting_lut_signed(table, x);
 }
 )glsl";
-    }
-    // TEV receives unlit color, not the diffuse material coefficient. Diffuse
-    // and ambient coefficients belong to their respective lighting terms;
-    // an ambient-only material may legitimately have a black diffuse term.
-    result.UnlitInputs = R"glsl(
+constexpr std::string_view kPbrUnlitPrimary = R"glsl(
     if (pica_surface.control.x != 0u ||
         (pica_surface.environment_parameters.w != 0.0 && (pica_surface.control.w & 1u) == 0u))
         rounded_primary_color.rgb = byteround3(min(abs(pica_surface_tint.rgb), vec3(1.0)));
 )glsl";
-    if (options.NativeFragmentLighting) {
-        result.UnlitInputs += R"glsl(
+constexpr std::string_view kPbrNativeUnlit = R"glsl(
     primary_fragment_color.rgb = vec3(1.0);
     secondary_fragment_color.rgb = vec3(0.0);
 )glsl";
-    }
-    const std::string nativeCoordinate = "pica_texcoord" + coordinate;
-    result.UnlitInputs += "\n    vec2 pbr_native_coordinate = " + nativeCoordinate + ";\n"
-                          "    vec2 pbr_native_uv = " + uv + ";\n";
-    result.UnlitInputs += R"glsl(
+constexpr std::string_view kPbrFrame = R"glsl(
     vec3 pbr_geometric_normal = pica_surface_unit(pica_surface_normal);
     vec3 pbr_view = pica_surface_unit(pica_view);
     vec3 pbr_tangent, pbr_bitangent;
@@ -195,16 +182,7 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
             vec3(dot(pbr_view, pbr_tangent), dot(pbr_view, pbr_bitangent), dot(pbr_view, pbr_geometric_normal)),
             pbr_gradient_x, pbr_gradient_y, 0.0, 0.0);
 )glsl";
-    // Shadow only the typed coordinate used by this material, never edit the
-    // canonical shader. The native-alpha replay restores the original input.
-    result.UnlitInputs += "    vec2 " + nativeCoordinate + " = pbr_native_coordinate;\n"
-                          "    if (pbr_relief && any(notEqual(pbr_uv, pbr_native_uv))) " +
-                          nativeCoordinate + " = vec2(pbr_uv.x, 1.0 - pbr_uv.y)";
-    if (sample->Operation == PicaTextureCoordinateOperation::ProjectedNativeVFlip)
-        result.UnlitInputs += " * pica_texcoord0_w";
-    result.UnlitInputs += ";\n";
-    result.NativeCoordinates = "        vec2 " + nativeCoordinate + " = pbr_native_coordinate;\n";
-    if (options.SeamSoftening) result.UnlitInputs += R"glsl(
+constexpr std::string_view kPbrSeamInputs = R"glsl(
     PbrSeamBlend pbr_seam = pbr_seam_blend(uint(gl_PrimitiveID), -pica_view,
         pbr_geometric_normal, dFdx(-pica_view), dFdy(-pica_view));
     uint pbr_seam_channels = floatBitsToUint(pbr_material.seam_settings.z);
@@ -215,11 +193,11 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
             vec3(dot(pbr_view, pbr_tangent), dot(pbr_view, pbr_bitangent), dot(pbr_view, pbr_geometric_normal)),
             pbr_gradient_x, pbr_gradient_y, pbr_seam.value.height, pbr_seam.weight);
 )glsl";
-    result.ShadingBody = R"glsl(
+constexpr std::string_view kPbrShadingNormal = R"glsl(
     vec3 pbr_normal = pbr_surface_normal(pbr_uv, pbr_geometric_normal, pbr_tangent, pbr_bitangent, pbr_valid_frame);
     vec3 pbr_orm = (pbr_material.control.x & 2u) != 0u ? texture(pbr_orm_map, pbr_uv).rgb : vec3(1.0);
 )glsl";
-    if (options.SeamSoftening) result.ShadingBody += R"glsl(
+constexpr std::string_view kPbrSeamShading = R"glsl(
     if (pbr_seam.weight > 0.0) {
         if ((pbr_seam_channels & 1u) != 0u) {
             vec3 blended = mix(pbr_normal, pbr_seam.value.normal, pbr_seam.weight);
@@ -230,7 +208,7 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
         if ((pbr_seam_channels & 8u) != 0u) pbr_orm.b = mix(pbr_orm.b, pbr_seam.value.orm.b, pbr_seam.weight);
     }
 )glsl";
-    result.ShadingBody += R"glsl(
+constexpr std::string_view kPbrShadingMaterial = R"glsl(
     float pbr_ao = mix(1.0, pbr_orm.r, pbr_material.orm_minimum_roughness.x);
     float pbr_authored_roughness = clamp(pbr_orm.g * pbr_material.orm_minimum_roughness.y, 0.0, 1.0);
     float pbr_roughness = clamp(1.0 - (1.0 - pbr_authored_roughness) *
@@ -241,31 +219,29 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
     vec3 pbr_emission = (pbr_material.control.x & 4u) != 0u ?
         pbr_srgb_to_linear(texture(pbr_emissive_map, pbr_uv).rgb) : vec3(1.0);
 )glsl";
-    if (options.SeamSoftening) result.ShadingBody += R"glsl(
+constexpr std::string_view kPbrSeamEmission = R"glsl(
     if ((pbr_seam_channels & 16u) != 0u && pbr_seam.weight > 0.0)
         pbr_emission = mix(pbr_emission, pbr_seam.value.emission, pbr_seam.weight);
 )glsl";
-    result.ShadingBody += R"glsl(
+constexpr std::string_view kPbrShadingAccumulators = R"glsl(
     pbr_emission *= pbr_material.emissive_normal_scale.rgb;
     vec3 pbr_direct = vec3(0.0), pbr_ambient = vec3(0.0);
     // Diffuse direct light seeding global illumination (sources weighted by
     // gi_sources; ambient, fill, emission and specular are not sources).
     vec3 pbr_gi_native = vec3(0.0), pbr_gi_direct = vec3(0.0);
 )glsl";
-    result.ShadingBody += options.NativeFragmentLighting
-        ? "    bool pbr_unlit_reference = false;\n"
-        : R"glsl(
+constexpr std::string_view kPbrUnlitReferenceNative = "    bool pbr_unlit_reference = false;\n";
+constexpr std::string_view kPbrUnlitReferenceSurface = R"glsl(
     bool pbr_unlit_reference = (pica_surface.control.w & 1u) != 0u && pica_surface.control.x == 0u;
 )glsl";
-    result.ShadingBody += R"glsl(
+constexpr std::string_view kPbrNativeFlags = R"glsl(
     bool pbr_native_direct = pbr_unlit_reference || pica_surface.environment_parameters.w == 0.0 ||
         (pica_surface.control.x != 0u || pbr_material.native_control.x != 0u
             ? pica_surface.environment_parameters.x : pica_surface.environment_parameters.y) != 0.0;
     bool pbr_native_ambient = pica_surface.environment_parameters.w == 0.0 ||
         ((pica_surface.control.w & 1u) == 0u && pica_surface.environment_parameters.y != 0.0);
 )glsl";
-    if (options.NativeFragmentLighting) {
-        result.ShadingBody += R"glsl(
+constexpr std::string_view kPbrNativeLoopBegin = R"glsl(
     for (uint slot = 0u; (pbr_native_direct || pbr_native_ambient) && slot < pbr_material.native_control.x; ++slot) {
         uint i = pbr_material.native_lights[slot].x;
         uint flags = pbr_material.native_lights[slot].y;
@@ -276,8 +252,7 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
         bool two_sided = (flags & 2u) != 0u;
         float attenuation = 1.0;
 )glsl";
-        if (options.NativeAttenuationLuts) {
-            result.ShadingBody += R"glsl(
+constexpr std::string_view kPbrNativeAttenuation = R"glsl(
         if ((flags & 32u) != 0u)
             attenuation *= pbr_native_spot(int(8u + i), two_sided, pbr_normal, pbr_tangent,
                 pbr_view, l, pbr_view + l, fragment_uniforms.lighting_spot_direction[i].xyz);
@@ -286,8 +261,7 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
                 fragment_uniforms.lighting_attenuation[i].y * light_distance +
                 fragment_uniforms.lighting_attenuation[i].x, 0.0, 1.0));
 )glsl";
-        }
-        result.ShadingBody += R"glsl(
+constexpr std::string_view kPbrNativeLoopEnd = R"glsl(
         if (pbr_native_direct) {
         vec3 diffuse, specular;
         pbr_ggx(pbr_normal, pbr_view, l, pbr_albedo, pbr_f0, pbr_roughness, pbr_metallic,
@@ -307,8 +281,7 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
     pbr_ambient += fragment_uniforms.lighting_global_ambient.rgb;
     pbr_ambient = pica_surface_resolved_ambient(pbr_ambient);
 )glsl";
-    } else {
-        result.ShadingBody += R"glsl(
+constexpr std::string_view kPbrSurfaceLoop = R"glsl(
     if (pica_surface.control.x != 0u) {
         for (int slot = 0; pbr_native_direct && slot < 3; ++slot) {
             if (pica_surface.lights[slot].direction_enabled.w == 0.0) continue;
@@ -330,8 +303,7 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
     }
     pbr_ambient = pica_surface.resolved_ambient.rgb;
 )glsl";
-    }
-    result.ShadingBody += R"glsl(
+constexpr std::string_view kPbrShadingEnd = R"glsl(
     vec3 pbr_indirect = pbr_ambient *
         pbr_albedo * (1.0 - pbr_metallic) * pbr_ao;
     if (pica_surface.environment_parameters.w != 0.0) {
@@ -384,12 +356,203 @@ float pbr_native_spot(int table, bool two_sided, vec3 n, vec3 t, vec3 v,
         pbr_reflectivity = 0.0;
     }
 )glsl";
-    result.DiagnosticOutput = R"glsl(
+constexpr std::string_view kPbrDiagnostic = R"glsl(
     if (pbr_material.control.z == 1u)
         pica_color.rgb = pbr_normal * 0.5 + 0.5;
     else if (pbr_material.control.z == 2u)
         pica_color.rgb = vec3(pbr_roughness);
 )glsl";
+
+} // namespace
+
+std::string HoistPicaGlslDeclarations(
+    std::string_view body, std::initializer_list<std::string_view> names, std::string& hoisted) {
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 6> kTypes{{
+        {"vec2", " = vec2(0.0)"}, {"vec3", " = vec3(0.0)"}, {"float", " = 0.0"},
+        {"bool", " = false"}, {"uint", " = 0u"}, {"PbrSeamBlend", ""}}};
+    const auto isName = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; };
+    std::string out;
+    size_t cursor = 0;
+    while (cursor < body.size()) {
+        const size_t lineEnd = std::min(body.find('\n', cursor), body.size());
+        const size_t first = body.find_first_not_of(' ', cursor);
+        bool rewritten = false;
+        for (const auto& [type, zero] : kTypes) {
+            if (first >= lineEnd || body.compare(first, type.size(), type) != 0 ||
+                first + type.size() >= body.size() || body[first + type.size()] != ' ')
+                continue;
+            const size_t nameBegin = first + type.size() + 1U;
+            size_t nameEnd = nameBegin;
+            while (nameEnd < body.size() && isName(body[nameEnd])) ++nameEnd;
+            const auto name = body.substr(nameBegin, nameEnd - nameBegin);
+            if (std::find(names.begin(), names.end(), name) == names.end()) break;
+            // The statement: declarators separated by top-level commas.
+            std::vector<std::string_view> declarators;
+            int depth = 0;
+            size_t begin = nameBegin, at = nameBegin;
+            for (; at < body.size(); ++at) {
+                const char c = body[at];
+                if (c == '(') ++depth;
+                else if (c == ')') --depth;
+                else if (depth == 0 && (c == ',' || c == ';')) {
+                    declarators.push_back(body.substr(begin, at - begin));
+                    begin = at + 1U;
+                    if (c == ';') break;
+                }
+            }
+            if (at == body.size()) throw std::logic_error("unterminated PBR declaration");
+            const std::string indent(first - cursor, ' ');
+            for (auto declarator : declarators) {
+                declarator.remove_prefix(std::min(declarator.find_first_not_of(" \n"), declarator.size()));
+                size_t end = 0;
+                while (end < declarator.size() && isName(declarator[end])) ++end;
+                const auto declared = declarator.substr(0, end);
+                if (std::find(names.begin(), names.end(), declared) == names.end())
+                    throw std::logic_error("PBR declaration mixes hoisted and local names");
+                hoisted += "    " + std::string(type) + " " + std::string(declared) + std::string(zero) + ";\n";
+                const size_t equals = declarator.find('=', end);
+                if (equals != std::string_view::npos)
+                    out += indent + std::string(declared) + " =" + std::string(declarator.substr(equals + 1U)) + ";\n";
+            }
+            cursor = at + 1U;
+            if (cursor < body.size() && body[cursor] == '\n') ++cursor;
+            rewritten = true;
+            break;
+        }
+        if (!rewritten) {
+            out.append(body.substr(cursor, lineEnd - cursor));
+            if (lineEnd < body.size()) out += '\n';
+            cursor = lineEnd + 1U;
+        }
+    }
+    return out;
+}
+
+PicaPbrUberShader BuildPicaPbrUberShader(
+    const PicaPbrUberControls& controls, bool nativeLighting, bool primitiveIds) {
+    PicaPbrUberShader result;
+    result.Declarations = kPbrDeclarations;
+    if (primitiveIds) result.Declarations += PicaPbrSeamShaderLibrary();
+    if (nativeLighting) result.Declarations += kPbrNativeSpot;
+    const auto& on = controls.Enabled;
+    auto& hoisted = result.MainDeclarations;
+
+    std::string unlit = "    if (" + on + ") {\n";
+    unlit += kPbrUnlitPrimary;
+    if (nativeLighting)
+        unlit += "    if (" + controls.NativeLighting + ") {" + std::string(kPbrNativeUnlit) + "    }\n";
+    unlit += "    pbr_native_coordinate = " + controls.Coordinate + " == 0u ? pica_texcoord0 : " +
+             controls.Coordinate + " == 1u ? pica_texcoord1 : pica_texcoord2;\n"
+             "    pbr_native_uv = " + controls.Projected +
+             " ? vec2(pica_texcoord0.x / pica_texcoord0_w, 1.0 - pica_texcoord0.y / pica_texcoord0_w)\n"
+             "        : vec2(pbr_native_coordinate.x, 1.0 - pbr_native_coordinate.y);\n";
+    hoisted += "    vec2 pbr_native_coordinate = vec2(0.0);\n    vec2 pbr_native_uv = vec2(0.0);\n";
+    unlit += HoistPicaGlslDeclarations(kPbrFrame, {"pbr_geometric_normal", "pbr_view", "pbr_tangent", "pbr_bitangent",
+                               "pbr_valid_frame", "pbr_gradient_x", "pbr_gradient_y", "pbr_uv", "pbr_relief"},
+                   hoisted);
+    unlit += "    if (pbr_relief && any(notEqual(pbr_uv, pbr_native_uv))) {\n"
+             "        vec2 pbr_relief_coordinate = " + controls.Projected +
+             " ? vec2(pbr_uv.x, 1.0 - pbr_uv.y) * pica_texcoord0_w : vec2(pbr_uv.x, 1.0 - pbr_uv.y);\n"
+             "        if (" + controls.Coordinate + " == 0u) pica_texcoord0 = pbr_relief_coordinate;\n"
+             "        else if (" + controls.Coordinate + " == 1u) pica_texcoord1 = pbr_relief_coordinate;\n"
+             "        else pica_texcoord2 = pbr_relief_coordinate;\n    }\n";
+    if (primitiveIds)
+        unlit += "    if (" + controls.Seams + ") {" +
+                 HoistPicaGlslDeclarations(kPbrSeamInputs, {"pbr_seam", "pbr_seam_channels"}, hoisted) + "    }\n";
+    unlit += "    }\n";
+    result.UnlitInputs = std::move(unlit);
+
+    std::string shading = "    if (" + on + ") {";
+    shading += HoistPicaGlslDeclarations(kPbrShadingNormal, {"pbr_normal"}, hoisted);
+    if (primitiveIds) shading += "    if (" + controls.Seams + ") {" + std::string(kPbrSeamShading) + "    }\n";
+    shading += HoistPicaGlslDeclarations(kPbrShadingMaterial, {"pbr_roughness", "pbr_albedo"}, hoisted);
+    if (primitiveIds) shading += "    if (" + controls.Seams + ") {" + std::string(kPbrSeamEmission) + "    }\n";
+    shading += kPbrShadingAccumulators;
+    if (nativeLighting) {
+        shading += "    bool pbr_unlit_reference = false;\n"
+                   "    if (!" + controls.NativeLighting + ")\n"
+                   "        pbr_unlit_reference = (pica_surface.control.w & 1u) != 0u && pica_surface.control.x == 0u;\n";
+    } else {
+        shading += kPbrUnlitReferenceSurface;
+    }
+    shading += kPbrNativeFlags;
+    if (nativeLighting) {
+        shading += "    if (" + controls.NativeLighting + ") {";
+        shading += kPbrNativeLoopBegin;
+        shading += "        if (" + controls.AttenuationLuts + ") {\n";
+        shading += kPbrNativeAttenuation;
+        shading += "        }\n";
+        shading += kPbrNativeLoopEnd;
+        shading += "    } else {";
+        shading += kPbrSurfaceLoop;
+        shading += "    }\n";
+    } else {
+        shading += kPbrSurfaceLoop;
+    }
+    shading += HoistPicaGlslDeclarations(kPbrShadingEnd, {"pbr_gi_radiance", "pbr_ao_response", "pbr_reflectivity"}, hoisted);
+    shading += "    }\n";
+    result.ShadingBody = std::move(shading);
+    result.DiagnosticOutput = kPbrDiagnostic;
+    return result;
+}
+
+std::optional<PicaPbrShader> BuildPicaPbrShader(
+    const PicaShaderHookLayout& hooks, const PicaPbrShaderOptions& options) {
+    const auto* sample = hooks.TextureSample(options.TextureSlot);
+    if (sample == nullptr || sample->Coordinate > 2U ||
+        (sample->Operation != PicaTextureCoordinateOperation::NativeVFlip &&
+         sample->Operation != PicaTextureCoordinateOperation::ProjectedNativeVFlip)) return std::nullopt;
+    const auto coordinate = std::to_string(sample->Coordinate);
+    const std::string uv = sample->Operation == PicaTextureCoordinateOperation::ProjectedNativeVFlip
+        ? "vec2(pica_texcoord0.x / pica_texcoord0_w, 1.0 - pica_texcoord0.y / pica_texcoord0_w)"
+        : "vec2(pica_texcoord" + coordinate + ".x, 1.0 - pica_texcoord" + coordinate + ".y)";
+    PicaPbrShader result;
+    result.Declarations = kPbrDeclarations;
+    if (options.SeamSoftening) result.Declarations += PicaPbrSeamShaderLibrary();
+    if (options.NativeFragmentLighting && options.NativeAttenuationLuts) {
+        result.Declarations += kPbrNativeSpot;
+    }
+    // TEV receives unlit color, not the diffuse material coefficient. Diffuse
+    // and ambient coefficients belong to their respective lighting terms;
+    // an ambient-only material may legitimately have a black diffuse term.
+    result.UnlitInputs = kPbrUnlitPrimary;
+    if (options.NativeFragmentLighting) {
+        result.UnlitInputs += kPbrNativeUnlit;
+    }
+    const std::string nativeCoordinate = "pica_texcoord" + coordinate;
+    result.UnlitInputs += "\n    vec2 pbr_native_coordinate = " + nativeCoordinate + ";\n"
+                          "    vec2 pbr_native_uv = " + uv + ";\n";
+    result.UnlitInputs += kPbrFrame;
+    // Shadow only the typed coordinate used by this material, never edit the
+    // canonical shader. The native-alpha replay restores the original input.
+    result.UnlitInputs += "    vec2 " + nativeCoordinate + " = pbr_native_coordinate;\n"
+                          "    if (pbr_relief && any(notEqual(pbr_uv, pbr_native_uv))) " +
+                          nativeCoordinate + " = vec2(pbr_uv.x, 1.0 - pbr_uv.y)";
+    if (sample->Operation == PicaTextureCoordinateOperation::ProjectedNativeVFlip)
+        result.UnlitInputs += " * pica_texcoord0_w";
+    result.UnlitInputs += ";\n";
+    result.NativeCoordinates = "        vec2 " + nativeCoordinate + " = pbr_native_coordinate;\n";
+    if (options.SeamSoftening) result.UnlitInputs += kPbrSeamInputs;
+    result.ShadingBody = kPbrShadingNormal;
+    if (options.SeamSoftening) result.ShadingBody += kPbrSeamShading;
+    result.ShadingBody += kPbrShadingMaterial;
+    if (options.SeamSoftening) result.ShadingBody += kPbrSeamEmission;
+    result.ShadingBody += kPbrShadingAccumulators;
+    result.ShadingBody += options.NativeFragmentLighting
+        ? kPbrUnlitReferenceNative
+        : kPbrUnlitReferenceSurface;
+    result.ShadingBody += kPbrNativeFlags;
+    if (options.NativeFragmentLighting) {
+        result.ShadingBody += kPbrNativeLoopBegin;
+        if (options.NativeAttenuationLuts) {
+            result.ShadingBody += kPbrNativeAttenuation;
+        }
+        result.ShadingBody += kPbrNativeLoopEnd;
+    } else {
+        result.ShadingBody += kPbrSurfaceLoop;
+    }
+    result.ShadingBody += kPbrShadingEnd;
+    result.DiagnosticOutput = kPbrDiagnostic;
     return result;
 }
 

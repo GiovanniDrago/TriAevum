@@ -1,7 +1,10 @@
 // Developer-only title build from original SHBIN output tables. No capture input.
 #include "oot3d_native_pica_shader_gen.h"
 #include "oot3d_native_vertex_binaries.h"
+#include "fast/oot3d/pica_directional_shadow_caster.h"
 #include "fast/oot3d/pica_rigid_motion.h"
+#include "fast/renderer/pass_shader_artifact.h"
+#include "fast/renderer3ds/pica_surface_lighting_shader.h"
 #include <shaderc/shaderc.hpp>
 #include <algorithm>
 #include <fstream>
@@ -17,17 +20,45 @@ static void Check(bool ok, const std::string& message) { if (!ok) throw std::run
 int main(int argc, char** argv) try {
     Check(argc >= 3, "usage: build_vertex_artifacts output.h|--check input.shbin [...]");
     const bool check = std::string_view(argv[1]) == "--check";
-    std::ostringstream output, table;
+    std::ostringstream output, table, passes;
     output << "// Generated translated OOT3D title vertex SPIR-V. Not title-neutral code.\n"
               "// Source: original SHBIN interfaces + maintained GLSL wrapper and translated body.\n"
               "// Citra/Azahar translator donor: GPL-2.0-or-later; preserve donor notices.\n"
               "#pragma once\n#include \"fast/renderer3ds/pica_vertex_artifact.h\"\n"
+              "#include \"fast/renderer/pass_shader_artifact.h\"\n"
               "namespace Oot3dNativeGame {\n";
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_1);
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
-    unsigned modules = 0;
+    unsigned modules = 0, passModules = 0;
+    // Pass programs derived from the title's vertex programs (shadow casters,
+    // surface lighting): the pass compiler's Vulkan 1.2 target.
+    const auto emitPass = [&](const std::string& source) {
+        shaderc::CompileOptions passOptions;
+        passOptions.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
+        passOptions.SetOptimizationLevel(shaderc_optimization_level_performance);
+        const auto spirv = compiler.CompileGlslToSpv(source, shaderc_vertex_shader, "title_pass", passOptions);
+        Check(spirv.GetCompilationStatus() == shaderc_compilation_status_success, spirv.GetErrorMessage());
+        if (check) {
+            const auto stored = Fast::Renderer::FindPassShaderArtifact(
+                kTitlePassArtifacts, source, Fast::Renderer::SpirvStage::Vertex, {});
+            Check(stored.size() == size_t(spirv.cend() - spirv.cbegin()) &&
+                      std::equal(stored.begin(), stored.end(), spirv.cbegin()),
+                  "missing/stale title pass program");
+        }
+        Check(source.find(")passsrc\"") == std::string::npos, "raw source delimiter collision");
+        output << "inline constexpr uint32_t kTitlePassSpirv" << passModules << "[] = {\n";
+        unsigned column = 0;
+        for (uint32_t w : spirv) {
+            output << "0x" << std::hex << w << "U,";
+            if (++column % 12 == 0) output << '\n';
+        }
+        output << std::dec << "\n};\n";
+        passes << "Fast::Renderer::PassShaderArtifact{Fast::Renderer::SpirvStage::Vertex,R\"passsrc(" << source
+               << ")passsrc\",{},kTitlePassSpirv" << passModules << ",2},\n";
+        ++passModules;
+    };
     const auto emitVertex = [&](const std::string& source) {
         const auto spirv = compiler.CompileGlslToSpv(source, shaderc_vertex_shader, "native_vertex", options);
         Check(spirv.GetCompilationStatus() == shaderc_compilation_status_success, spirv.GetErrorMessage());
@@ -141,15 +172,34 @@ int main(int argc, char** argv) try {
                     translated.Source, translated.StateKey, view, temporalOutputs, true);
                 if (surface.Applied && surface.SurfaceApplied) emitVertex(surface.Source);
             }
+            // The passes derive from the program and its typed hooks exactly
+            // as they do at draw time; a program a pass rejects at draw time
+            // (no caster or lighting contract) has none.
+            const auto directional = Fast::Oot3d::BuildPicaDirectionalShadowCasterShader(
+                translated.Source, translated.StateKey, temporalProgram.Hooks);
+            if (directional.Applied()) emitPass(directional.Source);
+            const auto point = Fast::Oot3d::BuildPicaPointShadowCasterShader(
+                translated.Source, translated.StateKey, temporalProgram.Hooks);
+            if (point.Applied()) emitPass(point.Source);
+            for (bool surfaceLighting : {false, true}) {
+                const auto lighting = Fast::Renderer3ds::BuildPicaSurfaceLightingVertexShader(
+                    translated.Source, temporalProgram.Hooks, surfaceLighting);
+                if (!lighting.empty()) emitPass(lighting);
+            }
+            std::cout << "title_pass_derivations directional=" << directional.Applied()
+                      << " point=" << point.Applied() << '\n';
         }
     }
     output << "inline const Fast::Renderer3ds::PicaVertexArtifact kTitleVertexArtifacts[] = {\n"
-           << table.str() << "};\n} // namespace Oot3dNativeGame\n";
+           << table.str() << "};\n"
+           << "inline const Fast::Renderer::PassShaderArtifact kTitlePassArtifacts[] = {\n"
+           << passes.str() << "};\n} // namespace Oot3dNativeGame\n";
     if (check) {
         Check(modules == std::size(kTitleVertexArtifacts), "compiled vertex family coverage changed");
+        Check(passModules == std::size(kTitlePassArtifacts), "title pass program coverage changed");
     } else {
         std::ofstream file(argv[1],std::ios::binary|std::ios::trunc);
         Check(bool(file) && bool(file << output.str()), "cannot write vertex artifacts");
     }
-    std::cout << "native_vertex_artifacts=" << modules << '\n';
+    std::cout << "native_vertex_artifacts=" << modules << " title_pass_artifacts=" << passModules << '\n';
 } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

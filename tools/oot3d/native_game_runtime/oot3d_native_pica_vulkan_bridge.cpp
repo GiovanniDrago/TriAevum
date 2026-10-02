@@ -12,6 +12,9 @@ namespace Oot3dNativeGame {
 std::span<const Fast::Renderer3ds::PicaVertexArtifact> NativePicaVertexProgramFamily() {
     return kTitleVertexArtifacts;
 }
+std::span<const Fast::Renderer::PassShaderArtifact> NativePicaTitlePassPrograms() {
+    return kTitlePassArtifacts;
+}
 namespace {
 
 template <typename Destination, typename Source>

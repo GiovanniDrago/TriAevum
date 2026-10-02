@@ -638,6 +638,7 @@ void AttachOot3dPicaRestoredUberFragment(Oot3dPicaVulkanDrawPlan& plan) {
         std::shared_ptr<const std::string> Source;
         uint64_t StateKey = 0;
         Oot3d::Renderer::PicaShaderSourceIdentity Identity;
+        Oot3d::Renderer::PicaShaderHookLayout Hooks;
     };
     // Four immutable programs, generated once on first use.
     static const std::array<Base, 4> bases = [] {
@@ -648,6 +649,7 @@ void AttachOot3dPicaRestoredUberFragment(Oot3dPicaVulkanDrawPlan& plan) {
                 continue;
             result[index].StateKey = generated.StateKey;
             result[index].Identity = generated.SourceIdentity;
+            result[index].Hooks = generated.Hooks;
             result[index].Source = std::make_shared<const std::string>(std::move(generated.Source));
         }
         return result;
@@ -658,7 +660,7 @@ void AttachOot3dPicaRestoredUberFragment(Oot3dPicaVulkanDrawPlan& plan) {
     if (base.Source == nullptr) return;
     plan.UberFragmentShader.StateKey = base.StateKey;
     plan.UberFragmentShader.SourceIdentity = base.Identity;
-    plan.UberFragmentShader.Hooks = {};
+    plan.UberFragmentShader.Hooks = base.Hooks;
     plan.SharedUberFragmentShaderSource = base.Source;
 }
 

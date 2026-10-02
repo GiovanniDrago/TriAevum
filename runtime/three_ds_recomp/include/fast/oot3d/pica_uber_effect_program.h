@@ -28,14 +28,20 @@ struct PicaUberEffectProgramRequest {
     // and the surface normal and tint (9, 10).
     bool TemporalInputs = false;
     bool SurfaceInputs = false;
+    // Fragment primitive IDs exist (PBR seam softening). Surface programs
+    // come in both forms; a device without the capability never sees one
+    // that declares them.
+    bool PrimitiveIds = false;
 };
 
 // Empty when the base lacks a hook the composition needs.
 [[nodiscard]] std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& request);
 
-// Whether the superset implements every branch of decisions; a draw whose
-// decisions it does not cover keeps only its specialized program.
-[[nodiscard]] bool PicaUberEffectSupports(const PicaEffectDecisions& decisions) noexcept;
+// Whether the program the request describes implements every branch of
+// decisions; a draw whose decisions it does not cover keeps only its
+// specialized program.
+[[nodiscard]] bool PicaUberEffectSupports(
+    const PicaEffectDecisions& decisions, const PicaUberEffectProgramRequest& request) noexcept;
 
 // std140 block at kPicaUberEffectBinding: the toon parameters (as packed by
 // PackToonSurfaceParameters) followed by the decisions.

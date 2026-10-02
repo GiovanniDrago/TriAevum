@@ -34,6 +34,11 @@
 // inputs and terms of the estimate.
 
 namespace Fast::Immerse {
+
+std::array<std::string, 6> BuildMxaoPassShaders(std::string_view debugLibrary) {
+    return {BuildMxaoDeinterleaveShader(), BuildMxaoOcclusionShader(), BuildMxaoFilterShader(false),
+            BuildMxaoFilterShader(true), BuildMxaoTemporalShader(), BuildMxaoDebugShader(debugLibrary)};
+}
 namespace {
 constexpr const char* kCommon = R"glsl(#version 450
 layout(set=0,binding=0) uniform texture2D native_depth;

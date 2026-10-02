@@ -12,6 +12,8 @@
 #include "fast/oot3d/pica_toon_fragment_binaries.h"
 #include "fast/oot3d/pica_uber_effect_program.h"
 #include "fast/oot3d/pica_uber_fragment_binaries.h"
+#include "fast/oot3d/pica_caster_fragment_binaries.h"
+#include "fast/renderer/pass_shader_artifact.h"
 #include "fast/oot3d/pica_nri_shader_contract.h"
 #include <shaderc/shaderc.hpp>
 #include <cstdlib>
@@ -47,6 +49,63 @@ static void ConfigureTemporal(Fast::Oot3d::PicaFragmentInstrumentationRequest& r
 // structural configuration (lighting, integer texture 0) and vertex interface
 // (temporal clip, surface normal and tint). Shadow-buffer draws keep the
 // native family. NRI separate-sampler interface only.
+// Alpha-tested shadow casters of the parametric bases: the map discards the
+// fragments the native draw discards with the parametric TEV and alpha test,
+// one program per base. Pass compiler target (Vulkan 1.2).
+static int BuildCasterFamily(int argc, char** argv) {
+    Check(argc == 2, "usage: build_fragment_artifacts --casters output.h | --check");
+    const bool verify = std::string_view(argv[1]) == "--check";
+    shaderc::Compiler compiler;
+    shaderc::CompileOptions options;
+    options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
+    options.SetOptimizationLevel(shaderc_optimization_level_performance);
+    std::ostringstream output, table;
+    output << "// Generated from maintained PICA equations (parametric bases), not captured game shaders.\n"
+              "// Regenerate with tools/renderer/tev_program/build_fragment_artifacts --casters.\n"
+              "#pragma once\n#include \"fast/renderer/pass_shader_artifact.h\"\n#include <array>\n"
+              "namespace Fast::Oot3d {\n";
+    unsigned modules = 0;
+    for (unsigned lighting = 0; lighting < 2; ++lighting)
+    for (unsigned integerTexture = 0; integerTexture < 2; ++integerTexture) {
+        Oot3dPicaGeneratedFragmentShader shader;
+        std::string error;
+        Check(GenerateOot3dPicaParametricBaseFragmentShader(lighting != 0, integerTexture != 0, shader, &error),
+              error);
+        const auto caster = Fast::Oot3d::BuildPicaShadowCasterAlphaFragmentShader(
+            shader.Source, shader.StateKey, shader.Hooks);
+        Check(caster.Applied(), "parametric alpha caster derivation failed");
+        const auto compiled = compiler.CompileGlslToSpv(caster.Source, shaderc_fragment_shader,
+                                                       "alpha_caster", options);
+        Check(compiled.GetCompilationStatus() == shaderc_compilation_status_success, compiled.GetErrorMessage());
+        if (verify) {
+            const auto stored = Fast::Renderer::FindPassShaderArtifact(
+                Fast::Oot3d::kCasterFragmentArtifacts, caster.Source, Fast::Renderer::SpirvStage::Fragment, {});
+            Check(stored.size() == size_t(compiled.cend() - compiled.cbegin()) &&
+                      std::equal(stored.begin(), stored.end(), compiled.cbegin()),
+                  "stale/missing alpha caster: regenerate with --casters");
+        }
+        output << "inline constexpr uint32_t kCasterFragmentSpirv" << modules << "[] = {\n";
+        unsigned column = 0;
+        for (auto word : compiled) {
+            output << "0x" << std::hex << word << "U,";
+            if (++column % 12 == 0) output << '\n';
+        }
+        output << std::dec << "\n};\n";
+        Check(caster.Source.find(")passsrc\"") == std::string::npos, "raw source delimiter collision");
+        table << "Renderer::PassShaderArtifact{Renderer::SpirvStage::Fragment,R\"passsrc(" << caster.Source
+              << ")passsrc\",{},kCasterFragmentSpirv" << modules << ",2},\n";
+        ++modules;
+    }
+    output << "inline const std::array<Renderer::PassShaderArtifact, " << modules
+           << "> kCasterFragmentArtifacts{{\n" << table.str() << "}};\n}\n";
+    if (!verify) {
+        std::ofstream file(argv[1], std::ios::binary | std::ios::trunc);
+        Check(bool(file) && bool(file << output.str()), "cannot write caster artifacts");
+    }
+    std::cout << "caster_fragment_artifacts=" << modules << '\n';
+    return 0;
+}
+
 static int BuildUberFamily(int argc, char** argv) {
     const bool verify = argc == 2 && std::string_view(argv[1]) == "--check";
     const bool countOnly = argc == 2 && std::string_view(argv[1]) == "--count";
@@ -66,10 +125,11 @@ static int BuildUberFamily(int argc, char** argv) {
         std::string error;
         Check(GenerateOot3dPicaParametricBaseFragmentShader(lighting != 0, integerTexture != 0, shader, &error),
               error);
+        // Surface programs with and without fragment primitive IDs (PBR seams).
         for (unsigned temporal = 0; temporal < 2; ++temporal)
-        for (unsigned surface = 0; surface < 2; ++surface) {
+        for (unsigned surface = 0; surface < 3; ++surface) {
             const auto uber = Fast::Oot3d::BuildPicaUberEffectProgram({shader.Source, shader.Hooks,
-                temporal != 0, surface != 0});
+                temporal != 0, surface != 0, surface == 2});
             Check(!uber.empty(), "uber effect composition rejected a parametric base");
             const auto nri = Fast::Oot3d::BuildPicaNriFragmentShaderVariant(uber);
             Check(nri.Applied, nri.Error);
@@ -101,7 +161,7 @@ static int BuildUberFamily(int argc, char** argv) {
             ++modules;
         }
     }
-    Check(modules == 16U, "unexpected uber effect family size");
+    Check(modules == 24U, "unexpected uber effect family size");
     if (countOnly || verify) {
         std::cout << "uber_fragment_artifacts=" << modules << '\n';
         return 0;
@@ -116,6 +176,7 @@ static int BuildUberFamily(int argc, char** argv) {
 
 int main(int argc, char** argv) try {
     if (argc > 1 && std::string_view(argv[1]) == "--uber") return BuildUberFamily(argc - 1, argv + 1);
+    if (argc > 1 && std::string_view(argv[1]) == "--casters") return BuildCasterFamily(argc - 1, argv + 1);
     const bool temporal = argc > 1 && std::string_view(argv[1]) == "--temporal";
     const bool toon = argc > 1 && std::string_view(argv[1]) == "--toon";
     if (temporal || toon) { --argc; ++argv; }

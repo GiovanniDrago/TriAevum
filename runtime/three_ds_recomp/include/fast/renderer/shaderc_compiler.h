@@ -5,6 +5,7 @@
 #include <span>
 
 namespace Fast::Renderer {
+struct PassShaderArtifact;
 // Hashes the loaded compiler and its shader-tool dependencies once per process.
 // Empty means provenance was unavailable: compile normally, without disk reuse.
 const std::string& ShadercCompilerContract();
@@ -24,8 +25,12 @@ class CachedPassShaderCompiler {
     SpirvCacheStats Stats() const;
     bool Enabled() const;
     uint64_t BuiltinArtifactHits() const { return mBuiltinArtifactHits; }
+    // Programs built with a title or effect family (derived from its own
+    // programs at development time), consulted after the built-in catalogue.
+    void AddArtifacts(std::span<const PassShaderArtifact> artifacts);
   private:
     std::filesystem::path mDirectory;
+    std::vector<std::pair<const PassShaderArtifact*, size_t>> mArtifacts;
     std::map<std::string, SpirvCache> mVariants;
     uint64_t mBuiltinArtifactHits = 0;
 };

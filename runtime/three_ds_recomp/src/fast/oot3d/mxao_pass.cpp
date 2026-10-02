@@ -7,6 +7,8 @@
 #include "fast/oot3d/temporal_history_manager.h"
 #ifdef ENABLE_OOT3D_IMMERSE
 #include "fast/immerse/mxao_shader.h"
+#include "fast/immerse/mxao_pass_binaries.h"
+#include "fast/renderer/pass_shader_artifact.h"
 #endif
 #if defined(ENABLE_OOT3D_NRI) && defined(ENABLE_OOT3D_IMMERSE)
 #include "nri_interop_internal.h"
@@ -149,15 +151,16 @@ bool MxaoPass::Initialize(VkPhysicalDevice physical, VkDevice device, NriInterop
         layout.flags = nri::PipelineLayoutBits::IGNORE_GLOBAL_SPIRV_OFFSETS;
         if (mImpl->Core->CreatePipelineLayout(*nriDevice, layout, mImpl->Layout) != nri::Result::SUCCESS)
             throw std::runtime_error("MXAO pipeline layout failed");
-        const std::array<std::string, kProgramCount> sources{
-            Immerse::BuildMxaoDeinterleaveShader(), Immerse::BuildMxaoOcclusionShader(),
-            Immerse::BuildMxaoFilterShader(false), Immerse::BuildMxaoFilterShader(true),
-            Immerse::BuildMxaoTemporalShader(), Immerse::BuildMxaoDebugShader(AmbientOcclusionDebugShaderLibrary()) };
+        const auto sources = Immerse::BuildMxaoPassShaders(AmbientOcclusionDebugShaderLibrary());
+        static_assert(std::tuple_size_v<decltype(sources)> == kProgramCount);
         constexpr std::array<const char*, kProgramCount> names{
             "immerse_mxao_deinterleave.comp", "immerse_mxao_occlusion.comp", "immerse_mxao_filter.comp",
             "immerse_mxao_resolve.comp", "immerse_mxao_temporal.comp", "immerse_mxao_debug.comp" };
         for (size_t i = 0; i < sources.size(); ++i) {
-            const auto spirv = interop.Shaders().Resolve(sources[i], Renderer::SpirvStage::Compute, names[i]);
+            const auto builtin = Renderer::FindPassShaderArtifact(
+                Immerse::kMxaoPassArtifacts, sources[i], Renderer::SpirvStage::Compute, {});
+            const auto spirv = !builtin.empty() ? std::vector<uint32_t>(builtin.begin(), builtin.end())
+                : interop.Shaders().Resolve(sources[i], Renderer::SpirvStage::Compute, names[i]);
             nri::ComputePipelineDesc pipeline{};
             pipeline.pipelineLayout = mImpl->Layout;
             pipeline.shader.stage = nri::StageBits::COMPUTE_SHADER;

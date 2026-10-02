@@ -2,8 +2,10 @@
 
 #include "fast/oot3d/pica_directional_shadow_lighting.h"
 #include "fast/oot3d/pica_reactive_mask.h"
+#include "fast/oot3d/pica_shader_instrumentation.h"
 #include "fast/oot3d/pica_toon_shader.h"
 #include "fast/renderer3ds/pica_material_guide.h"
+#include "fast/renderer3ds/pica_pbr_shading.h"
 #include "fast/renderer3ds/pica_surface_lighting.h"
 #include "fast/renderer3ds/point_shadow_map.h"
 
@@ -14,6 +16,7 @@ namespace {
 
 using Decision = PicaEffectDecisions;
 using ::Oot3d::Renderer::PicaShaderHook;
+using ::Oot3d::Renderer::PicaShaderSemantic;
 
 constexpr unsigned kNormalShift = kPicaUberNormalShift, kNormalAtShift = kPicaUberNormalAtShift,
                    kMaterialAtShift = kPicaUberMaterialAtShift, kCoverageShift = kPicaUberCoverageShift,
@@ -34,15 +37,46 @@ std::string Guarded(const std::string& condition, std::string_view body) {
     return "    if (" + condition + ") {\n" + std::string(body) + "    }\n";
 }
 
+// What the base program provides to the branches.
+struct BaseCapabilities {
+    bool MaterialNormal = false;
+    bool NativeLighting = false;
+    bool IntegerTexture0 = false;
+    bool AmbientResponse = false;
+    bool ExplicitDepth = false;
+};
+
+BaseCapabilities Capabilities(const PicaUberEffectProgramRequest& request,
+                              const ::Oot3d::Renderer::PicaShaderHookLayout& hooks) {
+    const auto& source = request.BaseSource;
+    return {
+        hooks.Has(PicaShaderSemantic::MaterialNormal),
+        source.find("pica_lighting_lut_unsigned") != std::string_view::npos &&
+            source.find("pica_shadow_factor") != std::string_view::npos,
+        source.find("usampler2D pica_texture0") != std::string_view::npos,
+        hooks.Has(PicaShaderSemantic::AmbientOcclusionResponse),
+        source.find("gl_FragDepth = pica_depth;") != std::string_view::npos,
+    };
+}
+
+Renderer3ds::PicaPbrUberControls PbrControls() {
+    return {Bit(Decision::Pbr), "(oot3d_uber.control.z & 3u)", "((oot3d_uber.control.z & 4u) != 0u)",
+            "((oot3d_uber.control.z & 8u) != 0u)", "((oot3d_uber.control.z & 16u) != 0u)",
+            "((oot3d_uber.control.z & 32u) != 0u)"};
+}
+
 // Branches whose identifiers the base or the variant does not declare are
-// unreachable there and omitted.
+// unreachable there and omitted (PicaUberEffectSupports).
 std::string NormalWrite(bool surfaceInputs, bool materialNormal) {
-    const std::string native_view = "oot3d_normal_guide_surface(pica_normquat, pica_view)";
+    const std::string native_view(kNativeViewNormalFromDerivatives);
     const std::string native_rotate = "oot3d_normal_guide_rotate_z(pica_normquat)";
     std::string out;
-    if (surfaceInputs)
+    if (surfaceInputs) {
+        out += Guarded(Is(kNormalShift, Decision::NormalPath::Pbr),
+                       "    pica_normal_guide = vec4(pbr_normal * 0.5 + 0.5, 1.0);\n");
         out += Guarded(Is(kNormalShift, Decision::NormalPath::Surface),
                        "    pica_normal_guide = vec4(pica_surface_unit(pica_surface_normal) * 0.5 + 0.5, 1.0);\n");
+    }
     if (materialNormal)
         out += Guarded(Is(kNormalShift, Decision::NormalPath::Material),
                        "    pica_normal_guide = vec4(normal * 0.5 + 0.5, 1.0);\n");
@@ -67,16 +101,6 @@ vec3 oot3d_normal_guide_rotate_z(vec4 q) {
                 1.0 - 2.0 * (q.x * q.x + q.y * q.y));
 }
 
-vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
-    // Vertex-lit PICA programs can disable the normal-quaternion output.
-    // Their view vector still describes geometry in the same camera basis.
-    vec3 geometric = cross(dFdx(to_eye), dFdy(to_eye));
-    float area = dot(geometric, geometric);
-    if (dot(q, q) >= 0.000001) return oot3d_normal_guide_rotate_z(q);
-    if (area <= 1.0e-20) return vec3(0.0, 0.0, 1.0);
-    geometric *= inversesqrt(area);
-    return dot(geometric, to_eye) < 0.0 ? -geometric : geometric;
-}
 )glsl";
 
 constexpr std::string_view kTypedNormalHelper = R"glsl(
@@ -108,12 +132,61 @@ std::string MaterialBaseline(Decision::MaterialWriter at) {
                    "    pica_material_guide = vec4(0.0); // OOT3D material guide baseline\n");
 }
 
+// AO texture relief with the unit and coordinate as data: the specialized
+// taps per unit, the values the bend reads declared at main scope.
+std::string ReliefPrologue(bool integerTexture0) {
+    std::string hoisted, units;
+    const std::initializer_list<std::string_view> outputs{
+        "oot3d_relief_slope", "oot3d_relief_dpdx", "oot3d_relief_dpdy", "oot3d_relief_duvdx", "oot3d_relief_duvdy"};
+    for (unsigned unit = integerTexture0 ? 1U : 0U; unit < 3U; ++unit) {
+        std::string discarded;
+        const auto taps = Renderer3ds::HoistPicaGlslDeclarations(
+            PicaTextureReliefPrologue(std::to_string(unit), "oot3d_relief_coordinate"), outputs,
+            hoisted.empty() ? hoisted : discarded);
+        units += (unit == (integerTexture0 ? 1U : 0U) ? "        if" : "        else if");
+        units += " ((oot3d_uber.control.w & 3u) == " + std::to_string(unit) + "u) {\n" + taps + "        }\n";
+    }
+    return "\n    // OOT3D_AO_TEXTURE_RELIEF\n" + hoisted +
+        Guarded(Bit(Decision::Relief),
+                "    uint oot3d_relief_index = (oot3d_uber.control.w >> 2u) & 3u;\n"
+                "    vec2 oot3d_relief_coordinate = oot3d_relief_index == 0u ? pica_texcoord0 :\n"
+                "        oot3d_relief_index == 1u ? pica_texcoord1 : pica_texcoord2;\n" + units);
+}
+
 } // namespace
 
-bool PicaUberEffectSupports(const PicaEffectDecisions& decisions) noexcept {
-    return !decisions.Has(Decision::Pbr) && !decisions.Has(Decision::Relief) &&
-           !decisions.Has(Decision::ReflectionPbr) &&
-           !(decisions.Has(Decision::AmbientGuide) && decisions.Ambient == Decision::AmbientPath::Exact);
+bool PicaUberEffectSupports(const PicaEffectDecisions& decisions,
+                            const PicaUberEffectProgramRequest& request) noexcept {
+    const auto& hooks = request.BaseHooks;
+    if (!hooks.ValidFor(request.BaseSource)) return false;
+    const auto base = Capabilities(request, hooks);
+    const bool surface = request.SurfaceInputs;
+    constexpr uint32_t surfaceBits = Decision::SurfaceLighting | Decision::Pbr | Decision::AlbedoReplay |
+        Decision::DirectionalShadow | Decision::PointShadow | Decision::ReflectionPbr | Decision::EnvironmentMix;
+    if (!surface && (decisions.Bits & surfaceBits) != 0U) return false;
+    if (!request.TemporalInputs &&
+        (decisions.Has(Decision::RigidMotion) || decisions.Has(Decision::SceneTransparentRigid)))
+        return false;
+    if (decisions.Has(Decision::ExplicitDepth) != base.ExplicitDepth) return false;
+    if (decisions.Has(Decision::NormalGuide)) {
+        const auto path = decisions.Normal;
+        if (!surface && (path == Decision::NormalPath::Pbr || path == Decision::NormalPath::Surface ||
+                         path == Decision::NormalPath::Typed))
+            return false;
+        if (!base.MaterialNormal && path == Decision::NormalPath::Material) return false;
+    }
+    if (decisions.Has(Decision::ToonMaterialPath) && !base.MaterialNormal) return false;
+    if (decisions.Has(Decision::AlbedoGuide) && !surface && decisions.Albedo != Decision::AlbedoPath::Zero)
+        return false;
+    if (decisions.Has(Decision::AmbientGuide) &&
+        ((decisions.Ambient == Decision::AmbientPath::Pbr && !surface) ||
+         (decisions.Ambient == Decision::AmbientPath::Exact && !base.AmbientResponse)))
+        return false;
+    if (decisions.Has(Decision::Pbr) &&
+        ((decisions.PbrNativeLighting && !base.NativeLighting) || (decisions.PbrSeams && !request.PrimitiveIds)))
+        return false;
+    if (decisions.Has(Decision::Relief) && decisions.ReliefUnit == 0U && base.IntegerTexture0) return false;
+    return true;
 }
 
 PicaUberEffectBlock PackPicaUberEffectBlock(const PicaEffectDecisions& decisions,
@@ -153,10 +226,13 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
     if (!(global <= prologue && prologue <= lighting && lighting <= afterTev && afterTev <= beforeDepth &&
           beforeDepth <= epilogue && epilogue <= source.size()))
         return {};
-    const bool materialNormal = hooks.Has(::Oot3d::Renderer::PicaShaderSemantic::MaterialNormal);
-    const bool explicitDepth = source.find("gl_FragDepth = pica_depth;") != std::string_view::npos;
-    const std::string depth = explicitDepth ? "gl_FragDepth" : "gl_FragCoord.z";
+    const auto base = Capabilities(request, hooks);
+    const bool surface = request.SurfaceInputs;
+    const std::string depth = base.ExplicitDepth ? "gl_FragDepth" : "gl_FragCoord.z";
     const std::string tev(source.substr(lighting, afterTev - lighting));
+    const auto pbr = surface
+        ? Renderer3ds::BuildPicaPbrUberShader(PbrControls(), base.NativeLighting, request.PrimitiveIds)
+        : Renderer3ds::PicaPbrUberShader{};
 
     // Declarations: every output, input and function any branch uses.
     std::string declarations = "\n// OOT3D always-available effect layer\n"
@@ -182,9 +258,11 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
         "layout(set=0,binding=15,std140) uniform Oot3dUberEffects {\n"
         "    ToonSurfaceParameters toon;\n    uvec4 control;\n    vec4 values;\n} oot3d_uber;\n";
     declarations += PicaToonUberDeclarations(block, Bit(Decision::ToonVertexLighting) + " ? 1.0 : 0.0");
+    declarations += PicaTextureReliefDeclarations("oot3d_uber.values.x");
     declarations += kNormalHelpers;
+    declarations += kNormalGuideSurfaceFromDerivatives;
     declarations += Renderer3ds::PicaMaterialGuideShaderLibrary;
-    if (request.SurfaceInputs) {
+    if (surface) {
         declarations += Renderer3ds::PicaSurfaceLightingDeclarations();
         declarations += kTypedNormalHelper;
         declarations += PicaDirectionalShadowLightingDeclarations();
@@ -203,17 +281,28 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
         declarations += "\nfloat pica_point_shadow(float slot, vec3 light_to_fragment, float radius) {\n"
                         "    return " + Bit(Decision::PointShadow) +
                         " ? pica_point_shadow_receiver(slot, light_to_fragment, radius) : 1.0;\n}\n";
+        declarations += pbr.Declarations;
     }
 
     // Insertions at the native hooks, in the specialized composition's order.
+    const std::string atPrologue = std::string(kViewDerivativesPrologue) + ReliefPrologue(base.IntegerTexture0);
     std::string atLighting;
-    if (request.SurfaceInputs) {
+    if (surface) {
         atLighting += "\n    vec4 surface_native_primary = rounded_primary_color;\n"
                       "    vec4 surface_native_fragment = primary_fragment_color;\n"
                       "    vec4 surface_native_secondary = secondary_fragment_color;\n";
-        atLighting += Guarded(Bit(Decision::SurfaceLighting), Renderer3ds::PicaSurfaceLightingBody());
+        // Writable copies of the coordinates: a material's relief moves the
+        // one it samples; the native-alpha replay restores the inputs.
+        for (char index : {'0', '1', '2'})
+            atLighting += std::string("    vec2 oot3d_native_texcoord") + index + " = pica_texcoord" + index + ";\n";
+        for (char index : {'0', '1', '2'})
+            atLighting += std::string("    vec2 pica_texcoord") + index + " = oot3d_native_texcoord" + index + ";\n";
+        atLighting += pbr.MainDeclarations;
+        atLighting += pbr.UnlitInputs;
+        atLighting += Guarded(Bit(Decision::SurfaceLighting) + " && !" + Bit(Decision::Pbr),
+                              Renderer3ds::PicaSurfaceLightingBody());
     }
-    if (materialNormal)
+    if (base.MaterialNormal)
         atLighting += Guarded(Bit(Decision::ToonMaterialPath),
             "\n    primary_fragment_color.rgb = "
             "oot3d_material_bands(primary_fragment_color.rgb, true);\n"
@@ -221,7 +310,7 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
             "oot3d_material_bands(secondary_fragment_color.rgb, false) + "
             "oot3d_material_rim(normal), 0.0, 1.0);\n");
     std::string atAfterTev;
-    if (request.SurfaceInputs) {
+    if (surface) {
         atAfterTev += Guarded(Bit(Decision::SurfaceLighting), R"glsl(
     {
         vec3 surface_lit_rgb = combiner_output.rgb;
@@ -231,7 +320,11 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
         vec4 combiner_buffer = vec4(0.0);
         vec4 next_combiner_buffer = fragment_uniforms.combiner_buffer_color;
         combiner_output = vec4(0.0);
+        vec2 pica_texcoord0 = oot3d_native_texcoord0;
+        vec2 pica_texcoord1 = oot3d_native_texcoord1;
+        vec2 pica_texcoord2 = oot3d_native_texcoord2;
 )glsl" + tev + "\n        combiner_output.rgb = surface_lit_rgb;\n    }\n");
+        atAfterTev += pbr.ShadingBody;
         atAfterTev += "\n    vec3 surface_before_fog = combiner_output.rgb;\n";
         atAfterTev += "    vec3 surface_gi_albedo = vec3(0.0);\n";
         atAfterTev += Guarded(Bit(Decision::AlbedoReplay), R"glsl(
@@ -257,26 +350,42 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
                    "    pica_fog_guide = vec4(fragment_uniforms.fog_color.rgb, fog_factor);\n");
     end += Guarded(Bit(Decision::FogGuide) + " && !" + Bit(Decision::FogGuideFactor),
                    "    pica_fog_guide = vec4(0.0, 0.0, 0.0, 1.0);\n");
-    end += "    if (" + Is(kNormalAtShift, Decision::NormalWriter::NormalGuide) + ") {\n" + NormalWrite(request.SurfaceInputs, materialNormal) + "    }\n";
-    end += "    if (" + Is(kNormalAtShift, Decision::NormalWriter::Outline) + ") {\n" + NormalWrite(request.SurfaceInputs, materialNormal) + "    }\n";
+    end += "    if (" + Is(kNormalAtShift, Decision::NormalWriter::NormalGuide) + ") {\n" +
+           NormalWrite(surface, base.MaterialNormal) + "    }\n";
+    end += "    if (" + Is(kNormalAtShift, Decision::NormalWriter::Outline) + ") {\n" +
+           NormalWrite(surface, base.MaterialNormal) + "    }\n";
     end += Guarded(Bit(Decision::Outline) + " && " + Bit(Decision::OutlineClear),
                    "    pica_outline_geometry_guide = vec4(0.0, 0.0, 0.0, 1.0);\n");
-    end += Guarded(Bit(Decision::Outline) + " && !" + Bit(Decision::OutlineClear),
+    end += Guarded(Bit(Decision::Outline) + " && !" + Bit(Decision::OutlineClear) + " && !" + Bit(Decision::Pbr),
                    "    pica_outline_geometry_guide = vec4(pica_normal_guide.rgb * 2.0 - 1.0, " + depth + ");\n");
+    if (surface)
+        end += Guarded(Bit(Decision::Outline) + " && !" + Bit(Decision::OutlineClear) + " && " + Bit(Decision::Pbr),
+                       "    pica_outline_geometry_guide = vec4(pbr_geometric_normal, " + depth + ");\n");
     {
         std::string albedo =
             "    float oot3d_albedo_coverage = " + Is(kCoverageShift, Decision::Coverage::One) + " ? 1.0 : " +
             Is(kCoverageShift, Decision::Coverage::Zero) + " ? 0.0 : clamp(pica_color.a, 0.0, 1.0);\n";
         albedo += Guarded(Is(kAlbedoShift, Decision::AlbedoPath::Zero), "    pica_diffuse_albedo_guide = vec4(0.0);\n");
-        if (request.SurfaceInputs)
+        if (surface) {
+            albedo += Guarded(Is(kAlbedoShift, Decision::AlbedoPath::Pbr),
+                "    pica_diffuse_albedo_guide = vec4((floor(clamp(pbr_linear_to_srgb(clamp(pbr_albedo, 0.0, 1.0)), "
+                "0.0, 1.0) * 255.0 + 0.5) * 256.0 + floor(clamp(pbr_linear_to_srgb(pbr_gi_radiance), 0.0, 1.0) * "
+                "255.0 + 0.5)) / 65535.0, oot3d_albedo_coverage);\n");
             albedo += Guarded(Is(kAlbedoShift, Decision::AlbedoPath::Surface),
                 "    pica_diffuse_albedo_guide = vec4((floor(surface_gi_albedo * 255.0 + 0.5) * 256.0 + "
                 "floor(clamp(surface_gi_albedo * pica_surface_gi_direct(pica_surface_unit(pica_surface_normal)), "
                 "0.0, 1.0) * 255.0 + 0.5)) / 65535.0, oot3d_albedo_coverage);\n");
+        }
         end += Guarded(Bit(Decision::AlbedoGuide), albedo);
     }
-    end += Guarded(Bit(Decision::AmbientGuide),
+    end += Guarded(Bit(Decision::AmbientGuide) + " && " + Is(kAmbientShift, Decision::AmbientPath::Fallback),
                    "\n    pica_ambient_guide = vec4(1.0, 1.0, 1.0, 1.0);\n");
+    if (surface)
+        end += Guarded(Bit(Decision::AmbientGuide) + " && " + Is(kAmbientShift, Decision::AmbientPath::Pbr),
+                       "\n    pica_ambient_guide = vec4(pbr_ao_response, 1.0);\n");
+    if (base.AmbientResponse)
+        end += Guarded(Bit(Decision::AmbientGuide) + " && " + Is(kAmbientShift, Decision::AmbientPath::Exact),
+                       "\n    pica_ambient_guide = vec4(clamp(oot3d_ao_response_rgb, vec3(0.0), vec3(1.0)), 1.0);\n");
     end += Guarded(Bit(Decision::SceneReset), "    pica_transparent_depth_guide = vec4(0.0);\n");
     {
         std::string overlay = "    float oot3d_scene_alpha = " + Bit(Decision::SceneBlended) + " ? pica_color.a : 0.0;\n";
@@ -287,9 +396,14 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
         end += Guarded(Bit(Decision::SceneOverlay), overlay);
     }
     end += MaterialBaseline(Decision::MaterialWriter::Reflection);
+    if (surface)
+        end += Guarded(Bit(Decision::Reflection) + " && " + Bit(Decision::ReflectionPbr),
+                       "    pica_material_guide = vec4(pbr_reflectivity, pbr_roughness, "
+                       "pica_encode_reflection_weight(pbr_material.specular_reflection_weight.y), 0.0);\n");
     end += Guarded(Bit(Decision::Reflection) + " && " + Bit(Decision::ReflectionExplicit),
                    "    pica_material_guide = vec4(oot3d_uber.values.y, oot3d_uber.values.z, (127.0 / 255.0), 0.0);\n");
-    end += Guarded(Bit(Decision::Reflection) + " && !" + Bit(Decision::ReflectionExplicit), kCalibratedMaterial);
+    end += Guarded(Bit(Decision::Reflection) + " && !" + Bit(Decision::ReflectionExplicit) + " && !" +
+                   Bit(Decision::ReflectionPbr), kCalibratedMaterial);
     end += MaterialBaseline(Decision::MaterialWriter::Reactive);
     {
         std::string reactive;
@@ -309,6 +423,9 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
             "        oot3d_motion = vec4(oot3d_previous_uv - oot3d_current_uv, 1.0, 1.0);\n"
             "    }\n"
             "    pica_rigid_motion_guide = vec4(oot3d_motion.xy, oot3d_motion.z, 0.0);\n");
+    // Deferred: the relief bend after every reader of the unbent guide, then
+    // the overlay's transparent depth.
+    end += Guarded(Bit(Decision::Relief), kPicaTextureReliefBend);
     {
         std::string transparent = Guarded("!" + Bit(Decision::SceneTransparentRigid),
                                           "    pica_transparent_depth_guide.rgb = vec3(0.0);\n");
@@ -316,16 +433,20 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
                        ", 0.0000152588, 1.0) : 0.0;\n";
         end += Guarded(Bit(Decision::SceneTransparentDepth), transparent);
     }
-    if (request.SurfaceInputs)
+    if (surface) {
         end += Guarded(Bit(Decision::EnvironmentMix),
                        "\n    if (pica_surface.environment_parameters.w != 0.0)\n"
                        "        pica_color.rgb = mix(surface_before_fog, pica_color.rgb, pica_surface.environment_parameters.z);\n");
+        end += Guarded(Bit(Decision::Pbr), pbr.DiagnosticOutput);
+    }
 
     std::string result;
     result.reserve(source.size() * 3 + declarations.size() + end.size());
     result.append(source.substr(0, global));
     result += declarations;
-    result.append(source.substr(global, lighting - global));
+    result.append(source.substr(global, prologue - global));
+    result += atPrologue;
+    result.append(source.substr(prologue, lighting - prologue));
     // Hook offsets follow native comments without a line break.
     result += "\n" + atLighting;
     result.append(source.substr(lighting, afterTev - lighting));

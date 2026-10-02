@@ -1302,3 +1302,76 @@ structural configuration (decisions recorded by the same instrumentation code
 that composes specialized programs), so every draw has an always-available
 program; then background part preparation, base exactness (lighting emission
 order), the pass catalogue and shadow caster programs.
+
+### Always-available effect layer, finite pass catalogue (2026-10-02)
+
+Every draw now has an always-available program (U) next to its specialized
+program (S), and U executes S's decisions:
+
+- The instrumentation that composes S records every branch it takes
+  (`PicaEffectDecisions`, including the guide outputs S declares). The superset
+  program of the draw's parametric base implements the same branches; binding 15
+  carries the decisions (4-bit enum fields) with the toon parameters. U uses S's
+  variant for everything except the program: decisions, outputs, applied
+  features and bindings. The pipeline masks the guide attachments S leaves
+  undeclared (they stay untouched, as with S).
+- The superset covers per-pixel lighting, PBR (data-driven coordinate,
+  projection, seams, native lighting and LUTs; the specialized snippets are
+  shared verbatim, cross-hook values hoisted by `HoistPicaGlslDeclarations`),
+  AO texture relief (unit, coordinate and gain as data, shared texts),
+  directional and point shadows, toon, every guide, scene domain, reflection,
+  reactive and rigid motion. 24 built-in programs: lighting x integer
+  texture 0 x temporal inputs x {no surface, surface, surface with fragment
+  primitive IDs}. `build_fragment_artifacts --uber`.
+- Plans restored from a visual savestate carry the parametric base of their
+  structural configuration (`AttachOot3dPicaRestoredUberFragment`).
+- Derivatives after the native alpha test are undefined (the quad may have
+  lost invocations), and two differently structured programs resolved them
+  differently: the native-view normal guide took `dFdx(pica_view)` in the
+  epilogue. Both programs now take the view derivatives at the main prologue
+  (`kViewDerivativesPrologue`), which also makes S defined at alpha-tested edges.
+- Startup preparation runs on the preparation workers: the title vertex family,
+  the canonical bases and the superset programs this device can create. A draw
+  that needs a part being created waits for that part alone; the NRI graphics
+  pipeline library cache creates and links parts outside its lock (per-part
+  in-flight entries).
+- Fixed passes the catalogue lacked are built in (texture copy derive, GI
+  prepare, scanout orientations; MXAO in `fast/immerse` under
+  `THREE_DS_RECOMP_ENABLE_IMMERSE`, `build_pass_artifacts --immerse`). Shadow
+  caster and surface-lighting vertex programs derived from the title vertex
+  family are built with it (`kTitlePassArtifacts`, registered by the title);
+  alpha-tested casters run the parametric base (4 built-in programs,
+  `--casters`) when the draw carries its pair.
+
+Verification (parametric verification mode, U against the instrumented
+parametric program, deterministic configurations): Enhanced without grass
+(DLSS, MXAO, GI, reflections) 12/12; MXAO with renderer normals 12/12; PBR
+material pack scene (828 PBR draws) within the run-to-run noise of that scene
+(isolated single pixels also present between two runs of the same mode).
+AO texture relief is not run-to-run deterministic even between two runs of the
+same mode, so captures cannot qualify it; U runs the same shared text with the
+same decisions. The first run of a probe sequence is a pre-existing outlier:
+compare against a second run.
+
+`hybrid` is the default (`TRIAEVUM_SHADER_PREPARATION=sync` keeps draw-time
+preparation). Kokiri Enhanced walk with grass, 420 frames, no captures
+(`--timing`, pacing trace), specialized base:
+
+| run | p50 ms | p95 ms | p99 ms | >33 ms | compile waits |
+|---|---|---|---|---|---|
+| sync, warm cache | 14.88 | 22.88 | 137.8 | 11 | - |
+| hybrid, warm cache | 15.50 | 21.75 | 83.8 | 7 | 0 (U acquire max 1.0 ms) |
+| sync, empty cache | 14.38 | 28.12 | 12411 | 18 | blocking, max 12.4 s |
+| hybrid, empty cache | 18.38 | 29.62 | 228.1 | 11 | 0 S waits; one U part wait 12.4 s |
+
+Captures (cfg-enhanced-k, 12 frames) are identical between `sync` and warm
+`hybrid`. A 2.5-4.9 s frame occurs in every mode with a warm cache: it is not
+program preparation. Startup preparation (39 parts) takes about 45 s with an
+empty driver/pipeline cache on the spare cores and about 1 s warm; a superset
+part takes 5-12 s to compile cold, so a draw that needs one before it is ready
+waits for it (first launch only, when gameplay starts at once).
+
+Next: acquire U without waiting for an in-flight part (complete S instead when
+it is the shorter path) or prepare on a first-launch screen; journal/Forge seed
+of S programs; lighting emission order (1 ulp) between bases so U and S are
+bit-identical in every frame, not only after the swap.

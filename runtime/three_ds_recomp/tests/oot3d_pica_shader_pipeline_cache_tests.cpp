@@ -883,7 +883,8 @@ TEST(Oot3dPicaShaderPipelineCache, NormalGuideReadsTheAuthoredVertexNormalInEver
     EXPECT_NE(typed.VertexShaderSource.find("layout(location=9) out vec3 pica_surface_normal"), std::string::npos);
     EXPECT_NE(typed.FragmentShaderSource.find("layout(location=9) in vec3 pica_surface_normal"), std::string::npos);
     EXPECT_NE(typed.FragmentShaderSource.find(
-                  "oot3d_normal_guide_typed(pica_surface_normal, oot3d_normal_guide_surface(pica_normquat, pica_view))"),
+                  "oot3d_normal_guide_typed(pica_surface_normal, oot3d_normal_guide_surface(pica_normquat, pica_view, "
+                  "oot3d_view_dx, oot3d_view_dy))"),
               std::string::npos);
     // The native colour path is untouched.
     EXPECT_NE(typed.FragmentShaderSource.find("pica_color = combiner_output;"), std::string::npos);
@@ -899,9 +900,14 @@ TEST(Oot3dPicaShaderPipelineCache, NormalGuideReadsTheAuthoredVertexNormalInEver
     const auto& fallback = cache.Resolve(untyped, effects);
     EXPECT_FALSE(fallback.TypedNormalGuide);
     EXPECT_NE(fallback.FragmentShaderSource.find(
-                  "pica_normal_guide = vec4(oot3d_normal_guide_surface(pica_normquat, pica_view) * 0.5 + 0.5, 1.0);"),
+                  "pica_normal_guide = vec4(oot3d_normal_guide_surface(pica_normquat, pica_view, oot3d_view_dx, "
+                  "oot3d_view_dy) * 0.5 + 0.5, 1.0);"),
               std::string::npos);
     EXPECT_EQ(fallback.FragmentShaderSource.find("pica_surface_normal"), std::string::npos);
+    const size_t derivatives = fallback.FragmentShaderSource.find(kViewDerivativesPrologue);
+    ASSERT_NE(derivatives, std::string::npos);
+    EXPECT_LT(derivatives, fallback.FragmentShaderSource.find("combiner_output"));
+    EXPECT_EQ(fallback.FragmentShaderSource.find("dFdx(to_eye)"), std::string::npos);
     EXPECT_NE(fallback.FragmentShaderKey, typed.FragmentShaderKey);
 
     // Without a normal-guide reader the program stays canonical.

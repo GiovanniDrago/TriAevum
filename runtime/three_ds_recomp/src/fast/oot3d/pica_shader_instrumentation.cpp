@@ -361,6 +361,51 @@ std::string Compose(std::string_view source,
 
 } // namespace
 
+std::string PicaTextureReliefDeclarations(std::string_view gain) {
+    return R"glsl(
+// Relative contrast (log2 luminance): a dark texture's detail carries the
+// same relief as a bright one's; the offset bounds near-black texels.
+float oot3d_relief_height(vec4 texel) {
+    return log2(dot(texel.rgb, vec3(0.2126, 0.7152, 0.0722)) + 0.0625);
+}
+// Bends the guide normal against the colour texture's luminance slope (per
+// texel along the texture's u and v axes) in the surface's tangent plane.
+vec3 oot3d_relief_normal(vec3 n, vec2 slope, vec3 dpdx, vec3 dpdy, vec2 duvdx, vec2 duvdy) {
+    float determinant = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
+    float length2 = dot(n, n);
+    if (abs(determinant) <= 1.0e-20 || length2 <= 1.0e-12) return n;
+    n *= inversesqrt(length2);
+    vec3 axis_u = (dpdx * duvdy.y - dpdy * duvdx.y) * sign(determinant);
+    vec3 axis_v = (dpdy * duvdx.x - dpdx * duvdy.x) * sign(determinant);
+    axis_u -= n * dot(n, axis_u);
+    axis_v -= n * dot(n, axis_v);
+    if (dot(axis_u, axis_u) <= 1.0e-20 || dot(axis_v, axis_v) <= 1.0e-20) return n;
+    return normalize(n - )glsl" + std::string(gain) + R"glsl( *
+        (slope.x * normalize(axis_u) + slope.y * normalize(axis_v)));
+}
+)glsl";
+}
+
+std::string PicaTextureReliefPrologue(std::string_view unitText, std::string_view coordinateText) {
+    const std::string unit(unitText), coordinate(coordinateText);
+    return "    vec2 oot3d_relief_uv = vec2(" + coordinate + ".x, 1.0 - " + coordinate + ".y);\n"
+        "    vec2 oot3d_relief_size = vec2(textureSize(pica_texture" + unit + ", 0));\n"
+        "    float oot3d_relief_lod = max(pica_texture_lod(oot3d_relief_uv, oot3d_relief_size) +\n"
+        "        fragment_uniforms.texture_lod_bias[" + unit + "], 0.0);\n"
+        "    vec2 oot3d_relief_step = exp2(oot3d_relief_lod) / oot3d_relief_size;\n"
+        "    vec2 oot3d_relief_slope = 0.5 * vec2(\n"
+        "        oot3d_relief_height(textureLod(pica_texture" + unit +
+            ", oot3d_relief_uv + vec2(oot3d_relief_step.x, 0.0), oot3d_relief_lod)) -\n"
+        "        oot3d_relief_height(textureLod(pica_texture" + unit +
+            ", oot3d_relief_uv - vec2(oot3d_relief_step.x, 0.0), oot3d_relief_lod)),\n"
+        "        oot3d_relief_height(textureLod(pica_texture" + unit +
+            ", oot3d_relief_uv + vec2(0.0, oot3d_relief_step.y), oot3d_relief_lod)) -\n"
+        "        oot3d_relief_height(textureLod(pica_texture" + unit +
+            ", oot3d_relief_uv - vec2(0.0, oot3d_relief_step.y), oot3d_relief_lod)));\n"
+        "    vec3 oot3d_relief_dpdx = -dFdx(pica_view), oot3d_relief_dpdy = -dFdy(pica_view);\n"
+        "    vec2 oot3d_relief_duvdx = dFdx(oot3d_relief_uv), oot3d_relief_duvdy = dFdy(oot3d_relief_uv);\n";
+}
+
 ::Oot3d::Renderer::PicaFragmentOutputContract
 AnalyzePicaFragmentOutputContract(std::string_view source) noexcept {
     using ::Oot3d::Renderer::PicaFragmentDepthOutput;
@@ -723,8 +768,11 @@ vec3 oot3d_normal_guide_rotate_z(vec4 q) {
                 1.0 - 2.0 * (q.x * q.x + q.y * q.y));
 }
 )glsl";
+            // The view derivatives are taken before the native alpha test can
+            // end an invocation of the quad (they are undefined after it).
+            const bool prologueDerivatives = result.Hooks.Supports(PicaShaderHook::MainPrologue);
             if (result.Hooks.Has(PicaShaderSemantic::ViewVector)) {
-                declarations += R"glsl(
+                declarations += prologueDerivatives ? kNormalGuideSurfaceFromDerivatives : R"glsl(
 vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
     // Vertex-lit PICA programs can disable the normal-quaternion output.
     // Their view vector still describes geometry in the same camera basis.
@@ -736,10 +784,16 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
     return dot(geometric, to_eye) < 0.0 ? -geometric : geometric;
 }
 )glsl";
+                if (prologueDerivatives) {
+                    insertions.push_back({result.Hooks.Offset(PicaShaderHook::MainPrologue),
+                                          std::string(kViewDerivativesPrologue)});
+                    result.FragmentKey = SaltedVariantKey(result.FragmentKey, "OOT3D_NORMAL_GUIDE_VIEW_DERIVATIVES_V1");
+                }
             }
-            const std::string native = result.Hooks.Has(PicaShaderSemantic::ViewVector)
-                ? "oot3d_normal_guide_surface(pica_normquat, pica_view)"
-                : "oot3d_normal_guide_rotate_z(pica_normquat)";
+            const std::string native = !result.Hooks.Has(PicaShaderSemantic::ViewVector)
+                ? "oot3d_normal_guide_rotate_z(pica_normquat)"
+                : prologueDerivatives ? std::string(kNativeViewNormalFromDerivatives)
+                                      : "oot3d_normal_guide_surface(pica_normquat, pica_view)";
             if (typedNormal) {
                 // The authored vertex normal, interpolated like the native
                 // lighting's; the program's own quaternion or the geometric
@@ -816,54 +870,14 @@ vec3 oot3d_normal_guide_typed(vec3 authored, vec3 native_normal) {
             std::ostringstream gain;
             gain.imbue(std::locale::classic());
             gain << std::fixed << std::setprecision(6) << request.ReliefGain;
-            declarations += R"glsl(
-// Relative contrast (log2 luminance): a dark texture's detail carries the
-// same relief as a bright one's; the offset bounds near-black texels.
-float oot3d_relief_height(vec4 texel) {
-    return log2(dot(texel.rgb, vec3(0.2126, 0.7152, 0.0722)) + 0.0625);
-}
-// Bends the guide normal against the colour texture's luminance slope (per
-// texel along the texture's u and v axes) in the surface's tangent plane.
-vec3 oot3d_relief_normal(vec3 n, vec2 slope, vec3 dpdx, vec3 dpdy, vec2 duvdx, vec2 duvdy) {
-    float determinant = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
-    float length2 = dot(n, n);
-    if (abs(determinant) <= 1.0e-20 || length2 <= 1.0e-12) return n;
-    n *= inversesqrt(length2);
-    vec3 axis_u = (dpdx * duvdy.y - dpdy * duvdx.y) * sign(determinant);
-    vec3 axis_v = (dpdy * duvdx.x - dpdx * duvdy.x) * sign(determinant);
-    axis_u -= n * dot(n, axis_u);
-    axis_v -= n * dot(n, axis_v);
-    if (dot(axis_u, axis_u) <= 1.0e-20 || dot(axis_v, axis_v) <= 1.0e-20) return n;
-    return normalize(n - )glsl" + gain.str() + R"glsl( *
-        (slope.x * normalize(axis_u) + slope.y * normalize(axis_v)));
-}
-)glsl";
+            declarations += PicaTextureReliefDeclarations(gain.str());
             // Taps and derivatives come before the native alpha test can end
             // an invocation of the quad; the texture is sampled at the LOD
             // and wrap of the native sample, one texel of that LOD apart.
             insertions.push_back({result.Hooks.Offset(PicaShaderHook::MainPrologue),
-                "\n    // OOT3D_AO_TEXTURE_RELIEF\n"
-                "    vec2 oot3d_relief_uv = vec2(" + coordinate + ".x, 1.0 - " + coordinate + ".y);\n"
-                "    vec2 oot3d_relief_size = vec2(textureSize(pica_texture" + unit + ", 0));\n"
-                "    float oot3d_relief_lod = max(pica_texture_lod(oot3d_relief_uv, oot3d_relief_size) +\n"
-                "        fragment_uniforms.texture_lod_bias[" + unit + "], 0.0);\n"
-                "    vec2 oot3d_relief_step = exp2(oot3d_relief_lod) / oot3d_relief_size;\n"
-                "    vec2 oot3d_relief_slope = 0.5 * vec2(\n"
-                "        oot3d_relief_height(textureLod(pica_texture" + unit +
-                    ", oot3d_relief_uv + vec2(oot3d_relief_step.x, 0.0), oot3d_relief_lod)) -\n"
-                "        oot3d_relief_height(textureLod(pica_texture" + unit +
-                    ", oot3d_relief_uv - vec2(oot3d_relief_step.x, 0.0), oot3d_relief_lod)),\n"
-                "        oot3d_relief_height(textureLod(pica_texture" + unit +
-                    ", oot3d_relief_uv + vec2(0.0, oot3d_relief_step.y), oot3d_relief_lod)) -\n"
-                "        oot3d_relief_height(textureLod(pica_texture" + unit +
-                    ", oot3d_relief_uv - vec2(0.0, oot3d_relief_step.y), oot3d_relief_lod)));\n"
-                "    vec3 oot3d_relief_dpdx = -dFdx(pica_view), oot3d_relief_dpdy = -dFdy(pica_view);\n"
-                "    vec2 oot3d_relief_duvdx = dFdx(oot3d_relief_uv), oot3d_relief_duvdy = dFdy(oot3d_relief_uv);\n"});
+                "\n    // OOT3D_AO_TEXTURE_RELIEF\n" + PicaTextureReliefPrologue(unit, coordinate)});
             // After every reader of the unbent guide (the outline geometry).
-            deferredEpilogue +=
-                "    pica_normal_guide.rgb = oot3d_relief_normal(pica_normal_guide.rgb * 2.0 - 1.0,\n"
-                "        oot3d_relief_slope, oot3d_relief_dpdx, oot3d_relief_dpdy, oot3d_relief_duvdx,\n"
-                "        oot3d_relief_duvdy) * 0.5 + 0.5;\n";
+            deferredEpilogue += kPicaTextureReliefBend;
             decisions.Set(Decision::Relief);
             decisions.ReliefUnit = request.ReliefTexture;
             decisions.ReliefCoordinate = relief->Coordinate;

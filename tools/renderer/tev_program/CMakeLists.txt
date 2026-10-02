@@ -225,6 +225,7 @@ target_sources(build_fragment_artifacts PRIVATE
 add_test(NAME pica_fragment_artifacts COMMAND build_fragment_artifacts --check)
 add_test(NAME pica_temporal_fragment_artifacts COMMAND build_fragment_artifacts --temporal --check)
 add_test(NAME pica_toon_fragment_artifacts COMMAND build_fragment_artifacts --toon --check)
+add_test(NAME pica_uber_fragment_artifacts COMMAND build_fragment_artifacts --uber --check)
 set_tests_properties(pica_toon_fragment_artifacts PROPERTIES TIMEOUT 120)
 set_tests_properties(pica_temporal_fragment_artifacts PROPERTIES TIMEOUT 180)
 set_tests_properties(pica_fragment_artifacts PROPERTIES TIMEOUT 120)
@@ -235,7 +236,7 @@ endif()
 
 find_package(spdlog CONFIG REQUIRED)
 include("${runtime}/cmake/pass_shader_sources.cmake")
-add_executable(build_pass_artifacts build_pass_artifacts.cpp)
+add_executable(build_pass_artifacts build_pass_artifacts.cpp "${runtime}/src/fast/immerse/mxao_shader.cpp")
 triaevum_add_pass_shader_sources(build_pass_artifacts)
 target_compile_features(build_pass_artifacts PRIVATE cxx_std_20)
 target_include_directories(build_pass_artifacts PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")
@@ -245,6 +246,7 @@ if(WIN32)
         "${SHADERC_RUNTIME}" "$<TARGET_FILE_DIR:build_pass_artifacts>")
 endif()
 add_test(NAME builtin_pass_artifacts COMMAND build_pass_artifacts --check)
+add_test(NAME immerse_pass_artifacts COMMAND build_pass_artifacts --immerse --check)
 set_tests_properties(builtin_pass_artifacts PROPERTIES TIMEOUT 120)
 
 add_executable(grass_motion_gpu_tests grass_motion_gpu_tests.cpp
@@ -294,7 +296,10 @@ add_executable(build_vertex_artifacts build_vertex_artifacts.cpp
     "${runtime}/src/fast/oot3d/pica_rigid_motion.cpp"
     "${frontend}/oot3d_native_pica_shader_gen.cpp"
     "${frontend}/../third_party/azahar_pica/video_core/shader/generator/glsl_shader_decompiler.cpp"
-    "${runtime}/src/fast/renderer3ds/pica_vertex_surface.cpp")
+    "${runtime}/src/fast/renderer3ds/pica_vertex_surface.cpp"
+    "${runtime}/src/fast/oot3d/pica_directional_shadow_caster.cpp"
+    "${runtime}/src/fast/renderer3ds/pica_nri_shader_contract.cpp"
+    "${runtime}/src/fast/renderer3ds/pica_surface_lighting.cpp")
 target_compile_features(build_vertex_artifacts PRIVATE cxx_std_20)
 target_include_directories(build_vertex_artifacts PRIVATE "${frontend}" "${runtime}/include"
     "${frontend}/../third_party/azahar_pica" "${SHADERC_INCLUDE_DIR}"

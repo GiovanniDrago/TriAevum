@@ -4668,6 +4668,19 @@ bool GfxRenderingAPIVulkan::PreparePicaSequenceDraw(
             record.LightingLut = sceneLightingLut;
             record.FragmentShaderHooks = draw.FragmentShaderHooks;
             record.PackedFragmentUniforms = draw.FragmentUniformBytes;
+            // The parametric base of the always-available pair evaluates the
+            // same TEV and alpha test from the packed uniforms: its caster is
+            // one of a finite built-in family.
+            if (!draw.UberFragmentShaderSource.empty() &&
+                draw.UberFragmentShaderHooks.ValidFor(draw.UberFragmentShaderSource)) {
+                record.FragmentShaderKey = draw.UberFragmentShaderKey;
+                record.FragmentShaderSource = draw.UberFragmentShaderSource;
+                record.EffectiveFragmentShaderKey = draw.UberFragmentShaderKey;
+                record.EffectiveFragmentShaderSource = draw.UberFragmentShaderSource;
+                record.FragmentSourceIdentity = draw.UberFragmentShaderSourceIdentity;
+                record.EffectiveFragmentSourceIdentity = draw.UberFragmentShaderSourceIdentity;
+                record.FragmentShaderHooks = draw.UberFragmentShaderHooks;
+            }
         }
         const auto status = mPreparedShadowCasterFrame.Record(record);
         const bool caster = status == Oot3d::PicaSceneRecordStatus::Recorded &&
@@ -5561,30 +5574,28 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         if (selectedPipeline == nullptr && UsesAlwaysAvailablePrograms()) {
             auto unavailable = NativePicaUberUnavailable::NoParametricProgram;
             if (!draw.UberFragmentShaderSource.empty()) {
-                auto uberRequest = variantRequest;
-                uberRequest.FragmentShaderSource = draw.UberFragmentShaderSource;
-                uberRequest.FragmentShaderKey = draw.UberFragmentShaderKey;
-                uberRequest.FragmentShaderHooks = draw.UberFragmentShaderHooks;
-                uberRequest.FragmentShaderSourceIdentity = draw.UberFragmentShaderSourceIdentity;
-                const auto& uberVariant = mPicaShaderPipelineCache.Resolve(
-                    uberRequest, nativeMemoryOnly ? nativeMemoryEffects : graphicsSettings.Effects);
-                if (auto* uberProgram = ResolveUberNativePicaProgram(uberVariant, effectiveDraw, unavailable)) {
+                // The always-available program executes the specialized
+                // variant's decisions: its outputs, features and bindings
+                // stay the variant's, only the program differs.
+                if (auto* uberProgram = ResolveUberNativePicaProgram(shaderVariant, effectiveDraw, unavailable)) {
                     uberDraw = effectiveDraw;
-                    uberDraw.VertexShaderSource = uberVariant.VertexShaderSource;
-                    uberDraw.VertexShaderKey = uberVariant.VertexShaderKey;
-                    uberDraw.VertexShaderSourceIdentity = uberVariant.VertexShaderSourceIdentity;
-                    uberDraw.FragmentShaderSource = uberVariant.FragmentShaderSource;
-                    uberDraw.FragmentShaderKey = uberVariant.FragmentShaderKey;
-                    uberDraw.FragmentShaderSourceIdentity = uberVariant.FragmentShaderSourceIdentity;
+                    uberDraw.FragmentShaderSource = draw.UberFragmentShaderSource;
+                    uberDraw.FragmentShaderKey = draw.UberFragmentShaderKey;
+                    uberDraw.FragmentShaderSourceIdentity = draw.UberFragmentShaderSourceIdentity;
                     uberDraw.FragmentShaderHooks = draw.UberFragmentShaderHooks;
+                    const auto acquireStart = std::chrono::steady_clock::now();
                     auto& uberPipeline = GetOrCreateNativePicaPipeline(
-                        uberDraw, *uberProgram, uberVariant.Reactive, uberVariant.Domain,
-                        uberVariant.RequestedFeatures, uberVariant.AppliedFeatures, true, false, false,
+                        uberDraw, *uberProgram, shaderVariant.Reactive, shaderVariant.Domain,
+                        shaderVariant.RequestedFeatures, shaderVariant.AppliedFeatures, true, false, false,
                         NativePicaPipelineAcquisition::Libraries);
+                    const double acquired = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - acquireStart).count();
+                    mNativePicaPreparationCounters.UberAcquireMilliseconds += acquired;
+                    mNativePicaPreparationCounters.MaximumUberAcquireMilliseconds =
+                        std::max(mNativePicaPreparationCounters.MaximumUberAcquireMilliseconds, acquired);
                     if (mNriPicaPipelineBridge.OwnedPipelineReady(uberPipeline.Id)) {
                         selectedPipeline = &uberPipeline;
                         selectedProgram = uberProgram;
-                        selectedVariant = &uberVariant;
                         selectedDraw = &uberDraw;
                     } else {
                         unavailable = NativePicaUberUnavailable::PipelineFailed;
@@ -5603,10 +5614,17 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                         static_cast<unsigned>(draw.CompositionDomain), static_cast<unsigned>(draw.FragmentOperationMode),
                         nativeMemoryOnly ? 1U : 0U, static_cast<unsigned>(shaderVariant.RequestedFeatures));
             }
-            if (selectedPipeline == nullptr)
+            if (selectedPipeline == nullptr) {
                 ++mNativePicaPreparationCounters.UberUnavailable[static_cast<size_t>(unavailable)];
-            else
-                ++mNativePicaPreparationCounters.UberDraws;
+            } else {
+                auto& counters = mNativePicaPreparationCounters;
+                const auto& decisions = shaderVariant.Decisions;
+                ++counters.UberDraws;
+                counters.UberSurfaceDraws += decisions.Has(Oot3d::PicaEffectDecisions::SurfaceLighting) ? 1U : 0U;
+                counters.UberPbrDraws += decisions.Has(Oot3d::PicaEffectDecisions::Pbr) ? 1U : 0U;
+                counters.UberReliefDraws += decisions.Has(Oot3d::PicaEffectDecisions::Relief) ? 1U : 0U;
+                counters.UberToonDraws += decisions.Has(Oot3d::PicaEffectDecisions::Toon) ? 1U : 0U;
+            }
         }
         if (selectedPipeline == nullptr) {
             const auto completionStart = std::chrono::steady_clock::now();
@@ -5623,7 +5641,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 mNativePicaPreparationCounters.MaximumCompleteMilliseconds =
                     std::max(mNativePicaPreparationCounters.MaximumCompleteMilliseconds, milliseconds);
             }
-        } else if (selectedVariant == &shaderVariant) {
+        } else if (selectedProgram == &shaderIt->second) {
             ++mNativePicaPreparationCounters.SpecializedDraws;
         }
         mDiagnostics.RecordNriPicaShaderContract(

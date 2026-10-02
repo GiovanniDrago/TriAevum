@@ -1,6 +1,7 @@
 #pragma once
 
 #include "oot3d/renderer/pica_render_backend.h"
+#include "fast/renderer/pass_shader_artifact.h"
 #include "oot3d_native_pica_submission.h"
 #include "oot3d_native_pica_vulkan_plan.h"
 
@@ -8,6 +9,8 @@
 
 namespace Oot3dNativeGame {
 std::span<const Fast::Renderer3ds::PicaVertexArtifact> NativePicaVertexProgramFamily();
+// Shadow-caster and surface-lighting vertex programs derived from the family.
+std::span<const Fast::Renderer::PassShaderArtifact> NativePicaTitlePassPrograms();
 
 struct Oot3dPicaVulkanDrawBridgeTiming {
     double UniformPackingSeconds = 0.0;

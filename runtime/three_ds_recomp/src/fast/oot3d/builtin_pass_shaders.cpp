@@ -1,4 +1,5 @@
 #include "fast/oot3d/builtin_pass_shaders.h"
+#include "fast/oot3d/brixelizer_gi_prepare_shader.h"
 #include "fast/oot3d/grass_shader_sources.h"
 #include "fast/oot3d/hiz_depth_pyramid.h"
 #include "fast/oot3d/hiz_reflection.h"
@@ -16,6 +17,7 @@
 #include "fast/oot3d/native_ui_overlay.h"
 #include "fast/renderer/gtao_shader.h"
 #include "fast/renderer3ds/pica_surface_lighting_shader.h"
+#include "fast/renderer3ds/pica_texture_copy_derive_gpu.h"
 
 namespace Fast::Oot3d {
 std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
@@ -52,6 +54,12 @@ std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
         {"pica_surface_lighting_coefficients.frag", Fragment, Renderer3ds::BuildPicaSurfaceLightingFragmentShader(true, true), {}},
         {"normal_space.comp", Compute, kNormalSpaceComputeShader, {}},
         {"oot3d_nri_directional_shadow.frag", Fragment, kPicaDirectionalShadowFragmentShader, {}},
+        {"oot3d_nri_pica_scanout_physical.frag", Fragment,
+         BuildPicaScanoutFragmentShader(true, std::nullopt, PicaScanoutOrientation::PhysicalScreen), {}},
+        {"oot3d_nri_pica_scanout_surface.frag", Fragment,
+         BuildPicaScanoutFragmentShader(true, std::nullopt, PicaScanoutOrientation::Surface), {}},
+        {"oot3d_pica_texture_copy_derive.comp", Compute, std::string(Renderer3ds::PicaTextureCopyDeriveComputeSource), {}},
+        {"brixelizer_gi_prepare.comp", Compute, std::string(kBrixelizerGiPrepareShader), {}},
     };
 }
 }

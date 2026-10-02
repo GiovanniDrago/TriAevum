@@ -258,10 +258,10 @@ bool BuildOot3dPicaVulkanDrawPlanAndConsumeResources(
     Oot3dPicaVulkanShaderSourceCache* shaderCache = nullptr);
 
 // A plan restored from a visual savestate keeps its specialized program but
-// neither its register packet nor its hooks, so it draws uninstrumented. Its
-// always-available pair is the parametric program of its structural
-// configuration, uninstrumented alike. Plans without typed fragment features
-// (old savestates) or with a shadow-producing output keep no pair.
+// not its register packet. Its always-available pair is the parametric
+// program of its structural configuration (which the decisions of the
+// specialized program drive like any other). Plans without typed fragment
+// features (old savestates) or with a shadow-producing output keep no pair.
 void AttachOot3dPicaRestoredUberFragment(Oot3dPicaVulkanDrawPlan& plan);
 
 // Offline pipeline metadata only. Shares the exact live vertex-layout planner;

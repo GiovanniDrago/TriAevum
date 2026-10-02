@@ -154,6 +154,35 @@ struct PicaFragmentInstrumentationResult {
 [[nodiscard]] ::Oot3d::Renderer::PicaFragmentOutputContract
 AnalyzePicaFragmentOutputContract(std::string_view source) noexcept;
 
+// The native-view normal guide from view derivatives taken at the main
+// prologue, before the native alpha test can end an invocation of the quad.
+inline constexpr std::string_view kViewDerivativesPrologue =
+    "\n    vec3 oot3d_view_dx = dFdx(pica_view), oot3d_view_dy = dFdy(pica_view);\n";
+inline constexpr std::string_view kNormalGuideSurfaceFromDerivatives = R"glsl(
+vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye, vec3 to_eye_dx, vec3 to_eye_dy) {
+    // Vertex-lit PICA programs can disable the normal-quaternion output.
+    // Their view vector still describes geometry in the same camera basis.
+    vec3 geometric = cross(to_eye_dx, to_eye_dy);
+    float area = dot(geometric, geometric);
+    if (dot(q, q) >= 0.000001) return oot3d_normal_guide_rotate_z(q);
+    if (area <= 1.0e-20) return vec3(0.0, 0.0, 1.0);
+    geometric *= inversesqrt(area);
+    return dot(geometric, to_eye) < 0.0 ? -geometric : geometric;
+}
+)glsl";
+inline constexpr std::string_view kNativeViewNormalFromDerivatives =
+    "oot3d_normal_guide_surface(pica_normquat, pica_view, oot3d_view_dx, oot3d_view_dy)";
+
+// AO texture relief: the height/bend functions (gain as GLSL text: the
+// specialized literal or a uniform), the taps at the main prologue (texture
+// unit and coordinate as GLSL text) and the bend after every guide reader.
+[[nodiscard]] std::string PicaTextureReliefDeclarations(std::string_view gain);
+[[nodiscard]] std::string PicaTextureReliefPrologue(std::string_view unit, std::string_view coordinate);
+inline constexpr std::string_view kPicaTextureReliefBend =
+    "    pica_normal_guide.rgb = oot3d_relief_normal(pica_normal_guide.rgb * 2.0 - 1.0,\n"
+    "        oot3d_relief_slope, oot3d_relief_dpdx, oot3d_relief_dpdy, oot3d_relief_duvdx,\n"
+    "        oot3d_relief_duvdy) * 0.5 + 0.5;\n";
+
 // Resolves every auxiliary fragment output against one typed hook layout and
 // composes one variant. Native color and depth statements are copied without
 // replacement; guide outputs are added only at typed insertion points.
