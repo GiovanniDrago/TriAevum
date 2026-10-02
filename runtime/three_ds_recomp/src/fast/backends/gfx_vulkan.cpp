@@ -746,11 +746,16 @@ void GfxRenderingAPIVulkan::PrepareNativePicaPrograms(
                 items.push_back({vertices.front().Spirv, artifact.Spirv, true});
         }
     };
-    fragmentFamily(Renderer3ds::kNativeFragmentArtifacts);
-    if (items.empty()) throw std::runtime_error("native program preparation has no fragment family");
+    // Vertex parts first (cheap, every link needs one; the first one comes
+    // with every fragment item), then the superset programs: they take
+    // longest and are what a first draw waits for.
     for (const auto& vertex : vertices.subspan(1))
         items.push_back({vertex.Spirv, Renderer3ds::kNativeFragmentArtifacts[0].Spirv, false});
     if (UsesAlwaysAvailablePrograms()) fragmentFamily(Oot3d::kUberFragmentArtifacts);
+    const size_t beforeNativeFamily = items.size();
+    fragmentFamily(Renderer3ds::kNativeFragmentArtifacts);
+    if (items.size() == beforeNativeFamily)
+        throw std::runtime_error("native program preparation has no fragment family");
     const auto samples = mNativePicaSampleCount;
     const auto depthFormat = mDepthFormat;
     const auto prepare = [this, samples, depthFormat](const Item& item) {
@@ -802,7 +807,10 @@ void GfxRenderingAPIVulkan::PrepareNativePicaPrograms(
     auto progress = std::make_shared<Progress>();
     progress->Items = std::move(items);
     progress->Remaining = progress->Items.size();
-    const unsigned threads = std::clamp(std::thread::hardware_concurrency(), 3U, 17U) - 1U;
+    // About one thread per physical core, one left to the frame: driver
+    // compilation oversubscribed across logical cores makes each part (and the
+    // draw waiting for it) several times slower for no added throughput.
+    const unsigned threads = std::clamp(std::thread::hardware_concurrency() / 2U, 2U, 9U) - 1U;
     for (unsigned thread = 0; thread < threads; ++thread) {
         mStartupPreparationThreads.emplace_back([prepare, progress, finished] {
             Renderer3ds::LowerPicaPreparationThreadPriority();

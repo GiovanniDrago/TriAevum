@@ -1427,3 +1427,30 @@ the state loads.
 These runs shared the GPU with a streaming client (about 24 % utilization at
 idle), so their absolute frame times are not comparable with the table above;
 the attribution is CPU wall time on the render thread.
+
+### First launch: startup preparation order and threads (2026-10-02)
+
+With empty caches a draw that needs an always-available part before it is
+ready waits for that part alone. On a 6-core/12-thread machine the startup
+preparation ran 11 threads next to the specialized-program workers and the
+game: oversubscribed driver compilation made each superset part take 19-31 s
+of wall time (about 3-5 s alone) for no added throughput, and the parts started
+after the canonical bases. `VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT` on the
+fragment parts changed nothing (402 s vs 398 s summed part time): the driver
+ignores it for pipeline libraries.
+
+Startup preparation now runs about one thread per physical core minus one
+(`hardware_concurrency / 2 - 1`, clamped to 1-8) and creates the vertex parts,
+then the superset programs, then the canonical bases. Kokiri Enhanced, empty
+caches, interleaved rounds (wait of the first draw that needs a part):
+
+| startup preparation | round 1 | round 2 | round 3 |
+|---|---|---|---|
+| 11 threads, canonical bases first (before) | 11.95 s | 21.9 s | 13.4 s |
+| 5 threads, canonical bases first | 7.1 s | 7.1 s | 7.5 s |
+| 5 threads, superset programs first (now) | 5.4 s | 5.8 s | 5.4 s |
+
+The cold run's longest frame drops from 13.5-22 s to 6.0-6.4 s. Preparation as
+a whole ends later (about 60 s instead of 50 s), in the background. A first
+launch that reaches gameplay before its superset parts exist still waits for
+the part it needs; only a preparation step before gameplay removes that wait.
