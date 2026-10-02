@@ -17,6 +17,11 @@ if(NOT TARGET NRI)
         set(NRI_ENABLE_${feature} OFF CACHE BOOL "" FORCE)
     endforeach()
     add_subdirectory("${TRIAEVUM_NRI_SOURCE_DIR}" nri)
+    if(MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND TARGET NRI_Shared)
+        # As the runtime build: NRI enables /WX for clang-cl after its Clang
+        # suppressions; warnings in the pinned SDK must not block the helper.
+        target_compile_options(NRI_Shared PUBLIC /WX-)
+    endif()
 endif()
 set(runtime "${root}/runtime/three_ds_recomp")
 add_library(triaevum_pipeline_preparation STATIC
@@ -24,6 +29,7 @@ add_library(triaevum_pipeline_preparation STATIC
     "${runtime}/src/fast/renderer/pipeline_preparation_job.cpp"
     "${runtime}/src/fast/renderer3ds/vulkan_pipeline_cache_store.cpp"
     "${runtime}/src/fast/renderer3ds/nri_pica_pipeline_bridge.cpp"
+    "${runtime}/src/fast/renderer3ds/pica_preparation_queue.cpp"
     "${runtime}/src/fast/renderer3ds/nri_pica_upload_arena.cpp"
     "${runtime}/src/fast/renderer3ds/pica_nri_upload.cpp"
     "${runtime}/src/fast/renderer3ds/pica_nri_shader_contract.cpp"
@@ -41,6 +47,9 @@ if(MSVC)
 endif()
 add_executable(triaevum_nri_pipeline_prepare main.cpp)
 target_link_libraries(triaevum_nri_pipeline_prepare PRIVATE triaevum_pipeline_preparation)
+# --startup-programs embeds the translated title vertex family, as the runtime
+# executable does: this helper is the title's Forge tool, not title-neutral.
+target_include_directories(triaevum_nri_pipeline_prepare PRIVATE "${root}/tools/oot3d/native_pica_frontend")
 add_executable(triaevum_pipeline_preparation_tests tests.cpp)
 target_link_libraries(triaevum_pipeline_preparation_tests PRIVATE triaevum_pipeline_preparation)
 enable_testing()

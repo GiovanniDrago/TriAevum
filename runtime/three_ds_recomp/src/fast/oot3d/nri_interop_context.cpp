@@ -18,6 +18,7 @@
 #include <Extensions/NRIUpscaler.h>
 #include <Extensions/NRIWrapperVK.h>
 #include "nri_interop_internal.h"
+#include "fast/renderer3ds/pica_vulkan_device_profile.h"
 #endif
 
 namespace Fast::Oot3d {
@@ -491,9 +492,9 @@ bool NriInteropContext::Initialize(VkInstance instance, VkPhysicalDevice physica
             VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
     desc.vkExtensions.deviceExtensions = deviceExtensions.data();
     if (graphicsPipelineLibrariesEnabled) {
-        deviceExtensions.push_back(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
-        deviceExtensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
-        deviceExtensions.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
+        deviceExtensions.insert(deviceExtensions.end(),
+                                Renderer3ds::kPicaPipelineLibraryExtensions.begin(),
+                                Renderer3ds::kPicaPipelineLibraryExtensions.end());
         desc.vkExtensions.deviceExtensions = deviceExtensions.data();
     }
     desc.vkExtensions.deviceExtensionNum =

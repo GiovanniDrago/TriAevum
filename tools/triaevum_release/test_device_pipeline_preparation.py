@@ -36,8 +36,9 @@ class DevicePreparationTests(unittest.TestCase):
         return prepare_device_pipelines(root=self.root, data_root=self.root / "data",
             title=self.title, pack=self.pack, cache_directory=self.cache)
 
-    def fake_run(self, command, root, stage, cancel, report):
+    def fake_run(self, command, root, stage, cancel, report, timeout=600):
         self.assertEqual(command[command.index("--pack") + 1], str(self.pack))
+        self.timeout = timeout
         self.cache.mkdir(exist_ok=True)
         cache = self.cache / CACHE_FILENAME
         cache.write_bytes(b"device cache")
@@ -72,6 +73,21 @@ class DevicePreparationTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0].count("--manifest"), 2)
             self.assertEqual(len(result["manifest_sha256s"]), 2)
 
+    def test_startup_programs_join_the_same_job_with_a_longer_budget(self):
+        with patch("device_pipeline_preparation._run", side_effect=self.fake_run) as run:
+            self.prepare()
+            self.assertNotIn("--startup-programs", run.call_args.args[0])
+            self.assertEqual(self.timeout, 600)
+            self.title["device_pipeline_preparation"]["startup_programs"] = True
+            self.assertEqual(self.prepare()["device_pipeline_prewarm"], "complete")
+            self.assertIn("--startup-programs", run.call_args.args[0])
+            self.assertEqual(run.call_args.args[0].count("--manifest"), 1)
+            self.assertEqual(self.timeout, 1800)
+        self.title["device_pipeline_preparation"]["startup_programs"] = "yes"
+        with patch("device_pipeline_preparation._run") as run:
+            with self.assertRaisesRegex(ValueError, "startup programs"): self.prepare()
+            run.assert_not_called()
+
     def test_ambiguous_or_empty_manifests_do_not_run(self):
         contract = self.title["device_pipeline_preparation"]
         with patch("device_pipeline_preparation._run") as run:
@@ -88,8 +104,8 @@ class DevicePreparationTests(unittest.TestCase):
                 self.assertEqual(self.prepare()["device_pipeline_prewarm"], "failed")
 
     def test_partial_result_does_not_activate_a_success_receipt(self):
-        def partial(command, root, stage, cancel, report):
-            self.fake_run(command, root, stage, cancel, report)
+        def partial(command, root, stage, cancel, report, timeout=600):
+            self.fake_run(command, root, stage, cancel, report, timeout)
             return 3
         with patch("device_pipeline_preparation._run", side_effect=partial):
             self.assertEqual(self.prepare()["device_pipeline_prewarm"], "failed")

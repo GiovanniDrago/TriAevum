@@ -168,6 +168,11 @@ def prepare_device_pipelines(*, root: Path, data_root: Path, title: dict,
     adapter = contract.get("adapter", 0)
     if type(adapter) is not int or not 0 <= adapter < 64:
         raise ValueError("Invalid device preparation adapter")
+    # The renderer's startup program parts (built into the helper, as into the
+    # runtime): the driver's longest work, otherwise paid on the first launch.
+    startup_programs = contract.get("startup_programs", False)
+    if type(startup_programs) is not bool:
+        raise ValueError("Invalid device preparation startup programs")
     cache = (cache_directory or renderer_cache_directory()).resolve()
     receipts = data_root.resolve() / "shader-seeds" / "device-preparation"
     receipts.mkdir(parents=True, exist_ok=True)
@@ -181,8 +186,12 @@ def prepare_device_pipelines(*, root: Path, data_root: Path, title: dict,
                    "--cancel-file", str(stage / "cancel"), "--adapter", str(adapter)]
         for manifest in manifests:
             command.extend(("--manifest", str(manifest)))
+        if startup_programs:
+            command.append("--startup-programs")
         try:
-            status = _run(command, root, stage, cancel, report)
+            # Startup programs take about a minute on six cores when cold.
+            status = _run(command, root, stage, cancel, report,
+                          1800 if startup_programs else 600)
             result = load_json_object(stage / "result.json")
             if result.get("format") != FORMAT:
                 raise ValueError("Invalid device preparation receipt")

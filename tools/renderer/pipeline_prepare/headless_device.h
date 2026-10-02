@@ -5,6 +5,7 @@
 #include <NRI.h>
 #include <Extensions/NRIRayTracing.h>
 #include <Extensions/NRIWrapperVK.h>
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <iostream>
@@ -76,28 +77,54 @@ class HeadlessDevice final : public Fast::Renderer3ds::NriPicaInterop {
         float priority = 1;
         VkDeviceQueueCreateInfo queue{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
         queue.queueFamilyIndex = family; queue.queueCount = 1; queue.pQueuePriorities = &priority;
+        VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT libraries{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
+        VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extendedDynamic{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
         VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamic{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR};
         VkPhysicalDeviceSynchronization2FeaturesKHR sync{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR};
         VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         supported.pNext = &v12; v12.pNext = &sync; sync.pNext = &dynamic;
+        dynamic.pNext = &libraries; libraries.pNext = &extendedDynamic;
         vkGetPhysicalDeviceFeatures2(physical, &supported);
         if (!sync.synchronization2 || !dynamic.dynamicRendering) return false;
+        uint32_t extensionCount = 0;
+        if (vkEnumerateDeviceExtensionProperties(physical, nullptr, &extensionCount, nullptr) != VK_SUCCESS) return false;
+        std::vector<VkExtensionProperties> available(extensionCount);
+        if (vkEnumerateDeviceExtensionProperties(physical, nullptr, &extensionCount, available.data()) != VK_SUCCESS)
+            return false;
+        const auto hasExtension = [&](const char* name) {
+            for (const auto& extension : available)
+                if (std::strcmp(extension.extensionName, name) == 0) return true;
+            return false;
+        };
+        // The live renderer's negotiation (its default preparation mode links
+        // library parts): it decides which pipelines NRI creates.
+        const auto& libraryExtensions = Fast::Renderer3ds::kPicaPipelineLibraryExtensions;
+        PipelineLibraries = Fast::Renderer3ds::PicaPipelineLibrariesSupported(
+            std::all_of(libraryExtensions.begin(), libraryExtensions.end(), hasExtension),
+            libraries, extendedDynamic, supported.features);
+        GeometryShaders = supported.features.geometryShader == VK_TRUE;
         const auto coreFeatures = Fast::Renderer3ds::PicaVulkanCoreFeatures(supported.features);
         v12 = Fast::Renderer3ds::PicaVulkan12Features(v12);
         v12.pNext = &sync;
-        const char* extensions[] = {VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME};
+        dynamic.pNext = PipelineLibraries ? &libraries : nullptr;
+        std::vector<const char*> extensions{VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME};
+        if (PipelineLibraries) extensions.insert(extensions.end(), libraryExtensions.begin(), libraryExtensions.end());
         VkDeviceCreateInfo device{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         device.pNext = &v12; device.pEnabledFeatures = &coreFeatures;
         device.queueCreateInfoCount = 1; device.pQueueCreateInfos = &queue;
-        device.enabledExtensionCount = 2; device.ppEnabledExtensionNames = extensions;
+        device.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+        device.ppEnabledExtensionNames = extensions.data();
         if (vkCreateDevice(physical, &device, nullptr, &mVkDevice) != VK_SUCCESS) return false;
         nri::QueueFamilyVKDesc nriQueue{1, nri::QueueType::GRAPHICS, family};
         nri::DeviceCreationVKDesc create{};
         create.vkInstance = mInstance; create.vkDevice = mVkDevice; create.vkPhysicalDevice = physical;
         create.minorVersion = VK_API_VERSION_MINOR(app.apiVersion);
         create.queueFamilies = &nriQueue; create.queueFamilyNum = 1;
-        create.vkExtensions.deviceExtensions = extensions; create.vkExtensions.deviceExtensionNum = 2;
+        create.vkExtensions.deviceExtensions = extensions.data();
+        create.vkExtensions.deviceExtensionNum = static_cast<uint32_t>(extensions.size());
         create.enableNRIValidation = validation;
         create.callbackInterface.MessageCallback = Message;
         create.callbackInterface.userArg = this;
@@ -119,6 +146,9 @@ class HeadlessDevice final : public Fast::Renderer3ds::NriPicaInterop {
     bool CmdSetPipeline(uint32_t, nri::Pipeline*) override { return false; }
     uint32_t ValidationErrors() const { return mValidationErrors.load(); }
     nri::WrapperVKInterface Wrapper{};
+    // Negotiated as the live renderer does: library parts can be prepared.
+    bool PipelineLibraries = false;
+    bool GeometryShaders = false;
   private:
     static VKAPI_ATTR VkBool32 VKAPI_CALL VulkanMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
         VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT* data, void* context) {

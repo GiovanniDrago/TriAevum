@@ -1533,3 +1533,39 @@ grass:
 Captures are unchanged: `sync` against `sync` 12/12. Scenes entered later
 still build their grass placements on their first grass frame (about 1 s for
 Kokiri), as before.
+
+### Startup programs prepared by Forge (2026-10-02)
+
+The first launch no longer waits for the startup program parts: Forge's device
+preparation creates them during installation, into the renderer cache the game
+then loads (`--startup-programs`, see
+[NRI pipeline preparation](TRIAEVUM_NRI_PIPELINE_PREPARATION.md#startup-programs-2026-10-02)).
+The renderer and the helper derive the parts from one owner
+(`renderer3ds/pica_startup_programs.h`: the title vertex family, the superset
+programs, the canonical bases, the same preparation interface and sample
+count), and negotiate graphics pipeline libraries with one function
+(`PicaPipelineLibrariesSupported`, `kPicaPipelineLibraryExtensions`): one
+differing parameter would be a silent cache miss.
+
+Kokiri Enhanced with grass, RTX 3060, i5-12400F (6 cores), same session:
+
+| first launch | game accepted | startup preparation | guest waited | parts |
+|---|---|---|---|---|
+| empty renderer cache | 0 bytes | 33.5-34.9 s | 24.8-25.9 s | cold (about 5.6 s per superset part) |
+| after Forge's preparation | 13,654,247 bytes | 0.72-1.16 s | 0 s | at most 0.30 s per fragment part |
+
+Forge pays the cost instead: 39/39 parts in 45.5 s on six threads on a new
+driver, 0.7-0.8 s when the driver's own disk cache still holds the helper's
+parts; with the 500 observed recipes the whole job is 539/539 in 9.1 s here.
+A driver update or another GPU invalidates the cache: the game then prepares
+the parts again behind its preparation screen, as before. The first frames
+(DLSS feature of a first launch, cold effect pipelines, the first scene's
+grass placements) still run under the screen (17 frames, 6.5-8.9 s).
+
+Validating this exposed a determinism fault of the preparation screen: the
+temporal jitter phase followed the renderer's frame counter, which also
+advanced on the frames that show the screen while the guest waits, so the
+images depended on how long the preparation took (cold against Forge-prepared:
+0/12 captures identical, 13-30% of pixels on every edge). The phase now counts
+the frames that drew the PICA scene (`mTemporalJitterSequence`): cold against
+Forge-prepared 12/12 identical, with the same process and memory fingerprints.

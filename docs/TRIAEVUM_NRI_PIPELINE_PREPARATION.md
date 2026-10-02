@@ -240,3 +240,50 @@ Private evidence:
 4. Then add helper/dependencies/contracts to platform packaging. Keep captured
    state, ROMs and derived packs private under the current release policy; do
    not silently distribute the developer corpus.
+
+## Startup Programs (2026-10-02)
+
+`--startup-programs` adds the renderer's startup program parts to the job:
+every shader-bearing graphics-pipeline-library part an always-available draw
+links (the title vertex family, the superset effect programs, the canonical
+bases), which the renderer otherwise creates on its first launch (39 parts,
+the driver's longest work). The helper and the renderer take them from one
+derivation, `renderer3ds/pica_startup_programs.h` (`PicaStartupProgramParts`,
+`PreparePicaStartupProgramPart`), at the renderer's single-sample startup
+state, with its depth format and geometry-shader capability. Manifests and
+`--pack` become optional when only startup programs are requested.
+
+The headless device negotiates graphics pipeline libraries and the extended
+dynamic state exactly as the live device (`PicaPipelineLibrariesSupported`,
+`kPicaPipelineLibraryExtensions` in `pica_vulkan_device_profile.h`) and passes
+the same extensions to NRI. This also matters for the observed recipes: with
+libraries enabled the live device has the extended dynamic state, which changes
+the pipelines NRI creates; before, the helper prepared them without it.
+
+Parts are created on about one thread per physical core (six on a 6c/12t CPU),
+before the recipes; progress events count both. The report adds `recipes`,
+`pipeline_libraries`, `startup_parts`, `startup_prepared`, `startup_failed`,
+`startup_threads` and `startup_seconds`; `total`/`prepared`/`failed` include
+the parts. Without library support the renderer prepares no parts and neither
+does the helper (`pipeline_libraries: false`).
+
+Forge passes the flag when the title contract says `"startup_programs": true`
+(bound by `shader_corpus_layout.py`), with a 1800 s budget instead of 600 s.
+The helper now embeds the translated title vertex family, like the runtime
+executable: it is the title's Forge tool, not title-neutral code, and the
+release metadata must catalogue it with that artifact (see
+`oot3d_native_vertex_binaries.provenance.json`).
+
+Windows RTX 3060, i5-12400F: empty application cache on a new driver, 39/39 in
+45.5 s; again with an empty application cache, 0.7-0.8 s (the driver's own disk
+cache keeps the helper's parts); recipes plus parts, 539/539 in 9.1 s. The game's
+first launch on that cache accepts all 13,654,247 bytes and its startup
+preparation takes 0.72-1.16 s instead of 33.5-34.9 s, with no guest wait;
+captures are identical to a cold first launch (12/12). The real Forge test
+(`test_actual_device_job_reuse_corruption_and_cancel`) passes with this helper:
+500 pipelines, 8.6 s first, 0.59 s reuse.
+
+The helper build needed three repairs of its own: the bridge now uses the
+preparation queue (`pica_preparation_queue.cpp`), clang-cl needs NRI's `/WX`
+relaxed as in the runtime build, and its contract test expected geometry
+shaders disabled although the shared profile enables them for PBR seams.

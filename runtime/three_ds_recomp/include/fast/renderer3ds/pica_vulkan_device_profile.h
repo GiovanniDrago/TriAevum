@@ -2,6 +2,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include <array>
+
 namespace Fast::Renderer3ds {
 
 // Preparation and live rendering must use the same Vulkan application contract.
@@ -46,6 +48,25 @@ inline VkPhysicalDeviceVulkan12Features PicaVulkan12Features(const VkPhysicalDev
     enabled.shaderSampledImageArrayNonUniformIndexing = supported.shaderSampledImageArrayNonUniformIndexing;
     enabled.shaderStorageImageArrayNonUniformIndexing = supported.shaderStorageImageArrayNonUniformIndexing;
     return enabled;
+}
+
+// Graphics pipeline libraries: always-available programs link prepared parts,
+// and the extended dynamic state keeps raster and depth state out of them.
+// The live device and Forge's device preparation negotiate the same set (it
+// changes the pipelines NRI creates, hence their cache identity).
+inline constexpr std::array<const char*, 3> kPicaPipelineLibraryExtensions{
+    VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME,
+    VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
+    VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,
+};
+
+inline bool PicaPipelineLibrariesSupported(
+    bool extensionsAvailable,
+    const VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT& libraries,
+    const VkPhysicalDeviceExtendedDynamicStateFeaturesEXT& dynamicState,
+    const VkPhysicalDeviceFeatures& core) {
+    return extensionsAvailable && libraries.graphicsPipelineLibrary == VK_TRUE &&
+           dynamicState.extendedDynamicState == VK_TRUE && core.fragmentStoresAndAtomics == VK_TRUE;
 }
 
 } // namespace Fast::Renderer3ds

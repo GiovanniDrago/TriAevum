@@ -124,7 +124,9 @@ def bind_shader_corpus(catalog: dict, pack: Path, manifests: list[Path],
         title['shader_preparation'] = dict(format=SEED_FORMAT, mode='portable_pack',
             descriptor_schema_version=schema, pack=copy.deepcopy(packed),
             **{key: copy.deepcopy(renderer[key]) for key in ('compiler', 'dependencies') if key in renderer})
+        # The helper built with this runtime also prepares the renderer's
+        # startup program parts, so the first launch does not wait for them.
         title['device_pipeline_preparation'] = dict(format=DEVICE_FORMAT,
             helper=copy.deepcopy(tool), manifests=copy.deepcopy(pipeline_records),
-            dependencies=copy.deepcopy(libraries))
+            dependencies=copy.deepcopy(libraries), startup_programs=True)
     return result, items

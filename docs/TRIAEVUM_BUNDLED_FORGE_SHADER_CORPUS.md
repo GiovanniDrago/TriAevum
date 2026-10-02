@@ -109,3 +109,12 @@ activation receipts, `game-verification.json`, and both game replay directories.
 Drivers: `I:/TriAevum-private-tas/qualify-bundled-forge.py`,
 `refresh-test-binding.py`, and `verify-bundled-linux.py`. Existing personal
 installations/profiles and saves were not overwritten by these tests.
+
+## Startup Programs (2026-10-02)
+
+`bind_shader_corpus` also sets `"startup_programs": true` in each title's
+`device_pipeline_preparation`: the bundled helper then prepares the renderer's
+startup program parts in the same job and cache, so the game's first launch
+does not wait for them. The helper embeds the translated title vertex family
+for this; catalogue it as title code. Details and results:
+[NRI pipeline preparation](TRIAEVUM_NRI_PIPELINE_PREPARATION.md#startup-programs-2026-10-02).

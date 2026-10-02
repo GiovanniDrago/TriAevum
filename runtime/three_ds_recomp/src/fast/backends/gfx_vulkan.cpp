@@ -13,6 +13,7 @@
 #include "fast/renderer/compatibility_shader_sources.h"
 #include "fast/renderer3ds/vulkan_pipeline_cache_store.h"
 #include "fast/renderer3ds/pica_vulkan_device_profile.h"
+#include "fast/renderer3ds/pica_startup_programs.h"
 #include "fast/oot3d/pica_nri_pipeline_state.h"
 
 #include "fast/backends/gfx_sdl.h"
@@ -707,74 +708,23 @@ bool GfxRenderingAPIVulkan::UsesAlwaysAvailablePrograms() const {
            mNativePicaPreparationMode == NativePicaPreparationMode::Uber;
 }
 
-namespace {
-// SPIR-V declares its capabilities first, right after the five-word header.
-bool DeclaresSpirvCapability(std::span<const uint32_t> spirv, uint32_t capability) {
-    constexpr uint32_t kOpCapability = 17U;
-    for (size_t at = 5U; at + 1U < spirv.size();) {
-        const uint32_t words = spirv[at] >> 16U;
-        if (words == 0U || (spirv[at] & 0xffffU) != kOpCapability) break;
-        if (spirv[at + 1U] == capability) return true;
-        at += words;
-    }
-    return false;
-}
-} // namespace
-
 void GfxRenderingAPIVulkan::PrepareNativePicaPrograms(
     std::span<const Renderer3ds::PicaVertexArtifact> vertices) {
     if (!mGraphicsPipelineLibrariesEnabled || !mNriPicaPipelineBridge.OwnedDrawsEnabled()) return;
-    if (vertices.empty()) throw std::runtime_error("native program preparation has no vertex family");
     // Every shader-bearing part an always-available draw links: the title
-    // vertex family, the canonical bases and the superset effect programs
-    // this device can create (each once, not the vertex/fragment product).
-    struct Item {
-        std::span<const uint32_t> Vertex;
-        std::span<const uint32_t> Fragment;
-        bool AlphaToCoverage = false;
-    };
-    std::vector<Item> items;
-    const auto fragmentFamily = [&](std::span<const Renderer3ds::PicaFragmentArtifact> family) {
-        for (const auto& artifact : family) {
-            if (!artifact.SeparateSamplers) continue;
-            // Fragment primitive IDs (PBR seams) exist only with geometry shaders.
-            constexpr uint32_t kCapabilityGeometry = 2U;
-            if (!mPbrSeamsAvailable && DeclaresSpirvCapability(artifact.Spirv, kCapabilityGeometry)) continue;
-            items.push_back({vertices.front().Spirv, artifact.Spirv, false});
-            // Alpha-tested draws cover by alpha once samples exceed one.
-            if (mNativePicaSampleCount != VK_SAMPLE_COUNT_1_BIT)
-                items.push_back({vertices.front().Spirv, artifact.Spirv, true});
-        }
-    };
-    // Vertex parts first (cheap, every link needs one; the first one comes
-    // with every fragment item), then the superset programs: they take
-    // longest and are what a first draw waits for.
-    for (const auto& vertex : vertices.subspan(1))
-        items.push_back({vertex.Spirv, Renderer3ds::kNativeFragmentArtifacts[0].Spirv, false});
-    if (UsesAlwaysAvailablePrograms()) fragmentFamily(Oot3d::kUberFragmentArtifacts);
-    const size_t beforeNativeFamily = items.size();
-    fragmentFamily(Renderer3ds::kNativeFragmentArtifacts);
-    if (items.size() == beforeNativeFamily)
-        throw std::runtime_error("native program preparation has no fragment family");
-    const auto samples = mNativePicaSampleCount;
-    const auto depthFormat = mDepthFormat;
-    const auto prepare = [this, samples, depthFormat](const Item& item) {
-        // A preparation interface, never geometry submitted to a draw.
-        VkVertexInputBindingDescription binding{0, 16U * 16U, VK_VERTEX_INPUT_RATE_VERTEX};
-        std::array<VkVertexInputAttributeDescription, 16> attributes{};
-        for (uint32_t i = 0; i < attributes.size(); ++i)
-            attributes[i] = {i, 0, VK_FORMAT_R32G32B32A32_SFLOAT, i * 16U};
-        Oot3d::NriPicaGraphicsPipelineDesc desc;
-        desc.VertexBindings = {&binding, 1}; desc.VertexAttributes = attributes;
-        desc.VertexSpirv = item.Vertex;
-        desc.FragmentSpirv = item.Fragment;
-        desc.ColorAttachmentCount = 1;
-        desc.ColorFormats[0] = VK_FORMAT_R8G8B8A8_UNORM;
-        desc.Colors[0].colorWriteMask = 15;
-        desc.DepthStencilFormat = depthFormat;
-        desc.Samples = samples;
-        desc.AlphaToCoverage = item.AlphaToCoverage;
-        return mNriPicaPipelineBridge.PreparePipeline(desc, Oot3d::NriPicaPipelineFactory::Libraries);
+    // vertex family, the superset effect programs (when draws use them) and
+    // the canonical bases. Forge's device preparation creates the same parts.
+    const Renderer3ds::PicaStartupProgramDevice device{mDepthFormat, mNativePicaSampleCount,
+                                                       mPbrSeamsAvailable};
+    using Item = Renderer3ds::PicaStartupProgramPart;
+    std::vector<Item> items = Renderer3ds::PicaStartupProgramParts(
+        vertices,
+        UsesAlwaysAvailablePrograms() ? std::span<const Renderer3ds::PicaFragmentArtifact>(Oot3d::kUberFragmentArtifacts)
+                                      : std::span<const Renderer3ds::PicaFragmentArtifact>{},
+        Renderer3ds::kNativeFragmentArtifacts, device);
+    const auto samples = device.Samples;
+    const auto prepare = [this, device](const Item& item) {
+        return Renderer3ds::PreparePicaStartupProgramPart(mNriPicaPipelineBridge, item, device);
     };
     const auto start = std::chrono::steady_clock::now();
     std::fprintf(stderr, "TRIAEVUM_NATIVE_PROGRAM_PREPARATION_BEGIN parts=%zu background=%u\n",
@@ -3166,10 +3116,10 @@ void GfxRenderingAPIVulkan::CreateLogicalDevice() {
     mDynamicRenderingEnabled =
         hasVulkan12 && hasDynamicRenderingExtension &&
         dynamicRendering.dynamicRendering == VK_TRUE;
-    const bool librarySupported = hasExtension(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
-        hasExtension(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) && pipelineLibraries.graphicsPipelineLibrary &&
-        hasExtension(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME) && extendedDynamic.extendedDynamicState &&
-        supportedFeatures.features.fragmentStoresAndAtomics;
+    const bool librarySupported = Renderer3ds::PicaPipelineLibrariesSupported(
+        std::all_of(Renderer3ds::kPicaPipelineLibraryExtensions.begin(),
+                    Renderer3ds::kPicaPipelineLibraryExtensions.end(), hasExtension),
+        pipelineLibraries, extendedDynamic, supportedFeatures.features);
     VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT libraryProperties{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
     VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -3189,11 +3139,9 @@ void GfxRenderingAPIVulkan::CreateLogicalDevice() {
         unsigned(librarySupported), unsigned(libraryRequested), unsigned(mGraphicsPipelineLibrariesEnabled),
         unsigned(libraryProperties.graphicsPipelineLibraryFastLinking),
         unsigned(libraryProperties.graphicsPipelineLibraryIndependentInterpolationDecoration));
-    if (mGraphicsPipelineLibrariesEnabled) {
-        extensions.push_back(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
-        extensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
-        extensions.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
-    }
+    if (mGraphicsPipelineLibrariesEnabled)
+        extensions.insert(extensions.end(), Renderer3ds::kPicaPipelineLibraryExtensions.begin(),
+                          Renderer3ds::kPicaPipelineLibraryExtensions.end());
     if (mSynchronization2Enabled)
         extensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
     if (mDynamicRenderingEnabled)
