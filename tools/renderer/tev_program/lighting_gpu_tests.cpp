@@ -152,11 +152,14 @@ layout(set=0,binding=1,std430) writeonly buffer Output {Result results[];};
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};submit.commandBufferCount=1;submit.pCommandBuffers=&cmd;
         Check(vkQueueSubmit(gpu.Queue,1,&submit,fence));Check(vkWaitForFences(device,1,&fence,VK_TRUE,30000000000ULL));
         const auto* results=static_cast<const Result*>(output.Mapped);
-        unsigned failures=0;float maximum=0;
+        unsigned failures=0,inexact=0;float maximum=0;
         for(unsigned i=0;i<count;++i)for(unsigned component=0;component<8;++component){
             const auto& a=component<4?results[2*i].Primary:results[2*i].Secondary;
             const auto& b=component<4?results[2*i+1].Primary:results[2*i+1].Secondary;
             float difference=std::abs(a[component%4]-b[component%4]);maximum=std::max(maximum,difference);
+            if(std::memcmp(&a[component%4],&b[component%4],sizeof(float))!=0){
+                if(inexact<8)std::cerr<<"inexact case="<<i<<" component="<<component<<'\n';
+                ++inexact;}
             if(!std::isfinite(a[component%4])||!std::isfinite(b[component%4])||difference>0.00001F){
                 if(failures<8)std::cerr<<"case="<<i<<" component="<<component<<" canonical="<<a[component%4]<<" parametric="<<b[component%4]<<'\n';
                 ++failures;}}
@@ -165,8 +168,11 @@ layout(set=0,binding=1,std430) writeonly buffer Output {Result results[];};
         vkDestroyPipelineLayout(device,pipelineLayout,nullptr);vkDestroyDescriptorPool(device,pool,nullptr);vkDestroyDescriptorSetLayout(device,layout,nullptr);
         vkDestroySampler(device,sampler,nullptr);vkDestroyImageView(device,view,nullptr);vkDestroyImage(device,image,nullptr);vkFreeMemory(device,memory,nullptr);
         gpu.Free(input);gpu.Free(output);gpu.Free(upload);
-        std::cout<<count<<" lighting configurations, "<<count*8<<" channels, mismatches="<<failures<<", max_error="<<maximum<<'\n';
+        std::cout<<count<<" lighting configurations, "<<count*8<<" channels, mismatches="<<failures<<", inexact="<<inexact<<", max_error="<<maximum<<'\n';
         Require(failures==0,"parametric lighting differs from canonical GPU equations");
+        // The always-available program swaps with the specialized one per draw:
+        // their lighting must be the same bits, not only within tolerance.
+        Require(inexact==0,"parametric lighting is not bit-identical to the specialized program");
         return 0;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

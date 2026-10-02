@@ -1454,3 +1454,39 @@ The cold run's longest frame drops from 13.5-22 s to 6.0-6.4 s. Preparation as
 a whole ends later (about 60 s instead of 50 s), in the background. A first
 launch that reaches gameplay before its superset parts exist still waits for
 the part it needs; only a preparation step before gameplay removes that wait.
+
+### One lighting text for specialized and always-available programs (2026-10-02)
+
+The specialized program emitted its fragment lighting unrolled per light; the
+always-available program runs `PicaLightingProgramBody`, reading the decoded
+program from the draw's uniforms. Both evaluated the same operations in the
+same order, but the compiler contracted and expanded them differently: 71 of
+512 channels of `pica_lighting_gpu_tests` differed by 1 ulp (its 1e-5
+tolerance hid them).
+
+The specialized program now runs the same text with its program as a constant
+(`pica_lighting_constant_program`, built by the same `BuildPicaLightingProgram`
+as the uniform payload); the compiler folds every branch. Lighting operations
+are `precise` (no contraction), and `dot`, `normalize`, `length` and `cross`
+are spelled out (`PicaLightingArithmeticFunctions`): the driver expands those
+builtins differently once inputs fold to constants (with `cross` alone left as a
+builtin, 4 of 512 channels still differed). The GPU test now requires bit
+identity: 0 of 512. Every built-in fragment family is regenerated.
+
+Specialized programs on every draw (`sync`) against always-available programs
+on every draw (`uber`), Kokiri, 12 captures:
+
+| configuration | sync vs uber | reference noise |
+|---|---|---|
+| effects, AA and AO off (`cfg-enh-static`) | 8/12 identical, others 1-5 px | - |
+| Enhanced without grass, AA off | 2-5/12 identical, 4-75 px, max 9 | sync vs sync 12/12; uber vs uber 9/12, 51 px |
+| Enhanced without grass, TAA | 1/12, 0.002 % | - |
+| Enhanced without grass, DLSS | 0.85 % (before: about 1.2 %), max 17-33 | sync vs sync 12/12 |
+
+Without an upscaler the remaining difference is the always-available mode's
+own run-to-run variation (uber vs uber is not bit-stable, sync vs sync is; open).
+DLSS accumulates it in its history across the frame; differences under 1 % are
+accepted when an upscaler is involved. GPU cost, interleaved warm rounds
+(Kokiri Enhanced with grass, GPU shared with a streaming client): mean GPU busy
+11.00 ms per frame before, 11.18 ms after, within the 0.6-0.8 ms spread of each
+build's rounds.

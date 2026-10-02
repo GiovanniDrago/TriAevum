@@ -1,9 +1,12 @@
 #include "oot3d_native_pica_fragment_shader_gen.h"
 #include "oot3d_native_pica_program_descriptor.h"
 #include "oot3d_native_pica_canonical_hash.h"
+#include "fast/oot3d/pica_fragment_lighting.h"
 
 #include <cstdlib>
 #include <iostream>
+#include <optional>
+#include <string>
 
 #if defined(OOT3D_NATIVE_PICA_TEST_SHADERC)
 #include <shaderc/shaderc.hpp>
@@ -34,6 +37,20 @@ void RequireFragmentShaderCompiles(const std::string& source) {
     }
 }
 #endif
+
+// The specialized program runs the parametric lighting text with its decoded
+// program as a constant: returns that program when the source carries it.
+std::optional<Fast::Renderer3ds::PicaLightingProgram> ConstantLightingProgram(
+    const std::string& source, const Oot3dNativeGame::Oot3dPicaDrawPacket& packet) {
+    const auto program = Fast::Oot3d::BuildPicaLightingProgram(
+        Fast::Oot3d::DecodePicaFragmentLighting(packet.Registers));
+    std::string control = "const PicaLightingProgram pica_lighting_constant_program = "
+                          "PicaLightingProgram(uvec4(";
+    for (size_t i = 0; i < program.Control.size(); ++i)
+        control += std::to_string(program.Control[i]) + (i + 1 < program.Control.size() ? "u, " : "u)");
+    if (source.find(control) == std::string::npos) return std::nullopt;
+    return program;
+}
 
 Oot3dNativeGame::Oot3dPicaDrawPacket MakePacket() {
     Oot3dNativeGame::Oot3dPicaDrawPacket packet;
@@ -306,14 +323,19 @@ int main() {
                     "return value.x > z ? float(value.y)") !=
                     std::string::npos &&
                 lightingShader.Source.find(
-                    "vec4(1.0) - (pica_sample_shadow2d") !=
-                    std::string::npos &&
+                    "pica_program_surface(pica_lighting_constant_program, "
+                    "vec4(0.0), pica_sample_shadow2d") != std::string::npos &&
+                ConstantLightingProgram(lightingShader.Source, shadowPacket)
+                    .has_value() &&
+                // Shadow factor, inverted, on the primary color and alpha;
+                // light 0 casts it.
+                (ConstantLightingProgram(lightingShader.Source, shadowPacket)
+                     ->Control[3] & (128U | 256U | 2U | 8U)) ==
+                    (128U | 256U | 2U | 8U) &&
+                (ConstantLightingProgram(lightingShader.Source, shadowPacket)
+                     ->Lights[0][1] & 16U) != 0U &&
                 lightingShader.Source.find(
-                    "lighting_diffuse[0].rgb * pica_light_dot_0 * "
-                    "pica_shadow_factor.rgb") != std::string::npos &&
-                lightingShader.Source.find(
-                    "lighting_ambient[0].rgb * pica_light_attenuation_0") !=
-                    std::string::npos &&
+                    "diffuse *= pica_shadow_factor.rgb") != std::string::npos &&
                 lightingShader.Source.find(
                     "pica_specular_sum.a *= pica_shadow_factor.a") !=
                     std::string::npos &&
@@ -377,13 +399,17 @@ int main() {
                     *bumpPacket, bumpState, lightingShader,
                     &lightingError) &&
                 lightingShader.Source.find(
-                    "vec3 pica_surface_normal = 2.0 * ("
+                    "pica_program_surface(pica_lighting_constant_program, "
                     "pica_sample_texture2(vec2(pica_texcoord1.x, 1.0 - "
-                    "pica_texcoord1.y))).rgb - vec3(1.0)") !=
-                    std::string::npos &&
-                lightingShader.Source.find(
-                    "pica_surface_normal_z_squared") !=
-                    std::string::npos &&
+                    "pica_texcoord1.y)), vec4(1.0)") != std::string::npos &&
+                ConstantLightingProgram(lightingShader.Source, *bumpPacket)
+                    .has_value() &&
+                // Normal map with the recalculated Z component.
+                ((ConstantLightingProgram(lightingShader.Source, *bumpPacket)
+                      ->Control[3] >> 4U) & 3U) ==
+                    static_cast<uint32_t>(Fast::Oot3d::PicaLightingBumpMode::NormalMap) &&
+                (ConstantLightingProgram(lightingShader.Source, *bumpPacket)
+                     ->Control[3] & 64U) != 0U &&
                 lightingShader.Source.find(
                     "pica_normal_quaternion, pica_surface_normal") !=
                     std::string::npos &&
@@ -403,12 +429,13 @@ int main() {
     Require(GenerateOot3dPicaFragmentShader(
                 *bumpPacket, bumpState, lightingShader,
                 &lightingError) &&
-                lightingShader.Source.find(
-                    "vec3 pica_surface_normal = 2.0 * (") !=
-                    std::string::npos &&
-                lightingShader.Source.find(
-                    "pica_surface_normal_z_squared") ==
-                    std::string::npos,
+                ConstantLightingProgram(lightingShader.Source, *bumpPacket)
+                    .has_value() &&
+                ((ConstantLightingProgram(lightingShader.Source, *bumpPacket)
+                      ->Control[3] >> 4U) & 3U) ==
+                    static_cast<uint32_t>(Fast::Oot3d::PicaLightingBumpMode::NormalMap) &&
+                (ConstantLightingProgram(lightingShader.Source, *bumpPacket)
+                     ->Control[3] & 64U) == 0U,
             "PICA disable-bump-renormalization bit was ignored");
 #if defined(OOT3D_NATIVE_PICA_TEST_SHADERC)
     RequireFragmentShaderCompiles(lightingShader.Source);
@@ -425,16 +452,14 @@ int main() {
                 *bumpPacket, tangentState, lightingShader,
                 &lightingError) &&
                 lightingShader.Source.find(
-                    "vec3 pica_surface_normal = vec3(0.0, 0.0, 1.0)") !=
-                    std::string::npos &&
-                lightingShader.Source.find(
-                    "vec3 pica_surface_tangent = 2.0 * ("
+                    "pica_program_surface(pica_lighting_constant_program, "
                     "pica_sample_texture1(vec2(pica_texcoord1.x, 1.0 - "
-                    "pica_texcoord1.y))).rgb - vec3(1.0)") !=
-                    std::string::npos &&
-                lightingShader.Source.find(
-                    "pica_surface_normal_z_squared") ==
-                    std::string::npos &&
+                    "pica_texcoord1.y)), vec4(1.0)") != std::string::npos &&
+                ConstantLightingProgram(lightingShader.Source, *bumpPacket)
+                    .has_value() &&
+                ((ConstantLightingProgram(lightingShader.Source, *bumpPacket)
+                      ->Control[3] >> 4U) & 3U) ==
+                    static_cast<uint32_t>(Fast::Oot3d::PicaLightingBumpMode::TangentMap) &&
                 lightingShader.Hooks.SamplesTexture(1U),
             "native PICA tangent-map bump lighting was not generated");
 #if defined(OOT3D_NATIVE_PICA_TEST_SHADERC)
@@ -471,8 +496,10 @@ int main() {
                 lightingShader.Source.find(
                     "binding=13) uniform usampler2D pica_lighting_lut") !=
                     std::string::npos &&
-                lightingShader.Source.find(
-                    "pica_lighting_lut_unsigned(0") != std::string::npos,
+                ConstantLightingProgram(lightingShader.Source, lutLightingPacket)
+                    .has_value() &&
+                ConstantLightingProgram(lightingShader.Source, lutLightingPacket)
+                        ->Luts[0][3] != 0.0F,
             "native fragment-lighting LUT shader was not generated");
 #if defined(OOT3D_NATIVE_PICA_TEST_SHADERC)
     RequireFragmentShaderCompiles(lightingShader.Source);
@@ -509,19 +536,18 @@ int main() {
                     completeLutLightingPacket, state, lightingShader,
                     &lightingError),
             "complete native fragment-lighting LUT configuration failed");
-    for (const char* expectedCall : {
-             "pica_lighting_lut_unsigned(0",
-             "pica_lighting_lut_unsigned(1",
-             "pica_lighting_lut_unsigned(3",
-             "pica_lighting_lut_unsigned(4",
-             "pica_lighting_lut_unsigned(5",
-             "pica_lighting_lut_unsigned(6",
-             "pica_lighting_lut_unsigned(8",
-             "pica_lighting_lut_unsigned(16",
-         }) {
-        Require(lightingShader.Source.find(expectedCall) != std::string::npos,
+    // Every LUT path is enabled in the constant program: D0, D1, fresnel and
+    // the three reflection tables, light 0's spot and distance attenuation.
+    const auto completeProgram =
+        ConstantLightingProgram(lightingShader.Source, completeLutLightingPacket);
+    Require(completeProgram.has_value(),
+            "complete native fragment-lighting program is missing");
+    for (const size_t sampler : {0U, 1U, 3U, 4U, 5U, 6U}) {
+        Require(completeProgram->Luts[sampler][3] != 0.0F,
                 "complete native fragment-lighting LUT path is missing");
     }
+    Require((completeProgram->Lights[0][1] & (32U | 64U)) == (32U | 64U),
+            "complete native fragment-lighting attenuation path is missing");
 #if defined(OOT3D_NATIVE_PICA_TEST_SHADERC)
     RequireFragmentShaderCompiles(lightingShader.Source);
 #endif
