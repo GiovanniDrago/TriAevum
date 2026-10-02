@@ -4,6 +4,7 @@
 #include "fast/renderer3ds/pica_material_guide.h"
 
 #include <algorithm>
+#include <charconv>
 #include <array>
 #include <bit>
 #include <cctype>
@@ -261,6 +262,17 @@ ReflectionMaterialParameters SanitizeProfile(const ReflectionMaterialParameters&
         finiteClamp(profile.Reflectivity, 0.0F, 1.0F, 0.0F),
         finiteClamp(profile.Roughness, 0.02F, 1.0F, 1.0F),
     };
+}
+
+// The value a fixed six-decimal GLSL literal of value parses to.
+float LiteralValue(float value) noexcept {
+    std::ostringstream stream;
+    stream.imbue(std::locale::classic());
+    stream << std::fixed << std::setprecision(6) << value;
+    const auto text = stream.str();
+    float parsed = 0.0F;
+    std::from_chars(text.data(), text.data() + text.size(), parsed);
+    return parsed;
 }
 
 std::string BuildExplicitMaterialGuide(const ReflectionMaterialParameters& profile) {
@@ -571,7 +583,13 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
     const auto pbr = surfaceLighting && HasPicaShaderInstrumentationFeature(
         request.RequestedFeatures, PicaShaderInstrumentationFeature::PbrMaterial)
         ? Renderer3ds::BuildPicaPbrShader(result.Hooks, request.Pbr) : std::nullopt;
+    using Decision = PicaEffectDecisions;
+    auto& decisions = result.Decisions;
+    if (AnalyzePicaFragmentOutputContract(request.Source).Depth ==
+        ::Oot3d::Renderer::PicaFragmentDepthOutput::ExplicitNative)
+        decisions.Set(Decision::ExplicitDepth);
     if (surfaceLighting) {
+        decisions.Set(Decision::SurfaceLighting);
         declarations += Renderer3ds::PicaSurfaceLightingDeclarations();
         insertions.push_back({result.Hooks.Offset(PicaShaderHook::PicaLighting),
             "\n    vec4 surface_native_primary = rounded_primary_color;\n"
@@ -609,6 +627,13 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
             MixKey(result.FragmentKey, request.Pbr.NativeAttenuationLuts);
             MixKey(result.FragmentKey, request.Pbr.SeamSoftening);
             result.AppliedFeatures |= PicaShaderInstrumentationFeature::PbrMaterial;
+            const auto* sample = result.Hooks.TextureSample(request.Pbr.TextureSlot);
+            decisions.Set(Decision::Pbr);
+            decisions.PbrCoordinate = sample->Coordinate;
+            decisions.PbrProjected = sample->Operation == PicaTextureCoordinateOperation::ProjectedNativeVFlip;
+            decisions.PbrNativeLighting = request.Pbr.NativeFragmentLighting;
+            decisions.PbrAttenuationLuts = request.Pbr.NativeAttenuationLuts;
+            decisions.PbrSeams = request.Pbr.SeamSoftening;
         }
         if (result.Hooks.Has(PicaShaderSemantic::NativeColorOutput))
             insertions.push_back({tevEnd, "\n    vec3 surface_before_fog = combiner_output.rgb;\n"});
@@ -617,6 +642,7 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
             // Diffuse albedo: the native TEV under unit lighting (primary 1,
             // secondary 0), i.e. textures times material colour without the
             // lighting. The lit result is restored untouched.
+            decisions.Set(Decision::AlbedoReplay);
             std::string albedo = R"glsl(
     vec3 surface_gi_albedo;
     {
@@ -652,7 +678,7 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
         !ContainsIdentifier(request.Source, "pica_rigid_motion_guide") &&
         !HasOutputAtLocation(request.Source, 3U);
 
-    const auto ensureNormalGuide = [&]() {
+    const auto ensureNormalGuide = [&](Decision::NormalWriter writer) {
         if (normalAvailable) {
             return true;
         }
@@ -668,6 +694,14 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
         declarations +=
             "layout(location=1) out vec4 pica_normal_guide;\n";
         const bool typedNormal = !surfaceLighting && !materialNormal && request.SurfaceNormalInput;
+        decisions.Set(Decision::NormalGuide);
+        decisions.NormalAt = writer;
+        decisions.Normal = pbr ? Decision::NormalPath::Pbr
+            : surfaceLighting ? Decision::NormalPath::Surface
+            : materialNormal ? Decision::NormalPath::Material
+            : typedNormal ? Decision::NormalPath::Typed
+            : result.Hooks.Has(PicaShaderSemantic::ViewVector) ? Decision::NormalPath::NativeView
+            : Decision::NormalPath::NativeRotate;
         if (pbr) {
             epilogue += "    pica_normal_guide = vec4(pbr_normal * 0.5 + 0.5, 1.0);\n";
         } else if (surfaceLighting) {
@@ -728,7 +762,7 @@ vec3 oot3d_normal_guide_typed(vec3 authored, vec3 native_normal) {
         return true;
     };
 
-    const auto ensureMaterialGuide = [&]() {
+    const auto ensureMaterialGuide = [&](Decision::MaterialWriter writer) {
         if (materialAvailable) {
             return true;
         }
@@ -736,6 +770,7 @@ vec3 oot3d_normal_guide_typed(vec3 authored, vec3 native_normal) {
             HasOutputAtLocation(request.Source, 2U)) {
             return false;
         }
+        decisions.MaterialAt = writer;
         declarations +=
             "layout(location=2) out vec4 pica_material_guide;\n";
         epilogue +=
@@ -750,6 +785,8 @@ vec3 oot3d_normal_guide_typed(vec3 authored, vec3 native_normal) {
             PicaShaderInstrumentationFeature::NativeFogGuide) && result.Hooks.Valid() &&
         !HasOutputAtLocation(request.Source, 5U)) {
         declarations += "layout(location=5) out vec4 pica_fog_guide;\n";
+        decisions.Set(Decision::FogGuide);
+        if (result.Hooks.Has(PicaShaderSemantic::NativeFogFactor)) decisions.Set(Decision::FogGuideFactor);
         epilogue += result.Hooks.Has(PicaShaderSemantic::NativeFogFactor)
             ? "    pica_fog_guide = vec4(fragment_uniforms.fog_color.rgb, fog_factor);\n"
             : "    pica_fog_guide = vec4(0.0, 0.0, 0.0, 1.0);\n";
@@ -761,7 +798,7 @@ vec3 oot3d_normal_guide_typed(vec3 authored, vec3 native_normal) {
     if (HasPicaShaderInstrumentationFeature(
             request.RequestedFeatures,
             PicaShaderInstrumentationFeature::NormalGuide) &&
-        ensureNormalGuide()) {
+        ensureNormalGuide(Decision::NormalWriter::NormalGuide)) {
         result.FragmentKey = NormalGuideVariantKey(result.FragmentKey);
         apply(PicaShaderInstrumentationFeature::NormalGuide);
         const auto* relief = request.ReliefTexture < 3U ? result.Hooks.TextureSample(request.ReliefTexture) : nullptr;
@@ -827,6 +864,10 @@ vec3 oot3d_relief_normal(vec3 n, vec2 slope, vec3 dpdx, vec3 dpdy, vec2 duvdx, v
                 "    pica_normal_guide.rgb = oot3d_relief_normal(pica_normal_guide.rgb * 2.0 - 1.0,\n"
                 "        oot3d_relief_slope, oot3d_relief_dpdx, oot3d_relief_dpdy, oot3d_relief_duvdx,\n"
                 "        oot3d_relief_duvdy) * 0.5 + 0.5;\n";
+            decisions.Set(Decision::Relief);
+            decisions.ReliefUnit = request.ReliefTexture;
+            decisions.ReliefCoordinate = relief->Coordinate;
+            decisions.ReliefGain = LiteralValue(request.ReliefGain);
             result.FragmentKey = SaltedVariantKey(result.FragmentKey, "OOT3D_AO_TEXTURE_RELIEF_V1");
             MixKey(result.FragmentKey, request.ReliefTexture);
             MixKey(result.FragmentKey, relief->Coordinate);
@@ -841,8 +882,11 @@ vec3 oot3d_relief_normal(vec3 n, vec2 slope, vec3 dpdx, vec3 dpdy, vec2 duvdx, v
         replacesDestinationRgb &&
         request.Draw.FragmentOperationMode == 0U && (request.Draw.ColorWriteMask & 7U) != 0U &&
         request.Draw.CompositionDomain == ::Oot3d::Renderer::PicaCompositionDomain::Scene &&
-        !HasOutputAtLocation(request.Source, 6U) && ensureNormalGuide()) {
+        !HasOutputAtLocation(request.Source, 6U) && ensureNormalGuide(Decision::NormalWriter::Outline)) {
         declarations += "layout(location=6) out vec4 pica_outline_geometry_guide;\n";
+        decisions.Set(Decision::Outline);
+        if (request.Draw.DepthCompare == ::Oot3d::Renderer::PicaCompareFunction::Always)
+            decisions.Set(Decision::OutlineClear);
         const auto depth = AnalyzePicaFragmentOutputContract(request.Source).Depth;
         if (request.Draw.DepthCompare == ::Oot3d::Renderer::PicaCompareFunction::Always) {
             // Raster color/depth initialization is not a geometric surface.
@@ -879,6 +923,15 @@ vec3 oot3d_relief_normal(vec3 n, vec2 slope, vec3 dpdx, vec3 dpdy, vec2 duvdx, v
         if (!replacesDestinationRgb)
             coverage = blend.DestRgb == ::Oot3d::Renderer::NativeBlendFactor::One ? "0.0"
                                                                                   : "clamp(pica_color.a, 0.0, 1.0)";
+        decisions.Set(Decision::AlbedoGuide);
+        decisions.AlbedoCoverage = replacesDestinationRgb ? Decision::Coverage::One
+            : blend.DestRgb == ::Oot3d::Renderer::NativeBlendFactor::One ? Decision::Coverage::Zero
+            : Decision::Coverage::Alpha;
+        decisions.Albedo =
+            request.Draw.DepthCompare == ::Oot3d::Renderer::PicaCompareFunction::Always ? Decision::AlbedoPath::Zero
+            : pbr ? Decision::AlbedoPath::Pbr
+            : surfaceLighting ? Decision::AlbedoPath::Surface
+            : Decision::AlbedoPath::Zero;
         declarations += "layout(location=7) out vec4 pica_diffuse_albedo_guide;\n";
         if (request.Draw.DepthCompare == ::Oot3d::Renderer::PicaCompareFunction::Always) {
             epilogue += "    pica_diffuse_albedo_guide = vec4(0.0);\n";
@@ -907,6 +960,7 @@ vec3 oot3d_relief_normal(vec3 n, vec2 slope, vec3 dpdx, vec3 dpdy, vec2 duvdx, v
         if (shadow.Applied()) {
             declarations += shadow.Declarations;
             surfaceShadow = surfaceLighting;
+            decisions.Set(Decision::DirectionalShadow);
             result.FragmentKey = shadow.FragmentKey;
             apply(PicaShaderInstrumentationFeature::
                       DirectionalShadowLighting);
@@ -925,6 +979,7 @@ vec3 pica_surface_shadow(int slot) {
         const bool pointShadow = HasPicaShaderInstrumentationFeature(
             request.RequestedFeatures, PicaShaderInstrumentationFeature::PointShadowLighting);
         if (pointShadow) {
+            decisions.Set(Decision::PointShadow);
             declarations += Renderer3ds::PointShadowReceiverShader();
             result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_POINT_SHADOW_V1");
             apply(PicaShaderInstrumentationFeature::PointShadowLighting);
@@ -960,6 +1015,10 @@ vec3 pica_surface_shadow(int slot) {
             result.ToonEligibility = toon.Eligibility;
             result.ToonMaterialPath = toon.MaterialPath;
             if (toon.Applied()) {
+                decisions.Set(Decision::Toon);
+                if (toon.MaterialPath) decisions.Set(Decision::ToonMaterialPath);
+                if (result.Hooks.Has(PicaShaderSemantic::PrimaryColorConsumed))
+                    decisions.Set(Decision::ToonVertexLighting);
                 declarations += toon.Declarations;
                 insertions.push_back({
                     result.Hooks.Offset(toon.InsertionHook),
@@ -981,6 +1040,9 @@ vec3 pica_surface_shadow(int slot) {
                 ambientAvailable = true;
             }
             const bool exact = result.Hooks.Has(PicaShaderSemantic::AmbientOcclusionResponse);
+            decisions.Set(Decision::AmbientGuide);
+            decisions.Ambient = pbr ? Decision::AmbientPath::Pbr
+                : exact ? Decision::AmbientPath::Exact : Decision::AmbientPath::Fallback;
             if (pbr) {
                 epilogue += "\n    pica_ambient_guide = vec4(pbr_ao_response, 1.0);\n";
                 result.AmbientGuideEligibility = PicaAmbientOcclusionGuideEligibility::AppliedExact;
@@ -1013,6 +1075,7 @@ vec3 pica_surface_shadow(int slot) {
         } else if (draw.DepthWriteEnabled && (!features.Outline || replacesDestinationRgb)) {
             result.SceneDomainEligibility = PicaSceneDomainGuideEligibility::SceneGeometry;
             if (features.Outline && !rigidMotionWillApply && !HasOutputAtLocation(request.Source, 3U)) {
+                decisions.Set(Decision::SceneReset);
                 declarations += "layout(location=3) out vec4 pica_transparent_depth_guide;\n";
                 epilogue += "    pica_transparent_depth_guide = vec4(0.0);\n";
                 result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_NATIVE_OCCLUSION_RESET_V2");
@@ -1032,7 +1095,10 @@ vec3 pica_surface_shadow(int slot) {
                 features.Outline && draw.Blend.Enabled && draw.DepthTestEnabled &&
                 draw.DepthCompare != ::Oot3d::Renderer::PicaCompareFunction::Always &&
                 !HasOutputAtLocation(request.Source, 3U);
+            decisions.Set(Decision::SceneOverlay);
             if (transparentDepthAvailable) {
+                decisions.Set(Decision::SceneTransparentDepth);
+                if (rigidMotionWillApply) decisions.Set(Decision::SceneTransparentRigid);
                 const char* outputName = "pica_rigid_motion_guide";
                 if (!rigidMotionWillApply) {
                     outputName = "pica_transparent_depth_guide";
@@ -1051,6 +1117,9 @@ vec3 pica_surface_shadow(int slot) {
                 deferredEpilogue += ", 0.0000152588, 1.0) : 0.0;\n";
             }
             const char* alpha = draw.Blend.Enabled ? "pica_color.a" : "0.0";
+            if (draw.Blend.Enabled) decisions.Set(Decision::SceneBlended);
+            if (features.Outline) decisions.Set(Decision::SceneOutline);
+            if (features.AmbientOcclusion) decisions.Set(Decision::SceneAmbient);
             if (draw.Blend.Enabled) {
                 epilogue += "    // OOT3D_SCENE_DOMAIN_BLENDED_OVERLAY\n";
             }
@@ -1069,6 +1138,7 @@ vec3 pica_surface_shadow(int slot) {
             // A depth-writing surface already published its own guide.
             const bool albedoOverlay = features.GlobalIllumination && !result.Outputs.WritesDiffuseAlbedoGuide;
             if (albedoOverlay) {
+                decisions.Set(Decision::SceneAlbedo);
                 declarations += "layout(location=7) out vec4 pica_diffuse_albedo_guide;\n";
                 epilogue += "    pica_diffuse_albedo_guide = vec4(0.0, 0.0, 0.0, ";
                 epilogue += alpha;
@@ -1108,15 +1178,20 @@ vec3 pica_surface_shadow(int slot) {
         const bool reflectionApplied =
             result.ReflectionEligibility == PicaReflectionMaterialEligibility::Eligible ||
             result.ReflectionEligibility == PicaReflectionMaterialEligibility::ExplicitTextureProfile;
-        if (reflectionApplied && ensureMaterialGuide()) {
+        if (reflectionApplied && ensureMaterialGuide(Decision::MaterialWriter::Reflection)) {
             declarations += Renderer3ds::PicaMaterialGuideShaderLibrary;
+            decisions.Set(Decision::Reflection);
             if (pbr) {
+                decisions.Set(Decision::ReflectionPbr);
                 epilogue += "    pica_material_guide = vec4(pbr_reflectivity, pbr_roughness, "
                     "pica_encode_reflection_weight(pbr_material.specular_reflection_weight.y), 0.0);\n";
                 apply(PicaShaderInstrumentationFeature::ReflectionMaterialGuide);
             } else if (request.ReflectionProfile != nullptr) {
                 const auto profile =
                     SanitizeProfile(*request.ReflectionProfile);
+                decisions.Set(Decision::ReflectionExplicit);
+                decisions.ReflectionReflectivity = LiteralValue(profile.Reflectivity);
+                decisions.ReflectionRoughness = LiteralValue(profile.Roughness);
                 epilogue += "    ";
                 epilogue += BuildExplicitMaterialGuide(profile);
                 epilogue += "\n";
@@ -1153,7 +1228,9 @@ vec3 pica_surface_shadow(int slot) {
             reactive.Coverage == PicaReactiveCoverage::Full ||
             result.Hooks.Has(PicaShaderSemantic::NativeColorOutput);
         if (reactive.Reactive() && sourceCoverageAvailable &&
-            ensureMaterialGuide()) {
+            ensureMaterialGuide(Decision::MaterialWriter::Reactive)) {
+            decisions.Set(Decision::Reactive);
+            decisions.ReactiveKind = static_cast<Decision::ReactiveCoverage>(reactive.Coverage);
             epilogue += BuildPicaReactiveMaskAssignment(reactive);
             result.FragmentKey = ResolvePicaReactiveFragmentKey(
                 result.FragmentKey, reactive.Coverage);
@@ -1174,12 +1251,13 @@ vec3 pica_surface_shadow(int slot) {
          HasPicaShaderInstrumentationFeature(request.RequestedFeatures,
                                              PicaShaderInstrumentationFeature::ReactiveMask)) &&
         !materialAvailable && request.Draw.DepthTestEnabled && request.Draw.DepthWriteEnabled &&
-        (request.Draw.ColorWriteMask & 7U) != 0U && ensureMaterialGuide()) {
+        (request.Draw.ColorWriteMask & 7U) != 0U && ensureMaterialGuide(Decision::MaterialWriter::Baseline)) {
         result.FragmentKey ^= 0x6d61746c62617365ULL;
         apply(PicaShaderInstrumentationFeature::MaterialGuideBaseline);
     }
 
     if (rigidMotionWillApply) {
+        decisions.Set(Decision::RigidMotion);
         declarations +=
             "layout(location=3) out vec4 pica_rigid_motion_guide;\n"
             "layout(location=7) in vec4 oot3d_current_clip;\n"
@@ -1199,9 +1277,11 @@ vec3 pica_surface_shadow(int slot) {
     }
 
     epilogue += deferredEpilogue;
-    if (surfaceLighting && result.Hooks.Has(PicaShaderSemantic::NativeColorOutput))
+    if (surfaceLighting && result.Hooks.Has(PicaShaderSemantic::NativeColorOutput)) {
+        decisions.Set(Decision::EnvironmentMix);
         epilogue += "\n    if (pica_surface.environment_parameters.w != 0.0)\n"
                     "        pica_color.rgb = mix(surface_before_fog, pica_color.rgb, pica_surface.environment_parameters.z);\n";
+    }
     if (pbr && result.Hooks.Has(PicaShaderSemantic::NativeColorOutput))
         epilogue += pbr->DiagnosticOutput;
 
@@ -1209,7 +1289,11 @@ vec3 pica_surface_shadow(int slot) {
         result.Source = Compose(
             request.Source, result.Hooks, declarations, epilogue,
             insertions);
+        for (uint32_t location = 1U; location < 8U; ++location)
+            if (HasOutputAtLocation(result.Source, location))
+                decisions.Outputs |= static_cast<uint8_t>(1U << location);
         if (result.Source.empty()) {
+            result.Decisions = {};
             result.AppliedFeatures = PicaShaderInstrumentationFeature::None;
             result.FragmentKey = request.FragmentKey;
             result.ReactiveCoverage = PicaReactiveCoverage::None;

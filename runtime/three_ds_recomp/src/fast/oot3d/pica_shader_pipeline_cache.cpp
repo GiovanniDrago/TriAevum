@@ -294,6 +294,7 @@ PicaShaderPipelineResult BuildInstrumentedVariant(
             if (vertex.TemporalApplied) apply(PicaShaderInstrumentationFeature::TemporalVertex);
         }
         surfaceNormalInput = vertex.SurfaceApplied;
+        result.SurfaceVertexApplied = vertex.SurfaceApplied;
         if (!vertex.SurfaceApplied) {
             fragmentFeatures = static_cast<PicaShaderInstrumentationFeature>(
                 static_cast<uint32_t>(fragmentFeatures) &
@@ -348,6 +349,7 @@ PicaShaderPipelineResult BuildInstrumentedVariant(
     result.RigidMotionApplied = fragment.RigidMotionApplied;
     result.TypedNormalGuide = fragment.Applied() && fragment.TypedNormalGuide;
     result.FragmentOutputs = fragment.Outputs;
+    result.Decisions = fragment.Decisions;
     result.DirectFragmentHooksUsed =
         canonical.DirectCanonicalFragmentHooksUsed &&
         fragment.UsedProvidedHooks;

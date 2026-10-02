@@ -10,7 +10,11 @@
 #include "fast/oot3d/toon_surface_response.h"
 #include "fast/oot3d/pica_temporal_fragment_binaries.h"
 #include "fast/oot3d/pica_toon_fragment_binaries.h"
+#include "fast/oot3d/pica_uber_effect_program.h"
+#include "fast/oot3d/pica_uber_fragment_binaries.h"
+#include "fast/oot3d/pica_nri_shader_contract.h"
 #include <shaderc/shaderc.hpp>
+#include <cstdlib>
 #include <fstream>
 #include <filesystem>
 #include <iostream>
@@ -39,7 +43,79 @@ static void ConfigureTemporal(Fast::Oot3d::PicaFragmentInstrumentationRequest& r
     request.Draw.Blend.DestRgb = Factor::One;
 }
 
+// Always-available effect family: one superset program per parametric
+// structural configuration (lighting, integer texture 0) and vertex interface
+// (temporal clip, surface normal and tint). Shadow-buffer draws keep the
+// native family. NRI separate-sampler interface only.
+static int BuildUberFamily(int argc, char** argv) {
+    const bool verify = argc == 2 && std::string_view(argv[1]) == "--check";
+    const bool countOnly = argc == 2 && std::string_view(argv[1]) == "--count";
+    Check(argc == 2, "usage: build_fragment_artifacts --uber output.h | --check | --count");
+    shaderc::Compiler compiler;
+    shaderc::CompileOptions options;
+    options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_1);
+    options.SetOptimizationLevel(shaderc_optimization_level_performance);
+    std::ostringstream output, table;
+    output << "// Generated from maintained PICA equations and effect compositions.\n"
+              "// Regenerate with tools/renderer/tev_program/build_fragment_artifacts --uber.\n"
+              "#pragma once\n#include \"fast/renderer3ds/pica_fragment_artifact.h\"\nnamespace Fast::Oot3d {\n";
+    unsigned modules = 0;
+    for (unsigned lighting = 0; lighting < 2; ++lighting)
+    for (unsigned integerTexture = 0; integerTexture < 2; ++integerTexture) {
+        Oot3dPicaGeneratedFragmentShader shader;
+        std::string error;
+        Check(GenerateOot3dPicaParametricBaseFragmentShader(lighting != 0, integerTexture != 0, shader, &error),
+              error);
+        for (unsigned temporal = 0; temporal < 2; ++temporal)
+        for (unsigned surface = 0; surface < 2; ++surface) {
+            const auto uber = Fast::Oot3d::BuildPicaUberEffectProgram({shader.Source, shader.Hooks,
+                temporal != 0, surface != 0});
+            Check(!uber.empty(), "uber effect composition rejected a parametric base");
+            const auto nri = Fast::Oot3d::BuildPicaNriFragmentShaderVariant(uber);
+            Check(nri.Applied, nri.Error);
+            if (const char* dump = std::getenv("TRIAEVUM_UBER_SOURCES")) {
+                std::ofstream file(std::filesystem::path(dump) / ("uber" + std::to_string(modules) + ".frag"));
+                file << nri.Source;
+            }
+            if (countOnly) { ++modules; continue; }
+            const auto id = IdentifyPicaShaderSource(nri.Source);
+            if (verify) {
+                Check(!FindPicaFragmentArtifact(Fast::Oot3d::kUberFragmentArtifacts, nri.Source, true).empty(),
+                      "uber effect source changed: regenerate artifacts");
+                ++modules;
+                continue;
+            }
+            const auto compiled = compiler.CompileGlslToSpv(nri.Source, shaderc_fragment_shader,
+                                                           "uber_fragment", options);
+            Check(compiled.GetCompilationStatus() == shaderc_compilation_status_success,
+                  compiled.GetErrorMessage());
+            output << "inline constexpr uint32_t kUberFragmentSpirv" << modules << "[] = {\n";
+            unsigned column = 0;
+            for (auto word : compiled) {
+                output << "0x" << std::hex << word << "U,";
+                if (++column % 12 == 0) output << '\n';
+            }
+            output << std::dec << "\n};\n";
+            table << "{{" << id.Id << "ULL," << id.SecondaryHash << "ULL," << id.Size
+                  << "ULL},true,kUberFragmentSpirv" << modules << "},\n";
+            ++modules;
+        }
+    }
+    Check(modules == 16U, "unexpected uber effect family size");
+    if (countOnly || verify) {
+        std::cout << "uber_fragment_artifacts=" << modules << '\n';
+        return 0;
+    }
+    output << "inline const Fast::Renderer3ds::PicaFragmentArtifact kUberFragmentArtifacts[] = {\n"
+           << table.str() << "};\n} // namespace Fast::Oot3d\n";
+    std::ofstream file(argv[1], std::ios::binary | std::ios::trunc);
+    Check(bool(file) && bool(file << output.str()), "cannot write uber fragment artifacts");
+    std::cout << "uber_fragment_artifacts=" << modules << '\n';
+    return 0;
+}
+
 int main(int argc, char** argv) try {
+    if (argc > 1 && std::string_view(argv[1]) == "--uber") return BuildUberFamily(argc - 1, argv + 1);
     const bool temporal = argc > 1 && std::string_view(argv[1]) == "--temporal";
     const bool toon = argc > 1 && std::string_view(argv[1]) == "--toon";
     if (temporal || toon) { --argc; ++argv; }
@@ -330,7 +406,7 @@ int main(int argc, char** argv) try {
         }
     }
     if (countOnly) { std::cout << "unique_modules=" << modules << '\n'; return 0; }
-    Check(modules == (toon ? 348U : temporal ? 40U : 16U), "unexpected finite fragment family size");
+    Check(modules == (toon ? 200U : temporal ? 40U : 16U), "unexpected finite fragment family size");
     output << ((temporal || toon) ? "inline const Fast::Renderer3ds::PicaFragmentArtifact "
                         : "inline const PicaFragmentArtifact ")
            << symbol << "Artifacts[] = {\n" << table.str()

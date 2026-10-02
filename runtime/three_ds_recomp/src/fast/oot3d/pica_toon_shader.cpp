@@ -68,6 +68,28 @@ std::string Float(float value) {
     return out.str();
 }
 
+constexpr std::string_view kToonHelpers = R"glsl(
+vec3 oot3d_toon_rotate_z(vec4 q) {
+    float qlen = dot(q, q);
+    if (qlen < 0.000001) return vec3(0.0, 0.0, 1.0);
+    q *= inversesqrt(qlen);
+    return vec3(2.0 * (q.x * q.z + q.w * q.y),
+                2.0 * (q.y * q.z - q.w * q.x),
+                1.0 - 2.0 * (q.x * q.x + q.y * q.y));
+}
+vec3 oot3d_apply_toon(vec3 sourceColor) {
+    return oot3d_toon_surface_response(sourceColor, pica_primary_color.rgb,
+        oot3d_toon_rotate_z(pica_normquat), pica_view, oot3d_toon_parameters());
+}
+vec3 oot3d_material_bands(vec3 lighting, bool shadow_tint) {
+    return clamp(oot3d_toon_banded_color(lighting, lighting, 1.0,
+        shadow_tint, oot3d_toon_parameters()), 0.0, 1.0);
+}
+vec3 oot3d_material_rim(vec3 materialNormal) {
+    return oot3d_toon_rim(materialNormal, pica_view, oot3d_toon_parameters());
+}
+)glsl";
+
 std::string Declarations(const ToonStyleSettings& style, bool usesVertexLighting,
                          bool uniformParameters = false) {
     std::string source(kToonSurfaceResponseShader);
@@ -90,30 +112,24 @@ std::string Declarations(const ToonStyleSettings& style, bool usesVertexLighting
             ", vec4[2](" + vec4(params.Levels[0]) + ", " + vec4(params.Levels[1]) +
             "), vec4[2](" + vec4(params.Thresholds[0]) + ", " + vec4(params.Thresholds[1]) + "));\n}\n";
     }
-    source += R"glsl(
-vec3 oot3d_toon_rotate_z(vec4 q) {
-    float qlen = dot(q, q);
-    if (qlen < 0.000001) return vec3(0.0, 0.0, 1.0);
-    q *= inversesqrt(qlen);
-    return vec3(2.0 * (q.x * q.z + q.w * q.y),
-                2.0 * (q.y * q.z - q.w * q.x),
-                1.0 - 2.0 * (q.x * q.x + q.y * q.y));
-}
-vec3 oot3d_apply_toon(vec3 sourceColor) {
-    return oot3d_toon_surface_response(sourceColor, pica_primary_color.rgb,
-        oot3d_toon_rotate_z(pica_normquat), pica_view, oot3d_toon_parameters());
-}
-vec3 oot3d_material_bands(vec3 lighting, bool shadow_tint) {
-    return clamp(oot3d_toon_banded_color(lighting, lighting, 1.0,
-        shadow_tint, oot3d_toon_parameters()), 0.0, 1.0);
-}
-vec3 oot3d_material_rim(vec3 materialNormal) {
-    return oot3d_toon_rim(materialNormal, pica_view, oot3d_toon_parameters());
-}
-)glsl";
+    source += kToonHelpers;
     return source;
 }
+
 } // namespace
+
+std::string PicaToonUberDeclarations(std::string_view parametersBlock, std::string_view vertexLighting) {
+    std::string source(kToonSurfaceResponseShader);
+    source += parametersBlock;
+    source += "ToonSurfaceParameters oot3d_toon_parameters() {\n"
+              "    ToonSurfaceParameters p = oot3d_uber.toon;\n"
+              "    p.flags.y = ";
+    source += vertexLighting;
+    source += ";\n    return p;\n}\n";
+    source += kToonHelpers;
+    return source;
+}
+
 
 PicaToonEligibility ClassifyPicaToonDraw(const PicaToonDrawInfo& draw,
                                          ToonMode mode) {

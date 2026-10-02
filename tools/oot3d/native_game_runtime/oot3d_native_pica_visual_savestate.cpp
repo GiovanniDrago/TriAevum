@@ -863,6 +863,7 @@ bool ReadPlan(Reader& reader, Oot3dPicaVulkanDrawPlan& value,
     value.FragmentShader.SourceIdentity =
         Oot3d::Renderer::IdentifyPicaShaderSource(
             value.FragmentShader.Source);
+    if (typedFeatures) AttachOot3dPicaRestoredUberFragment(value);
     uint32_t bindingCount = 0U;
     if (!reader.U32(bindingCount) || bindingCount > 16U) return false;
     value.VertexBindings.resize(bindingCount);

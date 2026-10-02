@@ -64,6 +64,9 @@ struct PicaDirectionalShadowHistoryState {
     }
 };
 
+// The receiver declarations every directional-shadow lighting variant adds.
+[[nodiscard]] std::string PicaDirectionalShadowLightingDeclarations();
+
 struct PicaDirectionalShadowLightingInstrumentation {
     std::string Declarations;
     uint64_t FragmentKey = 0U;

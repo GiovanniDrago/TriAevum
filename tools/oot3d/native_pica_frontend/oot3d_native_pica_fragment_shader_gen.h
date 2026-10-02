@@ -60,4 +60,11 @@ bool GenerateOot3dPicaFragmentShader(
     Oot3dPicaShaderBuildPurpose purpose = Oot3dPicaShaderBuildPurpose::RuntimeDraw,
     Oot3dPicaTevMode mode = Oot3dPicaTevMode::Specialized);
 
+// The parametric program of one structural configuration. Its text depends
+// only on native fragment lighting and an integer (shadow) texture 0; every
+// parametric draw program is one of these, with draw-specific hooks.
+bool GenerateOot3dPicaParametricBaseFragmentShader(
+    bool fragmentLighting, bool integerTexture0,
+    Oot3dPicaGeneratedFragmentShader& shader, std::string* error = nullptr);
+
 } // namespace Oot3dNativeGame

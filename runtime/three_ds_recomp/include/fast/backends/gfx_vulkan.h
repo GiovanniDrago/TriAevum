@@ -456,6 +456,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         // An always-available program exists only as built-in artifacts.
         bool Available = true;
         uint8_t UnavailableReason = 0;
+        // The superset effect program: binding 15 carries its decisions.
+        bool EffectBlock = false;
+        // Guide locations its specialized program declares (EffectBlock).
+        uint8_t DeclaredOutputs = 0xFFU;
     };
 
     enum class NativePicaPreparationMode : uint8_t {
@@ -485,6 +489,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         FragmentNotBuiltIn,
         NoNriContract,
         PipelineFailed,
+        EffectNotCovered,
         Count,
     };
 

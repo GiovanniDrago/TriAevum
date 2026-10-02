@@ -213,6 +213,7 @@ add_executable(oot3d_pica_shader_pipeline_cache_tests
     ../src/fast/oot3d/pica_shader_instrumentation.cpp
     ../src/fast/oot3d/pica_shader_pipeline_cache.cpp
     ../src/fast/oot3d/pica_toon_shader.cpp
+    ../src/fast/oot3d/pica_uber_effect_program.cpp
 )
 set_property(TARGET oot3d_pica_shader_pipeline_cache_tests
     PROPERTY CXX_STANDARD 20)

@@ -4,6 +4,7 @@
 #include "fast/oot3d/pica_reactive_mask.h"
 #include "fast/oot3d/pica_rigid_motion.h"
 #include "fast/oot3d/pica_shader_pipeline_cache.h"
+#include "fast/oot3d/pica_uber_effect_program.h"
 #include "fast/renderer3ds/pica_surface_lighting.h"
 
 #include <gtest/gtest.h>
@@ -816,6 +817,55 @@ void ExpectCompiles(const std::string& source, shaderc_shader_kind kind, const c
     EXPECT_EQ(compiled.GetCompilationStatus(), shaderc_compilation_status_success) << compiled.GetErrorMessage();
 }
 #endif
+
+TEST(Oot3dPicaUberEffectProgram, DecisionFieldsDecodeIndependently) {
+    using namespace Fast::Oot3d;
+    using Decision = PicaEffectDecisions;
+    const auto decode = [](uint32_t packed, unsigned shift) {
+        return (packed >> shift) & ((1U << kPicaUberFieldBits) - 1U);
+    };
+    // Every field at its largest value next to neighbours at theirs: a field
+    // that read its neighbour's bits would not round-trip.
+    Decision decisions;
+    decisions.Bits = Decision::NormalGuide | Decision::Reactive;
+    decisions.Normal = Decision::NormalPath::NativeRotate;
+    decisions.NormalAt = Decision::NormalWriter::Outline;
+    decisions.MaterialAt = Decision::MaterialWriter::Baseline;
+    decisions.AlbedoCoverage = Decision::Coverage::Alpha;
+    decisions.Albedo = Decision::AlbedoPath::Surface;
+    decisions.Ambient = Decision::AmbientPath::Fallback;
+    decisions.ReactiveKind = Decision::ReactiveCoverage::Full;
+    const auto block = PackPicaUberEffectBlock(decisions, {});
+    EXPECT_EQ(block.Control[0], decisions.Bits);
+    const uint32_t y = block.Control[1];
+    EXPECT_EQ(decode(y, kPicaUberNormalShift), static_cast<uint32_t>(decisions.Normal));
+    EXPECT_EQ(decode(y, kPicaUberNormalAtShift), static_cast<uint32_t>(decisions.NormalAt));
+    EXPECT_EQ(decode(y, kPicaUberMaterialAtShift), static_cast<uint32_t>(decisions.MaterialAt));
+    EXPECT_EQ(decode(y, kPicaUberCoverageShift), static_cast<uint32_t>(decisions.AlbedoCoverage));
+    EXPECT_EQ(decode(y, kPicaUberAlbedoShift), static_cast<uint32_t>(decisions.Albedo));
+    EXPECT_EQ(decode(y, kPicaUberAmbientShift), static_cast<uint32_t>(decisions.Ambient));
+    EXPECT_EQ(decode(y, kPicaUberReactiveShift), static_cast<uint32_t>(decisions.ReactiveKind));
+    static_assert(sizeof(PicaUberEffectBlock) == 160U);
+}
+
+TEST(Oot3dPicaUberEffectProgram, DecisionsRecordTheDeclaredGuideOutputs) {
+    using namespace Fast::Oot3d;
+    PicaShaderPipelineCache cache;
+    EffectsSettings effects;
+    effects.AmbientOcclusion = AmbientOcclusionMode::Mxao;
+    auto request = VertexLitWorldRequest();
+    cache.BeginFrame(1U);
+    const auto& variant = cache.Resolve(request, effects);
+    ASSERT_FALSE(variant.IsCanonical());
+    // The superset program declares every guide; its pipeline writes only
+    // the attachments the specialized program declares.
+    for (uint32_t location = 1U; location < 8U; ++location) {
+        const bool declared = variant.FragmentShaderSource.find(
+            "layout(location=" + std::to_string(location) + ") out") != std::string_view::npos;
+        EXPECT_EQ((variant.Decisions.Outputs & (1U << location)) != 0U, declared) << location;
+    }
+    EXPECT_NE(variant.Decisions.Outputs & (1U << 1U), 0U);
+}
 
 TEST(Oot3dPicaShaderPipelineCache, NormalGuideReadsTheAuthoredVertexNormalInEveryLightingMode) {
     using namespace Fast::Oot3d;

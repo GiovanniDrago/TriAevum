@@ -18,7 +18,7 @@ void CheckStaticTevSlots(const std::string& source) {
     }
     for (unsigned slot = 0; slot < 4; ++slot) {
         const auto index = std::to_string(slot);
-        Check(source.find("pica_native_texture(" + index + "u)") != std::string::npos,
+        Check(source.find("pica_native_texture(" + index + "u, pica_texcoord0") != std::string::npos,
               "native texture unit no longer lowered statically");
     }
     for (const char* dynamicIndex : {"colors[input_index]", "alphas[input_index]",

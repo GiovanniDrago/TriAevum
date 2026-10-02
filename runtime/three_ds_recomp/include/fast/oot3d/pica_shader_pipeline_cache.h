@@ -77,6 +77,8 @@ struct PicaShaderPipelineResult {
     PicaToonEligibility ToonEligibility = PicaToonEligibility::Disabled;
     bool ToonMaterialPath = false;
     bool TemporalVertexApplied = false;
+    // The vertex program writes the authored surface normal and tint.
+    bool SurfaceVertexApplied = false;
     bool DirectTemporalVertexProgramUsed = false;
     PicaShaderHookLayout CanonicalFragmentHooks;
     bool DirectCanonicalFragmentHooksUsed = false;
@@ -96,6 +98,8 @@ struct PicaShaderPipelineResult {
     bool DirectFragmentHooksUsed = false;
     bool GrassTexture0Sampled = false;
     PicaFragmentInstrumentationOutputLayout FragmentOutputs;
+    // The fragment composition's branches (always-available programs).
+    PicaEffectDecisions Decisions;
 
     [[nodiscard]] bool IsCanonical() const noexcept {
         return Domain == PicaShaderDomain::Canonical;

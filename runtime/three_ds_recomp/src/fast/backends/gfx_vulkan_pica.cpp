@@ -31,6 +31,7 @@
 #include "fast/oot3d/pica_guide_sampling_barriers.h"
 #include "fast/oot3d/pica_reactive_mask.h"
 #include "fast/oot3d/pica_nri_shader_contract.h"
+#include "fast/oot3d/pica_uber_effect_program.h"
 #include "fast/oot3d/pica_nri_vertex_input.h"
 #include "fast/oot3d/pica_nri_pipeline_state.h"
 #include "fast/renderer3ds/pica_pipeline_identity.h"
@@ -3734,9 +3735,13 @@ Renderer3ds::PicaDevicePipelineRecord& GfxRenderingAPIVulkan::GetOrCreateNativeP
             std::move(entry), draw.CanonicalPipelineId,
             mFrameGraphicsSettingsRevision);
     }
-    const auto resolvedState = Oot3d::BuildPicaNriPipelineState(
+    auto resolvedState = Oot3d::BuildPicaNriPipelineState(
         draw, shader.FragmentOutputs, mFramePicaAttachmentRequirements,
         mNativePicaSampleCount, mDepthFormat, writesReactiveMask, outlineOcclusionOnly);
+    // The superset program declares every guide output; the attachments its
+    // specialized program does not declare stay untouched, as they do there.
+    for (size_t location = 1U; location < resolvedState.Colors.size(); ++location)
+        if ((shader.DeclaredOutputs & (1U << location)) == 0U) resolvedState.Colors[location].colorWriteMask = 0U;
     const auto sourceIdentity = [](const Oot3d::PicaAotShaderSourceIdentity& value) {
         return std::array<uint64_t, 3>{value.Id, value.SecondaryHash, value.Size};
     };
@@ -5586,6 +5591,18 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     }
                 }
             }
+            if (selectedPipeline == nullptr && unavailable == NativePicaUberUnavailable::NoParametricProgram) {
+                static const bool diagnostics = [] {
+                    const char* value = std::getenv("TRIAEVUM_UBER_DIAGNOSTICS");
+                    return value != nullptr && value[0] == '1';
+                }();
+                if (diagnostics)
+                    std::fprintf(stderr,
+                        "TRIAEVUM_UBER_NO_PAIR fragment=%016llx bytes=%zu domain=%u op=%u memory_only=%u requested=%08x\n",
+                        static_cast<unsigned long long>(draw.FragmentShaderKey), draw.FragmentShaderSource.size(),
+                        static_cast<unsigned>(draw.CompositionDomain), static_cast<unsigned>(draw.FragmentOperationMode),
+                        nativeMemoryOnly ? 1U : 0U, static_cast<unsigned>(shaderVariant.RequestedFeatures));
+            }
             if (selectedPipeline == nullptr)
                 ++mNativePicaPreparationCounters.UberUnavailable[static_cast<size_t>(unavailable)];
             else
@@ -5851,9 +5868,21 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             directionalShadowBinding.Uniforms;
         const auto toonUniforms = Oot3d::PackToonSurfaceParameters(
             graphicsSettings.Effects.Toon, graphicsSettings.Effects.ToonStyle, false);
+        // The superset effect program reads its decisions (and the toon
+        // parameters) from the toon binding.
+        std::optional<Oot3d::PicaUberEffectBlock> effectBlock;
+        if (selectedProgram->EffectBlock) {
+            std::array<float, 32> toon{};
+            static_assert(sizeof(toonUniforms) == sizeof(toon));
+            std::memcpy(toon.data(), &toonUniforms, sizeof(toon));
+            effectBlock = Oot3d::PackPicaUberEffectBlock(drawVariant.Decisions, toon);
+        }
 
-        const bool uniformToon = Oot3d::HasPicaShaderInstrumentationFeature(
+        const bool uniformToon = effectBlock.has_value() || Oot3d::HasPicaShaderInstrumentationFeature(
             drawVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::Toon);
+        const std::span<const uint8_t> toonBytes = effectBlock
+            ? std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&*effectBlock), sizeof(*effectBlock))
+            : std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&toonUniforms), sizeof(toonUniforms));
         const bool uniformSurface = Oot3d::HasPicaShaderInstrumentationFeature(
             drawVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::NativePerPixelLighting);
         const bool uniformPbr = Oot3d::HasPicaShaderInstrumentationFeature(
@@ -5865,7 +5894,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         const std::array<VkDeviceSize, 7> uniformSizes{
             draw.VertexUniformBytes.size(), previousVertexUniformBytes.size(),
             draw.FragmentUniformBytes.size(), uniformShadow ? sizeof(directionalShadowUniforms) : 0U,
-            uniformToon ? sizeof(toonUniforms) : 0U,
+            uniformToon ? toonBytes.size() : 0U,
             uniformSurface ? sizeof(*surfaceLighting) : 0U,
             uniformPbr ? sizeof(*pbrUniforms) : 0U};
         VkDeviceSize uniformBytes = 0;
@@ -5906,11 +5935,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             : fragmentUniformOffset;
         // Inactive extension bindings reuse an existing range; no upload.
         const VkDeviceSize toonUniformOffset = uniformToon
-            ? uploadUniform(std::span<const uint8_t>(
-                reinterpret_cast<const uint8_t*>(&toonUniforms), sizeof(toonUniforms)))
+            ? uploadUniform(toonBytes)
             : directionalShadowUniformOffset;
         const VkDeviceSize toonUniformSize = uniformToon
-            ? sizeof(toonUniforms) : directionalShadowUniformSize;
+            ? toonBytes.size() : directionalShadowUniformSize;
         VkDeviceSize surfaceUniformOffset = directionalShadowUniformOffset;
         if (uniformSurface) {
             // Compare host-cached state, not potentially write-combined mapped

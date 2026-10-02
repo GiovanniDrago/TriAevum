@@ -5,6 +5,8 @@
 #include "fast/oot3d/pica_temporal_fragment_binaries.h"
 #include "fast/oot3d/pica_toon_fragment_artifact.h"
 #include "fast/oot3d/pica_nri_shader_contract.h"
+#include "fast/oot3d/pica_uber_effect_program.h"
+#include "fast/oot3d/pica_uber_fragment_binaries.h"
 #include "fast/renderer/framebuffer_readback.h"
 #include "fast/renderer/shaderc_compiler.h"
 #include "fast/renderer/compatibility_shader_sources.h"
@@ -3775,7 +3777,7 @@ void GfxRenderingAPIVulkan::FinishNativePicaAotShaders() {
         std::fprintf(stderr,
             "TRIAEVUM_HYBRID_PREPARATION specialized_draws=%llu uber_draws=%llu completed_draws=%llu "
             "complete_ms=%.3f max_complete_ms=%.3f program_tasks=%llu uber_programs=%llu "
-            "uber_unavailable=%llu/%llu/%llu/%llu/%llu pipeline_tasks=%llu pipeline_created=%llu "
+            "uber_unavailable=%llu/%llu/%llu/%llu/%llu/%llu pipeline_tasks=%llu pipeline_created=%llu "
             "pipeline_completions=%llu pending=%zu\n",
             static_cast<unsigned long long>(counters.SpecializedDraws),
             static_cast<unsigned long long>(counters.UberDraws),
@@ -3788,6 +3790,7 @@ void GfxRenderingAPIVulkan::FinishNativePicaAotShaders() {
             static_cast<unsigned long long>(counters.UberUnavailable[2]),
             static_cast<unsigned long long>(counters.UberUnavailable[3]),
             static_cast<unsigned long long>(counters.UberUnavailable[4]),
+            static_cast<unsigned long long>(counters.UberUnavailable[5]),
             static_cast<unsigned long long>(bridge.BackgroundRequests),
             static_cast<unsigned long long>(bridge.BackgroundCreated),
             static_cast<unsigned long long>(bridge.BackgroundCompletions),
@@ -3872,9 +3875,19 @@ GfxRenderingAPIVulkan::NativePicaShaderProgram* GfxRenderingAPIVulkan::ResolveUb
         shader.FragmentSource = Oot3d::IdentifyPicaAotShaderSource(variant.FragmentShaderSource);
         shader.FragmentOutputs = variant.FragmentOutputs;
         const auto vertex = Renderer3ds::FindPicaVertexArtifact(draw.VertexArtifacts, variant.VertexShaderSource);
-        const auto nri = Oot3d::BuildPicaNriFragmentShaderVariant(variant.FragmentShaderSource);
+        // Effects compose as data in the superset program of the parametric
+        // base: one program per structural configuration and vertex interface.
+        const bool superset = !variant.IsCanonical() && Oot3d::PicaUberEffectSupports(variant.Decisions);
+        const auto nri = Oot3d::BuildPicaNriFragmentShaderVariant(superset
+            ? Oot3d::BuildPicaUberEffectProgram({draw.UberFragmentShaderSource, draw.UberFragmentShaderHooks,
+                  variant.TemporalVertexApplied, variant.SurfaceVertexApplied})
+            : std::string(variant.FragmentShaderSource));
         std::span<const uint32_t> fragment;
-        if (nri.Applied) {
+        if (superset && nri.Applied) {
+            fragment = Renderer3ds::FindPicaFragmentArtifact(Oot3d::kUberFragmentArtifacts, nri.Source, true);
+            shader.EffectBlock = true;
+            shader.DeclaredOutputs = static_cast<uint8_t>(variant.Decisions.Outputs | 1U);
+        } else if (nri.Applied) {
             fragment = Renderer3ds::FindPicaFragmentArtifact(Renderer3ds::kNativeFragmentArtifacts, nri.Source, true);
             if (fragment.empty())
                 fragment = Renderer3ds::FindPicaFragmentArtifact(Oot3d::kTemporalFragmentArtifacts, nri.Source, true);
@@ -3882,7 +3895,9 @@ GfxRenderingAPIVulkan::NativePicaShaderProgram* GfxRenderingAPIVulkan::ResolveUb
                 fragment = Renderer3ds::FindPicaFragmentArtifact(Oot3d::ToonFragmentArtifacts(), nri.Source, true);
         }
         auto unavailable = NativePicaUberUnavailable::Count;
-        if (vertex.Spirv.empty()) unavailable = NativePicaUberUnavailable::VertexNotBuiltIn;
+        if (!variant.IsCanonical() && !superset && fragment.empty())
+            unavailable = NativePicaUberUnavailable::EffectNotCovered;
+        else if (vertex.Spirv.empty()) unavailable = NativePicaUberUnavailable::VertexNotBuiltIn;
         else if (!nri.Applied) unavailable = NativePicaUberUnavailable::NoNriContract;
         else if (fragment.empty()) unavailable = NativePicaUberUnavailable::FragmentNotBuiltIn;
         if (unavailable == NativePicaUberUnavailable::Count) {

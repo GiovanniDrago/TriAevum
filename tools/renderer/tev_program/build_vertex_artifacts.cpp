@@ -127,11 +127,20 @@ int main(int argc, char** argv) try {
             Check(translated.Source == reference.Source, "offline/native vertex source mismatch");
             emitVertex(translated.Source);
             const auto& temporalProgram = *translated.TemporalProgram;
-            const auto temporal = Fast::Oot3d::BuildPicaTemporalVertexInstrumentation(
-                translated.Source, translated.StateKey,
-                {temporalProgram.Hooks, temporalProgram.PreviousRegisterState, temporalProgram.PreviousMainBody});
+            const ::Oot3d::Renderer::PicaTemporalVertexProgramView view{
+                temporalProgram.Hooks, temporalProgram.PreviousRegisterState, temporalProgram.PreviousMainBody};
+            const auto temporal = Fast::Oot3d::BuildPicaVertexInstrumentation(
+                translated.Source, translated.StateKey, view, true, false);
             Check(temporal.Applied && temporal.UsedProvidedProgram, "typed temporal vertex emission failed");
             emitVertex(temporal.Source);
+            // Per-pixel lighting and typed normal guides read the authored
+            // surface normal and tint: the always-available programs pair
+            // with these exactly as draws request them.
+            for (bool temporalOutputs : {false, true}) {
+                const auto surface = Fast::Oot3d::BuildPicaVertexInstrumentation(
+                    translated.Source, translated.StateKey, view, temporalOutputs, true);
+                if (surface.Applied && surface.SurfaceApplied) emitVertex(surface.Source);
+            }
         }
     }
     output << "inline const Fast::Renderer3ds::PicaVertexArtifact kTitleVertexArtifacts[] = {\n"

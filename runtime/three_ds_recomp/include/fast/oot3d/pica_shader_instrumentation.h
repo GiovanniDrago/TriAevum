@@ -2,6 +2,7 @@
 
 #include "fast/oot3d/pica_ambient_occlusion_guide.h"
 #include "fast/oot3d/pica_directional_shadow_lighting.h"
+#include "fast/oot3d/pica_effect_decisions.h"
 #include "fast/oot3d/pica_reflection_material.h"
 #include "fast/oot3d/pica_reactive_mask.h"
 #include "fast/oot3d/pica_scene_domain_guide.h"
@@ -137,6 +138,8 @@ struct PicaFragmentInstrumentationResult {
     // The normal guide reads the authored vertex normal (SurfaceNormalInput).
     bool TypedNormalGuide = false;
     PicaFragmentInstrumentationOutputLayout Outputs;
+    // Every composition branch taken, for the always-available program.
+    PicaEffectDecisions Decisions;
 
     [[nodiscard]] bool Applied() const noexcept {
         return AppliedFeatures != PicaShaderInstrumentationFeature::None;

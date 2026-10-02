@@ -213,6 +213,7 @@ target_sources(build_fragment_artifacts PRIVATE
     "${runtime}/src/fast/renderer3ds/virtual_shadow_map.cpp"
     "${runtime}/src/fast/oot3d/directional_shadows.cpp"
     "${runtime}/src/fast/oot3d/pica_directional_shadow_caster.cpp"
+    "${runtime}/src/fast/oot3d/pica_uber_effect_program.cpp"
     "${runtime}/src/fast/oot3d/pica_directional_shadow_lighting.cpp"
     "${runtime}/src/fast/oot3d/pica_directional_shadow_semantics.cpp"
     "${runtime}/src/fast/oot3d/pica_reactive_mask.cpp"
@@ -292,7 +293,8 @@ set_tests_properties(pbr_seam_gpu_tests PROPERTIES TIMEOUT 120)
 add_executable(build_vertex_artifacts build_vertex_artifacts.cpp
     "${runtime}/src/fast/oot3d/pica_rigid_motion.cpp"
     "${frontend}/oot3d_native_pica_shader_gen.cpp"
-    "${frontend}/../third_party/azahar_pica/video_core/shader/generator/glsl_shader_decompiler.cpp")
+    "${frontend}/../third_party/azahar_pica/video_core/shader/generator/glsl_shader_decompiler.cpp"
+    "${runtime}/src/fast/renderer3ds/pica_vertex_surface.cpp")
 target_compile_features(build_vertex_artifacts PRIVATE cxx_std_20)
 target_include_directories(build_vertex_artifacts PRIVATE "${frontend}" "${runtime}/include"
     "${frontend}/../third_party/azahar_pica" "${SHADERC_INCLUDE_DIR}"

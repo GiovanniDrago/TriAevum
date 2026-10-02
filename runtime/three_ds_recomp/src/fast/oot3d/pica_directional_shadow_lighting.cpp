@@ -42,6 +42,8 @@ vec3 oot3d_directional_shadow_visibility() {
 
 } // namespace
 
+std::string PicaDirectionalShadowLightingDeclarations() { return LightingDeclarations(); }
+
 PicaDirectionalShadowReceiverUniforms PackPicaDirectionalShadowReceiverUniforms(
     const DirectionalShadowMatrix& viewToWorld, const PicaDirectionalShadowHistoryState& history) noexcept {
     PicaDirectionalShadowReceiverUniforms uniforms;
