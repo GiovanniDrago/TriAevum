@@ -5422,6 +5422,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         }
         std::span<const uint8_t> previousVertexUniformBytes =
             draw.VertexUniformBytes;
+        // Owns the previous sample's uniforms for this draw: the history entry
+        // is replaced below, which would free the storage under the span.
+        std::vector<uint8_t> previousVertexUniformStorage;
         std::array<float, 2> previousJitterNdc{
             2.0F * jitterUv[0], 2.0F * jitterUv[1]};
         bool exactMotionHistory = false;
@@ -5432,7 +5435,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 previous->second.FrameId + 1U == mFrameCounter &&
                 previous->second.Bytes.size() ==
                     draw.VertexUniformBytes.size()) {
-                previousVertexUniformBytes = previous->second.Bytes;
+                previousVertexUniformStorage = std::move(previous->second.Bytes);
+                previousVertexUniformBytes = previousVertexUniformStorage;
                 previousJitterNdc = previous->second.JitterNdc;
                 exactMotionHistory = true;
             }
