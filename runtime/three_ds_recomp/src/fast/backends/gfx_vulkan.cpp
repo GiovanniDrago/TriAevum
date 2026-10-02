@@ -788,11 +788,23 @@ Renderer3ds::PicaPreparationStatus GfxRenderingAPIVulkan::PreparationStatus() co
 }
 
 namespace {
-constexpr std::string_view kDlssFeatureRecordTag = "triaevum-dlss-feature-v1";
+constexpr std::string_view kDlssFeatureRecordTag = "triaevum-dlss-features-v2";
+// One feature of the first runs' records (the presentation's).
+constexpr std::string_view kDlssFeatureRecordTagV1 = "triaevum-dlss-feature-v1";
 
 std::filesystem::path DlssFeatureRecordPath() {
     const auto directory = VulkanShaderCacheDirectory();
     return directory.empty() ? std::filesystem::path{} : directory / "dlss_feature.txt";
+}
+
+std::optional<Oot3d::NriDlssFeatureKey> ReadDlssFeatureKey(std::istream& input) {
+    uint32_t width = 0, height = 0, quality = 0, srgb = 0, preset = 0;
+    if (!(input >> width >> height >> quality >> srgb >> preset) || width == 0U || height == 0U ||
+        quality > static_cast<uint32_t>(Oot3d::UpscalerQuality::UltraPerformance) || srgb > 1U ||
+        preset > 0xFFU)
+        return std::nullopt;
+    return Oot3d::NriDlssFeatureKey{width, height, static_cast<Oot3d::UpscalerQuality>(quality),
+                                    srgb != 0U, static_cast<uint8_t>(preset)};
 }
 } // namespace
 
@@ -803,17 +815,26 @@ void GfxRenderingAPIVulkan::LoadDlssFeatureRecord() {
     if (path.empty() || !mNriInterop.DlssAvailable()) return;
     std::ifstream input(path);
     std::string tag;
-    uint32_t width = 0, height = 0, quality = 0, srgb = 0, preset = 0, swapchainWidth = 0,
-             swapchainHeight = 0;
-    if (!(input >> tag >> width >> height >> quality >> srgb >> preset >> swapchainWidth >>
-          swapchainHeight) || tag != kDlssFeatureRecordTag || width == 0U || height == 0U ||
-        quality > static_cast<uint32_t>(Oot3d::UpscalerQuality::UltraPerformance) || srgb > 1U ||
-        preset > 0xFFU)
+    if (!(input >> tag)) return;
+    DlssFeatureRecord record;
+    if (tag == kDlssFeatureRecordTagV1) {
+        const auto key = ReadDlssFeatureKey(input);
+        if (!key || !(input >> record.SwapchainWidth >> record.SwapchainHeight)) return;
+        record.Keys.push_back(*key);
+    } else if (tag == kDlssFeatureRecordTag) {
+        size_t count = 0;
+        if (!(input >> record.SwapchainWidth >> record.SwapchainHeight >> count) || count == 0U ||
+            count > 8U)
+            return;
+        for (size_t index = 0; index < count; ++index) {
+            const auto key = ReadDlssFeatureKey(input);
+            if (!key) return;
+            record.Keys.push_back(*key);
+        }
+    } else {
         return;
-    mDlssFeatureRecord = DlssFeatureRecord{
-        {width, height, static_cast<Oot3d::UpscalerQuality>(quality), srgb != 0U,
-         static_cast<uint8_t>(preset)},
-        swapchainWidth, swapchainHeight};
+    }
+    mDlssFeatureRecord = std::move(record);
     mDlssPreparationPending = true;
 }
 
@@ -825,36 +846,41 @@ void GfxRenderingAPIVulkan::PrepareRecordedDlssFeature() {
     const auto& record = *mDlssFeatureRecord;
     if (settings.AntiAliasing != Oot3d::AntiAliasingMode::Upscaler ||
         settings.Upscaler != Oot3d::UpscalerProvider::Dlss ||
-        settings.UpscalerMode != record.Key.Quality ||
-        Oot3d::DlssRenderPreset(settings.UpscalerDlssModel, settings.UpscalerMode) != record.Key.Preset ||
         mSwapchainExtent.width != record.SwapchainWidth ||
         mSwapchainExtent.height != record.SwapchainHeight)
         return;
 #if defined(_WIN32) && defined(ENABLE_OOT3D_D3D12_NGX_PROVIDER)
     if (mD3d12NgxProvider.FrameDispatchRequested()) return;
 #endif
-    const auto start = std::chrono::steady_clock::now();
-    const bool prepared = mNriInterop.PrepareDlss(mCurrentFrame, record.Key);
-    std::fprintf(stderr, "TRIAEVUM_DLSS_FEATURE_PREPARED prepared=%d output=%ux%u ms=%.1f\n",
-                 prepared ? 1 : 0, record.Key.OutputWidth, record.Key.OutputHeight,
-                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+    for (const auto& key : record.Keys) {
+        if (settings.UpscalerMode != key.Quality ||
+            Oot3d::DlssRenderPreset(settings.UpscalerDlssModel, settings.UpscalerMode) != key.Preset)
+            continue;
+        const auto start = std::chrono::steady_clock::now();
+        const bool prepared = mNriInterop.PrepareDlss(mCurrentFrame, key);
+        std::fprintf(stderr, "TRIAEVUM_DLSS_FEATURE_PREPARED prepared=%d output=%ux%u ms=%.1f\n",
+                     prepared ? 1 : 0, key.OutputWidth, key.OutputHeight,
+                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+    }
 }
 
 void GfxRenderingAPIVulkan::StoreDlssFeatureRecord() {
-    const auto feature = mNriInterop.DlssFeature();
-    if (!feature.has_value()) return;
-    const DlssFeatureRecord record{*feature, mSwapchainExtent.width, mSwapchainExtent.height};
-    if (mDlssFeatureRecord == record) return;
+    const uint64_t generation = mNriInterop.DlssFeatureGeneration();
+    if (generation == mDlssFeatureRecordGeneration) return;
+    mDlssFeatureRecordGeneration = generation;
+    DlssFeatureRecord record{mNriInterop.DlssFeatures(), mSwapchainExtent.width, mSwapchainExtent.height};
+    if (record.Keys.empty() || mDlssFeatureRecord == record) return;
     mDlssFeatureRecord = record;
     const auto path = DlssFeatureRecordPath();
     if (path.empty()) return;
     std::error_code error;
     std::filesystem::create_directories(path.parent_path(), error);
     std::ofstream output(path, std::ios::trunc);
-    output << kDlssFeatureRecordTag << ' ' << record.Key.OutputWidth << ' ' << record.Key.OutputHeight << ' '
-           << static_cast<uint32_t>(record.Key.Quality) << ' ' << (record.Key.InputSrgb ? 1 : 0) << ' '
-           << static_cast<uint32_t>(record.Key.Preset) << ' ' << record.SwapchainWidth << ' '
-           << record.SwapchainHeight << '\n';
+    output << kDlssFeatureRecordTag << ' ' << record.SwapchainWidth << ' ' << record.SwapchainHeight << ' '
+           << record.Keys.size() << '\n';
+    for (const auto& key : record.Keys)
+        output << key.OutputWidth << ' ' << key.OutputHeight << ' ' << static_cast<uint32_t>(key.Quality) << ' '
+               << (key.InputSrgb ? 1 : 0) << ' ' << static_cast<uint32_t>(key.Preset) << '\n';
 }
 
 void GfxRenderingAPIVulkan::JoinStartupPreparation() {

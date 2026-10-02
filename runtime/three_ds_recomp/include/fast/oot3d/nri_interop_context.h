@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace Fast::Oot3d {
 
@@ -71,8 +72,11 @@ struct NriTemporalUpscaleDispatchDesc {
     SceneColorEncoding InputEncoding = SceneColorEncoding::Unknown;
 };
 
-// What a DLSS feature is created for. A dispatch reuses the live feature when
-// its key matches, including one created ahead of its first dispatch.
+// What a DLSS feature is created for. Each key keeps its own feature: a
+// native boundary composed at its scene target's extent and the presentation
+// at the display's extent are separate streams with separate outputs. A
+// dispatch reuses the live feature of its key, including one created ahead of
+// its first dispatch.
 struct NriDlssFeatureKey {
     uint32_t OutputWidth = 0;
     uint32_t OutputHeight = 0;
@@ -139,8 +143,10 @@ class NriInteropContext final {
     // Creates the DLSS feature for `key` ahead of its first dispatch,
     // recording into the frame's command buffer as the dispatch would.
     bool PrepareDlss(uint32_t frameIndex, const NriDlssFeatureKey& key);
-    // The live feature's key; none before the first creation.
-    [[nodiscard]] std::optional<NriDlssFeatureKey> DlssFeature() const;
+    // The live features' keys, in key order; none before the first creation.
+    [[nodiscard]] std::vector<NriDlssFeatureKey> DlssFeatures() const;
+    // Advances whenever a feature is created or retired.
+    [[nodiscard]] uint64_t DlssFeatureGeneration() const;
 
     [[nodiscard]] bool Available() const;
     [[nodiscard]] const std::string& UnavailableReason() const;

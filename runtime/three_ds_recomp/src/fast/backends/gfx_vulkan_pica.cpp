@@ -11615,6 +11615,13 @@ bool GfxRenderingAPIVulkan::RestorePicaColorTargets(
             throw std::runtime_error(
                 "native PICA color restore does not yet support multisampled targets");
         }
+        // A state loaded at startup is restored before the first frame applies
+        // the settings: take the internal resolution that frame would select.
+        const float requestedScale = Oot3d::ResolveInternalResolutionScale(
+            Oot3d::GraphicsSettingsRuntime::Instance().SnapshotForRendering().Value);
+        if (std::abs(requestedScale - mInternalResolutionScale) > 0.0005F) {
+            ApplyInternalResolutionScale(requestedScale);
+        }
         const uint16_t currentScale = static_cast<uint16_t>(std::lround(
             mInternalResolutionScale * 1000.0F));
         std::set<std::tuple<uint64_t, uint32_t, uint32_t, uint16_t,
@@ -11627,12 +11634,18 @@ bool GfxRenderingAPIVulkan::RestorePicaColorTargets(
             const uint64_t expectedPixels =
                 static_cast<uint64_t>(snapshot.ImageWidth) *
                 snapshot.ImageHeight;
+            if (snapshot.RenderScalePermille != currentScale) {
+                throw std::runtime_error(
+                    "native PICA color snapshot was saved at render scale " +
+                    std::to_string(snapshot.RenderScalePermille) +
+                    "/1000; the current settings render at " +
+                    std::to_string(currentScale) + "/1000");
+            }
             if (snapshot.ColorPhysicalAddress == 0U ||
                 snapshot.FramebufferWidth == 0U ||
                 snapshot.FramebufferHeight == 0U ||
                 snapshot.ImageWidth == 0U || snapshot.ImageHeight == 0U ||
                 snapshot.SampleCount != 1U ||
-                snapshot.RenderScalePermille != currentScale ||
                 expectedBytes != snapshot.ColorRgba8.size() ||
                 expectedBytes != snapshot.NormalGuideRgba8.size() ||
                 expectedBytes != snapshot.MaterialGuideRgba8.size() ||

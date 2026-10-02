@@ -1004,16 +1004,17 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     // Startup preparation progress (PrepareNativePicaPrograms parts).
     std::atomic<size_t> mStartupParts{0};
     std::atomic<size_t> mStartupPreparedParts{0};
-    // The DLSS feature of the last run (renderer cache): created on the first
-    // active frame when the settings still select it, so the first upscaled
-    // frame does not create it.
+    // The DLSS features of the last run (renderer cache): created on the first
+    // active frame when the settings still select them, so neither the first
+    // upscaled frame nor a later native boundary creates one.
     struct DlssFeatureRecord {
-        Oot3d::NriDlssFeatureKey Key;
+        std::vector<Oot3d::NriDlssFeatureKey> Keys;
         uint32_t SwapchainWidth = 0;
         uint32_t SwapchainHeight = 0;
         bool operator==(const DlssFeatureRecord&) const = default;
     };
     std::optional<DlssFeatureRecord> mDlssFeatureRecord;
+    uint64_t mDlssFeatureRecordGeneration = 0;
     std::atomic<bool> mDlssPreparationPending{false};
     void LoadDlssFeatureRecord();
     void PrepareRecordedDlssFeature();

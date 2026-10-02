@@ -1509,12 +1509,13 @@ before it and are unaffected):
 1. The guest waits, its clock stopped and its frames not counted, until the
    renderer's startup preparation is ready
    (`PicaProgramPreparationBackend::PreparationStatus`): every startup program
-   part, and the DLSS feature of the last run. The DLSS feature depends only on
+   part, and the DLSS features of the last run. A DLSS feature depends only on
    its output size, quality, input encoding and preset; the backend records the
-   key of the feature it last created in the renderer cache
-   (`dlss_feature.txt`) and creates it on the first active frame when the
-   settings and swapchain still match (`NriInteropContext::PrepareDlss`, the
-   same creation the dispatch runs; the dispatch reuses a matching feature).
+   keys of its live features in the renderer cache (`dlss_feature.txt`) and
+   creates them on the first active frame when the settings and swapchain
+   still match (`NriInteropContext::PrepareDlss`, the same creation the
+   dispatch runs; the dispatch reuses the feature of its key; see
+   [Scene changes](#scene-changes-one-temporal-upscaler-instance-per-stream-2026-10-02)).
 2. The first guest frames render under the screen until ten in a row take
    less than 100 ms (at most 30 s): what is left of the first-use costs, such
    as the first scene's grass placements, a DLSS feature for new parameters or
@@ -1569,3 +1570,54 @@ images depended on how long the preparation took (cold against Forge-prepared:
 0/12 captures identical, 13-30% of pixels on every edge). The phase now counts
 the frames that drew the PICA scene (`mTemporalJitterSequence`): cold against
 Forge-prepared 12/12 identical, with the same process and memory fingerprints.
+
+### Scene changes: one temporal upscaler instance per stream (2026-10-02)
+
+Entering a house froze the game for seconds. Reproduction: the user's save in
+front of Link's house in Kokiri Forest (their Enhanced configuration: 4K
+output, DLSS Ultra Performance with the Transformer model, grass, PBR), stick
+forward for 210 frames: Link enters, and since the house camera faces the
+door, walks back out; `qualify/scene-change` in the work directory
+(`enter.json`, `run_equiv_trio.sh`).
+
+Every scene change switched the upscaler between two output extents a few
+frames apart: the presentation upscales to the display's extent (2160x3840
+in storage orientation), while the transition composes the scene at a native
+boundary (the game copies its scene into a texture) at its scene target's
+extent (4320x3840). One DLSS feature served both, so each switch destroyed it
+and created the other one (`TRIAEVUM_DLSS_FEATURE_CREATED`): eight creations
+in that walk, 3.4-3.8 s each on this machine's shared GPU (1.4 s measured on
+an idle one), the longest frame 3.84 s. The creation itself is not the cost:
+with one feature alive the second takes 0.06-0.1 s; destroying the only
+feature made NGX load its model again for the next one.
+
+Each provider now keeps one instance per output contract (`UpscalerInstances`
+in `nri_interop_context.cpp`, for DLSS and FSR): at most three with the
+current quality and preset, instances of other settings retired, the least
+recently used extent making room. A dispatch that resumes an instance after
+another instance's dispatch restarts its history, as the recreated single
+instance did, so the images are unchanged. The renderer cache records every
+live DLSS feature (`dlss_feature.txt`, `triaevum-dlss-features-v2`; the
+single-feature v1 record still loads) and the initial preparation creates
+them all, so a scene change creates none.
+
+| walk (two scene changes) | DLSS creations during play | longest frame | frames over 33 ms |
+|---|---|---|---|
+| before | 8 (3.4-3.8 s each) | 3839 ms | 297/882 |
+| after, record of the previous build | 1 (0.09 s) | 130 ms | 24/884 |
+| after, both features prepared at startup | 0 | 110 ms | GPU-contention dependent |
+
+The 110 ms frame is the guest's own scene load (a 5 MB RomFS read and its
+decompression) during the black fade. FSR had the same switch, cheaper:
+100-175 ms on each of seven switches; now only the first use of each extent
+(instance creation 12-17 ms). Captures across both transitions (frames 40-325
+every 15, including the frames after each switch): new against the previous
+build 20/20 identical for DLSS and FSR; the one capture that differed (frame
+40, before any switch) differs the same way between two runs of either build.
+
+Reproducing it also exposed a savestate fault: a state saved while an
+upscaler renders at a reduced internal scale could not be loaded at startup
+(`--load-state`: "native PICA color snapshot is incompatible"), because the
+restore ran before the first frame applied the settings' internal scale.
+`RestorePicaColorTargets` now applies the scale that frame would select; a
+state saved at another scale says so, with both scales.
