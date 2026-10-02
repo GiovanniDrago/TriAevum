@@ -5910,11 +5910,13 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             drawVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::PbrMaterial);
         const bool uniformShadow = Oot3d::HasPicaShaderInstrumentationFeature(
             drawVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::DirectionalShadowLighting);
+        // Without a dissolve the receiver never reads the older layout: its
+        // range ends before it.
         const VkDeviceSize directionalShadowUniformSize = uniformShadow
-            ? sizeof(directionalShadowUniforms) : draw.FragmentUniformBytes.size();
+            ? directionalShadowUniforms.UsedBytes() : draw.FragmentUniformBytes.size();
         const std::array<VkDeviceSize, 7> uniformSizes{
             draw.VertexUniformBytes.size(), previousVertexUniformBytes.size(),
-            draw.FragmentUniformBytes.size(), uniformShadow ? sizeof(directionalShadowUniforms) : 0U,
+            draw.FragmentUniformBytes.size(), uniformShadow ? directionalShadowUniformSize : 0U,
             uniformToon ? toonBytes.size() : 0U,
             uniformSurface ? sizeof(*surfaceLighting) : 0U,
             uniformPbr ? sizeof(*pbrUniforms) : 0U};
@@ -5952,7 +5954,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         const VkDeviceSize directionalShadowUniformOffset = uniformShadow
             ? uploadUniform(std::span<const uint8_t>(
                 reinterpret_cast<const uint8_t*>(&directionalShadowUniforms),
-                sizeof(directionalShadowUniforms)))
+                static_cast<size_t>(directionalShadowUniformSize)))
             : fragmentUniformOffset;
         // Inactive extension bindings reuse an existing range; no upload.
         const VkDeviceSize toonUniformOffset = uniformToon
@@ -6337,7 +6339,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     : VK_FORMAT_R8G8B8A8_UNORM;
                 destination.Usage = VK_IMAGE_USAGE_SAMPLED_BIT;
                 destination.Width = directionalShadowHistoryBound
-                    ? directionalShadowHistory.State.Virtual.AtlasResolution
+                    ? directionalShadowHistory.State.Virtual.AtlasResolution *
+                          directionalShadowHistory.State.AtlasRegions
                     : mFallbackTexture.Width;
                 destination.Height = directionalShadowHistoryBound
                     ? directionalShadowHistory.State.Virtual.AtlasResolution
@@ -7150,6 +7153,11 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
             mNriDirectionalShadowPass.LastLightTelemetry();
         mDiagnostics.RecordNriVirtualShadowPages(
             lightTelemetry.Pages, lightTelemetry.UpdatedPages, lightTelemetry.AtlasBytes);
+        const auto& keyframes = mNriDirectionalShadowPass.LastKeyframeTelemetry();
+        mDiagnostics.RecordNriVirtualShadowKeyframes(
+            keyframes.DisplayedLayouts, keyframes.NewerWeight, keyframes.ConstructionPages,
+            keyframes.ConstructionBudget, keyframes.Cut, keyframes.Rotated,
+            keyframes.DisplayedDirectionTowardSource, keyframes.LagDegrees);
         mDiagnostics.RecordNriDirectionalShadowLightSelection(
             lightTelemetry.CandidateCount,
             lightTelemetry.ClusterCount,

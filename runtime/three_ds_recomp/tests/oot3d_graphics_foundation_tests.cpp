@@ -2,6 +2,8 @@
 #include "fast/renderer3ds/pica_ui_canvas.h"
 #include "fast/renderer3ds/pica_shadow_geometry.h"
 #include "fast/renderer3ds/pica_scene_light_continuity.h"
+#include "fast/renderer3ds/virtual_shadow_keyframes.h"
+#include "fast/oot3d/pica_directional_shadow_lighting.h"
 #include "oot3d/renderer/ui_presentation_layout.h"
 #include "fast/renderer3ds/pica_surface_passthrough_scale.h"
 #include "fast/oot3d/display_effect_plan.h"
@@ -102,6 +104,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <random>
+#include <numbers>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -5709,6 +5713,345 @@ TEST(PicaSceneLightContinuity, FixedCastersHandOverThroughAFade) {
     EXPECT_TRUE(changed);
     EXPECT_EQ(lights.ShadowCasterIdentity, 20U);
     EXPECT_EQ(lights.ShadowStrength, 1.0F);
+}
+
+TEST(Renderer3dsVirtualShadows, PageCastersFollowTheExactOverlapRule) {
+    using namespace Fast::Renderer3ds;
+    std::mt19937 random(7);
+    std::uniform_real_distribution<float> position(-9000.0F, 9000.0F), large(100.0F, 3000.0F), small(1.0F, 60.0F),
+        unit(-1.0F, 1.0F);
+    for (int round = 0; round < 40; ++round) {
+        const ShadowVector light{unit(random), std::abs(unit(random)) + 0.2F, unit(random)};
+        const ShadowVector camera{position(random) * 0.1F, position(random) * 0.01F, position(random) * 0.1F};
+        const auto layout = BuildVirtualShadowLayout(camera, light, 4096, 6550);
+        ASSERT_TRUE(layout.Valid());
+        std::vector<VirtualShadowCaster> casters(60);
+        for (size_t index = 0; index < casters.size(); ++index) {
+            const float half = index % 3 == 0 ? large(random) : small(random);
+            const float spread = index % 2 == 0 ? 1.0F : 0.05F;
+            const ShadowVector center{camera[0] + position(random) * spread, position(random) * 0.02F,
+                                      camera[2] + position(random) * spread};
+            casters[index].WorldBounds = {{center[0] - half, center[1] - half, center[2] - half},
+                                          {center[0] + half, center[1] + half, center[2] + half}, true};
+            casters[index].ContentVersion = index + 1;
+            casters[index].Dynamic = index % 5 == 0;
+        }
+        // Bounds that could not be proved reach every page.
+        if (round % 2 == 0) casters[7].WorldBounds.Available = false;
+        std::vector<ShadowBounds> bounds;
+        for (const auto& caster : casters)
+            bounds.push_back(TransformShadowBounds(caster.WorldBounds, layout.WorldToLight));
+        const auto overlapping = [&](const VirtualShadowPageKey& key) {
+            const float size = layout.Levels[key.Level].PageWorldSize;
+            const float guard = float(kVirtualShadowPageBorder) * size / kVirtualShadowPageTexels;
+            const float x = float(key.X) * size, y = float(key.Y) * size;
+            std::array<std::vector<uint32_t>, 2> result;
+            for (uint32_t index = 0; index < casters.size(); ++index) {
+                const auto& box = bounds[index];
+                if (!box.Available || (box.Maximum[0] >= x - guard && box.Minimum[0] <= x + size + guard &&
+                                       box.Maximum[1] >= y - guard && box.Minimum[1] <= y + size + guard))
+                    result[casters[index].Dynamic ? 1 : 0].push_back(index);
+            }
+            return result;
+        };
+        VirtualShadowMapCache cache;
+        cache.Prepare(layout, casters, 1);
+        // The atlas holds every page: each mapped page is drawn with exactly
+        // its overlapping casters, in caster order.
+        ASSERT_EQ(cache.Statistics().Unmapped, 0U);
+        EXPECT_EQ(cache.Updates().size(), cache.Statistics().Resident);
+        for (const auto& page : cache.Updates()) {
+            const auto expected = overlapping(page.Key);
+            const auto statics = cache.StaticCasters(page), dynamics = cache.DynamicCasters(page);
+            EXPECT_EQ(std::vector<uint32_t>(statics.begin(), statics.end()), expected[0]);
+            EXPECT_EQ(std::vector<uint32_t>(dynamics.begin(), dynamics.end()), expected[1]);
+        }
+        size_t mapped = 0;
+        for (uint32_t level = 0; level < layout.LevelCount; ++level)
+            for (uint32_t y = 0; y < kVirtualShadowGridPages; ++y)
+                for (uint32_t x = 0; x < kVirtualShadowGridPages; ++x) {
+                    const auto expected = overlapping(
+                        {layout.Levels[level].OriginX + int32_t(x), layout.Levels[level].OriginY + int32_t(y), level});
+                    const uint32_t entry = cache.Table()[(level * kVirtualShadowGridPages + y) * kVirtualShadowGridPages + x];
+                    EXPECT_EQ(entry == kVirtualShadowEmptyPage, expected[0].empty() && expected[1].empty());
+                    mapped += entry != kVirtualShadowEmptyPage ? 1U : 0U;
+                }
+        EXPECT_EQ(mapped, cache.Statistics().Resident);
+    }
+}
+
+TEST(Renderer3dsVirtualShadows, ConstructsStaticPagesWithinBudgetBeforeDisplay) {
+    using namespace Fast::Renderer3ds;
+    const auto layout = BuildVirtualShadowLayout({0.25F, 0.25F, 0}, {0, 0, 1}, 4096, 65536);
+    const std::array<VirtualShadowCaster, 2> casters{{
+        {{{-3000, -3000, -10}, {3000, 3000, 10}, true}, 1},
+        {{{20, 20, 0}, {40, 40, 80}, true}, 2, true}}};
+    VirtualShadowMapCache reference;
+    reference.Prepare(layout, casters, 1);
+    const uint32_t total = reference.Statistics().Resident;
+    ASSERT_GT(total, 16U);
+
+    VirtualShadowMapCache cache;
+    const VirtualShadowConstruction construction{16};
+    uint32_t built = 0;
+    uint64_t frame = 1;
+    for (; frame < 100; ++frame) {
+        cache.Prepare(layout, casters, frame, &construction);
+        EXPECT_LE(cache.Updates().size(), 16U);
+        for (const auto& page : cache.Updates()) {
+            EXPECT_TRUE(page.RefreshStatic);
+            EXPECT_EQ(page.DynamicCasterCount, 0U);
+            EXPECT_FALSE(cache.StaticCasters(page).empty());
+        }
+        built += static_cast<uint32_t>(cache.Updates().size());
+        EXPECT_EQ(cache.Statistics().Pending, total - built);
+        const bool complete = cache.Statistics().Pending == 0;
+        cache.Commit();
+        if (complete) break;
+    }
+    EXPECT_EQ(built, total);
+    EXPECT_EQ(frame, (total + 15U) / 16U);
+    // A pass that draws nothing more: the construction is retained.
+    cache.Prepare(layout, casters, ++frame, &construction);
+    EXPECT_TRUE(cache.Updates().empty());
+    EXPECT_EQ(cache.Statistics().Pending, 0U);
+    // The construction composed its pages from static depth: its first
+    // display composes only the pages the dynamic caster reaches, with the
+    // same residency as a layout built at once.
+    cache.Prepare(layout, casters, ++frame);
+    EXPECT_EQ(cache.Statistics().StaticUpdated, 0U);
+    EXPECT_EQ(cache.Statistics().Resident, total);
+    ASSERT_FALSE(cache.Updates().empty());
+    EXPECT_LT(cache.Updates().size(), total);
+    for (const auto& page : cache.Updates()) {
+        EXPECT_FALSE(page.RefreshStatic);
+        EXPECT_EQ(page.DynamicCasterCount, 1U);
+    }
+    for (size_t entry = 0; entry < cache.Table().size(); ++entry)
+        EXPECT_EQ(cache.Table()[entry] == 0U, reference.Table()[entry] == 0U);
+    cache.Commit();
+    cache.Prepare(layout, casters, ++frame);
+    EXPECT_TRUE(cache.Updates().empty());
+    // Another atlas region: composed again, static depth kept.
+    cache.InvalidateComposition();
+    cache.Prepare(layout, casters, ++frame);
+    EXPECT_EQ(cache.Updates().size(), total);
+    EXPECT_EQ(cache.Statistics().StaticUpdated, 0U);
+}
+
+namespace {
+// Drives the keyframe scheduler with a light that turns about the Z axis and
+// a construction of `pages` static pages.
+struct KeyframeSimulation {
+    Fast::Renderer3ds::VirtualShadowKeyframes Keyframes;
+    uint32_t Pages = 220;
+    uint32_t Built = 0;
+    uint64_t Epoch = 1;
+    double Angle = 0.0;
+    Fast::Renderer3ds::VirtualShadowKeyframeFrame Frame;
+    uint32_t MaximumBudget = 0;
+
+    static Fast::Renderer3ds::ShadowVector Direction(double degrees) {
+        const double radians = degrees * std::numbers::pi / 180.0;
+        return {float(std::cos(radians)), float(std::sin(radians)), 0.0F};
+    }
+    static double Degrees(const Fast::Renderer3ds::ShadowVector& direction) {
+        return std::atan2(double(direction[1]), double(direction[0])) * 180.0 / std::numbers::pi;
+    }
+    void Step(double turn) {
+        Angle += turn;
+        Frame = Keyframes.Begin(Direction(Angle), Epoch, 7, Pages);
+        if (Frame.ConstructionStarted || Frame.Cut) Built = 0;
+        if (Frame.Construction >= 0) {
+            MaximumBudget = std::max(MaximumBudget, Frame.ConstructionBudget);
+            Built = std::min(Pages, Built + Frame.ConstructionBudget);
+            Frame = Keyframes.EndConstruction(Pages - Built);
+        }
+    }
+    // The direction the displayed shadows correspond to.
+    double Displayed() const {
+        const double newer = Degrees(Keyframes.Direction(Frame.Newer));
+        if (!Frame.OlderDisplayed()) return newer;
+        const double older = Degrees(Keyframes.Direction(Frame.Older));
+        return older + (newer - older) * double(Frame.NewerWeight);
+    }
+};
+} // namespace
+
+TEST(Renderer3dsVirtualShadowKeyframes, StillLightKeepsOneLayout) {
+    KeyframeSimulation simulation;
+    simulation.Step(30.0);
+    EXPECT_TRUE(simulation.Frame.Cut);
+    EXPECT_EQ(simulation.Frame.Newer, 0);
+    for (int frame = 0; frame < 100; ++frame) {
+        // Float roundoff of a still light is not motion.
+        simulation.Step(frame % 2 == 0 ? 1.0e-5 : -1.0e-5);
+        EXPECT_FALSE(simulation.Frame.Cut);
+        EXPECT_EQ(simulation.Frame.Construction, -1);
+        EXPECT_FALSE(simulation.Frame.OlderDisplayed());
+        EXPECT_EQ(simulation.Frame.NewerWeight, 1.0F);
+        EXPECT_EQ(simulation.Frame.Newer, 0);
+    }
+}
+
+TEST(Renderer3dsVirtualShadowKeyframes, MovingLightIsFollowedEvenlyWithinTheBudget) {
+    KeyframeSimulation simulation;
+    simulation.Step(30.0);
+    constexpr double speed = 0.0165;
+    double previous = simulation.Displayed();
+    double smallest = 1.0e9, largest = 0.0, lag = 0.0;
+    uint32_t rotations = 0;
+    for (int frame = 0; frame < 2000; ++frame) {
+        simulation.Step(speed);
+        EXPECT_FALSE(simulation.Frame.Cut);
+        // Displayed layouts and the construction never share a slot.
+        EXPECT_NE(simulation.Frame.Newer, simulation.Frame.Construction);
+        if (simulation.Frame.Older >= 0) {
+            EXPECT_NE(simulation.Frame.Older, simulation.Frame.Newer);
+            EXPECT_NE(simulation.Frame.Older, simulation.Frame.Construction);
+        }
+        rotations += simulation.Frame.Rotated ? 1U : 0U;
+        if (simulation.Frame.Rotated)
+            EXPECT_EQ(simulation.Frame.NewerWeight, 0.0F);
+        const double displayed = simulation.Displayed();
+        if (frame >= 200) {
+            smallest = std::min(smallest, displayed - previous);
+            largest = std::max(largest, displayed - previous);
+            lag = std::max(lag, simulation.Angle - displayed);
+        }
+        previous = displayed;
+    }
+    EXPECT_GT(rotations, 50U);
+    // The displayed shadow moves in every frame, at the speed of the light.
+    EXPECT_NEAR(smallest, speed, 1.0e-4);
+    EXPECT_NEAR(largest, speed, 1.0e-4);
+    EXPECT_LT(lag, 1.0);
+    EXPECT_EQ(simulation.MaximumBudget, 16U);
+}
+
+TEST(Renderer3dsVirtualShadowKeyframes, FastLightRaisesTheBudgetAndStaysContinuous) {
+    KeyframeSimulation simulation;
+    simulation.Step(30.0);
+    // Twice the speed of the night clock: the spacing law needs more pages.
+    constexpr double speed = 0.08;
+    double previous = simulation.Displayed();
+    double smallest = 1.0e9, largest = 0.0;
+    for (int frame = 0; frame < 1000; ++frame) {
+        simulation.Step(speed);
+        EXPECT_FALSE(simulation.Frame.Cut);
+        const double displayed = simulation.Displayed();
+        if (frame >= 200) {
+            smallest = std::min(smallest, displayed - previous);
+            largest = std::max(largest, displayed - previous);
+        }
+        previous = displayed;
+    }
+    EXPECT_GT(simulation.MaximumBudget, 16U);
+    EXPECT_LE(simulation.MaximumBudget, 64U);
+    EXPECT_GT(smallest, 0.9 * speed);
+    EXPECT_LT(largest, 1.1 * speed);
+}
+
+TEST(Renderer3dsVirtualShadowKeyframes, LightThatStopsSettlesOnItsDirection) {
+    KeyframeSimulation simulation;
+    simulation.Step(30.0);
+    for (int frame = 0; frame < 300; ++frame) simulation.Step(0.0165);
+    double previous = simulation.Displayed();
+    for (int frame = 0; frame < 300; ++frame) {
+        simulation.Step(0.0);
+        EXPECT_FALSE(simulation.Frame.Cut);
+        EXPECT_GE(simulation.Displayed(), previous - 1.0e-9);
+        previous = simulation.Displayed();
+    }
+    EXPECT_EQ(simulation.Frame.Construction, -1);
+    EXPECT_FALSE(simulation.Frame.OlderDisplayed());
+    EXPECT_NEAR(simulation.Displayed(), simulation.Angle, 0.002);
+}
+
+TEST(Renderer3dsVirtualShadowKeyframes, DiscontinuitiesRebuildOneLayout) {
+    KeyframeSimulation simulation;
+    simulation.Step(30.0);
+    for (int frame = 0; frame < 100; ++frame) simulation.Step(0.0165);
+    ASSERT_FALSE(simulation.Frame.Cut);
+    // A new continuity epoch.
+    ++simulation.Epoch;
+    simulation.Step(0.0165);
+    EXPECT_TRUE(simulation.Frame.Cut);
+    EXPECT_EQ(simulation.Frame.Newer, 0);
+    EXPECT_EQ(simulation.Frame.Construction, -1);
+    EXPECT_FALSE(simulation.Frame.OlderDisplayed());
+    EXPECT_NEAR(simulation.Displayed(), simulation.Angle, 1.0e-4);
+    for (int frame = 0; frame < 100; ++frame) simulation.Step(0.0165);
+    // A turn above the cut angle in one frame.
+    simulation.Step(20.0);
+    EXPECT_TRUE(simulation.Frame.Cut);
+    EXPECT_NEAR(simulation.Displayed(), simulation.Angle, 1.0e-4);
+    // Reset: the next frame is a discontinuity.
+    simulation.Step(0.0);
+    EXPECT_FALSE(simulation.Frame.Cut);
+    simulation.Keyframes.Reset();
+    simulation.Step(0.0);
+    EXPECT_TRUE(simulation.Frame.Cut);
+}
+
+TEST(Renderer3dsVirtualShadowKeyframes, WithoutAnAtlasForThreeLayoutsTheLayoutStepsWithTheLight) {
+    Fast::Renderer3ds::VirtualShadowKeyframeSettings settings;
+    settings.Keyframed = false;
+    KeyframeSimulation simulation{Fast::Renderer3ds::VirtualShadowKeyframes(settings)};
+    simulation.Step(30.0);
+    uint32_t cuts = 0;
+    for (int frame = 0; frame < 100; ++frame) {
+        simulation.Step(0.02);
+        cuts += simulation.Frame.Cut ? 1U : 0U;
+        EXPECT_EQ(simulation.Frame.Construction, -1);
+        EXPECT_FALSE(simulation.Frame.OlderDisplayed());
+        EXPECT_EQ(simulation.Frame.Newer, 0);
+        EXPECT_LT(simulation.Angle - simulation.Displayed(), 0.25);
+    }
+    // 2 degrees in steps of 0.25.
+    EXPECT_GE(cuts, 7U);
+    EXPECT_LE(cuts, 8U);
+}
+
+TEST(Oot3dDirectionalShadowReceiver, PacksTheOlderLayoutOnlyWhileItDissolves) {
+    using namespace Fast::Oot3d;
+    const auto identity = IdentityDirectionalShadowMatrix();
+    PicaDirectionalShadowHistoryState history;
+    history.ProducedFrameId = 1U;
+    history.Virtual = Fast::Renderer3ds::BuildVirtualShadowLayout({}, {0, 1, 0}, 2048, 6550);
+    history.PageTable[5] = 9U;
+    history.Strength = 0.75F;
+    auto uniforms = PackPicaDirectionalShadowReceiverUniforms(identity, history);
+    EXPECT_EQ(uniforms.Extent[3], kPicaDirectionalShadowBoundFlag);
+    EXPECT_EQ(uniforms.Extent[0], 2048U);
+    EXPECT_EQ(uniforms.ShadowState[1], 1.0F / 2048.0F);
+    EXPECT_EQ(uniforms.Dissolve, (std::array<float, 4>{1.0F, 1.0F / 2048.0F, 0.0F, 0.0F}));
+    EXPECT_EQ(uniforms.Layouts[0].PageTable[5], 9U);
+    EXPECT_EQ(uniforms.UsedBytes(), sizeof(uniforms) - sizeof(PicaDirectionalShadowReceiverLayout));
+    EXPECT_EQ(uniforms.Layouts[1].CameraLight[3], 0.0F);
+
+    // A dissolve: both layouts, each in its region of an atlas three regions wide.
+    auto older = std::make_shared<PicaDirectionalShadowOlderLayout>();
+    older->Virtual = Fast::Renderer3ds::BuildVirtualShadowLayout({}, {0.01F, 1, 0}, 2048, 6550);
+    older->PageTable[6] = 4U;
+    older->Region = 2U;
+    history.Older = older;
+    history.Region = 1U;
+    history.AtlasRegions = 3U;
+    history.NewerWeight = 0.25F;
+    uniforms = PackPicaDirectionalShadowReceiverUniforms(identity, history);
+    EXPECT_EQ(uniforms.Extent[3], kPicaDirectionalShadowBoundFlag | kPicaDirectionalShadowDissolveFlag);
+    EXPECT_EQ(uniforms.ShadowState[1], 1.0F / 6144.0F);
+    EXPECT_EQ(uniforms.Dissolve, (std::array<float, 4>{0.25F, 1.0F / 2048.0F, 2048.0F, 4096.0F}));
+    EXPECT_EQ(uniforms.Layouts[1].PageTable[6], 4U);
+    EXPECT_EQ(uniforms.Layouts[1].ViewToLight, older->Virtual.WorldToLight);
+    EXPECT_EQ(uniforms.UsedBytes(), sizeof(uniforms));
+    // The dissolve has reached the newest layout: one layout again.
+    history.NewerWeight = 1.0F;
+    uniforms = PackPicaDirectionalShadowReceiverUniforms(identity, history);
+    EXPECT_EQ(uniforms.Extent[3], kPicaDirectionalShadowBoundFlag);
+    EXPECT_EQ(uniforms.Dissolve[0], 1.0F);
+    EXPECT_EQ(uniforms.Dissolve[2], 2048.0F);
 }
 
 } // namespace

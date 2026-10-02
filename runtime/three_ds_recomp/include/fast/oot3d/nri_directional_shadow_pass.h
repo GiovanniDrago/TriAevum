@@ -112,9 +112,31 @@ struct NriDirectionalShadowLightTelemetry {
     }
 };
 
+// Shadow keyframes of the last update (a light that moves in every frame).
+struct NriDirectionalShadowKeyframeTelemetry {
+    // Layouts the receivers sample: 1, or 2 while a dissolve runs.
+    uint32_t DisplayedLayouts = 0U;
+    // Weight of the newest layout in the dissolve.
+    float NewerWeight = 1.0F;
+    // Static pages drawn for the layout in construction, its budget, and the
+    // pages it still lacks.
+    uint32_t ConstructionPages = 0U;
+    uint32_t ConstructionBudget = 0U;
+    uint32_t PendingPages = 0U;
+    bool Cut = false;
+    bool Rotated = false;
+    // The direction the displayed shadows correspond to (the dissolve between
+    // the two layouts) and its angle to the scene's light.
+    DirectionalShadowVector DisplayedDirectionTowardSource{};
+    float LagDegrees = 0.0F;
+};
+
 // Graph-owned persistent virtual shadow atlas. Native receivers sample the
 // latest published immutable page table; the declared native anchor updates
 // dirty pages, then publishes the table for subsequent native draws/frames.
+// A light that moves in every frame is followed by keyframes: up to three
+// layouts per target, two displayed with a dissolve and one constructed under
+// a page budget (renderer3ds/virtual_shadow_keyframes.h).
 // The scene view holds the sample's casters prepared ahead of native order, so
 // the BeforeOpaque anchor publishes them before the first opaque receiver; a
 // target without that boundary uses the graph's BeforeUi anchor.
@@ -154,6 +176,8 @@ class NriDirectionalShadowPass final {
     [[nodiscard]] uint32_t LastAlphaCasterCount() const;
     [[nodiscard]] const NriDirectionalShadowLightTelemetry&
     LastLightTelemetry() const;
+    [[nodiscard]] const NriDirectionalShadowKeyframeTelemetry&
+    LastKeyframeTelemetry() const;
     [[nodiscard]] NriDirectionalShadowExecutionStage LastExecutionStage() const;
     [[nodiscard]] const EffectPassBarrierExecution& LastShadowMapBarrierExecution() const;
     [[nodiscard]] const std::string& UnavailableReason() const;

@@ -386,6 +386,18 @@ struct Oot3dVulkanFrameDiagnostics {
     uint32_t NriVirtualShadowEvictedPageCount = 0;
     uint32_t NriVirtualShadowUnmappedPageCount = 0;
     uint64_t NriVirtualShadowAtlasBytes = 0;
+    // Shadow keyframes (a light that moves in every frame).
+    uint32_t NriVirtualShadowPendingPageCount = 0;
+    uint32_t NriVirtualShadowKeyframeDisplayedLayoutCount = 0;
+    uint32_t NriVirtualShadowKeyframeConstructionPageCount = 0;
+    uint32_t NriVirtualShadowKeyframeConstructionBudget = 0;
+    uint32_t NriVirtualShadowKeyframeCutCount = 0;
+    uint32_t NriVirtualShadowKeyframeRotationCount = 0;
+    float NriVirtualShadowKeyframeWeight = 0.0F;
+    float NriVirtualShadowKeyframeLagDegrees = 0.0F;
+    float NriVirtualShadowKeyframeDirectionX = 0.0F;
+    float NriVirtualShadowKeyframeDirectionY = 0.0F;
+    float NriVirtualShadowKeyframeDirectionZ = 0.0F;
     uint32_t NriDirectionalShadowReceiverEligibleDrawCount = 0;
     uint32_t NriDirectionalShadowReceiverLightingAvailableDrawCount = 0;
     uint32_t NriDirectionalShadowReceiverLightingEnabledDrawCount = 0;
@@ -724,6 +736,11 @@ class Oot3dVulkanDiagnostics {
         float directionZ);
     void RecordNriVirtualShadowPages(const Renderer3ds::VirtualShadowPageStatistics& pages,
                                     uint32_t updated, uint64_t atlasBytes);
+    // displayedDirection: the direction the displayed shadows correspond to.
+    void RecordNriVirtualShadowKeyframes(uint32_t displayedLayouts, float newerWeight,
+                                        uint32_t constructionPages, uint32_t constructionBudget,
+                                        bool cut, bool rotated, const std::array<float, 3>& displayedDirection,
+                                        float lagDegrees);
     void RecordNriDirectionalShadowReceiver(bool eligible,
                                             bool lightingAvailable,
                                             bool lightingEnabled,

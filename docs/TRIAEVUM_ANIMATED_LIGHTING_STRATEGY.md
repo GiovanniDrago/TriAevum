@@ -332,48 +332,69 @@ in every frame (3.1: +3 to +9 ms). Instead:
 
 **Layouts.** Up to three shadow layouts exist per target: two *displayed*
 (`K[n-1]`, `K[n]`) and one *in construction* (`K[n+1]`). Each is a complete
-virtual shadow layout for one fixed light direction, with its static cache.
+virtual shadow layout for one fixed light direction, with its own static depth
+atlas, its own residency and its own region of the composed atlas. A still
+light keeps one layout and a composed atlas of one region, as before; a moving
+light uses three regions side by side.
 
-**Construction under a fixed budget.** Each presented frame renders at most
-`B` pages of `K[n+1]` (*initial*: 16; one page measured at about 0.015 ms),
-in the existing residency priority order (near to far). The layout's direction
-is the light direction when its construction starts.
+**Construction under a budget.** Each presented frame draws at most `B` static
+pages of `K[n+1]` (16 at the measured day and night speeds; one page measured
+at about 0.015 ms), in the existing residency priority order, and restores them
+into the layout's region as they are drawn. The layout's direction is the
+light's direction when its construction starts. Because a slot keeps its
+region, the first display of a constructed layout composes only the pages that
+dynamic casters reach: a rotation moves no page.
 
-**Continuous dissolve.** Receivers sample `K[n-1]` and `K[n]` and blend with a
-weight that advances every presented frame from 0 to 1 over the construction
-time of `K[n+1]`. When it reaches 1, `K[n+1]` is complete: the layouts rotate
-and the next construction starts. The displayed shadow therefore follows the
-light continuously, one to two construction periods behind (about 0.5 s and
-0.5 degrees at the measured intro speed).
+**Continuous dissolve.** Receivers sample `K[n-1]` and `K[n]` and blend the two
+visibilities with a weight that advances every presented frame from 0 to 1.
+A dissolve lasts a whole number of frames, 1.25 times the construction time of
+its layout: the margin absorbs a construction that takes a little longer, and
+the whole number makes every frame advance the displayed shadow by the same
+angle. When the dissolve ends, the completed `K[n+1]` becomes the newest layout
+and the next construction starts at the light's direction of that frame. In
+steady state the displayed shadow moves at the light's angular speed, two
+dissolve periods behind it (0.6 degrees at the title intro's speed).
 
-**Spacing law.** With `P` selected pages, light speed `v` and frame time `dt`:
-construction time `T = ceil(P / B) * dt`, keyframe spacing `delta = v * T`.
-The page set is chosen so that `delta <= delta_max` (*initial*: 0.5 degrees):
+**Spacing law.** With `P` pages in a layout, light speed `v` per frame and
+budget `B`: keyframe spacing `delta = v * 1.25 * P / B`. The budget rises from
+16 up to 64 pages so that `delta <= 0.5` degrees; above that speed the spacing
+grows and the dissolve reads as a blur of the sweep. (The first design shrank
+the page set under fast sweeps; raising the budget is simpler and bounded at
+about 1 ms. The set can still shrink if the Sun's Song probe asks for it.)
 
-- slow motion (class A): the full set fits; spacing about 0.25 degrees at the
-  measured intro speed;
-- fast motion (class B): the set shrinks from the finest levels outward. Near
-  shadows fall back to the coarser resident levels the virtual shadow map
-  already provides, so shadows soften while the light sweeps and sharpen when
-  it slows. Cost stays at `B` pages per frame by construction;
-- if even the coarsest set exceeds `delta_max`, the spacing grows; the
-  dissolve then reads as a blur of the sweep.
+**Start and stop.** After a cut, or when a still light starts to move, the
+displayed shadow starts from the exact layout, holds for one construction and
+reaches the light's speed over two dissolves: the lag builds up without a
+jump. When the light stops, the remaining keyframes play out and the last
+layout is built at the light's final direction.
 
-**Still light (class S).** When the weight reaches 1 and the light has not
-moved, no construction starts; receivers sample one layout, as today.
+**Still light (class S).** No construction starts; receivers sample one layout,
+as before. After 600 frames without motion the other layouts are released, and
+the composed atlas returns to one region once slot 0 is the displayed layout
+(every cut puts the layout in slot 0).
 
-**Cut (class C).** All layouts are dropped and one is rebuilt in that frame, as
-today. Cuts coincide with camera cuts, fades or scene loads.
+**Cut (class C).** A new continuity epoch, another layout geometry (resolution,
+range) or a turn above 8 degrees in one frame: slot 0 is rebuilt in that frame,
+as before. Cuts coincide with camera cuts, fades or scene loads.
 
 **Dynamic casters.** Each displayed layout recomposes its dynamic pages every
-frame, as one layout does today; two layouts double that small cost (9 pages
-per frame measured on a still light).
+frame, as one layout does when the light is still.
 
-**Memory.** Up to three pairs of atlases (static cache and composed depth)
-instead of one: at 2048, 96 MiB against 32 MiB; less if pages without dynamic
-casters are sampled from the static cache. At 4096 it would be 384 MiB against
-128: *initial* rule, a moving light uses 2048 layouts; a still light keeps the
-configured size. To settle in P2.
+**Receivers.** The receiver block holds two layouts (matrix, clip levels, page
+table), the dissolve weight and each layout's atlas offset; the atlas binding
+is unchanged. The second layout is read only while the dissolve flag is set;
+without it its bytes are neither uploaded nor bound (the range ends before
+them). Receivers' lights are matched against the scene's current light, not
+against a layout's direction, so the lag never unbinds a receiver. A fragment
+looks its visibility up once: the lighting asks for it once per shadowed term
+of each matched light and used to repeat the whole filtered lookup each time.
+
+**Memory.** While the light moves: three static atlases and a composed atlas of
+three regions, 96 MiB at 2048 against 32 MiB for a still light (384 against 128
+at 4096). The resolution is not lowered for a moving light: the shadow would
+change sharpness when the light starts to move. A device whose largest image
+is narrower than three regions keeps one layout and relayouts it in steps of
+0.25 degrees.
 
 **Why not fewer layouts.** With two layouts, display and construction must
 alternate, and the shadow would move in visible bursts. The alternative that
@@ -541,6 +562,55 @@ ambient at night; P3's ambient gain addresses that.
 - **Exit:** R2, R5, R6 for shadows; GPU time on moving frames within the noise
   of still frames plus the measured two-layout sampling cost.
 
+**Done (2026-10-02).** `renderer3ds/virtual_shadow_keyframes.h` (the scheduler:
+slots, whole-frame dissolve, budget, cuts), `VirtualShadowMapCache`
+(construction mode: budgeted static pages composed as they are drawn; page
+selection made cheaper with the same results), the receiver shader and block
+(two layouts, weight, atlas offsets, one lookup per fragment), the shadow pass
+(three layout slots with their static atlases, one composed atlas of one or
+three regions, release after 600 still frames), the grass shadow grid on the
+same block, diagnostics `nri_vsm_keyframe_*` and `nri_vsm_pending_pages`.
+Probes at 1280x720 on the development GPU (`qualify/intro-lights`,
+`p2_analyze.py`), P1 build against P2 in interleaved rounds:
+
+| Probe | Displayed step / light step | Lag | Pages updated per frame | GPU frame, P1 | GPU frame, P2 |
+|---|---|---|---|---|---|
+| Title intro, 2,600 frames, 2 rounds | 1.000 (p50); 43 held and 39 ramp frames after the 2 cuts | 0.62 deg | p50 30, p95 52 (P1: 225 every 16 frames) | mean 5.55; held frames 5.35, relayout frames 8.5 | mean 5.6, p95 6.6 |
+| Field through sunset, 4,400 frames | 0.999-1.000 in every frame, none stalled | 0.71 deg | p50 28 | p50 5.4-5.5 on held frames, p95 12.8 | p50 4.7-5.1, p95 6.5-7.5 |
+| Field at night and dawn (before the single lookup) | 0.999-1.000 | 1.0 deg (the night clock runs twice as fast; budget 22) | p50 28, p95 64 | mean 2.8-2.9 without the upscaler | mean 3.1-3.2 without the upscaler |
+
+- The construction never exceeds its budget; it costs 0.2 ms of GPU time for
+  16 pages. A rotation moves no page: 46 consecutive captures at sunset across
+  three rotations change by 0.38-0.45 levels on the rotation frames, inside
+  the 0.36-0.51 of the other frames (the grass in the wind).
+- The second lookup first cost 0.8 to 1.3 ms by day in the field (GPU p50 7.3
+  to 8.0 ms): the lighting repeated the filtered lookup for every shadowed
+  term. With one lookup per fragment the two layouts cost less than P1's one
+  layout did, and a still light gains the same saving.
+- CPU: the render thread's draw time rises by about 0.4 ms per frame while the
+  light moves (6.6 to 7.0 ms p50 in the title intro): three page selections
+  and caster bindings per frame instead of one. A page selection fell from
+  65-88 to 52-74 microseconds. P1's relayout frames no longer exist.
+- Still light, the user's configuration at 3840x2160 over the Link's house
+  entry and exit: 19 of 20 captures identical to P1 (the twentieth differs
+  between two runs of one build, as before). Native lighting 12/12 and
+  directional shadows off 12/12 identical to P1 on the Kokiri walk.
+- Validation on the title intro reports the same messages for P1 and P2 (a
+  descriptor at binding 26 never updated, vertex outputs missing for fragment
+  inputs 7-10, descriptor types at bindings 1-3 of one program); they predate
+  this phase and are open.
+- Tests: scheduler (still light, even motion at two speeds, stop, cuts, the
+  single-layout fallback), construction budget and composition, the exact
+  overlap rule of the page selection against a brute-force reference, receiver
+  packing; foundation 323/323, scene-frame 20/20, pipeline cache 51/51,
+  composition and visual replay suites, pass artifacts 70, renderer boundary
+  title-neutral (99 files).
+
+The nightmare (fixed light settings) keeps one layout and 32 MiB over 1,627
+frames, with a cut at each of its three scene cuts. Not probed yet: the Sun's
+Song (the budget rises to 64 pages; above that the spacing grows) and a
+weather change.
+
 ### P3. Profile standard
 
 - Version 6 schema, loader for 1-5 unchanged, F1 tabs, panel smoke test.
@@ -578,16 +648,16 @@ ambient at night; P3's ambient gain addresses that.
 
 ### Metrics and thresholds
 
-| Metric | Before (P-boot) | After P1 | Target |
-|---|---|---|---|
-| Guest frames in which a moving light moves | 74 of 900 | all | all |
-| Largest change of angular step between frames | 0.68 deg | 0.039 deg, once per native speed change | <= 0.01 deg outside cuts and native speed changes |
-| Direction jumps outside cuts | 2 (the 180 degree flips) | 0 | 0 |
-| Frames with the shadow light below the horizon | 1,317 of 3,800 | 0 | 0 |
-| Pages rendered in one frame by a moving light | 215 of 220 | 215 of 220, every 0.25 deg | <= budget (16) plus dynamic pages |
-| GPU frame time on moving frames against still frames | 9.8 against 6.5 ms, 15.5 max | relayout frames 1,055 -> 765 in the field probe | within noise plus two-layout sampling |
-| Shadow edge position across consecutive captures | steps | steps of 0.25 deg | monotonic, even |
-| Native / Authentic / F2 captures | - | not read by these modes | byte-identical to the baseline |
+| Metric | Before (P-boot) | After P1 | After P2 | Target |
+|---|---|---|---|---|
+| Guest frames in which a moving light moves | 74 of 900 | all | all | all |
+| Largest change of angular step between frames | 0.68 deg | 0.039 deg, once per native speed change | unchanged | <= 0.01 deg outside cuts and native speed changes |
+| Direction jumps outside cuts | 2 (the 180 degree flips) | 0 | 0 | 0 |
+| Frames with the shadow light below the horizon | 1,317 of 3,800 | 0 | 0 | 0 |
+| Pages rendered in one frame by a moving light | 215 of 220 | 215 of 220, every 0.25 deg | 16 static pages (22 at night) plus dynamic pages; p95 52-64 updated | <= budget plus dynamic pages |
+| GPU frame time on moving frames against still frames | 9.8 against 6.5 ms, 15.5 max | relayout frames 8.5 against 5.35 ms | 5.6 ms on every frame (title intro); below P1 by day in the field | within noise plus two-layout sampling |
+| Shadow motion | steps of the native bytes | steps of 0.25 deg | the light's step in every frame; ramp after a cut | monotonic, even |
+| Native lighting and shadows-off captures | - | not read by these modes | identical to P1 | byte-identical to the baseline |
 
 All timing comparisons use interleaved rounds; the GPU is shared on the
 development machine.
@@ -597,23 +667,24 @@ development machine.
 | Item | Cost |
 |---|---|
 | Snapshot, clock direction, dequantiser | negligible CPU, once per guest frame |
-| Layout construction while the light moves | at most 16 pages per frame, about 0.25 ms GPU (*initial*) |
-| Second displayed layout while the light moves | double PCF sampling in receivers and the grass grid; to measure in P2 |
-| Dynamic casters while the light moves | twice today's dynamic pages (about 9 per frame measured) |
-| Still light | exactly today's cost |
-| Memory at 2048 | up to 96 MiB against 32 MiB |
+| Layout construction while the light moves | 16 pages per frame by day, 22 at night (up to 64): 0.2 ms GPU measured for 16 |
+| Second displayed layout while the light moves | one more filtered lookup per shadowed fragment; with one lookup per fragment per layout the total is below P1's |
+| Dynamic casters while the light moves | twice the dynamic pages of a still light (about 6 to 9 per layout measured) |
+| Render-thread CPU while the light moves | about +0.4 ms per frame (three page selections and caster bindings) |
+| Still light | one lookup per fragment instead of one per shadowed term; otherwise as before |
+| Memory at 2048 | 96 MiB while the light moves, 32 MiB still |
 
 ## 9. Risks
 
 | Risk | Mitigation |
 |---|---|
 | The dissolve shows a double edge at the tip of long shadows | Spacing law keeps the offset inside the filter width near the caster; the horizon fade removes the longest shadows; P5 warp |
-| Two-layout sampling costs more than expected at 4K | Measure in P2; sample the second layout only where the first reports an occluder nearby; stochastic choice resolved by the upscaler as a fallback |
+| Two-layout sampling costs more than expected at 4K | Measured in P2: one extra filtered lookup per shadowed fragment, more than paid for by looking up once per fragment. A stochastic choice of layout stays rejected: without temporal anti-aliasing it shows as stipple on the edges of tall casters |
 | Another writer changes the sky record (cutscene) | The clock check of 5.2 falls back to the native bytes and the dequantiser |
 | The Sun's Song step exceeds the cut angle | P-song-flow sets the threshold; the clock speed read in P0 bounds it |
 | A fixed-mode scene relies on a light from below as its main light | It still lights; it only never casts the shadow map (5.3). Reviewed per probe, not per scene |
-| Memory at 4096 | Moving lights use 2048 layouts (5.5) |
-| Shadows trail the light by about half a second | Invisible at measured speeds (0.5 deg); class B shortens the construction time |
+| Memory at 4096 | 384 MiB while the light moves (5.5); the resolution is the user's setting and is not lowered |
+| Shadows trail the light by about half a second | 0.6 to 1.0 degrees at the measured speeds; a faster light raises the budget and shortens the construction |
 
 ## 10. Alternatives considered
 
@@ -641,6 +712,7 @@ development machine.
 1. `cut angle`, `event step`, hysteresis margin, handover time (4.2, 5.4).
 2. Horizon angles for `shadow(e)` and `direct(e)` (5.3), judged on dusk and
    dawn captures.
-3. Page budget and `delta_max` (5.5), judged on edge tracking and GPU time.
-4. Layout size rule at 4096 (5.5).
+3. Page budget and `delta_max` (5.5): settled at 16 to 64 pages and 0.5
+   degrees for the measured speeds; the Sun's Song probe may still move them.
+4. Layout size rule at 4096 (5.5): settled, the resolution is not lowered.
 5. Whether colours need the dequantiser at all once gains are applied (5.2).

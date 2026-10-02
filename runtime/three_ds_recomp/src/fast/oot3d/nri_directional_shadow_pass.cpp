@@ -6,6 +6,7 @@
 #include "fast/oot3d/pica_directional_shadow_caster.h"
 #include "fast/oot3d/pica_directional_shadow_semantics.h"
 #include "fast/oot3d/resource_state_tracker.h"
+#include "fast/renderer3ds/virtual_shadow_keyframes.h"
 
 #ifdef ENABLE_OOT3D_NRI
 #include "nri_interop_internal.h"
@@ -33,9 +34,12 @@ namespace {
 
 constexpr uint32_t kFrameSlots = 2U;
 constexpr uint32_t kMaximumCasters = 512U;
-// Caster descriptor sets of one frame slot: the directional map and the
-// point maps each bind a caster once.
-constexpr uint32_t kCasterBindingsPerFrame = 2U * kMaximumCasters;
+// Caster descriptor sets of one frame slot: each shadow layout (the two
+// displayed and the one in construction) and the point maps bind a caster once.
+constexpr uint32_t kCasterBindingsPerFrame =
+    (Renderer3ds::kVirtualShadowKeyframeSlots + 1U) * kMaximumCasters;
+// A still light releases the layouts it no longer displays after this long.
+constexpr uint32_t kStillLayoutReleaseFrames = 600U;
 constexpr size_t kMaximumShadowTargets = 8U;
 
 uint64_t AlignUp(uint64_t value, uint64_t alignment) {
@@ -202,15 +206,28 @@ struct NriDirectionalShadowPass::Impl {
         PicaDirectionalShadowHistoryState State;
     };
 
-    struct TargetHistory {
-        HistorySlot Slot;
+    // One shadow layout (a keyframe of the light): its static depth, its
+    // residency and the layout it was last prepared with.
+    struct LayoutSlot {
         NriOwnedTexture2D StaticTexture;
         Renderer3ds::VirtualShadowMapCache Cache;
+        Renderer3ds::VirtualShadowLayout Layout;
+    };
+
+    // Slot.Texture is the composed atlas: one region (a still light, slot 0)
+    // or one per layout slot, side by side, each of the layout resolution.
+    struct TargetHistory {
+        HistorySlot Slot;
+        std::array<LayoutSlot, Renderer3ds::kVirtualShadowKeyframeSlots> Layouts;
+        Renderer3ds::VirtualShadowKeyframes Keyframes;
         uint32_t Resolution = 0U;
+        uint32_t Regions = 0U;
+        uint32_t StillFrames = 0U;
         uint64_t LastUsedFrameId = 0U;
     };
 
     VkPhysicalDevice PhysicalDevice = VK_NULL_HANDLE;
+    uint32_t MaximumImageDimension = 0U;
     VkDevice Device = VK_NULL_HANDLE;
     VkSampler ReceiverSampler = VK_NULL_HANDLE;
     NriInteropContext* Interop = nullptr;
@@ -238,6 +255,7 @@ struct NriDirectionalShadowPass::Impl {
     uint32_t LastCasters = 0U;
     uint32_t LastAlphaCasters = 0U;
     NriDirectionalShadowLightTelemetry LastLight;
+    NriDirectionalShadowKeyframeTelemetry LastKeyframes;
     NriDirectionalShadowExecutionStage LastStage = NriDirectionalShadowExecutionStage::NotAttempted;
     EffectPassBarrierExecution LastShadowMapBarrierExecution;
     std::string Reason = "NRI directional shadow pass is not initialized";
@@ -263,13 +281,18 @@ struct NriDirectionalShadowPass::Impl {
     std::unordered_map<uint64_t, nri::Descriptor*> CasterSamplers;
 #endif
 
-    void Retire(TargetHistory& history, uint64_t frameId) {
-        for (const auto* texture : { &history.Slot.Texture, &history.StaticTexture }) {
-            if (texture->Image != VK_NULL_HANDLE) {
-                OwnedStates.Forget(reinterpret_cast<uintptr_t>(texture->Image));
-                RetiredTextures.push_back({ *texture, frameId });
-            }
+    void RetireTexture(NriOwnedTexture2D& texture, uint64_t frameId) {
+        if (texture.Image != VK_NULL_HANDLE) {
+            OwnedStates.Forget(reinterpret_cast<uintptr_t>(texture.Image));
+            RetiredTextures.push_back({ texture, frameId });
         }
+        texture = {};
+    }
+
+    void Retire(TargetHistory& history, uint64_t frameId) {
+        RetireTexture(history.Slot.Texture, frameId);
+        for (auto& layout : history.Layouts)
+            RetireTexture(layout.StaticTexture, frameId);
         history = {};
     }
 
@@ -278,7 +301,8 @@ struct NriDirectionalShadowPass::Impl {
             for (auto& [key, history] : Histories) {
                 (void)key;
                 Interop->DestroyOwnedTexture(history.Slot.Texture.Image);
-                Interop->DestroyOwnedTexture(history.StaticTexture.Image);
+                for (auto& layout : history.Layouts)
+                    Interop->DestroyOwnedTexture(layout.StaticTexture.Image);
             }
             for (auto& texture : RetiredTextures) {
                 Interop->DestroyOwnedTexture(texture.Texture.Image);
@@ -313,21 +337,16 @@ struct NriDirectionalShadowPass::Impl {
 
         TargetHistory replacement;
         replacement.Resolution = resolution;
+        replacement.Regions = 1U;
         replacement.LastUsedFrameId = frameId;
-        NriOwnedTexture2DDesc textureDesc;
-        textureDesc.Width = resolution;
-        textureDesc.Height = resolution;
-        textureDesc.Format = VK_FORMAT_D32_SFLOAT;
-        textureDesc.Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                            VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-        if (!Interop->CreateOwnedTexture2D(textureDesc, replacement.Slot.Texture))
+        // Keyframes need an atlas with a region per layout; a device without
+        // it relayouts a moving light in steps.
+        Renderer3ds::VirtualShadowKeyframeSettings keyframes;
+        keyframes.Keyframed =
+            uint64_t{ resolution } * Renderer3ds::kVirtualShadowKeyframeSlots <= MaximumImageDimension;
+        replacement.Keyframes = Renderer3ds::VirtualShadowKeyframes(keyframes);
+        if (!CreateAtlas(resolution, resolution, true, replacement.Slot.Texture))
             return nullptr;
-        textureDesc.Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        if (!Interop->CreateOwnedTexture2D(textureDesc, replacement.StaticTexture)) {
-            Interop->DestroyOwnedTexture(replacement.Slot.Texture.Image);
-            return nullptr;
-        }
 
         if (found != Histories.end()) {
             Retire(found->second, frameId);
@@ -345,6 +364,34 @@ struct NriDirectionalShadowPass::Impl {
             }
         }
         return &Histories.emplace(key, std::move(replacement)).first->second;
+    }
+
+    // composed: sampled by receivers and restored from static depth;
+    // otherwise the static depth of one layout.
+    bool CreateAtlas(uint32_t width, uint32_t height, bool composed, NriOwnedTexture2D& texture) {
+        NriOwnedTexture2DDesc textureDesc;
+        textureDesc.Width = width;
+        textureDesc.Height = height;
+        textureDesc.Format = VK_FORMAT_D32_SFLOAT;
+        textureDesc.Usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                            (composed ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+        return Interop->CreateOwnedTexture2D(textureDesc, texture);
+    }
+
+    // Replaces the composed atlas by one of the given regions. The regions
+    // of the retired atlas are lost: true when it was replaced.
+    bool ResizeAtlas(TargetHistory& target, uint32_t regions, uint64_t frameId, bool& replaced) {
+        replaced = false;
+        if (regions == target.Regions)
+            return true;
+        NriOwnedTexture2D atlas;
+        if (!CreateAtlas(target.Resolution * regions, target.Resolution, true, atlas))
+            return false;
+        RetireTexture(target.Slot.Texture, frameId);
+        target.Slot.Texture = atlas;
+        target.Regions = regions;
+        replaced = true;
+        return true;
     }
 
     uint64_t PipelineKey(const PicaSceneDrawRecord& caster, const DirectionalShadowFramePlan& plan) const {
@@ -749,6 +796,9 @@ bool NriDirectionalShadowPass::Initialize(VkPhysicalDevice physicalDevice, VkDev
         if ((properties.optimalTilingFeatures & required) != required) {
             throw std::runtime_error("D32 sampled depth attachments are unavailable");
         }
+        VkPhysicalDeviceProperties deviceProperties{};
+        vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+        mImpl->MaximumImageDimension = deviceProperties.limits.maxImageDimension2D;
         nri::Device* nriDevice = NriInteropAccess::Device(interop);
         mImpl->Core = NriInteropAccess::Core(interop);
         if (nriDevice == nullptr || mImpl->Core == nullptr) {
@@ -853,6 +903,7 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     mImpl->LastCasters = 0;
     mImpl->LastAlphaCasters = 0;
     mImpl->LastLight = {};
+    mImpl->LastKeyframes = {};
     mImpl->LastStage = NriDirectionalShadowExecutionStage::NotAttempted;
     mImpl->LastShadowMapBarrierExecution = {};
 #ifndef ENABLE_OOT3D_NRI
@@ -901,15 +952,15 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     if (casters.empty())
         return false;
     mImpl->LastStage = NriDirectionalShadowExecutionStage::CastersMatched;
+    const auto sceneCaster = std::find_if(casters.begin(), casters.end(),
+                                          [](const auto* draw) { return draw->SceneDirectionals != nullptr; });
+    const auto* scene = sceneCaster != casters.end() ? (*sceneCaster)->SceneDirectionals.get() : nullptr;
     PicaDirectionalShadowLightSelection light;
     const bool authoredKey = desc.EnvironmentKey && desc.EnvironmentKey->Intensity > 0.0F;
     if (authoredKey) {
         light.WorldDirectionTowardSource = desc.EnvironmentKey->DirectionTowardSource;
         // The same direction the surface lighting resolves for these draws.
         if (desc.Environment != nullptr) {
-            const auto caster = std::find_if(casters.begin(), casters.end(),
-                                             [](const auto* draw) { return draw->SceneDirectionals != nullptr; });
-            const auto* scene = caster != casters.end() ? (*caster)->SceneDirectionals.get() : nullptr;
             light.WorldDirectionTowardSource = Renderer3ds::ResolvePicaEnvironmentKeyDirection(*desc.Environment, scene);
             // A key that follows the scene's lights shows its main light's
             // shadow strength (horizon, handover).
@@ -939,23 +990,13 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     input.CameraWorld = { viewToWorld[12], viewToWorld[13], viewToWorld[14] };
     input.LightDirectionTowardSource = light.WorldDirectionTowardSource;
     input.Settings = desc.Settings;
-    const auto previous = mImpl->Histories.find({ desc.RenderTargetNamespace, desc.ColorPhysicalAddress });
-    if (previous != mImpl->Histories.end() && previous->second.Slot.State.Valid()) {
-        input.PreviousLayout = &previous->second.Slot.State.Virtual;
-        // A light that moves every frame relayouts (redraws every page) only
-        // once it has turned kLayoutStepCosine from the layout's direction.
-        constexpr float kLayoutStepCosine = 0.99999048F; // cos(0.25 degrees)
-        const auto& held = input.PreviousLayout->LightDirection;
-        auto moving = light.WorldDirectionTowardSource;
-        const float length = std::sqrt(moving[0] * moving[0] + moving[1] * moving[1] + moving[2] * moving[2]);
-        if (length > 1.0e-6F &&
-            (held[0] * moving[0] + held[1] * moving[1] + held[2] * moving[2]) / length >= kLayoutStepCosine)
-            input.LightDirectionTowardSource = held;
-    }
+    // Validates the settings and the light. Each layout is planned at its own
+    // direction below.
     const auto plan = BuildDirectionalShadowFramePlan(input);
     if (!plan.Ready())
         return false;
-    mImpl->LastLight.WorldDirectionTowardSource = plan.LightDirectionTowardSource;
+    const Renderer3ds::ShadowVector lightDirection = plan.LightDirectionTowardSource;
+    mImpl->LastLight.WorldDirectionTowardSource = lightDirection;
     mImpl->LastStage = NriDirectionalShadowExecutionStage::FramePlanReady;
     // A caster whose program cannot be built casts nothing; it never fails
     // the map for the others. A discarding alpha test without its program
@@ -989,11 +1030,47 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
             geometry[index].ContentVersion =
                 HashValue(geometry[index].ContentVersion, mImpl->PipelineKey(*drawable[index], plan));
     }
-    target->Cache.Prepare(plan.Virtual, std::span(geometry).first(casterCount), desc.FrameId);
-    mImpl->LastLight.Pages = target->Cache.Statistics();
-    mImpl->LastLight.UpdatedPages = static_cast<uint32_t>(target->Cache.Updates().size());
-    mImpl->LastLight.AtlasBytes =
-        uint64_t(plan.Virtual.AtlasResolution) * plan.Virtual.AtlasResolution * sizeof(float) * 2U;
+    const auto casterGeometry = std::span<const Renderer3ds::VirtualShadowCaster>(geometry).first(casterCount);
+
+    // Shadow keyframes: which layouts are displayed, which one is constructed
+    // and with what page budget. The scene's continuity epoch marks its cuts.
+    auto& keyframes = target->Keyframes;
+    const int32_t previousNewer = keyframes.Frame().Newer;
+    const uint32_t layoutPages =
+        previousNewer >= 0 ? target->Layouts[previousNewer].Cache.Statistics().Resident : 0U;
+    const uint64_t layoutKey =
+        HashValue(HashValue(1469598103934665603ULL, plan.Virtual.AtlasResolution), plan.Virtual.MaximumDistance);
+    auto schedule =
+        keyframes.Begin(lightDirection, scene != nullptr ? scene->ContinuityEpoch : 0U, layoutKey, layoutPages);
+    const bool cut = schedule.Cut;
+    // A still light on slot 0 needs one region and one layout; a light that
+    // moves needs a region per slot. After a while without motion the other
+    // layouts are released.
+    const bool still = schedule.Construction < 0 && !schedule.OlderDisplayed();
+    target->StillFrames = still ? std::min(target->StillFrames + 1U, kStillLayoutReleaseFrames) : 0U;
+    const bool release = target->StillFrames == kStillLayoutReleaseFrames;
+    if (release)
+        for (int32_t slotIndex = 0; slotIndex < Renderer3ds::kVirtualShadowKeyframeSlots; ++slotIndex) {
+            auto& slot = target->Layouts[static_cast<size_t>(slotIndex)];
+            if (slotIndex == schedule.Newer || slot.StaticTexture.Image == VK_NULL_HANDLE)
+                continue;
+            mImpl->RetireTexture(slot.StaticTexture, desc.FrameId);
+            slot = {};
+        }
+    uint32_t regions = target->Regions;
+    if (std::max(schedule.Newer, schedule.Construction) > 0 || !still)
+        regions = static_cast<uint32_t>(Renderer3ds::kVirtualShadowKeyframeSlots);
+    else if (release && schedule.Newer == 0)
+        regions = 1U;
+    bool atlasReplaced = false;
+    if (!mImpl->ResizeAtlas(*target, regions, desc.FrameId, atlasReplaced))
+        return false;
+    if (atlasReplaced)
+        for (auto& slot : target->Layouts)
+            slot.Cache.InvalidateComposition();
+    const auto regionOffset = [&](int32_t slotIndex) {
+        return target->Regions == 1U ? 0U : static_cast<uint32_t>(slotIndex) * target->Resolution;
+    };
 
     auto* command = NriInteropAccess::CommandBuffer(*mImpl->Interop, desc.FrameSlot);
     auto& frame = mImpl->Frames[desc.FrameSlot % kFrameSlots];
@@ -1006,23 +1083,56 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         frame.FrameId = desc.FrameId;
         frame.CastersUsed = 0;
     }
-    std::array<Impl::PreparedCaster, kMaximumCasters> prepared{};
-    std::array<bool, kMaximumCasters> required{};
-    for (const auto& page : target->Cache.Updates()) {
-        for (auto index : target->Cache.StaticCasters(page))
-            required[index] = true;
-        for (auto index : target->Cache.DynamicCasters(page))
-            required[index] = true;
-    }
-    for (size_t index = 0; index < casterCount; ++index) {
-        if (!required[index])
-            continue;
-        const auto& caster = *drawable[index];
-        auto& draw = prepared[index];
-        draw.Pipeline = pipelines[index];
-        if (draw.Pipeline == nullptr || !mImpl->BindCaster(frame, sceneFrame, caster, plan.Virtual.WorldToLight, draw))
+    using PreparedCasters = std::array<Impl::PreparedCaster, kMaximumCasters>;
+    std::array<PreparedCasters, Renderer3ds::kVirtualShadowKeyframeSlots> prepared{};
+    Renderer3ds::VirtualShadowPageStatistics pages;
+    uint32_t updatedPages = 0U;
+    // Plans a layout at its own light direction and the current camera,
+    // selects its pages and binds the casters its updates draw. A
+    // construction draws static pages only, within its budget.
+    const auto prepareLayout = [&](int32_t slotIndex, const Renderer3ds::VirtualShadowConstruction* construction) {
+        auto& slot = target->Layouts[static_cast<size_t>(slotIndex)];
+        if (slot.StaticTexture.Image == VK_NULL_HANDLE &&
+            !mImpl->CreateAtlas(target->Resolution, target->Resolution, false, slot.StaticTexture))
             return false;
-    }
+        DirectionalShadowFrameInput slotInput = input;
+        slotInput.LightDirectionTowardSource = keyframes.Direction(slotIndex);
+        slotInput.PreviousLayout = slot.Layout.Valid() ? &slot.Layout : nullptr;
+        const auto slotPlan = BuildDirectionalShadowFramePlan(slotInput);
+        if (!slotPlan.Ready())
+            return false;
+        slot.Layout = slotPlan.Virtual;
+        slot.Cache.Prepare(slot.Layout, casterGeometry, desc.FrameId, construction);
+        const auto& statistics = slot.Cache.Statistics();
+        pages.Requested += statistics.Requested;
+        pages.Resident += statistics.Resident;
+        pages.Reused += statistics.Reused;
+        pages.Empty += statistics.Empty;
+        pages.Evicted += statistics.Evicted;
+        pages.Unmapped += statistics.Unmapped;
+        pages.StaticUpdated += statistics.StaticUpdated;
+        pages.StaticReused += statistics.StaticReused;
+        pages.Pending += statistics.Pending;
+        updatedPages += static_cast<uint32_t>(slot.Cache.Updates().size());
+        std::array<bool, kMaximumCasters> required{};
+        for (const auto& page : slot.Cache.Updates()) {
+            for (auto index : slot.Cache.StaticCasters(page))
+                required[index] = true;
+            for (auto index : slot.Cache.DynamicCasters(page))
+                required[index] = true;
+        }
+        for (size_t index = 0; index < casterCount; ++index) {
+            if (!required[index])
+                continue;
+            auto& draw = prepared[static_cast<size_t>(slotIndex)][index];
+            draw = {};
+            draw.Pipeline = pipelines[index];
+            if (draw.Pipeline == nullptr ||
+                !mImpl->BindCaster(frame, sceneFrame, *drawable[index], slot.Layout.WorldToLight, draw))
+                return false;
+        }
+        return true;
+    };
 
     mImpl->LastShadowMapBarrierExecution = shadowMapBarrierPlan.BeginExecution();
     const auto transition = [&](VkImage image, ResourceAccess access) {
@@ -1034,8 +1144,13 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         return true;
     };
     constexpr uint32_t pageSize = Renderer3ds::kVirtualShadowPhysicalPageTexels;
-    const uint32_t pagesAcross = plan.Virtual.AtlasResolution / pageSize;
-    const auto rasterize = [&](VkImage image, bool staticLayer) {
+    const uint32_t pagesAcross = target->Resolution / pageSize;
+    // Draws the pages of one layout: its static pages into its static atlas,
+    // or its dynamic casters into its region of the composed atlas.
+    const auto rasterize = [&](VkImage image, int32_t slotIndex, bool staticLayer) {
+        const uint32_t offsetX = staticLayer ? 0U : regionOffset(slotIndex);
+        const auto& slot = target->Layouts[static_cast<size_t>(slotIndex)];
+        const auto& draws = prepared[static_cast<size_t>(slotIndex)];
         nri::RenderingDesc rendering{};
         rendering.depth.descriptor = NriInteropAccess::DepthAttachmentView(*mImpl->Interop, image);
         if (rendering.depth.descriptor == nullptr)
@@ -1046,10 +1161,10 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         mImpl->Core->CmdBeginRendering(*command, rendering);
         mImpl->Core->CmdSetPipelineLayout(*command, nri::BindPoint::GRAPHICS, *mImpl->ShadowLayout);
         nri::Pipeline* boundPipeline = nullptr;
-        for (const auto& page : target->Cache.Updates()) {
+        for (const auto& page : slot.Cache.Updates()) {
             if (staticLayer ? !page.RefreshStatic : page.DynamicCasterCount == 0)
                 continue;
-            const uint32_t x = (page.PhysicalPage % pagesAcross) * pageSize;
+            const uint32_t x = offsetX + (page.PhysicalPage % pagesAcross) * pageSize;
             const uint32_t y = (page.PhysicalPage / pagesAcross) * pageSize;
             const nri::Rect scissor{ static_cast<int32_t>(x), static_cast<int32_t>(y), pageSize, pageSize };
             if (staticLayer) {
@@ -1062,16 +1177,15 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
             mImpl->Core->CmdSetViewports(*command, &viewport, 1);
             mImpl->Core->CmdSetScissors(*command, &scissor, 1);
             constexpr float coverage = float(Renderer3ds::kVirtualShadowPageTexels) / pageSize;
-            const float scale = 2.0F * coverage / plan.Virtual.Levels[page.Key.Level].PageWorldSize;
+            const float scale = 2.0F * coverage / slot.Layout.Levels[page.Key.Level].PageWorldSize;
             const std::array<float, 4> pageTransform{ scale, scale, (-2.0F * float(page.Key.X) - 1.0F) * coverage,
                                                       (-2.0F * float(page.Key.Y) - 1.0F) * coverage };
             const nri::SetRootConstantsDesc constants{ 0, pageTransform.data(), sizeof(pageTransform) };
             mImpl->Core->CmdSetRootConstants(*command, constants);
-            const auto indices =
-                staticLayer ? target->Cache.StaticCasters(page) : target->Cache.DynamicCasters(page);
+            const auto indices = staticLayer ? slot.Cache.StaticCasters(page) : slot.Cache.DynamicCasters(page);
             for (auto index : indices) {
                 const auto& caster = *drawable[index];
-                const auto& draw = prepared[index];
+                const auto& draw = draws[index];
                 if (boundPipeline != draw.Pipeline) {
                     mImpl->Core->CmdSetPipeline(*command, *draw.Pipeline);
                     boundPipeline = draw.Pipeline;
@@ -1099,47 +1213,144 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         mImpl->Core->CmdEndRendering(*command);
         return true;
     };
-    if (target->Cache.Statistics().StaticUpdated != 0 &&
-        (!transition(target->StaticTexture.Image, staticBarrier->DispatchAccess) ||
-         !rasterize(target->StaticTexture.Image, true)))
-        return false;
-    if (!target->Cache.Updates().empty()) {
-        auto* source = NriInteropAccess::Texture(*mImpl->Interop, target->StaticTexture.Image);
+
+    // Restores the changed pages of a layout from its static depth into its
+    // region of the composed atlas (in TransferWrite). Unchanged pages remain
+    // untouched and retain their exact depth.
+    const auto restore = [&](int32_t slotIndex) {
+        auto& slot = target->Layouts[static_cast<size_t>(slotIndex)];
+        auto* source = NriInteropAccess::Texture(*mImpl->Interop, slot.StaticTexture.Image);
         auto* destination = NriInteropAccess::Texture(*mImpl->Interop, history.Texture.Image);
         if (source == nullptr || destination == nullptr ||
-            !transition(target->StaticTexture.Image, staticBarrier->CompletionAccess) ||
-            !transition(history.Texture.Image, mapBarrier->DispatchAccess))
+            !transition(slot.StaticTexture.Image, staticBarrier->CompletionAccess))
+            return false;
+        for (const auto& page : slot.Cache.Updates()) {
+            nri::TextureRegionDesc from{};
+            from.x = static_cast<nri::Dim_t>((page.PhysicalPage % pagesAcross) * pageSize);
+            from.y = static_cast<nri::Dim_t>((page.PhysicalPage / pagesAcross) * pageSize);
+            from.width = from.height = pageSize;
+            from.depth = 1;
+            from.planes = nri::PlaneBits::DEPTH;
+            nri::TextureRegionDesc to = from;
+            to.x = static_cast<nri::Dim_t>(from.x + regionOffset(slotIndex));
+            mImpl->Core->CmdCopyTexture(*command, *destination, &to, *source, &from);
+        }
+        return true;
+    };
+
+    // The layout in construction: static pages only, within the budget,
+    // composed as they are drawn so that its display moves no page. They are
+    // committed at once: the layout may be displayed (and prepared again) in
+    // this same frame.
+    auto& telemetry = mImpl->LastKeyframes;
+    telemetry.Cut = cut;
+    if (schedule.Construction >= 0) {
+        const int32_t slotIndex = schedule.Construction;
+        const Renderer3ds::VirtualShadowConstruction construction{ schedule.ConstructionBudget };
+        if (!prepareLayout(slotIndex, &construction))
+            return false;
+        auto& slot = target->Layouts[static_cast<size_t>(slotIndex)];
+        telemetry.ConstructionBudget = schedule.ConstructionBudget;
+        telemetry.ConstructionPages = static_cast<uint32_t>(slot.Cache.Updates().size());
+        telemetry.PendingPages = slot.Cache.Statistics().Pending;
+        if (telemetry.ConstructionPages != 0U &&
+            (!transition(slot.StaticTexture.Image, staticBarrier->DispatchAccess) ||
+             !rasterize(slot.StaticTexture.Image, slotIndex, true) ||
+             !transition(history.Texture.Image, mapBarrier->DispatchAccess) || !restore(slotIndex)))
+            return false;
+        slot.Cache.Commit();
+        schedule = keyframes.EndConstruction(telemetry.PendingPages);
+        telemetry.Rotated = schedule.Rotated;
+    }
+
+    // The displayed layouts: the newest and, while the dissolve runs, the
+    // older one.
+    if (schedule.Newer < 0)
+        return false;
+    const std::array<int32_t, 2> displayed{ schedule.Newer, schedule.OlderDisplayed() ? schedule.Older : -1 };
+    bool restored = false;
+    bool dynamicDraws = false;
+    for (const int32_t slotIndex : displayed) {
+        if (slotIndex < 0)
+            continue;
+        auto& slot = target->Layouts[static_cast<size_t>(slotIndex)];
+        if (!prepareLayout(slotIndex, nullptr))
+            return false;
+        if (slot.Cache.Statistics().StaticUpdated != 0 &&
+            (!transition(slot.StaticTexture.Image, staticBarrier->DispatchAccess) ||
+             !rasterize(slot.StaticTexture.Image, slotIndex, true)))
+            return false;
+        restored |= !slot.Cache.Updates().empty();
+        for (const auto& page : slot.Cache.Updates())
+            dynamicDraws |= page.DynamicCasterCount != 0;
+    }
+    mImpl->LastLight.Pages = pages;
+    mImpl->LastLight.UpdatedPages = updatedPages;
+    uint32_t atlases = target->Regions;
+    for (const auto& slot : target->Layouts)
+        atlases += slot.StaticTexture.Image != VK_NULL_HANDLE ? 1U : 0U;
+    mImpl->LastLight.AtlasBytes = uint64_t(target->Resolution) * target->Resolution * sizeof(float) * atlases;
+    if (restored) {
+        if (!transition(history.Texture.Image, mapBarrier->DispatchAccess))
             return false;
         // Restore every changed page, even when its last actor has left.
-        // Unchanged final pages remain untouched and retain their exact depth.
-        bool dynamicDraws = false;
-        for (const auto& page : target->Cache.Updates()) {
-            nri::TextureRegionDesc region{};
-            region.x = static_cast<nri::Dim_t>((page.PhysicalPage % pagesAcross) * pageSize);
-            region.y = static_cast<nri::Dim_t>((page.PhysicalPage / pagesAcross) * pageSize);
-            region.width = region.height = pageSize;
-            region.depth = 1;
-            region.planes = nri::PlaneBits::DEPTH;
-            mImpl->Core->CmdCopyTexture(*command, *destination, &region, *source, &region);
-            dynamicDraws |= page.DynamicCasterCount != 0;
+        for (const int32_t slotIndex : displayed)
+            if (slotIndex >= 0 && !target->Layouts[static_cast<size_t>(slotIndex)].Cache.Updates().empty() &&
+                !restore(slotIndex))
+                return false;
+        if (dynamicDraws) {
+            if (!transition(history.Texture.Image, mapBarrier->IntermediateAccess))
+                return false;
+            for (const int32_t slotIndex : displayed)
+                if (slotIndex >= 0 && !rasterize(history.Texture.Image, slotIndex, false))
+                    return false;
         }
-        if (dynamicDraws &&
-            (!transition(history.Texture.Image, mapBarrier->IntermediateAccess) ||
-             !rasterize(history.Texture.Image, false)))
-            return false;
     }
     mImpl->LastStage = NriDirectionalShadowExecutionStage::ShadowRasterized;
     if (!transition(history.Texture.Image, mapBarrier->CompletionAccess))
         return false;
-    target->Cache.Commit();
-    history.State.Virtual = plan.Virtual;
-    history.State.PageTable = target->Cache.Table();
-    history.State.WorldLightDirectionTowardSource = plan.LightDirectionTowardSource;
+    for (const int32_t slotIndex : displayed)
+        if (slotIndex >= 0)
+            target->Layouts[static_cast<size_t>(slotIndex)].Cache.Commit();
+
+    const auto& newer = target->Layouts[static_cast<size_t>(schedule.Newer)];
+    history.State.Virtual = newer.Layout;
+    history.State.PageTable = newer.Cache.Table();
+    history.State.Region = regionOffset(schedule.Newer) / target->Resolution;
+    history.State.AtlasRegions = target->Regions;
+    Renderer3ds::ShadowVector displayedDirection = newer.Layout.LightDirection;
+    if (displayed[1] >= 0) {
+        const auto& older = target->Layouts[static_cast<size_t>(displayed[1])];
+        auto olderLayout = std::make_shared<PicaDirectionalShadowOlderLayout>();
+        olderLayout->Virtual = older.Layout;
+        olderLayout->PageTable = older.Cache.Table();
+        olderLayout->Region = regionOffset(displayed[1]) / target->Resolution;
+        history.State.Older = std::move(olderLayout);
+        history.State.NewerWeight = schedule.NewerWeight;
+        float length = 0.0F;
+        for (size_t axis = 0; axis < 3U; ++axis) {
+            displayedDirection[axis] = older.Layout.LightDirection[axis] +
+                (newer.Layout.LightDirection[axis] - older.Layout.LightDirection[axis]) * schedule.NewerWeight;
+            length += displayedDirection[axis] * displayedDirection[axis];
+        }
+        length = std::sqrt(length);
+        if (length > 1.0e-6F)
+            for (auto& component : displayedDirection)
+                component /= length;
+    }
+    // The receivers' lights are matched against the scene's current light;
+    // the layouts follow it.
+    history.State.WorldLightDirectionTowardSource = lightDirection;
     history.State.ProducedFrameId = desc.FrameId;
     history.State.Strength = plan.Strength * std::clamp(light.ShadowStrength, 0.0F, 1.0F);
     history.State.DepthBias = std::max(plan.DepthBiasConstant, 0.0F) * 0.5F / (2.0F * plan.Virtual.DepthExtent);
     history.State.PcfRadius = plan.PcfRadius;
     target->LastUsedFrameId = desc.FrameId;
+    telemetry.DisplayedLayouts = displayed[1] >= 0 ? 2U : 1U;
+    telemetry.NewerWeight = history.State.NewerWeight;
+    telemetry.DisplayedDirectionTowardSource = displayedDirection;
+    telemetry.LagDegrees = static_cast<float>(
+        Renderer3ds::VirtualShadowKeyframes::AngleDegrees(displayedDirection, lightDirection));
     mImpl->LastNativeLight = !authoredKey;
     mImpl->LastStage = NriDirectionalShadowExecutionStage::HistoryPublished;
     return true;
@@ -1424,7 +1635,11 @@ NriDirectionalShadowHistorySnapshot NriDirectionalShadowPass::FindLatestHistory(
 void NriDirectionalShadowPass::InvalidateHistory() noexcept {
     for (auto& [key, history] : mImpl->Histories) {
         history.Slot.State = {};
-        history.Cache.Invalidate();
+        for (auto& layout : history.Layouts)
+            layout.Cache.Invalidate();
+        // The next map is a discontinuity: one layout, rebuilt at once.
+        history.Keyframes.Reset();
+        history.StillFrames = 0U;
     }
     for (auto& [key, point] : mImpl->PointTargets) {
         (void)key;
@@ -1510,6 +1725,10 @@ uint32_t NriDirectionalShadowPass::LastAlphaCasterCount() const {
 
 const NriDirectionalShadowLightTelemetry& NriDirectionalShadowPass::LastLightTelemetry() const {
     return mImpl->LastLight;
+}
+
+const NriDirectionalShadowKeyframeTelemetry& NriDirectionalShadowPass::LastKeyframeTelemetry() const {
+    return mImpl->LastKeyframes;
 }
 
 NriDirectionalShadowExecutionStage NriDirectionalShadowPass::LastExecutionStage() const {

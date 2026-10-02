@@ -12,7 +12,7 @@ namespace {
 uint64_t LightingVariantKey(uint64_t original, bool fragmentPrimary) {
     constexpr uint64_t kOffset = 1469598103934665603ULL;
     constexpr uint64_t kPrime = 1099511628211ULL;
-    constexpr std::string_view kSalt = "OOT3D_PICA_VIRTUAL_SHADOW_LIGHTING_V5";
+    constexpr std::string_view kSalt = "OOT3D_PICA_VIRTUAL_SHADOW_LIGHTING_V6";
     uint64_t hash = kOffset;
     for (unsigned shift = 0U; shift < 64U; shift += 8U) {
         hash ^= static_cast<uint8_t>(original >> shift);
@@ -28,14 +28,18 @@ uint64_t LightingVariantKey(uint64_t original, bool fragmentPrimary) {
 
 std::string LightingDeclarations() {
     return std::string(Renderer3ds::VirtualShadowReceiverShader()) + R"glsl(
+// The lighting asks once per shadowed term of each matched light; the
+// visibility of a fragment is looked up once.
+bool oot3d_directional_shadow_ready = false;
+vec3 oot3d_directional_shadow_value = vec3(1.0);
 vec3 oot3d_directional_shadow_visibility() {
     if ((pica_vsm.extent.w & 1u) == 0u) return vec3(1.0);
-    vec4 position = pica_vsm.input_to_light * vec4(-pica_view, 1.0);
-    if (abs(position.w) <= 1.0e-7) return vec3(1.0);
-    // Differentiate before normalized-depth translation to retain D32 slopes.
-    vec3 dx = mat3(pica_vsm.input_to_light) * dFdx(-pica_view);
-    vec3 dy = mat3(pica_vsm.input_to_light) * dFdy(-pica_view);
-    return vec3(pica_vsm_visibility(position.xyz / position.w, pica_vsm_depth_gradient(dx, dy)));
+    if (!oot3d_directional_shadow_ready) {
+        oot3d_directional_shadow_value =
+            vec3(pica_vsm_visibility(-pica_view, dFdx(-pica_view), dFdy(-pica_view)));
+        oot3d_directional_shadow_ready = true;
+    }
+    return oot3d_directional_shadow_value;
 }
 )glsl";
 }
@@ -47,20 +51,42 @@ std::string PicaDirectionalShadowLightingDeclarations() { return LightingDeclara
 PicaDirectionalShadowReceiverUniforms PackPicaDirectionalShadowReceiverUniforms(
     const DirectionalShadowMatrix& viewToWorld, const PicaDirectionalShadowHistoryState& history) noexcept {
     PicaDirectionalShadowReceiverUniforms uniforms;
-    const auto& layout = history.Virtual;
-    uniforms.ViewToLight = MultiplyDirectionalShadowMatrices(layout.WorldToLight, viewToWorld);
-    uniforms.ShadowState = { std::clamp(history.Strength, 0.0F, 4.0F), 1.0F / float(layout.AtlasResolution),
-                             layout.MaximumDistance, std::max(history.DepthBias, 0.0F) };
-    uniforms.ShadowedDirectFraction = { 1.0F, 1.0F, 1.0F, 0.0F };
-    uniforms.Extent = { layout.AtlasResolution, layout.AtlasResolution, std::min<uint32_t>(history.PcfRadius, 2U), 1U };
-    uniforms.CameraLight = { layout.CameraLight[0], layout.CameraLight[1], layout.CameraLight[2],
-                             float(layout.LevelCount) };
-    for (size_t level = 0; level < layout.LevelCount; ++level) {
-        const auto& source = layout.Levels[level];
-        uniforms.Levels[level] = { float(source.OriginX), float(source.OriginY), source.PageWorldSize, 0 };
-    }
-    uniforms.PageTable = history.PageTable;
+    PackPicaDirectionalShadowReceiverUniforms(viewToWorld, history, uniforms);
     return uniforms;
+}
+
+void PackPicaDirectionalShadowReceiverUniforms(const DirectionalShadowMatrix& viewToWorld,
+                                               const PicaDirectionalShadowHistoryState& history,
+                                               PicaDirectionalShadowReceiverUniforms& uniforms) noexcept {
+    const auto& layout = history.Virtual;
+    const bool dissolving = history.Dissolving();
+    const uint32_t regions = std::max<uint32_t>(history.AtlasRegions, 1U);
+    uniforms.ShadowState = { std::clamp(history.Strength, 0.0F, 4.0F),
+                             1.0F / float(layout.AtlasResolution * regions), layout.MaximumDistance,
+                             std::max(history.DepthBias, 0.0F) };
+    uniforms.ShadowedDirectFraction = { 1.0F, 1.0F, 1.0F, 0.0F };
+    uniforms.Extent = { layout.AtlasResolution, layout.AtlasResolution, std::min<uint32_t>(history.PcfRadius, 2U),
+                        kPicaDirectionalShadowBoundFlag | (dissolving ? kPicaDirectionalShadowDissolveFlag : 0U) };
+    uniforms.Dissolve = { dissolving ? std::clamp(history.NewerWeight, 0.0F, 1.0F) : 1.0F,
+                          1.0F / float(layout.AtlasResolution), float(history.Region * layout.AtlasResolution),
+                          dissolving ? float(history.Older->Region * layout.AtlasResolution) : 0.0F };
+    const auto pack = [&](PicaDirectionalShadowReceiverLayout& destination,
+                          const Renderer3ds::VirtualShadowLayout& source,
+                          const std::array<uint32_t, Renderer3ds::kVirtualShadowTableEntries>& table) {
+        destination.ViewToLight = MultiplyDirectionalShadowMatrices(source.WorldToLight, viewToWorld);
+        destination.CameraLight = { source.CameraLight[0], source.CameraLight[1], source.CameraLight[2],
+                                    float(source.LevelCount) };
+        for (size_t level = 0; level < source.LevelCount; ++level) {
+            const auto& grid = source.Levels[level];
+            destination.Levels[level] = { float(grid.OriginX), float(grid.OriginY), grid.PageWorldSize, 0 };
+        }
+        for (size_t level = source.LevelCount; level < destination.Levels.size(); ++level)
+            destination.Levels[level] = {};
+        destination.PageTable = table;
+    };
+    pack(uniforms.Layouts[0], layout, history.PageTable);
+    if (dissolving)
+        pack(uniforms.Layouts[1], history.Older->Virtual, history.Older->PageTable);
 }
 
 
@@ -110,7 +136,7 @@ BuildPicaSurfaceShadowReceiverBinding(const DirectionalShadowMatrix& currentView
                                        : PicaDirectionalShadowReceiverClass::DirectUnmatched;
     if (mask == 0U)
         return result;
-    result.Uniforms = PackPicaDirectionalShadowReceiverUniforms(currentViewToWorld, history);
+    PackPicaDirectionalShadowReceiverUniforms(currentViewToWorld, history, result.Uniforms);
     result.Uniforms.ShadowedDirectFraction[3] = static_cast<float>(mask);
     return result;
 }

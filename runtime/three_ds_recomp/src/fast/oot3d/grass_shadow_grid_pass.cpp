@@ -234,7 +234,7 @@ GrassShadowGridResult GrassShadowGridPass::Execute(VkCommandBuffer command, uint
              true);
     const DirectionalShadowMatrix identity{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
     const auto uniforms = PackPicaDirectionalShadowReceiverUniforms(identity, history.State);
-    std::memcpy(invocation.Uniforms.Mapped, &uniforms, sizeof(uniforms));
+    std::memcpy(invocation.Uniforms.Mapped, &uniforms, uniforms.UsedBytes());
     const std::array<VkDescriptorBufferInfo, 5> buffers{ { { invocation.Points.Handle, 0, points.size_bytes() },
                                                            { invocation.Visibility.Handle, 0, visibilityBytes },
                                                            { invocation.Uniforms.Handle, 0, sizeof(uniforms) },

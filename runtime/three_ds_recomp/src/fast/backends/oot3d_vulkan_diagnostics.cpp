@@ -555,6 +555,17 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
         {"nri_vsm_evicted_pages", frame.NriVirtualShadowEvictedPageCount},
         {"nri_vsm_unmapped_pages", frame.NriVirtualShadowUnmappedPageCount},
         {"nri_vsm_atlas_bytes", frame.NriVirtualShadowAtlasBytes},
+        {"nri_vsm_pending_pages", frame.NriVirtualShadowPendingPageCount},
+        {"nri_vsm_keyframe_displayed_layouts", frame.NriVirtualShadowKeyframeDisplayedLayoutCount},
+        {"nri_vsm_keyframe_construction_pages", frame.NriVirtualShadowKeyframeConstructionPageCount},
+        {"nri_vsm_keyframe_construction_budget", frame.NriVirtualShadowKeyframeConstructionBudget},
+        {"nri_vsm_keyframe_cuts", frame.NriVirtualShadowKeyframeCutCount},
+        {"nri_vsm_keyframe_rotations", frame.NriVirtualShadowKeyframeRotationCount},
+        {"nri_vsm_keyframe_weight", frame.NriVirtualShadowKeyframeWeight},
+        {"nri_vsm_keyframe_lag_degrees", frame.NriVirtualShadowKeyframeLagDegrees},
+        {"nri_vsm_keyframe_direction_x", frame.NriVirtualShadowKeyframeDirectionX},
+        {"nri_vsm_keyframe_direction_y", frame.NriVirtualShadowKeyframeDirectionY},
+        {"nri_vsm_keyframe_direction_z", frame.NriVirtualShadowKeyframeDirectionZ},
         { "nri_directional_shadow_receiver_eligible_draw_count",
           frame.NriDirectionalShadowReceiverEligibleDrawCount },
         { "nri_directional_shadow_receiver_lighting_available_draw_count",
@@ -1665,6 +1676,27 @@ void Oot3dVulkanDiagnostics::RecordNriVirtualShadowPages(
     frame.NriVirtualShadowEvictedPageCount += pages.Evicted;
     frame.NriVirtualShadowUnmappedPageCount += pages.Unmapped;
     frame.NriVirtualShadowAtlasBytes += atlasBytes;
+    frame.NriVirtualShadowPendingPageCount += pages.Pending;
+}
+
+void Oot3dVulkanDiagnostics::RecordNriVirtualShadowKeyframes(
+    uint32_t displayedLayouts, float newerWeight, uint32_t constructionPages, uint32_t constructionBudget,
+    bool cut, bool rotated, const std::array<float, 3>& displayedDirection, float lagDegrees) {
+    if (!mActiveFrame) return;
+    auto& frame = *mActiveFrame;
+    // Several targets: the one that displays the most layouts describes the frame.
+    if (displayedLayouts >= frame.NriVirtualShadowKeyframeDisplayedLayoutCount) {
+        frame.NriVirtualShadowKeyframeDisplayedLayoutCount = displayedLayouts;
+        frame.NriVirtualShadowKeyframeWeight = newerWeight;
+        frame.NriVirtualShadowKeyframeLagDegrees = lagDegrees;
+        frame.NriVirtualShadowKeyframeDirectionX = displayedDirection[0];
+        frame.NriVirtualShadowKeyframeDirectionY = displayedDirection[1];
+        frame.NriVirtualShadowKeyframeDirectionZ = displayedDirection[2];
+    }
+    frame.NriVirtualShadowKeyframeConstructionPageCount += constructionPages;
+    frame.NriVirtualShadowKeyframeConstructionBudget += constructionBudget;
+    frame.NriVirtualShadowKeyframeCutCount += cut ? 1U : 0U;
+    frame.NriVirtualShadowKeyframeRotationCount += rotated ? 1U : 0U;
 }
 
 void Oot3dVulkanDiagnostics::RecordNriDirectionalShadowReceiver(

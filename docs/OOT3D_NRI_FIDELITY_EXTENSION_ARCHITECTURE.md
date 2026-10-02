@@ -2399,6 +2399,23 @@ rather than moving Grass across transparency.
 Dirty static tiles replay static casters. Each dirty final tile first copies
 its cached static depth, including PCF borders, then replays current dynamic
 casters. Departed actors therefore cannot leave old depth behind.
+
+Shadow keyframes (2026-10-02). A light that moves in every frame (animated
+time of day) is followed by up to three layouts per target, each with its own
+static atlas, residency and region of the composed atlas (one region for a
+still light, three side by side while the light moves; 96 MiB at 2048 against
+32). Two layouts are displayed and dissolve into each other over a whole
+number of frames; the third is constructed at the light's current direction,
+at most 16 to 64 static pages per frame, and composed as it is drawn, so a
+rotation moves no page. `renderer3ds/virtual_shadow_keyframes.h` decides
+(still light, construction, rotation, cut on a new continuity epoch or layout
+geometry); the pass owns the atlases. The receiver block holds both layouts,
+the weight and the atlas offsets; the second layout is read, uploaded and
+bound only while the dissolve runs, and a fragment looks its visibility up
+once however many lighting terms ask for it. A device whose largest image is
+narrower than three regions keeps one layout and relayouts in steps of 0.25
+degrees. Design and measurements: `TRIAEVUM_ANIMATED_LIGHTING_STRATEGY.md`,
+section 5.5 and phase P2.
 The per-draw page table is immutable. Receivers sample only the composed atlas,
 using 1/4/9 gather operations for
 PCF radii 0/1/2 and a narrow continuous LOD transition. NRI's bottom-left

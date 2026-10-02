@@ -939,16 +939,14 @@ void main() {
         point.position = vec4(grass_shadow_surface_point(tile, position), 1.0);
         point.normal = tile.normal;
     }
-    vec4 light = pica_vsm.input_to_light * vec4(point.position.xyz, 1.0);
-    vec2 gradient = vec2(0.0);
+    // A point without a normal has no depth slope.
+    vec3 tangent = vec3(0.0), bitangent = vec3(0.0);
     if (dot(point.normal.xyz, point.normal.xyz) > 1.0e-12) {
         vec3 normal = normalize(point.normal.xyz);
-        vec3 tangent = normalize(cross(normal, abs(normal.z) < 0.9 ? vec3(0,0,1) : vec3(0,1,0)));
-        vec3 bitangent = cross(normal, tangent);
-        gradient = pica_vsm_depth_gradient(mat3(pica_vsm.input_to_light) * tangent,
-                                           mat3(pica_vsm.input_to_light) * bitangent);
+        tangent = normalize(cross(normal, abs(normal.z) < 0.9 ? vec3(0,0,1) : vec3(0,1,0)));
+        bitangent = cross(normal, tangent);
     }
-    float value = abs(light.w) > 1.0e-7 ? pica_vsm_visibility(light.xyz / light.w, gradient) : 1.0;
+    float value = pica_vsm_visibility(point.position.xyz, tangent, bitangent);
     visibility.values[index] = GrassShadowVisibility(value, packed_patches);
 }
 )glsl";

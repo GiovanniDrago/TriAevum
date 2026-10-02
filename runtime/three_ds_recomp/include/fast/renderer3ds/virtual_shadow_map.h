@@ -95,6 +95,16 @@ struct VirtualShadowPageStatistics {
     uint32_t Unmapped = 0;
     uint32_t StaticUpdated = 0;
     uint32_t StaticReused = 0;
+    // Static pages a construction budget left for later frames.
+    uint32_t Pending = 0;
+};
+
+// A layout constructed ahead of its display: its static pages are drawn and
+// composed without dynamic casters, at most StaticPageBudget per Prepare in
+// residency priority order (coarse levels first). Its first display then
+// composes only the pages that dynamic casters reach.
+struct VirtualShadowConstruction {
+    uint32_t StaticPageBudget = 0;
 };
 
 // CPU-owned residency shared by graph-owned static and composed depth atlases.
@@ -103,9 +113,13 @@ struct VirtualShadowPageStatistics {
 // either image valid until recording succeeds and Commit is called.
 class VirtualShadowMapCache final {
   public:
-    void Prepare(const VirtualShadowLayout& layout, std::span<const VirtualShadowCaster> casters, uint64_t frameId);
+    void Prepare(const VirtualShadowLayout& layout, std::span<const VirtualShadowCaster> casters, uint64_t frameId,
+                 const VirtualShadowConstruction* construction = nullptr);
     void Commit() noexcept;
     void Invalidate() noexcept;
+    // The composed pages moved to another atlas region: every page is composed
+    // again from its retained static depth.
+    void InvalidateComposition() noexcept;
     [[nodiscard]] const std::array<uint32_t, kVirtualShadowTableEntries>& Table() const noexcept {
         return mTable;
     }
@@ -146,7 +160,10 @@ class VirtualShadowMapCache final {
     std::vector<uint32_t> mStaticCasterIndices;
     std::vector<uint32_t> mDynamicCasterIndices;
     std::vector<ShadowBounds> mLightBounds;
+    // Casters that can reach each level's grid, in caster order.
+    std::vector<uint32_t> mLevelCasters;
     VirtualShadowPageStatistics mStatistics;
+    bool mConstruction = false;
 };
 
 } // namespace Fast::Renderer3ds

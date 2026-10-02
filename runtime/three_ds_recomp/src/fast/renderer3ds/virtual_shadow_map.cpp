@@ -146,13 +146,20 @@ void VirtualShadowMapCache::Invalidate() noexcept {
     }
 }
 
+void VirtualShadowMapCache::InvalidateComposition() noexcept {
+    for (auto& page : mPages)
+        page.Valid = false;
+}
+
 void VirtualShadowMapCache::Prepare(const VirtualShadowLayout& layout, std::span<const VirtualShadowCaster> casters,
-                                    uint64_t frameId) {
+                                    uint64_t frameId, const VirtualShadowConstruction* construction) {
     mStatistics = {};
     mTable.fill(0);
     mUpdates.clear();
     mStaticCasterIndices.clear();
     mDynamicCasterIndices.clear();
+    mConstruction = construction != nullptr;
+    uint32_t staticBudget = construction != nullptr ? construction->StaticPageBudget : 0U;
     if (!layout.Valid() || frameId == 0)
         return;
     if (mResolution != layout.AtlasResolution) {
@@ -170,10 +177,50 @@ void VirtualShadowMapCache::Prepare(const VirtualShadowLayout& layout, std::span
     mLightBounds.resize(casters.size());
     for (size_t index = 0; index < casters.size(); ++index)
         mLightBounds[index] = TransformShadowBounds(casters[index].WorldBounds, layout.WorldToLight);
+    // The casters that can reach each level's grid, in caster order: its
+    // pages test only those, with the same overlap rule. Page priorities:
+    // the coarse fallback, the receivers' LOD rings, then spare pages.
+    mLevelCasters.clear();
+    std::array<uint32_t, kVirtualShadowLevelCount + 1> levelFirst{};
+    std::array<uint8_t, kVirtualShadowTableEntries> priorities;
+    for (uint32_t level = 0; level < layout.LevelCount; ++level) {
+        const auto& grid = layout.Levels[level];
+        const float size = grid.PageWorldSize;
+        const float guard = float(kVirtualShadowPageBorder) * size / kVirtualShadowPageTexels;
+        const int32_t last = int32_t(kVirtualShadowGridPages) - 1;
+        const float lowX = float(grid.OriginX) * size - guard, lowY = float(grid.OriginY) * size - guard;
+        const float highX = float(grid.OriginX + last) * size + size + guard;
+        const float highY = float(grid.OriginY + last) * size + size + guard;
+        for (uint32_t caster = 0; caster < casters.size(); ++caster) {
+            const auto& bounds = mLightBounds[caster];
+            if (!bounds.Available || (bounds.Maximum[0] >= lowX && bounds.Minimum[0] <= highX &&
+                                      bounds.Maximum[1] >= lowY && bounds.Minimum[1] <= highY))
+                mLevelCasters.push_back(caster);
+        }
+        levelFirst[level + 1] = static_cast<uint32_t>(mLevelCasters.size());
+        for (const auto& [x, y] : kCenterFirstPages) {
+            const float worldX = float(grid.OriginX + int32_t(x)) * size;
+            const float worldY = float(grid.OriginY + int32_t(y)) * size;
+            const float dx = (worldX - layout.CameraLight[0]) / size;
+            const float dy = (worldY - layout.CameraLight[1]) / size;
+            const float nearest = std::max({ dx, -dx - 1.0F, dy, -dy - 1.0F, 0.0F });
+            const float farthest =
+                std::max({ std::abs(dx), std::abs(dx + 1.0F), std::abs(dy), std::abs(dy + 1.0F) });
+            const bool receiverRing = nearest <= 3.0F && (level == 0 || farthest >= 1.375F);
+            priorities[(level * kVirtualShadowGridPages + y) * kVirtualShadowGridPages + x] =
+                level + 1 == layout.LevelCount ? 0U : receiverRing ? 1U : 2U;
+        }
+    }
+    const auto levelCasters = [&](uint32_t level) {
+        return std::span<const uint32_t>(mLevelCasters).subspan(levelFirst[level],
+                                                                 levelFirst[level + 1] - levelFirst[level]);
+    };
     // Reserve the coarse fallback, then the square LOD rings actually sampled
     // by receivers (including their 2.75..3-page transition), then spare pages.
     // Reserving all surviving mappings before allocation prevents an arriving
     // page from evicting another selected page that happens to be visited later.
+    // resident: the physical page a selected key already holds.
+    std::array<uint32_t, kVirtualShadowTableEntries> resident;
     std::array<bool, kVirtualShadowTableEntries> selected{};
     size_t remaining = mPages.size();
     for (uint32_t priority = 0; priority < 3; ++priority) {
@@ -181,22 +228,17 @@ void VirtualShadowMapCache::Prepare(const VirtualShadowLayout& layout, std::span
             const auto& grid = layout.Levels[level];
             const float size = grid.PageWorldSize;
             const float guard = float(kVirtualShadowPageBorder) * size / kVirtualShadowPageTexels;
+            const auto candidates = levelCasters(level);
             for (const auto& [x, y] : kCenterFirstPages) {
-                const VirtualShadowPageKey key{ grid.OriginX + int32_t(x), grid.OriginY + int32_t(y), level };
-                const float worldX = float(key.X) * size, worldY = float(key.Y) * size;
-                const float dx = (worldX - layout.CameraLight[0]) / size;
-                const float dy = (worldY - layout.CameraLight[1]) / size;
-                const float nearest = std::max({ dx, -dx - 1.0F, dy, -dy - 1.0F, 0.0F });
-                const float farthest =
-                    std::max({ std::abs(dx), std::abs(dx + 1.0F), std::abs(dy), std::abs(dy + 1.0F) });
-                const bool receiverRing = nearest <= 3.0F && (level == 0 || farthest >= 1.375F);
-                const uint32_t pagePriority = level + 1 == layout.LevelCount ? 0U : receiverRing ? 1U : 2U;
-                if (pagePriority != priority)
+                const uint32_t tableIndex = (level * kVirtualShadowGridPages + y) * kVirtualShadowGridPages + x;
+                if (priorities[tableIndex] != priority)
                     continue;
                 ++mStatistics.Requested;
-                const uint32_t tableIndex = (level * kVirtualShadowGridPages + y) * kVirtualShadowGridPages + x;
-                if (std::none_of(mLightBounds.begin(), mLightBounds.end(),
-                                 [&](const auto& bounds) { return Overlaps(bounds, worldX, worldY, size, guard); })) {
+                const VirtualShadowPageKey key{ grid.OriginX + int32_t(x), grid.OriginY + int32_t(y), level };
+                const float worldX = float(key.X) * size, worldY = float(key.Y) * size;
+                if (std::none_of(candidates.begin(), candidates.end(), [&](uint32_t caster) {
+                        return Overlaps(mLightBounds[caster], worldX, worldY, size, guard);
+                    })) {
                     mTable[tableIndex] = kVirtualShadowEmptyPage;
                     ++mStatistics.Empty;
                     continue;
@@ -208,6 +250,7 @@ void VirtualShadowMapCache::Prepare(const VirtualShadowLayout& layout, std::span
                 --remaining;
                 selected[tableIndex] = true;
                 const auto found = mResidency.find(key);
+                resident[tableIndex] = found != mResidency.end() ? found->second : kVirtualShadowEmptyPage;
                 if (found != mResidency.end())
                     mPages[found->second].LastUsed = frameId;
             }
@@ -218,6 +261,7 @@ void VirtualShadowMapCache::Prepare(const VirtualShadowLayout& layout, std::span
         const auto& grid = layout.Levels[level];
         const float size = grid.PageWorldSize;
         const float guard = float(kVirtualShadowPageBorder) * size / kVirtualShadowPageTexels;
+        const auto candidates = levelCasters(level);
         for (const auto& [x, y] : kCenterFirstPages) {
             const uint32_t tableIndex = (level * kVirtualShadowGridPages + y) * kVirtualShadowGridPages + x;
             if (!selected[tableIndex])
@@ -229,7 +273,7 @@ void VirtualShadowMapCache::Prepare(const VirtualShadowLayout& layout, std::span
             const uint32_t firstStatic = static_cast<uint32_t>(mStaticCasterIndices.size());
             const uint32_t firstDynamic = static_cast<uint32_t>(mDynamicCasterIndices.size());
             uint64_t staticSignature = 0, dynamicSignature = 0;
-            for (uint32_t caster = 0; caster < casters.size(); ++caster) {
+            for (const uint32_t caster : candidates) {
                 if (!Overlaps(mLightBounds[caster], worldX, worldY, size, guard))
                     continue;
                 const uint64_t version = casters[caster].ContentVersion;
@@ -246,11 +290,8 @@ void VirtualShadowMapCache::Prepare(const VirtualShadowLayout& layout, std::span
             staticSignature = Mix(staticSignature ^ Mix(staticCount));
             dynamicSignature = Mix(dynamicSignature ^ Mix(dynamicCount));
             const uint64_t signature = Mix(staticSignature) ^ dynamicSignature;
-            auto found = mResidency.find(key);
-            uint32_t physical = 0;
-            if (found != mResidency.end())
-                physical = found->second;
-            else {
+            uint32_t physical = resident[tableIndex];
+            if (physical == kVirtualShadowEmptyPage) {
                 size_t selected = mPages.size();
                 uint64_t oldest = std::numeric_limits<uint64_t>::max();
                 for (size_t index = 0; index < mPages.size(); ++index) {
@@ -285,9 +326,32 @@ void VirtualShadowMapCache::Prepare(const VirtualShadowLayout& layout, std::span
             page.LastUsed = frameId;
             page.PendingSignature = signature;
             page.PendingStaticSignature = staticSignature;
+            const bool refreshStatic = !page.StaticValid || page.StaticSignature != staticSignature;
+            if (mConstruction) {
+                // Composed from static depth alone.
+                page.PendingSignature = Mix(staticSignature) ^ Mix(Mix(0));
+                mDynamicCasterIndices.resize(firstDynamic);
+                if (refreshStatic && staticBudget == 0) {
+                    ++mStatistics.Pending;
+                    mStaticCasterIndices.resize(firstStatic);
+                    continue;
+                }
+                mTable[tableIndex] = physical + 1;
+                ++mStatistics.Resident;
+                if (!refreshStatic) {
+                    ++mStatistics.StaticReused;
+                    mStaticCasterIndices.resize(firstStatic);
+                    continue;
+                }
+                --staticBudget;
+                ++mStatistics.StaticUpdated;
+                page.Valid = false;
+                page.StaticValid = false;
+                mUpdates.push_back({ key, physical, firstStatic, staticCount, firstDynamic, 0U, true });
+                continue;
+            }
             mTable[tableIndex] = physical + 1;
             ++mStatistics.Resident;
-            const bool refreshStatic = !page.StaticValid || page.StaticSignature != staticSignature;
             if (refreshStatic)
                 ++mStatistics.StaticUpdated;
             else
