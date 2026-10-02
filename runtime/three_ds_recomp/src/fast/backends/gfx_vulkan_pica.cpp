@@ -11616,11 +11616,20 @@ bool GfxRenderingAPIVulkan::RestorePicaColorTargets(
                 "native PICA color restore does not yet support multisampled targets");
         }
         // A state loaded at startup is restored before the first frame applies
-        // the settings: take the internal resolution that frame would select.
-        const float requestedScale = Oot3d::ResolveInternalResolutionScale(
+        // the settings. The targets are restored at the scale they were saved
+        // at: the settings' own scale when it is the same, so the first frame
+        // keeps them; otherwise that frame replaces them, as any scale change.
+        const float settingsScale = Oot3d::ResolveInternalResolutionScale(
             Oot3d::GraphicsSettingsRuntime::Instance().SnapshotForRendering().Value);
-        if (std::abs(requestedScale - mInternalResolutionScale) > 0.0005F) {
-            ApplyInternalResolutionScale(requestedScale);
+        float restoreScale = mInternalResolutionScale;
+        if (!snapshots.empty()) {
+            const uint16_t savedScale = snapshots.front().RenderScalePermille;
+            restoreScale = savedScale == static_cast<uint16_t>(std::lround(settingsScale * 1000.0F))
+                ? settingsScale
+                : static_cast<float>(savedScale) / 1000.0F;
+        }
+        if (restoreScale > 0.0F && std::abs(restoreScale - mInternalResolutionScale) > 0.0005F) {
+            ApplyInternalResolutionScale(restoreScale);
         }
         const uint16_t currentScale = static_cast<uint16_t>(std::lround(
             mInternalResolutionScale * 1000.0F));
@@ -11636,10 +11645,9 @@ bool GfxRenderingAPIVulkan::RestorePicaColorTargets(
                 snapshot.ImageHeight;
             if (snapshot.RenderScalePermille != currentScale) {
                 throw std::runtime_error(
-                    "native PICA color snapshot was saved at render scale " +
-                    std::to_string(snapshot.RenderScalePermille) +
-                    "/1000; the current settings render at " +
-                    std::to_string(currentScale) + "/1000");
+                    "native PICA color snapshots were saved at different render scales (" +
+                    std::to_string(snapshot.RenderScalePermille) + " and " +
+                    std::to_string(currentScale) + "/1000)");
             }
             if (snapshot.ColorPhysicalAddress == 0U ||
                 snapshot.FramebufferWidth == 0U ||
