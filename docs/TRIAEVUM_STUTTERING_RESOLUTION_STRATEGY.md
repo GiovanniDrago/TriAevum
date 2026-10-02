@@ -1250,3 +1250,55 @@ D. For draws still unseen: an exact-enough immediate fallback while the
 
 Also outside shaders: Grass placement (1.4 s at area entry), texture pack and
 cache reads from the HDD.
+
+## Hybrid preparation: background programs and always-available programs (2026-10-02)
+
+Goal set by the maintainer: no missing program and no shader stutter, at a
+trivial cost. Neither tier alone gives both: specialized programs are fast but
+open-ended (some draw always meets a new one); the parametric family is finite
+but costs 3.7 ms of GPU work per Enhanced frame even with effects off (7.3 ->
+10.9 ms, paired no-presentation runs). The hybrid draws each draw with its
+specialized program once that is ready and with its always-available program
+until then, so no draw waits for compilation and the slower program only covers
+transitions.
+
+First part, selected by `TRIAEVUM_SHADER_PREPARATION`:
+
+| Mode | Behaviour |
+| --- | --- |
+| `sync` (default) | Unchanged: a draw creates its own program and pipeline |
+| `complete` | Specialized programs (SPIR-V) and pipelines are prepared by a `PicaPreparationQueue` (three below-normal threads); a draw completes its own unfinished work, so output stays deterministic |
+| `hybrid` | A draw without a ready specialized program draws with its always-available program; only a draw that has neither completes its specialized program |
+| `uber` | Verification: always-available programs wherever they exist |
+
+- The frontend plan carries, beside each specialized fragment program, its
+  parametric pair (the specialized state key determines every input of the
+  parametric program). The backend instruments that pair exactly like the
+  specialized program and accepts it only from built-in SPIR-V (native,
+  temporal and toon families, title vertex family): an always-available program
+  never compiles.
+- Always-available pipelines link startup-prepared graphics pipeline library
+  parts (`NriPicaPipelineFactory::Libraries`, extended dynamic state);
+  specialized pipelines stay monolithic and are created on preparation threads
+  (`NriPicaPipelineBridge::RequestOwnedPipeline/Poll/Complete`). The device
+  negotiates libraries for `hybrid`/`uber`; `TRIAEVUM_NRI_PIPELINE_LIBRARIES=1`
+  still moves every pipeline onto libraries and `0` disables them.
+- `TRIAEVUM_HYBRID_PREPARATION` (end of run) reports specialized, uber and
+  completed draws, completion time, preparation tasks and why a draw had no
+  always-available program; `TRIAEVUM_UBER_DIAGNOSTICS=1` names each one.
+
+Kokiri Enhanced walk, empty application cache (driver caches warm), 420 frames:
+`complete` waited 47 s in 136 draws (maximum 2.0 s), as `sync` did; `hybrid`
+drew 194 draws with always-available programs and still waited 42 s in 96: the
+Enhanced effects (per-pixel lighting, PBR, guides) have no built-in
+always-available programs yet, and one CMB vertex variant (temporal + surface)
+is not built in. Captures (cfg-enhanced-k, 12 frames) are identical across
+`sync`, `complete` and `hybrid`. Startup preparation of the native and temporal
+library parts takes 16-18 s with an empty pipeline cache and 0.1-0.3 s warm; it
+is synchronous and must move to the background before `hybrid` can be default.
+
+Next: express the effect layer as data in one superset program per parametric
+structural configuration (decisions recorded by the same instrumentation code
+that composes specialized programs), so every draw has an always-available
+program; then background part preparation, base exactness (lighting emission
+order), the pass catalogue and shadow caster programs.

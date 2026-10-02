@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -17,16 +18,24 @@ struct SpirvCacheStats {
     uint64_t CompileNanoseconds = 0, ReadNanoseconds = 0, WriteNanoseconds = 0;
 };
 
-// Render-thread owned. Separate instances/processes may share its directory.
-// No GPU objects, title metadata, profile queue or shutdown-only persistence.
+// Resolve may run on preparation threads (different sources concurrently);
+// Configure belongs to the owner. Separate instances/processes may share its
+// directory. No GPU objects, title metadata, profile queue or shutdown-only
+// persistence.
 class SpirvCache {
   public:
     using Compile = std::function<std::vector<uint32_t>()>;
     static constexpr uint64_t MaximumEntryBytes = 16 * 1024 * 1024;
     void Configure(std::filesystem::path directory, std::string compilerContract);
     std::vector<uint32_t> Resolve(std::string_view source, SpirvStage stage, const Compile& compile);
-    const SpirvCacheStats& Stats() const { return mStats; }
-    const std::string& LastWriteError() const { return mLastWriteError; }
+    SpirvCacheStats Stats() const {
+        std::lock_guard lock(mStatsMutex);
+        return mStats;
+    }
+    std::string LastWriteError() const {
+        std::lock_guard lock(mStatsMutex);
+        return mLastWriteError;
+    }
     bool Enabled() const { return !mDirectory.empty() && !mCompilerContract.empty(); }
 
   private:
@@ -37,6 +46,7 @@ class SpirvCache {
                SpirvStage stage, const std::vector<uint32_t>& words);
     std::filesystem::path mDirectory;
     std::string mCompilerContract, mLastWriteError;
+    mutable std::mutex mStatsMutex;
     SpirvCacheStats mStats;
 };
 }

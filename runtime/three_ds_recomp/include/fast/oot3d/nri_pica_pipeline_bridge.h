@@ -29,7 +29,9 @@ namespace Fast::Oot3d {
 class NriInteropContext;
 
 using Renderer3ds::NriPicaGraphicsPipelineDesc;
+using Renderer3ds::NriPicaPipelineFactory;
 using Renderer3ds::NriPicaPipelineId;
+using Renderer3ds::NriPicaPipelineRequest;
 using Renderer3ds::NriPicaOwnedDrawDesc;
 using Renderer3ds::NriPicaTextureBindingDesc;
 using Renderer3ds::NriPicaUniformBindingDesc;
@@ -44,14 +46,23 @@ class NriPicaPipelineBridge final {
     NriPicaPipelineBridge(const NriPicaPipelineBridge&) = delete;
     NriPicaPipelineBridge& operator=(const NriPicaPipelineBridge&) = delete;
 
-    bool Initialize(NriInteropContext& interop, bool pipelineLibrariesEnabled = false);
+    bool Initialize(NriInteropContext& interop, bool pipelineLibrariesEnabled = false,
+                    bool pipelineLibrariesAvailable = false);
     bool InitializePipelineCache(std::span<const uint8_t> data = {});
-    bool PreparePipeline(const NriPicaGraphicsPipelineDesc& desc);
+    bool PreparePipeline(const NriPicaGraphicsPipelineDesc& desc,
+                         NriPicaPipelineFactory factory = NriPicaPipelineFactory::Default);
     [[nodiscard]] std::vector<uint8_t> GetPipelineCacheData() const;
     [[nodiscard]] Renderer3ds::NriPicaPipelineStatistics PipelineStatistics() const;
     bool CreateOwnedPipeline(
         NriPicaPipelineId pipelineId,
-        const NriPicaGraphicsPipelineDesc& desc);
+        const NriPicaGraphicsPipelineDesc& desc,
+        NriPicaPipelineFactory factory = NriPicaPipelineFactory::Default);
+    NriPicaPipelineRequest RequestOwnedPipeline(
+        NriPicaPipelineId pipelineId, const NriPicaGraphicsPipelineDesc& desc,
+        NriPicaPipelineFactory factory, Renderer3ds::PicaPreparationQueue& queue);
+    NriPicaPipelineRequest PollOwnedPipeline(NriPicaPipelineId pipelineId);
+    NriPicaPipelineRequest CompleteOwnedPipeline(NriPicaPipelineId pipelineId);
+    [[nodiscard]] size_t PendingOwnedPipelineCount() const;
     bool BindOwnedDraw(const NriPicaOwnedDrawDesc& desc);
     bool DrawBoundGeometry(const NriPicaOwnedDrawDesc& desc);
     bool Bind(uint32_t frameIndex, VkPipeline pipeline);

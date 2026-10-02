@@ -45,6 +45,13 @@ struct PicaDrawView {
     PicaShaderSourceIdentity FragmentShaderSourceIdentity;
     PicaTemporalVertexProgramView TemporalVertexProgram;
     PicaShaderHookLayout FragmentShaderHooks;
+    // The always-available program of the same draw (hybrid preparation):
+    // its parametric fragment program, drawn while the specialized program
+    // above is still being prepared. Empty when the draw has none.
+    uint64_t UberFragmentShaderKey = 0;
+    std::string_view UberFragmentShaderSource;
+    PicaShaderSourceIdentity UberFragmentShaderSourceIdentity;
+    PicaShaderHookLayout UberFragmentShaderHooks;
     PicaFragmentFeatureView FragmentFeatures;
     std::span<const uint8_t> VertexUniformBytes;
     std::span<const uint8_t> FragmentUniformBytes;

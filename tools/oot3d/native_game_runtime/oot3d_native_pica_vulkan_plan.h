@@ -93,6 +93,10 @@ struct Oot3dPicaVulkanDrawPlan {
     Oot3dPicaGeneratedFragmentShader FragmentShader;
     std::shared_ptr<const std::string> SharedVertexShaderSource;
     std::shared_ptr<const std::string> SharedFragmentShaderSource;
+    // The parametric program of the same draw (hybrid preparation); no source
+    // when the draw has none or the specialized program is already parametric.
+    Oot3dPicaGeneratedFragmentShader UberFragmentShader;
+    std::shared_ptr<const std::string> SharedUberFragmentShaderSource;
     Oot3dPicaDecodedDrawState State;
     std::vector<Oot3dPicaVulkanVertexBinding> VertexBindings;
     std::vector<Oot3dPicaVulkanVertexAttribute> VertexAttributes;
@@ -191,8 +195,21 @@ struct Oot3dPicaVulkanCachedVertexStructuralState {
     uint64_t CanonicalProgramId = 0;
 };
 
+struct Oot3dPicaVulkanCachedUberFragment {
+    bool Available = false;
+    uint64_t StateKey = 0;
+    std::shared_ptr<const std::string> Source;
+    Oot3d::Renderer::PicaShaderSourceIdentity Identity;
+    Oot3d::Renderer::PicaShaderHookLayout Hooks;
+};
+
 struct Oot3dPicaVulkanShaderSourceCache {
     Oot3dPicaTevMode TevMode = Oot3dPicaTevMode::Specialized;
+    // Generate each specialized fragment program's parametric pair. The
+    // specialized state key determines every input of the parametric program.
+    bool UberFragments = false;
+    std::unordered_map<uint64_t, Oot3dPicaVulkanCachedUberFragment>
+        UberFragmentsBySpecializedKey;
     std::unordered_map<uint64_t, Oot3dPicaVulkanCachedShaderSource>
         VertexSources;
     std::unordered_map<uint64_t, Oot3dPicaVulkanCachedShaderSource>

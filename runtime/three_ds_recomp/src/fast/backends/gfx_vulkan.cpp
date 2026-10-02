@@ -4,6 +4,7 @@
 #include "fast/renderer3ds/pica_native_fragment_binaries.h"
 #include "fast/oot3d/pica_temporal_fragment_binaries.h"
 #include "fast/oot3d/pica_toon_fragment_artifact.h"
+#include "fast/oot3d/pica_nri_shader_contract.h"
 #include "fast/renderer/framebuffer_readback.h"
 #include "fast/renderer/shaderc_compiler.h"
 #include "fast/renderer/compatibility_shader_sources.h"
@@ -692,6 +693,11 @@ void GfxRenderingAPIVulkan::DrawTrianglesFromBuffer(VkBuffer vertexBuffer,
     vkCmdDraw(commandBuffer, static_cast<uint32_t>(bufVboNumTris * 3), 1, 0, 0);
 }
 
+bool GfxRenderingAPIVulkan::UsesAlwaysAvailablePrograms() const {
+    return mNativePicaPreparationMode == NativePicaPreparationMode::Hybrid ||
+           mNativePicaPreparationMode == NativePicaPreparationMode::Uber;
+}
+
 void GfxRenderingAPIVulkan::PrepareNativePicaPrograms(
     std::span<const Renderer3ds::PicaVertexArtifact> vertices) {
     if (!mGraphicsPipelineLibrariesEnabled || !mNriPicaPipelineBridge.OwnedDrawsEnabled()) return;
@@ -711,25 +717,32 @@ void GfxRenderingAPIVulkan::PrepareNativePicaPrograms(
     desc.ColorFormats[0] = VK_FORMAT_R8G8B8A8_UNORM;
     desc.Colors[0].colorWriteMask = 15;
     desc.DepthStencilFormat = mDepthFormat;
-    desc.Samples = VK_SAMPLE_COUNT_1_BIT;
+    desc.Samples = mNativePicaSampleCount;
     uint32_t fragments = 0;
-    for (const auto& artifact : Renderer3ds::kNativeFragmentArtifacts) {
-        if (!artifact.SeparateSamplers) continue;
-        desc.FragmentSpirv = artifact.Spirv;
-        if (!mNriPicaPipelineBridge.PreparePipeline(desc))
-            throw std::runtime_error("native fragment program preparation failed");
-        ++fragments;
-    }
+    const auto prepareFamily = [&](std::span<const Renderer3ds::PicaFragmentArtifact> family) {
+        for (const auto& artifact : family) {
+            if (!artifact.SeparateSamplers) continue;
+            desc.FragmentSpirv = artifact.Spirv;
+            if (!mNriPicaPipelineBridge.PreparePipeline(desc, Oot3d::NriPicaPipelineFactory::Libraries))
+                throw std::runtime_error("native fragment program preparation failed");
+            ++fragments;
+        }
+    };
+    prepareFamily(Renderer3ds::kNativeFragmentArtifacts);
     if (!fragments) throw std::runtime_error("native program preparation has no fragment family");
+    // Always-available programs of temporal effects (motion and reactivity).
+    if (UsesAlwaysAvailablePrograms()) prepareFamily(Oot3d::kTemporalFragmentArtifacts);
     for (const auto& vertex : vertices.subspan(1)) {
         desc.VertexSpirv = vertex.Spirv;
-        if (!mNriPicaPipelineBridge.PreparePipeline(desc))
+        if (!mNriPicaPipelineBridge.PreparePipeline(desc, Oot3d::NriPicaPipelineFactory::Libraries))
             throw std::runtime_error("native vertex program preparation failed");
     }
+    mNativePicaProgramsPrepared = true;
     const auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now() - start).count();
-    std::fprintf(stderr, "TRIAEVUM_NATIVE_PROGRAM_PREPARATION_END vertices=%zu fragments=%u samples=1 ns=%llu\n",
-        vertices.size(), fragments, static_cast<unsigned long long>(nanoseconds));
+    std::fprintf(stderr, "TRIAEVUM_NATIVE_PROGRAM_PREPARATION_END vertices=%zu fragments=%u samples=%u ns=%llu\n",
+        vertices.size(), fragments, static_cast<unsigned>(mNativePicaSampleCount),
+        static_cast<unsigned long long>(nanoseconds));
 }
 
 void GfxRenderingAPIVulkan::Init() {
@@ -746,6 +759,17 @@ void GfxRenderingAPIVulkan::Init() {
     mDiagnostics.ReloadFromEnvironment();
     mValidationTelemetry.Reset();
     ConfigureNativePicaAotShaders();
+    {
+        const char* value = std::getenv("TRIAEVUM_SHADER_PREPARATION");
+        // Until always-available programs cover every effect, programs are
+        // still prepared by the draw that needs them unless requested.
+        const std::string_view mode = value != nullptr ? value : "sync";
+        mNativePicaPreparationMode =
+            mode == "complete" ? NativePicaPreparationMode::Complete
+            : mode == "hybrid" ? NativePicaPreparationMode::Hybrid
+            : mode == "uber" ? NativePicaPreparationMode::Uber
+            : NativePicaPreparationMode::Synchronous;
+    }
 
     CreateInstance();
     CreateSurface();
@@ -843,7 +867,8 @@ void GfxRenderingAPIVulkan::Init() {
         nriPicaPipelines == nullptr ||
         std::string_view(nriPicaPipelines) != "0";
     if (!nriPicaPipelinesEnabled ||
-        !mNriPicaPipelineBridge.Initialize(mNriInterop, mGraphicsPipelineLibrariesEnabled)) {
+        !mNriPicaPipelineBridge.Initialize(mNriInterop, mAllNativePipelinesUseLibraries,
+                                           mGraphicsPipelineLibrariesEnabled)) {
         SPDLOG_INFO("OOT3D Vulkan NRI PICA pipeline bridge unavailable: {}",
                     nriPicaPipelinesEnabled
                         ? mNriPicaPipelineBridge.UnavailableReason()
@@ -858,6 +883,23 @@ void GfxRenderingAPIVulkan::Init() {
         SPDLOG_INFO("NRI PICA pipeline cache: initialized={}, accepted {} bytes", initialized,
                     mNriPicaPipelineBridge.PipelineStatistics().InitialCacheBytes);
     }
+    if ((mNativePicaPreparationMode == NativePicaPreparationMode::Hybrid ||
+         mNativePicaPreparationMode == NativePicaPreparationMode::Uber) &&
+        (!mGraphicsPipelineLibrariesEnabled || !mNriPicaPipelineBridge.OwnedDrawsEnabled())) {
+        // No prepared parts to link: specialized programs complete instead.
+        mNativePicaPreparationMode = NativePicaPreparationMode::Complete;
+    }
+    if (mNativePicaPreparationMode != NativePicaPreparationMode::Synchronous && !mPreparationQueue) {
+        const unsigned hardware = std::max(1U, std::thread::hardware_concurrency());
+        mPreparationQueue = std::make_unique<Renderer3ds::PicaPreparationQueue>(
+            std::clamp(hardware / 4U, 1U, 3U));
+    }
+    std::fprintf(stderr, "TRIAEVUM_SHADER_PREPARATION mode=%s threads=%u libraries=%u all_libraries=%u\n",
+        mNativePicaPreparationMode == NativePicaPreparationMode::Synchronous ? "sync"
+        : mNativePicaPreparationMode == NativePicaPreparationMode::Complete ? "complete"
+        : mNativePicaPreparationMode == NativePicaPreparationMode::Hybrid ? "hybrid" : "uber",
+        mPreparationQueue ? mPreparationQueue->Threads() : 0U,
+        unsigned(mGraphicsPipelineLibrariesEnabled), unsigned(mAllNativePipelinesUseLibraries));
     if (!mNriPicaTextureImageOwner.Initialize(mNriInterop)) {
         SPDLOG_INFO(
             "OOT3D Vulkan NRI PICA texture images unavailable: {}",
@@ -1201,6 +1243,8 @@ void GfxRenderingAPIVulkan::Shutdown() {
         mInteractiveGrassPass.Shutdown();
         mPicaDynamicRenderingScope.Shutdown();
         mNriPicaTextureUploadPass.Shutdown();
+        // Background creations finish before their device objects go.
+        if (mPreparationQueue) mPreparationQueue->Drain();
         mNriPicaPipelineBridge.Shutdown();
         DestroyNativePicaGeometryResources();
         DestroyNativePicaShaderResources();
@@ -2950,9 +2994,16 @@ void GfxRenderingAPIVulkan::CreateLogicalDevice() {
     VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     properties2.pNext = &libraryProperties;
     vkGetPhysicalDeviceProperties2(mPhysicalDevice, &properties2);
+    // Always-available programs link prepared library parts. "1" also moves
+    // every specialized pipeline onto libraries; "0" disables them.
     const char* libraryMode = std::getenv("TRIAEVUM_NRI_PIPELINE_LIBRARIES");
-    const bool libraryRequested = libraryMode && std::string_view(libraryMode) == "1";
+    mAllNativePipelinesUseLibraries = libraryMode && std::string_view(libraryMode) == "1";
+    const bool libraryRequested = mAllNativePipelinesUseLibraries ||
+        (!(libraryMode && std::string_view(libraryMode) == "0") &&
+         (mNativePicaPreparationMode == NativePicaPreparationMode::Hybrid ||
+          mNativePicaPreparationMode == NativePicaPreparationMode::Uber));
     mGraphicsPipelineLibrariesEnabled = libraryRequested && librarySupported && mDynamicRenderingEnabled;
+    if (!mGraphicsPipelineLibrariesEnabled) mAllNativePipelinesUseLibraries = false;
     std::fprintf(stderr, "TRIAEVUM_NRI_GPL_CAPABILITY supported=%u requested=%u enabled=%u fast_link=%u independent_interpolation=%u\n",
         unsigned(librarySupported), unsigned(libraryRequested), unsigned(mGraphicsPipelineLibrariesEnabled),
         unsigned(libraryProperties.graphicsPipelineLibraryFastLinking),
@@ -3527,6 +3578,7 @@ void GfxRenderingAPIVulkan::ConfigureNativePicaAotShaders() {
     mPicaPipelineInventory.Clear();
     mPicaPipelineManifest.Clear();
     mPicaPipelinePrewarmedProfiles.clear();
+    if (mPreparationQueue) mPreparationQueue->Drain();
     mPicaAotShaderMissesLogged.clear();
     mPicaAotShaderHits = 0;
     mNativeFragmentArtifactHits = 0;
@@ -3696,7 +3748,7 @@ void GfxRenderingAPIVulkan::FinishNativePicaAotShaders() {
         (mNativeVertexArtifactHits != 0U || mNativeFragmentArtifactHits != 0U || mPicaAotShaderPack.Loaded() || mPicaAotShaderHits != 0U ||
          mPicaAotShaderMisses != 0U)) {
         SPDLOG_INFO("Native PICA AOT shader resolution: {} hits, {} misses",
-                    mPicaAotShaderHits, mPicaAotShaderMisses);
+                    mPicaAotShaderHits.load(), mPicaAotShaderMisses.load());
         std::fprintf(stderr,
                      "OOT3D_PICA_AOT_SHADER_RESOLUTION hits=%llu misses=%llu "
                      "strict=%u entries=%zu\n",
@@ -3712,8 +3764,34 @@ void GfxRenderingAPIVulkan::FinishNativePicaAotShaders() {
                          Oot3d::ToonFragmentArtifacts().size());
         std::fprintf(stderr, "TRIAEVUM_NATIVE_VERTEX_ARTIFACTS hits=%llu\n",
                      static_cast<unsigned long long>(mNativeVertexArtifactHits));
-        std::fprintf(stderr, "TRIAEVUM_NATIVE_PROGRAM_OWNERS canonical=%zu instrumented=%zu\n",
-                     mCanonicalNativePicaShaders.size(), mInstrumentedNativePicaShaders.size());
+        std::fprintf(stderr, "TRIAEVUM_NATIVE_PROGRAM_OWNERS canonical=%zu instrumented=%zu uber=%zu\n",
+                     mCanonicalNativePicaShaders.size(), mInstrumentedNativePicaShaders.size(),
+                     mUberNativePicaShaders.size());
+    }
+    if (mPreparationQueue && !mNativePicaPreparationSummaryLogged) {
+        mNativePicaPreparationSummaryLogged = true;
+        const auto& counters = mNativePicaPreparationCounters;
+        const auto bridge = mNriPicaPipelineBridge.PipelineStatistics();
+        std::fprintf(stderr,
+            "TRIAEVUM_HYBRID_PREPARATION specialized_draws=%llu uber_draws=%llu completed_draws=%llu "
+            "complete_ms=%.3f max_complete_ms=%.3f program_tasks=%llu uber_programs=%llu "
+            "uber_unavailable=%llu/%llu/%llu/%llu/%llu pipeline_tasks=%llu pipeline_created=%llu "
+            "pipeline_completions=%llu pending=%zu\n",
+            static_cast<unsigned long long>(counters.SpecializedDraws),
+            static_cast<unsigned long long>(counters.UberDraws),
+            static_cast<unsigned long long>(counters.CompletedDraws),
+            counters.CompleteMilliseconds, counters.MaximumCompleteMilliseconds,
+            static_cast<unsigned long long>(counters.ProgramTasks),
+            static_cast<unsigned long long>(counters.UberPrograms),
+            static_cast<unsigned long long>(counters.UberUnavailable[0]),
+            static_cast<unsigned long long>(counters.UberUnavailable[1]),
+            static_cast<unsigned long long>(counters.UberUnavailable[2]),
+            static_cast<unsigned long long>(counters.UberUnavailable[3]),
+            static_cast<unsigned long long>(counters.UberUnavailable[4]),
+            static_cast<unsigned long long>(bridge.BackgroundRequests),
+            static_cast<unsigned long long>(bridge.BackgroundCreated),
+            static_cast<unsigned long long>(bridge.BackgroundCompletions),
+            mPreparationQueue->Pending());
     }
 }
 
@@ -3758,7 +3836,12 @@ GfxRenderingAPIVulkan::ResolveNativePicaShaderSpirv(
 
     ++mPicaAotShaderMisses;
     const auto identity = Oot3d::IdentifyPicaAotShaderSource(source);
-    if (mPicaAotShaderMissesLogged.insert({stage, identity.Id}).second) {
+    bool firstMiss = false;
+    {
+        std::lock_guard lock(mPicaAotShaderLogMutex);
+        firstMiss = mPicaAotShaderMissesLogged.insert({stage, identity.Id}).second;
+    }
+    if (firstMiss) {
         SPDLOG_WARN(
             "Native PICA AOT shader miss: stage={}, source={}, name={}",
             Oot3d::PicaAotShaderStageName(stage),
@@ -3772,6 +3855,63 @@ GfxRenderingAPIVulkan::ResolveNativePicaShaderSpirv(
     }
     return CompileShaderSpirv(std::string(source), vertexShader,
                               sourceName);
+}
+
+GfxRenderingAPIVulkan::NativePicaShaderProgram* GfxRenderingAPIVulkan::ResolveUberNativePicaProgram(
+    const Oot3d::PicaShaderPipelineResult& variant, const GfxNativePicaDrawView& draw,
+    NativePicaUberUnavailable& reason) {
+    const auto key = Renderer3ds::BuildPicaShaderModuleIdentity(
+        variant.VertexShaderSourceIdentity, variant.FragmentShaderSourceIdentity,
+        draw.CanonicalDescriptorSchemaVersion, true, variant.FragmentOutputs);
+    auto found = mUberNativePicaShaders.find(key);
+    if (found == mUberNativePicaShaders.end()) {
+        // Built-in artifacts only: an always-available program never compiles.
+        NativePicaShaderProgram shader;
+        shader.Available = false;
+        shader.VertexSource = Oot3d::IdentifyPicaAotShaderSource(variant.VertexShaderSource);
+        shader.FragmentSource = Oot3d::IdentifyPicaAotShaderSource(variant.FragmentShaderSource);
+        shader.FragmentOutputs = variant.FragmentOutputs;
+        const auto vertex = Renderer3ds::FindPicaVertexArtifact(draw.VertexArtifacts, variant.VertexShaderSource);
+        const auto nri = Oot3d::BuildPicaNriFragmentShaderVariant(variant.FragmentShaderSource);
+        std::span<const uint32_t> fragment;
+        if (nri.Applied) {
+            fragment = Renderer3ds::FindPicaFragmentArtifact(Renderer3ds::kNativeFragmentArtifacts, nri.Source, true);
+            if (fragment.empty())
+                fragment = Renderer3ds::FindPicaFragmentArtifact(Oot3d::kTemporalFragmentArtifacts, nri.Source, true);
+            if (fragment.empty())
+                fragment = Renderer3ds::FindPicaFragmentArtifact(Oot3d::ToonFragmentArtifacts(), nri.Source, true);
+        }
+        auto unavailable = NativePicaUberUnavailable::Count;
+        if (vertex.Spirv.empty()) unavailable = NativePicaUberUnavailable::VertexNotBuiltIn;
+        else if (!nri.Applied) unavailable = NativePicaUberUnavailable::NoNriContract;
+        else if (fragment.empty()) unavailable = NativePicaUberUnavailable::FragmentNotBuiltIn;
+        if (unavailable == NativePicaUberUnavailable::Count) {
+            shader.NriVertexSpirv.assign(vertex.Spirv.begin(), vertex.Spirv.end());
+            shader.NriFragmentSpirv.assign(fragment.begin(), fragment.end());
+            shader.NriFragmentSource = Oot3d::IdentifyPicaAotShaderSource(nri.Source);
+            shader.NriDescriptorContract = true;
+            shader.Available = true;
+            ++mNativePicaPreparationCounters.UberPrograms;
+        } else {
+            shader.UnavailableReason = static_cast<uint8_t>(unavailable);
+            static const bool uberDiagnostics = [] {
+                const char* value = std::getenv("TRIAEVUM_UBER_DIAGNOSTICS");
+                return value != nullptr && std::string_view(value) == "1";
+            }();
+            if (uberDiagnostics)
+                std::fprintf(stderr, "TRIAEVUM_UBER_UNAVAILABLE reason=%u features=%08x vertex=%llu fragment=%llu bytes=%zu\n",
+                    static_cast<unsigned>(unavailable), static_cast<unsigned>(variant.AppliedFeatures),
+                    static_cast<unsigned long long>(variant.VertexShaderSourceIdentity.Id),
+                    static_cast<unsigned long long>(variant.FragmentShaderSourceIdentity.Id),
+                    variant.FragmentShaderSource.size());
+        }
+        found = mUberNativePicaShaders.emplace(key, std::move(shader)).first;
+    }
+    if (!found->second.Available) {
+        reason = static_cast<NativePicaUberUnavailable>(found->second.UnavailableReason);
+        return nullptr;
+    }
+    return &found->second;
 }
 
 VkShaderModule GfxRenderingAPIVulkan::CreateShaderModuleFromSpirv(

@@ -46,6 +46,7 @@ bool ValidWords(std::span<const uint32_t> words) {
 void SpirvCache::Configure(std::filesystem::path directory, std::string compilerContract) {
     mDirectory = directory.empty() ? directory : directory / "spirv-v2";
     mCompilerContract = std::move(compilerContract);
+    std::lock_guard lock(mStatsMutex);
     mLastWriteError.clear();
     mStats = {};
 }
@@ -65,7 +66,11 @@ bool SpirvCache::Load(const std::filesystem::path& path, std::string_view source
     std::error_code error;
     const auto size = std::filesystem::file_size(path, error);
     if (error) return false;
-    const auto reject = [&] { ++mStats.Rejected; return false; };
+    const auto reject = [&] {
+        std::lock_guard lock(mStatsMutex);
+        ++mStats.Rejected;
+        return false;
+    };
     if (size < kHeaderBytes || size > MaximumEntryBytes) return reject();
     std::ifstream input(path, std::ios::binary);
     std::array<uint8_t, kHeaderBytes> header{};
@@ -96,6 +101,7 @@ bool SpirvCache::Store(const std::filesystem::path& path, std::string_view sourc
                        SpirvStage stage, const std::vector<uint32_t>& words) {
     const uint64_t size = mCompilerContract.size() + source.size() + uint64_t{words.size()} * 4;
     if (size > MaximumEntryBytes - kHeaderBytes) {
+        std::lock_guard lock(mStatsMutex);
         mLastWriteError = "shader cache entry exceeds storage limit";
         return false;
     }
@@ -111,34 +117,44 @@ bool SpirvCache::Store(const std::filesystem::path& path, std::string_view sourc
     Append(header, static_cast<uint32_t>(stage), 4);
     Append(header, mCompilerContract.size(), 4); Append(header, source.size(), 4);
     Append(header, words.size(), 4); Append(header, size, 8); Append(header, Hash(payload), 8);
-    return WriteCacheFileAtomically(path, header, payload, &mLastWriteError);
+    std::string error;
+    const bool written = WriteCacheFileAtomically(path, header, payload, &error);
+    std::lock_guard lock(mStatsMutex);
+    mLastWriteError = std::move(error);
+    return written;
 }
 
 std::vector<uint32_t> SpirvCache::Resolve(std::string_view source, SpirvStage stage, const Compile& compile) {
-    ++mStats.Requests;
+    const auto count = [this](uint64_t SpirvCacheStats::*field, uint64_t value = 1) {
+        std::lock_guard lock(mStatsMutex);
+        mStats.*field += value;
+    };
+    count(&SpirvCacheStats::Requests);
     const auto path = Enabled() ? EntryPath(source, stage) : std::filesystem::path{};
     std::vector<uint32_t> words;
     const auto readStart = Clock::now();
     const bool found = !path.empty() && Load(path, source, stage, words);
-    mStats.ReadNanoseconds += Elapsed(readStart);
-    if (found) { ++mStats.Hits; return words; }
-    ++mStats.Misses;
-    ++mStats.Compilations;
+    count(&SpirvCacheStats::ReadNanoseconds, Elapsed(readStart));
+    if (found) {
+        count(&SpirvCacheStats::Hits);
+        return words;
+    }
+    count(&SpirvCacheStats::Misses);
+    count(&SpirvCacheStats::Compilations);
     const auto compileStart = Clock::now();
     try {
         words = compile();
         if (!ValidWords(words)) throw std::runtime_error("compiler returned malformed SPIR-V");
     } catch (...) {
-        mStats.CompileNanoseconds += Elapsed(compileStart);
-        ++mStats.CompilationFailures;
+        count(&SpirvCacheStats::CompileNanoseconds, Elapsed(compileStart));
+        count(&SpirvCacheStats::CompilationFailures);
         throw;
     }
-    mStats.CompileNanoseconds += Elapsed(compileStart);
+    count(&SpirvCacheStats::CompileNanoseconds, Elapsed(compileStart));
     if (!path.empty()) {
         const auto writeStart = Clock::now();
-        if (Store(path, source, stage, words)) ++mStats.Writes;
-        else ++mStats.WriteFailures;
-        mStats.WriteNanoseconds += Elapsed(writeStart);
+        count(Store(path, source, stage, words) ? &SpirvCacheStats::Writes : &SpirvCacheStats::WriteFailures);
+        count(&SpirvCacheStats::WriteNanoseconds, Elapsed(writeStart));
     }
     return words;
 }

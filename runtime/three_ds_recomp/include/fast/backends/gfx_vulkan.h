@@ -10,6 +10,7 @@
 #include "fast/renderer/spirv_cache.h"
 #include "fast/renderer3ds/pica_shader_module_identity.h"
 #include "fast/renderer3ds/pica_program_preparation.h"
+#include "fast/renderer3ds/pica_preparation_queue.h"
 #include "fast/renderer3ds/pica_texture_copy_plan.h"
 #include "fast/renderer3ds/pica_shadow_geometry.h"
 #include "fast/renderer3ds/pica_pbr_material.h"
@@ -142,6 +143,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     explicit GfxRenderingAPIVulkan(GfxWindowBackendSDL2* windowBackend);
     ~GfxRenderingAPIVulkan() override;
     void PrepareNativePicaPrograms(std::span<const Renderer3ds::PicaVertexArtifact> vertices) override;
+    [[nodiscard]] bool UsesAlwaysAvailablePrograms() const override;
 
     const char* GetName() override;
     int GetMaxTextureSize() override;
@@ -418,6 +420,27 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
 
     using NativePicaShaderModuleKey = Renderer3ds::PicaShaderModuleIdentity<
         Oot3d::PicaGraphicsPipelineShaderOutputs>;
+    // Source to SPIR-V of one specialized program on a preparation thread.
+    // Inputs are owned copies; the render thread adopts the results.
+    struct NativePicaProgramPreparation {
+        std::string VertexSource;
+        std::string FragmentSource;
+        std::string Stem;
+        bool ResolveVertex = false;
+        bool Nri = false;
+        uint32_t DescriptorSchemaVersion = 0;
+        uint64_t CanonicalPipelineId = 0;
+        uint64_t FragmentShaderKey = 0;
+        uint64_t SettingsRevision = 0;
+        std::vector<uint32_t> VertexSpirv;
+        std::vector<uint32_t> NriFragmentSpirv;
+        std::string NriFragmentSource;
+        bool NriApplied = false;
+        std::string NriError;
+        std::string CompileError;
+        std::shared_ptr<Renderer3ds::PicaPreparationTask> Task;
+    };
+
     struct NativePicaShaderProgram {
         VkShaderModule VertexShader = VK_NULL_HANDLE;
         VkShaderModule FragmentShader = VK_NULL_HANDLE;
@@ -428,6 +451,52 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         Oot3d::PicaAotShaderSourceIdentity NriFragmentSource;
         Oot3d::PicaGraphicsPipelineShaderOutputs FragmentOutputs;
         bool NriDescriptorContract = false;
+        // Background preparation not yet adopted (specialized programs).
+        std::shared_ptr<NativePicaProgramPreparation> Preparation;
+        // An always-available program exists only as built-in artifacts.
+        bool Available = true;
+        uint8_t UnavailableReason = 0;
+    };
+
+    enum class NativePicaPreparationMode : uint8_t {
+        // Every program and pipeline is created inline by the draw needing it.
+        Synchronous,
+        // Specialized programs are prepared on preparation threads; a draw
+        // finding its own unfinished completes it (deterministic output).
+        Complete,
+        // A draw renders with its always-available program until its
+        // specialized program is ready; it never waits for compilation.
+        Hybrid,
+        // Verification: always-available programs wherever they exist.
+        Uber,
+    };
+
+    enum class NativePicaPipelineAcquisition : uint8_t {
+        Blocking,
+        // Owned pipeline created by a preparation thread (Pending meanwhile).
+        Background,
+        // Fast link of prepared library parts (always-available programs).
+        Libraries,
+    };
+
+    enum class NativePicaUberUnavailable : uint8_t {
+        NoParametricProgram,
+        VertexNotBuiltIn,
+        FragmentNotBuiltIn,
+        NoNriContract,
+        PipelineFailed,
+        Count,
+    };
+
+    struct NativePicaPreparationCounters {
+        uint64_t SpecializedDraws = 0;
+        uint64_t UberDraws = 0;
+        uint64_t CompletedDraws = 0;
+        uint64_t ProgramTasks = 0;
+        std::array<uint64_t, static_cast<size_t>(NativePicaUberUnavailable::Count)> UberUnavailable{};
+        double CompleteMilliseconds = 0.0;
+        double MaximumCompleteMilliseconds = 0.0;
+        uint64_t UberPrograms = 0;
     };
 
     struct NativePicaGeometryBuffer {
@@ -825,9 +894,17 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     void FinishNativePicaAotShaders();
     void PrewarmNativePicaPipelines();
     void DestroyNativePicaPipelines();
+    // Thread-safe: preparation threads resolve specialized programs.
     std::vector<uint32_t> ResolveNativePicaShaderSpirv(
         std::string_view source, Oot3d::PicaAotShaderStage stage,
         bool vertexShader, const char* sourceName);
+    void PrepareNativePicaProgram(NativePicaProgramPreparation& preparation);
+    // Render thread. Adopts finished background work; with complete set, runs
+    // or waits for unfinished work first. Returns whether the program is ready.
+    bool AdoptNativePicaProgram(NativePicaShaderProgram& shader, bool complete);
+    NativePicaShaderProgram* ResolveUberNativePicaProgram(
+        const Oot3d::PicaShaderPipelineResult& variant, const GfxNativePicaDrawView& draw,
+        NativePicaUberUnavailable& reason);
     VkShaderModule CreateShaderModuleFromSpirv(
         std::span<const uint32_t> spirv);
     void EnsureNativePicaVulkanShaderModules(
@@ -839,7 +916,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         Oot3d::PicaShaderInstrumentationFeature requestedFeatures,
         Oot3d::PicaShaderInstrumentationFeature appliedFeatures,
         bool recordInventory = true, bool outlineOcclusionOnly = false,
-        bool requireVulkan = false);
+        bool requireVulkan = false,
+        NativePicaPipelineAcquisition acquisition = NativePicaPipelineAcquisition::Blocking,
+        bool* pending = nullptr);
     void CreateNativePicaTextureImage(TextureRecord& texture,
                                       std::span<const uint8_t> pixels,
                                       uint32_t width, uint32_t height,
@@ -901,7 +980,15 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     uint32_t mVulkanAdapterDeviceId = 0;
     bool mSynchronization2Enabled = false;
     bool mDynamicRenderingEnabled = false;
+    // The device negotiated graphics pipeline libraries (always-available
+    // programs link prepared parts); with TRIAEVUM_NRI_PIPELINE_LIBRARIES=1
+    // every native pipeline uses them.
     bool mGraphicsPipelineLibrariesEnabled = false;
+    bool mAllNativePipelinesUseLibraries = false;
+    NativePicaPreparationMode mNativePicaPreparationMode = NativePicaPreparationMode::Synchronous;
+    bool mNativePicaProgramsPrepared = false;
+    NativePicaPreparationCounters mNativePicaPreparationCounters;
+    bool mNativePicaPreparationSummaryLogged = false;
     bool mNisVulkanFeaturesEnabled = false;
     bool mFsrVulkanFeaturesEnabled = false;
     bool mD3d12InteropExtensionsEnabled = false;
@@ -977,6 +1064,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         mCanonicalNativePicaShaders;
     std::map<NativePicaShaderModuleKey, NativePicaShaderProgram>
         mInstrumentedNativePicaShaders;
+    std::map<NativePicaShaderModuleKey, NativePicaShaderProgram>
+        mUberNativePicaShaders;
     Oot3d::PicaGeometryRegistry mPicaGeometryRegistry;
     bool mPbrSeamsAvailable = false;
     Oot3d::PicaCompositionSchedule mNativePicaCompositionSchedule;
@@ -1014,12 +1103,13 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::PicaGraphicsPipelineInventory mPicaPipelineInventory;
     Oot3d::PicaGraphicsPipelineManifest mPicaPipelineManifest;
     std::set<uint64_t> mPicaPipelinePrewarmedProfiles;
+    std::mutex mPicaAotShaderLogMutex;
     std::set<std::pair<Oot3d::PicaAotShaderStage, uint64_t>>
         mPicaAotShaderMissesLogged;
-    uint64_t mPicaAotShaderHits = 0;
-    uint64_t mNativeFragmentArtifactHits = 0;
-    uint64_t mNativeVertexArtifactHits = 0;
-    uint64_t mPicaAotShaderMisses = 0;
+    std::atomic<uint64_t> mPicaAotShaderHits = 0;
+    std::atomic<uint64_t> mNativeFragmentArtifactHits = 0;
+    std::atomic<uint64_t> mNativeVertexArtifactHits = 0;
+    std::atomic<uint64_t> mPicaAotShaderMisses = 0;
     bool mPicaAotShaderStrict = false;
     bool mPicaAotShaderSummaryLogged = false;
     bool mPicaPipelinePrewarmSummaryLogged = false;
@@ -1455,6 +1545,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
 #if defined(_WIN32) && defined(ENABLE_OOT3D_D3D12_NGX_PROVIDER)
     Oot3d::D3d12NgxProvider mD3d12NgxProvider;
 #endif
+    // Destroyed after the NRI objects whose background creation it runs.
+    std::unique_ptr<Renderer3ds::PicaPreparationQueue> mPreparationQueue;
     Oot3d::NriInteropContext mNriInterop;
     Oot3d::AmbientOcclusionPass mAmbientOcclusionPass;
     Oot3d::CacaoPass mCacaoPass;

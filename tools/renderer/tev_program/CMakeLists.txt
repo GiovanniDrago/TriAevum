@@ -188,6 +188,11 @@ target_include_directories(pica_pipeline_library_tests PRIVATE
     "${runtime}/cmake/patches/nri_pipeline_libraries" "${runtime}/include")
 target_link_libraries(pica_pipeline_library_tests PRIVATE Vulkan::Vulkan)
 add_test(NAME pica_pipeline_libraries COMMAND pica_pipeline_library_tests)
+add_executable(pica_preparation_queue_tests preparation_queue_tests.cpp
+    "${runtime}/src/fast/renderer3ds/pica_preparation_queue.cpp")
+target_compile_features(pica_preparation_queue_tests PRIVATE cxx_std_20)
+target_include_directories(pica_preparation_queue_tests PRIVATE "${runtime}/include")
+add_test(NAME pica_preparation_queue COMMAND pica_preparation_queue_tests)
 
 add_executable(build_fragment_artifacts build_fragment_artifacts.cpp
     "${frontend}/oot3d_native_pica_fragment_shader_gen.cpp"

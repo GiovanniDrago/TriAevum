@@ -124,6 +124,7 @@ source_group("renderer3ds" FILES ${Source_Files__Renderer3dsPica})
 if(THREE_DS_RECOMP_ENABLE_VULKAN)
     set(Source_Files__Renderer3dsNriPica
         renderer3ds/nri_pica_pipeline_bridge.cpp
+        renderer3ds/pica_preparation_queue.cpp
         renderer3ds/vulkan_pipeline_cache_store.cpp
         renderer3ds/nri_pica_upload_arena.cpp
         renderer3ds/pica_nri_shader_contract.cpp

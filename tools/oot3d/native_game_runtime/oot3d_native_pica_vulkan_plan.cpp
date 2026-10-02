@@ -304,6 +304,36 @@ bool BuildOot3dPicaVulkanDrawPlanImpl(
             ++shaderCache->FragmentMisses;
         }
     }
+    if (shaderCache != nullptr && shaderCache->UberFragments &&
+        shaderCache->TevMode == Oot3dPicaTevMode::Specialized) {
+        auto uber = shaderCache->UberFragmentsBySpecializedKey.find(
+            fragmentShaderKey);
+        if (uber == shaderCache->UberFragmentsBySpecializedKey.end()) {
+            Oot3dPicaVulkanCachedUberFragment entry;
+            Oot3dPicaGeneratedFragmentShader generated;
+            // A draw the parametric program cannot express keeps only its
+            // specialized program; that is reported by the backend.
+            entry.Available = GenerateOot3dPicaFragmentShader(
+                submission.Packet, submission.State, generated, nullptr,
+                Oot3dPicaShaderBuildPurpose::RuntimeDraw,
+                Oot3dPicaTevMode::Parametric);
+            if (entry.Available) {
+                entry.StateKey = generated.StateKey;
+                entry.Identity = generated.SourceIdentity;
+                entry.Hooks = generated.Hooks;
+                entry.Source = std::make_shared<const std::string>(
+                    std::move(generated.Source));
+            }
+            uber = shaderCache->UberFragmentsBySpecializedKey.emplace(
+                fragmentShaderKey, std::move(entry)).first;
+        }
+        if (uber->second.Available) {
+            plan.UberFragmentShader.StateKey = uber->second.StateKey;
+            plan.UberFragmentShader.SourceIdentity = uber->second.Identity;
+            plan.UberFragmentShader.Hooks = uber->second.Hooks;
+            plan.SharedUberFragmentShaderSource = uber->second.Source;
+        }
+    }
 
     plan.SubmissionId = submission.Id;
     plan.CommandListAddress = submission.Packet.CommandListAddress;

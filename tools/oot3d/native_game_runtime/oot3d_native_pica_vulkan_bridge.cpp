@@ -290,6 +290,13 @@ bool WithOot3dPicaVulkanDrawView(
         };
     }
     draw.FragmentShaderHooks = plan.FragmentShader.Hooks;
+    if (plan.SharedUberFragmentShaderSource != nullptr) {
+        draw.UberFragmentShaderKey = plan.UberFragmentShader.StateKey;
+        draw.UberFragmentShaderSource = *plan.SharedUberFragmentShaderSource;
+        draw.UberFragmentShaderSourceIdentity =
+            plan.UberFragmentShader.SourceIdentity;
+        draw.UberFragmentShaderHooks = plan.UberFragmentShader.Hooks;
+    }
     draw.FragmentFeatures.SurfaceColorResponse = plan.FragmentFeatures.SurfaceColorResponse;
     draw.FragmentFeatures.SchemaVersion =
         plan.FragmentFeatures.FragmentLighting.Available()

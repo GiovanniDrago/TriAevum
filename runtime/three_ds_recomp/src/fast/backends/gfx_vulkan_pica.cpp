@@ -561,6 +561,7 @@ void GfxRenderingAPIVulkan::DestroyNativePicaShaderResources() {
     };
     destroyShaderCache(mCanonicalNativePicaShaders);
     destroyShaderCache(mInstrumentedNativePicaShaders);
+    destroyShaderCache(mUberNativePicaShaders);
     if (mNativePicaScanoutSampler != VK_NULL_HANDLE) {
         vkDestroySampler(mDevice, mNativePicaScanoutSampler, nullptr);
         mNativePicaScanoutSampler = VK_NULL_HANDLE;
@@ -3628,13 +3629,85 @@ void GfxRenderingAPIVulkan::EnsureNativePicaVulkanShaderModules(
     ++mNativePicaVulkanShaderPairCreations;
 }
 
+void GfxRenderingAPIVulkan::PrepareNativePicaProgram(NativePicaProgramPreparation& preparation) {
+    // Owned inputs only; the render thread adopts the results.
+    try {
+        if (preparation.ResolveVertex)
+            preparation.VertexSpirv = ResolveNativePicaShaderSpirv(
+                preparation.VertexSource, Oot3d::PicaAotShaderStage::Vertex, true,
+                (preparation.Stem + ".vert").c_str());
+    } catch (const std::exception& exception) {
+        preparation.CompileError = exception.what();
+        preparation.ResolveVertex = false;
+        preparation.Nri = false;
+        preparation.VertexSource = "!";
+        return;
+    }
+    if (!preparation.Nri) return;
+    const auto nriVariant = Oot3d::BuildPicaNriFragmentShaderVariant(preparation.FragmentSource);
+    preparation.NriApplied = nriVariant.Applied;
+    if (!nriVariant.Applied) {
+        preparation.NriError = nriVariant.Error;
+        return;
+    }
+    preparation.NriFragmentSource = nriVariant.Source;
+    try {
+        preparation.NriFragmentSpirv = ResolveNativePicaShaderSpirv(
+            nriVariant.Source, Oot3d::PicaAotShaderStage::NriFragment, false,
+            (preparation.Stem + "_nri.frag").c_str());
+    } catch (const std::exception& exception) {
+        preparation.CompileError = exception.what();
+    }
+}
+
+bool GfxRenderingAPIVulkan::AdoptNativePicaProgram(NativePicaShaderProgram& shader, bool complete) {
+    const auto preparation = shader.Preparation;
+    if (preparation == nullptr) return true;
+    if (preparation->Task != nullptr && !preparation->Task->Done()) {
+        if (!complete) return false;
+        const auto start = std::chrono::steady_clock::now();
+        mPreparationQueue->Complete(*preparation->Task);
+        const double milliseconds = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        mNativePicaPreparationCounters.CompleteMilliseconds += milliseconds;
+        mNativePicaPreparationCounters.MaximumCompleteMilliseconds =
+            std::max(mNativePicaPreparationCounters.MaximumCompleteMilliseconds, milliseconds);
+    }
+    shader.Preparation.reset();
+    // A vertex program that cannot be compiled has no draw (as before).
+    if (preparation->VertexSource == "!") throw std::runtime_error(preparation->CompileError);
+    if (preparation->ResolveVertex) shader.NriVertexSpirv = std::move(preparation->VertexSpirv);
+    if (!preparation->Nri) return true;
+    if (!preparation->NriApplied) {
+        SPDLOG_WARN("NRI PICA shader contract unavailable for {}: {}",
+                    preparation->Stem, preparation->NriError);
+        return true;
+    }
+    shader.NriFragmentSource = Oot3d::IdentifyPicaAotShaderSource(preparation->NriFragmentSource);
+    mPicaEffectiveShaderInventory.Observe(
+        Oot3d::PicaAotShaderStage::NriFragment, preparation->NriFragmentSource,
+        preparation->DescriptorSchemaVersion, preparation->CanonicalPipelineId,
+        preparation->FragmentShaderKey, preparation->SettingsRevision);
+    if (!preparation->CompileError.empty()) {
+        if (mPicaAotShaderStrict) throw std::runtime_error(preparation->CompileError);
+        SPDLOG_WARN("NRI PICA shader contract compile failed for {}: {}",
+                    preparation->Stem, preparation->CompileError);
+        return true;
+    }
+    shader.NriFragmentSpirv = std::move(preparation->NriFragmentSpirv);
+    shader.NriDescriptorContract = true;
+    return true;
+}
+
 Renderer3ds::PicaDevicePipelineRecord& GfxRenderingAPIVulkan::GetOrCreateNativePicaPipeline(
     const GfxNativePicaDrawView& draw,
     NativePicaShaderProgram& shader, bool writesReactiveMask,
     Oot3d::PicaShaderDomain domain,
     Oot3d::PicaShaderInstrumentationFeature requestedFeatures,
     Oot3d::PicaShaderInstrumentationFeature appliedFeatures,
-    bool recordInventory, bool outlineOcclusionOnly, bool requireVulkan) {
+    bool recordInventory, bool outlineOcclusionOnly, bool requireVulkan,
+    NativePicaPipelineAcquisition acquisition, bool* pending) {
+    if (pending != nullptr) *pending = false;
     if (recordInventory && mPicaPipelineInventory.Enabled()) {
         auto entry = Oot3d::DescribePicaGraphicsPipelineDraw(draw);
         entry.DescriptorSchemaVersion =
@@ -3678,6 +3751,18 @@ Renderer3ds::PicaDevicePipelineRecord& GfxRenderingAPIVulkan::GetOrCreateNativeP
     if (record.Vulkan != VK_NULL_HANDLE ||
         (!requireVulkan && mNriPicaPipelineBridge.OwnedPipelineReady(record.Id))) {
         return record;
+    }
+    if (!requireVulkan && record.NriPreparationAttempted) {
+        // A creation of this record already started; Failed falls back below.
+        const auto state = acquisition == NativePicaPipelineAcquisition::Background
+            ? mNriPicaPipelineBridge.PollOwnedPipeline(record.Id)
+            : mNriPicaPipelineBridge.CompleteOwnedPipeline(record.Id);
+        if (state == Oot3d::NriPicaPipelineRequest::Ready) return record;
+        if (state == Oot3d::NriPicaPipelineRequest::Pending) {
+            if (pending != nullptr) *pending = true;
+            return record;
+        }
+        if (acquisition == NativePicaPipelineAcquisition::Libraries) return record;
     }
 
     std::vector<VkVertexInputBindingDescription> bindings;
@@ -3749,8 +3834,22 @@ Renderer3ds::PicaDevicePipelineRecord& GfxRenderingAPIVulkan::GetOrCreateNativeP
         nriPipeline.FragmentSpirv = shader.NriFragmentSpirv;
         nriPipeline.VertexBindings = nriBindings;
         nriPipeline.VertexAttributes = nriAttributes;
-        if (!mNriPicaPipelineBridge.CreateOwnedPipeline(
-                record.Id, nriPipeline)) {
+        if (acquisition == NativePicaPipelineAcquisition::Background && mPreparationQueue) {
+            const auto state = mNriPicaPipelineBridge.RequestOwnedPipeline(
+                record.Id, nriPipeline, Oot3d::NriPicaPipelineFactory::Default, *mPreparationQueue);
+            if (state == Oot3d::NriPicaPipelineRequest::Pending) {
+                if (pending != nullptr) *pending = true;
+                return record;
+            }
+            if (state == Oot3d::NriPicaPipelineRequest::Failed)
+                SPDLOG_WARN(
+                    "NRI PICA pipeline creation failed for shader {}:{}",
+                    draw.VertexShaderKey, draw.FragmentShaderKey);
+        } else if (!mNriPicaPipelineBridge.CreateOwnedPipeline(
+                       record.Id, nriPipeline,
+                       acquisition == NativePicaPipelineAcquisition::Libraries
+                           ? Oot3d::NriPicaPipelineFactory::Libraries
+                           : Oot3d::NriPicaPipelineFactory::Default)) {
             SPDLOG_WARN(
                 "NRI PICA pipeline creation failed for shader {}:{}",
                 draw.VertexShaderKey, draw.FragmentShaderKey);
@@ -3758,6 +3857,8 @@ Renderer3ds::PicaDevicePipelineRecord& GfxRenderingAPIVulkan::GetOrCreateNativeP
     }
     if (!requireVulkan && mNriPicaPipelineBridge.OwnedPipelineReady(record.Id))
         return record;
+    // An always-available program never takes the compiling Vulkan fallback.
+    if (acquisition == NativePicaPipelineAcquisition::Libraries) return record;
 
     EnsureNativePicaVulkanShaderModules(draw, shader);
     const VkPipelineShaderStageCreateInfo stages[] = {
@@ -5262,7 +5363,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             shader.FragmentSource = Oot3d::IdentifyPicaAotShaderSource(
                 effectiveDraw.FragmentShaderSource);
             shader.FragmentOutputs = shaderVariant.FragmentOutputs;
-            const std::string stem =
+            auto preparation = std::make_shared<NativePicaProgramPreparation>();
+            preparation->Stem =
                 "native_pica_" + std::to_string(effectiveDraw.VertexShaderKey) + "_" +
                 std::to_string(effectiveDraw.FragmentShaderKey);
             const auto vertexArtifact = Renderer3ds::FindPicaVertexArtifact(
@@ -5271,54 +5373,31 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 shader.NriVertexSpirv.assign(vertexArtifact.Spirv.begin(), vertexArtifact.Spirv.end());
                 ++mNativeVertexArtifactHits;
             } else {
-                shader.NriVertexSpirv = ResolveNativePicaShaderSpirv(
-                    effectiveDraw.VertexShaderSource,
-                    Oot3d::PicaAotShaderStage::Vertex, true,
-                    (stem + ".vert").c_str());
+                preparation->ResolveVertex = true;
+                preparation->VertexSource = std::string(effectiveDraw.VertexShaderSource);
             }
-            if (mNriPicaPipelineBridge.Available()) {
-                const auto nriVariant =
-                    Oot3d::BuildPicaNriFragmentShaderVariant(
-                        effectiveDraw.FragmentShaderSource);
-                if (nriVariant.Applied) {
-                    shader.NriFragmentSource =
-                        Oot3d::IdentifyPicaAotShaderSource(
-                            nriVariant.Source);
-                    mPicaEffectiveShaderInventory.Observe(
-                        Oot3d::PicaAotShaderStage::NriFragment,
-                        nriVariant.Source,
-                        effectiveDraw.CanonicalDescriptorSchemaVersion,
-                        effectiveDraw.CanonicalPipelineId,
-                        effectiveDraw.FragmentShaderKey,
-                        mFrameGraphicsSettingsRevision);
-                    try {
-                        shader.NriFragmentSpirv =
-                            ResolveNativePicaShaderSpirv(
-                                nriVariant.Source,
-                                Oot3d::PicaAotShaderStage::NriFragment,
-                                false,
-                                (stem + "_nri.frag").c_str());
-                        shader.NriDescriptorContract = true;
-                    } catch (const std::exception& exception) {
-                        if (mPicaAotShaderStrict) {
-                            throw;
-                        }
-                        shader.NriFragmentSpirv.clear();
-                        SPDLOG_WARN(
-                            "NRI PICA shader contract compile failed for {}: {}",
-                            stem, exception.what());
-                    }
+            preparation->Nri = mNriPicaPipelineBridge.Available();
+            if (preparation->Nri)
+                preparation->FragmentSource = std::string(effectiveDraw.FragmentShaderSource);
+            preparation->DescriptorSchemaVersion = effectiveDraw.CanonicalDescriptorSchemaVersion;
+            preparation->CanonicalPipelineId = effectiveDraw.CanonicalPipelineId;
+            preparation->FragmentShaderKey = effectiveDraw.FragmentShaderKey;
+            preparation->SettingsRevision = mFrameGraphicsSettingsRevision;
+            if (preparation->ResolveVertex || preparation->Nri) {
+                if (mPreparationQueue) {
+                    preparation->Task = mPreparationQueue->Submit(
+                        [this, preparation] { PrepareNativePicaProgram(*preparation); });
+                    ++mNativePicaPreparationCounters.ProgramTasks;
                 } else {
-                    SPDLOG_WARN(
-                        "NRI PICA shader contract unavailable for {}: {}",
-                        stem, nriVariant.Error);
+                    PrepareNativePicaProgram(*preparation);
                 }
+                shader.Preparation = std::move(preparation);
             }
             shaderIt = nativeShaderCache.emplace(shaderKey, std::move(shader)).first;
         }
-        mDiagnostics.RecordNriPicaShaderContract(
-            shaderIt->second.NriDescriptorContract,
-            mNriPicaPipelineBridge.DescriptorLayoutOwnedByNri());
+        // Inline preparation has nothing to wait for; queued work is adopted
+        // (or completed) when the draw selects its program below.
+        if (!mPreparationQueue) AdoptNativePicaProgram(shaderIt->second, true);
         finishCpuStage(cpuTimings.ShaderCacheMilliseconds);
 
         if (!nativeMemoryOnly && mInteractiveGrassProviderPlan.Valid() && opaqueWorldDraw) {
@@ -5454,11 +5533,88 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             cpuTimings.SceneStateMilliseconds +
             cpuTimings.TemporalStateMilliseconds;
         const size_t previousPipelineCount = mNativePicaPipelines.size();
-        auto& pipelineRecord =
-            GetOrCreateNativePicaPipeline(
+        // Hybrid preparation: the specialized program draws once it and its
+        // pipeline are ready, the draw's always-available program until then.
+        // A draw with neither completes its specialized program here.
+        const auto backgroundAcquisition = mPreparationQueue
+            ? NativePicaPipelineAcquisition::Background : NativePicaPipelineAcquisition::Blocking;
+        const Oot3d::PicaShaderPipelineResult* selectedVariant = &shaderVariant;
+        NativePicaShaderProgram* selectedProgram = &shaderIt->second;
+        Renderer3ds::PicaDevicePipelineRecord* selectedPipeline = nullptr;
+        GfxNativePicaDrawView uberDraw;
+        const GfxNativePicaDrawView* selectedDraw = &effectiveDraw;
+        if (mNativePicaPreparationMode != NativePicaPreparationMode::Uber &&
+            AdoptNativePicaProgram(shaderIt->second, false)) {
+            bool specializedPending = false;
+            selectedPipeline = &GetOrCreateNativePicaPipeline(
+                effectiveDraw, shaderIt->second, shaderVariant.Reactive,
+                shaderVariant.Domain, shaderVariant.RequestedFeatures,
+                shaderVariant.AppliedFeatures, true, false, false,
+                backgroundAcquisition, &specializedPending);
+            if (specializedPending) selectedPipeline = nullptr;
+        }
+        if (selectedPipeline == nullptr && UsesAlwaysAvailablePrograms()) {
+            auto unavailable = NativePicaUberUnavailable::NoParametricProgram;
+            if (!draw.UberFragmentShaderSource.empty()) {
+                auto uberRequest = variantRequest;
+                uberRequest.FragmentShaderSource = draw.UberFragmentShaderSource;
+                uberRequest.FragmentShaderKey = draw.UberFragmentShaderKey;
+                uberRequest.FragmentShaderHooks = draw.UberFragmentShaderHooks;
+                uberRequest.FragmentShaderSourceIdentity = draw.UberFragmentShaderSourceIdentity;
+                const auto& uberVariant = mPicaShaderPipelineCache.Resolve(
+                    uberRequest, nativeMemoryOnly ? nativeMemoryEffects : graphicsSettings.Effects);
+                if (auto* uberProgram = ResolveUberNativePicaProgram(uberVariant, effectiveDraw, unavailable)) {
+                    uberDraw = effectiveDraw;
+                    uberDraw.VertexShaderSource = uberVariant.VertexShaderSource;
+                    uberDraw.VertexShaderKey = uberVariant.VertexShaderKey;
+                    uberDraw.VertexShaderSourceIdentity = uberVariant.VertexShaderSourceIdentity;
+                    uberDraw.FragmentShaderSource = uberVariant.FragmentShaderSource;
+                    uberDraw.FragmentShaderKey = uberVariant.FragmentShaderKey;
+                    uberDraw.FragmentShaderSourceIdentity = uberVariant.FragmentShaderSourceIdentity;
+                    uberDraw.FragmentShaderHooks = draw.UberFragmentShaderHooks;
+                    auto& uberPipeline = GetOrCreateNativePicaPipeline(
+                        uberDraw, *uberProgram, uberVariant.Reactive, uberVariant.Domain,
+                        uberVariant.RequestedFeatures, uberVariant.AppliedFeatures, true, false, false,
+                        NativePicaPipelineAcquisition::Libraries);
+                    if (mNriPicaPipelineBridge.OwnedPipelineReady(uberPipeline.Id)) {
+                        selectedPipeline = &uberPipeline;
+                        selectedProgram = uberProgram;
+                        selectedVariant = &uberVariant;
+                        selectedDraw = &uberDraw;
+                    } else {
+                        unavailable = NativePicaUberUnavailable::PipelineFailed;
+                    }
+                }
+            }
+            if (selectedPipeline == nullptr)
+                ++mNativePicaPreparationCounters.UberUnavailable[static_cast<size_t>(unavailable)];
+            else
+                ++mNativePicaPreparationCounters.UberDraws;
+        }
+        if (selectedPipeline == nullptr) {
+            const auto completionStart = std::chrono::steady_clock::now();
+            AdoptNativePicaProgram(shaderIt->second, true);
+            selectedPipeline = &GetOrCreateNativePicaPipeline(
                 effectiveDraw, shaderIt->second, shaderVariant.Reactive,
                 shaderVariant.Domain, shaderVariant.RequestedFeatures,
                 shaderVariant.AppliedFeatures);
+            if (mPreparationQueue) {
+                ++mNativePicaPreparationCounters.CompletedDraws;
+                const double milliseconds = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - completionStart).count();
+                mNativePicaPreparationCounters.CompleteMilliseconds += milliseconds;
+                mNativePicaPreparationCounters.MaximumCompleteMilliseconds =
+                    std::max(mNativePicaPreparationCounters.MaximumCompleteMilliseconds, milliseconds);
+            }
+        } else if (selectedVariant == &shaderVariant) {
+            ++mNativePicaPreparationCounters.SpecializedDraws;
+        }
+        mDiagnostics.RecordNriPicaShaderContract(
+            selectedProgram->NriDescriptorContract,
+            mNriPicaPipelineBridge.DescriptorLayoutOwnedByNri());
+        // Everything below binds what the selected program declares.
+        const auto& drawVariant = *selectedVariant;
+        auto& pipelineRecord = *selectedPipeline;
         VkPipeline pipeline = pipelineRecord.Vulkan;
         cpuTimings.PipelineLookupHits = mNativePicaPipelines.size() == previousPipelineCount ? 1U : 0U;
         cpuTimings.PipelineCreations = mNativePicaPipelines.size() != previousPipelineCount ? 1U : 0U;
@@ -5517,7 +5673,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         const Renderer3ds::PicaPbrSeamData* seamData = nullptr;
         if (pbrOptions.SeamSoftening && geometry.PackedValid &&
             Oot3d::HasPicaShaderInstrumentationFeature(
-                shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::PbrMaterial)) {
+                drawVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::PbrMaterial)) {
             std::array<Oot3d::PicaNriSourceVertexBinding, 16> sourceBindings{};
             if (nriDrawSourceStreams.size() > sourceBindings.size())
                 throw std::runtime_error("PICA seam input exceeds native binding count");
@@ -5605,9 +5761,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         Oot3d::PicaDirectionalShadowReceiverBinding
             directionalShadowBinding{};
         const bool directionalShadowShaderApplied =
-            shaderVariant.DirectionalShadowEligibility ==
+            drawVariant.DirectionalShadowEligibility ==
                 Oot3d::PicaDirectionalShadowLightingEligibility::VertexPrimary ||
-            shaderVariant.DirectionalShadowEligibility ==
+            drawVariant.DirectionalShadowEligibility ==
                 Oot3d::PicaDirectionalShadowLightingEligibility::FragmentPrimary;
         if (directionalShadowReceiver &&
             directionalShadowShaderApplied) {
@@ -5626,7 +5782,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 if (draw.LightBinding.WorldToView &&
                     Oot3d::InvertDirectionalShadowMatrix(*draw.LightBinding.WorldToView, receiverViewToWorld)) {
                     if (surfaceLighting &&
-                        Oot3d::HasPicaShaderInstrumentationFeature(shaderVariant.AppliedFeatures,
+                        Oot3d::HasPicaShaderInstrumentationFeature(drawVariant.AppliedFeatures,
                             Oot3d::PicaShaderInstrumentationFeature::NativePerPixelLighting) &&
                         (surfaceLighting->EnvironmentParameters[3] != 0.0F ||
                          surfaceLighting->Control[0] != 0U ||
@@ -5697,13 +5853,13 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             graphicsSettings.Effects.Toon, graphicsSettings.Effects.ToonStyle, false);
 
         const bool uniformToon = Oot3d::HasPicaShaderInstrumentationFeature(
-            shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::Toon);
+            drawVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::Toon);
         const bool uniformSurface = Oot3d::HasPicaShaderInstrumentationFeature(
-            shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::NativePerPixelLighting);
+            drawVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::NativePerPixelLighting);
         const bool uniformPbr = Oot3d::HasPicaShaderInstrumentationFeature(
-            shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::PbrMaterial);
+            drawVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::PbrMaterial);
         const bool uniformShadow = Oot3d::HasPicaShaderInstrumentationFeature(
-            shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::DirectionalShadowLighting);
+            drawVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::DirectionalShadowLighting);
         const VkDeviceSize directionalShadowUniformSize = uniformShadow
             ? sizeof(directionalShadowUniforms) : draw.FragmentUniformBytes.size();
         const std::array<VkDeviceSize, 7> uniformSizes{
@@ -6154,7 +6310,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 // The cube atlas only where the variant reads it.
                 const bool pointShadowBound = pointShadowHistory.Valid() &&
                     Oot3d::HasPicaShaderInstrumentationFeature(
-                        shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::PointShadowLighting);
+                        drawVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::PointShadowLighting);
                 if (pointShadowReceiver)
                     mDiagnostics.RecordNriPointShadowReceiver(pointShadowBound);
                 auto& destination = nriDraw.PointShadowTexture;
@@ -6549,11 +6705,14 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 .EffectiveFragmentSourceIdentity = effectiveDraw.FragmentShaderSourceIdentity,
             });
         }
-        const auto* coveragePipeline = shaderVariant.FragmentOutputs.SceneDomainTransparentDepthOverlay
+        const auto* coveragePipeline = drawVariant.FragmentOutputs.SceneDomainTransparentDepthOverlay
             ? &GetOrCreateNativePicaPipeline(
-                effectiveDraw, shaderIt->second, shaderVariant.Reactive,
-                shaderVariant.Domain, shaderVariant.RequestedFeatures, shaderVariant.AppliedFeatures,
-                true, true, !nriOwnedDraw)
+                *selectedDraw, *selectedProgram, drawVariant.Reactive,
+                drawVariant.Domain, drawVariant.RequestedFeatures, drawVariant.AppliedFeatures,
+                true, true, !nriOwnedDraw,
+                selectedDraw == &uberDraw && nriOwnedDraw
+                    ? NativePicaPipelineAcquisition::Libraries
+                    : NativePicaPipelineAcquisition::Blocking)
             : nullptr;
         // Coverage runs before the native draw: stencil must still have its
         // original value if that draw modifies it. The auxiliary pass is read-only.
@@ -6574,9 +6733,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         bool nriPipelineBound = nriOwnedDrawBound;
         if (!nriOwnedDrawBound) {
             pipeline = GetOrCreateNativePicaPipeline(
-                effectiveDraw, shaderIt->second, shaderVariant.Reactive,
-                shaderVariant.Domain, shaderVariant.RequestedFeatures,
-                shaderVariant.AppliedFeatures, false, false, true).Vulkan;
+                *selectedDraw, *selectedProgram, drawVariant.Reactive,
+                drawVariant.Domain, drawVariant.RequestedFeatures,
+                drawVariant.AppliedFeatures, false, false, true).Vulkan;
             nriPipelineBound =
                 mNriPicaPipelineBridge.Bind(
                     mCurrentFrame, pipeline);

@@ -37,8 +37,25 @@ struct NriPicaExecutionConfig {
     uint32_t DescriptorSetsPerPool = 512U;
     bool OwnedDraws = true;
     bool PreferOwnedUploads = false;
+    // Default factory of every pipeline: library parts plus a fast link.
     bool PipelineLibrariesEnabled = false;
+    // The device negotiated graphics pipeline libraries: an explicit
+    // NriPicaPipelineFactory::Libraries request may use them.
+    bool PipelineLibrariesAvailable = false;
 };
+
+enum class NriPicaPipelineFactory : uint8_t {
+    // PipelineLibrariesEnabled decides.
+    Default,
+    // One optimized driver pipeline.
+    Monolithic,
+    // A fast link of independently prepared library parts (when available).
+    Libraries,
+};
+
+enum class NriPicaPipelineRequest : uint8_t { Ready, Pending, Failed };
+
+class PicaPreparationQueue;
 
 struct NriPicaGraphicsPipelineDesc {
     std::span<const uint32_t> VertexSpirv;
@@ -142,6 +159,11 @@ struct NriPicaPipelineStatistics {
     uint64_t Created = 0;
     uint64_t OwnedReuses = 0;
     uint64_t CreationNanoseconds = 0;
+    // Owned pipelines created by a preparation thread, and draws that had to
+    // run or wait for such a creation on the render thread.
+    uint64_t BackgroundRequests = 0;
+    uint64_t BackgroundCreated = 0;
+    uint64_t BackgroundCompletions = 0;
 };
 
 class NriPicaPipelineBridge final {
@@ -158,10 +180,24 @@ class NriPicaPipelineBridge final {
     [[nodiscard]] NriPicaPipelineStatistics PipelineStatistics() const;
     // Uses the live pipeline factory, then releases the pipeline. No draw,
     // framebuffer, upload allocation or fake Vulkan pipeline handle is needed.
-    bool PreparePipeline(const NriPicaGraphicsPipelineDesc& desc);
+    bool PreparePipeline(const NriPicaGraphicsPipelineDesc& desc,
+                         NriPicaPipelineFactory factory = NriPicaPipelineFactory::Default);
     bool CreateOwnedPipeline(
         NriPicaPipelineId pipelineId,
-        const NriPicaGraphicsPipelineDesc& desc);
+        const NriPicaGraphicsPipelineDesc& desc,
+        NriPicaPipelineFactory factory = NriPicaPipelineFactory::Default);
+    // Render thread. Ready when the id already owns a pipeline or an equal
+    // device object exists; otherwise a task on queue creates it (Pending).
+    // The description is copied; the queue must outlive Reset().
+    NriPicaPipelineRequest RequestOwnedPipeline(
+        NriPicaPipelineId pipelineId, const NriPicaGraphicsPipelineDesc& desc,
+        NriPicaPipelineFactory factory, PicaPreparationQueue& queue);
+    // Render thread. Adopts a finished creation.
+    NriPicaPipelineRequest PollOwnedPipeline(NriPicaPipelineId pipelineId);
+    // Render thread. Runs the creation inline if no worker started it, or
+    // waits for it: only for a draw that has no other program.
+    NriPicaPipelineRequest CompleteOwnedPipeline(NriPicaPipelineId pipelineId);
+    [[nodiscard]] size_t PendingOwnedPipelineCount() const;
     bool BindOwnedDraw(const NriPicaOwnedDrawDesc& desc);
     // Same layout/resources as the immediately preceding owned draw; no uploads.
     bool DrawBoundGeometry(const NriPicaOwnedDrawDesc& desc);
@@ -184,7 +220,13 @@ class NriPicaPipelineBridge final {
 
   private:
 #ifdef ENABLE_RENDERER3DS_NRI
-    nri::Pipeline* CreatePipeline(const NriPicaGraphicsPipelineDesc& desc);
+    // Thread-safe: preparation threads create owned pipelines concurrently.
+    nri::Pipeline* CreatePipeline(const NriPicaGraphicsPipelineDesc& desc,
+                                  NriPicaPipelineFactory factory);
+    void AdoptOwnedPipeline(NriPicaPipelineId pipelineId,
+                            std::shared_ptr<nri::Pipeline> owned,
+                            const NriPicaGraphicsPipelineDesc& desc);
+    void CompleteAllPendingPipelines();
 #endif
     struct Impl;
     std::unique_ptr<Impl> mImpl;

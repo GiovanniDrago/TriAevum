@@ -75,11 +75,13 @@ class NriPicaPipelineBridge::InteropAdapter final
 
 NriPicaPipelineBridge::NriPicaPipelineBridge() = default;
 NriPicaPipelineBridge::~NriPicaPipelineBridge() { Shutdown(); }
-bool NriPicaPipelineBridge::PreparePipeline(const NriPicaGraphicsPipelineDesc& desc) {
-    return mBridge.PreparePipeline(desc);
+bool NriPicaPipelineBridge::PreparePipeline(const NriPicaGraphicsPipelineDesc& desc,
+                                            NriPicaPipelineFactory factory) {
+    return mBridge.PreparePipeline(desc, factory);
 }
 
-bool NriPicaPipelineBridge::Initialize(NriInteropContext& interop, bool pipelineLibrariesEnabled) {
+bool NriPicaPipelineBridge::Initialize(NriInteropContext& interop, bool pipelineLibrariesEnabled,
+                                       bool pipelineLibrariesAvailable) {
     Shutdown();
     mInteropAdapter = std::make_unique<InteropAdapter>(interop);
     const char* ownedDraws =
@@ -92,6 +94,7 @@ bool NriPicaPipelineBridge::Initialize(NriInteropContext& interop, bool pipeline
         ownedDraws == nullptr || std::string_view(ownedDraws) != "0",
         ownedUploads != nullptr && std::string_view(ownedUploads) == "1",
         pipelineLibrariesEnabled,
+        pipelineLibrariesAvailable,
     };
     if (!mBridge.Initialize(*mInteropAdapter, config)) {
         mInteropAdapter.reset();
@@ -111,8 +114,23 @@ Renderer3ds::NriPicaPipelineStatistics NriPicaPipelineBridge::PipelineStatistics
 }
 bool NriPicaPipelineBridge::CreateOwnedPipeline(
     NriPicaPipelineId pipelineId,
-    const NriPicaGraphicsPipelineDesc& desc) {
-    return mBridge.CreateOwnedPipeline(pipelineId, desc);
+    const NriPicaGraphicsPipelineDesc& desc,
+    NriPicaPipelineFactory factory) {
+    return mBridge.CreateOwnedPipeline(pipelineId, desc, factory);
+}
+NriPicaPipelineRequest NriPicaPipelineBridge::RequestOwnedPipeline(
+    NriPicaPipelineId pipelineId, const NriPicaGraphicsPipelineDesc& desc,
+    NriPicaPipelineFactory factory, Renderer3ds::PicaPreparationQueue& queue) {
+    return mBridge.RequestOwnedPipeline(pipelineId, desc, factory, queue);
+}
+NriPicaPipelineRequest NriPicaPipelineBridge::PollOwnedPipeline(NriPicaPipelineId pipelineId) {
+    return mBridge.PollOwnedPipeline(pipelineId);
+}
+NriPicaPipelineRequest NriPicaPipelineBridge::CompleteOwnedPipeline(NriPicaPipelineId pipelineId) {
+    return mBridge.CompleteOwnedPipeline(pipelineId);
+}
+size_t NriPicaPipelineBridge::PendingOwnedPipelineCount() const {
+    return mBridge.PendingOwnedPipelineCount();
 }
 bool NriPicaPipelineBridge::BindOwnedDraw(
     const NriPicaOwnedDrawDesc& desc) {

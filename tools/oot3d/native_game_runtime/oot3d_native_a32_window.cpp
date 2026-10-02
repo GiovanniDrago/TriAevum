@@ -3913,9 +3913,15 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     window.SetTargetFps(0);
   }
   auto &api = GetActiveRenderingApiForDemo(window);
-  if (launch.PicaParametricTev) {
-    if (auto* preparation = dynamic_cast<Fast::Renderer3ds::PicaProgramPreparationBackend*>(&api))
-      preparation->PrepareNativePicaPrograms(Oot3dNativeGame::NativePicaVertexProgramFamily());
+  auto *const programPreparation =
+      dynamic_cast<Fast::Renderer3ds::PicaProgramPreparationBackend *>(&api);
+  const bool alwaysAvailablePrograms =
+      programPreparation != nullptr &&
+      programPreparation->UsesAlwaysAvailablePrograms();
+  if (programPreparation != nullptr &&
+      (launch.PicaParametricTev || alwaysAvailablePrograms)) {
+    programPreparation->PrepareNativePicaPrograms(
+        Oot3dNativeGame::NativePicaVertexProgramFamily());
   }
   api.SetNativePicaGeometryCacheEnabled(
       !launch.DisableOpenGlPicaGeometryCache);
@@ -3983,6 +3989,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   shaderSourceCache.TevMode = launch.PicaParametricTev
       ? Oot3dNativeGame::Oot3dPicaTevMode::Parametric
       : Oot3dNativeGame::Oot3dPicaTevMode::Specialized;
+  shaderSourceCache.UberFragments = alwaysAvailablePrograms;
   Oot3dNativeGame::Oot3dPicaSemanticTraceWriter picaSemanticTrace(
       launch.PicaSemanticTracePath);
   picaSemanticTrace.BeginSession(
