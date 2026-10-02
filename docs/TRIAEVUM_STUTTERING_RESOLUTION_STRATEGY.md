@@ -1366,7 +1366,13 @@ preparation). Kokiri Enhanced walk with grass, 420 frames, no captures
 
 Captures (cfg-enhanced-k, 12 frames) are identical between `sync` and warm
 `hybrid`. A 2.5-4.9 s frame occurs in every mode with a warm cache: it is not
-program preparation. Startup preparation (39 parts) takes about 45 s with an
+program preparation. `phase_timing.slow_frames` places it after the state
+load: frame 2 in `host_frame_start` (2.2-2.5 s) and frame 5 in `present`
+(2.5 s sync, 4.9 s hybrid), where effect passes create their pipelines and
+resources on first use. Background part compilation lengthens that frame
+despite below-normal priority (the driver serializes part of pipeline
+creation), so the effect passes' pipelines belong in the load-time
+preparation too. Startup preparation (39 parts) takes about 45 s with an
 empty driver/pipeline cache on the spare cores and about 1 s warm; a superset
 part takes 5-12 s to compile cold, so a draw that needs one before it is ready
 waits for it (first launch only, when gameplay starts at once).
