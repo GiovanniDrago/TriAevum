@@ -138,6 +138,7 @@ bool MotionVectorPass::Initialize(VkPhysicalDevice physicalDevice,
         pipelineDesc.shader.stage = nri::StageBits::COMPUTE_SHADER;
         pipelineDesc.shader.bytecode = shader.data();
         pipelineDesc.shader.size = shader.size() * sizeof(uint32_t);
+        pipelineDesc.cache = NriInteropAccess::PipelineCache(interop);
         if (mImpl->Core->CreateComputePipeline(
                 *nriDevice, pipelineDesc, mImpl->Pipeline) !=
             nri::Result::SUCCESS)

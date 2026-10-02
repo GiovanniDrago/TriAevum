@@ -35,7 +35,9 @@ class InteractiveGrassPass final {
                     VkRenderPass instrumentedRenderPass,
                     VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT,
                     bool dynamicRendering = false,
-                    VkFormat depthFormat = VK_FORMAT_UNDEFINED);
+                    VkFormat depthFormat = VK_FORMAT_UNDEFINED,
+                    // The device's persisted pipeline cache (optional).
+                    VkPipelineCache pipelineCache = VK_NULL_HANDLE);
     bool Prepare(VkCommandBuffer commandBuffer, uint32_t width,
                  uint32_t height,
                  const ::Fast::Renderer3ds::PicaPerspectiveCameraState& view,

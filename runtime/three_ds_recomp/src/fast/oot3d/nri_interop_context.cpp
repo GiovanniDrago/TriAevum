@@ -52,6 +52,7 @@ struct NriInteropContext::Impl {
     uint8_t DlssPreset = 0;
     std::string DlssReason = "NRI DLSS support is unavailable";
     bool DynamicRendering = false;
+    nri::PipelineCache* LentPipelineCache = nullptr;
     std::unordered_map<uint32_t, nri::CommandBuffer*> CommandBuffers;
     struct WrappedTexture {
         nri::Texture* Texture = nullptr;
@@ -416,6 +417,15 @@ void NriInteropAccess::DestroyPipelineWrapper(
         context.mImpl->Core.DestroyPipeline(pipeline);
 }
 
+nri::PipelineCache* NriInteropAccess::PipelineCache(NriInteropContext& context) {
+    return context.mImpl->LentPipelineCache;
+}
+
+void NriInteropAccess::LendPipelineCache(NriInteropContext& context,
+                                         nri::PipelineCache* cache) {
+    context.mImpl->LentPipelineCache = cache;
+}
+
 bool NriInteropAccess::CmdSetPipeline(
     NriInteropContext& context, uint32_t frameIndex,
     nri::Pipeline* pipeline) {
@@ -586,6 +596,7 @@ void NriInteropContext::Shutdown() {
         mImpl->Textures.clear();
         mImpl->Buffers.clear();
         mImpl->CommandBuffers.clear();
+        mImpl->LentPipelineCache = nullptr;
         nriDestroyDevice(mImpl->Device);
         mImpl->Device = nullptr;
         mImpl->Core = {};

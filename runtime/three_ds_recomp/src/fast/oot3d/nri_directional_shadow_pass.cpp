@@ -480,6 +480,7 @@ struct NriDirectionalShadowPass::Impl {
         pipeline.shaders = shaders.data();
         pipeline.shaderNum = static_cast<uint32_t>(shaders.size());
         nri::Pipeline* result = nullptr;
+        pipeline.cache = NriInteropAccess::PipelineCache(*Interop);
         if (Core->CreateGraphicsPipeline(*NriInteropAccess::Device(*Interop), pipeline, result) !=
             nri::Result::SUCCESS) {
             return reject();
@@ -608,6 +609,7 @@ struct NriDirectionalShadowPass::Impl {
         pipeline.shaders = shaders.data();
         pipeline.shaderNum = static_cast<uint32_t>(shaders.size());
         nri::Pipeline* result = nullptr;
+        pipeline.cache = NriInteropAccess::PipelineCache(*Interop);
         if (Core->CreateGraphicsPipeline(*NriInteropAccess::Device(*Interop), pipeline, result) != nri::Result::SUCCESS)
             return reject();
         PointPipelines.emplace(key, result);

@@ -84,6 +84,7 @@ class NriPicaPipelineBridge final {
 
   private:
     class InteropAdapter;
+    NriInteropContext* mContext = nullptr;
     std::unique_ptr<InteropAdapter> mInteropAdapter;
     Renderer3ds::NriPicaPipelineBridge mBridge;
 };

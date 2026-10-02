@@ -51,6 +51,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "fast/renderer3ds/slow_step_trace.h"
+
 namespace Fast {
 namespace {
 
@@ -1264,7 +1266,7 @@ void GfxRenderingAPIVulkan::Init() {
                                           mNativePicaRenderPass,
                                           mNativePicaSampleCount,
                                           mPicaDynamicRenderingScope.Available(),
-                                          mDepthFormat)) {
+                                          mDepthFormat, mPipelineCache)) {
         SPDLOG_INFO("OOT3D Vulkan interactive grass unavailable: {}",
                     mInteractiveGrassPass.UnavailableReason());
     }
@@ -1724,6 +1726,7 @@ bool GfxRenderingAPIVulkan::ApplyPresentationSettings(
 }
 
 void GfxRenderingAPIVulkan::StartFrame() {
+    Renderer3ds::SlowStepScope slowStep("start_frame");
     const char* traceEnvironment = std::getenv("TRIAEVUM_FRAME_START_TIMING");
     const bool traceStart = traceEnvironment != nullptr && std::string_view(traceEnvironment) == "1";
     auto startMark = traceStart ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -2322,6 +2325,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
 }
 
 void GfxRenderingAPIVulkan::EndFrame() {
+    Renderer3ds::SlowStepScope slowStep("end_frame");
     if (!mFrameActive) {
         return;
     }
@@ -2366,6 +2370,7 @@ void GfxRenderingAPIVulkan::EndFrame() {
 }
 
 void GfxRenderingAPIVulkan::FinishRender() {
+    Renderer3ds::SlowStepScope slowStep("finish_render");
     if (!mFrameSubmitted) {
         return;
     }

@@ -121,6 +121,7 @@ bool HiZDepthPyramidPass::Initialize(VkPhysicalDevice physicalDevice,
         pipeline.shader.stage = nri::StageBits::COMPUTE_SHADER;
         pipeline.shader.bytecode = shader.data();
         pipeline.shader.size = shader.size() * sizeof(uint32_t);
+        pipeline.cache = NriInteropAccess::PipelineCache(interop);
         if (mImpl->Core->CreateComputePipeline(
                 *nriDevice, pipeline, mImpl->Pipeline) != nri::Result::SUCCESS)
             throw std::runtime_error("NRI Hi-Z pipeline failed");

@@ -24,8 +24,9 @@ class PicaSurfaceLightingPass final {
   public:
     PicaSurfaceLightingPass();
     ~PicaSurfaceLightingPass();
+    // `pipelineCache`: the device's persisted cache (optional).
     bool Initialize(VkPhysicalDevice physical, VkDevice device, Renderer::CachedPassShaderCompiler& shaders,
-                    bool shadowCoefficients = false);
+                    bool shadowCoefficients = false, VkPipelineCache pipelineCache = VK_NULL_HANDLE);
     bool Prepare(VkCommandBuffer command, uint32_t frameSlot, uint64_t frameId,
         PicaResolvedDrawStreamView scene, std::span<PicaSurfaceLightingRequest> requests,
         const std::array<float, 3>& shadowDirection = {});

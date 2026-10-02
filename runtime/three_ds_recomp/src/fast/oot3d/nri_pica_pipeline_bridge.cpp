@@ -84,6 +84,7 @@ bool NriPicaPipelineBridge::Initialize(NriInteropContext& interop, bool pipeline
                                        bool pipelineLibrariesAvailable) {
     Shutdown();
     mInteropAdapter = std::make_unique<InteropAdapter>(interop);
+    mContext = &interop;
     const char* ownedDraws =
         std::getenv("OOT3D_GRAPHICS_NRI_PICA_DRAWS");
     const char* ownedUploads =
@@ -98,13 +99,21 @@ bool NriPicaPipelineBridge::Initialize(NriInteropContext& interop, bool pipeline
     };
     if (!mBridge.Initialize(*mInteropAdapter, config)) {
         mInteropAdapter.reset();
+        mContext = nullptr;
         return false;
     }
     return true;
 }
 
 bool NriPicaPipelineBridge::InitializePipelineCache(std::span<const uint8_t> data) {
-    return mBridge.InitializePipelineCache(data);
+    const bool initialized = mBridge.InitializePipelineCache(data);
+#ifdef ENABLE_OOT3D_NRI
+    // Every pipeline of the device (effect passes, casters) creates from and
+    // adds to the same persisted cache.
+    if (mContext != nullptr)
+        NriInteropAccess::LendPipelineCache(*mContext, mBridge.PipelineCache());
+#endif
+    return initialized;
 }
 std::vector<uint8_t> NriPicaPipelineBridge::GetPipelineCacheData() const {
     return mBridge.GetPipelineCacheData();
@@ -151,6 +160,10 @@ void NriPicaPipelineBridge::Forget(VkPipeline pipeline) {
 }
 void NriPicaPipelineBridge::Reset() { mBridge.Reset(); }
 void NriPicaPipelineBridge::Shutdown() {
+#ifdef ENABLE_OOT3D_NRI
+    if (mContext != nullptr) NriInteropAccess::LendPipelineCache(*mContext, nullptr);
+#endif
+    mContext = nullptr;
     mBridge.Shutdown();
     mInteropAdapter.reset();
 }

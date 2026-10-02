@@ -705,7 +705,7 @@ bool GfxRenderingAPIVulkan::EnsureRawCopyEncodeResources(uint32_t encodedBytes,
         pipelineInfo.stage.pName = "main";
         pipelineInfo.layout = mRawCopyEncodePipelineLayout;
         const VkResult created =
-            vkCreateComputePipelines(mDevice, VK_NULL_HANDLE, 1U, &pipelineInfo, nullptr,
+            vkCreateComputePipelines(mDevice, mPipelineCache, 1U, &pipelineInfo, nullptr,
                                      &mRawCopyEncodePipeline);
         vkDestroyShaderModule(mDevice, module, nullptr);
         RequireCopyVk(created, "vkCreateComputePipelines(raw copy encode)");

@@ -1381,3 +1381,49 @@ Next: acquire U without waiting for an in-flight part (complete S instead when
 it is the shorter path) or prepare on a first-launch screen; journal/Forge seed
 of S programs; lighting emission order (1 ulp) between bases so U and S are
 bit-identical in every frame, not only after the swap.
+
+### Effect pipelines from the persisted cache (2026-10-02)
+
+`TRIAEVUM_SLOW_STEP_MS=<threshold>` prints every timed renderer step slower
+than the threshold (`TRIAEVUM_SLOW_STEP scope=... step=... ms=...`): frame
+start/end, PICA draws, display transfers and each effect pass of the display
+graph, directional and point shadows, interactive grass (placements, surface
+lighting), and the host loop's frame start and present. Disabled, a step costs
+one load.
+
+It attributes the post-load slow frames (Kokiri Enhanced, warm caches):
+
+| frame | step | before | after |
+|---|---|---|---|
+| 5 | directional shadow casters, first use | 0.91 s | < 0.1 s |
+| 5 | point shadow casters, first use | 0.67 s | < 0.1 s |
+| 5 | interactive grass: scene placements | 1.03-1.07 s | unchanged |
+| 2 | upscaler: DLSS feature creation | 1.40-1.51 s | unchanged |
+
+The caster, effect and grass pipelines were created without a pipeline cache,
+so every launch compiled them again on first use. Every pipeline of the device
+now uses the persisted caches: NRI passes and casters the NRI cache (owned by
+the PICA pipeline bridge and lent to the interop context,
+`NriInteropAccess::PipelineCache`), raw Vulkan passes (grass, its compactor
+and shadow grid, surface lighting, raw copy encode) the backend's
+`VkPipelineCache`. Frame 5 drops from 2.75 s to 1.17 s.
+
+The remaining two are one-time initializations, not programs:
+
+- DLSS creates its NGX feature on the first dispatch (and again when the
+  resolution or quality changes). The creation records and submits on the
+  graphics queue, so it cannot move to a worker while frames submit.
+- `GrassStaticPlacementCache::Resolve` waits for the whole scene's grass
+  placements (built in parallel on the placement workers) so grass never
+  appears partially; on entering a scene that wait is about 1 s here.
+  Starting a scene's placements when its geometry registers, before its first
+  rendered frame, would hide it behind the scene transition.
+
+GPL shader parts log their creation time
+(`TRIAEVUM_NRI_GPL_SHADER_PART_CREATED part=N ms=...`): warm, the 41 startup
+parts take 80-470 ms each while 16 threads contend, 0.9 s wall time, all before
+the state loads.
+
+These runs shared the GPU with a streaming client (about 24 % utilization at
+idle), so their absolute frame times are not comparable with the table above;
+the attribution is CPU wall time on the render thread.

@@ -163,6 +163,7 @@ bool Smaa1xPass::Initialize(VkPhysicalDevice physicalDevice,
             pipeline.shader.bytecode = shader.data();
             pipeline.shader.size =
                 shader.size() * sizeof(uint32_t);
+            pipeline.cache = NriInteropAccess::PipelineCache(interop);
             if (mImpl->Core->CreateComputePipeline(
                     *nriDevice, pipeline, mImpl->Pipelines[i]) !=
                 nri::Result::SUCCESS) {

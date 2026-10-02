@@ -1,3 +1,4 @@
+#include "fast/renderer3ds/slow_step_trace.h"
 #include "fast/oot3d/interactive_grass_pass.h"
 #include "fast/oot3d/grass_shader_sources.h"
 #include "fast/oot3d/pica_attachment_contract.h"
@@ -428,6 +429,7 @@ struct InteractiveGrassPass::Impl {
     std::vector<::Fast::Renderer3ds::PicaSurfaceLightingRequest> LightingRequests;
     VkPhysicalDevice PhysicalDevice = VK_NULL_HANDLE;
     VkDevice Device = VK_NULL_HANDLE;
+    VkPipelineCache PipelineCache = VK_NULL_HANDLE;
     VkDescriptorSetLayout DescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
     std::array<VkDescriptorSet, 2> DescriptorSets{};
@@ -636,9 +638,11 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                                       VkRenderPass instrumentedRenderPass,
                                       VkSampleCountFlagBits sampleCount,
                                       bool dynamicRendering,
-                                      VkFormat depthFormat) {
+                                      VkFormat depthFormat,
+                                      VkPipelineCache pipelineCache) {
     Shutdown();
     mImpl->PhysicalDevice = physicalDevice;
+    mImpl->PipelineCache = pipelineCache;
     VkPhysicalDeviceProperties grassDeviceProperties{};
     vkGetPhysicalDeviceProperties(physicalDevice, &grassDeviceProperties);
     mImpl->PlacementBuilder.SetCandidateCapacity(std::min(8U * 1024U * 1024U,
@@ -855,7 +859,7 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                     pipeline.renderPass = renderPasses[index];
                 }
                 if (vkCreateGraphicsPipelines(
-                        device, VK_NULL_HANDLE, 1, &pipeline, nullptr,
+                        device, pipelineCache, 1, &pipeline, nullptr,
                         &mImpl->Pipelines[index]) != VK_SUCCESS) {
                     throw std::runtime_error(
                         "cannot create interactive grass pipeline");
@@ -876,7 +880,7 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
         vkDestroyShaderModule(device, vertex, nullptr);
         mImpl->GpuCompactorAvailable =
             mImpl->InstanceCompactor.Initialize(
-                physicalDevice, device, shaders);
+                physicalDevice, device, shaders, pipelineCache);
         mImpl->IndexedTopology = BuildGrassIndexedTopology();
         const auto indexBytes = mImpl->IndexedTopology.Indices.size() * sizeof(uint32_t);
         mImpl->EnsureBuffer(mImpl->IndexBuffer, indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, 4096);
@@ -907,6 +911,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
     mImpl->LastBlades = 0;
     mImpl->LastMotionBlades = 0;
     const auto cpuStart = std::chrono::steady_clock::now();
+    ::Fast::Renderer3ds::SlowStepTrace grassSteps("grass_prepare");
     GrassRenderTelemetrySnapshot telemetry;
     telemetry.FrameId = frameId;
     telemetry.AvailableMeshes = GrassSceneBridge::Instance().Size();
@@ -1095,14 +1100,18 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             }
         }
 
+        grassSteps.Mark("before_placements");
         const auto placementStart = std::chrono::steady_clock::now();
         auto placements = mImpl->PlacementBuilder.Resolve(placementRequests);
+        grassSteps.Mark("placements");
         if (!surfaceLighting.Sampler() && !surfaceLighting.Initialize(
-                mImpl->PhysicalDevice, mImpl->Device, *mImpl->SurfaceShaders, receiveShadows))
+                mImpl->PhysicalDevice, mImpl->Device, *mImpl->SurfaceShaders, receiveShadows,
+                mImpl->PipelineCache))
             return finish(GrassRenderStatus::PipelineUnavailable, false);
         if (!surfaceLighting.Prepare(commandBuffer, frameSlot, frameId, scene, mImpl->LightingRequests,
                 shadowHistory.State.WorldLightDirectionTowardSource))
             return finish(GrassRenderStatus::PipelineUnavailable, false);
+        grassSteps.Mark("surface_lighting");
         size_t nativeLit = 0;
         for (size_t i = 0; i < preparedPlacements.size(); ++i) {
             const auto& source = mImpl->LightingRequests[i];
@@ -1600,7 +1609,8 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         std::array<VkDescriptorBufferInfo, 4> shadowBuffers{unusedShadow, unusedShadow, unusedShadow, unusedShadow};
         if (receiveShadows) {
             if (!mImpl->ShadowGrid.Available())
-                mImpl->ShadowGrid.Initialize(mImpl->PhysicalDevice, mImpl->Device, *mImpl->SurfaceShaders);
+                mImpl->ShadowGrid.Initialize(mImpl->PhysicalDevice, mImpl->Device, *mImpl->SurfaceShaders,
+                                             mImpl->PipelineCache);
             const auto focus = shadowHistory.State.ProducedFrameId == frameId && scene.FrameId == frameId
                 ? ResolveShadowFocus(actors, scene, renderTargetNamespace, framebufferColorPhysicalAddress)
                 : std::array<Renderer3ds::ShadowBounds, 2>{};
@@ -1839,6 +1849,7 @@ void InteractiveGrassPass::Shutdown() {
     GrassRenderTelemetry::Instance().Reset();
     mImpl->Device = VK_NULL_HANDLE;
     mImpl->PhysicalDevice = VK_NULL_HANDLE;
+    mImpl->PipelineCache = VK_NULL_HANDLE;
 }
 
 uint32_t InteractiveGrassPass::LastBladeCount() const { return mImpl->LastBlades; }

@@ -271,7 +271,8 @@ class GraphicsPipelineLibraries {
             lock.unlock();
             mPartReady.notify_all();
             if (result == VK_SUCCESS && (p == 1 || p == 2))
-                std::fprintf(stderr, "TRIAEVUM_NRI_GPL_SHADER_PART_CREATED part=%zu\n", p);
+                std::fprintf(stderr, "TRIAEVUM_NRI_GPL_SHADER_PART_CREATED part=%zu ms=%.1f\n", p,
+                             static_cast<double>(elapsed) / 1.0e6);
         }
         // Parts other threads create: wait for those alone.
         VkResult result = VK_SUCCESS;

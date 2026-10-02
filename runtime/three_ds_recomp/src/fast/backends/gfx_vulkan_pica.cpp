@@ -69,6 +69,8 @@
 #include <type_traits>
 #include <vector>
 
+#include "fast/renderer3ds/slow_step_trace.h"
+
 namespace Fast {
 namespace {
 
@@ -960,7 +962,7 @@ void GfxRenderingAPIVulkan::ApplyNativePicaSampleCount(VkSampleCountFlagBits sam
                                            mNativePicaRenderPass,
                                            mNativePicaSampleCount,
                                            mPicaDynamicRenderingScope.Available(),
-                                           mDepthFormat)) {
+                                           mDepthFormat, mPipelineCache)) {
         SPDLOG_INFO("OOT3D Vulkan interactive grass unavailable after MSAA change: {}",
                     mInteractiveGrassPass.UnavailableReason());
     }
@@ -4698,6 +4700,7 @@ bool GfxRenderingAPIVulkan::PreparePicaSequenceDraw(
 
 bool GfxRenderingAPIVulkan::SubmitPicaDraw(
     const GfxNativePicaDrawView& draw, std::string* error) {
+    Renderer3ds::SlowStepScope slowStep("pica_draw");
     try {
         const bool collectCpuTimings = mDiagnostics.Enabled();
         using CpuClock = std::chrono::steady_clock;
@@ -6881,6 +6884,7 @@ bool GfxRenderingAPIVulkan::TryRenderInteractiveGrass(
     NativePicaRenderTarget& target,
     const Oot3d::GraphicsSettings& settings,
     Oot3d::EffectGeometryProviderInvocationKind invocationKind) {
+    Renderer3ds::SlowStepScope slowStep("interactive_grass");
     const auto latestPerspective = SamplePerspective(&target);
     (void)mNativeSceneView.Publish(
         mFrameCounter, mPicaSceneFrame, latestPerspective);
@@ -7062,6 +7066,7 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
     NativePicaRenderTarget& target,
     const Oot3d::GraphicsSettings& settings,
     const Oot3d::PicaCompositionStageAnchor& anchor) {
+    Renderer3ds::SlowStepScope slowStep("directional_shadows");
     const auto boundary = Oot3d::BuildPicaExtensionScheduleBoundary(
         mNativePicaCompositionSchedule, anchor);
     const auto decision = mDirectionalShadowSchedulePlan.Resolve(boundary);
@@ -7163,6 +7168,7 @@ bool GfxRenderingAPIVulkan::TryRenderPointShadowMaps(
     NativePicaRenderTarget& target,
     const Oot3d::GraphicsSettings& settings,
     const Oot3d::PicaCompositionStageAnchor& anchor) {
+    Renderer3ds::SlowStepScope slowStep("point_shadows");
     const auto boundary = Oot3d::BuildPicaExtensionScheduleBoundary(
         mNativePicaCompositionSchedule, anchor);
     const auto decision = mPointShadowSchedulePlan.Resolve(boundary);
@@ -7261,6 +7267,7 @@ struct NativePicaTargetEndDispatch {
 
 bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
     const GfxNativePicaDisplayTransferView& transfer, std::string* error) {
+    Renderer3ds::SlowStepScope slowStep("display_transfer");
     if (transfer.TextureCopyBytes != 0U) return SubmitNativePicaTextureCopy(transfer, error);
     try {
         if (!mFrameActive || transfer.CompletionId == 0U ||
@@ -7578,6 +7585,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
     NativePicaRenderTarget* copySource,
     GpuTextureCopySourceImport* copyOutput, std::string* error,
     bool beforeNativeUi) {
+    Renderer3ds::SlowStepTrace slowSteps("display_graph");
 
         const auto& presentationSettings =
             mFrameGraphicsSettings;
@@ -7770,6 +7778,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         // including the boundary composition that a native consumer samples.
         const auto recordDeclared = [&](Oot3d::DisplayEffectPass pass,
                                         EffectOutcome outcome) {
+            slowSteps.Mark(Oot3d::DisplayEffectPassName(pass));
             if (effectPlan.Enabled(pass) &&
                 !effectExecution.Record(pass, outcome)) {
                 throw std::runtime_error(
@@ -9556,6 +9565,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 mCurrentFrame,
                 Oot3d::GpuProfileScope::SceneComposite,
                 command);
+            slowSteps.Mark("scene_effects");
             compositeForTaa =
                 transientCompositeOutput != nullptr && mSceneCompositePass.Configure(*transientCompositeOutput) &&
                 mSceneCompositePass.Execute(
@@ -9864,6 +9874,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         bool dlssAttempted = false;
         uint32_t dlssOutputWidth = canReuseUpscaler ? mUpscalerOutputWidth : plannedUpscalerWidth;
         uint32_t dlssOutputHeight = canReuseUpscaler ? mUpscalerOutputHeight : plannedUpscalerHeight;
+        slowSteps.Mark("composite_taa");
 #if defined(_WIN32) && defined(ENABLE_OOT3D_D3D12_NGX_PROVIDER)
         const bool d3d12FrameDlssRequested = mD3d12NgxProvider.FrameDispatchRequested() &&
                                              mD3d12NgxProvider.Available() && !mNativePicaPresentedThisFrame &&
@@ -10059,6 +10070,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 nisForDisplay, mNriUpscalerPass.OutputOwnedByNri(),
                 mNriUpscalerPass.BarriersOwnedByNri());
         }
+        slowSteps.Mark("upscaler");
         const bool smaaEffectsNeedComposite =
             aoForDisplay || reflectionsForDisplay ||
             outlineForDisplay;

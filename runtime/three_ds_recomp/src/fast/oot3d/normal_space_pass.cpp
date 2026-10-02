@@ -61,6 +61,7 @@ void NormalSpacePass::Initialize(NriInteropContext& interop) {
     pipeline.pipelineLayout = mImpl->Layout;
     pipeline.shader.stage = nri::StageBits::COMPUTE_SHADER;
     pipeline.shader.bytecode = code.data(); pipeline.shader.size = code.size() * sizeof(uint32_t);
+    pipeline.cache = NriInteropAccess::PipelineCache(interop);
     if (mImpl->Core->CreateComputePipeline(*device, pipeline, mImpl->Pipeline) != nri::Result::SUCCESS)
         throw std::runtime_error("normal-space pipeline creation failed");
 #endif

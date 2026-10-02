@@ -249,6 +249,7 @@ bool BrixelizerGiPass::Initialize(VkPhysicalDevice physicalDevice, VkDevice devi
         pipeline.shader.stage = nri::StageBits::COMPUTE_SHADER;
         pipeline.shader.bytecode = code.data();
         pipeline.shader.size = code.size() * sizeof(uint32_t);
+        pipeline.cache = NriInteropAccess::PipelineCache(interop);
         if (mImpl->Core->CreateComputePipeline(*nriDevice, pipeline, mImpl->Pipeline) != nri::Result::SUCCESS)
             throw std::runtime_error("Brixelizer GI prepare pipeline creation failed");
         if (!mImpl->Clear.Initialize(interop)) throw std::runtime_error(mImpl->Clear.UnavailableReason());

@@ -48,7 +48,8 @@ class GrassGpuInstanceCompactor final {
     GrassGpuInstanceCompactor& operator=(const GrassGpuInstanceCompactor&) = delete;
 
     bool Initialize(VkPhysicalDevice physicalDevice, VkDevice device,
-                    Renderer::CachedPassShaderCompiler& shaders);
+                    Renderer::CachedPassShaderCompiler& shaders,
+                    VkPipelineCache pipelineCache = VK_NULL_HANDLE);
     [[nodiscard]] bool Compact(const GrassGpuInstanceCompactionRequest& request,
                                GrassGpuInstanceCompactionResult& result);
     // Forget every previous bend (savestates, scene transitions).

@@ -94,6 +94,7 @@ bool AmbientOcclusionPass::Initialize(VkPhysicalDevice physical, VkDevice device
             pipeline.shader.stage = nri::StageBits::COMPUTE_SHADER;
             pipeline.shader.bytecode = spirv.data();
             pipeline.shader.size = spirv.size() * sizeof(uint32_t);
+            pipeline.cache = NriInteropAccess::PipelineCache(interop);
             if (mImpl->Core->CreateComputePipeline(*nriDevice, pipeline, mImpl->Pipelines[i]) != nri::Result::SUCCESS)
                 throw std::runtime_error("NRI AO pipeline failed");
         }

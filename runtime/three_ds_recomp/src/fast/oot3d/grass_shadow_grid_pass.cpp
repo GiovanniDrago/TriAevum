@@ -124,7 +124,8 @@ bool GrassShadowGridPass::Available() const noexcept {
 }
 
 void GrassShadowGridPass::Initialize(VkPhysicalDevice physical, VkDevice device,
-                                     Renderer::CachedPassShaderCompiler& shaders) {
+                                     Renderer::CachedPassShaderCompiler& shaders,
+                                     VkPipelineCache pipelineCache) {
     Shutdown();
     auto& p = *mImpl;
     p.Device = device;
@@ -169,7 +170,7 @@ void GrassShadowGridPass::Initialize(VkPhysicalDevice physical, VkDevice device,
                        "main",
                        nullptr };
     pipeline.layout = p.Layout;
-    const auto result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &p.Pipeline);
+    const auto result = vkCreateComputePipelines(device, pipelineCache, 1, &pipeline, nullptr, &p.Pipeline);
     vkDestroyShaderModule(device, shader, nullptr);
     Check(result);
 }

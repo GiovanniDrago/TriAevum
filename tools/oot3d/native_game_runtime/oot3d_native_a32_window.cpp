@@ -5,6 +5,7 @@
 #include "fast/renderer/frame_time_distribution.h"
 #include "fast/renderer/slow_frame_samples.h"
 #include "fast/renderer3ds/pica_program_preparation.h"
+#include "fast/renderer3ds/slow_step_trace.h"
 #include "oot3d_game_language_panel.h"
 #include "oot3d_graphics_settings_schedule.h"
 #include "oot3d_scene_environment.h"
@@ -5091,9 +5092,13 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     hdFonts.SetOutputHeight(height);
     updateScenePresentation();
     phaseStart = std::chrono::steady_clock::now();
+    Fast::Renderer3ds::SlowStepTrace hostStartSteps("host_frame_start");
     window.GetMouseStateManager()->StartFrame();
+    hostStartSteps.Mark("mouse");
     gui->StartDraw();
+    hostStartSteps.Mark("gui_start_draw");
     renderStream.Submit([&] { window.StartFrame(); });
+    hostStartSteps.Mark("render_start_frame");
     phaseTiming.HostFrameStartSeconds += SecondsSince(phaseStart);
     const auto inputPhaseStart = std::chrono::steady_clock::now();
     const bool quickSaveKeyDown = window.IsKeyDown(Ship::KbScancode::LUS_KB_F5);
@@ -6669,7 +6674,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
 
     phaseStart = std::chrono::steady_clock::now();
     CpuProbe::Scope cpuPresent(CpuProbe::Phase::Present);
+    Fast::Renderer3ds::SlowStepTrace presentSteps("present");
     gui->EndDraw();
+    presentSteps.Mark("gui_end_draw");
     renderStream.Submit([&, width, height,
                          presentationSerial = presentationFrameCount] {
       if (rendererFrameSkipped) {
@@ -6690,6 +6697,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       rendererTiming->PacingWaitSeconds += SecondsSince(waitStart);
       window.EndFrame();
     }, true);
+    presentSteps.Mark("render_end_frame");
     picaSemanticTrace.RecordFrameBoundary(
         presentationFrameCount, frameCount, guestRefreshesDue != 0U);
     phaseTiming.PresentSeconds += SecondsSince(phaseStart);

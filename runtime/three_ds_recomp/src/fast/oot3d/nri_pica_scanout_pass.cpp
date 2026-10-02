@@ -215,6 +215,7 @@ bool NriPicaScanoutPass::Impl::ConfigureTarget(
         pipeline.shaders = shaders.data();
         pipeline.shaderNum = static_cast<uint32_t>(shaders.size());
         nri::Device* nriDevice = NriInteropAccess::Device(*Interop);
+        pipeline.cache = NriInteropAccess::PipelineCache(*Interop);
         if (Core->CreateGraphicsPipeline(*nriDevice, pipeline, base) !=
             nri::Result::SUCCESS)
             throw std::runtime_error("NRI base scanout pipeline failed");

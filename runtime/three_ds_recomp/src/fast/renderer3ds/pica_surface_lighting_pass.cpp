@@ -44,6 +44,7 @@ struct PicaSurfaceLightingPass::Impl {
     bool ShadowCoefficients = false;
     uint32_t Layers = 1;
     VkDevice Device{};
+    VkPipelineCache PipelineCache{};
     Renderer::CachedPassShaderCompiler* Shaders = nullptr;
     VkDescriptorSetLayout DescriptorLayout{};
     VkDescriptorPool Pool{};
@@ -115,7 +116,7 @@ struct PicaSurfaceLightingPass::Impl {
             info.pInputAssemblyState = &assembly; info.pRasterizationState = &raster;
             info.pMultisampleState = &samples; info.pViewportState = &viewportState;
             info.pColorBlendState = &blend; info.layout = Layout; info.renderPass = RenderPass;
-            Check(vkCreateGraphicsPipelines(Device, {}, 1, &info, nullptr, &result));
+            Check(vkCreateGraphicsPipelines(Device, PipelineCache, 1, &info, nullptr, &result));
         } catch (const std::exception& e) { std::fprintf(stderr, "Native surface lighting: %s\n", e.what()); }
         if (vertex) vkDestroyShaderModule(Device, vertex, nullptr);
         if (fragment) vkDestroyShaderModule(Device, fragment, nullptr);
@@ -127,9 +128,10 @@ struct PicaSurfaceLightingPass::Impl {
 PicaSurfaceLightingPass::PicaSurfaceLightingPass() : mImpl(std::make_unique<Impl>()) {}
 PicaSurfaceLightingPass::~PicaSurfaceLightingPass() { Shutdown(); }
 bool PicaSurfaceLightingPass::Initialize(VkPhysicalDevice physical, VkDevice device, Renderer::CachedPassShaderCompiler& shaders,
-                                         bool shadowCoefficients) {
+                                         bool shadowCoefficients, VkPipelineCache pipelineCache) {
     Shutdown();
     auto& p = *mImpl; p.Physical = physical; p.Device = device; p.Shaders = &shaders;
+    p.PipelineCache = pipelineCache;
     p.ShadowCoefficients = shadowCoefficients;
     p.Layers = shadowCoefficients ? 3U : 1U;
     try {

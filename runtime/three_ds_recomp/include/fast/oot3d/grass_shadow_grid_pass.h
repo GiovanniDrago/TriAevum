@@ -31,7 +31,8 @@ class GrassShadowGridPass final {
     ~GrassShadowGridPass();
     GrassShadowGridPass(const GrassShadowGridPass&) = delete;
     GrassShadowGridPass& operator=(const GrassShadowGridPass&) = delete;
-    void Initialize(VkPhysicalDevice physical, VkDevice device, Renderer::CachedPassShaderCompiler& shaders);
+    void Initialize(VkPhysicalDevice physical, VkDevice device, Renderer::CachedPassShaderCompiler& shaders,
+                    VkPipelineCache pipelineCache = VK_NULL_HANDLE);
     [[nodiscard]] bool Available() const noexcept;
     GrassShadowGridResult Execute(VkCommandBuffer command, uint32_t frameSlot, uint64_t frameId, uint64_t revision,
                                   std::span<const GrassShadowGridPoint> points,

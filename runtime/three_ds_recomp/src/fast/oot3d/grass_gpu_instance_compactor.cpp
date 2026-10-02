@@ -177,7 +177,8 @@ GrassGpuInstanceCompactor::~GrassGpuInstanceCompactor() {
 }
 
 bool GrassGpuInstanceCompactor::Initialize(VkPhysicalDevice physicalDevice, VkDevice device,
-                                          Renderer::CachedPassShaderCompiler& shaders) {
+                                          Renderer::CachedPassShaderCompiler& shaders,
+                                          VkPipelineCache pipelineCache) {
     Shutdown();
     mImpl->PhysicalDevice = physicalDevice;
     mImpl->Device = device;
@@ -258,7 +259,7 @@ bool GrassGpuInstanceCompactor::Initialize(VkPhysicalDevice physicalDevice, VkDe
                 VK_NULL_HANDLE,
                 -1,
             };
-            if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1U, &pipelineInfo, nullptr, &mImpl->Pipeline) !=
+            if (vkCreateComputePipelines(device, pipelineCache, 1U, &pipelineInfo, nullptr, &mImpl->Pipeline) !=
                 VK_SUCCESS) {
                 throw std::runtime_error("cannot create grass compactor pipeline");
             }

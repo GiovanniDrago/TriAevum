@@ -64,6 +64,12 @@ class NriInteropAccess final {
     static bool CmdSetPipeline(NriInteropContext& context,
                                uint32_t frameIndex,
                                nri::Pipeline* pipeline);
+    // The device's persisted pipeline cache, lent by its owner (null without
+    // one). Every pipeline desc of the renderer sets it: a later run then
+    // creates the pipeline from the cached blob instead of compiling it.
+    static nri::PipelineCache* PipelineCache(NriInteropContext& context);
+    static void LendPipelineCache(NriInteropContext& context,
+                                  nri::PipelineCache* cache);
 };
 
 } // namespace Fast::Oot3d

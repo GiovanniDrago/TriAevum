@@ -161,6 +161,7 @@ bool NriPicaDisplayCopyPass::Initialize(NriInteropContext& interop) {
         pipeline.shader.stage = nri::StageBits::COMPUTE_SHADER;
         pipeline.shader.bytecode = shader.data();
         pipeline.shader.size = shader.size() * sizeof(uint32_t);
+        pipeline.cache = NriInteropAccess::PipelineCache(interop);
         if (mImpl->Core->CreateComputePipeline(
                 *device, pipeline, mImpl->Pipeline) !=
             nri::Result::SUCCESS) {
@@ -193,6 +194,7 @@ bool NriPicaDisplayCopyPass::Initialize(NriInteropContext& interop) {
             derivePipeline.shader.bytecode = deriveShader.data();
             derivePipeline.shader.size =
                 deriveShader.size() * sizeof(uint32_t);
+            derivePipeline.cache = NriInteropAccess::PipelineCache(interop);
             if (mImpl->Core->CreateComputePipeline(
                     *device, derivePipeline, mImpl->DerivePipeline) !=
                 nri::Result::SUCCESS) {

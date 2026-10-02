@@ -446,6 +446,11 @@ std::vector<uint8_t> NriPicaPipelineBridge::GetPipelineCacheData() const {
 }
 
 #ifdef ENABLE_RENDERER3DS_NRI
+nri::PipelineCache* NriPicaPipelineBridge::PipelineCache() const {
+    std::lock_guard lock(mImpl->PipelineCacheMutex);
+    return mImpl->PipelineCache;
+}
+
 nri::Pipeline* NriPicaPipelineBridge::CreatePipeline(const NriPicaGraphicsPipelineDesc& desc,
                                                      NriPicaPipelineFactory factory) {
     if (!Available() || desc.VertexSpirv.empty() || desc.FragmentSpirv.empty() ||

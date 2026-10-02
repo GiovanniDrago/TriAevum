@@ -217,6 +217,11 @@ class NriPicaPipelineBridge final {
     [[nodiscard]] size_t OwnedPipelineCount() const;
     [[nodiscard]] size_t WrappedPipelineCount() const;
     [[nodiscard]] const std::string& UnavailableReason() const;
+#ifdef ENABLE_RENDERER3DS_NRI
+    // The device's persisted pipeline cache, owned here (null before
+    // InitializePipelineCache). Other pipelines of the device may use it.
+    [[nodiscard]] nri::PipelineCache* PipelineCache() const;
+#endif
 
   private:
 #ifdef ENABLE_RENDERER3DS_NRI
