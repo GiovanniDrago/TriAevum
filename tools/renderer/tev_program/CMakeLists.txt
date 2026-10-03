@@ -131,6 +131,20 @@ if(WIN32)
 endif()
 add_test(NAME gtao_gpu COMMAND gtao_gpu_tests)
 set_tests_properties(gtao_gpu PROPERTIES TIMEOUT 60)
+add_executable(diffuse_gi_gpu_tests diffuse_gi_gpu_tests.cpp
+    "${runtime}/src/fast/renderer/diffuse_gi_reference.cpp"
+    "${runtime}/src/fast/renderer/diffuse_gi_gather.cpp"
+    "${runtime}/src/fast/renderer/diffuse_gi_scene.cpp"
+    "${runtime}/src/fast/renderer/diffuse_gi_gather_shader.cpp")
+target_compile_features(diffuse_gi_gpu_tests PRIVATE cxx_std_20)
+target_include_directories(diffuse_gi_gpu_tests PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")
+target_link_libraries(diffuse_gi_gpu_tests PRIVATE Vulkan::Vulkan "${SHADERC_LIBRARY}")
+if(WIN32)
+    add_custom_command(TARGET diffuse_gi_gpu_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${SHADERC_RUNTIME}" "$<TARGET_FILE_DIR:diffuse_gi_gpu_tests>")
+endif()
+add_test(NAME diffuse_gi_gpu COMMAND diffuse_gi_gpu_tests)
+set_tests_properties(diffuse_gi_gpu PROPERTIES TIMEOUT 120)
 add_executable(mxao_gpu_tests mxao_gpu_tests.cpp "${runtime}/src/fast/immerse/mxao_shader.cpp"
     "${runtime}/src/fast/oot3d/ambient_occlusion_composite.cpp")
 target_compile_features(mxao_gpu_tests PRIVATE cxx_std_20)
