@@ -227,11 +227,6 @@ int main(int argc, char** argv) {
             return 2;
         }
 
-        if (launch.A32ProcessManifestPath.empty()) {
-            throw std::runtime_error(
-                "oot3d_native_game requires --a32-process-manifest; use "
-                "oot3d_native_game_legacy_sandbox for the standalone demo");
-        }
 #if defined(OOT3D_REQUIRE_WHOLE_AOT_PLUGIN_V2)
         if (!Oot3dNativeGame::Oot3dWholeAotPluginV2Available()) {
             throw std::runtime_error(

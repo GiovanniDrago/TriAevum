@@ -241,125 +241,6 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set_property(TARGET oot3d_room_compilation_runtime_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 set_property(TARGET oot3d_room_compilation_runtime_tests PROPERTY FOLDER Tests)
-set(OOT3D_DECOMP_DEVELOPMENT_SOURCE_ROOT
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/oot3d/decomp_support/src/code")
-if (EXISTS "${OOT3D_DECOMP_DEVELOPMENT_SOURCE_ROOT}/z_oot3d_math.c" AND
-    EXISTS "${OOT3D_DECOMP_DEVELOPMENT_SOURCE_ROOT}/z_scene_cutscene_frame_runtime.c")
-add_library(oot3d_native_math STATIC EXCLUDE_FROM_ALL
-    tools/oot3d/decomp_support/src/code/z_oot3d_math.c
-)
-target_include_directories(oot3d_native_math PUBLIC
-    tools/oot3d/decomp_support/include
-)
-target_compile_options(oot3d_native_math PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    set_property(TARGET oot3d_native_math PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_math PROPERTY FOLDER Tools)
-
-add_library(oot3d_native_cutscene_host STATIC EXCLUDE_FROM_ALL
-    tools/oot3d/native_demo_host/oot3d_demo_host_camera_controls.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_context.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_diagnostics.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_cli.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_io.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_input.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_link_controls.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_playback_frame.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_render_frame.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_screenshot.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_self_test.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_self_test_camera.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_self_test_link.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_self_test_playback.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_summary.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_title_trace.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_view_projection.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_window_demo.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_window_summary.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_window_state.cpp
-    tools/oot3d/native_demo_host/oot3d_demo_host_window_timing.cpp
-    tools/oot3d/native_demo_host/oot3d_link_collision.cpp
-    tools/oot3d/native_demo_host/oot3d_link_instance.cpp
-    tools/oot3d/native_demo_host/oot3d_link_animation.cpp
-    tools/oot3d/native_demo_host/oot3d_link_locomotion_config.cpp
-    tools/oot3d/native_demo_host/oot3d_link_movement.cpp
-    tools/oot3d/native_demo_host/oot3d_link_render.cpp
-    tools/oot3d/native_demo_host/oot3d_link_surface_state.cpp
-    tools/oot3d/native_demo_host/oot3d_native_bg_camera.cpp
-    tools/oot3d/native_demo_host/oot3d_native_camera_collision.cpp
-    tools/oot3d/native_demo_host/oot3d_native_camera_config.cpp
-    tools/oot3d/native_demo_host/oot3d_native_camera_controller.cpp
-    tools/oot3d/native_demo_host/oot3d_native_camera_normal.cpp
-    tools/oot3d/native_demo_host/oot3d_native_camera_runtime.cpp
-    tools/oot3d/native_demo_host/oot3d_native_camera_scene.cpp
-    tools/oot3d/native_demo_host/oot3d_native_collision_math.cpp
-    tools/oot3d/native_demo_host/oot3d_intro_cutscene_playback.cpp
-    tools/oot3d/native_demo_host/oot3d_intro_cutscene_status_names.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_actor_assets.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_actor_diagnostics.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_actor_render.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_effects.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_camera.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_cue_sampling.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_diagnostics.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_logo_render.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_logo_runtime.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_opening_frame_runtime.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_opening_resolver.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_playback_init.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_playback_render.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_render_binding_diagnostics.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_render_guard.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_render_scene.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_runtime_environment.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_status_names.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_trace.cpp
-    tools/oot3d/native_demo_host/oot3d_title_intro_visibility_diagnostics.cpp
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_camera_blob_table.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_camera_cmad_apply.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_camera_cmad_table.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_camera_curve_eval.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_camera_keyframe_table.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_camera_runtime.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_frame_runtime.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_direct_player_event_table.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_intro_camera_timeline.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_intro_runtime.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_lighting_table.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_misc_action_table.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_set_time_table.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_transition_handoff_table.c
-    tools/oot3d/decomp_support/src/code/z_scene_global_entrance_table.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_native_source_table.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_player_action_table.c
-    tools/oot3d/decomp_support/src/code/z_scene_cutscene_source_table.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_source_table.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_opening_orchestration.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_opening_resolver_runtime.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_opening_player_motion.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_opening_actor_runtime.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_opening_camera_runtime.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_opening_logo_runtime.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_runtime_tables.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_player_resource_visibility.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_record_c_runtime.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_playback_runtime.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_source_selector_runtime.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_source_selector_feed_runtime.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_cutscene_runtime.c
-    tools/oot3d/decomp_support/src/code/z_title_intro_opening_frame_runtime.c
-)
-target_link_libraries(oot3d_native_cutscene_host PUBLIC three_ds_recomp_runtime oot3d_native_math)
-target_include_directories(oot3d_native_cutscene_host PUBLIC tools/oot3d/decomp_support/include)
-target_compile_options(oot3d_native_cutscene_host PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_cutscene_host PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_cutscene_host PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_cutscene_host PROPERTY FOLDER Tools)
-add_library(oot3d_native_runtime_host ALIAS oot3d_native_cutscene_host)
-endif()
 
 add_library(oot3d_native_application_host STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_demo_host/oot3d_demo_host_context.cpp
@@ -2333,17 +2214,6 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 endif()
 set_property(TARGET oot3d_native_pica_vulkan_bridge_tests PROPERTY FOLDER Tests)
 
-add_executable(oot3d_native_pica_texture_tests EXCLUDE_FROM_ALL
-    tools/oot3d/native_game_runtime/oot3d_native_pica_texture_tests.cpp
-)
-target_link_libraries(oot3d_native_pica_texture_tests PRIVATE three_ds_recomp_runtime)
-target_compile_options(oot3d_native_pica_texture_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_texture_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_texture_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_texture_tests PROPERTY FOLDER Tests)
-
 add_subdirectory(tools/oot3d/ui_contract EXCLUDE_FROM_ALL)
 
 add_library(oot3d_ui_topscreen STATIC EXCLUDE_FROM_ALL
@@ -3182,7 +3052,6 @@ endif()
 # when regenerating its documentary evidence.
 
 add_library(oot3d_native_game_runtime STATIC EXCLUDE_FROM_ALL
-    tools/oot3d/native_game_runtime/oot3d_native_a32_execution.cpp
     tools/oot3d/native_game_runtime/oot3d_native_a32_scene_view.cpp
     tools/oot3d/native_game_runtime/oot3d_native_a32_timing_probe.cpp
     tools/oot3d/native_game_runtime/oot3d_native_scenario_bootstrap.cpp
@@ -3190,19 +3059,6 @@ add_library(oot3d_native_game_runtime STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_presentation_pacer.cpp
     tools/oot3d/native_game_runtime/oot3d_native_temporal_event_ledger.cpp
     tools/oot3d/native_game_runtime/oot3d_native_player_temporal_bridge.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_actor_core_contract.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_actor_runtime.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_closure_catalog.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_limb_callback.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_npc_tracking.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_object_bank_runtime.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_room_runtime.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_room_render_runtime.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_transition_actor_runtime.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_player_action_runtime.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_player_collision_action_contract.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_player_clip_runtime.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_player_animation_catalog.cpp
     tools/oot3d/native_game_runtime/oot3d_native_root_motion.cpp
     tools/oot3d/native_game_runtime/oot3d_native_skel_anime.cpp
 )
@@ -3214,14 +3070,10 @@ target_include_directories(oot3d_native_game_runtime PUBLIC
 )
 target_compile_options(oot3d_native_game_runtime PRIVATE "${WARNING_OVERRIDE}")
 target_link_libraries(oot3d_native_game_runtime PUBLIC
-    oot3d_native_asset_runtime
     oot3d_room_compilation_runtime
     oot3d_native_audio
     oot3d_native_a32_process
 )
-if(TARGET oot3d_native_math)
-    target_link_libraries(oot3d_native_game_runtime PUBLIC oot3d_native_math)
-endif()
 if (TARGET oot3d_native_a32_aot)
     target_link_libraries(oot3d_native_game_runtime PUBLIC oot3d_native_a32_aot)
     target_compile_definitions(oot3d_native_game_runtime PRIVATE
@@ -3239,17 +3091,10 @@ add_executable(oot3d_native_game_runtime_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_player_temporal_bridge_tests.cpp
     tools/oot3d/native_game_runtime/oot3d_native_a32_scene_view_tests.cpp
     tools/oot3d/native_game_runtime/oot3d_native_a32_timing_probe_tests.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_player_clip_runtime_tests.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_player_action_runtime_tests.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_player_animation_catalog_tests.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_player_collision_tests.cpp
     tools/oot3d/native_game_runtime/oot3d_native_root_motion_tests.cpp
     tools/oot3d/native_game_runtime/oot3d_native_skel_anime_tests.cpp
 )
-target_link_libraries(oot3d_native_game_runtime_tests PRIVATE
-    oot3d_native_game_runtime
-    oot3d_native_runtime_host
-)
+target_link_libraries(oot3d_native_game_runtime_tests PRIVATE oot3d_native_game_runtime)
 target_compile_options(oot3d_native_game_runtime_tests PRIVATE "${WARNING_OVERRIDE}")
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
     target_compile_definitions(oot3d_native_game_runtime_tests PRIVATE NOMINMAX)
@@ -3268,38 +3113,6 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 endif()
 set_property(TARGET triaevum_presentation_clock_tests PROPERTY FOLDER Tests)
 
-add_executable(oot3d_native_actor_core_contract_tests EXCLUDE_FROM_ALL
-    tools/oot3d/native_game_runtime/oot3d_native_actor_core_contract_tests.cpp
-)
-target_link_libraries(oot3d_native_actor_core_contract_tests PRIVATE oot3d_native_game_runtime)
-target_compile_options(oot3d_native_actor_core_contract_tests PRIVATE "${WARNING_OVERRIDE}")
-
-add_executable(oot3d_native_actor_runtime_tests EXCLUDE_FROM_ALL
-    tools/oot3d/native_game_runtime/oot3d_native_actor_runtime_tests.cpp
-)
-target_link_libraries(oot3d_native_actor_runtime_tests PRIVATE oot3d_native_game_runtime)
-target_compile_options(oot3d_native_actor_runtime_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_actor_core_contract_tests PRIVATE NOMINMAX)
-    target_compile_definitions(oot3d_native_actor_runtime_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_actor_core_contract_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    set_property(TARGET oot3d_native_actor_runtime_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_actor_core_contract_tests PROPERTY FOLDER Tests)
-set_property(TARGET oot3d_native_actor_runtime_tests PROPERTY FOLDER Tests)
-
-add_executable(oot3d_native_a32_execution_tests EXCLUDE_FROM_ALL
-    tools/oot3d/native_game_runtime/oot3d_native_a32_execution_tests.cpp
-)
-target_link_libraries(oot3d_native_a32_execution_tests PRIVATE
-    oot3d_native_game_runtime)
-target_compile_options(oot3d_native_a32_execution_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_a32_execution_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_a32_execution_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_a32_execution_tests PROPERTY FOLDER Tests)
-
 add_executable(oot3d_native_audio_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_audio_tests.cpp
 )
@@ -3310,36 +3123,6 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set_property(TARGET oot3d_native_audio_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 set_property(TARGET oot3d_native_audio_tests PROPERTY FOLDER Tests)
-
-add_executable(oot3d_native_closure_catalog_tests EXCLUDE_FROM_ALL
-    tools/oot3d/native_game_runtime/oot3d_native_closure_catalog_tests.cpp
-)
-target_link_libraries(oot3d_native_closure_catalog_tests PRIVATE oot3d_native_game_runtime)
-target_compile_options(oot3d_native_closure_catalog_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_closure_catalog_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_closure_catalog_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_closure_catalog_tests PROPERTY FOLDER Tests)
-
-add_executable(oot3d_native_fast3d_demo EXCLUDE_FROM_ALL
-    tools/oot3d/native_demo_host/oot3d_native_fast3d_demo.cpp
-)
-target_link_libraries(oot3d_native_fast3d_demo PRIVATE oot3d_native_cutscene_host)
-target_compile_options(oot3d_native_fast3d_demo PRIVATE "${WARNING_OVERRIDE}")
-
-add_executable(oot3d_native_cutscene_player EXCLUDE_FROM_ALL
-    tools/oot3d/native_demo_host/oot3d_native_cutscene_player.cpp
-    tools/oot3d/native_demo_host/oot3d_cutscene_player_cli.cpp
-)
-target_link_libraries(oot3d_native_cutscene_player PRIVATE oot3d_native_cutscene_host)
-target_compile_options(oot3d_native_cutscene_player PRIVATE "${WARNING_OVERRIDE}")
-
-add_executable(oot3d_shadow2d_backend_probe EXCLUDE_FROM_ALL
-    tools/oot3d/native_demo_host/oot3d_shadow2d_backend_probe.cpp
-)
-target_link_libraries(oot3d_shadow2d_backend_probe PRIVATE oot3d_native_cutscene_host)
-target_compile_options(oot3d_shadow2d_backend_probe PRIVATE "${WARNING_OVERRIDE}")
 
 if(ANDROID)
     add_library(oot3d_native_game SHARED EXCLUDE_FROM_ALL)
@@ -3557,9 +3340,6 @@ endif()
 
 set(_oot3d_vulkan_hosts
     triaevum_oot3d_module_host
-    oot3d_native_fast3d_demo
-    oot3d_native_cutscene_player
-    oot3d_shadow2d_backend_probe
     oot3d_native_game)
 if(OOT3D_ENABLE_VULKAN_RENDERER AND TARGET three_ds_recomp_shaderc)
     if(TARGET oot3d_native_pica_default_pack)
@@ -3582,13 +3362,7 @@ if(COMMAND three_ds_recomp_deploy_nri_runtime)
 endif()
 unset(_oot3d_vulkan_hosts)
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_fast3d_demo PRIVATE NOMINMAX)
-    target_compile_definitions(oot3d_native_cutscene_player PRIVATE NOMINMAX)
-    target_compile_definitions(oot3d_shadow2d_backend_probe PRIVATE NOMINMAX)
     target_compile_definitions(oot3d_native_game PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_fast3d_demo PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    set_property(TARGET oot3d_native_cutscene_player PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    set_property(TARGET oot3d_shadow2d_backend_probe PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     set_property(TARGET oot3d_native_game PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
@@ -3599,39 +3373,4 @@ if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     nx_create_nro(oot3d_native_game
         NACP oot3d_native_game.nacp)
 endif()
-set_property(TARGET oot3d_native_fast3d_demo PROPERTY FOLDER Tools)
-set_property(TARGET oot3d_native_cutscene_player PROPERTY FOLDER Tools)
-set_property(TARGET oot3d_shadow2d_backend_probe PROPERTY FOLDER Tools)
 set_property(TARGET oot3d_native_game PROPERTY FOLDER Tools)
-
-add_executable(oot3d_native_game_legacy_sandbox EXCLUDE_FROM_ALL
-    tools/oot3d/native_game_runtime/oot3d_native_game_legacy_sandbox.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_game_bootstrap.cpp
-    tools/oot3d/native_game_runtime/oot3d_native_player_controller.cpp
-)
-target_include_directories(oot3d_native_game_legacy_sandbox PRIVATE
-    tools/oot3d/native_demo_host
-    tools/oot3d/native_game_runtime
-    tools/oot3d/ui_topscreen
-)
-target_link_libraries(oot3d_native_game_legacy_sandbox PRIVATE
-    oot3d_native_cutscene_host
-    oot3d_native_game_runtime
-    oot3d_native_control_config
-    oot3d_ui_topscreen
-)
-target_compile_options(oot3d_native_game_legacy_sandbox PRIVATE
-    "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_game_legacy_sandbox PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_game_legacy_sandbox PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_game_legacy_sandbox PROPERTY FOLDER Tools)
-if(OOT3D_ENABLE_VULKAN_RENDERER AND TARGET three_ds_recomp_shaderc)
-    add_custom_command(TARGET oot3d_native_game_legacy_sandbox POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:three_ds_recomp_shaderc>
-                $<TARGET_FILE_DIR:oot3d_native_game_legacy_sandbox>
-        COMMENT "Deploying shaderc for oot3d_native_game_legacy_sandbox")
-endif()

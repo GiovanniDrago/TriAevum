@@ -44,38 +44,6 @@ add_library(ThreeDsRecomp::TevProgram ALIAS renderer_3ds_tev_program)
 target_compile_features(renderer_3ds_tev_program PUBLIC cxx_std_20)
 target_include_directories(renderer_3ds_tev_program PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
-set(OOT3D_NATIVE_ASSET_RUNTIME_SOURCE_NAMES
-	Oot3dAssetCatalog.cpp
-	Oot3dCutsceneProvider.cpp
-	Oot3dEngineCapabilities.cpp
-	Oot3dNativeActorRenderProvider.cpp
-	Oot3dNativeAssets.cpp
-	Oot3dNativeDemoScene.cpp
-	Oot3dNativeEffectSs.cpp
-	Oot3dNativeFormat.cpp
-	Oot3dNativeQdbProvider.cpp
-	Oot3dNativeRenderer.cpp
-	Oot3dNativeRenderScene.cpp
-	Oot3dNativeResourceContract.cpp
-	Oot3dNativeRoomRenderProvider.cpp
-	Oot3dNativeSceneEntryProvider.cpp
-	Oot3dNativeSceneEnvironmentProvider.cpp
-	Oot3dNativeSceneRenderProvider.cpp
-	Oot3dNativeSourceProvider.cpp
-	Oot3dSceneProvider.cpp
-	Oot3dSemanticRouteCatalog.cpp)
-set(OOT3D_NATIVE_ASSET_RUNTIME_SOURCES
-	${OOT3D_NATIVE_ASSET_RUNTIME_SOURCE_NAMES})
-list(TRANSFORM OOT3D_NATIVE_ASSET_RUNTIME_SOURCES PREPEND
-	"${CMAKE_CURRENT_SOURCE_DIR}/src/oot3d/")
-add_library(oot3d_native_asset_runtime STATIC
-	${OOT3D_NATIVE_ASSET_RUNTIME_SOURCES})
-set_property(TARGET oot3d_native_asset_runtime PROPERTY CXX_STANDARD 20)
-target_include_directories(oot3d_native_asset_runtime PUBLIC
-	"${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(oot3d_native_asset_runtime PRIVATE
-	oot3d_renderer_texture_decode)
-
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
     enable_language(OBJCXX)
     set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -fobjc-arc")

@@ -192,7 +192,6 @@
 #define G_DL_INDEX 0x3d
 #define G_READFB 0x3e
 #define G_SETINTENSITY 0x40
-#define G_OOT3D_NATIVE_RENDER 0x41
 #define G_PUSH_SHADER 0x43
 #define G_POP_SHADER 0x44
 #define G_SETTILESIZE_INTERP 0x45
@@ -3138,12 +3137,6 @@ typedef union Gfx {
 
 #define gDPSetGrayscaleColor(pkt, r, g, b, lerp) DPRGBColor(pkt, G_SETINTENSITY, r, g, b, lerp)
 #define gsDPSetGrayscaleColor(r, g, b, a) sDPRGBColor(G_SETINTENSITY, r, g, b, a)
-#define gSPOot3dNativeRender(pkt, token)                      \
-    {                                                         \
-        Gfx* _g = (Gfx*)(pkt);                                \
-        _g->words.w0 = _SHIFTL(G_OOT3D_NATIVE_RENDER, 24, 8); \
-        _g->words.w1 = (uintptr_t)(token);                     \
-    }
 #define gDPSetEnvColor(pkt, r, g, b, a) DPRGBColor(pkt, G_SETENVCOLOR, r, g, b, a)
 #define gsDPSetEnvColor(r, g, b, a) sDPRGBColor(G_SETENVCOLOR, r, g, b, a)
 #define gDPSetBlendColor(pkt, r, g, b, a) DPRGBColor(pkt, G_SETBLENDCOLOR, r, g, b, a)

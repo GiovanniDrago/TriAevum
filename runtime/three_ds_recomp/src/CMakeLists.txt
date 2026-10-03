@@ -56,17 +56,6 @@ add_subdirectory("legacy_compat")
 
 add_subdirectory("ship")
 
-#=================== OOT3D Native ===================
-
-file(GLOB Source_Files__Oot3d CONFIGURE_DEPENDS RELATIVE
-    ${CMAKE_CURRENT_SOURCE_DIR} "oot3d/*.cpp")
-foreach(OOT3D_NATIVE_ASSET_SOURCE IN LISTS
-        OOT3D_NATIVE_ASSET_RUNTIME_SOURCE_NAMES)
-    list(REMOVE_ITEM Source_Files__Oot3d
-        "oot3d/${OOT3D_NATIVE_ASSET_SOURCE}")
-endforeach()
-source_group("oot3d" FILES ${Source_Files__Oot3d})
-target_sources(three_ds_recomp_runtime PRIVATE ${Source_Files__Oot3d})
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/ship/utils/AppleFolderManager.mm PROPERTIES COMPILE_FLAGS -fno-objc-arc)
@@ -119,9 +108,6 @@ target_link_libraries(three_ds_recomp_runtime PRIVATE ZLIB::ZLIB)
 
 find_package(nlohmann_json REQUIRED)
 target_link_libraries(three_ds_recomp_runtime PUBLIC nlohmann_json::nlohmann_json)
-target_link_libraries(oot3d_native_asset_runtime PUBLIC
-    nlohmann_json::nlohmann_json)
-target_link_libraries(three_ds_recomp_runtime PRIVATE oot3d_native_asset_runtime)
 
 find_package(tinyxml2 REQUIRED)
 target_link_libraries(three_ds_recomp_runtime PUBLIC tinyxml2::tinyxml2)

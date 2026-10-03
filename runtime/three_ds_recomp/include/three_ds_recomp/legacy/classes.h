@@ -6,7 +6,6 @@
 #include "ship/resource/archive/OtrArchive.h"
 #include "ship/resource/archive/O2rArchive.h"
 #include "ship/resource/ResourceManager.h"
-#include "three_ds_recomp/oot3d/Oot3dNativeResourceContract.h"
 #include "ship/Context.h"
 #include "ship/window/Window.h"
 #include "ship/debug/Console.h"

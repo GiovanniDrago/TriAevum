@@ -34,7 +34,6 @@
 #include "ship/utils/Utils.h"
 #include "ship/Context.h"
 #include "ship/config/ConsoleVariable.h"
-#include "three_ds_recomp/oot3d/Oot3dNativeRenderCommand.h"
 
 #include "three_ds_recomp/legacy/libultra/os.h"
 
@@ -139,22 +138,6 @@ void Interpreter::Flush() {
         mBufVboLen = 0;
         mBufVboNumTris = 0;
     }
-}
-
-void Interpreter::RestoreRenderingStateAfterExternalDraw() {
-    mRapi->SetNativeCullMode(GfxNativeCullMode::KeepAll);
-    mRapi->SetDepthTestAndMask((mRenderingState.depth_test_and_mask & 1) != 0,
-                              (mRenderingState.depth_test_and_mask & 2) != 0);
-    mRapi->SetZmodeDecal(mRenderingState.decal_mode);
-    mRapi->SetUseAlpha(mRenderingState.alpha_blend);
-    mRapi->SetViewport(mRenderingState.viewport.x, mRenderingState.viewport.y,
-                       mRenderingState.viewport.width, mRenderingState.viewport.height);
-    mRapi->SetScissor(mRenderingState.scissor.x, mRenderingState.scissor.y,
-                      mRenderingState.scissor.width, mRenderingState.scissor.height);
-    if (mRenderingState.mShaderProgram != nullptr) {
-        mRapi->LoadShader(mRenderingState.mShaderProgram);
-    }
-    std::fill(std::begin(mRenderingState.mTextures), std::end(mRenderingState.mTextures), nullptr);
 }
 
 ShaderProgram* Interpreter::LookupOrCreateShaderProgram(uint64_t id0, uint64_t id1) {
@@ -4331,27 +4314,6 @@ bool gfx_set_intensity_handler_custom(F3DGfx** cmd0) {
     return false;
 }
 
-bool gfx_oot3d_native_render_handler_custom(F3DGfx** cmd0) {
-    Interpreter* gfx = mInstance.lock().get();
-    F3DGfx* cmd = *cmd0;
-    ThreeDsRecomp::Oot3d::Matrix4f worldToClip{};
-    ThreeDsRecomp::Oot3d::Matrix4f viewToClip{};
-
-    gfx->Flush();
-    for (size_t row = 0; row < 4; ++row) {
-        for (size_t column = 0; column < 4; ++column) {
-            // Fast3D transforms row vectors; the native renderer transforms column vectors.
-            worldToClip.M[row][column] = gfx->mRsp->MP_matrix[column][row];
-            viewToClip.M[row][column] = gfx->mRsp->P_matrix[column][row];
-        }
-    }
-
-    ThreeDsRecomp::Oot3d::ExecuteNativeRenderScene(static_cast<ThreeDsRecomp::Oot3d::NativeRenderCommandToken>(cmd->words.w1),
-                                          *gfx->GetCurrentRenderingAPI(), worldToClip, viewToClip);
-    gfx->RestoreRenderingStateAfterExternalDraw();
-    return false;
-}
-
 bool gfx_set_combine_handler_rdp(F3DGfx** cmd0) {
     Interpreter* gfx = mInstance.lock().get();
     F3DGfx* cmd = *cmd0;
@@ -4626,8 +4588,6 @@ static constexpr UcodeHandler otrHandlers = {
     { OTR_G_REGBLENDEDTEX,
       { "G_REGBLENDEDTEX", gfx_register_blended_texture_handler_custom } },         // G_REGBLENDEDTEX (0x3f)
     { OTR_G_SETINTENSITY, { "G_SETINTENSITY", gfx_set_intensity_handler_custom } }, // G_SETINTENSITY (0x40)
-    { OTR_G_OOT3D_NATIVE_RENDER,
-      { "G_OOT3D_NATIVE_RENDER", gfx_oot3d_native_render_handler_custom } }, // G_OOT3D_NATIVE_RENDER (0x41)
     { OTR_G_MOVEMEM_HASH, { "OTR_G_MOVEMEM_HASH", gfx_movemem_handler_otr } },      // OTR_G_MOVEMEM_HASH
     { OTR_G_PUSH_SHADER, { "G_PUSH_SHADER", gfx_push_shader } },
     { OTR_G_POP_SHADER, { "G_POP_SHADER", gfx_pop_shader } },

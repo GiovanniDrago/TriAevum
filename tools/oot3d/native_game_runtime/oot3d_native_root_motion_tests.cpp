@@ -6,10 +6,6 @@
 #include <string>
 #include <vector>
 
-void RunPlayerAnimationCatalogTests();
-void RunPlayerClipRuntimeTests();
-void RunNativePlayerActionRuntimeTests();
-void RunNativePlayerCollisionTests();
 void RunNativeSkelAnimeTests();
 void RunNativeFrameRateTests();
 void RunNativeA32TimingProbeTests();
@@ -117,10 +113,6 @@ void TestInvalidSpecialLimbRejected() {
 
 int main() {
     try {
-        RunPlayerAnimationCatalogTests();
-        RunPlayerClipRuntimeTests();
-        RunNativePlayerActionRuntimeTests();
-        RunNativePlayerCollisionTests();
         RunNativeSkelAnimeTests();
         RunNativeFrameRateTests();
         RunNativeA32SceneViewProbeTests();

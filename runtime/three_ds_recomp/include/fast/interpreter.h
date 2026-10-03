@@ -329,7 +329,6 @@ class Interpreter {
 
     // private: TODO make these private
     void Flush();
-    void RestoreRenderingStateAfterExternalDraw();
     ShaderProgram* LookupOrCreateShaderProgram(uint64_t id0, uint64_t id1);
     ColorCombiner* LookupOrCreateColorCombiner(const ColorCombinerKey& key);
     void ShaderCacheClear();

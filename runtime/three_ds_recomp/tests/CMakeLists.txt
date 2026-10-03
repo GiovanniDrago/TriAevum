@@ -75,12 +75,6 @@ add_executable(three_ds_recomp_tests
     splittext_tests.cpp
     path_diskfile_tests.cpp
     resource_type_tests.cpp
-    oot3d_native_resource_contract_tests.cpp
-    oot3d_asset_catalog_tests.cpp
-    oot3d_semantic_route_catalog_tests.cpp
-    oot3d_native_qdb_provider_tests.cpp
-    oot3d_native_scene_entry_provider_tests.cpp
-    oot3d_cutscene_provider_tests.cpp
     archive_self_tests.cpp
 )
 
