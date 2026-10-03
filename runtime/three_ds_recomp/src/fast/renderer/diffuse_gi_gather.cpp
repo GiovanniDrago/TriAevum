@@ -10,6 +10,7 @@
 #include <bit>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <thread>
 #include <type_traits>
 
@@ -704,6 +705,31 @@ void BuildCandidates(const View<T>& g, const SectionT<T>& s, uint32_t x, uint32_
             scratch.Candidates.push_back(candidate);
 }
 
+// M3 rotation sequence: double divides exactly, float multiplies by the
+// float reciprocal of M (same operations as the GPU kernel).
+template <typename T>
+T PixelRotationT(const GatherSettings& settings, uint32_t x, uint32_t y) {
+    if (settings.Rotations.Mode != RotationMode::Stratified) return static_cast<T>(settings.Rotation);
+    const uint32_t k = StratumIndex(settings.Rotations, x, y);
+    if constexpr (std::is_same_v<T, double>)
+        return (static_cast<double>(k) + 0.5) / static_cast<double>(StratumCount(settings.Rotations));
+    else
+        return (static_cast<float>(k) + 0.5F) * StratumScaleF32(settings.Rotations);
+}
+
+template <typename T>
+T PixelRadialJitterT(const GatherSettings& settings, uint32_t x, uint32_t y) {
+    if (settings.Rotations.Mode != RotationMode::Stratified || !settings.SequenceRadialJitter)
+        return static_cast<T>(settings.RadialJitter);
+    const uint32_t strata = StratumCount(settings.Rotations);
+    const uint32_t k = StratumIndex(settings.Rotations, x, y);
+    const uint32_t j = static_cast<uint32_t>((static_cast<uint64_t>(k) * LatticeMultiplier(strata)) % strata);
+    if constexpr (std::is_same_v<T, double>)
+        return (static_cast<double>(j) + 0.5) / static_cast<double>(strata);
+    else
+        return (static_cast<float>(j) + 0.5F) * StratumScaleF32(settings.Rotations);
+}
+
 template <typename T>
 PixelGather GatherPixelT(const View<T>& g, uint32_t x, uint32_t y, const GatherSettings& settings,
                          Scratch<T>& scratch) {
@@ -712,11 +738,20 @@ PixelGather GatherPixelT(const View<T>& g, uint32_t x, uint32_t y, const GatherS
     if (!IsGeometry(g.Cls[index]) || !(VDot(g.N[index], g.N[index]) > T(0))) return out;
     T sumR = T(0), sumG = T(0), sumB = T(0), sumA = T(0);
     const T inversePdf = Pi<T>();
+    const T rotation = PixelRotationT<T>(settings, x, y);
+    // Per-pixel radial jitter (M3): a local copy keeps the schedule code unchanged.
+    GatherSettings jittered;
+    const GatherSettings* active = &settings;
+    if (settings.Rotations.Mode == RotationMode::Stratified && settings.SequenceRadialJitter) {
+        jittered = settings;
+        jittered.RadialJitter = static_cast<double>(PixelRadialJitterT<T>(settings, x, y));
+        active = &jittered;
+    }
     for (uint32_t section = 0; section < settings.Sections; ++section) {
-        const T phi = Pi<T>() * (T(section) + static_cast<T>(settings.Rotation)) / static_cast<T>(settings.Sections);
+        const T phi = Pi<T>() * (T(section) + rotation) / static_cast<T>(settings.Sections);
         const SectionT<T> s = SetupT(g, x, y, phi, static_cast<T>(settings.Radius));
         if (!s.Valid) return PixelGather{};
-        BuildCandidates(g, s, x, y, settings, scratch, out.Counters);
+        BuildCandidates(g, s, x, y, *active, scratch, out.Counters);
         SectionSums<T> sums;
         if constexpr (std::is_same_v<T, double>) {
             if (settings.Mask == MaskMode::ContinuousIntervals)
@@ -896,7 +931,97 @@ const char* ValidateGatherSettings(const GatherSettings& s) noexcept {
     }
     if (!(s.SelfIntersectionSine >= 0.0) || !(s.SelfIntersectionDepth >= 0.0)) return "negative self tolerance";
     if (!(s.ChordEpsilon >= 0.0 && s.ChordEpsilon < 0.5)) return "chord epsilon outside [0, 0.5)";
+    if (s.Rotations.Mode == RotationMode::Stratified) {
+        if (s.Rotations.TileLog2 > kMaxRotationTileLog2) return "rotation tile larger than 8 x 8";
+        if (s.Rotations.Cycle == 0U || s.Rotations.Cycle > kMaxRotationCycle) return "rotation cycle outside [1, 64]";
+    }
     return "";
+}
+
+uint32_t TileOrder(uint32_t x, uint32_t y, uint32_t tileLog2) noexcept {
+    // Bit pair (x_k, y_k) -> 0, 2, 3, 1; pair k weighted by 4^(L - 1 - k).
+    uint32_t index = 0U;
+    for (uint32_t k = 0; k < tileLog2; ++k) {
+        const uint32_t bx = (x >> k) & 1U, by = (y >> k) & 1U;
+        const uint32_t code = bx == 0U ? (by == 0U ? 0U : 3U) : (by == 0U ? 2U : 1U);
+        index |= code << (2U * (tileLog2 - 1U - k));
+    }
+    return index;
+}
+
+uint32_t StratumCount(const RotationSequence& sequence) noexcept {
+    const uint32_t log2 = std::min(sequence.TileLog2, kMaxRotationTileLog2);
+    return (1U << (2U * log2)) * std::clamp(sequence.Cycle, 1U, kMaxRotationCycle);
+}
+
+uint32_t FrameShift(const RotationSequence& sequence) noexcept {
+    const uint32_t log2 = std::min(sequence.TileLog2, kMaxRotationTileLog2);
+    if (log2 == 0U) return 0U;
+    const uint32_t tiles = 1U << (2U * log2);
+    // Pair i of the T^2-frame shift period; even shifts 2 bitrev(i) over
+    // log2(T^2 / 2) bits, so that with the XOR flip every stratum visits every
+    // tile position once per period.
+    const auto pair = static_cast<uint32_t>(sequence.Frame % tiles) >> 1U;
+    const uint32_t bits = 2U * log2 - 1U;
+    uint32_t reversed = 0U;
+    for (uint32_t b = 0; b < bits; ++b) reversed |= ((pair >> b) & 1U) << (bits - 1U - b);
+    return 2U * reversed;
+}
+
+uint32_t FrameFlip(const RotationSequence& sequence) noexcept {
+    const uint32_t log2 = std::min(sequence.TileLog2, kMaxRotationTileLog2);
+    return log2 == 0U ? 0U : static_cast<uint32_t>(sequence.Frame & 1U);
+}
+
+uint32_t StratumIndex(const RotationSequence& sequence, uint32_t x, uint32_t y) noexcept {
+    const uint32_t log2 = std::min(sequence.TileLog2, kMaxRotationTileLog2);
+    const uint32_t tiles = 1U << (2U * log2);
+    const uint32_t cycle = std::clamp(sequence.Cycle, 1U, kMaxRotationCycle);
+    const auto phase = static_cast<uint32_t>(sequence.Frame % cycle);
+    const uint32_t coarse = ((TileOrder(x, y, log2) ^ FrameFlip(sequence)) + FrameShift(sequence)) % tiles;
+    return cycle * coarse + phase;
+}
+
+uint32_t LatticeMultiplier(uint32_t strata) noexcept {
+    if (strata <= 1U) return 1U;
+    const double target = static_cast<double>(strata) * 0.6180339887498949;
+    const auto base = static_cast<int64_t>(std::floor(target));
+    // Nearest coprime integer in [1, strata - 1]; ties go to the smaller.
+    for (int64_t distance = 0; distance < static_cast<int64_t>(strata); ++distance) {
+        int64_t best = -1;
+        double bestGap = 0.0;
+        for (const int64_t candidate : {base - distance, base + 1 - distance, base + distance, base + 1 + distance}) {
+            if (candidate < 1 || candidate >= static_cast<int64_t>(strata)) continue;
+            if (std::gcd(static_cast<uint64_t>(candidate), static_cast<uint64_t>(strata)) != 1U) continue;
+            const double gap = std::abs(static_cast<double>(candidate) - target);
+            if (best < 0 || gap < bestGap || (gap == bestGap && candidate < best)) {
+                best = candidate;
+                bestGap = gap;
+            }
+        }
+        if (best >= 0) return static_cast<uint32_t>(best);
+    }
+    return 1U;
+}
+
+float StratumScaleF32(const RotationSequence& sequence) noexcept {
+    return 1.0F / static_cast<float>(StratumCount(sequence));
+}
+
+double PixelRotation(const GatherSettings& settings, uint32_t x, uint32_t y) noexcept {
+    return PixelRotationT<double>(settings, x, y);
+}
+
+float PixelRotationF32(const GatherSettings& settings, uint32_t x, uint32_t y) noexcept {
+    return PixelRotationT<float>(settings, x, y);
+}
+
+double PixelRadialJitter(const GatherSettings& settings, uint32_t x, uint32_t y) noexcept {
+    return PixelRadialJitterT<double>(settings, x, y);
+}
+
+float PixelRadialJitterF32(const GatherSettings& settings, uint32_t x, uint32_t y) noexcept {
+    return PixelRadialJitterT<float>(settings, x, y);
 }
 
 double DecodeViewDepth(double encoded, const DepthCamera& camera) noexcept {

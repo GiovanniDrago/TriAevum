@@ -5,6 +5,7 @@
 // CPU/GPU comparison isolates GPU arithmetic (transcendentals, contraction)
 // from FP32 rounding. Own code; no third-party shader was consulted.
 
+#include <algorithm>
 #include <cmath>
 
 namespace Fast::Renderer::DiffuseGi {
@@ -132,6 +133,9 @@ layout(std140, set = 0, binding = 0) uniform GatherParams {
     vec4 depth;
     vec4 gather;
     vec4 radial;
+    uvec4 sequence;
+    uvec4 strata;
+    vec4 strata_scale;
 } p;
 layout(std430, set = 0, binding = 1) readonly buffer DepthValues { float depth_values[]; };
 layout(std430, set = 0, binding = 2) readonly buffer ClassValues { uint class_values[]; };
@@ -189,6 +193,35 @@ vec3 ray(float px, float py) {
     float u = px / float(viewport_width());
     float v = py / float(viewport_height());
     return vec3(p.view_x.x * u + p.view_x.y * v + p.view_x.z, p.view_y.x * u + p.view_y.y * v + p.view_y.z, -1.0);
+}
+
+// M3 rotation sequence (twin of StratumIndex / PixelRotationT).
+uint tile_order(uint x, uint y, uint log2) {
+    uint index = 0u;
+    for (uint k = 0u; k < log2; ++k) {
+        uint bx = (x >> k) & 1u;
+        uint by = (y >> k) & 1u;
+        uint code = bx == 0u ? (by == 0u ? 0u : 3u) : (by == 0u ? 2u : 1u);
+        index |= code << (2u * (log2 - 1u - k));
+    }
+    return index;
+}
+
+uint stratum_index(uint x, uint y) {
+    uint flip = (p.sequence.x >> 2u) & 1u;
+    uint coarse = ((tile_order(x, y, p.sequence.y) ^ flip) + p.strata.w) % p.strata.z;
+    return p.sequence.z * coarse + p.sequence.w;
+}
+
+float pixel_rotation(uint x, uint y) {
+    if ((p.sequence.x & 1u) == 0u) return p.gather.z;
+    return (float(stratum_index(x, y)) + 0.5) * p.strata_scale.x;
+}
+
+float pixel_radial_jitter(uint x, uint y) {
+    if ((p.sequence.x & 3u) != 3u) return p.radial.y;
+    uint j = (stratum_index(x, y) * p.strata.y) % p.strata.x;
+    return (float(j) + 0.5) * p.strata_scale.x;
 }
 )glsl";
 
@@ -279,6 +312,7 @@ layout(std430, set = 0, binding = 6) writeonly buffer Aux { vec4 aux[]; };
 // Section state (per invocation).
 vec3 g_p, g_v, g_t, g_n;
 float g_a, g_b, g_zp, g_dir_x, g_dir_y;
+float g_radial_jitter;
 int g_x, g_y;
 uint g_mask[8];
 vec3 g_sum;
@@ -352,7 +386,7 @@ void advance(inout Side s) {
     uint count = max(p.modes.z, 1u);
     while (!s.done && s.k < count) {
         uint k = s.k++;
-        float u = (float(k) + p.radial.y) / float(count);
+        float u = (float(k) + g_radial_jitter) / float(count);
         float shaped = u > 0.0 ? pow(u, p.radial.x) : 0.0;
         float lambda = s.lambda0 + (s.extent - s.lambda0) * shaped;
         int cx = int(floor(lambda * s.dx + 0.5));
@@ -478,8 +512,10 @@ void main() {
     float occupied = 0.0;
     g_scheduled = 0u;
     g_valid = 0u;
+    float rotation = pixel_rotation(uint(id.x), uint(id.y));
+    g_radial_jitter = pixel_radial_jitter(uint(id.x), uint(id.y));
     for (uint section = 0u; section < sections; ++section) {
-        float phi = PI * (float(section) + p.gather.z) / float(sections);
+        float phi = PI * (float(section) + rotation) / float(sections);
         g_zp = z0;
         g_p = ray(float(id.x) + 0.5, float(id.y) + 0.5) * z0;
         g_v = vnormalize(g_p * -1.0);
@@ -570,6 +606,23 @@ void main() {
 }
 )glsl";
 
+// M3: geometry of the receivers for the temporal kernels (viewport sized).
+constexpr const char* kPackMain = R"glsl(
+layout(std430, set = 0, binding = 6) readonly buffer Aux { vec4 aux[]; };
+layout(std430, set = 0, binding = 7) writeonly buffer Geometry { vec4 geometry[]; };
+
+void main() {
+    ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+    if (!inside(id.x, id.y)) return; // no barriers in this kernel
+    uint out_index = uint(id.y) * viewport_width() + uint(id.x);
+    float z;
+    uint c = texel_class(id.x, id.y, z);
+    vec4 n = normal_values[buffer_index(id.x, id.y)];
+    bool receiver = (c == 1u || c == 2u) && n.w != 0.0 && aux[out_index].y != 0.0;
+    geometry[out_index] = receiver ? vec4(n.xyz, z) : vec4(0.0);
+}
+)glsl";
+
 constexpr const char* kUnitMain = R"glsl(
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(std140, set = 0, binding = 0) uniform UnitParams { uvec4 info; } u;
@@ -616,6 +669,20 @@ GatherShaderParams MakeGatherShaderParams(const GatherInput& input, const Gather
                 static_cast<float>(settings.Rotation), static_cast<float>(settings.ChordEpsilon)};
     p.Radial = {static_cast<float>(settings.RadialExponent), static_cast<float>(settings.RadialJitter),
                 static_cast<float>(settings.SelfIntersectionSine), static_cast<float>(settings.SelfIntersectionDepth)};
+    const RotationSequence& sequence = settings.Rotations;
+    if (sequence.Mode == RotationMode::Stratified) {
+        uint32_t sequenceFlags = kShaderSequenceStratified;
+        if (settings.SequenceRadialJitter) sequenceFlags |= kShaderSequenceRadialJitter;
+        if (FrameFlip(sequence) != 0U) sequenceFlags |= kShaderSequenceFlip;
+        const uint32_t log2 = std::min(sequence.TileLog2, kMaxRotationTileLog2);
+        const uint32_t cycle = std::clamp(sequence.Cycle, 1U, kMaxRotationCycle);
+        const uint32_t strata = StratumCount(sequence);
+        p.Sequence = {sequenceFlags, log2, cycle, static_cast<uint32_t>(sequence.Frame % cycle)};
+        p.Strata = {strata, LatticeMultiplier(strata), 1U << (2U * log2), FrameShift(sequence)};
+        p.StrataScale = {StratumScaleF32(sequence), 0.0F, 0.0F, 0.0F};
+    } else {
+        p.Strata = {1U, 1U, 1U, 0U}; // never used: flags are zero
+    }
     return p;
 }
 
@@ -625,6 +692,10 @@ std::string BuildDiffuseGiNormalShader() {
 
 std::string BuildDiffuseGiGatherShader() {
     return std::string(kMath) + kGatherCommon + kGatherMain;
+}
+
+std::string BuildDiffuseGiPackShader() {
+    return std::string(kMath) + kGatherCommon + kPackMain;
 }
 
 std::string BuildDiffuseGiUnitShader() {

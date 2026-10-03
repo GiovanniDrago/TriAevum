@@ -511,6 +511,25 @@ if(MSVC)
 endif()
 gtest_discover_tests(renderer_diffuse_gi_reference_tests DISCOVERY_TIMEOUT 30)
 
+# Diffuse GI temporal accumulation and a-trous filter (M3, T11-T16 and the
+# [B2]-derived requirements), docs/TRIAEVUM_SCREEN_SPACE_GI.md.
+add_executable(renderer_diffuse_gi_temporal_tests
+    renderer_diffuse_gi_temporal_tests.cpp
+    ../src/fast/renderer/diffuse_gi_reference.cpp
+    ../src/fast/renderer/diffuse_gi_gather.cpp
+    ../src/fast/renderer/diffuse_gi_scene.cpp
+    ../src/fast/renderer/diffuse_gi_temporal.cpp
+    ../src/fast/renderer/diffuse_gi_sequence.cpp
+)
+set_property(TARGET renderer_diffuse_gi_temporal_tests PROPERTY CXX_STANDARD 20)
+target_include_directories(renderer_diffuse_gi_temporal_tests PRIVATE ../include)
+target_link_libraries(renderer_diffuse_gi_temporal_tests PRIVATE gtest_main)
+if(MSVC)
+    target_compile_definitions(renderer_diffuse_gi_temporal_tests PRIVATE NOMINMAX)
+    target_compile_options(renderer_diffuse_gi_temporal_tests PRIVATE /utf-8)
+endif()
+gtest_discover_tests(renderer_diffuse_gi_temporal_tests DISCOVERY_TIMEOUT 30)
+
 add_executable(oot3d_grass_midrange_clusters_tests oot3d_grass_midrange_clusters_tests.cpp
     ../src/fast/oot3d/grass_visibility.cpp)
 target_include_directories(oot3d_grass_midrange_clusters_tests PRIVATE ../include)

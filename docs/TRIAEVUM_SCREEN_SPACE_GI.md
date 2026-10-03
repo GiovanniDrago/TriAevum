@@ -1,6 +1,9 @@
 # Screen-space diffuse GI (clean-room implementation)
 
-Status: **M2 done** (gathering on a depth buffer, sector masks, thickness,
+Status: **M3 done** (2026-10-03: per-pixel stratified rotations, stratum
+reconstruction, temporal accumulation of J and A, edge-aware a-trous filter,
+T11-T16 and the four [B2]-derived requirements, GLSL twins over frame
+sequences; see "M3"), on top of **M2** (gathering on a depth buffer, sector masks, thickness,
 T05-T09, GPU compute twin), on top of **M1** (radiometric contract,
 deterministic angular reference, T01-T04), with **[B2] reintegrated**
 (2026-10-03: every [B2] topic reviewed with the paper, M1/M2 decisions
@@ -31,6 +34,17 @@ and guiding (after T10); M5 artistic integration and profiling.
 | `runtime/three_ds_recomp/tests/renderer_diffuse_gi_gather_tests.cpp` | T05-T09, the [B2] cross-check, the geometric-normal tests and the sector-count study; 16 tests added to `renderer_diffuse_gi_reference_tests` |
 | `runtime/three_ds_recomp/tests/renderer_diffuse_gi_b2_tests.cpp` ([B2] reintegration) | [B2] eqs. 5-8, 10, 17, 23 implemented from the paper, with an independent horizon estimator on depth buffers; 4 tests added to `renderer_diffuse_gi_reference_tests` |
 | `tools/renderer/tev_program/diffuse_gi_gpu_tests.cpp`, `tools/renderer/tev_program/CMakeLists.txt` | GPU target `diffuse_gi_gpu_tests`: kernels compiled at run time and compared with the FP32 twin and the double reference |
+
+## M3 deliverables
+
+| File | Content |
+|---|---|
+| `include/fast/renderer/diffuse_gi_temporal.h`, `src/fast/renderer/diffuse_gi_temporal.cpp` | Frame and history declarations, reset rules, stratum reconstruction, reprojection with both validation modes, temporal accumulation of J (luminance moments) and A (own history), light response, a-trous filter; double reference and FP32 twin reading the GPU constant blocks |
+| `include/fast/renderer/diffuse_gi_temporal_shader.h`, `src/fast/renderer/diffuse_gi_temporal_shader.cpp` | GLSL temporal kernel (reconstruction, reprojection, accumulation) and a-trous level kernel |
+| `include/fast/renderer/diffuse_gi_sequence.h`, `src/fast/renderer/diffuse_gi_sequence.cpp` | Synthetic sequences: rigid camera and object poses, emission scales, projection jitter, exact motion (jitter included and excluded), previous positions, surface ids |
+| `diffuse_gi_gather.h/.cpp`, `diffuse_gi_gather_shader.h/.cpp` (extended) | Rotation sequence (`RotationSequence`, `StratumIndex`, per-pixel rotation and radial jitter, CPU and GLSL), geometry pack kernel; Fixed mode keeps M1/M2 bit-identical |
+| `tests/renderer_diffuse_gi_temporal_tests.cpp`, target `renderer_diffuse_gi_temporal_tests` | 14 tests: T11-T16, [B2] requirements, parameter studies, FP32 twin, filter edges, octahedral face normals |
+| `tools/renderer/tev_program/diffuse_gi_temporal_gpu_tests.cpp`, target `diffuse_gi_temporal_gpu_tests` | GPU twin over sequences, T16 with the validation layer, full GPU chain |
 
 The module belongs to the generic renderer layer (no 3DS, PICA or OOT3D
 vocabulary). It is compiled only into its test targets: `renderer/*.cpp` is an
@@ -477,12 +491,12 @@ screen) and in physical PICA storage orientation.
 
 | Contract item | TriAevum source | Declared convention | Gap |
 |---|---|---|---|
-| Depth and camera | `NativeDepth` (D32_SFLOAT preferred), `NativeSceneView` / `PerspectiveViewState` (Projection, WorldToClip, Eye, At, Near, Far), `TemporalViewState` (current/previous WorldToClip) | Perspective window depth 0 at near, 1 at far (guest D3D form, w = -z), view forward -Z; W-buffer targets (`WBuffering`) are linear n + d (f - n). `DepthCamera.ViewX/ViewY` from storage UV via `PicaSurfaceCoordinates::StorageToViewNdc` and the projection, as GTAO does | Scene units are native OoT3D world units; their metric scale is not established. R and tau are declared in those units |
-| Geometric normal | Decided 2026-10-03: a per-pixel face normal of the visible surface from the rasterized triangles, view space, unit, toward the eye, written by the draws that write scene depth (format and channels to come) | `GeometricNormalSource::RendererFaceNormal` (primary); `DepthReconstruction` (M2 quadrant rule) as fallback and test | Face-normal precision: an 8-bit-per-channel encoding errs by 0.10-0.21 degrees and biases A by up to 1.9e-3 at sine 2e-3 (needs sine 8e-3); depth reconstruction errs by at most 0.013 degrees on planes but is ambiguous on faces thinner than three texels |
+| Depth and camera | `NativeDepth` (D32_SFLOAT preferred), `NativeSceneView` / `PerspectiveViewState` (Projection, WorldToClip, Eye, At, Near, Far), `TemporalViewState` (current/previous WorldToClip) | Perspective window depth 0 at near, 1 at far (guest D3D form, w = -z), view forward -Z; W-buffer targets (`WBuffering`) are linear n + d (f - n). `DepthCamera.ViewX/ViewY` from storage UV via `PicaSurfaceCoordinates::StorageToViewNdc` and the projection the native draws apply: the sample perspective of commit 0dfc904, not the guest camera frustum (the game rescales the x and y rows of its projection after building it, by about 1.17 at the Kokiri reference); with it, face normals and depth-reconstructed normals agree on every interior pixel. M3: the previous frame's ray map and `CurrentToPrevious` (view to previous view, camera motion) come from `TemporalViewState` | Scene units are native OoT3D world units; their metric scale is not established. R and tau are declared in those units |
+| Geometric normal | Colour attachment 6, the geometry guide (`renderer3ds/pica_geometry_guide.h`, R32G32B32A32_UINT): G = face normal of the visible surface from the rasterized triangle, view space, unit, oriented toward the eye, octahedral unorm16x2 (0 = unknown); B = kind (0 none, 1 native scene, 2 extension geometry such as grass); R and A belong to the toon outline. Published only when an effect declares it reads the face normal; GI becomes such a reader at M5 | `GeometricNormalSource::RendererFaceNormal` (primary, decoded with the header's C++/GLSL mirror); `DepthReconstruction` (M2 quadrant rule) as fallback and test | Precision closed: renderer round trip at most 0.004 degrees; through the octahedral code the M2 sloped planes err by at most 0.0013 degrees with no self-occlusion at sine 2e-3 (M3 test). Open: policy for kind 2 (grass) receivers and sources |
 | Shading normal | `NormalGuide` RGBA8, 0.5 n + 0.5, view space (unrotated camera basis), alpha coverage; PBR mapped / authored / quaternion / derivative normal | Not used for integration in the first version | Policy and tests for below-surface directions before use |
 | Source radiance | `DiffuseAlbedoGuide` RGBA16 UNORM, low byte of each channel: sRGB of albedo x per-pixel direct light (shadowed native directionals, key, local lights, Navi/fairies); per-pixel lighting modes only | Outgoing radiance including the source albedo, display-encoded, clipped at 1: **LdrApproximation** | Native HDR profile needs a linear float direct-radiance output (e.g. RGBA16F) written by the same per-pixel lighting before its clamp |
 | Receiver albedo | Same guide, high byte (TEV with unit lighting: texture x material) | sRGB 8-bit | Textures may carry baked light (see compatibility path) |
-| Motion | `MotionVectors` RGBA16F: rg = previous UV - current UV in storage UV of the same target; b = disocclusion; rigid/grass object motion from `RigidMotionGuide` | CurrentToPrevious, NormalizedViewportUv, jitter Included (both UVs jittered) | Previous surface position only through motion; validation of history is weaker than the specification's ideal (M3) |
+| Motion | `MotionVectors` RGBA16F: rg = previous UV - current UV in storage UV of the same target; b = disocclusion; rigid/grass object motion from `RigidMotionGuide` | CurrentToPrevious, NormalizedViewportUv, jitter Included (both UVs jittered) | No previous surface position is exported, so M3's `HistoryValidation::FlowAndDepth` applies (declared weaker: surfaces whose flow differs from the camera prediction keep a capped history). Requirement for the full test (`PreviousPosition`): export the previous view-space position or depth per pixel |
 | Validity | Albedo-guide alpha = validity x overlay transmission (0 on clear, HUD, replacing surfaces); depth >= 1 = no geometry | `TexelClass`: Sky = clear/no depth; Unavailable = alpha 0; OneSided otherwise | Two-sided surfaces are not marked (all OneSided until the adapter can tell) |
 | Frame state | `mFrameCounter`, `TemporalViewState` (jitter, `CameraCut`, `ResetReason`, history epoch), world identity resets, `SceneSurfaceKey` per composed surface, guide extent | Exposure: none (fixed) | Interpolated presentations (Interpolated2x) need per-sample history like Brixelizer GI |
 
@@ -782,15 +796,12 @@ mean |dJ| <= 2.6e-6, max dA 3.2e-3 (T06).
    GI Off must stay byte-identical (deterministic capture, M5).
 5. Closed (M2): N = 64 chosen on scenes of realistic angular size (sector
    study above); continuous intervals remain the reference.
-6. Requirement (decided 2026-10-03, to implement): the renderer exports the
-   face normal of the visible surface (primary geometric-normal source). Its
-   storage must keep the angular error well below 0.1 degrees (an RGB8
-   encoding gives 0.10-0.21 degrees and an A bias of 1.9e-3 at sine 2e-3), or
-   the self-intersection sine must be raised with it (8e-3 removes the RGB8
-   bias). Tests: the sloped-plane test with the chosen format reports the
-   angle against the exact plane normal and the A bias; on captured OoT3D
-   buffers, face normal vs depth reconstruction where faces span the stencil,
-   and the fraction of faces thinner than three texels.
+6. Closed (M3): the renderer exports the face normal in the geometry guide
+   (attachment 6, G channel, octahedral unorm16x2). Its round trip (at most
+   0.004 degrees in the renderer, 0.0013 degrees on the sloped planes) keeps the
+   self-intersection sine at 2e-3 with no self-occlusion. Remaining test (M5):
+   on captured OoT3D buffers, face normal vs depth reconstruction where faces
+   span the stencil, and the fraction of faces thinner than three texels.
 7. Requirement: tau per material or per object class (a 0.1 bar and a 3.5
    block need different values); test: T07's bar and block within 5% of the
    3D truth at once. [B2] section 4.1 offers a candidate rule (thickness
@@ -820,35 +831,331 @@ mean |dJ| <= 2.6e-6, max dA 3.2e-3 (T06).
     horizon-only variant at the same section and candidate counts before any
     cheaper path is considered.
 
-## What M3 needs (accumulation and filter, T11-T16)
+14. Open (M3): alternating projection jitter makes the history fetch at half
+    pixels; bilinear resampling adds 0.9 px^2 of blur, and the shift estimator
+    of T11 reads 0.25 px along x+y against the unjittered history run (no
+    alternation; the constant-jitter control shows no static bias). Test at M5,
+    with the real TAA jitter sequence: a sharper history resampler (bicubic
+    with a non-negative clamp) against the blur and offset.
+15. Open (M3): on this host the validation layer loads and reports no
+    error, but the synchronization-validation negative control (a deliberately
+    missing barrier) is not reported, so race freedom rests on construction
+    (each invocation writes only its pixel, ping-pong history, explicit
+    barriers) and on bit-identical reruns. Test: repeat on a host where the
+    control is detected, and at M5 with the renderer's own validation runs.
+16. Requirement (M5): `FlowAndDepth` parameters for moving surfaces
+    (0.25 px, 5% depth band, confidence 0.25) are declared, not tuned; test on
+    captured rigid and grass motion (ghosting against noise).
+17. Measured (M3): a +20% light change reaches 90% of the new mean value at
+    the first frame (specification metric) but 90% of the change only after
+    13 frames, because z thresholds of 3-6 keep false responses at 0.66% of
+    static receiver-frames; a lower threshold reacts at once but triples the
+    static noise (study below).
+18. Requirement (M5): GPU timing per pass (median, p95) and the VRAM of the
+    resources below at the guide extent.
 
-- **From [B2].** The four requirements of "What [B2] implies for M3"
-  (stratified spatio-temporal rotations, a history that holds a full rotation
-  cycle, pre-filter history, separate A history) with their tests.
+## M3: accumulation and filter (T11-T16)
 
-- **Code.** Per-pixel, per-frame rotation u (and, if adopted, a sector-grid
-  offset) from a reproducible sequence with a deterministic mode; temporal
-  accumulation H_t = (1 - alpha) H_valid + alpha J with luminance moments and
-  history validity; reprojection by the declared motion; disocclusion and
-  surface-compatibility tests; reset rules (first frame, camera cut, view
-  change, resize, exposure); history saved before the spatial filter; an
-  edge-aware a-trous filter with variance weights; CPU references for each
-  and GLSL twins in a GPU target with sequences of frames.
-- **Tests.** T11 flow sign and units with known translations and alternating
-  jitter; T12 disocclusion; T13 90% response within 8 frames and switch-off;
-  T14 128-frame variance with temporal on/off; T15 reset cases without spurious
-  impulses or cross-view leaks; T16 odd extents, partial groups, extreme
-  counts, validation layers and race checks (synchronization validation).
-- **Synthetic inputs.** Moving cameras and objects in the scene generator
-  with exact previous positions and motion vectors (both UV conventions and
-  jitter), sequences with lights switching on/off, disocclusions and cuts.
-- **Expected effort.** Comparable to M2: about 1,500-2,000 lines of C++/GLSL
-  and tests; one host test target and one GPU target, each built in a few
-  minutes at -j 4; no game build.
-- **Only the real renderer can provide:** the native depth/camera of
-  `NativeSceneView`, the guide extents and storage orientation, actual motion
-  vectors (rigid, grass, camera jitter) and their disocclusion bit, the
-  history epochs and reset reasons of `TemporalViewState`, the per-pixel
-  direct radiance (LDR now, HDR after open point 1), interpolated-presentation
-  timing, the metric scale of OoT3D units, and GPU timings of the real passes
-  (M5).
+Implemented 2026-10-03 from the specification (sections 6, 7, 8, 9, 11, 12),
+[B3] and [B6] (papers only) and [B2] section 4.1 (rotations). No temporal
+filter, motion-vector, TAA or denoiser implementation was read: not the
+repository's own, not FidelityFX, NRD or any `_deps` code, not the GLSL
+listing at the end of [B6].
+
+### Pipeline (per view and frame)
+
+1. **Gather** (M2) with one section per pixel and a per-pixel rotation from
+   the stratified sequence (below).
+2. **Stratum reconstruction** of the raw J and A over a geometry-gated
+   window of radius T/2 with half weights at its ends (5 x 5 for T = 4).
+   Every residue modulo T, hence every stratum of the tile, has total weight
+   1 in a flat region and the window is symmetric (no half-pixel shift).
+   Neighbours are gated by the hard surface test of the reprojection (below).
+   It acts on the fresh samples only, so blur never accumulates.
+3. **Temporal accumulation** (this is the history, saved before the a-trous
+   filter): reprojection through the declared motion, 2 x 2 bilinear taps
+   each tested on its own; rejected taps' weight is redistributed over the
+   accepted ones ([B3] section 4.1). A full rejection is the neutral state
+   (alpha = 1). J and its luminance second moment use
+   alpha = max(alpha_min, 1 / (N + 1), light response); A has its own history,
+   length and light response. N = 1 / alpha (effective sample count).
+4. **A-trous filter**, 4 levels with steps 1, 2, 4, 8, B3-spline kernel,
+   hard surface gate, colour weight driven by the variance of the estimates,
+   variance propagated per level ([B3] section 4.3). Its output is never fed
+   back.
+
+Outputs per pixel: accumulated (pre-filter) J and A raw, their variances,
+filtered J, filtered A raw and A clamped to [0, 1], alpha, N, light-response
+z, history acceptance, motion class and confidence (diagnostics: J raw, J
+filtered, A, C from M2, history rejection).
+
+### Conventions and decisions
+
+- **Rotation sequence** (`RotationSequence`, own construction). T x T tile
+  (T = 2^L), cycle F, M = T^2 F strata, u = (k + 1/2) / M, k = F c + t:
+  fine stratum t = frame mod F; coarse stratum c = ((b XOR e) + s) mod T^2
+  with b the recursive ordered-dither index of the tile position (bit pairs
+  (0,0), (1,0), (0,1), (1,1) -> 0, 2, 3, 1, lowest pair weighted most), e =
+  frame mod 2 and s = 2 bitrev((frame mod T^2) / 2) over log2(T^2 / 2) bits.
+  Any F consecutive frames of a tile cover all M strata exactly once (the
+  rotations of the deterministic S = M estimator); over T^2 frames every
+  stratum visits every tile position. Tiles are anchored at the viewport
+  origin. A second, lattice dimension frac(k P / M) (P coprime to M nearest
+  0.618 M) gives the per-pixel radial jitter of the Radial schedule. Fixed
+  mode is the deterministic, noise-free mode of M1/M2 (bit-identical).
+- **Motion.** previous UV = current UV + motion (`CurrentToPrevious`,
+  normalized viewport UV); `PreviousToCurrent` and pixel units are converted
+  by the declared sign and scale. Jitter in pixels, positive along +u and +v
+  (jittered projection = unjittered + jitter). Motion that includes jitter
+  is used as is; motion that excludes it gets the jitter difference
+  (previous - current) once.
+- **Validation** (`HistoryValidation`). `PreviousPosition`: the expected
+  previous surface point P' is the adapter's previous position. `FlowAndDepth`
+  (declared weaker): P' = CurrentToPrevious(P), the static prediction; where
+  its projection differs from the flow by more than 0.25 px the surface is
+  moving and only a weak test applies (previous depth within 5% of the
+  prediction, normals); such histories are capped at 0.25 / alpha_min frames
+  (confidence 0.25). Tap test (both modes): |n_h . (X_h - P')| <=
+  0.05 |X_h - P'| + 1e-3 z', n_h . R n >= 0.9, equal surface ids when both are
+  known, finite values, inside the previous viewport. z is never compared
+  with z: the current surface is moved into the previous camera.
+- **Resets.** First frame, camera cut, view change (each view id needs its
+  own `TemporalAccumulator`; stereo views have independent histories),
+  resize or dynamic resolution (decision: reset, no resampling), explicit
+  reset or resource invalidation (`Invalidate()`), transport settings (any
+  change of `TransportKey`: R, tau, S, N, schedule), an invalid exposure
+  ratio, and temporal off. Projection changes are handled by the previous
+  ray map. A reset never reads the previous history (GPU test: NaN-poisoned
+  history), and every history texel is written every frame (neutral values
+  for non-receivers, borders and sky).
+- **Pre-exposure.** J inputs are pre-exposed; on a change the history and
+  its second moment are rescaled by r and r^2 (default) or invalidated.
+- **Variance.** Second moment of luminance m2 (m1 is the luminance of the
+  history, same alpha). Per-sample variance: m2 - m1^2 from N >= 4 ([B3]
+  section 4.2), otherwise the spatial variance of the reconstruction window
+  (weighted, divided by (sum w)^2 / sum w^2). Variance of the estimate:
+  sigma^2 v with v the sum of squared sample weights, v' = (1 - alpha)^2 v + alpha^2.
+- **Light response** (own): z = |l(x) - l(H)| / sqrt(sigma^2 (1 + v) + (0.02 max(l(x), l(H)))^2)
+  raises alpha linearly from z = 3 to z = 6; A uses an absolute floor 0.01. No
+  neighbourhood clamping of the history (optional in the specification;
+  not adopted, it can hide motion errors).
+- **Filter** (`FilterSettings`). a_pq = h(q) g(p, q) w(p, q), h = (1, 4, 6, 4, 1) / 16
+  per axis with holes 2^i ([B6] eqs. 1-4, [B3] eq. 1); g the hard surface
+  gate; w = exp(-d / (sigma_l sqrt(Var_p + Var_q) + 0.01 (l_p + l_q) / 2)) with
+  d = 0.2126 |dR| + 0.7152 |dG| + 0.0722 |dB| (an equal-luminance chromatic
+  edge still stops the filter; scale invariant: J x k, Var x k^2 give J' x k);
+  A has its own w. Invalid coordinates are discarded before any read; null
+  normals, invalid depth, sky and non-finite values are not receivers
+  (neutral J = 0, A = 1, variance 0) and never contribute.
+- **Precision and workgroups.** History, moments and weights in FP32
+  (64 bytes per pixel, four vec4); 8 x 8 workgroups, no barriers inside the
+  kernels; one dispatch per a-trous level with an explicit barrier between
+  producer and consumer.
+
+### Parameter decisions
+
+| Parameter | Decision | Evidence (DGI_M3 lines) |
+|---|---|---|
+| Tile | 4 x 4 | [B2] section 4.1; reconstruction window 5 x 5 |
+| Cycle F | **7** (M = 112), coprime with T^2 = 16 | Cycle study: with F = 6 a (pixel, coarse stratum) pair recurs on one frame parity only and sees half the fine strata; temporal-only tile component after a full period (J / p95 J, corner and pillars): F = 6 0.00161, 0.01117; F = 5 0.00123, 0.00947; F = 7 0.00124, 0.00945 |
+| Coarse shift | XOR pairs, even bit-reversed shifts, period T^2 | Own derivations 1-2; the reconstructed output has no tile pattern (requirement 1) |
+| alpha_min | **1/32** | T14: output std / mean J 0.998% (1/8), 0.587% (1/16), 0.333% (1/32), 0.200% (1/64); detail after 128 frames 1.025, 0.995, 0.978, 0.967; 1/32 keeps 4.6 cycles of 7 (requirement 2) |
+| Variance frames | 4 | [B3] section 4.2 |
+| Light response | z 3 to 6, floor 0.02 (J), 0.01 (A) | Study: z 2-4 2.5% false responses, static noise 1.06%; z 3-6 0.66%, 0.34%, x2 in 1 frame, +20% in 13; floor 0.05 or z 4-8 never reach 90% of a +20% change in 32 frames |
+| Surface test | sine 0.05, depth 1e-3 z, normal cos 0.9 | T12: sine 0.2 lets stale light through (max excess J 53.7x the current sample); 0.02 and 0.05 identical on the scenes; T11: 100% acceptance of visible surfaces under translation and jitter |
+| Moving surfaces (FlowAndDepth) | 0.25 px, 5%, confidence 0.25 | Declared; T12 moving box 97% accepted, revealed pixels 0 foreign taps (open point 16) |
+| Exposure | rescale | T15: jump of mean J / e exactly 0 |
+| Resize | reset | Declared (no validated resampler) |
+| Filter | 4 levels, sigma_l 4, eps 0.01 | Filter study (pillars, after accumulation): levels 0/2/4/5 equal within 0.5% std; sigma 16 over-smooths (bias vs S = 112 0.348 vs 0.312); the filter carries the reset and temporal-off cases (T14 off: 3.7% std) |
+
+### Own derivations (M3)
+
+1. **Pairwise cancellation.** In the half-weight window the mean offset of
+   residue d (mod T) relative to the receiver is d for d < T/2, 0 for d = T/2
+   (split) and d - T above. For T = 4 the residues d and d + 2 have mean offsets
+   summing to zero for every d, in x and in y; b XOR 1 moves every stratum by
+   (T/2, T/2). Hence two consecutive frames cancel the first-order term
+   sum_k grad J(u_k) . (q_k - p) by which neighbours' strata would leave a
+   tile-periodic error (T = 2 too; not for T = 8).
+2. **Full-period cancellation.** If every stratum visits every tile position
+   once, the period average of the reconstruction is sum_r w_r J_full(p + o_r):
+   a translation-invariant blur of the per-pixel full estimates, with no
+   tile-periodic term at any order.
+3. **Coprime cycle.** Frame t gives coarse stratum c to position r with fine
+   stratum t mod F; the frames that give c to r recur with period T^2, so they
+   meet only fine strata congruent modulo gcd(T^2, F). F coprime with T^2 is
+   required for every (position, coarse stratum) pair to meet all fine strata.
+4. **The reconstruction blur has zeros at the tile frequencies.** The window
+   is a 4-pixel box per axis; its transfer function vanishes at 1/4, 1/2, 3/4
+   cycles per pixel, so (estimate - S) keeps the true signal's detail at
+   exactly the tile bins. A sampling pattern must be measured against K * S
+   (the reference through the same window); (K * S - S) is the reconstruction's
+   blur bias, reported separately.
+5. **Variance of the accumulated estimate:** H = sum_i w_i x_i with
+   independent x_i of variance sigma^2 has variance sigma^2 sum w_i^2; with
+   H' = (1 - alpha) H + alpha x, v' = (1 - alpha)^2 v + alpha^2. The difference
+   x - H has variance sigma^2 (1 + v) (light-response statistic).
+6. **Jitter compensation** (motion without jitter): a point at current
+   jittered centre c has unjittered position c - j_t, so its previous jittered
+   position is c + m + (j_(t-1) - j_t).
+7. **Exposure:** J and m1 scale by r = e_t / e_(t-1), m2 by r^2, v and A not.
+8. **Colour distance:** sum_c k_c |dJ_c| >= |sum_c k_c dJ_c| = |d l|, equal when
+   the channels change in the same direction; positive for equal-luminance
+   chromatic edges.
+
+### Tests and results
+
+`renderer_diffuse_gi_temporal_tests` (14 tests, 96 s) and
+`diffuse_gi_temporal_gpu_tests`; 96 x 64 unless stated, R 2.5 (corner room)
+or 3 (pillars), tau 0.5, N = 64, EveryTexel, one section per pixel.
+
+- **Sequence.** Tiles 1-8 x cycles 1-64 (64 configurations): every frame
+  covers all coarse strata, tile x cycle is a bijection with a consistent
+  inverse, tiles repeat, the lattice dimension is a permutation; Bayer 4 x 4
+  reproduced; 4 x 4 x 6: shifts 0, 0, 8, 8, 4, 4, every stratum at all 16
+  positions in 16 frames, mean circular |du| between neighbours 0.346
+  (independent: 0.25), FP32 u within 4e-8 of double. A stratified pixel equals
+  the deterministic gather with Rotation = u(x, y) bit for bit (110 pixels);
+  a 1 x 1 tile and cycle 1 equal Fixed mode bit for bit.
+- **[B2] requirement 1** (S = 1 per pixel, reconstruction and accumulation
+  against the deterministic S = 112; K * S = the reference through the
+  window). Corner room after one cycle (7 frames): mean |dJ| / mean J 4.21%
+  (blur bias of the window alone 4.23%), A 0.0037; tile-periodic component
+  vs K * S (J / p95 J) 0.00029 reconstructed, 0.00045 filtered, against
+  0.0167 without reconstruction and 0.0793 raw; A 0.00004 / 0.00011 / 0.0080
+  / 0.0394. After the full period (112 frames): 0.00003 / 0.00023 / 0.0022 /
+  0.0761. Pillars (dark: mean J 0.0055): one cycle 0.0014 / 0.0066 / 0.0817 /
+  0.1000, full period 0.0001 / 0.0009 / 0.0493 / 0.0905; A 0.00006 and 0.00000
+  reconstructed. Budget declared: output tile component below 0.5% of p95 J
+  and 0.002 in A after the period, at least 4 times below raw after one cycle
+  (A): met.
+- **T14 and requirements 2-3.** 64 warm-up + 128 frames: temporal off 3.70%
+  output std / mean J (A 0.0032), bias vs S = 112 10.2%; on (1/32) 0.333%
+  (A 0.0003), bias 4.4% (the window's blur bias), false light responses 0.64%
+  of receiver-frames. No blur growth: detail (gradient energy / reference)
+  1.014, 0.993, 0.978 at frames 8, 32, 128 (temporal off: 0.818, 0.874, 0.855).
+- **T13.** Region of 486 interior pixels lit by the switched red wall:
+  switch-on (0.0086 -> 0.178), switch-off, x2 and x0.5 reach 90% of the change
+  in 1 frame (output and history); +20% reaches 97% of the new value in 1
+  frame and 90% of the change in 13. Without the light response (alpha_min
+  only): none within 32 frames (21-24% after 8).
+- **T11.** Camera translation of exactly 2 px per frame on the back wall:
+  motion 2.000000000 px (error 8.9e-15). Eight conventions (direction x units x
+  jitter included or excluded, with alternating jitter), both validation
+  modes: reprojection error at most 2.95e-14 px against the exact projection
+  of the previous surface point, 100% acceptance of the 56,879 previously
+  visible receivers, J identical within 2.3e-13. Wrong declarations: sign
+  33 px, pixel units as UV 1,570 px, jitter not or twice compensated 0.707 px.
+  Alternating jitter +-0.25 px in a still scene (joint shift and blur fit over
+  interior floor pixels): alternation of the light 0.042 px with both correct
+  conventions (no-history floor 0.026; constant-jitter control 0.0001, offset
+  -0.020 vs +0.035 floor), against 0.279 and 0.779 px when not or twice
+  compensated; the half-pixel history fetches add 0.9 px^2 of blur (open
+  point 14).
+- **T12** (box moving 0.12 per frame, 325 revealed receivers). With surface
+  ids, both validation modes: no accepted tap on another surface; 288 / 296
+  fully rejected, J and A of those equal the fresh sample exactly;
+  previously visible static receivers 99.98% accepted; the moving box 97%
+  (FlowAndDepth: weak test, capped). Geometric test only (no ids): 1-2 of 325
+  pixels keep a foreign tap (declared limit). Plane sine 0.2 leaks stale light
+  (max excess J 53.7 times the current sample).
+- **T15.** First frame: reason FirstFrame, history finite, non-receivers
+  neutral. Cut: no tap accepted, output identical to a first frame; without
+  the cut flag 2,056 of 5,264 receivers would accept history. Pre-exposure x4:
+  jump of mean J / e 0 (rescale), 1.9% (invalidate: a fresh frame; also
+  1.9% when undeclared, caught by the light response). Resize 96 x 64 ->
+  80 x 48: reset, everything finite. Two views: separate accumulators equal
+  their solo runs bit for bit; one shared accumulator resets at every view
+  change (no tap accepted, output identical to a first frame). Transport key
+  and `Invalidate()` reset.
+- **T16** (CPU). 432 frames: extents 1 x 1, 1 x 7, 7 x 1, 3 x 2, 13 x 11, 37 x 23;
+  tiles 1, 4, 8; cycles 1 and 64; 0, 1 and 8 levels; frame index 2^62; double
+  and FP32; poisoned raw (inf, NaN), NaN normal, negative depth, motion 1e30
+  and NaN, NaN previous positions: no non-finite output, every non-receiver
+  neutral; invalid declarations rejected before any work.
+- **FP32 twin vs double** (97 x 61, 30 frames, moving camera and box): 0
+  acceptance flips in 177,334 pixel-frames; history mean relative dJ 5.8e-5
+  (isolated threshold decisions: max 0.35).
+- **Filter.** Equal-luminance red/green edge: 0.19% leak; depth step: A
+  unchanged to 3e-10; null normal and NaN depth neutral; J x 8 with variance
+  x 64 gives exactly 8 J'.
+- **Octahedral face normal** (geometry guide encoding, M2 sloped planes at
+  pitch 30, 60, 75): at most 0.0013 degrees, no occupied sector (a plane never
+  occludes itself), J identical to float normals.
+- **GPU** (NVIDIA GeForce RTX 3060, driver 0x98928000, Vulkan 1.4.341, SDK
+  1.4.350.0, Khronos validation layer loaded). Sequence twin (97 x 61, 36
+  frames, moving camera and box, alternating jitter, pre-exposure change,
+  camera cut, explicit reset, one non-finite sample, NaN-poisoned history at
+  start), both validation modes: guards intact, no non-finite value, 0 of
+  213,012 history decisions differ from the FP32 twin; history J mean
+  relative 2.9e-5 (A 7.6e-6), filtered 3.8e-4, 6% of pixels beyond 1e-3
+  (threshold flips spread by the filter; declared tolerance: means below 1e-4
+  and 1e-3, decisions within 0.1%). T16: 30 cases (1 x 1, 7 x 1, 1 x 7, 13 x 11,
+  131 x 77; tiles 1 and 8; cycles 1 and 64; 0, 1, 8 levels; poisoned history
+  and inputs): no non-finite value, guards intact, 0 decision flips, reruns
+  bit-identical. Full chain (normal, gather with the stratified rotation,
+  pack, temporal, filter; 16 frames) against the FP32 CPU chain: mean |dJ| /
+  mean J 1.8e-3 (M2 gather flips propagated). Validation errors 0 (one
+  loader message about a third-party implicit layer of this host); the
+  synchronization-validation negative control was not reported (open point
+  15). M2 GPU test unchanged (masks 5,210 bit-exact, weights 1.6e-7).
+
+### Resources (FP32 reference layout, per view)
+
+| Resource | Format | Bytes per pixel | Lifetime | Access |
+|---|---|---|---|---|
+| Raw gather J, A | vec4 | 16 | frame | gather writes, temporal reads |
+| Geometry (normal, view depth) | vec4 | 16 | frame | pack writes, temporal and filter read |
+| Motion, previous position, surface id | vec2, vec4, uint | 8 + 16 + 4 | frame (adapter) | temporal reads |
+| History in / out | 4 x vec4 | 2 x 64 | persistent, ping-pong | temporal reads one, writes the other |
+| Accumulated J, A; variance | vec4, vec2 | 24 | frame | temporal writes, filter level 0 reads |
+| Filter ping-pong | vec4 + vec2 | 2 x 24 | frame | one level reads, the next writes |
+| Diagnostics | 2 x vec4 | 32 | frame (debug) | temporal writes |
+
+About 300 bytes per pixel with diagnostics: 58 MB at 800 x 240, 128 of them
+persistent (25 MB). FP16 for J, A and the filter buffers is allowed only after
+the HDR and distance tests (section 9); untested in M3.
+
+### Source manifest (M3)
+
+| Component | Public source (consulted 2026-10-03) | Used | Own derivation | Rejected alternatives |
+|---|---|---|---|---|
+| Temporal accumulation | Specification section 7 (formula H_t, sigma^2 = max(0, m2 - m1^2)); [B3] section 4.1 (pages 4-5): exponential moving average, 2 x 2 bilinear taps tested individually with redistribution of the weight | EMA form, per-tap tests, redistribution, rejection = no history | Cumulative mean to 1/alpha_min, light response, length cap of weak histories, exposure rescale, v recursion | [B3]'s fixed alpha = 0.2 (no response, short memory), its 3 x 3 fallback search, depth / normal / mesh-id thresholds (own plane test instead), history = first wavelet level ([B3] p. 5; the specification requires a pre-filter history) |
+| Variance | [B3] section 4.2 (page 5): luminance moments, spatial estimate below 4 frames | Moments, 4-frame switch | Spatial estimate from the reconstruction window (not a 7 x 7 bilateral), variance of the estimate sigma^2 v | 3 x 3 Gaussian prefilter of the variance ([B3] section 4.4), unneeded with the symmetric Var_p + Var_q |
+| A-trous filter | [B6] section 2.2, eqs. 1-5 (pages 3-4); [B3] eq. 1 and the variance propagation (page 5), eqs. 2-5 (pages 5-6) | B3-spline kernel with holes 2^i, normalized weighted sum, product of edge-stopping terms, variance propagation, 5 x 5 taps | Hard surface gate, symmetric variance, L1 luminance-weighted colour distance, relative epsilon, separate A weight | [B6]'s sigma_rt halving per level (variance-driven instead), [B3]'s depth-gradient and normal-power terms (hard gate instead); GLSL listing at the end of [B6] not read |
+| Stratified rotations | [B2] section 4.1 (page 4): one direction per pixel, 4 x 4 spatial and 6 temporal rotations | Interleaving of a spatial tile and a temporal cycle | Sequence of this section, derivations 1-4, coprime cycle | [B2]'s 6-frame cycle (gcd with 16), any noise asset ([B4] not needed: the sequence is generated by its definition) |
+| Synthetic sequences | Own | Rigid poses, exact motion and previous positions | - | - |
+| Validation features | Vulkan specification (`VK_EXT_validation_features`, `VK_EXT_layer_settings`) | Layer, sync validation request | - | - |
+
+### Deviations from the M3 plan
+
+- The cycle is 7, not 6 (derivation 3), and the coarse shift has its own
+  16-frame period. One cycle covers all 112 strata; the tile-periodic error
+  cancels over 16 frames.
+- The [B2] 4 x 4 reconstruction is a stratum reconstruction applied to the
+  fresh samples before accumulation (fused into the temporal kernel), so the
+  history stays free of the a-trous filter and of accumulated blur.
+- Requirement 1 is measured against K * S (derivation 4): against S alone a
+  4-pixel window always shows "tile content" (the true detail it blurs).
+- A light response replaces neighbourhood clamping.
+- No sector-grid offset: the M2 sector study already found the quantization
+  noise-like, and the rotations vary the sections.
+- Separate host target `renderer_diffuse_gi_temporal_tests`; the M2 gather
+  parameter block grew from 128 to 176 bytes (sequence appended, ignored when
+  its flags are zero).
+
+### Reproducible report (M3)
+
+```text
+I:\_triaevum_work\perf-levers\build-host.cmd -j 4 renderer_diffuse_gi_temporal_tests renderer_diffuse_gi_reference_tests
+I:\_triaevum_work\perf-levers\host-build\three_ds_recomp_runtime\tests\renderer_diffuse_gi_temporal_tests.exe
+I:\_triaevum_work\perf-levers\host-build\three_ds_recomp_runtime\tests\renderer_diffuse_gi_reference_tests.exe
+I:\_triaevum_work\perf-levers\build-gpu-tests.cmd diffuse_gi_gpu_tests.exe diffuse_gi_temporal_gpu_tests.exe
+I:\_triaevum_work\perf-levers\gpu-tests-build\diffuse_gi_temporal_gpu_tests.exe
+I:\_triaevum_work\perf-levers\gpu-tests-build\diffuse_gi_gpu_tests.exe
+```
+
+clang 22.1.6 Release, Windows 11, 2026-10-03: M3 14/14 in 96 s; M1/M2/[B2]
+27/27 in 48 s with all 116 `DGI_REPORT` lines identical to the [B2]
+reintegration run; GPU M3 passed in 5.2 s, M2 passed in 2.8 s. The numbers
+above are the `DGI_M3` / `DGI_GPU_M3` lines of these runs.

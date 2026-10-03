@@ -86,6 +86,58 @@ enum class MaskMode : uint8_t {
     ContinuousIntervals, // exact union of occupied intervals (reference only)
 };
 
+// ---------------------------------------------------------------------------
+// Per-pixel, per-frame section rotation (milestone M3, [B2]-derived
+// requirement 1). Fixed: every pixel uses GatherSettings::Rotation (the
+// deterministic, noise-free mode of M1/M2). Stratified: the strata
+// k in [0, M), M = T^2 F, of a T x T pixel tile (T = 2^TileLog2) and a cycle of
+// F frames are assigned so that
+//   - every frame, the T^2 pixels of each tile take all T^2 coarse strata
+//     c = floor(k / F): c = ((b XOR e) + s) mod T^2, b the recursive
+//     ordered-dither index of the tile position, e = Frame mod 2 (T >= 2),
+//     s = 2 bitrev(((Frame mod T^2) / 2)) over log2(T^2 / 2) bits;
+//   - within each frame pair the strata move by (T/2, T/2) pixels (b XOR 1
+//     flips the most significant position bits): with the stratum
+//     reconstruction window of diffuse_gi_temporal.h this cancels, for 2 x 2
+//     and 4 x 4 tiles, the first-order term by which neighbours' strata
+//     leave a tile-periodic error; over T^2 frames every stratum visits every
+//     tile position once, which cancels it at every order (own derivation,
+//     document);
+//   - the fine stratum is t = Frame mod F: any F consecutive frames of a tile
+//     cover all M = T^2 F strata exactly once (bijection).
+// u = (k + 1/2) / M; the stratified rotations of one tile over F consecutive
+// frames are exactly the deterministic rotations of S = M sections. Tiles are
+// anchored at the viewport origin. Own construction (document, M3 section).
+enum class RotationMode : uint8_t { Fixed, Stratified };
+
+inline constexpr uint32_t kMaxRotationTileLog2 = 3; // 8 x 8 pixels
+inline constexpr uint32_t kMaxRotationCycle = 64;
+
+struct RotationSequence {
+    RotationMode Mode = RotationMode::Fixed;
+    uint32_t TileLog2 = 2; // [B2]: 4 x 4 pixels
+    uint32_t Cycle = 7;    // M3 decision: coprime with 16 ([B2] used 6)
+    uint64_t Frame = 0;    // only Frame mod Cycle matters
+};
+
+// Recursive ordered-dither (Bayer) index of a tile position, in [0, T^2): the
+// bit pairs (x_k, y_k) map to 0, 2, 3, 1 for (0,0), (1,0), (0,1), (1,1), the
+// lowest pair weighted most, so neighbouring pixels differ by large indices.
+[[nodiscard]] uint32_t TileOrder(uint32_t x, uint32_t y, uint32_t tileLog2) noexcept;
+[[nodiscard]] uint32_t StratumCount(const RotationSequence& sequence) noexcept; // M
+// s = 2 bitrev((Frame mod T^2) / 2) (0 for a 1 x 1 tile).
+[[nodiscard]] uint32_t FrameShift(const RotationSequence& sequence) noexcept;
+// 1 on odd frames with tiles of 2 x 2 or larger, else 0.
+[[nodiscard]] uint32_t FrameFlip(const RotationSequence& sequence) noexcept;
+// k = F (((TileOrder XOR flip) + shift) mod T^2) + t for viewport pixel (x, y).
+[[nodiscard]] uint32_t StratumIndex(const RotationSequence& sequence, uint32_t x, uint32_t y) noexcept;
+// Multiplier of the second (radial-jitter) dimension: the integer coprime to M
+// nearest to M (sqrt(5) - 1) / 2 (ties: the smaller); rank-1 lattice
+// (k / M, frac(k P / M)), each projection a perfect stratification.
+[[nodiscard]] uint32_t LatticeMultiplier(uint32_t strata) noexcept;
+// 1 / M rounded to float: the FP32 twin and the GPU multiply by it.
+[[nodiscard]] float StratumScaleF32(const RotationSequence& sequence) noexcept;
+
 struct GatherSettings {
     double Radius = 1.0;    // R, scene units: finite and positive
     double Thickness = 0.5; // tau, scene units, along the camera ray behind q
@@ -109,9 +161,21 @@ struct GatherSettings {
     // Texel chords shorter than this (pixels) are corner touches: skipped.
     double ChordEpsilon = 1.0e-3;
     uint32_t Threads = 1; // image gather only
+    // M3: per-pixel rotation sequence (Fixed keeps Rotation for every pixel)
+    // and, with Stratified, optionally the per-pixel radial jitter of the
+    // Radial schedule from the lattice dimension (replaces RadialJitter).
+    RotationSequence Rotations;
+    bool SequenceRadialJitter = false;
 };
 
 [[nodiscard]] const char* ValidateGatherSettings(const GatherSettings& settings) noexcept;
+
+// Rotation u and radial jitter of viewport pixel (x, y): (k + 1/2) / M in
+// double; (float(k) + 0.5f) * StratumScaleF32 in the FP32 twin and the GPU.
+[[nodiscard]] double PixelRotation(const GatherSettings& settings, uint32_t x, uint32_t y) noexcept;
+[[nodiscard]] float PixelRotationF32(const GatherSettings& settings, uint32_t x, uint32_t y) noexcept;
+[[nodiscard]] double PixelRadialJitter(const GatherSettings& settings, uint32_t x, uint32_t y) noexcept;
+[[nodiscard]] float PixelRadialJitterF32(const GatherSettings& settings, uint32_t x, uint32_t y) noexcept;
 
 struct GatherCounters {
     uint64_t Scheduled = 0;   // candidates programmed (denominator of C)
