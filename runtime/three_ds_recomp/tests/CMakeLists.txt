@@ -492,11 +492,12 @@ endif()
 gtest_discover_tests(oot3d_effect_graph_tests DISCOVERY_TIMEOUT 30)
 
 # Diffuse GI reference integrator (M1) and screen-space gathering with sector
-# masks (M2), docs/TRIAEVUM_SCREEN_SPACE_GI.md: title-neutral, no Vulkan, not
-# yet part of any runtime library.
+# masks (M2), with the [B2] reintegration tests, docs/TRIAEVUM_SCREEN_SPACE_GI.md:
+# title-neutral, no Vulkan, not yet part of any runtime library.
 add_executable(renderer_diffuse_gi_reference_tests
     renderer_diffuse_gi_reference_tests.cpp
     renderer_diffuse_gi_gather_tests.cpp
+    renderer_diffuse_gi_b2_tests.cpp
     ../src/fast/renderer/diffuse_gi_reference.cpp
     ../src/fast/renderer/diffuse_gi_gather.cpp
     ../src/fast/renderer/diffuse_gi_scene.cpp

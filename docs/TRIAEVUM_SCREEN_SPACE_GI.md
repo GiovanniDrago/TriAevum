@@ -2,7 +2,9 @@
 
 Status: **M2 done** (gathering on a depth buffer, sector masks, thickness,
 T05-T09, GPU compute twin), on top of **M1** (radiometric contract,
-deterministic angular reference, T01-T04). Nothing is wired into the renderer
+deterministic angular reference, T01-T04), with **[B2] reintegrated**
+(2026-10-03: every [B2] topic reviewed with the paper, M1/M2 decisions
+re-examined, four tests from the paper; see "[B2] reintegration"). Nothing is wired into the renderer
 yet: no setting, no graph pass, no F1 control, no runtime shader. The GLSL
 kernels exist only inside a GPU test. Design input is only the written
 specification "Specifica per una GI diffusa in screen space" v1.2 (2026-09-30),
@@ -27,6 +29,7 @@ and guiding (after T10); M5 artistic integration and profiling.
 | `runtime/three_ds_recomp/include/fast/renderer/diffuse_gi_scene.h`, `src/fast/renderer/diffuse_gi_scene.cpp` | Synthetic scene generator: analytic boxes and rectangles ray-cast into the adapter buffers (depth in four encodings, FP32 or 24-bit storage, class, radiance, face normals, shifted and poisoned viewports, HUD rectangles) and the 3D ground truth of the finite-radius model as an M1 `AngularField` with exact section breakpoints; scene catalogue |
 | `runtime/three_ds_recomp/include/fast/renderer/diffuse_gi_gather_shader.h`, `src/fast/renderer/diffuse_gi_gather_shader.cpp` | GLSL compute kernels (normal reconstruction, gathering, unit kernel for masks and weights) and the std140 parameter block; GLSL twin of the FP32 path |
 | `runtime/three_ds_recomp/tests/renderer_diffuse_gi_gather_tests.cpp` | T05-T09, the [B2] cross-check, the geometric-normal tests and the sector-count study; 16 tests added to `renderer_diffuse_gi_reference_tests` |
+| `runtime/three_ds_recomp/tests/renderer_diffuse_gi_b2_tests.cpp` ([B2] reintegration) | [B2] eqs. 5-8, 10, 17, 23 implemented from the paper, with an independent horizon estimator on depth buffers; 4 tests added to `renderer_diffuse_gi_reference_tests` |
 | `tools/renderer/tev_program/diffuse_gi_gpu_tests.cpp`, `tools/renderer/tev_program/CMakeLists.txt` | GPU target `diffuse_gi_gpu_tests`: kernels compiled at run time and compared with the FP32 twin and the double reference |
 
 The module belongs to the generic renderer layer (no 3DS, PICA or OOT3D
@@ -47,6 +50,8 @@ explicit list, so the game build is unchanged. It joins
   cosine and no 1/r^2: the receiver cosine is already the solid-angle weight.
 - **Own closed forms** (verified against the quadrature, and in M2 against
   [B2], see the report):
+  - (the M2 cross-check and the [B2] reintegration compare them with [B2]
+    eq. 7, implemented from the paper: agreement to 1.7e-16)
   - per piece where sin theta has one sign s and the lobe is positive:
     integral_p^q (a cos t + b sin t) sin t dt = 1/2 [b (D - sin D cos S) + a sin D sin S],
     D = q - p, S = q + p, evaluated as b ((D - sin D) + 2 sin D sin^2(S/2)) + a sin D sin S
@@ -256,12 +261,169 @@ of value: eq. 7 needs h1 <= 0 <= h2 inside the lobe (horizons), M1 handles any
 interval, wrapped lobes and back-facing normals (it extends eq. 7 through
 M(gamma) = M(pi - gamma)); and gamma must be signed by the side of the
 projected normal (the text defines it with arccos): with |gamma| the example
-weight is 0.0404 instead of 0.0253. Not adopted from [B2]: the height-field
-horizon search (eq. 6; the specification uses finite thickness [B1]), the
-thickness heuristic (eq. 9), the distance falloff, the clamped pixel radius
-and the multi-bounce fit of section 5 (not transfer of colour).
+weight is 0.0404 instead of 0.0253. This cross-check covered eq. 7 only; the
+decisions on every other [B2] topic (horizon search, thickness heuristic,
+falloff, pixel radius, sampling, multi-bounce, bent normals, specular
+occlusion) are now made with the paper in hand in the next section.
 
-## Synthetic scenes (generator)
+## [B2] reintegration (2026-10-03)
+
+M1 (ccda246) was built without [B2] (its download failed twice) and M2
+(c45e89b) checked only eq. 7. This review read the whole paper (9 pages,
+figures 1-14, eqs. 1-26, appendices A and B) from
+`B2-PracticalRealtimeStrategiesTRfinal.pdf`, equations from the page images
+and from 220 dpi renders of the equation regions, and maps every topic to the
+specification, to M1/M2 and to a decision. Only the paper was used: no code,
+shader or asset associated with it, and not the repository's own GTAO
+provider or its GPU test (not opened for this review). The new tests are in
+`runtime/three_ds_recomp/tests/renderer_diffuse_gi_b2_tests.cpp` (4 tests in
+`renderer_diffuse_gi_reference_tests`); they implement [B2]'s equations with
+their own quadrature, depth decoding, section setup and texel enumeration
+and compare them with M1's integrator and M2's gather. No M1/M2 code changed.
+
+### Topic map
+
+| # | [B2] topic (where) | Specification | M1/M2 today | Decision |
+|---|---|---|---|---|
+| 1 | AO as the cosine-weighted visibility integral, eq. 2; V binary within a distance r; obscurance attenuation rejected (sections 2, 4) | Section 2: A = (1/pi) integral V n.omega d omega, V binary inside R; J uses the same measure with L_i | Sector weights (1/pi) integral max(0, n.omega) abs(sin theta); sectors occupied or open | **Adopted**: identical definition |
+| 2 | Slices around the view vector omega_o over the full sphere, phi in [0, pi), integrand cos(theta - gamma)^+ abs(sin theta), Monte Carlo over phi (eq. 5, Fig. 2) | Section 3: v axis, phi in [0, pi), theta in [-pi, pi), d omega = abs(sin theta) d theta d phi, p = 1/pi | Same (M1) | **Adopted**: with a = n.v = r cos gamma and b = n.t = r sin gamma eq. 5 is M1's weight (2,625 cases, 1.1e-16) |
+| 3 | Normal projected on the slice plane: gamma from the normalized projection, weight by its norm (eq. 8) | Section 3: the section weight depends on the normal and is never normalized alone | M1 works with (a, b) directly; r = norm of the projection | **Adopted** (implicit in M1). gamma must be signed toward +t (M2). An unoccluded receiver integrates to 1 at every tilt 0-89 degrees (within 1e-10) |
+| 4 | Analytic inner integral between a horizon pair h1 <= 0 <= h2 (eq. 7) | Sections 3, 12: analytic forms or own tables allowed in production, quadrature is the reference | M1's own closed form per interval | **Adopted as independent check**, M1's form kept (any interval, sector runs, wrapped lobes, FP32-stable on short runs). Own extension: each eq. 7 term is the antiderivative of cos(t - gamma) sin t from 0, so one-sided pieces are differences of terms (4,000 pieces, 1.7e-16 against M1). Eq. 7 integrates cos without ^+: with a horizon beyond the lobe edge it departs from eq. 5 by up to 0.739; horizons must be clamped to the lobe first (2.8e-14 against quadrature) |
+| 5 | Horizon search: theta = arccos(max over screen samples of <omega_s, omega_o>^+), s_hat = x_hat + t_hat s, s < n/2 (eq. 6) | Section 4: sector masks with finite thickness tau, both sides of the projected line, q from the continuous UV and the texel depth | M2 gather (every texel or radial K), masks, tau | **Rejected as the visibility model**: it is the tau = infinity limit of M2 (proved and tested below). The positive part ^+ is **rejected**: it caps both horizons at pi/2 from v, and an unoccluded receiver tilted alpha from v gets A = (1 + cos alpha)/2 instead of 1 (own closed form, tested to 1e-10); floor receivers of the synthetic scenes lose 0.205 of A on average (max 0.327). Any horizon fast path must start its horizons at the lobe edges gamma +- pi/2 |
+| 6 | Search radius in pixels scaled with distance (view-independent), clamped to a maximum pixel radius for cache efficiency (section 4) | Sections 6, 9: R in scene units, finite and positive; T08 scale invariance | Metric R; screen extent = exact projection of the R ball, capped only at the viewport diagonal when the ball contains the camera | **Adopted** (a metric R is the distance-scaled radius). The pixel clamp is **deferred to M5** as a declared performance option: wherever it binds it breaks T08 scale invariance, so it stays off in validation and its clipped fraction is counted |
+| 7 | Conservative attenuation: linear blend from 1 to 0 between a large distance and the search radius, because far-field occlusion is baked with indirect light (section 4.1) | Section 9 "Aspetto": optional fade, off in validation, neutral by default; hard R in the reference | Hard R | **Rejected for the reference, deferred to M5** as an optional artistic fade of A only. The rationale applies to OoT3D, which bakes fill and ambient light |
+| 8 | Thickness heuristic: horizon update with an exponential-moving-average blend when the sample cosine drops; thickness assumed similar to the screen-space size (eq. 9, Fig. 4) | Section 4: constant tau in scene units first; documented material variants | Constant tau; T07; open point 7 (tau per material or class) | **Rejected**: the blend rate is not given, so eq. 9 is not a verifiable formula, and it edits a height-field horizon rather than a finite segment. Its assumption (thickness ~ screen-space size) is **kept as a candidate rule for open point 7**, under the T07 bar-and-block test |
+| 9 | One direction per pixel per frame, 4 x 4 bilateral spatial reconstruction, 6 temporal rotations with reprojection and an exponential accumulation buffer: 96 effective directions (section 4.1, Fig. 3); half resolution with upsampling | Section 6: uniform sections, reproducible sequence, deterministic mode; section 7 temporal; section 8 edge-aware filter, reduced scale with geometry-guided upsampling | Uniform phi, p = 1/pi, declared rotation u; S = 8 per frame in the reference, deterministic | Uniform phi with p = 1/pi **adopted** (same estimator). The spatio-temporal distribution is **deferred to M3** (requirements below); half resolution is **deferred to M5** (work scale is a separate quality control, section 9) |
+| 10 | Near-field multi-bounce: G(A, rho) = a(rho) A^3 - b(rho) A^2 + c(rho) A, cubic fits of 3-bounce path tracing at constant albedo (eq. 10, section 5, Figs. 5-7, 11-12) | Section 13: an occlusion/albedo correction, not colour transfer; section 11: multi-bounce is a later milestone with controlled feedback and energy tests | Not implemented | **Rejected for the core, deferred to the later multi-bounce milestone** only as a candidate for the A L_ambient term. Recorded: G(1, rho) - 1 within 4.0e-4; G(A, 0) - A reaches -0.044 at A = 0.32 (the fit does not reduce to A without interreflection); G is monotone in A |
+| 11 | Bent normal and visibility cone: A = 1 - cos^2(alpha_v), cos(alpha_v) = sqrt(1 - A) (eqs. 17, 18, section 6.1) | No bent-normal output in the first version | M1 integrates caps (T02) | **Rejected for the first version** (no consumer). Eq. 17 verified with M1's continuous integrator on a cone about n seen from a view vector up to 70 degrees away: 3.7e-8 (M1's accuracy on caps). A bent normal could later be derived exactly from the sector mask |
+| 12 | Specular occlusion GTSO (eqs. 11-16, 19-21, appendix B eqs. 25-26; Figs. 8, 13, 14) | Section 1: specular reflections need separate modules | None | **Rejected** (out of scope) |
+| 13 | Uniformly weighted AO (appendix A, eqs. 22-24) | Section 2: radiometric (cosine-weighted) contract | None | **Rejected**; eq. 23 verified (1.9e-15 against quadrature, open A = 1) |
+| 14 | Inputs: depth buffer and normals, either derived from depth or supplied (section 3) | Section 1: declared geometric normal | Renderer face normal (primary) and depth quadrant reconstruction (fallback) | **Confirmed**: [B2] gives no reconstruction rule; M2's stays |
+| 15 | Quality claim: matches the ray-traced ground truth (Fig. 9, white probe) | Section 10: the reference is the independent integrator; single-layer limits are measured (T09) | T07, T09 against the 3D first hit | **Adapted**: the claim holds for the height-field model. M2 with tau = infinity reproduces [B2] exactly where the height field is closed below the horizon; M2's T07 shows the height field loses 80-96% of the light behind a 0.1 bar, so [B2]'s ground truth is not the specification's finite-thickness truth |
+| 16 | Performance claims: 0.5 ms at 1080p on PS4, half resolution, memory bound, 2 cos + 1 sin + 3 acos per pixel (sections 4, 7) | Section 9: GPU timestamps per pass, median and p95; no guaranteed milliseconds | None | **Deferred to M5** (not transferable: other hardware, and masks need an interval and a mask update per candidate where [B2] keeps one maximum) |
+| 17 | AO alongside baked irradiance (sections 1, 3, 4.1) | Section 8: compatibility path for legacy baked lighting | Adapter contract, compatibility path | **Adopted as rationale** for M5: A must not darken baked ambient twice |
+
+### M1/M2 decisions re-examined
+
+| Decision taken without [B2] | Evidence with [B2] | Verdict |
+|---|---|---|
+| Measure and closed forms (full circle theta in [-pi, pi), lobe-limited weights, own closed form) | Eq. 5/8 are the same measure; eq. 7 equals M1 to 1.1e-16 in the paper's domain, 1.7e-16 on one-sided pieces, 1.1e-16 beyond pi/2 inside the lobe; eq. 6 as written truncates the lobe at pi/2 ((1 + n.v)/2 for an open receiver) | **Confirmed**; the full circle is required, not only convenient |
+| Section distribution and estimator (uniform phi, p = 1/pi, rotation u; S = 8 per frame as reference) | [B2] integrates phi by Monte Carlo with random phi, one per pixel per frame, 96 effective through 4 x 4 x 6 | **Confirmed**; M3 must distribute the rotations (below) |
+| Sector count N = 64 (centre rule) | [B2] is the continuous limit; on the height-field scenes the N = 64 centre rule differs from [B2] by mean 2.6e-3, max 1.8e-2 in A (S = 8), consistent with M2's study (mean dA 1.9e-3) | **Confirmed** |
+| Thickness tau constant, policies (front beyond R excluded, degenerate segment rejected) | tau = infinity equals [B2]; [B2] needs a heuristic because the height field over-occludes thin objects (Fig. 4), which T07 quantifies (80-96% light lost) | **Confirmed** constant tau for the first version; open point 7 stays, with [B2]'s screen-size assumption as a candidate |
+| Candidate order (screen distance, + side first on ties) | [B2] keeps a maximum, which is order-independent; so is M2's occupancy (A). Order matters only for J's first claim (derivation 2) | **Confirmed** |
+| Radius limit (metric R, hard, front beyond R excluded) | [B2]: distance-scaled radius, pixel clamp, falloff. With R = 2 [B2] occludes below-horizon directions whose occluder is beyond R: the gather is more open by mean 3.9e-3, max 0.156 in A, on 3,380 of 16,288 receivers | **Confirmed** hard metric R; falloff and pixel clamp only as declared M5 options |
+| Self-intersection rejection | [B2] is silent; its horizon search keeping the receiver's own-plane samples darkens receivers by mean 0.033, max 0.148 (footprint error) | **Confirmed**, and required for any horizon variant |
+| Depth-derived geometric normal | [B2]: normals derived from depth or supplied | **Confirmed** |
+
+No M1/M2 decision changed; the corrections are in this document (statements
+that [B2] was unavailable or checked only through eq. 7).
+
+### Own derivations ([B2])
+
+1. **Eq. 7 as an antiderivative.** cos(t - gamma) sin t = (sin(2t - gamma) + sin gamma)/2,
+   so F(h) = 1/4 (-cos(2h - gamma) + cos gamma + 2 h sin gamma) = integral_0^h cos(t - gamma) sin t dt.
+   Eq. 7 is F(h1) + F(h2) for h1 <= 0 <= h2; [p, q] on one side is F(q) - F(p)
+   (p >= 0) or F(p) - F(q) (q <= 0). Valid inside the lobe only: horizons are
+   clamped to gamma +- pi/2 first (eq. 5 has the positive part).
+2. **Eq. 6 as written.** With ^+ every horizon is at most pi/2 from v. Per
+   section the open lobe then misses its part beyond pi/2 on the side the
+   normal leans to ([pi/2, gamma + pi/2] for gamma > 0, mirrored for gamma < 0),
+   whose weight F(gamma + pi/2) - F(pi/2) is (r/2) gamma sin gamma: half of the
+   gamma term of pi M_phi = r (cos gamma + gamma sin gamma). For a normal tilted alpha from
+   v, (1/pi) integral r cos gamma d phi = (1/pi) integral n.v d phi = cos alpha and the
+   whole integral is 1, so (1/pi) integral r gamma sin gamma d phi = 1 - cos alpha and an
+   open receiver gets A = cos alpha + (1 - cos alpha)/2 = (1 + cos alpha)/2.
+3. **Infinite thickness is the height field, up to a computable gap.** With
+   tau = infinity a candidate occupies [theta_front, theta_back(R)] on its camera
+   ray; theta_front is never above its side's horizon (the minimum front
+   angle), and the sides are disjoint (M2 derivation 1). So the gather's
+   occluded set is a subset of [B2]'s ([horizon, lobe edge] per side) and
+   A_gather = A_B2 + Gap, Gap = weight of [horizon, edge] minus the union of
+   the segments. With R unbounded a segment reaches pi - psi(q) (psi the camera
+   angle between the receiver and q), and Gap is zero unless the height field
+   is open below the horizon inside the section plane.
+4. **Raster convergence of eq. 6 sampling.** [B2]'s unit pixel steps and the
+   specification's every-crossed-texel rule put their points on the same line,
+   within the same texel chords except for texels the steps skip, so their
+   horizons differ by at most one texel footprint seen from the receiver:
+   first order in the pixel size.
+
+### Tests and results
+
+`renderer_diffuse_gi_b2_tests.cpp`, clang-cl 22.1.6 Release, 2026-10-03:
+
+- **SliceIntegralEq7AgainstM1AndQuadrature.** Paper domain (h1 <= 0 <= h2,
+  abs(h) <= pi/2, inside the lobe; gamma -85..85 degrees, r 1/0.6/0.15, 25 horizon
+  pairs each): 2,625 cases, against M1 1.1e-16, against an independent
+  composite Simpson rule of eq. 5 9.2e-15. Horizons beyond the lobe edge
+  (306 cases): eq. 7 applied raw departs from eq. 5 by up to 0.739; lobe-clamped
+  2.8e-14 against eq. 5 and 1.1e-16 against M1. Horizons beyond pi/2 inside the
+  lobe (140 cases): 1.1e-16. One-sided pieces (4,000 random): 1.7e-16 against
+  M1's sector weight and against its cumulative C_phi. Section mass (horizons
+  at the lobe edges, 179 normals): 1.1e-16. Open receiver over phi: lobe edges
+  1.000000000000 at tilts 0, 30, 60, 85, 89 degrees; as written 1, 0.933013,
+  0.750000, 0.543578, 0.508726 = (1 + cos alpha)/2 within 1e-10. Eq. 23: 1.9e-15,
+  open A = 1.
+- **ConeVisibilityEq17WithM1Integrator.** Cones of 20, 50, 80 degrees about n,
+  normal tilted 0, 40, 70 degrees from v: M1's continuous A = 1 - cos^2(alpha)
+  within 3.7e-8 (last correction 3.3e-7, 8,192 panels at most; M1's T02
+  reports 2.1e-7 on caps); eq. 18 recovers cos(alpha) within 1e-6.
+- **MultiBounceFitEq10ScopeRecord.** G(1, rho) - 1 within 4.0e-4 for rho in
+  [0, 1]; G(A, 0) - A down to -0.0443 at A = 0.322; monotone in A.
+- **HeightFieldHorizonAoEqualsInfiniteThicknessGather.** Five scenes at
+  96 x 64 (T06 black occluder, T07 thick block, corner room, pillars, T07 thin
+  bar), exact face normals on both sides, S = 8, R = 1e12 and tau = 1e30
+  (unbounded), M2 continuous intervals:
+
+  | Quantity | Result |
+  |---|---|
+  | Receivers compared, validity mismatches | 28,646, 0 |
+  | A_gather - (A_B2 + Gap), max abs (identity of derivation 3) | 4.4e-16 |
+  | Receivers with Gap > 1e-9 | 62, all in the 4 side-border columns of the pillars scene (traced: those sections pass beside the lateral end of the back wall, open below its horizon); 0 in the other four scenes |
+  | abs(A_gather - A_B2): max, mean | 3.2e-3, 7.8e-7 |
+  | Centre rule N = 64 instead of continuous intervals: max, mean | 1.8e-2, 2.6e-3 |
+  | R = 2 (T06, pillars, overhang; 16,288 receivers): identity, A_B2 - A_gather max (inclusion) | 5.3e-16, 4.4e-16 |
+  | R = 2: A_gather - A_B2 mean, max, receivers above 1e-6 | 3.9e-3, 0.156, 3,380 |
+  | Eq. 6 as written (^+): A_adapted - A_as_written mean, max; floor receivers mean, max | 0.114, 0.327; 0.205, 0.327 (13% of sides clamped) |
+  | Own-plane samples kept (no self rejection): A drop mean, max | 0.033, 0.148 (49% of receivers above 1e-3) |
+  | [B2] pixel steps against every crossed texel: mean (max) at 96 x 64 and 192 x 128 | 1.66e-3 (0.154), 7.97e-4 (0.146): ratio 2.08, first order; the max is a thin silhouette texel skipped by unit steps |
+
+  Conclusion: with unbounded thickness M2's gather reproduces [B2]'s
+  horizon-based AO exactly on the same samples wherever the height field is
+  closed below the horizon (the raster error between the two is zero, not
+  merely small); the only differences are the derived Gap, the finite-radius
+  overestimate of [B2], and the sampling pattern's first-order raster term.
+
+### Source manifest ([B2])
+
+| Item | Record |
+|---|---|
+| Source | Jimenez, Wu, Pesce, Jarabo, "Practical Realtime Strategies for Accurate Indirect Occlusion", Activision Technical Memo ATVI-TR-16-01, 2016; file `B2-PracticalRealtimeStrategiesTRfinal.pdf`, 9 pages, 7,488,804 bytes, SHA-256 `33e48153c21e411a3c52081a917be61fe707fa531719999566ec94fde8ab9fb1`, from https://www.activision.com/cdn/research/PracticalRealtimeStrategiesTRfinal.pdf as cited (provenance in the specification's `SOURCES.md`) |
+| Consultation | 2026-10-03, complete (text by page, page images at 110 dpi, equation regions rendered at 220 dpi with PyMuPDF); M1 on 2026-10-01 could not retrieve it |
+| Equations used | 2 and 3 (definition), 5 (inner integral), 6 (horizon, with and without ^+), 7 (closed form), 8 (projected normal), 10 (properties only), 17 and 18 (cone), 23 (uniform variant, verification only) |
+| Own derivations | Derivations 1-4 above; lobe clamp of eq. 7; signed gamma (M2) |
+| Rejected alternatives | Positive part of eq. 6; eq. 7 without lobe clamp; eq. 9 heuristic; falloff and pixel-radius clamp in the reference; uniform weighting (eqs. 22-24); G(A, rho) in the core; GTSO; arccos horizons in the test estimator (atan2 of the arg-max sample is used: arccos loses about 1e-8 near 0) |
+| Not consulted | Any code, shader, table or asset associated with [B2]; the repository's GTAO provider and its GPU test |
+
+### What [B2] implies for M3 (requirements and tests)
+
+1. Requirement: per-pixel, per-frame rotations u from a reproducible
+   stratified set that interleaves a spatial tile and a temporal cycle ([B2]:
+   4 x 4 pixels x 6 frames = 96 directions), with the deterministic mode kept.
+   Test: static scene, S = 1 per pixel, 4 x 4 edge-aware reconstruction and
+   6 frames of accumulation match the deterministic S = 96 reference (A and J)
+   within the T14 budget, and the result shows no 4 x 4 pattern (spectrum of
+   the residual).
+2. Requirement: the accumulation weight must keep a full rotation cycle in
+   the history (with 6 rotations, alpha well below 1/6 on static regions) while
+   T13 still reaches 90% of a light change within 8 frames; test both.
+3. Requirement: the history stays pre-filter (specification section 7);
+   [B2] does not state whether its exponential buffer stores the spatially
+   reconstructed AO, so nothing is taken from it here. Test: T14 with temporal
+   on and off, and no blur growth over 128 frames.
+4. Requirement: A may keep its own history ([B2] accumulates AO only); test:
+   disocclusion (T12) on A and J separately.
 
 `diffuse_gi_scene.cpp` ray-casts analytic primitives at the pixel centres of a
 pinhole camera (60 degree vertical field of view) into the adapter buffers; the
@@ -367,14 +529,17 @@ control, never hidden in the estimator.
 | Section parameterization, measure, weights, estimator | Specification sections 2, 3, 12 (formulas 1-5), 2026-10-01 | Definitions of J, A, omega, d omega, w_j, F, J hat | Closed form of the piecewise integral, lobe wrapping, M_phi closed form, FP32-stable form | Unsplit Gauss-Legendre across kinks (2.7e-4 error at order 256, not converged); hemisphere-slice sectors with 1/N weights and a source cosine as in [B1] Algorithm 1 (the specification uses the solid-angle measure and no source cosine) |
 | Gathering, masks, thickness, order (M2) | Specification sections 1, 4, 6, 9, 10 (T05-T09), 11, 2026-10-03; `spec.txt` SHA-256 `1e0671363266b7912a60b03b6a27f34a24551958f0e1081ab39808de1c8ae8d2`, `.docx` `6b2e09ff4e595a49adaa0b77997b5bd02b8b397119258a47c6b0e6905831b028` | Both sides of the projected line, q from continuous UV and pointwise depth, back segment along the camera ray clipped to R, atan2 ends, centre rule, first claim, one-sided radiance, outputs J/A/C | Derivations 1-7 above; schedules; quadrant normal; tolerances; policies (front beyond R, degenerate segment, missing source normal) | Reconstructing q at the texel centre (leaves the section plane); per-axis normal selection (mixes two planes at junctions, found by test); line-point coplanarity for self-intersection (footprint makes the own floor look elevated) |
 | Sector visibility family | [B1] Therrien, Levesque, Gilet, arXiv:2301.11376v2, file `B1-arXiv-2301.11376v2.pdf`, SHA-256 `fd9ef7dad323feffd51ec93cc2c15b9265f31c51579cc171b9ef02d7cf67aeb0`; HTML 2026-10-01, PDF and page images 2026-10-03; sections 3.1, 3.3, 4.1, 4.3, Algorithm 1 | Principle only: sectors per slice, sample with constant thickness between front and back angles, newly occupied sectors bring light and are then occupied, sectors independent of samples | Full-circle theta sectors with solid-angle weights; back point along the camera ray through the sample (Algorithm 1 line 15 offsets along the receiver's view direction p/|p|) | Algorithm 1's sector index arithmetic and its "half covered" (round) criterion (the specification fixes the centre rule); n_p.l n_j.-l source/receiver cosines; 32 fixed sectors (study chose 64); thickness growing with distance (constant tau, scene units) |
-| Slice integration of AO | [B2] Jimenez, Wu, Pesce, Jarabo, ATVI-TR-16-01, file `B2-PracticalRealtimeStrategiesTRfinal.pdf`, SHA-256 `33e48153c21e411a3c52081a917be61fe707fa531719999566ec94fde8ab9fb1`, 2026-10-03 (not retrievable on 2026-10-01); sections 2, 4 (eqs. 3, 5, 6, 7, 8, 9), 5 read for scope | Eqs. 5, 7, 8 as an independent check of M1's M_phi, per-piece integral and C_phi (agreement to 5.6e-16) | Extension of eq. 7 to any interval and wrapped lobes; signed gamma | Horizon (height-field) search, thickness heuristic, falloff, pixel-radius clamp, multi-bounce fit G(A, rho) |
+| Slice integration of AO, horizon model ([B2] reintegration) | [B2] Jimenez, Wu, Pesce, Jarabo, ATVI-TR-16-01, file `B2-PracticalRealtimeStrategiesTRfinal.pdf`, SHA-256 `33e48153c21e411a3c52081a917be61fe707fa531719999566ec94fde8ab9fb1`; not retrievable on 2026-10-01 (M1 used nothing from it); M2 cross-check of eq. 7 on 2026-10-03; whole paper (sections 1-8, appendices A-B, figures 1-14) on 2026-10-03 | Definitions (eqs. 2, 3, 5, 8) are the specification's and M1's measure; eq. 7 as an independent check of M1 (1.1e-16 to 2.8e-14); eq. 6 (adapted: horizons from the lobe edges, no positive part) as the independent estimator of the tau = infinity test; eqs. 10, 17, 18, 23 verified for the scope record | Eq. 7 as an antiderivative (any one-sided interval), lobe clamp, signed gamma, open-receiver closed form (1 + n.v)/2 of eq. 6 as written, A_gather = A_B2 + Gap for tau = infinity, first-order raster convergence of eq. 6 sampling (section "[B2] reintegration") | Positive part of eq. 6; eq. 9 thickness heuristic; falloff and pixel-radius clamp in the reference (M5 options); uniform weighting; G(A, rho) in the core (later multi-bounce milestone); GTSO and bent normals (no consumer) |
 | Gauss-Legendre rule | Standard numerical analysis (Legendre recurrence, Newton) | Nodes/weights computed at run time in double | - | Tabulated nodes |
 | Synthetic scenes and ground truth | Own: caps, half-spaces, view band (M1); boxes and rectangles ray-cast by slabs and planes (M2) | Known integrals (M1); 3D first hit within R via M1's continuous integrator (M2) | Section breakpoints of a cap (M1) and of face cross-sections, segment crossings, R crossings (M2) | - |
 | Plumbing conventions | Our GTAO provider (`gtao_shader.cpp`, our implementation of [B2]; its header records an MIT-licensed adaptation, not used here), `gtao_gpu_tests.cpp`, `vulkan_test_device.h`, GPU CMakeLists | Affine UV-to-ray form (ViewX/ViewY), perspective and W-buffer decode forms, run-time shaderc compilation, test device | - | No horizon, falloff, filter or noise code taken |
 
 No code, table, noise or asset of any implementation was consulted or
 imported; no shader source of any third-party AO/GI implementation was read.
-[B3]-[B6] were not consulted in M2 (they belong to M3/M4).
+[B3]-[B6] were not consulted in M2 (they belong to M3/M4). The [B2]
+reintegration read [B2] from the paper only: the GTAO provider and
+`gtao_gpu_tests.cpp` listed above (M2 plumbing conventions) were not opened
+for it, and its tests share no code with them.
 
 ## Reproducible report (M1)
 
@@ -432,7 +597,8 @@ I:\_triaevum_work\perf-levers\gpu-tests-build\diffuse_gi_gpu_tests.exe
 ```
 
 clang-cl 22.1.6 Release, Windows 11, 2026-10-03. CPU: 23/23 tests pass
-(7 M1 + 16 M2) in 20 s. GPU: NVIDIA GeForce RTX 3060, driver 0x98928000,
+(7 M1 + 16 M2) in 20 s; with the [B2] reintegration 27/27 (+4) in 38 s,
+M1/M2 values unchanged. GPU (path untouched by the reintegration): NVIDIA GeForce RTX 3060, driver 0x98928000,
 Vulkan 1.4.341: all cases pass in 1.6 s. Values from `DGI_REPORT` and
 `DGI_GPU` lines (EveryTexel, S = 8, rotation 1/2 unless stated).
 
@@ -627,14 +793,38 @@ mean |dJ| <= 2.6e-6, max dA 3.2e-3 (T06).
    and the fraction of faces thinner than three texels.
 7. Requirement: tau per material or per object class (a 0.1 bar and a 3.5
    block need different values); test: T07's bar and block within 5% of the
-   3D truth at once.
+   3D truth at once. [B2] section 4.1 offers a candidate rule (thickness
+   similar to the occluder's screen-space size); any such rule is a declared
+   tau policy and must pass the same test.
 8. Requirement: the policy for fronts beyond R must be revisited only with a
    test showing the overhang error (A +0.18) is significant in OoT3D scenes.
 9. Test: confirm the FP32 tolerance model on a second GPU vendor (Vulkan
    allows 2^-11 absolute error for sin/cos; this RTX 3060 gives weights within
    1.6e-7); if a backend exceeds it, the weights need their own polynomial.
+10. Requirement ([B2]): any horizon-based (height-field) fast path starts its
+    horizons at the lobe edges gamma +- pi/2 and clamps them there before eq. 7,
+    never at pi/2 from v; tests: an unoccluded receiver gives A = 1 at tilts
+    0-89 degrees, and the path equals M2's gather with tau = infinity up to the
+    derived Gap (both in `renderer_diffuse_gi_b2_tests.cpp`).
+11. Requirement ([B2], M5): a distance falloff of A or a pixel clamp of the
+    search radius is a declared option, default off and off in validation;
+    test: T08 scale invariance with it off; with it on, report the clipped
+    fraction and the A bias against the hard-R reference.
+12. Requirement ([B2], later multi-bounce milestone): G(A, rho) of eq. 10, if
+    used, acts only on the A L_ambient term, never on J, and the first bounce
+    already carried by J is not counted twice; tests: an energy test against a
+    multi-bounce reference, and the zero-albedo case (the fit gives
+    G(A, 0) - A = -0.044 at A = 0.32 where it must equal A).
+13. Test ([B2], M5): the performance claim (0.5 ms, memory bound) does not
+    transfer; measure per-pass GPU time (median, p95) of the gather against a
+    horizon-only variant at the same section and candidate counts before any
+    cheaper path is considered.
 
 ## What M3 needs (accumulation and filter, T11-T16)
+
+- **From [B2].** The four requirements of "What [B2] implies for M3"
+  (stratified spatio-temporal rotations, a history that holds a full rotation
+  cycle, pre-filter history, separate A history) with their tests.
 
 - **Code.** Per-pixel, per-frame rotation u (and, if adopted, a sector-grid
   offset) from a reproducible sequence with a deterministic mode; temporal
