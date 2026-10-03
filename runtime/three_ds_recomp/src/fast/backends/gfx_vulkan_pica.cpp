@@ -8703,7 +8703,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                         reinterpret_cast<VkImage>(aoNormalBinding.NativeImage),
                         static_cast<VkFormat>(aoNormalBinding.Format),
                         aoGeometry, mxaoTemporal ? &mxaoMotion : nullptr) &&
-                    mMxaoPass.Execute(mCurrentFrame, *presentationPerspective,
+                    mMxaoPass.Execute(mCurrentFrame, mFrameCounter, *presentationPerspective,
                         effectGuideTarget->WBuffering, presentationSettings.Effects, aoBarrierPlan,
                         Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags),
                         mxaoTemporal ? &mxaoFrame : nullptr);

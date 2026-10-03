@@ -48,7 +48,7 @@ class MxaoPass final {
     bool Configure(const NriEffectGraphTransientImageBinding& output, VkImage depth, VkFormat depthFormat,
                    VkImage normal, VkFormat normalFormat, VkImage geometry,
                    const MxaoMotionInput* motion = nullptr);
-    bool Execute(uint32_t frameSlot, const PerspectiveViewState& view, bool wBuffer, const EffectsSettings& settings,
+    bool Execute(uint32_t frameSlot, uint64_t frameId, const PerspectiveViewState& view, bool wBuffer, const EffectsSettings& settings,
                  const EffectPassBarrierPlan& barriers, PicaSurfaceCoordinates coordinates,
                  const MxaoTemporalFrame* temporal = nullptr);
     void InvalidateScreenResources();

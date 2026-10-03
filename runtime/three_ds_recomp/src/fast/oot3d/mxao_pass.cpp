@@ -74,9 +74,8 @@ struct MxaoPass::Impl {
     float HistoryFarPlane = 0.0F;
     std::array<float, 13> HistorySettings{};
     // Shading rate: the raw estimate holds every pixel once a full-rate frame
-    // has written it; executions count the rotating phase.
+    // has written it; the frame identifier selects the rotating phase.
     bool RawComplete = false;
-    uint32_t ShadingFrame = 0;
     bool LastHistoryValid = false;
     bool Ready = false;
     ResourceStateTracker PrivateStates;
@@ -318,7 +317,7 @@ bool MxaoPass::Configure(const NriEffectGraphTransientImageBinding& output, VkIm
 #endif
 }
 
-bool MxaoPass::Execute(uint32_t frameSlot, const PerspectiveViewState& view, bool wBuffer,
+bool MxaoPass::Execute(uint32_t frameSlot, uint64_t frameId, const PerspectiveViewState& view, bool wBuffer,
                        const EffectsSettings& settings, const EffectPassBarrierPlan& barriers,
                        PicaSurfaceCoordinates coordinates, const MxaoTemporalFrame* temporal) {
     mImpl->LastBarriers = {};
@@ -331,6 +330,7 @@ bool MxaoPass::Execute(uint32_t frameSlot, const PerspectiveViewState& view, boo
         return false;
 #if !defined(ENABLE_OOT3D_NRI) || !defined(ENABLE_OOT3D_IMMERSE)
     (void)frameSlot;
+    (void)frameId;
     (void)settings;
     (void)coordinates;
     (void)wBuffer;
@@ -355,7 +355,9 @@ bool MxaoPass::Execute(uint32_t frameSlot, const PerspectiveViewState& view, boo
     const bool geometryNormals = settings.MxaoNormals == MxaoNormalSource::Geometry;
     const bool screenRadius = settings.MxaoRadiusGrowsWithDistance;
     const uint32_t shadingRate = mImpl->RawComplete ? std::min<uint32_t>(settings.MxaoShadingRate, 2U) : 0U;
-    const uint32_t shadingPhase = mImpl->ShadingFrame++ & 3U;
+    // From the frame, not from executions: a frame that runs the pass for
+    // more than one surface keeps one phase, and captures are reproducible.
+    const uint32_t shadingPhase = uint32_t(frameId & 3U);
     const uint32_t options = (depthNormals ? Immerse::kMxaoDepthNormals : 0U) |
                              (geometryNormals ? Immerse::kMxaoGeometryNormals : 0U) |
                              (screenRadius ? Immerse::kMxaoScreenRadius : 0U) |
