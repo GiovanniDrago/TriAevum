@@ -158,7 +158,7 @@ bool MxaoPass::Initialize(VkPhysicalDevice physical, VkDevice device, NriInterop
             "immerse_mxao_resolve.comp", "immerse_mxao_temporal.comp", "immerse_mxao_debug.comp" };
         for (size_t i = 0; i < sources.size(); ++i) {
             const auto builtin = Renderer::FindPassShaderArtifact(
-                Immerse::kMxaoPassArtifacts, sources[i], Renderer::SpirvStage::Compute, {});
+                Immerse::MxaoPassArtifacts(), sources[i], Renderer::SpirvStage::Compute, {});
             const auto spirv = !builtin.empty() ? std::vector<uint32_t>(builtin.begin(), builtin.end())
                 : interop.Shaders().Resolve(sources[i], Renderer::SpirvStage::Compute, names[i]);
             nri::ComputePipelineDesc pipeline{};

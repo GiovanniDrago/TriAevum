@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pica_shader_source_identity.h"
+#include "fast/renderer/spirv_pack.h"
 #include <span>
 
 namespace Fast::Renderer3ds {
@@ -10,6 +11,17 @@ struct PicaFragmentArtifact {
     bool SeparateSamplers;
     std::span<const uint32_t> Spirv;
 };
+
+// The fragment programs of a pack, viewing the pack's modules.
+inline std::vector<PicaFragmentArtifact> PicaFragmentArtifactsFromPack(
+    std::span<const Renderer::SpirvPackEntry> entries) {
+    std::vector<PicaFragmentArtifact> artifacts;
+    for (const auto& entry : entries)
+        if (entry.Kind == Renderer::SpirvPackKind::PicaFragment)
+            artifacts.push_back({{entry.Identity[0], entry.Identity[1], entry.Identity[2]},
+                                 (entry.Flags & Renderer::kSpirvPackSeparateSamplers) != 0U, entry.Spirv});
+    return artifacts;
+}
 
 inline std::span<const uint32_t> FindPicaFragmentArtifact(
     std::span<const PicaFragmentArtifact> artifacts, std::string_view source,

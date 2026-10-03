@@ -92,7 +92,7 @@ Private evidence under `C:/Users/xander/AppData/Local/Temp/`, never package:
 Developer commands:
 
 ```text
-build_fragment_artifacts --temporal runtime/three_ds_recomp/include/fast/oot3d/pica_temporal_fragment_binaries.h
+build_fragment_artifacts --temporal runtime/three_ds_recomp/src/fast/oot3d/pica_temporal_fragment.spvpack
 build_fragment_artifacts --temporal --check
 ctest --test-dir <standalone-build> --output-on-failure
 python tools/renderer/tev_program/benchmark_native_paths.py --invocation <private-invocation.json> --baseline <historical-exe> --output <new-directory> --taa

@@ -1784,6 +1784,10 @@ add_executable(oot3d_native_pica_capture_inventory EXCLUDE_FROM_ALL
     runtime/three_ds_recomp/src/fast/oot3d/pica_pipeline_manifest.cpp
     runtime/three_ds_recomp/src/fast/oot3d/pica_aot_shader_pack.cpp
     runtime/three_ds_recomp/src/fast/renderer3ds/pica_nri_shader_contract.cpp)
+include(runtime/three_ds_recomp/cmake/spirv_pack.cmake)
+triaevum_add_spirv_pack(oot3d_native_pica_capture_inventory
+    tools/oot3d/native_pica_frontend/oot3d_native_vertex_binaries.cpp
+    tools/oot3d/native_pica_frontend/oot3d_native_vertex.spvpack)
 target_include_directories(oot3d_native_pica_capture_inventory PRIVATE tools/oot3d/native_game_runtime)
 target_link_libraries(oot3d_native_pica_capture_inventory PRIVATE
     oot3d_native_pica_frontend oot3d_native_pica_azahar_capture)
@@ -2166,6 +2170,11 @@ add_library(oot3d_native_pica_vulkan_bridge STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_pica_visual_savestate.cpp
     tools/oot3d/native_game_runtime/oot3d_native_pica_vulkan_bridge.cpp
 )
+# The translated title vertex family (title-derived, not title-neutral).
+include(runtime/three_ds_recomp/cmake/spirv_pack.cmake)
+triaevum_add_spirv_pack(oot3d_native_pica_vulkan_bridge
+    tools/oot3d/native_pica_frontend/oot3d_native_vertex_binaries.cpp
+    tools/oot3d/native_pica_frontend/oot3d_native_vertex.spvpack)
 target_include_directories(oot3d_native_pica_vulkan_bridge PUBLIC
     tools/oot3d/native_game_runtime
 )

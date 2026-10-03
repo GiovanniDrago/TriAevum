@@ -530,6 +530,25 @@ if(MSVC)
 endif()
 gtest_discover_tests(renderer_diffuse_gi_temporal_tests DISCOVERY_TIMEOUT 30)
 
+# Precompiled SPIR-V packs: format, malformed packs and every embedded family.
+include(../cmake/spirv_pack.cmake)
+add_executable(renderer_spirv_pack_tests renderer_spirv_pack_tests.cpp)
+foreach(_pack renderer/builtin_pass renderer3ds/pica_native_fragment oot3d/pica_temporal_fragment
+              oot3d/pica_toon_fragment oot3d/pica_uber_fragment oot3d/pica_caster_fragment immerse/mxao_pass)
+    triaevum_add_spirv_pack(renderer_spirv_pack_tests ../src/fast/${_pack}_binaries.cpp ../src/fast/${_pack}.spvpack)
+endforeach()
+triaevum_add_spirv_pack(renderer_spirv_pack_tests
+    ../../../tools/oot3d/native_pica_frontend/oot3d_native_vertex_binaries.cpp
+    ../../../tools/oot3d/native_pica_frontend/oot3d_native_vertex.spvpack)
+set_property(TARGET renderer_spirv_pack_tests PROPERTY CXX_STANDARD 20)
+target_include_directories(renderer_spirv_pack_tests PRIVATE ../include ../../../tools/oot3d/native_pica_frontend)
+target_link_libraries(renderer_spirv_pack_tests PRIVATE gtest_main)
+if(MSVC)
+    target_compile_definitions(renderer_spirv_pack_tests PRIVATE NOMINMAX)
+    target_compile_options(renderer_spirv_pack_tests PRIVATE /utf-8)
+endif()
+gtest_discover_tests(renderer_spirv_pack_tests DISCOVERY_TIMEOUT 30)
+
 add_executable(oot3d_grass_midrange_clusters_tests oot3d_grass_midrange_clusters_tests.cpp
     ../src/fast/oot3d/grass_visibility.cpp)
 target_include_directories(oot3d_grass_midrange_clusters_tests PRIVATE ../include)

@@ -5,28 +5,23 @@
 #include "fast/oot3d/pica_rigid_motion.h"
 #include "fast/renderer/pass_shader_artifact.h"
 #include "fast/renderer3ds/pica_surface_lighting_shader.h"
+#include "spirv_pack_file.h"
 #include <shaderc/shaderc.hpp>
 #include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <memory>
-#include <sstream>
 #include <vector>
 
 using namespace Oot3dNativeGame;
 static void Check(bool ok, const std::string& message) { if (!ok) throw std::runtime_error(message); }
 
 int main(int argc, char** argv) try {
-    Check(argc >= 3, "usage: build_vertex_artifacts output.h|--check input.shbin [...]");
+    Check(argc >= 3, "usage: build_vertex_artifacts oot3d_native_vertex.spvpack|--check input.shbin [...]");
     const bool check = std::string_view(argv[1]) == "--check";
-    std::ostringstream output, table, passes;
-    output << "// Generated translated OOT3D title vertex SPIR-V. Not title-neutral code.\n"
-              "// Source: original SHBIN interfaces + maintained GLSL wrapper and translated body.\n"
-              "// Citra/Azahar translator donor: GPL-2.0-or-later; preserve donor notices.\n"
-              "#pragma once\n#include \"fast/renderer3ds/pica_vertex_artifact.h\"\n"
-              "#include \"fast/renderer/pass_shader_artifact.h\"\n"
-              "namespace Oot3dNativeGame {\n";
+    // Vertex programs first, then the pass programs, each in emission order.
+    SpirvPackFile vertexPack, passPack;
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_1);
@@ -42,21 +37,15 @@ int main(int argc, char** argv) try {
         Check(spirv.GetCompilationStatus() == shaderc_compilation_status_success, spirv.GetErrorMessage());
         if (check) {
             const auto stored = Fast::Renderer::FindPassShaderArtifact(
-                kTitlePassArtifacts, source, Fast::Renderer::SpirvStage::Vertex, {});
+                TitlePassArtifacts(), source, Fast::Renderer::SpirvStage::Vertex, {});
             Check(stored.size() == size_t(spirv.cend() - spirv.cbegin()) &&
                       std::equal(stored.begin(), stored.end(), spirv.cbegin()),
                   "missing/stale title pass program");
         }
-        Check(source.find(")passsrc\"") == std::string::npos, "raw source delimiter collision");
-        output << "inline constexpr uint32_t kTitlePassSpirv" << passModules << "[] = {\n";
-        unsigned column = 0;
-        for (uint32_t w : spirv) {
-            output << "0x" << std::hex << w << "U,";
-            if (++column % 12 == 0) output << '\n';
-        }
-        output << std::dec << "\n};\n";
-        passes << "Fast::Renderer::PassShaderArtifact{Fast::Renderer::SpirvStage::Vertex,R\"passsrc(" << source
-               << ")passsrc\",{},kTitlePassSpirv" << passModules << ",2},\n";
+        auto& entry = passPack.Add(Fast::Renderer::SpirvPackKind::Pass, {spirv.cbegin(), spirv.cend()});
+        entry.Stage = uint32_t(Fast::Renderer::SpirvStage::Vertex);
+        entry.VulkanMinor = 2;
+        entry.Source = passPack.Keep(source);
         ++passModules;
     };
     const auto emitVertex = [&](const std::string& source) {
@@ -64,7 +53,7 @@ int main(int argc, char** argv) try {
         Check(spirv.GetCompilationStatus() == shaderc_compilation_status_success, spirv.GetErrorMessage());
         const auto id = Fast::Renderer3ds::IdentifyPicaShaderSource(source);
         if (check) {
-            const auto artifact = Fast::Renderer3ds::FindPicaVertexArtifact(kTitleVertexArtifacts, source);
+            const auto artifact = Fast::Renderer3ds::FindPicaVertexArtifact(TitleVertexArtifacts(), source);
             Check(!artifact.Spirv.empty(), "missing/stale compiled vertex source identity");
             // Validate the stored module independently of compiler version and layout.
             bool vertexEntry = false;
@@ -80,15 +69,8 @@ int main(int argc, char** argv) try {
             }
             Check(vertexEntry, "compiled artifact has no vertex entry point");
         }
-        output << "inline constexpr uint32_t kTitleVertexSpirv" << modules << "[] = {\n";
-        unsigned column=0;
-        for (uint32_t w : spirv) {
-            output << "0x" << std::hex << w << "U,";
-            if (++column%12 == 0) output << '\n';
-        }
-        output << std::dec << "\n};\n";
-        table << "{{" << id.Id << "ULL," << id.SecondaryHash << "ULL," << id.Size
-              << "ULL},kTitleVertexSpirv" << modules << "},\n";
+        vertexPack.Add(Fast::Renderer::SpirvPackKind::PicaVertex, {spirv.cbegin(), spirv.cend()}).Identity =
+            {id.Id, id.SecondaryHash, id.Size};
         std::cout << "vertex_source=" << id.Id << '\n';
         ++modules;
     };
@@ -190,16 +172,12 @@ int main(int argc, char** argv) try {
                       << " point=" << point.Applied() << '\n';
         }
     }
-    output << "inline const Fast::Renderer3ds::PicaVertexArtifact kTitleVertexArtifacts[] = {\n"
-           << table.str() << "};\n"
-           << "inline const Fast::Renderer::PassShaderArtifact kTitlePassArtifacts[] = {\n"
-           << passes.str() << "};\n} // namespace Oot3dNativeGame\n";
     if (check) {
-        Check(modules == std::size(kTitleVertexArtifacts), "compiled vertex family coverage changed");
-        Check(passModules == std::size(kTitlePassArtifacts), "title pass program coverage changed");
+        Check(modules == TitleVertexArtifacts().size(), "compiled vertex family coverage changed");
+        Check(passModules == TitlePassArtifacts().size(), "title pass program coverage changed");
     } else {
-        std::ofstream file(argv[1],std::ios::binary|std::ios::trunc);
-        Check(bool(file) && bool(file << output.str()), "cannot write vertex artifacts");
+        vertexPack.Entries.insert(vertexPack.Entries.end(), passPack.Entries.begin(), passPack.Entries.end());
+        vertexPack.Write(argv[1]);
     }
     std::cout << "native_vertex_artifacts=" << modules << " title_pass_artifacts=" << passModules << '\n';
 } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

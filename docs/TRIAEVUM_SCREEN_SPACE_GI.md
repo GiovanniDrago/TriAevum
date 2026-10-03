@@ -533,7 +533,7 @@ control, never hidden in the estimator.
   gain, highlight clamp and fade.
 - **Shaders.** Runtime-compiled through the pass shader cache during M3
   (fast iteration, CPU reference in this module, GPU tests in
-  `tools/renderer/tev_program`); precompiled into `builtin_pass_binaries.h`
+  `tools/renderer/tev_program`); precompiled into `builtin_pass.spvpack`
   (`build_pass_artifacts`, `--check`) at M5.
 
 ## Implementation manifest (section 14)

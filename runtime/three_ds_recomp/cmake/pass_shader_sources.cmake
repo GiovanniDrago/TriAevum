@@ -1,4 +1,5 @@
 # Shared renderer-owned shader builders; no Vulkan device or title build.
+include("${CMAKE_CURRENT_LIST_DIR}/spirv_pack.cmake")
 function(triaevum_add_pass_shader_sources target)
     get_filename_component(runtime "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
     target_sources(${target} PRIVATE
@@ -26,4 +27,6 @@ function(triaevum_add_pass_shader_sources target)
         "${runtime}/src/fast/renderer/spirv_cache.cpp"
         "${runtime}/src/fast/renderer/cache_file.cpp"
     )
+    triaevum_add_spirv_pack(${target} "${runtime}/src/fast/renderer/builtin_pass_binaries.cpp"
+        "${runtime}/src/fast/renderer/builtin_pass.spvpack")
 endfunction()

@@ -163,6 +163,8 @@ file(GLOB Source_Files__Oot3dRenderer CONFIGURE_DEPENDS
     RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "oot3d/*.cpp")
 list(FILTER Source_Files__Oot3dRenderer EXCLUDE REGEX
     "^oot3d/(pica_texture_decode|pica_fragment_lighting)\\.cpp$")
+# SPIR-V pack sources are added with their packs (src/CMakeLists.txt).
+list(FILTER Source_Files__Oot3dRenderer EXCLUDE REGEX "^oot3d/.*_binaries\\.cpp$")
 if(NOT THREE_DS_RECOMP_ENABLE_VULKAN)
     # This translation unit is Vulkan-only and deliberately has no stub
     # implementation.  Keep Vulkan headers out of OpenGL-only ports such as

@@ -177,6 +177,12 @@ target_link_libraries(three_ds_recomp_runtime PUBLIC prism monocypher)
 
 if(THREE_DS_RECOMP_ENABLE_VULKAN)
     target_sources(three_ds_recomp_runtime PRIVATE fast/renderer/shaderc_compiler.cpp)
+    # Precompiled SPIR-V families, embedded from their packs.
+    include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/spirv_pack.cmake)
+    foreach(_pack renderer/builtin_pass renderer3ds/pica_native_fragment oot3d/pica_temporal_fragment
+                  oot3d/pica_toon_fragment oot3d/pica_uber_fragment oot3d/pica_caster_fragment)
+        triaevum_add_spirv_pack(three_ds_recomp_runtime fast/${_pack}_binaries.cpp fast/${_pack}.spvpack)
+    endforeach()
     target_link_libraries(three_ds_recomp_runtime PRIVATE ${CMAKE_DL_LIBS})
     target_link_libraries(three_ds_recomp_runtime PUBLIC Vulkan::Vulkan PRIVATE three_ds_recomp_shaderc)
     if(THREE_DS_RECOMP_ENABLE_NRI)
@@ -207,6 +213,8 @@ if(THREE_DS_RECOMP_ENABLE_VULKAN)
     if(THREE_DS_RECOMP_ENABLE_IMMERSE)
         target_sources(three_ds_recomp_runtime PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/fast/immerse/mxao_shader.cpp")
+        triaevum_add_spirv_pack(three_ds_recomp_runtime
+            fast/immerse/mxao_pass_binaries.cpp fast/immerse/mxao_pass.spvpack)
         target_compile_definitions(three_ds_recomp_runtime PRIVATE ENABLE_OOT3D_IMMERSE)
     endif()
     if(THREE_DS_RECOMP_ENABLE_D3D12_NGX_PROVIDER)

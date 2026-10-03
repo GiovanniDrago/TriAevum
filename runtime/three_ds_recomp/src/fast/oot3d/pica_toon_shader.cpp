@@ -1,7 +1,6 @@
 #include "fast/oot3d/pica_toon_shader.h"
 #include "fast/oot3d/toon_surface_response.h"
 #include "fast/oot3d/pica_toon_fragment_artifact.h"
-#include "fast/oot3d/pica_toon_fragment_binaries.h"
 
 #include <algorithm>
 #include <bit>
@@ -10,10 +9,6 @@
 #include <sstream>
 
 namespace Fast::Oot3d {
-std::span<const Renderer3ds::PicaFragmentArtifact> ToonFragmentArtifacts() {
-    return kToonFragmentArtifacts;
-}
-
 namespace {
 
 constexpr std::string_view kDepthMarker =

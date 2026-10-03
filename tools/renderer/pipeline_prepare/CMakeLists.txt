@@ -50,6 +50,13 @@ target_link_libraries(triaevum_nri_pipeline_prepare PRIVATE triaevum_pipeline_pr
 # --startup-programs embeds the translated title vertex family, as the runtime
 # executable does: this helper is the title's Forge tool, not title-neutral.
 target_include_directories(triaevum_nri_pipeline_prepare PRIVATE "${root}/tools/oot3d/native_pica_frontend")
+include("${runtime}/cmake/spirv_pack.cmake")
+triaevum_add_spirv_pack(triaevum_nri_pipeline_prepare "${root}/tools/oot3d/native_pica_frontend/oot3d_native_vertex_binaries.cpp"
+    "${root}/tools/oot3d/native_pica_frontend/oot3d_native_vertex.spvpack")
+foreach(_pack renderer3ds/pica_native_fragment oot3d/pica_uber_fragment)
+    triaevum_add_spirv_pack(triaevum_nri_pipeline_prepare "${runtime}/src/fast/${_pack}_binaries.cpp"
+        "${runtime}/src/fast/${_pack}.spvpack")
+endforeach()
 add_executable(triaevum_pipeline_preparation_tests tests.cpp)
 target_link_libraries(triaevum_pipeline_preparation_tests PRIVATE triaevum_pipeline_preparation)
 enable_testing()

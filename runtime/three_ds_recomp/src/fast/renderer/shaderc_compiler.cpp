@@ -154,7 +154,7 @@ void CachedPassShaderCompiler::Configure(std::filesystem::path directory) {
 
 std::span<const uint32_t> FindBuiltinPassShaderSpirv(std::string_view source,
     SpirvStage stage, const ShaderDefines& defines, uint32_t vulkanMinor) {
-    return FindPassShaderArtifact(kBuiltinPassArtifacts, source, stage, defines, vulkanMinor);
+    return FindPassShaderArtifact(BuiltinPassArtifacts(), source, stage, defines, vulkanMinor);
 }
 
 bool CachedPassShaderCompiler::Enabled() const {

@@ -144,8 +144,8 @@ int main(int argc, char** argv) {
         startup.Device = {depthFormat, VK_SAMPLE_COUNT_1_BIT, device.GeometryShaders};
         if (startupPrograms && device.PipelineLibraries)
             startup.Parts = Renderer3ds::PicaStartupProgramParts(
-                Oot3dNativeGame::kTitleVertexArtifacts, Fast::Oot3d::kUberFragmentArtifacts,
-                Renderer3ds::kNativeFragmentArtifacts, startup.Device);
+                Oot3dNativeGame::TitleVertexArtifacts(), Fast::Oot3d::UberFragmentArtifacts(),
+                Renderer3ds::NativeFragmentArtifacts(), startup.Device);
         const size_t total = startup.Parts.size() + entries.size();
         const auto progress = [&](size_t attempted, size_t prepared, size_t failed, const std::string& last) {
             std::cout << Json{{"event", "pipeline_progress"}, {"total", total}, {"attempted", attempted},

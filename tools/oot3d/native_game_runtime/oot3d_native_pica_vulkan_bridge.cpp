@@ -10,10 +10,10 @@
 
 namespace Oot3dNativeGame {
 std::span<const Fast::Renderer3ds::PicaVertexArtifact> NativePicaVertexProgramFamily() {
-    return kTitleVertexArtifacts;
+    return TitleVertexArtifacts();
 }
 std::span<const Fast::Renderer::PassShaderArtifact> NativePicaTitlePassPrograms() {
-    return kTitlePassArtifacts;
+    return TitlePassArtifacts();
 }
 namespace {
 
@@ -282,7 +282,7 @@ bool WithOot3dPicaVulkanDrawView(
     draw.VertexShaderSourceIdentity = plan.VertexShader.SourceIdentity;
     // Immutable title-owned family: the backend selects the effective program
     // after applying typed instrumentation, never by a scene/material identity.
-    draw.VertexArtifacts = kTitleVertexArtifacts;
+    draw.VertexArtifacts = TitleVertexArtifacts();
     draw.FragmentShaderSourceIdentity =
         plan.FragmentShader.SourceIdentity;
     if (plan.VertexShader.TemporalProgram != nullptr) {

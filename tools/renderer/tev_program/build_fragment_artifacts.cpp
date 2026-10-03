@@ -9,19 +9,19 @@
 #include "fast/oot3d/pica_shader_pipeline_cache.h"
 #include "fast/oot3d/toon_surface_response.h"
 #include "fast/oot3d/pica_temporal_fragment_binaries.h"
-#include "fast/oot3d/pica_toon_fragment_binaries.h"
+#include "fast/oot3d/pica_toon_fragment_artifact.h"
 #include "fast/oot3d/pica_uber_effect_program.h"
 #include "fast/oot3d/pica_uber_fragment_binaries.h"
 #include "fast/oot3d/pica_caster_fragment_binaries.h"
 #include "fast/renderer/pass_shader_artifact.h"
 #include "fast/oot3d/pica_nri_shader_contract.h"
+#include "spirv_pack_file.h"
 #include <shaderc/shaderc.hpp>
 #include <cstdlib>
 #include <fstream>
 #include <filesystem>
 #include <iostream>
 #include <memory>
-#include <sstream>
 #include <vector>
 #include <unordered_set>
 
@@ -53,17 +53,13 @@ static void ConfigureTemporal(Fast::Oot3d::PicaFragmentInstrumentationRequest& r
 // fragments the native draw discards with the parametric TEV and alpha test,
 // one program per base. Pass compiler target (Vulkan 1.2).
 static int BuildCasterFamily(int argc, char** argv) {
-    Check(argc == 2, "usage: build_fragment_artifacts --casters output.h | --check");
+    Check(argc == 2, "usage: build_fragment_artifacts --casters pica_caster_fragment.spvpack | --check");
     const bool verify = std::string_view(argv[1]) == "--check";
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
-    std::ostringstream output, table;
-    output << "// Generated from maintained PICA equations (parametric bases), not captured game shaders.\n"
-              "// Regenerate with tools/renderer/tev_program/build_fragment_artifacts --casters.\n"
-              "#pragma once\n#include \"fast/renderer/pass_shader_artifact.h\"\n#include <array>\n"
-              "namespace Fast::Oot3d {\n";
+    SpirvPackFile pack;
     unsigned modules = 0;
     for (unsigned lighting = 0; lighting < 2; ++lighting)
     for (unsigned integerTexture = 0; integerTexture < 2; ++integerTexture) {
@@ -79,29 +75,18 @@ static int BuildCasterFamily(int argc, char** argv) {
         Check(compiled.GetCompilationStatus() == shaderc_compilation_status_success, compiled.GetErrorMessage());
         if (verify) {
             const auto stored = Fast::Renderer::FindPassShaderArtifact(
-                Fast::Oot3d::kCasterFragmentArtifacts, caster.Source, Fast::Renderer::SpirvStage::Fragment, {});
+                Fast::Oot3d::CasterFragmentArtifacts(), caster.Source, Fast::Renderer::SpirvStage::Fragment, {});
             Check(stored.size() == size_t(compiled.cend() - compiled.cbegin()) &&
                       std::equal(stored.begin(), stored.end(), compiled.cbegin()),
                   "stale/missing alpha caster: regenerate with --casters");
         }
-        output << "inline constexpr uint32_t kCasterFragmentSpirv" << modules << "[] = {\n";
-        unsigned column = 0;
-        for (auto word : compiled) {
-            output << "0x" << std::hex << word << "U,";
-            if (++column % 12 == 0) output << '\n';
-        }
-        output << std::dec << "\n};\n";
-        Check(caster.Source.find(")passsrc\"") == std::string::npos, "raw source delimiter collision");
-        table << "Renderer::PassShaderArtifact{Renderer::SpirvStage::Fragment,R\"passsrc(" << caster.Source
-              << ")passsrc\",{},kCasterFragmentSpirv" << modules << ",2},\n";
+        auto& entry = pack.Add(Fast::Renderer::SpirvPackKind::Pass, {compiled.cbegin(), compiled.cend()});
+        entry.Stage = uint32_t(Fast::Renderer::SpirvStage::Fragment);
+        entry.VulkanMinor = 2;
+        entry.Source = pack.Keep(caster.Source);
         ++modules;
     }
-    output << "inline const std::array<Renderer::PassShaderArtifact, " << modules
-           << "> kCasterFragmentArtifacts{{\n" << table.str() << "}};\n}\n";
-    if (!verify) {
-        std::ofstream file(argv[1], std::ios::binary | std::ios::trunc);
-        Check(bool(file) && bool(file << output.str()), "cannot write caster artifacts");
-    }
+    if (!verify) pack.Write(argv[1]);
     std::cout << "caster_fragment_artifacts=" << modules << '\n';
     return 0;
 }
@@ -109,15 +94,12 @@ static int BuildCasterFamily(int argc, char** argv) {
 static int BuildUberFamily(int argc, char** argv) {
     const bool verify = argc == 2 && std::string_view(argv[1]) == "--check";
     const bool countOnly = argc == 2 && std::string_view(argv[1]) == "--count";
-    Check(argc == 2, "usage: build_fragment_artifacts --uber output.h | --check | --count");
+    Check(argc == 2, "usage: build_fragment_artifacts --uber pica_uber_fragment.spvpack | --check | --count");
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_1);
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
-    std::ostringstream output, table;
-    output << "// Generated from maintained PICA equations and effect compositions.\n"
-              "// Regenerate with tools/renderer/tev_program/build_fragment_artifacts --uber.\n"
-              "#pragma once\n#include \"fast/renderer3ds/pica_fragment_artifact.h\"\nnamespace Fast::Oot3d {\n";
+    SpirvPackFile pack;
     unsigned modules = 0;
     for (unsigned lighting = 0; lighting < 2; ++lighting)
     for (unsigned integerTexture = 0; integerTexture < 2; ++integerTexture) {
@@ -140,7 +122,7 @@ static int BuildUberFamily(int argc, char** argv) {
             if (countOnly) { ++modules; continue; }
             const auto id = IdentifyPicaShaderSource(nri.Source);
             if (verify) {
-                Check(!FindPicaFragmentArtifact(Fast::Oot3d::kUberFragmentArtifacts, nri.Source, true).empty(),
+                Check(!FindPicaFragmentArtifact(Fast::Oot3d::UberFragmentArtifacts(), nri.Source, true).empty(),
                       "uber effect source changed: regenerate artifacts");
                 ++modules;
                 continue;
@@ -149,15 +131,9 @@ static int BuildUberFamily(int argc, char** argv) {
                                                            "uber_fragment", options);
             Check(compiled.GetCompilationStatus() == shaderc_compilation_status_success,
                   compiled.GetErrorMessage());
-            output << "inline constexpr uint32_t kUberFragmentSpirv" << modules << "[] = {\n";
-            unsigned column = 0;
-            for (auto word : compiled) {
-                output << "0x" << std::hex << word << "U,";
-                if (++column % 12 == 0) output << '\n';
-            }
-            output << std::dec << "\n};\n";
-            table << "{{" << id.Id << "ULL," << id.SecondaryHash << "ULL," << id.Size
-                  << "ULL},true,kUberFragmentSpirv" << modules << "},\n";
+            auto& entry = pack.Add(Fast::Renderer::SpirvPackKind::PicaFragment, {compiled.cbegin(), compiled.cend()});
+            entry.Flags = Fast::Renderer::kSpirvPackSeparateSamplers;
+            entry.Identity = {id.Id, id.SecondaryHash, id.Size};
             ++modules;
         }
     }
@@ -166,10 +142,7 @@ static int BuildUberFamily(int argc, char** argv) {
         std::cout << "uber_fragment_artifacts=" << modules << '\n';
         return 0;
     }
-    output << "inline const Fast::Renderer3ds::PicaFragmentArtifact kUberFragmentArtifacts[] = {\n"
-           << table.str() << "};\n} // namespace Fast::Oot3d\n";
-    std::ofstream file(argv[1], std::ios::binary | std::ios::trunc);
-    Check(bool(file) && bool(file << output.str()), "cannot write uber fragment artifacts");
+    pack.Write(argv[1]);
     std::cout << "uber_fragment_artifacts=" << modules << '\n';
     return 0;
 }
@@ -187,25 +160,15 @@ int main(int argc, char** argv) try {
     const bool countOnly = dumpSources || (argc == 2 && std::string_view(argv[1]) == "--count");
     const bool exact = argc == 3 && std::string_view(argv[1]) == "--check-exact";
     Check(!(exact && reuseBuiltins), "exact compiler verification must rebuild all programs");
-    Check(argc == 2 || exact || dumpSources, "usage: build_fragment_artifacts [--temporal|--toon] output.h | --check | --count | --sources directory | --check-exact output.h");
+    Check(argc == 2 || exact || dumpSources, "usage: build_fragment_artifacts [--temporal|--toon] output.spvpack | --check | --count | --sources directory | --check-exact output.spvpack");
     if (dumpSources) std::filesystem::create_directories(argv[2]);
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_1);
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
-    std::ostringstream output, table;
-    output << "// Generated from maintained PICA equations, not captured game shaders.\n"
-              "// Regenerate with tools/renderer/tev_program/build_fragment_artifacts.\n"
-              "// Vulkan 1.1, shaderc performance optimization; canonical and NRI interfaces.\n";
-    output << ((temporal || toon) ? "// Optional effect family, isolated from canonical programs.\n"
-                          "#pragma once\n#include \"fast/renderer3ds/pica_fragment_artifact.h\"\n"
-                        : "#pragma once\n#include \"pica_fragment_artifact.h\"\n");
-    output << ((temporal || toon) ? "namespace Fast::Oot3d {\n" : "namespace Fast::Renderer3ds {\n");
-    const char* symbol = toon ? "kToonFragment" : temporal ? "kTemporalFragment" : "kNativeFragment";
-    const std::span<const PicaFragmentArtifact> storedArtifacts = toon
-        ? std::span<const PicaFragmentArtifact>(Fast::Oot3d::kToonFragmentArtifacts) : temporal
-        ? std::span<const PicaFragmentArtifact>(Fast::Oot3d::kTemporalFragmentArtifacts)
-        : std::span<const PicaFragmentArtifact>(kNativeFragmentArtifacts);
+    SpirvPackFile pack;
+    const std::span<const PicaFragmentArtifact> storedArtifacts = toon ? Fast::Oot3d::ToonFragmentArtifacts()
+        : temporal ? Fast::Oot3d::TemporalFragmentArtifacts() : NativeFragmentArtifacts();
     std::unordered_set<std::string> emittedSources;
     unsigned modules = 0;
     unsigned materialCases = 0, toonStyleCases = 0;
@@ -453,35 +416,19 @@ int main(int argc, char** argv) try {
                       compiled.GetErrorMessage());
                 binary.assign(compiled.begin(), compiled.end());
             }
-            output << "inline constexpr uint32_t " << symbol << "Spirv" << modules << "[] = {\n";
-            unsigned column = 0;
-            for (auto word : binary) {
-                output << "0x" << std::hex << word << "U,";
-                if (++column % 12 == 0) output << '\n';
-            }
-            output << std::dec << "\n};\n";
-            table << "{{" << id.Id << "ULL," << id.SecondaryHash << "ULL," << id.Size
-                  << "ULL}," << (separate ? "true" : "false") << "," << symbol << "Spirv" << modules << "},\n";
+            auto& entry = pack.Add(Fast::Renderer::SpirvPackKind::PicaFragment, std::move(binary));
+            entry.Flags = separate ? Fast::Renderer::kSpirvPackSeparateSamplers : 0U;
+            entry.Identity = {id.Id, id.SecondaryHash, id.Size};
             ++modules;
         }
         }
     }
     if (countOnly) { std::cout << "unique_modules=" << modules << '\n'; return 0; }
     Check(modules == (toon ? 200U : temporal ? 40U : 16U), "unexpected finite fragment family size");
-    output << ((temporal || toon) ? "inline const Fast::Renderer3ds::PicaFragmentArtifact "
-                        : "inline const PicaFragmentArtifact ")
-           << symbol << "Artifacts[] = {\n" << table.str()
-           << ((temporal || toon) ? "};\n} // namespace Fast::Oot3d\n"
-                        : "};\n} // namespace Fast::Renderer3ds\n");
-    if (exact) {
-        std::ifstream file(argv[2], std::ios::binary);
-        Check(bool(file), "cannot read fragment artifacts");
-        const std::string existing((std::istreambuf_iterator<char>(file)), {});
-        Check(existing == output.str(), "fragment artifacts are stale; regenerate with the current compiler and generators");
-    } else if (!verify) {
-        std::ofstream file(argv[1], std::ios::binary | std::ios::trunc);
-        Check(bool(file) && bool(file << output.str()), "cannot write fragment artifacts");
-    }
+    if (exact)
+        Check(pack.Matches(argv[2]), "fragment artifacts are stale; regenerate with the current compiler and generators");
+    else if (!verify)
+        pack.Write(argv[1]);
     std::cout << (toon ? "toon_fragment_artifacts=" : temporal ? "temporal_fragment_artifacts=" : "native_fragment_artifacts=")
               << modules << " material_invariance_cases=" << materialCases
               << " toon_style_invariance_cases=" << toonStyleCases << '\n';

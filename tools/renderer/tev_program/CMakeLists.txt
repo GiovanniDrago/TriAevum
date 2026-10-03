@@ -253,6 +253,12 @@ target_sources(build_fragment_artifacts PRIVATE
     "${runtime}/src/fast/oot3d/pica_shader_pipeline_cache.cpp"
     "${runtime}/src/fast/oot3d/pica_rigid_motion.cpp"
     "${runtime}/src/fast/oot3d/pica_shader_instrumentation.cpp")
+include("${runtime}/cmake/spirv_pack.cmake")
+foreach(_pack renderer3ds/pica_native_fragment oot3d/pica_temporal_fragment oot3d/pica_toon_fragment
+              oot3d/pica_uber_fragment oot3d/pica_caster_fragment)
+    triaevum_add_spirv_pack(build_fragment_artifacts "${runtime}/src/fast/${_pack}_binaries.cpp"
+        "${runtime}/src/fast/${_pack}.spvpack")
+endforeach()
 add_test(NAME pica_fragment_artifacts COMMAND build_fragment_artifacts --check)
 add_test(NAME pica_temporal_fragment_artifacts COMMAND build_fragment_artifacts --temporal --check)
 add_test(NAME pica_toon_fragment_artifacts COMMAND build_fragment_artifacts --toon --check)
@@ -269,6 +275,8 @@ find_package(spdlog CONFIG REQUIRED)
 include("${runtime}/cmake/pass_shader_sources.cmake")
 add_executable(build_pass_artifacts build_pass_artifacts.cpp "${runtime}/src/fast/immerse/mxao_shader.cpp")
 triaevum_add_pass_shader_sources(build_pass_artifacts)
+triaevum_add_spirv_pack(build_pass_artifacts "${runtime}/src/fast/immerse/mxao_pass_binaries.cpp"
+    "${runtime}/src/fast/immerse/mxao_pass.spvpack")
 target_compile_features(build_pass_artifacts PRIVATE cxx_std_20)
 target_include_directories(build_pass_artifacts PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")
 target_link_libraries(build_pass_artifacts PRIVATE "${SHADERC_LIBRARY}" ${CMAKE_DL_LIBS})
@@ -331,6 +339,8 @@ add_executable(build_vertex_artifacts build_vertex_artifacts.cpp
     "${runtime}/src/fast/oot3d/pica_directional_shadow_caster.cpp"
     "${runtime}/src/fast/renderer3ds/pica_nri_shader_contract.cpp"
     "${runtime}/src/fast/renderer3ds/pica_surface_lighting.cpp")
+triaevum_add_spirv_pack(build_vertex_artifacts "${frontend}/oot3d_native_vertex_binaries.cpp"
+    "${frontend}/oot3d_native_vertex.spvpack")
 target_compile_features(build_vertex_artifacts PRIVATE cxx_std_20)
 target_include_directories(build_vertex_artifacts PRIVATE "${frontend}" "${runtime}/include"
     "${frontend}/../third_party/azahar_pica" "${SHADERC_INCLUDE_DIR}"

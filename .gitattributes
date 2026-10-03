@@ -1,3 +1,5 @@
 * text=auto eol=lf
 # Unified diffs must retain the space prefix on empty context lines.
 tools/oot3d/native_pica_frontend/instrumentation/*.patch -whitespace
+# Precompiled SPIR-V packs (fast/renderer/spirv_pack.h).
+*.spvpack binary

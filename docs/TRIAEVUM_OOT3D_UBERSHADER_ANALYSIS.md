@@ -831,8 +831,9 @@ Code ownership:
   configurations from constructed valid PICA states, not captured states. It
   verifies 128 material-data variations do not change those sources. Compilation
   uses the existing Vulkan 1.1 / shaderc performance-optimization contract.
-- `fast/renderer3ds/pica_native_fragment_binaries.h` is the generated SPIR-V
-  artifact, with all corresponding maintained generator sources in this repo.
+- `src/fast/renderer3ds/pica_native_fragment.spvpack` is the generated SPIR-V
+  artifact (a SPIR-V pack, see "SPIR-V packs" below), with all corresponding
+  maintained generator sources in this repo.
   It contains neither GPU-specific driver caches nor original-game shader binary
   payloads. Unlike the translated vertex artifact, these programs are compiled
   from the renderer's maintained PICA equations. Donor notices remain applicable.
@@ -848,9 +849,9 @@ Code ownership:
 Developer commands (never an end-user Forge step):
 
 ```powershell
-build_fragment_artifacts.exe runtime/three_ds_recomp/include/fast/renderer3ds/pica_native_fragment_binaries.h
+build_fragment_artifacts.exe runtime/three_ds_recomp/src/fast/renderer3ds/pica_native_fragment.spvpack
 build_fragment_artifacts.exe --check
-build_fragment_artifacts.exe --check-exact runtime/three_ds_recomp/include/fast/renderer3ds/pica_native_fragment_binaries.h
+build_fragment_artifacts.exe --check-exact runtime/three_ds_recomp/src/fast/renderer3ds/pica_native_fragment.spvpack
 ```
 
 `--check` recompiles the family, checks all stored source/interface identities,
@@ -906,7 +907,8 @@ Ownership and reproduction:
 - `tools/renderer/tev_program/build_vertex_artifacts.cpp` reads private SHBIN
   inputs, verifies translated GLSL against the existing translator, applies the
   existing typed temporal hooks and compiles at developer build time.
-- `oot3d_native_vertex_binaries.h` and its adjacent provenance JSON explicitly
+- `oot3d_native_vertex.spvpack` (embedded by `oot3d_native_vertex_binaries.cpp`)
+  and the adjacent `oot3d_native_vertex_binaries.provenance.json` explicitly
   identify translated title code. They are not a neutral shader cache.
 - `PicaDrawView::VertexArtifacts` borrows a title-owned immutable family.
   `pica_vertex_artifact.h` is the shared source-identity lookup; the backend
@@ -940,6 +942,35 @@ effective wrappers still take the existing resolver, never a mismatched binary.
 No FPS improvement, cross-platform GPU validation, complete interface coverage
 or release readiness is inferred from these parity tests.
 
+## SPIR-V packs (2026-10-03)
+
+Every precompiled family is a binary SPIR-V pack next to the source that
+embeds it, instead of SPIR-V words as C++ literals (about 114 MB of headers):
+
+| Family | Pack (`runtime/three_ds_recomp/src/fast/`) | Accessor |
+| --- | --- | --- |
+| Native fragment | `renderer3ds/pica_native_fragment.spvpack` | `Renderer3ds::NativeFragmentArtifacts()` |
+| Temporal fragment | `oot3d/pica_temporal_fragment.spvpack` | `Oot3d::TemporalFragmentArtifacts()` |
+| Toon fragment | `oot3d/pica_toon_fragment.spvpack` | `Oot3d::ToonFragmentArtifacts()` |
+| Uber effect fragment | `oot3d/pica_uber_fragment.spvpack` | `Oot3d::UberFragmentArtifacts()` |
+| Alpha shadow casters | `oot3d/pica_caster_fragment.spvpack` | `Oot3d::CasterFragmentArtifacts()` |
+| Renderer passes | `renderer/builtin_pass.spvpack` | `Renderer::BuiltinPassArtifacts()` |
+| iMMERSE MXAO | `immerse/mxao_pass.spvpack` | `Immerse::MxaoPassArtifacts()` |
+| Title vertex (translated title code) | `tools/oot3d/native_pica_frontend/oot3d_native_vertex.spvpack` | `TitleVertexArtifacts()`, `TitlePassArtifacts()` |
+
+`fast/renderer/spirv_pack.h` defines the format (an index of kind, stage,
+Vulkan target, flags, source identity, source text and ordered defines, then
+the modules; identical modules and strings are stored once) and its reader and
+writer. Each `*_binaries.cpp` embeds its pack with `#embed` and builds the
+artifact table once, on first use; the tables view the embedded bytes, and the
+`Find*Artifact` lookups are unchanged. `cmake/spirv_pack.cmake`
+(`triaevum_add_spirv_pack`) adds the source to a target with the pack as an
+object dependency; a compiler without `#embed` includes a byte list generated
+in the build tree. The generators write the packs (`--check-exact` compares
+the pack bytes). The packs were converted from the committed headers entry by
+entry, so the program receives the same SPIR-V words; `renderer_spirv_pack_tests`
+covers the format, malformed packs and every embedded family.
+
 ## Precompiled Renderer Passes (2026-09-14)
 
 The maintained `BuildBuiltinPassShaders()` catalogue is now compiled offline
@@ -960,7 +991,7 @@ draw order, effect parameters, depth/blend state or UI composition changes.
 Developer reproduction, no ROM or capture input:
 
 ```text
-build_pass_artifacts runtime/three_ds_recomp/include/fast/renderer/builtin_pass_binaries.h
+build_pass_artifacts runtime/three_ds_recomp/src/fast/renderer/builtin_pass.spvpack
 # Rebuild the tool after generation, then:
 build_pass_artifacts --check
 ```

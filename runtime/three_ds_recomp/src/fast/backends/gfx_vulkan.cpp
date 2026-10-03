@@ -720,9 +720,9 @@ void GfxRenderingAPIVulkan::PrepareNativePicaPrograms(
     using Item = Renderer3ds::PicaStartupProgramPart;
     std::vector<Item> items = Renderer3ds::PicaStartupProgramParts(
         vertices,
-        UsesAlwaysAvailablePrograms() ? std::span<const Renderer3ds::PicaFragmentArtifact>(Oot3d::kUberFragmentArtifacts)
+        UsesAlwaysAvailablePrograms() ? Oot3d::UberFragmentArtifacts()
                                       : std::span<const Renderer3ds::PicaFragmentArtifact>{},
-        Renderer3ds::kNativeFragmentArtifacts, device);
+        Renderer3ds::NativeFragmentArtifacts(), device);
     const auto samples = device.Samples;
     const auto prepare = [this, device](const Item& item) {
         return Renderer3ds::PreparePicaStartupProgramPart(mNriPicaPipelineBridge, item, device);
@@ -3732,7 +3732,7 @@ void GfxRenderingAPIVulkan::ConfigureNativePicaAotShaders() {
     mCompiledShaderCache.Configure(VulkanShaderCacheDirectory(), Renderer::ShadercCompilerContract());
     mNriInterop.Shaders().Configure(VulkanShaderCacheDirectory());
     // Alpha shadow casters of the parametric bases (built-in, finite).
-    mNriInterop.Shaders().AddArtifacts(Oot3d::kCasterFragmentArtifacts);
+    mNriInterop.Shaders().AddArtifacts(Oot3d::CasterFragmentArtifacts());
     mCompiledShaderCacheSummaryLogged = false;
     if (!mCompiledShaderCache.Enabled())
         SPDLOG_WARN("SPIR-V disk reuse disabled: cache directory or compiler identity unavailable");
@@ -3923,8 +3923,8 @@ void GfxRenderingAPIVulkan::FinishNativePicaAotShaders() {
         mPicaAotShaderSummaryLogged = true;
         std::fprintf(stderr, "TRIAEVUM_NATIVE_FRAGMENT_ARTIFACTS hits=%llu modules=%zu\n",
                      static_cast<unsigned long long>(mNativeFragmentArtifactHits),
-                     std::size(Renderer3ds::kNativeFragmentArtifacts) +
-                         std::size(Oot3d::kTemporalFragmentArtifacts) +
+                     Renderer3ds::NativeFragmentArtifacts().size() +
+                         Oot3d::TemporalFragmentArtifacts().size() +
                          Oot3d::ToonFragmentArtifacts().size());
         std::fprintf(stderr, "TRIAEVUM_NATIVE_VERTEX_ARTIFACTS hits=%llu\n",
                      static_cast<unsigned long long>(mNativeVertexArtifactHits));
@@ -3973,11 +3973,11 @@ GfxRenderingAPIVulkan::ResolveNativePicaShaderSpirv(
     if (!vertexShader && (stage == Oot3d::PicaAotShaderStage::Fragment ||
                           stage == Oot3d::PicaAotShaderStage::NriFragment)) {
         auto artifact = Renderer3ds::FindPicaFragmentArtifact(
-            Renderer3ds::kNativeFragmentArtifacts, source,
+            Renderer3ds::NativeFragmentArtifacts(), source,
             stage == Oot3d::PicaAotShaderStage::NriFragment);
         if (artifact.empty()) {
             artifact = Renderer3ds::FindPicaFragmentArtifact(
-                Oot3d::kTemporalFragmentArtifacts, source,
+                Oot3d::TemporalFragmentArtifacts(), source,
                 stage == Oot3d::PicaAotShaderStage::NriFragment);
         }
         if (artifact.empty()) {
@@ -4072,7 +4072,7 @@ GfxRenderingAPIVulkan::NativePicaShaderProgram* GfxRenderingAPIVulkan::ResolveUb
                 entry.NriApplied = composed.Applied;
                 if (composed.Applied) {
                     entry.Fragment = Renderer3ds::FindPicaFragmentArtifact(
-                        Oot3d::kUberFragmentArtifacts, composed.Source, true);
+                        Oot3d::UberFragmentArtifacts(), composed.Source, true);
                     entry.NriSource = Oot3d::IdentifyPicaAotShaderSource(composed.Source);
                 }
                 artifact = mUberSupersetArtifacts.emplace(artifactKey, entry).first;
@@ -4087,7 +4087,7 @@ GfxRenderingAPIVulkan::NativePicaShaderProgram* GfxRenderingAPIVulkan::ResolveUb
             const auto nri = Oot3d::BuildPicaNriFragmentShaderVariant(std::string(draw.UberFragmentShaderSource));
             nriApplied = nri.Applied;
             if (nri.Applied) {
-                fragment = Renderer3ds::FindPicaFragmentArtifact(Renderer3ds::kNativeFragmentArtifacts, nri.Source, true);
+                fragment = Renderer3ds::FindPicaFragmentArtifact(Renderer3ds::NativeFragmentArtifacts(), nri.Source, true);
                 shader.NriFragmentSource = Oot3d::IdentifyPicaAotShaderSource(nri.Source);
             }
         }
