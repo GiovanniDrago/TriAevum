@@ -5,6 +5,7 @@
 #include "fast/oot3d/grass_instance_layout.h"
 #include "fast/oot3d/grass_world_placement_cache.h"
 #include "fast/oot3d/toon_surface_response.h"
+#include "fast/renderer3ds/pica_geometry_guide.h"
 #include "fast/renderer3ds/pica_surface_lighting_shader.h"
 #include "fast/renderer3ds/virtual_shadow_receiver_shader.h"
 
@@ -499,6 +500,7 @@ void main() {
 
 std::string BuildGrassFragmentShader() {
     return std::string("#version 450\n") +
+            std::string(Renderer3ds::PicaGeometryGuideShaderLibrary()) +
             std::string(kToonSurfaceResponseShader) +
             std::string(kGrassDistantTuftShader) + R"glsl(
 layout(location=0) in vec4 blade_color;
@@ -553,8 +555,13 @@ layout(location=1) out vec4 out_normal_guide;
 layout(location=2) out vec4 out_material_guide;
 layout(location=3) out vec4 out_rigid_motion;
 layout(location=4) out vec4 out_ambient_guide;
+layout(location=6) out uvec4 out_geometry_guide;
 #endif
 void main() {
+#if GRASS_AUXILIARY_OUTPUTS
+    // Before any discard: derivatives need the whole quad.
+    vec3 blade_face_dx = dFdx(blade_view_direction), blade_face_dy = dFdy(blade_view_direction);
+#endif
     // Blade-local stipple, not frame/screen-space noise. Discard before every
     // guide/depth write; fading geometry cannot leave invisible occluders.
     if (lod_visibility < 1.0) {
@@ -574,6 +581,8 @@ void main() {
             oot3d_toon_rim(blade_normal_guide.xyz * 2.0 - 1.0, blade_view_direction, toon), 0.0, 1.0);
 #if GRASS_AUXILIARY_OUTPUTS
     out_normal_guide = blade_normal_guide;
+    out_geometry_guide = uvec4(0u, pica_geometry_encode_normal(pica_geometry_face_normal(
+        blade_view_direction, blade_face_dx, blade_face_dy)), 2u, 0u);
     // With the placement's previous frame the blade writes exact motion and
     // keeps its temporal history. Without it, the motion pass reconstructs
     // camera motion from depth and the reactive mask rejects the history,

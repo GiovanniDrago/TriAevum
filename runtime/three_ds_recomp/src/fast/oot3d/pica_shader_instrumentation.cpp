@@ -1,6 +1,7 @@
 #include "fast/oot3d/pica_shader_instrumentation.h"
 #include "fast/renderer3ds/point_shadow_map.h"
 #include "fast/renderer3ds/pica_surface_lighting.h"
+#include "fast/renderer3ds/pica_geometry_guide.h"
 #include "fast/renderer3ds/pica_material_guide.h"
 
 #include <algorithm>
@@ -723,6 +724,7 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
         !ContainsIdentifier(request.Source, "pica_rigid_motion_guide") &&
         !HasOutputAtLocation(request.Source, 3U);
 
+    bool viewDerivativesInserted = false;
     const auto ensureNormalGuide = [&](Decision::NormalWriter writer) {
         if (normalAvailable) {
             return true;
@@ -787,6 +789,7 @@ vec3 oot3d_normal_guide_surface(vec4 q, vec3 to_eye) {
                 if (prologueDerivatives) {
                     insertions.push_back({result.Hooks.Offset(PicaShaderHook::MainPrologue),
                                           std::string(kViewDerivativesPrologue)});
+                    viewDerivativesInserted = true;
                     result.FragmentKey = SaltedVariantKey(result.FragmentKey, "OOT3D_NORMAL_GUIDE_VIEW_DERIVATIVES_V1");
                 }
             }
@@ -890,32 +893,77 @@ vec3 oot3d_normal_guide_typed(vec3 authored, vec3 native_normal) {
         }
     }
 
-    if (HasPicaShaderInstrumentationFeature(request.RequestedFeatures,
+    // Geometry guide (location 6, uvec4): R/A native normal and depth for the
+    // outlines, G/B the visible surface's face normal and kind. One output,
+    // per-channel write masks select what each draw stores.
+    const bool outlineGeometry =
+        HasPicaShaderInstrumentationFeature(request.RequestedFeatures,
                                             PicaShaderInstrumentationFeature::OutlineGeometryGuide) &&
         request.Draw.DepthTestEnabled && request.Draw.DepthWriteEnabled &&
         replacesDestinationRgb &&
         request.Draw.FragmentOperationMode == 0U && (request.Draw.ColorWriteMask & 7U) != 0U &&
         request.Draw.CompositionDomain == ::Oot3d::Renderer::PicaCompositionDomain::Scene &&
-        !HasOutputAtLocation(request.Source, 6U) && ensureNormalGuide(Decision::NormalWriter::Outline)) {
-        declarations += "layout(location=6) out vec4 pica_outline_geometry_guide;\n";
+        !HasOutputAtLocation(request.Source, 6U) && ensureNormalGuide(Decision::NormalWriter::Outline);
+    // The face normal follows the scene depth: every draw that writes depth
+    // and the normal guide (the pipeline's normal-guide write rule).
+    const bool faceNormal =
+        HasPicaShaderInstrumentationFeature(request.RequestedFeatures,
+                                            PicaShaderInstrumentationFeature::FaceNormalGuide) &&
+        result.Hooks.Valid() && request.Draw.DepthTestEnabled && request.Draw.DepthWriteEnabled &&
+        request.Draw.FragmentOperationMode != 3U && (request.Draw.ColorWriteMask & 7U) != 0U &&
+        request.Draw.CompositionDomain == ::Oot3d::Renderer::PicaCompositionDomain::Scene &&
+        !HasOutputAtLocation(request.Source, 6U);
+    if (outlineGeometry || faceNormal) {
+        declarations += "layout(location=6) out uvec4 pica_geometry_guide;\n";
+        declarations += Renderer3ds::PicaGeometryGuideShaderLibrary();
+        epilogue += "    pica_geometry_guide = uvec4(0u, 0u, 0u, 0x3F800000u);\n";
+    }
+    const bool rasterInitializer = request.Draw.DepthCompare == ::Oot3d::Renderer::PicaCompareFunction::Always;
+    if (outlineGeometry) {
         decisions.Set(Decision::Outline);
-        if (request.Draw.DepthCompare == ::Oot3d::Renderer::PicaCompareFunction::Always)
+        if (rasterInitializer)
             decisions.Set(Decision::OutlineClear);
         const auto depth = AnalyzePicaFragmentOutputContract(request.Source).Depth;
-        if (request.Draw.DepthCompare == ::Oot3d::Renderer::PicaCompareFunction::Always) {
+        if (rasterInitializer) {
             // Raster color/depth initialization is not a geometric surface.
-            epilogue += "    pica_outline_geometry_guide = vec4(0.0, 0.0, 0.0, 1.0);\n";
-            result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_OUTLINE_CANVAS_CLEAR_V2");
+            result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_OUTLINE_CANVAS_CLEAR_V3");
         } else {
             epilogue += pbr
-                ? "    pica_outline_geometry_guide = vec4(pbr_geometric_normal, "
-                : "    pica_outline_geometry_guide = vec4(pica_normal_guide.rgb * 2.0 - 1.0, ";
-            epilogue += depth == ::Oot3d::Renderer::PicaFragmentDepthOutput::ExplicitNative ? "gl_FragDepth);\n"
-                                                                                       : "gl_FragCoord.z);\n";
-            result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_OUTLINE_GEOMETRY_GUIDE_V2");
+                ? "    pica_geometry_guide.r = pica_geometry_encode_normal(pbr_geometric_normal);\n"
+                : "    pica_geometry_guide.r = pica_geometry_encode_normal(pica_normal_guide.rgb * 2.0 - 1.0);\n";
+            epilogue += depth == ::Oot3d::Renderer::PicaFragmentDepthOutput::ExplicitNative
+                ? "    pica_geometry_guide.a = floatBitsToUint(gl_FragDepth);\n"
+                : "    pica_geometry_guide.a = floatBitsToUint(gl_FragCoord.z);\n";
+            result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_OUTLINE_GEOMETRY_GUIDE_V3");
         }
         result.Outputs.WritesOutlineGeometryGuide = true;
         apply(PicaShaderInstrumentationFeature::OutlineGeometryGuide);
+    }
+    if (faceNormal) {
+        decisions.Set(Decision::FaceNormal);
+        if (!rasterInitializer) {
+            // Derivatives of the view vector are those of the view-space
+            // position (negated); taken before the native alpha test when the
+            // program has a main prologue. Without a view vector the kind
+            // still marks the surface and the normal stays unknown.
+            if (result.Hooks.Has(PicaShaderSemantic::ViewVector)) {
+                const bool prologue = result.Hooks.Supports(PicaShaderHook::MainPrologue);
+                if (prologue && !viewDerivativesInserted) {
+                    insertions.push_back({result.Hooks.Offset(PicaShaderHook::MainPrologue),
+                                          std::string(kViewDerivativesPrologue)});
+                    viewDerivativesInserted = true;
+                }
+                epilogue += prologue
+                    ? "    pica_geometry_guide.g = pica_geometry_encode_normal(\n"
+                      "        pica_geometry_face_normal(pica_view, oot3d_view_dx, oot3d_view_dy));\n"
+                    : "    pica_geometry_guide.g = pica_geometry_encode_normal(\n"
+                      "        pica_geometry_face_normal(pica_view, dFdx(pica_view), dFdy(pica_view)));\n";
+            }
+            epilogue += "    pica_geometry_guide.b = 1u;\n";
+        }
+        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_FACE_NORMAL_GUIDE_V1");
+        result.Outputs.WritesFaceNormalGuide = true;
+        apply(PicaShaderInstrumentationFeature::FaceNormalGuide);
     }
 
     // Global illumination surface guide: depth-writing scene surfaces publish

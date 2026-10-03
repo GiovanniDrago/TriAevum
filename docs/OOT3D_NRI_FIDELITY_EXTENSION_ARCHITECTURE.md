@@ -159,6 +159,36 @@ Authentic cold start still allocates only native surfaces. See
 `TRIAEVUM_F2_NATIVE_PRESENTATION.md` for the isolated attachment lifecycle owner
 and repeated-switch validation; turning effects Off is not target invalidation.
 
+2026-10-03: location 6 becomes the shared **geometry guide**
+(`R32G32B32A32_UINT`, `renderer3ds/pica_geometry_guide.h`). With global
+illumination the instrumented layout already uses eight color attachments, the
+device maximum, so the face normal every effect needs could not get its own
+attachment: it shares this one. R holds the native normal before relief and
+normal maps, octahedral unorm16x2 (0 = no native surface); A the native window
+depth as float bits. Both keep the outline contract above: written only by
+native depth-tested, depth-writing, RGB-replacing scene geometry. G holds the
+face normal of the visible surface, from the screen derivatives of the
+rasterized triangle's view-space position (taken in the main prologue, before
+the native alpha test), view space, oriented toward the eye, octahedral
+unorm16x2 (0 = unknown, for programs without a view vector); B its kind (0 none,
+1 native scene, 2 extension geometry). G and B follow the scene depth: every
+draw that writes depth and the normal guide writes them, blended depth writers
+and Grass included (Grass writes G/B only). Per-channel write masks keep the two
+pairs independent in one output. The format is integer: never blended, and a
+multisample resolve keeps one sample (dynamic rendering resolves attachment 6
+with `SAMPLE_ZERO`) instead of averaging packed values. The cleared value
+(0, 0, 0, bits of 1.0) equals the previous float clear. Octahedral round trip:
+at most 0.004 degrees, far below the 0.1 degrees the GI self-intersection test
+tolerates (RGB8 normals: 0.1-0.2 degrees). Outline readers decode R and A;
+their results are unchanged. Readers fetch the guide without a sampler
+(`utexture2D`, `GL_EXT_samplerless_texture_functions`): a linear sampler may
+not be paired with an integer view. A pass whose shader declares the guide in
+a frame that has none binds a 1x1 cleared integer image, never the color
+source. The face normal is published when a reader
+requests `FaceNormalGuide`; until the AO and GI readers move to it (each with
+its own captures), `OOT3D_GRAPHICS_FACE_NORMAL_GUIDE=1` requests it for
+diagnostics.
+
 2026-09-07: `OutlineGeometryGuide` appends location 6 (`RGBA32_SFLOAT` native
 normal/window depth), making the instrumented ABI seven color attachments.
 Only native depth-tested/depth-writing, RGB-replacing scene geometry publishes

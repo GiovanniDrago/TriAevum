@@ -1,6 +1,7 @@
 #ifdef ENABLE_OOT3D_VULKAN
 
 #include "fast/backends/gfx_vulkan.h"
+#include "fast/renderer3ds/pica_geometry_guide.h"
 #include "fast/renderer3ds/pica_native_fragment_binaries.h"
 #include "fast/oot3d/pica_temporal_fragment_binaries.h"
 #include "fast/oot3d/pica_toon_fragment_artifact.h"
@@ -1437,6 +1438,7 @@ void GfxRenderingAPIVulkan::Shutdown() {
         }
         mOot3dCachedVertexBuffers.clear();
         DestroyTexture(mFallbackTexture);
+        DestroyTexture(mGeometryGuideFallback);
         for (VkSampler sampler : mRetiredSamplers) {
             vkDestroySampler(mDevice, sampler, nullptr);
         }
@@ -4245,6 +4247,54 @@ void GfxRenderingAPIVulkan::CreateFrameResources() {
 void GfxRenderingAPIVulkan::CreateFallbackTexture() {
     constexpr std::array<uint8_t, 4> white = { 255, 255, 255, 255 };
     CreateTextureImage(mFallbackTexture, white.data(), 1, 1);
+
+    TextureRecord& guide = mGeometryGuideFallback;
+    guide.Width = 1;
+    guide.Height = 1;
+    guide.MipLevels = 1;
+    VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent = { 1, 1, 1 };
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R32G32B32A32_UINT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    CheckVk(vkCreateImage(mDevice, &imageInfo, nullptr, &guide.Image), "vkCreateImage(geometry guide fallback)");
+    guide.NriImage = guide.Image;
+    VkMemoryRequirements requirements{};
+    vkGetImageMemoryRequirements(mDevice, guide.Image, &requirements);
+    VkMemoryAllocateInfo allocationInfo{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    allocationInfo.allocationSize = requirements.size;
+    allocationInfo.memoryTypeIndex = FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    CheckVk(vkAllocateMemory(mDevice, &allocationInfo, nullptr, &guide.Memory),
+            "vkAllocateMemory(geometry guide fallback)");
+    CheckVk(vkBindImageMemory(mDevice, guide.Image, guide.Memory, 0), "vkBindImageMemory(geometry guide fallback)");
+    TransitionImageLayout(guide.Image, 0, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkCommandBuffer clearCommand = BeginImmediateCommands();
+    VkClearColorValue cleared{};
+    for (size_t channel = 0; channel < 4; ++channel)
+        cleared.uint32[channel] = Fast::Renderer3ds::kPicaGeometryGuideClear[channel];
+    VkImageSubresourceRange range{};
+    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    range.levelCount = 1;
+    range.layerCount = 1;
+    vkCmdClearColorImage(clearCommand, guide.Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cleared, 1, &range);
+    EndImmediateCommands(clearCommand);
+    TransitionImageLayout(guide.Image, 0, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    viewInfo.image = guide.Image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R32G32B32A32_UINT;
+    viewInfo.subresourceRange = range;
+    CheckVk(vkCreateImageView(mDevice, &viewInfo, nullptr, &guide.View),
+            "vkCreateImageView(geometry guide fallback)");
+    guide.ImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    guide.Uploaded = true;
 }
 
 void GfxRenderingAPIVulkan::CreateOot3dShadow2dRenderPass() {

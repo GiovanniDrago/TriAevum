@@ -2,6 +2,7 @@
 
 #include "fast/oot3d/pica_directional_shadow_lighting.h"
 #include "fast/oot3d/pica_reactive_mask.h"
+#include "fast/renderer3ds/pica_geometry_guide.h"
 #include "fast/oot3d/pica_shader_instrumentation.h"
 #include "fast/oot3d/pica_toon_shader.h"
 #include "fast/renderer3ds/pica_material_guide.h"
@@ -237,12 +238,13 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
     // Declarations: every output, input and function any branch uses.
     std::string declarations = "\n// OOT3D always-available effect layer\n"
         "#define OOT3D_U(bit) ((oot3d_uber.control.x & (bit)) != 0u)\n";
+    declarations += Renderer3ds::PicaGeometryGuideShaderLibrary();
     declarations +=
         "layout(location=1) out vec4 pica_normal_guide;\n"
         "layout(location=2) out vec4 pica_material_guide;\n"
         "layout(location=4) out vec4 pica_ambient_guide;\n"
         "layout(location=5) out vec4 pica_fog_guide;\n"
-        "layout(location=6) out vec4 pica_outline_geometry_guide;\n"
+        "layout(location=6) out uvec4 pica_geometry_guide;\n"
         "layout(location=7) out vec4 pica_diffuse_albedo_guide;\n";
     if (request.TemporalInputs) {
         declarations +=
@@ -354,13 +356,18 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
            NormalWrite(surface, base.MaterialNormal) + "    }\n";
     end += "    if (" + Is(kNormalAtShift, Decision::NormalWriter::Outline) + ") {\n" +
            NormalWrite(surface, base.MaterialNormal) + "    }\n";
-    end += Guarded(Bit(Decision::Outline) + " && " + Bit(Decision::OutlineClear),
-                   "    pica_outline_geometry_guide = vec4(0.0, 0.0, 0.0, 1.0);\n");
+    end += "    pica_geometry_guide = uvec4(0u, 0u, 0u, 0x3F800000u);\n";
     end += Guarded(Bit(Decision::Outline) + " && !" + Bit(Decision::OutlineClear) + " && !" + Bit(Decision::Pbr),
-                   "    pica_outline_geometry_guide = vec4(pica_normal_guide.rgb * 2.0 - 1.0, " + depth + ");\n");
+                   "    pica_geometry_guide.r = pica_geometry_encode_normal(pica_normal_guide.rgb * 2.0 - 1.0);\n"
+                   "    pica_geometry_guide.a = floatBitsToUint(" + depth + ");\n");
     if (surface)
         end += Guarded(Bit(Decision::Outline) + " && !" + Bit(Decision::OutlineClear) + " && " + Bit(Decision::Pbr),
-                       "    pica_outline_geometry_guide = vec4(pbr_geometric_normal, " + depth + ");\n");
+                       "    pica_geometry_guide.r = pica_geometry_encode_normal(pbr_geometric_normal);\n"
+                       "    pica_geometry_guide.a = floatBitsToUint(" + depth + ");\n");
+    end += Guarded(Bit(Decision::FaceNormal),
+                   "    pica_geometry_guide.g = pica_geometry_encode_normal(\n"
+                   "        pica_geometry_face_normal(pica_view, oot3d_view_dx, oot3d_view_dy));\n"
+                   "    pica_geometry_guide.b = 1u;\n");
     {
         std::string albedo =
             "    float oot3d_albedo_coverage = " + Is(kCoverageShift, Decision::Coverage::One) + " ? 1.0 : " +

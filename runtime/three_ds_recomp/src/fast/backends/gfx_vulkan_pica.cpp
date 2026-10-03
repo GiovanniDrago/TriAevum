@@ -791,7 +791,7 @@ void GfxRenderingAPIVulkan::CreateNativePicaRenderPass() {
         constexpr std::array<VkFormat, Oot3d::kPicaColorAttachmentCount> colorFormats{
             VK_FORMAT_R8G8B8A8_UNORM,      VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
             VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
-            VK_FORMAT_R32G32B32A32_SFLOAT
+            VK_FORMAT_R32G32B32A32_UINT
         };
         for (uint32_t index = 0; index < colorCount; ++index) {
             attachments[index].format = colorFormats[index];
@@ -1130,7 +1130,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaRenderTarget(
                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                     VK_IMAGE_USAGE_SAMPLED_BIT,
                 VK_SAMPLE_COUNT_1_BIT, target.FogGuideImage, target.FogGuideMemory);
-            createImage(VK_FORMAT_R32G32B32A32_SFLOAT,
+            createImage(VK_FORMAT_R32G32B32A32_UINT,
                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                             VK_IMAGE_USAGE_SAMPLED_BIT,
                         VK_SAMPLE_COUNT_1_BIT, target.OutlineGeometryGuideImage, target.OutlineGeometryGuideMemory);
@@ -1178,7 +1178,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaRenderTarget(
                     target.MsaaAmbientGuideMemory);
                 createImage(VK_FORMAT_R8G8B8A8_UNORM, msaaColorUsage,
                     mNativePicaSampleCount, target.MsaaFogGuideImage, target.MsaaFogGuideMemory);
-                createImage(VK_FORMAT_R32G32B32A32_SFLOAT, msaaColorUsage, mNativePicaSampleCount,
+                createImage(VK_FORMAT_R32G32B32A32_UINT, msaaColorUsage, mNativePicaSampleCount,
                             target.MsaaOutlineGeometryGuideImage, target.MsaaOutlineGeometryGuideMemory);
             }
             createImage(
@@ -1223,7 +1223,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaRenderTarget(
         CheckNativeVk(vkCreateImageView(mDevice, &view, nullptr, &target.FogGuideView),
                       "vkCreateImageView(native PICA fog guide)");
         view.image = target.OutlineGeometryGuideImage;
-        view.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        view.format = VK_FORMAT_R32G32B32A32_UINT;
         CheckNativeVk(vkCreateImageView(mDevice, &view, nullptr, &target.OutlineGeometryGuideView),
                       "vkCreateImageView(native PICA outline geometry guide)");
     }
@@ -1268,7 +1268,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaRenderTarget(
             CheckNativeVk(vkCreateImageView(mDevice, &view, nullptr, &target.MsaaFogGuideView),
                           "vkCreateImageView(native PICA MSAA fog guide)");
             view.image = target.MsaaOutlineGeometryGuideImage;
-            view.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+            view.format = VK_FORMAT_R32G32B32A32_UINT;
             CheckNativeVk(vkCreateImageView(mDevice, &view, nullptr, &target.MsaaOutlineGeometryGuideView),
                           "vkCreateImageView(native PICA MSAA outline geometry guide)");
         }
@@ -1685,7 +1685,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaRenderTarget(
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                        VK_IMAGE_USAGE_SAMPLED_BIT,
                    Oot3d::SceneSurfaceKind::FogGuide, key.ColorPhysicalAddress);
-    publishSurface(inserted.OutlineGeometryGuideImage, VK_FORMAT_R32G32B32A32_SFLOAT,
+    publishSurface(inserted.OutlineGeometryGuideImage, VK_FORMAT_R32G32B32A32_UINT,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                    Oot3d::SceneSurfaceKind::OutlineGeometryGuide, key.ColorPhysicalAddress);
     if (key.RenderTargetNamespace == 0U) {
@@ -2481,7 +2481,7 @@ void GfxRenderingAPIVulkan::BeginNativePicaRenderPass(
         renderingTarget.ColorFormats = { VK_FORMAT_R8G8B8A8_UNORM,     VK_FORMAT_R8G8B8A8_UNORM,
                                          VK_FORMAT_R8G8B8A8_UNORM,     VK_FORMAT_R16G16B16A16_SFLOAT,
                                          VK_FORMAT_R8G8B8A8_UNORM,     VK_FORMAT_R8G8B8A8_UNORM,
-                                         VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R16G16B16A16_UNORM };
+                                         VK_FORMAT_R32G32B32A32_UINT, VK_FORMAT_R16G16B16A16_UNORM };
         renderingTarget.DepthFormat = mDepthFormat;
         renderingTarget.ColorAttachmentCount =
             mFramePicaAttachmentRequirements.ColorAttachmentCount();
@@ -8252,7 +8252,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 effectGuideTarget->FogGuideImage, effectGuideTarget->FogGuideView,
                 VK_FORMAT_R8G8B8A8_UNORM);
             bindGuide(Oot3d::EffectResource::OutlineGeometryGuide, effectGuideTarget->OutlineGeometryGuideImage,
-                      effectGuideTarget->OutlineGeometryGuideView, VK_FORMAT_R32G32B32A32_SFLOAT);
+                      effectGuideTarget->OutlineGeometryGuideView, VK_FORMAT_R32G32B32A32_UINT);
             bindGuide(Oot3d::EffectResource::DiffuseAlbedoGuide, effectGuideTarget->DiffuseAlbedoGuideImage,
                       effectGuideTarget->DiffuseAlbedoGuideView, VK_FORMAT_R16G16B16A16_UNORM);
         }
@@ -9585,8 +9585,10 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     compositeAmbientFormat, compositeDepthImage, compositeDepthFormat,
                     optionalCompositeImage(Oot3d::EffectResource::FogGuide),
                     optionalCompositeFormat(Oot3d::EffectResource::FogGuide),
-                    optionalCompositeImage(Oot3d::EffectResource::OutlineGeometryGuide),
-                    optionalCompositeFormat(Oot3d::EffectResource::OutlineGeometryGuide),
+                    compositeReads.Declares(Oot3d::EffectResource::OutlineGeometryGuide)
+                        ? optionalCompositeImage(Oot3d::EffectResource::OutlineGeometryGuide)
+                        : mGeometryGuideFallback.Image,
+                    VK_FORMAT_R32G32B32A32_UINT,
                     optionalCompositeImage(Oot3d::EffectResource::DiffuseIllumination),
                     optionalCompositeFormat(Oot3d::EffectResource::DiffuseIllumination),
                     optionalCompositeImage(Oot3d::EffectResource::DiffuseAlbedoGuide),
@@ -10357,6 +10359,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             std::array<VkFormat, 11> compositionFormats{};
             compositionImages.fill(composedImage);
             compositionFormats.fill(composedFormat);
+            // The integer geometry guide cannot fall back to the color source.
+            compositionImages[10] = mGeometryGuideFallback.Image;
+            compositionFormats[10] = VK_FORMAT_R32G32B32A32_UINT;
             Oot3d::PicaScanoutPolicyInput compositionPolicy{};
             compositionPolicy.TransferFlags = 0U;
             compositionPolicy.AaMode = 0U;
@@ -10636,6 +10641,10 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         imageInfos[0].imageView = scanoutView;
         imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         imageInfos.fill(imageInfos[0]);
+        // The integer geometry guide cannot fall back to the color source.
+        scanoutImages[10] = mGeometryGuideFallback.Image;
+        scanoutFormats[10] = VK_FORMAT_R32G32B32A32_UINT;
+        imageInfos[10].imageView = mGeometryGuideFallback.View;
         constexpr std::array<Oot3d::EffectResource, 11> scanoutSlotResources{
             Oot3d::EffectResource::Count,
             Oot3d::EffectResource::AmbientOcclusion,

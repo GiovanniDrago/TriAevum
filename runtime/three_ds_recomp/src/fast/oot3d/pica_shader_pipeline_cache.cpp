@@ -2,6 +2,7 @@
 
 #include "fast/oot3d/pica_rigid_motion.h"
 
+#include <cstdlib>
 #include <bit>
 #include <cstddef>
 #include <functional>
@@ -13,6 +14,13 @@
 
 namespace Fast::Oot3d {
 namespace {
+bool FaceNormalGuideDiagnosticRequested() {
+    static const bool requested = [] {
+        const char* value = std::getenv("OOT3D_GRAPHICS_FACE_NORMAL_GUIDE");
+        return value != nullptr && value[0] == '1';
+    }();
+    return requested;
+}
 
 void HashCombine(size_t& seed, size_t value) noexcept {
     seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6U) +
@@ -194,6 +202,13 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
         effects.ToonStyle.OutlineEnabled) {
         features |=
             PicaShaderInstrumentationFeature::NativeFogGuide | PicaShaderInstrumentationFeature::OutlineGeometryGuide;
+    }
+    // The face normal of the visible surface: requested by its readers; until
+    // one exists, OOT3D_GRAPHICS_FACE_NORMAL_GUIDE=1 publishes it (diagnostics)
+    // for draws that already publish guides.
+    if (sceneDraw && request.Draw.DepthWriteEnabled && features != PicaShaderInstrumentationFeature::None &&
+        FaceNormalGuideDiagnosticRequested()) {
+        features |= PicaShaderInstrumentationFeature::FaceNormalGuide;
     }
     // GI specular is a reflection source resolved through the same guide.
     if (sceneDraw && (effects.Reflections != ReflectionMode::Off ||
@@ -418,6 +433,8 @@ PicaShaderInstrumentationFeature ResolvePicaShaderProfileFeatures(
         features |=
             PicaShaderInstrumentationFeature::NativeFogGuide | PicaShaderInstrumentationFeature::OutlineGeometryGuide;
     }
+    if (features != PicaShaderInstrumentationFeature::None && FaceNormalGuideDiagnosticRequested())
+        features |= PicaShaderInstrumentationFeature::FaceNormalGuide;
     if (effects.Reflections != ReflectionMode::Off ||
         (effects.GlobalIllumination.Mode != GlobalIlluminationMode::Off &&
          effects.GlobalIllumination.Specular)) {

@@ -173,7 +173,7 @@ void GfxRenderingAPIVulkan::PrepareNativePicaBaseGuides(NativePicaRenderTarget& 
         { target.FogGuideImage, target.FogGuideMemory, target.FogGuideView, VK_FORMAT_R8G8B8A8_UNORM, invalid,
           Kind::FogGuide },
         { target.OutlineGeometryGuideImage, target.OutlineGeometryGuideMemory, target.OutlineGeometryGuideView,
-          VK_FORMAT_R32G32B32A32_SFLOAT, invalid, Kind::OutlineGeometryGuide },
+          VK_FORMAT_R32G32B32A32_UINT, invalid, Kind::OutlineGeometryGuide },
         { target.MsaaNormalGuideImage, target.MsaaNormalGuideMemory, target.MsaaNormalGuideView,
           VK_FORMAT_R8G8B8A8_UNORM, normal, Kind::NormalGuide },
         { target.MsaaMaterialGuideImage, target.MsaaMaterialGuideMemory, target.MsaaMaterialGuideView,
@@ -185,7 +185,7 @@ void GfxRenderingAPIVulkan::PrepareNativePicaBaseGuides(NativePicaRenderTarget& 
         { target.MsaaFogGuideImage, target.MsaaFogGuideMemory, target.MsaaFogGuideView, VK_FORMAT_R8G8B8A8_UNORM,
           invalid, Kind::FogGuide },
         { target.MsaaOutlineGeometryGuideImage, target.MsaaOutlineGeometryGuideMemory,
-          target.MsaaOutlineGeometryGuideView, VK_FORMAT_R32G32B32A32_SFLOAT, invalid, Kind::OutlineGeometryGuide },
+          target.MsaaOutlineGeometryGuideView, VK_FORMAT_R32G32B32A32_UINT, invalid, Kind::OutlineGeometryGuide },
     } };
     const uint32_t count = mNativePicaSampleCount == VK_SAMPLE_COUNT_1_BIT ? 6U : 12U;
     std::vector<VkImageMemoryBarrier> barriers;

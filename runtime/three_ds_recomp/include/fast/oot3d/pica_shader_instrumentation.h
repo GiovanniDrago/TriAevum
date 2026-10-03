@@ -42,6 +42,9 @@ enum class PicaShaderInstrumentationFeature : uint32_t {
     NormalGuideTextureRelief = 1U << 15U,
     // Point lights attenuated by their shadow cube maps (per-pixel lighting).
     PointShadowLighting = 1U << 16U,
+    // The face normal and kind of the visible surface in the geometry guide
+    // (renderer3ds/pica_geometry_guide.h), from every depth-writing draw.
+    FaceNormalGuide = 1U << 17U,
 };
 
 constexpr PicaShaderInstrumentationFeature operator|(PicaShaderInstrumentationFeature left,
@@ -110,7 +113,10 @@ struct PicaFragmentInstrumentationOutputLayout {
     bool SceneDomainAlbedoOverlay = false;
     bool WritesAmbientGuide = false;
     bool WritesFogGuide = false;
+    // Geometry guide channels: native normal and depth (outlines), and
+    // the visible surface's face normal and kind.
     bool WritesOutlineGeometryGuide = false;
+    bool WritesFaceNormalGuide = false;
     bool WritesDiffuseAlbedoGuide = false;
 
     auto operator<=>(

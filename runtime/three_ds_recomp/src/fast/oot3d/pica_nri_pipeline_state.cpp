@@ -306,7 +306,11 @@ Renderer3ds::NriPicaGraphicsPipelineDesc BuildPicaNriPipelineState(
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     }
     VkPipelineColorBlendAttachmentState outlineGeometryAttachment{};
-    outlineGeometryAttachment.colorWriteMask = outputs.WritesOutlineGeometryGuide ? 0xfU : 0U;
+    // Integer channels, never blended: R/A native normal and depth, G/B the
+    // visible surface's face normal and kind.
+    outlineGeometryAttachment.colorWriteMask =
+        (outputs.WritesOutlineGeometryGuide ? VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_A_BIT : 0U) |
+        (outputs.WritesFaceNormalGuide ? VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT : 0U);
     VkPipelineColorBlendAttachmentState fogAttachment{};
     fogAttachment.colorWriteMask = outputs.WritesFogGuide ? 0xfU : 0U;
     VkPipelineColorBlendAttachmentState albedoAttachment{};
@@ -343,7 +347,7 @@ Renderer3ds::NriPicaGraphicsPipelineDesc BuildPicaNriPipelineState(
     result.ColorFormats = {
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
         VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM,
-        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R16G16B16A16_UNORM};
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R32G32B32A32_UINT, VK_FORMAT_R16G16B16A16_UNORM};
     result.ColorAttachmentCount = attachments.ColorAttachmentCount();
     result.DepthStencilFormat = depthFormat;
     return result;

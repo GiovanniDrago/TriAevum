@@ -1,5 +1,7 @@
 #include "fast/oot3d/toon_outline_shader.h"
 
+#include "fast/renderer3ds/pica_geometry_guide.h"
+
 namespace Fast::Oot3d {
 
 std::string ToonOutlineShaderLibrary() {
@@ -150,7 +152,7 @@ float oot3d_toon_outline_edge(vec2 uv, vec2 inverse_size, float width,
 }
 
 std::string ToonOutlineComputeShaderLibrary() {
-    return std::string(R"glsl(
+    return std::string(Renderer3ds::PicaGeometryGuideShaderLibrary()) + std::string(R"glsl(
 vec3 oot3d_outline_srgb_to_linear(vec3 value) {
     value=max(value,vec3(0.0));
     bvec3 cutoff=lessThanEqual(value,vec3(0.04045));
@@ -169,9 +171,10 @@ vec4 oot3d_outline_sample_normal(vec2 uv) {
         clamp(ivec2(uv*vec2(size)),ivec2(0),size-1),0);
 }
 vec4 oot3d_outline_sample_geometry(vec2 uv) {
-    ivec2 size=textureSize(sampler2D(outline_geometry_guide,composite_sampler),0);
-    return texelFetch(sampler2D(outline_geometry_guide,composite_sampler),
+    ivec2 size=textureSize(outline_geometry_guide,0);
+    uvec4 geometry=texelFetch(outline_geometry_guide,
         clamp(ivec2(uv*vec2(size)),ivec2(0),size-1),0);
+    return vec4(pica_geometry_decode_normal(geometry.r),uintBitsToFloat(geometry.a));
 }
 float oot3d_outline_sample_occlusion(vec2 uv) {
     ivec2 size=textureSize(sampler2D(transparent_depth_guide,composite_sampler),0);

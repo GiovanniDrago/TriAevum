@@ -792,11 +792,16 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
             VkPipelineColorBlendAttachmentState motionAttachment{};
             ConfigureOutlineCoverageBlend(motionAttachment,
                 VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT);
+            // Geometry guide: the blades' face normal and kind (G/B); the
+            // native normal and depth (R/A) stay the outlines' native surface.
+            VkPipelineColorBlendAttachmentState geometryAttachment{};
+            geometryAttachment.colorWriteMask = VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
             const std::array<VkPipelineColorBlendAttachmentState,
                              kPicaColorAttachmentCount>
                 attachments{attachment, guideAttachment,
                             guideAttachment, motionAttachment,
-                            guideAttachment};
+                            guideAttachment, VkPipelineColorBlendAttachmentState{},
+                            geometryAttachment};
             static_assert(kPicaColorAttachmentCount == kPicaBaseInstrumentedColorAttachmentCount + 1U);
             VkPipelineColorBlendStateCreateInfo blend{
                 VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
@@ -823,7 +828,7 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
             const std::array<VkFormat, kPicaColorAttachmentCount> colorFormats{
                 VK_FORMAT_R8G8B8A8_UNORM,      VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
                 VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
-                VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R16G16B16A16_UNORM
+                VK_FORMAT_R32G32B32A32_UINT, VK_FORMAT_R16G16B16A16_UNORM
             };
             VkPipelineRenderingCreateInfoKHR rendering{
                 VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR};

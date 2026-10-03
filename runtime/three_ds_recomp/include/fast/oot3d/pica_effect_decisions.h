@@ -49,6 +49,8 @@ struct PicaEffectDecisions {
         EnvironmentMix = 1U << 29U,
         // The fragment depth is written explicitly (else gl_FragCoord.z).
         ExplicitDepth = 1U << 30U,
+        // The face normal of the visible surface (geometry guide G/B).
+        FaceNormal = 1U << 31U,
     };
     enum class NormalPath : uint8_t { Pbr, Surface, Material, Typed, NativeView, NativeRotate };
     // The first block that needed a guide output writes its base value there.

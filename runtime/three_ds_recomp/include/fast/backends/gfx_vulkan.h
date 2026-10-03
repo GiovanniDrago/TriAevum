@@ -1555,6 +1555,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     std::unordered_map<uint64_t, CachedVertexBuffer> mOot3dCachedVertexBuffers;
     std::unordered_map<int, OffscreenFramebufferRecord> mOffscreenFramebuffers;
     TextureRecord mFallbackTexture;
+    // Bound where a pass declares the geometry guide but the frame has none:
+    // its integer views need an integer image (cleared guide, 1x1).
+    TextureRecord mGeometryGuideFallback;
     std::vector<VkSampler> mRetiredSamplers;
     GfxNativeBlendState mBlendState{};
     GfxNativeCullMode mCullMode = GfxNativeCullMode::KeepAll;

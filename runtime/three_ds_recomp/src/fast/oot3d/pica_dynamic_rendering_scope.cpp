@@ -313,7 +313,9 @@ bool PicaDynamicRenderingScope::Begin(
         colors[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         colors[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         if (multisampled) {
-            colors[i].resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+            // The geometry guide is an integer attachment: one sample.
+            colors[i].resolveMode = i == static_cast<uint32_t>(PicaColorAttachment::OutlineGeometryGuide)
+                ? VK_RESOLVE_MODE_SAMPLE_ZERO_BIT : VK_RESOLVE_MODE_AVERAGE_BIT;
             colors[i].resolveImageView = target.Resolves[i];
             colors[i].resolveImageLayout =
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;

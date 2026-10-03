@@ -3,6 +3,7 @@
 #include "fast/renderer3ds/pica_shadow_geometry.h"
 #include "fast/renderer3ds/pica_scene_light_continuity.h"
 #include "fast/renderer3ds/virtual_shadow_keyframes.h"
+#include "fast/renderer3ds/pica_geometry_guide.h"
 #include "fast/oot3d/pica_directional_shadow_lighting.h"
 #include "oot3d/renderer/ui_presentation_layout.h"
 #include "fast/renderer3ds/pica_surface_passthrough_scale.h"
@@ -2286,6 +2287,84 @@ TEST(Oot3dOutlineGeometryGuide, ExtensionCoverageKeepsNearestDepthAndReplacesMot
 }
 
 #ifdef OOT3D_FOUNDATION_HAS_SHADERC
+TEST(Renderer3dsGeometryGuide, OctahedralNormalsKeepTheirDirection) {
+    using namespace Fast::Renderer3ds;
+    EXPECT_EQ(EncodePicaGeometryGuideNormal({0.0F, 0.0F, 0.0F}), 0U);
+    EXPECT_EQ(DecodePicaGeometryGuideNormal(0U), (std::array<float, 3>{}));
+    double worst = 0.0;
+    for (int i = 0; i < 4096; ++i) {
+        // Fibonacci sphere, both hemispheres and the fold.
+        const double z = 1.0 - (i + 0.5) * 2.0 / 4096.0, r = std::sqrt(1.0 - z * z);
+        const double phi = i * 2.399963229728653;
+        const std::array<float, 3> normal{float(r * std::cos(phi)), float(r * std::sin(phi)), float(z)};
+        const uint32_t bits = EncodePicaGeometryGuideNormal(normal);
+        ASSERT_NE(bits, 0U);
+        const auto decoded = DecodePicaGeometryGuideNormal(bits);
+        // atan2 of cross and dot: acos near 1 would measure float rounding.
+        const double a0 = decoded[0], a1 = decoded[1], a2 = decoded[2];
+        const double cx = a1 * normal[2] - a2 * normal[1], cy = a2 * normal[0] - a0 * normal[2],
+                     cz = a0 * normal[1] - a1 * normal[0];
+        const double dot = a0 * normal[0] + a1 * normal[1] + a2 * normal[2];
+        worst = std::max(worst, std::atan2(std::sqrt(cx * cx + cy * cy + cz * cz), dot) * 180.0 / std::numbers::pi);
+    }
+    // Well below the 0.1 degree the GI self-intersection test tolerates.
+    EXPECT_LT(worst, 0.01);
+    EXPECT_EQ(DecodePicaGeometryGuideDepth(kPicaGeometryGuideClear[3]), 1.0F);
+}
+
+TEST(Oot3dOutlineGeometryGuide, FaceNormalFollowsDepthWritingDraws) {
+    using namespace Fast::Oot3d;
+    shaderc::Compiler compiler;
+    PicaFragmentInstrumentationRequest request;
+    request.Source = "#version 450\nlayout(location=5) in vec4 pica_normquat;\n"
+                     "layout(location=6) in vec3 pica_view;\n"
+                     "layout(location=0) out vec4 pica_color;\n"
+                     "void main() { pica_color=vec4(0.2,0.4,0.8,1.0);\n}\n";
+    request.Draw.CompositionDomain = Oot3d::Renderer::PicaCompositionDomain::Scene;
+    request.Draw.DepthTestEnabled = true;
+    request.Draw.ColorWriteMask = 0xFU;
+    request.Draw.DepthWriteEnabled = true;
+    request.RequestedFeatures = PicaShaderInstrumentationFeature::FaceNormalGuide;
+    const auto variant = BuildPicaFragmentInstrumentationVariant(request);
+    ASSERT_TRUE(variant.Outputs.WritesFaceNormalGuide);
+    EXPECT_FALSE(variant.Outputs.WritesOutlineGeometryGuide);
+    EXPECT_NE(variant.Source.find("layout(location=6) out uvec4 pica_geometry_guide"), std::string::npos);
+    EXPECT_NE(variant.Source.find("pica_geometry_guide.b = 1u;"), std::string::npos);
+    const auto compiled = compiler.CompileGlslToSpv(variant.Source, shaderc_fragment_shader, "face_normal.frag");
+    EXPECT_EQ(compiled.GetCompilationStatus(), shaderc_compilation_status_success) << compiled.GetErrorMessage();
+    // Blended depth writers follow the depth too; the outline does not.
+    request.Draw.Blend.Enabled = true;
+    request.Draw.Blend.SourceRgb = Oot3d::Renderer::NativeBlendFactor::SourceAlpha;
+    request.Draw.Blend.DestRgb = Oot3d::Renderer::NativeBlendFactor::OneMinusSourceAlpha;
+    EXPECT_TRUE(BuildPicaFragmentInstrumentationVariant(request).Outputs.WritesFaceNormalGuide);
+    request.Draw.Blend = {};
+    // Nothing without a depth write, outside the scene or for shadow producers.
+    request.Draw.DepthWriteEnabled = false;
+    EXPECT_FALSE(BuildPicaFragmentInstrumentationVariant(request).Outputs.WritesFaceNormalGuide);
+    request.Draw.DepthWriteEnabled = true;
+    request.Draw.CompositionDomain = Oot3d::Renderer::PicaCompositionDomain::Ui;
+    EXPECT_FALSE(BuildPicaFragmentInstrumentationVariant(request).Outputs.WritesFaceNormalGuide);
+    request.Draw.CompositionDomain = Oot3d::Renderer::PicaCompositionDomain::Scene;
+    request.Draw.FragmentOperationMode = 3U;
+    EXPECT_FALSE(BuildPicaFragmentInstrumentationVariant(request).Outputs.WritesFaceNormalGuide);
+    request.Draw.FragmentOperationMode = 0U;
+    // A raster initializer stores no surface.
+    request.Draw.DepthCompare = Oot3d::Renderer::PicaCompareFunction::Always;
+    const auto initializer = BuildPicaFragmentInstrumentationVariant(request);
+    EXPECT_TRUE(initializer.Outputs.WritesFaceNormalGuide);
+    EXPECT_EQ(initializer.Source.find("pica_geometry_guide.b = 1u;"), std::string::npos);
+    // Requested together with the outline: one output, both channel pairs.
+    request.Draw.DepthCompare = Oot3d::Renderer::PicaCompareFunction::Less;
+    request.RequestedFeatures |= PicaShaderInstrumentationFeature::OutlineGeometryGuide;
+    const auto both = BuildPicaFragmentInstrumentationVariant(request);
+    EXPECT_TRUE(both.Outputs.WritesFaceNormalGuide && both.Outputs.WritesOutlineGeometryGuide);
+    const auto first = both.Source.find("layout(location=6) out");
+    EXPECT_EQ(both.Source.find("layout(location=6) out", first + 1), std::string::npos);
+    const auto compiledBoth = compiler.CompileGlslToSpv(both.Source, shaderc_fragment_shader, "geometry.frag");
+    EXPECT_EQ(compiledBoth.GetCompilationStatus(), shaderc_compilation_status_success)
+        << compiledBoth.GetErrorMessage();
+}
+
 TEST(Oot3dOutlineGeometryGuide, PreservesNativeDepthAndColorInBothDepthModes) {
     using namespace Fast::Oot3d;
     shaderc::Compiler compiler;
@@ -2303,15 +2382,19 @@ TEST(Oot3dOutlineGeometryGuide, PreservesNativeDepthAndColorInBothDepthModes) {
         request.RequestedFeatures = PicaShaderInstrumentationFeature::OutlineGeometryGuide;
         const auto variant = BuildPicaFragmentInstrumentationVariant(request);
         ASSERT_TRUE(variant.Outputs.WritesOutlineGeometryGuide);
-        EXPECT_NE(variant.Source.find("layout(location=6) out vec4 pica_outline_geometry_guide"), std::string::npos);
+        EXPECT_NE(variant.Source.find("layout(location=6) out uvec4 pica_geometry_guide"), std::string::npos);
         EXPECT_NE(variant.Source.find("pica_color=vec4(0.2,0.4,0.8,1.0);"), std::string::npos);
-        EXPECT_NE(variant.Source.find(explicitDepth ? "gl_FragDepth);" : "gl_FragCoord.z);"), std::string::npos);
+        EXPECT_NE(variant.Source.find(explicitDepth ? "floatBitsToUint(gl_FragDepth);"
+                                                    : "floatBitsToUint(gl_FragCoord.z);"),
+                  std::string::npos);
         const auto compiled =
             compiler.CompileGlslToSpv(variant.Source, shaderc_fragment_shader, "outline_native_geometry.frag");
         EXPECT_EQ(compiled.GetCompilationStatus(), shaderc_compilation_status_success) << compiled.GetErrorMessage();
         request.Draw.DepthCompare = Oot3d::Renderer::PicaCompareFunction::Always;
         const auto clear = BuildPicaFragmentInstrumentationVariant(request);
-        EXPECT_NE(clear.Source.find("pica_outline_geometry_guide = vec4(0.0, 0.0, 0.0, 1.0)"), std::string::npos);
+        // A raster initializer stores the cleared value: no surface, depth 1.
+        EXPECT_NE(clear.Source.find("pica_geometry_guide = uvec4(0u, 0u, 0u, 0x3F800000u)"), std::string::npos);
+        EXPECT_EQ(clear.Source.find("pica_geometry_guide.r ="), std::string::npos);
         EXPECT_NE(clear.FragmentKey, variant.FragmentKey);
         request.Draw.DepthCompare = Oot3d::Renderer::PicaCompareFunction::Less;
         request.Draw.Blend.Enabled = true;
@@ -2938,7 +3021,9 @@ TEST(Oot3dPicaToon, OutlineRestoresSceneGuidesWithNativeWidthProtection) {
         std::string::npos);
     EXPECT_NE(shader.find("oot3d_outline_excluded(center_guide.a)"), std::string::npos);
     EXPECT_NE(shader.find("!excluded || center_depth + 0.0000001 < depth"), std::string::npos);
-    EXPECT_NE(shader.find("sampler2D(outline_geometry_guide,composite_sampler)"), std::string::npos);
+    // The integer geometry guide is fetched without the linear sampler.
+    EXPECT_NE(shader.find("texelFetch(outline_geometry_guide,"), std::string::npos);
+    EXPECT_EQ(shader.find("sampler2D(outline_geometry_guide,"), std::string::npos);
     EXPECT_NE(shader.find("sampler2D(normal_guide,composite_sampler)"), std::string::npos);
     const auto gather = shader.substr(shader.find("for (int index = 0; index < 8; ++index)"));
     EXPECT_NE(gather.find("oot3d_outline_sample_geometry(neighbor_uv)"), std::string::npos);
@@ -3058,6 +3143,10 @@ TEST(Oot3dPicaScanout, NriShaderUsesSeparateTexturesAndSampler) {
               std::string::npos);
     EXPECT_EQ(fragment.find("uniform sampler2D physical_scanout"),
               std::string::npos);
+    // The integer geometry guide is fetched without the linear sampler.
+    EXPECT_NE(fragment.find("binding = 10) uniform utexture2D outline_geometry_guide"), std::string::npos);
+    EXPECT_NE(fragment.find("texelFetch(outline_geometry_guide,"), std::string::npos);
+    EXPECT_EQ(fragment.find("usampler2D(outline_geometry_guide"), std::string::npos);
 #ifdef OOT3D_FOUNDATION_HAS_SHADERC
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;

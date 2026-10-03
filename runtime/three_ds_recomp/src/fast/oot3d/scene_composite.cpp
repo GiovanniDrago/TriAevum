@@ -8,6 +8,7 @@ namespace Fast::Oot3d {
 
 std::string BuildSceneCompositeComputeShader() {
     std::string source = R"glsl(#version 450
+#extension GL_EXT_samplerless_texture_functions : require
 layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
 layout(set=0,binding=0) uniform texture2D scene_color;
 layout(set=0,binding=1) uniform texture2D ao_visibility;
@@ -20,7 +21,7 @@ layout(set=0,binding=7,rgba16f) uniform writeonly image2D composite_output;
 layout(set=0,binding=8) uniform sampler composite_sampler;
 layout(set=0,binding=9) uniform texture2D transparent_depth_guide;
 layout(set=0,binding=10) uniform texture2D fog_guide;
-layout(set=0,binding=11) uniform texture2D outline_geometry_guide;
+layout(set=0,binding=11) uniform utexture2D outline_geometry_guide;
 layout(set=0,binding=12) uniform texture2D diffuse_illumination;
 layout(set=0,binding=13) uniform texture2D diffuse_albedo_guide;
 layout(push_constant) uniform CompositeState {

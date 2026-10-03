@@ -1,4 +1,6 @@
 #include "fast/oot3d/pica_scanout_effects.h"
+
+#include "fast/renderer3ds/pica_geometry_guide.h"
 #include "fast/oot3d/pica_surface_coordinates.h"
 #include "fast/oot3d/pica_guide_diagnostics.h"
 #include "fast/oot3d/toon_outline_shader.h"
@@ -100,7 +102,7 @@ layout(set = 0, binding = 6) uniform sampler2D filtered_reflection;
 layout(set = 0, binding = 7) uniform sampler2D ambient_guide;
 layout(set = 0, binding = 8) uniform sampler2D transparent_depth_guide;
 layout(set = 0, binding = 9) uniform sampler2D fog_guide;
-layout(set = 0, binding = 10) uniform sampler2D outline_geometry_guide;
+layout(set = 0, binding = 10) uniform usampler2D outline_geometry_guide;
 layout(push_constant) uniform ScanoutState {
     uint flip_y; uint aa_mode; uint ambient_occlusion; uint outline;
     vec2 inverse_size;
@@ -148,6 +150,7 @@ vec3 oot3d_linear_to_srgb(vec3 value) {
     return mix(higher,lower,cutoff);
 }
 )glsl";
+    source += Renderer3ds::PicaGeometryGuideShaderLibrary();
     source += R"glsl(
 float oot3d_outline_sample_scene_depth(vec2 uv) {
     ivec2 size=textureSize(scene_depth,0);
@@ -159,7 +162,8 @@ vec4 oot3d_outline_sample_normal(vec2 uv) {
 }
 vec4 oot3d_outline_sample_geometry(vec2 uv) {
     ivec2 size=textureSize(outline_geometry_guide,0);
-    return texelFetch(outline_geometry_guide,clamp(ivec2(uv*vec2(size)),ivec2(0),size-1),0);
+    uvec4 geometry=texelFetch(outline_geometry_guide,clamp(ivec2(uv*vec2(size)),ivec2(0),size-1),0);
+    return vec4(pica_geometry_decode_normal(geometry.r),uintBitsToFloat(geometry.a));
 }
 float oot3d_outline_sample_occlusion(vec2 uv) {
     ivec2 size=textureSize(transparent_depth_guide,0);
@@ -236,14 +240,19 @@ void main() {
                                                             "fog_guide",
                                                             "outline_geometry_guide" };
         for (const char* name : names) {
+            // The geometry guide is an unsigned-integer texture, fetched
+            // without the (linear) scanout sampler.
+            const bool integer = std::string_view(name) == "outline_geometry_guide";
+            const std::string kind = integer ? "u" : "";
             const std::string combined =
-                "uniform sampler2D " + std::string(name) + ";";
+                "uniform " + kind + "sampler2D " + std::string(name) + ";";
             const std::string texture =
-                "uniform texture2D " + std::string(name) + ";";
+                "uniform " + kind + "texture2D " + std::string(name) + ";";
             source.replace(source.find(combined), combined.size(), texture);
+            if (integer) continue;
             for (const std::string operation : {"texture", "textureSize", "texelFetch"}) {
                 const std::string sample = operation + "(" + name + ",";
-                const std::string separate = operation + "(sampler2D(" + name + ", scanout_sampler),";
+                const std::string separate = operation + "(" + kind + "sampler2D(" + name + ", scanout_sampler),";
                 size_t offset = 0;
                 while ((offset = source.find(sample, offset)) != std::string::npos) {
                     source.replace(offset, sample.size(), separate);
@@ -255,6 +264,9 @@ void main() {
             source.find("layout(push_constant)");
         source.insert(declarationEnd, "layout(set = 0, binding = 11) uniform sampler "
                                       "scanout_sampler;\n");
+        static constexpr std::string_view kVersion = "#version 450\n";
+        source.insert(source.find(kVersion) + kVersion.size(),
+                      "#extension GL_EXT_samplerless_texture_functions : require\n");
     }
     // The source pixel domain is declared by the caller and baked here; an
     // unreplaced marker fails shader compilation instead of sampling wrongly.
