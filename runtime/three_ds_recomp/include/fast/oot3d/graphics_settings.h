@@ -255,7 +255,9 @@ struct EffectsSettings {
     uint8_t MxaoFilter = 1;
     // Accumulates MXAO over frames with the scene's motion vectors.
     bool MxaoTemporal = false;
-    MxaoNormalSource MxaoNormals = MxaoNormalSource::Depth;
+    // Face normals by default: the exact depth plane (the original
+    // reconstructs it from depth; still selectable).
+    MxaoNormalSource MxaoNormals = MxaoNormalSource::Geometry;
     // The original's Shading Rate: 0 full, 1 half, 2 quarter of the pixels
     // estimated per frame; the others keep their previous estimate.
     uint8_t MxaoShadingRate = 0;

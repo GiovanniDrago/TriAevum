@@ -904,7 +904,7 @@ int main() try {
     Select("Preset", "Enhanced");
     Check(runtime.Snapshot().Preset == GraphicsPreset::Enhanced &&
               runtime.Snapshot().Effects.AmbientOcclusion == AmbientOcclusionMode::Mxao &&
-              runtime.Snapshot().Effects.MxaoNormals == MxaoNormalSource::Depth &&
+              runtime.Snapshot().Effects.MxaoNormals == MxaoNormalSource::Geometry &&
               runtime.Snapshot().TexturePacks.Azahar.LoadCustomTextures &&
               runtime.Snapshot().TexturePacks.Azahar.LoadDirectory == "pack",
           "Enhanced is not the captured profile or replaced the texture pack");
@@ -1093,12 +1093,14 @@ int main() try {
     Click("Original fade");
     Click("Increase radius with distance");
     Select("MXAO normals", "From depth (original)");
+    Check(runtime.Snapshot().Effects.MxaoNormals == MxaoNormalSource::Depth, "MXAO depth normals cannot be selected");
+    Select("MXAO normals", "Face normals");
     Select("MXAO shading rate", "Full rate");
     Select("MXAO quality", "High");
     {
         const auto restored = runtime.Snapshot().Effects;
         Check(restored.MxaoDebug == MxaoDebugView::Off, "the MXAO debug view cannot be turned off");
-        Check(restored.MxaoNormals == MxaoNormalSource::Depth, "MXAO depth normals cannot be restored");
+        Check(restored.MxaoNormals == MxaoNormalSource::Geometry, "MXAO face normals cannot be restored");
         Check(!restored.MxaoRadiusGrowsWithDistance, "MXAO increase radius with distance cannot be cleared");
         Check(!restored.MxaoOriginalFade, "the MXAO original fade cannot be cleared");
         Check(restored.MxaoShadingRate == 0, "the MXAO full shading rate cannot be restored");

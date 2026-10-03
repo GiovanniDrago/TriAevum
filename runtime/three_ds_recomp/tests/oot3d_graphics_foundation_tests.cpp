@@ -3991,7 +3991,7 @@ TEST(Oot3dGraphicsSettings, EnhancedIsTheCapturedProfileAndToonKeepsItsBase) {
     EXPECT_EQ(enhanced.Preset, GraphicsPreset::Enhanced);
     EXPECT_EQ(enhanced.Effects.SurfaceLighting, SurfaceLightingMode::PerPixelPbr);
     EXPECT_EQ(enhanced.Effects.AmbientOcclusion, AmbientOcclusionMode::Mxao);
-    EXPECT_EQ(enhanced.Effects.MxaoNormals, MxaoNormalSource::Depth);
+    EXPECT_EQ(enhanced.Effects.MxaoNormals, MxaoNormalSource::Geometry);
     EXPECT_EQ(enhanced.Effects.DirectionalShadows.Mode, DirectionalShadowMode::VirtualShadowMaps);
     EXPECT_EQ(enhanced.Effects.PointShadows.Mode, PointShadowMode::CubeMaps);
     EXPECT_EQ(enhanced.FrameRate, FrameRateMode::Interpolated2x);
@@ -4040,7 +4040,7 @@ TEST(Oot3dGraphicsSettings, EnhancedIsTheCapturedProfileAndToonKeepsItsBase) {
 TEST(Oot3dGraphicsSettings, ClampsTheOriginalMxaoOptions) {
     using namespace Fast::Oot3d;
     auto settings = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
-    EXPECT_EQ(settings.Effects.MxaoNormals, MxaoNormalSource::Depth);
+    EXPECT_EQ(settings.Effects.MxaoNormals, MxaoNormalSource::Geometry);
     EXPECT_EQ(settings.Effects.MxaoDebug, MxaoDebugView::Off);
     settings.Effects.MxaoQuality = 9U;
     settings.Effects.MxaoShadingRate = 7U;
@@ -4053,7 +4053,7 @@ TEST(Oot3dGraphicsSettings, ClampsTheOriginalMxaoOptions) {
     EXPECT_EQ(value.MxaoShadingRate, 2U);
     EXPECT_FLOAT_EQ(value.MxaoScreenRadius, 10.0F);
     EXPECT_FLOAT_EQ(value.MxaoFadeDistance, 0.0F);
-    EXPECT_EQ(value.MxaoNormals, MxaoNormalSource::Depth);
+    EXPECT_EQ(value.MxaoNormals, MxaoNormalSource::Geometry);
     EXPECT_EQ(value.MxaoDebug, MxaoDebugView::Off);
     // The face-normal source and views are valid values.
     settings.Effects.MxaoNormals = MxaoNormalSource::Geometry;

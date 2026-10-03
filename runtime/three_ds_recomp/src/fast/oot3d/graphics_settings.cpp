@@ -254,7 +254,7 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
     value.Effects.MxaoQuality = std::min<uint8_t>(value.Effects.MxaoQuality, 6U);
     value.Effects.MxaoFilter = std::min<uint8_t>(value.Effects.MxaoFilter, 2U);
     if (value.Effects.MxaoNormals > MxaoNormalSource::Geometry)
-        value.Effects.MxaoNormals = MxaoNormalSource::Depth;
+        value.Effects.MxaoNormals = MxaoNormalSource::Geometry;
     value.Effects.MxaoShadingRate = std::min<uint8_t>(value.Effects.MxaoShadingRate, 2U);
     value.Effects.MxaoScreenRadius = std::isfinite(value.Effects.MxaoScreenRadius)
         ? std::clamp(value.Effects.MxaoScreenRadius, 0.5F, 10.0F) : 2.5F;

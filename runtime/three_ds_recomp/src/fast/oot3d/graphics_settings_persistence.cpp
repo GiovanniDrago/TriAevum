@@ -1201,7 +1201,7 @@ std::string_view EnhancedPresetDocument() noexcept {
         "Filter": 2,
         "IncreaseRadiusWithDistance": true,
         "Method": "SolidAngle",
-        "Normals": "Depth",
+        "Normals": "Geometry",
         "OriginalFade": false,
         "Quality": 0,
         "ScreenRadius": 2.5,

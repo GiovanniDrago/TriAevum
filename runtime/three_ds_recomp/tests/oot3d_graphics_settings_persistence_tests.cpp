@@ -316,8 +316,8 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsMxaoAndAddsItsDefaultsToOlderFi
     EXPECT_FLOAT_EQ(loaded.Value.Effects.MxaoFadeDistance, 0.4F);
     // Debug views are not saved.
     EXPECT_EQ(loaded.Value.Effects.MxaoDebug, MxaoDebugView::Off);
-    // Files written before the original's remaining options get its defaults
-    // (normals from depth) and are rewritten.
+    // Files written before the original's remaining options get the defaults
+    // (face normals) and are rewritten.
     // Face normals round-trip under their own name.
     auto geometry = settings;
     geometry.Effects.MxaoNormals = MxaoNormalSource::Geometry;
@@ -330,7 +330,7 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsMxaoAndAddsItsDefaultsToOlderFi
         withoutOptions["Effects"]["AO"]["Mxao"].erase(name);
     const auto optionDefaults = DeserializeGraphicsSettings(withoutOptions);
     EXPECT_TRUE(optionDefaults.NeedsRewrite);
-    EXPECT_EQ(optionDefaults.Value.Effects.MxaoNormals, MxaoNormalSource::Depth);
+    EXPECT_EQ(optionDefaults.Value.Effects.MxaoNormals, MxaoNormalSource::Geometry);
     EXPECT_EQ(optionDefaults.Value.Effects.MxaoShadingRate, 0U);
     EXPECT_FALSE(optionDefaults.Value.Effects.MxaoRadiusGrowsWithDistance);
     EXPECT_FLOAT_EQ(optionDefaults.Value.Effects.MxaoScreenRadius, 2.5F);

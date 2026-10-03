@@ -923,6 +923,7 @@ TEST(Oot3dPicaShaderPipelineCache, FaceNormalReadersRequestTheGeometryGuide) {
     PicaShaderPipelineCache cache;
     EffectsSettings effects;
     effects.AmbientOcclusion = AmbientOcclusionMode::Mxao;
+    effects.MxaoNormals = MxaoNormalSource::Depth;
     const auto request = VertexLitWorldRequest();
     cache.BeginFrame(1U);
     const auto depth = cache.Resolve(request, effects);

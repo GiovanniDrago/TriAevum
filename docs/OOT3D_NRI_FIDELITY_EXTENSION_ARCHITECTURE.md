@@ -3279,7 +3279,7 @@ occlusion and the regression filter, which then filters the accumulation.
 Every option of the original is exposed (F1 **Lighting**, iMMERSE MXAO), and the
 debug views show what the renderer passes to MXAO and the terms of its estimate.
 
-- **Normals** (`AO.Mxao.Normals`: `Depth` default, `Renderer`). The original's
+- **Normals** (`AO.Mxao.Normals`: `Geometry` default since 2026-10-03, `Depth`, `Renderer`). The original's
   `MXAO_USE_LAUNCHPAD_NORMALS`: from depth, the four neighbour cross products
   weighted against the depth steps they span, exactly as the original (at the
   image border the clamped neighbour is replaced by the mirrored opposite one);
@@ -3307,7 +3307,13 @@ debug views show what the renderer passes to MXAO and the terms of its estimate.
   depth: 12/12 captures identical to the previous build). `mxao_gpu_tests`:
   on planes face and depth normals give the same visibility (0 difference on
   the 16.7 degree plane, 6.5e-7 mean on the steps), and without a face normal
-  the result is the depth normal's bit for bit.
+  the result is the depth normal's bit for bit. Default since the user's review
+  in the Kokiri Forest (2026-10-03; the Enhanced preset too). Cost on the
+  user's profile (RTX 3060, interleaved 420-frame Kokiri walks, two each): GPU
+  frame median 9.25-9.28 ms with depth normals, 9.76-9.89 ms with face normals
+  (+0.5-0.65 ms): the native scene writing the guide +0.16 ms, the AO pass
+  reading it +0.18 ms, grass unchanged; the remaining 0.2-0.3 ms falls outside
+  the profiled scopes (not yet attributed).
 - **Sample quality** adds the original's IDGAF preset (8 slices, 20 steps).
 - **Shading rate** (`AO.Mxao.ShadingRate` full / half / quarter): 50% or 25% of
   the pixels, by deinterleaved tile parity, are estimated per frame; the others
