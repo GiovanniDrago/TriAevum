@@ -4121,6 +4121,56 @@ TEST(Oot3dSampleView, UsesTheRenderedCameraAndTheMajorityView) {
     EXPECT_EQ(sample.Projection, guest.Projection);
 }
 
+TEST(Oot3dSampleView, NativeDrawsSetTheProjectionScale) {
+    using namespace Fast::Oot3d;
+    // OOT3D's projection rows c0-c3, rotated with the framebuffer: the Kokiri
+    // walk's draws (clip x from view y, clip y from view x).
+    std::vector<uint8_t> uniforms(kPicaPackedVertexUniformSize);
+    const std::array<float, 16> rotated{ 0, 2.0503F, 0, 0, -1.1533F, 0, 0, 0, 0, 0, 1.0001F, 7.0009F, 0, 0, -1, 0 };
+    std::memcpy(uniforms.data() + kPicaPackedVertexFloatOffset, rotated.data(), sizeof(rotated));
+    const auto decoded = DecodePicaPerspectiveProjection(uniforms);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_FLOAT_EQ(decoded->X, 1.1533F);
+    EXPECT_FLOAT_EQ(decoded->Y, 2.0503F);
+    // Unrotated rows decode the same way; an orthographic projection does not.
+    const std::array<float, 16> plain{ 1.1533F, 0, 0, 0, 0, 2.0503F, 0, 0, 0, 0, 1.0001F, 7.0009F, 0, 0, -1, 0 };
+    std::memcpy(uniforms.data() + kPicaPackedVertexFloatOffset, plain.data(), sizeof(plain));
+    EXPECT_EQ(DecodePicaPerspectiveProjection(uniforms), decoded);
+    const std::array<float, 16> orthographic{ 0, 0.005F, 0, 0, -0.008F, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    std::memcpy(uniforms.data() + kPicaPackedVertexFloatOffset, orthographic.data(), sizeof(orthographic));
+    EXPECT_FALSE(DecodePicaPerspectiveProjection(uniforms).has_value());
+
+    // The draws most of the frame agree on win.
+    SampleProjectionAccumulator accumulator;
+    accumulator.Observe(3U, { 0.5F, 0.9F });
+    accumulator.Observe(3U, *decoded);
+    accumulator.Observe(3U, *decoded);
+    EXPECT_EQ(accumulator.Resolve(3U), decoded);
+    EXPECT_FALSE(accumulator.Resolve(4U).has_value());
+
+    // The guest frustum the camera requested (+-5.2056 x +-2.9282 at near 7):
+    // the native rows widen it by 1.166 on both axes; depth is unchanged.
+    PerspectiveViewState guest;
+    guest.Left = -5.2056F;
+    guest.Right = 5.2056F;
+    guest.Bottom = -2.9282F;
+    guest.Top = 2.9282F;
+    guest.NearPlane = 7.0F;
+    guest.FarPlane = 12000.5F;
+    guest.Projection = { 7.0F / 5.2056F, 0, 0, 0, 0, 7.0F / 2.9282F, 0, 0, 0, 0, -1.0006F, -1.0F, 0, 0, -7.004F, 0 };
+    guest.WorldToClip = guest.Projection;
+    const auto applied = ApplySampleProjection(guest, *decoded);
+    EXPECT_FLOAT_EQ(applied.Projection[0], 1.1533F);
+    EXPECT_FLOAT_EQ(applied.Projection[5], 2.0503F);
+    EXPECT_FLOAT_EQ(applied.WorldToClip[0], 1.1533F);
+    EXPECT_FLOAT_EQ(applied.Projection[10], guest.Projection[10]);
+    EXPECT_FLOAT_EQ(applied.Projection[14], guest.Projection[14]);
+    EXPECT_NEAR(applied.Right, 7.0F / 1.1533F, 1.0e-4F);
+    EXPECT_NEAR(applied.Top, 7.0F / 2.0503F, 1.0e-4F);
+    // A projection of another camera is not an adjustment of this one.
+    EXPECT_EQ(ApplySampleProjection(guest, { 50.0F, 90.0F }).Projection, guest.Projection);
+}
+
 TEST(Oot3dGraphicsSettings, GatesGlobalIlluminationOnItsInputsAndProvider) {
     using namespace Fast::Oot3d;
     auto settings = GraphicsSettingsService::Preset(GraphicsPreset::Custom);

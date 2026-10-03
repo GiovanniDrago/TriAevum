@@ -341,6 +341,9 @@ struct NativeSceneProjectionState {
     uint64_t Calls = 0;
     float FirstLeft = 0.0F;
     float FirstRight = 0.0F;
+    // The latest perspective frustum this callsite received, before the
+    // presentation policy widens it (left, right, bottom, top, near, far).
+    std::array<float, 6> LastFrustum{};
   };
 
   Fast::Oot3d::ScenePresentationPolicy Presentation{};
@@ -2550,6 +2553,7 @@ void ApplyNativeWidescreenProjectionPolicy(
   const float top = std::bit_cast<float>(state.vfp[3]);
   const float nearPlane = std::bit_cast<float>(state.vfp[4]);
   const float farPlane = std::bit_cast<float>(state.vfp[5]);
+  callsite.LastFrustum = {left, right, bottom, top, nearPlane, farPlane};
   const auto resolved = Fast::Oot3d::ResolvePerspectiveFov({
       {left, right, bottom, top, nearPlane, farPlane},
       projection.FovMultiplier,
@@ -7034,6 +7038,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           {"calls", stats.Calls},
           {"first_left", stats.FirstLeft},
           {"first_right", stats.FirstRight},
+          {"last_frustum", stats.LastFrustum},
       });
     }
     std::vector<std::pair<uint32_t, uint64_t>> sampledBlocks(

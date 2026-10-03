@@ -666,6 +666,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         // Camera of the opaque world geometry drawn into this target during
         // each presented frame (see SamplePerspective).
         Oot3d::SampleViewAccumulator SampleView;
+        // The projection those draws apply (see SamplePerspective).
+        Oot3d::SampleProjectionAccumulator SampleProjection;
         bool AuxiliaryNeedsClear = false;
         bool WBuffering = false;
         bool NriOwned = false;

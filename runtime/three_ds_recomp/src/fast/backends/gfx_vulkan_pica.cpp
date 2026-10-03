@@ -974,6 +974,10 @@ std::optional<Oot3d::PerspectiveViewState> GfxRenderingAPIVulkan::SamplePerspect
     const NativePicaRenderTarget* target) const {
     auto perspective = Oot3d::SceneViewRuntime::Instance().LatestPerspective();
     if (!perspective.has_value() || target == nullptr) return perspective;
+    // The rendered depth follows the projection the draws applied, which the
+    // game adjusts after building it from the camera's frustum.
+    if (const auto projection = target->SampleProjection.Resolve(mFrameCounter))
+        perspective = Oot3d::ApplySampleProjection(*perspective, *projection);
     if (const auto view = target->SampleView.Resolve(mFrameCounter))
         return Oot3d::ResolveSamplePerspective(*perspective, *view);
     return perspective;
@@ -5425,6 +5429,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             auto latestGrassPerspective =
                 Oot3d::SceneViewRuntime::Instance()
                     .LatestPerspective();
+            if (latestGrassPerspective)
+                if (const auto projection = Oot3d::DecodePicaPerspectiveProjection(draw.VertexUniformBytes))
+                    latestGrassPerspective = Oot3d::ApplySampleProjection(*latestGrassPerspective, *projection);
             if (latestGrassPerspective && draw.LightBinding.WorldToView)
                 latestGrassPerspective = Oot3d::ResolveSamplePerspective(
                     *latestGrassPerspective, *draw.LightBinding.WorldToView);
@@ -6478,6 +6485,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             shadowCaster.OwnerIdentity = draw.Composition.NativeActorIdentity;
             if (opaqueWorldDraw && draw.LightBinding.WorldToView)
                 renderTarget.SampleView.Observe(mFrameCounter, *draw.LightBinding.WorldToView);
+            if (opaqueWorldDraw)
+                if (const auto projection = Oot3d::DecodePicaPerspectiveProjection(draw.VertexUniformBytes))
+                    renderTarget.SampleProjection.Observe(mFrameCounter, *projection);
             // Native frame geometry for the scene distance field: the shadow
             // caster admission, from the first non-synthetic execution.
             const bool sceneDistanceFieldGeometry =

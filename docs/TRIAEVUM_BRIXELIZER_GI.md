@@ -612,6 +612,35 @@ serial, so interpolated samples of one native step are distinct perspectives
 and the previous-view history advances per sample. With effects off, Field and
 Sheik copy stay identical to the Interpolated2x baseline.
 
+Sample projection (2026-10-03). The face normal of the geometry guide (exact
+plane of each rasterized triangle) disagreed with MXAO's normals from depth by
+a constant angle per triangle (Kokiri walk: median 2.9 degrees). A fit of the
+two normal fields gave depth ~ diag(1.16, 1.16, 1) x face: the depth was
+reconstructed with x and y ray slopes 14% too small. The guest projection is
+the frustum the camera passes to `Mtx4x4BuildFrustum` (after the FOV and
+widescreen policy); the game then adjusts the x and y rows of the matrix it
+uploads. Every one of the ~180 perspective draws of a Kokiri frame applies
+vertex uniforms c0-c3 with P_x 1.1533 and P_y 2.0503 (rotated with the
+framebuffer: c1.x = -P_x, c0.y = P_y) where the guest projection had 1.3447 and
+2.3906: a 1.166 ratio on both axes (1.171 with FOV x1.1); the depth row (near
+7, far 12000.5) matches. Each target now also accumulates that native
+projection (`SampleProjectionAccumulator`, majority of its opaque world draws
+in the presented frame; `DecodePicaPerspectiveProjection` reads rotated or
+unrotated rows and rejects orthographic ones) and `SamplePerspective` scales
+the x and y rows of the projection and of world-to-clip, and the frustum
+extents, to it before applying the sample view (`ApplySampleProjection`; a
+ratio outside 0.25-4 is another camera and is ignored). The grass scene view
+applies its own draw's projection. Afterwards the fit is the identity (0.9993
+to 1.0004) and face and depth normals agree on every interior pixel (median
+and 90th percentile 0.00 degrees at the 8-bit resolution of the view); they
+differ only on creases and grass blades, where the reconstruction mixes
+neighbouring surfaces. Effect on the Kokiri walk (12 captures each): MXAO
+(user settings) loses false occlusion, 0.1-0.6% of pixels brighter by more
+than 8 levels (raw AO: 1.4-6.2%); the reference user profile (Brixelizer GI,
+VSM, no AO) changes 2.5-4.7% of pixels by more than 8 levels, mean luma within
++-0.5. `widescreen_projection.callsites[].last_frustum` reports the latest
+frustum each callsite received.
+
 Second defect found on the way: in scenes that compose more than one scene
 surface per frame (a native copy boundary plus the presentation, Sheik copy),
 FidelityFX SSSR reconfigured its single context and destroyed resources the
