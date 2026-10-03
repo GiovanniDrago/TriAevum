@@ -491,7 +491,11 @@ void process(float lambda, int side, int cell_x, int cell_y) {
     accumulate(pieces, piece_count, radiance);
 }
 
-void main() {
+)glsl";
+
+// Entry point of the gather; kGatherMain + kGatherEntry is the M2/M3 kernel
+// text unchanged (M4 reuses kGatherMain's functions with its own entry).
+constexpr const char* kGatherEntry = R"glsl(void main() {
     ivec2 id = ivec2(gl_GlobalInvocationID.xy);
     if (!inside(id.x, id.y)) return; // no barriers in this kernel
     uint out_index = uint(id.y) * viewport_width() + uint(id.x);
@@ -657,8 +661,11 @@ GatherShaderParams MakeGatherShaderParams(const GatherInput& input, const Gather
     if (settings.InterleaveSides) flags |= kShaderFlagInterleave;
     if (settings.RejectSelfIntersection) flags |= kShaderFlagRejectSelf;
     if (input.NormalSource == GeometricNormalSource::RendererFaceNormal) flags |= kShaderFlagFaceNormals;
-    p.Modes = {static_cast<uint32_t>(input.Camera.Encoding),
-               settings.Schedule == CandidateSchedule::Radial ? 1U : 0U, settings.CandidatesPerSide, flags};
+    // Schedule: 0 EveryTexel, 1 Radial, 2 MetricRadial (M4 kernel only).
+    const uint32_t schedule = settings.Schedule == CandidateSchedule::Radial
+                                  ? 1U
+                                  : (settings.Schedule == CandidateSchedule::MetricRadial ? 2U : 0U);
+    p.Modes = {static_cast<uint32_t>(input.Camera.Encoding), schedule, settings.CandidatesPerSide, flags};
     const auto& c = input.Camera;
     p.ViewX = {static_cast<float>(c.ViewX[0]), static_cast<float>(c.ViewX[1]), static_cast<float>(c.ViewX[2]), 0.0F};
     p.ViewY = {static_cast<float>(c.ViewY[0]), static_cast<float>(c.ViewY[1]), static_cast<float>(c.ViewY[2]), 0.0F};
@@ -691,6 +698,10 @@ std::string BuildDiffuseGiNormalShader() {
 }
 
 std::string BuildDiffuseGiGatherShader() {
+    return std::string(kMath) + kGatherCommon + kGatherMain + kGatherEntry;
+}
+
+std::string DiffuseGiGatherFunctionsGlsl() {
     return std::string(kMath) + kGatherCommon + kGatherMain;
 }
 

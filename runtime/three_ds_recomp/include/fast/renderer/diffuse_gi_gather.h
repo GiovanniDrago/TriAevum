@@ -79,7 +79,30 @@ enum class CandidateSchedule : uint8_t {
     // Production candidate: K positions per side at screen distances
     // lambda_k = lambda_0 + (L - lambda_0) ((k + jitter) / K)^exponent.
     Radial,
+    // M4 radial distribution in scene units: K positions per side on the
+    // camera rays of the section plane whose closest distance to the receiver
+    // is rho_k = R ((k + jitter) / K)^exponent (the ray at angle
+    // asin(rho / |P|) from the receiver's ray; rho = R is the exact bound of
+    // the R-ball, so the positions scale with the scene, not with the pixel
+    // resolution). Positions closer than the contact texel (one texel along the
+    // dominant screen axis) are moved onto it, so no jitter value skips the
+    // contact region. Documented in the M4 section of the document.
+    MetricRadial,
 };
+
+// M4 guiding and A (specification section 6): IndependentUniform estimates A
+// on S additional sections at the unguided angles pi (s + u) / S with the
+// uniform density (A is then exactly the unguided estimator; the section work
+// doubles); SamePdf weights the open weights of the guided sections by the
+// same 1 / p_b as J (unbiased, no extra sections).
+enum class GuidedAccessibility : uint8_t { IndependentUniform, SamePdf };
+
+// M4 radiance cache (specification section 5): Off reads the source radiance
+// of the level-0 texel (point reference); Mean reads the prefiltered mean of
+// the planar hierarchy cell of the sample's footprint level; SphericalHarmonics
+// evaluates the cell's low-order SH representation toward the receiver
+// (diffuse_gi_hierarchy.h). Both caches act only on planar cells (one surface).
+enum class CacheMode : uint8_t { Off, Mean, SphericalHarmonics };
 
 enum class MaskMode : uint8_t {
     CentreRule,          // uniform theta sectors, sector-centre coverage (baseline)
@@ -108,7 +131,11 @@ enum class MaskMode : uint8_t {
 // u = (k + 1/2) / M; the stratified rotations of one tile over F consecutive
 // frames are exactly the deterministic rotations of S = M sections. Tiles are
 // anchored at the viewport origin. Own construction (document, M3 section).
-enum class RotationMode : uint8_t { Fixed, Stratified };
+// BlueNoise (M4): u = (rank + 1/2) / N from an own spatiotemporal blue-noise
+// mask (diffuse_gi_noise.h) at (x mod W, y mod H, Frame mod D); the radial
+// jitter reads the same slice at (x + W/2, y + H/2) ([B4] section 5.2: a scalar
+// mask read at two offsets gives two values). Needs GatherAcceleration::Noise.
+enum class RotationMode : uint8_t { Fixed, Stratified, BlueNoise };
 
 inline constexpr uint32_t kMaxRotationTileLog2 = 3; // 8 x 8 pixels
 inline constexpr uint32_t kMaxRotationCycle = 64;
@@ -166,6 +193,27 @@ struct GatherSettings {
     // Radial schedule from the lattice dimension (replaces RadialJitter).
     RotationSequence Rotations;
     bool SequenceRadialJitter = false;
+    // M4 optimizations, each off by default and individually switchable; with
+    // all of them off the M1-M3 code paths run unchanged. The hierarchy, cache
+    // and guide data come from GatherAcceleration (built by the caller).
+    // Footprint level of a radial sample: the largest l <= HierarchyMaxLevel
+    // with 2^l <= HierarchySpacingScale x (its spacing to the next sample along
+    // the line, pixels); then the descent: while the level-l cell holding the
+    // sample's texel is not planar, or holds the receiver's texel, l decreases
+    // (level 0 is the M2 point reference).
+    // HierarchyFootprint: a sample on a planar cell above level 0 represents
+    // the cell's footprint along the line: the chord of the section line
+    // through the cell, on the cell's plane (exact depth, no raster footprint
+    // error), clipped to the R-ball; it occupies the angular range of that
+    // strip and of its thickness segments (own construction, document "M4").
+    bool HierarchyFootprint = false;
+    CacheMode Cache = CacheMode::Off;
+    uint32_t HierarchyMaxLevel = 4;     // footprint levels used by the gather (<= hierarchy levels - 1)
+    double HierarchySpacingScale = 1.0; // chosen by HierarchyFootprintStudy (document)
+    // Guiding: phi_s = P^-1((s + u) / S) of the region's frozen distribution
+    // p = (1 - eta) / pi + eta g, J weighted by 1 / p(phi_s); A as declared.
+    bool Guiding = false;
+    GuidedAccessibility GuidingAccessibility = GuidedAccessibility::IndependentUniform; // GuidingParameterStudy
 };
 
 [[nodiscard]] const char* ValidateGatherSettings(const GatherSettings& settings) noexcept;
@@ -188,6 +236,10 @@ struct GatherCounters {
     uint64_t MissingSourceNormal = 0;
     uint64_t Duplicates = 0;  // Radial positions falling in an already used texel
     uint64_t Occupying = 0;   // candidates with a non-empty interval
+    // M4 (zero unless a hierarchy or cache switch is on).
+    uint64_t Coarse = 0;      // candidates evaluated on a hierarchy cell above level 0
+    uint64_t Descended = 0;   // level steps taken because a cell was not one plane
+    uint64_t Contact = 0;     // MetricRadial positions moved onto the contact texel
     GatherCounters& operator+=(const GatherCounters& other) noexcept;
 };
 
@@ -244,6 +296,8 @@ struct Candidate {
     double Lo[2] = {0.0, 0.0}, Hi[2] = {0.0, 0.0};
     Rgb Radiance; // evaluated toward the receiver (zero when back-facing)
     Vec3 Front, Back; // view-space segment endpoints after clipping to R
+    uint32_t Level = 0; // M4: footprint level of the sample (0: point reference)
+    int32_t HX = 0, HY = 0; // M4: hierarchy cell at that level (absolute)
 };
 
 struct SectionCandidates {
@@ -293,5 +347,60 @@ struct SectionResult {
 // One receiver, all sections (double reference).
 [[nodiscard]] PixelGather GatherPixel(const GatherInput& input, const PreparedGeometry& geometry, uint32_t x,
                                       uint32_t y, const GatherSettings& settings);
+
+// ---------------------------------------------------------------------------
+// M4: optimization inputs of one frame (docs/TRIAEVUM_SCREEN_SPACE_GI.md,
+// "M4"). Built by the caller and frozen while the frame samples:
+// - Hierarchy: depth hierarchy and radiance cache of this frame's buffers
+//   (diffuse_gi_hierarchy.h), built from PrepareGeometry for the double path
+//   and with float arithmetic from PrepareGeometryF32 for the FP32 twin;
+// - Guide: the frozen guiding distribution per screen region
+//   (diffuse_gi_guiding.h); Samples, when not null, receives one record per
+//   viewport pixel and section (pixel-major) for the update after the frame;
+// - Noise: the spatiotemporal blue-noise mask of RotationMode::BlueNoise
+//   (diffuse_gi_noise.h).
+struct DepthHierarchy;
+struct GuideTable;
+struct GuideSample;
+struct NoiseMask;
+
+struct GatherAcceleration {
+    const DepthHierarchy* Hierarchy = nullptr;
+    const GuideTable* Guide = nullptr;
+    const NoiseMask* Noise = nullptr;
+    std::vector<GuideSample>* Samples = nullptr;
+};
+
+// Empty when every M4 switch of `settings` has the data it needs and the data
+// matches the viewport, otherwise the first violated rule.
+[[nodiscard]] const char* ValidateGatherAcceleration(const GatherInput& input, const GatherSettings& settings,
+                                                     const GatherAcceleration& acceleration) noexcept;
+
+[[nodiscard]] std::vector<PixelGather> GatherImage(const GatherInput& input, const GatherSettings& settings,
+                                                   const GatherAcceleration& acceleration);
+[[nodiscard]] std::vector<PixelGather> GatherImageF32(const GatherInput& input, const GatherSettings& settings,
+                                                      const GatherAcceleration& acceleration);
+// One receiver (double); Samples, when set, receives this pixel's S records.
+[[nodiscard]] PixelGather GatherPixel(const GatherInput& input, const PreparedGeometry& geometry, uint32_t x,
+                                      uint32_t y, const GatherSettings& settings,
+                                      const GatherAcceleration& acceleration);
+// Section-level reference with the M4 inputs (candidates carry their level).
+[[nodiscard]] SectionCandidates BuildSection(const GatherInput& input, const PreparedGeometry& geometry, uint32_t x,
+                                             uint32_t y, double phi, const GatherSettings& settings,
+                                             const GatherAcceleration& acceleration);
+// Scheduled positions of one section before evaluation (double), in
+// processing order: the schedule tests (contact region, footprint levels).
+struct ScheduledPosition {
+    double Lambda = 0.0;
+    int Side = 1;
+    int32_t CellX = 0, CellY = 0; // texel offset from the receiver
+    uint32_t Level = 0;           // after the descent
+    uint32_t Requested = 0;       // from the spacing, before the descent
+    double Spacing = 0.0;         // pixels to the next sample (last: to the previous)
+};
+[[nodiscard]] std::vector<ScheduledPosition> ScheduleSection(const GatherInput& input,
+                                                             const PreparedGeometry& geometry, uint32_t x, uint32_t y,
+                                                             double phi, const GatherSettings& settings,
+                                                             const GatherAcceleration& acceleration);
 
 } // namespace Fast::Renderer::DiffuseGi

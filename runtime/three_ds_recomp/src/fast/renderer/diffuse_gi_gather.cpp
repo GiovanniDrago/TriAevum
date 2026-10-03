@@ -5,6 +5,14 @@
 // derived in docs/TRIAEVUM_SCREEN_SPACE_GI.md. The template core runs in
 // double (reference) and in float (twin of the GPU kernel, same operation
 // order); see diffuse_gi_gather_shader.cpp for the GLSL counterpart.
+// M4 adds, behind switches that default to off, the metric radial
+// distribution, hierarchy depth and radiance cache for sparse samples,
+// guiding of phi and the blue-noise rotation; with every switch off the
+// M1-M3 paths below run unchanged.
+
+#include "fast/renderer/diffuse_gi_guiding.h"
+#include "fast/renderer/diffuse_gi_hierarchy.h"
+#include "fast/renderer/diffuse_gi_noise.h"
 
 #include <algorithm>
 #include <bit>
@@ -88,6 +96,7 @@ struct View {
     const T* Z = nullptr;
     const uint8_t* Cls = nullptr;
     const VecT<T>* N = nullptr;
+    const GatherAcceleration* Acc = nullptr; // M4 inputs (null: M1-M3)
 
     [[nodiscard]] VecT<T> Ray(T px, T py) const {
         const T u = px / static_cast<T>(W);
@@ -255,6 +264,7 @@ struct SectionT {
     VecT<T> P, V, Tn, N;
     T A{}, B{}, ZP{}, DirX{}, DirY{};
     T Extent[2]{};
+    T Distance{}; // |P| (M4 metric radial distribution)
 };
 
 template <typename T>
@@ -293,6 +303,7 @@ SectionT<T> SetupT(const View<T>& g, uint32_t x, uint32_t y, T phi, T radius) {
     // asin(R / |P|) from the receiver's ray bound the R-ball (exact).
     const T cap = std::sqrt(static_cast<T>(g.W) * static_cast<T>(g.W) + static_cast<T>(g.H) * static_cast<T>(g.H));
     const T distance = VLength(s.P);
+    s.Distance = distance;
     for (int side = 0; side < 2; ++side) {
         T extent = cap;
         if (radius < distance) {
@@ -322,7 +333,150 @@ struct Position {
     T Lambda{};
     int Side = 1;
     int32_t CellX = 0, CellY = 0;
+    // M4: footprint level after descent (0: point reference) and the
+    // hierarchy cell of that level (absolute cell coordinates); the level
+    // requested by the spacing before the descent, and the spacing (pixels).
+    uint32_t Level = 0;
+    int32_t HX = 0, HY = 0;
+    uint32_t Requested = 0;
+    T Spacing{};
 };
+
+// M4: radial samples use hierarchy levels when the hierarchy depth or the
+// radiance cache is on (sparse schedules only; EveryTexel is the reference).
+template <typename T>
+bool UsesLevels(const View<T>& g, const GatherSettings& settings) {
+    return g.Acc != nullptr && g.Acc->Hierarchy != nullptr &&
+           (settings.HierarchyFootprint || settings.Cache != CacheMode::Off) &&
+           settings.Schedule != CandidateSchedule::EveryTexel;
+}
+
+// M4 metric radial distribution: screen distance (pixels) of the camera ray
+// of the section plane whose closest distance to the receiver is rho, i.e.
+// the ray at angle asin(rho / |P|) from the receiver's ray. Same construction
+// as the projected radius of SetupT with rho in place of R (rho = R gives the
+// extent); the viewport diagonal when the ray leaves the screen.
+template <typename T>
+T MetricScreenDistance(const View<T>& g, const SectionT<T>& s, T rho, int side, T cap) {
+    if (!(rho < s.Distance)) return cap;
+    const T sa = rho / s.Distance;
+    const T ca = std::sqrt(std::max(T(1) - sa * sa, T(0)));
+    const T sign = side > 0 ? T(1) : T(-1);
+    const VecT<T> r = VAdd(VScale(s.V, -ca), VScale(s.Tn, sign * sa));
+    if (!(r.Z < T(0))) return cap;
+    const T zp = -s.P.Z;
+    const T det = g.Ax * g.By - g.Bx * g.Ay;
+    const T tx = r.X / -r.Z - s.P.X / zp;
+    const T ty = r.Y / -r.Z - s.P.Y / zp;
+    const T eu = (g.By * tx - g.Bx * ty) / det * static_cast<T>(g.W);
+    const T ev = (-g.Ay * tx + g.Ax * ty) / det * static_cast<T>(g.H);
+    return std::min(std::sqrt(eu * eu + ev * ev), cap);
+}
+
+// M4 radial positions (Radial with hierarchy or cache, or MetricRadial):
+// the natural sequence lambda_k, then per sample the footprint level from its
+// spacing along the line and the descent to the first planar cell (level 0:
+// the M2 point reference). One texel (level 0) or one cell (level l) is one
+// surface sample: a repeat of the previous key on this side is skipped.
+template <typename T>
+void EnumerateRadialM4(const View<T>& g, const SectionT<T>& s, uint32_t x, uint32_t y, int side,
+                       const GatherSettings& settings, std::vector<Position<T>>& out, GatherCounters& counters) {
+    const T dx = s.DirX * T(side);
+    const T dy = s.DirY * T(side);
+    const T adx = std::abs(dx);
+    const T ady = std::abs(dy);
+    const T infinity = std::numeric_limits<T>::infinity();
+    const T invX = adx > T(0) ? T(1) / adx : infinity;
+    const T invY = ady > T(0) ? T(1) / ady : infinity;
+    const T extent = s.Extent[side > 0 ? 0 : 1];
+    const uint32_t count = std::max(settings.CandidatesPerSide, 1U);
+    const T jitter = static_cast<T>(settings.RadialJitter);
+    const T exponent = static_cast<T>(settings.RadialExponent);
+    T lambdas[256];
+    uint32_t total = 0;
+    if (settings.Schedule == CandidateSchedule::Radial) {
+        const T lambda0 = std::min(T(0.5) * invX, T(0.5) * invY);
+        if (!(extent > lambda0)) return;
+        for (uint32_t k = 0; k < count && total < 256U; ++k) {
+            const T u = (T(k) + jitter) / T(count);
+            const T shaped = u > T(0) ? std::pow(u, exponent) : T(0);
+            lambdas[total++] = lambda0 + (extent - lambda0) * shaped;
+        }
+    } else {
+        // Contact sample: the midpoint of the line's chord through the first
+        // texel it enters after the receiver's (the first texel of the
+        // EveryTexel traversal; an exact corner enters the diagonal texel).
+        const T tx0 = T(0.5) * invX, ty0 = T(0.5) * invY;
+        const T enter = std::min(tx0, ty0);
+        const T exit = tx0 < ty0 ? std::min(T(3) * tx0, ty0) : (ty0 < tx0 ? std::min(tx0, T(3) * ty0) : T(3) * tx0);
+        const T contact = T(0.5) * (enter + exit);
+        if (!(extent > contact)) return;
+        const T cap = std::sqrt(static_cast<T>(g.W) * static_cast<T>(g.W) + static_cast<T>(g.H) * static_cast<T>(g.H));
+        const T radius = static_cast<T>(settings.Radius);
+        for (uint32_t k = 0; k < count && total < 256U; ++k) {
+            const T u = (T(k) + jitter) / T(count);
+            const T shaped = u > T(0) ? std::pow(u, exponent) : T(0);
+            T lambda = MetricScreenDistance(g, s, radius * shaped, side, cap);
+            if (lambda < contact) {
+                lambda = contact;
+                ++counters.Contact;
+            }
+            lambdas[total++] = lambda;
+        }
+    }
+    const bool levels = UsesLevels(g, settings);
+    const DepthHierarchy* hierarchy = levels ? g.Acc->Hierarchy : nullptr;
+    const uint32_t maxLevel =
+        levels ? std::min(settings.HierarchyMaxLevel, static_cast<uint32_t>(hierarchy->Levels.size()) - 1U) : 0U;
+    int32_t previousX = 0, previousY = 0;
+    uint32_t previousLevel = 0;
+    for (uint32_t k = 0; k < total; ++k) {
+        const T lambda = lambdas[k];
+        if (lambda > extent) break; // monotone sequence: the rest lies beyond the R-ball
+        const auto cx = static_cast<int32_t>(std::floor(lambda * dx + T(0.5)));
+        const auto cy = static_cast<int32_t>(std::floor(lambda * dy + T(0.5)));
+        uint32_t level = 0, requested = 0;
+        int32_t hx = cx, hy = cy; // level 0 keys: texel offsets (the receiver is (0, 0))
+        const int32_t tx = static_cast<int32_t>(x) + cx, ty = static_cast<int32_t>(y) + cy;
+        const T spacing = k + 1U < total ? lambdas[k + 1U] - lambda : (k > 0U ? lambda - lambdas[k - 1U] : extent - lambda);
+        if (levels) requested = FootprintLevel<T>(spacing * static_cast<T>(settings.HierarchySpacingScale), maxLevel);
+        if (levels && g.Inside(tx, ty) && !(cx == 0 && cy == 0)) {
+            level = requested;
+            while (level > 0U) {
+                const auto ix = static_cast<uint32_t>(tx) >> level;
+                const auto iy = static_cast<uint32_t>(ty) >> level;
+                // The receiver's own footprint is never a coarse candidate.
+                const bool own = (x >> level) == ix && (y >> level) == iy;
+                if (!own && (hierarchy->Cell(level, ix, iy).Flags & kCellPlanar) != 0U) {
+                    hx = static_cast<int32_t>(ix);
+                    hy = static_cast<int32_t>(iy);
+                    break;
+                }
+                ++counters.Descended;
+                --level;
+            }
+            if (level == 0U) hx = cx, hy = cy;
+        }
+        // Duplicate key: the strip's cell with the footprint, else the texel
+        // (the cache alone changes only the radiance of a point sample).
+        const uint32_t keyLevel = settings.HierarchyFootprint ? level : 0U;
+        const int32_t keyX = settings.HierarchyFootprint ? hx : cx, keyY = settings.HierarchyFootprint ? hy : cy;
+        if ((cx == 0 && cy == 0) || (keyLevel == previousLevel && keyX == previousX && keyY == previousY)) {
+            ++counters.Duplicates;
+            continue;
+        }
+        previousLevel = keyLevel;
+        previousX = keyX;
+        previousY = keyY;
+        Position<T> position{lambda, side, cx, cy};
+        position.Level = level;
+        position.HX = hx;
+        position.HY = hy;
+        position.Requested = requested;
+        position.Spacing = spacing;
+        out.push_back(position);
+    }
+}
 
 template <typename T>
 void EnumerateSide(const View<T>& g, const SectionT<T>& s, int side, const GatherSettings& settings,
@@ -423,6 +577,8 @@ struct CandidateT {
     T Lo[2]{}, Hi[2]{};
     T R{}, G{}, B{};
     VecT<T> Front, Back;
+    uint32_t Level = 0; // M4 (diagnostics)
+    int32_t HX = 0, HY = 0;
 };
 
 template <typename T>
@@ -523,6 +679,252 @@ bool EvaluateCandidate(const View<T>& g, const SectionT<T>& s, uint32_t x, uint3
     out.R = r, out.G = gg, out.B = b;
     out.Front = q;
     out.Back = back;
+    return true;
+}
+
+// M4: a radial sample whose footprint level is above 0 after the descent. Its
+// cell is planar (one surface of one class, all geometry), does not hold the
+// receiver's texel, and the sample's level-0 texel lies inside the viewport and
+// inside the cell. Depth and radiance always describe that one surface.
+//
+// HierarchyFootprint: the sample stands for the cell's footprint along the
+// line. The chord [la, lb] of the section line through the cell (clipped to
+// the viewport) is lifted onto the cell's plane: Qa, Qb are exact surface
+// points (w affine in pixels), the 3D front line Qa-Qb lies in the section
+// plane. It is clipped to the R-ball (|Q - P| <= R is an interval of the line,
+// the M2 front policy applied along the strip); each end gets its thickness
+// segment along its camera ray (clipped to the R-sphere as in M2). The strip
+// occupies the shortest arc holding the angles of its four corners (front and
+// back of both ends); an arc of pi or more means the strip surrounds the
+// receiver (degenerate, rejected), as does any of its three edges passing
+// within 1e-6 z_P of the receiver. Self intersection: a cell on the receiver's
+// own plane (normals within NormalCos, plane through the receiver within
+// PlaneTolerance), or whose two front ends both fail the M2 elevation test,
+// is the receiver's surface. The one-sided test uses the cell's normal (one
+// sign for the whole plane). Otherwise (cache only) depth, normal and self
+// test are the texel's (M2 point) and only the radiance is the cell's.
+// Cache Mean / SphericalHarmonics: the cell's radiance; otherwise the texel's.
+template <typename T>
+bool EvaluateCoarseCandidate(const View<T>& g, const SectionT<T>& s, uint32_t x, uint32_t y, const Position<T>& p,
+                             const GatherSettings& settings, GatherCounters& counters, CandidateT<T>& out) {
+    ++counters.Scheduled;
+    const int32_t xx = static_cast<int32_t>(x) + p.CellX;
+    const int32_t yy = static_cast<int32_t>(y) + p.CellY;
+    const size_t index = g.Index(xx, yy);
+    const uint8_t cls = g.Cls[index];
+    ++counters.Valid;
+    ++counters.Coarse;
+    const DepthHierarchy& hierarchy = *g.Acc->Hierarchy;
+    const HierarchyCell& cell = hierarchy.Cell(p.Level, static_cast<uint32_t>(p.HX), static_cast<uint32_t>(p.HY));
+    const T radius = static_cast<T>(settings.Radius);
+    const T sign = T(p.Side);
+    const T pi = Pi<T>();
+    const T twoPi = T(2) * pi;
+    VecT<T> q;          // representative front point (radiance direction)
+    VecT<T> corners[4]; // front a, front b, back a, back b (footprint) or front, back (point)
+    uint32_t cornerCount = 0;
+    VecT<T> nq;
+    if (settings.HierarchyFootprint) {
+        const T size = static_cast<T>(1U << p.Level);
+        const T x0 = static_cast<T>(p.HX) * size, y0 = static_cast<T>(p.HY) * size;
+        const T x1 = std::min(x0 + size, static_cast<T>(g.W)), y1 = std::min(y0 + size, static_cast<T>(g.H));
+        const T xc = x0 + T(0.5) * size, yc = y0 + T(0.5) * size;
+        const T cw = static_cast<T>(cell.W), cgx = static_cast<T>(cell.Gx), cgy = static_cast<T>(cell.Gy);
+        nq = {static_cast<T>(cell.Normal.X), static_cast<T>(cell.Normal.Y), static_cast<T>(cell.Normal.Z)};
+        if (settings.RejectSelfIntersection) {
+            // The receiver's own plane.
+            const T wp = cw + cgx * (T(x) + T(0.5) - xc) + cgy * (T(y) + T(0.5) - yc);
+            const T w0 = T(1) / s.ZP;
+            if (VDot(nq, s.N) >= static_cast<T>(hierarchy.Settings.NormalCos) &&
+                std::abs(wp - w0) <= static_cast<T>(hierarchy.Settings.PlaneTolerance) * w0) {
+                ++counters.SelfRejected;
+                return false;
+            }
+        }
+        // Chord of the line o + lambda d through [x0, x1] x [y0, y1].
+        const T ox = T(x) + T(0.5), oy = T(y) + T(0.5);
+        const T dx = s.DirX * sign, dy = s.DirY * sign;
+        T la = T(0), lb = std::numeric_limits<T>::infinity();
+        const auto slab = [&](T o, T d, T b0, T b1) {
+            if (std::abs(d) > T(0)) {
+                T t0 = (b0 - o) / d, t1 = (b1 - o) / d;
+                if (t0 > t1) std::swap(t0, t1);
+                la = std::max(la, t0);
+                lb = std::min(lb, t1);
+            } else if (o < b0 || o > b1) {
+                lb = -std::numeric_limits<T>::infinity();
+            }
+        };
+        slab(ox, dx, x0, x1);
+        slab(oy, dy, y0, y1);
+        if (!(lb >= la)) la = lb = p.Lambda; // rounding at a corner: the sample point alone
+        const auto lift = [&](T lambda) {
+            const T px = ox + lambda * dx, py = oy + lambda * dy;
+            const T w = cw + cgx * (px - xc) + cgy * (py - yc);
+            return VScale(g.Ray(px, py), T(1) / w);
+        };
+        const VecT<T> qa = lift(la), qb = lift(lb);
+        // Front line within the R-ball: |qa + t (qb - qa) - P|^2 <= R^2, t in [0, 1].
+        const VecT<T> d = VSub(qb, qa), f = VSub(qa, s.P);
+        const T a2 = VDot(d, d), b2 = T(2) * VDot(f, d), c2 = VDot(f, f) - radius * radius;
+        T t0 = T(0), t1 = T(1);
+        if (a2 > T(0)) {
+            const T disc = b2 * b2 - T(4) * a2 * c2;
+            if (disc < T(0)) {
+                ++counters.BeyondRadius;
+                return false;
+            }
+            const T root = std::sqrt(disc);
+            t0 = std::max(T(0), (-b2 - root) / (T(2) * a2));
+            t1 = std::min(T(1), (-b2 + root) / (T(2) * a2));
+        } else if (c2 > T(0)) {
+            t1 = T(-1);
+        }
+        if (!(t1 >= t0)) {
+            ++counters.BeyondRadius;
+            return false;
+        }
+        const VecT<T> fa = VAdd(qa, VScale(d, t0)), fb = VAdd(qa, VScale(d, t1));
+        if (settings.RejectSelfIntersection) {
+            const auto below = [&](const VecT<T>& e) {
+                const VecT<T> rel = VSub(e, s.P);
+                return VDot(rel, s.N) <= static_cast<T>(settings.SelfIntersectionSine) * VLength(rel) +
+                                             static_cast<T>(settings.SelfIntersectionDepth) * s.ZP;
+            };
+            if (below(fa) && below(fb)) {
+                ++counters.SelfRejected;
+                return false;
+            }
+        }
+        // Thickness segments of both ends, clipped to the R-sphere (M2).
+        const auto backOf = [&](const VecT<T>& e) {
+            const VecT<T> rel = VSub(e, s.P);
+            const T dist = VLength(rel);
+            const VecT<T> dir = VNormalize(e);
+            const T along = VDot(rel, dir);
+            const T clip = -along + std::sqrt(std::max(along * along - (dist * dist - radius * radius), T(0)));
+            const T length = std::max(std::min(static_cast<T>(settings.Thickness), clip), T(0));
+            return VAdd(e, VScale(dir, length));
+        };
+        const VecT<T> ba = backOf(fa), bb = backOf(fb);
+        // Degenerate: an edge of the strip meets the receiver.
+        const auto nearReceiver = [&](const VecT<T>& u, const VecT<T>& v) {
+            const VecT<T> e = VSub(v, u), r = VSub(s.P, u);
+            const T ee = VDot(e, e);
+            const T t = ee > T(0) ? std::clamp(VDot(r, e) / ee, T(0), T(1)) : T(0);
+            return VLength(VSub(r, VScale(e, t))) <= T(1.0e-6) * s.ZP;
+        };
+        if (nearReceiver(fa, ba) || nearReceiver(fb, bb) || nearReceiver(fa, fb)) {
+            ++counters.Degenerate;
+            return false;
+        }
+        corners[0] = fa, corners[1] = fb, corners[2] = ba, corners[3] = bb;
+        cornerCount = 4;
+        q = lift(p.Lambda);
+    } else {
+        // Cache only: the M2 point candidate of the sample's texel.
+        const T zq = g.Z[index];
+        nq = g.N[index];
+        if (settings.RejectSelfIntersection) {
+            const VecT<T> centre = VScale(g.Ray(T(xx) + T(0.5), T(yy) + T(0.5)), zq);
+            const VecT<T> dd = VSub(centre, s.P);
+            const T elevation = VDot(dd, s.N);
+            if (elevation <= static_cast<T>(settings.SelfIntersectionSine) * VLength(dd) +
+                                 static_cast<T>(settings.SelfIntersectionDepth) * s.ZP) {
+                ++counters.SelfRejected;
+                return false;
+            }
+        }
+        const T px = T(x) + T(0.5) + p.Lambda * s.DirX * sign;
+        const T py = T(y) + T(0.5) + p.Lambda * s.DirY * sign;
+        q = VScale(g.Ray(px, py), zq);
+        const VecT<T> rel = VSub(q, s.P);
+        const T dist = VLength(rel);
+        if (dist > radius) {
+            ++counters.BeyondRadius;
+            return false;
+        }
+        const VecT<T> dir = VNormalize(q);
+        const T along = VDot(rel, dir);
+        const T clip = -along + std::sqrt(std::max(along * along - (dist * dist - radius * radius), T(0)));
+        const T length = std::max(std::min(static_cast<T>(settings.Thickness), clip), T(0));
+        const VecT<T> back = VAdd(q, VScale(dir, length));
+        const T closestAt = std::clamp(-along, T(0), length);
+        if (VLength(VAdd(rel, VScale(dir, closestAt))) <= T(1.0e-6) * s.ZP) {
+            ++counters.Degenerate;
+            return false;
+        }
+        corners[0] = q, corners[1] = back;
+        cornerCount = 2;
+    }
+    // Shortest arc holding the corner angles (two corners: the M2 short arc).
+    const VecT<T> rel0 = VSub(corners[0], s.P);
+    const T theta0 = std::atan2(VDot(rel0, s.Tn), VDot(rel0, s.V));
+    T lowDelta = T(0), highDelta = T(0);
+    for (uint32_t c = 1; c < cornerCount; ++c) {
+        const VecT<T> rel = VSub(corners[c], s.P);
+        T delta = std::atan2(VDot(rel, s.Tn), VDot(rel, s.V)) - theta0;
+        if (delta > pi) delta -= twoPi;
+        else if (delta <= -pi) delta += twoPi;
+        lowDelta = std::min(lowDelta, delta);
+        highDelta = std::max(highDelta, delta);
+    }
+    if (highDelta - lowDelta >= pi) {
+        ++counters.Degenerate; // the strip surrounds the receiver
+        return false;
+    }
+    const T lo = theta0 + lowDelta;
+    const T hi = theta0 + highDelta;
+    out.Pieces = 0;
+    if (hi > lo) {
+        if (lo < -pi) {
+            out.Lo[0] = lo + twoPi, out.Hi[0] = pi, out.Lo[1] = -pi, out.Hi[1] = hi;
+            out.Pieces = 2;
+        } else if (hi > pi) {
+            out.Lo[0] = lo, out.Hi[0] = pi, out.Lo[1] = -pi, out.Hi[1] = hi - twoPi;
+            out.Pieces = 2;
+        } else {
+            out.Lo[0] = lo, out.Hi[0] = hi;
+            out.Pieces = 1;
+        }
+        ++counters.Occupying;
+    }
+    T r, gg, b;
+    if (settings.Cache == CacheMode::Mean) {
+        r = static_cast<T>(cell.Mean.R), gg = static_cast<T>(cell.Mean.G), b = static_cast<T>(cell.Mean.B);
+    } else if (settings.Cache == CacheMode::SphericalHarmonics) {
+        const VecT<T> omega = VNormalize(VSub(s.P, q)); // from the source toward the receiver
+        const Rgb value = EvaluateShRadianceOrder2<T>(
+            hierarchy.CellSh(p.Level, static_cast<uint32_t>(p.HX), static_cast<uint32_t>(p.HY)),
+            hierarchy.Settings.ShOrder, omega.X, omega.Y, omega.Z);
+        r = static_cast<T>(value.R), gg = static_cast<T>(value.G), b = static_cast<T>(value.B);
+    } else {
+        const size_t bi = g.BufferIndex(xx, yy);
+        r = static_cast<T>(g.In->Radiance[3 * bi]);
+        gg = static_cast<T>(g.In->Radiance[3 * bi + 1]);
+        b = static_cast<T>(g.In->Radiance[3 * bi + 2]);
+    }
+    // One-sided source (side test kept separate from the cache).
+    if (cls == static_cast<uint8_t>(TexelClass::OneSided)) {
+        if (VDot(nq, nq) > T(0)) {
+            if (!(VDot(nq, VSub(s.P, q)) > T(0))) {
+                r = gg = b = T(0);
+                ++counters.BackFacing;
+            }
+        } else {
+            ++counters.MissingSourceNormal;
+        }
+    }
+    out.Lambda = p.Lambda;
+    out.Side = p.Side;
+    out.CellX = p.CellX;
+    out.CellY = p.CellY;
+    out.R = r, out.G = gg, out.B = b;
+    out.Front = corners[0];
+    out.Back = cornerCount == 4U ? corners[3] : corners[1];
+    out.Level = p.Level;
+    out.HX = p.HX;
+    out.HY = p.HY;
     return true;
 }
 
@@ -695,14 +1097,28 @@ struct Scratch {
 template <typename T>
 void BuildCandidates(const View<T>& g, const SectionT<T>& s, uint32_t x, uint32_t y, const GatherSettings& settings,
                      Scratch<T>& scratch, GatherCounters& counters) {
-    EnumerateSide(g, s, 1, settings, scratch.Plus, counters);
-    EnumerateSide(g, s, -1, settings, scratch.Minus, counters);
+    if (settings.Schedule == CandidateSchedule::MetricRadial || UsesLevels(g, settings)) {
+        // M4 radial schedules (metric distribution, hierarchy levels).
+        scratch.Plus.clear();
+        scratch.Minus.clear();
+        EnumerateRadialM4(g, s, x, y, 1, settings, scratch.Plus, counters);
+        EnumerateRadialM4(g, s, x, y, -1, settings, scratch.Minus, counters);
+    } else {
+        EnumerateSide(g, s, 1, settings, scratch.Plus, counters);
+        EnumerateSide(g, s, -1, settings, scratch.Minus, counters);
+    }
     MergeSides(scratch.Plus, scratch.Minus, settings.InterleaveSides, scratch.Merged);
     scratch.Candidates.clear();
     CandidateT<T> candidate;
-    for (const auto& position : scratch.Merged)
-        if (EvaluateCandidate(g, s, x, y, position, settings, counters, candidate))
-            scratch.Candidates.push_back(candidate);
+    for (const auto& position : scratch.Merged) {
+        candidate.Level = position.Level;
+        candidate.HX = position.HX;
+        candidate.HY = position.HY;
+        const bool kept = position.Level > 0U
+                              ? EvaluateCoarseCandidate(g, s, x, y, position, settings, counters, candidate)
+                              : EvaluateCandidate(g, s, x, y, position, settings, counters, candidate);
+        if (kept) scratch.Candidates.push_back(candidate);
+    }
 }
 
 // M3 rotation sequence: double divides exactly, float multiplies by the
@@ -732,13 +1148,17 @@ T PixelRadialJitterT(const GatherSettings& settings, uint32_t x, uint32_t y) {
 
 template <typename T>
 PixelGather GatherPixelT(const View<T>& g, uint32_t x, uint32_t y, const GatherSettings& settings,
-                         Scratch<T>& scratch) {
+                         Scratch<T>& scratch, GuideSample* records = nullptr) {
     PixelGather out;
     const size_t index = g.Index(static_cast<int32_t>(x), static_cast<int32_t>(y));
+    if (records != nullptr)
+        for (uint32_t section = 0; section < settings.Sections; ++section) records[section] = GuideSample{};
     if (!IsGeometry(g.Cls[index]) || !(VDot(g.N[index], g.N[index]) > T(0))) return out;
     T sumR = T(0), sumG = T(0), sumB = T(0), sumA = T(0);
     const T inversePdf = Pi<T>();
-    const T rotation = PixelRotationT<T>(settings, x, y);
+    T rotation = PixelRotationT<T>(settings, x, y);
+    const NoiseMask* noise = settings.Rotations.Mode == RotationMode::BlueNoise && g.Acc != nullptr ? g.Acc->Noise : nullptr;
+    if (noise != nullptr) rotation = NoiseValue<T>(*noise, x, y, settings.Rotations.Frame, false);
     // Per-pixel radial jitter (M3): a local copy keeps the schedule code unchanged.
     GatherSettings jittered;
     const GatherSettings* active = &settings;
@@ -746,11 +1166,36 @@ PixelGather GatherPixelT(const View<T>& g, uint32_t x, uint32_t y, const GatherS
         jittered = settings;
         jittered.RadialJitter = static_cast<double>(PixelRadialJitterT<T>(settings, x, y));
         active = &jittered;
+    } else if (noise != nullptr) {
+        jittered = settings;
+        jittered.RadialJitter = static_cast<double>(NoiseValue<T>(*noise, x, y, settings.Rotations.Frame, true));
+        active = &jittered;
     }
+    // M4 guiding: the region's frozen table; records also of unguided frames
+    // (density 1 / pi) when a table and a record buffer are given.
+    const GuideTable* table = g.Acc != nullptr ? g.Acc->Guide : nullptr;
+    const bool guided = settings.Guiding && table != nullptr;
+    const uint32_t region = table != nullptr ? table->Region(x, y) : 0U;
     for (uint32_t section = 0; section < settings.Sections; ++section) {
-        const T phi = Pi<T>() * (T(section) + rotation) / static_cast<T>(settings.Sections);
+        T phi;
+        T sectionInversePdf = inversePdf;
+        T density = T(1) / Pi<T>();
+        uint32_t bin = kNoGuideBin;
+        if (guided) {
+            const T u = (T(section) + rotation) / static_cast<T>(settings.Sections);
+            phi = GuideDraw<T>(*table, region, u, density, bin);
+            sectionInversePdf = T(1) / density;
+        } else {
+            phi = Pi<T>() * (T(section) + rotation) / static_cast<T>(settings.Sections);
+            if (table != nullptr)
+                bin = std::min(static_cast<uint32_t>(phi * static_cast<T>(table->Bins) / Pi<T>()), table->Bins - 1U);
+        }
         const SectionT<T> s = SetupT(g, x, y, phi, static_cast<T>(settings.Radius));
-        if (!s.Valid) return PixelGather{};
+        if (!s.Valid) {
+            if (records != nullptr)
+                for (uint32_t k = 0; k < settings.Sections; ++k) records[k] = GuideSample{};
+            return PixelGather{};
+        }
         BuildCandidates(g, s, x, y, *active, scratch, out.Counters);
         SectionSums<T> sums;
         if constexpr (std::is_same_v<T, double>) {
@@ -764,11 +1209,43 @@ PixelGather GatherPixelT(const View<T>& g, uint32_t x, uint32_t y, const GatherS
             sums = AccumulateCentre<T>(s, scratch.Candidates.data(), scratch.Candidates.size(), settings.Sectors,
                                        nullptr, nullptr);
         }
-        sumR += sums.R * inversePdf;
-        sumG += sums.G * inversePdf;
-        sumB += sums.B * inversePdf;
-        sumA += sums.FA * inversePdf;
+        sumR += sums.R * sectionInversePdf;
+        sumG += sums.G * sectionInversePdf;
+        sumB += sums.B * sectionInversePdf;
+        if (guided && settings.GuidingAccessibility == GuidedAccessibility::IndependentUniform) {
+            // A: the unguided section of the same stratum (uniform density).
+            const T phiA = Pi<T>() * (T(section) + rotation) / static_cast<T>(settings.Sections);
+            const SectionT<T> sa = SetupT(g, x, y, phiA, static_cast<T>(settings.Radius));
+            if (!sa.Valid) {
+                if (records != nullptr)
+                    for (uint32_t k = 0; k < settings.Sections; ++k) records[k] = GuideSample{};
+                return PixelGather{};
+            }
+            BuildCandidates(g, sa, x, y, *active, scratch, out.Counters);
+            SectionSums<T> sumsA;
+            if constexpr (std::is_same_v<T, double>) {
+                if (settings.Mask == MaskMode::ContinuousIntervals)
+                    sumsA = AccumulateContinuousIntervals(sa, scratch.Candidates.data(), scratch.Candidates.size(),
+                                                          scratch.Occupied);
+                else
+                    sumsA = AccumulateCentre<T>(sa, scratch.Candidates.data(), scratch.Candidates.size(),
+                                                settings.Sectors, nullptr, nullptr);
+            } else {
+                sumsA = AccumulateCentre<T>(sa, scratch.Candidates.data(), scratch.Candidates.size(), settings.Sectors,
+                                            nullptr, nullptr);
+            }
+            sumA += sumsA.FA * inversePdf;
+        } else {
+            sumA += sums.FA * sectionInversePdf;
+        }
         out.OccupiedSectors += sums.Occupied;
+        if (records != nullptr && table != nullptr) {
+            GuideSample& record = records[section];
+            record.Contribution = static_cast<double>(T(0.2126) * sums.R + T(0.7152) * sums.G + T(0.0722) * sums.B);
+            record.Pdf = static_cast<double>(density);
+            record.Phi = static_cast<double>(phi);
+            record.Bin = bin;
+        }
     }
     const T inverse = T(1) / static_cast<T>(settings.Sections);
     out.Valid = true;
@@ -786,10 +1263,16 @@ template <typename T>
 std::vector<PixelGather> GatherImageT(const View<T>& g, const GatherSettings& settings) {
     std::vector<PixelGather> results(static_cast<size_t>(g.W) * g.H);
     const uint32_t threads = std::clamp(settings.Threads, 1U, 16U);
+    std::vector<GuideSample>* records = g.Acc != nullptr ? g.Acc->Samples : nullptr;
+    if (records != nullptr) records->assign(results.size() * settings.Sections, GuideSample{});
     const auto worker = [&](uint32_t first) {
         Scratch<T> scratch;
         for (uint32_t y = first; y < g.H; y += threads)
-            for (uint32_t x = 0; x < g.W; ++x) results[static_cast<size_t>(y) * g.W + x] = GatherPixelT(g, x, y, settings, scratch);
+            for (uint32_t x = 0; x < g.W; ++x) {
+                const size_t i = static_cast<size_t>(y) * g.W + x;
+                results[i] = GatherPixelT(g, x, y, settings, scratch,
+                                          records != nullptr ? &(*records)[i * settings.Sections] : nullptr);
+            }
     };
     if (threads == 1U) {
         worker(0U);
@@ -860,6 +1343,9 @@ Candidate ToPublic(const CandidateT<T>& c) {
     out.Radiance = {c.R, c.G, c.B};
     out.Front = Widen(c.Front);
     out.Back = Widen(c.Back);
+    out.Level = c.Level;
+    out.HX = c.HX;
+    out.HY = c.HY;
     return out;
 }
 
@@ -890,6 +1376,9 @@ GatherCounters& GatherCounters::operator+=(const GatherCounters& o) noexcept {
     MissingSourceNormal += o.MissingSourceNormal;
     Duplicates += o.Duplicates;
     Occupying += o.Occupying;
+    Coarse += o.Coarse;
+    Descended += o.Descended;
+    Contact += o.Contact;
     return *this;
 }
 
@@ -924,11 +1413,21 @@ const char* ValidateGatherSettings(const GatherSettings& s) noexcept {
     if (s.Sections == 0U) return "at least one section";
     if (s.Sectors == 0U || s.Sectors > kMaxSectors) return "sector count outside [1, 256]";
     if (!(s.Rotation >= 0.0 && s.Rotation < 1.0)) return "rotation outside [0, 1)";
-    if (s.Schedule == CandidateSchedule::Radial) {
+    if (s.Schedule == CandidateSchedule::Radial || s.Schedule == CandidateSchedule::MetricRadial) {
         if (s.CandidatesPerSide == 0U) return "radial schedule needs candidates";
         if (!(s.RadialExponent >= 1.0) || !std::isfinite(s.RadialExponent)) return "radial exponent must be >= 1";
         if (!(s.RadialJitter >= 0.0 && s.RadialJitter < 1.0)) return "radial jitter outside [0, 1)";
     }
+    // M4 switches.
+    const bool levels = s.HierarchyFootprint || s.Cache != CacheMode::Off;
+    if (levels && s.Schedule == CandidateSchedule::EveryTexel)
+        return "hierarchy and cache act on radial schedules (EveryTexel is the reference)";
+    if ((levels || s.Schedule == CandidateSchedule::MetricRadial) && s.CandidatesPerSide > 256U)
+        return "M4 radial schedules take at most 256 candidates per side";
+    if (levels && (s.HierarchyMaxLevel == 0U || s.HierarchyMaxLevel >= kMaxHierarchyLevels))
+        return "hierarchy footprint level outside [1, 7]";
+    if (levels && !(s.HierarchySpacingScale >= 0.5 && s.HierarchySpacingScale <= 4.0))
+        return "hierarchy spacing scale outside [0.5, 4]";
     if (!(s.SelfIntersectionSine >= 0.0) || !(s.SelfIntersectionDepth >= 0.0)) return "negative self tolerance";
     if (!(s.ChordEpsilon >= 0.0 && s.ChordEpsilon < 0.5)) return "chord epsilon outside [0, 0.5)";
     if (s.Rotations.Mode == RotationMode::Stratified) {
@@ -1186,6 +1685,110 @@ std::vector<PixelGather> GatherImageF32(const GatherInput& input, const GatherSe
     View<float> view;
     const auto data = PrepareT<float>(input, view);
     return GatherImageT(view, settings);
+}
+
+// ---------------------------------------------------------------------------
+// M4 entry points.
+
+const char* ValidateGatherAcceleration(const GatherInput& input, const GatherSettings& settings,
+                                       const GatherAcceleration& acceleration) noexcept {
+    const uint32_t width = input.Viewport.Width, height = input.Viewport.Height;
+    if (settings.HierarchyFootprint || settings.Cache != CacheMode::Off) {
+        const DepthHierarchy* h = acceleration.Hierarchy;
+        if (h == nullptr) return "hierarchy or cache switched on without a hierarchy";
+        if (h->Width != width || h->Height != height) return "hierarchy built for another viewport";
+        if (h->Levels.size() < 2U || settings.HierarchyMaxLevel + 1U > h->Levels.size())
+            return "footprint level beyond the hierarchy";
+        if (settings.Cache == CacheMode::SphericalHarmonics &&
+            (h->ShCoefficients == 0U || h->Settings.ShOrder > kMaxShOrder || h->Sh.size() != h->Cells.size() * 4U * h->ShCoefficients))
+            return "SH cache switched on without SH data of order <= 2";
+    }
+    if (settings.Guiding || acceleration.Samples != nullptr) {
+        const GuideTable* t = acceleration.Guide;
+        if (t == nullptr) return "guiding (or its records) switched on without a guide table";
+        if (t->Width != width || t->Height != height) return "guide table built for another viewport";
+        if (t->Bins == 0U || t->Bins > kMaxGuideBins) return "guide bins outside [1, 32]";
+        const size_t regions = static_cast<size_t>(t->RegionsX) * t->RegionsY;
+        if (t->RegionsX != ((width + (1U << t->RegionLog2) - 1U) >> t->RegionLog2) ||
+            t->RegionsY != ((height + (1U << t->RegionLog2) - 1U) >> t->RegionLog2))
+            return "guide regions do not cover the viewport";
+        if (t->Cdf.size() != regions * (t->Bins + 1U) || t->Pdf.size() != regions * t->Bins)
+            return "guide table sizes do not match its regions";
+        for (const double p : t->Pdf)
+            if (!(p > 0.0) || !std::isfinite(p)) return "guide densities must be finite and positive";
+    }
+    if (settings.Rotations.Mode == RotationMode::BlueNoise) {
+        const NoiseMask* n = acceleration.Noise;
+        if (n == nullptr || n->Count() == 0U || n->Rank.size() != n->Count()) return "blue-noise rotation without a mask";
+    }
+    return "";
+}
+
+std::vector<PixelGather> GatherImage(const GatherInput& input, const GatherSettings& settings,
+                                     const GatherAcceleration& acceleration) {
+    const PreparedGeometry geometry = PrepareGeometry(input);
+    View<double> view = ViewOf(input, geometry);
+    view.Acc = &acceleration;
+    return GatherImageT(view, settings);
+}
+
+std::vector<PixelGather> GatherImageF32(const GatherInput& input, const GatherSettings& settings,
+                                        const GatherAcceleration& acceleration) {
+    View<float> view;
+    const auto data = PrepareT<float>(input, view);
+    view.Acc = &acceleration;
+    return GatherImageT(view, settings);
+}
+
+SectionCandidates BuildSection(const GatherInput& input, const PreparedGeometry& geometry, uint32_t x, uint32_t y,
+                               double phi, const GatherSettings& settings, const GatherAcceleration& acceleration) {
+    SectionCandidates out;
+    View<double> view = ViewOf(input, geometry);
+    view.Acc = &acceleration;
+    const SectionT<double> s = SetupT(view, x, y, phi, settings.Radius);
+    out.Setup = ToPublic(s);
+    if (!s.Valid) return out;
+    Scratch<double> scratch;
+    BuildCandidates(view, s, x, y, settings, scratch, out.Counters);
+    out.Ordered.reserve(scratch.Candidates.size());
+    for (const auto& c : scratch.Candidates) out.Ordered.push_back(ToPublic(c));
+    return out;
+}
+
+std::vector<ScheduledPosition> ScheduleSection(const GatherInput& input, const PreparedGeometry& geometry, uint32_t x,
+                                               uint32_t y, double phi, const GatherSettings& settings,
+                                               const GatherAcceleration& acceleration) {
+    std::vector<ScheduledPosition> out;
+    View<double> view = ViewOf(input, geometry);
+    view.Acc = &acceleration;
+    const SectionT<double> s = SetupT(view, x, y, phi, settings.Radius);
+    if (!s.Valid) return out;
+    Scratch<double> scratch;
+    GatherCounters counters;
+    if (settings.Schedule == CandidateSchedule::MetricRadial || UsesLevels(view, settings)) {
+        EnumerateRadialM4(view, s, x, y, 1, settings, scratch.Plus, counters);
+        EnumerateRadialM4(view, s, x, y, -1, settings, scratch.Minus, counters);
+    } else {
+        EnumerateSide(view, s, 1, settings, scratch.Plus, counters);
+        EnumerateSide(view, s, -1, settings, scratch.Minus, counters);
+    }
+    MergeSides(scratch.Plus, scratch.Minus, settings.InterleaveSides, scratch.Merged);
+    for (const auto& p : scratch.Merged)
+        out.push_back({p.Lambda, p.Side, p.CellX, p.CellY, p.Level, p.Requested, p.Spacing});
+    return out;
+}
+
+PixelGather GatherPixel(const GatherInput& input, const PreparedGeometry& geometry, uint32_t x, uint32_t y,
+                        const GatherSettings& settings, const GatherAcceleration& acceleration) {
+    Scratch<double> scratch;
+    View<double> view = ViewOf(input, geometry);
+    view.Acc = &acceleration;
+    GuideSample* records = nullptr;
+    if (acceleration.Samples != nullptr) {
+        acceleration.Samples->assign(settings.Sections, GuideSample{});
+        records = acceleration.Samples->data();
+    }
+    return GatherPixelT(view, x, y, settings, scratch, records);
 }
 
 } // namespace Fast::Renderer::DiffuseGi

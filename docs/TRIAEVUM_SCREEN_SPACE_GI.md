@@ -1,6 +1,9 @@
 # Screen-space diffuse GI (clean-room implementation)
 
-Status: **M3 done** (2026-10-03: per-pixel stratified rotations, stratum
+Status: **M4 done** (2026-10-03: depth hierarchy with footprint strips,
+radiance cache and SH backend, metric radial distribution, guiding, own
+spatiotemporal blue-noise masks, T10; every switch off by default and M1-M3
+unchanged with them off; see "M4"), on top of **M3 done** (2026-10-03: per-pixel stratified rotations, stratum
 reconstruction, temporal accumulation of J and A, edge-aware a-trous filter,
 T11-T16 and the four [B2]-derived requirements, GLSL twins over frame
 sequences; see "M3"), on top of **M2** (gathering on a depth buffer, sector masks, thickness,
@@ -853,6 +856,25 @@ mean |dJ| <= 2.6e-6, max dA 3.2e-3 (T06).
     static noise (study below).
 18. Requirement (M5): GPU timing per pass (median, p95) and the VRAM of the
     resources below at the guide extent.
+19. Open (M4): the footprint strip occupies the shortest arc through its four
+    corners; this assumes the angle along the back curve (front + tau along the
+    camera rays) is monotone. Test: compare with a densely sampled strip (the
+    EveryTexel union inside the cell) on grazing planes and large tau.
+20. Requirement (M4, M5): guiding, the SH backend and blue noise stay off by
+    default (M4 studies); re-measure them on captured OoT3D buffers (localized
+    lights for guiding, curved surfaces for SH, TAA motion for the masks)
+    before any default changes.
+21. Open (M4): the guide is per screen region and not reprojected; under
+    camera motion it is stale (still unbiased, only variance). Test at M5:
+    variance with and without a guide reset on large motion.
+22. Open (M4): the 3D-truth comparison of the footprint used spacing scale 2;
+    the default (1) was chosen against EveryTexel. Test: repeat the truth
+    comparison with scale 1 on more receivers.
+23. Measured (M4): with depth-reconstructed normals, texels whose centre lies
+    exactly on a crease (synthetic symmetric cameras) take either plane by the
+    M2 tie rule; such a texel can join the other plane's cell (10-12 "crease
+    tie" cells per study, never a silhouette) and flips with last-bit changes.
+    Renderer face normals remove it (0 tie cells).
 
 ## M3: accumulation and filter (T11-T16)
 
@@ -1159,3 +1181,377 @@ clang 22.1.6 Release, Windows 11, 2026-10-03: M3 14/14 in 96 s; M1/M2/[B2]
 27/27 in 48 s with all 116 `DGI_REPORT` lines identical to the [B2]
 reintegration run; GPU M3 passed in 5.2 s, M2 passed in 2.8 s. The numbers
 above are the `DGI_M3` / `DGI_GPU_M3` lines of these runs.
+
+## M4: cache and guiding (T10)
+
+Implemented 2026-10-03 from the specification (sections 5, 6, 9, 10 T10,
+12), [B1] page 8 (exponentially distributed and jittered samples), [B4]
+sections 3.1, 4.1 (eq. 4) and 5.2, and [B5] eqs. 3, 5-9 (papers only). No
+hierarchical-depth, mip, SPD/SSSR/CACAO/Brixelizer, GTAO, spherical-harmonics,
+blue-noise or path-guiding code, texture or asset of the repository, of
+`_deps` or of the papers' SDKs was read. Every M4 feature is a switch that
+defaults to off; with all of them off the M1-M3 code paths run unchanged
+(tested bit for bit, and all M1-M3 report lines are identical, below).
+Nothing is wired into the renderer.
+
+### M4 deliverables
+
+| File | Content |
+|---|---|
+| `include/fast/renderer/diffuse_gi_hierarchy.h`, `src/fast/renderer/diffuse_gi_hierarchy.cpp` | Depth hierarchy (bounds, validity, discontinuity mask, cell planes), radiance cache (mean), SH backend (basis, clamped-cosine operator, evaluation, exact reference); double and FP32 twin |
+| `include/fast/renderer/diffuse_gi_guiding.h`, `src/fast/renderer/diffuse_gi_guiding.cpp` | Guide tables per screen region, inverse-cumulative draw, frozen state with a separate update, resets; double and FP32 twin |
+| `include/fast/renderer/diffuse_gi_noise.h`, `src/fast/renderer/diffuse_gi_noise.cpp` | Spatiotemporal blue-noise generator (void and cluster, [B4] eq. 4), white control, asset format with validation, spectral analysis |
+| `diffuse_gi_gather.h/.cpp` (extended) | `CandidateSchedule::MetricRadial`, `RotationMode::BlueNoise`, `CacheMode`, `GuidedAccessibility`, the footprint strips, `GatherAcceleration`, M4 entry points, `ScheduleSection` |
+| `diffuse_gi_scene.h/.cpp` (extended) | Checker textures (`CheckerRoomScene`), per-texel surface ids and exact hit depths (`RasterizeSurfaceIds`, `FacePlane`) |
+| `include/fast/renderer/diffuse_gi_m4_shader.h`, `src/fast/renderer/diffuse_gi_m4_shader.cpp`; `diffuse_gi_gather_shader.cpp` (gather entry point split off, text unchanged) | GLSL: hierarchy level 0 and reduction, M4 gather, guide update |
+| `tests/renderer_diffuse_gi_m4_tests.cpp`, target `renderer_diffuse_gi_m4_tests` | 21 tests: bit identity off, hierarchy, footprint, radial, cache, SH, guiding, noise, T10, FP32 twins, robustness |
+| `tools/renderer/tev_program/diffuse_gi_m4_gpu_tests.cpp`, target `diffuse_gi_m4_gpu_tests` | GPU twin of every M4 path with odd extents, guards, a padded viewport and the validation layer |
+| Asset | `dgi_stbn_32x32x32.bin` is produced by the generator in the test (not committed); see the manifest |
+
+### Design and conventions
+
+- **Hierarchy** (`DepthHierarchy`, section 5). Level l cell (I, J) covers the
+  aligned 2^l x 2^l footprint clipped to the viewport. `ZMin`/`ZMax` bound the
+  geometry depths (limits, never a surface). `kCellGeometry`: every texel is
+  geometry with a geometric normal; `kCellSky`/`kCellUnavailable`: what else
+  it holds. Discontinuity mask: `kCellPlanar` only when the footprint is one
+  surface: all geometry of one class, and the planes of the four children
+  agree with the cell's plane at the four corners of each child's footprint
+  within `PlaneTolerance` (relative inverse depth) and their normals within
+  `NormalCos`. Planes: inverse depth w = 1/z is affine in pixels on a plane;
+  level 0 takes it from the texel's depth and geometric normal,
+  w(x, y) = (n . ray(x, y)) / (n . P) (gradients (n_x a_x + n_y a_y) / (W n.P), ...);
+  a planar cell stores the mean of its children's planes at its centre (same
+  basis, level-0 pixels). A texel with non-finite radiance is never planar.
+- **Footprint level** of a radial sample: the largest l <= `HierarchyMaxLevel`
+  with 2^l <= `HierarchySpacingScale` x (spacing to the next sample along the
+  line, pixels of this image). Descent: while the level-l cell holding the
+  sample's texel is not planar, or holds the receiver's texel, l decreases;
+  level 0 is the M2 point reference.
+- **Footprint strips** (`HierarchyFootprint`, own construction). A sample on a
+  planar cell above level 0 represents the cell's footprint along the line:
+  the chord [la, lb] of the section line through the cell is lifted onto the
+  cell's plane (exact surface points, no raster footprint error), clipped to
+  the R-ball (the M2 front policy applied along the strip), and each end gets
+  its thickness segment along its camera ray, clipped to the R-sphere as in
+  M2. The strip occupies the shortest arc holding its four corner angles; an
+  arc of pi or more, or an edge passing within 1e-6 z_P of the receiver, is
+  degenerate. A cell on the receiver's own plane is the receiver's surface
+  (self). One cell is one surface sample (duplicates by cell). The one-sided
+  test uses the cell's normal (one sign for the whole plane). Depth and
+  radiance of a strip always describe the same planar surface; a coarse level
+  never joins a near dark object with a far bright background (the mask).
+- **Radiance cache** (`CacheMode::Mean`): the mean source radiance of a planar
+  footprint, every texel weighted 1 (the screen-uniform density of the
+  reference schedule), rebuilt each frame from the source buffer (a
+  reconstruction of the source signal, not a bounce). Without the footprint,
+  the cache changes only the radiance of point samples (duplicates stay by
+  texel).
+- **SH backend** (`CacheMode::SphericalHarmonics`). Real orthonormal SH, view
+  space, zenith +Z, [B5] eq. 3 convention (Y_1,1 ~ x, Y_1,0 ~ z, Y_1,-1 ~ y; no
+  Condon-Shortley phase), index l^2 + l + m, order 2 (9 coefficients), separate
+  RGB, no chroma compression. Represented function, for omega from the source
+  to the receiver: N(omega) = sum_i L_i max(0, n_i . omega), D(omega) = sum_i max(0, n_i . omega);
+  outgoing radiance = N / D (radiance, not cosine-convolved irradiance).
+  Operator: N_lm += L_i A_l Y_lm(n_i), D_lm += A_l Y_lm(n_i) with A_l of [B5]
+  eqs. 6 and 8 (Funk-Hecke); coefficients are sums in one basis, never clipped.
+  The side test stays the gather's one-sided test; the SH is read only on
+  planar cells.
+- **Metric radial distribution** (`CandidateSchedule::MetricRadial`, section 6).
+  Sample k of K lies on the camera ray of the section plane whose closest
+  distance to the receiver is rho_k = R ((k + j) / K)^e (the ray at angle
+  asin(rho / |P|) from the receiver's ray; rho = R is the exact bound of the
+  R-ball, the M2 extent). Distribution function: the fraction of samples within
+  closest distance rho is (rho / R)^(1/e); effective metric radius
+  R ((K - 1 + j) / K)^e, R as j -> 1. Positions closer than the contact sample
+  (the midpoint of the line's chord through the first texel after the
+  receiver's, the first EveryTexel texel) are moved onto it: every jitter
+  j < j_c samples the contact texel, so no jitter skips it systematically. All
+  quantities are metric or exact projections: the schedule is invariant to
+  scaling scene, R and tau.
+- **Guiding** (section 6, p(phi) = (1 - eta)/pi + eta g(phi)). Regions of
+  2^RegionLog2 pixels, B equal bins over [0, pi). Bin probabilities
+  q_b = (1 - eta)/B + eta E_b / sum E; cumulative P_(b+1) = P_b + q_b with P_B = 1
+  (no rounded renormalization). Draw phi = (b + (u - P_b)/(P_(b+1) - P_b)) pi/B
+  for u = (s + rotation)/S (the M1-M3 rotations, so stratification is kept in
+  the cumulative domain); its density p_b = (P_(b+1) - P_b) B/pi weights J. The
+  table is frozen while a frame samples; `Update()` reads one record per pixel
+  and section (luminance of F, p_b, bin) and writes the next state into
+  separate storage: e_b = (1/n) sum_(in b) lum(F)/p_b, E_b <- (1 - beta) E_b + beta e_b
+  (E = e on first data). Uniform on initialization, `Invalidate()` (scene
+  change), zero sums, negative or non-finite records (per region); a region
+  without receivers keeps its memory. A: `IndependentUniform` (default)
+  evaluates S extra sections at the unguided angles, so A is exactly the
+  unguided A; `SamePdf` weights the open weights by the same 1/p_b. No ratio
+  estimator, adaptive normalization or clamp is used (the mixture bounds
+  1/p_b by pi/(1 - eta)). The guide is a distribution over phi, not a history
+  of light.
+- **Noise** (section 6, 12). `GenerateBlueNoiseMask`: void and cluster ([B4]
+  section 3.1: initial pattern from a seeded SplitMix64, tightest-cluster /
+  largest-void swaps until they coincide, then the three ranking phases) with
+  the spatiotemporal energy of [B4] eq. 4 (Gaussian over toroidal distance
+  within a slice or along a pixel's time column, zero otherwise). Ranks are a
+  permutation of [0, W H D); u = (rank + 1/2)/(W H D) at (x mod W, y mod H,
+  frame mod D); the radial jitter reads the same slice at (x + W/2, y + H/2)
+  ([B4] section 5.2). Deterministic noise-free modes are kept (Fixed, M3
+  Stratified). Asset format: "DGIBNM01", extents, flags, sigma, density, seed,
+  uint32 ranks, FNV-1a 64; the parser rejects wrong magic, sizes, extents,
+  checksums and non-permutations before any use.
+
+### Parameter decisions
+
+| Parameter | Decision | Evidence (DGI_M4 lines) |
+|---|---|---|
+| PlaneTolerance, NormalCos | **1e-3**, **0.9995** | Tolerance grid (12 scenes x 4 variants: depth/face normals, FP32/24-bit depth, 96x64 and 192x128): geometric bridging 0 for every tolerance <= 1e-3; first bridges at 1e-2 with cos 0.99 (6) and at 1e-1 (16-42); coverage of single-face cells saturates at 1e-4 (0.9995). 1e-3 sits a decade above the coverage knee and a decade below the first bridge |
+| Levels, HierarchyMaxLevel | 5, **4** | Footprint study: L2/L4/L6 within 0.1% bias; footprints beyond 16 px rare at these resolutions |
+| HierarchySpacingScale | **1** | Footprint study: scale 1 has the lowest mean per-pixel error in all four scenes (2 overshoots pillars by +12% J) |
+| Radial schedule for M4 | MetricRadial **K 16, e 2**, footprint on | Footprint study vs EveryTexel (jitter mean): bias J -4.1% / -7.9% / -2.9% / +1.2% (corner / pillars / checker / T06), against -15.8% / -22.0% / -16.0% / -15.1% without footprint; e 1 similar (-5.5% ... +0.05%) |
+| Cache | **Mean** with the footprint | Checker: jitter noise 0.103 -> 0.083 (-19%) at unchanged mean (-0.12%); uniform scenes unchanged (A identical, J within 0.04%) |
+| SH backend | order 2 implemented, **off** | Equals the mean on planar cells (1e-12 uniform, 1.3e-5 textured); on creases contamination up to 0.49 already at 2 degrees (study) |
+| Guiding | RegionLog2 **2**, Bins **8**, eta **0.25**, beta **0.25**, A **IndependentUniform**, guiding **off** | Study (one at a time around 8 px / 8 / 0.5 / 0.25): region 4 px 1.60x/1.66x J variance reduction, eta 0.25 1.74x/1.61x, beta 1 worse (1.41x/1.15x); combined 1.93x/1.92x. Same-PDF A: 7-40x worse MSE (variance reduction 0.023-0.158). Cost-matched: two more uniform stratified sections give 6.9x/4.7x for J (and 7.9x/7.7x for A): guiding loses at equal work on these scenes |
+| Noise | 32 x 32 x 32, sigma **1.9**, density 0.1, rotation mode **off** (M3 stratified stays) | sigma 1.5/1.9/2.5: spatial low 0.002/0.001/0.001, temporal low 0.047/0.044/0.059 (1.9 best); convergence (S = 1, static): STBN beats M3 at 2 frames (0.50 vs 0.82) and 4 (0.24 vs 0.28), M3 wins from 8 frames on (0.090 vs 0.135; 32: 0.036 vs 0.046) and has less low-frequency residual (0.12 vs 0.36) |
+
+### Own derivations (M4)
+
+1. **Plane form.** For X = z ray(x, y) on the plane n . X = n . P,
+   w = 1/z = n . ray(x, y)/(n . P), affine in (x, y) because ray is affine in
+   the viewport UV. Two affine functions differ most at the corners of a
+   rectangle, so agreement at the four corners bounds the deviation over the
+   whole child footprint.
+2. **Strip angle.** The front points of a planar strip lie on the line
+   plane x section plane; the angle seen from P along a line not through P is
+   monotone, so the front contributes its two ends; with the two thickness
+   segments the strip's angular set is the arc between its extreme corners
+   (declared assumption for the back curve: open point 19).
+3. **Unbiased guided estimator.** With u uniform, phi = P^-1(u) has density
+   p = dP/dphi = (P_(b+1) - P_b) B/pi in bin b, and E[F(phi)/p(phi)] = integral F dphi;
+   stratified u keeps each stratum unbiased. Using the stored density of the
+   draw (derived from the same cumulative) makes draw and weight identical.
+4. **Exact edges.** P_b as running sums of q_b = (1 - eta)/B + eta E_b/sum E
+   (no division by a rounded total) makes probabilities exact in binary
+   (e.g. (1 - eta)/B = 1/32) give identical edges in double, float and GLSL:
+   a deterministic u = (s + 1/2)/S that hits an edge selects the same bin in
+   every twin (found by the FP32 test: before this, u = 1/8 met an edge of
+   1/16 steps and the twins took different bins).
+5. **Independent A.** The A sections use phi = pi (s + u)/S, the unguided
+   expression, and the same code path: A of a guided frame equals the
+   unguided A bit for bit.
+6. **SH on one plane.** With one normal, N = L D for any truncation order, so
+   N/D = L wherever D > 0; on a planar cell with texture the deviation is
+   (radiance contrast) x (spread of the truncated clamped cosines of the
+   texels' normals), bounded by the planarity tolerance.
+7. **Footprint level under rescaling.** Rendering the same rays at 3x the
+   resolution (or zooming the tangents by 3) multiplies every metric sample's
+   screen distance and spacing by exactly 3, so the requested level rises by
+   floor(log2(3 s)) - floor(log2 s) in {1, 2} and the metric footprint
+   2^l x pixel changes by 2/3 or 4/3.
+
+### Tests and results
+
+`renderer_diffuse_gi_m4_tests` (21 tests, 94 s), 96 x 64 unless stated,
+N = 64, depth-reconstructed normals unless stated.
+
+- **Switches off** (3 scenes, EveryTexel, Radial, M3 stratified with radial
+  jitter; double and FP32; all M4 inputs present incl. a non-uniform guide,
+  a noise mask and guide records): 18 images, 84,480 pixels, 0 mismatches
+  (J, A, C, sectors and every counter bit for bit).
+- **Hierarchy invariants** (65,040 cells, 4 scenes, both normal sources):
+  counts, flags and bounds 0 errors; planar texels within 4.1e-5 relative of
+  their cell's plane and 0.009 degrees of its normal; cache mean exact; SH sums
+  within 2.9e-14.
+- **No bridging** (geometric truth: a footprint is one surface when the exact
+  surface points of all its texels lie on one face's plane): 0 bridging cells
+  at the defaults in every variant; 10-12 crease-tie cells with
+  depth-reconstructed normals (open point 23), 0 with face normals.
+- **Footprint follows resolution and projection** (same receivers at 96 x 64,
+  288 x 192 and zoomed x3; 10,511 and 10,529 matched samples): spacing ratio 3
+  within 3.6e-14; level steps only 1 (8,727) or 2 (1,784 / 1,802); metric
+  footprint ratio within log2(3/2) = 0.585.
+- **Scene units** (off-centre principal point, scene, R and tau x0.01 and
+  x100): metric radial and metric + footprint + cache with face normals: J
+  within 1.7e-16, A within 6.7e-16, every counter and hierarchy flag
+  identical. Depth-reconstructed normals: A and counters identical, 1-3 J
+  flips (M2 normal tie rule at edge texels); symmetric camera: 26-33 flips
+  (crease-centre ties, open point 23).
+- **Contact region** (5,376 sides, 4 sections, 16 jitters): MetricRadial never
+  skips it (K 16 e 2: sampled at every jitter; K 8 e 1: 37% of jitters, never
+  0); the M2 screen schedule skips it systematically on 32 (K 16 e 1) and 164
+  (K 8 e 1) sides, not with e 2.
+- **Radial study** (screen and metric, K 8/16/32, e 1/2/3, three scenes,
+  against EveryTexel, jitter mean): sparse point samples leave gaps between
+  their thin intervals: J -2.1% to -58%, A +0.002 to +0.067; metric beats
+  screen at equal K, e (e.g. K 32 e 1: -0.8% vs -2.5% corner).
+- **Footprint study** (above; strips cut the radial deficit by 3-15x). Against
+  the 3D ground truth (continuous M1 integrator, 26 and 30 receivers, S = 32):
+  mean |dJ| 0.0316 (strips, scale 2) vs 0.0337 EveryTexel vs 0.0414 screen
+  radial (corner); 0.0036 vs 0.0073 vs 0.0269 (T06); mean |dA| 0.046 / 0.056 /
+  0.084 and 0.018 / 0.021 / 0.052: strips close the raster gaps of the
+  per-texel reference as well.
+- **Cache and silhouettes** (T06, black box in front of the bright wall,
+  58,748 coarse candidates, 7,211 on the box): 0 cells mixing primitives, every
+  cached radiance is its face's. **Textured sources** (checker room): jitter
+  noise 0.103 -> 0.083.
+- **SH**: closed forms vs general basis 2.2e-16, [B5] eq. 3 printed constants
+  within 4.9e-7, orthonormality to order 8 within 7.6e-15, A_l (eq. 8) vs
+  quadrature 3.6e-15, eq. 9 printed within 3.9e-7, Funk-Hecke operator (l <= 4)
+  1.2e-15. Planar cells (62,156 cells, 1.46M directions with n . omega > 0.01):
+  SH vs mean 1.1e-15 (uniform), 1.3e-5 (textured, depth normals), 9.7e-16
+  (textured, face normals); FP32 7.5e-7 / 2.0e-4; gather SH vs mean cache
+  9.3e-7 (double). **Crease study** (two faces, red / green, order 2): 2
+  degrees: max 0.47 (contamination 0.49 in the 88 one-face directions), area
+  weighted mean 0.0023; 20 degrees: overshoot 0.28, mean 0.057; 90 degrees:
+  overshoot 0.66; order 8 converges (90 degrees: 0.59 max, 0.018 mean). Real
+  non-planar cells of the corner room: mean 0.11, area weighted 0.031, ratio
+  blow-ups where D_SH -> 0; 647 of 4,896 coefficients negative, clipping them
+  raises the area-weighted error to 0.107. Hence SH only on planar cells.
+- **Guiding unbiased** (angular field, 20,000 draws of S = 2 per table, eta
+  0.25/0.5/0.9, learned and adversarial tables; 6 screen receivers, 1,500 draws,
+  same-PDF A): |z| <= 1.33 (field) and 1.20 (screen); weighting with pi instead
+  of the draw's density: |z| >= 43.7 and 15.1. **State**: uniform at start,
+  frozen during the frame, update in separate storage, 0 / zero-sum / NaN /
+  negative / `Invalidate()` back to uniform as specified; independent A equals
+  the unguided A bit for bit.
+- **Noise**: 32x32x32 mask in 1.6-2.6 s, deterministic, a permutation; spatial
+  low-frequency power 0.001 and temporal 0.044 of white (white 0.999, 0.984;
+  per-slice 2D blue noise 0.000 spatial but 1.021 temporal); slice
+  Kolmogorov distance 0.0072; lag-1 correlations -0.175 / -0.490. Asset
+  131,128 bytes, FNV-1a 64 `9fa36e8292ff6e41`, SHA-256
+  `9c57874ca22879772f81fd072a5b8c73173cb84782af3676fe47b2c07d5fee65`, round trip
+  exact, 5/5 corruptions rejected (magic, payload bit, truncation, duplicate
+  rank, zero width).
+- **FP32 twins** (97 x 61, every feature): hierarchy flags 0-1 flips of 7,968
+  cells, planes 7e-6; guide update vs double 1.1e-6 (pdf x pi); gathers: means
+  <= 2.1e-4, at most 41 of 5,878 pixels beyond 1e-4 (isolated decisions).
+- **Robustness**: 3 poisoned source texels (NaN, +inf, -inf): 0 planar cells
+  hold them, 0 non-finite coarse candidates (non-finite pixels 22 point
+  reference, 23 with strips and cache: the M2 point behaviour, not spread);
+  extreme settings (K = 1, N = 1, S = 1, R = tau = 1e6): finite.
+
+### T10: optimizations against the baseline
+
+Baseline: the M2 production candidate (Radial K 16, e 2, jitter 1/2, S = 8,
+rotation 1/2); reference: EveryTexel S = 8. Frames: 32 frames of S = 2 with
+the M3 stratified sequence, per-pixel mean, reference EveryTexel S = 64; the
+guide learns online. Bias = mean J ratio - 1.
+
+| Scene | Config | vs baseline: bias J, bias A | vs reference: bias J (baseline), bias A (baseline) |
+|---|---|---|---|
+| corner | hierarchy (strips) | +12.7%, -0.017 | -7.0% (-17.4%), +0.003 (+0.021) |
+| corner | cache mean / SH | +0.04%, 0 | -17.4% |
+| corner | metric radial | +2.2%, +0.001 | -15.6% |
+| corner | metric + strips + cache | +16.6%, -0.018 | -3.7%, +0.002 |
+| pillars | hierarchy | +15.2%, -0.006 | -10.3% (-22.1%), +0.004 (+0.011) |
+| pillars | cache | 0, 0 | unchanged |
+| pillars | metric + strips + cache | +19.4%, -0.009 | -7.0%, +0.002 |
+| checker | hierarchy | +14.5%, -0.017 | -5.3% (-17.3%) |
+| checker | cache | -0.12% (mean abs 5.3%), 0 | -17.4% |
+| checker | metric + strips + cache | +18.0%, -0.018 | -2.4%, +0.002 |
+| T06 | hierarchy | +21.1%, -0.026 | +1.1% (-16.5%), +0.005 (+0.031) |
+| T06 | cache | 0, 0 | unchanged |
+| T06 | metric + strips + cache | +21.1%, -0.026 | +1.2%, +0.005 |
+| frames (4 scenes) | guiding | -0.24% to +0.04%, A identical | single-frame error 0.32 -> 0.27, 0.49 -> 0.39, 0.37 -> 0.32, 0.21 -> 0.22 |
+| frames (4 scenes) | blue noise | -0.28% to -0.08% | single-frame error unchanged (0.32, 0.49, 0.37, 0.21) |
+| frames (4 scenes) | all together | +17% to +21% | -2.8%, -6.7%, -1.9%, +2.1% (baseline -17.0%, -22.7%, -16.7%, -15.0%); single frame 0.23, 0.40, 0.28, 0.16 |
+
+Justification of every systematic variation: (1) the strips add the light and
+occlusion of the parts of planar surfaces that sparse point samples skip; the
+variation moves J and A toward the EveryTexel reference in every scene
+(asserted) and toward the 3D truth (footprint study); its residual is the
+radial schedule on non-planar footprints (descents) and silhouettes. (2) The
+cache changes only the radiance of planar footprints: A is identical
+(asserted), mean J within 0.5% (asserted; 0.12% on the checker room, 0.04%
+from the crease-tie cells of the corner room), per-pixel differences are the
+texture average replacing an aliased point sample. (3) The metric distribution
+places samples differently (+1.7% to +2.2% J), a re-sampling of the same
+deficit. (4) Guiding and blue noise change only which phi or jitter is drawn:
+their 32-frame means agree with the baseline within 1% (asserted; observed
+<= 0.28%). Images: mean |dJ|/mean J against the baseline 2.3-6.1% (guiding,
+noise: different noise realizations), 13-24% (strips: the added strips).
+
+### GPU twin (`diffuse_gi_m4_gpu_tests`)
+
+NVIDIA GeForce RTX 3060, driver 0x98928000, Vulkan 1.4.341, Khronos
+validation layer loaded: 9 cases (odd extents 97 x 61, 101 x 67, 91 x 63,
+83 x 59; metric radial, strips, cache, strips + SH, guiding with both A
+estimators, blue noise with face normals, everything together, and a padded
+poisoned viewport), each through the normal pass, hierarchy level 0, four
+reductions and the M4 gather, then two guide updates. Guards intact, no
+non-finite value, validity identical, counts identical; hierarchy flags 0
+flips outside 0-4 junction tie texels (their 10-18 ancestor cells are counted
+apart); planes within 1.7e-5, normals 1.6e-4, cache 6e-8, depth bounds 4.1e-8
+of the depth step z^2/n, SH sums 8.5e-5 of the cell weight; gathers vs the
+FP32 twin: means <= 1.35e-4 (J) and 2.3e-4 (A), at most 121 of 6,723 pixels
+beyond 1e-3; guide records: 0 bin mismatches, 0-147 contribution flips of
+up to 26,892; guide update vs the FP32 twin: tables within 3.1e-7, state
+1.5e-8; padded viewport bit-identical; 0 validation errors (1 loader message
+of a third-party implicit layer of this host). One submission per stage
+(the reduced level is a uniform value), explicit barriers producer to
+consumer; no barrier inside any kernel.
+
+### Resources (FP32, per view; 800 x 240 = 192,000 pixels)
+
+| Resource | Format | Size | Lifetime | Access |
+|---|---|---|---|---|
+| Hierarchy cells (all levels, about 4/3 per pixel) | 3 x vec4 per cell (plane + flags/count, normal + ZMin, mean + ZMax) | 64 B/pixel, 12.3 MB | frame | level-0 kernel writes level 0; each reduction reads level l-1, writes l; the gather reads |
+| SH sums (order 2, optional) | 9 x vec4 per cell | 192 B/pixel, 36.9 MB | frame | as above (off by default: not allocated) |
+| Guide table | (2B + 1) floats per region (B = 8, 4 x 4 regions: 12,000) | 0.8 MB | frame (output of the update = input of the next frame) | update writes, gather reads |
+| Guide state in / out | (B + 1) floats per region, ping-pong | 2 x 0.43 MB | persistent per view; reset on scene change | update reads one, writes the other |
+| Guide records | vec4 per pixel and section | 16 S B/pixel, 6.1 MB at S = 2 | frame | gather writes, update reads |
+| Noise mask | uint32 per voxel, 32 x 32 x 32 | 128 KB | static asset | gather reads |
+
+With the default footprint and mean cache (no SH, no guiding): +12.3 MB per
+view; FP16 for the plane and mean would need the M3 HDR/distance tests first.
+
+### Source manifest (M4)
+
+| Component | Public source (consulted 2026-10-03) | Used | Own derivation | Rejected alternatives |
+|---|---|---|---|---|
+| Depth hierarchy, footprint strips | Specification section 5 (min/max with validity and discontinuity masks, descend or point reference, footprint, resolution and projection, depth and radiance of one surface) | Requirements only | Plane form, corner agreement, footprint level from the spacing, descent rules, strips (derivations 1, 2, 7) | Coarse point samples on the cell plane (tried: leaves the sparse-schedule gaps), min/max as surfaces, the renderer's Hi-Z pyramid (not opened) |
+| Radiance cache | Specification section 5 | Per-frame prefilter bounded by depth and normals, initialized from the source | Screen-uniform mean on planar cells | Bilateral full-resolution prefilter windows |
+| SH backend | [B5] `B5-envmap.pdf` (SHA-256 `0ea018d0...58d1fb`), eq. 3 (basis, page 2), eqs. 5-6 (convolution), 8-9 (A_l, page 2), section 3.1 (RGB separate, page 2) | Basis convention and constants, clamped-cosine coefficients | Represented function N/D (radiance, not irradiance), general-order recurrence, exact reference, crease study (derivation 6) | Storing B5's irradiance E_lm as radiance; clipping coefficients; SH across creases |
+| Radial distribution | Specification section 6; [B1] page 8 (Fig. 14: jitter along the direction; exponential distribution near the shaded pixel) | Dense near / sparse far, jitter | Metric closest-distance parameter, contact sample | Screen-fraction exponent (M2 schedule kept for comparison) |
+| Guiding | Specification section 6 (formula p = (1 - eta)/pi + eta g, frozen, separate update, resets, A) | Formula and rules | Piecewise-constant g, exact cumulative, update estimator (derivations 3-5) | Reservoirs, path-guiding families, ratio estimators, clamps |
+| Noise | [B4] `B4-main.pdf` (SHA-256 `0a9605dc...6adb996a`), section 3.1 (void and cluster phases, eqs. 1-2, page 3), section 4.1 eq. 4 (page 3), section 5.2 (two offsets, page 5) | Algorithm description, energy, sigma 1.9 and density 10% (re-tested) | Own implementation, asset format, spectral checks | [B4]'s SDK, code and masks (not read), golden-ratio animation |
+
+### Deviations from the specification and the plan
+
+- The SH backend exists and is tested but is used only on planar cells, where
+  it equals the mean cache; its crease errors exceed any useful tolerance, so
+  the specification's rule "reduce the footprint or use point evaluation"
+  leaves it without a benefit here (off by default).
+- Guiding is implemented and unbiased but off by default: at equal section
+  work more stratified uniform sections are better on the synthetic scenes;
+  A uses the specification's independent uniform estimator, which doubles the
+  section work when guiding is on.
+- Blue-noise rotations are off by default: the M3 stratified sequence
+  converges better from 8 frames on (the masks help only in the first 2-4
+  frames, e.g. after a disocclusion).
+- The hierarchy is applied to radial schedules only (EveryTexel remains the
+  reference); its samples are strips, an own extension of the "sample
+  footprint" of section 5.
+- T10 uses the M2 radial schedule as the baseline (the production candidate)
+  and EveryTexel as the reference, since every M4 optimization acts on sparse
+  schedules.
+- The M4 GPU test uses the validation layer without the synchronization
+  validation features (one submission per stage).
+
+### Reproducible report (M4)
+
+```text
+I:\_triaevum_work\perf-levers\build-host.cmd -j 4 renderer_diffuse_gi_m4_tests renderer_diffuse_gi_reference_tests renderer_diffuse_gi_temporal_tests
+set DGI_M4_ASSET_DIR=<directory for the noise asset>
+I:\_triaevum_work\perf-levers\host-build\three_ds_recomp_runtime\tests\renderer_diffuse_gi_m4_tests.exe
+I:\_triaevum_work\perf-levers\host-build\three_ds_recomp_runtime\tests\renderer_diffuse_gi_reference_tests.exe
+I:\_triaevum_work\perf-levers\host-build\three_ds_recomp_runtime\tests\renderer_diffuse_gi_temporal_tests.exe
+I:\_triaevum_work\perf-levers\build-gpu-tests.cmd diffuse_gi_gpu_tests.exe diffuse_gi_temporal_gpu_tests.exe diffuse_gi_m4_gpu_tests.exe
+I:\_triaevum_work\perf-levers\gpu-tests-build\diffuse_gi_m4_gpu_tests.exe
+I:\_triaevum_work\perf-levers\gpu-tests-build\diffuse_gi_gpu_tests.exe
+I:\_triaevum_work\perf-levers\gpu-tests-build\diffuse_gi_temporal_gpu_tests.exe
+```
+
+clang 22.1.6 Release, Windows 11, 2026-10-03: M4 21/21 in 94 s; M1/M2/[B2]
+27/27 with all 116 `DGI_REPORT` lines identical to the pre-M4 run; M3 14/14
+with all 90 `DGI_M3` lines identical; GPU M4 passed (0.6 s of kernels), M2 and
+M3 GPU tests passed with all 15 and 8 `DGI_GPU` lines identical to the pre-M4
+binaries. The numbers above are the `DGI_M4` / `DGI_GPU_M4` lines of these
+runs. Timings are indications only (shared GPU).

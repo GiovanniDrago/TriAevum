@@ -524,6 +524,29 @@ if(MSVC)
 endif()
 gtest_discover_tests(renderer_diffuse_gi_temporal_tests DISCOVERY_TIMEOUT 30)
 
+# Diffuse GI optimizations (M4: depth hierarchy, radiance cache and SH
+# backend, metric radial distribution, guiding, blue noise; T10),
+# docs/TRIAEVUM_SCREEN_SPACE_GI.md.
+add_executable(renderer_diffuse_gi_m4_tests
+    renderer_diffuse_gi_m4_tests.cpp
+    ../src/fast/renderer/diffuse_gi_reference.cpp
+    ../src/fast/renderer/diffuse_gi_gather.cpp
+    ../src/fast/renderer/diffuse_gi_scene.cpp
+    ../src/fast/renderer/diffuse_gi_temporal.cpp
+    ../src/fast/renderer/diffuse_gi_sequence.cpp
+    ../src/fast/renderer/diffuse_gi_hierarchy.cpp
+    ../src/fast/renderer/diffuse_gi_guiding.cpp
+    ../src/fast/renderer/diffuse_gi_noise.cpp
+)
+set_property(TARGET renderer_diffuse_gi_m4_tests PROPERTY CXX_STANDARD 20)
+target_include_directories(renderer_diffuse_gi_m4_tests PRIVATE ../include)
+target_link_libraries(renderer_diffuse_gi_m4_tests PRIVATE gtest_main)
+if(MSVC)
+    target_compile_definitions(renderer_diffuse_gi_m4_tests PRIVATE NOMINMAX)
+    target_compile_options(renderer_diffuse_gi_m4_tests PRIVATE /utf-8)
+endif()
+gtest_discover_tests(renderer_diffuse_gi_m4_tests DISCOVERY_TIMEOUT 60)
+
 # Precompiled SPIR-V packs: format, malformed packs and every embedded family.
 include(../cmake/spirv_pack.cmake)
 add_executable(renderer_spirv_pack_tests renderer_spirv_pack_tests.cpp)

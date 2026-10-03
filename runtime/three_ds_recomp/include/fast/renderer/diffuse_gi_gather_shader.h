@@ -52,6 +52,9 @@ static_assert(sizeof(GatherShaderParams) == 176);
 
 [[nodiscard]] std::string BuildDiffuseGiNormalShader();
 [[nodiscard]] std::string BuildDiffuseGiGatherShader();
+// The gather's constants, buffers, sides, accumulation and candidate
+// processing without its entry point (M4 kernels, diffuse_gi_m4_shader.h).
+[[nodiscard]] std::string DiffuseGiGatherFunctionsGlsl();
 // M3 geometry pack (same bindings 0-6 as the gather, plus 7): vec4 per
 // viewport pixel (oriented normal xyz, view depth z) where the gather output
 // is valid (aux.y != 0), zero elsewhere. Input of the temporal kernels.

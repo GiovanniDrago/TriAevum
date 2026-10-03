@@ -30,6 +30,11 @@ struct Primitive {
     Vec3 Half; // half extents along the axes (rectangle: Z unused)
     Rgb Radiance;
     bool TwoSided = false; // rectangles only; boxes emit from their outside
+    // M4: optional 3D checker texture of the radiance (period in scene units
+    // along the primitive's axes, 0: none); odd cells take CheckerRadiance.
+    double CheckerPeriod = 0.0;
+    Rgb CheckerRadiance;
+    [[nodiscard]] Rgb RadianceAt(const Vec3& point) const;
 
     [[nodiscard]] static Primitive Box(const Vec3& centre, const Vec3& half, const Rgb& radiance);
     // Box rotated about the view X axis by `pitch` radians (then translated).
@@ -141,5 +146,19 @@ struct GroundTruth {
 // T09: overhang whose only camera-visible face lies beyond R while its
 // underside, hidden from the camera, is the first 3D hit within R.
 [[nodiscard]] Scene OverhangScene(uint32_t width, uint32_t height);
+// M4 (T10): the corner room with checker-textured walls and floor (a source
+// signal with detail at the footprint scale of sparse samples).
+[[nodiscard]] Scene CheckerRoomScene(uint32_t width, uint32_t height);
+// M4: viewport-wide primitive id of the first hit per texel (-1: sky), the
+// ground truth of the hierarchy tests (which surface each texel shows), and
+// the face of that primitive (0-5 for boxes along +X, -X, +Y, -Y, +Z, -Z).
+struct SurfaceIds {
+    std::vector<int32_t> Primitive;
+    std::vector<int32_t> Face;
+    std::vector<double> Distance; // exact view depth of the first hit (0: none)
+};
+// Plane n . X = d of a face (outward normal) in view space.
+void FacePlane(const Primitive& primitive, int32_t face, Vec3& normal, double& offset);
+[[nodiscard]] SurfaceIds RasterizeSurfaceIds(const Scene& scene);
 
 } // namespace Fast::Renderer::DiffuseGi::Synthetic

@@ -44,6 +44,21 @@ double WrapAngle(double angle) {
 
 } // namespace
 
+Rgb Primitive::RadianceAt(const Vec3& point) const {
+    if (!(CheckerPeriod > 0.0)) return Radiance;
+    const Vec3 local = Sub(point, Centre);
+    // A small inward offset keeps the coordinate along the face normal off the
+    // period boundary at the face itself.
+    int64_t parity = 0;
+    for (int axis = 0; axis < 3; ++axis) {
+        const double a = Dot(local, Axes[axis]);
+        const double half = axis == 0 ? Half.X : (axis == 1 ? Half.Y : Half.Z);
+        const double inside = std::clamp(a, -half * (1.0 - 1e-9), half * (1.0 - 1e-9));
+        parity += static_cast<int64_t>(std::floor(inside / CheckerPeriod));
+    }
+    return (parity & 1) != 0 ? CheckerRadiance : Radiance;
+}
+
 Primitive Primitive::Box(const Vec3& centre, const Vec3& half, const Rgb& radiance) {
     Primitive p;
     p.Shape = Kind::Box;
@@ -188,7 +203,9 @@ GatherInput Rasterize(const Scene& scene) {
             const Primitive& p = scene.Primitives[hit->Primitive];
             in.Depth[bi] = EncodeDepth(hit->Distance, c);
             in.Class[bi] = static_cast<uint8_t>(p.TwoSided ? TexelClass::TwoSided : TexelClass::OneSided);
-            const Rgb radiance = hit->FrontFace ? p.Radiance : Rgb{};
+            const Rgb radiance = hit->FrontFace ? (p.CheckerPeriod > 0.0 ? p.RadianceAt(Scale(ray, hit->Distance))
+                                                                         : p.Radiance)
+                                                : Rgb{};
             in.Radiance[3 * bi] = static_cast<float>(radiance.R);
             in.Radiance[3 * bi + 1] = static_cast<float>(radiance.G);
             in.Radiance[3 * bi + 2] = static_cast<float>(radiance.B);
@@ -232,7 +249,10 @@ FieldSample SceneField::Sample(const Vec3& omega) const {
     if (!hit) return {};
     FieldSample sample;
     sample.State = DirectionState::Hit;
-    if (hit->FrontFace) sample.Radiance = mPrimitives[hit->Primitive].Radiance;
+    if (hit->FrontFace) {
+        const Primitive& p = mPrimitives[hit->Primitive];
+        sample.Radiance = p.CheckerPeriod > 0.0 ? p.RadianceAt(Add(mReceiver, Scale(omega, hit->Distance))) : p.Radiance;
+    }
     return sample;
 }
 
@@ -447,6 +467,65 @@ Scene OverhangScene(uint32_t width, uint32_t height) {
     // (y = -0.2) spans z in [-5.8, -2].
     scene.Primitives.push_back(Primitive::Box({0.2, 0.3, -3.9}, {0.6, 0.5, 1.9}, {0.5, 0.5, 0.5}));
     return scene;
+}
+
+Scene CheckerRoomScene(uint32_t width, uint32_t height) {
+    Scene scene = CornerRoomScene(width, height);
+    scene.Name = "checker_room";
+    // Floor, back wall, red wall: checkers of 0.25 / 0.4 / 0.3 scene units.
+    scene.Primitives[0].CheckerPeriod = 0.25;
+    scene.Primitives[0].CheckerRadiance = {0.6, 0.6, 0.6};
+    scene.Primitives[1].CheckerPeriod = 0.4;
+    scene.Primitives[1].CheckerRadiance = {1.5, 1.2, 0.2};
+    scene.Primitives[2].CheckerPeriod = 0.3;
+    scene.Primitives[2].CheckerRadiance = {0.3, 0.1, 0.05};
+    return scene;
+}
+
+void FacePlane(const Primitive& p, int32_t face, Vec3& normal, double& offset) {
+    if (p.Shape == Primitive::Kind::Rectangle) {
+        normal = p.Axes[2];
+        offset = Dot(normal, p.Centre);
+        return;
+    }
+    const int axis = face / 2;
+    const double sign = (face % 2) == 0 ? 1.0 : -1.0;
+    const double half = axis == 0 ? p.Half.X : (axis == 1 ? p.Half.Y : p.Half.Z);
+    normal = Scale(p.Axes[axis], sign);
+    offset = Dot(normal, p.Centre) + half;
+}
+
+SurfaceIds RasterizeSurfaceIds(const Scene& scene) {
+    const PinholeCamera& c = scene.Camera;
+    const DepthCamera camera = MakeDepthCamera(c);
+    SurfaceIds out;
+    out.Primitive.assign(static_cast<size_t>(c.Width) * c.Height, -1);
+    out.Face.assign(out.Primitive.size(), -1);
+    out.Distance.assign(out.Primitive.size(), 0.0);
+    for (uint32_t j = 0; j < c.Height; ++j)
+        for (uint32_t i = 0; i < c.Width; ++i) {
+            const double u = (i + 0.5) / c.Width, v = (j + 0.5) / c.Height;
+            const Vec3 ray{camera.ViewX[0] * u + camera.ViewX[1] * v + camera.ViewX[2],
+                           camera.ViewY[0] * u + camera.ViewY[1] * v + camera.ViewY[2], -1.0};
+            const auto hit = Intersect(scene.Primitives, {}, ray, c.Near, std::isinf(c.Far) ? 1.0e300 : c.Far);
+            if (!hit) continue;
+            const size_t index = static_cast<size_t>(j) * c.Width + i;
+            out.Primitive[index] = static_cast<int32_t>(hit->Primitive);
+            out.Distance[index] = hit->Distance;
+            const Primitive& p = scene.Primitives[hit->Primitive];
+            int32_t face = 0;
+            if (p.Shape == Primitive::Kind::Box)
+                for (int axis = 0; axis < 3; ++axis) {
+                    const double d = Dot(hit->Normal, p.Axes[axis]);
+                    if (std::abs(d) > 0.5) face = 2 * axis + (d < 0.0 ? 1 : 0);
+                }
+            out.Face[index] = face;
+        }
+    for (const auto& rect : scene.Unavailable)
+        for (uint32_t j = rect[1]; j < std::min(rect[3], c.Height); ++j)
+            for (uint32_t i = rect[0]; i < std::min(rect[2], c.Width); ++i)
+                out.Primitive[static_cast<size_t>(j) * c.Width + i] = -2;
+    return out;
 }
 
 } // namespace Fast::Renderer::DiffuseGi::Synthetic
