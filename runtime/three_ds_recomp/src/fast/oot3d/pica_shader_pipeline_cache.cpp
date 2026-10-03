@@ -203,11 +203,11 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
         features |=
             PicaShaderInstrumentationFeature::NativeFogGuide | PicaShaderInstrumentationFeature::OutlineGeometryGuide;
     }
-    // The face normal of the visible surface: requested by its readers; until
-    // one exists, OOT3D_GRAPHICS_FACE_NORMAL_GUIDE=1 publishes it (diagnostics)
-    // for draws that already publish guides.
+    // The face normal of the visible surface, for its readers;
+    // OOT3D_GRAPHICS_FACE_NORMAL_GUIDE=1 also publishes it (diagnostics) for
+    // draws that already publish guides.
     if (sceneDraw && request.Draw.DepthWriteEnabled && features != PicaShaderInstrumentationFeature::None &&
-        FaceNormalGuideDiagnosticRequested()) {
+        (EffectsReadFaceNormal(effects) || FaceNormalGuideDiagnosticRequested())) {
         features |= PicaShaderInstrumentationFeature::FaceNormalGuide;
     }
     // GI specular is a reflection source resolved through the same guide.
@@ -433,7 +433,8 @@ PicaShaderInstrumentationFeature ResolvePicaShaderProfileFeatures(
         features |=
             PicaShaderInstrumentationFeature::NativeFogGuide | PicaShaderInstrumentationFeature::OutlineGeometryGuide;
     }
-    if (features != PicaShaderInstrumentationFeature::None && FaceNormalGuideDiagnosticRequested())
+    if (features != PicaShaderInstrumentationFeature::None &&
+        (EffectsReadFaceNormal(effects) || FaceNormalGuideDiagnosticRequested()))
         features |= PicaShaderInstrumentationFeature::FaceNormalGuide;
     if (effects.Reflections != ReflectionMode::Off ||
         (effects.GlobalIllumination.Mode != GlobalIlluminationMode::Off &&

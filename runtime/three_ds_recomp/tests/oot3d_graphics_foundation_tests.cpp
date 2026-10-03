@@ -4055,6 +4055,12 @@ TEST(Oot3dGraphicsSettings, ClampsTheOriginalMxaoOptions) {
     EXPECT_FLOAT_EQ(value.MxaoFadeDistance, 0.0F);
     EXPECT_EQ(value.MxaoNormals, MxaoNormalSource::Depth);
     EXPECT_EQ(value.MxaoDebug, MxaoDebugView::Off);
+    // The face-normal source and views are valid values.
+    settings.Effects.MxaoNormals = MxaoNormalSource::Geometry;
+    settings.Effects.MxaoDebug = MxaoDebugView::FaceDisagreement;
+    const auto face = GraphicsSettingsService::Validate(settings, GraphicsCapabilities{}).Value.Effects;
+    EXPECT_EQ(face.MxaoNormals, MxaoNormalSource::Geometry);
+    EXPECT_EQ(face.MxaoDebug, MxaoDebugView::FaceDisagreement);
 }
 
 TEST(Oot3dGraphicsSettings, GatesAndClampsPointShadows) {

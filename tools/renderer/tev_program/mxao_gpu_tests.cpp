@@ -1,5 +1,6 @@
 #include "fast/immerse/mxao_shader.h"
 #include "fast/oot3d/ambient_occlusion_composite.h"
+#include "fast/renderer3ds/pica_geometry_guide.h"
 #include "vulkan_test_device.h"
 
 #include <algorithm>
@@ -16,7 +17,19 @@ struct Image {
     VkDeviceMemory Memory{};
 };
 
-enum : uint32_t { kDepth, kNormals, kTiled, kRaw, kFiltered, kOutput, kMotion, kHistory0, kHistory1, kImageCount };
+enum : uint32_t {
+    kDepth,
+    kNormals,
+    kTiled,
+    kRaw,
+    kFiltered,
+    kOutput,
+    kMotion,
+    kHistory0,
+    kHistory1,
+    kGeometry,
+    kImageCount
+};
 enum : uint32_t { kDeinterleave, kOcclusion, kFilter, kResolve, kTemporal, kDebug, kProgramCount };
 // The descriptor sets of MxaoPass: input (binding 2), output (binding 3) and
 // history (binding 6); binding 5 is always the motion vectors.
@@ -61,7 +74,7 @@ struct MxaoFixture {
     static constexpr uint32_t Width = 129, Height = 97;
     Gpu Device{ VkPhysicalDeviceFeatures{ .shaderStorageImageExtendedFormats = VK_TRUE } };
     std::array<Image, kImageCount> Images{};
-    Gpu::Buffer Depths{}, Normals{}, Motion{}, Result{}, Accumulation{};
+    Gpu::Buffer Depths{}, Normals{}, Motion{}, Result{}, Accumulation{}, Geometry{};
     VkSampler Sampler{};
     VkDescriptorSetLayout SetLayout{};
     VkDescriptorPool Pool{};
@@ -124,16 +137,18 @@ struct MxaoFixture {
                    MakeImage(VK_FORMAT_R32_SFLOAT, Width, Height),
                    MakeImage(VK_FORMAT_R32G32B32A32_SFLOAT, Width, Height),
                    MakeImage(VK_FORMAT_R16G16B16A16_SFLOAT, Width, Height),
-                   MakeImage(VK_FORMAT_R16G16B16A16_SFLOAT, Width, Height) };
+                   MakeImage(VK_FORMAT_R16G16B16A16_SFLOAT, Width, Height),
+                   MakeImage(VK_FORMAT_R32G32B32A32_UINT, Width, Height) };
         Depths = Device.MakeBuffer(Width * Height * sizeof(float), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         Normals = Device.MakeBuffer(Width * Height * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         Motion = Device.MakeBuffer(Width * Height * 4 * sizeof(float), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         Result = Device.MakeBuffer(Width * Height * sizeof(float), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         Accumulation = Device.MakeBuffer(Width * Height * 4 * sizeof(uint16_t), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        Geometry = Device.MakeBuffer(Width * Height * 4 * sizeof(uint32_t), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         VkSamplerCreateInfo sampler{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
         sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         Check(vkCreateSampler(Device.Device, &sampler, nullptr, &Sampler));
-        std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
+        std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
         for (uint32_t i = 0; i < bindings.size(); ++i) {
             bindings[i].binding = i;
             bindings[i].descriptorCount = 1;
@@ -146,7 +161,7 @@ struct MxaoFixture {
         setLayout.bindingCount = static_cast<uint32_t>(bindings.size());
         setLayout.pBindings = bindings.data();
         Check(vkCreateDescriptorSetLayout(Device.Device, &setLayout, nullptr, &SetLayout));
-        const std::array<VkDescriptorPoolSize, 3> sizes{ { { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 5 * kSetCount },
+        const std::array<VkDescriptorPoolSize, 3> sizes{ { { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 6 * kSetCount },
                                                            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kSetCount },
                                                            { VK_DESCRIPTOR_TYPE_SAMPLER, kSetCount } } };
         VkDescriptorPoolCreateInfo pool{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
@@ -162,13 +177,14 @@ struct MxaoFixture {
         allocation.pSetLayouts = layouts.data();
         Check(vkAllocateDescriptorSets(Device.Device, &allocation, Sets.data()));
         for (uint32_t set = 0; set < Sets.size(); ++set) {
-            std::array<VkDescriptorImageInfo, 7> images{};
-            std::array<VkWriteDescriptorSet, 7> writes{};
-            for (uint32_t binding = 0; binding < 7; ++binding) {
+            std::array<VkDescriptorImageInfo, 8> images{};
+            std::array<VkWriteDescriptorSet, 8> writes{};
+            for (uint32_t binding = 0; binding < 8; ++binding) {
                 const uint32_t index = binding == 2   ? kSets[set][0]
                                        : binding == 3 ? kSets[set][1]
                                        : binding == 5 ? uint32_t(kMotion)
                                        : binding == 6 ? kSets[set][2]
+                                       : binding == 7 ? uint32_t(kGeometry)
                                                       : binding;
                 images[binding].imageView = binding == 4 ? VK_NULL_HANDLE : Images[index].View;
                 images[binding].imageLayout =
@@ -271,6 +287,8 @@ struct MxaoFixture {
     bool KeepRaw = false;
     bool RawWritten = false;
     uint32_t DebugView = 0;
+    // The geometry guide's face normal of every pixel (G); 0 = none.
+    uint32_t FaceNormal = 0;
 
     // One frame. With `motion` the frame accumulates (temporal program) into
     // the next history image, reading the other one; Constants.Temporal says
@@ -292,12 +310,17 @@ struct MxaoFixture {
         }
         if (motion != nullptr)
             std::memcpy(Motion.Mapped, motion->data(), motion->size() * sizeof((*motion)[0]));
+        auto* geometry = static_cast<std::array<uint32_t, 4>*>(Geometry.Mapped);
+        for (size_t i = 0; i < depth.size(); ++i)
+            geometry[i] = { 0U, FaceNormal, FaceNormal != 0U ? Fast::Renderer3ds::kPicaGeometryGuideKindNative : 0U,
+                            0U };
         Check(vkResetCommandPool(Device.Device, Commands, 0));
         VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         Check(vkBeginCommandBuffer(Command, &begin));
         Upload(Depths, kDepth);
         Upload(Normals, kNormals);
         Upload(Motion, kMotion);
+        Upload(Geometry, kGeometry);
         for (uint32_t i : { kTiled, kRaw, kFiltered, kOutput })
             Barrier(Images[i],
                     i == kRaw && KeepRaw && RawWritten ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
@@ -366,7 +389,7 @@ struct MxaoFixture {
         Check(vkQueueWaitIdle(Device.Queue));
         std::vector<float> values(depth.size());
         std::memcpy(values.data(), Result.Mapped, values.size() * sizeof(float));
-        const bool packed = DebugView >= 1 && DebugView <= 3;
+        const bool packed = (DebugView >= 1 && DebugView <= 3) || DebugView == 9 || DebugView == 10;
         for (float value : values)
             Require(std::isfinite(value) && value >= 0 && value <= (packed ? 2.0F : 1.0F),
                     "nonfinite or out-of-range MXAO visibility");
@@ -393,6 +416,7 @@ struct MxaoFixture {
         Device.Free(Motion);
         Device.Free(Result);
         Device.Free(Accumulation);
+        Device.Free(Geometry);
         for (const auto& image : Images) {
             vkDestroyImageView(Device.Device, image.View, nullptr);
             vkDestroyImage(Device.Device, image.Handle, nullptr);
@@ -560,6 +584,74 @@ void TestOriginalOptions(MxaoFixture& gpu, MxaoConstants constants, const std::v
     gpu.DebugView = 0;
     std::cout << "original options: depth normals, IDGAF, screen radius, exponential fade, shading rates and "
               << checked << " debug normals passed\n";
+}
+
+// Face normals from the geometry guide: the exact plane of the surface, equal
+// to the depth normal on planes, from depth where the guide has none, and the
+// views that compare them.
+void TestGeometryNormals(MxaoFixture& gpu, MxaoConstants constants, const std::vector<float>& flat,
+                         const std::vector<float>& sloped, const std::vector<float>& scene) {
+    using namespace Fast::Immerse;
+    using Fast::Renderer3ds::EncodePicaGeometryGuideNormal;
+    constexpr uint32_t W = MxaoFixture::Width, H = MxaoFixture::Height;
+    const std::vector<float> identity(flat.size(), 1);
+    auto depthNormals = constants;
+    depthNormals.Flags = 3 | kMxaoDepthNormals; // Very high
+    auto geometryNormals = constants;
+    geometryNormals.Flags = 3 | kMxaoGeometryNormals;
+    // View space, Z toward the viewer: the sloped plane's own normal, and the
+    // normal of the fronto-parallel steps.
+    const float length = std::sqrt(1 + .3F * .3F);
+    const uint32_t slopedFace = EncodePicaGeometryGuideNormal({ .3F / length, 0, 1 / length });
+    const uint32_t frontFace = EncodePicaGeometryGuideNormal({ 0, 0, 1 });
+
+    // Without a face normal the source is the depth normal, bit for bit.
+    gpu.FaceNormal = 0;
+    Require(Difference(gpu.Run(scene, geometryNormals, 2), gpu.Run(scene, depthNormals, 2)) == 0,
+            "without a face normal the geometry source is not the depth normal");
+
+    // On planes the face normal is the depth plane: no self-occlusion.
+    gpu.FaceNormal = slopedFace;
+    const float slopedGap = Difference(gpu.Run(sloped, geometryNormals, 0), gpu.Run(sloped, depthNormals, 0));
+    Require(Minimum(gpu.Run(sloped, geometryNormals, 2)) > .998F, "face normals darken a sloped plane");
+    gpu.FaceNormal = frontFace;
+    Require(Difference(gpu.Run(flat, geometryNormals, 2), identity) < .0002F, "face normals darken a flat plane");
+    const auto stepsFace = gpu.Run(scene, geometryNormals, 2);
+    const auto stepsDepth = gpu.Run(scene, depthNormals, 2);
+    Require(Minimum(stepsFace) < .9F, "face normals miss the steps");
+    std::cout << "face normals: sloped plane differs from depth normals by " << slopedGap
+              << "; steps minimum visibility " << Minimum(stepsFace) << " (depth normals " << Minimum(stepsDepth)
+              << "), mean difference " << MeanDifference(stepsFace, stepsDepth) << '\n';
+    Require(slopedGap < .001F, "face and depth normals disagree on a plane");
+
+    // Views: the face normal itself, and its angle to the depth normal over
+    // 10 degrees (grey), magenta where there is none.
+    gpu.FaceNormal = slopedFace;
+    gpu.DebugView = 9;
+    const auto shown = Unpack(gpu.Run(sloped, depthNormals, 0)[(H / 2) * W + W / 2]);
+    const std::array<float, 3> expected{ .5F + .5F * .3F / length, .5F, .5F + .5F / length };
+    for (size_t c = 0; c < 3; ++c)
+        Require(std::abs(shown[c] - expected[c]) < (c == 2 ? 2.0F / 127 : 2.0F / 255), "the face normal view");
+    gpu.DebugView = 10;
+    const auto agree = gpu.Run(sloped, depthNormals, 0);
+    float worst = 0;
+    for (uint32_t y = 2; y + 2 < H; ++y)
+        for (uint32_t x = 2; x + 2 < W; ++x)
+            worst = std::max(worst, Unpack(agree[y * W + x])[0]);
+    std::cout << "face vs depth normals on the sloped plane: at most " << worst * 10 << " degrees\n";
+    Require(worst <= 3.0F / 255, "face and depth normals of a plane are more than 0.12 degrees apart");
+    gpu.FaceNormal = frontFace;
+    const auto apart = Unpack(gpu.Run(sloped, depthNormals, 0)[(H / 2) * W + W / 2]);
+    Require(apart[0] > .99F && apart[1] > .99F, "a 16.7 degree disagreement is not saturated");
+    gpu.FaceNormal = 0;
+    const auto none = Unpack(gpu.Run(sloped, depthNormals, 0)[(H / 2) * W + W / 2]);
+    Require(none[0] > .99F && none[1] < .01F && none[2] > .99F, "a missing face normal is not magenta");
+    gpu.DebugView = 1;
+    gpu.FaceNormal = slopedFace;
+    const auto used = Unpack(gpu.Run(sloped, geometryNormals, 0)[(H / 2) * W + W / 2]);
+    Require(std::abs(used[0] - expected[0]) < 2.0F / 255, "the normals in use are not the face normals");
+    gpu.DebugView = 0;
+    gpu.FaceNormal = 0;
 }
 
 // Temporal accumulation: an invalid history reproduces the original filter
@@ -744,6 +836,7 @@ int main() try {
     }
     TestTemporal(gpu, constants, scene);
     TestOriginalOptions(gpu, constants, flat, sloped, scene);
+    TestGeometryNormals(gpu, constants, flat, sloped, scene);
     std::cout << "MXAO GPU: RGB8 planes, occlusion for four methods and three filters, coverage, amount, fade, "
                  "W-buffer, odd extents, repeatability and temporal accumulation passed\n";
 } catch (const std::exception& error) {

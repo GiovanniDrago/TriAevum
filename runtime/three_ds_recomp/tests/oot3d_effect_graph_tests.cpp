@@ -603,6 +603,46 @@ TEST(Oot3dDisplayEffectPlan, GlobalIlluminationComposesThroughTheSceneComposite)
     EXPECT_FALSE(BuildDisplayEffectPlan(input).Enabled(DisplayEffectPass::GlobalIllumination));
 }
 
+TEST(Oot3dEffectGraph, FaceNormalReadersAllocateTheGeometryGuide) {
+    const auto ao = BuildPicaExtensionGraph({ .AmbientOcclusion = true });
+    ASSERT_TRUE(ao.Valid()) << ao.Error;
+    EXPECT_FALSE(ao.Attachments.Requires(PicaAuxiliaryOutput::OutlineGeometryGuide));
+    const auto face = BuildPicaExtensionGraph({ .AmbientOcclusion = true, .FaceNormal = true });
+    ASSERT_TRUE(face.Valid()) << face.Error;
+    EXPECT_TRUE(face.Attachments.Requires(PicaAuxiliaryOutput::OutlineGeometryGuide));
+    // The outline's fog guide stays the outline's.
+    EXPECT_FALSE(face.Attachments.Requires(PicaAuxiliaryOutput::FogGuide));
+}
+
+TEST(Oot3dDisplayEffectPlan, FaceNormalAmbientOcclusionReadsTheGeometryGuide) {
+    DisplayEffectPlanInput input;
+    input.WorldSurface = true;
+    input.PerspectiveAvailable = true;
+    input.AmbientOcclusion = AmbientOcclusionMode::Mxao;
+    input.NativeSceneBoundary = true;
+    const auto contains = [](const auto& uses, const EffectResourceUse& use) {
+        return std::find(uses.begin(), uses.end(), use) != uses.end();
+    };
+    // Without a face-normal reader the guide is neither published nor read.
+    const auto depth = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(depth.Graph.Valid()) << depth.Graph.Error;
+    EXPECT_FALSE(contains(depth.Bindings(DisplayEffectPass::AmbientOcclusion),
+                          Read(EffectResource::OutlineGeometryGuide)));
+    EXPECT_FALSE(depth.Graph.Attachments.Requires(PicaAuxiliaryOutput::OutlineGeometryGuide));
+
+    input.AmbientOcclusionFaceNormal = true;
+    const auto face = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(face.Graph.Valid()) << face.Graph.Error;
+    EXPECT_TRUE(contains(face.Bindings(DisplayEffectPass::AmbientOcclusion),
+                         Read(EffectResource::OutlineGeometryGuide)));
+    EXPECT_TRUE(face.Graph.Attachments.Requires(PicaAuxiliaryOutput::OutlineGeometryGuide));
+    EXPECT_FALSE(face.Graph.Attachments.Requires(PicaAuxiliaryOutput::FogGuide));
+
+    // No AO, no reader.
+    input.AmbientOcclusion = AmbientOcclusionMode::Off;
+    EXPECT_FALSE(BuildDisplayEffectPlan(input).Graph.Attachments.Requires(PicaAuxiliaryOutput::OutlineGeometryGuide));
+}
+
 TEST(Oot3dDisplayEffectPlan, TemporalAmbientOcclusionReadsTheBoundaryMotion) {
     DisplayEffectPlanInput input;
     input.WorldSurface = true;

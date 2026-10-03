@@ -185,9 +185,13 @@ their results are unchanged. Readers fetch the guide without a sampler
 not be paired with an integer view. A pass whose shader declares the guide in
 a frame that has none binds a 1x1 cleared integer image, never the color
 source. The face normal is published when a reader
-requests `FaceNormalGuide`; until the AO and GI readers move to it (each with
-its own captures), `OOT3D_GRAPHICS_FACE_NORMAL_GUIDE=1` requests it for
-diagnostics.
+requests `FaceNormalGuide`: `EffectsReadFaceNormal` names the readers (MXAO's
+`Geometry` normals and its face-normal debug views, 2026-10-03); the other AO
+and GI readers move to it one at a time, each with its own captures.
+`OOT3D_GRAPHICS_FACE_NORMAL_GUIDE=1` also requests it for diagnostics. The
+coherence check against MXAO's normals from depth exposed a projection error of
+every depth reconstruction (see "Sample projection" in
+`TRIAEVUM_BRIXELIZER_GI.md`); with it fixed they agree on every interior pixel.
 
 2026-09-07: `OutlineGeometryGuide` appends location 6 (`RGBA32_SFLOAT` native
 normal/window depth), making the instrumented ABI seven color attachments.
@@ -3293,6 +3297,17 @@ debug views show what the renderer passes to MXAO and the terms of its estimate.
   normals and 1.0 with depth normals. Renderer normals reproduce the previous
   build byte for byte (12/12 captures). AO texture relief bends only the
   renderer normals.
+  `Geometry` (2026-10-03, F1 "Face normals"): the face normal of the visible
+  surface from the geometry guide (G channel), the exact plane of the
+  rasterized triangle, so the plane of the depth samples without the
+  reconstruction's neighbour selection across creases and silhouettes; from
+  depth where the guide has none. Selecting it (or a face-normal debug view)
+  is what publishes the guide and declares it as the AO pass's input
+  (`EffectsReadFaceNormal`); otherwise nothing changes (Kokiri walk, MXAO from
+  depth: 12/12 captures identical to the previous build). `mxao_gpu_tests`:
+  on planes face and depth normals give the same visibility (0 difference on
+  the 16.7 degree plane, 6.5e-7 mean on the steps), and without a face normal
+  the result is the depth normal's bit for bit.
 - **Sample quality** adds the original's IDGAF preset (8 slices, 20 steps).
 - **Shading rate** (`AO.Mxao.ShadingRate` full / half / quarter): 50% or 25% of
   the pixels, by deinterleaved tile parity, are estimated per frame; the others
@@ -3307,12 +3322,14 @@ debug views show what the renderer passes to MXAO and the terms of its estimate.
 - **Original fade** (`AO.Mxao.OriginalFade`, `FadeDistance` 0-1): the original's
   `saturate(1 - d^2) * exp2(-(d / distance)^2)` over depth normalized by the far
   plane, instead of the native fade start and end.
-- **Debug view** (not saved; `OOT3D_GRAPHICS_MXAO_DEBUG=1..10` for captures):
+- **Debug view** (not saved; `OOT3D_GRAPHICS_MXAO_DEBUG=1..12` for captures):
   ambient occlusion (the original's Show Raw AO), unfiltered occlusion (the filter
   input, the accumulation when temporal), normals in use, renderer normals, depth
   normals (view space: X right, Y up, Z toward the viewer), normal disagreement
   (black equal, white 90 degrees apart), depth over the fade range, the filter's
-  edge weight, fade and temporal history length. A debug program
+  edge weight, fade, temporal history length, face normals (geometry guide) and
+  face vs depth normals (grey: the angle over 10 degrees, as a packed colour so
+  small angles keep 8 bits; magenta: no face normal). A debug program
   (`BuildMxaoDebugShader`) replaces the resolve and writes the view into the R32F
   visibility: scalars in [0, 1], normals as 8/8/7 bits in the mantissa of a float
   in [1, 2) (`AmbientOcclusionDebugShaderLibrary`); the scene composite shows the

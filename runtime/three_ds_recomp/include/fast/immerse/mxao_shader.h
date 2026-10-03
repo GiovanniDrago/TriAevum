@@ -48,6 +48,9 @@ inline constexpr uint32_t kMxaoShadingPhaseShift = 14U;
 // The original's exponential fade: RadiusFade.z is its Fade Out Distance in
 // depth normalized by the far plane (RadiusFade.w unused).
 inline constexpr uint32_t kMxaoOriginalFade = 1U << 16U;
+// Face normals of the renderer's geometry guide (binding 7), the exact plane
+// of the visible triangle; normals from depth where the guide has none.
+inline constexpr uint32_t kMxaoGeometryNormals = 1U << 17U;
 // Bits 20-23: the view of the debug program (MxaoDebugProgramView).
 inline constexpr uint32_t kMxaoDebugViewShift = 20U;
 
@@ -63,6 +66,11 @@ enum class MxaoDebugProgramView : uint32_t {
     EdgeWeight = 6,
     Fade = 7,
     HistoryLength = 8,
+    // The geometry guide's face normals (packed), and their angle to the
+    // normals from depth over 10 degrees (packed grey; magenta where the
+    // guide has no face normal).
+    FaceNormals = 9,
+    FaceDisagreement = 10,
 };
 
 // Temporal accumulation: the history length an estimate converges to, the

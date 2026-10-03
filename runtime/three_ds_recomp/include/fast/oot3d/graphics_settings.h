@@ -36,7 +36,10 @@ enum class MxaoEstimator : uint8_t { GroundTruth, SolidAngle, VisibilityBitmask,
 // original computes it, or the renderer's normal guide (interpolated vertex
 // normals, PBR normal maps and texture relief), like the original's Launchpad
 // normals. Only the depth normal is the plane of the depth samples it tests.
-enum class MxaoNormalSource : uint8_t { Depth, Renderer };
+// Geometry: the face normal of the visible surface from the geometry guide,
+// the exact plane of the rasterized triangle (no reconstruction across
+// silhouettes); from depth where the guide has none.
+enum class MxaoNormalSource : uint8_t { Depth, Renderer, Geometry };
 // MXAO debug views, shown by the scene composite in place of the image. Not
 // saved. Normals are shown in view space (X right, Y up, Z toward the viewer).
 enum class MxaoDebugView : uint8_t {
@@ -51,6 +54,8 @@ enum class MxaoDebugView : uint8_t {
     EdgeWeight,          // the filter's silhouette / grazing weight
     Fade,                // distance fade
     HistoryLength,       // temporal accumulation length
+    FaceNormals,         // the geometry guide's face normals
+    FaceDisagreement,    // angle between face and depth normals, 0 to 10 degrees
 };
 // Relief the AO providers read from each world material's colour texture: its
 // luminance slope bends the scene's normal guide (and so every guide reader).
@@ -276,6 +281,14 @@ struct EffectsSettings {
     ToonMode Toon = ToonMode::Off;
     ToonStyleSettings ToonStyle;
 };
+
+// Whether an effect reads the face normal of the geometry guide: the guide is
+// then published and declared as that effect's input.
+[[nodiscard]] constexpr bool EffectsReadFaceNormal(const EffectsSettings& effects) noexcept {
+    return effects.AmbientOcclusion == AmbientOcclusionMode::Mxao &&
+           (effects.MxaoNormals == MxaoNormalSource::Geometry || effects.MxaoDebug == MxaoDebugView::FaceNormals ||
+            effects.MxaoDebug == MxaoDebugView::FaceDisagreement);
+}
 
 struct AzaharTexturePackSettings {
     bool DumpTextures = false;

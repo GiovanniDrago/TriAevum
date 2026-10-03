@@ -318,6 +318,12 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsMxaoAndAddsItsDefaultsToOlderFi
     EXPECT_EQ(loaded.Value.Effects.MxaoDebug, MxaoDebugView::Off);
     // Files written before the original's remaining options get its defaults
     // (normals from depth) and are rewritten.
+    // Face normals round-trip under their own name.
+    auto geometry = settings;
+    geometry.Effects.MxaoNormals = MxaoNormalSource::Geometry;
+    const auto savedGeometry = SerializeGraphicsSettings(geometry);
+    EXPECT_EQ(savedGeometry["Effects"]["AO"]["Mxao"]["Normals"], "Geometry");
+    EXPECT_EQ(DeserializeGraphicsSettings(savedGeometry).Value.Effects.MxaoNormals, MxaoNormalSource::Geometry);
     auto withoutOptions = saved;
     for (const char* name : { "Normals", "ShadingRate", "IncreaseRadiusWithDistance", "ScreenRadius",
                               "OriginalFade", "FadeDistance" })

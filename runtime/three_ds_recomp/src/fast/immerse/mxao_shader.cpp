@@ -1,5 +1,7 @@
 #include "fast/immerse/mxao_shader.h"
 
+#include "fast/renderer3ds/pica_geometry_guide.h"
+
 // iMMERSE MXAO, ported from MartysMods_MXAO.fx of
 // https://github.com/martymcmodding/iMMERSE at revision
 // f57d3afa1ebe5d1fd6152d4f6fb9a2e75bd1d1cb.
@@ -41,12 +43,15 @@ std::array<std::string, 6> BuildMxaoPassShaders(std::string_view debugLibrary) {
 }
 namespace {
 constexpr const char* kCommon = R"glsl(#version 450
+#extension GL_EXT_samplerless_texture_functions : require
 layout(set=0,binding=0) uniform texture2D native_depth;
 layout(set=0,binding=1) uniform texture2D view_normals;
 layout(set=0,binding=2) uniform texture2D intermediate;
 layout(set=0,binding=4) uniform sampler point_sampler;
 layout(set=0,binding=5) uniform texture2D motion_vectors;
 layout(set=0,binding=6) uniform texture2D history;
+// The renderer's geometry guide (unsigned integer, fetched without a sampler).
+layout(set=0,binding=7) uniform utexture2D geometry_guide;
 layout(push_constant) uniform MxaoState {
     uvec2 extent;
     uint method;
@@ -144,10 +149,27 @@ float fade_factor(float z) {
     return clamp((pc.radius_fade.w-z)/max(pc.radius_fade.w-pc.radius_fade.z,1.0e-5),0.0,1.0);
 }
 )glsl";
+
+// The face normal of the geometry guide in MXAO's projection space (view
+// space mirrored along Z); zero where the guide has none.
+constexpr const char* kGeometryNormal = R"glsl(
+vec3 geometry_normal(ivec2 pixel) {
+    vec3 n=pica_geometry_decode_normal(texelFetch(geometry_guide,pixel,0).g);
+    n.z=-n.z;
+    return n;
+}
+)glsl";
+
+std::string Common() {
+    std::string source = kCommon;
+    source += Renderer3ds::PicaGeometryGuideShaderLibrary();
+    source += kGeometryNormal;
+    return source;
+}
 } // namespace
 
 std::string BuildMxaoDeinterleaveShader() {
-    std::string source = kCommon;
+    std::string source = Common();
     source += R"glsl(
 layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
 layout(set=0,binding=3,r32f) uniform writeonly image2D tiled_depth;
@@ -163,7 +185,7 @@ void main() {
 }
 
 std::string BuildMxaoOcclusionShader() {
-    std::string source = kCommon;
+    std::string source = Common();
     source += R"glsl(
 layout(local_size_x=16,local_size_y=16,local_size_z=1) in;
 layout(set=0,binding=3,rg16f) uniform writeonly image2D raw_occlusion;
@@ -213,6 +235,10 @@ void main() {
     vec3 p=proj_position(pixel,z);
     bool from_depth=(pc.flags&64u)!=0u;
     vec3 n=from_depth ? depth_normal(pixel,p,neighbours,w) : renderer_normal(guide);
+    if((pc.flags&131072u)!=0u) {
+        vec3 face=geometry_normal(pixel);
+        n=dot(face,face)>0.0 ? face : depth_normal(pixel,p,neighbours,w);
+    }
     p*=0.996;
     vec3 v=normalize(-p);
     if(dot(n,v)<0.0) n=-n;
@@ -354,7 +380,7 @@ void main() {
 }
 
 std::string BuildMxaoFilterShader(bool finalPass) {
-    std::string source = kCommon;
+    std::string source = Common();
     source += finalPass ? "layout(set=0,binding=3,r32f) uniform writeonly image2D filtered;\n"
                         : "layout(set=0,binding=3,rg16f) uniform writeonly image2D filtered;\n";
     source += R"glsl(
@@ -393,7 +419,7 @@ void main() {
 }
 
 std::string BuildMxaoDebugShader(std::string_view packNormal) {
-    std::string source = kCommon;
+    std::string source = Common();
     source += "layout(set=0,binding=3,r32f) uniform writeonly image2D debug_view;\n";
     source.append(packNormal);
     source += R"glsl(
@@ -422,17 +448,28 @@ void main() {
         vec3 v=normalize(-p);
         vec3 from_depth=depth_normal(pixel,p,neighbours,w);
         vec3 from_renderer=renderer_normal(guide);
+        vec3 from_geometry=geometry_normal(pixel);
+        bool has_geometry=dot(from_geometry,from_geometry)>0.0;
         if(dot(from_depth,v)<0.0) from_depth=-from_depth;
         if(dot(from_renderer,v)<0.0) from_renderer=-from_renderer;
-        vec3 used=(pc.flags&64u)!=0u ? from_depth : from_renderer;
+        if(dot(from_geometry,v)<0.0) from_geometry=-from_geometry;
+        vec3 used=(pc.flags&131072u)!=0u ? (has_geometry ? from_geometry : from_depth)
+                 : (pc.flags&64u)!=0u ? from_depth : from_renderer;
         // Displayed in view space (Z toward the viewer).
-        vec3 shown=view==1u ? used : view==2u ? from_renderer : from_depth;
-        if(view<=3u)
+        vec3 shown=view==1u ? used : view==2u ? from_renderer : view==9u ? from_geometry : from_depth;
+        if(view<=3u || view==9u)
             value=mxao_debug_pack_normal(vec3(shown.xy,-shown.z));
         else if(view==4u)
             value=clamp(acos(clamp(dot(from_depth,from_renderer),-1.0,1.0))/(0.5*pi),0.0,1.0);
         else if(view==6u)
             value=clamp(1.0-dot(w,vec4(1.0)),0.0,1.0);
+        else if(view==10u) {
+            // Grey: the angle over 10 degrees (atan2 of the cross and dot
+            // products keeps small angles exact); magenta: no face normal.
+            float angle=clamp(atan(length(cross(from_geometry,from_depth)),dot(from_geometry,from_depth))/
+                              radians(10.0),0.0,1.0);
+            value=mxao_debug_pack_normal(has_geometry ? vec3(angle*2.0-1.0) : vec3(1.0,-1.0,1.0));
+        }
     }
     imageStore(debug_view,pixel,vec4(value));
 }
@@ -441,7 +478,7 @@ void main() {
 }
 
 std::string BuildMxaoTemporalShader() {
-    std::string source = kCommon;
+    std::string source = Common();
     source += R"glsl(
 layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
 layout(set=0,binding=3,rgba16f) uniform writeonly image2D accumulated;

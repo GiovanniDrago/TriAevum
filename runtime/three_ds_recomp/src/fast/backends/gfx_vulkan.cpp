@@ -2063,6 +2063,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
         graphicsSettings.Grass.Quality != Oot3d::GrassQuality::Off,
         globalIlluminationRequested,
         graphicsSettings.Effects.PointShadows.Mode == Oot3d::PointShadowMode::CubeMaps,
+        Oot3d::EffectsReadFaceNormal(graphicsSettings.Effects),
     };
     if (!mPicaExtensionRequests.has_value() ||
         *mPicaExtensionRequests != extensionRequests) {

@@ -79,6 +79,8 @@ struct PicaAttachmentFeatureRequests {
     bool InteractiveGrass = false;
     bool GlobalIllumination = false;
     bool PointShadows = false;
+    // An effect reads the face normal of the geometry guide.
+    bool FaceNormal = false;
     bool operator==(const PicaAttachmentFeatureRequests&) const = default;
 };
 

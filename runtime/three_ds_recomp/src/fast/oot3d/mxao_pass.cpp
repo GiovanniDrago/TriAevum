@@ -61,8 +61,8 @@ struct MxaoPass::Impl {
     NriOwnedTexture2D Raw;
     NriOwnedTexture2D Filtered;
     NriOwnedTexture2D Output;
-    std::array<VkImage, 2> Inputs{};
-    std::array<VkFormat, 2> Formats{};
+    std::array<VkImage, 3> Inputs{};
+    std::array<VkFormat, 3> Formats{};
     uint32_t Width = 0, Height = 0;
     // Temporal mode: the motion vectors and two accumulation images, written
     // alternately (the other one is the history).
@@ -127,14 +127,15 @@ bool MxaoPass::Initialize(VkPhysicalDevice physical, VkDevice device, NriInterop
         mImpl->Core = NriInteropAccess::Core(interop);
         if (nriDevice == nullptr || mImpl->Core == nullptr)
             throw std::runtime_error("MXAO NRI device unavailable");
-        const std::array<nri::DescriptorRangeDesc, 7> ranges{
+        const std::array<nri::DescriptorRangeDesc, 8> ranges{
             { { 0, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER },
               { 1, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER },
               { 2, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER },
               { 3, 1, nri::DescriptorType::STORAGE_TEXTURE, nri::StageBits::COMPUTE_SHADER },
               { 4, 1, nri::DescriptorType::SAMPLER, nri::StageBits::COMPUTE_SHADER },
               { 5, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER },
-              { 6, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER } }
+              { 6, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER },
+              { 7, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER } }
         };
         nri::DescriptorSetDesc set{};
         set.ranges = ranges.data();
@@ -187,15 +188,15 @@ bool MxaoPass::Initialize(VkPhysicalDevice physical, VkDevice device, NriInterop
 }
 
 bool MxaoPass::Configure(const NriEffectGraphTransientImageBinding& output, VkImage depth, VkFormat depthFormat,
-                         VkImage normal, VkFormat normalFormat, const MxaoMotionInput* motion) {
-    const std::array inputs{ depth, normal };
-    const std::array formats{ depthFormat, normalFormat };
+                         VkImage normal, VkFormat normalFormat, VkImage geometry, const MxaoMotionInput* motion) {
+    const std::array inputs{ depth, normal, geometry };
+    const std::array formats{ depthFormat, normalFormat, VK_FORMAT_R32G32B32A32_UINT };
     constexpr auto usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
     if (!Available() || !output.Valid() || output.Resource != EffectResource::AmbientOcclusion ||
         output.Format != VK_FORMAT_R32_SFLOAT || output.MipLevels != 1 || output.Layers != 1 ||
         output.Samples != VK_SAMPLE_COUNT_1_BIT || (output.Usage & usage) != usage ||
         output.Texture.SampledView == VK_NULL_HANDLE || output.Texture.StorageView == VK_NULL_HANDLE ||
-        depth == VK_NULL_HANDLE || normal == VK_NULL_HANDLE)
+        depth == VK_NULL_HANDLE || normal == VK_NULL_HANDLE || geometry == VK_NULL_HANDLE)
         return false;
     const MxaoMotionInput temporal = motion != nullptr && motion->Image != VK_NULL_HANDLE && motion->Width != 0U &&
                                              motion->Height != 0U
@@ -227,7 +228,7 @@ bool MxaoPass::Configure(const NriEffectGraphTransientImageBinding& output, VkIm
                     throw std::runtime_error("MXAO history allocation failed");
         mImpl->Output = output.Texture;
         mImpl->OutputStates = output.StateTracker;
-        std::array<nri::Descriptor*, 2> sources{};
+        std::array<nri::Descriptor*, 3> sources{};
         for (size_t i = 0; i < inputs.size(); ++i) {
             if (!mImpl->Interop->WrapTexture(inputs[i], formats[i], VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT,
                                              output.Width, output.Height))
@@ -250,7 +251,7 @@ bool MxaoPass::Configure(const NriEffectGraphTransientImageBinding& output, VkIm
         const size_t setCount = accumulates ? size_t(kSetCount) : size_t(kTemporalSet);
         nri::DescriptorPoolDesc pool{};
         pool.descriptorSetMaxNum = uint32_t(setCount);
-        pool.textureMaxNum = uint32_t(5 * setCount);
+        pool.textureMaxNum = uint32_t(6 * setCount);
         pool.storageTextureMaxNum = uint32_t(setCount);
         pool.samplerMaxNum = uint32_t(setCount);
         auto* device = NriInteropAccess::Device(*mImpl->Interop);
@@ -292,13 +293,14 @@ bool MxaoPass::Configure(const NriEffectGraphTransientImageBinding& output, VkIm
         for (size_t i = 0; i < setCount; ++i) {
             auto* set = mImpl->Sets[i];
             const auto& binding = bindings[i];
-            const std::array<nri::UpdateDescriptorRangeDesc, 7> updates{ { { set, 0, 0, &sources[0], 1 },
+            const std::array<nri::UpdateDescriptorRangeDesc, 8> updates{ { { set, 0, 0, &sources[0], 1 },
                                                                            { set, 1, 0, &sources[1], 1 },
                                                                            { set, 2, 0, &binding.Intermediate, 1 },
                                                                            { set, 3, 0, &binding.Destination, 1 },
                                                                            { set, 4, 0, &mImpl->Sampler, 1 },
                                                                            { set, 5, 0, &motionView, 1 },
-                                                                           { set, 6, 0, &binding.History, 1 } } };
+                                                                           { set, 6, 0, &binding.History, 1 },
+                                                                           { set, 7, 0, &sources[2], 1 } } };
             mImpl->Core->UpdateDescriptorRanges(updates.data(), uint32_t(updates.size()));
         }
         mImpl->Width = output.Width;
@@ -347,12 +349,15 @@ bool MxaoPass::Execute(uint32_t frameSlot, const PerspectiveViewState& view, boo
     push.Method = std::min<uint32_t>(uint32_t(settings.MxaoMethod), 3U);
     const uint32_t quality = std::min<uint32_t>(settings.MxaoQuality, Immerse::kMxaoQualityPresets - 1U);
     // The original's options: normal source, screen radius, fade and shading
-    // rate. A skipped pixel needs an estimate from an earlier frame.
+    // rate. A skipped pixel needs an estimate from an earlier frame. Face
+    // normals come from the geometry guide, from depth where it has none.
     const bool depthNormals = settings.MxaoNormals == MxaoNormalSource::Depth;
+    const bool geometryNormals = settings.MxaoNormals == MxaoNormalSource::Geometry;
     const bool screenRadius = settings.MxaoRadiusGrowsWithDistance;
     const uint32_t shadingRate = mImpl->RawComplete ? std::min<uint32_t>(settings.MxaoShadingRate, 2U) : 0U;
     const uint32_t shadingPhase = mImpl->ShadingFrame++ & 3U;
     const uint32_t options = (depthNormals ? Immerse::kMxaoDepthNormals : 0U) |
+                             (geometryNormals ? Immerse::kMxaoGeometryNormals : 0U) |
                              (screenRadius ? Immerse::kMxaoScreenRadius : 0U) |
                              (settings.MxaoOriginalFade ? Immerse::kMxaoOriginalFade : 0U) |
                              (shadingRate << Immerse::kMxaoShadingRateShift) |
@@ -385,7 +390,7 @@ bool MxaoPass::Execute(uint32_t frameSlot, const PerspectiveViewState& view, boo
     const bool temporalFrame = accumulates && temporal != nullptr && temporal->View != nullptr;
     const std::array<float, 13> historySettings{ float(push.Method), float(quality), radius, settings.AoStrength,
                                                  settings.AoFadeOutFrom, settings.AoFadeOutTo,
-                                                 wBuffer ? 1.0F : 0.0F, normalError, depthNormals ? 1.0F : 0.0F,
+                                                 wBuffer ? 1.0F : 0.0F, normalError, float(settings.MxaoNormals),
                                                  screenRadius ? settings.MxaoScreenRadius : 0.0F,
                                                  settings.MxaoOriginalFade ? 1.0F : 0.0F, settings.MxaoFadeDistance,
                                                  float(settings.AoRelief) };

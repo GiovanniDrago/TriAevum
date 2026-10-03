@@ -43,8 +43,11 @@ class MxaoPass final {
     MxaoPass(const MxaoPass&) = delete;
     MxaoPass& operator=(const MxaoPass&) = delete;
     bool Initialize(VkPhysicalDevice physicalDevice, VkDevice device, NriInteropContext& interop);
+    // `geometry` is the geometry guide (R32G32B32A32_UINT), or a cleared
+    // image of that format when the face normals are not read.
     bool Configure(const NriEffectGraphTransientImageBinding& output, VkImage depth, VkFormat depthFormat,
-                   VkImage normal, VkFormat normalFormat, const MxaoMotionInput* motion = nullptr);
+                   VkImage normal, VkFormat normalFormat, VkImage geometry,
+                   const MxaoMotionInput* motion = nullptr);
     bool Execute(uint32_t frameSlot, const PerspectiveViewState& view, bool wBuffer, const EffectsSettings& settings,
                  const EffectPassBarrierPlan& barriers, PicaSurfaceCoordinates coordinates,
                  const MxaoTemporalFrame* temporal = nullptr);

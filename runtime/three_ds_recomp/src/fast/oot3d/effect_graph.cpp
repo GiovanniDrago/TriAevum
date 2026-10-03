@@ -492,6 +492,10 @@ CompiledEffectGraph BuildPicaExtensionGraph(const PicaAttachmentFeatureRequests&
     }
     if (requests.ToonOutline) {
         guideOutputs.push_back(Write(EffectResource::FogGuide));
+    }
+    // The geometry guide carries the outline's native normal and depth and
+    // the face normal of the visible surface.
+    if (requests.ToonOutline || requests.FaceNormal) {
         guideOutputs.push_back(Write(EffectResource::OutlineGeometryGuide));
     }
     if (requests.GlobalIllumination) {

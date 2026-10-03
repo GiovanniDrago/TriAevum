@@ -1080,6 +1080,15 @@ int main() try {
                   options.MxaoTemporal,
               "the original MXAO options did not apply or disturbed the other MXAO controls");
     }
+    // Face normals and the views that compare them.
+    Select("MXAO normals", "Face normals");
+    Select("MXAO debug view", "Face vs depth normals");
+    Check(runtime.Snapshot().Effects.MxaoNormals == MxaoNormalSource::Geometry &&
+              runtime.Snapshot().Effects.MxaoDebug == MxaoDebugView::FaceDisagreement,
+          "MXAO face normals or their debug view did not apply");
+    Select("MXAO debug view", "Face normals");
+    Check(runtime.Snapshot().Effects.MxaoDebug == MxaoDebugView::FaceNormals,
+          "the MXAO face normal view did not apply");
     Select("MXAO debug view", "Off");
     Click("Original fade");
     Click("Increase radius with distance");

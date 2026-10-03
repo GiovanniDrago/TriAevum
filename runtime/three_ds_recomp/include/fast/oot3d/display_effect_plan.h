@@ -44,6 +44,8 @@ struct DisplayEffectPlanInput {
     AmbientOcclusionMode AmbientOcclusion = AmbientOcclusionMode::Off;
     // The AO provider accumulates over frames with the scene's motion vectors.
     bool AmbientOcclusionTemporal = false;
+    // The AO provider reads the face normal of the geometry guide.
+    bool AmbientOcclusionFaceNormal = false;
     ReflectionMode Reflections = ReflectionMode::Off;
     // Diffuse GI is requested and its provider is available.
     bool GlobalIllumination = false;

@@ -98,6 +98,7 @@ constexpr EnumNames<MxaoEstimator> kMxaoMethodNames{
 constexpr EnumNames<MxaoNormalSource> kMxaoNormalNames{
     {MxaoNormalSource::Depth, "Depth"},
     {MxaoNormalSource::Renderer, "Renderer"},
+    {MxaoNormalSource::Geometry, "Geometry"},
 };
 constexpr EnumNames<AoTextureRelief> kAoReliefNames{
     {AoTextureRelief::Off, "Off"},

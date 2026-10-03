@@ -319,6 +319,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
                                   input.CameraAvailable;
     // Temporal AO reprojects its history with the scene's motion vectors.
     const bool temporalAo = ao && temporalMetadata && input.AmbientOcclusionTemporal;
+    const bool faceNormalAo = ao && input.AmbientOcclusionFaceNormal;
     // GI keeps a temporal history (motion vectors) and adds light in the
     // linear domain through the composite.
     const bool globalIllumination = temporalMetadata && input.GlobalIllumination;
@@ -392,6 +393,8 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     }
     if (outline) {
         guideOutputs.push_back(Write(EffectResource::FogGuide));
+    }
+    if (outline || faceNormalAo) {
         guideOutputs.push_back(Write(EffectResource::OutlineGeometryGuide));
     }
     if (globalIllumination) {
@@ -415,6 +418,8 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
                                                 Read(EffectResource::NormalGuide) };
     if (temporalAo)
         aoResources.push_back(Read(EffectResource::MotionVectors));
+    if (faceNormalAo)
+        aoResources.push_back(Read(EffectResource::OutlineGeometryGuide));
     aoResources.push_back(Write(EffectResource::AmbientOcclusion));
     graph.Add({ .Name = "AmbientOcclusion",
                 .DependsOn = temporalAo ? std::vector<std::string>{ "Guides", "Motion" }

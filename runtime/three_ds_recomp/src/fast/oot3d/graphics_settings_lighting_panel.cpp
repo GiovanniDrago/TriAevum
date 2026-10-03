@@ -179,12 +179,13 @@ bool GraphicsSettingsPanel::DrawMxaoSettings(EffectsSettings& effects) {
     combo("MXAO method", effects.MxaoMethod, methodNames, 4,
           "Ground truth: high contrast. Solid angle: smoother. Visibility bitmask: highest quality, slower. "
           "Bitmask with solid angle: like the bitmask, smoother.");
-    const char* const normalNames[] = {"From depth (original)", "Renderer normals"};
-    combo("MXAO normals", effects.MxaoNormals, normalNames, 2,
+    const char* const normalNames[] = {"From depth (original)", "Renderer normals", "Face normals"};
+    combo("MXAO normals", effects.MxaoNormals, normalNames, 3,
           "From depth: the plane of the depth samples MXAO tests, as the original computes it. Renderer normals: "
           "interpolated vertex normals, PBR normal maps and texture relief (like Launchpad's smooth normals); "
           "where they tilt away from the surface, as across sharp corners, the surface occludes itself and "
-          "darkens.");
+          "darkens. Face normals: the exact plane of each visible triangle, the depth plane without its "
+          "reconstruction across silhouettes.");
     changed |= ImGui::Checkbox("Increase radius with distance", &effects.MxaoRadiusGrowsWithDistance);
     if (effects.MxaoRadiusGrowsWithDistance)
         changed |= ImGui::SliderFloat("MXAO sample radius", &effects.MxaoScreenRadius, 0.5F, 10.0F, "%.2f");
@@ -226,11 +227,13 @@ bool GraphicsSettingsPanel::DrawMxaoSettings(EffectsSettings& effects) {
     }
     const char* const debugViews[] = {"Off", "Ambient occlusion", "Unfiltered occlusion", "Normals in use",
                                       "Renderer normals", "Depth normals", "Normal disagreement", "Depth",
-                                      "Edge weight", "Fade", "Temporal history"};
-    combo("MXAO debug view", effects.MxaoDebug, debugViews, 11,
+                                      "Edge weight", "Fade", "Temporal history", "Face normals",
+                                      "Face vs depth normals"};
+    combo("MXAO debug view", effects.MxaoDebug, debugViews, 13,
           "Replaces the image. Ambient occlusion is the original's Show Raw AO; the others show the depth and "
           "normals the renderer passes and the estimate's terms. Normals: view space (X right, Y up, Z toward "
-          "the viewer). Disagreement: black = equal, white = 90 degrees apart. Not saved.");
+          "the viewer). Normal disagreement (renderer vs depth): black = equal, white = 90 degrees apart. Face "
+          "vs depth normals: black = equal, white = 10 degrees or more apart. Not saved.");
     return changed;
 }
 } // namespace Fast::Oot3d

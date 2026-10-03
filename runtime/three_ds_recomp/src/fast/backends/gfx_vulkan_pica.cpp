@@ -7695,6 +7695,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             .AmbientOcclusionTemporal =
                 presentationSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Mxao &&
                 presentationSettings.Effects.MxaoTemporal && mMxaoPass.Available(),
+            .AmbientOcclusionFaceNormal =
+                Oot3d::EffectsReadFaceNormal(presentationSettings.Effects) && mMxaoPass.Available(),
             .Reflections = presentationSettings.Effects.Reflections,
             .GlobalIllumination =
                 presentationSettings.Effects.GlobalIllumination.Mode ==
@@ -8687,13 +8689,20 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                                              aoMotion->Height}
                     : Oot3d::MxaoMotionInput{};
                 const Oot3d::MxaoTemporalFrame mxaoFrame{mxaoTemporal ? &*temporalState : nullptr, mFrameCounter};
+                // Face normals come from the declared geometry guide; without
+                // it the shader reads the cleared fallback (no face normal).
+                const VkImage aoGeometry =
+                    aoReads.Declares(Oot3d::EffectResource::OutlineGeometryGuide)
+                        ? reinterpret_cast<VkImage>(
+                              requireEffectImageRead(aoReads, Oot3d::EffectResource::OutlineGeometryGuide).NativeImage)
+                        : mGeometryGuideFallback.Image;
                 mAmbientOcclusionOutputValid =
                     mMxaoPass.Configure(*transientAmbientOcclusionOutput,
                         reinterpret_cast<VkImage>(aoDepthBinding.NativeImage),
                         static_cast<VkFormat>(aoDepthBinding.Format),
                         reinterpret_cast<VkImage>(aoNormalBinding.NativeImage),
                         static_cast<VkFormat>(aoNormalBinding.Format),
-                        mxaoTemporal ? &mxaoMotion : nullptr) &&
+                        aoGeometry, mxaoTemporal ? &mxaoMotion : nullptr) &&
                     mMxaoPass.Execute(mCurrentFrame, *presentationPerspective,
                         effectGuideTarget->WBuffering, presentationSettings.Effects, aoBarrierPlan,
                         Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags),

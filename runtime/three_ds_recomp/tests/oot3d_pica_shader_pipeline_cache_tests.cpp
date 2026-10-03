@@ -918,6 +918,39 @@ TEST(Oot3dPicaShaderPipelineCache, NormalGuideReadsTheAuthoredVertexNormalInEver
     EXPECT_EQ(canonical.VertexShaderSource, kTypedVertexShader);
 }
 
+TEST(Oot3dPicaShaderPipelineCache, FaceNormalReadersRequestTheGeometryGuide) {
+    using namespace Fast::Oot3d;
+    PicaShaderPipelineCache cache;
+    EffectsSettings effects;
+    effects.AmbientOcclusion = AmbientOcclusionMode::Mxao;
+    const auto request = VertexLitWorldRequest();
+    cache.BeginFrame(1U);
+    const auto depth = cache.Resolve(request, effects);
+    EXPECT_FALSE(HasPicaShaderInstrumentationFeature(depth.RequestedFeatures,
+                                                     PicaShaderInstrumentationFeature::FaceNormalGuide));
+    const auto depthKey = depth.FragmentShaderKey;
+
+    effects.MxaoNormals = MxaoNormalSource::Geometry;
+    cache.BeginFrame(2U);
+    const auto face = cache.Resolve(request, effects);
+    EXPECT_TRUE(HasPicaShaderInstrumentationFeature(face.RequestedFeatures,
+                                                    PicaShaderInstrumentationFeature::FaceNormalGuide));
+    EXPECT_NE(face.FragmentShaderKey, depthKey);
+
+    // The debug views that show face normals read them too; MXAO is their
+    // only reader.
+    effects.MxaoNormals = MxaoNormalSource::Depth;
+    effects.MxaoDebug = MxaoDebugView::FaceDisagreement;
+    EXPECT_TRUE(EffectsReadFaceNormal(effects));
+    effects.MxaoDebug = MxaoDebugView::FaceNormals;
+    EXPECT_TRUE(EffectsReadFaceNormal(effects));
+    effects.MxaoDebug = MxaoDebugView::DepthNormals;
+    EXPECT_FALSE(EffectsReadFaceNormal(effects));
+    effects.MxaoNormals = MxaoNormalSource::Geometry;
+    effects.AmbientOcclusion = AmbientOcclusionMode::Gtao;
+    EXPECT_FALSE(EffectsReadFaceNormal(effects));
+}
+
 TEST(Oot3dPicaShaderPipelineCache, AoTextureReliefBendsTheGuideFromTheColourTexture) {
     using namespace Fast::Oot3d;
     PicaShaderPipelineCache cache;
