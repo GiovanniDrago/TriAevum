@@ -294,7 +294,7 @@ executable; 1,124 tests):
 | `oot3d_native_a32_process_tests` | asserted the interpreter dispatcher's registry, which whole-AOT product mode does not use | fixed (`8b16cf7`, configuration-aware) |
 | `oot3d_native_audio_tests` | needs ROM-derived fixtures | reads `OOT3D_TEST_EXTRACT_ROOT`, passes (`8b16cf7`) |
 | `oot3d_native_mass_aot_tests`, `oot3d_native_pica_frontend_tests` | were not built | built where their generated inputs exist; frontend test repaired (`8b16cf7`) |
-| `oot3d_toon_outline_gpu_tests` | `Oot3dGrassLodGpu.IndexedVertexDecoderMatchesExpandedStreamForEveryTopology`: `vkCreateComputePipelines` fails for a test shader with a large constant index array | open: pass indices and ranges in a storage buffer |
+| `oot3d_toon_outline_gpu_tests` | `Oot3dGrassLodGpu.IndexedVertexDecoderMatchesExpandedStreamForEveryTopology`: `vkCreateComputePipelines` failed for a test shader with a large constant index array | fixed: indices and ranges are input words of a storage buffer; the four GPU tests of the executable pass |
 | `oot3d_game_module_smoke` | needs a Forge-made `game.tam` and `content.tap` | skipped (77) until the L6 installation provides them |
 | Revelation under Original30 | stopped at the first raw copy (D2) | fixed 2026-10-05 |
 | TopScreen HUD, minimap, dialogue at 4:3/16:9/21:9 | composed as screen content since `ba1f200` (E1) | fixed 2026-10-05 |

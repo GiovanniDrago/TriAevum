@@ -5,8 +5,10 @@
 #include <vulkan/vulkan.h>
 
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <source_location>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -19,12 +21,17 @@ void Check(VkResult result, std::source_location where = std::source_location::c
 }
 
 // Executes the production contour kernel on deterministic surfaces, without
-// title assets, gameplay or screen-capture ambiguity.
+// title assets, gameplay or screen-capture ambiguity. The kernel writes 48
+// vec4 to binding 0; optional input words are bound read-only at binding 1
+// (large tables do not belong in shader constants: drivers may refuse the
+// pipeline).
 struct ComputeFixture {
     VkInstance Instance = VK_NULL_HANDLE;
     VkDevice Device = VK_NULL_HANDLE;
     VkBuffer Buffer = VK_NULL_HANDLE;
     VkDeviceMemory Memory = VK_NULL_HANDLE;
+    VkBuffer InputBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory InputMemory = VK_NULL_HANDLE;
     VkDescriptorSetLayout SetLayout = VK_NULL_HANDLE;
     VkDescriptorPool Pool = VK_NULL_HANDLE;
     VkPipelineLayout Layout = VK_NULL_HANDLE;
@@ -43,12 +50,15 @@ struct ComputeFixture {
             vkDestroyDescriptorSetLayout(Device, SetLayout, nullptr);
             vkDestroyBuffer(Device, Buffer, nullptr);
             vkFreeMemory(Device, Memory, nullptr);
+            vkDestroyBuffer(Device, InputBuffer, nullptr);
+            vkFreeMemory(Device, InputMemory, nullptr);
             vkDestroyDevice(Device, nullptr);
         }
         vkDestroyInstance(Instance, nullptr);
     }
 
-    std::array<std::array<float, 4>, 48> Run(const std::string& source) {
+    std::array<std::array<float, 4>, 48> Run(const std::string& source,
+                                             std::span<const uint32_t> input = {}) {
         VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         app.apiVersion = VK_API_VERSION_1_2;
         VkInstanceCreateInfo instance{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
@@ -80,29 +90,42 @@ struct ComputeFixture {
         vkGetDeviceQueue(Device, family, 0, &queue);
 
         std::array<std::array<float, 4>, 48> result{};
-        VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        buffer.size = sizeof(result); buffer.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        Check(vkCreateBuffer(Device, &buffer, nullptr, &Buffer));
-        VkMemoryRequirements requirements;
-        vkGetBufferMemoryRequirements(Device, Buffer, &requirements);
         VkPhysicalDeviceMemoryProperties memory;
         vkGetPhysicalDeviceMemoryProperties(physical, &memory);
-        uint32_t memoryType = UINT32_MAX;
-        const auto hostFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)
-            if ((requirements.memoryTypeBits & (1U << i)) &&
-                (memory.memoryTypes[i].propertyFlags & hostFlags) == hostFlags) { memoryType = i; break; }
-        if (memoryType == UINT32_MAX) throw std::runtime_error("no host coherent memory for outline test");
-        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        allocation.allocationSize = requirements.size; allocation.memoryTypeIndex = memoryType;
-        Check(vkAllocateMemory(Device, &allocation, nullptr, &Memory));
-        Check(vkBindBufferMemory(Device, Buffer, Memory, 0));
+        const auto createHostBuffer = [&](VkDeviceSize size, VkBuffer& target, VkDeviceMemory& targetMemory) {
+            VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+            buffer.size = size; buffer.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            Check(vkCreateBuffer(Device, &buffer, nullptr, &target));
+            VkMemoryRequirements requirements;
+            vkGetBufferMemoryRequirements(Device, target, &requirements);
+            uint32_t memoryType = UINT32_MAX;
+            const auto hostFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)
+                if ((requirements.memoryTypeBits & (1U << i)) &&
+                    (memory.memoryTypes[i].propertyFlags & hostFlags) == hostFlags) { memoryType = i; break; }
+            if (memoryType == UINT32_MAX) throw std::runtime_error("no host coherent memory for outline test");
+            VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            allocation.allocationSize = requirements.size; allocation.memoryTypeIndex = memoryType;
+            Check(vkAllocateMemory(Device, &allocation, nullptr, &targetMemory));
+            Check(vkBindBufferMemory(Device, target, targetMemory, 0));
+        };
+        createHostBuffer(sizeof(result), Buffer, Memory);
+        if (!input.empty()) {
+            createHostBuffer(input.size_bytes(), InputBuffer, InputMemory);
+            void* words = nullptr;
+            Check(vkMapMemory(Device, InputMemory, 0, input.size_bytes(), 0, &words));
+            std::memcpy(words, input.data(), input.size_bytes());
+            vkUnmapMemory(Device, InputMemory);
+        }
+        const uint32_t bindingCount = input.empty() ? 1U : 2U;
 
-        VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT};
+        const std::array<VkDescriptorSetLayoutBinding, 2> bindings{{
+            {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT},
+            {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT}}};
         VkDescriptorSetLayoutCreateInfo setLayout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        setLayout.bindingCount = 1; setLayout.pBindings = &binding;
+        setLayout.bindingCount = bindingCount; setLayout.pBindings = bindings.data();
         Check(vkCreateDescriptorSetLayout(Device, &setLayout, nullptr, &SetLayout));
-        VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+        VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, bindingCount};
         VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pool.maxSets = 1; pool.poolSizeCount = 1; pool.pPoolSizes = &poolSize;
         Check(vkCreateDescriptorPool(Device, &pool, nullptr, &Pool));
@@ -110,11 +133,16 @@ struct ComputeFixture {
         setInfo.descriptorPool = Pool; setInfo.descriptorSetCount = 1; setInfo.pSetLayouts = &SetLayout;
         VkDescriptorSet set;
         Check(vkAllocateDescriptorSets(Device, &setInfo, &set));
-        VkDescriptorBufferInfo bufferInfo{Buffer, 0, sizeof(result)};
-        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        write.dstSet = set; write.descriptorCount = 1; write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        write.pBufferInfo = &bufferInfo;
-        vkUpdateDescriptorSets(Device, 1, &write, 0, nullptr);
+        const std::array<VkDescriptorBufferInfo, 2> bufferInfos{{
+            {Buffer, 0, sizeof(result)}, {InputBuffer, 0, VK_WHOLE_SIZE}}};
+        std::array<VkWriteDescriptorSet, 2> writes{};
+        for (uint32_t index = 0; index < bindingCount; ++index) {
+            writes[index] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            writes[index].dstSet = set; writes[index].dstBinding = index; writes[index].descriptorCount = 1;
+            writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[index].pBufferInfo = &bufferInfos[index];
+        }
+        vkUpdateDescriptorSets(Device, bindingCount, writes.data(), 0, nullptr);
         VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         layout.setLayoutCount = 1; layout.pSetLayouts = &SetLayout;
         Check(vkCreatePipelineLayout(Device, &layout, nullptr, &Layout));

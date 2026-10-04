@@ -5,19 +5,22 @@
 TEST(Oot3dGrassLodGpu, IndexedVertexDecoderMatchesExpandedStreamForEveryTopology) {
     using namespace Fast::Oot3d;
     const auto topology = BuildGrassIndexedTopology();
-    std::string arrays = "const uint indices[] = uint[](";
-    for (size_t i=0; i<topology.Indices.size(); ++i)
-        arrays += (i ? "," : "") + std::to_string(topology.Indices[i]) + "u";
-    arrays += ");\nconst uvec2 ranges[] = uvec2[](";
+    // The 25 (first, count) ranges, then the index stream, as input words: a
+    // constant array of this size makes the driver refuse the pipeline.
+    std::vector<uint32_t> words;
     for (uint32_t i=0; i<25; ++i) {
         const auto& r=i==24 ? topology.Tuft : topology.Blades[i/2][i%2];
-        arrays += (i ? "," : "") + std::string("uvec2(")+std::to_string(r.First)+"u,"+std::to_string(r.Count)+"u)";
+        words.push_back(r.First);
+        words.push_back(r.Count);
     }
-    arrays += ");\n";
+    words.insert(words.end(), topology.Indices.begin(), topology.Indices.end());
     const auto source = std::string(R"glsl(#version 450
 layout(local_size_x=8) in;
 layout(std430,set=0,binding=0) buffer Output { vec4 values[]; } output_data;
-)glsl") + std::string(kGrassIndexedVertexShader) + arrays + R"glsl(
+layout(std430,set=0,binding=1) readonly buffer Input { uint words[]; } input_data;
+uvec2 range_of(uint id) { return uvec2(input_data.words[2u*id], input_data.words[2u*id+1u]); }
+uint index_at(uint position) { return input_data.words[50u+position]; }
+)glsl") + std::string(kGrassIndexedVertexShader) + R"glsl(
 void main() {
     uint id=gl_GlobalInvocationID.y*8u+gl_GlobalInvocationID.x;
     vec4 result=vec4(0);
@@ -25,9 +28,10 @@ void main() {
         bool tuft=id==24u;
         uint segments=id/2u+1u;
         uint plane_count=3u+(segments-1u)*6u;
-        for(uint i=0u;i<ranges[id].y;++i) {
+        uvec2 range=range_of(id);
+        for(uint i=0u;i<range.y;++i) {
             uint plane; float h; float w;
-            grass_indexed_vertex(indices[ranges[id].x+i],segments,tuft,plane,h,w);
+            grass_indexed_vertex(index_at(range.x+i),segments,tuft,plane,h,w);
             uint local=i%plane_count;
             float old_h; float old_w;
             if(tuft) {
@@ -44,13 +48,13 @@ void main() {
             }
             if(h!=old_h || w!=old_w || plane!=(tuft?0u:i/plane_count)) result.x+=1.0;
         }
-        result.y=float(ranges[id].y);
+        result.y=float(range.y);
     }
     output_data.values[id]=result;
 }
 )glsl";
     ComputeFixture gpu;
-    const auto values=gpu.Run(source);
+    const auto values=gpu.Run(source, words);
     for(size_t i=0;i<values.size();++i) {
         EXPECT_EQ(values[i][0],0) << "topology " << i;
         if(i<25) EXPECT_GT(values[i][1],0);
