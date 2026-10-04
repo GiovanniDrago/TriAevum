@@ -1270,6 +1270,20 @@ int Study(Device& d, const PassDevice& passDevice, std::shared_ptr<DiffuseGiKern
     for (uint64_t k = 0; k < referenceFrames; ++k) StepScaled(d, reference, k, k + 1U == referenceFrames);
     const std::vector<uint16_t> refJ = reference.OutJ;
     ReleaseScaled(d, reference);
+    // DGI_STUDY_SAVE=<dir>: the converged J of the reference and of every
+    // configuration (RGBA16F at the guide extent, storage order) for analysis
+    // outside this tool.
+    const char* saveDirectory = std::getenv("DGI_STUDY_SAVE");
+    const auto save = [&](const std::string& name, const std::vector<uint16_t>& j) {
+        if (saveDirectory == nullptr) return;
+        std::filesystem::create_directories(saveDirectory);
+        std::ofstream out(std::string(saveDirectory) + "/" + name + "_J.bin", std::ios::binary);
+        out.write(reinterpret_cast<const char*>(j.data()), static_cast<std::streamsize>(j.size() * sizeof(uint16_t)));
+        Require(out.good(), "cannot write " + name + "_J.bin");
+        std::printf("DGI_STUDY saved=%s/%s_J.bin extent=%ux%u\n", saveDirectory, name.c_str(), full.BufferWidth,
+                    full.BufferHeight);
+    };
+    save("reference", refJ);
     // Configurations interleaved frame by frame (A/B ordering per round).
     std::vector<std::unique_ptr<ScaledRun>> runs;
     std::vector<std::vector<std::array<double, kPassKernelCount + 1U>>> samples(configs.size());
@@ -1322,6 +1336,7 @@ int Study(Device& d, const PassDevice& passDevice, std::shared_ptr<DiffuseGiKern
         size_t holes = 0, holes1 = 0;
         compare(runs[r]->OutJ, ratio, error, holes);
         compare(firstJ[r], ratio1, error1, holes1);
+        save(c.Name, runs[r]->OutJ);
         std::printf("DGI_STUDY config=%s factor=%u S=%u K=%u N=%u filter=%u temporal=%d samples=%zu total_p50=%.3f "
                     "p95=%.3f | normal=%.3f level0=%.3f reduce=%.3f gather=%.3f pack=%.3f temporal=%.3f filter=%.3f "
                     "output=%.3f upsample=%.3f (p50 ms) | converged J ratio=%.4f mean|dJ|/J=%.4f | frame-1 J "

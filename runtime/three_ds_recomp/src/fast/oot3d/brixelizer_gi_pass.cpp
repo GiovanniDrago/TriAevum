@@ -21,8 +21,13 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
+#include <string>
+#include <tuple>
 #include <vector>
 
 namespace Fast::Oot3d {
@@ -80,6 +85,8 @@ struct BrixelizerGiInstance {
     // views assume it); every composition of the surface copies this.
     NriOwnedTexture2D Output{};
     ResourceStateTracker States;
+    // World from view of the latest trace (column-major), for the developer dump.
+    std::array<float, 16> InverseView{};
     uint32_t Current = 0;
     bool HistoryPrepared = false;
     uint64_t LastUsedFrame = 0;
@@ -106,6 +113,82 @@ struct BrixelizerGiPass::Impl {
     NriStorageClearBinding Clear;
     bool Initialized = false;
     std::string Reason = "Brixelizer GI is not initialized";
+    VkPhysicalDevice Physical = VK_NULL_HANDLE;
+
+    // Developer dump, off unless OOT3D_GRAPHICS_BRIXELIZER_GI_DUMP=<dir> is set
+    // (OOT3D_GRAPHICS_BRIXELIZER_GI_DUMP_FRAME=<n>, default 300): the diffuse
+    // GI output and the prepared inputs (native depth, world normals from the
+    // normal guide, linear direct radiance) of the first traced frame at or
+    // after n, at the surface extent in storage order, for comparisons outside
+    // the game. Never persisted; nothing changes when it is unset.
+    struct DumpState {
+        struct Part {
+            const char* Name;
+            const char* Format;
+            VkDeviceSize Offset, Size;
+        };
+        std::string Directory;
+        uint64_t Frame = 300;
+        bool Recorded = false;
+        uint64_t RecordedFrame = 0;
+        VkBuffer Buffer = VK_NULL_HANDLE;
+        VkDeviceMemory Memory = VK_NULL_HANDLE;
+        void* Mapped = nullptr;
+        std::vector<Part> Parts;
+        uint32_t Width = 0, Height = 0;
+        std::array<float, 16> InverseView{};
+        std::array<float, 3> Environment{};
+        std::array<float, 4> SourceWeights{};
+        GlobalIlluminationResolution Resolution = GlobalIlluminationResolution::Half;
+    };
+    std::unique_ptr<DumpState> Dump;
+
+    void ReleaseDump() {
+        if (!Dump) return;
+        if (Dump->Mapped != nullptr) vkUnmapMemory(Device, Dump->Memory);
+        if (Dump->Buffer != VK_NULL_HANDLE) vkDestroyBuffer(Device, Dump->Buffer, nullptr);
+        if (Dump->Memory != VK_NULL_HANDLE) vkFreeMemory(Device, Dump->Memory, nullptr);
+        Dump->Mapped = nullptr;
+        Dump->Buffer = VK_NULL_HANDLE;
+        Dump->Memory = VK_NULL_HANDLE;
+    }
+    // Writes a recorded dump once its frame's copies have executed (every frame
+    // slot has been recorded again since), or unconditionally at shutdown.
+    void FinishDump(uint64_t frameId, bool shutdown) {
+        if (!Dump || !Dump->Recorded || Dump->Mapped == nullptr) return;
+        if (!shutdown && frameId < Dump->RecordedFrame + 4U) return;
+        std::filesystem::create_directories(Dump->Directory);
+        bool ok = true;
+        std::string parts;
+        for (const auto& part : Dump->Parts) {
+            std::ofstream file(Dump->Directory + "/brix_" + part.Name + ".bin", std::ios::binary);
+            file.write(static_cast<const char*>(Dump->Mapped) + part.Offset, static_cast<std::streamsize>(part.Size));
+            ok = ok && file.good();
+            parts += std::string(parts.empty() ? "" : ", ") + "\"" + part.Name + "\": \"" + part.Format + "\"";
+        }
+        std::ofstream meta(Dump->Directory + "/brix_dump.json");
+        const auto& m = Dump->InverseView;
+        char text[2048];
+        std::snprintf(text, sizeof(text),
+                      "{\n  \"frame\": %llu,\n  \"extent\": [%u, %u],\n  \"parts\": {%s},\n"
+                      "  \"normal_encoding\": \"world normal * 0.5 + 0.5 (from the normal guide)\",\n"
+                      "  \"resolution\": \"%s\",\n  \"environment\": [%.9g, %.9g, %.9g],\n"
+                      "  \"source_weights\": [%.9g, %.9g, %.9g, %.9g],\n"
+                      "  \"world_from_view_column_major\": [%.9g, %.9g, %.9g, %.9g, %.9g, %.9g, %.9g, %.9g, %.9g, "
+                      "%.9g, %.9g, %.9g, %.9g, %.9g, %.9g, %.9g]\n}\n",
+                      static_cast<unsigned long long>(Dump->RecordedFrame), Dump->Width, Dump->Height, parts.c_str(),
+                      Dump->Resolution == GlobalIlluminationResolution::Quarter ? "Quarter" : "Half",
+                      Dump->Environment[0], Dump->Environment[1], Dump->Environment[2], Dump->SourceWeights[0],
+                      Dump->SourceWeights[1], Dump->SourceWeights[2], Dump->SourceWeights[3], m[0], m[1], m[2], m[3],
+                      m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+        meta << text;
+        ok = ok && meta.good();
+        std::fprintf(stderr, "TRIAEVUM_GLOBAL_ILLUMINATION dump frame=%llu extent=%ux%u written=%d dir=%s\n",
+                     static_cast<unsigned long long>(Dump->RecordedFrame), Dump->Width, Dump->Height, ok ? 1 : 0,
+                     Dump->Directory.c_str());
+        ReleaseDump();
+        Dump.reset();
+    }
 #if OOT3D_HAS_BRIXELIZER_GI_PASS
     nri::CoreInterface* Core = nullptr;
     nri::PipelineLayout* Layout = nullptr;
@@ -208,6 +291,15 @@ bool BrixelizerGiPass::Initialize(VkPhysicalDevice physicalDevice, VkDevice devi
     mImpl->Device = device;
     mImpl->Interop = &interop;
     mImpl->Scene = &scene;
+    mImpl->Physical = physicalDevice;
+    if (const char* dump = std::getenv("OOT3D_GRAPHICS_BRIXELIZER_GI_DUMP"); dump != nullptr && *dump != '\0') {
+        mImpl->Dump = std::make_unique<Impl::DumpState>();
+        mImpl->Dump->Directory = dump;
+        if (const char* frame = std::getenv("OOT3D_GRAPHICS_BRIXELIZER_GI_DUMP_FRAME"); frame != nullptr)
+            mImpl->Dump->Frame = std::strtoull(frame, nullptr, 10);
+        std::fprintf(stderr, "TRIAEVUM_GLOBAL_ILLUMINATION developer dump=%s frame=%llu\n", dump,
+                     static_cast<unsigned long long>(mImpl->Dump->Frame));
+    }
 #if !OOT3D_HAS_BRIXELIZER_GI_PASS
     (void)physicalDevice;
     mImpl->Reason = "Brixelizer GI is not built into this renderer";
@@ -392,6 +484,72 @@ bool BrixelizerGiPass::Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot
         mImpl->Core->CmdCopyTexture(*command, *to, nullptr, *from, nullptr);
         graphTransition(target, barriers.Find(target.Resource)->CompletionAccess);
     };
+    mImpl->FinishDump(frameId, false);
+    // Developer dump: copies of the output (already a transfer source after
+    // `copy`) and of the inputs this trace prepared, into one host buffer.
+    const auto recordDump = [&]() {
+        auto& d = *mImpl->Dump;
+        d.Recorded = true;
+        const uint32_t prepared = instance.Current ^ 1U; // Trace advanced Current after the dispatch
+        const uint64_t texels = uint64_t(instance.Inputs.Width) * instance.Inputs.Height;
+        const std::array<std::tuple<const char*, const char*, const NriOwnedTexture2D*, uint32_t>, 4> sources{{
+            {"diffuse", "rgba16f", &instance.Output, 8U},
+            {"normal", "rgba16f", &instance.Normal[prepared], 8U},
+            {"depth", "r32f", &instance.Depth[prepared], 4U},
+            {"lit", "rgba16f", &instance.Lit[prepared], 8U}}};
+        VkDeviceSize total = 0;
+        for (const auto& [name, format, texture, bytes] : sources) {
+            d.Parts.push_back({name, format, total, texels * bytes});
+            total += (texels * bytes + 255U) / 256U * 256U;
+        }
+        VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        info.size = total;
+        info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VkMemoryRequirements requirements{};
+        VkPhysicalDeviceMemoryProperties memory{};
+        vkGetPhysicalDeviceMemoryProperties(mImpl->Physical, &memory);
+        const VkMemoryPropertyFlags wanted = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        uint32_t type = memory.memoryTypeCount;
+        if (vkCreateBuffer(mImpl->Device, &info, nullptr, &d.Buffer) == VK_SUCCESS) {
+            vkGetBufferMemoryRequirements(mImpl->Device, d.Buffer, &requirements);
+            for (uint32_t t = 0; t < memory.memoryTypeCount && type == memory.memoryTypeCount; ++t)
+                if ((requirements.memoryTypeBits & (1U << t)) && (memory.memoryTypes[t].propertyFlags & wanted) == wanted)
+                    type = t;
+        }
+        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = type;
+        if (d.Buffer == VK_NULL_HANDLE || type == memory.memoryTypeCount ||
+            vkAllocateMemory(mImpl->Device, &allocation, nullptr, &d.Memory) != VK_SUCCESS ||
+            vkBindBufferMemory(mImpl->Device, d.Buffer, d.Memory, 0) != VK_SUCCESS ||
+            vkMapMemory(mImpl->Device, d.Memory, 0, VK_WHOLE_SIZE, 0, &d.Mapped) != VK_SUCCESS) {
+            std::fprintf(stderr, "TRIAEVUM_GLOBAL_ILLUMINATION dump failed: host memory\n");
+            mImpl->ReleaseDump();
+            return;
+        }
+        for (size_t i = 0; i < sources.size(); ++i) {
+            const NriOwnedTexture2D& texture = *std::get<2>(sources[i]);
+            if (texture.Image != instance.Output.Image) privateTransition(texture.Image, ResourceAccess::TransferRead);
+            VkBufferImageCopy region{};
+            region.bufferOffset = d.Parts[i].Offset;
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageExtent = {instance.Inputs.Width, instance.Inputs.Height, 1U};
+            vkCmdCopyImageToBuffer(commandBuffer, texture.Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, d.Buffer, 1,
+                                   &region);
+        }
+        VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &host, 0,
+                             nullptr, 0, nullptr);
+        d.RecordedFrame = frameId;
+        d.Width = instance.Inputs.Width;
+        d.Height = instance.Inputs.Height;
+        d.InverseView = instance.InverseView;
+        d.Environment = environment;
+        d.SourceWeights = instance.SourceWeights;
+        d.Resolution = instance.Resolution;
+    };
     if (instance.LastTracedFrame != frameId || !instance.Traced) {
         if (!Trace(instance, commandBuffer, frameSlot, frameId, temporal, view, coordinates, environment,
                    privateTransition))
@@ -402,6 +560,8 @@ bool BrixelizerGiPass::Execute(VkCommandBuffer commandBuffer, uint32_t frameSlot
     try {
         copy(instance.Output, output);
         if (specularOutput != nullptr) copy(instance.SpecularOutput, *specularOutput);
+        if (mImpl->Dump && !mImpl->Dump->Recorded && frameId >= mImpl->Dump->Frame)
+            recordDump();
     } catch (const std::exception& exception) {
         mImpl->Reason = exception.what();
         return false;
@@ -431,6 +591,7 @@ bool BrixelizerGiPass::Trace(BrixelizerGiInstance& instance, VkCommandBuffer com
         mImpl->Reason = "Brixelizer GI view is not invertible";
         return false;
     }
+    instance.InverseView = inverseView;
     FfxBrixelizerGIDispatchDescription dispatch{};
     if (!BrixelizerSceneGiAccess::Bind(*mImpl->Scene, commandBuffer, frameId, environment, dispatch)) {
         mImpl->Reason = "the scene distance field has no data yet";
@@ -575,6 +736,8 @@ void BrixelizerGiPass::ResetHistory() {
 }
 
 void BrixelizerGiPass::Shutdown() {
+    mImpl->FinishDump(0U, true);
+    mImpl->ReleaseDump();
     InvalidateScreenResources();
     mImpl->Clear.Shutdown();
 #if OOT3D_HAS_BRIXELIZER_GI_PASS
