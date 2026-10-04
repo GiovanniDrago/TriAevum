@@ -805,13 +805,6 @@
       "purpose": "Current native demo manifest for the first/open-title intro reconstruction."
     },
     {
-      "id": "title_intro_fast_lane_script",
-      "kind": "file",
-      "path": "${repoRoot}\\scripts\\oot3d\\Invoke-Oot3dTitleIntro.ps1",
-      "required": true,
-      "purpose": "OpenGL-only fast lane for the title intro: release build, visible live launch, and deterministic checkpoint smoke captures."
-    },
-    {
       "id": "title_intro_frame600_kankyo_runtime_scale_backend_stats",
       "kind": "file",
       "path": "${repoRoot}\\build-codex\\title_intro_frame600_kankyo_runtime_scale_backend_stats.json",
@@ -1080,34 +1073,14 @@
       "command": "& '${pcvrReTools}\\ghidra\\support\\analyzeHeadless.bat' 'E:\\ppssppvr\\oot3d_decomp\\work\\ghidra_project' oot3d_code -process code.bin -noanalysis -scriptPath '${repoRoot}\\tools\\oot3d\\decomp_support\\ghidra_scripts' -postScript ExportOot3dSelected.java '${repoRoot}\\tools\\oot3d\\decomp_support\\ghidra_export' '<entries-file>' false false"
     },
     {
-      "id": "native_fast3d_link_house_demo",
-      "working_directory": "${repoRoot}",
-      "command": ".\\scripts\\oot3d\\Invoke-Oot3dNativeFast3dDemo.ps1 -Manifest '${workRoot}\\standalone_demo\\link_house\\demo_manifest.json' -Launch"
-    },
-    {
       "id": "native_game_kokiri_forest_live",
       "working_directory": "${repoRoot}",
       "command": ".\\scripts\\oot3d\\Invoke-Oot3dNativeGame.ps1"
     },
     {
-      "id": "native_fast3d_title_intro_live",
-      "working_directory": "${repoRoot}",
-      "command": ".\\scripts\\oot3d\\Invoke-Oot3dTitleIntro.ps1 -Mode Live"
-    },
-    {
-      "id": "native_fast3d_title_intro_checkpoint_240",
-      "working_directory": "${repoRoot}",
-      "command": ".\\scripts\\oot3d\\Invoke-Oot3dTitleIntro.ps1 -Mode Checkpoint -CheckpointFrame 240"
-    },
-    {
       "id": "capture_azahar_title_intro_slot6_focused",
       "working_directory": "${repoRoot}",
       "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\oot3d\\Invoke-Oot3dTitleIntroSlot6EmulatorDump.ps1 -Focused"
-    },
-    {
-      "id": "native_fast3d_title_intro_frame600_backend_probe",
-      "working_directory": "${repoRoot}",
-      "command": ".\\build-codex\\oot3d_native_fast3d_demo.exe --manifest '${workRoot}\\standalone_demo\\title_intro\\demo_manifest.json' --resource-root '${repoRoot}\\runtime/three_ds_recomp\\src\\fast' --title-intro --title-intro-frame 600 --frames 1 --max-seconds 1 --width 320 --height 180 --output build-codex\\title_intro_frame600_kankyo_fog_backend_stats.json"
     },
     {
       "id": "verify_revelation_raw_copy_window",

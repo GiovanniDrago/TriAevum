@@ -54,8 +54,6 @@ if ($Verify) {
 if ($NativeHost) {
     $manifest = Join-Path $WorkRoot "standalone_demo\link_house\demo_manifest.json"
     $nativeHostScript = Join-Path $repoRoot "scripts\oot3d\Invoke-Oot3dNativeDemoHost.ps1"
-    $nativeResourceProbeScript = Join-Path $repoRoot "scripts\oot3d\Invoke-Oot3dNativeResourceProbe.ps1"
-    $nativeRuntimeProbeScript = Join-Path $repoRoot "scripts\oot3d\Invoke-Oot3dNativeRuntimeProbe.ps1"
     $nativeHostArgs = @{
         Manifest = $manifest
         Verify = $true
@@ -72,15 +70,6 @@ if ($NativeHost) {
     & $nativeHostScript @nativeHostArgs
     if ($LASTEXITCODE -ne 0) {
         throw "OOT3D native demo host wrapper failed with exit code $LASTEXITCODE"
-    }
-    $nativeContract = Join-Path $WorkRoot "standalone_demo\link_house\contracts\native_resource_contract.json"
-    & $nativeResourceProbeScript -Contract $nativeContract -Verify
-    if ($LASTEXITCODE -ne 0) {
-        throw "OOT3D runtime/three_ds_recomp native resource probe failed with exit code $LASTEXITCODE"
-    }
-    & $nativeRuntimeProbeScript -Manifest $manifest -Verify
-    if ($LASTEXITCODE -ne 0) {
-        throw "OOT3D runtime/three_ds_recomp native runtime probe failed with exit code $LASTEXITCODE"
     }
     & python $script native-readiness --manifest $manifest
     if ($LASTEXITCODE -ne 0) {

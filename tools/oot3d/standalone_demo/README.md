@@ -78,14 +78,9 @@ To run the separate native-host probe before printing readiness:
 .\scripts\oot3d\Invoke-Oot3dStandaloneDemo.ps1 -Verify -NativeHost -NativeReadiness
 ```
 
-That command also compiles and runs the C++ runtime/three_ds_recomp resource probe through
-`Invoke-Oot3dNativeResourceProbe.ps1`. The probe validates the native demo
-resource contract and parses the native ZSI embedded CMB room mesh plus
-ZAR/CMB/CSAB Link child sources before checking the derived runtime artifacts.
-It also compiles and runs `Invoke-Oot3dNativeRuntimeProbe.ps1`, which writes a
-C++ deterministic movement/collision/camera trace and a small collision/path
-preview artifact. This is still a runtime probe, not native OOT3D movement
-parity.
+The C++ resource and runtime probes that this command used to run were removed
+with the pre-AOT native demo (2026-10); only the Python native-host probe
+and the readiness refresh remain.
 
 To require comparison against a captured OOT3D reference trace:
 
