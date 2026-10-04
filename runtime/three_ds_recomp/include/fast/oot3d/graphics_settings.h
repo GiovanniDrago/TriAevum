@@ -102,7 +102,7 @@ enum class GlobalIlluminationResolution : uint8_t { Half, Quarter };
 // (DiffuseIntensity) and without the highlight clamp.
 struct ScreenSpaceGiSettings {
     uint8_t Sections = 1;            // 1-4
-    uint16_t RadialCandidates = 32;  // 8, 16 or 32
+    uint16_t RadialCandidates = 20;  // 8, 16, 20, 24 or 32
     uint16_t Sectors = 64;           // 32, 64 or 128
     float Radius = 150.0F;           // R, scene units, [10, 1000]
     float Thickness = 30.0F;         // tau, scene units, [1, 200]

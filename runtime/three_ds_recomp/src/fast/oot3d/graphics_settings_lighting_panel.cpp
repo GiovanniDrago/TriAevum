@@ -76,16 +76,26 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
                 screen.Sections = static_cast<uint8_t>(sections);
                 changed = true;
             }
-            const auto choice = [&changed](const char* label, uint16_t& value, const uint16_t (&options)[3],
-                                           const char* const (&names)[3]) {
-                int index = value <= options[0] ? 0 : value <= options[1] ? 1 : 2;
-                if (ImGui::Combo(label, &index, names, 3)) {
+            const auto choice = [&changed](const char* label, uint16_t& value, const auto& options,
+                                           const auto& names) {
+                const int count = static_cast<int>(sizeof(options) / sizeof(options[0]));
+                int index = count - 1;
+                for (int i = 0; i < count; ++i)
+                    if (value <= options[i]) {
+                        index = i;
+                        break;
+                    }
+                if (ImGui::Combo(label, &index, names, count)) {
                     value = options[index];
                     changed = true;
                 }
             };
-            choice("SSGI radial candidates", screen.RadialCandidates, {8U, 16U, 32U}, {"8", "16", "32"});
-            choice("SSGI sectors", screen.Sectors, {32U, 64U, 128U}, {"32", "64", "128"});
+            const uint16_t candidateOptions[] = {8U, 16U, 20U, 24U, 32U};
+            const char* const candidateNames[] = {"8", "16", "20", "24", "32"};
+            choice("SSGI radial candidates", screen.RadialCandidates, candidateOptions, candidateNames);
+            const uint16_t sectorOptions[] = {32U, 64U, 128U};
+            const char* const sectorNames[] = {"32", "64", "128"};
+            choice("SSGI sectors", screen.Sectors, sectorOptions, sectorNames);
             changed |= ImGui::SliderFloat("SSGI radius", &screen.Radius, 10.0F, 1000.0F, "%.0f units");
             changed |= ImGui::SliderFloat("SSGI thickness", &screen.Thickness, 1.0F, 200.0F, "%.1f units");
             changed |= ImGui::Checkbox("SSGI temporal accumulation", &screen.Temporal);

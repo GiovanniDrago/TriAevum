@@ -1,6 +1,9 @@
 # Screen-space diffuse GI (clean-room implementation)
 
-Status: **M5 done** (2026-10-04, Stage C: per-kernel timing and a developer
+Status: **M6 done** (2026-10-04: the candidate-count darkening attributed to the
+footprint strips and corrected with a uniform radial exponent; default 20
+candidates: 2.89 ms pass time, 3.5-3.9 ms in game; horizon-only measured and
+rejected; see "M6"), on top of **M5 done** (2026-10-04, Stage C: per-kernel timing and a developer
 dump, defaults chosen on the game's buffers (Quarter work scale, 32
 candidates: 3.98 ms instead of 11.6), highlight clamp, the baked-ambient
 decision, open points 2 and 6 measured; see "M5 Stage C"), on top of
@@ -2371,3 +2374,137 @@ GTAO, TAA and denoiser code were not opened. Shared files edited (generic and
 GI parts only): `graphics_settings.h/.cpp`, `graphics_settings_persistence.cpp`,
 `graphics_settings_lighting_panel.cpp`, `gfx_vulkan_pica.cpp` (one stats
 line).
+
+## M6: cost and quality on real buffers
+
+Input: a new dump of kit frame 300 (Kokiri, guide 1440 x 1280, work factor 1;
+the kit's warm cache no longer exists, so every M6 game run uses
+`--cold-cache`). Timing: RTX 3060, `diffuse_gi_pass_gpu_tests --study`,
+configurations interleaved frame by frame, 44 samples after warm-up, p50 /
+p95; quality as in Stage C (converged J ratio, mean |dJ| / mean J) against two
+references:
+
+- **truth**: the M2 EveryTexel schedule (every texel along each section, no
+  hierarchy, no cache; the specification's reference), Half, 4 sections, 128
+  sectors, 4 levels (`DGI_STUDY_REFERENCE_OPTIONS=every`); Half and Full
+  agree within 0.5 % on these buffers (Stage C);
+- **K64**: the brief's reference, the M4 radial schedule with 64 candidates,
+  full extent, 8 sections, 128 sectors.
+
+The study tool gained per-configuration M4 options (`s` spacing scale, `e`
+radial exponent, `t` thickness, `nofp`, `nocache`, `l` level, `every`) and a
+reference option.
+
+### Attribution of the candidate-count darkening (open point 27)
+
+Quarter, one section, 64 sectors, two levels, against truth:
+
+| Configuration | p50 ms | J ratio | error |
+|---|---|---|---|
+| K16 (exponent 2, footprint, mean cache) | 2.54 | 0.950 | 0.211 |
+| K32 (Stage C default) | 3.92 | 1.014 | 0.191 |
+| K64 | 7.20 | 1.030 | 0.188 |
+| K32, no footprint, no cache | 2.42 | 0.969 | 0.231 |
+| K32, no cache (footprint on) | 4.03 | 1.014 | 0.190 |
+| K32, spacing scale 2 | 4.99 | 1.043 | 0.202 |
+| EveryTexel at Quarter | 13.41 | 1.008 | 0.142 |
+
+- The term is the **footprint strips**: at 32 candidates they add 4.5 % of J
+  over the candidates alone, and their coverage of the gaps between
+  candidates grows with the candidate count (16: -5 %, 32: +1.4 %, 64: +3 %
+  against truth; larger strips through the spacing scale add more). The
+  **mean cache has no effect** on J (1.014 with and without). The radial
+  candidates alone (no strips) stay 3 % dark at 32.
+- The brief's K64 reference is itself 3 % above truth, so Stage C's
+  "darkening against K64" was half the reference's own overshoot; against
+  truth Stage C's default was already +1.4 %.
+- Cheap correction: the **radial exponent**. The M4 exponent 2 puts most
+  candidates next to the receiver, where at the Quarter work scale many fall
+  in the same texel and are skipped; exponent 1 spaces them uniformly in
+  scene distance:
+
+| K, exponent | p50 / p95 ms | J vs truth | error vs truth | J vs K64 | error vs K64 |
+|---|---|---|---|---|---|
+| 16, 2 | 2.49 / 3.62 | 0.950 | 0.211 | 0.895 | 0.209 |
+| 16, 1.5 | 2.48 / 3.42 | 0.973 | 0.208 | 0.917 | 0.200 |
+| 16, 1 | 2.47 / 2.98 | 0.992 | 0.220 | 0.935 | 0.209 |
+| 20, 2 | 2.78 / 4.09 | 0.979 | 0.202 | 0.922 | 0.187 |
+| 20, 1.5 | 2.86 / 4.29 | 0.994 | 0.203 | 0.937 | 0.180 |
+| **20, 1 (M6 default)** | **2.89 / 4.07** | **1.020** | **0.212** | **0.962** | **0.186** |
+| 24, 2 | 3.10 / 4.46 | 0.993 | 0.197 | 0.936 | 0.170 |
+| 24, 1 | 3.29 / 4.85 | 1.034 | 0.211 | 0.974 | 0.174 |
+| 32, 2 (Stage C default) | 3.76 / 5.20 | 1.014 | 0.191 | 0.955 | 0.153 |
+
+### Gather cost (open point 27)
+
+- Exact optimization of the M4 gather: each side computed the next
+  candidate's radial distance twice (once as its spacing, once as its own
+  position); it is now computed once and carried (`lambda_next`,
+  `lambda_last`). Same J to four digits; K32 3.92 -> 3.76 ms (gather 3.23 ->
+  3.01); the module shrinks from 86,655 to 84,683 SPIR-V words. The FP32
+  twins compute the same values (no tolerance change); the M4 GPU test
+  passes unchanged.
+- Per kernel (p50 ms, Quarter, dump): Stage C default gather 3.01-3.23,
+  upsample 0.28, filter 0.21, temporal 0.13, hierarchy 0.10, normal and pack
+  0.04; M6 default gather 2.15, the rest unchanged (total 2.89 p50, 4.07
+  p95).
+- **Defaults (M6)**: 20 radial candidates (the F1 grid is now 8, 16, 20, 24,
+  32) and exponent 1 for the screen-space mode (a module parameter of the
+  mode, not a control); Quarter, one section, 64 sectors, two levels
+  unchanged.
+- In the game (two timing runs, interleaved with Brixelizer GI, 358 frames):
+  `global_illumination_ms` 3.89 and 3.52 p50, 5.15 and 5.11 p95 (target 4.0
+  p50: met; Stage C 5.44); Brixelizer GI 1.88 / 2.69; per-kernel pass totals
+  2.9-3.3 ms.
+- Against the brief's floor: pass time 2.89 ms (target 3.0: met), J 0.962 of
+  K64 (floor 0.95: met), error 0.186 against K64 (floor 0.16: **not met**).
+  The error floor is relative to an estimator that shares the exponent-2
+  pattern with Stage C's default; against truth every radial configuration
+  stays between 0.19 and 0.22 (EveryTexel at Quarter: 0.142) and the M6
+  default (0.212) is 0.02 above Stage C's (0.191) while its J moves from
+  +1.4 % to +2.0 %. Stretch: 16 candidates with exponent 1 cost 2.47 ms with
+  J 0.992 of truth (error 0.220).
+
+### Horizon-only variant (open point 13)
+
+Infinite thickness (every candidate occludes everything behind it: the
+height-field assumption), same kernel, against truth: M6 default 2.88 ms, J
+1.103, error 0.300; Stage C default 3.75 ms, J 1.082, error 0.277. It costs
+the same in this pass (no separate horizon kernel) and adds 8-10 % of J and
+40 % of error: it does not ship (open point 10's tests were not needed).
+
+### Not done in M6
+
+- Temporal quality on real motion (open points 14, 16, 21): it needs
+  consecutive-frame dumps (88 MB per frame at the guide extent) and a per-frame
+  converged reference; with about 2 GB free and this stage's budget it was not
+  run. The study tool and the dump hook are the means; parameters of
+  FlowAndDepth and the guide-reset decision stay as in M3/M4.
+- Guiding, SH and blue noise on captured buffers (open point 20): the runtime
+  pass rejects them by design, so their measurement needs the CPU module on a
+  dump; not run. Defaults unchanged.
+
+### Gates (M6)
+
+| Gate | Result |
+|---|---|
+| GI Off byte-identical (kit, cold cache, 12 frames) | 2/2 runs = the dominant set (first frame `991cf3d8...`, hashes file `3327f70c4519`) |
+| GI on (M6 default) under `--validation` | same classes and counts as M5 and the reference; none from the GI path |
+| F1 actual-widget smoke | `F1 UI smoke passed: 8459 assertions, real renderer/Controls/TopScreen widgets` |
+| Host tests | `renderer_diffuse_gi_pass_tests` 14, `oot3d_screen_space_gi_tests` 5, `oot3d_effect_graph_tests` 58, `oot3d_graphics_foundation_tests` 329, `renderer_spirv_pack_tests` 3: all pass |
+| GPU tests | `diffuse_gi_pass_gpu_tests` passed, 0 validation errors, 0 hazards; `diffuse_gi_m4_gpu_tests` passed, 0 validation errors |
+| Pack | 80 modules, 79 unchanged, gather changed; `--check` passes |
+| Builds | `oot3d_native_game`, `triaevum_title_aot_stub` |
+
+Open points: 27 attributed (footprint strips; exponent correction) and the
+cost target met; 13 measured (rejected); 14, 16, 20, 21 open.
+
+### Source manifest (M6)
+
+Own measurements and code only: the module's own pass on dumped buffers, an
+exact refactoring of its own M4 gather, its own study tool. No external
+implementation consulted; Brixelizer, FidelityFX, GTAO, TAA, denoiser and MXAO
+code not opened. Shared files edited (GI parts only):
+`graphics_settings.h/.cpp`, `graphics_settings_persistence.cpp`,
+`graphics_settings_lighting_panel.cpp`. Shared topic files of the backend
+split were not opened in M6.

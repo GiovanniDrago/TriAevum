@@ -1165,7 +1165,31 @@ struct StudyConfig {
     std::string Name;
     uint32_t Factor = 2, Sections = 1, Candidates = 16, Sectors = 64, Filter = 4;
     bool Temporal = true;
+    std::string Options; // comma list: notemporal, s<spacing scale>, e<radial exponent>, nofp, nocache, l<max level>
 };
+
+// Applies a study configuration's M4 options to pass settings.
+void ApplyStudyOptions(const std::string& options, PassSettings& s) {
+    size_t at = 0;
+    while (at < options.size()) {
+        const size_t end = std::min(options.find(',', at), options.size());
+        const std::string o = options.substr(at, end - at);
+        at = end + 1;
+        if (o == "notemporal") s.Temporal.Enabled = false;
+        else if (o == "nofp") s.Gather.HierarchyFootprint = false;
+        else if (o == "nocache") s.Gather.Cache = CacheMode::Off;
+        else if (o == "every") { // the M2 reference schedule: every texel, no hierarchy, no cache
+            s.Gather.Schedule = CandidateSchedule::EveryTexel;
+            s.Gather.HierarchyFootprint = false;
+            s.Gather.Cache = CacheMode::Off;
+        }
+        else if (!o.empty() && o[0] == 's') s.Gather.HierarchySpacingScale = std::atof(o.c_str() + 1);
+        else if (!o.empty() && o[0] == 'e') s.Gather.RadialExponent = std::atof(o.c_str() + 1);
+        else if (!o.empty() && o[0] == 'l') s.Gather.HierarchyMaxLevel = static_cast<uint32_t>(std::atoi(o.c_str() + 1));
+        else if (!o.empty() && o[0] == 't') s.Gather.Thickness = std::atof(o.c_str() + 1); // t1e9: horizon-only
+        else Require(o.empty(), "unknown study option " + o);
+    }
+}
 
 double Percentile(std::vector<double> v, double q) {
     if (v.empty()) return 0.0;
@@ -1184,15 +1208,15 @@ int Study(Device& d, const PassDevice& passDevice, std::shared_ptr<DiffuseGiKern
     std::vector<StudyConfig> configs;
     for (int a = 6; a < argc; ++a) {
         StudyConfig c;
-        char name[64] = {}, flag[16] = {};
-        const int got = std::sscanf(argv[a], "%63[^:]:%u:%u:%u:%u:%u:%15s", name, &c.Factor, &c.Sections,
+        char name[64] = {}, flag[128] = {};
+        const int got = std::sscanf(argv[a], "%63[^:]:%u:%u:%u:%u:%u:%127s", name, &c.Factor, &c.Sections,
                                     &c.Candidates, &c.Sectors, &c.Filter, flag);
         Require(got >= 6, std::string("bad config ") + argv[a]);
         c.Name = name;
-        c.Temporal = std::strcmp(flag, "notemporal") != 0;
+        c.Options = flag;
         configs.push_back(c);
     }
-    if (configs.empty()) configs.push_back({"default", 2, 1, 16, 64, 4, true});
+    if (configs.empty()) configs.push_back({"default", 4, 1, 32, 64, 2, true, ""});
     const auto settingsOf = [&](const StudyConfig& c) {
         PassSettings s = DefaultPassSettings();
         s.Gather.Radius = radius;
@@ -1202,6 +1226,8 @@ int Study(Device& d, const PassDevice& passDevice, std::shared_ptr<DiffuseGiKern
         s.Gather.Sectors = c.Sectors;
         s.Filter.Levels = c.Filter;
         s.Temporal.Enabled = c.Temporal;
+        ApplyStudyOptions(c.Options, s);
+        Require(*ValidatePassSettings(s) == '\0', std::string("study settings: ") + ValidatePassSettings(s));
         return s;
     };
     std::printf("DGI_STUDY dump=%ux%u R=%.1f tau=%.1f frames=%llu\n", full.BufferWidth, full.BufferHeight, radius,
@@ -1212,7 +1238,9 @@ int Study(Device& d, const PassDevice& passDevice, std::shared_ptr<DiffuseGiKern
     if (const char* r = std::getenv("DGI_STUDY_REFERENCE"); r != nullptr) // factor:S:K:N:levels
         std::sscanf(r, "%u:%u:%u:%u:%u", &referenceConfig.Factor, &referenceConfig.Sections,
                     &referenceConfig.Candidates, &referenceConfig.Sectors, &referenceConfig.Filter);
-    std::printf("DGI_STUDY reference factor=%u S=%u K=%u N=%u filter=%u\n", referenceConfig.Factor,
+    if (const char* o = std::getenv("DGI_STUDY_REFERENCE_OPTIONS"); o != nullptr) referenceConfig.Options = o;
+    std::printf("DGI_STUDY reference options=%s factor=%u S=%u K=%u N=%u filter=%u\n", referenceConfig.Options.c_str(),
+                referenceConfig.Factor,
                 referenceConfig.Sections, referenceConfig.Candidates, referenceConfig.Sectors, referenceConfig.Filter);
     reference.Settings = settingsOf(referenceConfig);
     Require(reference.Pass.Initialize(passDevice, kernels), reference.Pass.UnavailableReason());

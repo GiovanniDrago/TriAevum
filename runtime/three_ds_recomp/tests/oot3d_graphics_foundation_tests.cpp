@@ -4229,7 +4229,7 @@ TEST(Oot3dGraphicsSettings, GatesScreenSpaceGlobalIlluminationAndClampsItsParame
     EXPECT_EQ(result.Value.Effects.GlobalIllumination.ScreenSpace, ScreenSpaceGiSettings{});
 
     // Out-of-grid values land on the nearest supported value.
-    gi.ScreenSpace = {9, 20, 100, 5000.0F, -3.0F, true, 7, false};
+    gi.ScreenSpace = {9, 17, 100, 5000.0F, -3.0F, true, 7, false};
     result = GraphicsSettingsService::Validate(settings, capabilities);
     const auto& clamped = result.Value.Effects.GlobalIllumination.ScreenSpace;
     EXPECT_EQ(clamped.Sections, 4U);

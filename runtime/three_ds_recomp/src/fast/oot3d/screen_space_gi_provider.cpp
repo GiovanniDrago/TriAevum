@@ -31,6 +31,10 @@ Renderer::DiffuseGi::PassSettings ScreenSpaceGiPassSettings(const GlobalIllumina
     s.Gather.Sections = ss.Sections;
     s.Gather.Sectors = ss.Sectors;
     s.Gather.CandidatesPerSide = ss.RadialCandidates;
+    // Uniform metric radial spacing (exponent 1): on the game's buffers it
+    // keeps J within 2 % of the EveryTexel reference at 20 candidates, where
+    // the M4 exponent 2 loses 2-5 % (docs, "M6").
+    s.Gather.RadialExponent = 1.0;
     s.Temporal.Enabled = ss.Temporal;
     s.Filter.Levels = ss.FilterLevels;
     // Highlight clamp (section 9): artistic, never in validation mode.

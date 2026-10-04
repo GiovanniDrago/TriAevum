@@ -359,7 +359,7 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         return best;
     };
     screenSpace.Sections = std::clamp<uint8_t>(screenSpace.Sections, 1U, 4U);
-    screenSpace.RadialCandidates = static_cast<uint16_t>(nearestOf(screenSpace.RadialCandidates, {8U, 16U, 32U}));
+    screenSpace.RadialCandidates = static_cast<uint16_t>(nearestOf(screenSpace.RadialCandidates, {8U, 16U, 20U, 24U, 32U}));
     screenSpace.Sectors = static_cast<uint16_t>(nearestOf(screenSpace.Sectors, {32U, 64U, 128U}));
     screenSpace.Radius = clampOr(screenSpace.Radius, 10.0F, 1000.0F, ScreenSpaceGiSettings{}.Radius);
     screenSpace.Thickness = clampOr(screenSpace.Thickness, 1.0F, 200.0F, ScreenSpaceGiSettings{}.Thickness);

@@ -273,8 +273,11 @@ float metric_screen_distance(float rho, float sign_side) {
 
 struct SideM4 {
     float dx, dy, extent, lambda0, contact, sign_side, lambda, spacing;
+    // natural_lambda of the next candidate (computed once for the spacing,
+    // reused as that candidate's lambda) and of the last one.
+    float lambda_next, lambda_last;
     int previous_x, previous_y, out_x, out_y, hx, hy;
-    uint k, previous_level, level;
+    uint k, previous_level, level, lambda_k;
     bool done, has;
 };
 
@@ -295,6 +298,9 @@ SideM4 make_side_m4(int side, float extent) {
     float exit_t = tx0 < ty0 ? min(3.0 * tx0, ty0) : (ty0 < tx0 ? min(tx0, 3.0 * ty0) : 3.0 * tx0);
     s.contact = 0.5 * (enter + exit_t);
     s.k = 0u;
+    s.lambda_k = 0xFFFFFFFFu;
+    s.lambda_next = 0.0;
+    s.lambda_last = 0.0;
     s.previous_x = 0;
     s.previous_y = 0;
     s.previous_level = 0u;
@@ -334,7 +340,7 @@ void advance_m4(inout SideM4 s) {
     bool footprint = (m.features.x & M4_FOOTPRINT) != 0u;
     while (!s.done && s.k < count) {
         uint k = s.k++;
-        float lambda = natural_lambda(s, k);
+        float lambda = s.lambda_k == k ? s.lambda_next : natural_lambda(s, k);
         if (lambda > s.extent) { s.done = true; return; }
         int cx = int(floor(lambda * s.dx + 0.5));
         int cy = int(floor(lambda * s.dy + 0.5));
@@ -344,8 +350,15 @@ void advance_m4(inout SideM4 s) {
         int hy = cy;
         int tx = g_x + cx;
         int ty = g_y + cy;
-        float spacing = k + 1u < count ? natural_lambda(s, k + 1u) - lambda
-                                       : (k > 0u ? lambda - natural_lambda(s, k - 1u) : s.extent - lambda);
+        float spacing;
+        if (k + 1u < count) {
+            s.lambda_next = natural_lambda(s, k + 1u);
+            s.lambda_k = k + 1u;
+            spacing = s.lambda_next - lambda;
+        } else {
+            spacing = k > 0u ? lambda - s.lambda_last : s.extent - lambda;
+        }
+        s.lambda_last = lambda;
         if (levels) requested = footprint_level(spacing * m.hierarchy.z, m.features.y);
         if (levels && inside(tx, ty) && !(cx == 0 && cy == 0)) {
             level = requested;

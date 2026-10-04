@@ -1236,7 +1236,7 @@ std::string_view EnhancedPresetDocument() noexcept {
       "ScreenSpace": {
         "FilterLevels": 2,
         "HighlightClamp": 0.0,
-        "RadialCandidates": 32,
+        "RadialCandidates": 20,
         "Radius": 150.0,
         "Sections": 1,
         "Sectors": 64,

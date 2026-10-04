@@ -100,14 +100,16 @@ TEST(ScreenSpaceGi, SettingsMapOntoTheRuntimePass) {
     EXPECT_EQ(s.Gather.Thickness, 30.0);
     EXPECT_EQ(s.Gather.Sections, 1U);
     EXPECT_EQ(s.Gather.Sectors, 64U);
-    EXPECT_EQ(s.Gather.CandidatesPerSide, 32U);
+    EXPECT_EQ(s.Gather.CandidatesPerSide, 20U);
     EXPECT_TRUE(s.Temporal.Enabled);
     EXPECT_EQ(s.Filter.Levels, 2U);
     // Everything else is the M4 recommendation.
     DGI::PassSettings expected = m4;
     expected.Gather.Radius = 150.0;
     expected.Gather.Thickness = 30.0;
-    expected.Gather.CandidatesPerSide = 32;
+    expected.Gather.CandidatesPerSide = 20;
+    expected.Gather.RadialExponent = 1.0;
+    EXPECT_EQ(s.Gather.RadialExponent, 1.0);
     EXPECT_EQ(s.OutputLimit, 65504.0);
     GlobalIlluminationSettings clamped = gi;
     clamped.ScreenSpace.HighlightClamp = 1.5F;
