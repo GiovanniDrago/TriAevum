@@ -356,9 +356,10 @@ int main(int argc, char** argv) {
         1U, 0x000F022EU, 1U, 0x000F022EU, 1U, 0x000F022EU};
     compositionSubmit.Parameters[1] = static_cast<uint32_t>(
         compositionCommandList.size() * sizeof(uint32_t));
-    constexpr std::array<Oot3dNativeGame::
-                             Oot3dPicaCommandListCompositionSpan,
-                         2>
+    // const, not constexpr: the span carries a light binding, not a literal type.
+    const std::array<Oot3dNativeGame::
+                         Oot3dPicaCommandListCompositionSpan,
+                     2>
         compositionSpans{{
             {0x14002800U,
              0x14002808U,

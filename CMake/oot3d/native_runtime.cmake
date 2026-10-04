@@ -632,21 +632,22 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 endif()
 set_property(TARGET oot3d_native_a32_process PROPERTY FOLDER Tools)
 
-add_executable(oot3d_native_mass_aot_tests EXCLUDE_FROM_ALL
-    tools/oot3d/native_game_runtime/oot3d_native_mass_aot_tests.cpp)
-target_link_libraries(oot3d_native_mass_aot_tests PRIVATE
-    oot3d_native_a32_process)
+# The mass-AOT tests compile against the generated A32 AOT header, so they exist
+# only in a tree configured with those generated inputs.
 if (TARGET oot3d_native_a32_aot)
+    add_executable(oot3d_native_mass_aot_tests EXCLUDE_FROM_ALL
+        tools/oot3d/native_game_runtime/oot3d_native_mass_aot_tests.cpp)
     target_link_libraries(oot3d_native_mass_aot_tests PRIVATE
+        oot3d_native_a32_process
         oot3d_native_a32_aot)
     target_include_directories(oot3d_native_mass_aot_tests PRIVATE
         ${OOT3D_A32_AOT_GENERATED_DIR})
+    if (TARGET oot3d_native_mass_aot)
+        target_include_directories(oot3d_native_mass_aot_tests PRIVATE
+            ${OOT3D_MASS_AOT_GENERATED_DIR}
+            tools/oot3d/native_a32_runtime/mass_cpp)
+    endif()
+    target_compile_options(oot3d_native_mass_aot_tests PRIVATE
+        "${WARNING_OVERRIDE}")
+    oot3d_target_defaults(oot3d_native_mass_aot_tests NO_WARNING_OVERRIDE FOLDER Tests)
 endif()
-if (TARGET oot3d_native_mass_aot)
-    target_include_directories(oot3d_native_mass_aot_tests PRIVATE
-        ${OOT3D_MASS_AOT_GENERATED_DIR}
-        tools/oot3d/native_a32_runtime/mass_cpp)
-endif()
-target_compile_options(oot3d_native_mass_aot_tests PRIVATE
-    "${WARNING_OVERRIDE}")
-oot3d_target_defaults(oot3d_native_mass_aot_tests NO_WARNING_OVERRIDE FOLDER Tests)

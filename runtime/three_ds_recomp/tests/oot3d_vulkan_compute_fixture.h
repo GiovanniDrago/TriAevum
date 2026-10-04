@@ -6,12 +6,16 @@
 
 #include <array>
 #include <cstring>
+#include <source_location>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
-void Check(VkResult result) {
-    if (result != VK_SUCCESS) throw std::runtime_error("outline GPU test Vulkan failure: " + std::to_string(result));
+void Check(VkResult result, std::source_location where = std::source_location::current()) {
+    if (result != VK_SUCCESS)
+        throw std::runtime_error("outline GPU test Vulkan failure: " + std::to_string(result) + " at " +
+                                 where.file_name() + ":" + std::to_string(where.line()));
 }
 
 // Executes the production contour kernel on deterministic surfaces, without

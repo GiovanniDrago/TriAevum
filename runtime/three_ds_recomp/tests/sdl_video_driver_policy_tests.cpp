@@ -20,7 +20,6 @@ int main() {
     SDL_SetHint(SDL_HINT_VIDEODRIVER, "dummy");
     Fast::ConfigureSdlVideoDriver(true);
     require(std::string_view(SDL_GetHint(SDL_HINT_VIDEODRIVER)) == "dummy");
-#endif
     SDL_ClearHints();
     SDL_setenv("SDL_VIDEODRIVER", "", 1);
     // An explicit empty environment value requests SDL's automatic selection.
@@ -29,4 +28,19 @@ int main() {
     SDL_setenv("SDL_VIDEODRIVER", "wayland", 1);
     Fast::ConfigureSdlVideoDriver(true);
     require(std::string_view(SDL_GetHint("SDL_VIDEODRIVER")) == "wayland");
+#else
+    // Elsewhere the policy leaves SDL's own driver selection untouched. SDL's
+    // Windows setenv deletes a variable set to an empty value, so the hint can
+    // be null: compare values without making a view of a null hint.
+    SDL_ClearHints();
+    const auto hint = [] {
+        const char* value = SDL_GetHint(SDL_HINT_VIDEODRIVER);
+        return std::string(value != nullptr ? value : "");
+    };
+    const std::string before = hint();
+    Fast::ConfigureSdlVideoDriver(true);
+    require(hint() == before);
+    Fast::ConfigureSdlVideoDriver(false);
+    require(hint() == before);
+#endif
 }

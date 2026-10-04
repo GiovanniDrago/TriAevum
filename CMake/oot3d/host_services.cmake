@@ -182,6 +182,12 @@ if (TARGET oot3d_native_whole_aot)
     target_compile_definitions(oot3d_native_a32_process_tests PRIVATE
         OOT3D_NATIVE_WHOLE_AOT_TESTS=1)
 endif()
+if (OOT3D_WHOLE_AOT_PRODUCT_MODE)
+    # The process library dispatches whole-AOT product blocks, which have no
+    # interpreter native-function entries (NativeA32Process::Run).
+    target_compile_definitions(oot3d_native_a32_process_tests PRIVATE
+        OOT3D_NATIVE_A32_PRODUCT_DISPATCH_TESTS=1)
+endif()
 oot3d_target_defaults(oot3d_native_a32_process_tests FOLDER Tests)
 
 add_executable(oot3d_native_a32_ctr_host_tests EXCLUDE_FROM_ALL

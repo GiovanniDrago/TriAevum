@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <span>
@@ -191,6 +192,33 @@ bool ParseFrameCount(const char *value, std::uint32_t *frames) {
 } // namespace
 
 int main(int argc, char **argv) {
+  // Without arguments the inputs come from a Forge-built installation:
+  // OOT3D_TEST_GAME_TAM and OOT3D_TEST_CONTENT_TAP name its module and content
+  // descriptor, and the module cache is a fresh directory under the system
+  // temporary directory. Without them the smoke reports itself skipped (exit
+  // 77, CMake/oot3d/tests.cmake): those files are user data, never in a tree.
+  std::array<std::string, 4> defaultInputs;
+  std::array<char *, 4> defaultArgv{};
+  if (argc == 1) {
+    const char *module = std::getenv("OOT3D_TEST_GAME_TAM");
+    const char *content = std::getenv("OOT3D_TEST_CONTENT_TAP");
+    if (module == nullptr || *module == '\0' || content == nullptr ||
+        *content == '\0') {
+      std::cerr << "oot3d_game_module_smoke: skipped, needs a Forge-built "
+                   "installation (OOT3D_TEST_GAME_TAM, OOT3D_TEST_CONTENT_TAP)\n";
+      return 77;
+    }
+    const auto cache = std::filesystem::temp_directory_path() /
+                       "oot3d_game_module_smoke_cache";
+    std::error_code ignored;
+    std::filesystem::remove_all(cache, ignored);
+    std::filesystem::create_directories(cache, ignored);
+    defaultInputs = {argv[0], module, cache.string(), content};
+    for (std::size_t index = 0; index < defaultInputs.size(); ++index)
+      defaultArgv[index] = defaultInputs[index].data();
+    argc = static_cast<int>(defaultArgv.size());
+    argv = defaultArgv.data();
+  }
   if (argc < 4 || argc > 5) {
     std::cerr << "usage: oot3d_game_module_smoke <game.tam> <cache-directory> "
                  "<content.tap> [frames]\n";

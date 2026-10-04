@@ -196,6 +196,8 @@ option(OOT3D_ENABLE_VULKAN_RENDERER
     "Build the Vulkan renderer used by native OoT3D executables" ON)
 set(THREE_DS_RECOMP_ENABLE_VULKAN ${OOT3D_ENABLE_VULKAN_RENDERER} CACHE BOOL
     "Build the native 3DS Vulkan backend" FORCE)
+# Before the sub-projects, so the build tree's root test file includes theirs.
+enable_testing()
 add_subdirectory(runtime/triaevum_module
     ${CMAKE_BINARY_DIR}/triaevum_module)
 add_subdirectory(runtime/three_ds_recomp
@@ -213,4 +215,6 @@ add_subdirectory(tools/triaevum_release/tests)
 include(CMake/oot3d/host_services.cmake)
 
 include(CMake/oot3d/game.cmake)
+
+include(CMake/oot3d/tests.cmake)
 

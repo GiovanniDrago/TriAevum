@@ -176,6 +176,8 @@ TEST(EventSystem, CallEventInvokesAllListeners) {
     gSlot[0] = gSlot[1] = gSlot[2] = nullptr;
 }
 
+// Caller metadata feeds the event debugger, a development tool that
+// CallEvent() records only in _DEBUG builds; release builds record none.
 TEST(EventSystem, CallEventUpdatesCallerMetadata) {
     Ship::EventSystem sys;
     EventID evId = sys.RegisterEvent("Ev");
@@ -187,10 +189,14 @@ TEST(EventSystem, CallEventUpdatesCallerMetadata) {
 
     auto* reg = sys.GetEventRegistration(evId);
     ASSERT_NE(reg, nullptr);
+#ifdef _DEBUG
     auto it = reg->Callers.find(key);
     ASSERT_NE(it, reg->Callers.end());
     EXPECT_EQ(it->second.Count, 1u);
     EXPECT_EQ(it->second.Line, 42);
+#else
+    EXPECT_TRUE(reg->Callers.empty());
+#endif
 }
 
 TEST(EventSystem, CallEventIncrementsCaller) {
@@ -205,7 +211,11 @@ TEST(EventSystem, CallEventIncrementsCaller) {
 
     auto* reg = sys.GetEventRegistration(evId);
     ASSERT_NE(reg, nullptr);
+#ifdef _DEBUG
     EXPECT_EQ(reg->Callers.at(key).Count, 3u);
+#else
+    EXPECT_TRUE(reg->Callers.empty());
+#endif
 }
 
 // ============================================================

@@ -195,6 +195,9 @@ target_link_libraries(triaevum_native_module_loader_tests PRIVATE
     triaevum_module)
 target_include_directories(triaevum_native_module_loader_tests PRIVATE src)
 add_dependencies(triaevum_native_module_loader_tests triaevum_mock_module)
+# The loader test reads the mock module it loads (CMake/oot3d/tests.cmake).
+set_property(TARGET triaevum_native_module_loader_tests PROPERTY
+    OOT3D_TEST_ARGUMENTS "$<TARGET_FILE:triaevum_mock_module>")
 if(MSVC)
     target_compile_options(triaevum_mock_module PRIVATE /W4 /WX /utf-8)
     target_compile_options(triaevum_native_module_loader_tests PRIVATE

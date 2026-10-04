@@ -10,6 +10,7 @@
 #include <iostream>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
@@ -104,6 +105,32 @@ std::vector<uint8_t> MakeMonoBcwav(
 
 int main(int argc, char** argv) {
     try {
+        // Without arguments the inputs come from the private extracted title
+        // named by OOT3D_TEST_EXTRACT_ROOT (its romfs/ and exefs/; the sample
+        // wave is the first effect of QueenSound's WARC_SE wave archive as
+        // extracted under romfs/sound/QueenSound/). Without that variable the
+        // test reports itself skipped (exit 77, CMake/oot3d/tests.cmake).
+        std::array<std::string, 6> defaultInputs;
+        std::array<char*, 6> defaultArgv{};
+        if (argc == 1) {
+            const char* root = std::getenv("OOT3D_TEST_EXTRACT_ROOT");
+            if (root == nullptr || *root == '\0') {
+                std::cerr << "oot3d_native_audio_tests: skipped, needs the extracted title "
+                             "(OOT3D_TEST_EXTRACT_ROOT)\n";
+                return 77;
+            }
+            const std::string base(root);
+            defaultInputs = {argv[0],
+                             base + "/romfs/sound/QueenSound.bcsar",
+                             base + "/romfs/sound/QueenSound/WaveArchives/WARC_SE/0.bcwav",
+                             base + "/exefs/code.bin",
+                             base + "/romfs/sound/stream/STRM_QUEEN_ROLL.bcstm",
+                             base + "/romfs/sound/QueenStream.bcsar"};
+            for (size_t index = 0; index < defaultInputs.size(); ++index)
+                defaultArgv[index] = defaultInputs[index].data();
+            argc = static_cast<int>(defaultArgv.size());
+            argv = defaultArgv.data();
+        }
         if (argc != 6) {
             std::cerr << "usage: oot3d_native_audio_tests QueenSound.bcsar sample.bcwav code.bin stream.bcstm QueenStream.bcsar\n";
             return 2;

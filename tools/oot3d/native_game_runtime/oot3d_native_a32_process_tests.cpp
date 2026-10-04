@@ -1928,6 +1928,7 @@ int main(int argc, char** argv) {
         TestWholeAotAllocatorLeafDifferential();
 #endif
 #endif
+#if !defined(OOT3D_NATIVE_A32_PRODUCT_DISPATCH_TESTS)
         TestNativeFunctionAtDispatchEntry();
         TestSynchronousOriginalFunctionInvocation();
         TestSynchronousFiniteWaitCompletion();
@@ -1940,6 +1941,17 @@ int main(int argc, char** argv) {
         TestFallbackBoundary();
         TestBlockEntryCallback();
         TestBlockEntryCallbackFilter();
+#else
+        // Whole-AOT product mode: Run() and InvokeFunction() dispatch the title's
+        // compiled blocks, not the synthetic registry code these cases execute
+        // through the interpreter dispatcher, so they apply to the interpreter
+        // configuration only (the game scenarios exercise scheduling, state
+        // round trips and block-entry callbacks in this one). Thread and TLS
+        // initialization does not dispatch.
+        TestPrioritySchedulerAndTls(false);
+        std::cout << "oot3d_native_a32_process_tests: 12 interpreter-dispatcher cases "
+                     "do not apply in whole-AOT product mode\n";
+#endif
         TestCompiledRuntimeMemcpy();
         TestCompiledPicaRegisterRangeWriter();
         TestCompiledPicaVertexFloatUniformWriter();
@@ -1950,8 +1962,15 @@ int main(int argc, char** argv) {
         TestCompiledAudioFourChannelDelay();
         TestCompiledAudioStereoReverb();
         TestTrueAotBgCheckClearBlock();
+#if defined(OOT3D_NATIVE_A32_AOT_TESTS)
+        // These blocks exist only in the generated true-AOT set, which the
+        // process library compiles when the A32 AOT inputs are generated.
         TestTrueAotCopyU32x16Loop();
         TestTrueAotNativeCurveType2Scan();
+#else
+        std::cout << "oot3d_native_a32_process_tests: 2 generated true-AOT cases "
+                     "need the generated A32 AOT inputs\n";
+#endif
         std::cout << "oot3d_native_a32_process_tests: ok\n";
         return 0;
     } catch (const std::exception& ex) {
