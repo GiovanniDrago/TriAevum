@@ -126,6 +126,7 @@
 #endif
 
 #include "oot3d_native_a32_window_shared.h"
+#include "oot3d_native_a32_window_stats.h"
 
 using namespace Oot3dA32Window;
 
@@ -1349,41 +1350,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   uint64_t nextVblankTick = 0;
   uint64_t lateVblankDeadlineCount = 0;
   uint64_t maximumVblankDeadlineOvershootTicks = 0;
-  uint64_t savestateSaveCount = 0;
-  uint64_t savestateLoadCount = 0;
-  uint64_t savestateSaveBytes = 0;
-  uint64_t savestateLoadBytes = 0;
-  double savestateSaveSeconds = 0.0;
-  double savestateLoadSeconds = 0.0;
-  double savestateCaptureSeconds = 0.0;
-  double savestateEncodeSeconds = 0.0;
-  double savestateWriteSeconds = 0.0;
-  double savestateReadSeconds = 0.0;
-  double savestateDecodeSeconds = 0.0;
-  double savestateRestoreSeconds = 0.0;
-  uint64_t legacySavestateClockRestoreCount = 0;
-  uint64_t legacySavestatePresentationSchedulerRestoreCount = 0;
-  uint64_t legacySavestateFrameRatePolicyRestoreCount = 0;
-  uint64_t legacySavestateTopScreenTemporalRestoreCount = 0;
-  uint64_t legacySavestatePicaVisualReplayRestoreCount = 0;
-  uint64_t legacySavestatePicaTextureCacheRestoreCount = 0;
-  uint64_t legacySavestatePicaColorTargetRestoreCount = 0;
-  uint64_t legacySavestatePicaPresentationRestoreCount = 0;
-  uint64_t savestatePicaTexturesCaptured = 0;
-  uint64_t savestatePicaTextureBytesCaptured = 0;
-  uint64_t savestatePicaTexturesRestored = 0;
-  uint64_t savestatePicaTextureBytesRestored = 0;
-  uint64_t savestatePicaColorTargetsCaptured = 0;
-  uint64_t savestatePicaColorTargetBytesCaptured = 0;
-  uint64_t savestatePicaColorTargetsRestored = 0;
-  uint64_t savestatePicaColorTargetBytesRestored = 0;
-  uint64_t savestatePicaDisplayImagesCaptured = 0;
-  uint64_t savestatePicaDisplayImageBytesCaptured = 0;
-  uint64_t savestatePicaDisplayImagesRestored = 0;
-  uint64_t savestatePicaDisplayImageBytesRestored = 0;
-  uint64_t savestatePicaVisualReplayBytesCaptured = 0;
-  uint64_t savestatePicaVisualReplayBytesRestored = 0;
-  uint64_t lastSavestateSemanticFingerprint = 0;
+  NativeA32SavestateStats savestateStats;
   Oot3dNativeGame::NativePresentationScheduler presentationScheduler(
       frameRateContract.SimulationRateHz,
       frameRateContract.Mode ==
@@ -1435,7 +1402,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       [&](const Oot3dNativeGame::NativeA32SavestateRuntimeState &runtime) {
         if (!runtime.GameplayClockAvailable) {
           frameRatePolicy.ResetGameplayClock();
-          ++legacySavestateClockRestoreCount;
+          ++savestateStats.LegacyClockRestoreCount;
           std::cerr
               << "oot3d_native_game: legacy savestate has no gameplay clock; "
                  "starting at a quiescent logical-frame boundary\n";
@@ -1449,7 +1416,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         }
         if (!runtime.PresentationSchedulerAvailable) {
           presentationScheduler.Reset();
-          ++legacySavestatePresentationSchedulerRestoreCount;
+          ++savestateStats.LegacyPresentationSchedulerRestoreCount;
         } else if (!presentationScheduler.Restore(
                        runtime.PresentationScheduler, &error)) {
           throw std::runtime_error(
@@ -1457,7 +1424,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         }
         if (!runtime.FrameRatePolicyTemporalStateAvailable) {
           frameRatePolicy.ResetTemporalState();
-          ++legacySavestateFrameRatePolicyRestoreCount;
+          ++savestateStats.LegacyFrameRatePolicyRestoreCount;
         } else if (!frameRatePolicy.RestoreTemporalState(
                        runtime.FrameRatePolicyTemporalState, &error)) {
           throw std::runtime_error(
@@ -1472,7 +1439,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         }
         if (!runtime.TopScreenTemporalStateAvailable ||
             !runtime.TopScreenTemporalState.ProfileActive) {
-          ++legacySavestateTopScreenTemporalRestoreCount;
+          ++savestateStats.LegacyTopScreenTemporalRestoreCount;
           return;
         }
         const auto &state = runtime.TopScreenTemporalState;
@@ -1512,7 +1479,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   const auto restoreSavestatePicaTextureCache =
       [&](const Oot3dNativeGame::NativeA32SavestateRuntimeState &runtime) {
         if (!runtime.PicaTextureCacheAvailable) {
-          ++legacySavestatePicaTextureCacheRestoreCount;
+          ++savestateStats.LegacyPicaTextureCacheRestoreCount;
           return;
         }
         if (!api.RestorePicaTextureCache(
@@ -1521,16 +1488,16 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               "savestate native PICA texture restore failed: " + error);
         }
         for (const auto &texture : runtime.PicaTextureCache) {
-          savestatePicaTextureBytesRestored +=
+          savestateStats.PicaTextureBytesRestored +=
               texture.PixelBytes.size();
         }
-        savestatePicaTexturesRestored +=
+        savestateStats.PicaTexturesRestored +=
             runtime.PicaTextureCache.size();
       };
   const auto restoreSavestatePicaColorTargets =
       [&](const Oot3dNativeGame::NativeA32SavestateRuntimeState &runtime) {
         if (!runtime.PicaColorTargetsAvailable) {
-          ++legacySavestatePicaColorTargetRestoreCount;
+          ++savestateStats.LegacyPicaColorTargetRestoreCount;
           return;
         }
         if (!api.RestorePicaColorTargets(
@@ -1542,17 +1509,17 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         restoredAddresses.reserve(runtime.PicaColorTargets.size());
         for (const auto &target : runtime.PicaColorTargets) {
           restoredAddresses.push_back(target.ColorPhysicalAddress);
-          savestatePicaColorTargetBytesRestored +=
+          savestateStats.PicaColorTargetBytesRestored +=
               target.ColorRgba8.size();
         }
         submissionQueue.RestoreGpuColorRenderTargetOwnership(
             restoredAddresses);
-        savestatePicaColorTargetsRestored += restoredAddresses.size();
+        savestateStats.PicaColorTargetsRestored += restoredAddresses.size();
       };
   const auto restoreSavestatePicaPresentationState =
       [&](const Oot3dNativeGame::NativeA32SavestateRuntimeState &runtime) {
         if (!runtime.PicaPresentationStateAvailable) {
-          ++legacySavestatePicaPresentationRestoreCount;
+          ++savestateStats.LegacyPicaPresentationRestoreCount;
           return;
         }
         if (!api.RestorePicaPresentationState(
@@ -1563,10 +1530,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         }
         for (const auto &image :
              runtime.PicaPresentationState.DisplayImages) {
-          savestatePicaDisplayImageBytesRestored +=
+          savestateStats.PicaDisplayImageBytesRestored +=
               image.ColorRgba8.size();
         }
-        savestatePicaDisplayImagesRestored +=
+        savestateStats.PicaDisplayImagesRestored +=
             runtime.PicaPresentationState.DisplayImages.size();
       };
   const auto restoreSavestatePicaVisualReplayState =
@@ -1583,7 +1550,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           lastSubmittedDrawId = 0U;
           lastSelectedTopTransferCompletionId = 0U;
           ++visualContinuityEpoch;
-          ++legacySavestatePicaVisualReplayRestoreCount;
+          ++savestateStats.LegacyPicaVisualReplayRestoreCount;
           return;
         }
         Oot3dNativeGame::Oot3dPicaVisualReplayState state;
@@ -1616,7 +1583,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         lastSelectedTopTransferCompletionId =
             state.LastSelectedTopTransferCompletionId;
         lastSubmittedDrawId = state.LastSubmittedDrawId;
-        savestatePicaVisualReplayBytesRestored +=
+        savestateStats.PicaVisualReplayBytesRestored +=
             runtime.PicaVisualReplayState.size();
       };
   if (!launch.LoadStatePath.empty()) {
@@ -1664,12 +1631,12 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     restoreSavestatePicaPresentationState(restoredRuntime);
     restoreSavestatePicaVisualReplayState(restoredRuntime);
     restoreSavestateTopScreenTemporalState(restoredRuntime);
-    ++savestateLoadCount;
-    savestateLoadBytes += ioResult.FileBytes;
-    savestateLoadSeconds += SecondsSince(phaseStart);
-    savestateReadSeconds += ioResult.IoSeconds;
-    savestateDecodeSeconds += ioResult.DecodeSeconds;
-    savestateRestoreSeconds += ioResult.RestoreSeconds;
+    ++savestateStats.LoadCount;
+    savestateStats.LoadBytes += ioResult.FileBytes;
+    savestateStats.LoadSeconds += SecondsSince(phaseStart);
+    savestateStats.ReadSeconds += ioResult.IoSeconds;
+    savestateStats.DecodeSeconds += ioResult.DecodeSeconds;
+    savestateStats.RestoreSeconds += ioResult.RestoreSeconds;
     std::cout << "oot3d_native_game: loaded initial state at frame "
               << frameCount << " from " << launch.LoadStatePath.string()
               << '\n';
@@ -1686,54 +1653,14 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     phaseTiming.GuestSeconds += SecondsSince(phaseStart);
     RequireRunnableGuest(processResult);
   }
-  uint64_t drawCount = 0;
-  uint64_t refreshesWithNativeDraws = 0;
-  uint64_t displayTransferCount = 0;
-  uint64_t recordedCompletionCount = 0;
-  uint64_t completedP3dCount = 0;
-  uint64_t completedPpfCount = 0;
-  uint64_t picaDrainPassCount = 0;
-  uint64_t maximumPicaDrainPassesPerRefresh = 0;
-  uint64_t selectedTopTransferCount = 0;
-  uint64_t nativeBottomFrontendPresentationCount = 0;
-  uint64_t nativeMenuBackdropDrawOmissionCount = 0;
-  uint64_t nativeMenuClearDrawOmissionCount = 0;
-  uint64_t nativeFrontendPresentationActiveCount = 0;
-  uint64_t nativeFrontendBottomTransferHitCount = 0;
-  uint64_t visualSnapshotCount = 0;
-  uint64_t visualTransitionCount = 0;
-  uint64_t visualMatchedDrawCount = 0;
-  uint64_t visualStrictUniqueMatchedDrawCount = 0;
-  uint64_t visualStrictOrdinalMatchedDrawCount = 0;
-  uint64_t visualStructuralOrdinalMatchedDrawCount = 0;
-  uint64_t visualPipelineOrdinalMatchedDrawCount = 0;
-  uint64_t visualChangedContinuousDrawCount = 0;
-  uint64_t visualChangedPerInstanceVertexDrawCount = 0;
-  uint64_t visualChangedPerVertexDrawCount = 0;
+  NativeA32PicaSubmissionStats picaStats;
+  NativeA32VisualStats visualStats;
   Oot3dNativeGame::Oot3dPicaVisualInterpolationTiming visualInterpolationTiming;
-  uint64_t visualAmbiguousPreviousDrawCount = 0;
-  uint64_t visualAmbiguousCurrentDrawCount = 0;
-  uint64_t visualUnmatchedPreviousDrawCount = 0;
-  uint64_t visualUnmatchedCurrentDrawCount = 0;
-  uint64_t visualSamplesPresented = 0;
-  uint64_t visualDirectFramesPresented = 0;
-  uint64_t visualReusedSnapshotPresentations = 0;
-  uint64_t visualDiscontinuityCount = 0;
-  uint64_t visualNamespaceResyncCount = 0;
   // Output addresses of selected top-screen transfers (the display
   // framebuffers): an earlier snapshot into one ends a superseded guest frame.
   std::vector<uint32_t> topDisplayOutputs;
-  uint64_t visualSampleDrawCount = 0;
-  uint64_t visualInterpolatedDrawCount = 0;
-  uint64_t visualInterpolatedPerInstanceVertexDrawCount = 0;
-  uint64_t visualInterpolatedPerVertexDrawCount = 0;
   uint64_t vblankCount = 0;
-  uint64_t dspFramesMixed = 0;
-  uint64_t dspFramesSuppressed = 0;
-  uint64_t dspSamplesMixed = 0;
-  uint64_t dspNonzeroSamples = 0;
-  uint64_t dspPcmFnv1a64 = 14695981039346656037ULL;
-  int32_t dspPeakMagnitude = 0;
+  NativeA32DspMixStats dspStats;
   nlohmann::json displayTransferEvents = nlohmann::json::array();
   nlohmann::json drawEvents = nlohmann::json::array();
   nlohmann::json visualTransitionEvents = nlohmann::json::array();
@@ -1881,8 +1808,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       [&](uint64_t) {
         requireStoppedGuest();
         if (!hostServices.SignalPicaInterrupt(process.Memory(), Oot3dNativeGame::Oot3dPicaInterruptId::Ppf)) return false;
-        ++completedPpfCount;
-        ++recordedCompletionCount;
+        ++picaStats.CompletedPpfCount;
+        ++picaStats.RecordedCompletionCount;
         return true;
       },
       [&]() {
@@ -2088,7 +2015,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       return false;
     }
     runtime.PicaVisualReplayStateAvailable = true;
-    savestatePicaVisualReplayBytesCaptured +=
+    savestateStats.PicaVisualReplayBytesCaptured +=
         runtime.PicaVisualReplayState.size();
     if (!api.CapturePicaTextureCache(
             runtime.PicaTextureCache, &error)) {
@@ -2099,9 +2026,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     }
     runtime.PicaTextureCacheAvailable = true;
     for (const auto &texture : runtime.PicaTextureCache) {
-      savestatePicaTextureBytesCaptured += texture.PixelBytes.size();
+      savestateStats.PicaTextureBytesCaptured += texture.PixelBytes.size();
     }
-    savestatePicaTexturesCaptured += runtime.PicaTextureCache.size();
+    savestateStats.PicaTexturesCaptured += runtime.PicaTextureCache.size();
     if (!api.CapturePicaColorTargets(
             runtime.PicaColorTargets, &error)) {
       std::cerr
@@ -2111,10 +2038,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     }
     runtime.PicaColorTargetsAvailable = true;
     for (const auto &target : runtime.PicaColorTargets) {
-      savestatePicaColorTargetBytesCaptured +=
+      savestateStats.PicaColorTargetBytesCaptured +=
           target.ColorRgba8.size();
     }
-    savestatePicaColorTargetsCaptured += runtime.PicaColorTargets.size();
+    savestateStats.PicaColorTargetsCaptured += runtime.PicaColorTargets.size();
     if (!api.CapturePicaPresentationState(
             runtime.PicaPresentationState, &error)) {
       std::cerr
@@ -2125,10 +2052,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     runtime.PicaPresentationStateAvailable = true;
     for (const auto &image :
          runtime.PicaPresentationState.DisplayImages) {
-      savestatePicaDisplayImageBytesCaptured +=
+      savestateStats.PicaDisplayImageBytesCaptured +=
           image.ColorRgba8.size();
     }
-    savestatePicaDisplayImagesCaptured +=
+    savestateStats.PicaDisplayImagesCaptured +=
         runtime.PicaPresentationState.DisplayImages.size();
     Oot3dNativeGame::NativeA32SavestateIoResult ioResult;
     if (!Oot3dNativeGame::SaveNativeA32State(
@@ -2138,13 +2065,13 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                 << '\n';
       return false;
     }
-    ++savestateSaveCount;
-    savestateSaveBytes += ioResult.FileBytes;
-    lastSavestateSemanticFingerprint = ioResult.SemanticFingerprint;
-    savestateSaveSeconds += SecondsSince(started);
-    savestateCaptureSeconds += ioResult.CaptureSeconds;
-    savestateEncodeSeconds += ioResult.EncodeSeconds;
-    savestateWriteSeconds += ioResult.IoSeconds;
+    ++savestateStats.SaveCount;
+    savestateStats.SaveBytes += ioResult.FileBytes;
+    savestateStats.LastSemanticFingerprint = ioResult.SemanticFingerprint;
+    savestateStats.SaveSeconds += SecondsSince(started);
+    savestateStats.CaptureSeconds += ioResult.CaptureSeconds;
+    savestateStats.EncodeSeconds += ioResult.EncodeSeconds;
+    savestateStats.WriteSeconds += ioResult.IoSeconds;
     std::cout << "oot3d_native_game: saved state at frame " << frameCount
               << " to " << path.string() << '\n';
     return true;
@@ -2259,28 +2186,18 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     pcmContinuityDiagnostics = {};
     realtimePacer.ResetDeadline();
     lastPresentationTime = std::chrono::steady_clock::now();
-    ++savestateLoadCount;
-    savestateLoadBytes += ioResult.FileBytes;
-    savestateLoadSeconds += SecondsSince(started);
-    savestateReadSeconds += ioResult.IoSeconds;
-    savestateDecodeSeconds += ioResult.DecodeSeconds;
-    savestateRestoreSeconds += ioResult.RestoreSeconds;
+    ++savestateStats.LoadCount;
+    savestateStats.LoadBytes += ioResult.FileBytes;
+    savestateStats.LoadSeconds += SecondsSince(started);
+    savestateStats.ReadSeconds += ioResult.IoSeconds;
+    savestateStats.DecodeSeconds += ioResult.DecodeSeconds;
+    savestateStats.RestoreSeconds += ioResult.RestoreSeconds;
     std::cout << "oot3d_native_game: loaded state at frame " << frameCount
               << " from " << path.string() << '\n';
     return true;
   };
 
-  auto benchmarkMeasurementStart = std::chrono::steady_clock::now();
-  auto benchmarkMeasurementEnd = benchmarkMeasurementStart;
-  uint64_t benchmarkMeasuredFrames = 0U;
-  std::array<double, 15> benchmarkPhaseSeconds{};
-  double benchmarkNestedGuestSeconds = 0.0;
-  double benchmarkGuestClockSeconds = 0.0;
-  double benchmarkUnattributedSeconds = 0.0;
-  Fast::Renderer::FrameTimeDistribution preBackendTimes;
-  Fast::Renderer::FrameTimeDistribution preBackendEnvelopeTimes;
-  uint64_t invalidPreBackendIntervals = 0;
-  Fast::Renderer::SlowFrameSamples<15> slowFrames;
+  NativeA32BenchmarkWindow benchmark;
   const char* pacingTrace = std::getenv("TRIAEVUM_PACING_TRACE");
   const bool measurePacing = pacingTrace && std::string_view(pacingTrace) == "1";
   auto benchmarkFrameTimes = (hostArgs.ThroughputBenchmark || measurePacing)
@@ -2974,10 +2891,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           phaseTiming.DspMixSeconds += SecondsSince(dspMixStart);
           cpuDsp.Stop();
           pcmContinuityDiagnostics.ObserveFrame(
-              dspFramesMixed, std::span<const int16_t>(audioSamples)
+              dspStats.FramesMixed, std::span<const int16_t>(audioSamples)
                                   .subspan(frameSampleOffset));
-          ++dspFramesMixed;
-          dspFramesSuppressed += launch.DisableAudio ? 1U : 0U;
+          ++dspStats.FramesMixed;
+          dspStats.FramesSuppressed += launch.DisableAudio ? 1U : 0U;
           if (!hostServices.SignalDspAudioFrame()) {
             break;
           }
@@ -2989,15 +2906,15 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         }
         for (const int16_t sample : audioSamples) {
           const int32_t magnitude = std::abs(static_cast<int32_t>(sample));
-          dspPeakMagnitude = std::max(dspPeakMagnitude, magnitude);
-          dspNonzeroSamples += sample != 0 ? 1U : 0U;
+          dspStats.PeakMagnitude = std::max(dspStats.PeakMagnitude, magnitude);
+          dspStats.NonzeroSamples += sample != 0 ? 1U : 0U;
           const uint16_t bits = static_cast<uint16_t>(sample);
-          dspPcmFnv1a64 ^= static_cast<uint8_t>(bits);
-          dspPcmFnv1a64 *= 1099511628211ULL;
-          dspPcmFnv1a64 ^= static_cast<uint8_t>(bits >> 8U);
-          dspPcmFnv1a64 *= 1099511628211ULL;
+          dspStats.PcmFnv1a64 ^= static_cast<uint8_t>(bits);
+          dspStats.PcmFnv1a64 *= 1099511628211ULL;
+          dspStats.PcmFnv1a64 ^= static_cast<uint8_t>(bits >> 8U);
+          dspStats.PcmFnv1a64 *= 1099511628211ULL;
         }
-        dspSamplesMixed += audioSamples.size() / 2U;
+        dspStats.SamplesMixed += audioSamples.size() / 2U;
         if (!launch.AudioPcmDumpPath.empty()) {
           pcmDumpSamples.insert(pcmDumpSamples.end(), audioSamples.begin(),
                                 audioSamples.end());
@@ -3048,7 +2965,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
             break;
           }
           ++drainPassesThisRefresh;
-          ++picaDrainPassCount;
+          ++picaStats.PicaDrainPassCount;
           refreshHadNativeDraws = refreshHadNativeDraws || !draws.empty();
           const bool suppressTopScreenFrontendBackdrop =
               Oot3dNativeGame::ShouldSuppressTopScreenFrontendBackdrop(
@@ -3111,12 +3028,12 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                   }
                   if (*fill.Interrupt ==
                       Oot3dNativeGame::Oot3dPicaInterruptId::P3d) {
-                    ++completedP3dCount;
+                    ++picaStats.CompletedP3dCount;
                   } else if (*fill.Interrupt ==
                              Oot3dNativeGame::Oot3dPicaInterruptId::Ppf) {
-                    ++completedPpfCount;
+                    ++picaStats.CompletedPpfCount;
                   }
-                  ++recordedCompletionCount;
+                  ++picaStats.RecordedCompletionCount;
                   signaledPicaCompletion = true;
                 }
               };
@@ -3205,13 +3122,13 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                         "native PICA display transfer completion could not "
                         "enter the GSP relay queue");
                   }
-                  ++completedPpfCount;
-                  ++recordedCompletionCount;
+                  ++picaStats.CompletedPpfCount;
+                  ++picaStats.RecordedCompletionCount;
                   signaledPicaCompletion = true;
                 }
                 displayTransfersByOutput[transfer.Transfer.OutputAddress] =
                     transfer;
-                ++displayTransferCount;
+                ++picaStats.DisplayTransferCount;
               };
           while (displayTransferIndex < displayTransfers.size() &&
                  displayTransfers[displayTransferIndex].AfterDrawSubmissionId <=
@@ -3259,9 +3176,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                 suppressNativeFrontendBackdropDraw, usesCommonBackground,
                 isOpaqueTargetInitialization);
             if (suppressNativeFrontendBackdropDraw) {
-              nativeMenuBackdropDrawOmissionCount +=
+              picaStats.NativeMenuBackdropDrawOmissionCount +=
                   usesCommonBackground ? 1U : 0U;
-              nativeMenuClearDrawOmissionCount +=
+              picaStats.NativeMenuClearDrawOmissionCount +=
                   isOpaqueTargetInitialization ? 1U : 0U;
             }
             if (launch.ExtendedDiagnostics) {
@@ -3467,12 +3384,12 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               }
               if (completion.Interrupt ==
                   Oot3dNativeGame::Oot3dPicaInterruptId::P3d) {
-                ++completedP3dCount;
+                ++picaStats.CompletedP3dCount;
               } else if (completion.Interrupt ==
                          Oot3dNativeGame::Oot3dPicaInterruptId::Ppf) {
-                ++completedPpfCount;
+                ++picaStats.CompletedPpfCount;
               }
-              ++recordedCompletionCount;
+              ++picaStats.RecordedCompletionCount;
               signaledPicaCompletion = true;
             }
             lastSubmittedDrawId = draw.Id;
@@ -3482,7 +3399,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                     draw.Id) {
               submitDisplayTransfer(displayTransfers[displayTransferIndex++]);
             }
-            ++drawCount;
+            ++picaStats.DrawCount;
           }
           if (completionIndex != completions.size()) {
             throw std::runtime_error(
@@ -3516,9 +3433,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           throw std::runtime_error("native PICA completion chain exceeded "
                                    "the per-refresh drain limit");
         }
-        maximumPicaDrainPassesPerRefresh = std::max<uint64_t>(
-            maximumPicaDrainPassesPerRefresh, drainPassesThisRefresh);
-        refreshesWithNativeDraws += refreshHadNativeDraws ? 1U : 0U;
+        picaStats.MaximumPicaDrainPassesPerRefresh = std::max<uint64_t>(
+            picaStats.MaximumPicaDrainPassesPerRefresh, drainPassesThisRefresh);
+        picaStats.RefreshesWithNativeDraws += refreshHadNativeDraws ? 1U : 0U;
         phaseTiming.PicaSubmitSeconds += SecondsSince(picaSubmitStart);
       }
       if (presentHostFrame) {
@@ -3577,7 +3494,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                   lastSelectedTopTransferCompletionId) {
                 lastSelectedTopTransferCompletionId =
                     topSelection.CompletionId;
-                ++selectedTopTransferCount;
+                ++picaStats.SelectedTopTransferCount;
                 auto finishedFrames = picaPresentationScheduler.FinishFrames(
                     topSelection, topDisplayOutputs);
                 if (std::find(topDisplayOutputs.begin(), topDisplayOutputs.end(),
@@ -3600,7 +3517,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                       process.Memory(),
                       sceneViewProbe.Stats().LastPlayStateAddress,
                       finished->Sequence);
-                  ++visualSnapshotCount;
+                  ++visualStats.SnapshotCount;
                   suppressTopScreenBackdrop =
                       Oot3dNativeGame::ShouldSuppressTopScreenFrontendBackdrop(
                           launch.UiProfile,
@@ -3694,9 +3611,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                           Oot3dNativeGame::
                               Oot3dPicaPresentationExecutionKind::CurrentFrame,
                           true, temporalSample);
-                      ++visualDirectFramesPresented;
-                      ++visualSamplesPresented;
-                      visualSampleDrawCount += sample.Draws.size();
+                      ++visualStats.DirectFramesPresented;
+                      ++visualStats.SamplesPresented;
+                      visualStats.SampleDrawCount += sample.Draws.size();
                       presentedVisualSample = true;
                     }
                     // Direct gameplay modes retain no cross-frame matching
@@ -3726,29 +3643,29 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                               *latestVisualFrame, *currentVisualFrame,
                               sampleAlpha, sample,
                               &visualInterpolationTiming);
-                      ++visualTransitionCount;
-                      visualMatchedDrawCount += transition.MatchedDraws;
-                      visualStrictUniqueMatchedDrawCount +=
+                      ++visualStats.TransitionCount;
+                      visualStats.MatchedDrawCount += transition.MatchedDraws;
+                      visualStats.StrictUniqueMatchedDrawCount +=
                           transition.StrictUniqueMatchedDraws;
-                      visualStrictOrdinalMatchedDrawCount +=
+                      visualStats.StrictOrdinalMatchedDrawCount +=
                           transition.StrictOrdinalMatchedDraws;
-                      visualStructuralOrdinalMatchedDrawCount +=
+                      visualStats.StructuralOrdinalMatchedDrawCount +=
                           transition.StructuralOrdinalMatchedDraws;
-                      visualPipelineOrdinalMatchedDrawCount +=
+                      visualStats.PipelineOrdinalMatchedDrawCount +=
                           transition.PipelineOrdinalMatchedDraws;
-                      visualChangedContinuousDrawCount +=
+                      visualStats.ChangedContinuousDrawCount +=
                           transition.ChangedContinuousDraws;
-                      visualChangedPerInstanceVertexDrawCount +=
+                      visualStats.ChangedPerInstanceVertexDrawCount +=
                           transition.ChangedPerInstanceVertexDraws;
-                      visualChangedPerVertexDrawCount +=
+                      visualStats.ChangedPerVertexDrawCount +=
                           transition.ChangedPerVertexDraws;
-                      visualAmbiguousPreviousDrawCount +=
+                      visualStats.AmbiguousPreviousDrawCount +=
                           transition.AmbiguousPreviousDraws;
-                      visualAmbiguousCurrentDrawCount +=
+                      visualStats.AmbiguousCurrentDrawCount +=
                           transition.AmbiguousCurrentDraws;
-                      visualUnmatchedPreviousDrawCount +=
+                      visualStats.UnmatchedPreviousDrawCount +=
                           transition.UnmatchedPreviousDraws;
-                      visualUnmatchedCurrentDrawCount +=
+                      visualStats.UnmatchedCurrentDrawCount +=
                           transition.UnmatchedCurrentDraws;
                       const double continuityThreshold =
                           visualContinuityTracker.CurrentThreshold();
@@ -3756,7 +3673,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                           transitionPrepared &&
                           visualContinuityTracker.Accept(transition);
                       latestVisualTransitionContinuous = continuousTransition;
-                      visualDiscontinuityCount +=
+                      visualStats.DiscontinuityCount +=
                           continuousTransition ? 0U : 1U;
                       if (launch.ExtendedDiagnostics) {
                         if (visualTransitionEvents.size() == 1024U) {
@@ -3815,13 +3732,13 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                                 Oot3dPicaPresentationExecutionKind::
                                     InterpolatedFrame,
                             true, temporalSample);
-                        ++visualSamplesPresented;
-                        visualSampleDrawCount += sample.Draws.size();
-                        visualInterpolatedDrawCount +=
+                        ++visualStats.SamplesPresented;
+                        visualStats.SampleDrawCount += sample.Draws.size();
+                        visualStats.InterpolatedDrawCount +=
                             sample.InterpolatedDraws;
-                        visualInterpolatedPerInstanceVertexDrawCount +=
+                        visualStats.InterpolatedPerInstanceVertexDrawCount +=
                             sample.InterpolatedPerInstanceVertexDraws;
-                        visualInterpolatedPerVertexDrawCount +=
+                        visualStats.InterpolatedPerVertexDrawCount +=
                             sample.InterpolatedPerVertexDraws;
                         presentedVisualSample = true;
                       } else {
@@ -3848,9 +3765,9 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                           Oot3dNativeGame::
                               Oot3dPicaPresentationExecutionKind::CurrentFrame,
                           true, temporalSample);
-                      ++visualNamespaceResyncCount;
-                      ++visualSamplesPresented;
-                      visualSampleDrawCount += sample.Draws.size();
+                      ++visualStats.NamespaceResyncCount;
+                      ++visualStats.SamplesPresented;
+                      visualStats.SampleDrawCount += sample.Draws.size();
                       presentedVisualSample = true;
                     }
                     if (latestVisualFrame.has_value()) {
@@ -3889,12 +3806,12 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                       Oot3dNativeGame::
                           Oot3dPicaPresentationExecutionKind::RepeatedFrame,
                       true, temporalSample);
-                  ++visualSamplesPresented;
-                  visualSampleDrawCount += sample.Draws.size();
-                  visualInterpolatedDrawCount += sample.InterpolatedDraws;
-                  visualInterpolatedPerInstanceVertexDrawCount +=
+                  ++visualStats.SamplesPresented;
+                  visualStats.SampleDrawCount += sample.Draws.size();
+                  visualStats.InterpolatedDrawCount += sample.InterpolatedDraws;
+                  visualStats.InterpolatedPerInstanceVertexDrawCount +=
                       sample.InterpolatedPerInstanceVertexDraws;
-                  visualInterpolatedPerVertexDrawCount +=
+                  visualStats.InterpolatedPerVertexDrawCount +=
                       sample.InterpolatedPerVertexDraws;
                   presentedVisualSample = true;
                 }
@@ -3912,7 +3829,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                       renderError);
                 }
                 rendererTiming->VisualReplaySeconds += SecondsSince(started);
-                ++visualReusedSnapshotPresentations;
+                ++visualStats.ReusedSnapshotPresentations;
               }
               });
             }
@@ -3925,7 +3842,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
           const auto bottomFramebuffer = hostServices.BottomFramebuffer();
           if (presentNativeBottomFrontend &&
               bottomFramebuffer.has_value()) {
-            ++nativeFrontendPresentationActiveCount;
+            ++picaStats.NativeFrontendPresentationActiveCount;
             auto selectedBottom =
                 displayTransfersByOutput.find(bottomFramebuffer->AddressLeft);
             if (selectedBottom == displayTransfersByOutput.end() &&
@@ -3935,7 +3852,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               selectedBottom = displayTransfersByOutput.find(
                   bottomFramebuffer->AddressRight);
             }
-            nativeFrontendBottomTransferHitCount +=
+            picaStats.NativeFrontendBottomTransferHitCount +=
                 selectedBottom != displayTransfersByOutput.end() ? 1U : 0U;
             if (selectedBottom != displayTransfersByOutput.end()) {
               renderStream.Submit(
@@ -3953,7 +3870,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                           "native bottom-screen frontend presentation "
                           "failed: " + renderError);
                     }
-                    ++nativeBottomFrontendPresentationCount;
+                    ++picaStats.NativeBottomFrontendPresentationCount;
                   });
             }
           }
@@ -4102,8 +4019,8 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
     lastCompletedFrameTime = completedFrameTime;
     if (!benchmarkMeasurementStarted && preparationScreen.Done() &&
         runFrameCount >= hostArgs.BenchmarkWarmupFrames) {
-      benchmarkMeasurementStart = completedFrameTime;
-      benchmarkMeasurementEnd = completedFrameTime;
+      benchmark.MeasurementStart = completedFrameTime;
+      benchmark.MeasurementEnd = completedFrameTime;
       benchmarkMeasurementStarted = true;
       if (cpuProbeRequested) CpuProbe::Thread.StartAt(CpuProbe::Read());
     } else if (benchmarkMeasurementStarted &&
@@ -4112,33 +4029,33 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       std::array<double, 15> delta{};
       for (size_t i=0; i<delta.size(); ++i) {
         delta[i]=currentPhases[i]-phaseBeforeFrame[i];
-        benchmarkPhaseSeconds[i]+=delta[i];
+        benchmark.PhaseSeconds[i]+=delta[i];
       }
       const double nestedGuest=phaseTiming.GuestInsidePicaSubmitSeconds-nestedGuestBeforeFrame;
-      benchmarkNestedGuestSeconds+=nestedGuest;
-      benchmarkGuestClockSeconds+=phaseTiming.GuestClockSeconds-guestClockBeforeFrame;
+      benchmark.NestedGuestSeconds+=nestedGuest;
+      benchmark.GuestClockSeconds+=phaseTiming.GuestClockSeconds-guestClockBeforeFrame;
       const Oot3dNativeGame::PreBackendBudget budget{
         delta[0],delta[7],nestedGuest,delta[8],delta[2],delta[3],delta[5],delta[6]};
-      if(budget.Valid()) preBackendTimes.RecordMilliseconds(budget.Total()*1000.0);
-      else ++invalidPreBackendIntervals;
+      if(budget.Valid()) benchmark.PreBackendTimes.RecordMilliseconds(budget.Total()*1000.0);
+      else ++benchmark.InvalidPreBackendIntervals;
       // Present includes pacing. Visual presentation includes backend/replay.
       // Remove each inclusive scope once; keep unclassified host/UI work visible.
-      const double envelope=std::chrono::duration<double>(completedFrameTime-benchmarkMeasurementEnd).count()
+      const double envelope=std::chrono::duration<double>(completedFrameTime-benchmark.MeasurementEnd).count()
           -delta[4]-delta[11]-delta[13];
-      preBackendEnvelopeTimes.RecordMilliseconds(envelope*1000.0);
-      benchmarkUnattributedSeconds+=envelope-budget.Total();
+      benchmark.PreBackendEnvelopeTimes.RecordMilliseconds(envelope*1000.0);
+      benchmark.UnattributedSeconds+=envelope-budget.Total();
       if (benchmarkFrameTimes) {
         auto phases = phaseTiming.Values();
         for (size_t i = 0; i < phases.size(); ++i)
           phases[i] = (phases[i] - phaseBeforeFrame[i]) * 1000.0;
-        slowFrames.Record(runFrameCount, std::chrono::duration<double, std::milli>(
-            completedFrameTime - benchmarkMeasurementEnd).count(), phases);
+        benchmark.SlowFrames.Record(runFrameCount, std::chrono::duration<double, std::milli>(
+            completedFrameTime - benchmark.MeasurementEnd).count(), phases);
         benchmarkFrameTimes->RecordMilliseconds(
             std::chrono::duration<double, std::milli>(
-                completedFrameTime - benchmarkMeasurementEnd).count());
+                completedFrameTime - benchmark.MeasurementEnd).count());
       }
-      benchmarkMeasurementEnd = completedFrameTime;
-      ++benchmarkMeasuredFrames;
+      benchmark.MeasurementEnd = completedFrameTime;
+      ++benchmark.MeasuredFrames;
       if (cpuProbeRequested) benchmarkCpuPhases = CpuProbe::Thread.Snapshot();
     }
     if (quickLoadRequested) {
@@ -4474,10 +4391,10 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
         graphicsSettings.Effects.DirectionalShadows;
     const auto &realtimePacingStats = realtimePacer.Stats();
     const double benchmarkHostSeconds =
-        benchmarkMeasuredFrames == 0U
+        benchmark.MeasuredFrames == 0U
             ? 0.0
-            : std::chrono::duration<double>(benchmarkMeasurementEnd -
-                                            benchmarkMeasurementStart)
+            : std::chrono::duration<double>(benchmark.MeasurementEnd -
+                                            benchmark.MeasurementStart)
                   .count();
     WriteJsonFile(
         launch.Host.OutputPath,
@@ -4569,64 +4486,64 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                automatedStateSavedAtGuestFrame.has_value()
                    ? nlohmann::json(*automatedStateSavedAtGuestFrame)
                    : nlohmann::json(nullptr)},
-              {"save_count", savestateSaveCount},
-              {"load_count", savestateLoadCount},
-              {"save_bytes", savestateSaveBytes},
-              {"load_bytes", savestateLoadBytes},
-              {"save_seconds", savestateSaveSeconds},
-              {"load_seconds", savestateLoadSeconds},
-              {"capture_seconds", savestateCaptureSeconds},
-              {"encode_seconds", savestateEncodeSeconds},
-              {"write_seconds", savestateWriteSeconds},
-              {"read_seconds", savestateReadSeconds},
-              {"decode_seconds", savestateDecodeSeconds},
-              {"restore_seconds", savestateRestoreSeconds},
+              {"save_count", savestateStats.SaveCount},
+              {"load_count", savestateStats.LoadCount},
+              {"save_bytes", savestateStats.SaveBytes},
+              {"load_bytes", savestateStats.LoadBytes},
+              {"save_seconds", savestateStats.SaveSeconds},
+              {"load_seconds", savestateStats.LoadSeconds},
+              {"capture_seconds", savestateStats.CaptureSeconds},
+              {"encode_seconds", savestateStats.EncodeSeconds},
+              {"write_seconds", savestateStats.WriteSeconds},
+              {"read_seconds", savestateStats.ReadSeconds},
+              {"decode_seconds", savestateStats.DecodeSeconds},
+              {"restore_seconds", savestateStats.RestoreSeconds},
               {"last_semantic_fingerprint",
-               std::to_string(lastSavestateSemanticFingerprint)},
+               std::to_string(savestateStats.LastSemanticFingerprint)},
               {"legacy_gameplay_clock_restores",
-               legacySavestateClockRestoreCount},
+               savestateStats.LegacyClockRestoreCount},
               {"legacy_presentation_scheduler_restores",
-               legacySavestatePresentationSchedulerRestoreCount},
+               savestateStats.LegacyPresentationSchedulerRestoreCount},
               {"legacy_frame_rate_policy_restores",
-               legacySavestateFrameRatePolicyRestoreCount},
+               savestateStats.LegacyFrameRatePolicyRestoreCount},
               {"legacy_topscreen_temporal_restores",
-               legacySavestateTopScreenTemporalRestoreCount},
+               savestateStats.LegacyTopScreenTemporalRestoreCount},
               {"legacy_pica_visual_replay_restores",
-               legacySavestatePicaVisualReplayRestoreCount},
+               savestateStats.LegacyPicaVisualReplayRestoreCount},
               {"legacy_pica_texture_cache_restores",
-               legacySavestatePicaTextureCacheRestoreCount},
+               savestateStats.LegacyPicaTextureCacheRestoreCount},
               {"legacy_pica_color_target_restores",
-               legacySavestatePicaColorTargetRestoreCount},
+               savestateStats.LegacyPicaColorTargetRestoreCount},
               {"legacy_pica_presentation_restores",
-               legacySavestatePicaPresentationRestoreCount},
+               savestateStats.LegacyPicaPresentationRestoreCount},
               {"pica_textures_captured",
-               savestatePicaTexturesCaptured},
+               savestateStats.PicaTexturesCaptured},
               {"pica_texture_bytes_captured",
-               savestatePicaTextureBytesCaptured},
+               savestateStats.PicaTextureBytesCaptured},
               {"pica_textures_restored",
-               savestatePicaTexturesRestored},
+               savestateStats.PicaTexturesRestored},
               {"pica_texture_bytes_restored",
-               savestatePicaTextureBytesRestored},
+               savestateStats.PicaTextureBytesRestored},
               {"pica_visual_replay_bytes_captured",
-               savestatePicaVisualReplayBytesCaptured},
+               savestateStats.PicaVisualReplayBytesCaptured},
               {"pica_visual_replay_bytes_restored",
-               savestatePicaVisualReplayBytesRestored},
+               savestateStats.PicaVisualReplayBytesRestored},
               {"pica_color_targets_captured",
-               savestatePicaColorTargetsCaptured},
+               savestateStats.PicaColorTargetsCaptured},
               {"pica_color_target_bytes_captured",
-               savestatePicaColorTargetBytesCaptured},
+               savestateStats.PicaColorTargetBytesCaptured},
               {"pica_color_targets_restored",
-               savestatePicaColorTargetsRestored},
+               savestateStats.PicaColorTargetsRestored},
               {"pica_color_target_bytes_restored",
-               savestatePicaColorTargetBytesRestored},
+               savestateStats.PicaColorTargetBytesRestored},
               {"pica_display_images_captured",
-               savestatePicaDisplayImagesCaptured},
+               savestateStats.PicaDisplayImagesCaptured},
               {"pica_display_image_bytes_captured",
-               savestatePicaDisplayImageBytesCaptured},
+               savestateStats.PicaDisplayImageBytesCaptured},
               {"pica_display_images_restored",
-               savestatePicaDisplayImagesRestored},
+               savestateStats.PicaDisplayImagesRestored},
               {"pica_display_image_bytes_restored",
-               savestatePicaDisplayImageBytesRestored}}},
+               savestateStats.PicaDisplayImageBytesRestored}}},
              {"realtime_pacing",
              {{"enabled", realtimePacer.Enabled()},
               {"multimedia_scheduling_active", realtimePacer.MultimediaSchedulingActive()},
@@ -4685,7 +4602,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
               {"warmup_frames_completed",
                std::min<uint64_t>(runFrameCount,
                                   hostArgs.BenchmarkWarmupFrames)},
-              {"measured_frames", benchmarkMeasuredFrames},
+              {"measured_frames", benchmark.MeasuredFrames},
               {"thread_cpu_ledger", [&]() -> nlohmann::json {
                 nlohmann::json phases = nlohmann::json::object();
                 double windowCpu = 0.0;
@@ -4706,24 +4623,24 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                     {"phases", std::move(phases)}};
               }()},
               {"pre_backend_cpu", [&]() -> nlohmann::json {
-                const auto& p=benchmarkPhaseSeconds;
+                const auto& p=benchmark.PhaseSeconds;
                 const Oot3dNativeGame::PreBackendBudget b{
-                  p[0],p[7],benchmarkNestedGuestSeconds,p[8],p[2],p[3],p[5],p[6]};
+                  p[0],p[7],benchmark.NestedGuestSeconds,p[8],p[2],p[3],p[5],p[6]};
                 return {{"scope","guest_including_gsp_pica_plus_plan_capture_host_audio_before_nri_execute"},
-                  {"samples",preBackendTimes.Count()}, {"invalid_intervals",invalidPreBackendIntervals},
+                  {"samples",benchmark.PreBackendTimes.Count()}, {"invalid_intervals",benchmark.InvalidPreBackendIntervals},
                   {"guest_seconds",b.Guest}, {"plan_seconds",b.Plan},
-                  {"guest_clock_included_seconds",benchmarkGuestClockSeconds},
+                  {"guest_clock_included_seconds",benchmark.GuestClockSeconds},
                   {"queue_capture_seconds",b.QueueAndCapture()},
                   {"nested_guest_subtracted_seconds",b.GuestInsideSubmission},
                   {"host_seconds",b.Host}, {"input_seconds",b.Input},
                   {"dsp_seconds",b.Dsp}, {"audio_output_seconds",b.AudioOutput},
                   {"total_seconds",b.Total()},
-                  {"mean_ms",preBackendTimes.MeanMs()},
-                  {"host_envelope_mean_ms",preBackendEnvelopeTimes.MeanMs()},
-                  {"host_envelope_p95_upper_ms",preBackendEnvelopeTimes.Count()?nlohmann::json(*preBackendEnvelopeTimes.QuantileUpperMs(.95)):nlohmann::json(nullptr)},
-                  {"unattributed_host_ui_seconds",benchmarkUnattributedSeconds},
-                  {"p95_upper_ms",preBackendTimes.Count()?nlohmann::json(*preBackendTimes.QuantileUpperMs(.95)):nlohmann::json(nullptr)},
-                  {"maximum_ms",preBackendTimes.MaximumMs()}};
+                  {"mean_ms",benchmark.PreBackendTimes.MeanMs()},
+                  {"host_envelope_mean_ms",benchmark.PreBackendEnvelopeTimes.MeanMs()},
+                  {"host_envelope_p95_upper_ms",benchmark.PreBackendEnvelopeTimes.Count()?nlohmann::json(*benchmark.PreBackendEnvelopeTimes.QuantileUpperMs(.95)):nlohmann::json(nullptr)},
+                  {"unattributed_host_ui_seconds",benchmark.UnattributedSeconds},
+                  {"p95_upper_ms",benchmark.PreBackendTimes.Count()?nlohmann::json(*benchmark.PreBackendTimes.QuantileUpperMs(.95)):nlohmann::json(nullptr)},
+                  {"maximum_ms",benchmark.PreBackendTimes.MaximumMs()}};
               }()},
               {"frame_times", [&]() -> nlohmann::json {
                  if (!benchmarkFrameTimes || !benchmarkFrameTimes->Count()) return nullptr;
@@ -4739,14 +4656,14 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                          {"over_30hz_budget", times.Over30Hz()}};
                }()},
               {"host_seconds",
-               benchmarkMeasuredFrames == 0U
+               benchmark.MeasuredFrames == 0U
                    ? nlohmann::json(nullptr)
                    : nlohmann::json(benchmarkHostSeconds)},
               {"frames_per_second",
-               benchmarkMeasuredFrames == 0U || benchmarkHostSeconds <= 0.0
+               benchmark.MeasuredFrames == 0U || benchmarkHostSeconds <= 0.0
                    ? nlohmann::json(nullptr)
                    : nlohmann::json(
-                         static_cast<double>(benchmarkMeasuredFrames) /
+                         static_cast<double>(benchmark.MeasuredFrames) /
                          benchmarkHostSeconds)},
               {"fixed_delta_seconds",
                hostArgs.FixedDeltaSeconds > 0.0
@@ -5174,13 +5091,13 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
              {{"enabled", !launch.DisableAudio},
               {"host_output_enabled", !launch.DisableAudio},
               {"guest_dsp_processing_enabled", true},
-              {"frames_mixed", dspFramesMixed},
-              {"frames_processed", dspFramesMixed},
-              {"frames_suppressed", dspFramesSuppressed},
-              {"stereo_samples_mixed", dspSamplesMixed},
-              {"nonzero_channel_samples", dspNonzeroSamples},
-              {"peak_magnitude", dspPeakMagnitude},
-              {"pcm_fnv1a64", dspPcmFnv1a64},
+              {"frames_mixed", dspStats.FramesMixed},
+              {"frames_processed", dspStats.FramesMixed},
+              {"frames_suppressed", dspStats.FramesSuppressed},
+              {"stereo_samples_mixed", dspStats.SamplesMixed},
+              {"nonzero_channel_samples", dspStats.NonzeroSamples},
+              {"peak_magnitude", dspStats.PeakMagnitude},
+              {"pcm_fnv1a64", dspStats.PcmFnv1a64},
               {"pcm_continuity", pcmContinuityDiagnostics.ToJson()},
               {"pcm_dump",
                {{"enabled", !launch.AudioPcmDumpPath.empty()},
@@ -5220,17 +5137,17 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                 {"desired_buffered", audioPlayer != nullptr
                                          ? audioPlayer->GetDesiredBuffered()
                                          : 0}}}}},
-            {"draws_submitted", drawCount},
-            {"refreshes_with_native_draws", refreshesWithNativeDraws},
-            {"display_transfers_submitted", displayTransferCount},
+            {"draws_submitted", picaStats.DrawCount},
+            {"refreshes_with_native_draws", picaStats.RefreshesWithNativeDraws},
+            {"display_transfers_submitted", picaStats.DisplayTransferCount},
             {"gpu_completions_queued", 0},
-            {"pica_completions_recorded", recordedCompletionCount},
-            {"p3d_completions_delivered", completedP3dCount},
-            {"ppf_completions_delivered", completedPpfCount},
+            {"pica_completions_recorded", picaStats.RecordedCompletionCount},
+            {"p3d_completions_delivered", picaStats.CompletedP3dCount},
+            {"ppf_completions_delivered", picaStats.CompletedPpfCount},
             {"pending_gpu_completions", 0},
-            {"pica_drain_passes", picaDrainPassCount},
+            {"pica_drain_passes", picaStats.PicaDrainPassCount},
             {"maximum_pica_drain_passes_per_refresh",
-             maximumPicaDrainPassesPerRefresh},
+             picaStats.MaximumPicaDrainPassesPerRefresh},
             {"pending_draws", submissionQueue.PendingDraws().size()},
             {"pending_completion_markers",
              submissionQueue.PendingCompletions().size()},
@@ -5381,38 +5298,38 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
              {{"snapshot_replay_enabled", visualInterpolationEnabled},
               {"cross_frame_history_enabled", visualInterpolationEnabled},
               {"direct_current_frames_presented",
-               visualDirectFramesPresented},
+               visualStats.DirectFramesPresented},
               {"reused_snapshot_presentations",
-               visualReusedSnapshotPresentations},
-              {"selected_top_transfers", selectedTopTransferCount},
-              {"complete_snapshots", visualSnapshotCount},
-              {"transitions", visualTransitionCount},
-              {"matched_draws", visualMatchedDrawCount},
+               visualStats.ReusedSnapshotPresentations},
+              {"selected_top_transfers", picaStats.SelectedTopTransferCount},
+              {"complete_snapshots", visualStats.SnapshotCount},
+              {"transitions", visualStats.TransitionCount},
+              {"matched_draws", visualStats.MatchedDrawCount},
               {"strict_unique_matched_draws",
-               visualStrictUniqueMatchedDrawCount},
+               visualStats.StrictUniqueMatchedDrawCount},
               {"strict_ordinal_matched_draws",
-               visualStrictOrdinalMatchedDrawCount},
+               visualStats.StrictOrdinalMatchedDrawCount},
               {"structural_ordinal_matched_draws",
-               visualStructuralOrdinalMatchedDrawCount},
+               visualStats.StructuralOrdinalMatchedDrawCount},
               {"pipeline_ordinal_matched_draws",
-               visualPipelineOrdinalMatchedDrawCount},
-              {"changed_continuous_draws", visualChangedContinuousDrawCount},
+               visualStats.PipelineOrdinalMatchedDrawCount},
+              {"changed_continuous_draws", visualStats.ChangedContinuousDrawCount},
               {"changed_per_instance_vertex_draws",
-               visualChangedPerInstanceVertexDrawCount},
-              {"changed_per_vertex_draws", visualChangedPerVertexDrawCount},
-              {"ambiguous_previous_draws", visualAmbiguousPreviousDrawCount},
-              {"ambiguous_current_draws", visualAmbiguousCurrentDrawCount},
-              {"unmatched_previous_draws", visualUnmatchedPreviousDrawCount},
-              {"unmatched_current_draws", visualUnmatchedCurrentDrawCount},
-              {"samples_presented", visualSamplesPresented},
-              {"discontinuities", visualDiscontinuityCount},
-              {"namespace_resynchronizations", visualNamespaceResyncCount},
-              {"sample_draws", visualSampleDrawCount},
-              {"interpolated_draws", visualInterpolatedDrawCount},
+               visualStats.ChangedPerInstanceVertexDrawCount},
+              {"changed_per_vertex_draws", visualStats.ChangedPerVertexDrawCount},
+              {"ambiguous_previous_draws", visualStats.AmbiguousPreviousDrawCount},
+              {"ambiguous_current_draws", visualStats.AmbiguousCurrentDrawCount},
+              {"unmatched_previous_draws", visualStats.UnmatchedPreviousDrawCount},
+              {"unmatched_current_draws", visualStats.UnmatchedCurrentDrawCount},
+              {"samples_presented", visualStats.SamplesPresented},
+              {"discontinuities", visualStats.DiscontinuityCount},
+              {"namespace_resynchronizations", visualStats.NamespaceResyncCount},
+              {"sample_draws", visualStats.SampleDrawCount},
+              {"interpolated_draws", visualStats.InterpolatedDrawCount},
               {"interpolated_per_instance_vertex_draws",
-               visualInterpolatedPerInstanceVertexDrawCount},
+               visualStats.InterpolatedPerInstanceVertexDrawCount},
               {"interpolated_per_vertex_draws",
-               visualInterpolatedPerVertexDrawCount},
+               visualStats.InterpolatedPerVertexDrawCount},
               {"matching_seconds",
                visualInterpolationTiming.MatchingNanoseconds * 1.0e-9},
               {"analysis_seconds",
@@ -5605,17 +5522,17 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                    {"topscreen_horse_stamina_visible_primitives",
                     bridge.topscreen_horse_stamina_visible_primitives},
                    {"native_bottom_frontend_presentation_frames",
-                    nativeBottomFrontendPresentationCount},
+                    picaStats.NativeBottomFrontendPresentationCount},
                    {"native_bottom_overlay_frames", 0U},
                    {"native_menu_backdrop_draws_omitted",
-                    nativeMenuBackdropDrawOmissionCount},
+                    picaStats.NativeMenuBackdropDrawOmissionCount},
                    {"native_menu_clear_draws_omitted",
-                    nativeMenuClearDrawOmissionCount},
+                    picaStats.NativeMenuClearDrawOmissionCount},
                    {"native_frontend_composition_draws", 0U},
                    {"native_frontend_presentation_active_frames",
-                    nativeFrontendPresentationActiveCount},
+                    picaStats.NativeFrontendPresentationActiveCount},
                    {"native_frontend_bottom_transfer_hits",
-                    nativeFrontendBottomTransferHitCount},
+                    picaStats.NativeFrontendBottomTransferHitCount},
                    {"native_frontend_composed_output_hits", 0U},
                    {"renderer_frames", renderer.frames},
                    {"renderer_primitives_drawn", renderer.primitives_drawn},
@@ -6703,7 +6620,7 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                    "renderer_frame_start", "dsp_mix", "audio_output", "pica_submit", "pica_plan",
                    "pica_backend", "pica_diagnostics", "visual_presentation", "visual_replay", "present", "pacing_wait"};
                  auto samples = nlohmann::json::array();
-                 for (const auto& sample : slowFrames.Samples()) {
+                 for (const auto& sample : benchmark.SlowFrames.Samples()) {
                    nlohmann::json phases;
                    for (size_t i = 0; i < std::size(names); ++i) phases[names[i]] = sample.PhaseMilliseconds[i];
                    samples.push_back({{"frame", sample.Frame}, {"total_ms", sample.Milliseconds}, {"phases_ms", phases}});
