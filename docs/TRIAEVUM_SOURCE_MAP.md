@@ -38,7 +38,7 @@ entry.
 | `oot3d_native_a32_window_session.h` | The session class, the helpers its files share, the A32 block trace writer. |
 | `oot3d_native_a32_window.cpp` | `Run()`, `Finish()`, the guest-run helpers, `RunOot3dNativeA32Window`. |
 | `oot3d_native_a32_window_setup.cpp` | `Setup()`: process image, host services, renderer, UI, initial state; small setup methods. |
-| `oot3d_native_a32_window_frame.cpp` | `RunFrame()` and the renderer-side methods it schedules. |
+| `oot3d_native_a32_window_frame.cpp` | `RunFrame()`: input, pacing and the guest refreshes, each `SampleGuestRefreshInput`, `UpdateGuestServicesForRefresh` (TopScreen routing, scenario, guest clock, HID, DSP audio), `RunGuestRefresh` (guest run, PICA drain) and, on the last one, `PresentVisualFrame`; then UI and present. Also the renderer-side methods these schedule. |
 | `oot3d_native_a32_window_savestate.cpp` | `SaveState()`, `LoadState()` and the restore steps. |
 | `oot3d_native_a32_window_summary.{h,cpp}` | The `runtime.json` document written at the end of a run. |
 | `oot3d_native_a32_window_shared.h`, `_stats.h` | Title constants, window helper declarations, run statistics. |
@@ -65,6 +65,14 @@ entry.
 `gfx_vulkan_internal.h` and `gfx_vulkan_pica_internal.h` are private to their
 units: the includes and the helpers the files share, in an anonymous namespace
 so each unit keeps its own copy as when they lived in one file.
+
+## Native audio (`tools/oot3d/native_game_runtime/`)
+
+| File | Contents |
+| --- | --- |
+| `oot3d_native_audio.cpp` | BCWAV, BCSTM and BCSAR decoding and sequence resolution (with the Citra/Azahar DSP-ADPCM notice). |
+| `oot3d_native_audio_profiles.cpp` | Envelope, modulation, mix, pan and filter profiles read from code.bin. |
+| `oot3d_native_audio_mixer.cpp` | The sequence mixer (`NativeAudioMixer`). |
 
 ## CTR host services (`tools/oot3d/native_game_runtime/`)
 
@@ -107,6 +115,7 @@ whole and unchanged:
 | `gfx_vulkan.cpp` | `gfx_vulkan*.cpp` (not `_pica`) |
 | `oot3d_native_a32_ctr_host.cpp` | `oot3d_native_a32_ctr_host*.cpp`; the service blocks of `HandleSvc` are `Handle<Service>Request` |
 | `oot3d_top_screen_mod_profile.cpp` | `oot3d_top_screen_mod_profile*.cpp` |
+| `oot3d_native_audio.cpp` | `oot3d_native_audio.cpp`, `_profiles.cpp`, `_mixer.cpp` |
 | root `CMakeLists.txt` target blocks | `CMake/oot3d/*.cmake` |
 
 The source-native study, the legacy sandbox and asset-tool group A were removed
