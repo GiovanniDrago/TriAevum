@@ -24,6 +24,14 @@
 // - Motion: the motion vectors' rg, previous minus current storage UV of the
 //   same target, jitter included; scaled to the work image's UV.
 // - Previous view: P^-1 W_prev W_cur^-1 P from the temporal view state.
+// - Shading normal (M8): the normal guide (RGBA8, view space, 0.5 n + 0.5,
+//   alpha coverage), the normal the per-pixel lighting shades the texel with:
+//   the authored vertex normal interpolated like the native lighting's (or the
+//   material / PBR normal of those lighting paths); the derivative flat normal
+//   only for programs without a normal. When the AO texture relief is active
+//   the guide carries its bend and the GI lobe follows it. Normalized and
+//   turned to the face normal's side; none (zero) without coverage or for a
+//   degenerate (resolve-blended, length below 1/4) vector.
 
 #include "fast/oot3d/pica_surface_coordinates.h"
 #include "fast/oot3d/scene_view_runtime.h"
@@ -58,15 +66,20 @@ struct DiffuseGiAdapterParams {
 };
 static_assert(sizeof(DiffuseGiAdapterParams) == 64);
 
+// `shading`: the pass takes shading normals (M8): the kernel decodes the
+// normal guide into them (and into the output guide's shading codes).
 [[nodiscard]] DiffuseGiAdapterParams MakeDiffuseGiAdapterParams(const Renderer::DiffuseGi::PassExtent& extent,
-                                                                const Renderer::DiffuseGi::DepthCamera& camera) noexcept;
+                                                                const Renderer::DiffuseGi::DepthCamera& camera,
+                                                                bool shading = false) noexcept;
 
 // GLSL of the adapter kernel (precompiled in builtin_pass.spvpack as
 // oot3d_diffuse_gi_inputs.comp). One invocation per guide texel: every texel
 // writes its output-guide entry; the texels of the work grid also write the
 // module's work inputs. Set 0: 0 native depth, 1 geometry guide (uint),
 // 2 surface guide, 3 motion vectors (sampled images, texelFetch); 4-9 the
-// pass buffers depth, class, radiance, normal, motion, output guide.
+// pass buffers depth, class, radiance, normal, motion, output guide; M8: 10
+// the normal guide (sampled), 11 the shading normals (vec4 per work texel),
+// 12 the output guide's shading codes (uint per output texel).
 [[nodiscard]] std::string BuildDiffuseGiAdapterShader();
 
 // FP32 twin of one guide texel (tests): the decoded inputs of the texel.
@@ -77,11 +90,14 @@ struct DiffuseGiAdapterTexel {
     std::array<float, 3> Normal{};
     std::array<float, 2> Motion{};
     std::array<uint32_t, 2> Guide{}; // view depth bits, normal code
+    std::array<float, 3> Shading{};  // M8 shading normal (zero: none)
+    uint32_t ShadingGuide = 0U;      // M8 output-guide shading code
 };
 [[nodiscard]] DiffuseGiAdapterTexel DiffuseGiAdapterTexelF32(const DiffuseGiAdapterParams& params, float depth,
                                                              const std::array<uint32_t, 4>& geometry,
                                                              const std::array<float, 4>& surface,
-                                                             const std::array<float, 2>& motion) noexcept;
+                                                             const std::array<float, 2>& motion,
+                                                             const std::array<float, 4>& normalGuide = {}) noexcept;
 
 } // namespace Fast::Oot3d
 
@@ -122,6 +138,7 @@ struct DiffuseGiGuideViews {
     VkImageView Geometry = VK_NULL_HANDLE; // R32G32B32A32_UINT
     VkImageView Surface = VK_NULL_HANDLE;  // R16G16B16A16_UNORM
     VkImageView Motion = VK_NULL_HANDLE;   // R16G16B16A16_SFLOAT
+    VkImageView Normal = VK_NULL_HANDLE;   // M8: R8G8B8A8_UNORM normal guide (null: no shading normals)
 };
 
 // Records the adapter dispatch of one frame into the pass's input buffers.

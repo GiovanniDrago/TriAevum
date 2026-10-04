@@ -23,8 +23,11 @@
 // block of the output, at a fixed phase), set 0: 0 uniform
 // UpsampleShaderParams; 1 colour[] and 2 geometry[] of the work image; 3 uvec2
 // output guide[] per output texel (view depth as float bits, the module's
-// octahedral normal code; depth 0: no receiver); 4 rgba16f and 5 r32f images
-// at the output extent. Each output receiver takes the bilinear taps of its
+// octahedral normal code; depth 0: no receiver); 4 vec4 shading geometry[] of
+// the work image and 5 uint shading codes[] per output texel (M8: a work
+// sample on the other side of a smooth crease of the same surface is accepted
+// by the temporal module's smooth-crease rule); 6 rgba16f and 7 r32f images at
+// the output extent. Each output receiver takes the bilinear taps of its
 // continuous work position whose surface passes the plane and normal test
 // against its own position and normal (weights renormalized over the accepted
 // taps); with none, the nearest such sample of the surrounding 4 x 4; with
@@ -32,6 +35,8 @@
 // silhouette: a tap on another surface is rejected, not blended.
 //
 // Workgroups 8 x 8; no barriers, so out-of-range invocations return at once.
+
+#include "fast/renderer/diffuse_gi_normal_code.h"
 
 #include <array>
 #include <cstdint>
@@ -78,9 +83,9 @@ static_assert(sizeof(OutputShaderParams) == 48);
 
 // std140 uniform block of the upsample kernel, 112 bytes.
 struct UpsampleShaderParams {
-    std::array<uint32_t, 4> Output{}; // output width, output height, write A (1 / 0), 0
+    std::array<uint32_t, 4> Output{}; // output width, output height, write A (1 / 0), flags (1 shading, M8)
     std::array<uint32_t, 4> Work{};   // work width, work height, factor, phase
-    std::array<float, 4> OutputX{}, OutputY{}; // output UV -> ray map (ax, bx, cx, 0)
+    std::array<float, 4> OutputX{}, OutputY{}; // output UV -> ray map (ax, bx, cx, 0; OutputX.w: hard-edge ratio, M8)
     std::array<float, 4> WorkX{}, WorkY{};     // work UV -> ray map
     std::array<float, 4> Surface{};   // plane sine, plane depth (relative), normal cos, largest stored |J|
 };
@@ -92,12 +97,8 @@ static_assert(sizeof(UpsampleShaderParams) == 112);
 // for the adapters that write the output guide.
 [[nodiscard]] std::string DiffuseGiNormalCodecGlsl();
 
-// The module's normal code: the octahedral map of a unit vector
-// (n / (|x| + |y| + |z|), the lower hemisphere folded over the diagonals),
-// each axis in unorm16 offset by one so that 0 means "no normal". FP32 twins
-// of the GLSL, same operation order.
-[[nodiscard]] uint32_t EncodeDiffuseGiNormal(const std::array<float, 3>& normal) noexcept;
-[[nodiscard]] std::array<float, 3> DecodeDiffuseGiNormal(uint32_t code) noexcept;
+// The module's normal code (EncodeDiffuseGiNormal, DecodeDiffuseGiNormal):
+// diffuse_gi_normal_code.h.
 
 // FP32 twins of one output texel (output coordinates), in the operation order
 // of the kernels. `colour` and `geometry` are viewport- (work-) sized vec4
@@ -108,8 +109,11 @@ struct OutputTexel {
 };
 [[nodiscard]] OutputTexel OutputTexelF32(const OutputShaderParams& params, uint32_t x, uint32_t y,
                                          const float* colour, const float* geometry) noexcept;
+// M8 (Output[3] & 1): `shading` holds the work pixels' vec4 shading normals,
+// `shadingGuide` the output texels' shading codes.
 [[nodiscard]] OutputTexel UpsampleTexelF32(const UpsampleShaderParams& params, uint32_t x, uint32_t y,
-                                           const float* colour, const float* geometry,
-                                           const uint32_t* guide) noexcept;
+                                           const float* colour, const float* geometry, const uint32_t* guide,
+                                           const float* shading = nullptr,
+                                           const uint32_t* shadingGuide = nullptr) noexcept;
 
 } // namespace Fast::Renderer::DiffuseGi

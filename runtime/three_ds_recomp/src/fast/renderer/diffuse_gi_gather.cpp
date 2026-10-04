@@ -96,6 +96,7 @@ struct View {
     const T* Z = nullptr;
     const uint8_t* Cls = nullptr;
     const VecT<T>* N = nullptr;
+    const VecT<T>* S = nullptr;              // M8 oriented shading normals (null: none)
     const GatherAcceleration* Acc = nullptr; // M4 inputs (null: M1-M3)
 
     [[nodiscard]] VecT<T> Ray(T px, T py) const {
@@ -135,6 +136,7 @@ struct GeometryData {
     std::vector<T> Z;
     std::vector<uint8_t> Cls;
     std::vector<VecT<T>> N;
+    std::vector<VecT<T>> S; // M8: empty without shading normals
 };
 
 // Geometric normal from depth (own derivation, see the document). On a plane
@@ -252,6 +254,26 @@ GeometryData<T> PrepareT(const GatherInput& in, View<T>& view) {
             }
         }
     view.N = data.N.data();
+    // M8: the shading normal of every geometry texel with a geometric normal,
+    // unit and on the geometric normal's side (the twin of the normal kernel).
+    if (in.ShadingNormals.size() == 3U * static_cast<size_t>(in.BufferWidth) * in.BufferHeight) {
+        data.S.assign(count, VecT<T>{});
+        for (uint32_t y = 0; y < view.H; ++y)
+            for (uint32_t x = 0; x < view.W; ++x) {
+                const auto xi = static_cast<int32_t>(x), yi = static_cast<int32_t>(y);
+                const size_t i = view.Index(xi, yi);
+                const VecT<T>& n = data.N[i];
+                if (!IsGeometry(data.Cls[i]) || !(VDot(n, n) > T(0))) continue;
+                const size_t bi = view.BufferIndex(xi, yi);
+                VecT<T> s = VNormalize(VecT<T>{static_cast<T>(in.ShadingNormals[3 * bi]),
+                                               static_cast<T>(in.ShadingNormals[3 * bi + 1]),
+                                               static_cast<T>(in.ShadingNormals[3 * bi + 2])});
+                if (!std::isfinite(s.X) || !std::isfinite(s.Y) || !std::isfinite(s.Z)) s = VecT<T>{};
+                if (VDot(s, n) < T(0)) s = VScale(s, T(-1));
+                data.S[i] = s;
+            }
+        view.S = data.S.data();
+    }
     return data;
 }
 
@@ -262,13 +284,14 @@ template <typename T>
 struct SectionT {
     bool Valid = false;
     VecT<T> P, V, Tn, N;
+    VecT<T> NS; // lobe normal: the shading normal (M8) or N
     T A{}, B{}, ZP{}, DirX{}, DirY{};
     T Extent[2]{};
     T Distance{}; // |P| (M4 metric radial distribution)
 };
 
 template <typename T>
-SectionT<T> SetupT(const View<T>& g, uint32_t x, uint32_t y, T phi, T radius) {
+SectionT<T> SetupT(const View<T>& g, uint32_t x, uint32_t y, T phi, T radius, bool shading = false) {
     SectionT<T> s;
     const size_t index = g.Index(static_cast<int32_t>(x), static_cast<int32_t>(y));
     if (!IsGeometry(g.Cls[index])) return s;
@@ -283,8 +306,11 @@ SectionT<T> SetupT(const View<T>& g, uint32_t x, uint32_t y, T phi, T radius) {
     const VecT<T> e2 = VCross(s.V, e1);
     s.Tn = VAdd(VScale(e1, std::cos(phi)), VScale(e2, std::sin(phi)));
     s.N = n;
-    s.A = VDot(n, s.V);
-    s.B = VDot(n, s.Tn);
+    // M8: the lobe of the shading normal (the geometric normal without one).
+    s.NS = n;
+    if (shading && g.S != nullptr && VDot(g.S[index], g.S[index]) > T(0)) s.NS = g.S[index];
+    s.A = VDot(s.NS, s.V);
+    s.B = VDot(s.NS, s.Tn);
     // Screen direction of +t: derivative of (X/z, Y/z) along P + mu t, mapped
     // through the inverse of the declared UV -> ray map.
     const T zp = -s.P.Z;
@@ -581,6 +607,40 @@ struct CandidateT {
     int32_t HX = 0, HY = 0;
 };
 
+// M8: a candidate on the receiver's own smooth surface (GatherSettings): the
+// shading normals agree, the shading turns less than the faces (no hard edge)
+// and the two face planes meet between the points.
+template <typename T>
+bool OwnSmoothSurfaceT(const SectionT<T>& s, const VecT<T>& d, T length, const VecT<T>& nq, const VecT<T>& sq,
+                       const GatherSettings& settings) {
+    if (!(VDot(sq, sq) > T(0)) || !(VDot(nq, nq) > T(0))) return false;
+    const T cf = VDot(s.N, nq);
+    const T cs = VDot(s.NS, sq);
+    if (!(cs >= static_cast<T>(settings.OwnSurfaceCos))) return false;
+    if (!(T(1) - cs < static_cast<T>(settings.HardEdgeRatio) * (T(1) - cf))) return false;
+    const T sf = std::sqrt(std::max(T(1) - cf * cf, T(0)));
+    const T tolerance = (static_cast<T>(settings.SelfIntersectionSine) + sf) * length +
+                        static_cast<T>(settings.SelfIntersectionDepth) * s.ZP;
+    return std::abs(VDot(s.N, d)) <= tolerance && std::abs(VDot(nq, d)) <= tolerance;
+}
+
+// M8 visibility of a point e of a candidate (face normal nq, shading normal sq
+// of its texel): hidden on the receiver's facet (face plane), below its
+// shading tangent plane, or on its own smooth surface. With the lobe normal
+// equal to the geometric normal and flat-shaded candidates (sq = nq) this is
+// the M2 elevation test.
+template <typename T>
+bool HiddenM8T(const SectionT<T>& s, const VecT<T>& e, const VecT<T>& nq, const VecT<T>& sq,
+               const GatherSettings& settings) {
+    const VecT<T> d = VSub(e, s.P);
+    const T length = VLength(d);
+    const T tolerance = static_cast<T>(settings.SelfIntersectionSine) * length +
+                        static_cast<T>(settings.SelfIntersectionDepth) * s.ZP;
+    if (std::abs(VDot(d, s.N)) <= tolerance) return true;
+    if (VDot(d, s.NS) <= tolerance) return true;
+    return OwnSmoothSurfaceT(s, d, length, nq, sq, settings);
+}
+
 template <typename T>
 bool EvaluateCandidate(const View<T>& g, const SectionT<T>& s, uint32_t x, uint32_t y, const Position<T>& p,
                        const GatherSettings& settings, GatherCounters& counters, CandidateT<T>& out) {
@@ -602,12 +662,19 @@ bool EvaluateCandidate(const View<T>& g, const SectionT<T>& s, uint32_t x, uint3
         // Coplanarity of the exactly reconstructed texel-centre point with the
         // receiver's tangent plane (the line point carries the footprint error).
         const VecT<T> centre = VScale(g.Ray(T(xx) + T(0.5), T(yy) + T(0.5)), zq);
-        const VecT<T> d = VSub(centre, s.P);
-        const T elevation = VDot(d, s.N);
-        if (elevation <= static_cast<T>(settings.SelfIntersectionSine) * VLength(d) +
-                             static_cast<T>(settings.SelfIntersectionDepth) * s.ZP) {
-            ++counters.SelfRejected;
-            return false;
+        if (settings.ShadingNormals && g.S != nullptr) {
+            if (HiddenM8T(s, centre, g.N[index], g.S[index], settings)) {
+                ++counters.SelfRejected;
+                return false;
+            }
+        } else {
+            const VecT<T> d = VSub(centre, s.P);
+            const T elevation = VDot(d, s.N);
+            if (elevation <= static_cast<T>(settings.SelfIntersectionSine) * VLength(d) +
+                                 static_cast<T>(settings.SelfIntersectionDepth) * s.ZP) {
+                ++counters.SelfRejected;
+                return false;
+            }
         }
     }
     const T sign = T(p.Side);
@@ -791,7 +858,13 @@ bool EvaluateCoarseCandidate(const View<T>& g, const SectionT<T>& s, uint32_t x,
                 return VDot(rel, s.N) <= static_cast<T>(settings.SelfIntersectionSine) * VLength(rel) +
                                              static_cast<T>(settings.SelfIntersectionDepth) * s.ZP;
             };
-            if (below(fa) && below(fb)) {
+            // M8: the cell's plane normal with the shading normal of the
+            // sample's texel (the cell is one plane of one surface).
+            const bool m8 = settings.ShadingNormals && g.S != nullptr;
+            const bool hidden = m8 ? HiddenM8T(s, fa, nq, g.S[index], settings) &&
+                                         HiddenM8T(s, fb, nq, g.S[index], settings)
+                                   : below(fa) && below(fb);
+            if (hidden) {
                 ++counters.SelfRejected;
                 return false;
             }
@@ -827,12 +900,19 @@ bool EvaluateCoarseCandidate(const View<T>& g, const SectionT<T>& s, uint32_t x,
         nq = g.N[index];
         if (settings.RejectSelfIntersection) {
             const VecT<T> centre = VScale(g.Ray(T(xx) + T(0.5), T(yy) + T(0.5)), zq);
-            const VecT<T> dd = VSub(centre, s.P);
-            const T elevation = VDot(dd, s.N);
-            if (elevation <= static_cast<T>(settings.SelfIntersectionSine) * VLength(dd) +
-                                 static_cast<T>(settings.SelfIntersectionDepth) * s.ZP) {
-                ++counters.SelfRejected;
-                return false;
+            if (settings.ShadingNormals && g.S != nullptr) {
+                if (HiddenM8T(s, centre, nq, g.S[index], settings)) {
+                    ++counters.SelfRejected;
+                    return false;
+                }
+            } else {
+                const VecT<T> dd = VSub(centre, s.P);
+                const T elevation = VDot(dd, s.N);
+                if (elevation <= static_cast<T>(settings.SelfIntersectionSine) * VLength(dd) +
+                                     static_cast<T>(settings.SelfIntersectionDepth) * s.ZP) {
+                    ++counters.SelfRejected;
+                    return false;
+                }
             }
         }
         const T px = T(x) + T(0.5) + p.Lambda * s.DirX * sign;
@@ -1190,7 +1270,7 @@ PixelGather GatherPixelT(const View<T>& g, uint32_t x, uint32_t y, const GatherS
             if (table != nullptr)
                 bin = std::min(static_cast<uint32_t>(phi * static_cast<T>(table->Bins) / Pi<T>()), table->Bins - 1U);
         }
-        const SectionT<T> s = SetupT(g, x, y, phi, static_cast<T>(settings.Radius));
+        const SectionT<T> s = SetupT(g, x, y, phi, static_cast<T>(settings.Radius), settings.ShadingNormals);
         if (!s.Valid) {
             if (records != nullptr)
                 for (uint32_t k = 0; k < settings.Sections; ++k) records[k] = GuideSample{};
@@ -1215,7 +1295,7 @@ PixelGather GatherPixelT(const View<T>& g, uint32_t x, uint32_t y, const GatherS
         if (guided && settings.GuidingAccessibility == GuidedAccessibility::IndependentUniform) {
             // A: the unguided section of the same stratum (uniform density).
             const T phiA = Pi<T>() * (T(section) + rotation) / static_cast<T>(settings.Sections);
-            const SectionT<T> sa = SetupT(g, x, y, phiA, static_cast<T>(settings.Radius));
+            const SectionT<T> sa = SetupT(g, x, y, phiA, static_cast<T>(settings.Radius), settings.ShadingNormals);
             if (!sa.Valid) {
                 if (records != nullptr)
                     for (uint32_t k = 0; k < settings.Sections; ++k) records[k] = GuideSample{};
@@ -1289,6 +1369,7 @@ View<double> ViewOf(const GatherInput& input, const PreparedGeometry& geometry) 
     view.Z = geometry.ViewDepth.data();
     view.Cls = geometry.Class.data();
     view.N = geometry.Normal.data();
+    if (!geometry.Shading.empty()) view.S = geometry.Shading.data();
     return view;
 }
 
@@ -1304,7 +1385,8 @@ SectionSetup ToPublic(const SectionT<T>& s) {
     out.P = Widen(s.P);
     out.V = Widen(s.V);
     out.T = Widen(s.Tn);
-    out.Normal = Widen(s.N);
+    out.Normal = Widen(s.NS);
+    out.Face = Widen(s.N);
     out.NV = s.A;
     out.NT = s.B;
     out.DirX = s.DirX;
@@ -1320,7 +1402,8 @@ SectionT<double> FromPublic(const SectionSetup& s) {
     out.P = s.P;
     out.V = s.V;
     out.Tn = s.T;
-    out.N = s.Normal;
+    out.N = s.Face.X != 0.0 || s.Face.Y != 0.0 || s.Face.Z != 0.0 ? s.Face : s.Normal;
+    out.NS = s.Normal;
     out.A = s.NV;
     out.B = s.NT;
     out.ZP = -s.P.Z;
@@ -1393,6 +1476,8 @@ const char* ValidateGatherInput(const GatherInput& in) noexcept {
         return "buffer sizes do not match the declared extent";
     if (in.NormalSource == GeometricNormalSource::RendererFaceNormal && in.FaceNormals.size() != 3U * texels)
         return "renderer face normals declared but not provided";
+    if (!in.ShadingNormals.empty() && in.ShadingNormals.size() != 3U * texels)
+        return "shading normals do not match the declared extent";
     return ValidateDepthCamera(in.Camera);
 }
 
@@ -1433,6 +1518,8 @@ const char* ValidateGatherSettings(const GatherSettings& s) noexcept {
         return "hierarchy spacing scale outside [0.5, 4]";
     if (!(s.SelfIntersectionSine >= 0.0) || !(s.SelfIntersectionDepth >= 0.0)) return "negative self tolerance";
     if (!(s.ChordEpsilon >= 0.0 && s.ChordEpsilon < 0.5)) return "chord epsilon outside [0, 0.5)";
+    if (!(s.OwnSurfaceCos >= -1.0 && s.OwnSurfaceCos <= 1.0)) return "own-surface cosine outside [-1, 1]";
+    if (!(s.HardEdgeRatio >= 0.0 && s.HardEdgeRatio <= 1.0)) return "hard-edge ratio outside [0, 1]";
     if (s.Rotations.Mode == RotationMode::Stratified) {
         if (s.Rotations.TileLog2 > kMaxRotationTileLog2) return "rotation tile larger than 8 x 8";
         if (s.Rotations.Cycle == 0U || s.Rotations.Cycle > kMaxRotationCycle) return "rotation cycle outside [1, 64]";
@@ -1551,6 +1638,7 @@ PreparedGeometry PrepareGeometry(const GatherInput& input) {
     out.ViewDepth = std::move(data.Z);
     out.Class = std::move(data.Cls);
     out.Normal = std::move(data.N);
+    out.Shading = std::move(data.S);
     return out;
 }
 
@@ -1564,6 +1652,8 @@ PreparedGeometry PrepareGeometryF32(const GatherInput& input) {
     out.Class = data.Cls;
     out.Normal.reserve(data.N.size());
     for (const auto& n : data.N) out.Normal.push_back(Widen(n));
+    out.Shading.reserve(data.S.size());
+    for (const auto& n : data.S) out.Shading.push_back(Widen(n));
     return out;
 }
 
@@ -1572,7 +1662,7 @@ SectionCandidates BuildSectionF32(const GatherInput& input, uint32_t x, uint32_t
     SectionCandidates out;
     View<float> view;
     const auto data = PrepareT<float>(input, view);
-    const SectionT<float> s = SetupT(view, x, y, phi, static_cast<float>(settings.Radius));
+    const SectionT<float> s = SetupT(view, x, y, phi, static_cast<float>(settings.Radius), settings.ShadingNormals);
     out.Setup = ToPublic(s);
     if (!s.Valid) return out;
     Scratch<float> scratch;
@@ -1583,14 +1673,14 @@ SectionCandidates BuildSectionF32(const GatherInput& input, uint32_t x, uint32_t
 
 SectionSetup SetupSection(const GatherInput& input, const PreparedGeometry& geometry, uint32_t x, uint32_t y,
                           double phi, const GatherSettings& settings) {
-    return ToPublic(SetupT(ViewOf(input, geometry), x, y, phi, settings.Radius));
+    return ToPublic(SetupT(ViewOf(input, geometry), x, y, phi, settings.Radius, settings.ShadingNormals));
 }
 
 SectionCandidates BuildSection(const GatherInput& input, const PreparedGeometry& geometry, uint32_t x, uint32_t y,
                                double phi, const GatherSettings& settings) {
     SectionCandidates out;
     const View<double> view = ViewOf(input, geometry);
-    const SectionT<double> s = SetupT(view, x, y, phi, settings.Radius);
+    const SectionT<double> s = SetupT(view, x, y, phi, settings.Radius, settings.ShadingNormals);
     out.Setup = ToPublic(s);
     if (!s.Valid) return out;
     Scratch<double> scratch;
@@ -1748,7 +1838,7 @@ SectionCandidates BuildSection(const GatherInput& input, const PreparedGeometry&
     SectionCandidates out;
     View<double> view = ViewOf(input, geometry);
     view.Acc = &acceleration;
-    const SectionT<double> s = SetupT(view, x, y, phi, settings.Radius);
+    const SectionT<double> s = SetupT(view, x, y, phi, settings.Radius, settings.ShadingNormals);
     out.Setup = ToPublic(s);
     if (!s.Valid) return out;
     Scratch<double> scratch;
@@ -1764,7 +1854,7 @@ std::vector<ScheduledPosition> ScheduleSection(const GatherInput& input, const P
     std::vector<ScheduledPosition> out;
     View<double> view = ViewOf(input, geometry);
     view.Acc = &acceleration;
-    const SectionT<double> s = SetupT(view, x, y, phi, settings.Radius);
+    const SectionT<double> s = SetupT(view, x, y, phi, settings.Radius, settings.ShadingNormals);
     if (!s.Valid) return out;
     Scratch<double> scratch;
     GatherCounters counters;

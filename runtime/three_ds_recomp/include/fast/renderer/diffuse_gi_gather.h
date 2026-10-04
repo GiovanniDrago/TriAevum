@@ -67,6 +67,12 @@ struct GatherInput {
     // RendererFaceNormal only: 3 floats per texel, view space. Oriented toward
     // the camera by the module (the visible side is the front side).
     std::vector<float> FaceNormals;
+    // M8 (optional): the renderer's shading normal, 3 floats per texel, view
+    // space (the normal the title's own lighting shades the texel with, e.g.
+    // interpolated vertex normals). Oriented to the side of the geometric
+    // normal by the module; a zero vector means none (the geometric normal
+    // stands in). Read only by GatherSettings::ShadingNormals.
+    std::vector<float> ShadingNormals;
 };
 
 // Empty when the input is consistent, otherwise the first violated rule.
@@ -216,6 +222,25 @@ struct GatherSettings {
     // p = (1 - eta) / pi + eta g, J weighted by 1 / p(phi_s); A as declared.
     bool Guiding = false;
     GuidedAccessibility GuidingAccessibility = GuidedAccessibility::IndependentUniform; // GuidingParameterStudy
+    // M8 smooth-shaded receivers (document "M8"; off: the M2-M7 receiver
+    // exactly). The receiver's hemisphere is the one of its shading normal
+    // (GatherInput::ShadingNormals): the cosine lobe (a = n.v, b = n.t of the
+    // M1 weights) uses it, and a candidate is visible when its texel-centre
+    // point lies above the shading tangent plane (the M2 tolerance), off the
+    // receiver's own facet (the face plane, M2 tolerance) and off the
+    // receiver's own smooth surface. Own smooth surface: an adjacent facet,
+    // i.e. a candidate whose shading normal agrees with the receiver's within
+    // OwnSurfaceCos, whose shading turns less than its face (1 - cos of the
+    // shading normals below HardEdgeRatio times 1 - cos of the face normals:
+    // HardEdgeRatio 1/2 is about 0.71 of the angle), and whose face plane meets the
+    // receiver's between them (each point within (sine + sine of the face
+    // angle) |d| + depth z of the other's face plane). Directions between the
+    // face plane and the shading tangent plane are therefore open to every
+    // other surface (no shading-normal terminator); hard edges (the shading
+    // turns with the face) and distinct surfaces keep their contact.
+    bool ShadingNormals = false;
+    double OwnSurfaceCos = 0.9;
+    double HardEdgeRatio = 0.5; // in angle about 0.71 (document "M8")
 };
 
 [[nodiscard]] const char* ValidateGatherSettings(const GatherSettings& settings) noexcept;
@@ -269,6 +294,7 @@ struct PreparedGeometry {
     std::vector<double> ViewDepth;        // 0 when not geometry
     std::vector<uint8_t> Class;           // effective TexelClass
     std::vector<Vec3> Normal;             // zero vector when unavailable
+    std::vector<Vec3> Shading;            // M8: oriented shading normal (zero: none); empty without input
     [[nodiscard]] Vec3 Ray(const DepthCamera& camera, double px, double py) const noexcept;
     [[nodiscard]] Vec3 Position(const DepthCamera& camera, uint32_t x, uint32_t y) const noexcept;
 };
@@ -285,6 +311,7 @@ struct PreparedGeometry {
 struct SectionSetup {
     bool Valid = false;
     Vec3 P, V, T, Normal; // receiver, unit view vector, unit section tangent, integration normal
+    Vec3 Face;            // M8: the geometric (visibility) normal; equals Normal without shading normals
     double NV = 0.0, NT = 0.0; // a = n.v and b = n.t(phi) of the M1 weights
     double DirX = 0.0, DirY = 0.0; // unit pixel direction of +t on screen
     double Extent[2] = {0.0, 0.0}; // projected radius in pixels: [0] + side, [1] - side

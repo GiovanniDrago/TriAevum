@@ -499,6 +499,12 @@ void process_coarse(float lambda, int side, int cell_x, int cell_y, uint level, 
         if (!(t1 >= t0)) return;
         vec3 fa = qa + d * t0;
         vec3 fb = qa + d * t1;
+#ifdef DGI_SHADING
+        if ((p.modes.w & 2u) != 0u && (p.modes.w & 8u) != 0u) {
+            uint qi = buffer_index(xx, yy);
+            if (hidden_m8(fa, nq, qi) && hidden_m8(fb, nq, qi)) return;
+        } else
+#endif
         if ((p.modes.w & 2u) != 0u && below_plane(fa) && below_plane(fb)) return;
         vec3 ba = back_of(fa, radius);
         vec3 bb = back_of(fb, radius);
@@ -514,9 +520,16 @@ void process_coarse(float lambda, int side, int cell_x, int cell_y, uint level, 
         nq = normal_values[buffer_index(xx, yy)].xyz;
         if ((p.modes.w & 2u) != 0u) {
             vec3 centre = ray(float(xx) + 0.5, float(yy) + 0.5) * zq;
-            vec3 dd = centre - g_p;
-            float elevation = vdot(dd, g_n);
-            if (elevation <= p.radial.z * vlength(dd) + p.radial.w * g_zp) return;
+#ifdef DGI_SHADING
+            if ((p.modes.w & 8u) != 0u) {
+                if (hidden_m8(centre, nq, buffer_index(xx, yy))) return;
+            } else
+#endif
+            {
+                vec3 dd = centre - g_p;
+                float elevation = vdot(dd, g_n);
+                if (elevation <= p.radial.z * vlength(dd) + p.radial.w * g_zp) return;
+            }
         }
         float px = float(g_x) + 0.5 + lambda * g_dir_x * sign_side;
         float py = float(g_y) + 0.5 + lambda * g_dir_y * sign_side;
@@ -636,8 +649,13 @@ bool run_section(float phi, out vec3 f_sum, out float fa, out float occupied_sec
     vec3 e1 = vnormalize(vcross(helper, g_v));
     vec3 e2 = vcross(g_v, e1);
     g_t = e1 * cos(phi) + e2 * sin(phi);
+#ifdef DGI_SHADING
+    g_a = vdot(g_ns, g_v);
+    g_b = vdot(g_ns, g_t);
+#else
     g_a = vdot(g_n, g_v);
     g_b = vdot(g_n, g_t);
+#endif
     float zp = -g_p.z;
     float gx = g_t.x * zp + g_p.x * g_t.z;
     float gy = g_t.y * zp + g_p.y * g_t.z;
@@ -747,6 +765,14 @@ void main() {
     vec3 n = normal_values[receiver].xyz;
     if (!(c == 1u || c == 2u) || !(vdot(n, n) > 0.0)) return;
     g_n = n;
+#ifdef DGI_SHADING
+    // M8: the lobe of the shading normal (the geometric normal without one).
+    g_ns = n;
+    if ((p.modes.w & 8u) != 0u) {
+        vec3 sn = shading_values[receiver].xyz;
+        if (vdot(sn, sn) > 0.0) g_ns = sn;
+    }
+#endif
     vec3 total = vec3(0.0);
     float total_a = 0.0;
     float occupied = 0.0;
@@ -962,9 +988,15 @@ std::vector<float> PackGuideState(const GuideField& field) {
     return out;
 }
 
-std::string BuildDiffuseGiHierarchyLevel0Shader() { return DiffuseGiGatherFunctionsGlsl() + kM4Common + kLevel0Main; }
-std::string BuildDiffuseGiHierarchyReduceShader() { return DiffuseGiGatherFunctionsGlsl() + kM4Common + kReduceMain; }
-std::string BuildDiffuseGiGatherM4Shader() { return DiffuseGiGatherFunctionsGlsl() + kM4Common + kGatherM4Main; }
+std::string BuildDiffuseGiHierarchyLevel0Shader(bool shading) {
+    return DiffuseGiGatherFunctionsGlsl(shading) + kM4Common + kLevel0Main;
+}
+std::string BuildDiffuseGiHierarchyReduceShader(bool shading) {
+    return DiffuseGiGatherFunctionsGlsl(shading) + kM4Common + kReduceMain;
+}
+std::string BuildDiffuseGiGatherM4Shader(bool shading) {
+    return DiffuseGiGatherFunctionsGlsl(shading) + kM4Common + kGatherM4Main;
+}
 std::string BuildDiffuseGiGuideUpdateShader() { return DiffuseGiGatherFunctionsGlsl() + kM4Common + kGuideUpdateMain; }
 
 } // namespace Fast::Renderer::DiffuseGi

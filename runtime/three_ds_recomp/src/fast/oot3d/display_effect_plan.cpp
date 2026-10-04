@@ -323,8 +323,8 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     // GI keeps a temporal history (motion vectors) and adds light in the
     // linear domain through the composite.
     const bool globalIllumination = temporalMetadata && input.GlobalIllumination;
-    // The screen-space gather reads the geometry guide's face normal and has
-    // no specular term.
+    // The screen-space gather reads the geometry guide's face normal and the
+    // normal guide's shading normal (M8), and has no specular term.
     const bool screenSpaceGi = globalIllumination && input.GlobalIlluminationScreenSpace;
     // GI specular is a reflection source: the Reflections pass resolves it
     // through the material guide and the composite mixes it like any
@@ -486,7 +486,8 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
         ? std::vector<EffectResourceUse>{
               Read(EffectResource::NativeSceneView), Read(EffectResource::DiffuseAlbedoGuide),
               Read(EffectResource::NativeDepth), Read(EffectResource::OutlineGeometryGuide),
-              Read(EffectResource::MotionVectors), Write(EffectResource::DiffuseIllumination) }
+              Read(EffectResource::NormalGuide), Read(EffectResource::MotionVectors),
+              Write(EffectResource::DiffuseIllumination) }
         : std::vector<EffectResourceUse>{
               Read(EffectResource::NativeSceneView), Read(EffectResource::DiffuseAlbedoGuide),
               Read(EffectResource::NativeDepth), Read(EffectResource::NormalGuide),

@@ -26,16 +26,23 @@ constexpr VkDescriptorType kSsbo = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 constexpr VkDescriptorType kImg = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 // Gather family (normal, hierarchy, M4 gather): 0 gather block, 1-6 M2
 // buffers, 7 M4 block (dynamic: the level), 8 cells, 9 SH, 10 guide table,
-// 11 guide records, 12 noise (9-12 unused by the pass: placeholder).
-constexpr std::array<VkDescriptorType, 13> kGatherTypes{kUbo,  kSsbo, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo,
-                                                        kDyn,  kSsbo, kSsbo, kSsbo, kSsbo, kSsbo};
-constexpr std::array<VkDescriptorType, 8> kPackTypes{kUbo, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo};
-constexpr std::array<VkDescriptorType, 12> kTemporalTypes{kUbo,  kSsbo, kSsbo, kSsbo, kSsbo, kSsbo,
+// 11 guide records, 12 noise (9-12 unused by the pass: placeholder), 13 M8
+// shading normals (placeholder without them).
+constexpr std::array<VkDescriptorType, 14> kGatherTypes{kUbo,  kSsbo, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo,
+                                                        kDyn,  kSsbo, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo};
+// Pack: 0-7 as the gather family's first eight, 8-12 placeholders, 13 M8
+// shading normals in, 14 M8 receiver shading normals out.
+constexpr std::array<VkDescriptorType, 15> kPackTypes{kUbo,  kSsbo, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo,
+                                                      kSsbo, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo};
+// Temporal 0-11 (M3) and 12 the M8 receiver shading normals; filter 0-5 and 6.
+constexpr std::array<VkDescriptorType, 13> kTemporalTypes{kUbo,  kSsbo, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo,
                                                           kSsbo, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo};
-constexpr std::array<VkDescriptorType, 6> kFilterTypes{kDyn, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo};
+constexpr std::array<VkDescriptorType, 7> kFilterTypes{kDyn, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo};
 constexpr std::array<VkDescriptorType, 5> kOutputTypes{kDyn, kSsbo, kSsbo, kImg, kImg};
-constexpr std::array<VkDescriptorType, 6> kUpsampleTypes{kDyn, kSsbo, kSsbo, kSsbo, kImg, kImg};
-constexpr uint32_t kMinStorageBuffersPerStage = 11; // gather and temporal sets
+// Upsample: 0 block, 1 colour, 2 geometry, 3 output guide, 4 M8 receiver
+// shading normals, 5 M8 output shading codes, 6-7 images.
+constexpr std::array<VkDescriptorType, 8> kUpsampleTypes{kDyn, kSsbo, kSsbo, kSsbo, kSsbo, kSsbo, kImg, kImg};
+constexpr uint32_t kMinStorageBuffersPerStage = 14; // the pack set
 
 uint32_t Groups(uint32_t n) noexcept { return (n + kGroup - 1U) / kGroup; }
 
@@ -84,7 +91,7 @@ bool DiffuseGiPassSupported(VkPhysicalDevice physical, std::string& reason) {
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical, &properties);
     if (properties.limits.maxPerStageDescriptorStorageBuffers < kMinStorageBuffersPerStage) {
-        reason = "the device binds fewer than 11 storage buffers per stage";
+        reason = "the device binds fewer than 14 storage buffers per stage";
         return false;
     }
     for (const VkFormat format : {VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R32_SFLOAT}) {
@@ -472,7 +479,7 @@ struct DiffuseGiPass::Impl {
         const std::array<VkDescriptorPoolSize, 4> sizes{{
             {kUbo, 4},
             {kDyn, 1U + 3U + variantSets},
-            {kSsbo, 11U + 7U + 2U * 11U + 5U * 3U + kOutputVariants * kColourSources * (2U + 3U)},
+            {kSsbo, 12U + 14U + 2U * 12U + 6U * 3U + kOutputVariants * kColourSources * (2U + 5U)},
             {kImg, variantSets * 2U},
         }};
         VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -485,12 +492,13 @@ struct DiffuseGiPass::Impl {
         WriteSet(SetGather, kGatherTypes.data(),
                  {gatherBlock, Storage(Depth), Storage(Class), Storage(Radiance), Storage(Normal), Storage(Results),
                   Storage(Aux), Block(0, sizeof(M4ShaderParams)), Storage(Cells), Storage(Placeholder),
-                  Storage(Placeholder), Storage(Placeholder), Storage(Placeholder)},
+                  Storage(Placeholder), Storage(Placeholder), Storage(Placeholder), Storage(ShadingNormal)},
                  {});
         SetPack = AllocateSet(DiffuseGiKernels::Pack);
         WriteSet(SetPack, kPackTypes.data(),
                  {gatherBlock, Storage(Depth), Storage(Class), Storage(Radiance), Storage(Normal), Storage(Results),
-                  Storage(Aux), Storage(Geometry)},
+                  Storage(Aux), Storage(Geometry), Storage(Placeholder), Storage(Placeholder), Storage(Placeholder),
+                  Storage(Placeholder), Storage(Placeholder), Storage(ShadingNormal), Storage(Shading)},
                  {});
         for (uint32_t k = 0; k < 2; ++k) {
             SetTemporal[k] = AllocateSet(DiffuseGiKernels::Temporal);
@@ -498,7 +506,7 @@ struct DiffuseGiPass::Impl {
                      {Block(Params.Temporal, sizeof(TemporalShaderParams)), Storage(Results), Storage(Geometry),
                       Storage(Motion), Storage(PreviousPosition), Storage(SurfaceId),
                       Storage(k == 0 ? History0 : History1), Storage(k == 0 ? History1 : History0), Storage(Colour),
-                      Storage(Variance), Storage(Diag), Storage(Diag2)},
+                      Storage(Variance), Storage(Diag), Storage(Diag2), Storage(Shading)},
                      {});
         }
         if (Allocated(Filter0)) {
@@ -511,7 +519,7 @@ struct DiffuseGiPass::Impl {
                 SetFilter[k] = AllocateSet(DiffuseGiKernels::Filter);
                 WriteSet(SetFilter[k], kFilterTypes.data(),
                          {Block(0, sizeof(FilterShaderParams)), Storage(Geometry), Storage(wiring[k][0]),
-                          Storage(wiring[k][1]), Storage(wiring[k][2]), Storage(wiring[k][3])},
+                          Storage(wiring[k][1]), Storage(wiring[k][2]), Storage(wiring[k][3]), Storage(Shading)},
                          {});
             }
         }
@@ -546,7 +554,7 @@ struct DiffuseGiPass::Impl {
                 variant.Upsample[k] = AllocateSet(DiffuseGiKernels::Upsample);
                 WriteSet(variant.Upsample[k], kUpsampleTypes.data(),
                          {Block(0, sizeof(UpsampleShaderParams)), Storage(sources[k]), Storage(Geometry),
-                          Storage(OutputGuide)},
+                          Storage(OutputGuide), Storage(Shading), Storage(OutputShading)},
                          {j, a});
             }
         }

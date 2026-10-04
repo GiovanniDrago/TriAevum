@@ -18,7 +18,7 @@ constexpr const char* kAdapterHead = R"glsl(#version 450
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(push_constant) uniform AdapterParams {
     uvec4 extent; // guide width, guide height, work width, work height
-    uvec4 scale;  // work factor, phase, depth encoding (1 perspective, 3 W-buffer), write guide
+    uvec4 scale;  // work factor, phase, depth encoding (1 perspective, 3 W-buffer), flags (1 guide, 2 shading)
     vec4 depth;   // near, far
     vec4 motion;  // guide UV -> work UV scale
 } p;
@@ -32,6 +32,11 @@ layout(std430, set = 0, binding = 6) writeonly buffer RadianceOut { vec4 radianc
 layout(std430, set = 0, binding = 7) writeonly buffer NormalOut { vec4 normal_out[]; };
 layout(std430, set = 0, binding = 8) writeonly buffer MotionOut { vec2 motion_out[]; };
 layout(std430, set = 0, binding = 9) writeonly buffer GuideOut { uvec2 guide_out[]; };
+// M8: the renderer's normal guide (RGBA8, view space, 0.5 n + 0.5, alpha
+// coverage) -> the shading normals of the work texels and of the output texels.
+layout(set = 0, binding = 10) uniform texture2D normal_guide;
+layout(std430, set = 0, binding = 11) writeonly buffer ShadingOut { vec4 shading_out[]; };
+layout(std430, set = 0, binding = 12) writeonly buffer ShadingGuideOut { uint shading_guide_out[]; };
 )glsl";
 
 constexpr const char* kAdapterMain = R"glsl(
@@ -53,8 +58,23 @@ void main() {
     float z = p.scale.z == 3u ? near_plane + d * (far_plane - near_plane)
                               : near_plane * far_plane / (far_plane - d * (far_plane - near_plane));
     bool receiver = cls == 1u && z > 0.0 && !isinf(z) && !isnan(z) && dot(n, n) > 0.0;
-    if (p.scale.w != 0u)
+    if ((p.scale.w & 1u) != 0u)
         guide_out[id.y * p.extent.x + id.x] = receiver ? uvec2(floatBitsToUint(z), dgi_encode_normal(n)) : uvec2(0u);
+    // M8 shading normal: unit, on the face normal's side; none where the guide
+    // has no coverage or a degenerate (blended) vector.
+    bool shading = (p.scale.w & 2u) != 0u;
+    vec3 sn = vec3(0.0);
+    if (shading) {
+        vec4 sg = texelFetch(normal_guide, t, 0);
+        vec3 raw = sg.rgb * 2.0 - 1.0;
+        float length2 = dot(raw, raw);
+        if (sg.a > 0.0 && length2 > 0.0625 && !isinf(length2) && !isnan(length2)) {
+            sn = raw * inversesqrt(length2);
+            if (dot(sn, n) < 0.0) sn = -sn;
+        }
+        if ((p.scale.w & 1u) != 0u)
+            shading_guide_out[id.y * p.extent.x + id.x] = receiver ? dgi_encode_normal(sn) : 0u;
+    }
     uint f = p.scale.x;
     uint o = p.scale.y;
     if (id.x < o || id.y < o || (id.x - o) % f != 0u || (id.y - o) % f != 0u) return;
@@ -69,6 +89,7 @@ void main() {
     radiance_out[w] = vec4(srgb_to_linear(direct.x), srgb_to_linear(direct.y), srgb_to_linear(direct.z), 0.0);
     normal_out[w] = vec4(n, dot(n, n) > 0.0 ? 1.0 : 0.0);
     motion_out[w] = texelFetch(motion_vectors, t, 0).xy * p.motion.xy;
+    if (shading) shading_out[w] = vec4(sn, dot(sn, sn) > 0.0 ? 1.0 : 0.0);
 }
 )glsl";
 

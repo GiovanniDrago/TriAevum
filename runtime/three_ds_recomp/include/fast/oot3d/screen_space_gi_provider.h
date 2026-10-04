@@ -135,6 +135,7 @@ class ScreenSpaceGiProvider final {
     // Developer options (environment, read at Initialize; never persisted):
     //   OOT3D_GRAPHICS_SSGI_KERNEL_TIMING=1  per-kernel GPU timing on stderr
     //   OOT3D_GRAPHICS_SSGI_WORK_FACTOR=1|2|4  overrides the work scale
+    //   OOT3D_GRAPHICS_SSGI_RECEIVERS=face  the M7 receivers (face-normal lobe and edge tests)
     //   OOT3D_GRAPHICS_SSGI_DUMP=<dir>, OOT3D_GRAPHICS_SSGI_DUMP_FRAME=<n>,
     //   OOT3D_GRAPHICS_SSGI_DUMP_COUNT=<c>
     //     writes the pass inputs (the adapter's decoding of the guides) and the
@@ -146,6 +147,7 @@ class ScreenSpaceGiProvider final {
                     const Renderer::DiffuseGi::PassFrame& passFrame);
     void FinishDump(uint64_t frameId);
     bool mKernelTiming = false;
+    bool mFaceReceivers = false; // OOT3D_GRAPHICS_SSGI_RECEIVERS=face: the M7 receivers (developer A/B)
     uint32_t mWorkFactorOverride = 0;
     std::unique_ptr<DumpState> mDump;
     Instance* InstanceFor(const ScreenSpaceGiFrame& frame);

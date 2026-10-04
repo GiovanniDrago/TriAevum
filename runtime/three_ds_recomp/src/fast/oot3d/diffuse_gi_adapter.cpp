@@ -123,13 +123,14 @@ std::optional<RigidTransform> DiffuseGiCurrentToPrevious(const std::array<float,
 }
 
 DiffuseGiAdapterParams MakeDiffuseGiAdapterParams(const Renderer::DiffuseGi::PassExtent& extent,
-                                                  const DepthCamera& camera) noexcept {
+                                                  const DepthCamera& camera, bool shading) noexcept {
     DiffuseGiAdapterParams p;
     const auto output = Renderer::DiffuseGi::PassOutputExtent(extent);
     const auto motion = Renderer::DiffuseGi::WorkMotionScale(extent);
     p.Extent = {output[0], output[1], extent.BufferWidth, extent.BufferHeight};
     p.Scale = {std::max(extent.WorkFactor, 1U), extent.WorkPhase,
-               camera.Encoding == DepthEncoding::LinearWBuffer ? 3U : 1U, extent.WorkFactor > 1U ? 1U : 0U};
+               camera.Encoding == DepthEncoding::LinearWBuffer ? 3U : 1U,
+               (extent.WorkFactor > 1U ? 1U : 0U) | (shading ? 2U : 0U)};
     p.Depth = {static_cast<float>(camera.Near), static_cast<float>(camera.Far), 0.0F, 0.0F};
     p.Motion = {static_cast<float>(motion[0]), static_cast<float>(motion[1]), 0.0F, 0.0F};
     return p;
@@ -138,7 +139,8 @@ DiffuseGiAdapterParams MakeDiffuseGiAdapterParams(const Renderer::DiffuseGi::Pas
 DiffuseGiAdapterTexel DiffuseGiAdapterTexelF32(const DiffuseGiAdapterParams& p, float d,
                                                const std::array<uint32_t, 4>& geometry,
                                                const std::array<float, 4>& surface,
-                                               const std::array<float, 2>& motion) noexcept {
+                                               const std::array<float, 2>& motion,
+                                               const std::array<float, 4>& normalGuide) noexcept {
     DiffuseGiAdapterTexel out;
     out.Depth = d;
     out.Class = !(d < 1.0F) ? 3U : (surface[3] > 0.0F ? 1U : 0U);
@@ -150,6 +152,19 @@ DiffuseGiAdapterTexel DiffuseGiAdapterTexelF32(const DiffuseGiAdapterParams& p, 
                                      : nearPlane * farPlane / (farPlane - d * (farPlane - nearPlane));
     const bool receiver = out.Class == 1U && z > 0.0F && std::isfinite(z) && n[0] * n[0] + n[1] * n[1] + n[2] * n[2] > 0.0F;
     if (receiver) out.Guide = {std::bit_cast<uint32_t>(z), Renderer::DiffuseGi::EncodeDiffuseGiNormal(n)};
+    if ((p.Scale[3] & 2U) != 0U) {
+        const std::array<float, 3> raw{normalGuide[0] * 2.0F - 1.0F, normalGuide[1] * 2.0F - 1.0F,
+                                       normalGuide[2] * 2.0F - 1.0F};
+        const float length2 = raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2];
+        if (normalGuide[3] > 0.0F && length2 > 0.0625F && std::isfinite(length2)) {
+            const float inverse = 1.0F / std::sqrt(length2);
+            out.Shading = {raw[0] * inverse, raw[1] * inverse, raw[2] * inverse};
+            if (out.Shading[0] * n[0] + out.Shading[1] * n[1] + out.Shading[2] * n[2] < 0.0F)
+                out.Shading = {-out.Shading[0], -out.Shading[1], -out.Shading[2]};
+        }
+        if ((p.Scale[3] & 1U) != 0U && receiver)
+            out.ShadingGuide = Renderer::DiffuseGi::EncodeDiffuseGiNormal(out.Shading);
+    }
     for (int c = 0; c < 3; ++c) {
         const float bits = std::floor(surface[c] * 65535.0F + 0.5F);
         out.Radiance[c] = SrgbToLinear(std::fmod(bits, 256.0F) / 255.0F);
@@ -170,9 +185,10 @@ bool DiffuseGiAdapterKernel::Create(VkDevice device, const std::vector<uint32_t>
     mDevice = device;
     const auto start = std::chrono::steady_clock::now();
     if (device == VK_NULL_HANDLE || spirv.size() < 5U || spirv[0] != 0x07230203U) return false;
-    std::array<VkDescriptorSetLayoutBinding, 10> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 13> bindings{};
     for (uint32_t i = 0; i < bindings.size(); ++i)
-        bindings[i] = {i, i < 4U ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+        bindings[i] = {i,
+                       i < 4U || i == 10U ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                        VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     setInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -231,36 +247,43 @@ bool RecordDiffuseGiAdapter(VkDevice device, VkCommandBuffer command, const Diff
     if (!kernel.Available() || set == VK_NULL_HANDLE || guides.Depth == VK_NULL_HANDLE ||
         guides.Geometry == VK_NULL_HANDLE || guides.Surface == VK_NULL_HANDLE || guides.Motion == VK_NULL_HANDLE)
         return false;
-    std::array<VkDescriptorImageInfo, 4> images{{
+    // M8: shading normals need the normal guide; without one the surface guide
+    // stands in at its binding (never read: the shading flag is off).
+    if ((params.Scale[3] & 2U) != 0U && guides.Normal == VK_NULL_HANDLE) return false;
+    std::array<VkDescriptorImageInfo, 5> images{{
         {VK_NULL_HANDLE, guides.Depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         {VK_NULL_HANDLE, guides.Geometry, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         {VK_NULL_HANDLE, guides.Surface, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         {VK_NULL_HANDLE, guides.Motion, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {VK_NULL_HANDLE, guides.Normal != VK_NULL_HANDLE ? guides.Normal : guides.Surface,
+         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
     }};
-    const std::array<PassResourceId, 6> outputs{PassResourceId::Depth,  PassResourceId::Class,
-                                                PassResourceId::Radiance, PassResourceId::Normal,
-                                                PassResourceId::Motion, PassResourceId::OutputGuide};
-    std::array<VkDescriptorBufferInfo, 6> buffers{};
+    const std::array<PassResourceId, 8> outputs{
+        PassResourceId::Depth,  PassResourceId::Class,       PassResourceId::Radiance,      PassResourceId::Normal,
+        PassResourceId::Motion, PassResourceId::OutputGuide, PassResourceId::ShadingNormal, PassResourceId::OutputShading};
+    std::array<VkDescriptorBufferInfo, 8> buffers{};
     for (size_t k = 0; k < outputs.size(); ++k) {
         auto view = pass.Buffer(outputs[k]);
-        // Without a work scale there is no output guide: the kernel writes none
-        // (Scale.w = 0) and the binding takes the pass's placeholder.
+        // Without a work scale there is no output guide, without shading
+        // normals no shading buffers: the kernel writes none and the binding
+        // takes the pass's placeholder.
         if (view.Buffer == VK_NULL_HANDLE) view = pass.Buffer(PassResourceId::Placeholder);
         if (view.Buffer == VK_NULL_HANDLE) return false;
         buffers[k] = {view.Buffer, 0, VK_WHOLE_SIZE};
     }
-    std::array<VkWriteDescriptorSet, 10> writes{};
+    std::array<VkWriteDescriptorSet, 13> writes{};
     for (uint32_t i = 0; i < writes.size(); ++i) {
         writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         writes[i].dstSet = set;
         writes[i].dstBinding = i;
         writes[i].descriptorCount = 1;
-        if (i < 4U) {
+        // 0-3 and 10 sampled guides; 4-9 and 11-12 pass buffers.
+        if (i < 4U || i == 10U) {
             writes[i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-            writes[i].pImageInfo = &images[i];
+            writes[i].pImageInfo = &images[i < 4U ? i : 4U];
         } else {
             writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[i].pBufferInfo = &buffers[i - 4U];
+            writes[i].pBufferInfo = &buffers[i < 10U ? i - 4U : i - 5U];
         }
     }
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);

@@ -141,6 +141,11 @@ layout(std430, set = 0, binding = 1) readonly buffer DepthValues { float depth_v
 layout(std430, set = 0, binding = 2) readonly buffer ClassValues { uint class_values[]; };
 layout(std430, set = 0, binding = 3) readonly buffer RadianceValues { vec4 radiance_values[]; };
 layout(std430, set = 0, binding = 4) buffer NormalValues { vec4 normal_values[]; };
+#ifdef DGI_SHADING
+// M8: shading normals (xyz, w = 1 when valid): renderer normals in, unit and
+// on the geometric normal's side after the normal pass.
+layout(std430, set = 0, binding = 13) buffer ShadingValues { vec4 shading_values[]; };
+#endif
 
 uint viewport_width() { return p.extent_counts.x; }
 uint viewport_height() { return p.extent_counts.y; }
@@ -301,6 +306,20 @@ void main() {
             result = reconstruct_normal(id.x, id.y, z0);
         }
     }
+#ifdef DGI_SHADING
+    // M8: the shading normal, unit and on the geometric normal's side (none
+    // without a geometric normal or for a non-finite vector).
+    if ((p.modes.w & 16u) != 0u) {
+        vec4 shading = vec4(0.0);
+        if (result.w != 0.0) {
+            vec3 sn = vnormalize(shading_values[index].xyz);
+            if (isnan(sn.x) || isinf(sn.x) || isnan(sn.y) || isinf(sn.y) || isnan(sn.z) || isinf(sn.z)) sn = vec3(0.0);
+            if (vdot(sn, result.xyz) < 0.0) sn = sn * -1.0;
+            shading = vec4(sn, vdot(sn, sn) > 0.0 ? 1.0 : 0.0);
+        }
+        shading_values[index] = shading;
+    }
+#endif
     normal_values[index] = result;
 }
 )glsl";
@@ -311,6 +330,9 @@ layout(std430, set = 0, binding = 6) writeonly buffer Aux { vec4 aux[]; };
 
 // Section state (per invocation).
 vec3 g_p, g_v, g_t, g_n;
+#ifdef DGI_SHADING
+vec3 g_ns; // M8: the lobe (shading) normal
+#endif
 float g_a, g_b, g_zp, g_dir_x, g_dir_y;
 float g_radial_jitter;
 int g_x, g_y;
@@ -427,6 +449,32 @@ void accumulate(vec2 pieces[2], uint piece_count, vec3 radiance) {
     }
 }
 
+#ifdef DGI_SHADING
+// M8 (GatherSettings::ShadingNormals): a candidate on the receiver's own
+// smooth surface, and the visibility of a candidate point from the receiver
+// (twins: OwnSmoothSurfaceT, HiddenM8T).
+bool own_smooth_m8(vec3 d, float len, vec3 nq, uint qi) {
+    vec3 sq = shading_values[qi].xyz; // read only for a candidate above both planes
+    if (!(vdot(sq, sq) > 0.0) || !(vdot(nq, nq) > 0.0)) return false;
+    float cf = vdot(g_n, nq);
+    float cs = vdot(g_ns, sq);
+    if (!(cs >= p.strata_scale.y)) return false;
+    if (!(1.0 - cs < p.strata_scale.z * (1.0 - cf))) return false;
+    float sf = sqrt(max(1.0 - cf * cf, 0.0));
+    float tolerance = (p.radial.z + sf) * len + p.radial.w * g_zp;
+    return abs(vdot(g_n, d)) <= tolerance && abs(vdot(nq, d)) <= tolerance;
+}
+// `qi`: the buffer index of the candidate's texel (its shading normal).
+bool hidden_m8(vec3 e, vec3 nq, uint qi) {
+    vec3 d = e - g_p;
+    float len = vlength(d);
+    float tolerance = p.radial.z * len + p.radial.w * g_zp;
+    if (abs(vdot(d, g_n)) <= tolerance) return true;
+    if (vdot(d, g_ns) <= tolerance) return true;
+    return own_smooth_m8(d, len, nq, qi);
+}
+#endif
+
 void process(float lambda, int side, int cell_x, int cell_y) {
     g_scheduled++;
     int xx = g_x + cell_x;
@@ -440,9 +488,17 @@ void process(float lambda, int side, int cell_x, int cell_y) {
     float radius = p.gather.x;
     if ((p.modes.w & 2u) != 0u) {
         vec3 centre = ray(float(xx) + 0.5, float(yy) + 0.5) * zq;
-        vec3 d = centre - g_p;
-        float elevation = vdot(d, g_n);
-        if (elevation <= p.radial.z * vlength(d) + p.radial.w * g_zp) return;
+#ifdef DGI_SHADING
+        if ((p.modes.w & 8u) != 0u) {
+            uint qi = buffer_index(xx, yy);
+            if (hidden_m8(centre, normal_values[qi].xyz, qi)) return;
+        } else
+#endif
+        {
+            vec3 d = centre - g_p;
+            float elevation = vdot(d, g_n);
+            if (elevation <= p.radial.z * vlength(d) + p.radial.w * g_zp) return;
+        }
     }
     float sign_side = float(side);
     float px = float(g_x) + 0.5 + lambda * g_dir_x * sign_side;
@@ -614,6 +670,10 @@ constexpr const char* kGatherEntry = R"glsl(void main() {
 constexpr const char* kPackMain = R"glsl(
 layout(std430, set = 0, binding = 6) readonly buffer Aux { vec4 aux[]; };
 layout(std430, set = 0, binding = 7) writeonly buffer Geometry { vec4 geometry[]; };
+#ifdef DGI_SHADING
+// M8: the receivers' shading normals per viewport pixel (temporal, filter, upsample).
+layout(std430, set = 0, binding = 14) writeonly buffer ShadingGeometry { vec4 shading_geometry[]; };
+#endif
 
 void main() {
     ivec2 id = ivec2(gl_GlobalInvocationID.xy);
@@ -624,6 +684,10 @@ void main() {
     vec4 n = normal_values[buffer_index(id.x, id.y)];
     bool receiver = (c == 1u || c == 2u) && n.w != 0.0 && aux[out_index].y != 0.0;
     geometry[out_index] = receiver ? vec4(n.xyz, z) : vec4(0.0);
+#ifdef DGI_SHADING
+    if ((p.modes.w & 16u) != 0u)
+        shading_geometry[out_index] = receiver ? shading_values[buffer_index(id.x, id.y)] : vec4(0.0);
+#endif
 }
 )glsl";
 
@@ -661,6 +725,9 @@ GatherShaderParams MakeGatherShaderParams(const GatherInput& input, const Gather
     if (settings.InterleaveSides) flags |= kShaderFlagInterleave;
     if (settings.RejectSelfIntersection) flags |= kShaderFlagRejectSelf;
     if (input.NormalSource == GeometricNormalSource::RendererFaceNormal) flags |= kShaderFlagFaceNormals;
+    // M8: the smooth-shaded receiver needs the shading normals (the pass
+    // allocates and orients them; the CPU twin reads GatherInput::ShadingNormals).
+    if (settings.ShadingNormals) flags |= kShaderFlagShading | kShaderFlagShadingInputs;
     // Schedule: 0 EveryTexel, 1 Radial, 2 MetricRadial (M4 kernel only).
     const uint32_t schedule = settings.Schedule == CandidateSchedule::Radial
                                   ? 1U
@@ -690,23 +757,40 @@ GatherShaderParams MakeGatherShaderParams(const GatherInput& input, const Gather
     } else {
         p.Strata = {1U, 1U, 1U, 0U}; // never used: flags are zero
     }
+    if (settings.ShadingNormals) {
+        p.StrataScale[1] = static_cast<float>(settings.OwnSurfaceCos);
+        p.StrataScale[2] = static_cast<float>(settings.HardEdgeRatio);
+    }
     return p;
 }
 
-std::string BuildDiffuseGiNormalShader() {
-    return std::string(kMath) + kGatherCommon + kNormalMain;
+namespace {
+// The M8 variant of a kernel: the shading-normal paths compiled in, each
+// behind its flag (GatherShaderParams::Modes[3] & 8 and & 16).
+std::string WithShadingDefine(const std::string& text) {
+    std::string out = text;
+    out.insert(out.find('\n') + 1, "#define DGI_SHADING 1\n");
+    return out;
+}
+} // namespace
+
+std::string BuildDiffuseGiNormalShader(bool shading) {
+    const std::string text = std::string(kMath) + kGatherCommon + kNormalMain;
+    return shading ? WithShadingDefine(text) : text;
 }
 
 std::string BuildDiffuseGiGatherShader() {
     return std::string(kMath) + kGatherCommon + kGatherMain + kGatherEntry;
 }
 
-std::string DiffuseGiGatherFunctionsGlsl() {
-    return std::string(kMath) + kGatherCommon + kGatherMain;
+std::string DiffuseGiGatherFunctionsGlsl(bool shading) {
+    const std::string text = std::string(kMath) + kGatherCommon + kGatherMain;
+    return shading ? WithShadingDefine(text) : text;
 }
 
-std::string BuildDiffuseGiPackShader() {
-    return std::string(kMath) + kGatherCommon + kPackMain;
+std::string BuildDiffuseGiPackShader(bool shading) {
+    const std::string text = std::string(kMath) + kGatherCommon + kPackMain;
+    return shading ? WithShadingDefine(text) : text;
 }
 
 std::string BuildDiffuseGiUnitShader() {

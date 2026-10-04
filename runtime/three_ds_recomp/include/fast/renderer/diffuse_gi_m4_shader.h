@@ -64,9 +64,10 @@ static_assert(sizeof(M4ShaderParams) == 240);
 // Float layout of binding 13 / 14: per region E[B] then valid (0 / 1).
 [[nodiscard]] std::vector<float> PackGuideState(const GuideField& field);
 
-[[nodiscard]] std::string BuildDiffuseGiHierarchyLevel0Shader();
-[[nodiscard]] std::string BuildDiffuseGiHierarchyReduceShader();
-[[nodiscard]] std::string BuildDiffuseGiGatherM4Shader();
+[[nodiscard]] std::string BuildDiffuseGiHierarchyLevel0Shader(bool shading = false);
+[[nodiscard]] std::string BuildDiffuseGiHierarchyReduceShader(bool shading = false);
+// `shading`: the M8 smooth-shaded receiver compiled in (behind its flag).
+[[nodiscard]] std::string BuildDiffuseGiGatherM4Shader(bool shading = false);
 [[nodiscard]] std::string BuildDiffuseGiGuideUpdateShader();
 
 } // namespace Fast::Renderer::DiffuseGi

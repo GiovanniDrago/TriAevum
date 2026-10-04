@@ -604,8 +604,9 @@ TEST(Oot3dDisplayEffectPlan, GlobalIlluminationComposesThroughTheSceneComposite)
 }
 
 // Screen-space GI: the same display pass and composition, reading only its
-// declared inputs (the geometry guide's face normal instead of the normal and
-// material guides), with no specular term and no scene distance field.
+// declared inputs (the geometry guide's face normal and, M8, the normal
+// guide's shading normal; no material guide), with no specular term and no
+// scene distance field.
 TEST(Oot3dDisplayEffectPlan, ScreenSpaceGlobalIlluminationReadsOnlyItsDeclaredInputs) {
     DisplayEffectPlanInput input;
     input.WorldSurface = true;
@@ -628,11 +629,12 @@ TEST(Oot3dDisplayEffectPlan, ScreenSpaceGlobalIlluminationReadsOnlyItsDeclaredIn
     const std::vector<EffectResourceUse> declared{
         Read(EffectResource::NativeSceneView), Read(EffectResource::DiffuseAlbedoGuide),
         Read(EffectResource::NativeDepth), Read(EffectResource::OutlineGeometryGuide),
-        Read(EffectResource::MotionVectors), Write(EffectResource::DiffuseIllumination)};
+        Read(EffectResource::NormalGuide), Read(EffectResource::MotionVectors),
+        Write(EffectResource::DiffuseIllumination)};
     EXPECT_EQ(gi.size(), declared.size());
     for (const auto use : declared) EXPECT_NE(std::find(gi.begin(), gi.end(), use), gi.end());
-    for (const auto resource : {EffectResource::NormalGuide, EffectResource::MaterialGuide,
-                                EffectResource::SpecularIllumination, EffectResource::SceneDistanceField})
+    for (const auto resource : {EffectResource::MaterialGuide, EffectResource::SpecularIllumination,
+                                EffectResource::SceneDistanceField})
         for (const auto& use : gi) EXPECT_NE(use.Resource, resource);
     // A (accessibility) has no consumer: the composite takes J and the albedo guide.
     const auto composite = plan.Bindings(DisplayEffectPass::Composite);

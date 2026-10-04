@@ -1579,6 +1579,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 giFrame.Guides.Geometry = view(Oot3d::EffectResource::OutlineGeometryGuide);
                 giFrame.Guides.Surface = view(Oot3d::EffectResource::DiffuseAlbedoGuide);
                 giFrame.Guides.Motion = view(Oot3d::EffectResource::MotionVectors);
+                giFrame.Guides.Normal = view(Oot3d::EffectResource::NormalGuide);
                 transitionEffectPassGuides(Oot3d::DisplayEffectPass::GlobalIllumination);
                 // Another world, or a source switched off or returning: the
                 // histories start over (the same rules as the traced GI).

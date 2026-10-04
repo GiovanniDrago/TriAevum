@@ -21,6 +21,9 @@ struct Face {
 };
 
 void AppendFaces(const Primitive& p, size_t index, std::vector<Face>& faces) {
+    // M8 triangles add no section breakpoints: their scenes are measured
+    // against analytic references, never M1-integrated.
+    if (p.Shape == Primitive::Kind::Triangle) return;
     if (p.Shape == Primitive::Kind::Rectangle) {
         faces.push_back({p.Centre, p.Axes[2], p.Axes[0], p.Axes[1], p.Half.X, p.Half.Y, index});
         return;
@@ -89,12 +92,64 @@ Primitive Primitive::Rectangle(const Vec3& centre, const Vec3& axisU, const Vec3
     return p;
 }
 
+Primitive Primitive::SmoothStrip(const Vec3& centre, const Vec3& axisU, const Vec3& axisV, double halfU, double halfV,
+                                 const Vec3& normalAtMinusU, const Vec3& normalAtPlusU, const Rgb& radiance) {
+    Primitive p = Rectangle(centre, axisU, axisV, halfU, halfV, radiance, false);
+    p.SmoothShading = true;
+    p.ShadingNormals = {Normalize(normalAtMinusU), Normalize(normalAtPlusU), Vec3{}};
+    return p;
+}
+
+Primitive Primitive::Triangle(const Vec3& a, const Vec3& b, const Vec3& c, const Rgb& radiance) {
+    Primitive p;
+    p.Shape = Kind::Triangle;
+    p.Vertices = {a, b, c};
+    p.Centre = Scale(Add(Add(a, b), c), 1.0 / 3.0);
+    const Vec3 u = Normalize(Sub(b, a));
+    const Vec3 w = Normalize(Cross(Sub(b, a), Sub(c, a)));
+    p.Axes = {u, Cross(w, u), w};
+    p.Radiance = radiance;
+    return p;
+}
+
+Primitive Primitive::SmoothTriangle(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& na, const Vec3& nb,
+                                    const Vec3& nc, const Rgb& radiance) {
+    Primitive p = Triangle(a, b, c, radiance);
+    p.SmoothShading = true;
+    p.ShadingNormals = {Normalize(na), Normalize(nb), Normalize(nc)};
+    return p;
+}
+
 std::optional<RayHit> Intersect(const std::vector<Primitive>& primitives, const Vec3& origin, const Vec3& direction,
                                 double tMin, double tMax) {
     std::optional<RayHit> best;
     for (size_t index = 0; index < primitives.size(); ++index) {
         const Primitive& p = primitives[index];
         const Vec3 local = Sub(origin, p.Centre);
+        if (p.Shape == Primitive::Kind::Triangle) {
+            // Ray/triangle by barycentric coordinates (u at b, v at c), with
+            // a tiny margin so that shared edges of a mesh leave no cracks.
+            constexpr double kEdge = 1.0e-12;
+            const Vec3 e1 = Sub(p.Vertices[1], p.Vertices[0]), e2 = Sub(p.Vertices[2], p.Vertices[0]);
+            const Vec3 pv = Cross(direction, e2);
+            const double det = Dot(e1, pv);
+            if (!(std::abs(det) > 0.0)) continue;
+            const Vec3 tv = Sub(origin, p.Vertices[0]);
+            const double u = Dot(tv, pv) / det;
+            if (u < -kEdge || u > 1.0 + kEdge) continue;
+            const Vec3 qv = Cross(tv, e1);
+            const double v = Dot(direction, qv) / det;
+            if (v < -kEdge || u + v > 1.0 + kEdge) continue;
+            const double t = Dot(e2, qv) / det;
+            if (!(t >= tMin && t <= tMax) || (best && t >= best->Distance)) continue;
+            const bool emitting = p.TwoSided || Dot(direction, p.Axes[2]) < 0.0;
+            const Vec3 shading =
+                p.SmoothShading ? Normalize(Add(Add(Scale(p.ShadingNormals[0], 1.0 - u - v), Scale(p.ShadingNormals[1], u)),
+                                                Scale(p.ShadingNormals[2], v)))
+                                : p.Axes[2];
+            best = RayHit{t, p.Axes[2], index, emitting, shading};
+            continue;
+        }
         if (p.Shape == Primitive::Kind::Rectangle) {
             const double denominator = Dot(direction, p.Axes[2]);
             if (!(std::abs(denominator) > 0.0)) continue;
@@ -103,7 +158,12 @@ std::optional<RayHit> Intersect(const std::vector<Primitive>& primitives, const 
             const Vec3 hit = Add(local, Scale(direction, t));
             if (std::abs(Dot(hit, p.Axes[0])) > p.Half.X || std::abs(Dot(hit, p.Axes[1])) > p.Half.Y) continue;
             const bool emitting = p.TwoSided || -denominator > 0.0;
-            best = RayHit{t, p.Axes[2], index, emitting};
+            Vec3 shading = p.Axes[2];
+            if (p.SmoothShading) {
+                const double w = std::clamp((Dot(hit, p.Axes[0]) + p.Half.X) / (2.0 * p.Half.X), 0.0, 1.0);
+                shading = Normalize(Add(Scale(p.ShadingNormals[0], 1.0 - w), Scale(p.ShadingNormals[1], w)));
+            }
+            best = RayHit{t, p.Axes[2], index, emitting, shading};
             continue;
         }
         const double half[3] = {p.Half.X, p.Half.Y, p.Half.Z};
@@ -129,7 +189,7 @@ std::optional<RayHit> Intersect(const std::vector<Primitive>& primitives, const 
         }
         if (miss || tNear > tFar || !(tNear >= tMin && tNear <= tMax)) continue;
         if (best && tNear >= best->Distance) continue;
-        best = RayHit{tNear, normal, index, true};
+        best = RayHit{tNear, normal, index, true, normal};
     }
     return best;
 }
@@ -186,6 +246,7 @@ GatherInput Rasterize(const Scene& scene) {
     in.Radiance.assign(3 * texels, 1.0e30F);
     in.FaceNormals.assign(3 * texels, 0.0F);
     for (size_t i = 0; i < texels; ++i) in.FaceNormals[3 * i + 2] = 1.0F;
+    if (scene.ShadingGuide) in.ShadingNormals = in.FaceNormals;
     in.NormalSource = GeometricNormalSource::DepthReconstruction;
     for (uint32_t j = 0; j < c.Height; ++j)
         for (uint32_t i = 0; i < c.Width; ++i) {
@@ -213,6 +274,13 @@ GatherInput Rasterize(const Scene& scene) {
             in.FaceNormals[3 * bi] = static_cast<float>(visible.X);
             in.FaceNormals[3 * bi + 1] = static_cast<float>(visible.Y);
             in.FaceNormals[3 * bi + 2] = static_cast<float>(visible.Z);
+            if (scene.ShadingGuide) {
+                // The shading normal on the visible side (same flip as the face).
+                const Vec3 shade = Dot(hit->Normal, ray) < 0.0 ? hit->Shading : Scale(hit->Shading, -1.0);
+                in.ShadingNormals[3 * bi] = static_cast<float>(shade.X);
+                in.ShadingNormals[3 * bi + 1] = static_cast<float>(shade.Y);
+                in.ShadingNormals[3 * bi + 2] = static_cast<float>(shade.Z);
+            }
         }
     for (const auto& rect : scene.Unavailable)
         for (uint32_t j = rect[1]; j < std::min(rect[3], c.Height); ++j)
@@ -229,11 +297,19 @@ void QuantizeFaceNormals8(GatherInput& input) {
     }
 }
 
+void QuantizeShadingNormals8(GatherInput& input) {
+    for (float& component : input.ShadingNormals) {
+        const double code = std::round((0.5 * std::clamp(static_cast<double>(component), -1.0, 1.0) + 0.5) * 255.0);
+        component = static_cast<float>(code / 255.0 * 2.0 - 1.0);
+    }
+}
+
 Scene Scaled(const Scene& scene, double factor) {
     Scene out = scene;
     for (auto& p : out.Primitives) {
         p.Centre = Scale(p.Centre, factor);
         p.Half = Scale(p.Half, factor);
+        for (Vec3& vertex : p.Vertices) vertex = Scale(vertex, factor);
     }
     out.Camera.Near *= factor;
     out.Camera.Far *= factor;
@@ -482,8 +558,127 @@ Scene CheckerRoomScene(uint32_t width, uint32_t height) {
     return scene;
 }
 
+// --- M8 scenes: low-poly meshes with interpolated vertex normals.
+namespace {
+
+// One-sided bright wall in the plane x = -1.4 facing +X, z in [-6.2, -2.2],
+// y in [-1.2, 1.2]: on screen and within 4.5 units of every M8 receiver.
+Primitive M8SourceWall() {
+    return Primitive::Rectangle({-1.4, 0.0, -4.2}, {0.0, 0.0, -1.0}, {0.0, 1.0, 0.0}, 2.0, 1.2, {3.0, 2.6, 2.2}, false);
+}
+
+Vec3 Radial(double theta) { return {std::cos(theta), 0.0, std::sin(theta)}; }
+
+// Facet strips of a vertical prism around `axis` (radius, half height) over
+// the angles [begin, end] (direction (cos, 0, sin)); outward or inward. Each
+// strip spans the chord between two vertices; smooth strips interpolate the
+// radial vertex normals.
+void AppendPrism(std::vector<Primitive>& out, const Vec3& axis, double radius, double halfHeight, uint32_t facets,
+                 double begin, double end, bool inward, bool smooth, const Rgb& radiance) {
+    const double step = (end - begin) / facets;
+    for (uint32_t k = 0; k < facets; ++k) {
+        const double a = begin + step * k, b = a + step, m = a + 0.5 * step;
+        const Vec3 centre = Add(axis, Scale(Radial(m), radius * std::cos(0.5 * step)));
+        const Vec3 tangent{-std::sin(m), 0.0, std::cos(m)}; // increasing angle
+        const double halfU = radius * std::sin(0.5 * step);
+        const double sign = inward ? -1.0 : 1.0;
+        // Outward strips run their U axis toward decreasing angle (facing +radial).
+        const Vec3 axisU = Scale(tangent, inward ? 1.0 : -1.0);
+        const Vec3 atMinusU = Scale(Radial(inward ? a : b), sign), atPlusU = Scale(Radial(inward ? b : a), sign);
+        out.push_back(smooth ? Primitive::SmoothStrip(centre, axisU, {0.0, 1.0, 0.0}, halfU, halfHeight, atMinusU,
+                                                      atPlusU, radiance)
+                             : Primitive::Rectangle(centre, axisU, {0.0, 1.0, 0.0}, halfU, halfHeight, radiance, false));
+    }
+}
+
+// Icosahedron subdivided `levels` times on the unit sphere, outward winding.
+std::vector<std::array<Vec3, 3>> UnitIcosphere(uint32_t levels) {
+    const double phi = 0.5 * (1.0 + std::sqrt(5.0));
+    const std::array<Vec3, 12> v{{{-1, phi, 0}, {1, phi, 0}, {-1, -phi, 0}, {1, -phi, 0}, {0, -1, phi}, {0, 1, phi},
+                                  {0, -1, -phi}, {0, 1, -phi}, {phi, 0, -1}, {phi, 0, 1}, {-phi, 0, -1}, {-phi, 0, 1}}};
+    constexpr int kFaces[20][3] = {{0, 11, 5}, {0, 5, 1},  {0, 1, 7},  {0, 7, 10}, {0, 10, 11}, {1, 5, 9},  {5, 11, 4},
+                                   {11, 10, 2}, {10, 7, 6}, {7, 1, 8},  {3, 9, 4},  {3, 4, 2},   {3, 2, 6},  {3, 6, 8},
+                                   {3, 8, 9},  {4, 9, 5},  {2, 4, 11}, {6, 2, 10}, {8, 6, 7},   {9, 8, 1}};
+    std::vector<std::array<Vec3, 3>> faces;
+    for (const auto& f : kFaces) faces.push_back({Normalize(v[f[0]]), Normalize(v[f[1]]), Normalize(v[f[2]])});
+    for (uint32_t level = 0; level < levels; ++level) {
+        std::vector<std::array<Vec3, 3>> finer;
+        for (const auto& f : faces) {
+            const Vec3 ab = Normalize(Add(f[0], f[1])), bc = Normalize(Add(f[1], f[2])), ca = Normalize(Add(f[2], f[0]));
+            finer.push_back({f[0], ab, ca});
+            finer.push_back({ab, f[1], bc});
+            finer.push_back({ca, bc, f[2]});
+            finer.push_back({ab, bc, ca});
+        }
+        faces.swap(finer);
+    }
+    for (auto& f : faces)
+        if (Dot(Cross(Sub(f[1], f[0]), Sub(f[2], f[0])), Add(Add(f[0], f[1]), f[2])) < 0.0) std::swap(f[1], f[2]);
+    return faces;
+}
+
+} // namespace
+
+Scene LowPolyCylinderScene(uint32_t width, uint32_t height, uint32_t sides, bool smooth) {
+    Scene scene;
+    scene.Name = "m8_cylinder_" + std::to_string(sides) + (smooth ? "_smooth" : "_flat");
+    scene.Camera = StandardCamera(width, height);
+    scene.ShadingGuide = true;
+    scene.Primitives.push_back(M8SourceWall());
+    // Vertices start 0.3 rad from +X: no facet edge on the view axis.
+    AppendPrism(scene.Primitives, {0.3, 0.0, -3.2}, 0.8, 0.8, sides, 0.3, 0.3 + 2.0 * kPi, false, smooth,
+                {0.3, 0.3, 0.3});
+    return scene;
+}
+
+Scene LowPolySphereScene(uint32_t width, uint32_t height, uint32_t levels, bool smooth, bool onFloor) {
+    Scene scene;
+    scene.Name = "m8_sphere_" + std::to_string(levels) + (smooth ? "_smooth" : "_flat") + (onFloor ? "_on_floor" : "");
+    scene.Camera = StandardCamera(width, height);
+    scene.ShadingGuide = true;
+    scene.Primitives.push_back(M8SourceWall());
+    if (onFloor)
+        scene.Primitives.push_back(Primitive::Rectangle({0.3, -0.8, -3.7}, {1.0, 0.0, 0.0}, {0.0, 0.0, -1.0}, 3.0, 2.5,
+                                                        {0.25, 0.25, 0.25}, false));
+    const Vec3 centre{0.3, 0.0, -3.2};
+    const double radius = 0.8;
+    for (const auto& f : UnitIcosphere(levels)) {
+        const Vec3 a = Add(centre, Scale(f[0], radius)), b = Add(centre, Scale(f[1], radius)),
+                   c = Add(centre, Scale(f[2], radius));
+        scene.Primitives.push_back(smooth ? Primitive::SmoothTriangle(a, b, c, f[0], f[1], f[2], {0.3, 0.3, 0.3})
+                                          : Primitive::Triangle(a, b, c, {0.3, 0.3, 0.3}));
+    }
+    return scene;
+}
+
+Scene TroughScene(uint32_t width, uint32_t height, uint32_t sides, bool smooth) {
+    Scene scene;
+    scene.Name = "m8_trough_" + std::to_string(sides) + (smooth ? "_smooth" : "_flat");
+    scene.Camera = StandardCamera(width, height);
+    scene.ShadingGuide = true;
+    // The known source: a bright floor in front of and inside the trough.
+    scene.Primitives.push_back(Primitive::Rectangle({0.2, -0.9, -3.1}, {1.0, 0.0, 0.0}, {0.0, 0.0, -1.0}, 2.0, 1.5,
+                                                    {2.0, 2.0, 2.0}, false));
+    AppendPrism(scene.Primitives, {0.2, 0.0, -3.6}, 1.0, 0.9, sides, kPi, 2.0 * kPi, true, smooth, {0.1, 0.1, 0.1});
+    return scene;
+}
+
+Scene WallFloorScene(uint32_t width, uint32_t height, double bendDegrees) {
+    Scene scene;
+    scene.Name = "m8_wall_floor_bend" + std::to_string(static_cast<int>(bendDegrees));
+    scene.Camera = StandardCamera(width, height);
+    scene.ShadingGuide = true;
+    const double s = std::sin(0.5 * bendDegrees * kPi / 180.0), c = std::cos(0.5 * bendDegrees * kPi / 180.0);
+    // The known source: the bright back wall (z = -7, facing +Z); grey floor (y = -1).
+    scene.Primitives.push_back(Primitive::SmoothStrip({0.0, 0.5, -7.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, 3.0, 1.5,
+                                                      {-s, 0.0, c}, {s, 0.0, c}, {1.0, 1.0, 1.0}));
+    scene.Primitives.push_back(Primitive::SmoothStrip({0.0, -1.0, -4.5}, {1.0, 0.0, 0.0}, {0.0, 0.0, -1.0}, 3.0, 2.5,
+                                                      {-s, c, 0.0}, {s, c, 0.0}, {0.3, 0.3, 0.3}));
+    return scene;
+}
+
 void FacePlane(const Primitive& p, int32_t face, Vec3& normal, double& offset) {
-    if (p.Shape == Primitive::Kind::Rectangle) {
+    if (p.Shape != Primitive::Kind::Box) {
         normal = p.Axes[2];
         offset = Dot(normal, p.Centre);
         return;

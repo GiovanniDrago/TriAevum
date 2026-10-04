@@ -387,13 +387,15 @@ TEST(DiffuseGiPass, KernelCatalogueIsTheModuleKernels) {
     }
     EXPECT_EQ(names.size(), kPassKernelCount);
     EXPECT_EQ(sources.size(), kPassKernelCount);
-    EXPECT_EQ(kernels[0].Source, BuildDiffuseGiNormalShader());
-    EXPECT_EQ(kernels[1].Source, BuildDiffuseGiHierarchyLevel0Shader());
-    EXPECT_EQ(kernels[2].Source, BuildDiffuseGiHierarchyReduceShader());
-    EXPECT_EQ(kernels[3].Source, BuildDiffuseGiGatherM4Shader());
-    EXPECT_EQ(kernels[4].Source, BuildDiffuseGiPackShader());
-    EXPECT_EQ(kernels[5].Source, BuildDiffuseGiTemporalShader());
-    EXPECT_EQ(kernels[6].Source, BuildDiffuseGiFilterShader());
+    // M8: the pass runs the shading-capable variants (DGI_SHADING); the M7
+    // path is their run-time switch off (SetPassShadingNormals(false)).
+    EXPECT_EQ(kernels[0].Source, BuildDiffuseGiNormalShader(true));
+    EXPECT_EQ(kernels[1].Source, BuildDiffuseGiHierarchyLevel0Shader(true));
+    EXPECT_EQ(kernels[2].Source, BuildDiffuseGiHierarchyReduceShader(true));
+    EXPECT_EQ(kernels[3].Source, BuildDiffuseGiGatherM4Shader(true));
+    EXPECT_EQ(kernels[4].Source, BuildDiffuseGiPackShader(true));
+    EXPECT_EQ(kernels[5].Source, BuildDiffuseGiTemporalShader(true));
+    EXPECT_EQ(kernels[6].Source, BuildDiffuseGiFilterShader(true));
     EXPECT_EQ(kernels[7].Source, BuildDiffuseGiOutputShader());
     EXPECT_EQ(kernels[8].Source, BuildDiffuseGiUpsampleShader());
 }

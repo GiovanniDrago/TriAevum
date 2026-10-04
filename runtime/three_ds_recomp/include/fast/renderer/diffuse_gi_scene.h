@@ -22,7 +22,7 @@
 namespace Fast::Renderer::DiffuseGi::Synthetic {
 
 struct Primitive {
-    enum class Kind : uint8_t { Box, Rectangle };
+    enum class Kind : uint8_t { Box, Rectangle, Triangle };
     Kind Shape = Kind::Box;
     Vec3 Centre;
     // Orthonormal axes; a rectangle spans Axes[0], Axes[1] and faces Axes[2].
@@ -41,6 +41,23 @@ struct Primitive {
     [[nodiscard]] static Primitive TiltedBox(const Vec3& centre, const Vec3& half, double pitch, const Rgb& radiance);
     [[nodiscard]] static Primitive Rectangle(const Vec3& centre, const Vec3& axisU, const Vec3& axisV, double halfU,
                                              double halfV, const Rgb& radiance, bool twoSided);
+
+    // M8: smooth shading, the renderer's interpolated vertex normals. A
+    // rectangle interpolates ShadingNormals[0] (at -HalfU) and [1] (at +HalfU)
+    // linearly along Axes[0] (one facet strip of a low-poly surface of
+    // revolution); a triangle interpolates ShadingNormals[i] at Vertices[i]
+    // barycentrically. Outward (emitting) side, normalized after interpolation.
+    // Without SmoothShading the shading normal is the face normal.
+    bool SmoothShading = false;
+    std::array<Vec3, 3> ShadingNormals{};
+    std::array<Vec3, 3> Vertices{}; // triangles; Centre is their centroid, Axes[2] their face normal
+    [[nodiscard]] static Primitive SmoothStrip(const Vec3& centre, const Vec3& axisU, const Vec3& axisV, double halfU,
+                                               double halfV, const Vec3& normalAtMinusU, const Vec3& normalAtPlusU,
+                                               const Rgb& radiance);
+    // One-sided triangle emitting toward (b - a) x (c - a).
+    [[nodiscard]] static Primitive Triangle(const Vec3& a, const Vec3& b, const Vec3& c, const Rgb& radiance);
+    [[nodiscard]] static Primitive SmoothTriangle(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& na,
+                                                  const Vec3& nb, const Vec3& nc, const Rgb& radiance);
 };
 
 enum class DepthStorage : uint8_t { Float32, Unorm24 };
@@ -64,6 +81,8 @@ struct Scene {
     uint32_t PadLeft = 0, PadTop = 0, PadRight = 0, PadBottom = 0;
     // Viewport rectangles [x0, x1) x [y0, y1) declared Unavailable (e.g. HUD).
     std::vector<std::array<uint32_t, 4>> Unavailable;
+    // M8: Rasterize also fills GatherInput::ShadingNormals (the normal guide).
+    bool ShadingGuide = false;
 };
 
 struct RayHit {
@@ -71,6 +90,7 @@ struct RayHit {
     Vec3 Normal;           // outward face normal
     size_t Primitive = 0;
     bool FrontFace = true; // the ray sees the emitting side
+    Vec3 Shading;          // M8: outward shading normal (the face normal when flat)
 };
 
 // First entering intersection with parameter in [tMin, tMax]; exits are
@@ -87,6 +107,8 @@ struct RayHit {
 // Replaces FaceNormals by their RGBA8 encoding 0.5 n + 0.5 decoded back
 // (the precision of the renderer's 8-bit shading-normal guide).
 void QuantizeFaceNormals8(GatherInput& input);
+// The same 8-bit round trip for the shading normals (M8).
+void QuantizeShadingNormals8(GatherInput& input);
 // Same scene with geometry, near and far multiplied by `factor`.
 [[nodiscard]] Scene Scaled(const Scene& scene, double factor);
 
@@ -149,6 +171,24 @@ struct GroundTruth {
 // M4 (T10): the corner room with checker-textured walls and floor (a source
 // signal with detail at the footprint scale of sparse samples).
 [[nodiscard]] Scene CheckerRoomScene(uint32_t width, uint32_t height);
+// M8 (smooth-shaded receivers): low-poly surfaces with interpolated vertex
+// normals and one known source, Primitives[0]: a bright one-sided rectangle
+// (cylinder and sphere: a wall facing +X on the left of the view, entirely on
+// screen and within 4.5 units of every receiver). With `smooth` false the same
+// meshes are flat shaded. Every M8 scene sets ShadingGuide.
+// Vertical prism of `sides` facets around a cylinder of radius 0.8 (vertex
+// normals radial).
+[[nodiscard]] Scene LowPolyCylinderScene(uint32_t width, uint32_t height, uint32_t sides, bool smooth);
+// Icosahedron subdivided `levels` times on a sphere of radius 0.8 (vertex
+// normals radial); `onFloor`: resting on a grey floor (contact).
+[[nodiscard]] Scene LowPolySphereScene(uint32_t width, uint32_t height, uint32_t levels, bool smooth, bool onFloor);
+// Concave trough: the inside of a vertical half prism of `sides` facets
+// opening toward the camera (vertex normals radial, inward), on a bright floor.
+[[nodiscard]] Scene TroughScene(uint32_t width, uint32_t height, uint32_t sides, bool smooth);
+// Hard edge: a floor meeting a back wall at 90 degrees, each face with its
+// own smoothly bent shading normals (`bendDegrees` across the face; 0: flat).
+[[nodiscard]] Scene WallFloorScene(uint32_t width, uint32_t height, double bendDegrees);
+
 // M4: viewport-wide primitive id of the first hit per texel (-1: sky), the
 // ground truth of the hierarchy tests (which surface each texel shows), and
 // the face of that primitive (0-5 for boxes along +X, -X, +Y, -Y, +Z, -Z).

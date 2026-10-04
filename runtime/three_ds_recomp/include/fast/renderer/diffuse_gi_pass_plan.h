@@ -52,6 +52,10 @@ struct PassUpsampleSettings {
     double PlaneSine = 0.05;
     double PlaneDepth = 1.0e-3; // relative to the output texel's view depth
     double NormalCos = 0.9;
+    // M8: the smooth-crease rule of TemporalSettings (the output texel's
+    // shading normal from the adapter's output guide).
+    bool ShadingNormals = false;
+    double HardEdgeRatio = 0.5; // in angle about 0.71 (document "M8")
 };
 
 struct PassSettings {
@@ -77,6 +81,12 @@ struct PassSettings {
 // The hierarchy is built (and allocated) only for the footprint or the cache
 // on a radial schedule.
 [[nodiscard]] bool PassUsesHierarchy(const PassSettings& settings) noexcept;
+// M8: any stage takes shading normals (the gather's smooth-shaded receiver or
+// a smooth-crease rule): the adapter writes them and the pass allocates them.
+[[nodiscard]] bool PassUsesShadingNormals(const PassSettings& settings) noexcept;
+// The M8 smooth-shaded receiver in every stage (`on`), or the M7 pass exactly
+// (the option of the document's "M8", R5): gather, temporal, filter, upsampler.
+void SetPassShadingNormals(PassSettings& settings, bool on) noexcept;
 // FNV-1a 64 over every transport field (R, tau, S, N, schedule, K, e, jitter,
 // masks, tolerances, rotation sequence, M4 switches, hierarchy, normal
 // source). Its change resets the history (kResetTransport); temporal, filter
@@ -132,6 +142,8 @@ enum class PassResourceId : uint8_t {
     PreviousPosition, // vec4 per pixel: previous view-space position (PreviousPosition only)
     SurfaceId,        // uint per pixel (optional, 0 = unknown)
     OutputGuide,      // uvec2 per output texel (work scale): view depth bits, normal code
+    ShadingNormal,    // M8: vec4 per texel: renderer shading normal in, oriented by the normal pass (w = 1 valid)
+    OutputShading,    // M8: uint per output texel (work scale): shading normal code
     // Frame transients.
     Cells,            // 3 vec4 per cell: plane + flags/count, normal + ZMin, mean radiance + ZMax
     Results,          // vec4 per pixel: raw J, A raw
@@ -143,6 +155,7 @@ enum class PassResourceId : uint8_t {
     Diag2,            // vec4 per pixel: z J, z A, confidence, flags
     Filter0, Filter1, // vec4 per pixel: a-trous ping-pong (J, A raw)
     FilterVariance0, FilterVariance1, // vec2 per pixel
+    Shading,          // M8: vec4 per pixel: the receivers' oriented shading normals (pack -> temporal, filter, upsample)
     // Persistent (per view).
     History0, History1, // 4 vec4 per pixel (kHistoryValues): ping-pong histories
     // Static.

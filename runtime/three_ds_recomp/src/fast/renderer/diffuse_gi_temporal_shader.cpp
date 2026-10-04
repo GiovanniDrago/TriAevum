@@ -1,5 +1,7 @@
 #include "fast/renderer/diffuse_gi_temporal_shader.h"
 
+#include "fast/renderer/diffuse_gi_normal_code.h"
+
 // GLSL twin of diffuse_gi_temporal.cpp (Precision::Float32). Every function
 // mirrors the C++ template instantiated with float, in the same operation
 // order. Own code; no third-party shader was consulted.
@@ -35,9 +37,29 @@ bool compatible(vec3 pa, vec3 na, float zp, vec3 qb, vec3 nb, float sine, float 
 }
 )glsl";
 
+// M8 (smooth-shaded receivers): the continuity test of two receiver samples
+// whose face normals differ (diffuse_gi_temporal.h, SmoothCreaseT).
+constexpr const char* kSmoothSurface = R"glsl(
+bool smooth_normals(vec3 na, vec3 sa, vec3 nb, vec3 sb, float cosn, float ratio) {
+    if (!(vdot(sa, sa) > 0.0) || !(vdot(sb, sb) > 0.0)) return false;
+    float cs = vdot(sa, sb);
+    float cf = vdot(na, nb);
+    return cs >= cosn && 1.0 - cs < ratio * (1.0 - cf);
+}
+bool smooth_crease(vec3 pa, vec3 na, vec3 sa, float zp, vec3 qb, vec3 nb, vec3 sb, float sine, float depth,
+                   float cosn, float ratio) {
+    if (!smooth_normals(na, sa, nb, sb, cosn, ratio)) return false;
+    float cf = vdot(na, nb);
+    vec3 d = qb - pa;
+    float sf = sqrt(max(1.0 - cf * cf, 0.0));
+    float tolerance = (sine + sf) * vlength(d) + depth * zp;
+    return abs(vdot(na, d)) <= tolerance && abs(vdot(nb, d)) <= tolerance;
+}
+)glsl";
+
 constexpr const char* kTemporalMain = R"glsl(
 layout(std140, set = 0, binding = 0) uniform TemporalParams {
-    uvec4 extent;   // width, height, flags (1 reset), window radius
+    uvec4 extent;   // width, height, flags (1 reset, 2 shading normals), window radius
     uvec4 modes;    // tile, reconstruct, flow and depth, surface ids
     vec4 view_x;
     vec4 view_y;
@@ -49,7 +71,7 @@ layout(std140, set = 0, binding = 0) uniform TemporalParams {
     vec4 motion;     // to pixels x, y; jitter compensation x, y
     vec4 accumulate; // alpha min, variance frames, exposure ratio, 1 / alpha min
     vec4 change;     // z low, z high, floor J, floor A
-    vec4 geometry;   // plane sine, plane depth, normal cos
+    vec4 geometry;   // plane sine, plane depth, normal cos, hard-edge ratio (M8)
     vec4 moving;     // flow, depth, confidence
 } p;
 struct History { vec4 a; vec4 b; vec4 c; vec4 d; };
@@ -64,6 +86,10 @@ layout(std430, set = 0, binding = 8) writeonly buffer ColourOut { vec4 colour_ou
 layout(std430, set = 0, binding = 9) writeonly buffer VarianceOut { vec2 variance_out[]; };
 layout(std430, set = 0, binding = 10) writeonly buffer Diag { vec4 diag[]; };
 layout(std430, set = 0, binding = 11) writeonly buffer Diag2 { vec4 diag2[]; };
+#ifdef DGI_SHADING
+// M8: oriented shading normals per pixel (xyz, w = 1 when valid).
+layout(std430, set = 0, binding = 12) readonly buffer ShadingGeometry { vec4 shading_geo[]; };
+#endif
 
 float window_weight(int d, uint tile) {
     int a = d < 0 ? -d : d;
@@ -105,6 +131,11 @@ void main() {
     float depth = p.geometry.y;
     float cosn = p.geometry.z;
     vec3 pos = map_ray(p.view_x, p.view_y, float(id.x) + 0.5, float(id.y) + 0.5, W, H) * z;
+#ifdef DGI_SHADING
+    bool m8 = (p.extent.z & 2u) != 0u;
+    vec3 sn = m8 ? shading_geo[i].xyz : vec3(0.0);
+    float ratio = p.geometry.w;
+#endif
 
     // Current sample: stratum reconstruction and spatial variance.
     float sw = 0.0, sw2 = 0.0, sr = 0.0, sg = 0.0, sb = 0.0, sa = 0.0, sl = 0.0, sl2 = 0.0, sa2 = 0.0;
@@ -121,7 +152,12 @@ void main() {
             if (!is_receiver(gq)) continue;
             if (dx != 0 || dy != 0) {
                 vec3 pq = map_ray(p.view_x, p.view_y, float(qx) + 0.5, float(qy) + 0.5, W, H) * gq.w;
-                if (!compatible(pos, n, z, pq, gq.xyz, sine, depth, cosn)) continue;
+                if (!compatible(pos, n, z, pq, gq.xyz, sine, depth, cosn)
+#ifdef DGI_SHADING
+                    && !(m8 && smooth_crease(pos, n, sn, z, pq, gq.xyz, shading_geo[q].xyz, sine, depth, cosn, ratio))
+#endif
+                )
+                    continue;
             }
             vec4 rq = raw[q];
             if (!finite4(rq)) continue;
@@ -183,6 +219,14 @@ void main() {
         vec3 np = vec3(p.rot0.x * n.x + p.rot0.y * n.y + p.rot0.z * n.z,
                        p.rot1.x * n.x + p.rot1.y * n.y + p.rot1.z * n.z,
                        p.rot2.x * n.x + p.rot2.y * n.y + p.rot2.z * n.z);
+#ifdef DGI_SHADING
+        // M8: the shading normal in the previous view; the history keeps its
+        // own shading normal in c.w (without surface ids).
+        bool history_shading = m8 && p.modes.w == 0u;
+        vec3 sp = vec3(p.rot0.x * sn.x + p.rot0.y * sn.y + p.rot0.z * sn.z,
+                       p.rot1.x * sn.x + p.rot1.y * sn.y + p.rot1.z * sn.z,
+                       p.rot2.x * sn.x + p.rot2.y * sn.y + p.rot2.z * sn.z);
+#endif
         float qx = (float(id.x) + 0.5) + m.x * p.motion.x + p.motion.z;
         float qy = (float(id.y) + 0.5) + m.y * p.motion.y + p.motion.w;
         if (expected && pp.z < 0.0 && finite1(qx) && finite1(qy)) {
@@ -229,6 +273,17 @@ void main() {
                         vec3 xh = map_ray(p.prev_x, p.prev_y, tx + 0.5, ty + 0.5, W, H) * zh;
                         ok = compatible(pp, nh, zexp, xh, np, sine, depth, cosn);
                     }
+#ifdef DGI_SHADING
+                    if (!ok && history_shading) {
+                        vec3 sh = dgi_decode_normal(floatBitsToUint(hp.c.w));
+                        if (moving) {
+                            ok = abs(zh - zexp) <= p.moving.y * zexp && smooth_normals(np, sp, nh, sh, cosn, ratio);
+                        } else {
+                            vec3 xh = map_ray(p.prev_x, p.prev_y, tx + 0.5, ty + 0.5, W, H) * zh;
+                            ok = smooth_crease(pp, np, sp, zexp, xh, nh, sh, sine, depth, cosn, ratio);
+                        }
+                    }
+#endif
                     if (!ok) continue;
                     if (!finite4(hp.a) || !finite4(hp.b) || !finite1(hp.c.x) || !finite1(hp.c.y)) continue;
                     sum_w += w;
@@ -338,7 +393,11 @@ void main() {
     History h;
     h.a = vec4(J, m2);
     h.b = vec4(A, a2, N, NA);
-    h.c = vec4(v, va, confidence, p.modes.w != 0u ? float(ids[i]) : 0.0);
+    float history_tag = p.modes.w != 0u ? float(ids[i]) : 0.0;
+#ifdef DGI_SHADING
+    if (m8 && p.modes.w == 0u) history_tag = uintBitsToFloat(dgi_encode_normal(sn));
+#endif
+    h.c = vec4(v, va, confidence, history_tag);
     h.d = vec4(n, z);
     history_out[i] = h;
     flags |= 2u;
@@ -358,13 +417,16 @@ layout(std140, set = 0, binding = 0) uniform FilterParams {
     vec4 view_x;
     vec4 view_y;
     vec4 weights;  // luminance sigma, relative epsilon, plane sine, plane depth
-    vec4 normals;  // normal cos
+    vec4 normals;  // normal cos, hard-edge ratio (M8), shading normals (1 / 0, M8)
 } p;
 layout(std430, set = 0, binding = 1) readonly buffer Geometry { vec4 geo[]; };
 layout(std430, set = 0, binding = 2) readonly buffer ColourIn { vec4 colour_in[]; };
 layout(std430, set = 0, binding = 3) readonly buffer VarianceIn { vec2 variance_in[]; };
 layout(std430, set = 0, binding = 4) writeonly buffer ColourOut { vec4 colour_out[]; };
 layout(std430, set = 0, binding = 5) writeonly buffer VarianceOut { vec2 variance_out[]; };
+#ifdef DGI_SHADING
+layout(std430, set = 0, binding = 6) readonly buffer ShadingGeometry { vec4 shading_geo[]; };
+#endif
 
 float kernel_weight(int d) {
     if (d == -2 || d == 2) return 0.0625;
@@ -395,6 +457,10 @@ void main() {
     float z = g.w;
     vec3 n = g.xyz;
     vec3 pos = map_ray(p.view_x, p.view_y, float(id.x) + 0.5, float(id.y) + 0.5, W, H) * z;
+#ifdef DGI_SHADING
+    bool m8 = p.normals.z != 0.0;
+    vec3 sn = m8 ? shading_geo[i].xyz : vec3(0.0);
+#endif
     float lp = luma(c.xyz);
     float sum_j = 0.0, sum_a = 0.0, r = 0.0, gg = 0.0, b = 0.0, a = 0.0, var_j = 0.0, var_a = 0.0;
     int stride = int(p.extent.z);
@@ -408,7 +474,13 @@ void main() {
             if (!is_receiver(gq)) continue;
             if (dx != 0 || dy != 0) {
                 vec3 pq = map_ray(p.view_x, p.view_y, float(qx) + 0.5, float(qy) + 0.5, W, H) * gq.w;
-                if (!compatible(pos, n, z, pq, gq.xyz, p.weights.z, p.weights.w, p.normals.x)) continue;
+                if (!compatible(pos, n, z, pq, gq.xyz, p.weights.z, p.weights.w, p.normals.x)
+#ifdef DGI_SHADING
+                    && !(m8 && smooth_crease(pos, n, sn, z, pq, gq.xyz, shading_geo[q].xyz, p.weights.z, p.weights.w,
+                                             p.normals.x, p.normals.y))
+#endif
+                )
+                    continue;
             }
             vec4 cq = colour_in[q];
             vec2 vq = variance_in[q];
@@ -439,8 +511,24 @@ void main() {
 
 } // namespace
 
-std::string BuildDiffuseGiTemporalShader() { return std::string(kCommon) + kTemporalMain; }
+namespace {
+// The M8 variant: the shading-normal paths compiled in (DGI_SHADING), each
+// behind its uniform flag.
+std::string WithShading(const std::string& text) {
+    std::string out = text;
+    out.insert(out.find('\n') + 1, "#define DGI_SHADING 1\n");
+    return out;
+}
+} // namespace
 
-std::string BuildDiffuseGiFilterShader() { return std::string(kCommon) + kFilterMain; }
+std::string BuildDiffuseGiTemporalShader(bool shading) {
+    if (!shading) return std::string(kCommon) + kTemporalMain;
+    return WithShading(std::string(kCommon) + kSmoothSurface + kDiffuseGiNormalCodecGlsl + kTemporalMain);
+}
+
+std::string BuildDiffuseGiFilterShader(bool shading) {
+    if (!shading) return std::string(kCommon) + kFilterMain;
+    return WithShading(std::string(kCommon) + kSmoothSurface + kFilterMain);
+}
 
 } // namespace Fast::Renderer::DiffuseGi

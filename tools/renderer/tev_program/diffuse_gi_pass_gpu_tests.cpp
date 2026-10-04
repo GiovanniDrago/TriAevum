@@ -352,6 +352,7 @@ struct FrameData {
 
 struct Readback {
     std::vector<float> Normal, Results, Aux, Geometry, Colour, Variance, Diag2, Filtered, History, A;
+    std::vector<float> Shading; // M8: oriented shading normal per pixel (empty without an M8 stage)
     std::vector<uint16_t> J;
 };
 
@@ -455,8 +456,11 @@ class Runner {
                      {PassResourceId::Normal, &r.Normal}, {PassResourceId::Results, &r.Results},
                      {PassResourceId::Aux, &r.Aux}, {PassResourceId::Geometry, &r.Geometry},
                      {PassResourceId::Colour, &r.Colour}, {PassResourceId::Variance, &r.Variance},
-                     {PassResourceId::Diag2, &r.Diag2}, {filtered, &r.Filtered}, {history, &r.History}})
+                     {PassResourceId::Diag2, &r.Diag2}, {filtered, &r.Filtered}, {history, &r.History},
+                     {PassResourceId::Shading, &r.Shading}}) {
+                if (in.Pass.Buffer(id).Size == 0U) continue; // M8 buffers exist only with an M8 stage
                 buffers.push_back({job, id, out, reserve(in.Pass.Buffer(id).Size)});
+            }
             const VkDeviceSize texels = static_cast<VkDeviceSize>(in.Extent.BufferWidth) * in.Extent.BufferHeight;
             images.push_back({job, {reserve(8U * texels), reserve(4U * texels)}});
         }
@@ -539,6 +543,19 @@ class Runner {
             ids.assign(pixels, 0U);
             if (f.Ids != nullptr) ids = *f.Ids;
         }
+        // M8: the adapter's shading normals (xyz, w = 1 when present).
+        std::vector<float> shading;
+        if (in.Pass.Buffer(PassResourceId::ShadingNormal).Size != 0U) {
+            shading.assign(4 * texels, 0.0F);
+            for (size_t i = 0; i < texels && !input.ShadingNormals.empty(); ++i) {
+                float length2 = 0.0F;
+                for (int c = 0; c < 3; ++c) {
+                    shading[4 * i + c] = input.ShadingNormals[3 * i + c];
+                    length2 += shading[4 * i + c] * shading[4 * i + c];
+                }
+                shading[4 * i + 3] = length2 > 0.0F ? 1.0F : 0.0F;
+            }
+        }
         const std::vector<std::pair<PassResourceId, std::pair<const void*, size_t>>> parts{
             {PassResourceId::Depth, {depth.data(), depth.size() * 4}},
             {PassResourceId::Class, {classes.data(), classes.size() * 4}},
@@ -546,7 +563,8 @@ class Runner {
             {PassResourceId::Normal, {normals.data(), normals.size() * 4}},
             {PassResourceId::Motion, {motion.data(), motion.size() * 4}},
             {PassResourceId::PreviousPosition, {previous.data(), previous.size() * 4}},
-            {PassResourceId::SurfaceId, {ids.data(), ids.size() * 4}}};
+            {PassResourceId::SurfaceId, {ids.data(), ids.size() * 4}},
+            {PassResourceId::ShadingNormal, {shading.data(), shading.size() * 4}}};
         size_t total = 0;
         for (const auto& [id, part] : parts) total += (part.second + 15U) / 16U * 16U;
         Device::Buffer staging = D.MakeHost(total);
@@ -652,6 +670,11 @@ TemporalFrame TemporalInputOf(const Readback& g, const PassFrame& frame, const P
     f.Validation = frame.Validation;
     if (frame.Validation == HistoryValidation::PreviousPosition) f.PreviousPosition = *data.Previous;
     if (frame.SurfaceIds) f.SurfaceId = *data.Ids;
+    if (!g.Shading.empty()) {
+        f.ShadingNormal.resize(3 * count);
+        for (size_t i = 0; i < count; ++i)
+            for (int c = 0; c < 3; ++c) f.ShadingNormal[3 * i + c] = g.Shading[4 * i + c];
+    }
     return f;
 }
 
@@ -692,6 +715,11 @@ std::vector<FilteredPixel> FilterTwin(const Readback& g, const PassFrame& frame,
         in.A[i] = g.Colour[4 * i + 3];
         in.VarianceJ[i] = g.Variance[2 * i];
         in.VarianceA[i] = g.Variance[2 * i + 1];
+    }
+    if (!g.Shading.empty()) {
+        in.ShadingNormal.resize(3 * count);
+        for (size_t i = 0; i < count; ++i)
+            for (int c = 0; c < 3; ++c) in.ShadingNormal[3 * i + c] = g.Shading[4 * i + c];
     }
     return FilterImage(in, settings, Precision::Float32);
 }
@@ -853,6 +881,7 @@ GatherInput WorkInput(const GatherInput& full, const PassExtent& e) {
             for (int c = 0; c < 3; ++c) {
                 w.Radiance.push_back(full.Radiance[3 * t + c]);
                 w.FaceNormals.push_back(full.FaceNormals[3 * t + c]);
+                if (!full.ShadingNormals.empty()) w.ShadingNormals.push_back(full.ShadingNormals[3 * t + c]);
             }
         }
     return w;
@@ -882,6 +911,27 @@ std::vector<uint32_t> OutputGuideOf(const GatherInput& full) {
     return guide;
 }
 
+// The output guide's M8 shading codes: the shading normal of every receiver
+// texel, unit and on its face normal's side (oriented toward the eye).
+std::vector<uint32_t> OutputShadingOf(const GatherInput& full) {
+    if (full.ShadingNormals.empty()) return {};
+    std::vector<uint32_t> codes(static_cast<size_t>(full.BufferWidth) * full.BufferHeight, 0U);
+    const std::vector<uint32_t> guide = OutputGuideOf(full);
+    for (size_t t = 0; t < codes.size(); ++t) {
+        if (guide[2 * t] == 0U) continue;
+        const auto n = DecodeDiffuseGiNormal(guide[2 * t + 1]);
+        std::array<float, 3> s{full.ShadingNormals[3 * t], full.ShadingNormals[3 * t + 1],
+                               full.ShadingNormals[3 * t + 2]};
+        const float length = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
+        if (!(length > 0.0F) || !std::isfinite(length)) continue;
+        for (float& c : s) c /= length;
+        if (s[0] * n[0] + s[1] * n[1] + s[2] * n[2] < 0.0F)
+            for (float& c : s) c = -c;
+        codes[t] = EncodeDiffuseGiNormal(s);
+    }
+    return codes;
+}
+
 // Host data -> pass buffers (transfer writes ordered after earlier compute use).
 Device::Buffer UploadParts(Device& d, const DiffuseGiPass& pass,
                            const std::vector<std::pair<PassResourceId, std::vector<uint8_t>>>& parts) {
@@ -909,20 +959,33 @@ std::vector<uint8_t> Bytes(const std::vector<T>& values) {
     return out;
 }
 
-// The adapter inputs of a work image (what oot3d_diffuse_gi_inputs.comp writes).
+// The adapter inputs of a work image (what oot3d_diffuse_gi_inputs.comp writes;
+// M8: the shading normals and the output guide's shading codes when given).
 std::vector<std::pair<PassResourceId, std::vector<uint8_t>>> WorkParts(const GatherInput& w,
-                                                                        const std::vector<uint32_t>& guide) {
+                                                                        const std::vector<uint32_t>& guide,
+                                                                        const std::vector<uint32_t>& shadingGuide = {}) {
     const size_t texels = static_cast<size_t>(w.BufferWidth) * w.BufferHeight;
     std::vector<uint32_t> classes(w.Class.begin(), w.Class.end());
     std::vector<float> radiance(4 * texels, 0.0F), normals(4 * texels, 0.0F), motion(2 * texels, 0.0F);
+    std::vector<float> shading(w.ShadingNormals.empty() ? 0U : 4 * texels, 0.0F);
     for (size_t i = 0; i < texels; ++i)
         for (int c = 0; c < 3; ++c) {
             radiance[4 * i + c] = w.Radiance[3 * i + c];
             normals[4 * i + c] = w.FaceNormals[3 * i + c];
+            if (!shading.empty()) shading[4 * i + c] = w.ShadingNormals[3 * i + c];
         }
-    return {{PassResourceId::Depth, Bytes(w.Depth)},       {PassResourceId::Class, Bytes(classes)},
-            {PassResourceId::Radiance, Bytes(radiance)},    {PassResourceId::Normal, Bytes(normals)},
-            {PassResourceId::Motion, Bytes(motion)},        {PassResourceId::OutputGuide, Bytes(guide)}};
+    for (size_t i = 0; i < texels && !shading.empty(); ++i)
+        shading[4 * i + 3] = shading[4 * i] * shading[4 * i] + shading[4 * i + 1] * shading[4 * i + 1] +
+                                         shading[4 * i + 2] * shading[4 * i + 2] > 0.0F
+                                 ? 1.0F
+                                 : 0.0F;
+    std::vector<std::pair<PassResourceId, std::vector<uint8_t>>> parts{
+        {PassResourceId::Depth, Bytes(w.Depth)},       {PassResourceId::Class, Bytes(classes)},
+        {PassResourceId::Radiance, Bytes(radiance)},    {PassResourceId::Normal, Bytes(normals)},
+        {PassResourceId::Motion, Bytes(motion)},        {PassResourceId::OutputGuide, Bytes(guide)}};
+    if (!shading.empty()) parts.push_back({PassResourceId::ShadingNormal, Bytes(shading)});
+    if (!shadingGuide.empty()) parts.push_back({PassResourceId::OutputShading, Bytes(shadingGuide)});
+    return parts;
 }
 
 void ReadImage(Device& d, Device::Image& image, PassImageState& state, const Device::Buffer& readback,
@@ -980,8 +1043,10 @@ void SetupScaled(Device& d, ScaledRun& run, const GatherInput& full, uint32_t fa
     if (writeA) outputs.Accessibility = {run.A.Handle, run.A.View, run.A.Format, run.A.Width, run.A.Height};
     Require(run.Pass.Configure(run.Extent, run.Settings, {}, outputs), run.Pass.UnavailableReason());
     run.Parts.clear();
-    for (auto& part : WorkParts(run.Work, run.Guide))
-        if (part.first != PassResourceId::OutputGuide || factor > 1U) run.Parts.push_back(std::move(part));
+    // Only the inputs this pass allocates (output guides with a work scale,
+    // shading normals with an M8 stage).
+    for (auto& part : WorkParts(run.Work, run.Guide, factor > 1U ? OutputShadingOf(full) : std::vector<uint32_t>{}))
+        if (run.Pass.Buffer(part.first).Size != 0U && !part.second.empty()) run.Parts.push_back(std::move(part));
     run.Camera = full.Camera;
     run.NormalSource = full.NormalSource;
     run.WriteA = writeA;
@@ -1172,6 +1237,14 @@ GatherInput LoadDump(const std::string& dir) {
             in.FaceNormals[3 * i + c] = nrm[4 * i + c];
         }
     }
+    // M8: the shading normals (after the normal pass: unit, oriented, w valid).
+    if (std::ifstream(dir + "/ssgi_shading.bin").good()) {
+        const auto shading = ReadVector<float>(dir + "/ssgi_shading.bin");
+        Require(shading.size() == 4 * n, "dump shading size");
+        in.ShadingNormals.resize(3 * n);
+        for (size_t i = 0; i < n; ++i)
+            for (int c = 0; c < 3; ++c) in.ShadingNormals[3 * i + c] = shading[4 * i + 3] != 0.0F ? shading[4 * i + c] : 0.0F;
+    }
     return in;
 }
 
@@ -1180,7 +1253,8 @@ struct StudyConfig {
     uint32_t Factor = 2, Sections = 1, Candidates = 16, Sectors = 64, Filter = 4;
     bool Temporal = true;
     // Comma list: notemporal, s<spacing scale>, e<radial exponent>, nofp, nocache, l<max level>, every,
-    // t<thickness>, mf<px>, md<rel>, mc<frac>, am<alpha min> (FlowAndDepth, M7).
+    // t<thickness>, mf<px>, md<rel>, mc<frac>, am<alpha min> (FlowAndDepth, M7); M8: m8 (every stage),
+    // m8g / m8t / m8f / m8u (gather, temporal, filter, upsample alone), own<cos>, hr<ratio>.
     std::string Options;
 };
 
@@ -1199,6 +1273,17 @@ void ApplyStudyOptions(const std::string& options, PassSettings& s) {
             s.Gather.HierarchyFootprint = false;
             s.Gather.Cache = CacheMode::Off;
         }
+        // M8 smooth-shaded receivers: every stage, or one stage at a time.
+        else if (o == "m8") SetPassShadingNormals(s, true);
+        else if (o == "m8g") s.Gather.ShadingNormals = true;
+        else if (o == "m8t") s.Temporal.ShadingNormals = true;
+        else if (o == "m8f") s.Filter.ShadingNormals = true;
+        else if (o == "m8u") s.Upsample.ShadingNormals = true;
+        else if (o.rfind("own", 0) == 0) s.Gather.OwnSurfaceCos = std::atof(o.c_str() + 3);
+        else if (o.rfind("hr", 0) == 0) {
+            const double ratio = std::atof(o.c_str() + 2);
+            s.Gather.HardEdgeRatio = s.Temporal.HardEdgeRatio = s.Filter.HardEdgeRatio = s.Upsample.HardEdgeRatio = ratio;
+        }
         // FlowAndDepth parameters (M7): flow px, depth band, confidence, alpha min.
         else if (o.rfind("mf", 0) == 0) s.Temporal.MovingFlow = std::atof(o.c_str() + 2);
         else if (o.rfind("md", 0) == 0) s.Temporal.MovingDepth = std::atof(o.c_str() + 2);
@@ -1216,6 +1301,183 @@ double Percentile(std::vector<double> v, double q) {
     if (v.empty()) return 0.0;
     std::sort(v.begin(), v.end());
     return v[std::min(v.size() - 1U, static_cast<size_t>(q * static_cast<double>(v.size() - 1U) + 0.5))];
+}
+
+// ---------------------------------------------------------------------------
+// M8 metrics of an image at the guide extent (the coordinator's rules,
+// document "M8"): the faceting index (log-luminance step across the edges
+// between facets of one smooth-shaded surface over the step inside a facet)
+// and the Oklab chroma of the image against a reference.
+
+struct FacetMetrics {
+    double Index = -1.0;    // mean step over smooth facet edges / mean step over interior pairs
+    double HardIndex = -1.0; // the same over hard edges
+    size_t Interior = 0, Smooth = 0, Hard = 0;
+};
+
+// Receivers of the rules: one-sided, valid face and shading normals, finite depth.
+struct FacetReceivers {
+    uint32_t W = 0, H = 0;
+    std::vector<uint8_t> Valid;
+    std::vector<double> Z;
+    std::vector<std::array<double, 3>> Face, Shading;
+};
+
+FacetReceivers MakeFacetReceivers(const GatherInput& in) {
+    FacetReceivers r;
+    r.W = in.BufferWidth, r.H = in.BufferHeight;
+    const size_t n = static_cast<size_t>(r.W) * r.H;
+    r.Valid.assign(n, 0U);
+    r.Z.assign(n, 0.0);
+    r.Face.assign(n, {});
+    r.Shading.assign(n, {});
+    if (in.ShadingNormals.size() != 3U * n) return r;
+    const auto unit = [](double x, double y, double z, std::array<double, 3>& out) {
+        const double l = std::sqrt(x * x + y * y + z * z);
+        if (!(l > 0.0) || !std::isfinite(l)) return false;
+        out = {x / l, y / l, z / l};
+        return true;
+    };
+    for (size_t t = 0; t < n; ++t) {
+        if (in.Class[t] != static_cast<uint8_t>(TexelClass::OneSided)) continue;
+        const double z = DecodeViewDepth(in.Depth[t], in.Camera);
+        if (!(z > 0.0) || !std::isfinite(z)) continue;
+        if (!unit(in.FaceNormals[3 * t], in.FaceNormals[3 * t + 1], in.FaceNormals[3 * t + 2], r.Face[t])) continue;
+        if (!unit(in.ShadingNormals[3 * t], in.ShadingNormals[3 * t + 1], in.ShadingNormals[3 * t + 2], r.Shading[t]))
+            continue;
+        r.Z[t] = z;
+        r.Valid[t] = 1U;
+    }
+    return r;
+}
+
+// `y`: luminance per texel.
+FacetMetrics FacetIndex(const FacetReceivers& r, const std::vector<double>& y) {
+    FacetMetrics m;
+    const size_t n = static_cast<size_t>(r.W) * r.H;
+    std::vector<double> positive;
+    for (size_t t = 0; t < n; ++t)
+        if (r.Valid[t] && y[t] > 0.0) positive.push_back(y[t]);
+    if (positive.empty()) return m;
+    std::nth_element(positive.begin(), positive.begin() + static_cast<std::ptrdiff_t>(positive.size() / 2),
+                     positive.end());
+    const double eps = 0.05 * positive[positive.size() / 2];
+    const auto degrees = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+        const double c = std::clamp(a[0] * b[0] + a[1] * b[1] + a[2] * b[2], -1.0, 1.0);
+        return std::acos(c) * 180.0 / kPi;
+    };
+    double interior = 0.0, smooth = 0.0, hard = 0.0;
+    for (uint32_t yy = 0; yy < r.H; ++yy)
+        for (uint32_t xx = 0; xx < r.W; ++xx) {
+            const size_t p = static_cast<size_t>(yy) * r.W + xx;
+            if (!r.Valid[p]) continue;
+            for (int k = 0; k < 2; ++k) {
+                if (k == 0 ? xx + 1U >= r.W : yy + 1U >= r.H) continue;
+                const size_t q = k == 0 ? p + 1U : p + r.W;
+                if (!r.Valid[q] || !(std::abs(r.Z[p] - r.Z[q]) <= 0.03 * std::min(r.Z[p], r.Z[q]))) continue;
+                const double tf = degrees(r.Face[p], r.Face[q]);
+                const double ts = degrees(r.Shading[p], r.Shading[q]);
+                const double g = std::abs(std::log(y[p] + eps) - std::log(y[q] + eps));
+                if (tf < 0.3) {
+                    interior += g;
+                    ++m.Interior;
+                } else if (tf >= 3.0 && tf <= 50.0 && ts <= std::max(2.0, tf / 3.0)) {
+                    smooth += g;
+                    ++m.Smooth;
+                }
+                if (tf >= 3.0 && ts > tf / 2.0) {
+                    hard += g;
+                    ++m.Hard;
+                }
+            }
+        }
+    if (m.Interior > 0U && interior > 0.0) {
+        const double base = interior / static_cast<double>(m.Interior);
+        if (m.Smooth > 0U) m.Index = smooth / static_cast<double>(m.Smooth) / base;
+        if (m.Hard > 0U) m.HardIndex = hard / static_cast<double>(m.Hard) / base;
+    }
+    return m;
+}
+
+std::vector<double> HalfImageLuminance(const std::vector<uint16_t>& j) {
+    std::vector<double> y(j.size() / 4U);
+    for (size_t t = 0; t < y.size(); ++t)
+        y[t] = 0.2126 * FromHalf(j[4 * t]) + 0.7152 * FromHalf(j[4 * t + 1]) + 0.0722 * FromHalf(j[4 * t + 2]);
+    return y;
+}
+
+struct ChromaMetrics {
+    double Mean = -1.0, P90 = -1.0;            // Oklab ab distance to the reference, weighted by reference Y
+    std::array<double, 2> Cast{}, CastRef{};   // weighted mean (a, b)
+    double Saturation = 0.0, SaturationRef = 0.0; // weighted mean |(a, b)|
+    size_t Count = 0;
+};
+
+// Oklab (a, b) of a linear sRGB colour (the published Oklab matrices).
+std::array<double, 2> OklabAb(double r, double g, double b) {
+    const double l = std::cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const double m = std::cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const double s = std::cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    return {1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+            0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s};
+}
+
+ChromaMetrics Chroma(const FacetReceivers& r, const std::vector<uint16_t>& image, const std::vector<uint16_t>& ref) {
+    ChromaMetrics c;
+    const size_t n = static_cast<size_t>(r.W) * r.H;
+    const auto luma = [](const std::vector<uint16_t>& j, size_t t) {
+        return 0.2126 * FromHalf(j[4 * t]) + 0.7152 * FromHalf(j[4 * t + 1]) + 0.0722 * FromHalf(j[4 * t + 2]);
+    };
+    double meanRef = 0.0;
+    size_t receivers = 0;
+    for (size_t t = 0; t < n; ++t)
+        if (r.Valid[t]) meanRef += luma(ref, t), ++receivers;
+    if (receivers == 0U) return c;
+    meanRef /= static_cast<double>(receivers);
+    std::vector<std::pair<double, double>> weighted; // distance, weight
+    double sw = 0.0, sd = 0.0;
+    for (size_t t = 0; t < n; ++t) {
+        if (!r.Valid[t]) continue;
+        const double yr = luma(ref, t), yi = luma(image, t);
+        if (!(yr > 0.05 * meanRef) || !(yi > 1.0e-6)) continue;
+        const auto ai = OklabAb(FromHalf(image[4 * t]) / yi, FromHalf(image[4 * t + 1]) / yi,
+                                FromHalf(image[4 * t + 2]) / yi);
+        const auto ar = OklabAb(FromHalf(ref[4 * t]) / yr, FromHalf(ref[4 * t + 1]) / yr, FromHalf(ref[4 * t + 2]) / yr);
+        const double d = std::hypot(ai[0] - ar[0], ai[1] - ar[1]);
+        weighted.push_back({d, yr});
+        sw += yr, sd += yr * d;
+        c.Cast[0] += yr * ai[0], c.Cast[1] += yr * ai[1];
+        c.CastRef[0] += yr * ar[0], c.CastRef[1] += yr * ar[1];
+        c.Saturation += yr * std::hypot(ai[0], ai[1]);
+        c.SaturationRef += yr * std::hypot(ar[0], ar[1]);
+    }
+    if (!(sw > 0.0)) return c;
+    c.Count = weighted.size();
+    c.Mean = sd / sw;
+    for (double& v : c.Cast) v /= sw;
+    for (double& v : c.CastRef) v /= sw;
+    c.Saturation /= sw;
+    c.SaturationRef /= sw;
+    std::sort(weighted.begin(), weighted.end());
+    double cumulative = 0.0;
+    for (const auto& [d, w] : weighted) {
+        cumulative += w;
+        if (cumulative >= 0.9 * sw) {
+            c.P90 = d;
+            break;
+        }
+    }
+    return c;
+}
+
+void PrintFacetAndChroma(const char* name, const FacetReceivers& r, const std::vector<uint16_t>& image,
+                         const std::vector<uint16_t>& ref) {
+    const FacetMetrics f = FacetIndex(r, HalfImageLuminance(image));
+    const ChromaMetrics c = Chroma(r, image, ref);
+    std::printf("DGI_STUDY_M8 config=%s FI=%.2f hard_edges=%.2f pairs interior=%zu smooth=%zu hard=%zu | chroma "
+                "dist mean=%.4f p90=%.4f cast=(%+.3f,%+.3f) ref=(%+.3f,%+.3f) saturation=%.3f ref=%.3f n=%zu\n",
+                name, f.Index, f.HardIndex, f.Interior, f.Smooth, f.Hard, c.Mean, c.P90, c.Cast[0], c.Cast[1],
+                c.CastRef[0], c.CastRef[1], c.Saturation, c.SaturationRef, c.Count);
 }
 
 // Arguments: --study DIR [R TAU FRAMES CONFIG...]; CONFIG is
@@ -1284,6 +1546,17 @@ int Study(Device& d, const PassDevice& passDevice, std::shared_ptr<DiffuseGiKern
                     full.BufferHeight);
     };
     save("reference", refJ);
+    // M8: faceting and chroma of the reference (and of the dump's direct light).
+    const FacetReceivers facets = MakeFacetReceivers(full);
+    {
+        std::vector<double> direct(static_cast<size_t>(full.BufferWidth) * full.BufferHeight);
+        for (size_t t = 0; t < direct.size(); ++t)
+            direct[t] = 0.2126 * full.Radiance[3 * t] + 0.7152 * full.Radiance[3 * t + 1] + 0.0722 * full.Radiance[3 * t + 2];
+        const FacetMetrics f = FacetIndex(facets, direct);
+        std::printf("DGI_STUDY_M8 config=direct_light FI=%.2f hard_edges=%.2f pairs interior=%zu smooth=%zu hard=%zu\n",
+                    f.Index, f.HardIndex, f.Interior, f.Smooth, f.Hard);
+    }
+    PrintFacetAndChroma("reference", facets, refJ, refJ);
     // Configurations interleaved frame by frame (A/B ordering per round).
     std::vector<std::unique_ptr<ScaledRun>> runs;
     std::vector<std::vector<std::array<double, kPassKernelCount + 1U>>> samples(configs.size());
@@ -1337,6 +1610,7 @@ int Study(Device& d, const PassDevice& passDevice, std::shared_ptr<DiffuseGiKern
         compare(runs[r]->OutJ, ratio, error, holes);
         compare(firstJ[r], ratio1, error1, holes1);
         save(c.Name, runs[r]->OutJ);
+        PrintFacetAndChroma(c.Name.c_str(), facets, runs[r]->OutJ, refJ);
         std::printf("DGI_STUDY config=%s factor=%u S=%u K=%u N=%u filter=%u temporal=%d samples=%zu total_p50=%.3f "
                     "p95=%.3f | normal=%.3f level0=%.3f reduce=%.3f gather=%.3f pack=%.3f temporal=%.3f filter=%.3f "
                     "output=%.3f upsample=%.3f (p50 ms) | converged J ratio=%.4f mean|dJ|/J=%.4f | frame-1 J "
@@ -1402,8 +1676,8 @@ void UseCapturedFrame(ScaledRun& run, const CapturedFrame& f) {
     run.Guide = factor > 1U ? OutputGuideOf(f.Input) : std::vector<uint32_t>{};
     const std::vector<float> motion = factor > 1U ? WorkMotion(f, run.Extent) : f.Motion;
     run.Parts.clear();
-    for (auto& part : WorkParts(run.Work, run.Guide)) {
-        if (part.first == PassResourceId::OutputGuide && factor == 1U) continue;
+    for (auto& part : WorkParts(run.Work, run.Guide, factor > 1U ? OutputShadingOf(f.Input) : std::vector<uint32_t>{})) {
+        if (run.Pass.Buffer(part.first).Size == 0U || part.second.empty()) continue;
         if (part.first == PassResourceId::Motion) part.second = Bytes(motion);
         run.Parts.push_back(std::move(part));
     }
@@ -2251,6 +2525,81 @@ int main(int argc, char** argv) try {
         runner.Release(pass);
     }
 
+    // --- M8: smooth-shaded receivers (shading normals from the guide) on a
+    // low-poly sphere resting on a floor and inside a concave trough; every
+    // stage against its FP32 twin, and the flat scene with the shading normal
+    // equal to the face normal bit for bit against the M7 path.
+    for (const Scene& scene : {LowPolySphereScene(97, 61, 2, true, true), TroughScene(97, 61, 12, true)}) {
+        GatherInput input = Rasterize(scene);
+        input.NormalSource = GeometricNormalSource::RendererFaceNormal;
+        QuantizeShadingNormals8(input);
+        PassSettings settings = SceneSettings(4.5, 0.5);
+        SetPassShadingNormals(settings, true);
+        Instance pass;
+        Require(pass.Pass.Initialize(passDevice, shaders), pass.Pass.UnavailableReason());
+        Require(runner.Configure(pass, ExtentOf(input), settings, {}), pass.Pass.UnavailableReason());
+        const std::vector<double> motion(2U * input.Viewport.Width * input.Viewport.Height, 0.0);
+        TemporalAccumulator temporalTwin(Precision::Float32);
+        Totals totals;
+        for (uint64_t k = 0; k < 8; ++k) {
+            FrameData data{&input, &motion};
+            const PassFrame frame = MakeFrame(input, k);
+            Job job{&pass, data, frame};
+            runner.Run({&job});
+            Require(job.Ok, pass.Pass.UnavailableReason());
+            Require(job.Out.Shading.size() == 4U * input.Viewport.Width * input.Viewport.Height,
+                    "the M8 pass did not publish its shading normals");
+            CompareGather(job.Out, GatherTwin(input, settings, k), totals);
+            const TemporalFrame tf = TemporalInputOf(job.Out, frame, settings, input.Viewport.Width,
+                                                     input.Viewport.Height, data);
+            const TemporalResult tr = temporalTwin.Process(tf, settings.Temporal);
+            totals.ReasonMismatch += tr.ResetReasons != pass.Pass.Stats().LastResetReasons ? 1U : 0U;
+            CompareTemporal(job.Out, tr, temporalTwin.History(), totals);
+            CompareFilter(job.Out, FilterTwin(job.Out, frame, settings.Filter, input.Viewport.Width,
+                                              input.Viewport.Height),
+                          totals);
+            CompareOutput(job.Out, pass.Extent, totals);
+            ++totals.Frames;
+        }
+        PrintTotals(scene.Name.c_str(), totals);
+        RequireTotals(totals);
+        runner.Release(pass);
+    }
+    {
+        Scene scene = CheckerRoomScene(101, 67);
+        scene.ShadingGuide = true; // shading normal = face normal (flat)
+        GatherInput input = Rasterize(scene);
+        input.NormalSource = GeometricNormalSource::RendererFaceNormal;
+        PassSettings m7 = SceneSettings(2.5, 0.5), m8 = m7;
+        SetPassShadingNormals(m8, true);
+        Instance a, b;
+        Require(a.Pass.Initialize(passDevice, shaders) && b.Pass.Initialize(passDevice, shaders), "M8 flat instances");
+        Require(runner.Configure(a, ExtentOf(input), m7, {}) && runner.Configure(b, ExtentOf(input), m8, {}),
+                "M8 flat configure");
+        const std::vector<double> motion(2U * input.Viewport.Width * input.Viewport.Height, 0.0);
+        size_t different = 0, values = 0;
+        for (uint64_t k = 0; k < 6; ++k) {
+            FrameData data{&input, &motion};
+            const PassFrame frame = MakeFrame(input, k);
+            Job ja{&a, data, frame}, jb{&b, data, frame};
+            runner.Run({&ja, &jb});
+            Require(ja.Ok && jb.Ok, "M8 flat run");
+            for (const auto& [x, y] : std::vector<std::pair<const std::vector<float>*, const std::vector<float>*>>{
+                     {&ja.Out.Results, &jb.Out.Results}, {&ja.Out.Colour, &jb.Out.Colour},
+                     {&ja.Out.Filtered, &jb.Out.Filtered}, {&ja.Out.A, &jb.Out.A}}) {
+                different += CountDifferent(*x, *y);
+                values += x->size();
+            }
+            different += CountDifferent(ja.Out.J, jb.Out.J);
+            values += ja.Out.J.size();
+        }
+        std::printf("DGI_GPU_M8 flat_checker_101x67 frames=6 values=%zu bit_different_from_m7_path=%zu\n", values,
+                    different);
+        Require(different == 0U, "M8 on flat surfaces differs from the M7 path");
+        runner.Release(a);
+        runner.Release(b);
+    }
+
     // --- History ownership: two views interleaved in one command buffer equal
     // their solo runs bit for bit; one instance shared by two views resets at
     // every view change and then equals a first frame.
@@ -2771,8 +3120,10 @@ int main(int argc, char** argv) try {
     }
 
     // --- The OOT3D adapter kernel against its FP32 twin (open point 25):
-    // synthetic guides with sky, invalid, unknown-normal and kind-0 texels.
-    {
+    // synthetic guides with sky, invalid, unknown-normal and kind-0 texels;
+    // then with the M8 normal guide (uncovered, degenerate and back-facing
+    // shading normals).
+    for (const bool m8 : {false, true}) {
         using namespace Fast::Oot3d;
         const uint32_t W = 13, H = 9;
         const PassExtent e = MakeWorkScaleExtent(W, H, 2);
@@ -2781,8 +3132,9 @@ int main(int argc, char** argv) try {
         camera.Far = 1000.0;
         camera.ViewX = {1.0, 0.0, -0.5};
         camera.ViewY = {0.0, -0.6, 0.3};
-        const DiffuseGiAdapterParams params = MakeDiffuseGiAdapterParams(e, camera);
+        const DiffuseGiAdapterParams params = MakeDiffuseGiAdapterParams(e, camera, m8);
         std::vector<float> depth(W * H);
+        std::vector<uint8_t> normalGuide(4U * W * H);
         std::vector<uint32_t> geometry(4U * W * H);
         std::vector<uint16_t> surface(4U * W * H), motion(4U * W * H);
         uint32_t state = 12345U;
@@ -2799,6 +3151,13 @@ int main(int argc, char** argv) try {
             surface[4 * t + 3] = t % 5U == 0U ? 0U : 65535U;
             motion[4 * t] = ToHalf(static_cast<float>(static_cast<int>(next() >> 24) - 128) / 4096.0F, true);
             motion[4 * t + 1] = ToHalf(static_cast<float>(static_cast<int>(next() >> 24) - 128) / 4096.0F, true);
+            const float b = static_cast<float>(next() >> 8) / 16777216.0F * 6.2831853F;
+            const float zs = t % 4U == 0U ? -0.5F : 0.9F; // every fourth faces away from the face normal
+            const std::array<float, 3> sn{0.4F * std::cos(b), 0.4F * std::sin(b), zs};
+            for (int c = 0; c < 3; ++c)
+                normalGuide[4 * t + c] =
+                    t % 9U == 0U ? 128U : static_cast<uint8_t>(std::lround((0.5F * sn[c] + 0.5F) * 255.0F));
+            normalGuide[4 * t + 3] = t % 6U == 0U ? 0U : 255U;
         }
         DiffuseGiAdapterKernel adapter;
         const auto spirv =
@@ -2807,13 +3166,14 @@ int main(int argc, char** argv) try {
         Require(adapter.Create(device.Handle, spirv), "adapter pipeline");
         ScaledRun run; // output images and the pass buffers only
         run.Settings = SceneSettings(2.5, 0.5);
+        if (m8) SetPassShadingNormals(run.Settings, true);
         Require(run.Pass.Initialize(passDevice, kernels), run.Pass.UnavailableReason());
         run.J = device.MakeImage(VK_FORMAT_R16G16B16A16_SFLOAT, W, H);
         Require(run.Pass.Configure(e, run.Settings, {}, {{run.J.Handle, run.J.View, run.J.Format, W, H}, {}}),
                 run.Pass.UnavailableReason());
         VkDescriptorPool pool{};
-        const std::array<VkDescriptorPoolSize, 2> sizes{{{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4},
-                                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6}}};
+        const std::array<VkDescriptorPoolSize, 2> sizes{{{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 5},
+                                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8}}};
         VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         poolInfo.maxSets = 1;
         poolInfo.poolSizeCount = 2;
@@ -2835,15 +3195,18 @@ int main(int argc, char** argv) try {
             MakeSampled(device, VK_FORMAT_R16G16B16A16_UNORM, W, H, surface.data(), surface.size() * 2, staging);
         Device::Image motionImage =
             MakeSampled(device, VK_FORMAT_R16G16B16A16_SFLOAT, W, H, motion.data(), motion.size() * 2, staging);
+        Device::Image normalImage =
+            MakeSampled(device, VK_FORMAT_R8G8B8A8_UNORM, W, H, normalGuide.data(), normalGuide.size(), staging);
         Require(RecordDiffuseGiAdapter(device.Handle, device.Command, adapter, set,
-                                       {depthImage.View, geometryImage.View, surfaceImage.View, motionImage.View},
+                                       {depthImage.View, geometryImage.View, surfaceImage.View, motionImage.View,
+                                        m8 ? normalImage.View : VK_NULL_HANDLE},
                                        run.Pass, params),
                 "adapter recording");
-        const std::array<PassResourceId, 6> ids{PassResourceId::Depth,  PassResourceId::Class,
-                                                PassResourceId::Radiance, PassResourceId::Normal,
-                                                PassResourceId::Motion, PassResourceId::OutputGuide};
+        std::vector<PassResourceId> ids{PassResourceId::Depth,  PassResourceId::Class,  PassResourceId::Radiance,
+                                        PassResourceId::Normal, PassResourceId::Motion, PassResourceId::OutputGuide};
+        if (m8) ids.push_back(PassResourceId::ShadingNormal), ids.push_back(PassResourceId::OutputShading);
         VkDeviceSize total = 0;
-        std::array<VkDeviceSize, 6> offsets{};
+        std::vector<VkDeviceSize> offsets(ids.size());
         for (size_t k = 0; k < ids.size(); ++k) offsets[k] = total, total += run.Pass.Buffer(ids[k]).Size;
         Device::Buffer readback = device.MakeHost(total);
         device.MemoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
@@ -2867,8 +3230,8 @@ int main(int argc, char** argv) try {
             std::memcpy(&v, bytes + offsets[k] + 4U * index, 4);
             return v;
         };
-        size_t guideTexels = 0, guideDiffer = 0, workTexels = 0, workDiffer = 0;
-        double maxRadiance = 0.0, maxNormal = 0.0, maxMotion = 0.0;
+        size_t guideTexels = 0, guideDiffer = 0, workTexels = 0, workDiffer = 0, shadingDiffer = 0, shadingValid = 0;
+        double maxRadiance = 0.0, maxNormal = 0.0, maxMotion = 0.0, maxShading = 0.0;
         float maxDepth = 0.0F;
         for (uint32_t y = 0; y < H; ++y)
             for (uint32_t x = 0; x < W; ++x) {
@@ -2877,7 +3240,9 @@ int main(int argc, char** argv) try {
                 for (int c = 0; c < 4; ++c) s[c] = surface[4 * t + c] / 65535.0F;
                 const DiffuseGiAdapterTexel twin = DiffuseGiAdapterTexelF32(
                     params, depth[t], {geometry[4 * t], geometry[4 * t + 1], geometry[4 * t + 2], geometry[4 * t + 3]},
-                    s, {FromHalf(motion[4 * t]), FromHalf(motion[4 * t + 1])});
+                    s, {FromHalf(motion[4 * t]), FromHalf(motion[4 * t + 1])},
+                    {normalGuide[4 * t] / 255.0F, normalGuide[4 * t + 1] / 255.0F, normalGuide[4 * t + 2] / 255.0F,
+                     normalGuide[4 * t + 3] / 255.0F});
                 // Output guide: the same receivers; view depth within 1e-5
                 // relative (the perspective decode cancels near the far
                 // plane, so FP32 contraction moves its last bits; the
@@ -2896,6 +3261,13 @@ int main(int argc, char** argv) try {
                                                            axis(gn, twin.Guide[1], 16));
                 guideDiffer += zSame && nSame ? 0U : 1U;
                 ++guideTexels;
+                if (m8) { // M8 output-guide shading code: one step per axis (inversesqrt vs 1 / sqrt)
+                    const uint32_t gs = u32(7, t);
+                    const bool sSame = gs == twin.ShadingGuide || (gs != 0U && twin.ShadingGuide != 0U &&
+                                                                   axis(gs, twin.ShadingGuide, 0) &&
+                                                                   axis(gs, twin.ShadingGuide, 16));
+                    shadingDiffer += sSame ? 0U : 1U;
+                }
                 if (x < e.WorkPhase || y < e.WorkPhase || (x - e.WorkPhase) % 2U != 0U || (y - e.WorkPhase) % 2U != 0U)
                     continue;
                 const size_t w = static_cast<size_t>((y - e.WorkPhase) / 2U) * e.BufferWidth + (x - e.WorkPhase) / 2U;
@@ -2906,6 +3278,14 @@ int main(int argc, char** argv) try {
                 }
                 for (int c = 0; c < 2; ++c)
                     maxMotion = std::max(maxMotion, static_cast<double>(std::abs(f32(4, 2 * w + c) - twin.Motion[c])));
+                if (m8) {
+                    const bool valid = twin.Shading[0] != 0.0F || twin.Shading[1] != 0.0F || twin.Shading[2] != 0.0F;
+                    same = same && f32(6, 4 * w + 3) == (valid ? 1.0F : 0.0F);
+                    shadingValid += valid ? 1U : 0U;
+                    for (int c = 0; c < 3; ++c)
+                        maxShading =
+                            std::max(maxShading, static_cast<double>(std::abs(f32(6, 4 * w + c) - twin.Shading[c])));
+                }
                 workDiffer += same ? 0U : 1U;
                 ++workTexels;
             }
@@ -2914,12 +3294,19 @@ int main(int argc, char** argv) try {
                     "max_rel_guide_depth=%.2e pipeline_ms=%.1f\n",
                     W, H, e.BufferWidth, e.BufferHeight, guideTexels, guideDiffer, workTexels, workDiffer, maxRadiance,
                     maxNormal, maxMotion, maxDepth, adapter.CreationMilliseconds());
-        Require(guideDiffer == 0 && workDiffer == 0, "adapter decoding differs from its twin");
-        Require(maxRadiance <= 2.0e-6 && maxNormal <= 2.0e-6 && maxMotion == 0.0, "adapter values beyond rounding");
+        if (m8)
+            std::printf("DGI_GPU_M8 adapter normal_guide work_texels=%zu shading_valid=%zu max|d shading|=%.2e "
+                        "guide_shading_differ=%zu/%zu\n",
+                        workTexels, shadingValid, maxShading, shadingDiffer, guideTexels);
+        Require(guideDiffer == 0 && workDiffer == 0 && shadingDiffer == 0, "adapter decoding differs from its twin");
+        Require(maxRadiance <= 2.0e-6 && maxNormal <= 2.0e-6 && maxMotion == 0.0 && maxShading <= 2.0e-6,
+                "adapter values beyond rounding");
+        Require(!m8 || (shadingValid > 0U && shadingValid < workTexels), "the M8 guide cases did not occur");
         Check(vkDeviceWaitIdle(device.Handle));
         device.Free(readback);
         for (auto& b : staging) device.Free(b);
-        for (Device::Image* image : {&depthImage, &geometryImage, &surfaceImage, &motionImage}) device.Free(*image);
+        for (Device::Image* image : {&depthImage, &geometryImage, &surfaceImage, &motionImage, &normalImage})
+            device.Free(*image);
         vkDestroyDescriptorPool(device.Handle, pool, nullptr);
         adapter.Destroy();
         ReleaseScaled(device, run);

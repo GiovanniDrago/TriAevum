@@ -1,6 +1,10 @@
 # Screen-space diffuse GI (clean-room implementation)
 
-Status: **M7 done** (2026-10-04: temporal quality measured on two captured
+Status: **M8 done** (2026-10-04: smooth-shaded receivers; the cosine lobe
+follows the renderer's shading normal, the face normal keeps visibility, the
+receiver's own smooth surface no longer darkens its creases and the post
+stages cross them; facet index 28.5 -> 2.22 on kit frame 400 with the colour
+kept; see "M8"), on top of **M7 done** (2026-10-04: temporal quality measured on two captured
 motion sequences; FlowAndDepth moving class off and radial exponent 1.5 in
 the OOT3D adapter; bilinear history, AlphaMin, guiding/SH/blue noise and the
 guide rules unchanged with numbers; the EveryTexel truth is the reference;
@@ -2805,4 +2809,334 @@ DGI_NO_VALIDATION=1 DGI_SEQ_REFS=<refs> diffuse_gi_pass_gpu_tests --sequence <se
 diffuse_gi_pass_gpu_tests --cpu-study <seq> 150 30 16
 DGI_NO_VALIDATION=1 DGI_STUDY_REFERENCE=2:4:64:128:4 DGI_STUDY_REFERENCE_OPTIONS=every
   diffuse_gi_pass_gpu_tests --study <seq>/f300 150 30 48 m6:4:1:20:64:2:e1 m7:4:1:20:64:2:e1.5 ...
+```
+
+## M8: smooth-shaded receivers
+
+The game shades its low-poly models with interpolated vertex normals; M7
+oriented every receiver's cosine lobe by the face normal, so the GI changed
+in steps at the facet edges ("it emphasizes the low-poly nature of the
+game") while its colour stayed faithful. M8 orients the lobe by the
+renderer's shading normal, keeps the face normal for visibility, and lets
+the post stages cross the creases of one smooth surface. The colour metrics
+are unchanged. Default on; `SetPassShadingNormals(settings, false)` restores
+the M7 receivers bit for bit (R5).
+
+### Metrics (study tool)
+
+`diffuse_gi_pass_gpu_tests --study` prints `DGI_STUDY_M8` lines for the
+direct light (the dump's outgoing radiance), the reference and every
+configuration, with the definitions of the M8 brief:
+
+- Receivers: class OneSided, a valid face normal and a valid shading normal
+  (the dump's `ssgi_shading.bin`, the adapter's decoded guide). Neighbour
+  pairs right and down, both receivers, `|z_p - z_q| <= 0.03 min(z_p, z_q)`
+  (linear view depth of the dump camera). `tf`, `ts`: angles between the
+  face normals and between the shading normals (degrees). Interior pair
+  `tf < 0.3`; smooth facet edge `3 <= tf <= 50` and `ts <= max(2, tf / 3)`;
+  hard edge `tf >= 3` and `ts > tf / 2`.
+- `Y` = 0.2126 R + 0.7152 G + 0.0722 B; `eps` = 0.05 median of Y over
+  receivers with Y > 0; `g = |ln(Y_p + eps) - ln(Y_q + eps)|`. Facet index
+  FI = mean g over smooth facet edges / mean g over interior pairs (1: the
+  facets are not marked); the same ratio over hard edges is printed as
+  `hard_edges` (real discontinuities of the lighting, which must stay).
+- Chroma: receivers with reference Y > 0.05 mean reference Y and image
+  Y > 1e-6; every colour divided by its own Y, Oklab (a, b); the distance to
+  the reference's (a, b) weighted by the reference Y (mean, p90); the
+  weighted mean (a, b) (cast) and weighted mean |(a, b)| (saturation).
+
+Own dump of kit frame 400 (work factor 1, cold cache, guide 1440x1280):
+3,285,818 interior pairs, 24,928 smooth facet edges, 10,395 hard edges (the
+brief's own capture: 3,287,066 and 25,925). Direct light FI 1.72 (brief:
+1.74); this GI as M7 runs it (Quarter, S1, K20, N64, 2 levels, e1.5) FI
+28.50 (brief: 28.4); the M7 reference FI 22.5 (brief: 17.8 on its capture).
+
+### Receiver policy (R1, R3)
+
+Input. The adapter decodes the renderer's normal guide (RGBA8, view space,
+0.5 n + 0.5, alpha = coverage) into the pass input `ShadingNormal` (work
+scale, xyz and a valid flag) and, for the upsampler, an output-guide shading
+code (the octahedral code of the face-normal guide). A guide texel is valid
+when its alpha is non-zero and `|2 rgb - 1|^2 > 1/16`; the decoded normal is
+made unit and turned to the face normal's side when it points below the face
+plane. Receivers without a valid shading normal keep the face normal (M7)
+for every rule below. The guide is the normal the per-pixel lighting shades
+the pixel with: the authored interpolated vertex normal (surface, material,
+PBR or typed authored normal; the derivative flat normal where none is
+authored). The GI follows the guide as the renderer publishes it: when the
+renderer bends it (texture relief of the AO path, only with AO and its relief
+option on; normal maps, if a material path writes them), the lobe follows;
+the GI adds no relief of its own. The kit configuration has the relief off.
+
+Lobe. The cosine lobe of every receiver (hemisphere orientation, cosine
+weights, the per-slice projected normal `a = n_s . v`, `b = n_s . t` and the
+lobe edges) uses the shading normal `n_s`.
+
+Visibility. The face normal `n_f` stays where horizons start. A candidate
+point `e`, `d = e - P`, `tol = sine |d| + depth z_P` (the M2
+self-intersection tolerances), is hidden when
+
+1. `|d . n_f| <= tol`: the receiver's own facet plane;
+2. `d . n_s <= tol`: below the shading tangent plane, outside the lobe;
+3. it is the receiver's own smooth surface: the candidate texel's shading
+   normal `s_q` and face normal `f_q` satisfy `c_s = n_s . s_q >= 0.9`
+   (`OwnSurfaceCos`), `1 - c_s < r (1 - c_f)` with `c_f = n_f . f_q` and
+   `r = 0.5` (`HardEdgeRatio`), and both face planes pass through the other
+   point: `|n_f . d| <= tol'` and `|f_q . d| <= tol'`,
+   `tol' = (sine + sqrt(1 - c_f^2)) |d| + depth z_P`.
+
+With flat shading (`n_s = n_f` on both sides) rule 3 never holds
+(`c_s = c_f`) and rules 1 and 2 are M7's `d . n_f <= tol`: flat surfaces are
+M7 exactly (tests below, CPU and GPU, bit for bit).
+
+Directions between the face plane and the shading tangent plane (the wedge).
+Three policies were derived: W1 counts the wedge as occluded by the
+receiver's own surface (hemisphere of `n_f` intersected with that of `n_s`),
+W2 counts it open to everything, W3 (chosen) counts it open to other
+surfaces only (rules 1-3). Under W1 a receiver whose shading normal tilts by
+`alpha` from its face loses the projected solid angle of a lune of dihedral
+angle `alpha`, a fraction `(1 - cos alpha) / 2` of its lobe, and which side
+loses it flips at every facet edge, where the face normal jumps and the
+shading normal does not: the facets come back as steps (the shading-normal
+"terminator" problem: Chiang, Li and Burley, "Taming the Shadow
+Terminator", SIGGRAPH Talks 2019; Hanika, "Hacking the Shadow Terminator",
+Ray Tracing Gems II, 2021). Under W2 the receiver's own neighbouring facets,
+which lie in the wedge near every crease (convex: below the face plane but
+above the shading plane; concave: above both), would light or occlude it.
+W3 keeps the lobe continuous (rule 2 depends on `n_s` only) and removes
+exactly the own surface (rule 3), while other surfaces in the wedge still
+count. Rule 3 is the R3 contact rule: occluders of the receiver's own smooth
+surface do not darken its creases; distinct surfaces (`c_s` small or the
+planes apart) and hard edges (`c_s` close to `c_f`) keep their contact.
+
+Thresholds (defaults by measurement on frame 400, Quarter game
+configuration; at `r = 0.25`: OwnSurfaceCos 0.95 FI 2.66, 0.9 2.66, 0.8
+2.69, so 0.9 = the upsampler's normal threshold):
+
+| HardEdgeRatio `r` (angle ratio about `sqrt(r)`) | 0.1 | 0.25 | 0.5 | 0.75 | 1.0 |
+|---|---|---|---|---|---|
+| FI | 4.09 | 2.66 | 2.22 | 2.07 | 2.03 |
+
+`r = 0.5` (shading turning less than about 0.71 of the face angle): most of
+the gain, with a factor-two margin from flat-shaded edges whose shading
+turns with the face (`ts = tf` up to the guide's 8-bit quantization); the
+hard-edge index stays with its reference (115.6 against 116.8).
+
+### Continuity in the post stages (R2)
+
+The temporal history validation (current and history taps), the a-trous
+filter and the upsampler keep M7's surface test (plane distance plus face
+normal cosine 0.9) and additionally accept a texel pair that fails it when
+`smooth_crease` holds: shading normals within cosine 0.9, `1 - c_s < r
+(1 - c_f)` and the planes meeting within the widened tolerance (rule 3's
+test with the stage's own plane tolerances). Silhouettes and depth
+discontinuities still stop (the plane tests), hard edges still stop (the
+ratio), and every existing no-leak test passes unchanged. The history keeps
+the shading normal's code in the slot of M7's surface tag (`c.w`) so that
+history taps can test it. The M4 cells and the mean cache keep their face
+plane grouping: with the hierarchy footprint off FI is 2.67 against 2.66
+(at `r = 0.25`), so the cells do not mark the facets; coarse candidates
+use the cell normal with the sample texel's shading normal in rule 3.
+
+Attribution at `r = 0.25` (Quarter): gather only FI 17.2, upsampler only
+6.10, gather and upsampler 4.35, all stages 2.66; all but the filter 3.09,
+all but the temporal 3.63, all but the gather 3.08 (error 0.257).
+
+### Reference (R4)
+
+The EveryTexel reference (Half, S4, K64, N128, 4 levels, 48 frames;
+`DGI_STUDY_REFERENCE_OPTIONS=every,m8`) uses the same receiver policy. The M7
+reference (`every`) is reported for continuity.
+
+### Results on kit frame 400
+
+| Image | FI | hard | chroma mean (p90) vs M8 ref | cast (a, b) | saturation | error vs M8 ref (J) | error vs M7 ref (J) |
+|---|---|---|---|---|---|---|---|
+| direct light | 1.72 | 10.9 | | | | | |
+| M7 reference | 22.54 | 153.5 | | (-0.101, +0.184) | 0.212 | | 0 |
+| M8 reference | 2.72 | 116.8 | 0 | (-0.101, +0.184) | 0.212 | 0 | |
+| Quarter M7 path | 28.50 | 144.7 | 0.0100 (0.027); vs M7 ref 0.0088 (0.026) | (-0.105, +0.186) | 0.216 | 0.278 (1.019) | 0.169 (0.995) |
+| Quarter M8 | 2.22 | 115.6 | 0.0089 (0.027) | (-0.105, +0.186) | 0.216 | 0.167 (1.017) | 0.308 (0.993) |
+| Half M7 path | 13.14 | 82.8 | 0.0094 (0.025) | (-0.105, +0.187) | 0.216 | 0.271 (1.015) | 0.148 (0.992) |
+| Half M8 | 1.63 | 71.4 | 0.0083 (0.024) | (-0.106, +0.187) | 0.217 | 0.144 (1.005) | 0.296 (0.982) |
+
+Goals: FI 2.22 <= 2.7 (Half 1.63 is below the direct light's 1.72); chroma
+0.0089 <= 0.012, the cast and saturation of M7 kept; error against the M8
+reference 0.167, below M7's 0.169 against its own reference (the brief's
+capture: 0.183). The M8 error against the M7 reference (0.308) is the
+facets that reference still has.
+
+Cost (study, Quarter game configuration, 156 frames per configuration,
+three interleaved pairs in one run, p50 / p95 ms):
+
+| Path | run a | run b | run c |
+|---|---|---|---|
+| M7 path | 2.846 / 4.319 | 2.851 / 4.374 | 2.848 / 4.328 |
+| M8 | 3.031 / 4.752 | 3.041 / 4.583 | 3.033 / 4.783 |
+
+M8 adds 0.19 ms (+6.5 %): gather +0.10, filter +0.025, upsampler +0.023,
+temporal +0.013, normal +0.010, pack +0.010 (the shading reads are lazy: a
+candidate's shading normal is read only above both planes, the upsampler's
+output shading code only at the first tap that fails M7's test). Target
+3.3 ms (M7 + 10 %) met. Sequential (not interleaved) runs on the same
+machine drifted between 2.8 and 3.5 ms for both paths with the same ratio
+(1.07 to 1.12); the interleaved run is the measurement.
+
+### Tests
+
+CPU (`renderer_diffuse_gi_m8_tests`, 8 tests, 4 s). The synthetic generator
+gained smooth strips (rectangles interpolating two edge normals),
+triangles (barycentric vertex normals; ray/triangle by barycentric
+coordinates) and `Scene::ShadingGuide`. The continuity cases put a low-poly
+mesh with radial vertex normals before a bright one-sided wall (160x120,
+R 4.5, S16, N64, 32 radial candidates without jitter, renderer face
+normals) and compare the GI with the analytic smooth surface: the wall's
+form factor from each receiver with its shading normal, the polygon clipped
+to the shading hemisphere (Lambert's contour integral), which is W3's
+answer for a convex receiver.
+
+| Scene | FI analytic | FI M7 | FI M8 | error M8 vs smooth | M7 vs smooth | M7 vs faceted |
+|---|---|---|---|---|---|---|
+| cylinder, 8 sides | 1.37 | 13.35 | 1.02 | 0.157 | 0.381 | 0.154 |
+| cylinder, 12 sides | 1.69 | 25.91 | 1.64 | 0.148 | 0.238 | 0.150 |
+| cylinder, 24 sides | 1.96 | 13.82 | 1.18 | 0.149 | 0.158 | 0.151 |
+| icosphere, 1 subdivision | 1.01 | 13.00 | 1.14 | 0.156 | 0.245 | 0.158 |
+| icosphere, 2 subdivisions | 0.99 | 6.43 | 1.06 | 0.160 | 0.178 | 0.160 |
+
+M8 is as close to the smooth surface as M7 is to the faceted one (the
+screen-space approximation is unchanged). Declared bounds: FI(M8) <= FI
+analytic + 0.6; FI(M7) >= 2 FI(M8); error <= 0.2 and <= M7's against the
+faceted surface + 0.03, and below M7's against the smooth one.
+
+- Flat surfaces bit-identical to M7: 14 scenes (the T05-T10 catalogue and
+  flat-shaded meshes) with the shading normal = face normal, EveryTexel and
+  Radial with the hierarchy footprint, plus the filter: 129,024 values, 0
+  different.
+- Flat surfaces with an 8-bit guide: mean relative |dJ| 0.67 % (bound 1 %),
+  max |dA| 0.0024 (bound 0.05).
+- Concave trough (inside of a half prism, 8 and 12 facets, lit by a bright
+  floor; R3): FI of the occlusion M7 3.53 and 2.31, M8 0.80 and 0.95; FI of
+  J M7 1.06 and 1.16, M8 0.58 and 0.90.
+- Hard wall-floor edge: occlusion within 0.5 of the crease 0.414 in both
+  (bit-identical when flat); with shading normals bent 20 degrees across each
+  face 0.408 (bound >= 0.85 x M7).
+- Object resting on a plane (2-subdivision icosphere on a floor): floor
+  contact occlusion 0.7209 in both (bound 2 %), the sphere's lower half
+  0.857 -> 0.859.
+- Filter (R2): the 12-sided cylinder's M8 gather FI 1.64; a-trous with
+  face-normal edges 4.00, with the M8 edges 1.05.
+- T01-T16 and [B2]: the module default is the M7 path; the suites pass
+  unchanged (`renderer_diffuse_gi_reference_tests` 27,
+  `renderer_diffuse_gi_temporal_tests` 14, `renderer_diffuse_gi_m4_tests`
+  21); on the M8 path the flat catalogue is bit-identical (above).
+
+GPU (`diffuse_gi_pass_gpu_tests`, synchronization validation on): the
+2-subdivision sphere on the floor and the 12-facet trough with an 8-bit
+guide, 8 frames each, every stage against its FP32 twin (gather mean
+relative J 2.9e-5 and 1.3e-7, 2 of 25,696 and 1 of 17,440 pixels over 1e-3;
+temporal, filter and output within the M5 bounds); the flat checker room
+with M8 on against the M7 path: 690,234 values, 0 bit different; the
+adapter with the normal guide (uncovered, degenerate and back-facing
+texels): max |d shading| 1.2e-7, output shading codes 0 different. 0
+validation errors, 0 hazards. `diffuse_gi_gpu_tests`,
+`diffuse_gi_m4_gpu_tests`, `diffuse_gi_temporal_gpu_tests` pass.
+
+R5, the M7 path (`SetPassShadingNormals(settings, false)`; in the game
+the developer variable `OOT3D_GRAPHICS_SSGI_RECEIVERS=face`). The CPU module
+runs M7's code (the M8 rules are a branch), so its M7 path is M7 by
+construction. On the GPU the pass always runs the shading-capable kernels
+with their run-time switches off. Verified against the committed M7 build
+(the M7 sources checked out, the study tool built and run on the same dump,
+then the M8 files restored; diff identical): the Quarter game configuration's
+final J after 48 frames is bit-identical (7,372,800 half values, 0
+different); at Half, 969 of 7,372,800 values (550 texels) differ by one
+half-float step, all at magnitudes below 2.5e-7 (near-black texels), while
+the committed build is deterministic there (two runs, 0 different). This is
+consistent with last-bit float differences of the recompiled kernels (the
+switch-off path computes M7's expressions in a changed control flow), not
+with a policy difference; exact identity at every scale would need the M7
+kernel text for the switch-off path (open point 30).
+
+### Decisions and deviations (M8)
+
+- W3 for the wedge (above); rule 3 is the declared tolerance of R3 (the
+  plane tolerance widened by the crease angle), not a minimum occluder
+  distance: a distance would also remove contact between distinct surfaces
+  near the receiver.
+- The pass runs the shading-capable kernel variants always (`DGI_SHADING`);
+  the M8 stages switch at run time (parameter flags). The pack holds the
+  same 80 modules (regenerated).
+- No F1 control: M8 is the default receiver policy; the M7 receivers remain
+  a developer A/B (`OOT3D_GRAPHICS_SSGI_RECEIVERS=face`, never persisted,
+  printed by the provider's developer line).
+- The cells of the M4 hierarchy are not regrouped by shading normal
+  (FI-neutral, above).
+
+### Gates (M8)
+
+| Gate | Result |
+|---|---|
+| Goals (kit frame 400, Quarter game configuration) | FI 2.22 <= 2.7 (Half 1.63); chroma 0.0089 <= 0.012; error 0.167 against the M8 reference, not worse than M7's 0.169 (brief: 0.183); 3.03-3.04 ms p50 <= 3.3 |
+| GI Off byte-identical (kit, cold cache, 12 frames) | runs 3 and 4 = the dominant set (hashes file `3327f70c4519`, first frame `991cf3d8...`, frame 390 `afbb237f...`); run 2 shares the first frame and run 1 differs from frame 60 on, their logs differing only in timing (variants of the kind Stage C and M7 recorded); the M8 lines of the shared files are inside the screen-space GI branch, so GI Off runs no M8 code |
+| GI on (M8 default) under `--validation` | same five classes and counts as Stage C to M7 (`OpEntryPoint-08743` 10, `layout-07990` 3, `imageLayout-00344` 10, `None-09600` 2, `None-08114` 10); none from the GI path; the pass ready with the pack's pipelines |
+| F1 actual-widget smoke | `F1 UI smoke passed: 8459 assertions, real renderer/Controls/TopScreen widgets` (no F1 change) |
+| Host tests | `renderer_diffuse_gi_pass_tests` 14, `oot3d_screen_space_gi_tests` 5 (now also checks the M8 switch, ratios and transport key), `oot3d_effect_graph_tests` 58 (the GI's declared normal-guide read), `oot3d_graphics_foundation_tests` 329, `renderer_spirv_pack_tests` 3, `renderer_diffuse_gi_reference_tests` 27, `renderer_diffuse_gi_temporal_tests` 14, `renderer_diffuse_gi_m4_tests` 21, `renderer_diffuse_gi_m8_tests` 8: all pass |
+| GPU tests | `diffuse_gi_pass_gpu_tests` passed, 0 validation errors, 0 hazards (synchronization validation on); `diffuse_gi_gpu_tests`, `diffuse_gi_m4_gpu_tests` (0 validation errors) and `diffuse_gi_temporal_gpu_tests` (0 validation errors) passed |
+| Pack | regenerated (the seven shading-capable kernels and the upsampler changed); 80 modules; `--check` passes |
+| Builds | `oot3d_native_game`, `triaevum_title_aot_stub` |
+
+Open points: new 30 (R5 at Half, above). The M7 open points 28 and 29
+are unchanged.
+
+### Source manifest (M8)
+
+Own derivations and code: the receiver rules, the wedge analysis, the
+synthetic smooth meshes (icosahedron subdivision, ray/triangle intersection
+by barycentric coordinates, Moller-Trumbore 1997) and the analytic polygon
+form factor (Lambert's contour integral, as in Arvo 1995, "Applications of
+irradiance tensors"). Literature cited for the wedge problem only (no code):
+Chiang, Li and Burley 2019; Hanika 2021. No external GI, AO, denoiser,
+TAA, Brixelizer, FidelityFX, GTAO or MXAO code opened; the other GI mode's
+implementation and the coordinator's measurements of it were not opened.
+
+Files edited (module, provider, adapter, tests, tools):
+`diffuse_gi_gather.h/.cpp`, `diffuse_gi_gather_shader.h/.cpp`,
+`diffuse_gi_m4_shader.h/.cpp`, `diffuse_gi_temporal.h/.cpp`,
+`diffuse_gi_temporal_shader.h/.cpp`, `diffuse_gi_pass_plan.h/.cpp`,
+`diffuse_gi_pass.cpp`, `diffuse_gi_pass_shader.h/.cpp`,
+`diffuse_gi_normal_code.h` (new: the octahedral normal code shared by the
+upsampler, temporal history and adapter), `diffuse_gi_scene.h/.cpp`,
+`builtin_pass.spvpack`, `diffuse_gi_adapter.h/.cpp`,
+`diffuse_gi_adapter_shader.cpp`, `screen_space_gi_provider.h/.cpp`,
+`renderer_diffuse_gi_m8_tests.cpp` (new), `renderer_diffuse_gi_pass_tests.cpp`,
+`oot3d_screen_space_gi_tests.cpp`, `oot3d_effect_graph_tests.cpp`,
+`tests/CMakeLists.txt`, `diffuse_gi_pass_gpu_tests.cpp`, this document.
+
+Shared files edited (screen-space GI lines only):
+`src/fast/oot3d/display_effect_plan.cpp` (the screen-space GI resources
+also read `EffectResource::NormalGuide`, with its comment) and
+`src/fast/backends/gfx_vulkan_pica_display.cpp` (one line: the GI frame's
+`Guides.Normal` view of `EffectResource::NormalGuide`). Shared files opened
+for reading: those two (GI lines) and the renderer's normal-guide output in
+`pica_uber_effect_program.cpp` (which normal the guide carries, generic
+lighting lines only).
+
+Incidental exposures (reported, not used): a paragraph of the renderer
+architecture document about a removed normal-smoothing port of an MXAO
+shader family was read while searching for the guide's definition; the
+subject and message of commit `ef413b8` were read (only this module's file
+of that commit was viewed).
+
+### Reproducible report (M8)
+
+```text
+capture.py <game> <out> --cold-cache --config cfg-ssgi.json --timing --frames <n > 400>
+  --env OOT3D_GRAPHICS_SSGI_WORK_FACTOR=1 --env OOT3D_GRAPHICS_SSGI_DUMP=<dir>
+  --env OOT3D_GRAPHICS_SSGI_DUMP_FRAME=400
+DGI_NO_VALIDATION=1 DGI_STUDY_REFERENCE=2:4:64:128:4 DGI_STUDY_REFERENCE_OPTIONS=every,m8
+  diffuse_gi_pass_gpu_tests --study <dir> 150 30 48 m7q:4:1:20:64:2:e1.5
+  m8q:4:1:20:64:2:e1.5,m8 m7h:2:1:20:64:2:e1.5 m8h:2:1:20:64:2:e1.5,m8
+  (DGI_STUDY_REFERENCE_OPTIONS=every: against the M7 reference; options
+  hr<r> and own<cos> set the thresholds, m8g/m8t/m8f/m8u single stages)
+renderer_diffuse_gi_m8_tests
 ```

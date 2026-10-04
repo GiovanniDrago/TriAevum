@@ -113,6 +113,19 @@ TEST(ScreenSpaceGi, SettingsMapOntoTheRuntimePass) {
     // M7: no surface takes the weaker moving-surface history test.
     EXPECT_TRUE(std::isinf(s.Temporal.MovingFlow) && s.Temporal.MovingFlow > 0.0);
     EXPECT_STREQ(DGI::ValidateTemporalSettings(s.Temporal), "");
+    // M8: smooth-shaded receivers in every stage (one switch; the M7 path
+    // stays available bit for bit as SetPassShadingNormals(false)).
+    EXPECT_TRUE(DGI::PassUsesShadingNormals(s));
+    EXPECT_TRUE(s.Gather.ShadingNormals && s.Temporal.ShadingNormals && s.Filter.ShadingNormals &&
+                s.Upsample.ShadingNormals);
+    EXPECT_EQ(s.Gather.HardEdgeRatio, 0.5);
+    EXPECT_EQ(s.Upsample.HardEdgeRatio, 0.5);
+    DGI::SetPassShadingNormals(expected, true);
+    DGI::PassSettings faceReceivers = s;
+    DGI::SetPassShadingNormals(faceReceivers, false);
+    EXPECT_FALSE(DGI::PassUsesShadingNormals(faceReceivers));
+    EXPECT_NE(DGI::PassTransportKey(faceReceivers, DGI::GeometricNormalSource::RendererFaceNormal),
+              DGI::PassTransportKey(s, DGI::GeometricNormalSource::RendererFaceNormal));
     EXPECT_EQ(s.OutputLimit, 65504.0);
     GlobalIlluminationSettings clamped = gi;
     clamped.ScreenSpace.HighlightClamp = 1.5F;

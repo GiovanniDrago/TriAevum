@@ -46,6 +46,10 @@ Renderer::DiffuseGi::PassSettings ScreenSpaceGiPassSettings(const GlobalIllumina
     // (docs, "M7", open point 16).
     s.Temporal.MovingFlow = std::numeric_limits<double>::infinity();
     s.Filter.Levels = ss.FilterLevels;
+    // M8: smooth-shaded receivers. The renderer's normal guide is the normal
+    // the per-pixel lighting shades with; the GI lobe and the continuity of
+    // every stage follow it (docs, "M8").
+    Renderer::DiffuseGi::SetPassShadingNormals(s, true);
     // Highlight clamp (section 9): artistic, never in validation mode.
     if (ss.HighlightClamp > 0.0F && !ss.Validation) s.OutputLimit = ss.HighlightClamp;
     return s;
@@ -129,6 +133,8 @@ void ScreenSpaceGiProvider::Initialize(VkPhysicalDevice physical, VkDevice devic
         return value != nullptr ? std::string_view(value) : std::string_view();
     };
     mKernelTiming = env("OOT3D_GRAPHICS_SSGI_KERNEL_TIMING") == "1";
+    // A/B against the M7 receivers (face-normal lobe and edge tests).
+    mFaceReceivers = env("OOT3D_GRAPHICS_SSGI_RECEIVERS") == "face";
     const std::string_view factor = env("OOT3D_GRAPHICS_SSGI_WORK_FACTOR");
     mWorkFactorOverride = factor == "1" ? 1U : factor == "2" ? 2U : factor == "4" ? 4U : 0U;
     if (const std::string_view dump = env("OOT3D_GRAPHICS_SSGI_DUMP"); !dump.empty()) {
@@ -139,10 +145,12 @@ void ScreenSpaceGiProvider::Initialize(VkPhysicalDevice physical, VkDevice devic
         if (const std::string_view count = env("OOT3D_GRAPHICS_SSGI_DUMP_COUNT"); !count.empty())
             mDump->Count = std::max(1U, static_cast<uint32_t>(std::strtoul(std::string(count).c_str(), nullptr, 10)));
     }
-    if (mKernelTiming || mWorkFactorOverride != 0U || mDump)
-        std::fprintf(stderr, "TRIAEVUM_SCREEN_SPACE_GI developer kernel_timing=%d work_factor=%u dump=%s frame=%llu\n",
+    if (mKernelTiming || mWorkFactorOverride != 0U || mDump || mFaceReceivers)
+        std::fprintf(stderr,
+                     "TRIAEVUM_SCREEN_SPACE_GI developer kernel_timing=%d work_factor=%u dump=%s frame=%llu "
+                     "receivers=%s\n",
                      mKernelTiming ? 1 : 0, mWorkFactorOverride, mDump ? mDump->Directory.c_str() : "-",
-                     static_cast<unsigned long long>(mDump ? mDump->Frame : 0U));
+                     static_cast<unsigned long long>(mDump ? mDump->Frame : 0U), mFaceReceivers ? "face" : "shading");
 }
 
 bool ScreenSpaceGiProvider::Prepare() {
@@ -236,8 +244,8 @@ ScreenSpaceGiProvider::Instance* ScreenSpaceGiProvider::InstanceFor(const Screen
         return nullptr;
     }
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4U * mFramesInFlight},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6U * mFramesInFlight},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 5U * mFramesInFlight},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8U * mFramesInFlight},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool.maxSets = mFramesInFlight;
@@ -273,7 +281,8 @@ bool ScreenSpaceGiProvider::ConfigureInstance(Instance& instance, const ScreenSp
     const DGI::PassExtent extent = DGI::MakeWorkScaleExtent(
         frame.Width, frame.Height,
         mWorkFactorOverride != 0U ? mWorkFactorOverride : ScreenSpaceGiWorkFactor(settings.ScreenSpace.WorkScale));
-    const DGI::PassSettings passSettings = ScreenSpaceGiPassSettings(settings);
+    DGI::PassSettings passSettings = ScreenSpaceGiPassSettings(settings);
+    if (mFaceReceivers) DGI::SetPassShadingNormals(passSettings, false);
     DGI::PassOutputs outputs;
     outputs.Illumination = {output.Texture.Image, output.Texture.StorageView, output.Format, output.Width,
                             output.Height};
@@ -350,7 +359,8 @@ bool ScreenSpaceGiProvider::Execute(VkCommandBuffer command, const ScreenSpaceGi
     } else {
         const DGI::DepthCamera camera =
             DiffuseGiGuideCamera(*frame.View, frame.Coordinates, frame.WBuffer, frame.JitterUv);
-        const DiffuseGiAdapterParams params = MakeDiffuseGiAdapterParams(instance->Extent, camera);
+        const bool shading = instance->Pass.Buffer(DGI::PassResourceId::ShadingNormal).Buffer != VK_NULL_HANDLE;
+        const DiffuseGiAdapterParams params = MakeDiffuseGiAdapterParams(instance->Extent, camera, shading);
         DGI::PassFrame passFrame;
         passFrame.Camera = camera;
         passFrame.NormalSource = DGI::GeometricNormalSource::RendererFaceNormal;
@@ -440,7 +450,7 @@ void ScreenSpaceGiProvider::RecordDump(VkCommandBuffer command, Instance& instan
     for (const auto& [name, id] : std::initializer_list<std::pair<const char*, DGI::PassResourceId>>{
              {"depth", DGI::PassResourceId::Depth},       {"class", DGI::PassResourceId::Class},
              {"radiance", DGI::PassResourceId::Radiance}, {"normal", DGI::PassResourceId::Normal},
-             {"motion", DGI::PassResourceId::Motion}}) {
+             {"motion", DGI::PassResourceId::Motion},     {"shading", DGI::PassResourceId::ShadingNormal}}) {
         const auto view = instance.Pass.Buffer(id);
         if (view.Size == 0U) continue;
         r.Parts.push_back({name, id, total, view.Size});

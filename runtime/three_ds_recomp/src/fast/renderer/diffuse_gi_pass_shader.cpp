@@ -57,38 +57,8 @@ void main() {
 }
 )glsl";
 
-// Octahedral normal code of the module (unorm16 per axis, 0 = no normal).
-constexpr const char* kNormalCodec = R"glsl(
-vec3 dgi_decode_normal(uint code) {
-    if (code == 0u) return vec3(0.0);
-    float u = (float(code & 0xFFFFu) - 1.0) / 65534.0 * 2.0 - 1.0;
-    float v = (float(code >> 16u) - 1.0) / 65534.0 * 2.0 - 1.0;
-    float z = 1.0 - abs(u) - abs(v);
-    float x = u;
-    float y = v;
-    if (z < 0.0) {
-        x = (1.0 - abs(v)) * (u >= 0.0 ? 1.0 : -1.0);
-        y = (1.0 - abs(u)) * (v >= 0.0 ? 1.0 : -1.0);
-    }
-    float len = sqrt(x * x + y * y + z * z);
-    return len > 0.0 ? vec3(x, y, z) / len : vec3(0.0);
-}
-uint dgi_encode_normal(vec3 n) {
-    float s = abs(n.x) + abs(n.y) + abs(n.z);
-    if (!(s > 0.0) || isinf(s) || isnan(s)) return 0u;
-    float u = n.x / s;
-    float v = n.y / s;
-    if (n.z < 0.0) {
-        float pu = (1.0 - abs(v)) * (u >= 0.0 ? 1.0 : -1.0);
-        float pv = (1.0 - abs(u)) * (v >= 0.0 ? 1.0 : -1.0);
-        u = pu;
-        v = pv;
-    }
-    uint cu = uint(floor(clamp(u * 0.5 + 0.5, 0.0, 1.0) * 65534.0 + 0.5)) + 1u;
-    uint cv = uint(floor(clamp(v * 0.5 + 0.5, 0.0, 1.0) * 65534.0 + 0.5)) + 1u;
-    return cu | (cv << 16u);
-}
-)glsl";
+// Octahedral normal code of the module (diffuse_gi_normal_code.h).
+constexpr const char* kNormalCodec = kDiffuseGiNormalCodecGlsl;
 
 // Geometry-guided upsampling of the work-scale result to the output extent
 // (own design from specification section 8: "risalire con un filtro guidato
@@ -96,9 +66,9 @@ uint dgi_encode_normal(vec3 n) {
 constexpr const char* kUpsampleShader = R"glsl(#version 450
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(std140, set = 0, binding = 0) uniform UpsampleParams {
-    uvec4 output_extent; // output width, output height, write A (1 / 0), 0
+    uvec4 output_extent; // output width, output height, write A (1 / 0), flags (1 shading normals, M8)
     uvec4 work;          // work width, work height, factor, phase
-    vec4 output_x;       // output UV -> ray map (ax, bx, cx)
+    vec4 output_x;       // output UV -> ray map (ax, bx, cx), hard-edge ratio (M8)
     vec4 output_y;
     vec4 work_x;         // work UV -> ray map
     vec4 work_y;
@@ -107,8 +77,11 @@ layout(std140, set = 0, binding = 0) uniform UpsampleParams {
 layout(std430, set = 0, binding = 1) readonly buffer Colour { vec4 colour[]; };
 layout(std430, set = 0, binding = 2) readonly buffer Geometry { vec4 geo[]; };
 layout(std430, set = 0, binding = 3) readonly buffer OutputGuide { uvec2 guide[]; };
-layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D illumination;
-layout(set = 0, binding = 5, r32f) uniform writeonly image2D accessibility;
+// M8: the work pixels' shading normals and the output texels' shading codes.
+layout(std430, set = 0, binding = 4) readonly buffer ShadingGeometry { vec4 shading_geo[]; };
+layout(std430, set = 0, binding = 5) readonly buffer OutputShading { uint shading_guide[]; };
+layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D illumination;
+layout(set = 0, binding = 7, r32f) uniform writeonly image2D accessibility;
 )glsl";
 
 constexpr const char* kUpsampleMain = R"glsl(
@@ -132,6 +105,19 @@ bool compatible(vec3 pa, vec3 na, float zp, vec3 qb, vec3 nb) {
     vec3 d = qb - pa;
     return abs(vdot(na, d)) <= p.surface.x * vlength(d) + p.surface.y * zp && vdot(na, nb) >= p.surface.z;
 }
+// M8: a smooth crease between the output texel and a work sample (the
+// temporal module's rule: shading normals agree and turn less than the faces,
+// the face planes meet between the two).
+bool smooth_crease(vec3 pa, vec3 na, vec3 sa, float zp, vec3 qb, vec3 nb, vec3 sb) {
+    if (!(vdot(sa, sa) > 0.0) || !(vdot(sb, sb) > 0.0)) return false;
+    float cs = vdot(sa, sb);
+    float cf = vdot(na, nb);
+    if (!(cs >= p.surface.z) || !(1.0 - cs < p.output_x.w * (1.0 - cf))) return false;
+    vec3 d = qb - pa;
+    float sf = sqrt(max(1.0 - cf * cf, 0.0));
+    float tolerance = (p.surface.x + sf) * vlength(d) + p.surface.y * zp;
+    return abs(vdot(na, d)) <= tolerance && abs(vdot(nb, d)) <= tolerance;
+}
 
 void main() {
     uvec2 id = gl_GlobalInvocationID.xy;
@@ -141,6 +127,11 @@ void main() {
     uvec2 g0 = guide[id.y * p.output_extent.x + id.x];
     float z = uintBitsToFloat(g0.x);
     vec3 n = dgi_decode_normal(g0.y);
+    // M8: the output texel's shading normal, decoded at the first tap whose
+    // surface test fails.
+    bool m8 = (p.output_extent.w & 1u) != 0u;
+    bool so_ready = false;
+    vec3 so = vec3(0.0);
     if (z > 0.0 && finite1(z) && vdot(n, n) > 0.0) {
         uint W = p.work.x;
         uint H = p.work.y;
@@ -165,7 +156,14 @@ void main() {
                 vec4 gq = geo[q];
                 if (!receiver(gq)) continue;
                 vec3 pq = map_ray(p.work_x, p.work_y, float(qx) + 0.5, float(qy) + 0.5, W, H) * gq.w;
-                if (!compatible(pos, n, z, pq, gq.xyz)) continue;
+                if (!compatible(pos, n, z, pq, gq.xyz)) {
+                    if (!m8) continue;
+                    if (!so_ready) {
+                        so = dgi_decode_normal(shading_guide[id.y * p.output_extent.x + id.x]);
+                        so_ready = true;
+                    }
+                    if (!smooth_crease(pos, n, so, z, pq, gq.xyz, shading_geo[q].xyz)) continue;
+                }
                 vec4 cq = colour[q];
                 if (!finite4(cq)) continue;
                 sum += w * cq;
@@ -185,7 +183,14 @@ void main() {
                     vec4 gq = geo[q];
                     if (!receiver(gq)) continue;
                     vec3 pq = map_ray(p.work_x, p.work_y, float(qx) + 0.5, float(qy) + 0.5, W, H) * gq.w;
-                    if (!compatible(pos, n, z, pq, gq.xyz)) continue;
+                    if (!compatible(pos, n, z, pq, gq.xyz)) {
+                        if (!m8) continue;
+                        if (!so_ready) {
+                            so = dgi_decode_normal(shading_guide[id.y * p.output_extent.x + id.x]);
+                            so_ready = true;
+                        }
+                        if (!smooth_crease(pos, n, so, z, pq, gq.xyz, shading_geo[q].xyz)) continue;
+                    }
                     vec4 cq = colour[q];
                     if (!finite4(cq)) continue;
                     float d = vlength(pq - pos);
@@ -238,15 +243,17 @@ std::string BuildDiffuseGiUpsampleShader() { return std::string(kUpsampleShader)
 std::vector<PassKernelSource> BuildDiffuseGiPassKernels() {
     std::vector<PassKernelSource> kernels;
     kernels.reserve(kPassKernelCount);
-    kernels.push_back({PassKernel::Normal, "diffuse_gi_normal.comp", BuildDiffuseGiNormalShader()});
+    // The M2-M4 kernels with the M8 smooth-shaded paths compiled in (each
+    // behind its flag: the M7 arithmetic when off).
+    kernels.push_back({PassKernel::Normal, "diffuse_gi_normal.comp", BuildDiffuseGiNormalShader(true)});
     kernels.push_back(
-        {PassKernel::HierarchyLevel0, "diffuse_gi_hierarchy_level0.comp", BuildDiffuseGiHierarchyLevel0Shader()});
+        {PassKernel::HierarchyLevel0, "diffuse_gi_hierarchy_level0.comp", BuildDiffuseGiHierarchyLevel0Shader(true)});
     kernels.push_back(
-        {PassKernel::HierarchyReduce, "diffuse_gi_hierarchy_reduce.comp", BuildDiffuseGiHierarchyReduceShader()});
-    kernels.push_back({PassKernel::Gather, "diffuse_gi_gather.comp", BuildDiffuseGiGatherM4Shader()});
-    kernels.push_back({PassKernel::Pack, "diffuse_gi_pack.comp", BuildDiffuseGiPackShader()});
-    kernels.push_back({PassKernel::Temporal, "diffuse_gi_temporal.comp", BuildDiffuseGiTemporalShader()});
-    kernels.push_back({PassKernel::Filter, "diffuse_gi_filter.comp", BuildDiffuseGiFilterShader()});
+        {PassKernel::HierarchyReduce, "diffuse_gi_hierarchy_reduce.comp", BuildDiffuseGiHierarchyReduceShader(true)});
+    kernels.push_back({PassKernel::Gather, "diffuse_gi_gather.comp", BuildDiffuseGiGatherM4Shader(true)});
+    kernels.push_back({PassKernel::Pack, "diffuse_gi_pack.comp", BuildDiffuseGiPackShader(true)});
+    kernels.push_back({PassKernel::Temporal, "diffuse_gi_temporal.comp", BuildDiffuseGiTemporalShader(true)});
+    kernels.push_back({PassKernel::Filter, "diffuse_gi_filter.comp", BuildDiffuseGiFilterShader(true)});
     kernels.push_back({PassKernel::Output, "diffuse_gi_output.comp", BuildDiffuseGiOutputShader()});
     kernels.push_back({PassKernel::Upsample, "diffuse_gi_upsample.comp", BuildDiffuseGiUpsampleShader()});
     return kernels;
@@ -268,46 +275,18 @@ OutputTexel OutputTexelF32(const OutputShaderParams& p, uint32_t x, uint32_t y, 
     return out;
 }
 
-uint32_t EncodeDiffuseGiNormal(const std::array<float, 3>& n) noexcept {
-    const float s = std::abs(n[0]) + std::abs(n[1]) + std::abs(n[2]);
-    if (!(s > 0.0F) || !std::isfinite(s)) return 0U;
-    float u = n[0] / s;
-    float v = n[1] / s;
-    if (n[2] < 0.0F) {
-        const float pu = (1.0F - std::abs(v)) * (u >= 0.0F ? 1.0F : -1.0F);
-        const float pv = (1.0F - std::abs(u)) * (v >= 0.0F ? 1.0F : -1.0F);
-        u = pu;
-        v = pv;
-    }
-    const auto code = [](float t) {
-        return static_cast<uint32_t>(std::floor(std::clamp(t * 0.5F + 0.5F, 0.0F, 1.0F) * 65534.0F + 0.5F)) + 1U;
-    };
-    return code(u) | (code(v) << 16U);
-}
-
-std::array<float, 3> DecodeDiffuseGiNormal(uint32_t code) noexcept {
-    if (code == 0U) return {};
-    const float u = (static_cast<float>(code & 0xFFFFU) - 1.0F) / 65534.0F * 2.0F - 1.0F;
-    const float v = (static_cast<float>(code >> 16U) - 1.0F) / 65534.0F * 2.0F - 1.0F;
-    const float z = 1.0F - std::abs(u) - std::abs(v);
-    float x = u, y = v;
-    if (z < 0.0F) {
-        x = (1.0F - std::abs(v)) * (u >= 0.0F ? 1.0F : -1.0F);
-        y = (1.0F - std::abs(u)) * (v >= 0.0F ? 1.0F : -1.0F);
-    }
-    const float len = std::sqrt(x * x + y * y + z * z);
-    if (!(len > 0.0F)) return {};
-    return {x / len, y / len, z / len};
-}
-
 OutputTexel UpsampleTexelF32(const UpsampleShaderParams& p, uint32_t x, uint32_t y, const float* colour,
-                             const float* geometry, const uint32_t* guide) noexcept {
+                             const float* geometry, const uint32_t* guide, const float* shading,
+                             const uint32_t* shadingGuide) noexcept {
     OutputTexel out;
     const size_t t = static_cast<size_t>(y) * p.Output[0] + x;
     float z = 0.0F;
     std::memcpy(&z, &guide[2 * t], 4);
     const auto nn = DecodeDiffuseGiNormal(guide[2 * t + 1]);
     const F3 n{nn[0], nn[1], nn[2]};
+    const bool m8 = (p.Output[3] & 1U) != 0U && shading != nullptr && shadingGuide != nullptr;
+    const auto so3 = m8 ? DecodeDiffuseGiNormal(shadingGuide[t]) : std::array<float, 3>{};
+    const F3 so{so3[0], so3[1], so3[2]};
     if (!(z > 0.0F && std::isfinite(z) && Dot(n, n) > 0.0F)) return out;
     const uint32_t W = p.Work[0], H = p.Work[1];
     const F3 r = Ray(p.OutputX, p.OutputY, static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F, p.Output[0],
@@ -329,8 +308,19 @@ OutputTexel UpsampleTexelF32(const UpsampleShaderParams& p, uint32_t x, uint32_t
         const F3 d{q.X - pos.X, q.Y - pos.Y, q.Z - pos.Z};
         const F3 nq{g[0], g[1], g[2]};
         if (!(std::abs(Dot(n, d)) <= p.Surface[0] * std::sqrt(Dot(d, d)) + p.Surface[1] * z &&
-              Dot(n, nq) >= p.Surface[2]))
-            return false;
+              Dot(n, nq) >= p.Surface[2])) {
+            // M8: a smooth crease (the kernel's smooth_crease).
+            if (!m8) return false;
+            const float* sq3 = shading + 4 * i;
+            const F3 sq{sq3[0], sq3[1], sq3[2]};
+            if (!(Dot(so, so) > 0.0F) || !(Dot(sq, sq) > 0.0F)) return false;
+            const float cs = Dot(so, sq);
+            const float cf = Dot(n, nq);
+            if (!(cs >= p.Surface[2]) || !(1.0F - cs < p.OutputX[3] * (1.0F - cf))) return false;
+            const float sf = std::sqrt(std::max(1.0F - cf * cf, 0.0F));
+            const float tolerance = (p.Surface[0] + sf) * std::sqrt(Dot(d, d)) + p.Surface[1] * z;
+            if (!(std::abs(Dot(n, d)) <= tolerance && std::abs(Dot(nq, d)) <= tolerance)) return false;
+        }
         c = colour + 4 * i;
         return Finite4(c);
     };

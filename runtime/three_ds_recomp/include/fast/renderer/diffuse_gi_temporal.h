@@ -97,6 +97,9 @@ struct TemporalFrame {
     HistoryValidation Validation = HistoryValidation::FlowAndDepth;
     std::vector<double> PreviousPosition; // 3 per pixel (PreviousPosition only)
     std::vector<uint32_t> SurfaceId;      // optional, 0 = unknown
+    // M8 (optional): the oriented shading normal, 3 per pixel (zero: none);
+    // read by TemporalSettings::ShadingNormals.
+    std::vector<double> ShadingNormal;
 };
 
 [[nodiscard]] const char* ValidateTemporalFrame(const TemporalFrame& frame) noexcept;
@@ -123,6 +126,17 @@ struct TemporalSettings {
     double MovingConfidence = 0.25; // history length cap, fraction of 1 / AlphaMin
     ExposureChange Exposure = ExposureChange::Rescale;
     uint32_t Threads = 1;
+    // M8 smooth-shaded receivers (document "M8"; off: M3-M7 exactly). Two
+    // samples whose surface test fails are still one surface when they form a
+    // smooth crease: their shading normals agree within NormalCos and turn
+    // less than their face normals (1 - cos of the shading normals below
+    // HardEdgeRatio times 1 - cos of the face normals; 1/2 is about 0.71 of the angle),
+    // and the two face planes meet between them (each sample within (sine +
+    // sine of the face angle) |d| + depth z of the other's plane). Used by the
+    // stratum reconstruction and the history taps (the history keeps the
+    // shading normal's code in value 11 when there are no surface ids).
+    bool ShadingNormals = false;
+    double HardEdgeRatio = 0.5; // in angle about 0.71 (document "M8")
 };
 
 [[nodiscard]] const char* ValidateTemporalSettings(const TemporalSettings& settings) noexcept;
@@ -169,8 +183,9 @@ enum class Precision : uint8_t { Double, Float32 };
 
 // std140 constants of the temporal kernel; the FP32 twin reads the same block.
 inline constexpr uint32_t kTemporalFlagReset = 1U;
+inline constexpr uint32_t kTemporalFlagShading = 2U; // M8: the smooth-surface paths
 struct TemporalShaderParams {
-    std::array<uint32_t, 4> Extent{};    // width, height, flags, window radius
+    std::array<uint32_t, 4> Extent{};    // width, height, flags (reset, shading), window radius
     std::array<uint32_t, 4> Modes{};     // tile size, reconstruct, validation (1 flow and depth), surface ids
     std::array<float, 4> ViewX{}, ViewY{};         // current ray map (ax, bx, cx, 0)
     std::array<float, 4> PreviousX{}, PreviousY{}; // previous ray map
@@ -178,7 +193,7 @@ struct TemporalShaderParams {
     std::array<float, 4> Motion{};       // motion to pixels x, y (sign included), jitter compensation x, y
     std::array<float, 4> Accumulate{};   // alpha min, variance frames, exposure ratio, 1 / alpha min
     std::array<float, 4> Change{};       // z low, z high, J floor (relative), A floor (absolute)
-    std::array<float, 4> Geometry{};     // plane sine, plane depth, normal cos, 0
+    std::array<float, 4> Geometry{};     // plane sine, plane depth, normal cos, hard-edge ratio (M8)
     std::array<float, 4> Moving{};       // moving flow, moving depth, moving confidence, 0
 };
 static_assert(sizeof(TemporalShaderParams) == 224);
@@ -186,8 +201,11 @@ static_assert(sizeof(TemporalShaderParams) == 224);
 // History layout: 16 values per pixel (GPU: four vec4).
 //  0-2 J, 3 m2 (second moment of luminance), 4 A, 5 second moment of A,
 //  6 length J, 7 length A, 8 v J, 9 v A (sum of squared sample weights),
-//  10 confidence, 11 surface id (as a float, exact below 2^24), 12-14 normal,
-//  15 view depth.
+//  10 confidence, 11 surface id (as a float, exact below 2^24) or, with M8
+//  shading normals and no surface ids, the shading normal's code
+//  (diffuse_gi_normal_code.h; the bits of the float on the GPU and in the FP32
+//  twin, the integer value in the double reference), 12-14 normal, 15 view
+//  depth.
 inline constexpr uint32_t kHistoryValues = 16;
 
 // Frame-level part of a TemporalFrame (M5): everything the reset rules and
@@ -289,6 +307,9 @@ struct FilterSettings {
     double PlaneDepth = 1.0e-3;
     double NormalCos = 0.9;
     uint32_t Threads = 1;
+    // M8: the smooth-crease rule of TemporalSettings for the a-trous taps.
+    bool ShadingNormals = false;
+    double HardEdgeRatio = 0.5; // in angle about 0.71 (document "M8")
 };
 
 [[nodiscard]] const char* ValidateFilterSettings(const FilterSettings& settings) noexcept;
@@ -301,6 +322,7 @@ struct FilterInput {
     std::vector<double> J;      // 3 per pixel
     std::vector<double> A;
     std::vector<double> VarianceJ, VarianceA;
+    std::vector<double> ShadingNormal; // M8 (optional): 3 per pixel (zero: none)
 };
 
 struct FilteredPixel {
@@ -316,7 +338,7 @@ struct FilterShaderParams {
     std::array<uint32_t, 4> Extent{}; // width, height, step, 0
     std::array<float, 4> ViewX{}, ViewY{};
     std::array<float, 4> Weights{};   // luminance sigma, relative epsilon, plane sine, plane depth
-    std::array<float, 4> Normals{};   // normal cos, 0, 0, 0
+    std::array<float, 4> Normals{};   // normal cos, hard-edge ratio, shading normals (1 / 0), 0 (M8)
 };
 static_assert(sizeof(FilterShaderParams) == 80);
 [[nodiscard]] FilterShaderParams MakeFilterShaderParams(const FilterInput& input, const FilterSettings& settings,

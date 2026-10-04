@@ -1,5 +1,7 @@
 #include "fast/renderer/diffuse_gi_temporal.h"
 
+#include "fast/renderer/diffuse_gi_normal_code.h"
+
 // Stratum reconstruction, temporal accumulation and a-trous filter of the
 // diffuse screen-space GI (milestone M3). Own code from the specification
 // (sections 7-9, 11) and the public papers cited in the document ([B3]
@@ -9,6 +11,7 @@
 // constants read from the same std140 blocks).
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <thread>
@@ -87,6 +90,45 @@ bool Compatible(const V3<T>& p, const V3<T>& n, T zp, const V3<T>& q, const V3<T
     return plane <= sine * Length3(d) + depth * zp && Dot3(n, nq) >= cosn;
 }
 
+// M8: shading normals that agree and turn less than the face normals.
+template <typename T>
+bool SmoothNormalsT(const V3<T>& na, const V3<T>& sa, const V3<T>& nb, const V3<T>& sb, T cosn, T ratio) {
+    if (!(Dot3(sa, sa) > T(0)) || !(Dot3(sb, sb) > T(0))) return false;
+    const T cs = Dot3(sa, sb);
+    const T cf = Dot3(na, nb);
+    return cs >= cosn && T(1) - cs < ratio * (T(1) - cf);
+}
+
+// M8: a smooth crease between two receiver samples (TemporalSettings).
+template <typename T>
+bool SmoothCreaseT(const V3<T>& pa, const V3<T>& na, const V3<T>& sa, T zp, const V3<T>& qb, const V3<T>& nb,
+                   const V3<T>& sb, T sine, T depth, T cosn, T ratio) {
+    if (!SmoothNormalsT(na, sa, nb, sb, cosn, ratio)) return false;
+    const T cf = Dot3(na, nb);
+    const V3<T> d = Sub(qb, pa);
+    const T sf = std::sqrt(std::max(T(1) - cf * cf, T(0)));
+    const T tolerance = (sine + sf) * Length3(d) + depth * zp;
+    return std::abs(Dot3(na, d)) <= tolerance && std::abs(Dot3(nb, d)) <= tolerance;
+}
+
+// M8: the shading normal's code in history value 11 (float bits on the GPU
+// and in the FP32 twin, the integer in the double reference).
+template <typename T>
+T PackShadingCode(const V3<T>& s) {
+    const uint32_t code =
+        EncodeDiffuseGiNormal({static_cast<float>(s.X), static_cast<float>(s.Y), static_cast<float>(s.Z)});
+    if constexpr (std::is_same_v<T, float>) return std::bit_cast<float>(code);
+    else return static_cast<T>(code);
+}
+template <typename T>
+V3<T> UnpackShadingCode(T value) {
+    uint32_t code = 0U;
+    if constexpr (std::is_same_v<T, float>) code = std::bit_cast<uint32_t>(value);
+    else code = value >= T(0) && value <= T(4294967295.0) ? static_cast<uint32_t>(value) : 0U;
+    const auto n = DecodeDiffuseGiNormal(code);
+    return {static_cast<T>(n[0]), static_cast<T>(n[1]), static_cast<T>(n[2])};
+}
+
 template <typename T>
 struct Constants {
     uint32_t W = 0, H = 0, Radius = 1, Tile = 1;
@@ -99,6 +141,8 @@ struct Constants {
     T ZLow{}, ZHigh{}, FloorJ{}, FloorA{};
     T PlaneSine{}, PlaneDepth{}, NormalCos{};
     T MovingFlow{}, MovingDepth{}, MovingConfidence{};
+    bool Shading = false; // M8
+    T Ratio{};
 };
 
 template <typename T>
@@ -125,6 +169,8 @@ Constants<T> FromParams(const TemporalShaderParams& p) {
     c.ZLow = p.Change[0], c.ZHigh = p.Change[1], c.FloorJ = p.Change[2], c.FloorA = p.Change[3];
     c.PlaneSine = p.Geometry[0], c.PlaneDepth = p.Geometry[1], c.NormalCos = p.Geometry[2];
     c.MovingFlow = p.Moving[0], c.MovingDepth = p.Moving[1], c.MovingConfidence = p.Moving[2];
+    c.Shading = (p.Extent[2] & kTemporalFlagShading) != 0U;
+    c.Ratio = p.Geometry[3];
     return c;
 }
 
@@ -136,6 +182,7 @@ struct FrameData {
     const T* Motion = nullptr;
     const T* PrevPos = nullptr;
     const uint32_t* Ids = nullptr;
+    const T* Shading = nullptr; // M8: 3 per pixel
 };
 
 template <typename T>
@@ -174,6 +221,11 @@ void TemporalPixelT(const Constants<T>& k, const FrameData<T>& f, const T* prev,
         return;
     }
     out.Receiver = true;
+    // M8: the oriented shading normal (zero: none).
+    const auto shadingAt = [&](size_t j) {
+        return f.Shading != nullptr ? V3<T>{f.Shading[3 * j], f.Shading[3 * j + 1], f.Shading[3 * j + 2]} : V3<T>{};
+    };
+    const V3<T> sn = k.Shading ? shadingAt(i) : V3<T>{};
     const V3<T> p = Mul(k.Current.Ray(T(x) + T(0.5), T(y) + T(0.5), k.W, k.H), z);
 
     // --- Current sample: stratum reconstruction and spatial variance.
@@ -191,7 +243,10 @@ void TemporalPixelT(const Constants<T>& k, const FrameData<T>& f, const T* prev,
             if (!IsReceiver(zq, nq.X, nq.Y, nq.Z)) continue;
             if (dx != 0 || dy != 0) {
                 const V3<T> pq = Mul(k.Current.Ray(T(qx) + T(0.5), T(qy) + T(0.5), k.W, k.H), zq);
-                if (!Compatible(p, n, z, pq, nq, k.PlaneSine, k.PlaneDepth, k.NormalCos)) continue;
+                if (!Compatible(p, n, z, pq, nq, k.PlaneSine, k.PlaneDepth, k.NormalCos) &&
+                    !(k.Shading && SmoothCreaseT(p, n, sn, z, pq, nq, shadingAt(q), k.PlaneSine, k.PlaneDepth,
+                                                 k.NormalCos, k.Ratio)))
+                    continue;
             }
             const T r = f.Raw[4 * q], g = f.Raw[4 * q + 1], b = f.Raw[4 * q + 2], a = f.Raw[4 * q + 3];
             if (!Finite(r) || !Finite(g) || !Finite(b) || !Finite(a)) continue;
@@ -249,6 +304,10 @@ void TemporalPixelT(const Constants<T>& k, const FrameData<T>& f, const T* prev,
         }
         const V3<T> np{k.R[0] * n.X + k.R[1] * n.Y + k.R[2] * n.Z, k.R[3] * n.X + k.R[4] * n.Y + k.R[5] * n.Z,
                        k.R[6] * n.X + k.R[7] * n.Y + k.R[8] * n.Z};
+        // M8: the shading normal in the previous view; the history's own in value 11.
+        const bool historyShading = k.Shading && !k.Ids;
+        const V3<T> sp{k.R[0] * sn.X + k.R[1] * sn.Y + k.R[2] * sn.Z, k.R[3] * sn.X + k.R[4] * sn.Y + k.R[5] * sn.Z,
+                       k.R[6] * sn.X + k.R[7] * sn.Y + k.R[8] * sn.Z};
         // Previous pixel coordinate (continuous; pixel centres at i + 1/2).
         const T qx = (T(x) + T(0.5)) + mx * k.MotionX + k.JitterX;
         const T qy = (T(y) + T(0.5)) + my * k.MotionY + k.JitterY;
@@ -296,6 +355,17 @@ void TemporalPixelT(const Constants<T>& k, const FrameData<T>& f, const T* prev,
                     } else {
                         const V3<T> xh = Mul(k.Previous.Ray(tx + T(0.5), ty + T(0.5), k.W, k.H), zh);
                         ok = Compatible(pp, nh, zexp, xh, np, k.PlaneSine, k.PlaneDepth, k.NormalCos);
+                    }
+                    if (!ok && historyShading) {
+                        const V3<T> sh = UnpackShadingCode(hp[11]);
+                        if (moving) {
+                            ok = std::abs(zh - zexp) <= k.MovingDepth * zexp &&
+                                 SmoothNormalsT(np, sp, nh, sh, k.NormalCos, k.Ratio);
+                        } else {
+                            const V3<T> xh = Mul(k.Previous.Ray(tx + T(0.5), ty + T(0.5), k.W, k.H), zh);
+                            ok = SmoothCreaseT(pp, np, sp, zexp, xh, nh, sh, k.PlaneSine, k.PlaneDepth, k.NormalCos,
+                                               k.Ratio);
+                        }
                     }
                     if (!ok) continue;
                     bool finite = true;
@@ -392,6 +462,7 @@ void TemporalPixelT(const Constants<T>& k, const FrameData<T>& f, const T* prev,
     h[4] = A, h[5] = a2, h[6] = N, h[7] = NA;
     h[8] = v, h[9] = vA, h[10] = confidence;
     h[11] = static_cast<T>(k.Ids ? f.Ids[i] : 0U); // exact below 2^24
+    if (k.Shading && !k.Ids) h[11] = PackShadingCode(sn);
     h[12] = n.X, h[13] = n.Y, h[14] = n.Z, h[15] = z;
     nextIds[i] = k.Ids ? f.Ids[i] : 0U;
 
@@ -462,6 +533,8 @@ struct FilterConstants {
     uint32_t W = 0, H = 0, Step = 1;
     RayMap<T> Camera;
     T Sigma{}, Epsilon{}, PlaneSine{}, PlaneDepth{}, NormalCos{};
+    bool Shading = false; // M8
+    T Ratio{};
 };
 
 template <typename T>
@@ -471,6 +544,8 @@ FilterConstants<T> FromParams(const FilterShaderParams& p) {
     c.Camera = {p.ViewX[0], p.ViewX[1], p.ViewX[2], p.ViewY[0], p.ViewY[1], p.ViewY[2]};
     c.Sigma = p.Weights[0], c.Epsilon = p.Weights[1], c.PlaneSine = p.Weights[2], c.PlaneDepth = p.Weights[3];
     c.NormalCos = p.Normals[0];
+    c.Ratio = p.Normals[1];
+    c.Shading = p.Normals[2] != 0.0F;
     return c;
 }
 
@@ -495,10 +570,11 @@ T ColourWeight(T distance, T den) {
     return den > T(0) ? std::exp(-distance / den) : T(0);
 }
 
-// geo: n.xyz, z per pixel; colour: J.rgb, A; variance: Var J, Var A.
+// geo: n.xyz, z per pixel; colour: J.rgb, A; variance: Var J, Var A;
+// shading (M8): the oriented shading normal, 3 per pixel.
 template <typename T>
 void FilterPixelT(const FilterConstants<T>& k, const T* geo, const T* colour, const T* variance, T* colourOut,
-                  T* varianceOut, uint32_t x, uint32_t y) {
+                  T* varianceOut, uint32_t x, uint32_t y, const T* shading = nullptr) {
     const size_t i = static_cast<size_t>(y) * k.W + x;
     T* co = colourOut + 4 * i;
     T* vo = varianceOut + 2 * i;
@@ -515,6 +591,10 @@ void FilterPixelT(const FilterConstants<T>& k, const T* geo, const T* colour, co
         return;
     }
     const V3<T> p = Mul(k.Camera.Ray(T(x) + T(0.5), T(y) + T(0.5), k.W, k.H), z);
+    const auto shadingAt = [&](size_t j) {
+        return shading != nullptr ? V3<T>{shading[3 * j], shading[3 * j + 1], shading[3 * j + 2]} : V3<T>{};
+    };
+    const V3<T> sn = k.Shading ? shadingAt(i) : V3<T>{};
     const T lp = Luma(c[0], c[1], c[2]);
     T sumJ = T(0), sumA = T(0), r = T(0), g = T(0), b = T(0), a = T(0), varJ = T(0), varA = T(0);
     const auto step = static_cast<int32_t>(k.Step);
@@ -529,7 +609,10 @@ void FilterPixelT(const FilterConstants<T>& k, const T* geo, const T* colour, co
             if (!IsReceiver(zq, nq.X, nq.Y, nq.Z)) continue;
             if (dx != 0 || dy != 0) {
                 const V3<T> pq = Mul(k.Camera.Ray(T(qx) + T(0.5), T(qy) + T(0.5), k.W, k.H), zq);
-                if (!Compatible(p, n, z, pq, nq, k.PlaneSine, k.PlaneDepth, k.NormalCos)) continue;
+                if (!Compatible(p, n, z, pq, nq, k.PlaneSine, k.PlaneDepth, k.NormalCos) &&
+                    !(k.Shading && SmoothCreaseT(p, n, sn, z, pq, nq, shadingAt(q), k.PlaneSine, k.PlaneDepth,
+                                                 k.NormalCos, k.Ratio)))
+                    continue;
             }
             const T* cq = colour + 4 * q;
             const T* vq = variance + 2 * q;
@@ -566,8 +649,10 @@ void FilterPixelT(const FilterConstants<T>& k, const T* geo, const T* colour, co
 template <typename T>
 std::vector<FilteredPixel> FilterImageT(const FilterInput& in, const FilterSettings& settings) {
     const size_t count = static_cast<size_t>(in.Width) * in.Height;
-    std::vector<T> geo(4 * count), colour(4 * count), variance(2 * count);
+    std::vector<T> geo(4 * count), colour(4 * count), variance(2 * count), shading(3 * count, T(0));
     for (size_t i = 0; i < count; ++i) {
+        if (in.ShadingNormal.size() == 3 * count)
+            for (int c = 0; c < 3; ++c) shading[3 * i + c] = static_cast<T>(in.ShadingNormal[3 * i + c]);
         for (int c = 0; c < 3; ++c) geo[4 * i + c] = static_cast<T>(in.Normal[3 * i + c]);
         geo[4 * i + 3] = static_cast<T>(in.Depth[i]);
         for (int c = 0; c < 3; ++c) colour[4 * i + c] = static_cast<T>(in.J[3 * i + c]);
@@ -585,11 +670,12 @@ std::vector<FilteredPixel> FilterImageT(const FilterInput& in, const FilterSetti
             k.Camera = {in.ViewX[0], in.ViewX[1], in.ViewX[2], in.ViewY[0], in.ViewY[1], in.ViewY[2]};
             k.Sigma = settings.LuminanceSigma, k.Epsilon = settings.RelativeEpsilon;
             k.PlaneSine = settings.PlaneSine, k.PlaneDepth = settings.PlaneDepth, k.NormalCos = settings.NormalCos;
+            k.Shading = settings.ShadingNormals, k.Ratio = settings.HardEdgeRatio;
         }
         ParallelRows(in.Height, settings.Threads, [&](uint32_t y) {
             for (uint32_t x = 0; x < in.Width; ++x)
                 FilterPixelT(k, geo.data(), colour.data(), variance.data(), colourOut.data(), varianceOut.data(), x,
-                             y);
+                             y, shading.data());
         });
         colour.swap(colourOut);
         variance.swap(varianceOut);
@@ -663,6 +749,7 @@ const char* ValidateTemporalSettings(const TemporalSettings& s) noexcept {
     if (!(s.MovingFlow >= 0.0) || !(s.MovingDepth >= 0.0) ||
         !(s.MovingConfidence > 0.0 && s.MovingConfidence <= 1.0))
         return "moving-surface tolerances out of range";
+    if (!(s.HardEdgeRatio >= 0.0 && s.HardEdgeRatio <= 1.0)) return "hard-edge ratio outside [0, 1]";
     return "";
 }
 
@@ -672,6 +759,7 @@ const char* ValidateFilterSettings(const FilterSettings& s) noexcept {
     if (!(s.RelativeEpsilon >= 0.0) || !std::isfinite(s.RelativeEpsilon)) return "negative relative epsilon";
     if (!(s.PlaneSine >= 0.0) || !(s.PlaneDepth >= 0.0) || !(s.NormalCos >= -1.0 && s.NormalCos <= 1.0))
         return "surface tolerances out of range";
+    if (!(s.HardEdgeRatio >= 0.0 && s.HardEdgeRatio <= 1.0)) return "hard-edge ratio outside [0, 1]";
     return "";
 }
 
@@ -776,13 +864,15 @@ Constants<double> PlannedConstants(const TemporalFrameState& frame, const Tempor
     c.PlaneSine = settings.PlaneSine, c.PlaneDepth = settings.PlaneDepth, c.NormalCos = settings.NormalCos;
     c.MovingFlow = settings.MovingFlow, c.MovingDepth = settings.MovingDepth;
     c.MovingConfidence = settings.MovingConfidence;
+    c.Shading = settings.ShadingNormals;
+    c.Ratio = settings.HardEdgeRatio;
     return c;
 }
 
 TemporalShaderParams ShaderParamsOf(const Constants<double>& c) {
     TemporalShaderParams p{};
     const auto f = [](double v) { return static_cast<float>(v); };
-    p.Extent = {c.W, c.H, c.Reset ? kTemporalFlagReset : 0U, c.Radius};
+    p.Extent = {c.W, c.H, (c.Reset ? kTemporalFlagReset : 0U) | (c.Shading ? kTemporalFlagShading : 0U), c.Radius};
     p.Modes = {c.Tile, c.Reconstruct ? 1U : 0U, c.Flow ? 1U : 0U, c.Ids ? 1U : 0U};
     p.ViewX = {f(c.Current.Ax), f(c.Current.Bx), f(c.Current.Cx), 0.0F};
     p.ViewY = {f(c.Current.Ay), f(c.Current.By), f(c.Current.Cy), 0.0F};
@@ -794,7 +884,7 @@ TemporalShaderParams ShaderParamsOf(const Constants<double>& c) {
     p.Motion = {f(c.MotionX), f(c.MotionY), f(c.JitterX), f(c.JitterY)};
     p.Accumulate = {f(c.AlphaMin), f(c.VarianceFrames), f(c.ExposureRatio), f(c.LengthCap)};
     p.Change = {f(c.ZLow), f(c.ZHigh), f(c.FloorJ), f(c.FloorA)};
-    p.Geometry = {f(c.PlaneSine), f(c.PlaneDepth), f(c.NormalCos), 0.0F};
+    p.Geometry = {f(c.PlaneSine), f(c.PlaneDepth), f(c.NormalCos), c.Shading ? f(c.Ratio) : 0.0F};
     p.Moving = {f(c.MovingFlow), f(c.MovingDepth), f(c.MovingConfidence), 0.0F};
     return p;
 }
@@ -873,7 +963,7 @@ TemporalResult TemporalAccumulator::Process(const TemporalFrame& frame, const Te
         if (history[m.Current].size() != count * kHistoryValues)
             history[m.Current].assign(count * kHistoryValues, T(0)); // never read on reset
         Constants<T> k;
-        std::vector<T> depth, normal, raw, motion, previous;
+        std::vector<T> depth, normal, raw, motion, previous, shading;
         FrameData<T> data;
         if constexpr (std::is_same_v<T, double>) {
             k = c;
@@ -882,6 +972,7 @@ TemporalResult TemporalAccumulator::Process(const TemporalFrame& frame, const Te
             data.Raw = frame.Raw.data();
             data.Motion = frame.MotionVectors.data();
             data.PrevPos = frame.PreviousPosition.empty() ? nullptr : frame.PreviousPosition.data();
+            data.Shading = frame.ShadingNormal.size() == 3 * count ? frame.ShadingNormal.data() : nullptr;
         } else {
             k = FromParams<float>(p);
             const auto narrow = [](const std::vector<double>& in, std::vector<float>& out) {
@@ -893,6 +984,8 @@ TemporalResult TemporalAccumulator::Process(const TemporalFrame& frame, const Te
             narrow(frame.Raw, raw);
             narrow(frame.MotionVectors, motion);
             narrow(frame.PreviousPosition, previous);
+            if (frame.ShadingNormal.size() == 3 * count) narrow(frame.ShadingNormal, shading);
+            data.Shading = shading.empty() ? nullptr : shading.data();
             data.Depth = depth.data();
             data.Normal = normal.data();
             data.Raw = raw.data();
@@ -942,7 +1035,7 @@ FilterShaderParams MakeFilterShaderParams(const FilterInput& in, const FilterSet
     p.ViewX = {f(in.ViewX[0]), f(in.ViewX[1]), f(in.ViewX[2]), 0.0F};
     p.ViewY = {f(in.ViewY[0]), f(in.ViewY[1]), f(in.ViewY[2]), 0.0F};
     p.Weights = {f(s.LuminanceSigma), f(s.RelativeEpsilon), f(s.PlaneSine), f(s.PlaneDepth)};
-    p.Normals = {f(s.NormalCos), 0.0F, 0.0F, 0.0F};
+    p.Normals = {f(s.NormalCos), s.ShadingNormals ? f(s.HardEdgeRatio) : 0.0F, s.ShadingNormals ? 1.0F : 0.0F, 0.0F};
     return p;
 }
 
@@ -959,11 +1052,14 @@ FilterInput MakeFilterInput(const TemporalFrame& frame, const TemporalResult& te
     in.A.assign(count, 1.0);
     in.VarianceJ.assign(count, 0.0);
     in.VarianceA.assign(count, 0.0);
+    if (frame.ShadingNormal.size() == 3 * count) in.ShadingNormal.assign(3 * count, 0.0);
     for (size_t i = 0; i < count && i < temporal.Pixels.size(); ++i) {
         const TemporalPixel& t = temporal.Pixels[i];
         if (!t.Valid) continue; // neutral pixels never contribute
         in.Depth[i] = frame.Depth[i];
         for (int c = 0; c < 3; ++c) in.Normal[3 * i + c] = frame.Normal[3 * i + c];
+        if (!in.ShadingNormal.empty())
+            for (int c = 0; c < 3; ++c) in.ShadingNormal[3 * i + c] = frame.ShadingNormal[3 * i + c];
         in.J[3 * i] = t.J.R, in.J[3 * i + 1] = t.J.G, in.J[3 * i + 2] = t.J.B;
         in.A[i] = t.A;
         in.VarianceJ[i] = t.VarianceJ;
@@ -993,6 +1089,7 @@ TemporalFrame MakeTemporalFrame(const GatherInput& input, const PreparedGeometry
     frame.MotionVectors.assign(2 * count, 0.0);
     frame.ViewX = input.Camera.ViewX;
     frame.ViewY = input.Camera.ViewY;
+    if (geometry.Shading.size() == count) frame.ShadingNormal.assign(3 * count, 0.0);
     for (size_t i = 0; i < count && i < gather.size(); ++i) {
         const PixelGather& g = gather[i];
         frame.Raw[4 * i] = g.J.R, frame.Raw[4 * i + 1] = g.J.G, frame.Raw[4 * i + 2] = g.J.B;
@@ -1005,6 +1102,11 @@ TemporalFrame MakeTemporalFrame(const GatherInput& input, const PreparedGeometry
         frame.Normal[3 * i] = geometry.Normal[i].X;
         frame.Normal[3 * i + 1] = geometry.Normal[i].Y;
         frame.Normal[3 * i + 2] = geometry.Normal[i].Z;
+        if (!frame.ShadingNormal.empty()) {
+            frame.ShadingNormal[3 * i] = geometry.Shading[i].X;
+            frame.ShadingNormal[3 * i + 1] = geometry.Shading[i].Y;
+            frame.ShadingNormal[3 * i + 2] = geometry.Shading[i].Z;
+        }
     }
     return frame;
 }

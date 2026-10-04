@@ -73,6 +73,18 @@ bool PassUsesHierarchy(const PassSettings& s) noexcept {
            s.Gather.Schedule != CandidateSchedule::EveryTexel;
 }
 
+bool PassUsesShadingNormals(const PassSettings& s) noexcept {
+    return s.Gather.ShadingNormals || s.Temporal.ShadingNormals || s.Filter.ShadingNormals ||
+           s.Upsample.ShadingNormals;
+}
+
+void SetPassShadingNormals(PassSettings& s, bool on) noexcept {
+    s.Gather.ShadingNormals = on;
+    s.Temporal.ShadingNormals = on;
+    s.Filter.ShadingNormals = on;
+    s.Upsample.ShadingNormals = on;
+}
+
 const char* ValidatePassSettings(const PassSettings& s) noexcept {
     const GatherSettings& g = s.Gather;
     if (const char* e = ValidateGatherSettings(g); *e != '\0') return e;
@@ -95,6 +107,7 @@ const char* ValidatePassSettings(const PassSettings& s) noexcept {
     if (!(u.PlaneSine >= 0.0) || !(u.PlaneDepth >= 0.0) || !(u.NormalCos >= -1.0 && u.NormalCos <= 1.0) ||
         !std::isfinite(u.PlaneSine) || !std::isfinite(u.PlaneDepth))
         return "upsample surface tolerances out of range";
+    if (!(u.HardEdgeRatio >= 0.0 && u.HardEdgeRatio <= 1.0)) return "upsample hard-edge ratio outside [0, 1]";
     if (!(s.OutputLimit > 0.0) || !std::isfinite(s.OutputLimit)) return "output limit must be finite and positive";
     return "";
 }
@@ -132,6 +145,12 @@ uint64_t PassTransportKey(const PassSettings& s, GeometricNormalSource normals) 
     h.F64(s.Hierarchy.NormalCos);
     h.U64(s.Hierarchy.ShOrder);
     h.U64(static_cast<uint64_t>(normals));
+    // M8: the smooth-shaded receiver changes the transport (the M7 key is unchanged).
+    if (g.ShadingNormals) {
+        h.U64(1U);
+        h.F64(g.OwnSurfaceCos);
+        h.F64(g.HardEdgeRatio);
+    }
     return h.Hash;
 }
 
@@ -258,6 +277,11 @@ PassResourcePlan PlanPassResources(const PassExtent& extent, const PassSettings&
         inputs.PreviousPositions);
     set(SurfaceId, "surface id", "uint", 4, pixels, Input, "adapter -> temporal", inputs.SurfaceIds);
     set(OutputGuide, "output guide", "uvec2", 8, outputTexels, Input, "adapter -> upsample", workScale);
+    const bool shading = PassUsesShadingNormals(settings);
+    set(ShadingNormal, "shading normal", "vec4", 16, texels, Input,
+        "adapter (renderer shading normals) -> normal pass (in place) -> gather, pack", shading);
+    set(OutputShading, "output shading guide", "uint", 4, outputTexels, Input, "adapter -> upsample",
+        shading && workScale);
     set(Cells, "hierarchy cells", "3 x vec4 per cell", 48, plan.HierarchyCells, Frame,
         "level 0, reduce -> reduce, gather", hierarchy);
     set(Results, "raw J and A", "vec4", 16, pixels, Frame, "gather -> temporal", true);
@@ -277,6 +301,8 @@ PassResourcePlan PlanPassResources(const PassExtent& extent, const PassSettings&
         filterLevels >= 1U);
     set(FilterVariance1, "filter pong variance", "vec2", 8, pixels, Frame, "filter level -> next level",
         filterLevels >= 1U);
+    set(Shading, "receiver shading normals", "vec4", 16, pixels, Frame, "pack -> temporal, filter, upsample",
+        shading);
     set(History0, "history A", "4 x vec4", 64, pixels, Persistent, "temporal (frame t) -> temporal (frame t + 1)",
         true);
     set(History1, "history B", "4 x vec4", 64, pixels, Persistent, "temporal (frame t) -> temporal (frame t + 1)",
@@ -370,6 +396,9 @@ const char* PlanPassFrame(const PassExtent& extent, const PassSettings& settings
     plan = {};
     plan.WorkCamera = work;
     plan.Gather = MakeGatherShaderParams(dims, gather);
+    // M8: the normal pass orients the shading normals and the pack copies them
+    // whenever any stage reads them.
+    if (PassUsesShadingNormals(settings)) plan.Gather.Modes[3] |= kShaderFlagShadingInputs;
     plan.Hierarchy = PassUsesHierarchy(settings);
     const uint32_t levels = std::clamp(settings.Hierarchy.Levels, 1U, kMaxHierarchyLevels);
     const M4ShaderParams m4 = MakeM4ShaderParams(dims, gather, settings.Hierarchy, nullptr, nullptr, nullptr, false);
@@ -407,6 +436,10 @@ const char* PlanPassFrame(const PassExtent& extent, const PassSettings& settings
         u.WorkY = RayRow(work.ViewY);
         u.Surface = {static_cast<float>(settings.Upsample.PlaneSine), static_cast<float>(settings.Upsample.PlaneDepth),
                      static_cast<float>(settings.Upsample.NormalCos), limit};
+        if (settings.Upsample.ShadingNormals) {
+            u.Output[3] = 1U;
+            u.OutputX[3] = static_cast<float>(settings.Upsample.HardEdgeRatio);
+        }
     }
 
     plan.Parameters.assign(layout.Size, 0U);

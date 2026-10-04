@@ -35,7 +35,11 @@ inline constexpr uint32_t kTemporalDiagMoving = 8U;
 inline constexpr uint32_t kTemporalDiagCurrentValid = 16U;
 inline constexpr uint32_t kTemporalDiagLightResponse = 32U;
 
-[[nodiscard]] std::string BuildDiffuseGiTemporalShader();
-[[nodiscard]] std::string BuildDiffuseGiFilterShader();
+// `shading` (M8): the smooth-surface paths compiled in, each behind its flag
+// (temporal: Extent.z & 2, filter: Normals.z != 0; both off run the M3-M7
+// arithmetic unchanged). Temporal binding 12 and filter binding 6: vec4
+// shading geometry[] (oriented shading normal, w = 1 when valid).
+[[nodiscard]] std::string BuildDiffuseGiTemporalShader(bool shading = false);
+[[nodiscard]] std::string BuildDiffuseGiFilterShader(bool shading = false);
 
 } // namespace Fast::Renderer::DiffuseGi
