@@ -1,5 +1,6 @@
 #include "fast/oot3d/effect_graph.h"
 #include "fast/renderer3ds/pica_ui_canvas.h"
+#include "fast/renderer3ds/pica_draw_coverage.h"
 #include "fast/renderer3ds/pica_shadow_geometry.h"
 #include "fast/renderer3ds/pica_scene_light_continuity.h"
 #include "fast/renderer3ds/virtual_shadow_keyframes.h"
@@ -148,36 +149,218 @@ TEST(Oot3dUiPresentationLayout, KeepsWidescreenCanvasIndependent) {
     EXPECT_EQ(viewport.Height, 576U);
 }
 
-TEST(Oot3dPicaRasterCanvas, ScreenSpaceContentCoversAndPlacedUiKeepsNativeFit) {
+TEST(Oot3dPicaRasterCanvas, ScreenContentReachesEveryPixelAndPlacedUiKeepsNativeFit) {
     using Fast::Renderer3ds::PicaCompositionDomain;
+    using Fast::Renderer3ds::PicaScreenContent;
     using ::Oot3d::Renderer::ResolvePicaRasterCanvas;
 
-    // Placed UI keeps the uniform native canvas: HUD and menu layout, and the
-    // pointer mapping that shares the same rectangle.
-    const auto ui = ResolvePicaRasterCanvas(PicaCompositionDomain::Ui, 400U,
-                                            240U, 1280U, 720U);
-    EXPECT_FLOAT_EQ(ui.X, 40.0F);
-    EXPECT_FLOAT_EQ(ui.Y, 0.0F);
-    EXPECT_FLOAT_EQ(ui.ScaleX, 3.0F);
-    EXPECT_FLOAT_EQ(ui.ScaleY, 3.0F);
+    for (const auto [width, height] : {std::pair{1280U, 720U}, std::pair{960U, 720U},
+                                       std::pair{1720U, 720U}}) {
+        // Placed UI keeps the uniform native canvas: HUD and menu layout, and
+        // the pointer mapping that shares the same rectangle.
+        const auto ui = ResolvePicaRasterCanvas(PicaCompositionDomain::Ui, PicaScreenContent::None,
+                                                400U, 240U, width, height);
+        const float fit = std::min(width / 400.0F, height / 240.0F);
+        EXPECT_NEAR(ui.X, (width - 400.0F * fit) * 0.5F, 1.0e-3F);
+        EXPECT_NEAR(ui.Y, (height - 240.0F * fit) * 0.5F, 1.0e-3F);
+        EXPECT_FLOAT_EQ(ui.ScaleX, fit);
+        EXPECT_FLOAT_EQ(ui.ScaleY, fit);
 
-    // Screen-space frame content covers the presentation extent without
-    // distortion, so the title's own full-frame effect reaches every pixel.
-    const auto screen = ResolvePicaRasterCanvas(PicaCompositionDomain::Screen,
-                                                400U, 240U, 1280U, 720U);
-    EXPECT_FLOAT_EQ(screen.X, 0.0F);
-    EXPECT_FLOAT_EQ(screen.Y, -24.0F);
-    EXPECT_FLOAT_EQ(screen.ScaleX, 3.2F);
-    EXPECT_FLOAT_EQ(screen.ScaleY, 3.2F);
+        // The perspective scene keeps its own full-target stretch, compensated
+        // by the frame's field-of-view policy.
+        const auto scene = ResolvePicaRasterCanvas(PicaCompositionDomain::Scene, PicaScreenContent::None,
+                                                   400U, 240U, width, height);
+        EXPECT_FLOAT_EQ(scene.X, 0.0F);
+        EXPECT_FLOAT_EQ(scene.Y, 0.0F);
+        EXPECT_FLOAT_EQ(scene.ScaleX, width / 400.0F);
+        EXPECT_FLOAT_EQ(scene.ScaleY, height / 240.0F);
 
-    // The perspective scene keeps its own full-target stretch, compensated by
-    // the frame's field-of-view policy.
-    const auto scene = ResolvePicaRasterCanvas(PicaCompositionDomain::Scene,
-                                               400U, 240U, 1280U, 720U);
-    EXPECT_FLOAT_EQ(scene.X, 0.0F);
-    EXPECT_FLOAT_EQ(scene.Y, 0.0F);
-    EXPECT_FLOAT_EQ(scene.ScaleX, 3.2F);
-    EXPECT_FLOAT_EQ(scene.ScaleY, 3.0F);
+        // Screen content showing the rendered frame takes the scene's mapping
+        // at every aspect ratio: a redraw of the copied frame lands on the
+        // pixels it copied, and a wash reaches every output pixel.
+        const auto frame = ResolvePicaRasterCanvas(PicaCompositionDomain::Screen,
+                                                   PicaScreenContent::RenderedFrame, 400U, 240U,
+                                                   width, height);
+        EXPECT_FLOAT_EQ(frame.X, scene.X);
+        EXPECT_FLOAT_EQ(frame.Y, scene.Y);
+        EXPECT_FLOAT_EQ(frame.ScaleX, scene.ScaleX);
+        EXPECT_FLOAT_EQ(frame.ScaleY, scene.ScaleY);
+
+        // A picture of its own (a movie frame) covers the target without
+        // distortion: one uniform scale, the excess centred.
+        const auto picture = ResolvePicaRasterCanvas(PicaCompositionDomain::Screen,
+                                                     PicaScreenContent::OwnPicture, 400U, 240U,
+                                                     width, height);
+        const float cover = std::max(width / 400.0F, height / 240.0F);
+        EXPECT_FLOAT_EQ(picture.ScaleX, cover);
+        EXPECT_FLOAT_EQ(picture.ScaleY, cover);
+        EXPECT_NEAR(picture.X, (width - 400.0F * cover) * 0.5F, 1.0e-3F);
+        EXPECT_NEAR(picture.Y, (height - 240.0F * cover) * 0.5F, 1.0e-3F);
+    }
+}
+
+TEST(Oot3dPicaRasterCanvas, OnlyContentCoveringTheFrameIsScreenContent) {
+    using Fast::Renderer3ds::PicaCompositionDomain;
+    using Fast::Renderer3ds::PicaScreenContent;
+    using Fast::Renderer3ds::PicaUiFrameContent;
+    using Fast::Renderer3ds::PicaUiFrameContentEvidence;
+    using Fast::Renderer3ds::ResolvePicaUiFrameContent;
+    const auto evidence = [](bool viewport, bool scene, bool geometry,
+                             bool untextured, bool copies) {
+        PicaUiFrameContentEvidence value;
+        value.CoversWholeTarget = viewport;
+        value.SceneDrewOnTarget = scene;
+        value.GeometryCoversViewport = geometry;
+        value.Untextured = untextured;
+        value.SamplesOnlyRenderedCopies = copies;
+        return value;
+    };
+    const auto screen = [](PicaScreenContent content) {
+        return PicaUiFrameContent{PicaCompositionDomain::Screen, content};
+    };
+    const auto keep = [](PicaCompositionDomain domain) {
+        return PicaUiFrameContent{domain, PicaScreenContent::None};
+    };
+
+    // The title's full-frame effect over its copy of the rendered scene, and a
+    // fade washing the whole frame, show the rendered frame.
+    EXPECT_EQ(ResolvePicaUiFrameContent(PicaCompositionDomain::Ui, evidence(true, true, true, false, true)),
+              screen(PicaScreenContent::RenderedFrame));
+    EXPECT_EQ(ResolvePicaUiFrameContent(PicaCompositionDomain::Ui, evidence(true, true, true, true, false)),
+              screen(PicaScreenContent::RenderedFrame));
+    // A movie frame covering the screen is a picture of its own.
+    EXPECT_EQ(ResolvePicaUiFrameContent(PicaCompositionDomain::Ui, evidence(true, true, true, false, false)),
+              screen(PicaScreenContent::OwnPicture));
+    // Placed UI drawn over the scene with a whole-target viewport (HUD
+    // buttons, minimap, dialogue) covers part of it, whatever it samples.
+    for (const bool untextured : {false, true}) {
+        for (const bool copies : {false, true}) {
+            EXPECT_EQ(ResolvePicaUiFrameContent(PicaCompositionDomain::Ui,
+                                                evidence(true, true, false, untextured, copies)),
+                      keep(PicaCompositionDomain::Ui));
+        }
+    }
+    // Without a scene on the target (title, file select, menus) or with a
+    // partial viewport, nothing is frame content.
+    EXPECT_EQ(ResolvePicaUiFrameContent(PicaCompositionDomain::Ui, evidence(true, false, true, true, false)),
+              keep(PicaCompositionDomain::Ui));
+    EXPECT_EQ(ResolvePicaUiFrameContent(PicaCompositionDomain::Ui, evidence(false, true, true, true, false)),
+              keep(PicaCompositionDomain::Ui));
+    // Only UI-attributed draws are ever reclassified.
+    EXPECT_EQ(ResolvePicaUiFrameContent(PicaCompositionDomain::Scene, evidence(true, true, true, true, false)),
+              keep(PicaCompositionDomain::Scene));
+    EXPECT_EQ(ResolvePicaUiFrameContent(PicaCompositionDomain::Unknown, evidence(true, true, true, true, false)),
+              keep(PicaCompositionDomain::Unknown));
+}
+
+namespace {
+
+// A draw through the typed model-view-projection layout (projection f[0..3],
+// view f[4..6], model f[20..22], position in v0), with an orthographic
+// projection of the 400x240 native screen and the given model rows.
+struct CoverageDraw {
+    std::array<float, 96 * 4> Uniforms{};
+    std::vector<float> Positions;
+    std::array<uint16_t, 4> Indices{0, 1, 2, 3};
+    Fast::Renderer3ds::PicaVertexAttributeView Attribute{};
+    Fast::Renderer3ds::PicaVertexBindingView Binding{};
+    Fast::Renderer3ds::PicaDrawView View;
+
+    CoverageDraw(std::vector<float> positions, std::array<float, 12> model)
+        : Positions(std::move(positions)) {
+        const auto row = [this](size_t uniform, std::array<float, 4> values) {
+            std::copy(values.begin(), values.end(), Uniforms.begin() + uniform * 4U);
+        };
+        row(0, {2.0F / 400.0F, 0.0F, 0.0F, -1.0F});
+        row(1, {0.0F, 2.0F / 240.0F, 0.0F, -1.0F});
+        row(2, {0.0F, 0.0F, 1.0F, 0.0F});
+        row(3, {0.0F, 0.0F, 0.0F, 1.0F});
+        row(4, {1.0F, 0.0F, 0.0F, 0.0F});
+        row(5, {0.0F, 1.0F, 0.0F, 0.0F});
+        row(6, {0.0F, 0.0F, 1.0F, 0.0F});
+        row(20, {model[0], model[1], model[2], model[3]});
+        row(21, {model[4], model[5], model[6], model[7]});
+        row(22, {model[8], model[9], model[10], model[11]});
+        auto& transform = View.TemporalVertexProgram.Hooks.Transform;
+        transform.Operation =
+            Fast::Renderer3ds::PicaVertexTransformOperation::ModelViewProjection3x4;
+        transform.ProjectionFirstUniform = 0U;
+        transform.ProjectionRowCount = 4U;
+        transform.ViewFirstUniform = 4U;
+        transform.ViewRowCount = 3U;
+        transform.ModelFirstUniform = 20U;
+        transform.ModelRowCount = 3U;
+        transform.PositionInputRegister = 0U;
+        transform.NormalInputRegister = 1U;
+        Attribute.Location = 0U;
+        Attribute.Binding = 0U;
+        Attribute.Format = Fast::Renderer3ds::PicaVertexFormat::Float;
+        Attribute.ComponentCount = 3U;
+        Binding.Binding = 0U;
+        Binding.ByteStride = 3U * sizeof(float);
+        Binding.Bytes = {reinterpret_cast<const uint8_t*>(Positions.data()),
+                         Positions.size() * sizeof(float)};
+        View.VertexAttributes = {&Attribute, 1U};
+        View.VertexBindings = {&Binding, 1U};
+        View.IndexBytes = {reinterpret_cast<const uint8_t*>(Indices.data()),
+                           Indices.size() * sizeof(uint16_t)};
+        View.Indexed = true;
+        View.IndicesAre16Bit = true;
+        View.VertexCount = 4U;
+    }
+
+    bool Covers(uint32_t booleans = 0U) const {
+        return Fast::Renderer3ds::PicaDrawGeometryCoversViewport(
+            View, booleans,
+            {reinterpret_cast<const uint8_t*>(Uniforms.data()),
+             Uniforms.size() * sizeof(float)});
+    }
+};
+
+constexpr std::array<float, 12> kIdentityModel{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+
+} // namespace
+
+TEST(Oot3dPicaDrawCoverage, ProvesFullScreenQuadsAndRejectsPlacedElements) {
+    // The copied-frame redraw: the native screen rectangle itself.
+    EXPECT_TRUE(CoverageDraw({0, 0, 0, 400, 0, 0, 0, 240, 0, 400, 240, 0},
+                             kIdentityModel)
+                    .Covers());
+    // A fade: a unit quad the model matrix scales over the whole screen.
+    EXPECT_TRUE(CoverageDraw({-0.5F, -0.5F, 0, 0.5F, -0.5F, 0, -0.5F, 0.5F, 0,
+                              0.5F, 0.5F, 0},
+                             {400, 0, 0, 200, 0, 240, 0, 120, 0, 0, 1, 0})
+                    .Covers());
+    // A placed element, such as a button or a text box, covers part of it.
+    EXPECT_FALSE(CoverageDraw({300, 180, 0, 380, 180, 0, 300, 230, 0, 380,
+                               230, 0},
+                              kIdentityModel)
+                     .Covers());
+    // A full-width bar is not the whole screen either.
+    EXPECT_FALSE(CoverageDraw({0, 0, 0, 400, 0, 0, 0, 30, 0, 400, 30, 0},
+                              kIdentityModel)
+                     .Covers());
+    // Nothing is proven without the typed transform, or with an enabled
+    // skeleton, or when the positions cannot be read.
+    CoverageDraw untyped({0, 0, 0, 400, 0, 0, 0, 240, 0, 400, 240, 0},
+                         kIdentityModel);
+    untyped.View.TemporalVertexProgram.Hooks.Transform = {};
+    EXPECT_FALSE(untyped.Covers());
+    CoverageDraw skinned({0, 0, 0, 400, 0, 0, 0, 240, 0, 400, 240, 0},
+                         kIdentityModel);
+    auto& skeleton = skinned.View.TemporalVertexProgram.Hooks.Skeleton;
+    skeleton.Operation =
+        Fast::Renderer3ds::PicaVertexSkeletonOperation::MatrixPalette3x4;
+    skeleton.EnableBooleanUniform = 2U;
+    skeleton.PaletteFirstUniform = 30U;
+    skeleton.RowsPerMatrix = 3U;
+    skeleton.BoneIndexInputRegister = 2U;
+    skeleton.BoneWeightInputRegister = 3U;
+    skeleton.MaximumInfluences = 1U;
+    EXPECT_TRUE(skinned.Covers(0U));
+    EXPECT_FALSE(skinned.Covers(1U << 2U));
+    CoverageDraw truncated({0, 0, 0, 400, 0, 0, 0, 240, 0}, kIdentityModel);
+    EXPECT_FALSE(truncated.Covers());
 }
 
 TEST(Oot3dUiPresentationLayout, RejectsInvalidExtents) {

@@ -131,9 +131,10 @@ struct UiPresentationPoint {
 // Title-side: it applies this title's presentation convention and placement
 // policy, so it stays out of the title-neutral renderer boundary.
 [[nodiscard]] inline Fast::Renderer3ds::PicaRasterCanvas ResolvePicaRasterCanvas(
-    Fast::Renderer3ds::PicaCompositionDomain domain, std::uint32_t nativeWidth,
-    std::uint32_t nativeHeight, std::uint32_t targetWidth,
-    std::uint32_t targetHeight) noexcept {
+    Fast::Renderer3ds::PicaCompositionDomain domain,
+    Fast::Renderer3ds::PicaScreenContent screenContent,
+    std::uint32_t nativeWidth, std::uint32_t nativeHeight,
+    std::uint32_t targetWidth, std::uint32_t targetHeight) noexcept {
     if (!nativeWidth || !nativeHeight || !targetWidth || !targetHeight) {
         return {};
     }
@@ -143,17 +144,20 @@ struct UiPresentationPoint {
             static_cast<float>(nativeHeight));
         return {fit.X, fit.Y, fit.Width / nativeWidth, fit.Height / nativeHeight};
     }
-    if (domain == Fast::Renderer3ds::PicaCompositionDomain::Screen) {
-        // Screen-space frame content covers the presentation extent without
-        // distortion: native proportions are preserved and the excess is
-        // centred, so the title's own full-frame effect reaches every output
-        // pixel instead of leaving the un-effected scene visible around it.
+    if (domain == Fast::Renderer3ds::PicaCompositionDomain::Screen &&
+        screenContent == Fast::Renderer3ds::PicaScreenContent::OwnPicture) {
+        // A picture of its own (a movie frame) covers the presentation extent
+        // without distortion: native proportions kept, the excess centred, so
+        // nothing behind it shows around it.
         const auto cover = FillUiPresentation(
             targetWidth, targetHeight, static_cast<float>(nativeWidth),
             static_cast<float>(nativeHeight));
         return {cover.X, cover.Y, cover.Width / nativeWidth,
                 cover.Height / nativeHeight};
     }
+    // The scene, and screen content that shows the rendered frame: a redraw of
+    // the copied frame must land on the pixels it copied (the copy holds the
+    // scene as this mapping rasterised it), and a wash reaches every pixel.
     return {0, 0, static_cast<float>(targetWidth) / nativeWidth,
             static_cast<float>(targetHeight) / nativeHeight};
 }

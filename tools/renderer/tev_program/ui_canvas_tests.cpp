@@ -18,7 +18,7 @@ int main() {
         for (const float resolution : {0.5F, 1.0F, 2.0F}) {
             const uint32_t width = static_cast<uint32_t>(output[1] * 2 * resolution);
             const uint32_t height = static_cast<uint32_t>(output[0] * resolution);
-            const auto ui = Oot3d::Renderer::ResolvePicaRasterCanvas(PicaCompositionDomain::Ui, 480, 400, width, height);
+            const auto ui = Oot3d::Renderer::ResolvePicaRasterCanvas(PicaCompositionDomain::Ui, PicaScreenContent::None, 480, 400, width, height);
             const auto host = Oot3d::Renderer::FitUiPresentation(output[0], output[1], 400, 240);
             Near(ui.Y / resolution, host.X);
             Near(ui.X / (2 * resolution), host.Y);
@@ -32,14 +32,14 @@ int main() {
             if (!touch.Inside) throw std::runtime_error("touch outside UI canvas");
             Near(touch.X, 120); Near(touch.Y, 168);
             for (auto domain : {PicaCompositionDomain::Scene, PicaCompositionDomain::Unknown}) {
-                const auto scene = Oot3d::Renderer::ResolvePicaRasterCanvas(domain, 480, 400, width, height);
+                const auto scene = Oot3d::Renderer::ResolvePicaRasterCanvas(domain, PicaScreenContent::None, 480, 400, width, height);
                 Near(scene.X, 0); Near(scene.Y, 0);
                 Near(scene.ScaleX * 480, static_cast<float>(width));
                 Near(scene.ScaleY * 400, static_cast<float>(height));
             }
         }
     }
-    const auto canvas = Oot3d::Renderer::ResolvePicaRasterCanvas(PicaCompositionDomain::Ui, 480, 400, 1440, 1720);
+    const auto canvas = Oot3d::Renderer::ResolvePicaRasterCanvas(PicaCompositionDomain::Ui, PicaScreenContent::None, 480, 400, 1440, 1720);
     const auto full = ClipToPicaCanvas({0, 0, 1440, 1720}, canvas, 480, 400);
     if (full.X != 0 || full.Y != 260 || full.Width != 1440 || full.Height != 1200)
         throw std::runtime_error("unscissored UI escaped its native canvas");

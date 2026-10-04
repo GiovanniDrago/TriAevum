@@ -1,6 +1,7 @@
 // Native PICA on Vulkan: draw submission, composition anchors, interactive grass and shadow maps.
 #ifdef ENABLE_OOT3D_VULKAN
 #include "gfx_vulkan_pica_internal.h"
+#include "fast/renderer3ds/pica_draw_coverage.h"
 
 namespace Fast {
 
@@ -1975,31 +1976,67 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 std::to_string(draw.FragmentShaderKey) +
                 ", packed_error=" + geometry.PackedError + "]");
         }
-        // A UI-classified draw that renders into the colour target the frame's
-        // scene draws use **and** covers that whole target is not a placed UI
-        // element: it is two-dimensional frame content the title composites over
-        // the whole native screen (movie frames, full-frame effect re-draws,
-        // screen-space post-process). It is composed like the scene so the
-        // title's own effect reaches the whole frame and our recomposition stays
-        // the single owner of the output. Placed elements - HUD, menus, the
-        // file-select screen - stay `Ui` and keep the uniform native canvas that
-        // their layout and pointer mapping depend on.
+        // A UI-classified draw whose geometry covers the colour target this
+        // frame's scene drew into is not a placed UI element but frame content
+        // the title composites over the whole native screen, so it reaches
+        // every output pixel and our recomposition stays the single owner of
+        // the output. When it shows the rendered frame - a wash over it, or a
+        // redraw of GPU copies of rendered output (the title's full-frame effect
+        // over the copied scene) - it takes the scene's mapping, so the redraw
+        // lands on the pixels it copied; a picture of its own (a movie frame)
+        // covers the target without distortion. Placed elements - HUD, minimap,
+        // dialogue, menus, the file-select screen - also draw over the scene
+        // with a whole-target viewport, but cover only part of it: they stay
+        // `Ui` and keep the uniform native canvas that their layout and pointer
+        // mapping depend on.
         const float viewportRight = draw.ViewportX + draw.ViewportWidth;
         const float viewportBottom = draw.ViewportY + draw.ViewportHeight;
-        const bool coversWholeTarget =
+        Renderer3ds::PicaUiFrameContentEvidence frameContent;
+        frameContent.CoversWholeTarget =
             draw.ViewportX <= 0.0F && draw.ViewportY <= 0.0F &&
             viewportRight >= static_cast<float>(draw.FramebufferWidth) &&
             viewportBottom >= static_cast<float>(draw.FramebufferHeight);
-        const auto compositionDomain =
+        const bool wholeTargetUi =
             draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui &&
-                    coversWholeTarget &&
-                    mPicaSceneFrame.HasSceneDrawOnColorTarget(
-                        draw.FramebufferColorPhysicalAddress)
-                ? Renderer3ds::PicaCompositionDomain::Screen
-                : draw.CompositionDomain;
+            frameContent.CoversWholeTarget &&
+            mPicaSceneFrame.HasSceneDrawOnColorTarget(
+                draw.FramebufferColorPhysicalAddress);
+        if (wholeTargetUi) {
+            frameContent.SceneDrewOnTarget = true;
+            frameContent.Untextured = draw.Textures.empty();
+            frameContent.SamplesOnlyRenderedCopies =
+                !draw.Textures.empty() &&
+                std::all_of(draw.Textures.begin(), draw.Textures.end(),
+                            [](const auto& texture) {
+                                return !texture.CopyReferences.empty();
+                            });
+            if (draw.VertexUniformBytes.size() >=
+                Oot3d::kPicaPackedVertexFloatOffset) {
+                uint32_t booleanUniforms = 0;
+                std::memcpy(&booleanUniforms,
+                            draw.VertexUniformBytes.data() +
+                                Oot3d::kPicaPackedVertexBooleanMaskOffset,
+                            sizeof(booleanUniforms));
+                frameContent.GeometryCoversViewport =
+                    Renderer3ds::PicaDrawGeometryCoversViewport(
+                        draw, booleanUniforms,
+                        draw.VertexUniformBytes.subspan(
+                            Oot3d::kPicaPackedVertexFloatOffset));
+            }
+        }
+        const auto frameContentResolution =
+            Renderer3ds::ResolvePicaUiFrameContent(draw.CompositionDomain,
+                                                   frameContent);
+        const auto compositionDomain = frameContentResolution.Domain;
+        if (wholeTargetUi) {
+            mDiagnostics.RecordWholeTargetUiDraw(
+                compositionDomain ==
+                Renderer3ds::PicaCompositionDomain::Screen);
+        }
         const auto rasterCanvas = ::Oot3d::Renderer::ResolvePicaRasterCanvas(
-            compositionDomain, draw.FramebufferWidth, draw.FramebufferHeight,
-            renderTarget.Width, renderTarget.Height);
+            compositionDomain, frameContentResolution.Content,
+            draw.FramebufferWidth, draw.FramebufferHeight, renderTarget.Width,
+            renderTarget.Height);
         const float framebufferScaleX = rasterCanvas.ScaleX;
         const float framebufferScaleY = rasterCanvas.ScaleY;
         mViewport = {rasterCanvas.X + draw.ViewportX * framebufferScaleX,

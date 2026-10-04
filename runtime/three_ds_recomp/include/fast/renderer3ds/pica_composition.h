@@ -10,14 +10,67 @@ enum class PicaCompositionDomain : uint8_t {
     Scene = 1,
     Ui = 2,
     // Two-dimensional content the title composites over the whole native
-    // screen: movie frames, full-frame effect re-draws, screen-space
-    // post-process. It is frame content rather than a placed UI element, so it
-    // is rasterised over the presentation extent like the scene - the frame has
-    // one owner and the title's own effect reaches the whole frame - instead of
-    // being inset in the uniform native UI canvas. Placed UI keeps `Ui`: HUD,
-    // menu layout and pointer mapping depend on that exact rectangle.
+    // screen: a full-frame redraw of the copied frame, a full-screen wash, a
+    // movie frame. It is frame content rather than a placed UI element, so it
+    // reaches every output pixel instead of being inset in the uniform native
+    // UI canvas (PicaScreenContent says how). Placed UI keeps `Ui`: HUD, menu
+    // layout and pointer mapping depend on that exact rectangle.
     Screen = 3,
 };
+
+// What screen-space frame content shows, which decides its mapping onto a
+// target wider or narrower than the native screen.
+enum class PicaScreenContent : uint8_t {
+    None = 0,
+    // The rendered frame itself - a redraw of a copy of rendered output, or a
+    // wash over it: it takes the scene's own mapping, so a redraw lands exactly
+    // on the pixels it copied.
+    RenderedFrame = 1,
+    // A picture of its own, such as a movie frame: it covers the target
+    // without distortion, native proportions kept and the excess centred.
+    OwnPicture = 2,
+};
+
+// What a UI-attributed draw rasterises, as far as frame content is concerned.
+struct PicaUiFrameContentEvidence {
+    // The draw's viewport covers its whole colour target.
+    bool CoversWholeTarget = false;
+    // This frame's scene drew into that colour target.
+    bool SceneDrewOnTarget = false;
+    // Its projected primitives cover the whole viewport.
+    bool GeometryCoversViewport = false;
+    // It samples no texture: a solid or vertex-coloured wash.
+    bool Untextured = false;
+    // It samples at least one texture, and each is owned by an ordered GPU
+    // copy of rendered output.
+    bool SamplesOnlyRenderedCopies = false;
+};
+
+struct PicaUiFrameContent {
+    PicaCompositionDomain Domain = PicaCompositionDomain::Unknown;
+    PicaScreenContent Content = PicaScreenContent::None;
+
+    bool operator==(const PicaUiFrameContent&) const = default;
+};
+
+// A UI-attributed draw is screen-space frame content only when it covers the
+// frame itself: its geometry covers the whole colour target the scene drew
+// into. Placed UI - HUD, minimap, dialogue, menus - also draws over the scene
+// with a whole-target viewport, but its primitives cover part of it, so it
+// stays `Ui`. Covering content that washes the frame or redraws a copy of
+// rendered output shows the rendered frame; anything else is its own picture.
+[[nodiscard]] constexpr PicaUiFrameContent ResolvePicaUiFrameContent(
+    PicaCompositionDomain declared,
+    const PicaUiFrameContentEvidence& evidence) noexcept {
+    if (declared != PicaCompositionDomain::Ui || !evidence.CoversWholeTarget ||
+        !evidence.SceneDrewOnTarget || !evidence.GeometryCoversViewport) {
+        return {declared, PicaScreenContent::None};
+    }
+    return {PicaCompositionDomain::Screen,
+            evidence.Untextured || evidence.SamplesOnlyRenderedCopies
+                ? PicaScreenContent::RenderedFrame
+                : PicaScreenContent::OwnPicture};
+}
 
 enum class PicaCompositionLayer : uint8_t {
     Unknown = 0,

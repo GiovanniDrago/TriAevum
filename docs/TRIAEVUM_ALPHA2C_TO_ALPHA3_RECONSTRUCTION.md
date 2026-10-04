@@ -515,6 +515,32 @@ evidence the classification rests on). The foundation suite is 292 tests, all
 passing, and the frontend, transfer, bridge and visual-savestate suites stay
 green.
 
+**Correction (2026-10-05): the evidence was too broad.** The two conditions
+above also hold for placed UI in gameplay. The TopScreen button cluster and
+minimap, and a dialogue's text box and glyphs, are UI-attributed draws with a
+whole-target viewport on the colour target the scene drew into (gameplay trace:
+4 such draws per frame; Zelda's dialogue: 3). They were therefore composed as
+`Screen`: rasterised with the cover canvas and exempt from the UI clip, so
+they grew, moved towards the real output edges and were cut at 4:3 and 21:9
+(the A button disappeared at 21:9). The checks of this section never looked at
+gameplay HUD or dialogue at another aspect ratio.
+
+What frame content has and placed UI lacks is coverage: the flashback's
+consumer (one texture an ordered raw copy of the rendered frame owns, 50 copy
+references in the trace), the fades (untextured quads) and the Sheikah Stone
+movie frames each cover the whole native screen, while every placed element
+covers part of it. `ResolvePicaUiFrameContent` (`renderer3ds/pica_composition.h`)
+now also requires geometry covering the viewport, proven by projecting the
+vertex positions through the frontend's typed model-view-projection layout
+(`renderer3ds/pica_draw_coverage.h`). Covering content that redraws rendered
+copies or washes the frame takes the scene's mapping: the cover canvas of this
+section had zoomed the flashback by 1.07 at 16:9, 1.25 at 4:3 and 1.43 at 21:9
+against the scene it copies. A picture of its own (a movie frame) keeps the
+cover canvas, so the grey fill drawn behind it never shows. The rule uses PICA
+provenance and geometry only, no address or asset. The per-frame diagnostics
+report `whole_target_ui_draw_count` and `screen_content_draw_count`.
+Verification is in `TRIAEVUM_WINDOWS_RELEASE_QUALIFICATION.md` (E1-E3, I1, I5).
+
 ### 7.4 Confirmed: the flashback copy and its consumer, measured
 
 The implementation plan for the GPU path is `TRIAEVUM_GPU_COPY_PATH_PLAN.md`

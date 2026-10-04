@@ -551,6 +551,11 @@ struct Oot3dVulkanFrameDiagnostics {
     uint32_t SceneBeforeUiSnapshotCount = 0;
     uint32_t SceneBeforeUiTransferCount = 0;
     uint32_t NativeUiOverlayCount = 0;
+    // UI-attributed draws whose viewport covers a colour target this frame's
+    // scene drew into, and those of them composed as screen-space frame
+    // content rather than placed on the native UI canvas.
+    uint32_t WholeTargetUiDrawCount = 0;
+    uint32_t ScreenContentDrawCount = 0;
     uint32_t UpscalerGuideWidth = 0;
     uint32_t UpscalerGuideHeight = 0;
     uint32_t DlssUpscalePassCount = 0;
@@ -846,6 +851,7 @@ class Oot3dVulkanDiagnostics {
     void RecordBeforeUiAntiAliasing(bool applied, bool unavailable);
     void RecordSceneBeforeUi(bool snapshot, bool transferred);
     void RecordNativeUiOverlay();
+    void RecordWholeTargetUiDraw(bool screenContent);
     void RecordDlssUpscale(bool executed, bool historyReset,
                            uint32_t inputWidth, uint32_t inputHeight,
                            uint32_t outputWidth, uint32_t outputHeight);
