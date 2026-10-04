@@ -1234,14 +1234,16 @@ std::string_view EnhancedPresetDocument() noexcept {
       "Resolution": "Half",
       "SceneLight": 1.0,
       "ScreenSpace": {
-        "FilterLevels": 4,
-        "RadialCandidates": 16,
+        "FilterLevels": 2,
+        "HighlightClamp": 0.0,
+        "RadialCandidates": 32,
         "Radius": 150.0,
         "Sections": 1,
         "Sectors": 64,
         "Temporal": true,
         "Thickness": 30.0,
-        "Validation": false
+        "Validation": false,
+        "WorkScale": "Quarter"
       },
       "SkyLight": 0.25,
       "Specular": true,
@@ -1544,6 +1546,9 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                        {"Temporal", effects.GlobalIllumination.ScreenSpace.Temporal},
                        {"FilterLevels", effects.GlobalIllumination.ScreenSpace.FilterLevels},
                        {"Validation", effects.GlobalIllumination.ScreenSpace.Validation},
+                       {"WorkScale", EnumName(effects.GlobalIllumination.ScreenSpace.WorkScale,
+                                              kGlobalIlluminationResolutionNames)},
+                       {"HighlightClamp", effects.GlobalIllumination.ScreenSpace.HighlightClamp},
                    }},
               }},
              {"AO",
@@ -1951,6 +1956,12 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                 read("Temporal", screen.Temporal);
                 read("FilterLevels", screen.FilterLevels);
                 read("Validation", screen.Validation);
+                read("HighlightClamp", screen.HighlightClamp);
+                if (FindMember(*ss, "WorkScale") != nullptr)
+                    ReadEnum(*ss, "WorkScale", screen.WorkScale, kGlobalIlluminationResolutionNames,
+                             "Graphics.Effects.GlobalIllumination.ScreenSpace.WorkScale", result);
+                else
+                    result.NeedsRewrite = true;
             } else {
                 result.NeedsRewrite = true;
             }

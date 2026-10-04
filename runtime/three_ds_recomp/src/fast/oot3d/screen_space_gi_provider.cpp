@@ -9,6 +9,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <string_view>
 
 #ifdef ENABLE_OOT3D_VULKAN
 #include "fast/oot3d/nri_effect_graph_transient_image_arena.h"
@@ -30,6 +33,8 @@ Renderer::DiffuseGi::PassSettings ScreenSpaceGiPassSettings(const GlobalIllumina
     s.Gather.CandidatesPerSide = ss.RadialCandidates;
     s.Temporal.Enabled = ss.Temporal;
     s.Filter.Levels = ss.FilterLevels;
+    // Highlight clamp (section 9): artistic, never in validation mode.
+    if (ss.HighlightClamp > 0.0F && !ss.Validation) s.OutputLimit = ss.HighlightClamp;
     return s;
 }
 
@@ -39,7 +44,7 @@ uint32_t ScreenSpaceGiWorkFactor(GlobalIlluminationResolution resolution) noexce
 
 uint64_t ScreenSpaceGiSurfaceBytes(uint32_t width, uint32_t height, const GlobalIlluminationSettings& settings) {
     const auto extent =
-        Renderer::DiffuseGi::MakeWorkScaleExtent(width, height, ScreenSpaceGiWorkFactor(settings.Resolution));
+        Renderer::DiffuseGi::MakeWorkScaleExtent(width, height, ScreenSpaceGiWorkFactor(settings.ScreenSpace.WorkScale));
     const auto plan = Renderer::DiffuseGi::PlanPassResources(extent, ScreenSpaceGiPassSettings(settings), {}, 256U);
     // The pass buffers (output guide included) and the RGBA16F output image.
     return plan.PassBytes() + 8ULL * width * height;
@@ -63,6 +68,27 @@ struct ScreenSpaceGiProvider::Instance {
     uint64_t LastUse = 0;
 };
 
+// Developer dump of one frame's pass inputs (see the header).
+struct ScreenSpaceGiProvider::DumpState {
+    std::string Directory;
+    uint64_t Frame = 300;
+    bool Recorded = false, Written = false;
+    uint64_t RecordedFrame = 0;
+    VkBuffer Buffer = VK_NULL_HANDLE;
+    VkDeviceMemory Memory = VK_NULL_HANDLE;
+    void* Mapped = nullptr;
+    struct Part {
+        const char* Name;
+        DGI::PassResourceId Id;
+        VkDeviceSize Offset, Size;
+    };
+    std::vector<Part> Parts;
+    DGI::PassExtent Extent;
+    DGI::DepthCamera Camera;
+    std::array<float, 2> Jitter{};
+    uint32_t GuideWidth = 0, GuideHeight = 0;
+};
+
 ScreenSpaceGiProvider::ScreenSpaceGiProvider() = default;
 ScreenSpaceGiProvider::~ScreenSpaceGiProvider() { Shutdown(); }
 
@@ -78,6 +104,23 @@ void ScreenSpaceGiProvider::Initialize(VkPhysicalDevice physical, VkDevice devic
     mInterop = &interop;
     mFramesInFlight = std::max(framesInFlight, 1U);
     mReason = "pipelines not created";
+    const auto env = [](const char* name) -> std::string_view {
+        const char* value = std::getenv(name);
+        return value != nullptr ? std::string_view(value) : std::string_view();
+    };
+    mKernelTiming = env("OOT3D_GRAPHICS_SSGI_KERNEL_TIMING") == "1";
+    const std::string_view factor = env("OOT3D_GRAPHICS_SSGI_WORK_FACTOR");
+    mWorkFactorOverride = factor == "1" ? 1U : factor == "2" ? 2U : factor == "4" ? 4U : 0U;
+    if (const std::string_view dump = env("OOT3D_GRAPHICS_SSGI_DUMP"); !dump.empty()) {
+        mDump = std::make_unique<DumpState>();
+        mDump->Directory = std::string(dump);
+        if (const std::string_view frame = env("OOT3D_GRAPHICS_SSGI_DUMP_FRAME"); !frame.empty())
+            mDump->Frame = std::strtoull(std::string(frame).c_str(), nullptr, 10);
+    }
+    if (mKernelTiming || mWorkFactorOverride != 0U || mDump)
+        std::fprintf(stderr, "TRIAEVUM_SCREEN_SPACE_GI developer kernel_timing=%d work_factor=%u dump=%s frame=%llu\n",
+                     mKernelTiming ? 1 : 0, mWorkFactorOverride, mDump ? mDump->Directory.c_str() : "-",
+                     static_cast<unsigned long long>(mDump ? mDump->Frame : 0U));
 }
 
 bool ScreenSpaceGiProvider::Prepare() {
@@ -193,6 +236,7 @@ ScreenSpaceGiProvider::Instance* ScreenSpaceGiProvider::InstanceFor(const Screen
         mReason = "adapter descriptor sets";
         return nullptr;
     }
+    instance->Pass.SetKernelTiming(mKernelTiming);
     mInstances.push_back(std::move(instance));
     ++mStats.InstancesCreated;
     std::fprintf(stderr, "TRIAEVUM_SCREEN_SPACE_GI frame=%llu instances_created=%llu retired=%llu\n",
@@ -204,8 +248,9 @@ ScreenSpaceGiProvider::Instance* ScreenSpaceGiProvider::InstanceFor(const Screen
 bool ScreenSpaceGiProvider::ConfigureInstance(Instance& instance, const ScreenSpaceGiFrame& frame,
                                               const GlobalIlluminationSettings& settings,
                                               const NriEffectGraphTransientImageBinding& output) {
-    const DGI::PassExtent extent =
-        DGI::MakeWorkScaleExtent(frame.Width, frame.Height, ScreenSpaceGiWorkFactor(settings.Resolution));
+    const DGI::PassExtent extent = DGI::MakeWorkScaleExtent(
+        frame.Width, frame.Height,
+        mWorkFactorOverride != 0U ? mWorkFactorOverride : ScreenSpaceGiWorkFactor(settings.ScreenSpace.WorkScale));
     const DGI::PassSettings passSettings = ScreenSpaceGiPassSettings(settings);
     DGI::PassOutputs outputs;
     outputs.Illumination = {output.Texture.Image, output.Texture.StorageView, output.Format, output.Width,
@@ -258,6 +303,7 @@ bool ScreenSpaceGiProvider::Execute(VkCommandBuffer command, const ScreenSpaceGi
                                     const EffectPassBarrierPlan& barriers) {
     mBarriers = barriers.BeginExecution();
     if (!Prepare()) return false;
+    FinishDump(frame.FrameId);
     const auto* declared = barriers.Find(EffectResource::DiffuseIllumination);
     if (declared == nullptr || !declared->Managed() || !output.Valid() || output.StateTracker == nullptr ||
         output.Texture.StorageView == VK_NULL_HANDLE || frame.View == nullptr || frame.Temporal == nullptr) {
@@ -305,6 +351,18 @@ bool ScreenSpaceGiProvider::Execute(VkCommandBuffer command, const ScreenSpaceGi
         const VkDescriptorSet set = instance->AdapterSets[frame.FrameSlot % instance->AdapterSets.size()];
         executed = RecordDiffuseGiAdapter(mDevice, command, *mAdapter, set, frame.Guides, instance->Pass, params) &&
                    instance->Pass.Execute(command, passFrame, illumination, accessibility, access, record);
+        if (executed && mDump && !mDump->Recorded && frame.FrameId >= mDump->Frame)
+            RecordDump(command, *instance, frame, camera);
+        if (executed && mKernelTiming && instance->Pass.Stats().Executions % 60U == 0U) {
+            const auto& t = instance->Pass.LastKernelTimings();
+            if (t.Valid)
+                std::fprintf(stderr,
+                             "TRIAEVUM_SCREEN_SPACE_GI kernel_ms frame=%llu total=%.3f normal=%.3f level0=%.3f "
+                             "reduce=%.3f gather=%.3f pack=%.3f temporal=%.3f filter=%.3f output=%.3f upsample=%.3f\n",
+                             static_cast<unsigned long long>(frame.FrameId), t.Total, t.Milliseconds[0],
+                             t.Milliseconds[1], t.Milliseconds[2], t.Milliseconds[3], t.Milliseconds[4],
+                             t.Milliseconds[5], t.Milliseconds[6], t.Milliseconds[7], t.Milliseconds[8]);
+        }
         if (executed) {
             instance->LastFrameId = frame.FrameId;
             instance->HasFrame = true;
@@ -351,6 +409,102 @@ bool ScreenSpaceGiProvider::ClearOutput(VkCommandBuffer command, const ScreenSpa
     return cleared && completed;
 }
 
+void ScreenSpaceGiProvider::RecordDump(VkCommandBuffer command, Instance& instance, const ScreenSpaceGiFrame& frame,
+                                       const DGI::DepthCamera& camera) {
+    DumpState& d = *mDump;
+    d.Recorded = true;
+    d.Parts.clear();
+    VkDeviceSize total = 0;
+    for (const auto& [name, id] : std::initializer_list<std::pair<const char*, DGI::PassResourceId>>{
+             {"depth", DGI::PassResourceId::Depth},       {"class", DGI::PassResourceId::Class},
+             {"radiance", DGI::PassResourceId::Radiance}, {"normal", DGI::PassResourceId::Normal},
+             {"motion", DGI::PassResourceId::Motion}}) {
+        const auto view = instance.Pass.Buffer(id);
+        if (view.Size == 0U) continue;
+        d.Parts.push_back({name, id, total, view.Size});
+        total += (view.Size + 255U) / 256U * 256U;
+    }
+    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    info.size = total;
+    info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (vkCreateBuffer(mDevice, &info, nullptr, &d.Buffer) != VK_SUCCESS) return;
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(mDevice, d.Buffer, &requirements);
+    VkPhysicalDeviceMemoryProperties memory{};
+    vkGetPhysicalDeviceMemoryProperties(mPhysical, &memory);
+    uint32_t type = memory.memoryTypeCount;
+    const VkMemoryPropertyFlags wanted = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    for (uint32_t t = 0; t < memory.memoryTypeCount && type == memory.memoryTypeCount; ++t)
+        if ((requirements.memoryTypeBits & (1U << t)) && (memory.memoryTypes[t].propertyFlags & wanted) == wanted)
+            type = t;
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocation.allocationSize = requirements.size;
+    allocation.memoryTypeIndex = type;
+    if (type == memory.memoryTypeCount || vkAllocateMemory(mDevice, &allocation, nullptr, &d.Memory) != VK_SUCCESS ||
+        vkBindBufferMemory(mDevice, d.Buffer, d.Memory, 0) != VK_SUCCESS ||
+        vkMapMemory(mDevice, d.Memory, 0, VK_WHOLE_SIZE, 0, &d.Mapped) != VK_SUCCESS) {
+        std::fprintf(stderr, "TRIAEVUM_SCREEN_SPACE_GI dump failed: host memory\n");
+        return;
+    }
+    // The adapter's writes (and the pass's reads) -> these copies.
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier,
+                         0, nullptr, 0, nullptr);
+    for (const auto& part : d.Parts) {
+        const VkBufferCopy region{0, part.Offset, part.Size};
+        vkCmdCopyBuffer(command, instance.Pass.Buffer(part.Id).Buffer, d.Buffer, 1, &region);
+    }
+    VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &host, 0, nullptr,
+                         0, nullptr);
+    d.RecordedFrame = frame.FrameId;
+    d.Extent = instance.Extent;
+    d.Camera = camera;
+    d.Jitter = frame.JitterUv;
+    d.GuideWidth = frame.Width;
+    d.GuideHeight = frame.Height;
+}
+
+void ScreenSpaceGiProvider::FinishDump(uint64_t frameId) {
+    if (!mDump || !mDump->Recorded || mDump->Written || mDump->Mapped == nullptr) return;
+    DumpState& d = *mDump;
+    // Every frame slot has been recorded again since: the copy has executed.
+    if (frameId < d.RecordedFrame + mFramesInFlight + 1U) return;
+    d.Written = true;
+    bool ok = true;
+    for (const auto& part : d.Parts) {
+        std::ofstream file(d.Directory + "/ssgi_" + part.Name + ".bin", std::ios::binary);
+        file.write(static_cast<const char*>(d.Mapped) + part.Offset, static_cast<std::streamsize>(part.Size));
+        ok = ok && file.good();
+    }
+    std::ofstream meta(d.Directory + "/ssgi_dump.json");
+    char text[1024];
+    std::snprintf(text, sizeof(text),
+                  "{\n  \"frame\": %llu,\n  \"guide\": [%u, %u],\n  \"buffer\": [%u, %u],\n  \"work_factor\": %u,\n"
+                  "  \"work_phase\": %u,\n  \"encoding\": %d,\n  \"near\": %.9g,\n  \"far\": %.9g,\n"
+                  "  \"view_x\": [%.17g, %.17g, %.17g],\n  \"view_y\": [%.17g, %.17g, %.17g],\n"
+                  "  \"jitter_uv\": [%.9g, %.9g]\n}\n",
+                  static_cast<unsigned long long>(d.RecordedFrame), d.GuideWidth, d.GuideHeight, d.Extent.BufferWidth,
+                  d.Extent.BufferHeight, d.Extent.WorkFactor, d.Extent.WorkPhase, static_cast<int>(d.Camera.Encoding),
+                  d.Camera.Near, d.Camera.Far, d.Camera.ViewX[0], d.Camera.ViewX[1], d.Camera.ViewX[2],
+                  d.Camera.ViewY[0], d.Camera.ViewY[1], d.Camera.ViewY[2], d.Jitter[0], d.Jitter[1]);
+    meta << text;
+    ok = ok && meta.good();
+    std::fprintf(stderr, "TRIAEVUM_SCREEN_SPACE_GI dump frame=%llu work=%ux%u factor=%u written=%d dir=%s\n",
+                 static_cast<unsigned long long>(d.RecordedFrame), d.Extent.BufferWidth, d.Extent.BufferHeight,
+                 d.Extent.WorkFactor, ok ? 1 : 0, d.Directory.c_str());
+    vkUnmapMemory(mDevice, d.Memory);
+    vkDestroyBuffer(mDevice, d.Buffer, nullptr);
+    vkFreeMemory(mDevice, d.Memory, nullptr);
+    d.Mapped = nullptr;
+    d.Buffer = VK_NULL_HANDLE;
+    d.Memory = VK_NULL_HANDLE;
+}
+
 VkImageView ScreenSpaceGiProvider::SampledDepthView(VkImage image, VkFormat format, uint32_t width,
                                                     uint32_t height) {
 #ifdef ENABLE_OOT3D_NRI
@@ -393,6 +547,12 @@ void ScreenSpaceGiProvider::Shutdown() noexcept {
     mCreation = {};
     if (mDevice != VK_NULL_HANDLE) InvalidateScreenResources();
     mInstances.clear();
+    if (mDump && mDevice != VK_NULL_HANDLE) {
+        if (mDump->Mapped != nullptr) vkUnmapMemory(mDevice, mDump->Memory);
+        if (mDump->Buffer != VK_NULL_HANDLE) vkDestroyBuffer(mDevice, mDump->Buffer, nullptr);
+        if (mDump->Memory != VK_NULL_HANDLE) vkFreeMemory(mDevice, mDump->Memory, nullptr);
+    }
+    mDump.reset();
     mAdapter.reset();
     mKernels.reset();
     mInterop = nullptr;

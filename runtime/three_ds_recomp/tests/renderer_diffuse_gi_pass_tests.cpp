@@ -493,6 +493,18 @@ TEST(DiffuseGiPass, WorkScaleFramePlan) {
     EXPECT_FLOAT_EQ(plan.Upsample.WorkX[0], static_cast<float>(work.ViewX[0]));
     EXPECT_FLOAT_EQ(plan.Upsample.Surface[0], static_cast<float>(s.Upsample.PlaneSine));
     EXPECT_FLOAT_EQ(plan.Upsample.Surface[3], kOutputHalfMax);
+    {   // Highlight clamp: the stored |J| limit of both output kernels, not the neutral output's.
+        PassSettings clamped = s;
+        clamped.OutputLimit = 2.0;
+        TemporalHistoryState fresh;
+        PassFramePlan p2;
+        ASSERT_STREQ(PlanPassFrame(e, clamped, {}, layout, fresh, frame, p2, false), "");
+        EXPECT_FLOAT_EQ(p2.Upsample.Surface[3], 2.0F);
+        EXPECT_FLOAT_EQ(p2.Output.Limits[0], 2.0F);
+        EXPECT_FLOAT_EQ(p2.OutputNeutral.Limits[0], kOutputHalfMax);
+        clamped.OutputLimit = 0.0;
+        EXPECT_STREQ(ValidatePassSettings(clamped), "output limit must be finite and positive");
+    }
     EXPECT_EQ(std::memcmp(plan.Parameters.data() + layout.Upsample, &plan.Upsample, sizeof(plan.Upsample)), 0);
     // The neutral outputs cover the output extent; A is not written.
     EXPECT_EQ(plan.OutputNeutral.Extent[0], 37U);

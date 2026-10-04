@@ -8836,7 +8836,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                              "buffer_bytes=%llu executions=%llu republications=%llu clears=%llu "
                              "reconfigurations=%llu history_resets=%llu reset_frames=%llu last_reset=0x%x allocation_ms=%.1f\n",
                              (unsigned long long)mFrameCounter, giFrame.Width, giFrame.Height,
-                             Oot3d::ScreenSpaceGiWorkFactor(giSettings.Resolution), gi.Instances,
+                             Oot3d::ScreenSpaceGiWorkFactor(giSettings.ScreenSpace.WorkScale), gi.Instances,
                              (unsigned long long)gi.BufferBytes, (unsigned long long)gi.Executions,
                              (unsigned long long)gi.Republications, (unsigned long long)gi.Clears,
                              (unsigned long long)gi.Reconfigurations, (unsigned long long)gi.HistoryResets,

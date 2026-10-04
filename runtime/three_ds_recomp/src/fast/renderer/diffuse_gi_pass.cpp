@@ -247,6 +247,79 @@ struct DiffuseGiPass::Impl {
     PassStats Stats;
     std::string Reason = "not initialized";
 
+    // Developer kernel timing: one query pool per ring entry; query 0 is the
+    // frame's start, query q > 0 follows the dispatch of TimingKernels[q].
+    static constexpr uint32_t kTimingRing = 4;
+    static constexpr uint32_t kTimingQueries = 32;
+    bool Timing = false;
+    mutable bool TimingActive = false;
+    mutable uint32_t TimingWritten = 0;
+    uint32_t TimingSlot = 0;
+    std::array<VkQueryPool, kTimingRing> TimingPools{};
+    mutable std::array<std::array<uint8_t, kTimingQueries>, kTimingRing> TimingKernels{};
+    std::array<uint32_t, kTimingRing> TimingCounts{};
+    std::array<bool, kTimingRing> TimingPending{};
+    PassKernelTimings Timings;
+
+    void DestroyTiming() noexcept {
+        for (VkQueryPool& pool : TimingPools) {
+            if (pool != VK_NULL_HANDLE && Device != VK_NULL_HANDLE) vkDestroyQueryPool(Device, pool, nullptr);
+            pool = VK_NULL_HANDLE;
+        }
+        TimingCounts = {};
+        TimingPending = {};
+        TimingActive = false;
+    }
+    // Reads the ring entry's results when available (never waits), then
+    // starts this frame's timestamps in it.
+    void BeginTiming(VkCommandBuffer command) {
+        TimingActive = false;
+        if (!Timing || Device == VK_NULL_HANDLE || Limits.timestampPeriod <= 0.0F) return;
+        VkQueryPool& pool = TimingPools[TimingSlot];
+        if (pool == VK_NULL_HANDLE) {
+            VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            info.queryCount = kTimingQueries;
+            if (vkCreateQueryPool(Device, &info, nullptr, &pool) != VK_SUCCESS) {
+                pool = VK_NULL_HANDLE;
+                return;
+            }
+        } else if (TimingPending[TimingSlot]) {
+            const uint32_t count = TimingCounts[TimingSlot];
+            std::array<uint64_t, kTimingQueries> ticks{};
+            if (count >= 2U && vkGetQueryPoolResults(Device, pool, 0, count, sizeof(ticks), ticks.data(),
+                                                     sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+                PassKernelTimings t;
+                const double scale = static_cast<double>(Limits.timestampPeriod) * 1.0e-6;
+                for (uint32_t q = 1; q < count; ++q)
+                    t.Milliseconds[TimingKernels[TimingSlot][q]] +=
+                        static_cast<double>(ticks[q] - ticks[q - 1U]) * scale;
+                t.Total = static_cast<double>(ticks[count - 1U] - ticks[0]) * scale;
+                t.Frames = Timings.Frames + 1U;
+                t.Valid = true;
+                Timings = t;
+            }
+            TimingPending[TimingSlot] = false;
+        }
+        vkCmdResetQueryPool(command, pool, 0, kTimingQueries);
+        vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, pool, 0);
+        TimingWritten = 1;
+        TimingActive = true;
+    }
+    void StampAfter(VkCommandBuffer command, PassKernel kernel) const {
+        if (!TimingActive || TimingWritten >= kTimingQueries) return;
+        vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, TimingPools[TimingSlot], TimingWritten);
+        TimingKernels[TimingSlot][TimingWritten] = static_cast<uint8_t>(kernel);
+        ++TimingWritten;
+    }
+    void EndTiming() {
+        if (!TimingActive) return;
+        TimingCounts[TimingSlot] = TimingWritten;
+        TimingPending[TimingSlot] = true;
+        TimingSlot = (TimingSlot + 1U) % kTimingRing;
+        TimingActive = false;
+    }
+
     [[nodiscard]] uint32_t Alignment() const noexcept {
         return static_cast<uint32_t>(std::max<VkDeviceSize>(Limits.minUniformBufferOffsetAlignment, 16));
     }
@@ -517,6 +590,7 @@ struct DiffuseGiPass::Impl {
                                 dynamicOffset != nullptr ? 1U : 0U, dynamicOffset);
         vkCmdDispatch(command, std::max(Groups(width), 1U), std::max(Groups(height), 1U), 1);
         ++record.Dispatches;
+        StampAfter(command, kernel);
     }
     static void Transition(VkCommandBuffer command, VkImage image, const PassImageState& from,
                            const PassImageState& to) {
@@ -742,6 +816,7 @@ bool DiffuseGiPass::Execute(VkCommandBuffer command, const PassFrame& frame, Pas
 
     using enum PassKernel;
     const ViewportRect& v = m.Extent.Viewport;
+    m.BeginTiming(command);
     m.UpdateParameters(command, 0, plan.Parameters.data(), m.Params.Size, record);
     m.Dispatch(command, Normal, m.SetGather, &m.Params.M4[0], v.Width, v.Height, record);
     for (uint32_t l = 0; l < plan.HierarchyLevels; ++l) {
@@ -769,6 +844,7 @@ bool DiffuseGiPass::Execute(VkCommandBuffer command, const PassFrame& frame, Pas
     else
         m.RecordOutput(command, Output, variant.Output[source], m.Params.Output, illumination, accessibility,
                        completion, record);
+    m.EndTiming();
 
     m.History.Commit(plan.Temporal);
     m.Current = 1U - m.Current;
@@ -841,6 +917,7 @@ void DiffuseGiPass::InvalidateScreenResources() noexcept {
 void DiffuseGiPass::Shutdown() noexcept {
     Impl& m = *mImpl;
     if (m.Device != VK_NULL_HANDLE) m.ReleaseResources();
+    m.DestroyTiming();
     m.Kernels.reset();
     m.Initialized = false;
     m.Configured = false;
@@ -855,5 +932,13 @@ const PassResourcePlan& DiffuseGiPass::Resources() const noexcept { return mImpl
 const PassParameterLayout& DiffuseGiPass::ParameterLayout() const noexcept { return mImpl->Params; }
 const PassFramePlan& DiffuseGiPass::LastFrame() const noexcept { return mImpl->Frame; }
 const DiffuseGiKernels* DiffuseGiPass::Kernels() const noexcept { return mImpl->Kernels.get(); }
+
+void DiffuseGiPass::SetKernelTiming(bool enabled) noexcept {
+    Impl& m = *mImpl;
+    if (m.Timing == enabled) return;
+    m.Timing = enabled;
+    if (!enabled) m.DestroyTiming();
+}
+const PassKernelTimings& DiffuseGiPass::LastKernelTimings() const noexcept { return mImpl->Timings; }
 
 } // namespace Fast::Renderer::DiffuseGi

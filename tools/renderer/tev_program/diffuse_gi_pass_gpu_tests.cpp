@@ -43,8 +43,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <future>
+#include <iterator>
 #include <limits>
+#include <string_view>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -115,6 +118,9 @@ struct Device {
         vkEnumerateInstanceLayerProperties(&count, layers.data());
         for (const auto& l : layers)
             Validation = Validation || std::strcmp(l.layerName, "VK_LAYER_KHRONOS_validation") == 0;
+        // Timing studies run without the layer (DGI_NO_VALIDATION=1).
+        if (const char* off = std::getenv("DGI_NO_VALIDATION"); off != nullptr && std::strcmp(off, "1") == 0)
+            Validation = false;
         VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         app.apiVersion = VK_API_VERSION_1_2;
         const char* layer = "VK_LAYER_KHRONOS_validation";
@@ -946,11 +952,15 @@ struct ScaledRun {
     std::vector<uint32_t> Guide;
     std::vector<uint16_t> OutJ;
     std::vector<float> OutA, Colour, Geometry;
+    std::vector<std::pair<PassResourceId, std::vector<uint8_t>>> Parts;
+    DepthCamera Camera;
+    GeometricNormalSource NormalSource = GeometricNormalSource::DepthReconstruction;
+    bool WriteA = false;
 };
 
 // Runs `frames` frames of a static camera; reads back the outputs and, at a
 // work scale, the upsampler's inputs (final colour, geometry).
-void RunScaled(Device& d, ScaledRun& run, const GatherInput& full, uint32_t factor, bool writeA, uint64_t frames) {
+void SetupScaled(Device& d, ScaledRun& run, const GatherInput& full, uint32_t factor, bool writeA) {
     run.Extent = MakeWorkScaleExtent(full.BufferWidth, full.BufferHeight, factor);
     run.Work = factor > 1U ? WorkInput(full, run.Extent) : full;
     run.Guide = factor > 1U ? OutputGuideOf(full) : std::vector<uint32_t>{};
@@ -959,22 +969,30 @@ void RunScaled(Device& d, ScaledRun& run, const GatherInput& full, uint32_t fact
     PassOutputs outputs{{run.J.Handle, run.J.View, run.J.Format, run.J.Width, run.J.Height}, {}};
     if (writeA) outputs.Accessibility = {run.A.Handle, run.A.View, run.A.Format, run.A.Width, run.A.Height};
     Require(run.Pass.Configure(run.Extent, run.Settings, {}, outputs), run.Pass.UnavailableReason());
-    const auto parts = WorkParts(run.Work, run.Guide);
-    for (uint64_t k = 0; k < frames; ++k) {
+    run.Parts.clear();
+    for (auto& part : WorkParts(run.Work, run.Guide))
+        if (part.first != PassResourceId::OutputGuide || factor > 1U) run.Parts.push_back(std::move(part));
+    run.Camera = full.Camera;
+    run.NormalSource = full.NormalSource;
+    run.WriteA = writeA;
+}
+
+// One frame of a static camera (inputs uploaded on the first); `last` reads
+// back the outputs and the upsampler's inputs.
+void StepScaled(Device& d, ScaledRun& run, uint64_t k, bool last) {
+    {
         d.Begin();
-        std::vector<std::pair<PassResourceId, std::vector<uint8_t>>> upload;
-        for (const auto& part : parts)
-            if (part.first != PassResourceId::OutputGuide || factor > 1U) upload.push_back(part);
-        Device::Buffer staging = UploadParts(d, run.Pass, upload);
+        Device::Buffer staging{};
+        if (k == 0U) staging = UploadParts(d, run.Pass, run.Parts);
+        const bool writeA = run.WriteA;
         PassFrame frame;
-        frame.Camera = full.Camera;
-        frame.NormalSource = full.NormalSource;
+        frame.Camera = run.Camera;
+        frame.NormalSource = run.NormalSource;
         frame.FrameIndex = k;
         PassBarrierRecord record;
         Require(run.Pass.Execute(d.Command, frame, run.JState, run.AState, {}, record), run.Pass.UnavailableReason());
-        const bool last = k + 1U == frames;
         Device::Buffer readback{};
-        const VkDeviceSize texels = static_cast<VkDeviceSize>(full.BufferWidth) * full.BufferHeight;
+        const VkDeviceSize texels = static_cast<VkDeviceSize>(run.J.Width) * run.J.Height;
         const uint32_t levels = run.Settings.Filter.Levels;
         const PassResourceId colour = levels == 0U ? PassResourceId::Colour
                                       : ((levels - 1U) % 2U == 0U ? PassResourceId::Filter0 : PassResourceId::Filter1);
@@ -1007,6 +1025,13 @@ void RunScaled(Device& d, ScaledRun& run, const GatherInput& full, uint32_t fact
             d.Free(readback);
         }
     }
+}
+
+// Runs `frames` frames of a static camera; reads back the outputs and, at a
+// work scale, the upsampler's inputs (final colour, geometry).
+void RunScaled(Device& d, ScaledRun& run, const GatherInput& full, uint32_t factor, bool writeA, uint64_t frames) {
+    SetupScaled(d, run, full, factor, writeA);
+    for (uint64_t k = 0; k < frames; ++k) StepScaled(d, run, k, k + 1U == frames);
 }
 
 void ReleaseScaled(Device& d, ScaledRun& run) {
@@ -1071,7 +1096,198 @@ Device::Image MakeSampled(Device& d, VkFormat format, uint32_t width, uint32_t h
 
 } // namespace
 
-int main() try {
+// ---------------------------------------------------------------------------
+// M5 Stage C: settings study on a developer dump of the game's pass inputs
+// (OOT3D_GRAPHICS_SSGI_DUMP with OOT3D_GRAPHICS_SSGI_WORK_FACTOR=1): GPU time
+// per kernel (p50 / p95 over interleaved runs) and quality against a
+// full-quality reference on the same real buffers.
+
+double JsonNumber(const std::string& text, const char* key, int index = 0) {
+    const auto at = text.find(std::string("\"") + key + "\"");
+    Require(at != std::string::npos, std::string("dump metadata lacks ") + key);
+    const char* p = text.c_str() + text.find(':', at) + 1;
+    for (int i = 0;; ++i) {
+        while (*p == ' ' || *p == '[' || *p == ',' || *p == '\n') ++p;
+        char* end = nullptr;
+        const double v = std::strtod(p, &end);
+        if (i == index) return v;
+        p = end;
+    }
+}
+
+template <typename T>
+std::vector<T> ReadVector(const std::string& path) {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    Require(f.good(), "cannot read " + path);
+    const auto bytes = static_cast<size_t>(f.tellg());
+    std::vector<T> v(bytes / sizeof(T));
+    f.seekg(0);
+    f.read(reinterpret_cast<char*>(v.data()), static_cast<std::streamsize>(bytes));
+    return v;
+}
+
+GatherInput LoadDump(const std::string& dir) {
+    std::ifstream meta(dir + "/ssgi_dump.json");
+    const std::string text((std::istreambuf_iterator<char>(meta)), std::istreambuf_iterator<char>());
+    Require(JsonNumber(text, "work_factor") == 1.0, "the study needs a dump at work factor 1");
+    GatherInput in;
+    in.BufferWidth = static_cast<uint32_t>(JsonNumber(text, "buffer", 0));
+    in.BufferHeight = static_cast<uint32_t>(JsonNumber(text, "buffer", 1));
+    in.Viewport = {0, 0, in.BufferWidth, in.BufferHeight};
+    in.Camera.Encoding = static_cast<DepthEncoding>(static_cast<int>(JsonNumber(text, "encoding")));
+    in.Camera.Near = JsonNumber(text, "near");
+    in.Camera.Far = JsonNumber(text, "far");
+    for (int i = 0; i < 3; ++i) {
+        in.Camera.ViewX[i] = JsonNumber(text, "view_x", i);
+        in.Camera.ViewY[i] = JsonNumber(text, "view_y", i);
+    }
+    in.NormalSource = GeometricNormalSource::RendererFaceNormal;
+    in.Depth = ReadVector<float>(dir + "/ssgi_depth.bin");
+    const auto cls = ReadVector<uint32_t>(dir + "/ssgi_class.bin");
+    const auto rad = ReadVector<float>(dir + "/ssgi_radiance.bin");
+    const auto nrm = ReadVector<float>(dir + "/ssgi_normal.bin");
+    const size_t n = static_cast<size_t>(in.BufferWidth) * in.BufferHeight;
+    Require(in.Depth.size() == n && cls.size() == n && rad.size() == 4 * n && nrm.size() == 4 * n, "dump sizes");
+    in.Class.resize(n);
+    in.Radiance.resize(3 * n);
+    in.FaceNormals.resize(3 * n);
+    for (size_t i = 0; i < n; ++i) {
+        in.Class[i] = static_cast<uint8_t>(cls[i]);
+        for (int c = 0; c < 3; ++c) {
+            in.Radiance[3 * i + c] = rad[4 * i + c];
+            in.FaceNormals[3 * i + c] = nrm[4 * i + c];
+        }
+    }
+    return in;
+}
+
+struct StudyConfig {
+    std::string Name;
+    uint32_t Factor = 2, Sections = 1, Candidates = 16, Sectors = 64, Filter = 4;
+    bool Temporal = true;
+};
+
+double Percentile(std::vector<double> v, double q) {
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    return v[std::min(v.size() - 1U, static_cast<size_t>(q * static_cast<double>(v.size() - 1U) + 0.5))];
+}
+
+// Arguments: --study DIR [R TAU FRAMES CONFIG...]; CONFIG is
+// name:factor:sections:candidates:sectors:filter[:notemporal]. The reference
+// is factor 1, 8 sections, 32 candidates, 128 sectors, 4 levels.
+int Study(Device& d, const PassDevice& passDevice, std::shared_ptr<DiffuseGiKernels> kernels, int argc, char** argv) {
+    const GatherInput full = LoadDump(argv[2]);
+    const double radius = argc > 3 ? std::atof(argv[3]) : 150.0;
+    const double thickness = argc > 4 ? std::atof(argv[4]) : 30.0;
+    const uint64_t frames = argc > 5 ? std::strtoull(argv[5], nullptr, 10) : 48U;
+    std::vector<StudyConfig> configs;
+    for (int a = 6; a < argc; ++a) {
+        StudyConfig c;
+        char name[64] = {}, flag[16] = {};
+        const int got = std::sscanf(argv[a], "%63[^:]:%u:%u:%u:%u:%u:%15s", name, &c.Factor, &c.Sections,
+                                    &c.Candidates, &c.Sectors, &c.Filter, flag);
+        Require(got >= 6, std::string("bad config ") + argv[a]);
+        c.Name = name;
+        c.Temporal = std::strcmp(flag, "notemporal") != 0;
+        configs.push_back(c);
+    }
+    if (configs.empty()) configs.push_back({"default", 2, 1, 16, 64, 4, true});
+    const auto settingsOf = [&](const StudyConfig& c) {
+        PassSettings s = DefaultPassSettings();
+        s.Gather.Radius = radius;
+        s.Gather.Thickness = thickness;
+        s.Gather.Sections = c.Sections;
+        s.Gather.CandidatesPerSide = c.Candidates;
+        s.Gather.Sectors = c.Sectors;
+        s.Filter.Levels = c.Filter;
+        s.Temporal.Enabled = c.Temporal;
+        return s;
+    };
+    std::printf("DGI_STUDY dump=%ux%u R=%.1f tau=%.1f frames=%llu\n", full.BufferWidth, full.BufferHeight, radius,
+                thickness, static_cast<unsigned long long>(frames));
+    // Reference: converged full-quality J at the guide extent.
+    ScaledRun reference;
+    StudyConfig referenceConfig{"reference", 1, 8, 32, 128, 4, true};
+    if (const char* r = std::getenv("DGI_STUDY_REFERENCE"); r != nullptr) // factor:S:K:N:levels
+        std::sscanf(r, "%u:%u:%u:%u:%u", &referenceConfig.Factor, &referenceConfig.Sections,
+                    &referenceConfig.Candidates, &referenceConfig.Sectors, &referenceConfig.Filter);
+    std::printf("DGI_STUDY reference factor=%u S=%u K=%u N=%u filter=%u\n", referenceConfig.Factor,
+                referenceConfig.Sections, referenceConfig.Candidates, referenceConfig.Sectors, referenceConfig.Filter);
+    reference.Settings = settingsOf(referenceConfig);
+    Require(reference.Pass.Initialize(passDevice, kernels), reference.Pass.UnavailableReason());
+    SetupScaled(d, reference, full, referenceConfig.Factor, false);
+    const uint64_t referenceFrames = std::max<uint64_t>(frames, 64U);
+    for (uint64_t k = 0; k < referenceFrames; ++k) StepScaled(d, reference, k, k + 1U == referenceFrames);
+    const std::vector<uint16_t> refJ = reference.OutJ;
+    ReleaseScaled(d, reference);
+    // Configurations interleaved frame by frame (A/B ordering per round).
+    std::vector<std::unique_ptr<ScaledRun>> runs;
+    std::vector<std::vector<std::array<double, kPassKernelCount + 1U>>> samples(configs.size());
+    for (const StudyConfig& c : configs) {
+        runs.push_back(std::make_unique<ScaledRun>());
+        runs.back()->Settings = settingsOf(c);
+        Require(runs.back()->Pass.Initialize(passDevice, kernels), runs.back()->Pass.UnavailableReason());
+        runs.back()->Pass.SetKernelTiming(true);
+        SetupScaled(d, *runs.back(), full, c.Factor, false);
+    }
+    std::vector<std::vector<uint16_t>> firstJ(configs.size());
+    std::vector<uint64_t> seen(configs.size(), 0U);
+    for (uint64_t k = 0; k < frames; ++k)
+        for (size_t i = 0; i < runs.size(); ++i) {
+            const size_t r = (k % 2U == 0U) ? i : runs.size() - 1U - i;
+            StepScaled(d, *runs[r], k, k == 0U || k + 1U == frames);
+            if (k == 0U) firstJ[r] = runs[r]->OutJ;
+            const auto& t = runs[r]->Pass.LastKernelTimings();
+            if (t.Valid && t.Frames != seen[r] && k >= 4U) {
+                seen[r] = t.Frames;
+                std::array<double, kPassKernelCount + 1U> s{};
+                for (uint32_t q = 0; q < kPassKernelCount; ++q) s[q] = t.Milliseconds[q];
+                s[kPassKernelCount] = t.Total;
+                samples[r].push_back(s);
+            }
+        }
+    const auto compare = [&](const std::vector<uint16_t>& j, double& ratio, double& error, size_t& holes) {
+        double sumRef = 0.0, sum = 0.0, diff = 0.0;
+        holes = 0;
+        for (size_t t = 0; 4 * t + 3 < refJ.size(); ++t) {
+            const bool a = FromHalf(refJ[4 * t + 3]) > 0.0F, b = FromHalf(j[4 * t + 3]) > 0.0F;
+            if (a && !b) ++holes;
+            if (!(a && b)) continue;
+            for (int c = 0; c < 3; ++c) {
+                const double r = FromHalf(refJ[4 * t + c]), v = FromHalf(j[4 * t + c]);
+                sumRef += r, sum += v, diff += std::abs(v - r);
+            }
+        }
+        ratio = sumRef > 0.0 ? sum / sumRef : 0.0;
+        error = sumRef > 0.0 ? diff / sumRef : 0.0;
+    };
+    for (size_t r = 0; r < runs.size(); ++r) {
+        const StudyConfig& c = configs[r];
+        std::vector<double> total, kernel[kPassKernelCount];
+        for (const auto& s : samples[r]) {
+            total.push_back(s[kPassKernelCount]);
+            for (uint32_t q = 0; q < kPassKernelCount; ++q) kernel[q].push_back(s[q]);
+        }
+        double ratio = 0.0, error = 0.0, ratio1 = 0.0, error1 = 0.0;
+        size_t holes = 0, holes1 = 0;
+        compare(runs[r]->OutJ, ratio, error, holes);
+        compare(firstJ[r], ratio1, error1, holes1);
+        std::printf("DGI_STUDY config=%s factor=%u S=%u K=%u N=%u filter=%u temporal=%d samples=%zu total_p50=%.3f "
+                    "p95=%.3f | normal=%.3f level0=%.3f reduce=%.3f gather=%.3f pack=%.3f temporal=%.3f filter=%.3f "
+                    "output=%.3f upsample=%.3f (p50 ms) | converged J ratio=%.4f mean|dJ|/J=%.4f | frame-1 J "
+                    "ratio=%.4f mean|dJ|/J=%.4f | holes=%zu\n",
+                    c.Name.c_str(), c.Factor, c.Sections, c.Candidates, c.Sectors, c.Filter, c.Temporal ? 1 : 0,
+                    total.size(), Percentile(total, 0.5), Percentile(total, 0.95), Percentile(kernel[0], 0.5),
+                    Percentile(kernel[1], 0.5), Percentile(kernel[2], 0.5), Percentile(kernel[3], 0.5),
+                    Percentile(kernel[4], 0.5), Percentile(kernel[5], 0.5), Percentile(kernel[6], 0.5),
+                    Percentile(kernel[7], 0.5), Percentile(kernel[8], 0.5), ratio, error, ratio1, error1, holes);
+        ReleaseScaled(d, *runs[r]);
+    }
+    return 0;
+}
+
+int main(int argc, char** argv) try {
     std::setvbuf(stdout, nullptr, _IONBF, 0); // lines interleave with stderr in order
     Device device;
     VkPhysicalDeviceProperties properties{};
@@ -1087,6 +1303,13 @@ int main() try {
     // --- The precompiled pack: every kernel resolves from builtin_pass.spvpack
     // without compiling (no compiler, no disk cache configured).
     Fast::Renderer::CachedPassShaderCompiler shaders;
+    if (argc >= 3 && std::string_view(argv[1]) == "--study") {
+        std::string reason;
+        auto studyKernels = std::make_shared<DiffuseGiKernels>();
+        const PassKernelBinaries binaries = DiffuseGiKernels::Resolve(shaders, reason);
+        Require(reason.empty() && studyKernels->Create(passDevice, binaries), "study kernels: " + reason);
+        return Study(device, passDevice, studyKernels, argc, argv);
+    }
     {
         Instance probe;
         Require(probe.Pass.Initialize(passDevice, shaders), "pass initialization: " + probe.Pass.UnavailableReason());

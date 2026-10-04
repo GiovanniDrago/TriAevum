@@ -60,6 +60,9 @@ struct PassSettings {
     TemporalSettings Temporal;   // Enabled = false: every frame resets (alpha = 1)
     FilterSettings Filter;       // Levels = 0: no spatial filter
     PassUpsampleSettings Upsample;
+    // Largest stored |J| per channel. The default is the FP16 storage bound;
+    // a lower value is the artistic highlight clamp (specification section 9).
+    double OutputLimit = 65504.0;
 };
 
 // The M4 recommendation: metric radial schedule K 16, e 2, footprint strips

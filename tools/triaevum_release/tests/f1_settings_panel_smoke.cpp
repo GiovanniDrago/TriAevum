@@ -1037,21 +1037,24 @@ int main() try {
         Frame();
         Check(!shown("GI sky light") && !shown("GI specular reflections"),
               "Brixelizer-only GI controls shown for screen-space GI");
-        Select("GI resolution", "Half");
+        Check(!shown("GI resolution"), "Brixelizer's resolution shown for screen-space GI");
+        Select("SSGI work scale", "Half");
         EditScalar("SSGI sections", "2");
-        Select("SSGI radial candidates", "32");
+        Select("SSGI radial candidates", "16");
         Select("SSGI sectors", "128");
         EditScalar("SSGI radius", "240");
         EditScalar("SSGI thickness", "45");
         Click("SSGI temporal accumulation");
-        EditScalar("SSGI filter levels", "2");
+        EditScalar("SSGI filter levels", "3");
+        EditScalar("SSGI highlight clamp", "1.5");
         Click("SSGI validation");
         const auto gi = runtime.Snapshot().Effects.GlobalIllumination;
         const auto& ss = gi.ScreenSpace;
-        Check(gi.Mode == GlobalIlluminationMode::ScreenSpace &&
-                  gi.Resolution == GlobalIlluminationResolution::Half && ss.Sections == 2U &&
-                  ss.RadialCandidates == 32U && ss.Sectors == 128U && ss.Radius == 240.0F &&
-                  ss.Thickness == 45.0F && !ss.Temporal && ss.FilterLevels == 2U && ss.Validation,
+        Check(gi.Mode == GlobalIlluminationMode::ScreenSpace && ss.WorkScale == GlobalIlluminationResolution::Half &&
+                  gi.Resolution == GlobalIlluminationResolution::Quarter && ss.Sections == 2U &&
+                  ss.RadialCandidates == 16U && ss.Sectors == 128U && ss.Radius == 240.0F &&
+                  ss.Thickness == 45.0F && !ss.Temporal && ss.FilterLevels == 3U && ss.HighlightClamp == 1.5F &&
+                  ss.Validation,
               "screen-space GI controls did not apply");
         const auto persisted = DeserializeGraphicsSettings(store->Root["Graphics"]);
         Check(persisted.Value.Effects.GlobalIllumination.Mode == GlobalIlluminationMode::ScreenSpace &&

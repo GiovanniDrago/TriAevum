@@ -100,13 +100,20 @@ TEST(ScreenSpaceGi, SettingsMapOntoTheRuntimePass) {
     EXPECT_EQ(s.Gather.Thickness, 30.0);
     EXPECT_EQ(s.Gather.Sections, 1U);
     EXPECT_EQ(s.Gather.Sectors, 64U);
-    EXPECT_EQ(s.Gather.CandidatesPerSide, 16U);
+    EXPECT_EQ(s.Gather.CandidatesPerSide, 32U);
     EXPECT_TRUE(s.Temporal.Enabled);
-    EXPECT_EQ(s.Filter.Levels, 4U);
+    EXPECT_EQ(s.Filter.Levels, 2U);
     // Everything else is the M4 recommendation.
     DGI::PassSettings expected = m4;
     expected.Gather.Radius = 150.0;
     expected.Gather.Thickness = 30.0;
+    expected.Gather.CandidatesPerSide = 32;
+    EXPECT_EQ(s.OutputLimit, 65504.0);
+    GlobalIlluminationSettings clamped = gi;
+    clamped.ScreenSpace.HighlightClamp = 1.5F;
+    EXPECT_EQ(ScreenSpaceGiPassSettings(clamped).OutputLimit, 1.5);
+    clamped.ScreenSpace.Validation = true;
+    EXPECT_EQ(ScreenSpaceGiPassSettings(clamped).OutputLimit, 65504.0);
     EXPECT_EQ(DGI::PassTransportKey(s, DGI::GeometricNormalSource::RendererFaceNormal),
               DGI::PassTransportKey(expected, DGI::GeometricNormalSource::RendererFaceNormal));
     // The extremes of every F1 control run in the pass.
@@ -134,13 +141,15 @@ TEST(ScreenSpaceGi, DefaultFitsTheDeclaredVramBudget) {
         GlobalIlluminationSettings gi;
         gi.Mode = GlobalIlluminationMode::ScreenSpace;
         const uint64_t texels = static_cast<uint64_t>(w) * h;
+        gi.ScreenSpace.WorkScale = GlobalIlluminationResolution::Half;
         const uint64_t half = ScreenSpaceGiSurfaceBytes(w, h, gi);
-        gi.Resolution = GlobalIlluminationResolution::Quarter;
+        gi.ScreenSpace.WorkScale = GlobalIlluminationResolution::Quarter; // the default
         const uint64_t quarter = ScreenSpaceGiSurfaceBytes(w, h, gi);
         const auto fullPlan = DGI::PlanPassResources(DGI::MakeWorkScaleExtent(w, h, 1),
                                                      ScreenSpaceGiPassSettings(gi), {}, 256U);
         const uint64_t full = fullPlan.PassBytes() + fullPlan.OutputBytes();
-        EXPECT_LE(half, kScreenSpaceGiDefaultBudgetBytesPerTexel * texels);
+        EXPECT_LE(quarter, kScreenSpaceGiDefaultBudgetBytesPerTexel * texels);
+        EXPECT_EQ(quarter, ScreenSpaceGiSurfaceBytes(w, h, GlobalIlluminationSettings{}));
         EXPECT_LT(quarter, half);
         EXPECT_LT(half, full);
         // Half: the work image holds a quarter of the texels (rounded up).

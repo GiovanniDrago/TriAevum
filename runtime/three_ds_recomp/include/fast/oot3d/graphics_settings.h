@@ -94,17 +94,23 @@ enum class GlobalIlluminationResolution : uint8_t { Half, Quarter };
 // "M5"): per pixel and frame Sections stratified sections of Sectors visibility
 // sectors, RadialCandidates per side on the metric radial schedule; radius R and
 // thickness tau in OoT scene units (provisional until open point 2 measures
-// the scale); temporal accumulation and the a-trous filter levels. Validation
-// composes the pass's J without the artistic gain (DiffuseIntensity).
+// the scale); temporal accumulation and the a-trous filter levels; the work
+// scale of the guide extent (this mode's own; GlobalIllumination.Resolution is
+// Brixelizer GI's) and the highlight clamp (largest J per channel, 0 off).
+// Defaults chosen by test on the game's buffers (docs, "M5 Stage C").
+// Validation composes the pass's J without the artistic gain
+// (DiffuseIntensity) and without the highlight clamp.
 struct ScreenSpaceGiSettings {
     uint8_t Sections = 1;            // 1-4
-    uint16_t RadialCandidates = 16;  // 8, 16 or 32
+    uint16_t RadialCandidates = 32;  // 8, 16 or 32
     uint16_t Sectors = 64;           // 32, 64 or 128
     float Radius = 150.0F;           // R, scene units, [10, 1000]
     float Thickness = 30.0F;         // tau, scene units, [1, 200]
     bool Temporal = true;
-    uint8_t FilterLevels = 4;        // 0-4
+    uint8_t FilterLevels = 2;        // 0-4
     bool Validation = false;
+    GlobalIlluminationResolution WorkScale = GlobalIlluminationResolution::Quarter;
+    float HighlightClamp = 0.0F;     // 0 off, else [0.05, 16]
     bool operator==(const ScreenSpaceGiSettings&) const = default;
 };
 

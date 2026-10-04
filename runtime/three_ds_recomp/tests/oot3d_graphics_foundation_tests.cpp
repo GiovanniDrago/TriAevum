@@ -4238,6 +4238,15 @@ TEST(Oot3dGraphicsSettings, GatesScreenSpaceGlobalIlluminationAndClampsItsParame
     EXPECT_FLOAT_EQ(clamped.Radius, 1000.0F);
     EXPECT_FLOAT_EQ(clamped.Thickness, 1.0F);
     EXPECT_EQ(clamped.FilterLevels, 4U);
+    gi.ScreenSpace.HighlightClamp = 99.0F;
+    EXPECT_FLOAT_EQ(GraphicsSettingsService::Validate(settings, capabilities)
+                        .Value.Effects.GlobalIllumination.ScreenSpace.HighlightClamp,
+                    16.0F);
+    gi.ScreenSpace.HighlightClamp = -1.0F;
+    EXPECT_FLOAT_EQ(GraphicsSettingsService::Validate(settings, capabilities)
+                        .Value.Effects.GlobalIllumination.ScreenSpace.HighlightClamp,
+                    0.0F);
+    gi.ScreenSpace.HighlightClamp = 0.0F;
     gi.ScreenSpace.Radius = std::numeric_limits<float>::quiet_NaN();
     result = GraphicsSettingsService::Validate(settings, capabilities);
     EXPECT_FLOAT_EQ(result.Value.Effects.GlobalIllumination.ScreenSpace.Radius, ScreenSpaceGiSettings{}.Radius);

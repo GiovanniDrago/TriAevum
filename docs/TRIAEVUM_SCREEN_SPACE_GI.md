@@ -1,6 +1,10 @@
 # Screen-space diffuse GI (clean-room implementation)
 
-Status: **M5 Stage B done** (2026-10-04: wired into the game as
+Status: **M5 done** (2026-10-04, Stage C: per-kernel timing and a developer
+dump, defaults chosen on the game's buffers (Quarter work scale, 32
+candidates: 3.98 ms instead of 11.6), highlight clamp, the baked-ambient
+decision, open points 2 and 6 measured; see "M5 Stage C"), on top of
+**M5 Stage B** (2026-10-04: wired into the game as
 `Graphics.Effects.GlobalIllumination.Mode = ScreenSpaceGI` behind the
 existing `GlobalIllumination` display pass, with its F1 controls, a work
 scale (Half / Quarter) and a geometry-guided upsampler, pipelines created off
@@ -799,6 +803,8 @@ mean |dJ| <= 2.6e-6, max dA 3.2e-3 (T06).
 2. The metric scale of native OoT3D units must be measured (test: known
    geometry such as a door height reconstructed from depth) before R and tau
    defaults are published.
+   Stage C: measured on a dump (child Link about 45-50 units; see "M5 Stage
+   C"); R 150 and tau 30 kept.
 3. Closed (M2): depth-derived geometric normals reject self-intersection
    without bias on sloped planes (FP32 and 24-bit depth); an RGB8 guide used
    as geometric normal biases A by up to 1.9e-3 on average unless the sine
@@ -2222,3 +2228,146 @@ capture.py TriAevum-gi-ref.exe / TriAevum-ssgi.exe (GI Off; cfg-ssgi.json --vali
 
 clang 22.1.6 Release, Windows 11, RTX 3060, 2026-10-04; timings are
 indications only.
+
+## M5 Stage C: cost, defaults, section 9 and real buffers
+
+### Developer tools (never persisted, off by default)
+
+- `DiffuseGiPass::SetKernelTiming`: GPU timestamps after every dispatch (a
+  ring of four query pools read without waiting), per kernel in
+  `PassKernelTimings`. In the game `OOT3D_GRAPHICS_SSGI_KERNEL_TIMING=1`
+  prints `TRIAEVUM_SCREEN_SPACE_GI kernel_ms ...` every 60 frames; the
+  product keeps the single `GlobalIllumination` profiler scope.
+- `OOT3D_GRAPHICS_SSGI_WORK_FACTOR=1|2|4` overrides the work scale;
+  `OOT3D_GRAPHICS_SSGI_DUMP=<dir>` with `OOT3D_GRAPHICS_SSGI_DUMP_FRAME=<n>`
+  writes the pass inputs of frame n (the adapter's decoding of the guides:
+  depth, class, radiance, normal, motion) and the camera (`ssgi_dump.json`).
+- `diffuse_gi_pass_gpu_tests --study DIR [R TAU FRAMES name:f:S:K:N:levels...]`
+  runs the pass on a dump: per-kernel p50 / p95 over runs interleaved frame
+  by frame (alternating order), and the converged and first-frame J against
+  a full-quality reference on the same buffers (`DGI_STUDY_REFERENCE`,
+  default factor 1, 8 sections, 32 candidates, 128 sectors, 4 levels;
+  `DGI_NO_VALIDATION=1` for timing). Dumps stay outside the repository and
+  are deleted after analysis.
+
+### Where the time goes (open point 18)
+
+Kit frame 300 (Kokiri, guide 1440 x 1280), R 150, tau 30, RTX 3060, in game
+at work factor 1: 46 ms, of which gather 34-36, a-trous (4 levels) 6.6-8,
+temporal 1.8-2.4, hierarchy 1.3, the rest under 0.6. The gather is three
+quarters of the cost at every scale and grows linearly with the radial
+candidates.
+
+Study on the dump (reference: factor 1, S 8, K 64, N 128, 4 levels; 60
+interleaved samples; J ratio = converged mean J / reference, error = mean
+|dJ| / mean J):
+
+| Work scale, K, levels | p50 ms | p95 ms | J ratio | error | frame-1 error |
+|---|---|---|---|---|---|
+| Half, 16, 4 (Stage B default) | 11.56 | 13.46 | 0.906 | 0.179 | 0.247 |
+| **Quarter, 32, 2 (Stage C default)** | **3.98** | **5.99** | **0.956** | **0.153** | 0.262 |
+| Quarter, 16, 2 | 2.57 | 3.71 | 0.896 | 0.207 | 0.308 |
+| Half, 32, 2 | 18.69 | 22.19 | 0.970 | 0.108 | 0.201 |
+| Full, 32, 4 | 77.2 | 79.3 | 0.975 | 0.090 | 0.169 |
+| Full, 16, 4 | 43.5 | 44.7 | 0.902 | 0.183 | 0.248 |
+
+Other runs on the same dump: 32 vs 64 sectors at Half cost the same and
+change J by +0.8 %; two sections at Quarter cost +47 % and do not change the
+bias; two vs four a-trous levels save 0.75 ms at Half for +0.6 % error; with
+R 75 and tau 15, Quarter K 16 costs 2.51 ms (J 0.932) and Quarter K 32
+3.67 ms (0.972). In the game (timing runs, 358 frames, interleaved with
+Brixelizer GI) the default's `global_illumination_ms` (adapter, pass,
+upsampler, transitions) is 5.44 ms p50, 7.42 p95; Brixelizer GI 1.90 / 2.94;
+Stage B's default was 12.3 ms.
+
+Defaults (chosen by these tests): work scale Quarter, 32 radial candidates,
+one section, 64 sectors, two a-trous levels, temporal on, R 150, tau 30.
+Declared target: the default costs at most 4 ms p50 of pass time on this
+GPU at the game's guide extent (measured 3.98). The suggested 3 ms is reached
+only with 16 candidates (2.57 ms), which darkens J by 10 % (next section);
+the remaining cost is the gather, whose optimization is the next step (open
+point 27), not part of M5.
+
+### Darkening: resolution or candidates
+
+- Resolution is not the cause on real buffers: at the same settings Half is
+  1.005 and Quarter 0.993 of the full-extent J, and the work-scale pass equals
+  the full-extent pass of its work image bit for bit (Stage B). The synthetic
+  161 x 97 corner room's 0.895 / 0.692 comes from its tiny work images (a
+  work texel there spans a large part of each wall). The upsampler leaves
+  0.05 % (Half) and 0.19 % (Quarter) of receivers without an estimate.
+- The radial candidate count is: against the K 64 reference, K 8 gives about
+  0.77, K 16 0.90, K 32 0.96-0.975, at every resolution, and more sections do
+  not help. With few candidates per side the metric radial schedule leaves
+  part of the light between candidates unseen (the footprint strips and the
+  mean cache do not fully compensate it). The default therefore uses 32
+  candidates (-4.4 % against K 64; the K 64 reference is not the K -> infinity
+  limit, which is unmeasured). Attributing the deficit to a term of the M4
+  estimator is open point 27.
+
+### Section 9 "Aspetto" and the baked ambient
+
+- Gain: `DiffuseIntensity` (existing); dropped in validation mode.
+- Highlight clamp: `ScreenSpace.HighlightClamp` (0 off, else 0.05-16), the
+  per-channel largest stored J of both output kernels
+  (`PassSettings::OutputLimit`, the bound the kernels already applied for
+  FP16: no shader change, no history reset); off in validation mode.
+- Fade: the specification's optional fade attenuates A only (open point
+  11); A is not composed, so no fade is offered.
+- A and the baked ambient (manifest item 17): A is not composed. OoT bakes
+  ambient and fill light into the native colour, and the AO providers already
+  darken that ambient through the ambient guide; the screen-space GI only adds
+  light (J), so the baked ambient is never darkened twice, with or without AO.
+
+### Measurements on real buffers (dump of kit frame 300)
+
+- Open point 2 (metric scale): view depth percentiles 88 / 100 / 240 / 1,675
+  / 5,063 units (1 / 10 / 50 / 90 / 99 %), near 7, far 12,000; child Link's
+  green tunic and cap span 37 units (365 guide texels of 0.101 units at a
+  view depth of 127), so Link is about 45-50 units tall. R 150 is about three
+  Link heights and tau 30 about two thirds of one; both kept as defaults.
+- Open point 6 (face normal vs depth reconstruction): the angle between the
+  geometry guide's face normal and the depth-reconstructed normal (one-sided
+  differences, oriented toward the eye) over 91 % of texels has median 0.03
+  degrees, p90 0.35, p99 23.6; 1.6 % exceed 10 degrees and 0.7 % exceed 45
+  (silhouettes, alpha-tested grass); every class-1 texel has a face normal.
+- Open points 13, 14, 16, 20 and 21 were not measured in Stage C; the dump
+  and the study tool make them measurable.
+
+### VRAM at the default (open point 24)
+
+| Guide extent | Quarter (default) | Half | Budget (48 B/texel) |
+|---|---|---|---|
+| 1280 x 720 | 37.3 MB (40.5 B/texel) | 105.1 MB | 44.2 MB |
+| 1920 x 1080 | 84.0 MB | 236.4 MB | 99.5 MB |
+| 2560 x 1440 | 149.3 MB | 420.2 MB | 176.9 MB |
+
+At the kit's 1440 x 1280 the game reports 59.9 MB of pass buffers plus
+14.7 MB for J. `GlobalIllumination.Resolution` is again Brixelizer GI's
+alone; the screen-space mode has its own `ScreenSpace.WorkScale` (F1: "SSGI
+work scale"), so its default does not change Brixelizer GI.
+
+### Gates (Stage C)
+
+| Gate | Result |
+|---|---|
+| GI Off inert (kit, 12 frames) | SSGI run b = reference run a = the reference's dominant outcome (`3327f70c4519`) on all 12 frames; SSGI run a is another of the reference's intermittent variants |
+| GI on (default) under `--validation` | Same classes and counts as Stage B and the reference executable; none attributable to the mode |
+| F1 actual-widget smoke | `F1 UI smoke passed: 8459 assertions, real renderer/Controls/TopScreen widgets` (work scale, highlight clamp, Brixelizer's resolution hidden for this mode) |
+| Host tests | `renderer_diffuse_gi_pass_tests` 14, `oot3d_screen_space_gi_tests` 5, `oot3d_effect_graph_tests` 58, `oot3d_graphics_foundation_tests` 329, `renderer_spirv_pack_tests` 3: all pass |
+| GPU test | passed, 0 validation errors, 0 hazards; pack unchanged (80 modules, `--check` passes) |
+
+Open point 27 (new): the radial schedule's J deficit with few candidates
+(about 10 % at 16 and 4 % at 32, against 64). Test: attribute it per term
+(candidates, footprint strips, mean cache) on the dump against the EveryTexel
+reference, then a fix that lets 16 candidates meet a 3 ms target.
+
+### Source manifest (M5 Stage C)
+
+Own tools and measurements only: Vulkan timestamp queries (Vulkan
+specification), the module's own pass on dumped buffers, numpy analysis of the
+dump. No external implementation was consulted; MXAO, Brixelizer, FidelityFX,
+GTAO, TAA and denoiser code were not opened. Shared files edited (generic and
+GI parts only): `graphics_settings.h/.cpp`, `graphics_settings_persistence.cpp`,
+`graphics_settings_lighting_panel.cpp`, `gfx_vulkan_pica.cpp` (one stats
+line).

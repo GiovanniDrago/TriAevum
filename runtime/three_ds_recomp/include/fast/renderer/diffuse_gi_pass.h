@@ -175,6 +175,18 @@ struct PassStats {
     uint32_t OutputSets = 0;       // output image pairs with descriptor sets
 };
 
+// Developer timing (off by default): GPU time of each kernel of one executed
+// frame, from timestamps written after every dispatch (the pass's barriers
+// serialize the kernels, so consecutive timestamps bound one kernel; levels of
+// the hierarchy and the filter are summed). Results arrive a few frames late
+// (a ring of query pools read without waiting).
+struct PassKernelTimings {
+    std::array<double, kPassKernelCount> Milliseconds{}; // by PassKernel
+    double Total = 0.0;                                   // first to last timestamp of the frame
+    uint64_t Frames = 0;                                  // frames read back so far
+    bool Valid = false;
+};
+
 class DiffuseGiPass final {
   public:
     DiffuseGiPass();
@@ -223,6 +235,11 @@ class DiffuseGiPass final {
     [[nodiscard]] const PassParameterLayout& ParameterLayout() const noexcept;
     [[nodiscard]] const PassFramePlan& LastFrame() const noexcept; // constants of the last executed frame
     [[nodiscard]] const DiffuseGiKernels* Kernels() const noexcept;
+
+    // Developer per-kernel timing (see PassKernelTimings); needs a queue with
+    // timestamp support. Off releases the query pools.
+    void SetKernelTiming(bool enabled) noexcept;
+    [[nodiscard]] const PassKernelTimings& LastKernelTimings() const noexcept;
 
   private:
     struct Impl;

@@ -28,16 +28,17 @@ namespace Fast::Oot3d {
 
 // The runtime pass settings of the persisted screen-space GI settings.
 [[nodiscard]] Renderer::DiffuseGi::PassSettings ScreenSpaceGiPassSettings(const GlobalIlluminationSettings& settings);
-// Work-scale factor of GlobalIllumination.Resolution (Half 2, Quarter 4).
+// Work-scale factor of ScreenSpaceGiSettings::WorkScale (Half 2, Quarter 4).
 [[nodiscard]] uint32_t ScreenSpaceGiWorkFactor(GlobalIlluminationResolution resolution) noexcept;
 
-// Declared VRAM budget of the default (Resolution Half) per composed surface,
-// in bytes per guide texel: every pass buffer at the work extent (392 bytes
-// per work pixel, a quarter of the guide texels) plus the two images the
-// upsampler needs at the guide extent (output guide 8, DiffuseIllumination
-// 8), with room for the rounding of odd extents (docs/TRIAEVUM_SCREEN_SPACE_GI.md,
-// "M5 Stage B", open point 24). The full-extent pass (Stage A) needs 404.
-inline constexpr uint32_t kScreenSpaceGiDefaultBudgetBytesPerTexel = 120U;
+// Declared VRAM budget of the default (work scale Quarter) per composed
+// surface, in bytes per guide texel: every pass buffer at the work extent
+// (392 bytes per work pixel, a sixteenth of the guide texels) plus the two
+// images the upsampler needs at the guide extent (output guide 8,
+// DiffuseIllumination 8), with room for the rounding of odd extents
+// (docs/TRIAEVUM_SCREEN_SPACE_GI.md, "M5 Stage C", open point 24). Half needs
+// 114, the full-extent pass 404.
+inline constexpr uint32_t kScreenSpaceGiDefaultBudgetBytesPerTexel = 48U;
 
 // Bytes the mode allocates for one composed surface of this guide extent
 // (pass buffers, output guide and the DiffuseIllumination image).
@@ -131,6 +132,19 @@ class ScreenSpaceGiProvider final {
 
   private:
     struct Instance;
+    // Developer options (environment, read at Initialize; never persisted):
+    //   OOT3D_GRAPHICS_SSGI_KERNEL_TIMING=1  per-kernel GPU timing on stderr
+    //   OOT3D_GRAPHICS_SSGI_WORK_FACTOR=1|2|4  overrides the work scale
+    //   OOT3D_GRAPHICS_SSGI_DUMP=<dir>, OOT3D_GRAPHICS_SSGI_DUMP_FRAME=<n>
+    //     writes the pass inputs (the adapter's decoding of the guides) and the
+    //     camera of frame n to <dir> for offline measurements
+    struct DumpState;
+    void RecordDump(VkCommandBuffer command, Instance& instance, const ScreenSpaceGiFrame& frame,
+                    const Renderer::DiffuseGi::DepthCamera& camera);
+    void FinishDump(uint64_t frameId);
+    bool mKernelTiming = false;
+    uint32_t mWorkFactorOverride = 0;
+    std::unique_ptr<DumpState> mDump;
     Instance* InstanceFor(const ScreenSpaceGiFrame& frame);
     bool ConfigureInstance(Instance& instance, const ScreenSpaceGiFrame& frame,
                            const GlobalIlluminationSettings& settings,

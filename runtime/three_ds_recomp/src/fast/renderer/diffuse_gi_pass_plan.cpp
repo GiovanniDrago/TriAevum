@@ -95,6 +95,7 @@ const char* ValidatePassSettings(const PassSettings& s) noexcept {
     if (!(u.PlaneSine >= 0.0) || !(u.PlaneDepth >= 0.0) || !(u.NormalCos >= -1.0 && u.NormalCos <= 1.0) ||
         !std::isfinite(u.PlaneSine) || !std::isfinite(u.PlaneDepth))
         return "upsample surface tolerances out of range";
+    if (!(s.OutputLimit > 0.0) || !std::isfinite(s.OutputLimit)) return "output limit must be finite and positive";
     return "";
 }
 
@@ -394,6 +395,8 @@ const char* PlanPassFrame(const PassExtent& extent, const PassSettings& settings
 
     plan.Output = MakeOutputShaderParams(extent, kOutputModeFinal, writeAccessibility);
     plan.OutputNeutral = MakeOutputShaderParams(extent, kOutputModeNeutral, writeAccessibility);
+    const float limit = static_cast<float>(std::min(settings.OutputLimit, static_cast<double>(kOutputHalfMax)));
+    plan.Output.Limits[0] = limit;
     if (extent.WorkFactor > 1U) {
         UpsampleShaderParams& u = plan.Upsample;
         u.Output = {extent.OutputWidth, extent.OutputHeight, writeAccessibility ? 1U : 0U, 0U};
@@ -403,7 +406,7 @@ const char* PlanPassFrame(const PassExtent& extent, const PassSettings& settings
         u.WorkX = RayRow(work.ViewX);
         u.WorkY = RayRow(work.ViewY);
         u.Surface = {static_cast<float>(settings.Upsample.PlaneSine), static_cast<float>(settings.Upsample.PlaneDepth),
-                     static_cast<float>(settings.Upsample.NormalCos), kOutputHalfMax};
+                     static_cast<float>(settings.Upsample.NormalCos), limit};
     }
 
     plan.Parameters.assign(layout.Size, 0U);

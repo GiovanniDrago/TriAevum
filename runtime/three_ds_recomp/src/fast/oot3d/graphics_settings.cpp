@@ -364,6 +364,12 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
     screenSpace.Radius = clampOr(screenSpace.Radius, 10.0F, 1000.0F, ScreenSpaceGiSettings{}.Radius);
     screenSpace.Thickness = clampOr(screenSpace.Thickness, 1.0F, 200.0F, ScreenSpaceGiSettings{}.Thickness);
     screenSpace.FilterLevels = std::min<uint8_t>(screenSpace.FilterLevels, 4U);
+    if (screenSpace.WorkScale > GlobalIlluminationResolution::Quarter)
+        screenSpace.WorkScale = ScreenSpaceGiSettings{}.WorkScale;
+    // 0 is off; otherwise the largest J per channel.
+    screenSpace.HighlightClamp = !std::isfinite(screenSpace.HighlightClamp) || screenSpace.HighlightClamp <= 0.0F
+        ? 0.0F
+        : std::clamp(screenSpace.HighlightClamp, 0.05F, 16.0F);
     if (globalIllumination.Mode > GlobalIlluminationMode::ScreenSpace) {
         globalIllumination.Mode = GlobalIlluminationMode::Off;
         Correct(result.Issues, "Graphics.Effects.GlobalIllumination.Mode", "unknown global illumination mode");

@@ -35,10 +35,13 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
     const bool brixelizer = globalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi;
     const bool screenSpace = globalIllumination.Mode == GlobalIlluminationMode::ScreenSpace;
     if (globalIllumination.Mode != GlobalIlluminationMode::Off) {
-        int resolution = static_cast<int>(globalIllumination.Resolution);
         const char* const resolutionNames[] = {"Half", "Quarter"};
-        if (ImGui::Combo("GI resolution", &resolution, resolutionNames, 2)) {
-            globalIllumination.Resolution = static_cast<GlobalIlluminationResolution>(resolution);
+        // Each mode's own resolution: Brixelizer's internal resolution, or the
+        // screen-space GI's work scale.
+        auto& resolutionSetting = screenSpace ? globalIllumination.ScreenSpace.WorkScale : globalIllumination.Resolution;
+        int resolution = static_cast<int>(resolutionSetting);
+        if (ImGui::Combo(screenSpace ? "SSGI work scale" : "GI resolution", &resolution, resolutionNames, 2)) {
+            resolutionSetting = static_cast<GlobalIlluminationResolution>(resolution);
             changed = true;
         }
         changed |= ImGui::SliderFloat("GI diffuse intensity", &globalIllumination.DiffuseIntensity,
@@ -91,9 +94,12 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
                 screen.FilterLevels = static_cast<uint8_t>(filterLevels);
                 changed = true;
             }
+            changed |= ImGui::SliderFloat("SSGI highlight clamp", &screen.HighlightClamp, 0.0F, 16.0F,
+                                          screen.HighlightClamp > 0.0F ? "%.2f" : "Off");
             changed |= ImGui::Checkbox("SSGI validation", &screen.Validation);
-            ImGui::TextWrapped("Radius and thickness are in OoT scene units (provisional defaults). Validation "
-                               "composes the bounce without the intensity gain.");
+            ImGui::TextWrapped("Radius and thickness are in OoT scene units (child Link is about 45-50 units tall). "
+                               "Fewer radial candidates darken the bounce. Validation composes the bounce without "
+                               "the intensity gain and the highlight clamp.");
         }
         if (!UsesFullSceneLighting(settings.Effects.SurfaceLighting))
             ImGui::TextWrapped("Active only with Per-pixel or Per-pixel + PBR lighting.");
