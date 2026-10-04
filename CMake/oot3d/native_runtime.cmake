@@ -20,6 +20,8 @@ oot3d_target_defaults(oot3d_native_application_host NO_WARNING_OVERRIDE FOLDER T
 add_library(oot3d_native_audio STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_cseq.cpp
     tools/oot3d/native_game_runtime/oot3d_native_audio.cpp
+    tools/oot3d/native_game_runtime/oot3d_native_audio_profiles.cpp
+    tools/oot3d/native_game_runtime/oot3d_native_audio_mixer.cpp
     tools/oot3d/native_game_runtime/oot3d_native_audio_dsp.cpp
     tools/oot3d/native_game_runtime/oot3d_native_audio_resampler.cpp
     tools/oot3d/native_game_runtime/oot3d_native_audio_service.cpp
