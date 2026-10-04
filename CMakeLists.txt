@@ -2481,6 +2481,9 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
     OOT3D_DIRECT_AOT_PLUGIN)
     target_sources(oot3d_native_game PRIVATE
         tools/oot3d/native_game_runtime/oot3d_native_a32_window.cpp
+        tools/oot3d/native_game_runtime/oot3d_native_a32_candidate_dispatch.cpp
+        tools/oot3d/native_game_runtime/oot3d_native_a32_projection_policy.cpp
+        tools/oot3d/native_game_runtime/oot3d_native_a32_window_input.cpp
         tools/oot3d/native_game_runtime/oot3d_native_preparation_screen.cpp
         tools/oot3d/native_game_runtime/oot3d_native_render_command_stream.cpp
         tools/oot3d/native_game_runtime/oot3d_top_screen_ocarina_text_runtime.cpp
