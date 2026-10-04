@@ -1,5 +1,7 @@
 // SPIR-V packs: format round trip, malformed packs, and the embedded families.
+#ifdef ENABLE_OOT3D_IMMERSE
 #include "fast/immerse/mxao_pass_binaries.h"
+#endif
 #include "fast/oot3d/pica_caster_fragment_binaries.h"
 #include "fast/oot3d/pica_temporal_fragment_binaries.h"
 #include "fast/oot3d/pica_toon_fragment_artifact.h"
@@ -135,7 +137,9 @@ TEST(SpirvPack, EmbeddedFamiliesHoldTheirModules) {
     ExpectSpirvModules(Fast::Oot3d::UberFragmentArtifacts(), 24U);
     ExpectSpirvModules(Fast::Oot3d::CasterFragmentArtifacts(), 4U);
     ExpectSpirvModules(BuiltinPassArtifacts(), 80U); // 70 + 9 diffuse GI pass kernels + its OOT3D adapter (M5)
+#ifdef ENABLE_OOT3D_IMMERSE
     ExpectSpirvModules(Fast::Immerse::MxaoPassArtifacts(), 6U);
+#endif
     ExpectSpirvModules(Oot3dNativeGame::TitleVertexArtifacts(), 8U);
     ExpectSpirvModules(Oot3dNativeGame::TitlePassArtifacts(), 6U);
     for (const auto& artifact : Oot3dNativeGame::TitleVertexArtifacts())

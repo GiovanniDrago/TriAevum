@@ -185,22 +185,32 @@ SOFTWARE.
 
 ## iMMERSE (Pascal Gilcher)
 
-The optional MXAO ambient-occlusion provider in
-`runtime/three_ds_recomp/src/fast/immerse/` is ported from `Shaders/MartysMods_MXAO.fx`
-of [iMMERSE](https://github.com/martymcmodding/iMMERSE) at revision
-`f57d3afa1ebe5d1fd6152d4f6fb9a2e75bd1d1cb`, by Pascal Gilcher
-([Marty's Mods](https://martysmods.com)). Its changes are listed in the file header.
+The optional MXAO ambient-occlusion provider is the iMMERSE module,
+`runtime/three_ds_recomp/src/fast/immerse/`. It is ported from
+`Shaders/MartysMods_MXAO.fx` of [iMMERSE](https://github.com/martymcmodding/iMMERSE)
+at revision `f57d3afa1ebe5d1fd6152d4f6fb9a2e75bd1d1cb`, by Pascal Gilcher
+([Marty's Mods](https://martysmods.com)). Its changes are listed in the headers of
+its files and in its `README.md`.
 
 iMMERSE is not under an open-source license: "Copyright (c) Pascal Gilcher. All
-rights reserved." Its terms forbid public redistribution, public modified versions,
+rights reserved." Its original license is reproduced unchanged in the module as
+`LICENSE-iMMERSE.txt` and remains the license of the module, including the changes
+that integrate it. Its terms forbid public redistribution, public modified versions,
 use of its parts in another project and monetization unless the author gives
 explicit permission, and require clear credit of the project, its author and the
-parts used. The maintainer reports the author's explicit permission to integrate
-and modify MXAO, LAUNCHPAD and SOLARIS in TriAevum (2026-09-30).
+parts used.
 
-This material is not an original TriAevum contribution and is not covered by the
-GPL grant in `LICENSE_SCOPE.md`. It is compiled only with
-`THREE_DS_RECOMP_ENABLE_IMMERSE`. Before a public source or binary package includes
+All rights remain with the author. TriAevum integrates and modifies MXAO under the
+author's explicit permission, granted exclusively to the TriAevum project; the
+maintainer reports it for MXAO, LAUNCHPAD and SOLARIS (2026-09-30), and only MXAO
+is integrated. The permission does not extend to recipients, forks or other
+projects. The module's `LICENSE.md` records this exception and its boundary to
+TriAevum's GPL code, and `LICENSE_SCOPE.md` excludes the module from the GPL grant.
+
+This material is not an original TriAevum contribution. It is compiled only with
+`THREE_DS_RECOMP_ENABLE_IMMERSE`; with the option off TriAevum builds without it.
+Binary packages built with it carry the module's `LICENSE.md` and the original
+license under `LICENSES/`. Before a public source or binary package includes
 it, record the written permission and confirm that it covers distribution of source
 and binaries together with the GPL-licensed runtime.
 

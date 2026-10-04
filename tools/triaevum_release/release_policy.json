@@ -30,7 +30,9 @@
     "LICENSES/shaderc-Apache-2.0.txt",
     "LICENSES/Capstone-BSD.txt",
     "LICENSES/PyInstaller-GPL-2.0-or-later-with-bootloader-exception.txt",
-    "LICENSES/LLVM-exception.txt"
+    "LICENSES/LLVM-exception.txt",
+    "LICENSES/iMMERSE-MXAO.md",
+    "LICENSES/iMMERSE-LICENSE.txt"
   ],
   "platforms": {
     "x86_64-pc-windows-msvc": {
@@ -104,7 +106,9 @@
   "source_archive_required_paths": [
     "CMakeLists.txt",
     "tools/oot3d/ui_contract/CMakeLists.txt",
-    "tools/oot3d/ui_contract/README.md"
+    "tools/oot3d/ui_contract/README.md",
+    "runtime/three_ds_recomp/src/fast/immerse/LICENSE.md",
+    "runtime/three_ds_recomp/src/fast/immerse/LICENSE-iMMERSE.txt"
   ],
   "source_archive_required_manifests": [
     "tools/oot3d/ui_contract/SOURCE_MANIFEST.json"

@@ -102,6 +102,28 @@ inline).
 | `_mod_profile_pause.cpp` | Pause inputs, routes and redraws, renderer visibility and fades, pause controller, alternate renderers, child suppression. |
 | `_mod_profile_internal.h` | Verified layout tables and shared helpers. |
 
+## iMMERSE module (`runtime/three_ds_recomp/src/fast/immerse/`)
+
+MXAO from Pascal Gilcher's iMMERSE is a module under its own licence, not the
+GPL: all rights remain with the author, the original iMMERSE licence applies,
+and TriAevum uses it under the author's explicit permission, granted
+exclusively to the project (`LICENSE.md` in the directory, `LICENSE_SCOPE.md`).
+Everything derived from MXAO lives in that directory and nowhere else.
+
+| File | Contents |
+| --- | --- |
+| `mxao_shader.{h,cpp}`, `mxao_pass.cpp` | The ported programs and their NRI execution. |
+| `mxao_pass.spvpack`, `mxao_pass_binaries.{h,cpp}` | The precompiled programs. |
+| `mxao_settings_panel.cpp` | The MXAO controls of the F1 Lighting tab. |
+| `immerse.cmake`, `tests/gpu_tests.cmake` | The module's runtime sources, GPU tests and `build_immerse_pass_artifacts`. |
+| `README.md`, `LICENSE.md`, `LICENSE-iMMERSE.txt` | The port's documentation, the exception, the original licence. |
+
+TriAevum code reaches the module through `include/fast/oot3d/mxao_pass.h` and
+`GraphicsSettingsPanel::DrawMxaoSettings`. It is built with
+`THREE_DS_RECOMP_ENABLE_IMMERSE` (on with NRI); with the option off,
+`fast/oot3d/immerse_unavailable.cpp` implements both and MXAO reports that it
+was not compiled.
+
 ## Reading older documents
 
 Documents written before October 2026 cite `file.cpp:line` positions and file
@@ -117,6 +139,9 @@ whole and unchanged:
 | `oot3d_top_screen_mod_profile.cpp` | `oot3d_top_screen_mod_profile*.cpp` |
 | `oot3d_native_audio.cpp` | `oot3d_native_audio.cpp`, `_profiles.cpp`, `_mixer.cpp` |
 | root `CMakeLists.txt` target blocks | `CMake/oot3d/*.cmake` |
+| `fast/oot3d/mxao_pass.cpp`, `include/fast/immerse/*`, `tev_program/mxao_gpu_tests.cpp`, `DrawMxaoSettings` in the lighting panel | `runtime/three_ds_recomp/src/fast/immerse/` |
+| `build_pass_artifacts --immerse` | `build_immerse_pass_artifacts` |
+| "iMMERSE MXAO" sections of `OOT3D_NRI_FIDELITY_EXTENSION_ARCHITECTURE.md` | `runtime/three_ds_recomp/src/fast/immerse/README.md` |
 
 The source-native study, the legacy sandbox and asset-tool group A were removed
 in the same reorganization (phase 2); documents describing them are history.

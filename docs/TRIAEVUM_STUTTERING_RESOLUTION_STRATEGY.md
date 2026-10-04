@@ -1337,7 +1337,7 @@ program (S), and U executes S's decisions:
   in-flight entries).
 - Fixed passes the catalogue lacked are built in (texture copy derive, GI
   prepare, scanout orientations; MXAO in `fast/immerse` under
-  `THREE_DS_RECOMP_ENABLE_IMMERSE`, `build_pass_artifacts --immerse`). Shadow
+  `THREE_DS_RECOMP_ENABLE_IMMERSE`, `build_immerse_pass_artifacts`). Shadow
   caster and surface-lighting vertex programs derived from the title vertex
   family are built with it (`kTitlePassArtifacts`, registered by the title);
   alpha-tested casters run the parametric base (4 built-in programs,

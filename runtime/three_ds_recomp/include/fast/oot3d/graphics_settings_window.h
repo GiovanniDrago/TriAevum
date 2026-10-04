@@ -42,6 +42,8 @@ class GraphicsSettingsPanel final {
     bool DrawDisplaySettings(GraphicsSettings&, const GraphicsCapabilities&);
     bool DrawAntialiasingSettings(GraphicsSettings&, const GraphicsCapabilities&);
     bool DrawLightingSettings(GraphicsSettings&, const GraphicsCapabilities&);
+    // In the iMMERSE module (fast/immerse/mxao_settings_panel.cpp, under its
+    // own licence); without it, fast/oot3d/immerse_unavailable.cpp.
     bool DrawMxaoSettings(EffectsSettings&);
     bool DrawReflectionSettings(GraphicsSettings&, const GraphicsCapabilities&);
     bool DrawToonSettings(GraphicsSettings&);

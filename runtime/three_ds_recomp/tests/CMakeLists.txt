@@ -609,9 +609,16 @@ gtest_discover_tests(oot3d_screen_space_gi_tests DISCOVERY_TIMEOUT 30)
 include(../cmake/spirv_pack.cmake)
 add_executable(renderer_spirv_pack_tests renderer_spirv_pack_tests.cpp)
 foreach(_pack renderer/builtin_pass renderer3ds/pica_native_fragment oot3d/pica_temporal_fragment
-              oot3d/pica_toon_fragment oot3d/pica_uber_fragment oot3d/pica_caster_fragment immerse/mxao_pass)
+              oot3d/pica_toon_fragment oot3d/pica_uber_fragment oot3d/pica_caster_fragment)
     triaevum_add_spirv_pack(renderer_spirv_pack_tests ../src/fast/${_pack}_binaries.cpp ../src/fast/${_pack}.spvpack)
 endforeach()
+# The iMMERSE module's pack, when the module is built (src/fast/immerse/LICENSE.md).
+if(THREE_DS_RECOMP_ENABLE_IMMERSE)
+    triaevum_add_spirv_pack(renderer_spirv_pack_tests ../src/fast/immerse/mxao_pass_binaries.cpp
+        ../src/fast/immerse/mxao_pass.spvpack)
+    target_include_directories(renderer_spirv_pack_tests PRIVATE ../src)
+    target_compile_definitions(renderer_spirv_pack_tests PRIVATE ENABLE_OOT3D_IMMERSE)
+endif()
 triaevum_add_spirv_pack(renderer_spirv_pack_tests
     ../../../tools/oot3d/native_pica_frontend/oot3d_native_vertex_binaries.cpp
     ../../../tools/oot3d/native_pica_frontend/oot3d_native_vertex.spvpack)

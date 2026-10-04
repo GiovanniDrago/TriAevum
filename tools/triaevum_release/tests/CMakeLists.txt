@@ -26,6 +26,11 @@ target_include_directories(triaevum_f1_settings_smoke PRIVATE
     ${PROJECT_SOURCE_DIR}/runtime/three_ds_recomp/src/fast/renderer)
 target_link_libraries(triaevum_f1_settings_smoke PRIVATE
     three_ds_recomp_runtime oot3d_ui_topscreen oot3d_native_control_config)
+# The MXAO controls come from the iMMERSE module when the runtime builds it.
+get_target_property(_f1_runtime_definitions three_ds_recomp_runtime COMPILE_DEFINITIONS)
+if("ENABLE_OOT3D_IMMERSE" IN_LIST _f1_runtime_definitions)
+    target_compile_definitions(triaevum_f1_settings_smoke PRIVATE ENABLE_OOT3D_IMMERSE)
+endif()
 if(WIN32)
     target_compile_definitions(triaevum_f1_settings_smoke PRIVATE NOMINMAX)
     set_property(TARGET triaevum_f1_settings_smoke PROPERTY MSVC_RUNTIME_LIBRARY

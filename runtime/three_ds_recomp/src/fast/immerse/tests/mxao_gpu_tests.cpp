@@ -1,3 +1,8 @@
+// iMMERSE module of TriAevum (see ../LICENSE.md).
+// iMMERSE MXAO, Copyright (c) Pascal Gilcher. All rights reserved.
+// Not covered by TriAevum's GPL: this file stays under the original iMMERSE
+// licence (../LICENSE-iMMERSE.txt) and is used under the author's explicit
+// permission, granted exclusively to TriAevum.
 #include "fast/immerse/mxao_shader.h"
 #include "fast/oot3d/ambient_occlusion_composite.h"
 #include "fast/renderer3ds/pica_geometry_guide.h"

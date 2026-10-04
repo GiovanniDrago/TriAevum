@@ -7,8 +7,10 @@
 // f57d3afa1ebe5d1fd6152d4f6fb9a2e75bd1d1cb.
 //
 // Copyright (c) Pascal Gilcher. All rights reserved.
-// Integrated and modified with the author's explicit permission; see
-// THIRD_PARTY_NOTICES.md ("iMMERSE").
+// iMMERSE module of TriAevum (see LICENSE.md in this directory). Not covered
+// by TriAevum's GPL: this file stays under the original iMMERSE licence
+// (LICENSE-iMMERSE.txt) and is used under the author's explicit permission,
+// granted exclusively to TriAevum.
 //
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

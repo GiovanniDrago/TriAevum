@@ -53,6 +53,8 @@ FILES = {
         b"PyInstaller test fixture\n",
     ),
     "LICENSES/LLVM-exception.txt": ("license", b"LLVM exception fixture\n"),
+    "LICENSES/iMMERSE-MXAO.md": ("license", b"iMMERSE module exception fixture\n"),
+    "LICENSES/iMMERSE-LICENSE.txt": ("license", b"iMMERSE license fixture\n"),
     "recipes/oot3d.json": ("revision_recipe", b'{"format":"recipe-test"}\n'),
 }
 

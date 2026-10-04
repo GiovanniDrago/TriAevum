@@ -81,9 +81,13 @@ cmake_dependent_option(
 	OFF)
 option(THREE_DS_RECOMP_ENABLE_SSSR "Enable FidelityFX SSSR for the native 3DS Vulkan backend" ${THREE_DS_RECOMP_ENABLE_NRI})
 option(THREE_DS_RECOMP_ENABLE_CACAO "Enable original FidelityFX CACAO alongside GTAO" ${THREE_DS_RECOMP_ENABLE_NRI})
-# iMMERSE effects (Pascal Gilcher) are integrated with the author's permission
-# under their own terms; see THIRD_PARTY_NOTICES.md.
-option(THREE_DS_RECOMP_ENABLE_IMMERSE "Enable iMMERSE-derived effects (MXAO)" ${THREE_DS_RECOMP_ENABLE_NRI})
+# The iMMERSE module (src/fast/immerse: MXAO by Pascal Gilcher) is not covered
+# by TriAevum's GPL: it stays under the original iMMERSE licence and is used
+# under the author's explicit permission, granted exclusively to TriAevum (see
+# src/fast/immerse/LICENSE.md). OFF builds the complete GPL runtime without it.
+cmake_dependent_option(THREE_DS_RECOMP_ENABLE_IMMERSE
+	"Build the iMMERSE module (MXAO), under its own licence" ON
+	"THREE_DS_RECOMP_ENABLE_VULKAN;THREE_DS_RECOMP_ENABLE_NRI" OFF)
 # Brixelizer GI shares the pinned SDK and Vulkan backend with SSSR. Shader
 # permutations are compiled with the Windows FidelityFX compiler; portable
 # shader bundles do not carry them yet.

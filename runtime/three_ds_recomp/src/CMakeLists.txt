@@ -212,12 +212,9 @@ if(THREE_DS_RECOMP_ENABLE_VULKAN)
         target_link_libraries(three_ds_recomp_runtime PRIVATE oot3d_cacao)
         target_compile_definitions(three_ds_recomp_runtime PRIVATE ENABLE_OOT3D_CACAO)
     endif()
+    # The iMMERSE module is under its own licence (fast/immerse/LICENSE.md).
     if(THREE_DS_RECOMP_ENABLE_IMMERSE)
-        target_sources(three_ds_recomp_runtime PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}/fast/immerse/mxao_shader.cpp")
-        triaevum_add_spirv_pack(three_ds_recomp_runtime
-            fast/immerse/mxao_pass_binaries.cpp fast/immerse/mxao_pass.spvpack)
-        target_compile_definitions(three_ds_recomp_runtime PRIVATE ENABLE_OOT3D_IMMERSE)
+        include(${CMAKE_CURRENT_SOURCE_DIR}/fast/immerse/immerse.cmake)
     endif()
     if(THREE_DS_RECOMP_ENABLE_D3D12_NGX_PROVIDER)
         target_link_libraries(three_ds_recomp_runtime PRIVATE d3d12 dxgi)

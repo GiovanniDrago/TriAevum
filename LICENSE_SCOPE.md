@@ -31,8 +31,8 @@ No permission is granted here for:
 - generated or translated title modules and decompiled title source;
 - patches, textures or payloads from the TopScreen mod or another mod unless
   their respective author has granted redistribution permission;
-- iMMERSE-derived effect code (Pascal Gilcher), used under the author's separate
-  permission (see `THIRD_PARTY_NOTICES.md`);
+- the iMMERSE module, `runtime/three_ds_recomp/src/fast/immerse/` (MXAO by
+  Pascal Gilcher); see [the exception below](#exception-the-immerse-module);
 - proprietary SDKs, redistributable libraries or model files whose own terms
   do not permit inclusion.
 
@@ -41,6 +41,25 @@ title modules and their corresponding translated source in the package. This
 does not grant original-game rights or relicense them under TriAevum's GPL.
 ROMs, extracted assets, keys, unapproved mod payloads and SDKs remain excluded.
 Local ROM-derived Forge output is private user data, not runtime-licensed data.
+
+## Exception: the iMMERSE module
+
+The directory `runtime/three_ds_recomp/src/fast/immerse/` is excluded from the
+GPL grant above. It ports MXAO from Pascal Gilcher's iMMERSE, and:
+
+- all rights in it remain with its original author, Pascal Gilcher;
+- it stays under the original iMMERSE licence, reproduced unchanged in that
+  directory as `LICENSE-iMMERSE.txt`, including the changes that integrate it
+  into TriAevum;
+- TriAevum integrates it under the author's explicit permission, granted
+  exclusively to the TriAevum project. The permission does not pass to
+  recipients, forks or other projects.
+
+The directory's `LICENSE.md` states these terms and the boundary. TriAevum's
+GPL code reaches the module only through integration points it owns, and
+building with `THREE_DS_RECOMP_ENABLE_IMMERSE=OFF` produces the complete GPL
+runtime without it. Anyone else distributing TriAevum must build that way and
+omit the directory, unless the author has given them permission.
 
 ## Release review
 

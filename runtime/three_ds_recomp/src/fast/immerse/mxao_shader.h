@@ -1,9 +1,11 @@
 #pragma once
 
+// iMMERSE module of TriAevum (see LICENSE.md in this directory).
 // iMMERSE MXAO, ported from MartysMods_MXAO.fx.
 // Copyright (c) Pascal Gilcher. All rights reserved.
-// Integrated and modified with the author's explicit permission; see
-// THIRD_PARTY_NOTICES.md ("iMMERSE").
+// Not covered by TriAevum's GPL: this file stays under the original iMMERSE
+// licence (LICENSE-iMMERSE.txt) and is used under the author's explicit
+// permission, granted exclusively to TriAevum.
 
 #include <array>
 #include <cstdint>

@@ -1,7 +1,4 @@
 // Developer-only compilation of the maintained pass catalogue, without ROMs.
-#include "fast/immerse/mxao_pass_binaries.h"
-#include "fast/immerse/mxao_shader.h"
-#include "fast/oot3d/ambient_occlusion_composite.h"
 #include "fast/oot3d/builtin_pass_shaders.h"
 #include "fast/oot3d/pica_scanout_effects.h"
 #include "fast/renderer/builtin_pass_binaries.h"
@@ -16,39 +13,9 @@ using namespace Fast::Renderer;
 static void Check(bool ok, const std::string& message) {
     if (!ok) throw std::runtime_error(message);
 }
-// iMMERSE MXAO programs: a catalogue of their own under fast/immerse, with
-// the port's notice (artifacts of iMMERSE-derived code stay with it).
-static int BuildImmerse(bool check, const char* path) {
-    const auto sources = Fast::Immerse::BuildMxaoPassShaders(Fast::Oot3d::AmbientOcclusionDebugShaderLibrary());
-    shaderc::Compiler compiler;
-    SpirvPackFile pack;
-    for (size_t index = 0; index < sources.size(); ++index) {
-        shaderc::CompileOptions options;
-        options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
-        options.SetOptimizationLevel(shaderc_optimization_level_performance);
-        const auto result = compiler.CompileGlslToSpv(sources[index], shaderc_compute_shader, "mxao", options);
-        Check(result.GetCompilationStatus() == shaderc_compilation_status_success, result.GetErrorMessage());
-        if (check) {
-            const auto stored = FindPassShaderArtifact(Fast::Immerse::MxaoPassArtifacts(), sources[index],
-                                                       SpirvStage::Compute, {});
-            Check(stored.size() == size_t(result.cend() - result.cbegin()) &&
-                      std::equal(stored.begin(), stored.end(), result.cbegin()),
-                  "stale/missing MXAO pass: regenerate with --immerse");
-        }
-        auto& entry = pack.Add(Fast::Renderer::SpirvPackKind::Pass, {result.cbegin(), result.cend()});
-        entry.Stage = uint32_t(SpirvStage::Compute);
-        entry.VulkanMinor = 2;
-        entry.Source = pack.Keep(sources[index]);
-    }
-    if (!check) pack.Write(path);
-    std::cout << "immerse_pass_artifacts=" << sources.size() << '\n';
-    return 0;
-}
 
 int main(int argc, char** argv) try {
-    if (argc == 3 && std::string_view(argv[1]) == "--immerse")
-        return BuildImmerse(std::string_view(argv[2]) == "--check", argv[2]);
-    Check(argc == 2, "usage: build_pass_artifacts builtin_pass.spvpack|--check | --immerse mxao_pass.spvpack|--check");
+    Check(argc == 2, "usage: build_pass_artifacts builtin_pass.spvpack|--check");
     const bool check = std::string_view(argv[1]) == "--check";
     auto passes = Fast::Oot3d::BuildBuiltinPassShaders();
     const auto nativePassCount = passes.size();

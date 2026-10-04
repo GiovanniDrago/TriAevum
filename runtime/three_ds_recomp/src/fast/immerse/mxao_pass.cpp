@@ -1,25 +1,29 @@
+// iMMERSE module of TriAevum (see LICENSE.md in this directory).
+// iMMERSE MXAO, Copyright (c) Pascal Gilcher. All rights reserved.
+// Not covered by TriAevum's GPL: this file stays under the original iMMERSE
+// licence (LICENSE-iMMERSE.txt) and is used under the author's explicit
+// permission, granted exclusively to TriAevum.
+//
+// The NRI execution of MXAO behind TriAevum's integration interface
+// fast/oot3d/mxao_pass.h. The module is compiled only with NRI and
+// THREE_DS_RECOMP_ENABLE_IMMERSE; without it fast/oot3d/immerse_unavailable.cpp
+// implements the interface.
 #include "fast/oot3d/mxao_pass.h"
-#ifdef ENABLE_OOT3D_VULKAN
 #include "fast/oot3d/ambient_occlusion_composite.h"
 #include "fast/oot3d/nri_effect_graph_transient_image_arena.h"
 #include "fast/oot3d/nri_interop_context.h"
 #include "fast/oot3d/resource_state_tracker.h"
 #include "fast/oot3d/temporal_history_manager.h"
-#ifdef ENABLE_OOT3D_IMMERSE
 #include "fast/immerse/mxao_shader.h"
 #include "fast/immerse/mxao_pass_binaries.h"
 #include "fast/renderer/pass_shader_artifact.h"
-#endif
-#if defined(ENABLE_OOT3D_NRI) && defined(ENABLE_OOT3D_IMMERSE)
-#include "nri_interop_internal.h"
-#endif
+#include "fast/oot3d/nri_interop_internal.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <stdexcept>
 
 namespace Fast::Oot3d {
-#if defined(ENABLE_OOT3D_NRI) && defined(ENABLE_OOT3D_IMMERSE)
 namespace {
 // Descriptor sets, one per dispatch input/output pairing. The temporal sets
 // come in pairs: the one that writes history image 0, then image 1.
@@ -44,19 +48,16 @@ enum : size_t {
     kProgramCount
 };
 } // namespace
-#endif
 
 struct MxaoPass::Impl {
     VkDevice Device = VK_NULL_HANDLE;
     NriInteropContext* Interop = nullptr;
-#if defined(ENABLE_OOT3D_NRI) && defined(ENABLE_OOT3D_IMMERSE)
     nri::CoreInterface* Core = nullptr;
     nri::PipelineLayout* Layout = nullptr;
     std::array<nri::Pipeline*, kProgramCount> Pipelines{};
     nri::Descriptor* Sampler = nullptr;
     nri::DescriptorPool* Pool = nullptr;
     std::array<nri::DescriptorSet*, kSetCount> Sets{};
-#endif
     NriOwnedTexture2D TiledDepth;
     NriOwnedTexture2D Raw;
     NriOwnedTexture2D Filtered;
@@ -81,11 +82,7 @@ struct MxaoPass::Impl {
     ResourceStateTracker PrivateStates;
     ResourceStateTracker* OutputStates = nullptr;
     EffectPassBarrierExecution LastBarriers;
-#if defined(ENABLE_OOT3D_NRI) && defined(ENABLE_OOT3D_IMMERSE)
     std::string Reason = "iMMERSE MXAO is not initialized";
-#else
-    std::string Reason = "iMMERSE MXAO support was not compiled into this build";
-#endif
 };
 
 namespace {
@@ -102,12 +99,6 @@ MxaoPass::~MxaoPass() {
 
 bool MxaoPass::Initialize(VkPhysicalDevice physical, VkDevice device, NriInteropContext& interop) {
     Shutdown();
-#if !defined(ENABLE_OOT3D_NRI) || !defined(ENABLE_OOT3D_IMMERSE)
-    (void)physical;
-    (void)device;
-    (void)interop;
-    return false;
-#else
     mImpl->Device = device;
     mImpl->Interop = &interop;
     if (!interop.Available()) {
@@ -183,7 +174,6 @@ bool MxaoPass::Initialize(VkPhysicalDevice physical, VkDevice device, NriInterop
         mImpl->Reason = error.what();
         return false;
     }
-#endif
 }
 
 bool MxaoPass::Configure(const NriEffectGraphTransientImageBinding& output, VkImage depth, VkFormat depthFormat,
@@ -205,9 +195,6 @@ bool MxaoPass::Configure(const NriEffectGraphTransientImageBinding& output, VkIm
         mImpl->OutputStates == output.StateTracker && mImpl->Inputs == inputs && mImpl->Formats == formats &&
         SameMotion(mImpl->Motion, temporal))
         return true;
-#if !defined(ENABLE_OOT3D_NRI) || !defined(ENABLE_OOT3D_IMMERSE)
-    return false;
-#else
     if (mImpl->Width != 0 && !mImpl->Interop->CompleteRecordedWork())
         return false;
     InvalidateScreenResources();
@@ -314,7 +301,6 @@ bool MxaoPass::Configure(const NriEffectGraphTransientImageBinding& output, VkIm
         InvalidateScreenResources();
         return false;
     }
-#endif
 }
 
 bool MxaoPass::Execute(uint32_t frameSlot, uint64_t frameId, const PerspectiveViewState& view, bool wBuffer,
@@ -328,15 +314,6 @@ bool MxaoPass::Execute(uint32_t frameSlot, uint64_t frameId, const PerspectiveVi
         output->CompletionAccess != ResourceAccess::ShaderRead || !output->DownstreamRead || view.NearPlane <= 0 ||
         view.FarPlane <= view.NearPlane)
         return false;
-#if !defined(ENABLE_OOT3D_NRI) || !defined(ENABLE_OOT3D_IMMERSE)
-    (void)frameSlot;
-    (void)frameId;
-    (void)settings;
-    (void)coordinates;
-    (void)wBuffer;
-    (void)temporal;
-    return false;
-#else
     auto* command = NriInteropAccess::CommandBuffer(*mImpl->Interop, frameSlot);
     const bool accumulates = mImpl->Motion.Image != VK_NULL_HANDLE;
     const size_t setCount = accumulates ? size_t(kSetCount) : size_t(kTemporalSet);
@@ -495,16 +472,13 @@ bool MxaoPass::Execute(uint32_t frameSlot, uint64_t frameId, const PerspectiveVi
                  mImpl->Height, 8);
     }
     return transition(mImpl->Output.Image, *mImpl->OutputStates, output->CompletionAccess, true);
-#endif
 }
 
 void MxaoPass::InvalidateScreenResources() {
-#if defined(ENABLE_OOT3D_NRI) && defined(ENABLE_OOT3D_IMMERSE)
     if (mImpl->Core && mImpl->Pool)
         mImpl->Core->DestroyDescriptorPool(mImpl->Pool);
     mImpl->Pool = nullptr;
     mImpl->Sets = {};
-#endif
     if (mImpl->Interop) {
         mImpl->Interop->DestroyOwnedTexture(mImpl->TiledDepth.Image);
         mImpl->Interop->DestroyOwnedTexture(mImpl->Raw.Image);
@@ -531,7 +505,6 @@ void MxaoPass::InvalidateScreenResources() {
 }
 void MxaoPass::Shutdown() {
     InvalidateScreenResources();
-#if defined(ENABLE_OOT3D_NRI) && defined(ENABLE_OOT3D_IMMERSE)
     if (mImpl->Core) {
         if (mImpl->Sampler)
             mImpl->Core->DestroyDescriptor(mImpl->Sampler);
@@ -541,7 +514,6 @@ void MxaoPass::Shutdown() {
         if (mImpl->Layout)
             mImpl->Core->DestroyPipelineLayout(mImpl->Layout);
     }
-#endif
     *mImpl = {};
 }
 bool MxaoPass::Available() const {
@@ -566,4 +538,3 @@ const std::string& MxaoPass::UnavailableReason() const {
     return mImpl->Reason;
 }
 } // namespace Fast::Oot3d
-#endif

@@ -180,17 +180,6 @@ if(WIN32)
 endif()
 add_test(NAME diffuse_gi_m4_gpu COMMAND diffuse_gi_m4_gpu_tests)
 set_tests_properties(diffuse_gi_m4_gpu PROPERTIES TIMEOUT 300)
-add_executable(mxao_gpu_tests mxao_gpu_tests.cpp "${runtime}/src/fast/immerse/mxao_shader.cpp"
-    "${runtime}/src/fast/oot3d/ambient_occlusion_composite.cpp")
-target_compile_features(mxao_gpu_tests PRIVATE cxx_std_20)
-target_include_directories(mxao_gpu_tests PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")
-target_link_libraries(mxao_gpu_tests PRIVATE Vulkan::Vulkan "${SHADERC_LIBRARY}")
-if(WIN32)
-    add_custom_command(TARGET mxao_gpu_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${SHADERC_RUNTIME}" "$<TARGET_FILE_DIR:mxao_gpu_tests>")
-endif()
-add_test(NAME mxao_gpu COMMAND mxao_gpu_tests)
-set_tests_properties(mxao_gpu PROPERTIES TIMEOUT 120)
 add_executable(scene_coverage_gpu_tests scene_coverage_gpu_tests.cpp
     "${runtime}/src/fast/oot3d/pica_nri_pipeline_state.cpp")
 target_compile_features(scene_coverage_gpu_tests PRIVATE cxx_std_20)
@@ -291,10 +280,8 @@ endif()
 
 find_package(spdlog CONFIG REQUIRED)
 include("${runtime}/cmake/pass_shader_sources.cmake")
-add_executable(build_pass_artifacts build_pass_artifacts.cpp "${runtime}/src/fast/immerse/mxao_shader.cpp")
+add_executable(build_pass_artifacts build_pass_artifacts.cpp)
 triaevum_add_pass_shader_sources(build_pass_artifacts)
-triaevum_add_spirv_pack(build_pass_artifacts "${runtime}/src/fast/immerse/mxao_pass_binaries.cpp"
-    "${runtime}/src/fast/immerse/mxao_pass.spvpack")
 target_compile_features(build_pass_artifacts PRIVATE cxx_std_20)
 target_include_directories(build_pass_artifacts PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")
 target_link_libraries(build_pass_artifacts PRIVATE "${SHADERC_LIBRARY}" ${CMAKE_DL_LIBS})
@@ -303,8 +290,14 @@ if(WIN32)
         "${SHADERC_RUNTIME}" "$<TARGET_FILE_DIR:build_pass_artifacts>")
 endif()
 add_test(NAME builtin_pass_artifacts COMMAND build_pass_artifacts --check)
-add_test(NAME immerse_pass_artifacts COMMAND build_pass_artifacts --immerse --check)
 set_tests_properties(builtin_pass_artifacts PROPERTIES TIMEOUT 120)
+
+# The iMMERSE module's GPU tests and pass artifacts live with the module, under
+# its own licence (runtime/three_ds_recomp/src/fast/immerse/LICENSE.md).
+option(THREE_DS_RECOMP_ENABLE_IMMERSE "Build the iMMERSE module's tests (MXAO), under its own licence" ON)
+if(THREE_DS_RECOMP_ENABLE_IMMERSE)
+    include("${runtime}/src/fast/immerse/tests/gpu_tests.cmake")
+endif()
 
 add_executable(grass_motion_gpu_tests grass_motion_gpu_tests.cpp
     "${runtime}/src/fast/oot3d/grass_gpu_instance_compactor.cpp"

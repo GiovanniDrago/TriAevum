@@ -1110,6 +1110,8 @@ int main() try {
               runtime.Snapshot().Effects.AoHorizonAngleThreshold == 0.12F &&
               runtime.Snapshot().Effects.AoBlurPassCount == 5,
           "original CACAO controls did not apply");
+#ifdef ENABLE_OOT3D_IMMERSE
+    // The MXAO controls belong to the iMMERSE module (fast/immerse/mxao_settings_panel.cpp).
     Select("Ambient occlusion", "iMMERSE MXAO");
     Select("MXAO quality", "High");
     Select("MXAO method", "Solid angle");
@@ -1172,15 +1174,18 @@ int main() try {
     Check(runtime.Snapshot().Effects.AoRelief == AoTextureRelief::Strong &&
               runtime.Snapshot().Effects.MxaoQuality == 2,
           "AO texture relief did not apply or disturbed the MXAO controls");
+#endif
     Select("Ambient occlusion", "Multiscale GTAO");
     Select("AO texture relief", "Subtle");
     Check(runtime.Snapshot().Effects.AoRelief == AoTextureRelief::Subtle &&
               runtime.Snapshot().Effects.AmbientOcclusion == AmbientOcclusionMode::Gtao,
           "AO texture relief is not shared by the AO providers");
     Select("AO texture relief", "Off");
+#ifdef ENABLE_OOT3D_IMMERSE
     Select("Ambient occlusion", "iMMERSE MXAO");
     Check(runtime.Snapshot().Effects.AoRelief == AoTextureRelief::Off && runtime.Snapshot().Effects.MxaoTemporal,
           "cannot disable AO texture relief, or another provider dropped MXAO accumulation");
+#endif
     runtime.SetCapability(GraphicsCapability::ImmerseMxao, false, "provider unavailable");
     Frame();
     Select("Ambient occlusion", "Off");
