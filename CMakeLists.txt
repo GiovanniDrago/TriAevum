@@ -1585,6 +1585,10 @@ add_library(oot3d_ui_topscreen STATIC EXCLUDE_FROM_ALL
     tools/oot3d/ui_topscreen/oot3d_top_screen_item_guest.cpp
     tools/oot3d/ui_topscreen/oot3d_top_screen_item_dispatch.cpp
     tools/oot3d/ui_topscreen/oot3d_top_screen_mod_profile.cpp
+    tools/oot3d/ui_topscreen/oot3d_top_screen_mod_profile_items.cpp
+    tools/oot3d/ui_topscreen/oot3d_top_screen_mod_profile_hud.cpp
+    tools/oot3d/ui_topscreen/oot3d_top_screen_mod_profile_quest.cpp
+    tools/oot3d/ui_topscreen/oot3d_top_screen_mod_profile_pause.cpp
     tools/oot3d/ui_topscreen/oot3d_top_screen_ocarina.cpp
     tools/oot3d/ui_topscreen/oot3d_top_screen_texture_overrides.cpp
 )
