@@ -250,6 +250,19 @@ private:
   void Setup();
   // One iteration of the frame loop; false when the frame closed the window.
   bool RunFrame();
+  // The phases of one guest refresh inside RunFrame() (oot3d_native_a32_window_frame.cpp).
+  bool SampleGuestRefreshInput(
+      const uint32_t &guestRefreshIndex,
+      bool &nativeFrontendTouchEnabled,
+      uint32_t &topScreenNativeGameMode,
+      bool &topScreenStartRoutingEligible,
+      Oot3dNativeGame::NativeA32InputFrame &physicalInputFrame,
+      Oot3dNativeGame::NativeA32InputFrame &inputFrame);
+  bool UpdateGuestServicesForRefresh(
+      bool &topScreenStartRoutingEligible,
+      Oot3dNativeGame::NativeA32InputFrame &inputFrame);
+  void RunGuestRefresh();
+  void PresentVisualFrame(const double &presentationElapsedSeconds, const float &visualInterpolationAlpha);
   void Finish();
   // The setup's former lambdas.
   void ApplyTopScreenConfigSnapshot();
