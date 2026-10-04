@@ -681,20 +681,6 @@
       "purpose": "Human-readable static audit of the player CMB/source-context route and Shadow2D record-owner boundary."
     },
     {
-      "id": "link_house_demo_manifest",
-      "kind": "file",
-      "path": "${workRoot}\\standalone_demo\\link_house\\demo_manifest.json",
-      "required": true,
-      "purpose": "Current Link house native demo manifest."
-    },
-    {
-      "id": "kokiri_demo_manifest",
-      "kind": "file",
-      "path": "${workRoot}\\standalone_demo\\kokiri_forest\\demo_manifest.json",
-      "required": true,
-      "purpose": "Current Kokiri Forest native demo manifest."
-    },
-    {
       "id": "link_child_character_manifest",
       "kind": "file",
       "path": "${workRoot}\\character_conversion\\link_child_character_conversion_manifest.json",
@@ -796,13 +782,6 @@
       "path": "${repoRoot}\\captures\\azahar_pica\\title_intro_slot6_kankyo_focused_20260707_082324\\derived\\title_intro_slot6_demo_vs_emulator_gap.md",
       "required": false,
       "purpose": "Human-readable slot 6 demo/emulator gap summary. Current expected high-priority failure is native fog-color source selection, not Kankyo primitive backend submission."
-    },
-    {
-      "id": "title_intro_demo_manifest",
-      "kind": "file",
-      "path": "${workRoot}\\standalone_demo\\title_intro\\demo_manifest.json",
-      "required": true,
-      "purpose": "Current native demo manifest for the first/open-title intro reconstruction."
     },
     {
       "id": "title_intro_frame600_kankyo_runtime_scale_backend_stats",

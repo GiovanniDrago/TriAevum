@@ -1,8 +1,9 @@
 # OOT3D native application host
 
 This directory began as the launch path of the pre-AOT native demo (Fast3D
-demo, cutscene player, mesh viewer, resource and runtime probes). That demo
-and its executables were removed in 2026-10; the game runs the translated
+demo, cutscene player, mesh viewer, resource and runtime probes, the Python
+native-host probe over the standalone data PoC). That demo, its executables
+and its Python tooling were removed in 2026-10; the game runs the translated
 whole-AOT process only.
 
 What remains:
@@ -12,8 +13,6 @@ What remains:
 | `oot3d_demo_host_{context,io,screenshot,window_timing}.{h,cpp}`, `oot3d_demo_host_types.h` | The application host the game links (`oot3d_native_application_host`): window, renderer, audio, framebuffer capture, frame timing and the host launch arguments (`Args`). |
 | `input_timelines/` | Deterministic input timelines for qualification runs (for example `kokiri_renderer_parity.json`, used by `scripts/oot3d/Invoke-Oot3dNativeGameRendererParity.ps1`). Diagnostic input only; never consulted by an interactive run or used as a source of gameplay values. |
 | `lighting_tables/oot3d_pica_lighting_semantics.json` | Lighting semantics read by the asset tool's playable pack (`oot3d_asset_tool/playable_pack.py`). |
-| `camera_tables/oot3d_native_camera_table.json` | Camera table of the removed demo; no current reader. |
-| `oot3d_native_host.py`, `oot3d_trace_compare.py` | Python probe of the removed demo over the standalone data PoC manifest (`tools/oot3d/standalone_demo`, `scripts/oot3d/Invoke-Oot3dNativeDemoHost.ps1`). |
 | `oot3d_pica_trace_import.py` | Normalizes an Azahar PICA command-list trace into JSON (`scripts/oot3d/Convert-Oot3dNativePicaTrace.ps1`). |
 | `oot3d_pica_command_list_watchlist.py` | Builds Azahar memory-watch ranges from a PICA frame JSONL dump (`scripts/oot3d/Invoke-Oot3dKokiriSlot5EmulatorDump.ps1`). |
 | `oot3d_pica_light_origin_probe.py`, `oot3d_pica_native_origin_audit.py` | Diagnostic audits that trace observed PICA state back to native asset or code.bin evidence. The emulator trace is a query source only. |
