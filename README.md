@@ -135,7 +135,8 @@ Original contributions are licensed under **GPL-3.0-or-later**. Third-party
 components retain their own licenses and notices:
 [license scope](LICENSE_SCOPE.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
 See the [release and build contract](docs/TRIAEVUM_PRECOMPILED_RELEASE.md) for
-source availability and developer packaging.
+source availability and developer packaging, and the [source map](docs/TRIAEVUM_SOURCE_MAP.md)
+for where the main components live.
 
 TriAevum is independent and is not affiliated with or endorsed by Nintendo.
 
