@@ -155,6 +155,7 @@ endif()
 # Common utils
 ################################################################################
 include(CMake/Utils.cmake)
+include(CMake/oot3d_target_defaults.cmake)
 
 if(CMAKE_SYSTEM_NAME MATCHES "Linux")
     get_linux_lsb_release_information()
@@ -214,12 +215,7 @@ target_include_directories(oot3d_native_application_host PUBLIC
 target_link_libraries(oot3d_native_application_host PUBLIC three_ds_recomp_runtime)
 target_compile_options(oot3d_native_application_host PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_application_host PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_application_host PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_application_host PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_application_host NO_WARNING_OVERRIDE FOLDER Tools)
 
 add_library(oot3d_native_audio STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_cseq.cpp
@@ -231,12 +227,7 @@ add_library(oot3d_native_audio STATIC EXCLUDE_FROM_ALL
 target_include_directories(oot3d_native_audio PUBLIC
     tools/oot3d/native_game_runtime
 )
-target_compile_options(oot3d_native_audio PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_audio PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_audio PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_audio PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_audio FOLDER Tools)
 
 set(OOT3D_PINNED_A32_ROOT
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/oot3d/native_a32_runtime/upstream")
@@ -378,12 +369,7 @@ if (EXISTS "${_oot3d_a32_generated_header}" AND
     )
     target_link_libraries(oot3d_native_a32_aot PUBLIC
         oot3d_native_a32_runtime)
-    target_compile_options(oot3d_native_a32_aot PRIVATE "${WARNING_OVERRIDE}")
-    if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        target_compile_definitions(oot3d_native_a32_aot PRIVATE NOMINMAX)
-        set_property(TARGET oot3d_native_a32_aot PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    endif()
-    set_property(TARGET oot3d_native_a32_aot PROPERTY FOLDER Tools)
+    oot3d_target_defaults(oot3d_native_a32_aot FOLDER Tools)
 endif()
 
 add_executable(oot3d_native_a32_runtime_tests EXCLUDE_FROM_ALL
@@ -391,12 +377,7 @@ add_executable(oot3d_native_a32_runtime_tests EXCLUDE_FROM_ALL
 )
 target_link_libraries(oot3d_native_a32_runtime_tests PRIVATE
     oot3d_native_a32_runtime)
-target_compile_options(oot3d_native_a32_runtime_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_a32_runtime_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_a32_runtime_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_a32_runtime_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_a32_runtime_tests FOLDER Tests)
 
 add_executable(oot3d_native_a32_vfp_fast_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_a32_runtime/oot3d_native_a32_vfp_fast_tests.cpp
@@ -405,11 +386,7 @@ target_link_libraries(oot3d_native_a32_vfp_fast_tests PRIVATE
     oot3d_native_a32_runtime)
 target_compile_options(oot3d_native_a32_vfp_fast_tests PRIVATE "${WARNING_OVERRIDE}"
     $<IF:$<CXX_COMPILER_FRONTEND_VARIANT:MSVC>,/fp:strict,-ffp-model=strict>)
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_a32_vfp_fast_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_a32_vfp_fast_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_a32_vfp_fast_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_a32_vfp_fast_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 add_executable(pica_gi_geometry_tests EXCLUDE_FROM_ALL
     runtime/three_ds_recomp/tests/pica_gi_geometry_tests.cpp
@@ -418,11 +395,7 @@ add_executable(pica_gi_geometry_tests EXCLUDE_FROM_ALL
 target_include_directories(pica_gi_geometry_tests PRIVATE
     runtime/three_ds_recomp/include)
 target_compile_features(pica_gi_geometry_tests PRIVATE cxx_std_20)
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(pica_gi_geometry_tests PRIVATE NOMINMAX)
-    set_property(TARGET pica_gi_geometry_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET pica_gi_geometry_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(pica_gi_geometry_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 add_executable(pica_fragment_lighting_memo_tests EXCLUDE_FROM_ALL
     runtime/three_ds_recomp/tests/pica_fragment_lighting_memo_tests.cpp
@@ -431,11 +404,7 @@ add_executable(pica_fragment_lighting_memo_tests EXCLUDE_FROM_ALL
 target_include_directories(pica_fragment_lighting_memo_tests PRIVATE
     runtime/three_ds_recomp/include)
 target_compile_features(pica_fragment_lighting_memo_tests PRIVATE cxx_std_20)
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(pica_fragment_lighting_memo_tests PRIVATE NOMINMAX)
-    set_property(TARGET pica_fragment_lighting_memo_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET pica_fragment_lighting_memo_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(pica_fragment_lighting_memo_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 if (NOT TARGET nlohmann_json::nlohmann_json)
     find_package(nlohmann_json REQUIRED)
@@ -456,12 +425,7 @@ add_library(oot3d_typed_gameplay STATIC EXCLUDE_FROM_ALL
 target_include_directories(oot3d_typed_gameplay PUBLIC
     tools/oot3d/typed_gameplay
 )
-target_compile_options(oot3d_typed_gameplay PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_typed_gameplay PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_typed_gameplay PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_typed_gameplay PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_typed_gameplay FOLDER Tools)
 
 add_executable(oot3d_gameplay_time_tests EXCLUDE_FROM_ALL
     tools/oot3d/typed_gameplay/oot3d_gameplay_time_tests.cpp
@@ -470,12 +434,7 @@ target_link_libraries(oot3d_gameplay_time_tests PRIVATE
     oot3d_typed_gameplay)
 target_compile_options(oot3d_gameplay_time_tests PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_gameplay_time_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_gameplay_time_tests PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_gameplay_time_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_gameplay_time_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 add_library(oot3d_native_a32_process STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_a32_memory.cpp
@@ -846,11 +805,7 @@ if (TARGET oot3d_native_a32_aot)
     )
     target_compile_options(oot3d_typed_gameplay_tests PRIVATE
         "${WARNING_OVERRIDE}")
-    if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        target_compile_definitions(oot3d_typed_gameplay_tests PRIVATE NOMINMAX)
-        set_property(TARGET oot3d_typed_gameplay_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    endif()
-    set_property(TARGET oot3d_typed_gameplay_tests PROPERTY FOLDER Tests)
+    oot3d_target_defaults(oot3d_typed_gameplay_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
     add_executable(oot3d_typed_player_gameplay_tests EXCLUDE_FROM_ALL
         tools/oot3d/native_game_runtime/oot3d_typed_player_gameplay_tests.cpp
@@ -864,11 +819,7 @@ if (TARGET oot3d_native_a32_aot)
     )
     target_compile_options(oot3d_typed_player_gameplay_tests PRIVATE
         "${WARNING_OVERRIDE}")
-    if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        target_compile_definitions(oot3d_typed_player_gameplay_tests PRIVATE NOMINMAX)
-        set_property(TARGET oot3d_typed_player_gameplay_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    endif()
-    set_property(TARGET oot3d_typed_player_gameplay_tests PROPERTY FOLDER Tests)
+    oot3d_target_defaults(oot3d_typed_player_gameplay_tests NO_WARNING_OVERRIDE FOLDER Tests)
 endif()
 target_compile_options(oot3d_native_a32_process PRIVATE "${WARNING_OVERRIDE}")
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
@@ -896,12 +847,7 @@ if (TARGET oot3d_native_mass_aot)
 endif()
 target_compile_options(oot3d_native_mass_aot_tests PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_mass_aot_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_mass_aot_tests PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_mass_aot_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_mass_aot_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 if (NOT TARGET nlohmann_json::nlohmann_json)
     find_package(nlohmann_json REQUIRED)
@@ -916,12 +862,7 @@ target_link_libraries(oot3d_native_a32_process_image PUBLIC
     oot3d_native_a32_process
     nlohmann_json::nlohmann_json
 )
-target_compile_options(oot3d_native_a32_process_image PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_a32_process_image PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_a32_process_image PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_a32_process_image PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_a32_process_image FOLDER Tools)
 
 find_package(spdlog REQUIRED)
 
@@ -945,12 +886,7 @@ target_link_libraries(oot3d_native_pica_frontend PUBLIC
     oot3d_renderer_fragment_lighting
     spdlog::spdlog
     nlohmann_json::nlohmann_json)
-target_compile_options(oot3d_native_pica_frontend PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_frontend PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_frontend PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_frontend PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_pica_frontend FOLDER Tools)
 
 add_library(triaevum_oot3d_pica_service STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/triaevum_oot3d_pica_host.cpp
@@ -966,12 +902,7 @@ target_link_libraries(triaevum_oot3d_pica_service PUBLIC
 )
 target_compile_options(triaevum_oot3d_pica_service PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(triaevum_oot3d_pica_service PRIVATE NOMINMAX)
-    set_property(TARGET triaevum_oot3d_pica_service PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET triaevum_oot3d_pica_service PROPERTY FOLDER Tools)
+oot3d_target_defaults(triaevum_oot3d_pica_service NO_WARNING_OVERRIDE FOLDER Tools)
 
 add_executable(triaevum_oot3d_pica_service_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/triaevum_oot3d_pica_service_tests.cpp
@@ -993,12 +924,7 @@ add_executable(oot3d_native_pica_frontend_tests EXCLUDE_FROM_ALL
 )
 target_link_libraries(oot3d_native_pica_frontend_tests PRIVATE
     oot3d_native_pica_frontend)
-target_compile_options(oot3d_native_pica_frontend_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_frontend_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_frontend_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_frontend_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_pica_frontend_tests FOLDER Tests)
 
 add_executable(oot3d_native_pica_program_descriptor_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_pica_frontend/oot3d_native_pica_program_descriptor_tests.cpp
@@ -1107,12 +1033,7 @@ target_include_directories(oot3d_native_pica_transfer PUBLIC
 target_link_libraries(oot3d_native_pica_transfer PUBLIC
     oot3d_native_a32_process
     oot3d_renderer_contracts)
-target_compile_options(oot3d_native_pica_transfer PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_transfer PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_transfer PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_transfer PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_pica_transfer FOLDER Tools)
 
 add_executable(oot3d_native_pica_transfer_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_pica_frontend/oot3d_native_pica_transfer_tests.cpp
@@ -1121,12 +1042,7 @@ target_link_libraries(oot3d_native_pica_transfer_tests PRIVATE
     oot3d_native_pica_transfer)
 target_include_directories(oot3d_native_pica_transfer_tests PRIVATE
     runtime/three_ds_recomp/include)
-target_compile_options(oot3d_native_pica_transfer_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_transfer_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_transfer_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_transfer_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_pica_transfer_tests FOLDER Tests)
 
 add_library(oot3d_native_pica_submission STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_pica_submission.cpp
@@ -1140,24 +1056,14 @@ target_link_libraries(oot3d_native_pica_submission PUBLIC
     oot3d_native_a32_process
     oot3d_native_pica_transfer
     oot3d_native_pica_frontend)
-target_compile_options(oot3d_native_pica_submission PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_submission PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_submission PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_submission PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_pica_submission FOLDER Tools)
 
 add_executable(oot3d_native_pica_submission_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_pica_submission_tests.cpp
 )
 target_link_libraries(oot3d_native_pica_submission_tests PRIVATE
     oot3d_native_pica_submission)
-target_compile_options(oot3d_native_pica_submission_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_submission_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_submission_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_submission_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_pica_submission_tests FOLDER Tests)
 
 add_library(oot3d_native_pica_composition STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_pica_composition.cpp
@@ -1176,12 +1082,7 @@ target_link_libraries(oot3d_native_pica_composition PUBLIC
     oot3d_native_pica_frontend)
 target_compile_options(oot3d_native_pica_composition PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_composition PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_composition PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_composition PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_pica_composition NO_WARNING_OVERRIDE FOLDER Tools)
 
 add_executable(oot3d_native_pica_composition_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_pica_composition_tests.cpp
@@ -1208,24 +1109,14 @@ target_include_directories(oot3d_native_pica_vulkan_plan PUBLIC
 )
 target_link_libraries(oot3d_native_pica_vulkan_plan PUBLIC
     oot3d_native_pica_submission)
-target_compile_options(oot3d_native_pica_vulkan_plan PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_vulkan_plan PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_vulkan_plan PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_vulkan_plan PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_pica_vulkan_plan FOLDER Tools)
 
 add_executable(oot3d_native_pica_vulkan_plan_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_pica_vulkan_plan_tests.cpp
 )
 target_link_libraries(oot3d_native_pica_vulkan_plan_tests PRIVATE
     oot3d_native_pica_vulkan_plan)
-target_compile_options(oot3d_native_pica_vulkan_plan_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_vulkan_plan_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_vulkan_plan_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_vulkan_plan_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_pica_vulkan_plan_tests FOLDER Tests)
 
 add_library(oot3d_native_pica_semantic_trace STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_pica_semantic_trace.cpp
@@ -1239,12 +1130,7 @@ target_link_libraries(oot3d_native_pica_semantic_trace PUBLIC
     nlohmann_json::nlohmann_json)
 target_compile_options(oot3d_native_pica_semantic_trace PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_semantic_trace PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_semantic_trace PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_semantic_trace PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_pica_semantic_trace NO_WARNING_OVERRIDE FOLDER Tools)
 
 add_executable(oot3d_native_pica_semantic_trace_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_pica_semantic_trace_tests.cpp
@@ -1268,12 +1154,7 @@ target_link_libraries(oot3d_native_pica_trace_inventory PRIVATE
     nlohmann_json::nlohmann_json)
 target_compile_options(oot3d_native_pica_trace_inventory PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_trace_inventory PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_trace_inventory PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_trace_inventory PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_pica_trace_inventory NO_WARNING_OVERRIDE FOLDER Tools)
 
 add_library(oot3d_native_pica_azahar_capture STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_pica_frontend/oot3d_native_pica_azahar_capture.cpp
@@ -1286,12 +1167,7 @@ target_link_libraries(oot3d_native_pica_azahar_capture PUBLIC
     nlohmann_json::nlohmann_json)
 target_compile_options(oot3d_native_pica_azahar_capture PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_azahar_capture PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_azahar_capture PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_azahar_capture PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_pica_azahar_capture NO_WARNING_OVERRIDE FOLDER Tools)
 
 add_executable(oot3d_native_pica_azahar_capture_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_pica_frontend/oot3d_native_pica_azahar_capture_tests.cpp
@@ -1300,12 +1176,7 @@ target_link_libraries(oot3d_native_pica_azahar_capture_tests PRIVATE
     oot3d_native_pica_azahar_capture)
 target_compile_options(oot3d_native_pica_azahar_capture_tests PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_azahar_capture_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_azahar_capture_tests PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_azahar_capture_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_pica_azahar_capture_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 add_executable(oot3d_native_pica_azahar_corpus_validator EXCLUDE_FROM_ALL
     tools/oot3d/native_pica_frontend/oot3d_native_pica_azahar_corpus_validator.cpp
@@ -1327,12 +1198,7 @@ if(OOT3D_ENABLE_VULKAN_RENDERER AND TARGET three_ds_recomp_shaderc)
             COMMENT "Deploying shaderc for Azahar PICA corpus validation")
     endif()
 endif()
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_azahar_corpus_validator PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_azahar_corpus_validator PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_azahar_corpus_validator PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_pica_azahar_corpus_validator NO_WARNING_OVERRIDE FOLDER Tools)
 
 if(OOT3D_ENABLE_VULKAN_RENDERER AND TARGET three_ds_recomp_shaderc)
     add_executable(oot3d_native_pica_aot_compiler EXCLUDE_FROM_ALL
@@ -1419,12 +1285,7 @@ target_include_directories(oot3d_native_pica_vulkan_bridge PUBLIC
 target_link_libraries(oot3d_native_pica_vulkan_bridge PUBLIC
     oot3d_native_pica_vulkan_plan
     oot3d_renderer_contracts)
-target_compile_options(oot3d_native_pica_vulkan_bridge PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_pica_vulkan_bridge PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_pica_vulkan_bridge PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_pica_vulkan_bridge PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_pica_vulkan_bridge FOLDER Tools)
 
 add_library(triaevum_oot3d_pica_renderer STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/triaevum_oot3d_pica_batch.cpp
@@ -1438,12 +1299,7 @@ target_link_libraries(triaevum_oot3d_pica_renderer PUBLIC
     oot3d_native_pica_vulkan_bridge)
 target_compile_options(triaevum_oot3d_pica_renderer PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(triaevum_oot3d_pica_renderer PRIVATE NOMINMAX)
-    set_property(TARGET triaevum_oot3d_pica_renderer PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET triaevum_oot3d_pica_renderer PROPERTY FOLDER Tools)
+oot3d_target_defaults(triaevum_oot3d_pica_renderer NO_WARNING_OVERRIDE FOLDER Tools)
 
 add_library(triaevum_forge_content_filesystem STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/triaevum_forge_content_filesystem.cpp)
@@ -1469,12 +1325,7 @@ target_link_libraries(triaevum_oot3d_pica_batch_tests PRIVATE
     triaevum_oot3d_pica_renderer)
 target_compile_options(triaevum_oot3d_pica_batch_tests PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(triaevum_oot3d_pica_batch_tests PRIVATE NOMINMAX)
-    set_property(TARGET triaevum_oot3d_pica_batch_tests PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET triaevum_oot3d_pica_batch_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(triaevum_oot3d_pica_batch_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 add_executable(triaevum_oot3d_pica_renderer_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/triaevum_oot3d_pica_renderer_tests.cpp
@@ -1483,12 +1334,7 @@ target_link_libraries(triaevum_oot3d_pica_renderer_tests PRIVATE
     triaevum_oot3d_pica_renderer)
 target_compile_options(triaevum_oot3d_pica_renderer_tests PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(triaevum_oot3d_pica_renderer_tests PRIVATE NOMINMAX)
-    set_property(TARGET triaevum_oot3d_pica_renderer_tests PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET triaevum_oot3d_pica_renderer_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(triaevum_oot3d_pica_renderer_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 # Developer vertical for a private Forge-produced title module. The host is
 # deliberately independent of oot3d_game_module: public runtime builds do not
@@ -1535,12 +1381,7 @@ target_link_libraries(triaevum_runtime_layout_tests PRIVATE
     nlohmann_json::nlohmann_json)
 target_compile_options(triaevum_runtime_layout_tests PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(triaevum_runtime_layout_tests PRIVATE NOMINMAX)
-    set_property(TARGET triaevum_runtime_layout_tests PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET triaevum_runtime_layout_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(triaevum_runtime_layout_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 add_executable(oot3d_native_pica_vulkan_bridge_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_pica_vulkan_bridge_tests.cpp
@@ -1600,12 +1441,7 @@ target_link_libraries(oot3d_ui_topscreen PUBLIC
     three_ds_recomp_input
     oot3d_native_a32_process
     oot3d_native_ui_contract)
-target_compile_options(oot3d_ui_topscreen PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_ui_topscreen PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_ui_topscreen PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_ui_topscreen PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_ui_topscreen FOLDER Tools)
 
 add_executable(oot3d_native_font_coverage_tests EXCLUDE_FROM_ALL
     tools/oot3d/ui_topscreen/oot3d_native_font_coverage.cpp
@@ -1621,12 +1457,7 @@ add_executable(oot3d_top_screen_mod_profile_tests EXCLUDE_FROM_ALL
 )
 target_link_libraries(oot3d_top_screen_mod_profile_tests PRIVATE
     oot3d_ui_topscreen)
-target_compile_options(oot3d_top_screen_mod_profile_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_top_screen_mod_profile_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_top_screen_mod_profile_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_top_screen_mod_profile_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_top_screen_mod_profile_tests FOLDER Tests)
 
 add_executable(oot3d_top_screen_items_hint_tests EXCLUDE_FROM_ALL
     tools/oot3d/ui_topscreen/oot3d_top_screen_items_hint_tests.cpp
@@ -1635,24 +1466,14 @@ target_link_libraries(oot3d_top_screen_items_hint_tests PRIVATE
     oot3d_ui_topscreen)
 target_compile_options(oot3d_top_screen_items_hint_tests PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_top_screen_items_hint_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_top_screen_items_hint_tests PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_top_screen_items_hint_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_top_screen_items_hint_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 add_executable(oot3d_native_ui_contract_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_ui_contract_tests.cpp
 )
 target_link_libraries(oot3d_native_ui_contract_tests PRIVATE
     oot3d_native_ui_contract)
-target_compile_options(oot3d_native_ui_contract_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_ui_contract_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_ui_contract_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_ui_contract_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_ui_contract_tests FOLDER Tests)
 
 add_library(oot3d_ui_n64 STATIC EXCLUDE_FROM_ALL
     tools/oot3d/ui_n64/oot3d_native_hud_atlas_regions.h
@@ -1664,12 +1485,7 @@ target_include_directories(oot3d_ui_n64 PUBLIC
 )
 target_link_libraries(oot3d_ui_n64 PUBLIC
     oot3d_native_ui_contract)
-target_compile_options(oot3d_ui_n64 PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_ui_n64 PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_ui_n64 PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_ui_n64 PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_ui_n64 FOLDER Tools)
 
 add_library(oot3d_ui_n64_renderer STATIC EXCLUDE_FROM_ALL
     tools/oot3d/ui_n64/oot3d_n64_ui_renderer.cpp
@@ -1680,12 +1496,7 @@ target_include_directories(oot3d_ui_n64_renderer PUBLIC
 target_link_libraries(oot3d_ui_n64_renderer PUBLIC
     oot3d_ui_n64
     oot3d_renderer_contracts)
-target_compile_options(oot3d_ui_n64_renderer PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_ui_n64_renderer PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_ui_n64_renderer PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_ui_n64_renderer PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_ui_n64_renderer FOLDER Tools)
 
 add_library(oot3d_ui_legacy_adapters STATIC EXCLUDE_FROM_ALL
     tools/oot3d/ui_n64/oot3d_legacy_ui_adapters.cpp
@@ -1697,36 +1508,21 @@ target_link_libraries(oot3d_ui_legacy_adapters PUBLIC
     oot3d_ui_n64_renderer
     oot3d_renderer_contracts
     PRIVATE ImGui)
-target_compile_options(oot3d_ui_legacy_adapters PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_ui_legacy_adapters PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_ui_legacy_adapters PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_ui_legacy_adapters PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_ui_legacy_adapters FOLDER Tools)
 
 add_executable(oot3d_n64_integrated_ui_runtime_tests EXCLUDE_FROM_ALL
     tools/oot3d/ui_n64/oot3d_n64_integrated_ui_runtime_tests.cpp
 )
 target_link_libraries(oot3d_n64_integrated_ui_runtime_tests PRIVATE
     oot3d_ui_n64)
-target_compile_options(oot3d_n64_integrated_ui_runtime_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_n64_integrated_ui_runtime_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_n64_integrated_ui_runtime_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_n64_integrated_ui_runtime_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_n64_integrated_ui_runtime_tests FOLDER Tests)
 
 add_executable(oot3d_n64_gameplay_hud_tests EXCLUDE_FROM_ALL
     tools/oot3d/ui_n64/oot3d_n64_gameplay_hud_tests.cpp
 )
 target_link_libraries(oot3d_n64_gameplay_hud_tests PRIVATE
     oot3d_ui_n64)
-target_compile_options(oot3d_n64_gameplay_hud_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_n64_gameplay_hud_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_n64_gameplay_hud_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_n64_gameplay_hud_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_n64_gameplay_hud_tests FOLDER Tests)
 
 add_executable(oot3d_n64_ui_renderer_tests EXCLUDE_FROM_ALL
     tools/oot3d/ui_n64/oot3d_n64_ui_renderer_tests.cpp
@@ -1737,12 +1533,7 @@ if (DEFINED _oot3d_mass_clang_builtins)
     target_link_libraries(oot3d_n64_ui_renderer_tests PRIVATE
         "${_oot3d_mass_clang_builtins}")
 endif()
-target_compile_options(oot3d_n64_ui_renderer_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_n64_ui_renderer_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_n64_ui_renderer_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_n64_ui_renderer_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_n64_ui_renderer_tests FOLDER Tests)
 
 add_library(oot3d_top_screen_runtime_consumer STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_top_screen_gameplay_action_consumer.cpp
@@ -1756,12 +1547,7 @@ target_link_libraries(oot3d_top_screen_runtime_consumer PUBLIC
     oot3d_ui_topscreen)
 target_compile_options(oot3d_top_screen_runtime_consumer PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_top_screen_runtime_consumer PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_top_screen_runtime_consumer PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_top_screen_runtime_consumer PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_top_screen_runtime_consumer NO_WARNING_OVERRIDE FOLDER Tools)
 
 add_library(oot3d_native_ui_lifecycle_bridge STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_ui_lifecycle_bridge.cpp
@@ -1774,24 +1560,14 @@ target_link_libraries(oot3d_native_ui_lifecycle_bridge PUBLIC
     oot3d_ui_n64
     oot3d_ui_topscreen
     oot3d_top_screen_runtime_consumer)
-target_compile_options(oot3d_native_ui_lifecycle_bridge PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_ui_lifecycle_bridge PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_ui_lifecycle_bridge PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_ui_lifecycle_bridge PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_ui_lifecycle_bridge FOLDER Tools)
 
 add_executable(oot3d_native_ui_lifecycle_bridge_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_ui_lifecycle_bridge_tests.cpp
 )
 target_link_libraries(oot3d_native_ui_lifecycle_bridge_tests PRIVATE
     oot3d_native_ui_lifecycle_bridge)
-target_compile_options(oot3d_native_ui_lifecycle_bridge_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_ui_lifecycle_bridge_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_ui_lifecycle_bridge_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_ui_lifecycle_bridge_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_ui_lifecycle_bridge_tests FOLDER Tests)
 
 add_library(oot3d_native_ui_texture_provider STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_ui_texture_provider.cpp
@@ -1804,24 +1580,14 @@ target_link_libraries(oot3d_native_ui_texture_provider PUBLIC
     oot3d_ui_n64_renderer
     oot3d_ui_topscreen
     oot3d_renderer_texture_decode)
-target_compile_options(oot3d_native_ui_texture_provider PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_ui_texture_provider PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_ui_texture_provider PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_ui_texture_provider PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_ui_texture_provider FOLDER Tools)
 
 add_executable(oot3d_native_ui_texture_provider_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_ui_texture_provider_tests.cpp
 )
 target_link_libraries(oot3d_native_ui_texture_provider_tests PRIVATE
     oot3d_native_ui_texture_provider)
-target_compile_options(oot3d_native_ui_texture_provider_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_ui_texture_provider_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_ui_texture_provider_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_ui_texture_provider_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_ui_texture_provider_tests FOLDER Tests)
 
 add_executable(oot3d_top_screen_ocarina_text_runtime_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_top_screen_ocarina_text_runtime.cpp
@@ -1856,23 +1622,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set_property(TARGET oot3d_native_hd_font_runtime_tests PROPERTY MSVC_RUNTIME_LIBRARY
         "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_top_screen_texture_runtime PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_top_screen_texture_runtime PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_top_screen_texture_runtime PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_top_screen_texture_runtime NO_WARNING_OVERRIDE FOLDER Tools)
 
 add_executable(oot3d_top_screen_texture_runtime_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_top_screen_texture_runtime_tests.cpp
 )
 target_link_libraries(oot3d_top_screen_texture_runtime_tests PRIVATE
     oot3d_top_screen_texture_runtime)
-target_compile_options(oot3d_top_screen_texture_runtime_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_top_screen_texture_runtime_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_top_screen_texture_runtime_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_top_screen_texture_runtime_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_top_screen_texture_runtime_tests FOLDER Tests)
 
 add_library(three_ds_recomp_input STATIC EXCLUDE_FROM_ALL
     tools/three_ds/input/three_ds_input.cpp
@@ -1881,13 +1638,7 @@ add_library(three_ds_recomp_input STATIC EXCLUDE_FROM_ALL
 target_include_directories(three_ds_recomp_input PUBLIC
     tools/three_ds/input
 )
-target_compile_options(three_ds_recomp_input PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(three_ds_recomp_input PRIVATE NOMINMAX)
-    set_property(TARGET three_ds_recomp_input PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET three_ds_recomp_input PROPERTY FOLDER Tools)
+oot3d_target_defaults(three_ds_recomp_input FOLDER Tools)
 
 add_executable(three_ds_recomp_input_tests EXCLUDE_FROM_ALL
     tools/three_ds/input/three_ds_input_tests.cpp
@@ -1896,12 +1647,7 @@ target_link_libraries(three_ds_recomp_input_tests PRIVATE
     three_ds_recomp_input)
 target_compile_options(three_ds_recomp_input_tests PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(three_ds_recomp_input_tests PRIVATE NOMINMAX)
-    set_property(TARGET three_ds_recomp_input_tests PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET three_ds_recomp_input_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(three_ds_recomp_input_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 # Imported dependencies found in the renderer directory are not visible here.
 if (NOT TARGET SDL2::SDL2 AND CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$")
@@ -1911,12 +1657,7 @@ if (TARGET SDL2::SDL2)
     add_executable(three_ds_sdl_controller_tests EXCLUDE_FROM_ALL
         tools/three_ds/input/three_ds_sdl_controller_tests.cpp)
     target_link_libraries(three_ds_sdl_controller_tests PRIVATE three_ds_recomp_input SDL2::SDL2)
-    if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        target_compile_definitions(three_ds_sdl_controller_tests PRIVATE NOMINMAX)
-        set_property(TARGET three_ds_sdl_controller_tests PROPERTY
-            MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    endif()
-    set_property(TARGET three_ds_sdl_controller_tests PROPERTY FOLDER Tests)
+    oot3d_target_defaults(three_ds_sdl_controller_tests NO_WARNING_OVERRIDE FOLDER Tests)
 endif()
 
 add_library(oot3d_native_control_config STATIC EXCLUDE_FROM_ALL
@@ -1930,12 +1671,7 @@ target_link_libraries(oot3d_native_control_config PUBLIC
     three_ds_recomp_input)
 target_compile_options(oot3d_native_control_config PRIVATE
     "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_control_config PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_control_config PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_control_config PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_control_config NO_WARNING_OVERRIDE FOLDER Tools)
 
 add_library(oot3d_native_a32_input STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_a32_input.cpp
@@ -1949,12 +1685,7 @@ target_include_directories(oot3d_native_a32_input PRIVATE
 target_link_libraries(oot3d_native_a32_input PUBLIC
     nlohmann_json::nlohmann_json
     oot3d_native_control_config)
-target_compile_options(oot3d_native_a32_input PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_a32_input PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_a32_input PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_a32_input PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_a32_input FOLDER Tools)
 
 # The UI lifecycle bridge consumes the guest-input routing contract. Declare
 # the dependency after both targets exist so the shared 3DS input API and its
@@ -1967,12 +1698,7 @@ add_executable(oot3d_native_a32_input_tests EXCLUDE_FROM_ALL
 )
 target_link_libraries(oot3d_native_a32_input_tests PRIVATE
     oot3d_native_a32_input)
-target_compile_options(oot3d_native_a32_input_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_a32_input_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_a32_input_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_a32_input_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_a32_input_tests FOLDER Tests)
 
 add_subdirectory(tools/triaevum_release/tests)
 
@@ -2006,12 +1732,7 @@ target_link_libraries(oot3d_native_a32_ctr_host PUBLIC
     oot3d_native_a32_process
     oot3d_native_pica_frontend
     oot3d_native_pica_transfer)
-target_compile_options(oot3d_native_a32_ctr_host PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_a32_ctr_host PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_a32_ctr_host PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_a32_ctr_host PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_a32_ctr_host FOLDER Tools)
 
 add_executable(oot3d_native_audio_storage_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_audio_storage_tests.cpp)
@@ -2019,12 +1740,7 @@ target_include_directories(oot3d_native_audio_storage_tests PRIVATE
     tools/oot3d/third_party/azahar_audio)
 target_link_libraries(oot3d_native_audio_storage_tests PRIVATE
     oot3d_native_a32_ctr_host)
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_audio_storage_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_audio_storage_tests PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_audio_storage_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_audio_storage_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 # Private title modules retain the exact CTR/SVC implementation but may only
 # reach graphics through the stable host-service ABI. This variant therefore
@@ -2121,12 +1837,7 @@ if (OOT3D_WHOLE_AOT_PRODUCT_MODE AND
     set_target_properties(oot3d_game_module PROPERTIES
         PREFIX ""
         OUTPUT_NAME "oot3d_game_module")
-    if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        target_compile_definitions(oot3d_game_module PRIVATE NOMINMAX)
-        set_property(TARGET oot3d_game_module PROPERTY
-            MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    endif()
-    set_property(TARGET oot3d_game_module PROPERTY FOLDER Tools)
+    oot3d_target_defaults(oot3d_game_module NO_WARNING_OVERRIDE FOLDER Tools)
 
     add_executable(oot3d_game_module_smoke EXCLUDE_FROM_ALL
         tools/oot3d/native_game_module/oot3d_game_module_smoke.cpp)
@@ -2136,12 +1847,7 @@ if (OOT3D_WHOLE_AOT_PRODUCT_MODE AND
     add_dependencies(oot3d_game_module_smoke oot3d_game_module)
     target_compile_options(oot3d_game_module_smoke PRIVATE
         "${WARNING_OVERRIDE}")
-    if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        target_compile_definitions(oot3d_game_module_smoke PRIVATE NOMINMAX)
-        set_property(TARGET oot3d_game_module_smoke PROPERTY
-            MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    endif()
-    set_property(TARGET oot3d_game_module_smoke PROPERTY FOLDER Tests)
+    oot3d_target_defaults(oot3d_game_module_smoke NO_WARNING_OVERRIDE FOLDER Tests)
 endif()
 
 add_executable(oot3d_triaevum_pica_client_bridge_tests EXCLUDE_FROM_ALL
@@ -2176,35 +1882,21 @@ if (TARGET oot3d_native_whole_aot)
     target_compile_definitions(oot3d_native_a32_process_tests PRIVATE
         OOT3D_NATIVE_WHOLE_AOT_TESTS=1)
 endif()
-target_compile_options(oot3d_native_a32_process_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_a32_process_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_a32_process_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_a32_process_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_a32_process_tests FOLDER Tests)
 
 add_executable(oot3d_native_a32_ctr_host_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_a32_ctr_host_tests.cpp
 )
 target_link_libraries(oot3d_native_a32_ctr_host_tests PRIVATE
     oot3d_native_a32_ctr_host)
-target_compile_options(oot3d_native_a32_ctr_host_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_a32_ctr_host_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_a32_ctr_host_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_a32_ctr_host_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_a32_ctr_host_tests FOLDER Tests)
 
 add_executable(oot3d_native_render_command_stream_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_render_command_stream_tests.cpp
     tools/oot3d/native_game_runtime/oot3d_native_render_command_stream.cpp
 )
 target_compile_features(oot3d_native_render_command_stream_tests PRIVATE cxx_std_20)
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_render_command_stream_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_render_command_stream_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_render_command_stream_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_render_command_stream_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 add_executable(oot3d_native_preparation_screen_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_preparation_screen_tests.cpp
@@ -2212,11 +1904,7 @@ add_executable(oot3d_native_preparation_screen_tests EXCLUDE_FROM_ALL
 target_compile_features(oot3d_native_preparation_screen_tests PRIVATE cxx_std_20)
 target_include_directories(oot3d_native_preparation_screen_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/runtime/three_ds_recomp/include)
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_preparation_screen_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_preparation_screen_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_preparation_screen_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_preparation_screen_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 add_executable(ctr_y2r_service_tests EXCLUDE_FROM_ALL
     tools/ctr_services/y2r_service_tests.cpp
@@ -2236,24 +1924,14 @@ target_link_libraries(oot3d_native_a32_savestate PUBLIC
     oot3d_native_a32_ctr_host
     oot3d_native_pica_submission
 )
-target_compile_options(oot3d_native_a32_savestate PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_a32_savestate PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_a32_savestate PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_a32_savestate PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_a32_savestate FOLDER Tools)
 
 add_executable(oot3d_native_a32_savestate_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_a32_savestate_tests.cpp
 )
 target_link_libraries(oot3d_native_a32_savestate_tests PRIVATE
     oot3d_native_a32_savestate)
-target_compile_options(oot3d_native_a32_savestate_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_a32_savestate_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_a32_savestate_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_a32_savestate_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_a32_savestate_tests FOLDER Tests)
 
 if (TARGET oot3d_native_a32_aot)
     add_executable(oot3d_native_a32_boot_probe EXCLUDE_FROM_ALL
@@ -2277,12 +1955,7 @@ if (TARGET oot3d_native_a32_aot)
                     $<TARGET_FILE_DIR:oot3d_native_a32_boot_probe>
             COMMENT "Deploying shaderc for oot3d_native_a32_boot_probe")
     endif()
-    target_compile_options(oot3d_native_a32_boot_probe PRIVATE "${WARNING_OVERRIDE}")
-    if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        target_compile_definitions(oot3d_native_a32_boot_probe PRIVATE NOMINMAX)
-        set_property(TARGET oot3d_native_a32_boot_probe PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    endif()
-    set_property(TARGET oot3d_native_a32_boot_probe PROPERTY FOLDER Tools)
+    oot3d_target_defaults(oot3d_native_a32_boot_probe FOLDER Tools)
 endif()
 
 # Documentation and analysis workspace for the historical source-native study.
@@ -2315,11 +1988,7 @@ if (TARGET oot3d_native_a32_aot)
     target_compile_definitions(oot3d_native_game_runtime PRIVATE
         OOT3D_NATIVE_A32_AOT_AVAILABLE=1)
 endif()
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_game_runtime PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_game_runtime PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_game_runtime PROPERTY FOLDER Tools)
+oot3d_target_defaults(oot3d_native_game_runtime NO_WARNING_OVERRIDE FOLDER Tools)
 
 add_executable(oot3d_native_game_runtime_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_frame_rate_tests.cpp
@@ -2331,34 +2000,20 @@ add_executable(oot3d_native_game_runtime_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_skel_anime_tests.cpp
 )
 target_link_libraries(oot3d_native_game_runtime_tests PRIVATE oot3d_native_game_runtime)
-target_compile_options(oot3d_native_game_runtime_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_game_runtime_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_game_runtime_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_game_runtime_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_game_runtime_tests FOLDER Tests)
 
 # Clock verification must also work without the optional legacy cutscene host.
 add_executable(triaevum_presentation_clock_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_frame_rate_tests.cpp
     tools/triaevum_release/tests/presentation_clock_main.cpp)
 target_link_libraries(triaevum_presentation_clock_tests PRIVATE oot3d_native_game_runtime)
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(triaevum_presentation_clock_tests PRIVATE NOMINMAX)
-    set_property(TARGET triaevum_presentation_clock_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET triaevum_presentation_clock_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(triaevum_presentation_clock_tests NO_WARNING_OVERRIDE FOLDER Tests)
 
 add_executable(oot3d_native_audio_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_audio_tests.cpp
 )
 target_link_libraries(oot3d_native_audio_tests PRIVATE oot3d_native_audio)
-target_compile_options(oot3d_native_audio_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_audio_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_audio_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_native_audio_tests PROPERTY FOLDER Tests)
+oot3d_target_defaults(oot3d_native_audio_tests FOLDER Tests)
 
 if(ANDROID)
     add_library(oot3d_native_game SHARED EXCLUDE_FROM_ALL)
@@ -2593,10 +2248,7 @@ if(COMMAND three_ds_recomp_deploy_nri_runtime)
     endforeach()
 endif()
 unset(_oot3d_vulkan_hosts)
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_native_game PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_native_game PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
+oot3d_target_defaults(oot3d_native_game NO_WARNING_OVERRIDE)
 if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     nx_generate_nacp(oot3d_native_game.nacp
         NAME "The Legend of Zelda: Ocarina of Time 3D Recompiled"
