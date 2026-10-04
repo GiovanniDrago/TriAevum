@@ -18,6 +18,13 @@ struct Oot3dPicaVisualFrame {
     std::vector<uint64_t> StrictDrawIdentities;
     std::vector<Oot3dPicaMemoryFillSubmission> MemoryFills;
     std::vector<Oot3dPicaDisplayTransferSubmission> DisplayTransfers;
+    // The leading work a raw-copy dependency flush already executed for the
+    // canonical target when this frame was closed: draws and fills up to this
+    // submission, and this many leading display transfers. The copy itself may
+    // belong to a later frame. Only the canonical continuation of a newly
+    // closed frame reads it, so a restored replay frame does not carry it.
+    std::optional<uint64_t> DependencyExecutedThroughDraw;
+    size_t DependencyExecutedTransfers = 0;
 };
 
 struct Oot3dPicaVisualFrameSample {

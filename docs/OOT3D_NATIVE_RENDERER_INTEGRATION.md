@@ -755,6 +755,24 @@ to their baselines (contracts, framebuffers, interpolation counters), and the
 Kokiri walk with GI off is pixel-identical to the pre-GI build. Runtime JSON
 reports `superseded_visual_frames`.
 
+Correction (2026-10-05). The split ignored raw-copy dependency work. A raw
+`TextureCopy` that signals the guest is executed immediately with every pending
+draw, fill and transfer before it (`ViewDependencyWork`), including the
+not-yet-closed frame's work when the guest copies in its next frame. The view
+of a closed frame skipped that executed prefix only when the completed copy was
+inside the frame, but the split moves the copy to the next frame with the rest
+of that frame's work. The selected frame then executed its draws a second time,
+and the presentation scheduler stopped the run ("PICA draw would execute more
+than once in one presentation"). With Original30 (native 30, no interpolation)
+the host always closes the previous guest frame while the next one is pending,
+so the Sheik revelation stopped at its first copy (run frame 2473) on every
+output size. `FinishFrames` now gives every frame it closes the boundary of the
+executed prefix (`DependencyExecutedThroughDraw`, `DependencyExecutedTransfers`),
+taken from the last completed copy among all pending work, and the canonical
+continuation skips exactly that. `oot3d_native_pica_vulkan_bridge_tests` covers
+the case: the flush, the split, both frames' canonical continuations and no
+duplicate draw.
+
 ## Commit discipline
 
 Each significant step uses two commits when both repositories change:

@@ -1625,23 +1625,19 @@ bool ViewOot3dPicaVisualFrame(
     output.MemoryFills = frame.MemoryFills;
     output.DisplayTransfers = frame.DisplayTransfers;
     size_t firstDraw = 0U;
-    if (skipCompletedDependencies) {
-        for (size_t index = frame.DisplayTransfers.size(); index != 0U; --index) {
-            const auto& transfer = frame.DisplayTransfers[index - 1U];
-            if (transfer.Transfer.TextureCopyBytes == 0U ||
-                transfer.SignalInterrupt) continue;
-            const auto lastDraw = transfer.AfterDrawSubmissionId;
-            while (firstDraw < frame.Draws.size() &&
-                   frame.Draws[firstDraw].SubmissionId <= lastDraw) ++firstDraw;
-            const auto firstFill = std::find_if(
-                frame.MemoryFills.begin(), frame.MemoryFills.end(),
-                [lastDraw](const auto& fill) {
-                    return fill.BeforeDrawSubmissionId > lastDraw;
-                });
-            output.MemoryFills = {firstFill, frame.MemoryFills.end()};
-            output.DisplayTransfers = output.DisplayTransfers.subspan(index);
-            break;
-        }
+    if (skipCompletedDependencies && frame.DependencyExecutedThroughDraw) {
+        const auto lastDraw = *frame.DependencyExecutedThroughDraw;
+        while (firstDraw < frame.Draws.size() &&
+               frame.Draws[firstDraw].SubmissionId <= lastDraw) ++firstDraw;
+        const auto firstFill = std::find_if(
+            frame.MemoryFills.begin(), frame.MemoryFills.end(),
+            [lastDraw](const auto& fill) {
+                return fill.BeforeDrawSubmissionId > lastDraw;
+            });
+        output.MemoryFills = {firstFill, frame.MemoryFills.end()};
+        output.DisplayTransfers = output.DisplayTransfers.subspan(
+            std::min(frame.DependencyExecutedTransfers,
+                     output.DisplayTransfers.size()));
     }
     output.MatchedDraws = 0;
     output.StrictUniqueMatchedDraws = 0;
@@ -1712,6 +1708,20 @@ std::vector<Oot3dPicaVisualFrame> Oot3dPicaVisualFrameAccumulator::FinishFrames(
     std::vector<Oot3dPicaVisualFrame> frames;
     if (mPendingDraws.empty()) {
         return frames;
+    }
+    // A raw-copy dependency flush has executed every pending draw, fill and
+    // transfer up to the last completed copy (ViewDependencyWork). The guest
+    // may have issued that copy in its next frame, after the selected
+    // snapshot: the boundary then also covers the frames closed here, which no
+    // longer hold the copy.
+    std::optional<uint64_t> executedThroughDraw;
+    size_t executedTransfers = 0U;
+    for (size_t index = 0U; index < mPendingDisplayTransfers.size(); ++index) {
+        const auto& transfer = mPendingDisplayTransfers[index];
+        if (transfer.Transfer.TextureCopyBytes != 0U && !transfer.SignalInterrupt) {
+            executedThroughDraw = transfer.AfterDrawSubmissionId;
+            executedTransfers = index + 1U;
+        }
     }
     // The guest may already have drawn its next frame into the other display
     // buffer: from the first later draw into the selected transfer's source,
@@ -1793,6 +1803,9 @@ std::vector<Oot3dPicaVisualFrame> Oot3dPicaVisualFrameAccumulator::FinishFrames(
                mPendingDisplayTransfers[transfer].AfterDrawSubmissionId <= end) ++transfer;
         frame.DisplayTransfers.assign(mPendingDisplayTransfers.begin() + firstTransfer,
                                       mPendingDisplayTransfers.begin() + transfer);
+        frame.DependencyExecutedThroughDraw = executedThroughDraw;
+        frame.DependencyExecutedTransfers =
+            std::min(executedTransfers, transfer) - std::min(executedTransfers, firstTransfer);
         frames.push_back(std::move(frame));
     }
     const size_t largest = std::max_element(frames.begin(), frames.end(), [](const auto& a, const auto& b) {

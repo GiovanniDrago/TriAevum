@@ -4,6 +4,7 @@
 #include "fast/oot3d/pica_uniform_layout.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <cstdlib>
 #include <iostream>
@@ -675,6 +676,76 @@ int main() {
     Require(splitBackend.GuestCopyCompletions == 1U &&
                 splitScheduler.Stats().DuplicateDrawAttempts == 0U,
             "visual replay duplicated native execution side effects");
+    {
+        // The guest ran one frame ahead and issued a raw copy in that next
+        // frame: its dependency flush executed both frames' work up to the
+        // copy before the host closed the selected frame. Closing it splits the
+        // next frame off together with the copy, and neither part may execute
+        // the flushed prefix again (the Sheik revelation under Original30).
+        Oot3dNativeGame::Oot3dPicaPresentationScheduler aheadScheduler;
+        RecordingBackend aheadBackend;
+        aheadScheduler.BeginPresentation(300U);
+        auto selectedWorld = firstPlan;
+        selectedWorld.SubmissionId = 61U;
+        selectedWorld.State.Framebuffer.ColorPhysicalAddress = 0x18000000U;
+        auto nextWorld = selectedWorld;
+        nextWorld.SubmissionId = 62U;
+        auto nextEffect = selectedWorld;
+        nextEffect.SubmissionId = 63U;
+        auto selectedTop = topTransfer;
+        selectedTop.CompletionId = 71U;
+        selectedTop.AfterDrawSubmissionId = selectedWorld.SubmissionId;
+        auto nextCopy = copy;
+        nextCopy.CompletionId = 72U;
+        nextCopy.InputPhysicalAddress = 0x18000000U;
+        nextCopy.AfterDrawSubmissionId = nextWorld.SubmissionId;
+        auto nextTop = topTransfer;
+        nextTop.CompletionId = 73U;
+        nextTop.AfterDrawSubmissionId = nextEffect.SubmissionId;
+        aheadScheduler.Capture(selectedWorld);
+        aheadScheduler.Capture(selectedTop);
+        aheadScheduler.Capture(nextWorld);
+        aheadScheduler.Capture(nextCopy);
+        Require(aheadScheduler.ViewDependencyWork(dependencySample) &&
+                    dependencySample.Draws.size() == 2U,
+                "the copy's dependency did not cover both frames' draws");
+        Require(aheadScheduler.Execute(aheadBackend, dependencySample, 1U,
+                    Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::DependencyFlush,
+                    false, &error), error);
+        aheadScheduler.Capture(nextEffect);
+        aheadScheduler.Capture(nextTop);
+        const std::array<uint32_t, 1> outputs{topTransfer.OutputPhysicalAddress};
+        auto frames = aheadScheduler.FinishFrames(selectedTop, outputs);
+        Require(frames.size() == 1U && frames[0].Draws.size() == 1U &&
+                    frames[0].Draws[0].SubmissionId == selectedWorld.SubmissionId,
+                "the selected frame did not keep only its own draw");
+        Oot3dNativeGame::Oot3dPicaVisualFrameViewSample remainder;
+        (void)Oot3dNativeGame::ViewOot3dPicaVisualFrame(frames[0], remainder, true);
+        Require(remainder.Draws.empty() && remainder.DisplayTransfers.empty(),
+                "the selected frame would redraw work its next frame's copy flushed");
+        Require(aheadScheduler.Execute(aheadBackend, remainder, 1U,
+                    Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::NativeFrame,
+                    false, &error), error);
+        Oot3dNativeGame::Oot3dPicaVisualFrameViewSample whole;
+        Require(Oot3dNativeGame::ViewOot3dPicaVisualFrame(frames[0], whole) &&
+                    whole.Draws.size() == 1U && whole.DisplayTransfers.size() == 1U,
+                "the presented frame lost its flushed work");
+        frames = aheadScheduler.FinishFrames(nextTop, outputs);
+        Require(frames.size() == 1U && frames[0].Draws.size() == 2U,
+                "the next frame did not keep the work split off with its copy");
+        (void)Oot3dNativeGame::ViewOot3dPicaVisualFrame(frames[0], remainder, true);
+        Require(remainder.Draws.size() == 1U &&
+                    remainder.Draws[0].BasePlan->SubmissionId == nextEffect.SubmissionId &&
+                    remainder.DisplayTransfers.size() == 1U &&
+                    remainder.DisplayTransfers[0].CompletionId == nextTop.CompletionId,
+                "the next frame would redraw its flushed prefix or lose its suffix");
+        Require(aheadScheduler.Execute(aheadBackend, remainder, 1U,
+                    Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::NativeFrame,
+                    false, &error), error);
+        Require(aheadScheduler.Stats().DuplicateDrawAttempts == 0U &&
+                    aheadBackend.GuestCopyCompletions == 1U,
+                "split frames executed native work twice");
+    }
     std::cout << "oot3d_native_pica_vulkan_bridge_tests: ok\n";
     return 0;
 }
