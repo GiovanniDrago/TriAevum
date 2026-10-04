@@ -2,13 +2,11 @@
 param(
     [switch]$SkipBuild,
     [string]$Executable = "",
-    [switch]$ValidateOnly,
     [int]$Frames = 0,
     [ValidateRange(0, 1000000)]
     [int]$BenchmarkWarmupFrames = 0,
     [double]$FixedDeltaSeconds = 0,
     [string]$InputTimeline = "",
-    [int[]]$RoomRequestSmoke = @(),
     [double]$MaxSeconds = 0,
     [ValidateRange(0, 300)]
     [int]$BoundedStartupGraceSeconds = 30,
@@ -65,9 +63,7 @@ param(
     [string]$SaveState = "",
     [int]$SaveStateFrame = -1,
     [int]$ScreenshotStartFrame = 0,
-    [int]$ScreenshotInterval = 1,
-    [string]$PlayablePack = "I:\oot3dre_work\playable_pack\oot3d_playable_pack.json",
-    [string]$RoomCompilationUnit = "I:\oot3dre_work\room_compilation_units\scene_entry_SCENE_ENTRY_KOKIRI_FOREST_FROM_LINKS_HOUSE_KOKIRI_FOREST_INITIAL_CHILD_DAY.json"
+    [int]$ScreenshotInterval = 1
 )
 
 Set-StrictMode -Version Latest
@@ -228,18 +224,7 @@ if (-not $SkipBuild) {
 
 $inputs = @(
     $executable,
-    "I:\oot3dre_work\standalone_demo\kokiri_forest\demo_manifest.json",
     (Join-Path $repoRoot "runtime/three_ds_recomp\src\fast"),
-    "I:\oot3dre_work\playable_catalog\oot3d_asset_catalog.json",
-    $PlayablePack,
-    "I:\oot3dre_work\playable_catalog\oot3d_semantic_route_catalog.json",
-    (Join-Path $repoRoot "tools\oot3d\decomp_support\analysis\player_animation_group_native_contract.json"),
-    (Join-Path $repoRoot "tools\oot3d\oot3d_asset_tool\profiles\link_child_native_runtime_semantics.json"),
-    (Join-Path $repoRoot "tools\oot3d\decomp_support\analysis\player_collision_action_native_contract.json"),
-    (Join-Path $repoRoot "tools\oot3d\decomp_support\analysis\actor_core_native_contract.json"),
-    "I:\oot3dre_work\playable_actors\oot3d-actors-native.o2r",
-    $RoomCompilationUnit,
-    "I:\oot3dre_work\native_corpus\kokiri_initial_607aaa6\manifest.json"
     $A32ProcessManifest
 )
 foreach ($path in $inputs) {
@@ -254,20 +239,8 @@ if ($PSBoundParameters.ContainsKey("SimulationRate") -and
 }
 
 $launchArgs = @(
-    "--manifest", $inputs[1],
-    "--resource-root", $inputs[2],
-    "--asset-catalog", $inputs[3],
-    "--playable-pack", $inputs[4],
-    "--route-catalog", $inputs[5],
-    "--player-animation-contract", $inputs[6],
-    "--player-runtime-semantics", $inputs[7],
-    "--player-collision-action-contract", $inputs[8],
-    "--actor-core-contract", $inputs[9],
-    "--actor-shard", $inputs[10],
-    "--room-compilation-unit", $inputs[11],
-    "--native-closure-manifest", $inputs[12],
-    "--a32-process-manifest", $inputs[13],
-    "--route-id", "scene_entry:SCENE_ENTRY_KOKIRI_FOREST_FROM_LINKS_HOUSE:KOKIRI_FOREST_INITIAL_CHILD_DAY",
+    "--resource-root", $inputs[1],
+    "--a32-process-manifest", $inputs[2],
     "--renderer", $Renderer,
     "--ui-profile", $UiProfile,
     "--config", $resolvedGraphicsConfig,
@@ -280,9 +253,6 @@ if ($PSBoundParameters.ContainsKey("SimulationRate")) {
     $launchArgs += @("--simulation-rate", [string]$SimulationRate)
 } else {
     $launchArgs += @("--gameplay-timing", $GameplayTiming)
-}
-if ($ValidateOnly) {
-    $launchArgs += "--validate-only"
 }
 if ($ExtendedDiagnostics) {
     $launchArgs += "--extended-diagnostics"
@@ -485,12 +455,6 @@ if (-not [string]::IsNullOrWhiteSpace($SaveDataDirectory)) {
         [System.IO.Path]::GetFullPath($SaveDataDirectory)
     )
 }
-foreach ($roomIndex in $RoomRequestSmoke) {
-    if ($roomIndex -lt 0) {
-        throw "Room-request smoke indices must be non-negative"
-    }
-    $launchArgs += @("--room-request-smoke", [string]$roomIndex)
-}
 if ($MaxSeconds -gt 0) {
     $launchArgs += @("--max-seconds", [string]$MaxSeconds)
 }
@@ -515,7 +479,7 @@ if (-not [string]::IsNullOrWhiteSpace($Screenshot)) {
     }
 }
 
-$interactiveLaunch = -not $ValidateOnly -and $Frames -le 0 -and $MaxSeconds -le 0
+$interactiveLaunch = $Frames -le 0 -and $MaxSeconds -le 0
 if ($interactiveLaunch) {
     $process = Start-Process -FilePath $executable -ArgumentList $launchArgs -WorkingDirectory $repoRoot -PassThru
     if (-not (Set-Oot3dNativeGameForeground -Process $process)) {

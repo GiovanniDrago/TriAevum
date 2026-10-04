@@ -49,33 +49,17 @@ nlohmann::json ReadJson(const std::filesystem::path& path) {
 void PrintOot3dNativeGameUsage() {
     std::cerr << "usage: oot3d_native_game [--launch-profile <profile.json>] "
                  "[overrides]\n"
-                 "       oot3d_native_game --manifest <demo_manifest.json> "
-                 "--resource-root <three_ds_recomp/legacy/src/fast> --asset-catalog "
-                 "<oot3d_asset_catalog.json> "
-                 "--playable-pack <oot3d_playable_pack.json> "
-                 "--route-catalog <oot3d_semantic_route_catalog.json> "
-                 "--player-animation-contract "
-                 "<player_animation_group_native_contract.json> "
-                 "--player-runtime-semantics "
-                 "<link_child_native_runtime_semantics.json> "
-                 "--player-collision-action-contract "
-                 "<player_collision_action_native_contract.json> "
-                 "--actor-core-contract <actor_core_native_contract.json> "
-                 "--actor-shard <oot3d-actors-native.o2r> "
-                 "--room-compilation-unit <oot3d_room_compilation_unit_v1.json> "
-                 "--native-closure-manifest <oot3d_native_corpus_manifest.json> "
-                 "--route-id <resolved scene_entry route> "
-                 "[--a32-process-manifest <manifest.json>] "
+                 "       oot3d_native_game --a32-process-manifest <manifest.json> "
+                 "--resource-root <directory> "
                  "[--ui-profile <oot3d|topscreen>] "
                  "[--topscreen-texture-overrides <textures.o3tu>] "
                  "[--topscreen-config <topscreen_ui.json>] "
                  "[--controls-config <oot3d_controls.json>] "
                  "[--save-data <directory>] "
-                 "[--validate-only] [--output <summary.json>] [--screenshot "
+                 "[--output <summary.json>] [--screenshot "
                  "<capture.bmp>] "
                  "[--screenshot-sequence] [--screenshot-interval <frames>] "
                  "[--screenshot-start-frame <frame>] "
-                 "[--room-request-smoke <room-index>] "
                  "[--extended-diagnostics] [--serial-presentation] "
                  "[--gameplay-timing <native30_interpolated|"
                  "native30_no_interpolation|enhanced60>] "
@@ -125,42 +109,17 @@ bool ParseOot3dNativeGameArgs(int argc, char** argv, Oot3dNativeGameLaunch& laun
     launch.Host.ApplicationId = "oot3d_native_game";
     launch.Host.ConfigurationPath = "oot3d_native_game.json";
     launch.Host.BackendId = 2;
-    launch.Host.RenderMode = "native_texture";
     bool gameplayTimingExplicit = false;
     bool simulationRateExplicit = false;
     bool disableVisualInterpolationExplicit = false;
 
     for (int index = 1; index < argc; ++index) {
         const std::string arg(argv[index]);
-        if (arg == "--manifest" && index + 1 < argc) {
-            launch.Host.ManifestPath = argv[++index];
-        } else if (arg == "--config" && index + 1 < argc) {
+        if (arg == "--config" && index + 1 < argc) {
             launch.Host.ConfigurationPath =
                 std::filesystem::absolute(argv[++index]).string();
         } else if (arg == "--resource-root" && index + 1 < argc) {
             launch.Host.ResourceRoot = argv[++index];
-        } else if (arg == "--asset-catalog" && index + 1 < argc) {
-            launch.AssetCatalogPath = argv[++index];
-        } else if (arg == "--playable-pack" && index + 1 < argc) {
-            launch.PlayablePackPath = argv[++index];
-        } else if (arg == "--route-catalog" && index + 1 < argc) {
-            launch.RouteCatalogPath = argv[++index];
-        } else if (arg == "--player-animation-contract" && index + 1 < argc) {
-            launch.PlayerAnimationContractPath = argv[++index];
-        } else if (arg == "--player-runtime-semantics" && index + 1 < argc) {
-            launch.PlayerRuntimeSemanticsPath = argv[++index];
-        } else if (arg == "--player-collision-action-contract" && index + 1 < argc) {
-            launch.PlayerCollisionActionContractPath = argv[++index];
-        } else if (arg == "--actor-core-contract" && index + 1 < argc) {
-            launch.ActorCoreContractPath = argv[++index];
-        } else if (arg == "--actor-shard" && index + 1 < argc) {
-            launch.ActorShardPath = argv[++index];
-        } else if (arg == "--room-compilation-unit" && index + 1 < argc) {
-            launch.RoomCompilationUnitPath = argv[++index];
-        } else if (arg == "--native-closure-manifest" && index + 1 < argc) {
-            launch.NativeClosureManifestPath = argv[++index];
-        } else if (arg == "--route-id" && index + 1 < argc) {
-            launch.RouteId = argv[++index];
         } else if (arg == "--a32-process-manifest" && index + 1 < argc) {
             launch.A32ProcessManifestPath = argv[++index];
         } else if (arg == "--ui-profile" && index + 1 < argc) {
@@ -187,8 +146,6 @@ bool ParseOot3dNativeGameArgs(int argc, char** argv, Oot3dNativeGameLaunch& laun
             launch.SaveDataDirectory = argv[++index];
         } else if (arg == "--renderer" && index + 1 < argc) {
             launch.Host.Renderer = argv[++index];
-        } else if (arg == "--validate-only") {
-            launch.ValidateOnly = true;
         } else if (arg == "--extended-diagnostics") {
             launch.ExtendedDiagnostics = true;
         } else if (arg == "--parallel-presentation") {
@@ -316,13 +273,6 @@ bool ParseOot3dNativeGameArgs(int argc, char** argv, Oot3dNativeGameLaunch& laun
         } else if (arg == "--screenshot-interval" && index + 1 < argc) {
             launch.Host.ScreenshotSequenceInterval =
                 std::max<uint32_t>(1, ParseU32(argv[++index], "screenshot interval"));
-        } else if (arg == "--room-request-smoke" && index + 1 < argc) {
-            const uint32_t roomIndex =
-                ParseU32(argv[++index], "room-request smoke index");
-            if (roomIndex > INT32_MAX) {
-                throw std::runtime_error("room-request smoke index is too large");
-            }
-            launch.RoomRequestSmokeSequence.push_back(static_cast<int32_t>(roomIndex));
         } else if (arg == "--frames" && index + 1 < argc) {
             launch.Host.FrameLimit = ParseU32(argv[++index], "frame count");
         } else if (arg == "--benchmark-warmup-frames" && index + 1 < argc) {

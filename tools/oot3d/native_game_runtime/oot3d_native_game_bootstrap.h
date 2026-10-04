@@ -15,16 +15,6 @@
 
 struct Oot3dNativeGameLaunch {
     Args Host;
-    std::filesystem::path AssetCatalogPath;
-    std::filesystem::path PlayablePackPath;
-    std::filesystem::path RouteCatalogPath;
-    std::filesystem::path PlayerAnimationContractPath;
-    std::filesystem::path PlayerRuntimeSemanticsPath;
-    std::filesystem::path PlayerCollisionActionContractPath;
-    std::filesystem::path ActorCoreContractPath;
-    std::filesystem::path ActorShardPath;
-    std::filesystem::path RoomCompilationUnitPath;
-    std::filesystem::path NativeClosureManifestPath;
     std::filesystem::path A32ProcessManifestPath;
     std::filesystem::path TopScreenTextureOverridePackPath;
     std::filesystem::path TopScreenConfigPath;
@@ -42,15 +32,12 @@ struct Oot3dNativeGameLaunch {
     std::filesystem::path LoadStatePath;
     std::filesystem::path QuickStatePath;
     std::filesystem::path SaveStatePath;
-    std::string RouteId;
     std::string ScenarioId;
     Oot3dNativeGame::Oot3dUiProfile UiProfile =
         Oot3dNativeGame::Oot3dUiProfile::Oot3d;
     Oot3dNativeGame::TopScreenUiConfig TopScreenConfig;
     Oot3dNativeGame::NativeControlConfig ControlConfig =
         Oot3dNativeGame::NativeControlDefaults();
-    std::vector<int32_t> RoomRequestSmokeSequence;
-    bool ValidateOnly = false;
     bool ExtendedDiagnostics = false;
     // Presents frame N on a render thread while the guest simulates N+1.
     // --serial-presentation restores the single-threaded loop.

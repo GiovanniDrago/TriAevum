@@ -11,7 +11,6 @@ struct Args {
     std::string ApplicationName = "OOT3D Native Fast3D Demo";
     std::string ApplicationId = "oot3d_native_fast3d_demo";
     std::string ConfigurationPath = "oot3d_native_fast3d_demo.json";
-    std::filesystem::path ManifestPath;
     std::filesystem::path ResourceRoot;
     std::vector<std::filesystem::path> ResourceArchives;
     std::filesystem::path OutputPath;
@@ -37,6 +36,4 @@ struct Args {
     int32_t AudioDesiredBuffered = 2480;
     int32_t BackendId = -1;
     std::string Renderer = "nri";
-    std::string RenderMode = "native_texture";
-    int32_t EntranceIndex = -1;
 };
