@@ -17,7 +17,6 @@ from .animation_glb_export import AnimationGlbOptions, export_skinned_animation_
 from .animation_like_audit import audit_actor_animation_like_payloads
 from .anb_export import export_anb_payload_batch
 from .anb_semantic_audit import audit_anb_semantic_candidates
-from .asset_replacement_ledger import audit_asset_replacement_ledger
 from .binary import ParseError
 from .cmb import CmbModel
 from .collision_gate_audit import (
@@ -52,13 +51,10 @@ from .csab_tracks import (
 )
 from .csab_target_audit import audit_csab_target_resolution
 from .cmab_audit import audit_cmab_payloads
-from .character_conversion_manifest import export_character_conversion_manifest
 from .character_conversion_package import (
     audit_character_conversion_package,
     pack_character_conversion_manifest,
 )
-from .character_segment_continuity import audit_character_segment_continuity
-from .character_visibility_reconstruction import audit_character_visibility_reconstruction
 from .kankyo_environment_audit import audit_kankyo_environment_assets
 from .kankyo_environment_export import export_kankyo_environment_assets
 from .kankyo_environment_package import (
@@ -72,31 +68,13 @@ from .link_child_animation_semantic_mapping import (
     build_link_child_pose_source_risk_diagnostic_tracks,
     build_link_child_route_runtime_diagnostic_tracks,
 )
-from .kokiri_actor_asset_readiness import audit_kokiri_actor_asset_readiness
-from .kokiri_audio_binding_plan import export_kokiri_audio_binding_plan
-from .kokiri_kankyo_binding_plan import export_kokiri_kankyo_binding_plan
 from .kokiri_runtime_route_audit import audit_kokiri_runtime_route
-from .kokiri_runtime_manifest import export_kokiri_runtime_manifest
-from .kokiri_static_actor_binding_plan import export_kokiri_static_actor_binding_plan
 from .material_audit import audit_scene_materials
 from .material_stage_inventory import inventory_material_stages
 from .media_asset_audit import audit_media_assets
-from .minimal_runtime_player_export import (
-    MinimalRuntimePlayerExportOptions,
-    MinimalRuntimeTrackExportOptions,
-    audit_minimal_runtime_player_export,
-    audit_minimal_runtime_track_export,
-)
 from .moflex_movie_audit import audit_moflex_movies
 from .n64_animation_reference_audit import audit_n64_animation_reference
-from .native_corpus_promotion import promote_native_corpus
 from .package_audit import audit_scene_package
-from .player_animation_group_native_contract import (
-    build_player_animation_group_native_contract,
-)
-from .player_collision_action_native_contract import (
-    build_player_collision_action_native_contract,
-)
 from .prerendered_room_audit import audit_prerendered_room_replacements
 from .prerendered_room_export import (
     audit_prerendered_room_export_package,
@@ -105,13 +83,6 @@ from .prerendered_room_export import (
 )
 from .q_format_audit import audit_q_format_assets
 from .romfs_inventory import inventory_romfs
-from .room_compilation_unit import (
-    compile_room_compilation_unit,
-    validate_room_compilation_unit,
-    write_room_compilation_markdown,
-    write_room_compilation_unit,
-)
-from .runtime_draw_dump_audit import audit_runtime_draw_dump
 from .legacy_fast_resource import LegacyFastResourceOptions, export_static_model
 from .skinned_animation import (
     batch_export_skinned_animation_pose_samples,
@@ -161,20 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     inspect_parser = subparsers.add_parser("inspect", help="Inspect a CMB model, ZAR archive, or ZSI file.")
     inspect_parser.add_argument("input", type=Path)
 
-    player_animation_group_parser = subparsers.add_parser(
-        "export-player-animation-group-native-contract",
-        help="Decode the native Player animation-group table from code.bin and its actor ZAR.",
-    )
-    player_animation_group_parser.add_argument("code_bin", type=Path)
-    player_animation_group_parser.add_argument("actor_zar", type=Path)
-    player_animation_group_parser.add_argument("--output", type=Path, required=True)
 
-    player_collision_action_parser = subparsers.add_parser(
-        "export-player-collision-action-native-contract",
-        help="Decode native Player collision/action parameters from code.bin.",
-    )
-    player_collision_action_parser.add_argument("code_bin", type=Path)
-    player_collision_action_parser.add_argument("--output", type=Path, required=True)
 
     inventory_parser = subparsers.add_parser(
         "inventory-romfs",
@@ -205,24 +163,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Write only aggregate RomFS counts, omitting per-file RomFS records.",
     )
 
-    replacement_ledger_parser = subparsers.add_parser(
-        "audit-asset-replacement-ledger",
-        help="Aggregate generated OOT3D gates into a conservative replacement-readiness ledger.",
-    )
-    replacement_ledger_parser.add_argument("work_root", type=Path)
-    replacement_ledger_parser.add_argument("--output", type=Path, required=True)
-    replacement_ledger_parser.add_argument(
-        "--decomp-support-root",
-        type=Path,
-        default=None,
-        help="Optional OOT3D decomp support root used to include ExeFS code decompilation frontier evidence.",
-    )
-    replacement_ledger_parser.add_argument(
-        "--code-bin",
-        type=Path,
-        default=None,
-        help="Optional extracted ExeFS code.bin whose hash must match decomp-support metadata.",
-    )
 
     material_stage_inventory_parser = subparsers.add_parser(
         "inventory-material-stages",
@@ -485,142 +425,6 @@ def main(argv: list[str] | None = None) -> int:
         "--no-records",
         action="store_true",
         help="Write aggregate counts and samples, omitting per-file setup records.",
-    )
-    kokiri_runtime_manifest_parser = subparsers.add_parser(
-        "export-kokiri-runtime-manifest",
-        help="Write a compact runtime routing manifest from the Kokiri route audit.",
-    )
-    kokiri_runtime_manifest_parser.add_argument(
-        "runtime_route_audit",
-        type=Path,
-        help="JSON emitted by audit-kokiri-runtime-route.",
-    )
-    kokiri_runtime_manifest_parser.add_argument("--output", type=Path, required=True)
-    kokiri_runtime_manifest_parser.add_argument(
-        "--route-id",
-        default="link_house_to_kokiri_forest",
-        help="Stable route identifier written into the manifest.",
-    )
-    kokiri_runtime_manifest_parser.add_argument(
-        "--n64-rom",
-        default=None,
-        help="Optional local N64 ROM reference path recorded as metadata only.",
-    )
-    kokiri_runtime_manifest_parser.add_argument(
-        "--runtime-enablement-status",
-        choices=("n64_fallback_only", "oot3d_runtime_enabled"),
-        default="n64_fallback_only",
-        help="Runtime status to write; oot3d_runtime_enabled is rejected unless blockers are zero.",
-    )
-    kokiri_runtime_manifest_parser.add_argument(
-        "--n64-decomp-reference",
-        default="https://github.com/zeldaret/oot",
-        help="Primary N64 decomp reference recorded as metadata only.",
-    )
-    kokiri_runtime_manifest_parser.add_argument(
-        "--sample-limit",
-        type=int,
-        default=20,
-        help="Maximum number of setup sample records to include where bounded.",
-    )
-    kokiri_actor_asset_parser = subparsers.add_parser(
-        "audit-kokiri-actor-asset-readiness",
-        help="Audit route-local Kokiri actor/object asset coverage from generated manifests.",
-    )
-    kokiri_actor_asset_parser.add_argument(
-        "runtime_manifest",
-        type=Path,
-        help="JSON emitted by export-kokiri-runtime-manifest.",
-    )
-    kokiri_actor_asset_parser.add_argument(
-        "actor_inventory",
-        type=Path,
-        help="JSON emitted by inventory-actors.",
-    )
-    kokiri_actor_asset_parser.add_argument(
-        "static_batch_manifest",
-        type=Path,
-        help="JSON emitted by batch-static for actor exports.",
-    )
-    kokiri_actor_asset_parser.add_argument(
-        "skinned_binding_manifest",
-        type=Path,
-        help="JSON emitted by export-skinned-animation-binding-manifest.",
-    )
-    kokiri_actor_asset_parser.add_argument("--output", type=Path, required=True)
-    kokiri_actor_asset_parser.add_argument(
-        "--sample-limit",
-        type=int,
-        default=100,
-        help="Maximum sample records to include.",
-    )
-    kokiri_static_actor_binding_parser = subparsers.add_parser(
-        "export-kokiri-static-actor-binding-plan",
-        help="Write the first-wave Kokiri static actor draw binding plan from generated audits.",
-    )
-    kokiri_static_actor_binding_parser.add_argument(
-        "runtime_manifest",
-        type=Path,
-        help="JSON emitted by export-kokiri-runtime-manifest.",
-    )
-    kokiri_static_actor_binding_parser.add_argument(
-        "actor_asset_readiness",
-        type=Path,
-        help="JSON emitted by audit-kokiri-actor-asset-readiness.",
-    )
-    kokiri_static_actor_binding_parser.add_argument(
-        "static_batch_manifest",
-        type=Path,
-        help="JSON emitted by batch-static for actor exports.",
-    )
-    kokiri_static_actor_binding_parser.add_argument("--output", type=Path, required=True)
-    kokiri_static_actor_binding_parser.add_argument(
-        "--sample-limit",
-        type=int,
-        default=100,
-        help="Maximum sample records to include.",
-    )
-    kokiri_kankyo_binding_parser = subparsers.add_parser(
-        "export-kokiri-kankyo-binding-plan",
-        help="Write the Kokiri sky/environment binding plan from runtime and kankyo export manifests.",
-    )
-    kokiri_kankyo_binding_parser.add_argument(
-        "runtime_manifest",
-        type=Path,
-        help="JSON emitted by export-kokiri-runtime-manifest.",
-    )
-    kokiri_kankyo_binding_parser.add_argument(
-        "kankyo_export_manifest",
-        type=Path,
-        help="JSON emitted by export-kankyo-environment-assets.",
-    )
-    kokiri_kankyo_binding_parser.add_argument("--output", type=Path, required=True)
-    kokiri_kankyo_binding_parser.add_argument(
-        "--sample-limit",
-        type=int,
-        default=100,
-        help="Maximum sample records to include.",
-    )
-    kokiri_audio_binding_parser = subparsers.add_parser(
-        "export-kokiri-audio-binding-plan",
-        help="Write the Kokiri route audio fallback binding plan from runtime and audio audits.",
-    )
-    kokiri_audio_binding_parser.add_argument(
-        "runtime_manifest",
-        type=Path,
-        help="JSON emitted by export-kokiri-runtime-manifest.",
-    )
-    kokiri_audio_binding_parser.add_argument(
-        "audio_asset_audit",
-        type=Path,
-        help="JSON emitted by audit-audio-assets.",
-    )
-    kokiri_audio_binding_parser.add_argument("--output", type=Path, required=True)
-    kokiri_audio_binding_parser.add_argument(
-        "--sample-limit",
-        type=int,
-        default=100,
-        help="Maximum sample records to include.",
     )
 
     prerendered_room_parser = subparsers.add_parser(
@@ -1148,27 +952,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Maximum number of validation issue samples to include.",
     )
 
-    character_visibility_parser = subparsers.add_parser(
-        "audit-character-visibility-reconstruction",
-        help="Reconstruct CMB visibility/draw-state evidence for a skinned character selection profile.",
-    )
-    character_visibility_parser.add_argument("input", type=Path)
-    character_visibility_parser.add_argument("--output", type=Path, required=True)
-    character_visibility_parser.add_argument("--selection-manifest", type=Path, default=None)
-    character_visibility_parser.add_argument("--cmb-index", type=int, default=0)
-    character_visibility_parser.add_argument("--cmb-name", default=None)
-    character_visibility_parser.add_argument(
-        "--n64-player-lib",
-        type=Path,
-        default=None,
-        help="Optional z_player_lib.c reference used to record N64 Player draw-state anchors.",
-    )
-    character_visibility_parser.add_argument(
-        "--sample-limit",
-        type=int,
-        default=100,
-        help="Maximum primitive samples to include per visibility group.",
-    )
 
     skinned_animation_glb_parser = subparsers.add_parser(
         "export-skinned-animation-glb",
@@ -1220,188 +1003,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Maximum number of validation issue samples to include.",
     )
 
-    minimal_runtime_player_parser = subparsers.add_parser(
-        "audit-minimal-runtime-player-export",
-        help="Export a player through the minimal runtime path and compare it frame-by-frame with the validated GLB oracle.",
-    )
-    minimal_runtime_player_parser.add_argument("character_manifest", type=Path)
-    minimal_runtime_player_parser.add_argument("--output", type=Path, required=True, help="Audit JSON output.")
-    minimal_runtime_player_parser.add_argument(
-        "--runtime-glb-output",
-        type=Path,
-        required=True,
-        help="GLB produced by the minimal runtime/package-data path.",
-    )
-    minimal_runtime_player_parser.add_argument(
-        "--validated-glb-output",
-        type=Path,
-        default=None,
-        help="Optional independently generated validated GLB oracle output.",
-    )
-    minimal_runtime_player_parser.add_argument(
-        "--validated-manifest-output",
-        type=Path,
-        default=None,
-        help="Optional manifest output for the validated GLB oracle.",
-    )
-    minimal_runtime_player_parser.add_argument("--zar", type=Path, default=None, help="Optional source actor ZAR override.")
-    minimal_runtime_player_parser.add_argument("--cmb-name", default=None)
-    minimal_runtime_player_parser.add_argument("--csab-name", default="child/anim/nml_run_free.csab")
-    minimal_runtime_player_parser.add_argument("--selection-manifest", type=Path, default=None)
-    minimal_runtime_player_parser.add_argument(
-        "--position-scale",
-        type=float,
-        default=None,
-        help="Scale applied to exported GLB vertex positions. Defaults to native manifest or 0.0001.",
-    )
-    minimal_runtime_player_parser.add_argument(
-        "--frame-step",
-        type=int,
-        default=1,
-        help="CSAB integer frame step to bake and compare. Defaults to every frame.",
-    )
-    minimal_runtime_player_parser.add_argument("--fps", type=float, default=60.0)
-    minimal_runtime_player_parser.add_argument(
-        "--interpolation",
-        default="STEP",
-        help="Morph weight interpolation for exported GLBs: STEP or LINEAR. Defaults to STEP.",
-    )
-    minimal_runtime_player_parser.add_argument(
-        "--position-tolerance",
-        type=float,
-        default=0.00001,
-        help="Maximum allowed position delta in GLB units.",
-    )
-    minimal_runtime_player_parser.add_argument(
-        "--normal-tolerance",
-        type=float,
-        default=0.00001,
-        help="Maximum allowed normal delta.",
-    )
-    minimal_runtime_player_parser.add_argument(
-        "--sample-limit",
-        type=int,
-        default=100,
-        help="Maximum mismatch samples to include.",
-    )
 
-    minimal_runtime_track_parser = subparsers.add_parser(
-        "audit-minimal-runtime-track-export",
-        help="Audit the minimal runtime player path against one materialized CSAB skeleton-track JSON.",
-    )
-    minimal_runtime_track_parser.add_argument("character_manifest", type=Path)
-    minimal_runtime_track_parser.add_argument("track_export", type=Path)
-    minimal_runtime_track_parser.add_argument("--output", type=Path, required=True, help="Audit JSON output.")
-    minimal_runtime_track_parser.add_argument(
-        "--runtime-glb-output",
-        type=Path,
-        required=True,
-        help="GLB produced by the minimal runtime/package-data path.",
-    )
-    minimal_runtime_track_parser.add_argument(
-        "--csab-name",
-        default=None,
-        help="Expected CSAB name for the track export. Defaults to the track JSON csab_name.",
-    )
-    minimal_runtime_track_parser.add_argument(
-        "--position-scale",
-        type=float,
-        default=None,
-        help="Scale applied to exported GLB vertex positions. Defaults to native manifest or 0.0001.",
-    )
-    minimal_runtime_track_parser.add_argument(
-        "--frame-step",
-        type=int,
-        default=1,
-        help="Track integer frame step to bake. Defaults to every frame.",
-    )
-    minimal_runtime_track_parser.add_argument("--fps", type=float, default=60.0)
-    minimal_runtime_track_parser.add_argument(
-        "--interpolation",
-        default="STEP",
-        help="Morph weight interpolation for exported GLBs: STEP or LINEAR. Defaults to STEP.",
-    )
-    minimal_runtime_track_parser.add_argument(
-        "--sample-limit",
-        type=int,
-        default=100,
-        help="Maximum issue samples to include.",
-    )
 
-    character_segment_continuity_parser = subparsers.add_parser(
-        "audit-character-segment-continuity",
-        help="Audit root-motion continuity across an ordered set of character CSAB segments.",
-    )
-    character_segment_continuity_parser.add_argument("character_manifest", type=Path)
-    character_segment_continuity_parser.add_argument("--output", type=Path, required=True)
-    character_segment_continuity_parser.add_argument(
-        "--csab-name",
-        action="append",
-        required=True,
-        help="CSAB segment name in playback order. Repeat for each segment.",
-    )
-    character_segment_continuity_parser.add_argument(
-        "--root-motion-bone",
-        type=int,
-        default=None,
-        help="Root-motion bone index. Defaults to the N64 mapping in the character manifest, then bone 0.",
-    )
-    character_segment_continuity_parser.add_argument(
-        "--tolerance",
-        type=float,
-        default=0.001,
-        help="Maximum allowed normalized transition delta in source units.",
-    )
-    character_segment_continuity_parser.add_argument(
-        "--sample-limit",
-        type=int,
-        default=100,
-        help="Maximum segment and transition records to include.",
-    )
 
-    runtime_draw_dump_parser = subparsers.add_parser(
-        "audit-runtime-draw-dump",
-        help="Compare an in-game C++ Link-child runtime draw dump against the canonical offline runtime computation.",
-    )
-    runtime_draw_dump_parser.add_argument("character_manifest", type=Path)
-    runtime_draw_dump_parser.add_argument("runtime_dump", type=Path)
-    runtime_draw_dump_parser.add_argument("--output", type=Path, required=True)
-    runtime_draw_dump_parser.add_argument(
-        "--track-export",
-        type=Path,
-        default=None,
-        help="Optional explicit CSAB skeleton track export to compare against the runtime dump.",
-    )
-    runtime_draw_dump_parser.add_argument(
-        "--segment-continuity-audit",
-        type=Path,
-        default=None,
-        help="Optional segment continuity audit/contract used to normalize authored segment-chain draw positions.",
-    )
-    runtime_draw_dump_parser.add_argument(
-        "--anb-semantic-audit",
-        type=Path,
-        default=None,
-        help="Optional ANB semantic candidate audit whose runtime-state counts must appear in the dump.",
-    )
-    runtime_draw_dump_parser.add_argument(
-        "--position-tolerance",
-        type=float,
-        default=1.0,
-        help="Maximum allowed native-unit bounds delta per primitive.",
-    )
-    runtime_draw_dump_parser.add_argument(
-        "--normal-tolerance",
-        type=float,
-        default=0.0001,
-        help="Reserved normal tolerance reported in the audit contract.",
-    )
-    runtime_draw_dump_parser.add_argument(
-        "--sample-limit",
-        type=int,
-        default=100,
-        help="Maximum mismatch samples to include.",
-    )
 
     skinned_bind_pose_native_audit_parser = subparsers.add_parser(
         "audit-skinned-bind-pose-native",
@@ -1552,58 +1156,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Maximum number of vertex samples to include per sampled frame in each target export.",
     )
 
-    character_conversion_parser = subparsers.add_parser(
-        "export-character-conversion-manifest",
-        help="Compose a character-level OOT3D conversion gate from skinned, animation-like, and CMAB manifests.",
-    )
-    character_conversion_parser.add_argument("skinned_binding_manifest", type=Path)
-    character_conversion_parser.add_argument("animation_like_audit", type=Path)
-    character_conversion_parser.add_argument("cmab_audit", type=Path)
-    character_conversion_parser.add_argument("--output", type=Path, required=True)
-    character_conversion_parser.add_argument("--profile-id", required=True)
-    character_conversion_parser.add_argument("--model-archive", required=True)
-    character_conversion_parser.add_argument("--model-cmb", required=True)
-    character_conversion_parser.add_argument(
-        "--pose-batch-manifest",
-        type=Path,
-        default=None,
-        help="Optional skinned animation pose batch manifest used to validate sampled deformation volumes.",
-    )
-    character_conversion_parser.add_argument(
-        "--native-bind-pose-manifest",
-        type=Path,
-        default=None,
-        help="Optional native Shipwright resource manifest for the skinned bind-pose display list.",
-    )
-    character_conversion_parser.add_argument(
-        "--n64-reference-audit",
-        type=Path,
-        default=None,
-        help="Optional N64 animation reference audit used as the time-normalized comparison oracle inventory.",
-    )
-    character_conversion_parser.add_argument(
-        "--auxiliary-archive",
-        action="append",
-        default=[],
-        help="Additional archive to include for related ANB/FACEB/CMAB payloads. May be repeated.",
-    )
-    character_conversion_parser.add_argument(
-        "--reference-label",
-        default="oot_n64_time_normalized_reference",
-        help="Label describing the external animation/behavior reference used by validation.",
-    )
-    character_conversion_parser.add_argument(
-        "--runtime-skinning-diagnostic-csab",
-        action="append",
-        default=[],
-        help="CSAB name to embed as a compact runtime skinning diagnostic sample. May be repeated.",
-    )
-    character_conversion_parser.add_argument(
-        "--sample-limit",
-        type=int,
-        default=25,
-        help="Maximum number of sample records to include for each payload class.",
-    )
 
     character_package_parser = subparsers.add_parser(
         "pack-character-conversion",
@@ -2337,61 +1889,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip embedded CMB summary parsing for faster RomFS-wide index runs.",
     )
 
-    room_compilation_parser = subparsers.add_parser(
-        "compile-room-unit",
-        help="Compile one semantic route into a native OOT3D room/scene execution unit.",
-    )
-    room_compilation_parser.add_argument("--scene-root", type=Path, required=True)
-    room_compilation_parser.add_argument("--code-bin", type=Path, required=True)
-    room_compilation_parser.add_argument(
-        "--semantic-route-catalog", type=Path, required=True
-    )
-    room_compilation_parser.add_argument("--asset-catalog", type=Path, required=True)
-    room_compilation_parser.add_argument(
-        "--scene-resource-table", type=Path, required=True
-    )
-    room_compilation_parser.add_argument(
-        "--room-callback-contracts", type=Path, required=True
-    )
-    room_compilation_parser.add_argument(
-        "--evidence-snapshot", type=Path, required=True
-    )
-    room_compilation_parser.add_argument("--route-id", required=True)
-    room_compilation_parser.add_argument("--setup-index", type=int, default=None)
-    room_compilation_parser.add_argument("--output", type=Path, required=True)
-    room_compilation_parser.add_argument("--markdown-output", type=Path, default=None)
 
-    room_compilation_validate_parser = subparsers.add_parser(
-        "validate-room-unit",
-        help="Validate structure, source identities and deterministic digest of a room unit.",
-    )
-    room_compilation_validate_parser.add_argument("input", type=Path)
 
-    native_corpus_parser = subparsers.add_parser(
-        "promote-native-corpus",
-        help=(
-            "Extract the C bodies reachable from a room unit from one pinned "
-            "Zelda3drecomp commit."
-        ),
-    )
-    native_corpus_parser.add_argument("--room-unit", type=Path, required=True)
-    native_corpus_parser.add_argument(
-        "--zelda3drecomp-root", type=Path, required=True
-    )
-    native_corpus_parser.add_argument(
-        "--revision",
-        default="HEAD",
-        help=(
-            "Git commit or ref for tracked evidence; an ignored generated corpus "
-            "sidecar is accepted only when checkout HEAD matches it."
-        ),
-    )
-    native_corpus_parser.add_argument("--output", type=Path, required=True)
-    native_corpus_parser.add_argument(
-        "--replace",
-        action="store_true",
-        help="Replace an existing output only when it has a matching promotion manifest.",
-    )
 
     zsi_cutscene_audit_parser = subparsers.add_parser(
         "audit-zsi-cutscene-metadata",
@@ -2483,18 +1982,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "inspect":
             print(json.dumps(inspect_input(args.input), indent=2))
             return 0
-        if args.command == "export-player-animation-group-native-contract":
-            contract = build_player_animation_group_native_contract(args.code_bin, args.actor_zar)
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(json.dumps(contract, indent=2) + "\n", encoding="utf-8")
-            print(str(args.output))
-            return 0
-        if args.command == "export-player-collision-action-native-contract":
-            contract = build_player_collision_action_native_contract(args.code_bin)
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(json.dumps(contract, indent=2) + "\n", encoding="utf-8")
-            print(str(args.output))
-            return 0
         if args.command == "inventory-romfs":
             inventory_romfs(
                 args.romfs_root,
@@ -2511,16 +1998,6 @@ def main(argv: list[str] | None = None) -> int:
                 include_records=not args.no_records,
             )
             print(str(args.output))
-            return 0
-        if args.command == "audit-asset-replacement-ledger":
-            ledger = audit_asset_replacement_ledger(
-                args.work_root,
-                args.output,
-                decomp_support_root=args.decomp_support_root,
-                code_bin_path=args.code_bin,
-            )
-            print(str(args.output))
-            print(json.dumps({"record_count": ledger.get("record_count"), "status_counts": ledger.get("status_counts")}, indent=2))
             return 0
         if args.command == "inventory-material-stages":
             inventory_material_stages(
@@ -2638,62 +2115,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(str(args.output))
             print(json.dumps(audit.get("runtime_gap_counts", {}), indent=2))
-            return 0
-        if args.command == "export-kokiri-runtime-manifest":
-            manifest = export_kokiri_runtime_manifest(
-                args.runtime_route_audit,
-                args.output,
-                route_id=args.route_id,
-                n64_rom=args.n64_rom,
-                n64_decomp_reference=args.n64_decomp_reference,
-                runtime_enablement_status=args.runtime_enablement_status,
-                sample_limit=args.sample_limit,
-            )
-            print(str(args.output))
-            print(json.dumps(manifest.get("runtime_blocker_counts", {}), indent=2))
-            return 0
-        if args.command == "audit-kokiri-actor-asset-readiness":
-            audit = audit_kokiri_actor_asset_readiness(
-                args.runtime_manifest,
-                args.actor_inventory,
-                args.static_batch_manifest,
-                args.skinned_binding_manifest,
-                args.output,
-                sample_limit=args.sample_limit,
-            )
-            print(str(args.output))
-            print(json.dumps(audit.get("asset_blocker_counts", {}), indent=2))
-            return 0
-        if args.command == "export-kokiri-static-actor-binding-plan":
-            plan = export_kokiri_static_actor_binding_plan(
-                args.runtime_manifest,
-                args.actor_asset_readiness,
-                args.static_batch_manifest,
-                args.output,
-                sample_limit=args.sample_limit,
-            )
-            print(str(args.output))
-            print(json.dumps(plan.get("actor_binding_status_counts", {}), indent=2))
-            return 0
-        if args.command == "export-kokiri-kankyo-binding-plan":
-            plan = export_kokiri_kankyo_binding_plan(
-                args.runtime_manifest,
-                args.kankyo_export_manifest,
-                args.output,
-                sample_limit=args.sample_limit,
-            )
-            print(str(args.output))
-            print(json.dumps(plan.get("profile_binding_status_counts", {}), indent=2))
-            return 0
-        if args.command == "export-kokiri-audio-binding-plan":
-            plan = export_kokiri_audio_binding_plan(
-                args.runtime_manifest,
-                args.audio_asset_audit,
-                args.output,
-                sample_limit=args.sample_limit,
-            )
-            print(str(args.output))
-            print(json.dumps(plan.get("profile_binding_status_counts", {}), indent=2))
             return 0
         if args.command == "audit-prerendered-room-replacements":
             audit_prerendered_room_replacements(
@@ -2967,19 +2388,6 @@ def main(argv: list[str] | None = None) -> int:
             print(str(args.manifest_output or args.output.with_suffix(".manifest.json")))
             print(json.dumps(manifest.get("counts", {}), indent=2))
             return 0
-        if args.command == "audit-character-visibility-reconstruction":
-            audit = audit_character_visibility_reconstruction(
-                args.input,
-                args.output,
-                selection_manifest=args.selection_manifest,
-                cmb_index=args.cmb_index,
-                cmb_name=args.cmb_name,
-                n64_player_lib=args.n64_player_lib,
-                sample_limit=args.sample_limit,
-            )
-            print(str(args.output))
-            print(json.dumps(audit.get("selection", {}), indent=2))
-            return 0
         if args.command == "export-skinned-animation-glb":
             manifest = export_skinned_animation_glb(
                 args.input,
@@ -3001,86 +2409,6 @@ def main(argv: list[str] | None = None) -> int:
             print(str(args.manifest_output or args.output.with_suffix(".manifest.json")))
             print(json.dumps(manifest.get("counts", {}), indent=2))
             return 0
-        if args.command == "audit-minimal-runtime-player-export":
-            audit = audit_minimal_runtime_player_export(
-                args.character_manifest,
-                MinimalRuntimePlayerExportOptions(
-                    output=args.runtime_glb_output,
-                    audit_output=args.output,
-                    validated_glb_output=args.validated_glb_output,
-                    validated_manifest_output=args.validated_manifest_output,
-                    zar_path=args.zar,
-                    cmb_name=args.cmb_name,
-                    csab_name=args.csab_name,
-                    selection_manifest=args.selection_manifest,
-                    position_scale=args.position_scale,
-                    frame_step=args.frame_step,
-                    fps=args.fps,
-                    interpolation=args.interpolation,
-                    position_tolerance=args.position_tolerance,
-                    normal_tolerance=args.normal_tolerance,
-                    sample_limit=args.sample_limit,
-                ),
-            )
-            print(str(args.output))
-            print(json.dumps(audit.get("comparison", {}), indent=2))
-            return 0 if audit.get("status") == "valid" else 1
-        if args.command == "audit-minimal-runtime-track-export":
-            audit = audit_minimal_runtime_track_export(
-                args.character_manifest,
-                args.track_export,
-                MinimalRuntimeTrackExportOptions(
-                    output=args.runtime_glb_output,
-                    audit_output=args.output,
-                    csab_name=args.csab_name,
-                    position_scale=args.position_scale,
-                    frame_step=args.frame_step,
-                    fps=args.fps,
-                    interpolation=args.interpolation,
-                    sample_limit=args.sample_limit,
-                ),
-            )
-            print(str(args.output))
-            print(json.dumps(audit.get("comparison", {}), indent=2))
-            return 0 if audit.get("status") == "valid" else 1
-        if args.command == "audit-character-segment-continuity":
-            audit = audit_character_segment_continuity(
-                args.character_manifest,
-                args.output,
-                csab_names=args.csab_name,
-                root_motion_bone=args.root_motion_bone,
-                tolerance=args.tolerance,
-                sample_limit=args.sample_limit,
-            )
-            print(str(args.output))
-            print(
-                json.dumps(
-                    {
-                        "status": audit.get("status"),
-                        "raw_discontinuity_count": audit.get("raw_discontinuity_count"),
-                        "normalized_discontinuity_count": audit.get("normalized_discontinuity_count"),
-                        "max_raw_transition_delta": audit.get("max_raw_transition_delta"),
-                        "max_normalized_transition_delta": audit.get("max_normalized_transition_delta"),
-                    },
-                    indent=2,
-                )
-            )
-            return 0 if audit.get("status") == "valid" else 1
-        if args.command == "audit-runtime-draw-dump":
-            audit = audit_runtime_draw_dump(
-                args.character_manifest,
-                args.runtime_dump,
-                args.output,
-                track_export_path=args.track_export,
-                segment_continuity_audit_path=args.segment_continuity_audit,
-                anb_semantic_audit_path=args.anb_semantic_audit,
-                position_tolerance=args.position_tolerance,
-                normal_tolerance=args.normal_tolerance,
-                sample_limit=args.sample_limit,
-            )
-            print(str(args.output))
-            print(json.dumps(audit.get("comparison", {}), indent=2))
-            return 0 if audit.get("status") == "valid" else 1
         if args.command == "audit-skinned-bind-pose-native":
             audit = audit_skinned_bind_pose_native_contract(
                 args.bind_pose,
@@ -3160,26 +2488,6 @@ def main(argv: list[str] | None = None) -> int:
                 sample_limit=args.sample_limit,
             )
             print(str(manifest))
-            return 0
-        if args.command == "export-character-conversion-manifest":
-            manifest = export_character_conversion_manifest(
-                args.skinned_binding_manifest,
-                args.animation_like_audit,
-                args.cmab_audit,
-                args.output,
-                profile_id=args.profile_id,
-                model_archive=args.model_archive,
-                model_cmb=args.model_cmb,
-                auxiliary_archives=args.auxiliary_archive,
-                pose_batch_manifest_path=args.pose_batch_manifest,
-                native_bind_pose_manifest_path=args.native_bind_pose_manifest,
-                n64_reference_audit_path=args.n64_reference_audit,
-                reference_label=args.reference_label,
-                runtime_skinning_diagnostic_csab_names=args.runtime_skinning_diagnostic_csab,
-                sample_limit=args.sample_limit,
-            )
-            print(str(args.output))
-            print(json.dumps(manifest.get("issue_counts", {}), indent=2))
             return 0
         if args.command == "pack-character-conversion":
             archive = pack_character_conversion_manifest(
@@ -3493,70 +2801,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(str(args.markdown_output))
             if args.c_output_dir is not None:
                 print(str(args.c_output_dir))
-            return 0
-        if args.command == "compile-room-unit":
-            unit = compile_room_compilation_unit(
-                scene_root=args.scene_root,
-                code_bin=args.code_bin,
-                semantic_route_catalog_path=args.semantic_route_catalog,
-                asset_catalog_path=args.asset_catalog,
-                scene_resource_table_path=args.scene_resource_table,
-                room_callback_contracts_path=args.room_callback_contracts,
-                evidence_snapshot_root=args.evidence_snapshot,
-                route_id=args.route_id,
-                setup_index=args.setup_index,
-            )
-            write_room_compilation_unit(unit, args.output)
-            if args.markdown_output is not None:
-                write_room_compilation_markdown(unit, args.markdown_output)
-            print(
-                json.dumps(
-                    {
-                        "output": str(args.output),
-                        "status": unit["status"],
-                        "payload_sha256": unit["identity"]["payload_sha256"],
-                        "closure": unit["closure"],
-                    },
-                    indent=2,
-                )
-            )
-            return 0
-        if args.command == "validate-room-unit":
-            unit = json.loads(args.input.read_text(encoding="utf-8-sig"))
-            validate_room_compilation_unit(unit)
-            print(
-                json.dumps(
-                    {
-                        "input": str(args.input),
-                        "status": unit["status"],
-                        "payload_sha256": unit["identity"]["payload_sha256"],
-                    },
-                    indent=2,
-                )
-            )
-            return 0
-        if args.command == "promote-native-corpus":
-            package = promote_native_corpus(
-                args.room_unit,
-                args.zelda3drecomp_root,
-                args.output,
-                revision=args.revision,
-                replace=args.replace,
-            )
-            print(
-                json.dumps(
-                    {
-                        "output": str(args.output),
-                        "payload_sha256": package.manifest["payload_sha256"],
-                        "source_revision": package.manifest["source"]["revision"],
-                        "counts": package.manifest["counts"],
-                        "compile_readiness_counts": package.manifest[
-                            "compile_readiness_counts"
-                        ],
-                    },
-                    indent=2,
-                )
-            )
             return 0
         if args.command == "audit-zsi-cutscene-metadata":
             audit_zsi_cutscene_metadata(

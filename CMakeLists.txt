@@ -200,43 +200,6 @@ add_subdirectory(runtime/triaevum_module
 add_subdirectory(runtime/three_ds_recomp
     ${CMAKE_BINARY_DIR}/three_ds_recomp_runtime)
 target_compile_options(three_ds_recomp_runtime PRIVATE "${WARNING_OVERRIDE}")
-add_library(oot3d_room_compilation_runtime STATIC
-    tools/oot3d/runtime_common/oot3d_native_abi_catalog.cpp
-    tools/oot3d/runtime_common/oot3d_room_compilation_unit.cpp
-)
-target_include_directories(oot3d_room_compilation_runtime PRIVATE
-    tools/oot3d/runtime_common
-)
-get_target_property(OOT3D_ROOM_RUNTIME_INTERFACE_INCLUDES
-    oot3d_room_compilation_runtime INTERFACE_INCLUDE_DIRECTORIES)
-if ("${OOT3D_ROOM_RUNTIME_INTERFACE_INCLUDES}" MATCHES
-    "tools[/\\\\]oot3d[/\\\\]runtime_common")
-    message(FATAL_ERROR
-        "oot3d_room_compilation_runtime must not publish runtime_common includes; "
-        "doing so invalidates unrelated runtime translation units")
-endif()
-unset(OOT3D_ROOM_RUNTIME_INTERFACE_INCLUDES)
-target_link_libraries(oot3d_room_compilation_runtime PUBLIC
-    nlohmann_json::nlohmann_json)
-target_compile_options(oot3d_room_compilation_runtime PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_room_compilation_runtime PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_room_compilation_runtime PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_room_compilation_runtime PROPERTY FOLDER Tools)
-add_executable(oot3d_room_compilation_runtime_tests EXCLUDE_FROM_ALL
-    tools/oot3d/runtime_common/oot3d_room_compilation_unit_tests.cpp
-)
-target_link_libraries(oot3d_room_compilation_runtime_tests PRIVATE oot3d_room_compilation_runtime)
-target_include_directories(oot3d_room_compilation_runtime_tests PRIVATE
-    tools/oot3d/runtime_common
-)
-target_compile_options(oot3d_room_compilation_runtime_tests PRIVATE "${WARNING_OVERRIDE}")
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    target_compile_definitions(oot3d_room_compilation_runtime_tests PRIVATE NOMINMAX)
-    set_property(TARGET oot3d_room_compilation_runtime_tests PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-set_property(TARGET oot3d_room_compilation_runtime_tests PROPERTY FOLDER Tests)
 
 add_library(oot3d_native_application_host STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_demo_host/oot3d_demo_host_context.cpp
@@ -2331,11 +2294,9 @@ target_include_directories(oot3d_native_game_runtime PUBLIC
     tools/oot3d/decomp_support/include
     tools/oot3d/native_demo_host
     tools/oot3d/native_game_runtime
-    tools/oot3d/runtime_common
 )
 target_compile_options(oot3d_native_game_runtime PRIVATE "${WARNING_OVERRIDE}")
 target_link_libraries(oot3d_native_game_runtime PUBLIC
-    oot3d_room_compilation_runtime
     oot3d_native_audio
     oot3d_native_a32_process
 )

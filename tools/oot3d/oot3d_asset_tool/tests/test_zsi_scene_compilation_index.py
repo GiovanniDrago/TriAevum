@@ -3,7 +3,6 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-from oot3d_asset_tool.room_compilation_unit import room_unit
 from oot3d_asset_tool.zsi import ZSI_RESOURCE_BASE_OFFSET, ZsiFile
 from oot3d_asset_tool.zsi_scene_index import build_room_index_record
 from oot3d_asset_tool.zsi_scene_index import export_zsi_scene_index
@@ -99,60 +98,6 @@ def test_scene_index_preserves_native_sound_id_and_ambience_byte(
     }
 
 
-def test_room_index_uses_resource_base_and_preserves_each_native_setup(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "fixture_0_info.zsi"
-    data = bytearray(0x240)
-    data[:4] = b"ZSI\x01"
-    data[0x18:0x58] = _room_setup(0x100, 0x120, 21)
-    data[0x58:0x98] = _room_setup(0x140, 0x160, 57)
-    data[0x100 + ZSI_RESOURCE_BASE_OFFSET : 0x114] = struct.pack("<hh", 303, 392)
-    data[0x120 + ZSI_RESOURCE_BASE_OFFSET : 0x140] = _actor(21, 100)
-    data[0x140 + ZSI_RESOURCE_BASE_OFFSET : 0x154] = struct.pack("<hh", 286, 252)
-    data[0x160 + ZSI_RESOURCE_BASE_OFFSET : 0x180] = _actor(57, 200)
-    path.write_bytes(data)
-    semantics = {
-        "actor": {21: "ACTOR_EN_ITEM00", 57: "ACTOR_EN_A_OBJ"},
-        "object": {
-            252: "OBJECT_KM1",
-            286: "OBJECT_MAMENOKI",
-            303: "OBJECT_KANBAN",
-            392: "OBJECT_GS",
-        },
-    }
-
-    room = build_room_index_record(
-        tmp_path,
-        path,
-        semantics,
-        sample_limit=16,
-        full_entries=True,
-        include_mesh_summary=False,
-    )
-
-    assert room["setup_count"] == 2
-    assert room["setups"][0]["object_list"]["source_offset"] == 0x110
-    assert [
-        entry["object_id"] for entry in room["setups"][0]["object_list"]["entries"]
-    ] == [303, 392]
-    assert (
-        room["setups"][0]["actor_list"]["selected_candidate"]["start_offset"] == 0x130
-    )
-    assert (
-        room["setups"][0]["actor_list"]["selected_candidate"]["entries"][0]["actor_id"]
-        == 21
-    )
-
-    compiled = room_unit(
-        room,
-        path,
-        initial_room_index=0,
-        setup_index=1,
-    )
-    assert compiled["setup_index"] == 1
-    assert compiled["object_list"]["entry_count"] == 2
-    assert compiled["actor_list"]["entries"][0]["actor_id"] == 57
 
 
 def test_scene_index_reports_exact_room_setup_alignment(tmp_path: Path) -> None:
