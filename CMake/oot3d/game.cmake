@@ -242,8 +242,11 @@ if (OOT3D_WHOLE_AOT_PRODUCT_MODE)
     if (CMAKE_SYSTEM_NAME STREQUAL "Windows" AND NOT OOT3D_FAST_DEV_LINK)
         set(_oot3d_whole_aot_symbol_dir "${CMAKE_CURRENT_BINARY_DIR}/symbols")
         file(MAKE_DIRECTORY "${_oot3d_whole_aot_symbol_dir}")
+        # /DEBUG keeps unreferenced functions and data unless /OPT:REF is explicit. Identical-code folding
+        # (/OPT:ICF) stays off: it can merge functions whose addresses the code compares.
         target_link_options(oot3d_native_game PRIVATE
             "/DEBUG:FULL"
+            "/OPT:REF"
             "/PDB:${_oot3d_whole_aot_symbol_dir}/oot3d_native_game.pdb"
             "/MAP:${_oot3d_whole_aot_symbol_dir}/oot3d_native_game.map")
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
