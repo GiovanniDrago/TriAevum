@@ -71,6 +71,8 @@ struct GatherInput {
 
 // Empty when the input is consistent, otherwise the first violated rule.
 [[nodiscard]] const char* ValidateGatherInput(const GatherInput& input) noexcept;
+// The camera rules of ValidateGatherInput (same order and messages).
+[[nodiscard]] const char* ValidateDepthCamera(const DepthCamera& camera) noexcept;
 
 enum class CandidateSchedule : uint8_t {
     // Reference: every texel crossed by the section line inside the projected

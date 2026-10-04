@@ -190,6 +190,64 @@ static_assert(sizeof(TemporalShaderParams) == 224);
 //  15 view depth.
 inline constexpr uint32_t kHistoryValues = 16;
 
+// Frame-level part of a TemporalFrame (M5): everything the reset rules and
+// the constant block depend on, without per-pixel data. The GPU pass keeps
+// its per-pixel data in buffers and plans each frame from this state.
+struct TemporalFrameState {
+    uint32_t Width = 0, Height = 0;
+    uint64_t FrameIndex = 0;
+    uint32_t ViewId = 0;
+    bool CameraCut = false;
+    bool ExplicitReset = false;
+    double PreExposure = 1.0;
+    uint64_t TransportKey = 0;
+    std::array<double, 3> ViewX{}, ViewY{};
+    double JitterX = 0.0, JitterY = 0.0;
+    RigidTransform CurrentToPrevious;
+    MotionDeclaration Motion;
+    HistoryValidation Validation = HistoryValidation::FlowAndDepth;
+    bool SurfaceIds = false; // per-pixel surface ids are provided
+};
+
+[[nodiscard]] TemporalFrameState TemporalStateOf(const TemporalFrame& frame) noexcept;
+// The frame-level rules of ValidateTemporalFrame (same order and messages).
+[[nodiscard]] const char* ValidateTemporalFrameState(const TemporalFrameState& frame) noexcept;
+
+// Reset rules of one view's history (specification section 7): the single
+// owner of the decisions TemporalAccumulator and the M5 GPU pass apply.
+// Prepare decides a frame without changing the state; Commit records the
+// frame once its history has been written.
+class TemporalHistoryState {
+  public:
+    struct Plan {
+        uint32_t ResetReasons = 0;
+        bool Reset = true;
+        double ExposureRatio = 1.0; // 1 on reset
+        std::array<double, 3> PreviousViewX{}, PreviousViewY{}; // the current map on reset
+        double PreviousJitterX = 0.0, PreviousJitterY = 0.0;
+    };
+    [[nodiscard]] Plan Prepare(const TemporalFrameState& frame, const TemporalSettings& settings) const noexcept;
+    void Commit(const TemporalFrameState& frame) noexcept;
+    // Resource invalidation or explicit reset: the next frame resets (kResetExplicit).
+    void Invalidate() noexcept;
+    [[nodiscard]] bool HasHistory() const noexcept { return mInitialized; }
+
+  private:
+    bool mInitialized = false;
+    bool mInvalidated = false;
+    uint32_t mWidth = 0, mHeight = 0, mViewId = 0;
+    uint64_t mTransportKey = 0;
+    double mPreExposure = 1.0;
+    std::array<double, 3> mViewX{}, mViewY{};
+    double mJitterX = 0.0, mJitterY = 0.0;
+};
+
+// The FP32 constant block of the temporal kernel for a planned frame: the
+// block TemporalAccumulator::LastShaderParams() holds after Process().
+[[nodiscard]] TemporalShaderParams MakeTemporalShaderParams(const TemporalFrameState& frame,
+                                                            const TemporalSettings& settings,
+                                                            const TemporalHistoryState::Plan& plan);
+
 class TemporalAccumulator {
   public:
     explicit TemporalAccumulator(Precision precision = Precision::Double);

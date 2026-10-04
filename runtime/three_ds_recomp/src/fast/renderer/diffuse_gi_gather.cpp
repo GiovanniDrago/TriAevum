@@ -1393,7 +1393,10 @@ const char* ValidateGatherInput(const GatherInput& in) noexcept {
         return "buffer sizes do not match the declared extent";
     if (in.NormalSource == GeometricNormalSource::RendererFaceNormal && in.FaceNormals.size() != 3U * texels)
         return "renderer face normals declared but not provided";
-    const auto& c = in.Camera;
+    return ValidateDepthCamera(in.Camera);
+}
+
+const char* ValidateDepthCamera(const DepthCamera& c) noexcept {
     if (c.Encoding == DepthEncoding::Unknown) return "depth encoding is undeclared";
     if (!(c.Near > 0.0) || !std::isfinite(c.Near)) return "near plane must be finite and positive";
     if (std::isinf(c.Far)) {

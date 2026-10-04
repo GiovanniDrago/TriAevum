@@ -22,6 +22,17 @@ function(triaevum_add_pass_shader_sources target)
         "${runtime}/src/fast/oot3d/upscaler_guides.cpp"
         "${runtime}/src/fast/oot3d/native_ui_overlay.cpp"
         "${runtime}/src/fast/renderer/gtao_shader.cpp"
+        # Diffuse screen-space GI kernels of the M5 runtime pass and the
+        # module code their parameter builders use.
+        "${runtime}/src/fast/renderer/diffuse_gi_pass_shader.cpp"
+        "${runtime}/src/fast/renderer/diffuse_gi_gather_shader.cpp"
+        "${runtime}/src/fast/renderer/diffuse_gi_temporal_shader.cpp"
+        "${runtime}/src/fast/renderer/diffuse_gi_m4_shader.cpp"
+        "${runtime}/src/fast/renderer/diffuse_gi_reference.cpp"
+        "${runtime}/src/fast/renderer/diffuse_gi_gather.cpp"
+        "${runtime}/src/fast/renderer/diffuse_gi_hierarchy.cpp"
+        "${runtime}/src/fast/renderer/diffuse_gi_guiding.cpp"
+        "${runtime}/src/fast/renderer/diffuse_gi_noise.cpp"
         "${runtime}/src/fast/renderer3ds/pica_surface_lighting.cpp"
         "${runtime}/src/fast/renderer/shaderc_compiler.cpp"
         "${runtime}/src/fast/renderer/spirv_cache.cpp"

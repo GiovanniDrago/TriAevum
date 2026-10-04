@@ -632,6 +632,11 @@ const char* ValidateTemporalFrame(const TemporalFrame& f) noexcept {
     if (f.Validation == HistoryValidation::PreviousPosition && f.PreviousPosition.size() != 3U * count)
         return "previous positions declared but not provided";
     if (!f.SurfaceId.empty() && f.SurfaceId.size() != count) return "surface ids do not match the extent";
+    return ValidateTemporalFrameState(TemporalStateOf(f));
+}
+
+const char* ValidateTemporalFrameState(const TemporalFrameState& f) noexcept {
+    if (static_cast<size_t>(f.Width) * f.Height == 0U) return "empty viewport";
     if (f.Motion.Direction == MotionDirection::Unknown || f.Motion.Units == MotionUnits::Unknown ||
         f.Motion.Jitter == JitterInMotion::Unknown)
         return "motion convention is undeclared";
@@ -671,17 +676,142 @@ const char* ValidateFilterSettings(const FilterSettings& s) noexcept {
 }
 
 // ---------------------------------------------------------------------------
+// Frame-level state and reset rules (shared by TemporalAccumulator and the M5
+// GPU pass).
+
+TemporalFrameState TemporalStateOf(const TemporalFrame& frame) noexcept {
+    TemporalFrameState s;
+    s.Width = frame.Width, s.Height = frame.Height;
+    s.FrameIndex = frame.FrameIndex;
+    s.ViewId = frame.ViewId;
+    s.CameraCut = frame.CameraCut;
+    s.ExplicitReset = frame.ExplicitReset;
+    s.PreExposure = frame.PreExposure;
+    s.TransportKey = frame.TransportKey;
+    s.ViewX = frame.ViewX, s.ViewY = frame.ViewY;
+    s.JitterX = frame.JitterX, s.JitterY = frame.JitterY;
+    s.CurrentToPrevious = frame.CurrentToPrevious;
+    s.Motion = frame.Motion;
+    s.Validation = frame.Validation;
+    s.SurfaceIds = !frame.SurfaceId.empty();
+    return s;
+}
+
+TemporalHistoryState::Plan TemporalHistoryState::Prepare(const TemporalFrameState& frame,
+                                                         const TemporalSettings& settings) const noexcept {
+    // Reset rules (specification section 7): first frame, camera cut, view
+    // change, resize (decision: reset, no resampling), explicit reset or
+    // resource invalidation, transport settings, invalid or invalidated
+    // exposure change; temporal off never uses a history.
+    Plan plan;
+    uint32_t reasons = 0U;
+    double ratio = 1.0;
+    if (!mInitialized) {
+        reasons |= kResetFirstFrame;
+    } else {
+        if (mWidth != frame.Width || mHeight != frame.Height) reasons |= kResetResize;
+        if (mViewId != frame.ViewId) reasons |= kResetViewChange;
+        if (mTransportKey != frame.TransportKey) reasons |= kResetTransport;
+        ratio = frame.PreExposure / mPreExposure;
+        if (!(ratio > 0.0) || !std::isfinite(ratio) ||
+            (settings.Exposure == ExposureChange::Invalidate && ratio != 1.0))
+            reasons |= kResetExposure;
+    }
+    if (frame.CameraCut) reasons |= kResetCameraCut;
+    if (frame.ExplicitReset || mInvalidated) reasons |= kResetExplicit;
+    if (!settings.Enabled) reasons |= kResetDisabled;
+    plan.ResetReasons = reasons;
+    plan.Reset = reasons != 0U;
+    plan.ExposureRatio = plan.Reset ? 1.0 : ratio;
+    plan.PreviousViewX = plan.Reset ? frame.ViewX : mViewX;
+    plan.PreviousViewY = plan.Reset ? frame.ViewY : mViewY;
+    plan.PreviousJitterX = mJitterX;
+    plan.PreviousJitterY = mJitterY;
+    return plan;
+}
+
+void TemporalHistoryState::Commit(const TemporalFrameState& frame) noexcept {
+    mInitialized = true;
+    mInvalidated = false;
+    mWidth = frame.Width, mHeight = frame.Height, mViewId = frame.ViewId;
+    mTransportKey = frame.TransportKey;
+    mPreExposure = frame.PreExposure;
+    mViewX = frame.ViewX, mViewY = frame.ViewY;
+    mJitterX = frame.JitterX, mJitterY = frame.JitterY;
+}
+
+void TemporalHistoryState::Invalidate() noexcept { mInvalidated = true; }
+
+namespace {
+
+// Constants (double) of a planned frame; the FP32 block is derived from them.
+Constants<double> PlannedConstants(const TemporalFrameState& frame, const TemporalSettings& settings,
+                                   const TemporalHistoryState::Plan& plan) {
+    Constants<double> c;
+    c.W = frame.Width, c.H = frame.Height;
+    c.Reset = plan.Reset;
+    c.Tile = 1U << std::min(settings.TileLog2, kMaxRotationTileLog2);
+    c.Radius = std::max(c.Tile / 2U, 1U);
+    c.Reconstruct = settings.Reconstruction && c.Tile >= 2U;
+    c.Flow = frame.Validation == HistoryValidation::FlowAndDepth;
+    c.Ids = frame.SurfaceIds;
+    c.Current = {frame.ViewX[0], frame.ViewX[1], frame.ViewX[2], frame.ViewY[0], frame.ViewY[1], frame.ViewY[2]};
+    c.Previous = {plan.PreviousViewX[0], plan.PreviousViewX[1], plan.PreviousViewX[2],
+                  plan.PreviousViewY[0], plan.PreviousViewY[1], plan.PreviousViewY[2]};
+    for (int k = 0; k < 9; ++k) c.R[k] = frame.CurrentToPrevious.R[k];
+    for (int k = 0; k < 3; ++k) c.Tr[k] = frame.CurrentToPrevious.T[k];
+    const double sign = frame.Motion.Direction == MotionDirection::CurrentToPrevious ? 1.0 : -1.0;
+    const bool uv = frame.Motion.Units == MotionUnits::NormalizedViewportUv;
+    c.MotionX = sign * (uv ? static_cast<double>(frame.Width) : 1.0);
+    c.MotionY = sign * (uv ? static_cast<double>(frame.Height) : 1.0);
+    // Jitter compensation, applied once: only motion that excludes jitter
+    // needs the change of jitter between the two frames.
+    const bool excluded = frame.Motion.Jitter == JitterInMotion::Excluded;
+    c.JitterX = excluded && !plan.Reset ? plan.PreviousJitterX - frame.JitterX : 0.0;
+    c.JitterY = excluded && !plan.Reset ? plan.PreviousJitterY - frame.JitterY : 0.0;
+    c.AlphaMin = settings.AlphaMin, c.VarianceFrames = settings.VarianceFrames;
+    c.ExposureRatio = plan.ExposureRatio, c.LengthCap = 1.0 / settings.AlphaMin;
+    c.ZLow = settings.ChangeLow, c.ZHigh = settings.ChangeHigh;
+    c.FloorJ = settings.ChangeFloor, c.FloorA = settings.ChangeFloorA;
+    c.PlaneSine = settings.PlaneSine, c.PlaneDepth = settings.PlaneDepth, c.NormalCos = settings.NormalCos;
+    c.MovingFlow = settings.MovingFlow, c.MovingDepth = settings.MovingDepth;
+    c.MovingConfidence = settings.MovingConfidence;
+    return c;
+}
+
+TemporalShaderParams ShaderParamsOf(const Constants<double>& c) {
+    TemporalShaderParams p{};
+    const auto f = [](double v) { return static_cast<float>(v); };
+    p.Extent = {c.W, c.H, c.Reset ? kTemporalFlagReset : 0U, c.Radius};
+    p.Modes = {c.Tile, c.Reconstruct ? 1U : 0U, c.Flow ? 1U : 0U, c.Ids ? 1U : 0U};
+    p.ViewX = {f(c.Current.Ax), f(c.Current.Bx), f(c.Current.Cx), 0.0F};
+    p.ViewY = {f(c.Current.Ay), f(c.Current.By), f(c.Current.Cy), 0.0F};
+    p.PreviousX = {f(c.Previous.Ax), f(c.Previous.Bx), f(c.Previous.Cx), 0.0F};
+    p.PreviousY = {f(c.Previous.Ay), f(c.Previous.By), f(c.Previous.Cy), 0.0F};
+    p.Rotation0 = {f(c.R[0]), f(c.R[1]), f(c.R[2]), f(c.Tr[0])};
+    p.Rotation1 = {f(c.R[3]), f(c.R[4]), f(c.R[5]), f(c.Tr[1])};
+    p.Rotation2 = {f(c.R[6]), f(c.R[7]), f(c.R[8]), f(c.Tr[2])};
+    p.Motion = {f(c.MotionX), f(c.MotionY), f(c.JitterX), f(c.JitterY)};
+    p.Accumulate = {f(c.AlphaMin), f(c.VarianceFrames), f(c.ExposureRatio), f(c.LengthCap)};
+    p.Change = {f(c.ZLow), f(c.ZHigh), f(c.FloorJ), f(c.FloorA)};
+    p.Geometry = {f(c.PlaneSine), f(c.PlaneDepth), f(c.NormalCos), 0.0F};
+    p.Moving = {f(c.MovingFlow), f(c.MovingDepth), f(c.MovingConfidence), 0.0F};
+    return p;
+}
+
+} // namespace
+
+TemporalShaderParams MakeTemporalShaderParams(const TemporalFrameState& frame, const TemporalSettings& settings,
+                                              const TemporalHistoryState::Plan& plan) {
+    return ShaderParamsOf(PlannedConstants(frame, settings, plan));
+}
+
+// ---------------------------------------------------------------------------
 // TemporalAccumulator.
 
 struct TemporalAccumulator::Impl {
     Precision Mode = Precision::Double;
-    bool Initialized = false;
-    bool Invalidated = false;
-    uint32_t W = 0, H = 0, ViewId = 0;
-    uint64_t TransportKey = 0;
-    double PreExposure = 1.0;
-    std::array<double, 3> ViewX{}, ViewY{};
-    double JitterX = 0.0, JitterY = 0.0;
+    TemporalHistoryState State;
     std::vector<double> HistoryD[2];
     std::vector<float> HistoryF[2];
     std::vector<uint32_t> Ids[2];
@@ -696,9 +826,9 @@ TemporalAccumulator::~TemporalAccumulator() = default;
 TemporalAccumulator::TemporalAccumulator(TemporalAccumulator&&) noexcept = default;
 TemporalAccumulator& TemporalAccumulator::operator=(TemporalAccumulator&&) noexcept = default;
 
-void TemporalAccumulator::Invalidate() noexcept { mImpl->Invalidated = true; }
+void TemporalAccumulator::Invalidate() noexcept { mImpl->State.Invalidate(); }
 
-bool TemporalAccumulator::HasHistory() const noexcept { return mImpl->Initialized; }
+bool TemporalAccumulator::HasHistory() const noexcept { return mImpl->State.HasHistory(); }
 
 const TemporalShaderParams& TemporalAccumulator::LastShaderParams() const noexcept { return mImpl->Params; }
 
@@ -713,76 +843,15 @@ TemporalResult TemporalAccumulator::Process(const TemporalFrame& frame, const Te
     TemporalResult result;
     if (*ValidateTemporalFrame(frame) != '\0' || *ValidateTemporalSettings(settings) != '\0') return result;
     Impl& m = *mImpl;
-    // --- Reset rules (specification section 7): first frame, camera cut, view
-    // change, resize (decision: reset, no resampling), explicit reset or
-    // resource invalidation, transport settings, invalid or invalidated
-    // exposure change; temporal off never uses a history.
-    uint32_t reasons = 0U;
-    double ratio = 1.0;
-    if (!m.Initialized) {
-        reasons |= kResetFirstFrame;
-    } else {
-        if (m.W != frame.Width || m.H != frame.Height) reasons |= kResetResize;
-        if (m.ViewId != frame.ViewId) reasons |= kResetViewChange;
-        if (m.TransportKey != frame.TransportKey) reasons |= kResetTransport;
-        ratio = frame.PreExposure / m.PreExposure;
-        if (!(ratio > 0.0) || !std::isfinite(ratio) ||
-            (settings.Exposure == ExposureChange::Invalidate && ratio != 1.0))
-            reasons |= kResetExposure;
-    }
-    if (frame.CameraCut) reasons |= kResetCameraCut;
-    if (frame.ExplicitReset || m.Invalidated) reasons |= kResetExplicit;
-    if (!settings.Enabled) reasons |= kResetDisabled;
-    const bool reset = reasons != 0U;
-    if (reset) ratio = 1.0;
+    // --- Reset rules (TemporalHistoryState, the single owner).
+    const TemporalFrameState state = TemporalStateOf(frame);
+    const TemporalHistoryState::Plan plan = m.State.Prepare(state, settings);
+    const uint32_t reasons = plan.ResetReasons;
 
     // --- Constants (double), and their FP32 block for the twin and the GPU.
-    Constants<double> c;
-    c.W = frame.Width, c.H = frame.Height;
-    c.Reset = reset;
-    c.Tile = 1U << std::min(settings.TileLog2, kMaxRotationTileLog2);
-    c.Radius = std::max(c.Tile / 2U, 1U);
-    c.Reconstruct = settings.Reconstruction && c.Tile >= 2U;
-    c.Flow = frame.Validation == HistoryValidation::FlowAndDepth;
-    c.Ids = !frame.SurfaceId.empty();
-    c.Current = {frame.ViewX[0], frame.ViewX[1], frame.ViewX[2], frame.ViewY[0], frame.ViewY[1], frame.ViewY[2]};
-    c.Previous = reset ? c.Current : RayMap<double>{m.ViewX[0], m.ViewX[1], m.ViewX[2], m.ViewY[0], m.ViewY[1], m.ViewY[2]};
-    for (int k = 0; k < 9; ++k) c.R[k] = frame.CurrentToPrevious.R[k];
-    for (int k = 0; k < 3; ++k) c.Tr[k] = frame.CurrentToPrevious.T[k];
-    const double sign = frame.Motion.Direction == MotionDirection::CurrentToPrevious ? 1.0 : -1.0;
-    const bool uv = frame.Motion.Units == MotionUnits::NormalizedViewportUv;
-    c.MotionX = sign * (uv ? static_cast<double>(frame.Width) : 1.0);
-    c.MotionY = sign * (uv ? static_cast<double>(frame.Height) : 1.0);
-    // Jitter compensation, applied once: only motion that excludes jitter
-    // needs the change of jitter between the two frames.
-    const bool excluded = frame.Motion.Jitter == JitterInMotion::Excluded;
-    c.JitterX = excluded && !reset ? m.JitterX - frame.JitterX : 0.0;
-    c.JitterY = excluded && !reset ? m.JitterY - frame.JitterY : 0.0;
-    c.AlphaMin = settings.AlphaMin, c.VarianceFrames = settings.VarianceFrames;
-    c.ExposureRatio = ratio, c.LengthCap = 1.0 / settings.AlphaMin;
-    c.ZLow = settings.ChangeLow, c.ZHigh = settings.ChangeHigh;
-    c.FloorJ = settings.ChangeFloor, c.FloorA = settings.ChangeFloorA;
-    c.PlaneSine = settings.PlaneSine, c.PlaneDepth = settings.PlaneDepth, c.NormalCos = settings.NormalCos;
-    c.MovingFlow = settings.MovingFlow, c.MovingDepth = settings.MovingDepth;
-    c.MovingConfidence = settings.MovingConfidence;
-
+    const Constants<double> c = PlannedConstants(state, settings, plan);
     TemporalShaderParams& p = m.Params;
-    p = {};
-    const auto f = [](double v) { return static_cast<float>(v); };
-    p.Extent = {c.W, c.H, reset ? kTemporalFlagReset : 0U, c.Radius};
-    p.Modes = {c.Tile, c.Reconstruct ? 1U : 0U, c.Flow ? 1U : 0U, c.Ids ? 1U : 0U};
-    p.ViewX = {f(c.Current.Ax), f(c.Current.Bx), f(c.Current.Cx), 0.0F};
-    p.ViewY = {f(c.Current.Ay), f(c.Current.By), f(c.Current.Cy), 0.0F};
-    p.PreviousX = {f(c.Previous.Ax), f(c.Previous.Bx), f(c.Previous.Cx), 0.0F};
-    p.PreviousY = {f(c.Previous.Ay), f(c.Previous.By), f(c.Previous.Cy), 0.0F};
-    p.Rotation0 = {f(c.R[0]), f(c.R[1]), f(c.R[2]), f(c.Tr[0])};
-    p.Rotation1 = {f(c.R[3]), f(c.R[4]), f(c.R[5]), f(c.Tr[1])};
-    p.Rotation2 = {f(c.R[6]), f(c.R[7]), f(c.R[8]), f(c.Tr[2])};
-    p.Motion = {f(c.MotionX), f(c.MotionY), f(c.JitterX), f(c.JitterY)};
-    p.Accumulate = {f(c.AlphaMin), f(c.VarianceFrames), f(c.ExposureRatio), f(c.LengthCap)};
-    p.Change = {f(c.ZLow), f(c.ZHigh), f(c.FloorJ), f(c.FloorA)};
-    p.Geometry = {f(c.PlaneSine), f(c.PlaneDepth), f(c.NormalCos), 0.0F};
-    p.Moving = {f(c.MovingFlow), f(c.MovingDepth), f(c.MovingConfidence), 0.0F};
+    p = ShaderParamsOf(c);
 
     // --- Buffers: the next history is written for every pixel.
     const size_t count = static_cast<size_t>(frame.Width) * frame.Height;
@@ -859,13 +928,7 @@ TemporalResult TemporalAccumulator::Process(const TemporalFrame& frame, const Te
     }
 
     m.Current = next;
-    m.Initialized = true;
-    m.Invalidated = false;
-    m.W = frame.Width, m.H = frame.Height, m.ViewId = frame.ViewId;
-    m.TransportKey = frame.TransportKey;
-    m.PreExposure = frame.PreExposure;
-    m.ViewX = frame.ViewX, m.ViewY = frame.ViewY;
-    m.JitterX = frame.JitterX, m.JitterY = frame.JitterY;
+    m.State.Commit(state);
     return result;
 }
 

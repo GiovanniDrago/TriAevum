@@ -15,6 +15,7 @@
 #include "fast/oot3d/temporal_aa.h"
 #include "fast/oot3d/upscaler_guides.h"
 #include "fast/oot3d/native_ui_overlay.h"
+#include "fast/renderer/diffuse_gi_pass_shader.h"
 #include "fast/renderer/gtao_shader.h"
 #include "fast/renderer3ds/pica_surface_lighting_shader.h"
 #include "fast/renderer3ds/pica_texture_copy_derive_gpu.h"
@@ -22,7 +23,7 @@
 namespace Fast::Oot3d {
 std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
     using enum Renderer::SpirvStage;
-    return {
+    std::vector<BuiltinPassShader> shaders{
         {"multiscale_gtao.comp", Compute, Renderer::BuildMultiscaleGtaoShader(), {}},
         {"multiscale_gtao_resolve.comp", Compute, Renderer::BuildMultiscaleGtaoResolveShader(), {}},
         {"oot3d_pica_display_transfer.comp", Compute, BuildPicaDisplayTransferComputeShader(), {}},
@@ -61,5 +62,10 @@ std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
         {"oot3d_pica_texture_copy_derive.comp", Compute, std::string(Renderer3ds::PicaTextureCopyDeriveComputeSource), {}},
         {"brixelizer_gi_prepare.comp", Compute, std::string(kBrixelizerGiPrepareShader), {}},
     };
+    // Diffuse screen-space GI runtime pass (title-neutral renderer kernels,
+    // docs/TRIAEVUM_SCREEN_SPACE_GI.md "M5"), after every earlier module.
+    for (auto& kernel : Renderer::DiffuseGi::BuildDiffuseGiPassKernels())
+        shaders.push_back({kernel.Name, Compute, std::move(kernel.Source), {}});
+    return shaders;
 }
 }

@@ -547,6 +547,35 @@ if(MSVC)
 endif()
 gtest_discover_tests(renderer_diffuse_gi_m4_tests DISCOVERY_TIMEOUT 60)
 
+# Diffuse GI runtime pass, CPU half (M5 Stage A: settings, reset rules,
+# resources, parameter blocks, frame plan, output twin),
+# docs/TRIAEVUM_SCREEN_SPACE_GI.md. The Vulkan half is tested by
+# tools/renderer/tev_program/diffuse_gi_pass_gpu_tests.cpp.
+add_executable(renderer_diffuse_gi_pass_tests
+    renderer_diffuse_gi_pass_tests.cpp
+    ../src/fast/renderer/diffuse_gi_reference.cpp
+    ../src/fast/renderer/diffuse_gi_gather.cpp
+    ../src/fast/renderer/diffuse_gi_scene.cpp
+    ../src/fast/renderer/diffuse_gi_temporal.cpp
+    ../src/fast/renderer/diffuse_gi_sequence.cpp
+    ../src/fast/renderer/diffuse_gi_hierarchy.cpp
+    ../src/fast/renderer/diffuse_gi_guiding.cpp
+    ../src/fast/renderer/diffuse_gi_noise.cpp
+    ../src/fast/renderer/diffuse_gi_gather_shader.cpp
+    ../src/fast/renderer/diffuse_gi_temporal_shader.cpp
+    ../src/fast/renderer/diffuse_gi_m4_shader.cpp
+    ../src/fast/renderer/diffuse_gi_pass_shader.cpp
+    ../src/fast/renderer/diffuse_gi_pass_plan.cpp
+)
+set_property(TARGET renderer_diffuse_gi_pass_tests PROPERTY CXX_STANDARD 20)
+target_include_directories(renderer_diffuse_gi_pass_tests PRIVATE ../include)
+target_link_libraries(renderer_diffuse_gi_pass_tests PRIVATE gtest_main)
+if(MSVC)
+    target_compile_definitions(renderer_diffuse_gi_pass_tests PRIVATE NOMINMAX)
+    target_compile_options(renderer_diffuse_gi_pass_tests PRIVATE /utf-8)
+endif()
+gtest_discover_tests(renderer_diffuse_gi_pass_tests DISCOVERY_TIMEOUT 30)
+
 # Precompiled SPIR-V packs: format, malformed packs and every embedded family.
 include(../cmake/spirv_pack.cmake)
 add_executable(renderer_spirv_pack_tests renderer_spirv_pack_tests.cpp)

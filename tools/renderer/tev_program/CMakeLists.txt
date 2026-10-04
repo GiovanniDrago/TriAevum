@@ -321,6 +321,27 @@ endif()
 add_test(NAME grass_motion_gpu COMMAND grass_motion_gpu_tests)
 set_tests_properties(grass_motion_gpu PROPERTIES TIMEOUT 120)
 
+# Diffuse GI runtime pass (M5 Stage A): the pass object runs the precompiled
+# kernels of builtin_pass.spvpack against the FP32 twins
+# (docs/TRIAEVUM_SCREEN_SPACE_GI.md, "M5"). The pass shader sources bring the
+# pack, its catalogue and the GI module code the kernels' parameters use.
+add_executable(diffuse_gi_pass_gpu_tests diffuse_gi_pass_gpu_tests.cpp
+    "${runtime}/src/fast/renderer/diffuse_gi_scene.cpp"
+    "${runtime}/src/fast/renderer/diffuse_gi_sequence.cpp"
+    "${runtime}/src/fast/renderer/diffuse_gi_temporal.cpp"
+    "${runtime}/src/fast/renderer/diffuse_gi_pass_plan.cpp"
+    "${runtime}/src/fast/renderer/diffuse_gi_pass.cpp")
+triaevum_add_pass_shader_sources(diffuse_gi_pass_gpu_tests)
+target_compile_features(diffuse_gi_pass_gpu_tests PRIVATE cxx_std_20)
+target_include_directories(diffuse_gi_pass_gpu_tests PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")
+target_link_libraries(diffuse_gi_pass_gpu_tests PRIVATE Vulkan::Vulkan "${SHADERC_LIBRARY}" ${CMAKE_DL_LIBS})
+if(WIN32)
+    add_custom_command(TARGET diffuse_gi_pass_gpu_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${SHADERC_RUNTIME}" "$<TARGET_FILE_DIR:diffuse_gi_pass_gpu_tests>")
+endif()
+add_test(NAME diffuse_gi_pass_gpu COMMAND diffuse_gi_pass_gpu_tests)
+set_tests_properties(diffuse_gi_pass_gpu PROPERTIES TIMEOUT 300)
+
 add_executable(reflection_weight_gpu_tests reflection_weight_gpu_tests.cpp
     "${runtime}/src/fast/oot3d/hiz_reflection.cpp"
     "${runtime}/src/fast/oot3d/reflection_ibl.cpp")
