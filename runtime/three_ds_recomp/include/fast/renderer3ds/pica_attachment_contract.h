@@ -81,6 +81,9 @@ struct PicaAttachmentFeatureRequests {
     bool PointShadows = false;
     // An effect reads the face normal of the geometry guide.
     bool FaceNormal = false;
+    // With GlobalIllumination: the GI gathers on screen from the guides, so
+    // no scene distance field is built.
+    bool ScreenSpaceGlobalIllumination = false;
     bool operator==(const PicaAttachmentFeatureRequests&) const = default;
 };
 

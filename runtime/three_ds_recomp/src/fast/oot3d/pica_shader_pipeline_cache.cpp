@@ -207,12 +207,14 @@ PicaShaderInstrumentationFeature ResolvePicaDrawInstrumentationFeatures(
     // OOT3D_GRAPHICS_FACE_NORMAL_GUIDE=1 also publishes it (diagnostics) for
     // draws that already publish guides.
     if (sceneDraw && request.Draw.DepthWriteEnabled && features != PicaShaderInstrumentationFeature::None &&
-        (EffectsReadFaceNormal(effects) || FaceNormalGuideDiagnosticRequested())) {
+        (EffectsReadFaceNormal(effects) || GlobalIlluminationReadsFaceNormal(effects.GlobalIllumination) ||
+         FaceNormalGuideDiagnosticRequested())) {
         features |= PicaShaderInstrumentationFeature::FaceNormalGuide;
     }
-    // GI specular is a reflection source resolved through the same guide.
+    // GI specular (Brixelizer GI) is a reflection source resolved through the
+    // same guide.
     if (sceneDraw && (effects.Reflections != ReflectionMode::Off ||
-                      (effects.GlobalIllumination.Mode != GlobalIlluminationMode::Off &&
+                      (effects.GlobalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi &&
                        effects.GlobalIllumination.Specular))) {
         features |=
             PicaShaderInstrumentationFeature::ReflectionMaterialGuide;
@@ -434,10 +436,11 @@ PicaShaderInstrumentationFeature ResolvePicaShaderProfileFeatures(
             PicaShaderInstrumentationFeature::NativeFogGuide | PicaShaderInstrumentationFeature::OutlineGeometryGuide;
     }
     if (features != PicaShaderInstrumentationFeature::None &&
-        (EffectsReadFaceNormal(effects) || FaceNormalGuideDiagnosticRequested()))
+        (EffectsReadFaceNormal(effects) || GlobalIlluminationReadsFaceNormal(effects.GlobalIllumination) ||
+         FaceNormalGuideDiagnosticRequested()))
         features |= PicaShaderInstrumentationFeature::FaceNormalGuide;
     if (effects.Reflections != ReflectionMode::Off ||
-        (effects.GlobalIllumination.Mode != GlobalIlluminationMode::Off &&
+        (effects.GlobalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi &&
          effects.GlobalIllumination.Specular)) {
         features |=
             PicaShaderInstrumentationFeature::ReflectionMaterialGuide;

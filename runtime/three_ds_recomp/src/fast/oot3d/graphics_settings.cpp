@@ -5,14 +5,16 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <initializer_list>
 #include <limits>
 
 namespace Fast::Oot3d {
 
 GlobalIlluminationSourceMix ResolveGlobalIlluminationSources(const GlobalIlluminationSettings& settings) noexcept {
     const auto gain = [](float value) { return std::isfinite(value) ? std::max(value, 0.0F) : 0.0F; };
+    const bool sky = settings.Mode != GlobalIlluminationMode::ScreenSpace;
     const std::array<float, 4> gains{gain(settings.SceneLight), gain(settings.KeyLight),
-                                     gain(settings.DynamicLights), gain(settings.SkyLight)};
+                                     gain(settings.DynamicLights), sky ? gain(settings.SkyLight) : 0.0F};
     GlobalIlluminationSourceMix mix;
     mix.Gain = std::max({gains[0], gains[1], gains[2], gains[3]});
     if (mix.Gain > 0.0F)
@@ -345,6 +347,39 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         globalIllumination.Mode = GlobalIlluminationMode::Off;
         Correct(result.Issues, "Graphics.Effects.GlobalIllumination.Mode",
                 capabilities.Get(GraphicsCapability::BrixelizerGlobalIllumination).Reason);
+    }
+    // Screen-space GI: transport and quality on the pass's supported grid.
+    auto& screenSpace = globalIllumination.ScreenSpace;
+    const auto nearestOf = [](uint32_t value, std::initializer_list<uint32_t> allowed) {
+        uint32_t best = *allowed.begin();
+        for (const uint32_t candidate : allowed)
+            if ((candidate > value ? candidate - value : value - candidate) <
+                (best > value ? best - value : value - best))
+                best = candidate;
+        return best;
+    };
+    screenSpace.Sections = std::clamp<uint8_t>(screenSpace.Sections, 1U, 4U);
+    screenSpace.RadialCandidates = static_cast<uint16_t>(nearestOf(screenSpace.RadialCandidates, {8U, 16U, 32U}));
+    screenSpace.Sectors = static_cast<uint16_t>(nearestOf(screenSpace.Sectors, {32U, 64U, 128U}));
+    screenSpace.Radius = clampOr(screenSpace.Radius, 10.0F, 1000.0F, ScreenSpaceGiSettings{}.Radius);
+    screenSpace.Thickness = clampOr(screenSpace.Thickness, 1.0F, 200.0F, ScreenSpaceGiSettings{}.Thickness);
+    screenSpace.FilterLevels = std::min<uint8_t>(screenSpace.FilterLevels, 4U);
+    if (globalIllumination.Mode > GlobalIlluminationMode::ScreenSpace) {
+        globalIllumination.Mode = GlobalIlluminationMode::Off;
+        Correct(result.Issues, "Graphics.Effects.GlobalIllumination.Mode", "unknown global illumination mode");
+    } else if (globalIllumination.Mode == GlobalIlluminationMode::ScreenSpace &&
+               (!capabilities.Has(GraphicsCapability::NriInterop) ||
+                !capabilities.Has(GraphicsCapability::SampledDepth) ||
+                !capabilities.Has(GraphicsCapability::MotionVectors) ||
+                !capabilities.Has(GraphicsCapability::ValidViewMetadata))) {
+        globalIllumination.Mode = GlobalIlluminationMode::Off;
+        Correct(result.Issues, "Graphics.Effects.GlobalIllumination.Mode",
+                "Screen-space global illumination requires NRI, sampled depth, motion vectors and view metadata");
+    } else if (globalIllumination.Mode == GlobalIlluminationMode::ScreenSpace &&
+               !capabilities.Has(GraphicsCapability::ScreenSpaceGlobalIllumination)) {
+        globalIllumination.Mode = GlobalIlluminationMode::Off;
+        Correct(result.Issues, "Graphics.Effects.GlobalIllumination.Mode",
+                capabilities.Get(GraphicsCapability::ScreenSpaceGlobalIllumination).Reason);
     }
     value.Effects.ReflectionStrength =
         std::clamp(value.Effects.ReflectionStrength, 0.0F, 2.0F);

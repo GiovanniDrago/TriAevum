@@ -576,6 +576,35 @@ if(MSVC)
 endif()
 gtest_discover_tests(renderer_diffuse_gi_pass_tests DISCOVERY_TIMEOUT 30)
 
+# Screen-space diffuse GI, M5 Stage B (docs/TRIAEVUM_SCREEN_SPACE_GI.md): the
+# OOT3D settings mapping, the VRAM budget of the default work scale and the
+# adapter's guide decoding, camera and previous-view transform (no Vulkan).
+add_executable(oot3d_screen_space_gi_tests
+    oot3d_screen_space_gi_tests.cpp
+    ../src/fast/oot3d/diffuse_gi_adapter.cpp
+    ../src/fast/oot3d/diffuse_gi_adapter_shader.cpp
+    ../src/fast/oot3d/screen_space_gi_provider.cpp
+    ../src/fast/renderer/diffuse_gi_reference.cpp
+    ../src/fast/renderer/diffuse_gi_gather.cpp
+    ../src/fast/renderer/diffuse_gi_temporal.cpp
+    ../src/fast/renderer/diffuse_gi_hierarchy.cpp
+    ../src/fast/renderer/diffuse_gi_guiding.cpp
+    ../src/fast/renderer/diffuse_gi_noise.cpp
+    ../src/fast/renderer/diffuse_gi_gather_shader.cpp
+    ../src/fast/renderer/diffuse_gi_temporal_shader.cpp
+    ../src/fast/renderer/diffuse_gi_m4_shader.cpp
+    ../src/fast/renderer/diffuse_gi_pass_shader.cpp
+    ../src/fast/renderer/diffuse_gi_pass_plan.cpp
+)
+set_property(TARGET oot3d_screen_space_gi_tests PROPERTY CXX_STANDARD 20)
+target_include_directories(oot3d_screen_space_gi_tests PRIVATE ../include)
+target_link_libraries(oot3d_screen_space_gi_tests PRIVATE gtest_main)
+if(MSVC)
+    target_compile_definitions(oot3d_screen_space_gi_tests PRIVATE NOMINMAX)
+    target_compile_options(oot3d_screen_space_gi_tests PRIVATE /utf-8)
+endif()
+gtest_discover_tests(oot3d_screen_space_gi_tests DISCOVERY_TIMEOUT 30)
+
 # Precompiled SPIR-V packs: format, malformed packs and every embedded family.
 include(../cmake/spirv_pack.cmake)
 add_executable(renderer_spirv_pack_tests renderer_spirv_pack_tests.cpp)

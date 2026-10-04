@@ -26,12 +26,14 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
     }
 
     ImGui::SeparatorText("Global illumination");
-    const char* const giModes[] = {"Off", "Brixelizer GI"};
+    const char* const giModes[] = {"Off", "Brixelizer GI", "Screen-space GI"};
     changed |= SettingsUi::ValidatedCombo<GlobalIlluminationMode>(
         "Global illumination", settings, capabilities, giModes,
         [](auto& value, auto mode) { value.Effects.GlobalIllumination.Mode = mode; },
         [](const auto& value) { return value.Effects.GlobalIllumination.Mode; });
     auto& globalIllumination = settings.Effects.GlobalIllumination;
+    const bool brixelizer = globalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi;
+    const bool screenSpace = globalIllumination.Mode == GlobalIlluminationMode::ScreenSpace;
     if (globalIllumination.Mode != GlobalIlluminationMode::Off) {
         int resolution = static_cast<int>(globalIllumination.Resolution);
         const char* const resolutionNames[] = {"Half", "Quarter"};
@@ -44,27 +46,67 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
         changed |= ImGui::SliderFloat("GI native scene light", &globalIllumination.SceneLight, 0.0F, 4.0F, "%.2f");
         changed |= ImGui::SliderFloat("GI key light", &globalIllumination.KeyLight, 0.0F, 4.0F, "%.2f");
         changed |= ImGui::SliderFloat("GI dynamic lights", &globalIllumination.DynamicLights, 0.0F, 4.0F, "%.2f");
-        changed |= ImGui::SliderFloat("GI sky light", &globalIllumination.SkyLight, 0.0F, 4.0F, "%.2f");
-        ImGui::TextWrapped("GI bounces the direct light of the native scene directionals, the added key light "
-                           "and dynamic lights (native local lights, Navi, fairies), and adds the sky light that "
-                           "open surfaces receive (the native sky colour). Ambient and fill light are baked into "
-                           "OoT's colours and are never bounced.");
-        ImGui::TextWrapped("Intensity, the strongest source and switching a source off apply at once; other "
-                           "changes of the source mix settle over a few seconds.");
-        changed |= ImGui::Checkbox("GI specular reflections", &globalIllumination.Specular);
-        if (globalIllumination.Specular) {
-            changed |= ImGui::SliderFloat("GI specular intensity", &globalIllumination.SpecularIntensity,
-                                          0.0F, 2.0F, "%.2f");
-            if (settings.Effects.Reflections != ReflectionMode::Off)
-                ImGui::TextWrapped("Screen-space reflections are enabled and provide the reflections; "
-                                   "GI specular applies when they are off.");
+        if (brixelizer) {
+            changed |= ImGui::SliderFloat("GI sky light", &globalIllumination.SkyLight, 0.0F, 4.0F, "%.2f");
+            ImGui::TextWrapped("GI bounces the direct light of the native scene directionals, the added key light "
+                               "and dynamic lights (native local lights, Navi, fairies), and adds the sky light that "
+                               "open surfaces receive (the native sky colour). Ambient and fill light are baked into "
+                               "OoT's colours and are never bounced.");
+            ImGui::TextWrapped("Intensity, the strongest source and switching a source off apply at once; other "
+                               "changes of the source mix settle over a few seconds.");
+            changed |= ImGui::Checkbox("GI specular reflections", &globalIllumination.Specular);
+            if (globalIllumination.Specular) {
+                changed |= ImGui::SliderFloat("GI specular intensity", &globalIllumination.SpecularIntensity,
+                                              0.0F, 2.0F, "%.2f");
+                if (settings.Effects.Reflections != ReflectionMode::Off)
+                    ImGui::TextWrapped("Screen-space reflections are enabled and provide the reflections; "
+                                       "GI specular applies when they are off.");
+            }
+        }
+        if (screenSpace) {
+            auto& screen = globalIllumination.ScreenSpace;
+            ImGui::TextWrapped("Screen-space GI bounces the direct light of the native scene directionals, the "
+                               "added key light and dynamic lights between surfaces visible on screen. Ambient and "
+                               "fill light are baked into OoT's colours and are never bounced.");
+            int sections = screen.Sections;
+            if (ImGui::SliderInt("SSGI sections", &sections, 1, 4)) {
+                screen.Sections = static_cast<uint8_t>(sections);
+                changed = true;
+            }
+            const auto choice = [&changed](const char* label, uint16_t& value, const uint16_t (&options)[3],
+                                           const char* const (&names)[3]) {
+                int index = value <= options[0] ? 0 : value <= options[1] ? 1 : 2;
+                if (ImGui::Combo(label, &index, names, 3)) {
+                    value = options[index];
+                    changed = true;
+                }
+            };
+            choice("SSGI radial candidates", screen.RadialCandidates, {8U, 16U, 32U}, {"8", "16", "32"});
+            choice("SSGI sectors", screen.Sectors, {32U, 64U, 128U}, {"32", "64", "128"});
+            changed |= ImGui::SliderFloat("SSGI radius", &screen.Radius, 10.0F, 1000.0F, "%.0f units");
+            changed |= ImGui::SliderFloat("SSGI thickness", &screen.Thickness, 1.0F, 200.0F, "%.1f units");
+            changed |= ImGui::Checkbox("SSGI temporal accumulation", &screen.Temporal);
+            int filterLevels = screen.FilterLevels;
+            if (ImGui::SliderInt("SSGI filter levels", &filterLevels, 0, 4)) {
+                screen.FilterLevels = static_cast<uint8_t>(filterLevels);
+                changed = true;
+            }
+            changed |= ImGui::Checkbox("SSGI validation", &screen.Validation);
+            ImGui::TextWrapped("Radius and thickness are in OoT scene units (provisional defaults). Validation "
+                               "composes the bounce without the intensity gain.");
         }
         if (!UsesFullSceneLighting(settings.Effects.SurfaceLighting))
             ImGui::TextWrapped("Active only with Per-pixel or Per-pixel + PBR lighting.");
+        const auto status = GraphicsSettingsRuntime::Instance().GlobalIlluminationStatus();
+        if (status.Mode == globalIllumination.Mode && !status.Ready && !status.Reason.empty())
+            ImGui::TextWrapped("GI not available yet: %s", status.Reason.c_str());
     }
     if (!capabilities.Has(GraphicsCapability::BrixelizerGlobalIllumination))
         ImGui::TextWrapped("Brixelizer GI unavailable: %s",
                            capabilities.Get(GraphicsCapability::BrixelizerGlobalIllumination).Reason.c_str());
+    if (!capabilities.Has(GraphicsCapability::ScreenSpaceGlobalIllumination))
+        ImGui::TextWrapped("Screen-space GI unavailable: %s",
+                           capabilities.Get(GraphicsCapability::ScreenSpaceGlobalIllumination).Reason.c_str());
 
     ImGui::SeparatorText("Ambient occlusion");
     const bool aoReady = capabilities.Has(GraphicsCapability::NriInterop) &&

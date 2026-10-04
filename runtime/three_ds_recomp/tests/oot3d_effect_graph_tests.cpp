@@ -603,6 +603,66 @@ TEST(Oot3dDisplayEffectPlan, GlobalIlluminationComposesThroughTheSceneComposite)
     EXPECT_FALSE(BuildDisplayEffectPlan(input).Enabled(DisplayEffectPass::GlobalIllumination));
 }
 
+// Screen-space GI: the same display pass and composition, reading only its
+// declared inputs (the geometry guide's face normal instead of the normal and
+// material guides), with no specular term and no scene distance field.
+TEST(Oot3dDisplayEffectPlan, ScreenSpaceGlobalIlluminationReadsOnlyItsDeclaredInputs) {
+    DisplayEffectPlanInput input;
+    input.WorldSurface = true;
+    input.PerspectiveAvailable = true;
+    input.CameraAvailable = true;
+    input.GlobalIllumination = true;
+    input.GlobalIlluminationScreenSpace = true;
+    input.GlobalIlluminationSpecular = true; // a stored Brixelizer control: ignored
+    const auto plan = BuildDisplayEffectPlan(input);
+    ASSERT_TRUE(plan.Graph.Valid()) << plan.Graph.Error;
+    EXPECT_TRUE(plan.Enabled(DisplayEffectPass::GlobalIllumination));
+    EXPECT_TRUE(plan.Enabled(DisplayEffectPass::Motion));
+    EXPECT_TRUE(plan.Enabled(DisplayEffectPass::Composite));
+    EXPECT_FALSE(plan.Enabled(DisplayEffectPass::Reflections));
+    EXPECT_FALSE(plan.ReflectionsFromGlobalIllumination);
+    EXPECT_FALSE(plan.ReflectionMissesFromGlobalIllumination);
+    EXPECT_TRUE(plan.Graph.Attachments.Requires(PicaAuxiliaryOutput::DiffuseAlbedoGuide));
+    EXPECT_TRUE(plan.Graph.Attachments.Requires(PicaAuxiliaryOutput::OutlineGeometryGuide));
+    const auto gi = plan.Bindings(DisplayEffectPass::GlobalIllumination);
+    const std::vector<EffectResourceUse> declared{
+        Read(EffectResource::NativeSceneView), Read(EffectResource::DiffuseAlbedoGuide),
+        Read(EffectResource::NativeDepth), Read(EffectResource::OutlineGeometryGuide),
+        Read(EffectResource::MotionVectors), Write(EffectResource::DiffuseIllumination)};
+    EXPECT_EQ(gi.size(), declared.size());
+    for (const auto use : declared) EXPECT_NE(std::find(gi.begin(), gi.end(), use), gi.end());
+    for (const auto resource : {EffectResource::NormalGuide, EffectResource::MaterialGuide,
+                                EffectResource::SpecularIllumination, EffectResource::SceneDistanceField})
+        for (const auto& use : gi) EXPECT_NE(use.Resource, resource);
+    // A (accessibility) has no consumer: the composite takes J and the albedo guide.
+    const auto composite = plan.Bindings(DisplayEffectPass::Composite);
+    for (const auto use : {Read(EffectResource::DiffuseIllumination), Read(EffectResource::DiffuseAlbedoGuide)})
+        EXPECT_NE(std::find(composite.begin(), composite.end(), use), composite.end());
+    const auto order = [&plan](std::string_view name) {
+        return std::find(plan.Graph.Order.begin(), plan.Graph.Order.end(), name) - plan.Graph.Order.begin();
+    };
+    EXPECT_LT(order("Guides"), order("GlobalIllumination"));
+    EXPECT_LT(order("Motion"), order("GlobalIllumination"));
+    EXPECT_LT(order("GlobalIllumination"), order("Composite"));
+    // Pipelines not ready: the provider is unavailable and nothing is declared.
+    input.GlobalIllumination = false;
+    const auto pending = BuildDisplayEffectPlan(input);
+    EXPECT_FALSE(pending.Enabled(DisplayEffectPass::GlobalIllumination));
+    EXPECT_FALSE(pending.Enabled(DisplayEffectPass::Composite));
+
+    // The instrumented guides: the albedo guide and the face normal, no
+    // distance field.
+    const auto extension = BuildPicaExtensionGraph(
+        { .GlobalIllumination = true, .FaceNormal = true, .ScreenSpaceGlobalIllumination = true });
+    ASSERT_TRUE(extension.Valid()) << extension.Error;
+    EXPECT_TRUE(extension.Attachments.Requires(PicaAuxiliaryOutput::DiffuseAlbedoGuide));
+    EXPECT_TRUE(extension.Attachments.Requires(PicaAuxiliaryOutput::OutlineGeometryGuide));
+    EXPECT_FALSE(PicaExtensionPassEnabled(extension, PicaExtensionPass::SceneDistanceField));
+    // Brixelizer GI keeps its field.
+    EXPECT_TRUE(PicaExtensionPassEnabled(BuildPicaExtensionGraph({ .GlobalIllumination = true }),
+                                         PicaExtensionPass::SceneDistanceField));
+}
+
 TEST(Oot3dEffectGraph, FaceNormalReadersAllocateTheGeometryGuide) {
     const auto ao = BuildPicaExtensionGraph({ .AmbientOcclusion = true });
     ASSERT_TRUE(ao.Valid()) << ao.Error;

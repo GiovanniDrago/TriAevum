@@ -13,6 +13,9 @@
 // outputs, a padded poisoned viewport, odd extents with poisoned inputs and
 // HDR, under the Khronos validation layer with synchronization validation when
 // installed. Lines starting with DGI_GPU_M5 are quoted in the document.
+// Stage B adds the kernels created on a worker thread and shared, the work
+// scale (Half, Quarter) against the FP32 twin of the upsampler and against the
+// full-extent pass, and the OOT3D adapter kernel against its FP32 twin.
 #include "fast/renderer/diffuse_gi_gather.h"
 #include "fast/renderer/diffuse_gi_hierarchy.h"
 #include "fast/renderer/diffuse_gi_pass.h"
@@ -23,17 +26,26 @@
 #include "fast/renderer/diffuse_gi_temporal.h"
 #include "fast/renderer/diffuse_gi_temporal_shader.h"
 #include "fast/renderer/shaderc_compiler.h"
+// The OOT3D adapter kernel (M5 Stage B) with its Vulkan recording.
+#ifndef ENABLE_OOT3D_VULKAN
+#define ENABLE_OOT3D_VULKAN 1
+#endif
+#include "fast/oot3d/diffuse_gi_adapter.h"
+#include "fast/renderer3ds/pica_geometry_guide.h"
 
 #include <vulkan/vulkan.h>
 #include <shaderc/shaderc.hpp>
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <future>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -810,9 +822,257 @@ void RequireTotals(const Totals& t) {
     Require(t.OutputMismatch == 0, "output texels differ from the FP16/FP32 twin");
 }
 
+// ---------------------------------------------------------------------------
+// M5 Stage B: work scale, upsampler, OOT3D adapter.
+
+// The work image of an output-resolution input: the output texels
+// (o + f i, o + f j), as the adapter samples them.
+GatherInput WorkInput(const GatherInput& full, const PassExtent& e) {
+    GatherInput w;
+    w.BufferWidth = e.BufferWidth;
+    w.BufferHeight = e.BufferHeight;
+    w.Viewport = e.Viewport;
+    w.Camera = WorkScaleCamera(full.Camera, e);
+    w.NormalSource = full.NormalSource;
+    for (uint32_t j = 0; j < e.BufferHeight; ++j)
+        for (uint32_t i = 0; i < e.BufferWidth; ++i) {
+            const size_t t = static_cast<size_t>(e.WorkPhase + e.WorkFactor * j) * full.BufferWidth +
+                             e.WorkPhase + e.WorkFactor * i;
+            w.Depth.push_back(full.Depth[t]);
+            w.Class.push_back(full.Class[t]);
+            for (int c = 0; c < 3; ++c) {
+                w.Radiance.push_back(full.Radiance[3 * t + c]);
+                w.FaceNormals.push_back(full.FaceNormals[3 * t + c]);
+            }
+        }
+    return w;
+}
+
+// The output guide the adapter writes: view depth bits and the module's code
+// of the face normal oriented toward the eye, for every receiver texel.
+std::vector<uint32_t> OutputGuideOf(const GatherInput& full) {
+    std::vector<uint32_t> guide(2U * full.BufferWidth * full.BufferHeight, 0U);
+    for (uint32_t y = 0; y < full.BufferHeight; ++y)
+        for (uint32_t x = 0; x < full.BufferWidth; ++x) {
+            const size_t t = static_cast<size_t>(y) * full.BufferWidth + x;
+            const auto cls = static_cast<TexelClass>(full.Class[t]);
+            if (cls != TexelClass::OneSided && cls != TexelClass::TwoSided) continue;
+            const double z = DecodeViewDepth(full.Depth[t], full.Camera);
+            if (!(z > 0.0) || !std::isfinite(z)) continue;
+            const double u = (x + 0.5) / full.BufferWidth, v = (y + 0.5) / full.BufferHeight;
+            const auto& X = full.Camera.ViewX;
+            const auto& Y = full.Camera.ViewY;
+            const double p[3] = {(X[0] * u + X[1] * v + X[2]) * z, (Y[0] * u + Y[1] * v + Y[2]) * z, -z};
+            std::array<float, 3> n{full.FaceNormals[3 * t], full.FaceNormals[3 * t + 1], full.FaceNormals[3 * t + 2]};
+            if (n[0] * p[0] + n[1] * p[1] + n[2] * p[2] > 0.0)
+                for (float& c : n) c = -c;
+            guide[2 * t] = std::bit_cast<uint32_t>(static_cast<float>(z));
+            guide[2 * t + 1] = EncodeDiffuseGiNormal(n);
+        }
+    return guide;
+}
+
+// Host data -> pass buffers (transfer writes ordered after earlier compute use).
+Device::Buffer UploadParts(Device& d, const DiffuseGiPass& pass,
+                           const std::vector<std::pair<PassResourceId, std::vector<uint8_t>>>& parts) {
+    size_t total = 0;
+    for (const auto& [id, bytes] : parts) total += (bytes.size() + 15U) / 16U * 16U;
+    Device::Buffer staging = d.MakeHost(total);
+    d.MemoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+    size_t offset = 0;
+    for (const auto& [id, bytes] : parts) {
+        const auto target = pass.Buffer(id);
+        Require(target.Size == bytes.size(), "upload size differs from the pass buffer");
+        std::memcpy(static_cast<unsigned char*>(staging.Mapped) + offset, bytes.data(), bytes.size());
+        const VkBufferCopy region{offset, 0, bytes.size()};
+        vkCmdCopyBuffer(d.Command, staging.Handle, target.Buffer, 1, &region);
+        offset += (bytes.size() + 15U) / 16U * 16U;
+    }
+    return staging;
+}
+
+template <typename T>
+std::vector<uint8_t> Bytes(const std::vector<T>& values) {
+    std::vector<uint8_t> out(values.size() * sizeof(T));
+    if (!out.empty()) std::memcpy(out.data(), values.data(), out.size());
+    return out;
+}
+
+// The adapter inputs of a work image (what oot3d_diffuse_gi_inputs.comp writes).
+std::vector<std::pair<PassResourceId, std::vector<uint8_t>>> WorkParts(const GatherInput& w,
+                                                                        const std::vector<uint32_t>& guide) {
+    const size_t texels = static_cast<size_t>(w.BufferWidth) * w.BufferHeight;
+    std::vector<uint32_t> classes(w.Class.begin(), w.Class.end());
+    std::vector<float> radiance(4 * texels, 0.0F), normals(4 * texels, 0.0F), motion(2 * texels, 0.0F);
+    for (size_t i = 0; i < texels; ++i)
+        for (int c = 0; c < 3; ++c) {
+            radiance[4 * i + c] = w.Radiance[3 * i + c];
+            normals[4 * i + c] = w.FaceNormals[3 * i + c];
+        }
+    return {{PassResourceId::Depth, Bytes(w.Depth)},       {PassResourceId::Class, Bytes(classes)},
+            {PassResourceId::Radiance, Bytes(radiance)},    {PassResourceId::Normal, Bytes(normals)},
+            {PassResourceId::Motion, Bytes(motion)},        {PassResourceId::OutputGuide, Bytes(guide)}};
+}
+
+void ReadImage(Device& d, Device::Image& image, PassImageState& state, const Device::Buffer& readback,
+               VkDeviceSize offset) {
+    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrier.srcAccessMask = state.Access;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.oldLayout = state.Layout;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image.Handle;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(d.Command, state.Stages, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                         &barrier);
+    state = {VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT};
+    VkBufferImageCopy region{};
+    region.bufferOffset = offset;
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {image.Width, image.Height, 1};
+    vkCmdCopyImageToBuffer(d.Command, image.Handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.Handle, 1, &region);
+}
+
+// One work-scale (or full-extent) pass instance on a static scene.
+struct ScaledRun {
+    DiffuseGiPass Pass;
+    Device::Image J, A;
+    PassImageState JState, AState;
+    PassExtent Extent;
+    PassSettings Settings;
+    GatherInput Work;
+    std::vector<uint32_t> Guide;
+    std::vector<uint16_t> OutJ;
+    std::vector<float> OutA, Colour, Geometry;
+};
+
+// Runs `frames` frames of a static camera; reads back the outputs and, at a
+// work scale, the upsampler's inputs (final colour, geometry).
+void RunScaled(Device& d, ScaledRun& run, const GatherInput& full, uint32_t factor, bool writeA, uint64_t frames) {
+    run.Extent = MakeWorkScaleExtent(full.BufferWidth, full.BufferHeight, factor);
+    run.Work = factor > 1U ? WorkInput(full, run.Extent) : full;
+    run.Guide = factor > 1U ? OutputGuideOf(full) : std::vector<uint32_t>{};
+    run.J = d.MakeImage(VK_FORMAT_R16G16B16A16_SFLOAT, full.BufferWidth, full.BufferHeight);
+    if (writeA) run.A = d.MakeImage(VK_FORMAT_R32_SFLOAT, full.BufferWidth, full.BufferHeight);
+    PassOutputs outputs{{run.J.Handle, run.J.View, run.J.Format, run.J.Width, run.J.Height}, {}};
+    if (writeA) outputs.Accessibility = {run.A.Handle, run.A.View, run.A.Format, run.A.Width, run.A.Height};
+    Require(run.Pass.Configure(run.Extent, run.Settings, {}, outputs), run.Pass.UnavailableReason());
+    const auto parts = WorkParts(run.Work, run.Guide);
+    for (uint64_t k = 0; k < frames; ++k) {
+        d.Begin();
+        std::vector<std::pair<PassResourceId, std::vector<uint8_t>>> upload;
+        for (const auto& part : parts)
+            if (part.first != PassResourceId::OutputGuide || factor > 1U) upload.push_back(part);
+        Device::Buffer staging = UploadParts(d, run.Pass, upload);
+        PassFrame frame;
+        frame.Camera = full.Camera;
+        frame.NormalSource = full.NormalSource;
+        frame.FrameIndex = k;
+        PassBarrierRecord record;
+        Require(run.Pass.Execute(d.Command, frame, run.JState, run.AState, {}, record), run.Pass.UnavailableReason());
+        const bool last = k + 1U == frames;
+        Device::Buffer readback{};
+        const VkDeviceSize texels = static_cast<VkDeviceSize>(full.BufferWidth) * full.BufferHeight;
+        const uint32_t levels = run.Settings.Filter.Levels;
+        const PassResourceId colour = levels == 0U ? PassResourceId::Colour
+                                      : ((levels - 1U) % 2U == 0U ? PassResourceId::Filter0 : PassResourceId::Filter1);
+        const auto colourView = run.Pass.Buffer(colour), geometryView = run.Pass.Buffer(PassResourceId::Geometry);
+        if (last) {
+            readback = d.MakeHost(8U * texels + 4U * texels + colourView.Size + geometryView.Size);
+            d.MemoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            ReadImage(d, run.J, run.JState, readback, 0);
+            if (writeA) ReadImage(d, run.A, run.AState, readback, 8U * texels);
+            const VkBufferCopy c{0, 12U * texels, colourView.Size};
+            vkCmdCopyBuffer(d.Command, colourView.Buffer, readback.Handle, 1, &c);
+            const VkBufferCopy g{0, 12U * texels + colourView.Size, geometryView.Size};
+            vkCmdCopyBuffer(d.Command, geometryView.Buffer, readback.Handle, 1, &g);
+            d.MemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                            VK_ACCESS_HOST_READ_BIT);
+        }
+        d.Submit();
+        d.Free(staging);
+        if (last) {
+            const auto* bytes = static_cast<const unsigned char*>(readback.Mapped);
+            run.OutJ.resize(4U * texels);
+            std::memcpy(run.OutJ.data(), bytes, 8U * texels);
+            run.OutA.assign(texels, 1.0F);
+            if (writeA) std::memcpy(run.OutA.data(), bytes + 8U * texels, 4U * texels);
+            run.Colour.resize(colourView.Size / 4U);
+            std::memcpy(run.Colour.data(), bytes + 12U * texels, colourView.Size);
+            run.Geometry.resize(geometryView.Size / 4U);
+            std::memcpy(run.Geometry.data(), bytes + 12U * texels + colourView.Size, geometryView.Size);
+            d.Free(readback);
+        }
+    }
+}
+
+void ReleaseScaled(Device& d, ScaledRun& run) {
+    Check(vkDeviceWaitIdle(d.Handle));
+    run.Pass.Shutdown();
+    d.Free(run.J);
+    d.Free(run.A);
+}
+
+// A sampled image filled from host data, in SHADER_READ_ONLY_OPTIMAL.
+Device::Image MakeSampled(Device& d, VkFormat format, uint32_t width, uint32_t height, const void* data,
+                          size_t bytes, std::vector<Device::Buffer>& staging) {
+    Device::Image image;
+    image.Format = format, image.Width = width, image.Height = height;
+    VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.format = format;
+    info.extent = {width, height, 1};
+    info.mipLevels = 1;
+    info.arrayLayers = 1;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    Check(vkCreateImage(d.Handle, &info, nullptr, &image.Handle));
+    VkMemoryRequirements req{};
+    vkGetImageMemoryRequirements(d.Handle, image.Handle, &req);
+    VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = d.Type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    Check(vkAllocateMemory(d.Handle, &alloc, nullptr, &image.Memory));
+    Check(vkBindImageMemory(d.Handle, image.Handle, image.Memory, 0));
+    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view.image = image.Handle;
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = format;
+    view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    Check(vkCreateImageView(d.Handle, &view, nullptr, &image.View));
+    staging.push_back(d.MakeHost(bytes));
+    std::memcpy(staging.back().Mapped, data, bytes);
+    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image.Handle;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(d.Command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                         0, nullptr, 1, &barrier);
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {width, height, 1};
+    vkCmdCopyBufferToImage(d.Command, staging.back().Handle, image.Handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                           &region);
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier(d.Command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                         nullptr, 0, nullptr, 1, &barrier);
+    return image;
+}
+
 } // namespace
 
 int main() try {
+    std::setvbuf(stdout, nullptr, _IONBF, 0); // lines interleave with stderr in order
     Device device;
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(device.Physical, &properties);
@@ -1361,6 +1621,291 @@ int main() try {
         Require(maxRel <= 1.0 / 1024.0 && aDifferent == 0, "x8 radiance changes the FP16 proportion or A");
         Require(nonFinite == 0 && maxJ <= kOutputHalfMax, "HDR output not finite");
     }
+
+    // ===================================================================
+    // M5 Stage B.
+
+    // --- Kernels created on a worker thread (open point 26): the SPIR-V
+    // resolves from the pack on this thread, the pipelines are created on
+    // another, and instances share them once complete.
+    std::shared_ptr<DiffuseGiKernels> kernels = std::make_shared<DiffuseGiKernels>();
+    {
+        std::string reason;
+        const auto t0 = std::chrono::steady_clock::now();
+        const PassKernelBinaries binaries = DiffuseGiKernels::Resolve(shaders, reason);
+        const double resolveMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        Require(reason.empty(), "kernel resolution: " + reason);
+        const auto t1 = std::chrono::steady_clock::now();
+        auto creation = std::async(std::launch::async, [&] { return kernels->Create(passDevice, binaries); });
+        const double launchMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+        Require(creation.get() && kernels->Complete(), "worker creation: " + kernels->Reason());
+        const auto& ms = kernels->KernelMilliseconds();
+        std::printf("DGI_GPU_M5B kernels_async resolve_ms=%.2f launch_ms=%.3f create_ms=%.1f (normal %.1f, level0 %.1f, "
+                    "reduce %.1f, gather %.1f, pack %.1f, temporal %.1f, filter %.1f, output %.1f, upsample %.1f) "
+                    "builtin_hits=%llu compiler_requests=%llu\n",
+                    resolveMs, launchMs, kernels->CreationMilliseconds(), ms[0], ms[1], ms[2], ms[3], ms[4], ms[5], ms[6],
+                    ms[7], ms[8], static_cast<unsigned long long>(shaders.BuiltinArtifactHits()),
+                    static_cast<unsigned long long>(shaders.Stats().Requests));
+        Require(shaders.Stats().Requests == 0, "a kernel was compiled at run time");
+    }
+
+    // --- Work scale against the FP32 twin of the upsampler, both factors,
+    // with and without A; the shared kernels.
+    {
+        const Scene scene = CornerRoomScene(97, 61);
+        GatherInput full = Rasterize(scene);
+        full.NormalSource = GeometricNormalSource::RendererFaceNormal;
+        for (const uint32_t factor : {2U, 4U}) {
+            ScaledRun run;
+            run.Settings = SceneSettings(2.5, 0.5);
+            Require(run.Pass.Initialize(passDevice, kernels), run.Pass.UnavailableReason());
+            const bool writeA = factor == 2U;
+            RunScaled(device, run, full, factor, writeA, 3);
+            const UpsampleShaderParams p = run.Pass.LastFrame().Upsample;
+            size_t texels = 0, receivers = 0, mismatch = 0, nonFinite = 0, noEstimate = 0;
+            double maxRel = 0.0;
+            for (uint32_t y = 0; y < full.BufferHeight; ++y)
+                for (uint32_t x = 0; x < full.BufferWidth; ++x) {
+                    const size_t t = static_cast<size_t>(y) * full.BufferWidth + x;
+                    const OutputTexel o =
+                        UpsampleTexelF32(p, x, y, run.Colour.data(), run.Geometry.data(), run.Guide.data());
+                    bool same = true;
+                    for (int c = 0; c < 4; ++c) {
+                        const uint16_t h = run.OutJ[4 * t + c];
+                        nonFinite += std::isfinite(FromHalf(h)) ? 0U : 1U;
+                        same = same && (h == ToHalf(o.Illumination[c], true) || h == ToHalf(o.Illumination[c], false));
+                        const double scale = std::max(1.0e-3, std::abs(static_cast<double>(o.Illumination[c])));
+                        maxRel = std::max(maxRel, std::abs(FromHalf(h) - o.Illumination[c]) / scale);
+                    }
+                    if (writeA) same = same && std::abs(run.OutA[t] - o.Accessibility) <= 1.0e-6F;
+                    mismatch += same ? 0U : 1U;
+                    receivers += run.Guide[2 * t] != 0U ? 1U : 0U;
+                    noEstimate += run.Guide[2 * t] != 0U && o.Illumination[3] == 0.0F ? 1U : 0U;
+                    ++texels;
+                }
+            std::printf("DGI_GPU_M5B upsample factor=%u extent=97x61 work=%ux%u write_A=%d texels=%zu receivers=%zu "
+                        "no_estimate=%zu differ_from_twin=%zu max_rel=%.2e nonfinite=%zu buffer_bytes=%llu "
+                        "output_sets=%u\n",
+                        factor, run.Extent.BufferWidth, run.Extent.BufferHeight, writeA, texels, receivers, noEstimate,
+                        mismatch, maxRel, nonFinite, static_cast<unsigned long long>(run.Pass.Stats().BufferBytes),
+                        run.Pass.Stats().OutputSets);
+            Require(nonFinite == 0, "upsample: non-finite output");
+            // FP32 operation order apart (bilinear weights, plane test), the
+            // kernel is its twin: isolated decision flips only.
+            Require(mismatch <= texels / 200U, "upsample differs from its FP32 twin");
+            ReleaseScaled(device, run);
+        }
+    }
+
+    // --- Work scale against the full-extent pass (open point 24): the same
+    // static scene accumulated over 32 frames at factor 1, 2 and 4.
+    {
+        const Scene scene = CornerRoomScene(161, 97);
+        GatherInput full = Rasterize(scene);
+        full.NormalSource = GeometricNormalSource::RendererFaceNormal;
+        std::array<ScaledRun, 3> runs;
+        const std::array<uint32_t, 3> factors{1U, 2U, 4U};
+        for (size_t r = 0; r < runs.size(); ++r) {
+            runs[r].Settings = SceneSettings(2.5, 0.5);
+            Require(runs[r].Pass.Initialize(passDevice, kernels), runs[r].Pass.UnavailableReason());
+            RunScaled(device, runs[r], full, factors[r], true, 32);
+        }
+        for (size_t r = 1; r < runs.size(); ++r) {
+            double sumFull = 0.0, sumScaled = 0.0, sumDiff = 0.0, sumA = 0.0;
+            size_t both = 0, onlyFull = 0, nonFinite = 0;
+            for (size_t t = 0; t < runs[0].OutA.size(); ++t) {
+                const bool a = FromHalf(runs[0].OutJ[4 * t + 3]) > 0.0F, b = FromHalf(runs[r].OutJ[4 * t + 3]) > 0.0F;
+                for (int c = 0; c < 3; ++c) nonFinite += std::isfinite(FromHalf(runs[r].OutJ[4 * t + c])) ? 0U : 1U;
+                if (a && !b) ++onlyFull;
+                if (!(a && b)) continue;
+                ++both;
+                for (int c = 0; c < 3; ++c) {
+                    const double jf = FromHalf(runs[0].OutJ[4 * t + c]), js = FromHalf(runs[r].OutJ[4 * t + c]);
+                    sumFull += jf, sumScaled += js, sumDiff += std::abs(js - jf);
+                }
+                sumA += std::abs(runs[r].OutA[t] - runs[0].OutA[t]);
+            }
+            std::printf("DGI_GPU_M5B work_scale_vs_full factor=%u extent=161x97 frames=32 receivers=%zu "
+                        "receivers_without_estimate=%zu meanJ_ratio=%.4f mean|dJ|/meanJ=%.4f mean|dA|=%.4f nonfinite=%zu\n",
+                        factors[r], both, onlyFull, sumFull > 0.0 ? sumScaled / sumFull : 0.0,
+                        sumFull > 0.0 ? sumDiff / sumFull : 0.0, both > 0U ? sumA / static_cast<double>(both) : 0.0,
+                        nonFinite);
+            Require(nonFinite == 0 && both > 0U, "work scale: no comparable output");
+        }
+        // The work-scale pass is the full-extent pass of its work image: the
+        // same final colour, bit for bit (the difference above is the
+        // resolution's, not the work-scale path's).
+        for (size_t r = 1; r < runs.size(); ++r) {
+            ScaledRun alone;
+            alone.Settings = runs[r].Settings;
+            Require(alone.Pass.Initialize(passDevice, kernels), alone.Pass.UnavailableReason());
+            RunScaled(device, alone, runs[r].Work, 1, true, 32);
+            const size_t different = CountDifferent(alone.Colour, runs[r].Colour);
+            std::printf("DGI_GPU_M5B work_image_identity factor=%u work=%ux%u values=%zu bit_different=%zu\n", factors[r],
+                        runs[r].Extent.BufferWidth, runs[r].Extent.BufferHeight, alone.Colour.size(), different);
+            Require(different == 0, "the work-scale pass differs from the full-extent pass of its work image");
+            ReleaseScaled(device, alone);
+        }
+        for (auto& run : runs) ReleaseScaled(device, run);
+    }
+
+    // --- The OOT3D adapter kernel against its FP32 twin (open point 25):
+    // synthetic guides with sky, invalid, unknown-normal and kind-0 texels.
+    {
+        using namespace Fast::Oot3d;
+        const uint32_t W = 13, H = 9;
+        const PassExtent e = MakeWorkScaleExtent(W, H, 2);
+        DepthCamera camera;
+        camera.Near = 10.0;
+        camera.Far = 1000.0;
+        camera.ViewX = {1.0, 0.0, -0.5};
+        camera.ViewY = {0.0, -0.6, 0.3};
+        const DiffuseGiAdapterParams params = MakeDiffuseGiAdapterParams(e, camera);
+        std::vector<float> depth(W * H);
+        std::vector<uint32_t> geometry(4U * W * H);
+        std::vector<uint16_t> surface(4U * W * H), motion(4U * W * H);
+        uint32_t state = 12345U;
+        const auto next = [&state] { return state = state * 1664525U + 1013904223U; };
+        for (uint32_t t = 0; t < W * H; ++t) {
+            depth[t] = t % 11U == 0U ? 1.0F : static_cast<float>(next() >> 8) / 16777216.0F;
+            const float a = static_cast<float>(next() >> 8) / 16777216.0F * 6.2831853F;
+            const std::array<float, 3> n{0.6F * std::cos(a), 0.6F * std::sin(a), 0.8F};
+            geometry[4 * t] = 0U;
+            geometry[4 * t + 1] = t % 7U == 0U ? 0U : Fast::Renderer3ds::EncodePicaGeometryGuideNormal(n);
+            geometry[4 * t + 2] = t % 13U == 0U ? 0U : 1U;
+            geometry[4 * t + 3] = 0x3F800000U;
+            for (int c = 0; c < 3; ++c) surface[4 * t + c] = static_cast<uint16_t>(next() >> 16);
+            surface[4 * t + 3] = t % 5U == 0U ? 0U : 65535U;
+            motion[4 * t] = ToHalf(static_cast<float>(static_cast<int>(next() >> 24) - 128) / 4096.0F, true);
+            motion[4 * t + 1] = ToHalf(static_cast<float>(static_cast<int>(next() >> 24) - 128) / 4096.0F, true);
+        }
+        DiffuseGiAdapterKernel adapter;
+        const auto spirv =
+            shaders.Resolve(BuildDiffuseGiAdapterShader(), Fast::Renderer::SpirvStage::Compute, "oot3d_diffuse_gi_inputs.comp");
+        Require(shaders.Stats().Requests == 0, "the adapter kernel was compiled at run time (not in the pack)");
+        Require(adapter.Create(device.Handle, spirv), "adapter pipeline");
+        ScaledRun run; // output images and the pass buffers only
+        run.Settings = SceneSettings(2.5, 0.5);
+        Require(run.Pass.Initialize(passDevice, kernels), run.Pass.UnavailableReason());
+        run.J = device.MakeImage(VK_FORMAT_R16G16B16A16_SFLOAT, W, H);
+        Require(run.Pass.Configure(e, run.Settings, {}, {{run.J.Handle, run.J.View, run.J.Format, W, H}, {}}),
+                run.Pass.UnavailableReason());
+        VkDescriptorPool pool{};
+        const std::array<VkDescriptorPoolSize, 2> sizes{{{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4},
+                                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6}}};
+        VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        poolInfo.maxSets = 1;
+        poolInfo.poolSizeCount = 2;
+        poolInfo.pPoolSizes = sizes.data();
+        Check(vkCreateDescriptorPool(device.Handle, &poolInfo, nullptr, &pool));
+        VkDescriptorSet set{};
+        const VkDescriptorSetLayout layout = adapter.SetLayout();
+        VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocation.descriptorPool = pool;
+        allocation.descriptorSetCount = 1;
+        allocation.pSetLayouts = &layout;
+        Check(vkAllocateDescriptorSets(device.Handle, &allocation, &set));
+        std::vector<Device::Buffer> staging;
+        device.Begin();
+        Device::Image depthImage = MakeSampled(device, VK_FORMAT_R32_SFLOAT, W, H, depth.data(), depth.size() * 4, staging);
+        Device::Image geometryImage =
+            MakeSampled(device, VK_FORMAT_R32G32B32A32_UINT, W, H, geometry.data(), geometry.size() * 4, staging);
+        Device::Image surfaceImage =
+            MakeSampled(device, VK_FORMAT_R16G16B16A16_UNORM, W, H, surface.data(), surface.size() * 2, staging);
+        Device::Image motionImage =
+            MakeSampled(device, VK_FORMAT_R16G16B16A16_SFLOAT, W, H, motion.data(), motion.size() * 2, staging);
+        Require(RecordDiffuseGiAdapter(device.Handle, device.Command, adapter, set,
+                                       {depthImage.View, geometryImage.View, surfaceImage.View, motionImage.View},
+                                       run.Pass, params),
+                "adapter recording");
+        const std::array<PassResourceId, 6> ids{PassResourceId::Depth,  PassResourceId::Class,
+                                                PassResourceId::Radiance, PassResourceId::Normal,
+                                                PassResourceId::Motion, PassResourceId::OutputGuide};
+        VkDeviceSize total = 0;
+        std::array<VkDeviceSize, 6> offsets{};
+        for (size_t k = 0; k < ids.size(); ++k) offsets[k] = total, total += run.Pass.Buffer(ids[k]).Size;
+        Device::Buffer readback = device.MakeHost(total);
+        device.MemoryBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        for (size_t k = 0; k < ids.size(); ++k) {
+            const auto view = run.Pass.Buffer(ids[k]);
+            const VkBufferCopy region{0, offsets[k], view.Size};
+            vkCmdCopyBuffer(device.Command, view.Buffer, readback.Handle, 1, &region);
+        }
+        device.MemoryBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                             VK_ACCESS_HOST_READ_BIT);
+        device.Submit();
+        const auto* bytes = static_cast<const unsigned char*>(readback.Mapped);
+        const auto f32 = [&](size_t k, size_t index) {
+            float v = 0.0F;
+            std::memcpy(&v, bytes + offsets[k] + 4U * index, 4);
+            return v;
+        };
+        const auto u32 = [&](size_t k, size_t index) {
+            uint32_t v = 0U;
+            std::memcpy(&v, bytes + offsets[k] + 4U * index, 4);
+            return v;
+        };
+        size_t guideTexels = 0, guideDiffer = 0, workTexels = 0, workDiffer = 0;
+        double maxRadiance = 0.0, maxNormal = 0.0, maxMotion = 0.0;
+        float maxDepth = 0.0F;
+        for (uint32_t y = 0; y < H; ++y)
+            for (uint32_t x = 0; x < W; ++x) {
+                const size_t t = static_cast<size_t>(y) * W + x;
+                std::array<float, 4> s{};
+                for (int c = 0; c < 4; ++c) s[c] = surface[4 * t + c] / 65535.0F;
+                const DiffuseGiAdapterTexel twin = DiffuseGiAdapterTexelF32(
+                    params, depth[t], {geometry[4 * t], geometry[4 * t + 1], geometry[4 * t + 2], geometry[4 * t + 3]},
+                    s, {FromHalf(motion[4 * t]), FromHalf(motion[4 * t + 1])});
+                // Output guide: the same receivers; view depth within 1e-5
+                // relative (the perspective decode cancels near the far
+                // plane, so FP32 contraction moves its last bits; the
+                // upsampler's plane test tolerates 1e-3 of the depth),
+                // normal code within one step per axis.
+                const uint32_t gz = u32(5, 2 * t), gn = u32(5, 2 * t + 1);
+                const float zg = std::bit_cast<float>(gz), zt = std::bit_cast<float>(twin.Guide[0]);
+                const bool zSame = gz == twin.Guide[0] ||
+                                   (gz != 0U && twin.Guide[0] != 0U && std::abs(zg - zt) <= 1.0e-5F * std::abs(zt));
+                if (gz != 0U && twin.Guide[0] != 0U) maxDepth = std::max(maxDepth, std::abs(zg - zt) / std::abs(zt));
+                const auto axis = [](uint32_t a, uint32_t b, int shift) {
+                    const int d = static_cast<int>((a >> shift) & 0xFFFFU) - static_cast<int>((b >> shift) & 0xFFFFU);
+                    return d >= -1 && d <= 1;
+                };
+                const bool nSame = gn == twin.Guide[1] || (gn != 0U && twin.Guide[1] != 0U && axis(gn, twin.Guide[1], 0) &&
+                                                           axis(gn, twin.Guide[1], 16));
+                guideDiffer += zSame && nSame ? 0U : 1U;
+                ++guideTexels;
+                if (x < e.WorkPhase || y < e.WorkPhase || (x - e.WorkPhase) % 2U != 0U || (y - e.WorkPhase) % 2U != 0U)
+                    continue;
+                const size_t w = static_cast<size_t>((y - e.WorkPhase) / 2U) * e.BufferWidth + (x - e.WorkPhase) / 2U;
+                bool same = f32(0, w) == twin.Depth && u32(1, w) == twin.Class;
+                for (int c = 0; c < 3; ++c) {
+                    maxRadiance = std::max(maxRadiance, static_cast<double>(std::abs(f32(2, 4 * w + c) - twin.Radiance[c])));
+                    maxNormal = std::max(maxNormal, static_cast<double>(std::abs(f32(3, 4 * w + c) - twin.Normal[c])));
+                }
+                for (int c = 0; c < 2; ++c)
+                    maxMotion = std::max(maxMotion, static_cast<double>(std::abs(f32(4, 2 * w + c) - twin.Motion[c])));
+                workDiffer += same ? 0U : 1U;
+                ++workTexels;
+            }
+        std::printf("DGI_GPU_M5B adapter guide=%ux%u work=%ux%u guide_texels=%zu guide_differ=%zu work_texels=%zu "
+                    "depth_or_class_differ=%zu max|d radiance|=%.2e max|d normal|=%.2e max|d motion|=%.2e "
+                    "max_rel_guide_depth=%.2e pipeline_ms=%.1f\n",
+                    W, H, e.BufferWidth, e.BufferHeight, guideTexels, guideDiffer, workTexels, workDiffer, maxRadiance,
+                    maxNormal, maxMotion, maxDepth, adapter.CreationMilliseconds());
+        Require(guideDiffer == 0 && workDiffer == 0, "adapter decoding differs from its twin");
+        Require(maxRadiance <= 2.0e-6 && maxNormal <= 2.0e-6 && maxMotion == 0.0, "adapter values beyond rounding");
+        Check(vkDeviceWaitIdle(device.Handle));
+        device.Free(readback);
+        for (auto& b : staging) device.Free(b);
+        for (Device::Image* image : {&depthImage, &geometryImage, &surfaceImage, &motionImage}) device.Free(*image);
+        vkDestroyDescriptorPool(device.Handle, pool, nullptr);
+        adapter.Destroy();
+        ReleaseScaled(device, run);
+    }
+    kernels.reset();
 
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     std::printf("DGI_GPU_M5 validation_errors=%u sync_hazards=%u loader_messages=%u first=\"%s\" seconds=%.1f\n", gErrors,

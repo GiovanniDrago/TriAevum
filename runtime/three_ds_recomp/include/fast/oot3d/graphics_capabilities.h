@@ -43,11 +43,13 @@ enum class GraphicsCapability : uint8_t {
     NativeSurfaceLighting,
     BrixelizerGlobalIllumination,
     ImmerseMxao,
+    // Screen-space diffuse GI (fast/renderer/diffuse_gi_pass.h on this device).
+    ScreenSpaceGlobalIllumination,
 };
 
 // Last enumerator, for code that visits every capability.
 inline constexpr GraphicsCapability kLastGraphicsCapability =
-    GraphicsCapability::ImmerseMxao;
+    GraphicsCapability::ScreenSpaceGlobalIllumination;
 
 struct GraphicsCapabilityState {
     bool Available = false;

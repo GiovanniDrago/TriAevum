@@ -1,5 +1,6 @@
 #include "fast/oot3d/builtin_pass_shaders.h"
 #include "fast/oot3d/brixelizer_gi_prepare_shader.h"
+#include "fast/oot3d/diffuse_gi_adapter.h"
 #include "fast/oot3d/grass_shader_sources.h"
 #include "fast/oot3d/hiz_depth_pyramid.h"
 #include "fast/oot3d/hiz_reflection.h"
@@ -66,6 +67,8 @@ std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
     // docs/TRIAEVUM_SCREEN_SPACE_GI.md "M5"), after every earlier module.
     for (auto& kernel : Renderer::DiffuseGi::BuildDiffuseGiPassKernels())
         shaders.push_back({kernel.Name, Compute, std::move(kernel.Source), {}});
+    // Its OOT3D adapter kernel (pass inputs from the renderer's guides).
+    shaders.push_back({"oot3d_diffuse_gi_inputs.comp", Compute, BuildDiffuseGiAdapterShader(), {}});
     return shaders;
 }
 }

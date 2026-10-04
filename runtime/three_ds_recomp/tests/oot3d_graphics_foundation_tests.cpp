@@ -4205,6 +4205,70 @@ TEST(Oot3dGraphicsSettings, GatesGlobalIlluminationOnItsInputsAndProvider) {
     EXPECT_EQ(result.Value.Effects.GlobalIllumination.Mode, GlobalIlluminationMode::Off);
 }
 
+// Screen-space GI: its own provider capability (the normal and material
+// guides are not its inputs), capability-safe Off, and its parameters kept on
+// the pass's supported grid.
+TEST(Oot3dGraphicsSettings, GatesScreenSpaceGlobalIlluminationAndClampsItsParameters) {
+    using namespace Fast::Oot3d;
+    auto settings = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
+    auto& gi = settings.Effects.GlobalIllumination;
+    gi.Mode = GlobalIlluminationMode::ScreenSpace;
+    GraphicsCapabilities capabilities;
+    for (const auto capability : {GraphicsCapability::NriInterop, GraphicsCapability::SampledDepth,
+                                  GraphicsCapability::MotionVectors, GraphicsCapability::ValidViewMetadata})
+        capabilities.Set(capability, true);
+    capabilities.Set(GraphicsCapability::ScreenSpaceGlobalIllumination, false, "no storage buffers");
+    auto result = GraphicsSettingsService::Validate(settings, capabilities);
+    EXPECT_EQ(result.Value.Effects.GlobalIllumination.Mode, GlobalIlluminationMode::Off);
+    ASSERT_FALSE(result.Issues.empty());
+    EXPECT_EQ(result.Issues.back().Message, "no storage buffers");
+
+    capabilities.Set(GraphicsCapability::ScreenSpaceGlobalIllumination, true);
+    result = GraphicsSettingsService::Validate(settings, capabilities);
+    EXPECT_EQ(result.Value.Effects.GlobalIllumination.Mode, GlobalIlluminationMode::ScreenSpace);
+    EXPECT_EQ(result.Value.Effects.GlobalIllumination.ScreenSpace, ScreenSpaceGiSettings{});
+
+    // Out-of-grid values land on the nearest supported value.
+    gi.ScreenSpace = {9, 20, 100, 5000.0F, -3.0F, true, 7, false};
+    result = GraphicsSettingsService::Validate(settings, capabilities);
+    const auto& clamped = result.Value.Effects.GlobalIllumination.ScreenSpace;
+    EXPECT_EQ(clamped.Sections, 4U);
+    EXPECT_EQ(clamped.RadialCandidates, 16U);
+    EXPECT_EQ(clamped.Sectors, 128U);
+    EXPECT_FLOAT_EQ(clamped.Radius, 1000.0F);
+    EXPECT_FLOAT_EQ(clamped.Thickness, 1.0F);
+    EXPECT_EQ(clamped.FilterLevels, 4U);
+    gi.ScreenSpace.Radius = std::numeric_limits<float>::quiet_NaN();
+    result = GraphicsSettingsService::Validate(settings, capabilities);
+    EXPECT_FLOAT_EQ(result.Value.Effects.GlobalIllumination.ScreenSpace.Radius, ScreenSpaceGiSettings{}.Radius);
+
+    capabilities.Set(GraphicsCapability::ValidViewMetadata, false, "no view");
+    result = GraphicsSettingsService::Validate(settings, capabilities);
+    EXPECT_EQ(result.Value.Effects.GlobalIllumination.Mode, GlobalIlluminationMode::Off);
+    // An unknown persisted mode value is corrected to Off.
+    capabilities.Set(GraphicsCapability::ValidViewMetadata, true);
+    gi.Mode = static_cast<GlobalIlluminationMode>(7);
+    result = GraphicsSettingsService::Validate(settings, capabilities);
+    EXPECT_EQ(result.Value.Effects.GlobalIllumination.Mode, GlobalIlluminationMode::Off);
+}
+
+// The screen-space mode has no ray that leaves the scene: no sky source, and
+// the sky gain never raises the composition gain. The face normal is its
+// geometric normal.
+TEST(Oot3dGraphicsSettings, ScreenSpaceGlobalIlluminationHasNoSkySource) {
+    using namespace Fast::Oot3d;
+    GlobalIlluminationSettings gi;
+    gi.SkyLight = 4.0F;
+    gi.Mode = GlobalIlluminationMode::BrixelizerGi;
+    EXPECT_FLOAT_EQ(ResolveGlobalIlluminationSources(gi).Gain, 4.0F);
+    EXPECT_FALSE(GlobalIlluminationReadsFaceNormal(gi));
+    gi.Mode = GlobalIlluminationMode::ScreenSpace;
+    const auto mix = ResolveGlobalIlluminationSources(gi);
+    EXPECT_FLOAT_EQ(mix.Gain, 1.0F);
+    EXPECT_EQ(mix.Weights, (std::array<float, 4>{1.0F, 1.0F, 1.0F, 0.0F}));
+    EXPECT_TRUE(GlobalIlluminationReadsFaceNormal(gi));
+}
+
 TEST(Oot3dGraphicsSettings, GlobalIlluminationSourcesSplitIntoWeightsAndGain) {
     using namespace Fast::Oot3d;
     GlobalIlluminationSettings gi;

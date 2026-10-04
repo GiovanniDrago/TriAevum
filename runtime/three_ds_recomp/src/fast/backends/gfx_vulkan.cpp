@@ -1123,6 +1123,9 @@ void GfxRenderingAPIVulkan::Init() {
     if (!mBrixelizerGiPass.Initialize(mPhysicalDevice, mDevice, mNriInterop, mBrixelizerScene)) {
         SPDLOG_INFO("OOT3D Vulkan Brixelizer GI unavailable: {}", mBrixelizerGiPass.UnavailableReason());
     }
+    // Screen-space GI creates its pipelines off the frame, the first time the
+    // mode is requested.
+    mScreenSpaceGi.Initialize(mPhysicalDevice, mDevice, mNriInterop, kFramesInFlight);
     if (!mReflectionIblPass.Initialize(
             mPhysicalDevice, mDevice, mNriInterop)) {
         SPDLOG_INFO("OOT3D Vulkan reflection IBL unavailable: {}",
@@ -1331,6 +1334,17 @@ void GfxRenderingAPIVulkan::Init() {
         Oot3d::GraphicsSettingsRuntime::Instance().SetCapability(
             Oot3d::GraphicsCapability::BrixelizerGlobalIllumination, supported, reason);
     }
+    {
+        // The screen-space GI reads the same albedo guide (dynamic rendering).
+        std::string reason;
+        bool supported = Oot3d::ScreenSpaceGiProvider::Supported(mPhysicalDevice, reason);
+        if (supported && !mPicaDynamicRenderingScope.Available()) {
+            supported = false;
+            reason = "screen-space global illumination requires PICA dynamic rendering";
+        }
+        Oot3d::GraphicsSettingsRuntime::Instance().SetCapability(
+            Oot3d::GraphicsCapability::ScreenSpaceGlobalIllumination, supported, reason);
+    }
     if (!mInteractiveGrassPass.Initialize(mPhysicalDevice, mDevice,
                                           mNriInterop.Shaders(),
                                           mNativePicaCanonicalRenderPass,
@@ -1367,6 +1381,7 @@ void GfxRenderingAPIVulkan::Shutdown() {
         JoinStartupPreparation();
         if (mPreparationQueue) mPreparationQueue->Drain();
         StorePipelineCache();
+        mScreenSpaceGi.Shutdown();
         mBrixelizerGiPass.Shutdown();
         mBrixelizerScene.Shutdown();
         ShutdownImGuiBackend();
@@ -2041,8 +2056,11 @@ void GfxRenderingAPIVulkan::StartFrame() {
     // The rendering snapshot already disables GI outside per-pixel lighting
     // and under native presentation.
     const bool globalIlluminationRequested =
-        graphicsSettings.Effects.GlobalIllumination.Mode == Oot3d::GlobalIlluminationMode::BrixelizerGi &&
+        graphicsSettings.Effects.GlobalIllumination.Mode != Oot3d::GlobalIlluminationMode::Off &&
         !mNativeFidelityProfile;
+    const bool screenSpaceGlobalIlluminationRequested =
+        globalIlluminationRequested &&
+        graphicsSettings.Effects.GlobalIllumination.Mode == Oot3d::GlobalIlluminationMode::ScreenSpace;
     // GI and temporal MXAO reproject their history with the scene's motion
     // vectors.
     const bool temporalAmbientOcclusionRequested =
@@ -2063,7 +2081,10 @@ void GfxRenderingAPIVulkan::StartFrame() {
         graphicsSettings.Grass.Quality != Oot3d::GrassQuality::Off,
         globalIlluminationRequested,
         graphicsSettings.Effects.PointShadows.Mode == Oot3d::PointShadowMode::CubeMaps,
-        Oot3d::EffectsReadFaceNormal(graphicsSettings.Effects),
+        Oot3d::EffectsReadFaceNormal(graphicsSettings.Effects) ||
+            (screenSpaceGlobalIlluminationRequested &&
+             Oot3d::GlobalIlluminationReadsFaceNormal(graphicsSettings.Effects.GlobalIllumination)),
+        screenSpaceGlobalIlluminationRequested,
     };
     if (!mPicaExtensionRequests.has_value() ||
         *mPicaExtensionRequests != extensionRequests) {

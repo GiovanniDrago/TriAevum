@@ -3,20 +3,35 @@
 // Compute kernels of the M5 runtime pass of the diffuse screen-space GI
 // (docs/TRIAEVUM_SCREEN_SPACE_GI.md, "M5"). The kernels are the M2-M4 GLSL
 // twins unchanged (normal pass, hierarchy level 0 and reduction, M4 gather,
-// geometry pack, temporal accumulation, a-trous level) plus one own output
-// kernel that writes the composition outputs. They are precompiled into
-// builtin_pass.spvpack by build_pass_artifacts (the catalogue in
-// fast/oot3d/builtin_pass_shaders.cpp appends BuildDiffuseGiPassKernels());
-// the pass resolves each kernel by its exact source text, never by name.
+// geometry pack, temporal accumulation, a-trous level) plus two own kernels
+// that write the composition outputs: the output kernel (the pass's own
+// extent) and the geometry-guided upsampler (a work-scale pass to the output
+// extent). They are precompiled into builtin_pass.spvpack by
+// build_pass_artifacts (the catalogue in fast/oot3d/builtin_pass_shaders.cpp
+// appends BuildDiffuseGiPassKernels()); the pass resolves each kernel by its
+// exact source text, never by name.
 //
 // Output kernel, set 0: 0 uniform OutputShaderParams; 1 vec4 colour[] (J.rgb,
 // A raw per viewport pixel: the last a-trous level, or the temporal colour
 // without a filter); 2 vec4 geometry[] (receivers: normal.xyz, view depth);
-// 3 rgba16f image (J.rgb, receiver flag); 4 r32f image (A clamped to [0, 1]).
-// The images cover the whole buffer extent: texels outside the viewport, and
-// every texel in the neutral mode, take J = 0, receiver 0, A = 1. Workgroups
-// 8 x 8 over the buffer extent; no barriers, so out-of-range invocations
-// return at once.
+// 3 rgba16f image (J.rgb, receiver flag); 4 r32f image (A clamped to [0, 1],
+// written only when requested). The images cover the whole buffer extent:
+// texels outside the viewport, and every texel in the neutral mode, take
+// J = 0, receiver 0, A = 1.
+//
+// Upsample kernel (work scale f > 1: the pass ran on one texel of every f x f
+// block of the output, at a fixed phase), set 0: 0 uniform
+// UpsampleShaderParams; 1 colour[] and 2 geometry[] of the work image; 3 uvec2
+// output guide[] per output texel (view depth as float bits, the module's
+// octahedral normal code; depth 0: no receiver); 4 rgba16f and 5 r32f images
+// at the output extent. Each output receiver takes the bilinear taps of its
+// continuous work position whose surface passes the plane and normal test
+// against its own position and normal (weights renormalized over the accepted
+// taps); with none, the nearest such sample of the surrounding 4 x 4; with
+// none either, no estimate (J = 0, receiver 0, A = 1). Light never crosses a
+// silhouette: a tap on another surface is rejected, not blended.
+//
+// Workgroups 8 x 8; no barriers, so out-of-range invocations return at once.
 
 #include <array>
 #include <cstdint>
@@ -33,9 +48,10 @@ enum class PassKernel : uint8_t {
     Pack,            // M3 geometry pack (receivers for the temporal kernels)
     Temporal,        // M3 stratum reconstruction and temporal accumulation
     Filter,          // M3 a-trous level, one dispatch per level
-    Output,          // M5 composition outputs
+    Output,          // M5 composition outputs at the pass's own extent (and the neutral outputs)
+    Upsample,        // M5 geometry-guided upsampling of a work-scale pass to the output extent
 };
-inline constexpr uint32_t kPassKernelCount = 8;
+inline constexpr uint32_t kPassKernelCount = 9;
 
 struct PassKernelSource {
     PassKernel Kernel = PassKernel::Normal;
@@ -55,20 +71,45 @@ inline constexpr float kOutputHalfMax = 65504.0F;
 // std140 uniform block of the output kernel, 48 bytes.
 struct OutputShaderParams {
     std::array<uint32_t, 4> Extent{};   // buffer width, buffer height, viewport x, viewport y
-    std::array<uint32_t, 4> Viewport{}; // viewport width, viewport height, mode, 0
+    std::array<uint32_t, 4> Viewport{}; // viewport width, viewport height, mode, write A (1 / 0)
     std::array<float, 4> Limits{};      // largest stored |J|, 0, 0, 0
 };
 static_assert(sizeof(OutputShaderParams) == 48);
 
-[[nodiscard]] std::string BuildDiffuseGiOutputShader();
+// std140 uniform block of the upsample kernel, 112 bytes.
+struct UpsampleShaderParams {
+    std::array<uint32_t, 4> Output{}; // output width, output height, write A (1 / 0), 0
+    std::array<uint32_t, 4> Work{};   // work width, work height, factor, phase
+    std::array<float, 4> OutputX{}, OutputY{}; // output UV -> ray map (ax, bx, cx, 0)
+    std::array<float, 4> WorkX{}, WorkY{};     // work UV -> ray map
+    std::array<float, 4> Surface{};   // plane sine, plane depth (relative), normal cos, largest stored |J|
+};
+static_assert(sizeof(UpsampleShaderParams) == 112);
 
-// FP32 twin of one output texel (buffer coordinates), in the operation order
-// of the kernel. `colour` and `geometry` are viewport-sized vec4 arrays.
+[[nodiscard]] std::string BuildDiffuseGiOutputShader();
+[[nodiscard]] std::string BuildDiffuseGiUpsampleShader();
+// GLSL of the module's normal code (dgi_encode_normal, dgi_decode_normal),
+// for the adapters that write the output guide.
+[[nodiscard]] std::string DiffuseGiNormalCodecGlsl();
+
+// The module's normal code: the octahedral map of a unit vector
+// (n / (|x| + |y| + |z|), the lower hemisphere folded over the diagonals),
+// each axis in unorm16 offset by one so that 0 means "no normal". FP32 twins
+// of the GLSL, same operation order.
+[[nodiscard]] uint32_t EncodeDiffuseGiNormal(const std::array<float, 3>& normal) noexcept;
+[[nodiscard]] std::array<float, 3> DecodeDiffuseGiNormal(uint32_t code) noexcept;
+
+// FP32 twins of one output texel (output coordinates), in the operation order
+// of the kernels. `colour` and `geometry` are viewport- (work-) sized vec4
+// arrays; `guide` holds two uint per output texel.
 struct OutputTexel {
     std::array<float, 4> Illumination{}; // J.rgb, receiver flag (before the FP16 store)
     float Accessibility = 1.0F;
 };
 [[nodiscard]] OutputTexel OutputTexelF32(const OutputShaderParams& params, uint32_t x, uint32_t y,
                                          const float* colour, const float* geometry) noexcept;
+[[nodiscard]] OutputTexel UpsampleTexelF32(const UpsampleShaderParams& params, uint32_t x, uint32_t y,
+                                           const float* colour, const float* geometry,
+                                           const uint32_t* guide) noexcept;
 
 } // namespace Fast::Renderer::DiffuseGi

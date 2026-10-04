@@ -33,6 +33,8 @@ function(triaevum_add_pass_shader_sources target)
         "${runtime}/src/fast/renderer/diffuse_gi_hierarchy.cpp"
         "${runtime}/src/fast/renderer/diffuse_gi_guiding.cpp"
         "${runtime}/src/fast/renderer/diffuse_gi_noise.cpp"
+        # The OOT3D adapter kernel that fills the pass inputs from the guides.
+        "${runtime}/src/fast/oot3d/diffuse_gi_adapter_shader.cpp"
         "${runtime}/src/fast/renderer3ds/pica_surface_lighting.cpp"
         "${runtime}/src/fast/renderer/shaderc_compiler.cpp"
         "${runtime}/src/fast/renderer/spirv_cache.cpp"

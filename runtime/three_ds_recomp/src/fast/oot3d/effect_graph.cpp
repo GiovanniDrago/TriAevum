@@ -594,9 +594,10 @@ CompiledEffectGraph BuildPicaExtensionGraph(const PicaAttachmentFeatureRequests&
                 .Resources = { Read(EffectResource::NativeDepth), Read(EffectResource::OutlineGeometryGuide),
                                Read(EffectResource::NormalGuide), Read(EffectResource::RigidMotionGuide) } });
     // The distance field voxelizes the native opaque geometry of the frame; it
-    // changes no native target and publishes a persistent field.
+    // changes no native target and publishes a persistent field (a
+    // screen-space GI gathers from the guides instead).
     graph.Add({ .Name = std::string(PicaExtensionPassName(PicaExtensionPass::SceneDistanceField)),
-                .Enabled = requests.GlobalIllumination,
+                .Enabled = requests.GlobalIllumination && !requests.ScreenSpaceGlobalIllumination,
                 .Stage = EffectStage::AfterOpaque,
                 .Contract = EffectContractKind::Observer,
                 .Resources = { Read(EffectResource::PicaSceneFrame), Read(EffectResource::NativeSceneView) } });

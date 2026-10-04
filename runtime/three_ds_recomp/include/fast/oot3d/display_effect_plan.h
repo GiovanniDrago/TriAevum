@@ -52,6 +52,10 @@ struct DisplayEffectPlanInput {
     // Specular GI is requested: the reflection source when no screen-space
     // provider is selected, the fill of HiZ misses with HiZ.
     bool GlobalIlluminationSpecular = false;
+    // The diffuse GI provider is the screen-space gather: it reads the native
+    // depth, the geometry guide's face normal, the surface guide and the
+    // motion vectors, and has no specular term.
+    bool GlobalIlluminationScreenSpace = false;
     ToonMode Toon = ToonMode::Off;
     bool OutlineEnabled = false;
     AntiAliasingMode AntiAliasing = AntiAliasingMode::Off;

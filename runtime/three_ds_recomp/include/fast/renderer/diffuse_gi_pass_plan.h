@@ -1,8 +1,8 @@
 #pragma once
 
-// Diffuse screen-space GI, milestone M5 (Stage A): the CPU half of the runtime
-// pass (docs/TRIAEVUM_SCREEN_SPACE_GI.md, "M5"). Title-neutral and
-// Vulkan-free: settings and their validation, the transport key, the
+// Diffuse screen-space GI, milestone M5: the CPU half of the runtime pass
+// (docs/TRIAEVUM_SCREEN_SPACE_GI.md, "M5"). Title-neutral and Vulkan-free:
+// settings and their validation, the transport key, the work scale, the
 // resources with their sizes and lifetimes, the layout of the uniform
 // parameter buffer and the plan of one frame (reset decision and every
 // constant block, built by the M2-M4 functions that the FP32 twins read).
@@ -17,10 +17,21 @@
 //   geometry pack (M3)          -> receivers (normal, view depth)
 //   temporal (M3)               reconstruction + accumulation; history ping-pong
 //   a-trous (M3)                one dispatch per level, ping-pong buffers
-//   output (M5)                 -> J (RGBA16F) and A (R32F) images
+//   output (M5)                 -> J (RGBA16F) and A (R32F) images at the pass extent, or
+//   upsample (M5)               -> the same images at the output extent (work scale f > 1)
 // The hierarchy runs only when the footprint or the cache is on with a radial
 // schedule; guiding, the SH backend and blue-noise rotations are not part of
 // the runtime pass (M4 decisions, open point 20).
+//
+// Work scale (open point 24): with f = 2 or 4 the pass runs on one texel of
+// every f x f block of the output, at phase o = (f - 1) / 2 (work pixel (i, j)
+// is output texel (f i + o, f j + o)). The work image is an exact point
+// subsample: its texels are output texels, its ray map is the output ray map
+// composed with the affine index map, so depth, normal and radiance of a work
+// texel always describe one surface (no averaging across silhouettes). The
+// adapter writes the work inputs and, per output texel, an output guide (view
+// depth, normal code) that the upsample kernel uses to keep light on its
+// surface.
 
 #include "fast/renderer/diffuse_gi_gather.h"
 #include "fast/renderer/diffuse_gi_gather_shader.h"
@@ -35,11 +46,20 @@
 
 namespace Fast::Renderer::DiffuseGi {
 
+// Surface test of the upsampler (the M3 hard surface test against the output
+// texel's own plane and normal).
+struct PassUpsampleSettings {
+    double PlaneSine = 0.05;
+    double PlaneDepth = 1.0e-3; // relative to the output texel's view depth
+    double NormalCos = 0.9;
+};
+
 struct PassSettings {
     GatherSettings Gather;       // transport (R, tau in scene units), quality, rotations, M4 switches
     HierarchySettings Hierarchy; // levels and tolerances; SH order 0 (no SH sums)
     TemporalSettings Temporal;   // Enabled = false: every frame resets (alpha = 1)
     FilterSettings Filter;       // Levels = 0: no spatial filter
+    PassUpsampleSettings Upsample;
 };
 
 // The M4 recommendation: metric radial schedule K 16, e 2, footprint strips
@@ -56,15 +76,36 @@ struct PassSettings {
 [[nodiscard]] bool PassUsesHierarchy(const PassSettings& settings) noexcept;
 // FNV-1a 64 over every transport field (R, tau, S, N, schedule, K, e, jitter,
 // masks, tolerances, rotation sequence, M4 switches, hierarchy, normal
-// source). Its change resets the history (kResetTransport); temporal and
-// filter settings are not part of it.
+// source). Its change resets the history (kResetTransport); temporal, filter
+// and upsample settings are not part of it.
 [[nodiscard]] uint64_t PassTransportKey(const PassSettings& settings, GeometricNormalSource normals) noexcept;
 
+inline constexpr uint32_t kMaxPassWorkFactor = 4;
+
 struct PassExtent {
-    uint32_t BufferWidth = 0, BufferHeight = 0; // extent of the per-texel inputs and of the output images
+    uint32_t BufferWidth = 0, BufferHeight = 0; // extent of the per-texel inputs (the work image)
     ViewportRect Viewport;                      // pixels the GI runs on (inside the buffers)
+    // Work scale: 1 writes the outputs at the buffer extent; 2 or 4 writes
+    // them at the output extent through the upsampler (the viewport is then
+    // the whole buffer and the buffer is the work image of the output).
+    uint32_t WorkFactor = 1;
+    uint32_t WorkPhase = 0;
+    uint32_t OutputWidth = 0, OutputHeight = 0; // 0 with WorkFactor 1 (the buffer extent)
 };
 [[nodiscard]] const char* ValidatePassExtent(const PassExtent& extent) noexcept;
+// The extent of a pass that runs at 1 / factor of an output of this size
+// (factor 1: the output itself, no padding).
+[[nodiscard]] PassExtent MakeWorkScaleExtent(uint32_t outputWidth, uint32_t outputHeight, uint32_t factor) noexcept;
+// Width and height of the output images.
+[[nodiscard]] std::array<uint32_t, 2> PassOutputExtent(const PassExtent& extent) noexcept;
+// The camera of the work image from the output's camera (same encoding, near,
+// far; ray map composed with u_out = (f w / W) u_work + (o + 1/2 - f/2) / W).
+// Factor 1 returns the camera unchanged.
+[[nodiscard]] DepthCamera WorkScaleCamera(const DepthCamera& output, const PassExtent& extent) noexcept;
+// Multipliers that turn a normalized output-UV displacement into a normalized
+// work-UV displacement: W / (f w) and H / (f h) (exactly 1 when f divides the
+// output extent and o = 0).
+[[nodiscard]] std::array<double, 2> WorkMotionScale(const PassExtent& extent) noexcept;
 
 // Optional per-pixel inputs the adapter provides; declared at Configure.
 struct PassInputLayout {
@@ -74,8 +115,9 @@ struct PassInputLayout {
 
 // ---------------------------------------------------------------------------
 // Resources. T = buffer texels, P = viewport pixels, C = hierarchy cells of
-// all levels (about 4/3 P). Every buffer is pass-owned device memory except
-// the two output images, which the caller (the effect graph) owns.
+// all levels (about 4/3 P), O = output texels (work scale only). Every buffer
+// is pass-owned device memory except the two output images, which the caller
+// (the effect graph) owns.
 
 enum class PassResourceId : uint8_t {
     // Inputs (written by the adapter before Execute).
@@ -86,6 +128,7 @@ enum class PassResourceId : uint8_t {
     Motion,           // vec2 per pixel: declared motion convention
     PreviousPosition, // vec4 per pixel: previous view-space position (PreviousPosition only)
     SurfaceId,        // uint per pixel (optional, 0 = unknown)
+    OutputGuide,      // uvec2 per output texel (work scale): view depth bits, normal code
     // Frame transients.
     Cells,            // 3 vec4 per cell: plane + flags/count, normal + ZMin, mean radiance + ZMax
     Results,          // vec4 per pixel: raw J, A raw
@@ -163,6 +206,7 @@ struct PassParameterLayout {
     std::array<uint32_t, kMaxFilterLevels> Filter{};  // FilterShaderParams with step 2^level
     uint32_t Output = 0;                              // OutputShaderParams, final mode
     uint32_t OutputNeutral = 0;                       // OutputShaderParams, neutral mode
+    uint32_t Upsample = 0;                            // UpsampleShaderParams (work scale)
     uint32_t Size = 0;
 };
 // `uniformAlignment` is minUniformBufferOffsetAlignment (a power of two);
@@ -173,16 +217,18 @@ struct PassParameterLayout {
 // Frames.
 
 struct PassFrame {
-    DepthCamera Camera; // encoding, near, far, UV -> ray map of this frame (jitter included)
+    // Encoding, near, far, UV -> ray map of the OUTPUT image of this frame
+    // (jitter included); with a work scale the pass derives the work camera.
+    DepthCamera Camera;
     GeometricNormalSource NormalSource = GeometricNormalSource::DepthReconstruction;
     uint64_t FrameIndex = 0; // drives the rotation sequence
     uint32_t ViewId = 0;
     bool CameraCut = false;
     bool ExplicitReset = false;
     double PreExposure = 1.0;
-    double JitterX = 0.0, JitterY = 0.0; // pixels, positive along +u / +v
+    double JitterX = 0.0, JitterY = 0.0; // output pixels, positive along +u / +v
     RigidTransform CurrentToPrevious;    // view to previous view
-    MotionDeclaration Motion;
+    MotionDeclaration Motion;            // of the motion the adapter wrote (work-image UV)
     HistoryValidation Validation = HistoryValidation::FlowAndDepth;
     bool SurfaceIds = false; // the adapter wrote this frame's surface ids
 };
@@ -192,6 +238,7 @@ struct PassFrame {
 struct PassFramePlan {
     uint32_t ResetReasons = 0;
     TemporalFrameState Temporal; // committed once the frame is recorded
+    DepthCamera WorkCamera;      // the camera of the pass's own image
     bool Hierarchy = false;
     uint32_t HierarchyLevels = 0;
     std::array<std::array<uint32_t, 2>, kMaxHierarchyLevels> LevelExtent{}; // cells per level
@@ -201,17 +248,22 @@ struct PassFramePlan {
     TemporalShaderParams TemporalParams{};
     std::array<FilterShaderParams, kMaxFilterLevels> Filter{};
     OutputShaderParams Output{}, OutputNeutral{};
+    UpsampleShaderParams Upsample{};
     std::vector<uint8_t> Parameters; // PassParameterLayout::Size bytes, every block in place
 };
 
 // Plans one frame (settings already validated). `history` is read, not
 // changed: the caller commits plan.Temporal after recording the frame.
+// `writeAccessibility` selects whether the output kernels store A.
 [[nodiscard]] const char* PlanPassFrame(const PassExtent& extent, const PassSettings& settings,
                                         const PassInputLayout& inputs, const PassParameterLayout& layout,
                                         const TemporalHistoryState& history, const PassFrame& frame,
-                                        PassFramePlan& plan);
+                                        PassFramePlan& plan, bool writeAccessibility = true);
 
-[[nodiscard]] OutputShaderParams MakeOutputShaderParams(const PassExtent& extent, uint32_t mode) noexcept;
+// The output block of a mode over the output images (the buffer extent with
+// work factor 1, the output extent otherwise).
+[[nodiscard]] OutputShaderParams MakeOutputShaderParams(const PassExtent& extent, uint32_t mode,
+                                                        bool writeAccessibility = true) noexcept;
 
 // Work of one frame: dispatches and the private compute barriers between
 // them (two leading barriers: producers -> this frame, parameter update ->

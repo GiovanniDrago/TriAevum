@@ -493,6 +493,14 @@ void GraphicsSettingsRuntime::PublishSceneExtent(uint32_t width, uint32_t height
     mDisplayMetrics.SceneWidth = width;
     mDisplayMetrics.SceneHeight = height;
 }
+GlobalIlluminationProviderStatus GraphicsSettingsRuntime::GlobalIlluminationStatus() const {
+    std::scoped_lock lock(mMutex);
+    return mGlobalIlluminationStatus;
+}
+void GraphicsSettingsRuntime::PublishGlobalIlluminationStatus(GlobalIlluminationProviderStatus status) {
+    std::scoped_lock lock(mMutex);
+    mGlobalIlluminationStatus = std::move(status);
+}
 GraphicsSettingsSaveState GraphicsSettingsRuntime::SaveState() const {
     std::scoped_lock lock(mMutex);
     if (mPersistenceSuppressed || mPersistence == nullptr)

@@ -134,7 +134,7 @@ TEST(SpirvPack, EmbeddedFamiliesHoldTheirModules) {
     ExpectSpirvModules(Fast::Oot3d::ToonFragmentArtifacts(), 200U);
     ExpectSpirvModules(Fast::Oot3d::UberFragmentArtifacts(), 24U);
     ExpectSpirvModules(Fast::Oot3d::CasterFragmentArtifacts(), 4U);
-    ExpectSpirvModules(BuiltinPassArtifacts(), 78U); // 70 + 8 diffuse GI pass kernels (M5)
+    ExpectSpirvModules(BuiltinPassArtifacts(), 80U); // 70 + 9 diffuse GI pass kernels + its OOT3D adapter (M5)
     ExpectSpirvModules(Fast::Immerse::MxaoPassArtifacts(), 6U);
     ExpectSpirvModules(Oot3dNativeGame::TitleVertexArtifacts(), 8U);
     ExpectSpirvModules(Oot3dNativeGame::TitlePassArtifacts(), 6U);

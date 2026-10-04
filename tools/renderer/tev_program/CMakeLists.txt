@@ -330,7 +330,11 @@ add_executable(diffuse_gi_pass_gpu_tests diffuse_gi_pass_gpu_tests.cpp
     "${runtime}/src/fast/renderer/diffuse_gi_sequence.cpp"
     "${runtime}/src/fast/renderer/diffuse_gi_temporal.cpp"
     "${runtime}/src/fast/renderer/diffuse_gi_pass_plan.cpp"
-    "${runtime}/src/fast/renderer/diffuse_gi_pass.cpp")
+    "${runtime}/src/fast/renderer/diffuse_gi_pass.cpp"
+    "${runtime}/src/fast/oot3d/diffuse_gi_adapter.cpp")
+# M5 Stage B: the OOT3D adapter kernel with its Vulkan recording.
+set_source_files_properties("${runtime}/src/fast/oot3d/diffuse_gi_adapter.cpp" PROPERTIES
+    COMPILE_DEFINITIONS ENABLE_OOT3D_VULKAN)
 triaevum_add_pass_shader_sources(diffuse_gi_pass_gpu_tests)
 target_compile_features(diffuse_gi_pass_gpu_tests PRIVATE cxx_std_20)
 target_include_directories(diffuse_gi_pass_gpu_tests PRIVATE "${runtime}/include" "${SHADERC_INCLUDE_DIR}")

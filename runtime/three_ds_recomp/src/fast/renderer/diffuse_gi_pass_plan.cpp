@@ -6,13 +6,14 @@
 // pass and the twins cannot drift apart.
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace Fast::Renderer::DiffuseGi {
 namespace {
 
-constexpr uint32_t kMaxPassSections = 64;     // one dispatch per frame must stay short
-constexpr uint32_t kMaxPassExtent = 16384;    // per axis: indices stay far below 2^32
+constexpr uint32_t kMaxPassSections = 64;  // one dispatch per frame must stay short
+constexpr uint32_t kMaxPassExtent = 16384; // per axis: indices stay far below 2^32
 
 struct Fnv {
     uint64_t Hash = 14695981039346656037ULL;
@@ -35,6 +36,10 @@ uint32_t AlignUp(uint32_t value, uint32_t alignment) noexcept { return (value + 
 template <typename Block>
 void Put(std::vector<uint8_t>& bytes, uint32_t offset, const Block& block) {
     std::memcpy(bytes.data() + offset, &block, sizeof(Block));
+}
+
+std::array<float, 4> RayRow(const std::array<double, 3>& row) noexcept {
+    return {static_cast<float>(row[0]), static_cast<float>(row[1]), static_cast<float>(row[2]), 0.0F};
 }
 
 } // namespace
@@ -86,6 +91,10 @@ const char* ValidatePassSettings(const PassSettings& s) noexcept {
     if (g.Rotations.Mode == RotationMode::Stratified && s.Temporal.TileLog2 != g.Rotations.TileLog2)
         return "the reconstruction tile must equal the rotation tile";
     if (const char* e = ValidateFilterSettings(s.Filter); *e != '\0') return e;
+    const PassUpsampleSettings& u = s.Upsample;
+    if (!(u.PlaneSine >= 0.0) || !(u.PlaneDepth >= 0.0) || !(u.NormalCos >= -1.0 && u.NormalCos <= 1.0) ||
+        !std::isfinite(u.PlaneSine) || !std::isfinite(u.PlaneDepth))
+        return "upsample surface tolerances out of range";
     return "";
 }
 
@@ -132,7 +141,73 @@ const char* ValidatePassExtent(const PassExtent& e) noexcept {
     if (static_cast<uint64_t>(e.Viewport.X) + e.Viewport.Width > e.BufferWidth ||
         static_cast<uint64_t>(e.Viewport.Y) + e.Viewport.Height > e.BufferHeight)
         return "viewport outside the buffers";
+    if (e.WorkFactor == 1U) {
+        if (e.WorkPhase != 0U || (e.OutputWidth != 0U && e.OutputWidth != e.BufferWidth) ||
+            (e.OutputHeight != 0U && e.OutputHeight != e.BufferHeight))
+            return "a pass without a work scale writes its outputs at the buffer extent";
+        return "";
+    }
+    if (e.WorkFactor != 2U && e.WorkFactor != kMaxPassWorkFactor) return "work scale must be 1, 2 or 4";
+    if (e.WorkPhase >= e.WorkFactor) return "work phase outside the block";
+    if (e.OutputWidth == 0U || e.OutputHeight == 0U || e.OutputWidth > kMaxPassExtent ||
+        e.OutputHeight > kMaxPassExtent || e.OutputWidth <= e.WorkPhase || e.OutputHeight <= e.WorkPhase)
+        return "work-scale output extent out of range";
+    if (e.Viewport.X != 0U || e.Viewport.Y != 0U || e.Viewport.Width != e.BufferWidth ||
+        e.Viewport.Height != e.BufferHeight)
+        return "a work-scale pass runs on its whole buffer";
+    if (e.BufferWidth != (e.OutputWidth - e.WorkPhase + e.WorkFactor - 1U) / e.WorkFactor ||
+        e.BufferHeight != (e.OutputHeight - e.WorkPhase + e.WorkFactor - 1U) / e.WorkFactor)
+        return "work extent does not subsample the output";
     return "";
+}
+
+PassExtent MakeWorkScaleExtent(uint32_t outputWidth, uint32_t outputHeight, uint32_t factor) noexcept {
+    PassExtent e;
+    if (factor <= 1U) {
+        e.BufferWidth = outputWidth;
+        e.BufferHeight = outputHeight;
+        e.Viewport = {0, 0, outputWidth, outputHeight};
+        return e;
+    }
+    e.WorkFactor = factor;
+    e.WorkPhase = (factor - 1U) / 2U;
+    e.OutputWidth = outputWidth;
+    e.OutputHeight = outputHeight;
+    const auto work = [&](uint32_t n) {
+        return n > e.WorkPhase ? (n - e.WorkPhase + factor - 1U) / factor : 0U;
+    };
+    e.BufferWidth = work(outputWidth);
+    e.BufferHeight = work(outputHeight);
+    e.Viewport = {0, 0, e.BufferWidth, e.BufferHeight};
+    return e;
+}
+
+std::array<uint32_t, 2> PassOutputExtent(const PassExtent& e) noexcept {
+    return e.WorkFactor > 1U ? std::array<uint32_t, 2>{e.OutputWidth, e.OutputHeight}
+                             : std::array<uint32_t, 2>{e.BufferWidth, e.BufferHeight};
+}
+
+DepthCamera WorkScaleCamera(const DepthCamera& output, const PassExtent& e) noexcept {
+    if (e.WorkFactor <= 1U || e.OutputWidth == 0U || e.OutputHeight == 0U) return output;
+    DepthCamera work = output;
+    const double f = static_cast<double>(e.WorkFactor);
+    const double w = static_cast<double>(e.BufferWidth), h = static_cast<double>(e.BufferHeight);
+    const double W = static_cast<double>(e.OutputWidth), H = static_cast<double>(e.OutputHeight);
+    const double offset = static_cast<double>(e.WorkPhase) + 0.5 - 0.5 * f;
+    for (std::array<double, 3>* row : {&work.ViewX, &work.ViewY}) {
+        const std::array<double, 3> o = *row;
+        (*row)[0] = o[0] * f * w / W;
+        (*row)[1] = o[1] * f * h / H;
+        (*row)[2] = o[2] + o[0] * offset / W + o[1] * offset / H;
+    }
+    return work;
+}
+
+std::array<double, 2> WorkMotionScale(const PassExtent& e) noexcept {
+    if (e.WorkFactor <= 1U || e.BufferWidth == 0U || e.BufferHeight == 0U) return {1.0, 1.0};
+    const double f = static_cast<double>(e.WorkFactor);
+    return {static_cast<double>(e.OutputWidth) / (f * static_cast<double>(e.BufferWidth)),
+            static_cast<double>(e.OutputHeight) / (f * static_cast<double>(e.BufferHeight))};
 }
 
 uint64_t PassResourcePlan::Bytes(PassLifetime lifetime) const noexcept {
@@ -157,6 +232,9 @@ PassResourcePlan PlanPassResources(const PassExtent& extent, const PassSettings&
     plan.Extent = extent;
     const uint64_t texels = static_cast<uint64_t>(extent.BufferWidth) * extent.BufferHeight;
     const uint64_t pixels = static_cast<uint64_t>(extent.Viewport.Width) * extent.Viewport.Height;
+    const auto outputExtent = PassOutputExtent(extent);
+    const uint64_t outputTexels = static_cast<uint64_t>(outputExtent[0]) * outputExtent[1];
+    const bool workScale = extent.WorkFactor > 1U;
     const bool hierarchy = PassUsesHierarchy(settings);
     const uint32_t levels = std::clamp(settings.Hierarchy.Levels, 1U, kMaxHierarchyLevels);
     plan.HierarchyCells = hierarchy ? HierarchyCellCount(extent.Viewport.Width, extent.Viewport.Height, levels) : 0U;
@@ -178,6 +256,7 @@ PassResourcePlan PlanPassResources(const PassExtent& extent, const PassSettings&
     set(PreviousPosition, "previous position", "vec4", 16, pixels, Input, "adapter -> temporal",
         inputs.PreviousPositions);
     set(SurfaceId, "surface id", "uint", 4, pixels, Input, "adapter -> temporal", inputs.SurfaceIds);
+    set(OutputGuide, "output guide", "uvec2", 8, outputTexels, Input, "adapter -> upsample", workScale);
     set(Cells, "hierarchy cells", "3 x vec4 per cell", 48, plan.HierarchyCells, Frame,
         "level 0, reduce -> reduce, gather", hierarchy);
     set(Results, "raw J and A", "vec4", 16, pixels, Frame, "gather -> temporal", true);
@@ -204,8 +283,8 @@ PassResourcePlan PlanPassResources(const PassExtent& extent, const PassSettings&
     set(Parameters, "parameters", "uniform blocks", 1, MakePassParameterLayout(uniformAlignment).Size, Static,
         "command stream update -> every kernel", true);
     set(Placeholder, "placeholder", "16 bytes", 16, 1, Static, "never accessed (unused kernel bindings)", true);
-    plan.Outputs[0] = {"DiffuseIllumination (J, receiver)", "R16G16B16A16_SFLOAT", 8, 8U * texels};
-    plan.Outputs[1] = {"diffuse accessibility (A)", "R32_SFLOAT", 4, 4U * texels};
+    plan.Outputs[0] = {"DiffuseIllumination (J, receiver)", "R16G16B16A16_SFLOAT", 8, 8U * outputTexels};
+    plan.Outputs[1] = {"diffuse accessibility (A)", "R32_SFLOAT", 4, 4U * outputTexels};
     return plan;
 }
 
@@ -224,6 +303,7 @@ PassParameterLayout MakePassParameterLayout(uint32_t uniformAlignment) noexcept 
     for (uint32_t& filter : layout.Filter) filter = take(sizeof(FilterShaderParams));
     layout.Output = take(sizeof(OutputShaderParams));
     layout.OutputNeutral = take(sizeof(OutputShaderParams));
+    layout.Upsample = take(sizeof(UpsampleShaderParams));
     layout.Size = offset;
     return layout;
 }
@@ -236,25 +316,32 @@ const char* ValidatePassFrame(const PassFrame& frame, const PassInputLayout& inp
     return "";
 }
 
-OutputShaderParams MakeOutputShaderParams(const PassExtent& extent, uint32_t mode) noexcept {
+OutputShaderParams MakeOutputShaderParams(const PassExtent& extent, uint32_t mode, bool writeAccessibility) noexcept {
     OutputShaderParams p;
-    p.Extent = {extent.BufferWidth, extent.BufferHeight, extent.Viewport.X, extent.Viewport.Y};
-    p.Viewport = {extent.Viewport.Width, extent.Viewport.Height, mode, 0U};
+    if (extent.WorkFactor > 1U) {
+        p.Extent = {extent.OutputWidth, extent.OutputHeight, 0U, 0U};
+        p.Viewport = {extent.OutputWidth, extent.OutputHeight, mode, writeAccessibility ? 1U : 0U};
+    } else {
+        p.Extent = {extent.BufferWidth, extent.BufferHeight, extent.Viewport.X, extent.Viewport.Y};
+        p.Viewport = {extent.Viewport.Width, extent.Viewport.Height, mode, writeAccessibility ? 1U : 0U};
+    }
     p.Limits = {kOutputHalfMax, 0.0F, 0.0F, 0.0F};
     return p;
 }
 
 const char* PlanPassFrame(const PassExtent& extent, const PassSettings& settings, const PassInputLayout& inputs,
                           const PassParameterLayout& layout, const TemporalHistoryState& history,
-                          const PassFrame& frame, PassFramePlan& plan) {
+                          const PassFrame& frame, PassFramePlan& plan, bool writeAccessibility) {
     if (const char* e = ValidatePassFrame(frame, inputs); *e != '\0') return e;
+    const DepthCamera work = WorkScaleCamera(frame.Camera, extent);
+    const double factor = static_cast<double>(std::max(extent.WorkFactor, 1U));
     // Frame-level gather input: extents, camera and normal source only (the
     // per-texel data lives in the pass buffers).
     GatherInput dims;
     dims.BufferWidth = extent.BufferWidth;
     dims.BufferHeight = extent.BufferHeight;
     dims.Viewport = extent.Viewport;
-    dims.Camera = frame.Camera;
+    dims.Camera = work;
     dims.NormalSource = frame.NormalSource;
     GatherSettings gather = settings.Gather;
     gather.Rotations.Frame = frame.FrameIndex;
@@ -268,10 +355,11 @@ const char* PlanPassFrame(const PassExtent& extent, const PassSettings& settings
     state.ExplicitReset = frame.ExplicitReset;
     state.PreExposure = frame.PreExposure;
     state.TransportKey = PassTransportKey(settings, frame.NormalSource);
-    state.ViewX = frame.Camera.ViewX;
-    state.ViewY = frame.Camera.ViewY;
-    state.JitterX = frame.JitterX;
-    state.JitterY = frame.JitterY;
+    state.ViewX = work.ViewX;
+    state.ViewY = work.ViewY;
+    // A work pixel spans f output pixels.
+    state.JitterX = frame.JitterX / factor;
+    state.JitterY = frame.JitterY / factor;
     state.CurrentToPrevious = frame.CurrentToPrevious;
     state.Motion = frame.Motion;
     state.Validation = frame.Validation;
@@ -279,6 +367,7 @@ const char* PlanPassFrame(const PassExtent& extent, const PassSettings& settings
     if (const char* e = ValidateTemporalFrameState(state); *e != '\0') return e;
 
     plan = {};
+    plan.WorkCamera = work;
     plan.Gather = MakeGatherShaderParams(dims, gather);
     plan.Hierarchy = PassUsesHierarchy(settings);
     const uint32_t levels = std::clamp(settings.Hierarchy.Levels, 1U, kMaxHierarchyLevels);
@@ -298,13 +387,24 @@ const char* PlanPassFrame(const PassExtent& extent, const PassSettings& settings
     FilterInput filter;
     filter.Width = extent.Viewport.Width;
     filter.Height = extent.Viewport.Height;
-    filter.ViewX = frame.Camera.ViewX;
-    filter.ViewY = frame.Camera.ViewY;
+    filter.ViewX = work.ViewX;
+    filter.ViewY = work.ViewY;
     plan.FilterLevels = settings.Filter.Levels;
     for (uint32_t l = 0; l < kMaxFilterLevels; ++l) plan.Filter[l] = MakeFilterShaderParams(filter, settings.Filter, l);
 
-    plan.Output = MakeOutputShaderParams(extent, kOutputModeFinal);
-    plan.OutputNeutral = MakeOutputShaderParams(extent, kOutputModeNeutral);
+    plan.Output = MakeOutputShaderParams(extent, kOutputModeFinal, writeAccessibility);
+    plan.OutputNeutral = MakeOutputShaderParams(extent, kOutputModeNeutral, writeAccessibility);
+    if (extent.WorkFactor > 1U) {
+        UpsampleShaderParams& u = plan.Upsample;
+        u.Output = {extent.OutputWidth, extent.OutputHeight, writeAccessibility ? 1U : 0U, 0U};
+        u.Work = {extent.BufferWidth, extent.BufferHeight, extent.WorkFactor, extent.WorkPhase};
+        u.OutputX = RayRow(frame.Camera.ViewX);
+        u.OutputY = RayRow(frame.Camera.ViewY);
+        u.WorkX = RayRow(work.ViewX);
+        u.WorkY = RayRow(work.ViewY);
+        u.Surface = {static_cast<float>(settings.Upsample.PlaneSine), static_cast<float>(settings.Upsample.PlaneDepth),
+                     static_cast<float>(settings.Upsample.NormalCos), kOutputHalfMax};
+    }
 
     plan.Parameters.assign(layout.Size, 0U);
     Put(plan.Parameters, layout.Gather, plan.Gather);
@@ -313,13 +413,14 @@ const char* PlanPassFrame(const PassExtent& extent, const PassSettings& settings
     for (uint32_t l = 0; l < kMaxFilterLevels; ++l) Put(plan.Parameters, layout.Filter[l], plan.Filter[l]);
     Put(plan.Parameters, layout.Output, plan.Output);
     Put(plan.Parameters, layout.OutputNeutral, plan.OutputNeutral);
+    Put(plan.Parameters, layout.Upsample, plan.Upsample);
     return "";
 }
 
 PassWorkload PassFrameWorkload(const PassSettings& settings) noexcept {
     PassWorkload w;
     const uint32_t levels = std::clamp(settings.Hierarchy.Levels, 1U, kMaxHierarchyLevels);
-    // normal, gather, pack, temporal, output; hierarchy levels; filter levels
+    // normal, gather, pack, temporal, output (or upsample); hierarchy levels; filter levels
     w.Dispatches = 5U + (PassUsesHierarchy(settings) ? levels : 0U) + settings.Filter.Levels;
     // two leading barriers, then one between consecutive dispatches
     w.PrivateBarriers = 2U + (w.Dispatches - 1U);

@@ -23,6 +23,8 @@
 #include "fast/oot3d/nri_interop_context.h"
 #include "fast/oot3d/brixelizer_gi_pass.h"
 #include "fast/oot3d/brixelizer_scene.h"
+#include "fast/oot3d/graphics_settings_runtime.h"
+#include "fast/oot3d/screen_space_gi_provider.h"
 #include "fast/oot3d/sample_view.h"
 #include "fast/renderer3ds/pica_gi_geometry.h"
 #include "fast/oot3d/ambient_occlusion_pass.h"
@@ -1139,6 +1141,15 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     uint64_t mReportedGiInstances = 0;
     uint64_t mReportedGiResets = 0;
     uint64_t mReportedGiCreationFailures = 0;
+    // Screen-space diffuse GI (GlobalIllumination.Mode ScreenSpace): pipelines
+    // created off the frame, one pass instance and history per surface.
+    Oot3d::ScreenSpaceGiProvider mScreenSpaceGi;
+    uint64_t mScreenSpaceGiWorldIdentity = 0;
+    std::array<float, 4> mScreenSpaceGiSourceWeights{};
+    Oot3d::ScreenSpaceGiStats mReportedScreenSpaceGi;
+    // The GI provider state last published to the settings runtime (F1).
+    Oot3d::GlobalIlluminationProviderStatus mPublishedGlobalIlluminationStatus;
+    void PublishGlobalIlluminationStatus(Oot3d::GlobalIlluminationMode mode);
     std::array<std::vector<BufferAllocation>, kFramesInFlight> mRetiredNativePicaGeometryBuffers;
     Oot3d::PicaShaderPipelineCache mPicaShaderPipelineCache;
     Oot3d::PicaAotShaderPack mPicaAotShaderPack;

@@ -27,7 +27,7 @@ void PopulateCompatibilityProjections(
         plan.Reflections && plan.ReflectionProvider == ReflectionMode::Off;
     plan.ReflectionMissesFromGlobalIllumination =
         plan.Reflections && plan.GlobalIllumination && input.GlobalIlluminationSpecular &&
-        plan.ReflectionProvider == ReflectionMode::HiZ;
+        !input.GlobalIlluminationScreenSpace && plan.ReflectionProvider == ReflectionMode::HiZ;
     plan.TemporalMetadata =
         input.WorldSurface && input.PerspectiveAvailable &&
         input.CameraAvailable &&
@@ -323,11 +323,14 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     // GI keeps a temporal history (motion vectors) and adds light in the
     // linear domain through the composite.
     const bool globalIllumination = temporalMetadata && input.GlobalIllumination;
+    // The screen-space gather reads the geometry guide's face normal and has
+    // no specular term.
+    const bool screenSpaceGi = globalIllumination && input.GlobalIlluminationScreenSpace;
     // GI specular is a reflection source: the Reflections pass resolves it
     // through the material guide and the composite mixes it like any
     // reflection. With HiZ it fills the misses (HiZ reports its hit
     // confidence); FidelityFX SSSR shades its own misses and owns the term.
-    const bool giSpecular = globalIllumination && input.GlobalIlluminationSpecular &&
+    const bool giSpecular = globalIllumination && !screenSpaceGi && input.GlobalIlluminationSpecular &&
                             (!screenSpaceReflections || input.Reflections == ReflectionMode::HiZ);
     const bool reflections = screenSpaceReflections || giSpecular;
     // Same-extent anti-aliasing is a scene stage: it resolves the scene before
@@ -394,7 +397,7 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
     if (outline) {
         guideOutputs.push_back(Write(EffectResource::FogGuide));
     }
-    if (outline || faceNormalAo) {
+    if (outline || faceNormalAo || screenSpaceGi) {
         guideOutputs.push_back(Write(EffectResource::OutlineGeometryGuide));
     }
     if (globalIllumination) {
@@ -479,11 +482,16 @@ DisplayEffectPlan BuildDisplayEffectPlan(const DisplayEffectPlanInput& input) {
                 .Stage = EffectStage::AfterOpaque,
                 .Contract = EffectContractKind::ComposerPass,
                 .Resources = std::move(reflectionResources) });
-    std::vector<EffectResourceUse> globalIlluminationResources{
-        Read(EffectResource::NativeSceneView), Read(EffectResource::DiffuseAlbedoGuide),
-        Read(EffectResource::NativeDepth), Read(EffectResource::NormalGuide),
-        Read(EffectResource::MaterialGuide), Read(EffectResource::MotionVectors),
-        Write(EffectResource::DiffuseIllumination) };
+    std::vector<EffectResourceUse> globalIlluminationResources = screenSpaceGi
+        ? std::vector<EffectResourceUse>{
+              Read(EffectResource::NativeSceneView), Read(EffectResource::DiffuseAlbedoGuide),
+              Read(EffectResource::NativeDepth), Read(EffectResource::OutlineGeometryGuide),
+              Read(EffectResource::MotionVectors), Write(EffectResource::DiffuseIllumination) }
+        : std::vector<EffectResourceUse>{
+              Read(EffectResource::NativeSceneView), Read(EffectResource::DiffuseAlbedoGuide),
+              Read(EffectResource::NativeDepth), Read(EffectResource::NormalGuide),
+              Read(EffectResource::MaterialGuide), Read(EffectResource::MotionVectors),
+              Write(EffectResource::DiffuseIllumination) };
     if (giSpecular) globalIlluminationResources.push_back(Write(EffectResource::SpecularIllumination));
     graph.Add({ .Name = "GlobalIllumination",
                 .DependsOn = { "Guides", "Motion" },

@@ -1,9 +1,11 @@
-// M5 (Stage A) tests of the CPU half of the diffuse GI runtime pass
+// M5 tests of the CPU half of the diffuse GI runtime pass
 // (diffuse_gi_pass_plan.h): settings and their validation, the transport key,
 // the reset rules shared with the M3 accumulator, the resource plan, the
 // uniform parameter layout, the frame plan built from the M2-M4 constant
-// blocks, the workload and the FP32 twin of the output kernel. Lines starting
-// with DGI_M5 are quoted in docs/TRIAEVUM_SCREEN_SPACE_GI.md ("M5").
+// blocks, the workload and the FP32 twin of the output kernel (Stage A); the
+// work scale, the normal code and the FP32 twin of the upsampler (Stage B).
+// Lines starting with DGI_M5 are quoted in docs/TRIAEVUM_SCREEN_SPACE_GI.md
+// ("M5").
 #include "fast/renderer/diffuse_gi_pass_plan.h"
 #include "fast/renderer/diffuse_gi_pass_shader.h"
 #include "fast/renderer/diffuse_gi_scene.h"
@@ -14,12 +16,14 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace Fast::Renderer::DiffuseGi;
@@ -211,8 +215,9 @@ TEST(DiffuseGiPass, ResourcePlanAndVram) {
         // filter buffers 16 each; variance and two filter variances 8 each.
         EXPECT_EQ(plan.Bytes(PassLifetime::Frame), 48U * cells + 8U * 16U * p + 3U * 8U * p);
         EXPECT_EQ(plan.Bytes(PassLifetime::Persistent), 128U * p);
-        EXPECT_EQ(plan.Bytes(PassLifetime::Static), 5120U + 16U);
+        EXPECT_EQ(plan.Bytes(PassLifetime::Static), MakePassParameterLayout(256).Size + 16U);
         EXPECT_EQ(plan.OutputBytes(), 12U * p);
+        EXPECT_FALSE(plan[PassResourceId::OutputGuide].Allocated); // no work scale
         EXPECT_FALSE(plan[PassResourceId::PreviousPosition].Allocated);
         EXPECT_FALSE(plan[PassResourceId::SurfaceId].Allocated);
         std::printf("DGI_M5 vram extent=%ux%u inputs=%.2f MB frame=%.2f MB (cells %.2f) history=%.2f MB static=%.4f MB "
@@ -251,7 +256,8 @@ TEST(DiffuseGiPass, ParameterLayoutIsAlignedAndFitsOneUpdate) {
         std::vector<std::pair<uint32_t, uint32_t>> blocks{{l.Gather, sizeof(GatherShaderParams)},
                                                           {l.Temporal, sizeof(TemporalShaderParams)},
                                                           {l.Output, sizeof(OutputShaderParams)},
-                                                          {l.OutputNeutral, sizeof(OutputShaderParams)}};
+                                                          {l.OutputNeutral, sizeof(OutputShaderParams)},
+                                                          {l.Upsample, sizeof(UpsampleShaderParams)}};
         for (const uint32_t m4 : l.M4) blocks.push_back({m4, sizeof(M4ShaderParams)});
         for (const uint32_t f : l.Filter) blocks.push_back({f, sizeof(FilterShaderParams)});
         for (size_t i = 0; i < blocks.size(); ++i) {
@@ -364,6 +370,9 @@ TEST(DiffuseGiPass, OutputTexelTwin) {
     const OutputShaderParams neutral = MakeOutputShaderParams(e, kOutputModeNeutral);
     EXPECT_EQ(OutputTexelF32(neutral, 1, 1, colour.data(), geometry.data()).Illumination[3], 0.0F);
     EXPECT_EQ(OutputTexelF32(neutral, 1, 1, colour.data(), geometry.data()).Accessibility, 1.0F);
+    // A is stored only when requested (the composition takes J alone).
+    EXPECT_EQ(p.Viewport[3], 1U);
+    EXPECT_EQ(MakeOutputShaderParams(e, kOutputModeFinal, false).Viewport[3], 0U);
 }
 
 TEST(DiffuseGiPass, KernelCatalogueIsTheModuleKernels) {
@@ -386,4 +395,220 @@ TEST(DiffuseGiPass, KernelCatalogueIsTheModuleKernels) {
     EXPECT_EQ(kernels[5].Source, BuildDiffuseGiTemporalShader());
     EXPECT_EQ(kernels[6].Source, BuildDiffuseGiFilterShader());
     EXPECT_EQ(kernels[7].Source, BuildDiffuseGiOutputShader());
+    EXPECT_EQ(kernels[8].Source, BuildDiffuseGiUpsampleShader());
+}
+
+// ---------------------------------------------------------------------------
+// M5 Stage B: work scale (open point 24).
+
+// The work image subsamples the output at phase o = (f - 1) / 2; its camera
+// is the exact affine restriction of the output's ray map.
+TEST(DiffuseGiPass, WorkScaleExtentCameraAndMotion) {
+    DepthCamera output;
+    output.Near = 10.0;
+    output.Far = 1000.0;
+    output.ViewX = {0.8, 0.05, -0.43};
+    output.ViewY = {-0.02, -0.5, 0.26};
+    for (const uint32_t f : {2U, 4U})
+        for (const auto& [W, H] : std::vector<std::pair<uint32_t, uint32_t>>{{1280, 720}, {401, 241}, {9, 7}}) {
+            const PassExtent e = MakeWorkScaleExtent(W, H, f);
+            ASSERT_STREQ(ValidatePassExtent(e), "") << f << " " << W << "x" << H;
+            EXPECT_EQ(e.WorkPhase, (f - 1U) / 2U);
+            EXPECT_EQ(PassOutputExtent(e), (std::array<uint32_t, 2>{W, H}));
+            // Every work texel samples an output texel inside the output.
+            EXPECT_LT(e.WorkPhase + f * (e.BufferWidth - 1U), W);
+            EXPECT_LT(e.WorkPhase + f * (e.BufferHeight - 1U), H);
+            EXPECT_GE(e.WorkPhase + f * e.BufferWidth, W);
+            const DepthCamera work = WorkScaleCamera(output, e);
+            for (const auto& [i, j] : std::vector<std::pair<uint32_t, uint32_t>>{
+                     {0, 0}, {e.BufferWidth - 1U, e.BufferHeight - 1U}, {e.BufferWidth / 2U, 1U}}) {
+                const double uw = (i + 0.5) / e.BufferWidth, vw = (j + 0.5) / e.BufferHeight;
+                const double uo = (e.WorkPhase + f * i + 0.5) / W, vo = (e.WorkPhase + f * j + 0.5) / H;
+                for (const auto& [wr, orow] : {std::pair{work.ViewX, output.ViewX}, std::pair{work.ViewY, output.ViewY}})
+                    EXPECT_NEAR(wr[0] * uw + wr[1] * vw + wr[2], orow[0] * uo + orow[1] * vo + orow[2], 1.0e-12);
+            }
+            // A displacement of one output texel is 1 / f work texels.
+            const auto scale = WorkMotionScale(e);
+            EXPECT_NEAR(scale[0] * (1.0 / W) * e.BufferWidth, 1.0 / f, 1.0e-12);
+            EXPECT_NEAR(scale[1] * (1.0 / H) * e.BufferHeight, 1.0 / f, 1.0e-12);
+        }
+    EXPECT_EQ(WorkScaleCamera(output, Full(9, 7)).ViewX, output.ViewX);
+    // Rejected declarations.
+    PassExtent bad = MakeWorkScaleExtent(64, 32, 2);
+    bad.WorkFactor = 3;
+    EXPECT_STREQ(ValidatePassExtent(bad), "work scale must be 1, 2 or 4");
+    bad = MakeWorkScaleExtent(64, 32, 2);
+    bad.BufferWidth += 1;
+    bad.Viewport.Width += 1;
+    EXPECT_STREQ(ValidatePassExtent(bad), "work extent does not subsample the output");
+    bad = MakeWorkScaleExtent(64, 32, 2);
+    bad.Viewport = {1, 0, 31, 16};
+    EXPECT_STREQ(ValidatePassExtent(bad), "a work-scale pass runs on its whole buffer");
+    bad = Full(64, 32);
+    bad.OutputWidth = 128;
+    EXPECT_STREQ(ValidatePassExtent(bad), "a pass without a work scale writes its outputs at the buffer extent");
+}
+
+// Resources at a work scale: per-pixel buffers at the work extent, the output
+// guide and the outputs at the output extent.
+TEST(DiffuseGiPass, WorkScaleResourcePlan) {
+    const PassSettings s = DefaultPassSettings();
+    for (const uint32_t f : {2U, 4U}) {
+        const PassExtent e = MakeWorkScaleExtent(1920, 1080, f);
+        const PassResourcePlan plan = PlanPassResources(e, s, {}, 256);
+        const PassResourcePlan work = PlanPassResources(Full(e.BufferWidth, e.BufferHeight), s, {}, 256);
+        const uint64_t outputTexels = 1920ULL * 1080ULL;
+        EXPECT_TRUE(plan[PassResourceId::OutputGuide].Allocated);
+        EXPECT_EQ(plan[PassResourceId::OutputGuide].Bytes, 8U * outputTexels);
+        EXPECT_EQ(plan.PassBytes(), work.PassBytes() + 8U * outputTexels);
+        EXPECT_EQ(plan.OutputBytes(), 12U * outputTexels);
+    }
+}
+
+// The frame plan of a work-scale pass: the module blocks see the work image
+// (camera, jitter), the upsample block maps it back to the output.
+TEST(DiffuseGiPass, WorkScaleFramePlan) {
+    const PassSettings s = DefaultPassSettings();
+    const PassParameterLayout layout = MakePassParameterLayout(256);
+    const PassExtent e = MakeWorkScaleExtent(37, 23, 2);
+    PassFrame frame;
+    frame.Camera.Near = 0.5;
+    frame.Camera.Far = 50.0;
+    frame.Camera.ViewX = {0.9, 0.0, -0.45};
+    frame.Camera.ViewY = {0.0, -0.6, 0.3};
+    frame.JitterX = 0.5;
+    frame.JitterY = -0.25;
+    TemporalHistoryState history;
+    PassFramePlan plan;
+    ASSERT_STREQ(PlanPassFrame(e, s, {}, layout, history, frame, plan, false), "");
+    const DepthCamera work = WorkScaleCamera(frame.Camera, e);
+    EXPECT_EQ(plan.WorkCamera.ViewX, work.ViewX);
+    EXPECT_EQ(plan.WorkCamera.ViewY, work.ViewY);
+    EXPECT_EQ(plan.Temporal.ViewX, work.ViewX);
+    EXPECT_DOUBLE_EQ(plan.Temporal.JitterX, 0.25);
+    EXPECT_DOUBLE_EQ(plan.Temporal.JitterY, -0.125);
+    EXPECT_EQ(plan.Upsample.Output, (std::array<uint32_t, 4>{37, 23, 0, 0}));
+    EXPECT_EQ(plan.Upsample.Work, (std::array<uint32_t, 4>{e.BufferWidth, e.BufferHeight, 2, 0}));
+    EXPECT_FLOAT_EQ(plan.Upsample.OutputX[0], 0.9F);
+    EXPECT_FLOAT_EQ(plan.Upsample.WorkX[0], static_cast<float>(work.ViewX[0]));
+    EXPECT_FLOAT_EQ(plan.Upsample.Surface[0], static_cast<float>(s.Upsample.PlaneSine));
+    EXPECT_FLOAT_EQ(plan.Upsample.Surface[3], kOutputHalfMax);
+    EXPECT_EQ(std::memcmp(plan.Parameters.data() + layout.Upsample, &plan.Upsample, sizeof(plan.Upsample)), 0);
+    // The neutral outputs cover the output extent; A is not written.
+    EXPECT_EQ(plan.OutputNeutral.Extent[0], 37U);
+    EXPECT_EQ(plan.OutputNeutral.Extent[1], 23U);
+    EXPECT_EQ(plan.OutputNeutral.Viewport[3], 0U);
+}
+
+// The module's normal code: round trip within the unorm16 octahedral
+// resolution, 0 reserved for "no normal", both hemispheres.
+TEST(DiffuseGiPass, NormalCodeRoundTrip) {
+    EXPECT_EQ(EncodeDiffuseGiNormal({0.0F, 0.0F, 0.0F}), 0U);
+    EXPECT_EQ(DecodeDiffuseGiNormal(0U), (std::array<float, 3>{0.0F, 0.0F, 0.0F}));
+    double worst = 0.0;
+    for (int a = 0; a < 48; ++a)
+        for (int b = 0; b <= 24; ++b) {
+            const double phi = 2.0 * 3.14159265358979323846 * a / 48.0;
+            const double theta = 3.14159265358979323846 * b / 24.0;
+            const std::array<float, 3> n{static_cast<float>(std::sin(theta) * std::cos(phi)),
+                                         static_cast<float>(std::sin(theta) * std::sin(phi)),
+                                         static_cast<float>(std::cos(theta))};
+            const uint32_t code = EncodeDiffuseGiNormal(n);
+            EXPECT_NE(code, 0U);
+            EXPECT_NE(code & 0xFFFFU, 0U);
+            EXPECT_NE(code >> 16U, 0U);
+            const auto d = DecodeDiffuseGiNormal(code);
+            EXPECT_NEAR(d[0] * d[0] + d[1] * d[1] + d[2] * d[2], 1.0F, 1.0e-5F);
+            // Angle from |a x b| and a . b in double (acos near 1 would
+            // measure the FP32 length rounding instead of the code).
+            const double p[3] = {n[0], n[1], n[2]}, q[3] = {d[0], d[1], d[2]};
+            const double cx = p[1] * q[2] - p[2] * q[1], cy = p[2] * q[0] - p[0] * q[2], cz = p[0] * q[1] - p[1] * q[0];
+            const double angle = std::atan2(std::sqrt(cx * cx + cy * cy + cz * cz), p[0] * q[0] + p[1] * q[1] + p[2] * q[2]);
+            worst = std::max(worst, angle * 180.0 / 3.14159265358979323846);
+        }
+    EXPECT_LT(worst, 0.01);
+    std::printf("DGI_M5B normal_code worst_error=%.5f deg\n", worst);
+}
+
+// Geometry-guided upsampling (FP32 twin of diffuse_gi_upsample.comp): a
+// receiver takes its own surface's work samples, never another's.
+TEST(DiffuseGiPass, UpsampleKeepsLightOnItsSurface) {
+    const uint32_t W = 16, H = 12, f = 2;
+    const PassExtent e = MakeWorkScaleExtent(W, H, f);
+    DepthCamera camera;
+    camera.Near = 0.1;
+    camera.Far = 100.0;
+    camera.ViewX = {1.0, 0.0, -0.5};
+    camera.ViewY = {0.0, -0.75, 0.375};
+    const DepthCamera work = WorkScaleCamera(camera, e);
+    const auto row = [](const std::array<double, 3>& r) {
+        return std::array<float, 4>{static_cast<float>(r[0]), static_cast<float>(r[1]), static_cast<float>(r[2]), 0.0F};
+    };
+    UpsampleShaderParams p;
+    p.Output = {W, H, 1, 0};
+    p.Work = {e.BufferWidth, e.BufferHeight, f, e.WorkPhase};
+    p.OutputX = row(camera.ViewX);
+    p.OutputY = row(camera.ViewY);
+    p.WorkX = row(work.ViewX);
+    p.WorkY = row(work.ViewY);
+    p.Surface = {0.05F, 1.0e-3F, 0.9F, kOutputHalfMax};
+    // Two fronto-parallel planes facing the eye: x < 7 at depth 4, x >= 7 at depth 9.
+    const auto depthAt = [](uint32_t x) { return x < 7U ? 4.0F : 9.0F; };
+    const std::array<float, 3> facing{0.0F, 0.0F, 1.0F};
+    std::vector<uint32_t> guide(2U * W * H, 0U);
+    for (uint32_t y = 0; y < H; ++y)
+        for (uint32_t x = 0; x < W; ++x) {
+            if (x == 3U && y == 5U) continue; // no receiver (sky, HUD)
+            const float z = depthAt(x);
+            std::memcpy(&guide[2U * (y * W + x)], &z, 4);
+            guide[2U * (y * W + x) + 1U] = EncodeDiffuseGiNormal(facing);
+        }
+    const size_t workTexels = static_cast<size_t>(e.BufferWidth) * e.BufferHeight;
+    std::vector<float> geometry(4U * workTexels), colour(4U * workTexels);
+    const std::array<float, 4> nearLight{1.0F, 2.0F, 3.0F, 0.5F}, farLight{7.0F, 8.0F, 9.0F, 0.25F};
+    for (uint32_t j = 0; j < e.BufferHeight; ++j)
+        for (uint32_t i = 0; i < e.BufferWidth; ++i) {
+            const uint32_t x = e.WorkPhase + f * i;
+            const size_t t = static_cast<size_t>(j) * e.BufferWidth + i;
+            const auto n = DecodeDiffuseGiNormal(EncodeDiffuseGiNormal(facing));
+            geometry[4 * t] = n[0], geometry[4 * t + 1] = n[1], geometry[4 * t + 2] = n[2];
+            geometry[4 * t + 3] = depthAt(x);
+            const auto& c = x < 7U ? nearLight : farLight;
+            std::copy(c.begin(), c.end(), colour.begin() + 4 * t);
+        }
+    uint32_t nearTexels = 0, farTexels = 0;
+    for (uint32_t y = 0; y < H; ++y)
+        for (uint32_t x = 0; x < W; ++x) {
+            const OutputTexel t = UpsampleTexelF32(p, x, y, colour.data(), geometry.data(), guide.data());
+            if (x == 3U && y == 5U) {
+                EXPECT_EQ(t.Illumination, (std::array<float, 4>{0.0F, 0.0F, 0.0F, 0.0F}));
+                EXPECT_EQ(t.Accessibility, 1.0F);
+                continue;
+            }
+            const auto& expected = x < 7U ? nearLight : farLight;
+            EXPECT_FLOAT_EQ(t.Illumination[0], expected[0]) << x << "," << y;
+            EXPECT_FLOAT_EQ(t.Illumination[2], expected[2]) << x << "," << y;
+            EXPECT_EQ(t.Illumination[3], 1.0F);
+            EXPECT_FLOAT_EQ(t.Accessibility, expected[3]);
+            (x < 7U ? nearTexels : farTexels)++;
+        }
+    EXPECT_EQ(nearTexels + farTexels, W * H - 1U);
+    // A receiver whose surface has no work sample nearby gets no estimate.
+    std::vector<float> empty(geometry.size(), 0.0F);
+    const OutputTexel none = UpsampleTexelF32(p, 5, 5, colour.data(), empty.data(), guide.data());
+    EXPECT_EQ(none.Illumination, (std::array<float, 4>{0.0F, 0.0F, 0.0F, 0.0F}));
+    // A smooth signal on one plane is interpolated bilinearly.
+    for (uint32_t x = 0; x < W; ++x) {
+        const float z = 4.0F;
+        for (uint32_t y = 0; y < H; ++y) std::memcpy(&guide[2U * (y * W + x)], &z, 4);
+    }
+    for (uint32_t j = 0; j < e.BufferHeight; ++j)
+        for (uint32_t i = 0; i < e.BufferWidth; ++i) {
+            const size_t t = static_cast<size_t>(j) * e.BufferWidth + i;
+            geometry[4 * t + 3] = 4.0F;
+            colour[4 * t] = static_cast<float>(i);
+        }
+    const OutputTexel mid = UpsampleTexelF32(p, 5, 6, colour.data(), geometry.data(), guide.data());
+    // Output x 5 is work x (5 - o) / f + 0.5 = 3: halfway between work texels 2 and 3.
+    EXPECT_FLOAT_EQ(mid.Illumination[0], 2.5F);
 }

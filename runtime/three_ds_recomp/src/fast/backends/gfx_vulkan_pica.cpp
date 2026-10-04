@@ -899,6 +899,7 @@ void GfxRenderingAPIVulkan::ApplyNativePicaSampleCount(VkSampleCountFlagBits sam
     mMxaoPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
     mBrixelizerGiPass.InvalidateScreenResources();
+    mScreenSpaceGi.InvalidateScreenResources();
     mReflectionMaterialResolvePass.InvalidateScreenResources();
     mLinearSceneColorPass.InvalidateScreenResources();
     mHiZDepthPyramidPass.InvalidateScreenResources();
@@ -4796,12 +4797,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         const uint64_t azaharTextureGeneration =
             mFrameAzaharTextureGeneration;
         // Material guide values: screen-space reflections or GI specular
-        // (a reflection source resolved through the same guide).
+        // (Brixelizer GI: a reflection source resolved through the same guide).
         const bool reflectionsEnabled = !nativeMemoryOnly &&
             (graphicsSettings.Effects.Reflections !=
                  Oot3d::ReflectionMode::Off ||
-             (graphicsSettings.Effects.GlobalIllumination.Mode !=
-                  Oot3d::GlobalIlluminationMode::Off &&
+             (graphicsSettings.Effects.GlobalIllumination.Mode ==
+                  Oot3d::GlobalIlluminationMode::BrixelizerGi &&
               graphicsSettings.Effects.GlobalIllumination.Specular));
         std::array<Oot3d::ReflectionMaterialTextureIdentity, 3U>
             reflectionTextureIdentities{};
@@ -7681,6 +7682,12 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                  mSmaaDisplayPhysicalAddress != copySource->Key.ColorPhysicalAddress);
             return !taaTaken && !smaaTaken;
         }();
+        // Screen-space GI joins the plan once its pipelines (created off the
+        // frame) are ready; until then the boundary composes no GI.
+        const bool screenSpaceGiRequested = presentationSettings.Effects.GlobalIllumination.Mode ==
+                                            Oot3d::GlobalIlluminationMode::ScreenSpace;
+        const bool screenSpaceGiReady = screenSpaceGiRequested && mScreenSpaceGi.Prepare();
+        PublishGlobalIlluminationStatus(presentationSettings.Effects.GlobalIllumination.Mode);
         const auto effectPlan = Oot3d::BuildDisplayEffectPlan({
             .AlphaOverlay = alphaOverlay,
             .WorldSurface = worldSurface,
@@ -7699,10 +7706,12 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 Oot3d::EffectsReadFaceNormal(presentationSettings.Effects) && mMxaoPass.Available(),
             .Reflections = presentationSettings.Effects.Reflections,
             .GlobalIllumination =
-                presentationSettings.Effects.GlobalIllumination.Mode ==
-                    Oot3d::GlobalIlluminationMode::BrixelizerGi &&
-                mBrixelizerGiPass.Available() && mBrixelizerScene.Available(),
+                (presentationSettings.Effects.GlobalIllumination.Mode ==
+                     Oot3d::GlobalIlluminationMode::BrixelizerGi &&
+                 mBrixelizerGiPass.Available() && mBrixelizerScene.Available()) ||
+                screenSpaceGiReady,
             .GlobalIlluminationSpecular = presentationSettings.Effects.GlobalIllumination.Specular,
+            .GlobalIlluminationScreenSpace = screenSpaceGiRequested,
             .Toon = presentationSettings.Effects.Toon,
             .OutlineEnabled =
                 presentationSettings.Effects.ToonStyle.OutlineEnabled,
@@ -8759,7 +8768,89 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         // perspective depth exist; otherwise the declared output is zero
         // irradiance, so the composite adds nothing and the graph stays whole.
         bool giForDisplay = false;
-        if (wantsGlobalIllumination && effectGuideTarget != nullptr &&
+        // Screen-space GI: gathered from this surface's declared guides where
+        // the motion vectors and the temporal view exist; otherwise the same
+        // neutral output. One pass instance (and history) per surface.
+        if (wantsGlobalIllumination && screenSpaceGiRequested && effectGuideTarget != nullptr &&
+            transientDiffuseIllumination != nullptr) {
+            const bool giAttempted =
+                motionAvailableForDisplay && temporalState.has_value() && presentationPerspective.has_value();
+            Oot3d::ScreenSpaceGiFrame giFrame;
+            giFrame.FrameId = mFrameCounter;
+            giFrame.FrameSlot = mCurrentFrame;
+            giFrame.Surface = {effectGuideTarget->Key.RenderTargetNamespace,
+                               effectGuideTarget->Key.ColorPhysicalAddress,
+                               effectGuideTarget->Key.DepthPhysicalAddress};
+            giFrame.Width = effectGuideTarget->Width;
+            giFrame.Height = effectGuideTarget->Height;
+            giFrame.WBuffer = effectGuideTarget->WBuffering;
+            giFrame.Coordinates = Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags);
+            const auto& giSettings = presentationSettings.Effects.GlobalIllumination;
+            if (giAttempted) {
+                giFrame.View = &*presentationPerspective;
+                giFrame.Temporal = &*temporalState;
+                giFrame.JitterUv = temporalState->CurrentJitterUv;
+                const auto giReads = resolveEffectPassReads(Oot3d::DisplayEffectPass::GlobalIllumination);
+                const auto& depth = requireEffectImageRead(giReads, Oot3d::EffectResource::NativeDepth);
+                const auto view = [&](Oot3d::EffectResource resource) {
+                    return reinterpret_cast<VkImageView>(requireEffectImageRead(giReads, resource).NativeView);
+                };
+                giFrame.Guides.Depth = mScreenSpaceGi.SampledDepthView(
+                    reinterpret_cast<VkImage>(depth.NativeImage), static_cast<VkFormat>(depth.Format),
+                    depth.Width, depth.Height);
+                giFrame.Guides.Geometry = view(Oot3d::EffectResource::OutlineGeometryGuide);
+                giFrame.Guides.Surface = view(Oot3d::EffectResource::DiffuseAlbedoGuide);
+                giFrame.Guides.Motion = view(Oot3d::EffectResource::MotionVectors);
+                transitionEffectPassGuides(Oot3d::DisplayEffectPass::GlobalIllumination);
+                // Another world, or a source switched off or returning: the
+                // histories start over (the same rules as the traced GI).
+                if (mTitleWorldIdentity != mScreenSpaceGiWorldIdentity ||
+                    Oot3d::RestartsGlobalIlluminationHistory(mScreenSpaceGiSourceWeights, giSources.Weights))
+                    mScreenSpaceGi.ResetHistory();
+                mScreenSpaceGiWorldIdentity = mTitleWorldIdentity;
+                mScreenSpaceGiSourceWeights = giSources.Weights;
+                mGpuProfiler.BeginScope(mCurrentFrame, Oot3d::GpuProfileScope::GlobalIllumination, command);
+                giForDisplay = mScreenSpaceGi.Execute(command, giFrame, giSettings, *transientDiffuseIllumination,
+                                                      globalIlluminationBarrierPlan);
+                mGpuProfiler.EndScope(mCurrentFrame, Oot3d::GpuProfileScope::GlobalIllumination, command);
+            }
+            if (!giForDisplay) {
+                static uint64_t screenSpaceGiFallbacks = 0;
+                if (screenSpaceGiFallbacks++ % 300U == 0U)
+                    std::fprintf(stderr, "TRIAEVUM_SCREEN_SPACE_GI fallback=%llu reason=\"%s\"\n",
+                                 (unsigned long long)screenSpaceGiFallbacks,
+                                 !giAttempted ? "motion vectors or temporal view unavailable"
+                                              : mScreenSpaceGi.UnavailableReason().c_str());
+                if (!mScreenSpaceGi.ClearOutput(command, giFrame, giSettings, *transientDiffuseIllumination,
+                                                globalIlluminationBarrierPlan))
+                    throw std::runtime_error("screen-space global illumination output could not be cleared: " +
+                                             mScreenSpaceGi.UnavailableReason());
+            }
+            if (const auto& gi = mScreenSpaceGi.Stats();
+                gi.InstancesCreated != mReportedScreenSpaceGi.InstancesCreated ||
+                gi.Reconfigurations != mReportedScreenSpaceGi.Reconfigurations ||
+                gi.HistoryResets != mReportedScreenSpaceGi.HistoryResets) {
+                mReportedScreenSpaceGi = gi;
+                std::fprintf(stderr,
+                             "TRIAEVUM_SCREEN_SPACE_GI frame=%llu surface=%ux%u factor=%u instances=%u "
+                             "buffer_bytes=%llu executions=%llu republications=%llu clears=%llu "
+                             "reconfigurations=%llu history_resets=%llu reset_frames=%llu last_reset=0x%x allocation_ms=%.1f\n",
+                             (unsigned long long)mFrameCounter, giFrame.Width, giFrame.Height,
+                             Oot3d::ScreenSpaceGiWorkFactor(giSettings.Resolution), gi.Instances,
+                             (unsigned long long)gi.BufferBytes, (unsigned long long)gi.Executions,
+                             (unsigned long long)gi.Republications, (unsigned long long)gi.Clears,
+                             (unsigned long long)gi.Reconfigurations, (unsigned long long)gi.HistoryResets,
+                             (unsigned long long)gi.ResetFrames, gi.LastResetReasons, gi.AllocationMilliseconds);
+            }
+            recordEffectPassTransitions(mScreenSpaceGi.LastBarrierExecution());
+            recordDeclared(Oot3d::DisplayEffectPass::GlobalIllumination,
+                           giForDisplay ? EffectOutcome::Executed : EffectOutcome::Skipped);
+            bindEffectImage(Oot3d::EffectResource::DiffuseIllumination,
+                            transientDiffuseIllumination->Texture.Image,
+                            transientDiffuseIllumination->Texture.SampledView,
+                            VK_FORMAT_R16G16B16A16_SFLOAT, effectGuideTarget->Width,
+                            effectGuideTarget->Height);
+        } else if (wantsGlobalIllumination && effectGuideTarget != nullptr &&
             transientDiffuseIllumination != nullptr &&
             ((!effectPlan.ReflectionsFromGlobalIllumination &&
           !effectPlan.ReflectionMissesFromGlobalIllumination) ||
@@ -9612,7 +9703,13 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     optionalCompositeFormat(Oot3d::EffectResource::DiffuseIllumination),
                     optionalCompositeImage(Oot3d::EffectResource::DiffuseAlbedoGuide),
                     optionalCompositeFormat(Oot3d::EffectResource::DiffuseAlbedoGuide), giForDisplay,
-                    presentationSettings.Effects.GlobalIllumination.DiffuseIntensity * giSources.Gain, aoForDisplay,
+                    // Screen-space GI validation composes J at the sources'
+                    // gain only (no artistic intensity).
+                    (screenSpaceGiRequested && presentationSettings.Effects.GlobalIllumination.ScreenSpace.Validation
+                         ? 1.0F
+                         : presentationSettings.Effects.GlobalIllumination.DiffuseIntensity) *
+                        giSources.Gain,
+                    aoForDisplay,
                     presentationSettings.Effects.AmbientOcclusion == Oot3d::AmbientOcclusionMode::Mxao
                         ? static_cast<uint32_t>(presentationSettings.Effects.MxaoDebug) : 0U,
                     reflectionsForDisplay,
@@ -12011,6 +12108,7 @@ bool GfxRenderingAPIVulkan::ResetPicaState(
         mMxaoPass.InvalidateScreenResources();
         mFidelityFxSssrPass.InvalidateScreenResources();
         mBrixelizerGiPass.InvalidateScreenResources();
+        mScreenSpaceGi.InvalidateScreenResources();
         mReflectionMaterialResolvePass.InvalidateScreenResources();
         mReflectionIblPass.InvalidateProfile();
         mLinearSceneColorPass.InvalidateScreenResources();
@@ -12484,6 +12582,22 @@ void GfxRenderingAPIVulkan::ForgetNativePicaEffectNriTextures() {
     // the pass through the owned-resource path.
 }
 
+void GfxRenderingAPIVulkan::PublishGlobalIlluminationStatus(Oot3d::GlobalIlluminationMode mode) {
+    // Only the screen-space provider reports a readiness of its own (its
+    // pipelines are created off the frame).
+    Oot3d::GlobalIlluminationProviderStatus status{mode, false, {}};
+    if (mode == Oot3d::GlobalIlluminationMode::ScreenSpace) {
+        status.Ready = mScreenSpaceGi.Ready();
+        if (!status.Ready) status.Reason = mScreenSpaceGi.UnavailableReason();
+    }
+    if (status == mPublishedGlobalIlluminationStatus) return;
+    mPublishedGlobalIlluminationStatus = status;
+    if (mode == Oot3d::GlobalIlluminationMode::ScreenSpace)
+        std::fprintf(stderr, "TRIAEVUM_SCREEN_SPACE_GI ready=%d reason=\"%s\"\n", status.Ready ? 1 : 0,
+                     status.Reason.c_str());
+    Oot3d::GraphicsSettingsRuntime::Instance().PublishGlobalIlluminationStatus(std::move(status));
+}
+
 void GfxRenderingAPIVulkan::ReleaseEffectGraphImageClients() {
     mAmbientOcclusionPass.InvalidateScreenResources();
     mCacaoPass.InvalidateScreenResources();
@@ -12491,6 +12605,7 @@ void GfxRenderingAPIVulkan::ReleaseEffectGraphImageClients() {
     mHiZDepthPyramidPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
     mBrixelizerGiPass.InvalidateScreenResources();
+    mScreenSpaceGi.InvalidateScreenResources();
     mReflectionMaterialResolvePass.InvalidateScreenResources();
     mLinearSceneColorPass.InvalidateScreenResources();
     if (mHiZReflectionSurface.has_value()) {
@@ -12544,6 +12659,7 @@ void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayIma
     mMxaoPass.InvalidateScreenResources();
     mFidelityFxSssrPass.InvalidateScreenResources();
     mBrixelizerGiPass.InvalidateScreenResources();
+    mScreenSpaceGi.InvalidateScreenResources();
     mReflectionMaterialResolvePass.InvalidateScreenResources();
     mLinearSceneColorPass.InvalidateScreenResources();
     mHiZDepthPyramidPass.InvalidateScreenResources();

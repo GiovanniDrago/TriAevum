@@ -1023,6 +1023,66 @@ int main() try {
     Click("Off");
     Select("Lighting model", "Native");
     AllCapabilities(true);
+    // Screen-space GI: another mode of the same control with its own
+    // parameters, persisted; the Brixelizer-only controls are hidden; the
+    // provider's readiness is shown; capability-safe Off.
+    {
+        const auto shown = [](const char* label) {
+            for (const auto& [id, item] : items)
+                if (item.Label == label) return true;
+            return false;
+        };
+        Frame();
+        Select("Global illumination", "Screen-space GI");
+        Frame();
+        Check(!shown("GI sky light") && !shown("GI specular reflections"),
+              "Brixelizer-only GI controls shown for screen-space GI");
+        Select("GI resolution", "Half");
+        EditScalar("SSGI sections", "2");
+        Select("SSGI radial candidates", "32");
+        Select("SSGI sectors", "128");
+        EditScalar("SSGI radius", "240");
+        EditScalar("SSGI thickness", "45");
+        Click("SSGI temporal accumulation");
+        EditScalar("SSGI filter levels", "2");
+        Click("SSGI validation");
+        const auto gi = runtime.Snapshot().Effects.GlobalIllumination;
+        const auto& ss = gi.ScreenSpace;
+        Check(gi.Mode == GlobalIlluminationMode::ScreenSpace &&
+                  gi.Resolution == GlobalIlluminationResolution::Half && ss.Sections == 2U &&
+                  ss.RadialCandidates == 32U && ss.Sectors == 128U && ss.Radius == 240.0F &&
+                  ss.Thickness == 45.0F && !ss.Temporal && ss.FilterLevels == 2U && ss.Validation,
+              "screen-space GI controls did not apply");
+        const auto persisted = DeserializeGraphicsSettings(store->Root["Graphics"]);
+        Check(persisted.Value.Effects.GlobalIllumination.Mode == GlobalIlluminationMode::ScreenSpace &&
+                  persisted.Value.Effects.GlobalIllumination.ScreenSpace == ss,
+              "screen-space GI selection lost on reload");
+        Check(runtime.SnapshotForRendering().Value.Effects.GlobalIllumination.Mode == GlobalIlluminationMode::Off,
+              "screen-space GI rendered without per-pixel lighting");
+        Select("Lighting model", "Per-pixel");
+        Check(runtime.SnapshotForRendering().Value.Effects.GlobalIllumination.Mode ==
+                  GlobalIlluminationMode::ScreenSpace,
+              "per-pixel lighting did not activate screen-space GI");
+        runtime.PublishGlobalIlluminationStatus({GlobalIlluminationMode::ScreenSpace, false, "creating pipelines"});
+        Frame(true);
+        Check(loggedPanelText.find("GI not available yet: creating pipelines") != std::string::npos,
+              "screen-space GI readiness not shown");
+        runtime.PublishGlobalIlluminationStatus({GlobalIlluminationMode::ScreenSpace, true, {}});
+        Frame(true);
+        Check(loggedPanelText.find("GI not available yet") == std::string::npos,
+              "ready screen-space GI reported unavailable");
+        runtime.SetCapability(GraphicsCapability::ScreenSpaceGlobalIllumination, false, "provider unavailable");
+        Frame();
+        Select("Global illumination", "Off");
+        Check(runtime.Snapshot().Effects.GlobalIllumination.Mode == GlobalIlluminationMode::Off,
+              "cannot disable screen-space GI after capability loss");
+        Click("Global illumination");
+        Check(Find("Screen-space GI").Disabled, "unsupported screen-space GI selectable");
+        Click("Off");
+        Select("Lighting model", "Native");
+        runtime.PublishGlobalIlluminationStatus({});
+        AllCapabilities(true);
+    }
     runtime.SetCapability(GraphicsCapability::ValidViewMetadata, false, "test unavailable");
     Frame();
     Select("Ambient occlusion", "Off");

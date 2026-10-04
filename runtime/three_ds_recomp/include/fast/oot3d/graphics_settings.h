@@ -82,11 +82,31 @@ enum class SurfaceLightingMode : uint8_t { Native, PerPixel, PerPixelPbr, Native
 }
 enum class GrassQuality : uint8_t { Off, Low, Medium, High, Custom };
 
-// Dynamic diffuse global illumination from the scene's distance field
-// (FidelityFX Brixelizer GI). Per-pixel lighting modes only.
-enum class GlobalIlluminationMode : uint8_t { Off, BrixelizerGi };
+// Dynamic diffuse global illumination. Per-pixel lighting modes only.
+// BrixelizerGi: from the scene's distance field (FidelityFX Brixelizer GI).
+// ScreenSpace: the screen-space diffuse GI of the native depth and guides
+// (docs/TRIAEVUM_SCREEN_SPACE_GI.md).
+enum class GlobalIlluminationMode : uint8_t { Off, BrixelizerGi, ScreenSpace };
 // Internal resolution of the GI solve relative to the scene guides.
 enum class GlobalIlluminationResolution : uint8_t { Half, Quarter };
+
+// Screen-space GI transport and quality (docs/TRIAEVUM_SCREEN_SPACE_GI.md,
+// "M5"): per pixel and frame Sections stratified sections of Sectors visibility
+// sectors, RadialCandidates per side on the metric radial schedule; radius R and
+// thickness tau in OoT scene units (provisional until open point 2 measures
+// the scale); temporal accumulation and the a-trous filter levels. Validation
+// composes the pass's J without the artistic gain (DiffuseIntensity).
+struct ScreenSpaceGiSettings {
+    uint8_t Sections = 1;            // 1-4
+    uint16_t RadialCandidates = 16;  // 8, 16 or 32
+    uint16_t Sectors = 64;           // 32, 64 or 128
+    float Radius = 150.0F;           // R, scene units, [10, 1000]
+    float Thickness = 30.0F;         // tau, scene units, [1, 200]
+    bool Temporal = true;
+    uint8_t FilterLevels = 4;        // 0-4
+    bool Validation = false;
+    bool operator==(const ScreenSpaceGiSettings&) const = default;
+};
 
 struct GlobalIlluminationSettings {
     GlobalIlluminationMode Mode = GlobalIlluminationMode::Off;
@@ -107,6 +127,9 @@ struct GlobalIlluminationSettings {
     // guide like screen-space reflections, which own the term when enabled.
     bool Specular = false;
     float SpecularIntensity = 1.0F;
+    // Mode ScreenSpace only (sky light and specular GI are Brixelizer terms:
+    // a screen-space gather has no ray that leaves the scene).
+    ScreenSpaceGiSettings ScreenSpace;
 };
 
 // How the GI sources reach the trace. The surface guide carries each source's
@@ -119,8 +142,15 @@ struct GlobalIlluminationSourceMix {
     float Gain = 0.0F;
     bool operator==(const GlobalIlluminationSourceMix&) const = default;
 };
+// The screen-space mode has no sky source: its sky weight is zero and the
+// sky gain never raises the composition gain.
 [[nodiscard]] GlobalIlluminationSourceMix ResolveGlobalIlluminationSources(
     const GlobalIlluminationSettings& settings) noexcept;
+// Whether the GI mode reads the renderer's face normal (geometry guide G):
+// the screen-space mode takes its geometric normal from it.
+[[nodiscard]] constexpr bool GlobalIlluminationReadsFaceNormal(const GlobalIlluminationSettings& settings) noexcept {
+    return settings.Mode == GlobalIlluminationMode::ScreenSpace;
+}
 // Whether a change of the source weights restarts the GI history instead of
 // blending in over the radiance cache's averaging window (seconds): light
 // returning to a history that held none, or a source switched off (its light

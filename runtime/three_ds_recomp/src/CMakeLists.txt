@@ -163,6 +163,22 @@ target_link_libraries(three_ds_recomp_runtime PUBLIC prism monocypher)
 
 if(THREE_DS_RECOMP_ENABLE_VULKAN)
     target_sources(three_ds_recomp_runtime PRIVATE fast/renderer/shaderc_compiler.cpp)
+    # Screen-space diffuse GI: the title-neutral module and runtime pass
+    # (docs/TRIAEVUM_SCREEN_SPACE_GI.md) behind the OOT3D provider
+    # (fast/oot3d/screen_space_gi_provider.cpp).
+    target_sources(three_ds_recomp_runtime PRIVATE
+        fast/renderer/diffuse_gi_reference.cpp
+        fast/renderer/diffuse_gi_gather.cpp
+        fast/renderer/diffuse_gi_gather_shader.cpp
+        fast/renderer/diffuse_gi_hierarchy.cpp
+        fast/renderer/diffuse_gi_guiding.cpp
+        fast/renderer/diffuse_gi_noise.cpp
+        fast/renderer/diffuse_gi_m4_shader.cpp
+        fast/renderer/diffuse_gi_temporal.cpp
+        fast/renderer/diffuse_gi_temporal_shader.cpp
+        fast/renderer/diffuse_gi_pass_shader.cpp
+        fast/renderer/diffuse_gi_pass_plan.cpp
+        fast/renderer/diffuse_gi_pass.cpp)
     # Precompiled SPIR-V families, embedded from their packs.
     include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/spirv_pack.cmake)
     foreach(_pack renderer/builtin_pass renderer3ds/pica_native_fragment oot3d/pica_temporal_fragment

@@ -78,6 +78,7 @@ constexpr EnumNames<DirectionalShadowMode> kDirectionalShadowNames{
 constexpr EnumNames<GlobalIlluminationMode> kGlobalIlluminationNames{
     {GlobalIlluminationMode::Off, "Off"},
     {GlobalIlluminationMode::BrixelizerGi, "BrixelizerGI"},
+    {GlobalIlluminationMode::ScreenSpace, "ScreenSpaceGI"},
 };
 constexpr EnumNames<GlobalIlluminationResolution> kGlobalIlluminationResolutionNames{
     {GlobalIlluminationResolution::Half, "Half"},
@@ -1232,6 +1233,16 @@ std::string_view EnhancedPresetDocument() noexcept {
       "Mode": "Off",
       "Resolution": "Half",
       "SceneLight": 1.0,
+      "ScreenSpace": {
+        "FilterLevels": 4,
+        "RadialCandidates": 16,
+        "Radius": 150.0,
+        "Sections": 1,
+        "Sectors": 64,
+        "Temporal": true,
+        "Thickness": 30.0,
+        "Validation": false
+      },
       "SkyLight": 0.25,
       "Specular": true,
       "SpecularIntensity": 0.0
@@ -1523,6 +1534,17 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                   {"KeyLight", effects.GlobalIllumination.KeyLight},
                   {"DynamicLights", effects.GlobalIllumination.DynamicLights},
                   {"SkyLight", effects.GlobalIllumination.SkyLight},
+                  {"ScreenSpace",
+                   {
+                       {"Sections", effects.GlobalIllumination.ScreenSpace.Sections},
+                       {"RadialCandidates", effects.GlobalIllumination.ScreenSpace.RadialCandidates},
+                       {"Sectors", effects.GlobalIllumination.ScreenSpace.Sectors},
+                       {"Radius", effects.GlobalIllumination.ScreenSpace.Radius},
+                       {"Thickness", effects.GlobalIllumination.ScreenSpace.Thickness},
+                       {"Temporal", effects.GlobalIllumination.ScreenSpace.Temporal},
+                       {"FilterLevels", effects.GlobalIllumination.ScreenSpace.FilterLevels},
+                       {"Validation", effects.GlobalIllumination.ScreenSpace.Validation},
+                   }},
               }},
              {"AO",
               {
@@ -1909,6 +1931,28 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                                std::string("Graphics.Effects.GlobalIllumination.") + name, result);
                 else
                     result.NeedsRewrite = true;
+            }
+            // Screen-space GI arrived later: an absent object or field keeps
+            // the defaults and is written on the next save.
+            if (const Json* ss = FindMember(*gi, "ScreenSpace"); ss != nullptr && ss->is_object()) {
+                auto& screen = settings.ScreenSpace;
+                const auto read = [&](const char* name, auto& field) {
+                    if (FindMember(*ss, name) != nullptr)
+                        ReadScalar(*ss, name, field,
+                                   std::string("Graphics.Effects.GlobalIllumination.ScreenSpace.") + name, result);
+                    else
+                        result.NeedsRewrite = true;
+                };
+                read("Sections", screen.Sections);
+                read("RadialCandidates", screen.RadialCandidates);
+                read("Sectors", screen.Sectors);
+                read("Radius", screen.Radius);
+                read("Thickness", screen.Thickness);
+                read("Temporal", screen.Temporal);
+                read("FilterLevels", screen.FilterLevels);
+                read("Validation", screen.Validation);
+            } else {
+                result.NeedsRewrite = true;
             }
             // Controls of the retired reference composition are dropped on
             // the next save.

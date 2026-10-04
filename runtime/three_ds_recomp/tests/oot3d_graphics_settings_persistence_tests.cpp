@@ -987,3 +987,41 @@ TEST(Oot3dGraphicsSettingsPersistence, GlobalIlluminationSpecular) {
     for (const auto& issue : legacy.Issues)
         EXPECT_EQ(issue.Field.find("GlobalIllumination"), std::string::npos) << issue.Field;
 }
+
+TEST(Oot3dGraphicsSettingsPersistence, ScreenSpaceGlobalIllumination) {
+    using namespace Fast::Oot3d;
+    auto settings = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
+    settings.Effects.GlobalIllumination.Mode = GlobalIlluminationMode::ScreenSpace;
+    settings.Effects.GlobalIllumination.ScreenSpace = {3, 32, 128, 240.0F, 45.0F, false, 2, true};
+    auto document = SerializeGraphicsSettings(settings);
+    EXPECT_EQ(document["Effects"]["GlobalIllumination"]["Mode"], "ScreenSpaceGI");
+    EXPECT_EQ(document["Effects"]["GlobalIllumination"]["ScreenSpace"]["RadialCandidates"], 32);
+    const auto loaded = DeserializeGraphicsSettings(document);
+    // Exactly what the same preset reports without the screen-space mode.
+    const auto baseline =
+        DeserializeGraphicsSettings(SerializeGraphicsSettings(GraphicsSettingsService::Preset(GraphicsPreset::Custom)));
+    EXPECT_EQ(loaded.NeedsRewrite, baseline.NeedsRewrite);
+    EXPECT_EQ(loaded.Issues.size(), baseline.Issues.size());
+    for (const auto& issue : loaded.Issues)
+        EXPECT_EQ(issue.Field.find("GlobalIllumination"), std::string::npos) << issue.Field;
+    EXPECT_EQ(loaded.Value.Effects.GlobalIllumination.Mode, GlobalIlluminationMode::ScreenSpace);
+    EXPECT_EQ(loaded.Value.Effects.GlobalIllumination.ScreenSpace, settings.Effects.GlobalIllumination.ScreenSpace);
+
+    // Written before the screen-space mode existed: defaults, rewritten on
+    // the next save, no correction reported.
+    document["Effects"]["GlobalIllumination"]["Mode"] = "BrixelizerGI";
+    document["Effects"]["GlobalIllumination"].erase("ScreenSpace");
+    const auto legacy = DeserializeGraphicsSettings(document);
+    EXPECT_TRUE(legacy.NeedsRewrite);
+    EXPECT_EQ(legacy.Value.Effects.GlobalIllumination.ScreenSpace, ScreenSpaceGiSettings{});
+    for (const auto& issue : legacy.Issues)
+        EXPECT_EQ(issue.Field.find("GlobalIllumination"), std::string::npos) << issue.Field;
+    EXPECT_TRUE(SerializeGraphicsSettings(legacy.Value)["Effects"]["GlobalIllumination"].contains("ScreenSpace"));
+    // A missing field keeps its default.
+    document = SerializeGraphicsSettings(settings);
+    document["Effects"]["GlobalIllumination"]["ScreenSpace"].erase("Thickness");
+    const auto partial = DeserializeGraphicsSettings(document);
+    EXPECT_TRUE(partial.NeedsRewrite);
+    EXPECT_FLOAT_EQ(partial.Value.Effects.GlobalIllumination.ScreenSpace.Thickness, ScreenSpaceGiSettings{}.Thickness);
+    EXPECT_EQ(partial.Value.Effects.GlobalIllumination.ScreenSpace.Sectors, 128U);
+}

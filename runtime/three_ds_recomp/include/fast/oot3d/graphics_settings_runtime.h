@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <nlohmann/json_fwd.hpp>
 
 namespace Fast::Oot3d {
@@ -39,6 +40,16 @@ struct GraphicsDisplayMetrics {
     WindowMode Window = WindowMode::Windowed;
 };
 
+// Observed state of the global illumination provider, never persisted: a
+// selected mode whose provider is not ready yet (pipelines created off the
+// frame) composes no GI and says why.
+struct GlobalIlluminationProviderStatus {
+    GlobalIlluminationMode Mode = GlobalIlluminationMode::Off;
+    bool Ready = false;
+    std::string Reason;
+    bool operator==(const GlobalIlluminationProviderStatus&) const = default;
+};
+
 enum class GraphicsSettingsSaveState {
     Saved, Pending, WaitingForDisplay, SessionOnly, Failed
 };
@@ -58,6 +69,8 @@ class GraphicsSettingsRuntime final {
     [[nodiscard]] GraphicsDisplayMetrics DisplayMetrics() const;
     void PublishDisplayMetrics(GraphicsDisplayMetrics metrics);
     void PublishSceneExtent(uint32_t width, uint32_t height);
+    [[nodiscard]] GlobalIlluminationProviderStatus GlobalIlluminationStatus() const;
+    void PublishGlobalIlluminationStatus(GlobalIlluminationProviderStatus status);
     // Resolved title-owned profile; never serialized into global graphics settings.
     void PublishSceneEnvironment(const Renderer3ds::PicaEnvironmentLighting& environment);
     GraphicsSettingsValidation Apply(GraphicsSettings candidate, bool persist = true);
@@ -82,6 +95,7 @@ class GraphicsSettingsRuntime final {
     GraphicsSettingsService mService;
     GraphicsCapabilities mCapabilities;
     GraphicsDisplayMetrics mDisplayMetrics;
+    GlobalIlluminationProviderStatus mGlobalIlluminationStatus;
     Renderer3ds::PicaEnvironmentLighting mSceneEnvironment;
     PresentationSettingsTransaction mPresentationTransaction;
     std::string mLastPresentationRejection;
