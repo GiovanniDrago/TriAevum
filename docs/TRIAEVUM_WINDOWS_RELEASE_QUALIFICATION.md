@@ -32,8 +32,8 @@ Windows, and what is open. It is not a release approval.
 | Source | What it holds | Treatment |
 | --- | --- | --- |
 | Commit history (286) | features, fixes, diagnostics, refactors | grouped below by area |
-| Recovery snapshots of 2026-09-30 | `recovery/omp-2026-09-28` (`88f935a`, main-checkout work reverted by a worktree reset), `recovery/renderer-2026-09-26` (`a33d1f6`) | 87 % and 95 % of their lines are in the line (restored by `e9dc221` and later work); the remainder is checked in section 4.R |
-| Unmerged pull requests | #13 TopScreen ZL/ZR item slots in the product build, #18 ocarina UI on the single screen, #14 display-change rejection reason (merged together on a former `play/all` branch); #11 per-user shader cache, #15 guest thread; #50 high refresh presets (contributor); #57 closed unmerged (#49, #55 fixes) | #13, #18 and #14 are the lost HUD/UI work: 0-9 % of their lines exist in the line (#14: 69 %). Restore with tests (section 4.R). #11 is superseded by the persisted pipeline work; #15 stays experimental |
+| Recovery snapshots of 2026-09-30 | `recovery/omp-2026-09-28` (`88f935a`, main-checkout work reverted by a worktree reset), `recovery/renderer-2026-09-26` (`a33d1f6`) | 87 % and 95 % of their lines are in the line (restored by `e9dc221` and later work); the remainder is the concurrent Azahar/AOT workstream (section 4.R) |
+| Open pull requests | #6, #11, #13, #14, #15, #16, #18 (999sian, PabloVSouza) | integrated selectively on 2026-09-09/10, before alpha.2c, as replacement implementations (`TRIAEVUM_CONTRIBUTIONS.md`); their branches stay open, so their own lines are mostly absent (0-69 %) while their behaviour is in the line. What was deliberately not adopted is listed in section 4.R. #50 (high refresh presets) and the closed #57 are proposals outside the line |
 | GitHub issues | user reports since alpha.2c | a fix claimed by a commit or document needs a scenario check (section 4) |
 | Qualification documents | `TRIAEVUM_TOPSCREEN_ISSUES_25_32_39.md`, `TRIAEVUM_ISSUES_40_43.md`, `TRIAEVUM_ISSUES_45_46.md`, `TRIAEVUM_ISSUE_48_TITLE_START.md`, `TRIAEVUM_ISSUE44_HD_FONTS.md`, `TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md` | their open acceptance items become battery entries |
 
@@ -212,14 +212,23 @@ Vulkan backends, CTR host, TopScreen profile and audio, CMake area files,
 unreferenced product code dropped (`86bb942`..`fc473e0`). Check: L4 identity
 (gates p3* to p5m8), L1 builds, L2. Status: pass.
 
-### 4.R Lost or unmerged work to restore
+### 4.R Integrated contributions, not-adopted parts and lost work
+
+No commit, pull request or recovery snapshot holds HUD/UI code that is missing
+from the line: every HUD/UI commit since alpha.2c survives at 91-100 % and the
+open pull requests were integrated as replacement implementations. HUD/UI work
+reported lost is therefore either work that was never committed (a reset
+before a commit) or a behaviour regression of code that is still present. The
+L5 HUD/UI scenarios detect the second; the user's list of missing behaviours
+drives the first.
 
 | ID | Development | Evidence | Check | Status |
 | --- | --- | --- | --- | --- |
-| R1 | TopScreen ZL/ZR item slots work in the whole-AOT product build; Items-page ZR/ZL assignment through the product handler (#39) | PR #13 (`c3c281a`, `8003453`; 6 % and 0 % in the line) | port to the split window sources with tests; L5 item scenario (bow ammunition, hookshot) | lost |
-| R2 | Ocarina performance UI on the single screen, TopScreen-mod layout, song browsing with the D-pad | PR #18 (`e3eca08`, `3655e28`; 9 % and 2 %) | port with tests; L5 ocarina scenario | lost |
-| R3 | Graphics settings window shows why a display change was reverted | PR #14 (`a359f70`; 69 %) | check what is missing, port; L3 | open |
-| R4 | Remainder of the 2026-09-28 / 2026-09-26 recovery snapshots not in the line | `88f935a` (13 %), `a33d1f6` (5 %) | list the missing hunks; restore the intended ones | open |
+| R1 | Product-mode TopScreen item getters, slot resolution and Items-page ZR/ZL assignment (#39) | PR #13, integrated as the item dispatch module (`7617c8a`, `TRIAEVUM_TOPSCREEN_PRODUCT_ITEM_DISPATCH.md`) | L2 `oot3d_top_screen_mod_profile_tests`; L5 S04 (assignment, bow ammunition, hookshot) | open |
+| R2 | PR #13's press latch, not adopted: a ZL/ZR tap shorter than a guest refresh, or released before the game polls, can be lost; the document leaves it to the input owner | `TRIAEVUM_TOPSCREEN_PRODUCT_ITEM_DISPATCH.md` | L5 S04 with one-frame taps | open |
+| R3 | Ocarina song guide and D-pad ownership in a dedicated title UI module (PR #18's evidence; its heuristics not adopted) | `TRIAEVUM_TOPSCREEN_OCARINA_OWNER.md` | L2 TopScreen ocarina tests; L5 S07 | open |
+| R4 | Display-change rejection reason in the F1 display status (PR #14, `dd7539e`) | `TRIAEVUM_CONTRIBUTIONS.md` | L3 actual-widget lifecycle | open |
+| R5 | Remainder of the 2026-09-28 / 2026-09-26 recovery snapshots | `88f935a` (13 % absent), `a33d1f6` (5 %) | the absent lines are the concurrent Azahar/AOT workstream (AOT redesign notes, SHA-256 and A32 runtime of the module) and renderer pieces of its uncommitted grass/VSM work (shadow history release, VSM page lookup, interop adapter): they belong to that workstream, not to this line | out of the line |
 
 ## 5. Scenarios (L5)
 
@@ -232,16 +241,16 @@ private and read only; outputs go to a scratch directory.
 | S01 | Boot, title, Start during the title presentation, file select, load a save | none (fresh boot) and a practice save | B5, C5, #48 |
 | S02 | Kokiri walk, eight renderer profiles (the L4 gate) | `qualify/ref-kokiri2` | C, J, K, Q |
 | S03 | HUD at 4:3, 16:9 and 21:9; minimap markers on fresh entry and after reload | practice saves with map/compass | E1, E2, #25, #32 |
-| S04 | Pause menu pages, item numbers, map screen, ZL/ZR assignment and use | practice saves (adult with bow/hookshot) | E2, R1, #39 |
+| S04 | Pause menu pages, item numbers, map screen, ZL/ZR assignment and use, one-frame taps | practice saves (adult with bow/hookshot) | E2, R1, R2, #39 |
 | S05 | Epona: stamina and timer, mounted B counter | issue 40-43 checkpoints | E5, #40, #42 |
 | S06 | Boots hotkey repeat | `boots-held` checkpoint | E5, #43 |
-| S07 | Ocarina performance UI, song browsing | practice save with ocarina | R2 |
+| S07 | Ocarina performance UI, song browsing | practice save with ocarina | R3 |
 | S08 | Game Over: continue/quit by directional/A, save-yes, mouse/touch | Game Over checkpoints | E6, #46 |
 | S09 | Temple of Time revelation and the mid-flashback savestate, native 30 and interpolated 2x | issue 45/46 checkpoints | I1-I4, #45, #49 |
 | S10 | Sheikah Stone movie: play, complete, cancel, return | Kokiri state near the stone | G1 |
 | S11 | Dialogue with HD fonts at 480p and above, TopScreen on and off | practice saves | F1, #44 |
 | S12 | F1 tap toggle, F2 native lighting, capability-safe Off controls | any gameplay state | E4, E8 |
-| S13 | Fullscreen and windowed toggles, display change rejection | any | D4, R3 |
+| S13 | Fullscreen and windowed toggles, display change rejection | any | D4, R4 |
 | S14 | DLSS and FSR profiles: UI at output resolution, house entry keeps one upscaler | `play-kokiri` style state at a house door | E7, J8, J9 |
 | S15 | Night/dawn light and shadows | `intro-lights` night anchor | J2 |
 | S16 | Savestate save/restore at a non-native scale | Kokiri | J11 |
