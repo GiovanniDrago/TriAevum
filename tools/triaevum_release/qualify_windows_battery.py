@@ -6,21 +6,28 @@ inputs) come from a local JSON configuration; an example lives next to this
 file. Nothing here reads or writes ROM-derived data outside the configured
 private directories, and every output goes to the report directory.
 
-usage: qualify_windows_battery.py --config LOCAL.json --output DIR [--layers build,unit]
+usage: qualify_windows_battery.py --config LOCAL.json --output DIR [--layers build,unit,scenarios]
 
 Layers implemented here:
 - build: the product targets and every test executable CTest knows, so a test
   that does not build fails the battery instead of disappearing;
 - unit: CTest of each build tree (JUnit per test), the generator --check
-  commands and the Python suites.
+  commands and the Python suites;
+- scenarios: deterministic game runs from private checkpoints and input
+  timelines at several output sizes, judged by their exit, their framebuffer
+  captures (accepted references, full-frame effects) and the renderer's
+  per-frame diagnostics.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
+import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -28,7 +35,7 @@ import xml.etree.ElementTree as ElementTree
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-LAYERS = ("build", "unit")
+LAYERS = ("build", "unit", "scenarios")
 
 
 @dataclass
@@ -276,6 +283,229 @@ def layer_unit(config: dict, out: Path, report: Report) -> None:
         report.add(Check("unit", f"python: {name}", status, detail, seconds, str(log)))
 
 
+def read_bmp(path: Path) -> tuple[int, int, list[bytes]]:
+    """Width, height and top-down rows of BGR triples of an uncompressed 24- or 32-bit framebuffer capture."""
+    data = path.read_bytes()
+    if len(data) < 54 or data[:2] != b"BM":
+        raise ValueError(f"not a BMP: {path}")
+    offset = struct.unpack_from("<I", data, 10)[0]
+    width, height, planes, depth, compression = struct.unpack_from("<iiHHI", data, 18)
+    if width <= 0 or height == 0 or planes != 1 or depth not in (24, 32) or compression != 0:
+        raise ValueError(f"unsupported BMP layout: {path}")
+    stride = ((width * depth + 31) // 32) * 4
+    count = abs(height)
+    if offset < 54 or offset + stride * count > len(data):
+        raise ValueError(f"truncated BMP: {path}")
+    step = depth // 8
+    rows = []
+    for row in (range(count) if height < 0 else range(count - 1, -1, -1)):
+        pixels = data[offset + stride * row:offset + stride * row + width * step]
+        if step == 4:
+            pixels = b"".join(pixels[index:index + 3] for index in range(0, len(pixels), 4))
+        rows.append(pixels)
+    return width, count, rows
+
+
+def desaturated_columns(path: Path, tolerance: int = 8) -> tuple[int, list[int]]:
+    """Image width and the columns whose every pixel is grey (channel spread within the tolerance).
+
+    The title's full-frame effects (the revelation's black-and-white flashback, fades to black) must reach
+    every output column; a placed rectangle leaves coloured margins.
+    """
+    width, _, rows = read_bmp(path)
+    grey = [True] * width
+    for row in rows:
+        for column, pixel in enumerate(zip(row[0::3], row[1::3], row[2::3])):
+            if grey[column] and max(pixel) - min(pixel) > tolerance:
+                grey[column] = False
+    return width, [column for column, value in enumerate(grey) if value]
+
+
+def compare_captures(a: Path, b: Path) -> tuple[int, tuple[int, int, int, int] | None]:
+    """Number of differing pixels between two captures and their bounding box (x0, y0, x1, y1)."""
+    width_a, height_a, rows_a = read_bmp(a)
+    width_b, height_b, rows_b = read_bmp(b)
+    if (width_a, height_a) != (width_b, height_b):
+        raise ValueError(f"capture sizes differ: {width_a}x{height_a} and {width_b}x{height_b}")
+    count = 0
+    box: tuple[int, int, int, int] | None = None
+    for y, (row_a, row_b) in enumerate(zip(rows_a, rows_b)):
+        if row_a == row_b:
+            continue
+        for x in range(width_a):
+            if row_a[3 * x:3 * x + 3] != row_b[3 * x:3 * x + 3]:
+                count += 1
+                box = (x, y, x, y) if box is None else (min(box[0], x), min(box[1], y), max(box[2], x),
+                                                        max(box[3], y))
+    return count, box
+
+
+def merge_settings(target: dict, overrides: dict) -> dict:
+    """Deep-merge a scenario's settings overrides into a configuration."""
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            merge_settings(target[key], value)
+        else:
+            target[key] = value
+    return target
+
+
+# Gameplay timing of a scenario: interpolated is the default product mode, original30 the Original30 frame rate
+# (native 30, no interpolation). Fixed steps make captures deterministic.
+SCENARIO_TIMING = {
+    "interpolated": ["--gameplay-timing", "native30_interpolated", "--presentation-rate", "60",
+                     "--fixed-delta-seconds", "0.016666666666666666"],
+    "original30": ["--gameplay-timing", "native30_no_interpolation", "--presentation-rate", "30",
+                   "--fixed-delta-seconds", "0.033333333333333333"],
+}
+
+
+@contextlib.contextmanager
+def gpu_lock(path: str | None, owner: str):
+    """Serialise GPU runs with other agents through an atomic lock directory (mkdir), if one is configured."""
+    if not path:
+        yield
+        return
+    lock = Path(path)
+    while True:
+        try:
+            lock.mkdir()
+            break
+        except FileExistsError:
+            time.sleep(20)
+    try:
+        (lock / "owner").write_text(owner, encoding="utf-8")
+        yield
+    finally:
+        shutil.rmtree(lock, ignore_errors=True)
+
+
+def stage_executable(executable: Path, directory: Path) -> Path:
+    """Hard-link (or copy) the executable as TriAevum.exe beside its DLLs: captures reproduce only under that name."""
+    directory.mkdir(parents=True)
+    for source, name in [(executable, "TriAevum.exe")] + [(dll, dll.name) for dll in executable.parent.glob("*.dll")]:
+        try:
+            os.link(source, directory / name)
+        except OSError:
+            shutil.copy2(source, directory / name)
+    return directory / "TriAevum.exe"
+
+
+def scenario_command(scenarios: dict, item: dict, run_dir: Path) -> list[str]:
+    timing = item.get("timing", "interpolated")
+    command = list(scenarios.get("arguments", [])) + SCENARIO_TIMING[timing] + [
+        "--config", (run_dir / "config.json").as_posix(),
+        "--topscreen-config", (run_dir / "topscreen-config").as_posix(),
+        "--save-data", (run_dir / "savedata").as_posix(),
+        "--output", (run_dir / "runtime.json").as_posix(),
+        "--frames", str(item["frames"]), "--max-seconds", str(item.get("max_seconds", 600)),
+        "--screenshot", (run_dir / "framebuffer.bmp").as_posix(),
+        "--screenshot-start-frame", str(item["shot_start"]),
+        "--screenshot-interval", str(item.get("shot_interval", 1000)), "--screenshot-sequence",
+    ]
+    if item.get("checkpoint"):
+        command += ["--load-state", Path(item["checkpoint"]).as_posix()]
+    if item.get("timeline"):
+        command += ["--input-timeline", Path(item["timeline"]).as_posix()]
+    return command
+
+
+def evaluate_scenario(name: str, run_dir: Path, code: int | str, expect: dict, references: Path | None,
+                      seconds: float, log: str) -> list[Check]:
+    """Judge one scenario run; every expectation becomes one check."""
+    checks = [Check("scenarios", f"{name}: exit", "pass" if code == expect.get("exit", 0) else "fail",
+                    f"exit {code}", seconds, log)]
+    captures = sorted(run_dir.glob("framebuffer_*.bmp"))
+    if "captures" in expect:
+        checks.append(Check("scenarios", f"{name}: captures",
+                            "pass" if len(captures) == expect["captures"] else "fail",
+                            f"{len(captures)} of {expect['captures']}: " + ", ".join(c.name for c in captures)))
+    for capture in expect.get("full_width_desaturation", []):
+        path = run_dir / capture
+        if not path.exists():
+            checks.append(Check("scenarios", f"{name}: {capture} full-width effect", "fail", "capture missing"))
+            continue
+        width, grey = desaturated_columns(path)
+        span = f"{grey[0]}..{grey[-1]} ({len(grey)} columns)" if grey else "none"
+        checks.append(Check("scenarios", f"{name}: {capture} full-width effect",
+                            "pass" if len(grey) == width else "fail", f"grey columns {span} of {width}"))
+    diagnostics = run_dir / "gpu.json"
+    bounds = [(key, expect[key]) for key in ("screen_content_max", "screen_content_min_total",
+                                             "whole_target_ui_min_total") if key in expect]
+    if bounds:
+        frames = json.loads(diagnostics.read_text(encoding="utf-8")).get("frames", []) if diagnostics.exists() else []
+        screen = [frame.get("screen_content_draw_count", 0) for frame in frames]
+        whole = [frame.get("whole_target_ui_draw_count", 0) for frame in frames]
+        observed = {"screen_content_max": max(screen, default=0), "screen_content_min_total": sum(screen),
+                    "whole_target_ui_min_total": sum(whole)}
+        for key, bound in bounds:
+            ok = bool(frames) and (observed[key] <= bound if key.endswith("_max") else observed[key] >= bound)
+            checks.append(Check("scenarios", f"{name}: {key.replace('_', ' ')} {bound}", "pass" if ok else "fail",
+                                f"{observed[key]} over {len(frames)} diagnostic frames"))
+    if expect.get("reference"):
+        for capture in captures:
+            reference = references / capture.name if references else None
+            if reference is None or not reference.exists():
+                checks.append(Check("scenarios", f"{name}: {capture.name} reference", "notrun",
+                                    "no accepted reference"))
+                continue
+            differing, box = compare_captures(reference, capture)
+            checks.append(Check("scenarios", f"{name}: {capture.name} reference",
+                                "pass" if differing == 0 else "fail",
+                                "identical" if differing == 0 else f"{differing} pixels differ in {box}"))
+    return checks
+
+
+def layer_scenarios(config: dict, out: Path, report: Report) -> None:
+    scenarios = config.get("scenarios")
+    if not scenarios:
+        report.add(Check("scenarios", "configuration", "notrun", "no scenarios configured"))
+        return
+    executable = Path(scenarios["executable"]).resolve()
+    references_root = Path(scenarios["references"]) if scenarios.get("references") else None
+    repository = Path(config["repository"])
+    for item in scenarios.get("items", []):
+        # Inputs given relative (an input timeline of the checkout) are relative to the repository.
+        item = dict(item, **{key: str(repository / item[key]) for key in ("checkpoint", "timeline", "config")
+                             if item.get(key) and not Path(item[key]).is_absolute()})
+        for size in item.get("sizes", ["1280x720"]):
+            width, height = (int(value) for value in size.split("x"))
+            name = f"{item['name']} {size}"
+            run_dir = out / "scenarios" / item["name"] / size
+            if run_dir.exists():
+                shutil.rmtree(run_dir)
+            run_dir.mkdir(parents=True)
+            settings = json.loads(Path(item.get("config", scenarios["config"])).read_text(encoding="utf-8-sig"))
+            graphics = settings.setdefault("Graphics", {})
+            graphics.setdefault("Output", {}).update(Width=width, Height=height)
+            settings.setdefault("Window", {}).update(Width=width, Height=height)
+            if item.get("timing") == "original30":
+                graphics.setdefault("FrameRate", {})["Mode"] = "Original30"
+            merge_settings(settings, item.get("settings", {}))
+            (run_dir / "config.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
+            shutil.copyfile(scenarios["topscreen_config"], run_dir / "topscreen-config")
+            shutil.copytree(scenarios["save_data_seed"], run_dir / "savedata")
+            staged = stage_executable(executable, run_dir / "bin")
+            environment = os.environ.copy()
+            environment.update({
+                "TRIAEVUM_RENDERER_CACHE_DIR": str(run_dir / "cache"),
+                "OOT3D_VULKAN_DIAGNOSTICS_PATH": str(run_dir / "gpu.json"),
+                "OOT3D_VULKAN_DIAGNOSTICS_MAX_FRAMES": str(item.get("diagnostic_frames", item["frames"])),
+            })
+            log = run_dir / "launch.log"
+            with gpu_lock(scenarios.get("gpu_lock"), f"qualify_windows_battery {name}"):
+                wait_idle(config.get("wait_idle_processes", []))
+                code, seconds = run_logged([str(staged)] + scenario_command(scenarios, item, run_dir), log,
+                                           cwd=Path(scenarios["working_directory"]),
+                                           timeout=item.get("max_seconds", 600) + 120, env=environment)
+            for leftover in ("bin", "cache", "savedata"):
+                shutil.rmtree(run_dir / leftover, ignore_errors=True)
+            references = references_root / item["name"] / size if references_root else None
+            for check in evaluate_scenario(name, run_dir, code, item.get("expect", {}), references, seconds,
+                                           str(log)):
+                report.add(check)
+
+
 def write_report(report: Report, out: Path) -> tuple[Path, Path]:
     data = asdict(report)
     totals: dict[str, dict[str, int]] = {}
@@ -290,7 +520,7 @@ def write_report(report: Report, out: Path) -> tuple[Path, Path]:
         lines.append(f"- {layer}: " + ", ".join(f"{key} {value}" for key, value in sorted(counts.items())))
     lines += ["", "| Layer | Check | Status | Detail |", "| --- | --- | --- | --- |"]
     for check in report.checks:
-        if check.status != "pass" or check.name.endswith(": ctest") or check.layer == "build":
+        if check.status != "pass" or check.name.endswith(": ctest") or check.layer in ("build", "scenarios"):
             detail = check.detail.replace("|", "/").replace("\n", " ")[:240]
             lines.append(f"| {check.layer} | {check.name} | {check.status} | {detail} |")
     md_path = out / "battery-report.md"
@@ -316,6 +546,8 @@ def main() -> int:
         layer_build(config, out, report)
     if "unit" in layers:
         layer_unit(config, out, report)
+    if "scenarios" in layers:
+        layer_scenarios(config, out, report)
     json_path, md_path = write_report(report, out)
     failing = [check for check in report.checks if check.status in ("fail", "notrun")]
     print(f"battery: {len(report.checks)} checks, {len(failing)} failing; report {md_path}")

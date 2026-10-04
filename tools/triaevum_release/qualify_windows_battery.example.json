@@ -1,0 +1,92 @@
+{
+  "_about": "Example for qualify_windows_battery.py. Copy it outside the repository, replace every <...> with a local path, and keep private inputs (extracted title, checkpoints, captures, references) outside the checkout. Keys starting with an underscore are comments.",
+  "repository": "<this checkout>",
+  "ctest": "<CMake bin>/ctest.exe",
+  "python": "python",
+  "wait_idle_processes": ["ninja.exe", "TriAevum.exe"],
+  "build_trees": [
+    {
+      "name": "host",
+      "dir": "<host build tree>",
+      "build_command": ["cmd.exe", "/c", "<script that sets up the compiler and runs ninja -C the host tree>", "-j", "4"],
+      "targets": ["oot3d_native_game", "triaevum_f1_settings_smoke"],
+      "test_jobs": 4,
+      "test_env": {
+        "_about": "Tests needing ROM-derived inputs read them from here and report themselves skipped (77) without them.",
+        "OOT3D_TEST_EXTRACT_ROOT": "<private extracted title: romfs/ and exefs/>"
+      }
+    },
+    {
+      "name": "gpu",
+      "dir": "<GPU test build tree>",
+      "build_command": ["cmd.exe", "/c", "<script that runs ninja -C the GPU test tree>", "-j", "4"],
+      "targets": ["build_fragment_artifacts", "build_pass_artifacts", "build_immerse_pass_artifacts", "build_vertex_artifacts"],
+      "test_jobs": 1
+    }
+  ],
+  "generator_checks": [
+    {"name": "native", "command": ["<GPU test build tree>/build_fragment_artifacts.exe", "--check"]},
+    {"name": "temporal", "command": ["<GPU test build tree>/build_fragment_artifacts.exe", "--temporal", "--check"]},
+    {"name": "toon", "command": ["<GPU test build tree>/build_fragment_artifacts.exe", "--toon", "--check"]},
+    {"name": "uber", "command": ["<GPU test build tree>/build_fragment_artifacts.exe", "--uber", "--check"]},
+    {"name": "casters", "command": ["<GPU test build tree>/build_fragment_artifacts.exe", "--casters", "--check"]},
+    {"name": "pass", "command": ["<GPU test build tree>/build_pass_artifacts.exe", "--check"]},
+    {"name": "immerse", "command": ["<GPU test build tree>/build_immerse_pass_artifacts.exe", "--check"]},
+    {"name": "vertex", "command": ["<GPU test build tree>/build_vertex_artifacts.exe", "--check",
+                                   "<private extracted title>/romfs/CmbVShader.shbin",
+                                   "<private extracted title>/romfs/profile.shbin"]}
+  ],
+  "python_suites": [
+    {"name": "triaevum_release", "start": "tools/triaevum_release"},
+    {"name": "triaevum_release-tests", "start": "tools/triaevum_release/tests"},
+    {"name": "native_a32_runtime", "start": "tools/oot3d/native_a32_runtime"},
+    {"name": "tev_program", "start": "tools/renderer/tev_program"},
+    {"name": "native_pica_frontend", "start": "tools/oot3d/native_pica_frontend"},
+    {"name": "native_game_runtime", "start": "tools/oot3d/native_game_runtime"},
+    {"name": "codec_validation", "start": "tools/oot3d/codec_validation"},
+    {"name": "renderer_integration", "start": "tools/oot3d/renderer_integration"},
+    {"name": "oot3d_asset_tool", "runner": "pytest", "start": "tools/oot3d/oot3d_asset_tool/tests",
+     "env": {"PYTHONPATH": "tools/oot3d/oot3d_asset_tool/src"}},
+    {"name": "android", "start": "tools/android"}
+  ],
+  "scenarios": {
+    "_about": "L5. Each item runs once per output size as TriAevum.exe (hard links) in the working directory, a Forge installation. Captures, the runtime report and per-frame renderer diagnostics (gpu.json) stay in the report directory. 'references' holds accepted captures per item and size; a missing reference is reported as not run.",
+    "executable": "<host build tree>/TriAevum.exe",
+    "working_directory": "<Forge installation>",
+    "arguments": ["--title-plugin", "<title module>", "--a32-process-manifest", "<process manifest>",
+                  "--resource-root", "<resources>", "--renderer", "nri", "--ui-profile", "topscreen",
+                  "--topscreen-texture-overrides", "<atlas overrides>", "--pica-aot-shader-pack", "<shader pack>"],
+    "config": "<settings JSON used when an item names none>",
+    "topscreen_config": "<TopScreen settings>",
+    "save_data_seed": "<save data directory copied for every run>",
+    "gpu_lock": "<optional lock directory shared with other GPU jobs>",
+    "references": "<private directory of accepted captures>",
+    "items": [
+      {
+        "name": "S03-hud-aspect",
+        "_about": "Adult Link outside Castle Town: the TopScreen button cluster, minimap and native HUD stay on the native canvas at 4:3, 16:9 and 21:9.",
+        "checkpoint": "<HUD checkpoint>",
+        "sizes": ["960x720", "1280x720", "1720x720"],
+        "frames": 160,
+        "shot_start": 150,
+        "expect": {"exit": 0, "captures": 1, "screen_content_max": 0, "whole_target_ui_min_total": 1, "reference": true}
+      },
+      {
+        "name": "S09-revelation-original30",
+        "_about": "Sheik's revelation under Original30: the run passes the raw copies and the black-and-white flashback covers every output column.",
+        "checkpoint": "<revelation trigger checkpoint>",
+        "timeline": "tools/oot3d/native_game_runtime/input_timelines/native_cutscene_dialogue_advance.json",
+        "config": "<settings JSON>",
+        "timing": "original30",
+        "settings": {"Graphics": {"Preset": "Authentic"}},
+        "sizes": ["960x720", "1280x720", "1720x720"],
+        "frames": 3430,
+        "shot_start": 2820,
+        "shot_interval": 300,
+        "diagnostic_frames": 1200,
+        "max_seconds": 600,
+        "expect": {"exit": 0, "captures": 3, "full_width_desaturation": ["framebuffer_002820.bmp"], "screen_content_min_total": 1, "reference": true}
+      }
+    ]
+  }
+}
