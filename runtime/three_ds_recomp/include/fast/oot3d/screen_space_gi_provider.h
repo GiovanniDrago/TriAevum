@@ -135,12 +135,15 @@ class ScreenSpaceGiProvider final {
     // Developer options (environment, read at Initialize; never persisted):
     //   OOT3D_GRAPHICS_SSGI_KERNEL_TIMING=1  per-kernel GPU timing on stderr
     //   OOT3D_GRAPHICS_SSGI_WORK_FACTOR=1|2|4  overrides the work scale
-    //   OOT3D_GRAPHICS_SSGI_DUMP=<dir>, OOT3D_GRAPHICS_SSGI_DUMP_FRAME=<n>
+    //   OOT3D_GRAPHICS_SSGI_DUMP=<dir>, OOT3D_GRAPHICS_SSGI_DUMP_FRAME=<n>,
+    //   OOT3D_GRAPHICS_SSGI_DUMP_COUNT=<c>
     //     writes the pass inputs (the adapter's decoding of the guides) and the
-    //     camera of frame n to <dir> for offline measurements
+    //     frame declarations (camera, jitter, camera cut, camera transform to
+    //     the previous view) of frame n to <dir> for offline measurements;
+    //     with c > 1, c consecutive frames, one <dir>/f<frame> directory each
     struct DumpState;
     void RecordDump(VkCommandBuffer command, Instance& instance, const ScreenSpaceGiFrame& frame,
-                    const Renderer::DiffuseGi::DepthCamera& camera);
+                    const Renderer::DiffuseGi::PassFrame& passFrame);
     void FinishDump(uint64_t frameId);
     bool mKernelTiming = false;
     uint32_t mWorkFactorOverride = 0;

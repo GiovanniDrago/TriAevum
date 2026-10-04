@@ -108,8 +108,11 @@ TEST(ScreenSpaceGi, SettingsMapOntoTheRuntimePass) {
     expected.Gather.Radius = 150.0;
     expected.Gather.Thickness = 30.0;
     expected.Gather.CandidatesPerSide = 20;
-    expected.Gather.RadialExponent = 1.0;
-    EXPECT_EQ(s.Gather.RadialExponent, 1.0);
+    expected.Gather.RadialExponent = 1.5;
+    EXPECT_EQ(s.Gather.RadialExponent, 1.5);
+    // M7: no surface takes the weaker moving-surface history test.
+    EXPECT_TRUE(std::isinf(s.Temporal.MovingFlow) && s.Temporal.MovingFlow > 0.0);
+    EXPECT_STREQ(DGI::ValidateTemporalSettings(s.Temporal), "");
     EXPECT_EQ(s.OutputLimit, 65504.0);
     GlobalIlluminationSettings clamped = gi;
     clamped.ScreenSpace.HighlightClamp = 1.5F;

@@ -1,6 +1,10 @@
 # Screen-space diffuse GI (clean-room implementation)
 
-Status: **M6 done** (2026-10-04: the candidate-count darkening attributed to the
+Status: **M7 done** (2026-10-04: temporal quality measured on two captured
+motion sequences; FlowAndDepth moving class off and radial exponent 1.5 in
+the OOT3D adapter; bilinear history, AlphaMin, guiding/SH/blue noise and the
+guide rules unchanged with numbers; the EveryTexel truth is the reference;
+see "M7"), on top of **M6 done** (2026-10-04: the candidate-count darkening attributed to the
 footprint strips and corrected with a uniform radial exponent; default 20
 candidates: 2.89 ms pass time, 3.5-3.9 ms in game; horizon-only measured and
 rejected; see "M6"), on top of **M5 done** (2026-10-04, Stage C: per-kernel timing and a developer
@@ -860,7 +864,12 @@ mean |dJ| <= 2.6e-6, max dA 3.2e-3 (T06).
     of T11 reads 0.25 px along x+y against the unjittered history run (no
     alternation; the constant-jitter control shows no static bias). Test at M5,
     with the real TAA jitter sequence: a sharper history resampler (bicubic
-    with a non-negative clamp) against the blur and offset.
+    with a non-negative clamp) against the blur and offset. **Closed (M7)**:
+    on two captured sequences the offset along the motion is +0.03 output px
+    and the log-luminance gradient gain 0.90-0.96 of a static run (noise
+    baseline 0.93-0.95); a Catmull-Rom history clamped to the bilinear taps
+    changes neither (0.898 vs 0.897; error within 0.001). Bilinear stays
+    (see "M7").
 15. Open (M3): on this host the validation layer loads and reports no
     error, but the synchronization-validation negative control (a deliberately
     missing barrier) is not reported, so race freedom rests on construction
@@ -869,7 +878,14 @@ mean |dJ| <= 2.6e-6, max dA 3.2e-3 (T06).
     control is detected, and at M5 with the renderer's own validation runs.
 16. Requirement (M5): `FlowAndDepth` parameters for moving surfaces
     (0.25 px, 5% depth band, confidence 0.25) are declared, not tuned; test on
-    captured rigid and grass motion (ghosting against noise).
+    captured rigid and grass motion (ghosting against noise). **Closed (M7)**:
+    on two captured sequences the weaker moving-surface test accepted other
+    surfaces' histories (moving receivers 8-12 % off their converged value);
+    the OOT3D adapter sets the flow threshold to infinity, so every tap passes
+    the camera-predicted surface test (moving receivers, error against their
+    converged value: 0.206 -> 0.184 and 0.212 -> 0.154 J-weighted, 0.179 ->
+    0.107 and 0.183 -> 0.113 median; static receivers unchanged). The module
+    default is unchanged (see "M7").
 17. Measured (M3): a +20% light change reaches 90% of the new mean value at
     the first frame (specification metric) but 90% of the change only after
     13 frames, because z thresholds of 3-6 keep false responses at 0.66% of
@@ -887,10 +903,17 @@ mean |dJ| <= 2.6e-6, max dA 3.2e-3 (T06).
 20. Requirement (M4, M5): guiding, the SH backend and blue noise stay off by
     default (M4 studies); re-measure them on captured OoT3D buffers (localized
     lights for guiding, curved surfaces for SH, TAA motion for the masks)
-    before any default changes.
+    before any default changes. **Measured (M7)** with the CPU module on the
+    captured buffers: guiding cuts single-frame variance 1.54x (28-frame mean
+    1.16x) but the runtime pass has no guiding path; the SH cache equals the
+    mean cache (both act only on planar cells); blue-noise rotations help at
+    4 frames and lose at 7 and 28. Defaults unchanged (see "M7").
 21. Open (M4): the guide is per screen region and not reprojected; under
     camera motion it is stale (still unbiased, only variance). Test at M5:
-    variance with and without a guide reset on large motion.
+    variance with and without a guide reset on large motion. **Closed (M7)**:
+    under captured motion of 2.7 and about 8 work px per step the stale guide
+    keeps 1.40x and 1.31x less variance than a reset (uniform) frame; no
+    reset on motion (see "M7").
 22. Open (M4): the 3D-truth comparison of the footprint used spacing scale 2;
     the default (1) was chosen against EveryTexel. Test: repeat the truth
     comparison with scale 1 on more receivers.
@@ -2508,3 +2531,278 @@ code not opened. Shared files edited (GI parts only):
 `graphics_settings.h/.cpp`, `graphics_settings_persistence.cpp`,
 `graphics_settings_lighting_panel.cpp`. Shared topic files of the backend
 split were not opened in M6.
+
+## M7: temporal quality on real motion, sampling options, truth as the reference
+
+Inputs: two captured 8-frame sequences of the kit walk (Kokiri, guide 1440 x
+1280, work factor 1, real TAA jitter of about 0.3 output px, no camera cut),
+dumped with the new consecutive-frame option:
+
+| Sequence | Kit frames | Mean flow (output px / frame) | Moving receivers | Disoccluded per frame | Sky |
+|---|---|---|---|---|---|
+| A | 300-307 | 10.8 | 1.4 % | 1.2 % | yes |
+| B | 220-227 | 23.6 | 1.6 % | 3.1 % | no |
+
+Each sequence is 676 MB and its eight truths 113 MB; they were captured,
+measured and deleted one at a time (A was captured twice, before and after B,
+and reproduced every number). Peak working data: 0.88 GB (sequence, truths,
+one kit output directory, the game copy) against the 1.2 GB budget.
+
+### Tools (developer only, never persisted)
+
+- `OOT3D_GRAPHICS_SSGI_DUMP_COUNT=<c>` (with `..._DUMP` and `..._DUMP_FRAME`):
+  c consecutive frames, one `f<frame>` directory each. The metadata now holds
+  every declaration of the pass frame: camera, `jitter_uv`, `camera_cut` and
+  the camera transform to the previous view (`current_to_previous_r`, `_t`).
+- `diffuse_gi_pass_gpu_tests --sequence DIR R TAU CONFIG...`: per frame a
+  converged EveryTexel truth (Half, 4 sections, 128 sectors, 4 levels, 64
+  frames; `DGI_SEQ_REFS=<dir>` caches it). Each configuration warms up on the
+  first frame (40 static frames, the last 16 give the static temporal noise),
+  then runs the captured frames with their motion, camera transform and
+  jitter. Every output is compared with (a) the truth, (b) the
+  configuration's own static converged output of that frame (32 frames) and
+  (c) a second static run at another rotation phase, the noise floor of (b).
+  Receivers are classed by flow (moving: the motion departs from the camera's
+  static prediction by more than 0.5 output px) and by age (frames since the
+  surface's history began: camera-predicted depth against the previous
+  frame's depth at the reprojected texel within 2 %, moving receivers their
+  own depth within 10 %; 7 = since the warm-up). Two error views: J-weighted
+  (sum |dJ| / sum J, the M5/M6 measure) and the median per-texel |dJ| / (J +
+  0.1 mean J), because J is concentrated (on A, 5 % of the receivers hold
+  60 % of the J sum). Lag: regression of output minus own static output on
+  the log-luminance slope along the motion; blur: log-luminance gradient
+  gain against the own static output.
+- Study options `mf<px>`, `md<rel>`, `mc<frac>`, `am<alpha>` (FlowAndDepth
+  flow threshold, depth band, confidence, AlphaMin).
+- `diffuse_gi_pass_gpu_tests --cpu-study DIR R TAU [S]`: the CPU module
+  (double) on the Quarter work images of the captured frames (360 x 320, the
+  default gather settings): guiding, SH cache, blue noise, guide staleness.
+  No GPU.
+
+### Temporal quality on real motion (open points 14, 16, 21)
+
+M6 default (K20, exponent 1, Quarter, S1, N64, L2), static-flow receivers,
+J-weighted error against the own static output / its noise floor / the truth,
+by age:
+
+| Age | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7+ | all |
+|---|---|---|---|---|---|---|---|---|---|
+| A | .310/.197/.404 | .244/.141/.370 | .214/.116/.349 | .221/.118/.350 | .196/.094/.355 | .204/.087/.341 | .190/.101/.301 | .155/.069/.247 | .161/.074/.256 |
+| A share | 1.2 % | 0.9 % | 0.7 % | 0.5 % | 0.4 % | 0.3 % | 0.1 % | 96 % | |
+| B | .158/.083/.195 | .138/.072/.163 | .143/.067/.160 | .138/.067/.160 | .136/.063/.165 | .131/.067/.158 | .122/.065/.152 | .177/.083/.370 | .174/.082/.352 |
+
+- **Disocclusion**: the error of a disoccluded surface (age 0) falls to the
+  plateau of old surfaces within two to three frames; in median terms the
+  young ages stay below the plateau (A: 0.025-0.052 against 0.086).
+- **What motion costs**: per frame of A the output departs from its own
+  static output by 0.124, 0.151, 0.158, 0.173, 0.176, 0.172, 0.168 (B: 0.124
+  to 0.195), against a noise floor of 0.074 (B 0.082), and from the truth by
+  0.23-0.27 while the static outputs stay at 0.21-0.23 (B: 0.30-0.39 against
+  0.25-0.29). The cause is the **view dependence of the screen-space
+  estimate**, not the resampler: from one frame to the next the converged
+  estimate of the same static surface changes by 0.10-0.14 at Quarter
+  (0.09-0.12 at Half, 0.05-0.10 for the truth itself, nearest reprojection),
+  and the history averages those views. A shorter memory buys little:
+  AlphaMin 1/16 lowers the static error from 0.161 to 0.156 for +29 % static
+  noise, 1/8 to 0.153 for +100 %; AlphaMin stays 1/32.
+- **Static noise** (temporal std / mean of luminance, the last 16 of 40
+  static frames): A median 0.0233 (J-weighted 0.046), B median 0.0059
+  (0.046).
+- **History resampler (open point 14)**: offset along the motion +0.034
+  output px on A, +0.025 on B (0.01 work px); log-gradient gain 0.897 on A
+  against a noise floor of 0.930, 0.958 against 0.953 on B. The sharper
+  alternative, a Catmull-Rom history over the accepted 4 x 4 taps (each tap
+  validated like the bilinear taps) with J and its second moment clamped to
+  the accepted bilinear taps (non-negative), gave gain 0.898, static error
+  0.160 (0.161), the same median, moving receivers 0.192 (0.197) and +0.4 %
+  J: no measurable gain for 12 more taps. Bilinear stays; the experiment was
+  removed and the pack is unchanged.
+
+**FlowAndDepth (open point 16)**, moving receivers only (static receivers are
+unchanged by every value to three decimals), error against the own static
+output, J-weighted / median, and their J against the own static output:
+
+| Sequence, configuration | J-weighted | median | J / own |
+|---|---|---|---|
+| A, M3 values (0.25 px, 5 %, 0.25) | 0.197 | 0.169 | 0.924 |
+| A, depth band 3 % / 2 % / 1 % | 0.180 / 0.181 / 0.184 | 0.154 / 0.128 / 0.108 | 0.955 / 0.995 / 1.008 |
+| A, confidence 0.125 / 1 | 0.187 / 0.206 | 0.159 / - | 0.930 / - |
+| A, flow 1 px | 0.190 | 0.158 | 0.943 |
+| A, flow infinite | 0.177 | 0.107 | 1.004 |
+| A, exponent 1.5, M3 values / flow infinite | 0.206 / **0.184** | 0.179 / **0.107** | 0.931 / **1.002** |
+| B, M3 values | 0.209 | 0.179 | 1.124 |
+| B, depth band 2 % / 1 % | 0.209 / 0.195 | 0.179 / 0.173 | 1.123 / 1.101 |
+| B, flow infinite | 0.150 | 0.107 | 1.003 |
+| B, exponent 1.5, flow 0.25 / 2 / 4 / 8 / infinite | 0.212 / 0.211 / 0.170 / 0.155 / **0.154** | 0.183 / 0.183 / 0.124 / 0.113 / **0.113** | 1.125 / 1.124 / 1.042 / 1.010 / **1.009** |
+
+The weaker test (depth band and normal only) accepts histories of other
+surfaces: the moving receivers end 8 % dark on A and 12 % bright on B. A
+narrower band helps on A and hardly on B; disabling the moving class (flow
+threshold infinite: every tap passes the camera-predicted surface test)
+helps on both, with no change to static receivers or static noise. By age
+on B (J-weighted, exponent 1.5, M3 values -> infinite): ages 0-6 0.289,
+0.295, 0.327, 0.330, 0.330, 0.370, 0.377 -> 0.303, 0.299, 0.266, 0.230,
+0.235, 0.286, 0.235 (the disoccluded frame itself 0.01 worse); on A ages 1-2
+(J-weighted 0.271/0.292 -> 0.299/0.302) are slightly worse while the median
+and the older ages improve. **Decision**: the OOT3D adapter sets the flow
+threshold to infinity; the module default (M3) is unchanged.
+
+**Guide reset (open point 21)**, CPU module on A, single-frame relative MSE
+of luminance against each frame's converged uniform estimator (16 stratified
+sections over a rotation cycle), guide learned 8 frames on the first frame
+and then kept learning through the motion:
+
+| Step | uniform (= a reset frame) | stale guide | fresh guide (8 frames on that frame) |
+|---|---|---|---|
+| every frame (2.7 work px) | 1.237 | 0.883 | 0.800 |
+| every third frame (about 8 work px) | 1.222 | 0.932 | 0.718 |
+
+The stale guide keeps 1.40x and 1.31x less variance than a reset; staleness
+costs 10-30 % of the fresh guide's gain. **Decision**: no reset on motion;
+the existing invalidations (camera cut, view change, resize, transport
+change, explicit reset) stay the only ones. Guiding itself is off in the
+runtime pass.
+
+### Sampling options on captured buffers (open point 20)
+
+CPU module, A frame 300, Quarter work image, default gather settings, 8
+learning frames then 28 measured; relative MSE of luminance against the
+converged uniform estimator:
+
+| Option | single frame | mean of 4 | mean of 7 | mean of 28 | bias |
+|---|---|---|---|---|---|
+| uniform stratified (default), 1 section | 1.245 | 0.178 | 0.060 | 0.0123 | +0.2 % |
+| uniform, 2 sections (twice the work) | 0.275 | 0.048 | 0.023 | 0.0077 | +0.2 % |
+| guiding (8 bins, regions 4 x 4, eta 1/4) | 0.806 | 0.098 | 0.044 | 0.0106 | +0.3 % |
+| blue-noise rotations | 1.235 | 0.143 | 0.066 | 0.0148 | +0.2 % |
+
+- **Guiding**: 1.54x less single-frame variance, 1.16x at the 28-frame mean
+  the history approaches; the runtime pass has no guiding path (table, draw,
+  update kernels and their twins), so the default stays off. Open point 28
+  (new) records the trade.
+- **SH cache**: identical to the mean cache (J-weighted difference below
+  5e-5, J ratio 1.0000; the mean cache itself differs from the point
+  reference by 4.5 %). Both caches act only on planar cells, where the SH
+  representation of a diffuse source evaluates to the mean: the backend
+  cannot help on these buffers. Off.
+- **Blue noise**: better at 4 frames (0.143 against 0.178), worse at 7 and
+  28 (the stratified sequence is exact over its 7-frame cycle). Under motion
+  (running mean along the nearest reprojection chain, frames 1-7) it is
+  better on the first two frames (0.773, 0.724 against 0.875, 0.797) and
+  worse on the last four; the chain error is dominated by the view
+  dependence above. Off.
+
+### Error metric: the truth is the reference
+
+The M6 floor (error 0.16 against the K64 radial estimator) is retired. K64
+is itself an estimate of the same schedule family: 3 % above the EveryTexel
+truth (J 1.030) with an error of 0.188 against it, so a distance to K64
+mixes the configuration's error with K64's own and rewards configurations
+that share its pattern. In M6, 20 candidates with exponent 2 and with
+exponent 1 scored alike against K64 (0.187, 0.186) and 0.010 apart against
+the truth (0.202, 0.212). The truth (EveryTexel, Half, 4 sections,
+converged) does not depend on the schedule; a more converged truth (16
+sections) moves every error by at most 0.001, and Half and Full agree
+within 0.5 % (Stage C). Errors and J below are against the truth; the K64
+figures remain in M6 for history.
+
+### Cost and error against the truth (frame 300)
+
+| K, exponent, levels | p50 ms (M6 default in the same run) | J | error |
+|---|---|---|---|
+| 20, 1, 2 (M6 default) | 2.89 / 2.89 (two runs, 156 samples each) | 1.020 | 0.212 |
+| **20, 1.5, 2 (M7 default)** | **2.88 / 2.88** (same runs) | **0.994** | **0.203** |
+| 20, 1.75, 2 | 2.85 / 2.86 (same runs) | 0.985 | 0.201 |
+| 20, 2, 2 | 2.79 / 2.79 (same runs) | 0.979 | 0.202 |
+| 16, 1.5, 4 | 2.70 (2.91) | 0.974 | 0.204 |
+| 18, 1.5, 4 | 2.91 (2.91) | 0.987 | 0.205 |
+| 20, 1.5, 3 | 3.21 (2.91) | 0.994 | 0.201 |
+| 20, 1.5, 4 | 3.30 (2.91) | 0.994 | 0.200 |
+| 20, 1.5, 2, 48 sectors | 3.15 (3.26) | 0.998 | 0.205 |
+| 22, 1.5, 2 | 3.45 (3.26) | 1.002 | 0.200 |
+| 24, 1.5, 2 | 3.71 (3.26) | 1.009 | 0.1985 |
+| EveryTexel at Quarter, 2 sections | 26.7 | - | 0.135 |
+| Half, K20, exponent 1 | 13.7 | 1.034 | 0.188 |
+
+The target (error 0.20 at 3.0 ms p50 with J within 1.00 +- 0.03) is **not
+reached**: at 3.0 ms the frontier ends at 0.201-0.203; 0.200 costs the
+fourth filter level or two more candidates (+0.2 to +0.4 ms). Within the
+same cost the radial exponent is the lever: 1.5 keeps the cost of 1 and
+moves J from +2.0 % to -0.6 % and the error from 0.212 to 0.203. On the
+sequences:
+
+| | A, M6 | A, M7 | B, M6 | B, M7 |
+|---|---|---|---|---|
+| own static J / truth (static receivers) | 1.016 | 0.987 | 1.078 | 1.010 |
+| static receivers in motion, J-weighted error / J vs truth | 0.256 / 1.044 | 0.256 / 1.019 | 0.352 / 1.140 | 0.343 / 1.076 |
+| static receivers, median error vs truth | 0.142 | 0.147 | 0.082 | 0.089 |
+| moving receivers, error vs truth J-weighted / median | 0.235 / 0.244 | 0.217 / 0.185 | 0.252 / 0.223 | 0.181 / 0.169 |
+| all receivers, J vs truth | 1.025 | 1.012 | 1.144 | 1.052 |
+| static noise, median (J-weighted) | 0.0233 (0.046) | 0.0241 (0.046) | 0.0059 (0.046) | 0.0061 (0.050) |
+
+(M7 = exponent 1.5 and the infinite flow threshold.) The exponent removes
+most of the overshoot that exponent 1 leaves on B (+7.8 % -> +1.0 % for the
+static output) and lowers the J-weighted errors; it costs +0.005 to +0.007
+of median error and +3 % of median static noise on both sequences. Those
+regressions are reported, not hidden: J within the +-3 % band of the truth
+and the energy-weighted error decide the default (the brief's target), and
+exponent 1 fails the band on B.
+
+### Defaults (M7)
+
+- Radial exponent **1.5** (M6: 1) in `ScreenSpaceGiPassSettings` (a module
+  parameter of the mode, not an F1 control).
+- FlowAndDepth flow threshold **infinite** in the same place (the moving
+  class is off; the module keeps the M3 values as its own default).
+- Unchanged: K20, Quarter, one section, 64 sectors, two filter levels,
+  AlphaMin 1/32, bilinear history, guiding / SH / blue noise off.
+- In the game (two timing runs, cold cache, 405 frames):
+  `global_illumination_ms` 3.36 and 3.33 p50, 4.57 and 4.57 p95 (M6: 3.89 and
+  3.52 / 5.15 and 5.11); per-kernel pass totals 2.8-3.7 ms (gather 2.0-2.9).
+
+### Gates (M7)
+
+| Gate | Result |
+|---|---|
+| GI Off byte-identical (kit, cold cache, 12 frames) | 3 of 4 runs = the dominant set (first frame `991cf3d8...`, hashes file `3327f70c4519`); run 1 differs only in its last frame (390: `2da95b70...` instead of `afbb237f...`), an intermittent variant of the kind the reference executable itself shows (Stage C); GI Off runs no GI code |
+| GI on (M7 default) under `--validation` | same five classes and counts as Stage C and M6 (`OpEntryPoint-08743` 10, `layout-07990` 3, `imageLayout-00344` 10, `None-09600` 2, `None-08114` 10); none from the GI path |
+| F1 actual-widget smoke | `F1 UI smoke passed: 8459 assertions, real renderer/Controls/TopScreen widgets` |
+| Host tests | `renderer_diffuse_gi_pass_tests` 14, `oot3d_screen_space_gi_tests` 5 (now also checks exponent 1.5 and the infinite flow threshold), `oot3d_effect_graph_tests` 58, `oot3d_graphics_foundation_tests` 329, `renderer_spirv_pack_tests` 3: all pass |
+| GPU tests | `diffuse_gi_pass_gpu_tests` passed, 0 validation errors, 0 hazards (synchronization validation on); `diffuse_gi_m4_gpu_tests` passed, 0 validation errors |
+| Pack | no kernel changed; 80 modules; `--check` passes |
+| Builds | `oot3d_native_game`, `triaevum_title_aot_stub` |
+
+Open points: 14, 16 and 21 closed; 20 measured (defaults unchanged).
+New:
+
+- Open point 28: guiding reduces single-frame variance 1.54x on the game's
+  buffers (1.16x at 28 frames); test its GPU cost (a guide table, draw and
+  update in the pass) against the same variance from a second section.
+- Open point 29: under motion the history lags the view-dependent
+  screen-space estimate (J +2.8 % against the own static output on A); test
+  the light-response thresholds (open point 17) and per-view weighting on
+  the captured sequences, with the static noise as the counter-metric.
+
+### Source manifest (M7)
+
+Own measurements and code only: the provider's multi-frame dump, the study
+tool's sequence and CPU modes, a Catmull-Rom history experiment written from
+the cubic convolution definition (removed). No external implementation
+consulted; no TAA, motion-vector, denoiser, Brixelizer, FidelityFX, GTAO or
+MXAO code opened. Files edited: `screen_space_gi_provider.h/.cpp`,
+`oot3d_screen_space_gi_tests.cpp`, `diffuse_gi_pass_gpu_tests.cpp`, this
+document; temporarily (reverted) `diffuse_gi_temporal.h/.cpp` and
+`diffuse_gi_temporal_shader.cpp`. No shared file was opened in M7.
+
+### Reproducible report (M7)
+
+```text
+capture.py <game> <out> --cold-cache --config cfg-ssgi.json --timing --frames 330
+  --env OOT3D_GRAPHICS_SSGI_WORK_FACTOR=1 --env OOT3D_GRAPHICS_SSGI_DUMP=<seq>
+  --env OOT3D_GRAPHICS_SSGI_DUMP_FRAME=300 --env OOT3D_GRAPHICS_SSGI_DUMP_COUNT=8
+DGI_NO_VALIDATION=1 DGI_SEQ_REFS=<refs> diffuse_gi_pass_gpu_tests --sequence <seq> 150 30
+  m6:4:1:20:64:2:e1 m7:4:1:20:64:2:e1.5,mfinf ...
+diffuse_gi_pass_gpu_tests --cpu-study <seq> 150 30 16
+DGI_NO_VALIDATION=1 DGI_STUDY_REFERENCE=2:4:64:128:4 DGI_STUDY_REFERENCE_OPTIONS=every
+  diffuse_gi_pass_gpu_tests --study <seq>/f300 150 30 48 m6:4:1:20:64:2:e1 m7:4:1:20:64:2:e1.5 ...
+```

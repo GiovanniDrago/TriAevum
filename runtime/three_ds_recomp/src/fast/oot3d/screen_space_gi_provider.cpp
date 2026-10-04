@@ -10,7 +10,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string_view>
 
 #ifdef ENABLE_OOT3D_VULKAN
@@ -31,11 +33,18 @@ Renderer::DiffuseGi::PassSettings ScreenSpaceGiPassSettings(const GlobalIllumina
     s.Gather.Sections = ss.Sections;
     s.Gather.Sectors = ss.Sectors;
     s.Gather.CandidatesPerSide = ss.RadialCandidates;
-    // Uniform metric radial spacing (exponent 1): on the game's buffers it
-    // keeps J within 2 % of the EveryTexel reference at 20 candidates, where
-    // the M4 exponent 2 loses 2-5 % (docs, "M6").
-    s.Gather.RadialExponent = 1.0;
+    // Metric radial spacing exponent 1.5 (M6: 1; M4: 2). Against the
+    // EveryTexel truth of two captured sequences it removes most of the J
+    // overshoot of exponent 1 (+2 % and +8 % -> -0.6 % and +1 %) and lowers
+    // the J-weighted error at the same cost (docs, "M7").
+    s.Gather.RadialExponent = 1.5;
     s.Temporal.Enabled = ss.Temporal;
+    // FlowAndDepth: no surface takes the weaker moving-surface test (depth
+    // band and normal only). On the captured sequences that test accepted
+    // histories of other surfaces (moving receivers 8-12 % off their converged
+    // value); every history tap now passes the camera-predicted surface test
+    // (docs, "M7", open point 16).
+    s.Temporal.MovingFlow = std::numeric_limits<double>::infinity();
     s.Filter.Levels = ss.FilterLevels;
     // Highlight clamp (section 9): artistic, never in validation mode.
     if (ss.HighlightClamp > 0.0F && !ss.Validation) s.OutputLimit = ss.HighlightClamp;
@@ -76,21 +85,28 @@ struct ScreenSpaceGiProvider::Instance {
 struct ScreenSpaceGiProvider::DumpState {
     std::string Directory;
     uint64_t Frame = 300;
-    bool Recorded = false, Written = false;
-    uint64_t RecordedFrame = 0;
-    VkBuffer Buffer = VK_NULL_HANDLE;
-    VkDeviceMemory Memory = VK_NULL_HANDLE;
-    void* Mapped = nullptr;
+    uint32_t Count = 1;  // consecutive frames (OOT3D_GRAPHICS_SSGI_DUMP_COUNT)
+    uint32_t Recorded = 0;
     struct Part {
         const char* Name;
         DGI::PassResourceId Id;
         VkDeviceSize Offset, Size;
     };
-    std::vector<Part> Parts;
-    DGI::PassExtent Extent;
-    DGI::DepthCamera Camera;
-    std::array<float, 2> Jitter{};
-    uint32_t GuideWidth = 0, GuideHeight = 0;
+    // One recorded frame: its host copy and the declarations of its frame.
+    struct Record {
+        uint64_t FrameId = 0;
+        VkBuffer Buffer = VK_NULL_HANDLE;
+        VkDeviceMemory Memory = VK_NULL_HANDLE;
+        void* Mapped = nullptr;
+        std::vector<Part> Parts;
+        DGI::PassExtent Extent;
+        DGI::DepthCamera Camera;
+        DGI::RigidTransform CurrentToPrevious;
+        bool CameraCut = false;
+        std::array<float, 2> Jitter{};
+        uint32_t GuideWidth = 0, GuideHeight = 0;
+    };
+    std::vector<Record> Pending;
 };
 
 ScreenSpaceGiProvider::ScreenSpaceGiProvider() = default;
@@ -120,6 +136,8 @@ void ScreenSpaceGiProvider::Initialize(VkPhysicalDevice physical, VkDevice devic
         mDump->Directory = std::string(dump);
         if (const std::string_view frame = env("OOT3D_GRAPHICS_SSGI_DUMP_FRAME"); !frame.empty())
             mDump->Frame = std::strtoull(std::string(frame).c_str(), nullptr, 10);
+        if (const std::string_view count = env("OOT3D_GRAPHICS_SSGI_DUMP_COUNT"); !count.empty())
+            mDump->Count = std::max(1U, static_cast<uint32_t>(std::strtoul(std::string(count).c_str(), nullptr, 10)));
     }
     if (mKernelTiming || mWorkFactorOverride != 0U || mDump)
         std::fprintf(stderr, "TRIAEVUM_SCREEN_SPACE_GI developer kernel_timing=%d work_factor=%u dump=%s frame=%llu\n",
@@ -355,8 +373,8 @@ bool ScreenSpaceGiProvider::Execute(VkCommandBuffer command, const ScreenSpaceGi
         const VkDescriptorSet set = instance->AdapterSets[frame.FrameSlot % instance->AdapterSets.size()];
         executed = RecordDiffuseGiAdapter(mDevice, command, *mAdapter, set, frame.Guides, instance->Pass, params) &&
                    instance->Pass.Execute(command, passFrame, illumination, accessibility, access, record);
-        if (executed && mDump && !mDump->Recorded && frame.FrameId >= mDump->Frame)
-            RecordDump(command, *instance, frame, camera);
+        if (executed && mDump && mDump->Recorded < mDump->Count && frame.FrameId >= mDump->Frame)
+            RecordDump(command, *instance, frame, passFrame);
         if (executed && mKernelTiming && instance->Pass.Stats().Executions % 60U == 0U) {
             const auto& t = instance->Pass.LastKernelTimings();
             if (t.Valid)
@@ -414,10 +432,10 @@ bool ScreenSpaceGiProvider::ClearOutput(VkCommandBuffer command, const ScreenSpa
 }
 
 void ScreenSpaceGiProvider::RecordDump(VkCommandBuffer command, Instance& instance, const ScreenSpaceGiFrame& frame,
-                                       const DGI::DepthCamera& camera) {
+                                       const DGI::PassFrame& passFrame) {
     DumpState& d = *mDump;
-    d.Recorded = true;
-    d.Parts.clear();
+    ++d.Recorded;
+    DumpState::Record r;
     VkDeviceSize total = 0;
     for (const auto& [name, id] : std::initializer_list<std::pair<const char*, DGI::PassResourceId>>{
              {"depth", DGI::PassResourceId::Depth},       {"class", DGI::PassResourceId::Class},
@@ -425,15 +443,15 @@ void ScreenSpaceGiProvider::RecordDump(VkCommandBuffer command, Instance& instan
              {"motion", DGI::PassResourceId::Motion}}) {
         const auto view = instance.Pass.Buffer(id);
         if (view.Size == 0U) continue;
-        d.Parts.push_back({name, id, total, view.Size});
+        r.Parts.push_back({name, id, total, view.Size});
         total += (view.Size + 255U) / 256U * 256U;
     }
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     info.size = total;
     info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    if (vkCreateBuffer(mDevice, &info, nullptr, &d.Buffer) != VK_SUCCESS) return;
+    if (vkCreateBuffer(mDevice, &info, nullptr, &r.Buffer) != VK_SUCCESS) return;
     VkMemoryRequirements requirements{};
-    vkGetBufferMemoryRequirements(mDevice, d.Buffer, &requirements);
+    vkGetBufferMemoryRequirements(mDevice, r.Buffer, &requirements);
     VkPhysicalDeviceMemoryProperties memory{};
     vkGetPhysicalDeviceMemoryProperties(mPhysical, &memory);
     uint32_t type = memory.memoryTypeCount;
@@ -444,10 +462,12 @@ void ScreenSpaceGiProvider::RecordDump(VkCommandBuffer command, Instance& instan
     VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     allocation.allocationSize = requirements.size;
     allocation.memoryTypeIndex = type;
-    if (type == memory.memoryTypeCount || vkAllocateMemory(mDevice, &allocation, nullptr, &d.Memory) != VK_SUCCESS ||
-        vkBindBufferMemory(mDevice, d.Buffer, d.Memory, 0) != VK_SUCCESS ||
-        vkMapMemory(mDevice, d.Memory, 0, VK_WHOLE_SIZE, 0, &d.Mapped) != VK_SUCCESS) {
+    if (type == memory.memoryTypeCount || vkAllocateMemory(mDevice, &allocation, nullptr, &r.Memory) != VK_SUCCESS ||
+        vkBindBufferMemory(mDevice, r.Buffer, r.Memory, 0) != VK_SUCCESS ||
+        vkMapMemory(mDevice, r.Memory, 0, VK_WHOLE_SIZE, 0, &r.Mapped) != VK_SUCCESS) {
         std::fprintf(stderr, "TRIAEVUM_SCREEN_SPACE_GI dump failed: host memory\n");
+        if (r.Buffer != VK_NULL_HANDLE) vkDestroyBuffer(mDevice, r.Buffer, nullptr);
+        if (r.Memory != VK_NULL_HANDLE) vkFreeMemory(mDevice, r.Memory, nullptr);
         return;
     }
     // The adapter's writes (and the pass's reads) -> these copies.
@@ -456,57 +476,73 @@ void ScreenSpaceGiProvider::RecordDump(VkCommandBuffer command, Instance& instan
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier,
                          0, nullptr, 0, nullptr);
-    for (const auto& part : d.Parts) {
+    for (const auto& part : r.Parts) {
         const VkBufferCopy region{0, part.Offset, part.Size};
-        vkCmdCopyBuffer(command, instance.Pass.Buffer(part.Id).Buffer, d.Buffer, 1, &region);
+        vkCmdCopyBuffer(command, instance.Pass.Buffer(part.Id).Buffer, r.Buffer, 1, &region);
     }
     VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
     vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &host, 0, nullptr,
                          0, nullptr);
-    d.RecordedFrame = frame.FrameId;
-    d.Extent = instance.Extent;
-    d.Camera = camera;
-    d.Jitter = frame.JitterUv;
-    d.GuideWidth = frame.Width;
-    d.GuideHeight = frame.Height;
+    r.FrameId = frame.FrameId;
+    r.Extent = instance.Extent;
+    r.Camera = passFrame.Camera;
+    r.CurrentToPrevious = passFrame.CurrentToPrevious;
+    r.CameraCut = passFrame.CameraCut;
+    r.Jitter = frame.JitterUv;
+    r.GuideWidth = frame.Width;
+    r.GuideHeight = frame.Height;
+    d.Pending.push_back(std::move(r));
 }
 
 void ScreenSpaceGiProvider::FinishDump(uint64_t frameId) {
-    if (!mDump || !mDump->Recorded || mDump->Written || mDump->Mapped == nullptr) return;
+    if (!mDump) return;
     DumpState& d = *mDump;
-    // Every frame slot has been recorded again since: the copy has executed.
-    if (frameId < d.RecordedFrame + mFramesInFlight + 1U) return;
-    d.Written = true;
-    bool ok = true;
-    for (const auto& part : d.Parts) {
-        std::ofstream file(d.Directory + "/ssgi_" + part.Name + ".bin", std::ios::binary);
-        file.write(static_cast<const char*>(d.Mapped) + part.Offset, static_cast<std::streamsize>(part.Size));
-        ok = ok && file.good();
+    for (auto it = d.Pending.begin(); it != d.Pending.end();) {
+        DumpState::Record& r = *it;
+        // Every frame slot has been recorded again since: the copy has executed.
+        if (frameId < r.FrameId + mFramesInFlight + 1U) {
+            ++it;
+            continue;
+        }
+        // One directory per frame when several are dumped.
+        const std::string directory =
+            d.Count > 1U ? d.Directory + "/f" + std::to_string(r.FrameId) : d.Directory;
+        std::filesystem::create_directories(directory);
+        bool ok = true;
+        for (const auto& part : r.Parts) {
+            std::ofstream file(directory + "/ssgi_" + part.Name + ".bin", std::ios::binary);
+            file.write(static_cast<const char*>(r.Mapped) + part.Offset, static_cast<std::streamsize>(part.Size));
+            ok = ok && file.good();
+        }
+        std::ofstream meta(directory + "/ssgi_dump.json");
+        char text[2048];
+        const auto& R = r.CurrentToPrevious.R;
+        const auto& T = r.CurrentToPrevious.T;
+        std::snprintf(text, sizeof(text),
+                      "{\n  \"frame\": %llu,\n  \"guide\": [%u, %u],\n  \"buffer\": [%u, %u],\n  \"work_factor\": %u,\n"
+                      "  \"work_phase\": %u,\n  \"encoding\": %d,\n  \"near\": %.9g,\n  \"far\": %.9g,\n"
+                      "  \"view_x\": [%.17g, %.17g, %.17g],\n  \"view_y\": [%.17g, %.17g, %.17g],\n"
+                      "  \"jitter_uv\": [%.9g, %.9g],\n  \"camera_cut\": %d,\n"
+                      "  \"current_to_previous_r\": [%.17g, %.17g, %.17g, %.17g, %.17g, %.17g, %.17g, %.17g, %.17g],\n"
+                      "  \"current_to_previous_t\": [%.17g, %.17g, %.17g]\n}\n",
+                      static_cast<unsigned long long>(r.FrameId), r.GuideWidth, r.GuideHeight, r.Extent.BufferWidth,
+                      r.Extent.BufferHeight, r.Extent.WorkFactor, r.Extent.WorkPhase,
+                      static_cast<int>(r.Camera.Encoding), r.Camera.Near, r.Camera.Far, r.Camera.ViewX[0],
+                      r.Camera.ViewX[1], r.Camera.ViewX[2], r.Camera.ViewY[0], r.Camera.ViewY[1], r.Camera.ViewY[2],
+                      r.Jitter[0], r.Jitter[1], r.CameraCut ? 1 : 0, R[0], R[1], R[2], R[3], R[4], R[5], R[6], R[7],
+                      R[8], T[0], T[1], T[2]);
+        meta << text;
+        ok = ok && meta.good();
+        std::fprintf(stderr, "TRIAEVUM_SCREEN_SPACE_GI dump frame=%llu work=%ux%u factor=%u written=%d dir=%s\n",
+                     static_cast<unsigned long long>(r.FrameId), r.Extent.BufferWidth, r.Extent.BufferHeight,
+                     r.Extent.WorkFactor, ok ? 1 : 0, directory.c_str());
+        vkUnmapMemory(mDevice, r.Memory);
+        vkDestroyBuffer(mDevice, r.Buffer, nullptr);
+        vkFreeMemory(mDevice, r.Memory, nullptr);
+        it = d.Pending.erase(it);
     }
-    std::ofstream meta(d.Directory + "/ssgi_dump.json");
-    char text[1024];
-    std::snprintf(text, sizeof(text),
-                  "{\n  \"frame\": %llu,\n  \"guide\": [%u, %u],\n  \"buffer\": [%u, %u],\n  \"work_factor\": %u,\n"
-                  "  \"work_phase\": %u,\n  \"encoding\": %d,\n  \"near\": %.9g,\n  \"far\": %.9g,\n"
-                  "  \"view_x\": [%.17g, %.17g, %.17g],\n  \"view_y\": [%.17g, %.17g, %.17g],\n"
-                  "  \"jitter_uv\": [%.9g, %.9g]\n}\n",
-                  static_cast<unsigned long long>(d.RecordedFrame), d.GuideWidth, d.GuideHeight, d.Extent.BufferWidth,
-                  d.Extent.BufferHeight, d.Extent.WorkFactor, d.Extent.WorkPhase, static_cast<int>(d.Camera.Encoding),
-                  d.Camera.Near, d.Camera.Far, d.Camera.ViewX[0], d.Camera.ViewX[1], d.Camera.ViewX[2],
-                  d.Camera.ViewY[0], d.Camera.ViewY[1], d.Camera.ViewY[2], d.Jitter[0], d.Jitter[1]);
-    meta << text;
-    ok = ok && meta.good();
-    std::fprintf(stderr, "TRIAEVUM_SCREEN_SPACE_GI dump frame=%llu work=%ux%u factor=%u written=%d dir=%s\n",
-                 static_cast<unsigned long long>(d.RecordedFrame), d.Extent.BufferWidth, d.Extent.BufferHeight,
-                 d.Extent.WorkFactor, ok ? 1 : 0, d.Directory.c_str());
-    vkUnmapMemory(mDevice, d.Memory);
-    vkDestroyBuffer(mDevice, d.Buffer, nullptr);
-    vkFreeMemory(mDevice, d.Memory, nullptr);
-    d.Mapped = nullptr;
-    d.Buffer = VK_NULL_HANDLE;
-    d.Memory = VK_NULL_HANDLE;
 }
 
 VkImageView ScreenSpaceGiProvider::SampledDepthView(VkImage image, VkFormat format, uint32_t width,
@@ -551,11 +587,12 @@ void ScreenSpaceGiProvider::Shutdown() noexcept {
     mCreation = {};
     if (mDevice != VK_NULL_HANDLE) InvalidateScreenResources();
     mInstances.clear();
-    if (mDump && mDevice != VK_NULL_HANDLE) {
-        if (mDump->Mapped != nullptr) vkUnmapMemory(mDevice, mDump->Memory);
-        if (mDump->Buffer != VK_NULL_HANDLE) vkDestroyBuffer(mDevice, mDump->Buffer, nullptr);
-        if (mDump->Memory != VK_NULL_HANDLE) vkFreeMemory(mDevice, mDump->Memory, nullptr);
-    }
+    if (mDump && mDevice != VK_NULL_HANDLE)
+        for (auto& r : mDump->Pending) {
+            if (r.Mapped != nullptr) vkUnmapMemory(mDevice, r.Memory);
+            if (r.Buffer != VK_NULL_HANDLE) vkDestroyBuffer(mDevice, r.Buffer, nullptr);
+            if (r.Memory != VK_NULL_HANDLE) vkFreeMemory(mDevice, r.Memory, nullptr);
+        }
     mDump.reset();
     mAdapter.reset();
     mKernels.reset();

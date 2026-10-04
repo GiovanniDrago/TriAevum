@@ -17,7 +17,9 @@
 // scale (Half, Quarter) against the FP32 twin of the upsampler and against the
 // full-extent pass, and the OOT3D adapter kernel against its FP32 twin.
 #include "fast/renderer/diffuse_gi_gather.h"
+#include "fast/renderer/diffuse_gi_guiding.h"
 #include "fast/renderer/diffuse_gi_hierarchy.h"
+#include "fast/renderer/diffuse_gi_noise.h"
 #include "fast/renderer/diffuse_gi_pass.h"
 #include "fast/renderer/diffuse_gi_pass_plan.h"
 #include "fast/renderer/diffuse_gi_pass_shader.h"
@@ -43,6 +45,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <iterator>
@@ -51,6 +54,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace Fast::Renderer::DiffuseGi;
@@ -956,6 +960,12 @@ struct ScaledRun {
     DepthCamera Camera;
     GeometricNormalSource NormalSource = GeometricNormalSource::DepthReconstruction;
     bool WriteA = false;
+    // Frame declarations (a static camera unless a captured sequence sets
+    // them) and a request to upload Parts at the next step.
+    RigidTransform ToPrevious;
+    bool CameraCut = false;
+    double JitterX = 0.0, JitterY = 0.0;
+    bool Upload = false;
 };
 
 // Runs `frames` frames of a static camera; reads back the outputs and, at a
@@ -983,12 +993,16 @@ void StepScaled(Device& d, ScaledRun& run, uint64_t k, bool last) {
     {
         d.Begin();
         Device::Buffer staging{};
-        if (k == 0U) staging = UploadParts(d, run.Pass, run.Parts);
+        if (k == 0U || run.Upload) staging = UploadParts(d, run.Pass, run.Parts);
+        run.Upload = false;
         const bool writeA = run.WriteA;
         PassFrame frame;
         frame.Camera = run.Camera;
         frame.NormalSource = run.NormalSource;
         frame.FrameIndex = k;
+        frame.CurrentToPrevious = run.ToPrevious;
+        frame.CameraCut = run.CameraCut;
+        frame.JitterX = run.JitterX, frame.JitterY = run.JitterY;
         PassBarrierRecord record;
         Require(run.Pass.Execute(d.Command, frame, run.JState, run.AState, {}, record), run.Pass.UnavailableReason());
         Device::Buffer readback{};
@@ -1165,7 +1179,9 @@ struct StudyConfig {
     std::string Name;
     uint32_t Factor = 2, Sections = 1, Candidates = 16, Sectors = 64, Filter = 4;
     bool Temporal = true;
-    std::string Options; // comma list: notemporal, s<spacing scale>, e<radial exponent>, nofp, nocache, l<max level>
+    // Comma list: notemporal, s<spacing scale>, e<radial exponent>, nofp, nocache, l<max level>, every,
+    // t<thickness>, mf<px>, md<rel>, mc<frac>, am<alpha min> (FlowAndDepth, M7).
+    std::string Options;
 };
 
 // Applies a study configuration's M4 options to pass settings.
@@ -1183,6 +1199,11 @@ void ApplyStudyOptions(const std::string& options, PassSettings& s) {
             s.Gather.HierarchyFootprint = false;
             s.Gather.Cache = CacheMode::Off;
         }
+        // FlowAndDepth parameters (M7): flow px, depth band, confidence, alpha min.
+        else if (o.rfind("mf", 0) == 0) s.Temporal.MovingFlow = std::atof(o.c_str() + 2);
+        else if (o.rfind("md", 0) == 0) s.Temporal.MovingDepth = std::atof(o.c_str() + 2);
+        else if (o.rfind("mc", 0) == 0) s.Temporal.MovingConfidence = std::atof(o.c_str() + 2);
+        else if (o.rfind("am", 0) == 0) s.Temporal.AlphaMin = std::atof(o.c_str() + 2);
         else if (!o.empty() && o[0] == 's') s.Gather.HierarchySpacingScale = std::atof(o.c_str() + 1);
         else if (!o.empty() && o[0] == 'e') s.Gather.RadialExponent = std::atof(o.c_str() + 1);
         else if (!o.empty() && o[0] == 'l') s.Gather.HierarchyMaxLevel = static_cast<uint32_t>(std::atoi(o.c_str() + 1));
@@ -1315,8 +1336,733 @@ int Study(Device& d, const PassDevice& passDevice, std::shared_ptr<DiffuseGiKern
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// M7: temporal quality on a captured sequence (OOT3D_GRAPHICS_SSGI_DUMP with
+// OOT3D_GRAPHICS_SSGI_DUMP_COUNT at work factor 1): every frame's adapter
+// inputs with its real motion vectors, camera transform and TAA jitter.
+
+struct CapturedFrame {
+    GatherInput Input;
+    std::vector<float> Motion; // 2 per texel: previous UV - current UV (jitter included)
+    RigidTransform ToPrevious;
+    bool CameraCut = false;
+    std::array<double, 2> Jitter{}; // UV
+};
+
+CapturedFrame LoadCapturedFrame(const std::string& dir) {
+    CapturedFrame f;
+    f.Input = LoadDump(dir);
+    std::ifstream meta(dir + "/ssgi_dump.json");
+    const std::string text((std::istreambuf_iterator<char>(meta)), std::istreambuf_iterator<char>());
+    for (int i = 0; i < 9; ++i) f.ToPrevious.R[i] = JsonNumber(text, "current_to_previous_r", i);
+    for (int i = 0; i < 3; ++i) f.ToPrevious.T[i] = JsonNumber(text, "current_to_previous_t", i);
+    f.CameraCut = JsonNumber(text, "camera_cut") != 0.0;
+    f.Jitter = {JsonNumber(text, "jitter_uv", 0), JsonNumber(text, "jitter_uv", 1)};
+    f.Motion = ReadVector<float>(dir + "/ssgi_motion.bin");
+    Require(f.Motion.size() == 2U * f.Input.Depth.size(), "dump motion size");
+    return f;
+}
+
+// The adapter's motion of a work image: the output motion at the work texel's
+// output position, times the work-UV scale.
+std::vector<float> WorkMotion(const CapturedFrame& f, const PassExtent& e) {
+    const auto scale = WorkMotionScale(e);
+    std::vector<float> out(2U * e.BufferWidth * e.BufferHeight);
+    for (uint32_t j = 0; j < e.BufferHeight; ++j)
+        for (uint32_t i = 0; i < e.BufferWidth; ++i) {
+            const size_t t = static_cast<size_t>(e.WorkPhase + e.WorkFactor * j) * f.Input.BufferWidth +
+                             e.WorkPhase + e.WorkFactor * i;
+            const size_t w = static_cast<size_t>(j) * e.BufferWidth + i;
+            out[2 * w] = static_cast<float>(f.Motion[2 * t] * scale[0]);
+            out[2 * w + 1] = static_cast<float>(f.Motion[2 * t + 1] * scale[1]);
+        }
+    return out;
+}
+
+// A captured frame's inputs and frame declarations -> the run (uploaded at
+// the next step).
+void UseCapturedFrame(ScaledRun& run, const CapturedFrame& f) {
+    const uint32_t factor = run.Extent.WorkFactor;
+    run.Work = factor > 1U ? WorkInput(f.Input, run.Extent) : f.Input;
+    run.Guide = factor > 1U ? OutputGuideOf(f.Input) : std::vector<uint32_t>{};
+    const std::vector<float> motion = factor > 1U ? WorkMotion(f, run.Extent) : f.Motion;
+    run.Parts.clear();
+    for (auto& part : WorkParts(run.Work, run.Guide)) {
+        if (part.first == PassResourceId::OutputGuide && factor == 1U) continue;
+        if (part.first == PassResourceId::Motion) part.second = Bytes(motion);
+        run.Parts.push_back(std::move(part));
+    }
+    run.Camera = f.Input.Camera;
+    run.ToPrevious = f.ToPrevious;
+    run.CameraCut = f.CameraCut;
+    run.JitterX = f.Jitter[0] * f.Input.BufferWidth;
+    run.JitterY = f.Jitter[1] * f.Input.BufferHeight;
+    run.Upload = true;
+}
+
+double HalfLuminance(const std::vector<uint16_t>& j, size_t t) {
+    return 0.2126 * FromHalf(j[4 * t]) + 0.7152 * FromHalf(j[4 * t + 1]) + 0.0722 * FromHalf(j[4 * t + 2]);
+}
+bool HalfValid(const std::vector<uint16_t>& j, size_t t) { return FromHalf(j[4 * t + 3]) > 0.0F; }
+
+// View-space position of texel t (z of the decoded depth).
+Vec3 CapturedPosition(const GatherInput& in, size_t t) {
+    const uint32_t x = static_cast<uint32_t>(t % in.BufferWidth), y = static_cast<uint32_t>(t / in.BufferWidth);
+    const double z = DecodeViewDepth(in.Depth[t], in.Camera);
+    const double u = (x + 0.5) / in.BufferWidth, v = (y + 0.5) / in.BufferHeight;
+    const auto& X = in.Camera.ViewX;
+    const auto& Y = in.Camera.ViewY;
+    return {(X[0] * u + X[1] * v + X[2]) * z, (Y[0] * u + Y[1] * v + Y[2]) * z, -z};
+}
+
+// Quantiles of a positive quantity: 200 bins per decade over [1e-6, 1e2)
+// (bin 0: zero or below).
+struct LogHistogram {
+    static constexpr int kBins = 1600;
+    std::vector<uint64_t> Counts = std::vector<uint64_t>(kBins + 1, 0U);
+    uint64_t Total = 0;
+    void Add(double x) {
+        const int b = x > 0.0 ? std::clamp(static_cast<int>((std::log10(x) + 6.0) * 200.0) + 1, 1, kBins) : 0;
+        ++Counts[static_cast<size_t>(b)], ++Total;
+    }
+    void Merge(const LogHistogram& other) {
+        for (size_t b = 0; b < Counts.size(); ++b) Counts[b] += other.Counts[b];
+        Total += other.Total;
+    }
+    [[nodiscard]] double Quantile(double q) const {
+        if (Total == 0U) return -1.0;
+        const auto target = static_cast<uint64_t>(q * static_cast<double>(Total - 1U));
+        uint64_t seen = 0;
+        for (int b = 0; b <= kBins; ++b) {
+            seen += Counts[static_cast<size_t>(b)];
+            if (seen > target) return b == 0 ? 0.0 : std::pow(10.0, (b - 0.5) / 200.0 - 6.0);
+        }
+        return -1.0;
+    }
+};
+
+// Arguments: --sequence DIR R TAU CONFIG... DIR holds one f<frame> directory
+// per captured frame (consecutive). CONFIG as for --study; options mf<px>,
+// md<rel>, mc<frac>, am<alpha> set the FlowAndDepth parameters. Each
+// configuration warms up on the first frame (static, 40 frames; the last 16
+// give the static temporal noise), then runs the captured frames with their
+// motion. Every output is compared with (a) the converged EveryTexel truth
+// of that frame and (b) the configuration's own static converged output of
+// that frame (32 static frames): (b) isolates what the motion costs
+// (ghosting, lag, resampling blur) from the schedule's bias. Receivers are
+// classed by flow (moving: the motion differs from the camera's static
+// prediction by more than 0.5 output px) and by age (frames since the
+// history of the surface began: camera-predicted depth against the previous
+// frame's depth at the reprojected texel, 2% band; moving receivers: their
+// own depth, 10%). Optional env DGI_SEQ_REFS=<dir> caches the truths.
+int Sequence(Device& d, const PassDevice& passDevice, std::shared_ptr<DiffuseGiKernels> kernels, int argc,
+             char** argv) {
+    Require(argc >= 6, "--sequence DIR R TAU CONFIG...");
+    const std::string root = argv[2];
+    const double radius = std::atof(argv[3]), thickness = std::atof(argv[4]);
+    std::vector<std::string> dirs;
+    for (const auto& entry : std::filesystem::directory_iterator(root))
+        if (entry.is_directory()) dirs.push_back(entry.path().string());
+    std::sort(dirs.begin(), dirs.end());
+    Require(dirs.size() >= 2U, "a sequence needs two frames");
+    std::vector<StudyConfig> configs;
+    for (int a = 5; a < argc; ++a) {
+        StudyConfig c;
+        char name[64] = {}, flag[128] = {};
+        Require(std::sscanf(argv[a], "%63[^:]:%u:%u:%u:%u:%u:%127s", name, &c.Factor, &c.Sections, &c.Candidates,
+                            &c.Sectors, &c.Filter, flag) >= 6,
+                std::string("bad config ") + argv[a]);
+        c.Name = name;
+        c.Options = flag;
+        configs.push_back(c);
+    }
+    const auto settingsOf = [&](const StudyConfig& c) {
+        PassSettings s = DefaultPassSettings();
+        s.Gather.Radius = radius;
+        s.Gather.Thickness = thickness;
+        s.Gather.Sections = c.Sections;
+        s.Gather.CandidatesPerSide = c.Candidates;
+        s.Gather.Sectors = c.Sectors;
+        s.Filter.Levels = c.Filter;
+        s.Temporal.Enabled = c.Temporal;
+        ApplyStudyOptions(c.Options, s);
+        Require(*ValidatePassSettings(s) == '\0', std::string("sequence settings: ") + ValidatePassSettings(s));
+        return s;
+    };
+    // Static converged output of a configuration on one frame (frame indices
+    // from `first`: another phase of the rotation sequence).
+    const auto converged = [&](const StudyConfig& c, const GatherInput& input, uint64_t frames, uint64_t first) {
+        ScaledRun run;
+        run.Settings = settingsOf(c);
+        Require(run.Pass.Initialize(passDevice, kernels), run.Pass.UnavailableReason());
+        SetupScaled(d, run, input, c.Factor, false);
+        run.Upload = true;
+        for (uint64_t k = 0; k < frames; ++k) StepScaled(d, run, first + k, k + 1U == frames);
+        ReleaseScaled(d, run);
+        return run.OutJ;
+    };
+    StudyConfig truthConfig{"truth", 2, 4, 64, 128, 4, true, "every"};
+    if (const char* r = std::getenv("DGI_STUDY_REFERENCE"); r != nullptr)
+        std::sscanf(r, "%u:%u:%u:%u:%u", &truthConfig.Factor, &truthConfig.Sections, &truthConfig.Candidates,
+                    &truthConfig.Sectors, &truthConfig.Filter);
+    if (const char* o = std::getenv("DGI_STUDY_REFERENCE_OPTIONS"); o != nullptr) truthConfig.Options = o;
+    const char* cache = std::getenv("DGI_SEQ_REFS");
+    std::vector<CapturedFrame> frames;
+    std::vector<std::vector<uint16_t>> truths;
+    for (const auto& dir : dirs) {
+        frames.push_back(LoadCapturedFrame(dir));
+        const std::string name = std::filesystem::path(dir).filename().string();
+        const std::string file = cache != nullptr ? std::string(cache) + "/" + name + "_truth.bin" : std::string();
+        if (!file.empty() && std::filesystem::exists(file)) {
+            truths.push_back(ReadVector<uint16_t>(file));
+        } else {
+            truths.push_back(converged(truthConfig, frames.back().Input, 64, 0));
+            if (!file.empty()) {
+                std::ofstream out(file, std::ios::binary);
+                out.write(reinterpret_cast<const char*>(truths.back().data()),
+                          static_cast<std::streamsize>(truths.back().size() * 2U));
+            }
+        }
+        Require(truths.back().size() == 4U * frames.back().Input.Depth.size(), "truth size");
+    }
+    // Classes: moving flag and age (7: since the start of the sequence).
+    const uint32_t W = frames[0].Input.BufferWidth, H = frames[0].Input.BufferHeight;
+    const size_t texels = static_cast<size_t>(W) * H;
+    constexpr uint32_t kAges = 8;
+    std::vector<std::vector<uint8_t>> age(frames.size(), std::vector<uint8_t>(texels, kAges - 1U));
+    std::vector<std::vector<uint8_t>> moving(frames.size(), std::vector<uint8_t>(texels, 0U));
+    // Previous texel (nearest) of a static-flow receiver with a history.
+    constexpr uint32_t kNone = 0xFFFFFFFFU;
+    std::vector<std::vector<uint32_t>> previous(frames.size(), std::vector<uint32_t>(texels, kNone));
+    const auto receiver = [](const GatherInput& in, size_t t) {
+        const auto c = static_cast<TexelClass>(in.Class[t]);
+        return (c == TexelClass::OneSided || c == TexelClass::TwoSided) && in.Depth[t] > 0.0F && in.Depth[t] < 1.0F;
+    };
+    double flowPixels = 0.0;
+    size_t receivers = 0, movingCount = 0, fresh = 0;
+    for (size_t k = 1; k < frames.size(); ++k) {
+        const GatherInput& cur = frames[k].Input;
+        const GatherInput& prev = frames[k - 1].Input;
+        const auto& X = prev.Camera.ViewX;
+        const auto& Y = prev.Camera.ViewY;
+        const double det = X[0] * Y[1] - X[1] * Y[0];
+        for (size_t t = 0; t < texels; ++t) {
+            if (!receiver(cur, t)) continue;
+            ++receivers;
+            const uint32_t x = static_cast<uint32_t>(t % W), y = static_cast<uint32_t>(t / W);
+            const double mu = frames[k].Motion[2 * t], mv = frames[k].Motion[2 * t + 1];
+            const double u = (x + 0.5) / W + mu, v = (y + 0.5) / H + mv;
+            flowPixels += std::hypot(mu * W, mv * H);
+            const Vec3 p = CapturedPosition(cur, t);
+            const Vec3 q = frames[k].ToPrevious.Apply(p);
+            const double zq = -q.Z;
+            const double rx = q.X / zq - X[2], ry = q.Y / zq - Y[2];
+            const double up = (rx * Y[1] - ry * X[1]) / det, vp = (ry * X[0] - rx * Y[0]) / det;
+            const bool isMoving = !(std::hypot((u - up) * W, (v - vp) * H) <= 0.5);
+            moving[k][t] = isMoving ? 1U : 0U;
+            movingCount += isMoving ? 1U : 0U;
+            const int px = static_cast<int>(std::floor(u * W)), py = static_cast<int>(std::floor(v * H));
+            bool isFresh = px < 0 || py < 0 || px >= static_cast<int>(W) || py >= static_cast<int>(H);
+            size_t pt = 0;
+            if (!isFresh) {
+                pt = static_cast<size_t>(py) * W + static_cast<size_t>(px);
+                const double zp = receiver(prev, pt) ? DecodeViewDepth(prev.Depth[pt], prev.Camera) : 0.0;
+                const double expected = isMoving ? -p.Z : zq;
+                isFresh = !(zp > 0.0) || !(std::abs(expected - zp) <= (isMoving ? 0.10 : 0.02) * zp);
+            }
+            fresh += isFresh ? 1U : 0U;
+            age[k][t] = isFresh ? 0U : static_cast<uint8_t>(std::min<uint32_t>(age[k - 1][pt] + 1U, kAges - 1U));
+            if (!isFresh && !isMoving) previous[k][t] = static_cast<uint32_t>(pt);
+        }
+    }
+    // View dependence: the converged estimate of a static surface in the
+    // previous view (nearest reprojected texel) against this view's, J-weighted.
+    const auto viewChange = [&](const std::vector<std::vector<uint16_t>>& images, size_t k) {
+        double e = 0.0, s = 0.0;
+        for (size_t t = 0; t < texels; ++t) {
+            const uint32_t pt = previous[k][t];
+            if (pt == kNone || !HalfValid(images[k], t) || !HalfValid(images[k - 1], pt)) continue;
+            for (int ch = 0; ch < 3; ++ch) {
+                const double a = FromHalf(images[k][4 * t + ch]), b = FromHalf(images[k - 1][4 * pt + ch]);
+                e += std::abs(a - b), s += a;
+            }
+        }
+        return s > 0.0 ? e / s : -1.0;
+    };
+    std::printf("DGI_SEQ truth view change by frame (J-weighted, static-flow receivers with a history):");
+    for (size_t k = 1; k < frames.size(); ++k) std::printf(" %.3f", viewChange(truths, k));
+    std::printf("\n");
+    std::printf("DGI_SEQ frames=%zu guide=%ux%u R=%.1f tau=%.1f truth=%u:%u:%u:%u:%u:%s mean_flow_px=%.2f "
+                "moving=%.4f fresh_per_frame=%.4f\n",
+                frames.size(), W, H, radius, thickness, truthConfig.Factor, truthConfig.Sections,
+                truthConfig.Candidates, truthConfig.Sectors, truthConfig.Filter, truthConfig.Options.c_str(),
+                flowPixels / std::max<size_t>(receivers, 1), double(movingCount) / std::max<size_t>(receivers, 1),
+                double(fresh) / std::max<size_t>(receivers, 1));
+    for (const StudyConfig& c : configs) {
+        // Own static converged output of every motion frame.
+        std::vector<std::vector<uint16_t>> still(frames.size());
+        // A second static run of another rotation phase: the noise baseline of
+        // every comparison with `still`.
+        std::vector<std::vector<uint16_t>> still2(frames.size());
+        for (size_t k = 0; k < frames.size(); ++k) {
+            still[k] = converged(c, frames[k].Input, 32, 0);
+            still2[k] = converged(c, frames[k].Input, 32, 53);
+        }
+        std::printf("DGI_SEQ config=%s own static view change by frame:", c.Name.c_str());
+        for (size_t k = 1; k < frames.size(); ++k) std::printf(" %.3f", viewChange(still, k));
+        std::printf("\n");
+        ScaledRun run;
+        run.Settings = settingsOf(c);
+        Require(run.Pass.Initialize(passDevice, kernels), run.Pass.UnavailableReason());
+        SetupScaled(d, run, frames[0].Input, c.Factor, false);
+        run.JitterX = frames[0].Jitter[0] * W, run.JitterY = frames[0].Jitter[1] * H;
+        // Warm-up and static noise (per-texel temporal std of luminance).
+        constexpr uint64_t kWarm = 24, kNoise = 16;
+        std::vector<double> sum(texels, 0.0), sum2(texels, 0.0);
+        for (uint64_t k = 0; k < kWarm + kNoise; ++k) {
+            StepScaled(d, run, k, k >= kWarm);
+            if (k < kWarm) continue;
+            for (size_t t = 0; t < texels; ++t) {
+                const double l = HalfLuminance(run.OutJ, t);
+                sum[t] += l, sum2[t] += l * l;
+            }
+        }
+        double noiseStd = 0.0, noiseMean = 0.0;
+        size_t noiseCount = 0;
+        for (size_t t = 0; t < texels; ++t) {
+            if (!receiver(frames[0].Input, t) || !HalfValid(run.OutJ, t)) continue;
+            const double m = sum[t] / kNoise;
+            noiseStd += std::sqrt(std::max(sum2[t] / kNoise - m * m, 0.0));
+            noiseMean += m, ++noiseCount;
+        }
+        LogHistogram noiseRelative;
+        const double noiseFloor = 0.1 * noiseMean / std::max<size_t>(noiseCount, 1);
+        for (size_t t = 0; t < texels; ++t) {
+            if (!receiver(frames[0].Input, t) || !HalfValid(run.OutJ, t)) continue;
+            const double m = sum[t] / kNoise;
+            noiseRelative.Add(std::sqrt(std::max(sum2[t] / kNoise - m * m, 0.0)) / (m + noiseFloor));
+        }
+        // Captured frames with motion. Two error measures per class and age:
+        // J-weighted (sum |dJ| / sum J, the energy view of M5/M6) and the
+        // median per-texel |dJ| / (J + floor), floor a tenth of the frame's
+        // mean J (the typical texel; J is concentrated: on this capture 5% of
+        // the receivers hold 60% of the J sum).
+        struct Bucket {
+            double OwnErr = 0, OwnRef = 0, BaseErr = 0, TruthErr = 0, TruthRef = 0, Out = 0;
+            size_t Count = 0;
+            LogHistogram OwnRelative, BaseRelative, TruthRelative;
+        };
+        std::array<std::array<Bucket, kAges>, 2> buckets{}; // [moving][age]
+        double sumOut = 0.0, sumTruth = 0.0, lagNum = 0.0, lagDen = 0.0;
+        // Gradient regressions on the own static output: [0] the sequence's
+        // output, [1] the second static phase (noise baseline), [2] the
+        // denominator.
+        std::vector<std::array<double, 3>> frameGain(frames.size());
+        // Static-flow receivers per frame: output vs truth, own static vs
+        // truth (the schedule's bias on that frame), output vs own static.
+        std::vector<std::array<double, 5>> frameStatic(frames.size());
+        for (size_t k = 1; k < frames.size(); ++k) {
+            UseCapturedFrame(run, frames[k]);
+            StepScaled(d, run, kWarm + kNoise + k - 1U, true);
+            const auto& out = run.OutJ;
+            const auto& truth = truths[k];
+            const auto& own = still[k];
+            const auto& base = still2[k];
+            const auto valid = [&](size_t t) {
+                return receiver(frames[k].Input, t) && HalfValid(out, t) && HalfValid(truth, t) &&
+                       HalfValid(own, t) && HalfValid(base, t);
+            };
+            double meanJ = 0.0, meanL = 0.0;
+            size_t count = 0;
+            for (size_t t = 0; t < texels; ++t)
+                if (valid(t)) {
+                    meanJ += FromHalf(own[4 * t]) + FromHalf(own[4 * t + 1]) + FromHalf(own[4 * t + 2]);
+                    meanL += HalfLuminance(own, t), ++count;
+                }
+            const double floorJ = 0.1 * meanJ / std::max<size_t>(count, 1);
+            const double floorL = 0.1 * meanL / std::max<size_t>(count, 1);
+            const auto logL = [&](const std::vector<uint16_t>& j, size_t t) {
+                return std::log(HalfLuminance(j, t) + floorL);
+            };
+            for (size_t t = 0; t < texels; ++t) {
+                if (!valid(t)) continue;
+                Bucket& b = buckets[moving[k][t]][age[k][t]];
+                double eOwn = 0.0, eBase = 0.0, eTruth = 0.0, sOwn = 0.0, sTruth = 0.0, eOwnTruth = 0.0;
+                for (int ch = 0; ch < 3; ++ch) {
+                    const double o = FromHalf(out[4 * t + ch]), r = FromHalf(truth[4 * t + ch]),
+                                 s = FromHalf(own[4 * t + ch]), s2 = FromHalf(base[4 * t + ch]);
+                    eOwn += std::abs(o - s), eBase += std::abs(s2 - s), sOwn += s;
+                    eTruth += std::abs(o - r), sTruth += r, eOwnTruth += std::abs(s - r);
+                    sumOut += o, sumTruth += r, b.Out += o;
+                }
+                if (!moving[k][t]) {
+                    auto& f = frameStatic[k];
+                    f[0] += eTruth, f[1] += sTruth, f[2] += eOwnTruth, f[3] += eOwn, f[4] += sOwn;
+                }
+                b.OwnErr += eOwn, b.BaseErr += eBase, b.OwnRef += sOwn, b.TruthErr += eTruth, b.TruthRef += sTruth;
+                b.OwnRelative.Add(eOwn / (sOwn + floorJ));
+                b.BaseRelative.Add(eBase / (sOwn + floorJ));
+                b.TruthRelative.Add(eTruth / (sTruth + floorJ));
+                ++b.Count;
+                // Lag along the motion and gradient gain of log luminance
+                // against the own static output (static-flow receivers with a
+                // history and such neighbours).
+                const uint32_t x = static_cast<uint32_t>(t % W), y = static_cast<uint32_t>(t / W);
+                if (moving[k][t] || age[k][t] == 0U || x == 0U || y == 0U || x + 1U >= W || y + 1U >= H) continue;
+                const size_t l = t - 1, r = t + 1, u = t - W, dn = t + W;
+                bool ok = true;
+                for (const size_t n : {l, r, u, dn}) ok = ok && valid(n) && age[k][n] != 0U && !moving[k][n];
+                if (!ok) continue;
+                const double gx = 0.5 * (logL(own, r) - logL(own, l));
+                const double gy = 0.5 * (logL(own, dn) - logL(own, u));
+                const double ox = 0.5 * (logL(out, r) - logL(out, l));
+                const double oy = 0.5 * (logL(out, dn) - logL(out, u));
+                const double bx = 0.5 * (logL(base, r) - logL(base, l));
+                const double by = 0.5 * (logL(base, dn) - logL(base, u));
+                frameGain[k][0] += ox * gx + oy * gy;
+                frameGain[k][1] += bx * gx + by * gy;
+                frameGain[k][2] += gx * gx + gy * gy;
+                const double mu = frames[k].Motion[2 * t] * W, mv = frames[k].Motion[2 * t + 1] * H;
+                const double m = std::hypot(mu, mv);
+                if (!(m > 0.25)) continue;
+                const double along = (gx * mu + gy * mv) / m; // slope toward the previous position
+                lagNum += along * (logL(out, t) - logL(own, t));
+                lagDen += along * along;
+            }
+        }
+        const auto ratio = [](double a, double b) { return b > 0.0 ? a / b : -1.0; };
+        std::array<double, 3> gain{};
+        for (const auto& g : frameGain) gain[0] += g[0], gain[1] += g[1], gain[2] += g[2];
+        std::printf("DGI_SEQ config=%s factor=%u S=%u K=%u N=%u filter=%u options=%s static_noise: J-weighted "
+                    "std/mean=%.4f median=%.4f | J_vs_truth=%.4f lag_along_motion_px=%+.3f log_gradient_gain "
+                    "sequence/baseline=%.3f/%.3f by frame:",
+                    c.Name.c_str(), c.Factor, c.Sections, c.Candidates, c.Sectors, c.Filter, c.Options.c_str(),
+                    ratio(noiseStd, noiseMean), noiseRelative.Quantile(0.5), ratio(sumOut, sumTruth),
+                    ratio(lagNum, lagDen), ratio(gain[0], gain[2]), ratio(gain[1], gain[2]));
+        for (size_t k = 1; k < frames.size(); ++k)
+            std::printf(" %.3f/%.3f", ratio(frameGain[k][0], frameGain[k][2]), ratio(frameGain[k][1], frameGain[k][2]));
+        std::printf("\n");
+        std::printf("DGI_SEQ config=%s static_flow by frame J-weighted output_vs_truth/own_static_vs_truth/output_vs_own:",
+                    c.Name.c_str());
+        for (size_t k = 1; k < frames.size(); ++k) {
+            const auto& f = frameStatic[k];
+            std::printf(" %.3f/%.3f/%.3f", ratio(f[0], f[1]), ratio(f[2], f[1]), ratio(f[3], f[4]));
+        }
+        std::printf("\n");
+        for (int m = 0; m < 2; ++m) {
+            size_t total = 0;
+            for (const Bucket& b : buckets[m]) total += b.Count;
+            Bucket all;
+            for (int view = 0; view < 2; ++view) {
+                std::printf("DGI_SEQ config=%s %s %s vs_own/baseline/vs_truth by age 0..6,7+:", c.Name.c_str(),
+                            m ? "moving" : "static_flow", view ? "median_rel" : "J_weighted");
+                for (uint32_t a = 0; a < kAges; ++a) {
+                    const Bucket& b = buckets[m][a];
+                    if (view == 0) {
+                        std::printf(" %.3f/%.3f/%.3f", ratio(b.OwnErr, b.OwnRef), ratio(b.BaseErr, b.OwnRef),
+                                    ratio(b.TruthErr, b.TruthRef));
+                        all.OwnErr += b.OwnErr, all.BaseErr += b.BaseErr, all.OwnRef += b.OwnRef;
+                        all.TruthErr += b.TruthErr, all.TruthRef += b.TruthRef, all.Out += b.Out;
+                    } else {
+                        std::printf(" %.3f/%.3f/%.3f", b.OwnRelative.Quantile(0.5), b.BaseRelative.Quantile(0.5),
+                                    b.TruthRelative.Quantile(0.5));
+                        all.OwnRelative.Merge(b.OwnRelative), all.BaseRelative.Merge(b.BaseRelative);
+                        all.TruthRelative.Merge(b.TruthRelative);
+                    }
+                }
+                if (view == 0)
+                    std::printf(" | all %.3f/%.3f/%.3f J_vs_own=%.4f J_vs_truth=%.4f\n", ratio(all.OwnErr, all.OwnRef),
+                                ratio(all.BaseErr, all.OwnRef), ratio(all.TruthErr, all.TruthRef),
+                                ratio(all.Out, all.OwnRef), ratio(all.Out, all.TruthRef));
+                else
+                    std::printf(" | all %.3f/%.3f/%.3f\n", all.OwnRelative.Quantile(0.5),
+                                all.BaseRelative.Quantile(0.5), all.TruthRelative.Quantile(0.5));
+            }
+            std::printf("DGI_SEQ config=%s %s share by age 0..6,7+:", c.Name.c_str(), m ? "moving" : "static_flow");
+            for (uint32_t a = 0; a < kAges; ++a) std::printf(" %.4f", ratio(double(buckets[m][a].Count), double(total)));
+            std::printf(" n=%zu\n", total);
+        }
+        ReleaseScaled(d, run);
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// M7: guiding, the SH cache and blue-noise rotations (open points 20 and 21)
+// on captured buffers through the CPU module (double precision), at the
+// default work scale (Quarter) and gather settings (S 1, K 20, e 1, N 64,
+// footprint strips, mean cache, stratified rotations). No GPU.
+
+struct FrameError {
+    double Mse = 0.0, Energy = 0.0, Bias = 0.0, Reference = 0.0; // luminance, J-weighted
+    LogHistogram Relative;                                       // |dL| / (L + floor)
+    void Add(const std::vector<PixelGather>& image, const std::vector<Rgb>& reference, double floor) {
+        for (size_t i = 0; i < image.size(); ++i) {
+            if (!image[i].Valid) continue;
+            const double r = 0.2126 * reference[i].R + 0.7152 * reference[i].G + 0.0722 * reference[i].B;
+            const double l = 0.2126 * image[i].J.R + 0.7152 * image[i].J.G + 0.0722 * image[i].J.B;
+            Mse += (l - r) * (l - r), Energy += r * r, Bias += l - r, Reference += r;
+            Relative.Add(std::abs(l - r) / (r + floor));
+        }
+    }
+    [[nodiscard]] double RelativeMse() const { return Energy > 0.0 ? Mse / Energy : -1.0; }
+    [[nodiscard]] double RelativeBias() const { return Reference > 0.0 ? Bias / Reference : 0.0; }
+};
+
+// Arguments: --cpu-study DIR R TAU [REFERENCE_SECTIONS]
+int CpuStudy(int argc, char** argv) {
+    Require(argc >= 5, "--cpu-study DIR R TAU [REFERENCE_SECTIONS]");
+    const double radius = std::atof(argv[3]), thickness = std::atof(argv[4]);
+    const uint32_t referenceSections = argc > 5 ? static_cast<uint32_t>(std::atoi(argv[5])) : 16U;
+    std::vector<std::string> dirs;
+    for (const auto& entry : std::filesystem::directory_iterator(argv[2]))
+        if (entry.is_directory()) dirs.push_back(entry.path().string());
+    std::sort(dirs.begin(), dirs.end());
+    Require(!dirs.empty(), "no captured frames");
+    const auto clock = [] { return std::chrono::steady_clock::now(); };
+    const auto seconds = [](auto a, auto b) { return std::chrono::duration<double>(b - a).count(); };
+    // Work images, their motion and hierarchies (SH order 2 for the SH cache).
+    struct WorkFrame {
+        GatherInput Input;
+        std::vector<float> Motion;
+        RigidTransform ToPrevious;
+        DepthHierarchy Hierarchy;
+    };
+    std::vector<WorkFrame> frames;
+    PassExtent extent;
+    for (const auto& dir : dirs) {
+        const CapturedFrame captured = LoadCapturedFrame(dir);
+        extent = MakeWorkScaleExtent(captured.Input.BufferWidth, captured.Input.BufferHeight, 4);
+        WorkFrame w;
+        w.Input = WorkInput(captured.Input, extent);
+        w.Motion = WorkMotion(captured, extent);
+        w.ToPrevious = captured.ToPrevious;
+        w.Hierarchy = BuildDepthHierarchy(w.Input, PrepareGeometry(w.Input), HierarchySettings{}, false);
+        frames.push_back(std::move(w));
+    }
+    const uint32_t vw = frames[0].Input.Viewport.Width, vh = frames[0].Input.Viewport.Height;
+    GatherSettings base = DefaultPassSettings().Gather;
+    base.Radius = radius, base.Thickness = thickness;
+    base.CandidatesPerSide = 20, base.RadialExponent = 1.0;
+    base.Threads = std::max(1U, std::thread::hardware_concurrency());
+    const NoiseMask noise = GenerateBlueNoiseMask(NoiseMaskSettings{});
+    enum class Sampling { Uniform, Guided, BlueNoise };
+    // One gather of frame k at frame index `index` (guided: the field's frozen
+    // table, then its update with this frame's records).
+    const auto gather = [&](size_t k, uint64_t index, Sampling mode, GuideField* field, GatherSettings g) {
+        g.Rotations.Frame = index;
+        GatherAcceleration acc;
+        acc.Hierarchy = &frames[k].Hierarchy;
+        std::vector<GuideSample> records;
+        if (mode == Sampling::Guided) {
+            g.Guiding = true;
+            acc.Guide = &field->Frozen();
+            acc.Samples = &records;
+        }
+        if (mode == Sampling::BlueNoise) {
+            g.Rotations.Mode = RotationMode::BlueNoise;
+            g.SequenceRadialJitter = false;
+            acc.Noise = &noise;
+        }
+        Require(*ValidateGatherAcceleration(frames[k].Input, g, acc) == '\0', "cpu study acceleration");
+        auto image = GatherImage(frames[k].Input, g, acc);
+        if (mode == Sampling::Guided) field->Update(records, g.Sections);
+        return image;
+    };
+    // Reference of frame k: the uniform estimator's expectation, approximated
+    // by `referenceSections` stratified sections averaged over one rotation
+    // cycle (every stratum of every pixel).
+    const auto reference = [&](size_t k) {
+        GatherSettings g = base;
+        g.Sections = referenceSections;
+        std::vector<Rgb> sum(static_cast<size_t>(vw) * vh);
+        for (uint64_t f = 0; f < base.Rotations.Cycle; ++f) {
+            const auto image = gather(k, f, Sampling::Uniform, nullptr, g);
+            for (size_t i = 0; i < image.size(); ++i)
+                sum[i].R += image[i].J.R, sum[i].G += image[i].J.G, sum[i].B += image[i].J.B;
+        }
+        for (Rgb& c : sum) {
+            const double inv = 1.0 / static_cast<double>(base.Rotations.Cycle);
+            c.R *= inv, c.G *= inv, c.B *= inv;
+        }
+        return sum;
+    };
+    const auto floorOf = [&](const std::vector<Rgb>& ref) {
+        double s = 0.0;
+        for (const Rgb& c : ref) s += 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B;
+        return 0.1 * s / std::max<size_t>(ref.size(), 1);
+    };
+    auto t0 = clock();
+    (void)gather(0, 0, Sampling::Uniform, nullptr, base);
+    std::printf("DGI_CPU work=%ux%u frames=%zu R=%.1f tau=%.1f reference_sections=%u threads=%u one_gather_s=%.2f\n", vw,
+                vh, frames.size(), radius, thickness, referenceSections, base.Threads, seconds(t0, clock()));
+    // --- (1) Static frame: single-frame error and running means of n frames.
+    t0 = clock();
+    std::vector<std::vector<Rgb>> refs(frames.size());
+    refs[0] = reference(0);
+    const double floor0 = floorOf(refs[0]);
+    std::printf("DGI_CPU reference frame 0 s=%.1f\n", seconds(t0, clock()));
+    struct StaticConfig {
+        const char* Name;
+        Sampling Mode;
+        uint32_t Sections;
+        GuidedAccessibility Accessibility;
+    };
+    const StaticConfig staticConfigs[] = {{"uniform_S1", Sampling::Uniform, 1, GuidedAccessibility::IndependentUniform},
+                                          {"uniform_S2", Sampling::Uniform, 2, GuidedAccessibility::IndependentUniform},
+                                          {"guided_independentA", Sampling::Guided, 1,
+                                           GuidedAccessibility::IndependentUniform},
+                                          {"guided_samepdfA", Sampling::Guided, 1, GuidedAccessibility::SamePdf},
+                                          {"blue_noise", Sampling::BlueNoise, 1, GuidedAccessibility::IndependentUniform}};
+    constexpr uint64_t kLearn = 8, kMeasured = 28;
+    for (const StaticConfig& c : staticConfigs) {
+        GatherSettings g = base;
+        g.Sections = c.Sections;
+        g.GuidingAccessibility = c.Accessibility;
+        GuideField field(vw, vh, GuidingSettings{});
+        FrameError single;
+        std::array<FrameError, 4> running; // means of 1, 4, 7, 28 frames
+        std::vector<Rgb> sum(static_cast<size_t>(vw) * vh);
+        std::vector<PixelGather> mean;
+        for (uint64_t f = 0; f < kLearn + kMeasured; ++f) {
+            const auto image = gather(0, f, c.Mode, &field, g);
+            if (f < kLearn) continue;
+            single.Add(image, refs[0], floor0);
+            for (size_t i = 0; i < image.size(); ++i)
+                sum[i].R += image[i].J.R, sum[i].G += image[i].J.G, sum[i].B += image[i].J.B;
+            const uint64_t n = f - kLearn + 1U;
+            for (const auto& [slot, frames_] : std::initializer_list<std::pair<int, uint64_t>>{{0, 1}, {1, 4}, {2, 7}, {3, 28}}) {
+                if (n != frames_) continue;
+                mean = image;
+                for (size_t i = 0; i < mean.size(); ++i) {
+                    const double inv = 1.0 / static_cast<double>(n);
+                    mean[i].J = {sum[i].R * inv, sum[i].G * inv, sum[i].B * inv};
+                }
+                running[slot].Add(mean, refs[0], floor0);
+            }
+        }
+        std::printf("DGI_CPU static config=%s single_frame rel_mse=%.4f median_rel=%.4f bias=%+.4f | mean of 1/4/7/28 "
+                    "frames rel_mse=%.4f/%.4f/%.4f/%.4f median_rel=%.4f/%.4f/%.4f/%.4f bias28=%+.4f\n",
+                    c.Name, single.RelativeMse(), single.Relative.Quantile(0.5), single.RelativeBias(),
+                    running[0].RelativeMse(), running[1].RelativeMse(), running[2].RelativeMse(),
+                    running[3].RelativeMse(), running[0].Relative.Quantile(0.5), running[1].Relative.Quantile(0.5),
+                    running[2].Relative.Quantile(0.5), running[3].Relative.Quantile(0.5), running[3].RelativeBias());
+    }
+    // --- (2) SH cache: converged means (28 frames) of the caches against the
+    // uniform reference (mean cache) and against the point reference (Off).
+    {
+        std::vector<std::vector<Rgb>> means;
+        for (const CacheMode cache : {CacheMode::Mean, CacheMode::SphericalHarmonics, CacheMode::Off}) {
+            GatherSettings g = base;
+            g.Cache = cache;
+            std::vector<Rgb> sum(static_cast<size_t>(vw) * vh);
+            for (uint64_t f = 0; f < kMeasured; ++f) {
+                const auto image = gather(0, f, Sampling::Uniform, nullptr, g);
+                for (size_t i = 0; i < image.size(); ++i)
+                    sum[i].R += image[i].J.R / kMeasured, sum[i].G += image[i].J.G / kMeasured,
+                        sum[i].B += image[i].J.B / kMeasured;
+            }
+            means.push_back(std::move(sum));
+        }
+        const auto compare = [&](const std::vector<Rgb>& a, const std::vector<Rgb>& b) {
+            double e = 0.0, s = 0.0, sa = 0.0;
+            for (size_t i = 0; i < a.size(); ++i) {
+                e += std::abs(a[i].R - b[i].R) + std::abs(a[i].G - b[i].G) + std::abs(a[i].B - b[i].B);
+                s += b[i].R + b[i].G + b[i].B, sa += a[i].R + a[i].G + a[i].B;
+            }
+            return std::array<double, 2>{s > 0.0 ? e / s : -1.0, s > 0.0 ? sa / s : -1.0};
+        };
+        const auto shVsOff = compare(means[1], means[2]), meanVsOff = compare(means[0], means[2]);
+        const auto shVsMean = compare(means[1], means[0]);
+        std::printf("DGI_CPU sh_cache (28-frame means, J-weighted |dJ|/J and J ratio): mean_cache_vs_point=%.4f/%.4f "
+                    "sh_cache_vs_point=%.4f/%.4f sh_vs_mean=%.4f/%.4f\n",
+                    meanVsOff[0], meanVsOff[1], shVsOff[0], shVsOff[1], shVsMean[0], shVsMean[1]);
+    }
+    if (frames.size() < 2U) return 0;
+    // --- (3) Motion: guide staleness (open point 21) and blue noise along the
+    // reprojection chain. References of every frame first.
+    t0 = clock();
+    for (size_t k = 1; k < frames.size(); ++k) refs[k] = reference(k);
+    std::printf("DGI_CPU references of %zu motion frames s=%.1f\n", frames.size() - 1U, seconds(t0, clock()));
+    // Nearest previous work texel of a static surface (camera prediction, 2%).
+    std::vector<std::vector<uint32_t>> previous(frames.size(), std::vector<uint32_t>(static_cast<size_t>(vw) * vh,
+                                                                                     0xFFFFFFFFU));
+    for (size_t k = 1; k < frames.size(); ++k) {
+        const GatherInput& cur = frames[k].Input;
+        const GatherInput& prev = frames[k - 1].Input;
+        for (uint32_t y = 0; y < vh; ++y)
+            for (uint32_t x = 0; x < vw; ++x) {
+                const size_t t = static_cast<size_t>(y) * cur.BufferWidth + x;
+                if (cur.Class[t] != static_cast<uint8_t>(TexelClass::OneSided) || !(cur.Depth[t] < 1.0F)) continue;
+                const double u = (x + 0.5) / cur.BufferWidth + frames[k].Motion[2 * t];
+                const double v = (y + 0.5) / cur.BufferHeight + frames[k].Motion[2 * t + 1];
+                const int px = static_cast<int>(std::floor(u * cur.BufferWidth));
+                const int py = static_cast<int>(std::floor(v * cur.BufferHeight));
+                if (px < 0 || py < 0 || px >= static_cast<int>(vw) || py >= static_cast<int>(vh)) continue;
+                const size_t pt = static_cast<size_t>(py) * prev.BufferWidth + static_cast<size_t>(px);
+                if (prev.Class[pt] != static_cast<uint8_t>(TexelClass::OneSided) || !(prev.Depth[pt] < 1.0F)) continue;
+                const Vec3 q = frames[k].ToPrevious.Apply(CapturedPosition(cur, t));
+                const double zp = DecodeViewDepth(prev.Depth[pt], prev.Camera);
+                if (std::abs(-q.Z - zp) <= 0.02 * zp) previous[k][t] = static_cast<uint32_t>(pt);
+            }
+    }
+    for (const size_t stride : {size_t{1}, size_t{3}}) {
+        // Guided: learned 8 frames on frame 0, then one frame per motion step
+        // with the stale guide (it keeps learning); uniform and a fresh guide
+        // (8 frames on that frame itself) on the same frames.
+        GuideField stale(vw, vh, GuidingSettings{});
+        for (uint64_t f = 0; f < kLearn; ++f) (void)gather(0, f, Sampling::Guided, &stale, base);
+        FrameError eStale, eUniform, eFresh;
+        uint64_t index = kLearn;
+        for (size_t k = stride; k < frames.size(); k += stride, ++index) {
+            const double fl = floorOf(refs[k]);
+            eStale.Add(gather(k, index, Sampling::Guided, &stale, base), refs[k], fl);
+            eUniform.Add(gather(k, index, Sampling::Uniform, nullptr, base), refs[k], fl);
+            GuideField fresh(vw, vh, GuidingSettings{});
+            for (uint64_t f = 0; f < kLearn; ++f) (void)gather(k, 100 + f, Sampling::Guided, &fresh, base);
+            eFresh.Add(gather(k, index, Sampling::Guided, &fresh, base), refs[k], fl);
+        }
+        std::printf("DGI_CPU motion stride=%zu (captured frames per step) single-frame rel_mse uniform=%.4f "
+                    "stale_guide=%.4f fresh_guide=%.4f | median_rel %.4f/%.4f/%.4f\n",
+                    stride, eUniform.RelativeMse(), eStale.RelativeMse(), eFresh.RelativeMse(),
+                    eUniform.Relative.Quantile(0.5), eStale.Relative.Quantile(0.5), eFresh.Relative.Quantile(0.5));
+    }
+    // Blue noise along the chain: per-texel running mean of the single-frame
+    // estimates of the surface (nearest reprojection; a broken chain restarts).
+    for (const Sampling mode : {Sampling::Uniform, Sampling::BlueNoise}) {
+        std::vector<Rgb> sum(static_cast<size_t>(vw) * vh);
+        std::vector<uint32_t> count(sum.size(), 0U);
+        std::array<FrameError, 8> byFrame;
+        for (size_t k = 0; k < frames.size(); ++k) {
+            const auto image = gather(k, 200 + k, mode, nullptr, base);
+            std::vector<Rgb> nextSum(sum.size());
+            std::vector<uint32_t> nextCount(sum.size(), 0U);
+            std::vector<PixelGather> mean = image;
+            for (size_t t = 0; t < image.size(); ++t) {
+                if (!image[t].Valid) continue;
+                Rgb s{};
+                uint32_t n = 0;
+                if (k > 0 && previous[k][t] != 0xFFFFFFFFU) s = sum[previous[k][t]], n = count[previous[k][t]];
+                s.R += image[t].J.R, s.G += image[t].J.G, s.B += image[t].J.B, ++n;
+                nextSum[t] = s, nextCount[t] = n;
+                mean[t].J = {s.R / n, s.G / n, s.B / n};
+            }
+            sum = std::move(nextSum), count = std::move(nextCount);
+            if (k > 0) byFrame[k].Add(mean, refs[k], floorOf(refs[k]));
+        }
+        std::printf("DGI_CPU chain mean (%s) rel_mse by frame 1..%zu:", mode == Sampling::BlueNoise ? "blue_noise" : "stratified",
+                    frames.size() - 1U);
+        for (size_t k = 1; k < frames.size(); ++k) std::printf(" %.4f", byFrame[k].RelativeMse());
+        std::printf(" | median_rel:");
+        for (size_t k = 1; k < frames.size(); ++k) std::printf(" %.4f", byFrame[k].Relative.Quantile(0.5));
+        std::printf("\n");
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) try {
     std::setvbuf(stdout, nullptr, _IONBF, 0); // lines interleave with stderr in order
+    if (argc >= 3 && std::string_view(argv[1]) == "--cpu-study") return CpuStudy(argc, argv);
     Device device;
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(device.Physical, &properties);
@@ -1337,6 +2083,13 @@ int main(int argc, char** argv) try {
         const PassKernelBinaries binaries = DiffuseGiKernels::Resolve(shaders, reason);
         Require(reason.empty() && studyKernels->Create(passDevice, binaries), "study kernels: " + reason);
         return Study(device, passDevice, studyKernels, argc, argv);
+    }
+    if (argc >= 3 && std::string_view(argv[1]) == "--sequence") {
+        std::string reason;
+        auto studyKernels = std::make_shared<DiffuseGiKernels>();
+        const PassKernelBinaries binaries = DiffuseGiKernels::Resolve(shaders, reason);
+        Require(reason.empty() && studyKernels->Create(passDevice, binaries), "sequence kernels: " + reason);
+        return Sequence(device, passDevice, studyKernels, argc, argv);
     }
     {
         Instance probe;
