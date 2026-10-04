@@ -1,7 +1,6 @@
 #include "oot3d_native_compiled_functions.h"
 
 #include "oot3d_native_a32_memory.h"
-#include "oot3d_native_source_overlay.h"
 #include "recomp/a32_vfp_scalar.h"
 #include "oot3d_native_whole_aot_runtime.h"
 
@@ -1057,26 +1056,6 @@ Oot3dWholeAotFlow ExecuteWholeAotExternalCall(
     auto& state = frame.Guest;
     state.r[15] = entry;
     oot3d::recomp::a32::ExecutionResult result{};
-#if !defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
-    // The product has no source overlay; skip its per-call lookup there.
-    if (ExecuteOot3dSourceOverlay(entry, state, memory, &result)) {
-        switch (result.kind) {
-        case oot3d::recomp::a32::ExitKind::Branch:
-        case oot3d::recomp::a32::ExitKind::Fallthrough:
-            return Oot3dAotReturned(result.pc);
-        case oot3d::recomp::a32::ExitKind::Svc:
-            return {Oot3dWholeAotFlowKind::Svc, result.pc, result.detail};
-        case oot3d::recomp::a32::ExitKind::BlockLimit:
-            return {Oot3dWholeAotFlowKind::BlockLimit, result.pc,
-                    result.detail};
-        case oot3d::recomp::a32::ExitKind::MemoryFault:
-            return {Oot3dWholeAotFlowKind::MemoryFault, result.pc,
-                    result.detail};
-        default:
-            break;
-        }
-    }
-#endif
     const bool sampleTiming =
         !gExternalTargetCounts.empty() &&
         ((++gExternalTimingCounter & kExternalTimingSampleMask) == 0U);
@@ -1112,88 +1091,31 @@ Oot3dWholeAotFlow ContinueWholeAotExternalCallInGuest(
     return Oot3dAotBranch(entry);
 }
 
-struct SourceOverlayBlockEntryContext {
-    oot3d::recomp::a32::BlockEntryCallback Original = nullptr;
-    void* OriginalUser = nullptr;
-    NativeA32Memory* Memory = nullptr;
-};
-
-bool IsMaterializedDirectCallBoundary(
-    uint32_t entry, const oot3d::recomp::a32::GuestState& state,
-    const NativeA32Memory& memory) {
-    const uint32_t returnAddress = state.r[14];
-    if (returnAddress < 4U) {
-        return false;
-    }
-    const uint32_t callAddress = returnAddress - 4U;
-    uint32_t instruction = 0U;
-    if (!memory.ReadFast<uint32_t>(callAddress, &instruction)) {
-        return false;
-    }
-    const uint32_t condition = instruction >> 28U;
-    const bool armBranchWithLink =
-        condition != 0xFU && (instruction & 0x0F000000U) == 0x0B000000U;
-    if (!armBranchWithLink) {
-        return false;
-    }
-    int64_t displacement =
-        static_cast<int64_t>(instruction & 0x00FFFFFFU) << 2U;
-    if ((displacement & 0x02000000LL) != 0) {
-        displacement -= 0x04000000LL;
-    }
-    const uint32_t target = static_cast<uint32_t>(
-        static_cast<int64_t>(callAddress) + 8LL + displacement);
-    return target == entry;
-}
-
-void SourceOverlayBlockEntry(
-    uint32_t pc, oot3d::recomp::a32::GuestState& state,
-    oot3d::recomp::a32::MemoryBus& memory, void* user) {
-    auto& context = *static_cast<SourceOverlayBlockEntryContext*>(user);
-    const auto entries = Oot3dSourceOverlayEntryPoints();
-    if (!Oot3dSourceOverlayEntryActive(pc) && context.Memory != nullptr &&
-        std::binary_search(entries.begin(), entries.end(), pc) &&
-        IsMaterializedDirectCallBoundary(pc, state, *context.Memory)) {
-        Oot3dWholeAotExitAt(pc, state);
-    }
-    if (context.Original != nullptr) {
-        context.Original(pc, state, memory, context.OriginalUser);
-    }
-}
-
 struct Oot3dBlockEntrySelection final {
     std::span<const uint32_t> Entries;
     const Oot3dAotBlockEntryFilter* Filter = nullptr;
 };
 
-Oot3dBlockEntrySelection MergeSourceOverlayBlockEntries(
+// Sorted, unique block entries and their filter, cached per caller list.
+Oot3dBlockEntrySelection SelectBlockEntries(
     const uint32_t* entries, size_t entryCount) {
-    const auto overlayEntries = Oot3dSourceOverlayEntryPoints();
     struct Cache {
         const uint32_t* Entries = nullptr;
         size_t EntryCount = 0U;
-        const uint32_t* OverlayEntries = nullptr;
-        size_t OverlayEntryCount = 0U;
         std::vector<uint32_t> Merged;
         Oot3dAotBlockEntryFilter Filter;
         bool Initialized = false;
     };
     thread_local Cache cache;
     if (!cache.Initialized || cache.Entries != entries ||
-        cache.EntryCount != entryCount ||
-        cache.OverlayEntries != overlayEntries.data() ||
-        cache.OverlayEntryCount != overlayEntries.size()) {
+        cache.EntryCount != entryCount) {
         cache.Initialized = true;
         cache.Entries = entries;
         cache.EntryCount = entryCount;
-        cache.OverlayEntries = overlayEntries.data();
-        cache.OverlayEntryCount = overlayEntries.size();
         cache.Merged.clear();
         if (entryCount != 0U) {
             cache.Merged.assign(entries, entries + entryCount);
         }
-        cache.Merged.insert(cache.Merged.end(), overlayEntries.begin(),
-                            overlayEntries.end());
         std::sort(cache.Merged.begin(), cache.Merged.end());
         cache.Merged.erase(
             std::unique(cache.Merged.begin(), cache.Merged.end()),
@@ -1232,9 +1154,6 @@ std::span<const uint32_t> Oot3dCompiledFunctionEntryPoints(
             const auto entries = Oot3dWholeAotEntryPoints();
             result.insert(result.end(), entries.begin(), entries.end());
         }
-        const auto sourceOverlay = Oot3dSourceOverlayEntryPoints();
-        result.insert(result.end(), sourceOverlay.begin(),
-                      sourceOverlay.end());
         std::sort(result.begin(), result.end());
         result.erase(std::unique(result.begin(), result.end()), result.end());
         return result;
@@ -1244,7 +1163,7 @@ std::span<const uint32_t> Oot3dCompiledFunctionEntryPoints(
         buildEntries(true, false);
     static const std::vector<uint32_t> manualEntries =
         buildEntries(false, true);
-    static const std::vector<uint32_t> overlayEntries =
+    static const std::vector<uint32_t> noEntries =
         buildEntries(false, false);
     if (includeWholeAot && includeManualCompiledFunctions) {
         return entries;
@@ -1255,14 +1174,11 @@ std::span<const uint32_t> Oot3dCompiledFunctionEntryPoints(
     if (includeManualCompiledFunctions) {
         return manualEntries;
     }
-    return overlayEntries;
+    return noEntries;
 #else
     static const std::vector<uint32_t> entries = [] {
         std::vector<uint32_t> result(kCompiledFunctionEntryPoints.begin(),
                                      kCompiledFunctionEntryPoints.end());
-        const auto sourceOverlay = Oot3dSourceOverlayEntryPoints();
-        result.insert(result.end(), sourceOverlay.begin(),
-                      sourceOverlay.end());
         std::sort(result.begin(), result.end());
         result.erase(std::unique(result.begin(), result.end()), result.end());
         return result;
@@ -1271,14 +1187,13 @@ std::span<const uint32_t> Oot3dCompiledFunctionEntryPoints(
     if (includeManualCompiledFunctions) {
         return entries;
     }
-    return Oot3dSourceOverlayEntryPoints();
+    return {};
 #endif
 }
 
 void ResetOot3dCompiledFunctionStats() noexcept {
     gStats = {};
     gWholeAotStats = {};
-    ResetOot3dSourceOverlayStats();
     gExternalTimingCounter = 0U;
     if (!gExternalTargetCounts.empty()) {
         std::fill(gExternalTargetCounts.begin(), gExternalTargetCounts.end(),
@@ -1368,10 +1283,6 @@ bool ExecuteOot3dCompiledFunction(
     if (blocksConsumed != nullptr) {
         *blocksConsumed = 1U;
     }
-    if (ExecuteOot3dSourceOverlay(pc, state, memory, result, blockBudget,
-                                  blocksConsumed)) {
-        return true;
-    }
     if (enableManualCompiledFunctions &&
         ExecuteOot3dManualCompiledFunction(pc, state, memory, result)) {
         return true;
@@ -1390,21 +1301,15 @@ bool ExecuteOot3dCompiledFunction(
         return false;
 #endif
     }
-    const auto overlayEntries = Oot3dSourceOverlayEntryPoints();
-    SourceOverlayBlockEntryContext overlayBlockContext{
-        blockEntry, blockEntryUser, &memory};
-    const auto blockEntrySelection = MergeSourceOverlayBlockEntries(
+    const auto blockEntrySelection = SelectBlockEntries(
         blockEntryPcs, blockEntryPcCount);
-    const bool routeOverlayBlocks = !overlayEntries.empty();
     return ExecuteOot3dWholeAotFunction(
         pc, state, memory, result, &gWholeAotStats,
         enableManualCompiledFunctions
             ? ExecuteWholeAotExternalCall
             : ContinueWholeAotExternalCallInGuest,
         blockBudget, blocksConsumed,
-        routeOverlayBlocks ? SourceOverlayBlockEntry : blockEntry,
-        routeOverlayBlocks ? static_cast<void*>(&overlayBlockContext)
-                           : blockEntryUser,
+        blockEntry, blockEntryUser,
         blockEntrySelection.Entries.data(),
         blockEntrySelection.Entries.size(), blockEntrySelection.Filter,
         skipFirstBlockEntry, stopPc);

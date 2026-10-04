@@ -50,15 +50,6 @@
 #include "oot3d_native_pica_vulkan_plan.h"
 #include "oot3d_native_player_temporal_bridge.h"
 #include "oot3d_native_scenario_bootstrap.h"
-#include "oot3d_source_actor_init_context_runtime.h"
-#include "oot3d_source_actor_update_all_runtime.h"
-#include "oot3d_source_camera_update_runtime.h"
-#include "oot3d_source_csab_curve_runtime.h"
-#include "oot3d_source_player_update_runtime.h"
-#include "oot3d_source_player_update_common_runtime.h"
-#include "oot3d_source_cutscene_process_commands_runtime.h"
-#include "oot3d_source_cutscene_update_frame_runtime.h"
-#include "oot3d_source_gameplay_profile.h"
 #include "oot3d_native_temporal_event_ledger.h"
 #include "oot3d_native_true_aot_blocks.h"
 #include "oot3d_native_ui_lifecycle_bridge.h"
@@ -769,22 +760,6 @@ struct NativeCandidateDispatchState {
   uint32_t SampleState = 0xA32C0DE1U;
   uint64_t Calls = 0;
   uint64_t Samples = 0;
-  uint64_t SourceActorInitContextSamples = 0;
-  uint64_t SourceActorInitContextSampleNanoseconds = 0;
-  uint64_t SourceActorUpdateAllSamples = 0;
-  uint64_t SourceActorUpdateAllSampleNanoseconds = 0;
-  uint64_t SourceCutsceneUpdateFrameSamples = 0;
-  uint64_t SourceCutsceneUpdateFrameSampleNanoseconds = 0;
-  uint64_t SourceCutsceneProcessCommandsSamples = 0;
-  uint64_t SourceCutsceneProcessCommandsSampleNanoseconds = 0;
-  uint64_t SourceCameraUpdateSamples = 0;
-  uint64_t SourceCameraUpdateSampleNanoseconds = 0;
-  uint64_t SourcePlayerUpdateSamples = 0;
-  uint64_t SourcePlayerUpdateSampleNanoseconds = 0;
-  uint64_t SourcePlayerUpdateCommonSamples = 0;
-  uint64_t SourcePlayerUpdateCommonSampleNanoseconds = 0;
-  uint64_t SourceCsabCurveSamples = 0;
-  uint64_t SourceCsabCurveSampleNanoseconds = 0;
   uint64_t TypedGameplaySamples = 0;
   uint64_t TypedGameplaySampleNanoseconds = 0;
   uint64_t CompiledSamples = 0;
@@ -806,19 +781,6 @@ struct NativeCandidateDispatchState {
   Oot3dNativeGame::TopScreenPauseProjectionState *TopScreenPauseProjection =
       nullptr;
   const Oot3dNativeGame::TopScreenUiConfig *TopScreenConfig = nullptr;
-  Oot3dNativeGame::SourceActorInitContextRuntime *SourceActorInitContext =
-      nullptr;
-  Oot3dNativeGame::SourceActorUpdateAllRuntime *SourceActorUpdateAll =
-      nullptr;
-  Oot3dNativeGame::SourceCutsceneUpdateFrameRuntime
-      *SourceCutsceneUpdateFrame = nullptr;
-  Oot3dNativeGame::SourceCutsceneProcessCommandsRuntime
-      *SourceCutsceneProcessCommands = nullptr;
-  Oot3dNativeGame::SourceCameraUpdateRuntime *SourceCameraUpdate = nullptr;
-  Oot3dNativeGame::SourcePlayerUpdateRuntime *SourcePlayerUpdate = nullptr;
-  Oot3dNativeGame::SourcePlayerUpdateCommonRuntime
-      *SourcePlayerUpdateCommon = nullptr;
-  Oot3dNativeGame::SourceCsabCurveRuntime *SourceCsabCurve = nullptr;
 };
 
 bool ExecuteTopScreenUiSourcePortBlock(
@@ -1656,85 +1618,7 @@ bool ExecuteNativeCandidate(uint32_t pc, oot3d::recomp::a32::GuestState &state,
       }
     }
   }
-#if defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
-  constexpr bool sourceActorInitContext = false;
-  constexpr bool sourceActorUpdateAll = false;
-  constexpr bool sourceCutsceneUpdateFrame = false;
-  constexpr bool sourceCutsceneProcessCommands = false;
-  constexpr bool sourceCameraUpdate = false;
-  constexpr bool sourcePlayerUpdate = false;
-  constexpr bool sourcePlayerUpdateCommon = false;
-  constexpr bool sourceOwner = false;
-  constexpr bool sourceCsabCurve = false;
-#else
-  const bool sourceActorInitContext =
-      !topScreenUi && dispatch.SourceActorInitContext != nullptr &&
-      dispatch.SourceActorInitContext->Execute(
-          pc, state, memory, result, blocksConsumed);
-  const bool sourceActorUpdateAll =
-      !topScreenUi && !sourceActorInitContext &&
-      dispatch.SourceActorUpdateAll != nullptr &&
-      dispatch.SourceActorUpdateAll->Execute(
-          pc, state, memory, result, blocksConsumed);
-  const bool sourceCutsceneUpdateFrame =
-      !topScreenUi && !sourceActorInitContext && !sourceActorUpdateAll &&
-      dispatch.SourceCutsceneUpdateFrame != nullptr &&
-      dispatch.SourceCutsceneUpdateFrame->Execute(
-          pc, state, memory, result, blocksConsumed);
-  const bool sourceCutsceneProcessCommands =
-      !topScreenUi && !sourceActorInitContext && !sourceActorUpdateAll &&
-      !sourceCutsceneUpdateFrame &&
-      dispatch.SourceCutsceneProcessCommands != nullptr &&
-      dispatch.SourceCutsceneProcessCommands->Execute(
-          pc, state, memory, result, blocksConsumed);
-  const bool sourceCameraUpdate =
-      !topScreenUi && !sourceActorInitContext && !sourceActorUpdateAll &&
-      !sourceCutsceneUpdateFrame && !sourceCutsceneProcessCommands &&
-      dispatch.SourceCameraUpdate != nullptr &&
-      dispatch.SourceCameraUpdate->Execute(
-          pc, state, memory, result, blocksConsumed);
-  if (sourceCameraUpdate && result != nullptr &&
-      result->kind == oot3d::recomp::a32::ExitKind::Unsupported) {
-    std::cerr << "oot3d_native_game: source Camera_Update failed: "
-              << dispatch.SourceCameraUpdate->LastError() << '\n';
-  }
-  const bool sourcePlayerUpdate =
-      !topScreenUi && !sourceActorInitContext && !sourceActorUpdateAll &&
-      !sourceCutsceneUpdateFrame && !sourceCutsceneProcessCommands &&
-      !sourceCameraUpdate && dispatch.SourcePlayerUpdate != nullptr &&
-      dispatch.SourcePlayerUpdate->Execute(
-          pc, state, memory, result, blocksConsumed);
-  if (sourcePlayerUpdate && result != nullptr &&
-      result->kind == oot3d::recomp::a32::ExitKind::Unsupported) {
-    std::cerr << "oot3d_native_game: source Player_Update failed: "
-              << dispatch.SourcePlayerUpdate->LastError() << '\n';
-  }
-  const bool sourcePlayerUpdateCommon =
-      !topScreenUi && !sourceActorInitContext && !sourceActorUpdateAll &&
-      !sourceCutsceneUpdateFrame && !sourceCutsceneProcessCommands &&
-      !sourceCameraUpdate && !sourcePlayerUpdate &&
-      dispatch.SourcePlayerUpdateCommon != nullptr &&
-      dispatch.SourcePlayerUpdateCommon->Execute(
-          pc, state, memory, result, blocksConsumed);
-  if (sourcePlayerUpdateCommon && result != nullptr &&
-      result->kind == oot3d::recomp::a32::ExitKind::Unsupported) {
-    std::cerr
-        << "oot3d_native_game: source Player_UpdateCommon failed: "
-        << dispatch.SourcePlayerUpdateCommon->LastError() << '\n';
-  }
-  const bool sourceOwner =
-      sourceActorInitContext || sourceActorUpdateAll ||
-      sourceCutsceneUpdateFrame || sourceCutsceneProcessCommands ||
-      sourceCameraUpdate || sourcePlayerUpdate ||
-      sourcePlayerUpdateCommon;
-  const bool sourceCsabCurve =
-      !topScreenUi && !sourceOwner &&
-      dispatch.SourceCsabCurve != nullptr &&
-      dispatch.SourceCsabCurve->Execute(
-          pc, state, memory, result, blocksConsumed);
-#endif
-  const bool typedGameplay = !topScreenUi && !sourceOwner &&
-                             !sourceCsabCurve &&
+  const bool typedGameplay = !topScreenUi &&
                              dispatch.TypedGameplay &&
                              dispatch.Memory != nullptr &&
                              Oot3dNativeGame::ExecuteOot3dTypedGameplay(
@@ -1747,8 +1631,7 @@ bool ExecuteNativeCandidate(uint32_t pc, oot3d::recomp::a32::GuestState &state,
       dispatch.WholeAot && !dispatch.TopScreenPauseAotBarrier;
 #endif
   const bool compiled =
-      !topScreenUi && !sourceOwner && !sourceCsabCurve &&
-      !typedGameplay &&
+      !topScreenUi && !typedGameplay &&
       dispatch.CompiledFunctions &&
       dispatch.Memory != nullptr &&
       Oot3dNativeGame::ExecuteOot3dCompiledFunction(
@@ -1757,8 +1640,7 @@ bool ExecuteNativeCandidate(uint32_t pc, oot3d::recomp::a32::GuestState &state,
           dispatch.BlockEntryPcs.data(), dispatch.BlockEntryPcs.size(), true,
           dispatch.ManualCompiledFunctions, wholeAotAllowed);
   const bool massAot =
-      !topScreenUi && !sourceOwner && !sourceCsabCurve &&
-      !typedGameplay &&
+      !topScreenUi && !typedGameplay &&
       !compiled && dispatch.MassAot &&
       dispatch.Memory != nullptr &&
       Oot3dNativeGame::ExecuteOot3dMassAot(
@@ -1766,8 +1648,7 @@ bool ExecuteNativeCandidate(uint32_t pc, oot3d::recomp::a32::GuestState &state,
           dispatch.BlockEntry, dispatch.BlockEntryUser,
           dispatch.MassAotBlockEntryFilter,
           dispatch.MassAotObservableExitFilter, true);
-  const bool trueAot = !topScreenUi && !sourceOwner &&
-                       !sourceCsabCurve &&
+  const bool trueAot = !topScreenUi &&
                        !typedGameplay && !compiled && !massAot &&
                        dispatch.TrueAotBlocks &&
                        Oot3dNativeGame::ExecuteOot3dTrueAotBlock(
@@ -1778,32 +1659,7 @@ bool ExecuteNativeCandidate(uint32_t pc, oot3d::recomp::a32::GuestState &state,
             std::chrono::steady_clock::now() - sampleStart)
             .count());
     ++dispatch.Samples;
-    if (sourceActorInitContext) {
-      ++dispatch.SourceActorInitContextSamples;
-      dispatch.SourceActorInitContextSampleNanoseconds += nanoseconds;
-    } else if (sourceActorUpdateAll) {
-      ++dispatch.SourceActorUpdateAllSamples;
-      dispatch.SourceActorUpdateAllSampleNanoseconds += nanoseconds;
-    } else if (sourceCutsceneUpdateFrame) {
-      ++dispatch.SourceCutsceneUpdateFrameSamples;
-      dispatch.SourceCutsceneUpdateFrameSampleNanoseconds += nanoseconds;
-    } else if (sourceCutsceneProcessCommands) {
-      ++dispatch.SourceCutsceneProcessCommandsSamples;
-      dispatch.SourceCutsceneProcessCommandsSampleNanoseconds += nanoseconds;
-    } else if (sourceCameraUpdate) {
-      ++dispatch.SourceCameraUpdateSamples;
-      dispatch.SourceCameraUpdateSampleNanoseconds += nanoseconds;
-    } else if (sourcePlayerUpdate) {
-      ++dispatch.SourcePlayerUpdateSamples;
-      dispatch.SourcePlayerUpdateSampleNanoseconds += nanoseconds;
-    } else if (sourcePlayerUpdateCommon) {
-      ++dispatch.SourcePlayerUpdateCommonSamples;
-      dispatch.SourcePlayerUpdateCommonSampleNanoseconds +=
-          nanoseconds;
-    } else if (sourceCsabCurve) {
-      ++dispatch.SourceCsabCurveSamples;
-      dispatch.SourceCsabCurveSampleNanoseconds += nanoseconds;
-    } else if (typedGameplay) {
+    if (typedGameplay) {
       ++dispatch.TypedGameplaySamples;
       dispatch.TypedGameplaySampleNanoseconds += nanoseconds;
     } else if (massAot || compiled) {
@@ -1818,8 +1674,7 @@ bool ExecuteNativeCandidate(uint32_t pc, oot3d::recomp::a32::GuestState &state,
     }
   }
   const bool handled =
-      topScreenUi || sourceOwner || sourceCsabCurve || typedGameplay ||
-      massAot || compiled || trueAot;
+      topScreenUi || typedGameplay || massAot || compiled || trueAot;
 #if defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
   if (!handled) {
     if (result != nullptr) {
@@ -3177,103 +3032,6 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
 #if defined(__SWITCH__)
   gSwitchVisualInterpolation = frameRateContract.VisualInterpolationAllowed;
 #endif
-#if defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
-  if (launch.EnableSourceGameplayProfile ||
-      launch.EnableSourceActorInitContext ||
-      launch.EnableSourceActorUpdateAll ||
-      launch.EnableSourceCutsceneUpdateFrame ||
-      launch.EnableSourceCutsceneProcessCommands ||
-      launch.EnableSourceCameraUpdate ||
-      launch.EnableSourcePlayerUpdate ||
-      launch.EnableSourcePlayerUpdateCommon ||
-      launch.EnableSourceCsabCurves) {
-    throw std::runtime_error(
-        "source-native options are documentation-only in a whole-AOT "
-        "product");
-  }
-  const Oot3dNativeGame::SourceGameplayOwnerSelection
-      sourceGameplayOwners{};
-#else
-  if (launch.EnableSourceGameplayProfile &&
-      frameRateContract.Mode ==
-          Oot3dNativeGame::GameplayTimingMode::Enhanced60) {
-    throw std::runtime_error(
-        "--enable-source-gameplay-profile is Native30-only; "
-        "Enhanced60 retains its typed timing owners");
-  }
-  if (launch.EnableSourceGameplayProfile &&
-      (launch.DisableCompiledFunctions ||
-       launch.DisableTypedGameplay)) {
-    throw std::runtime_error(
-        "--enable-source-gameplay-profile requires typed gameplay "
-        "for GameState_Update");
-  }
-  const auto sourceGameplayOwners =
-      Oot3dNativeGame::ResolveSourceGameplayOwnerSelection({
-          launch.EnableSourceGameplayProfile,
-          !launch.DisableCompiledFunctions &&
-              !launch.DisableTypedGameplay,
-          launch.EnableSourceActorInitContext,
-          launch.EnableSourceActorUpdateAll,
-          launch.EnableSourceCutsceneUpdateFrame,
-          launch.EnableSourceCutsceneProcessCommands,
-          launch.EnableSourceCameraUpdate,
-          launch.EnableSourcePlayerUpdate,
-          launch.EnableSourcePlayerUpdateCommon,
-      });
-#endif
-  const bool enableSourceActorInitContext =
-      sourceGameplayOwners.ActorInitContext;
-  const bool enableSourceActorUpdateAll =
-      sourceGameplayOwners.ActorUpdateAll;
-  const bool enableSourceCutsceneUpdateFrame =
-      sourceGameplayOwners.CutsceneUpdateFrame;
-  const bool enableSourceCutsceneProcessCommands =
-      sourceGameplayOwners.CutsceneProcessCommands;
-  const bool enableSourceCameraUpdate =
-      sourceGameplayOwners.CameraUpdate;
-  const bool enableSourcePlayerUpdate =
-      sourceGameplayOwners.PlayerUpdate;
-  const bool enableSourcePlayerUpdateCommon =
-      sourceGameplayOwners.PlayerUpdateCommon;
-  const bool enableSourceCsabCurves = launch.EnableSourceCsabCurves;
-#if !defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
-  if (enableSourceCutsceneUpdateFrame &&
-      frameRateContract.Mode ==
-          Oot3dNativeGame::GameplayTimingMode::Enhanced60) {
-    throw std::runtime_error(
-        "--enable-source-cutscene-update-frame is Native30-only; "
-        "Enhanced60 retains its typed frame-crossing owner");
-  }
-  if (enableSourceCutsceneProcessCommands &&
-      frameRateContract.Mode ==
-          Oot3dNativeGame::GameplayTimingMode::Enhanced60) {
-    throw std::runtime_error(
-        "--enable-source-cutscene-process-commands is Native30-only; "
-        "Enhanced60 retains its typed cutscene path");
-  }
-  if (enableSourceCameraUpdate &&
-      frameRateContract.Mode ==
-          Oot3dNativeGame::GameplayTimingMode::Enhanced60) {
-    throw std::runtime_error(
-        "--enable-source-camera-update is Native30-only; "
-        "Enhanced60 retains its typed camera timing owner");
-  }
-  if (enableSourcePlayerUpdate &&
-      frameRateContract.Mode ==
-          Oot3dNativeGame::GameplayTimingMode::Enhanced60) {
-    throw std::runtime_error(
-        "--enable-source-player-update is Native30-only; "
-        "Enhanced60 retains its typed player timing owner");
-  }
-  if (enableSourcePlayerUpdateCommon &&
-      frameRateContract.Mode ==
-          Oot3dNativeGame::GameplayTimingMode::Enhanced60) {
-    throw std::runtime_error(
-        "--enable-source-player-update-common is Native30-only; "
-        "Enhanced60 retains its typed player timing owner");
-  }
-#endif
   Oot3dNativeGame::NativeFrameRatePolicy frameRatePolicy(frameRateContract);
   Oot3dNativeGame::NativeA32SceneViewProbe sceneViewProbe;
   Oot3dNativeGame::NativeA32PlayerTimingProbe playerTimingProbe;
@@ -3497,40 +3255,6 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                                   trueAotEntries.begin(), trueAotEntries.end());
     Oot3dNativeGame::ResetOot3dTrueAotBlockStats();
   }
-  if (enableSourceActorUpdateAll) {
-    nativeCandidateEntries.push_back(
-        Oot3dNativeGame::kSourceActorUpdateAllEntry);
-  }
-  if (enableSourceActorInitContext) {
-    nativeCandidateEntries.push_back(
-        Oot3dNativeGame::kSourceActorInitContextEntry);
-  }
-  if (enableSourceCutsceneUpdateFrame) {
-    nativeCandidateEntries.push_back(
-        Oot3dNativeGame::kSourceCutsceneUpdateFrameEntry);
-  }
-  if (enableSourceCutsceneProcessCommands) {
-    nativeCandidateEntries.push_back(
-        Oot3dNativeGame::kSourceCutsceneProcessCommandsEntry);
-  }
-  if (enableSourceCameraUpdate) {
-    nativeCandidateEntries.push_back(
-        Oot3dNativeGame::kSourceCameraUpdateEntry);
-  }
-  if (enableSourcePlayerUpdate) {
-    nativeCandidateEntries.push_back(
-        Oot3dNativeGame::kSourcePlayerUpdateEntry);
-  }
-  if (enableSourcePlayerUpdateCommon) {
-    nativeCandidateEntries.push_back(
-        Oot3dNativeGame::kSourcePlayerUpdateCommonEntry);
-  }
-  if (enableSourceCsabCurves) {
-    nativeCandidateEntries.push_back(
-        Oot3dNativeGame::kSourceCsabCurveS16Entry);
-    nativeCandidateEntries.push_back(
-        Oot3dNativeGame::kSourceCsabCurveF32Entry);
-  }
   std::vector<uint32_t> topScreenSourcePortBlocks;
   std::vector<uint32_t> wholeAotObservableExitBlocks;
 #if !defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
@@ -3540,40 +3264,6 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       wholeAotObservableExitBlocks.end(), picaCompositionHooks.begin(),
       picaCompositionHooks.end());
 #endif
-  if (enableSourceActorUpdateAll) {
-    wholeAotObservableExitBlocks.push_back(
-        Oot3dNativeGame::kSourceActorUpdateAllEntry);
-  }
-  if (enableSourceActorInitContext) {
-    wholeAotObservableExitBlocks.push_back(
-        Oot3dNativeGame::kSourceActorInitContextEntry);
-  }
-  if (enableSourceCutsceneUpdateFrame) {
-    wholeAotObservableExitBlocks.push_back(
-        Oot3dNativeGame::kSourceCutsceneUpdateFrameEntry);
-  }
-  if (enableSourceCutsceneProcessCommands) {
-    wholeAotObservableExitBlocks.push_back(
-        Oot3dNativeGame::kSourceCutsceneProcessCommandsEntry);
-  }
-  if (enableSourceCameraUpdate) {
-    wholeAotObservableExitBlocks.push_back(
-        Oot3dNativeGame::kSourceCameraUpdateEntry);
-  }
-  if (enableSourcePlayerUpdate) {
-    wholeAotObservableExitBlocks.push_back(
-        Oot3dNativeGame::kSourcePlayerUpdateEntry);
-  }
-  if (enableSourcePlayerUpdateCommon) {
-    wholeAotObservableExitBlocks.push_back(
-        Oot3dNativeGame::kSourcePlayerUpdateCommonEntry);
-  }
-  if (enableSourceCsabCurves) {
-    wholeAotObservableExitBlocks.push_back(
-        Oot3dNativeGame::kSourceCsabCurveS16Entry);
-    wholeAotObservableExitBlocks.push_back(
-        Oot3dNativeGame::kSourceCsabCurveF32Entry);
-  }
 #if !defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
   if (enableCompiledFunctions && !launch.DisableTypedGameplay) {
     wholeAotObservableExitBlocks.insert(
@@ -3649,21 +3339,6 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
       nativeCandidateEntries);
   Oot3dNativeGame::NativeA32Process process(
       Oot3dNativeGame::Oot3dNativeA32Registry(), hostServices);
-#if !defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
-  Oot3dNativeGame::SourceActorInitContextRuntime sourceActorInitContext(
-      process);
-  Oot3dNativeGame::SourceActorUpdateAllRuntime sourceActorUpdateAll(process);
-  Oot3dNativeGame::SourceCutsceneUpdateFrameRuntime
-      sourceCutsceneUpdateFrame(process);
-  Oot3dNativeGame::SourceCutsceneProcessCommandsRuntime
-      sourceCutsceneProcessCommands(process);
-  Oot3dNativeGame::SourceCameraUpdateRuntime sourceCameraUpdate(process);
-  Oot3dNativeGame::SourcePlayerUpdateRuntime sourcePlayerUpdate(process);
-  Oot3dNativeGame::SourcePlayerUpdateCommonRuntime
-      sourcePlayerUpdateCommon(process);
-  Oot3dNativeGame::SourceCsabCurveRuntime sourceCsabCurve(
-      process.Memory());
-#endif
   widescreenProjection.TraceMemory = &process.Memory();
   process.Memory().EnableWriteTraceFingerprint(
       widescreenProjection.TraceA32Blocks);
@@ -3701,28 +3376,6 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
   };
   nativeCandidateDispatch.TopScreenUiProfile =
       launch.UiProfile == Oot3dNativeGame::Oot3dUiProfile::TopScreen;
-#if !defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
-  nativeCandidateDispatch.SourceActorInitContext =
-      enableSourceActorInitContext ? &sourceActorInitContext : nullptr;
-  nativeCandidateDispatch.SourceActorUpdateAll =
-      enableSourceActorUpdateAll ? &sourceActorUpdateAll : nullptr;
-  nativeCandidateDispatch.SourceCutsceneUpdateFrame =
-      enableSourceCutsceneUpdateFrame ? &sourceCutsceneUpdateFrame : nullptr;
-  nativeCandidateDispatch.SourceCutsceneProcessCommands =
-      enableSourceCutsceneProcessCommands
-          ? &sourceCutsceneProcessCommands
-          : nullptr;
-  nativeCandidateDispatch.SourceCameraUpdate =
-      enableSourceCameraUpdate ? &sourceCameraUpdate : nullptr;
-  nativeCandidateDispatch.SourcePlayerUpdate =
-      enableSourcePlayerUpdate ? &sourcePlayerUpdate : nullptr;
-  nativeCandidateDispatch.SourcePlayerUpdateCommon =
-      enableSourcePlayerUpdateCommon
-          ? &sourcePlayerUpdateCommon
-          : nullptr;
-  nativeCandidateDispatch.SourceCsabCurve =
-      enableSourceCsabCurves ? &sourceCsabCurve : nullptr;
-#endif
   widescreenProjection.TopScreenInput =
       &nativeCandidateDispatch.TopScreenInput;
   widescreenProjection.TopScreenInputClock =
@@ -7521,8 +7174,6 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                                frameCompositionPolicy.TargetPresentationRateHz)
                          : nlohmann::json(nullptr)},
                     {"visual_continuity_epoch", visualContinuityEpoch},
-                    {"source_owner_graphs_complete",
-                     sourceGameplayOwners.EnabledOwnerCount()},
                     {"compatibility_island",
                      contract.Mode ==
                              Oot3dNativeGame::GameplayTimingMode::Enhanced60
@@ -8926,191 +8577,6 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                    {"memory_faults", stats.MemoryFaults},
                };
              }()},
-#if !defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
-            {"source_gameplay_profile",
-             {{"requested", sourceGameplayOwners.ProfileRequested},
-              {"required_owner_count",
-               Oot3dNativeGame::kSourceGameplayOwnerCount},
-              {"enabled_owner_count",
-               sourceGameplayOwners.EnabledOwnerCount()},
-              {"complete", sourceGameplayOwners.Complete()},
-              {"owners",
-               {{"game_state_update",
-                 sourceGameplayOwners.GameStateUpdate},
-                {"actor_init_context",
-                 sourceGameplayOwners.ActorInitContext},
-                {"actor_update_all",
-                 sourceGameplayOwners.ActorUpdateAll},
-                {"cutscene_update_frame",
-                 sourceGameplayOwners.CutsceneUpdateFrame},
-                {"cutscene_process_commands",
-                 sourceGameplayOwners.CutsceneProcessCommands},
-                {"camera_update",
-                 sourceGameplayOwners.CameraUpdate},
-                {"player_update",
-                 sourceGameplayOwners.PlayerUpdate},
-                {"player_update_common",
-                 sourceGameplayOwners.PlayerUpdateCommon}}}}},
-            {"source_actor_update_all",
-             [&]() {
-               const auto stats = sourceActorUpdateAll.Stats();
-               return nlohmann::json{
-                   {"enabled", enableSourceActorUpdateAll},
-                   {"owner_calls", stats.OwnerCalls},
-                   {"nested_guest_calls", stats.NestedGuestCalls},
-                   {"svc_calls", stats.SvcCalls},
-                   {"callback_calls", stats.CallbackCalls},
-                   {"init_callback_calls", stats.InitCallbackCalls},
-                   {"update_callback_calls", stats.UpdateCallbackCalls},
-                   {"source_callback_calls", stats.SourceCallbackCalls},
-                   {"source_obj_hana_init_calls",
-                    stats.SourceObjHanaInitCalls},
-                   {"source_callback_failures",
-                    stats.SourceCallbackFailures},
-                   {"destroy_calls", stats.DestroyCalls},
-                   {"free_calls", stats.FreeCalls},
-                   {"registry_release_scans", stats.RegistryReleaseScans},
-                   {"failures", stats.Failures},
-                   {"last_error", sourceActorUpdateAll.LastError()},
-               };
-             }()},
-            {"source_actor_init_context",
-             [&]() {
-               const auto stats = sourceActorInitContext.Stats();
-               return nlohmann::json{
-                   {"enabled", enableSourceActorInitContext},
-                   {"owner_calls", stats.OwnerCalls},
-                   {"nested_guest_calls", stats.NestedGuestCalls},
-                   {"direct_dependency_calls",
-                    stats.DirectDependencyCalls},
-                   {"dynamic_factory_calls", stats.DynamicFactoryCalls},
-                   {"dynamic_allocator_calls", stats.DynamicAllocatorCalls},
-                   {"actor_spawn_calls", stats.ActorSpawnCalls},
-                   {"light_setup_calls", stats.LightSetupCalls},
-                   {"tail_helper_calls", stats.TailHelperCalls},
-                   {"failures", stats.Failures},
-                   {"last_error", sourceActorInitContext.LastError()},
-               };
-             }()},
-            {"source_cutscene_update_frame",
-             [&]() {
-               const auto stats = sourceCutsceneUpdateFrame.Stats();
-               return nlohmann::json{
-                   {"enabled", enableSourceCutsceneUpdateFrame},
-                   {"owner_calls", stats.OwnerCalls},
-                   {"nested_guest_calls", stats.NestedGuestCalls},
-                   {"clock_query_calls", stats.ClockQueryCalls},
-                   {"clock_commit_calls", stats.ClockCommitCalls},
-                   {"process_command_calls", stats.ProcessCommandCalls},
-                   {"failures", stats.Failures},
-                   {"last_error",
-                    sourceCutsceneUpdateFrame.LastError()},
-               };
-              }()},
-            {"source_cutscene_process_commands",
-             [&]() {
-               const auto stats =
-                   sourceCutsceneProcessCommands.Stats();
-               return nlohmann::json{
-                   {"enabled", enableSourceCutsceneProcessCommands},
-                   {"owner_calls", stats.OwnerCalls},
-                   {"nested_guest_calls", stats.NestedGuestCalls},
-                   {"direct_dependency_calls",
-                    stats.DirectDependencyCalls},
-                   {"dynamic_callback_calls",
-                    stats.DynamicCallbackCalls},
-                   {"guest_read_calls", stats.GuestReadCalls},
-                   {"guest_write_calls", stats.GuestWriteCalls},
-                   {"scratch_calls", stats.ScratchCalls},
-                   {"hard_float_calls", stats.HardFloatCalls},
-                   {"conversion_operations",
-                    stats.ConversionOperations},
-                   {"failures", stats.Failures},
-                   {"last_error",
-                    sourceCutsceneProcessCommands.LastError()},
-               };
-             }()},
-            {"source_camera_update",
-             [&]() {
-               const auto stats = sourceCameraUpdate.Stats();
-               return nlohmann::json{
-                   {"enabled", enableSourceCameraUpdate},
-                   {"owner_calls", stats.OwnerCalls},
-                   {"nested_guest_calls", stats.NestedGuestCalls},
-                   {"direct_dependency_calls",
-                    stats.DirectDependencyCalls},
-                   {"dynamic_camera_function_calls",
-                    stats.DynamicCameraFunctionCalls},
-                   {"guest_read_calls", stats.GuestReadCalls},
-                   {"guest_write_calls", stats.GuestWriteCalls},
-                   {"scratch_calls", stats.ScratchCalls},
-                   {"hard_float_calls", stats.HardFloatCalls},
-                   {"square_root_operations",
-                    stats.SquareRootOperations},
-                   {"failures", stats.Failures},
-                   {"last_error", sourceCameraUpdate.LastError()},
-               };
-             }()},
-            {"source_player_update",
-             [&]() {
-               const auto stats = sourcePlayerUpdate.Stats();
-               return nlohmann::json{
-                   {"enabled", enableSourcePlayerUpdate},
-                   {"owner_calls", stats.OwnerCalls},
-                   {"nested_guest_calls", stats.NestedGuestCalls},
-                   {"direct_dependency_calls",
-                    stats.DirectDependencyCalls},
-                   {"player_update_common_calls",
-                    stats.PlayerUpdateCommonCalls},
-                   {"actor_spawn_calls", stats.ActorSpawnCalls},
-                   {"guest_read_calls", stats.GuestReadCalls},
-                   {"guest_write_calls", stats.GuestWriteCalls},
-                   {"scratch_calls", stats.ScratchCalls},
-                   {"hard_float_calls", stats.HardFloatCalls},
-                   {"vfp_operations", stats.VfpOperations},
-                   {"float_conversions", stats.FloatConversions},
-                   {"failures", stats.Failures},
-                   {"last_error", sourcePlayerUpdate.LastError()},
-               };
-             }()},
-            {"source_player_update_common",
-             [&]() {
-               const auto stats = sourcePlayerUpdateCommon.Stats();
-               return nlohmann::json{
-                   {"enabled", enableSourcePlayerUpdateCommon},
-                   {"owner_calls", stats.OwnerCalls},
-                   {"nested_guest_calls", stats.NestedGuestCalls},
-                   {"direct_dependency_calls",
-                    stats.DirectDependencyCalls},
-                   {"dynamic_player_action_calls",
-                    stats.DynamicPlayerActionCalls},
-                   {"guest_read_calls", stats.GuestReadCalls},
-                   {"guest_write_calls", stats.GuestWriteCalls},
-                   {"hard_float_calls", stats.HardFloatCalls},
-                   {"vfp_operations", stats.VfpOperations},
-                   {"float_conversions", stats.FloatConversions},
-                   {"square_root_operations",
-                    stats.SquareRootOperations},
-                   {"failures", stats.Failures},
-                   {"last_error",
-                    sourcePlayerUpdateCommon.LastError()},
-               };
-             }()},
-            {"source_csab_curves",
-             [&]() {
-               const auto stats = sourceCsabCurve.Stats();
-               return nlohmann::json{
-                   {"enabled", enableSourceCsabCurves},
-                   {"s16_calls", stats.S16Calls},
-                   {"f32_calls", stats.F32Calls},
-                   {"guest_bytes_read", stats.GuestBytesRead},
-                   {"fallbacks", stats.Fallbacks},
-                   {"fpscr_exception_updates",
-                    stats.FpscrExceptionUpdates},
-                   {"last_error", sourceCsabCurve.LastError()},
-               };
-             }()},
-#endif
             {"a32_runtime_profile",
              [&]() {
                const auto timing = process.TimingStats();
@@ -9120,22 +8586,6 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                const auto picaBackend = api.GetNativePicaBackendStats();
                constexpr double nanosecondsToSeconds = 1.0e-9;
                const uint64_t candidateSampleNanoseconds =
-                   nativeCandidateDispatch
-                       .SourceActorInitContextSampleNanoseconds +
-                   nativeCandidateDispatch
-                       .SourceActorUpdateAllSampleNanoseconds +
-                   nativeCandidateDispatch
-                       .SourceCutsceneUpdateFrameSampleNanoseconds +
-                   nativeCandidateDispatch
-                       .SourceCutsceneProcessCommandsSampleNanoseconds +
-                   nativeCandidateDispatch
-                       .SourceCameraUpdateSampleNanoseconds +
-                   nativeCandidateDispatch
-                       .SourcePlayerUpdateSampleNanoseconds +
-                   nativeCandidateDispatch
-                       .SourcePlayerUpdateCommonSampleNanoseconds +
-                   nativeCandidateDispatch
-                       .SourceCsabCurveSampleNanoseconds +
                    nativeCandidateDispatch.TypedGameplaySampleNanoseconds +
                    nativeCandidateDispatch.CompiledSampleNanoseconds +
                    nativeCandidateDispatch.TrueAotSampleNanoseconds +
@@ -9555,59 +9005,6 @@ void RunOot3dNativeA32Window(const Oot3dNativeGameLaunch &launch) {
                    {"candidate_samples", nativeCandidateDispatch.Samples},
                    {"candidate_estimated_seconds",
                     candidateSampleNanoseconds * kA32RuntimeSampleDenominator *
-                        nanosecondsToSeconds},
-                   {"source_actor_init_context_samples",
-                    nativeCandidateDispatch.SourceActorInitContextSamples},
-                   {"source_actor_init_context_estimated_seconds",
-                    nativeCandidateDispatch
-                            .SourceActorInitContextSampleNanoseconds *
-                        kA32RuntimeSampleDenominator * nanosecondsToSeconds},
-                   {"source_actor_update_all_samples",
-                    nativeCandidateDispatch.SourceActorUpdateAllSamples},
-                   {"source_actor_update_all_estimated_seconds",
-                    nativeCandidateDispatch
-                            .SourceActorUpdateAllSampleNanoseconds *
-                        kA32RuntimeSampleDenominator * nanosecondsToSeconds},
-                   {"source_cutscene_update_frame_samples",
-                    nativeCandidateDispatch
-                        .SourceCutsceneUpdateFrameSamples},
-                   {"source_cutscene_update_frame_estimated_seconds",
-                    nativeCandidateDispatch
-                            .SourceCutsceneUpdateFrameSampleNanoseconds *
-                        kA32RuntimeSampleDenominator * nanosecondsToSeconds},
-                   {"source_cutscene_process_commands_samples",
-                    nativeCandidateDispatch
-                        .SourceCutsceneProcessCommandsSamples},
-                   {"source_cutscene_process_commands_estimated_seconds",
-                    nativeCandidateDispatch
-                            .SourceCutsceneProcessCommandsSampleNanoseconds *
-                        kA32RuntimeSampleDenominator * nanosecondsToSeconds},
-                   {"source_camera_update_samples",
-                    nativeCandidateDispatch.SourceCameraUpdateSamples},
-                   {"source_camera_update_estimated_seconds",
-                    nativeCandidateDispatch
-                            .SourceCameraUpdateSampleNanoseconds *
-                        kA32RuntimeSampleDenominator * nanosecondsToSeconds},
-                   {"source_player_update_samples",
-                    nativeCandidateDispatch.SourcePlayerUpdateSamples},
-                   {"source_player_update_estimated_seconds",
-                    nativeCandidateDispatch
-                            .SourcePlayerUpdateSampleNanoseconds *
-                        kA32RuntimeSampleDenominator * nanosecondsToSeconds},
-                   {"source_player_update_common_samples",
-                    nativeCandidateDispatch
-                        .SourcePlayerUpdateCommonSamples},
-                   {"source_player_update_common_estimated_seconds",
-                    nativeCandidateDispatch
-                            .SourcePlayerUpdateCommonSampleNanoseconds *
-                        kA32RuntimeSampleDenominator *
-                        nanosecondsToSeconds},
-                   {"source_csab_curve_samples",
-                    nativeCandidateDispatch.SourceCsabCurveSamples},
-                   {"source_csab_curve_estimated_seconds",
-                    nativeCandidateDispatch
-                            .SourceCsabCurveSampleNanoseconds *
-                        kA32RuntimeSampleDenominator *
                         nanosecondsToSeconds},
                    {"typed_gameplay_samples",
                     nativeCandidateDispatch.TypedGameplaySamples},

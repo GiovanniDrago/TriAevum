@@ -53,15 +53,6 @@ param(
     [switch]$ProfileA32Runtime,
     [switch]$DisableCompiledFunctions,
     [switch]$DisableTypedGameplay,
-    [switch]$EnableSourceGameplayProfile,
-    [switch]$EnableSourceActorInitContext,
-    [switch]$EnableSourceActorUpdateAll,
-    [switch]$EnableSourceCutsceneUpdateFrame,
-    [switch]$EnableSourceCutsceneProcessCommands,
-    [switch]$EnableSourceCameraUpdate,
-    [switch]$EnableSourcePlayerUpdate,
-    [switch]$EnableSourcePlayerUpdateCommon,
-    [switch]$EnableSourceCsabCurves,
     [switch]$DisableManualCompiledFunctions,
     [switch]$DisableTrueAotBlocks,
     [switch]$DisableWholeAot,
@@ -394,33 +385,6 @@ if ($DisableCompiledFunctions) {
 }
 if ($DisableTypedGameplay) {
     $launchArgs += "--disable-typed-gameplay"
-}
-if ($EnableSourceGameplayProfile) {
-    $launchArgs += "--enable-source-gameplay-profile"
-}
-if ($EnableSourceActorInitContext) {
-    $launchArgs += "--enable-source-actor-init-context"
-}
-if ($EnableSourceActorUpdateAll) {
-    $launchArgs += "--enable-source-actor-update-all"
-}
-if ($EnableSourceCutsceneUpdateFrame) {
-    $launchArgs += "--enable-source-cutscene-update-frame"
-}
-if ($EnableSourceCutsceneProcessCommands) {
-    $launchArgs += "--enable-source-cutscene-process-commands"
-}
-if ($EnableSourceCameraUpdate) {
-    $launchArgs += "--enable-source-camera-update"
-}
-if ($EnableSourcePlayerUpdate) {
-    $launchArgs += "--enable-source-player-update"
-}
-if ($EnableSourcePlayerUpdateCommon) {
-    $launchArgs += "--enable-source-player-update-common"
-}
-if ($EnableSourceCsabCurves) {
-    $launchArgs += "--enable-source-csab-curves"
 }
 if ($DisableManualCompiledFunctions) {
     $launchArgs += "--disable-manual-compiled-functions"

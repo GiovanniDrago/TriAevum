@@ -9,10 +9,10 @@ three audited host boundaries and zero residual A32 entries.
 
 The Switch port therefore recompiles the same generated C++ shards for ARM64.
 It must never link the Windows x64 archive, an A32 interpreter or a packed-op
-fallback. `tools/oot3d/source_native_runtime`, the source imports and their
-typed reconstructions are documentation and analysis material only. Product
-mode rejects every source-native launch option and does not install the native
-candidate callback. Gameplay remains the original whole-AOT graph.
+fallback. The source-native study (source runtimes, source overlay, source
+imports and their launch options) was removed on 2026-10-03; product mode does
+not install the native candidate callback. Gameplay remains the original
+whole-AOT graph.
 
 Shared optimization evidence and the Windows adoption protocol are recorded in
 the [cross-platform performance status](OOT3D_CROSS_PLATFORM_PERFORMANCE_STATUS.md).

@@ -97,15 +97,6 @@ void PrintOot3dNativeGameUsage() {
                   "[--profile-a32-runtime] "
                   "[--disable-compiled-functions] "
                   "[--disable-typed-gameplay] "
-                  "[--enable-source-gameplay-profile] "
-                  "[--enable-source-actor-init-context] "
-                  "[--enable-source-actor-update-all] "
-                  "[--enable-source-cutscene-update-frame] "
-                  "[--enable-source-cutscene-process-commands] "
-                  "[--enable-source-camera-update] "
-                  "[--enable-source-player-update] "
-                  "[--enable-source-player-update-common] "
-                  "[--enable-source-csab-curves] "
                   "[--disable-manual-compiled-functions] "
                  "[--disable-true-aot-blocks] "
                  "[--disable-whole-aot] "
@@ -279,25 +270,6 @@ bool ParseOot3dNativeGameArgs(int argc, char** argv, Oot3dNativeGameLaunch& laun
             launch.DisableCompiledFunctions = true;
         } else if (arg == "--disable-typed-gameplay") {
             launch.DisableTypedGameplay = true;
-        } else if (arg == "--enable-source-gameplay-profile") {
-            launch.EnableSourceGameplayProfile = true;
-        } else if (arg == "--enable-source-actor-init-context") {
-            launch.EnableSourceActorInitContext = true;
-        } else if (arg == "--enable-source-actor-update-all") {
-            launch.EnableSourceActorUpdateAll = true;
-        } else if (arg == "--enable-source-cutscene-update-frame") {
-            launch.EnableSourceCutsceneUpdateFrame = true;
-        } else if (
-            arg == "--enable-source-cutscene-process-commands") {
-            launch.EnableSourceCutsceneProcessCommands = true;
-        } else if (arg == "--enable-source-camera-update") {
-            launch.EnableSourceCameraUpdate = true;
-        } else if (arg == "--enable-source-player-update") {
-            launch.EnableSourcePlayerUpdate = true;
-        } else if (arg == "--enable-source-player-update-common") {
-            launch.EnableSourcePlayerUpdateCommon = true;
-        } else if (arg == "--enable-source-csab-curves") {
-            launch.EnableSourceCsabCurves = true;
         } else if (arg == "--disable-manual-compiled-functions") {
             launch.DisableManualCompiledFunctions = true;
         } else if (arg == "--disable-true-aot-blocks") {

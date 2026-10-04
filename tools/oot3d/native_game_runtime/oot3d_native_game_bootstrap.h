@@ -73,15 +73,6 @@ struct Oot3dNativeGameLaunch {
     bool ScenarioAutoExit = false;
     bool DisableCompiledFunctions = false;
     bool DisableTypedGameplay = false;
-    bool EnableSourceGameplayProfile = false;
-    bool EnableSourceActorInitContext = false;
-    bool EnableSourceActorUpdateAll = false;
-    bool EnableSourceCutsceneUpdateFrame = false;
-    bool EnableSourceCutsceneProcessCommands = false;
-    bool EnableSourceCameraUpdate = false;
-    bool EnableSourcePlayerUpdate = false;
-    bool EnableSourcePlayerUpdateCommon = false;
-    bool EnableSourceCsabCurves = false;
     bool DisableManualCompiledFunctions = false;
     bool DisableTrueAotBlocks = false;
     bool DisableWholeAot = false;

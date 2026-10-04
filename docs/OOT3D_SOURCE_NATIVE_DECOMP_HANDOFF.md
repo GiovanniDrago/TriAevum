@@ -1,5 +1,11 @@
 # OOT3D source-native decomp handoff
 
+> **Removed 2026-10-03.** The source-native study this document describes
+> (source runtimes, source overlay, source imports, source integration and
+> the `--enable-source-*` options) was deleted from the tree; the game runs the
+> translated whole-AOT process only. This document is kept as a record; the
+> code is in the history before the removal commit.
+
 ## Consumer checkpoint
 
 The source-native consumer is pinned to decomp revision

@@ -1,5 +1,11 @@
 # OOT3D source overlay over the qualified whole-AOT runtime
 
+> **Removed 2026-10-03.** The source-native study this document describes
+> (source runtimes, source overlay, source imports, source integration and
+> the `--enable-source-*` options) was deleted from the tree; the game runs the
+> translated whole-AOT process only. This document is kept as a record; the
+> code is in the history before the removal commit.
+
 > **Historical snapshot.** The statement below that the qualified prebuilt
 > shard archive remained valid applied to that source-overlay change only. The
 > current branch has since changed the generated/runtime ABI and shard layout;

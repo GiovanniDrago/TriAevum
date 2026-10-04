@@ -1,5 +1,11 @@
 # OOT3D parallel decomp consumer strategy
 
+> **Removed 2026-10-03.** The source-native study this document describes
+> (source runtimes, source overlay, source imports, source integration and
+> the `--enable-source-*` options) was deleted from the tree; the game runs the
+> translated whole-AOT process only. This document is kept as a record; the
+> code is in the history before the removal commit.
+
 ## Objective
 
 Turn semantic progress from `I:\oot3decomp` into reviewable source-owner

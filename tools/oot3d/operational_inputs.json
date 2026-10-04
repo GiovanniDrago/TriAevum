@@ -4,7 +4,7 @@
   "policy": {
     "purpose": "Stable local index for OOT3D tools, original game inputs, derived exports, and validation captures used by this workspace.",
     "rule": "Check this manifest before searching for Ghidra, code.bin, ROMFS, emulator, trace, or demo manifest paths. Entry ids are stable: scripts in scripts\\\\oot3d resolve variables from here, so add rather than rename.",
-    "translated_code_and_scenarios": "Translated title code lives in ${aotProductCache} (generated) and in tools/oot3d/{source_overlay,source_imports,decomp_support} (readable). Savestates live in ${nativeGameCheckpoints} and ${diagnosticsRoot}; native transitions are driven through ${structuralScenarios} instead of one savestate per scene. Narrative map: docs\\\\OOT3D_WORKSPACE_PATHS.md."
+    "translated_code_and_scenarios": "Translated title code lives in ${aotProductCache} (generated) and in tools/oot3d/decomp_support (readable). Savestates live in ${nativeGameCheckpoints} and ${diagnosticsRoot}; native transitions are driven through ${structuralScenarios} instead of one savestate per scene. Narrative map: docs\\\\OOT3D_WORKSPACE_PATHS.md."
   },
   "variables": {
     "repoRoot": "I:\\oot3dre",
@@ -997,20 +997,6 @@
       "required": true,
       "min_file_count": 8,
       "purpose": "Deterministic native input timelines: title to file select, existing save, empty slot name entry, second slot, ladder interaction, cutscene dialogue advance, no input."
-    },
-    {
-      "id": "source_overlay_decomp_owners",
-      "kind": "directory",
-      "path": "${repoRoot}\\tools\\oot3d\\source_overlay\\decomp_owner",
-      "required": true,
-      "purpose": "Recovered (translated) owner sources promoted into the hot source overlay DLL; with source_imports and decomp_support this is the readable title code inside the repository."
-    },
-    {
-      "id": "source_imports",
-      "kind": "directory",
-      "path": "${repoRoot}\\tools\\oot3d\\source_imports",
-      "required": true,
-      "purpose": "Imported decompiled functions (actor init/update, camera, CSAB curves, cutscene command processing, player update) with their own manifest and tests."
     },
     {
       "id": "release_corresponding_source",

@@ -9,9 +9,7 @@ import argparse
 import json
 from pathlib import Path
 import struct
-import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "source_overlay"))
 from compare_savestates import load
 
 

@@ -29,9 +29,7 @@ source is what to read when a question is about what the guest actually does.
 | Generated whole-AOT C++, one directory per product hash: `cpp/oot3d_whole_aot_generated.{h,cpp}`, `cpp/oot3d_whole_aot_shard_NNN.cpp`, `aot_program.json`, `product_artifacts.json`, `whole_aot_archive.json` | `I:/oot3dre_work/oot3d-whole-aot-product-cache/<hash>/` |
 | Loose generated trees from earlier experiments | `I:/oot3dre_work/native_game/whole_aot_kokiri_main_top12/`, `I:/oot3dre_work/native_game/whole_aot_navi_pica_flush/` |
 | Generator and selection indices | `tools/oot3d/native_a32_runtime/generate_whole_aot_cpp.py`, `whole_aot_cpp.py`, `whole_aot_program.py`, `whole_aot_functions.json`, `whole_aot_product_manifest.json`, `whole_aot_product_golden.json` |
-| Recovered owner sources promoted into the hot source overlay DLL | `tools/oot3d/source_overlay/` (`decomp_owner/`, `hybrid_migration_manifest.json`, dispatch order `topscreen_ui_source_port` -> `hot_source_overlay_dll` -> `whole_aot_fallback`) |
-| Imported decompiled functions with manifest and tests | `tools/oot3d/source_imports/` |
-| Structured decomp evidence inside the repository (struct layouts, symbols, metadata, analysis, Ghidra helpers) | `tools/oot3d/decomp_support/` |
+| Structured decomp evidence inside the repository (struct layouts, symbols, metadata, analysis, Ghidra helpers) and the native actor layout headers the game includes (`include/oot3d/actor{,_spawn}.h`) | `tools/oot3d/decomp_support/` |
 | Corresponding source shipped with the package | `I:/TriAevum-public/releases/v0.6.0-alpha.3/title-build-source/` (`SOURCE_ARCHIVE_MANIFEST.json` pins the commit and the renderer subtree hash) |
 | External reconstruction checkout (read-only evidence) | `I:/Zelda3drecomp` (with `analysis/`, `ghidra/`, `build/`), original image at `E:/ppssppvr/oot3d_decomp/work/extract/exefs/code.bin`, ROMFS at `.../extract/romfs` |
 
