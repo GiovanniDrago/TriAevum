@@ -233,6 +233,162 @@ inline constexpr uint32_t kInputRawCurrentOffset = 0xC4U;
 inline constexpr uint32_t kInputRawPreviousOffset = 0xC8U;
 inline constexpr size_t kMaximumA32BlockTraceRecords = 65'536U;
 
+namespace CpuProbe = Oot3dNativeGame::CpuPhaseProbe;
+
+struct NativeFramePhaseTiming {
+  double GuestSeconds = 0.0;
+  double GuestInsidePicaSubmitSeconds = 0.0;
+  double GuestClockSeconds = 0.0;
+  double FrameStartSeconds = 0.0;
+  double HostFrameStartSeconds = 0.0;
+  double InputPollSeconds = 0.0;
+  double RendererFrameStartSeconds = 0.0;
+  double DspMixSeconds = 0.0;
+  double AudioOutputSeconds = 0.0;
+  double PicaSubmitSeconds = 0.0;
+  double PicaPlanSeconds = 0.0;
+  double PicaBackendSeconds = 0.0;
+  double PicaDiagnosticsSeconds = 0.0;
+  double VisualPresentationSeconds = 0.0;
+  double VisualReplaySeconds = 0.0;
+  double PresentSeconds = 0.0;
+  double PacingWaitSeconds = 0.0;
+  std::array<double, 15> Values() const {
+    return {GuestSeconds, FrameStartSeconds, HostFrameStartSeconds, InputPollSeconds,
+      RendererFrameStartSeconds, DspMixSeconds, AudioOutputSeconds, PicaSubmitSeconds,
+      PicaPlanSeconds, PicaBackendSeconds, PicaDiagnosticsSeconds,
+      VisualPresentationSeconds, VisualReplaySeconds, PresentSeconds, PacingWaitSeconds};
+  }
+};
+
+struct NativeAudioOutputDiagnostics {
+  void Observe(uint32_t hostFrame, int32_t before, int32_t after,
+               uint64_t requestedFrames, int32_t desiredBuffered) {
+    const auto now = std::chrono::steady_clock::now();
+    if (HasSubmitTime) {
+      const double gapSeconds =
+          std::chrono::duration<double>(now - LastSubmitTime).count();
+      MaximumSubmitGapSeconds = std::max(MaximumSubmitGapSeconds, gapSeconds);
+      if (gapSeconds >= 0.05 && SubmitGapEvents.size() < 64U) {
+        SubmitGapEvents.push_back({
+            {"host_frame", hostFrame},
+            {"gap_seconds", gapSeconds},
+            {"buffered_before", before},
+        });
+      }
+    }
+    LastSubmitTime = now;
+    HasSubmitTime = true;
+    ++SubmitCalls;
+    RequestedFrames += requestedFrames;
+    if (!HasBufferObservation) {
+      MinimumBufferedBefore = before;
+      MaximumBufferedBefore = before;
+      MinimumBufferedAfter = after;
+      MaximumBufferedAfter = after;
+      HasBufferObservation = true;
+    } else {
+      MinimumBufferedBefore = std::min(MinimumBufferedBefore, before);
+      MaximumBufferedBefore = std::max(MaximumBufferedBefore, before);
+      MinimumBufferedAfter = std::min(MinimumBufferedAfter, after);
+      MaximumBufferedAfter = std::max(MaximumBufferedAfter, after);
+    }
+    const bool wasPrimed = Primed;
+    if (after >= desiredBuffered) {
+      Primed = true;
+    }
+    if (wasPrimed && before == 0) {
+      ++StarvationObservations;
+      StarvationEvents.push_back({
+          {"host_frame", hostFrame},
+          {"buffered_before", before},
+          {"buffered_after", after},
+          {"requested_frames", requestedFrames},
+      });
+    }
+    const uint64_t growth =
+        after > before ? static_cast<uint64_t>(after - before) : 0U;
+    if (growth < requestedFrames) {
+      EstimatedShortfallFrames += requestedFrames - growth;
+      ++ShortGrowthSubmissions;
+    }
+  }
+
+  bool HasBufferObservation = false;
+  bool HasSubmitTime = false;
+  bool Primed = false;
+  std::chrono::steady_clock::time_point LastSubmitTime{};
+  double MaximumSubmitGapSeconds = 0.0;
+  uint64_t SubmitCalls = 0;
+  uint64_t RequestedFrames = 0;
+  uint64_t ShortGrowthSubmissions = 0;
+  uint64_t EstimatedShortfallFrames = 0;
+  uint64_t StarvationObservations = 0;
+  int32_t MinimumBufferedBefore = 0;
+  int32_t MaximumBufferedBefore = 0;
+  int32_t MinimumBufferedAfter = 0;
+  int32_t MaximumBufferedAfter = 0;
+  nlohmann::json StarvationEvents = nlohmann::json::array();
+  nlohmann::json SubmitGapEvents = nlohmann::json::array();
+};
+
+struct NativeInputConsumerDiagnostics {
+  uint64_t Samples = 0;
+  uint64_t ReadFailures = 0;
+  uint64_t HeldFrames = 0;
+  uint64_t PressedFrames = 0;
+  uint64_t ReleasedFrames = 0;
+  uint32_t LastHeld = 0;
+  uint32_t LastPressed = 0;
+  uint32_t LastReleased = 0;
+  uint32_t LastRawCurrent = 0;
+  uint32_t LastRawPrevious = 0;
+  bool HasPrevious = false;
+  nlohmann::json Transitions = nlohmann::json::array();
+
+  void Observe(Oot3dNativeGame::NativeA32Memory &memory, uint32_t hostFrame) {
+    uint32_t held = 0;
+    uint32_t pressed = 0;
+    uint32_t released = 0;
+    uint32_t rawCurrent = 0;
+    uint32_t rawPrevious = 0;
+    if (!memory.Read32(kInputGlobalState + kInputHeldOffset, &held) ||
+        !memory.Read32(kInputGlobalState + kInputPressedOffset, &pressed) ||
+        !memory.Read32(kInputGlobalState + kInputReleasedOffset, &released) ||
+        !memory.Read32(kInputGlobalState + kInputRawCurrentOffset,
+                       &rawCurrent) ||
+        !memory.Read32(kInputGlobalState + kInputRawPreviousOffset,
+                       &rawPrevious)) {
+      ++ReadFailures;
+      return;
+    }
+    ++Samples;
+    HeldFrames += held != 0U ? 1U : 0U;
+    PressedFrames += pressed != 0U ? 1U : 0U;
+    ReleasedFrames += released != 0U ? 1U : 0U;
+    const bool changed = !HasPrevious || held != LastHeld ||
+                         pressed != LastPressed || released != LastReleased ||
+                         rawCurrent != LastRawCurrent ||
+                         rawPrevious != LastRawPrevious;
+    if (changed && Transitions.size() < 64U) {
+      Transitions.push_back({
+          {"host_frame", hostFrame},
+          {"held", held},
+          {"pressed", pressed},
+          {"released", released},
+          {"raw_current", rawCurrent},
+          {"raw_previous", rawPrevious},
+      });
+    }
+    LastHeld = held;
+    LastPressed = pressed;
+    LastReleased = released;
+    LastRawCurrent = rawCurrent;
+    LastRawPrevious = rawPrevious;
+    HasPrevious = true;
+  }
+};
+
 struct NativeSceneProjectionState {
   struct CallsiteStats {
     uint64_t Calls = 0;
