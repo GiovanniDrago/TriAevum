@@ -39,7 +39,7 @@ Windows, and what is open. It is not a release approval.
 | Local laboratories of 2026-09-16/18 (inventoried 2026-10-05) | `perf/pica-snapshot-version` (`I:/TriAevum-pica-lab`, 3 commits); `perf/aot-independent` (`I:/TriAevum-aot-lab`, 6 commits) and its uncommitted experiment 12; the uncommitted identity-mapped guest memory and semantic-lowering pilots of the clone `I:/TriAevum-aot-optimization`; the clone `I:/TriAevum-source-native-repo` (8 commits, 8 uncommitted files) | Per-range snapshot versions are in the line through `46a2731`: a profiled Field run (900 updates, 85,500 draws) gives the laboratory's own geometry figures (version hits 331,750, misses 51,650, 23.8 MB compared) and compares 9.2 MB of texture bytes against its 75.5 MB. Flag fusion and the guarded hardware VFP path were measured without significant gain (`TRIAEVUM_NON_RENDERER_200FPS_ASSESSMENT.md`); the inline host-float VFP of `perf/aot-levers` succeeds the latter. Experiment 12 is item R6. The identity-mapped memory and semantic-lowering pilots were never measured; the source-native study left the line with `dec3fad` |
 | Android donor fork | `I:/TriAevum-public/donor-review-windroid` (WINDROID-EMU, 38 commits since alpha.2c) | examined, not integrated (`TRIAEVUM_PROJECT_HANDOVER.md` section 13); Android only |
 | Unreachable objects and reflogs | commits since alpha.2 that no branch holds | 28 later pushes of the macOS proposal (#16), two empty stash index commits, three reflog-only commits superseded by amended or re-recorded ones: nothing to integrate |
-| GitHub issues | user reports since alpha.2c | a fix claimed by a commit or document needs a scenario check (section 4) |
+| GitHub issues | user reports since alpha.2c | a fix claimed by a commit or document needs a scenario check (section 4); the open issues are mapped in section 8 |
 | Qualification documents | `TRIAEVUM_TOPSCREEN_ISSUES_25_32_39.md`, `TRIAEVUM_ISSUES_40_43.md`, `TRIAEVUM_ISSUES_45_46.md`, `TRIAEVUM_ISSUE_48_TITLE_START.md`, `TRIAEVUM_ISSUE44_HD_FONTS.md`, `TRIAEVUM_RUNTIME_PROGRESS_QUALIFICATION.md` | their open acceptance items become battery entries |
 
 Line survival (lines a commit added that still exist anywhere in the tree,
@@ -325,3 +325,38 @@ executable; 1,124 tests):
 | Persisted GI mode rendered without its capability | found while gating GI (section 6) | fixed (`074bfa6`) |
 | `pipeline_prepare` contract test | stale outline guide mask since `567281a`; the project is not built by the battery | fixed (`6ad23a5`); add the helper build to L1 |
 | L4 identity after the UI composition fix | the first gate run was stopped by the host for low memory after four pre-fix profiles | rerun 2026-10-05, six profiles x 12 Kokiri frames: every difference lies in the two HUD elements the fix moved (TopScreen buttons, minimap: 100 % of the union of differing pixels); scene pixels identical. Pass |
+| Vulkan 1.2 entry points imported eagerly (#12, #35) | issue 12's loader report (Windows 10 21H2, Vulkan loader 1.1.97) names `vulkan-1.dll!vkGetSemaphoreCounterValue`, `vkSignalSemaphore` and `vkWaitSemaphores` as unresolved; the line's `TriAevum.exe` (2026-10-05) still imports all three eagerly, so the process cannot start on such a loader (0xC0000139) | open: obtain them through the device, or report the Vulkan requirement before any import can fail; L6 import audit |
+
+## 8. Open GitHub issues (2026-10-05)
+
+44 issues are open. 25 report a malfunction and are mapped below. The others
+are feature or port requests (#2, #8, #9, #10, #22, #33, #34, #36, #47, #54,
+#59), project or packaging requests (#1, #29, #38), a licence dispute (#52), a
+question answered by alpha.2 (#21; one comment mentions a fullscreen crash
+without details), the HD font request implemented as F1 (#44), and ROM inputs
+outside the supported set (#37: an EUR dump, program `0004000000033600`,
+refused as an unknown revision; #58: Korean).
+
+| Issue | Report | Inventory | State | Remaining check |
+| --- | --- | --- | --- | --- |
+| #12, #35 | 0xC0000139 before the program starts | new | fail (section 7: eager Vulkan 1.2 imports) | fix; L6 import audit against a Vulkan 1.1 loader |
+| #17 | remapped shoulder buttons do not use items | H1 | L2 pass: 24 shoulder/trigger assignments (`oot3d_native_a32_input_tests`) | L7 with the reporter's pad |
+| #19 | erasing a file never completes | - | fixed in alpha.2 (`d1f57f9`), checked by hand | L5: erase a copied save from file selection |
+| #20 | gyro yaw unresponsive (third-party Switch Pro pad through BetterJoy) | H2 | pitch fixed according to the reporter | L7 device checklist |
+| #23 | access violation in `vulkan-1.dll` at repeated starts after an hour of play and a save (alpha.1c, RTX 3080 Ti) | new | cause unknown; the line validates its persisted pipeline cache (device identity, size, checksum, atomic write) | L5: save, quit and restart on the same data and cache; retest by the reporter |
+| #25 | HUD and menus at 21:9 | E1 | pass (S03, S04 pages) | - |
+| #27 | Forge does nothing from an external hard disk | new | not analysed | L6 installation on a second volume; L7 on a removable drive |
+| #28 | the Normal / Master Quest choice is not visible in single-screen mode | new | not analysed | needs a system save with Master Quest unlocked; L5 file selection |
+| #30, #55 | interpolated 60 FPS and uncapped stutter (RX 6600, 240 Hz, with and without VSync); Original 30 smooth | new (D1, D3) | the alpha.2c report shows 138 runtime shader compilations, 115 audio underruns, 61 % of the session inside present and 778 of 16,363 guest refreshes dropped; the hybrid preparation (B3) removes waits for programs, the effect of the presentation worker (D3) on this case is unmeasured | L5 real-time pacing (interpolated, VSync on and off: dropped refreshes, underruns, frame-time percentiles); L7 on a high-refresh display |
+| #31 | stutter while assets load from a hard disk | new | not analysed | latency injection for RomFS reads, or L7 on a hard disk |
+| #32 | minimap markers misplaced | E2 | placement fixed with E1 | L5 S03 markers on fresh entry and after reload |
+| #39 | ZL/ZR items, item numbers, map screen | R1, R2 | pages pass (S04) | L5 S04 assignment, use and one-frame taps |
+| #40, #42 | Epona stamina over the timer; mounted B counter | E5 | L2 TopScreen profile tests | L5 S05 (`mounted-timer`, `ranch-user` checkpoints) |
+| #41 | Chamber of Sages grey instead of black | (`TRIAEVUM_ISSUES_40_43.md`) | accepted by the user on 2026-09-17 | L5 with `sages-user/issue41.oot3dsav` |
+| #43 | iron boots hotkey repeats | E5 | L2 | L5 S06 (`boots-held`) |
+| #45, #49 | Temple of Time softlock; crash after the revelation | I1-I4, D2 | pass under Original30 (S09) | S09 interpolated (the default) and the mid-flashback restore |
+| #46 | Game Over without choices | E6 | directional and A pass (S08) | touch input (the timeline carries touch) |
+| #48 | crash when the title appears | C5 | no crash (S01); early Start ignored as by alpha.3b | - |
+| #51 | F1 enters fullscreen instead of opening the menu | E4 | L2: the window toggles from the key event (`three_ds_sdl_controller_tests`) | F1 tap in the product (L7, or a host-key input for L5) |
+| #53 | Forge cannot write the module in a deep path | A2 | L2 | L6 installation into a padded root |
+| #56 | HD texture packs do not reach the TopScreen HUD | new | not analysed | investigate; L5 with a pack that replaces one HUD texture |
