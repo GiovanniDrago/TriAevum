@@ -1621,3 +1621,36 @@ upscaler renders at a reduced internal scale could not be loaded at startup
 restore ran before the first frame applied the settings' internal scale.
 `RestorePicaColorTargets` now applies the scale that frame would select; a
 state saved at another scale says so, with both scales.
+
+### Valid startup links and the seam binding (2026-10-05)
+
+The Windows release qualification ran the Vulkan validation layer over the
+release profiles (Kokiri walk under Enhanced, point and directional shadows,
+toon outline, the plain path, and the title intro with animated lights). Every
+run reported the same errors, all from this preparation work:
+
+- `VUID-VkGraphicsPipelineCreateInfo-layout-07990`: the startup items of the
+  vertex programs linked `canonical.front()`, a base with combined image
+  samplers, against the separate-sampler layout of the startup state.
+- `VUID-RuntimeSpirv-OpEntryPoint-08743`: every superset program was linked
+  with the first vertex program of the title family, which writes locations
+  0-6, while 20 of the 24 superset programs read the temporal clip positions
+  (7, 8) or the surface normal and tint (9, 10) that only the matching vertex
+  variants write.
+- `VUID-vkCmdDrawIndexed-None-08114`: always-available surface programs on a
+  device with fragment primitive IDs declare the PBR seam buffer (binding 26)
+  and read it only when the draw's decisions select seam softening, but a draw
+  without seam data left binding 26 unwritten.
+
+The links were invalid only during preparation: draws link the parts with
+their own vertex programs. `PicaStartupProgramParts` now pairs every fragment
+program with the first vertex program of the family that writes every location
+it reads (`PicaStageInterfaceLinks`, from the SPIR-V Location decorations) and
+gives each vertex program the first separate-sampler base it feeds; a fragment
+program no vertex program feeds gets no item. The parts are the same, so the
+driver and Forge caches stay valid. A draw without seam data binds a 16-byte
+view of its frame's uniform buffer at binding 26 (one view per frame). Images
+are unchanged; with the fixes the validation layer reports no error in any of
+the five runs (`renderer_spirv_pack_tests` checks every startup link of the
+embedded families). The remaining warnings are unused vertex attributes,
+fragment outputs masked by the guide attachments and unread vertex outputs.

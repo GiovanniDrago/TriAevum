@@ -646,7 +646,10 @@ triaevum_add_spirv_pack(renderer_spirv_pack_tests
     ../../../tools/oot3d/native_pica_frontend/oot3d_native_vertex.spvpack)
 set_property(TARGET renderer_spirv_pack_tests PROPERTY CXX_STANDARD 20)
 target_include_directories(renderer_spirv_pack_tests PRIVATE ../include ../../../tools/oot3d/native_pica_frontend)
-target_link_libraries(renderer_spirv_pack_tests PRIVATE gtest_main)
+# The startup program parts (pica_startup_programs.h) are checked against the
+# embedded families: Vulkan types only, no device.
+target_compile_definitions(renderer_spirv_pack_tests PRIVATE ENABLE_RENDERER3DS_VULKAN)
+target_link_libraries(renderer_spirv_pack_tests PRIVATE gtest_main Vulkan::Vulkan)
 if(MSVC)
     target_compile_definitions(renderer_spirv_pack_tests PRIVATE NOMINMAX)
     target_compile_options(renderer_spirv_pack_tests PRIVATE /utf-8)

@@ -104,7 +104,8 @@ int main() {
                                                 VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_D32_SFLOAT);
         Check(state.DepthCompare == VK_COMPARE_OP_LESS && state.CullMode == VK_CULL_MODE_FRONT_BIT);
         Check(state.FrontFace == VK_FRONT_FACE_CLOCKWISE && state.ColorAttachmentCount == 7);
-        Check(state.Colors[6].colorWriteMask == 15);
+        // The geometry guide's outline channels (R/A); G/B carry the face normal.
+        Check(state.Colors[6].colorWriteMask == (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_A_BIT));
         state = Fast::Oot3d::BuildPicaNriPipelineState(draw, outputs, {Renderer3ds::kAllPicaAuxiliaryOutputs},
                                                 VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_D32_SFLOAT, false, true);
         Check(!state.DepthWrite && !state.DepthTest && state.Colors[0].colorWriteMask == 0);
@@ -170,6 +171,44 @@ int main() {
         try { Renderer3ds::PicaStartupProgramParts({}, superset, canonical, startupDevice); }
         catch (const std::runtime_error&) { threw = true; }
         Check(threw);
+
+        // Every item is a valid link: a fragment program reading the temporal
+        // inputs (7, 8) takes the vertex variant that writes them, and the
+        // vertex parts take a base with the layout's separate samplers.
+        const auto module = [](uint32_t storageClass, std::initializer_list<uint32_t> locations) {
+            std::vector<uint32_t> words{0x07230203, 0x00010000, 0, 100, 0};
+            uint32_t id = 10;
+            for (const uint32_t location : locations) words.insert(words.end(), {(4U << 16U) | 71U, id++, 30U, location});
+            id = 10;
+            for (size_t index = 0; index < locations.size(); ++index)
+                words.insert(words.end(), {(4U << 16U) | 59U, 1U, id++, storageClass});
+            return words;
+        };
+        const auto vertexPlain = module(3, {0, 1, 2, 3, 4, 5, 6});
+        const auto vertexTemporal = module(3, {0, 1, 2, 3, 4, 5, 6, 7, 8});
+        const auto fragmentTemporal = module(1, {0, 1, 2, 7, 8});
+        const auto fragmentSurface = module(1, {0, 9, 10});
+        const auto fragmentBase = module(1, {0, 1, 2, 3, 4});
+        Check(Renderer3ds::SpirvInterfaceLocations(vertexTemporal, 3) == 0x1ffU &&
+              Renderer3ds::SpirvInterfaceLocations(vertexTemporal, 1) == 0U);
+        Check(!Renderer3ds::PicaStageInterfaceLinks(vertexPlain, fragmentTemporal) &&
+              Renderer3ds::PicaStageInterfaceLinks(vertexTemporal, fragmentTemporal));
+        const std::array family{Renderer3ds::PicaVertexArtifact{{}, vertexPlain},
+                                Renderer3ds::PicaVertexArtifact{{}, vertexTemporal}};
+        const std::array effects{Renderer3ds::PicaFragmentArtifact{{}, true, fragmentTemporal},
+                                 Renderer3ds::PicaFragmentArtifact{{}, true, fragmentSurface}};
+        const std::array bases{Renderer3ds::PicaFragmentArtifact{{}, false, fragmentBase},
+                               Renderer3ds::PicaFragmentArtifact{{}, true, fragmentBase}};
+        const Renderer3ds::PicaStartupProgramDevice linkDevice{VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true};
+        const auto links = Renderer3ds::PicaStartupProgramParts(family, effects, bases, linkDevice);
+        // The temporal vertex variant with the separate base, the temporal
+        // effect with it (no variant writes 9 and 10: no item for the surface
+        // effect), then the separate base with the plain vertex program.
+        Check(links.size() == 3);
+        Check(links[0].Vertex.data() == vertexTemporal.data() && links[0].Fragment.data() == bases[1].Spirv.data());
+        Check(links[1].Vertex.data() == vertexTemporal.data() && links[1].Fragment.data() == fragmentTemporal.data());
+        Check(links[2].Vertex.data() == vertexPlain.data() && links[2].Fragment.data() == bases[1].Spirv.data());
+        for (const auto& part : links) Check(Renderer3ds::PicaStageInterfaceLinks(part.Vertex, part.Fragment));
         struct RecordingBridge {
             Renderer3ds::NriPicaGraphicsPipelineDesc Desc;
             Renderer3ds::NriPicaPipelineFactory Factory = Renderer3ds::NriPicaPipelineFactory::Default;

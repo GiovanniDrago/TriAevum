@@ -8,8 +8,10 @@
 #include "fast/oot3d/pica_uber_fragment_binaries.h"
 #include "fast/renderer/builtin_pass_binaries.h"
 #include "fast/renderer3ds/pica_native_fragment_binaries.h"
+#include "fast/renderer3ds/pica_startup_programs.h"
 #include "oot3d_native_vertex_binaries.h"
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <cstring>
 
 using namespace Fast::Renderer;
@@ -151,4 +153,46 @@ TEST(SpirvPack, EmbeddedFamiliesHoldTheirModules) {
             EXPECT_FALSE(native[i].Source == native[j].Source && native[i].SeparateSamplers == native[j].SeparateSamplers);
     // The table views the embedded pack, so repeated calls return the same storage.
     EXPECT_EQ(BuiltinPassArtifacts().data(), BuiltinPassArtifacts().data());
+}
+
+// The startup preparation (and Forge's device preparation) links each program
+// part once. Every link must be valid: separate samplers, as the startup
+// layout declares them, and fragment inputs the vertex program writes (the
+// superset's temporal and surface programs read 7-10). Nothing is dropped.
+TEST(SpirvPack, StartupProgramPartsLinkTheEmbeddedFamiliesValidly) {
+    using namespace Fast::Renderer3ds;
+    const auto vertices = Oot3dNativeGame::TitleVertexArtifacts();
+    const auto superset = Fast::Oot3d::UberFragmentArtifacts();
+    const auto canonical = NativeFragmentArtifacts();
+    for (const bool geometry : {false, true}) {
+        for (const auto samples : {VK_SAMPLE_COUNT_1_BIT, VK_SAMPLE_COUNT_4_BIT}) {
+            const PicaStartupProgramDevice device{VK_FORMAT_D32_SFLOAT, samples, geometry};
+            const auto parts = PicaStartupProgramParts(vertices, superset, canonical, device);
+            size_t supersetItems = 0;
+            for (const auto& part : parts) {
+                EXPECT_TRUE(PicaStageInterfaceLinks(part.Vertex, part.Fragment));
+                const auto owner = [&](std::span<const PicaFragmentArtifact> family) {
+                    return std::find_if(family.begin(), family.end(), [&](const PicaFragmentArtifact& artifact) {
+                        return artifact.Spirv.data() == part.Fragment.data();
+                    });
+                };
+                const auto inSuperset = owner(superset);
+                const auto inCanonical = owner(canonical);
+                ASSERT_TRUE(inSuperset != superset.end() || inCanonical != canonical.end());
+                EXPECT_TRUE(inSuperset != superset.end() ? inSuperset->SeparateSamplers
+                                                         : inCanonical->SeparateSamplers);
+                supersetItems += inSuperset != superset.end();
+            }
+            size_t usable = 0;
+            for (const auto& artifact : superset)
+                usable += artifact.SeparateSamplers &&
+                          (geometry || !DeclaresSpirvCapability(artifact.Spirv, 2U));
+            EXPECT_EQ(supersetItems, usable * (samples == VK_SAMPLE_COUNT_1_BIT ? 1U : 2U));
+            // Every vertex program of the family is prepared.
+            for (const auto& vertex : vertices)
+                EXPECT_TRUE(std::any_of(parts.begin(), parts.end(), [&](const PicaStartupProgramPart& part) {
+                    return part.Vertex.data() == vertex.Spirv.data();
+                }));
+        }
+    }
 }

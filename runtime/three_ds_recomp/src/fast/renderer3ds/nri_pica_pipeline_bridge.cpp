@@ -253,6 +253,9 @@ struct NriPicaPipelineBridge::Impl {
         std::unique_ptr<NriPicaUploadArena> UploadArena;
         uint64_t FrameId = std::numeric_limits<uint64_t>::max();
         size_t Used = 0;
+        // The seam binding of draws without seam data (one of TransientViews).
+        nri::Descriptor* SeamFallback = nullptr;
+        VkBuffer SeamFallbackBuffer = VK_NULL_HANDLE;
     };
     std::vector<FrameDescriptors> Frames;
     std::map<NriPicaSamplerKey, nri::Descriptor*> Samplers;
@@ -846,6 +849,8 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
         for (nri::Descriptor* view : frame.TransientViews)
             core->DestroyDescriptor(view);
         frame.TransientViews.clear();
+        frame.SeamFallback = nullptr;
+        frame.SeamFallbackBuffer = VK_NULL_HANDLE;
         frame.FrameId = desc.FrameId;
         frame.Used = 0;
     }
@@ -972,6 +977,29 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
         if (core->CreateBufferView(seamView, seamBuffer) != nri::Result::SUCCESS)
             return false;
         frame.TransientViews.push_back(seamBuffer);
+    } else {
+        // Binding 26 is in every set, and the always-available surface programs
+        // declare it (they read it only when the draw's decisions select seam
+        // softening). A draw without seam data binds a valid view instead of
+        // leaving a statically used descriptor unwritten.
+        if (frame.SeamFallback == nullptr || frame.SeamFallbackBuffer != desc.UniformBuffer) {
+            if (desc.UniformBufferSize < 16U ||
+                !mImpl->Interop->WrapBuffer(desc.UniformBuffer, desc.UniformBufferSize, desc.UniformMappedMemory))
+                return false;
+            nri::BufferViewDesc fallback{};
+            fallback.buffer = mImpl->Interop->Buffer(desc.UniformBuffer);
+            fallback.type = nri::BufferView::STRUCTURED_BUFFER;
+            fallback.structureStride = 16;
+            fallback.offset = 0;
+            fallback.size = 16;
+            nri::Descriptor* view = nullptr;
+            if (core->CreateBufferView(fallback, view) != nri::Result::SUCCESS)
+                return false;
+            frame.TransientViews.push_back(view);
+            frame.SeamFallback = view;
+            frame.SeamFallbackBuffer = desc.UniformBuffer;
+        }
+        seamBuffer = frame.SeamFallback;
     }
 
     std::array<NriPicaTextureBindingDesc, 10> textureSources{};
@@ -1082,11 +1110,10 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
         {set, 25, 0, &samplers[8], 1},
         {set, 27, 0, &textures[9], 1},
         {set, 28, 0, &samplers[9], 1},
-        // Optional seam data stays last: it is left out when absent.
+        // The draw's seam data, or the frame's fallback view.
         {set, 26, 0, &seamBuffer, 1},
     }};
-    core->UpdateDescriptorRanges(
-        updates.data(), static_cast<uint32_t>(updates.size() - (seamBuffer ? 0U : 1U)));
+    core->UpdateDescriptorRanges(updates.data(), static_cast<uint32_t>(updates.size()));
     core->CmdSetDescriptorPool(*command, *descriptorPool.Pool);
     core->CmdSetPipelineLayout(
         *command, nri::BindPoint::GRAPHICS,

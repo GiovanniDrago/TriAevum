@@ -1950,7 +1950,9 @@ depth/stencil/blending and transfers remain unchanged.
 evaluates the same typed rigid/palette contract for seam frames and shadow bounds;
 `pica_texture_coordinates` is also the typed Grass affine decoder. Fragment
 primitive IDs select declared read-only binding 26: seven vec4 records per
-primitive, followed by packed corner-fan references. Immutable frame-arena slices
+primitive, followed by packed corner-fan references. A draw without seam data
+binds a valid 16-byte view there, because the always-available surface
+programs declare the buffer. Immutable frame-arena slices
 retain the correct data when one geometry is submitted with multiple poses.
 The NRI and Vulkan paths share this ABI; the material UBO is 352 bytes.
 

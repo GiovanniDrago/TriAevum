@@ -598,7 +598,10 @@ Probes at 1280x720 on the development GPU (`qualify/intro-lights`,
 - Validation on the title intro reports the same messages for P1 and P2 (a
   descriptor at binding 26 never updated, vertex outputs missing for fragment
   inputs 7-10, descriptor types at bindings 1-3 of one program); they predate
-  this phase and are open.
+  this phase. Fixed 2026-10-05: they came from the hybrid shader preparation's
+  startup links and the unwritten PBR seam binding
+  (`TRIAEVUM_STUTTERING_RESOLUTION_STRATEGY.md`, "Valid startup links and the
+  seam binding"); the intro now runs without validation errors.
 - Tests: scheduler (still light, even motion at two speeds, stop, cuts, the
   single-layout fallback), construction budget and composition, the exact
   overlap rule of the page selection against a brute-force reference, receiver
