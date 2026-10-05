@@ -63,3 +63,22 @@ alpha.2 ZIP; the standalone script works with that ZIP without rebuilding.
 Keep issue 12 open until the reporter's missing dependency is identified and a
 correction is verified there. No GPU requirement or rendering code is changed
 on the strength of this screenshot.
+
+## Cause found (2026-10-05)
+
+The loader report attached to issue 12 (Windows 10 21H2, Vulkan loader
+1.1.97) names three unresolved imports of `TriAevum.exe`:
+`vulkan-1.dll!vkGetSemaphoreCounterValue`, `vkSignalSemaphore` and
+`vkWaitSemaphores`, Vulkan 1.2 commands that a 1.1 loader does not export.
+Windows therefore refused to load the process (0xC0000139, also issue 35)
+before it could report anything. The runtime of alpha.2 to alpha.3b imported
+them, and two Vulkan 1.1 commands as well.
+
+Correction: a shipped executable imports from `vulkan-1.dll` only the Vulkan
+1.0 commands and the original surface, swapchain and Win32 surface commands.
+Newer commands are obtained from the loader at run time
+(`runtime/three_ds_recomp/include/fast/renderer3ds/vulkan_commands.h`; the
+FidelityFX backend's two direct Vulkan 1.1 calls are routed through its stub),
+so an older loader reaches the renderer's own error. The release audit rejects
+a Windows binary that imports anything else from `vulkan-1.dll`
+(`tools/triaevum_release/vulkan_imports.py`).

@@ -12,6 +12,8 @@
 #include <vulkan/vulkan_win32.h>
 #include <wrl/client.h>
 
+#include "fast/renderer3ds/vulkan_commands.h"
+
 #ifdef ERROR
 #undef ERROR
 #endif
@@ -213,6 +215,10 @@ struct D3d12NgxFrameBridge::Impl {
 
     ComPtr<ID3D12Fence> SharedFence;
     VkSemaphore SharedSemaphore = VK_NULL_HANDLE;
+    // Vulkan 1.2 timeline commands, from the device (renderer3ds/vulkan_commands.h).
+    PFN_vkGetSemaphoreCounterValue GetSemaphoreCounterValue = nullptr;
+    PFN_vkSignalSemaphore SignalSemaphore = nullptr;
+    PFN_vkWaitSemaphores WaitSemaphores = nullptr;
     uint64_t NextFenceValue = 3U;
     uint64_t LastQueuedFenceValue = 2U;
     uint64_t NextSerial = 1U;
@@ -230,6 +236,16 @@ struct D3d12NgxFrameBridge::Impl {
     std::string Reason = "D3D12 NGX frame bridge is not initialized";
 
     bool CreateSharedFence() {
+        GetSemaphoreCounterValue = Renderer3ds::VulkanDeviceCommand<PFN_vkGetSemaphoreCounterValue>(
+            VulkanDevice, "vkGetSemaphoreCounterValue", "vkGetSemaphoreCounterValueKHR");
+        SignalSemaphore = Renderer3ds::VulkanDeviceCommand<PFN_vkSignalSemaphore>(
+            VulkanDevice, "vkSignalSemaphore", "vkSignalSemaphoreKHR");
+        WaitSemaphores = Renderer3ds::VulkanDeviceCommand<PFN_vkWaitSemaphores>(
+            VulkanDevice, "vkWaitSemaphores", "vkWaitSemaphoresKHR");
+        if (GetSemaphoreCounterValue == nullptr || SignalSemaphore == nullptr || WaitSemaphores == nullptr) {
+            Reason = "Vulkan timeline semaphore commands are unavailable";
+            return false;
+        }
         HRESULT hr = D3d12Device->CreateFence(0U, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&SharedFence));
         if (FAILED(hr)) {
             Reason = "D3D12 frame bridge fence creation failed: " + FormatHresult(hr);
@@ -279,7 +295,7 @@ struct D3d12NgxFrameBridge::Impl {
             return false;
         }
         uint64_t observed = 0U;
-        result = vkGetSemaphoreCounterValue(VulkanDevice, SharedSemaphore, &observed);
+        result = GetSemaphoreCounterValue(VulkanDevice, SharedSemaphore, &observed);
         if (result != VK_SUCCESS || observed < 1U) {
             Reason = "Vulkan did not observe the D3D12 frame bridge fence";
             return false;
@@ -287,7 +303,7 @@ struct D3d12NgxFrameBridge::Impl {
         VkSemaphoreSignalInfo signal{ VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO };
         signal.semaphore = SharedSemaphore;
         signal.value = 2U;
-        result = vkSignalSemaphore(VulkanDevice, &signal);
+        result = SignalSemaphore(VulkanDevice, &signal);
         if (result != VK_SUCCESS || !WaitForFence(*SharedFence.Get(), 2U, Reason)) {
             if (result == VK_SUCCESS)
                 return false;
@@ -810,7 +826,7 @@ struct D3d12NgxFrameBridge::Impl {
         wait.semaphoreCount = 1U;
         wait.pSemaphores = &SharedSemaphore;
         wait.pValues = &inputsReady;
-        const VkResult waitResult = vkWaitSemaphores(
+        const VkResult waitResult = WaitSemaphores(
             VulkanDevice, &wait,
             static_cast<uint64_t>(kFenceTimeoutMilliseconds) * 1000000ULL);
         if (waitResult != VK_SUCCESS) {

@@ -325,7 +325,7 @@ executable; 1,124 tests):
 | Persisted GI mode rendered without its capability | found while gating GI (section 6) | fixed (`074bfa6`) |
 | `pipeline_prepare` contract test | stale outline guide mask since `567281a`; the project is not built by the battery | fixed (`6ad23a5`); add the helper build to L1 |
 | L4 identity after the UI composition fix | the first gate run was stopped by the host for low memory after four pre-fix profiles | rerun 2026-10-05, six profiles x 12 Kokiri frames: every difference lies in the two HUD elements the fix moved (TopScreen buttons, minimap: 100 % of the union of differing pixels); scene pixels identical. Pass |
-| Vulkan 1.2 entry points imported eagerly (#12, #35) | issue 12's loader report (Windows 10 21H2, Vulkan loader 1.1.97) names `vulkan-1.dll!vkGetSemaphoreCounterValue`, `vkSignalSemaphore` and `vkWaitSemaphores` as unresolved; the line's `TriAevum.exe` (2026-10-05) still imports all three eagerly, so the process cannot start on such a loader (0xC0000139) | open: obtain them through the device, or report the Vulkan requirement before any import can fail; L6 import audit |
+| Vulkan 1.2 entry points imported eagerly (#12, #35) | issue 12's loader report (Windows 10 21H2, Vulkan loader 1.1.97) names `vulkan-1.dll!vkGetSemaphoreCounterValue`, `vkSignalSemaphore` and `vkWaitSemaphores` as unresolved; the line's `TriAevum.exe` (2026-10-05) still imports all three eagerly, so the process cannot start on such a loader (0xC0000139) | fixed 2026-10-05: commands newer than Vulkan 1.0 come from the loader at run time (`renderer3ds/vulkan_commands.h`; the FidelityFX backend's two direct Vulkan 1.1 calls go through its stub), `TriAevum.exe` and the Forge helper import only Vulkan 1.0 and WSI commands, and the release audit rejects any other `vulkan-1.dll` import (`vulkan_imports.py`). DLSS, FSR 2, HUD and S17 scenarios unchanged (55 of 55); the D3D12 NGX frame bridge still verifies its shared fence |
 
 ## 8. Open GitHub issues (2026-10-05)
 
@@ -339,7 +339,7 @@ refused as an unknown revision; #58: Korean).
 
 | Issue | Report | Inventory | State | Remaining check |
 | --- | --- | --- | --- | --- |
-| #12, #35 | 0xC0000139 before the program starts | new | fail (section 7: eager Vulkan 1.2 imports) | fix; L6 import audit against a Vulkan 1.1 loader |
+| #12, #35 | 0xC0000139 before the program starts | new | fixed (section 7: the runtime imported Vulkan 1.2 commands) | L6 audit of the package; retest by the reporters |
 | #17 | remapped shoulder buttons do not use items | H1 | L2 pass: 24 shoulder/trigger assignments (`oot3d_native_a32_input_tests`) | L7 with the reporter's pad |
 | #19 | erasing a file never completes | - | fixed in alpha.2 (`d1f57f9`), checked by hand | L5: erase a copied save from file selection |
 | #20 | gyro yaw unresponsive (third-party Switch Pro pad through BetterJoy) | H2 | pitch fixed according to the reporter | L7 device checklist |

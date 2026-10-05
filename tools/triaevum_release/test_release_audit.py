@@ -10,6 +10,7 @@ from unittest.mock import patch
 from audit_release import DEFAULT_POLICY, audit_release
 from common import atomic_write_json, sha256_file
 from package_release import package_release
+from test_vulkan_imports import pe_import_fixture
 
 
 FILES = {
@@ -211,6 +212,25 @@ class PublicReleaseAuditTests(unittest.TestCase):
             for capability, mode in ((True, "Off"), (None, "Off"), (False, "ScreenSpace")):
                 errors = audit(capability, mode)
                 self.assertTrue(any("global illumination" in error for error in errors), errors)
+
+    def test_rejects_binary_importing_vulkan_commands_an_older_loader_lacks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_clean_package(root)
+            manifest_path = root / "release-manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            runtime = root / "TriAevum.exe"
+
+            def audit(commands: list[str]) -> list[str]:
+                runtime.write_bytes(pe_import_fixture({"vulkan-1.dll": commands}))
+                item = next(item for item in manifest["files"] if item["path"] == "TriAevum.exe")
+                item.update(bytes=runtime.stat().st_size, sha256=sha256_file(runtime))
+                atomic_write_json(manifest_path, manifest)
+                return list(audit_release(root).errors)
+
+            self.assertEqual(audit(["vkCreateInstance", "vkQueuePresentKHR"]), [])
+            self.assertEqual(audit(["vkCreateInstance", "vkWaitSemaphores"]),
+                             ["TriAevum.exe imports Vulkan commands that older loaders lack: vkWaitSemaphores"])
 
     def test_rejects_private_file_hidden_in_source_archive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

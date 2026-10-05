@@ -279,6 +279,14 @@ add_dependencies(oot3d_ffx_sssr_backend_vk oot3d_ffx_sssr_shaders)
 target_compile_definitions(oot3d_ffx_sssr_backend_vk PRIVATE
     FFX_DENOISER
     FFX_SSSR)
+if(WIN32)
+    # The backend's two direct Vulkan 1.1 calls go through
+    # oot3d_ffx_vk_optional_stubs.cpp, so the runtime imports only Vulkan 1.0
+    # and WSI commands from vulkan-1.dll (tools/triaevum_release/vulkan_imports.py).
+    target_compile_definitions(oot3d_ffx_sssr_backend_vk PRIVATE
+        vkGetPhysicalDeviceFeatures2=oot3dFfxGetPhysicalDeviceFeatures2
+        vkGetPhysicalDeviceProperties2=oot3dFfxGetPhysicalDeviceProperties2)
+endif()
 target_include_directories(oot3d_ffx_sssr_backend_vk PUBLIC
     "${_ffx_include}"
     PRIVATE

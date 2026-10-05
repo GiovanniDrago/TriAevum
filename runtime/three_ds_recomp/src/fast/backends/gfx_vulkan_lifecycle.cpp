@@ -174,7 +174,7 @@ void GfxRenderingAPIVulkan::Init() {
                     mNriInterop.UnavailableReason());
     }
 #if defined(_WIN32) && defined(ENABLE_OOT3D_D3D12_NGX_PROVIDER)
-    const bool d3d12NgxReady = mD3d12NgxProvider.Initialize(mPhysicalDevice, mDevice, mGraphicsQueueFamily,
+    const bool d3d12NgxReady = mD3d12NgxProvider.Initialize(mInstance, mPhysicalDevice, mDevice, mGraphicsQueueFamily,
                                                             kFramesInFlight, mD3d12InteropExtensionsEnabled);
     const auto& d3d12NgxStatus = mD3d12NgxProvider.Status();
     mDiagnostics.SetD3d12NgxProvider({
@@ -564,7 +564,7 @@ void GfxRenderingAPIVulkan::Init() {
         // The GI albedo guide is an eighth colour attachment, bound only
         // through dynamic rendering.
         std::string reason;
-        bool supported = Oot3d::BrixelizerScene::Supported(mPhysicalDevice, reason);
+        bool supported = Oot3d::BrixelizerScene::Supported(mInstance, mPhysicalDevice, reason);
         if (supported && !mPicaDynamicRenderingScope.Available()) {
             supported = false;
             reason = "global illumination requires PICA dynamic rendering";

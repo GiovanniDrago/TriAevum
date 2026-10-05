@@ -12,6 +12,8 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
+#include "fast/renderer3ds/vulkan_commands.h"
+
 #ifdef ERROR
 #undef ERROR
 #endif
@@ -108,8 +110,9 @@ D3d12NgxProvider::~D3d12NgxProvider() {
     Shutdown();
 }
 
-bool D3d12NgxProvider::Initialize(VkPhysicalDevice physicalDevice, VkDevice device, uint32_t graphicsQueueFamily,
-                                  uint32_t frameSlotCount, bool externalInteropExtensionsEnabled) {
+bool D3d12NgxProvider::Initialize(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device,
+                                  uint32_t graphicsQueueFamily, uint32_t frameSlotCount,
+                                  bool externalInteropExtensionsEnabled) {
     Shutdown();
     if (const char* enabled = std::getenv("OOT3D_NGX_D3D12_PROVIDER");
         enabled != nullptr && std::string_view(enabled) == "0") {
@@ -121,10 +124,16 @@ bool D3d12NgxProvider::Initialize(VkPhysicalDevice physicalDevice, VkDevice devi
         return false;
     }
 
+    const auto getProperties2 = Renderer3ds::VulkanInstanceCommand<PFN_vkGetPhysicalDeviceProperties2>(
+        instance, "vkGetPhysicalDeviceProperties2");
+    if (getProperties2 == nullptr) {
+        mImpl->Status.Detail = "vkGetPhysicalDeviceProperties2 is unavailable";
+        return false;
+    }
     VkPhysicalDeviceIDProperties id{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES };
     VkPhysicalDeviceProperties2 properties{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
     properties.pNext = &id;
-    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+    getProperties2(physicalDevice, &properties);
     if (id.deviceLUIDValid != VK_TRUE) {
         mImpl->Status.Detail = "Vulkan adapter does not expose a valid Windows LUID";
         return false;

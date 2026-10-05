@@ -23,6 +23,7 @@ try:
     from .source_contracts import source_contract_errors
     from .shader_corpus_layout import validate_bundled_corpus
     from .qualified_input_coverage import require_coverage
+    from .vulkan_imports import vulkan_import_errors
 except ImportError:
     from product_contract import validate_product_info
     from precompiled_titles import MODEL, CATALOG, load_catalog, validate_title, checked_file
@@ -33,6 +34,7 @@ except ImportError:
     from source_contracts import source_contract_errors
     from shader_corpus_layout import validate_bundled_corpus
     from qualified_input_coverage import require_coverage
+    from vulkan_imports import vulkan_import_errors
 
 
 ROOT = Path(__file__).resolve().parent
@@ -334,6 +336,11 @@ def audit_release(
 
         pure = Path(relative)
         role = str(item.get("role", ""))
+        # A Windows binary that imports a Vulkan command an older loader lacks
+        # cannot start there at all (0xC0000139).
+        if platform.target == WINDOWS.target and pure.suffix.lower() in (".exe", ".dll"):
+            for error in vulkan_import_errors(path, relative, require_pe=False):
+                reject(error)
         package_forbidden_extensions = {
             extension
             for extension in forbidden_extensions

@@ -2,8 +2,24 @@
 // and the swapchain.
 #ifdef ENABLE_OOT3D_VULKAN
 #include "gfx_vulkan_internal.h"
+#include "fast/renderer3ds/vulkan_commands.h"
 
 namespace Fast {
+
+namespace {
+
+// Vulkan 1.1 physical-device queries come from the instance
+// (renderer3ds/vulkan_commands.h): a loader without them is a reported error.
+template <typename Command>
+Command RequiredInstanceCommand(VkInstance instance, const char* name) {
+    const auto command = Renderer3ds::VulkanInstanceCommand<Command>(instance, name);
+    if (command == nullptr)
+        throw std::runtime_error(std::string(name) +
+                                 " is unavailable: the Vulkan loader predates Vulkan 1.1; update the graphics driver");
+    return command;
+}
+
+} // namespace
 
 bool GfxRenderingAPIVulkan::QueueFamilies::Complete() const {
     return Graphics.has_value() && Present.has_value();
@@ -208,7 +224,8 @@ void GfxRenderingAPIVulkan::PickPhysicalDevice() {
     VkPhysicalDeviceProperties2 properties2{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     properties2.pNext = &resolveProperties;
-    vkGetPhysicalDeviceProperties2(mPhysicalDevice, &properties2);
+    RequiredInstanceCommand<PFN_vkGetPhysicalDeviceProperties2>(mInstance, "vkGetPhysicalDeviceProperties2")(
+        mPhysicalDevice, &properties2);
     if ((resolveProperties.supportedDepthResolveModes &
          VK_RESOLVE_MODE_MIN_BIT) != 0U) {
         mNativePicaDepthResolveMode = VK_RESOLVE_MODE_MIN_BIT;
@@ -299,7 +316,7 @@ void GfxRenderingAPIVulkan::CreateLogicalDevice() {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2
     };
     supportedFeatures.pNext = &vulkan12;
-    vkGetPhysicalDeviceFeatures2(
+    RequiredInstanceCommand<PFN_vkGetPhysicalDeviceFeatures2>(mInstance, "vkGetPhysicalDeviceFeatures2")(
         mPhysicalDevice, &supportedFeatures);
     mSynchronization2Enabled =
         hasVulkan12 && hasSynchronization2Extension &&
@@ -315,7 +332,8 @@ void GfxRenderingAPIVulkan::CreateLogicalDevice() {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
     VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     properties2.pNext = &libraryProperties;
-    vkGetPhysicalDeviceProperties2(mPhysicalDevice, &properties2);
+    RequiredInstanceCommand<PFN_vkGetPhysicalDeviceProperties2>(mInstance, "vkGetPhysicalDeviceProperties2")(
+        mPhysicalDevice, &properties2);
     // Always-available programs link prepared library parts. "1" also moves
     // every specialized pipeline onto libraries; "0" disables them.
     const char* libraryMode = std::getenv("TRIAEVUM_NRI_PIPELINE_LIBRARIES");

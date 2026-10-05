@@ -15,6 +15,7 @@
 #endif
 
 #include "fast/oot3d/temporal_history_manager.h"
+#include "fast/renderer3ds/vulkan_commands.h"
 #if OOT3D_HAS_FFX_BRIXELIZER
 #include "brixelizer_gi_access.h"
 #endif
@@ -464,8 +465,9 @@ struct BrixelizerScene::Impl {
 
 BrixelizerScene::BrixelizerScene() : mImpl(std::make_unique<Impl>()) {}
 
-bool BrixelizerScene::Supported(VkPhysicalDevice physicalDevice, std::string& reason) {
+bool BrixelizerScene::Supported(VkInstance instance, VkPhysicalDevice physicalDevice, std::string& reason) {
 #if !OOT3D_HAS_FFX_BRIXELIZER
+    (void)instance;
     (void)physicalDevice;
     reason = "FidelityFX Brixelizer is not built into this renderer";
     return false;
@@ -476,10 +478,16 @@ bool BrixelizerScene::Supported(VkPhysicalDevice physicalDevice, std::string& re
         reason = "R8 storage images are unavailable";
         return false;
     }
+    const auto getFeatures2 =
+        Renderer3ds::VulkanInstanceCommand<PFN_vkGetPhysicalDeviceFeatures2>(instance, "vkGetPhysicalDeviceFeatures2");
+    if (getFeatures2 == nullptr) {
+        reason = "vkGetPhysicalDeviceFeatures2 is unavailable";
+        return false;
+    }
     VkPhysicalDeviceVulkan12Features features12{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
     VkPhysicalDeviceFeatures2 features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
     features.pNext = &features12;
-    vkGetPhysicalDeviceFeatures2(physicalDevice, &features);
+    getFeatures2(physicalDevice, &features);
     if (!features12.descriptorBindingPartiallyBound || !features12.runtimeDescriptorArray ||
         !features12.shaderStorageBufferArrayNonUniformIndexing ||
         !features12.shaderSampledImageArrayNonUniformIndexing ||

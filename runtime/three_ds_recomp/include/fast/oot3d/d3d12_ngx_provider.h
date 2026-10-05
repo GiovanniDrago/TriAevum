@@ -84,7 +84,7 @@ class D3d12NgxProvider final {
     D3d12NgxProvider(const D3d12NgxProvider&) = delete;
     D3d12NgxProvider& operator=(const D3d12NgxProvider&) = delete;
 
-    bool Initialize(VkPhysicalDevice physicalDevice, VkDevice device, uint32_t graphicsQueueFamily,
+    bool Initialize(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, uint32_t graphicsQueueFamily,
                     uint32_t frameSlotCount, bool externalInteropExtensionsEnabled);
     void Shutdown();
 

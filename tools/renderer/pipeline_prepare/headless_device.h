@@ -2,6 +2,7 @@
 
 #include "fast/renderer3ds/nri_pica_pipeline_bridge.h"
 #include "fast/renderer3ds/pica_vulkan_device_profile.h"
+#include "fast/renderer3ds/vulkan_commands.h"
 #include <NRI.h>
 #include <Extensions/NRIRayTracing.h>
 #include <Extensions/NRIWrapperVK.h>
@@ -51,6 +52,11 @@ class HeadlessDevice final : public Fast::Renderer3ds::NriPicaInterop {
                 vkGetInstanceProcAddr(mInstance, "vkCreateDebugUtilsMessengerEXT"));
             if (!createMessenger || createMessenger(mInstance, &messenger, nullptr, &mMessenger) != VK_SUCCESS) return false;
         }
+        const auto getProperties2 = Fast::Renderer3ds::VulkanInstanceCommand<PFN_vkGetPhysicalDeviceProperties2>(
+            mInstance, "vkGetPhysicalDeviceProperties2");
+        const auto getFeatures2 = Fast::Renderer3ds::VulkanInstanceCommand<PFN_vkGetPhysicalDeviceFeatures2>(
+            mInstance, "vkGetPhysicalDeviceFeatures2");
+        if (!getProperties2 || !getFeatures2) return false;
         uint32_t physicalCount = 0;
         if (vkEnumeratePhysicalDevices(mInstance, &physicalCount, nullptr) != VK_SUCCESS || physicalCount > 64) return false;
         std::vector<VkPhysicalDevice> physicals(physicalCount);
@@ -60,7 +66,7 @@ class HeadlessDevice final : public Fast::Renderer3ds::NriPicaInterop {
             VkPhysicalDeviceIDProperties id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
             VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
             props.pNext = &id;
-            vkGetPhysicalDeviceProperties2(candidate, &props);
+            getProperties2(candidate, &props);
             nri::Uid_t uid{};
             std::memcpy(&uid.low, id.deviceLUIDValid ? id.deviceLUID : id.deviceUUID, 8);
             if (!id.deviceLUIDValid) std::memcpy(&uid.high, id.deviceUUID + 8, 8);
@@ -87,7 +93,7 @@ class HeadlessDevice final : public Fast::Renderer3ds::NriPicaInterop {
         VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         supported.pNext = &v12; v12.pNext = &sync; sync.pNext = &dynamic;
         dynamic.pNext = &libraries; libraries.pNext = &extendedDynamic;
-        vkGetPhysicalDeviceFeatures2(physical, &supported);
+        getFeatures2(physical, &supported);
         if (!sync.synchronization2 || !dynamic.dynamicRendering) return false;
         uint32_t extensionCount = 0;
         if (vkEnumerateDeviceExtensionProperties(physical, nullptr, &extensionCount, nullptr) != VK_SUCCESS) return false;
