@@ -194,6 +194,9 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(select_scenarios(items, "S09, S03"), [{"name": "S03"}, {"name": "S09"}])
         with self.assertRaises(ValueError):
             select_scenarios(items, "S03,S99")
+        timed = items + [{"name": "S20", "optional": True}]
+        self.assertEqual(select_scenarios(timed, ""), items)
+        self.assertEqual(select_scenarios(timed, "S20"), [{"name": "S20", "optional": True}])
 
     def test_log_and_runtime_metrics(self):
         text = ("TRIAEVUM_SPIRV_CACHE requests=4 hits=0 compiled=4\n"

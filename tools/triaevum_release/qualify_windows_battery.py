@@ -484,10 +484,11 @@ FRAME_COUNTERS = {
 
 
 def select_scenarios(items: list[dict], names: str) -> list[dict]:
-    """The scenario items to run: all, or those named (comma-separated), in configuration order."""
+    """The scenario items to run: all but the optional ones (real-time measurements that need a quiet host), or
+    those named (comma-separated), in configuration order."""
     wanted = [name.strip() for name in names.split(",") if name.strip()]
     if not wanted:
-        return list(items)
+        return [item for item in items if not item.get("optional")]
     unknown = [name for name in wanted if name not in {item["name"] for item in items}]
     if unknown:
         raise ValueError(f"unknown scenarios: {', '.join(unknown)}")
