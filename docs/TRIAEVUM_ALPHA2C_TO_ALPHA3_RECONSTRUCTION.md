@@ -541,6 +541,38 @@ provenance and geometry only, no address or asset. The per-frame diagnostics
 report `whole_target_ui_draw_count` and `screen_content_draw_count`.
 Verification is in `TRIAEVUM_WINDOWS_RELEASE_QUALIFICATION.md` (E1-E3, I1, I5).
 
+**Movie frames fitted with black bars (2026-10-05, user decision).** An opaque
+picture of its own is no longer covered: it is shown whole on the native
+canvas of placed UI, and before it is drawn the renderer paints the target
+outside that canvas opaque black, on the native colour attachment only
+(`SurroundPicaCanvas` in `renderer3ds/pica_ui_canvas.h`; nothing is painted at
+the native aspect ratio). The fill drawn behind the movie never shows: the bars
+replace it. Opaque means that no sampled texture stores alpha per texel
+(`PicaTextureFormatCarriesAlpha`; the movie frames are RGB8). A covering picture
+with alpha is an overlay laid on the frame - the revelation draws an IA8 mask
+over its first 72 flashback frames under Original30 - and keeps the cover
+canvas, so a mask over a visible scene is never cut by bars. Diagnostics:
+`own_picture_draw_count`, `picture_bar_rect_count`,
+`picture_overlay_draw_count`. The Sheikah Stone movie has one picture draw per
+frame (237 frames in the verification run), and no pixel outside the picture
+is lit at 4:3 (bars above and below), 16:9 or 21:9.
+
+**The copied frame is upright (2026-10-05, I5).** The flashback was the
+left-right mirror of the scene it copies. The raw-copy path read attachment row
+y as PICA memory row y, but attachments hold window rows bottom-up (the viewport
+maps NDC y = -1 to row 0) while memory stores the top window row first:
+Azahar's framebuffer writes window row y at memory row height - 1 - y, and its
+texture unit reads coordinate t from row height - 1 - t. On the top screen,
+whose framebuffer is rotated, a row reversal is a left-right mirror.
+`EncodePicaFramebuffer`, its GPU form and the GPU copy derivation now reverse
+rows between attachment and memory order; a base decoded from native bytes is
+already in memory order. In the interpolated revelation every flashback capture
+(frames 5060-5580, one every 20) is now the exact mirror of the previous
+build's (luminance correlation 1.000 mirrored, -0.04 to 0.77 as is), while the
+dialogue boxes drawn over it keep their orientation. Link now stands in the
+left part of the frame looking right, towards the castle Impa rides out of,
+as the user remembers the original.
+
 ### 7.4 Confirmed: the flashback copy and its consumer, measured
 
 The implementation plan for the GPU path is `TRIAEVUM_GPU_COPY_PATH_PLAN.md`
@@ -825,7 +857,7 @@ qualification. Ordered checks for the next Linux session:
 | `tools/triaevum_release/test_host_layout.py` | New: AppImage layout without `APPDIR`, similar-name package, opened-file argument, unknown option. |
 | `runtime/three_ds_recomp/include/fast/renderer3ds/pica_composition.h` | New `Screen` composition domain (screen-space frame content). |
 | `runtime/three_ds_recomp/include/fast/renderer3ds/pica_ui_canvas.h` | `Screen` covers the presentation extent; placed UI keeps the native fit. |
-| `runtime/three_ds_recomp/include/oot3d/renderer/ui_presentation_layout.h` | `FillUiPresentation` (cover without distortion) beside the existing fit. |
+| `runtime/three_ds_recomp/include/oot3d/renderer/ui_presentation_layout.h` | `FillUiPresentation` (cover without distortion) beside the existing fit. Since 2026-10-05 it serves only overlays with their own alpha; movie frames take the fit with black bars (§7.3). |
 | `runtime/three_ds_recomp/include/fast/oot3d/pica_scene_frame.h` | `HasSceneDrawOnColorTarget` and the screen-domain statistic. |
 | `runtime/three_ds_recomp/src/fast/oot3d/pica_scene_frame.cpp` | Frame evidence query and domain counting. |
 | `runtime/three_ds_recomp/src/fast/backends/gfx_vulkan_pica.cpp` | Resolves the per-draw composition domain from the frame's scene target. |

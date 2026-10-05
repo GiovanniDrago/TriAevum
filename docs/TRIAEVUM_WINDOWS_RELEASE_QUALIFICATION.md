@@ -115,7 +115,7 @@ absent from the line), `experimental` (excluded from the release).
 | --- | --- | --- | --- | --- |
 | E1 | Native HUD keeps its aspect with exact UI composition ownership | `0b2d848` | L5 S03 HUD at 4:3, 16:9, 21:9 (#25). Failed on this line: `ba1f200` composed the TopScreen buttons, the minimap and dialogue boxes as screen content (enlarged, moved to the output edges, cut; A lost at 21:9). Fixed 2026-10-05: only a wash or a redraw of the copied frame whose geometry covers the viewport is screen content (reconstruction doc 7.3, correction). S03 captures match the placed layout of alpha.3b at all three sizes; battery 2026-10-05: S03 15/15 checks | pass (L5 S03) |
 | E2 | Centered UI composition; minimap layout persists (and survives savestate reload, #32) | `1f5ef90`, issues doc 25/32/39 | L5 minimap marker scenario, fresh entry and reload. Minimap placement failed with E1 and is fixed with it; persistence and reload still unproven | open |
-| E3 | Visions UI ownership through shared primitive drawing | `d108659` | L5 Visions scenario (ultrawide and 4:3). The Visions header and panel were cover-scaled with E1 and are back on the canvas since the fix; the movie frames keep the cover canvas (unchanged) | fixed at 16:9; 4:3 and 21:9 open |
+| E3 | Visions UI ownership through shared primitive drawing | `d108659` | L5 S10 (Sheikah Stone, 4:3, 16:9, 21:9). The Visions header and panel were cover-scaled with E1 and are back on the canvas since the fix, at all three sizes. Movie frames: by the user's choice (2026-10-05) shown whole at 5:3 with black bars (above and below at 4:3, beside at 16:9 and 21:9), no longer cropped to cover; no lit pixel outside the picture in any movie frame. Only opaque pictures (no texture alpha) get bars; covering overlays with alpha keep the cover canvas | fixed (L5 S10) |
 | E4 | Consolidated F1 settings; F1 toggles from the key event (#51); Steam Input pads pass through | `a946f34`, `816fe91` | L3; L5 F1 tap scenario | open |
 | E5 | TopScreen #40 stamina/timer overlap, #42 mounted B counter, #43 boots hotkey repeat (recovered after the 2026-09-17 reset) | `3f84692`, `71a654e` | L2 TopScreen profile tests; L5 Epona and boots scenarios | open |
 | E6 | Game Over choices restored (#46): directional/A, save-yes, mouse/touch | `f89d3fb`, issues doc 45/46 | L5 Game Over scenarios (the last two never qualified) | open |
@@ -150,7 +150,7 @@ absent from the line), `experimental` (excluded from the release).
 | I2 | Raw copy readback cost cut; GPU encode; guest-access watch | `99e2005`, `4f58878`, `7dd875c`, `e91a360` | L2; L5 revelation timing | open |
 | I3 | Copied textures decoded on the GPU (2026-09-23 work, 18-27 % of its lines in the line) | `0765e0c`, `602d10e`, `6cc19cc`, `c5b6bb0` | establish whether a later commit replaced it on purpose; L5 revelation | open |
 | I4 | Canonical GPU-copy visibility preserved across title execution | `bcec0f6` | L5 revelation; L2 | open |
-| I5 | Orientation of the raw-copy redraw | found 2026-10-05 | The flashback is the horizontal mirror of the scene it copies: luminance correlation with the scene drawn under it (redraw skipped, 21:9, run frame 2820) is 0.03 as captured and 0.998 mirrored, with exact registration. The texture path predates this line's changes. Establish the hardware orientation (encode `EncodePicaFramebuffer`, GPU derivation and decode conventions against PICA memory order, or an Azahar reference of the scene) before changing it | open |
+| I5 | Orientation of the raw-copy redraw | found and fixed 2026-10-05 | The flashback was the left-right mirror of the scene it copies (luminance correlation with the scene drawn under it, redraw skipped: 0.03 as captured, 0.998 mirrored). The raw-copy path read attachment row y as PICA memory row y; attachments hold window rows bottom-up while memory stores the top window row first (Azahar: framebuffer writes window row y at memory row height - 1 - y, the texture unit reads t at row height - 1 - t). `EncodePicaFramebuffer`, its GPU form and the GPU copy derivation now reverse rows (L2: transfer tests, GPU derivation in both row orders). Interpolated revelation, every 20 frames: each flashback capture is the exact mirror of the previous build's (correlation 1.000 mirrored), dialogue boxes unchanged; Link stands in the left part of the frame looking right, towards the castle, as the user remembers the original | fixed |
 
 ### 4.J Lighting, shadows, materials, AO, AA and upscalers
 
@@ -242,11 +242,19 @@ The battery runner's `scenarios` layer executes them
 output size, as `TriAevum.exe`, with deterministic timing (`interpolated` or
 `original30`). Assertions per run: exit code, number of captures, accepted
 reference captures (byte identity; a missing reference is "not run"),
-full-width effects (every column grey), and per-frame renderer diagnostics
-(`whole_target_ui_draw_count`, `screen_content_draw_count`). Implemented so
-far: S03 (HUD at 960x720, 1280x720 and 1720x720: no screen content, references)
-and S09 under Original30 (three sizes: the copies pass, the flashback covers
-every column, references).
+full-width effects (every column grey), black bars around movie frames (every
+pixel outside the fitted 5:3 picture black), and bounds on per-frame renderer
+diagnostics (`whole_target_ui_draw_count`, `screen_content_draw_count`,
+`own_picture_draw_count`, `picture_bar_rect_count`,
+`picture_overlay_draw_count`). Implemented so far: S03 (HUD at 960x720,
+1280x720 and 1720x720: no screen content and no picture, references), S09
+under Original30 (three sizes: the copies pass, the flashback covers every
+column, no opaque picture, references) and S10 (Sheikah Stone movie at three
+sizes: picture draws, black bars, references). Run of 2026-10-05 on the build
+with the upright copy and the movie bars: 84 of 84 checks against the
+references accepted from it. The S09 flashback reference changed only by the
+mirror: each new capture equals the previous reference flipped left-right,
+pixel for pixel; S03 and S10 reproduced their references byte for byte.
 
 | ID | Scenario | Input | Covers |
 | --- | --- | --- | --- |
@@ -298,4 +306,4 @@ executable; 1,124 tests):
 | `oot3d_game_module_smoke` | needs a Forge-made `game.tam` and `content.tap` | skipped (77) until the L6 installation provides them |
 | Revelation under Original30 | stopped at the first raw copy (D2) | fixed 2026-10-05 |
 | TopScreen HUD, minimap, dialogue at 4:3/16:9/21:9 | composed as screen content since `ba1f200` (E1) | fixed 2026-10-05 |
-| L4 identity after the UI composition fix | the gate run was stopped by the host for low memory after four pre-fix profiles; the fixed build's profiles have not run | open: rerun `qualify/baseline` and diff the images (only UI regions may change) |
+| L4 identity after the UI composition fix | the first gate run was stopped by the host for low memory after four pre-fix profiles | rerun 2026-10-05, six profiles x 12 Kokiri frames: every difference lies in the two HUD elements the fix moved (TopScreen buttons, minimap: 100 % of the union of differing pixels); scene pixels identical. Pass |
