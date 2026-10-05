@@ -47,7 +47,7 @@ struct DerivePush {
     uint32_t Height = 0;
     int32_t NativeDeltaX = 0;
     int32_t NativeDeltaY = 0;
-    uint32_t Padding0 = 0;
+    uint32_t SourceAttachmentRows = 0;
     uint32_t Padding1 = 0;
     uint32_t DensityX = 1;
     uint32_t DensityY = 1;
@@ -508,7 +508,7 @@ bool NriPicaDisplayCopyPass::ExecuteRegion(
         desc.Height,
         desc.NativeDeltaX,
         desc.NativeDeltaY,
-        0U,
+        desc.SourceAttachmentRows ? 1U : 0U,
         0U,
         desc.DensityX,
         desc.DensityY,

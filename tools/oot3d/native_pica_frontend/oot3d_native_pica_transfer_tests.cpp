@@ -70,13 +70,15 @@ int main() {
     }
     const auto tiled = Fast::Renderer3ds::EncodePicaFramebuffer(rgba, 16, 16, 16, 16, 0);
     const auto scaled = Fast::Renderer3ds::EncodePicaFramebuffer(rgba, 16, 16, 8, 8, 0);
+    // Green carries the attachment row: memory row y is attachment row 15 - y,
+    // because native memory stores the top window row first.
     for (uint32_t y = 0; y < 16; ++y) for (uint32_t x = 0; x < 16; ++x) {
         const size_t i = TiledPixelOffset(x, y, 16) * 4;
-        Require(tiled[i] == 231 && tiled[i+1] == 123 && tiled[i+2] == y && tiled[i+3] == x,
+        Require(tiled[i] == 231 && tiled[i+1] == 123 && tiled[i+2] == 15 - y && tiled[i+3] == x,
                 "framebuffer writeback changed native channels or axes");
         if (x < 8 && y < 8) {
             const size_t s = TiledPixelOffset(x, y, 8) * 4;
-            Require(scaled[s+2] == y*2+1 && scaled[s+3] == x*2+1,
+            Require(scaled[s+2] == (7 - y) * 2 + 1 && scaled[s+3] == x*2+1,
                     "scaled framebuffer writeback samples wrong native texel");
         }
     }

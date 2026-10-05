@@ -8,7 +8,15 @@
 
 namespace Fast::Renderer3ds {
 // Resolve an internally scaled RGBA attachment to its native tiled bytes.
-// Native image axes are retained; no screen rotation or presentation effects.
+//
+// Row order: attachment row r holds PICA window row r (the viewport maps NDC
+// y = -1 to row 0), while native memory stores the top window row first:
+// memory row y holds window row height - 1 - y. Azahar's framebuffer writes
+// window row y at that memory row and its texture unit reads coordinate t from
+// row height - 1 - t, so a raw copy sampled as a texture shows the frame the
+// way it was rendered. Memory row y is therefore read from the attachment's
+// native row height - 1 - y, sampled at its centre. Columns keep their order;
+// no screen rotation or presentation effect is applied.
 inline std::vector<uint8_t> EncodePicaFramebuffer(
     std::span<const uint8_t> rgba, uint32_t imageWidth, uint32_t imageHeight,
     uint32_t width, uint32_t height, uint8_t format) {
@@ -23,7 +31,8 @@ inline std::vector<uint8_t> EncodePicaFramebuffer(
     for (uint32_t y = 0; y < height; ++y) {
         for (uint32_t x = 0; x < width; ++x) {
             const auto sx = static_cast<uint32_t>((uint64_t{x} * 2 + 1) * imageWidth / (uint64_t{width} * 2));
-            const auto sy = static_cast<uint32_t>((uint64_t{y} * 2 + 1) * imageHeight / (uint64_t{height} * 2));
+            const auto sy = static_cast<uint32_t>(
+                (uint64_t{height - 1U - y} * 2 + 1) * imageHeight / (uint64_t{height} * 2));
             const auto* c = rgba.data() + (std::size_t{sy} * imageWidth + sx) * 4;
             uint32_t morton = 0;
             for (uint32_t bit = 0; bit < 3; ++bit) {

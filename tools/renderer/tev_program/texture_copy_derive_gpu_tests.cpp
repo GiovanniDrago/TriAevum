@@ -165,11 +165,15 @@ void Run() {
                              nullptr, 0, nullptr, 1, &b);
     };
     uint64_t failures = 0;
-    for (uint32_t format = 0; format < 5; ++format) {
+    // Each format in both row orders: a source decoded from native bytes (rows
+    // as the destination stores them) and a captured attachment (rows mirrored).
+    for (uint32_t pass = 0; pass < 10; ++pass) {
+        const uint32_t format = pass % 5;
+        const int32_t attachmentRows = pass < 5 ? 0 : 1;
         Check(vkResetCommandBuffer(command, 0));
         VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         Check(vkBeginCommandBuffer(command, &begin));
-        if (format == 0) {
+        if (pass == 0) {
             barrier(source.Handle, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                     VK_ACCESS_TRANSFER_WRITE_BIT);
             VkBufferImageCopy copy{};
@@ -180,8 +184,8 @@ void Run() {
             barrier(source.Handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
         }
-        barrier(destination.Handle, format == 0 ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, format == 0 ? 0 : VK_ACCESS_TRANSFER_READ_BIT,
+        barrier(destination.Handle, pass == 0 ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, pass == 0 ? 0 : VK_ACCESS_TRANSFER_READ_BIT,
                 VK_ACCESS_TRANSFER_WRITE_BIT);
         const VkClearColorValue base{ { 17.0F / 255, 31.0F / 255, 63.0F / 255, 127.0F / 255 } };
         const VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
@@ -191,7 +195,8 @@ void Run() {
         vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
         for (uint32_t half = 0; half < 2; ++half) {
-            Push push{ { 24 + half * 24, 32, 24, 64 }, { -8, -8, 0, 0 }, { 3, 4, 16, 16 }, { sw, sh, format, 0 } };
+            Push push{ { 24 + half * 24, 32, 24, 64 }, { -8, -8, attachmentRows, 0 }, { 3, 4, 16, 16 },
+                       { sw, sh, format, 0 } };
             vkCmdPushConstants(command, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
             vkCmdDispatch(command, 3, 8, 1);
         }
@@ -218,20 +223,24 @@ void Run() {
             for (uint32_t x = 0; x < dw; ++x) {
                 Pixel expected{ 17, 31, 63, 127 };
                 if (x >= 24 && x < 72 && y >= 32 && y < 96) {
+                    // Half-texel rows over the 16 native rows at density 4: a
+                    // mirrored source reads native row 16 - v instead of v.
+                    const uint32_t row = 2 * (y - 32) + 1;
                     const uint32_t sx = ((2 * (x - 24) + 1) * sw) / 96;
-                    const uint32_t sy = ((2 * (y - 32) + 1) * sh) / 128;
+                    const uint32_t sy = ((attachmentRows ? 128 - row : row) * sh) / 128;
                     expected = Quantize(pixels[sy * sw + sx], format);
                 }
                 if (actual[y * dw + x] != expected) {
                     if (failures < 4)
-                        std::cerr << "format=" << format << " pixel=" << x << ',' << y
+                        std::cerr << "format=" << format << " attachment_rows=" << attachmentRows
+                                  << " pixel=" << x << ',' << y
                                   << " expected.r=" << unsigned(expected[0])
                                   << " actual.r=" << unsigned(actual[y * dw + x][0]) << '\n';
                     ++failures;
                 }
             }
     }
-    std::cout << "GPU copy derivation: " << dw * dh * 5 << " pixels, mismatches=" << failures << '\n';
+    std::cout << "GPU copy derivation: " << dw * dh * 10 << " pixels, mismatches=" << failures << '\n';
     vkDestroyCommandPool(gpu.Device, commandPool, nullptr);
     vkDestroyDescriptorPool(gpu.Device, pool, nullptr);
     vkDestroySampler(gpu.Device, sampler, nullptr);

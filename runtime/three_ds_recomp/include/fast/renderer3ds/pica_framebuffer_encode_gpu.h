@@ -44,7 +44,9 @@ uint packedTexelByte(uint x, uint y, uint byteInTexel) {
     const uint height = encode.Extent.w;
     const uint format = encode.Layout.x;
     const uint sx = ((x * 2u + 1u) * imageWidth) / (width * 2u);
-    const uint sy = ((y * 2u + 1u) * imageHeight) / (height * 2u);
+    // Memory row y is the attachment's native row height - 1 - y, as in the
+    // oracle: native memory stores the top window row first.
+    const uint sy = (((height - 1u - y) * 2u + 1u) * imageHeight) / (height * 2u);
     // `sample` is a reserved word in GLSL: the fetched texel has its own name.
     const vec4 texel = texelFetch(SourceImage, ivec2(int(sx), int(sy)), 0);
     const uvec4 c = uvec4(texel * 255.0 + 0.5);

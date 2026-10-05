@@ -368,6 +368,9 @@ bool GfxRenderingAPIVulkan::RecordGpuTextureCopyDerivation(
             desc.NativeDeltaY =
                 static_cast<int32_t>(region.SourceY) -
                 static_cast<int32_t>(region.DestinationY);
+            // The capture keeps the attachment's bottom-up rows; the region's
+            // rows are native memory rows.
+            desc.SourceAttachmentRows = true;
             desc.DensityX = derivation.DensityX;
             desc.DensityY = derivation.DensityY;
             desc.SourceNativeWidth = surface.SourceWidth;

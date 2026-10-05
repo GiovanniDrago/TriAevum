@@ -70,6 +70,10 @@ struct NriPicaDisplayCopyRegionDesc {
     // Destination-native to source-native region translation, per axis.
     int32_t NativeDeltaX = 0;
     int32_t NativeDeltaY = 0;
+    // The source is a captured attachment, whose rows run bottom-up, while the
+    // destination stores native memory rows (top row first): the source rows
+    // are mirrored. False for a source decoded from native bytes.
+    bool SourceAttachmentRows = false;
     // Destination texels per native texel, and the source surface's native
     // extent the capture was rendered from.
     uint32_t DensityX = 1;
@@ -105,11 +109,16 @@ struct NriPicaDisplayCopyRegionDesc {
                                 desc.NativeDeltaX < 0 ? -desc.NativeDeltaX
                                                       : desc.NativeDeltaX)) *
         desc.SourceWidth;
+    // A mirrored source subtracts the row from 2*density*sourceNativeHeight;
+    // bounding the sum bounds the difference.
     const uint64_t numeratorY =
         (2U * lastY + 1U + 2U * desc.DensityY *
                             static_cast<uint64_t>(
                                 desc.NativeDeltaY < 0 ? -desc.NativeDeltaY
-                                                      : desc.NativeDeltaY)) *
+                                                      : desc.NativeDeltaY) +
+         (desc.SourceAttachmentRows
+              ? 2U * uint64_t{desc.DensityY} * desc.SourceNativeHeight
+              : 0U)) *
         desc.SourceHeight;
     return numeratorX <= 0x7FFFFFFFull && numeratorY <= 0x7FFFFFFFull;
 }

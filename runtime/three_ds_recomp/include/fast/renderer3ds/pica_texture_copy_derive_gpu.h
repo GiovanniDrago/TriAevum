@@ -23,6 +23,12 @@ namespace Fast::Renderer3ds {
 // (((2*x+1)*imageWidth)/(2*width)) when the destination is at the declared
 // native layout.
 //
+// Rows: the destination, like native memory, stores the top window row first.
+// A captured attachment holds window rows bottom-up (see
+// EncodePicaFramebuffer), so for such a source the vertical native coordinate
+// is mirrored first: v_capture_native = sourceNativeHeight - v_source_native.
+// A source decoded from native bytes is already in memory order.
+//
 // The declared native format's channel semantics are applied per pixel, so a
 // quantized native format is reproduced exactly: 0 RGBA8 unchanged, 1 RGB8 alpha
 // 255, 2 RGB565 5/6/5, 3 RGBA5551 5/5/5/1, 4 RGBA4444 4/4/4/4, each expanded the
@@ -31,10 +37,12 @@ namespace Fast::Renderer3ds {
 // The host must validate before dispatch: nonzero region and image extents,
 // nonzero density and source native extent, format <= 4, the region inside the
 // destination, and every numerator below 2^31 after the absolute native
-// translation is added, so the integer arithmetic cannot wrap.
+// translation (and, for a mirrored source, 2*density*sourceNativeHeight) is
+// added, so the integer arithmetic cannot wrap.
 //
 // Push constants: Rect   = (destinationX, destinationY, width, height),
-//                 Delta  = (nativeDeltaX, nativeDeltaY, 0, 0),
+//                 Delta  = (nativeDeltaX, nativeDeltaY, sourceAttachmentRows,
+//                           0),
 //                 Layout = (densityX, densityY, sourceNativeWidth,
 //                           sourceNativeHeight),
 //                 Extent = (imageWidth, imageHeight, nativeFormat, 0).
@@ -73,9 +81,12 @@ void main() {
     const int numeratorX =
         (2 * destination.x + 1 + 2 * int(densityX) * derive.Delta.x) *
         int(imageWidth);
-    const int numeratorY =
-        (2 * destination.y + 1 + 2 * int(densityY) * derive.Delta.y) *
-        int(imageHeight);
+    int rowY = 2 * destination.y + 1 + 2 * int(densityY) * derive.Delta.y;
+    if (derive.Delta.z != 0) {
+        // A captured attachment: window rows bottom-up.
+        rowY = 2 * int(densityY) * int(sourceNativeHeight) - rowY;
+    }
+    const int numeratorY = rowY * int(imageHeight);
     const int denominatorX = 2 * int(densityX) * int(sourceNativeWidth);
     const int denominatorY = 2 * int(densityY) * int(sourceNativeHeight);
     const int sx = clamp(floorDiv(numeratorX, denominatorX), 0,
