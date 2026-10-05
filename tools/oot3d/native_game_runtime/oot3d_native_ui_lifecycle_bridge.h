@@ -51,6 +51,8 @@ struct NativeUiLifecycleBridgeStats {
   // the lower screen, and its last highlighted panel (-1 before any).
   uint64_t version_choice_captures = 0;
   int32_t version_choice_last_selection = -1;
+  // Reveals of the choice on one screen (START, A or touch on the title).
+  uint64_t version_choice_reveals = 0;
   std::array<uint64_t, oot3d::ui::kUiSubsystemCount> calls_by_subsystem{};
   std::array<uint64_t, NativeUiSeamPhaseCount> calls_by_phase{};
 };
@@ -102,6 +104,17 @@ public:
   // The guest address of the version choice's own menu background
   // (common_bg01) while the choice is presented.
   std::optional<uint32_t> NativeVersionChoiceBackdropGuestAddress() const noexcept;
+  // One-screen profiles show the version choice only once the player reveals
+  // it (see ApplyTopScreenVersionChoiceReveal); the two-screen profile shows
+  // it as the game does. The reveal ends with the choice.
+  void SetVersionChoiceRevealRequired(bool required) noexcept {
+    mVersionChoiceRevealRequired = required;
+  }
+  bool NativeVersionChoiceAwaitingReveal() const noexcept;
+  // The title prompt before the panels enter: a press there reaches the game
+  // (which starts the panels) and also counts as the reveal.
+  bool NativeVersionChoicePrompting() const noexcept;
+  void RevealNativeVersionChoice() noexcept;
   std::optional<oot3d::ui::UiTextureIdentity> NativePauseSharedTextureIdentity(
       oot3d::ui::UiPauseSharedTextureSlot slot) const;
   std::optional<oot3d::ui::UiTextureIdentity>
@@ -139,6 +152,8 @@ private:
   TopScreenExtendedInputFrame mTopScreenInput;
   TopScreenOcarinaBrowser mTopScreenOcarina;
   TopScreenItemsHintRuntimeState mTopScreenItemsHint;
+  bool mVersionChoiceRevealRequired = false;
+  bool mVersionChoiceRevealed = false;
   TopScreenUiConfig mTopScreenConfig;
 };
 

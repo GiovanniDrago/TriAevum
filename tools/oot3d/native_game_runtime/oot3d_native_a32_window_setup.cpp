@@ -451,6 +451,8 @@ void NativeA32WindowSession::Setup() {
   auto &uiLifecycleBridge = uiLifecycleBridgeStorage.emplace(
       process.Memory());
   uiLifecycleBridge.SetTopScreenConfig(activeTopScreenConfig);
+  uiLifecycleBridge.SetVersionChoiceRevealRequired(
+      launch.UiProfile == Oot3dNativeGame::Oot3dUiProfile::TopScreen);
   widescreenProjection.UiLifecycleBridge = &uiLifecycleBridge;
   widescreenProjection.PicaCompositionDomain = &picaCompositionDomain;
   widescreenProjection.PicaCompositionTracker = &picaCompositionTracker;

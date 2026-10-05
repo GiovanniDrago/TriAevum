@@ -441,6 +441,61 @@ int main() {
   Require(!selectorBridge.NativeFrontendPresentationActive(),
           "a destroyed selector owner kept the frontend presentation");
 
+  // One screen: the game slides the cards in by itself, so the choice stays
+  // withheld (title visible, no touch ownership) until the player reveals it,
+  // and the reveal ends with the choice.
+  selectorBridge.SetVersionChoiceRevealRequired(true);
+  Require(selectorMemory.Write32(kOmoteUraSelectorOwner, kSelectorOwner) &&
+              selectorMemory.Write8(kSelectorOwner + 0x04U, 8U),
+          "cannot reopen the version choice fixture");
+  observeSelectorFrame(7U);
+  Require(selectorBridge.NativeVersionChoiceAwaitingReveal() &&
+              !selectorBridge.NativeFrontendPresentationActive() &&
+              !selectorBridge.NativeTouchPresentationActive() &&
+              !selectorBridge.NativeVersionChoiceBackdropGuestAddress(),
+          "an unrevealed version choice covered the title");
+  selectorBridge.RevealNativeVersionChoice();
+  Require(!selectorBridge.NativeVersionChoiceAwaitingReveal() &&
+              selectorBridge.NativeFrontendPresentationActive() &&
+              selectorBridge.NativeVersionChoiceBackdropGuestAddress() ==
+                  kSelectorBackdropTexture &&
+              selectorBridge.Stats().version_choice_reveals == 1U,
+          "the reveal did not present the version choice");
+  observeSelectorFrame(8U);
+  Require(selectorBridge.NativeFrontendPresentationActive(),
+          "the reveal did not last for the choice");
+  Require(selectorMemory.Write8(kSelectorOwner + 0x04U, 9U),
+          "cannot close the revealed version choice");
+  observeSelectorFrame(9U);
+  Require(selectorMemory.Write8(kSelectorOwner + 0x04U, 8U),
+          "cannot reopen the version choice fixture");
+  observeSelectorFrame(10U);
+  Require(selectorBridge.NativeVersionChoiceAwaitingReveal(),
+          "a closed choice kept its reveal for the next title");
+  // A press on the title prompt counts as the reveal and survives the
+  // prompt's own phases into the panels.
+  Require(selectorMemory.Write8(kSelectorOwner + 0x04U, 9U),
+          "cannot close the version choice fixture");
+  observeSelectorFrame(11U);
+  Require(selectorMemory.Write8(kSelectorOwner + 0x04U, 1U),
+          "cannot open the title prompt fixture");
+  observeSelectorFrame(12U);
+  Require(selectorBridge.NativeVersionChoicePrompting() &&
+              !selectorBridge.NativeVersionChoiceAwaitingReveal() &&
+              !selectorBridge.NativeFrontendPresentationActive(),
+          "the title prompt was not recognised");
+  selectorBridge.RevealNativeVersionChoice();
+  Require(selectorMemory.Write8(kSelectorOwner + 0x04U, 2U),
+          "cannot advance the title prompt fixture");
+  observeSelectorFrame(13U);
+  Require(selectorMemory.Write8(kSelectorOwner + 0x04U, 3U),
+          "cannot slide the panels in");
+  observeSelectorFrame(14U);
+  Require(!selectorBridge.NativeVersionChoiceAwaitingReveal() &&
+              selectorBridge.NativeFrontendPresentationActive() &&
+              selectorBridge.Stats().version_choice_reveals == 2U,
+          "a prompt press did not reveal the entering panels");
+
   std::cout << "oot3d_native_ui_lifecycle_bridge_tests: ok\n";
   return 0;
 }

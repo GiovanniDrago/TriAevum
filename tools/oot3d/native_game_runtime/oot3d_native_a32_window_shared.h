@@ -536,6 +536,7 @@ struct NativeCandidateDispatchState {
   uint32_t PreviousTopScreenButtons = 0U;
   Oot3dNativeGame::NativeA32PolledButtonLatch StartButtonLatch;
   Oot3dNativeGame::TopScreenStartRoutingState TopScreenStartRouting;
+  Oot3dNativeGame::TopScreenVersionChoiceRevealState TopScreenVersionChoiceReveal;
   Oot3dNativeGame::TopScreenPauseSystemOpenState TopScreenPauseSystemOpen;
   uint64_t TopScreenPauseStartCloseCalls = 0U;
   uint64_t TopScreenPauseSystemOpenCalls = 0U;

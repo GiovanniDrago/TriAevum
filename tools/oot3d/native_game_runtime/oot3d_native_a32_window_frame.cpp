@@ -651,6 +651,13 @@ bool NativeA32WindowSession::SampleGuestRefreshInput(
       nativeCandidateDispatch.TopScreenUiProfile,
       nativeCandidateDispatch.StartButtonLatch,
       nativeCandidateDispatch.TopScreenStartRouting);
+  if (nativeCandidateDispatch.TopScreenUiProfile &&
+      Oot3dNativeGame::ApplyTopScreenVersionChoiceReveal(
+          inputFrame, uiLifecycleBridge.NativeVersionChoiceAwaitingReveal(),
+          uiLifecycleBridge.NativeVersionChoicePrompting(),
+          nativeCandidateDispatch.TopScreenVersionChoiceReveal)) {
+    uiLifecycleBridge.RevealNativeVersionChoice();
+  }
   inputDiagnostics.Observe(inputFrame);
   if (inputFrame.Exit) {
     window.Close();

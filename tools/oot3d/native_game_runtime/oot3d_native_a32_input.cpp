@@ -413,6 +413,45 @@ bool ResolveNativeA32TouchInputEnabled(
     return nativeFrontendPresentationActive || nativePausePageActive;
 }
 
+bool ApplyTopScreenVersionChoiceReveal(
+    NativeA32InputFrame& frame, bool awaitingReveal, bool prompting,
+    TopScreenVersionChoiceRevealState& state) noexcept {
+    const uint32_t gestureButtons =
+        NativeA32HidButtonMask(NativeA32HidButton::Start) |
+        NativeA32HidButtonMask(NativeA32HidButton::A);
+    const bool gesture = (frame.Hid.Buttons & gestureButtons) != 0U ||
+                         frame.Hid.TouchPressed;
+    const auto withhold = [&frame] {
+        frame.Hid.Buttons = 0U;
+        frame.Hid.CirclePadX = 0;
+        frame.Hid.CirclePadY = 0;
+        frame.Hid.TouchPressed = false;
+    };
+    if (state.GestureHeld) {
+        if (gesture) {
+            withhold();
+            return false;
+        }
+        state.GestureHeld = false;
+    }
+    if (prompting && !awaitingReveal) {
+        if (!gesture) {
+            return false;
+        }
+        state.GestureHeld = true;
+        return true;
+    }
+    if (!awaitingReveal) {
+        return false;
+    }
+    withhold();
+    if (!gesture) {
+        return false;
+    }
+    state.GestureHeld = true;
+    return true;
+}
+
 void ApplyTopScreenStartRouting(NativeA32InputFrame& frame,
                                 bool topScreenProfile,
                                 bool routeGameplayStartToItems,

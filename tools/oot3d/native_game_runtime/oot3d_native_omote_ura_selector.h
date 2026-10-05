@@ -72,4 +72,11 @@ IsNativeVersionChoicePresented(const NativeOmoteUraSelectorState &state) noexcep
          state.Phase >= 3U && state.Phase <= 8U;
 }
 
+// The two-version title prompt ("PRESS START") before the panels enter.
+constexpr bool
+IsNativeVersionChoicePrompting(const NativeOmoteUraSelectorState &state) noexcept {
+  return state.LaneEnabled && state.Owner != 0U && state.Variant == 1U &&
+         (state.Phase == 1U || state.Phase == 2U);
+}
+
 } // namespace Oot3dNativeGame

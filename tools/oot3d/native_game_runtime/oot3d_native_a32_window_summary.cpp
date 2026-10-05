@@ -1503,6 +1503,7 @@ void WriteNativeA32WindowRuntimeSummary(const NativeA32WindowSummaryInputs &in) 
                    {"version_choice_captures", bridge.version_choice_captures},
                    {"version_choice_last_selection",
                     bridge.version_choice_last_selection},
+                   {"version_choice_reveals", bridge.version_choice_reveals},
                    {"native_bottom_frontend_presentation_frames",
                     picaStats.NativeBottomFrontendPresentationCount},
                    {"native_bottom_overlay_frames", 0U},

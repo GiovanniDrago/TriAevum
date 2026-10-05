@@ -117,6 +117,7 @@ void Oot3dNativeUiLifecycleBridge::ResetAfterStateLoad(
   mLatestState = {};
   mHasLatestState = false;
   mOmoteUraSelector = {};
+  mVersionChoiceRevealed = false;
   mObservedSubsystems.fill(false);
   mLastObservedSubsystem.reset();
   mTopScreenPauseProjection = {};
@@ -543,7 +544,8 @@ bool Oot3dNativeUiLifecycleBridge::NativeFrontendPresentationActive()
   // The title's normal / Master Quest choice is a lower-screen menu of the
   // root pause UI that runs while game_mode is still 1, so it has its own
   // native discriminator.
-  if (mHasLatestState && IsNativeVersionChoicePresented(mOmoteUraSelector)) {
+  if (mHasLatestState && IsNativeVersionChoicePresented(mOmoteUraSelector) &&
+      !NativeVersionChoiceAwaitingReveal()) {
     return true;
   }
   // FileSelect owns the out-of-game options as well as the slot list.
@@ -564,10 +566,30 @@ std::optional<uint32_t>
 Oot3dNativeUiLifecycleBridge::NativeVersionChoiceBackdropGuestAddress()
     const noexcept {
   if (!mHasLatestState || !IsNativeVersionChoicePresented(mOmoteUraSelector) ||
+      NativeVersionChoiceAwaitingReveal() ||
       mOmoteUraSelector.BackdropTexture == 0U) {
     return std::nullopt;
   }
   return mOmoteUraSelector.BackdropTexture;
+}
+
+bool Oot3dNativeUiLifecycleBridge::NativeVersionChoiceAwaitingReveal()
+    const noexcept {
+  return mVersionChoiceRevealRequired && !mVersionChoiceRevealed &&
+         mHasLatestState && IsNativeVersionChoicePresented(mOmoteUraSelector);
+}
+
+bool Oot3dNativeUiLifecycleBridge::NativeVersionChoicePrompting()
+    const noexcept {
+  return mVersionChoiceRevealRequired && !mVersionChoiceRevealed &&
+         mHasLatestState && IsNativeVersionChoicePrompting(mOmoteUraSelector);
+}
+
+void Oot3dNativeUiLifecycleBridge::RevealNativeVersionChoice() noexcept {
+  if (NativeVersionChoiceAwaitingReveal() || NativeVersionChoicePrompting()) {
+    mVersionChoiceRevealed = true;
+    ++mStats.version_choice_reveals;
+  }
 }
 
 std::optional<uint32_t>
@@ -650,6 +672,9 @@ void Oot3dNativeUiLifecycleBridge::CaptureState() {
   if (IsNativeVersionChoicePresented(mOmoteUraSelector)) {
     ++mStats.version_choice_captures;
     mStats.version_choice_last_selection = mOmoteUraSelector.Selection;
+  } else if (!IsNativeVersionChoicePrompting(mOmoteUraSelector)) {
+    // The next title waits for the player again.
+    mVersionChoiceRevealed = false;
   }
   mRouter.ObserveState(capture.state);
   TopScreenItemsHintCursorBounds itemsHintCursor;

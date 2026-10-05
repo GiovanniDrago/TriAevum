@@ -422,6 +422,7 @@ bool NativeA32WindowSession::LoadState(const std::filesystem::path &path,
   nativeCandidateDispatch.PreviousTopScreenButtons = 0U;
   nativeCandidateDispatch.StartButtonLatch = {};
   nativeCandidateDispatch.TopScreenStartRouting = {};
+  nativeCandidateDispatch.TopScreenVersionChoiceReveal = {};
   nativeCandidateDispatch.TopScreenPauseSystemOpen = {};
   nativeCandidateDispatch.TopScreenViewportDrawPhase = 0U;
   nativeCandidateDispatch.TopScreenViewportDrawArgument = 0U;

@@ -262,7 +262,9 @@ bool ResolveNativeA32TouchInputEnabled(
   return Oot3dNativeGame::ResolveNativeA32TouchInputEnabled(
       topScreenUiProfile,
       uiLifecycleBridge.NativeTouchPresentationActive(),
-      uiLifecycleBridge.NativeFrontendPresentationActive(),
+      // A touch on the title also reveals the withheld version choice.
+      uiLifecycleBridge.NativeFrontendPresentationActive() ||
+          uiLifecycleBridge.NativeVersionChoiceAwaitingReveal(),
       nativePausePageActive);
 }
 

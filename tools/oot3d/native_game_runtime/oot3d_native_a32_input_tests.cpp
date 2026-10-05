@@ -677,6 +677,73 @@ int main(int argc, char** argv) {
 
     ReleaseTopScreenStartRoutingLatch(false, startRouting);
 
+    // One-screen title: the withheld version choice receives nothing until a
+    // START, A or touch press reveals it; that press never reaches the guest.
+    {
+        const uint32_t start = NativeA32HidButtonMask(NativeA32HidButton::Start);
+        const uint32_t a = NativeA32HidButtonMask(NativeA32HidButton::A);
+        const uint32_t right = NativeA32HidButtonMask(NativeA32HidButton::DpadRight);
+        TopScreenVersionChoiceRevealState reveal;
+        NativeA32InputFrame idle;
+        idle.Hid.Buttons = right;
+        idle.Hid.CirclePadX = 120;
+        Require(!ApplyTopScreenVersionChoiceReveal(idle, true, false, reveal) &&
+                    idle.Hid.Buttons == 0U && idle.Hid.CirclePadX == 0 &&
+                    !reveal.GestureHeld,
+                "withheld version choice received navigation");
+        NativeA32InputFrame press;
+        press.Hid.Buttons = start;
+        Require(ApplyTopScreenVersionChoiceReveal(press, true, false, reveal) &&
+                    press.Hid.Buttons == 0U && reveal.GestureHeld,
+                "START did not reveal the version choice");
+        NativeA32InputFrame held;
+        held.Hid.Buttons = start | right;
+        Require(!ApplyTopScreenVersionChoiceReveal(held, false, false, reveal) &&
+                    held.Hid.Buttons == 0U,
+                "the revealing START reached the revealed choice");
+        NativeA32InputFrame released;
+        released.Hid.Buttons = right;
+        Require(!ApplyTopScreenVersionChoiceReveal(released, false, false, reveal) &&
+                    released.Hid.Buttons == right && !reveal.GestureHeld,
+                "input after the revealing release was withheld");
+        NativeA32InputFrame confirm;
+        confirm.Hid.Buttons = a;
+        Require(!ApplyTopScreenVersionChoiceReveal(confirm, false, false, reveal) &&
+                    confirm.Hid.Buttons == a,
+                "A did not reach the revealed choice");
+        TopScreenVersionChoiceRevealState touchReveal;
+        NativeA32InputFrame touch;
+        touch.Hid.TouchPressed = true;
+        touch.Hid.TouchX = 100U;
+        Require(ApplyTopScreenVersionChoiceReveal(touch, true, false, touchReveal) &&
+                    !touch.Hid.TouchPressed,
+                "a touch did not reveal the version choice");
+        TopScreenVersionChoiceRevealState aReveal;
+        NativeA32InputFrame aPress;
+        aPress.Hid.Buttons = a;
+        Require(ApplyTopScreenVersionChoiceReveal(aPress, true, false, aReveal) &&
+                    aPress.Hid.Buttons == 0U,
+                "A did not reveal the version choice");
+        // START on the title prompt reaches the game (which brings the panels
+        // in) and is the reveal; holding it must not confirm a panel.
+        TopScreenVersionChoiceRevealState promptReveal;
+        NativeA32InputFrame promptStart;
+        promptStart.Hid.Buttons = start;
+        Require(ApplyTopScreenVersionChoiceReveal(promptStart, false, true, promptReveal) &&
+                    promptStart.Hid.Buttons == start && promptReveal.GestureHeld,
+                "START on the title prompt was not passed and counted as the reveal");
+        NativeA32InputFrame promptHeld;
+        promptHeld.Hid.Buttons = start;
+        Require(!ApplyTopScreenVersionChoiceReveal(promptHeld, false, false, promptReveal) &&
+                    promptHeld.Hid.Buttons == 0U,
+                "the held prompt START reached the panels");
+        NativeA32InputFrame promptIdle;
+        promptIdle.Hid.Buttons = right;
+        Require(!ApplyTopScreenVersionChoiceReveal(promptIdle, false, true, aReveal) &&
+                    promptIdle.Hid.Buttons == right,
+                "the title prompt withheld unrelated input");
+    }
+
     const auto path = std::filesystem::temp_directory_path() /
                       "oot3d_native_a32_input_timeline.json";
     const auto controlsPath = std::filesystem::temp_directory_path() /

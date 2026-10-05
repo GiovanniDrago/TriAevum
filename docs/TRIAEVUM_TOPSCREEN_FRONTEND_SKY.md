@@ -60,6 +60,22 @@ removes it like CommonBackground00 (the user's choice, 2026-10-05): the cards
 and header lie over the title scene. The native title logo, still drawn on the
 upper screen, shows in the gap between the cards.
 
+On hardware the game slides the cards onto the lower screen by itself shortly
+after the title appears, while the upper screen keeps the title. On one screen
+that covered the title without any input (user report, 2026-10-05), so
+TopScreen withholds the choice until the player acts
+(`ApplyTopScreenVersionChoiceReveal`, bridge `NativeVersionChoiceAwaitingReveal`):
+the title stays, and every guest input is withheld, until START, A or a touch
+reveals the cards. That press only reveals and is swallowed until released, so
+it never confirms a card. A press during the native title prompt (selector
+phases 1-2, before the panels enter) reaches the game as on hardware and counts
+as the reveal, so one press always suffices. The reveal lasts until the choice
+closes; the OoT3D two-screen profile is unchanged. Idle boot: the title stays
+up through frame 1450 with no reveal; S28, S01 early and S23 produce their
+accepted captures unchanged; S01 late (first START after the hidden panels have
+entered) now shows the choice on its first START and reaches File Select on the
+second, as the new captures show.
+
 ## Verification
 
 Fast ROM-free regression test (about three seconds including compilation):

@@ -145,6 +145,21 @@ bool ResolveNativeA32TouchInputEnabled(
     bool nativeFrontendPresentationActive,
     bool nativePausePageActive) noexcept;
 
+// On one screen the title keeps its "PRESS START" until the player acts: the
+// game slides the normal / Master Quest cards onto the lower screen by itself,
+// so TopScreen withholds them and every guest input until a START, A or touch
+// press reveals them. That press only reveals (it is swallowed until released,
+// so it cannot also confirm a card). A press during the title prompt, before
+// the panels enter, reaches the game as on hardware and counts as the reveal.
+// Returns true on the revealing sample.
+struct TopScreenVersionChoiceRevealState {
+    bool GestureHeld = false;
+};
+
+bool ApplyTopScreenVersionChoiceReveal(
+    NativeA32InputFrame& frame, bool awaitingReveal, bool prompting,
+    TopScreenVersionChoiceRevealState& state) noexcept;
+
 // The TopScreen payload routes START to the native Items touch target while
 // gameplay owns the UI. Once Pause owns the UI, this boundary leaves START
 // available for the source-level pause-close dispatcher. Routing state changes
