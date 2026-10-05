@@ -91,7 +91,8 @@ public:
   // first (see Oot3dPicaVisualFrameAccumulator::FinishFrames).
   std::vector<Oot3dPicaVisualFrame>
   FinishFrames(const Oot3dPicaDisplayTransferSubmission &topTransfer,
-               std::span<const uint32_t> displayOutputs);
+               std::span<const uint32_t> displayOutputs,
+               std::span<const Oot3dPicaViewportState> continuationViewports = {});
   // GPU completion may precede scanout. Retain the native prefix in the complete
   // frame rather than consuming the only interpolation source.
   bool ViewDependencyWork(Oot3dPicaVisualFrameViewSample& output);

@@ -203,9 +203,13 @@ class Oot3dPicaVisualFrameAccumulator final {
     // frame. Other transfers of that source (captures into other buffers)
     // stay inside their frame. Work of the guest's next frame, drawn after the
     // selected snapshot into its source, stays pending for the next call.
+    // Draws into the source on one of continuationViewports (compared by
+    // corner and half extents) are not next-frame work: a guest frame that
+    // draws there after its snapshot keeps them.
     std::vector<Oot3dPicaVisualFrame>
     FinishFrames(const Oot3dPicaDisplayTransferSubmission& topTransfer,
-                 std::span<const uint32_t> displayOutputs);
+                 std::span<const uint32_t> displayOutputs,
+                 std::span<const Oot3dPicaViewportState> continuationViewports = {});
     size_t PendingDrawCount() const;
     // Live plans the accumulator has not published as a frame yet. They still
     // pin the copy versions their textures reference.

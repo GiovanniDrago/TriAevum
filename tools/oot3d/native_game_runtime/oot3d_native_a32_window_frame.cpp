@@ -1592,8 +1592,20 @@ void NativeA32WindowSession::PresentVisualFrame(
           lastSelectedTopTransferCompletionId =
               topSelection.CompletionId;
           ++picaStats.SelectedTopTransferCount;
+          // TopScreen draws the relocated lower menu onto the upper target
+          // after the upper snapshot: that work completes the same frame.
+          const bool relocatedFrontend =
+              Oot3dNativeGame::ShouldSuppressTopScreenFrontendBackdrop(
+                  launch.UiProfile,
+                  uiLifecycleBridge.NativeFrontendPresentationActive());
+          const auto frontendMenuCanvases =
+              Oot3dNativeGame::TopScreenFrontendMenuCanvases();
           auto finishedFrames = picaPresentationScheduler.FinishFrames(
-              topSelection, topDisplayOutputs);
+              topSelection, topDisplayOutputs,
+              relocatedFrontend
+                  ? std::span<const Oot3dNativeGame::Oot3dPicaViewportState>(
+                        frontendMenuCanvases)
+                  : std::span<const Oot3dNativeGame::Oot3dPicaViewportState>());
           if (std::find(topDisplayOutputs.begin(), topDisplayOutputs.end(),
                         topSelection.OutputPhysicalAddress) == topDisplayOutputs.end()) {
             if (topDisplayOutputs.size() == 4U)
@@ -1615,10 +1627,7 @@ void NativeA32WindowSession::PresentVisualFrame(
                 sceneViewProbe.Stats().LastPlayStateAddress,
                 finished->Sequence);
             ++visualStats.SnapshotCount;
-            suppressTopScreenBackdrop =
-                Oot3dNativeGame::ShouldSuppressTopScreenFrontendBackdrop(
-                    launch.UiProfile,
-                    uiLifecycleBridge.NativeFrontendPresentationActive());
+            suppressTopScreenBackdrop = relocatedFrontend;
             completedFrame =
                 std::make_shared<Oot3dNativeGame::Oot3dPicaVisualFrame>(
                     std::move(*finished));
@@ -1655,6 +1664,8 @@ void NativeA32WindowSession::PresentVisualFrame(
                   false, nativeTemporalSample,
                   kNativeDependencyRenderTargetNamespace);
               if (visualInterpolationEnabled) {
+                Oot3dNativeGame::ComposeTopScreenFrontendFrame(
+                    superseded, suppressTopScreenBackdrop);
                 preparedVisualTransition.Reset();
                 if (latestVisualFrame.has_value())
                   previousVisualFrame = std::move(latestVisualFrame);

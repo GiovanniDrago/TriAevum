@@ -536,6 +536,82 @@ int main() {
                     frames[0].MemoryFills.size() == 1U && frames[0].DisplayTransfers.size() == 1U &&
                     behind.PendingDrawCount() == 0U,
                 "retained next-frame work was not closed with its own snapshot");
+
+        // TopScreen draws the lower menu onto the upper target after the
+        // upper snapshot. On a continuation canvas that work completes the
+        // snapshot's frame, also an earlier one; the next frame still starts
+        // at its first other draw into the source.
+        Oot3dNativeGame::Oot3dPicaViewportState sceneCanvas;
+        sceneCanvas.HalfWidth = 240.0F;
+        sceneCanvas.HalfHeight = 200.0F;
+        Oot3dNativeGame::Oot3dPicaViewportState menuCanvas = sceneCanvas;
+        menuCanvas.CornerY = 40;
+        menuCanvas.HalfHeight = 160.0F;
+        const std::array<Oot3dNativeGame::Oot3dPicaViewportState, 1> continuation{menuCanvas};
+        const auto sourceDraw = [&](uint64_t id, const Oot3dNativeGame::Oot3dPicaViewportState& viewport) {
+            auto draw = cachedPlan;
+            draw.SubmissionId = id;
+            draw.State.Framebuffer.ColorPhysicalAddress = firstTop.InputPhysicalAddress;
+            draw.State.Viewport = viewport;
+            return draw;
+        };
+        const auto snapshot = [&](uint32_t completion, uint32_t output, uint64_t afterDraw) {
+            auto transfer = firstTop;
+            transfer.CompletionId = completion;
+            transfer.OutputPhysicalAddress = output;
+            transfer.AfterDrawSubmissionId = afterDraw;
+            return transfer;
+        };
+        auto bottomSnapshot = snapshot(21U, 0x18800000U, 301U);
+        bottomSnapshot.InputPhysicalAddress = 0x18300000U;
+        const auto menuTop = snapshot(20U, outputs[0], 300U);
+        const auto appendMenuFrame = [&]() {
+            behind.Append(sourceDraw(300U, sceneCanvas));
+            behind.Append(menuTop);
+            behind.Append(sourceDraw(301U, menuCanvas));
+            behind.Append(bottomSnapshot);
+            behind.Append(sourceDraw(302U, sceneCanvas));
+        };
+        appendMenuFrame();
+        frames = behind.FinishFrames(menuTop, outputs, continuation);
+        Require(frames.size() == 1U && frames[0].Draws.size() == 2U &&
+                    frames[0].Draws.back().SubmissionId == 301U &&
+                    frames[0].DisplayTransfers.size() == 2U &&
+                    behind.PendingDrawCount() == 1U,
+                "a relocated menu drawn after the snapshot left its frame");
+        behind.Append(snapshot(22U, outputs[1], 302U));
+        frames = behind.FinishFrames(snapshot(22U, outputs[1], 302U), outputs, continuation);
+        Require(frames.size() == 1U && frames[0].Draws.size() == 1U &&
+                    frames[0].Draws[0].SubmissionId == 302U && behind.PendingDrawCount() == 0U,
+                "the frame after a relocated menu did not start at its scene");
+        appendMenuFrame();
+        frames = behind.FinishFrames(menuTop, outputs);
+        Require(frames.size() == 1U && frames[0].Draws.size() == 1U &&
+                    behind.PendingDrawCount() == 2U,
+                "without a continuation canvas a later source draw stayed in the frame");
+        frames = behind.FinishFrames(snapshot(23U, outputs[1], 302U), outputs);
+        Require(behind.PendingDrawCount() == 0U, "cannot drain the continuation fixture");
+        // Two guest frames, each with its relocated menu, before the host
+        // selects the second.
+        behind.Append(sourceDraw(400U, sceneCanvas));
+        behind.Append(snapshot(30U, outputs[0], 400U));
+        behind.Append(sourceDraw(401U, menuCanvas));
+        auto firstBottom = bottomSnapshot;
+        firstBottom.CompletionId = 31U;
+        firstBottom.AfterDrawSubmissionId = 401U;
+        behind.Append(firstBottom);
+        behind.Append(sourceDraw(402U, sceneCanvas));
+        const auto secondMenuTop = snapshot(32U, outputs[1], 402U);
+        behind.Append(secondMenuTop);
+        behind.Append(sourceDraw(403U, menuCanvas));
+        frames = behind.FinishFrames(secondMenuTop, outputs, continuation);
+        Require(frames.size() == 2U && frames[0].Draws.size() == 2U &&
+                    frames[0].Draws.back().SubmissionId == 401U &&
+                    frames[0].DisplayTransfers.size() == 2U &&
+                    frames[1].Draws.size() == 2U && frames[1].Draws[0].SubmissionId == 402U &&
+                    frames[1].Draws.back().SubmissionId == 403U &&
+                    behind.PendingDrawCount() == 0U,
+                "an earlier guest frame lost its relocated menu");
     }
     const auto transition =
         Oot3dNativeGame::AnalyzeOot3dPicaVisualTransition(

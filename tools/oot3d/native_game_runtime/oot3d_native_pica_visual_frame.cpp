@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <unordered_map>
@@ -1704,7 +1705,8 @@ std::optional<Oot3dPicaVisualFrame> Oot3dPicaVisualFrameAccumulator::Finish(
 
 std::vector<Oot3dPicaVisualFrame> Oot3dPicaVisualFrameAccumulator::FinishFrames(
     const Oot3dPicaDisplayTransferSubmission& topTransfer,
-    std::span<const uint32_t> displayOutputs) {
+    std::span<const uint32_t> displayOutputs,
+    std::span<const Oot3dPicaViewportState> continuationViewports) {
     std::vector<Oot3dPicaVisualFrame> frames;
     if (mPendingDraws.empty()) {
         return frames;
@@ -1727,13 +1729,29 @@ std::vector<Oot3dPicaVisualFrame> Oot3dPicaVisualFrameAccumulator::FinishFrames(
     // buffer: from the first later draw into the selected transfer's source,
     // the work belongs to the next visual frame and stays pending (the
     // selected frame's later draws into other targets, such as the bottom
-    // screen, remain in it).
+    // screen, remain in it). Draws into the source on a continuation canvas
+    // (a lower-screen menu relocated onto the upper target after the upper
+    // snapshot) still complete the frame that snapshot belongs to.
+    const auto continuesFrame = [&](const Oot3dPicaVulkanDrawPlan& draw) {
+        const auto& viewport = draw.State.Viewport;
+        return std::any_of(continuationViewports.begin(), continuationViewports.end(),
+                           [&](const Oot3dPicaViewportState& canvas) {
+                               return viewport.CornerX == canvas.CornerX &&
+                                      viewport.CornerY == canvas.CornerY &&
+                                      viewport.HalfWidth == canvas.HalfWidth &&
+                                      viewport.HalfHeight == canvas.HalfHeight;
+                           });
+    };
+    const auto startsNextFrame = [&](const Oot3dPicaVulkanDrawPlan& draw, uint64_t snapshotDraw) {
+        return draw.SubmissionId > snapshotDraw &&
+               draw.State.Framebuffer.ColorPhysicalAddress == topTransfer.InputPhysicalAddress &&
+               !continuesFrame(draw);
+    };
     std::vector<Oot3dPicaVulkanDrawPlan> nextDraws;
     std::vector<Oot3dPicaMemoryFillSubmission> nextFills;
     std::vector<Oot3dPicaDisplayTransferSubmission> nextTransfers;
     const auto next = std::find_if(mPendingDraws.begin(), mPendingDraws.end(), [&](const auto& draw) {
-        return draw.SubmissionId > topTransfer.AfterDrawSubmissionId &&
-               draw.State.Framebuffer.ColorPhysicalAddress == topTransfer.InputPhysicalAddress;
+        return startsNextFrame(draw, topTransfer.AfterDrawSubmissionId);
     });
     if (next != mPendingDraws.begin() && next != mPendingDraws.end()) {
         const uint64_t nextStart = next->SubmissionId;
@@ -1774,6 +1792,17 @@ std::vector<Oot3dPicaVisualFrame> Oot3dPicaVisualFrameAccumulator::FinishFrames(
     if (!drawsAfter) {
         boundaries.clear();
         ends.clear();
+    }
+    // An earlier guest frame likewise keeps its continuation-canvas work, up
+    // to the following frame's first draw into the source.
+    if (!continuationViewports.empty()) {
+        for (auto& end : ends) {
+            const auto following = std::find_if(mPendingDraws.begin(), mPendingDraws.end(),
+                                                [&](const auto& draw) { return startsNextFrame(draw, end); });
+            if (following != mPendingDraws.begin() && following != mPendingDraws.end()) {
+                end = std::max(end, std::prev(following)->SubmissionId);
+            }
+        }
     }
     std::vector<Oot3dPicaDisplayTransferSubmission> tops;
     for (const auto* boundary : boundaries) tops.push_back(*boundary);

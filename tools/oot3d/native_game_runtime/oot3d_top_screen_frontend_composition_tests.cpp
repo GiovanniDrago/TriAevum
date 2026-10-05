@@ -19,6 +19,14 @@ int main() {
         assert(!ResolveTopScreenFrontendTargetCommand({false, 0x401, half}, true).Handled);
         assert(!ResolveTopScreenFrontendTargetCommand({true, 0x410, half}, true).Handled);
     }
+    // The continuation canvases are the menu viewports above, as PICA
+    // corner and half extents: the native 480x400 upper target's centered
+    // 320-row menu, and its half-width mode.
+    const auto canvases = TopScreenFrontendMenuCanvases();
+    assert(canvases[0].CornerX == 0 && canvases[0].CornerY == 40 &&
+           canvases[0].HalfWidth == 240.0F && canvases[0].HalfHeight == 160.0F);
+    assert(canvases[1].CornerX == 0 && canvases[1].CornerY == 40 &&
+           canvases[1].HalfWidth == 120.0F && canvases[1].HalfHeight == 160.0F);
     Oot3dPicaDecodedDrawState state{};
     state.Framebuffer.ColorPhysicalAddress = 100;
     state.Viewport.HalfWidth = 240;

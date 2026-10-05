@@ -773,6 +773,17 @@ continuation skips exactly that. `oot3d_native_pica_vulkan_bridge_tests` covers
 the case: the flush, the split, both frames' canonical continuations and no
 duplicate draw.
 
+Second correction (2026-10-05). The TopScreen frontend draws its relocated
+lower menu onto the upper target after the upper snapshot, within the same
+guest frame. The split took it for the next frame's work, so File Select, Name
+Entry and the version choice were drawn over by the next frame's scene and
+never shown. `FinishFrames` accepts continuation viewports: a later draw into
+the source on one of them continues the frame (also for a superseded frame, up
+to the following frame's first other draw into the source). The window passes
+the relocated menu canvases only while that relocation is active, so every
+other frame splits as before (`oot3d_native_pica_vulkan_plan_tests`;
+`TRIAEVUM_TOPSCREEN_FRONTEND_SKY.md`).
+
 ## Commit discipline
 
 Each significant step uses two commits when both repositories change:

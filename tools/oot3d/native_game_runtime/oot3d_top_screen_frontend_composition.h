@@ -4,6 +4,8 @@
 #include "oot3d_top_screen_mod_profile.h"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 
 namespace Oot3dNativeGame {
 
@@ -24,6 +26,22 @@ inline TopScreenPauseTargetPlan ResolveTopScreenFrontendTargetCommand(
     plan.ViewportY = command.NativeCommand == 0x401U ? 40U : 0U;
     plan.ViewportHeight = command.NativeCommand == 0x401U ? 320U : 400U;
     return plan;
+}
+
+// The relocated lower menu's canvases on the upper target, in both renderer
+// width modes. The guest draws that menu after its upper snapshot, so these
+// draws continue the snapshot's visual frame (see FinishFrames).
+inline std::array<Oot3dPicaViewportState, 2> TopScreenFrontendMenuCanvases() noexcept {
+    std::array<Oot3dPicaViewportState, 2> canvases{};
+    for (size_t index = 0; index < canvases.size(); ++index) {
+        const auto plan =
+            ResolveTopScreenFrontendTargetCommand({true, 0x401U, index != 0U}, true);
+        canvases[index].CornerX = static_cast<int16_t>(plan.ViewportX);
+        canvases[index].CornerY = static_cast<int16_t>(plan.ViewportY);
+        canvases[index].HalfWidth = static_cast<float>(plan.ViewportWidth) * 0.5F;
+        canvases[index].HalfHeight = static_cast<float>(plan.ViewportHeight) * 0.5F;
+    }
+    return canvases;
 }
 
 struct TopScreenFrontendCanvas {
