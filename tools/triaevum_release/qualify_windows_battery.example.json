@@ -143,6 +143,48 @@
         "expect": {"exit": 0, "captures": 4, "dlss_upscale_min_total": 100, "native_ui_overlay_min_total": 100, "screen_content_max": 0, "own_picture_max": 0, "reference": true}
       },
       {
+        "name": "S14-fsr-hud-pause",
+        "_about": "FSR 2 Ultra Performance with the HUD and a pause roundtrip: the scene is upscaled and the native UI laid over the output.",
+        "checkpoint": "<HUD checkpoint>",
+        "timeline": "tools/oot3d/native_game_runtime/input_timelines/topscreen_hud_pause_roundtrip.json",
+        "config": "<settings JSON of S14>",
+        "settings": {"Graphics": {"AA": {"Mode": "Upscaler", "Upscaler": {"Provider": "FSR", "Quality": "UltraPerformance"}}}},
+        "sizes": ["1720x720"],
+        "frames": 300,
+        "shot_start": 20,
+        "shot_interval": 80,
+        "max_seconds": 300,
+        "expect": {"exit": 0, "captures": 4, "fsr_upscale_min_total": 100, "native_ui_overlay_min_total": 100, "screen_content_max": 0, "own_picture_max": 0, "reference": true}
+      },
+      {
+        "name": "S14-taa-hud-pause",
+        "_about": "TAA resolved before the native UI.",
+        "checkpoint": "<HUD checkpoint>",
+        "timeline": "tools/oot3d/native_game_runtime/input_timelines/topscreen_hud_pause_roundtrip.json",
+        "config": "<settings JSON of S14>",
+        "settings": {"Graphics": {"AA": {"Mode": "TAA"}}},
+        "sizes": ["1720x720"],
+        "frames": 300,
+        "shot_start": 20,
+        "shot_interval": 80,
+        "max_seconds": 300,
+        "expect": {"exit": 0, "captures": 4, "taa_min_total": 100, "before_ui_aa_min_total": 100, "screen_content_max": 0, "own_picture_max": 0, "reference": true}
+      },
+      {
+        "name": "S14-smaa-hud-pause",
+        "_about": "SMAA 1x resolved before the native UI.",
+        "checkpoint": "<HUD checkpoint>",
+        "timeline": "tools/oot3d/native_game_runtime/input_timelines/topscreen_hud_pause_roundtrip.json",
+        "config": "<settings JSON of S14>",
+        "settings": {"Graphics": {"AA": {"Mode": "SMAA1x"}}},
+        "sizes": ["1720x720"],
+        "frames": 300,
+        "shot_start": 20,
+        "shot_interval": 80,
+        "max_seconds": 300,
+        "expect": {"exit": 0, "captures": 4, "smaa_min_total": 100, "before_ui_aa_min_total": 100, "screen_content_max": 0, "own_picture_max": 0, "reference": true}
+      },
+      {
         "name": "S01-title-late-start",
         "_about": "Clean boot with the save data seed: Start after the title presentation reaches the game selection.",
         "timeline": "tools/oot3d/native_game_runtime/input_timelines/title_start_late_file_select.json",

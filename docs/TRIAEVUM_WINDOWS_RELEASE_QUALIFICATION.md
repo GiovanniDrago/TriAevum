@@ -1,6 +1,6 @@
 # TriAevum: Windows qualification of the line after alpha.2c
 
-Status: inventory and battery design, 2026-10-04. Branch `qual/windows-next`
+Status: inventory and battery design, 2026-10-04; battery results to 2026-10-05. Branch `qual/windows-next`
 (from `perf/aot-levers` `cf4d331`). This record lists every development
 intended since the last good release, how each one is proven to work on
 Windows, and what is open. It is not a release approval.
@@ -71,19 +71,20 @@ absent from the line), `experimental` (excluded from the release).
 | A2 | Atomic writes keep temporary paths inside the legacy limit (Forge in a deep root, #53) | `4a09933`, reconstruction 3.1 | L2 `test_common` path capacity; L6 install into a padded root | open |
 | A3 | Forge prepares the renderer's startup programs during installation | `6d2f40a` | L6 install, then first launch reports prepared programs | open |
 | A4 | USA hint movies get the names the EUR module opens | `e5fbc5a` | L2 Forge suite; L5 movie scenario on a USA install (if a USA input exists) | open |
-| A5 | Developer PGO profile accepted for title modules (developer path only) | `41cc7b5` | L2; L6 confirms the release module build options | open |
+| A5 | Developer PGO profile accepted for title modules; a profiled module is published with its profile | `41cc7b5`, `924d93a` | L2: `prepare_release --title-profile` stores the profile in the translated title source and the audit requires it for a profiled module (`test_precompiled_release`). L6 confirms the release module build options | pass (L2); L6 open |
 | A6 | iMMERSE module isolated with its own licence, release layout maps both licence files | `b94b3b8` | L2 release audit tests; L6 audit | pass (gate `verify-immerse`) |
 | A7 | Source-archive UI contract reads the CMake area files | `27e5a10` | L2 | pass |
+| A8 | Forge's portable shader corpus matches the release's program generator | `TRIAEVUM_BUNDLED_FORGE_SHADER_CORPUS.md` | L6: regenerate the corpus with the release runtime. The corpus used by the qualification runs (`expanded-union.o3ps`, 2026-09-10) resolves 0 of 29 programs of the Kokiri walk: its modules are keyed by the generated source text, which the preparation work changed. With hybrid preparation a stale corpus costs no stall (S17), only background compilation on a first launch | open (L6) |
 
 ### 4.B Startup, shader preparation and stutter
 
 | ID | Development | Evidence | Check | Status |
 | --- | --- | --- | --- | --- |
-| B1 | Precompiled native, temporal, toon, uber, caster and pass families; no shader compilation in the product | `247f234`..`4d0e39b`, `86bb942`, `271b9a5` | L2 generator `--check`; L5 runtime reports zero runtime compilations | open |
+| B1 | Precompiled native, temporal, toon, uber, caster and pass families; no shader compilation in the product | `247f234`..`4d0e39b`, `86bb942`, `271b9a5` | L2 generator `--check`; L5 S17 counts pass compilations. The raw-copy row fix (`ae6fa94`) changed the texture copy derive shader without regenerating `builtin_pass.spvpack`: it compiled at every launch until `bb23340`; the eight generator checks pass. The raw-copy encode shader is outside the catalogue and compiles at the first raw copy of a cold cache | pass (L2, L5 S17); encode shader open |
 | B2 | Pipeline identity excludes dormant state; shared normalized pipelines; bounded retirement | `801a359`, `d42143c`, `aaa3530`, `a9d9441`, `fd9195a` | L2 pipeline tests; L4 | pass (L4) |
-| B3 | Background program preparation, always-available programs, hybrid default | `4151f1a`, `a430ab8`, `271b9a5`, `44b59e3` | L4; L5 cold-cache scenario: no first-use stall counters | open |
-| B4 | Pipelines prepared in the background are persisted and reused | `038dcf9`, `b644be7`, `390d918` | L5 second launch: every effect pipeline from the cache | open |
-| B5 | Initial preparation before gameplay | `743d05a` | L5 boot scenario: preparation completes before the first gameplay frame | open |
+| B3 | Background program preparation, always-available programs, hybrid default | `4151f1a`, `a430ab8`, `271b9a5`, `44b59e3` | L4; L5 S17 from an empty cache: no draw waits for a program (5,475 always-available draws), slowest measured frame 43.9 ms. The Vulkan validation layer found the startup links invalid (separate-sampler layout against a combined-sampler base; superset programs linked with a vertex program lacking their inputs 7-10) and the seam binding unwritten for always-available surface programs; fixed in `6ad23a5`, no validation error left on five profiles | pass (L5 S17, validation) |
+| B4 | Pipelines prepared in the background are persisted and reused | `038dcf9`, `b644be7`, `390d918` | L5 S17 warm: no compilation (72 cache hits), 23.5 MB of pipelines loaded, slowest frame 42.2 ms | pass (L5 S17) |
+| B5 | Initial preparation before gameplay | `743d05a` | L5 S17: preparation completes (39 parts, no failure, no guest wait warm or cold); its first frames run under the screen, outside the measured window | pass (L5 S17) |
 | B6 | Startup stalls reduced; swapchain fence ownership retired | `18bc3c0`, `e6490d7` | L5 timing receipts | open |
 
 ### 4.C Renderer core
@@ -97,6 +98,7 @@ absent from the line), `experimental` (excluded from the release).
 | C5 | Scene completion exposed only before native UI; title and menu draw domains (#48) | `d363d36`, `16be838` | L5 title Start scenario | open |
 | C6 | Per-draw allocation, register-hash and lighting-decode levers | `83c7be4`, `2c545df`, `754ccb3`, `8cdf3ca` | L4 identity | pass (L4) |
 | C7 | Effects reconstruct depth with the draws' projection; one shared geometry guide | `0dfc904`, `567281a` | L4; L2 effect-graph tests | pass |
+| C9 | Vulkan validation of the release profiles (Enhanced, point and directional shadows, toon outline, plain path, title intro) | 2026-10-05 sweep | Before `6ad23a5`: three error classes on every profile (B3); after: none, message limit disabled; remaining warnings are unused vertex attributes, masked guide outputs and unread vertex outputs | pass |
 | C8 | Toon: uniform appearance, native raster initialization outside toon lighting, offline outline coverage | `8735f46`, `ebd6ba6`, `8c4b6b1`, `6ad3d83` | L4 `cfg-gg-outline*`; L2 `oot3d_toon_outline_gpu_tests` (one failing case, section 7) | open |
 
 ### 4.D Presentation and pacing
@@ -105,7 +107,7 @@ absent from the line), `experimental` (excluded from the release).
 | --- | --- | --- | --- | --- |
 | D1 | Bounded presentation catch-up debt, isolated pacing waits, one interactive limiter, native clocks | `6891f89`, `b361f02`, `ab6b485` | L2 presentation clock tests; L5 timing scenario | open |
 | D2 | One visual frame per guest frame when the host falls behind | `b09e3cb` | L5 throttled scenario. Its split re-executed raw-copy dependency work: under Original30 the revelation stopped at its first copy (run frame 2473, every output size). Fixed 2026-10-05 (each closed frame carries the executed dependency prefix; `oot3d_native_pica_vulkan_bridge_tests`); L5 S09 Original30 passes the copies | fixed; throttled scenario open |
-| D3 | Parallel presentation (render command stream, worker) on by default | `fc5408f`..`f5fff67` | L4 identity; L5 scene change, F1 toggle, resize and fullscreen under the worker | open |
+| D3 | Parallel presentation (render command stream, worker) on by default | `fc5408f`..`f5fff67` | L4 identity; every L5 run uses the worker (`benchmark_window.parallel_presentation`); resize, fullscreen and F1 toggles under the worker are not automated | L4/L5 pass; display changes open |
 | D4 | Fullscreen lifecycle (the alpha.2c fix) and display changes | alpha.2c, #3 | L5 fullscreen/windowed toggles | open |
 | D5 | Temporal jitter phase counts frames that drew the scene; temporal history across graph invocations | `e550c18`, `b49fa74`, `4120c4e` | L4; L5 pause/unpause scenario | open |
 
@@ -119,7 +121,7 @@ absent from the line), `experimental` (excluded from the release).
 | E4 | Consolidated F1 settings; F1 toggles from the key event (#51); Steam Input pads pass through | `a946f34`, `816fe91` | L3; L5 F1 tap scenario | open |
 | E5 | TopScreen #40 stamina/timer overlap, #42 mounted B counter, #43 boots hotkey repeat (recovered after the 2026-09-17 reset) | `3f84692`, `71a654e` | L2 TopScreen profile tests; L5 Epona and boots scenarios | open |
 | E6 | Game Over choices restored (#46): directional/A, save-yes, mouse/touch | `f89d3fb`, issues doc 45/46 | L5 S08: directional input and A drive the Game Over and save questions (Save gives "Progress saved", Don't save "Progress was not saved"), on the native canvas at three sizes (2026-10-05, references). Mouse/touch not yet in a scenario | directional/A pass (L5 S08); mouse/touch open |
-| E7 | Native UI kept out of the upscalers; TAA/SMAA resolved before native UI | `85c780f`, `cd6e550`, `d39aa14` | L4; L5 S14 (DLSS Ultra Performance at 21:9, HUD and pause page): the scene is reconstructed and the native UI is laid over the output on every scene frame (2026-10-05: 157 DLSS passes and 156 overlays in 300 frames; captures reproducible byte for byte). Closing the pause shows the HUD over the page for two frames, with and without DLSS alike (the game's own transition). FSR and TAA/SMAA are not in a scenario yet | DLSS pass (L5 S14); FSR, TAA/SMAA open |
+| E7 | Native UI kept out of the upscalers; TAA/SMAA resolved before native UI | `85c780f`, `cd6e550`, `d39aa14` | L4; L5 S14 (DLSS Ultra Performance at 21:9, HUD and pause page): the scene is reconstructed and the native UI is laid over the output on every scene frame (2026-10-05: 157 DLSS passes and 156 overlays in 300 frames; captures reproducible byte for byte). Closing the pause shows the HUD over the page for two frames, with and without DLSS alike (the game's own transition). FSR and TAA/SMAA are not in a scenario yet | pass (L5 S14: DLSS, FSR 2, TAA, SMAA 1x) |
 | E8 | F2 native lighting toggle and Navi fix | `e9dc221` | L5 | open |
 
 ### 4.F Fonts
@@ -157,7 +159,7 @@ absent from the line), `experimental` (excluded from the release).
 | ID | Development | Evidence | Check | Status |
 | --- | --- | --- | --- | --- |
 | J1 | Scene lit by native environment directionals; queued atmosphere appearance preserved; native brightness independent of light gains | `6e80d2e`, `6c07177`, `5b530d5`, `bc4f8c9`, `b0772ec` | L4; L5 day/night scenario | open |
-| J2 | Key light from the scene's environment lights, its colour from the main light; continuous light under animated time; shadow keyframes follow a moving light | `9669831`, `d1691e8`, `0a3a357`, `5a83492` | L5 night/dawn scenario (`intro-lights` anchor) | open |
+| J2 | Key light from the scene's environment lights, its colour from the main light; continuous light under animated time; shadow keyframes follow a moving light | `9669831`, `d1691e8`, `0a3a357`, `5a83492` | L5 S15 (`analyze_scene_lighting.py`): Hyrule Field with the clock running, 899 moving guest frames without jump or casting from below the horizon, the shadow following the light in 1,679 of 1,679 frames without stall, cut or construction over budget; title intro through dawn without jump or casting from below the horizon, the shadows waiting for their first keyframe after each scene cut (15 frames, the P2 design). The title intro's validation errors were the preparation's (B3) | pass (L5 S15) |
 | J3 | Directional shadows: current sample's casters, alpha-tested casters keep their cutout; point lights cast cube shadows | `ab1b32a`, `e4930f7`, `d92fe95` | L4 `cfg-points`; L5 | pass (L4) |
 | J4 | Grass VSM shadows, actor shadow cache | `e9dc221` | L4; L5 | open |
 | J5 | Editable PBR packs and native UV seam softening | `c9138cb` | L2; L5 | open |
@@ -275,13 +277,15 @@ for byte, DLSS included, before their references were accepted.
 | S11 | Dialogue with HD fonts at 480p and above, TopScreen on and off | practice saves | F1, #44 |
 | S12 | F1 tap toggle, F2 native lighting, capability-safe Off controls | any gameplay state | E4, E8 |
 | S13 | Fullscreen and windowed toggles, display change rejection | any | D4, R4 |
-| S14 | DLSS and FSR profiles: UI at output resolution, house entry keeps one upscaler | `play-kokiri` style state at a house door | E7, J8, J9. In the battery since 2026-10-05: DLSS Ultra Performance with the HUD and a pause roundtrip at 21:9 (upscaler and UI overlay counted, references); FSR and the house entry still open |
-| S15 | Night/dawn light and shadows | `intro-lights` night anchor | J2 |
+| S14 | DLSS and FSR profiles: UI at output resolution, house entry keeps one upscaler | `play-kokiri` style state at a house door | E7, J8, J9. In the battery since 2026-10-05: DLSS Ultra Performance with the HUD and a pause roundtrip at 21:9 (upscaler and UI overlay counted, references); FSR 2, TAA and SMAA 1x with the same input since 2026-10-05 (references); the house entry is open (its private state is gone) |
+| S15 | Night/dawn light and shadows | open-field checkpoint, clean boot | J2. In the battery since 2026-10-05: `S15-field-light` and `S15-title-intro-light` with `lighting:` metrics (section 4.J) and references |
 | S16 | Savestate save/restore at a non-native scale | Kokiri | J11 |
-| S17 | Cold and warm cache start: preparation, no runtime compilation, persisted pipelines | fresh cache directory | B1, B3-B5 |
+| S17 | Cold and warm cache start: preparation, no runtime compilation, persisted pipelines | fresh cache directory | B1, B3-B5. In the battery since 2026-10-05: `S17-shader-preparation`, cold then warm from the cache it left, without captures, bounded by log and runtime metrics (section 4.B) |
 | S18 | Slow host: one visual frame per guest frame | Kokiri with a throttled host | D2 |
 
 ## 6. Global illumination out of the release
+
+Implemented 2026-10-05 (`074bfa6`): `THREE_DS_RECOMP_OFFER_EXPERIMENTAL_GI` (OFF) decides whether a build offers the two GI modes. Without it both capabilities report "experimental, not part of this build", F1 keeps them disabled with that reason, and the rendering snapshot renders a GI mode Off when its capability is unavailable: the settings layer validates capabilities only on edits, so a GI mode loaded from a configuration rendered anyway (373 and 195 ms of GI work in 90 frames before, 0 after). The runtime reports `capabilities.experimental_global_illumination`; `prepare_release` refuses a runtime that offers it and the audit rejects a contract that does not exclude it or selects GI by default. F1 smoke 8,461 assertions; all L5 references unchanged.
 
 Requirement: a release build offers no GI mode; the GI code stays in the tree
 and in developer builds. Design (to implement): a build option for the
@@ -310,4 +314,8 @@ executable; 1,124 tests):
 | `oot3d_game_module_smoke` | needs a Forge-made `game.tam` and `content.tap` | skipped (77) until the L6 installation provides them |
 | Revelation under Original30 | stopped at the first raw copy (D2) | fixed 2026-10-05 |
 | TopScreen HUD, minimap, dialogue at 4:3/16:9/21:9 | composed as screen content since `ba1f200` (E1) | fixed 2026-10-05 |
+| Vulkan validation of the release profiles | three error classes from the hybrid preparation (C9) | fixed (`6ad23a5`); battery 247/247 and L4 6x12/12 identical |
+| Texture copy derive shader outside the pass catalogue | regression of `ae6fa94`, runtime compilation at every launch | fixed (`bb23340`) |
+| Persisted GI mode rendered without its capability | found while gating GI (section 6) | fixed (`074bfa6`) |
+| `pipeline_prepare` contract test | stale outline guide mask since `567281a`; the project is not built by the battery | fixed (`6ad23a5`); add the helper build to L1 |
 | L4 identity after the UI composition fix | the first gate run was stopped by the host for low memory after four pre-fix profiles | rerun 2026-10-05, six profiles x 12 Kokiri frames: every difference lies in the two HUD elements the fix moved (TopScreen buttons, minimap: 100 % of the union of differing pixels); scene pixels identical. Pass |
