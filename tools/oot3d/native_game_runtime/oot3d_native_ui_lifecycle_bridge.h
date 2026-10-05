@@ -99,6 +99,9 @@ public:
   bool NativeGameplayPresentationActive() const noexcept;
   bool NativeFrontendPresentationActive() const noexcept;
   bool NativeTouchPresentationActive() const noexcept;
+  // The guest address of the version choice's own menu background
+  // (common_bg01) while the choice is presented.
+  std::optional<uint32_t> NativeVersionChoiceBackdropGuestAddress() const noexcept;
   std::optional<oot3d::ui::UiTextureIdentity> NativePauseSharedTextureIdentity(
       oot3d::ui::UiPauseSharedTextureSlot slot) const;
   std::optional<oot3d::ui::UiTextureIdentity>

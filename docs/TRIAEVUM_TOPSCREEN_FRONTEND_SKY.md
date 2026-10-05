@@ -51,10 +51,14 @@ root pause UI that runs in game mode 1, so the FileSelect/NameEntry
 discriminator never covered it (#28). `oot3d_native_omote_ura_selector.h`
 reads its owner, and from the moment its panels enter until they leave it owns
 the frontend presentation: TopScreen relocates it like File Select, the OoT3D
-profile presents the lower screen. Its own background is a separate texture
-instance, not the shared CommonBackground00, so it is kept: the menu appears
-complete in the centre with the title scene beside it, as the lower screen
-shows it.
+profile presents the lower screen. Its background is its own texture, not the
+shared CommonBackground00: `OmoteUraSelector_LoadTextures` builds
+`rom:/misc/common_bg01.ctxb` into the CTXB resource at owner `+0x498`, and
+`CtxbResource_BuildTexture` stores the texture address at `+0x4C`. The bridge
+reports it while the choice is presented and the backdrop suppression above
+removes it like CommonBackground00 (the user's choice, 2026-10-05): the cards
+and header lie over the title scene. The native title logo, still drawn on the
+upper screen, shows in the gap between the cards.
 
 ## Verification
 

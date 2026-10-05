@@ -561,6 +561,16 @@ bool Oot3dNativeUiLifecycleBridge::NativeFrontendPresentationActive()
 }
 
 std::optional<uint32_t>
+Oot3dNativeUiLifecycleBridge::NativeVersionChoiceBackdropGuestAddress()
+    const noexcept {
+  if (!mHasLatestState || !IsNativeVersionChoicePresented(mOmoteUraSelector) ||
+      mOmoteUraSelector.BackdropTexture == 0U) {
+    return std::nullopt;
+  }
+  return mOmoteUraSelector.BackdropTexture;
+}
+
+std::optional<uint32_t>
 Oot3dNativeUiLifecycleBridge::NativePauseSharedTextureGuestAddress(
     oot3d::ui::UiPauseSharedTextureSlot slot) const {
   const auto identity = NativePauseSharedTextureIdentity(slot);

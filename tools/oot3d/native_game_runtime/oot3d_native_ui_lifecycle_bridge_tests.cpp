@@ -369,11 +369,17 @@ int main() {
               &error),
           "cannot map version selector fixture");
   constexpr std::uint32_t kSelectorOwner = 0x005F0000U;
+  constexpr std::uint32_t kSelectorBackdropResource = 0x005F1000U;
+  constexpr std::uint32_t kSelectorBackdropTexture = 0x1495AA00U;
   Require(selectorMemory.Write32(0x00588E3CU, 1U) &&
               selectorMemory.Write32(kOmoteUraSelectorLaneEnabled, 1U) &&
               selectorMemory.Write32(kOmoteUraSelectorOwner, kSelectorOwner) &&
               selectorMemory.Write8(kSelectorOwner + 0x04U, 1U) &&
-              selectorMemory.Write8(kSelectorOwner + 0x06U, 1U),
+              selectorMemory.Write8(kSelectorOwner + 0x06U, 1U) &&
+              selectorMemory.Write32(kSelectorOwner + 0x498U,
+                                     kSelectorBackdropResource) &&
+              selectorMemory.Write32(kSelectorBackdropResource + 0x4CU,
+                                     kSelectorBackdropTexture),
           "cannot seed version selector fixture");
   Oot3dNativeUiLifecycleBridge selectorBridge(selectorMemory);
   const auto observeSelectorFrame = [&](std::uint32_t hostFrame) {
@@ -384,6 +390,7 @@ int main() {
   observeSelectorFrame(1U);
   Require(!selectorBridge.NativeFrontendPresentationActive() &&
               !selectorBridge.NativeTouchPresentationActive() &&
+              !selectorBridge.NativeVersionChoiceBackdropGuestAddress() &&
               selectorBridge.Stats().version_choice_captures == 0U &&
               selectorBridge.Stats().version_choice_last_selection == -1,
           "the title prompt displaced the upper title screen");
@@ -396,11 +403,25 @@ int main() {
               selectorBridge.Stats().version_choice_captures == 1U &&
               selectorBridge.Stats().version_choice_last_selection == 1,
           "the version choice did not own the frontend presentation");
+  Require(selectorBridge.NativeVersionChoiceBackdropGuestAddress() ==
+              kSelectorBackdropTexture,
+          "the version choice background texture was not resolved");
   Require(selectorMemory.Write8(kSelectorOwner + 0x06U, 2U),
           "cannot select the single-version variant");
   observeSelectorFrame(3U);
-  Require(!selectorBridge.NativeFrontendPresentationActive(),
+  Require(!selectorBridge.NativeFrontendPresentationActive() &&
+              !selectorBridge.NativeVersionChoiceBackdropGuestAddress(),
           "the single-version prompt was presented as a choice");
+  Require(selectorMemory.Write8(kSelectorOwner + 0x06U, 1U) &&
+              selectorMemory.Write32(kSelectorOwner + 0x498U, 0U),
+          "cannot drop the version choice background resource");
+  observeSelectorFrame(30U);
+  Require(selectorBridge.NativeFrontendPresentationActive() &&
+              !selectorBridge.NativeVersionChoiceBackdropGuestAddress(),
+          "an unbuilt background changed the version choice presentation");
+  Require(selectorMemory.Write32(kSelectorOwner + 0x498U,
+                                 kSelectorBackdropResource),
+          "cannot restore the version choice background resource");
   Require(selectorMemory.Write8(kSelectorOwner + 0x06U, 1U) &&
               selectorMemory.Write32(kOmoteUraSelectorLaneEnabled, 0U),
           "cannot disable the version selector lane");
@@ -412,7 +433,7 @@ int main() {
           "cannot close the version choice fixture");
   observeSelectorFrame(5U);
   Require(!selectorBridge.NativeFrontendPresentationActive() &&
-              selectorBridge.Stats().version_choice_captures == 1U,
+              selectorBridge.Stats().version_choice_captures == 2U,
           "a closed version choice kept the frontend presentation");
   Require(selectorMemory.Write32(kOmoteUraSelectorOwner, 0U),
           "cannot destroy the version selector fixture");

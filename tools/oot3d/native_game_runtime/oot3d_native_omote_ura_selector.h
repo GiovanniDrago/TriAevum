@@ -24,6 +24,11 @@ struct NativeOmoteUraSelectorState {
   std::uint8_t Selection = 0;
   // Owner +0x06: 1 the two-version choice, 2 the single-version prompt.
   std::uint8_t Variant = 0;
+  // Guest address of the menu's full-screen background texture: owner
+  // +0x498 is the CTXB resource that OmoteUraSelector_LoadTextures builds
+  // from rom:/misc/common_bg01.ctxb (element 0), and CtxbResource_BuildTexture
+  // stores its texture address at +0x4C. Zero before it is built.
+  std::uint32_t BackdropTexture = 0;
 };
 
 inline constexpr std::uint32_t kOmoteUraSelectorLaneEnabled =
@@ -40,11 +45,19 @@ inline bool ReadNativeOmoteUraSelectorState(NativeA32Memory &memory,
     return false;
   }
   result.LaneEnabled = laneEnabled != 0U;
+  std::uint32_t backdropResource = 0U;
   if (result.Owner != 0U &&
       (!memory.Read8(result.Owner + 0x04U, &result.Phase) ||
        !memory.Read8(result.Owner + 0x05U, &result.Selection) ||
-       !memory.Read8(result.Owner + 0x06U, &result.Variant))) {
+       !memory.Read8(result.Owner + 0x06U, &result.Variant) ||
+       !memory.Read32(result.Owner + 0x498U, &backdropResource))) {
     return false;
+  }
+  // The background only refines the presentation: without it the menu keeps
+  // its native backdrop.
+  if (backdropResource != 0U &&
+      !memory.Read32(backdropResource + 0x4CU, &result.BackdropTexture)) {
+    result.BackdropTexture = 0U;
   }
   *state = result;
   return true;

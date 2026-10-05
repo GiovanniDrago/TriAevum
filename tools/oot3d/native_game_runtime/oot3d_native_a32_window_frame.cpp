@@ -1059,16 +1059,38 @@ void NativeA32WindowSession::RunGuestRefresh() {
         Oot3dNativeGame::ShouldSuppressTopScreenFrontendBackdrop(
             launch.UiProfile,
             uiLifecycleBridge.NativeFrontendPresentationActive());
-    const auto commonBackgroundGuestAddress =
-        suppressTopScreenFrontendBackdrop
-            ? uiLifecycleBridge.NativePauseSharedTextureGuestAddress(
-                  oot3d::ui::UiPauseSharedTextureSlot::CommonBackground00)
-            : std::nullopt;
-    const auto commonBackgroundPhysicalAddress =
-        commonBackgroundGuestAddress.has_value()
-            ? picaMemoryView.TranslateGuest(*commonBackgroundGuestAddress,
-                                            1U)
-            : std::nullopt;
+    // The native menu backdrops TopScreen removes: the shared
+    // CommonBackground00 of File Select and Name Entry, and the version
+    // choice's own background.
+    std::array<std::optional<uint32_t>, 2> frontendBackdropPhysicalAddresses{};
+    if (suppressTopScreenFrontendBackdrop) {
+      const std::array<std::optional<uint32_t>, 2> frontendBackdropGuestAddresses{
+          uiLifecycleBridge.NativePauseSharedTextureGuestAddress(
+              oot3d::ui::UiPauseSharedTextureSlot::CommonBackground00),
+          uiLifecycleBridge.NativeVersionChoiceBackdropGuestAddress()};
+      for (size_t index = 0; index < frontendBackdropGuestAddresses.size();
+           ++index) {
+        if (frontendBackdropGuestAddresses[index].has_value()) {
+          frontendBackdropPhysicalAddresses[index] =
+              picaMemoryView.TranslateGuest(
+                  *frontendBackdropGuestAddresses[index], 1U);
+        }
+      }
+    }
+    const auto usesFrontendBackdrop =
+        [&](const Oot3dNativeGame::Oot3dPicaDecodedDrawState& state) {
+          return std::any_of(
+              state.Textures.begin(), state.Textures.end(),
+              [&](const auto &texture) {
+                return texture.Enabled &&
+                       std::any_of(frontendBackdropPhysicalAddresses.begin(),
+                                   frontendBackdropPhysicalAddresses.end(),
+                                   [&](const auto &address) {
+                                     return address.has_value() &&
+                                            texture.PhysicalAddress == *address;
+                                   });
+              });
+        };
     std::vector<Oot3dNativeGame::TopScreenFrontendCanvas>
         frontendBackdropCanvases;
     const auto rememberFrontendBackdropCanvas =
@@ -1083,16 +1105,9 @@ void NativeA32WindowSession::RunGuestRefresh() {
                 {state.Framebuffer.ColorPhysicalAddress, state.Viewport});
           }
         };
-    if (commonBackgroundPhysicalAddress.has_value()) {
+    if (suppressTopScreenFrontendBackdrop) {
       for (const auto &draw : draws) {
-        const bool usesCommonBackground = std::any_of(
-            draw.State.Textures.begin(), draw.State.Textures.end(),
-            [&](const auto &texture) {
-              return texture.Enabled &&
-                     texture.PhysicalAddress ==
-                         *commonBackgroundPhysicalAddress;
-            });
-        if (usesCommonBackground) {
+        if (usesFrontendBackdrop(draw.State)) {
           rememberFrontendBackdropCanvas(draw.State);
         }
       }
@@ -1230,14 +1245,7 @@ void NativeA32WindowSession::RunGuestRefresh() {
         submitMemoryFill(memoryFills[memoryFillIndex++]);
       }
       const bool usesCommonBackground =
-          commonBackgroundPhysicalAddress.has_value() &&
-          std::any_of(draw.State.Textures.begin(),
-                      draw.State.Textures.end(),
-                      [&](const auto &texture) {
-                        return texture.Enabled &&
-                               texture.PhysicalAddress ==
-                                   *commonBackgroundPhysicalAddress;
-                      });
+          suppressTopScreenFrontendBackdrop && usesFrontendBackdrop(draw.State);
       const bool targetsFrontendBackdrop =
           std::any_of(frontendBackdropCanvases.begin(),
                       frontendBackdropCanvases.end(),
