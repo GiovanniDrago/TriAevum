@@ -119,7 +119,7 @@ absent from the line), `experimental` (excluded from the release).
 | E4 | Consolidated F1 settings; F1 toggles from the key event (#51); Steam Input pads pass through | `a946f34`, `816fe91` | L3; L5 F1 tap scenario | open |
 | E5 | TopScreen #40 stamina/timer overlap, #42 mounted B counter, #43 boots hotkey repeat (recovered after the 2026-09-17 reset) | `3f84692`, `71a654e` | L2 TopScreen profile tests; L5 Epona and boots scenarios | open |
 | E6 | Game Over choices restored (#46): directional/A, save-yes, mouse/touch | `f89d3fb`, issues doc 45/46 | L5 Game Over scenarios (the last two never qualified) | open |
-| E7 | Native UI kept out of the upscalers; TAA/SMAA resolved before native UI | `85c780f`, `cd6e550`, `d39aa14` | L4; L5 DLSS/FSR scenario: UI pixels at output resolution | open |
+| E7 | Native UI kept out of the upscalers; TAA/SMAA resolved before native UI | `85c780f`, `cd6e550`, `d39aa14` | L4; L5 S14 (DLSS Ultra Performance at 21:9, HUD and pause page): the scene is reconstructed and the native UI is laid over the output on every scene frame (2026-10-05: 157 DLSS passes and 156 overlays in 300 frames; captures reproducible byte for byte). Closing the pause shows the HUD over the page for two frames, with and without DLSS alike (the game's own transition). FSR and TAA/SMAA are not in a scenario yet | DLSS pass (L5 S14); FSR, TAA/SMAA open |
 | E8 | F2 native lighting toggle and Navi fix | `e9dc221` | L5 | open |
 
 ### 4.F Fonts
@@ -250,18 +250,21 @@ diagnostics (`whole_target_ui_draw_count`, `screen_content_draw_count`,
 1280x720 and 1720x720: no screen content and no picture, references), S09
 under Original30 (three sizes: the copies pass, the flashback covers every
 column, no opaque picture, references) and S10 (Sheikah Stone movie at three
-sizes: picture draws, black bars, references). Run of 2026-10-05 on the build
+sizes: picture draws, black bars, references), S04 (pause roundtrip and pages at three sizes) and
+S14 (DLSS with the native UI overlay). Run of 2026-10-05 on the build
 with the upright copy and the movie bars: 84 of 84 checks against the
 references accepted from it. The S09 flashback reference changed only by the
 mirror: each new capture equals the previous reference flipped left-right,
 pixel for pixel; S03 and S10 reproduced their references byte for byte.
+S04 and S14 (100 of 100 checks) reproduced the reviewed probe captures byte
+for byte, DLSS included, before their references were accepted.
 
 | ID | Scenario | Input | Covers |
 | --- | --- | --- | --- |
 | S01 | Boot, title, Start during the title presentation, file select, load a save | none (fresh boot) and a practice save | B5, C5, #48 |
 | S02 | Kokiri walk, eight renderer profiles (the L4 gate) | `qualify/ref-kokiri2` | C, J, K, Q |
 | S03 | HUD at 4:3, 16:9 and 21:9; minimap markers on fresh entry and after reload | practice saves with map/compass | E1, E2, #25, #32 |
-| S04 | Pause menu pages, item numbers, map screen, ZL/ZR assignment and use, one-frame taps | practice saves (adult with bow/hookshot) | E2, R1, R2, #39 |
+| S04 | Pause menu pages, item numbers, map screen, ZL/ZR assignment and use, one-frame taps | practice saves (adult with bow/hookshot) | E2, R1, R2, #39. In the battery since 2026-10-05: the Start roundtrip and the Map, Gear and Items pages from the HUD checkpoint at three sizes (pages on the native canvas, no screen content); assignment and one-frame taps still open |
 | S05 | Epona: stamina and timer, mounted B counter | issue 40-43 checkpoints | E5, #40, #42 |
 | S06 | Boots hotkey repeat | `boots-held` checkpoint | E5, #43 |
 | S07 | Ocarina performance UI, song browsing | practice save with ocarina | R3 |
@@ -271,7 +274,7 @@ pixel for pixel; S03 and S10 reproduced their references byte for byte.
 | S11 | Dialogue with HD fonts at 480p and above, TopScreen on and off | practice saves | F1, #44 |
 | S12 | F1 tap toggle, F2 native lighting, capability-safe Off controls | any gameplay state | E4, E8 |
 | S13 | Fullscreen and windowed toggles, display change rejection | any | D4, R4 |
-| S14 | DLSS and FSR profiles: UI at output resolution, house entry keeps one upscaler | `play-kokiri` style state at a house door | E7, J8, J9 |
+| S14 | DLSS and FSR profiles: UI at output resolution, house entry keeps one upscaler | `play-kokiri` style state at a house door | E7, J8, J9. In the battery since 2026-10-05: DLSS Ultra Performance with the HUD and a pause roundtrip at 21:9 (upscaler and UI overlay counted, references); FSR and the house entry still open |
 | S15 | Night/dawn light and shadows | `intro-lights` night anchor | J2 |
 | S16 | Savestate save/restore at a non-native scale | Kokiri | J11 |
 | S17 | Cold and warm cache start: preparation, no runtime compilation, persisted pipelines | fresh cache directory | B1, B3-B5 |

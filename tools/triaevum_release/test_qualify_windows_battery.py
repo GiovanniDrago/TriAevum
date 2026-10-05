@@ -6,7 +6,8 @@ from pathlib import Path
 
 from qualify_windows_battery import (Check, black_outside_picture, compare_captures, counter_bound,
                                      desaturated_columns, evaluate_scenario, fitted_picture, merge_settings,
-                                     parse_junit, pytest_summary, read_bmp, scenario_command, unittest_summary)
+                                     parse_junit, pytest_summary, read_bmp, scenario_command, select_scenarios,
+                                     unittest_summary)
 
 
 def write_bmp(path: Path, rows: list[list[tuple[int, int, int]]], depth: int = 24) -> Path:
@@ -160,8 +161,16 @@ class ScenarioTests(unittest.TestCase):
     def test_counter_bounds_name_known_counters_only(self):
         self.assertEqual(counter_bound("screen_content_max"), ("screen_content_draw_count", True))
         self.assertEqual(counter_bound("own_picture_min_total"), ("own_picture_draw_count", False))
+        self.assertEqual(counter_bound("dlss_upscale_min_total"), ("dlss_upscale_pass_count", False))
         self.assertIsNone(counter_bound("captures"))
         self.assertIsNone(counter_bound("unknown_max"))
+
+    def test_scenarios_can_be_selected_by_name(self):
+        items = [{"name": "S03"}, {"name": "S04"}, {"name": "S09"}]
+        self.assertEqual(select_scenarios(items, ""), items)
+        self.assertEqual(select_scenarios(items, "S09, S03"), [{"name": "S03"}, {"name": "S09"}])
+        with self.assertRaises(ValueError):
+            select_scenarios(items, "S03,S99")
 
 
 class SummaryTests(unittest.TestCase):

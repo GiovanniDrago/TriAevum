@@ -448,7 +448,20 @@ FRAME_COUNTERS = {
     "own_picture": "own_picture_draw_count",
     "picture_bars": "picture_bar_rect_count",
     "picture_overlay": "picture_overlay_draw_count",
+    "dlss_upscale": "dlss_upscale_pass_count",
+    "native_ui_overlay": "native_ui_overlay_count",
 }
+
+
+def select_scenarios(items: list[dict], names: str) -> list[dict]:
+    """The scenario items to run: all, or those named (comma-separated), in configuration order."""
+    wanted = [name.strip() for name in names.split(",") if name.strip()]
+    if not wanted:
+        return list(items)
+    unknown = [name for name in wanted if name not in {item["name"] for item in items}]
+    if unknown:
+        raise ValueError(f"unknown scenarios: {', '.join(unknown)}")
+    return [item for item in items if item["name"] in wanted]
 
 
 def counter_bound(key: str) -> tuple[str, bool] | None:
@@ -511,7 +524,7 @@ def evaluate_scenario(name: str, run_dir: Path, code: int | str, expect: dict, r
     return checks
 
 
-def layer_scenarios(config: dict, out: Path, report: Report) -> None:
+def layer_scenarios(config: dict, out: Path, report: Report, only: str = "") -> None:
     scenarios = config.get("scenarios")
     if not scenarios:
         report.add(Check("scenarios", "configuration", "notrun", "no scenarios configured"))
@@ -519,7 +532,7 @@ def layer_scenarios(config: dict, out: Path, report: Report) -> None:
     executable = Path(scenarios["executable"]).resolve()
     references_root = Path(scenarios["references"]) if scenarios.get("references") else None
     repository = Path(config["repository"])
-    for item in scenarios.get("items", []):
+    for item in select_scenarios(scenarios.get("items", []), only):
         # Inputs given relative (an input timeline of the checkout) are relative to the repository.
         item = dict(item, **{key: str(repository / item[key]) for key in ("checkpoint", "timeline", "config")
                              if item.get(key) and not Path(item[key]).is_absolute()})
@@ -588,12 +601,18 @@ def main() -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--layers", default=",".join(LAYERS))
+    parser.add_argument("--scenarios", default="",
+                        help="comma-separated scenario names to run in the scenarios layer (default: all)")
     args = parser.parse_args()
     config = json.loads(args.config.read_text(encoding="utf-8"))
     layers = [layer.strip() for layer in args.layers.split(",") if layer.strip()]
     unknown = [layer for layer in layers if layer not in LAYERS]
     if unknown:
         parser.error(f"unknown layers: {', '.join(unknown)} (known: {', '.join(LAYERS)})")
+    try:
+        select_scenarios(config.get("scenarios", {}).get("items", []), args.scenarios)
+    except ValueError as error:
+        parser.error(str(error))
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     report = Report(started=time.strftime("%Y-%m-%d %H:%M:%S"), configuration=str(args.config))
@@ -602,7 +621,7 @@ def main() -> int:
     if "unit" in layers:
         layer_unit(config, out, report)
     if "scenarios" in layers:
-        layer_scenarios(config, out, report)
+        layer_scenarios(config, out, report, args.scenarios)
     json_path, md_path = write_report(report, out)
     failing = [check for check in report.checks if check.status in ("fail", "notrun")]
     print(f"battery: {len(report.checks)} checks, {len(failing)} failing; report {md_path}")

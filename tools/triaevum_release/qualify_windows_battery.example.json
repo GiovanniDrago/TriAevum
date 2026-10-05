@@ -51,7 +51,7 @@
   ],
   "scenarios": {
     "_about": "L5. Each item runs once per output size as TriAevum.exe (hard links) in the working directory, a Forge installation. Captures, the runtime report and per-frame renderer diagnostics (gpu.json) stay in the report directory. 'references' holds accepted captures per item and size; a missing reference is reported as not run.",
-    "_expect": "exit, captures (count), reference (byte identity), full_width_desaturation (captures whose every column is grey), black_bars (captures whose pixels outside the fitted picture of 'picture_native' proportions, default 400x240, are black), and bounds on per-frame renderer counters: <counter>_max for every frame, <counter>_min_total for the run, with counter one of screen_content, whole_target_ui, own_picture, picture_bars, picture_overlay.",
+    "_expect": "exit, captures (count), reference (byte identity), full_width_desaturation (captures whose every column is grey), black_bars (captures whose pixels outside the fitted picture of 'picture_native' proportions, default 400x240, are black), and bounds on per-frame renderer counters: <counter>_max for every frame, <counter>_min_total for the run, with counter one of screen_content, whole_target_ui, own_picture, picture_bars, picture_overlay, dlss_upscale, native_ui_overlay. qualify_windows_battery.py --scenarios NAME,... runs only the named items.",
     "executable": "<host build tree>/TriAevum.exe",
     "working_directory": "<Forge installation>",
     "arguments": ["--title-plugin", "<title module>", "--a32-process-manifest", "<process manifest>",
@@ -92,7 +92,7 @@
         "name": "S10-stone-movie",
         "_about": "A Sheikah Stone vision under Original30: the Visions menu stays on the native canvas and the movie frames are shown whole at 5:3 with black bars (above and below at 4:3, beside at 16:9 and 21:9).",
         "checkpoint": "<checkpoint in front of a Sheikah Stone>",
-        "timeline": "<input timeline: A to open the Visions menu, A to play a vision>",
+        "timeline": "tools/oot3d/native_game_runtime/input_timelines/sheikah_stone_vision_play.json",
         "config": "<settings JSON>",
         "timing": "original30",
         "settings": {"Graphics": {"Preset": "Authentic"}},
@@ -104,6 +104,43 @@
         "expect": {"exit": 0, "captures": 6,
                    "black_bars": ["framebuffer_000240.bmp", "framebuffer_000300.bmp", "framebuffer_000360.bmp", "framebuffer_000420.bmp"],
                    "own_picture_min_total": 200, "picture_bars_min_total": 200, "reference": true}
+      },
+      {
+        "name": "S04-pause-roundtrip",
+        "_about": "The pause menu opened and closed twice with Start from the HUD checkpoint: the TopScreen page stays on the native canvas over the dimmed scene at 4:3, 16:9 and 21:9.",
+        "checkpoint": "<HUD checkpoint>",
+        "timeline": "tools/oot3d/native_game_runtime/input_timelines/topscreen_hud_pause_roundtrip.json",
+        "sizes": ["960x720", "1280x720", "1720x720"],
+        "frames": 560,
+        "shot_start": 40,
+        "shot_interval": 60,
+        "max_seconds": 300,
+        "expect": {"exit": 0, "captures": 9, "screen_content_max": 0, "own_picture_max": 0, "whole_target_ui_min_total": 1, "reference": true}
+      },
+      {
+        "name": "S04-pause-pages",
+        "_about": "The Map, Gear and Items pages opened by touching the lower screen's page buttons, then Start: each page on the native canvas at 4:3, 16:9 and 21:9.",
+        "checkpoint": "<HUD checkpoint>",
+        "timeline": "tools/oot3d/native_game_runtime/input_timelines/topscreen_ui_pages.json",
+        "sizes": ["960x720", "1280x720", "1720x720"],
+        "frames": 760,
+        "shot_start": 100,
+        "shot_interval": 60,
+        "max_seconds": 300,
+        "expect": {"exit": 0, "captures": 11, "screen_content_max": 0, "own_picture_max": 0, "whole_target_ui_min_total": 1, "reference": true}
+      },
+      {
+        "name": "S14-dlss-hud-pause",
+        "_about": "DLSS Ultra Performance on an NVIDIA GPU: the upscaler reconstructs the scene and the native UI is laid over its output (HUD and pause page).",
+        "checkpoint": "<HUD checkpoint>",
+        "timeline": "tools/oot3d/native_game_runtime/input_timelines/topscreen_hud_pause_roundtrip.json",
+        "config": "<settings JSON with AA Mode Upscaler, Provider DLSS, Quality UltraPerformance>",
+        "sizes": ["1720x720"],
+        "frames": 300,
+        "shot_start": 20,
+        "shot_interval": 80,
+        "max_seconds": 300,
+        "expect": {"exit": 0, "captures": 4, "dlss_upscale_min_total": 100, "native_ui_overlay_min_total": 100, "screen_content_max": 0, "own_picture_max": 0, "reference": true}
       }
     ]
   }
