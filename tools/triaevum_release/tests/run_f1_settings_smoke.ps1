@@ -50,6 +50,8 @@ $args = @('-std=c++20', '-O1', '-fms-runtime-lib=static', '-DIMGUI_ENABLE_TEST_E
     "$Build/CMakeFiles/oot3d_native_game.dir/tools/oot3d/native_game_runtime/oot3d_game_language_panel.cpp.obj",
     "$Build/CMakeFiles/oot3d_native_game.dir/tools/oot3d/native_game_runtime/oot3d_scene_environment.cpp.obj",
     "$Build/CMakeFiles/oot3d_native_game.dir/tools/oot3d/native_game_runtime/oot3d_scene_environment_panel.cpp.obj",
+    "$Build/CMakeFiles/oot3d_native_game.dir/tools/oot3d/native_game_runtime/oot3d_savestate_panel.cpp.obj",
+    "$Build/CMakeFiles/oot3d_native_a32_savestate.dir/tools/oot3d/native_game_runtime/oot3d_savestate_library.cpp.obj",
     '-o', $output)
 $args += $imguiObjects
 & $Compiler @args

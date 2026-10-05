@@ -28,9 +28,10 @@ if [[ -n "${TRIAEVUM_NLOHMANN_INCLUDE:-}" ]]; then
     includes+=(-I"$TRIAEVUM_NLOHMANN_INCLUDE")
 fi
 for unit in oot3d_native_controls_settings_panel oot3d_top_screen_settings_panel \
-            oot3d_game_language oot3d_game_language_panel; do
+            oot3d_game_language oot3d_game_language_panel oot3d_savestate_panel; do
     panels+=("$build/CMakeFiles/oot3d_native_game.dir/tools/oot3d/native_game_runtime/$unit.cpp.o")
 done
+panels+=("$build/CMakeFiles/oot3d_native_a32_savestate.dir/tools/oot3d/native_game_runtime/oot3d_savestate_library.cpp.o")
 "$compiler" -std=c++20 -O1 -DIMGUI_ENABLE_TEST_ENGINE \
     -I"$imgui" -I"$root/runtime/three_ds_recomp/include" \
     -I"$root/tools/oot3d/native_game_runtime" -I"$root/tools/oot3d/ui_topscreen" \

@@ -220,6 +220,7 @@ set_property(TARGET ctr_y2r_service_tests PROPERTY FOLDER Tests)
 
 add_library(oot3d_native_a32_savestate STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_a32_savestate.cpp
+    tools/oot3d/native_game_runtime/oot3d_savestate_library.cpp
 )
 target_include_directories(oot3d_native_a32_savestate PUBLIC
     tools/oot3d/native_game_runtime

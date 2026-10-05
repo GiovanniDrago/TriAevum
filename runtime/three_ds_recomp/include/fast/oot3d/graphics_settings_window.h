@@ -16,6 +16,12 @@ namespace Fast::Oot3d {
 // Draw independently of F1 visibility, collapse state, tabs and scroll position.
 void DrawDisplayConfirmation();
 
+// A short host notice (for example the result of a hotkey action) shown for a
+// few seconds outside F1. A later notice replaces the current one.
+void PostHostNotice(std::string text, bool failure = false);
+[[nodiscard]] bool HostNoticeActive();
+void DrawHostNotice();
+
 class GraphicsSettingsPanelTab {
   public:
     virtual ~GraphicsSettingsPanelTab() = default;

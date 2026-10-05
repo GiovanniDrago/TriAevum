@@ -32,6 +32,9 @@ struct Oot3dNativeGameLaunch {
     std::filesystem::path LoadStatePath;
     std::filesystem::path QuickStatePath;
     std::filesystem::path SaveStatePath;
+    // The command-line forms of Shift+F8 / Shift+F5.
+    bool LoadStateWithSettings = false;
+    bool SaveStateWithSettings = false;
     std::string ScenarioId;
     Oot3dNativeGame::Oot3dUiProfile UiProfile =
         Oot3dNativeGame::Oot3dUiProfile::Oot3d;
@@ -78,6 +81,15 @@ struct Oot3dNativeGameLaunch {
     bool DisableAudio = false;
     uint32_t SaveStateFrame = 0;
     bool SaveStateFrameAvailable = false;
+    // Scripted F5/F8 requests (--savestate-action FRAME:ACTION[:PATH]): the
+    // same mailbox the hotkeys and the F1 tab use, at a zero-based run frame.
+    struct ScriptedSavestateAction {
+        uint32_t RunFrame = 0;
+        bool Load = false;
+        bool WithSettings = false;
+        std::filesystem::path Path;
+    };
+    std::vector<ScriptedSavestateAction> SavestateActions;
 };
 
 bool ParseOot3dNativeGameArgs(int argc, char** argv, Oot3dNativeGameLaunch& launch);

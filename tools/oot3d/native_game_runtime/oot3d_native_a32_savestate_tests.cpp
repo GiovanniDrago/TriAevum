@@ -5,6 +5,11 @@
 #include "oot3d_native_a32_process.h"
 #include "oot3d_native_pica_frontend.h"
 #include "oot3d_native_pica_submission.h"
+#include "oot3d_savestate_library.h"
+#include "fast/renderer3ds/pica_guest_extent_snapshot.h"
+
+#include <chrono>
+#include <fstream>
 
 #include <cstdlib>
 #include <filesystem>
@@ -387,6 +392,163 @@ int main() {
                 statePath, incompatible, runtime, process, host,
                 picaFrontend, submissionQueue, dspHle, nullptr, &error),
             "savestate accepted an incompatible code.bin identity");
+
+    // A state holds the game moment at the guest extent: targets carry colour,
+    // depth and stencil only, and the optional host settings travel beside it.
+    {
+        auto moment = runtime;
+        auto& guestTarget = moment.PicaColorTargets[0];
+        guestTarget.RenderScalePermille =
+            Fast::Renderer3ds::kPicaGuestExtentRenderScalePermille;
+        guestTarget.NormalGuideRgba8.clear();
+        guestTarget.MaterialGuideRgba8.clear();
+        guestTarget.RigidMotionGuideRgba16FloatLe.clear();
+        guestTarget.AmbientGuideRgba8.clear();
+        guestTarget.ShadowR32UintLe.clear();
+        moment.PicaPresentationState.DisplayImages[0]
+            .DepthTargetRenderScalePermille =
+            Fast::Renderer3ds::kPicaGuestExtentRenderScalePermille;
+        moment.HostSettingsAvailable = true;
+        moment.HostSettingsJson = R"({"schema":1,"language":"it"})";
+        const auto momentPath = root / "moment.oot3dsav";
+        Require(SaveNativeA32State(momentPath, compatibility, moment, process,
+                                   host, picaFrontend, submissionQueue, dspHle,
+                                   nullptr, &error),
+                error);
+        NativeA32SavestateRuntimeState restored;
+        Require(LoadNativeA32State(momentPath, compatibility, restored, process,
+                                   host, picaFrontend, submissionQueue, dspHle,
+                                   nullptr, &error),
+                error);
+        const auto& restoredTarget = restored.PicaColorTargets.at(0);
+        Require(restoredTarget.RenderScalePermille == 0U &&
+                    restoredTarget.NormalGuideRgba8.empty() &&
+                    restoredTarget.ShadowR32UintLe.empty() &&
+                    restoredTarget.ColorRgba8 == guestTarget.ColorRgba8 &&
+                    restoredTarget.DepthValues == guestTarget.DepthValues &&
+                    restored.HostSettingsAvailable &&
+                    restored.HostSettingsJson ==
+                        R"({"language":"it","schema":1})",
+                "guest-extent state or host settings did not round-trip");
+
+        auto withGuides = moment;
+        withGuides.PicaColorTargets[0].NormalGuideRgba8.assign(8U, 0x80U);
+        Require(!SaveNativeA32State(root / "guest-guides.oot3dsav",
+                                    compatibility, withGuides, process, host,
+                                    picaFrontend, submissionQueue, dspHle,
+                                    nullptr, &error),
+                "guest-extent target accepted enhancement guides");
+        auto scaled = moment;
+        scaled.PicaColorTargets[0].ImageWidth = 4U;
+        scaled.PicaColorTargets[0].ColorRgba8.resize(16U);
+        scaled.PicaColorTargets[0].DepthValues.resize(4U, 1.0F);
+        scaled.PicaColorTargets[0].StencilValues.resize(4U);
+        Require(!SaveNativeA32State(root / "guest-scaled.oot3dsav",
+                                    compatibility, scaled, process, host,
+                                    picaFrontend, submissionQueue, dspHle,
+                                    nullptr, &error),
+                "guest-extent target accepted a renderer extent");
+
+        // The simulation rate is part of the moment: refused before any
+        // guest state is touched.
+        auto thirtyHz = compatibility;
+        thirtyHz.GameplayTiming = GameplayTimingMode::Native30Interpolated;
+        Require(process.Memory().Write32(0x00100020U, 0xCAFEF00DU),
+                "cannot mutate guest memory");
+        std::string rateError;
+        Require(!LoadNativeA32State(momentPath, thirtyHz, restored, process,
+                                    host, picaFrontend, submissionQueue,
+                                    dspHle, nullptr, &rateError) &&
+                    rateError.find("60 Hz") != std::string::npos,
+                "a 60 Hz state loaded into a 30 Hz run");
+        uint32_t untouched = 0;
+        Require(process.Memory().Read32(0x00100020U, &untouched) &&
+                    untouched == 0xCAFEF00DU,
+                "a refused state changed guest memory");
+        auto sixtyHz = compatibility;
+        sixtyHz.GameplayTiming = GameplayTimingMode::Enhanced60;
+        Require(LoadNativeA32State(momentPath, sixtyHz, restored, process,
+                                   host, picaFrontend, submissionQueue, dspHle,
+                                   nullptr, &error),
+                error);
+    }
+
+    // Guest-extent resampling: area average down, bilinear up, nearest for
+    // values that must not blend.
+    {
+        const std::vector<uint8_t> source{
+            0U, 0U, 0U, 0U,   100U, 100U, 100U, 100U,
+            200U, 0U, 0U, 255U, 0U, 200U, 0U, 255U};
+        const auto down = Fast::Renderer3ds::ResamplePicaRgba8(source, 4U, 1U, 2U, 1U);
+        Require(down == std::vector<uint8_t>({50U, 50U, 50U, 50U, 100U, 100U, 0U, 255U}),
+                "area-average downsample is wrong");
+        const std::vector<uint8_t> flat{10U, 20U, 30U, 40U};
+        const auto up = Fast::Renderer3ds::ResamplePicaRgba8(flat, 1U, 1U, 3U, 2U);
+        Require(up.size() == 24U && up[0] == 10U && up[23] == 40U,
+                "bilinear upsample is wrong");
+        const std::vector<float> depth{0.1F, 0.2F, 0.3F, 0.4F};
+        const auto nearest =
+            Fast::Renderer3ds::ResamplePicaNearest<float>(depth, 2U, 2U, 4U, 4U);
+        Require(nearest.size() == 16U && nearest[0] == 0.1F && nearest[3] == 0.2F &&
+                    nearest[12] == 0.3F && nearest[15] == 0.4F,
+                "nearest resample is wrong");
+        const auto shrink =
+            Fast::Renderer3ds::ResamplePicaNearest<float>(depth, 2U, 2U, 1U, 1U);
+        Require(shrink.size() == 1U, "nearest shrink is wrong");
+    }
+
+    // The library: default folder, timestamped names, last state and
+    // preferences that survive a restart, newest-first listing, fixed slot.
+    {
+        const auto libraryRoot = root / "library";
+        const auto preferences = libraryRoot / "config" / "savestates.json";
+        const auto defaultFolder = libraryRoot / "exe" / "savestates";
+        SavestateLibrary library(preferences, defaultFolder);
+        Require(library.Directory() == defaultFolder &&
+                    library.UsingDefaultDirectory() && !library.LastState(),
+                "library does not start at the default folder");
+        const auto now = std::chrono::system_clock::now();
+        const auto plain = library.NewStatePath(false, now);
+        const auto withSettings = library.NewStatePath(true, now);
+        Require(plain.parent_path() == defaultFolder &&
+                    plain.extension() == ".oot3dsav" &&
+                    !SavestateLibrary::NameCarriesSettings(plain) &&
+                    SavestateLibrary::NameCarriesSettings(withSettings),
+                "state names do not record their kind");
+        std::filesystem::create_directories(defaultFolder);
+        { std::ofstream(plain, std::ios::binary) << "a"; }
+        Require(library.NewStatePath(false, now) != plain,
+                "a new state would overwrite an existing file");
+        { std::ofstream(withSettings, std::ios::binary) << "bb"; }
+        std::filesystem::last_write_time(
+            withSettings, std::filesystem::last_write_time(plain) + std::chrono::seconds(5));
+        const auto entries = library.List(&error);
+        Require(entries.size() == 2U && entries[0].Path == withSettings &&
+                    entries[0].WithSettings && entries[1].Bytes == 1U,
+                "listing is not newest first");
+        const auto chosen = libraryRoot / "chosen";
+        Require(library.SetDirectory(chosen, &error), error);
+        library.SetLastState(plain);
+        Require(library.PreferencesError().empty(), library.PreferencesError());
+        SavestateLibrary reopened(preferences, defaultFolder);
+        Require(reopened.Directory() == chosen && !reopened.UsingDefaultDirectory() &&
+                    reopened.LastState() == plain,
+                "folder or last state was not remembered");
+        Require(reopened.SetDirectory(defaultFolder, &error) &&
+                    reopened.UsingDefaultDirectory(),
+                "choosing the default folder did not restore the default");
+        reopened.Request({SavestateRequestKind::Load, true, {}});
+        reopened.Request({SavestateRequestKind::Save, false, {}});
+        const auto request = reopened.TakeRequest();
+        Require(request && request->Kind == SavestateRequestKind::Save &&
+                    !reopened.TakeRequest(),
+                "the latest request must replace an unserviced one");
+        const auto slot = libraryRoot / "scripted" / "quick.oot3dsav";
+        SavestateLibrary fixed(preferences, defaultFolder, slot);
+        Require(fixed.NewStatePath(true) == slot && fixed.LastState() == slot &&
+                    !fixed.SetDirectory(chosen, &error),
+                "--quick-state does not pin one file");
+    }
 
     std::filesystem::remove_all(root, cleanupError);
     std::cout << "oot3d_native_a32_savestate_tests: ok\n";

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,10 @@ struct NativeA32SavestateCompatibility {
     std::string CodeBinSha256;
     std::string ProcessName;
     std::string A32SourceSnapshotId;
+    // The simulation rate is part of the game moment (a launch option, not a
+    // setting): a state is refused before anything is restored when it was
+    // saved at the other rate. Unset skips the check.
+    std::optional<GameplayTimingMode> GameplayTiming;
 };
 
 // Host-side TopScreen routing survives across guest refreshes even though it
@@ -74,6 +79,11 @@ struct NativeA32SavestateRuntimeState {
     bool PicaPresentationStateAvailable = false;
     Oot3d::Renderer::PicaPresentationStateSnapshot
         PicaPresentationState;
+    // Optional copy of the host settings (a JSON object owned by the window
+    // session), written by a "state + settings" save. The game moment above
+    // never depends on it.
+    bool HostSettingsAvailable = false;
+    std::string HostSettingsJson;
 };
 
 struct NativeA32SavestateIoResult {

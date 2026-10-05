@@ -2,6 +2,7 @@
 // completions and resets.
 #ifdef ENABLE_OOT3D_VULKAN
 #include "gfx_vulkan_pica_internal.h"
+#include "fast/renderer3ds/pica_guest_extent_snapshot.h"
 
 namespace Fast {
 
@@ -132,6 +133,39 @@ void GfxRenderingAPIVulkan::RestoreNativePicaImageBytes(
         throw;
     }
     DestroyBuffer(staging);
+}
+
+void GfxRenderingAPIVulkan::ClearNativePicaColorImage(
+    VkImage image, const VkClearColorValue& value,
+    VkImageLayout stableLayout, VkPipelineStageFlags stableStage,
+    VkAccessFlags stableAccess) {
+    if (image == VK_NULL_HANDLE) {
+        throw std::runtime_error("native PICA colour clear has no image");
+    }
+    VkCommandBuffer command = BeginImmediateCommands();
+    VkImageMemoryBarrier toTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    toTransfer.oldLayout = stableLayout;
+    toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toTransfer.image = image;
+    toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toTransfer.subresourceRange.levelCount = 1U;
+    toTransfer.subresourceRange.layerCount = 1U;
+    toTransfer.srcAccessMask = stableAccess;
+    toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(command, stableStage, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+    vkCmdClearColorImage(command, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         &value, 1U, &toTransfer.subresourceRange);
+    VkImageMemoryBarrier toStable = toTransfer;
+    toStable.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toStable.newLayout = stableLayout;
+    toStable.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toStable.dstAccessMask = stableAccess;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, stableStage,
+                         0, 0, nullptr, 0, nullptr, 1, &toStable);
+    EndImmediateCommands(command);
 }
 
 void GfxRenderingAPIVulkan::CaptureNativePicaDepthStencilImage(
@@ -404,6 +438,11 @@ bool GfxRenderingAPIVulkan::CapturePicaTextureCache(
             if (key.GpuCopyIdentity != 0U) {
                 continue;
             }
+            // A texture-pack replacement is a function of the restoring
+            // renderer's texture settings, not of the game moment.
+            if (key.CustomReplacement) {
+                continue;
+            }
             const auto expectedBytes = NativePicaDecodedMipChainSize(
                 texture.Width, texture.Height, texture.MipLevels);
             if (texture.Width == 0U || texture.Height == 0U ||
@@ -488,20 +527,25 @@ bool GfxRenderingAPIVulkan::CapturePicaTextureCache(
                 static_cast<uint8_t>(surface.Encoding);
             snapshot.CopyProducer.SceneEffectsResolved =
                 surface.SceneEffectsResolved;
-            snapshot.ImageWidth = surface.ImageWidth;
-            snapshot.ImageHeight = surface.ImageHeight;
+            // Stored at the source's guest extent; the sampler maps spans
+            // through the image extent, whatever it is.
+            snapshot.ImageWidth = surface.SourceWidth;
+            snapshot.ImageHeight = surface.SourceHeight;
             snapshot.ImageFormat = GfxNativePicaTextureSnapshotFormat::Rgba8;
             snapshot.MipLevels = 1U;
-            snapshot.PixelBytes = CaptureNativePicaImageBytes(
+            const auto pixels = CaptureNativePicaImageBytes(
                 surface.Image, surface.ImageWidth, surface.ImageHeight, 4U,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_SHADER_READ_BIT);
-            if (snapshot.PixelBytes.size() !=
+            if (pixels.size() !=
                 static_cast<size_t>(surface.ImageWidth) * surface.ImageHeight *
                     4U) {
                 throw std::runtime_error(
                     "native PICA copy producer capture is incomplete");
             }
+            snapshot.PixelBytes = Renderer3ds::ResamplePicaRgba8(
+                pixels, surface.ImageWidth, surface.ImageHeight,
+                surface.SourceWidth, surface.SourceHeight);
             snapshots.push_back(std::move(snapshot));
         }
         return true;
@@ -735,61 +779,36 @@ bool GfxRenderingAPIVulkan::CapturePicaColorTargets(
             snapshot.FramebufferHeight = key.Height;
             snapshot.FramebufferColorFormat = key.ColorFormat;
             snapshot.FramebufferDepthFormat = key.DepthFormat;
-            snapshot.RenderScalePermille = key.RenderScalePermille;
-            snapshot.ImageWidth = target.Width;
-            snapshot.ImageHeight = target.Height;
+            // Saved at the guest framebuffer extent with colour, depth and
+            // stencil only: the enhancement guides and the shadow mask are
+            // functions of the restoring renderer's settings and start neutral.
+            snapshot.RenderScalePermille =
+                Renderer3ds::kPicaGuestExtentRenderScalePermille;
+            snapshot.ImageWidth = key.Width;
+            snapshot.ImageHeight = key.Height;
             snapshot.SampleCount = 1U;
             snapshot.WBuffering = target.WBuffering;
-            const auto captureColorAttachment =
-                [&](VkImage image, uint32_t bytesPerPixel) {
-                    return CaptureNativePicaImageBytes(
-                        image, target.Width, target.Height,
-                        bytesPerPixel,
-                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-                };
-            snapshot.ColorRgba8 =
-                captureColorAttachment(target.ColorImage, 4U);
-            if (target.Attachments.NativeColorOnly()) {
-                const size_t pixelCount =
-                    static_cast<size_t>(target.Width) * target.Height;
-                snapshot.NormalGuideRgba8.resize(pixelCount * 4U);
-                snapshot.MaterialGuideRgba8.assign(pixelCount * 4U, 0U);
-                snapshot.RigidMotionGuideRgba16FloatLe.assign(
-                    pixelCount * 8U, 0U);
-                snapshot.AmbientGuideRgba8.resize(pixelCount * 4U);
-                for (size_t pixel = 0; pixel < pixelCount; ++pixel) {
-                    const size_t offset = pixel * 4U;
-                    snapshot.NormalGuideRgba8[offset] = 128U;
-                    snapshot.NormalGuideRgba8[offset + 1U] = 128U;
-                    snapshot.NormalGuideRgba8[offset + 2U] = 255U;
-                    snapshot.NormalGuideRgba8[offset + 3U] = 0U;
-                    snapshot.AmbientGuideRgba8[offset] = 255U;
-                    snapshot.AmbientGuideRgba8[offset + 1U] = 255U;
-                    snapshot.AmbientGuideRgba8[offset + 2U] = 255U;
-                    snapshot.AmbientGuideRgba8[offset + 3U] = 0U;
-                }
-            } else {
-                snapshot.NormalGuideRgba8 =
-                    captureColorAttachment(target.NormalGuideImage, 4U);
-                snapshot.MaterialGuideRgba8 =
-                    captureColorAttachment(target.MaterialGuideImage, 4U);
-                snapshot.RigidMotionGuideRgba16FloatLe =
-                    captureColorAttachment(
-                        target.RigidMotionGuideImage, 8U);
-                snapshot.AmbientGuideRgba8 =
-                    captureColorAttachment(target.AmbientGuideImage, 4U);
-            }
-            snapshot.ShadowR32UintLe = CaptureNativePicaImageBytes(
-                target.ShadowImage, target.Width, target.Height, 4U,
-                VK_IMAGE_LAYOUT_GENERAL,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+            const auto color = CaptureNativePicaImageBytes(
+                target.ColorImage, target.Width, target.Height, 4U,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+            snapshot.ColorRgba8 = Renderer3ds::ResamplePicaRgba8(
+                color, target.Width, target.Height, key.Width, key.Height);
+            std::vector<float> depth;
+            std::vector<uint8_t> stencil;
             CaptureNativePicaDepthStencilImage(
-                target.DepthImage, target.Width, target.Height,
-                snapshot.DepthValues, snapshot.StencilValues);
+                target.DepthImage, target.Width, target.Height, depth,
+                stencil);
+            snapshot.DepthValues = Renderer3ds::ResamplePicaNearest<float>(
+                depth, target.Width, target.Height, key.Width, key.Height);
+            if (!stencil.empty()) {
+                snapshot.StencilValues =
+                    Renderer3ds::ResamplePicaNearest<uint8_t>(
+                        stencil, target.Width, target.Height, key.Width,
+                        key.Height);
+            }
             snapshots.push_back(std::move(snapshot));
         }
         return true;
@@ -816,14 +835,22 @@ bool GfxRenderingAPIVulkan::RestorePicaColorTargets(
             throw std::runtime_error(
                 "native PICA color restore does not yet support multisampled targets");
         }
+        // Snapshots at the guest extent carry no renderer scale; legacy ones
+        // were saved at a renderer's internal extent.
+        const bool guestExtent =
+            !snapshots.empty() &&
+            snapshots.front().RenderScalePermille ==
+                Renderer3ds::kPicaGuestExtentRenderScalePermille;
         // A state loaded at startup is restored before the first frame applies
-        // the settings. The targets are restored at the scale they were saved
-        // at: the settings' own scale when it is the same, so the first frame
-        // keeps them; otherwise that frame replaces them, as any scale change.
+        // the settings, so the targets are created at the settings' scale and
+        // that frame keeps them. A legacy state at another scale is restored at
+        // its own scale and the first frame replaces it, as any scale change.
         const float settingsScale = Oot3d::ResolveInternalResolutionScale(
             Oot3d::GraphicsSettingsRuntime::Instance().SnapshotForRendering().Value);
         float restoreScale = mInternalResolutionScale;
-        if (!snapshots.empty()) {
+        if (guestExtent) {
+            restoreScale = settingsScale;
+        } else if (!snapshots.empty()) {
             const uint16_t savedScale = snapshots.front().RenderScalePermille;
             restoreScale = savedScale == static_cast<uint16_t>(std::lround(settingsScale * 1000.0F))
                 ? settingsScale
@@ -844,24 +871,36 @@ bool GfxRenderingAPIVulkan::RestorePicaColorTargets(
             const uint64_t expectedPixels =
                 static_cast<uint64_t>(snapshot.ImageWidth) *
                 snapshot.ImageHeight;
-            if (snapshot.RenderScalePermille != currentScale) {
+            const uint16_t expectedScale =
+                guestExtent ? Renderer3ds::kPicaGuestExtentRenderScalePermille
+                            : currentScale;
+            if (snapshot.RenderScalePermille != expectedScale) {
                 throw std::runtime_error(
                     "native PICA color snapshots were saved at different render scales (" +
                     std::to_string(snapshot.RenderScalePermille) + " and " +
-                    std::to_string(currentScale) + "/1000)");
+                    std::to_string(expectedScale) + "/1000)");
             }
+            const bool guidesValid =
+                guestExtent
+                    ? snapshot.ImageWidth == snapshot.FramebufferWidth &&
+                          snapshot.ImageHeight == snapshot.FramebufferHeight &&
+                          snapshot.NormalGuideRgba8.empty() &&
+                          snapshot.MaterialGuideRgba8.empty() &&
+                          snapshot.RigidMotionGuideRgba16FloatLe.empty() &&
+                          snapshot.AmbientGuideRgba8.empty() &&
+                          snapshot.ShadowR32UintLe.empty()
+                    : expectedBytes == snapshot.NormalGuideRgba8.size() &&
+                          expectedBytes == snapshot.MaterialGuideRgba8.size() &&
+                          expectedPixels * 8U ==
+                              snapshot.RigidMotionGuideRgba16FloatLe.size() &&
+                          expectedBytes == snapshot.AmbientGuideRgba8.size() &&
+                          expectedBytes == snapshot.ShadowR32UintLe.size();
             if (snapshot.ColorPhysicalAddress == 0U ||
                 snapshot.FramebufferWidth == 0U ||
                 snapshot.FramebufferHeight == 0U ||
                 snapshot.ImageWidth == 0U || snapshot.ImageHeight == 0U ||
                 snapshot.SampleCount != 1U ||
-                expectedBytes != snapshot.ColorRgba8.size() ||
-                expectedBytes != snapshot.NormalGuideRgba8.size() ||
-                expectedBytes != snapshot.MaterialGuideRgba8.size() ||
-                expectedPixels * 8U !=
-                    snapshot.RigidMotionGuideRgba16FloatLe.size() ||
-                expectedBytes != snapshot.AmbientGuideRgba8.size() ||
-                expectedBytes != snapshot.ShadowR32UintLe.size() ||
+                expectedBytes != snapshot.ColorRgba8.size() || !guidesValid ||
                 expectedPixels != snapshot.DepthValues.size() ||
                 (!snapshot.StencilValues.empty() &&
                  expectedPixels != snapshot.StencilValues.size()) ||
@@ -879,6 +918,15 @@ bool GfxRenderingAPIVulkan::RestorePicaColorTargets(
                     "native PICA color snapshot is incompatible");
             }
         }
+        constexpr VkImageLayout kColorLayout =
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        constexpr VkPipelineStageFlags kColorStage =
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        constexpr VkAccessFlags kColorAccess =
+            VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        constexpr VkAccessFlags kShadowAccess =
+            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
         for (const auto& snapshot : snapshots) {
             GfxNativePicaDrawView targetDescription;
             targetDescription.RenderTargetNamespace =
@@ -893,11 +941,13 @@ bool GfxRenderingAPIVulkan::RestorePicaColorTargets(
                 snapshot.FramebufferColorFormat;
             targetDescription.FramebufferDepthFormat =
                 snapshot.FramebufferDepthFormat;
-            auto& target = GetOrCreateNativePicaRenderTarget(
-                targetDescription, snapshot.ImageWidth,
-                snapshot.ImageHeight);
-            if (target.Width != snapshot.ImageWidth ||
-                target.Height != snapshot.ImageHeight) {
+            auto& target = guestExtent
+                ? GetOrCreateNativePicaRenderTarget(targetDescription)
+                : GetOrCreateNativePicaRenderTarget(
+                      targetDescription, snapshot.ImageWidth,
+                      snapshot.ImageHeight);
+            if (!guestExtent && (target.Width != snapshot.ImageWidth ||
+                                 target.Height != snapshot.ImageHeight)) {
                 throw std::runtime_error(
                     "native PICA color snapshot render extent changed");
             }
@@ -905,16 +955,9 @@ bool GfxRenderingAPIVulkan::RestorePicaColorTargets(
                 [&](VkImage image, uint32_t bytesPerPixel,
                     std::span<const uint8_t> bytes) {
                     RestoreNativePicaImageBytes(
-                        image, snapshot.ImageWidth,
-                        snapshot.ImageHeight, bytesPerPixel, bytes,
-                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+                        image, target.Width, target.Height, bytesPerPixel,
+                        bytes, kColorLayout, kColorStage, kColorAccess,
+                        kColorLayout, kColorStage, kColorAccess);
                 };
             // The restored colour becomes this target's current content version.
             // If it was saved as resolved content, the provenance answers true
@@ -924,35 +967,76 @@ bool GfxRenderingAPIVulkan::RestorePicaColorTargets(
             target.ContentWriteSerial = ++mGpuTextureCopyWriteSerial;
             target.SceneEffectsResolvedSerial =
                 snapshot.SceneEffectsResolved ? target.ContentWriteSerial : 0U;
-            restoreColorAttachment(
-                target.ColorImage, 4U, snapshot.ColorRgba8);
-            if (!target.Attachments.NativeColorOnly()) {
+            if (guestExtent) {
                 restoreColorAttachment(
-                    target.NormalGuideImage, 4U,
-                    snapshot.NormalGuideRgba8);
+                    target.ColorImage, 4U,
+                    Renderer3ds::ResamplePicaRgba8(
+                        snapshot.ColorRgba8, snapshot.ImageWidth,
+                        snapshot.ImageHeight, target.Width, target.Height));
+                // Neutral guides: what the canonical colour-only target
+                // reports, until the next draw writes the enhanced ones.
+                if (!target.Attachments.NativeColorOnly()) {
+                    ClearNativePicaColorImage(
+                        target.NormalGuideImage,
+                        {{128.0F / 255.0F, 128.0F / 255.0F, 1.0F, 0.0F}},
+                        kColorLayout, kColorStage, kColorAccess);
+                    ClearNativePicaColorImage(
+                        target.MaterialGuideImage, {{0.0F, 0.0F, 0.0F, 0.0F}},
+                        kColorLayout, kColorStage, kColorAccess);
+                    ClearNativePicaColorImage(
+                        target.RigidMotionGuideImage,
+                        {{0.0F, 0.0F, 0.0F, 0.0F}}, kColorLayout,
+                        kColorStage, kColorAccess);
+                    ClearNativePicaColorImage(
+                        target.AmbientGuideImage, {{1.0F, 1.0F, 1.0F, 0.0F}},
+                        kColorLayout, kColorStage, kColorAccess);
+                }
+                VkClearColorValue noShadow{};
+                noShadow.uint32[0] = 0xFFFFFFFFU;
+                ClearNativePicaColorImage(
+                    target.ShadowImage, noShadow, VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, kShadowAccess);
+                const auto depth = Renderer3ds::ResamplePicaNearest<float>(
+                    snapshot.DepthValues, snapshot.ImageWidth,
+                    snapshot.ImageHeight, target.Width, target.Height);
+                std::vector<uint8_t> stencil;
+                if (!snapshot.StencilValues.empty()) {
+                    stencil = Renderer3ds::ResamplePicaNearest<uint8_t>(
+                        snapshot.StencilValues, snapshot.ImageWidth,
+                        snapshot.ImageHeight, target.Width, target.Height);
+                }
+                RestoreNativePicaDepthStencilImage(
+                    target.DepthImage, target.Width, target.Height, depth,
+                    stencil);
+            } else {
                 restoreColorAttachment(
-                    target.MaterialGuideImage, 4U,
-                    snapshot.MaterialGuideRgba8);
-                restoreColorAttachment(
-                    target.RigidMotionGuideImage, 8U,
-                    snapshot.RigidMotionGuideRgba16FloatLe);
-                restoreColorAttachment(
-                    target.AmbientGuideImage, 4U,
-                    snapshot.AmbientGuideRgba8);
+                    target.ColorImage, 4U, snapshot.ColorRgba8);
+                if (!target.Attachments.NativeColorOnly()) {
+                    restoreColorAttachment(
+                        target.NormalGuideImage, 4U,
+                        snapshot.NormalGuideRgba8);
+                    restoreColorAttachment(
+                        target.MaterialGuideImage, 4U,
+                        snapshot.MaterialGuideRgba8);
+                    restoreColorAttachment(
+                        target.RigidMotionGuideImage, 8U,
+                        snapshot.RigidMotionGuideRgba16FloatLe);
+                    restoreColorAttachment(
+                        target.AmbientGuideImage, 4U,
+                        snapshot.AmbientGuideRgba8);
+                }
+                RestoreNativePicaImageBytes(
+                    target.ShadowImage, snapshot.ImageWidth,
+                    snapshot.ImageHeight, 4U, snapshot.ShadowR32UintLe,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, kShadowAccess,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, kShadowAccess);
+                RestoreNativePicaDepthStencilImage(
+                    target.DepthImage, snapshot.ImageWidth,
+                    snapshot.ImageHeight, snapshot.DepthValues,
+                    snapshot.StencilValues);
             }
-            RestoreNativePicaImageBytes(
-                target.ShadowImage, snapshot.ImageWidth,
-                snapshot.ImageHeight, 4U, snapshot.ShadowR32UintLe,
-                VK_IMAGE_LAYOUT_GENERAL,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-                VK_IMAGE_LAYOUT_GENERAL,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-            RestoreNativePicaDepthStencilImage(
-                target.DepthImage, snapshot.ImageWidth,
-                snapshot.ImageHeight, snapshot.DepthValues,
-                snapshot.StencilValues);
             target.WBuffering = snapshot.WBuffering;
         }
         return true;
@@ -978,15 +1062,24 @@ bool GfxRenderingAPIVulkan::CapturePicaPresentationState(
             GfxNativePicaDisplayImageColorSnapshot imageSnapshot;
             imageSnapshot.RenderTargetNamespace = key.first;
             imageSnapshot.OutputPhysicalAddress = key.second;
-            imageSnapshot.ImageWidth = image.Width;
-            imageSnapshot.ImageHeight = image.Height;
+            // Stored at the guest output extent of its transfer; the next
+            // transfer recreates it at the restoring renderer's extent.
+            const bool guestExtentKnown =
+                image.GuestWidth != 0U && image.GuestHeight != 0U;
+            imageSnapshot.ImageWidth =
+                guestExtentKnown ? image.GuestWidth : image.Width;
+            imageSnapshot.ImageHeight =
+                guestExtentKnown ? image.GuestHeight : image.Height;
             imageSnapshot.Initialized = image.Initialized;
             if (image.Initialized) {
-                imageSnapshot.ColorRgba8 = CaptureNativePicaImageBytes(
-                    image.Image, image.Width, image.Height, 4U,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                    VK_ACCESS_SHADER_READ_BIT);
+                imageSnapshot.ColorRgba8 = Renderer3ds::ResamplePicaRgba8(
+                    CaptureNativePicaImageBytes(
+                        image.Image, image.Width, image.Height, 4U,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                        VK_ACCESS_SHADER_READ_BIT),
+                    image.Width, image.Height, imageSnapshot.ImageWidth,
+                    imageSnapshot.ImageHeight);
             }
             const auto depthAssociation =
                 mNativePicaDisplayDepthTargets.find(key);
@@ -1005,8 +1098,9 @@ bool GfxRenderingAPIVulkan::CapturePicaPresentationState(
                     target.ColorFormat;
                 imageSnapshot.DepthTargetFramebufferDepthFormat =
                     target.DepthFormat;
+                // The associated target is saved at the guest extent too.
                 imageSnapshot.DepthTargetRenderScalePermille =
-                    target.RenderScalePermille;
+                    Renderer3ds::kPicaGuestExtentRenderScalePermille;
             }
             snapshot.DisplayImages.push_back(std::move(imageSnapshot));
         }
@@ -1034,6 +1128,15 @@ bool GfxRenderingAPIVulkan::RestorePicaPresentationState(
             throw std::runtime_error(
                 "native PICA presentation restore requires reset renderer state");
         }
+        // A display image's depth association names a target saved at the
+        // guest extent; that target was restored at the current scale.
+        const uint16_t currentScale = static_cast<uint16_t>(
+            std::lround(mInternalResolutionScale * 1000.0F));
+        const auto restoredScale = [currentScale](uint16_t saved) {
+            return saved == Renderer3ds::kPicaGuestExtentRenderScalePermille
+                       ? currentScale
+                       : saved;
+        };
         std::set<std::pair<uint64_t, uint32_t>> identities;
         for (const auto& image : snapshot.DisplayImages) {
             const uint64_t expectedBytes =
@@ -1060,7 +1163,7 @@ bool GfxRenderingAPIVulkan::RestorePicaPresentationState(
                     image.DepthTargetFramebufferHeight,
                     image.DepthTargetFramebufferColorFormat,
                     image.DepthTargetFramebufferDepthFormat,
-                    image.DepthTargetRenderScalePermille};
+                    restoredScale(image.DepthTargetRenderScalePermille)};
                 if (mNativePicaRenderTargets.find(targetKey) ==
                     mNativePicaRenderTargets.end()) {
                     throw std::runtime_error(
@@ -1112,6 +1215,8 @@ bool GfxRenderingAPIVulkan::RestorePicaPresentationState(
                     VK_ACCESS_SHADER_READ_BIT);
             }
             image.Initialized = imageSnapshot.Initialized;
+            image.GuestWidth = imageSnapshot.ImageWidth;
+            image.GuestHeight = imageSnapshot.ImageHeight;
             if (imageSnapshot.HasDepthTarget) {
                 mNativePicaDisplayDepthTargets[{
                     imageSnapshot.RenderTargetNamespace,
@@ -1123,7 +1228,7 @@ bool GfxRenderingAPIVulkan::RestorePicaPresentationState(
                     imageSnapshot.DepthTargetFramebufferHeight,
                     imageSnapshot.DepthTargetFramebufferColorFormat,
                     imageSnapshot.DepthTargetFramebufferDepthFormat,
-                    imageSnapshot.DepthTargetRenderScalePermille};
+                    restoredScale(imageSnapshot.DepthTargetRenderScalePermille)};
             }
         }
         mLastPresentedNativePicaDisplayTransfer =

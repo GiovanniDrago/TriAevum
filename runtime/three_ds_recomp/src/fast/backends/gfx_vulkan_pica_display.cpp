@@ -170,6 +170,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                 transfer.OutputPhysicalAddress,
                 transferPlan->DestinationWidth,
                 transferPlan->DestinationHeight);
+            display.GuestWidth = transfer.OutputWidth;
+            display.GuestHeight = transfer.OutputHeight;
             const auto displayKey = std::make_pair(
                 transfer.RenderTargetNamespace,
                 transfer.OutputPhysicalAddress);

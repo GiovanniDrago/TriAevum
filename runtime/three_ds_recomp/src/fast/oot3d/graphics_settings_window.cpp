@@ -1,6 +1,7 @@
 #include "fast/oot3d/graphics_settings_window.h"
 #include "fast/oot3d/graphics_settings_runtime.h"
 #include "fast/oot3d/settings_panel_widgets.h"
+#include <chrono>
 #include <mutex>
 
 namespace Fast::Oot3d {
@@ -35,6 +36,62 @@ void InstallGraphicsSettingsPanelTab(
     }
     InstallGraphicsSettingsPanelTabs(std::move(tabs));
 }
+
+namespace {
+struct HostNotice {
+    std::string Text;
+    bool Failure = false;
+    std::chrono::steady_clock::time_point Until{};
+};
+std::mutex& HostNoticeMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+HostNotice& CurrentHostNotice() {
+    static HostNotice notice;
+    return notice;
+}
+} // namespace
+
+void PostHostNotice(std::string text, bool failure) {
+    std::scoped_lock lock(HostNoticeMutex());
+    auto& notice = CurrentHostNotice();
+    notice.Text = std::move(text);
+    notice.Failure = failure;
+    // Failures stay longer: they point the player at F1.
+    notice.Until = std::chrono::steady_clock::now() +
+                   std::chrono::seconds(failure ? 8 : 3);
+}
+
+bool HostNoticeActive() {
+    std::scoped_lock lock(HostNoticeMutex());
+    return std::chrono::steady_clock::now() < CurrentHostNotice().Until;
+}
+
+void DrawHostNotice() {
+    HostNotice notice;
+    {
+        std::scoped_lock lock(HostNoticeMutex());
+        notice = CurrentHostNotice();
+    }
+    if (std::chrono::steady_clock::now() >= notice.Until) return;
+    const auto* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 16.0F, viewport->WorkPos.y + 16.0F),
+                            ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.75F);
+    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+    if (ImGui::Begin("##TriAevumHostNotice", nullptr, flags)) {
+        if (notice.Failure) {
+            ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.4F, 1.0F), "%s", notice.Text.c_str());
+        } else {
+            ImGui::TextUnformatted(notice.Text.c_str());
+        }
+    }
+    ImGui::End();
+}
+
 void DrawDisplayConfirmation() {
     auto& runtime = GraphicsSettingsRuntime::Instance();
     const bool awaiting = runtime.PresentationStatus().Phase == PresentationTransactionPhase::AwaitingConfirmation;

@@ -15,6 +15,9 @@
 #include "oot3d_game_language_panel.h"
 #include "oot3d_graphics_settings_schedule.h"
 #include "oot3d_scene_environment.h"
+#include "oot3d_savestate_library.h"
+#include "oot3d_savestate_panel.h"
+#include "oot3d_savestate_settings.h"
 #ifdef OOT3D_WHOLE_AOT_PRODUCT_MODE
 #include "oot3d_native_crash_diagnostics.h"
 #endif
@@ -285,8 +288,17 @@ private:
   // Deferred: a host continuation is pending, retry at a later frame boundary. Failed: reported once; the request is
   // dropped because every retry repeats the full GPU drain and readback.
   enum class SaveStateOutcome : uint8_t { Saved, Deferred, Failed };
-  SaveStateOutcome SaveState(const std::filesystem::path &path);
-  bool LoadState(const std::filesystem::path &path);
+  // A save state holds the game moment only; withSettings also stores the host settings beside it.
+  SaveStateOutcome SaveState(const std::filesystem::path &path, bool withSettings = false);
+  SaveStateOutcome FailSave(std::string message);
+  // applySettings applies the settings a state carries before the renderer restore, so the restored
+  // content is rebuilt at their scale. lastSavestateMessage describes the outcome.
+  bool LoadState(const std::filesystem::path &path, bool applySettings = false);
+  void ApplyLoadedSavestateSettings(const Oot3dNativeGame::NativeA32SavestateRuntimeState &runtime,
+                                    bool applySettings);
+  // F5/F8 and the F1 Save states tab: one request per frame boundary.
+  void ServiceSavestateRequests();
+  Oot3dNativeGame::SavestateSettingsOwners SavestateSettingsOwners() const;
 
   // The former locals, in declaration order: construction (in Setup()), lifetime and destruction order are
   // those of the function.
@@ -309,6 +321,8 @@ private:
   std::shared_ptr<Oot3dNativeGame::GameLanguageSettings> languageSettings{};
   std::filesystem::path saveDataDirectory{};
   std::filesystem::path quickStatePath{};
+  std::shared_ptr<Oot3dNativeGame::SavestateLibrary> savestateLibrary{};
+  std::string lastSavestateMessage;
   Oot3dNativeGame::NativeA32SavestateCompatibility savestateCompatibility{};
   std::optional<Oot3dNativeGame::NativeA32CtrHostServices> hostServicesStorage;
   Oot3dNativeGame::NativeFrameRateContract frameRateContract{};
@@ -451,7 +465,6 @@ private:
   std::vector<Oot3dNativeGame::Oot3dPicaDrawSubmission> drainedDraws;
   bool quickSaveKeyWasDown = false;
   bool quickLoadKeyWasDown = false;
-  bool quickSavePending = false;
   bool automatedStateSaved = false;
   bool automatedStateSaveFailed = false;
   std::optional<uint32_t> automatedStateSavedAtRunFrame;

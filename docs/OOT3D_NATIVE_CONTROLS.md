@@ -88,6 +88,8 @@ is not a replacement with an unrestricted FPS camera.
 The runtime owns this state alongside polling, not in the renderer or a
 global singleton. Interpolated presentation-only polls do not advance it.
 When input stops, angular velocity is zero but gravity retains the pose.
+F5/Shift+F5 and F8/Shift+F8 (save states, with or without settings) are
+described in [`TRIAEVUM_SAVESTATES.md`](TRIAEVUM_SAVESTATES.md).
 Cold checkpoint loading and F8 restore pitch from the HID accelerometer
 already present in the savestate and clear pending mouse movement; no save
 schema or title AOT changes are required. The separate module-host adapter

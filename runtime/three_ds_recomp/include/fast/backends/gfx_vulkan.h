@@ -681,6 +681,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     struct NativePicaDisplayImage {
         uint32_t Width = 0;
         uint32_t Height = 0;
+        // The guest output extent of the transfer that produced this image,
+        // the extent a savestate stores it at (zero until a transfer wrote it).
+        uint32_t GuestWidth = 0;
+        uint32_t GuestHeight = 0;
         VkImage Image = VK_NULL_HANDLE;
         VkDeviceMemory Memory = VK_NULL_HANDLE;
         VkImageView View = VK_NULL_HANDLE;
@@ -821,6 +825,11 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         uint32_t bytesPerPixel, std::span<const uint8_t> bytes,
         VkImageLayout initialLayout,
         VkPipelineStageFlags initialStage, VkAccessFlags initialAccess,
+        VkImageLayout stableLayout, VkPipelineStageFlags stableStage,
+        VkAccessFlags stableAccess);
+    // Fills one colour image with a constant, leaving it in its stable layout.
+    void ClearNativePicaColorImage(
+        VkImage image, const VkClearColorValue& value,
         VkImageLayout stableLayout, VkPipelineStageFlags stableStage,
         VkAccessFlags stableAccess);
     void CaptureNativePicaDepthStencilImage(

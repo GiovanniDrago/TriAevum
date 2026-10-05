@@ -122,9 +122,15 @@ void NativeA32WindowSession::Setup() {
                 "oot3d_native_savedata"
           : launch.SaveDataDirectory;
   saveDataDirectory = hostConfig.SaveDataDirectory;
-  quickStatePath =
-      launch.QuickStatePath.empty() ? saveDataDirectory / "quick.oot3dsav"
-                                    : launch.QuickStatePath;
+  // Save states default to a folder beside the executable; --quick-state pins one file for scripted runs.
+  savestateLibrary = std::make_shared<Oot3dNativeGame::SavestateLibrary>(
+      std::filesystem::path(launch.Host.ConfigurationPath).parent_path() / "savestates.json",
+      std::filesystem::path(std::u8string(
+          reinterpret_cast<const char8_t *>(Ship::Context::GetAppBundlePath().c_str()))) /
+          "savestates",
+      launch.QuickStatePath);
+  quickStatePath = launch.QuickStatePath.empty() ? savestateLibrary->Directory()
+                                                 : launch.QuickStatePath;
   savestateCompatibility = Oot3dNativeGame::NativeA32SavestateCompatibility{
       manifest->CodeBinSha256,
       manifest->ProcessName,
@@ -136,6 +142,7 @@ void NativeA32WindowSession::Setup() {
   frameRateContract =
       Oot3dNativeGame::ResolveNativeFrameRateContract(
           launch.GameplayTiming, launch.PresentationRateHz);
+  savestateCompatibility.GameplayTiming = frameRateContract.Mode;
 #if defined(__SWITCH__)
   gSwitchVisualInterpolation = frameRateContract.VisualInterpolationAllowed;
 #endif
@@ -596,6 +603,8 @@ void NativeA32WindowSession::Setup() {
         Oot3dNativeGame::CreateTopScreenSettingsPanel(
             topScreenConfigRuntime));
   }
+  applicationSettingsTabs.push_back(
+      Oot3dNativeGame::CreateSavestatePanel(savestateLibrary));
   Fast::Oot3d::InstallGraphicsSettingsPanelTabs(
       std::move(applicationSettingsTabs));
   InitContextForDemo(hostArgs);
@@ -735,6 +744,7 @@ void NativeA32WindowSession::Setup() {
             &ioResult, &error)) {
       throw std::runtime_error("native savestate load failed: " + error);
     }
+    ApplyLoadedSavestateSettings(restoredRuntime, launch.LoadStateWithSettings);
     Oot3dNativeGame::ResetOot3dTypedGameplayTransientState();
     hdFonts.Reset();
     const auto restoredGravity = hostServices.HidRuntimeProfile().LastAccelerometer;

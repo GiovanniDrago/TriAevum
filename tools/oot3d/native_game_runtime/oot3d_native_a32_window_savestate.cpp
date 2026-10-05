@@ -199,7 +199,15 @@ void NativeA32WindowSession::RestoreSavestatePicaVisualReplayState(const Oot3dNa
 }
 
 NativeA32WindowSession::SaveStateOutcome
-NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
+NativeA32WindowSession::FailSave(std::string message) {
+  std::cerr << "oot3d_native_game: " << message << '\n';
+  ++savestateStats.SaveFailureCount;
+  lastSavestateMessage = std::move(message);
+  return SaveStateOutcome::Failed;
+}
+
+NativeA32WindowSession::SaveStateOutcome
+NativeA32WindowSession::SaveState(const std::filesystem::path &path, bool withSettings) {
   auto &hostServices = *hostServicesStorage;
   auto &frameRatePolicy = *frameRatePolicyStorage;
   auto &process = *processStorage;
@@ -277,22 +285,14 @@ NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
   visualReplayState.LastSubmittedDrawId = lastSubmittedDrawId;
   if (!Oot3dNativeGame::EncodeOot3dPicaVisualReplayState(
           visualReplayState, runtime.PicaVisualReplayState, &error)) {
-    std::cerr
-        << "oot3d_native_game: native PICA visual replay capture failed: "
-        << error << '\n';
-    ++savestateStats.SaveFailureCount;
-    return SaveStateOutcome::Failed;
+    return FailSave("native PICA visual replay capture failed: " + error);
   }
   runtime.PicaVisualReplayStateAvailable = true;
   savestateStats.PicaVisualReplayBytesCaptured +=
       runtime.PicaVisualReplayState.size();
   if (!api.CapturePicaTextureCache(
           runtime.PicaTextureCache, &error)) {
-    std::cerr
-        << "oot3d_native_game: native PICA texture capture failed: "
-        << error << '\n';
-    ++savestateStats.SaveFailureCount;
-    return SaveStateOutcome::Failed;
+    return FailSave("native PICA texture capture failed: " + error);
   }
   runtime.PicaTextureCacheAvailable = true;
   for (const auto &texture : runtime.PicaTextureCache) {
@@ -301,11 +301,7 @@ NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
   savestateStats.PicaTexturesCaptured += runtime.PicaTextureCache.size();
   if (!api.CapturePicaColorTargets(
           runtime.PicaColorTargets, &error)) {
-    std::cerr
-        << "oot3d_native_game: native PICA color capture failed: "
-        << error << '\n';
-    ++savestateStats.SaveFailureCount;
-    return SaveStateOutcome::Failed;
+    return FailSave("native PICA color capture failed: " + error);
   }
   runtime.PicaColorTargetsAvailable = true;
   for (const auto &target : runtime.PicaColorTargets) {
@@ -315,11 +311,7 @@ NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
   savestateStats.PicaColorTargetsCaptured += runtime.PicaColorTargets.size();
   if (!api.CapturePicaPresentationState(
           runtime.PicaPresentationState, &error)) {
-    std::cerr
-        << "oot3d_native_game: native PICA presentation capture failed: "
-        << error << '\n';
-    ++savestateStats.SaveFailureCount;
-    return SaveStateOutcome::Failed;
+    return FailSave("native PICA presentation capture failed: " + error);
   }
   runtime.PicaPresentationStateAvailable = true;
   for (const auto &image :
@@ -329,14 +321,16 @@ NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
   }
   savestateStats.PicaDisplayImagesCaptured +=
       runtime.PicaPresentationState.DisplayImages.size();
+  if (withSettings) {
+    runtime.HostSettingsAvailable = true;
+    runtime.HostSettingsJson =
+        Oot3dNativeGame::CaptureSavestateSettings(SavestateSettingsOwners());
+  }
   Oot3dNativeGame::NativeA32SavestateIoResult ioResult;
   if (!Oot3dNativeGame::SaveNativeA32State(
           path, savestateCompatibility, runtime, process, hostServices,
           picaFrontend, submissionQueue, dspHle, &ioResult, &error)) {
-    std::cerr << "oot3d_native_game: savestate save failed: " << error
-              << '\n';
-    ++savestateStats.SaveFailureCount;
-    return SaveStateOutcome::Failed;
+    return FailSave("savestate save failed: " + error);
   }
   ++savestateStats.SaveCount;
   savestateStats.SaveBytes += ioResult.FileBytes;
@@ -347,10 +341,12 @@ NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
   savestateStats.WriteSeconds += ioResult.IoSeconds;
   std::cout << "oot3d_native_game: saved state at frame " << frameCount
             << " to " << path.string() << '\n';
+  lastSavestateMessage.clear();
   return SaveStateOutcome::Saved;
 }
 
-bool NativeA32WindowSession::LoadState(const std::filesystem::path &path) {
+bool NativeA32WindowSession::LoadState(const std::filesystem::path &path,
+                                       bool applySettings) {
   auto &hostServices = *hostServicesStorage;
   auto &process = *processStorage;
   auto &uiLifecycleBridge = *uiLifecycleBridgeStorage;
@@ -370,8 +366,12 @@ bool NativeA32WindowSession::LoadState(const std::filesystem::path &path) {
           picaFrontend, submissionQueue, dspHle, &ioResult, &error)) {
     std::cerr << "oot3d_native_game: savestate load failed: " << error
               << '\n';
+    lastSavestateMessage = error;
     return false;
   }
+  // Settings first: the renderer restore below rebuilds the saved content at
+  // the scale they select.
+  ApplyLoadedSavestateSettings(runtime, applySettings);
   Oot3dNativeGame::ResetOot3dTypedGameplayTransientState();
   picaCompositionTracker.Reset();
   const auto restoredGravity = hostServices.HidRuntimeProfile().LastAccelerometer;
@@ -478,6 +478,94 @@ bool NativeA32WindowSession::LoadState(const std::filesystem::path &path) {
   std::cout << "oot3d_native_game: loaded state at frame " << frameCount
             << " from " << path.string() << '\n';
   return true;
+}
+
+void NativeA32WindowSession::ApplyLoadedSavestateSettings(
+    const Oot3dNativeGame::NativeA32SavestateRuntimeState &runtime,
+    bool applySettings) {
+  lastSavestateMessage.clear();
+  if (!applySettings) return;
+  if (!runtime.HostSettingsAvailable) {
+    lastSavestateMessage = "this state has no saved settings; current settings kept";
+    std::cout << "oot3d_native_game: savestate settings: none stored\n";
+    return;
+  }
+  const auto applied = Oot3dNativeGame::ApplySavestateSettings(
+      runtime.HostSettingsJson, SavestateSettingsOwners());
+  for (const auto &line : applied.Lines) {
+    std::cout << "oot3d_native_game: savestate settings: " << line << '\n';
+    lastSavestateMessage += (lastSavestateMessage.empty() ? "" : "\n") + line;
+  }
+  if (topScreenConfigRuntime != nullptr) ApplyTopScreenConfigSnapshot();
+}
+
+Oot3dNativeGame::SavestateSettingsOwners
+NativeA32WindowSession::SavestateSettingsOwners() const {
+  return {launch.UiProfile == Oot3dNativeGame::Oot3dUiProfile::TopScreen
+              ? topScreenConfigRuntime
+              : nullptr,
+          controlConfigRuntime, languageSettings};
+}
+
+void NativeA32WindowSession::ServiceSavestateRequests() {
+  auto request = savestateLibrary->TakeRequest();
+  if (!request.has_value()) return;
+  const auto report = [&](bool success, std::string message) {
+    std::cout << "oot3d_native_game: savestate request "
+              << (success ? "succeeded" : "failed") << ": " << message << '\n';
+    Fast::Oot3d::PostHostNotice(message, !success);
+    savestateLibrary->Report(success, std::move(message));
+  };
+  const auto fileName = [](const std::filesystem::path &path) {
+    const auto text = path.filename().u8string();
+    return std::string(text.begin(), text.end());
+  };
+  if (request->Kind == Oot3dNativeGame::SavestateRequestKind::Save) {
+    const auto path = savestateLibrary->NewStatePath(request->WithSettings);
+    std::error_code directoryError;
+    std::filesystem::create_directories(path.parent_path(), directoryError);
+    if (directoryError) {
+      report(false, "Save state failed: cannot create the folder (" +
+                        directoryError.message() + ")");
+      return;
+    }
+    switch (SaveState(path, request->WithSettings)) {
+    case SaveStateOutcome::Deferred:
+      savestateLibrary->Request(*request);  // Retried at the next boundary.
+      return;
+    case SaveStateOutcome::Failed:
+      report(false, "Save state failed: " + lastSavestateMessage);
+      return;
+    case SaveStateOutcome::Saved:
+      savestateLibrary->SetLastState(path);
+      report(true, std::string(request->WithSettings ? "State and settings saved: "
+                                                     : "State saved: ") +
+                       fileName(path));
+      return;
+    }
+    return;
+  }
+  const auto path = request->Path.empty() ? savestateLibrary->LastState()
+                                          : std::optional(request->Path);
+  if (!path.has_value()) {
+    report(false, "No save state to load yet");
+    return;
+  }
+  std::error_code existsError;
+  if (!std::filesystem::is_regular_file(*path, existsError)) {
+    report(false, "Save state not found: " + fileName(*path));
+    return;
+  }
+  if (!LoadState(*path, request->WithSettings)) {
+    report(false, "Load failed: " + lastSavestateMessage);
+    return;
+  }
+  savestateLibrary->SetLastState(*path);
+  std::string message = (request->WithSettings ? "State and settings loaded: "
+                                               : "State loaded: ") +
+                        fileName(*path);
+  if (!lastSavestateMessage.empty()) message += "\n" + lastSavestateMessage;
+  report(true, std::move(message));
 }
 
 } // namespace Oot3dA32Window

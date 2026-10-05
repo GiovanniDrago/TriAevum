@@ -89,9 +89,9 @@ void PrintOot3dNativeGameUsage() {
                  "[--enable-mass-aot|--disable-mass-aot] "
                  "[--disable-audio] "
                  "[--audio-pcm-dump <capture.wav>] "
-                 "[--load-state <checkpoint.oot3dsav>] "
+                 "[--load-state <checkpoint.oot3dsav> [--load-state-with-settings]] "
                  "[--quick-state <checkpoint.oot3dsav>] "
-                 "[--save-state <checkpoint.oot3dsav> "
+                 "[--save-state <checkpoint.oot3dsav> [--save-state-with-settings] "
                  "--save-state-frame <frame>] "
                  "[--renderer <nri|opengl>] "
                  "[--config <oot3d_native_game.json>] "
@@ -253,10 +253,42 @@ bool ParseOot3dNativeGameArgs(int argc, char** argv, Oot3dNativeGameLaunch& laun
             launch.AudioPcmDumpPath = argv[++index];
         } else if (arg == "--load-state" && index + 1 < argc) {
             launch.LoadStatePath = argv[++index];
+        } else if (arg == "--load-state-with-settings") {
+            launch.LoadStateWithSettings = true;
+        } else if (arg == "--save-state-with-settings") {
+            launch.SaveStateWithSettings = true;
         } else if (arg == "--quick-state" && index + 1 < argc) {
             launch.QuickStatePath = argv[++index];
         } else if (arg == "--save-state" && index + 1 < argc) {
             launch.SaveStatePath = argv[++index];
+        } else if (arg == "--savestate-action" && index + 1 < argc) {
+            // FRAME:ACTION[:PATH]; the path may itself contain ':'.
+            const std::string value = argv[++index];
+            const auto first = value.find(':');
+            const auto second = first == std::string::npos
+                                    ? std::string::npos
+                                    : value.find(':', first + 1U);
+            const std::string action = value.substr(
+                first + 1U, second == std::string::npos
+                                ? std::string::npos
+                                : second - first - 1U);
+            Oot3dNativeGameLaunch::ScriptedSavestateAction scripted;
+            scripted.RunFrame =
+                ParseU32(value.substr(0, first).c_str(), "savestate action frame");
+            scripted.Load = action == "load" || action == "load+settings";
+            scripted.WithSettings =
+                action == "save+settings" || action == "load+settings";
+            if (first == std::string::npos ||
+                (!scripted.Load && action != "save" &&
+                 action != "save+settings")) {
+                throw std::runtime_error(
+                    "--savestate-action expects FRAME:save|save+settings|"
+                    "load|load+settings[:PATH]");
+            }
+            if (second != std::string::npos) {
+                scripted.Path = value.substr(second + 1U);
+            }
+            launch.SavestateActions.push_back(std::move(scripted));
         } else if (arg == "--save-state-frame" && index + 1 < argc) {
             launch.SaveStateFrame =
                 ParseU32(argv[++index], "savestate frame");

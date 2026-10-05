@@ -1,5 +1,16 @@
 # F1 settings rationalization
 
+2026-10-05 **Save states** (application tab, `oot3d_savestate_panel.cpp`): the
+F5/Shift+F5 and F8/Shift+F8 actions as buttons, the save folder (default
+`savestates/` beside the executable, in-game browser, **Use default folder**),
+the folder listing and **Choose a state file...** that pick the state F8 loads,
+and the last outcome. The tab owns the folder and the last state
+(`savestates.json` beside the configuration); the settings a state carries are
+applied through their own owners. Actual-widget smoke: **8,639 assertions**,
+including every button, the listing, both browsers, the default folder and a
+visible failure. Contract and limits:
+[`TRIAEVUM_SAVESTATES.md`](TRIAEVUM_SAVESTATES.md).
+
 Ambient occlusion lives in **Lighting** as
 **Off / Multiscale GTAO / FidelityFX CACAO**. GTAO exposes independent
 **Fine radius / Fine strength** and **Broad radius / Broad strength**;

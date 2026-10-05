@@ -5,6 +5,7 @@
 #include "oot3d_native_a32_process.h"
 #include "oot3d_native_pica_frontend.h"
 #include "oot3d_native_pica_submission.h"
+#include "fast/renderer3ds/pica_guest_extent_snapshot.h"
 
 #include <array>
 #include <algorithm>
@@ -141,6 +142,35 @@ void SetError(std::string* error, const std::string& message) {
     if (error != nullptr) {
         *error = message;
     }
+}
+
+bool IsGuestExtentPicaColorTarget(
+    const Oot3d::Renderer::PicaRenderTargetColorSnapshot& target) {
+    return target.RenderScalePermille ==
+           Fast::Renderer3ds::kPicaGuestExtentRenderScalePermille;
+}
+
+// A target saved at the guest extent carries no enhancement guides or shadow
+// mask (they belong to the restoring renderer's settings); a legacy target
+// saved at a renderer's internal extent carries all of them.
+bool PicaColorTargetGuidesValid(
+    const Oot3d::Renderer::PicaRenderTargetColorSnapshot& target) {
+    if (IsGuestExtentPicaColorTarget(target)) {
+        return target.ImageWidth == target.FramebufferWidth &&
+               target.ImageHeight == target.FramebufferHeight &&
+               target.NormalGuideRgba8.empty() &&
+               target.MaterialGuideRgba8.empty() &&
+               target.RigidMotionGuideRgba16FloatLe.empty() &&
+               target.AmbientGuideRgba8.empty() &&
+               target.ShadowR32UintLe.empty();
+    }
+    const uint64_t pixels =
+        static_cast<uint64_t>(target.ImageWidth) * target.ImageHeight;
+    return target.NormalGuideRgba8.size() == pixels * 4U &&
+           target.MaterialGuideRgba8.size() == pixels * 4U &&
+           target.RigidMotionGuideRgba16FloatLe.size() == pixels * 8U &&
+           target.AmbientGuideRgba8.size() == pixels * 4U &&
+           target.ShadowR32UintLe.size() == pixels * 4U;
 }
 
 template <typename T>
@@ -412,7 +442,6 @@ bool SaveNativeA32State(
             const uint64_t expectedPixels =
                 static_cast<uint64_t>(target.ImageWidth) *
                 target.ImageHeight;
-            const uint64_t expectedMotionBytes = expectedPixels * 8U;
             std::vector<uint8_t> encodedDepth;
             encodedDepth.reserve(target.DepthValues.size() *
                                  sizeof(float));
@@ -444,15 +473,7 @@ bool SaveNativeA32State(
                     ? "extent"
                 : target.SampleCount != 1U ? "samples"
                 : expectedBytes != target.ColorRgba8.size() ? "color"
-                : expectedBytes != target.NormalGuideRgba8.size() ? "normal"
-                : expectedBytes != target.MaterialGuideRgba8.size()
-                    ? "material"
-                : expectedMotionBytes !=
-                        target.RigidMotionGuideRgba16FloatLe.size()
-                    ? "motion"
-                : expectedBytes != target.AmbientGuideRgba8.size()
-                    ? "ambient"
-                : expectedBytes != target.ShadowR32UintLe.size() ? "shadow"
+                : !PicaColorTargetGuidesValid(target) ? "guides"
                 : expectedPixels != target.DepthValues.size() ? "depth"
                 : !target.StencilValues.empty() &&
                         expectedPixels != target.StencilValues.size()
@@ -482,8 +503,8 @@ bool SaveNativeA32State(
                              std::to_string(target.ImageHeight) + ")");
                 return false;
             }
-            encodedPicaColorTargets.push_back(
-                {{"render_target_namespace",
+            nlohmann::json encodedTarget{
+                {"render_target_namespace",
                   target.RenderTargetNamespace},
                  {"color_physical_address",
                   target.ColorPhysicalAddress},
@@ -504,21 +525,27 @@ bool SaveNativeA32State(
                  {"scene_effects_resolved", target.SceneEffectsResolved},
                  {"color_rgba8",
                   nlohmann::json::binary(target.ColorRgba8)},
-                 {"normal_guide_rgba8",
-                  nlohmann::json::binary(target.NormalGuideRgba8)},
-                 {"material_guide_rgba8",
-                  nlohmann::json::binary(target.MaterialGuideRgba8)},
-                 {"rigid_motion_guide_rgba16_float_le",
-                  nlohmann::json::binary(
-                      target.RigidMotionGuideRgba16FloatLe)},
-                 {"ambient_guide_rgba8",
-                  nlohmann::json::binary(target.AmbientGuideRgba8)},
-                 {"shadow_r32_uint_le",
-                  nlohmann::json::binary(target.ShadowR32UintLe)},
                  {"depth_float32_le",
                   nlohmann::json::binary(encodedDepth)},
                  {"stencil_u8",
-                  nlohmann::json::binary(target.StencilValues)}});
+                  nlohmann::json::binary(target.StencilValues)}};
+            // Guest-extent targets carry no guides; the field set itself
+            // says so to the loader.
+            if (!IsGuestExtentPicaColorTarget(target)) {
+                encodedTarget.update(
+                    {{"normal_guide_rgba8",
+                      nlohmann::json::binary(target.NormalGuideRgba8)},
+                     {"material_guide_rgba8",
+                      nlohmann::json::binary(target.MaterialGuideRgba8)},
+                     {"rigid_motion_guide_rgba16_float_le",
+                      nlohmann::json::binary(
+                          target.RigidMotionGuideRgba16FloatLe)},
+                     {"ambient_guide_rgba8",
+                      nlohmann::json::binary(target.AmbientGuideRgba8)},
+                     {"shadow_r32_uint_le",
+                      nlohmann::json::binary(target.ShadowR32UintLe)}});
+            }
+            encodedPicaColorTargets.push_back(std::move(encodedTarget));
         }
         const auto& presentation = runtime.PicaPresentationState;
         if (presentation.DisplayImages.size() >
@@ -735,6 +762,15 @@ bool SaveNativeA32State(
             {"pica_submission", submissionQueue.CaptureState()},
             {"dsp_hle", dspHle.CaptureState()},
         };
+        if (runtime.HostSettingsAvailable) {
+            auto settings = nlohmann::json::parse(
+                runtime.HostSettingsJson, nullptr, false);
+            if (!settings.is_object()) {
+                SetError(error, "savestate host settings are invalid");
+                return false;
+            }
+            document["host_settings"] = std::move(settings);
+        }
         const double captureSeconds = SecondsSince(captureStarted);
         const auto encodeStarted = std::chrono::steady_clock::now();
         auto& memoryWriteGeneration =
@@ -903,6 +939,15 @@ bool LoadNativeA32State(
             encodedRuntime.at("next_vblank_tick").get<uint64_t>();
         restoredRuntime.ProcessRunKind =
             encodedRuntime.at("process_run_kind").get<uint32_t>();
+        if (const auto settings = document.find("host_settings");
+            settings != document.end()) {
+            if (!settings->is_object()) {
+                SetError(error, "savestate host settings are invalid");
+                return false;
+            }
+            restoredRuntime.HostSettingsAvailable = true;
+            restoredRuntime.HostSettingsJson = settings->dump();
+        }
         const auto encodedGameplayClock =
             encodedRuntime.find("gameplay_clock");
         if (encodedGameplayClock != encodedRuntime.end()) {
@@ -918,6 +963,21 @@ bool LoadNativeA32State(
             }
             restoredRuntime.GameplayTiming =
                 static_cast<GameplayTimingMode>(timingMode);
+            const auto simulatesAt60 = [](GameplayTimingMode mode) {
+                return mode == GameplayTimingMode::Enhanced60;
+            };
+            if (restoredRuntime.GameplayClockAvailable &&
+                compatibility.GameplayTiming.has_value() &&
+                simulatesAt60(restoredRuntime.GameplayTiming) !=
+                    simulatesAt60(*compatibility.GameplayTiming)) {
+                SetError(error,
+                         simulatesAt60(restoredRuntime.GameplayTiming)
+                             ? "this state was saved with 60 Hz gameplay; "
+                               "start the game with that timing to load it"
+                             : "this state was saved with 30 Hz gameplay; "
+                               "start the game with that timing to load it");
+                return false;
+            }
             restoredRuntime.GameplayClock.SimulationTick =
                 encodedGameplayClock->value("simulation_tick", 0ULL);
             restoredRuntime.GameplayClock.PreviousLogicalFrame =
@@ -1286,7 +1346,11 @@ bool LoadNativeA32State(
                     [&](const char* name) {
                         return encoded.contains(name);
                     });
-                if (guideFieldCount == 0U) {
+                if (guideFieldCount == 0U &&
+                    IsGuestExtentPicaColorTarget(target)) {
+                    // Saved at the guest extent: guides start neutral in the
+                    // restoring renderer.
+                } else if (guideFieldCount == 0U) {
                     target.NormalGuideRgba8.resize(
                         static_cast<size_t>(expectedBytes));
                     target.MaterialGuideRgba8.assign(
@@ -1405,12 +1469,7 @@ bool LoadNativeA32State(
                     target.ImageWidth == 0U || target.ImageHeight == 0U ||
                     target.SampleCount != 1U ||
                     expectedBytes != target.ColorRgba8.size() ||
-                    expectedBytes != target.NormalGuideRgba8.size() ||
-                    expectedBytes != target.MaterialGuideRgba8.size() ||
-                    expectedMotionBytes !=
-                        target.RigidMotionGuideRgba16FloatLe.size() ||
-                    expectedBytes != target.AmbientGuideRgba8.size() ||
-                    expectedBytes != target.ShadowR32UintLe.size() ||
+                    !PicaColorTargetGuidesValid(target) ||
                     !validDepthValues ||
                     (!target.StencilValues.empty() &&
                      target.StencilValues.size() != expectedPixels) ||

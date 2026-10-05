@@ -121,6 +121,19 @@ class Oot3dDisplayConfirmationWindow final : public Ship::GuiWindow {
     void DrawElement() override {}
 };
 
+class Oot3dHostNoticeWindow final : public Ship::GuiWindow {
+  public:
+    Oot3dHostNoticeWindow() : GuiWindow("", false, "Host notice") {}
+    void Draw() override {
+        SetVisibility(Oot3d::HostNoticeActive());
+        Oot3d::DrawHostNotice();
+    }
+  protected:
+    void InitElement() override {}
+    void UpdateElement() override {}
+    void DrawElement() override {}
+};
+
 struct Oot3dMousePosition {
     float X = 0.0F;
     float Y = 0.0F;
@@ -212,6 +225,7 @@ void Fast3dGui::Init(GuiWindowInitData windowImpl) {
             std::make_shared<Oot3dGraphicsSettingsPersistence>());
         AddGuiWindow(std::make_shared<Oot3dGraphicsSettingsWindow>());
         AddGuiWindow(std::make_shared<Oot3dDisplayConfirmationWindow>());
+        AddGuiWindow(std::make_shared<Oot3dHostNoticeWindow>());
     }
 #endif
     Gui::Init();

@@ -74,6 +74,10 @@ class GraphicsSettingsRuntime final {
     // Resolved title-owned profile; never serialized into global graphics settings.
     void PublishSceneEnvironment(const Renderer3ds::PicaEnvironmentLighting& environment);
     GraphicsSettingsValidation Apply(GraphicsSettings candidate, bool persist = true);
+    // Restores previously stored preferences the way the startup load does: a
+    // capability missing at this moment (for example view metadata outside
+    // gameplay) leaves its effect inert instead of erasing the choice.
+    GraphicsSettingsValidation RestorePreferences(GraphicsSettings stored, bool persist = true);
     [[nodiscard]] GraphicsSettingsSaveState SaveState() const;
     void SavePending();
     bool RetrySave();
@@ -90,6 +94,8 @@ class GraphicsSettingsRuntime final {
     GraphicsSettingsRuntime();
     bool RestoreLastKnownPresentationLocked();
     bool PersistCurrentLocked();
+    GraphicsSettingsValidation ApplyLocked(GraphicsSettings candidate,
+                                           const GraphicsCapabilities& capabilities, bool persist);
 
     mutable std::mutex mMutex;
     GraphicsSettingsService mService;

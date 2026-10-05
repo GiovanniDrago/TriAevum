@@ -4,6 +4,7 @@
 #include "oot3d_native_controls_settings_panel.h"
 #include "oot3d_top_screen_settings_panel.h"
 #include "oot3d_game_language_panel.h"
+#include "oot3d_savestate_panel.h"
 #include "oot3d_scene_environment.h"
 #include "fast/MouseCapturePolicy.h"
 #include <imgui_internal.h>
@@ -250,6 +251,68 @@ void CheckControlPersistence() {
     Frame(true);
     Check(loggedPanelText.find("cannot") != std::string::npos, "Save error was not visible");
     InstallGraphicsSettingsPanelTabs({});
+}
+
+// Save states tab: the four hotkey actions as buttons, the folder browser
+// with its default, the listing that picks the state F8 loads, and status.
+void CheckSavestatePanel() {
+    using namespace Oot3dNativeGame;
+    const auto root = std::filesystem::temp_directory_path() /
+        ("triaevum-savestates-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto defaultFolder = root / "exe" / "savestates";
+    auto library = std::make_shared<SavestateLibrary>(root / "config" / "savestates.json", defaultFolder);
+    InstallGraphicsSettingsPanelTabs({CreateSavestatePanel(library)});
+    Frame(); Frame();
+    Click("Save states"); Frame();
+    Check(Find("Load last state (F8)").Disabled && Find("Load last state + settings (Shift+F8)").Disabled,
+          "load buttons enabled without any state");
+    const auto expectRequest = [&](const char* button, SavestateRequestKind kind, bool withSettings) {
+        Click(button);
+        const auto request = library->TakeRequest();
+        Check(request && request->Kind == kind && request->WithSettings == withSettings &&
+                  request->Path.empty(),
+              std::string("wrong request from ") + button);
+    };
+    expectRequest("Save state (F5)", SavestateRequestKind::Save, false);
+    expectRequest("Save state + settings (Shift+F5)", SavestateRequestKind::Save, true);
+
+    std::filesystem::create_directories(defaultFolder);
+    const auto older = defaultFolder / "state-older.oot3dsav";
+    const auto newer = defaultFolder / "state-newer+settings.oot3dsav";
+    { std::ofstream(older, std::ios::binary) << "1"; }
+    { std::ofstream(newer, std::ios::binary) << "22"; }
+    std::filesystem::last_write_time(newer, std::filesystem::last_write_time(older) + std::chrono::seconds(5));
+    Click("Refresh");
+    Frame(true);
+    Check(loggedPanelText.find("2 states") != std::string::npos, "folder listing missing");
+    Click("state-older.oot3dsav");
+    Check(library->LastState() == older, "selecting a listed state did not make it the last state");
+    expectRequest("Load last state (F8)", SavestateRequestKind::Load, false);
+    expectRequest("Load last state + settings (Shift+F8)", SavestateRequestKind::Load, true);
+
+    // The folder browser starts at the current folder; Up then Use this folder
+    // selects its parent, and the default can be restored.
+    Click("Browse...##SavestateFolder");
+    Click("Up");
+    Click("Use this folder");
+    Check(library->Directory() == defaultFolder.parent_path() && !library->UsingDefaultDirectory(),
+          "folder browser did not choose the folder");
+    Click("Use default folder");
+    Check(library->UsingDefaultDirectory() && library->Directory() == defaultFolder,
+          "default folder was not restored");
+    // The file browser picks any state as the one F8 loads.
+    Click("Choose a state file...");
+    Click("state-newer+settings.oot3dsav");
+    Check(library->LastState() == newer, "file browser did not pick the state");
+
+    library->Report(false, "Load failed: this state was saved with 60 Hz gameplay");
+    Frame(true);
+    Check(loggedPanelText.find("60 Hz gameplay") != std::string::npos, "failure status not visible");
+    SavestateLibrary reopened(root / "config" / "savestates.json", defaultFolder);
+    Check(reopened.LastState() == newer, "last state was not remembered");
+    InstallGraphicsSettingsPanelTabs({});
+    std::error_code cleanup;
+    std::filesystem::remove_all(root, cleanup);
 }
 
 void CheckSceneEnvironment() {
@@ -1628,6 +1691,7 @@ int main() try {
     Oot3dNativeGame::GameLanguageSettings differentRom(languagePath,{{"en","English",1}});
     Check(differentRom.SystemId() == 1, "unsupported old language leaked into another ROM");
     std::filesystem::remove(languagePath);
+    CheckSavestatePanel();
     CheckSceneEnvironment();
     InstallGraphicsSettingsPanelTabs({});
     ImGui::DestroyContext();

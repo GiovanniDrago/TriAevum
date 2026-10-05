@@ -187,11 +187,19 @@ bool NativeA32WindowSession::RunFrame() {
   hostStartSteps.Mark("render_start_frame");
   phaseTiming.HostFrameStartSeconds += SecondsSince(phaseStart);
   const auto inputPhaseStart = std::chrono::steady_clock::now();
+  // F5 saves the game moment and F8 loads the last state; with Shift, the
+  // settings are saved beside it / applied from it.
   const bool quickSaveKeyDown = window.IsKeyDown(Ship::KbScancode::LUS_KB_F5);
   const bool quickLoadKeyDown = window.IsKeyDown(Ship::KbScancode::LUS_KB_F8);
-  quickSavePending =
-      quickSavePending || (quickSaveKeyDown && !quickSaveKeyWasDown);
-  const bool quickLoadRequested = quickLoadKeyDown && !quickLoadKeyWasDown;
+  const bool shiftDown = window.IsKeyDown(Ship::KbScancode::LUS_KB_SHIFT) ||
+                         window.IsKeyDown(Ship::KbScancode::LUS_KB_RSHIFT);
+  if (quickLoadKeyDown && !quickLoadKeyWasDown) {
+    savestateLibrary->Request(
+        {Oot3dNativeGame::SavestateRequestKind::Load, shiftDown, {}});
+  } else if (quickSaveKeyDown && !quickSaveKeyWasDown) {
+    savestateLibrary->Request(
+        {Oot3dNativeGame::SavestateRequestKind::Save, shiftDown, {}});
+  }
   quickSaveKeyWasDown = quickSaveKeyDown;
   quickLoadKeyWasDown = quickLoadKeyDown;
   bool nativeFrontendTouchEnabled = ResolveNativeA32TouchInputEnabled(
@@ -571,20 +579,22 @@ bool NativeA32WindowSession::RunFrame() {
     ++benchmark.MeasuredFrames;
     if (cpuProbeRequested) benchmarkCpuPhases = CpuProbe::Thread.Snapshot();
   }
-  if (quickLoadRequested) {
-    if (LoadState(quickStatePath)) {
-      quickSavePending = false;
+  for (const auto &action : launch.SavestateActions) {
+    if (runFrameCount == static_cast<uint64_t>(action.RunFrame) + 1U) {
+      savestateLibrary->Request(
+          {action.Load ? Oot3dNativeGame::SavestateRequestKind::Load
+                       : Oot3dNativeGame::SavestateRequestKind::Save,
+           action.WithSettings, action.Path});
     }
-  } else {
-    if (quickSavePending &&
-        SaveState(quickStatePath) != SaveStateOutcome::Deferred) {
-      quickSavePending = false;
-    }
+  }
+  ServiceSavestateRequests();
+  {
     if (Oot3dNativeGame::ShouldCaptureNativeA32AutomatedState(
             launch.SaveStateFrameAvailable,
             automatedStateSaved || automatedStateSaveFailed, runFrameCount,
             launch.SaveStateFrame)) {
-      const auto outcome = SaveState(launch.SaveStatePath);
+      const auto outcome =
+          SaveState(launch.SaveStatePath, launch.SaveStateWithSettings);
       if (outcome == SaveStateOutcome::Saved) {
         automatedStateSaved = true;
         automatedStateSavedAtRunFrame = runFrameCount - 1U;

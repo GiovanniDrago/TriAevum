@@ -237,6 +237,10 @@ struct PicaRenderTargetColorSnapshot {
     uint16_t FramebufferHeight = 0;
     uint8_t FramebufferColorFormat = 0;
     uint8_t FramebufferDepthFormat = 0;
+    // 0 (kPicaGuestExtentRenderScalePermille): stored at the framebuffer's
+    // guest extent with colour, depth and stencil only, recreated at the
+    // restoring renderer's scale. Otherwise a legacy snapshot at that scale
+    // with every guide.
     uint16_t RenderScalePermille = 1000;
     uint32_t ImageWidth = 0;
     uint32_t ImageHeight = 0;

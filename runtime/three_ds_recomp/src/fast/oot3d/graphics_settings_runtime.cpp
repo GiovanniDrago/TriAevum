@@ -467,9 +467,23 @@ GraphicsSettingsRuntime::PresentationStatus() const {
 }
 GraphicsSettingsValidation GraphicsSettingsRuntime::Apply(GraphicsSettings candidate, bool persist) {
     std::scoped_lock lock(mMutex);
+    return ApplyLocked(std::move(candidate), mCapabilities, persist);
+}
+GraphicsSettingsValidation GraphicsSettingsRuntime::RestorePreferences(GraphicsSettings stored,
+                                                                       bool persist) {
+    std::scoped_lock lock(mMutex);
+    // Structural validation only: every capability counts as present.
+    GraphicsCapabilities unrestricted;
+    for (uint32_t index = 0; index <= static_cast<uint32_t>(kLastGraphicsCapability); ++index) {
+        unrestricted.Set(static_cast<GraphicsCapability>(index), true);
+    }
+    return ApplyLocked(std::move(stored), unrestricted, persist);
+}
+GraphicsSettingsValidation GraphicsSettingsRuntime::ApplyLocked(
+    GraphicsSettings candidate, const GraphicsCapabilities& capabilities, bool persist) {
     const auto previous =
         GetPresentationSettings(mService.Current());
-    auto result = mService.Stage(std::move(candidate), mCapabilities);
+    auto result = mService.Stage(std::move(candidate), capabilities);
     if (mService.ApplyPending()) {
         ++mRevision;
         const auto current =
