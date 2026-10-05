@@ -116,6 +116,7 @@ void Oot3dNativeUiLifecycleBridge::ResetAfterStateLoad(
   mCapturedGeneration = UINT64_MAX;
   mLatestState = {};
   mHasLatestState = false;
+  mOmoteUraSelector = {};
   mObservedSubsystems.fill(false);
   mLastObservedSubsystem.reset();
   mTopScreenPauseProjection = {};
@@ -539,9 +540,14 @@ bool Oot3dNativeUiLifecycleBridge::NativeTouchPresentationActive()
 
 bool Oot3dNativeUiLifecycleBridge::NativeFrontendPresentationActive()
     const noexcept {
-  // FileSelect owns the out-of-game options and normal/Master Quest
-  // selectors as well as the slot list. NameEntry is its separate native
-  // controller.
+  // The title's normal / Master Quest choice is a lower-screen menu of the
+  // root pause UI that runs while game_mode is still 1, so it has its own
+  // native discriminator.
+  if (mHasLatestState && IsNativeVersionChoicePresented(mOmoteUraSelector)) {
+    return true;
+  }
+  // FileSelect owns the out-of-game options as well as the slot list.
+  // NameEntry is its separate native controller.
   // Gameplay and frontend callbacks share a global update chain, so callback
   // order is not ownership. SaveContext.game_mode is the persistent native
   // discriminator: 0/1 are gameplay, while frontend modes are greater.
@@ -628,6 +634,13 @@ void Oot3dNativeUiLifecycleBridge::CaptureState() {
   mStats.fields_missing += capture.fields_missing;
   mLatestState = capture.state;
   mHasLatestState = true;
+  if (!ReadNativeOmoteUraSelectorState(mMemory, &mOmoteUraSelector)) {
+    mOmoteUraSelector = {};
+  }
+  if (IsNativeVersionChoicePresented(mOmoteUraSelector)) {
+    ++mStats.version_choice_captures;
+    mStats.version_choice_last_selection = mOmoteUraSelector.Selection;
+  }
   mRouter.ObserveState(capture.state);
   TopScreenItemsHintCursorBounds itemsHintCursor;
   std::string itemsHintError;

@@ -77,6 +77,7 @@ stable, generic contracts.
 | Pause behavior | Configurable Select action and configurable Items-to-Save B behavior |
 | Items hint | Native selected-model bounds, 90-update delay, 12-update fade, 90-update pulse and exact atlas geometry |
 | Assets | Original-size localized CTXB replacements plus named 2.1.1 menu/font profile assets in O3TU v2 |
+| Version choice | The title's normal / Master Quest choice on the upper screen with the frontend menus, native input unchanged (`TRIAEVUM_TOPSCREEN_FRONTEND_SKY.md`, #28) |
 | Compatibility | O3TU v1 remains readable; default OoT3D profile and original saves remain unchanged |
 
 Equipment and direct-item routes deliberately call or mutate the same native

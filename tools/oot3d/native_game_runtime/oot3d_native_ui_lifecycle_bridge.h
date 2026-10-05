@@ -2,6 +2,7 @@
 
 #include "oot3d_n64_integrated_ui_runtime.h"
 #include "oot3d_native_a32_memory.h"
+#include "oot3d_native_omote_ura_selector.h"
 #include "oot3d_top_screen_config.h"
 #include "oot3d_top_screen_items_hint.h"
 #include "oot3d_top_screen_mod_profile.h"
@@ -46,6 +47,10 @@ struct NativeUiLifecycleBridgeStats {
   uint64_t topscreen_native_touch_visible_primitives = 0;
   uint64_t topscreen_horse_stamina_visible_frames = 0;
   uint64_t topscreen_horse_stamina_visible_primitives = 0;
+  // State captures that found the title's normal / Master Quest choice on
+  // the lower screen, and its last highlighted panel (-1 before any).
+  uint64_t version_choice_captures = 0;
+  int32_t version_choice_last_selection = -1;
   std::array<uint64_t, oot3d::ui::kUiSubsystemCount> calls_by_subsystem{};
   std::array<uint64_t, NativeUiSeamPhaseCount> calls_by_phase{};
 };
@@ -121,6 +126,7 @@ private:
   uint64_t mCapturedGeneration = UINT64_MAX;
   oot3d::ui::Oot3dUiSemanticState mLatestState;
   bool mHasLatestState = false;
+  NativeOmoteUraSelectorState mOmoteUraSelector;
   std::array<bool, oot3d::ui::kUiSubsystemCount> mObservedSubsystems{};
   std::optional<oot3d::ui::UiSubsystem> mLastObservedSubsystem;
   TopScreenPauseProjectionState mTopScreenPauseProjection;

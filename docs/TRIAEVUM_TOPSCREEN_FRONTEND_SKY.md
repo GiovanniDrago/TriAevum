@@ -34,6 +34,28 @@ owns this title/profile-specific composition policy:
 `oot3d_native_a32_window.cpp` is the integration boundary: native target routing,
 background-canvas classification, and the completed frame before interpolation.
 
+## Visual frames and the version choice (2026-10-05)
+
+`b09e3cb` closes one visual frame per guest frame and treats a later draw into
+the selected snapshot's source as the guest's next frame. The relocated menu is
+exactly such a draw, so from 2026-09-30 every TopScreen frontend menu was drawn
+over by the next frame and never shown. While the relocation is active the
+window now passes the menu canvases (`TopScreenFrontendMenuCanvases`, derived
+from `ResolveTopScreenFrontendTargetCommand`) to `FinishFrames`: draws on them
+continue their frame, earlier superseded frames included, and the composition
+above moves the snapshot after them. Without an active relocation the frame
+split is unchanged.
+
+The title's normal / Master Quest choice (`COmoteUraSelector`) is a lane of the
+root pause UI that runs in game mode 1, so the FileSelect/NameEntry
+discriminator never covered it (#28). `oot3d_native_omote_ura_selector.h`
+reads its owner, and from the moment its panels enter until they leave it owns
+the frontend presentation: TopScreen relocates it like File Select, the OoT3D
+profile presents the lower screen. Its own background is a separate texture
+instance, not the shared CommonBackground00, so it is kept: the menu appears
+complete in the centre with the title scene beside it, as the lower screen
+shows it.
+
 ## Verification
 
 Fast ROM-free regression test (about three seconds including compilation):

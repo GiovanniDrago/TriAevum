@@ -351,6 +351,75 @@ int main() {
               !bridge.TopScreenPauseProjection().QuestDrawModelAdjusted,
           "native counter refresh must rearm its draw transform");
 
+  for (std::uint8_t phase = 0U; phase <= 10U; ++phase) {
+    Require(IsNativeVersionChoicePresented({true, 0x005F0000U, phase, 0U, 1U}) ==
+                (phase >= 3U && phase <= 8U),
+            "version choice phases outside the panels owned the lower screen");
+  }
+  Require(!IsNativeVersionChoicePresented({false, 0x005F0000U, 8U, 0U, 1U}) &&
+              !IsNativeVersionChoicePresented({true, 0U, 8U, 0U, 1U}) &&
+              !IsNativeVersionChoicePresented({true, 0x005F0000U, 8U, 0U, 2U}),
+          "a disabled, destroyed or single-version selector was presented");
+
+  // The title's normal / Master Quest choice runs in game mode 1, as a lane
+  // of the root pause UI rather than a FileSelect state.
+  NativeA32Memory selectorMemory;
+  Require(selectorMemory.MapRegion(
+              {"selector-state", 0x004F0000U, 0x00110000U, true, false, {}},
+              &error),
+          "cannot map version selector fixture");
+  constexpr std::uint32_t kSelectorOwner = 0x005F0000U;
+  Require(selectorMemory.Write32(0x00588E3CU, 1U) &&
+              selectorMemory.Write32(kOmoteUraSelectorLaneEnabled, 1U) &&
+              selectorMemory.Write32(kOmoteUraSelectorOwner, kSelectorOwner) &&
+              selectorMemory.Write8(kSelectorOwner + 0x04U, 1U) &&
+              selectorMemory.Write8(kSelectorOwner + 0x06U, 1U),
+          "cannot seed version selector fixture");
+  Oot3dNativeUiLifecycleBridge selectorBridge(selectorMemory);
+  const auto observeSelectorFrame = [&](std::uint32_t hostFrame) {
+    selectorBridge.BeginHostFrame(hostFrame);
+    Require(selectorBridge.ObserveGuestEntry(kGameplayHudDraw).matched,
+            "version selector fixture was not observed");
+  };
+  observeSelectorFrame(1U);
+  Require(!selectorBridge.NativeFrontendPresentationActive() &&
+              !selectorBridge.NativeTouchPresentationActive() &&
+              selectorBridge.Stats().version_choice_captures == 0U &&
+              selectorBridge.Stats().version_choice_last_selection == -1,
+          "the title prompt displaced the upper title screen");
+  Require(selectorMemory.Write8(kSelectorOwner + 0x04U, 8U) &&
+              selectorMemory.Write8(kSelectorOwner + 0x05U, 1U),
+          "cannot open the version choice fixture");
+  observeSelectorFrame(2U);
+  Require(selectorBridge.NativeFrontendPresentationActive() &&
+              selectorBridge.NativeTouchPresentationActive() &&
+              selectorBridge.Stats().version_choice_captures == 1U &&
+              selectorBridge.Stats().version_choice_last_selection == 1,
+          "the version choice did not own the frontend presentation");
+  Require(selectorMemory.Write8(kSelectorOwner + 0x06U, 2U),
+          "cannot select the single-version variant");
+  observeSelectorFrame(3U);
+  Require(!selectorBridge.NativeFrontendPresentationActive(),
+          "the single-version prompt was presented as a choice");
+  Require(selectorMemory.Write8(kSelectorOwner + 0x06U, 1U) &&
+              selectorMemory.Write32(kOmoteUraSelectorLaneEnabled, 0U),
+          "cannot disable the version selector lane");
+  observeSelectorFrame(4U);
+  Require(!selectorBridge.NativeFrontendPresentationActive(),
+          "a disabled selector lane kept the frontend presentation");
+  Require(selectorMemory.Write32(kOmoteUraSelectorLaneEnabled, 1U) &&
+              selectorMemory.Write8(kSelectorOwner + 0x04U, 9U),
+          "cannot close the version choice fixture");
+  observeSelectorFrame(5U);
+  Require(!selectorBridge.NativeFrontendPresentationActive() &&
+              selectorBridge.Stats().version_choice_captures == 1U,
+          "a closed version choice kept the frontend presentation");
+  Require(selectorMemory.Write32(kOmoteUraSelectorOwner, 0U),
+          "cannot destroy the version selector fixture");
+  observeSelectorFrame(6U);
+  Require(!selectorBridge.NativeFrontendPresentationActive(),
+          "a destroyed selector owner kept the frontend presentation");
+
   std::cout << "oot3d_native_ui_lifecycle_bridge_tests: ok\n";
   return 0;
 }
