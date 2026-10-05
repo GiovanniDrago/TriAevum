@@ -382,13 +382,18 @@ def merge_settings(target: dict, overrides: dict) -> dict:
 
 
 # Gameplay timing of a scenario: interpolated is the default product mode, original30 the Original30 frame rate
-# (native 30, no interpolation). Fixed steps make captures deterministic.
+# (native 30, no interpolation). Fixed steps make captures deterministic; realtime is the interpolated mode on the
+# wall clock, as a player runs it (pacing, never reference captures).
 SCENARIO_TIMING = {
     "interpolated": ["--gameplay-timing", "native30_interpolated", "--presentation-rate", "60",
                      "--fixed-delta-seconds", "0.016666666666666666"],
     "original30": ["--gameplay-timing", "native30_no_interpolation", "--presentation-rate", "30",
                    "--fixed-delta-seconds", "0.033333333333333333"],
+    "realtime": ["--gameplay-timing", "native30_interpolated", "--presentation-rate", "60"],
 }
+
+# Item inputs given relative to the repository (an input timeline of the checkout, for example).
+SCENARIO_PATH_KEYS = ("checkpoint", "timeline", "config", "topscreen_config", "save_data_seed")
 
 
 @contextlib.contextmanager
@@ -422,12 +427,12 @@ def stage_executable(executable: Path, directory: Path) -> Path:
     return directory / "TriAevum.exe"
 
 
-def scenario_command(scenarios: dict, item: dict, run_dir: Path) -> list[str]:
+def scenario_command(scenarios: dict, item: dict, run_dir: Path, save_dir: Path | None = None) -> list[str]:
     timing = item.get("timing", "interpolated")
     command = list(scenarios.get("arguments", [])) + SCENARIO_TIMING[timing] + [
         "--config", (run_dir / "config.json").as_posix(),
         "--topscreen-config", (run_dir / "topscreen-config").as_posix(),
-        "--save-data", (run_dir / "savedata").as_posix(),
+        "--save-data", (save_dir or run_dir / "savedata").as_posix(),
         "--output", (run_dir / "runtime.json").as_posix(),
         "--frames", str(item["frames"]), "--max-seconds", str(item.get("max_seconds", 600)),
         "--screenshot", (run_dir / "framebuffer.bmp").as_posix(),
@@ -438,7 +443,27 @@ def scenario_command(scenarios: dict, item: dict, run_dir: Path) -> list[str]:
         command += ["--load-state", Path(item["checkpoint"]).as_posix()]
     if item.get("timeline"):
         command += ["--input-timeline", Path(item["timeline"]).as_posix()]
+    # Further runtime arguments of the item ({run} is its run directory), for example a savestate to write.
+    command += [str(argument).replace("{run}", run_dir.as_posix()) for argument in item.get("arguments", [])]
     return command
+
+
+def resolve_scenario_paths(item: dict, repository: Path) -> dict:
+    """The item with its relative inputs (SCENARIO_PATH_KEYS) made relative to the repository."""
+    return dict(item, **{key: str(repository / item[key]) for key in SCENARIO_PATH_KEYS
+                         if item.get(key) and not Path(item[key]).is_absolute()})
+
+
+def scenario_passes(item: dict) -> list[tuple[str, dict]]:
+    """The runs of one item and size: `cache_passes` names ("cold", then "warm" from the cache the cold run left)
+    or objects {"name": ..., <item keys>} whose keys replace the item's for that run."""
+    passes = []
+    for entry in item.get("cache_passes", ["cold"]):
+        if isinstance(entry, str):
+            passes.append((entry, item))
+        else:
+            passes.append((entry["name"], dict(item, **{key: value for key, value in entry.items() if key != "name"})))
+    return passes
 
 
 # Per-frame renderer counters a scenario can bound: `<stem>_max` bounds every frame, `<stem>_min_total` the sum
@@ -620,52 +645,61 @@ def layer_scenarios(config: dict, out: Path, report: Report, only: str = "") -> 
     references_root = Path(scenarios["references"]) if scenarios.get("references") else None
     repository = Path(config["repository"])
     for item in select_scenarios(scenarios.get("items", []), only):
-        # Inputs given relative (an input timeline of the checkout) are relative to the repository.
-        item = dict(item, **{key: str(repository / item[key]) for key in ("checkpoint", "timeline", "config")
-                             if item.get(key) and not Path(item[key]).is_absolute()})
-        # Cache passes: each run starts from an empty renderer cache unless the
-        # item asks for passes ("cold", then "warm" from the cache the cold run left).
-        passes = item.get("cache_passes", ["cold"])
+        # Passes: each run starts from an empty renderer cache unless the item asks for passes ("cold", then
+        # "warm" from the cache the cold run left); a pass object replaces item keys for its run. With
+        # share_save_data the passes also continue on one save directory (save, then restart and load).
+        passes = [(pass_name, resolve_scenario_paths(pass_item, repository))
+                  for pass_name, pass_item in scenario_passes(item)]
+        distinct_passes = any(not isinstance(entry, str) for entry in item.get("cache_passes", []))
         for size in item.get("sizes", ["1280x720"]):
             width, height = (int(value) for value in size.split("x"))
             size_dir = out / "scenarios" / item["name"] / size
             if size_dir.exists():
                 shutil.rmtree(size_dir)
             cache = size_dir / "cache"
+            shared_save = size_dir / "savedata" if item.get("share_save_data") else None
             first_captures: list[Path] = []
-            for cache_pass in passes:
+            for cache_pass, run_item in passes:
                 name = f"{item['name']} {size}" + (f" {cache_pass}" if len(passes) > 1 else "")
                 run_dir = size_dir / cache_pass if len(passes) > 1 else size_dir
                 run_dir.mkdir(parents=True)
-                settings = json.loads(Path(item.get("config", scenarios["config"])).read_text(encoding="utf-8-sig"))
+                settings = json.loads(Path(run_item.get("config", scenarios["config"])).read_text(
+                    encoding="utf-8-sig"))
                 graphics = settings.setdefault("Graphics", {})
                 graphics.setdefault("Output", {}).update(Width=width, Height=height)
                 settings.setdefault("Window", {}).update(Width=width, Height=height)
-                if item.get("timing") == "original30":
+                if run_item.get("timing") == "original30":
                     graphics.setdefault("FrameRate", {})["Mode"] = "Original30"
-                merge_settings(settings, item.get("settings", {}))
+                merge_settings(settings, run_item.get("settings", {}))
                 (run_dir / "config.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
-                shutil.copyfile(scenarios["topscreen_config"], run_dir / "topscreen-config")
-                shutil.copytree(scenarios["save_data_seed"], run_dir / "savedata")
+                shutil.copyfile(run_item.get("topscreen_config", scenarios["topscreen_config"]),
+                                run_dir / "topscreen-config")
+                save_dir = shared_save or run_dir / "savedata"
+                if not save_dir.exists():
+                    shutil.copytree(run_item.get("save_data_seed", scenarios["save_data_seed"]), save_dir)
                 staged = stage_executable(executable, run_dir / "bin")
                 environment = os.environ.copy()
                 # Diagnostic switches a scenario reads (for example TRIAEVUM_SCENE_LIGHT_TRACE).
-                environment.update({key: str(value) for key, value in item.get("env", {}).items()})
+                environment.update({key: str(value) for key, value in run_item.get("env", {}).items()})
                 environment.update({
                     "TRIAEVUM_RENDERER_CACHE_DIR": str(cache),
                     "OOT3D_VULKAN_DIAGNOSTICS_PATH": str(run_dir / "gpu.json"),
-                    "OOT3D_VULKAN_DIAGNOSTICS_MAX_FRAMES": str(item.get("diagnostic_frames", item["frames"])),
+                    "OOT3D_VULKAN_DIAGNOSTICS_MAX_FRAMES": str(run_item.get("diagnostic_frames", run_item["frames"])),
                 })
                 log = run_dir / "launch.log"
                 with gpu_lock(scenarios.get("gpu_lock"), f"qualify_windows_battery {name}"):
                     wait_idle(config.get("wait_idle_processes", []))
-                    code, seconds = run_logged([str(staged)] + scenario_command(scenarios, item, run_dir), log,
-                                               cwd=Path(scenarios["working_directory"]),
-                                               timeout=item.get("max_seconds", 600) + 120, env=environment)
-                for leftover in ("bin", "savedata"):
-                    shutil.rmtree(run_dir / leftover, ignore_errors=True)
+                    code, seconds = run_logged(
+                        [str(staged)] + scenario_command(scenarios, run_item, run_dir, save_dir), log,
+                        cwd=Path(scenarios["working_directory"]),
+                        timeout=run_item.get("max_seconds", 600) + 120, env=environment)
+                shutil.rmtree(run_dir / "bin", ignore_errors=True)
+                if shared_save is None:
+                    shutil.rmtree(save_dir, ignore_errors=True)
                 references = references_root / item["name"] / size if references_root else None
-                for check in evaluate_scenario(name, run_dir, code, scenario_expectation(item, cache_pass),
+                if references and distinct_passes:
+                    references = references / cache_pass
+                for check in evaluate_scenario(name, run_dir, code, scenario_expectation(run_item, cache_pass),
                                                references, seconds, str(log)):
                     report.add(check)
                 captures = sorted(run_dir.glob("framebuffer_*.bmp"))
@@ -676,14 +710,16 @@ def layer_scenarios(config: dict, out: Path, report: Report, only: str = "") -> 
                     for capture in first_captures:
                         other = run_dir / capture.name
                         if not other.exists():
-                            report.add(Check("scenarios", f"{name}: {capture.name} as {passes[0]}", "fail",
+                            report.add(Check("scenarios", f"{name}: {capture.name} as {passes[0][0]}", "fail",
                                              "capture missing"))
                             continue
                         differing, box = compare_captures(capture, other)
-                        report.add(Check("scenarios", f"{name}: {capture.name} as {passes[0]}",
+                        report.add(Check("scenarios", f"{name}: {capture.name} as {passes[0][0]}",
                                          "pass" if differing == 0 else "fail",
                                          "identical" if differing == 0 else f"{differing} pixels differ in {box}"))
             shutil.rmtree(cache, ignore_errors=True)
+            if shared_save is not None:
+                shutil.rmtree(shared_save, ignore_errors=True)
 
 
 def write_report(report: Report, out: Path) -> tuple[Path, Path]:

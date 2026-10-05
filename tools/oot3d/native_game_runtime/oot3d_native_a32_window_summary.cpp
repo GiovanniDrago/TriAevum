@@ -1085,6 +1085,8 @@ void WriteNativeA32WindowRuntimeSummary(const NativeA32WindowSummaryInputs &in) 
                audioPlayer != nullptr ? audioPlayer->GetSampleRate() : 0},
               {"output_frame_samples",
                audioPlayer != nullptr ? audioPlayer->GetSampleLength() : 0},
+              {"output_underruns",
+               audioPlayer != nullptr ? audioPlayer->OutputUnderruns() : uint64_t{0}},
               {"output_queue",
                {{"observed", audioOutputDiagnostics.HasBufferObservation},
                 {"primed", audioOutputDiagnostics.Primed},

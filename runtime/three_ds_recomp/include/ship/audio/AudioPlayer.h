@@ -54,6 +54,11 @@ class AudioPlayer {
      */
     virtual int32_t Buffered() = 0;
 
+    /** @brief Output underruns the backend recovered from; 0 where the backend does not observe them. */
+    virtual uint64_t OutputUnderruns() const {
+        return 0;
+    }
+
     /**
      * @brief Submits a frame of PCM audio to the output device.
      *

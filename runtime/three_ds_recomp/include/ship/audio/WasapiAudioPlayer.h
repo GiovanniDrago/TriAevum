@@ -6,6 +6,7 @@
 #include <wrl/client.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <atomic>
 #include <vector>
 #include <mutex>
 
@@ -36,6 +37,9 @@ class WasapiAudioPlayer : public AudioPlayer, public IMMNotificationClient {
      * Used by the audio subsystem to pace audio production.
      */
     int Buffered() override;
+
+    /** @brief Render-buffer underruns re-primed since the player was created. */
+    uint64_t OutputUnderruns() const override;
 
   protected:
     /**
@@ -116,6 +120,7 @@ class WasapiAudioPlayer : public AudioPlayer, public IMMNotificationClient {
     std::vector<int16_t> mPendingSamples;          ///< PCM not yet accepted by the device buffer.
     size_t mPendingSampleOffset = 0;               ///< First unconsumed sample in mPendingSamples.
     std::mutex mMutex;                             ///< Serialises DoPlay() and device-change callbacks.
+    std::atomic<uint64_t> mOutputUnderruns{0};     ///< Underruns re-primed by DoPlay(), read by diagnostics.
 };
 } // namespace Ship
 #endif

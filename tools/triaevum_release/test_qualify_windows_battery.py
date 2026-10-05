@@ -7,8 +7,8 @@ from pathlib import Path
 from qualify_windows_battery import (Check, black_outside_picture, compare_captures, counter_bound,
                                      desaturated_columns, evaluate_scenario, fitted_picture, log_metric,
                                      merge_settings, metric_checks, parse_junit, pytest_summary, read_bmp,
-                                     run_metric, scenario_command, scenario_expectation, select_scenarios,
-                                     unittest_summary)
+                                     resolve_scenario_paths, run_metric, scenario_command, scenario_expectation,
+                                     scenario_passes, select_scenarios, unittest_summary)
 
 
 def write_bmp(path: Path, rows: list[list[tuple[int, int, int]]], depth: int = 24) -> Path:
@@ -104,6 +104,27 @@ class ScenarioTests(unittest.TestCase):
         default = scenario_command({}, {"frames": 1, "shot_start": 0}, run)
         self.assertIn("native30_interpolated", default)
         self.assertNotIn("--load-state", default)
+
+    def test_realtime_runs_on_the_wall_clock_with_item_arguments(self):
+        run = Path("I:/run")
+        command = scenario_command({}, {"timing": "realtime", "frames": 1, "shot_start": 0,
+                                        "arguments": ["--save-state", "{run}/mid.oot3dsav"]},
+                                   run, Path("I:/shared/savedata"))
+        self.assertIn("native30_interpolated", command)
+        self.assertNotIn("--fixed-delta-seconds", command)
+        self.assertEqual(command[-2:], ["--save-state", "I:/run/mid.oot3dsav"])
+        self.assertEqual(command[command.index("--save-data") + 1], "I:/shared/savedata")
+
+    def test_pass_objects_replace_item_keys_and_inputs_resolve_in_the_repository(self):
+        item = {"name": "S", "frames": 10, "timeline": "a.json", "cache_passes": [
+            "cold", {"name": "load", "checkpoint": "", "timeline": "J:/b.json", "frames": 20}]}
+        (cold, cold_item), (load, load_item) = scenario_passes(item)
+        self.assertEqual((cold, cold_item["frames"], load, load_item["frames"]), ("cold", 10, "load", 20))
+        self.assertEqual(load_item["timeline"], "J:/b.json")
+        resolved = resolve_scenario_paths(dict(cold_item, save_data_seed="seeds/a"), Path("I:/repo"))
+        self.assertEqual(Path(resolved["timeline"]), Path("I:/repo/a.json"))
+        self.assertEqual(Path(resolved["save_data_seed"]), Path("I:/repo/seeds/a"))
+        self.assertEqual(resolve_scenario_paths(load_item, Path("I:/repo"))["timeline"], "J:/b.json")
 
     def test_evaluation_turns_every_expectation_into_a_check(self):
         with tempfile.TemporaryDirectory() as temporary:

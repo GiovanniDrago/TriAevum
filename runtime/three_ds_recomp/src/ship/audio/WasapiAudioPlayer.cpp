@@ -133,6 +133,10 @@ void WasapiAudioPlayer::ConsumePendingFrames(size_t frameCount) {
     }
 }
 
+uint64_t WasapiAudioPlayer::OutputUnderruns() const {
+    return mOutputUnderruns.load(std::memory_order_relaxed);
+}
+
 int WasapiAudioPlayer::Buffered() {
     std::lock_guard<std::mutex> lock(mMutex);
     if (!mInitialized) {
@@ -180,6 +184,7 @@ void WasapiAudioPlayer::DoPlay(const uint8_t* buf, size_t len) {
             ThrowIfFailed(mClient->Reset());
             mStarted = false;
             recoveringFromUnderrun = true;
+            mOutputUnderruns.fetch_add(1, std::memory_order_relaxed);
             SPDLOG_WARN("WASAPI output underrun; re-priming the render buffer");
         }
 

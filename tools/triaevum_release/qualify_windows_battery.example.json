@@ -9,7 +9,7 @@
       "name": "host",
       "dir": "<host build tree>",
       "build_command": ["cmd.exe", "/c", "<script that sets up the compiler and runs ninja -C the host tree>", "-j", "4"],
-      "targets": ["oot3d_native_game", "triaevum_f1_settings_smoke"],
+      "targets": ["oot3d_native_game", "triaevum_f1_settings_smoke", "verify_renderer_3ds_cross_title_boundary"],
       "test_jobs": 4,
       "test_env": {
         "_about": "Tests needing ROM-derived inputs read them from here and report themselves skipped (77) without them.",
@@ -21,6 +21,14 @@
       "dir": "<GPU test build tree>",
       "build_command": ["cmd.exe", "/c", "<script that runs ninja -C the GPU test tree>", "-j", "4"],
       "targets": ["build_fragment_artifacts", "build_pass_artifacts", "build_immerse_pass_artifacts", "build_vertex_artifacts"],
+      "test_jobs": 1
+    },
+    {
+      "name": "forge-helper",
+      "_about": "Forge's device preparation helper (tools/renderer/pipeline_prepare) and its contract test.",
+      "dir": "<Forge helper build tree>",
+      "build_command": ["cmd.exe", "/c", "<script that configures tools/renderer/pipeline_prepare and runs ninja>"],
+      "targets": ["triaevum_nri_pipeline_prepare"],
       "test_jobs": 1
     }
   ],
@@ -34,7 +42,11 @@
     {"name": "immerse", "command": ["<GPU test build tree>/build_immerse_pass_artifacts.exe", "--check"]},
     {"name": "vertex", "command": ["<GPU test build tree>/build_vertex_artifacts.exe", "--check",
                                    "<private extracted title>/romfs/CmbVShader.shbin",
-                                   "<private extracted title>/romfs/profile.shbin"]}
+                                   "<private extracted title>/romfs/profile.shbin"]},
+    {"name": "vulkan-imports", "_about": "Shipped executables import only Vulkan 1.0 and WSI commands (issues 12 and 35).",
+     "cwd": "<this checkout>",
+     "command": ["python", "tools/triaevum_release/vulkan_imports.py", "<host build tree>/TriAevum.exe",
+                 "<Forge helper build tree>/triaevum_nri_pipeline_prepare.exe"]}
   ],
   "python_suites": [
     {"name": "triaevum_release", "start": "tools/triaevum_release"},
