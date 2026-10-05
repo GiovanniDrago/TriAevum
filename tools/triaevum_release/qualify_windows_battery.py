@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import json
 import os
 import re
@@ -449,7 +450,11 @@ FRAME_COUNTERS = {
     "picture_bars": "picture_bar_rect_count",
     "picture_overlay": "picture_overlay_draw_count",
     "dlss_upscale": "dlss_upscale_pass_count",
+    "fsr_upscale": "fsr_upscale_pass_count",
     "native_ui_overlay": "native_ui_overlay_count",
+    "taa": "temporal_aa_pass_count",
+    "smaa": "smaa_1x_pass_count",
+    "before_ui_aa": "before_ui_anti_aliasing_count",
 }
 
 
@@ -470,6 +475,87 @@ def counter_bound(key: str) -> tuple[str, bool] | None:
         if key.endswith(suffix) and key[:-len(suffix)] in FRAME_COUNTERS:
             return FRAME_COUNTERS[key[:-len(suffix)]], maximum
     return None
+
+
+def log_metric(text: str, tag: str, name: str):
+    """A field of the last `TAG key=value ...` (or `TAG {json}`) line a run printed, or None."""
+    lines = [line[len(tag):].strip() for line in text.splitlines() if line.startswith(tag + " ")]
+    if not lines:
+        return None
+    if lines[-1].startswith("{"):
+        value = json.loads(lines[-1])
+        for part in name.split("."):
+            value = value.get(part) if isinstance(value, dict) else None
+        return value
+    for token in lines[-1].split():
+        key, _, value = token.partition("=")
+        if key == name:
+            try:
+                return float(value)
+            except ValueError:
+                return value
+    return None
+
+
+@functools.lru_cache(maxsize=8)
+def _lighting_metrics(run_dir: str, stamps: tuple[int, int]) -> dict:
+    """The scene lighting metrics of a run, analysed once per version of its outputs."""
+    try:
+        from .analyze_scene_lighting import scene_lighting_metrics
+    except ImportError:
+        from analyze_scene_lighting import scene_lighting_metrics
+    return scene_lighting_metrics(Path(run_dir))
+
+
+def run_metric(run_dir: Path, source: str):
+    """A metric of one run: `log:TAG.field` from its launch log, `runtime:a.b` from its runtime report,
+    `lighting:metric` from analyze_scene_lighting (light continuity and shadow keyframes)."""
+    kind, _, path = source.partition(":")
+    if kind == "lighting":
+        stamps = tuple((run_dir / name).stat().st_mtime_ns if (run_dir / name).exists() else 0
+                       for name in ("launch.log", "gpu.json"))
+        return _lighting_metrics(str(run_dir), stamps).get(path)
+    if kind == "log":
+        tag, _, name = path.partition(".")
+        log = run_dir / "launch.log"
+        return log_metric(log.read_text(errors="replace"), tag, name) if log.exists() else None
+    if kind == "runtime":
+        report = run_dir / "runtime.json"
+        value = json.loads(report.read_text(encoding="utf-8")) if report.exists() else None
+        for part in path.split("."):
+            value = value.get(part) if isinstance(value, dict) else None
+        return value
+    raise ValueError(f"unknown metric source: {source}")
+
+
+def metric_checks(name: str, run_dir: Path, metrics: dict) -> list[Check]:
+    """One check per metric bound: {"log:TAG.field" or "runtime:path": {"min": a, "max": b, "equals": c}}."""
+    checks = []
+    for source, bound in metrics.items():
+        value = run_metric(run_dir, source)
+        numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
+        ok = value is not None
+        if "equals" in bound:
+            ok = ok and value == bound["equals"]
+        if "min" in bound:
+            ok = ok and numeric and value >= bound["min"]
+        if "max" in bound:
+            ok = ok and numeric and value <= bound["max"]
+        limits = ", ".join(f"{key} {bound[key]}" for key in ("min", "max", "equals") if key in bound)
+        checks.append(Check("scenarios", f"{name}: {source} ({limits})", "pass" if ok else "fail",
+                            "missing" if value is None else f"observed {value}"))
+    return checks
+
+
+def scenario_expectation(item: dict, cache_pass: str) -> dict:
+    """The expectations of one cache pass: the item's, then those of `expect_<pass>`, metrics merged."""
+    expect = dict(item.get("expect", {}))
+    extra = item.get(f"expect_{cache_pass}", {})
+    metrics = {**expect.get("metrics", {}), **extra.get("metrics", {})}
+    expect.update(extra)
+    if metrics:
+        expect["metrics"] = metrics
+    return expect
 
 
 def evaluate_scenario(name: str, run_dir: Path, code: int | str, expect: dict, references: Path | None,
@@ -510,6 +596,7 @@ def evaluate_scenario(name: str, run_dir: Path, code: int | str, expect: dict, r
             ok = bool(frames) and (observed <= bound if maximum else observed >= bound)
             checks.append(Check("scenarios", f"{name}: {key.replace('_', ' ')} {bound}", "pass" if ok else "fail",
                                 f"{observed} over {len(frames)} diagnostic frames"))
+    checks += metric_checks(name, run_dir, expect.get("metrics", {}))
     if expect.get("reference"):
         for capture in captures:
             reference = references / capture.name if references else None
@@ -536,42 +623,67 @@ def layer_scenarios(config: dict, out: Path, report: Report, only: str = "") -> 
         # Inputs given relative (an input timeline of the checkout) are relative to the repository.
         item = dict(item, **{key: str(repository / item[key]) for key in ("checkpoint", "timeline", "config")
                              if item.get(key) and not Path(item[key]).is_absolute()})
+        # Cache passes: each run starts from an empty renderer cache unless the
+        # item asks for passes ("cold", then "warm" from the cache the cold run left).
+        passes = item.get("cache_passes", ["cold"])
         for size in item.get("sizes", ["1280x720"]):
             width, height = (int(value) for value in size.split("x"))
-            name = f"{item['name']} {size}"
-            run_dir = out / "scenarios" / item["name"] / size
-            if run_dir.exists():
-                shutil.rmtree(run_dir)
-            run_dir.mkdir(parents=True)
-            settings = json.loads(Path(item.get("config", scenarios["config"])).read_text(encoding="utf-8-sig"))
-            graphics = settings.setdefault("Graphics", {})
-            graphics.setdefault("Output", {}).update(Width=width, Height=height)
-            settings.setdefault("Window", {}).update(Width=width, Height=height)
-            if item.get("timing") == "original30":
-                graphics.setdefault("FrameRate", {})["Mode"] = "Original30"
-            merge_settings(settings, item.get("settings", {}))
-            (run_dir / "config.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
-            shutil.copyfile(scenarios["topscreen_config"], run_dir / "topscreen-config")
-            shutil.copytree(scenarios["save_data_seed"], run_dir / "savedata")
-            staged = stage_executable(executable, run_dir / "bin")
-            environment = os.environ.copy()
-            environment.update({
-                "TRIAEVUM_RENDERER_CACHE_DIR": str(run_dir / "cache"),
-                "OOT3D_VULKAN_DIAGNOSTICS_PATH": str(run_dir / "gpu.json"),
-                "OOT3D_VULKAN_DIAGNOSTICS_MAX_FRAMES": str(item.get("diagnostic_frames", item["frames"])),
-            })
-            log = run_dir / "launch.log"
-            with gpu_lock(scenarios.get("gpu_lock"), f"qualify_windows_battery {name}"):
-                wait_idle(config.get("wait_idle_processes", []))
-                code, seconds = run_logged([str(staged)] + scenario_command(scenarios, item, run_dir), log,
-                                           cwd=Path(scenarios["working_directory"]),
-                                           timeout=item.get("max_seconds", 600) + 120, env=environment)
-            for leftover in ("bin", "cache", "savedata"):
-                shutil.rmtree(run_dir / leftover, ignore_errors=True)
-            references = references_root / item["name"] / size if references_root else None
-            for check in evaluate_scenario(name, run_dir, code, item.get("expect", {}), references, seconds,
-                                           str(log)):
-                report.add(check)
+            size_dir = out / "scenarios" / item["name"] / size
+            if size_dir.exists():
+                shutil.rmtree(size_dir)
+            cache = size_dir / "cache"
+            first_captures: list[Path] = []
+            for cache_pass in passes:
+                name = f"{item['name']} {size}" + (f" {cache_pass}" if len(passes) > 1 else "")
+                run_dir = size_dir / cache_pass if len(passes) > 1 else size_dir
+                run_dir.mkdir(parents=True)
+                settings = json.loads(Path(item.get("config", scenarios["config"])).read_text(encoding="utf-8-sig"))
+                graphics = settings.setdefault("Graphics", {})
+                graphics.setdefault("Output", {}).update(Width=width, Height=height)
+                settings.setdefault("Window", {}).update(Width=width, Height=height)
+                if item.get("timing") == "original30":
+                    graphics.setdefault("FrameRate", {})["Mode"] = "Original30"
+                merge_settings(settings, item.get("settings", {}))
+                (run_dir / "config.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
+                shutil.copyfile(scenarios["topscreen_config"], run_dir / "topscreen-config")
+                shutil.copytree(scenarios["save_data_seed"], run_dir / "savedata")
+                staged = stage_executable(executable, run_dir / "bin")
+                environment = os.environ.copy()
+                # Diagnostic switches a scenario reads (for example TRIAEVUM_SCENE_LIGHT_TRACE).
+                environment.update({key: str(value) for key, value in item.get("env", {}).items()})
+                environment.update({
+                    "TRIAEVUM_RENDERER_CACHE_DIR": str(cache),
+                    "OOT3D_VULKAN_DIAGNOSTICS_PATH": str(run_dir / "gpu.json"),
+                    "OOT3D_VULKAN_DIAGNOSTICS_MAX_FRAMES": str(item.get("diagnostic_frames", item["frames"])),
+                })
+                log = run_dir / "launch.log"
+                with gpu_lock(scenarios.get("gpu_lock"), f"qualify_windows_battery {name}"):
+                    wait_idle(config.get("wait_idle_processes", []))
+                    code, seconds = run_logged([str(staged)] + scenario_command(scenarios, item, run_dir), log,
+                                               cwd=Path(scenarios["working_directory"]),
+                                               timeout=item.get("max_seconds", 600) + 120, env=environment)
+                for leftover in ("bin", "savedata"):
+                    shutil.rmtree(run_dir / leftover, ignore_errors=True)
+                references = references_root / item["name"] / size if references_root else None
+                for check in evaluate_scenario(name, run_dir, code, scenario_expectation(item, cache_pass),
+                                               references, seconds, str(log)):
+                    report.add(check)
+                captures = sorted(run_dir.glob("framebuffer_*.bmp"))
+                if not first_captures:
+                    first_captures = captures
+                elif item.get("identical_passes"):
+                    # A prepared cache changes when programs are ready, never the images.
+                    for capture in first_captures:
+                        other = run_dir / capture.name
+                        if not other.exists():
+                            report.add(Check("scenarios", f"{name}: {capture.name} as {passes[0]}", "fail",
+                                             "capture missing"))
+                            continue
+                        differing, box = compare_captures(capture, other)
+                        report.add(Check("scenarios", f"{name}: {capture.name} as {passes[0]}",
+                                         "pass" if differing == 0 else "fail",
+                                         "identical" if differing == 0 else f"{differing} pixels differ in {box}"))
+            shutil.rmtree(cache, ignore_errors=True)
 
 
 def write_report(report: Report, out: Path) -> tuple[Path, Path]:

@@ -5,8 +5,9 @@ import unittest
 from pathlib import Path
 
 from qualify_windows_battery import (Check, black_outside_picture, compare_captures, counter_bound,
-                                     desaturated_columns, evaluate_scenario, fitted_picture, merge_settings,
-                                     parse_junit, pytest_summary, read_bmp, scenario_command, select_scenarios,
+                                     desaturated_columns, evaluate_scenario, fitted_picture, log_metric,
+                                     merge_settings, metric_checks, parse_junit, pytest_summary, read_bmp,
+                                     run_metric, scenario_command, scenario_expectation, select_scenarios,
                                      unittest_summary)
 
 
@@ -162,6 +163,7 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(counter_bound("screen_content_max"), ("screen_content_draw_count", True))
         self.assertEqual(counter_bound("own_picture_min_total"), ("own_picture_draw_count", False))
         self.assertEqual(counter_bound("dlss_upscale_min_total"), ("dlss_upscale_pass_count", False))
+        self.assertEqual(counter_bound("before_ui_aa_min_total"), ("before_ui_anti_aliasing_count", False))
         self.assertIsNone(counter_bound("captures"))
         self.assertIsNone(counter_bound("unknown_max"))
 
@@ -171,6 +173,43 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(select_scenarios(items, "S09, S03"), [{"name": "S03"}, {"name": "S09"}])
         with self.assertRaises(ValueError):
             select_scenarios(items, "S03,S99")
+
+    def test_log_and_runtime_metrics(self):
+        text = ("TRIAEVUM_SPIRV_CACHE requests=4 hits=0 compiled=4\n"
+                "TRIAEVUM_HYBRID_PREPARATION completed_draws=3 uber_unavailable=0/0\n"
+                "TRIAEVUM_SPIRV_CACHE requests=62 hits=62 compiled=0\n"
+                'TRIAEVUM_NRI_PIPELINE_CACHE {"created":5,"initial_cache_bytes":1024}\n')
+        # The last line of a tag counts; JSON lines are read by path.
+        self.assertEqual(log_metric(text, "TRIAEVUM_SPIRV_CACHE", "compiled"), 0.0)
+        self.assertEqual(log_metric(text, "TRIAEVUM_HYBRID_PREPARATION", "uber_unavailable"), "0/0")
+        self.assertEqual(log_metric(text, "TRIAEVUM_NRI_PIPELINE_CACHE", "initial_cache_bytes"), 1024)
+        self.assertIsNone(log_metric(text, "TRIAEVUM_SPIRV", "compiled"))
+        self.assertIsNone(log_metric(text, "TRIAEVUM_SPIRV_CACHE", "absent"))
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            (run / "launch.log").write_text(text)
+            (run / "runtime.json").write_text(json.dumps({"initial_preparation": {"wait_seconds": 0.25}}))
+            self.assertEqual(run_metric(run, "runtime:initial_preparation.wait_seconds"), 0.25)
+            self.assertIsNone(run_metric(run, "runtime:initial_preparation.absent"))
+            checks = metric_checks("S17", run, {
+                "log:TRIAEVUM_SPIRV_CACHE.compiled": {"max": 0},
+                "log:TRIAEVUM_SPIRV_CACHE.hits": {"min": 63},
+                "log:TRIAEVUM_HYBRID_PREPARATION.uber_unavailable": {"equals": "0/0"},
+                "runtime:initial_preparation.wait_seconds": {"max": 0.5},
+                "runtime:initial_preparation.absent": {"max": 1}})
+            self.assertEqual([check.status for check in checks], ["pass", "fail", "pass", "pass", "fail"])
+            self.assertEqual(checks[4].detail, "missing")
+            with self.assertRaises(ValueError):
+                run_metric(run, "gpu:frames")
+
+    def test_cache_passes_merge_their_expectations(self):
+        item = {"expect": {"exit": 0, "metrics": {"log:A.x": {"max": 1}}},
+                "expect_warm": {"metrics": {"log:B.y": {"max": 0}}, "captures": 2}}
+        self.assertEqual(scenario_expectation(item, "cold"), item["expect"])
+        warm = scenario_expectation(item, "warm")
+        self.assertEqual(warm["metrics"], {"log:A.x": {"max": 1}, "log:B.y": {"max": 0}})
+        self.assertEqual((warm["exit"], warm["captures"]), (0, 2))
+        self.assertEqual(item["expect"]["metrics"], {"log:A.x": {"max": 1}})
 
 
 class SummaryTests(unittest.TestCase):

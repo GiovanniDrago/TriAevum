@@ -51,7 +51,7 @@
   ],
   "scenarios": {
     "_about": "L5. Each item runs once per output size as TriAevum.exe (hard links) in the working directory, a Forge installation. Captures, the runtime report and per-frame renderer diagnostics (gpu.json) stay in the report directory. 'references' holds accepted captures per item and size; a missing reference is reported as not run.",
-    "_expect": "exit, captures (count), reference (byte identity), full_width_desaturation (captures whose every column is grey), black_bars (captures whose pixels outside the fitted picture of 'picture_native' proportions, default 400x240, are black), and bounds on per-frame renderer counters: <counter>_max for every frame, <counter>_min_total for the run, with counter one of screen_content, whole_target_ui, own_picture, picture_bars, picture_overlay, dlss_upscale, native_ui_overlay. qualify_windows_battery.py --scenarios NAME,... runs only the named items.",
+    "_expect": "exit, captures (count), reference (byte identity), full_width_desaturation (captures whose every column is grey), black_bars (captures whose pixels outside the fitted picture of 'picture_native' proportions, default 400x240, are black), bounds on per-frame renderer counters: <counter>_max for every frame, <counter>_min_total for the run, with counter one of screen_content, whole_target_ui, own_picture, picture_bars, picture_overlay, dlss_upscale, native_ui_overlay, and metrics: {source: {min, max, equals}} with source log:TAG.field (the last TAG line of the run log), runtime:path (runtime.json) or lighting:metric (analyze_scene_lighting.py). An item may set env (diagnostic switches), cache_passes ([\"cold\", \"warm\"]: the warm run starts from the renderer cache the cold run left; expect_<pass> adds expectations to one pass) and identical_passes. qualify_windows_battery.py --scenarios NAME,... runs only the named items.",
     "executable": "<host build tree>/TriAevum.exe",
     "working_directory": "<Forge installation>",
     "arguments": ["--title-plugin", "<title module>", "--a32-process-manifest", "<process manifest>",
@@ -191,6 +191,94 @@
         "shot_interval": 120,
         "max_seconds": 300,
         "expect": {"exit": 0, "captures": 4, "own_picture_max": 0, "reference": true}
+      },
+      {
+        "name": "S15-field-light",
+        "_about": "Hyrule Field with the clock running under the Enhanced preset: the scene light moves every guest frame, never jumps or casts from below the horizon, and the shadow keyframes follow it in every presented frame within their page budget (docs/TRIAEVUM_ANIMATED_LIGHTING_STRATEGY.md, section 7).",
+        "checkpoint": "<open-field checkpoint by day>",
+        "timeline": "<input timeline that holds no button: Link stands, the clock runs>",
+        "config": "<settings JSON of the Enhanced preset>",
+        "env": {"TRIAEVUM_SCENE_LIGHT_TRACE": "1"},
+        "sizes": ["1280x720"],
+        "frames": 1800,
+        "shot_start": 1500,
+        "shot_interval": 150,
+        "max_seconds": 900,
+        "expect": {"exit": 0, "captures": 2, "reference": true,
+                   "metrics": {"lighting:moving_frames": {"min": 800}, "lighting:jumps": {"max": 0},
+                               "lighting:below_horizon_casting": {"max": 0}, "lighting:largest_step_change": {"max": 0.05},
+                               "lighting:moving_shadow_frames": {"min": 1500}, "lighting:stalled_frames": {"max": 0},
+                               "lighting:uneven_frames": {"max": 0}, "lighting:cuts": {"max": 0},
+                               "lighting:construction_over_budget": {"max": 0}}}
+      },
+      {
+        "name": "S15-title-intro-light",
+        "_about": "Clean boot without input through the title intro's dawn: the sun/moon handovers never flip the shadow light and it never casts from below the horizon. After each of the intro's scene cuts the shadows wait for their first keyframe (P2 design): stalled and uneven frames are bounded at the accepted run's values.",
+        "config": "<settings JSON of the Enhanced preset>",
+        "env": {"TRIAEVUM_SCENE_LIGHT_TRACE": "1"},
+        "sizes": ["1280x720"],
+        "frames": 1500,
+        "shot_start": 600,
+        "shot_interval": 300,
+        "max_seconds": 900,
+        "expect": {"exit": 0, "captures": 3, "reference": true,
+                   "metrics": {"lighting:moving_frames": {"min": 300}, "lighting:jumps": {"max": 0},
+                               "lighting:below_horizon_casting": {"max": 0}, "lighting:stalled_frames": {"max": 15},
+                               "lighting:uneven_frames": {"max": 19}, "lighting:construction_over_budget": {"max": 0}}}
+      },
+      {
+        "name": "S17-shader-preparation",
+        "_about": "A walk under the Enhanced preset from an empty renderer cache, then from the cache it left: no draw waits for its specialized program (hybrid preparation), every startup part prepares, no pass shader compiles, and the warm run compiles nothing and starts from the persisted pipeline cache. No captures (a capture stalls its frame): the slowest frame after the initial preparation is bounded.",
+        "checkpoint": "<gameplay checkpoint>",
+        "timeline": "<walk input timeline>",
+        "config": "<settings JSON of the Enhanced preset>",
+        "sizes": [
+          "1280x720"
+        ],
+        "frames": 420,
+        "shot_start": 100000,
+        "max_seconds": 900,
+        "cache_passes": [
+          "cold",
+          "warm"
+        ],
+        "expect": {
+          "exit": 0,
+          "captures": 0,
+          "metrics": {
+            "log:TRIAEVUM_HYBRID_PREPARATION.completed_draws": {
+              "max": 0
+            },
+            "log:TRIAEVUM_NATIVE_PROGRAM_PREPARATION_END.failures": {
+              "max": 0
+            },
+            "log:TRIAEVUM_PASS_SHADER_CACHE.compiled": {
+              "max": 0
+            },
+            "runtime:initial_preparation.completed": {
+              "equals": true
+            },
+            "runtime:benchmark_window.frame_times.maximum_ms": {
+              "max": 250
+            }
+          }
+        },
+        "expect_warm": {
+          "metrics": {
+            "log:TRIAEVUM_SPIRV_CACHE.compiled": {
+              "max": 0
+            },
+            "log:TRIAEVUM_NRI_PIPELINE_CACHE.initial_cache_bytes": {
+              "min": 1
+            },
+            "runtime:initial_preparation.wait_seconds": {
+              "max": 0.5
+            }
+          }
+        },
+        "env": {
+          "TRIAEVUM_PACING_TRACE": "1"
+        }
       }
     ]
   }
