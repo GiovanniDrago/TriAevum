@@ -13,6 +13,7 @@
 #include "fast/renderer3ds/pica_preparation_queue.h"
 #include "fast/renderer3ds/pica_texture_copy_plan.h"
 #include "fast/renderer3ds/pica_shadow_geometry.h"
+#include "fast/renderer3ds/pica_ui_canvas.h"
 #include "fast/renderer3ds/pica_pbr_material.h"
 #include "fast/renderer3ds/pica_pbr_seams.h"
 #include "fast/renderer3ds/pica_surface_lighting.h"
@@ -852,6 +853,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     void ResetNativePicaRenderTargets(bool preserveDisplayImages = false);
     void ForgetNativePicaEffectNriTextures();
     void ApplyPendingNativePicaMemoryFills(NativePicaRenderTarget& target);
+    // Paints the bars around a fitted full-screen picture black, in the open
+    // native render scope, before the picture is drawn.
+    void PaintNativePicaPictureBars(const Renderer3ds::PicaCanvasSurround& bars);
     void CreateFrameResources();
     void EnsureFrameUniformCapacity(VkDeviceSize bytes, VkDeviceSize alignment);
     // Cacheable geometry uses its per-identity buffer, uploaded once per

@@ -775,6 +775,9 @@ nlohmann::json FrameToJson(const Oot3dVulkanFrameDiagnostics& frame) {
         { "native_ui_overlay_count", frame.NativeUiOverlayCount },
         { "whole_target_ui_draw_count", frame.WholeTargetUiDrawCount },
         { "screen_content_draw_count", frame.ScreenContentDrawCount },
+        { "own_picture_draw_count", frame.OwnPictureDrawCount },
+        { "picture_bar_rect_count", frame.PictureBarRectCount },
+        { "picture_overlay_draw_count", frame.PictureOverlayDrawCount },
         { "upscaler_guide_width", frame.UpscalerGuideWidth },
         { "upscaler_guide_height", frame.UpscalerGuideHeight },
         { "dlss_upscale_pass_count", frame.DlssUpscalePassCount },
@@ -1952,6 +1955,17 @@ void Oot3dVulkanDiagnostics::RecordWholeTargetUiDraw(bool screenContent) {
     if (!mActiveFrame.has_value()) return;
     ++mActiveFrame->WholeTargetUiDrawCount;
     if (screenContent) ++mActiveFrame->ScreenContentDrawCount;
+}
+
+void Oot3dVulkanDiagnostics::RecordOwnPictureDraw(uint32_t barRects) {
+    if (!mActiveFrame.has_value()) return;
+    ++mActiveFrame->OwnPictureDrawCount;
+    mActiveFrame->PictureBarRectCount += barRects;
+}
+
+void Oot3dVulkanDiagnostics::RecordPictureOverlayDraw() {
+    if (!mActiveFrame.has_value()) return;
+    ++mActiveFrame->PictureOverlayDrawCount;
 }
 
 void Oot3dVulkanDiagnostics::RecordNativeUiOverlay() {

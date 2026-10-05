@@ -553,9 +553,14 @@ struct Oot3dVulkanFrameDiagnostics {
     uint32_t NativeUiOverlayCount = 0;
     // UI-attributed draws whose viewport covers a colour target this frame's
     // scene drew into, and those of them composed as screen-space frame
-    // content rather than placed on the native UI canvas.
+    // content rather than placed on the native UI canvas. Of those, opaque
+    // pictures of their own (movie frames), shown fitted, the black bar
+    // rectangles painted around them, and overlays with their own alpha.
     uint32_t WholeTargetUiDrawCount = 0;
     uint32_t ScreenContentDrawCount = 0;
+    uint32_t OwnPictureDrawCount = 0;
+    uint32_t PictureBarRectCount = 0;
+    uint32_t PictureOverlayDrawCount = 0;
     uint32_t UpscalerGuideWidth = 0;
     uint32_t UpscalerGuideHeight = 0;
     uint32_t DlssUpscalePassCount = 0;
@@ -852,6 +857,8 @@ class Oot3dVulkanDiagnostics {
     void RecordSceneBeforeUi(bool snapshot, bool transferred);
     void RecordNativeUiOverlay();
     void RecordWholeTargetUiDraw(bool screenContent);
+    void RecordOwnPictureDraw(uint32_t barRects);
+    void RecordPictureOverlayDraw();
     void RecordDlssUpscale(bool executed, bool historyReset,
                            uint32_t inputWidth, uint32_t inputHeight,
                            uint32_t outputWidth, uint32_t outputHeight);

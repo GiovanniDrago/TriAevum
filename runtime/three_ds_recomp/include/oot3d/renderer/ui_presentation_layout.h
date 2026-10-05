@@ -138,17 +138,23 @@ struct UiPresentationPoint {
     if (!nativeWidth || !nativeHeight || !targetWidth || !targetHeight) {
         return {};
     }
-    if (domain == Fast::Renderer3ds::PicaCompositionDomain::Ui) {
+    // Placed UI, and an opaque picture of its own (a movie frame): the whole
+    // native screen at its own proportions, centred. Around a picture the
+    // renderer shows black bars (`SurroundPicaCanvas`), never what was drawn
+    // behind it.
+    if (domain == Fast::Renderer3ds::PicaCompositionDomain::Ui ||
+        (domain == Fast::Renderer3ds::PicaCompositionDomain::Screen &&
+         screenContent == Fast::Renderer3ds::PicaScreenContent::OwnPicture)) {
         const auto fit = FitUiPresentation(
             targetWidth, targetHeight, static_cast<float>(nativeWidth),
             static_cast<float>(nativeHeight));
         return {fit.X, fit.Y, fit.Width / nativeWidth, fit.Height / nativeHeight};
     }
     if (domain == Fast::Renderer3ds::PicaCompositionDomain::Screen &&
-        screenContent == Fast::Renderer3ds::PicaScreenContent::OwnPicture) {
-        // A picture of its own (a movie frame) covers the presentation extent
-        // without distortion: native proportions kept, the excess centred, so
-        // nothing behind it shows around it.
+        screenContent == Fast::Renderer3ds::PicaScreenContent::PictureOverlay) {
+        // An overlay with its own transparency (a mask, a glow) covers the
+        // target without distortion: native proportions kept, the excess
+        // centred, so no part of the frame under it is left uncovered.
         const auto cover = FillUiPresentation(
             targetWidth, targetHeight, static_cast<float>(nativeWidth),
             static_cast<float>(nativeHeight));

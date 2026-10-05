@@ -12,9 +12,9 @@ enum class PicaCompositionDomain : uint8_t {
     // Two-dimensional content the title composites over the whole native
     // screen: a full-frame redraw of the copied frame, a full-screen wash, a
     // movie frame. It is frame content rather than a placed UI element, so it
-    // reaches every output pixel instead of being inset in the uniform native
-    // UI canvas (PicaScreenContent says how). Placed UI keeps `Ui`: HUD, menu
-    // layout and pointer mapping depend on that exact rectangle.
+    // owns every output pixel (PicaScreenContent says how). Placed UI keeps
+    // `Ui`: HUD, menu layout and pointer mapping depend on the uniform native
+    // UI canvas.
     Screen = 3,
 };
 
@@ -26,9 +26,14 @@ enum class PicaScreenContent : uint8_t {
     // wash over it: it takes the scene's own mapping, so a redraw lands exactly
     // on the pixels it copied.
     RenderedFrame = 1,
-    // A picture of its own, such as a movie frame: it covers the target
-    // without distortion, native proportions kept and the excess centred.
+    // A picture of its own whose textures carry no alpha, such as a movie
+    // frame: it replaces the frame. It is shown whole at its native
+    // proportions, centred, and the pixels around it are black bars.
     OwnPicture = 2,
+    // A picture of its own whose textures carry alpha (a mask, a glow) laid
+    // over the frame: it covers the target without distortion, native
+    // proportions kept and the excess centred, so the whole frame lies under it.
+    PictureOverlay = 3,
 };
 
 // What a UI-attributed draw rasterises, as far as frame content is concerned.
@@ -44,6 +49,10 @@ struct PicaUiFrameContentEvidence {
     // It samples at least one texture, and each is owned by an ordered GPU
     // copy of rendered output.
     bool SamplesOnlyRenderedCopies = false;
+    // It samples at least one texture, and none stores alpha per texel
+    // (`PicaTextureFormatCarriesAlpha`): what it draws is opaque but for a
+    // uniform or vertex fade.
+    bool SamplesOnlyAlphaFreeTextures = false;
 };
 
 struct PicaUiFrameContent {
@@ -58,7 +67,8 @@ struct PicaUiFrameContent {
 // into. Placed UI - HUD, minimap, dialogue, menus - also draws over the scene
 // with a whole-target viewport, but its primitives cover part of it, so it
 // stays `Ui`. Covering content that washes the frame or redraws a copy of
-// rendered output shows the rendered frame; anything else is its own picture.
+// rendered output shows the rendered frame; anything else is a picture of its
+// own, opaque when its textures carry no alpha and an overlay when they do.
 [[nodiscard]] constexpr PicaUiFrameContent ResolvePicaUiFrameContent(
     PicaCompositionDomain declared,
     const PicaUiFrameContentEvidence& evidence) noexcept {
@@ -66,10 +76,13 @@ struct PicaUiFrameContent {
         !evidence.SceneDrewOnTarget || !evidence.GeometryCoversViewport) {
         return {declared, PicaScreenContent::None};
     }
+    if (evidence.Untextured || evidence.SamplesOnlyRenderedCopies) {
+        return {PicaCompositionDomain::Screen, PicaScreenContent::RenderedFrame};
+    }
     return {PicaCompositionDomain::Screen,
-            evidence.Untextured || evidence.SamplesOnlyRenderedCopies
-                ? PicaScreenContent::RenderedFrame
-                : PicaScreenContent::OwnPicture};
+            evidence.SamplesOnlyAlphaFreeTextures
+                ? PicaScreenContent::OwnPicture
+                : PicaScreenContent::PictureOverlay};
 }
 
 enum class PicaCompositionLayer : uint8_t {

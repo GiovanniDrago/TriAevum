@@ -149,7 +149,7 @@ TEST(Oot3dUiPresentationLayout, KeepsWidescreenCanvasIndependent) {
     EXPECT_EQ(viewport.Height, 576U);
 }
 
-TEST(Oot3dPicaRasterCanvas, ScreenContentReachesEveryPixelAndPlacedUiKeepsNativeFit) {
+TEST(Oot3dPicaRasterCanvas, EachScreenContentHasItsMappingAndPlacedUiKeepsNativeFit) {
     using Fast::Renderer3ds::PicaCompositionDomain;
     using Fast::Renderer3ds::PicaScreenContent;
     using ::Oot3d::Renderer::ResolvePicaRasterCanvas;
@@ -186,17 +186,78 @@ TEST(Oot3dPicaRasterCanvas, ScreenContentReachesEveryPixelAndPlacedUiKeepsNative
         EXPECT_FLOAT_EQ(frame.ScaleX, scene.ScaleX);
         EXPECT_FLOAT_EQ(frame.ScaleY, scene.ScaleY);
 
-        // A picture of its own (a movie frame) covers the target without
-        // distortion: one uniform scale, the excess centred.
+        // A picture of its own (a movie frame) is shown whole at its own
+        // proportions, on the same canvas as placed UI; the renderer paints
+        // the surround black.
         const auto picture = ResolvePicaRasterCanvas(PicaCompositionDomain::Screen,
                                                      PicaScreenContent::OwnPicture, 400U, 240U,
                                                      width, height);
+        EXPECT_FLOAT_EQ(picture.X, ui.X);
+        EXPECT_FLOAT_EQ(picture.Y, ui.Y);
+        EXPECT_FLOAT_EQ(picture.ScaleX, ui.ScaleX);
+        EXPECT_FLOAT_EQ(picture.ScaleY, ui.ScaleY);
+
+        // An overlay with its own alpha covers the target without distortion:
+        // one uniform scale, the excess centred.
+        const auto overlay = ResolvePicaRasterCanvas(PicaCompositionDomain::Screen,
+                                                     PicaScreenContent::PictureOverlay, 400U, 240U,
+                                                     width, height);
         const float cover = std::max(width / 400.0F, height / 240.0F);
-        EXPECT_FLOAT_EQ(picture.ScaleX, cover);
-        EXPECT_FLOAT_EQ(picture.ScaleY, cover);
-        EXPECT_NEAR(picture.X, (width - 400.0F * cover) * 0.5F, 1.0e-3F);
-        EXPECT_NEAR(picture.Y, (height - 240.0F * cover) * 0.5F, 1.0e-3F);
+        EXPECT_FLOAT_EQ(overlay.ScaleX, cover);
+        EXPECT_FLOAT_EQ(overlay.ScaleY, cover);
+        EXPECT_NEAR(overlay.X, (width - 400.0F * cover) * 0.5F, 1.0e-3F);
+        EXPECT_NEAR(overlay.Y, (height - 240.0F * cover) * 0.5F, 1.0e-3F);
     }
+}
+
+TEST(Oot3dPicaRasterCanvas, SurroundCoversEveryPixelOutsideTheFittedPicture) {
+    using Fast::Renderer3ds::PicaCompositionDomain;
+    using Fast::Renderer3ds::PicaScreenContent;
+    using Fast::Renderer3ds::SurroundPicaCanvas;
+    using ::Oot3d::Renderer::ResolvePicaRasterCanvas;
+
+    struct Case {
+        uint32_t Width, Height, Bars;
+    };
+    // 16:9 and 21:9 put bars beside the picture, 4:3 above and below it, and
+    // the native aspect leaves nothing to paint.
+    for (const Case c : {Case{1280U, 720U, 2U}, Case{1720U, 720U, 2U}, Case{960U, 720U, 2U},
+                         Case{400U, 240U, 0U}, Case{1200U, 720U, 0U}}) {
+        const auto canvas = ResolvePicaRasterCanvas(PicaCompositionDomain::Screen,
+                                                    PicaScreenContent::OwnPicture, 400U, 240U,
+                                                    c.Width, c.Height);
+        const auto surround = SurroundPicaCanvas(canvas, 400U, 240U, c.Width, c.Height);
+        EXPECT_EQ(surround.Count, c.Bars) << c.Width << 'x' << c.Height;
+        // Every target pixel lies in exactly one of: the picture, a bar.
+        std::vector<uint8_t> hits(size_t{c.Width} * c.Height, 0U);
+        const auto inner = Fast::Renderer3ds::ClipToPicaCanvas({0, 0, c.Width, c.Height}, canvas,
+                                                               400U, 240U);
+        const auto mark = [&](const Fast::Renderer3ds::PicaCanvasClip& rect) {
+            ASSERT_GE(rect.X, 0);
+            ASSERT_GE(rect.Y, 0);
+            ASSERT_LE(uint64_t(rect.X) + rect.Width, c.Width);
+            ASSERT_LE(uint64_t(rect.Y) + rect.Height, c.Height);
+            for (uint32_t y = 0; y < rect.Height; ++y)
+                for (uint32_t x = 0; x < rect.Width; ++x)
+                    ++hits[size_t(rect.Y + y) * c.Width + rect.X + x];
+        };
+        mark(inner);
+        for (uint32_t index = 0; index < surround.Count; ++index)
+            mark(surround.Rects[index]);
+        EXPECT_TRUE(std::all_of(hits.begin(), hits.end(), [](uint8_t hit) { return hit == 1U; }))
+            << c.Width << 'x' << c.Height;
+    }
+    // 16:9: the picture spans 1200 of 1280 columns, centred.
+    const auto canvas = ResolvePicaRasterCanvas(PicaCompositionDomain::Screen,
+                                                PicaScreenContent::OwnPicture, 400U, 240U, 1280U,
+                                                720U);
+    const auto surround = SurroundPicaCanvas(canvas, 400U, 240U, 1280U, 720U);
+    ASSERT_EQ(surround.Count, 2U);
+    EXPECT_EQ(surround.Rects[0].X, 0);
+    EXPECT_EQ(surround.Rects[0].Width, 40U);
+    EXPECT_EQ(surround.Rects[0].Height, 720U);
+    EXPECT_EQ(surround.Rects[1].X, 1240);
+    EXPECT_EQ(surround.Rects[1].Width, 40U);
 }
 
 TEST(Oot3dPicaRasterCanvas, OnlyContentCoveringTheFrameIsScreenContent) {
@@ -206,13 +267,14 @@ TEST(Oot3dPicaRasterCanvas, OnlyContentCoveringTheFrameIsScreenContent) {
     using Fast::Renderer3ds::PicaUiFrameContentEvidence;
     using Fast::Renderer3ds::ResolvePicaUiFrameContent;
     const auto evidence = [](bool viewport, bool scene, bool geometry,
-                             bool untextured, bool copies) {
+                             bool untextured, bool copies, bool alphaFree = false) {
         PicaUiFrameContentEvidence value;
         value.CoversWholeTarget = viewport;
         value.SceneDrewOnTarget = scene;
         value.GeometryCoversViewport = geometry;
         value.Untextured = untextured;
         value.SamplesOnlyRenderedCopies = copies;
+        value.SamplesOnlyAlphaFreeTextures = alphaFree;
         return value;
     };
     const auto screen = [](PicaScreenContent content) {
@@ -228,9 +290,22 @@ TEST(Oot3dPicaRasterCanvas, OnlyContentCoveringTheFrameIsScreenContent) {
               screen(PicaScreenContent::RenderedFrame));
     EXPECT_EQ(ResolvePicaUiFrameContent(PicaCompositionDomain::Ui, evidence(true, true, true, true, false)),
               screen(PicaScreenContent::RenderedFrame));
-    // A movie frame covering the screen is a picture of its own.
-    EXPECT_EQ(ResolvePicaUiFrameContent(PicaCompositionDomain::Ui, evidence(true, true, true, false, false)),
+    // A movie frame covering the screen (RGB8 textures, no alpha) is an opaque
+    // picture of its own; a covering texture with alpha (the mask over the
+    // revelation's first flashback frames, IA8) is an overlay.
+    EXPECT_EQ(ResolvePicaUiFrameContent(PicaCompositionDomain::Ui,
+                                        evidence(true, true, true, false, false, true)),
               screen(PicaScreenContent::OwnPicture));
+    EXPECT_EQ(ResolvePicaUiFrameContent(PicaCompositionDomain::Ui, evidence(true, true, true, false, false)),
+              screen(PicaScreenContent::PictureOverlay));
+    // Copies decide before alpha: a redraw of copied output shows the frame.
+    EXPECT_EQ(ResolvePicaUiFrameContent(PicaCompositionDomain::Ui,
+                                        evidence(true, true, true, false, true, true)),
+              screen(PicaScreenContent::RenderedFrame));
+    for (const uint8_t format : {1U, 3U, 6U, 7U, 10U, 12U})
+        EXPECT_FALSE(Fast::Renderer3ds::PicaTextureFormatCarriesAlpha(format)) << int(format);
+    for (const uint8_t format : {0U, 2U, 4U, 5U, 8U, 9U, 11U, 13U, 14U, 255U})
+        EXPECT_TRUE(Fast::Renderer3ds::PicaTextureFormatCarriesAlpha(format)) << int(format);
     // Placed UI drawn over the scene with a whole-target viewport (HUD
     // buttons, minimap, dialogue) covers part of it, whatever it samples.
     for (const bool untextured : {false, true}) {

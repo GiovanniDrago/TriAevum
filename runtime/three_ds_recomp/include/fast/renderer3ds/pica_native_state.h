@@ -188,6 +188,18 @@ struct PicaTextureView {
     std::span<const PicaTextureCopyReference> CopyReferences;
 };
 
+// Whether a native texture format stores alpha per texel. RGB8, RGB565,
+// HILO8, I8, I4 and ETC1 sample alpha 1 everywhere; unknown formats count as
+// carrying alpha.
+[[nodiscard]] constexpr bool PicaTextureFormatCarriesAlpha(uint8_t nativeFormat) noexcept {
+    switch (nativeFormat) {
+        case 1U: case 3U: case 6U: case 7U: case 10U: case 12U:
+            return false;
+        default:
+            return true;
+    }
+}
+
 inline constexpr size_t kPicaLightingLutPackedEntryCount = 24U * 256U;
 
 // Packed native table words remain owned by the title/frontend. The common

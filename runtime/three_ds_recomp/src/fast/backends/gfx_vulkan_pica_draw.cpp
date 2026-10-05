@@ -1983,12 +1983,13 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         // the output. When it shows the rendered frame - a wash over it, or a
         // redraw of GPU copies of rendered output (the title's full-frame effect
         // over the copied scene) - it takes the scene's mapping, so the redraw
-        // lands on the pixels it copied; a picture of its own (a movie frame)
-        // covers the target without distortion. Placed elements - HUD, minimap,
-        // dialogue, menus, the file-select screen - also draw over the scene
-        // with a whole-target viewport, but cover only part of it: they stay
-        // `Ui` and keep the uniform native canvas that their layout and pointer
-        // mapping depend on.
+        // lands on the pixels it copied; an opaque picture of its own (a movie
+        // frame) is shown whole on the native canvas, with black bars around
+        // it; an overlay with its own alpha covers the target undistorted.
+        // Placed elements - HUD, minimap, dialogue, menus, the file-select
+        // screen - also draw over the scene with a whole-target viewport, but
+        // cover only part of it: they stay `Ui` and keep the uniform native
+        // canvas that their layout and pointer mapping depend on.
         const float viewportRight = draw.ViewportX + draw.ViewportWidth;
         const float viewportBottom = draw.ViewportY + draw.ViewportHeight;
         Renderer3ds::PicaUiFrameContentEvidence frameContent;
@@ -2010,6 +2011,13 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                             [](const auto& texture) {
                                 return !texture.CopyReferences.empty();
                             });
+            frameContent.SamplesOnlyAlphaFreeTextures =
+                !draw.Textures.empty() &&
+                std::none_of(draw.Textures.begin(), draw.Textures.end(),
+                             [](const auto& texture) {
+                                 return Renderer3ds::PicaTextureFormatCarriesAlpha(
+                                     texture.NativeFormat);
+                             });
             if (draw.VertexUniformBytes.size() >=
                 Oot3d::kPicaPackedVertexFloatOffset) {
                 uint32_t booleanUniforms = 0;
@@ -2127,12 +2135,28 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 }
             }
         }
-        if (compositionDomain == Renderer3ds::PicaCompositionDomain::Ui) {
+        const bool ownPicture = frameContentResolution.Content ==
+                                Renderer3ds::PicaScreenContent::OwnPicture;
+        if (compositionDomain == Renderer3ds::PicaCompositionDomain::Ui ||
+            ownPicture) {
             const auto clip = Renderer3ds::ClipToPicaCanvas(
                 {mScissor.offset.x, mScissor.offset.y,
                  mScissor.extent.width, mScissor.extent.height},
                 rasterCanvas, draw.FramebufferWidth, draw.FramebufferHeight);
             mScissor = {{clip.X, clip.Y}, {clip.Width, clip.Height}};
+        }
+        if (ownPicture) {
+            // A picture of its own (a movie frame) is shown whole on the
+            // native canvas, and the pixels around it are black bars, never
+            // what the title drew behind the picture.
+            const auto bars = Renderer3ds::SurroundPicaCanvas(
+                rasterCanvas, draw.FramebufferWidth, draw.FramebufferHeight,
+                renderTarget.Width, renderTarget.Height);
+            PaintNativePicaPictureBars(bars);
+            mDiagnostics.RecordOwnPictureDraw(bars.Count);
+        } else if (frameContentResolution.Content ==
+                   Renderer3ds::PicaScreenContent::PictureOverlay) {
+            mDiagnostics.RecordPictureOverlayDraw();
         }
         struct NativeDrawPush {
             std::array<float, 4> RigidMotion{};

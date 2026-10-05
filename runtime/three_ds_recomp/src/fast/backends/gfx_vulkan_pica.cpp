@@ -1833,6 +1833,39 @@ void GfxRenderingAPIVulkan::ApplyPendingNativePicaMemoryFills(NativePicaRenderTa
     }
 }
 
+void GfxRenderingAPIVulkan::PaintNativePicaPictureBars(
+    const Renderer3ds::PicaCanvasSurround& bars) {
+    if (bars.Count == 0U) {
+        return;
+    }
+    // Opaque black on the native colour only: the bars are presentation
+    // pixels, so the guides, depth and stencil of what lies under them stay.
+    Oot3d::NriPicaColorRectsClearDesc clear;
+    clear.FrameIndex = mCurrentFrame;
+    clear.Color = {0.0F, 0.0F, 0.0F, 1.0F};
+    clear.RectCount = bars.Count;
+    for (uint32_t index = 0; index < bars.Count; ++index) {
+        const auto& rect = bars.Rects[index];
+        clear.Rects[index] = {static_cast<uint32_t>(rect.X), static_cast<uint32_t>(rect.Y),
+                              rect.Width, rect.Height};
+    }
+    clear.NriRenderingScope = mPicaDynamicRenderingScope.ActiveOwnedByNri();
+    if (mNriPicaMemoryFillClearPass.ClearColorRects(clear)) {
+        return;
+    }
+    VkClearAttachment attachment{};
+    attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    attachment.colorAttachment = 0U;
+    attachment.clearValue.color = {{0.0F, 0.0F, 0.0F, 1.0F}};
+    std::array<VkClearRect, 4> rects{};
+    for (uint32_t index = 0; index < bars.Count; ++index) {
+        const auto& rect = bars.Rects[index];
+        rects[index] = {{{rect.X, rect.Y}, {rect.Width, rect.Height}}, 0U, 1U};
+    }
+    vkCmdClearAttachments(mCommandBuffers[mCurrentFrame], 1U, &attachment, bars.Count,
+                          rects.data());
+}
+
 VkDescriptorSet GfxRenderingAPIVulkan::AllocateNativePicaDescriptorSet() {
     VkDescriptorSetAllocateInfo allocation{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};

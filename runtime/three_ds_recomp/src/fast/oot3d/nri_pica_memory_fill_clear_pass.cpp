@@ -145,6 +145,31 @@ bool NriPicaMemoryFillClearPass::ClearAttachments(const NriPicaAttachmentClearDe
 #endif
 }
 
+bool NriPicaMemoryFillClearPass::ClearColorRects(const NriPicaColorRectsClearDesc& desc) {
+#ifndef ENABLE_OOT3D_NRI
+    (void)desc;
+    return false;
+#else
+    if (!Available() || !ValidateNriPicaColorRectsClearDesc(desc))
+        return false;
+    nri::CommandBuffer* command = NriInteropAccess::CommandBuffer(*mImpl->Interop, desc.FrameIndex);
+    if (command == nullptr)
+        return false;
+    nri::ClearAttachmentDesc clear{};
+    clear.planes = nri::PlaneBits::COLOR;
+    clear.colorAttachmentIndex = 0U;
+    clear.value.color.f = { desc.Color[0], desc.Color[1], desc.Color[2], desc.Color[3] };
+    std::array<nri::Rect, 4> rects{};
+    for (uint32_t index = 0; index < desc.RectCount; ++index) {
+        const auto& rect = desc.Rects[index];
+        rects[index] = { static_cast<int16_t>(rect[0]), static_cast<int16_t>(rect[1]),
+                         static_cast<nri::Dim_t>(rect[2]), static_cast<nri::Dim_t>(rect[3]) };
+    }
+    mImpl->Core->CmdClearAttachments(*command, &clear, 1U, rects.data(), desc.RectCount);
+    return true;
+#endif
+}
+
 void NriPicaMemoryFillClearPass::Shutdown() {
     *mImpl = {};
     mImpl->Reason = "NRI PICA memory-fill clear is not initialized";
