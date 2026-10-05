@@ -321,6 +321,36 @@ def desaturated_columns(path: Path, tolerance: int = 8) -> tuple[int, list[int]]
     return width, [column for column, value in enumerate(grey) if value]
 
 
+def fitted_picture(width: int, height: int, native: tuple[int, int]) -> tuple[float, float, float, float]:
+    """The rectangle (x0, y0, x1, y1) a native-aspect picture fills when fitted, centred, into the output."""
+    scale = min(width / native[0], height / native[1])
+    picture_width, picture_height = native[0] * scale, native[1] * scale
+    x0, y0 = (width - picture_width) / 2, (height - picture_height) / 2
+    return x0, y0, x0 + picture_width, y0 + picture_height
+
+
+def black_outside_picture(path: Path, native: tuple[int, int], margin: int = 2,
+                          tolerance: int = 0) -> tuple[int, int]:
+    """Pixels outside the fitted native-aspect picture, and how many of them are not black.
+
+    A movie frame is shown whole at its own proportions with black bars around it. Pixels within `margin` of
+    the picture's edge are not judged: presentation filtering may blend the edge.
+    """
+    width, height, rows = read_bmp(path)
+    x0, y0, x1, y1 = fitted_picture(width, height, native)
+    outside = 0
+    lit = 0
+    for y, row in enumerate(rows):
+        for x in range(width):
+            near = x0 - margin <= x < x1 + margin and y0 - margin <= y < y1 + margin
+            if near:
+                continue
+            outside += 1
+            if max(row[3 * x:3 * x + 3]) > tolerance:
+                lit += 1
+    return outside, lit
+
+
 def compare_captures(a: Path, b: Path) -> tuple[int, tuple[int, int, int, int] | None]:
     """Number of differing pixels between two captures and their bounding box (x0, y0, x1, y1)."""
     width_a, height_a, rows_a = read_bmp(a)
@@ -410,6 +440,25 @@ def scenario_command(scenarios: dict, item: dict, run_dir: Path) -> list[str]:
     return command
 
 
+# Per-frame renderer counters a scenario can bound: `<stem>_max` bounds every frame, `<stem>_min_total` the sum
+# over the run's diagnostic frames.
+FRAME_COUNTERS = {
+    "screen_content": "screen_content_draw_count",
+    "whole_target_ui": "whole_target_ui_draw_count",
+    "own_picture": "own_picture_draw_count",
+    "picture_bars": "picture_bar_rect_count",
+    "picture_overlay": "picture_overlay_draw_count",
+}
+
+
+def counter_bound(key: str) -> tuple[str, bool] | None:
+    """The diagnostic counter an expectation key bounds, and whether it is a per-frame maximum."""
+    for suffix, maximum in (("_max", True), ("_min_total", False)):
+        if key.endswith(suffix) and key[:-len(suffix)] in FRAME_COUNTERS:
+            return FRAME_COUNTERS[key[:-len(suffix)]], maximum
+    return None
+
+
 def evaluate_scenario(name: str, run_dir: Path, code: int | str, expect: dict, references: Path | None,
                       seconds: float, log: str) -> list[Check]:
     """Judge one scenario run; every expectation becomes one check."""
@@ -429,19 +478,25 @@ def evaluate_scenario(name: str, run_dir: Path, code: int | str, expect: dict, r
         span = f"{grey[0]}..{grey[-1]} ({len(grey)} columns)" if grey else "none"
         checks.append(Check("scenarios", f"{name}: {capture} full-width effect",
                             "pass" if len(grey) == width else "fail", f"grey columns {span} of {width}"))
+    native = tuple(expect.get("picture_native", (400, 240)))
+    for capture in expect.get("black_bars", []):
+        path = run_dir / capture
+        if not path.exists():
+            checks.append(Check("scenarios", f"{name}: {capture} black bars", "fail", "capture missing"))
+            continue
+        outside, lit = black_outside_picture(path, native)
+        checks.append(Check("scenarios", f"{name}: {capture} black bars", "pass" if lit == 0 else "fail",
+                            f"{lit} of {outside} pixels outside the fitted picture are not black"))
     diagnostics = run_dir / "gpu.json"
-    bounds = [(key, expect[key]) for key in ("screen_content_max", "screen_content_min_total",
-                                             "whole_target_ui_min_total") if key in expect]
+    bounds = [(key, expect[key], counter_bound(key)) for key in expect if counter_bound(key)]
     if bounds:
         frames = json.loads(diagnostics.read_text(encoding="utf-8")).get("frames", []) if diagnostics.exists() else []
-        screen = [frame.get("screen_content_draw_count", 0) for frame in frames]
-        whole = [frame.get("whole_target_ui_draw_count", 0) for frame in frames]
-        observed = {"screen_content_max": max(screen, default=0), "screen_content_min_total": sum(screen),
-                    "whole_target_ui_min_total": sum(whole)}
-        for key, bound in bounds:
-            ok = bool(frames) and (observed[key] <= bound if key.endswith("_max") else observed[key] >= bound)
+        for key, bound, (counter, maximum) in bounds:
+            values = [frame.get(counter, 0) for frame in frames]
+            observed = max(values, default=0) if maximum else sum(values)
+            ok = bool(frames) and (observed <= bound if maximum else observed >= bound)
             checks.append(Check("scenarios", f"{name}: {key.replace('_', ' ')} {bound}", "pass" if ok else "fail",
-                                f"{observed[key]} over {len(frames)} diagnostic frames"))
+                                f"{observed} over {len(frames)} diagnostic frames"))
     if expect.get("reference"):
         for capture in captures:
             reference = references / capture.name if references else None

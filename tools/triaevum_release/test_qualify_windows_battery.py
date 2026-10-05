@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from qualify_windows_battery import (Check, compare_captures, desaturated_columns, evaluate_scenario,
-                                     merge_settings, parse_junit, pytest_summary, read_bmp, scenario_command,
-                                     unittest_summary)
+from qualify_windows_battery import (Check, black_outside_picture, compare_captures, counter_bound,
+                                     desaturated_columns, evaluate_scenario, fitted_picture, merge_settings,
+                                     parse_junit, pytest_summary, read_bmp, scenario_command, unittest_summary)
 
 
 def write_bmp(path: Path, rows: list[list[tuple[int, int, int]]], depth: int = 24) -> Path:
@@ -63,6 +63,23 @@ class CaptureTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 compare_captures(a, small)
 
+    def test_fitted_picture_is_centred_at_native_proportions(self):
+        self.assertEqual(fitted_picture(1280, 720, (400, 240)), (40.0, 0.0, 1240.0, 720.0))
+        self.assertEqual(fitted_picture(960, 720, (400, 240)), (0.0, 72.0, 960.0, 648.0))
+        self.assertEqual(fitted_picture(400, 240, (400, 240)), (0.0, 0.0, 400.0, 240.0))
+
+    def test_black_outside_picture_judges_only_the_bars(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            # 40x12 output, 5:3 picture 20x12 centred at x 10..29; 2-pixel margin each side not judged.
+            picture = (90, 120, 30)
+            rows = [[(0, 0, 0)] * 10 + [picture] * 20 + [(0, 0, 0)] * 10 for _ in range(12)]
+            clean = write_bmp(Path(temporary) / "clean.bmp", rows)
+            self.assertEqual(black_outside_picture(clean, (5, 3)), (12 * 16, 0))
+            rows[3][2] = (1, 0, 0)
+            rows[4][9] = (255, 255, 255)
+            lit = write_bmp(Path(temporary) / "lit.bmp", rows)
+            self.assertEqual(black_outside_picture(lit, (5, 3)), (12 * 16, 1))
+
 
 class ScenarioTests(unittest.TestCase):
     def test_merge_settings_is_deep(self):
@@ -117,6 +134,34 @@ class ScenarioTests(unittest.TestCase):
             missing = evaluate_scenario("S", run, 0, {"screen_content_max": 0}, None, 1.0, "log")
             self.assertEqual(missing[1].status, "fail")
             self.assertIsInstance(missing[1], Check)
+
+    def test_pictures_are_judged_by_their_bars_and_counters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary)
+            rows = [[(0, 0, 0)] * 10 + [(90, 120, 30)] * 20 + [(0, 0, 0)] * 10 for _ in range(12)]
+            write_bmp(run / "framebuffer_000300.bmp", rows)
+            rows[0][0] = (60, 60, 60)
+            write_bmp(run / "framebuffer_000360.bmp", rows)
+            (run / "gpu.json").write_text(json.dumps({"frames": [
+                {"own_picture_draw_count": 1, "picture_bar_rect_count": 2},
+                {"own_picture_draw_count": 0, "picture_bar_rect_count": 0}]}))
+            checks = evaluate_scenario("S", run, 0, {
+                "black_bars": ["framebuffer_000300.bmp", "framebuffer_000360.bmp", "framebuffer_000420.bmp"],
+                "picture_native": [5, 3], "own_picture_min_total": 1, "picture_bars_min_total": 2,
+                "own_picture_max": 0}, None, 1.0, "log")
+            status = {check.name: check.status for check in checks}
+            self.assertEqual(status["S: framebuffer_000300.bmp black bars"], "pass")
+            self.assertEqual(status["S: framebuffer_000360.bmp black bars"], "fail")
+            self.assertEqual(status["S: framebuffer_000420.bmp black bars"], "fail")
+            self.assertEqual(status["S: own picture min total 1"], "pass")
+            self.assertEqual(status["S: picture bars min total 2"], "pass")
+            self.assertEqual(status["S: own picture max 0"], "fail")
+
+    def test_counter_bounds_name_known_counters_only(self):
+        self.assertEqual(counter_bound("screen_content_max"), ("screen_content_draw_count", True))
+        self.assertEqual(counter_bound("own_picture_min_total"), ("own_picture_draw_count", False))
+        self.assertIsNone(counter_bound("captures"))
+        self.assertIsNone(counter_bound("unknown_max"))
 
 
 class SummaryTests(unittest.TestCase):

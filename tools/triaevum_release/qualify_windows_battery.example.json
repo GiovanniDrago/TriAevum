@@ -51,6 +51,7 @@
   ],
   "scenarios": {
     "_about": "L5. Each item runs once per output size as TriAevum.exe (hard links) in the working directory, a Forge installation. Captures, the runtime report and per-frame renderer diagnostics (gpu.json) stay in the report directory. 'references' holds accepted captures per item and size; a missing reference is reported as not run.",
+    "_expect": "exit, captures (count), reference (byte identity), full_width_desaturation (captures whose every column is grey), black_bars (captures whose pixels outside the fitted picture of 'picture_native' proportions, default 400x240, are black), and bounds on per-frame renderer counters: <counter>_max for every frame, <counter>_min_total for the run, with counter one of screen_content, whole_target_ui, own_picture, picture_bars, picture_overlay.",
     "executable": "<host build tree>/TriAevum.exe",
     "working_directory": "<Forge installation>",
     "arguments": ["--title-plugin", "<title module>", "--a32-process-manifest", "<process manifest>",
@@ -69,7 +70,7 @@
         "sizes": ["960x720", "1280x720", "1720x720"],
         "frames": 160,
         "shot_start": 150,
-        "expect": {"exit": 0, "captures": 1, "screen_content_max": 0, "whole_target_ui_min_total": 1, "reference": true}
+        "expect": {"exit": 0, "captures": 1, "screen_content_max": 0, "own_picture_max": 0, "whole_target_ui_min_total": 1, "reference": true}
       },
       {
         "name": "S09-revelation-original30",
@@ -85,7 +86,24 @@
         "shot_interval": 300,
         "diagnostic_frames": 1200,
         "max_seconds": 600,
-        "expect": {"exit": 0, "captures": 3, "full_width_desaturation": ["framebuffer_002820.bmp"], "screen_content_min_total": 1, "reference": true}
+        "expect": {"exit": 0, "captures": 3, "full_width_desaturation": ["framebuffer_002820.bmp"], "screen_content_min_total": 1, "own_picture_max": 0, "reference": true}
+      },
+      {
+        "name": "S10-stone-movie",
+        "_about": "A Sheikah Stone vision under Original30: the Visions menu stays on the native canvas and the movie frames are shown whole at 5:3 with black bars (above and below at 4:3, beside at 16:9 and 21:9).",
+        "checkpoint": "<checkpoint in front of a Sheikah Stone>",
+        "timeline": "<input timeline: A to open the Visions menu, A to play a vision>",
+        "config": "<settings JSON>",
+        "timing": "original30",
+        "settings": {"Graphics": {"Preset": "Authentic"}},
+        "sizes": ["960x720", "1280x720", "1720x720"],
+        "frames": 430,
+        "shot_start": 120,
+        "shot_interval": 60,
+        "max_seconds": 300,
+        "expect": {"exit": 0, "captures": 6,
+                   "black_bars": ["framebuffer_000240.bmp", "framebuffer_000300.bmp", "framebuffer_000360.bmp", "framebuffer_000420.bmp"],
+                   "own_picture_min_total": 200, "picture_bars_min_total": 200, "reference": true}
       }
     ]
   }
