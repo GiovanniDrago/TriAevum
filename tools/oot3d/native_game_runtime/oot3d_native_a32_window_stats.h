@@ -14,6 +14,7 @@ namespace Oot3dA32Window {
 // Savestate saves and loads: counts, bytes, phase times and the legacy-format restores.
 struct NativeA32SavestateStats {
     uint64_t SaveCount = 0;
+    uint64_t SaveFailureCount = 0;
     uint64_t LoadCount = 0;
     uint64_t SaveBytes = 0;
     uint64_t LoadBytes = 0;

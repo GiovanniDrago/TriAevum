@@ -576,16 +576,22 @@ bool NativeA32WindowSession::RunFrame() {
       quickSavePending = false;
     }
   } else {
-    if (quickSavePending && SaveState(quickStatePath)) {
+    if (quickSavePending &&
+        SaveState(quickStatePath) != SaveStateOutcome::Deferred) {
       quickSavePending = false;
     }
     if (Oot3dNativeGame::ShouldCaptureNativeA32AutomatedState(
-            launch.SaveStateFrameAvailable, automatedStateSaved,
-            runFrameCount, launch.SaveStateFrame) &&
-        SaveState(launch.SaveStatePath)) {
-      automatedStateSaved = true;
-      automatedStateSavedAtRunFrame = runFrameCount - 1U;
-      automatedStateSavedAtGuestFrame = frameCount;
+            launch.SaveStateFrameAvailable,
+            automatedStateSaved || automatedStateSaveFailed, runFrameCount,
+            launch.SaveStateFrame)) {
+      const auto outcome = SaveState(launch.SaveStatePath);
+      if (outcome == SaveStateOutcome::Saved) {
+        automatedStateSaved = true;
+        automatedStateSavedAtRunFrame = runFrameCount - 1U;
+        automatedStateSavedAtGuestFrame = frameCount;
+      } else if (outcome == SaveStateOutcome::Failed) {
+        automatedStateSaveFailed = true;
+      }
     }
   }
   ApplyWindowDemoFrameLimit(hostArgs, window, runFrameCount);

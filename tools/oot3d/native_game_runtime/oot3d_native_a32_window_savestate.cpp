@@ -198,7 +198,8 @@ void NativeA32WindowSession::RestoreSavestatePicaVisualReplayState(const Oot3dNa
       runtime.PicaVisualReplayState.size();
 }
 
-bool NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
+NativeA32WindowSession::SaveStateOutcome
+NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
   auto &hostServices = *hostServicesStorage;
   auto &frameRatePolicy = *frameRatePolicyStorage;
   auto &process = *processStorage;
@@ -211,7 +212,7 @@ bool NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
   // Barrier: the savestate captures renderer-owned replay state.
   renderStream.Drain();
   // Host-owned continuation registers must never escape into a standalone savestate.
-  if (ocarinaText.Pending()) return false;
+  if (ocarinaText.Pending()) return SaveStateOutcome::Deferred;
   const auto started = std::chrono::steady_clock::now();
   Oot3dNativeGame::NativeA32SavestateRuntimeState runtime;
   runtime.FrameCount = frameCount;
@@ -279,7 +280,8 @@ bool NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
     std::cerr
         << "oot3d_native_game: native PICA visual replay capture failed: "
         << error << '\n';
-    return false;
+    ++savestateStats.SaveFailureCount;
+    return SaveStateOutcome::Failed;
   }
   runtime.PicaVisualReplayStateAvailable = true;
   savestateStats.PicaVisualReplayBytesCaptured +=
@@ -289,7 +291,8 @@ bool NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
     std::cerr
         << "oot3d_native_game: native PICA texture capture failed: "
         << error << '\n';
-    return false;
+    ++savestateStats.SaveFailureCount;
+    return SaveStateOutcome::Failed;
   }
   runtime.PicaTextureCacheAvailable = true;
   for (const auto &texture : runtime.PicaTextureCache) {
@@ -301,7 +304,8 @@ bool NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
     std::cerr
         << "oot3d_native_game: native PICA color capture failed: "
         << error << '\n';
-    return false;
+    ++savestateStats.SaveFailureCount;
+    return SaveStateOutcome::Failed;
   }
   runtime.PicaColorTargetsAvailable = true;
   for (const auto &target : runtime.PicaColorTargets) {
@@ -314,7 +318,8 @@ bool NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
     std::cerr
         << "oot3d_native_game: native PICA presentation capture failed: "
         << error << '\n';
-    return false;
+    ++savestateStats.SaveFailureCount;
+    return SaveStateOutcome::Failed;
   }
   runtime.PicaPresentationStateAvailable = true;
   for (const auto &image :
@@ -330,7 +335,8 @@ bool NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
           picaFrontend, submissionQueue, dspHle, &ioResult, &error)) {
     std::cerr << "oot3d_native_game: savestate save failed: " << error
               << '\n';
-    return false;
+    ++savestateStats.SaveFailureCount;
+    return SaveStateOutcome::Failed;
   }
   ++savestateStats.SaveCount;
   savestateStats.SaveBytes += ioResult.FileBytes;
@@ -341,7 +347,7 @@ bool NativeA32WindowSession::SaveState(const std::filesystem::path &path) {
   savestateStats.WriteSeconds += ioResult.IoSeconds;
   std::cout << "oot3d_native_game: saved state at frame " << frameCount
             << " to " << path.string() << '\n';
-  return true;
+  return SaveStateOutcome::Saved;
 }
 
 bool NativeA32WindowSession::LoadState(const std::filesystem::path &path) {

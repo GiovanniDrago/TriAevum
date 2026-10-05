@@ -463,6 +463,7 @@ void WriteNativeA32WindowRuntimeSummary(const NativeA32WindowSummaryInputs &in) 
                    ? nlohmann::json(*automatedStateSavedAtGuestFrame)
                    : nlohmann::json(nullptr)},
               {"save_count", savestateStats.SaveCount},
+              {"save_failure_count", savestateStats.SaveFailureCount},
               {"load_count", savestateStats.LoadCount},
               {"save_bytes", savestateStats.SaveBytes},
               {"load_bytes", savestateStats.LoadBytes},

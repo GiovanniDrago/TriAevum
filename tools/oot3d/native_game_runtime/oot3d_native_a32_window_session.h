@@ -282,7 +282,10 @@ private:
   void PinGpuCopyResources(const Oot3dNativeGame::Oot3dPicaVisualFrameViewSample& sample);
   bool FlushNativeDependencies();
   void ExecuteVisualSample(const Oot3dNativeGame::Oot3dPicaVisualFrameViewSample &sample, Oot3dNativeGame::Oot3dPicaPresentationExecutionKind kind, bool present, const Fast::Oot3d::NativeFrameTemporalSample& temporalSample, uint64_t renderTargetNamespace = kVisualInterpolationRenderTargetNamespace);
-  bool SaveState(const std::filesystem::path &path);
+  // Deferred: a host continuation is pending, retry at a later frame boundary. Failed: reported once; the request is
+  // dropped because every retry repeats the full GPU drain and readback.
+  enum class SaveStateOutcome : uint8_t { Saved, Deferred, Failed };
+  SaveStateOutcome SaveState(const std::filesystem::path &path);
   bool LoadState(const std::filesystem::path &path);
 
   // The former locals, in declaration order: construction (in Setup()), lifetime and destruction order are
@@ -450,6 +453,7 @@ private:
   bool quickLoadKeyWasDown = false;
   bool quickSavePending = false;
   bool automatedStateSaved = false;
+  bool automatedStateSaveFailed = false;
   std::optional<uint32_t> automatedStateSavedAtRunFrame;
   std::optional<uint32_t> automatedStateSavedAtGuestFrame;
   NativeA32BenchmarkWindow benchmark;

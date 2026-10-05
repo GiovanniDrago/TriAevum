@@ -436,35 +436,50 @@ bool SaveNativeA32State(
                 target.AmbientGuideRgba8.size() +
                 target.ShadowR32UintLe.size() + encodedDepth.size() +
                 target.StencilValues.size();
-            if (target.ColorPhysicalAddress == 0U ||
-                target.FramebufferWidth == 0U ||
-                target.FramebufferHeight == 0U ||
-                target.ImageWidth == 0U || target.ImageHeight == 0U ||
-                target.SampleCount != 1U ||
-                expectedBytes != target.ColorRgba8.size() ||
-                expectedBytes != target.NormalGuideRgba8.size() ||
-                expectedBytes != target.MaterialGuideRgba8.size() ||
-                expectedMotionBytes !=
-                    target.RigidMotionGuideRgba16FloatLe.size() ||
-                expectedBytes != target.AmbientGuideRgba8.size() ||
-                expectedBytes != target.ShadowR32UintLe.size() ||
-                expectedPixels != target.DepthValues.size() ||
-                (!target.StencilValues.empty() &&
-                 expectedPixels != target.StencilValues.size()) ||
-                !validDepthValues ||
-                picaColorTargetBytes > kMaximumPicaColorTargetBytes ||
-                !picaColorTargetIdentities
-                     .insert({target.RenderTargetNamespace,
-                              target.ColorPhysicalAddress,
-                              target.DepthPhysicalAddress,
-                              target.FramebufferWidth,
-                              target.FramebufferHeight,
-                              target.FramebufferColorFormat,
-                              target.FramebufferDepthFormat,
-                              target.RenderScalePermille})
-                     .second) {
+            const char* invalidReason =
+                target.ColorPhysicalAddress == 0U ? "address"
+                : target.FramebufferWidth == 0U ||
+                        target.FramebufferHeight == 0U ||
+                        target.ImageWidth == 0U || target.ImageHeight == 0U
+                    ? "extent"
+                : target.SampleCount != 1U ? "samples"
+                : expectedBytes != target.ColorRgba8.size() ? "color"
+                : expectedBytes != target.NormalGuideRgba8.size() ? "normal"
+                : expectedBytes != target.MaterialGuideRgba8.size()
+                    ? "material"
+                : expectedMotionBytes !=
+                        target.RigidMotionGuideRgba16FloatLe.size()
+                    ? "motion"
+                : expectedBytes != target.AmbientGuideRgba8.size()
+                    ? "ambient"
+                : expectedBytes != target.ShadowR32UintLe.size() ? "shadow"
+                : expectedPixels != target.DepthValues.size() ? "depth"
+                : !target.StencilValues.empty() &&
+                        expectedPixels != target.StencilValues.size()
+                    ? "stencil"
+                : !validDepthValues ? "depth range"
+                : picaColorTargetBytes > kMaximumPicaColorTargetBytes
+                    ? "total bytes"
+                : !picaColorTargetIdentities
+                       .insert({target.RenderTargetNamespace,
+                                target.ColorPhysicalAddress,
+                                target.DepthPhysicalAddress,
+                                target.FramebufferWidth,
+                                target.FramebufferHeight,
+                                target.FramebufferColorFormat,
+                                target.FramebufferDepthFormat,
+                                target.RenderScalePermille})
+                       .second
+                    ? "duplicate identity"
+                    : nullptr;
+            if (invalidReason != nullptr) {
                 SetError(error,
-                         "savestate native PICA color target is invalid");
+                         std::string(
+                             "savestate native PICA color target is "
+                             "invalid (") +
+                             invalidReason + ", " +
+                             std::to_string(target.ImageWidth) + "x" +
+                             std::to_string(target.ImageHeight) + ")");
                 return false;
             }
             encodedPicaColorTargets.push_back(
