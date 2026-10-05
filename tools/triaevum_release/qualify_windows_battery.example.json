@@ -141,6 +141,56 @@
         "shot_interval": 80,
         "max_seconds": 300,
         "expect": {"exit": 0, "captures": 4, "dlss_upscale_min_total": 100, "native_ui_overlay_min_total": 100, "screen_content_max": 0, "own_picture_max": 0, "reference": true}
+      },
+      {
+        "name": "S01-title-late-start",
+        "_about": "Clean boot with the save data seed: Start after the title presentation reaches the game selection.",
+        "timeline": "tools/oot3d/native_game_runtime/input_timelines/title_start_late_file_select.json",
+        "sizes": ["960x720", "1280x720", "1720x720"],
+        "frames": 2400,
+        "shot_start": 1590,
+        "shot_interval": 400,
+        "max_seconds": 400,
+        "expect": {"exit": 0, "captures": 3, "own_picture_max": 0, "reference": true}
+      },
+      {
+        "name": "S01-title-early-start",
+        "_about": "Issue 48: Start during the title presentation must not stop the run. No reference: on this line the selection is not reached (see the qualification record).",
+        "timeline": "tools/oot3d/native_game_runtime/input_timelines/title_to_file_select.json",
+        "sizes": ["1280x720"],
+        "frames": 1800,
+        "shot_start": 590,
+        "shot_interval": 600,
+        "max_seconds": 400,
+        "expect": {"exit": 0, "captures": 3, "own_picture_max": 0}
+      },
+      {
+        "name": "S08-gameover-continue",
+        "_about": "Game Over at zero health: directional input and A choose Save, then the continue question.",
+        "checkpoint": "<zero-health checkpoint>",
+        "timeline": "tools/oot3d/native_game_runtime/input_timelines/topscreen_gameover_continue.json",
+        "timing": "original30",
+        "settings": {"Graphics": {"Preset": "Authentic"}},
+        "sizes": ["960x720", "1280x720", "1720x720"],
+        "frames": 600,
+        "shot_start": 120,
+        "shot_interval": 120,
+        "max_seconds": 300,
+        "expect": {"exit": 0, "captures": 4, "own_picture_max": 0, "reference": true}
+      },
+      {
+        "name": "S08-gameover-quit",
+        "_about": "Game Over at zero health: Don't save, then the continue question.",
+        "checkpoint": "<zero-health checkpoint>",
+        "timeline": "tools/oot3d/native_game_runtime/input_timelines/topscreen_gameover_quit.json",
+        "timing": "original30",
+        "settings": {"Graphics": {"Preset": "Authentic"}},
+        "sizes": ["960x720", "1280x720", "1720x720"],
+        "frames": 600,
+        "shot_start": 120,
+        "shot_interval": 120,
+        "max_seconds": 300,
+        "expect": {"exit": 0, "captures": 4, "own_picture_max": 0, "reference": true}
       }
     ]
   }

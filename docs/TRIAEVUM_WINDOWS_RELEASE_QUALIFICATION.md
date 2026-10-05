@@ -118,7 +118,7 @@ absent from the line), `experimental` (excluded from the release).
 | E3 | Visions UI ownership through shared primitive drawing | `d108659` | L5 S10 (Sheikah Stone, 4:3, 16:9, 21:9). The Visions header and panel were cover-scaled with E1 and are back on the canvas since the fix, at all three sizes. Movie frames: by the user's choice (2026-10-05) shown whole at 5:3 with black bars (above and below at 4:3, beside at 16:9 and 21:9), no longer cropped to cover; no lit pixel outside the picture in any movie frame. Only opaque pictures (no texture alpha) get bars; covering overlays with alpha keep the cover canvas | fixed (L5 S10) |
 | E4 | Consolidated F1 settings; F1 toggles from the key event (#51); Steam Input pads pass through | `a946f34`, `816fe91` | L3; L5 F1 tap scenario | open |
 | E5 | TopScreen #40 stamina/timer overlap, #42 mounted B counter, #43 boots hotkey repeat (recovered after the 2026-09-17 reset) | `3f84692`, `71a654e` | L2 TopScreen profile tests; L5 Epona and boots scenarios | open |
-| E6 | Game Over choices restored (#46): directional/A, save-yes, mouse/touch | `f89d3fb`, issues doc 45/46 | L5 Game Over scenarios (the last two never qualified) | open |
+| E6 | Game Over choices restored (#46): directional/A, save-yes, mouse/touch | `f89d3fb`, issues doc 45/46 | L5 S08: directional input and A drive the Game Over and save questions (Save gives "Progress saved", Don't save "Progress was not saved"), on the native canvas at three sizes (2026-10-05, references). Mouse/touch not yet in a scenario | directional/A pass (L5 S08); mouse/touch open |
 | E7 | Native UI kept out of the upscalers; TAA/SMAA resolved before native UI | `85c780f`, `cd6e550`, `d39aa14` | L4; L5 S14 (DLSS Ultra Performance at 21:9, HUD and pause page): the scene is reconstructed and the native UI is laid over the output on every scene frame (2026-10-05: 157 DLSS passes and 156 overlays in 300 frames; captures reproducible byte for byte). Closing the pause shows the HUD over the page for two frames, with and without DLSS alike (the game's own transition). FSR and TAA/SMAA are not in a scenario yet | DLSS pass (L5 S14); FSR, TAA/SMAA open |
 | E8 | F2 native lighting toggle and Navi fix | `e9dc221` | L5 | open |
 
@@ -251,7 +251,8 @@ diagnostics (`whole_target_ui_draw_count`, `screen_content_draw_count`,
 under Original30 (three sizes: the copies pass, the flashback covers every
 column, no opaque picture, references) and S10 (Sheikah Stone movie at three
 sizes: picture draws, black bars, references), S04 (pause roundtrip and pages at three sizes) and
-S14 (DLSS with the native UI overlay). Run of 2026-10-05 on the build
+S14 (DLSS with the native UI overlay), S01 (title, late and early Start) and S08
+(Game Over, Save and Don't save). Run of 2026-10-05 on the build
 with the upright copy and the movie bars: 84 of 84 checks against the
 references accepted from it. The S09 flashback reference changed only by the
 mirror: each new capture equals the previous reference flipped left-right,
@@ -261,14 +262,14 @@ for byte, DLSS included, before their references were accepted.
 
 | ID | Scenario | Input | Covers |
 | --- | --- | --- | --- |
-| S01 | Boot, title, Start during the title presentation, file select, load a save | none (fresh boot) and a practice save | B5, C5, #48 |
+| S01 | Boot, title, Start during the title presentation, file select, load a save | none (fresh boot) and a practice save | B5, C5, #48. In the battery since 2026-10-05: Start after the presentation (`title_start_late_file_select.json`) reaches the game selection at three sizes (references). Start during the presentation (`title_to_file_select.json`, guest frames 100 and 300) no longer stops the run (#48's failure) but is not honoured: the title is still shown after 1,800 presented frames, interpolated or Original30, while issue 48's verification of alpha.3b reached file selection with it. Open: compare with the alpha.3b runtime; loading a save is not covered yet |
 | S02 | Kokiri walk, eight renderer profiles (the L4 gate) | `qualify/ref-kokiri2` | C, J, K, Q |
 | S03 | HUD at 4:3, 16:9 and 21:9; minimap markers on fresh entry and after reload | practice saves with map/compass | E1, E2, #25, #32 |
 | S04 | Pause menu pages, item numbers, map screen, ZL/ZR assignment and use, one-frame taps | practice saves (adult with bow/hookshot) | E2, R1, R2, #39. In the battery since 2026-10-05: the Start roundtrip and the Map, Gear and Items pages from the HUD checkpoint at three sizes (pages on the native canvas, no screen content); assignment and one-frame taps still open |
 | S05 | Epona: stamina and timer, mounted B counter | issue 40-43 checkpoints | E5, #40, #42 |
 | S06 | Boots hotkey repeat | `boots-held` checkpoint | E5, #43 |
 | S07 | Ocarina performance UI, song browsing | practice save with ocarina | R3 |
-| S08 | Game Over: continue/quit by directional/A, save-yes, mouse/touch | Game Over checkpoints | E6, #46 |
+| S08 | Game Over: continue/quit by directional/A, save-yes, mouse/touch | Game Over checkpoints | E6, #46. In the battery since 2026-10-05: Save and Don't save paths from the zero-health checkpoint at three sizes |
 | S09 | Temple of Time revelation and the mid-flashback savestate, native 30 and interpolated 2x | issue 45/46 checkpoints | I1-I4, #45, #49 |
 | S10 | Sheikah Stone movie: play, complete, cancel, return | Kokiri state near the stone | G1 |
 | S11 | Dialogue with HD fonts at 480p and above, TopScreen on and off | practice saves | F1, #44 |
