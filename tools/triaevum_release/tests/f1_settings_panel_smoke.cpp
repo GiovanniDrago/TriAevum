@@ -1014,6 +1014,9 @@ int main() try {
           "F2 did not bypass global illumination");
     runtime.ToggleNativePresentationOverride();
     runtime.SetCapability(GraphicsCapability::BrixelizerGlobalIllumination, false, "provider unavailable");
+    Check(runtime.Snapshot().Effects.GlobalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi &&
+              runtime.SnapshotForRendering().Value.Effects.GlobalIllumination.Mode == GlobalIlluminationMode::Off,
+          "an unavailable global illumination mode rendered");
     Frame();
     Select("Global illumination", "Off");
     Check(runtime.Snapshot().Effects.GlobalIllumination.Mode == GlobalIlluminationMode::Off,
@@ -1075,6 +1078,9 @@ int main() try {
         Check(loggedPanelText.find("GI not available yet") == std::string::npos,
               "ready screen-space GI reported unavailable");
         runtime.SetCapability(GraphicsCapability::ScreenSpaceGlobalIllumination, false, "provider unavailable");
+        Check(runtime.Snapshot().Effects.GlobalIllumination.Mode == GlobalIlluminationMode::ScreenSpace &&
+                  runtime.SnapshotForRendering().Value.Effects.GlobalIllumination.Mode == GlobalIlluminationMode::Off,
+              "an unavailable screen-space GI rendered");
         Frame();
         Select("Global illumination", "Off");
         Check(runtime.Snapshot().Effects.GlobalIllumination.Mode == GlobalIlluminationMode::Off,

@@ -415,6 +415,15 @@ VersionedGraphicsSettings GraphicsSettingsRuntime::SnapshotForRendering() const 
         result.Value.Effects.PointShadows.Mode = PointShadowMode::Off;
         result.Value.Effects.GlobalIllumination.Mode = GlobalIlluminationMode::Off;
     }
+    // A GI mode this build or device does not offer (the experimental modes
+    // outside builds that opt in) renders Off, whatever the loaded
+    // configuration asks for; F1 shows the capability's reason.
+    auto& globalIllumination = result.Value.Effects.GlobalIllumination;
+    if ((globalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi &&
+         !mCapabilities.Has(GraphicsCapability::BrixelizerGlobalIllumination)) ||
+        (globalIllumination.Mode == GlobalIlluminationMode::ScreenSpace &&
+         !mCapabilities.Has(GraphicsCapability::ScreenSpaceGlobalIllumination)))
+        globalIllumination.Mode = GlobalIlluminationMode::Off;
     // Inactive directional/ambient edits must not invalidate histories.
     // Point-light groups remain independently controllable in per-pixel modes.
     if (!mNativePresentation.Active() && result.Value.Preset != GraphicsPreset::Authentic &&

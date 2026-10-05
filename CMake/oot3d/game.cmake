@@ -91,6 +91,12 @@ set(TRIAEVUM_PRODUCT_NRI 0)
 if(THREE_DS_RECOMP_ENABLE_NRI AND OOT3D_ENABLE_VULKAN_RENDERER)
     set(TRIAEVUM_PRODUCT_NRI 1)
 endif()
+# Reported so the release workflow can refuse a runtime that offers the
+# experimental global illumination modes.
+set(TRIAEVUM_PRODUCT_EXPERIMENTAL_GI 0)
+if(THREE_DS_RECOMP_OFFER_EXPERIMENTAL_GI)
+    set(TRIAEVUM_PRODUCT_EXPERIMENTAL_GI 1)
+endif()
 configure_file(
     tools/oot3d/native_game_runtime/triaevum_product_build.h.in
     "${CMAKE_CURRENT_BINARY_DIR}/triaevum-product/triaevum_product_build.h" @ONLY)

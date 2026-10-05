@@ -86,6 +86,9 @@ def prepare(args) -> dict:
     receipt = query_product(Path(targets["runtime"]), commit)
     if receipt["product"].get("private_title_loaded") is not False:
         raise ValueError("The build directory must contain the public stub, not a title")
+    if receipt["product"]["capabilities"].get("experimental_global_illumination") is not False:
+        raise ValueError("The release runtime must not offer the experimental global illumination "
+                         "(configure with THREE_DS_RECOMP_OFFER_EXPERIMENTAL_GI=OFF)")
     source_zip = work / "TriAevum-source.zip"
     create_source_archive(ROOT, source_zip, source_commit=commit)
     forge_exe = build_forge(work / "forge-binary", work / "forge-build",

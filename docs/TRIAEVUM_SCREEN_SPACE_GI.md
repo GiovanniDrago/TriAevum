@@ -1,5 +1,12 @@
 # Screen-space diffuse GI (clean-room implementation)
 
+**Experimental, outside releases.** A build offers this mode only when configured with
+`-DTHREE_DS_RECOMP_OFFER_EXPERIMENTAL_GI=ON`. Without it (the default, and every release
+build) the code and its tests are built, the GI capability reports "experimental, not
+part of this build", the settings keep the mode Off and F1 shows that reason; the
+release workflow refuses a runtime that offers it
+(`TRIAEVUM_WINDOWS_RELEASE_QUALIFICATION.md`, section 6).
+
 Status: **M8 done** (2026-10-04: smooth-shaded receivers; the cosine lobe
 follows the renderer's shading normal, the face normal keeps visibility, the
 receiver's own smooth surface no longer darkens its creases and the post

@@ -34,6 +34,7 @@ void WriteTriAevumProductInfo(std::ostream& output) {
         {"private_title_loaded", false},
 #endif
         {"capabilities", {{"nri", kTriAevumProductNri},
+                          {"experimental_global_illumination", kTriAevumProductExperimentalGi},
 #ifdef OOT3D_NATIVE_A32_WINDOW_AVAILABLE
                           {"f1", true}, {"topscreen", true}}},
 #else

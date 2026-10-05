@@ -91,6 +91,11 @@ cmake_dependent_option(THREE_DS_RECOMP_ENABLE_IMMERSE
 # Brixelizer GI shares the pinned SDK and Vulkan backend with SSSR. Shader
 # permutations are compiled with the Windows FidelityFX compiler; portable
 # shader bundles do not carry them yet.
+# Global illumination (Brixelizer GI and the screen-space GI) is experimental:
+# both are built and tested, but a build offers them only with this option.
+# Release builds leave it OFF; their GI capabilities report "experimental, not
+# part of this build" (docs/TRIAEVUM_WINDOWS_RELEASE_QUALIFICATION.md, section 6).
+option(THREE_DS_RECOMP_OFFER_EXPERIMENTAL_GI "Offer the experimental global illumination modes" OFF)
 cmake_dependent_option(THREE_DS_RECOMP_ENABLE_BRIXELIZER_GI
 	"Enable FidelityFX Brixelizer GI for the native 3DS Vulkan backend"
 	ON "WIN32;THREE_DS_RECOMP_ENABLE_SSSR" OFF)

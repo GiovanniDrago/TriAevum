@@ -288,6 +288,13 @@ def audit_release(
                 reject("runtime contract identifies a private title plugin")
             if contract.get("runtime_sha256") != declared.get(platform.runtime, {}).get("sha256"):
                 reject("runtime contract hash differs from packaged executable")
+            # Global illumination is experimental: a public runtime neither
+            # offers it nor selects it by default.
+            if contract["product"]["capabilities"].get("experimental_global_illumination") is not False:
+                reject("runtime contract does not exclude the experimental global illumination")
+            graphics = contract["product"]["default_config"]["Graphics"]
+            if graphics.get("Effects", {}).get("GlobalIllumination", {}).get("Mode", "Off") != "Off":
+                reject("runtime default configuration enables global illumination")
         except (KeyError, TypeError, AttributeError, ValueError) as exc:
             reject(f"invalid runtime contract: {exc}")
     actual: dict[str, Path] = {}

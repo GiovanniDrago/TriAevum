@@ -1,5 +1,12 @@
 # FidelityFX Brixelizer GI: design
 
+**Experimental, outside releases.** A build offers this mode only when configured with
+`-DTHREE_DS_RECOMP_OFFER_EXPERIMENTAL_GI=ON`. Without it (the default, and every release
+build) the code and its tests are built, the GI capability reports "experimental, not
+part of this build", the settings keep the mode Off and F1 shows that reason; the
+release workflow refuses a runtime that offers it
+(`TRIAEVUM_WINDOWS_RELEASE_QUALIFICATION.md`, section 6).
+
 Status: phases 1-5 done (diffuse GI, history and resets, F1 live qualification, specular GI as a reflection source). Owner surface: F1 **Lighting**.
 
 ## Goal

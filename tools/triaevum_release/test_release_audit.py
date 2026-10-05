@@ -177,6 +177,41 @@ class PublicReleaseAuditTests(unittest.TestCase):
             self.assertTrue(result.ok, result.errors)
             self.assertEqual(result.summary["verified_files"], len(FILES) + 1)
 
+    def test_runtime_contract_excludes_experimental_global_illumination(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_clean_package(root)
+            manifest_path = root / "release-manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            runtime = next(item for item in manifest["files"] if item["path"] == "TriAevum.exe")
+            # A runtime contract also binds the corresponding source to its commit.
+            source = root / "source/TriAevum-source.zip"
+            with zipfile.ZipFile(source, "a") as archive:
+                archive.writestr("SOURCE_ARCHIVE_MANIFEST.json", json.dumps({"source_commit": "0" * 40}))
+            item = next(item for item in manifest["files"] if item["role"] == "corresponding_source")
+            item.update(bytes=source.stat().st_size, sha256=sha256_file(source))
+
+            def audit(capability, mode: str) -> list[str]:
+                capabilities = {"nri": True, "f1": True, "topscreen": True}
+                if capability is not None:
+                    capabilities["experimental_global_illumination"] = capability
+                product = {
+                    "format": "triaevum_product_info_v1", "runtime": "oot3d_native_game",
+                    "source_commit": "0" * 40, "whole_aot_plugin_abi": 2, "private_title_loaded": False,
+                    "capabilities": capabilities,
+                    "default_config": {"Graphics": {
+                        "Preset": "Custom", "FrameRate": {"Mode": "Interpolated2x"},
+                        "Effects": {"GlobalIllumination": {"Mode": mode}}}},
+                }
+                manifest["release"]["runtime_contract"] = {"runtime_sha256": runtime["sha256"], "product": product}
+                atomic_write_json(manifest_path, manifest)
+                return list(audit_release(root).errors)
+
+            self.assertEqual(audit(False, "Off"), [])
+            for capability, mode in ((True, "Off"), (None, "Off"), (False, "ScreenSpace")):
+                errors = audit(capability, mode)
+                self.assertTrue(any("global illumination" in error for error in errors), errors)
+
     def test_rejects_private_file_hidden_in_source_archive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

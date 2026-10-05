@@ -551,6 +551,15 @@ void GfxRenderingAPIVulkan::Init() {
         SPDLOG_INFO("OOT3D Vulkan PICA dynamic rendering unavailable: {}",
                     mPicaDynamicRenderingScope.UnavailableReason());
     }
+    // Both GI modes are experimental: offered only by builds configured with
+    // THREE_DS_RECOMP_OFFER_EXPERIMENTAL_GI. Elsewhere the settings keep them
+    // Off and F1 shows why.
+#ifdef TRIAEVUM_OFFER_EXPERIMENTAL_GI
+    constexpr bool kOfferExperimentalGi = true;
+#else
+    constexpr bool kOfferExperimentalGi = false;
+#endif
+    constexpr const char* kExperimentalGiReason = "experimental, not part of this build";
     {
         // The GI albedo guide is an eighth colour attachment, bound only
         // through dynamic rendering.
@@ -559,6 +568,10 @@ void GfxRenderingAPIVulkan::Init() {
         if (supported && !mPicaDynamicRenderingScope.Available()) {
             supported = false;
             reason = "global illumination requires PICA dynamic rendering";
+        }
+        if (!kOfferExperimentalGi) {
+            supported = false;
+            reason = kExperimentalGiReason;
         }
         Oot3d::GraphicsSettingsRuntime::Instance().SetCapability(
             Oot3d::GraphicsCapability::BrixelizerGlobalIllumination, supported, reason);
@@ -570,6 +583,10 @@ void GfxRenderingAPIVulkan::Init() {
         if (supported && !mPicaDynamicRenderingScope.Available()) {
             supported = false;
             reason = "screen-space global illumination requires PICA dynamic rendering";
+        }
+        if (!kOfferExperimentalGi) {
+            supported = false;
+            reason = kExperimentalGiReason;
         }
         Oot3d::GraphicsSettingsRuntime::Instance().SetCapability(
             Oot3d::GraphicsCapability::ScreenSpaceGlobalIllumination, supported, reason);

@@ -208,6 +208,10 @@ if(THREE_DS_RECOMP_ENABLE_VULKAN)
         target_compile_definitions(three_ds_recomp_runtime PRIVATE
             ENABLE_OOT3D_BRIXELIZER_GI)
     endif()
+    if(THREE_DS_RECOMP_OFFER_EXPERIMENTAL_GI)
+        target_compile_definitions(three_ds_recomp_runtime PRIVATE
+            TRIAEVUM_OFFER_EXPERIMENTAL_GI)
+    endif()
     if(TARGET oot3d_cacao)
         target_link_libraries(three_ds_recomp_runtime PRIVATE oot3d_cacao)
         target_compile_definitions(three_ds_recomp_runtime PRIVATE ENABLE_OOT3D_CACAO)
