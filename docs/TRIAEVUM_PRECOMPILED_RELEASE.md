@@ -120,10 +120,18 @@ joins the object, toolchain and plugin cache identities and is written to
 `whole-aot-plugin.json` as `profile_data_sha256`. Preserve the profile and its
 collection receipt with the title build snapshot and the generated C++, because
 they are needed to rebuild that module. The profile holds only counters for the
-generated title functions, not ROM bytes or assets. Packaging it with the
-corresponding title source and allowing it in the release audit is still to be
-implemented in `prepare_release`; until then a profiled module must not be
-published. Measurements and qualification: `TRIAEVUM_AOT_LEVERS_RESULTS.md`.
+generated title functions, not ROM bytes or assets.
+
+A profiled module is published with its profile: `prepare_release` takes it as
+`--title-profile <title.profdata>`, checks its SHA-256 against
+`profile_data_sha256` and stores it as `title.profdata` in the translated title
+source archive, recorded under `profile` in `TITLE_SOURCE_MANIFEST.json`.
+Promotion fails for a profiled build without its profile, for a different
+profile and for a profile given with an unprofiled build. The release audit
+rejects a profiled title whose translated source lacks that profile or holds
+another one. The collection receipt stays with the private build snapshot (it
+names local checkpoints). Measurements and qualification:
+`TRIAEVUM_AOT_LEVERS_RESULTS.md`.
 
 ## Qualification
 

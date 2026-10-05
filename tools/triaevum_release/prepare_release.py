@@ -108,7 +108,7 @@ def prepare(args) -> dict:
         runtime=Path(targets["runtime"]), native_module=artifacts["oot3d_game_module.dll"],
         plugin_manifest=args.title_build, generated_manifest=args.title_sources,
         build_source=args.title_build_source, recipe=load_recipe(DEFAULT_RECIPES, args.recipe),
-        work=work / "precompiled"))
+        work=work / "precompiled", profile_data=args.title_profile))
     catalog_path = work / "precompiled/precompiled-titles.json"
     definitions = load_json_object(DEFAULT_RECIPES)
     catalog, definitions = add_verified_variants(load_json_object(catalog_path), definitions, definitions)
@@ -151,6 +151,9 @@ def main() -> int:
     parser.add_argument("--title-build", type=Path, required=True, help="Verified whole-aot-plugin.json")
     parser.add_argument("--title-sources", type=Path, required=True, help="Corresponding generated C++ manifest")
     parser.add_argument("--title-build-source", type=Path, required=True, help="Source ZIP used to build the title")
+    parser.add_argument("--title-profile", type=Path,
+                        help="Profile the title was built with (build-title --profile-data); required for a "
+                             "profile-guided title, shipped with its translated source")
     parser.add_argument("--recipe", default="oot3d-eur-project-baseline-16a6b0aa")
     parser.add_argument("--shader-pack", type=Path, required=True,
                         help="Publisher input: bundled portable corpus, never a user choice")

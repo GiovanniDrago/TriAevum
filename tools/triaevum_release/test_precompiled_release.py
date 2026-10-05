@@ -199,6 +199,75 @@ class PrecompiledReleaseTests(unittest.TestCase):
         self.save()
         self.assertTrue(any("code.bin" in e for e in audit_release(self.root).errors))
 
+    def profile_guided(self, contents: bytes = b"\xfflprofi fixture counters") -> Path:
+        profile = self.work / "title.profdata"
+        profile.write_bytes(contents)
+        build = load_json_object(self.build)
+        build["profile_data_sha256"] = sha256_file(profile)
+        atomic_write_json(self.build, build)
+        return profile
+
+    def test_profile_guided_title_ships_its_profile_with_the_translated_source(self):
+        profile = self.profile_guided()
+        with patch("precompiled_title_layout.query_product"):
+            items = title_layout(runtime=self.root / "TriAevum.exe",
+                native_module=self.root / "forge/oot3d_game_module.dll", plugin_manifest=self.build,
+                generated_manifest=self.generated, build_source=self.build_source, recipe=self.recipe,
+                work=self.work / "promoted-profile", profile_data=profile)
+        for item in items:
+            shutil.copy2(item["source"], self.root / item["path"])
+            self.rehash(item["path"])
+        self.save()
+        result = audit_release(self.root)
+        self.assertTrue(result.ok, result.errors)
+        with zipfile.ZipFile(self.root / "source/titles/fixture-translated.zip") as archive:
+            self.assertEqual(archive.read("title.profdata"), profile.read_bytes())
+            manifest = json.loads(archive.read("TITLE_SOURCE_MANIFEST.json"))
+        self.assertEqual(manifest["profile"]["sha256"], sha256_file(profile))
+        self.assertEqual(manifest["build"]["profile_data_sha256"], sha256_file(profile))
+
+    def test_profile_guided_title_is_not_promoted_without_its_own_profile(self):
+        self.profile_guided()
+        with patch("precompiled_title_layout.query_product"), \
+             self.assertRaisesRegex(ValueError, "requires its profile data"):
+            self.layout()
+        other = self.work / "other.profdata"
+        other.write_bytes(b"other counters")
+        with patch("precompiled_title_layout.query_product"), self.assertRaisesRegex(ValueError, "differs"):
+            title_layout(runtime=self.root / "TriAevum.exe",
+                native_module=self.root / "forge/oot3d_game_module.dll", plugin_manifest=self.build,
+                generated_manifest=self.generated, build_source=self.build_source, recipe=self.recipe,
+                work=self.work / "promoted-other", profile_data=other)
+        build = load_json_object(self.build)
+        del build["profile_data_sha256"]
+        atomic_write_json(self.build, build)
+        with patch("precompiled_title_layout.query_product"), \
+             self.assertRaisesRegex(ValueError, "without a profile"):
+            title_layout(runtime=self.root / "TriAevum.exe",
+                native_module=self.root / "forge/oot3d_game_module.dll", plugin_manifest=self.build,
+                generated_manifest=self.generated, build_source=self.build_source, recipe=self.recipe,
+                work=self.work / "promoted-unprofiled", profile_data=other)
+
+    def test_audit_rejects_a_profile_guided_title_published_without_its_profile(self):
+        relative = "source/titles/fixture-translated.zip"
+        path = self.root / relative
+        with zipfile.ZipFile(path) as archive:
+            members = {name: archive.read(name) for name in archive.namelist()}
+        manifest = json.loads(members["TITLE_SOURCE_MANIFEST.json"])
+        manifest["build"]["profile_data_sha256"] = "f" * 64
+        members["TITLE_SOURCE_MANIFEST.json"] = json.dumps(manifest).encode()
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, data in members.items():
+                archive.writestr(name, data)
+        self.rehash(relative)
+        catalog = load_json_object(self.root / "recipes/precompiled-titles.json")
+        catalog["titles"][0]["sources"][0].update(sha256=sha256_file(path), bytes=path.stat().st_size)
+        atomic_write_json(self.root / "recipes/precompiled-titles.json", catalog)
+        self.rehash("recipes/precompiled-titles.json")
+        self.save()
+        errors = audit_release(self.root).errors
+        self.assertTrue(any("lacks its profile" in e for e in errors), errors)
+
     def test_compiler_payloads_are_rejected(self):
         relative = "forge/clang-cl.exe"
         (self.root / relative).write_bytes(b"compiler")

@@ -427,6 +427,18 @@ def audit_release(
                             for name, digest in metadata["files"].items():
                                 if hashlib.sha256(source_zip.read(name)).hexdigest() != digest:
                                     raise ValueError("Translated source inventory mismatch")
+                            # A profile-guided module is published only with the
+                            # profile it was built with.
+                            profiled = metadata["build"].get("profile_data_sha256")
+                            profile = metadata.get("profile")
+                            if profiled is not None:
+                                if (not isinstance(profile, dict) or profile.get("path") != "title.profdata"
+                                        or profile.get("sha256") != profiled):
+                                    raise ValueError("Profile-guided title lacks its profile in the translated source")
+                                if hashlib.sha256(source_zip.read(profile["path"])).hexdigest() != profiled:
+                                    raise ValueError("Translated source profile mismatch")
+                            elif profile is not None:
+                                raise ValueError("Translated source carries a profile for a title built without one")
             if {name for name, item in declared.items() if item["role"] in title_roles} != expected_title_paths:
                 raise ValueError("Uncatalogued title artifact in release")
         except (OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile) as exc:

@@ -22,11 +22,26 @@ def artifact(path: Path, destination: str) -> dict:
     return {"path": destination, "sha256": sha256_file(path), "bytes": path.stat().st_size}
 
 
+PROFILE_MEMBER = "title.profdata"
+
+
 def title_layout(*, runtime: Path, native_module: Path, plugin_manifest: Path,
                  generated_manifest: Path, build_source: Path, recipe: dict,
-                 work: Path) -> list[dict]:
+                 work: Path, profile_data: Path | None = None) -> list[dict]:
     build = load_json_object(plugin_manifest)
     generated = load_json_object(generated_manifest)
+    # A profile-guided module is rebuilt from its translated sources and the
+    # profile it was optimized with, so the profile ships beside the sources.
+    profile_sha256 = build.get("profile_data_sha256")
+    if profile_sha256 is not None and profile_data is None:
+        raise ValueError("Profile-guided title build requires its profile data (--title-profile)")
+    if profile_sha256 is None and profile_data is not None:
+        raise ValueError("Profile data given for a title built without a profile")
+    profile = None
+    if profile_data is not None:
+        profile = artifact(profile_data, PROFILE_MEMBER)
+        if profile["sha256"] != profile_sha256:
+            raise ValueError("Profile data differs from the one the title was built with")
     platform = for_target(build.get("target", WINDOWS.target))
     if (build.get("format") != "triaevum_generated_cpp_whole_aot_plugin_v2"
             or build.get("profile") != platform.profile
@@ -61,15 +76,21 @@ def title_layout(*, runtime: Path, native_module: Path, plugin_manifest: Path,
             if path.is_symlink() or sha256_file(path) != expected:
                 raise ValueError(f"Translated source changed since generation: {relative}")
             archive.write(path, relative)
-        archive.writestr("TITLE_SOURCE_MANIFEST.json", json.dumps({
-            "format": "triaevum_translated_title_source_v1", "recipe": name,
-            "build_source_commit": build_commit, "build": build, "files": files}, indent=2))
+        manifest = {"format": "triaevum_translated_title_source_v1", "recipe": name,
+                    "build_source_commit": build_commit, "build": build, "files": files}
+        if profile is not None:
+            archive.write(profile_data, PROFILE_MEMBER)
+            manifest["profile"] = profile
+        archive.writestr("TITLE_SOURCE_MANIFEST.json", json.dumps(manifest, indent=2))
         archive.writestr("README.md", "# Translated title sources\n\n"
             "This archive contains game-derived translated logic, not game assets.\n"
             "Use the paired title-build source archive for the ABI, support library,\n"
             "plugin wrapper and build scripts, and the release source for the current runtime.\n"
             "See docs/TRIAEVUM_PRECOMPILED_RELEASE.md for developer rebuild instructions.\n"
-            "Original game rights are not relicensed by the TriAevum project license.\n")
+            "Original game rights are not relicensed by the TriAevum project license.\n"
+            + ("\n`title.profdata` is the LLVM instrumentation profile the module was\n"
+               "optimized with (`-fprofile-instr-use`). It holds execution counters of the\n"
+               "translated functions, not game data.\n" if profile is not None else ""))
     sources = [artifact(translated, f"source/titles/{name}-translated.zip"),
                artifact(build_source, f"source/titles/{name}-build.zip")]
     catalog = {"format": FORMAT, "install_model": MODEL,

@@ -136,6 +136,8 @@ presented frame), Sheik copy 0.768 (12.79 -> 9.83 ms). On by default;
 
 ## Not yet done
 
-- `prepare_release` packaging and audit allowance for the title profile.
+- Done 2026-10-05: `prepare_release --title-profile` ships the profile with the
+  translated title source and the release audit requires it for a profiled
+  module (`TRIAEVUM_PRECOMPILED_RELEASE.md`, "Profile-guided title builds").
 - PICA plan/queue off the guest critical path; block-entry contract changes;
   further call-free leaf functions.
