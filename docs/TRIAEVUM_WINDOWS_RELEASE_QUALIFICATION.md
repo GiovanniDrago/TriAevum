@@ -270,15 +270,15 @@ for byte, DLSS included, before their references were accepted.
 
 | ID | Scenario | Input | Covers |
 | --- | --- | --- | --- |
-| S01 | Boot, title, Start during the title presentation, file select, load a save | none (fresh boot) and a practice save | B5, C5, #48. In the battery since 2026-10-05: Start after the presentation (`title_start_late_file_select.json`) reaches the game selection at three sizes (references). Start during the presentation (`title_to_file_select.json`, guest frames 100 and 300) no longer stops the run (#48's failure) but is not honoured: the title is still shown after 1,800 presented frames, interpolated or Original30, while issue 48's verification of alpha.3b reached file selection with it. A/B of 2026-10-05: the alpha.3b package's runtime, run with the same inputs, behaves the same (deterministic: its last capture differs from this line's by 0.8/255 on average; in real time both still show the title), so this is not a regression of the line; issue 48's selection depended on its run's conditions. Loading a save is not covered yet |
+| S01 | Boot, title, Start during the title presentation, file select, load a save | none (fresh boot) and a practice save | B5, C5, #48. In the battery since 2026-10-05: Start after the presentation (`title_start_late_file_select.json`) reaches the game selection at three sizes (references). Start during the presentation (`title_to_file_select.json`, guest frames 100 and 300) no longer stops the run (#48's failure) but is not honoured: the title is still shown after 1,800 presented frames, interpolated or Original30, while issue 48's verification of alpha.3b reached file selection with it. A/B of 2026-10-05: the alpha.3b package's runtime, run with the same inputs, behaves the same (deterministic: its last capture differs from this line's by 0.8/255 on average; in real time both still show the title), so this is not a regression of the line; issue 48's selection depended on its run's conditions. Loading a save is not covered yet Loading an existing save in the battery since 2026-10-05 (S01-load-save). |
 | S02 | Kokiri walk, eight renderer profiles (the L4 gate) | `qualify/ref-kokiri2` | C, J, K, Q |
 | S03 | HUD at 4:3, 16:9 and 21:9; minimap markers on fresh entry and after reload | practice saves with map/compass | E1, E2, #25, #32 |
 | S04 | Pause menu pages, item numbers, map screen, ZL/ZR assignment and use, one-frame taps | practice saves (adult with bow/hookshot) | E2, R1, R2, #39. In the battery since 2026-10-05: the Start roundtrip and the Map, Gear and Items pages from the HUD checkpoint at three sizes (pages on the native canvas, no screen content); assignment and one-frame taps still open |
-| S05 | Epona: stamina and timer, mounted B counter | issue 40-43 checkpoints | E5, #40, #42 |
-| S06 | Boots hotkey repeat | `boots-held` checkpoint | E5, #43 |
+| S05 | Epona: stamina and timer, mounted B counter | issue 40-43 checkpoints | E5, #40, #42 In the battery since 2026-10-05 (race and mounted). |
+| S06 | Boots hotkey repeat | `boots-held` checkpoint | E5, #43 In the battery since 2026-10-05. |
 | S07 | Ocarina performance UI, song browsing | practice save with ocarina | R3 |
 | S08 | Game Over: continue/quit by directional/A, save-yes, mouse/touch | Game Over checkpoints | E6, #46. In the battery since 2026-10-05: Save and Don't save paths from the zero-health checkpoint at three sizes |
-| S09 | Temple of Time revelation and the mid-flashback savestate, native 30 and interpolated 2x | issue 45/46 checkpoints | I1-I4, #45, #49 |
+| S09 | Temple of Time revelation and the mid-flashback savestate, native 30 and interpolated 2x | issue 45/46 checkpoints | I1-I4, #45, #49 Interpolated with a mid-flashback restore in the battery since 2026-10-05. |
 | S10 | Sheikah Stone movie: play, complete, cancel, return | Kokiri state near the stone | G1 |
 | S11 | Dialogue with HD fonts at 480p and above, TopScreen on and off | practice saves | F1, #44 |
 | S12 | F1 tap toggle, F2 native lighting, capability-safe Off controls | any gameplay state | E4, E8 |
@@ -288,6 +288,9 @@ for byte, DLSS included, before their references were accepted.
 | S16 | Savestate save/restore at a non-native scale | Kokiri | J11 |
 | S17 | Cold and warm cache start: preparation, no runtime compilation, persisted pipelines | fresh cache directory | B1, B3-B5. In the battery since 2026-10-05: `S17-shader-preparation`, cold then warm from the cache it left, without captures, bounded by log and runtime metrics (section 4.B) |
 | S18 | Slow host: one visual frame per guest frame | Kokiri with a throttled host | D2 |
+| S19 | Chamber of Sages with the user's toon settings | `sages-user/issue41.oot3dsav` | #41. In the battery since 2026-10-05 |
+| S20 | Real-time pacing: Kokiri walk, Enhanced, interpolated on the wall clock after a warm-up; VSync on and off | Kokiri reference state and walk | D1, #30, #55. In the battery since 2026-10-05: FPS, frame-time p99 and `dsp_audio.output_underruns` bounds |
+| S23 | Save (Game Over), quit, restart on the same save data and cache | zero-health checkpoint | #23. In the battery since 2026-10-05 |
 
 ## 6. Global illumination out of the release
 
@@ -343,18 +346,18 @@ refused as an unknown revision; #58: Korean).
 | #17 | remapped shoulder buttons do not use items | H1 | L2 pass: 24 shoulder/trigger assignments (`oot3d_native_a32_input_tests`) | L7 with the reporter's pad |
 | #19 | erasing a file never completes | - | fixed in alpha.2 (`d1f57f9`), checked by hand | L5: erase a copied save from file selection |
 | #20 | gyro yaw unresponsive (third-party Switch Pro pad through BetterJoy) | H2 | pitch fixed according to the reporter | L7 device checklist |
-| #23 | access violation in `vulkan-1.dll` at repeated starts after an hour of play and a save (alpha.1c, RTX 3080 Ti) | new | cause unknown; the line validates its persisted pipeline cache (device identity, size, checksum, atomic write) | L5: save, quit and restart on the same data and cache; retest by the reporter |
+| #23 | access violation in `vulkan-1.dll` at repeated starts after an hour of play and a save (alpha.1c, RTX 3080 Ti) | new | the line validates its persisted pipeline cache (device identity, size, checksum, atomic write); S23 (2026-10-05): a Game Over save, then a fresh start on the same save data and cache, runs without fault to the title and version selection | retest by the reporter; loading the saved file needs a timeline for the version selection |
 | #25 | HUD and menus at 21:9 | E1 | pass (S03, S04 pages) | - |
 | #27 | Forge does nothing from an external hard disk | new | not analysed | L6 installation on a second volume; L7 on a removable drive |
-| #28 | the Normal / Master Quest choice is not visible in single-screen mode | new | not analysed | needs a system save with Master Quest unlocked; L5 file selection |
-| #30, #55 | interpolated 60 FPS and uncapped stutter (RX 6600, 240 Hz, with and without VSync); Original 30 smooth | new (D1, D3) | the alpha.2c report shows 138 runtime shader compilations, 115 audio underruns, 61 % of the session inside present and 778 of 16,363 guest refreshes dropped; the hybrid preparation (B3) removes waits for programs, the effect of the presentation worker (D3) on this case is unmeasured | L5 real-time pacing (interpolated, VSync on and off: dropped refreshes, underruns, frame-time percentiles); L7 on a high-refresh display |
+| #28 | the Normal / Master Quest choice is not visible in single-screen mode | new | confirmed 2026-10-05: with Master Quest unlocked the selection shows only the top screen's text ("Master Quest"); D-pad, circle pad and up/down do not change it; the choice is a bottom-screen touch that the TopScreen mode does not present | fix: TopScreen coverage of the version selection; then an L5 scenario |
+| #30, #55 | interpolated 60 FPS and uncapped stutter (RX 6600, 240 Hz, with and without VSync); Original 30 smooth | new (D1, D3) | the alpha.2c report shows 138 runtime shader compilations, 115 audio underruns and 61 % of the session inside present; the hybrid preparation removes waits for programs. S20 (real time, Kokiri walk, Enhanced, warm cache, 60 Hz display): VSync on 59.96 FPS, frame time p50 15.6 / p95 22.3 / p99 28.3 / max 43 ms, no underrun; VSync off 196 FPS, p99 10.6 ms, 1 underrun. The dropped-refresh counter is dominated by the stall after a state load (about 190 in every run) and is not windowed | L7 on a high-refresh display; occasional two-frame hitches with VSync on (p99 28 ms) to analyse |
 | #31 | stutter while assets load from a hard disk | new | not analysed | latency injection for RomFS reads, or L7 on a hard disk |
 | #32 | minimap markers misplaced | E2 | placement fixed with E1 | L5 S03 markers on fresh entry and after reload |
 | #39 | ZL/ZR items, item numbers, map screen | R1, R2 | pages pass (S04) | L5 S04 assignment, use and one-frame taps |
-| #40, #42 | Epona stamina over the timer; mounted B counter | E5 | L2 TopScreen profile tests | L5 S05 (`mounted-timer`, `ranch-user` checkpoints) |
-| #41 | Chamber of Sages grey instead of black | (`TRIAEVUM_ISSUES_40_43.md`) | accepted by the user on 2026-09-17 | L5 with `sages-user/issue41.oot3dsav` |
-| #43 | iron boots hotkey repeats | E5 | L2 | L5 S06 (`boots-held`) |
-| #45, #49 | Temple of Time softlock; crash after the revelation | I1-I4, D2 | pass under Original30 (S09) | S09 interpolated (the default) and the mid-flashback restore |
+| #40, #42 | Epona stamina over the timer; mounted B counter | E5 | pass (S05, 2026-10-05): race timer and clock above the carrots at 16:9 and 21:9, mounted B count separate from ZR, no TopScreen hook failure | - |
+| #41 | Chamber of Sages grey instead of black | (`TRIAEVUM_ISSUES_40_43.md`) | pass (S19, 2026-10-05): the user's checkpoint and toon settings reproduce the look the user accepted on 2026-09-17 | - |
+| #43 | iron boots hotkey repeats | E5 | pass (S06, 2026-10-05): holding the hotkey changes the equipment once and refreshes the player once | - |
+| #45, #49 | Temple of Time softlock; crash after the revelation | I1-I4, D2 | pass under Original30 (S09) and interpolated (S09-revelation-interpolated, 2026-10-05: flashback over every column at 16:9 and 21:9; a savestate written mid-flashback restores and the sequence continues to Zelda's dialogue) | - |
 | #46 | Game Over without choices | E6 | directional and A pass (S08) | touch input (the timeline carries touch) |
 | #48 | crash when the title appears | C5 | no crash (S01); early Start ignored as by alpha.3b | - |
 | #51 | F1 enters fullscreen instead of opening the menu | E4 | L2: the window toggles from the key event (`three_ds_sdl_controller_tests`) | F1 tap in the product (L7, or a host-key input for L5) |
