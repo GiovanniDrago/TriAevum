@@ -15,6 +15,10 @@ struct PicaDisplayTransferPlanInput {
     uint32_t SourceWidth = 0;
     uint32_t SourceHeight = 0;
     uint32_t Flags = 0;
+    // The host source already has one texel per presented pixel along the
+    // filtered axes (the top screen, see render_resolution_policy.h): the
+    // native box filter becomes a copy at the source's density.
+    bool SourceAtPresentedDensity = false;
 };
 
 struct PicaDisplayTransferPlan {
@@ -49,7 +53,8 @@ struct PicaDisplayTransferPlan {
 
 // Builds the GPU-image equivalent of the native PICA display transfer. The
 // output dimensions preserve renderer supersampling while crop and 2:1 box
-// filtering continue to operate in native PICA coordinates.
+// filtering continue to operate in native PICA coordinates; a source at the
+// presented density is copied instead of filtered.
 [[nodiscard]] std::optional<PicaDisplayTransferPlan>
 BuildPicaDisplayTransferPlan(const PicaDisplayTransferPlanInput& input,
                              std::string* error = nullptr);

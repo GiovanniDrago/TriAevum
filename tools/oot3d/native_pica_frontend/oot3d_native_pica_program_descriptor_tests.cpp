@@ -584,6 +584,47 @@ int main() {
                 procedural.ProceduralTextureReferenced &&
                 !procedural.FullySupported(),
             "procedural-texture coverage gap was not classified");
+
+    // Z-buffering with scale -1 and offset 0: the PICA depth is the
+    // rasterized depth, so the program leaves depth to fixed function (early
+    // depth testing) and gets its own key. A depth offset, another scale or
+    // W-buffering keeps the explicit depth.
+    auto rasterState = state;
+    rasterState.Viewport.ZBuffering = true;
+    rasterState.Viewport.DepthRange = -1.0F;
+    rasterState.Viewport.NearPlane = 0.0F;
+    Oot3dPicaGeneratedFragmentShader rasterShader;
+    std::string rasterError;
+    Require(Oot3dPicaFragmentDepthIsRasterDepth(rasterState) &&
+                GenerateOot3dPicaFragmentShader(packet, rasterState, rasterShader, &rasterError) &&
+                rasterShader.Source.find("gl_FragDepth") == std::string::npos &&
+                rasterShader.Source.find("float pica_depth = gl_FragCoord.z;") != std::string::npos &&
+                rasterShader.Hooks.Outputs.Depth == Oot3d::Renderer::PicaFragmentDepthOutput::FixedFunction,
+            "raster-depth fragment program still writes its depth");
+    Oot3dPicaGeneratedFragmentShader parametricShader;
+    Require(!Oot3dPicaFragmentDepthIsRasterDepth(rasterState, Oot3dPicaTevMode::Parametric) &&
+                GenerateOot3dPicaFragmentShader(packet, rasterState, parametricShader, &rasterError,
+                                                Oot3dPicaShaderBuildPurpose::RuntimeDraw,
+                                                Oot3dPicaTevMode::Parametric) &&
+                parametricShader.Source.find("gl_FragDepth = pica_depth;") != std::string::npos,
+            "parametric program lost its explicit depth");
+#if defined(OOT3D_NATIVE_PICA_TEST_SHADERC)
+    RequireFragmentShaderCompiles(rasterShader.Source);
+#endif
+    for (int variant = 0; variant < 3; ++variant) {
+        auto explicitState = rasterState;
+        if (variant == 0) explicitState.Viewport.NearPlane = -3.0517578125e-05F;
+        if (variant == 1) explicitState.Viewport.DepthRange = -0.5F;
+        if (variant == 2) explicitState.Viewport.ZBuffering = false;
+        Oot3dPicaGeneratedFragmentShader explicitShader;
+        Require(!Oot3dPicaFragmentDepthIsRasterDepth(explicitState) &&
+                    GenerateOot3dPicaFragmentShader(packet, explicitState, explicitShader, &rasterError) &&
+                    explicitShader.Source.find("gl_FragDepth = pica_depth;") != std::string::npos &&
+                    explicitShader.Hooks.Outputs.Depth ==
+                        Oot3d::Renderer::PicaFragmentDepthOutput::ExplicitNative &&
+                    explicitShader.StateKey != rasterShader.StateKey,
+                "explicit-depth fragment program lost its depth write or key");
+    }
     std::cout << "oot3d_native_pica_program_descriptor_tests: ok\n";
     return 0;
 }

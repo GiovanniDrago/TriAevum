@@ -498,8 +498,9 @@ void main() {
 )glsl";
 }
 
-std::string BuildGrassFragmentShader() {
+std::string BuildGrassFragmentShader(bool rasterDepth) {
     return std::string("#version 450\n") +
+            (rasterDepth ? "#define GRASS_RASTER_DEPTH 1\n" : "") +
             std::string(Renderer3ds::PicaGeometryGuideShaderLibrary()) +
             std::string(kToonSurfaceResponseShader) +
             std::string(kGrassDistantTuftShader) + R"glsl(
@@ -631,11 +632,16 @@ void main() {
             resolved_color.rgb, fog_factor);
     }
     out_color = resolved_color;
+#ifdef GRASS_RASTER_DEPTH
+    float written_depth = gl_FragCoord.z;
+#else
     gl_FragDepth = clamp(resolved_depth, 0.0, 1.0);
+    float written_depth = gl_FragDepth;
+#endif
 #if GRASS_AUXILIARY_OUTPUTS
     // Only rasterized, depth-visible blades/tufts occlude native contours.
     // The separate native geometry guide remains untouched.
-    out_rigid_motion.a = 1.0 - gl_FragDepth;
+    out_rigid_motion.a = 1.0 - written_depth;
 #endif
 }
 )glsl";

@@ -625,6 +625,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
                  mInFlightFences[mCurrentFrame], VkFence{VK_NULL_HANDLE});
     mScanoutProbe.Consume(mCurrentFrame);
     ReleaseRetiredNativePicaGeometryBuffers(mCurrentFrame);
+    ReleaseRetiredNativePicaDisplayImages(mCurrentFrame);
     RetireGpuTextureCopyProducers(mGpuCopySubmittedFrames[mCurrentFrame]);
     auto& frame = mFrameResources[mCurrentFrame];
     for (auto& image : frame.RetiredTextures) DestroyTexture(image);

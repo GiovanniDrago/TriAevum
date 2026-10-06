@@ -3,7 +3,9 @@
 
 namespace Fast::Oot3d {
 std::string BuildGrassVertexShader();
-std::string BuildGrassFragmentShader();
+// rasterDepth: the blades' PICA depth equals the rasterized depth, so the
+// program leaves depth to fixed function and keeps early depth testing.
+std::string BuildGrassFragmentShader(bool rasterDepth = false);
 std::string BuildGrassCompactionComputeShader();
 std::string BuildGrassShadowGridComputeShader();
 }

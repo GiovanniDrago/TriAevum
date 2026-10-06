@@ -2044,7 +2044,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         const auto rasterCanvas = ::Oot3d::Renderer::ResolvePicaRasterCanvas(
             compositionDomain, frameContentResolution.Content,
             draw.FramebufferWidth, draw.FramebufferHeight, renderTarget.Width,
-            renderTarget.Height);
+            renderTarget.Height,
+            Oot3d::NativeTopScreenStorageSamplingX(
+                {draw.FramebufferWidth, draw.FramebufferHeight},
+                {mSwapchainExtent.width, mSwapchainExtent.height}));
         const float framebufferScaleX = rasterCanvas.ScaleX;
         const float framebufferScaleY = rasterCanvas.ScaleY;
         mViewport = {rasterCanvas.X + draw.ViewportX * framebufferScaleX,
@@ -2859,6 +2862,7 @@ bool GfxRenderingAPIVulkan::TryRenderInteractiveGrass(
     bool executed = false;
     if (prepared) {
         BeginNativePicaRenderPass(target);
+        mGpuProfiler.Mark(mCurrentFrame, "grass_draw", mCommandBuffers[mCurrentFrame]);
         executed = mInteractiveGrassPass.DrawPrepared(
             mCommandBuffers[mCurrentFrame],
             target.Width, target.Height,
@@ -3022,6 +3026,7 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
         mOverlayRenderPassActive = false;
     }
 
+    mGpuProfiler.Mark(mCurrentFrame, "directional_shadows", mCommandBuffers[mCurrentFrame]);
     const bool executionRequested = mPreparedShadowCasterView.Active();
     const bool executed =
         executionRequested &&
@@ -3108,6 +3113,7 @@ bool GfxRenderingAPIVulkan::TryRenderPointShadowMaps(
         mRenderPassActive = false;
         mOverlayRenderPassActive = false;
     }
+    mGpuProfiler.Mark(mCurrentFrame, "point_shadows", mCommandBuffers[mCurrentFrame]);
     const bool executed = mNriDirectionalShadowPass.ExecutePointMaps(
         {
             mCurrentFrame,

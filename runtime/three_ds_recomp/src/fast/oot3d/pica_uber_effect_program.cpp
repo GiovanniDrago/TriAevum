@@ -168,7 +168,9 @@ bool PicaUberEffectSupports(const PicaEffectDecisions& decisions,
     if (!request.TemporalInputs &&
         (decisions.Has(Decision::RigidMotion) || decisions.Has(Decision::SceneTransparentRigid)))
         return false;
-    if (decisions.Has(Decision::ExplicitDepth) != base.ExplicitDepth) return false;
+    // An explicit-depth base serves a draw whose specialized program left
+    // depth to fixed function: that draw's PICA depth is the rasterized one.
+    if (decisions.Has(Decision::ExplicitDepth) && !base.ExplicitDepth) return false;
     if (decisions.Has(Decision::NormalGuide)) {
         const auto path = decisions.Normal;
         if (!surface && (path == Decision::NormalPath::Pbr || path == Decision::NormalPath::Surface ||

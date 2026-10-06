@@ -357,6 +357,16 @@ size_t StreamOffset(std::ostringstream& stream) {
 
 } // namespace
 
+bool Oot3dPicaFragmentDepthIsRasterDepth(const Oot3dPicaDecodedDrawState& state, Oot3dPicaTevMode mode) {
+    // Z-buffering with scale -1 and offset 0 makes the PICA depth
+    // (-z/w * -1 + 0) bit-identical to the rasterized depth, so a specialized
+    // program leaves depth to fixed function and keeps early depth testing.
+    // The parametric (always-available) programs keep their single explicit
+    // form: it writes the same depth, and their built-in artifacts stay valid.
+    return mode == Oot3dPicaTevMode::Specialized && state.OutputMerger.FragmentOperationMode != 3U &&
+           state.Viewport.ZBuffering && state.Viewport.DepthRange == -1.0F && state.Viewport.NearPlane == 0.0F;
+}
+
 uint64_t ComputeOot3dPicaFragmentShaderStateKey(
     const Oot3dPicaDrawPacket& packet,
     const Oot3dPicaDecodedDrawState& state, Oot3dPicaTevMode mode) {
@@ -365,6 +375,8 @@ uint64_t ComputeOot3dPicaFragmentShaderStateKey(
     uint64_t key = HashWord(kFnvOffset, 0x54455605U);
     key = HashWord(key, packet.Registers[0x080U]);
     key = HashWord(key, static_cast<uint32_t>(mode));
+    if (Oot3dPicaFragmentDepthIsRasterDepth(state, mode))
+        key = HashWord(key, 0x5A524153U);
     key = HashWord(key, packet.Registers[0x08FU]);
     const auto lighting =
         Fast::Oot3d::DecodePicaFragmentLighting(packet.Registers);
@@ -562,7 +574,7 @@ bool GenerateOot3dPicaFragmentShader(
         Oot3d::Renderer::kPicaFragmentOutputContractSchemaVersion,
         1U,
         0U,
-        state.OutputMerger.FragmentOperationMode == 3U
+        state.OutputMerger.FragmentOperationMode == 3U || Oot3dPicaFragmentDepthIsRasterDepth(state, mode)
             ? Oot3d::Renderer::PicaFragmentDepthOutput::FixedFunction
             : Oot3d::Renderer::PicaFragmentDepthOutput::ExplicitNative,
         false,
@@ -866,9 +878,15 @@ bool GenerateOot3dPicaFragmentShader(
     hooks.Offsets[static_cast<size_t>(
         Oot3d::Renderer::PicaShaderHook::BeforeDepth)] =
         StreamOffset(source);
-    source << "    float pica_z_over_w = -gl_FragCoord.z;\n"
-              "    float pica_depth = pica_z_over_w * fragment_uniforms.depth_scale + fragment_uniforms.depth_offset;\n"
-              "    if (fragment_uniforms.w_buffering != 0) pica_depth /= gl_FragCoord.w;\n";
+    const bool rasterDepth = Oot3dPicaFragmentDepthIsRasterDepth(state, mode);
+    if (rasterDepth) {
+        source << "    float pica_z_over_w = -gl_FragCoord.z;\n"
+                  "    float pica_depth = gl_FragCoord.z;\n";
+    } else {
+        source << "    float pica_z_over_w = -gl_FragCoord.z;\n"
+                  "    float pica_depth = pica_z_over_w * fragment_uniforms.depth_scale + fragment_uniforms.depth_offset;\n"
+                  "    if (fragment_uniforms.w_buffering != 0) pica_depth /= gl_FragCoord.w;\n";
+    }
     // The parametric program always provides fog_factor (1 when disabled).
     // Hooks describe its interface, not the first material cached with it.
     if (parametric || fogMode == 5U)
@@ -915,9 +933,9 @@ bool GenerateOot3dPicaFragmentShader(
             "    } while (true);\n"
             "    pica_color = vec4(0.0);\n";
     } else {
-        source <<
-            "    gl_FragDepth = pica_depth;\n"
-            "    pica_color = vec4(byteround3(combiner_output.rgb), byteround1(combiner_output.a));\n";
+        if (!rasterDepth)
+            source << "    gl_FragDepth = pica_depth;\n";
+        source << "    pica_color = vec4(byteround3(combiner_output.rgb), byteround1(combiner_output.a));\n";
     }
     hooks.Offsets[static_cast<size_t>(
         Oot3d::Renderer::PicaShaderHook::MainEpilogue)] =

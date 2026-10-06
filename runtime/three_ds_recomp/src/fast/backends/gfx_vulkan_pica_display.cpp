@@ -66,6 +66,7 @@ struct NativePicaTargetEndDispatch {
 bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
     const GfxNativePicaDisplayTransferView& transfer, std::string* error) {
     Renderer3ds::SlowStepScope slowStep("display_transfer");
+    if (mFrameActive) mGpuProfiler.Mark(mCurrentFrame, "display_transfer_submit", mCommandBuffers[mCurrentFrame]);
     if (transfer.TextureCopyBytes != 0U) return SubmitNativePicaTextureCopy(transfer, error);
     try {
         if (!mFrameActive || transfer.CompletionId == 0U ||
@@ -110,6 +111,11 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                     source->Width,
                     source->Height,
                     transfer.Flags,
+                    // Target extents follow this policy for the acquired
+                    // swapchain (stale targets are rebuilt at frame start).
+                    Oot3d::IsNativeTopScreenTarget({source->Key.Width, source->Key.Height}) &&
+                        Oot3d::NativeTopScreenAtPresentedDensity(
+                            {mSwapchainExtent.width, mSwapchainExtent.height}),
                 }, &transferPlanError);
             if (!transferPlan.has_value()) {
                 throw std::runtime_error(
@@ -386,6 +392,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
     GpuTextureCopySourceImport* copyOutput, std::string* error,
     bool beforeNativeUi) {
     Renderer3ds::SlowStepTrace slowSteps("display_graph");
+    if (mFrameActive) mGpuProfiler.Mark(mCurrentFrame, "display_graph", mCommandBuffers[mCurrentFrame]);
 
         const auto& presentationSettings =
             mFrameGraphicsSettings;
@@ -589,6 +596,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         const auto recordDeclared = [&](Oot3d::DisplayEffectPass pass,
                                         EffectOutcome outcome) {
             slowSteps.Mark(Oot3d::DisplayEffectPassName(pass));
+            mGpuProfiler.MarkCompleted(mCurrentFrame, Oot3d::DisplayEffectPassName(pass).data(),
+                                       mCommandBuffers[mCurrentFrame]);
             if (effectPlan.Enabled(pass) &&
                 !effectExecution.Record(pass, outcome)) {
                 throw std::runtime_error(
@@ -3825,6 +3834,7 @@ bool GfxRenderingAPIVulkan::ComposeNativePicaSceneForCopy(
     GpuTextureCopySourceImport& output, std::string* error,
     const Renderer3ds::PicaCompositionStageAnchor* beforeUi) {
     output = {};
+    if (mFrameActive) mGpuProfiler.Mark(mCurrentFrame, "compose_for_copy", mCommandBuffers[mCurrentFrame]);
     if (!mFrameActive || source.ColorImage == VK_NULL_HANDLE ||
         source.Width == 0U || source.Height == 0U ||
         !mNativePicaCompositionSchedule.Valid()) {
@@ -3937,6 +3947,7 @@ bool GfxRenderingAPIVulkan::ComposeNativePicaSceneForCopy(
 bool GfxRenderingAPIVulkan::ClearPicaRenderTarget(
     uint64_t renderTargetNamespace, uint32_t colorPhysicalAddress,
     std::string* error) {
+    if (mFrameActive) mGpuProfiler.Mark(mCurrentFrame, "clear_target", mCommandBuffers[mCurrentFrame]);
     try {
         if (!mFrameActive || colorPhysicalAddress == 0U) {
             throw std::runtime_error(
@@ -4022,6 +4033,7 @@ bool GfxRenderingAPIVulkan::ClearPicaRenderTarget(
 
 bool GfxRenderingAPIVulkan::PrepareOverlay(
     std::string* error) {
+    if (mFrameActive) mGpuProfiler.Mark(mCurrentFrame, "overlay_prepare", mCommandBuffers[mCurrentFrame]);
     if (!mFrameActive) {
         SetNativeError(error,
                        "native PICA overlay requested outside an active frame");

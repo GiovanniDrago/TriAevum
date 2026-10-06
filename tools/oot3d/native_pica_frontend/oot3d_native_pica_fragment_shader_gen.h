@@ -42,6 +42,11 @@ struct Oot3dPicaGeneratedFragmentShader {
     Oot3dPicaFragmentUniformState Uniforms;
 };
 
+// True when a specialized program's PICA depth equals the rasterized depth
+// exactly, so it leaves depth to fixed function.
+bool Oot3dPicaFragmentDepthIsRasterDepth(const Oot3dPicaDecodedDrawState& state,
+                                         Oot3dPicaTevMode mode = Oot3dPicaTevMode::Specialized);
+
 uint64_t ComputeOot3dPicaFragmentShaderStateKey(
     const Oot3dPicaDrawPacket& packet,
     const Oot3dPicaDecodedDrawState& state,

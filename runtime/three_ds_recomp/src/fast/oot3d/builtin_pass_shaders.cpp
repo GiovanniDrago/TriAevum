@@ -48,6 +48,8 @@ std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
         {"interactive_grass.vert", Vertex, BuildGrassVertexShader(), {}},
         {"interactive_grass_canonical.frag", Fragment, BuildGrassFragmentShader(), {{"GRASS_AUXILIARY_OUTPUTS", "0"}}},
         {"interactive_grass_instrumented.frag", Fragment, BuildGrassFragmentShader(), {{"GRASS_AUXILIARY_OUTPUTS", "1"}}},
+        {"interactive_grass_canonical_raster_depth.frag", Fragment, BuildGrassFragmentShader(true), {{"GRASS_AUXILIARY_OUTPUTS", "0"}}},
+        {"interactive_grass_instrumented_raster_depth.frag", Fragment, BuildGrassFragmentShader(true), {{"GRASS_AUXILIARY_OUTPUTS", "1"}}},
         {"grass_instance_compactor.comp", Compute, BuildGrassCompactionComputeShader(), {}},
         {"grass_shadow_grid.comp", Compute, BuildGrassShadowGridComputeShader(), {}},
         {"pica_surface_lighting_native.frag", Fragment, Renderer3ds::BuildPicaSurfaceLightingFragmentShader(false), {}},

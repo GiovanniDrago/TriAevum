@@ -68,4 +68,14 @@ struct GrassPushConstants {
 };
 static_assert(sizeof(GrassPushConstants) == 112U);
 
+// The blades' PICA depth equals the rasterized depth (bit for bit): no PICA
+// mapping, or Z-buffering with scale -1 / offset 0 on the negated window
+// depth (scale 1 on the plain one). Such batches draw with the fragment
+// program that leaves depth to fixed function and keeps early depth testing.
+[[nodiscard]] inline bool GrassDepthIsRasterDepth(const GrassPushConstants& push) noexcept {
+    const auto& depth = push.DepthState;
+    if (depth[3] <= 0.5F) return true;
+    return depth[2] <= 0.5F && depth[1] == 0.0F && depth[0] == (push.Flags[0] != 0U ? -1.0F : 1.0F);
+}
+
 } // namespace Fast::Oot3d

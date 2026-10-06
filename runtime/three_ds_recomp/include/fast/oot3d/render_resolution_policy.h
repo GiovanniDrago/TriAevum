@@ -39,17 +39,44 @@ inline constexpr float kMinimumUpscalerRenderScale = 1.0F / 3.0F;
                          static_cast<float>(extent.Height) * sanitized)))};
 }
 
+// The top LCD target (480x400, stored rotated) holds twice the presented
+// lines: the game renders 2x along physical X and its display transfer box
+// filters 2:1. At host resolution that second sample per output pixel doubles
+// every per-pixel cost. From 480 presented lines (the game's own sample
+// count) the host renders the target at the output's density (scale 1 = one
+// sample per output pixel on both axes) and the transfer copies
+// (SourceAtPresentedDensity); a render scale above 1 supersamples both axes
+// evenly. Below 480 lines the game's 2x sampling and filter are kept.
+[[nodiscard]] inline bool IsNativeTopScreenTarget(RenderExtent guestExtent) noexcept {
+    return guestExtent.Width == kNativeTopScreenPhysicalWidth &&
+           guestExtent.Height == kNativeTopScreenPhysicalHeight;
+}
+
+[[nodiscard]] inline bool NativeTopScreenAtPresentedDensity(RenderExtent outputExtent) noexcept {
+    return outputExtent.Height >= kNativeTopScreenPhysicalWidth;
+}
+
 [[nodiscard]] inline RenderExtent ResolveNativePicaRenderExtent(
     RenderExtent guestExtent, RenderExtent outputExtent,
     float internalScale) {
     RenderExtent base = guestExtent;
-    if (guestExtent.Width == kNativeTopScreenPhysicalWidth &&
-        guestExtent.Height == kNativeTopScreenPhysicalHeight &&
+    if (IsNativeTopScreenTarget(guestExtent) &&
         outputExtent.Width != 0U && outputExtent.Height != 0U) {
-        // The top LCD is stored rotated: physical X is twice logical height.
-        base = {outputExtent.Height * 2U, outputExtent.Width};
+        // Stored rotated: physical X spans the output's height.
+        base = {outputExtent.Height * (NativeTopScreenAtPresentedDensity(outputExtent) ? 1U : 2U),
+                outputExtent.Width};
     }
     return ScaleRenderExtent(base, internalScale);
+}
+
+// Host samples per native sample along storage X, relative to the native
+// target's own sampling: 0.5 for a top-screen target at the presented density
+// (its 480 native columns hold 240 presented lines), otherwise 1. Native
+// coordinates fitted with uniform proportions (placed UI, movie pictures)
+// correct their X scale by it.
+[[nodiscard]] inline float NativeTopScreenStorageSamplingX(
+    RenderExtent guestExtent, RenderExtent outputExtent) noexcept {
+    return IsNativeTopScreenTarget(guestExtent) && NativeTopScreenAtPresentedDensity(outputExtent) ? 0.5F : 1.0F;
 }
 
 } // namespace Fast::Oot3d

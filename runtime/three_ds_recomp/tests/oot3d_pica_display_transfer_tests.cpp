@@ -35,6 +35,24 @@ TEST(Oot3dPicaDisplayTransfer, PreservesRendererSupersampling) {
     EXPECT_EQ(plan->VerticalSamples, 2U);
 }
 
+TEST(Oot3dPicaDisplayTransfer, CopiesASourceAtPresentedDensity) {
+    // A 4K top-screen target (one sample per output pixel): the guest's 2:1
+    // filter becomes a copy of the whole target.
+    const auto plan = Fast::Oot3d::BuildPicaDisplayTransferPlan({
+        480U, 400U, 240U, 400U, 2160U, 3840U, 0x01001000U, true});
+    ASSERT_TRUE(plan.has_value());
+    EXPECT_EQ(plan->DestinationWidth, 2160U);
+    EXPECT_EQ(plan->DestinationHeight, 3840U);
+    EXPECT_EQ(plan->HorizontalSamples, 1U);
+    EXPECT_EQ(plan->VerticalSamples, 1U);
+    EXPECT_TRUE(plan->SamplingFitsSource());
+    // A guest crop keeps its native proportion of the source.
+    const auto crop = Fast::Oot3d::BuildPicaDisplayTransferPlan({
+        480U, 400U, 120U, 400U, 2160U, 3840U, 0x01001000U, true});
+    ASSERT_TRUE(crop.has_value());
+    EXPECT_EQ(crop->DestinationWidth, 1080U);
+}
+
 TEST(Oot3dPicaDisplayTransfer, RejectsSamplingPastSource) {
     std::string error;
     const auto plan = Fast::Oot3d::BuildPicaDisplayTransferPlan(
@@ -49,12 +67,14 @@ TEST(Oot3dPicaDisplayTransfer, FractionalScaleAndOddOutputKeepValidNativeCommand
     for (const RenderExtent output : {RenderExtent{1280, 720}, {1024, 768}, {3840, 2160}, {1279, 719}}) {
         for (int percent = 50; percent <= 200; ++percent) {
             const auto extent = ResolveNativePicaRenderExtent({480, 400}, output, percent / 100.0F);
-            const auto plan = BuildPicaDisplayTransferPlan({480, 400, 240, 400, extent.Width, extent.Height, 0x01001000});
+            const auto plan = BuildPicaDisplayTransferPlan(
+                {480, 400, 240, 400, extent.Width, extent.Height, 0x01001000, NativeTopScreenAtPresentedDensity(output)});
             ASSERT_TRUE(plan.has_value()) << percent << "% at " << output.Width << "x" << output.Height;
             EXPECT_TRUE(plan->SamplingFitsSource());
             EXPECT_LE(plan->BlitSourceWidth(), extent.Width);
             EXPECT_LE(plan->BlitSourceHeight(), extent.Height);
-            EXPECT_LE(plan->DestinationWidth * 2U, extent.Width + 1U);
+            EXPECT_EQ(plan->HorizontalSamples, 1U);
+            EXPECT_EQ(plan->DestinationWidth, extent.Width);
             EXPECT_EQ(plan->DestinationHeight, extent.Height);
             EXPECT_NEAR(double(plan->DestinationHeight) / plan->DestinationWidth,
                         double(output.Width) / output.Height, 0.01);

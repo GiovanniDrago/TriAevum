@@ -447,7 +447,8 @@ struct InteractiveGrassPass::Impl {
     VkPipelineLayout PipelineLayout = VK_NULL_HANDLE;
     // Canonical, instrumented, instrumented with the GI albedo guide
     // (dynamic rendering only; grass leaves the albedo below it).
-    std::array<VkPipeline, 3> Pipelines{};
+    // [0..2] explicit PICA depth, [3..5] the same with rasterized depth.
+    std::array<VkPipeline, 6> Pipelines{};
     struct BufferSlot {
         VkBuffer Buffer = VK_NULL_HANDLE;
         VkDeviceMemory Memory = VK_NULL_HANDLE;
@@ -652,9 +653,10 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
     try {
         const auto vertexSource = BuildGrassVertexShader();
         const auto fragmentSource = BuildGrassFragmentShader();
+        const auto rasterDepthSource = BuildGrassFragmentShader(true);
         VkShaderModule vertex = Compile(shaders, device, vertexSource.c_str(),
                                         Renderer::SpirvStage::Vertex, "interactive_grass.vert");
-        std::array<VkShaderModule, 2> fragments{};
+        std::array<VkShaderModule, 4> fragments{};
         try {
             fragments[0] = Compile(
                 shaders, device, fragmentSource.c_str(), Renderer::SpirvStage::Fragment,
@@ -663,6 +665,14 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
             fragments[1] = Compile(
                 shaders, device, fragmentSource.c_str(), Renderer::SpirvStage::Fragment,
                 "interactive_grass_instrumented.frag",
+                "GRASS_AUXILIARY_OUTPUTS", "1");
+            fragments[2] = Compile(
+                shaders, device, rasterDepthSource.c_str(), Renderer::SpirvStage::Fragment,
+                "interactive_grass_canonical_raster_depth.frag",
+                "GRASS_AUXILIARY_OUTPUTS", "0");
+            fragments[3] = Compile(
+                shaders, device, rasterDepthSource.c_str(), Renderer::SpirvStage::Fragment,
+                "interactive_grass_instrumented_raster_depth.frag",
                 "GRASS_AUXILIARY_OUTPUTS", "1");
             const std::array<VkDescriptorSetLayoutBinding, 9> environmentBindings{{
                 {0U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -850,9 +860,11 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                 static_cast<uint32_t>(kPicaColorAttachmentCount)};
             const std::array<VkRenderPass, 2> renderPasses{
                 canonicalRenderPass, instrumentedRenderPass};
-            for (size_t index = 0U; index < mImpl->Pipelines.size(); ++index) {
-                if (index == 2U && !dynamicRendering) break;
-                stages[1].module = fragments[std::min<size_t>(index, 1U)];
+            for (size_t slot = 0U; slot < mImpl->Pipelines.size(); ++slot) {
+                const size_t index = slot % 3U;
+                const bool rasterDepth = slot >= 3U;
+                if (index == 2U && !dynamicRendering) continue;
+                stages[1].module = fragments[std::min<size_t>(index, 1U) + (rasterDepth ? 2U : 0U)];
                 blend.attachmentCount = attachmentCounts[index];
                 if (dynamicRendering) {
                     rendering.colorAttachmentCount = attachmentCounts[index];
@@ -865,7 +877,7 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                 }
                 if (vkCreateGraphicsPipelines(
                         device, pipelineCache, 1, &pipeline, nullptr,
-                        &mImpl->Pipelines[index]) != VK_SUCCESS) {
+                        &mImpl->Pipelines[slot]) != VK_SUCCESS) {
                     throw std::runtime_error(
                         "cannot create interactive grass pipeline");
                 }
@@ -1738,6 +1750,7 @@ bool InteractiveGrassPass::DrawPrepared(
     const size_t pipelineIndex = attachments.NativeColorOnly() ? 0U
         : attachments.Requires(PicaAuxiliaryOutput::DiffuseAlbedoGuide) ? 2U : 1U;
     const VkPipeline pipeline = mImpl->Pipelines[pipelineIndex];
+    const VkPipeline rasterDepthPipeline = mImpl->Pipelines[pipelineIndex + 3U];
     if (!providerPlan.Valid() ||
         providerPlan.Stage() != EffectStage::BeforeTransparent ||
         !providerPlan.ProducesExtensionGeometry() ||
@@ -1758,7 +1771,15 @@ bool InteractiveGrassPass::DrawPrepared(
     const VkRect2D scissor{ { 0, 0 }, { width, height } };
     vkCmdSetViewport(commandBuffer, 0U, 1U, &viewport);
     vkCmdSetScissor(commandBuffer, 0U, 1U, &scissor);
+    VkPipeline bound = pipeline;
     for (const auto& batch : mImpl->Batches) {
+        const VkPipeline wanted = rasterDepthPipeline != VK_NULL_HANDLE &&
+                GrassDepthIsRasterDepth(batch.Push)
+            ? rasterDepthPipeline : pipeline;
+        if (wanted != bound) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wanted);
+            bound = wanted;
+        }
         vkCmdPushConstants(commandBuffer, mImpl->PipelineLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0U, sizeof(batch.Push),
                            &batch.Push);

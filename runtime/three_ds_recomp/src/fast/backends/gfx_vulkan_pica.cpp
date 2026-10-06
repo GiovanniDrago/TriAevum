@@ -130,6 +130,9 @@ void GfxRenderingAPIVulkan::DestroyNativePicaShaderResources() {
         DestroyNativePicaDisplayImage(image);
     }
     mNativePicaDisplayImages.clear();
+    for (uint32_t slot = 0; slot < kFramesInFlight; ++slot) {
+        ReleaseRetiredNativePicaDisplayImages(slot);
+    }
     DestroyNativePicaSceneBeforeUiImages();
     const auto destroyShaderCache = [this](auto& cache) {
         for (auto& [key, shader] : cache) {
@@ -1446,7 +1449,15 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaDisplayImage(
         return found->second;
     }
     if (found != images.end()) {
-        DestroyNativePicaDisplayImage(found->second);
+        // Commands already recorded in this frame, and the previous frame
+        // still in flight, may sample or write the replaced image (a guest
+        // that alternates crop and scaled transfers into one address resizes
+        // it within a frame). Destroy it once this slot's fence completes.
+        if (mFrameActive) {
+            mRetiredNativePicaDisplayImages[mCurrentFrame].push_back(std::move(found->second));
+        } else {
+            DestroyNativePicaDisplayImage(found->second);
+        }
         images.erase(found);
     }
 
@@ -1506,6 +1517,14 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaDisplayImage(
             "vkCreateImageView(native PICA display transfer)");
     }
     return images.emplace(key, std::move(image)).first->second;
+}
+
+void GfxRenderingAPIVulkan::ReleaseRetiredNativePicaDisplayImages(uint32_t frameIndex) {
+    auto& retired = mRetiredNativePicaDisplayImages[frameIndex % kFramesInFlight];
+    for (auto& image : retired) {
+        DestroyNativePicaDisplayImage(image);
+    }
+    retired.clear();
 }
 
 void GfxRenderingAPIVulkan::DestroyNativePicaDisplayImage(
@@ -1640,6 +1659,12 @@ void GfxRenderingAPIVulkan::BeginNativePicaRenderPass(
     mGpuProfiler.BeginScope(
         mCurrentFrame, Oot3d::GpuProfileScope::NativePica,
         mCommandBuffers[mCurrentFrame]);
+    if (mGpuProfiler.TimelineEnabled()) {
+        mGpuProfiler.MarkNamed(mCurrentFrame,
+                               "pica " + std::to_string(target.Width) + "x" + std::to_string(target.Height) +
+                                   (target.NormalGuideView != VK_NULL_HANDLE ? " guides" : ""),
+                               mCommandBuffers[mCurrentFrame]);
+    }
     if (mFrameGraphicsSettings.Effects.Toon !=
         Oot3d::ToonMode::Off) {
         mGpuProfiler.BeginScope(

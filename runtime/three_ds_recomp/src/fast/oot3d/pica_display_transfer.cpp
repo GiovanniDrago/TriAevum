@@ -51,11 +51,13 @@ std::optional<PicaDisplayTransferPlan> BuildPicaDisplayTransferPlan(
         return std::nullopt;
     }
 
+    const uint32_t collapsedH = input.SourceAtPresentedDensity ? horizontalSamples : 1U;
+    const uint32_t collapsedV = input.SourceAtPresentedDensity ? verticalSamples : 1U;
     const auto destinationWidth = ScaleNativeExtent(
-        input.NativeOutputWidth, input.SourceWidth,
+        input.NativeOutputWidth * collapsedH, input.SourceWidth,
         input.NativeInputWidth);
     const auto destinationHeight = ScaleNativeExtent(
-        input.NativeOutputHeight, input.SourceHeight,
+        input.NativeOutputHeight * collapsedV, input.SourceHeight,
         input.NativeInputHeight);
     if (!destinationWidth.has_value() || !destinationHeight.has_value()) {
         SetError(error, "PICA display transfer output extent is invalid");
@@ -67,8 +69,8 @@ std::optional<PicaDisplayTransferPlan> BuildPicaDisplayTransferPlan(
     plan.SourceHeight = input.SourceHeight;
     plan.DestinationWidth = *destinationWidth;
     plan.DestinationHeight = *destinationHeight;
-    plan.HorizontalSamples = horizontalSamples;
-    plan.VerticalSamples = verticalSamples;
+    plan.HorizontalSamples = horizontalSamples / collapsedH;
+    plan.VerticalSamples = verticalSamples / collapsedV;
     plan.ScalingMode = scaling;
 
     if (!plan.SamplingFitsSource()) {

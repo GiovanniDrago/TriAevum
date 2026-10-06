@@ -1138,6 +1138,10 @@ timeline. `TRIAEVUM_GPU_GAP_TRACE=1` prints, every 60 frames, the GPU's busy
 time per frame (the frame scope's timestamps) and its idle time between
 consecutive frames, which separates GPU-bound, CPU-bound and presentation-bound
 frames. `gpu.frame_ms` alone cannot: it excludes the gaps.
+`TRIAEVUM_GPU_TIMELINE=1` (2026-10-06) attributes the busy time: labelled
+timestamps at every profile scope, top-target render pass, grass draw, shadow
+map and display effect pass, reported as mean ms per label every 300 frames
+(`TRIAEVUM_INTRO_2160P_PERFORMANCE.md`).
 
 | Mode | Frame time | GPU busy / idle per frame |
 | --- | --- | --- |

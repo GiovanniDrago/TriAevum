@@ -519,8 +519,10 @@ Masks are bit-exact against the FP32 CPU rule; sector weights within 2e-6.
 GI runs in the display graph at the native pre-UI boundary, like AO, before
 TAA/SMAA/upscalers, scanout and native UI. There is no bloom or tone mapping:
 the PICA scene colour is display-encoded RGBA8. Buffers below are at the guide
-target extent (`effectGuideTarget`, twice the presented width for OoT3D's top
-screen) and in physical PICA storage orientation.
+target extent (`effectGuideTarget`; since 2026-10-06 the presented extent for
+OoT3D's top screen from 480 presented lines, twice the presented width below,
+see `TRIAEVUM_INTRO_2160P_PERFORMANCE.md`) and in physical PICA storage
+orientation.
 
 | Contract item | TriAevum source | Declared convention | Gap |
 |---|---|---|---|

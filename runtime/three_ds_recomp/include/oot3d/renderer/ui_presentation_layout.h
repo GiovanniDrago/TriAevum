@@ -130,14 +130,23 @@ struct UiPresentationPoint {
 // Ownership, not an orthographic matrix or shader mode, distinguishes UI.
 // Title-side: it applies this title's presentation convention and placement
 // policy, so it stays out of the title-neutral renderer boundary.
+// `storageSamplingX` (NativeTopScreenStorageSamplingX): host samples per native sample along storage X relative
+// to the native target's own sampling. 1 when the host target keeps it (the
+// fit in native coordinates is then proportional); 0.5 for a top-screen
+// target rendered at the presented density, whose 480 native columns hold 240
+// presented lines (render_resolution_policy.h): the fit then preserves the
+// presented proportions and the canvas scales X by half of Y.
 [[nodiscard]] inline Fast::Renderer3ds::PicaRasterCanvas ResolvePicaRasterCanvas(
     Fast::Renderer3ds::PicaCompositionDomain domain,
     Fast::Renderer3ds::PicaScreenContent screenContent,
     std::uint32_t nativeWidth, std::uint32_t nativeHeight,
-    std::uint32_t targetWidth, std::uint32_t targetHeight) noexcept {
-    if (!nativeWidth || !nativeHeight || !targetWidth || !targetHeight) {
+    std::uint32_t targetWidth, std::uint32_t targetHeight,
+    float storageSamplingX = 1.0F) noexcept {
+    if (!nativeWidth || !nativeHeight || !targetWidth || !targetHeight ||
+        !(storageSamplingX > 0.0F)) {
         return {};
     }
+    const float fittedNativeWidth = static_cast<float>(nativeWidth) * storageSamplingX;
     // Placed UI, and an opaque picture of its own (a movie frame): the whole
     // native screen at its own proportions, centred. Around a picture the
     // renderer shows black bars (`SurroundPicaCanvas`), never what was drawn
@@ -146,7 +155,7 @@ struct UiPresentationPoint {
         (domain == Fast::Renderer3ds::PicaCompositionDomain::Screen &&
          screenContent == Fast::Renderer3ds::PicaScreenContent::OwnPicture)) {
         const auto fit = FitUiPresentation(
-            targetWidth, targetHeight, static_cast<float>(nativeWidth),
+            targetWidth, targetHeight, fittedNativeWidth,
             static_cast<float>(nativeHeight));
         return {fit.X, fit.Y, fit.Width / nativeWidth, fit.Height / nativeHeight};
     }
@@ -156,7 +165,7 @@ struct UiPresentationPoint {
         // target without distortion: native proportions kept, the excess
         // centred, so no part of the frame under it is left uncovered.
         const auto cover = FillUiPresentation(
-            targetWidth, targetHeight, static_cast<float>(nativeWidth),
+            targetWidth, targetHeight, fittedNativeWidth,
             static_cast<float>(nativeHeight));
         return {cover.X, cover.Y, cover.Width / nativeWidth,
                 cover.Height / nativeHeight};

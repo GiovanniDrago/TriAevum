@@ -51,6 +51,7 @@
 #include "fast/oot3d/texture_preview_artifact.h"
 #include "fast/oot3d/pica_toon_shader.h"
 #include "fast/oot3d/toon_surface_response.h"
+#include "fast/oot3d/grass_draw_state.h"
 #include "fast/oot3d/grass_shader_sources.h"
 #include "fast/oot3d/renderer_validation_telemetry.h"
 #include "fast/oot3d/reflection_ibl.h"
@@ -208,6 +209,44 @@ TEST(Oot3dPicaRasterCanvas, EachScreenContentHasItsMappingAndPlacedUiKeepsNative
         EXPECT_NEAR(overlay.X, (width - 400.0F * cover) * 0.5F, 1.0e-3F);
         EXPECT_NEAR(overlay.Y, (height - 240.0F * cover) * 0.5F, 1.0e-3F);
     }
+}
+
+TEST(Oot3dPicaRasterCanvas, PresentedDensityTopTargetKeepsThePresentedProportions) {
+    using Fast::Renderer3ds::PicaCompositionDomain;
+    using Fast::Renderer3ds::PicaScreenContent;
+    using namespace Fast::Oot3d;
+    using ::Oot3d::Renderer::ResolvePicaRasterCanvas;
+
+    // The same output with the former 2x top target and the presented-density
+    // one: placed UI and pictures land on the same presented rectangle (half
+    // the storage X), and the scene keeps its per-axis stretch.
+    for (const RenderExtent output : {RenderExtent{1280U, 720U}, {960U, 720U}, {1720U, 720U}, {3840U, 2160U}}) {
+        const RenderExtent native{kNativeTopScreenPhysicalWidth, kNativeTopScreenPhysicalHeight};
+        const float sampling = NativeTopScreenStorageSamplingX(native, output);
+        EXPECT_FLOAT_EQ(sampling, 0.5F);
+        const auto target = ResolveNativePicaRenderExtent(native, output, 1.0F);
+        const RenderExtent doubled{target.Width * 2U, target.Height};
+        for (const auto content : {PicaScreenContent::None, PicaScreenContent::OwnPicture,
+                                   PicaScreenContent::PictureOverlay}) {
+            const auto domain = content == PicaScreenContent::None ? PicaCompositionDomain::Ui
+                                                                   : PicaCompositionDomain::Screen;
+            const auto former = ResolvePicaRasterCanvas(domain, content, native.Width, native.Height,
+                                                        doubled.Width, doubled.Height);
+            const auto current = ResolvePicaRasterCanvas(domain, content, native.Width, native.Height,
+                                                         target.Width, target.Height, sampling);
+            EXPECT_NEAR(current.X * 2.0F, former.X, 1.0e-3F);
+            EXPECT_NEAR(current.Y, former.Y, 1.0e-3F);
+            EXPECT_FLOAT_EQ(current.ScaleX * 2.0F, former.ScaleX);
+            EXPECT_FLOAT_EQ(current.ScaleY, former.ScaleY);
+        }
+        const auto scene = ResolvePicaRasterCanvas(PicaCompositionDomain::Scene, PicaScreenContent::None,
+                                                   native.Width, native.Height, target.Width, target.Height,
+                                                   sampling);
+        EXPECT_FLOAT_EQ(scene.ScaleX, float(target.Width) / native.Width);
+        EXPECT_FLOAT_EQ(scene.ScaleY, float(target.Height) / native.Height);
+    }
+    EXPECT_FLOAT_EQ(NativeTopScreenStorageSamplingX({480U, 400U}, {400U, 240U}), 1.0F);
+    EXPECT_FLOAT_EQ(NativeTopScreenStorageSamplingX({240U, 320U}, {3840U, 2160U}), 1.0F);
 }
 
 TEST(Oot3dPicaRasterCanvas, SurroundCoversEveryPixelOutsideTheFittedPicture) {
@@ -948,6 +987,26 @@ TEST(Oot3dReflectionIbl, ComputeShadersCompile) {
     }
 }
 #endif
+
+TEST(Oot3dGrassDepth, RasterDepthProgramOnlyWhereDepthIsUnchanged) {
+    using namespace Fast::Oot3d;
+    GrassPushConstants push;
+    EXPECT_TRUE(GrassDepthIsRasterDepth(push));  // no PICA depth mapping
+    push.Flags[0] = 1U;
+    push.DepthState = {-1.0F, 0.0F, 0.0F, 1.0F};
+    EXPECT_TRUE(GrassDepthIsRasterDepth(push));
+    push.DepthState = {-1.0F, -3.0517578125e-05F, 0.0F, 1.0F};
+    EXPECT_FALSE(GrassDepthIsRasterDepth(push));  // decal offset
+    push.DepthState = {-1.0F, 0.0F, 1.0F, 1.0F};
+    EXPECT_FALSE(GrassDepthIsRasterDepth(push));  // W-buffering
+    push.DepthState = {-0.5F, 0.0F, 0.0F, 1.0F};
+    EXPECT_FALSE(GrassDepthIsRasterDepth(push));
+    const auto explicitDepth = BuildGrassFragmentShader();
+    const auto rasterDepth = BuildGrassFragmentShader(true);
+    EXPECT_NE(explicitDepth.find("#ifdef GRASS_RASTER_DEPTH"), std::string::npos);
+    EXPECT_EQ(explicitDepth.find("#define GRASS_RASTER_DEPTH"), std::string::npos);
+    EXPECT_EQ(rasterDepth.rfind("#version 450\n#define GRASS_RASTER_DEPTH 1\n", 0), 0U);
+}
 
 TEST(Oot3dGrassMotion, RequiresConsecutiveMatchingTopology) {
     EXPECT_TRUE(Fast::Oot3d::GrassMotionHistoryMatches(10U,11U,180U,180U));
@@ -2086,15 +2145,23 @@ TEST(Oot3dRenderResolution,
     EXPECT_EQ(ordinary.Width, 480U);
     EXPECT_EQ(ordinary.Height, 360U);
 
+    // From 480 presented lines the top screen renders at the output's
+    // density (one sample per output pixel at scale 1, rotated); below, at
+    // the game's own 2x.
     const auto topScreen = ResolveNativePicaRenderExtent(
         {480U, 400U}, {1920U, 1080U}, 1.5F);
-    EXPECT_EQ(topScreen.Width, 3240U);
+    EXPECT_EQ(topScreen.Width, 1620U);
     EXPECT_EQ(topScreen.Height, 2880U);
 
     const auto standardTopScreen = ResolveNativePicaRenderExtent(
         {480U, 400U}, {1024U, 768U}, 1.0F);
-    EXPECT_EQ(standardTopScreen.Width, 1536U);
+    EXPECT_EQ(standardTopScreen.Width, 768U);
     EXPECT_EQ(standardTopScreen.Height, 1024U);
+
+    const auto uhdTopScreen = ResolveNativePicaRenderExtent(
+        {480U, 400U}, {3840U, 2160U}, 1.0F);
+    EXPECT_EQ(uhdTopScreen.Width, 2160U);
+    EXPECT_EQ(uhdTopScreen.Height, 3840U);
 
     const auto nativeTopScreen = ResolveNativePicaRenderExtent(
         {480U, 400U}, {400U, 240U}, 1.0F);
@@ -2124,8 +2191,9 @@ TEST(Oot3dRenderResolution,
         settings.UpscalerMode = quality;
         const auto render = ResolveNativePicaRenderExtent({480U, 400U}, {3840U, 2160U},
                                                           ResolveInternalResolutionScale(settings));
-        // The upscaler reads one eye of the stereo top-screen target.
-        const auto contract = ResolveUpscalerContractFromRender(UpscalerProvider::Dlss, quality, render.Width / 2U,
+        // The top-screen target is at the presented density: its transfer
+        // copies, so the upscaler reads the whole target extent.
+        const auto contract = ResolveUpscalerContractFromRender(UpscalerProvider::Dlss, quality, render.Width,
                                                                 render.Height);
         EXPECT_NEAR(double(contract.Output.Width), 2160.0, 2.0) << int(quality);
         EXPECT_NEAR(double(contract.Output.Height), 3840.0, 2.0) << int(quality);

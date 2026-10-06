@@ -814,6 +814,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         uint64_t renderTargetNamespace, uint32_t physicalAddress,
         uint32_t width, uint32_t height);
     void DestroyNativePicaDisplayImage(NativePicaDisplayImage& image);
+    // Destroys the display images replaced while this frame slot recorded,
+    // once its fence has completed.
+    void ReleaseRetiredNativePicaDisplayImages(uint32_t frameIndex);
     void DestroyNativePicaSceneBeforeUiImages();
     std::vector<uint8_t> CaptureNativePicaImageBytes(
         VkImage image, uint32_t width, uint32_t height,
@@ -1523,6 +1526,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         mNativePicaRenderTargets;
     std::map<std::pair<uint64_t, uint32_t>, NativePicaDisplayImage>
         mNativePicaDisplayImages;
+    // A display image resized while frames are in flight stays alive until
+    // the frame slot that last recorded it completes.
+    std::array<std::vector<NativePicaDisplayImage>, kFramesInFlight>
+        mRetiredNativePicaDisplayImages;
     // The scene before native UI a target's boundary before UI kept for an
     // upscaler (by colour target), and its transfer for each display.
     std::map<std::pair<uint64_t, uint32_t>, NativePicaDisplayImage>
