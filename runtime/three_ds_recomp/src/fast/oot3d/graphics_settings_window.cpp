@@ -1,8 +1,12 @@
 #include "fast/oot3d/graphics_settings_window.h"
 #include "fast/oot3d/graphics_settings_runtime.h"
 #include "fast/oot3d/settings_panel_widgets.h"
+#include <algorithm>
 #include <chrono>
+#include <iterator>
 #include <mutex>
+#include <string_view>
+#include <utility>
 
 namespace Fast::Oot3d {
 namespace {
@@ -175,36 +179,66 @@ void GraphicsSettingsPanel::Draw() {
     ImGui::PopStyleColor();
     ImGui::Separator();
     DrawPresentationStatus();
-    const auto applicationTabs = SnapshotPanelTabs();
     ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.48F);
+    DrawPresetSelector();
+    // Application tabs: the Lighting group joins the built-in Lighting tab;
+    // every other group (or ungrouped tab) is a top-level tab, in the order
+    // it was first installed.
+    std::vector<std::shared_ptr<GraphicsSettingsPanelTab>> lightingTabs;
+    std::vector<std::pair<std::string, std::vector<std::shared_ptr<GraphicsSettingsPanelTab>>>> groups;
+    for (const auto& tab : SnapshotPanelTabs()) {
+        const char* group = tab->Group();
+        if (group != nullptr && std::string_view(group) == kLightingSettingsGroup) {
+            lightingTabs.push_back(tab);
+            continue;
+        }
+        const std::string name = group != nullptr ? group : tab->Label();
+        auto existing = std::find_if(groups.begin(), groups.end(),
+                                     [&](const auto& entry) { return entry.first == name; });
+        if (existing == groups.end()) {
+            groups.emplace_back(name, std::vector<std::shared_ptr<GraphicsSettingsPanelTab>>{});
+            existing = std::prev(groups.end());
+        }
+        existing->second.push_back(tab);
+    }
+    const auto drawApplicationTab = [](const std::shared_ptr<GraphicsSettingsPanelTab>& tab) {
+        ImGui::PushID(tab->Label());
+        tab->Draw();
+        ImGui::PopID();
+    };
     if (ImGui::BeginTabBar("##Oot3dSettingsTabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
-        if (ImGui::BeginTabItem("Renderer")) {
-            DrawRendererSettings();
+        if (ImGui::BeginTabItem("Display")) {
+            DrawSettingsPage("##DisplayContent", {&GraphicsSettingsPanel::DrawDisplaySettings,
+                                                  &GraphicsSettingsPanel::DrawAntialiasingSettings,
+                                                  &GraphicsSettingsPanel::DrawMotionSettings});
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Lighting")) {
+            DrawLightingTab(lightingTabs);
             ImGui::EndTabItem();
         }
         if (!nativeRequired && ImGui::BeginTabItem("Grass")) {
             DrawGrassSettings();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Textures")) {
-            ImGui::BeginChild("##TextureContent");
-            DrawTextureSettings();
-            ImGui::EndChild();
+        if (ImGui::BeginTabItem("Materials")) {
+            DrawMaterialsTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Material editor")) {
-            ImGui::BeginChild("##MaterialEditorContent");
-            DrawPbrMaterialEditor(mMaterialEditorState);
-            ImGui::EndChild();
-            ImGui::EndTabItem();
-        }
-        for (const auto& tab : applicationTabs) {
-            if (tab != nullptr && ImGui::BeginTabItem(tab->Label())) {
-                ImGui::PushID(tab->Label());
-                tab->Draw();
-                ImGui::PopID();
-                ImGui::EndTabItem();
+        for (const auto& [name, tabs] : groups) {
+            if (!ImGui::BeginTabItem(name.c_str())) continue;
+            if (tabs.size() == 1U && tabs.front()->Group() == nullptr) {
+                drawApplicationTab(tabs.front());
+            } else if (ImGui::BeginTabBar(("##" + name + "Sections").c_str(), ImGuiTabBarFlags_FittingPolicyScroll)) {
+                for (const auto& tab : tabs) {
+                    if (ImGui::BeginTabItem(tab->Label())) {
+                        drawApplicationTab(tab);
+                        ImGui::EndTabItem();
+                    }
+                }
+                ImGui::EndTabBar();
             }
+            ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
     }
@@ -230,16 +264,15 @@ void GraphicsSettingsPanel::DrawTextureSettings() {
     }
 }
 
-void GraphicsSettingsPanel::DrawRendererSettings() {
+// The graphics preset covers every graphics tab, so it sits above them.
+void GraphicsSettingsPanel::DrawPresetSelector() {
     auto& runtime = GraphicsSettingsRuntime::Instance();
     auto settings = runtime.Snapshot();
-    const auto capabilities = runtime.Capabilities();
     const char* const presets[] = {"Authentic", "Enhanced", "Toon", "Custom"};
     GraphicsPreset preset = settings.Preset;
-    if (SettingsUi::EnumCombo("Preset", preset, presets)) {
+    if (SettingsUi::EnumCombo("Graphics preset", preset, presets)) {
         settings = GraphicsSettingsService::PresetForCurrent(preset, settings);
         mRendererStatus = SettingsUi::DescribeApply(runtime.Apply(settings));
-        settings = runtime.Snapshot();
         mRenderScaleEditing = false;
         mOutputResolutionEditing = false;
     }
@@ -247,30 +280,71 @@ void GraphicsSettingsPanel::DrawRendererSettings() {
         ImGui::TextWrapped("%s", mRendererStatus.c_str());
         ImGui::TreePop();
     }
+}
 
+void GraphicsSettingsPanel::DrawSettingsPage(const char* id, std::initializer_list<Section> sections) {
+    auto& runtime = GraphicsSettingsRuntime::Instance();
+    auto settings = runtime.Snapshot();
+    const auto capabilities = runtime.Capabilities();
     bool changed = false;
-    if (ImGui::BeginTabBar("##RendererSections", ImGuiTabBarFlags_FittingPolicyScroll)) {
-        const auto section = [&](const char* label, auto draw) {
-            if (ImGui::BeginTabItem(label)) {
-                ImGui::BeginChild(label);
-                ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.48F);
-                changed |= draw();
-                ImGui::PopItemWidth();
-                ImGui::EndChild();
-                ImGui::EndTabItem();
-            }
-        };
-        section("Display", [&] { return DrawDisplaySettings(settings, capabilities); });
-        section("Antialiasing", [&] { return DrawAntialiasingSettings(settings, capabilities); });
-        section("Lighting", [&] { return DrawLightingSettings(settings, capabilities); });
-        section("Reflections", [&] { return DrawReflectionSettings(settings, capabilities); });
-        section("Toon", [&] { return DrawToonSettings(settings); });
-        ImGui::EndTabBar();
-    }
+    ImGui::BeginChild(id);
+    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.48F);
+    for (const auto section : sections) changed |= (this->*section)(settings, capabilities);
+    ImGui::PopItemWidth();
+    ImGui::EndChild();
     if (changed) {
         settings.Preset = GraphicsPreset::Custom;
         mRendererStatus = SettingsUi::DescribeApply(
             runtime.Apply(settings, !ImGui::IsAnyItemActive()));
     }
+}
+
+void GraphicsSettingsPanel::DrawLightingTab(
+    const std::vector<std::shared_ptr<GraphicsSettingsPanelTab>>& lightingTabs) {
+    if (!ImGui::BeginTabBar("##LightingSections", ImGuiTabBarFlags_FittingPolicyScroll)) return;
+    const auto section = [&](const char* label, Section draw) {
+        if (ImGui::BeginTabItem(label)) {
+            DrawSettingsPage(label, {draw});
+            ImGui::EndTabItem();
+        }
+    };
+    section("Lighting & GI", &GraphicsSettingsPanel::DrawLightingSettings);
+    section("Shadows", &GraphicsSettingsPanel::DrawShadowSettings);
+    section("Occlusion", &GraphicsSettingsPanel::DrawAmbientOcclusionSettings);
+    section("Reflections", &GraphicsSettingsPanel::DrawReflectionSettings);
+    // Application-owned lighting sections (the per-scene environment).
+    for (const auto& tab : lightingTabs) {
+        if (ImGui::BeginTabItem(tab->Label())) {
+            ImGui::BeginChild(tab->Label());
+            ImGui::PushID(tab->Label());
+            tab->Draw();
+            ImGui::PopID();
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+    }
+    section("Toon", &GraphicsSettingsPanel::DrawToonSettings);
+    ImGui::EndTabBar();
+}
+
+void GraphicsSettingsPanel::DrawMaterialsTab() {
+    if (!ImGui::BeginTabBar("##MaterialSections", ImGuiTabBarFlags_FittingPolicyScroll)) return;
+    if (ImGui::BeginTabItem("Texture packs")) {
+        ImGui::BeginChild("##TextureContent");
+        DrawTextureSettings();
+        ImGui::EndChild();
+        ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Material editor")) {
+        ImGui::BeginChild("##MaterialEditorContent");
+        DrawPbrMaterialEditor(mMaterialEditorState);
+        ImGui::EndChild();
+        ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Reflection materials")) {
+        DrawSettingsPage("##ReflectionMaterialContent", {&GraphicsSettingsPanel::DrawReflectionMaterialSettings});
+        ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
 }
 } // namespace Fast::Oot3d

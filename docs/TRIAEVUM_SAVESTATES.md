@@ -63,7 +63,7 @@ images) load through the same previous path; the paragraph above describes it.
 
 ## Keys and F1
 
-| Action | Key | F1 **Save states** |
+| Action | Key | F1 **Game > Save states** |
 | --- | --- | --- |
 | Save the game moment to a new file | F5 | Save state (F5) |
 | Save the moment and the settings | Shift+F5 | Save state + settings (Shift+F5) |

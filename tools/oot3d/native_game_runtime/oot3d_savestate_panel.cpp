@@ -65,6 +65,7 @@ class SavestatePanel final : public Fast::Oot3d::GraphicsSettingsPanelTab {
       : mLibrary(std::move(library)) {}
 
   const char* Label() const noexcept override { return "Save states"; }
+  const char* Group() const noexcept override { return Fast::Oot3d::kGameSettingsGroup; }
 
   void Draw() override {
     const bool fixedSlot = !mLibrary->FixedSlot().empty();

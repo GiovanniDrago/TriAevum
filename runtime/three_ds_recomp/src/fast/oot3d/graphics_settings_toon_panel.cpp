@@ -6,7 +6,7 @@
 namespace Fast::Oot3d {
 using SettingsUi::EnumCombo;
 
-bool GraphicsSettingsPanel::DrawToonSettings(GraphicsSettings& settings) {
+bool GraphicsSettingsPanel::DrawToonSettings(GraphicsSettings& settings, const GraphicsCapabilities&) {
     bool changed = false;
     ImGui::SeparatorText("Advanced PICA toon");
     const char* const toonModes[] = {

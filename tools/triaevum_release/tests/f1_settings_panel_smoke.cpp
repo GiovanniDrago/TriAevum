@@ -263,7 +263,7 @@ void CheckSavestatePanel() {
     auto library = std::make_shared<SavestateLibrary>(root / "config" / "savestates.json", defaultFolder);
     InstallGraphicsSettingsPanelTabs({CreateSavestatePanel(library)});
     Frame(); Frame();
-    Click("Save states"); Frame();
+    Click("Game"); Click("Save states"); Frame();
     Check(Find("Load last state (F8)").Disabled && Find("Load last state + settings (Shift+F8)").Disabled,
           "load buttons enabled without any state");
     const auto expectRequest = [&](const char* button, SavestateRequestKind kind, bool withSettings) {
@@ -333,7 +333,8 @@ void CheckSceneEnvironment() {
     environment->ObserveScene(0x55);
     InstallGraphicsSettingsPanelTabs({CreateSceneEnvironmentPanel(environment)});
     size = ImVec2(760, 1450);
-    Frame(); Frame(); Click("Environment");
+    // Shadows and the scene environment are sections of Lighting.
+    Frame(); Frame(); Click("Lighting"); Click("Shadows");
     Select("Shadow mode", "Virtual Shadow Maps");
     EditScalar("Shadow strength", "4");
     Check(graphics.Snapshot().Effects.DirectionalShadows.Strength == 4.0F,
@@ -418,6 +419,7 @@ void CheckSceneEnvironment() {
     settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixelPbr;
     graphics.Apply(settings);
     Frame();
+    Click("Scene environment");
     Click("Use scene environment");
     Check(Find("Native ambient contribution").Disabled, "scene reference did not own the ambient baseline");
     Click("Preserve scene brightness");
@@ -605,6 +607,7 @@ void CheckPbrMaterialEditor() {
     catalog.Observe(0x12345678, 0x1000, 32, 32, 0);
     catalog.AssociateMaterial(0x12345678, 32, 32, 0, 0xABCD, packs.Snapshot().PackUsesNewHash);
     size = ImVec2(1000, 1350);
+    Click("Materials");
     Click("Material editor");
     Click("Create from texture");
     Click("Texture catalog selection");
@@ -796,8 +799,8 @@ void CheckPbrMaterialEditor() {
     Frame();
     Check(resolved(0xABCD).Preview->MinimumRoughness == 0.4F,
           "selecting an existing material lost its authored roughness floor");
-    Click("Renderer");
     Click("Lighting");
+    Click("Lighting & GI");
     size = ImVec2(760, 1100);
     Frame(); Frame();
 }
@@ -877,6 +880,31 @@ int main() try {
     ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
     Frame(); Frame();
 
+    // Top-level tabs in their order; the former Renderer/Textures/TopScreen
+    // tabs no longer exist.
+    {
+        float previous = -1.0F;
+        for (const char* tab : {"Display", "Lighting", "Grass", "Materials", "Controls", "HUD"}) {
+            const auto item = Find(tab);
+            Check(item.Rect.Min.x > previous, std::string("top-level tab out of order: ") + tab);
+            previous = item.Rect.Min.x;
+        }
+        for (const char* old : {"Renderer", "Textures", "Environment", "TopScreen 2.1.1"})
+            Check(std::none_of(items.begin(), items.end(),
+                               [&](const auto& pair) { return pair.second.Label == old; }),
+                  std::string("former top-level tab still present: ") + old);
+        Click("Lighting");
+        float sectionX = -1.0F;
+        for (const char* section : {"Lighting & GI", "Shadows", "Occlusion", "Reflections", "Toon"}) {
+            const auto item = Find(section);
+            Check(item.Rect.Min.x > sectionX, std::string("Lighting section out of order: ") + section);
+            sectionX = item.Rect.Min.x;
+        }
+        Click("Materials");
+        for (const char* section : {"Texture packs", "Material editor", "Reflection materials"}) Find(section);
+        Click("Display");
+    }
+
     auto requestedDisplay = runtime.Snapshot();
     requestedDisplay.OutputWidth = 3840;
     requestedDisplay.OutputHeight = 2160;
@@ -951,9 +979,9 @@ int main() try {
     runtime.Apply(initial);
     Frame();
 
-    Select("Preset", "Authentic");
+    Select("Graphics preset", "Authentic");
     Check(runtime.Snapshot().Preset == GraphicsPreset::Authentic, "preset identity lost");
-    Click("Antialiasing");
+    Click("Display");
     Select("Mode", "FXAA");
     Check(runtime.Snapshot().AntiAliasing == AntiAliasingMode::Fxaa, "cannot customize Authentic");
     Check(runtime.Snapshot().Preset == GraphicsPreset::Custom, "manual edits must become Custom");
@@ -964,20 +992,21 @@ int main() try {
         runtime.Apply(withPack);
         Frame();
     }
-    Select("Preset", "Enhanced");
+    Select("Graphics preset", "Enhanced");
     Check(runtime.Snapshot().Preset == GraphicsPreset::Enhanced &&
               runtime.Snapshot().Effects.AmbientOcclusion == AmbientOcclusionMode::Mxao &&
               runtime.Snapshot().Effects.MxaoNormals == MxaoNormalSource::Geometry &&
               runtime.Snapshot().TexturePacks.Azahar.LoadCustomTextures &&
               runtime.Snapshot().TexturePacks.Azahar.LoadDirectory == "pack",
           "Enhanced is not the captured profile or replaced the texture pack");
-    Select("Preset", "Toon");
+    Select("Graphics preset", "Toon");
     const auto beforeCustom = runtime.Snapshot();
-    Select("Preset", "Custom");
+    Select("Graphics preset", "Custom");
     const auto expected = GraphicsSettingsService::PresetForCurrent(GraphicsPreset::Custom, beforeCustom);
     Check(SerializeGraphicsSettings(runtime.Snapshot()) == SerializeGraphicsSettings(expected),
           "Custom changed user settings");
     Check(runtime.Snapshot().Effects.Toon == ToonMode::PostProcessPreview, "Custom reset effects");
+    Click("Lighting");
     Click("Toon");
     auto custom = runtime.Snapshot();
     custom.Effects.ToonStyle.LightBandLevels[1] = 0.22F;
@@ -1007,7 +1036,7 @@ int main() try {
     Check(runtime.Snapshot().Effects.ToonStyle.OutlineSoftness == 0.25F,
           "outline softness not applied");
 
-    Click("Lighting");
+    Click("Lighting & GI");
     Select("Lighting model", "Per-pixel");
     Check(runtime.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::PerPixel,
           "per-pixel lighting selection not applied");
@@ -1155,6 +1184,7 @@ int main() try {
         runtime.PublishGlobalIlluminationStatus({});
         AllCapabilities(true);
     }
+    Click("Occlusion");
     runtime.SetCapability(GraphicsCapability::ValidViewMetadata, false, "test unavailable");
     Frame();
     Select("Ambient occlusion", "Off");
@@ -1286,7 +1316,7 @@ int main() try {
     Select("Reflection provider", "Off");
     Check(runtime.Snapshot().Effects.Reflections == ReflectionMode::Off, "cannot disable reflections");
     AllCapabilities(true);
-    Click("Antialiasing");
+    Click("Display");
     Select("Mode", "MSAA");
     Select("Samples", "4x");
     Check(runtime.Snapshot().MsaaSamples == 4, "MSAA selection lost");
@@ -1357,9 +1387,8 @@ int main() try {
     Check(runtime.Snapshot().Grass.Rules.size() == 1 &&
           runtime.Snapshot().Grass.Rules.front().Target.Rgba8Hash == secondTextureHash,
           "texture selection did not reach the grass consumer");
-    Click("Renderer");
-    Click("Reflections");
-    Click("Reflection material assignments");
+    Click("Materials");
+    Click("Reflection materials");
     Click("Texture catalog selection");
     ClickTexture(firstTextureHash);
     Click("Assign selected as water");
@@ -1405,7 +1434,7 @@ int main() try {
           "failed display request did not restore previous settings");
     Frame(true);
     Check(loggedPanelText.find("Display change reverted: " + displayFailure) != std::string::npos,
-          "backend failure not visible in F1 outside Renderer");
+          "backend failure not visible in F1 outside Display");
     Check(!runtime.RejectPresentationApply(rejectedDisplay, "stale failure"),
           "stale display failure accepted");
     Check(!runtime.RejectPresentationApply(confirmedDisplay, "idle failure"),
@@ -1436,7 +1465,8 @@ int main() try {
     Click("Revert display settings");
     Check(runtime.AcknowledgePresentationApplied(confirmedDisplay),
           "smoke test could not restore its original display");
-    Click("Textures");
+    Click("Materials");
+    Click("Texture packs");
     Find("Apply folders");
     Click("Controls");
     for (const char* section : {"Bindings", "Shortcuts", "Camera"}) Click(section);
@@ -1607,7 +1637,7 @@ int main() try {
           controls->Snapshot().Config.GyroscopeBiasDegreesPerSecond == beforePreset.GyroscopeBiasDegreesPerSecond &&
           controls->Snapshot().Config.AccelerometerNeutral == beforePreset.AccelerometerNeutral,
           "preset discarded controller identity or calibration");
-    Click("TopScreen 2.1.1");
+    Click("HUD");
     Click("Render HUD");
     Check(!topScreen->Snapshot().Config.RenderHud, "TopScreen preview not connected");
     auto externalTop = topScreen->Snapshot().Config;
@@ -1616,7 +1646,6 @@ int main() try {
     Frame();
     Click("Render HUD");
     Check(topScreen->Snapshot().Config.HudScale == 0.75F, "stale draft overwrote external TopScreen");
-    Click("HUD");
     size = ImVec2(520, 400);
     Frame(); Frame();
     Find("Save TopScreen");
@@ -1644,7 +1673,6 @@ int main() try {
     runtime.SavePending();
     Check(store->Stores == storesBefore + 1, "deferred save not coalesced");
     size = ImVec2(760, 680);
-    Click("Renderer");
     Click("Display");
     Frame();
     const auto fov = Find("Global scene FOV");
@@ -1679,7 +1707,7 @@ int main() try {
     auto language = std::make_shared<Oot3dNativeGame::GameLanguageSettings>(languagePath,languages);
     InstallGraphicsSettingsPanelTabs({Oot3dNativeGame::CreateGameLanguagePanel(language)});
     Frame(); Frame();
-    Click("Game"); Frame();
+    Click("Game"); Click("Language"); Frame();
     Select("Game language", "Italiano");
     Check(language->Selected() == "it", "language widget did not persist choice");
     Check(language->SystemId() == 1, "language selection mutated the running guest");

@@ -19,9 +19,9 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
         : "Uses native scene lights and selected local lights. Unsupported native materials keep their original shading.");
     if (UsesPbrMaterials(settings.Effects.SurfaceLighting)) {
         ImGui::TextWrapped(nativePbr
-            ? "PBR uses Azahar material packs configured in Textures. Surfaces without a supported material keep original native shading."
-            : "PBR uses Azahar material packs configured in Textures. Materials without a pack use native per-pixel lighting.");
-        ImGui::TextWrapped("Edit individual materials, maps and PBR response in the Material editor tab.");
+            ? "PBR uses Azahar material packs configured in Materials > Texture packs. Surfaces without a supported material keep original native shading."
+            : "PBR uses Azahar material packs configured in Materials > Texture packs. Materials without a pack use native per-pixel lighting.");
+        ImGui::TextWrapped("Edit individual materials, maps and PBR response in Materials > Material editor.");
     }
 
     ImGui::SeparatorText("Global illumination");
@@ -122,7 +122,12 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
     if (!capabilities.Has(GraphicsCapability::ScreenSpaceGlobalIllumination))
         ImGui::TextWrapped("Screen-space GI unavailable: %s",
                            capabilities.Get(GraphicsCapability::ScreenSpaceGlobalIllumination).Reason.c_str());
+    return changed;
+}
 
+bool GraphicsSettingsPanel::DrawAmbientOcclusionSettings(GraphicsSettings& settings,
+                                                         const GraphicsCapabilities& capabilities) {
+    bool changed = false;
     ImGui::SeparatorText("Ambient occlusion");
     const bool aoReady = capabilities.Has(GraphicsCapability::NriInterop) &&
                          capabilities.Has(GraphicsCapability::SampledDepth) &&

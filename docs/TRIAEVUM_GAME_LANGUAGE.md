@@ -7,7 +7,7 @@
 - Forge discovers languages after ROM extraction/adaptation. Its **Game
   language** dropdown becomes available when preparation completes, before
   Launch game. Subsequent Forge sessions reuse the same preference.
-- **F1 > Game > Game language** exposes the same languages and saves changes.
+- **F1 > Game > Language > Game language** exposes the same languages and saves changes.
 - Changes require a full restart. Native resource loaders initialize menu
   textures and messages together; changing just the message-language global in
   a running session is not supported. Loading a save state restores its old

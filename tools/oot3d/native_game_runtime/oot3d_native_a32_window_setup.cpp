@@ -590,7 +590,8 @@ void NativeA32WindowSession::Setup() {
       [](const Fast::Renderer3ds::PicaEnvironmentLighting& environment) {
         Fast::Oot3d::GraphicsSettingsRuntime::Instance().PublishSceneEnvironment(environment);
       });
-  applicationSettingsTabs.push_back(Oot3dNativeGame::CreateGameLanguagePanel(languageSettings));
+  // F1 order: Scene environment joins Lighting; then Controls, HUD and Game
+  // (Save states, Language) after the graphics tabs.
   applicationSettingsTabs.push_back(Oot3dNativeGame::CreateSceneEnvironmentPanel(sceneEnvironment));
   applicationSettingsTabs.push_back(
       Oot3dNativeGame::CreateNativeControlsSettingsPanel(
@@ -607,6 +608,7 @@ void NativeA32WindowSession::Setup() {
   }
   applicationSettingsTabs.push_back(
       Oot3dNativeGame::CreateSavestatePanel(savestateLibrary));
+  applicationSettingsTabs.push_back(Oot3dNativeGame::CreateGameLanguagePanel(languageSettings));
   Fast::Oot3d::InstallGraphicsSettingsPanelTabs(
       std::move(applicationSettingsTabs));
   InitContextForDemo(hostArgs);

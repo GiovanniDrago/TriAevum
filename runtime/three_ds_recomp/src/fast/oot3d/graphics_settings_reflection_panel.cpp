@@ -66,8 +66,16 @@ bool GraphicsSettingsPanel::DrawReflectionSettings(GraphicsSettings& settings, c
     if (!reflectionReady) {
         ImGui::TextWrapped("SSR unavailable: depth, normal, material or camera metadata missing.");
     }
+    ImGui::TextWrapped("Which textures reflect, and how, is set in Materials > Reflection materials.");
+    return changed;
+}
 
-    if (ImGui::CollapsingHeader("Reflection material assignments")) {
+bool GraphicsSettingsPanel::DrawReflectionMaterialSettings(GraphicsSettings& settings, const GraphicsCapabilities&) {
+    bool changed = false;
+    ImGui::SeparatorText("Reflection material assignments");
+    if (settings.Effects.Reflections == ReflectionMode::Off)
+        ImGui::TextWrapped("Screen-space reflections are off (Lighting > Reflections); assignments are kept.");
+    {
         std::vector<TextureCatalogTag> textureTags;
         textureTags.reserve(
             settings.Effects.ReflectionMaterials.size());

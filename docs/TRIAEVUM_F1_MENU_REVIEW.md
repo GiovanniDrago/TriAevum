@@ -1,5 +1,35 @@
 # F1 settings rationalization
 
+## Tab rationalization (2026-10-06)
+
+The F1 window has seven top-level tabs grouped by purpose, instead of nine. No
+option was added, removed or given another owner. The **Graphics preset**
+selector (Authentic / Enhanced / Toon / Custom) and its last-change status sit
+above the tabs because the preset covers every graphics tab.
+
+| Tab | Sections | Former location |
+| --- | --- | --- |
+| **Display** | Screen (window mode, resolution, internal render scale, VSync); Antialiasing and upscaling; Motion and camera (frame rate, scene FOV) | Renderer > Display, Renderer > Antialiasing |
+| **Lighting** | **Lighting & GI** (lighting model, global illumination); **Shadows** (directional, point light); **Occlusion**; **Reflections** (provider and parameters); **Scene environment** (per-scene profile, Navi/fairy lights); **Toon** | Renderer > Lighting, Environment, Renderer > Reflections, Renderer > Toon |
+| **Grass** | unchanged | Grass |
+| **Materials** | **Texture packs**; **Material editor**; **Reflection materials** (texture assignments) | Textures, Material editor, Renderer > Reflections |
+| **Controls** | unchanged | Controls |
+| **HUD** | the TopScreen 2.1.1 HUD and layout (TopScreen profile only) | TopScreen 2.1.1 |
+| **Game** | **Save states**; **Language** | Save states, Game |
+
+Application tabs declare a group (`GraphicsSettingsPanelTab::Group`): the
+scene environment joins the built-in Lighting tab and Save states and Language
+form the Game tab; other application tabs stay top-level in installation order.
+The shadow controls moved from the application's Environment panel to
+`graphics_settings_shadows_panel.cpp` because `GraphicsSettingsRuntime` owns
+them; they now apply through the same coalesced path as the other renderer
+pages. Cross-references in panel text name the new locations.
+
+Actual-widget smoke (developer build): **8,750 assertions**, including the
+top-level order, the Lighting section order, the Materials sections and the
+absence of the former Renderer, Textures, Environment and TopScreen 2.1.1 tabs;
+every earlier control interaction runs at its new location.
+
 2026-10-05 **Save states** (application tab, `oot3d_savestate_panel.cpp`): the
 F5/Shift+F5 and F8/Shift+F8 actions as buttons, the save folder (default
 `savestates/` beside the executable, in-game browser, **Use default folder**),
@@ -334,13 +364,17 @@ This change repairs the existing F1 control surfaces, not the rendering algorith
 No title code, save format, native HUD composition, shader math, or effect-graph
 scheduling has been replaced.
 
+Current surfaces (since the 2026-10-06 tab rationalization above):
+
 | Surface | Sections | Owner |
 | --- | --- | --- |
-| Renderer | Display, Antialiasing, Lighting, Reflections, Toon | GraphicsSettingsRuntime |
+| Display | Screen, Antialiasing and upscaling, Motion and camera | GraphicsSettingsRuntime |
+| Lighting | Lighting & GI, Shadows, Occlusion, Reflections, Scene environment, Toon | GraphicsSettingsRuntime; SceneEnvironmentRuntime (Scene environment) |
 | Grass | Sources, Generation, Appearance, Performance, Wind, Interaction | GraphicsSettingsRuntime / grass module |
-| Textures | Load, dump, directories, reload, diagnostics | GraphicsSettingsRuntime / texture-pack module |
+| Materials | Texture packs, Material editor, Reflection materials | GraphicsSettingsRuntime / texture-pack module / material JSON |
 | Controls | Bindings, Camera, Devices, Shortcuts | NativeControlConfigRuntime / TopScreenUiConfigRuntime |
-| TopScreen 2.1.1 | HUD and layout | TopScreenUiConfigRuntime |
+| HUD | TopScreen 2.1.1 HUD and layout | TopScreenUiConfigRuntime |
+| Game | Save states, Language | SavestateLibrary, GameLanguageSettings |
 
 Input still owns host-device routing and sensitivity. TopScreen owns game-camera
 behavior, layout and D-pad actions. Its C-stick smoothing really is consumed by
@@ -390,8 +424,9 @@ and layout only. JSON ownership remains unchanged.
 
 Renderer files under `runtime/three_ds_recomp/`:
 
-- `src/fast/oot3d/graphics_settings_window.cpp`: navigation and application.
-- `src/fast/oot3d/graphics_settings_{display,antialiasing,lighting,reflection,toon}_panel.cpp`:
+- `src/fast/oot3d/graphics_settings_window.cpp`: navigation (top-level tabs,
+  Lighting and Materials sections, application-tab groups) and application.
+- `src/fast/oot3d/graphics_settings_{display,antialiasing,lighting,shadows,reflection,toon}_panel.cpp`:
   separate section implementations.
 - `include/fast/oot3d/settings_panel_widgets.h`: validated choice widget and
   complete apply-result formatting.

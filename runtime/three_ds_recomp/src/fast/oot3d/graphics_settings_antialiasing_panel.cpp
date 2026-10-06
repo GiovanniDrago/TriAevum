@@ -5,6 +5,7 @@ namespace Fast::Oot3d {
 bool GraphicsSettingsPanel::DrawAntialiasingSettings(
     GraphicsSettings& settings, const GraphicsCapabilities& capabilities) {
     bool changed = false;
+    ImGui::SeparatorText("Antialiasing and upscaling");
     const char* const modes[] = {"Off", "FXAA", "SMAA 1x (High)", "MSAA", "Temporal AA", "NRI Upscaler"};
     changed |= SettingsUi::ValidatedCombo<AntiAliasingMode>(
         "Mode", settings, capabilities, modes,

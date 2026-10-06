@@ -6,7 +6,10 @@ class LanguagePanel final : public Fast::Oot3d::GraphicsSettingsPanelTab {
 public:
   explicit LanguagePanel(std::shared_ptr<GameLanguageSettings> settings)
       : mSettings(std::move(settings)) {}
-  const char *Label() const noexcept override { return "Game"; }
+  const char *Label() const noexcept override { return "Language"; }
+  const char *Group() const noexcept override {
+    return Fast::Oot3d::kGameSettingsGroup;
+  }
   void Draw() override {
     const char *label = mSettings->Selected().c_str();
     for (const auto &lang : mSettings->Available())

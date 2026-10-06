@@ -384,7 +384,7 @@ void DrawPbrMaterialEditor(PbrMaterialEditorState &state) {
         state.CatalogGeneration = pack.Generation;
     }
     ImGui::TextWrapped("Pack: %s", PathText(pack.LoadDirectory).c_str());
-    ImGui::TextDisabled("Pack folder and loading are owned by the Textures tab.");
+    ImGui::TextDisabled("Pack folder and loading are owned by Materials > Texture packs.");
     if (pack.IndexPending)
         ImGui::TextDisabled("Indexing material descriptors...");
     if (!pack.LastError.empty())

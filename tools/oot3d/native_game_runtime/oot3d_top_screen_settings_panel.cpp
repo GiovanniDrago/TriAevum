@@ -30,8 +30,9 @@ public:
       std::shared_ptr<TopScreenUiConfigRuntime> runtime)
       : mRuntime(std::move(runtime)) {}
 
+  // The TopScreen 2.1.1 HUD and layout.
   [[nodiscard]] const char *Label() const noexcept override {
-    return "TopScreen 2.1.1";
+    return "HUD";
   }
 
   void Draw() override {
@@ -44,21 +45,12 @@ public:
     }
     const TopScreenUiConfig frameStartDraft = mDraft;
 
-    if (ImGui::BeginTabBar("##TopScreenSections")) {
-      const auto section = [&](const char* label, auto draw) {
-        if (ImGui::BeginTabItem(label)) {
-          ImGui::BeginChild(label, ImVec2(0.0F, std::max(
-              80.0F, ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 4.0F)));
-          ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.45F);
-          draw();
-          ImGui::PopItemWidth();
-          ImGui::EndChild();
-          ImGui::EndTabItem();
-        }
-      };
-      section("HUD", [&] { DrawHud(); });
-      ImGui::EndTabBar();
-    }
+    ImGui::BeginChild("##HudContent", ImVec2(0.0F, std::max(
+        80.0F, ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 4.0F)));
+    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.45F);
+    DrawHud();
+    ImGui::PopItemWidth();
+    ImGui::EndChild();
     if (mDraft != frameStartDraft) {
       mRuntime->Preview(mDraft);
       const auto preview = mRuntime->Snapshot();
