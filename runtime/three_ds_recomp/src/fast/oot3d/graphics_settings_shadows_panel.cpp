@@ -129,11 +129,11 @@ bool DrawPointShadows(GraphicsSettings& settings, const GraphicsCapabilities& ca
 } // namespace
 
 bool GraphicsSettingsPanel::DrawShadowSettings(GraphicsSettings& settings, const GraphicsCapabilities& capabilities) {
-    // Both shadow kinds need the full scene lighting of the Per-pixel models.
+    // Both shadow kinds need the full scene lighting of the Modern model.
     auto shadowCapabilities = capabilities;
     if (!UsesFullSceneLighting(settings.Effects.SurfaceLighting))
         shadowCapabilities.Set(GraphicsCapability::NriDirectionalShadows, false,
-                               "Choose Per-pixel or Per-pixel + PBR in Lighting & GI.");
+                               "Choose the Modern lighting model in Lighting & GI.");
     bool changed = DrawDirectionalShadows(settings, shadowCapabilities);
     changed |= DrawPointShadows(settings, shadowCapabilities);
     return changed;

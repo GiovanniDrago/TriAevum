@@ -1,5 +1,20 @@
 # F1 settings rationalization
 
+## Two lighting models (2026-10-06)
+
+**Lighting > Lighting & GI > Lighting model** offers **Native** and **Modern**.
+Native is the former Native + PBR: original native shading, with PBR only on
+supported pack materials (identical to plain native shading without a material
+pack). Modern is the former Per-pixel + PBR (materials without a pack use
+per-pixel lighting). Validation migrates saved choices: Per-pixel becomes
+Modern and plain Native becomes Native (NativePbr). Plain native shading stays
+internal: it is the capability fallback when the renderer cannot relight (the
+Native choice then selects it), the Authentic preset and the F2 override.
+Panel text refers to "the Modern lighting model" where it named the per-pixel
+models. Actual-widget smoke: **8,726 assertions** (only the two choices are
+offered, migration, Modern disabled after capability loss); foundation tests
+337/337 with the migration case.
+
 ## Tab rationalization (2026-10-06)
 
 The F1 window has seven top-level tabs grouped by purpose, instead of nine. No

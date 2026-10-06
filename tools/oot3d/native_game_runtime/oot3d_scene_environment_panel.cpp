@@ -38,7 +38,7 @@ public:
         settings.Preset == Fast::Oot3d::GraphicsPreset::Authentic ||
         graphics.NativePresentationOverrideActive())
       ImGui::TextWrapped(
-          "Inactive: choose Per-pixel or Per-pixel + PBR in Lighting & GI, with F2 "
+          "Inactive: choose the Modern lighting model in Lighting & GI, with F2 "
           "native override off and a supported renderer.");
     ImGui::BeginDisabled(!value.Enabled || !supported);
     changed |= ImGui::Checkbox("Preserve scene brightness", &value.PreserveSceneBrightness);
@@ -141,7 +141,7 @@ public:
     ImGui::SeparatorText("Dynamic scene point lights");
     ImGui::TextWrapped("Replace Navi and fairy vertex-light contributions with spatial scene lights. "
                        "Native positions, colors and ranges are retained. These controls are independent "
-                       "of Use scene environment and affect only Per-pixel / Per-pixel + PBR.");
+                       "of Use scene environment and affect only the Modern lighting model.");
     const char *pointLabels[] = {"Navi point lights", "Fairy point lights"};
     for (size_t i = 0; i < value.PointLights.size(); ++i) {
       auto &light = value.PointLights[i];

@@ -8,19 +8,26 @@ using SettingsUi::EnumCombo;
 bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, const GraphicsCapabilities& capabilities) {
     bool changed = false;
     ImGui::SeparatorText("Surface lighting");
-    const char* const surfaceLightingModes[] = {"Native", "Per-pixel", "Per-pixel + PBR", "Native + PBR"};
-    changed |= SettingsUi::ValidatedCombo<SurfaceLightingMode>(
+    // Native: native shading, PBR on supported pack materials (plain native
+    // shading when the renderer cannot relight). Modern: per-pixel + PBR.
+    const char* const surfaceLightingModes[] = {"Native", "Modern"};
+    changed |= SettingsUi::ValidatedCombo<int>(
         "Lighting model", settings, capabilities, surfaceLightingModes,
-        [](auto& value, auto mode) { value.Effects.SurfaceLighting = mode; },
-        [](const auto& value) { return value.Effects.SurfaceLighting; });
-    const bool nativePbr = settings.Effects.SurfaceLighting == SurfaceLightingMode::NativePbr;
-    ImGui::TextWrapped(nativePbr
-        ? "Uses native scene lights only on PBR materials. Other surfaces and projected shadows stay native. Scene environment overrides are inactive."
-        : "Uses native scene lights and selected local lights. Unsupported native materials keep their original shading.");
+        [&capabilities](auto& value, int choice) {
+            value.Effects.SurfaceLighting =
+                choice == 1 ? SurfaceLightingMode::PerPixelPbr
+                : capabilities.Has(GraphicsCapability::NativeSurfaceLighting) ? SurfaceLightingMode::NativePbr
+                                                                                : SurfaceLightingMode::Native;
+        },
+        [](const auto& value) { return UsesFullSceneLighting(value.Effects.SurfaceLighting) ? 1 : 0; });
+    const bool modern = UsesFullSceneLighting(settings.Effects.SurfaceLighting);
+    ImGui::TextWrapped(modern
+        ? "Per-pixel lighting from native scene lights and selected local lights, with PBR materials. Unsupported native materials keep their original shading."
+        : "Original native shading. Supported PBR materials use the native scene lights; other surfaces and projected shadows stay native. Scene environment overrides are inactive.");
     if (UsesPbrMaterials(settings.Effects.SurfaceLighting)) {
-        ImGui::TextWrapped(nativePbr
-            ? "PBR uses Azahar material packs configured in Materials > Texture packs. Surfaces without a supported material keep original native shading."
-            : "PBR uses Azahar material packs configured in Materials > Texture packs. Materials without a pack use native per-pixel lighting.");
+        ImGui::TextWrapped(modern
+            ? "PBR uses Azahar material packs configured in Materials > Texture packs. Materials without a pack use native per-pixel lighting."
+            : "PBR uses Azahar material packs configured in Materials > Texture packs. Surfaces without a supported material keep original native shading.");
         ImGui::TextWrapped("Edit individual materials, maps and PBR response in Materials > Material editor.");
     }
 
@@ -111,7 +118,7 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
                                "the intensity gain and the highlight clamp.");
         }
         if (!UsesFullSceneLighting(settings.Effects.SurfaceLighting))
-            ImGui::TextWrapped("Active only with Per-pixel or Per-pixel + PBR lighting.");
+            ImGui::TextWrapped("Active only with the Modern lighting model.");
         const auto status = GraphicsSettingsRuntime::Instance().GlobalIlluminationStatus();
         if (status.Mode == globalIllumination.Mode && !status.Ready && !status.Reason.empty())
             ImGui::TextWrapped("GI not available yet: %s", status.Reason.c_str());

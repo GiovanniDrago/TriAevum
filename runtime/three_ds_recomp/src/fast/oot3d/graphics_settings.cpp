@@ -223,6 +223,15 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         std::clamp(value.UpscalerSharpness, 0.0F, 1.0F);
     if (value.UpscalerDlssModel > DlssModel::Cnn)
         value.UpscalerDlssModel = DlssModel::Default;
+    // The selectable models are Native (native shading, PBR only on supported
+    // pack materials) and Modern (per-pixel + PBR). Per-pixel without PBR is
+    // Modern without a pack; plain native shading remains the capability
+    // fallback, the Authentic preset and the F2 override.
+    if (value.Effects.SurfaceLighting == SurfaceLightingMode::PerPixel)
+        value.Effects.SurfaceLighting = SurfaceLightingMode::PerPixelPbr;
+    if (value.Effects.SurfaceLighting == SurfaceLightingMode::Native &&
+        capabilities.Has(GraphicsCapability::NativeSurfaceLighting))
+        value.Effects.SurfaceLighting = SurfaceLightingMode::NativePbr;
     if (value.Effects.SurfaceLighting != SurfaceLightingMode::Native &&
         !capabilities.Has(GraphicsCapability::NativeSurfaceLighting)) {
         value.Effects.SurfaceLighting = SurfaceLightingMode::Native;

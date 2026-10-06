@@ -4190,6 +4190,29 @@ TEST(Oot3dSmaa1x, OfficialThreeStageComputeShadersCompile) {
 }
 #endif
 
+// Two selectable lighting models: Native (NativePbr) and Modern (PerPixelPbr).
+// Saved Per-pixel becomes Modern and plain native shading becomes Native;
+// plain native shading stays the capability fallback and the Authentic look.
+TEST(Oot3dGraphicsSettings, LightingModelsAreNativeAndModern) {
+    using namespace Fast::Oot3d;
+    GraphicsCapabilities capabilities;
+    capabilities.Set(GraphicsCapability::NativeSurfaceLighting, true);
+    auto settings = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
+    settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixel;
+    EXPECT_EQ(GraphicsSettingsService::Validate(settings, capabilities).Value.Effects.SurfaceLighting,
+              SurfaceLightingMode::PerPixelPbr);
+    settings.Effects.SurfaceLighting = SurfaceLightingMode::Native;
+    EXPECT_EQ(GraphicsSettingsService::Validate(settings, capabilities).Value.Effects.SurfaceLighting,
+              SurfaceLightingMode::NativePbr);
+    const auto withoutRelighting = GraphicsSettingsService::Validate(settings, {});
+    EXPECT_EQ(withoutRelighting.Value.Effects.SurfaceLighting, SurfaceLightingMode::Native);
+    EXPECT_TRUE(std::none_of(withoutRelighting.Issues.begin(), withoutRelighting.Issues.end(),
+                             [](const auto& issue) { return issue.Field == "Graphics.Effects.SurfaceLighting"; }));
+    auto authentic = GraphicsSettingsService::Preset(GraphicsPreset::Authentic);
+    EXPECT_EQ(GraphicsSettingsService::Validate(authentic, capabilities).Value.Effects.SurfaceLighting,
+              SurfaceLightingMode::Native);
+}
+
 TEST(Oot3dGraphicsSettings, GatesSmaaOnThreeStageNriCapability) {
     Fast::Oot3d::GraphicsCapabilities capabilities;
     auto settings = Fast::Oot3d::GraphicsSettingsService::Preset(

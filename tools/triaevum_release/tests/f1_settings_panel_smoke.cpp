@@ -381,11 +381,11 @@ void CheckSceneEnvironment() {
           graphics.Snapshot().Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps,
           "F2 did not bypass VSM without erasing its preference");
     Check(graphics.SnapshotForRendering().Value.Effects.SurfaceLighting == SurfaceLightingMode::Native &&
-              graphics.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::PerPixel,
+              graphics.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::PerPixelPbr,
           "F2 did not force Native lighting while preserving the configured model");
     graphics.ToggleNativePresentationOverride();
-    Check(graphics.SnapshotForRendering().Value.Effects.SurfaceLighting == SurfaceLightingMode::PerPixel,
-          "F2 did not restore per-pixel lighting");
+    Check(graphics.SnapshotForRendering().Value.Effects.SurfaceLighting == SurfaceLightingMode::PerPixelPbr,
+          "F2 did not restore Modern lighting");
     settings = graphics.Snapshot();
     settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixelPbr;
     graphics.Apply(settings);
@@ -946,6 +946,8 @@ int main() try {
             expectedOff.Effects.ToonStyle.OutlineEnabled = false;
             expectedOff.Effects.AmbientOcclusion = AmbientOcclusionMode::Off;
             expectedOff.Effects.Reflections = ReflectionMode::Off;
+            // F2 shows plain native shading, below the Native model's PBR materials.
+            expectedOff.Effects.SurfaceLighting = SurfaceLightingMode::Native;
             Check(runtime.NativePresentationOverrideActive() && effective.Revision > before.Revision,
                   "F2 must invalidate frame settings");
             Check(SerializeGraphicsSettings(effective.Value) == SerializeGraphicsSettings(expectedOff),
@@ -1037,15 +1039,31 @@ int main() try {
           "outline softness not applied");
 
     Click("Lighting & GI");
-    Select("Lighting model", "Per-pixel");
-    Check(runtime.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::PerPixel,
-          "per-pixel lighting selection not applied");
-    Select("Lighting model", "Per-pixel + PBR");
+    // Two lighting models: Native (native shading, PBR on supported pack
+    // materials) and Modern (per-pixel + PBR).
+    Click("Lighting model");
+    Check(std::none_of(items.begin(), items.end(), [](const auto& pair) {
+              return pair.second.Label == "Per-pixel" || pair.second.Label == "Per-pixel + PBR" ||
+                     pair.second.Label == "Native + PBR";
+          }), "a removed lighting model is still offered");
+    Click("Modern");
     Check(runtime.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::PerPixelPbr,
-          "PBR lighting selection not applied");
-    Select("Lighting model", "Native + PBR");
+          "Modern lighting selection not applied");
+    Select("Lighting model", "Native");
     Check(runtime.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::NativePbr,
-          "native PBR selection not applied");
+          "Native lighting selection not applied");
+    {
+        // Saved Per-pixel becomes Modern and plain native shading becomes Native.
+        auto legacy = runtime.Snapshot();
+        legacy.Effects.SurfaceLighting = SurfaceLightingMode::PerPixel;
+        runtime.Apply(legacy);
+        Check(runtime.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::PerPixelPbr,
+              "Per-pixel was not migrated to Modern");
+        legacy.Effects.SurfaceLighting = SurfaceLightingMode::Native;
+        runtime.Apply(legacy);
+        Check(runtime.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::NativePbr,
+              "plain native shading was not migrated to Native");
+    }
     const auto persistedNativePbr = DeserializeGraphicsSettings(store->Root["Graphics"]);
     Check(persistedNativePbr.Value.Effects.SurfaceLighting == SurfaceLightingMode::NativePbr,
           "native PBR lighting selection lost on reload");
@@ -1062,8 +1080,7 @@ int main() try {
     Check(runtime.Snapshot().Effects.SurfaceLighting == SurfaceLightingMode::Native,
           "cannot restore native lighting after capability loss");
     Click("Lighting model");
-    Check(Find("Per-pixel").Disabled && Find("Per-pixel + PBR").Disabled && Find("Native + PBR").Disabled,
-          "unsupported lighting model selectable");
+    Check(Find("Modern").Disabled, "unsupported lighting model selectable");
     Click("Native");
     AllCapabilities(true);
     Frame();
@@ -1098,7 +1115,7 @@ int main() try {
                   persistedGi.Value.Effects.GlobalIllumination.DiffuseIntensity == 2.5F,
               "global illumination selection lost on reload");
     }
-    Select("Lighting model", "Per-pixel");
+    Select("Lighting model", "Modern");
     Check(runtime.SnapshotForRendering().Value.Effects.GlobalIllumination.Mode == GlobalIlluminationMode::BrixelizerGi,
           "per-pixel lighting did not activate the stored global illumination");
     runtime.ToggleNativePresentationOverride();
@@ -1157,7 +1174,7 @@ int main() try {
               "screen-space GI selection lost on reload");
         Check(runtime.SnapshotForRendering().Value.Effects.GlobalIllumination.Mode == GlobalIlluminationMode::Off,
               "screen-space GI rendered without per-pixel lighting");
-        Select("Lighting model", "Per-pixel");
+        Select("Lighting model", "Modern");
         Check(runtime.SnapshotForRendering().Value.Effects.GlobalIllumination.Mode ==
                   GlobalIlluminationMode::ScreenSpace,
               "per-pixel lighting did not activate screen-space GI");
