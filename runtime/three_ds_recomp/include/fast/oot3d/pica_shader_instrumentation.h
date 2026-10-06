@@ -81,6 +81,8 @@ struct PicaFragmentInstrumentationDrawInfo {
         ::Oot3d::Renderer::PicaCompositionDomain::Unknown;
     ::Oot3d::Renderer::PicaCompareFunction DepthCompare = ::Oot3d::Renderer::PicaCompareFunction::Less;
     bool PerspectiveProjection = false;
+    // PicaShaderPipelineDrawInfo::IsolatedLighting.
+    bool IsolatedLighting = false;
 };
 
 struct PicaFragmentInstrumentationRequest {

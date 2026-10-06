@@ -585,6 +585,7 @@ void Oot3dPicaSemanticTraceWriter::RecordDraw(
         {"native_projected_shadow", plan.Composition.NativeProjectedShadow},
         {"native_actor_geometry", plan.Composition.NativeActorGeometry},
         {"native_actor_identity", plan.Composition.NativeActorIdentity},
+        {"isolated_lighting", plan.Composition.IsolatedLighting},
         {"selected_native_lights", std::move(selectedLights)},
         {"scene_point_lights", std::move(scenePoints)},
         {"scene_directional_lights", std::move(sceneDirectionals)},

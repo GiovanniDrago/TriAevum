@@ -680,7 +680,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         const bool grassPerspectiveProjection =
             Oot3d::UsesPicaPerspectiveProjection(
                 draw.VertexUniformBytes);
-        const bool directionalShadowReceiver = !nativeMemoryOnly &&
+        // A draw the title lights as an object of its own keeps its native
+        // lights in the full per-pixel model and receives none of the scene's
+        // environment profile, shadows, GI or ambient occlusion.
+        const bool isolatedLighting = !nativeMemoryOnly && draw.Composition.IsolatedLighting &&
+            Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting);
+        const bool directionalShadowReceiver = !nativeMemoryOnly && !isolatedLighting &&
             Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
             mDirectionalShadowMapBarrierPlan.Valid() &&
             Oot3d::PicaExtensionPassEnabled(
@@ -688,7 +693,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 Oot3d::PicaExtensionPass::DirectionalShadowLighting) &&
             grassPerspectiveProjection;
         // Point lights with a cube map: only NRI-owned draws bind the atlas.
-        const bool pointShadowReceiver = !nativeMemoryOnly && !mNativeFidelityProfile &&
+        const bool pointShadowReceiver = !nativeMemoryOnly && !mNativeFidelityProfile && !isolatedLighting &&
             graphicsSettings.Effects.PointShadows.Mode == Oot3d::PointShadowMode::CubeMaps &&
             Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
             mPointShadowMapBarrierPlan.Valid() &&
@@ -730,10 +735,14 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             if (environmentWorldToView &&
                 (!mSurfaceLightingView || mSurfaceLightingView->WorldToView != *environmentWorldToView))
                 mSurfaceLightingView = Renderer3ds::BuildPicaSurfaceLightingView(*environmentWorldToView);
+            // The scene environment profile, or the native environment for an
+            // isolated draw.
+            auto isolatedEnvironment = mFrameEnvironment;
+            isolatedEnvironment.Enabled = false;
             surfaceLighting = Renderer3ds::BuildPicaSurfaceLightingUniforms(
                 draw.TemporalVertexProgram.Hooks, booleanUniforms,
                 draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset),
-                draw.LightBinding, mFrameEnvironment,
+                draw.LightBinding, isolatedLighting ? isolatedEnvironment : mFrameEnvironment,
                 environmentWorldToView && mSurfaceLightingView ? &*mSurfaceLightingView : nullptr,
                 pointShadowHistory.Valid() ? &pointShadowAssignment : nullptr);
             if (surfaceLighting) {
@@ -741,8 +750,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 // clip gains above one); the gain applies when GI is composed.
                 const auto sources =
                     Oot3d::ResolveGlobalIlluminationSources(graphicsSettings.Effects.GlobalIllumination);
-                surfaceLighting->GlobalIlluminationSources = {sources.Weights[0], sources.Weights[1],
-                                                              sources.Weights[2], 0.0F};
+                surfaceLighting->GlobalIlluminationSources = isolatedLighting
+                    ? std::array<float, 4>{}
+                    : std::array<float, 4>{sources.Weights[0], sources.Weights[1], sources.Weights[2], 0.0F};
             }
             if (surfaceLighting && environmentWorldToView && directionalShadowReceiver &&
                 !Oot3d::InvertDirectionalShadowMatrix(*environmentWorldToView, environmentViewToWorld))
@@ -937,6 +947,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 draw.DepthCompare,
                 draw.Composition.Layer,
                 pointShadowReceiver && surfaceLighting.has_value(),
+                isolatedLighting,
             },
             mTemporalMotionEnabled && !nativeMemoryOnly,
             resolvedReflectionMaterial.has_value()

@@ -335,6 +335,7 @@ PicaShaderPipelineResult BuildInstrumentedVariant(
             request.Draw.CompositionDomain,
             request.Draw.DepthCompare,
             request.Draw.PerspectiveProjection,
+            request.Draw.IsolatedLighting,
         },
         {
             effects.AmbientOcclusion != AmbientOcclusionMode::Off,

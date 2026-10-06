@@ -154,6 +154,8 @@ struct Oot3dPicaCompositionAttribution {
     bool NativeProjectedShadow = false;
     bool NativeActorGeometry = false;
     uint64_t NativeActorIdentity = 0;
+    // Renderer3ds::PicaCompositionAttribution::IsolatedLighting.
+    bool IsolatedLighting = false;
 
     bool operator==(const Oot3dPicaCompositionAttribution&) const = default;
 };

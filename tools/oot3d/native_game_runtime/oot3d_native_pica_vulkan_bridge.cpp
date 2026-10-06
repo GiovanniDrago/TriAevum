@@ -261,6 +261,7 @@ bool WithOot3dPicaVulkanDrawView(
         plan.Composition.NativeProjectedShadow,
         plan.Composition.NativeActorGeometry,
         plan.Composition.NativeActorIdentity,
+        plan.Composition.IsolatedLighting,
     };
     draw.LightBinding = overrides != nullptr && overrides->LightBinding != nullptr
         ? *overrides->LightBinding : plan.LightBinding;

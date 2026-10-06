@@ -323,6 +323,7 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
                 : Oot3dPicaCompositionAttribution{};
             attribution.NativeActorGeometry = !mActorDrawStack.empty();
             attribution.NativeActorIdentity = mActorDrawStack.empty() ? 0 : mActorDrawStack.back();
+            attribution.IsolatedLighting = IsTitleLogoActor(attribution.NativeActorIdentity);
             if (at != mQueuedComposition.end() && at->SlotAddress == state.r[1])
                 at->Attribution = attribution;
             else
@@ -457,6 +458,9 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
         mActiveCmbAttribution.NativeActorGeometry = !mActorDrawStack.empty() && !mActiveUiScope;
         mActiveCmbAttribution.NativeActorIdentity =
             mActiveCmbAttribution.NativeActorGeometry ? mActorDrawStack.back() : 0;
+        mActiveCmbAttribution.IsolatedLighting =
+            mActiveCmbAttribution.NativeActorGeometry &&
+            IsTitleLogoActor(mActiveCmbAttribution.NativeActorIdentity);
         // The model-array consumers 002FAD2C, 002FAE10 and 003FE374 keep
         // the array in r8 and its current index in r4 at these CMB calls.
         // 002FEA30 uses a different layout and is deliberately excluded.
@@ -470,6 +474,7 @@ void Oot3dNativePicaCompositionTracker::ObserveBlockEntry(
                 else {
                     mActiveCmbAttribution.NativeActorGeometry = at->Attribution.NativeActorGeometry;
                     mActiveCmbAttribution.NativeActorIdentity = at->Attribution.NativeActorIdentity;
+                    mActiveCmbAttribution.IsolatedLighting = at->Attribution.IsolatedLighting;
                 }
             }
         }

@@ -58,7 +58,8 @@ struct PicaEffectDecisions {
     enum class MaterialWriter : uint8_t { None, Reflection, Reactive, Baseline };
     enum class Coverage : uint8_t { One, Zero, Alpha };
     enum class AlbedoPath : uint8_t { Zero, Pbr, Surface };
-    enum class AmbientPath : uint8_t { Pbr, Exact, Fallback };
+    // None: an isolated draw publishes no ambient occlusion response.
+    enum class AmbientPath : uint8_t { Pbr, Exact, Fallback, None };
     enum class ReactiveCoverage : uint8_t { None, SourceAlpha, SourceColor, Full };
 
     uint32_t Bits = 0;

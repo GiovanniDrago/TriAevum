@@ -117,6 +117,11 @@ struct PicaCompositionAttribution {
     // Native actor draw ownership, independent of skinning and material.
     bool NativeActorGeometry = false;
     uint64_t NativeActorIdentity = 0;
+    // The title lights this draw as an object of its own: in the full
+    // per-pixel model it keeps its own native lights and receives none of the
+    // scene's environment profile, shadows, global illumination or ambient
+    // occlusion.
+    bool IsolatedLighting = false;
 
     bool operator==(const PicaCompositionAttribution&) const = default;
 };

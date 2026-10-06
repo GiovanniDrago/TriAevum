@@ -3530,3 +3530,30 @@ own sun or moon, including sunrise colours and night. The main light is the
 strongest environment light above the horizon (the published shadow caster).
 An authored (`Manual`) key keeps its own colour.
 
+## Isolated lighting: the title logo (2026-10-06)
+
+`PicaCompositionAttribution::IsolatedLighting` marks a draw the title lights
+as an object of its own. In the Modern (full per-pixel) model such a draw keeps
+per-pixel + PBR shading by its own native lights and receives none of the
+scene's lighting: the scene environment profile is replaced by the native
+environment (profile disabled), it is neither a directional nor a point shadow
+receiver, its GI source weights are zero, and its shader publishes no ambient
+occlusion response (`AmbientPath::None`, ambient guide `vec4(0,0,0,1)`) and a
+zero diffuse albedo guide (no GI received or bounced). The Native model and
+F2 are unaffected.
+
+The OOT3D adapter sets it from typed actor ownership, not from assets: draws
+under `Actor_Draw` of `ACTOR_EN_MAG` (0x0171, the title logo composited over
+the opening; `kOot3dTitleLogoActorId`, `IsTitleLogoActor` in
+`oot3d_native_pica_composition.h`). The semantic trace reports
+`isolated_lighting`.
+
+Evidence (developer build, intro from boot, the user's configuration and scene
+profiles, 3840x2160): at guest frame 899 21 draws are isolated, all of actor
+0x0171. Before, the scene profile turned the logo almost black in Modern; now
+it matches the Native look with per-pixel shading. Between Modern before and
+after, every changed pixel lies inside the logo's box at presentation frames
+1200, 1500 and 1800; Native frames are byte-identical to the previous build.
+Foundation 337/337, pipeline cache 52/52, composition, visual savestate and
+Vulkan bridge tests pass.
+

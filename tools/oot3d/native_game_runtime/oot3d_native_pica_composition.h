@@ -22,6 +22,13 @@ inline constexpr uint32_t kOot3dCmbRendererSubmitDrawHandleEntry =
 inline constexpr uint32_t kOot3dObjectKankyoDrawEntry = 0x00297508U;
 inline constexpr uint32_t kOot3dActorDrawEntry = 0x002D5F68U;
 inline constexpr uint32_t kOot3dActorDrawCallbackReturn = 0x002D6314U;
+// ACTOR_EN_MAG: the title logo composited over the opening. The full
+// per-pixel model lights it by its own native lights, apart from the scene.
+inline constexpr uint16_t kOot3dTitleLogoActorId = 0x0171U;
+// Actor draw identities are (actor id << 32) | actor address.
+[[nodiscard]] constexpr bool IsTitleLogoActor(uint64_t actorIdentity) noexcept {
+    return actorIdentity != 0U && (actorIdentity >> 32U) == kOot3dTitleLogoActorId;
+}
 inline constexpr uint32_t kOot3dSceneRendererSubmitConfiguredModelPassEntry =
     0x002D9664U;
 inline constexpr uint32_t kOot3dEnvironmentRendererUpdateGameplayFadeLayersEntry =

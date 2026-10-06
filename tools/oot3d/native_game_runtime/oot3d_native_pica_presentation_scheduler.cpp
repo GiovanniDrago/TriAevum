@@ -180,6 +180,7 @@ bool Oot3dPicaPresentationScheduler::Execute(
             .NativeProjectedShadow = draw.Composition.NativeProjectedShadow,
             .NativeActorGeometry = draw.Composition.NativeActorGeometry,
             .NativeActorIdentity = draw.Composition.NativeActorIdentity,
+            .IsolatedLighting = draw.Composition.IsolatedLighting,
         },
     });
   }

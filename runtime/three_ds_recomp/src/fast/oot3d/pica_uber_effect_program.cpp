@@ -389,6 +389,8 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
     }
     end += Guarded(Bit(Decision::AmbientGuide) + " && " + Is(kAmbientShift, Decision::AmbientPath::Fallback),
                    "\n    pica_ambient_guide = vec4(1.0, 1.0, 1.0, 1.0);\n");
+    end += Guarded(Bit(Decision::AmbientGuide) + " && " + Is(kAmbientShift, Decision::AmbientPath::None),
+                   "\n    pica_ambient_guide = vec4(0.0, 0.0, 0.0, 1.0);\n");
     if (surface)
         end += Guarded(Bit(Decision::AmbientGuide) + " && " + Is(kAmbientShift, Decision::AmbientPath::Pbr),
                        "\n    pica_ambient_guide = vec4(pbr_ao_response, 1.0);\n");

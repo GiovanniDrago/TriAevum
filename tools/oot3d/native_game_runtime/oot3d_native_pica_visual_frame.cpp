@@ -1515,6 +1515,7 @@ ComputeOot3dPicaVisualDrawIdentity(const Oot3dPicaVulkanDrawPlan& plan) {
     HashValue(hash, plan.Composition.NativeProjectedShadow);
     HashValue(hash, plan.Composition.NativeActorGeometry);
     HashValue(hash, plan.Composition.NativeActorIdentity);
+    HashValue(hash, plan.Composition.IsolatedLighting);
     HashValue(hash, plan.VertexShader.StateKey);
     HashValue(hash, plan.FragmentShader.StateKey);
     HashValue(hash, plan.Indexed);

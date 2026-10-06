@@ -39,6 +39,9 @@ struct PicaShaderPipelineDrawInfo {
     ::Oot3d::Renderer::PicaCompareFunction DepthCompare = ::Oot3d::Renderer::PicaCompareFunction::Less;
     Renderer3ds::PicaCompositionLayer CompositionLayer = Renderer3ds::PicaCompositionLayer::Unknown;
     bool PointShadowReceiver = false;
+    // PicaCompositionAttribution::IsolatedLighting, in the full per-pixel
+    // model: the draw publishes no ambient occlusion response and no GI albedo.
+    bool IsolatedLighting = false;
 };
 
 struct PicaShaderPipelineRequest {

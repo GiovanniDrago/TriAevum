@@ -989,13 +989,18 @@ vec3 oot3d_normal_guide_typed(vec3 authored, vec3 native_normal) {
         decisions.AlbedoCoverage = replacesDestinationRgb ? Decision::Coverage::One
             : blend.DestRgb == ::Oot3d::Renderer::NativeBlendFactor::One ? Decision::Coverage::Zero
             : Decision::Coverage::Alpha;
+        // An isolated object neither receives nor bounces global illumination.
+        const bool zeroAlbedo = request.Draw.DepthCompare == ::Oot3d::Renderer::PicaCompareFunction::Always ||
+                                request.Draw.IsolatedLighting;
         decisions.Albedo =
-            request.Draw.DepthCompare == ::Oot3d::Renderer::PicaCompareFunction::Always ? Decision::AlbedoPath::Zero
+            zeroAlbedo ? Decision::AlbedoPath::Zero
             : pbr ? Decision::AlbedoPath::Pbr
             : surfaceLighting ? Decision::AlbedoPath::Surface
             : Decision::AlbedoPath::Zero;
         declarations += "layout(location=7) out vec4 pica_diffuse_albedo_guide;\n";
-        if (request.Draw.DepthCompare == ::Oot3d::Renderer::PicaCompareFunction::Always) {
+        if (zeroAlbedo) {
+            if (request.Draw.IsolatedLighting)
+                result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_ISOLATED_ALBEDO_V1");
             epilogue += "    pica_diffuse_albedo_guide = vec4(0.0);\n";
         } else if (pbr) {
             epilogue += "    pica_diffuse_albedo_guide = vec4((floor(clamp(pbr_linear_to_srgb(clamp(pbr_albedo, 0.0, 1.0)), 0.0, 1.0) * 255.0 + 0.5) * 256.0 + floor(clamp(pbr_linear_to_srgb(pbr_gi_radiance), 0.0, 1.0) * 255.0 + 0.5)) / 65535.0, " + coverage + ");\n";
@@ -1103,9 +1108,15 @@ vec3 pica_surface_shadow(int slot) {
             }
             const bool exact = result.Hooks.Has(PicaShaderSemantic::AmbientOcclusionResponse);
             decisions.Set(Decision::AmbientGuide);
-            decisions.Ambient = pbr ? Decision::AmbientPath::Pbr
+            decisions.Ambient = request.Draw.IsolatedLighting ? Decision::AmbientPath::None
+                : pbr ? Decision::AmbientPath::Pbr
                 : exact ? Decision::AmbientPath::Exact : Decision::AmbientPath::Fallback;
-            if (pbr) {
+            if (request.Draw.IsolatedLighting) {
+                // An isolated object receives no ambient occlusion.
+                epilogue += "\n    pica_ambient_guide = vec4(0.0, 0.0, 0.0, 1.0);\n";
+                result.AmbientGuideEligibility = PicaAmbientOcclusionGuideEligibility::AppliedExact;
+                result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_ISOLATED_AMBIENT_V1");
+            } else if (pbr) {
                 epilogue += "\n    pica_ambient_guide = vec4(pbr_ao_response, 1.0);\n";
                 result.AmbientGuideEligibility = PicaAmbientOcclusionGuideEligibility::AppliedExact;
             } else if (exact) {
