@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
 #include "oot3d/renderer/pica_render_backend.h"
 #include "oot3d_native_frame_rate.h"
 #include "../ui_topscreen/oot3d_top_screen_projection_state.h"
@@ -144,5 +146,12 @@ bool LoadNativeA32State(
     NativeA32DspHle& dspHle,
     NativeA32SavestateIoResult* result = nullptr,
     std::string* error = nullptr);
+
+// The document of a state file of either container version, checked against
+// its header and checksum but not against a runtime (tools and diagnostics).
+bool ReadNativeA32StateDocument(const std::filesystem::path& path,
+                                nlohmann::json& document,
+                                NativeA32SavestateIoResult* result = nullptr,
+                                std::string* error = nullptr);
 
 } // namespace Oot3dNativeGame

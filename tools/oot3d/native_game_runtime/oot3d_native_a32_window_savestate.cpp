@@ -256,7 +256,8 @@ NativeA32WindowSession::FailSave(std::string message) {
 }
 
 NativeA32WindowSession::SaveStateOutcome
-NativeA32WindowSession::SaveState(const std::filesystem::path &path, bool withSettings) {
+NativeA32WindowSession::SaveState(const std::filesystem::path &path, bool withSettings,
+                                  const std::string *storedSettings) {
   auto &hostServices = *hostServicesStorage;
   auto &frameRatePolicy = *frameRatePolicyStorage;
   auto &process = *processStorage;
@@ -377,7 +378,10 @@ NativeA32WindowSession::SaveState(const std::filesystem::path &path, bool withSe
     runtime.PicaGuestFramebuffersAvailable = true;
     savestateStats.PicaColorTargetsCaptured += runtime.PicaGuestFramebuffers.size();
   }
-  if (withSettings) {
+  if (storedSettings != nullptr) {
+    runtime.HostSettingsAvailable = true;
+    runtime.HostSettingsJson = *storedSettings;
+  } else if (withSettings) {
     runtime.HostSettingsAvailable = true;
     runtime.HostSettingsJson =
         Oot3dNativeGame::CaptureSavestateSettings(SavestateSettingsOwners());

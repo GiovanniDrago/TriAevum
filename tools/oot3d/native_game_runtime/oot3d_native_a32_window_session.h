@@ -288,8 +288,10 @@ private:
   // Deferred: a host continuation is pending, retry at a later frame boundary. Failed: reported once; the request is
   // dropped because every retry repeats the full GPU drain and readback.
   enum class SaveStateOutcome : uint8_t { Saved, Deferred, Failed };
-  // A save state holds the game moment only; withSettings also stores the host settings beside it.
-  SaveStateOutcome SaveState(const std::filesystem::path &path, bool withSettings = false);
+  // A save state holds the game moment only; withSettings also stores the host settings beside it, or
+  // storedSettings verbatim when given (a conversion keeps the settings block it loaded).
+  SaveStateOutcome SaveState(const std::filesystem::path &path, bool withSettings = false,
+                             const std::string *storedSettings = nullptr);
   SaveStateOutcome FailSave(std::string message);
   // applySettings applies the settings a state carries before the renderer restore, so the restored
   // content is rebuilt at their scale. lastSavestateMessage describes the outcome.
@@ -467,6 +469,8 @@ private:
   bool quickLoadKeyWasDown = false;
   bool automatedStateSaved = false;
   bool automatedStateSaveFailed = false;
+  // The settings block of the --load-state file, for --convert-state.
+  std::optional<std::string> initialStateHostSettings;
   std::optional<uint32_t> automatedStateSavedAtRunFrame;
   std::optional<uint32_t> automatedStateSavedAtGuestFrame;
   NativeA32BenchmarkWindow benchmark;

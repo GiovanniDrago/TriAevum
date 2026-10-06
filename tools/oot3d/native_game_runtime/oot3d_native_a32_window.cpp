@@ -137,6 +137,20 @@ void RequireRunnableGuest(
 
 void NativeA32WindowSession::Run() {
   Setup();
+  if (!launch.ConvertStatePath.empty()) {
+    // The loaded moment, re-saved before any guest frame runs.
+    const std::string *settings =
+        initialStateHostSettings ? &*initialStateHostSettings : nullptr;
+    const auto outcome = SaveState(launch.ConvertStatePath, false, settings);
+    Finish();
+    if (outcome != SaveStateOutcome::Saved) {
+      throw std::runtime_error("savestate conversion failed: " +
+                               (lastSavestateMessage.empty()
+                                    ? std::string("a host continuation is pending")
+                                    : lastSavestateMessage));
+    }
+    return;
+  }
   auto &window = *windowPointer;
   while (window.IsRunning() &&
          processResult.Kind !=

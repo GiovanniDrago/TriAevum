@@ -747,6 +747,8 @@ void NativeA32WindowSession::Setup() {
       throw std::runtime_error("native savestate load failed: " + error);
     }
     ApplyLoadedSavestateSettings(restoredRuntime, launch.LoadStateWithSettings);
+    if (restoredRuntime.HostSettingsAvailable)
+      initialStateHostSettings = restoredRuntime.HostSettingsJson;
     Oot3dNativeGame::ResetOot3dTypedGameplayTransientState();
     hdFonts.Reset();
     const auto restoredGravity = hostServices.HidRuntimeProfile().LastAccelerometer;

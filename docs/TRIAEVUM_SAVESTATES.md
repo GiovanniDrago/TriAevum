@@ -124,6 +124,15 @@ text continuation is pending is deferred to the next frame boundary.
   (repeatable): queues the same request F5/F8 queue, at a zero-based run frame.
 - `--quick-state FILE`: pins one file for scripted runs; every save writes it
   and F8 loads it, and the folder controls are disabled.
+- `--load-state OLD --convert-state NEW` (developer): re-saves the loaded
+  moment in the current format before any guest frame runs, keeps the stored
+  settings block verbatim, then exits. Launch it with the state's own gameplay
+  timing (the timing mode is part of the state).
+- `oot3d_native_a32_savestate_diff FIRST SECOND` (developer tool): JSON report
+  of what differs between two states of one moment; `graphics_only` (exit 0)
+  when the differences are renderer-owned sections, schema upgrades and guest
+  memory inside the render targets the second state declares.
+  `--describe FILE` prints the container, timing mode, frame and identity.
 
 ## Verification (developer launch, host-build, mod-vfp-pgo)
 
@@ -142,6 +151,18 @@ text continuation is pending is deferred to the next frame boundary.
   and original 30 Hz, 1280x720 and 1720x720) gives the same results as before
   compression and its captures are byte-identical; S03 and S10 load their
   existing (version 1) states.
+- 2026-10-06, conversion of existing states with `--convert-state`, each run
+  in the state's own gameplay timing and UI profile. A conversion is accepted
+  when (1) guest memory outside the declared render targets is identical to
+  the old state's, (2) converting the new file again changes only
+  renderer-owned sections, and (3) the old and new states, each run 120 frames,
+  end in the same game state (the diff tool on states saved at that frame).
+  Captures are compared for information only: the old format restored host
+  presentation state (for example the grass animation phase), which a game
+  moment omits, so some states differ in grass and foliage after load while
+  the game state stays identical. Older documents are normalized by the loader
+  (for example known render targets become invalidated until a draw recreates
+  them); the converted file holds exactly what loading the old one gives.
 - `oot3d_native_a32_savestate_tests`: compressed container, a version 1 copy
   of the same document loads, a document size the frame contradicts is refused
   before guest memory changes; guest-extent round trip with settings,

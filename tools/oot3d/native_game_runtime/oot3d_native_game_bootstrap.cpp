@@ -93,6 +93,7 @@ void PrintOot3dNativeGameUsage() {
                  "[--quick-state <checkpoint.oot3dsav>] "
                  "[--save-state <checkpoint.oot3dsav> [--save-state-with-settings] "
                  "--save-state-frame <frame>] "
+                 "[--convert-state <new.oot3dsav>] "
                  "[--renderer <nri|opengl>] "
                  "[--config <oot3d_native_game.json>] "
                  "[--frames <count>] [--benchmark-warmup-frames <count>] "
@@ -261,6 +262,8 @@ bool ParseOot3dNativeGameArgs(int argc, char** argv, Oot3dNativeGameLaunch& laun
             launch.QuickStatePath = argv[++index];
         } else if (arg == "--save-state" && index + 1 < argc) {
             launch.SaveStatePath = argv[++index];
+        } else if (arg == "--convert-state" && index + 1 < argc) {
+            launch.ConvertStatePath = argv[++index];
         } else if (arg == "--savestate-action" && index + 1 < argc) {
             // FRAME:ACTION[:PATH]; the path may itself contain ':'.
             const std::string value = argv[++index];
@@ -493,6 +496,13 @@ bool ParseOot3dNativeGameArgs(int argc, char** argv, Oot3dNativeGameLaunch& laun
         !launch.SaveStateFrameAvailable) {
         throw std::runtime_error(
             "--save-state and --save-state-frame must be specified together");
+    }
+    if (!launch.ConvertStatePath.empty() &&
+        (launch.LoadStatePath.empty() || !launch.SaveStatePath.empty() ||
+         !launch.SavestateActions.empty() || launch.LoadStateWithSettings)) {
+        throw std::runtime_error(
+            "--convert-state requires --load-state and excludes other "
+            "savestate options");
     }
 
     // The game runs the translated A32 process; there is no other launch mode.

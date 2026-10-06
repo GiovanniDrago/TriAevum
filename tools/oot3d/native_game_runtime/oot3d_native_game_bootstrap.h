@@ -32,6 +32,9 @@ struct Oot3dNativeGameLaunch {
     std::filesystem::path LoadStatePath;
     std::filesystem::path QuickStatePath;
     std::filesystem::path SaveStatePath;
+    // --convert-state: re-save the --load-state moment in the current format
+    // before any guest frame runs, keeping its stored settings, then exit.
+    std::filesystem::path ConvertStatePath;
     // The command-line forms of Shift+F8 / Shift+F5.
     bool LoadStateWithSettings = false;
     bool SaveStateWithSettings = false;

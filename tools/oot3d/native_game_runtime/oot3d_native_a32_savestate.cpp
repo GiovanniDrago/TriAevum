@@ -910,25 +910,13 @@ bool SaveNativeA32State(
     }
 }
 
-bool LoadNativeA32State(
-    const std::filesystem::path& path,
-    const NativeA32SavestateCompatibility& compatibility,
-    NativeA32SavestateRuntimeState& runtime,
-    NativeA32Process& process,
-    NativeA32CtrHostServices& host,
-    Oot3dNativePicaFrontend& picaFrontend,
-    Oot3dNativePicaSubmissionQueue& submissionQueue,
-    NativeA32DspHle& dspHle,
-    NativeA32SavestateIoResult* result,
-    std::string* error) {
+bool ReadNativeA32StateDocument(const std::filesystem::path& path,
+                                nlohmann::json& document,
+                                NativeA32SavestateIoResult* result,
+                                std::string* error) {
     try {
         if (result != nullptr) {
             *result = {};
-        }
-        if (!submissionQueue.IsQuiescent()) {
-            SetError(error,
-                     "savestate load requires a quiescent native PICA boundary");
-            return false;
         }
         const auto ioStarted = std::chrono::steady_clock::now();
         std::ifstream input(path, std::ios::binary | std::ios::ate);
@@ -1000,15 +988,54 @@ bool LoadNativeA32State(
             }
             documentBytes = decompressed;
         }
-        const auto document = nlohmann::json::from_msgpack(documentBytes);
+        document = nlohmann::json::from_msgpack(documentBytes);
         if (!document.is_object() ||
             document.value("format", std::string{}) !=
-                "oot3d_native_a32_savestate_v1" ||
+                "oot3d_native_a32_savestate_v1") {
+            SetError(error, "savestate document format is not supported");
+            return false;
+        }
+        if (result != nullptr) {
+            result->FileBytes = file.size();
+            result->PayloadBytes = documentBytes.size();
+            result->IoSeconds = ioSeconds;
+            result->DecodeSeconds = SecondsSince(decodeStarted);
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        SetError(error, std::string("savestate read failed: ") +
+                            exception.what());
+        return false;
+    }
+}
+
+bool LoadNativeA32State(
+    const std::filesystem::path& path,
+    const NativeA32SavestateCompatibility& compatibility,
+    NativeA32SavestateRuntimeState& runtime,
+    NativeA32Process& process,
+    NativeA32CtrHostServices& host,
+    Oot3dNativePicaFrontend& picaFrontend,
+    Oot3dNativePicaSubmissionQueue& submissionQueue,
+    NativeA32DspHle& dspHle,
+    NativeA32SavestateIoResult* result,
+    std::string* error) {
+    try {
+        if (result != nullptr) {
+            *result = {};
+        }
+        if (!submissionQueue.IsQuiescent()) {
+            SetError(error,
+                     "savestate load requires a quiescent native PICA boundary");
+            return false;
+        }
+        nlohmann::json document;
+        NativeA32SavestateIoResult readResult;
+        if (!ReadNativeA32StateDocument(path, document, &readResult, error) ||
             !CompatibilityMatches(document.at("compatibility"),
                                   compatibility, error)) {
             return false;
         }
-        const double decodeSeconds = SecondsSince(decodeStarted);
         NativeA32SavestateRuntimeState restoredRuntime;
         const auto& encodedRuntime = document.at("runtime");
         restoredRuntime.FrameCount =
@@ -1811,10 +1838,10 @@ bool LoadNativeA32State(
         }
         runtime = restoredRuntime;
         if (result != nullptr) {
-            result->PayloadBytes = documentBytes.size();
-            result->FileBytes = file.size();
-            result->IoSeconds = ioSeconds;
-            result->DecodeSeconds = decodeSeconds;
+            result->PayloadBytes = readResult.PayloadBytes;
+            result->FileBytes = readResult.FileBytes;
+            result->IoSeconds = readResult.IoSeconds;
+            result->DecodeSeconds = readResult.DecodeSeconds;
             result->RestoreSeconds = SecondsSince(restoreStarted);
         }
         return true;

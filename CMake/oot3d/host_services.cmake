@@ -265,6 +265,14 @@ target_link_libraries(oot3d_native_a32_savestate_tests PRIVATE
     oot3d_native_a32_savestate triaevum_zstd)
 oot3d_target_defaults(oot3d_native_a32_savestate_tests FOLDER Tests)
 
+# Developer tool: what differs between two states of one game moment.
+add_executable(oot3d_native_a32_savestate_diff EXCLUDE_FROM_ALL
+    tools/oot3d/native_game_runtime/oot3d_native_a32_savestate_diff.cpp
+)
+target_link_libraries(oot3d_native_a32_savestate_diff PRIVATE
+    oot3d_native_a32_savestate)
+oot3d_target_defaults(oot3d_native_a32_savestate_diff FOLDER Tools)
+
 if (TARGET oot3d_native_a32_aot)
     add_executable(oot3d_native_a32_boot_probe EXCLUDE_FROM_ALL
         tools/oot3d/native_game_runtime/oot3d_native_a32_boot_probe.cpp
