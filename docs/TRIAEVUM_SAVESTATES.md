@@ -12,9 +12,22 @@ either UI profile.
 | --- | --- | --- |
 | Guest | A32 process and memory, CTR host services, DSP, PICA frontend and submission state | no |
 | Clocks | gameplay clock, presentation scheduler, frame pacing, TopScreen routing | no (TopScreen routing is applied only in the TopScreen profile) |
-| Renderer content | colour targets, GPU texture copies and display images at the **guest extent** (colour, depth, stencil) | no |
-| Decoded textures | native texture decodes; texture-pack replacements are not saved | no |
+| Render targets | identities only (`native_pica_guest_framebuffers`); their pixels are in the guest memory above | no |
 | `host_settings` (optional) | graphics, TopScreen, controls and game language | stored only by a "state + settings" save |
+
+Since 2026-10-06 a state carries **no graphics resources**, like an Azahar state
+after its rasterizer flush. Saving writes the game's render targets (the native
+namespace) at their native extent and PICA formats (colour 0-4, depth D16, D24,
+D24S8; tiled 8x8, `pica_framebuffer_encode.h`) into the saved copy of VRAM; the
+live process is not written. GPU copies the game made are already in memory
+(the memory capture resolves deferred writes). The texture cache, the
+interpolation namespace, display images and the visual replay state are not
+saved: on load the targets are decoded from memory and rebuilt at the current
+resolution, textures are decoded from memory on first use, and presentation
+starts afresh with the next guest frame. S09 mid-flashback: 78 MB instead of
+240 MB at any output size; the restore pass captures are identical to the
+previous format's (1280x720 and 1720x720). Azahar `.cst` files themselves are
+not readable: they serialize Azahar's own kernel, service and JIT objects.
 
 The simulation rate (`--gameplay-timing`: 30 Hz or Enhanced 60 Hz) is part of
 the game moment, not a setting. A state saved at the other rate is refused
@@ -34,6 +47,8 @@ resampling.
 
 Older states (renderer content at a renderer's internal extent, with guides)
 still load through the previous path, which restores them at their own scale.
+States of 2026-10-05 (guest-extent renderer content, texture cache, display
+images) load through the same previous path; the paragraph above describes it.
 
 ## Keys and F1
 

@@ -1,9 +1,40 @@
 #include "fast/oot3d/pica_display_transfer.h"
 #include "fast/oot3d/render_resolution_policy.h"
+#include "fast/renderer3ds/pica_framebuffer_encode.h"
 
 #include <gtest/gtest.h>
 
 namespace {
+
+TEST(PicaFramebufferCodec, NativeColourAndDepthRoundTrip) {
+    using namespace Fast::Renderer3ds;
+    constexpr uint32_t width = 16, height = 8;
+    std::vector<uint8_t> rgba(width * height * 4);
+    for (size_t i = 0; i < rgba.size(); ++i) rgba[i] = static_cast<uint8_t>(i * 37U + 11U);
+    // RGBA8 is exact; packed formats keep their bits.
+    for (uint8_t format = 0; format <= 4; ++format) {
+        const auto encoded = EncodePicaFramebuffer(rgba, width, height, width, height, format);
+        const auto decoded = DecodePicaFramebuffer(encoded, width, height, format);
+        EXPECT_EQ(EncodePicaFramebuffer(decoded, width, height, width, height, format), encoded) << int(format);
+        if (format == 0) EXPECT_EQ(decoded, rgba);
+    }
+    std::vector<float> depth(width * height);
+    std::vector<uint8_t> stencil(width * height);
+    for (size_t i = 0; i < depth.size(); ++i) {
+        depth[i] = static_cast<float>(i) / static_cast<float>(depth.size());
+        stencil[i] = static_cast<uint8_t>(i * 7U);
+    }
+    for (const uint8_t format : {uint8_t{0}, uint8_t{2}, uint8_t{3}}) {
+        std::vector<float> decodedDepth;
+        std::vector<uint8_t> decodedStencil;
+        DecodePicaDepthStencil(EncodePicaDepthStencil(depth, stencil, width, height, format), width, height,
+                               format, decodedDepth, decodedStencil);
+        ASSERT_EQ(decodedDepth.size(), depth.size());
+        const float step = format == 0 ? 1.0F / 65535.0F : 1.0F / 16777215.0F;
+        for (size_t i = 0; i < depth.size(); ++i) EXPECT_NEAR(decodedDepth[i], depth[i], step);
+        EXPECT_EQ(decodedStencil, format == 3 ? stencil : std::vector<uint8_t>{});
+    }
+}
 
 TEST(Oot3dPicaDisplayTransfer, CropsWithoutRescaling) {
     const auto plan = Fast::Oot3d::BuildPicaDisplayTransferPlan({

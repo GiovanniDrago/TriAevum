@@ -1,5 +1,9 @@
 // Native A32 window session: savestate save, load and the restore of renderer and title state.
 #include "oot3d_native_a32_window_session.h"
+#include "fast/renderer3ds/pica_framebuffer_encode.h"
+#include "fast/renderer3ds/pica_guest_extent_snapshot.h"
+
+#include <optional>
 
 namespace Oot3dA32Window {
 
@@ -106,6 +110,51 @@ void NativeA32WindowSession::RestoreSavestatePicaTextureCache(const Oot3dNativeG
 void NativeA32WindowSession::RestoreSavestatePicaColorTargets(const Oot3dNativeGame::NativeA32SavestateRuntimeState &runtime) {
   auto &submissionQueue = *submissionQueueStorage;
   auto &api = *apiPointer;
+  if (runtime.PicaGuestFramebuffersAvailable) {
+    // Graphics-free state: the targets are decoded from the restored
+    // emulated memory at the guest extent and rebuilt at this renderer's
+    // resolution, like a fresh renderer reading VRAM.
+    auto &process = *processStorage;
+    const auto regions = dspHleStorage->PhysicalRegions();
+    const auto readPhysical = [&](uint32_t address, size_t size) {
+      std::vector<uint8_t> bytes(size);
+      for (const auto &region : regions) {
+        if (address < region.PhysicalAddress) continue;
+        const uint64_t offset = address - region.PhysicalAddress;
+        if (offset + size <= region.Size &&
+            process.Memory().ReadBytes(region.VirtualAddress + static_cast<uint32_t>(offset), bytes))
+          return bytes;
+      }
+      throw std::runtime_error("savestate guest framebuffer lies outside emulated memory");
+    };
+    std::vector<Oot3d::Renderer::PicaRenderTargetColorSnapshot> targets = runtime.PicaGuestFramebuffers;
+    std::vector<uint32_t> restoredAddresses;
+    for (auto &target : targets) {
+      const uint32_t width = target.FramebufferWidth;
+      const uint32_t height = target.FramebufferHeight;
+      const uint8_t colorFormat = target.FramebufferColorFormat;
+      const uint32_t colorBytes = colorFormat == 0 ? 4U : colorFormat == 1 ? 3U : 2U;
+      target.ColorRgba8 = Fast::Renderer3ds::DecodePicaFramebuffer(
+          readPhysical(target.ColorPhysicalAddress, size_t{width} * height * colorBytes), width, height,
+          colorFormat);
+      const uint32_t depthBytes = Fast::Renderer3ds::PicaDepthFormatBytes(target.FramebufferDepthFormat);
+      if (target.DepthPhysicalAddress != 0U && depthBytes != 0U) {
+        Fast::Renderer3ds::DecodePicaDepthStencil(
+            readPhysical(target.DepthPhysicalAddress, size_t{width} * height * depthBytes), width, height,
+            target.FramebufferDepthFormat, target.DepthValues, target.StencilValues);
+      } else {
+        target.DepthValues.assign(size_t{width} * height, 1.0F);
+      }
+      restoredAddresses.push_back(target.ColorPhysicalAddress);
+      savestateStats.PicaColorTargetBytesRestored += target.ColorRgba8.size();
+    }
+    if (!api.RestorePicaColorTargets(targets, &error)) {
+      throw std::runtime_error("savestate guest framebuffer restore failed: " + error);
+    }
+    submissionQueue.RestoreGpuColorRenderTargetOwnership(restoredAddresses);
+    savestateStats.PicaColorTargetsRestored += restoredAddresses.size();
+    return;
+  }
   if (!runtime.PicaColorTargetsAvailable) {
     ++savestateStats.LegacyPicaColorTargetRestoreCount;
     return;
@@ -269,58 +318,65 @@ NativeA32WindowSession::SaveState(const std::filesystem::path &path, bool withSe
   topScreenState.TouchCoordinateRuntimeSceneLatch =
       nativeCandidateDispatch.TopScreenTouchCoordinateRoute
           .RuntimeSceneLatch;
-  Oot3dNativeGame::Oot3dPicaVisualReplayState visualReplayState;
-  visualReplayState.Scheduler =
-      picaPresentationScheduler.CaptureState();
-  visualReplayState.Continuity =
-      visualContinuityTracker.CaptureState();
-  visualReplayState.PreviousFrame = previousVisualFrame;
-  visualReplayState.LatestFrame = latestVisualFrame;
-  visualReplayState.LatestTransitionContinuous =
-      latestVisualTransitionContinuous;
-  visualReplayState.DisplayTransfersByOutput =
-      displayTransfersByOutput;
-  visualReplayState.LastSelectedTopTransferCompletionId =
-      lastSelectedTopTransferCompletionId;
-  visualReplayState.LastSubmittedDrawId = lastSubmittedDrawId;
-  if (!Oot3dNativeGame::EncodeOot3dPicaVisualReplayState(
-          visualReplayState, runtime.PicaVisualReplayState, &error)) {
-    return FailSave("native PICA visual replay capture failed: " + error);
+  // Presentation state (visual replay, interpolation targets, display
+  // images) is not the game moment: the restoring session starts its
+  // presentation afresh and the next guest frame rebuilds it.
+  // Graphics-free state, like an Azahar state after its rasterizer flush:
+  // the game's render targets (the native namespace) are written at their
+  // native extent and formats into the saved copy of emulated memory (VRAM),
+  // and only their identities travel. GPU copies the game made are already in
+  // memory (the memory capture resolves deferred writes). No texture cache,
+  // interpolation target or display image is saved: the restoring renderer
+  // rebuilds them from memory and the next frame.
+  {
+    std::vector<Oot3d::Renderer::PicaRenderTargetColorSnapshot> targets;
+    if (!api.CapturePicaColorTargets(targets, &error)) {
+      return FailSave("native PICA color capture failed: " + error);
+    }
+    const auto regions = dspHleStorage->PhysicalRegions();
+    const auto virtualAddress = [&](uint32_t address, size_t size) -> std::optional<uint32_t> {
+      for (const auto &region : regions) {
+        if (address < region.PhysicalAddress) continue;
+        const uint64_t offset = address - region.PhysicalAddress;
+        if (offset + size <= region.Size) return region.VirtualAddress + static_cast<uint32_t>(offset);
+      }
+      return std::nullopt;
+    };
+    try {
+      for (auto &target : targets) {
+        if (target.RenderTargetNamespace != kNativeDependencyRenderTargetNamespace) continue;
+        if (target.RenderScalePermille != Fast::Renderer3ds::kPicaGuestExtentRenderScalePermille ||
+            target.ImageWidth != target.FramebufferWidth || target.ImageHeight != target.FramebufferHeight) {
+          return FailSave("native PICA color capture is not at the guest extent");
+        }
+        auto color = Fast::Renderer3ds::EncodePicaFramebuffer(
+            target.ColorRgba8, target.ImageWidth, target.ImageHeight, target.FramebufferWidth,
+            target.FramebufferHeight, target.FramebufferColorFormat);
+        const auto colorAddress = virtualAddress(target.ColorPhysicalAddress, color.size());
+        if (!colorAddress) return FailSave("native PICA color target lies outside emulated memory");
+        savestateStats.PicaColorTargetBytesCaptured += color.size();
+        runtime.GuestMemoryOverlays.push_back({*colorAddress, std::move(color)});
+        if (target.DepthPhysicalAddress != 0U &&
+            Fast::Renderer3ds::PicaDepthFormatBytes(target.FramebufferDepthFormat) != 0U &&
+            target.DepthValues.size() == size_t{target.ImageWidth} * target.ImageHeight) {
+          auto depth = Fast::Renderer3ds::EncodePicaDepthStencil(
+              target.DepthValues, target.StencilValues, target.ImageWidth, target.ImageHeight,
+              target.FramebufferDepthFormat);
+          const auto depthAddress = virtualAddress(target.DepthPhysicalAddress, depth.size());
+          if (!depthAddress) return FailSave("native PICA depth target lies outside emulated memory");
+          runtime.GuestMemoryOverlays.push_back({*depthAddress, std::move(depth)});
+        }
+        target.ColorRgba8.clear();
+        target.DepthValues.clear();
+        target.StencilValues.clear();
+        runtime.PicaGuestFramebuffers.push_back(std::move(target));
+      }
+    } catch (const std::exception &exception) {
+      return FailSave(std::string("native PICA framebuffer encode failed: ") + exception.what());
+    }
+    runtime.PicaGuestFramebuffersAvailable = true;
+    savestateStats.PicaColorTargetsCaptured += runtime.PicaGuestFramebuffers.size();
   }
-  runtime.PicaVisualReplayStateAvailable = true;
-  savestateStats.PicaVisualReplayBytesCaptured +=
-      runtime.PicaVisualReplayState.size();
-  if (!api.CapturePicaTextureCache(
-          runtime.PicaTextureCache, &error)) {
-    return FailSave("native PICA texture capture failed: " + error);
-  }
-  runtime.PicaTextureCacheAvailable = true;
-  for (const auto &texture : runtime.PicaTextureCache) {
-    savestateStats.PicaTextureBytesCaptured += texture.PixelBytes.size();
-  }
-  savestateStats.PicaTexturesCaptured += runtime.PicaTextureCache.size();
-  if (!api.CapturePicaColorTargets(
-          runtime.PicaColorTargets, &error)) {
-    return FailSave("native PICA color capture failed: " + error);
-  }
-  runtime.PicaColorTargetsAvailable = true;
-  for (const auto &target : runtime.PicaColorTargets) {
-    savestateStats.PicaColorTargetBytesCaptured +=
-        target.ColorRgba8.size();
-  }
-  savestateStats.PicaColorTargetsCaptured += runtime.PicaColorTargets.size();
-  if (!api.CapturePicaPresentationState(
-          runtime.PicaPresentationState, &error)) {
-    return FailSave("native PICA presentation capture failed: " + error);
-  }
-  runtime.PicaPresentationStateAvailable = true;
-  for (const auto &image :
-       runtime.PicaPresentationState.DisplayImages) {
-    savestateStats.PicaDisplayImageBytesCaptured +=
-        image.ColorRgba8.size();
-  }
-  savestateStats.PicaDisplayImagesCaptured +=
-      runtime.PicaPresentationState.DisplayImages.size();
   if (withSettings) {
     runtime.HostSettingsAvailable = true;
     runtime.HostSettingsJson =

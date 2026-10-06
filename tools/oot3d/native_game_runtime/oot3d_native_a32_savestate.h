@@ -79,6 +79,20 @@ struct NativeA32SavestateRuntimeState {
     bool PicaPresentationStateAvailable = false;
     Oot3d::Renderer::PicaPresentationStateSnapshot
         PicaPresentationState;
+    // Graphics-free form: the game's render targets live in emulated memory
+    // like on hardware (VRAM), and only their identities travel here (pixel
+    // vectors empty). The writer patches GuestMemoryOverlays (virtual
+    // address, native bytes) into its copy of the memory; the live process is
+    // never written. The texture cache and display images are then absent and
+    // rebuilt from memory by the restoring renderer.
+    bool PicaGuestFramebuffersAvailable = false;
+    std::vector<Oot3d::Renderer::PicaRenderTargetColorSnapshot>
+        PicaGuestFramebuffers;
+    struct GuestMemoryOverlay {
+        uint32_t VirtualAddress = 0;
+        std::vector<uint8_t> Bytes;
+    };
+    std::vector<GuestMemoryOverlay> GuestMemoryOverlays;
     // Optional copy of the host settings (a JSON object owned by the window
     // session), written by a "state + settings" save. The game moment above
     // never depends on it.

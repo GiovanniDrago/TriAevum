@@ -771,6 +771,45 @@ bool SaveNativeA32State(
             }
             document["host_settings"] = std::move(settings);
         }
+        if (runtime.PicaGuestFramebuffersAvailable) {
+            nlohmann::json targets = nlohmann::json::array();
+            for (const auto& target : runtime.PicaGuestFramebuffers) {
+                targets.push_back({
+                    {"render_target_namespace", target.RenderTargetNamespace},
+                    {"color_physical_address", target.ColorPhysicalAddress},
+                    {"depth_physical_address", target.DepthPhysicalAddress},
+                    {"framebuffer_width", target.FramebufferWidth},
+                    {"framebuffer_height", target.FramebufferHeight},
+                    {"framebuffer_color_format", target.FramebufferColorFormat},
+                    {"framebuffer_depth_format", target.FramebufferDepthFormat},
+                    {"w_buffering", target.WBuffering},
+                    {"scene_effects_resolved", target.SceneEffectsResolved},
+                });
+            }
+            document.at("runtime")["native_pica_guest_framebuffers"] = {
+                {"available", true}, {"targets", std::move(targets)}};
+        }
+        // The target pixels belong to emulated memory (VRAM), as on hardware:
+        // patched into this document's copy, never into the live process.
+        for (const auto& overlay : runtime.GuestMemoryOverlays) {
+            bool patched = false;
+            for (auto& region : document.at("process").at("memory").at("regions")) {
+                const uint64_t base = region.at("base_address").get<uint64_t>();
+                auto& bytes = region.at("bytes").get_binary();
+                if (overlay.VirtualAddress < base ||
+                    overlay.VirtualAddress - base + overlay.Bytes.size() > bytes.size()) {
+                    continue;
+                }
+                std::copy(overlay.Bytes.begin(), overlay.Bytes.end(),
+                          bytes.begin() + static_cast<std::ptrdiff_t>(overlay.VirtualAddress - base));
+                patched = true;
+                break;
+            }
+            if (!patched) {
+                SetError(error, "savestate framebuffer lies outside emulated memory");
+                return false;
+            }
+        }
         const double captureSeconds = SecondsSince(captureStarted);
         const auto encodeStarted = std::chrono::steady_clock::now();
         auto& memoryWriteGeneration =
@@ -1276,6 +1315,38 @@ bool LoadNativeA32State(
                 restoredRuntime.PicaTextureCache.push_back(
                     std::move(texture));
             }
+        }
+        if (const auto framebuffers = encodedRuntime.find("native_pica_guest_framebuffers");
+            framebuffers != encodedRuntime.end() && framebuffers->value("available", false)) {
+            const auto& targets = framebuffers->at("targets");
+            if (!targets.is_array() || targets.size() > kMaximumPicaColorTargetCount) {
+                SetError(error, "savestate guest framebuffer list is invalid");
+                return false;
+            }
+            for (const auto& encoded : targets) {
+                Oot3d::Renderer::PicaRenderTargetColorSnapshot target;
+                target.RenderTargetNamespace = encoded.at("render_target_namespace").get<uint64_t>();
+                target.ColorPhysicalAddress = encoded.at("color_physical_address").get<uint32_t>();
+                target.DepthPhysicalAddress = encoded.at("depth_physical_address").get<uint32_t>();
+                target.FramebufferWidth = encoded.at("framebuffer_width").get<uint16_t>();
+                target.FramebufferHeight = encoded.at("framebuffer_height").get<uint16_t>();
+                target.FramebufferColorFormat = encoded.at("framebuffer_color_format").get<uint8_t>();
+                target.FramebufferDepthFormat = encoded.at("framebuffer_depth_format").get<uint8_t>();
+                target.WBuffering = encoded.value("w_buffering", false);
+                target.SceneEffectsResolved = encoded.value("scene_effects_resolved", false);
+                // Pixels are decoded from the restored memory by the session.
+                target.RenderScalePermille = 0U;
+                target.ImageWidth = target.FramebufferWidth;
+                target.ImageHeight = target.FramebufferHeight;
+                if (target.ColorPhysicalAddress == 0U || target.FramebufferWidth == 0U ||
+                    target.FramebufferHeight == 0U || target.FramebufferWidth % 8U != 0U ||
+                    target.FramebufferHeight % 8U != 0U || target.FramebufferColorFormat > 4U) {
+                    SetError(error, "savestate guest framebuffer is invalid");
+                    return false;
+                }
+                restoredRuntime.PicaGuestFramebuffers.push_back(std::move(target));
+            }
+            restoredRuntime.PicaGuestFramebuffersAvailable = true;
         }
         const auto encodedPicaColorTargets =
             encodedRuntime.find("native_pica_color_targets");
