@@ -23,23 +23,44 @@ def fnv1a64(data: bytes) -> int:
     return result
 
 
+def zstd_decompress(data: bytes) -> bytes:
+    try:
+        from compression import zstd  # Python 3.14+
+        return zstd.decompress(data)
+    except ImportError:
+        pass
+    try:
+        import zstandard
+    except ImportError as exception:
+        raise ValueError(
+            "compressed savestates (container version 2) need Python 3.14 "
+            "or the zstandard package"
+        ) from exception
+    return zstandard.ZstdDecompressor().decompress(data)
+
+
 def load(path: Path, verify_checksum: bool) -> dict:
+    """Read a version 1 (msgpack) or version 2 (Zstandard msgpack) state."""
     encoded = path.read_bytes()
     if len(encoded) < HEADER_SIZE or encoded[:8] != MAGIC:
         raise ValueError(f"{path} is not an OOT3D native savestate")
-    version, header_size, payload_size, payload_hash, reserved = (
+    version, header_size, payload_size, payload_hash, document_size = (
         struct.unpack_from("<IIQQQ", encoded, 8)
     )
     payload = encoded[HEADER_SIZE:]
     if (
-        version != 1
+        version not in (1, 2)
         or header_size != HEADER_SIZE
-        or reserved != 0
+        or (version == 1 and document_size != 0)
         or len(payload) != payload_size
     ):
         raise ValueError(f"{path} has an invalid container header")
     if verify_checksum and fnv1a64(payload) != payload_hash:
         raise ValueError(f"{path} has an invalid payload checksum")
+    if version == 2:
+        payload = zstd_decompress(payload)
+        if len(payload) != document_size:
+            raise ValueError(f"{path} has an invalid compressed payload")
     return msgpack.unpackb(payload, raw=False, strict_map_key=False)
 
 

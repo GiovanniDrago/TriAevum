@@ -14,7 +14,11 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <string_view>
+#include <vector>
+
+#include <zstd.h>
 
 namespace {
 
@@ -192,7 +196,7 @@ int main() {
                 statePath, compatibility, runtime, process, host,
                 picaFrontend, submissionQueue, dspHle, &io, &error),
             error);
-    Require(io.FileBytes > io.PayloadBytes &&
+    Require(io.FileBytes > 40U && io.PayloadBytes != 0U &&
                 io.SemanticFingerprint != 0U &&
                 std::filesystem::is_regular_file(statePath),
             "savestate container was not written");
@@ -243,6 +247,79 @@ int main() {
                     malformed, process, host, picaFrontend, submissionQueue,
                     dspHle, nullptr, &producerError),
                 "savestate accepted a producer with incomplete pixels");
+    }
+
+    // The container is compressed (version 2); version 1 files still load and
+    // a size that disagrees with the compressed frame is refused.
+    {
+        std::ifstream input(statePath, std::ios::binary);
+        std::vector<uint8_t> file((std::istreambuf_iterator<char>(input)),
+                                  std::istreambuf_iterator<char>());
+        const auto readWord = [&](size_t offset, size_t count) {
+            uint64_t value = 0U;
+            for (size_t i = 0; i < count; ++i)
+                value |= uint64_t{file[offset + i]} << (8U * i);
+            return value;
+        };
+        const auto writeWord = [](std::vector<uint8_t>& bytes, size_t offset,
+                                  size_t count, uint64_t value) {
+            for (size_t i = 0; i < count; ++i)
+                bytes[offset + i] = static_cast<uint8_t>(value >> (8U * i));
+        };
+        const auto fnv = [](const uint8_t* bytes, size_t size) {
+            uint64_t hash = 14695981039346656037ULL;
+            for (size_t i = 0; i < size; ++i)
+                hash = (hash ^ bytes[i]) * 1099511628211ULL;
+            return hash;
+        };
+        Require(file.size() > 40U && readWord(8U, 4U) == 2U &&
+                    readWord(32U, 8U) == io.PayloadBytes &&
+                    file.size() - 40U < io.PayloadBytes,
+                "savestate payload was not compressed");
+        std::vector<uint8_t> document(io.PayloadBytes);
+        Require(ZSTD_decompress(document.data(), document.size(),
+                                file.data() + 40U, file.size() - 40U) ==
+                    document.size(),
+                "savestate payload is not one Zstandard frame");
+
+        std::vector<uint8_t> legacy(file.begin(), file.begin() + 40);
+        writeWord(legacy, 8U, 4U, 1U);
+        writeWord(legacy, 16U, 8U, document.size());
+        writeWord(legacy, 24U, 8U, fnv(document.data(), document.size()));
+        writeWord(legacy, 32U, 8U, 0U);
+        legacy.insert(legacy.end(), document.begin(), document.end());
+        const auto legacyPath = root / "uncompressed-v1.oot3dsav";
+        std::ofstream(legacyPath, std::ios::binary)
+            .write(reinterpret_cast<const char*>(legacy.data()),
+                   static_cast<std::streamsize>(legacy.size()));
+
+        auto wrongSize = file;
+        writeWord(wrongSize, 32U, 8U, io.PayloadBytes + 1U);
+        const auto wrongSizePath = root / "wrong-document-size.oot3dsav";
+        std::ofstream(wrongSizePath, std::ios::binary)
+            .write(reinterpret_cast<const char*>(wrongSize.data()),
+                   static_cast<std::streamsize>(wrongSize.size()));
+
+        Require(process.Memory().Write32(0x00100020U, 0xDEADBEEFU),
+                "cannot mutate guest memory");
+        NativeA32SavestateRuntimeState refused;
+        std::string refusal;
+        uint32_t word = 0U;
+        Require(!LoadNativeA32State(wrongSizePath, compatibility, refused,
+                                    process, host, picaFrontend,
+                                    submissionQueue, dspHle, nullptr,
+                                    &refusal) &&
+                    process.Memory().Read32(0x00100020U, &word) &&
+                    word == 0xDEADBEEFU,
+                "savestate accepted a document size the frame contradicts");
+        NativeA32SavestateRuntimeState legacyRuntime;
+        Require(LoadNativeA32State(legacyPath, compatibility, legacyRuntime,
+                                   process, host, picaFrontend,
+                                   submissionQueue, dspHle, nullptr, &error),
+                error);
+        Require(process.Memory().Read32(0x00100020U, &word) &&
+                    word == 0x12345678U && legacyRuntime.FrameCount == 321U,
+                "uncompressed version 1 savestate did not restore");
     }
 
     Require(process.Memory().Write32(0x00100020U, 0xDEADBEEFU),

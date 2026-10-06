@@ -23,6 +23,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <zstd.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -74,8 +75,13 @@ TopScreenPauseProjectionState DecodeProjection(const nlohmann::json& encoded) {
 
 constexpr std::array<uint8_t, 8> kStateMagic{
     'O', 'O', 'T', '3', 'D', 'S', 'V', 0};
-constexpr uint32_t kStateContainerVersion = 1U;
+// Version 1 stores the msgpack document as is. Version 2 stores it as one
+// Zstandard frame; the size and checksum describe the stored bytes and the
+// last header word holds the document size.
+constexpr uint32_t kUncompressedStateContainerVersion = 1U;
+constexpr uint32_t kStateContainerVersion = 2U;
 constexpr uint32_t kStateHeaderSize = 40U;
+constexpr int kStateCompressionLevel = 3;
 constexpr uint64_t kMaximumStatePayloadBytes = 1ULL << 30U;
 constexpr uint64_t kMaximumPicaVisualReplayStateBytes = 256ULL << 20U;
 constexpr size_t kMaximumPicaTextureCacheEntryCount = 4096U;
@@ -820,13 +826,24 @@ bool SaveNativeA32State(
         const uint64_t semanticFingerprint = Fnv1a64(
             nlohmann::json::to_msgpack(document));
         memoryWriteGeneration = savedMemoryWriteGeneration;
-        const std::vector<uint8_t> payload =
+        const std::vector<uint8_t> documentBytes =
             nlohmann::json::to_msgpack(document);
-        const double encodeSeconds = SecondsSince(encodeStarted);
-        if (payload.empty() || payload.size() > kMaximumStatePayloadBytes) {
+        if (documentBytes.empty() ||
+            documentBytes.size() > kMaximumStatePayloadBytes) {
             SetError(error, "savestate payload exceeds the supported size");
             return false;
         }
+        std::vector<uint8_t> payload(ZSTD_compressBound(documentBytes.size()));
+        const size_t compressedSize = ZSTD_compress(
+            payload.data(), payload.size(), documentBytes.data(),
+            documentBytes.size(), kStateCompressionLevel);
+        if (ZSTD_isError(compressedSize) != 0U) {
+            SetError(error, std::string("savestate compression failed: ") +
+                                ZSTD_getErrorName(compressedSize));
+            return false;
+        }
+        payload.resize(compressedSize);
+        const double encodeSeconds = SecondsSince(encodeStarted);
 
         std::vector<uint8_t> header;
         header.reserve(kStateHeaderSize);
@@ -835,7 +852,7 @@ bool SaveNativeA32State(
         AppendLittleEndian(header, kStateHeaderSize);
         AppendLittleEndian(header, static_cast<uint64_t>(payload.size()));
         AppendLittleEndian(header, Fnv1a64(payload));
-        AppendLittleEndian(header, uint64_t{0});
+        AppendLittleEndian(header, static_cast<uint64_t>(documentBytes.size()));
         if (header.size() != kStateHeaderSize) {
             SetError(error, "internal savestate header size mismatch");
             return false;
@@ -877,7 +894,7 @@ bool SaveNativeA32State(
             return false;
         }
         if (result != nullptr) {
-            result->PayloadBytes = payload.size();
+            result->PayloadBytes = documentBytes.size();
             result->FileBytes = header.size() + payload.size();
             result->SemanticFingerprint = semanticFingerprint;
             result->CaptureSeconds = captureSeconds;
@@ -941,14 +958,19 @@ bool LoadNativeA32State(
         uint32_t headerSize = 0;
         uint64_t payloadSize = 0;
         uint64_t payloadChecksum = 0;
+        uint64_t documentSize = 0;
         if (!ReadLittleEndian(file, 8U, version) ||
             !ReadLittleEndian(file, 12U, headerSize) ||
             !ReadLittleEndian(file, 16U, payloadSize) ||
             !ReadLittleEndian(file, 24U, payloadChecksum) ||
-            version != kStateContainerVersion ||
+            !ReadLittleEndian(file, 32U, documentSize) ||
+            (version != kStateContainerVersion &&
+             version != kUncompressedStateContainerVersion) ||
             headerSize != kStateHeaderSize || payloadSize == 0U ||
             payloadSize > kMaximumStatePayloadBytes ||
-            payloadSize != file.size() - headerSize) {
+            payloadSize != file.size() - headerSize ||
+            (version == kStateContainerVersion &&
+             (documentSize == 0U || documentSize > kMaximumStatePayloadBytes))) {
             SetError(error, "savestate container header is invalid");
             return false;
         }
@@ -959,7 +981,26 @@ bool LoadNativeA32State(
         }
         const double ioSeconds = SecondsSince(ioStarted);
         const auto decodeStarted = std::chrono::steady_clock::now();
-        const auto document = nlohmann::json::from_msgpack(payload);
+        std::vector<uint8_t> decompressed;
+        std::span<const uint8_t> documentBytes = payload;
+        if (version == kStateContainerVersion) {
+            if (ZSTD_getFrameContentSize(payload.data(), payload.size()) !=
+                documentSize) {
+                SetError(error, "savestate compressed payload size does not match");
+                return false;
+            }
+            decompressed.resize(static_cast<size_t>(documentSize));
+            const size_t decompressedSize = ZSTD_decompress(
+                decompressed.data(), decompressed.size(), payload.data(),
+                payload.size());
+            if (ZSTD_isError(decompressedSize) != 0U ||
+                decompressedSize != documentSize) {
+                SetError(error, "savestate payload could not be decompressed");
+                return false;
+            }
+            documentBytes = decompressed;
+        }
+        const auto document = nlohmann::json::from_msgpack(documentBytes);
         if (!document.is_object() ||
             document.value("format", std::string{}) !=
                 "oot3d_native_a32_savestate_v1" ||
@@ -1770,7 +1811,7 @@ bool LoadNativeA32State(
         }
         runtime = restoredRuntime;
         if (result != nullptr) {
-            result->PayloadBytes = payloadSize;
+            result->PayloadBytes = documentBytes.size();
             result->FileBytes = file.size();
             result->IoSeconds = ioSeconds;
             result->DecodeSeconds = decodeSeconds;

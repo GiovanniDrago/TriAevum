@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Patch explicit guest-memory bytes in an OoT3D native A32 savestate."""
+"""Patch explicit guest-memory bytes in an OoT3D native A32 savestate.
+
+Reads either container version; writes version 1 (uncompressed), which the
+runtime still loads.
+"""
 
 from __future__ import annotations
 
@@ -9,18 +13,10 @@ from pathlib import Path
 
 import msgpack
 
+from compare_savestates import HEADER_SIZE, MAGIC, fnv1a64, load
 
-MAGIC = b"OOT3DSV\0"
-HEADER_SIZE = 40
+
 CONTAINER_VERSION = 1
-
-
-def fnv1a64(data: bytes) -> int:
-    result = 14695981039346656037
-    for value in data:
-        result ^= value
-        result = (result * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-    return result
 
 
 def parse_write(specification: str) -> tuple[int, bytes]:
@@ -47,19 +43,7 @@ def main() -> int:
     )
     arguments = parser.parse_args()
 
-    encoded = arguments.input.read_bytes()
-    if len(encoded) < HEADER_SIZE or encoded[:8] != MAGIC:
-        raise ValueError("input is not an OoT3D native A32 savestate")
-    version, header_size, payload_size, payload_hash, reserved = (
-        struct.unpack_from("<IIQQQ", encoded, 8)
-    )
-    if version != CONTAINER_VERSION or header_size != HEADER_SIZE or reserved != 0:
-        raise ValueError("unsupported savestate container header")
-    payload = encoded[HEADER_SIZE:]
-    if len(payload) != payload_size or fnv1a64(payload) != payload_hash:
-        raise ValueError("savestate payload size or checksum is invalid")
-
-    document = msgpack.unpackb(payload, raw=False, strict_map_key=False)
+    document = load(arguments.input, verify_checksum=True)
     if document.get("format") != "oot3d_native_a32_savestate_v1":
         raise ValueError("unsupported savestate document")
     memory = document["process"]["memory"]

@@ -11,6 +11,7 @@
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <zstd.h>
 
 namespace {
 using Sample = AudioCore::StereoBuffer16::value_type;
@@ -262,12 +263,23 @@ nlohmann::json ReadDspSnapshot(const char* path) {
         return value;
     };
     const std::array<u8, 8> magic{'O', 'O', 'T', '3', 'D', 'S', 'V', 0};
-    Require(std::equal(magic.begin(), magic.end(), bytes.begin()) && read(8, 4) == 1 &&
+    const u64 version = read(8, 4);
+    Require(std::equal(magic.begin(), magic.end(), bytes.begin()) && (version == 1 || version == 2) &&
             read(12, 4) == 40 && read(16, 8) == bytes.size() - 40, "unsupported checkpoint header");
     u64 hash = 14695981039346656037ULL;
     for (std::size_t i = 40; i < bytes.size(); ++i) hash = (hash ^ bytes[i]) * 1099511628211ULL;
     Require(hash == read(24, 8), "checkpoint payload hash differs");
-    auto document = nlohmann::json::from_msgpack(bytes.begin() + 40, bytes.end());
+    if (version == 2) {
+        // Version 2 stores the msgpack document as one Zstandard frame.
+        std::vector<u8> document(static_cast<std::size_t>(read(32, 8)));
+        Require(ZSTD_decompress(document.data(), document.size(), bytes.data() + 40, bytes.size() - 40) ==
+                    document.size(),
+                "checkpoint payload cannot be decompressed");
+        bytes = std::move(document);
+    } else {
+        bytes.erase(bytes.begin(), bytes.begin() + 40);
+    }
+    auto document = nlohmann::json::from_msgpack(bytes);
     return std::move(document.at("dsp_hle"));
 }
 }

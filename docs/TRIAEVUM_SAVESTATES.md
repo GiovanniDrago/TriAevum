@@ -29,6 +29,17 @@ starts afresh with the next guest frame. S09 mid-flashback: 78 MB instead of
 previous format's (1280x720 and 1720x720). Azahar `.cst` files themselves are
 not readable: they serialize Azahar's own kernel, service and JIT objects.
 
+The file is a 40-byte header followed by the msgpack document. Container
+version 2 (since 2026-10-06) stores the document as one Zstandard frame
+(level 3, as Azahar compresses its states); the header's size and FNV-1a
+checksum describe the stored bytes and its last word holds the document size.
+Version 1 files (uncompressed document, last word 0) still load. S09
+mid-flashback: 23 MB instead of 78 MB; compression adds about 0.2 s to a save
+and decompression about 0.1 s to a load; restore captures are byte-identical to
+the uncompressed format's.
+`compare_savestates.py` reads both versions (version 2 needs Python 3.14 or the
+`zstandard` package); `patch_native_a32_savestate_memory.py` writes version 1.
+
 The simulation rate (`--gameplay-timing`: 30 Hz or Enhanced 60 Hz) is part of
 the game moment, not a setting. A state saved at the other rate is refused
 before anything is restored, with a message naming the rate to start with.
@@ -127,7 +138,13 @@ text continuation is pending is deferred to the next frame boundary.
   applied.
 - Mailbox path at 4K: save, save+settings, load, load+settings, a missing file
   (reported), load; the default folder and the last state are persisted.
-- `oot3d_native_a32_savestate_tests`: guest-extent round trip with settings,
+- 2026-10-06, graphics-free and compressed states: battery S09 (interpolated
+  and original 30 Hz, 1280x720 and 1720x720) gives the same results as before
+  compression and its captures are byte-identical; S03 and S10 load their
+  existing (version 1) states.
+- `oot3d_native_a32_savestate_tests`: compressed container, a version 1 copy
+  of the same document loads, a document size the frame contradicts is refused
+  before guest memory changes; guest-extent round trip with settings,
   rejection of guides or renderer extents in a guest-extent target, refusal of
   the other simulation rate before guest memory changes, resampling, library
   (names, folder, last state, persistence, newest-first listing, fixed slot).
@@ -139,5 +156,6 @@ text continuation is pending is deferred to the next frame boundary.
 - Until the game redraws, restored content is an enlargement of the guest
   extent, and content saved with scene effects resolved keeps those effects
   (for example a pause-menu background).
-- Decoded native textures dominate the file size (about 126 MB in Kokiri).
+- Guest memory dominates the file size (about 74 MB of the 78 MB document in
+  S09 before compression).
 - The notice drawn after a hotkey action is part of the presented frame.

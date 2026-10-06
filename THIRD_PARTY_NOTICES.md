@@ -115,6 +115,15 @@ The release ships it as `resources/gamecontrollerdb.txt` together with its
 zlib notice in `LICENSES/SDL-GameControllerDB-zlib.txt`. These community
 mappings supplement SDL's built-in controller database.
 
+## Zstandard
+
+The runtime links [Zstandard](https://github.com/facebook/zstd) 1.5.6 (release
+archive SHA-256
+`8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1`) statically
+to compress save states. Zstandard is dual-licensed upstream under BSD and
+GPL-2.0; TriAevum uses it under the BSD license, copyright Meta Platforms, Inc.
+and affiliates. Its notice is in `LICENSES/zstd-BSD-3-Clause.txt`.
+
 ## NVIDIA NRI
 
 The primary renderer uses

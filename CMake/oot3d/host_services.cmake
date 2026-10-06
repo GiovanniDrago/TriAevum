@@ -218,6 +218,30 @@ add_executable(ctr_y2r_service_tests EXCLUDE_FROM_ALL
 target_compile_features(ctr_y2r_service_tests PRIVATE cxx_std_20)
 set_property(TARGET ctr_y2r_service_tests PROPERTY FOLDER Tests)
 
+# Zstandard (BSD) compresses save states, as Azahar does. Static, library only;
+# offline builds provide FETCHCONTENT_SOURCE_DIR_ZSTD like the other packages.
+if(NOT TARGET libzstd_static)
+    include(FetchContent)
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
+    set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(zstd
+        GIT_REPOSITORY https://github.com/facebook/zstd.git
+        GIT_TAG v1.5.6
+        GIT_SHALLOW TRUE
+        SOURCE_SUBDIR build/cmake)
+    FetchContent_MakeAvailable(zstd)
+endif()
+if(NOT TARGET triaevum_zstd)
+    add_library(triaevum_zstd INTERFACE)
+    target_link_libraries(triaevum_zstd INTERFACE libzstd_static)
+    target_include_directories(triaevum_zstd INTERFACE "${zstd_SOURCE_DIR}/lib")
+endif()
+target_link_libraries(oot3d_native_audio_storage_tests PRIVATE triaevum_zstd)
+
 add_library(oot3d_native_a32_savestate STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_a32_savestate.cpp
     tools/oot3d/native_game_runtime/oot3d_savestate_library.cpp
@@ -231,13 +255,14 @@ target_link_libraries(oot3d_native_a32_savestate PUBLIC
     oot3d_native_a32_ctr_host
     oot3d_native_pica_submission
 )
+target_link_libraries(oot3d_native_a32_savestate PRIVATE triaevum_zstd)
 oot3d_target_defaults(oot3d_native_a32_savestate FOLDER Tools)
 
 add_executable(oot3d_native_a32_savestate_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_a32_savestate_tests.cpp
 )
 target_link_libraries(oot3d_native_a32_savestate_tests PRIVATE
-    oot3d_native_a32_savestate)
+    oot3d_native_a32_savestate triaevum_zstd)
 oot3d_target_defaults(oot3d_native_a32_savestate_tests FOLDER Tests)
 
 if (TARGET oot3d_native_a32_aot)

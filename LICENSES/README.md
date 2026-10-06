@@ -14,6 +14,7 @@ their imported source.
 | NVIDIA NRI | MIT | `LICENSES/NRI-MIT.txt` and pinned upstream source |
 | SDL2 2.32.10 (statically linked) | zlib | `LICENSES/SDL2-zlib.txt` |
 | SDL_GameControllerDB mappings | zlib | `LICENSES/SDL-GameControllerDB-zlib.txt` |
+| Zstandard 1.5.6 (statically linked) | BSD-3-Clause (upstream is dual BSD/GPL-2.0; used under BSD) | `LICENSES/zstd-BSD-3-Clause.txt` |
 | Microsoft Visual C++ runtime for shaderc | Microsoft runtime redistribution terms | `LICENSES/Microsoft-Visual-Cpp-Runtime.md` |
 | NXVK probe | GPL-2.0-or-later | `ports/switch_vulkan_probe/COPYING` |
 | shaderc shared runtime | Apache-2.0 | `LICENSES/shaderc-Apache-2.0.txt` |
