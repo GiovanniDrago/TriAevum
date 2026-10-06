@@ -77,7 +77,7 @@ bool DrawDirectionalShadows(GraphicsSettings& settings, const GraphicsCapabiliti
     }
     if (GraphicsSettingsRuntime::Instance().NativePresentationOverrideActive())
         ImGui::TextWrapped("Inactive while the F2 native override is enabled.");
-    ImGui::TextWrapped("Shadow quality is global and saved automatically. Scene lights use Lighting > Scene environment.");
+    ImGui::TextWrapped("Shadows apply to every scene and are saved automatically; the scene lights above are saved per scene.");
     return changed;
 }
 

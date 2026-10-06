@@ -188,7 +188,7 @@ GraphicsSettings GraphicsSettingsService::PresetForCurrent(
     }
     auto value = Preset(preset);
 
-    // Presets select rendering behavior. Host presentation, camera preference
+    // Presets select rendering behavior, motion and camera. Host presentation
     // and content identities are independent user-owned state.
     value.Window = current.Window;
     value.DisplayIndex = current.DisplayIndex;
@@ -196,7 +196,6 @@ GraphicsSettings GraphicsSettingsService::PresetForCurrent(
     value.OutputHeight = current.OutputHeight;
     value.RefreshRate = current.RefreshRate;
     value.VSync = current.VSync;
-    value.FovMultiplier = current.FovMultiplier;
     value.TexturePacks = current.TexturePacks;
     value.Grass.Rules = current.Grass.Rules;
     value.GrassSavedPreset = current.GrassSavedPreset;

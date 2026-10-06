@@ -56,6 +56,8 @@ class GraphicsSettingsPanel final {
     void DrawPresetSelector();
     // One page of renderer settings: its sections in order, applied together.
     void DrawSettingsPage(const char* id, std::initializer_list<Section> sections);
+    // The same sections without their own scrolling region.
+    void DrawSettingsSections(std::initializer_list<Section> sections);
     void DrawLightingTab(const std::vector<std::shared_ptr<GraphicsSettingsPanelTab>>& lightingTabs);
     void DrawMaterialsTab();
     void DrawPresentationStatus();
@@ -68,6 +70,8 @@ class GraphicsSettingsPanel final {
     // In the iMMERSE module (fast/immerse/mxao_settings_panel.cpp, under its
     // own licence); without it, fast/oot3d/immerse_unavailable.cpp.
     bool DrawMxaoSettings(EffectsSettings&);
+    // MXAO's credit and licence exception, at the foot of Ambient Occlusion.
+    void DrawMxaoCredits();
     bool DrawReflectionSettings(GraphicsSettings&, const GraphicsCapabilities&);
     bool DrawReflectionMaterialSettings(GraphicsSettings&, const GraphicsCapabilities&);
     bool DrawToonSettings(GraphicsSettings&, const GraphicsCapabilities&);

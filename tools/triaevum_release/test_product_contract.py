@@ -19,7 +19,7 @@ def fixture_product():
         "private_title_loaded": False,
         "capabilities": {"nri": True, "f1": True, "topscreen": True},
         "default_config": {"Graphics": {
-            "Preset": "Custom", "FrameRate": {"Mode": "Interpolated2x"},
+            "Preset": "Enhanced", "FrameRate": {"Mode": "Interpolated2x"},
         }},
     }
 
@@ -34,6 +34,10 @@ class ProductContractTests(unittest.TestCase):
                 validate_product_info(info)
         with self.assertRaisesRegex(ValueError, "commit"):
             validate_product_info(fixture_product(), "b" * 40)
+        info = fixture_product()
+        info["default_config"]["Graphics"]["Preset"] = "Custom"
+        with self.assertRaisesRegex(ValueError, "Enhanced"):
+            validate_product_info(info)
 
     def test_initializes_x2_only_for_new_configuration(self):
         with tempfile.TemporaryDirectory() as directory:

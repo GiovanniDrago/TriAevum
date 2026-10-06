@@ -9,12 +9,13 @@ class EnvironmentPanel final : public Fast::Oot3d::GraphicsSettingsPanelTab {
 public:
   explicit EnvironmentPanel(std::shared_ptr<SceneEnvironmentRuntime> runtime)
       : mRuntime(std::move(runtime)) {}
-  const char *Label() const noexcept override { return "Scene environment"; }
+  // A section of Lighting > Lights & Shadows, above the shadow settings.
+  const char *Label() const noexcept override { return "Scene lights"; }
   const char *Group() const noexcept override {
     return Fast::Oot3d::kLightingSettingsGroup;
   }
   void Draw() override {
-    ImGui::SeparatorText("Scene environment");
+    ImGui::SeparatorText("Scene lights");
     const auto state = mRuntime->Snapshot();
     if (!state.SceneId) {
       ImGui::TextWrapped("No native gameplay scene is available. Environment "
@@ -22,7 +23,10 @@ public:
       return;
     }
     ImGui::Text("Native scene: 0x%04X (all rooms)", unsigned(*state.SceneId));
-    ImGui::TextWrapped("Profile: %s", state.Path.string().c_str());
+    ImGui::TextWrapped(state.FileExists
+                           ? "Profile: %s"
+                           : "Base environment (the title intro's). Saving creates %s for this scene only.",
+                       state.Path.string().c_str());
     auto value = state.Profile;
     auto &graphics = Fast::Oot3d::GraphicsSettingsRuntime::Instance();
     const auto settings = graphics.Snapshot();
@@ -38,8 +42,8 @@ public:
         settings.Preset == Fast::Oot3d::GraphicsPreset::Authentic ||
         graphics.NativePresentationOverrideActive())
       ImGui::TextWrapped(
-          "Inactive: choose the Modern lighting model in Lighting & GI, with F2 "
-          "native override off and a supported renderer.");
+          "Inactive: needs the Modern lighting model, F2 native override off "
+          "and a supported renderer.");
     ImGui::BeginDisabled(!value.Enabled || !supported);
     changed |= ImGui::Checkbox("Preserve scene brightness", &value.PreserveSceneBrightness);
     ImGui::TextWrapped(
@@ -127,7 +131,7 @@ public:
                              "no environment light.");
         ImGui::TextWrapped(
             i == 0 ? "Key light casts directional shadows when they are enabled "
-                     "in Shadows. It lights actors and static world surfaces."
+                     "below. It lights actors and static world surfaces."
                    : "Fill light is unshadowed.");
         ImGui::PopID();
         ImGui::EndTabItem();
@@ -179,7 +183,7 @@ public:
     else
       ImGui::TextUnformatted(
           status.FileExists ? "Scene profile saved."
-                            : "No scene profile file. Save to create one.");
+                            : "Using the base environment. Save to keep a profile for this scene.");
   }
 
 private:

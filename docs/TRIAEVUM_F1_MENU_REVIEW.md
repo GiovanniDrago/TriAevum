@@ -1,5 +1,46 @@
 # F1 settings rationalization
 
+## Enhanced default, Lights & Shadows and credits (2026-10-06)
+
+**Enhanced** is the maintainer's current play configuration (captured
+2026-10-06 in `EnhancedPresetDocument()`): Motion and camera (Interpolated
+2x, scene FOV 1.10x), the Modern lighting model, virtual shadow maps and
+point-light cube shadows, MXAO (solid angle, face normals, temporal) and the
+custom grass profile; the other renderer settings are the same configuration's
+(antialiasing Off, GI, reflections and Toon off). Presets now set Motion and
+camera too: choosing one sets the frame rate and the scene FOV, and still keeps
+window, output, VSync, texture packs, grass sources, reflection materials and
+the saved grass preset. A new installation starts from Enhanced:
+`--product-info` exports the preset with the title's grass source rules
+(`triaevum_product_graphics.inc` now holds only those), and Forge's contract
+requires `"Preset": "Enhanced"`. The HUD default is unchanged and equals the
+maintainer's current HUD (`config/topscreen_ui.example.json`); presets never
+change the HUD.
+
+**Lighting** sections: **Lighting & GI**, **Lights & Shadows** (Modern only),
+**Ambient Occlusion** (formerly Occlusion), **Reflections**, **Toon**. Lights &
+Shadows shows the scene lights (formerly the Scene environment tab, owned by
+`SceneEnvironmentRuntime`, saved per scene) above the directional and point
+shadows (owned by `GraphicsSettingsRuntime`, every scene). Both act only in
+the Modern model, so the section is absent with Native. A scene without its
+own profile takes the **base environment**, `BaseSceneEnvironmentProfile()`:
+the title intro's tuned profile (scene 0x6B). **Save scene environment** stores
+the edited lights for the current scene only.
+
+Credits: **HUD** thanks M-1, author of the TopScreen mod; **Ambient
+Occlusion** closes with MXAO's credit (Pascal Gilcher, iMMERSE), its reserved
+rights and the licence exception (permission granted to TriAevum only, outside
+TriAevum's GPL). Builds without the iMMERSE module show no MXAO credit.
+
+Verification (developer build): actual-widget smoke **8,810 assertions** (the
+section order with Native and with Modern, absence of the former sections, the
+base environment on a scene without a profile and after a transition, the
+credits); foundation tests 337/337; release tests including the compiled
+`--product-info` export. Game check from the Hyrule Field checkpoint with the
+play configuration: without a scene profile the frames are byte-identical to
+the same run with an explicit copy of the intro profile, and differ from the
+environment-off run.
+
 ## Two lighting models (2026-10-06)
 
 **Lighting > Lighting & GI > Lighting model** offers **Native** and **Modern**.
@@ -691,7 +732,10 @@ interactive runtime also survived framebuffer readback and the following
 
 ## Enhanced Preset Profile (2026-10-01)
 
-The **Enhanced** preset is the user's tuned Kokiri play configuration
+Superseded on 2026-10-06: see "Enhanced default, Lights & Shadows and credits"
+above (new capture, default of new installations, presets set the camera).
+
+The **Enhanced** preset was the user's tuned Kokiri play configuration
 ("enhanced"): Per-pixel + PBR lighting, virtual shadow maps, point-light cube
 shadows, MXAO from depth normals, the custom grass profile, DLSS and fixed-60
 presentation. `EnhancedPresetDocument()` (graphics settings persistence) holds

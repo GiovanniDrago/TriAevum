@@ -1171,10 +1171,10 @@ GraphicsSettingsLoadResult MigrateLegacy(
 } // namespace
 
 std::string_view EnhancedPresetDocument() noexcept {
-    // Captured 2026-10-01 from the Kokiri play configuration ("enhanced").
+    // Captured 2026-10-06 from the Kokiri play configuration.
     return R"json({
   "AA": {
-    "Mode": "Upscaler",
+    "Mode": "Off",
     "MsaaSamples": 1,
     "TAA": {
       "ClampExpansion": 0.05000000074505806,
@@ -1187,6 +1187,9 @@ std::string_view EnhancedPresetDocument() noexcept {
       "Quality": "UltraPerformance",
       "Sharpness": 0.3499999940395355
     }
+  },
+  "Camera": {
+    "FovMultiplier": 1.100000023841858
   },
   "Effects": {
     "AO": {
@@ -1207,7 +1210,7 @@ std::string_view EnhancedPresetDocument() noexcept {
         "Quality": 0,
         "ScreenRadius": 2.5,
         "ShadingRate": 1,
-        "Temporal": false
+        "Temporal": true
       },
       "Quality": 1,
       "Radius": 1.5399999618530273,
@@ -1227,12 +1230,12 @@ std::string_view EnhancedPresetDocument() noexcept {
       "Strength": 1.0
     },
     "GlobalIllumination": {
-      "DiffuseIntensity": 0.8100000023841858,
-      "DynamicLights": 1.0,
-      "KeyLight": 1.0,
+      "DiffuseIntensity": 0.05999999865889549,
+      "DynamicLights": 0.3499999940395355,
+      "KeyLight": 1.600000023841858,
       "Mode": "Off",
       "Resolution": "Half",
-      "SceneLight": 1.0,
+      "SceneLight": 0.0,
       "ScreenSpace": {
         "FilterLevels": 2,
         "HighlightClamp": 0.0,
@@ -1245,8 +1248,8 @@ std::string_view EnhancedPresetDocument() noexcept {
         "Validation": false,
         "WorkScale": "Quarter"
       },
-      "SkyLight": 0.25,
-      "Specular": true,
+      "SkyLight": 0.20000000298023224,
+      "Specular": false,
       "SpecularIntensity": 0.0
     },
     "PointShadows": {

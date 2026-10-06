@@ -4284,7 +4284,8 @@ TEST(Oot3dGraphicsSettings, VisualPresetsPreserveHostAndContentIdentityState) {
     EXPECT_EQ(toon.OutputHeight, 1440U);
     EXPECT_EQ(toon.RefreshRate, 144U);
     EXPECT_FALSE(toon.VSync);
-    EXPECT_FLOAT_EQ(toon.FovMultiplier, 1.25F);
+    // Motion and camera belong to the preset.
+    EXPECT_FLOAT_EQ(toon.FovMultiplier, 1.0F);
     EXPECT_TRUE(toon.TexturePacks.Azahar.LoadCustomTextures);
     EXPECT_EQ(toon.TexturePacks.Azahar.LoadDirectory,
               "custom-textures");
@@ -4343,7 +4344,10 @@ TEST(Oot3dGraphicsSettings, EnhancedIsTheCapturedProfileAndToonKeepsItsBase) {
     EXPECT_EQ(enhanced.Effects.MxaoNormals, MxaoNormalSource::Geometry);
     EXPECT_EQ(enhanced.Effects.DirectionalShadows.Mode, DirectionalShadowMode::VirtualShadowMaps);
     EXPECT_EQ(enhanced.Effects.PointShadows.Mode, PointShadowMode::CubeMaps);
+    EXPECT_TRUE(enhanced.Effects.MxaoTemporal);
     EXPECT_EQ(enhanced.FrameRate, FrameRateMode::Interpolated2x);
+    EXPECT_FLOAT_EQ(enhanced.FovMultiplier, 1.1F);
+    EXPECT_EQ(enhanced.AntiAliasing, AntiAliasingMode::Off);
     EXPECT_EQ(enhanced.Grass.Quality, GrassQuality::Custom);
     EXPECT_EQ(enhanced.UpscalerDlssModel, DlssModel::Transformer);
     EXPECT_EQ(DlssRenderPreset(DlssModel::Transformer, UpscalerQuality::UltraPerformance), 11U);
@@ -4371,12 +4375,14 @@ TEST(Oot3dGraphicsSettings, EnhancedIsTheCapturedProfileAndToonKeepsItsBase) {
             EXPECT_EQ(encoded[key], value) << key;
         }
     }
-    // A preset keeps the user's own state.
+    // A preset keeps the user's own state and sets motion and camera.
     auto current = GraphicsSettingsService::Preset(GraphicsPreset::Custom);
     current.FovMultiplier = 1.2F;
+    current.VSync = false;
     current.TexturePacks.Azahar.LoadCustomTextures = true;
     const auto chosen = GraphicsSettingsService::PresetForCurrent(GraphicsPreset::Enhanced, current);
-    EXPECT_FLOAT_EQ(chosen.FovMultiplier, 1.2F);
+    EXPECT_FLOAT_EQ(chosen.FovMultiplier, 1.1F);
+    EXPECT_FALSE(chosen.VSync);
     EXPECT_TRUE(chosen.TexturePacks.Azahar.LoadCustomTextures);
     EXPECT_EQ(chosen.Grass.Rules.size(), current.Grass.Rules.size());
     const auto toon = GraphicsSettingsService::Preset(GraphicsPreset::Toon);

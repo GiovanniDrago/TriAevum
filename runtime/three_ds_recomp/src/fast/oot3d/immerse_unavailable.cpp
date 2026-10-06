@@ -1,7 +1,8 @@
 // TriAevum's stand-in for the optional iMMERSE module (fast/immerse, under its
 // own licence) in builds that leave it out: MXAO reports that it was not
 // compiled, so the capability check keeps it unselectable, and it has no F1
-// controls. Builds with the module (ENABLE_OOT3D_IMMERSE) compile nothing here.
+// controls or credits. Builds with the module (ENABLE_OOT3D_IMMERSE) compile
+// nothing here.
 #include "fast/oot3d/graphics_settings_window.h"
 #include "fast/oot3d/mxao_pass.h"
 
@@ -9,6 +10,9 @@
 namespace Fast::Oot3d {
 bool GraphicsSettingsPanel::DrawMxaoSettings(EffectsSettings&) {
     return false;
+}
+
+void GraphicsSettingsPanel::DrawMxaoCredits() {
 }
 
 #ifdef ENABLE_OOT3D_VULKAN

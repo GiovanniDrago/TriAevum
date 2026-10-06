@@ -590,8 +590,8 @@ void NativeA32WindowSession::Setup() {
       [](const Fast::Renderer3ds::PicaEnvironmentLighting& environment) {
         Fast::Oot3d::GraphicsSettingsRuntime::Instance().PublishSceneEnvironment(environment);
       });
-  // F1 order: Scene environment joins Lighting; then Controls, HUD and Game
-  // (Save states, Language) after the graphics tabs.
+  // F1 order: the scene lights join Lighting > Lights & Shadows; then
+  // Controls, HUD and Game (Save states, Language) after the graphics tabs.
   applicationSettingsTabs.push_back(Oot3dNativeGame::CreateSceneEnvironmentPanel(sceneEnvironment));
   applicationSettingsTabs.push_back(
       Oot3dNativeGame::CreateNativeControlsSettingsPanel(

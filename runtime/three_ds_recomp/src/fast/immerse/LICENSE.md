@@ -27,9 +27,10 @@ Copyright (c) Pascal Gilcher. All rights reserved.
   transferable and extends to no one else: receiving TriAevum, its source, or a
   copy or fork of either gives no right to use, modify or redistribute this
   module. Anyone else needs the author's own permission.
-- Credit: iMMERSE MXAO by Pascal Gilcher (martysmods.com). The F1 Lighting tab
-  shows it with the MXAO controls, and `THIRD_PARTY_NOTICES.md` records it for
-  source and binary distributions.
+- Credit: iMMERSE MXAO by Pascal Gilcher (martysmods.com). F1 Lighting >
+  Ambient Occlusion closes with it, the reserved rights and this exception in
+  brief, and `THIRD_PARTY_NOTICES.md` records it for source and binary
+  distributions.
 
 ## Boundary
 

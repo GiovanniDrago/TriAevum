@@ -23,7 +23,7 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
     const bool modern = UsesFullSceneLighting(settings.Effects.SurfaceLighting);
     ImGui::TextWrapped(modern
         ? "Per-pixel lighting from native scene lights and selected local lights, with PBR materials. Unsupported native materials keep their original shading."
-        : "Original native shading. Supported PBR materials use the native scene lights; other surfaces and projected shadows stay native. Scene environment overrides are inactive.");
+        : "Original native shading. Supported PBR materials use the native scene lights; other surfaces and projected shadows stay native. Lights & Shadows is available with Modern.");
     if (UsesPbrMaterials(settings.Effects.SurfaceLighting)) {
         ImGui::TextWrapped(modern
             ? "PBR uses Azahar material packs configured in Materials > Texture packs. Materials without a pack use native per-pixel lighting."
@@ -219,7 +219,7 @@ bool GraphicsSettingsPanel::DrawAmbientOcclusionSettings(GraphicsSettings& setti
         ImGui::TextWrapped("CACAO unavailable: %s", capabilities.Get(GraphicsCapability::FidelityFxCacao).Reason.c_str());
     if (!capabilities.Has(GraphicsCapability::ImmerseMxao))
         ImGui::TextWrapped("MXAO unavailable: %s", capabilities.Get(GraphicsCapability::ImmerseMxao).Reason.c_str());
-
+    DrawMxaoCredits();
     return changed;
 }
 } // namespace Fast::Oot3d

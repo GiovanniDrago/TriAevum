@@ -40,6 +40,10 @@ struct SceneEnvironmentProfile {
              Fast::Renderer3ds::kPicaScenePointLightGroups> PointLights{};
   bool operator==(const SceneEnvironmentProfile &) const = default;
 };
+// The environment of every scene without its own profile: the title intro's
+// (scene 0x6B) tuned lights. Saving stores a profile for the current scene only.
+[[nodiscard]] SceneEnvironmentProfile BaseSceneEnvironmentProfile();
+
 struct SceneEnvironmentSnapshot {
   std::optional<uint16_t> SceneId;
   SceneEnvironmentProfile Profile;

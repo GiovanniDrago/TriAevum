@@ -4,7 +4,14 @@ Updated 2026-09-07. Baseline: project `476f384dc`, renderer `93ba845f`.
 
 ## Product defaults
 
-`tools/oot3d/native_game_runtime/triaevum_product_graphics.inc` holds the
+Since 2026-10-06 a new installation starts from the **Enhanced** preset
+(`EnhancedPresetDocument()`, the maintainer's current play configuration) and
+`triaevum_product_graphics.inc` holds only the title's grass source rules,
+which no preset owns; see `TRIAEVUM_F1_MENU_REVIEW.md`, "Enhanced default,
+Lights & Shadows and credits". The September 7 snapshot below, with its Toon
+style, is no longer the default.
+
+Former content: `tools/oot3d/native_game_runtime/triaevum_product_graphics.inc` held the
 maintainer-approved snapshot from the September 7 playable session:
 
 - Visual interpolation x2 (30 Hz native logic, 60 Hz presentation target).

@@ -283,15 +283,19 @@ void GraphicsSettingsPanel::DrawPresetSelector() {
 }
 
 void GraphicsSettingsPanel::DrawSettingsPage(const char* id, std::initializer_list<Section> sections) {
+    ImGui::BeginChild(id);
+    DrawSettingsSections(sections);
+    ImGui::EndChild();
+}
+
+void GraphicsSettingsPanel::DrawSettingsSections(std::initializer_list<Section> sections) {
     auto& runtime = GraphicsSettingsRuntime::Instance();
     auto settings = runtime.Snapshot();
     const auto capabilities = runtime.Capabilities();
     bool changed = false;
-    ImGui::BeginChild(id);
     ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.48F);
     for (const auto section : sections) changed |= (this->*section)(settings, capabilities);
     ImGui::PopItemWidth();
-    ImGui::EndChild();
     if (changed) {
         settings.Preset = GraphicsPreset::Custom;
         mRendererStatus = SettingsUi::DescribeApply(
@@ -309,20 +313,23 @@ void GraphicsSettingsPanel::DrawLightingTab(
         }
     };
     section("Lighting & GI", &GraphicsSettingsPanel::DrawLightingSettings);
-    section("Shadows", &GraphicsSettingsPanel::DrawShadowSettings);
-    section("Occlusion", &GraphicsSettingsPanel::DrawAmbientOcclusionSettings);
-    section("Reflections", &GraphicsSettingsPanel::DrawReflectionSettings);
-    // Application-owned lighting sections (the per-scene environment).
-    for (const auto& tab : lightingTabs) {
-        if (ImGui::BeginTabItem(tab->Label())) {
-            ImGui::BeginChild(tab->Label());
+    // Lights & Shadows: the application's scene lights (saved per scene) above
+    // the renderer's shadows (every scene). Both act only in the Modern model,
+    // so the section exists only while it is chosen.
+    if (UsesFullSceneLighting(GraphicsSettingsRuntime::Instance().Snapshot().Effects.SurfaceLighting) &&
+        ImGui::BeginTabItem("Lights & Shadows")) {
+        ImGui::BeginChild("##LightsAndShadows");
+        for (const auto& tab : lightingTabs) {
             ImGui::PushID(tab->Label());
             tab->Draw();
             ImGui::PopID();
-            ImGui::EndChild();
-            ImGui::EndTabItem();
         }
+        DrawSettingsSections({&GraphicsSettingsPanel::DrawShadowSettings});
+        ImGui::EndChild();
+        ImGui::EndTabItem();
     }
+    section("Ambient Occlusion", &GraphicsSettingsPanel::DrawAmbientOcclusionSettings);
+    section("Reflections", &GraphicsSettingsPanel::DrawReflectionSettings);
     section("Toon", &GraphicsSettingsPanel::DrawToonSettings);
     ImGui::EndTabBar();
 }

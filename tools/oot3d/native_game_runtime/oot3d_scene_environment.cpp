@@ -172,6 +172,27 @@ Json Encode(const SceneEnvironmentProfile &value, uint16_t scene) {
 }
 } // namespace
 
+SceneEnvironmentProfile BaseSceneEnvironmentProfile() {
+  // Captured 2026-10-06 from the Kokiri play configuration's title intro
+  // profile (scene-006B.environment.json).
+  SceneEnvironmentProfile base;
+  base.Enabled = true;
+  base.PreserveSceneBrightness = false;
+  base.NativeDirectStrength = 0.0F;
+  base.NativeLocalStrength = 0.0F;
+  base.NativeAmbientStrength = 0.6F;
+  base.AmbientColor = {1.0F, 1.0F, 1.0F};
+  base.AmbientIntensity = 0.0F;
+  base.FogStrength = 1.0F;
+  base.Lights = {{{45.0F, 45.0F, {1.0F, 1.0F, 1.0F}, 1.0F},
+                  {-135.0F, 30.0F, {1.0F, 1.0F, 1.0F}, 0.0F}}};
+  base.KeyDirection = KeyDirection::SceneMain;
+  base.KeyAzimuthOffset = 0.0F;
+  base.KeyElevationOffset = 0.0F;
+  base.PointLights = {};
+  return base;
+}
+
 SceneEnvironmentRuntime::SceneEnvironmentRuntime(
     std::filesystem::path directory, Publisher publish)
     : mDirectory(std::move(directory)), mPublish(std::move(publish)) {}
@@ -241,7 +262,8 @@ bool SceneEnvironmentRuntime::ReloadLocked() {
   if (!mState.SceneId)
     return false;
   try {
-    SceneEnvironmentProfile candidate;
+    // A scene without its own profile takes the base environment.
+    auto candidate = BaseSceneEnvironmentProfile();
     const bool exists = std::filesystem::exists(mState.Path);
     if (exists) {
       if (std::filesystem::file_size(mState.Path) > 65536)

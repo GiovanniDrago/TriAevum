@@ -33,9 +33,10 @@ SerializeGraphicsSettings(const GraphicsSettings& settings);
     const nlohmann::json& document,
     GraphicsSettings fallback = {});
 
-// The Enhanced preset: a tuned play configuration's "Graphics" block, without
-// the state a preset never sets (window, output, presentation, camera, texture
-// packs, grass sources, reflection materials, the saved grass preset).
+// The Enhanced preset, the default of a new installation: a tuned play
+// configuration's "Graphics" block, without the state a preset never sets
+// (window, output, presentation, texture packs, grass sources, reflection
+// materials, the saved grass preset).
 [[nodiscard]] std::string_view EnhancedPresetDocument() noexcept;
 [[nodiscard]] const GraphicsSettings& EnhancedPresetSettings();
 

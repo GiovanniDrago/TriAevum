@@ -331,10 +331,23 @@ void CheckSceneEnvironment() {
         graphics.PublishSceneEnvironment(value);
     });
     environment->ObserveScene(0x55);
+    // A scene without its own profile takes the base environment.
+    Check(environment->Snapshot().Profile == BaseSceneEnvironmentProfile() &&
+              !environment->Snapshot().FileExists && graphics.SnapshotForRendering().Environment.Enabled &&
+              graphics.SnapshotForRendering().Environment.NativeAmbientStrength == 0.6F,
+          "a scene without a profile did not take the base environment");
     InstallGraphicsSettingsPanelTabs({CreateSceneEnvironmentPanel(environment)});
-    size = ImVec2(760, 1450);
-    // Shadows and the scene environment are sections of Lighting.
-    Frame(); Frame(); Click("Lighting"); Click("Shadows");
+    size = ImVec2(760, 2600);
+    // The scene lights and the shadows share Lighting > Lights & Shadows.
+    Frame(); Frame(); Click("Lighting"); Click("Lights & Shadows");
+    Frame(true);
+    Check(loggedPanelText.find("Scene lights") != std::string::npos &&
+              loggedPanelText.find("Base environment (the title intro's)") != std::string::npos &&
+              loggedPanelText.find("Directional shadows") != std::string::npos,
+          "Lights & Shadows does not show the scene lights, the base environment and the shadows");
+    for (const char* old : {"Shadows", "Scene environment", "Occlusion"})
+        Check(std::none_of(items.begin(), items.end(), [&](const auto& pair) { return pair.second.Label == old; }),
+              std::string("former Lighting section still present: ") + old);
     Select("Shadow mode", "Virtual Shadow Maps");
     EditScalar("Shadow strength", "4");
     Check(graphics.Snapshot().Effects.DirectionalShadows.Strength == 4.0F,
@@ -352,6 +365,12 @@ void CheckSceneEnvironment() {
     Click("Off");
     AllCapabilities(true);
     Select("Shadow mode", "Virtual Shadow Maps");
+    // Lights & Shadows exists only with the Modern model.
+    const auto lightsAndShadowsOffered = [] {
+        Frame();
+        return std::any_of(items.begin(), items.end(),
+                           [](const auto& pair) { return pair.second.Label == "Lights & Shadows"; });
+    };
     settings = graphics.Snapshot();
     settings.Effects.SurfaceLighting = SurfaceLightingMode::Native;
     graphics.Apply(settings);
@@ -359,20 +378,19 @@ void CheckSceneEnvironment() {
     Check(graphics.Snapshot().Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps &&
           graphics.SnapshotForRendering().Value.Effects.DirectionalShadows.Mode == DirectionalShadowMode::Off,
           "native lighting did not bypass VSM while preserving its preference");
-    Click("Shadow mode");
-    Check(Find("Virtual Shadow Maps").Disabled, "native lighting can enable VSM");
+    Check(!lightsAndShadowsOffered(), "Lights & Shadows offered with native lighting");
     settings.Effects.SurfaceLighting = SurfaceLightingMode::NativePbr;
     graphics.Apply(settings);
-    Frame();
-    Check(Find("Virtual Shadow Maps").Disabled &&
+    Check(!lightsAndShadowsOffered() &&
               graphics.SnapshotForRendering().Value.Effects.DirectionalShadows.Mode == DirectionalShadowMode::Off &&
               graphics.Snapshot().Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps,
-          "Native PBR enabled VSM or erased its saved preference");
-    Click("Off");
+          "Native PBR offered Lights & Shadows, enabled VSM or erased its saved preference");
     settings = graphics.Snapshot();
     settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixel;
     graphics.Apply(settings);
-    Frame();
+    Check(lightsAndShadowsOffered(), "Lights & Shadows not offered with the Modern model");
+    Click("Lights & Shadows");
+    Select("Shadow mode", "Off");
     Select("Shadow mode", "Virtual Shadow Maps");
     Check(graphics.SnapshotForRendering().Value.Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps,
           "per-pixel lighting did not enable VSM");
@@ -411,16 +429,17 @@ void CheckSceneEnvironment() {
     Check(graphics.Snapshot().Effects.PointShadows.Mode == PointShadowMode::CubeMaps &&
               graphics.SnapshotForRendering().Value.Effects.PointShadows.Mode == PointShadowMode::Off,
           "native lighting did not bypass point shadows while preserving their preference");
-    Click("Point shadow mode");
-    Check(Find("Cube maps").Disabled, "native lighting can enable point shadows");
-    Click("Off");
-    Check(graphics.Snapshot().Effects.PointShadows.Mode == PointShadowMode::Off, "cannot disable unsupported point shadows");
     settings = graphics.Snapshot();
     settings.Effects.SurfaceLighting = SurfaceLightingMode::PerPixelPbr;
     graphics.Apply(settings);
     Frame();
-    Click("Scene environment");
-    Click("Use scene environment");
+    Click("Lights & Shadows");
+    Select("Point shadow mode", "Off");
+    Check(graphics.Snapshot().Effects.PointShadows.Mode == PointShadowMode::Off, "cannot disable point shadows");
+    // The base environment is on, without the scene brightness reference.
+    Check(Find("Use scene environment").Rect.GetHeight() > 0.0F && !Find("Native ambient contribution").Disabled,
+          "the base environment is not shown as an enabled profile");
+    Click("Preserve scene brightness");
     Check(Find("Native ambient contribution").Disabled, "scene reference did not own the ambient baseline");
     Click("Preserve scene brightness");
     EditScalar("Ambient intensity", "0.12");
@@ -429,6 +448,8 @@ void CheckSceneEnvironment() {
     EditScalar("Native ambient contribution", "0.15");
     EditScalar("Native fog contribution", "0.4");
     EditScalar("Light intensity", "1.4");
+    // The base key light follows the main scene light; edit its own direction.
+    Click("Key light direction"); Click("Manual");
     EditScalar("Azimuth", "90");
     EditScalar("Elevation", "30");
     const auto rendered = graphics.SnapshotForRendering().Environment;
@@ -510,7 +531,9 @@ void CheckSceneEnvironment() {
     graphics.ToggleNativePresentationOverride();
     Check(graphics.SnapshotForRendering().Environment.Enabled, "F2 did not restore the authored environment");
     environment->ObserveScene(0x56);
-    Check(!graphics.SnapshotForRendering().Environment.Enabled, "previous scene's environment leaked across a transition");
+    Check(environment->Snapshot().Profile == BaseSceneEnvironmentProfile() &&
+              graphics.SnapshotForRendering().Environment.AmbientIntensity == 0.0F,
+          "previous scene's environment leaked across a transition instead of the base");
     environment->ObserveScene(0x55);
     Check(environment->Snapshot().Profile == saved.Profile, "returning to scene did not restore its file");
     const auto backup = root / "saved.json";
@@ -894,12 +917,42 @@ int main() try {
                                [&](const auto& pair) { return pair.second.Label == old; }),
                   std::string("former top-level tab still present: ") + old);
         Click("Lighting");
+        // Native lighting: no Lights & Shadows section.
         float sectionX = -1.0F;
-        for (const char* section : {"Lighting & GI", "Shadows", "Occlusion", "Reflections", "Toon"}) {
+        for (const char* section : {"Lighting & GI", "Ambient Occlusion", "Reflections", "Toon"}) {
             const auto item = Find(section);
             Check(item.Rect.Min.x > sectionX, std::string("Lighting section out of order: ") + section);
             sectionX = item.Rect.Min.x;
         }
+        for (const char* old : {"Lights & Shadows", "Shadows", "Occlusion", "Scene environment"})
+            Check(std::none_of(items.begin(), items.end(),
+                               [&](const auto& pair) { return pair.second.Label == old; }),
+                  std::string("Lighting section offered with native lighting: ") + old);
+        auto modern = runtime.Snapshot();
+        modern.Effects.SurfaceLighting = SurfaceLightingMode::PerPixelPbr;
+        runtime.Apply(modern);
+        // A tab appearing is laid out on its next frame.
+        Frame(); Frame();
+        sectionX = -1.0F;
+        for (const char* section : {"Lighting & GI", "Lights & Shadows", "Ambient Occlusion", "Reflections", "Toon"}) {
+            const auto item = Find(section);
+            Check(item.Rect.Min.x > sectionX, std::string("Modern Lighting section out of order: ") + section);
+            sectionX = item.Rect.Min.x;
+        }
+        runtime.Apply(initial);
+        // The remaining tabs close up over the next frames.
+        Frame(); Frame();
+        Click("Ambient Occlusion");
+        // The credits close the page: show all of it so its text is logged.
+        const auto pageSize = size;
+        size = ImVec2(760, 2600);
+        Frame();
+        Frame(true);
+        Check(loggedPanelText.find("iMMERSE by Pascal Gilcher") != std::string::npos &&
+                  loggedPanelText.find("all rights reserved") != std::string::npos &&
+                  loggedPanelText.find("Licence exception") != std::string::npos,
+              "Ambient Occlusion lacks the MXAO credit and licence exception");
+        size = pageSize;
         Click("Materials");
         for (const char* section : {"Texture packs", "Material editor", "Reflection materials"}) Find(section);
         Click("Display");
@@ -1201,7 +1254,7 @@ int main() try {
         runtime.PublishGlobalIlluminationStatus({});
         AllCapabilities(true);
     }
-    Click("Occlusion");
+    Click("Ambient Occlusion");
     runtime.SetCapability(GraphicsCapability::ValidViewMetadata, false, "test unavailable");
     Frame();
     Select("Ambient occlusion", "Off");
@@ -1655,6 +1708,8 @@ int main() try {
           controls->Snapshot().Config.AccelerometerNeutral == beforePreset.AccelerometerNeutral,
           "preset discarded controller identity or calibration");
     Click("HUD");
+    Frame(true);
+    Check(loggedPanelText.find("TopScreen mod by M-1") != std::string::npos, "HUD lacks the TopScreen credit");
     Click("Render HUD");
     Check(!topScreen->Snapshot().Config.RenderHud, "TopScreen preview not connected");
     auto externalTop = topScreen->Snapshot().Config;

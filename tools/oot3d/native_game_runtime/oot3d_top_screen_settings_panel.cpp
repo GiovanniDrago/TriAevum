@@ -50,6 +50,9 @@ public:
     ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.45F);
     DrawHud();
     ImGui::PopItemWidth();
+    ImGui::SeparatorText("Credits");
+    ImGui::TextWrapped("HUD and layout from the TopScreen mod by M-1 (gamebanana.com/mods/695893). "
+                       "Thanks to the author.");
     ImGui::EndChild();
     if (mDraft != frameStartDraft) {
       mRuntime->Preview(mDraft);

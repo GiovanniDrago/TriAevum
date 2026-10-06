@@ -5,8 +5,9 @@
 // permission, granted exclusively to TriAevum.
 //
 // The MXAO controls of the F1 Lighting tab: the original's options, preset
-// names and descriptions. GraphicsSettingsPanel::DrawLightingSettings calls
-// them when MXAO is the ambient occlusion provider.
+// names and descriptions. GraphicsSettingsPanel::DrawAmbientOcclusionSettings
+// calls them when MXAO is the ambient occlusion provider, and the credits at
+// the foot of Lighting > Ambient Occlusion.
 #include "fast/oot3d/graphics_settings_window.h"
 #include "fast/oot3d/settings_panel_widgets.h"
 #include <type_traits>
@@ -68,8 +69,7 @@ bool GraphicsSettingsPanel::DrawMxaoSettings(EffectsSettings& effects) {
     if (effects.MxaoTemporal)
         ImGui::TextWrapped("Each frame samples other directions and the scene's motion vectors carry the "
                            "result over frames: a lower quality preset gives a stable image.");
-    ImGui::TextWrapped("iMMERSE MXAO by Pascal Gilcher (martysmods.com), used with the author's permission. "
-                       "AO texture relief bends only the renderer normals.");
+    ImGui::TextWrapped("AO texture relief bends only the renderer normals.");
     if (ImGui::TreeNode("Advanced AO")) {
         changed |= ImGui::Checkbox("Original fade", &effects.MxaoOriginalFade);
         if (ImGui::IsItemHovered())
@@ -93,5 +93,13 @@ bool GraphicsSettingsPanel::DrawMxaoSettings(EffectsSettings& effects) {
           "the viewer). Normal disagreement (renderer vs depth): black = equal, white = 90 degrees apart. Face "
           "vs depth normals: black = equal, white = 10 degrees or more apart. Not saved.");
     return changed;
+}
+
+void GraphicsSettingsPanel::DrawMxaoCredits() {
+    ImGui::SeparatorText("Credits");
+    ImGui::TextWrapped("MXAO: iMMERSE by Pascal Gilcher (martysmods.com). Thanks to the author.");
+    ImGui::TextWrapped("Copyright (c) Pascal Gilcher, all rights reserved. Licence exception: used and modified "
+                       "with the author's permission, granted to TriAevum only; it stays under its original "
+                       "licence, outside TriAevum's GPL.");
 }
 } // namespace Fast::Oot3d

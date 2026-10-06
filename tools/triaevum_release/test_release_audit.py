@@ -202,7 +202,7 @@ class PublicReleaseAuditTests(unittest.TestCase):
                     "source_commit": "0" * 40, "whole_aot_plugin_abi": 2, "private_title_loaded": False,
                     "capabilities": capabilities,
                     "default_config": {"Graphics": {
-                        "Preset": "Custom", "FrameRate": {"Mode": "Interpolated2x"},
+                        "Preset": "Enhanced", "FrameRate": {"Mode": "Interpolated2x"},
                         "Effects": {"GlobalIllumination": {"Mode": mode}}}},
                 }
                 manifest["release"]["runtime_contract"] = {"runtime_sha256": runtime["sha256"], "product": product}

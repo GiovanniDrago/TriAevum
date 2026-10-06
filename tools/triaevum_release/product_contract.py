@@ -32,8 +32,9 @@ def validate_product_info(info: dict[str, Any], source_commit: str = "") -> None
     if not isinstance(defaults, dict) or not isinstance(defaults.get("Graphics"), dict):
         raise ValueError("Runtime did not publish its graphics defaults")
     graphics = defaults["Graphics"]
-    if (graphics.get("Preset") != "Custom"
-            or graphics.get("FrameRate", {}).get("Mode") != "Interpolated2x"):
+    if graphics.get("Preset") != "Enhanced":
+        raise ValueError("Runtime defaults do not select the Enhanced preset")
+    if graphics.get("FrameRate", {}).get("Mode") != "Interpolated2x":
         raise ValueError("Runtime defaults do not enable visual interpolation x2")
 
 
