@@ -3557,3 +3557,26 @@ after, every changed pixel lies inside the logo's box at presentation frames
 Foundation 337/337, pipeline cache 52/52, composition, visual savestate and
 Vulkan bridge tests pass.
 
+## Sky identity under visual interpolation (2026-10-06)
+
+In the title intro the sky and its clouds held still for two presentations and
+then jumped, every three to four guest frames, with Interpolated 2x. The guest
+delivered its frames evenly (one top transfer every two refreshes); the
+transitions with the stutter were exactly those where the three sky draws of
+`SceneRenderer_SubmitConfiguredModelPass@0x002D9664` were unmatched, so the
+sampler drew them from the current frame at alpha 0 and 0.5 alike. Their
+attribution packed `r2 | r3 << 16` into the native value, and `r3` is the sky
+blend, which the game steps every few frames as it rewrites the sky's vertex
+colours (the call takes four core arguments and the eye position in `s0-s2`).
+A draw parameter inside the identity made each step a new draw for the strict,
+structural and pipeline tiers, which all compare the attribution.
+
+The adapter now publishes only the sky selector (`r2`). Intro from boot with
+the play configuration, 720p, every presentation from 300 to 1499: the sky
+region held still while the scene moved in 99 presentations before and in none
+after; authoritative samples equal the native-30 frame of the previous source
+exactly in motion. At a blend step the sky colour still changes one sample
+early, because unsigned-byte vertex attributes are not interpolated; the step
+itself is native (native 30 shows it too). Composition tests cover the selector
+staying constant while the blend steps.
+

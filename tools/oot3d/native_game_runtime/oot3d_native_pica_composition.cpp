@@ -202,7 +202,11 @@ uint32_t AtmosphereNativeValue(
         return selector;
     }
     if (sourcePc == kOot3dSceneRendererSubmitConfiguredModelPassEntry) {
-        return (state.r[2] & 0xFFFFU) | ((state.r[3] & 0xFFFFU) << 16U);
+        // The sky model selector. r3 is the sky blend, which the game steps
+        // every few frames as the sky colour changes: a draw parameter, not an
+        // identity. Keeping it here made the same sky a new draw at each step,
+        // so visual interpolation could not match it and the sky stuttered.
+        return state.r[2] & 0xFFFFU;
     }
     return 0U;
 }

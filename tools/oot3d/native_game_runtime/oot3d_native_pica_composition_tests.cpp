@@ -204,9 +204,10 @@ void TestDeferredAtmosphereOwnership() {
     Oot3dNativePicaCompositionTracker tracker;
     oot3d::recomp::a32::GuestState state{};
     constexpr uint32_t queue = 0x10000400U, renderer = 0x10000600U;
+    uint32_t skyBlend = 2;
     const auto enqueueAtmosphere = [&] {
         state.r[2] = 7;
-        state.r[3] = 2;
+        state.r[3] = skyBlend++; // The sky blend steps over time.
         state.r[14] = 0x002E2B8CU;
         tracker.ObserveBlockEntry(kOot3dSceneRendererSubmitConfiguredModelPassEntry, state, memory);
         state.r[1] = queue;
@@ -252,9 +253,10 @@ void TestDeferredAtmosphereOwnership() {
         Require(found != spans.end() && found->Attribution.Layer == layer,
                 "deferred atmosphere ownership was lost or leaked across queue slots/lifetimes");
         if (i < 2)
+            // The sky selector identifies the draw; the blend does not.
             Require(found->Attribution.SourcePc == kOot3dSceneRendererSubmitConfiguredModelPassEntry &&
-                    found->Attribution.NativeValue == 0x00020007U,
-                    "deferred atmosphere lost its native producer provenance");
+                    found->Attribution.NativeValue == 7U,
+                    "deferred atmosphere lost its native producer provenance or kept the sky blend");
     }
 }
 
