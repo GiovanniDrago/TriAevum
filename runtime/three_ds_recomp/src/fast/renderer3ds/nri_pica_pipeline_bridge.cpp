@@ -8,6 +8,7 @@
 #include "fast/renderer3ds/pica_device_pipeline_pool.h"
 #include "fast/renderer3ds/pica_nri_upload.h"
 #include "fast/renderer3ds/pica_preparation_queue.h"
+#include "fast/renderer3ds/vulkan_pipeline_cache_store.h"
 
 #ifdef ENABLE_RENDERER3DS_NRI
 #include "nri_pica_upload_arena.h"
@@ -438,8 +439,12 @@ std::vector<uint8_t> NriPicaPipelineBridge::GetPipelineCacheData() const {
     if (!Available() || mImpl->PipelineCache == nullptr) return {};
     auto* core = mImpl->Interop->Core();
     uint64_t size = 0;
+    // No size policy here: the store keeps or drops the cache (it outgrows the
+    // plain 64 MiB limit; capping it here once left it silently unsaved).
+    // Only an implausible size is refused before allocating it.
+    constexpr uint64_t kImplausibleBytes = 4ULL * kMaximumNriPipelineCacheBytes;
     if (core->GetPipelineCacheData(*mImpl->PipelineCache, nullptr, size) != nri::Result::SUCCESS ||
-        size == 0 || size > 64ULL * 1024ULL * 1024ULL) return {};
+        size == 0 || size > kImplausibleBytes) return {};
     std::vector<uint8_t> data(static_cast<size_t>(size));
     if (core->GetPipelineCacheData(*mImpl->PipelineCache, data.data(), size) != nri::Result::SUCCESS ||
         size == 0 || size > data.size()) return {};

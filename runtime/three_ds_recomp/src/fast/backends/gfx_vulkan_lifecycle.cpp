@@ -253,7 +253,8 @@ void GfxRenderingAPIVulkan::Init() {
         vkGetPhysicalDeviceProperties(mPhysicalDevice, &properties);
         std::vector<uint8_t> data;
         LoadPipelineCacheData(VulkanPipelineCachePath(true),
-                              MakePipelineCacheHeader(properties), data);
+                              MakePipelineCacheHeader(properties), data,
+                              kMaximumNriPipelineCacheBytes);
         const bool initialized = mNriPicaPipelineBridge.InitializePipelineCache(data);
         SPDLOG_INFO("NRI PICA pipeline cache: initialized={}, accepted {} bytes", initialized,
                     mNriPicaPipelineBridge.PipelineStatistics().InitialCacheBytes);
