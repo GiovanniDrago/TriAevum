@@ -106,7 +106,8 @@ void PrintOot3dNativeGameUsage() {
 }
 
 bool ParseOot3dNativeGameArgs(int argc, char** argv, Oot3dNativeGameLaunch& launch) {
-    launch.Host.ApplicationName = "OOT3D Native Game";
+    // The window title: the Ocarina of Time 3D project of TriAevum (UTF-8).
+    launch.Host.ApplicationName = "TriAevum \xE2\x80\x94 Echoes of Time";
     launch.Host.ApplicationId = "oot3d_native_game";
     launch.Host.ConfigurationPath = "oot3d_native_game.json";
     launch.Host.BackendId = 2;
