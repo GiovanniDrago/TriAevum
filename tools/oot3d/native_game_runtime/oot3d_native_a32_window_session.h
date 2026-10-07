@@ -135,6 +135,10 @@
 
 #include "oot3d_native_a32_window_shared.h"
 #include "oot3d_native_a32_window_stats.h"
+#if defined(TRIAEVUM_DEVELOPER_TOOLS)
+#include "oot3d_dev_tools_panel.h"
+#include "oot3d_dev_warp.h"
+#endif
 
 namespace Oot3dA32Window {
 
@@ -312,6 +316,11 @@ private:
   std::optional<Oot3dNativeGame::NativeA32ProcessImageManifest> manifest{};
   std::optional<Oot3dNativeGame::NativeScenarioCatalog> scenarioCatalog;
   std::optional<Oot3dNativeGame::NativeScenarioBootstrap> scenarioBootstrap;
+#if defined(TRIAEVUM_DEVELOPER_TOOLS)
+  // F1 > Dev Tools warping (developer builds only).
+  std::shared_ptr<Oot3dNativeGame::DevWarpRuntime> devWarp;
+  std::unique_ptr<Oot3dNativeGame::DevWarpGuest> devWarpGuest;
+#endif
   Oot3dNativeGame::TopScreenTextureOverridePack topScreenTextureOverridePack;
   Oot3dNativeGame::NativeHdFontRuntime hdFonts;
   bool hdFontsLoaded = false;

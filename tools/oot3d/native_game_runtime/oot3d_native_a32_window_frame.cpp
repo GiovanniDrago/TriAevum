@@ -946,6 +946,14 @@ bool NativeA32WindowSession::UpdateGuestServicesForRefresh(
       return false;
     }
   }
+#if defined(TRIAEVUM_DEVELOPER_TOOLS)
+  // F1 > Dev Tools warps run at the same guest-frame boundary as the
+  // structural scenarios, through the same native transition request.
+  if (devWarp != nullptr) {
+    if (devWarpGuest == nullptr) devWarpGuest = Oot3dNativeGame::MakeDevWarpProcessGuest(process);
+    devWarp->Advance(*devWarpGuest, sceneViewProbe.Stats().LastPlayStateAddress, frameCount);
+  }
+#endif
   refreshTickRemainder += kCtrArm11TicksPerSecond;
   nextVblankTick += refreshTickRemainder / kGuestDisplayRefreshRate;
   refreshTickRemainder %= kGuestDisplayRefreshRate;

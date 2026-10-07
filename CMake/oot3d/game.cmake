@@ -97,6 +97,11 @@ set(TRIAEVUM_PRODUCT_EXPERIMENTAL_GI 0)
 if(THREE_DS_RECOMP_OFFER_EXPERIMENTAL_GI)
     set(TRIAEVUM_PRODUCT_EXPERIMENTAL_GI 1)
 endif()
+# Reported so the release workflow can refuse a runtime with developer tools.
+set(TRIAEVUM_PRODUCT_DEVELOPER_TOOLS 0)
+if(TRIAEVUM_DEVELOPER_TOOLS)
+    set(TRIAEVUM_PRODUCT_DEVELOPER_TOOLS 1)
+endif()
 configure_file(
     tools/oot3d/native_game_runtime/triaevum_product_build.h.in
     "${CMAKE_CURRENT_BINARY_DIR}/triaevum-product/triaevum_product_build.h" @ONLY)
@@ -214,6 +219,26 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
         tools/oot3d/native_game_runtime/oot3d_graphics_settings_schedule.cpp)
     set_source_files_properties(tools/oot3d/native_game_runtime/oot3d_native_actor_interactions.cpp
         PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/tools/oot3d/decomp_support/include")
+    # Developer tools (F1 > Dev Tools: SoH's Debug Warp Screen and Warp
+    # Points). Never in a public build: --product-info reports the capability
+    # and the release workflow refuses a runtime that has it.
+    if(TRIAEVUM_DEVELOPER_TOOLS)
+        target_sources(oot3d_native_game PRIVATE
+            tools/oot3d/native_game_runtime/oot3d_dev_warp.cpp
+            tools/oot3d/native_game_runtime/oot3d_dev_tools_panel.cpp
+            tools/oot3d/native_game_runtime/oot3d_dev_warp_process.cpp)
+        set_source_files_properties(tools/oot3d/native_game_runtime/oot3d_dev_warp.cpp
+            PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/tools/oot3d/decomp_support/include")
+        target_compile_definitions(oot3d_native_game PRIVATE TRIAEVUM_DEVELOPER_TOOLS=1)
+        add_executable(oot3d_dev_warp_tests EXCLUDE_FROM_ALL
+            tools/oot3d/native_game_runtime/oot3d_dev_warp.cpp
+            tools/oot3d/native_game_runtime/oot3d_dev_warp_tests.cpp)
+        target_include_directories(oot3d_dev_warp_tests PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/oot3d/native_game_runtime"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/oot3d/decomp_support/include")
+        target_link_libraries(oot3d_dev_warp_tests PRIVATE oot3d_native_game_runtime)
+        oot3d_target_defaults(oot3d_dev_warp_tests FOLDER Tests)
+    endif()
     target_link_libraries(oot3d_native_game PRIVATE
         oot3d_native_a32_input
         oot3d_native_a32_process_image

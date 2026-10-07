@@ -609,6 +609,30 @@ void NativeA32WindowSession::Setup() {
   applicationSettingsTabs.push_back(
       Oot3dNativeGame::CreateSavestatePanel(savestateLibrary));
   applicationSettingsTabs.push_back(Oot3dNativeGame::CreateGameLanguagePanel(languageSettings));
+#if defined(TRIAEVUM_DEVELOPER_TOOLS)
+  devWarp = std::make_shared<Oot3dNativeGame::DevWarpRuntime>(
+      std::filesystem::path(launch.Host.ConfigurationPath).parent_path() / "developer-tools.json");
+  applicationSettingsTabs.push_back(
+      Oot3dNativeGame::CreateDevToolsPanel(devWarp, languageSettings->BootLanguage()));
+  // Scripted check of the Better list without the menu:
+  // TRIAEVUM_DEV_WARP=<scene>:<entrance>:<child|adult>:<day|night> (list
+  // indices), requested when gameplay first starts.
+  if (const char *script = std::getenv("TRIAEVUM_DEV_WARP")) {
+    int scene = -1, entrance = -1;
+    char age[8]{}, time[8]{};
+    const auto scenes = Oot3dNativeGame::DevWarpBetterScenes();
+    if (std::sscanf(script, "%d:%d:%7[a-z]:%7[a-z]", &scene, &entrance, age, time) != 4 || scene < 0 ||
+        scene >= static_cast<int>(scenes.size()) || entrance < 0 ||
+        entrance >= static_cast<int>(scenes[static_cast<size_t>(scene)].Count)) {
+      throw std::runtime_error("TRIAEVUM_DEV_WARP must be <scene>:<entrance>:<child|adult>:<day|night>");
+    }
+    devWarp->WarpTo(Oot3dNativeGame::DevWarpBetterEntrances()[scenes[static_cast<size_t>(scene)].First +
+                                                               static_cast<size_t>(entrance)],
+                    std::string_view(age) == "adult" ? Oot3dNativeGame::DevWarpAge::Adult
+                                                     : Oot3dNativeGame::DevWarpAge::Child,
+                    std::string_view(time) == "night");
+  }
+#endif
   Fast::Oot3d::InstallGraphicsSettingsPanelTabs(
       std::move(applicationSettingsTabs));
   InitContextForDemo(hostArgs);
