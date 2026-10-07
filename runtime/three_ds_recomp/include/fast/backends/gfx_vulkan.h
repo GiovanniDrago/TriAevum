@@ -41,6 +41,7 @@
 #include "fast/oot3d/hiz_depth_pyramid_pass.h"
 #include "fast/oot3d/hiz_reflection_pass.h"
 #include "fast/oot3d/interactive_grass_pass.h"
+#include "fast/oot3d/world_debug_line_pass.h"
 #include "fast/oot3d/linear_scene_color.h"
 #include "fast/oot3d/linear_scene_color_pass.h"
 #include "fast/oot3d/motion_vector_pass.h"
@@ -857,6 +858,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         NativePicaRenderTarget& target,
         const Oot3d::GraphicsSettings& settings,
         Oot3d::EffectGeometryProviderInvocationKind invocationKind);
+    // The title's world debug lines (light gizmos) over the target's scene.
+    void TryRenderWorldDebugLines(NativePicaRenderTarget& target);
     bool TryRenderDirectionalShadowMap(
         NativePicaRenderTarget& target,
         const Oot3d::GraphicsSettings& settings,
@@ -1645,6 +1648,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::HiZDepthPyramidPass mHiZDepthPyramidPass;
     Oot3d::HiZReflectionPass mHiZReflectionPass;
     Oot3d::InteractiveGrassPass mInteractiveGrassPass;
+    Oot3d::WorldDebugLinePass mWorldDebugLinePass;
     Oot3d::LinearSceneColorPass mLinearSceneColorPass;
     Oot3d::MotionVectorPass mMotionVectorPass;
     Oot3d::NriDirectionalShadowPass mNriDirectionalShadowPass;

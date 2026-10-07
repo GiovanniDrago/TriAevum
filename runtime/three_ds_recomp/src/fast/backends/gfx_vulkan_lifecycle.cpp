@@ -602,6 +602,10 @@ void GfxRenderingAPIVulkan::Init() {
         SPDLOG_INFO("OOT3D Vulkan interactive grass unavailable: {}",
                     mInteractiveGrassPass.UnavailableReason());
     }
+    mWorldDebugLinePass.Initialize(mPhysicalDevice, mDevice, mNriInterop.Shaders(),
+                                   mNativePicaCanonicalRenderPass, mNativePicaRenderPass,
+                                   mNativePicaSampleCount, mPicaDynamicRenderingScope.Available(),
+                                   mDepthFormat, mPipelineCache);
     CreateFrameResources();
     mScanoutProbe.Initialize(mPhysicalDevice, mDevice, kFramesInFlight);
     mGpuProfiler.Initialize(mPhysicalDevice, mDevice, mGraphicsQueueFamily,
@@ -654,6 +658,7 @@ void GfxRenderingAPIVulkan::Shutdown() {
         mNriEffectGraphTransientImageArena.Shutdown();
         mTemporalAaPass.Shutdown();
         mInteractiveGrassPass.Shutdown();
+        mWorldDebugLinePass.Shutdown();
         mPicaDynamicRenderingScope.Shutdown();
         mNriPicaTextureUploadPass.Shutdown();
         // Background creations finish before their device objects go.

@@ -214,6 +214,7 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
         tools/oot3d/native_game_runtime/oot3d_savestate_panel.cpp
         tools/oot3d/native_game_runtime/oot3d_savestate_settings.cpp
         tools/oot3d/native_game_runtime/oot3d_scene_environment.cpp
+        tools/oot3d/native_game_runtime/oot3d_light_gizmo.cpp
         tools/oot3d/native_game_runtime/oot3d_scene_environment_panel.cpp
         tools/oot3d/native_game_runtime/oot3d_top_screen_settings_panel.cpp
         tools/oot3d/native_game_runtime/oot3d_graphics_settings_schedule.cpp)

@@ -84,6 +84,11 @@ void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
             Oot3d::EffectGeometryProviderInvocationKind::DeclaredBoundary);
     if (timed)
         grassMilliseconds += std::chrono::duration<double, std::milli>(Clock::now() - begin).count();
+    // The finished scene, before its first UI draw and the scene stages.
+    if (draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui &&
+        mNativePicaCompositionSchedule.FindAnchorBeforeDraw(
+            Oot3d::EffectStage::BeforeUi, reference.Target, draw.SubmissionId) != nullptr)
+        TryRenderWorldDebugLines(target);
     const auto& effects = mFrameGraphicsSettings.Effects;
     // Scene stages, same-extent anti-aliasing included: it resolves the scene
     // here so the UI that follows is drawn over the result, never through it.
@@ -2806,6 +2811,30 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
     } catch (const std::exception& exception) {
         SetNativeError(error, exception.what());
         return false;
+    }
+}
+
+void GfxRenderingAPIVulkan::TryRenderWorldDebugLines(NativePicaRenderTarget& target) {
+    const auto lines = Oot3d::WorldDebugLineRuntime::Instance().Latest();
+    if (lines == nullptr) return;
+    // The projection the target's draws applied, so the lines meet its depth.
+    const auto perspective = SamplePerspective(&target);
+    if (!perspective.has_value() || !perspective->CameraAvailable) return;
+    const std::array<float, 2> jitterNdc = mTemporalJitterEnabled
+        ? std::array<float, 2>{ 2.0F * mTemporalJitterPixels[0] / static_cast<float>(target.Width),
+                                2.0F * mTemporalJitterPixels[1] / static_cast<float>(target.Height) }
+        : std::array<float, 2>{};
+    BeginNativePicaRenderPass(target);
+    const bool drawn = mWorldDebugLinePass.Draw(
+        mCommandBuffers[mCurrentFrame], mCurrentFrame, mFrameCounter, target.Width, target.Height, *lines,
+        perspective->WorldToClip, jitterNdc, mFramePicaAttachmentRequirements);
+    // The next native draw starts its render pass afresh, with its own state.
+    if (drawn) EndNativePicaRenderPass();
+    static bool reported = false;
+    if (!reported && (drawn || !mWorldDebugLinePass.UnavailableReason().empty())) {
+        reported = true;
+        std::fprintf(stderr, "TRIAEVUM_WORLD_DEBUG_LINES drawn=%d lines=%zu target=%ux%u reason=%s\n", drawn ? 1 : 0,
+                     lines->Lines.size(), target.Width, target.Height, mWorldDebugLinePass.UnavailableReason().c_str());
     }
 }
 

@@ -2,6 +2,7 @@
 
 #include "fast/oot3d/graphics_settings_window.h"
 #include "fast/renderer3ds/pica_environment_lighting.h"
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -129,6 +130,13 @@ public:
   bool CreateNightProfile();
   // Deletes the night profile: the scene's own profile applies day and night.
   bool RemoveNightProfile();
+  // Light gizmos: the light the placed-light editor selected and whether it
+  // wants gizmos, told while the editor is drawn.
+  void EditLightGizmo(uint32_t selectedLight, bool enabled);
+  // Renderer order, once per frame: the placed lights' gizmos (world debug
+  // lines) while the editor was drawn within the last half second or while
+  // `forced` (the free camera), none otherwise. `eye`: the scene's camera.
+  void PublishLightGizmo(const std::optional<std::array<float, 3>> &eye, bool forced = false);
 
 private:
   bool ReloadLocked();
@@ -140,6 +148,10 @@ private:
   mutable std::mutex mMutex;
   SceneEnvironmentSnapshot mState;
   SceneEnvironmentProfile mSaved;
+  uint32_t mGizmoSelected = 0;
+  bool mGizmoEnabled = true;
+  std::chrono::steady_clock::time_point mGizmoEdited{};
+  bool mGizmoPublished = false;
 };
 
 std::shared_ptr<Fast::Oot3d::GraphicsSettingsPanelTab>

@@ -2113,8 +2113,15 @@ void NativeA32WindowSession::PublishNativeSceneView() {
         player = placement;
     }
   }
-  renderStream.Submit([&, snapshot, night, player] {
+  // Light gizmos also show while the developer free camera looks around.
+  bool freeCamera = false;
+#if defined(TRIAEVUM_DEVELOPER_TOOLS)
+  freeCamera = nativeCandidateDispatch.DevFreeCamera->Active();
+#endif
+  renderStream.Submit([&, snapshot, night, player, freeCamera] {
   sceneEnvironment->ObserveScene(snapshot ? snapshot->SceneId : std::nullopt, night, player);
+  sceneEnvironment->PublishLightGizmo(
+      snapshot && snapshot->CameraAvailable ? std::optional(snapshot->Eye) : std::nullopt, freeCamera);
   if (!snapshot.has_value() ||
       snapshot->Serial == lastPublishedSceneViewSerial) {
     return;

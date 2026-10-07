@@ -6,9 +6,11 @@
 #include "oot3d_game_language_panel.h"
 #include "oot3d_savestate_panel.h"
 #include "oot3d_scene_environment.h"
+#include "fast/oot3d/world_debug_lines.h"
 #include "fast/MouseCapturePolicy.h"
 #include <imgui_internal.h>
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <chrono>
@@ -628,6 +630,42 @@ void CheckSceneEnvironment() {
               graphics.SnapshotForRendering().Environment.PlacedLights[0].Kind == PicaPlacedLightKind::Omni &&
               graphics.SnapshotForRendering().Environment.PlacedLights[0].CastShadows,
           "an omni light did not cast shadows");
+    // Light gizmos: published while the editor is drawn, none once turned off.
+    {
+        using Fast::Oot3d::WorldDebugLineRuntime;
+        environment->PublishLightGizmo(std::array<float, 3>{100.0F, 50.0F, 700.0F});
+        const auto lines = WorldDebugLineRuntime::Instance().Latest();
+        const auto hasLine = [&](const std::array<float, 3>& from, const std::array<float, 3>& to) {
+            return lines != nullptr && std::any_of(lines->Lines.begin(), lines->Lines.end(), [&](const auto& line) {
+                       return line.From == from && line.To == to;
+                   });
+        };
+        Check(lines != nullptr && lines->Lines.size() >= 3U * 64U + 3U &&
+                  hasLine({100.0F - 20000.0F, 50.0F, 200.0F}, {100.0F + 20000.0F, 50.0F, 200.0F}) &&
+                  hasLine({100.0F, 50.0F - 20000.0F, 200.0F}, {100.0F, 50.0F + 20000.0F, 200.0F}),
+              "the placed light's gizmo (its reach and move axes) was not published");
+        Click("Show light gizmos");
+        environment->PublishLightGizmo(std::array<float, 3>{100.0F, 50.0F, 700.0F});
+        Check(WorldDebugLineRuntime::Instance().Latest() == nullptr, "light gizmos turned off are still drawn");
+        Click("Show light gizmos");
+        // A camera at the origin looking down -Z (near 1, far 1000): a line
+        // from behind it is cut at the near plane; the physical framebuffer
+        // takes the logical Y as X and the logical X reversed as Y.
+        std::array<float, 16> clip{};
+        clip[0] = 1.0F;
+        clip[5] = 1.0F;
+        clip[10] = 1000.0F / (1.0F - 1000.0F);
+        clip[11] = -1.0F;
+        clip[14] = 1000.0F / (1.0F - 1000.0F);
+        Fast::Oot3d::WorldDebugLineSet set;
+        set.Lines.push_back({{1.0F, 2.0F, 10.0F}, {1.0F, 2.0F, -10.0F}, {1.0F, 1.0F, 1.0F, 1.0F}});
+        set.Lines.push_back({{0.0F, 0.0F, 5.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 1.0F, 1.0F, 1.0F}});
+        const auto vertices = Fast::Oot3d::BuildWorldDebugLineVertices(set, clip);
+        Check(vertices.size() == 6U && std::abs(vertices[0].ClipFrom[2] / vertices[0].ClipFrom[3]) < 1.0e-3F &&
+                  std::abs(vertices[0].ClipTo[0] / vertices[0].ClipTo[3] - 0.2F) < 1.0e-5F &&
+                  std::abs(vertices[0].ClipTo[1] / vertices[0].ClipTo[3] + 0.1F) < 1.0e-5F,
+              "world debug lines are not cut at the near plane or not turned into the framebuffer");
+    }
     Click("Save scene environment");
     {
         nlohmann::json document;

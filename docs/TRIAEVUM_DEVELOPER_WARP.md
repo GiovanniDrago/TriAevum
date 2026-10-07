@@ -78,6 +78,21 @@ row `respawnFlag - 1` and arms the void damage for 1 and -1. (An earlier try
 used `+0x4EC`/`+0x4F0`, relative to the decomp's second SaveContext base
 `0x00588958`, against `0x00587958`: the game ignored them.)
 
+## Free camera
+
+F1 > Dev Tools > Free camera (or F6) detaches the camera from Link. While it
+is on, the main camera's `Camera_Update` (0x002D84C4) is replaced: the free
+view is written to the camera's at/eye (+0x80, +0x8C, +0xA4) and the
+PlayState view (eye +0x1B8, at +0x1C4, up +0x1D0), and the function returns,
+so the game itself draws, culls and animates from it. It starts from the
+game's view. Keyboard: WASD move, Q/E down/up, Shift faster, Ctrl slower;
+right mouse button held to look. Pad: circle pad moves, C-stick looks, L/R
+down/up. The game sees no pad, sticks or touch meanwhile, so Link stays
+still. "Back to the game's view" restarts it from the game's camera.
+`TRIAEVUM_DEV_FREECAM=<x>,<y>,<z>,<yaw>,<pitch>` (degrees; yaw 0 faces +Z)
+starts with it on at that pose. The placed lights' gizmos also show while it
+is on.
+
 ## Storage
 
 `developer-tools.json` beside the config: `WarpPoints` (SoH's format) and
@@ -106,3 +121,9 @@ an input timeline walking onto the exit light, Link leaves to Kokiri Forest at
 the grotto's place (minimap and capture). `TRIAEVUM_DEV_WARP=<scene>:
 <entrance>:<child|adult>:<day|night>` requests a Better-list warp at the first
 gameplay frame for such checks.
+
+Free camera, developer launch from the play quick save with
+`TRIAEVUM_DEV_FREECAM=-32.6,600,1627.4,180,-45`: `TRIAEVUM_DEV_FREECAM
+applied` at the first main-camera update, the capture shows Kokiri Forest from
+600 units up looking down at the stump with Link out of view, 150 frames
+complete.

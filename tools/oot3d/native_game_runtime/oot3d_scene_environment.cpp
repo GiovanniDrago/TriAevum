@@ -1,4 +1,5 @@
 #include "oot3d_scene_environment.h"
+#include "oot3d_light_gizmo.h"
 #include "ship/config/ConfigPersistence.h"
 #include <algorithm>
 #include <cmath>
@@ -397,6 +398,31 @@ void SceneEnvironmentRuntime::SelectLocked(std::optional<uint16_t> scene,
   }
   PublishLocked();
 }
+void SceneEnvironmentRuntime::EditLightGizmo(uint32_t selectedLight, bool enabled) {
+  std::scoped_lock lock(mMutex);
+  mGizmoSelected = selectedLight;
+  mGizmoEnabled = enabled;
+  mGizmoEdited = std::chrono::steady_clock::now();
+}
+
+void SceneEnvironmentRuntime::PublishLightGizmo(const std::optional<std::array<float, 3>> &eye,
+                                                bool forced) {
+  std::optional<Fast::Oot3d::WorldDebugLineSet> lines;
+  std::scoped_lock lock(mMutex);
+  const bool editing =
+      std::chrono::steady_clock::now() - mGizmoEdited < std::chrono::milliseconds(500);
+  if (mGizmoEnabled && (editing || forced) && mState.SceneId && eye &&
+      !mState.Profile.PlacedLights.empty())
+    lines = BuildPlacedLightGizmo(mState.Profile.PlacedLights, mGizmoSelected, *eye);
+  if (lines) {
+    Fast::Oot3d::WorldDebugLineRuntime::Instance().Publish(std::move(*lines));
+    mGizmoPublished = true;
+  } else if (mGizmoPublished) {
+    Fast::Oot3d::WorldDebugLineRuntime::Instance().Clear();
+    mGizmoPublished = false;
+  }
+}
+
 SceneEnvironmentSnapshot SceneEnvironmentRuntime::Snapshot() const {
   std::scoped_lock lock(mMutex);
   return mState;

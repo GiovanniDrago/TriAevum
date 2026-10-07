@@ -203,6 +203,12 @@ private:
     ImGui::SeparatorText("Placed lights");
     ImGui::TextWrapped("Lights of this scene's profile (day or night). New lights start where Link "
                        "is; save the scene environment to keep them.");
+    ImGui::Checkbox("Show light gizmos", &mShowGizmos);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("While this editor is open (and with the free camera): every light's shape in "
+                        "its colour, and through the selected light its move axes (X red, Y green, Z "
+                        "blue) and turn axes (yaw about Y, pitch orange, roll cyan) across the scene. "
+                        "Parts behind surfaces are dashed, so an axis shows where it meets them.");
     bool changed = false;
     auto &lights = value.PlacedLights;
     ImGui::BeginDisabled(lights.size() >= kMaximumPlacedLights);
@@ -245,6 +251,7 @@ private:
       }
       ImGui::EndListBox();
     }
+    mRuntime->EditLightGizmo(mSelectedLight, mShowGizmos);
     const auto selected = std::find_if(lights.begin(), lights.end(),
                                        [&](const auto &light) { return light.Id == mSelectedLight; });
     auto &light = *selected;
@@ -387,6 +394,7 @@ private:
   // World units above Link's feet where a new light starts.
   static constexpr float kPlacedLightHeadHeight = 50.0F;
   uint32_t mSelectedLight = 0;
+  bool mShowGizmos = true;
   // A scene with day and night (Kakariko Village, Hyrule Field) may keep a
   // second profile for the night; the game's night flag picks it.
   void DrawDayNight(const SceneEnvironmentSnapshot &state) {

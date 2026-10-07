@@ -56,6 +56,27 @@ well: it was regenerated with this lighting on 2026-10-07 by
 [scenario preparation](TRIAEVUM_SCENARIO_SHADER_PREPARATION.md#regeneration-with-the-current-runtime-2026-10-07)
 document) and is regenerated again with each release runtime.
 
+## Gizmos
+
+"Show light gizmos" (on by default) draws, while the placed-light editor is
+open and while the developer free camera is on, every light's shape in its
+colour: omni and point their reach as three great circles, spot its cone (and
+its hard core), surface its rectangle or disc with arrows to its reach from
+each emitting face, sun a sheaf of arrows along its light; the selected light
+bright, the others fainter, hidden lights faintest. Through the selected light
+run its move axes (world X red, Y green, Z blue) and turn axes (yaw about Y,
+pitch about its horizontal right axis in orange, a surface's roll about its
+own axis in cyan; a spot's or sun's beam in pale yellow), 20000 units each
+way, with rings of a constant size on screen.
+
+The lines are real 3D lines (`Fast::Oot3d::WorldDebugLineRuntime`,
+`WorldDebugLinePass`): screen-space quads of a constant width drawn in the
+scene's render pass before its first UI draw, tested against the scene's
+depth without writing it. Parts in front of the scene's surfaces are solid;
+parts behind them are dashed and faint, so an axis shows where it enters and
+leaves a surface. Their pipelines are built (and their two shaders compiled)
+the first time there are lines, never at startup.
+
 ## Storage
 
 `placedLights` in the profile JSON (`environments/scene-XXXX[.night].environment.json`),
@@ -91,10 +112,17 @@ the profile invalid, as any other out-of-range value does.
   publishes its cone cosines; surface its rectangle and disc; sun offers no
   shadows; omni with shadows publishes a shadowing light; save writes
   `placedLights`; duplicate gives a new identity; delete stops drawing; reload
-  restores the saved light.
+  restores the saved light. Gizmos: the editor publishes a light's reach and
+  move axes, none once "Show light gizmos" is off; lines are cut at the near
+  plane and turned into the physical framebuffer.
 - Live, Kokiri Forest from the play quick save, against the same frame without
   lights: an orange sun at pitch -45 raises the mean RGB from (56, 59, 21) to
   (83, 73, 22); a green 200x200 rectangle 200 units above Link greens the
   platform (mean G 59 -> 67); a blue 90-degree spot 150 units above him draws
   its cone's edge on the tree around the door (around Link, mean RGB
   (76, 77, 24) -> (86, 94, 36)).
+- Gizmos, live (developer build, free camera fixed above Kokiri Forest's
+  stump, a spot, a green omni and a blue two-sided panel): every shape lands
+  where its light lights the scene (the green omni's sphere around the
+  green-lit ground right of the stump), the spot's cone is dashed behind the
+  stump and the omni's sphere below the ground, the HUD stays over the lines.
