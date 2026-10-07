@@ -1,4 +1,5 @@
 #include "fast/oot3d/grass_world_placement_cache.h"
+#include "fast/oot3d/grass_parallel_work.h"
 #include "fast/oot3d/grass_visibility.h"
 
 #include <algorithm>
@@ -304,36 +305,47 @@ GrassWorldPlacement BuildPlacement(const GrassWorldPlacementRequest& request, ui
     result.CullingAnchors.resize(request.Anchors.size());
     ShadowGridBuilder shadowGrid(request, result.ShadowPoints, result.ShadowSurfaces);
     if (request.ShadowGrid) result.ShadowReferences.resize(request.Anchors.size());
-    for (size_t index = 0U; index < request.Anchors.size(); ++index) {
-        const auto& source = request.Anchors[index];
-        auto base = TransformPoint(request, source.LocalPosition);
-        auto normal = TransformNormal(request, source.LocalNormal);
-        if (normal == std::array<float, 3>{}) {
-            normal = { 0.0F, 1.0F, 0.0F };
+    // Each anchor is independent except for the shadow grid, which appends
+    // shared points in anchor order: it runs afterwards, in that order.
+    std::vector<GrassTextureGridSample> samples(request.ShadowGrid ? request.Anchors.size() : 0U);
+    const size_t workers = GrassParallelWorkerCount(request.Anchors.size());
+    RunGrassParallelWork(workers, [&](size_t worker) {
+        const size_t first = request.Anchors.size() * worker / workers;
+        const size_t last = request.Anchors.size() * (worker + 1U) / workers;
+        for (size_t index = first; index < last; ++index) {
+            const auto& source = request.Anchors[index];
+            auto base = TransformPoint(request, source.LocalPosition);
+            auto normal = TransformNormal(request, source.LocalNormal);
+            if (normal == std::array<float, 3>{}) {
+                normal = { 0.0F, 1.0F, 0.0F };
+            }
+            for (size_t axis = 0U; axis < 3U; ++axis) {
+                base[axis] += normal[axis] * request.NormalOffset;
+            }
+            auto& destination = result.Anchors[index];
+            destination.BaseHeight = { base[0], base[1], base[2], source.BladeHeight * request.HeightScale };
+            destination.HalfWidthPhase = { source.BladeWidth * 0.5F, source.Phase };
+            destination.PackedWidthAxis = PackGrassDirection(source.WidthAxis);
+            destination.PackedWorldNormal = PackGrassNormal(normal);
+            destination.StableId = source.StableId;
+            destination.SurfaceReference = source.SurfaceReference;
+            if (request.ShadowGrid) {
+                samples[index] = ResolveGrassTextureGridSample(
+                    source.Uv[0], source.Uv[1], request.ColorWrapS, request.ColorWrapT);
+                destination.SurfaceColor = request.ColorSource.SamplePacked(samples[index]);
+            } else {
+                destination.SurfaceColor = request.ColorSource.SamplePacked(
+                    source.Uv[0], source.Uv[1], request.ColorWrapS, request.ColorWrapT);
+            }
+            result.CullingAnchors[index] = {
+                { destination.BaseHeight[0], destination.BaseHeight[1], destination.BaseHeight[2] },
+                GrassStableVisibilityValue(source.StableId),
+            };
         }
-        for (size_t axis = 0U; axis < 3U; ++axis) {
-            base[axis] += normal[axis] * request.NormalOffset;
-        }
-        auto& destination = result.Anchors[index];
-        destination.BaseHeight = { base[0], base[1], base[2], source.BladeHeight * request.HeightScale };
-        destination.HalfWidthPhase = { source.BladeWidth * 0.5F, source.Phase };
-        destination.PackedWidthAxis = PackGrassDirection(source.WidthAxis);
-        destination.PackedWorldNormal = PackGrassNormal(normal);
-        destination.StableId = source.StableId;
-        destination.SurfaceReference = source.SurfaceReference;
-        if (request.ShadowGrid) {
-            const auto sample = ResolveGrassTextureGridSample(
-                source.Uv[0], source.Uv[1], request.ColorWrapS, request.ColorWrapT);
-            destination.SurfaceColor = request.ColorSource.SamplePacked(sample);
-            result.ShadowReferences[index] = shadowGrid.Resolve(source, sample);
-        } else {
-            destination.SurfaceColor = request.ColorSource.SamplePacked(
-                source.Uv[0], source.Uv[1], request.ColorWrapS, request.ColorWrapT);
-        }
-        result.CullingAnchors[index] = {
-            { destination.BaseHeight[0], destination.BaseHeight[1], destination.BaseHeight[2] },
-            GrassStableVisibilityValue(source.StableId),
-        };
+    });
+    if (request.ShadowGrid) {
+        for (size_t index = 0U; index < request.Anchors.size(); ++index)
+            result.ShadowReferences[index] = shadowGrid.Resolve(request.Anchors[index], samples[index]);
     }
 
     const float modelScale = MaximumModelScale(request);

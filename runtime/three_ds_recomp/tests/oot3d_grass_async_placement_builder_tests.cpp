@@ -124,6 +124,29 @@ TEST(Oot3dGrassAsyncPlacementBuilder, PublishesImmutablePlacementAndDeduplicates
     EXPECT_GE(stats.Hits, 2U);
 }
 
+TEST(Oot3dGrassAsyncPlacementBuilder, ShadowedPlacementServesAnUnshadowedScene) {
+    Fast::Oot3d::GrassAsyncPlacementBuilder builder(8U, 1U);
+    auto request = BaseRequest();
+    request.ShadowGrid = true;
+    ASSERT_TRUE(builder.ResolveOrQueue(request).Queued);
+    builder.WaitForIdle();
+    const auto shadowed = builder.ResolveOrQueue(request);
+    ASSERT_EQ(shadowed.State, Fast::Oot3d::GrassAsyncPlacementState::Ready);
+    // A scene without directional shadows reuses the shadowed placement.
+    request.ShadowGrid = false;
+    const auto plain = builder.ResolveOrQueue(request);
+    EXPECT_FALSE(plain.Queued);
+    ASSERT_EQ(plain.State, Fast::Oot3d::GrassAsyncPlacementState::Ready);
+    EXPECT_EQ(plain.Placement, shadowed.Placement);
+    // The reverse needs the grid, so it builds.
+    Fast::Oot3d::GrassAsyncPlacementBuilder unshadowedFirst(8U, 1U);
+    ASSERT_TRUE(unshadowedFirst.ResolveOrQueue(request).Queued);
+    unshadowedFirst.WaitForIdle();
+    request.ShadowGrid = true;
+    EXPECT_TRUE(unshadowedFirst.ResolveOrQueue(request).Queued);
+    unshadowedFirst.WaitForIdle();
+}
+
 TEST(Oot3dGrassAsyncPlacementBuilder, CompletionTicketsSurviveResidentEviction) {
     using namespace Fast::Oot3d;
     GrassAsyncPlacementBuilder builder(1U,2U);

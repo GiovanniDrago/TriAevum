@@ -1,4 +1,5 @@
 #include "fast/oot3d/grass_surface_extractor.h"
+#include "fast/oot3d/grass_parallel_work.h"
 #include "fast/oot3d/grass_surface_reference.h"
 #include "fast/oot3d/grass_visibility.h"
 
@@ -6,10 +7,14 @@
 #include <bit>
 #include <cmath>
 #include <compare>
+#include <exception>
 #include <limits>
-#include <memory_resource>
+#include <mutex>
 #include <numbers>
+#include <stdexcept>
+#include <thread>
 #include <unordered_map>
+#include <utility>
 
 namespace Fast::Oot3d {
 namespace {
@@ -162,19 +167,6 @@ struct SpatialCellHash {
     }
 };
 
-struct SpacingPoint {
-    std::array<float, 3> Position;
-    int32_t CellY;
-};
-
-// Flat terrain needs one allocation per occupied column, not a separately
-// allocated point vector per cell. Sorted overflow keeps stacked floors local.
-struct SpacingColumn {
-    SpacingPoint First;
-    std::vector<SpacingPoint> Extra;
-};
-using SpacingIndex = std::pmr::unordered_map<SpatialCell, SpacingColumn, SpatialCellHash>;
-
 SpatialCell CellFor(const std::array<float, 3>& position,
                     float cellSize) {
     return {
@@ -184,39 +176,116 @@ SpatialCell CellFor(const std::array<float, 3>& position,
     };
 }
 
-bool HasMinimumSpacing(
-    const std::array<float, 3>& worldPosition, float spacing,
-    const SpacingIndex& occupied) {
-    if (spacing <= 0.0F) {
-        return true;
+// A blade that passed its mask and acceptance test, before the spacing test.
+struct PendingAnchor {
+    GrassAnchor Anchor;
+    std::array<float, 3> World{};
+};
+
+// Sorts by a strict total order: chunks in parallel, then pairwise merges.
+template <typename Value, typename Less>
+void SortInParallel(std::vector<Value>& values, Less less, size_t workers) {
+    workers = std::clamp<size_t>(workers, 1U, std::max<size_t>(values.size() / 4096U, 1U));
+    std::vector<size_t> bounds(workers + 1U);
+    for (size_t chunk = 0; chunk <= workers; ++chunk) bounds[chunk] = values.size() * chunk / workers;
+    RunGrassParallelWork(workers, [&](size_t chunk) {
+        std::sort(values.begin() + static_cast<std::ptrdiff_t>(bounds[chunk]),
+                  values.begin() + static_cast<std::ptrdiff_t>(bounds[chunk + 1U]), less);
+    });
+    for (size_t width = 1U; width < workers; width *= 2U) {
+        std::vector<size_t> merges;
+        for (size_t chunk = 0; chunk + width < workers; chunk += 2U * width) merges.push_back(chunk);
+        RunGrassParallelWork(merges.size(), [&](size_t merge) {
+            const size_t chunk = merges[merge];
+            const auto begin = values.begin();
+            std::inplace_merge(begin + static_cast<std::ptrdiff_t>(bounds[chunk]),
+                               begin + static_cast<std::ptrdiff_t>(bounds[chunk + width]),
+                               begin + static_cast<std::ptrdiff_t>(bounds[std::min(chunk + 2U * width, workers)]),
+                               less);
+        });
     }
-    const auto center = CellFor(worldPosition, spacing);
+}
+
+// Orders cells by X, then Z, as signed values.
+uint64_t ColumnKey(int64_t x, int64_t z) noexcept {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(static_cast<int32_t>(x)) ^ 0x80000000U) << 32U) |
+           (static_cast<uint32_t>(static_cast<int32_t>(z)) ^ 0x80000000U);
+}
+
+// The minimum spacing of the sequential walk: a blade is kept unless a kept
+// blade before it lies within the spacing (in its own or a neighbouring cell
+// column and cell layer). Each blade's earlier neighbours are found in
+// parallel by stripes of cell columns; the few blades that have any are then
+// decided in index order, which is all the walk's order ever decided.
+std::vector<uint8_t> ResolveMinimumSpacing(const std::vector<PendingAnchor>& pending, float spacing,
+                                           size_t workers) {
+    std::vector<uint8_t> kept(pending.size(), 1U);
+    if (spacing <= 0.0F || pending.size() < 2U) return kept;
+    if (pending.size() > std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("grass candidate count exceeds the spacing index");
+    std::vector<SpatialCell> cells(pending.size());
+    int64_t minimumX = std::numeric_limits<int64_t>::max();
+    int64_t maximumX = std::numeric_limits<int64_t>::min();
+    for (size_t index = 0; index < pending.size(); ++index) {
+        cells[index] = CellFor(pending[index].World, spacing);
+        minimumX = std::min<int64_t>(minimumX, cells[index].X);
+        maximumX = std::max<int64_t>(maximumX, cells[index].X);
+    }
+    const size_t stripes = std::max<size_t>(workers, 1U);
+    const int64_t width = (maximumX - minimumX) / static_cast<int64_t>(stripes) + 1;
     const float spacingSquared = spacing * spacing;
-    const auto overlaps = [&](const SpacingPoint& point) {
-        if (static_cast<int64_t>(point.CellY) < static_cast<int64_t>(center.Y) - 1 ||
-            static_cast<int64_t>(point.CellY) > static_cast<int64_t>(center.Y) + 1) return false;
-        const float dx = point.Position[0] - worldPosition[0];
-        const float dy = point.Position[1] - worldPosition[1];
-        const float dz = point.Position[2] - worldPosition[2];
-        return dx * dx + dy * dy + dz * dz < spacingSquared;
-    };
-    for (int32_t z = -1; z <= 1; ++z) {
-        for (int32_t x = -1; x <= 1; ++x) {
-            const SpatialCell neighbor{center.X + x, 0, center.Z + z};
-            const auto found = occupied.find(neighbor);
-            if (found == occupied.end()) continue;
-            const auto& column = found->second;
-            if (overlaps(column.First)) return false;
-            auto point = std::lower_bound(column.Extra.begin(), column.Extra.end(),
-                static_cast<int64_t>(center.Y) - 1,
-                [](const SpacingPoint& p, int64_t y) { return p.CellY < y; });
-            for (; point != column.Extra.end() &&
-                   point->CellY <= static_cast<int64_t>(center.Y) + 1; ++point) {
-                if (overlaps(*point)) return false;
+    std::vector<std::vector<std::pair<uint32_t, uint32_t>>> conflicts(stripes);
+    RunGrassParallelWork(stripes, [&](size_t stripe) {
+        const int64_t first = minimumX + static_cast<int64_t>(stripe) * width;
+        const int64_t last = first + width;
+        // The stripe's blades and a one-column halo, by column, then index.
+        std::vector<std::pair<uint64_t, uint32_t>> entries;
+        for (size_t index = 0; index < pending.size(); ++index) {
+            const int64_t x = cells[index].X;
+            if (x >= first - 1 && x <= last)
+                entries.emplace_back(ColumnKey(x, cells[index].Z), static_cast<uint32_t>(index));
+        }
+        std::sort(entries.begin(), entries.end());
+        auto& output = conflicts[stripe];
+        for (const auto& [ownKey, index] : entries) {
+            const auto& center = cells[index];
+            if (center.X < first || center.X >= last) continue;
+            const auto& world = pending[index].World;
+            for (int64_t dx = -1; dx <= 1; ++dx) {
+                const int64_t x = static_cast<int64_t>(center.X) + dx;
+                const int64_t z = static_cast<int64_t>(center.Z);
+                if (x < std::numeric_limits<int32_t>::min() || x > std::numeric_limits<int32_t>::max() ||
+                    z - 1 < std::numeric_limits<int32_t>::min() || z + 1 > std::numeric_limits<int32_t>::max())
+                    continue;
+                const uint64_t lastKey = ColumnKey(x, z + 1);
+                for (auto entry = std::lower_bound(entries.begin(), entries.end(),
+                                                   std::pair<uint64_t, uint32_t>{ColumnKey(x, z - 1), 0U});
+                     entry != entries.end() && entry->first <= lastKey; ++entry) {
+                    const uint32_t earlier = entry->second;
+                    if (earlier >= index) continue;
+                    const auto& cell = cells[earlier];
+                    if (static_cast<int64_t>(cell.Y) < static_cast<int64_t>(center.Y) - 1 ||
+                        static_cast<int64_t>(cell.Y) > static_cast<int64_t>(center.Y) + 1) continue;
+                    const auto& point = pending[earlier].World;
+                    const float px = point[0] - world[0];
+                    const float py = point[1] - world[1];
+                    const float pz = point[2] - world[2];
+                    if (px * px + py * py + pz * pz < spacingSquared) output.emplace_back(index, earlier);
+                }
             }
         }
+    });
+    std::vector<std::pair<uint32_t, uint32_t>> ordered;
+    for (auto& part : conflicts) ordered.insert(ordered.end(), part.begin(), part.end());
+    std::sort(ordered.begin(), ordered.end());
+    for (size_t position = 0; position < ordered.size();) {
+        const uint32_t index = ordered[position].first;
+        bool blocked = false;
+        for (; position < ordered.size() && ordered[position].first == index; ++position)
+            blocked = blocked || kept[ordered[position].second] != 0U;
+        if (blocked) kept[index] = 0U;
     }
-    return true;
+    return kept;
 }
 
 } // namespace
@@ -342,9 +411,6 @@ static std::vector<GrassAnchor> ExtractAnchors(
         return anchors;
     const uint32_t limit = budget;
     anchors.reserve(std::min<uint32_t>(limit, 4096U));
-    // Each extraction owns its pool; parallel surface jobs never share it.
-    std::pmr::unsynchronized_pool_resource spacingStorage;
-    SpacingIndex occupied{&spacingStorage};
     const GrassTextureWrap wrapS = ResolveGrassTextureWrap(
         rule.Wrap, surface.MaterialWrapS);
     const GrassTextureWrap wrapT = ResolveGrassTextureWrap(
@@ -410,129 +476,152 @@ static std::vector<GrassAnchor> ExtractAnchors(
         return totalCandidates <= limit ? prefix : static_cast<uint64_t>(
             static_cast<double>(prefix) * limit / static_cast<double>(totalCandidates));
     };
-    for (size_t triangle = 0;
-         triangle + 2 < surface.Indices.size() && anchors.size() < limit;
-         triangle += 3) {
-        const uint32_t candidates = candidateCounts[triangle / 3U];
-        const uint32_t selectedCandidates = viewQuotas.empty() ? static_cast<uint32_t>(
-            quotaAt(candidatePrefix + candidates) - quotaAt(candidatePrefix)) : viewQuotas[triangle / 3U];
+    std::vector<uint32_t> selectedCounts(candidateCounts.size());
+    uint64_t totalSelected = 0U;
+    for (size_t triangle = 0; triangle < candidateCounts.size(); ++triangle) {
+        const uint32_t candidates = candidateCounts[triangle];
+        selectedCounts[triangle] = viewQuotas.empty() ? static_cast<uint32_t>(
+            quotaAt(candidatePrefix + candidates) - quotaAt(candidatePrefix)) : viewQuotas[triangle];
         candidatePrefix += candidates;
-        if (selectedCandidates == 0U) continue;
-        const uint32_t ia = surface.Indices[triangle];
-        const uint32_t ib = surface.Indices[triangle + 1];
-        const uint32_t ic = surface.Indices[triangle + 2];
-        if (ia >= surface.Vertices.size() || ib >= surface.Vertices.size() ||
-            ic >= surface.Vertices.size()) continue;
-        const auto& a = surface.Vertices[ia];
-        const auto& b = surface.Vertices[ib];
-        const auto& c = surface.Vertices[ic];
-        const auto face = Cross(Subtract(b.Position, a.Position),
-                                Subtract(c.Position, a.Position));
-        const float doubledArea = Length(face);
-        if (doubledArea <= 1.0e-6F) continue;
-        for (uint32_t selected = 0;
-             selected < selectedCandidates && anchors.size() < limit; ++selected) {
-            // A progressive prefix is independent of the view/budget. Increasing
-            // a patch's quota adds blades without moving its existing samples.
-            const uint32_t candidate = selected;
-            uint32_t random = HashCoordinates(static_cast<int32_t>(triangle / 3U), static_cast<int32_t>(candidate),
-                generation.Seed ^ static_cast<uint32_t>(surface.GeometryId));
-            if (random == 0U) random = 1U;
-            float randomU = UnitRandom(random);
-            float randomV = UnitRandom(random);
-            if (randomU + randomV > 1.0F) {
-                randomU = 1.0F - randomU;
-                randomV = 1.0F - randomV;
-            }
-            float sequenceU = static_cast<float>(std::fmod((static_cast<double>(candidate) + 0.5) * 0.7548776662466927, 1.0));
-            float sequenceV =
-                std::fmod(
-                    static_cast<float>(candidate) *
-                            0.61803398875F +
-                        HashUnit(
-                            static_cast<int32_t>(triangle / 3U),
-                            static_cast<int32_t>(candidate),
-                            generation.Seed),
-                    1.0F);
-            if (sequenceU + sequenceV > 1.0F) {
-                sequenceU = 1.0F - sequenceU;
-                sequenceV = 1.0F - sequenceV;
-            }
-            const float randomness =
-                std::clamp(
-                    generation.IndividualRandomness, 0.0F, 1.0F);
-            const float u =
-                std::lerp(sequenceU, randomU, randomness);
-            const float v =
-                std::lerp(sequenceV, randomV, randomness);
-            const float w = 1.0F - u - v;
-            const std::array<float, 2> uv{
-                a.Uv[0] * w + b.Uv[0] * u + c.Uv[0] * v,
-                a.Uv[1] * w + b.Uv[1] * u + c.Uv[1] * v};
-            float sample = EvaluateGrassMaskLevel(
-                SampleMask(mask, uv[0], uv[1], wrapS, wrapT),
-                rule);
-            GrassAnchor anchor;
-            if (surface.TriangleSources.empty()) {
-                anchor.SurfaceReference = PackGrassSurfaceReference({ia, ib, ic}, u, v);
-            } else {
-                anchor.SurfaceReference = PackGrassSurfaceReference(surface.TriangleSources[triangle / 3U],
-                    a.SourceWeights[1] * w + b.SourceWeights[1] * u + c.SourceWeights[1] * v,
-                    a.SourceWeights[2] * w + b.SourceWeights[2] * u + c.SourceWeights[2] * v);
-            }
-            for (size_t axis = 0; axis < 3; ++axis) {
-                anchor.LocalPosition[axis] =
-                    a.Position[axis] * w + b.Position[axis] * u +
-                    c.Position[axis] * v;
-                anchor.LocalNormal[axis] = face[axis] / doubledArea;
-            }
-            const auto worldPosition =
-                TransformPoint(surface, anchor.LocalPosition);
-            sample *= ClusterWeight(generation, worldPosition);
-            const float acceptanceSample = UnitRandom(random);
-            if (!(acceptanceSample < sample) ||
-                !HasMinimumSpacing(
-                    worldPosition, generation.MinimumSpacing,
-                    occupied)) {
-                continue;
-            }
-            anchor.Uv = uv;
-            anchor.BladeHeight =
-                generation.BladeHeightMin +
-                (generation.BladeHeightMax -
-                 generation.BladeHeightMin) *
-                    UnitRandom(random);
-            anchor.BladeWidth =
-                generation.BladeWidthMin +
-                (generation.BladeWidthMax -
-                 generation.BladeWidthMin) *
-                    UnitRandom(random);
-            anchor.Phase = UnitRandom(random) * 2.0F * std::numbers::pi_v<float>;
-            const float orientation =
-                UnitRandom(random) * 2.0F *
-                std::numbers::pi_v<float>;
-            anchor.WidthAxis = {
-                std::cos(orientation),
-                std::sin(orientation)};
-            anchor.StableId = NextRandom(random);
-            if (anchor.StableId == 0U) {
-                anchor.StableId = 1U;
-            }
-            anchors.push_back(anchor);
-            if (generation.MinimumSpacing > 0.0F) {
-                const auto cell = CellFor(worldPosition, generation.MinimumSpacing);
-                const SpacingPoint point{worldPosition, cell.Y};
-                auto [entry, inserted] = occupied.try_emplace(
-                    SpatialCell{cell.X, 0, cell.Z}, SpacingColumn{point, {}});
-                if (!inserted) {
-                    auto& extra = entry->second.Extra;
-                    const auto where = std::upper_bound(extra.begin(), extra.end(), cell.Y,
-                        [](int32_t y, const SpacingPoint& p) { return y < p.CellY; });
-                    extra.insert(where, point);
-                }
-            }
+        totalSelected += selectedCounts[triangle];
+    }
+
+    // Every candidate depends only on its (triangle, candidate) pair; only the
+    // minimum spacing depends on the order of the blades already kept. The
+    // candidates are evaluated in parallel by triangle ranges, each blade's
+    // earlier neighbours within the spacing are found in parallel by spatial
+    // stripes, and those (rare) conflicts are resolved in the original order:
+    // the result equals the sequential walk exactly.
+    const size_t workers = GrassParallelWorkerCount(totalSelected);
+    std::vector<size_t> rangeBegin(workers + 1U, candidateCounts.size());
+    rangeBegin[0] = 0U;
+    {
+        uint64_t running = 0U;
+        size_t next = 1U;
+        for (size_t triangle = 0; triangle < candidateCounts.size() && next < workers; ++triangle) {
+            running += selectedCounts[triangle];
+            while (next < workers && running * workers >= totalSelected * next) rangeBegin[next++] = triangle + 1U;
         }
     }
+    std::vector<std::vector<PendingAnchor>> evaluated(workers);
+    RunGrassParallelWork(workers, [&](size_t worker) {
+        auto& output = evaluated[worker];
+        for (size_t triangleIndex = rangeBegin[worker]; triangleIndex < rangeBegin[worker + 1U]; ++triangleIndex) {
+            const uint32_t selectedCandidates = selectedCounts[triangleIndex];
+            if (selectedCandidates == 0U) continue;
+            const size_t triangle = triangleIndex * 3U;
+            const uint32_t ia = surface.Indices[triangle];
+            const uint32_t ib = surface.Indices[triangle + 1];
+            const uint32_t ic = surface.Indices[triangle + 2];
+            if (ia >= surface.Vertices.size() || ib >= surface.Vertices.size() ||
+                ic >= surface.Vertices.size()) continue;
+            const auto& a = surface.Vertices[ia];
+            const auto& b = surface.Vertices[ib];
+            const auto& c = surface.Vertices[ic];
+            const auto face = Cross(Subtract(b.Position, a.Position),
+                                    Subtract(c.Position, a.Position));
+            const float doubledArea = Length(face);
+            if (doubledArea <= 1.0e-6F) continue;
+            for (uint32_t selected = 0; selected < selectedCandidates; ++selected) {
+                // A progressive prefix is independent of the view/budget. Increasing
+                // a patch's quota adds blades without moving its existing samples.
+                const uint32_t candidate = selected;
+                uint32_t random = HashCoordinates(static_cast<int32_t>(triangle / 3U), static_cast<int32_t>(candidate),
+                    generation.Seed ^ static_cast<uint32_t>(surface.GeometryId));
+                if (random == 0U) random = 1U;
+                float randomU = UnitRandom(random);
+                float randomV = UnitRandom(random);
+                if (randomU + randomV > 1.0F) {
+                    randomU = 1.0F - randomU;
+                    randomV = 1.0F - randomV;
+                }
+                float sequenceU = static_cast<float>(std::fmod((static_cast<double>(candidate) + 0.5) * 0.7548776662466927, 1.0));
+                float sequenceV =
+                    std::fmod(
+                        static_cast<float>(candidate) *
+                                0.61803398875F +
+                            HashUnit(
+                                static_cast<int32_t>(triangle / 3U),
+                                static_cast<int32_t>(candidate),
+                                generation.Seed),
+                        1.0F);
+                if (sequenceU + sequenceV > 1.0F) {
+                    sequenceU = 1.0F - sequenceU;
+                    sequenceV = 1.0F - sequenceV;
+                }
+                const float randomness =
+                    std::clamp(
+                        generation.IndividualRandomness, 0.0F, 1.0F);
+                const float u =
+                    std::lerp(sequenceU, randomU, randomness);
+                const float v =
+                    std::lerp(sequenceV, randomV, randomness);
+                const float w = 1.0F - u - v;
+                const std::array<float, 2> uv{
+                    a.Uv[0] * w + b.Uv[0] * u + c.Uv[0] * v,
+                    a.Uv[1] * w + b.Uv[1] * u + c.Uv[1] * v};
+                float sample = EvaluateGrassMaskLevel(
+                    SampleMask(mask, uv[0], uv[1], wrapS, wrapT),
+                    rule);
+                PendingAnchor pending;
+                auto& anchor = pending.Anchor;
+                if (surface.TriangleSources.empty()) {
+                    anchor.SurfaceReference = PackGrassSurfaceReference({ia, ib, ic}, u, v);
+                } else {
+                    anchor.SurfaceReference = PackGrassSurfaceReference(surface.TriangleSources[triangle / 3U],
+                        a.SourceWeights[1] * w + b.SourceWeights[1] * u + c.SourceWeights[1] * v,
+                        a.SourceWeights[2] * w + b.SourceWeights[2] * u + c.SourceWeights[2] * v);
+                }
+                for (size_t axis = 0; axis < 3; ++axis) {
+                    anchor.LocalPosition[axis] =
+                        a.Position[axis] * w + b.Position[axis] * u +
+                        c.Position[axis] * v;
+                    anchor.LocalNormal[axis] = face[axis] / doubledArea;
+                }
+                pending.World = TransformPoint(surface, anchor.LocalPosition);
+                sample *= ClusterWeight(generation, pending.World);
+                const float acceptanceSample = UnitRandom(random);
+                if (!(acceptanceSample < sample)) continue;
+                anchor.Uv = uv;
+                anchor.BladeHeight =
+                    generation.BladeHeightMin +
+                    (generation.BladeHeightMax -
+                     generation.BladeHeightMin) *
+                        UnitRandom(random);
+                anchor.BladeWidth =
+                    generation.BladeWidthMin +
+                    (generation.BladeWidthMax -
+                     generation.BladeWidthMin) *
+                        UnitRandom(random);
+                anchor.Phase = UnitRandom(random) * 2.0F * std::numbers::pi_v<float>;
+                const float orientation =
+                    UnitRandom(random) * 2.0F *
+                    std::numbers::pi_v<float>;
+                anchor.WidthAxis = {
+                    std::cos(orientation),
+                    std::sin(orientation)};
+                anchor.StableId = NextRandom(random);
+                if (anchor.StableId == 0U) {
+                    anchor.StableId = 1U;
+                }
+                output.push_back(pending);
+            }
+        }
+    });
+    std::vector<PendingAnchor> pending;
+    {
+        size_t count = 0U;
+        for (const auto& part : evaluated) count += part.size();
+        pending.reserve(count);
+        for (auto& part : evaluated) {
+            pending.insert(pending.end(), part.begin(), part.end());
+            std::vector<PendingAnchor>().swap(part);
+        }
+    }
+    const auto kept = ResolveMinimumSpacing(pending, generation.MinimumSpacing, workers);
+    anchors.reserve(std::min<size_t>(limit, pending.size()));
+    for (size_t index = 0; index < pending.size() && anchors.size() < limit; ++index)
+        if (kept[index]) anchors.push_back(pending[index].Anchor);
     return anchors;
 }
 
@@ -626,75 +715,84 @@ GrassPlacementSet BuildGrassPlacementSet(
         return result;
     }
     clusterSize = std::max(clusterSize, 1.0F);
-    std::unordered_map<
-        SpatialCell, std::vector<GrassAnchor>, SpatialCellHash>
-        buckets;
-    for (auto& anchor : anchors) {
-        buckets[CellFor(anchor.LocalPosition, clusterSize)]
-            .push_back(std::move(anchor));
-    }
-    const auto anchorCount = anchors.size();
-    std::vector<GrassAnchor>().swap(anchors);
-
-    std::vector<SpatialCell> keys;
-    keys.reserve(buckets.size());
-    for (const auto& [key, values] : buckets) {
-        (void)values;
-        keys.push_back(key);
-    }
-    std::sort(keys.begin(), keys.end());
-    result.Anchors.reserve(anchorCount);
-    result.Clusters.reserve(keys.size());
-    for (const auto& key : keys) {
-        auto& values = buckets.at(key);
-        std::sort(
-            values.begin(), values.end(),
-            [](const GrassAnchor& left,
-               const GrassAnchor& right) {
-                return GrassStableVisibilityValue(
-                           left.StableId) <
-                       GrassStableVisibilityValue(
-                           right.StableId);
-            });
-        GrassAnchorCluster cluster;
-        cluster.FirstAnchor =
-            static_cast<uint32_t>(result.Anchors.size());
-        cluster.AnchorCount =
-            static_cast<uint32_t>(values.size());
-        std::array<float, 3> minimum{
-            std::numeric_limits<float>::max(),
-            std::numeric_limits<float>::max(),
-            std::numeric_limits<float>::max()};
-        std::array<float, 3> maximum{
-            std::numeric_limits<float>::lowest(),
-            std::numeric_limits<float>::lowest(),
-            std::numeric_limits<float>::lowest()};
-        for (const auto& anchor : values) {
-            for (size_t axis = 0U; axis < 3U; ++axis) {
-                minimum[axis] = std::min(
-                    minimum[axis], anchor.LocalPosition[axis]);
-                maximum[axis] = std::max(
-                    maximum[axis], anchor.LocalPosition[axis]);
+    if (anchors.size() > std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("grass anchor count exceeds the cluster index");
+    // One cluster per cell, in cell order (X, then Y, then Z). Within a cell
+    // the anchors keep their extraction order before the visibility sort, as
+    // a bucket per cell filled in order would; clusters are then independent.
+    const size_t workers = GrassParallelWorkerCount(anchors.size());
+    struct Entry {
+        SpatialCell Cell;
+        uint32_t Index = 0U;
+    };
+    std::vector<Entry> order(anchors.size());
+    for (size_t index = 0; index < anchors.size(); ++index)
+        order[index] = {CellFor(anchors[index].LocalPosition, clusterSize), static_cast<uint32_t>(index)};
+    SortInParallel(order, [](const Entry& left, const Entry& right) {
+        if (left.Cell != right.Cell) return left.Cell < right.Cell;
+        return left.Index < right.Index;
+    }, workers);
+    std::vector<size_t> starts;
+    for (size_t position = 0; position < order.size(); ++position)
+        if (position == 0U || order[position].Cell != order[position - 1U].Cell) starts.push_back(position);
+    starts.push_back(order.size());
+    const size_t clusterCount = starts.size() - 1U;
+    result.Anchors.resize(anchors.size());
+    result.Clusters.resize(clusterCount);
+    RunGrassParallelWork(workers, [&](size_t worker) {
+        const size_t firstCluster = clusterCount * worker / workers;
+        const size_t lastCluster = clusterCount * (worker + 1U) / workers;
+        for (size_t clusterIndex = firstCluster; clusterIndex < lastCluster; ++clusterIndex) {
+            const size_t begin = starts[clusterIndex];
+            const size_t end = starts[clusterIndex + 1U];
+            for (size_t position = begin; position < end; ++position)
+                result.Anchors[position] = anchors[order[position].Index];
+            const auto values = result.Anchors.begin();
+            std::sort(
+                values + static_cast<std::ptrdiff_t>(begin), values + static_cast<std::ptrdiff_t>(end),
+                [](const GrassAnchor& left,
+                   const GrassAnchor& right) {
+                    return GrassStableVisibilityValue(
+                               left.StableId) <
+                           GrassStableVisibilityValue(
+                               right.StableId);
+                });
+            GrassAnchorCluster cluster;
+            cluster.FirstAnchor = static_cast<uint32_t>(begin);
+            cluster.AnchorCount = static_cast<uint32_t>(end - begin);
+            std::array<float, 3> minimum{
+                std::numeric_limits<float>::max(),
+                std::numeric_limits<float>::max(),
+                std::numeric_limits<float>::max()};
+            std::array<float, 3> maximum{
+                std::numeric_limits<float>::lowest(),
+                std::numeric_limits<float>::lowest(),
+                std::numeric_limits<float>::lowest()};
+            for (size_t position = begin; position < end; ++position) {
+                const auto& anchor = result.Anchors[position];
+                for (size_t axis = 0U; axis < 3U; ++axis) {
+                    minimum[axis] = std::min(
+                        minimum[axis], anchor.LocalPosition[axis]);
+                    maximum[axis] = std::max(
+                        maximum[axis], anchor.LocalPosition[axis]);
+                }
+                cluster.MaximumBladeHeight = std::max(
+                    cluster.MaximumBladeHeight, anchor.BladeHeight);
             }
-            cluster.MaximumBladeHeight = std::max(
-                cluster.MaximumBladeHeight, anchor.BladeHeight);
+            for (size_t axis = 0U; axis < 3U; ++axis) {
+                cluster.LocalCenter[axis] =
+                    (minimum[axis] + maximum[axis]) * 0.5F;
+            }
+            for (size_t position = begin; position < end; ++position) {
+                cluster.LocalRadius = std::max(
+                    cluster.LocalRadius,
+                    Length(Subtract(
+                        result.Anchors[position].LocalPosition,
+                        cluster.LocalCenter)));
+            }
+            result.Clusters[clusterIndex] = cluster;
         }
-        for (size_t axis = 0U; axis < 3U; ++axis) {
-            cluster.LocalCenter[axis] =
-                (minimum[axis] + maximum[axis]) * 0.5F;
-        }
-        for (const auto& anchor : values) {
-            cluster.LocalRadius = std::max(
-                cluster.LocalRadius,
-                Length(Subtract(
-                    anchor.LocalPosition,
-                    cluster.LocalCenter)));
-        }
-        for (auto& anchor : values) {
-            result.Anchors.push_back(std::move(anchor));
-        }
-        result.Clusters.push_back(cluster);
-    }
+    });
     return result;
 }
 

@@ -56,9 +56,9 @@ uint64_t GrassPlacementSourceVersion(const GrassAsyncPlacementRequest& request) 
 }
 
 namespace {
-uint64_t TransformVersion(const GrassAsyncPlacementRequest& request) noexcept {
+uint64_t TransformVersion(const GrassAsyncPlacementRequest& request, bool shadowGrid) noexcept {
     uint64_t hash = GrassPlacementSourceVersion(request);
-    if (request.ShadowGrid) HashValue(hash, request.ShadowGrid);
+    if (shadowGrid) HashValue(hash, shadowGrid);
     HashValue(hash, request.Budget);
     HashValue(hash, request.PlacementView.Enabled);
     if (request.PlacementView.Enabled) {
@@ -117,6 +117,12 @@ std::shared_ptr<const GrassWorldPlacement> Build(const GrassAsyncPlacementReques
     auto anchors =
         GrassSurfaceExtractor::Extract(surface, request.Rule, request.Generation, *request.Mask, request.Budget);
     const auto extracted = diagnose ? std::chrono::steady_clock::now() : started;
+    const auto bytesHash = [](const auto& values) {
+        uint64_t hash = kFnvOffset;
+        for (const auto& value : values) HashValue(hash, value);
+        return hash;
+    };
+    const uint64_t anchorHash = diagnose ? bytesHash(anchors) : 0U;
     auto local = BuildGrassPlacementSet(std::move(anchors), request.ClusterSize);
     const auto clustered = diagnose ? std::chrono::steady_clock::now() : started;
 
@@ -125,7 +131,7 @@ std::shared_ptr<const GrassWorldPlacement> Build(const GrassAsyncPlacementReques
     world.ColorWrapS = ResolveGrassTextureWrap(request.Rule.Wrap, request.MaterialWrapS);
     world.ColorWrapT = ResolveGrassTextureWrap(request.Rule.Wrap, request.MaterialWrapT);
     world.Identity = request.WorldIdentity;
-    world.ContentVersion = request.PlacementKey.ContentVersion ^ TransformVersion(request);
+    world.ContentVersion = request.PlacementKey.ContentVersion ^ TransformVersion(request, request.ShadowGrid);
     if (world.ContentVersion == 0U) world.ContentVersion = 1U;
     world.FrameId = request.FrameId;
     world.Anchors = local.Anchors;
@@ -147,10 +153,12 @@ std::shared_ptr<const GrassWorldPlacement> Build(const GrassAsyncPlacementReques
             return std::chrono::duration<double, std::milli>(end - begin).count();
         };
         std::fprintf(stderr,
-            "[grass-build] source=%llx anchors=%zu clusters=%zu extract_ms=%.3f cluster_ms=%.3f world_ms=%.3f\n",
+            "[grass-build] source=%llx anchors=%zu clusters=%zu extract_ms=%.3f cluster_ms=%.3f world_ms=%.3f "
+            "anchor_hash=%016llx world_hash=%016llx\n",
             static_cast<unsigned long long>(request.WorldIdentity), local.Anchors.size(), local.Clusters.size(),
             elapsed(started, extracted), elapsed(extracted, clustered),
-            elapsed(clustered, std::chrono::steady_clock::now()));
+            elapsed(clustered, std::chrono::steady_clock::now()), static_cast<unsigned long long>(anchorHash),
+            static_cast<unsigned long long>(bytesHash(result->Anchors)));
     }
     return result;
 }
@@ -334,12 +342,28 @@ GrassAsyncPlacementResult GrassAsyncPlacementBuilder::ResolveOrQueue(GrassAsyncP
     const BuildKey key{
         request.PlacementKey,
         request.WorldIdentity,
-        TransformVersion(request),
+        TransformVersion(request, request.ShadowGrid),
     };
 
     std::shared_future<GrassPlacementCompletion> completion;
     {
         std::scoped_lock lock(mImpl->Mutex);
+        // A placement built with the shadow grid carries every field of one
+        // without it: a scene without directional shadows reuses it.
+        if (!request.ShadowGrid && !mImpl->Entries.contains(key)) {
+            const BuildKey shadowed{key.Placement, key.WorldIdentity, TransformVersion(request, true)};
+            if (const auto found = mImpl->Entries.find(shadowed);
+                found != mImpl->Entries.end() && found->second.State == Impl::EntryState::Ready) {
+                found->second.LastUsedFrame = request.FrameId;
+                ++mImpl->Statistics.Hits;
+                return {
+                    GrassAsyncPlacementState::Ready,
+                    found->second.Placement,
+                    false,
+                    found->second.BuildMilliseconds,
+                };
+            }
+        }
         if (const auto found = mImpl->Entries.find(key); found != mImpl->Entries.end()) {
             found->second.LastUsedFrame = request.FrameId;
             switch (found->second.State) {
@@ -365,6 +389,18 @@ GrassAsyncPlacementResult GrassAsyncPlacementBuilder::ResolveOrQueue(GrassAsyncP
         }
 
         ++mImpl->Statistics.Misses;
+        static const bool diagnose = std::getenv("OOT3D_GRASS_DIAGNOSTICS") != nullptr;
+        if (diagnose)
+            std::fprintf(stderr,
+                "[grass-miss] world=%llx geometry=%llx placement_version=%llx source_version=%llx transform=%llx "
+                "budget=%u color=%llx frame=%llu\n",
+                static_cast<unsigned long long>(request.WorldIdentity),
+                static_cast<unsigned long long>(request.PlacementKey.GeometryId),
+                static_cast<unsigned long long>(request.PlacementKey.ContentVersion),
+                static_cast<unsigned long long>(request.SourceContentVersion),
+                static_cast<unsigned long long>(key.Transform), request.Budget,
+                static_cast<unsigned long long>(request.ColorSource.ContentVersion()),
+                static_cast<unsigned long long>(request.FrameId));
         auto promise = std::make_shared<std::promise<GrassPlacementCompletion>>();
         completion = promise->get_future().share();
         mImpl->Entries.emplace(key, Impl::Entry{
