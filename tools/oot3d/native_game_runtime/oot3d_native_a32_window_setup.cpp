@@ -150,7 +150,6 @@ void NativeA32WindowSession::Setup() {
   widescreenProjection.HdFonts = hdFontsLoaded ? &hdFonts : nullptr;
   widescreenProjection.FrameRatePolicy = &frameRatePolicy;
   widescreenProjection.SceneViewProbe = &sceneViewProbe;
-  widescreenProjection.DevFreeCamera = nativeCandidateDispatch.DevFreeCamera.get();
   widescreenProjection.PlayerTimingProbe = &playerTimingProbe;
   widescreenProjection.TemporalEventLedger = &temporalEventLedger;
   if (frameRateContract.Mode ==
@@ -490,6 +489,9 @@ void NativeA32WindowSession::Setup() {
   widescreenProjection.TopScreenInputClock =
       &nativeCandidateDispatch.TopScreenInputClock;
   widescreenProjection.TopScreenItems = &nativeCandidateDispatch.TopScreenItems;
+  // After the dispatch state is rebuilt: an earlier pointer would name the
+  // free camera that assignment destroyed.
+  widescreenProjection.DevFreeCamera = nativeCandidateDispatch.DevFreeCamera.get();
   nativeCandidateDispatch.TopScreenItems.TraceEnabled = launch.ExtendedDiagnostics;
   nativeCandidateDispatch.UiLifecycleBridge = &uiLifecycleBridge;
   nativeCandidateDispatch.PicaCompositionDomain = &picaCompositionDomain;
