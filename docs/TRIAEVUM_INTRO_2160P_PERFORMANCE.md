@@ -63,7 +63,7 @@ Two causes multiplied every effect:
   resize with frames in flight.
 - **GPU timeline** (`oot3d_vulkan_gpu_profiler.{h,cpp}`, developer only).
   `TRIAEVUM_GPU_TIMELINE=1` writes labelled timestamps (every profile scope,
-  each top-target render pass with its size, grass draw, shadow maps, display
+  each render pass with its namespace and size, grass draw, shadow maps, display
   effect passes) and prints the mean GPU time per label every 300 frames. Each
   timestamp serializes the GPU slightly; use it to attribute time, not to
   report frame rates. Inert when unset.
@@ -112,6 +112,35 @@ Screen difference against the previous build, five deterministic intro frames
 PSNR 33.5-37.7 dB. The difference is confined to polygon and blade edges, which
 lose the vertical 2x supersampling; 3.6-15.4% of pixels change by more than 3%
 in some channel.
+
+## Screen audit (2026-10-07)
+
+Question: is the top screen rendered once, at the intended resolution, and is
+the bottom screen limited to what TopScreen needs? Developer launch, the play
+profile above (3840x2160, render scale 1.0, Interpolated2x, TopScreen), real
+time from a Kokiri gameplay save plus the 6,000-frame intro run;
+`--pica-semantic-trace` for structure, `TRIAEVUM_GPU_TIMELINE=1` for cost (its
+render-pass labels now carry the target namespace).
+
+- **Mono.** The top LCD left and right addresses are equal in every frame and
+  each guest frame has one top display transfer from one 480x400 target: no
+  second eye is drawn.
+- **Resolution.** The host top target is 2160x3840 (stored rotated): one
+  sample per output pixel, without the game's 2:1 vertical sampling. The
+  bottom target is 240x320, its native size.
+- **Executions per guest frame.** The draw list runs three times at that
+  resolution: the interpolated and the repeated presented samples (namespace
+  2), and the non-presented canonical frame (namespace 1) that keeps the
+  guest-visible target exact for raw copies and savestates. The canonical
+  frame runs no scene effect, but its target carries every guide attachment
+  (about 55 bytes per pixel, roughly 450 MB at this size). GPU per presented
+  frame: presented top passes 5.36 ms, canonical 0.73 ms, of 13.3 ms.
+- **Bottom screen.** The game still draws its complete touch screen: one
+  clear and ten UI draws (about 950 vertices) per guest frame, transferred to
+  the bottom LCD, which TopScreen never presents or reads: its relocated HUD
+  copies native quads and save data from guest memory. The guest code that
+  builds them is what TopScreen consumes. Host GPU cost 0.03 ms per presented
+  frame (both namespaces).
 
 ## Reproduce
 

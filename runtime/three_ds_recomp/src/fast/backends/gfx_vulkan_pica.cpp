@@ -1661,7 +1661,8 @@ void GfxRenderingAPIVulkan::BeginNativePicaRenderPass(
         mCommandBuffers[mCurrentFrame]);
     if (mGpuProfiler.TimelineEnabled()) {
         mGpuProfiler.MarkNamed(mCurrentFrame,
-                               "pica " + std::to_string(target.Width) + "x" + std::to_string(target.Height) +
+                               "pica ns" + std::to_string(target.Key.RenderTargetNamespace) + " " +
+                                   std::to_string(target.Width) + "x" + std::to_string(target.Height) +
                                    (target.NormalGuideView != VK_NULL_HANDLE ? " guides" : ""),
                                mCommandBuffers[mCurrentFrame]);
     }
