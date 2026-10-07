@@ -52,6 +52,22 @@ before revealing terrain, with all four placements ready (3,897,490 anchors).
 Cache is RAM-only. Eviction or generation edits may wait again. Camera cuts do
 not regenerate placements; no scene-ID preload or timing exception is used.
 
+2026-10-07: admission still waits for complete placement (maintainer's choice
+over a fade-in), but the build is parallel and the result unchanged bit for
+bit. Extraction evaluates candidates by triangle ranges on all cores, finds
+each blade's earlier neighbours within the minimum spacing by stripes of cell
+columns, and decides the few conflicting blades in the original order;
+clustering sorts (cell, index) in parallel and builds clusters independently;
+the world placement transforms anchors in parallel and keeps the shadow grid
+in anchor order (`grass_parallel_work.h`). A placement built with the shadow
+grid also serves a scene without directional shadows, which previously
+rebuilt it. Title intro with the 1,048.8/m² play profile (4,189,027 anchors on
+the field): the largest surface takes 1.9 s instead of 6.0 s; a 6,000-frame
+real-time run went from stalls of 15.9, 11.4, 6.3 s and more to one 1.96 s
+stall at the first grass frame, the intro-to-demo transition reusing the
+cache. Anchor and world-anchor hashes (`OOT3D_GRASS_DIAGNOSTICS`) equal the
+sequential build for every surface.
+
 ## Outline
 
 Follow-up: `TRIAEVUM_NATIVE_OUTLINE_GUIDE.md` replaces the alpha-marker approach
