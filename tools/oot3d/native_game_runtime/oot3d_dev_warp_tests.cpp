@@ -1,6 +1,7 @@
 // Developer warp runtime against a fake guest: catalog validation, the
-// save-context writes of SoH's warps, arrival, void-damage suppression,
-// gameplay admission and SoH-format persistence.
+// save-context writes of SoH's warps (age, time, the respawn rows of warp
+// points and grottos), arrival, void-damage cancellation, gameplay admission
+// and SoH-format persistence.
 #include "oot3d_dev_warp.h"
 
 #include <cstring>
@@ -28,6 +29,10 @@ constexpr uint32_t kPlay = 0x08100000U;
 constexpr uint32_t kPlayer = 0x08200000U;
 constexpr uint32_t kTable = 0x00543BB8U;
 constexpr uint32_t kPlayerHead = kPlay + 0x208CU + 0x0CU + 2U * 8U + 4U;
+constexpr uint32_t kRespawnFlag = kSave + 0x14ECU;
+constexpr uint32_t kRespawnDown = kSave + 0x14F0U;
+constexpr uint32_t kRespawnReturn = kRespawnDown + 0x1CU;
+constexpr uint32_t kVoidDamage = kPlayer + 0x249EU;
 
 class FakeGuest final : public DevWarpGuest {
  public:
@@ -85,6 +90,7 @@ FakeGuest Game(int16_t scene) {
   guest.Put<int32_t>(kSave, 0x00BB);
   guest.Put<int32_t>(kSave + 4U, 1);
   guest.Put<uint16_t>(kSave + 0x0CU, 0x6000U);
+  guest.Put<int32_t>(kRespawnFlag, 1);  // left by an earlier void-out
   guest.Put<int16_t>(kPlay + 0x104U, scene);
   guest.Put<uint8_t>(kPlay + 0x4C30U, 2U);
   guest.Put<int16_t>(kPlay + 0x5C32U, -1);
@@ -142,6 +148,7 @@ void SceneEntranceWarp() {
           "the native transition was not requested for the entrance");
   Require(guest.Get<uint8_t>(kPlay + 0x5C00U) == 0U, "the age on load was not set to adult");
   Require(guest.Get<uint16_t>(kSave + 0x0CU) == 0x0000U, "night did not set midnight");
+  Require(guest.Get<int32_t>(kRespawnFlag) == 0, "a scene warp kept a respawn flag");
   Require(warp.Status().Phase == DevWarpPhase::Requested, "the warp is not in progress");
   Arrive(guest, warp, field.Entrance, field.Scene, frame);
   Require(warp.Status().Phase == DevWarpPhase::Arrived, "the arrival was not observed");
@@ -154,7 +161,7 @@ void SceneEntranceWarp() {
           "the vanilla warp changed the time or ignored the age");
 }
 
-void WarpPointToItsEntrance() {
+void WarpPointRespawn() {
   auto guest = Game(85);
   DevWarpRuntime warp({});
   uint64_t frame = 1;
@@ -166,13 +173,47 @@ void WarpPointToItsEntrance() {
               point.Position[2] == -30.0F && point.RotY == 0x4000,
           "the warp point does not hold the player's place");
   guest.Put<float>(kPlayer + 0x28U, 999.0F);
+  guest.Put<int32_t>(kRespawnFlag, 0);
   warp.WarpToPoint("Bridge");
   warp.Advance(guest, kPlay, frame++);
-  Require(guest.Requests.size() == 1U && guest.Requests[0].second == 0x00BB &&
-              guest.Get<int32_t>(kSave + 0x4ECU) == 0 && guest.Get<float>(kSave + 0x4F0U) == 0.0F,
-          "a warp point did not request its entrance or wrote respawn fields");
+  // SoH: respawn[DOWN] = the point, playerParams 0xDFF, respawnFlag 1.
+  Require(guest.Requests.size() == 1U && guest.Requests[0].second == 0x00BB, "the point's entrance was not requested");
+  Require(guest.Get<int32_t>(kRespawnFlag) == 1 && guest.Get<float>(kRespawnDown) == 10.0F &&
+              guest.Get<float>(kRespawnDown + 4U) == 20.0F && guest.Get<float>(kRespawnDown + 8U) == -30.0F &&
+              guest.Get<int16_t>(kRespawnDown + 0x0CU) == 0x4000 &&
+              guest.Get<int16_t>(kRespawnDown + 0x0EU) == 0x0DFF &&
+              guest.Get<int16_t>(kRespawnDown + 0x10U) == 0x00BB && guest.Get<uint8_t>(kRespawnDown + 0x12U) == 2U,
+          "the warp point is not the void-out respawn");
+  // Player_Init arms the void-out damage; the warp cancels it once.
+  guest.Put<int8_t>(kVoidDamage, -2);
   Arrive(guest, warp, 0x00BB, 52, frame);
   Require(warp.Status().Phase == DevWarpPhase::Arrived, "the warp point did not arrive");
+  Require(guest.Get<int8_t>(kVoidDamage) == 0, "the void-out damage was not cancelled");
+  guest.Put<int8_t>(kVoidDamage, -2);  // a later genuine void-out keeps its damage
+  warp.Advance(guest, kPlay, frame++);
+  Require(guest.Get<int8_t>(kVoidDamage) == -2, "the damage was cancelled twice");
+
+  // useSceneEntrance: the entrance's own spawn, no respawn.
+  guest.Put<int8_t>(kVoidDamage, 0);
+  const nlohmann::json document = {{"WarpPoints",
+                                    {{"Door",
+                                      {{"entranceId", 0x00BB},
+                                       {"roomNum", 0},
+                                       {"pos", {{"x", 1.0}, {"y", 2.0}, {"z", 3.0}}},
+                                       {"rotY", 0},
+                                       {"bootToPoint", false},
+                                       {"useSceneEntrance", true}}}}}};
+  const auto path = std::filesystem::temp_directory_path() / "triaevum-dev-warp-scene-entrance.json";
+  std::ofstream(path) << document.dump();
+  DevWarpRuntime entranceWarp(path);
+  guest.Put<int32_t>(kRespawnFlag, 1);
+  entranceWarp.Advance(guest, kPlay, frame++);
+  entranceWarp.WarpToPoint("Door");
+  entranceWarp.Advance(guest, kPlay, frame++);
+  Require(guest.Requests.size() == 2U && guest.Get<int32_t>(kRespawnFlag) == 0 &&
+              guest.Get<float>(kRespawnDown) == 10.0F,
+          "a scene-entrance point used the respawn");
+  std::filesystem::remove(path);
 }
 
 void GrottoAndAdmission() {
@@ -181,6 +222,8 @@ void GrottoAndAdmission() {
   DevWarpRuntime warp({});
   uint64_t frame = 1;
   const auto &storms = Better("Kokiri Forest (Song of Storms)");
+  Require(storms.Grotto >= 0, "the catalog grotto is not a grotto");
+  const auto &grotto = DevWarpGrottos()[static_cast<size_t>(storms.Grotto)];
   warp.WarpTo(storms, DevWarpAge::Child, false);
   for (int step = 0; step < 5; ++step) warp.Advance(guest, kPlay, frame++);
   Require(guest.Requests.empty() && warp.Status().Phase == DevWarpPhase::Waiting,
@@ -189,11 +232,27 @@ void GrottoAndAdmission() {
   guest.Put<int16_t>(kPlay + 0x5C32U, 0x0211);  // a transition in progress
   warp.Advance(guest, kPlay, frame++);
   Require(guest.Requests.empty(), "a warp interrupted a native transition");
+  Require(warp.Check(storms).Available, "a grotto whose rows match is not offered");
   guest.Put<int16_t>(kPlay + 0x5C32U, -1);
   warp.Advance(guest, kPlay, frame++);
-  Require(guest.Requests.empty() && warp.Status().Phase == DevWarpPhase::Failed &&
-              !warp.Check(storms).Available && !warp.Check(storms).Reason.empty(),
-          "a grotto warp was offered or requested");
+  // SoH's Select_Grotto_LoadGame: content and way back in respawn[RETURN].
+  Require(guest.Requests.size() == 1U && guest.Requests[0].second == grotto.Entrance,
+          "the grotto entrance was not requested");
+  Require(guest.Get<int32_t>(kRespawnFlag) == 0 && guest.Get<uint8_t>(kRespawnReturn + 0x13U) == grotto.Data &&
+              guest.Get<int16_t>(kRespawnReturn + 0x10U) == static_cast<int16_t>(grotto.ReturnEntrance) &&
+              guest.Get<int8_t>(kRespawnReturn + 0x12U) == grotto.ReturnRoom &&
+              guest.Get<int16_t>(kRespawnReturn + 0x0EU) == 0x04FF &&
+              guest.Get<float>(kRespawnReturn) == grotto.ReturnPosition[0] &&
+              guest.Get<float>(kRespawnReturn + 8U) == grotto.ReturnPosition[2],
+          "the grotto return point was not written");
+  Arrive(guest, warp, grotto.Entrance, grotto.Scene, frame);
+  Require(warp.Status().Phase == DevWarpPhase::Arrived, "the grotto warp did not arrive");
+  // A grotto whose way back OOT3D numbers differently is not offered.
+  guest.Put<uint8_t>(kTable + grotto.ReturnEntrance * 4U + 1U, static_cast<uint8_t>(grotto.ReturnSpawn + 1U));
+  DevWarpRuntime fresh({});
+  fresh.Advance(guest, kPlay, frame++);
+  Require(!fresh.Check(storms).Available && !fresh.Check(storms).Reason.empty(),
+          "a grotto with a mismatching way back is offered");
 }
 
 void PersistenceAndBoot() {
@@ -232,7 +291,7 @@ void PersistenceAndBoot() {
 int main() try {
   CatalogAgainstTheTable();
   SceneEntranceWarp();
-  WarpPointToItsEntrance();
+  WarpPointRespawn();
   GrottoAndAdmission();
   PersistenceAndBoot();
   std::cout << "dev warp tests passed: " << gChecks << " checks\n";

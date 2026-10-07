@@ -24,6 +24,25 @@ constexpr uint32_t kSaveCutscene = kSaveContext + 0x08U;     // s32
 constexpr uint32_t kSaveDayTime = kSaveContext + 0x0CU;      // u16
 constexpr uint32_t kSaveGameMode = kSaveContext + 0x14E4U;   // s32, 0 = normal gameplay
 constexpr uint32_t kSaveHealth = kSaveContext + 0x44U;       // s16 (log only)
+// The N64 respawn state, 0x188 further than the N64 SaveContext (gameMode
+// 0x135C/0x14E4): Gameplay_SetupRespawnPoint (0x0036C494) writes the
+// RespawnData rows at +0x14F0 (0x1C each: pos, yaw +0x0C, playerParams +0x0E,
+// entranceIndex +0x10, roomIndex +0x12, data +0x13), Gameplay_TriggerVoidOut
+// (0x0036EBDC) sets respawnFlag +0x14EC to 1 and requests the DOWN row's
+// entrance, the grotto exit (0x0033DE98) requests the RETURN row's.
+constexpr uint32_t kSaveRespawnFlag = kSaveContext + 0x14ECU;  // s32
+constexpr uint32_t kSaveRespawn = kSaveContext + 0x14F0U;
+constexpr uint32_t kRespawnSize = 0x1CU;
+constexpr uint32_t kRespawnDown = 0U;
+constexpr uint32_t kRespawnReturn = 1U;
+constexpr uint32_t kRespawnYaw = 0x0CU;          // s16
+constexpr uint32_t kRespawnPlayerParams = 0x0EU; // s16
+constexpr uint32_t kRespawnEntrance = 0x10U;     // s16
+constexpr uint32_t kRespawnRoom = 0x12U;         // u8
+constexpr uint32_t kRespawnData = 0x13U;         // s8
+// Player_Init (0x00191844) arms the void-out damage with -2 here for a
+// respawnFlag of 1 or -1; the damage lands when it is nonzero (N64 unk_A86).
+constexpr uint32_t kPlayerVoidDamage = 0x249EU;  // s8
 // PlayState fields (structural scenario contract and decomp).
 constexpr uint32_t kPlaySceneId = 0x104U;          // s16
 constexpr uint32_t kPlayPendingEntrance = 0x5C32U; // s16, negative when free
@@ -94,9 +113,10 @@ DevWarpAvailability DevWarpRuntime::Check(const DevWarpEntrance &entrance) const
     return true;
   };
   if (entrance.Grotto >= 0) {
-    // SoH loads a grotto through the respawn return data (content byte, way
-    // back), whose OOT3D fields are not verified.
-    result.Reason = "Grotto warps need OOT3D's respawn fields, not yet verified.";
+    // The grotto and the place its exit returns to.
+    const auto &grotto = DevWarpGrottos()[static_cast<size_t>(entrance.Grotto)];
+    result.Available = check(grotto.Entrance, grotto.Scene, grotto.Spawn) &&
+                       check(grotto.ReturnEntrance, grotto.ReturnScene, grotto.ReturnSpawn);
     return result;
   }
   result.Available = check(entrance.Entrance, entrance.Scene, entrance.Spawn);
@@ -203,6 +223,7 @@ bool DevWarpRuntime::Observe(DevWarpGuest &guest, uint32_t playState, int16_t *p
   int32_t cutscene = 0;
   int32_t gameMode = 0;
   observation.PlayState = playState != 0U;
+  mPlayerActor = 0U;
   if (!ReadValue(guest, kSaveEntrance, observation.Entrance) || !ReadValue(guest, kSaveAge, observation.Age) ||
       !ReadValue(guest, kSaveCutscene, cutscene) || !ReadValue(guest, kSaveDayTime, observation.DayTime) ||
       !ReadValue(guest, kSaveGameMode, gameMode)) {
@@ -221,6 +242,7 @@ bool DevWarpRuntime::Observe(DevWarpGuest &guest, uint32_t playState, int16_t *p
       return false;
     }
     observation.AgeOnLoad = ageOnLoad;
+    mPlayerActor = player;
     if (player != 0U) {
       uint32_t position[3]{};
       observation.Player = ReadValue(guest, player + kActorWorldPosition, position[0]) &&
@@ -269,12 +291,40 @@ bool DevWarpRuntime::Apply(DevWarpGuest &guest, uint32_t playState, const Reques
   if (request.Night.has_value() &&
       !WriteValue(guest, kSaveDayTime, static_cast<uint16_t>(*request.Night ? 0x0000U : 0x8000U)))
     return fail("cannot write the time of day");
-  // A warp point arrives at its entrance: SoH's exact place (a void-out
-  // respawn at the point) needs OOT3D's respawn fields, which are not
-  // verified: the title's void-out (0x0036EBDC) requested the respawn
-  // entrance it keeps, not the one written at the decomp's SaveContext+0x500,
-  // and left +0x4EC at 0. Nothing is written there.
-  if (request.Type == Kind::Grotto) return fail("grotto warps need OOT3D's respawn fields, not yet verified");
+  const auto writeRow = [&](uint32_t mode, uint16_t entrance, uint8_t room, const float (&position)[3],
+                            std::optional<int16_t> yaw, int16_t playerParams) {
+    const uint32_t row = kSaveRespawn + mode * kRespawnSize;
+    bool ok = true;
+    for (uint32_t axis = 0; axis < 3U; ++axis) ok = ok && WriteValue(guest, row + axis * 4U, position[axis]);
+    if (yaw.has_value()) ok = ok && WriteValue(guest, row + kRespawnYaw, *yaw);
+    return ok && WriteValue(guest, row + kRespawnPlayerParams, playerParams) &&
+           WriteValue(guest, row + kRespawnEntrance, static_cast<int16_t>(entrance)) &&
+           WriteValue(guest, row + kRespawnRoom, room);
+  };
+  if (request.Type == Kind::WarpPoint) {
+    // SoH: the point becomes the void-out respawn (DOWN row, playerParams
+    // 0xDFF, respawnFlag 1); with useSceneEntrance the entrance's own spawn.
+    const auto &point = request.Point;
+    if (point.UseSceneEntrance) {
+      if (!WriteValue(guest, kSaveRespawnFlag, int32_t{0})) return fail("cannot write the respawn flag");
+    } else if (!writeRow(kRespawnDown, request.Entrance, static_cast<uint8_t>(point.RoomNum), point.Position,
+                         point.RotY, static_cast<int16_t>(0x0DFF)) ||
+               !WriteValue(guest, kSaveRespawnFlag, int32_t{1})) {
+      return fail("cannot write the respawn point");
+    }
+  } else if (request.Type == Kind::Grotto) {
+    // SoH's Select_Grotto_LoadGame: the content byte and the way back
+    // (entrance, room, position, playerParams 0x4FF) in the RETURN row; the
+    // grotto's own spawn (respawnFlag 0).
+    const auto &grotto = request.Grotto;
+    if (!writeRow(kRespawnReturn, grotto.ReturnEntrance, static_cast<uint8_t>(grotto.ReturnRoom),
+                  grotto.ReturnPosition, std::nullopt, static_cast<int16_t>(0x04FF)) ||
+        !WriteValue(guest, kSaveRespawn + kRespawnReturn * kRespawnSize + kRespawnData, grotto.Data) ||
+        !WriteValue(guest, kSaveRespawnFlag, int32_t{0}))
+      return fail("cannot write the grotto return point");
+  } else if (!WriteValue(guest, kSaveRespawnFlag, int32_t{0})) {
+    return fail("cannot write the respawn flag");
+  }
   bool accepted = false;
   if (!guest.RequestTransition(playState, request.Entrance, &accepted, error)) return false;
   if (!accepted) return fail("the native transition helper refused the request");
@@ -286,15 +336,20 @@ void DevWarpRuntime::Report(DevWarpGuest &guest, const char *event, uint64_t gue
   // +0x10 is reported for the night state SoH also writes (N64 nightFlag).
   int16_t health = 0;
   int32_t nightWord = 0;
+  int32_t respawnFlag = 0;
+  int8_t voidDamage = 0;
   ReadValue(guest, kSaveHealth, health);
   ReadValue(guest, kSaveContext + 0x10U, nightWord);
+  ReadValue(guest, kSaveRespawnFlag, respawnFlag);
+  if (mPlayerActor != 0U) ReadValue(guest, mPlayerActor + kPlayerVoidDamage, voidDamage);
   const auto &o = mStatus.Observation;
   std::fprintf(stderr,
                "TRIAEVUM_DEV_WARP %s target=\"%s\" entrance=0x%04X frame=%llu scene=%d room=%u save_entrance=0x%04X "
-               "age=%d age_on_load=%d day_time=0x%04X save_0x10=%d health=%d player=%d pos=%.1f,%.1f,%.1f yaw=%d\n",
+               "age=%d age_on_load=%d day_time=0x%04X save_0x10=%d health=%d player=%d pos=%.1f,%.1f,%.1f yaw=%d "
+               "respawn_flag=%d void_damage=%d\n",
                event, mActive.has_value() ? mActive->Label.c_str() : "", mActive.has_value() ? mActive->Entrance : 0U,
                static_cast<unsigned long long>(guestFrame), o.Scene, o.Room, o.Entrance, o.Age, o.AgeOnLoad, o.DayTime, nightWord,
-               health, o.Player ? 1 : 0, o.Position[0], o.Position[1], o.Position[2], o.RotY);
+               health, o.Player ? 1 : 0, o.Position[0], o.Position[1], o.Position[2], o.RotY, respawnFlag, voidDamage);
 }
 
 void DevWarpRuntime::Advance(DevWarpGuest &guest, uint32_t playState, uint64_t guestFrame) {
@@ -326,8 +381,20 @@ void DevWarpRuntime::Advance(DevWarpGuest &guest, uint32_t playState, uint64_t g
   }
 
   if (mActive.has_value()) {
+    if (pendingEntrance >= 0) mSawTransition = true;
+    // The respawned player in the requested scene: cancel the void-out
+    // damage Player_Init armed, once (SoH's hook unregisters itself).
+    if (mCancelVoidDamage && mSawTransition && pendingEntrance < 0 && mPlayerActor != 0U &&
+        observation.Scene == mActive->Scene) {
+      int8_t armed = 0;
+      if (ReadValue(guest, mPlayerActor + kPlayerVoidDamage, armed) && armed != 0 &&
+          WriteValue(guest, mPlayerActor + kPlayerVoidDamage, int8_t{0})) {
+        mCancelVoidDamage = false;
+        std::fprintf(stderr, "TRIAEVUM_DEV_WARP void_damage_cancelled frame=%llu armed=%d\n",
+                     static_cast<unsigned long long>(guestFrame), armed);
+      }
+    }
     if (!mArrived) {
-      if (pendingEntrance >= 0) mSawTransition = true;
       if (mSawTransition && pendingEntrance < 0 && observation.Scene == mActive->Scene &&
           observation.Player) {
         mStatus.Phase = DevWarpPhase::Arrived;
@@ -372,6 +439,7 @@ void DevWarpRuntime::Advance(DevWarpGuest &guest, uint32_t playState, uint64_t g
   mRequestFrame = guestFrame;
   mSawTransition = false;
   mArrived = false;
+  mCancelVoidDamage = request.Type == Kind::WarpPoint && !request.Point.UseSceneEntrance;
   mStatus.Phase = DevWarpPhase::Requested;
   mStatus.Message = "Warping to " + request.Label + " (entrance " + Hex4(request.Entrance) + ")...";
   mActive = std::move(request);

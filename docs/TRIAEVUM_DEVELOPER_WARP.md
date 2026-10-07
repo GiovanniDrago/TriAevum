@@ -21,9 +21,9 @@ it and `audit_release.py` rejects a runtime contract that does not exclude it
 | Better Debug Warp Screen (default on) | same checkbox: the Better list (scenes, then entrances), Child/Adult, Day/Night; off: the vanilla scene list, current time kept |
 | Debug Warp Screen Translation | same checkbox: German or French names when the game runs in that language (the F1 font has no Japanese) |
 | Debug Warp Screen lists (`sScenes`, `sBetterScenes`, `sBetterGrottos`) | the same lists and names, generated from SoH's `z_select.c` |
-| Grotto entries (`Select_Grotto_LoadGame`) | listed, disabled: they need OOT3D's respawn fields (below) |
+| Grotto entries (`Select_Grotto_LoadGame`) | same: content byte, return entrance, room, position and playerParams `0x4FF` in `respawn[RETURN]`, `respawnFlag` 0 |
 | Warp Points: name + "+", Warp, Boot, Delete | same; points stored with SoH's fields (`entranceId`, `roomNum`, `pos`, `rotY`, `bootToPoint`, `useSceneEntrance`) |
-| Warp point arrival at the saved place (void-out respawn at `respawn[DOWN]`, damage skipped) | arrival at the point's entrance and scene; room and position not yet (below) |
+| Warp point arrival at the saved place: `respawn[DOWN]` = the point, playerParams `0xDFF`, `respawnFlag` 1, void damage skipped (`VB_INFLICT_VOID_DAMAGE`) | same writes; the void-out damage Player_Init arms (`Player+0x249E`, -2) is reset to 0 once, at the respawned player; `useSceneEntrance` arrives at the entrance (`respawnFlag` 0) |
 | Boot to warp point (Boot Sequence) | the boot point is warped to when gameplay first starts in a session: OOT3D needs a loaded file, there is no debug save |
 
 Not offered: the Master Quest toggle (OOT3D's Master Quest is a save-wide mode
@@ -41,7 +41,8 @@ OOT3D's at -0xC1E8, checked on five fields; the game applies it when the
 scene ends and swaps the age equipment, like SoH's SwitchAge), and the time of
 day at SaveContext `+0x0C` (noon or midnight; the scene derives night from it,
 `+0x10` reads 1 afterwards). Writing the save age under a live player faults
-the title. It then calls code.bin's own transition request
+the title. It writes the respawn state SoH's warp writes (below; a scene warp
+clears `respawnFlag`, as `Select_LoadGame`). It then calls code.bin's own transition request
 (`FUN_003348E8`, trigger 20) and effect preparation (`FUN_0035DA3C`), the
 structural scenario contract (`oot3d_dev_warp_process.cpp`). Arrival is the
 requested scene in the PlayState after the transition slot was seen busy.
@@ -61,17 +62,21 @@ Against the EUR code.bin 391 of 397 entrance references match; the six others
 are debug scenes OOT3D numbers differently (SRD Map, Treasure Chest Warp,
 Hyrule Garden Game).
 
-## Not yet: respawn fields
+## Respawn fields
 
-SoH places a warp point exactly through a void-out respawn and loads grottos
-through the respawn return data. The decomp maps OOT3D's respawn state to
-SaveContext `+0x4EC` (flag) and `+0x4F0` (RespawnData), but the live title
-disagrees: after writing `respawn[DOWN]` there and calling the title's void-out
-(`0x0036EBDC`), the requested entrance was the respawn entrance the game keeps
-(`0x0211`), not the written one, and `+0x4EC` stayed 0; with the exit helper,
-a written flag was ignored. The runtime therefore writes no respawn field:
-warp points arrive at their entrance, grottos are disabled. Finding the real
-fields (a memory diff around a genuine void-out) completes both.
+OOT3D keeps the N64 respawn state 0x188 bytes further than the N64
+SaveContext (`gameMode` 0x135C there, `+0x14E4` here): `respawnFlag` at
+SaveContext `+0x14EC` (s32) and `RespawnData respawn[3]` from `+0x14F0`, 0x1C
+bytes each with the N64 layout (pos, yaw `+0x0C`, playerParams `+0x0E`,
+entranceIndex `+0x10`, roomIndex `+0x12`, data `+0x13`, temp flags
+`+0x14`/`+0x18`): DOWN `+0x14F0`, RETURN `+0x150C`, TOP `+0x1528`. Read from
+code.bin: `Gameplay_SetupRespawnPoint` (`0x0036C494`) writes those rows from the
+player, `Gameplay_TriggerVoidOut` (`0x0036EBDC`) sets the flag to 1 and requests
+the DOWN entrance, the great-fairy return (`0x0033DE98`) sets -3 and requests
+the RETURN entrance, and Player_Init (`0x00191844`) places the player from the
+row `respawnFlag - 1` and arms the void damage for 1 and -1. (An earlier try
+used `+0x4EC`/`+0x4F0`, relative to the decomp's second SaveContext base
+`0x00588958`, against `0x00587958`: the game ignored them.)
 
 ## Storage
 
@@ -81,16 +86,23 @@ night), written atomically; a read or write error is shown in the tab.
 
 ## Verification
 
-`oot3d_dev_warp_tests` (fake guest, 22 checks): catalog against the table,
-scene and vanilla warps (age on load, time kept or set), warp points to their
-entrance with no respawn write, grottos refused, arrival, gameplay and
-transition-slot admission, SoH-format persistence and the boot point.
+`oot3d_dev_warp_tests` (fake guest, 32 checks): catalog against the table
+(grottos with their way back), scene and vanilla warps (age on load, time kept
+or set, respawn flag cleared), the warp point's DOWN row and flag and the void
+damage cancelled once, a `useSceneEntrance` point, the grotto's RETURN row,
+arrival, gameplay and transition-slot admission, SoH-format persistence and the
+boot point. Against the EUR code.bin the 28 grottos and their return entrances
+all match.
 
 Live, developer launch from the play quick save (Kokiri Forest), log lines
 `TRIAEVUM_DEV_WARP` (stderr): Hyrule Field "Near Drawbridge" as adult at night
 arrives in 70 guest frames as adult (`age 0`), `day_time 0x0000`, night flag
 1, health unchanged, capture showing adult Link at the drawbridge; the same
-warp keeping child and day arrives likewise; a boot warp point warps at the
-first gameplay frame to its entrance (0x00EE). `TRIAEVUM_DEV_WARP=<scene>:
+warp keeping child and day arrives likewise. A boot warp point at Hyrule Field
+(300, 0, 1200), yaw 0x4000, arrives exactly there with that yaw, the armed void
+damage (-2) cancelled and health 48 unchanged 90 frames later. The chest
+grotto "Kokiri Forest (Song of Storms)" arrives in the grotto (scene 62); with
+an input timeline walking onto the exit light, Link leaves to Kokiri Forest at
+the grotto's place (minimap and capture). `TRIAEVUM_DEV_WARP=<scene>:
 <entrance>:<child|adult>:<day|night>` requests a Better-list warp at the first
 gameplay frame for such checks.

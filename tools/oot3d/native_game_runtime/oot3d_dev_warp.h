@@ -161,6 +161,11 @@ class DevWarpRuntime {
   bool mArrived = false;
   // Guest frames until the settled report after arrival.
   uint32_t mReportFrames = 0;
+  // A warp point respawn: the void-out damage Player_Init arms is cancelled
+  // once, as SoH's VB_INFLICT_VOID_DAMAGE hook does.
+  bool mCancelVoidDamage = false;
+  // The player actor of the last observation (0 when none).
+  uint32_t mPlayerActor = 0;
   bool mBootChecked = false;
 };
 
