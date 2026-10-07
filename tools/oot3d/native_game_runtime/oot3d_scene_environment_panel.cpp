@@ -1,7 +1,11 @@
 #include "fast/oot3d/graphics_settings_runtime.h"
 #include "fast/oot3d/settings_panel_widgets.h"
 #include "oot3d_scene_environment.h"
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
 #include <imgui.h>
+#include <string>
 
 namespace Oot3dNativeGame {
 namespace {
@@ -164,6 +168,9 @@ public:
       ImGui::EndDisabled();
       ImGui::PopID();
     }
+    ImGui::BeginDisabled(!value.Enabled || !supported);
+    changed |= DrawPlacedLights(value, state);
+    ImGui::EndDisabled();
     if (changed)
       mRuntime->Preview(value);
     if (ImGui::Button("Save scene environment"))
@@ -190,6 +197,188 @@ public:
   }
 
 private:
+  // Lights placed in the scene: added where Link is, then moved, turned and
+  // shaped with the controls of their type.
+  bool DrawPlacedLights(SceneEnvironmentProfile &value, const SceneEnvironmentSnapshot &state) {
+    ImGui::SeparatorText("Placed lights");
+    ImGui::TextWrapped("Lights of this scene's profile (day or night). New lights start where Link "
+                       "is; save the scene environment to keep them.");
+    bool changed = false;
+    auto &lights = value.PlacedLights;
+    ImGui::BeginDisabled(lights.size() >= kMaximumPlacedLights);
+    if (ImGui::Button("Add light at Link")) {
+      PlacedLight light;
+      for (const auto &existing : lights)
+        light.Id = std::max(light.Id, existing.Id);
+      ++light.Id;
+      light.Name = "Light " + std::to_string(light.Id);
+      if (state.Player) {
+        // At head height, facing where Link faces, tilted down.
+        light.Position = state.Player->Position;
+        light.Position[1] += kPlacedLightHeadHeight;
+        light.Rotation = {state.Player->Yaw, -30.0F, 0.0F};
+      }
+      lights.push_back(light);
+      mSelectedLight = light.Id;
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("%zu / %zu", lights.size(), kMaximumPlacedLights);
+    if (!state.Player)
+      ImGui::TextWrapped("Link's position is not available: new lights start at the scene origin.");
+    if (lights.empty())
+      return changed;
+    if (std::none_of(lights.begin(), lights.end(), [&](const auto &light) { return light.Id == mSelectedLight; }))
+      mSelectedLight = lights.front().Id;
+    if (ImGui::BeginListBox("##PlacedLights",
+                            ImVec2(-FLT_MIN, ImGui::GetTextLineHeightWithSpacing() *
+                                                 static_cast<float>(std::min<size_t>(lights.size(), 6U) + 0.25F)))) {
+      for (const auto &light : lights) {
+        ImGui::PushID(static_cast<int>(light.Id));
+        char label[96];
+        std::snprintf(label, sizeof(label), "%s (%s)%s", light.Name.c_str(), kTypeNames[static_cast<size_t>(light.Type)],
+                      light.Visible ? "" : ", hidden");
+        if (ImGui::Selectable(label, light.Id == mSelectedLight))
+          mSelectedLight = light.Id;
+        ImGui::PopID();
+      }
+      ImGui::EndListBox();
+    }
+    const auto selected = std::find_if(lights.begin(), lights.end(),
+                                       [&](const auto &light) { return light.Id == mSelectedLight; });
+    auto &light = *selected;
+    ImGui::PushID("PlacedLight");
+    char name[65]{};
+    std::snprintf(name, sizeof(name), "%s", light.Name.c_str());
+    if (ImGui::InputText("Light name", name, sizeof(name))) {
+      light.Name = name;
+      changed = true;
+    }
+    int type = static_cast<int>(light.Type);
+    if (ImGui::Combo("Light type", &type, kTypeNames, IM_ARRAYSIZE(kTypeNames))) {
+      light.Type = static_cast<PlacedLightType>(type);
+      changed = true;
+    }
+    if (!PlacedLightRendered(light.Type))
+      ImGui::TextWrapped("Not drawn yet: sun, spot and surface lights arrive with the renderer's next "
+                         "step. Their settings are kept and saved.");
+    else if (light.Type == PlacedLightType::Point)
+      ImGui::TextWrapped("Drawn for now with the omni falloff; the physical (inverse-square) falloff "
+                         "arrives with the renderer's next step.");
+    changed |= ImGui::Checkbox("Light visible", &light.Visible);
+    changed |= ImGui::ColorEdit3("Placed light color", light.Color.data(), ImGuiColorEditFlags_Float);
+    changed |= ImGui::SliderFloat("Placed light intensity", &light.Intensity, 0.0F, 16.0F, "%.2f",
+                                  ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+    const bool sun = light.Type == PlacedLightType::Sun;
+    if (!sun) {
+      changed |= ImGui::DragFloat3("Position", light.Position.data(), 1.0F, -100000.0F, 100000.0F, "%.1f",
+                                   ImGuiSliderFlags_AlwaysClamp);
+      ImGui::BeginDisabled(!state.Player);
+      if (ImGui::Button("Move to Link") && state.Player) {
+        light.Position = state.Player->Position;
+        light.Position[1] += kPlacedLightHeadHeight;
+        changed = true;
+      }
+      ImGui::EndDisabled();
+    }
+    // Direction: the sun's light, the spot's beam, the surface's face.
+    if (light.Type == PlacedLightType::Sun || light.Type == PlacedLightType::Spot ||
+        light.Type == PlacedLightType::Surface) {
+      changed |= ImGui::SliderFloat("Yaw", &light.Rotation[0], -180.0F, 180.0F, "%.1f deg",
+                                    ImGuiSliderFlags_AlwaysClamp);
+      changed |= ImGui::SliderFloat("Pitch", &light.Rotation[1], -90.0F, 90.0F, "%.1f deg",
+                                    ImGuiSliderFlags_AlwaysClamp);
+      if (light.Type == PlacedLightType::Surface)
+        changed |= ImGui::SliderFloat("Roll", &light.Rotation[2], -180.0F, 180.0F, "%.1f deg",
+                                      ImGuiSliderFlags_AlwaysClamp);
+      ImGui::BeginDisabled(!state.Player);
+      if (ImGui::Button("Face Link's direction") && state.Player) {
+        light.Rotation[0] = state.Player->Yaw;
+        changed = true;
+      }
+      ImGui::EndDisabled();
+      ImGui::TextWrapped("Yaw 0 faces +Z, 90 faces +X; pitch 90 points up, -90 down.");
+    }
+    ImGui::BeginDisabled(sun);
+    bool shadows = light.CastShadows && !sun;
+    if (ImGui::Checkbox("Cast shadows", &shadows)) {
+      light.CastShadows = shadows;
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    if (sun)
+      ImGui::TextWrapped("Sun lights do not cast shadows; the key light keeps the directional shadows.");
+    else if (PlacedLightRendered(light.Type))
+      ImGui::TextWrapped("Uses a point-shadow cube map (Lights & Shadows > Point shadows: Cube maps), "
+                         "shared with Navi and the fairies.");
+    switch (light.Type) {
+    case PlacedLightType::Point:
+    case PlacedLightType::Omni:
+      changed |= ImGui::SliderFloat("Reach", &light.Radius, 1.0F, 5000.0F, "%.0f",
+                                    ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+      break;
+    case PlacedLightType::Spot:
+      changed |= ImGui::SliderFloat("Reach", &light.Radius, 1.0F, 5000.0F, "%.0f",
+                                    ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+      changed |= ImGui::SliderFloat("Beam angle", &light.BeamAngle, 1.0F, 179.0F, "%.1f deg",
+                                    ImGuiSliderFlags_AlwaysClamp);
+      changed |= ImGui::SliderFloat("Beam softness", &light.BeamSoftness, 0.0F, 1.0F, "%.2f",
+                                    ImGuiSliderFlags_AlwaysClamp);
+      break;
+    case PlacedLightType::Surface: {
+      const char *shapes[] = {"Rectangle", "Disc"};
+      int shape = static_cast<int>(light.Shape);
+      if (ImGui::Combo("Surface shape", &shape, shapes, IM_ARRAYSIZE(shapes))) {
+        light.Shape = static_cast<PlacedLightShape>(shape);
+        changed = true;
+      }
+      if (light.Shape == PlacedLightShape::Rectangle) {
+        changed |= ImGui::SliderFloat("Surface width", &light.Width, 1.0F, 5000.0F, "%.0f",
+                                      ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+        changed |= ImGui::SliderFloat("Surface height", &light.Height, 1.0F, 5000.0F, "%.0f",
+                                      ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+      } else {
+        changed |= ImGui::SliderFloat("Surface radius", &light.Radius, 1.0F, 5000.0F, "%.0f",
+                                      ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+      }
+      changed |= ImGui::Checkbox("Emit from both sides", &light.TwoSided);
+      changed |= ImGui::SliderFloat("Surface reach", &light.Range, 1.0F, 5000.0F, "%.0f",
+                                    ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+      break;
+    }
+    case PlacedLightType::Sun:
+      break;
+    }
+    ImGui::BeginDisabled(lights.size() >= kMaximumPlacedLights);
+    if (ImGui::Button("Duplicate light")) {
+      auto copy = light;
+      for (const auto &existing : lights)
+        copy.Id = std::max(copy.Id, existing.Id);
+      ++copy.Id;
+      copy.Name = light.Name + " copy";
+      if (copy.Name.size() > 64U)
+        copy.Name.resize(64U);
+      mSelectedLight = copy.Id;
+      lights.push_back(copy);
+      changed = true;
+      ImGui::EndDisabled();
+      ImGui::PopID();
+      return changed;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Delete light")) {
+      lights.erase(selected);
+      changed = true;
+    }
+    ImGui::PopID();
+    return changed;
+  }
+  static constexpr const char *kTypeNames[] = {"Sun", "Spot", "Point", "Surface", "Omni"};
+  // World units above Link's feet where a new light starts.
+  static constexpr float kPlacedLightHeadHeight = 50.0F;
+  uint32_t mSelectedLight = 0;
   // A scene with day and night (Kakariko Village, Hyrule Field) may keep a
   // second profile for the night; the game's night flag picks it.
   void DrawDayNight(const SceneEnvironmentSnapshot &state) {

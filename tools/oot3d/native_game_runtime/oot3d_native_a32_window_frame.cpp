@@ -2036,8 +2036,27 @@ void NativeA32WindowSession::PublishNativeSceneView() {
   uint32_t nightFlag = 0U;
   const bool night =
       process.Memory().Read32(kSaveContextNightFlag, &nightFlag) && nightFlag != 0U;
-  renderStream.Submit([&, snapshot, night] {
-  sceneEnvironment->ObserveScene(snapshot ? snapshot->SceneId : std::nullopt, night);
+  // Where Link is (world position +0x28, shape yaw +0xBE: 0 faces +Z,
+  // 0x4000 +X), for lights placed from F1.
+  std::optional<Oot3dNativeGame::ScenePlayerPlacement> player;
+  if (const uint32_t actor = playerTimingProbe.Stats().LastPlayerAddress; actor != 0U) {
+    Oot3dNativeGame::ScenePlayerPlacement placement;
+    uint32_t bits[3]{};
+    uint16_t yaw = 0;
+    if (process.Memory().Read32(actor + 0x28U, &bits[0]) &&
+        process.Memory().Read32(actor + 0x2CU, &bits[1]) &&
+        process.Memory().Read32(actor + 0x30U, &bits[2]) &&
+        process.Memory().Read16(actor + 0xBEU, &yaw)) {
+      for (size_t axis = 0; axis < 3; ++axis)
+        placement.Position[axis] = std::bit_cast<float>(bits[axis]);
+      placement.Yaw = static_cast<float>(static_cast<int16_t>(yaw)) * (180.0F / 32768.0F);
+      if (std::isfinite(placement.Position[0]) && std::isfinite(placement.Position[1]) &&
+          std::isfinite(placement.Position[2]))
+        player = placement;
+    }
+  }
+  renderStream.Submit([&, snapshot, night, player] {
+  sceneEnvironment->ObserveScene(snapshot ? snapshot->SceneId : std::nullopt, night, player);
   if (!snapshot.has_value() ||
       snapshot->Serial == lastPublishedSceneViewSerial) {
     return;

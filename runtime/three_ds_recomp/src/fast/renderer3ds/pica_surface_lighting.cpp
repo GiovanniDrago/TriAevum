@@ -91,6 +91,7 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
         if (binding.SceneDirectionals->Count > binding.SceneDirectionals->Lights.size()) return std::nullopt;
         sceneDirectionals = {binding.SceneDirectionals->Lights.data(), binding.SceneDirectionals->Count};
     }
+    if (environment.PlacedPointCount > environment.PlacedPoints.size()) return std::nullopt;
     const bool needsWorldView = environment.Enabled || !scenePoints.empty() || !sceneDirectionals.empty() ||
         std::any_of(binding.Sources.begin(), binding.Sources.end(), [](const auto& light) {
             return light.Kind == PicaNativeLightSource::Type::Point;
@@ -168,6 +169,20 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
                 point.PositionRadius[row] += view[row][axis] * source.PositionWorld[axis];
             point.Color[row] = source.Color[row] * settings.ColorTint[row] *
                 settings.Intensity * reflectance[row];
+        }
+    }
+    // Placed lights take the slots the native scene points leave.
+    for (uint32_t index = 0; environment.Enabled && index < environment.PlacedPointCount; ++index) {
+        const auto& source = environment.PlacedPoints[index];
+        if (source.Radius <= 0.0F || result.Control[1] >= result.ScenePoints.size()) continue;
+        auto& point = result.ScenePoints[result.Control[1]++];
+        point.PositionRadius[3] = source.Radius;
+        point.Color[3] = source.CastShadows ? pointShadowRow(source.SourceIdentity) : -1.0F;
+        for (size_t row = 0; row < 3; ++row) {
+            point.PositionRadius[row] = view[row][3];
+            for (size_t axis = 0; axis < 3; ++axis)
+                point.PositionRadius[row] += view[row][axis] * source.PositionWorld[axis];
+            point.Color[row] = source.Color[row] * reflectance[row];
         }
     }
     const float ambientGain = !environment.Enabled || environment.PreserveSceneBrightness

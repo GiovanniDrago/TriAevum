@@ -584,6 +584,56 @@ void CheckSceneEnvironment() {
               environment->Snapshot().Profile == saved.Profile,
           "removing the night profile did not return night to the scene's profile");
     environment->ObserveScene(0x55, false);
+    // Placed lights: added where Link is, edited by type, saved in the profile.
+    environment->ObserveScene(0x55, false, ScenePlayerPlacement{{100.0F, 0.0F, 200.0F}, 90.0F});
+    Click("Add light at Link");
+    {
+        const auto placed = environment->Snapshot().Profile.PlacedLights;
+        const auto& rendered = graphics.SnapshotForRendering().Environment;
+        Check(placed.size() == 1U && placed[0].Position == std::array<float, 3>{100.0F, 50.0F, 200.0F} &&
+                  placed[0].Rotation[0] == 90.0F && placed[0].Type == PlacedLightType::Point &&
+                  rendered.PlacedPointCount == 1U && rendered.PlacedPoints[0].Radius == 300.0F &&
+                  rendered.PlacedPoints[0].PositionWorld == placed[0].Position && !rendered.PlacedPoints[0].CastShadows,
+              "a light added at Link was not placed there or not drawn");
+    }
+    Select("Light type", "Spot");
+    Check(environment->Snapshot().Profile.PlacedLights[0].Type == PlacedLightType::Spot &&
+              graphics.SnapshotForRendering().Environment.PlacedPointCount == 0U &&
+              Find("Beam angle").Rect.GetHeight() > 0.0F,
+          "a spot light was drawn as a point or its beam controls are missing");
+    Select("Light type", "Surface");
+    Check(Find("Surface width").Rect.GetHeight() > 0.0F && Find("Emit from both sides").Rect.GetHeight() > 0.0F,
+          "the surface light controls are missing");
+    Select("Light type", "Sun");
+    Check(Find("Cast shadows").Disabled, "a sun light offers shadows");
+    Select("Light type", "Omni");
+    Click("Cast shadows");
+    Check(graphics.SnapshotForRendering().Environment.PlacedPointCount == 1U &&
+              graphics.SnapshotForRendering().Environment.PlacedPoints[0].CastShadows,
+          "an omni light did not cast shadows");
+    Click("Save scene environment");
+    {
+        nlohmann::json document;
+        { std::ifstream file(saved.Path); file >> document; }
+        Check(document.at("placedLights").size() == 1U && document["placedLights"][0].at("type") == "omni" &&
+                  document["placedLights"][0].at("castShadows") == true,
+              "the placed light was not saved in the profile");
+    }
+    Click("Duplicate light");
+    Check(environment->Snapshot().Profile.PlacedLights.size() == 2U &&
+              environment->Snapshot().Profile.PlacedLights[1].Id != environment->Snapshot().Profile.PlacedLights[0].Id,
+          "a duplicated light kept its identity");
+    Click("Delete light");
+    Click("Delete light");
+    Check(environment->Snapshot().Profile.PlacedLights.empty() &&
+              graphics.SnapshotForRendering().Environment.PlacedPointCount == 0U,
+          "deleted lights are still drawn");
+    Click("Reload scene environment");
+    Check(environment->Snapshot().Profile.PlacedLights.size() == 1U, "reload lost the saved placed light");
+    auto withoutLights = environment->Snapshot().Profile;
+    withoutLights.PlacedLights.clear();
+    environment->Preview(withoutLights);
+    Click("Save scene environment");
     const auto backup = root / "saved.json";
     std::filesystem::rename(saved.Path, backup);
     std::filesystem::create_directory(saved.Path);

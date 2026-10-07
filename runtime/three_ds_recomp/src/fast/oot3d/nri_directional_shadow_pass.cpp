@@ -1398,6 +1398,14 @@ bool NriDirectionalShadowPass::ExecutePointMaps(const NriPointShadowExecuteDesc&
         candidates[candidateCount++] = light;
     };
     const auto& environment = desc.Environment;
+    // Placed lights that cast shadows, while the environment applies them.
+    for (uint32_t index = 0; environment.Enabled &&
+         index < std::min<uint32_t>(environment.PlacedPointCount, kMaximumPicaPlacedPointLights); ++index) {
+        const auto& placed = environment.PlacedPoints[index];
+        if (placed.CastShadows)
+            addCandidate({ placed.SourceIdentity, placed.PositionWorld, placed.Radius,
+                           std::max({ placed.Color[0], placed.Color[1], placed.Color[2] }) });
+    }
     std::optional<ShadowVector> camera;
     const auto draws = sceneFrame.Draws();
     for (size_t index = 0; index < draws.size(); ++index) {

@@ -35,6 +35,20 @@ struct PicaScenePointLightSettings {
     bool operator==(const PicaScenePointLightSettings&) const = default;
 };
 
+// A light the title placed in the scene, lit with the scene point-light
+// falloff (the same term as Navi and the fairies). Applies while the
+// environment is enabled; a shadowing light competes for a point-shadow row.
+inline constexpr uint32_t kMaximumPicaPlacedPointLights = 16U;
+struct PicaPlacedPointLight {
+    uint64_t SourceIdentity = 0;
+    std::array<float, 3> PositionWorld{};
+    // Linear RGB already scaled by the light's intensity.
+    std::array<float, 3> Color{};
+    float Radius = 0.0F;
+    bool CastShadows = false;
+    bool operator==(const PicaPlacedPointLight&) const = default;
+};
+
 // Explicit extension inputs, never a replacement for native PICA state.
 // The title owns profile identity, persistence and world-axis conventions.
 struct PicaEnvironmentLighting {
@@ -62,6 +76,10 @@ struct PicaEnvironmentLighting {
     std::array<float, 3> WorldAzimuthZero{ 0.0F, 0.0F, 1.0F };
     // Independent of the directional/ambient override; title-owned groups.
     std::array<PicaScenePointLightSettings, kPicaScenePointLightGroups> PointLights{};
+    // Lights placed in the scene: after the native scene points, in the same
+    // per-draw slots (kMaximumPicaScenePointLights in all).
+    std::array<PicaPlacedPointLight, kMaximumPicaPlacedPointLights> PlacedPoints{};
+    uint32_t PlacedPointCount = 0;
     bool operator==(const PicaEnvironmentLighting&) const = default;
 };
 

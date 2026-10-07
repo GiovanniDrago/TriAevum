@@ -6,6 +6,8 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace Oot3dNativeGame {
 
@@ -16,6 +18,43 @@ struct SceneDirectionalLight {
   float Intensity = 0.0F;
   bool operator==(const SceneDirectionalLight &) const = default;
 };
+// A light placed in the scene from F1 (Scene lights > Placed lights).
+enum class PlacedLightType : uint8_t { Sun, Spot, Point, Surface, Omni };
+enum class PlacedLightShape : uint8_t { Rectangle, Disc };
+inline constexpr size_t kMaximumPlacedLights = 16U;
+struct PlacedLight {
+  // Stable within the profile: the light's identity (shadow rows).
+  uint32_t Id = 0;
+  std::string Name;
+  PlacedLightType Type = PlacedLightType::Point;
+  bool Visible = true;
+  std::array<float, 3> Color{1.0F, 1.0F, 1.0F};
+  float Intensity = 1.0F;
+  // World units (OOT3D: Y up).
+  std::array<float, 3> Position{};
+  // Degrees: yaw about +Y (0 faces +Z, 90 faces +X), pitch (positive up),
+  // roll about the light's own axis. The light emits along that axis.
+  std::array<float, 3> Rotation{};
+  bool CastShadows = false;
+  // Point, omni and spot: the distance it reaches; surface (disc): its radius.
+  float Radius = 300.0F;
+  // Surface (rectangle).
+  float Width = 100.0F;
+  float Height = 100.0F;
+  PlacedLightShape Shape = PlacedLightShape::Rectangle;
+  // Surface: emits from both faces.
+  bool TwoSided = false;
+  // Spot: the full beam angle and the soft edge (a fraction of it).
+  float BeamAngle = 45.0F;
+  float BeamSoftness = 0.2F;
+  // Surface: the distance it reaches.
+  float Range = 300.0F;
+  bool operator==(const PlacedLight &) const = default;
+};
+// Point and omni are drawn now (scene point-light falloff); sun, spot and
+// surface are kept and edited, and drawn once the renderer has their terms.
+[[nodiscard]] bool PlacedLightRendered(PlacedLightType type) noexcept;
+
 struct SceneEnvironmentProfile {
   bool Enabled = false;
   bool PreserveSceneBrightness = true;
@@ -38,7 +77,15 @@ struct SceneEnvironmentProfile {
   float KeyElevationOffset = 0.0F;
   std::array<Fast::Renderer3ds::PicaScenePointLightSettings,
              Fast::Renderer3ds::kPicaScenePointLightGroups> PointLights{};
+  std::vector<PlacedLight> PlacedLights;
   bool operator==(const SceneEnvironmentProfile &) const = default;
+};
+
+// Where Link is, for placing a light: world position and facing (degrees).
+struct ScenePlayerPlacement {
+  std::array<float, 3> Position{};
+  float Yaw = 0.0F;
+  bool operator==(const ScenePlayerPlacement &) const = default;
 };
 // The environment of every scene without its own profile: the title intro's
 // (scene 0x6B) tuned lights. Saving stores a profile for the current scene only.
@@ -59,6 +106,8 @@ struct SceneEnvironmentSnapshot {
   bool NightProfileExists = false;
   // The night profile is the one in use.
   bool EditingNight = false;
+  // The player in this scene, when known.
+  std::optional<ScenePlayerPlacement> Player;
 };
 
 class SceneEnvironmentRuntime final {
@@ -68,7 +117,8 @@ public:
   SceneEnvironmentRuntime(std::filesystem::path directory, Publisher publish);
   // A scene with a night profile switches to it while `night`; any unsaved
   // preview is dropped then, as when the scene changes.
-  void ObserveScene(std::optional<uint16_t> scene, bool night = false);
+  void ObserveScene(std::optional<uint16_t> scene, bool night = false,
+                    std::optional<ScenePlayerPlacement> player = std::nullopt);
   [[nodiscard]] SceneEnvironmentSnapshot Snapshot() const;
   void Preview(SceneEnvironmentProfile profile);
   bool Save();
