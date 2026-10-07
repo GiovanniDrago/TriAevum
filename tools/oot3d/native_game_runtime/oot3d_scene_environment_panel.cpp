@@ -27,6 +27,7 @@ public:
                            ? "Profile: %s"
                            : "Base environment (the title intro's). Saving creates %s for this scene only.",
                        state.Path.string().c_str());
+    DrawDayNight(state);
     auto value = state.Profile;
     auto &graphics = Fast::Oot3d::GraphicsSettingsRuntime::Instance();
     const auto settings = graphics.Snapshot();
@@ -179,7 +180,9 @@ public:
       ImGui::TextWrapped("Environment error: %s", status.Error.c_str());
     if (status.Dirty)
       ImGui::TextWrapped(
-          "Unsaved live preview. Save before leaving this scene.");
+          status.NightProfileExists
+              ? "Unsaved live preview. Save before leaving this scene or before the time of day changes."
+              : "Unsaved live preview. Save before leaving this scene.");
     else
       ImGui::TextUnformatted(
           status.FileExists ? "Scene profile saved."
@@ -187,6 +190,38 @@ public:
   }
 
 private:
+  // A scene with day and night (Kakariko Village, Hyrule Field) may keep a
+  // second profile for the night; the game's night flag picks it.
+  void DrawDayNight(const SceneEnvironmentSnapshot &state) {
+    ImGui::Text("Time of day: %s", state.Night ? "night" : "day");
+    if (!state.NightProfileExists) {
+      ImGui::TextWrapped("The same profile applies by day and by night.");
+      if (ImGui::Button("Create night profile"))
+        mRuntime->CreateNightProfile();
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Saves the values shown as this scene's night profile. At night it is the "
+                          "profile in use and edited here; by day, the scene's own profile is.");
+      return;
+    }
+    ImGui::TextWrapped(state.EditingNight
+                           ? "Separate day and night profiles: editing the night profile."
+                           : "Separate day and night profiles: editing the day profile (the night "
+                             "profile applies at night).");
+    if (ImGui::Button("Remove night profile"))
+      ImGui::OpenPopup("Remove night profile?");
+    if (ImGui::BeginPopupModal("Remove night profile?", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextUnformatted("Delete this scene's night profile? The day profile will apply at night too.");
+      if (ImGui::Button("Remove")) {
+        mRuntime->RemoveNightProfile();
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel"))
+        ImGui::CloseCurrentPopup();
+      ImGui::EndPopup();
+    }
+  }
   std::shared_ptr<SceneEnvironmentRuntime> mRuntime;
 };
 } // namespace

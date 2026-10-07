@@ -47,10 +47,18 @@ struct SceneEnvironmentProfile {
 struct SceneEnvironmentSnapshot {
   std::optional<uint16_t> SceneId;
   SceneEnvironmentProfile Profile;
+  // The profile file shown and saved: the night one while the scene has a
+  // night profile and the game's time is night, otherwise the scene's own.
   std::filesystem::path Path;
   std::string Error;
   bool Dirty = false;
   bool FileExists = false;
+  // The game's time of day (SaveContext nightFlag).
+  bool Night = false;
+  // The scene keeps a separate night profile (scene-XXXX.night.environment.json).
+  bool NightProfileExists = false;
+  // The night profile is the one in use.
+  bool EditingNight = false;
 };
 
 class SceneEnvironmentRuntime final {
@@ -58,15 +66,24 @@ public:
   using Publisher =
       std::function<void(const Fast::Renderer3ds::PicaEnvironmentLighting &)>;
   SceneEnvironmentRuntime(std::filesystem::path directory, Publisher publish);
-  void ObserveScene(std::optional<uint16_t> scene);
+  // A scene with a night profile switches to it while `night`; any unsaved
+  // preview is dropped then, as when the scene changes.
+  void ObserveScene(std::optional<uint16_t> scene, bool night = false);
   [[nodiscard]] SceneEnvironmentSnapshot Snapshot() const;
   void Preview(SceneEnvironmentProfile profile);
   bool Save();
   bool Reload();
+  // Saves the values shown as the scene's night profile; at night it becomes
+  // the profile in use.
+  bool CreateNightProfile();
+  // Deletes the night profile: the scene's own profile applies day and night.
+  bool RemoveNightProfile();
 
 private:
   bool ReloadLocked();
   void PublishLocked();
+  [[nodiscard]] std::filesystem::path ProfilePathLocked(bool night) const;
+  void SelectLocked(std::optional<uint16_t> scene, bool night);
   std::filesystem::path mDirectory;
   Publisher mPublish;
   mutable std::mutex mMutex;

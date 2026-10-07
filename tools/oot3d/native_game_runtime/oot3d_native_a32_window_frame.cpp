@@ -2031,8 +2031,13 @@ void NativeA32WindowSession::PublishNativeSceneView() {
   // Guest memory is read here; the scene environment, the duplicate check
   // and the publish belong to the renderer and run in its order.
   auto snapshot = sceneViewProbe.Capture(process.Memory());
-  renderStream.Submit([&, snapshot] {
-  sceneEnvironment->ObserveScene(snapshot ? snapshot->SceneId : std::nullopt);
+  // SaveContext nightFlag (+0x10): 1 at night; picks a scene's night profile.
+  constexpr uint32_t kSaveContextNightFlag = 0x00587968U;
+  uint32_t nightFlag = 0U;
+  const bool night =
+      process.Memory().Read32(kSaveContextNightFlag, &nightFlag) && nightFlag != 0U;
+  renderStream.Submit([&, snapshot, night] {
+  sceneEnvironment->ObserveScene(snapshot ? snapshot->SceneId : std::nullopt, night);
   if (!snapshot.has_value() ||
       snapshot->Serial == lastPublishedSceneViewSerial) {
     return;

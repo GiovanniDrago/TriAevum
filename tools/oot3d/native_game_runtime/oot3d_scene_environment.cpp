@@ -86,7 +86,10 @@ const char *EncodeKeyDirection(KeyDirection value) {
   }
   return "authored";
 }
-SceneEnvironmentProfile Decode(const Json &doc, uint16_t scene) {
+SceneEnvironmentProfile Decode(const Json &doc, uint16_t scene, bool night) {
+  // A night profile names its time of day; the scene's own profile does not.
+  if (doc.value("timeOfDay", std::string("day")) != (night ? "night" : "day"))
+    throw std::runtime_error("Environment time of day mismatch");
   if (doc.at("schema") != "triaevum.scene-environment" ||
       (doc.at("version") != 1 && doc.at("version") != 2 &&
        doc.at("version") != 3 && doc.at("version") != 4 &&
@@ -140,7 +143,7 @@ SceneEnvironmentProfile Decode(const Json &doc, uint16_t scene) {
   }
   return result;
 }
-Json Encode(const SceneEnvironmentProfile &value, uint16_t scene) {
+Json Encode(const SceneEnvironmentProfile &value, uint16_t scene, bool night) {
   Json lights = Json::array();
   for (const auto &light : value.Lights)
     lights.push_back({{"azimuth", light.Azimuth},
@@ -153,7 +156,7 @@ Json Encode(const SceneEnvironmentProfile &value, uint16_t scene) {
                       {"intensity", light.Intensity},
                       {"radiusScale", light.RadiusScale},
                       {"colorTint", light.ColorTint}});
-  return {{"schema", "triaevum.scene-environment"},
+  Json result = {{"schema", "triaevum.scene-environment"},
           {"version", 5},
           {"sceneId", scene},
           {"enabled", value.Enabled},
@@ -169,6 +172,9 @@ Json Encode(const SceneEnvironmentProfile &value, uint16_t scene) {
           {"keyLightDirection", EncodeKeyDirection(value.KeyDirection)},
           {"keyLightAzimuthOffset", value.KeyAzimuthOffset},
           {"keyLightElevationOffset", value.KeyElevationOffset}};
+  if (night)
+    result["timeOfDay"] = "night";
+  return result;
 }
 } // namespace
 
@@ -197,18 +203,40 @@ SceneEnvironmentRuntime::SceneEnvironmentRuntime(
     std::filesystem::path directory, Publisher publish)
     : mDirectory(std::move(directory)), mPublish(std::move(publish)) {}
 
-void SceneEnvironmentRuntime::ObserveScene(std::optional<uint16_t> scene) {
+void SceneEnvironmentRuntime::ObserveScene(std::optional<uint16_t> scene,
+                                           bool night) {
   std::scoped_lock lock(mMutex);
-  if (mState.SceneId == scene)
+  if (mState.SceneId == scene && mState.Night == night)
     return;
+  // The time changed: only a scene with a night profile changes profile.
+  if (mState.SceneId == scene && scene &&
+      (night && mState.NightProfileExists) == mState.EditingNight) {
+    mState.Night = night;
+    return;
+  }
+  SelectLocked(scene, night);
+}
+std::filesystem::path
+SceneEnvironmentRuntime::ProfilePathLocked(bool night) const {
+  char name[48];
+  std::snprintf(name, sizeof(name),
+                night ? "scene-%04X.night.environment.json"
+                      : "scene-%04X.environment.json",
+                unsigned(mState.SceneId.value_or(0)));
+  return mDirectory / name;
+}
+void SceneEnvironmentRuntime::SelectLocked(std::optional<uint16_t> scene,
+                                           bool night) {
   mState = {};
   mSaved = {};
   mState.SceneId = scene;
+  mState.Night = night;
   if (scene) {
-    char name[40];
-    std::snprintf(name, sizeof(name), "scene-%04X.environment.json",
-                  unsigned(*scene));
-    mState.Path = mDirectory / name;
+    std::error_code error;
+    mState.NightProfileExists =
+        std::filesystem::exists(ProfilePathLocked(true), error);
+    mState.EditingNight = night && mState.NightProfileExists;
+    mState.Path = ProfilePathLocked(mState.EditingNight);
     ReloadLocked();
   }
   PublishLocked();
@@ -242,7 +270,8 @@ bool SceneEnvironmentRuntime::Save() {
     return false;
   }
   const auto saved = Ship::WriteConfigFileAtomically(
-      mState.Path, Encode(mState.Profile, *mState.SceneId).dump(2));
+      mState.Path,
+      Encode(mState.Profile, *mState.SceneId, mState.EditingNight).dump(2));
   mState.Error = saved.Error;
   if (saved.Success) {
     mSaved = mState.Profile;
@@ -250,6 +279,54 @@ bool SceneEnvironmentRuntime::Save() {
     mState.FileExists = true;
   }
   return saved.Success;
+}
+bool SceneEnvironmentRuntime::CreateNightProfile() {
+  std::scoped_lock lock(mMutex);
+  if (!mState.SceneId)
+    return false;
+  std::error_code error;
+  std::filesystem::create_directories(mDirectory, error);
+  if (error) {
+    mState.Error = error.message();
+    return false;
+  }
+  const auto path = ProfilePathLocked(true);
+  const auto saved = Ship::WriteConfigFileAtomically(
+      path, Encode(mState.Profile, *mState.SceneId, true).dump(2));
+  mState.Error = saved.Error;
+  if (!saved.Success)
+    return false;
+  mState.NightProfileExists = true;
+  if (mState.Night && !mState.EditingNight) {
+    // The values shown become the night profile in use; the scene's own
+    // profile keeps what it last saved.
+    mState.EditingNight = true;
+    mState.Path = path;
+    mSaved = mState.Profile;
+    mState.Dirty = false;
+    mState.FileExists = true;
+    PublishLocked();
+  }
+  return true;
+}
+bool SceneEnvironmentRuntime::RemoveNightProfile() {
+  std::scoped_lock lock(mMutex);
+  if (!mState.SceneId || !mState.NightProfileExists)
+    return false;
+  std::error_code error;
+  std::filesystem::remove(ProfilePathLocked(true), error);
+  if (error) {
+    mState.Error = error.message();
+    return false;
+  }
+  mState.NightProfileExists = false;
+  if (mState.EditingNight) {
+    mState.EditingNight = false;
+    mState.Path = ProfilePathLocked(false);
+    ReloadLocked();
+    PublishLocked();
+  }
+  return true;
 }
 bool SceneEnvironmentRuntime::Reload() {
   std::scoped_lock lock(mMutex);
@@ -269,7 +346,7 @@ bool SceneEnvironmentRuntime::ReloadLocked() {
       if (std::filesystem::file_size(mState.Path) > 65536)
         throw std::runtime_error("Environment profile exceeds 64 KiB");
       std::ifstream file(mState.Path);
-      candidate = Decode(Json::parse(file), *mState.SceneId);
+      candidate = Decode(Json::parse(file), *mState.SceneId, mState.EditingNight);
     }
     mSaved = mState.Profile = candidate;
     mState.FileExists = exists;
@@ -285,7 +362,9 @@ void SceneEnvironmentRuntime::PublishLocked() {
   Fast::Renderer3ds::PicaEnvironmentLighting result;
   if (mState.SceneId) {
     const auto &value = mState.Profile;
-    result.ScopeIdentity = uint64_t(*mState.SceneId) + 1;
+    // Day and night profiles are separate scopes (no shared shadow history).
+    result.ScopeIdentity = uint64_t(*mState.SceneId) + 1 +
+                           (mState.EditingNight ? 0x10000U : 0U);
     result.Enabled = value.Enabled;
     result.PreserveSceneBrightness = value.PreserveSceneBrightness;
     result.NativeDirectStrength = value.NativeDirectStrength;

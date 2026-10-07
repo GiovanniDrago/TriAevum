@@ -544,6 +544,46 @@ void CheckSceneEnvironment() {
           "previous scene's environment leaked across a transition instead of the base");
     environment->ObserveScene(0x55);
     Check(environment->Snapshot().Profile == saved.Profile, "returning to scene did not restore its file");
+    // Day and night: one profile until the scene has a night profile, then
+    // the game's night flag picks it.
+    environment->ObserveScene(0x55, true);
+    Check(environment->Snapshot().Night && !environment->Snapshot().EditingNight &&
+              environment->Snapshot().Profile == saved.Profile,
+          "night without a night profile did not keep the scene's profile");
+    const auto dayScope = graphics.SnapshotForRendering().Environment.ScopeIdentity;
+    Click("Create night profile");
+    const auto nightPath = root / "scene-0055.night.environment.json";
+    Check(std::filesystem::exists(nightPath) && environment->Snapshot().EditingNight &&
+              environment->Snapshot().Path == nightPath &&
+              graphics.SnapshotForRendering().Environment.ScopeIdentity != dayScope,
+          "creating the night profile did not make it the night scope");
+    auto nightEdit = saved.Profile;
+    nightEdit.AmbientIntensity = 0.4F;
+    nightEdit.AmbientColor = {0.2F, 0.3F, 0.8F};
+    environment->Preview(nightEdit);
+    Click("Save scene environment");
+    nlohmann::json nightDocument;
+    { std::ifstream file(nightPath); file >> nightDocument; }
+    Check(nightDocument.value("timeOfDay", "") == "night" && nightDocument.at("ambientIntensity") == 0.4F,
+          "the night profile was not saved to its own file");
+    environment->ObserveScene(0x55, false);
+    Check(!environment->Snapshot().EditingNight && environment->Snapshot().Profile == saved.Profile &&
+              graphics.SnapshotForRendering().Environment.AmbientIntensity == saved.Profile.AmbientIntensity,
+          "day did not return to the scene's own profile");
+    environment->ObserveScene(0x55, true);
+    Check(environment->Snapshot().Profile == nightEdit &&
+              graphics.SnapshotForRendering().Environment.AmbientIntensity == 0.4F,
+          "night did not take the night profile");
+    environment->ObserveScene(0x56, true);
+    Check(environment->Snapshot().Profile == BaseSceneEnvironmentProfile() && !environment->Snapshot().EditingNight,
+          "a scene without a night profile took another scene's");
+    environment->ObserveScene(0x55, true);
+    Click("Remove night profile");
+    Click("Remove");
+    Check(!std::filesystem::exists(nightPath) && !environment->Snapshot().EditingNight &&
+              environment->Snapshot().Profile == saved.Profile,
+          "removing the night profile did not return night to the scene's profile");
+    environment->ObserveScene(0x55, false);
     const auto backup = root / "saved.json";
     std::filesystem::rename(saved.Path, backup);
     std::filesystem::create_directory(saved.Path);
