@@ -50,10 +50,11 @@ surface (its centre casts).
 Changing the lighting shader changes every lit pipeline: the built-in fragment
 families (`pica_*_fragment_binaries.h`) are regenerated with it
 (`build_fragment_artifacts`, checked by `tev_generator_consumer_tests`). Forge's
-portable shader corpus (`expanded-union.o3ps`) was already stale before this
-change (Windows qualification A8: modules keyed by the generated source); with
-hybrid preparation a stale corpus costs background compilation on a first
-launch, not a stall, and it is regenerated with the release runtime (L6).
+portable shader corpus (`expanded-union.o3ps`) is keyed by generated source as
+well: it was regenerated with this lighting on 2026-10-07 by
+`regenerate_shader_corpus.py` (see the
+[scenario preparation](TRIAEVUM_SCENARIO_SHADER_PREPARATION.md#regeneration-with-the-current-runtime-2026-10-07)
+document) and is regenerated again with each release runtime.
 
 ## Storage
 
