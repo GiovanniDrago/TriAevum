@@ -51,9 +51,10 @@ struct PlacedLight {
   float Range = 300.0F;
   bool operator==(const PlacedLight &) const = default;
 };
-// Point and omni are drawn now (scene point-light falloff); sun, spot and
-// surface are kept and edited, and drawn once the renderer has their terms.
-[[nodiscard]] bool PlacedLightRendered(PlacedLightType type) noexcept;
+// The renderer's light for a placed light of this scene: the emission axis
+// from yaw and pitch, a rectangle's width axis turned by the roll.
+[[nodiscard]] Fast::Renderer3ds::PicaPlacedLight
+ResolvePlacedLight(const PlacedLight &light, uint64_t identity);
 
 struct SceneEnvironmentProfile {
   bool Enabled = false;

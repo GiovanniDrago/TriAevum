@@ -260,12 +260,7 @@ private:
       light.Type = static_cast<PlacedLightType>(type);
       changed = true;
     }
-    if (!PlacedLightRendered(light.Type))
-      ImGui::TextWrapped("Not drawn yet: sun, spot and surface lights arrive with the renderer's next "
-                         "step. Their settings are kept and saved.");
-    else if (light.Type == PlacedLightType::Point)
-      ImGui::TextWrapped("Drawn for now with the omni falloff; the physical (inverse-square) falloff "
-                         "arrives with the renderer's next step.");
+    ImGui::TextWrapped("%s", kTypeHelp[static_cast<size_t>(light.Type)]);
     changed |= ImGui::Checkbox("Light visible", &light.Visible);
     changed |= ImGui::ColorEdit3("Placed light color", light.Color.data(), ImGuiColorEditFlags_Float);
     changed |= ImGui::SliderFloat("Placed light intensity", &light.Intensity, 0.0F, 16.0F, "%.2f",
@@ -309,9 +304,13 @@ private:
     ImGui::EndDisabled();
     if (sun)
       ImGui::TextWrapped("Sun lights do not cast shadows; the key light keeps the directional shadows.");
-    else if (PlacedLightRendered(light.Type))
-      ImGui::TextWrapped("Uses a point-shadow cube map (Lights & Shadows > Point shadows: Cube maps), "
-                         "shared with Navi and the fairies.");
+    else
+      ImGui::TextWrapped(light.Type == PlacedLightType::Surface
+                             ? "Uses a point-shadow cube map at the surface's centre (Point shadows: Cube "
+                               "maps), shared with Navi and the fairies; a large surface's shadows are "
+                               "approximate."
+                             : "Uses a point-shadow cube map at the light (Point shadows: Cube maps), "
+                               "shared with Navi and the fairies.");
     switch (light.Type) {
     case PlacedLightType::Point:
     case PlacedLightType::Omni:
@@ -376,6 +375,15 @@ private:
     return changed;
   }
   static constexpr const char *kTypeNames[] = {"Sun", "Spot", "Point", "Surface", "Omni"};
+  static constexpr const char *kTypeHelp[] = {
+      "Parallel light along its direction, everywhere in the scene, without falloff.",
+      "A cone from its position: inverse-square falloff (intensity 1 is its colour at 100 "
+      "units), cut at the reach.",
+      "Inverse-square falloff from its position (intensity 1 is its colour at 100 units), cut "
+      "smoothly at the reach.",
+      "An emitting rectangle or disc facing its direction (both faces when two-sided): bright "
+      "close to it, fading with distance, cut at the reach.",
+      "Soft falloff to zero at the reach, like Navi and the fairies: easy to dose."};
   // World units above Link's feet where a new light starts.
   static constexpr float kPlacedLightHeadHeight = 50.0F;
   uint32_t mSelectedLight = 0;

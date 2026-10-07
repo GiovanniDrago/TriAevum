@@ -286,8 +286,49 @@ Json Encode(const SceneEnvironmentProfile &value, uint16_t scene, bool night) {
 }
 } // namespace
 
-bool PlacedLightRendered(PlacedLightType type) noexcept {
-  return type == PlacedLightType::Point || type == PlacedLightType::Omni;
+Fast::Renderer3ds::PicaPlacedLight ResolvePlacedLight(const PlacedLight &light,
+                                                      uint64_t identity) {
+  using Kind = Fast::Renderer3ds::PicaPlacedLightKind;
+  constexpr float kRadians = std::numbers::pi_v<float> / 180.0F;
+  Fast::Renderer3ds::PicaPlacedLight result;
+  result.SourceIdentity = identity;
+  switch (light.Type) {
+  case PlacedLightType::Sun: result.Kind = Kind::Sun; break;
+  case PlacedLightType::Spot: result.Kind = Kind::Spot; break;
+  case PlacedLightType::Point: result.Kind = Kind::Point; break;
+  case PlacedLightType::Omni: result.Kind = Kind::Omni; break;
+  case PlacedLightType::Surface:
+    result.Kind = light.Shape == PlacedLightShape::Disc ? Kind::Disc : Kind::Rectangle;
+    break;
+  }
+  result.PositionWorld = light.Position;
+  const float yaw = light.Rotation[0] * kRadians;
+  const float pitch = light.Rotation[1] * kRadians;
+  const float roll = light.Rotation[2] * kRadians;
+  // Yaw 0 faces +Z and 90 faces +X (the game's yaw); pitch 90 points up.
+  const std::array<float, 3> axis{std::sin(yaw) * std::cos(pitch), std::sin(pitch),
+                                  std::cos(yaw) * std::cos(pitch)};
+  // The horizontal axis to the light's right, turned by the roll.
+  const std::array<float, 3> right{std::cos(yaw), 0.0F, -std::sin(yaw)};
+  const std::array<float, 3> up{axis[1] * right[2] - axis[2] * right[1],
+                                axis[2] * right[0] - axis[0] * right[2],
+                                axis[0] * right[1] - axis[1] * right[0]};
+  result.AxisWorld = axis;
+  for (size_t i = 0; i < 3; ++i) {
+    result.TangentWorld[i] = right[i] * std::cos(roll) + up[i] * std::sin(roll);
+    result.Color[i] = light.Color[i] * light.Intensity;
+  }
+  result.Reach = light.Type == PlacedLightType::Surface ? light.Range : light.Radius;
+  if (light.Type == PlacedLightType::Surface) {
+    result.HalfWidth = light.Shape == PlacedLightShape::Disc ? light.Radius : light.Width * 0.5F;
+    result.HalfHeight = light.Shape == PlacedLightShape::Disc ? light.Radius : light.Height * 0.5F;
+    result.TwoSided = light.TwoSided;
+  }
+  const float halfAngle = light.BeamAngle * 0.5F * kRadians;
+  result.CosOuter = std::cos(halfAngle);
+  result.CosInner = std::cos(halfAngle * (1.0F - light.BeamSoftness));
+  result.CastShadows = light.CastShadows && light.Type != PlacedLightType::Sun;
+  return result;
 }
 
 SceneEnvironmentProfile BaseSceneEnvironmentProfile() {
@@ -489,20 +530,13 @@ void SceneEnvironmentRuntime::PublishLocked() {
     result.AmbientIntensity = value.AmbientIntensity;
     result.FogStrength = value.FogStrength;
     result.PointLights = value.PointLights;
-    // Placed point and omni lights; the other types are not drawn yet.
     for (const auto &light : value.PlacedLights) {
-      if (!light.Visible || !PlacedLightRendered(light.Type) ||
-          result.PlacedPointCount == result.PlacedPoints.size())
+      if (!light.Visible || result.PlacedLightCount == result.PlacedLights.size())
         continue;
-      auto &point = result.PlacedPoints[result.PlacedPointCount++];
       // Unique per scene, time of day and light.
-      point.SourceIdentity = 0xD1A6000000000000ULL | (uint64_t(*mState.SceneId) << 32U) |
-                             (mState.EditingNight ? 0x80000000ULL : 0ULL) | light.Id;
-      point.PositionWorld = light.Position;
-      for (size_t channel = 0; channel < 3; ++channel)
-        point.Color[channel] = light.Color[channel] * light.Intensity;
-      point.Radius = light.Radius;
-      point.CastShadows = light.CastShadows;
+      result.PlacedLights[result.PlacedLightCount++] = ResolvePlacedLight(
+          light, 0xD1A6000000000000ULL | (uint64_t(*mState.SceneId) << 32U) |
+                     (mState.EditingNight ? 0x80000000ULL : 0ULL) | light.Id);
     }
     result.KeyDirection = value.KeyDirection;
     result.KeyAzimuthOffset =

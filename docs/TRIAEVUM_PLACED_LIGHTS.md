@@ -26,21 +26,34 @@ Yaw 0 faces +Z and 90 faces +X (the game's own yaw); pitch 90 points up. Edits
 preview live; **Save scene environment** keeps them, **Reload** discards them.
 They apply while **Use scene environment** applies (Modern lighting, F2 off).
 
-## Rendering, by step
+## Rendering
 
-1. **Now.** Point and omni lights are drawn through the scene point-light term
-   the renderer already has for Navi and the fairies (`1 - d^2/r^2` falloff
-   over the reach), after the native scene points in the same per-draw slots
-   (32 in all). A light with **Cast shadows** competes for a point-shadow cube
-   map (Point shadows: Cube maps; 8 rows shared with Navi and the fairies).
-   Sun, spot and surface lights are kept, edited and saved, not drawn yet; the
-   panel says so. Point currently uses the omni falloff.
-2. **Next.** Shader terms for the physical point falloff (inverse square with
-   a smooth cut at the reach), spot cones, surface lights (rectangle and disc,
-   one or two sides) and unshadowed suns. Changing the surface-lighting shader
-   changes every lit pipeline, so the precompiled shader pack
-   (`expanded-union.o3ps`) has to be regenerated with it.
-3. **Then.** Shadows for spot and surface lights.
+Placed lights have their own per-draw slots (`PicaSurfaceLightingUniforms::Placed`,
+16, count in `Control[3]` bits 8-15), lit in the per-vertex/Modern path and in
+the PBR path (GGX), and they seed global illumination like the other dynamic
+lights. Position is in view space, axis and tangent in world space; distances
+are world units. The terms (`pica_surface_placed_light`):
+
+| Type | Term |
+|---|---|
+| Omni | `1 - d^2/r^2` to the reach `r`, as Navi and the fairies |
+| Point | `(100 / max(d, 10))^2`: intensity 1 is the colour at 100 units; times a smooth cut `(1 - (d/r)^4)^2` at the reach |
+| Spot | the point term times `smoothstep(cos outer, cos inner, cos angle)`; outer is half the beam angle, inner shrinks it by the softness |
+| Surface | rectangle or disc: direction to the shape's closest point, form factor `A cos / (pi d^2 + A)` (the colour times intensity in contact with it), cut at the reach; one-sided surfaces emit from the front face only |
+| Sun | parallel light along its direction, no falloff, never shadowed |
+
+**Cast shadows** gives spot, point, surface and omni a point-shadow cube map at
+the light's position (Point shadows: Cube maps; 8 rows shared with Navi and the
+fairies). That is exact for spot, point and omni, approximate for a large
+surface (its centre casts).
+
+Changing the lighting shader changes every lit pipeline: the built-in fragment
+families (`pica_*_fragment_binaries.h`) are regenerated with it
+(`build_fragment_artifacts`, checked by `tev_generator_consumer_tests`). Forge's
+portable shader corpus (`expanded-union.o3ps`) was already stale before this
+change (Windows qualification A8: modules keyed by the generated source); with
+hybrid preparation a stale corpus costs background compilation on a first
+launch, not a stall, and it is regenerated with the release runtime (L6).
 
 ## Storage
 
@@ -65,9 +78,22 @@ the profile invalid, as any other out-of-range value does.
 
 ## Verification
 
-`triaevum_f1_settings_smoke`: a light added at Link's placement lands 50 units
-above him with his yaw and is drawn as a point light; spot is not drawn and
-shows its beam controls; surface shows its shape, size and sides; sun offers no
-shadows; omni with shadows publishes a shadowing light; save writes
-`placedLights`; duplicate gives a new identity; delete stops drawing; reload
-restores the saved light.
+- `scene_point_light_gpu_tests` runs the production lighting GLSL on the GPU:
+  11 placed-light cases (omni, point at 100 and 50 units and beyond its reach,
+  spot on and off its axis, rectangle facing, one-sided and two-sided facing
+  away, disc, sun) beside the 24 scene and 10 shadow cases.
+- `build_fragment_artifacts --check` (all five families) and
+  `tev_generator_consumer_tests` after regenerating the packs; only the uber
+  family contains the lighting term and changed.
+- `triaevum_f1_settings_smoke`: a light added at Link's placement lands 50
+  units above him with his yaw (axis checked) and is drawn as a point; spot
+  publishes its cone cosines; surface its rectangle and disc; sun offers no
+  shadows; omni with shadows publishes a shadowing light; save writes
+  `placedLights`; duplicate gives a new identity; delete stops drawing; reload
+  restores the saved light.
+- Live, Kokiri Forest from the play quick save, against the same frame without
+  lights: an orange sun at pitch -45 raises the mean RGB from (56, 59, 21) to
+  (83, 73, 22); a green 200x200 rectangle 200 units above Link greens the
+  platform (mean G 59 -> 67); a blue 90-degree spot 150 units above him draws
+  its cone's edge on the tree around the door (around Link, mean RGB
+  (76, 77, 24) -> (86, 94, 36)).

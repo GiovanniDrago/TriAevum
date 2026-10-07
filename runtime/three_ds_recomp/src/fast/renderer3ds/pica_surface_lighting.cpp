@@ -91,7 +91,7 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
         if (binding.SceneDirectionals->Count > binding.SceneDirectionals->Lights.size()) return std::nullopt;
         sceneDirectionals = {binding.SceneDirectionals->Lights.data(), binding.SceneDirectionals->Count};
     }
-    if (environment.PlacedPointCount > environment.PlacedPoints.size()) return std::nullopt;
+    if (environment.PlacedLightCount > environment.PlacedLights.size()) return std::nullopt;
     const bool needsWorldView = environment.Enabled || !scenePoints.empty() || !sceneDirectionals.empty() ||
         std::any_of(binding.Sources.begin(), binding.Sources.end(), [](const auto& light) {
             return light.Kind == PicaNativeLightSource::Type::Point;
@@ -171,20 +171,30 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
                 settings.Intensity * reflectance[row];
         }
     }
-    // Placed lights take the slots the native scene points leave.
-    for (uint32_t index = 0; environment.Enabled && index < environment.PlacedPointCount; ++index) {
-        const auto& source = environment.PlacedPoints[index];
-        if (source.Radius <= 0.0F || result.Control[1] >= result.ScenePoints.size()) continue;
-        auto& point = result.ScenePoints[result.Control[1]++];
-        point.PositionRadius[3] = source.Radius;
-        point.Color[3] = source.CastShadows ? pointShadowRow(source.SourceIdentity) : -1.0F;
+    // Placed lights, in their own slots.
+    uint32_t placedCount = 0;
+    for (uint32_t index = 0; environment.Enabled && index < environment.PlacedLightCount; ++index) {
+        const auto& source = environment.PlacedLights[index];
+        const bool sun = source.Kind == PicaPlacedLightKind::Sun;
+        if (source.Kind > PicaPlacedLightKind::Sun || (!sun && source.Reach <= 0.0F)) continue;
+        auto& placed = result.Placed[placedCount++];
+        placed.PositionReach[3] = source.Reach;
+        placed.Color[3] = source.CastShadows && !sun ? pointShadowRow(source.SourceIdentity) : -1.0F;
+        placed.AxisKind = { source.AxisWorld[0], source.AxisWorld[1], source.AxisWorld[2],
+                            static_cast<float>(source.Kind) + (source.TwoSided ? 8.0F : 0.0F) };
+        if (source.Kind == PicaPlacedLightKind::Spot)
+            placed.TangentShape = { source.CosOuter, source.CosInner, 0.0F, 0.0F };
+        else
+            placed.TangentShape = { source.TangentWorld[0] * source.HalfWidth, source.TangentWorld[1] * source.HalfWidth,
+                                    source.TangentWorld[2] * source.HalfWidth, source.HalfHeight };
         for (size_t row = 0; row < 3; ++row) {
-            point.PositionRadius[row] = view[row][3];
+            placed.PositionReach[row] = view[row][3];
             for (size_t axis = 0; axis < 3; ++axis)
-                point.PositionRadius[row] += view[row][axis] * source.PositionWorld[axis];
-            point.Color[row] = source.Color[row] * reflectance[row];
+                placed.PositionReach[row] += view[row][axis] * source.PositionWorld[axis];
+            placed.Color[row] = source.Color[row] * reflectance[row];
         }
     }
+    result.Control[3] |= placedCount << 8U;
     const float ambientGain = !environment.Enabled || environment.PreserveSceneBrightness
         ? 1.0F : environment.NativeAmbientStrength;
     result.EnvironmentParameters[1] = ambientGain;
@@ -192,7 +202,7 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
         result.EnvironmentParameters = {environment.NativeLocalStrength, ambientGain,
                                         environment.FogStrength, 1.0F};
         const bool preserveReference = environment.PreserveSceneBrightness;
-        result.Control[3] = preserveReference ? 1U : 0U;
+        result.Control[3] = (result.Control[3] & ~1U) | (preserveReference ? 1U : 0U);
         // The profile replaces illumination, not material reflectance. Native
         // TEV gains still apply, so dropping these coefficients overexposes
         // materials authored with reduced diffuse/ambient response.
@@ -241,6 +251,12 @@ struct PicaScenePointLight {
     vec4 position_radius;
     vec4 color;
 };
+struct PicaPlacedLight {
+    vec4 position_reach;
+    vec4 color;
+    vec4 axis_kind;
+    vec4 tangent_shape;
+};
 layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
     vec4 material_diffuse;
     vec4 material_ambient;
@@ -258,6 +274,7 @@ layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
     vec4 gi_sources;
     vec4 point_shadow;
     vec4 point_shadow_atlas;
+    PicaPlacedLight placed_lights[16];
 } pica_surface;
 vec3 pica_surface_unit(vec3 value) {
     float squared = dot(value, value);
@@ -294,11 +311,104 @@ void pica_surface_scene_point(int slot, out vec3 direction, out vec3 radiance) {
     direction = pica_surface_unit(delta);
     radiance = light.color.rgb * attenuation * pica_point_shadow(light.color.w, -world_delta, light.position_radius.w);
 }
+uint pica_surface_placed_count() {
+    return (pica_surface.control.w >> 8u) & 0xFFu;
+}
+vec3 pica_surface_to_world(vec3 view_vector) {
+    return vec3(dot(pica_surface.view_to_world_linear[0].xyz, view_vector),
+                dot(pica_surface.view_to_world_linear[1].xyz, view_vector),
+                dot(pica_surface.view_to_world_linear[2].xyz, view_vector));
+}
+// World to view direction: the transpose of the (rotation and uniform
+// scale) view-to-world matrix, normalized.
+vec3 pica_surface_view_direction(vec3 world_vector) {
+    return pica_surface_unit(pica_surface.view_to_world_linear[0].xyz * world_vector.x +
+                             pica_surface.view_to_world_linear[1].xyz * world_vector.y +
+                             pica_surface.view_to_world_linear[2].xyz * world_vector.z);
+}
+// A smooth cut to zero at the reach.
+float pica_surface_reach_window(float distance_world, float reach) {
+    float ratio = distance_world / max(reach, 1.0e-3);
+    float window = clamp(1.0 - ratio * ratio * ratio * ratio, 0.0, 1.0);
+    return window * window;
+}
+// Placed light kinds (PicaPlacedLightKind): 0 omni, 1 point, 2 spot,
+// 3 rectangle, 4 disc, 5 sun; 8 is added for a two-sided surface.
+void pica_surface_placed_light(int slot, out vec3 direction, out vec3 radiance) {
+    PicaPlacedLight light = pica_surface.placed_lights[slot];
+    bool two_sided = light.axis_kind.w >= 7.5;
+    int kind = int(light.axis_kind.w - (two_sided ? 8.0 : 0.0) + 0.5);
+    vec3 axis = light.axis_kind.xyz;
+    radiance = light.color.rgb;
+    if (kind == 5) {
+        direction = pica_surface_view_direction(-axis);
+        return;
+    }
+    float reach = light.position_reach.w;
+    // World vector from the fragment to the light's position.
+    vec3 to_light = pica_surface_to_world(light.position_reach.xyz + pica_view);
+    float distance_world = length(to_light);
+    if (kind == 3 || kind == 4) {
+        // The fragment seen from the surface's centre.
+        vec3 from_center = -to_light;
+        float side = dot(from_center, axis);
+        if (!two_sided && side <= 0.0) {
+            direction = vec3(0.0, 0.0, 1.0);
+            radiance = vec3(0.0);
+            return;
+        }
+        vec3 closest;
+        float area;
+        if (kind == 3) {
+            float half_width = length(light.tangent_shape.xyz);
+            vec3 tangent = light.tangent_shape.xyz / max(half_width, 1.0e-6);
+            vec3 bitangent = cross(axis, tangent);
+            float half_height = light.tangent_shape.w;
+            closest = tangent * clamp(dot(from_center, tangent), -half_width, half_width) +
+                      bitangent * clamp(dot(from_center, bitangent), -half_height, half_height);
+            area = 4.0 * half_width * half_height;
+        } else {
+            float radius = length(light.tangent_shape.xyz);
+            vec3 planar = from_center - axis * side;
+            float planar_length = length(planar);
+            closest = planar_length > radius ? planar * (radius / planar_length) : planar;
+            area = 3.14159265 * radius * radius;
+        }
+        // From the fragment to the closest point of the surface.
+        vec3 to_surface = closest - from_center;
+        float cos_light = abs(side) / max(distance_world, 1.0e-3);
+        float form = area * cos_light / (3.14159265 * dot(to_surface, to_surface) + area);
+        direction = pica_surface_view_direction(to_surface);
+        radiance *= form * pica_surface_reach_window(distance_world, reach);
+    } else {
+        direction = pica_surface_view_direction(to_light);
+        float attenuation;
+        if (kind == 0) {
+            attenuation = max(0.0, 1.0 - distance_world * distance_world / (reach * reach));
+        } else {
+            float reference = 100.0;
+            attenuation = reference * reference / max(distance_world * distance_world, 100.0) *
+                          pica_surface_reach_window(distance_world, reach);
+            if (kind == 2) {
+                float beam = dot(-to_light / max(distance_world, 1.0e-3), axis);
+                attenuation *= smoothstep(light.tangent_shape.x, max(light.tangent_shape.y,
+                                          light.tangent_shape.x + 1.0e-4), beam);
+            }
+        }
+        radiance *= attenuation;
+    }
+    radiance *= pica_point_shadow(light.color.w, -to_light, reach);
+}
 vec3 pica_surface_scene_point_primary(vec3 normal_view) {
     vec3 color = vec3(0.0);
     for (uint slot = 0u; slot < pica_surface.control.y; ++slot) {
         vec3 direction, radiance;
         pica_surface_scene_point(int(slot), direction, radiance);
+        color += max(dot(normal_view, direction), 0.0) * radiance;
+    }
+    for (uint slot = 0u; slot < pica_surface_placed_count(); ++slot) {
+        vec3 direction, radiance;
+        pica_surface_placed_light(int(slot), direction, radiance);
         color += max(dot(normal_view, direction), 0.0) * radiance;
     }
     return color;

@@ -325,6 +325,7 @@ void CheckSavestatePanel() {
 
 void CheckSceneEnvironment() {
     using namespace Oot3dNativeGame;
+    using Fast::Renderer3ds::PicaPlacedLightKind;
     const auto root = std::filesystem::temp_directory_path() /
         ("triaevum-environment-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directory(root);
@@ -592,24 +593,40 @@ void CheckSceneEnvironment() {
         const auto& rendered = graphics.SnapshotForRendering().Environment;
         Check(placed.size() == 1U && placed[0].Position == std::array<float, 3>{100.0F, 50.0F, 200.0F} &&
                   placed[0].Rotation[0] == 90.0F && placed[0].Type == PlacedLightType::Point &&
-                  rendered.PlacedPointCount == 1U && rendered.PlacedPoints[0].Radius == 300.0F &&
-                  rendered.PlacedPoints[0].PositionWorld == placed[0].Position && !rendered.PlacedPoints[0].CastShadows,
+                  rendered.PlacedLightCount == 1U && rendered.PlacedLights[0].Reach == 300.0F &&
+                  rendered.PlacedLights[0].Kind == PicaPlacedLightKind::Point &&
+                  rendered.PlacedLights[0].PositionWorld == placed[0].Position && !rendered.PlacedLights[0].CastShadows,
               "a light added at Link was not placed there or not drawn");
+        // Yaw 90 faces +X; tilted 30 degrees down.
+        const auto axis = rendered.PlacedLights[0].AxisWorld;
+        Check(std::abs(axis[0] - 0.8660254F) < 1.0e-4F && std::abs(axis[1] + 0.5F) < 1.0e-4F &&
+                  std::abs(axis[2]) < 1.0e-4F,
+              "the placed light's axis does not follow its yaw and pitch");
     }
     Select("Light type", "Spot");
     Check(environment->Snapshot().Profile.PlacedLights[0].Type == PlacedLightType::Spot &&
-              graphics.SnapshotForRendering().Environment.PlacedPointCount == 0U &&
+              graphics.SnapshotForRendering().Environment.PlacedLights[0].Kind == PicaPlacedLightKind::Spot &&
+              std::abs(graphics.SnapshotForRendering().Environment.PlacedLights[0].CosOuter - 0.9238795F) < 1.0e-4F &&
               Find("Beam angle").Rect.GetHeight() > 0.0F,
-          "a spot light was drawn as a point or its beam controls are missing");
+          "a spot light is not drawn as a spot or its beam controls are missing");
     Select("Light type", "Surface");
-    Check(Find("Surface width").Rect.GetHeight() > 0.0F && Find("Emit from both sides").Rect.GetHeight() > 0.0F,
-          "the surface light controls are missing");
+    Check(Find("Surface width").Rect.GetHeight() > 0.0F && Find("Emit from both sides").Rect.GetHeight() > 0.0F &&
+              graphics.SnapshotForRendering().Environment.PlacedLights[0].Kind == PicaPlacedLightKind::Rectangle &&
+              graphics.SnapshotForRendering().Environment.PlacedLights[0].HalfWidth == 50.0F,
+          "the surface light controls are missing or it is not drawn as a rectangle");
+    Select("Surface shape", "Disc");
+    Check(graphics.SnapshotForRendering().Environment.PlacedLights[0].Kind == PicaPlacedLightKind::Disc &&
+              Find("Surface radius").Rect.GetHeight() > 0.0F,
+          "a disc surface is not drawn as a disc");
     Select("Light type", "Sun");
-    Check(Find("Cast shadows").Disabled, "a sun light offers shadows");
+    Check(Find("Cast shadows").Disabled &&
+              graphics.SnapshotForRendering().Environment.PlacedLights[0].Kind == PicaPlacedLightKind::Sun,
+          "a sun light offers shadows or is not drawn as a sun");
     Select("Light type", "Omni");
     Click("Cast shadows");
-    Check(graphics.SnapshotForRendering().Environment.PlacedPointCount == 1U &&
-              graphics.SnapshotForRendering().Environment.PlacedPoints[0].CastShadows,
+    Check(graphics.SnapshotForRendering().Environment.PlacedLightCount == 1U &&
+              graphics.SnapshotForRendering().Environment.PlacedLights[0].Kind == PicaPlacedLightKind::Omni &&
+              graphics.SnapshotForRendering().Environment.PlacedLights[0].CastShadows,
           "an omni light did not cast shadows");
     Click("Save scene environment");
     {
@@ -626,7 +643,7 @@ void CheckSceneEnvironment() {
     Click("Delete light");
     Click("Delete light");
     Check(environment->Snapshot().Profile.PlacedLights.empty() &&
-              graphics.SnapshotForRendering().Environment.PlacedPointCount == 0U,
+              graphics.SnapshotForRendering().Environment.PlacedLightCount == 0U,
           "deleted lights are still drawn");
     Click("Reload scene environment");
     Check(environment->Snapshot().Profile.PlacedLights.size() == 1U, "reload lost the saved placed light");

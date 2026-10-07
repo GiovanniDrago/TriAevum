@@ -26,6 +26,21 @@ struct alignas(16) PicaScenePointLightUniforms {
     std::array<float, 4> Color{};
 };
 
+// A placed light: position in view space (as the scene points), axis and
+// tangent in world space.
+struct alignas(16) PicaPlacedLightUniforms {
+    // XYZ: view-space position; W: reach (world units).
+    std::array<float, 4> PositionReach{};
+    // RGB colour times reflectance; W: point-shadow atlas row, negative for none.
+    std::array<float, 4> Color{};
+    // XYZ: world emission axis; W: PicaPlacedLightKind, plus 8 when two-sided.
+    std::array<float, 4> AxisKind{};
+    // Rectangle: XYZ the world width axis times the half width, W the half
+    // height. Disc: XYZ any in-plane axis times the radius. Spot: X, Y the
+    // outer and inner cosines.
+    std::array<float, 4> TangentShape{};
+};
+
 // Point lights with a shadow cube map this sample: atlas row i belongs to
 // Identities[i] (zero for an empty row).
 struct PicaPointShadowAssignment {
@@ -58,9 +73,11 @@ struct alignas(16) PicaSurfaceLightingUniforms {
     // Point-shadow parameters and atlas of the assigned rows (zero: none).
     std::array<float, 4> PointShadow{};
     std::array<float, 4> PointShadowAtlas{};
+    // Placed lights; Control[3] bits 8-15 hold their count.
+    std::array<PicaPlacedLightUniforms, kMaximumPicaPlacedLights> Placed{};
 };
 
-static_assert(sizeof(PicaSurfaceLightingUniforms) == 1488U);
+static_assert(sizeof(PicaSurfaceLightingUniforms) == 2512U);
 
 // Scene lighting requires the column-major WorldToView captured with this
 // geometry sample. Neither a live camera nor a model/bone matrix is a substitute.
