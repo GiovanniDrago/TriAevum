@@ -605,7 +605,7 @@ GfxRenderingAPIVulkan::GetOrCreateNativePicaRenderTarget(
     target.Key = key;
     target.Width = targetExtent.Width;
     target.Height = targetExtent.Height;
-    target.Attachments = mFramePicaAttachmentRequirements.BaseGuides();
+    target.Attachments = ActivePicaAttachmentRequirements().BaseGuides();
     const bool instrumented = !target.Attachments.NativeColorOnly();
     VkFormatProperties shadowFormatProperties{};
     vkGetPhysicalDeviceFormatProperties(mPhysicalDevice, VK_FORMAT_R32_UINT,
@@ -1551,8 +1551,10 @@ void GfxRenderingAPIVulkan::DestroyNativePicaDisplayImage(
 void GfxRenderingAPIVulkan::BeginNativePicaRenderPass(
     NativePicaRenderTarget& target) {
     PrepareNativePicaTargetAttachments(target);
+    const auto attachments = ActivePicaAttachmentRequirements();
     if (mNativePicaRenderPassActive &&
-        mActiveNativePicaRenderTarget == &target) {
+        mActiveNativePicaRenderTarget == &target &&
+        mActiveNativePicaAttachments == attachments) {
         return;
     }
     EndNativePicaRenderPass();
@@ -1633,8 +1635,7 @@ void GfxRenderingAPIVulkan::BeginNativePicaRenderPass(
                                          VK_FORMAT_R8G8B8A8_UNORM,     VK_FORMAT_R8G8B8A8_UNORM,
                                          VK_FORMAT_R32G32B32A32_UINT, VK_FORMAT_R16G16B16A16_UNORM };
         renderingTarget.DepthFormat = mDepthFormat;
-        renderingTarget.ColorAttachmentCount =
-            mFramePicaAttachmentRequirements.ColorAttachmentCount();
+        renderingTarget.ColorAttachmentCount = attachments.ColorAttachmentCount();
         renderingTarget.Width = target.Width;
         renderingTarget.Height = target.Height;
         renderingTarget.Samples = mNativePicaSampleCount;
@@ -1648,10 +1649,10 @@ void GfxRenderingAPIVulkan::BeginNativePicaRenderPass(
     } else {
         VkRenderPassBeginInfo begin{
             VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-        begin.renderPass = mFramePicaAttachmentRequirements.NativeColorOnly()
+        begin.renderPass = attachments.NativeColorOnly()
             ? mNativePicaCanonicalRenderPass
             : mNativePicaRenderPass;
-        begin.framebuffer = NativePicaFramebuffer(target, mFramePicaAttachmentRequirements.NativeColorOnly());
+        begin.framebuffer = NativePicaFramebuffer(target, attachments.NativeColorOnly());
         begin.renderArea.extent = {target.Width, target.Height};
         vkCmdBeginRenderPass(mCommandBuffers[mCurrentFrame], &begin,
                              VK_SUBPASS_CONTENTS_INLINE);
@@ -1674,6 +1675,7 @@ void GfxRenderingAPIVulkan::BeginNativePicaRenderPass(
     }
     mNativePicaRenderPassActive = true;
     mActiveNativePicaRenderTarget = &target;
+    mActiveNativePicaAttachments = attachments;
 }
 
 void GfxRenderingAPIVulkan::EndNativePicaRenderPass() {
@@ -1792,7 +1794,7 @@ void GfxRenderingAPIVulkan::ApplyPendingNativePicaMemoryFills(NativePicaRenderTa
         nriClear.ClearDepth = coversDepth;
         nriClear.HasStencil = target.Key.DepthFormat == 3U;
         nriClear.NriRenderingScope = mPicaDynamicRenderingScope.ActiveOwnedByNri();
-        nriClear.Attachments = mFramePicaAttachmentRequirements;
+        nriClear.Attachments = mActiveNativePicaAttachments;
         const bool nriAttachmentClear = mNriPicaMemoryFillClearPass.ClearAttachments(nriClear);
         if (!nriAttachmentClear) {
             std::array<VkClearAttachment, Oot3d::kPicaColorAttachmentCount + 1U> attachments{};
@@ -1803,7 +1805,7 @@ void GfxRenderingAPIVulkan::ApplyPendingNativePicaMemoryFills(NativePicaRenderTa
                 attachment.colorAttachment = 0U;
                 attachment.clearValue.color = decodedColor;
             }
-            if (coversColor && !mFramePicaAttachmentRequirements.NativeColorOnly()) {
+            if (coversColor && !mActiveNativePicaAttachments.NativeColorOnly()) {
                 auto& normalGuide = attachments[attachmentCount++];
                 normalGuide.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
                 normalGuide.colorAttachment = 1U;
@@ -1825,14 +1827,14 @@ void GfxRenderingAPIVulkan::ApplyPendingNativePicaMemoryFills(NativePicaRenderTa
                 fogGuide.colorAttachment = static_cast<uint32_t>(Oot3d::PicaColorAttachment::FogGuide);
                 fogGuide.clearValue.color = {{0, 0, 0, 1}};
             }
-            if (coversColor && !mFramePicaAttachmentRequirements.NativeColorOnly()) {
+            if (coversColor && !mActiveNativePicaAttachments.NativeColorOnly()) {
                 auto& guide = attachments[attachmentCount++];
                 guide.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
                 guide.colorAttachment = static_cast<uint32_t>(Oot3d::PicaColorAttachment::OutlineGeometryGuide);
                 guide.clearValue.color = {{0, 0, 0, 1}};
             }
             if (coversColor &&
-                mFramePicaAttachmentRequirements.Requires(Oot3d::PicaAuxiliaryOutput::DiffuseAlbedoGuide)) {
+                mActiveNativePicaAttachments.Requires(Oot3d::PicaAuxiliaryOutput::DiffuseAlbedoGuide)) {
                 auto& guide = attachments[attachmentCount++];
                 guide.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
                 guide.colorAttachment = static_cast<uint32_t>(Oot3d::PicaColorAttachment::DiffuseAlbedoGuide);

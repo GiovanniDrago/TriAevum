@@ -15,15 +15,22 @@ void CheckAttachmentVk(VkResult result, const char* operation) {
 }
 } // namespace
 
+Oot3d::PicaAttachmentRequirements GfxRenderingAPIVulkan::ActivePicaAttachmentRequirements() const noexcept {
+    return mNativePicaCompositionSchedule.Purpose() == Renderer3ds::PicaCompositionPurpose::NativeMemory
+        ? Oot3d::PicaAttachmentRequirements{}
+        : mFramePicaAttachmentRequirements;
+}
+
 // Native color/depth/Shadow2D and display-transfer images outlive effect modes.
 // Grow only auxiliary storage, and never attach it to a canonical-only draw.
 void GfxRenderingAPIVulkan::PrepareNativePicaTargetAttachments(NativePicaRenderTarget& target) {
-    if (mFramePicaAttachmentRequirements.NativeColorOnly())
+    const auto attachments = ActivePicaAttachmentRequirements();
+    if (attachments.NativeColorOnly())
         return;
     // A cleared base means stale extension storage too.
     const bool clearExtensions = target.AuxiliaryNeedsClear;
     PrepareNativePicaBaseGuides(target);
-    if (mFramePicaAttachmentRequirements.Requires(Oot3d::PicaAuxiliaryOutput::DiffuseAlbedoGuide))
+    if (attachments.Requires(Oot3d::PicaAuxiliaryOutput::DiffuseAlbedoGuide))
         PrepareNativePicaDiffuseAlbedoGuide(target, clearExtensions);
 }
 

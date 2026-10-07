@@ -122,7 +122,7 @@ Renderer3ds::PicaDevicePipelineRecord& GfxRenderingAPIVulkan::GetOrCreateNativeP
         entry.RequestedFeatures = requestedFeatures;
         entry.AppliedFeatures = appliedFeatures;
         entry.AttachmentRequirementsKey =
-            mFramePicaAttachmentRequirements.Key();
+            ActivePicaAttachmentRequirements().Key();
         entry.SampleCount =
             static_cast<uint8_t>(mNativePicaSampleCount);
         entry.WritesReactiveMask = writesReactiveMask;
@@ -133,7 +133,7 @@ Renderer3ds::PicaDevicePipelineRecord& GfxRenderingAPIVulkan::GetOrCreateNativeP
             mFrameGraphicsSettingsRevision);
     }
     auto resolvedState = Oot3d::BuildPicaNriPipelineState(
-        draw, shader.FragmentOutputs, mFramePicaAttachmentRequirements,
+        draw, shader.FragmentOutputs, ActivePicaAttachmentRequirements(),
         mNativePicaSampleCount, mDepthFormat, writesReactiveMask, outlineOcclusionOnly);
     // The superset program declares every guide output; the attachments its
     // specialized program does not declare stay untouched, as they do there.
@@ -347,7 +347,7 @@ Renderer3ds::PicaDevicePipelineRecord& GfxRenderingAPIVulkan::GetOrCreateNativeP
         pipelineInfo.renderPass = VK_NULL_HANDLE;
     } else {
         pipelineInfo.renderPass =
-            mFramePicaAttachmentRequirements.NativeColorOnly()
+            ActivePicaAttachmentRequirements().NativeColorOnly()
                 ? mNativePicaCanonicalRenderPass
                 : mNativePicaRenderPass;
     }
@@ -374,7 +374,7 @@ void GfxRenderingAPIVulkan::PrewarmNativePicaPipelines() {
             mPicaExtensionGraph,
             Oot3d::PicaExtensionPass::DirectionalShadowLighting));
     const uint64_t profile =
-        static_cast<uint64_t>(mFramePicaAttachmentRequirements.Key()) |
+        static_cast<uint64_t>(ActivePicaAttachmentRequirements().Key()) |
         (static_cast<uint64_t>(sampleCount) << 8U) |
         (static_cast<uint64_t>(activeFeatures) << 16U) |
         (mNativeFidelityProfile ? 1ULL << 48U : 0U);
@@ -385,7 +385,7 @@ void GfxRenderingAPIVulkan::PrewarmNativePicaPipelines() {
     const std::array<uint8_t, 1> dummyVertexBytes{};
     for (const auto& entry : mPicaPipelineManifest.Entries()) {
         if (entry.AttachmentRequirementsKey !=
-                mFramePicaAttachmentRequirements.Key() ||
+                ActivePicaAttachmentRequirements().Key() ||
             entry.SampleCount != sampleCount ||
             entry.DescriptorSchemaVersion !=
                 mPicaAotShaderPack.DescriptorSchemaVersion() ||

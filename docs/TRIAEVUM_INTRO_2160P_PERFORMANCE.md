@@ -142,6 +142,30 @@ render-pass labels now carry the target namespace).
   builds them is what TopScreen consumes. Host GPU cost 0.03 ms per presented
   frame (both namespaces).
 
+### Canonical frame without guides
+
+Native-memory execution (the canonical frame and raw-copy dependency
+flushes) now renders with a colour-only attachment layout
+(`ActivePicaAttachmentRequirements`, `gfx_vulkan_pica_attachments.cpp`): its
+targets are created without guide storage, its passes use the canonical
+render pass or one dynamic-rendering colour attachment, its pipelines are
+built for that layout and its clears cover colour and depth only. The layout
+follows the published sequence purpose, and a pass restarts if the layout of
+its target changes. Presentation keeps the frame's instrumented layout and
+grows guides on any target that lacks them, as before.
+
+Verification, developer launch, play profile with AO off at 2560x1440 (AO's
+temporal noise and the desktop's window clamp make the 4K profile differ from
+run to run), scripted input, old/new/old builds: every capture and the
+savestate (which holds the canonical colour targets) are bit-identical in
+gameplay (11 captures), a pause opened and closed twice (11), and the Sheik
+revelation near-copy checkpoint with 128 raw TextureCopy reads of the
+canonical target (8). Real time at 3840x2160 with the full play profile,
+two interleaved rounds: dedicated VRAM 2,080 -> 1,759-1,778 MiB; the
+canonical pass stays at 0.75 ms of GPU per presented frame (canonical
+shaders never wrote the guides; only their storage and clears went), frame
+p95 32.0 -> 30.3-30.5 ms.
+
 ## Reproduce
 
 Scripts are private (`I:/_triaevum_work/perf-levers/tmp/intro-fps`); the

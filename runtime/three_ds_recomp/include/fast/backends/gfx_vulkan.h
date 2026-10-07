@@ -663,7 +663,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         VkDeviceMemory MsaaDepthMemory = VK_NULL_HANDLE;
         VkImageView MsaaDepthView = VK_NULL_HANDLE;
         // Variants share native images. Attachments describes allocated storage;
-        // mFramePicaAttachmentRequirements selects the active draw bindings.
+        // ActivePicaAttachmentRequirements() selects the active draw bindings.
         VkFramebuffer Framebuffer = VK_NULL_HANDLE;
         VkFramebuffer CanonicalFramebuffer = VK_NULL_HANDLE;
         // Camera of the opaque world geometry drawn into this target during
@@ -795,6 +795,11 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         uint32_t restoredWidth = 0U, uint32_t restoredHeight = 0U);
     void DestroyNativePicaRenderTarget(NativePicaRenderTarget& target);
     void PrepareNativePicaTargetAttachments(NativePicaRenderTarget& target);
+    // The attachment layout of the sequence being executed. Native-memory
+    // execution (the canonical frame and raw-copy dependencies) is never
+    // presented and runs no scene effect: it renders colour, depth and
+    // stencil only, so its targets carry no guide storage.
+    [[nodiscard]] Oot3d::PicaAttachmentRequirements ActivePicaAttachmentRequirements() const noexcept;
     // The scene camera of the presented sample: the guest projection with the
     // world-to-view the target's geometry was rendered with this frame, or
     // the latest guest camera when the target recorded none.
@@ -1540,6 +1545,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         mNativePicaDisplayDepthTargets;
     std::set<uint32_t> mInvalidatedNativePicaRenderTargetAddresses;
     NativePicaRenderTarget* mActiveNativePicaRenderTarget = nullptr;
+    // The layout the active native PICA pass began with.
+    Oot3d::PicaAttachmentRequirements mActiveNativePicaAttachments;
     std::optional<GfxNativePicaDisplayTransferView>
         mLastPresentedNativePicaDisplayTransfer;
     std::vector<GfxNativePicaMemoryFillView> mPendingNativePicaMemoryFills;

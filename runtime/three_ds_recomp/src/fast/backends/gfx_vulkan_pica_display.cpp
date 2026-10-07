@@ -4013,10 +4013,16 @@ bool GfxRenderingAPIVulkan::ClearPicaRenderTarget(
                 attachments[4].aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
             }
             attachments[4].clearValue.depthStencil = {1.0F, 0U};
+            // A colour-only pass has no guide attachments to clear.
+            uint32_t attachmentCount = static_cast<uint32_t>(attachments.size());
+            if (mActiveNativePicaAttachments.NativeColorOnly()) {
+                attachments[1] = attachments[4];
+                attachmentCount = 2U;
+            }
             const VkClearRect clearRect{
                 {{0, 0}, {target.Width, target.Height}}, 0U, 1U};
             vkCmdClearAttachments(mCommandBuffers[mCurrentFrame],
-                                  static_cast<uint32_t>(attachments.size()),
+                                  attachmentCount,
                                   attachments.data(), 1U, &clearRect);
             // The cleared content is new: it carries no resolved scene effects
             // any more, so the provenance serial moves on.
