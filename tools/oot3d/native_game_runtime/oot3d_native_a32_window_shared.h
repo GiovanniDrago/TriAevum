@@ -629,6 +629,17 @@ struct NativeControlPollingState {
   ThreeDsRecomp::Input::VirtualMotionState VirtualMotion;
   uint32_t PreviousControllerButtons = 0;
   uint32_t PendingControllerButtons = 0;
+  // The developer free camera's own physical sources, apart from the game's
+  // bindings (the right mouse button is the game's R): mouse motion since it
+  // last read it, the right mouse button, and the pad's sticks (-1..1, dead
+  // zone applied; Y up) and shoulders.
+  int64_t DevMouseDeltaX = 0;
+  int64_t DevMouseDeltaY = 0;
+  bool DevMouseRightHeld = false;
+  std::array<float, 2> DevPadLeftStick{};
+  std::array<float, 2> DevPadRightStick{};
+  bool DevPadLeftShoulder = false;
+  bool DevPadRightShoulder = false;
 };
 
 bool ExecuteProductTopScreenHook(uint32_t pc, oot3d::recomp::a32::GuestState &state,

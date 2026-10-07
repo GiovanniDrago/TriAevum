@@ -2043,23 +2043,20 @@ void NativeA32WindowSession::UpdateDevFreeCamera(Oot3dNativeGame::NativeA32Input
       ? 0.0F
       : std::min(std::chrono::duration<float>(now - devFreeCameraLastRefresh).count(), 0.1F);
   devFreeCameraLastRefresh = now;
-  int mouseX = 0, mouseY = 0;
-  const Uint32 mouseButtons = SDL_GetRelativeMouseState(&mouseX, &mouseY);
+  // Physical sources, not the game's bindings (its R is the right mouse
+  // button): the mouse motion since the last refresh, the pad as it is.
+  auto &sources = nativeControlPollingState;
+  const float mouseX = static_cast<float>(sources.DevMouseDeltaX);
+  const float mouseY = static_cast<float>(sources.DevMouseDeltaY);
+  sources.DevMouseDeltaX = sources.DevMouseDeltaY = 0;
   if (!freeCamera.Active()) return;
-  using Button = Oot3dNativeGame::NativeA32HidButton;
-  const auto held = [&](Button button) {
-    return (inputFrame.Hid.Buttons & Oot3dNativeGame::NativeA32HidButtonMask(button)) != 0U;
-  };
-  constexpr float kStick = 154.0F;
-  // Pad: circle pad moves, C-stick looks (120 degrees per second), L/R down/up.
-  float forward = inputFrame.Hid.CirclePadY / kStick;
-  float right = inputFrame.Hid.CirclePadX / kStick;
-  float up = (held(Button::R) ? 1.0F : 0.0F) - (held(Button::L) ? 1.0F : 0.0F);
-  float yaw = 0.0F, pitch = 0.0F;
-  if (inputFrame.CStick.Kind == ThreeDsRecomp::Input::AxisInputKind::Absolute) {
-    yaw -= inputFrame.CStick.X / kStick * 120.0F * seconds;
-    pitch += inputFrame.CStick.Y / kStick * 120.0F * seconds;
-  }
+  // Pad: left stick moves, right stick looks (120 degrees per second), L/R
+  // shoulders down/up.
+  float forward = sources.DevPadLeftStick[1];
+  float right = sources.DevPadLeftStick[0];
+  float up = (sources.DevPadRightShoulder ? 1.0F : 0.0F) - (sources.DevPadLeftShoulder ? 1.0F : 0.0F);
+  float yaw = -sources.DevPadRightStick[0] * 120.0F * seconds;
+  float pitch = sources.DevPadRightStick[1] * 120.0F * seconds;
   float multiplier = 1.0F;
   if (keyboard) {
     // WASD moves, Q/E down/up, Shift faster, Ctrl slower.
@@ -2070,9 +2067,9 @@ void NativeA32WindowSession::UpdateDevFreeCamera(Oot3dNativeGame::NativeA32Input
     if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) multiplier = 0.25F;
   }
   // Right mouse button held: look (0.15 degrees per pixel).
-  if ((mouseButtons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0U && !io.WantCaptureMouse) {
-    yaw -= static_cast<float>(mouseX) * 0.15F;
-    pitch -= static_cast<float>(mouseY) * 0.15F;
+  if (sources.DevMouseRightHeld && !io.WantCaptureMouse) {
+    yaw -= mouseX * 0.15F;
+    pitch -= mouseY * 0.15F;
   }
   const auto clampAxis = [](float value) { return std::clamp(value, -1.0F, 1.0F); };
   freeCamera.Move(clampAxis(forward), clampAxis(right), clampAxis(up), yaw, pitch, seconds, multiplier);

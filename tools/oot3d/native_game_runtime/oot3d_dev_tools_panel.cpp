@@ -40,7 +40,7 @@ class DevToolsPanel final : public Fast::Oot3d::GraphicsSettingsPanelTab {
     if (ImGui::Checkbox("Free camera (F6)", &active)) mFreeCamera->SetActive(active);
     Tooltip("A camera detached from Link: the game draws from it and Link stays still. "
             "WASD move, Q/E down/up, right mouse button held to look, Shift faster, Ctrl slower; "
-            "pad: circle pad moves, C-stick looks, L/R down/up.");
+            "pad: left stick moves, right stick looks, L/R shoulders down/up.");
     float speed = mFreeCamera->Speed();
     if (ImGui::SliderFloat("Free camera speed", &speed, 10.0F, 10000.0F, "%.0f units/s",
                            ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp))

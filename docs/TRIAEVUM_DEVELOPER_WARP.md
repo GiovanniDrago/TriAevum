@@ -86,9 +86,11 @@ view is written to the camera's at/eye (+0x80, +0x8C, +0xA4) and the
 PlayState view (eye +0x1B8, at +0x1C4, up +0x1D0), and the function returns,
 so the game itself draws, culls and animates from it. It starts from the
 game's view. Keyboard: WASD move, Q/E down/up, Shift faster, Ctrl slower;
-right mouse button held to look. Pad: circle pad moves, C-stick looks, L/R
-down/up. The game sees no pad, sticks or touch meanwhile, so Link stays
-still. "Back to the game's view" restarts it from the game's camera.
+right mouse button held to look. Pad: left stick moves, right stick looks,
+L/R shoulders down/up. These are read from the devices themselves, not
+through the game's bindings (the keyboard and mouse profile binds the right
+mouse button to R). The game sees no pad, sticks or touch meanwhile, so Link
+stays still. "Back to the game's view" restarts it from the game's camera.
 `TRIAEVUM_DEV_FREECAM=<x>,<y>,<z>,<yaw>,<pitch>` (degrees; yaw 0 faces +Z)
 starts with it on at that pose. The placed lights' gizmos also show while it
 is on.
