@@ -1,5 +1,6 @@
 #pragma once
 
+#include "fast/oot3d/graphics_preset_library.h"
 #include "fast/oot3d/graphics_settings.h"
 #include "fast/oot3d/native_presentation_policy.h"
 #include "fast/oot3d/presentation_settings_transaction.h"
@@ -19,6 +20,15 @@ class GraphicsSettingsPersistencePort {
     [[nodiscard]] virtual bool LoadRoot(nlohmann::json& root) = 0;
     [[nodiscard]] virtual bool StoreGraphics(
         const nlohmann::json& graphics) = 0;
+    // The user's graphics presets: the top-level "GraphicsPresets" block.
+    [[nodiscard]] virtual bool StoreGraphicsPresets(
+        const nlohmann::json& presets) = 0;
+};
+
+// The outcome of a user preset action, with the reason when it failed.
+struct GraphicsPresetChange {
+    bool Succeeded = false;
+    std::string Message;
 };
 
 // Install before the first call to GraphicsSettingsRuntime::Instance().
@@ -78,6 +88,19 @@ class GraphicsSettingsRuntime final {
     // capability missing at this moment (for example view metadata outside
     // gameplay) leaves its effect inert instead of erasing the choice.
     GraphicsSettingsValidation RestorePreferences(GraphicsSettings stored, bool persist = true);
+    // User graphics presets. The built-in presets are not among them and
+    // cannot be overwritten or deleted. Saving stores the current settings'
+    // preset part under the name (replacing a user preset of that name);
+    // loading applies it like a built-in preset, keeping window, output and
+    // content identities; both are written at once, never left pending.
+    [[nodiscard]] std::vector<std::string> UserPresetNames() const;
+    [[nodiscard]] bool HasUserPreset(std::string_view name) const;
+    // The user preset the current settings are, unmodified; empty otherwise.
+    [[nodiscard]] std::string ActiveUserPreset() const;
+    [[nodiscard]] std::string UserPresetsReadOnlyReason() const;
+    GraphicsPresetChange SaveUserPreset(std::string_view name);
+    GraphicsPresetChange LoadUserPreset(std::string_view name);
+    GraphicsPresetChange DeleteUserPreset(std::string_view name);
     [[nodiscard]] GraphicsSettingsSaveState SaveState() const;
     void SavePending();
     bool RetrySave();
@@ -94,6 +117,8 @@ class GraphicsSettingsRuntime final {
     GraphicsSettingsRuntime();
     bool RestoreLastKnownPresentationLocked();
     bool PersistCurrentLocked();
+    // Writes the preset library, or restores `previous` and says why not.
+    GraphicsPresetChange PersistUserPresetsLocked(GraphicsPresetLibrary previous, std::string done);
     GraphicsSettingsValidation ApplyLocked(GraphicsSettings candidate,
                                            const GraphicsCapabilities& capabilities, bool persist);
 
@@ -110,5 +135,11 @@ class GraphicsSettingsRuntime final {
     NativePresentationPolicy mNativePresentation;
     bool mPersistenceSuppressed = false;
     GraphicsSettingsSaveState mSaveState = GraphicsSettingsSaveState::Saved;
+    GraphicsPresetLibrary mUserPresets;
+    uint64_t mUserPresetGeneration = 1;
+    // ActiveUserPreset() for (mRevision, mUserPresetGeneration).
+    mutable uint64_t mActiveUserPresetRevision = 0;
+    mutable uint64_t mActiveUserPresetGeneration = 0;
+    mutable std::string mActiveUserPreset;
 };
 } // namespace Fast::Oot3d

@@ -3,6 +3,7 @@
 #include "fast/oot3d/azahar_texture_pack_panel.h"
 #include "fast/oot3d/grass_settings_panel.h"
 #include "fast/oot3d/texture_catalog_selection.h"
+#include "fast/oot3d/graphics_preset_library.h"
 #include "fast/oot3d/graphics_settings.h"
 #include "fast/oot3d/pbr_material_editor.h"
 
@@ -54,6 +55,8 @@ class GraphicsSettingsPanel final {
   private:
     using Section = bool (GraphicsSettingsPanel::*)(GraphicsSettings&, const GraphicsCapabilities&);
     void DrawPresetSelector();
+    // Save as / Delete for the user's presets, below the selector.
+    void DrawUserPresetControls(const std::string& activeUserPreset);
     // One page of renderer settings: its sections in order, applied together.
     void DrawSettingsPage(const char* id, std::initializer_list<Section> sections);
     // The same sections without their own scrolling region.
@@ -88,6 +91,11 @@ class GraphicsSettingsPanel final {
     TextureCatalogSelectionState mReflectionTextureSelection;
     std::string mReflectionAssignmentStatus;
     std::string mRendererStatus;
+    std::array<char, kMaximumGraphicsPresetNameLength + 1U> mPresetName{};
+    // The user preset awaiting a second, confirming click on Delete.
+    std::string mPresetPendingDelete;
+    std::string mPresetStatus;
+    bool mPresetStatusFailed = false;
 };
 
 } // namespace Fast::Oot3d

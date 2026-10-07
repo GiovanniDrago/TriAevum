@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <string_view>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
@@ -123,6 +124,11 @@ GraphicsSettingsRuntime::GraphicsSettingsRuntime() {
                     initial = loaded.Value;
                     selectedInitial = true;
                     rewriteLoadedSettings = loaded.NeedsRewrite;
+                }
+                if (const auto presets = root.find("GraphicsPresets"); presets != root.end()) {
+                    std::vector<std::string> issues;
+                    mUserPresets = GraphicsPresetLibrary::Deserialize(*presets, &issues);
+                    for (const auto& issue : issues) SPDLOG_WARN("OOT3D graphics presets: {}", issue);
                 }
             }
         } catch (const std::exception& exception) {
@@ -660,5 +666,82 @@ bool GraphicsSettingsRuntime::PersistCurrentLocked() {
                      exception.what());
         return false;
     }
+}
+std::vector<std::string> GraphicsSettingsRuntime::UserPresetNames() const {
+    std::scoped_lock lock(mMutex);
+    std::vector<std::string> names;
+    for (const auto& preset : mUserPresets.Presets()) names.push_back(preset.Name);
+    return names;
+}
+bool GraphicsSettingsRuntime::HasUserPreset(std::string_view name) const {
+    std::scoped_lock lock(mMutex);
+    return mUserPresets.Find(name) != nullptr;
+}
+std::string GraphicsSettingsRuntime::ActiveUserPreset() const {
+    std::scoped_lock lock(mMutex);
+    if (mActiveUserPresetRevision != mRevision || mActiveUserPresetGeneration != mUserPresetGeneration) {
+        const auto* match = mUserPresets.Match(mService.Current());
+        mActiveUserPreset = match != nullptr ? match->Name : std::string{};
+        mActiveUserPresetRevision = mRevision;
+        mActiveUserPresetGeneration = mUserPresetGeneration;
+    }
+    return mActiveUserPreset;
+}
+std::string GraphicsSettingsRuntime::UserPresetsReadOnlyReason() const {
+    std::scoped_lock lock(mMutex);
+    return mUserPresets.ReadOnlyReason();
+}
+GraphicsPresetChange GraphicsSettingsRuntime::SaveUserPreset(std::string_view name) {
+    std::scoped_lock lock(mMutex);
+    if (!mUserPresets.ReadOnlyReason().empty()) return {false, mUserPresets.ReadOnlyReason()};
+    if (const auto error = GraphicsPresetLibrary::ValidateName(name); error != GraphicsPresetNameError::None)
+        return {false, GraphicsPresetLibrary::DescribeNameError(error)};
+    auto previous = mUserPresets;
+    const bool replaced = mUserPresets.Find(name) != nullptr;
+    mUserPresets.Save(name, mService.Current());
+    ++mUserPresetGeneration;
+    const auto stored = GraphicsPresetLibrary::NormalizeName(name);
+    return PersistUserPresetsLocked(std::move(previous),
+                                    (replaced ? "Replaced preset \"" : "Saved preset \"") + stored + "\"");
+}
+GraphicsPresetChange GraphicsSettingsRuntime::LoadUserPreset(std::string_view name) {
+    std::scoped_lock lock(mMutex);
+    const auto* preset = mUserPresets.Find(name);
+    if (preset == nullptr) return {false, "No user preset is named \"" + std::string(name) + "\""};
+    auto candidate = GraphicsSettingsService::KeepHostOwnedSettings(preset->Settings, mService.Current());
+    candidate.Preset = GraphicsPreset::Custom;
+    const auto loadedName = preset->Name;
+    const auto validation = ApplyLocked(std::move(candidate), mCapabilities, true);
+    GraphicsPresetChange change{validation.Accepted(),
+                                (validation.Accepted() ? "Loaded preset \"" : "Rejected preset \"") + loadedName + "\""};
+    for (const auto& issue : validation.Issues) change.Message += "\n" + issue.Field + ": " + issue.Message;
+    return change;
+}
+GraphicsPresetChange GraphicsSettingsRuntime::DeleteUserPreset(std::string_view name) {
+    std::scoped_lock lock(mMutex);
+    if (!mUserPresets.ReadOnlyReason().empty()) return {false, mUserPresets.ReadOnlyReason()};
+    const auto* preset = mUserPresets.Find(name);
+    if (preset == nullptr) return {false, "No user preset is named \"" + std::string(name) + "\""};
+    const auto deletedName = preset->Name;
+    auto previous = mUserPresets;
+    mUserPresets.Remove(name);
+    ++mUserPresetGeneration;
+    return PersistUserPresetsLocked(std::move(previous), "Deleted preset \"" + deletedName + "\"");
+}
+GraphicsPresetChange GraphicsSettingsRuntime::PersistUserPresetsLocked(
+    GraphicsPresetLibrary previous, std::string done) {
+    if (mPersistenceSuppressed || mPersistence == nullptr)
+        return {true, done + " for this session only (settings are not being saved)."};
+    std::string failure;
+    try {
+        if (mPersistence->StoreGraphicsPresets(mUserPresets.Serialize())) return {true, done + "."};
+        failure = "the configuration file could not be written";
+    } catch (const std::exception& exception) {
+        failure = exception.what();
+    }
+    SPDLOG_ERROR("Unable to persist OOT3D graphics presets: {}", failure);
+    mUserPresets = std::move(previous);
+    ++mUserPresetGeneration;
+    return {false, "Not saved: " + failure + ". The presets are unchanged."};
 }
 } // namespace Fast::Oot3d

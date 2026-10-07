@@ -1,5 +1,40 @@
 # F1 settings rationalization
 
+## User graphics presets (2026-10-07)
+
+**Graphics preset** lists the built-in presets (Authentic, Enhanced, Toon),
+then **Your presets**, then Custom; choosing a user preset loads it. **Save or
+delete presets** (below the selector) saves the current settings under a new
+name, or **Overwrite preset** when the name is one of the user's, and deletes
+the selected user preset after **Confirm delete** (the current settings stay as
+they are). Built-in presets cannot be changed: their names, and Custom's, are
+refused whatever the case or padding, and they are never in the user library.
+Any edit leaves a loaded user preset, which the selector then shows as Custom;
+the selector shows a user preset whenever the settings equal it.
+
+A user preset holds what a built-in preset sets. Loading it keeps window,
+output, VSync, texture packs, grass sources, reflection materials and the
+saved grass preset (`GraphicsSettingsService::KeepHostOwnedSettings`, now
+shared with the built-in presets), and it applies as Custom, never as
+Authentic's native fidelity profile.
+
+Owner: `GraphicsPresetLibrary` (`graphics_preset_library.{h,cpp}`), held by
+`GraphicsSettingsRuntime` and written at once through the persistence port's
+new `StoreGraphicsPresets` into the top-level `GraphicsPresets` config block
+(schema 1; each entry a name and a `Graphics` document without the host-owned
+state). A failed write is reported and leaves the presets unchanged; with
+persistence suppressed (developer environment overrides) the action holds for
+the session and says so. Invalid or duplicate entries are skipped and logged;
+a preset saved by a newer settings schema is kept as it is and not offered,
+and a newer library schema makes the library read-only.
+
+Verification (developer build): actual-widget smoke **9,045 assertions**
+(built-in name refused, save, edit, load, overwrite, failed write, delete only
+after confirmation); foundation tests 340/340 including the runtime save, load,
+delete and failure paths and the library round trip through the config store's
+flattening; a game start on a config with a `GraphicsPresets` block loads the
+valid preset without warnings and skips one named "Toon".
+
 ## Enhanced default, Lights & Shadows and credits (2026-10-06)
 
 **Enhanced** is the maintainer's current play configuration (captured

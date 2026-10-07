@@ -264,22 +264,113 @@ void GraphicsSettingsPanel::DrawTextureSettings() {
     }
 }
 
-// The graphics preset covers every graphics tab, so it sits above them.
+// The graphics preset covers every graphics tab, so it sits above them: the
+// built-in presets, the user's own, then Custom. Choosing one applies it.
 void GraphicsSettingsPanel::DrawPresetSelector() {
     auto& runtime = GraphicsSettingsRuntime::Instance();
     auto settings = runtime.Snapshot();
-    const char* const presets[] = {"Authentic", "Enhanced", "Toon", "Custom"};
-    GraphicsPreset preset = settings.Preset;
-    if (SettingsUi::EnumCombo("Graphics preset", preset, presets)) {
+    const auto userPresets = runtime.UserPresetNames();
+    const auto activeUserPreset = runtime.ActiveUserPreset();
+    const char* const builtIns[] = {"Authentic", "Enhanced", "Toon"};
+    const bool custom = settings.Preset == GraphicsPreset::Custom;
+    const std::string shown = !custom ? builtIns[static_cast<size_t>(settings.Preset)]
+                              : !activeUserPreset.empty() ? activeUserPreset : "Custom";
+    const auto applyBuiltIn = [&](GraphicsPreset preset) {
         settings = GraphicsSettingsService::PresetForCurrent(preset, settings);
         mRendererStatus = SettingsUi::DescribeApply(runtime.Apply(settings));
         mRenderScaleEditing = false;
         mOutputResolutionEditing = false;
+    };
+    if (ImGui::BeginCombo("Graphics preset", shown.c_str())) {
+        for (size_t index = 0; index < std::size(builtIns); ++index) {
+            const auto preset = static_cast<GraphicsPreset>(index);
+            if (ImGui::Selectable(builtIns[index], settings.Preset == preset)) applyBuiltIn(preset);
+        }
+        if (!userPresets.empty()) ImGui::SeparatorText("Your presets");
+        ImGui::PushID("UserPresets");
+        for (const auto& name : userPresets) {
+            if (!ImGui::Selectable(name.c_str(), custom && name == activeUserPreset)) continue;
+            const auto change = runtime.LoadUserPreset(name);
+            mRendererStatus = change.Message;
+            mPresetStatus = change.Message;
+            mPresetStatusFailed = !change.Succeeded;
+            mPresetPendingDelete.clear();
+            mRenderScaleEditing = false;
+            mOutputResolutionEditing = false;
+        }
+        ImGui::PopID();
+        ImGui::Separator();
+        if (ImGui::Selectable("Custom", custom && activeUserPreset.empty())) applyBuiltIn(GraphicsPreset::Custom);
+        ImGui::EndCombo();
     }
+    DrawUserPresetControls(activeUserPreset);
     if (!mRendererStatus.empty() && ImGui::TreeNode("Last change")) {
         ImGui::TextWrapped("%s", mRendererStatus.c_str());
         ImGui::TreePop();
     }
+}
+
+void GraphicsSettingsPanel::DrawUserPresetControls(const std::string& activeUserPreset) {
+    auto& runtime = GraphicsSettingsRuntime::Instance();
+    if (!ImGui::TreeNode("Save or delete presets")) return;
+    const auto readOnly = runtime.UserPresetsReadOnlyReason();
+    if (!readOnly.empty()) {
+        ImGui::TextWrapped("%s Presets cannot be saved or deleted here.", readOnly.c_str());
+        ImGui::TreePop();
+        return;
+    }
+    ImGui::TextWrapped("Built-in presets cannot be changed. Save the current settings as a preset of "
+                       "your own; window, output and texture packs stay as they are when it is loaded.");
+    ImGui::InputTextWithHint("Preset name", "Name of a new preset", mPresetName.data(), mPresetName.size());
+    const std::string_view typed(mPresetName.data());
+    const auto nameError = GraphicsPresetLibrary::ValidateName(typed);
+    const bool replaces = nameError == GraphicsPresetNameError::None && runtime.HasUserPreset(typed);
+    ImGui::BeginDisabled(nameError != GraphicsPresetNameError::None);
+    if (ImGui::Button(replaces ? "Overwrite preset" : "Save preset")) {
+        const auto change = runtime.SaveUserPreset(typed);
+        mPresetStatus = change.Message;
+        mPresetStatusFailed = !change.Succeeded;
+        mPresetPendingDelete.clear();
+        if (change.Succeeded) mPresetName.fill('\0');
+    }
+    ImGui::EndDisabled();
+    if (nameError != GraphicsPresetNameError::None && nameError != GraphicsPresetNameError::Empty) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.35F, 1.0F), "%s", GraphicsPresetLibrary::DescribeNameError(nameError));
+    } else if (replaces) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Replaces your preset of this name.");
+    }
+
+    if (activeUserPreset.empty()) {
+        ImGui::BeginDisabled();
+        ImGui::Button("Delete preset");
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextDisabled("Choose one of your presets above to delete it.");
+    } else if (mPresetPendingDelete != activeUserPreset) {
+        if (ImGui::Button("Delete preset")) mPresetPendingDelete = activeUserPreset;
+        ImGui::SameLine();
+        ImGui::TextDisabled("\"%s\"", activeUserPreset.c_str());
+    } else {
+        if (ImGui::Button("Confirm delete")) {
+            const auto change = runtime.DeleteUserPreset(activeUserPreset);
+            mPresetStatus = change.Message;
+            mPresetStatusFailed = !change.Succeeded;
+            mPresetPendingDelete.clear();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) mPresetPendingDelete.clear();
+        ImGui::SameLine();
+        ImGui::TextWrapped("Delete \"%s\"? The current settings stay as they are.", activeUserPreset.c_str());
+    }
+    if (!mPresetStatus.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, mPresetStatusFailed ? ImVec4(1.0F, 0.45F, 0.35F, 1.0F)
+                                                                 : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextWrapped("%s", mPresetStatus.c_str());
+        ImGui::PopStyleColor();
+    }
+    ImGui::TreePop();
 }
 
 void GraphicsSettingsPanel::DrawSettingsPage(const char* id, std::initializer_list<Section> sections) {

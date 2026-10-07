@@ -384,6 +384,12 @@ class GraphicsSettingsService {
     [[nodiscard]] static GraphicsSettings Preset(GraphicsPreset preset);
     [[nodiscard]] static GraphicsSettings PresetForCurrent(
         GraphicsPreset preset, const GraphicsSettings& current);
+    // A preset's settings over the current ones: every preset, built-in or
+    // the user's, keeps host presentation and content identities (window,
+    // output, VSync, texture packs, grass sources, reflection materials, the
+    // saved grass preset) as they are.
+    [[nodiscard]] static GraphicsSettings KeepHostOwnedSettings(
+        GraphicsSettings preset, const GraphicsSettings& current);
     [[nodiscard]] static GraphicsSettingsValidation Validate(
         GraphicsSettings candidate, const GraphicsCapabilities& capabilities);
     [[nodiscard]] const GraphicsSettings& Current() const;

@@ -710,6 +710,7 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/renderer3ds/virtual_shadow_map.cpp
     ../src/fast/renderer3ds/pica_shadow_geometry.cpp
     ../src/fast/oot3d/graphics_settings_persistence.cpp
+    ../src/fast/oot3d/graphics_preset_library.cpp
     ../src/fast/oot3d/graphics_settings_runtime.cpp
     ../src/fast/oot3d/texture_assignment_model.cpp
     ../src/fast/oot3d/texture_catalog_selection.cpp

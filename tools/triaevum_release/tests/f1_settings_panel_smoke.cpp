@@ -46,6 +46,14 @@ struct MemoryStore final : GraphicsSettingsPersistencePort {
         Root["Graphics"] = value;
         return true;
     }
+    int PresetStores = 0;
+    bool FailPresets = false;
+    bool StoreGraphicsPresets(const nlohmann::json& value) override {
+        ++PresetStores;
+        if (FailPresets) return false;
+        Root["GraphicsPresets"] = value;
+        return true;
+    }
 };
 GraphicsSettingsPanel panel;
 std::string loggedPanelText;
@@ -1061,6 +1069,55 @@ int main() try {
     Check(SerializeGraphicsSettings(runtime.Snapshot()) == SerializeGraphicsSettings(expected),
           "Custom changed user settings");
     Check(runtime.Snapshot().Effects.Toon == ToonMode::PostProcessPreview, "Custom reset effects");
+    // User presets: built-in names refused, save, edit, load, overwrite,
+    // a failed write reported without loss, delete only after confirmation.
+    {
+        Click("Save or delete presets");
+        Check(Find("Save preset").Disabled, "an empty preset name could be saved");
+        Check(Find("Delete preset").Disabled, "Delete offered without a user preset");
+        EditText("Preset name", " enhanced ");
+        Frame(true);
+        Check(Find("Save preset").Disabled &&
+                  loggedPanelText.find("Built-in presets cannot be changed: choose") != std::string::npos,
+              "a built-in preset name was accepted");
+        EditText("Preset name", "Sera");
+        Click("Save preset");
+        Check(runtime.UserPresetNames() == std::vector<std::string>{"Sera"} &&
+                  store->Root["GraphicsPresets"]["Presets"][0]["Name"] == "Sera" &&
+                  runtime.ActiveUserPreset() == "Sera",
+              "user preset not saved or not selected");
+        const auto saved = runtime.Snapshot();
+        auto edited = saved;
+        edited.FovMultiplier = saved.FovMultiplier == 1.25F ? 1.0F : 1.25F;
+        runtime.Apply(edited);
+        Frame();
+        Check(runtime.ActiveUserPreset().empty(), "an edited preset still shows as loaded");
+        Select("Graphics preset", "Sera");
+        Check(SerializeGraphicsSettings(runtime.Snapshot()) == SerializeGraphicsSettings(saved) &&
+                  runtime.ActiveUserPreset() == "Sera",
+              "loading the user preset did not restore it");
+        EditText("Preset name", "SERA");
+        Frame();
+        Find("Overwrite preset");
+        store->FailPresets = true;
+        EditText("Preset name", "Notte");
+        Click("Save preset");
+        Frame(true);
+        Check(loggedPanelText.find("Not saved") != std::string::npos &&
+                  runtime.UserPresetNames() == std::vector<std::string>{"Sera"},
+              "a failed preset write was hidden or changed the presets");
+        store->FailPresets = false;
+        Click("Delete preset");
+        Check(runtime.UserPresetNames().size() == 1U, "a preset was deleted without confirmation");
+        Click("Cancel");
+        Click("Delete preset");
+        Click("Confirm delete");
+        Check(runtime.UserPresetNames().empty() && store->Root["GraphicsPresets"]["Presets"].empty() &&
+                  SerializeGraphicsSettings(runtime.Snapshot()) == SerializeGraphicsSettings(saved),
+              "delete did not remove the preset or changed the settings");
+        Check(Find("Delete preset").Disabled, "Delete offered after the preset was removed");
+        Click("Save or delete presets");
+    }
     Click("Lighting");
     Click("Toon");
     auto custom = runtime.Snapshot();

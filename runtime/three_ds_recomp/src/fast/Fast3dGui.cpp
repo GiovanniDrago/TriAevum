@@ -70,6 +70,12 @@ class Oot3dGraphicsSettingsPersistence final
         return context != nullptr && context->GetConfig() != nullptr &&
             context->GetConfig()->SetBlock("Graphics", graphics);
     }
+
+    bool StoreGraphicsPresets(const nlohmann::json& presets) override {
+        auto* context = Ship::Context::GetRawInstance();
+        return context != nullptr && context->GetConfig() != nullptr &&
+            context->GetConfig()->SetBlock("GraphicsPresets", presets);
+    }
 };
 
 class Oot3dGraphicsSettingsWindow final : public Ship::GuiWindow {

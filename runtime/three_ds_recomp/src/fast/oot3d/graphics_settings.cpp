@@ -186,8 +186,11 @@ GraphicsSettings GraphicsSettingsService::PresetForCurrent(
         value.Preset = preset;
         return value;
     }
-    auto value = Preset(preset);
+    return KeepHostOwnedSettings(Preset(preset), current);
+}
 
+GraphicsSettings GraphicsSettingsService::KeepHostOwnedSettings(
+    GraphicsSettings value, const GraphicsSettings& current) {
     // Presets select rendering behavior, motion and camera. Host presentation
     // and content identities are independent user-owned state.
     value.Window = current.Window;
