@@ -676,6 +676,9 @@ bool NativeA32WindowSession::UpdateGuestServicesForRefresh(
   auto &uiLifecycleBridge = *uiLifecycleBridgeStorage;
   auto &window = *windowPointer;
   auto &dspHle = *dspHleStorage;
+#if defined(TRIAEVUM_DEVELOPER_TOOLS)
+  UpdateDevFreeCamera(inputFrame);
+#endif
   const uint32_t topScreenButtons = inputFrame.Hid.Buttons;
   const uint32_t topScreenPressed =
       topScreenButtons &
@@ -2025,6 +2028,61 @@ void NativeA32WindowSession::PresentVisualFrame(
   phaseTiming.VisualPresentationSeconds +=
       SecondsSince(visualPresentationStart);
 }
+
+#if defined(TRIAEVUM_DEVELOPER_TOOLS)
+void NativeA32WindowSession::UpdateDevFreeCamera(Oot3dNativeGame::NativeA32InputFrame &inputFrame) {
+  auto &freeCamera = *nativeCandidateDispatch.DevFreeCamera;
+  const Uint8 *keys = SDL_GetKeyboardState(nullptr);
+  const auto &io = ImGui::GetIO();
+  const bool keyboard = keys != nullptr && !io.WantCaptureKeyboard;
+  const bool toggle = keyboard && keys[SDL_SCANCODE_F6] != 0U;
+  if (toggle && !devFreeCameraToggleHeld) freeCamera.SetActive(!freeCamera.Active());
+  devFreeCameraToggleHeld = toggle;
+  const auto now = std::chrono::steady_clock::now();
+  const float seconds = devFreeCameraLastRefresh.time_since_epoch().count() == 0
+      ? 0.0F
+      : std::min(std::chrono::duration<float>(now - devFreeCameraLastRefresh).count(), 0.1F);
+  devFreeCameraLastRefresh = now;
+  int mouseX = 0, mouseY = 0;
+  const Uint32 mouseButtons = SDL_GetRelativeMouseState(&mouseX, &mouseY);
+  if (!freeCamera.Active()) return;
+  using Button = Oot3dNativeGame::NativeA32HidButton;
+  const auto held = [&](Button button) {
+    return (inputFrame.Hid.Buttons & Oot3dNativeGame::NativeA32HidButtonMask(button)) != 0U;
+  };
+  constexpr float kStick = 154.0F;
+  // Pad: circle pad moves, C-stick looks (120 degrees per second), L/R down/up.
+  float forward = inputFrame.Hid.CirclePadY / kStick;
+  float right = inputFrame.Hid.CirclePadX / kStick;
+  float up = (held(Button::R) ? 1.0F : 0.0F) - (held(Button::L) ? 1.0F : 0.0F);
+  float yaw = 0.0F, pitch = 0.0F;
+  if (inputFrame.CStick.Kind == ThreeDsRecomp::Input::AxisInputKind::Absolute) {
+    yaw -= inputFrame.CStick.X / kStick * 120.0F * seconds;
+    pitch += inputFrame.CStick.Y / kStick * 120.0F * seconds;
+  }
+  float multiplier = 1.0F;
+  if (keyboard) {
+    // WASD moves, Q/E down/up, Shift faster, Ctrl slower.
+    forward += (keys[SDL_SCANCODE_W] ? 1.0F : 0.0F) - (keys[SDL_SCANCODE_S] ? 1.0F : 0.0F);
+    right += (keys[SDL_SCANCODE_D] ? 1.0F : 0.0F) - (keys[SDL_SCANCODE_A] ? 1.0F : 0.0F);
+    up += (keys[SDL_SCANCODE_E] ? 1.0F : 0.0F) - (keys[SDL_SCANCODE_Q] ? 1.0F : 0.0F);
+    if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) multiplier = 4.0F;
+    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) multiplier = 0.25F;
+  }
+  // Right mouse button held: look (0.15 degrees per pixel).
+  if ((mouseButtons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0U && !io.WantCaptureMouse) {
+    yaw -= static_cast<float>(mouseX) * 0.15F;
+    pitch -= static_cast<float>(mouseY) * 0.15F;
+  }
+  const auto clampAxis = [](float value) { return std::clamp(value, -1.0F, 1.0F); };
+  freeCamera.Move(clampAxis(forward), clampAxis(right), clampAxis(up), yaw, pitch, seconds, multiplier);
+  // Link stays still: the game sees no pad, sticks or touch.
+  inputFrame.Hid.Buttons = 0U;
+  inputFrame.Hid.CirclePadX = inputFrame.Hid.CirclePadY = 0;
+  inputFrame.Hid.TouchPressed = false;
+  inputFrame.CStick = {};
+}
+#endif
 
 void NativeA32WindowSession::PublishNativeSceneView() {
   auto &process = *processStorage;

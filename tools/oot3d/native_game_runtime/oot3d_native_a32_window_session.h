@@ -320,6 +320,12 @@ private:
   // F1 > Dev Tools warping (developer builds only).
   std::shared_ptr<Oot3dNativeGame::DevWarpRuntime> devWarp;
   std::unique_ptr<Oot3dNativeGame::DevWarpGuest> devWarpGuest;
+  // F6 (free camera) rising edge and the free camera's refresh clock.
+  bool devFreeCameraToggleHeld = false;
+  std::chrono::steady_clock::time_point devFreeCameraLastRefresh{};
+  // Moves the free camera from the pad, keyboard and mouse and withholds that
+  // input from the game while it is active.
+  void UpdateDevFreeCamera(Oot3dNativeGame::NativeA32InputFrame &inputFrame);
 #endif
   Oot3dNativeGame::TopScreenTextureOverridePack topScreenTextureOverridePack;
   Oot3dNativeGame::NativeHdFontRuntime hdFonts;

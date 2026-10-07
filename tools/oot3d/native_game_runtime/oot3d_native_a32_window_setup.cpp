@@ -150,6 +150,7 @@ void NativeA32WindowSession::Setup() {
   widescreenProjection.HdFonts = hdFontsLoaded ? &hdFonts : nullptr;
   widescreenProjection.FrameRatePolicy = &frameRatePolicy;
   widescreenProjection.SceneViewProbe = &sceneViewProbe;
+  widescreenProjection.DevFreeCamera = nativeCandidateDispatch.DevFreeCamera.get();
   widescreenProjection.PlayerTimingProbe = &playerTimingProbe;
   widescreenProjection.TemporalEventLedger = &temporalEventLedger;
   if (frameRateContract.Mode ==
@@ -613,10 +614,21 @@ void NativeA32WindowSession::Setup() {
   devWarp = std::make_shared<Oot3dNativeGame::DevWarpRuntime>(
       std::filesystem::path(launch.Host.ConfigurationPath).parent_path() / "developer-tools.json");
   applicationSettingsTabs.push_back(
-      Oot3dNativeGame::CreateDevToolsPanel(devWarp, languageSettings->BootLanguage()));
+      Oot3dNativeGame::CreateDevToolsPanel(devWarp, nativeCandidateDispatch.DevFreeCamera,
+                                           languageSettings->BootLanguage()));
   // Scripted check of the Better list without the menu:
   // TRIAEVUM_DEV_WARP=<scene>:<entrance>:<child|adult>:<day|night> (list
   // indices), requested when gameplay first starts.
+  // TRIAEVUM_DEV_FREECAM=<x>,<y>,<z>,<yaw>,<pitch>: the free camera at a fixed
+  // pose from the start (degrees; yaw 0 faces +Z, pitch positive up).
+  if (const char *pose = std::getenv("TRIAEVUM_DEV_FREECAM")) {
+    std::array<float, 3> eye{};
+    float yaw = 0.0F, pitch = 0.0F;
+    if (std::sscanf(pose, "%f,%f,%f,%f,%f", &eye[0], &eye[1], &eye[2], &yaw, &pitch) != 5)
+      throw std::runtime_error("TRIAEVUM_DEV_FREECAM must be <x>,<y>,<z>,<yaw>,<pitch>");
+    nativeCandidateDispatch.DevFreeCamera->SetPose(eye, yaw, pitch);
+    std::fprintf(stderr, "TRIAEVUM_DEV_FREECAM pose=%.1f,%.1f,%.1f yaw=%.1f pitch=%.1f\n", eye[0], eye[1], eye[2], yaw, pitch);
+  }
   if (const char *script = std::getenv("TRIAEVUM_DEV_WARP")) {
     int scene = -1, entrance = -1;
     char age[8]{}, time[8]{};
