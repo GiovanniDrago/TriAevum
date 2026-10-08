@@ -1,6 +1,12 @@
 #include "fast/oot3d/graphics_settings_window.h"
 #include "fast/oot3d/graphics_settings_runtime.h"
 #include "fast/oot3d/settings_panel_widgets.h"
+#include "fast/oot3d/texture_catalog_viewer.h"
+#include "fast/renderer3ds/pica_actor_normal_smoothing.h"
+
+#include <imgui.h>
+
+#include <algorithm>
 
 namespace Fast::Oot3d {
 using SettingsUi::EnumCombo;
@@ -29,6 +35,64 @@ bool GraphicsSettingsPanel::DrawLightingSettings(GraphicsSettings& settings, con
             ? "PBR uses Azahar material packs configured in Materials > Texture packs. Materials without a pack use native per-pixel lighting."
             : "PBR uses Azahar material packs configured in Materials > Texture packs. Surfaces without a supported material keep original native shading.");
         ImGui::TextWrapped("Edit individual materials, maps and PBR response in Materials > Material editor.");
+    }
+
+    if (modern) {
+        ImGui::SeparatorText("Character normals");
+        auto& normals = settings.Effects.CharacterNormals;
+        changed |= ImGui::Checkbox("Smooth across a character's pieces", &normals.Enabled);
+        ImGui::TextWrapped(
+            "Continuous shading where a character's separate pieces meet (body, hands, eyes). Vertices are "
+            "joined only where they are one point in every pose seen; partners further apart than the crease "
+            "angle keep their edge.");
+        ImGui::BeginDisabled(!normals.Enabled);
+        changed |= ImGui::SliderFloat("Crease angle", &normals.CreaseDegrees, 5.0F, 120.0F, "%.0f degrees");
+        changed |= ImGui::SliderFloat("Crease angle between materials", &normals.MaterialCreaseDegrees, 0.0F, 120.0F,
+                                      "%.0f degrees");
+        changed |= ImGui::SliderFloat("Smoothing strength", &normals.Strength, 0.0F, 1.0F, "%.2f");
+        changed |= ImGui::SliderFloat("Weld distance", &normals.WeldDistance, 0.005F, 1.0F, "%.3f units",
+                                      ImGuiSliderFlags_Logarithmic);
+        changed |= ImGui::Checkbox("Also within a piece (its texture seams)", &normals.WithinPieces);
+        const auto report = Renderer3ds::LatestPicaNormalSmoothingReport();
+        ImGui::Text("Characters %u | pieces %u | joined points %u | smoothed vertices %u", report.Actors,
+                    report.Pieces, report.Joined, report.Smoothed);
+        ImGui::Text("Edges kept %u | waiting for poses %u | parted %u", report.Creases, report.Pending,
+                    report.Parted);
+        if (report.Joints != 0U || report.Ambiguous != 0U || report.Shared != 0U)
+            ImGui::TextWrapped(
+                "Uncertain: %u points meet across a joint (they would tear when animated: left alone), %u "
+                "partners are near the crease angle, %u meshes are drawn twice. Adjust the angle, or exclude "
+                "a piece's texture below.",
+                report.Joints, report.Ambiguous, report.Shared);
+
+        // Pieces by texture: excluded ones keep their original normals.
+        std::vector<TextureCatalogTag> tags;
+        for (const uint64_t hash : normals.ExcludedTextures) tags.push_back({hash, 0U, 0U, "NO SMOOTH"});
+        if (ImGui::TreeNode("Excluded pieces")) {
+            ImGui::Text("Excluded textures: %zu", normals.ExcludedTextures.size());
+            const auto catalog = DrawTextureCatalogViewer(mCharacterNormalTextureSelection, tags, 10U);
+            if (catalog.Selected.has_value()) {
+                const uint64_t hash = catalog.Selected->ContentHash;
+                auto& list = normals.ExcludedTextures;
+                const auto at = std::find(list.begin(), list.end(), hash);
+                if (at == list.end()) {
+                    if (list.size() < kMaximumCharacterNormalExclusions &&
+                        ImGui::Button("Exclude this texture's pieces")) {
+                        list.push_back(hash);
+                        changed = true;
+                    }
+                } else if (ImGui::Button("Smooth this texture's pieces again")) {
+                    list.erase(at);
+                    changed = true;
+                }
+            }
+            if (!normals.ExcludedTextures.empty() && ImGui::Button("Clear exclusions")) {
+                normals.ExcludedTextures.clear();
+                changed = true;
+            }
+            ImGui::TreePop();
+        }
+        ImGui::EndDisabled();
     }
 
     ImGui::SeparatorText("Global illumination");

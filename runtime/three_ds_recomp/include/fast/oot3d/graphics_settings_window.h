@@ -89,6 +89,7 @@ class GraphicsSettingsPanel final {
     AzaharTexturePackPanelState mTexturePackPanelState;
     PbrMaterialEditorState mMaterialEditorState;
     TextureCatalogSelectionState mReflectionTextureSelection;
+    TextureCatalogSelectionState mCharacterNormalTextureSelection;
     std::string mReflectionAssignmentStatus;
     std::string mRendererStatus;
     std::array<char, kMaximumGraphicsPresetNameLength + 1U> mPresetName{};
