@@ -297,6 +297,14 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         std::isfinite(directionalShadows.Strength)
             ? std::clamp(directionalShadows.Strength, 0.0F, 4.0F)
             : 0.80F;
+    directionalShadows.NormalOffset =
+        std::isfinite(directionalShadows.NormalOffset)
+            ? std::clamp(directionalShadows.NormalOffset, 0.0F, 8.0F)
+            : DirectionalShadowSettings{}.NormalOffset;
+    directionalShadows.TerminatorFade =
+        std::isfinite(directionalShadows.TerminatorFade)
+            ? std::clamp(directionalShadows.TerminatorFade, 0.0F, 1.0F)
+            : DirectionalShadowSettings{}.TerminatorFade;
     if (directionalShadows.Mode ==
             DirectionalShadowMode::VirtualShadowMaps &&
         !capabilities.Has(GraphicsCapability::NriDirectionalShadows)) {

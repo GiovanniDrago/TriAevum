@@ -12,7 +12,7 @@ namespace {
 uint64_t LightingVariantKey(uint64_t original, bool fragmentPrimary) {
     constexpr uint64_t kOffset = 1469598103934665603ULL;
     constexpr uint64_t kPrime = 1099511628211ULL;
-    constexpr std::string_view kSalt = "OOT3D_PICA_VIRTUAL_SHADOW_LIGHTING_V6";
+    constexpr std::string_view kSalt = "OOT3D_PICA_VIRTUAL_SHADOW_LIGHTING_V7";
     uint64_t hash = kOffset;
     for (unsigned shift = 0U; shift < 64U; shift += 8U) {
         hash ^= static_cast<uint8_t>(original >> shift);
@@ -29,14 +29,15 @@ uint64_t LightingVariantKey(uint64_t original, bool fragmentPrimary) {
 std::string LightingDeclarations() {
     return std::string(Renderer3ds::VirtualShadowReceiverShader()) + R"glsl(
 // The lighting asks once per shadowed term of each matched light; the
-// visibility of a fragment is looked up once.
+// visibility of a fragment is looked up once. A smooth-shaded receiver passes
+// its shading normal (view space), others zero.
 bool oot3d_directional_shadow_ready = false;
 vec3 oot3d_directional_shadow_value = vec3(1.0);
-vec3 oot3d_directional_shadow_visibility() {
+vec3 oot3d_directional_shadow_visibility(vec3 normal) {
     if ((pica_vsm.extent.w & 1u) == 0u) return vec3(1.0);
     if (!oot3d_directional_shadow_ready) {
         oot3d_directional_shadow_value =
-            vec3(pica_vsm_visibility(-pica_view, dFdx(-pica_view), dFdy(-pica_view)));
+            vec3(pica_vsm_visibility(-pica_view, dFdx(-pica_view), dFdy(-pica_view), normal));
         oot3d_directional_shadow_ready = true;
     }
     return oot3d_directional_shadow_value;
@@ -64,7 +65,8 @@ void PackPicaDirectionalShadowReceiverUniforms(const DirectionalShadowMatrix& vi
     uniforms.ShadowState = { std::clamp(history.Strength, 0.0F, 4.0F),
                              1.0F / float(layout.AtlasResolution * regions), layout.MaximumDistance,
                              std::max(history.DepthBias, 0.0F) };
-    uniforms.ShadowedDirectFraction = { 1.0F, 1.0F, 1.0F, 0.0F };
+    uniforms.Receiver = { std::clamp(history.NormalOffset, 0.0F, 8.0F),
+                          std::clamp(history.TerminatorFade, 0.0F, 1.0F), 0.0F, 0.0F };
     uniforms.Extent = { layout.AtlasResolution, layout.AtlasResolution, std::min<uint32_t>(history.PcfRadius, 2U),
                         kPicaDirectionalShadowBoundFlag | (dissolving ? kPicaDirectionalShadowDissolveFlag : 0U) };
     uniforms.Dissolve = { dissolving ? std::clamp(history.NewerWeight, 0.0F, 1.0F) : 1.0F,
@@ -137,7 +139,7 @@ BuildPicaSurfaceShadowReceiverBinding(const DirectionalShadowMatrix& currentView
     if (mask == 0U)
         return result;
     PackPicaDirectionalShadowReceiverUniforms(currentViewToWorld, history, result.Uniforms);
-    result.Uniforms.ShadowedDirectFraction[3] = static_cast<float>(mask);
+    result.Uniforms.Receiver[3] = static_cast<float>(mask);
     return result;
 }
 

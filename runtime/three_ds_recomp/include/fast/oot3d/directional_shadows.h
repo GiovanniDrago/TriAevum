@@ -22,6 +22,14 @@ struct DirectionalShadowSettings {
     float DepthBiasSlope = 1.75F;
     float Strength = 0.80F;
     uint8_t PcfRadius = 1;
+    // Smooth-shaded receivers read the map this many texels along their
+    // shading normal (scaled by the sine to the light): their flat triangles
+    // leave the smooth surface they are lit as and would shadow one another.
+    float NormalOffset = 4.0F;
+    // Where a smooth-shaded receiver turns from the light (its shading N.L
+    // below this), its own shadow fades into the N.L falloff: past the flat
+    // triangles' silhouette they shadow one another in facets.
+    float TerminatorFade = 0.4F;
 };
 
 using DirectionalShadowMatrix = std::array<float, 16>;
@@ -49,6 +57,8 @@ struct DirectionalShadowFramePlan {
     float DepthBiasSlope = 0.0F;
     float Strength = 0.0F;
     uint8_t PcfRadius = 0;
+    float NormalOffset = 0.0F;
+    float TerminatorFade = 0.0F;
 
     [[nodiscard]] bool Ready() const noexcept {
         return Status == DirectionalShadowPlanStatus::Ready;

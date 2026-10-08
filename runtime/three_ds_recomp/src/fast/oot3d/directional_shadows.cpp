@@ -162,6 +162,10 @@ DirectionalShadowFramePlan BuildDirectionalShadowFramePlan(const DirectionalShad
     plan.DepthBiasSlope = input.Settings.DepthBiasSlope;
     plan.Strength = std::clamp(input.Settings.Strength, 0.0F, 4.0F);
     plan.PcfRadius = std::min<uint8_t>(input.Settings.PcfRadius, 2U);
+    plan.NormalOffset = std::isfinite(input.Settings.NormalOffset) ? std::clamp(input.Settings.NormalOffset, 0.0F, 8.0F)
+                                                                   : 0.0F;
+    plan.TerminatorFade = std::isfinite(input.Settings.TerminatorFade)
+        ? std::clamp(input.Settings.TerminatorFade, 0.0F, 1.0F) : 0.0F;
     plan.Status = DirectionalShadowPlanStatus::Ready;
     return plan;
 }

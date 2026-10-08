@@ -132,6 +132,8 @@ Fast::Oot3d::GraphicsSettings CompleteSettings() {
     effects.DirectionalShadows.DepthBiasSlope = 2.25F;
     effects.DirectionalShadows.Strength = 3.25F;
     effects.DirectionalShadows.PcfRadius = 2U;
+    effects.DirectionalShadows.NormalOffset = 2.5F;
+    effects.DirectionalShadows.TerminatorFade = 0.3F;
     effects.PointShadows.Mode = PointShadowMode::CubeMaps;
     effects.PointShadows.Resolution = 1024U;
     effects.PointShadows.MaxLights = 6U;
@@ -388,6 +390,8 @@ TEST(Oot3dGraphicsSettingsPersistence, MigratesSingleCascadeWithoutLosingTheOffC
     shadows["Mode"] = "SingleCascade";
     shadows["Resolution"] = 1024;
     shadows["MaximumDistance"] = 1310;
+    shadows.erase("NormalOffset");
+    shadows.erase("TerminatorFade");
     shadows["DepthPadding"] = 30;
     shadows["Stabilize"] = false;
     const auto migrated = DeserializeGraphicsSettings(document);
@@ -397,6 +401,10 @@ TEST(Oot3dGraphicsSettingsPersistence, MigratesSingleCascadeWithoutLosingTheOffC
     EXPECT_FLOAT_EQ(migrated.Value.Effects.DirectionalShadows.MaximumDistance, 65536.0F);
     EXPECT_FLOAT_EQ(migrated.Value.Effects.DirectionalShadows.Strength, 3.25F);
     EXPECT_FLOAT_EQ(migrated.Value.Effects.DirectionalShadows.DepthBiasSlope, 2.25F);
+    // Documents from before the smooth-receiver controls take their defaults.
+    EXPECT_FLOAT_EQ(migrated.Value.Effects.DirectionalShadows.NormalOffset, DirectionalShadowSettings{}.NormalOffset);
+    EXPECT_FLOAT_EQ(migrated.Value.Effects.DirectionalShadows.TerminatorFade,
+                    DirectionalShadowSettings{}.TerminatorFade);
     const auto saved = SerializeGraphicsSettings(migrated.Value);
     const auto reloaded = DeserializeGraphicsSettings(saved);
     EXPECT_FALSE(reloaded.NeedsRewrite);
