@@ -1,4 +1,5 @@
 #include "oot3d_scene_environment.h"
+#include "oot3d_scene_environment_codec.h"
 #include "oot3d_light_gizmo.h"
 #include "ship/config/ConfigPersistence.h"
 #include <algorithm>
@@ -12,325 +13,8 @@
 namespace Oot3dNativeGame {
 namespace {
 using Json = nlohmann::json;
-constexpr size_t kPlacedLightNameLength = 64U;
-constexpr float kPlacedLightMaximumIntensity = 16.0F;
-constexpr float kPlacedLightMaximumCoordinate = 100000.0F;
-constexpr float kPlacedLightMaximumSize = 20000.0F;
-constexpr const char *kPlacedLightTypeNames[] = {"sun", "spot", "point", "surface", "omni"};
-constexpr const char *kPlacedLightShapeNames[] = {"rectangle", "disc"};
-template <class Enum, size_t Count>
-Enum DecodeName(const Json &object, const char *key, const char *const (&names)[Count]) {
-  const auto value = object.at(key).get<std::string>();
-  for (size_t i = 0; i < Count; ++i)
-    if (value == names[i])
-      return static_cast<Enum>(i);
-  throw std::runtime_error(std::string("Unknown ") + key + ": " + value);
-}
-void Validate(const SceneEnvironmentProfile &profile) {
-  const auto scalar = [](float value, float low, float high) {
-    if (!std::isfinite(value) || value < low || value > high)
-      throw std::runtime_error(
-          "Environment value is non-finite or out of range");
-  };
-  scalar(profile.NativeDirectStrength, 0.0F, 2.0F);
-  scalar(profile.NativeLocalStrength, 0.0F, 2.0F);
-  scalar(profile.NativeAmbientStrength, 0.0F, 2.0F);
-  scalar(profile.AmbientIntensity, 0.0F, 2.0F);
-  scalar(profile.FogStrength, 0.0F, 1.0F);
-  for (float value : profile.AmbientColor)
-    scalar(value, 0.0F, 1.0F);
-  for (const auto &light : profile.Lights) {
-    scalar(light.Azimuth, -180.0F, 180.0F);
-    scalar(light.Elevation, -90.0F, 90.0F);
-    scalar(light.Intensity, 0.0F, 4.0F);
-    for (float value : light.Color)
-      scalar(value, 0.0F, 1.0F);
-  }
-  scalar(profile.KeyAzimuthOffset, -180.0F, 180.0F);
-  scalar(profile.KeyElevationOffset, -90.0F, 90.0F);
-  if (profile.KeyDirection > Fast::Renderer3ds::PicaEnvironmentKeyDirection::SceneAmbient)
-    throw std::runtime_error("Unknown key light direction");
-  for (const auto &light : profile.PointLights) {
-    scalar(light.Intensity, 0.0F, 8.0F);
-    scalar(light.RadiusScale, 0.1F, 8.0F);
-    for (float value : light.ColorTint)
-      scalar(value, 0.0F, 1.0F);
-  }
-  if (profile.PlacedLights.size() > kMaximumPlacedLights)
-    throw std::runtime_error("Too many placed lights");
-  for (size_t i = 0; i < profile.PlacedLights.size(); ++i) {
-    const auto &light = profile.PlacedLights[i];
-    if (light.Id == 0 || light.Name.size() > kPlacedLightNameLength ||
-        light.Type > PlacedLightType::Omni || light.Shape > PlacedLightShape::Disc)
-      throw std::runtime_error("Placed light identity, name, type or shape is invalid");
-    for (size_t j = 0; j < i; ++j)
-      if (profile.PlacedLights[j].Id == light.Id)
-        throw std::runtime_error("Placed lights share an identity");
-    for (float value : light.Color)
-      scalar(value, 0.0F, 1.0F);
-    scalar(light.Intensity, 0.0F, kPlacedLightMaximumIntensity);
-    for (float value : light.Position)
-      scalar(value, -kPlacedLightMaximumCoordinate, kPlacedLightMaximumCoordinate);
-    scalar(light.Rotation[0], -180.0F, 180.0F);
-    scalar(light.Rotation[1], -90.0F, 90.0F);
-    scalar(light.Rotation[2], -180.0F, 180.0F);
-    scalar(light.Radius, 1.0F, kPlacedLightMaximumSize);
-    scalar(light.Width, 1.0F, kPlacedLightMaximumSize);
-    scalar(light.Height, 1.0F, kPlacedLightMaximumSize);
-    scalar(light.Range, 1.0F, kPlacedLightMaximumSize);
-    scalar(light.BeamAngle, 1.0F, 179.0F);
-    scalar(light.BeamSoftness, 0.0F, 1.0F);
-  }
-}
-float Scalar(const Json &object, const char *key, float low, float high) {
-  const auto &value = object.at(key);
-  if (!value.is_number())
-    throw std::runtime_error(std::string(key) + " must be numeric");
-  const float result = value.get<float>();
-  if (!std::isfinite(result) || result < low || result > high)
-    throw std::runtime_error(std::string(key) + " is out of range");
-  return result;
-}
-std::array<float, 3> Color(const Json &object, const char *key) {
-  const auto &values = object.at(key);
-  if (!values.is_array() || values.size() != 3)
-    throw std::runtime_error(std::string(key) + " requires RGB");
-  std::array<float, 3> result;
-  for (size_t i = 0; i < 3; ++i) {
-    if (!values[i].is_number())
-      throw std::runtime_error("RGB must be numeric");
-    result[i] = values[i].get<float>();
-    if (!std::isfinite(result[i]) || result[i] < 0.0F || result[i] > 1.0F)
-      throw std::runtime_error("RGB must be finite and within 0..1");
-  }
-  return result;
-}
-std::array<float, 3> Vector(const Json &object, const char *key, float low, float high) {
-  const auto &values = object.at(key);
-  if (!values.is_array() || values.size() != 3)
-    throw std::runtime_error(std::string(key) + " requires three values");
-  std::array<float, 3> result;
-  for (size_t i = 0; i < 3; ++i) {
-    if (!values[i].is_number())
-      throw std::runtime_error(std::string(key) + " must be numeric");
-    result[i] = values[i].get<float>();
-    if (!std::isfinite(result[i]) || result[i] < low || result[i] > high)
-      throw std::runtime_error(std::string(key) + " is out of range");
-  }
-  return result;
-}
-PlacedLight DecodePlacedLight(const Json &object) {
-  PlacedLight light;
-  light.Id = object.at("id").get<uint32_t>();
-  light.Name = object.at("name").get<std::string>();
-  light.Type = DecodeName<PlacedLightType>(object, "type", kPlacedLightTypeNames);
-  light.Visible = object.at("visible").get<bool>();
-  light.Color = Color(object, "color");
-  light.Intensity = Scalar(object, "intensity", 0.0F, kPlacedLightMaximumIntensity);
-  light.Position = Vector(object, "position", -kPlacedLightMaximumCoordinate, kPlacedLightMaximumCoordinate);
-  light.Rotation = Vector(object, "rotation", -180.0F, 180.0F);
-  light.CastShadows = object.at("castShadows").get<bool>();
-  light.Radius = Scalar(object, "radius", 1.0F, kPlacedLightMaximumSize);
-  light.Width = Scalar(object, "width", 1.0F, kPlacedLightMaximumSize);
-  light.Height = Scalar(object, "height", 1.0F, kPlacedLightMaximumSize);
-  light.Shape = DecodeName<PlacedLightShape>(object, "shape", kPlacedLightShapeNames);
-  light.TwoSided = object.at("twoSided").get<bool>();
-  light.BeamAngle = Scalar(object, "beamAngle", 1.0F, 179.0F);
-  light.BeamSoftness = Scalar(object, "beamSoftness", 0.0F, 1.0F);
-  light.Range = Scalar(object, "range", 1.0F, kPlacedLightMaximumSize);
-  return light;
-}
-Json EncodePlacedLight(const PlacedLight &light) {
-  return {{"id", light.Id},
-          {"name", light.Name},
-          {"type", kPlacedLightTypeNames[static_cast<size_t>(light.Type)]},
-          {"visible", light.Visible},
-          {"color", light.Color},
-          {"intensity", light.Intensity},
-          {"position", light.Position},
-          {"rotation", light.Rotation},
-          {"castShadows", light.CastShadows},
-          {"radius", light.Radius},
-          {"width", light.Width},
-          {"height", light.Height},
-          {"shape", kPlacedLightShapeNames[static_cast<size_t>(light.Shape)]},
-          {"twoSided", light.TwoSided},
-          {"beamAngle", light.BeamAngle},
-          {"beamSoftness", light.BeamSoftness},
-          {"range", light.Range}};
-}
 using KeyDirection = Fast::Renderer3ds::PicaEnvironmentKeyDirection;
-KeyDirection DecodeKeyDirection(const std::string &value) {
-  if (value == "authored")
-    return KeyDirection::Authored;
-  if (value == "scene_main")
-    return KeyDirection::SceneMain;
-  if (value == "scene_ambient")
-    return KeyDirection::SceneAmbient;
-  throw std::runtime_error("Unknown key light direction: " + value);
-}
-const char *EncodeKeyDirection(KeyDirection value) {
-  switch (value) {
-  case KeyDirection::SceneMain:
-    return "scene_main";
-  case KeyDirection::SceneAmbient:
-    return "scene_ambient";
-  case KeyDirection::Authored:
-    break;
-  }
-  return "authored";
-}
-SceneEnvironmentProfile Decode(const Json &doc, uint16_t scene, bool night) {
-  // A night profile names its time of day; the scene's own profile does not.
-  if (doc.value("timeOfDay", std::string("day")) != (night ? "night" : "day"))
-    throw std::runtime_error("Environment time of day mismatch");
-  if (doc.at("schema") != "triaevum.scene-environment" ||
-      (doc.at("version") != 1 && doc.at("version") != 2 &&
-       doc.at("version") != 3 && doc.at("version") != 4 &&
-       doc.at("version") != 5) ||
-      doc.at("sceneId") != scene)
-    throw std::runtime_error(
-        "Environment schema, version or scene identity mismatch");
-  SceneEnvironmentProfile result;
-  result.Enabled = doc.at("enabled").get<bool>();
-  // Legacy authored profiles retain their explicit black/ambient choices.
-  // Loading never rewrites them; new profiles use the scene reference.
-  result.PreserveSceneBrightness = doc.at("version") >= 4
-      ? doc.at("preserveSceneBrightness").get<bool>() : false;
-  result.NativeDirectStrength = Scalar(doc, "nativeDirectStrength", 0.0F, 2.0F);
-  // Older profiles used one gain for every selected native direct source.
-  result.NativeLocalStrength = doc.at("version") >= 3
-      ? Scalar(doc, "nativeLocalStrength", 0.0F, 2.0F) : result.NativeDirectStrength;
-  result.NativeAmbientStrength =
-      Scalar(doc, "nativeAmbientStrength", 0.0F, 2.0F);
-  result.AmbientColor = Color(doc, "ambientColor");
-  result.AmbientIntensity = Scalar(doc, "ambientIntensity", 0.0F, 2.0F);
-  result.FogStrength = Scalar(doc, "fogStrength", 0.0F, 1.0F);
-  const auto &lights = doc.at("directionalLights");
-  if (!lights.is_array() || lights.size() != result.Lights.size())
-    throw std::runtime_error(
-        "Environment requires a key light and a fill light");
-  for (size_t i = 0; i < result.Lights.size(); ++i) {
-    auto &light = result.Lights[i];
-    light.Azimuth = Scalar(lights[i], "azimuth", -180.0F, 180.0F);
-    light.Elevation = Scalar(lights[i], "elevation", -90.0F, 90.0F);
-    light.Intensity = Scalar(lights[i], "intensity", 0.0F, 4.0F);
-    light.Color = Color(lights[i], "color");
-  }
-  if (doc.at("version") >= 5) {
-    const auto &key = doc.at("keyLightDirection");
-    result.KeyDirection = DecodeKeyDirection(key.get<std::string>());
-    result.KeyAzimuthOffset = Scalar(doc, "keyLightAzimuthOffset", -180.0F, 180.0F);
-    result.KeyElevationOffset = Scalar(doc, "keyLightElevationOffset", -90.0F, 90.0F);
-  }
-  if (doc.at("version") >= 2) {
-    const auto &points = doc.at("pointLights");
-    if (!points.is_array() || points.size() != result.PointLights.size())
-      throw std::runtime_error("Environment requires Navi and fairy point-light groups");
-    for (size_t i = 0; i < result.PointLights.size(); ++i) {
-      auto &light = result.PointLights[i];
-      light.Enabled = points[i].at("enabled").get<bool>();
-      light.Intensity = Scalar(points[i], "intensity", 0.0F, 8.0F);
-      light.RadiusScale = Scalar(points[i], "radiusScale", 0.1F, 8.0F);
-      light.ColorTint = Color(points[i], "colorTint");
-    }
-  }
-  // Optional in version 5: a profile without placed lights omits them, and
-  // a runtime that predates them ignores the field.
-  if (const auto placed = doc.find("placedLights"); placed != doc.end()) {
-    if (!placed->is_array())
-      throw std::runtime_error("placedLights must be an array");
-    for (const auto &light : *placed)
-      result.PlacedLights.push_back(DecodePlacedLight(light));
-  }
-  Validate(result);
-  return result;
-}
-Json Encode(const SceneEnvironmentProfile &value, uint16_t scene, bool night) {
-  Json lights = Json::array();
-  for (const auto &light : value.Lights)
-    lights.push_back({{"azimuth", light.Azimuth},
-                      {"elevation", light.Elevation},
-                      {"color", light.Color},
-                      {"intensity", light.Intensity}});
-  Json points = Json::array();
-  for (const auto &light : value.PointLights)
-    points.push_back({{"enabled", light.Enabled},
-                      {"intensity", light.Intensity},
-                      {"radiusScale", light.RadiusScale},
-                      {"colorTint", light.ColorTint}});
-  Json result = {{"schema", "triaevum.scene-environment"},
-          {"version", 5},
-          {"sceneId", scene},
-          {"enabled", value.Enabled},
-          {"preserveSceneBrightness", value.PreserveSceneBrightness},
-          {"nativeDirectStrength", value.NativeDirectStrength},
-          {"nativeLocalStrength", value.NativeLocalStrength},
-          {"nativeAmbientStrength", value.NativeAmbientStrength},
-          {"ambientColor", value.AmbientColor},
-          {"ambientIntensity", value.AmbientIntensity},
-          {"fogStrength", value.FogStrength},
-          {"pointLights", std::move(points)},
-          {"directionalLights", std::move(lights)},
-          {"keyLightDirection", EncodeKeyDirection(value.KeyDirection)},
-          {"keyLightAzimuthOffset", value.KeyAzimuthOffset},
-          {"keyLightElevationOffset", value.KeyElevationOffset}};
-  if (night)
-    result["timeOfDay"] = "night";
-  if (!value.PlacedLights.empty()) {
-    Json placed = Json::array();
-    for (const auto &light : value.PlacedLights)
-      placed.push_back(EncodePlacedLight(light));
-    result["placedLights"] = std::move(placed);
-  }
-  return result;
-}
 } // namespace
-
-Fast::Renderer3ds::PicaPlacedLight ResolvePlacedLight(const PlacedLight &light,
-                                                      uint64_t identity) {
-  using Kind = Fast::Renderer3ds::PicaPlacedLightKind;
-  constexpr float kRadians = std::numbers::pi_v<float> / 180.0F;
-  Fast::Renderer3ds::PicaPlacedLight result;
-  result.SourceIdentity = identity;
-  switch (light.Type) {
-  case PlacedLightType::Sun: result.Kind = Kind::Sun; break;
-  case PlacedLightType::Spot: result.Kind = Kind::Spot; break;
-  case PlacedLightType::Point: result.Kind = Kind::Point; break;
-  case PlacedLightType::Omni: result.Kind = Kind::Omni; break;
-  case PlacedLightType::Surface:
-    result.Kind = light.Shape == PlacedLightShape::Disc ? Kind::Disc : Kind::Rectangle;
-    break;
-  }
-  result.PositionWorld = light.Position;
-  const float yaw = light.Rotation[0] * kRadians;
-  const float pitch = light.Rotation[1] * kRadians;
-  const float roll = light.Rotation[2] * kRadians;
-  // Yaw 0 faces +Z and 90 faces +X (the game's yaw); pitch 90 points up.
-  const std::array<float, 3> axis{std::sin(yaw) * std::cos(pitch), std::sin(pitch),
-                                  std::cos(yaw) * std::cos(pitch)};
-  // The horizontal axis to the light's right, turned by the roll.
-  const std::array<float, 3> right{std::cos(yaw), 0.0F, -std::sin(yaw)};
-  const std::array<float, 3> up{axis[1] * right[2] - axis[2] * right[1],
-                                axis[2] * right[0] - axis[0] * right[2],
-                                axis[0] * right[1] - axis[1] * right[0]};
-  result.AxisWorld = axis;
-  for (size_t i = 0; i < 3; ++i) {
-    result.TangentWorld[i] = right[i] * std::cos(roll) + up[i] * std::sin(roll);
-    result.Color[i] = light.Color[i] * light.Intensity;
-  }
-  result.Reach = light.Type == PlacedLightType::Surface ? light.Range : light.Radius;
-  if (light.Type == PlacedLightType::Surface) {
-    result.HalfWidth = light.Shape == PlacedLightShape::Disc ? light.Radius : light.Width * 0.5F;
-    result.HalfHeight = light.Shape == PlacedLightShape::Disc ? light.Radius : light.Height * 0.5F;
-    result.TwoSided = light.TwoSided;
-  }
-  const float halfAngle = light.BeamAngle * 0.5F * kRadians;
-  result.CosOuter = std::cos(halfAngle);
-  result.CosInner = std::cos(halfAngle * (1.0F - light.BeamSoftness));
-  result.CastShadows = light.CastShadows && light.Type != PlacedLightType::Sun;
-  return result;
-}
 
 SceneEnvironmentProfile BaseSceneEnvironmentProfile() {
   // Captured 2026-10-06 from the Kokiri play configuration's title intro
@@ -396,6 +80,7 @@ void SceneEnvironmentRuntime::SelectLocked(std::optional<uint16_t> scene,
     mState.Path = ProfilePathLocked(mState.EditingNight);
     ReloadLocked();
   }
+  mFileSignature = FileSignatureLocked();
   PublishLocked();
 }
 void SceneEnvironmentRuntime::EditLightGizmo(uint32_t selectedLight, bool enabled) {
@@ -423,6 +108,67 @@ void SceneEnvironmentRuntime::PublishLightGizmo(const std::optional<std::array<f
   }
 }
 
+void SceneEnvironmentRuntime::SetHotReload(bool enabled) {
+  std::scoped_lock lock(mMutex);
+  mHotReload = enabled;
+  mFileSignature = FileSignatureLocked();
+}
+
+std::string SceneEnvironmentRuntime::FileSignatureLocked() const {
+  if (!mState.SceneId)
+    return {};
+  std::string signature;
+  for (const bool night : {false, true}) {
+    std::error_code error;
+    const auto path = ProfilePathLocked(night);
+    const auto size = std::filesystem::file_size(path, error);
+    const auto time = error ? std::filesystem::file_time_type{} : std::filesystem::last_write_time(path, error);
+    signature += error ? std::string("-|") : std::to_string(size) + ":" +
+                                                 std::to_string(time.time_since_epoch().count()) + "|";
+  }
+  return signature;
+}
+
+void SceneEnvironmentRuntime::PollProfileFiles() {
+  std::scoped_lock lock(mMutex);
+  const auto now = std::chrono::steady_clock::now();
+  if (!mHotReload || !mState.SceneId || now - mLastFilePoll < std::chrono::milliseconds(250))
+    return;
+  mLastFilePoll = now;
+  auto signature = FileSignatureLocked();
+  if (signature == mFileSignature)
+    return;
+  mFileSignature = std::move(signature);
+  const auto report = [&](const char *result, const std::string &detail) {
+    std::fprintf(stderr, "TRIAEVUM_ENVIRONMENT_RELOAD scene=0x%04X time=%s result=%s file=%s%s%s\n",
+                 unsigned(*mState.SceneId), mState.EditingNight ? "night" : "day", result,
+                 mState.Path.filename().string().c_str(), detail.empty() ? "" : " detail=", detail.c_str());
+  };
+  if (mState.Dirty) {
+    mState.Error = "The profile changed on disk; the unsaved edits here are kept (save or reload).";
+    report("kept-unsaved", "");
+    return;
+  }
+  // A night file created or removed changes which file the night uses.
+  std::error_code error;
+  mState.NightProfileExists = std::filesystem::exists(ProfilePathLocked(true), error);
+  const bool editingNight = mState.Night && mState.NightProfileExists;
+  if (editingNight != mState.EditingNight) {
+    mState.EditingNight = editingNight;
+    mState.Path = ProfilePathLocked(editingNight);
+  }
+  if (!std::filesystem::exists(mState.Path, error)) {
+    report("kept-missing", "");
+    return;
+  }
+  if (!ReloadLocked()) {
+    report("kept-invalid", mState.Error);
+    return;
+  }
+  PublishLocked();
+  report("applied", "");
+}
+
 SceneEnvironmentSnapshot SceneEnvironmentRuntime::Snapshot() const {
   std::scoped_lock lock(mMutex);
   return mState;
@@ -432,14 +178,13 @@ void SceneEnvironmentRuntime::Preview(SceneEnvironmentProfile profile) {
   if (!mState.SceneId)
     return;
   // Validate callers as well as files, without publishing partial state.
-  try {
-    Validate(profile);
-    mState.Profile = profile;
-    mState.Dirty = mState.Profile != mSaved;
-    PublishLocked();
-  } catch (const std::exception &error) {
-    mState.Error = error.what();
+  if (const auto errors = ValidateSceneEnvironment(profile); !errors.empty()) {
+    mState.Error = DescribeSceneEnvironmentErrors(errors);
+    return;
   }
+  mState.Profile = profile;
+  mState.Dirty = mState.Profile != mSaved;
+  PublishLocked();
 }
 bool SceneEnvironmentRuntime::Save() {
   std::scoped_lock lock(mMutex);
@@ -453,13 +198,15 @@ bool SceneEnvironmentRuntime::Save() {
   }
   const auto saved = Ship::WriteConfigFileAtomically(
       mState.Path,
-      Encode(mState.Profile, *mState.SceneId, mState.EditingNight).dump(2));
+      FormatSceneEnvironment(EncodeSceneEnvironment(mState.Profile, *mState.SceneId, mState.EditingNight)));
   mState.Error = saved.Error;
   if (saved.Success) {
     mSaved = mState.Profile;
     mState.Dirty = false;
     mState.FileExists = true;
   }
+  // Its own writes are not changes to pick up.
+  mFileSignature = FileSignatureLocked();
   return saved.Success;
 }
 bool SceneEnvironmentRuntime::CreateNightProfile() {
@@ -474,8 +221,9 @@ bool SceneEnvironmentRuntime::CreateNightProfile() {
   }
   const auto path = ProfilePathLocked(true);
   const auto saved = Ship::WriteConfigFileAtomically(
-      path, Encode(mState.Profile, *mState.SceneId, true).dump(2));
+      path, FormatSceneEnvironment(EncodeSceneEnvironment(mState.Profile, *mState.SceneId, true)));
   mState.Error = saved.Error;
+  mFileSignature = FileSignatureLocked();
   if (!saved.Success)
     return false;
   mState.NightProfileExists = true;
@@ -502,6 +250,7 @@ bool SceneEnvironmentRuntime::RemoveNightProfile() {
     return false;
   }
   mState.NightProfileExists = false;
+  mFileSignature = FileSignatureLocked();
   if (mState.EditingNight) {
     mState.EditingNight = false;
     mState.Path = ProfilePathLocked(false);
@@ -528,7 +277,10 @@ bool SceneEnvironmentRuntime::ReloadLocked() {
       if (std::filesystem::file_size(mState.Path) > 65536)
         throw std::runtime_error("Environment profile exceeds 64 KiB");
       std::ifstream file(mState.Path);
-      candidate = Decode(Json::parse(file), *mState.SceneId, mState.EditingNight);
+      auto document = DecodeSceneEnvironment(Json::parse(file), *mState.SceneId, mState.EditingNight);
+      if (!document.Profile)
+        throw std::runtime_error(DescribeSceneEnvironmentErrors(document.Errors));
+      candidate = std::move(*document.Profile);
     }
     mSaved = mState.Profile = candidate;
     mState.FileExists = exists;
@@ -541,50 +293,8 @@ bool SceneEnvironmentRuntime::ReloadLocked() {
   }
 }
 void SceneEnvironmentRuntime::PublishLocked() {
-  Fast::Renderer3ds::PicaEnvironmentLighting result;
-  if (mState.SceneId) {
-    const auto &value = mState.Profile;
-    // Day and night profiles are separate scopes (no shared shadow history).
-    result.ScopeIdentity = uint64_t(*mState.SceneId) + 1 +
-                           (mState.EditingNight ? 0x10000U : 0U);
-    result.Enabled = value.Enabled;
-    result.PreserveSceneBrightness = value.PreserveSceneBrightness;
-    result.NativeDirectStrength = value.NativeDirectStrength;
-    result.NativeLocalStrength = value.NativeLocalStrength;
-    result.NativeAmbientStrength = value.NativeAmbientStrength;
-    result.AmbientColor = value.AmbientColor;
-    result.AmbientIntensity = value.AmbientIntensity;
-    result.FogStrength = value.FogStrength;
-    result.PointLights = value.PointLights;
-    for (const auto &light : value.PlacedLights) {
-      if (!light.Visible || result.PlacedLightCount == result.PlacedLights.size())
-        continue;
-      // Unique per scene, time of day and light.
-      result.PlacedLights[result.PlacedLightCount++] = ResolvePlacedLight(
-          light, 0xD1A6000000000000ULL | (uint64_t(*mState.SceneId) << 32U) |
-                     (mState.EditingNight ? 0x80000000ULL : 0ULL) | light.Id);
-    }
-    result.KeyDirection = value.KeyDirection;
-    result.KeyAzimuthOffset =
-        value.KeyAzimuthOffset * std::numbers::pi_v<float> / 180.0F;
-    result.KeyElevationOffset =
-        value.KeyElevationOffset * std::numbers::pi_v<float> / 180.0F;
-    // The same axes as the authored azimuth/elevation below.
-    result.WorldUp = {0.0F, 1.0F, 0.0F};
-    result.WorldAzimuthZero = {0.0F, 0.0F, 1.0F};
-    for (size_t i = 0; i < value.Lights.size(); ++i) {
-      const auto &light = value.Lights[i];
-      const float azimuth = light.Azimuth * std::numbers::pi_v<float> / 180.0F;
-      const float elevation =
-          light.Elevation * std::numbers::pi_v<float> / 180.0F;
-      // OOT3D world is Y-up. Zero azimuth points toward +Z; +90 toward +X.
-      result.Lights[i] = {{std::sin(azimuth) * std::cos(elevation),
-                           std::sin(elevation),
-                           std::cos(azimuth) * std::cos(elevation)},
-                          light.Color,
-                          light.Intensity};
-    }
-  }
-  mPublish(result);
+  mPublish(mState.SceneId
+               ? ResolveSceneEnvironment(mState.Profile, *mState.SceneId, mState.EditingNight)
+               : Fast::Renderer3ds::PicaEnvironmentLighting{});
 }
 } // namespace Oot3dNativeGame

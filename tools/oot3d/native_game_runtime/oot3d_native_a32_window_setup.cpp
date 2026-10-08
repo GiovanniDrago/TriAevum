@@ -596,6 +596,13 @@ void NativeA32WindowSession::Setup() {
   // F1 order: the scene lights join Lighting > Lights & Shadows; then
   // Controls, HUD and Game (Save states, Language) after the graphics tabs.
   applicationSettingsTabs.push_back(Oot3dNativeGame::CreateSceneEnvironmentPanel(sceneEnvironment));
+#if defined(TRIAEVUM_DEVELOPER_TOOLS)
+  // Agents edit scene profiles on disk while the game runs.
+  if (const char *reload = std::getenv("TRIAEVUM_ENVIRONMENT_HOT_RELOAD"); reload != nullptr && *reload != '0') {
+    sceneEnvironment->SetHotReload(true);
+    std::fprintf(stderr, "TRIAEVUM_ENVIRONMENT_HOT_RELOAD enabled\n");
+  }
+#endif
   applicationSettingsTabs.push_back(
       Oot3dNativeGame::CreateNativeControlsSettingsPanel(
           controlConfigRuntime,

@@ -137,9 +137,19 @@ public:
   // lines) while the editor was drawn within the last half second or while
   // `forced` (the free camera), none otherwise. `eye`: the scene's camera.
   void PublishLightGizmo(const std::optional<std::array<float, 3>> &eye, bool forced = false);
+  // Developer builds (TRIAEVUM_ENVIRONMENT_HOT_RELOAD): the scene's profile
+  // files are re-read when they change on disk, so an agent can edit them
+  // while the game runs. A file that does not validate, or is missing,
+  // keeps the profile in use; unsaved F1 edits are never replaced. Each
+  // outcome is reported on stderr (TRIAEVUM_ENVIRONMENT_RELOAD).
+  void SetHotReload(bool enabled);
+  // Renderer order, once per frame; looks at the files at most every 250 ms.
+  void PollProfileFiles();
 
 private:
   bool ReloadLocked();
+  // The day and night files as they are on disk (existence, size, time).
+  [[nodiscard]] std::string FileSignatureLocked() const;
   void PublishLocked();
   [[nodiscard]] std::filesystem::path ProfilePathLocked(bool night) const;
   void SelectLocked(std::optional<uint16_t> scene, bool night);
@@ -152,6 +162,9 @@ private:
   bool mGizmoEnabled = true;
   std::chrono::steady_clock::time_point mGizmoEdited{};
   bool mGizmoPublished = false;
+  bool mHotReload = false;
+  std::chrono::steady_clock::time_point mLastFilePoll{};
+  std::string mFileSignature;
 };
 
 std::shared_ptr<Fast::Oot3d::GraphicsSettingsPanelTab>

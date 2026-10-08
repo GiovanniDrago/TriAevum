@@ -215,6 +215,7 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
         tools/oot3d/native_game_runtime/oot3d_savestate_settings.cpp
         tools/oot3d/native_game_runtime/oot3d_scene_environment.cpp
         tools/oot3d/native_game_runtime/oot3d_light_gizmo.cpp
+        tools/oot3d/native_game_runtime/oot3d_scene_environment_codec.cpp
         tools/oot3d/native_game_runtime/oot3d_scene_environment_panel.cpp
         tools/oot3d/native_game_runtime/oot3d_top_screen_settings_panel.cpp
         tools/oot3d/native_game_runtime/oot3d_graphics_settings_schedule.cpp)
@@ -239,6 +240,15 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/oot3d/decomp_support/include")
         target_link_libraries(oot3d_dev_warp_tests PRIVATE oot3d_native_game_runtime)
         oot3d_target_defaults(oot3d_dev_warp_tests FOLDER Tests)
+        # Scene environment profiles for agents and scripts (validate, format,
+        # explain), without starting the game.
+        add_executable(triaevum_environment_tool EXCLUDE_FROM_ALL
+            tools/oot3d/native_game_runtime/oot3d_environment_tool.cpp
+            tools/oot3d/native_game_runtime/oot3d_scene_environment_codec.cpp)
+        target_include_directories(triaevum_environment_tool PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/oot3d/native_game_runtime")
+        target_link_libraries(triaevum_environment_tool PRIVATE three_ds_recomp_runtime)
+        oot3d_target_defaults(triaevum_environment_tool FOLDER Tools)
     endif()
     target_link_libraries(oot3d_native_game PRIVATE
         oot3d_native_a32_input

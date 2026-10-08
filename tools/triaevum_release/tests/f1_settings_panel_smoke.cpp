@@ -6,6 +6,7 @@
 #include "oot3d_game_language_panel.h"
 #include "oot3d_savestate_panel.h"
 #include "oot3d_scene_environment.h"
+#include "oot3d_scene_environment_codec.h"
 #include "fast/oot3d/world_debug_lines.h"
 #include "fast/MouseCapturePolicy.h"
 #include <imgui_internal.h>
@@ -325,6 +326,52 @@ void CheckSavestatePanel() {
     std::filesystem::remove_all(root, cleanup);
 }
 
+// The profile codec shared by the runtime and the environment tool.
+void CheckSceneEnvironmentCodec() {
+    using namespace Oot3dNativeGame;
+    auto profile = BaseSceneEnvironmentProfile();
+    profile.AmbientIntensity = 0.3F;
+    PlacedLight high;
+    high.Id = 0xFFFFFFFFU;
+    high.Name = "High id";
+    high.Type = PlacedLightType::Spot;
+    high.Intensity = 0.6F;
+    profile.PlacedLights.push_back(high);
+    const auto document = EncodeSceneEnvironment(profile, 0x55, true);
+    const auto text = FormatSceneEnvironment(document);
+    Check(text.find("\"ambientIntensity\": 0.3,") != std::string::npos && text.back() == '\n',
+          "canonical profiles do not write numbers in their shortest form");
+    const auto decoded = DecodeSceneEnvironment(nlohmann::json::parse(text), 0x55, true);
+    Check(decoded.Profile && *decoded.Profile == profile && decoded.Errors.empty(),
+          "a canonical profile does not decode to the same profile");
+    Check(!DecodeSceneEnvironment(nlohmann::json::parse(text), 0x55, false).Profile,
+          "a night profile decodes as a day profile");
+    // The whole 32-bit id: night and day, scenes and lights stay distinct.
+    Check(PlacedLightIdentity(0x55, false, 0xFFFFFFFFU) != PlacedLightIdentity(0x55, true, 0xFFFFFFFFU) &&
+              PlacedLightIdentity(0x55, false, 0x80000001U) != PlacedLightIdentity(0x55, true, 1U) &&
+              PlacedLightIdentity(0x55, false, 1U) != PlacedLightIdentity(0x56, false, 1U),
+          "placed light identities collide across time of day, scene or high ids");
+    auto broken = document;
+    broken["placedLights"][0]["id"] = 2.5;
+    broken["placedLights"][0]["intensity"] = 30;
+    broken["directionalLights"][1]["color"] = nlohmann::json::array({1, 2});
+    broken.erase("fogStrength");
+    broken["placedLights"].push_back(document["placedLights"][0]);
+    broken["placedLights"].push_back(document["placedLights"][0]);
+    const auto errors = DecodeSceneEnvironment(broken, 0x55, true).Errors;
+    const auto has = [&](const char* pointer) {
+        return std::any_of(errors.begin(), errors.end(), [&](const auto& error) { return error.Pointer == pointer; });
+    };
+    Check(has("/placedLights/0/id") && has("/placedLights/0/intensity") && has("/directionalLights/1/color") &&
+              has("/fogStrength") && has("/placedLights/2/id"),
+          "profile errors are not all reported at their JSON pointers");
+    const auto explained = ExplainSceneEnvironment(profile, 0x55, true);
+    Check(explained.at("renderer").at("placedLights").size() == 1U &&
+              explained.at("renderer").at("placedLights")[0].at("id") == 0xFFFFFFFFU &&
+              explained.at("dependsOnScene").size() == 1U,
+          "explain does not show the renderer's placed lights or the scene-following key light");
+}
+
 void CheckSceneEnvironment() {
     using namespace Oot3dNativeGame;
     using Fast::Renderer3ds::PicaPlacedLightKind;
@@ -567,7 +614,7 @@ void CheckSceneEnvironment() {
     Click("Save scene environment");
     nlohmann::json nightDocument;
     { std::ifstream file(nightPath); file >> nightDocument; }
-    Check(nightDocument.value("timeOfDay", "") == "night" && nightDocument.at("ambientIntensity") == 0.4F,
+    Check(nightDocument.value("timeOfDay", "") == "night" && nightDocument.at("ambientIntensity").get<float>() == 0.4F,
           "the night profile was not saved to its own file");
     environment->ObserveScene(0x55, false);
     Check(!environment->Snapshot().EditingNight && environment->Snapshot().Profile == saved.Profile &&
@@ -1994,6 +2041,7 @@ int main() try {
     Check(differentRom.SystemId() == 1, "unsupported old language leaked into another ROM");
     std::filesystem::remove(languagePath);
     CheckSavestatePanel();
+    CheckSceneEnvironmentCodec();
     CheckSceneEnvironment();
     InstallGraphicsSettingsPanelTabs({});
     ImGui::DestroyContext();

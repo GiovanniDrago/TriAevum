@@ -2117,6 +2117,7 @@ void NativeA32WindowSession::PublishNativeSceneView() {
 #endif
   renderStream.Submit([&, snapshot, night, player, freeCamera] {
   sceneEnvironment->ObserveScene(snapshot ? snapshot->SceneId : std::nullopt, night, player);
+  sceneEnvironment->PollProfileFiles();
   sceneEnvironment->PublishLightGizmo(
       snapshot && snapshot->CameraAvailable ? std::optional(snapshot->Eye) : std::nullopt, freeCamera);
   if (!snapshot.has_value() ||
