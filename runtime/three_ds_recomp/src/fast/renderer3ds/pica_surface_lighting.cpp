@@ -48,7 +48,7 @@ std::optional<PicaSurfaceLightingView> BuildPicaSurfaceLightingView(
 
 void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSurfaceLightingView& view,
                             const PicaSceneWaterBodies& bodies, const std::array<float, 3>& worldMinimum,
-                            const std::array<float, 3>& worldMaximum) noexcept {
+                            const std::array<float, 3>& worldMaximum, float seconds) noexcept {
     std::array<uint32_t, kMaximumPicaSceneWaterBodies> reached{};
     uint32_t count = 0;
     for (uint32_t i = 0; i < std::min(bodies.Count, kMaximumPicaSceneWaterBodies); ++i) {
@@ -75,6 +75,9 @@ void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSur
         uniforms.WaterHeights[slot] = body.SurfaceY;
     }
     uniforms.WaterViewTranslation = {view.Rows[0][3], view.Rows[1][3], view.Rows[2][3], static_cast<float>(count)};
+    uniforms.WaterOptics = kPicaSurfaceWaterOptics;
+    uniforms.WaterRipples = {std::fmod(std::max(seconds, 0.0F), 3600.0F), kPicaSurfaceWaterRipples[0],
+                             kPicaSurfaceWaterRipples[1], 0.0F};
 }
 
 std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
@@ -309,7 +312,11 @@ layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
     vec4 water_view_translation;
     vec4 water_footprints[4];
     vec4 water_heights;
+    vec4 water_optics;
+    vec4 water_ripples;
 } pica_surface;
+vec3 pica_surface_water_world = vec3(0.0);
+float pica_surface_water_footprint = 0.0;
 // A fragment of gameplay water (pica_scene_water.h): a horizontal face at a
 // listed body's surface height, inside its footprint. face: the view-space
 // face normal (any length or sign).
@@ -328,8 +335,10 @@ bool pica_surface_water(vec3 face) {
     for (uint slot = 0u; slot < min(count, 4u); ++slot) {
         vec4 footprint = pica_surface.water_footprints[slot];
         if (abs(world.y - pica_surface.water_heights[slot]) <= 4.0 && world.x >= footprint.x &&
-            world.z >= footprint.y && world.x <= footprint.z && world.z <= footprint.w)
+            world.z >= footprint.y && world.x <= footprint.z && world.z <= footprint.w) {
+            pica_surface_water_world = world;
             return true;
+        }
     }
     return false;
 }
@@ -574,12 +583,122 @@ vec3 pica_surface_primary(vec3 native_color, vec3 normal_view) {
     return min(native_color + (pica_surface_scene_point_primary(normal_view) +
                pica_surface_scene_directional_primary(normal_view)) * pica_surface_tint.rgb, vec3(1.0));
 }
+// Gameplay water (pica_surface_water): its native colour is its appearance.
+// Added optics: Fresnel reflection of the environment (F0 water_optics.x;
+// sky: the scene's colour at a distance) and GGX specular of the direct
+// lights, shadowed: colour = (1 - F) native + F sky + specular.
+bool pica_surface_water_fragment = false;
+float pica_surface_water_fresnel(float cosine) {
+    float f0 = pica_surface.water_optics.x;
+    float grazing = 1.0 - clamp(cosine, 0.0, 1.0);
+    float grazing2 = grazing * grazing;
+    return f0 + (1.0 - f0) * grazing2 * grazing2 * grazing;
+}
+vec3 pica_surface_water_specular(vec3 normal, vec3 view_dir, vec3 direction, vec3 radiance) {
+    float n_dot_l = dot(normal, direction);
+    if (n_dot_l <= 0.0) return vec3(0.0);
+    vec3 half_vector = pica_surface_unit(direction + view_dir);
+    float n_dot_h = clamp(dot(normal, half_vector), 0.0, 1.0);
+    float alpha2 = pica_surface.water_optics.y * pica_surface.water_optics.y;
+    float denominator = n_dot_h * n_dot_h * (alpha2 - 1.0) + 1.0;
+    float distribution = alpha2 / (3.14159265 * denominator * denominator);
+    float fresnel = pica_surface_water_fresnel(dot(view_dir, half_vector));
+    // Cook-Torrance with a unit visibility term: D F / (4 n.v), faded in at
+    // the light's horizon.
+    float n_dot_v = max(dot(normal, view_dir), 0.1);
+    return radiance * (distribution * fresnel / (4.0 * n_dot_v) * smoothstep(0.0, 0.1, n_dot_l));
+}
+// Gradient noise with its derivatives (value, d/dx, d/dy).
+vec2 pica_surface_water_gradient(vec2 cell) {
+    float angle = 6.2831853 * fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+    return vec2(cos(angle), sin(angle));
+}
+vec3 pica_surface_water_noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = p - i;
+    vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    vec2 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+    vec2 ga = pica_surface_water_gradient(i);
+    vec2 gb = pica_surface_water_gradient(i + vec2(1.0, 0.0));
+    vec2 gc = pica_surface_water_gradient(i + vec2(0.0, 1.0));
+    vec2 gd = pica_surface_water_gradient(i + vec2(1.0, 1.0));
+    float va = dot(ga, f);
+    float vb = dot(gb, f - vec2(1.0, 0.0));
+    float vc = dot(gc, f - vec2(0.0, 1.0));
+    float vd = dot(gd, f - vec2(1.0, 1.0));
+    return vec3(va + u.x * (vb - va) + u.y * (vc - va) + u.x * u.y * (va - vb - vc + vd),
+                ga + u.x * (gb - ga) + u.y * (gc - ga) + u.x * u.y * (ga - gb - gc + gd) +
+                    du * (u.yx * (va - vb - vc + vd) + vec2(vb, vc) - va));
+}
+// The ripples' world slope (d height / dx, dz): three drifting octaves, each
+// faded out where a pixel covers its wavelength.
+vec2 pica_surface_water_slope() {
+    vec2 position = pica_surface_water_world.xz;
+    float time = pica_surface.water_ripples.x;
+    float scale = max(pica_surface.water_ripples.z, 0.05);
+    vec3 octaves[3] = vec3[3](vec3(120.0, 6.0, 0.0), vec3(45.0, 2.2, 1.0), vec3(17.0, 0.8, 2.0));
+    vec2 drifts[3] = vec2[3](vec2(12.0, 7.0), vec2(-9.0, 14.0), vec2(20.0, -6.0));
+    vec2 slope = vec2(0.0);
+    for (int octave = 0; octave < 3; ++octave) {
+        float wavelength = octaves[octave].x * scale;
+        float fade = clamp(1.5 - 3.0 * pica_surface_water_footprint / wavelength, 0.0, 1.0);
+        if (fade <= 0.0) continue;
+        vec3 noise = pica_surface_water_noise((position + drifts[octave] * time) / wavelength +
+                                              octaves[octave].z * 17.31);
+        slope += noise.yz * (octaves[octave].y * scale / wavelength) * fade;
+    }
+    return slope * pica_surface.water_ripples.y;
+}
+vec3 pica_surface_water_shade(vec3 native_rgb, vec3 sky) {
+    if (pica_surface.water_optics.w < 0.0) return vec3(1.0, 0.0, 1.0);
+    vec3 view_dir = pica_surface_unit(pica_view);
+    vec2 slope = pica_surface_water_slope();
+    vec3 normal = pica_surface_view_direction(vec3(-slope.x, 1.0, -slope.y));
+    // Seen from below (underwater), the surface faces down.
+    if (dot(normal, view_dir) < 0.0) normal = -normal;
+    float fresnel = pica_surface_water_fresnel(dot(normal, view_dir)) * pica_surface.water_optics.z;
+    vec3 color = mix(native_rgb, sky, fresnel);
+    vec3 specular = vec3(0.0);
+    for (uint slot = 0u; slot < pica_surface.control.z; ++slot)
+        specular += pica_surface_water_specular(normal, view_dir,
+            pica_surface_unit(pica_surface.scene_directions[slot].xyz),
+            pica_surface.scene_directional_colors[slot].rgb * pica_surface_shadow(10 + int(slot)));
+    if (pica_surface.environment_parameters.w != 0.0) {
+        for (int slot = 0; slot < 2; ++slot) {
+            if (pica_surface.environment_directions[slot].w <= 0.0) continue;
+            specular += pica_surface_water_specular(normal, view_dir,
+                pica_surface_unit(pica_surface.environment_directions[slot].xyz),
+                pica_surface.environment_colors[slot].rgb * pica_surface.environment_directions[slot].w *
+                    pica_surface_shadow(8 + slot));
+        }
+    }
+    for (uint slot = 0u; slot < pica_surface.control.y; ++slot) {
+        vec3 direction, radiance;
+        pica_surface_scene_point(int(slot), direction, radiance);
+        specular += pica_surface_water_specular(normal, view_dir, direction, radiance);
+    }
+    for (uint slot = 0u; slot < pica_surface_placed_count(); ++slot) {
+        vec3 direction, radiance;
+        pica_surface_placed_light(int(slot), direction, radiance);
+        specular += pica_surface_water_specular(normal, view_dir, direction, radiance);
+    }
+    return color + specular * pica_surface.water_optics.w;
+}
+)glsl";
+}
+
+std::string_view PicaSurfaceLightingWaterShading() noexcept {
+    return R"glsl(
+    if (pica_surface_water_fragment)
+        combiner_output.rgb = pica_surface_water_shade(combiner_output.rgb, fragment_uniforms.fog_color.rgb);
 )glsl";
 }
 
 std::string_view PicaSurfaceLightingBody() noexcept {
     return R"glsl(
     bool surface_water = pica_surface_water(cross(dFdx(pica_view), dFdy(pica_view)));
+    pica_surface_water_fragment = surface_water;
+    pica_surface_water_footprint = length(fwidth(pica_view)) * length(pica_surface.view_to_world_linear[0].xyz);
     if ((pica_surface.control.x != 0u || pica_surface.environment_parameters.w != 0.0 ||
          pica_surface.control.y != 0u || pica_surface.control.z != 0u) && !surface_water) {
         rounded_primary_color.rgb = byteround3(pica_surface_primary(rounded_primary_color.rgb,

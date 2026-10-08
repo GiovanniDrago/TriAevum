@@ -198,6 +198,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         ::Fast::Renderer3ds::ShadowBounds WorldBounds;
     };
     NativePicaWaterSurface ResolveNativePicaWaterSurface(const GfxNativePicaDrawView& draw);
+    // Water ripple time origin (cosmetic animation, presentation clock).
+    std::chrono::steady_clock::time_point mWaterEpoch = std::chrono::steady_clock::now();
     bool SubmitPicaDisplayTransfer(
         const GfxNativePicaDisplayTransferView& transfer,
         std::string* error = nullptr) override;

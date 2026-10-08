@@ -84,9 +84,21 @@ struct alignas(16) PicaSurfaceLightingUniforms {
     std::array<float, 4> WaterViewTranslation{};
     std::array<std::array<float, 4>, kMaximumPicaSurfaceWaterBodies> WaterFootprints{};
     std::array<float, 4> WaterHeights{};
+    // Water optics: F0, GGX alpha, environment reflection and direct
+    // specular strengths (kPicaSurfaceWaterOptics unless a scene sets them).
+    std::array<float, 4> WaterOptics{};
+    // Water ripples: time (seconds, wrapped), slope strength, wavelength scale.
+    std::array<float, 4> WaterRipples{};
 };
 
-static_assert(sizeof(PicaSurfaceLightingUniforms) == 2608U);
+static_assert(sizeof(PicaSurfaceLightingUniforms) == 2640U);
+
+// Water's Fresnel reflectance at normal incidence, its GGX alpha, and its
+// environment reflection (subdued: the environment is the fog colour until
+// screen-space reflections) and direct specular strengths.
+inline constexpr std::array<float, 4> kPicaSurfaceWaterOptics{0.02F, 0.08F, 0.6F, 1.0F};
+// Ripple slope strength and wavelength scale (1: 120/45/17 world units).
+inline constexpr std::array<float, 2> kPicaSurfaceWaterRipples{1.4F, 1.0F};
 
 // Scene lighting requires the column-major WorldToView captured with this
 // geometry sample. Neither a live camera nor a model/bone matrix is a substitute.
@@ -115,9 +127,12 @@ std::optional<PicaSurfaceLightingView> BuildPicaSurfaceLightingView(
 // found per fragment, on a body's surface with a horizontal face.
 void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSurfaceLightingView& view,
                             const PicaSceneWaterBodies& bodies, const std::array<float, 3>& worldMinimum,
-                            const std::array<float, 3>& worldMaximum) noexcept;
+                            const std::array<float, 3>& worldMaximum, float seconds) noexcept;
 
 [[nodiscard]] std::string_view PicaSurfaceLightingDeclarations() noexcept;
 [[nodiscard]] std::string_view PicaSurfaceLightingBody() noexcept;
+// After the native TEV, before fog: water optics on a water fragment's
+// native colour (the body marks the fragment).
+[[nodiscard]] std::string_view PicaSurfaceLightingWaterShading() noexcept;
 
 } // namespace Fast::Renderer3ds

@@ -328,6 +328,8 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
         vec2 pica_texcoord1 = oot3d_native_texcoord1;
         vec2 pica_texcoord2 = oot3d_native_texcoord2;
 )glsl" + tev + "\n        combiner_output.rgb = surface_lit_rgb;\n    }\n");
+        atAfterTev += Guarded(Bit(Decision::SurfaceLighting) + " && !" + Bit(Decision::Pbr),
+                              Renderer3ds::PicaSurfaceLightingWaterShading());
         atAfterTev += pbr.ShadingBody;
         atAfterTev += "\n    vec3 surface_before_fog = combiner_output.rgb;\n";
         atAfterTev += "    vec3 surface_gi_albedo = vec3(0.0);\n";

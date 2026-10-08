@@ -763,9 +763,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         }
         const auto surfaceAppearance = Renderer3ds::ClassifyPicaSurfaceAppearance(
             draw.Blend, nativeVertexLighting, draw.FragmentFeatures.FragmentLightingEnabled);
-        // Water lying on a gameplay water body (pica_scene_water.h) keeps its
-        // native colour too: the title's water is ambient-only geometry, and
-        // relit like ground its top faces the key light at full Lambert.
+        // Gameplay water (pica_scene_water.h) keeps its native colour with
+        // added optics: the title's water is ambient-only geometry, and relit
+        // like ground its top faced the key light at full Lambert. Its
+        // fragments are found in the surface shader (AssignPicaSurfaceWater).
         NativePicaWaterSurface waterSurface;
         if (!nativeMemoryOnly && !mNativeFidelityProfile &&
             Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
@@ -774,7 +775,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             Renderer3ds::PicaCompositionReceivesSurfaceLighting(draw.Composition.Layer) && grassPerspectiveProjection)
             waterSurface = ResolveNativePicaWaterSurface(draw);
         const bool authoredAppearance = Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
-            (surfaceAppearance != Renderer3ds::PicaSurfaceAppearance::Relightable || waterSurface.Body.has_value());
+            surfaceAppearance != Renderer3ds::PicaSurfaceAppearance::Relightable;
         const bool directionalShadowReceiver = !nativeMemoryOnly && !isolatedLighting && !authoredAppearance &&
             Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
             mDirectionalShadowMapBarrierPlan.Valid() &&
@@ -860,7 +861,15 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 draw.LightBinding.Water)
                 Renderer3ds::AssignPicaSurfaceWater(*surfaceLighting, *mSurfaceLightingView, *draw.LightBinding.Water,
                                                     waterSurface.WorldBounds.Minimum,
-                                                    waterSurface.WorldBounds.Maximum);
+                                                    waterSurface.WorldBounds.Maximum,
+                                                    std::chrono::duration<float>(
+                                                        std::chrono::steady_clock::now() - mWaterEpoch).count());
+#if defined(TRIAEVUM_RENDERER_DEVELOPER_TOOLS)
+            // Developer view: water fragments in magenta.
+            if (surfaceLighting && surfaceLighting->WaterViewTranslation[3] > 0.0F &&
+                std::getenv("TRIAEVUM_DEV_WATER_DEBUG") != nullptr)
+                surfaceLighting->WaterOptics[3] = -1.0F;
+#endif
             if (surfaceLighting && environmentWorldToView && directionalShadowReceiver &&
                 !Oot3d::InvertDirectionalShadowMatrix(*environmentWorldToView, environmentViewToWorld))
                 surfaceLighting.reset();
@@ -1057,8 +1066,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 draw.Composition.Layer,
                 pointShadowReceiver && surfaceLighting.has_value(),
                 // Authored appearance, like an isolated object, publishes no
-                // ambient occlusion response and no GI albedo.
-                isolatedLighting || authoredAppearance,
+                // ambient occlusion response and no GI albedo; nor does a
+                // draw that is all water.
+                isolatedLighting || authoredAppearance || waterSurface.Body.has_value(),
             },
             mTemporalMotionEnabled && !nativeMemoryOnly,
             resolvedReflectionMaterial.has_value()

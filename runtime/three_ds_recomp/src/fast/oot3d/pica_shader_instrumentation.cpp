@@ -662,7 +662,8 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
         preserveAlpha.append(request.Source.substr(tevBegin, tevEnd - tevBegin));
         preserveAlpha += "\n        combiner_output.rgb = surface_lit_rgb;\n    }\n";
         insertions.push_back({tevEnd, std::move(preserveAlpha)});
-        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_NATIVE_PER_PIXEL_LIGHTING_V10_WATER");
+        if (!pbr) insertions.push_back({tevEnd, std::string(Renderer3ds::PicaSurfaceLightingWaterShading())});
+        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_NATIVE_PER_PIXEL_LIGHTING_V12_WATER_RIPPLES");
         result.AppliedFeatures |= PicaShaderInstrumentationFeature::NativePerPixelLighting;
         if (pbr) {
             declarations += pbr->Declarations;
