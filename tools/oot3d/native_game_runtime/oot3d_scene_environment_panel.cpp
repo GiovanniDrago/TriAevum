@@ -174,6 +174,13 @@ public:
     ImGui::BeginDisabled(!value.Enabled || !supported);
     changed |= DrawPlacedLights(value, state);
     ImGui::EndDisabled();
+    ImGui::SeparatorText("Shadows");
+    ImGui::BeginDisabled(!supported);
+    changed |= ImGui::Checkbox("Cull shadow caster faces", &value.ShadowCasterCulling);
+    ImGui::EndDisabled();
+    ImGui::TextWrapped("Directional shadow casters keep the title's back-face culling. Off: both faces of every "
+                       "caster draw into the shadow map, for one-sided or open meshes whose culled faces leave "
+                       "holes or leak light.");
     if (changed)
       mRuntime->Preview(value, state.Revision);
     if (ImGui::Button("Save scene environment"))

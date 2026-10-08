@@ -162,6 +162,7 @@ DirectionalShadowFramePlan BuildDirectionalShadowFramePlan(const DirectionalShad
     plan.DepthBiasSlope = input.Settings.DepthBiasSlope;
     plan.Strength = std::clamp(input.Settings.Strength, 0.0F, 4.0F);
     plan.PcfRadius = std::min<uint8_t>(input.Settings.PcfRadius, 2U);
+    plan.CullCasters = input.CullCasters;
     plan.Status = DirectionalShadowPlanStatus::Ready;
     return plan;
 }

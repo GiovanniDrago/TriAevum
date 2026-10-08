@@ -389,6 +389,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
             mFrameEnvironment.KeyDirection != graphicsSnapshot.Environment.KeyDirection ||
             mFrameEnvironment.KeyAzimuthOffset != graphicsSnapshot.Environment.KeyAzimuthOffset ||
             mFrameEnvironment.KeyElevationOffset != graphicsSnapshot.Environment.KeyElevationOffset ||
+            mFrameEnvironment.ShadowCasterCulling != graphicsSnapshot.Environment.ShadowCasterCulling ||
             mFrameEnvironment.Lights[0].DirectionTowardSource !=
                 graphicsSnapshot.Environment.Lights[0].DirectionTowardSource)
             mNriDirectionalShadowPass.InvalidateHistory();

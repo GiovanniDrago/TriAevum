@@ -351,6 +351,9 @@ SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<u
     result.KeyAzimuthOffset = read.Scalar(doc, "", "keyLightAzimuthOffset", -180.0F, 180.0F);
     result.KeyElevationOffset = read.Scalar(doc, "", "keyLightElevationOffset", -90.0F, 90.0F);
   }
+  // Optional: profiles without it keep the title's culling.
+  if (doc.contains("shadowCasterCulling"))
+    result.ShadowCasterCulling = read.Boolean(doc, "", "shadowCasterCulling");
   if (version >= 2) {
     if (const auto *points = read.Member(doc, "", "pointLights")) {
       // Profiles from before the flames group list two; it keeps its defaults.
@@ -462,7 +465,8 @@ Json EncodeSceneEnvironment(const SceneEnvironmentProfile &value, uint16_t scene
                  {"directionalLights", std::move(lights)},
                  {"keyLightDirection", EncodeKeyDirection(value.KeyDirection)},
                  {"keyLightAzimuthOffset", Number(value.KeyAzimuthOffset)},
-                 {"keyLightElevationOffset", Number(value.KeyElevationOffset)}};
+                 {"keyLightElevationOffset", Number(value.KeyElevationOffset)},
+                 {"shadowCasterCulling", value.ShadowCasterCulling}};
   if (night) result["timeOfDay"] = "night";
   if (!value.PlacedLights.empty()) {
     Json placed = Json::array();
@@ -541,6 +545,7 @@ Fast::Renderer3ds::PicaEnvironmentLighting ResolveSceneEnvironment(const SceneEn
     result.PlacedLights[result.PlacedLightCount++] =
         ResolvePlacedLight(light, PlacedLightIdentity(scene, night, light.Id));
   }
+  result.ShadowCasterCulling = value.ShadowCasterCulling;
   result.KeyDirection = value.KeyDirection;
   result.KeyAzimuthOffset = value.KeyAzimuthOffset * kRadians;
   result.KeyElevationOffset = value.KeyElevationOffset * kRadians;
@@ -580,6 +585,7 @@ Json ExplainSceneEnvironment(const SceneEnvironmentProfile &profile, uint16_t sc
                      {"ambient", Number(resolved.NativeAmbientStrength)}}},
                    {"ambient", {{"color", Triple(resolved.AmbientColor)}, {"intensity", Number(resolved.AmbientIntensity)}}},
                    {"fogStrength", Number(resolved.FogStrength)},
+                   {"shadowCasterCulling", resolved.ShadowCasterCulling},
                    {"keyLight",
                     {{"follows", EncodeKeyDirection(resolved.KeyDirection)},
                      {"offsetDegrees", Json::array({Number(profile.KeyAzimuthOffset), Number(profile.KeyElevationOffset)})},

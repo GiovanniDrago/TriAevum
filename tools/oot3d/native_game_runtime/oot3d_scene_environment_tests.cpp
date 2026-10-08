@@ -141,6 +141,23 @@ int main() try {
   f.Settle();
   Check(f.Ambient() == 0.85F, "a missing file replaced the profile in use");
 
+  // The shadow casters' face culling: on without the key, off read, written
+  // and handed to the renderer.
+  {
+    auto document = EncodeSceneEnvironment(BaseSceneEnvironmentProfile(), 0x55, false);
+    document.erase("shadowCasterCulling");
+    const auto older = DecodeSceneEnvironment(document);
+    Check(older.Profile && older.Profile->ShadowCasterCulling, "a profile without the key lost the culling");
+    auto profile = BaseSceneEnvironmentProfile();
+    profile.ShadowCasterCulling = false;
+    const auto decoded = DecodeSceneEnvironment(EncodeSceneEnvironment(profile, 0x55, false));
+    Check(decoded.Profile && !decoded.Profile->ShadowCasterCulling, "the culling switch did not round trip");
+    Check(!ResolveSceneEnvironment(profile, 0x55, false).ShadowCasterCulling,
+          "the renderer did not receive the culling switch");
+    document["shadowCasterCulling"] = 1;
+    Check(!DecodeSceneEnvironment(document).Errors.empty(), "a non-boolean culling switch was accepted");
+  }
+
   std::filesystem::remove_all(directory);
   std::printf("scene environment tests passed: %d checks\n", gChecks);
   return 0;

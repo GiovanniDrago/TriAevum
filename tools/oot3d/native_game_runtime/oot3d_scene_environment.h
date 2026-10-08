@@ -80,6 +80,8 @@ struct SceneEnvironmentProfile {
   std::array<Fast::Renderer3ds::PicaScenePointLightSettings,
              Fast::Renderer3ds::kPicaScenePointLightGroups> PointLights{};
   std::vector<PlacedLight> PlacedLights;
+  // The directional shadow casters' face culling (off: both faces cast).
+  bool ShadowCasterCulling = true;
   bool operator==(const SceneEnvironmentProfile &) const = default;
 };
 

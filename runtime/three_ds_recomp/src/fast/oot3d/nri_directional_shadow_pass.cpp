@@ -398,7 +398,7 @@ struct NriDirectionalShadowPass::Impl {
         uint64_t hash = 1469598103934665603ULL;
         hash = HashValue(hash, caster.VertexShader->Key);
         hash = HashValue(hash, caster.Material.Topology);
-        hash = HashValue(hash, caster.Material.CullMode);
+        hash = HashValue(hash, plan.CullCasters ? caster.Material.CullMode : PicaSceneCullMode::None);
         hash = HashValue(hash, caster.Material.FrontFace);
         hash = HashValue(hash, plan.DepthBiasConstant);
         hash = HashValue(hash, plan.DepthBiasSlope);
@@ -443,7 +443,7 @@ struct NriDirectionalShadowPass::Impl {
             return nullptr;
         };
         const nri::Topology topology = ToNriTopology(caster.Material.Topology);
-        const nri::CullMode cull = ToNriCullMode(caster.Material.CullMode);
+        const nri::CullMode cull = ToNriCullMode(plan.CullCasters ? caster.Material.CullMode : PicaSceneCullMode::None);
         if (topology == nri::Topology::MAX_NUM || cull == nri::CullMode::MAX_NUM) {
             return reject();
         }
@@ -990,6 +990,7 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     input.CameraWorld = { viewToWorld[12], viewToWorld[13], viewToWorld[14] };
     input.LightDirectionTowardSource = light.WorldDirectionTowardSource;
     input.Settings = desc.Settings;
+    input.CullCasters = desc.Environment == nullptr || desc.Environment->ShadowCasterCulling;
     // Validates the settings and the light. Each layout is planned at its own
     // direction below.
     const auto plan = BuildDirectionalShadowFramePlan(input);

@@ -39,6 +39,8 @@ struct DirectionalShadowFrameInput {
     DirectionalShadowVector LightDirectionTowardSource{};
     DirectionalShadowSettings Settings;
     const ::Fast::Renderer3ds::VirtualShadowLayout* PreviousLayout = nullptr;
+    // The casters keep their own face culling (false: both faces draw).
+    bool CullCasters = true;
 };
 
 struct DirectionalShadowFramePlan {
@@ -49,6 +51,7 @@ struct DirectionalShadowFramePlan {
     float DepthBiasSlope = 0.0F;
     float Strength = 0.0F;
     uint8_t PcfRadius = 0;
+    bool CullCasters = true;
 
     [[nodiscard]] bool Ready() const noexcept {
         return Status == DirectionalShadowPlanStatus::Ready;
