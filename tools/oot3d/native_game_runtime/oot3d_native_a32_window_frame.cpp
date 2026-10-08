@@ -2212,6 +2212,20 @@ void NativeA32WindowSession::UpdateDevLab(uint64_t guestFrame) {
         const uint16_t value = static_cast<uint16_t>(command.at("value").get<int>());
         const bool written = processStorage->Memory().Write16(address, value);
         finish(written ? "ok" : "failed", {{"frame", guestFrame}, {"address", address}});
+      } else if (op == "water") {
+        // The scene's water boxes as the renderer receives them.
+        const auto water = Oot3dNativeGame::CaptureNativeWaterBodies(sceneViewProbe.Stats().LastPlayStateAddress, processStorage->Memory());
+        Json bodies = Json::array();
+        for (uint32_t i = 0; i < water.Count; ++i) {
+          const auto &body = water.Bodies[i];
+          bodies.push_back({{"min", {body.MinimumXZ[0], body.MinimumXZ[1]}},
+                            {"max", {body.MaximumXZ[0], body.MaximumXZ[1]}},
+                            {"y", body.SurfaceY},
+                            {"properties", body.Properties}});
+        }
+        auto detail = place();
+        detail["water"] = std::move(bodies);
+        finish("ok", detail);
       } else if (op == "actors") {
         // The live actors (optionally only some ids): id, params, instance,
         // room, world position and scale.

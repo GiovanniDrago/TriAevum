@@ -547,6 +547,41 @@ void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recom
         mScenePoints.reset();
     else if (!mScenePoints || *mScenePoints != snapshot)
         mScenePoints = std::make_shared<const PicaScenePointLights>(std::move(snapshot));
+    auto water = CaptureNativeWaterBodies(playState, memory);
+    if (water.Count == 0)
+        mWater.reset();
+    else if (!mWater || *mWater != water)
+        mWater = std::make_shared<const PicaSceneWaterBodies>(std::move(water));
+}
+
+Fast::Renderer3ds::PicaSceneWaterBodies CaptureNativeWaterBodies(uint32_t playState,
+                                                               oot3d::recomp::a32::MemoryBus& memory) {
+    using namespace Fast::Renderer3ds;
+    PicaSceneWaterBodies result;
+    uint32_t header = 0, boxes = 0;
+    uint16_t count = 0;
+    if (playState == 0 || playState > std::numeric_limits<uint32_t>::max() - 0xA98U ||
+        !memory.Read32(playState + 0xA98U, &header) || header == 0 ||
+        header > std::numeric_limits<uint32_t>::max() - 0x2CU || !memory.Read16(header + 0x14U, &count) ||
+        !memory.Read32(header + 0x28U, &boxes) || boxes == 0 ||
+        boxes > std::numeric_limits<uint32_t>::max() - kMaximumPicaSceneWaterBodies * 0x10U)
+        return result;
+    for (uint32_t i = 0; i < std::min<uint32_t>(count, kMaximumPicaSceneWaterBodies); ++i) {
+        std::array<uint16_t, 5> raw{};
+        uint32_t properties = 0;
+        bool valid = memory.Read32(boxes + i * 0x10U + 0x0CU, &properties);
+        for (uint32_t field = 0; valid && field < raw.size(); ++field)
+            valid = memory.Read16(boxes + i * 0x10U + field * 2U, &raw[field]);
+        if (!valid) return {};
+        const auto value = [&](size_t field) { return float(std::bit_cast<int16_t>(raw[field])); };
+        if (value(3) <= 0.0F || value(4) <= 0.0F) continue;
+        auto& body = result.Bodies[result.Count++];
+        body.MinimumXZ = { value(0), value(2) };
+        body.MaximumXZ = { value(0) + value(3), value(2) + value(4) };
+        body.SurfaceY = value(1);
+        body.Properties = properties;
+    }
+    return result;
 }
 
 Fast::Renderer3ds::PicaNativeLightBinding
@@ -560,6 +595,7 @@ NativeA32LightingProbe::CaptureRenderer(uint32_t renderer, oot3d::recomp::a32::M
     result.WorldToView = CaptureWorldToView(memory);
     result.ScenePoints = mScenePoints;
     result.SceneDirectionals = mSceneDirectionals;
+    result.Water = mWater;
     return result;
 }
 
@@ -598,6 +634,7 @@ void NativeA32LightingProbe::Reset() noexcept {
     mRenderStates.clear();
     mScenePoints.reset();
     mSceneDirectionals.reset();
+    mWater.reset();
     mSceneLightTrace = {};
     // A state load is a discontinuity.
     mContinuityPlayState = 0;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "fast/renderer3ds/pica_scene_water.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -208,6 +210,7 @@ struct PicaNativeLightBinding {
     std::optional<std::array<float, 16>> WorldToView;
     std::shared_ptr<const PicaScenePointLights> ScenePoints;
     std::shared_ptr<const PicaSceneDirectionalLights> SceneDirectionals;
+    std::shared_ptr<const PicaSceneWaterBodies> Water;
 
     bool operator==(const PicaNativeLightBinding&) const = default;
 };

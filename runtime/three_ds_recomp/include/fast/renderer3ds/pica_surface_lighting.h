@@ -51,6 +51,8 @@ struct PicaPointShadowAssignment {
     std::array<float, 4> Atlas{};
 };
 
+inline constexpr uint32_t kMaximumPicaSurfaceWaterBodies = 4U;
+
 struct alignas(16) PicaSurfaceLightingUniforms {
     std::array<float, 4> MaterialDiffuse{};
     std::array<float, 4> MaterialAmbient{};
@@ -75,9 +77,16 @@ struct alignas(16) PicaSurfaceLightingUniforms {
     std::array<float, 4> PointShadowAtlas{};
     // Placed lights; Control[3] bits 8-15 hold their count.
     std::array<PicaPlacedLightUniforms, kMaximumPicaPlacedLights> Placed{};
+    // Water bodies under this draw (AssignPicaSurfaceWater): the view's
+    // translation (xyz; w = body count), each body's world footprint (min x,
+    // min z, max x, max z) and the bodies' surface heights. A fragment on one
+    // of those surfaces keeps its native colour.
+    std::array<float, 4> WaterViewTranslation{};
+    std::array<std::array<float, 4>, kMaximumPicaSurfaceWaterBodies> WaterFootprints{};
+    std::array<float, 4> WaterHeights{};
 };
 
-static_assert(sizeof(PicaSurfaceLightingUniforms) == 2512U);
+static_assert(sizeof(PicaSurfaceLightingUniforms) == 2608U);
 
 // Scene lighting requires the column-major WorldToView captured with this
 // geometry sample. Neither a live camera nor a model/bone matrix is a substitute.
@@ -100,6 +109,13 @@ std::optional<PicaSurfaceLightingView> BuildPicaSurfaceLightingView(
     const PicaEnvironmentLighting& environment,
     const PicaSurfaceLightingView* cameraView,
     const PicaPointShadowAssignment* pointShadows = nullptr) noexcept;
+
+// The water bodies a draw's world bounds reach (the nearest heights first;
+// at most kMaximumPicaSurfaceWaterBodies): water drawn in a mixed room mesh is
+// found per fragment, on a body's surface with a horizontal face.
+void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSurfaceLightingView& view,
+                            const PicaSceneWaterBodies& bodies, const std::array<float, 3>& worldMinimum,
+                            const std::array<float, 3>& worldMaximum) noexcept;
 
 [[nodiscard]] std::string_view PicaSurfaceLightingDeclarations() noexcept;
 [[nodiscard]] std::string_view PicaSurfaceLightingBody() noexcept;

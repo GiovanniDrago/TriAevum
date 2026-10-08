@@ -26,6 +26,11 @@ target_compile_features(pica_surface_appearance_tests PRIVATE cxx_std_20)
 target_include_directories(pica_surface_appearance_tests PRIVATE ../include)
 add_test(NAME pica_surface_appearance_tests COMMAND pica_surface_appearance_tests)
 
+add_executable(pica_scene_water_tests pica_scene_water_tests.cpp)
+target_compile_features(pica_scene_water_tests PRIVATE cxx_std_20)
+target_include_directories(pica_scene_water_tests PRIVATE ../include)
+add_test(NAME pica_scene_water_tests COMMAND pica_scene_water_tests)
+
 add_executable(ambient_occlusion_guide_tests ambient_occlusion_guide_tests.cpp)
 target_compile_features(ambient_occlusion_guide_tests PRIVATE cxx_std_20)
 target_include_directories(ambient_occlusion_guide_tests PRIVATE ../include)

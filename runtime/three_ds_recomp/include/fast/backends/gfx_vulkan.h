@@ -190,6 +190,14 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         const ::Fast::Renderer3ds::PicaCompositionDrawReference& draw) const override;
     bool PreparePicaSequenceDraw(const GfxNativePicaDrawView& draw,
                                  std::string* error = nullptr) override;
+    // A scene draw lying on one of its binding's water bodies (flat, at the
+    // body's height, over it): the body index. World bounds come from the
+    // draw's cached triangle geometry; unknown geometry is not water.
+    struct NativePicaWaterSurface {
+        std::optional<uint32_t> Body;
+        ::Fast::Renderer3ds::ShadowBounds WorldBounds;
+    };
+    NativePicaWaterSurface ResolveNativePicaWaterSurface(const GfxNativePicaDrawView& draw);
     bool SubmitPicaDisplayTransfer(
         const GfxNativePicaDisplayTransferView& transfer,
         std::string* error = nullptr) override;

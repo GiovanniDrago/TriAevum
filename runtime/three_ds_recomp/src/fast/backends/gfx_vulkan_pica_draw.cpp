@@ -223,6 +223,63 @@ bool GfxRenderingAPIVulkan::WantsPicaSequenceDrawPreparation(
            !draw.Composition.NativeProjectedShadow;
 }
 
+GfxRenderingAPIVulkan::NativePicaWaterSurface GfxRenderingAPIVulkan::ResolveNativePicaWaterSurface(
+    const GfxNativePicaDrawView& draw) {
+    NativePicaWaterSurface result;
+    Oot3d::DirectionalShadowMatrix viewToWorld;
+    if (!draw.LightBinding.Water || draw.LightBinding.Water->Count == 0U || !draw.GeometryIdentityAvailable ||
+        draw.VertexCount == 0U || draw.VertexBindings.empty() || draw.VertexAttributes.empty() ||
+        draw.VertexUniformBytes.size() < Oot3d::kPicaPackedVertexFloatOffset || !draw.LightBinding.WorldToView ||
+        !Oot3d::InvertDirectionalShadowMatrix(*draw.LightBinding.WorldToView, viewToWorld))
+        return result;
+    std::vector<Oot3d::PicaNriSourceVertexStream> streams;
+    std::vector<Oot3d::PicaNriSourceVertexBinding> sourceBindings;
+    std::vector<Oot3d::PicaNriSourceVertexAttribute> attributes;
+    streams.reserve(draw.VertexBindings.size());
+    sourceBindings.reserve(draw.VertexBindings.size());
+    for (const auto& binding : draw.VertexBindings) {
+        streams.push_back({ { binding.Binding, binding.ByteStride, binding.PerInstance }, binding.Bytes });
+        sourceBindings.push_back({ binding.Binding, binding.ByteStride, binding.PerInstance });
+    }
+    attributes.reserve(draw.VertexAttributes.size());
+    for (const auto& attribute : draw.VertexAttributes)
+        attributes.push_back({ attribute.Location, attribute.Binding,
+                               static_cast<Oot3d::PicaNriVertexScalar>(attribute.Format),
+                               attribute.ComponentCount, attribute.ByteOffset });
+    const auto layout = Oot3d::BuildPicaNriVertexInputLayout(sourceBindings, attributes);
+    if (!layout.Valid() || layout.Bindings.empty() || layout.Attributes.empty()) return result;
+    // The ordered submission resolves the same geometry again: a cache hit.
+    const auto resolution = mPicaGeometryRegistry.Resolve({
+        draw.GeometryIdentity, draw.GeometryContentVersion, draw.GeometryIdentityAvailable, mFrameCounter,
+        streams, attributes, draw.IndexBytes, draw.Indexed, draw.IndicesAre16Bit, draw.VertexCount, true,
+    });
+    if (resolution.Geometry == nullptr) throw std::runtime_error("native PICA geometry preparation failed");
+    for (const uint64_t evicted : mPicaGeometryRegistry.TakeEvictedIdentities()) RetireNativePicaGeometry(evicted);
+    const auto& geometry = *resolution.Geometry;
+    if (!resolution.Cacheable || !geometry.PackedValid) return result;
+    std::vector<Oot3d::PicaSceneVertexBufferBinding> bindings;
+    bindings.reserve(geometry.PackedBindings.size());
+    for (const auto& binding : geometry.PackedBindings)
+        bindings.push_back({ binding.Binding, binding.Offset, binding.Size, binding.Stride });
+    uint32_t booleanUniforms = 0;
+    std::memcpy(&booleanUniforms, draw.VertexUniformBytes.data() + Oot3d::kPicaPackedVertexBooleanMaskOffset,
+                sizeof(booleanUniforms));
+    // The scene distance field's cache: one mesh per geometry version.
+    const uint64_t version = geometry.ContentVersion ^ (geometry.StructuralSignature * 0x9e3779b97f4a7c15ULL) ^
+                             geometry.Identity ^ draw.VertexShaderKey;
+    const auto instance = Renderer3ds::BuildPicaGiInstance(
+        { geometry.Payload, bindings, layout.Attributes, layout.Bindings, 0, geometry.IndexOffset,
+          geometry.VertexOrIndexCount, draw.BaseVertex, geometry.Indexed },
+        ToPicaSceneTopology(draw.Topology), draw.TemporalVertexProgram.Hooks, booleanUniforms,
+        draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset), viewToWorld, version,
+        mNativePicaGeometryBuffers[geometry.Identity].GiGeometry);
+    if (!instance.Valid()) return result;
+    result.WorldBounds = instance.WorldBounds;
+    result.Body = Renderer3ds::MatchPicaWaterSurface(instance.WorldBounds.Minimum, instance.WorldBounds.Maximum,
+                                                     *draw.LightBinding.Water);
+    return result;
+}
+
 bool GfxRenderingAPIVulkan::PreparePicaSequenceDraw(
     const GfxNativePicaDrawView& draw, std::string* error) {
     try {
@@ -706,8 +763,18 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         }
         const auto surfaceAppearance = Renderer3ds::ClassifyPicaSurfaceAppearance(
             draw.Blend, nativeVertexLighting, draw.FragmentFeatures.FragmentLightingEnabled);
+        // Water lying on a gameplay water body (pica_scene_water.h) keeps its
+        // native colour too: the title's water is ambient-only geometry, and
+        // relit like ground its top faces the key light at full Lambert.
+        NativePicaWaterSurface waterSurface;
+        if (!nativeMemoryOnly && !mNativeFidelityProfile &&
+            Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
+            surfaceAppearance == Renderer3ds::PicaSurfaceAppearance::Relightable &&
+            draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Scene &&
+            Renderer3ds::PicaCompositionReceivesSurfaceLighting(draw.Composition.Layer) && grassPerspectiveProjection)
+            waterSurface = ResolveNativePicaWaterSurface(draw);
         const bool authoredAppearance = Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
-            surfaceAppearance != Renderer3ds::PicaSurfaceAppearance::Relightable;
+            (surfaceAppearance != Renderer3ds::PicaSurfaceAppearance::Relightable || waterSurface.Body.has_value());
         const bool directionalShadowReceiver = !nativeMemoryOnly && !isolatedLighting && !authoredAppearance &&
             Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
             mDirectionalShadowMapBarrierPlan.Valid() &&
@@ -788,6 +855,12 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     ? std::array<float, 4>{}
                     : std::array<float, 4>{sources.Weights[0], sources.Weights[1], sources.Weights[2], 0.0F};
             }
+            // Water in a mixed mesh (a room's water and banks in one draw).
+            if (surfaceLighting && waterSurface.WorldBounds.Available && mSurfaceLightingView &&
+                draw.LightBinding.Water)
+                Renderer3ds::AssignPicaSurfaceWater(*surfaceLighting, *mSurfaceLightingView, *draw.LightBinding.Water,
+                                                    waterSurface.WorldBounds.Minimum,
+                                                    waterSurface.WorldBounds.Maximum);
             if (surfaceLighting && environmentWorldToView && directionalShadowReceiver &&
                 !Oot3d::InvertDirectionalShadowMatrix(*environmentWorldToView, environmentViewToWorld))
                 surfaceLighting.reset();
@@ -1071,6 +1144,16 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 }
                 record.pop_back();
                 record += shifts + "]}";
+            }
+            if (waterSurface.WorldBounds.Available) {
+                const auto& b = waterSurface.WorldBounds;
+                char water[256];
+                std::snprintf(water, sizeof(water),
+                    ",\"worldMin\":[%.1f,%.1f,%.1f],\"worldMax\":[%.1f,%.1f,%.1f],\"waterBody\":%d}",
+                    b.Minimum[0], b.Minimum[1], b.Minimum[2], b.Maximum[0], b.Maximum[1], b.Maximum[2],
+                    waterSurface.Body ? static_cast<int>(*waterSurface.Body) : -1);
+                record.pop_back();
+                record += water;
             }
             if (surfaceLighting) {
                 // The native material and lights the replacement read.

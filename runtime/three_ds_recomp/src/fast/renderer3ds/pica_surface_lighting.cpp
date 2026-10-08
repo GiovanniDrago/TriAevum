@@ -46,6 +46,37 @@ std::optional<PicaSurfaceLightingView> BuildPicaSurfaceLightingView(
     return result;
 }
 
+void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSurfaceLightingView& view,
+                            const PicaSceneWaterBodies& bodies, const std::array<float, 3>& worldMinimum,
+                            const std::array<float, 3>& worldMaximum) noexcept {
+    std::array<uint32_t, kMaximumPicaSceneWaterBodies> reached{};
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < std::min(bodies.Count, kMaximumPicaSceneWaterBodies); ++i) {
+        const auto& body = bodies.Bodies[i];
+        if (body.SurfaceY < worldMinimum[1] - kPicaWaterSurfaceHeightTolerance ||
+            body.SurfaceY > worldMaximum[1] + kPicaWaterSurfaceHeightTolerance ||
+            body.MaximumXZ[0] < worldMinimum[0] || body.MinimumXZ[0] > worldMaximum[0] ||
+            body.MaximumXZ[1] < worldMinimum[2] || body.MinimumXZ[1] > worldMaximum[2])
+            continue;
+        reached[count++] = i;
+    }
+    // More bodies than slots: the largest overlaps.
+    const auto overlap = [&](uint32_t index) {
+        const auto& body = bodies.Bodies[index];
+        return (std::min(worldMaximum[0], body.MaximumXZ[0]) - std::max(worldMinimum[0], body.MinimumXZ[0])) *
+               (std::min(worldMaximum[2], body.MaximumXZ[1]) - std::max(worldMinimum[2], body.MinimumXZ[1]));
+    };
+    std::stable_sort(reached.begin(), reached.begin() + count,
+                     [&](uint32_t a, uint32_t b) { return overlap(a) > overlap(b); });
+    count = std::min(count, kMaximumPicaSurfaceWaterBodies);
+    for (uint32_t slot = 0; slot < count; ++slot) {
+        const auto& body = bodies.Bodies[reached[slot]];
+        uniforms.WaterFootprints[slot] = {body.MinimumXZ[0], body.MinimumXZ[1], body.MaximumXZ[0], body.MaximumXZ[1]};
+        uniforms.WaterHeights[slot] = body.SurfaceY;
+    }
+    uniforms.WaterViewTranslation = {view.Rows[0][3], view.Rows[1][3], view.Rows[2][3], static_cast<float>(count)};
+}
+
 std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
     const PicaVertexShaderHookLayout& hooks, uint32_t booleanUniforms,
     std::span<const uint8_t> floatUniformBytes,
@@ -275,7 +306,33 @@ layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
     vec4 point_shadow;
     vec4 point_shadow_atlas;
     PicaPlacedLight placed_lights[16];
+    vec4 water_view_translation;
+    vec4 water_footprints[4];
+    vec4 water_heights;
 } pica_surface;
+// A fragment of gameplay water (pica_scene_water.h): a horizontal face at a
+// listed body's surface height, inside its footprint. face: the view-space
+// face normal (any length or sign).
+bool pica_surface_water(vec3 face) {
+    uint count = uint(pica_surface.water_view_translation.w);
+    if (count == 0u) return false;
+    vec3 world_face = vec3(dot(pica_surface.view_to_world_linear[0].xyz, face),
+                           dot(pica_surface.view_to_world_linear[1].xyz, face),
+                           dot(pica_surface.view_to_world_linear[2].xyz, face));
+    float face_length = length(world_face);
+    if (face_length <= 0.0 || abs(world_face.y) < 0.95 * face_length) return false;
+    vec3 view_position = -pica_view - pica_surface.water_view_translation.xyz;
+    vec3 world = vec3(dot(pica_surface.view_to_world_linear[0].xyz, view_position),
+                      dot(pica_surface.view_to_world_linear[1].xyz, view_position),
+                      dot(pica_surface.view_to_world_linear[2].xyz, view_position));
+    for (uint slot = 0u; slot < min(count, 4u); ++slot) {
+        vec4 footprint = pica_surface.water_footprints[slot];
+        if (abs(world.y - pica_surface.water_heights[slot]) <= 4.0 && world.x >= footprint.x &&
+            world.z >= footprint.y && world.x <= footprint.z && world.z <= footprint.w)
+            return true;
+    }
+    return false;
+}
 vec3 pica_surface_unit(vec3 value) {
     float squared = dot(value, value);
     return squared > 1.0e-20 ? value * inversesqrt(squared) : vec3(0.0);
@@ -522,8 +579,9 @@ vec3 pica_surface_primary(vec3 native_color, vec3 normal_view) {
 
 std::string_view PicaSurfaceLightingBody() noexcept {
     return R"glsl(
-    if (pica_surface.control.x != 0u || pica_surface.environment_parameters.w != 0.0 ||
-        pica_surface.control.y != 0u || pica_surface.control.z != 0u) {
+    bool surface_water = pica_surface_water(cross(dFdx(pica_view), dFdy(pica_view)));
+    if ((pica_surface.control.x != 0u || pica_surface.environment_parameters.w != 0.0 ||
+         pica_surface.control.y != 0u || pica_surface.control.z != 0u) && !surface_water) {
         rounded_primary_color.rgb = byteround3(pica_surface_primary(rounded_primary_color.rgb,
             pica_surface_unit(pica_surface_normal)));
     }
