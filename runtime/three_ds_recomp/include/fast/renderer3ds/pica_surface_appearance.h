@@ -16,8 +16,8 @@ namespace Fast::Renderer3ds {
 //   Relighting it as a surface removes the light it was authored to add.
 // - A draw the title lights neither per vertex nor per fragment has a colour
 //   no light produced (effects, smoke, particles); replacing that colour with
-//   reconstructed illumination discards it. OOT3D's world surfaces, rooms
-//   included, are vertex-lit.
+//   reconstructed illumination discards it. World surfaces, rooms included,
+//   are vertex-lit in the titles measured.
 //
 // Kept appearance means native colour, alpha, blending, fog and order: no
 // per-pixel/PBR replacement and no received directional or point shadows.
