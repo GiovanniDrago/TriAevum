@@ -266,31 +266,8 @@ void ApplyGrassQualityPreset(
     InteractiveGrassSettings& settings,
     GrassQuality quality) noexcept;
 
-// Characters' shading normals continuous across their pieces (separate
-// draws: body, hands, eyes), keeping creases: per-pixel models only.
-// Experimental, off by default (it can still blend distinct elements that
-// share a texture, as a belt on a tunic).
-struct CharacterNormalSettings {
-    bool Enabled = false;
-    // Partners whose normals differ by more keep their edge.
-    float CreaseDegrees = 60.0F;
-    // The same between pieces of different materials (distinct elements).
-    float MaterialCreaseDegrees = 20.0F;
-    // 0: the original normals; 1: fully smoothed.
-    float Strength = 1.0F;
-    // Vertices this close (world units) are one point.
-    float WeldDistance = 0.05F;
-    // Also a piece's own split vertices (texture seams).
-    bool WithinPieces = true;
-    // Pieces drawn with these textures (content hashes) are left alone.
-    std::vector<uint64_t> ExcludedTextures;
-    bool operator==(const CharacterNormalSettings&) const = default;
-};
-inline constexpr size_t kMaximumCharacterNormalExclusions = 256U;
-
 struct EffectsSettings {
     SurfaceLightingMode SurfaceLighting = SurfaceLightingMode::Native;
-    CharacterNormalSettings CharacterNormals;
     DirectionalShadowSettings DirectionalShadows;
     PointShadowSettings PointShadows;
     GlobalIlluminationSettings GlobalIllumination;

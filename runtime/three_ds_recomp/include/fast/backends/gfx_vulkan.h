@@ -16,7 +16,6 @@
 #include "fast/renderer3ds/pica_ui_canvas.h"
 #include "fast/renderer3ds/pica_pbr_material.h"
 #include "fast/renderer3ds/pica_pbr_seams.h"
-#include "fast/renderer3ds/pica_actor_normal_smoothing.h"
 #include "fast/renderer3ds/pica_surface_lighting.h"
 #include "fast/backends/oot3d_vulkan_diagnostics.h"
 #include "fast/backends/oot3d_vulkan_gpu_profiler.h"
@@ -567,21 +566,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         std::array<BufferAllocation, kFramesInFlight> Buffers{};
         std::array<uint64_t, kFramesInFlight> ContentVersions{};
         std::array<uint64_t, kFramesInFlight> StructuralSignatures{};
-        // The smoothed normals written over the payload (0: its own).
-        std::array<uint64_t, kFramesInFlight> NormalVersions{};
         Renderer3ds::PicaShadowCasterCache ShadowCaster;
         Renderer3ds::PicaGiGeometryCache GiGeometry;
         Renderer3ds::PicaPbrSeamCache Seams;
         uint64_t LastUsedFrame = 0;
-    };
-
-    // A character piece's smoothed source normals over its payload: the
-    // normal input's stream (payload offset, stride) and the result (none:
-    // the payload's own normals).
-    struct NativePicaNormalOverride {
-        const Renderer3ds::PicaNormalSmoothingResult* Result = nullptr;
-        uint64_t Offset = 0U;
-        uint32_t Stride = 0U;
     };
 
     // Where this frame's GPU copy of one resolved geometry lives.
@@ -949,18 +937,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     // Cacheable geometry uses its per-identity buffer, uploaded once per
     // content version and frame slot; other geometry is copied into the
     // frame's transient arena.
-    // With normals, the copy carries them (and a persistent copy follows
-    // their changes); without, persistent copies keep what they hold.
     NativePicaGeometryPlacement PlaceNativePicaGeometry(
         const Oot3d::PicaGeometryResolveResult& resolution,
-        Oot3dVulkanNativePicaCpuTimings* cpuTimings,
-        const NativePicaNormalOverride* normals = nullptr);
-    // Characters' normals across their pieces: the smoother, the pieces seen
-    // this frame (by actor), observed at the next frame's start.
-    ::Fast::Renderer3ds::PicaActorNormalSmoother mNormalSmoother;
-    std::unordered_map<uint64_t, std::vector<::Fast::Renderer3ds::PicaNormalSmoothingPiece>> mNormalPieces;
-    Oot3d::CharacterNormalSettings mNormalSettings;
-    void ObserveCharacterNormals();
+        Oot3dVulkanNativePicaCpuTimings* cpuTimings);
     void CreateFallbackTexture();
     void CreateOot3dShadow2dRenderPass();
     void CreateOot3dShadow2dDepthEncodePipeline();

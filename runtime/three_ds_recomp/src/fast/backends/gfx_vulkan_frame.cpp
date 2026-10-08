@@ -411,7 +411,6 @@ void GfxRenderingAPIVulkan::StartFrame() {
     }
     mFrameGraphicsSettings = std::move(graphicsSnapshot.Value);
     mFrameGraphicsSettingsRevision = graphicsSnapshot.Revision;
-    ObserveCharacterNormals();
     const auto& graphicsSettings = mFrameGraphicsSettings;
     mPicaShaderPipelineCache.BeginFrame(
         mFrameGraphicsSettingsRevision);

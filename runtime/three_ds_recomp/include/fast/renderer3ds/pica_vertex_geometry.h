@@ -32,24 +32,6 @@ inline ShadowVector Transform(const ShadowMatrix& matrix, const Vec4& point) {
     }
     return result;
 }
-// The normal matrix of a transform's linear part (column-major 3x3): its
-// inverse transpose, as the surface shader forms it (cofactors over the
-// determinant; the linear part itself when singular).
-using NormalMatrix = std::array<float, 9>;
-inline NormalMatrix InverseTransposeLinear(const ShadowMatrix& m) {
-    const std::array<std::array<double, 3>, 3> l{{{m[0], m[1], m[2]}, {m[4], m[5], m[6]}, {m[8], m[9], m[10]}}};
-    const auto cross = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
-        return std::array<double, 3>{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
-    };
-    const std::array<std::array<double, 3>, 3> cofactor{cross(l[1], l[2]), cross(l[2], l[0]), cross(l[0], l[1])};
-    const double determinant = l[0][0] * cofactor[0][0] + l[0][1] * cofactor[0][1] + l[0][2] * cofactor[0][2];
-    NormalMatrix result{};
-    for (size_t col = 0; col < 3; ++col)
-        for (size_t row = 0; row < 3; ++row)
-            result[col * 3 + row] = static_cast<float>(std::abs(determinant) > 1e-20 ? cofactor[col][row] / determinant
-                                                                                       : l[col][row]);
-    return result;
-}
 inline bool UniformMatrix(std::span<const uint8_t> bytes, uint32_t first, ShadowMatrix& result) {
     if (first > 93 || bytes.size() < (first + 3) * sizeof(Vec4))
         return false;
@@ -150,33 +132,9 @@ class Pose {
         Valid = true;
     }
     bool Position(Vec4 position, const Vec4& indices, const Vec4& weights, ShadowVector& result) {
-        return Evaluate(position, indices, weights, result, nullptr);
-    }
-    // The position and the normal matrix: a source normal's posed direction
-    // (before normalizing) is normal * source, as the surface shader blends
-    // each bone's transformed normal by its weight, then applies the view.
-    bool PositionAndNormal(Vec4 position, const Vec4& indices, const Vec4& weights, ShadowVector& result,
-                           NormalMatrix& normal) {
-        return Evaluate(position, indices, weights, result, &normal);
-    }
-    // Also the plain linear blend (the bones' matrices themselves, as a
-    // program transforming normals like positions would).
-    bool PositionAndNormals(Vec4 position, const Vec4& indices, const Vec4& weights, ShadowVector& result,
-                            NormalMatrix& normal, NormalMatrix& direct) {
-        return Evaluate(position, indices, weights, result, &normal, &direct);
-    }
-    bool Valid = false, Skinned = false, Multiple = false;
-
-  private:
-    bool Evaluate(Vec4 position, const Vec4& indices, const Vec4& weights, ShadowVector& result,
-                  NormalMatrix* normal, NormalMatrix* direct = nullptr) {
-        if (direct != nullptr)
-            direct->fill(0.0F);
         if (!Valid)
             return false;
         ShadowVector model{};
-        if (normal != nullptr)
-            normal->fill(0.0F);
         if (Skinned) {
             for (auto& v : position)
                 v *= PositionScale;
@@ -193,43 +151,27 @@ class Pose {
                     if (!UniformMatrix(Uniforms, Skeleton->PaletteFirstUniform + bone, matrix))
                         return false;
                     Bones[bone] = Multiply(linear, matrix);
-                    BoneNormals[bone] = InverseTransposeLinear(Bones[bone]);
                     Ready[bone] = true;
                 }
                 const auto point = Transform(Bones[bone], position);
                 const float weight = Multiple ? weights[i] * WeightScale : 1;
                 for (size_t axis = 0; axis < 3; ++axis)
                     model[axis] += point[axis] * weight;
-                if (normal != nullptr)
-                    for (size_t k = 0; k < 9; ++k)
-                        (*normal)[k] += BoneNormals[bone][k] * weight;
-                if (direct != nullptr)
-                    for (size_t col = 0; col < 3; ++col)
-                        for (size_t row = 0; row < 3; ++row)
-                            (*direct)[col * 3 + row] += Bones[bone][col * 4 + row] * weight;
             }
             result = { model[0] + Post[12], model[1] + Post[13], model[2] + Post[14] };
         } else {
             model = Transform(Model, position);
             result = Transform(Post, { model[0], model[1], model[2], 1 });
-            if (normal != nullptr)
-                *normal = InverseTransposeLinear(Multiply(Post, Model));
-            if (direct != nullptr) {
-                const auto linear = Multiply(Post, Model);
-                for (size_t col = 0; col < 3; ++col)
-                    for (size_t row = 0; row < 3; ++row)
-                        (*direct)[col * 3 + row] = linear[col * 4 + row];
-            }
         }
-        return std::all_of(result.begin(), result.end(), [](float v) { return std::isfinite(v); }) &&
-               (normal == nullptr || std::all_of(normal->begin(), normal->end(), [](float v) { return std::isfinite(v); }));
+        return std::all_of(result.begin(), result.end(), [](float v) { return std::isfinite(v); });
     }
+    bool Valid = false, Skinned = false, Multiple = false;
 
+  private:
     const PicaVertexSkeletonLayout* Skeleton = nullptr;
     std::span<const uint8_t> Uniforms;
     ShadowMatrix Post{}, Model{};
     std::array<ShadowMatrix, 96> Bones{};
-    std::array<NormalMatrix, 96> BoneNormals{};
     std::array<bool, 96> Ready{};
     std::array<bool, 4> Enabled{ true, false, false, false };
     uint8_t Influences = 1;

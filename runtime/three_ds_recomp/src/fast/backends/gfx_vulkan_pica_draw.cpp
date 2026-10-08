@@ -6,7 +6,6 @@
 #include "fast/renderer3ds/pica_surface_debug.h"
 #include "fast/oot3d/grass_interaction_bridge.h"
 #include "fast/oot3d/grass_texture_twins.h"
-#include "fast/renderer3ds/pica_vertex_geometry.h"
 
 #include <filesystem>
 #include <fstream>
@@ -163,110 +162,10 @@ void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
     }
 }
 
-namespace {
-// One character piece as the smoother sees it: its distinct vertices posed
-// (position, normal matrix) by the draw's own transform and skeleton.
-std::optional<Renderer3ds::PicaNormalSmoothingPiece> BuildNormalSmoothingPiece(
-    const Renderer3ds::PicaShadowGeometryView& geometry, const Renderer3ds::PicaVertexShaderHookLayout& hooks,
-    uint32_t booleans, std::span<const uint8_t> uniforms, uint64_t key, bool excluded, bool strip,
-    uint64_t material) {
-    using namespace Renderer3ds::VertexGeometry;
-    const auto* transform = hooks.TransformProgram();
-    if (transform == nullptr) return std::nullopt;
-    Pose pose(hooks, booleans, uniforms);
-    if (!pose.Valid) return std::nullopt;
-    const auto positions = ResolveAttribute(geometry, transform->PositionInputRegister);
-    const auto normals = ResolveAttribute(geometry, transform->NormalInputRegister);
-    const auto* skeleton = hooks.SkeletonProgram();
-    const auto bones = pose.Skinned ? ResolveAttribute(geometry, skeleton->BoneIndexInputRegister) : AttributeStream{};
-    const auto weights = pose.Multiple ? ResolveAttribute(geometry, skeleton->BoneWeightInputRegister) : AttributeStream{};
-    std::vector<uint32_t> vertices;
-    vertices.reserve(geometry.VertexOrIndexCount);
-    for (uint32_t item = 0; item < geometry.VertexOrIndexCount; ++item) {
-        uint32_t index = item;
-        if (geometry.Indexed) {
-            const uint64_t offset = geometry.IndexOffset + uint64_t(item) * 2;
-            if (offset > geometry.Payload.size() || 2 > geometry.Payload.size() - offset) return std::nullopt;
-            uint16_t value;
-            std::memcpy(&value, geometry.Payload.data() + offset, 2);
-            index = value;
-        }
-        const int64_t adjusted = int64_t(index) + geometry.BaseVertex;
-        if (adjusted < 0 || adjusted > int64_t(UINT32_MAX)) return std::nullopt;
-        vertices.push_back(uint32_t(adjusted));
-    }
-    Renderer3ds::PicaNormalSmoothingPiece piece;
-    piece.Corners = vertices;
-    piece.Strip = strip;
-    std::sort(vertices.begin(), vertices.end());
-    vertices.erase(std::unique(vertices.begin(), vertices.end()), vertices.end());
-    piece.Geometry = key;
-    piece.Excluded = excluded;
-    piece.Indices.reserve(vertices.size());
-    piece.Vertices.reserve(vertices.size());
-    for (const uint32_t vertex : vertices) {
-        Vec4 position, normal, boneIndices{}, boneWeights{};
-        if (!positions.Read(vertex, position) || !normals.Read(vertex, normal) ||
-            (pose.Skinned && !bones.Read(vertex, boneIndices)) || (pose.Multiple && !weights.Read(vertex, boneWeights)))
-            return std::nullopt;
-        Renderer3ds::PicaNormalSmoothingVertex v;
-        Renderer3ds::ShadowVector posed{};
-        if (!pose.PositionAndNormal(position, boneIndices, boneWeights, posed, v.NormalMatrix))
-            return std::nullopt;
-        v.Position = {posed[0], posed[1], posed[2]};
-        v.Source = normal;
-        piece.Indices.push_back(vertex);
-        piece.Vertices.push_back(v);
-    }
-    return piece;
-}
-
-// Poses the listed vertices of a piece for the smoother (its joints).
-void PoseNormalSmoothingVertices(const Renderer3ds::PicaShadowGeometryView& geometry,
-                                 const Renderer3ds::PicaVertexShaderHookLayout& hooks, uint32_t booleans,
-                                 std::span<const uint8_t> uniforms, uint64_t key, const std::vector<uint32_t>& indices,
-                                 Renderer3ds::PicaActorNormalSmoother& smoother) {
-    using namespace Renderer3ds::VertexGeometry;
-    const auto* transform = hooks.TransformProgram();
-    if (transform == nullptr) return;
-    Pose pose(hooks, booleans, uniforms);
-    if (!pose.Valid) return;
-    const auto positions = ResolveAttribute(geometry, transform->PositionInputRegister);
-    const auto normals = ResolveAttribute(geometry, transform->NormalInputRegister);
-    const auto* skeleton = hooks.SkeletonProgram();
-    const auto bones = pose.Skinned ? ResolveAttribute(geometry, skeleton->BoneIndexInputRegister) : AttributeStream{};
-    const auto weights = pose.Multiple ? ResolveAttribute(geometry, skeleton->BoneWeightInputRegister) : AttributeStream{};
-    for (const uint32_t vertex : indices) {
-        Vec4 position, normal, boneIndices{}, boneWeights{};
-        if (!positions.Read(vertex, position) || !normals.Read(vertex, normal) ||
-            (pose.Skinned && !bones.Read(vertex, boneIndices)) || (pose.Multiple && !weights.Read(vertex, boneWeights)))
-            continue;
-        Renderer3ds::PicaNormalSmoothingVertex v;
-        Renderer3ds::ShadowVector posed{};
-        if (!pose.PositionAndNormal(position, boneIndices, boneWeights, posed, v.NormalMatrix)) continue;
-        v.Position = {posed[0], posed[1], posed[2]};
-        v.Source = normal;
-        smoother.PoseVertex(key, vertex, v);
-    }
-}
-
-// Writes a piece's smoothed source normals over its copy of the payload.
-void WriteSmoothedNormals(uint8_t* payload, size_t size, uint64_t offset, uint32_t stride,
-                          const Renderer3ds::PicaNormalSmoothingResult& result) {
-    for (const auto& [index, normal] : result.Normals) {
-        const uint64_t at = offset + uint64_t(index) * stride;
-        if (at > size || sizeof(normal) > size - at) continue;
-        std::memcpy(payload + at, normal.data(), sizeof(normal));
-    }
-}
-} // namespace
-
 GfxRenderingAPIVulkan::NativePicaGeometryPlacement GfxRenderingAPIVulkan::PlaceNativePicaGeometry(
-    const Oot3d::PicaGeometryResolveResult& resolution, Oot3dVulkanNativePicaCpuTimings* cpuTimings,
-    const NativePicaNormalOverride* normals) {
+    const Oot3d::PicaGeometryResolveResult& resolution, Oot3dVulkanNativePicaCpuTimings* cpuTimings) {
     const auto& geometry = *resolution.Geometry;
     auto& frame = mFrameResources[mCurrentFrame];
-    const uint64_t normalVersion = normals != nullptr && normals->Result != nullptr ? normals->Result->Version : 0U;
     if (resolution.Cacheable) {
         auto& cached = mNativePicaGeometryBuffers[geometry.Identity];
         auto& buffer = cached.Buffers[mCurrentFrame];
@@ -282,20 +181,13 @@ GfxRenderingAPIVulkan::NativePicaGeometryPlacement GfxRenderingAPIVulkan::PlaceN
             cached.StructuralSignatures[mCurrentFrame] = 0U;
         }
         if (cached.ContentVersions[mCurrentFrame] != geometry.ContentVersion ||
-            cached.StructuralSignatures[mCurrentFrame] != geometry.StructuralSignature ||
-            (normals != nullptr && cached.NormalVersions[mCurrentFrame] != normalVersion)) {
+            cached.StructuralSignatures[mCurrentFrame] != geometry.StructuralSignature) {
             std::memcpy(buffer.Mapped, geometry.Payload.data(), geometry.Payload.size());
             if (cpuTimings != nullptr) {
                 cpuTimings->GeometryPersistentUploadBytes += geometry.Payload.size();
             }
             cached.ContentVersions[mCurrentFrame] = geometry.ContentVersion;
             cached.StructuralSignatures[mCurrentFrame] = geometry.StructuralSignature;
-            cached.NormalVersions[mCurrentFrame] = 0U;
-            if (normalVersion != 0U) {
-                WriteSmoothedNormals(static_cast<uint8_t*>(buffer.Mapped), geometry.Payload.size(), normals->Offset,
-                                     normals->Stride, *normals->Result);
-                cached.NormalVersions[mCurrentFrame] = normalVersion;
-            }
         }
         cached.LastUsedFrame = mFrameCounter;
         if (cpuTimings != nullptr) {
@@ -309,9 +201,6 @@ GfxRenderingAPIVulkan::NativePicaGeometryPlacement GfxRenderingAPIVulkan::PlaceN
     }
     std::memcpy(static_cast<uint8_t*>(frame.VertexBuffer.Mapped) + baseOffset, geometry.Payload.data(),
                 geometry.Payload.size());
-    if (normalVersion != 0U)
-        WriteSmoothedNormals(static_cast<uint8_t*>(frame.VertexBuffer.Mapped) + baseOffset, geometry.Payload.size(),
-                             normals->Offset, normals->Stride, *normals->Result);
     frame.VertexBytesUsed = baseOffset + geometry.Payload.size();
     if (cpuTimings != nullptr) {
         cpuTimings->GeometryTransientUploadBytes += geometry.Payload.size();
@@ -319,79 +208,6 @@ GfxRenderingAPIVulkan::NativePicaGeometryPlacement GfxRenderingAPIVulkan::PlaceN
     }
     return { frame.VertexBuffer.Buffer, frame.VertexBuffer.Size, static_cast<uint8_t*>(frame.VertexBuffer.Mapped),
              baseOffset, false };
-}
-
-void GfxRenderingAPIVulkan::ObserveCharacterNormals() {
-    const auto& settings = mFrameGraphicsSettings.Effects.CharacterNormals;
-    // A change of the settings (exclusions included; not turning it on or
-    // off) starts learning anew.
-    auto compared = settings;
-    compared.Enabled = mNormalSettings.Enabled;
-    if (!(compared == mNormalSettings)) {
-        mNormalSettings = settings;
-        mNormalSmoother.Clear();
-        mNormalPieces.clear();
-    }
-    Renderer3ds::PicaNormalSmoothingOptions options;
-    options.CreaseDegrees = settings.CreaseDegrees;
-    options.MaterialCreaseDegrees = settings.MaterialCreaseDegrees;
-    options.Strength = settings.Strength;
-    options.WeldDistance = settings.WeldDistance;
-    options.WithinPieces = settings.WithinPieces;
-    mNormalSmoother.SetOptions(options);
-    mNormalSettings.Enabled = settings.Enabled;
-    for (const auto& [actor, pieces] : mNormalPieces) mNormalSmoother.Observe(actor, pieces);
-#if defined(TRIAEVUM_RENDERER_DEVELOPER_TOOLS)
-    // The lab renders the observed pieces offline, original and smoothed
-    // normals in one pose.
-    if (Renderer3ds::PicaSurfaceDebug::Instance().Tracing())
-        for (const auto& [actor, pieces] : mNormalPieces)
-            for (const auto& piece : pieces) {
-                std::string line = "{\"characterPiece\":{\"actor\":" + std::to_string(actor) +
-                    ",\"geometry\":" + std::to_string(piece.Geometry) + ",\"strip\":" +
-                    (piece.Strip ? "1" : "0") + ",\"excluded\":" + (piece.Excluded ? "1" : "0") + ",\"corners\":[";
-                for (size_t i = 0; i < piece.Corners.size(); ++i)
-                    line += (i ? "," : "") + std::to_string(piece.Corners[i]);
-                line += "],\"vertices\":[";
-                const auto* result = mNormalSmoother.Find(piece.Geometry);
-                for (size_t i = 0; i < piece.Vertices.size(); ++i) {
-                    const auto& v = piece.Vertices[i];
-                    std::array<float, 4> smoothed = v.Source;
-                    if (result != nullptr)
-                        for (const auto& [index, normal] : result->Normals)
-                            if (index == piece.Indices[i]) smoothed = normal;
-                    const auto posed = [&](const std::array<float, 4>& s) {
-                        const auto& m = v.NormalMatrix;
-                        return std::array<float, 3>{m[0] * s[0] + m[3] * s[1] + m[6] * s[2],
-                                                    m[1] * s[0] + m[4] * s[1] + m[7] * s[2],
-                                                    m[2] * s[0] + m[5] * s[1] + m[8] * s[2]};
-                    };
-                    const auto a = posed(v.Source), b = posed(smoothed);
-                    char text[256];
-                    std::snprintf(text, sizeof(text), "%s[%u,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f]",
-                                  i ? "," : "", piece.Indices[i], v.Position[0], v.Position[1], v.Position[2], a[0],
-                                  a[1], a[2], b[0], b[1], b[2]);
-                    line += text;
-                }
-                Renderer3ds::PicaSurfaceDebug::Instance().Write(line + "]}}");
-            }
-#endif
-    mNormalPieces.clear();
-    // Joints follow the pose the last frame drew.
-    mNormalSmoother.SolveJoints();
-    const auto report = mNormalSmoother.Report();
-    Renderer3ds::PublishPicaNormalSmoothingReport(report);
-#if defined(TRIAEVUM_RENDERER_DEVELOPER_TOOLS)
-    if (Renderer3ds::PicaSurfaceDebug::Instance().Tracing()) {
-        char line[320];
-        std::snprintf(line, sizeof(line),
-                      "{\"characterNormals\":{\"actors\":%u,\"pieces\":%u,\"joined\":%u,\"pending\":%u,"
-                      "\"parted\":%u,\"joints\":%u,\"creases\":%u,\"ambiguous\":%u,\"smoothed\":%u,\"shared\":%u}}",
-                      report.Actors, report.Pieces, report.Joined, report.Pending, report.Parted, report.Joints,
-                      report.Creases, report.Ambiguous, report.Smoothed + report.Following, report.Shared);
-        Renderer3ds::PicaSurfaceDebug::Instance().Write(line);
-    }
-#endif
 }
 
 bool GfxRenderingAPIVulkan::WantsPicaSequenceDrawPreparation(
@@ -2167,73 +1983,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
 
         auto& frame = mFrameResources[mCurrentFrame];
         VkCommandBuffer commandBuffer = mCommandBuffers[mCurrentFrame];
-        // Characters' shading normals across their pieces: an actor's draws
-        // are observed while the smoother learns it (rarely once settled) and
-        // draw with the normals it joined; the payload's own otherwise.
-        NativePicaNormalOverride normalOverride;
-        bool manageNormals = false;
-        if (!nativeMemoryOnly && !mNativeFidelityProfile && sceneDraw && draw.Composition.NativeActorGeometry &&
-            draw.Composition.NativeActorIdentity != 0U && geometry.PackedValid && geometryResolution.Cacheable) {
-            manageNormals = true;
-            const auto& characterNormals = graphicsSettings.Effects.CharacterNormals;
-            const auto& hooks = draw.TemporalVertexProgram.Hooks;
-            const auto* transform = hooks.TransformProgram();
-            if (characterNormals.Enabled && Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
-                transform != nullptr && hooks.SurfaceProgram() != nullptr) {
-                std::array<Oot3d::PicaNriSourceVertexBinding, 16> sourceBindings{};
-                std::array<Renderer3ds::PicaSceneVertexBufferBinding, 16> bindings{};
-                if (nriDrawSourceStreams.size() <= sourceBindings.size() &&
-                    geometry.PackedBindings.size() <= bindings.size()) {
-                    for (size_t i = 0; i < nriDrawSourceStreams.size(); ++i)
-                        sourceBindings[i] = nriDrawSourceStreams[i].Binding;
-                    const auto layout = Oot3d::BuildPicaNriVertexInputLayout(
-                        std::span(sourceBindings).first(nriDrawSourceStreams.size()), nriDrawSourceAttributes);
-                    for (size_t i = 0; i < geometry.PackedBindings.size(); ++i) {
-                        const auto& b = geometry.PackedBindings[i];
-                        bindings[i] = {b.Binding, b.Offset, b.Size, b.Stride};
-                    }
-                    const Renderer3ds::PicaShadowGeometryView view{
-                        geometry.Payload, std::span(bindings).first(geometry.PackedBindings.size()),
-                        layout.Attributes, layout.Bindings, 0, geometry.IndexOffset,
-                        geometry.VertexOrIndexCount, draw.BaseVertex, geometry.Indexed};
-                    const auto normalStream =
-                        Renderer3ds::VertexGeometry::ResolveAttribute(view, transform->NormalInputRegister);
-                    if (normalStream.Stride != 0U && !normalStream.PerInstance && !normalStream.Bytes.empty()) {
-                        const uint64_t key = geometry.Identity ^ (geometry.ContentVersion * 0x9e3779b97f4a7c15ULL);
-                        normalOverride = {mNormalSmoother.Find(key),
-                                          uint64_t(normalStream.Bytes.data() - geometry.Payload.data()),
-                                          normalStream.Stride};
-                        const uint64_t actor = draw.Composition.NativeActorIdentity;
-                        uint32_t booleans = 0;
-                        std::memcpy(&booleans, draw.VertexUniformBytes.data() +
-                            Oot3d::kPicaPackedVertexBooleanMaskOffset, sizeof(booleans));
-                        const auto floatUniforms =
-                            draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset);
-                        // Its vertices at joints: posed every frame.
-                        if (const auto* joints = mNormalSmoother.JointVertices(key))
-                            PoseNormalSmoothingVertices(view, hooks, booleans, floatUniforms, key, *joints,
-                                                        mNormalSmoother);
-                        if (mFrameCounter % (mNormalSmoother.Unsettled(actor) ? 8U : 120U) == 0U) {
-                            bool excluded = false;
-                            uint64_t material = 0U;
-                            for (const auto& texture : draw.Textures)
-                                if (texture.NativeType == 0U && texture.Slot < 3U)
-                                    if (const auto hash = ResolveNativeTextureBaseLevelContentHash(texture)) {
-                                        excluded |= std::binary_search(characterNormals.ExcludedTextures.begin(),
-                                                                       characterNormals.ExcludedTextures.end(), *hash);
-                                        if (texture.Slot == 0U) material = *hash;
-                                    }
-                            if (auto piece = BuildNormalSmoothingPiece(
-                                    view, hooks, booleans, floatUniforms, key, excluded,
-                                    draw.Topology == GfxNativePicaTopology::TriangleStrip, material))
-                                mNormalPieces[actor].push_back(std::move(*piece));
-                        }
-                    }
-                }
-            }
-        }
-        const auto placement = PlaceNativePicaGeometry(geometryResolution, &cpuTimings,
-                                                       manageNormals ? &normalOverride : nullptr);
+        const auto placement = PlaceNativePicaGeometry(geometryResolution, &cpuTimings);
         const VkBuffer geometryBuffer = placement.Buffer;
         const VkDeviceSize geometryBufferSize = placement.Size;
         uint8_t* const geometryMappedMemory = placement.Mapped;

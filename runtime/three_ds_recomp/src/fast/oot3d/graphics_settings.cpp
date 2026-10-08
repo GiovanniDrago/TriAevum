@@ -204,8 +204,6 @@ GraphicsSettings GraphicsSettingsService::KeepHostOwnedSettings(
     value.GrassSavedPreset = current.GrassSavedPreset;
     value.Effects.ReflectionMaterials =
         current.Effects.ReflectionMaterials;
-    value.Effects.CharacterNormals.ExcludedTextures =
-        current.Effects.CharacterNormals.ExcludedTextures;
     return value;
 }
 
@@ -402,20 +400,6 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
     }
     value.Effects.ReflectionStrength =
         std::clamp(value.Effects.ReflectionStrength, 0.0F, 2.0F);
-    {
-        auto& normals = value.Effects.CharacterNormals;
-        const auto finite = [](float v, float fallback) { return std::isfinite(v) ? v : fallback; };
-        normals.CreaseDegrees = std::clamp(finite(normals.CreaseDegrees, 60.0F), 1.0F, 179.0F);
-        normals.MaterialCreaseDegrees = std::clamp(finite(normals.MaterialCreaseDegrees, 20.0F), 0.0F, 179.0F);
-        normals.Strength = std::clamp(finite(normals.Strength, 1.0F), 0.0F, 1.0F);
-        normals.WeldDistance = std::clamp(finite(normals.WeldDistance, 0.05F), 0.001F, 5.0F);
-        std::sort(normals.ExcludedTextures.begin(), normals.ExcludedTextures.end());
-        normals.ExcludedTextures.erase(
-            std::unique(normals.ExcludedTextures.begin(), normals.ExcludedTextures.end()),
-            normals.ExcludedTextures.end());
-        if (normals.ExcludedTextures.size() > kMaximumCharacterNormalExclusions)
-            normals.ExcludedTextures.resize(kMaximumCharacterNormalExclusions);
-    }
     value.Effects.ReflectionMaxDistance =
         std::clamp(value.Effects.ReflectionMaxDistance, 10.0F, 10000.0F);
     value.Effects.ReflectionThickness =

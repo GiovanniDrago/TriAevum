@@ -75,7 +75,6 @@ source_group("renderer" FILES ${Source_Files__RendererExtensions})
 #=================== Reusable 3DS/PICA renderer core ===================
 
 set(Source_Files__Renderer3dsPica
-    renderer3ds/pica_actor_normal_smoothing.cpp
     renderer3ds/pica_composition_schedule.cpp
     renderer3ds/pica_display_composition.cpp
     renderer3ds/pica_extension_schedule.cpp

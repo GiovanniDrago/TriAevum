@@ -1526,19 +1526,6 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
         {"Effects",
          {
              {"SurfaceLighting", EnumName(effects.SurfaceLighting, kSurfaceLightingNames)},
-             {"CharacterNormals",
-              [&effects] {
-                  Json excluded = Json::array();
-                  for (const uint64_t hash : effects.CharacterNormals.ExcludedTextures)
-                      excluded.push_back(SerializeHash(hash));
-                  return Json{{"Enabled", effects.CharacterNormals.Enabled},
-                              {"CreaseDegrees", effects.CharacterNormals.CreaseDegrees},
-                              {"MaterialCreaseDegrees", effects.CharacterNormals.MaterialCreaseDegrees},
-                              {"Strength", effects.CharacterNormals.Strength},
-                              {"WeldDistance", effects.CharacterNormals.WeldDistance},
-                              {"WithinPieces", effects.CharacterNormals.WithinPieces},
-                              {"ExcludedTextures", std::move(excluded)}};
-              }()},
              {"DirectionalShadows",
               {
                   {"Mode",
@@ -1929,38 +1916,6 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
             }
         } else {
             value.DirectionalShadows = {};
-        }
-        // Added without a schema change: an absent object keeps the defaults
-        // and is written on the next save.
-        if (const Json* normals = FindMember(*effects, "CharacterNormals"); normals != nullptr && normals->is_object()) {
-            auto& settings = value.CharacterNormals;
-            const std::string path = "Graphics.Effects.CharacterNormals.";
-            ReadScalar(*normals, "Enabled", settings.Enabled, path + "Enabled", result);
-            ReadScalar(*normals, "CreaseDegrees", settings.CreaseDegrees, path + "CreaseDegrees", result);
-            if (FindMember(*normals, "MaterialCreaseDegrees") != nullptr)
-                ReadScalar(*normals, "MaterialCreaseDegrees", settings.MaterialCreaseDegrees,
-                           path + "MaterialCreaseDegrees", result);
-            ReadScalar(*normals, "Strength", settings.Strength, path + "Strength", result);
-            ReadScalar(*normals, "WeldDistance", settings.WeldDistance, path + "WeldDistance", result);
-            ReadScalar(*normals, "WithinPieces", settings.WithinPieces, path + "WithinPieces", result);
-            settings.ExcludedTextures.clear();
-            if (const Json* excluded = FindMember(*normals, "ExcludedTextures"); excluded != nullptr) {
-                // An empty list may round-trip as null.
-                bool valid = excluded->is_array() || excluded->is_null();
-                for (size_t i = 0; valid && excluded->is_array() && i < excluded->size(); ++i) {
-                    Json entry = Json::object();
-                    entry["Hash"] = (*excluded)[i];
-                    uint64_t hash = 0;
-                    valid = ReadHash(entry, "Hash", hash, path + "ExcludedTextures", result);
-                    if (valid) settings.ExcludedTextures.push_back(hash);
-                }
-                if (!valid) {
-                    settings.ExcludedTextures.clear();
-                    Correct(result, path + "ExcludedTextures", "invalid exclusions removed");
-                }
-            }
-        } else {
-            result.NeedsRewrite = true;
         }
         // Added without a schema change: an absent object keeps the default
         // (Off) and is written on the next save.

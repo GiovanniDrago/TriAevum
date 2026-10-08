@@ -36,12 +36,6 @@ target_compile_features(pica_water_map_tests PRIVATE cxx_std_20)
 target_include_directories(pica_water_map_tests PRIVATE ../include)
 add_test(NAME pica_water_map_tests COMMAND pica_water_map_tests)
 
-add_executable(pica_actor_normal_smoothing_tests pica_actor_normal_smoothing_tests.cpp
-    ../src/fast/renderer3ds/pica_actor_normal_smoothing.cpp)
-target_compile_features(pica_actor_normal_smoothing_tests PRIVATE cxx_std_20)
-target_include_directories(pica_actor_normal_smoothing_tests PRIVATE ../include)
-add_test(NAME pica_actor_normal_smoothing_tests COMMAND pica_actor_normal_smoothing_tests)
-
 add_executable(ambient_occlusion_guide_tests ambient_occlusion_guide_tests.cpp)
 target_compile_features(ambient_occlusion_guide_tests PRIVATE cxx_std_20)
 target_include_directories(ambient_occlusion_guide_tests PRIVATE ../include)
