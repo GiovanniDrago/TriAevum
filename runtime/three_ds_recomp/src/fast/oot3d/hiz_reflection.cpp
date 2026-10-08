@@ -50,12 +50,27 @@ layout(set = 0, binding = 7, std140) uniform HiZWater {
 layout(set = 0, binding = 9, std430) readonly buffer HiZWaterMap {
     vec2 texels[];
 } hiz_water_map;
-vec2 hiz_water_map_at(vec2 xz) {
-    float size = hiz_water.map_info.w;
-    if (size <= 0.0) return vec2(-1.0e30, 0.0);
-    vec2 texel = floor((xz - hiz_water.map_info.xy) / hiz_water.map_info.z);
-    if (any(lessThan(texel, vec2(0.0))) || any(greaterThanEqual(texel, vec2(size)))) return vec2(-1.0e30, 0.0);
-    return hiz_water_map.texels[uint(texel.y) * uint(size) + uint(texel.x)];
+vec2 hiz_water_map_texel(ivec2 texel) {
+    int size = int(hiz_water.map_info.w);
+    if (any(lessThan(texel, ivec2(0))) || any(greaterThanEqual(texel, ivec2(size)))) return vec2(-1.0e30, 0.0);
+    return hiz_water_map.texels[texel.y * size + texel.x];
+}
+// The map around a world position for one level, interpolated between the
+// four nearest texel centres (no texel steps): how much of it is water at
+// that height (x; water where at least half) and its landing foam (y).
+vec2 hiz_water_map_sample(vec2 xz, float height) {
+    if (hiz_water.map_info.w <= 0.0) return vec2(0.0);
+    vec2 position = (xz - hiz_water.map_info.xy) / hiz_water.map_info.z - 0.5;
+    ivec2 base = ivec2(floor(position));
+    vec2 f = position - vec2(base);
+    vec2 result = vec2(0.0);
+    for (int i = 0; i < 4; ++i) {
+        ivec2 offset = ivec2(i & 1, i >> 1);
+        vec2 texel = hiz_water_map_texel(base + offset);
+        float weight = (offset.x == 1 ? f.x : 1.0 - f.x) * (offset.y == 1 ? f.y : 1.0 - f.y);
+        if (abs(texel.x - height) <= 4.0) result += weight * vec2(1.0, texel.y);
+    }
+    return result;
 }
 vec3 hiz_water_view_direction(vec2 uv) {
     vec2 ndc = oot3d_surface_view_ndc(uv, pc.surface_orientation);
@@ -65,6 +80,15 @@ vec3 hiz_water_view_direction(vec2 uv) {
 vec3 hiz_water_to_world(vec3 v) {
     return vec3(dot(hiz_water.view_to_world[0].xyz, v), dot(hiz_water.view_to_world[1].xyz, v),
                 dot(hiz_water.view_to_world[2].xyz, v));
+}
+// Drawn water within a texel or so of a world position (any height).
+bool hiz_water_map_drawn_near(vec2 xz) {
+    if (hiz_water.map_info.w <= 0.0) return false;
+    vec2 centre = (xz - hiz_water.map_info.xy) / hiz_water.map_info.z;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x)
+            if (hiz_water_map_texel(ivec2(floor(centre + 1.5 * vec2(x, y)))).x > -1.0e29) return true;
+    return false;
 }
 // The nearest listed surface in front of the scene: its view depth, world
 // position and view direction (depth 1); depth 0 if none.
@@ -88,6 +112,9 @@ float hiz_water_surface(vec2 uv, float scene_depth, out vec3 world_position, out
         vec4 footprint = hiz_water.footprints[i];
         if (position.x < footprint.x || position.z < footprint.y || position.x > footprint.z ||
             position.z > footprint.w) continue;
+        // Where water is drawn nearby, the drawn water decides: a box reaching
+        // past a piece's edge (over a drop) is not water there.
+        if (hiz_water_map_sample(position.xz, height).x < 0.5 && hiz_water_map_drawn_near(position.xz)) continue;
         if (nearest == 0.0 || depth < nearest) {
             nearest = depth;
             world_position = position;
@@ -101,12 +128,25 @@ float hiz_water_surface(vec2 uv, float scene_depth, out vec3 world_position, out
         float depth = (height - camera.y) / ray.y;
         if (nearest != 0.0 && depth >= nearest) continue;
         vec3 position = camera + ray * depth;
-        if (abs(hiz_water_map_at(position.xz).x - height) > 4.0) continue;
+        if (hiz_water_map_sample(position.xz, height).x < 0.5) continue;
         nearest = depth;
         world_position = position;
     }
     // Something stands on the water (in front of it): not water there.
     return nearest > 0.0 && nearest < scene_depth - 1.0 ? nearest : 0.0;
+}
+// A lip: lower water near this piece (it pours over its edge there), where a
+// shallow bed is the brink of a drop, not a shore.
+bool hiz_water_lip(vec2 xz, float height) {
+    if (hiz_water.map_info.w <= 0.0) return false;
+    for (int i = 0; i < 16; ++i) {
+        float angle = 0.7853982 * float(i & 7);
+        float reach = hiz_water.map_info.z * (i < 8 ? 2.0 : 4.0);
+        vec2 at = xz + reach * vec2(cos(angle), sin(angle));
+        vec2 texel = hiz_water_map_texel(ivec2(floor((at - hiz_water.map_info.xy) / hiz_water.map_info.z)));
+        if (texel.x > -1.0e29 && texel.x < height - 4.0) return true;
+    }
+    return false;
 }
 vec2 hiz_water_slope(vec2 position, float footprint) {
     const vec3 waves[8] = vec3[8](vec3(157.0, 0.0, 0.050), vec3(113.0, 37.0, 0.045), vec3(83.0, -29.0, 0.040),
@@ -372,11 +412,34 @@ vec3 water_compose(vec2 uv, vec3 world, vec3 direction, float water_depth, float
     // Refraction: the view of the bed shifts with the slope, more where the
     // water is deeper; a shifted sample in front of the water is not its bed.
     vec3 surface = direction * water_depth;
-    vec2 refracted_uv = water_project(surface + (normal - flat_normal) * hiz_water.medium.y * min(column, 80.0));
+    // Near a piece's edge the scene behind holds the water's own edge: no
+    // shift there (it would show a rippled ghost of the edge).
+    float edge_scale = 1.0;
+    if (hiz_water.map_info.w > 0.0) {
+        float reach = 1.5 * hiz_water.map_info.z;
+        for (int i = 0; i < 4; ++i) {
+            vec2 offset = reach * vec2(i == 0 ? 1.0 : i == 1 ? -1.0 : 0.0, i == 2 ? 1.0 : i == 3 ? -1.0 : 0.0);
+            edge_scale = min(edge_scale, clamp(2.0 * hiz_water_map_sample(world.xz + offset, world.y).x - 1.0, 0.0, 1.0));
+        }
+        // Water the map does not hold (a gameplay box): unchanged.
+        if (hiz_water_map_sample(world.xz, world.y).x < 0.5) edge_scale = 1.0;
+    }
+    vec2 refracted_uv = water_project(surface + (normal - flat_normal) * hiz_water.medium.y * edge_scale *
+                                                    min(column, 80.0));
     vec2 sample_uv = uv;
     if (all(greaterThan(refracted_uv, vec2(0.0))) && all(lessThan(refracted_uv, vec2(1.0)))) {
         float refracted_depth = textureLod(sampler2D(hiz_depth, nearest_sampler), refracted_uv, 0.0).r;
-        if (!(refracted_depth < water_depth + 1.0)) sample_uv = refracted_uv;
+        // The shifted view must still pass through this water: on the map,
+        // where it has one (no ghost of the edge's surroundings).
+        vec3 camera = vec3(hiz_water.view_to_world[0].w, hiz_water.view_to_world[1].w, hiz_water.view_to_world[2].w);
+        vec3 shifted_ray = hiz_water_to_world(hiz_water_view_direction(refracted_uv));
+        bool on_water = true;
+        if (hiz_water.map_info.w > 0.0 && shifted_ray.y < -1.0e-6) {
+            vec3 shifted = camera + shifted_ray * ((world.y - camera.y) / shifted_ray.y);
+            on_water = hiz_water_map_sample(shifted.xz, world.y).x >= 0.5 ||
+                       hiz_water_map_sample(world.xz, world.y).x < 0.5;
+        }
+        if (!(refracted_depth < water_depth + 1.0) && on_water) sample_uv = refracted_uv;
     }
     vec3 color = textureLod(sampler2D(scene_color, linear_sampler), sample_uv, 0.0).rgb;
     // Absorption (red first), never to black: the title's water colour stays.
@@ -385,18 +448,22 @@ vec3 water_compose(vec2 uv, vec3 world, vec3 direction, float water_depth, float
     // Shore foam: broken by drifting noise, densest at the waterline.
     float width = max(hiz_water.medium.z, 1.0e-3);
     float shore = bed ? 1.0 - smoothstep(0.0, width, column) : 0.0;
+    if (shore > 0.0 && hiz_water_lip(world.xz, world.y)) shore = 0.0;
     float time = hiz_water.parameters.y;
     float foam = 0.0;
     // Where a fall between pieces lands (the map's landing foam).
-    float landing = hiz_water_map_at(world.xz).y;
+    float landing = hiz_water_map_sample(world.xz, world.y).y;
+    // Soft churn, densest where the water falls in and fading fast; slow
+    // drifting variation, no thresholds (no spots, no texel edges).
     if (landing > 0.0)
-        foam = landing * smoothstep(0.35, 0.7, water_pattern(world.zx * 2.3, 3.0 * time) + 0.25 * landing);
+        foam = landing * landing * (0.55 + 0.45 * water_pattern(world.zx * 1.3, 2.0 * time));
     if (shore > 0.0) {
         float noise = water_pattern(world.xz, time);
         foam = max(foam, shore * shore * smoothstep(0.6, 0.9, noise + 0.45 * shore));
     }
     if (foam > 0.0) {
-        float light = clamp(dot(color, vec3(0.299, 0.587, 0.114)) * 1.6 + 0.3, 0.35, 1.0);
+        // Foam scatters what light there is: white, a little dimmer in shade.
+        float light = clamp(dot(color, vec3(0.299, 0.587, 0.114)) * 1.6 + 0.45, 0.6, 1.0);
         color = mix(color, vec3(light), 0.75 * foam);
     }
     return mix(color, reflection, clamp(reflection_weight, 0.0, 1.0));

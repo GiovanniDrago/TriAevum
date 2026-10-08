@@ -747,7 +747,7 @@ vec3 pica_surface_water_shade(vec3 native_rgb, vec3 sky) {
         float streak = smoothstep(0.35, 0.95, 0.5 + 0.3 * first + 0.2 * second);
         // A waterfall churns white where it lands (the bottom of its sheet).
         float landing = 1.0 - smoothstep(0.0, 60.0, pica_surface_water_world.y - pica_surface.water_ripples.w);
-        float light = clamp(dot(native_rgb, vec3(0.299, 0.587, 0.114)) * 1.3, 0.5, 1.0);
+        float light = clamp(dot(native_rgb, vec3(0.299, 0.587, 0.114)) * 1.3 + 0.15, 0.6, 1.0);
         color = mix(color, vec3(light), max(0.45 * fast * streak,
                                             0.7 * landing * smoothstep(0.2, 0.7, 0.5 + 0.3 * first + 0.2 * second)));
     }

@@ -66,7 +66,7 @@ struct PicaWaterTriangles {
 inline constexpr uint32_t kPicaWaterMapSize = 512U;
 inline constexpr uint32_t kPicaWaterMapLevels = 16U;
 // World units around a fall's footprint where its landing churns.
-inline constexpr float kPicaWaterLandingReach = 25.0F;
+inline constexpr float kPicaWaterLandingReach = 18.0F;
 
 struct PicaWaterMap {
     // World x, z of texel (0, 0)'s corner, world units per texel, texels per
@@ -142,13 +142,15 @@ inline constexpr float kPicaWaterMapMinimumTexel = 4.0F;
             }
         }
     }
-    // Falls: where each lands (level water a little below its lowest point,
-    // around its footprint), foam fading over kPicaWaterLandingReach.
+    // Falls: where each lands (level water at or a little below its lowest
+    // point and clearly below its top: never the piece it falls from),
+    // around its footprint, foam fading over kPicaWaterLandingReach.
     for (const auto* set : sets) {
         for (const auto& t : set->Falling) {
             const float lowX = std::min({t[0][0], t[1][0], t[2][0]}), highX = std::max({t[0][0], t[1][0], t[2][0]});
             const float lowZ = std::min({t[0][2], t[1][2], t[2][2]}), highZ = std::max({t[0][2], t[1][2], t[2][2]});
             const float bottom = std::min({t[0][1], t[1][1], t[2][1]});
+            const float top = std::max({t[0][1], t[1][1], t[2][1]});
             int32_t u0, u1, v0, v1;
             if (!range(lowX - kPicaWaterLandingReach, highX + kPicaWaterLandingReach, map.Origin[0], u0, u1) ||
                 !range(lowZ - kPicaWaterLandingReach, highZ + kPicaWaterLandingReach, map.Origin[1], v0, v1))
@@ -156,7 +158,8 @@ inline constexpr float kPicaWaterMapMinimumTexel = 4.0F;
             for (int32_t v = v0; v <= v1; ++v) {
                 for (int32_t u = u0; u <= u1; ++u) {
                     auto& texel = map.Texels[size_t(v) * map.Size + size_t(u)];
-                    if (!(texel[0] <= bottom + 10.0F && texel[0] >= bottom - 60.0F)) continue;
+                    if (!(texel[0] <= bottom + 3.0F && texel[0] >= bottom - 60.0F && texel[0] <= top - 5.0F))
+                        continue;
                     const float x = map.Origin[0] + (float(u) + 0.5F) * map.Texel;
                     const float z = map.Origin[1] + (float(v) + 0.5F) * map.Texel;
                     const float dx = std::max({lowX - x, 0.0F, x - highX});
