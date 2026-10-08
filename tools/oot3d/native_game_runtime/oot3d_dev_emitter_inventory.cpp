@@ -181,9 +181,13 @@ void NativeEmitterInventoryLog::Observe(uint64_t frame, uint32_t playState, std:
       std::snprintf(text, sizeof(text), ",\"owner\":null}");
     }
     lights += text;
-    // Change detection: what, where (to a unit), colour and reach.
-    std::snprintf(text, sizeof(text), "|%u:%.0f,%.0f,%.0f:%.3f,%.3f,%.3f:%d:%u", e.Type, e.Position[0], e.Position[1],
-                  e.Position[2], e.Color[0], e.Color[1], e.Color[2], e.Radius, e.Owner ? e.Owner->ActorId : 0xFFFFU);
+    // Change detection: what, where (to a unit), colour and reach. A light an
+    // actor carries (the fairy following Link) counts where the actor spawned:
+    // its own movement is not a change.
+    const bool carried = e.Owner && e.Owner->Kind == "actor";
+    const auto &where = carried ? e.Owner->HomePosition : e.Position;
+    std::snprintf(text, sizeof(text), "|%u:%.0f,%.0f,%.0f:%.3f,%.3f,%.3f:%d:%u", e.Type, where[0], where[1], where[2],
+                  e.Color[0], e.Color[1], e.Color[2], e.Radius, e.Owner ? e.Owner->ActorId : 0xFFFFU);
     key += text;
   }
   if (key == mLastKey) return;

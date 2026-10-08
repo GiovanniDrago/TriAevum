@@ -54,8 +54,9 @@ struct NativeEmitter {
 [[nodiscard]] std::vector<NativeEmitter> CaptureNativeEmitters(uint32_t playState,
                                                                oot3d::recomp::a32::MemoryBus &memory);
 
-// Appends a JSON line when the inventory changes (positions to 1 unit,
-// colours and radii exactly), at most every `minimumFrames` calls.
+// Appends a JSON line when the inventory changes (positions to 1 unit, an
+// actor's lights by the actor's home, colours and radii exactly), at most
+// every `minimumFrames` calls.
 class NativeEmitterInventoryLog {
 public:
   explicit NativeEmitterInventoryLog(std::string path, uint32_t minimumFrames = 30U);

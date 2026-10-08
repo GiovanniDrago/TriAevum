@@ -83,12 +83,25 @@ void SceneEnvironmentRuntime::SelectLocked(std::optional<uint16_t> scene,
   }
   AcknowledgeFilesLocked();
   PublishLocked();
+#if defined(TRIAEVUM_DEVELOPER_TOOLS)
+  // Which profile a scene took, for agents reading the log.
+  if (scene)
+    std::fprintf(stderr, "TRIAEVUM_ENVIRONMENT_SELECT scene=0x%04X night=%d file=%s enabled=%d placed=%zu error=%s\n",
+                 unsigned(*scene), mState.EditingNight ? 1 : 0, mState.FileExists ? mState.Path.string().c_str() : "-",
+                 mState.Profile.Enabled ? 1 : 0, mState.Profile.PlacedLights.size(),
+                 mState.Error.empty() ? "-" : mState.Error.c_str());
+#endif
 }
 void SceneEnvironmentRuntime::EditLightGizmo(uint32_t selectedLight, bool enabled) {
   std::scoped_lock lock(mMutex);
   mGizmoSelected = selectedLight;
   mGizmoEnabled = enabled;
   mGizmoEdited = std::chrono::steady_clock::now();
+}
+
+void SceneEnvironmentRuntime::ShowLightGizmos(bool shown) {
+  std::scoped_lock lock(mMutex);
+  mGizmoEnabled = shown;
 }
 
 void SceneEnvironmentRuntime::PublishLightGizmo(const std::optional<std::array<float, 3>> &eye,

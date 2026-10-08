@@ -111,6 +111,8 @@ class DevWarpRuntime {
   // Without `night` the time of day stays as it is (the vanilla screen).
   void WarpTo(const DevWarpEntrance &entrance, DevWarpAge age, std::optional<bool> night);
   void WarpToPoint(const std::string &name);
+  // A place that is not a stored point (agents' lab warps), same respawn.
+  void WarpToPlace(const std::string &label, const DevWarpPoint &point);
   [[nodiscard]] std::map<std::string, DevWarpPoint> Points() const;
   // Stores the player's current place under the name (SoH's "+" button).
   bool AddPoint(const std::string &name, std::string *error);

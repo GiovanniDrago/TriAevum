@@ -160,6 +160,20 @@ void DevWarpRuntime::WarpToPoint(const std::string &name) {
   mStatus.Message = "Warping to " + name + "...";
 }
 
+void DevWarpRuntime::WarpToPlace(const std::string &label, const DevWarpPoint &point) {
+  std::scoped_lock lock(mMutex);
+  Request request;
+  request.Type = Kind::WarpPoint;
+  request.Label = label;
+  request.Entrance = static_cast<uint16_t>(point.EntranceId);
+  request.Point = point;
+  if (point.EntranceId >= 0 && static_cast<uint32_t>(point.EntranceId) < mEntranceTable.size())
+    request.Scene = static_cast<uint8_t>(mEntranceTable[static_cast<size_t>(point.EntranceId)] & 0xFFU);
+  mPending = std::move(request);
+  mStatus.Phase = DevWarpPhase::Waiting;
+  mStatus.Message = "Warping to " + label + "...";
+}
+
 std::map<std::string, DevWarpPoint> DevWarpRuntime::Points() const {
   std::scoped_lock lock(mMutex);
   return mPoints;

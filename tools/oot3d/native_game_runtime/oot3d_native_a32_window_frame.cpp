@@ -239,7 +239,7 @@ bool NativeA32WindowSession::RunFrame() {
                          presentationElapsedSeconds,
                          guestRefreshesDue != 0U,
                          nativeControlPollingState);
-  if (physicalInputFrame.Exit) {
+  if (physicalInputFrame.Exit || devLabQuit) {
     window.Close();
     return false;
   }
@@ -958,6 +958,7 @@ bool NativeA32WindowSession::UpdateGuestServicesForRefresh(
     if (devWarpGuest == nullptr) devWarpGuest = Oot3dNativeGame::MakeDevWarpProcessGuest(process);
     devWarp->Advance(*devWarpGuest, sceneViewProbe.Stats().LastPlayStateAddress, frameCount);
     UpdateDevFreeCameraTour(frameCount);
+    if (devLab) UpdateDevLab(frameCount);
   }
 #endif
   refreshTickRemainder += kCtrArm11TicksPerSecond;
@@ -2047,15 +2048,19 @@ void NativeA32WindowSession::UpdateDevFreeCameraTour(uint64_t guestFrame) {
     const float yaw = devTourAnchorYaw * kRadians;
     const std::array<float, 3> forward{std::sin(yaw), 0.0F, std::cos(yaw)};
     const std::array<float, 3> right{std::cos(yaw), 0.0F, -std::sin(yaw)};
-    std::array<float, 3> eye{};
-    for (size_t axis = 0; axis < 3; ++axis)
-      eye[axis] = devTourAnchor[axis] + forward[axis] * p.Forward + right[axis] * p.Right + (axis == 1 ? p.Up : 0.0F);
-    nativeCandidateDispatch.DevFreeCamera->SetPose(eye, devTourAnchorYaw + p.Yaw, p.Pitch);
+    std::array<float, 3> eye{p.Forward, p.Right, p.Up};
+    if (!p.Absolute)
+      for (size_t axis = 0; axis < 3; ++axis)
+        eye[axis] = devTourAnchor[axis] + forward[axis] * p.Forward + right[axis] * p.Right + (axis == 1 ? p.Up : 0.0F);
+    const float viewYaw = p.Absolute ? p.Yaw : devTourAnchorYaw + p.Yaw;
+    nativeCandidateDispatch.DevFreeCamera->SetPose(eye, viewYaw, p.Pitch);
     devTourAppliedAtPose = nativeCandidateDispatch.DevFreeCamera->AppliedCount();
     std::fprintf(stderr, "TRIAEVUM_DEV_FREECAM_TOUR pose=%d eye=%.1f,%.1f,%.1f yaw=%.1f pitch=%.1f frame=%llu\n", index,
-                 eye[0], eye[1], eye[2], devTourAnchorYaw + p.Yaw, p.Pitch, static_cast<unsigned long long>(guestFrame));
+                 eye[0], eye[1], eye[2], viewYaw, p.Pitch, static_cast<unsigned long long>(guestFrame));
   };
   if (devTourIndex < 0) {
+    // A boot warp point is requested once gameplay starts: wait for it too.
+    if (status.Phase != Oot3dNativeGame::DevWarpPhase::Idle) devTourAfterWarp = true;
     const bool ready = devTourAfterWarp ? status.Phase == Oot3dNativeGame::DevWarpPhase::Arrived
                                         : status.Observation.Gameplay && status.Observation.Player;
     if (!ready) {
@@ -2091,6 +2096,111 @@ void NativeA32WindowSession::UpdateDevFreeCameraTour(uint64_t guestFrame) {
     pose(devTourIndex);
   else
     std::fprintf(stderr, "TRIAEVUM_DEV_FREECAM_TOUR done\n");
+}
+
+void NativeA32WindowSession::UpdateDevLab(uint64_t guestFrame) {
+  using Json = nlohmann::json;
+  auto &camera = *nativeCandidateDispatch.DevFreeCamera;
+  const auto status = devWarp->Status();
+  const auto &seen = status.Observation;
+  const auto place = [&] {
+    return Json{{"frame", guestFrame},
+                {"scene", seen.Scene},
+                {"room", seen.Room},
+                {"position", {seen.Position[0], seen.Position[1], seen.Position[2]}},
+                {"yaw", static_cast<float>(seen.RotY) * (180.0F / 32768.0F)},
+                {"gameplay", seen.Gameplay}};
+  };
+  const auto finish = [&](std::string_view result, Json detail) {
+    devLab->Answer(*devLabCommand, result, detail);
+    devLabCommand.reset();
+  };
+  const auto vector3 = [](const Json &value) {
+    return std::array<float, 3>{value.at(0).get<float>(), value.at(1).get<float>(), value.at(2).get<float>()};
+  };
+  if (!devLabCommand) {
+    devLabCommand = devLab->Next();
+    if (!devLabCommand) return;
+    devLabFrames = 0;
+    devLabSawArrival = false;
+    const auto &command = *devLabCommand;
+    const std::string op = command["op"].get<std::string>();
+    try {
+      if (op == "warp") {
+        // Link respawns at the position in the room (SoH's warp point), facing yaw.
+        Oot3dNativeGame::DevWarpPoint point;
+        point.EntranceId = command.value("entrance", 0);
+        point.RoomNum = static_cast<int8_t>(command.value("room", 0));
+        const auto position = vector3(command.at("position"));
+        std::copy(position.begin(), position.end(), point.Position);
+        point.RotY = static_cast<int16_t>(std::lround(command.value("yaw", 0.0) * 32768.0 / 180.0));
+        devWarp->WarpToPlace("lab " + command.value("id", Json()).dump(), point);
+      } else if (op == "camera") {
+        camera.SetPose(vector3(command.at("eye")), command.value("yaw", 0.0F), command.value("pitch", 0.0F));
+        devLabAppliedAt = camera.AppliedCount();
+      } else if (op == "camera_off") {
+        camera.SetActive(false);
+        finish("ok", place());
+      } else if (op == "capture") {
+        // Written by the render stream with this frame; the file appears shortly after.
+        pendingForcedScreenshot = command.at("path").get<std::string>();
+        finish("ok", {{"frame", guestFrame}, {"path", pendingForcedScreenshot.string()}});
+      } else if (op == "status") {
+        const auto environment = sceneEnvironment->Snapshot();
+        auto detail = place();
+        detail["warp"] = status.Message;
+        detail["profile"] = {{"file", environment.FileExists ? environment.Path.string() : std::string()},
+                             {"enabled", environment.Profile.Enabled},
+                             {"revision", environment.Revision},
+                             {"error", environment.Error}};
+        finish("ok", detail);
+      } else if (op == "gizmos") {
+        sceneEnvironment->ShowLightGizmos(command.value("shown", true));
+        finish("ok", {{"frame", guestFrame}});
+      } else if (op == "quit") {
+        finish("ok", place());
+        devLabQuit = true;
+      } else if (op != "wait") {
+        finish("rejected", {{"reason", "unknown op"}});
+      }
+    } catch (const std::exception &error) {
+      finish("rejected", {{"reason", error.what()}});
+    }
+    return;
+  }
+  ++devLabFrames;
+  const auto &command = *devLabCommand;
+  const std::string op = command["op"].get<std::string>();
+  if (op == "warp") {
+    // Settled: the given frames after arriving (title cards and fades).
+    if (status.Phase == Oot3dNativeGame::DevWarpPhase::Failed) {
+      finish("failed", {{"reason", status.Message}});
+    } else if (status.Phase == Oot3dNativeGame::DevWarpPhase::Arrived) {
+      if (!devLabSawArrival) {
+        devLabSawArrival = true;
+        devLabFrames = 0;
+      } else if (devLabFrames >= command.value("settleFrames", 60U)) {
+        finish("ok", place());
+      }
+    } else if (devLabFrames >= 3600U) {
+      finish("timeout", {{"reason", status.Message}});
+    }
+  } else if (op == "camera") {
+    // Held until the game took the free view for the given frames from the
+    // main camera (PlayState +0xA64, 0): a cutscene camera does not count.
+    int16_t activeCamera = -1;
+    const uint32_t playState = sceneViewProbe.Stats().LastPlayStateAddress;
+    if (playState != 0U)
+      (void)processStorage->Memory().Read16(playState + 0xA64U, reinterpret_cast<uint16_t *>(&activeCamera));
+    if (activeCamera != 0) devLabAppliedAt = camera.AppliedCount();
+    const uint64_t applied = camera.AppliedCount() - devLabAppliedAt;
+    if (applied >= command.value("holdFrames", 45U))
+      finish("ok", {{"frame", guestFrame}, {"applied", applied}});
+    else if (devLabFrames >= command.value("timeoutFrames", 900U))
+      finish("timeout", {{"frame", guestFrame}, {"applied", applied}, {"activeCamera", activeCamera}});
+  } else if (op == "wait") {
+    if (devLabFrames >= command.value("frames", 30U)) finish("ok", place());
+  }
 }
 
 void NativeA32WindowSession::UpdateDevFreeCamera(Oot3dNativeGame::NativeA32InputFrame &inputFrame) {

@@ -139,6 +139,8 @@ public:
   // Light gizmos: the light the placed-light editor selected and whether it
   // wants gizmos, told while the editor is drawn.
   void EditLightGizmo(uint32_t selectedLight, bool enabled);
+  // Shows or hides the gizmos without selecting a light (agents' captures).
+  void ShowLightGizmos(bool shown);
   // Renderer order, once per frame: the placed lights' gizmos (world debug
   // lines) while the editor was drawn within the last half second or while
   // `forced` (the free camera), none otherwise. `eye`: the scene's camera.
