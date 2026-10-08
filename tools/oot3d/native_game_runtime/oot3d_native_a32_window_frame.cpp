@@ -2190,6 +2190,27 @@ void NativeA32WindowSession::UpdateDevLab(uint64_t guestFrame) {
         Fast::Renderer3ds::PicaSurfaceDebug::Instance().SetExemptRange(command.value("first", 1U),
                                                                        command.value("last", 0U));
         finish("ok", {{"frame", guestFrame}});
+      } else if (op == "peek") {
+        // Guest memory as hex (at most 4 KiB): finding actor fields.
+        const uint32_t address = command.at("address").get<uint32_t>();
+        const uint32_t size = std::min(command.value("size", 256U), 4096U);
+        std::string hex;
+        hex.reserve(size * 2U);
+        static constexpr char kDigits[] = "0123456789abcdef";
+        bool readable = true;
+        for (uint32_t i = 0; i < size && readable; ++i) {
+          uint8_t byte = 0;
+          readable = processStorage->Memory().Read8(address + i, &byte);
+          hex += kDigits[byte >> 4U];
+          hex += kDigits[byte & 15U];
+        }
+        finish(readable ? "ok" : "failed", {{"frame", guestFrame}, {"address", address}, {"hex", hex}});
+      } else if (op == "poke16") {
+        // One halfword written into guest memory (developer experiments only).
+        const uint32_t address = command.at("address").get<uint32_t>();
+        const uint16_t value = static_cast<uint16_t>(command.at("value").get<int>());
+        const bool written = processStorage->Memory().Write16(address, value);
+        finish(written ? "ok" : "failed", {{"frame", guestFrame}, {"address", address}});
       } else if (op == "actors") {
         // The live actors (optionally only some ids): id, params, instance,
         // room, world position and scale.

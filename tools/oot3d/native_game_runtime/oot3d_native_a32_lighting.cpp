@@ -377,9 +377,10 @@ void NativeA32LightingProbe::ContinueSceneLights(Fast::Renderer3ds::PicaSceneDir
 // Temple's great flames) and Obj_Syokudai (0x05E, torches). Neither registers
 // a LightContext record in OOT3D. Position: the actor's world position
 // (+0x28) raised to the flame; reach from its scale (+0x54); colour from the
-// flame's kind (OoT's En_Light table: 2 blue, 3 green, else orange). Torches
-// of type 2 (params bits 12-13) are lit only by the player; their lit state is
-// not read yet, so they are left out.
+// flame's kind (OoT's En_Light table: 2 blue, 3 green, else orange). A torch
+// is lit while its timer (s16 +0x27C, OoT's litTimer: -1 for good, a count
+// down when the player lit it, 0 unlit) is non-zero: the same test
+// ObjSyokudai_Draw (00286590) makes before drawing its flame.
 static bool CaptureFlameEmitter(oot3d::recomp::a32::MemoryBus& memory, uint32_t actor, uint16_t id,
                                 uint16_t params, Fast::Renderer3ds::PicaScenePointLight& light) {
     std::array<float, 3> position{};
@@ -403,7 +404,8 @@ static bool CaptureFlameEmitter(oot3d::recomp::a32::MemoryBus& memory, uint32_t 
         }
         return true;
     }
-    if (((params >> 12U) & 3U) == 2U) return false;
+    uint16_t litTimer = 0;
+    if (!memory.Read16(actor + 0x27CU, &litTimer) || litTimer == 0U) return false;
     light.PositionWorld[1] += 55.0F;
     light.Radius = 500.0F;
     light.Color = {1.0F, 0.6F, 0.25F};
