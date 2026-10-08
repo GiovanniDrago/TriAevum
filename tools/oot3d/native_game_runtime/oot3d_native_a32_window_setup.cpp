@@ -597,6 +597,28 @@ void NativeA32WindowSession::Setup() {
   // Controls, HUD and Game (Save states, Language) after the graphics tabs.
   applicationSettingsTabs.push_back(Oot3dNativeGame::CreateSceneEnvironmentPanel(sceneEnvironment));
 #if defined(TRIAEVUM_DEVELOPER_TOOLS)
+  if (const char *tour = std::getenv("TRIAEVUM_DEV_FREECAM_TOUR"); tour != nullptr && *tour != '\0') {
+    std::string text = tour;
+    size_t start = 0;
+    while (start < text.size()) {
+      const size_t end = std::min(text.find(';', start), text.size());
+      DevFreeCameraTourPose pose;
+      if (std::sscanf(text.substr(start, end - start).c_str(), "%f,%f,%f,%f,%f", &pose.Forward, &pose.Right, &pose.Up,
+                      &pose.Yaw, &pose.Pitch) == 5)
+        devTourPoses.push_back(pose);
+      start = end + 1;
+    }
+    const char *out = std::getenv("TRIAEVUM_DEV_FREECAM_TOUR_OUT");
+    devTourDirectory = out != nullptr ? std::filesystem::path(out) : std::filesystem::current_path();
+    std::filesystem::create_directories(devTourDirectory);
+    devTourAfterWarp = std::getenv("TRIAEVUM_DEV_WARP") != nullptr;
+    std::fprintf(stderr, "TRIAEVUM_DEV_FREECAM_TOUR poses=%zu out=%s\n", devTourPoses.size(),
+                 devTourDirectory.string().c_str());
+  }
+  if (const char *emitters = std::getenv("TRIAEVUM_DEV_EMITTERS"); emitters != nullptr && *emitters != '\0') {
+    devEmitterLog = std::make_unique<Oot3dNativeGame::NativeEmitterInventoryLog>(emitters);
+    std::fprintf(stderr, "TRIAEVUM_DEV_EMITTERS %s\n", emitters);
+  }
   // Agents edit scene profiles on disk while the game runs.
   if (const char *reload = std::getenv("TRIAEVUM_ENVIRONMENT_HOT_RELOAD"); reload != nullptr && *reload != '0') {
     sceneEnvironment->SetHotReload(true);

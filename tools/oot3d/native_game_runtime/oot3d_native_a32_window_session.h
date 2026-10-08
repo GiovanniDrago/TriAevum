@@ -138,6 +138,7 @@
 #if defined(TRIAEVUM_DEVELOPER_TOOLS)
 #include "oot3d_dev_tools_panel.h"
 #include "oot3d_dev_warp.h"
+#include "oot3d_dev_emitter_inventory.h"
 #endif
 
 namespace Oot3dA32Window {
@@ -320,6 +321,25 @@ private:
   // F1 > Dev Tools warping (developer builds only).
   std::shared_ptr<Oot3dNativeGame::DevWarpRuntime> devWarp;
   std::unique_ptr<Oot3dNativeGame::DevWarpGuest> devWarpGuest;
+  // TRIAEVUM_DEV_FREECAM_TOUR="f,r,u,yaw,pitch;...": free camera poses
+  // relative to Link (forward/right/up units, yaw offset and pitch in
+  // degrees), from 3 s after the scripted warp arrives (or gameplay starts),
+  // each held 1.5 s then captured to TRIAEVUM_DEV_FREECAM_TOUR_OUT/tour-NN.bmp.
+  struct DevFreeCameraTourPose {
+    float Forward = 0.0F, Right = 0.0F, Up = 0.0F, Yaw = 0.0F, Pitch = 0.0F;
+  };
+  std::vector<DevFreeCameraTourPose> devTourPoses;
+  std::filesystem::path devTourDirectory;
+  bool devTourAfterWarp = false;
+  int devTourIndex = -1;
+  uint32_t devTourFrames = 0;
+  uint64_t devTourAppliedAtPose = 0;
+  std::array<float, 3> devTourAnchor{};
+  float devTourAnchorYaw = 0.0F;
+  void UpdateDevFreeCameraTour(uint64_t guestFrame);
+  // TRIAEVUM_DEV_EMITTERS=<file.jsonl>: the native lights per scene/room.
+  std::unique_ptr<Oot3dNativeGame::NativeEmitterInventoryLog> devEmitterLog;
+  uint64_t devEmitterFrames = 0;
   // F6 (free camera) rising edge and the free camera's refresh clock.
   bool devFreeCameraToggleHeld = false;
   std::chrono::steady_clock::time_point devFreeCameraLastRefresh{};
@@ -407,6 +427,8 @@ private:
   Oot3dNativeGame::NativeA32ProcessRunResult processResult;
   uint32_t frameCount = 0;
   uint32_t runFrameCount = 0;
+  // A one-frame capture path requested by a developer camera tour.
+  std::filesystem::path pendingForcedScreenshot;
   uint64_t presentationFrameCount = 0;
   uint64_t refreshTickRemainder = 0;
   uint64_t nextVblankTick = 0;

@@ -97,7 +97,14 @@ public:
     view.Yaw = static_cast<int16_t>(std::lround(mYaw * 32768.0F / 180.0F));
     view.Pitch = static_cast<int16_t>(std::lround(mPitch * 32768.0F / 180.0F));
     mLast = view;
+    ++mApplied;
     return view;
+  }
+  // How many times the game took the free view (main camera updates): a
+  // cutscene camera, such as a scene's intro, does not count.
+  [[nodiscard]] uint64_t AppliedCount() const {
+    std::scoped_lock lock(mMutex);
+    return mApplied;
   }
   // The last view written to the game (the gizmo pass and the panel show it).
   [[nodiscard]] std::optional<DevFreeCameraView> LastView() const {
@@ -120,6 +127,7 @@ private:
   float mPitch = 0.0F;  // degrees, positive up
   float mSpeed = 400.0F;  // world units per second
   DevFreeCameraView mLast;
+  uint64_t mApplied = 0;
 };
 
 } // namespace Oot3dNativeGame

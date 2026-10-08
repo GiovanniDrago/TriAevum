@@ -468,7 +468,9 @@ bool NativeA32WindowSession::RunFrame() {
   gui->EndDraw();
   presentSteps.Mark("gui_end_draw");
   renderStream.Submit([&, width, height,
-                       presentationSerial = presentationFrameCount] {
+                       presentationSerial = presentationFrameCount,
+                       forcedScreenshot = std::exchange(pendingForcedScreenshot, {})] {
+    if (!forcedScreenshot.empty()) screenshotState.ForcedPath = forcedScreenshot;
     if (rendererFrameSkipped) {
       capturedTemporalSample.reset();
       window.EndFrame();
@@ -955,6 +957,7 @@ bool NativeA32WindowSession::UpdateGuestServicesForRefresh(
   if (devWarp != nullptr) {
     if (devWarpGuest == nullptr) devWarpGuest = Oot3dNativeGame::MakeDevWarpProcessGuest(process);
     devWarp->Advance(*devWarpGuest, sceneViewProbe.Stats().LastPlayStateAddress, frameCount);
+    UpdateDevFreeCameraTour(frameCount);
   }
 #endif
   refreshTickRemainder += kCtrArm11TicksPerSecond;
@@ -2030,6 +2033,66 @@ void NativeA32WindowSession::PresentVisualFrame(
 }
 
 #if defined(TRIAEVUM_DEVELOPER_TOOLS)
+void NativeA32WindowSession::UpdateDevFreeCameraTour(uint64_t guestFrame) {
+  if (devTourPoses.empty() || devTourIndex >= static_cast<int>(devTourPoses.size()) || devWarp == nullptr) return;
+  constexpr uint32_t kStartFrames = 90U;  // the scene's title card fades
+  // Held for 45 frames in which the game took the free view (an intro or
+  // other cutscene camera does not count), at most 900 frames.
+  constexpr uint32_t kHoldFrames = 45U;
+  constexpr uint32_t kGiveUpFrames = 900U;
+  constexpr float kRadians = 3.14159265F / 180.0F;
+  const auto status = devWarp->Status();
+  const auto pose = [&](int index) {
+    const auto &p = devTourPoses[static_cast<size_t>(index)];
+    const float yaw = devTourAnchorYaw * kRadians;
+    const std::array<float, 3> forward{std::sin(yaw), 0.0F, std::cos(yaw)};
+    const std::array<float, 3> right{std::cos(yaw), 0.0F, -std::sin(yaw)};
+    std::array<float, 3> eye{};
+    for (size_t axis = 0; axis < 3; ++axis)
+      eye[axis] = devTourAnchor[axis] + forward[axis] * p.Forward + right[axis] * p.Right + (axis == 1 ? p.Up : 0.0F);
+    nativeCandidateDispatch.DevFreeCamera->SetPose(eye, devTourAnchorYaw + p.Yaw, p.Pitch);
+    devTourAppliedAtPose = nativeCandidateDispatch.DevFreeCamera->AppliedCount();
+    std::fprintf(stderr, "TRIAEVUM_DEV_FREECAM_TOUR pose=%d eye=%.1f,%.1f,%.1f yaw=%.1f pitch=%.1f frame=%llu\n", index,
+                 eye[0], eye[1], eye[2], devTourAnchorYaw + p.Yaw, p.Pitch, static_cast<unsigned long long>(guestFrame));
+  };
+  if (devTourIndex < 0) {
+    const bool ready = devTourAfterWarp ? status.Phase == Oot3dNativeGame::DevWarpPhase::Arrived
+                                        : status.Observation.Gameplay && status.Observation.Player;
+    if (!ready) {
+      devTourFrames = 0;
+      return;
+    }
+    if (++devTourFrames < kStartFrames) return;
+    devTourAnchor = {status.Observation.Position[0], status.Observation.Position[1], status.Observation.Position[2]};
+    devTourAnchorYaw = static_cast<float>(status.Observation.RotY) * (180.0F / 32768.0F);
+    devTourIndex = 0;
+    devTourFrames = 0;
+    pose(0);
+    return;
+  }
+  ++devTourFrames;
+  // Only frames drawn from the main camera count: PlayState +0xA64 is the
+  // active camera's index (cameras at +0xA54), 0 the main camera.
+  int16_t activeCamera = -1;
+  const uint32_t playState = sceneViewProbe.Stats().LastPlayStateAddress;
+  if (playState != 0U) (void)processStorage->Memory().Read16(playState + 0xA64U, reinterpret_cast<uint16_t *>(&activeCamera));
+  const uint64_t appliedNow = nativeCandidateDispatch.DevFreeCamera->AppliedCount();
+  if (activeCamera != 0) devTourAppliedAtPose = appliedNow;
+  const uint64_t applied = appliedNow - devTourAppliedAtPose;
+  if (applied < kHoldFrames && devTourFrames < kGiveUpFrames) return;
+  char name[32];
+  std::snprintf(name, sizeof(name), "tour-%02d.bmp", devTourIndex);
+  pendingForcedScreenshot = devTourDirectory / name;
+  std::fprintf(stderr, "TRIAEVUM_DEV_FREECAM_TOUR capture=%s applied=%llu%s\n",
+               pendingForcedScreenshot.string().c_str(), static_cast<unsigned long long>(applied),
+               applied < kHoldFrames ? " not-applied" : "");
+  devTourFrames = 0;
+  if (++devTourIndex < static_cast<int>(devTourPoses.size()))
+    pose(devTourIndex);
+  else
+    std::fprintf(stderr, "TRIAEVUM_DEV_FREECAM_TOUR done\n");
+}
+
 void NativeA32WindowSession::UpdateDevFreeCamera(Oot3dNativeGame::NativeA32InputFrame &inputFrame) {
   auto &freeCamera = *nativeCandidateDispatch.DevFreeCamera;
   const Uint8 *keys = SDL_GetKeyboardState(nullptr);
@@ -2114,6 +2177,8 @@ void NativeA32WindowSession::PublishNativeSceneView() {
   bool freeCamera = false;
 #if defined(TRIAEVUM_DEVELOPER_TOOLS)
   freeCamera = nativeCandidateDispatch.DevFreeCamera->Active();
+  if (devEmitterLog && snapshot)
+    devEmitterLog->Observe(++devEmitterFrames, snapshot->PlayStateAddress, snapshot->SceneId, process.Memory());
 #endif
   renderStream.Submit([&, snapshot, night, player, freeCamera] {
   sceneEnvironment->ObserveScene(snapshot ? snapshot->SceneId : std::nullopt, night, player);

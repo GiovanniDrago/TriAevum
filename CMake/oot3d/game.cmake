@@ -228,8 +228,10 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
         target_sources(oot3d_native_game PRIVATE
             tools/oot3d/native_game_runtime/oot3d_dev_warp.cpp
             tools/oot3d/native_game_runtime/oot3d_dev_tools_panel.cpp
-            tools/oot3d/native_game_runtime/oot3d_dev_warp_process.cpp)
+            tools/oot3d/native_game_runtime/oot3d_dev_warp_process.cpp
+            tools/oot3d/native_game_runtime/oot3d_dev_emitter_inventory.cpp)
         set_source_files_properties(tools/oot3d/native_game_runtime/oot3d_dev_warp.cpp
+            tools/oot3d/native_game_runtime/oot3d_dev_emitter_inventory.cpp
             PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/tools/oot3d/decomp_support/include")
         target_compile_definitions(oot3d_native_game PRIVATE TRIAEVUM_DEVELOPER_TOOLS=1)
         add_executable(oot3d_dev_warp_tests EXCLUDE_FROM_ALL
