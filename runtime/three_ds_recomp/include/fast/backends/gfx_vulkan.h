@@ -688,6 +688,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         Oot3d::SampleViewAccumulator SampleView;
         // The projection those draws apply (see SamplePerspective).
         Oot3d::SampleProjectionAccumulator SampleProjection;
+        // Gameplay water reaching this target's scene draws, and the frame
+        // it was last seen (reflections find water surfaces from it).
+        std::shared_ptr<const Renderer3ds::PicaSceneWaterBodies> WaterBodies;
+        uint64_t WaterBodiesFrame = 0;
         bool AuxiliaryNeedsClear = false;
         bool WBuffering = false;
         bool NriOwned = false;

@@ -9,6 +9,7 @@
 #include "nri_interop_internal.h"
 #endif
 #include <array>
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 
@@ -24,6 +25,9 @@ struct ReflectionPush {
     uint32_t SurfaceOrientation;
 };
 static_assert(sizeof(ReflectionPush) == 76U);
+
+// Water uniforms per frame slot (the dispatches of a slot read its buffer).
+constexpr uint32_t kWaterSlots = 2U;
 
 std::vector<uint32_t> Compile(Renderer::CachedPassShaderCompiler& shaders, const std::string& source, const char* name) {
     return shaders.Resolve(source, Renderer::SpirvStage::Compute, name);
@@ -41,8 +45,11 @@ struct HiZReflectionPass::Impl {
     nri::Descriptor* LinearSampler = nullptr;
     nri::Descriptor* NearestSampler = nullptr;
     nri::DescriptorPool* DescriptorPool = nullptr;
-    nri::DescriptorSet* RaySet = nullptr;
-    nri::DescriptorSet* FilterSet = nullptr;
+    std::array<nri::DescriptorSet*, kWaterSlots> RaySets{};
+    std::array<nri::DescriptorSet*, kWaterSlots> FilterSets{};
+    std::array<nri::Buffer*, kWaterSlots> WaterBuffers{};
+    std::array<nri::Descriptor*, kWaterSlots> WaterViews{};
+    std::array<void*, kWaterSlots> WaterMapped{};
 #endif
     std::array<VkImage, 2> Images{};
     std::array<VkImageView, 2> Views{};
@@ -85,7 +92,7 @@ bool HiZReflectionPass::Initialize(VkPhysicalDevice physicalDevice,
         mImpl->Core = NriInteropAccess::Core(interop);
         if (nriDevice == nullptr || mImpl->Core == nullptr)
             throw std::runtime_error("NRI SSR device is unavailable");
-        const std::array<nri::DescriptorRangeDesc, 7> ranges{{
+        const std::array<nri::DescriptorRangeDesc, 8> ranges{{
             {0, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER},
             {1, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER},
             {2, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER},
@@ -93,7 +100,8 @@ bool HiZReflectionPass::Initialize(VkPhysicalDevice physicalDevice,
             {4, 1, nri::DescriptorType::STORAGE_TEXTURE,
              nri::StageBits::COMPUTE_SHADER},
             {5, 1, nri::DescriptorType::SAMPLER, nri::StageBits::COMPUTE_SHADER},
-            {6, 1, nri::DescriptorType::SAMPLER, nri::StageBits::COMPUTE_SHADER}}};
+            {6, 1, nri::DescriptorType::SAMPLER, nri::StageBits::COMPUTE_SHADER},
+            {7, 1, nri::DescriptorType::CONSTANT_BUFFER, nri::StageBits::COMPUTE_SHADER}}};
         nri::DescriptorSetDesc set{};
         set.ranges = ranges.data();
         set.rangeNum = static_cast<uint32_t>(ranges.size());
@@ -144,6 +152,26 @@ bool HiZReflectionPass::Initialize(VkPhysicalDevice physicalDevice,
         };
         createSampler(nri::Filter::LINEAR, mImpl->LinearSampler);
         createSampler(nri::Filter::NEAREST, mImpl->NearestSampler);
+        for (uint32_t slot = 0; slot < kWaterSlots; ++slot) {
+            nri::BufferDesc bufferDesc{};
+            bufferDesc.size = sizeof(HiZWaterUniforms);
+            bufferDesc.usage = nri::BufferUsageBits::CONSTANT_BUFFER;
+            if (mImpl->Core->CreateCommittedBuffer(*nriDevice, nri::MemoryLocation::HOST_UPLOAD, 0.0F, bufferDesc,
+                                                   mImpl->WaterBuffers[slot]) != nri::Result::SUCCESS)
+                throw std::runtime_error("NRI SSR water uniform creation failed");
+            nri::BufferViewDesc viewDesc{};
+            viewDesc.buffer = mImpl->WaterBuffers[slot];
+            viewDesc.type = nri::BufferView::CONSTANT_BUFFER;
+            viewDesc.size = sizeof(HiZWaterUniforms);
+            if (mImpl->Core->CreateBufferView(viewDesc, mImpl->WaterViews[slot]) != nri::Result::SUCCESS)
+                throw std::runtime_error("NRI SSR water uniform view creation failed");
+            mImpl->WaterMapped[slot] =
+                mImpl->Core->MapBuffer(*mImpl->WaterBuffers[slot], 0, sizeof(HiZWaterUniforms));
+            if (mImpl->WaterMapped[slot] == nullptr)
+                throw std::runtime_error("NRI SSR water uniform mapping failed");
+            const HiZWaterUniforms none{};
+            std::memcpy(mImpl->WaterMapped[slot], &none, sizeof(none));
+        }
         mImpl->Initialized = true;
         mImpl->Reason.clear();
         return true;
@@ -213,43 +241,49 @@ bool HiZReflectionPass::Configure(
                 throw std::runtime_error("NRI SSR input view failed");
         }
         nri::DescriptorPoolDesc pool{};
-        pool.descriptorSetMaxNum = 2;
-        pool.samplerMaxNum = 4;
-        pool.textureMaxNum = 8;
-        pool.storageTextureMaxNum = 2;
+        pool.descriptorSetMaxNum = 2U * kWaterSlots;
+        pool.samplerMaxNum = 4U * kWaterSlots;
+        pool.textureMaxNum = 8U * kWaterSlots;
+        pool.storageTextureMaxNum = 2U * kWaterSlots;
+        pool.constantBufferMaxNum = 2U * kWaterSlots;
         nri::Device* device = NriInteropAccess::Device(*mImpl->Interop);
         if (mImpl->Core->CreateDescriptorPool(
                 *device, pool, mImpl->DescriptorPool) != nri::Result::SUCCESS)
             throw std::runtime_error("NRI SSR descriptor pool failed");
-        std::array<nri::DescriptorSet*, 2> sets{};
+        std::array<nri::DescriptorSet*, 2U * kWaterSlots> sets{};
         if (mImpl->Core->AllocateDescriptorSets(
                 *mImpl->DescriptorPool, *mImpl->PipelineLayout, 0,
-                sets.data(), 2, 0) != nri::Result::SUCCESS)
+                sets.data(), 2U * kWaterSlots, 0) != nri::Result::SUCCESS)
             throw std::runtime_error("NRI SSR descriptor sets failed");
-        mImpl->RaySet = sets[0];
-        mImpl->FilterSet = sets[1];
+        for (uint32_t slot = 0; slot < kWaterSlots; ++slot) {
+            mImpl->RaySets[slot] = sets[2U * slot];
+            mImpl->FilterSets[slot] = sets[2U * slot + 1U];
+        }
         const auto updateSet = [&](nri::DescriptorSet* set,
                                    const std::array<nri::Descriptor*, 4>& sources,
-                                   VkImage destinationImage) {
+                                   VkImage destinationImage, uint32_t slot) {
             nri::Descriptor* destination = NriInteropAccess::TextureView(
                 *mImpl->Interop, destinationImage, true);
             if (destination == nullptr)
                 throw std::runtime_error("NRI SSR storage view failed");
-            std::array<nri::UpdateDescriptorRangeDesc, 7> updates{};
+            std::array<nri::UpdateDescriptorRangeDesc, 8> updates{};
             for (uint32_t i = 0; i < sources.size(); ++i)
                 updates[i] = {set, i, 0, &sources[i], 1};
             updates[4] = {set, 4, 0, &destination, 1};
             updates[5] = {set, 5, 0, &mImpl->LinearSampler, 1};
             updates[6] = {set, 6, 0, &mImpl->NearestSampler, 1};
+            updates[7] = {set, 7, 0, &mImpl->WaterViews[slot], 1};
             mImpl->Core->UpdateDescriptorRanges(
                 updates.data(), static_cast<uint32_t>(updates.size()));
         };
-        updateSet(mImpl->RaySet, inputViews, mImpl->Images[0]);
         std::array<nri::Descriptor*, 4> filterInputs{
             NriInteropAccess::TextureView(*mImpl->Interop,
                                           mImpl->Images[0], false),
             inputViews[1], inputViews[2], inputViews[3]};
-        updateSet(mImpl->FilterSet, filterInputs, mImpl->Images[1]);
+        for (uint32_t slot = 0; slot < kWaterSlots; ++slot) {
+            updateSet(mImpl->RaySets[slot], inputViews, mImpl->Images[0], slot);
+            updateSet(mImpl->FilterSets[slot], filterInputs, mImpl->Images[1], slot);
+        }
         mImpl->Width = output.Width;
         mImpl->Height = output.Height;
         mImpl->Inputs = inputs;
@@ -270,7 +304,8 @@ bool HiZReflectionPass::Execute(VkCommandBuffer commandBuffer,
                                 const PerspectiveViewState& view,
                                 const EffectsSettings& settings,
                                 const EffectPassBarrierPlan& barrierPlan,
-                                std::optional<PicaSurfaceCoordinates> coordinates) {
+                                std::optional<PicaSurfaceCoordinates> coordinates,
+                                const HiZWaterUniforms& water) {
     const auto* outputBarrier = barrierPlan.Find(
         EffectResource::ReflectionColor);
     if (!barrierPlan.Valid() || mImpl->OutputStates == nullptr ||
@@ -281,10 +316,12 @@ bool HiZReflectionPass::Execute(VkCommandBuffer commandBuffer,
 #ifndef ENABLE_OOT3D_NRI
     (void)commandBuffer; (void)frameSlot; (void)hiZMipCount;
     (void)view; (void)settings;
-    (void)barrierPlan;
+    (void)barrierPlan; (void)water;
     return false;
 #else
-    if (mImpl->RaySet == nullptr || mImpl->FilterSet == nullptr) return false;
+    const uint32_t slot = frameSlot % kWaterSlots;
+    if (mImpl->RaySets[slot] == nullptr || mImpl->FilterSets[slot] == nullptr) return false;
+    std::memcpy(mImpl->WaterMapped[slot], &water, sizeof(water));
     nri::CommandBuffer* command =
         NriInteropAccess::CommandBuffer(*mImpl->Interop, frameSlot);
     if (command == nullptr) return false;
@@ -332,7 +369,7 @@ bool HiZReflectionPass::Execute(VkCommandBuffer commandBuffer,
             (mImpl->Width + 7U) / 8U, (mImpl->Height + 7U) / 8U, 1U};
         mImpl->Core->CmdDispatch(*command, groups);
     };
-    dispatch(mImpl->RayPipeline, mImpl->RaySet);
+    dispatch(mImpl->RayPipeline, mImpl->RaySets[slot]);
     const auto rawRead = mImpl->PrivateStates.PlanTransition(
         reinterpret_cast<uintptr_t>(mImpl->Images[0]),
         {ResourceAccess::ShaderRead, 0});
@@ -341,7 +378,7 @@ bool HiZReflectionPass::Execute(VkCommandBuffer commandBuffer,
         return false;
     mImpl->LastBarrierExecution.RecordPrivateTransition(rawRead);
     mImpl->PrivateStates.Commit(rawRead);
-    dispatch(mImpl->FilterPipeline, mImpl->FilterSet);
+    dispatch(mImpl->FilterPipeline, mImpl->FilterSets[slot]);
     const auto filteredRead = mImpl->OutputStates->PlanTransition(
         reinterpret_cast<uintptr_t>(mImpl->Images[1]),
         {outputBarrier->CompletionAccess, 0});
@@ -360,8 +397,8 @@ void HiZReflectionPass::InvalidateScreenResources() {
     if (mImpl->Core != nullptr && mImpl->DescriptorPool != nullptr)
         mImpl->Core->DestroyDescriptorPool(mImpl->DescriptorPool);
     mImpl->DescriptorPool = nullptr;
-    mImpl->RaySet = nullptr;
-    mImpl->FilterSet = nullptr;
+    mImpl->RaySets = {};
+    mImpl->FilterSets = {};
 #endif
     if (mImpl->Interop != nullptr)
         mImpl->Interop->DestroyOwnedTexture(mImpl->Images[0]);
@@ -390,6 +427,12 @@ void HiZReflectionPass::Shutdown() {
             mImpl->Core->DestroyPipeline(mImpl->FilterPipeline);
         if (mImpl->PipelineLayout != nullptr)
             mImpl->Core->DestroyPipelineLayout(mImpl->PipelineLayout);
+        for (uint32_t slot = 0; slot < kWaterSlots; ++slot) {
+            if (mImpl->WaterMapped[slot] != nullptr && mImpl->WaterBuffers[slot] != nullptr)
+                mImpl->Core->UnmapBuffer(*mImpl->WaterBuffers[slot]);
+            if (mImpl->WaterViews[slot] != nullptr) mImpl->Core->DestroyDescriptor(mImpl->WaterViews[slot]);
+            if (mImpl->WaterBuffers[slot] != nullptr) mImpl->Core->DestroyBuffer(mImpl->WaterBuffers[slot]);
+        }
     }
 #endif
     *mImpl = {};

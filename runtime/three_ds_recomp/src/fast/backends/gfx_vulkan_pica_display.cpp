@@ -2258,7 +2258,19 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                         *presentationPerspective,
                         presentationSettings.Effects,
                         reflectionBarrierPlan,
-                        Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
+                        Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags),
+                        [&] {
+                            // Water surfaces the trace finds itself (the
+                            // title's transparent water writes no depth).
+                            const auto worldToView = effectGuideTarget->SampleView.Resolve(mFrameCounter);
+                            const bool water = effectGuideTarget->WaterBodies &&
+                                effectGuideTarget->WaterBodiesFrame == mFrameCounter && worldToView;
+                            return Oot3d::BuildHiZWaterUniforms(
+                                water ? &*worldToView : nullptr,
+                                water ? effectGuideTarget->WaterBodies.get() : nullptr,
+                                std::chrono::duration<float>(std::chrono::steady_clock::now() - mWaterEpoch).count(),
+                                mWaterOnlyReflections);
+                        }());
                 if (hiZExecuted) {
                     recordEffectPassTransitions(
                         mHiZReflectionPass.LastBarrierExecution());

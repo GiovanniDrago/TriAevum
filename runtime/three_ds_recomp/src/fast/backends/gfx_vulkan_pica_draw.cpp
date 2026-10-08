@@ -780,16 +780,6 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             waterSurface = ResolveNativePicaWaterSurface(draw);
         const bool authoredAppearance = Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
             surfaceAppearance != Renderer3ds::PicaSurfaceAppearance::Relightable;
-        // Traced reflections on water: an explicit zero material that its
-        // water fragments replace with their Fresnel reflectance. With water
-        // only (Reflections Off), every other draw publishes zero too, so
-        // nothing in front of water inherits its material.
-        const bool waterReflections = reflectionsEnabled && waterSurface.ReachesWater &&
-                                      !resolvedReflectionMaterial;
-        if ((waterReflections || mWaterOnlyReflections) && reflectionsEnabled && !resolvedReflectionMaterial) {
-            resolvedReflectionMaterial.emplace();
-            resolvedReflectionMaterial->Parameters = {0.0F, 1.0F};
-        }
         const bool directionalShadowReceiver = !nativeMemoryOnly && !isolatedLighting && !authoredAppearance &&
             Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
             mDirectionalShadowMapBarrierPlan.Valid() &&
@@ -900,7 +890,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     if (track.Valid())
                         surfaceLighting->WaterFlow = {track.Velocity[0], track.Velocity[1], 1.0F, 0.0F};
                 }
-                surfaceLighting->WaterFlow[3] = waterReflections ? 1.0F : 0.0F;
+                surfaceLighting->WaterFlow[3] =
+                    graphicsSettings.Effects.Reflections == Oot3d::ReflectionMode::HiZ ? 1.0F : 0.0F;
             }
 #if defined(TRIAEVUM_RENDERER_DEVELOPER_TOOLS)
             // Developer view: water fragments in magenta (1), their ripple
@@ -1199,11 +1190,27 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 const auto& b = waterSurface.WorldBounds;
                 char water[256];
                 std::snprintf(water, sizeof(water),
-                    ",\"worldMin\":[%.1f,%.1f,%.1f],\"worldMax\":[%.1f,%.1f,%.1f],\"waterBody\":%d}",
+                    ",\"worldMin\":[%.1f,%.1f,%.1f],\"worldMax\":[%.1f,%.1f,%.1f],\"waterBody\":%d,"
+                    "\"reachesWater\":%d}",
                     b.Minimum[0], b.Minimum[1], b.Minimum[2], b.Maximum[0], b.Maximum[1], b.Maximum[2],
-                    waterSurface.Body ? static_cast<int>(*waterSurface.Body) : -1);
+                    waterSurface.Body ? static_cast<int>(*waterSurface.Body) : -1, waterSurface.ReachesWater ? 1 : 0);
                 record.pop_back();
                 record += water;
+            }
+            {
+                // Texture identities (base-level content hash, size, slot), as
+                // texture-keyed materials select them: building water catalogs.
+                std::string ids = ",\"textureIds\":[";
+                for (const auto& texture : draw.Textures) {
+                    const auto hash = ResolveNativeTextureBaseLevelContentHash(texture);
+                    char text[96];
+                    std::snprintf(text, sizeof(text), "%s\"%016llx:%ux%u:%u\"", ids.back() == '[' ? "" : ",",
+                                  static_cast<unsigned long long>(hash.value_or(0U)), texture.Width, texture.Height,
+                                  static_cast<unsigned>(texture.Slot));
+                    ids += text;
+                }
+                record.pop_back();
+                record += ids + "]}";
             }
             if (surfaceLighting) {
                 // The native material and lights the replacement read.
@@ -2659,6 +2666,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             shadowCaster.OwnerIdentity = draw.Composition.NativeActorIdentity;
             if (opaqueWorldDraw && draw.LightBinding.WorldToView)
                 renderTarget.SampleView.Observe(mFrameCounter, *draw.LightBinding.WorldToView);
+            if (draw.LightBinding.Water && draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Scene) {
+                renderTarget.WaterBodies = draw.LightBinding.Water;
+                renderTarget.WaterBodiesFrame = mFrameCounter;
+            }
             if (opaqueWorldDraw)
                 if (const auto projection = Oot3d::DecodePicaPerspectiveProjection(draw.VertexUniformBytes))
                     renderTarget.SampleProjection.Observe(mFrameCounter, *projection);

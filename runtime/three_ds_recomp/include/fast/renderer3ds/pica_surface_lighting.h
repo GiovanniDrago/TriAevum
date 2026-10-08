@@ -91,7 +91,8 @@ struct alignas(16) PicaSurfaceLightingUniforms {
     // Water ripples: time (seconds, wrapped), slope strength, wavelength scale.
     std::array<float, 4> WaterRipples{};
     // Water flow: texture coordinate 0's scrolling (texture units per second,
-    // xy) and whether it is known (z).
+    // xy) and whether it is known (z); w: the reflection trace owns the
+    // water's environment term (the Hi-Z trace finds water surfaces).
     std::array<float, 4> WaterFlow{};
 };
 
@@ -138,9 +139,6 @@ void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSur
 // After the native TEV, before fog: water optics on a water fragment's
 // native colour (the body marks the fragment).
 [[nodiscard]] std::string_view PicaSurfaceLightingWaterShading() noexcept;
-// After the guides are written: a water fragment publishes its rippled normal
-// and its Fresnel reflectance to traced reflections (when the draw traces
-// them for water, water_flow.w).
-[[nodiscard]] std::string PicaSurfaceLightingWaterGuides(bool normalGuide, bool materialGuide);
+
 
 } // namespace Fast::Renderer3ds

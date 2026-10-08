@@ -2,6 +2,10 @@
 #include "fast/oot3d/pica_surface_coordinates.h"
 #include "fast/renderer3ds/pica_material_guide.h"
 
+#include <algorithm>
+#include <cmath>
+#include <utility>
+
 namespace Fast::Oot3d {
 
 namespace {
@@ -26,6 +30,90 @@ layout(push_constant) uniform ReflectionPush {
     uint surface_orientation;
 } pc;
 )glsl";
+
+// The water surface the view ray meets (HiZWaterUniforms), its waves (the
+// surface shader's: eight directional waves) and Fresnel.
+constexpr const char* kWaterLibrary = R"glsl(
+layout(set = 0, binding = 7, std140) uniform HiZWater {
+    vec4 view_to_world[3];
+    vec4 footprints[8];
+    vec4 heights[2];
+    vec4 parameters;
+} hiz_water;
+vec3 hiz_water_view_direction(vec2 uv) {
+    vec2 ndc = oot3d_surface_view_ndc(uv, pc.surface_orientation);
+    return vec3((ndc.x + pc.projection_offset_x) / pc.projection_scale_x,
+                (ndc.y + pc.projection_offset_y) / pc.projection_scale_y, -1.0);
+}
+vec3 hiz_water_to_world(vec3 v) {
+    return vec3(dot(hiz_water.view_to_world[0].xyz, v), dot(hiz_water.view_to_world[1].xyz, v),
+                dot(hiz_water.view_to_world[2].xyz, v));
+}
+// The nearest listed surface in front of the scene: its view depth, world
+// position and view direction (depth 1); depth 0 if none.
+float hiz_water_surface(vec2 uv, float scene_depth, out vec3 world_position, out vec3 direction) {
+    uint count = min(uint(hiz_water.parameters.x), 8u);
+    direction = hiz_water_view_direction(uv);
+    world_position = vec3(0.0);
+    if (count == 0u) return 0.0;
+    vec3 ray = hiz_water_to_world(direction);
+    vec3 camera = vec3(hiz_water.view_to_world[0].w, hiz_water.view_to_world[1].w,
+                       hiz_water.view_to_world[2].w);
+    float nearest = 0.0;
+    for (uint i = 0u; i < count; ++i) {
+        float height = hiz_water.heights[i >> 2u][i & 3u];
+        if (camera.y <= height || ray.y >= -1.0e-6) continue;
+        float depth = (height - camera.y) / ray.y;
+        vec3 position = camera + ray * depth;
+        vec4 footprint = hiz_water.footprints[i];
+        if (position.x < footprint.x || position.z < footprint.y || position.x > footprint.z ||
+            position.z > footprint.w) continue;
+        if (nearest == 0.0 || depth < nearest) {
+            nearest = depth;
+            world_position = position;
+        }
+    }
+    // Something stands on the water (in front of it): not water there.
+    return nearest > 0.0 && nearest < scene_depth - 1.0 ? nearest : 0.0;
+}
+vec2 hiz_water_slope(vec2 position, float footprint) {
+    const vec3 waves[8] = vec3[8](vec3(157.0, 0.0, 0.050), vec3(113.0, 37.0, 0.045), vec3(83.0, -29.0, 0.040),
+                                  vec3(61.0, 71.0, 0.035), vec3(43.0, -63.0, 0.030), vec3(31.0, 113.0, 0.025),
+                                  vec3(23.0, -101.0, 0.020), vec3(17.0, 151.0, 0.020));
+    float time = hiz_water.parameters.y;
+    vec2 slope = vec2(0.0);
+    for (int wave = 0; wave < 8; ++wave) {
+        float wavelength = waves[wave].x;
+        float fade = clamp(1.5 - 3.0 * footprint / wavelength, 0.0, 1.0);
+        if (fade <= 0.0) continue;
+        float angle = 0.38 + radians(waves[wave].y);
+        vec2 direction = vec2(cos(angle), sin(angle));
+        float number = 6.2831853 / wavelength;
+        float speed = 0.33 * sqrt(981.0 / number);
+        float phase = number * (dot(direction, position) - speed * time) + float(wave) * 1.618;
+        slope += direction * (waves[wave].z * cos(phase) * fade);
+    }
+    return slope;
+}
+// The rippled surface normal in view space.
+vec3 hiz_water_normal(vec3 world_position, float depth, vec3 direction) {
+    vec3 ray = normalize(hiz_water_to_world(direction));
+    float footprint = depth * 2.0 * max(pc.inverse_size.x / abs(pc.projection_scale_x),
+                                        pc.inverse_size.y / abs(pc.projection_scale_y)) /
+                      max(-ray.y, 0.05);
+    vec2 slope = hiz_water_slope(world_position.xz, footprint);
+    vec3 world_normal = vec3(-slope.x, 1.0, -slope.y);
+    return normalize(hiz_water.view_to_world[0].xyz * world_normal.x +
+                     hiz_water.view_to_world[1].xyz * world_normal.y +
+                     hiz_water.view_to_world[2].xyz * world_normal.z);
+}
+float hiz_water_fresnel(float cosine) {
+    float f0 = hiz_water.parameters.z;
+    float grazing = 1.0 - clamp(cosine, 0.0, 1.0);
+    float grazing2 = grazing * grazing;
+    return f0 + (1.0 - f0) * grazing2 * grazing2 * grazing;
+}
+)glsl";
 }
 
 std::string BuildHiZReflectionComputeShader() {
@@ -41,6 +129,7 @@ layout(set = 0, binding = 6) uniform sampler nearest_sampler;
 )glsl";
     source += kPushBlock;
     source += EffectSurfaceCoordinateShaderLibrary;
+    source += kWaterLibrary;
     source += R"glsl(
 vec3 view_position(vec2 uv, float view_depth) {
     vec2 ndc = oot3d_surface_view_ndc(uv, pc.surface_orientation);
@@ -65,22 +154,39 @@ void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(pixel, ivec2(pc.extent)))) return;
     vec2 uv = (vec2(pixel) + 0.5) * pc.inverse_size;
-    vec4 material = texture(sampler2D(material_guide,linear_sampler), uv);
-    vec4 normal_sample = texture(sampler2D(normal_guide,linear_sampler), uv);
-    float roughness = clamp(material.g + pc.roughness_bias, 0.0, 1.0);
-    if (material.r <= 0.001 || normal_sample.a < 0.5 || roughness >= 1.0) {
-        imageStore(reflection_output, pixel, vec4(0.0));
-        return;
-    }
     float surface_depth = textureLod(
         sampler2D(hiz_depth,nearest_sampler), uv, 0.0).r;
-    if (isnan(surface_depth) || isinf(surface_depth) ||
-        surface_depth <= pc.near_plane || surface_depth >= pc.far_plane) {
-        imageStore(reflection_output, pixel, vec4(0.0));
-        return;
+    bool depth_valid = !(isnan(surface_depth) || isinf(surface_depth) ||
+        surface_depth <= pc.near_plane);
+    vec3 water_world, water_direction;
+    float water_depth = hiz_water_surface(
+        uv, depth_valid ? surface_depth : 1.0e30, water_world, water_direction);
+    vec4 material;
+    vec3 normal;
+    vec3 surface;
+    float roughness;
+    if (water_depth > 0.0) {
+        // Water: its own surface, rippled normal and Fresnel weight.
+        surface = water_direction * water_depth;
+        normal = hiz_water_normal(water_world, water_depth, water_direction);
+        roughness = 0.06;
+        material = vec4(hiz_water_fresnel(dot(normal, -normalize(surface))), roughness, 0.0, 0.0);
+    } else {
+        if (hiz_water.parameters.w > 0.5) {
+            imageStore(reflection_output, pixel, vec4(0.0));
+            return;
+        }
+        material = texture(sampler2D(material_guide,linear_sampler), uv);
+        vec4 normal_sample = texture(sampler2D(normal_guide,linear_sampler), uv);
+        roughness = clamp(material.g + pc.roughness_bias, 0.0, 1.0);
+        if (material.r <= 0.001 || normal_sample.a < 0.5 || roughness >= 1.0 ||
+            !depth_valid || surface_depth >= pc.far_plane) {
+            imageStore(reflection_output, pixel, vec4(0.0));
+            return;
+        }
+        normal = normalize(normal_sample.xyz * 2.0 - 1.0);
+        surface = view_position(uv, surface_depth);
     }
-    vec3 normal = normalize(normal_sample.xyz * 2.0 - 1.0);
-    vec3 surface = view_position(uv, surface_depth);
     vec3 incident = normalize(surface);
     vec3 ray_direction = normalize(reflect(incident, normal));
     if (ray_direction.z >= -0.001) {
@@ -93,8 +199,14 @@ void main() {
     float travelled = step_length;
     vec2 hit_uv = vec2(-1.0);
     float confidence = 0.0;
+    float previous_travelled = 0.0;
+    // The last on-screen point the water's ray passed over open sky.
+    vec2 sky_uv = vec2(-1.0);
+    // Water traces its full step budget at full depth resolution and refines
+    // where the ray crosses the scene (its long steps miss thin hits).
+    uint steps = water_depth > 0.0 ? 64u : pc.max_steps;
     for (uint step_index = 0u; step_index < 64u; ++step_index) {
-        if (step_index >= pc.max_steps || travelled > pc.max_distance) break;
+        if (step_index >= steps || travelled > pc.max_distance) break;
         vec3 ray_position = origin + ray_direction * travelled;
         float ray_depth = -ray_position.z;
         if (ray_depth <= pc.near_plane || ray_depth >= pc.far_plane) break;
@@ -103,11 +215,14 @@ void main() {
             any(greaterThanEqual(candidate_uv, vec2(1.0)))) break;
         float footprint = max(travelled * max(pc.inverse_size.x,
                                               pc.inverse_size.y), 1.0);
-        uint mip_index = min(uint(findMSB(uint(footprint))),
+        uint mip_index = water_depth > 0.0 ? 0u : min(uint(findMSB(uint(footprint))),
                              max(pc.hiz_mip_count, 1u) - 1u);
         float mip = float(mip_index);
         float scene_depth = textureLod(
             sampler2D(hiz_depth,nearest_sampler), candidate_uv, mip).r;
+        if (water_depth > 0.0 && (isnan(scene_depth) || isinf(scene_depth) || scene_depth <= pc.near_plane ||
+                                  scene_depth >= 0.98 * pc.far_plane))
+            sky_uv = candidate_uv;
         float gap = ray_depth - scene_depth;
         float tolerance = pc.thickness * (1.0 + mip * 0.5);
         if (gap >= 0.0 && gap <= tolerance) {
@@ -115,7 +230,34 @@ void main() {
             confidence = 1.0 - travelled / pc.max_distance;
             break;
         }
+        if (gap > tolerance && water_depth > 0.0) {
+            // Crossed: bisect between the last point in front and this one.
+            float near_travelled = previous_travelled, far_travelled = travelled;
+            for (int refine = 0; refine < 6; ++refine) {
+                float middle = 0.5 * (near_travelled + far_travelled);
+                vec3 position = origin + ray_direction * middle;
+                vec2 middle_uv = project_view(position);
+                float middle_gap = -position.z - textureLod(
+                    sampler2D(hiz_depth,nearest_sampler), middle_uv, 0.0).r;
+                if (middle_gap >= 0.0) far_travelled = middle; else near_travelled = middle;
+            }
+            vec3 position = origin + ray_direction * far_travelled;
+            vec2 refined_uv = project_view(position);
+            float refined_gap = -position.z - textureLod(
+                sampler2D(hiz_depth,nearest_sampler), refined_uv, 0.0).r;
+            if (refined_gap <= max(tolerance, 25.0 + 0.05 * -position.z)) {
+                hit_uv = refined_uv;
+                confidence = 1.0 - 0.5 * far_travelled / pc.max_distance;
+                break;
+            }
+        }
+        previous_travelled = travelled;
         travelled += step_length * float(1u << max(int(mip_index) - 1, 0));
+    }
+    if (confidence <= 0.0 && water_depth > 0.0 && sky_uv.x >= 0.0) {
+        // Water reflects the sky it was heading for (screen sky, not a hit).
+        hit_uv = sky_uv;
+        confidence = 1.0;
     }
     if (confidence <= 0.0) {
         imageStore(reflection_output, pixel, vec4(0.0));
@@ -125,8 +267,10 @@ void main() {
     float edge = smoothstep(0.0, max(pc.edge_fade, 1.0e-4),
                             min(edge_distance.x, edge_distance.y));
     float grazing = 1.0 - abs(dot(normal, -incident));
-    confidence *= edge * material.r * mix(0.35, 1.0, grazing) *
-                  (1.0 - roughness);
+    // Water's weight is its Fresnel reflectance; guide materials keep their
+    // grazing response.
+    confidence *= water_depth > 0.0 ? edge * material.r
+                                    : edge * material.r * mix(0.35, 1.0, grazing) * (1.0 - roughness);
     imageStore(reflection_output, pixel,
                vec4(texture(sampler2D(immutable_color,linear_sampler),
                             hit_uv).rgb, confidence));
@@ -148,6 +292,8 @@ layout(set = 0, binding = 6) uniform sampler nearest_sampler;
 )glsl";
     source += kPushBlock;
     source += Renderer3ds::PicaMaterialGuideShaderLibrary;
+    source += EffectSurfaceCoordinateShaderLibrary;
+    source += kWaterLibrary;
     source += R"glsl(
 // An 8x8 workgroup shares its two-texel halo. Keep the full 5x5 bilateral
 // kernel; only redundant guide/reflection fetches and normalization disappear.
@@ -164,8 +310,12 @@ void main() {
     vec4 material = textureLod(sampler2D(material_guide,linear_sampler), uv, 0.0);
     vec4 center_guide = textureLod(sampler2D(normal_guide,linear_sampler), uv, 0.0);
     float reflection_weight = pica_reflection_weight(material);
-    bool participates = inside && material.r > 0.001 && reflection_weight > 0.0 &&
-        center_guide.a >= 0.5;
+    float center_scene_depth = textureLod(sampler2D(hiz_depth,nearest_sampler), uv, 0.0).r;
+    vec3 water_world, water_direction;
+    bool water = inside && hiz_water_surface(uv, isnan(center_scene_depth) || isinf(center_scene_depth)
+        ? 1.0e30 : center_scene_depth, water_world, water_direction) > 0.0;
+    bool participates = water || (inside && hiz_water.parameters.w <= 0.5 && material.r > 0.001 &&
+        reflection_weight > 0.0 && center_guide.a >= 0.5);
     if (participates) atomicOr(tile_active, 1u);
     barrier();
     if (tile_active == 0u) {
@@ -192,6 +342,24 @@ void main() {
     vec4 center_normal_sample = tile_normal[center_index];
     if (!participates) {
         imageStore(filtered_output, pixel, vec4(0.0));
+        return;
+    }
+    if (water) {
+        // Water: the raw hits' confidence weighs a plain spatial kernel (the
+        // guides under transparent water describe its bed).
+        vec3 water_color = vec3(0.0);
+        float water_confidence = 0.0, water_total = 0.0;
+        for (int y = -2; y <= 2; ++y) {
+            for (int x = -2; x <= 2; ++x) {
+                vec4 reflection = tile_reflection[center_index + y * 12 + x];
+                float spatial_weight = exp(-0.5 * float(x * x + y * y));
+                water_total += spatial_weight;
+                water_color += reflection.rgb * reflection.a * spatial_weight;
+                water_confidence += reflection.a * spatial_weight;
+            }
+        }
+        imageStore(filtered_output, pixel, vec4(water_confidence > 1.0e-5 ? water_color / water_confidence : vec3(0.0),
+                                                water_confidence / water_total));
         return;
     }
     float center_depth = tile_depth[center_index];
@@ -229,6 +397,60 @@ void main() {
 }
 )glsl";
     return source;
+}
+
+HiZWaterUniforms BuildHiZWaterUniforms(const std::array<float, 16>* worldToView,
+                                       const Renderer3ds::PicaSceneWaterBodies* bodies, float seconds,
+                                       bool waterOnly) {
+    HiZWaterUniforms result;
+    result.Parameters = {0.0F, std::fmod(std::max(seconds, 0.0F), 3600.0F), 0.02F, waterOnly ? 1.0F : 0.0F};
+    if (worldToView == nullptr || bodies == nullptr) return result;
+    // Column-major world-to-view: rows of its linear part and translation.
+    std::array<std::array<float, 3>, 3> linear{};
+    std::array<float, 3> translation{};
+    for (size_t row = 0; row < 3U; ++row) {
+        for (size_t column = 0; column < 3U; ++column) linear[row][column] = (*worldToView)[column * 4U + row];
+        translation[row] = (*worldToView)[12U + row];
+    }
+    const auto& m = linear;
+    const float determinant = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+                              m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+                              m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    if (!std::isfinite(determinant) || std::abs(determinant) < 1.0e-12F) return result;
+    std::array<std::array<float, 3>, 3> inverse{};
+    inverse[0] = {(m[1][1] * m[2][2] - m[1][2] * m[2][1]) / determinant,
+                  (m[0][2] * m[2][1] - m[0][1] * m[2][2]) / determinant,
+                  (m[0][1] * m[1][2] - m[0][2] * m[1][1]) / determinant};
+    inverse[1] = {(m[1][2] * m[2][0] - m[1][0] * m[2][2]) / determinant,
+                  (m[0][0] * m[2][2] - m[0][2] * m[2][0]) / determinant,
+                  (m[0][2] * m[1][0] - m[0][0] * m[1][2]) / determinant};
+    inverse[2] = {(m[1][0] * m[2][1] - m[1][1] * m[2][0]) / determinant,
+                  (m[0][1] * m[2][0] - m[0][0] * m[2][1]) / determinant,
+                  (m[0][0] * m[1][1] - m[0][1] * m[1][0]) / determinant};
+    std::array<float, 3> camera{};
+    for (size_t row = 0; row < 3U; ++row) {
+        for (size_t column = 0; column < 3U; ++column) camera[row] -= inverse[row][column] * translation[column];
+        result.ViewToWorld[row] = {inverse[row][0], inverse[row][1], inverse[row][2], camera[row]};
+    }
+    // Bodies seen from above, nearest footprint first.
+    std::array<std::pair<float, uint32_t>, Renderer3ds::kMaximumPicaSceneWaterBodies> order{};
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < std::min(bodies->Count, Renderer3ds::kMaximumPicaSceneWaterBodies); ++i) {
+        const auto& body = bodies->Bodies[i];
+        if (camera[1] <= body.SurfaceY) continue;
+        const float dx = std::max({body.MinimumXZ[0] - camera[0], 0.0F, camera[0] - body.MaximumXZ[0]});
+        const float dz = std::max({body.MinimumXZ[1] - camera[2], 0.0F, camera[2] - body.MaximumXZ[1]});
+        order[count++] = {dx * dx + dz * dz + (camera[1] - body.SurfaceY) * (camera[1] - body.SurfaceY), i};
+    }
+    std::sort(order.begin(), order.begin() + count);
+    count = std::min(count, kHiZWaterPlanes);
+    for (uint32_t slot = 0; slot < count; ++slot) {
+        const auto& body = bodies->Bodies[order[slot].second];
+        result.Footprints[slot] = {body.MinimumXZ[0], body.MinimumXZ[1], body.MaximumXZ[0], body.MaximumXZ[1]};
+        result.Heights[slot / 4U][slot % 4U] = body.SurfaceY;
+    }
+    result.Parameters[0] = static_cast<float>(count);
+    return result;
 }
 
 } // namespace Fast::Oot3d

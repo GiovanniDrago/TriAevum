@@ -312,11 +312,7 @@ layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
 } pica_surface;
 vec3 pica_surface_water_world = vec3(0.0);
 float pica_surface_water_footprint = 0.0;
-// What the water publishes to traced reflections (water_flow.w): its
-// Fresnel reflectance, roughness and rippled view-space normal.
-float pica_surface_water_reflectance = 0.0;
-float pica_surface_water_roughness = 1.0;
-vec3 pica_surface_water_normal = vec3(0.0, 0.0, 1.0);
+
 // World-space flow (units per second, xz) of the water's texture pattern.
 vec2 pica_surface_water_flow = vec2(0.0);
 // The pattern's world motion: the scrolling texture coordinate moves the
@@ -671,12 +667,11 @@ vec3 pica_surface_water_shade(vec3 native_rgb, vec3 sky) {
     // Seen from below (underwater), the surface faces down.
     if (dot(normal, view_dir) < 0.0) normal = -normal;
     float reflectance = pica_surface_water_fresnel(dot(normal, view_dir));
-    pica_surface_water_reflectance = reflectance;
-    pica_surface_water_roughness = mix(0.06, 0.25, pica_surface_water_fast());
-    pica_surface_water_normal = normal;
-    // The environment where a traced reflection misses (the trace mixes its
-    // hits over this by the same reflectance).
-    vec3 color = mix(native_rgb, sky, reflectance * pica_surface.water_optics.z);
+    // The environment: the fog colour, unless the reflection trace owns it
+    // (water_flow.w), which mixes its hits and the screen's sky over the
+    // native colour by the same reflectance.
+    vec3 color = mix(native_rgb, sky,
+                     pica_surface.water_flow.w > 0.0 ? 0.0 : reflectance * pica_surface.water_optics.z);
     if (pica_surface.water_optics.w == -4.0)
         return vec3(pica_surface.water_flow.w, reflectance, 0.0);
     vec3 specular = vec3(0.0);
@@ -713,15 +708,6 @@ std::string_view PicaSurfaceLightingWaterShading() noexcept {
     if (pica_surface_water_fragment)
         combiner_output.rgb = pica_surface_water_shade(combiner_output.rgb, fragment_uniforms.fog_color.rgb);
 )glsl";
-}
-
-std::string PicaSurfaceLightingWaterGuides(bool normalGuide, bool materialGuide) {
-    std::string result = "    if (pica_surface_water_fragment && pica_surface.water_flow.w > 0.0) {\n";
-    if (normalGuide) result += "        pica_normal_guide.xyz = pica_surface_water_normal * 0.5 + 0.5;\n";
-    if (materialGuide)
-        result += "        pica_material_guide.rgb = vec3(pica_surface_water_reflectance, "
-                  "pica_surface_water_roughness, 127.0 / 255.0);\n";
-    return result + "    }\n";
 }
 
 std::string_view PicaSurfaceLightingBody() noexcept {
