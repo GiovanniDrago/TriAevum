@@ -97,8 +97,8 @@ static_assert(sizeof(PicaSurfaceLightingUniforms) == 2640U);
 // environment reflection (subdued: the environment is the fog colour until
 // screen-space reflections) and direct specular strengths.
 inline constexpr std::array<float, 4> kPicaSurfaceWaterOptics{0.02F, 0.08F, 0.6F, 1.0F};
-// Ripple slope strength and wavelength scale (1: 120/45/17 world units).
-inline constexpr std::array<float, 2> kPicaSurfaceWaterRipples{1.4F, 1.0F};
+// Ripple slope strength and wavelength scale (1: waves of 157 to 17 world units).
+inline constexpr std::array<float, 2> kPicaSurfaceWaterRipples{1.0F, 1.0F};
 
 // Scene lighting requires the column-major WorldToView captured with this
 // geometry sample. Neither a live camera nor a model/bone matrix is a substitute.

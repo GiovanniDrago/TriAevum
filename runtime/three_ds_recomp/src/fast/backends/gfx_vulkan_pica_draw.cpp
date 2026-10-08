@@ -865,10 +865,11 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                                                     std::chrono::duration<float>(
                                                         std::chrono::steady_clock::now() - mWaterEpoch).count());
 #if defined(TRIAEVUM_RENDERER_DEVELOPER_TOOLS)
-            // Developer view: water fragments in magenta.
-            if (surfaceLighting && surfaceLighting->WaterViewTranslation[3] > 0.0F &&
-                std::getenv("TRIAEVUM_DEV_WATER_DEBUG") != nullptr)
-                surfaceLighting->WaterOptics[3] = -1.0F;
+            // Developer view: water fragments in magenta (1) or their ripple
+            // slope (2).
+            if (const char* debug = std::getenv("TRIAEVUM_DEV_WATER_DEBUG");
+                debug != nullptr && surfaceLighting && surfaceLighting->WaterViewTranslation[3] > 0.0F)
+                surfaceLighting->WaterOptics[3] = std::strcmp(debug, "2") == 0 ? -2.0F : -1.0F;
 #endif
             if (surfaceLighting && environmentWorldToView && directionalShadowReceiver &&
                 !Oot3d::InvertDirectionalShadowMatrix(*environmentWorldToView, environmentViewToWorld))

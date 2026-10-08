@@ -608,51 +608,38 @@ vec3 pica_surface_water_specular(vec3 normal, vec3 view_dir, vec3 direction, vec
     float n_dot_v = max(dot(normal, view_dir), 0.1);
     return radiance * (distribution * fresnel / (4.0 * n_dot_v) * smoothstep(0.0, 0.1, n_dot_l));
 }
-// Gradient noise with its derivatives (value, d/dx, d/dy).
-vec2 pica_surface_water_gradient(vec2 cell) {
-    float angle = 6.2831853 * fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
-    return vec2(cos(angle), sin(angle));
-}
-vec3 pica_surface_water_noise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = p - i;
-    vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-    vec2 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
-    vec2 ga = pica_surface_water_gradient(i);
-    vec2 gb = pica_surface_water_gradient(i + vec2(1.0, 0.0));
-    vec2 gc = pica_surface_water_gradient(i + vec2(0.0, 1.0));
-    vec2 gd = pica_surface_water_gradient(i + vec2(1.0, 1.0));
-    float va = dot(ga, f);
-    float vb = dot(gb, f - vec2(1.0, 0.0));
-    float vc = dot(gc, f - vec2(0.0, 1.0));
-    float vd = dot(gd, f - vec2(1.0, 1.0));
-    return vec3(va + u.x * (vb - va) + u.y * (vc - va) + u.x * u.y * (va - vb - vc + vd),
-                ga + u.x * (gb - ga) + u.y * (gc - ga) + u.x * u.y * (ga - gb - gc + gd) +
-                    du * (u.yx * (va - vb - vc + vd) + vec2(vb, vc) - va));
-}
-// The ripples' world slope (d height / dx, dz): three drifting octaves, each
-// faded out where a pixel covers its wavelength.
+// The ripples' world slope (d height / dx, dz): a sum of directional waves
+// (no lattice, so no tiles), spread around one wind direction with deep-water
+// phase speeds (slowed), each faded out where a pixel covers its wavelength.
 vec2 pica_surface_water_slope() {
     vec2 position = pica_surface_water_world.xz;
     float time = pica_surface.water_ripples.x;
     float scale = max(pica_surface.water_ripples.z, 0.05);
-    vec3 octaves[3] = vec3[3](vec3(120.0, 6.0, 0.0), vec3(45.0, 2.2, 1.0), vec3(17.0, 0.8, 2.0));
-    vec2 drifts[3] = vec2[3](vec2(12.0, 7.0), vec2(-9.0, 14.0), vec2(20.0, -6.0));
+    // Wavelength (world units), direction (degrees from the wind) and slope.
+    const vec3 waves[8] = vec3[8](vec3(157.0, 0.0, 0.050), vec3(113.0, 37.0, 0.045), vec3(83.0, -29.0, 0.040),
+                                  vec3(61.0, 71.0, 0.035), vec3(43.0, -63.0, 0.030), vec3(31.0, 113.0, 0.025),
+                                  vec3(23.0, -101.0, 0.020), vec3(17.0, 151.0, 0.020));
+    const float wind = 0.38;
     vec2 slope = vec2(0.0);
-    for (int octave = 0; octave < 3; ++octave) {
-        float wavelength = octaves[octave].x * scale;
+    for (int wave = 0; wave < 8; ++wave) {
+        float wavelength = waves[wave].x * scale;
         float fade = clamp(1.5 - 3.0 * pica_surface_water_footprint / wavelength, 0.0, 1.0);
         if (fade <= 0.0) continue;
-        vec3 noise = pica_surface_water_noise((position + drifts[octave] * time) / wavelength +
-                                              octaves[octave].z * 17.31);
-        slope += noise.yz * (octaves[octave].y * scale / wavelength) * fade;
+        float angle = wind + radians(waves[wave].y);
+        vec2 direction = vec2(cos(angle), sin(angle));
+        float number = 6.2831853 / wavelength;
+        // Deep water: c = sqrt(g / k), g = 981 units/s^2, at a third.
+        float speed = 0.33 * sqrt(981.0 / number);
+        float phase = number * (dot(direction, position) - speed * time) + float(wave) * 1.618;
+        slope += direction * (waves[wave].z * cos(phase) * fade);
     }
     return slope * pica_surface.water_ripples.y;
 }
 vec3 pica_surface_water_shade(vec3 native_rgb, vec3 sky) {
-    if (pica_surface.water_optics.w < 0.0) return vec3(1.0, 0.0, 1.0);
+    if (pica_surface.water_optics.w == -1.0) return vec3(1.0, 0.0, 1.0);
     vec3 view_dir = pica_surface_unit(pica_view);
     vec2 slope = pica_surface_water_slope();
+    if (pica_surface.water_optics.w == -2.0) return vec3(0.5 + 2.5 * slope, 0.5).xzy;
     vec3 normal = pica_surface_view_direction(vec3(-slope.x, 1.0, -slope.y));
     // Seen from below (underwater), the surface faces down.
     if (dot(normal, view_dir) < 0.0) normal = -normal;
