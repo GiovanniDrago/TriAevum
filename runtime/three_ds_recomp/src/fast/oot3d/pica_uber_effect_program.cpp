@@ -417,6 +417,15 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
                    "    pica_material_guide = vec4(oot3d_uber.values.y, oot3d_uber.values.z, (127.0 / 255.0), 0.0);\n");
     end += Guarded(Bit(Decision::Reflection) + " && !" + Bit(Decision::ReflectionExplicit) + " && !" +
                    Bit(Decision::ReflectionPbr), kCalibratedMaterial);
+    if (surface) {
+        end += Guarded(Bit(Decision::Reflection) + " && " + Bit(Decision::SurfaceLighting) + " && !" +
+                           Bit(Decision::Pbr) + " && (" + Is(kNormalAtShift, Decision::NormalWriter::NormalGuide) +
+                           " || " + Is(kNormalAtShift, Decision::NormalWriter::Outline) + ")",
+                       Renderer3ds::PicaSurfaceLightingWaterGuides(true, false));
+        end += Guarded(Bit(Decision::Reflection) + " && " + Bit(Decision::SurfaceLighting) + " && !" +
+                           Bit(Decision::Pbr),
+                       Renderer3ds::PicaSurfaceLightingWaterGuides(false, true));
+    }
     end += MaterialBaseline(Decision::MaterialWriter::Reactive);
     {
         std::string reactive;

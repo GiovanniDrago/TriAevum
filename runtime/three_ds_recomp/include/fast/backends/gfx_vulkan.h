@@ -196,10 +196,16 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     struct NativePicaWaterSurface {
         std::optional<uint32_t> Body;
         ::Fast::Renderer3ds::ShadowBounds WorldBounds;
+        // Its bounds reach a body's surface: it may hold water fragments.
+        bool ReachesWater = false;
     };
     NativePicaWaterSurface ResolveNativePicaWaterSurface(const GfxNativePicaDrawView& draw);
     // Water ripple time origin (cosmetic animation, presentation clock).
     std::chrono::steady_clock::time_point mWaterEpoch = std::chrono::steady_clock::now();
+    // Texture scrolling of water draws, per geometry (native time).
+    std::unordered_map<uint64_t, ::Fast::Renderer3ds::PicaWaterFlowTrack> mWaterFlow;
+    // This frame traces reflections for water only (Reflections Off).
+    bool mWaterOnlyReflections = false;
     bool SubmitPicaDisplayTransfer(
         const GfxNativePicaDisplayTransferView& transfer,
         std::string* error = nullptr) override;

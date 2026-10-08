@@ -1602,6 +1602,7 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                    effects.ReflectionRoughnessBias},
                   {"DebugView",
                    effects.ReflectionDebugView},
+                  {"Water", effects.WaterReflections},
                   {"Materials", std::move(reflectionRules)},
               }},
              {"Toon",
@@ -2091,6 +2092,10 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
             ReadScalar(*reflections, "DebugView",
                        value.ReflectionDebugView,
                        "Graphics.Effects.Reflections.DebugView",
+                       result);
+            ReadScalar(*reflections, "Water",
+                       value.WaterReflections,
+                       "Graphics.Effects.Reflections.Water",
                        result);
             if (const Json* materials =
                     FindMember(*reflections, "Materials");

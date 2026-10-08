@@ -33,6 +33,17 @@ struct PicaSceneWaterBodies {
 inline constexpr float kPicaWaterSurfaceHeightTolerance = 4.0F;
 inline constexpr float kPicaWaterSurfaceMinimumCoverage = 0.5F;
 
+// Whether a draw's world bounds reach a body's surface (its height range
+// includes the surface, within the tolerance, over the body's footprint): the
+// draw may hold water fragments.
+[[nodiscard]] inline bool PicaWaterSurfaceReaches(const std::array<float, 3>& minimum,
+                                                  const std::array<float, 3>& maximum,
+                                                  const PicaSceneWaterBody& body) noexcept {
+    return body.SurfaceY >= minimum[1] - kPicaWaterSurfaceHeightTolerance &&
+           body.SurfaceY <= maximum[1] + kPicaWaterSurfaceHeightTolerance && body.MaximumXZ[0] >= minimum[0] &&
+           body.MinimumXZ[0] <= maximum[0] && body.MaximumXZ[1] >= minimum[2] && body.MinimumXZ[1] <= maximum[2];
+}
+
 // The body a draw's world bounds lie on as a water surface: flat (its height
 // range within the tolerance), at the body's surface height, and with most of
 // its horizontal footprint over the body. Bridges, banks and the bed are not
@@ -64,6 +75,49 @@ inline constexpr float kPicaWaterSurfaceMinimumCoverage = 0.5F;
         }
     }
     return best;
+}
+
+// A water draw's texture scrolling (its coordinate's matrix translation)
+// over native frames, in texture units per second: the title's visual flow
+// signal (calm or fast water), not fluid velocity. Repeated presentations of
+// one native frame add nothing; a gap of more than kPicaWaterFlowMaximumGap
+// frames, or going back, restarts the track.
+inline constexpr uint64_t kPicaWaterFlowMaximumGap = 4U;
+
+struct PicaWaterFlowTrack {
+    uint64_t Frame = 0;
+    std::array<float, 2> Translation{};
+    std::array<float, 2> Velocity{};
+    uint32_t Samples = 0;
+
+    // Two native frames give a velocity.
+    [[nodiscard]] bool Valid() const noexcept { return Samples >= 2U; }
+};
+
+inline void AdvancePicaWaterFlow(PicaWaterFlowTrack& track, uint64_t frame, float rateHz,
+                                 const std::array<float, 2>& translation) noexcept {
+    if (track.Samples != 0U && frame == track.Frame) return;
+    if (track.Samples == 0U || frame < track.Frame || frame - track.Frame > kPicaWaterFlowMaximumGap ||
+        !(rateHz > 0.0F) || !std::isfinite(translation[0]) || !std::isfinite(translation[1])) {
+        track = {};
+        track.Frame = frame;
+        track.Translation = translation;
+        track.Samples = 1U;
+        return;
+    }
+    const float frames = static_cast<float>(frame - track.Frame);
+    std::array<float, 2> sample{};
+    for (size_t axis = 0; axis < 2U; ++axis) {
+        // Translations may wrap at whole texture repeats.
+        float delta = translation[axis] - track.Translation[axis];
+        delta -= std::round(delta);
+        sample[axis] = delta * rateHz / frames;
+        // Smoothed: animations that step every other frame read as steady.
+        track.Velocity[axis] = track.Samples == 1U ? sample[axis] : 0.7F * track.Velocity[axis] + 0.3F * sample[axis];
+    }
+    track.Frame = frame;
+    track.Translation = translation;
+    ++track.Samples;
 }
 
 } // namespace Fast::Renderer3ds

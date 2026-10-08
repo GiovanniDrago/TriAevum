@@ -52,13 +52,7 @@ void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSur
     std::array<uint32_t, kMaximumPicaSceneWaterBodies> reached{};
     uint32_t count = 0;
     for (uint32_t i = 0; i < std::min(bodies.Count, kMaximumPicaSceneWaterBodies); ++i) {
-        const auto& body = bodies.Bodies[i];
-        if (body.SurfaceY < worldMinimum[1] - kPicaWaterSurfaceHeightTolerance ||
-            body.SurfaceY > worldMaximum[1] + kPicaWaterSurfaceHeightTolerance ||
-            body.MaximumXZ[0] < worldMinimum[0] || body.MinimumXZ[0] > worldMaximum[0] ||
-            body.MaximumXZ[1] < worldMinimum[2] || body.MinimumXZ[1] > worldMaximum[2])
-            continue;
-        reached[count++] = i;
+        if (PicaWaterSurfaceReaches(worldMinimum, worldMaximum, bodies.Bodies[i])) reached[count++] = i;
     }
     // More bodies than slots: the largest overlaps.
     const auto overlap = [&](uint32_t index) {
@@ -314,9 +308,37 @@ layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
     vec4 water_heights;
     vec4 water_optics;
     vec4 water_ripples;
+    vec4 water_flow;
 } pica_surface;
 vec3 pica_surface_water_world = vec3(0.0);
 float pica_surface_water_footprint = 0.0;
+// What the water publishes to traced reflections (water_flow.w): its
+// Fresnel reflectance, roughness and rippled view-space normal.
+float pica_surface_water_reflectance = 0.0;
+float pica_surface_water_roughness = 1.0;
+vec3 pica_surface_water_normal = vec3(0.0, 0.0, 1.0);
+// World-space flow (units per second, xz) of the water's texture pattern.
+vec2 pica_surface_water_flow = vec2(0.0);
+// The pattern's world motion: the scrolling texture coordinate moves the
+// pattern the other way, mapped to the surface through the screen-space
+// derivatives of the coordinate and of the view position.
+vec2 pica_surface_water_flow_world(vec2 uv_dx, vec2 uv_dy, vec3 view_dx, vec3 view_dy) {
+    if (pica_surface.water_flow.z <= 0.0) return vec2(0.0);
+    vec2 world_dx = vec2(dot(pica_surface.view_to_world_linear[0].xyz, -view_dx),
+                         dot(pica_surface.view_to_world_linear[2].xyz, -view_dx));
+    vec2 world_dy = vec2(dot(pica_surface.view_to_world_linear[0].xyz, -view_dy),
+                         dot(pica_surface.view_to_world_linear[2].xyz, -view_dy));
+    mat2 texture_from_screen = mat2(uv_dx, uv_dy);
+    if (abs(determinant(texture_from_screen)) < 1.0e-12) return vec2(0.0);
+    vec2 flow = -(mat2(world_dx, world_dy) * (inverse(texture_from_screen) * pica_surface.water_flow.xy));
+    float speed = length(flow);
+    return speed > 400.0 ? flow * (400.0 / speed) : flow;
+}
+// Flowing water (calm below 10 world units per second, fast above 80): the
+// waves ride the current, shorter and steeper as it quickens.
+float pica_surface_water_fast() {
+    return smoothstep(10.0, 80.0, length(pica_surface_water_flow));
+}
 // A fragment of gameplay water (pica_scene_water.h): a horizontal face at a
 // listed body's surface height, inside its footprint. face: the view-space
 // face normal (any length or sign).
@@ -599,7 +621,8 @@ vec3 pica_surface_water_specular(vec3 normal, vec3 view_dir, vec3 direction, vec
     if (n_dot_l <= 0.0) return vec3(0.0);
     vec3 half_vector = pica_surface_unit(direction + view_dir);
     float n_dot_h = clamp(dot(normal, half_vector), 0.0, 1.0);
-    float alpha2 = pica_surface.water_optics.y * pica_surface.water_optics.y;
+    float alpha = mix(pica_surface.water_optics.y, 0.16, pica_surface_water_fast());
+    float alpha2 = alpha * alpha;
     float denominator = n_dot_h * n_dot_h * (alpha2 - 1.0) + 1.0;
     float distribution = alpha2 / (3.14159265 * denominator * denominator);
     float fresnel = pica_surface_water_fresnel(dot(view_dir, half_vector));
@@ -612,9 +635,10 @@ vec3 pica_surface_water_specular(vec3 normal, vec3 view_dir, vec3 direction, vec
 // (no lattice, so no tiles), spread around one wind direction with deep-water
 // phase speeds (slowed), each faded out where a pixel covers its wavelength.
 vec2 pica_surface_water_slope() {
-    vec2 position = pica_surface_water_world.xz;
     float time = pica_surface.water_ripples.x;
-    float scale = max(pica_surface.water_ripples.z, 0.05);
+    vec2 position = pica_surface_water_world.xz - pica_surface_water_flow * time;
+    float fast = pica_surface_water_fast();
+    float scale = max(pica_surface.water_ripples.z, 0.05) * mix(1.0, 0.6, fast);
     // Wavelength (world units), direction (degrees from the wind) and slope.
     const vec3 waves[8] = vec3[8](vec3(157.0, 0.0, 0.050), vec3(113.0, 37.0, 0.045), vec3(83.0, -29.0, 0.040),
                                   vec3(61.0, 71.0, 0.035), vec3(43.0, -63.0, 0.030), vec3(31.0, 113.0, 0.025),
@@ -633,18 +657,28 @@ vec2 pica_surface_water_slope() {
         float phase = number * (dot(direction, position) - speed * time) + float(wave) * 1.618;
         slope += direction * (waves[wave].z * cos(phase) * fade);
     }
-    return slope * pica_surface.water_ripples.y;
+    return slope * pica_surface.water_ripples.y * mix(1.0, 1.8, fast);
 }
 vec3 pica_surface_water_shade(vec3 native_rgb, vec3 sky) {
     if (pica_surface.water_optics.w == -1.0) return vec3(1.0, 0.0, 1.0);
     vec3 view_dir = pica_surface_unit(pica_view);
     vec2 slope = pica_surface_water_slope();
     if (pica_surface.water_optics.w == -2.0) return vec3(0.5 + 2.5 * slope, 0.5).xzy;
+    if (pica_surface.water_optics.w == -3.0)
+        return pica_surface.water_flow.z <= 0.0 ? vec3(0.2, 1.0, 0.2)
+                                                : mix(vec3(0.0, 0.3, 1.0), vec3(1.0, 0.2, 0.0), pica_surface_water_fast());
     vec3 normal = pica_surface_view_direction(vec3(-slope.x, 1.0, -slope.y));
     // Seen from below (underwater), the surface faces down.
     if (dot(normal, view_dir) < 0.0) normal = -normal;
-    float fresnel = pica_surface_water_fresnel(dot(normal, view_dir)) * pica_surface.water_optics.z;
-    vec3 color = mix(native_rgb, sky, fresnel);
+    float reflectance = pica_surface_water_fresnel(dot(normal, view_dir));
+    pica_surface_water_reflectance = reflectance;
+    pica_surface_water_roughness = mix(0.06, 0.25, pica_surface_water_fast());
+    pica_surface_water_normal = normal;
+    // The environment where a traced reflection misses (the trace mixes its
+    // hits over this by the same reflectance).
+    vec3 color = mix(native_rgb, sky, reflectance * pica_surface.water_optics.z);
+    if (pica_surface.water_optics.w == -4.0)
+        return vec3(pica_surface.water_flow.w, reflectance, 0.0);
     vec3 specular = vec3(0.0);
     for (uint slot = 0u; slot < pica_surface.control.z; ++slot)
         specular += pica_surface_water_specular(normal, view_dir,
@@ -681,11 +715,29 @@ std::string_view PicaSurfaceLightingWaterShading() noexcept {
 )glsl";
 }
 
+std::string PicaSurfaceLightingWaterGuides(bool normalGuide, bool materialGuide) {
+    std::string result = "    if (pica_surface_water_fragment && pica_surface.water_flow.w > 0.0) {\n";
+    if (normalGuide) result += "        pica_normal_guide.xyz = pica_surface_water_normal * 0.5 + 0.5;\n";
+    if (materialGuide)
+        result += "        pica_material_guide.rgb = vec3(pica_surface_water_reflectance, "
+                  "pica_surface_water_roughness, 127.0 / 255.0);\n";
+    return result + "    }\n";
+}
+
 std::string_view PicaSurfaceLightingBody() noexcept {
     return R"glsl(
     bool surface_water = pica_surface_water(cross(dFdx(pica_view), dFdy(pica_view)));
     pica_surface_water_fragment = surface_water;
     pica_surface_water_footprint = length(fwidth(pica_view)) * length(pica_surface.view_to_world_linear[0].xyz);
+    {
+        vec2 water_uv_dx = dFdx(pica_texcoord0);
+        vec2 water_uv_dy = dFdy(pica_texcoord0);
+        vec3 water_view_dx = dFdx(pica_view);
+        vec3 water_view_dy = dFdy(pica_view);
+        if (surface_water)
+            pica_surface_water_flow = pica_surface_water_flow_world(water_uv_dx, water_uv_dy, water_view_dx,
+                                                                   water_view_dy);
+    }
     if ((pica_surface.control.x != 0u || pica_surface.environment_parameters.w != 0.0 ||
          pica_surface.control.y != 0u || pica_surface.control.z != 0u) && !surface_water) {
         rounded_primary_color.rgb = byteround3(pica_surface_primary(rounded_primary_color.rgb,

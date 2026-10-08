@@ -25,6 +25,12 @@ bool GraphicsSettingsPanel::DrawReflectionSettings(GraphicsSettings& settings, c
         "Reflection provider", settings, capabilities, reflectionModes,
         [](auto& value, auto mode) { value.Effects.Reflections = mode; },
         [](const auto& value) { return value.Effects.Reflections; });
+    if (settings.Effects.Reflections == ReflectionMode::Off) {
+        ImGui::BeginDisabled(!reflectionReady);
+        changed |= ImGui::Checkbox("Water reflections (experimental)", &settings.Effects.WaterReflections);
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Hi-Z reflections on water only, in the per-pixel lighting models. Opaque water only for now.");
+    }
     if (settings.Effects.Reflections != ReflectionMode::Off) {
         ImGui::BeginDisabled(!reflectionReady);
         changed |= ImGui::SliderFloat("Reflection strength",

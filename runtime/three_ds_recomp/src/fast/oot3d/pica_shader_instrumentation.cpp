@@ -663,7 +663,7 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
         preserveAlpha += "\n        combiner_output.rgb = surface_lit_rgb;\n    }\n";
         insertions.push_back({tevEnd, std::move(preserveAlpha)});
         if (!pbr) insertions.push_back({tevEnd, std::string(Renderer3ds::PicaSurfaceLightingWaterShading())});
-        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_NATIVE_PER_PIXEL_LIGHTING_V13_WATER_WAVES");
+        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_NATIVE_PER_PIXEL_LIGHTING_V15_WATER_REFLECTIONS");
         result.AppliedFeatures |= PicaShaderInstrumentationFeature::NativePerPixelLighting;
         if (pbr) {
             declarations += pbr->Declarations;
@@ -1286,6 +1286,10 @@ vec3 pica_surface_shadow(int slot) {
             result.ReflectionEligibility =
                 PicaReflectionMaterialEligibility::UnsupportedShader;
         }
+        // Water traces with its own Fresnel and rippled normal.
+        if (surfaceLighting && !pbr && decisions.Has(Decision::Reflection))
+            epilogue += Renderer3ds::PicaSurfaceLightingWaterGuides(
+                epilogue.find("pica_normal_guide =") != std::string::npos, true);
     }
 
     if (HasPicaShaderInstrumentationFeature(

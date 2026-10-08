@@ -1,5 +1,6 @@
 #include "fast/renderer3ds/pica_scene_water.h"
 
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 
@@ -47,6 +48,30 @@ int main() {
     ++checks;
     // Two bodies at one height: the one covering most.
     expect(match({150, 877, -1700}, {900, 877, -1300}) == 1U, "largest coverage");
+    // Flow: texture units per second from native frames.
+    PicaWaterFlowTrack track;
+    AdvancePicaWaterFlow(track, 100, 30.0F, {0.0F, 0.0F});
+    expect(!track.Valid(), "one frame has no velocity");
+    AdvancePicaWaterFlow(track, 100, 30.0F, {0.5F, 0.5F});
+    expect(!track.Valid() && track.Translation[0] == 0.0F, "a repeated native frame adds nothing");
+    AdvancePicaWaterFlow(track, 101, 30.0F, {0.01F, -0.02F});
+    expect(track.Valid() && std::abs(track.Velocity[0] - 0.3F) < 1e-4F && std::abs(track.Velocity[1] + 0.6F) < 1e-4F,
+           "velocity per second");
+    // Wrapping at a texture repeat (0.99 -> 0.01) is a small step forward.
+    PicaWaterFlowTrack wrap;
+    AdvancePicaWaterFlow(wrap, 1, 30.0F, {0.99F, 0.0F});
+    AdvancePicaWaterFlow(wrap, 2, 30.0F, {0.01F, 0.0F});
+    expect(std::abs(wrap.Velocity[0] - 0.6F) < 1e-3F, "wrapped translation");
+    // A long gap (a warp, a pause) restarts the track.
+    AdvancePicaWaterFlow(wrap, 20, 30.0F, {0.5F, 0.0F});
+    expect(!wrap.Valid(), "gap restarts");
+    // Smoothing: a step that holds for a frame halves nothing at once.
+    PicaWaterFlowTrack step;
+    AdvancePicaWaterFlow(step, 1, 30.0F, {0.0F, 0.0F});
+    AdvancePicaWaterFlow(step, 2, 30.0F, {0.02F, 0.0F});
+    AdvancePicaWaterFlow(step, 3, 30.0F, {0.02F, 0.0F});
+    expect(std::abs(step.Velocity[0] - 0.42F) < 1e-4F, "smoothed velocity");
+    checks += 6;
     std::cout << "pica_scene_water_tests: " << checks << " checks passed\n";
     return 0;
 }

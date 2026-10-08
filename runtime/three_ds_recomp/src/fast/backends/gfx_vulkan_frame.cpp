@@ -359,6 +359,23 @@ void GfxRenderingAPIVulkan::StartFrame() {
         }
     }
     auto graphicsSnapshot = settingsRuntime.SnapshotForRendering();
+    // Water reflections with Reflections Off (EffectsSettings::WaterReflections):
+    // the frame traces Hi-Z, and only water writes a reflection material.
+    {
+        auto& effects = graphicsSnapshot.Value.Effects;
+        const auto capabilities = settingsRuntime.Capabilities();
+        mWaterOnlyReflections = effects.Reflections == Oot3d::ReflectionMode::Off && effects.WaterReflections &&
+            Oot3d::UsesFullSceneLighting(effects.SurfaceLighting) &&
+            capabilities.Has(Oot3d::GraphicsCapability::NriInterop) &&
+            capabilities.Has(Oot3d::GraphicsCapability::ValidViewMetadata);
+        if (mWaterOnlyReflections) {
+            effects.Reflections = Oot3d::ReflectionMode::HiZ;
+            effects.ReflectionMaterials.clear();
+            // The water's reflectance weighs the trace; open water reaches far.
+            effects.ReflectionStrength = 1.0F;
+            effects.ReflectionMaxDistance = std::max(effects.ReflectionMaxDistance, 3000.0F);
+        }
+    }
 #if defined(TRIAEVUM_RENDERER_DEVELOPER_TOOLS)
     Renderer3ds::PicaSurfaceDebug::Instance().BeginFrame();
 #endif

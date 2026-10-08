@@ -275,6 +275,10 @@ GfxRenderingAPIVulkan::NativePicaWaterSurface GfxRenderingAPIVulkan::ResolveNati
         mNativePicaGeometryBuffers[geometry.Identity].GiGeometry);
     if (!instance.Valid()) return result;
     result.WorldBounds = instance.WorldBounds;
+    const auto& bodies = *draw.LightBinding.Water;
+    for (uint32_t i = 0; i < std::min(bodies.Count, Renderer3ds::kMaximumPicaSceneWaterBodies); ++i)
+        result.ReachesWater |= Renderer3ds::PicaWaterSurfaceReaches(instance.WorldBounds.Minimum,
+                                                                    instance.WorldBounds.Maximum, bodies.Bodies[i]);
     result.Body = Renderer3ds::MatchPicaWaterSurface(instance.WorldBounds.Minimum, instance.WorldBounds.Maximum,
                                                      *draw.LightBinding.Water);
     return result;
@@ -776,6 +780,16 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             waterSurface = ResolveNativePicaWaterSurface(draw);
         const bool authoredAppearance = Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
             surfaceAppearance != Renderer3ds::PicaSurfaceAppearance::Relightable;
+        // Traced reflections on water: an explicit zero material that its
+        // water fragments replace with their Fresnel reflectance. With water
+        // only (Reflections Off), every other draw publishes zero too, so
+        // nothing in front of water inherits its material.
+        const bool waterReflections = reflectionsEnabled && waterSurface.ReachesWater &&
+                                      !resolvedReflectionMaterial;
+        if ((waterReflections || mWaterOnlyReflections) && reflectionsEnabled && !resolvedReflectionMaterial) {
+            resolvedReflectionMaterial.emplace();
+            resolvedReflectionMaterial->Parameters = {0.0F, 1.0F};
+        }
         const bool directionalShadowReceiver = !nativeMemoryOnly && !isolatedLighting && !authoredAppearance &&
             Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
             mDirectionalShadowMapBarrierPlan.Valid() &&
@@ -864,12 +878,37 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                                                     waterSurface.WorldBounds.Maximum,
                                                     std::chrono::duration<float>(
                                                         std::chrono::steady_clock::now() - mWaterEpoch).count());
+            // Its texture's scrolling (coordinate 0) over native frames.
+            if (surfaceLighting && surfaceLighting->WaterViewTranslation[3] > 0.0F) {
+                const auto& sample = mPicaSceneFrame.TemporalSample();
+                const auto* coordinate = draw.TemporalVertexProgram.Hooks.TextureCoordinate(0);
+                const auto floats = draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset);
+                const auto translation = [&](uint8_t uniform, float& value) {
+                    const size_t offset = static_cast<size_t>(uniform) * 16U + 12U;
+                    if (offset + sizeof(float) > floats.size()) return false;
+                    std::memcpy(&value, floats.data() + offset, sizeof(float));
+                    return std::isfinite(value);
+                };
+                std::array<float, 2> shift{};
+                if (sample.Available() && coordinate != nullptr &&
+                    translation(coordinate->MatrixRowUUniform, shift[0]) &&
+                    translation(coordinate->MatrixRowVUniform, shift[1])) {
+                    if (mWaterFlow.size() > 4096U) mWaterFlow.clear();
+                    auto& track = mWaterFlow[draw.GeometryIdentity];
+                    Renderer3ds::AdvancePicaWaterFlow(track, sample.CurrentSourceFrameId,
+                                                      static_cast<float>(sample.NativeRateHz), shift);
+                    if (track.Valid())
+                        surfaceLighting->WaterFlow = {track.Velocity[0], track.Velocity[1], 1.0F, 0.0F};
+                }
+                surfaceLighting->WaterFlow[3] = waterReflections ? 1.0F : 0.0F;
+            }
 #if defined(TRIAEVUM_RENDERER_DEVELOPER_TOOLS)
-            // Developer view: water fragments in magenta (1) or their ripple
-            // slope (2).
+            // Developer view: water fragments in magenta (1), their ripple
+            // slope (2), their flow (3: blue calm, red fast, green unknown) or their
+            // reflection flag and reflectance (4: red, green).
             if (const char* debug = std::getenv("TRIAEVUM_DEV_WATER_DEBUG");
                 debug != nullptr && surfaceLighting && surfaceLighting->WaterViewTranslation[3] > 0.0F)
-                surfaceLighting->WaterOptics[3] = std::strcmp(debug, "2") == 0 ? -2.0F : -1.0F;
+                surfaceLighting->WaterOptics[3] = -static_cast<float>(std::clamp(std::atoi(debug), 1, 4));
 #endif
             if (surfaceLighting && environmentWorldToView && directionalShadowReceiver &&
                 !Oot3d::InvertDirectionalShadowMatrix(*environmentWorldToView, environmentViewToWorld))

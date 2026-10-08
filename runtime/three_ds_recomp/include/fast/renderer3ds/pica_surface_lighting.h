@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace Fast::Renderer3ds {
@@ -89,9 +90,12 @@ struct alignas(16) PicaSurfaceLightingUniforms {
     std::array<float, 4> WaterOptics{};
     // Water ripples: time (seconds, wrapped), slope strength, wavelength scale.
     std::array<float, 4> WaterRipples{};
+    // Water flow: texture coordinate 0's scrolling (texture units per second,
+    // xy) and whether it is known (z).
+    std::array<float, 4> WaterFlow{};
 };
 
-static_assert(sizeof(PicaSurfaceLightingUniforms) == 2640U);
+static_assert(sizeof(PicaSurfaceLightingUniforms) == 2656U);
 
 // Water's Fresnel reflectance at normal incidence, its GGX alpha, and its
 // environment reflection (subdued: the environment is the fog colour until
@@ -134,5 +138,9 @@ void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSur
 // After the native TEV, before fog: water optics on a water fragment's
 // native colour (the body marks the fragment).
 [[nodiscard]] std::string_view PicaSurfaceLightingWaterShading() noexcept;
+// After the guides are written: a water fragment publishes its rippled normal
+// and its Fresnel reflectance to traced reflections (when the draw traces
+// them for water, water_flow.w).
+[[nodiscard]] std::string PicaSurfaceLightingWaterGuides(bool normalGuide, bool materialGuide);
 
 } // namespace Fast::Renderer3ds
