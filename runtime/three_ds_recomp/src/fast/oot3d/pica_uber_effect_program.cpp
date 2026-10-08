@@ -426,6 +426,9 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
         end += Guarded(Bit(Decision::Reactive), reactive);
     }
     end += MaterialBaseline(Decision::MaterialWriter::Baseline);
+    if (surface)
+        end += Guarded(Bit(Decision::SurfaceLighting) + " && !" + Bit(Decision::Pbr),
+                       Renderer3ds::PicaSurfaceLightingWaterMarker());
     if (request.TemporalInputs)
         end += Guarded(Bit(Decision::RigidMotion),
             "    vec4 oot3d_motion = oot3d_draw.rigid_motion;\n"
@@ -448,7 +451,9 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
     }
     if (surface) {
         end += Guarded(Bit(Decision::EnvironmentMix),
-                       "\n    if (pica_surface.environment_parameters.w != 0.0)\n"
+                       "\n    // Water keeps its native fog (its native colour is its appearance;\n"
+                       "    // far water meets the native horizon).\n"
+                       "    if (pica_surface.environment_parameters.w != 0.0 && !pica_surface_water_fragment)\n"
                        "        pica_color.rgb = mix(surface_before_fog, pica_color.rgb, pica_surface.environment_parameters.z);\n");
         end += Guarded(Bit(Decision::Pbr), pbr.DiagnosticOutput);
     }

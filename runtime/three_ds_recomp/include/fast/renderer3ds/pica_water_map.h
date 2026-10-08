@@ -198,4 +198,62 @@ inline constexpr float kPicaWaterMapMinimumTexel = 4.0F;
     return map;
 }
 
+// Connected regions of a map: level pieces (texels at one level, within two
+// units) and landings (foam above a quarter), largest first; their world
+// bounds and height. For tools that frame every piece of the drawn water.
+struct PicaWaterMapRegion {
+    bool Landing = false;
+    float Height = 0.0F;
+    std::array<float, 2> MinimumXZ{};
+    std::array<float, 2> MaximumXZ{};
+    uint32_t Texels = 0;
+};
+
+[[nodiscard]] inline std::vector<PicaWaterMapRegion> PicaWaterMapRegions(const PicaWaterMap& map) {
+    std::vector<PicaWaterMapRegion> regions;
+    if (map.Size == 0U) return regions;
+    const size_t size = map.Size;
+    for (const bool landing : {false, true}) {
+        std::vector<uint8_t> seen(size * size, 0U);
+        std::vector<size_t> stack;
+        for (size_t start = 0; start < seen.size(); ++start) {
+            const auto& first = map.Texels[start];
+            if (seen[start] || std::isnan(first[0]) || (landing && first[1] <= 0.25F)) continue;
+            PicaWaterMapRegion region;
+            region.Landing = landing;
+            region.Height = first[0];
+            region.MinimumXZ = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+            region.MaximumXZ = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
+            stack.assign(1U, start);
+            seen[start] = 1U;
+            while (!stack.empty()) {
+                const size_t index = stack.back();
+                stack.pop_back();
+                const size_t u = index % size, v = index / size;
+                const float x = map.Origin[0] + float(u) * map.Texel, z = map.Origin[1] + float(v) * map.Texel;
+                region.MinimumXZ = {std::min(region.MinimumXZ[0], x), std::min(region.MinimumXZ[1], z)};
+                region.MaximumXZ = {std::max(region.MaximumXZ[0], x + map.Texel),
+                                    std::max(region.MaximumXZ[1], z + map.Texel)};
+                ++region.Texels;
+                const std::array<std::pair<int, int>, 4> steps{{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}};
+                for (const auto& [du, dv] : steps) {
+                    const int nu = int(u) + du, nv = int(v) + dv;
+                    if (nu < 0 || nv < 0 || nu >= int(size) || nv >= int(size)) continue;
+                    const size_t next = size_t(nv) * size + size_t(nu);
+                    const auto& texel = map.Texels[next];
+                    if (seen[next] || std::isnan(texel[0]) || std::abs(texel[0] - region.Height) > 2.0F ||
+                        (landing && texel[1] <= 0.25F))
+                        continue;
+                    seen[next] = 1U;
+                    stack.push_back(next);
+                }
+            }
+            regions.push_back(region);
+        }
+    }
+    std::stable_sort(regions.begin(), regions.end(),
+                     [](const auto& a, const auto& b) { return a.Texels > b.Texels; });
+    return regions;
+}
+
 } // namespace Fast::Renderer3ds

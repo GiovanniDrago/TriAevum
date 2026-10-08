@@ -81,14 +81,31 @@ vec3 hiz_water_to_world(vec3 v) {
     return vec3(dot(hiz_water.view_to_world[0].xyz, v), dot(hiz_water.view_to_world[1].xyz, v),
                 dot(hiz_water.view_to_world[2].xyz, v));
 }
-// Drawn water within a texel or so of a world position (any height).
+// World distances of the map's edge rules (any scene scale; at least a
+// texel): drawn water near a gameplay box, a lip's lower water, the fade of
+// refraction at a piece's edge.
+const float kHiZWaterNear = 24.0;
+const float kHiZWaterLipNear = 30.0;
+const float kHiZWaterLipFar = 60.0;
+const float kHiZWaterEdgeFade = 24.0;
+float hiz_water_map_reach(float world) {
+    return max(world, hiz_water.map_info.z);
+}
+// Drawn water within kHiZWaterNear of a world position (any height).
 bool hiz_water_map_drawn_near(vec2 xz) {
     if (hiz_water.map_info.w <= 0.0) return false;
-    vec2 centre = (xz - hiz_water.map_info.xy) / hiz_water.map_info.z;
+    float reach = hiz_water_map_reach(kHiZWaterNear);
     for (int y = -1; y <= 1; ++y)
-        for (int x = -1; x <= 1; ++x)
-            if (hiz_water_map_texel(ivec2(floor(centre + 1.5 * vec2(x, y)))).x > -1.0e29) return true;
+        for (int x = -1; x <= 1; ++x) {
+            vec2 at = (xz + reach * vec2(x, y) - hiz_water.map_info.xy) / hiz_water.map_info.z;
+            if (hiz_water_map_texel(ivec2(floor(at))).x > -1.0e29) return true;
+        }
     return false;
+}
+// A drawn water fragment marked the material guide here (B at 1.0). Later
+// transparent draws (mist, particles) may clear it: only edges rely on it.
+bool hiz_water_marked(vec2 uv) {
+    return textureLod(sampler2D(material_guide, nearest_sampler), uv, 0.0).b > 0.996;
 }
 // The nearest listed surface in front of the scene: its view depth, world
 // position and view direction (depth 1); depth 0 if none.
@@ -113,8 +130,9 @@ float hiz_water_surface(vec2 uv, float scene_depth, out vec3 world_position, out
         if (position.x < footprint.x || position.z < footprint.y || position.x > footprint.z ||
             position.z > footprint.w) continue;
         // Where water is drawn nearby, the drawn water decides: a box reaching
-        // past a piece's edge (over a drop) is not water there.
-        if (hiz_water_map_sample(position.xz, height).x < 0.5 && hiz_water_map_drawn_near(position.xz)) continue;
+        // past a piece's edge (over a drop) is water only where marked.
+        if (hiz_water_map_sample(position.xz, height).x < 0.5 && hiz_water_map_drawn_near(position.xz) &&
+            !hiz_water_marked(uv)) continue;
         if (nearest == 0.0 || depth < nearest) {
             nearest = depth;
             world_position = position;
@@ -128,7 +146,12 @@ float hiz_water_surface(vec2 uv, float scene_depth, out vec3 world_position, out
         float depth = (height - camera.y) / ray.y;
         if (nearest != 0.0 && depth >= nearest) continue;
         vec3 position = camera + ray * depth;
-        if (hiz_water_map_sample(position.xz, height).x < 0.5) continue;
+        // Inside a piece (all four texels at this level): water. At its edge
+        // (some): where a water fragment marked the guide, the drawn edge.
+        // Over no bed (sky, the far plane) only the drawn water counts.
+        float coverage = hiz_water_map_sample(position.xz, height).x;
+        bool bed = scene_depth < pc.far_plane;
+        if (coverage <= 0.0 || ((coverage < 0.999 || !bed) && !hiz_water_marked(uv))) continue;
         nearest = depth;
         world_position = position;
     }
@@ -141,7 +164,7 @@ bool hiz_water_lip(vec2 xz, float height) {
     if (hiz_water.map_info.w <= 0.0) return false;
     for (int i = 0; i < 16; ++i) {
         float angle = 0.7853982 * float(i & 7);
-        float reach = hiz_water.map_info.z * (i < 8 ? 2.0 : 4.0);
+        float reach = hiz_water_map_reach(i < 8 ? kHiZWaterLipNear : kHiZWaterLipFar);
         vec2 at = xz + reach * vec2(cos(angle), sin(angle));
         vec2 texel = hiz_water_map_texel(ivec2(floor((at - hiz_water.map_info.xy) / hiz_water.map_info.z)));
         if (texel.x > -1.0e29 && texel.x < height - 4.0) return true;
@@ -416,7 +439,7 @@ vec3 water_compose(vec2 uv, vec3 world, vec3 direction, float water_depth, float
     // shift there (it would show a rippled ghost of the edge).
     float edge_scale = 1.0;
     if (hiz_water.map_info.w > 0.0) {
-        float reach = 1.5 * hiz_water.map_info.z;
+        float reach = hiz_water_map_reach(kHiZWaterEdgeFade);
         for (int i = 0; i < 4; ++i) {
             vec2 offset = reach * vec2(i == 0 ? 1.0 : i == 1 ? -1.0 : 0.0, i == 2 ? 1.0 : i == 3 ? -1.0 : 0.0);
             edge_scale = min(edge_scale, clamp(2.0 * hiz_water_map_sample(world.xz + offset, world.y).x - 1.0, 0.0, 1.0));

@@ -43,6 +43,18 @@ static int run() {
     const PicaWaterTriangles* none[] = {};
     expect(BuildPicaWaterMap(std::span<const PicaWaterTriangles* const>(none, 0)).Size == 0U, "no water, no map");
     checks += 11;
+    // Regions: the two pieces and the drop's landing.
+    const auto regions = PicaWaterMapRegions(map);
+    size_t levels = 0, landings = 0;
+    for (const auto& region : regions) {
+        (region.Landing ? landings : levels) += 1U;
+        if (region.Landing)
+            expect(std::abs(region.Height) < 1.0e-3F && region.MinimumXZ[1] > 99.0F && region.MinimumXZ[1] < 106.0F,
+                   "landing on the lower piece below the drop");
+    }
+    expect(levels == 2U && landings == 1U, "two pieces, one landing");
+    expect(!regions.empty() && !regions[0].Landing && regions[0].Texels > regions.back().Texels, "largest first");
+    checks += 3;
     std::cout << "pica_water_map_tests: " << checks << " checks passed\n";
     return 0;
 }

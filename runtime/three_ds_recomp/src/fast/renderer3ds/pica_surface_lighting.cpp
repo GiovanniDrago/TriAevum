@@ -787,6 +787,13 @@ std::string_view PicaSurfaceLightingWaterShading() noexcept {
 )glsl";
 }
 
+std::string_view PicaSurfaceLightingWaterMarker() noexcept {
+    return R"glsl(
+    if (pica_surface_water_fragment)
+        pica_material_guide = vec4(0.0, 0.0, 1.0, pica_material_guide.a);
+)glsl";
+}
+
 std::string_view PicaSurfaceLightingBody() noexcept {
     return R"glsl(
     bool surface_water = pica_surface_water(cross(dFdx(pica_view), dFdy(pica_view)));

@@ -663,7 +663,7 @@ BuildPicaFragmentInstrumentationVariant(const PicaFragmentInstrumentationRequest
         preserveAlpha += "\n        combiner_output.rgb = surface_lit_rgb;\n    }\n";
         insertions.push_back({tevEnd, std::move(preserveAlpha)});
         if (!pbr) insertions.push_back({tevEnd, std::string(Renderer3ds::PicaSurfaceLightingWaterShading())});
-        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_NATIVE_PER_PIXEL_LIGHTING_V18_WATER_CATALOG");
+        result.FragmentKey = SaltedVariantKey(result.FragmentKey, "PICA_NATIVE_PER_PIXEL_LIGHTING_V20_WATER_NATIVE_FOG");
         result.AppliedFeatures |= PicaShaderInstrumentationFeature::NativePerPixelLighting;
         if (pbr) {
             declarations += pbr->Declarations;
@@ -1353,11 +1353,15 @@ vec3 pica_surface_shadow(int slot) {
     epilogue += deferredEpilogue;
     if (surfaceLighting && result.Hooks.Has(PicaShaderSemantic::NativeColorOutput)) {
         decisions.Set(Decision::EnvironmentMix);
-        epilogue += "\n    if (pica_surface.environment_parameters.w != 0.0)\n"
+        epilogue += "\n    // Water keeps its native fog (its native colour is its appearance;\n"
+                    "    // far water meets the native horizon).\n"
+                    "    if (pica_surface.environment_parameters.w != 0.0 && !pica_surface_water_fragment)\n"
                     "        pica_color.rgb = mix(surface_before_fog, pica_color.rgb, pica_surface.environment_parameters.z);\n";
     }
     if (pbr && result.Hooks.Has(PicaShaderSemantic::NativeColorOutput))
         epilogue += pbr->DiagnosticOutput;
+    if (surfaceLighting && !pbr && materialAvailable)
+        epilogue += Renderer3ds::PicaSurfaceLightingWaterMarker();
 
     if (result.Applied()) {
         result.Source = Compose(

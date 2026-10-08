@@ -2,6 +2,7 @@
 // clears, overlays and memory fills.
 #ifdef ENABLE_OOT3D_VULKAN
 #include "gfx_vulkan_pica_internal.h"
+#include "fast/renderer3ds/pica_surface_debug.h"
 
 namespace Fast {
 
@@ -2257,6 +2258,23 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                         ++mWaterMapVersion;
                     }
                     waterMap = &mWaterMap;
+#if defined(TRIAEVUM_RENDERER_DEVELOPER_TOOLS)
+                    // The lab frames every piece and landing of the map.
+                    if (Renderer3ds::PicaSurfaceDebug::Instance().Tracing()) {
+                        std::string line = "{\"waterMap\":[";
+                        for (const auto& region : Renderer3ds::PicaWaterMapRegions(mWaterMap)) {
+                            char text[192];
+                            std::snprintf(text, sizeof(text),
+                                          "%s{\"landing\":%d,\"height\":%.1f,\"min\":[%.1f,%.1f],"
+                                          "\"max\":[%.1f,%.1f],\"texels\":%u}",
+                                          line.back() == '[' ? "" : ",", region.Landing ? 1 : 0, region.Height,
+                                          region.MinimumXZ[0], region.MinimumXZ[1], region.MaximumXZ[0],
+                                          region.MaximumXZ[1], region.Texels);
+                            line += text;
+                        }
+                        Renderer3ds::PicaSurfaceDebug::Instance().Write(line + "]}");
+                    }
+#endif
                 }
                 const bool hiZExecuted =
                     transientReflectionOutput != nullptr &&
