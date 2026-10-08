@@ -2154,6 +2154,19 @@ void NativeA32WindowSession::UpdateDevLab(uint64_t guestFrame) {
                              {"revision", environment.Revision},
                              {"error", environment.Error}};
         finish("ok", detail);
+      } else if (op == "graphics") {
+        // A partial "Graphics" block, applied like an F1 commit (not saved),
+        // as the qualification schedule does.
+        auto &graphicsSettings = Fast::Oot3d::GraphicsSettingsRuntime::Instance();
+        const auto current = graphicsSettings.Snapshot();
+        const auto decoded = Fast::Oot3d::DeserializeGraphicsSettings(
+            Oot3dNativeGame::MergeScheduledGraphics(Fast::Oot3d::SerializeGraphicsSettings(current),
+                                                    command.at("graphics")),
+            current);
+        const auto applied = graphicsSettings.Apply(decoded.Value, false);
+        finish(applied.Accepted() && !decoded.UnsupportedFutureVersion ? "ok" : "failed",
+               {{"frame", guestFrame}, {"decodeIssues", decoded.Issues.size()},
+                {"applyIssues", applied.Issues.size()}});
       } else if (op == "gizmos") {
         sceneEnvironment->ShowLightGizmos(command.value("shown", true));
         finish("ok", {{"frame", guestFrame}});

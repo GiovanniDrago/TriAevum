@@ -342,7 +342,8 @@ private:
   float devTourAnchorYaw = 0.0F;
   void UpdateDevFreeCameraTour(uint64_t guestFrame);
   // TRIAEVUM_DEV_LAB=<dir>: commands from an agent (oot3d_dev_lab.h), one
-  // at a time: warp, camera, camera_off, wait, capture, gizmos, status, quit.
+  // at a time: warp, camera, camera_off, wait, capture, graphics, gizmos,
+  // status, quit.
   std::unique_ptr<Oot3dNativeGame::DevLabChannel> devLab;
   std::optional<nlohmann::json> devLabCommand;
   uint32_t devLabFrames = 0;
