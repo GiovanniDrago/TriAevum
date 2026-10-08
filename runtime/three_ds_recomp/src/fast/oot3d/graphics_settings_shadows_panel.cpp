@@ -67,22 +67,6 @@ bool DrawDirectionalShadows(GraphicsSettings& settings, const GraphicsCapabiliti
                 "Shadow slope bias",
                 &directionalShadows.DepthBiasSlope,
                 0.05F, 0.0F, 16.0F, "%.2f");
-            changed |= ImGui::SliderFloat(
-                "Shadow normal offset",
-                &directionalShadows.NormalOffset,
-                0.0F, 8.0F, "%.2f texels");
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Smooth-shaded models (characters) read the shadow this far along their "
-                                  "shading normal, more where the light grazes them: removes the faceted "
-                                  "self-shadowing of their triangles and of the joins between their pieces.");
-            changed |= ImGui::SliderFloat(
-                "Shadow terminator fade",
-                &directionalShadows.TerminatorFade,
-                0.0F, 1.0F, "%.2f N.L");
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Where a smooth-shaded model turns from the light (N.L below this), its "
-                                  "shadow gives way to the smooth light falloff instead of the facets of its "
-                                  "triangles shadowing one another.");
             ImGui::TreePop();
         }
         if (!directionalShadowsReady) ImGui::EndDisabled();

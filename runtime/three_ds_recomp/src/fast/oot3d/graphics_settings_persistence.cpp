@@ -1247,9 +1247,7 @@ std::string_view EnhancedPresetDocument() noexcept {
       "DepthBiasSlope": 1.75,
       "MaximumDistance": 6550.0,
       "Mode": "VirtualShadowMaps",
-      "NormalOffset": 4.0,
       "PcfRadius": 2,
-      "TerminatorFade": 0.4000000059604645,
       "Resolution": 2048,
       "Strength": 1.0
     },
@@ -1542,8 +1540,6 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                    directionalShadows.DepthBiasSlope},
                   {"Strength", directionalShadows.Strength},
                   {"PcfRadius", directionalShadows.PcfRadius},
-                  {"NormalOffset", directionalShadows.NormalOffset},
-                  {"TerminatorFade", directionalShadows.TerminatorFade},
               }},
              {"PointShadows",
               {
@@ -1910,12 +1906,6 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                     *shadows, "PcfRadius", settings.PcfRadius,
                     "Graphics.Effects.DirectionalShadows.PcfRadius",
                     result);
-                if (FindMember(*shadows, "NormalOffset") != nullptr)
-                    ReadScalar(*shadows, "NormalOffset", settings.NormalOffset,
-                               "Graphics.Effects.DirectionalShadows.NormalOffset", result);
-                if (FindMember(*shadows, "TerminatorFade") != nullptr)
-                    ReadScalar(*shadows, "TerminatorFade", settings.TerminatorFade,
-                               "Graphics.Effects.DirectionalShadows.TerminatorFade", result);
                 if (version < 12U || legacyMode) {
                     // The old distance sized a camera-fitted map; it is not a
                     // virtual-map coverage limit. Preserve strength/filter/bias.

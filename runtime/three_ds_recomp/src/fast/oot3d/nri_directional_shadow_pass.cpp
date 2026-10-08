@@ -1345,8 +1345,6 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     history.State.Strength = plan.Strength * std::clamp(light.ShadowStrength, 0.0F, 1.0F);
     history.State.DepthBias = std::max(plan.DepthBiasConstant, 0.0F) * 0.5F / (2.0F * plan.Virtual.DepthExtent);
     history.State.PcfRadius = plan.PcfRadius;
-    history.State.NormalOffset = plan.NormalOffset;
-    history.State.TerminatorFade = plan.TerminatorFade;
     target->LastUsedFrameId = desc.FrameId;
     telemetry.DisplayedLayouts = displayed[1] >= 0 ? 2U : 1U;
     telemetry.NewerWeight = history.State.NewerWeight;
