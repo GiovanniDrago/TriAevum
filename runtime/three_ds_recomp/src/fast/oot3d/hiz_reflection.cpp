@@ -45,19 +45,33 @@ layout(set = 0, binding = 7, std140) uniform HiZWater {
     vec4 map_levels[4];
     vec4 map_counts;
 } hiz_water;
-// Per texel of the drawn water's map: its surface height (-1e30: none) and
-// landing foam.
+// Per texel of the drawn water's map: its surface height at the centre
+// (-1e30: none), landing foam and the surface's slope (d height / dx, dz).
 layout(set = 0, binding = 9, std430) readonly buffer HiZWaterMap {
-    vec2 texels[];
+    vec4 texels[];
 } hiz_water_map;
-vec2 hiz_water_map_texel(ivec2 texel) {
+vec4 hiz_water_map_texel(ivec2 texel) {
     int size = int(hiz_water.map_info.w);
-    if (any(lessThan(texel, ivec2(0))) || any(greaterThanEqual(texel, ivec2(size)))) return vec2(-1.0e30, 0.0);
+    if (any(lessThan(texel, ivec2(0))) || any(greaterThanEqual(texel, ivec2(size)))) return vec4(-1.0e30, 0.0, 0.0, 0.0);
     return hiz_water_map.texels[texel.y * size + texel.x];
 }
-// The map around a world position for one level, interpolated between the
-// four nearest texel centres (no texel steps): how much of it is water at
-// that height (x; water where at least half) and its landing foam (y).
+// A texel's surface height at a world position (its plane continued).
+float hiz_water_map_height(ivec2 index, vec4 texel, vec2 xz) {
+    vec2 centre = hiz_water.map_info.xy + (vec2(index) + 0.5) * hiz_water.map_info.z;
+    return texel.x + dot(texel.zw, xz - centre);
+}
+// The surface height under a world position (-1e30: no water).
+float hiz_water_map_surface(vec2 xz) {
+    if (hiz_water.map_info.w <= 0.0) return -1.0e30;
+    ivec2 index = ivec2(floor((xz - hiz_water.map_info.xy) / hiz_water.map_info.z));
+    vec4 texel = hiz_water_map_texel(index);
+    return texel.x > -1.0e29 ? hiz_water_map_height(index, texel, xz) : -1.0e30;
+}
+// The map around a world position for the surface at this height,
+// interpolated between the four nearest texel centres (no texel steps): how
+// much of it is water there (x; water where at least half), each texel's
+// plane continued to the position (a sloped stream stays one surface), and
+// its landing foam (y).
 vec2 hiz_water_map_sample(vec2 xz, float height) {
     if (hiz_water.map_info.w <= 0.0) return vec2(0.0);
     vec2 position = (xz - hiz_water.map_info.xy) / hiz_water.map_info.z - 0.5;
@@ -66,9 +80,10 @@ vec2 hiz_water_map_sample(vec2 xz, float height) {
     vec2 result = vec2(0.0);
     for (int i = 0; i < 4; ++i) {
         ivec2 offset = ivec2(i & 1, i >> 1);
-        vec2 texel = hiz_water_map_texel(base + offset);
+        vec4 texel = hiz_water_map_texel(base + offset);
         float weight = (offset.x == 1 ? f.x : 1.0 - f.x) * (offset.y == 1 ? f.y : 1.0 - f.y);
-        if (abs(texel.x - height) <= 4.0) result += weight * vec2(1.0, texel.y);
+        if (texel.x > -1.0e29 && abs(hiz_water_map_height(base + offset, texel, xz) - height) <= 4.0)
+            result += weight * vec2(1.0, texel.y);
     }
     return result;
 }
@@ -111,10 +126,10 @@ bool hiz_water_marked(vec2 uv) {
 // position and view direction (depth 1); depth 0 if none.
 float hiz_water_surface(vec2 uv, float scene_depth, out vec3 world_position, out vec3 direction) {
     uint count = min(uint(hiz_water.parameters.x), 8u);
-    uint levels = min(uint(hiz_water.map_counts.x), 16u);
+    bool mapped = hiz_water.map_info.w > 0.0 && hiz_water.map_counts.x > 0.0;
     direction = hiz_water_view_direction(uv);
     world_position = vec3(0.0);
-    if (count == 0u && levels == 0u) return 0.0;
+    if (count == 0u && !mapped) return 0.0;
     vec3 ray = hiz_water_to_world(direction);
     vec3 camera = vec3(hiz_water.view_to_world[0].w, hiz_water.view_to_world[1].w,
                        hiz_water.view_to_world[2].w);
@@ -138,36 +153,70 @@ float hiz_water_surface(vec2 uv, float scene_depth, out vec3 world_position, out
             world_position = position;
         }
     }
-    // The drawn water's levels, where the map holds that height (each piece
-    // of a river with steps at its own).
-    for (uint i = 0u; i < levels; ++i) {
-        float height = hiz_water.map_levels[i >> 2u][i & 3u];
-        if (camera.y <= height) continue;
-        float depth = (height - camera.y) / ray.y;
-        if (nearest != 0.0 && depth >= nearest) continue;
-        vec3 position = camera + ray * depth;
-        // Inside a piece (all four texels at this level): water. At its edge
-        // (some): where a water fragment marked the guide, the drawn edge.
-        // Over no bed (sky, the far plane) only the drawn water counts.
-        float coverage = hiz_water_map_sample(position.xz, height).x;
-        bool bed = scene_depth < pc.far_plane;
-        if (coverage <= 0.0 || ((coverage < 0.999 || !bed) && !hiz_water_marked(uv))) continue;
-        nearest = depth;
-        world_position = position;
+    // The drawn water: where the view ray first goes below the map's surface
+    // (each piece of a river with steps at its own height, a stream running
+    // downhill sloped as it is), marched between the surface's highest and
+    // lowest heights, then refined.
+    if (mapped && camera.y > hiz_water.map_counts.y) {
+        float first = max((hiz_water.map_counts.z - camera.y) / ray.y, 0.0);
+        float last = (hiz_water.map_counts.y - camera.y) / ray.y;
+        if (nearest != 0.0) last = min(last, nearest);
+        if (!(isnan(scene_depth) || isinf(scene_depth))) last = min(last, scene_depth);
+        last = min(last, pc.far_plane);
+        const int steps = 64;
+        float above = first;
+        bool found = false;
+        for (int i = 1; first < last && i <= steps; ++i) {
+            float depth = mix(first, last, float(i) / float(steps));
+            vec3 position = camera + ray * depth;
+            float surface = hiz_water_map_surface(position.xz);
+            if (surface > -1.0e29 && position.y <= surface) {
+                // Between the last point above (or off) the surface and this one.
+                float below = depth;
+                for (int k = 0; k < 6; ++k) {
+                    float middle = 0.5 * (above + below);
+                    vec3 at = camera + ray * middle;
+                    float height = hiz_water_map_surface(at.xz);
+                    if (height > -1.0e29 && at.y <= height) below = middle;
+                    else above = middle;
+                }
+                found = true;
+                above = below;
+                break;
+            }
+            above = depth;
+        }
+        if (found) {
+            vec3 position = camera + ray * above;
+            float height = hiz_water_map_surface(position.xz);
+            position.y = height > -1.0e29 ? height : position.y;
+            // Inside a piece (all four texels on this surface): water. At its
+            // edge (some): where a water fragment marked the guide, the drawn
+            // edge. Over no bed (sky, the far plane) only the drawn water counts.
+            float coverage = hiz_water_map_sample(position.xz, position.y).x;
+            bool bed = scene_depth < pc.far_plane;
+            if (coverage > 0.0 && (coverage >= 0.999 && bed || hiz_water_marked(uv)) &&
+                (nearest == 0.0 || above < nearest)) {
+                nearest = above;
+                world_position = position;
+            }
+        }
     }
     // Something stands on the water (in front of it): not water there.
     return nearest > 0.0 && nearest < scene_depth - 1.0 ? nearest : 0.0;
 }
 // A lip: lower water near this piece (it pours over its edge there), where a
-// shallow bed is the brink of a drop, not a shore.
+// shallow bed is the brink of a drop, not a shore. Lower than this surface
+// continued (a stream running downhill is no lip).
 bool hiz_water_lip(vec2 xz, float height) {
     if (hiz_water.map_info.w <= 0.0) return false;
+    vec2 slope = hiz_water_map_texel(ivec2(floor((xz - hiz_water.map_info.xy) / hiz_water.map_info.z))).zw;
     for (int i = 0; i < 16; ++i) {
         float angle = 0.7853982 * float(i & 7);
         float reach = hiz_water_map_reach(i < 8 ? kHiZWaterLipNear : kHiZWaterLipFar);
         vec2 at = xz + reach * vec2(cos(angle), sin(angle));
-        vec2 texel = hiz_water_map_texel(ivec2(floor((at - hiz_water.map_info.xy) / hiz_water.map_info.z)));
-        if (texel.x > -1.0e29 && texel.x < height - 4.0) return true;
+        float there = hiz_water_map_surface(at);
+        if (there > -1.0e29 && there < height + dot(slope, at - xz) - 4.0) return true;
     }
     return false;
 }
@@ -617,6 +666,8 @@ HiZWaterUniforms BuildHiZWaterUniforms(const std::array<float, 16>* worldToView,
             result.MapLevels[i / 4U][i % 4U] = map->Levels[i];
         result.MapCounts[0] = static_cast<float>(std::min<size_t>(map->Levels.size(),
                                                                    Renderer3ds::kPicaWaterMapLevels));
+        result.MapCounts[1] = map->HeightRange[0];
+        result.MapCounts[2] = map->HeightRange[1];
     }
     if (rings != nullptr)
         for (uint32_t i = 0; i < Renderer3ds::kPicaWaterRings; ++i)

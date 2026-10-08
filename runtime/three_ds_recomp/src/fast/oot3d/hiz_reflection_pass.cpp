@@ -181,10 +181,10 @@ bool HiZReflectionPass::Initialize(VkPhysicalDevice physicalDevice,
             const HiZWaterUniforms none{};
             std::memcpy(mImpl->WaterMapped[slot], &none, sizeof(none));
             constexpr uint64_t mapBytes =
-                uint64_t(Renderer3ds::kPicaWaterMapSize) * Renderer3ds::kPicaWaterMapSize * 2U * sizeof(float);
+                uint64_t(Renderer3ds::kPicaWaterMapSize) * Renderer3ds::kPicaWaterMapSize * 4U * sizeof(float);
             nri::BufferDesc mapDesc{};
             mapDesc.size = mapBytes;
-            mapDesc.structureStride = 2U * sizeof(float);
+            mapDesc.structureStride = 4U * sizeof(float);
             mapDesc.usage = nri::BufferUsageBits::SHADER_RESOURCE;
             if (mImpl->Core->CreateCommittedBuffer(*nriDevice, nri::MemoryLocation::HOST_UPLOAD, 0.0F, mapDesc,
                                                    mImpl->MapBuffers[slot]) != nri::Result::SUCCESS)
@@ -193,7 +193,7 @@ bool HiZReflectionPass::Initialize(VkPhysicalDevice physicalDevice,
             mapView.buffer = mImpl->MapBuffers[slot];
             mapView.type = nri::BufferView::STRUCTURED_BUFFER;
             mapView.size = mapBytes;
-            mapView.structureStride = 2U * sizeof(float);
+            mapView.structureStride = 4U * sizeof(float);
             if (mImpl->Core->CreateBufferView(mapView, mImpl->MapViews[slot]) != nri::Result::SUCCESS)
                 throw std::runtime_error("NRI SSR water map view creation failed");
             mImpl->MapMapped[slot] = mImpl->Core->MapBuffer(*mImpl->MapBuffers[slot], 0, mapBytes);
@@ -360,8 +360,8 @@ bool HiZReflectionPass::Execute(VkCommandBuffer commandBuffer,
         mImpl->MapVersions[slot] != waterMapVersion) {
         auto* texels = static_cast<float*>(mImpl->MapMapped[slot]);
         for (size_t i = 0; i < waterMap->Texels.size(); ++i) {
-            texels[2U * i] = std::isnan(waterMap->Texels[i][0]) ? -1.0e30F : waterMap->Texels[i][0];
-            texels[2U * i + 1U] = waterMap->Texels[i][1];
+            texels[4U * i] = std::isnan(waterMap->Texels[i][0]) ? -1.0e30F : waterMap->Texels[i][0];
+            for (size_t c = 1U; c < 4U; ++c) texels[4U * i + c] = waterMap->Texels[i][c];
         }
         mImpl->MapVersions[slot] = waterMapVersion;
     }

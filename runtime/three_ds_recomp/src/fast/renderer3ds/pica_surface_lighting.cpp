@@ -347,6 +347,15 @@ vec3 pica_surface_water_flow_world(vec2 uv_dx, vec2 uv_dy, vec3 view_dx, vec3 vi
     float speed = length(flow);
     return speed > 400.0 ? flow * (400.0 / speed) : flow;
 }
+// Lying water whose texture flows (a river): its waves and streaks ride the
+// texture, in its coordinates (continuous across faces whose mappings
+// differ, as the native texture is), turned onto the surface by the face's
+// mapping (uv per tangent-frame unit). Faces' own flows would part their
+// patterns at every edge, further each second.
+bool pica_surface_water_textured = false;
+vec2 pica_surface_water_uv = vec2(0.0);
+float pica_surface_water_uv_footprint = 0.0;
+mat2 pica_surface_water_uv_per_unit = mat2(1.0);
 // Flowing water (calm below 10 world units per second, fast above 80): the
 // waves ride the current, shorter and steeper as it quickens.
 float pica_surface_water_fast() {
@@ -374,13 +383,14 @@ bool pica_surface_water(vec3 face) {
                                     dot(pica_surface.view_to_world_linear[1].xyz, view_position),
                                     dot(pica_surface.view_to_world_linear[2].xyz, view_position));
     vec3 world = pica_surface_water_world;
+    // A whole water draw's lying faces (level, or a stream's slope; not its
+    // falls) are the reflection trace's (its water map).
+    if (whole && world_face.y > 0.75 * face_length) {
+        pica_surface_water_traced = true;
+        return true;
+    }
     if (abs(world_face.y) >= 0.95 * face_length) {
-        // A whole water draw's level faces are the reflection trace's (its
-        // water map); a mixed mesh's over a body.
-        if (whole && world_face.y > 0.0) {
-            pica_surface_water_traced = true;
-            return true;
-        }
+        // A mixed mesh's level faces over a body.
         for (uint slot = 0u; slot < min(count, 4u); ++slot) {
             vec4 footprint = pica_surface.water_footprints[slot];
             if (abs(world.y - pica_surface.water_heights[slot]) <= 4.0 && world.x >= footprint.x &&
@@ -392,6 +402,10 @@ bool pica_surface_water(vec3 face) {
     }
     if (!whole) return false;
     vec3 up = world_face / face_length;
+    // Lying water (a sloped stream, not a fall) shades as level water: its
+    // triangles each tilt a little, and their own normals and wave frames
+    // would show as facets and as waves changing scale and direction.
+    if (abs(up.y) >= 0.75) up = vec3(0.0, sign(up.y), 0.0);
     pica_surface_water_up = up;
     pica_surface_water_tangent = abs(up.y) > 0.95 ? vec3(1.0, 0.0, 0.0)
                                                    : normalize(cross(vec3(0.0, 1.0, 0.0), up));
@@ -670,6 +684,34 @@ vec3 pica_surface_water_specular(vec3 normal, vec3 view_dir, vec3 direction, vec
 // phase speeds (slowed), each faded out where a pixel covers its wavelength.
 vec2 pica_surface_water_slope() {
     float time = pica_surface.water_ripples.x;
+    const float wind = 0.38;
+    vec2 slope = vec2(0.0);
+    if (pica_surface_water_textured) {
+        // Wavelength (texture repeats), direction (degrees from the wind),
+        // slope: the world set's proportions, at the native texture's scale.
+        const vec3 texture_waves[8] = vec3[8](vec3(0.50, 0.0, 0.050), vec3(0.36, 37.0, 0.045),
+                                              vec3(0.27, -29.0, 0.040), vec3(0.20, 71.0, 0.035),
+                                              vec3(0.14, -63.0, 0.030), vec3(0.10, 113.0, 0.025),
+                                              vec3(0.075, -101.0, 0.020), vec3(0.055, 151.0, 0.020));
+        float texture_scale = max(pica_surface.water_ripples.z, 0.05);
+        for (int wave = 0; wave < 8; ++wave) {
+            float wavelength = texture_waves[wave].x * texture_scale;
+            float fade = clamp(1.5 - 3.0 * pica_surface_water_uv_footprint / wavelength, 0.0, 1.0);
+            if (fade <= 0.0) continue;
+            float angle = wind + radians(texture_waves[wave].y);
+            vec2 direction = vec2(cos(angle), sin(angle));
+            float number = 6.2831853 / wavelength;
+            // Their own slow motion on the flowing texture.
+            float phase = number * dot(direction, pica_surface_water_uv) - 0.9 * sqrt(number) * time +
+                          float(wave) * 1.618;
+            // The phase's gradient on the surface, as a direction.
+            vec2 across = transpose(pica_surface_water_uv_per_unit) * direction;
+            float length_across = length(across);
+            if (length_across <= 0.0) continue;
+            slope += across / length_across * (texture_waves[wave].z * cos(phase) * fade);
+        }
+        slope *= pica_surface.water_ripples.y;
+    } else {
     vec2 position = vec2(dot(pica_surface_water_world, pica_surface_water_tangent),
                          dot(pica_surface_water_world, pica_surface_water_bitangent)) -
                     pica_surface_water_flow * time;
@@ -679,8 +721,6 @@ vec2 pica_surface_water_slope() {
     const vec3 waves[8] = vec3[8](vec3(157.0, 0.0, 0.050), vec3(113.0, 37.0, 0.045), vec3(83.0, -29.0, 0.040),
                                   vec3(61.0, 71.0, 0.035), vec3(43.0, -63.0, 0.030), vec3(31.0, 113.0, 0.025),
                                   vec3(23.0, -101.0, 0.020), vec3(17.0, 151.0, 0.020));
-    const float wind = 0.38;
-    vec2 slope = vec2(0.0);
     for (int wave = 0; wave < 8; ++wave) {
         float wavelength = waves[wave].x * scale;
         float fade = clamp(1.5 - 3.0 * pica_surface_water_footprint / wavelength, 0.0, 1.0);
@@ -694,6 +734,7 @@ vec2 pica_surface_water_slope() {
         slope += direction * (waves[wave].z * cos(phase) * fade);
     }
     slope *= pica_surface.water_ripples.y * mix(1.0, 1.8, fast);
+    }
     // Movers' rings on a level surface (water_rings: centre xz, birth,
     // strength): a wave packet spreading from the centre and fading.
     if (pica_surface_water_up.y > 0.95) {
@@ -742,6 +783,14 @@ vec3 pica_surface_water_shade(vec3 native_rgb, vec3 sky) {
                              dot(pica_surface_water_world, pica_surface_water_bitangent));
         float along = dot(position, along_direction) - speed * pica_surface.water_ripples.x;
         float across = dot(position, vec2(-along_direction.y, along_direction.x));
+        if (pica_surface_water_textured) {
+            // On a flowing texture: streaks along its scroll, riding it (its
+            // coordinates already move), at its scale.
+            vec2 scroll = pica_surface.water_flow.xy;
+            vec2 along_texture = length(scroll) > 0.0 ? normalize(scroll) : vec2(1.0, 0.0);
+            along = 6.0 * dot(pica_surface_water_uv, along_texture);
+            across = 20.0 * dot(pica_surface_water_uv, vec2(-along_texture.y, along_texture.x));
+        }
         float first = sin(across * 0.13 + 1.7 * sin(along * 0.021 + across * 0.017));
         float second = sin(across * 0.31 - 1.3 * sin(along * 0.047 + 0.7) + along * 0.013);
         float streak = smoothstep(0.35, 0.95, 0.5 + 0.3 * first + 0.2 * second);
@@ -808,6 +857,27 @@ std::string_view PicaSurfaceLightingBody() noexcept {
             vec3 flow = pica_surface_water_flow_world(water_uv_dx, water_uv_dy, water_view_dx, water_view_dy);
             pica_surface_water_flow = vec2(dot(flow, pica_surface_water_tangent),
                                            dot(flow, pica_surface_water_bitangent));
+            // Lying water on a flowing texture: its waves in the texture's
+            // coordinates (pica_surface_water_textured).
+            vec3 world_dx = vec3(dot(pica_surface.view_to_world_linear[0].xyz, -water_view_dx),
+                                 dot(pica_surface.view_to_world_linear[1].xyz, -water_view_dx),
+                                 dot(pica_surface.view_to_world_linear[2].xyz, -water_view_dx));
+            vec3 world_dy = vec3(dot(pica_surface.view_to_world_linear[0].xyz, -water_view_dy),
+                                 dot(pica_surface.view_to_world_linear[1].xyz, -water_view_dy),
+                                 dot(pica_surface.view_to_world_linear[2].xyz, -water_view_dy));
+            mat2 surface_from_screen = mat2(vec2(dot(world_dx, pica_surface_water_tangent),
+                                                 dot(world_dx, pica_surface_water_bitangent)),
+                                            vec2(dot(world_dy, pica_surface_water_tangent),
+                                                 dot(world_dy, pica_surface_water_bitangent)));
+            mat2 texture_from_screen = mat2(water_uv_dx, water_uv_dy);
+            if (abs(pica_surface_water_up.y) >= 0.75 && pica_surface.water_flow.z > 0.0 &&
+                abs(determinant(surface_from_screen)) > 1.0e-12 &&
+                abs(determinant(texture_from_screen)) > 1.0e-12) {
+                pica_surface_water_textured = true;
+                pica_surface_water_uv = pica_texcoord0;
+                pica_surface_water_uv_footprint = length(fwidth(pica_texcoord0));
+                pica_surface_water_uv_per_unit = texture_from_screen * inverse(surface_from_screen);
+            }
             // A steep face falls (a waterfall, a river's drop between its
             // pieces): white water running down it, whatever its texture does.
             if (abs(pica_surface_water_up.y) < 0.75) {

@@ -17,10 +17,9 @@ namespace Fast::Renderer3ds {
 // pieces land. Generic data: world triangles only.
 using PicaWaterTriangle = std::array<std::array<float, 3>, 3>;
 
-// Level faces (a surface at one height, within kPicaWaterLevelSlope) and
-// falling ones (steeper than kPicaWaterFallSlope: waterfalls, the drops of a
-// river); gentle slopes (rapids) are neither.
-inline constexpr float kPicaWaterLevelSlope = 0.99F;
+// Lying faces (the surface: level, or sloped as a stream running downhill)
+// and falling ones (steeper than kPicaWaterFallSlope: waterfalls, the drops
+// of a river).
 inline constexpr float kPicaWaterFallSlope = 0.75F;
 
 struct PicaWaterTriangles {
@@ -55,9 +54,9 @@ struct PicaWaterTriangles {
         const float length = std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
         if (!(length > 1.0e-6F)) continue;
         const float up = std::abs(normal[1]) / length;
-        if (up >= kPicaWaterLevelSlope)
+        if (up > kPicaWaterFallSlope)
             result.Level.push_back(triangle);
-        else if (up <= kPicaWaterFallSlope)
+        else
             result.Falling.push_back(triangle);
     }
     return result;
@@ -74,12 +73,17 @@ struct PicaWaterMap {
     std::array<float, 2> Origin{};
     float Texel = 0.0F;
     uint32_t Size = 0;
-    // Per texel: the surface height (NaN: no water) and landing foam (0-1).
-    std::vector<std::array<float, 2>> Texels;
+    // Per texel: the surface height at its centre (NaN: no water), landing
+    // foam (0-1) and the surface's slope there (d height / dx, dz): the
+    // height anywhere in the texel is its plane's (a sloped stream is
+    // continuous, a step between pieces is not).
+    std::vector<std::array<float, 4>> Texels;
     // The distinct surface heights, ascending (at most kPicaWaterMapLevels).
     std::vector<float> Levels;
+    // The lowest and highest surface heights.
+    std::array<float, 2> HeightRange{};
 
-    [[nodiscard]] const std::array<float, 2>* At(float x, float z) const noexcept {
+    [[nodiscard]] const std::array<float, 4>* At(float x, float z) const noexcept {
         if (Size == 0U) return nullptr;
         const float u = std::floor((x - Origin[0]) / Texel), v = std::floor((z - Origin[1]) / Texel);
         if (u < 0.0F || v < 0.0F || u >= float(Size) || v >= float(Size)) return nullptr;
@@ -109,14 +113,14 @@ inline constexpr float kPicaWaterMapMinimumTexel = 4.0F;
     map.Texel = std::max((std::max(maxX - minX, maxZ - minZ) + 2.0F * kPicaWaterLandingReach) / float(map.Size),
                          kPicaWaterMapMinimumTexel);
     map.Origin = {minX - kPicaWaterLandingReach, minZ - kPicaWaterLandingReach};
-    map.Texels.assign(size_t(map.Size) * map.Size, {std::numeric_limits<float>::quiet_NaN(), 0.0F});
+    map.Texels.assign(size_t(map.Size) * map.Size, {std::numeric_limits<float>::quiet_NaN(), 0.0F, 0.0F, 0.0F});
     const auto range = [&](float low, float high, float origin, int32_t& first, int32_t& last) {
         first = std::max(int32_t(std::floor((low - origin) / map.Texel)), 0);
         last = std::min(int32_t(std::floor((high - origin) / map.Texel)), int32_t(map.Size) - 1);
         return first <= last;
     };
-    // Level faces: the height at each texel centre they cover (the higher
-    // where two overlap).
+    // Lying faces: the height at each texel centre they cover and their
+    // slope (the higher where two overlap).
     for (const auto* set : sets) {
         for (const auto& t : set->Level) {
             int32_t u0, u1, v0, v1;
@@ -127,6 +131,9 @@ inline constexpr float kPicaWaterMapMinimumTexel = 4.0F;
                 continue;
             const float area = (t[1][0] - t[0][0]) * (t[2][2] - t[0][2]) - (t[2][0] - t[0][0]) * (t[1][2] - t[0][2]);
             if (std::abs(area) < 1.0e-6F) continue;
+            const float rise1 = t[1][1] - t[0][1], rise2 = t[2][1] - t[0][1];
+            const float slopeX = (rise1 * (t[2][2] - t[0][2]) - rise2 * (t[1][2] - t[0][2])) / area;
+            const float slopeZ = ((t[1][0] - t[0][0]) * rise2 - (t[2][0] - t[0][0]) * rise1) / area;
             for (int32_t v = v0; v <= v1; ++v) {
                 for (int32_t u = u0; u <= u1; ++u) {
                     const float x = map.Origin[0] + (float(u) + 0.5F) * map.Texel;
@@ -137,7 +144,7 @@ inline constexpr float kPicaWaterMapMinimumTexel = 4.0F;
                     if (w0 < -1.0e-4F || w1 < -1.0e-4F || w2 < -1.0e-4F) continue;
                     const float height = w0 * t[0][1] + w1 * t[1][1] + w2 * t[2][1];
                     auto& texel = map.Texels[size_t(v) * map.Size + size_t(u)];
-                    if (!(texel[0] >= height)) texel[0] = height;
+                    if (!(texel[0] >= height)) texel = {height, texel[1], slopeX, slopeZ};
                 }
             }
         }
@@ -195,11 +202,20 @@ inline constexpr float kPicaWaterMapMinimumTexel = 4.0F;
     for (size_t i = 0; i < std::min<size_t>(levels.size(), kPicaWaterMapLevels); ++i)
         map.Levels.push_back(levels[i].first);
     std::sort(map.Levels.begin(), map.Levels.end());
+    map.HeightRange = {std::numeric_limits<float>::max(), std::numeric_limits<float>::lowest()};
+    for (const auto& texel : map.Texels) {
+        if (std::isnan(texel[0])) continue;
+        // The surface anywhere in the texel (its corners).
+        const float reach = 0.5F * map.Texel * (std::abs(texel[2]) + std::abs(texel[3]));
+        map.HeightRange = {std::min(map.HeightRange[0], texel[0] - reach),
+                           std::max(map.HeightRange[1], texel[0] + reach)};
+    }
+    if (map.Levels.empty()) map.HeightRange = {};
     return map;
 }
 
-// Connected regions of a map: level pieces (texels at one level, within two
-// units) and landings (foam above a quarter), largest first; their world
+// Connected regions of a map: pieces (texels whose surfaces meet, within two
+// units: a level piece, a sloped stream) and landings (foam above a quarter), largest first; their world
 // bounds and height. For tools that frame every piece of the drawn water.
 struct PicaWaterMapRegion {
     bool Landing = false;
@@ -229,6 +245,7 @@ struct PicaWaterMapRegion {
             while (!stack.empty()) {
                 const size_t index = stack.back();
                 stack.pop_back();
+                const auto& here = map.Texels[index];
                 const size_t u = index % size, v = index / size;
                 const float x = map.Origin[0] + float(u) * map.Texel, z = map.Origin[1] + float(v) * map.Texel;
                 region.MinimumXZ = {std::min(region.MinimumXZ[0], x), std::min(region.MinimumXZ[1], z)};
@@ -241,7 +258,9 @@ struct PicaWaterMapRegion {
                     if (nu < 0 || nv < 0 || nu >= int(size) || nv >= int(size)) continue;
                     const size_t next = size_t(nv) * size + size_t(nu);
                     const auto& texel = map.Texels[next];
-                    if (seen[next] || std::isnan(texel[0]) || std::abs(texel[0] - region.Height) > 2.0F ||
+                    // Its surface where this one's plane continues.
+                    const float continued = here[0] + (float(du) * here[2] + float(dv) * here[3]) * map.Texel;
+                    if (seen[next] || std::isnan(texel[0]) || std::abs(texel[0] - continued) > 2.0F ||
                         (landing && texel[1] <= 0.25F))
                         continue;
                     seen[next] = 1U;

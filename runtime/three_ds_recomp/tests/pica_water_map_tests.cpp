@@ -24,7 +24,7 @@ static int run() {
                                         10, 11, 12};
     std::array<float, 16> world{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10, 0, 0, 1};
     const auto split = SplitPicaWaterTriangles(positions, indices, world);
-    expect(split.Level.size() == 4U && split.Falling.size() == 4U, "level and falling faces; the rapids neither");
+    expect(split.Level.size() == 5U && split.Falling.size() == 4U, "lying faces (the rapids too) and falling ones");
     expect(split.Level[0][0][0] == 10.0F, "world placement");
     const PicaWaterTriangles* sets[] = {&split};
     const auto map = BuildPicaWaterMap(sets);
@@ -55,6 +55,29 @@ static int run() {
     expect(levels == 2U && landings == 1U, "two pieces, one landing");
     expect(!regions.empty() && !regions[0].Landing && regions[0].Texels > regions.back().Texels, "largest first");
     checks += 3;
+    // A stream running downhill (y 100 at z 0 to y 40 at z 300, about 11
+    // degrees): one continuous surface, its slope in every texel.
+    {
+        const std::vector<std::array<float, 3>> stream{{0, 100, 0}, {80, 100, 0}, {80, 40, 300}, {0, 40, 300}};
+        const std::vector<uint32_t> quad{0, 1, 2, 0, 2, 3};
+        const std::array<float, 16> identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        const auto sloped = SplitPicaWaterTriangles(stream, quad, identity);
+        expect(sloped.Level.size() == 2U && sloped.Falling.empty(), "a stream's slope lies, it does not fall");
+        const PicaWaterTriangles* streamSets[] = {&sloped};
+        const auto streamMap = BuildPicaWaterMap(streamSets);
+        const auto* middle = streamMap.At(40, 150);
+        expect(middle && std::abs((*middle)[0] - (100.0F - 0.2F * 150.0F)) < 0.2F * streamMap.Texel,
+               "its height along the slope");
+        expect(middle && std::abs((*middle)[2]) < 1.0e-4F && std::abs((*middle)[3] + 0.2F) < 1.0e-4F,
+               "its slope (d height / dz = -0.2)");
+        expect(streamMap.HeightRange[0] <= 40.0F && streamMap.HeightRange[0] > 30.0F &&
+                   streamMap.HeightRange[1] >= 100.0F && streamMap.HeightRange[1] < 110.0F,
+               "the height range");
+        size_t pieces = 0;
+        for (const auto& region : PicaWaterMapRegions(streamMap)) pieces += region.Landing ? 0U : 1U;
+        expect(pieces == 1U, "one piece, not a band per height");
+        checks += 5;
+    }
     std::cout << "pica_water_map_tests: " << checks << " checks passed\n";
     return 0;
 }
