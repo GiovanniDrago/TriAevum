@@ -41,8 +41,9 @@ inline constexpr uint32_t kPicaDirectionalShadowDissolveFlag = 2U;
 struct alignas(16) PicaDirectionalShadowReceiverUniforms {
     // strength, inverse atlas width, maximum distance, finest-level depth bias
     std::array<float, 4> ShadowState{};
-    // RGB: native direct fraction; W: selected shader-light mask for surface lighting.
-    std::array<float, 4> ShadowedDirectFraction{};
+    // X: the smooth-shaded receivers' normal bias (texels); W: selected
+    // shader-light mask for surface lighting.
+    std::array<float, 4> Receiver{};
     // layout resolution (twice), PCF radius, flags
     std::array<uint32_t, 4> Extent{};
     // weight of layout 0, inverse atlas height, atlas X offset of layouts 0 and 1
@@ -96,6 +97,7 @@ struct PicaDirectionalShadowHistoryState {
     float Strength = 0.0F;
     float DepthBias = 0.0F;
     uint8_t PcfRadius = 0U;
+    float NormalBias = 0.0F;
 
     [[nodiscard]] bool Valid() const noexcept {
         return ProducedFrameId != 0U && Virtual.Valid();

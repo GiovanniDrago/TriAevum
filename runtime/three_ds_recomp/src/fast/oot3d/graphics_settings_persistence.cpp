@@ -1247,6 +1247,7 @@ std::string_view EnhancedPresetDocument() noexcept {
       "DepthBiasSlope": 1.75,
       "MaximumDistance": 6550.0,
       "Mode": "VirtualShadowMaps",
+      "NormalBias": 1.0,
       "PcfRadius": 2,
       "Resolution": 2048,
       "Strength": 1.0
@@ -1540,6 +1541,7 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                    directionalShadows.DepthBiasSlope},
                   {"Strength", directionalShadows.Strength},
                   {"PcfRadius", directionalShadows.PcfRadius},
+                  {"NormalBias", directionalShadows.NormalBias},
               }},
              {"PointShadows",
               {
@@ -1906,6 +1908,9 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                     *shadows, "PcfRadius", settings.PcfRadius,
                     "Graphics.Effects.DirectionalShadows.PcfRadius",
                     result);
+                if (FindMember(*shadows, "NormalBias") != nullptr)
+                    ReadScalar(*shadows, "NormalBias", settings.NormalBias,
+                               "Graphics.Effects.DirectionalShadows.NormalBias", result);
                 if (version < 12U || legacyMode) {
                     // The old distance sized a camera-fitted map; it is not a
                     // virtual-map coverage limit. Preserve strength/filter/bias.

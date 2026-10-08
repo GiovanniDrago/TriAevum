@@ -961,7 +961,7 @@ void main() {
         tangent = normalize(cross(normal, abs(normal.z) < 0.9 ? vec3(0,0,1) : vec3(0,1,0)));
         bitangent = cross(normal, tangent);
     }
-    float value = pica_vsm_visibility(point.position.xyz, tangent, bitangent);
+    float value = pica_vsm_visibility(point.position.xyz, tangent, bitangent, vec3(0.0));
     visibility.values[index] = GrassShadowVisibility(value, packed_patches);
 }
 )glsl";

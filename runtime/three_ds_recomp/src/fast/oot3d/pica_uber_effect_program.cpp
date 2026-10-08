@@ -272,10 +272,10 @@ std::string BuildPicaUberEffectProgram(const PicaUberEffectProgramRequest& reque
         declarations += PicaDirectionalShadowLightingDeclarations();
         declarations += "\nvec3 pica_surface_shadow(int slot) {\n"
                         "    if (!" + Bit(Decision::DirectionalShadow) + ") return vec3(1.0);\n"
-                        "    uint selected = uint(pica_vsm.shadowed_direct_fraction.w);\n"
+                        "    uint selected = uint(pica_vsm.receiver.w);\n"
                         "    if (slot < 0) return vec3(1.0);\n"
                         "    return (selected & (1u << uint(slot))) != 0u\n"
-                        "        ? oot3d_directional_shadow_visibility() : vec3(1.0);\n}\n";
+                        "        ? oot3d_directional_shadow_visibility(pica_surface_normal) : vec3(1.0);\n}\n";
         std::string point(Renderer3ds::PointShadowReceiverShader());
         const std::string_view name = "float pica_point_shadow(float slot, vec3 light_to_fragment, float radius) {";
         const size_t at = point.find(name);

@@ -67,6 +67,14 @@ bool DrawDirectionalShadows(GraphicsSettings& settings, const GraphicsCapabiliti
                 "Shadow slope bias",
                 &directionalShadows.DepthBiasSlope,
                 0.05F, 0.0F, 16.0F, "%.2f");
+            changed |= ImGui::SliderFloat(
+                "Shadow normal bias",
+                &directionalShadows.NormalBias,
+                0.0F, 10.0F, "%.2f texels");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("As Godot's directional normal bias: smooth-shaded models read the shadow this many "
+                                  "texels along their vertex normal, across the light. Too low: they shadow "
+                                  "themselves; too high: shadows look thinner.");
             ImGui::TreePop();
         }
         if (!directionalShadowsReady) ImGui::EndDisabled();

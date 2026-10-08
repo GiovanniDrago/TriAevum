@@ -297,6 +297,10 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         std::isfinite(directionalShadows.Strength)
             ? std::clamp(directionalShadows.Strength, 0.0F, 4.0F)
             : 0.80F;
+    directionalShadows.NormalBias =
+        std::isfinite(directionalShadows.NormalBias)
+            ? std::clamp(directionalShadows.NormalBias, 0.0F, 10.0F)
+            : DirectionalShadowSettings{}.NormalBias;
     if (directionalShadows.Mode ==
             DirectionalShadowMode::VirtualShadowMaps &&
         !capabilities.Has(GraphicsCapability::NriDirectionalShadows)) {

@@ -22,6 +22,11 @@ struct DirectionalShadowSettings {
     float DepthBiasSlope = 1.75F;
     float Strength = 0.80F;
     uint8_t PcfRadius = 1;
+    // Godot's directional normal bias: smooth-shaded receivers read the map
+    // this many texels (of the level read) along their vertex normal, the
+    // full amount where they face the light, none where they face away, and
+    // only across the light (never along it).
+    float NormalBias = 1.0F;
 };
 
 using DirectionalShadowMatrix = std::array<float, 16>;
@@ -51,6 +56,7 @@ struct DirectionalShadowFramePlan {
     float DepthBiasSlope = 0.0F;
     float Strength = 0.0F;
     uint8_t PcfRadius = 0;
+    float NormalBias = 0.0F;
     bool CullCasters = true;
 
     [[nodiscard]] bool Ready() const noexcept {
