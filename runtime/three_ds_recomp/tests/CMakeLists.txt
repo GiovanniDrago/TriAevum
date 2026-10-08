@@ -716,6 +716,7 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/pica_scene_semantics.cpp
     ../src/fast/oot3d/grass_surface_extractor.cpp
     ../src/fast/oot3d/grass_texture_source_cache.cpp
+    ../src/fast/oot3d/grass_texture_twins.cpp
     ../src/fast/oot3d/grass_visibility.cpp
     ../src/fast/oot3d/grass_wind.cpp
     ../src/fast/oot3d/graphics_capabilities.cpp

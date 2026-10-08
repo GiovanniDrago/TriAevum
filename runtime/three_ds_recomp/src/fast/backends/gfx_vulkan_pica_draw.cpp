@@ -5,6 +5,7 @@
 #include "fast/renderer3ds/pica_surface_appearance.h"
 #include "fast/renderer3ds/pica_surface_debug.h"
 #include "fast/oot3d/grass_interaction_bridge.h"
+#include "fast/oot3d/grass_texture_twins.h"
 
 #include <filesystem>
 #include <fstream>
@@ -3616,17 +3617,11 @@ bool PublishNativePicaGrassSurface(
             .ResolveObservedHash(
                 *textureHash, texture->Width,
                 texture->Height);
-    const bool configuredSource = std::any_of(
-        settings.Rules.begin(), settings.Rules.end(),
-        [&](const auto& rule) {
-            return rule.Target.Rgba8Hash ==
-                       observedTextureHash &&
-                (rule.Target.MapperSlotMask & 1U) != 0U &&
-                (rule.Target.Width == 0U ||
-                 rule.Target.Width == texture->Width) &&
-                (rule.Target.Height == 0U ||
-                 rule.Target.Height == texture->Height);
-        });
+    // Its own rule, or the rule of a texture it is the same image as.
+    const bool configuredSource =
+        Oot3d::GrassTwinRules::Instance().Configured(
+            settings.Rules, observedTextureHash,
+            texture->Width, texture->Height, 0U);
     if (diagnostics) {
         static uint32_t sourceDrawReports = 0U;
         if (sourceDrawReports++ < 128U) {

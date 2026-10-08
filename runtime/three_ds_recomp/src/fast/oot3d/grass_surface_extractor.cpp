@@ -332,7 +332,7 @@ float WrapGrassTextureCoordinate(
 float EvaluateGrassMaskLevel(
     float sample, const GrassPlacementRule& rule) noexcept {
     sample = std::isfinite(sample)
-        ? std::clamp(sample, 0.0F, 1.0F)
+        ? std::clamp(sample * rule.SampleScale + rule.SampleOffset, 0.0F, 1.0F)
         : 0.0F;
     if (rule.Invert) {
         sample = 1.0F - sample;
@@ -407,6 +407,8 @@ uint64_t GrassPlacementRuleVersion(
     mixFloat(rule.OutputWhite);
     mixFloat(rule.MaximumSlopeDegrees);
     mixFloat(rule.NormalOffset);
+    mixFloat(rule.SampleScale);
+    mixFloat(rule.SampleOffset);
     mix(rule.ActiveRects.size());
     for (const auto& rect : rule.ActiveRects) {
         mixFloat(rect.MinU);

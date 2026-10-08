@@ -1,6 +1,7 @@
 // Vulkan backend: construction, Init and Shutdown, and the recorded DLSS feature.
 #ifdef ENABLE_OOT3D_VULKAN
 #include "gfx_vulkan_internal.h"
+#include "fast/oot3d/grass_texture_source_cache.h"
 
 namespace Fast {
 
@@ -260,6 +261,11 @@ void GfxRenderingAPIVulkan::Init() {
                     mNriPicaPipelineBridge.PipelineStatistics().InitialCacheBytes);
     }
     LoadDlssFeatureRecord();
+    // Grass rule textures' signatures, for their twins in scenes that do not
+    // draw them.
+    if (const auto directory = VulkanShaderCacheDirectory(); !directory.empty())
+        Oot3d::GrassTextureSourceCache::Instance().SetSignatureStore(
+            directory / "grass_texture_signatures.bin");
     if ((mNativePicaPreparationMode == NativePicaPreparationMode::Hybrid ||
          mNativePicaPreparationMode == NativePicaPreparationMode::Uber) &&
         (!mGraphicsPipelineLibrariesEnabled || !mNriPicaPipelineBridge.OwnedDrawsEnabled())) {

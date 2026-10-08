@@ -48,6 +48,12 @@ struct GrassPlacementRule {
     // Active rectangles: when any are listed, the mask applies only inside
     // them and is zero elsewhere (as a black mask); none: all of it applies.
     std::vector<GrassMaskRect> ActiveRects;
+    // Inherited rules only (a twin texture's, never configured or saved):
+    // its samples mapped onto the source texture's range before the levels,
+    // and the configured rule they come from.
+    float SampleScale = 1.0F;
+    float SampleOffset = 0.0F;
+    uint32_t InheritedFrom = 0U;
 };
 
 struct GrassGenerationSettings {

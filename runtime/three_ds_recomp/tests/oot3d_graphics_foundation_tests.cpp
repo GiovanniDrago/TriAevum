@@ -35,6 +35,7 @@
 #include "fast/oot3d/grass_surface_extractor.h"
 #include "fast/oot3d/grass_mask_interior.h"
 #include "fast/oot3d/grass_texture_source_cache.h"
+#include "fast/oot3d/grass_texture_twins.h"
 #include "fast/oot3d/grass_visibility.h"
 #include "fast/oot3d/pica_shader_instrumentation.h"
 #include "fast/oot3d/outline_occlusion_pass.h"
@@ -114,6 +115,8 @@
 #include <limits>
 #include <memory>
 #include <vector>
+#include <unordered_map>
+#include <sstream>
 
 namespace {
 
@@ -1235,6 +1238,194 @@ TEST(Oot3dGrassMaskLevels,
                                      [&](float u, float v) { return GrassMaskPositionActive(rule, u, v); });
     EXPECT_TRUE(interior.Contains({0.15F, 0.15F}, {0.35F, 0.25F}));
     EXPECT_FALSE(interior.Contains({0.45F, 0.45F}, {0.55F, 0.55F}));
+}
+
+namespace {
+
+// A ground-like texture: smooth blobs plus fine grain, from a seed; tinted by
+// a green gain.
+std::vector<uint8_t> GrassTwinPattern(uint32_t seed, uint32_t side, float greenGain = 1.0F) {
+    std::mt19937 random(seed);
+    std::uniform_real_distribution<float> unit(0.0F, 1.0F);
+    std::vector<float> coarse(16U * 16U);
+    for (auto& value : coarse) value = unit(random);
+    std::vector<uint8_t> rgba(size_t(side) * side * 4U);
+    std::mt19937 grain(seed * 7U + 1U);
+    for (uint32_t y = 0; y < side; ++y)
+        for (uint32_t x = 0; x < side; ++x) {
+            const float fx = float(x) * 16.0F / float(side), fy = float(y) * 16.0F / float(side);
+            const uint32_t x0 = uint32_t(fx) % 16U, y0 = uint32_t(fy) % 16U;
+            const uint32_t x1 = (x0 + 1U) % 16U, y1 = (y0 + 1U) % 16U;
+            const float ax = fx - std::floor(fx), ay = fy - std::floor(fy);
+            const float blob = std::lerp(std::lerp(coarse[y0 * 16U + x0], coarse[y0 * 16U + x1], ax),
+                                         std::lerp(coarse[y1 * 16U + x0], coarse[y1 * 16U + x1], ax), ay);
+            const float value = 0.6F * blob + 0.4F * unit(grain);
+            uint8_t* pixel = rgba.data() + (size_t(y) * side + x) * 4U;
+            pixel[0] = uint8_t(std::lround(60.0F * value));
+            pixel[1] = uint8_t(std::clamp(std::lround(greenGain * (60.0F + 140.0F * value)), 0L, 255L));
+            pixel[2] = uint8_t(std::lround(30.0F * value));
+            pixel[3] = 255U;
+        }
+    return rgba;
+}
+
+std::vector<uint8_t> GrassTwinHalf(const std::vector<uint8_t>& rgba, uint32_t side) {
+    std::vector<uint8_t> half(size_t(side / 2U) * (side / 2U) * 4U);
+    for (uint32_t y = 0; y < side / 2U; ++y)
+        for (uint32_t x = 0; x < side / 2U; ++x)
+            for (uint32_t c = 0; c < 4U; ++c) {
+                uint32_t sum = 0U;
+                for (uint32_t k = 0; k < 4U; ++k)
+                    sum += rgba[((size_t(2U * y + k / 2U)) * side + 2U * x + k % 2U) * 4U + c];
+                half[(size_t(y) * (side / 2U) + x) * 4U + c] = uint8_t((sum + 2U) / 4U);
+            }
+    return half;
+}
+
+class FakeGrassSignatures final : public Fast::Oot3d::GrassTextureSignatureSource {
+  public:
+    std::shared_ptr<const Fast::Oot3d::GrassTextureSignature> Find(uint64_t hash, bool persist) override {
+        ++Finds;
+        if (persist) Persisted.push_back(hash);
+        const auto found = Signatures.find(hash);
+        return found == Signatures.end() ? nullptr : found->second;
+    }
+    uint64_t Generation() const override { return Serial; }
+    void Add(uint64_t hash, uint32_t side, const std::vector<uint8_t>& rgba) {
+        Signatures[hash] = std::make_shared<const Fast::Oot3d::GrassTextureSignature>(
+            Fast::Oot3d::ComputeGrassTextureSignature(uint16_t(side), uint16_t(side), rgba));
+        ++Serial;
+    }
+    std::unordered_map<uint64_t, std::shared_ptr<const Fast::Oot3d::GrassTextureSignature>> Signatures;
+    std::vector<uint64_t> Persisted;
+    uint64_t Serial = 1U;
+    size_t Finds = 0U;
+};
+
+} // namespace
+
+TEST(Oot3dGrassTextureTwins, SameImageScoresAboveDifferentImages) {
+    using namespace Fast::Oot3d;
+    const auto original = GrassTwinPattern(11U, 128U);
+    const auto sig = ComputeGrassTextureSignature(128U, 128U, original);
+    // Another tint, half the size, a patch painted over: the same image.
+    const auto tinted = ComputeGrassTextureSignature(128U, 128U, GrassTwinPattern(11U, 128U, 0.55F));
+    const auto half = ComputeGrassTextureSignature(64U, 64U, GrassTwinHalf(original, 128U));
+    auto patched = original;
+    for (uint32_t y = 70U; y < 100U; ++y)
+        for (uint32_t x = 10U; x < 60U; ++x)
+            for (uint32_t c = 0; c < 3U; ++c) patched[(size_t(y) * 128U + x) * 4U + c] = 0U;
+    const auto patchedSig = ComputeGrassTextureSignature(128U, 128U, patched);
+    EXPECT_GT(GrassTextureTwinScore(sig, tinted), 0.95F);
+    EXPECT_GT(GrassTextureTwinScore(sig, half), kGrassTextureTwinThreshold);
+    EXPECT_GT(GrassTextureTwinScore(sig, patchedSig), kGrassTextureTwinThreshold);
+    // Another pattern of the same kind and colours: not the same image.
+    const auto other = ComputeGrassTextureSignature(128U, 128U, GrassTwinPattern(12U, 128U));
+    EXPECT_LT(GrassTextureTwinScore(sig, other), 0.3F);
+    // Shapes that cannot be the same image.
+    const auto quarter = ComputeGrassTextureSignature(32U, 32U, GrassTwinHalf(GrassTwinHalf(original, 128U), 64U));
+    EXPECT_EQ(GrassTextureTwinScore(sig, quarter), -1.0F);
+    const auto wide = ComputeGrassTextureSignature(128U, 64U, std::vector<uint8_t>(original.begin(), original.begin() + 128U * 64U * 4U));
+    EXPECT_EQ(GrassTextureTwinScore(sig, wide), -1.0F);
+}
+
+TEST(Oot3dGrassTextureTwins, InheritedRuleMapsTheTwinsTintOntoTheSource) {
+    using namespace Fast::Oot3d;
+    const auto source = ComputeGrassTextureSignature(128U, 128U, GrassTwinPattern(5U, 128U));
+    const auto twin = ComputeGrassTextureSignature(128U, 128U, GrassTwinPattern(5U, 128U, 0.5F));
+    GrassPlacementRule rule;
+    rule.RuleId = 3U;
+    rule.Target.Rgba8Hash = 0xAAU;
+    rule.Target.Width = rule.Target.Height = 128U;
+    rule.Channel = GrassSampleChannel::Green;
+    rule.InputBlack = 0.4F;
+    rule.InputWhite = 0.7F;
+    rule.ActiveRects = {{0.1F, 0.1F, 0.6F, 0.6F}};
+    const auto inherited = DeriveGrassTwinRule(rule, source, twin, 0xBBU);
+    EXPECT_EQ(inherited.Target.Rgba8Hash, 0xBBU);
+    EXPECT_EQ(inherited.InheritedFrom, 3U);
+    EXPECT_NE(inherited.RuleId & kGrassInheritedRuleIdBit, 0U);
+    EXPECT_EQ(inherited.ActiveRects, rule.ActiveRects);
+    // The same texel: green g on the source, about g / 2 on the twin.
+    for (const float green : {0.35F, 0.5F, 0.6F, 0.72F}) {
+        EXPECT_NEAR(EvaluateGrassMaskLevel(green * 0.5F, inherited),
+                    EvaluateGrassMaskLevel(green, rule), 0.06F) << green;
+    }
+    // Its own rule from it keeps the mask (the mapping folded into levels).
+    for (const bool invert : {false, true}) {
+        auto from = inherited;
+        from.Invert = invert;
+        const auto own = OwnGrassRuleFromInherited(from, 9U);
+        EXPECT_EQ(own.RuleId, 9U);
+        EXPECT_EQ(own.InheritedFrom, 0U);
+        EXPECT_FLOAT_EQ(own.SampleScale, 1.0F);
+        for (const float sample : {0.18F, 0.25F, 0.3F, 0.34F})
+            EXPECT_NEAR(EvaluateGrassMaskLevel(sample, own), EvaluateGrassMaskLevel(sample, from), 1.0e-3F)
+                << invert << " " << sample;
+    }
+}
+
+TEST(Oot3dGrassTextureTwins, SignatureStoreRoundTrips) {
+    using namespace Fast::Oot3d;
+    const auto a = ComputeGrassTextureSignature(128U, 128U, GrassTwinPattern(1U, 128U));
+    const auto b = ComputeGrassTextureSignature(64U, 64U, GrassTwinPattern(2U, 64U));
+    std::stringstream stream;
+    WriteGrassTextureSignature(stream, 0x1234U, a);
+    WriteGrassTextureSignature(stream, 0x5678U, b);
+    std::string bytes = stream.str();
+    std::stringstream input(bytes);
+    const auto read = ReadGrassTextureSignatures(input);
+    ASSERT_EQ(read.size(), 2U);
+    EXPECT_EQ(read[0].first, 0x1234U);
+    EXPECT_EQ(read[0].second, a);
+    EXPECT_EQ(read[1].second, b);
+    // A truncated last record is dropped, the others kept.
+    std::stringstream truncated(bytes.substr(0, bytes.size() - 10U));
+    EXPECT_EQ(ReadGrassTextureSignatures(truncated).size(), 1U);
+}
+
+TEST(Oot3dGrassTextureTwins, TexturesWithoutTheirOwnRuleInheritTheirTwinsRule) {
+    using namespace Fast::Oot3d;
+    FakeGrassSignatures signatures;
+    auto& twins = GrassTwinRules::Instance();
+    twins.SetSource(&signatures);
+    const auto pattern = GrassTwinPattern(21U, 128U);
+    signatures.Add(0xB0U, 128U, GrassTwinPattern(21U, 128U, 0.6F));  // twin
+    signatures.Add(0xC0U, 128U, GrassTwinPattern(22U, 128U));        // another image
+    std::vector<GrassPlacementRule> rules(1);
+    rules[0].RuleId = 1U;
+    rules[0].Target.Rgba8Hash = 0xA0U;
+    rules[0].Target.Width = rules[0].Target.Height = 128U;
+    rules[0].Target.MapperSlotMask = 0x01U;
+    // The rule's texture not known yet: nothing to inherit from.
+    EXPECT_FALSE(twins.Configured(rules, 0xB0U, 128U, 128U, 0U));
+    signatures.Add(0xA0U, 128U, pattern);
+    EXPECT_TRUE(twins.Configured(rules, 0xA0U, 128U, 128U, 0U));
+    EXPECT_TRUE(twins.Configured(rules, 0xB0U, 128U, 128U, 0U));
+    EXPECT_FALSE(twins.Configured(rules, 0xB0U, 128U, 128U, 1U));  // the source's slots
+    EXPECT_FALSE(twins.Configured(rules, 0xC0U, 128U, 128U, 0U));
+    EXPECT_NE(std::find(signatures.Persisted.begin(), signatures.Persisted.end(), 0xA0U),
+              signatures.Persisted.end());
+    auto inherited = twins.Inherited(rules, 0xB0U, 128U, 128U);
+    ASSERT_TRUE(inherited.has_value());
+    EXPECT_EQ(inherited->InheritedFrom, 1U);
+    EXPECT_EQ(inherited->Target.Rgba8Hash, 0xB0U);
+    ASSERT_EQ(twins.AllInherited(rules).size(), 1U);
+    // The source's settings are read when asked, without matching again.
+    const size_t finds = signatures.Finds;
+    rules[0].InputBlack = 0.123F;
+    inherited = twins.Inherited(rules, 0xB0U, 128U, 128U);
+    ASSERT_TRUE(inherited.has_value());
+    EXPECT_FLOAT_EQ(inherited->InputBlack, 0.123F);
+    EXPECT_EQ(signatures.Finds, finds);
+    // A rule of its own wins.
+    rules.push_back(rules[0]);
+    rules[1].RuleId = 2U;
+    rules[1].Target.Rgba8Hash = 0xB0U;
+    EXPECT_FALSE(twins.Inherited(rules, 0xB0U, 128U, 128U).has_value());
+    EXPECT_TRUE(twins.Configured(rules, 0xB0U, 128U, 128U, 0U));
+    EXPECT_TRUE(twins.AllInherited(rules).empty());
+    twins.SetSource(nullptr);
 }
 
 TEST(Oot3dGrassTextureCoordinates,
