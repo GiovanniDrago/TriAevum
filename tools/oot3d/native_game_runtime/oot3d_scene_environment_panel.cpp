@@ -148,10 +148,12 @@ public:
                        "lighting remains in the albedo.");
     ImGui::EndDisabled();
     ImGui::SeparatorText("Dynamic scene point lights");
-    ImGui::TextWrapped("Replace Navi and fairy vertex-light contributions with spatial scene lights. "
-                       "Native positions, colors and ranges are retained. These controls are independent "
-                       "of Use scene environment and affect only the Modern lighting model.");
-    const char *pointLabels[] = {"Navi point lights", "Fairy point lights"};
+    ImGui::TextWrapped("Replace Navi and fairy vertex-light contributions with spatial scene lights, and light "
+                       "the flames the game only draws (torches, fire objects). Native positions, colors and "
+                       "ranges are retained. These controls are independent of Use scene environment and affect "
+                       "only the Modern lighting model.");
+    const char *pointLabels[] = {"Navi point lights", "Fairy point lights", "Flame point lights"};
+    const char *pointNames[] = {"Navi", "Fairy", "Flame"};
     for (size_t i = 0; i < value.PointLights.size(); ++i) {
       auto &light = value.PointLights[i];
       ImGui::PushID(pointLabels[i]);
@@ -159,11 +161,12 @@ public:
       changed |= ImGui::Checkbox(pointLabels[i], &light.Enabled);
       ImGui::EndDisabled();
       ImGui::BeginDisabled(!supported || !light.Enabled);
-      changed |= ImGui::SliderFloat(i == 0 ? "Navi intensity" : "Fairy intensity", &light.Intensity, 0.0F, 8.0F,
-                                    "%.2fx", ImGuiSliderFlags_AlwaysClamp);
-      changed |= ImGui::SliderFloat(i == 0 ? "Navi radius scale" : "Fairy radius scale", &light.RadiusScale, 0.1F, 8.0F,
-                                    "%.2fx", ImGuiSliderFlags_AlwaysClamp);
-      changed |= ImGui::ColorEdit3(i == 0 ? "Navi color tint" : "Fairy color tint", light.ColorTint.data(),
+      const std::string name = pointNames[i];
+      changed |= ImGui::SliderFloat((name + " intensity").c_str(), &light.Intensity, 0.0F, 8.0F, "%.2fx",
+                                    ImGuiSliderFlags_AlwaysClamp);
+      changed |= ImGui::SliderFloat((name + " radius scale").c_str(), &light.RadiusScale, 0.1F, 8.0F, "%.2fx",
+                                    ImGuiSliderFlags_AlwaysClamp);
+      changed |= ImGui::ColorEdit3((name + " color tint").c_str(), light.ColorTint.data(),
                                    ImGuiColorEditFlags_Float);
       ImGui::EndDisabled();
       ImGui::PopID();

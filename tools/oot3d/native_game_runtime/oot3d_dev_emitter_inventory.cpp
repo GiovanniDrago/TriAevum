@@ -140,6 +140,22 @@ std::vector<NativeEmitter> CaptureNativeEmitters(uint32_t playState, oot3d::reco
   return emitters;
 }
 
+std::vector<NativeActorSnapshot> CaptureNativeActors(uint32_t playState, oot3d::recomp::a32::MemoryBus &memory) {
+  std::vector<NativeActorSnapshot> result;
+  if (playState == 0U || playState > std::numeric_limits<uint32_t>::max() - 0x6000U) return result;
+  for (const auto &span : CaptureActors(playState, memory)) {
+    NativeActorSnapshot actor;
+    actor.Address = span.Address;
+    actor.Id = span.Id;
+    actor.Params = span.Params;
+    actor.Category = span.Category;
+    actor.Room = span.Room;
+    if (ReadFloat3(memory, span.Address + 0x28U, actor.Position) && ReadFloat3(memory, span.Address + 0x54U, actor.Scale))
+      result.push_back(actor);
+  }
+  return result;
+}
+
 NativeEmitterInventoryLog::NativeEmitterInventoryLog(std::string path, uint32_t minimumFrames)
     : mFile(std::fopen(path.c_str(), "ab")), mMinimumFrames(minimumFrames) {
   if (mFile == nullptr) std::fprintf(stderr, "TRIAEVUM_DEV_EMITTERS cannot open %s\n", path.c_str());

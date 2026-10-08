@@ -353,11 +353,12 @@ SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<u
   }
   if (version >= 2) {
     if (const auto *points = read.Member(doc, "", "pointLights")) {
-      if (!points->is_array() || points->size() != result.PointLights.size()) {
-        read.Error("/pointLights", "must be an array of " + std::to_string(result.PointLights.size()) +
-                                       " point-light groups (Navi, fairies)");
+      // Profiles from before the flames group list two; it keeps its defaults.
+      if (!points->is_array() || points->size() < 2U || points->size() > result.PointLights.size()) {
+        read.Error("/pointLights", "must be an array of 2 or " + std::to_string(result.PointLights.size()) +
+                                       " point-light groups (Navi, fairies, flames)");
       } else {
-        for (size_t i = 0; i < result.PointLights.size(); ++i) {
+        for (size_t i = 0; i < points->size(); ++i) {
           auto &light = result.PointLights[i];
           const auto pointer = Join("/pointLights", i);
           if (!(*points)[i].is_object()) {
@@ -562,7 +563,7 @@ Fast::Renderer3ds::PicaEnvironmentLighting ResolveSceneEnvironment(const SceneEn
 Json ExplainSceneEnvironment(const SceneEnvironmentProfile &profile, uint16_t scene, bool night) {
   const auto resolved = ResolveSceneEnvironment(profile, scene, night);
   Json groups = Json::array();
-  static constexpr const char *kGroups[] = {"navi", "fairies"};
+  static constexpr const char *kGroups[] = {"navi", "fairies", "flames"};
   for (size_t i = 0; i < resolved.PointLights.size(); ++i)
     groups.push_back({{"group", i < std::size(kGroups) ? kGroups[i] : "group"},
                       {"enabled", resolved.PointLights[i].Enabled},

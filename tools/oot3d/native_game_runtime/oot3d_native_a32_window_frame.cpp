@@ -2190,6 +2190,50 @@ void NativeA32WindowSession::UpdateDevLab(uint64_t guestFrame) {
         Fast::Renderer3ds::PicaSurfaceDebug::Instance().SetExemptRange(command.value("first", 1U),
                                                                        command.value("last", 0U));
         finish("ok", {{"frame", guestFrame}});
+      } else if (op == "actors") {
+        // The live actors (optionally only some ids): id, params, instance,
+        // room, world position and scale.
+        Json actors = Json::array();
+        std::vector<uint16_t> only;
+        if (command.contains("ids"))
+          for (const auto &id : command["ids"]) only.push_back(id.get<uint16_t>());
+        for (const auto &a : Oot3dNativeGame::CaptureNativeActors(sceneViewProbe.Stats().LastPlayStateAddress,
+                                                                  processStorage->Memory())) {
+          if (!only.empty() && std::find(only.begin(), only.end(), a.Id) == only.end()) continue;
+          actors.push_back({{"id", a.Id},
+                            {"params", a.Params},
+                            {"category", a.Category},
+                            {"room", a.Room},
+                            {"address", a.Address},
+                            {"position", {a.Position[0], a.Position[1], a.Position[2]}},
+                            {"scale", {a.Scale[0], a.Scale[1], a.Scale[2]}}});
+        }
+        auto detail = place();
+        detail["actors"] = std::move(actors);
+        finish("ok", detail);
+      } else if (op == "emitters") {
+        // The native lights linked now (LightContext), with their owners.
+        Json lights = Json::array();
+        const uint32_t playState = sceneViewProbe.Stats().LastPlayStateAddress;
+        for (const auto &e : Oot3dNativeGame::CaptureNativeEmitters(playState, processStorage->Memory())) {
+          Json light = {{"type", e.Type},
+                        {"position", {e.Position[0], e.Position[1], e.Position[2]}},
+                        {"direction", {e.Direction[0], e.Direction[1], e.Direction[2]}},
+                        {"color", {e.Color[0], e.Color[1], e.Color[2]}},
+                        {"radius", e.Radius}};
+          if (e.Owner && e.Owner->Kind == "actor")
+            light["owner"] = {{"kind", "actor"},
+                              {"actorId", e.Owner->ActorId},
+                              {"actor", e.Owner->ActorAddress},
+                              {"params", e.Owner->Params},
+                              {"offset", e.Owner->Offset}};
+          else if (e.Owner)
+            light["owner"] = {{"kind", e.Owner->Kind}, {"offset", e.Owner->Offset}};
+          lights.push_back(std::move(light));
+        }
+        auto detail = place();
+        detail["lights"] = std::move(lights);
+        finish("ok", detail);
       } else if (op == "gizmos") {
         sceneEnvironment->ShowLightGizmos(command.value("shown", true));
         finish("ok", {{"frame", guestFrame}});

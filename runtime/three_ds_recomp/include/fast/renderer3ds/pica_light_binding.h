@@ -26,7 +26,9 @@ struct PicaNativeLightSource {
 };
 
 inline constexpr uint32_t kMaximumPicaScenePointLights = 32U;
-inline constexpr uint32_t kPicaScenePointLightGroups = 2U;
+// Scene point-light groups: 0 Navi, 1 fairies, 2 flames (lights the title
+// draws as flames but never registers: torches, fire objects).
+inline constexpr uint32_t kPicaScenePointLightGroups = 3U;
 
 struct PicaScenePointLight {
     uint64_t SourceIdentity = 0;

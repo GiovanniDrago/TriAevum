@@ -123,8 +123,8 @@
         }
       },
       "minItems": 2,
-      "maxItems": 2,
-      "description": "Scene point-light groups: Navi, fairies"
+      "maxItems": 3,
+      "description": "Scene point-light groups: Navi, fairies, flames (torches and fire objects the title draws but never lights); a profile listing two keeps the flames defaults"
     },
     "directionalLights": {
       "type": "array",

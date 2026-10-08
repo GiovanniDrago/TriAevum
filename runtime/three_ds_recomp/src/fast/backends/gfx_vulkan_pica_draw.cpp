@@ -1046,6 +1046,32 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 perPixelApplied ? 1 : 0, pbrApplied ? 1 : 0, surfaceExempt ? 1 : 0,
                 static_cast<unsigned>(surfaceAppearance), vertexLightingKnown ? 1 : 0);
             std::string record = line;
+            {
+                // Texture-matrix translations (row U/V .w) of each coordinate:
+                // two traced frames give scrolling speed (flowing water, lava).
+                const auto floats = draw.VertexUniformBytes.size() > Oot3d::kPicaPackedVertexFloatOffset
+                    ? draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset)
+                    : std::span<const uint8_t>{};
+                const auto readW = [&](uint8_t uniform, float& value) {
+                    const size_t offset = static_cast<size_t>(uniform) * 16U + 12U;
+                    if (uniform >= 96U || offset + sizeof(float) > floats.size()) return false;
+                    std::memcpy(&value, floats.data() + offset, sizeof(float));
+                    return std::isfinite(value);
+                };
+                std::string shifts = ",\"texShift\":[";
+                for (uint8_t coordinate = 0; coordinate < 3U; ++coordinate) {
+                    const auto* layout = draw.TemporalVertexProgram.Hooks.TextureCoordinate(coordinate);
+                    float u = 0.0F, v = 0.0F;
+                    char text[64];
+                    if (layout != nullptr && readW(layout->MatrixRowUUniform, u) && readW(layout->MatrixRowVUniform, v))
+                        std::snprintf(text, sizeof(text), "%s[%.5f,%.5f]", coordinate ? "," : "", u, v);
+                    else
+                        std::snprintf(text, sizeof(text), "%snull", coordinate ? "," : "");
+                    shifts += text;
+                }
+                record.pop_back();
+                record += shifts + "]}";
+            }
             if (surfaceLighting) {
                 // The native material and lights the replacement read.
                 const auto& s = *surfaceLighting;

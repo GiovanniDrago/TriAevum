@@ -54,6 +54,19 @@ struct NativeEmitter {
 [[nodiscard]] std::vector<NativeEmitter> CaptureNativeEmitters(uint32_t playState,
                                                                oot3d::recomp::a32::MemoryBus &memory);
 
+// A live actor: identity, room, world position (+0x28) and scale (+0x54).
+struct NativeActorSnapshot {
+  uint32_t Address = 0;
+  uint16_t Id = 0;
+  int16_t Params = 0;
+  uint8_t Category = 0;
+  int8_t Room = -1;
+  std::array<float, 3> Position{};
+  std::array<float, 3> Scale{};
+};
+[[nodiscard]] std::vector<NativeActorSnapshot> CaptureNativeActors(uint32_t playState,
+                                                                   oot3d::recomp::a32::MemoryBus &memory);
+
 // Appends a JSON line when the inventory changes (positions to 1 unit, an
 // actor's lights by the actor's home, colours and radii exactly), at most
 // every `minimumFrames` calls.
