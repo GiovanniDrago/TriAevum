@@ -41,7 +41,22 @@ layout(set = 0, binding = 7, std140) uniform HiZWater {
     vec4 parameters;
     vec4 medium;
     vec4 rings[16];
+    vec4 map_info;
+    vec4 map_levels[4];
+    vec4 map_counts;
 } hiz_water;
+// Per texel of the drawn water's map: its surface height (-1e30: none) and
+// landing foam.
+layout(set = 0, binding = 9, std430) readonly buffer HiZWaterMap {
+    vec2 texels[];
+} hiz_water_map;
+vec2 hiz_water_map_at(vec2 xz) {
+    float size = hiz_water.map_info.w;
+    if (size <= 0.0) return vec2(-1.0e30, 0.0);
+    vec2 texel = floor((xz - hiz_water.map_info.xy) / hiz_water.map_info.z);
+    if (any(lessThan(texel, vec2(0.0))) || any(greaterThanEqual(texel, vec2(size)))) return vec2(-1.0e30, 0.0);
+    return hiz_water_map.texels[uint(texel.y) * uint(size) + uint(texel.x)];
+}
 vec3 hiz_water_view_direction(vec2 uv) {
     vec2 ndc = oot3d_surface_view_ndc(uv, pc.surface_orientation);
     return vec3((ndc.x + pc.projection_offset_x) / pc.projection_scale_x,
@@ -55,27 +70,40 @@ vec3 hiz_water_to_world(vec3 v) {
 // position and view direction (depth 1); depth 0 if none.
 float hiz_water_surface(vec2 uv, float scene_depth, out vec3 world_position, out vec3 direction) {
     uint count = min(uint(hiz_water.parameters.x), 8u);
+    uint levels = min(uint(hiz_water.map_counts.x), 16u);
     direction = hiz_water_view_direction(uv);
     world_position = vec3(0.0);
-    if (count == 0u) return 0.0;
+    if (count == 0u && levels == 0u) return 0.0;
     vec3 ray = hiz_water_to_world(direction);
     vec3 camera = vec3(hiz_water.view_to_world[0].w, hiz_water.view_to_world[1].w,
                        hiz_water.view_to_world[2].w);
+    if (ray.y >= -1.0e-6) return 0.0;
     float nearest = 0.0;
+    // Gameplay water boxes.
     for (uint i = 0u; i < count; ++i) {
         float height = hiz_water.heights[i >> 2u][i & 3u];
-        if (camera.y <= height || ray.y >= -1.0e-6) continue;
+        if (camera.y <= height) continue;
         float depth = (height - camera.y) / ray.y;
         vec3 position = camera + ray * depth;
-        // The drawn water reaches past the gameplay boxes; land above the
-        // water stands in front of the plane (rejected below).
-        vec4 footprint = hiz_water.footprints[i] + vec4(-400.0, -400.0, 400.0, 400.0);
+        vec4 footprint = hiz_water.footprints[i];
         if (position.x < footprint.x || position.z < footprint.y || position.x > footprint.z ||
             position.z > footprint.w) continue;
         if (nearest == 0.0 || depth < nearest) {
             nearest = depth;
             world_position = position;
         }
+    }
+    // The drawn water's levels, where the map holds that height (each piece
+    // of a river with steps at its own).
+    for (uint i = 0u; i < levels; ++i) {
+        float height = hiz_water.map_levels[i >> 2u][i & 3u];
+        if (camera.y <= height) continue;
+        float depth = (height - camera.y) / ray.y;
+        if (nearest != 0.0 && depth >= nearest) continue;
+        vec3 position = camera + ray * depth;
+        if (abs(hiz_water_map_at(position.xz).x - height) > 4.0) continue;
+        nearest = depth;
+        world_position = position;
     }
     // Something stands on the water (in front of it): not water there.
     return nearest > 0.0 && nearest < scene_depth - 1.0 ? nearest : 0.0;
@@ -359,9 +387,13 @@ vec3 water_compose(vec2 uv, vec3 world, vec3 direction, float water_depth, float
     float shore = bed ? 1.0 - smoothstep(0.0, width, column) : 0.0;
     float time = hiz_water.parameters.y;
     float foam = 0.0;
+    // Where a fall between pieces lands (the map's landing foam).
+    float landing = hiz_water_map_at(world.xz).y;
+    if (landing > 0.0)
+        foam = landing * smoothstep(0.35, 0.7, water_pattern(world.zx * 2.3, 3.0 * time) + 0.25 * landing);
     if (shore > 0.0) {
         float noise = water_pattern(world.xz, time);
-        foam = shore * shore * smoothstep(0.6, 0.9, noise + 0.45 * shore);
+        foam = max(foam, shore * shore * smoothstep(0.6, 0.9, noise + 0.45 * shore));
     }
     if (foam > 0.0) {
         float light = clamp(dot(color, vec3(0.299, 0.587, 0.114)) * 1.6 + 0.3, 0.35, 1.0);
@@ -486,8 +518,16 @@ void main() {
 HiZWaterUniforms BuildHiZWaterUniforms(const std::array<float, 16>* worldToView,
                                        const Renderer3ds::PicaSceneWaterBodies* bodies, float seconds,
                                        bool waterOnly,
-                                       const std::array<Renderer3ds::PicaWaterRing, Renderer3ds::kPicaWaterRings>* rings) {
+                                       const std::array<Renderer3ds::PicaWaterRing, Renderer3ds::kPicaWaterRings>* rings,
+                                       const Renderer3ds::PicaWaterMap* map) {
     HiZWaterUniforms result;
+    if (map != nullptr && map->Size != 0U) {
+        result.MapInfo = {map->Origin[0], map->Origin[1], map->Texel, static_cast<float>(map->Size)};
+        for (size_t i = 0; i < std::min<size_t>(map->Levels.size(), Renderer3ds::kPicaWaterMapLevels); ++i)
+            result.MapLevels[i / 4U][i % 4U] = map->Levels[i];
+        result.MapCounts[0] = static_cast<float>(std::min<size_t>(map->Levels.size(),
+                                                                   Renderer3ds::kPicaWaterMapLevels));
+    }
     if (rings != nullptr)
         for (uint32_t i = 0; i < Renderer3ds::kPicaWaterRings; ++i)
             result.Rings[i] = {(*rings)[i].CenterXZ[0], (*rings)[i].CenterXZ[1], (*rings)[i].Birth,

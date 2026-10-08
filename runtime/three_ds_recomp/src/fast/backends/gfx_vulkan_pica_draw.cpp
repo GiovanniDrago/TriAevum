@@ -333,6 +333,22 @@ GfxRenderingAPIVulkan::NativePicaWaterSurface GfxRenderingAPIVulkan::ResolveNati
     result.Roles = roles;
     if (catalogWater) {
         result.WholeDraw = true;
+        // Its triangles by slope, once per rigid placement.
+        const auto split = [&] {
+            return std::make_shared<const Renderer3ds::PicaWaterTriangles>(Renderer3ds::SplitPicaWaterTriangles(
+                instance.Mesh->Positions, instance.Mesh->Indices, instance.WorldFromLocal));
+        };
+        if (instance.RigidSignature != 0U) {
+            if (mWaterTriangles.size() > 1024U) mWaterTriangles.clear();
+            auto& cached = mWaterTriangles[instance.RigidSignature];
+            if (!cached) cached = split();
+            result.Pieces = cached;
+            result.PiecesKey = instance.RigidSignature;
+        } else {
+            result.Pieces = split();
+            result.PiecesKey = std::bit_cast<uint32_t>(instance.WorldBounds.Minimum[0]) * 0x9e3779b97f4a7c15ULL ^
+                               std::bit_cast<uint32_t>(instance.WorldBounds.Maximum[2]);
+        }
         if (!result.ReachesWater)
             result.Plane = Renderer3ds::PicaWaterSurfaceFromBounds(instance.WorldBounds.Minimum,
                                                                    instance.WorldBounds.Maximum);
@@ -2745,6 +2761,18 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             if (draw.LightBinding.Water && draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Scene) {
                 renderTarget.WaterBodies = draw.LightBinding.Water;
                 renderTarget.WaterBodiesFrame = mFrameCounter;
+            }
+            if (waterSurface.Pieces && draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Scene) {
+                if (renderTarget.WaterPiecesFrame != mFrameCounter) {
+                    renderTarget.WaterPieces.clear();
+                    renderTarget.WaterPieceKeys.clear();
+                    renderTarget.WaterPiecesFrame = mFrameCounter;
+                }
+                if (std::find(renderTarget.WaterPieceKeys.begin(), renderTarget.WaterPieceKeys.end(),
+                              waterSurface.PiecesKey) == renderTarget.WaterPieceKeys.end()) {
+                    renderTarget.WaterPieceKeys.push_back(waterSurface.PiecesKey);
+                    renderTarget.WaterPieces.push_back(waterSurface.Pieces);
+                }
             }
             if (waterSurface.Plane && draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Scene) {
                 auto& planes = renderTarget.WaterPlanes;

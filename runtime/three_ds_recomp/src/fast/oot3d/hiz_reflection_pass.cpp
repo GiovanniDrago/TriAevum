@@ -9,6 +9,7 @@
 #include "nri_interop_internal.h"
 #endif
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -50,6 +51,11 @@ struct HiZReflectionPass::Impl {
     std::array<nri::Buffer*, kWaterSlots> WaterBuffers{};
     std::array<nri::Descriptor*, kWaterSlots> WaterViews{};
     std::array<void*, kWaterSlots> WaterMapped{};
+    // The drawn water's map per slot (binding 9) and the map version it holds.
+    std::array<nri::Buffer*, kWaterSlots> MapBuffers{};
+    std::array<nri::Descriptor*, kWaterSlots> MapViews{};
+    std::array<void*, kWaterSlots> MapMapped{};
+    std::array<uint64_t, kWaterSlots> MapVersions{};
 #endif
     std::array<VkImage, 2> Images{};
     std::array<VkImageView, 2> Views{};
@@ -93,7 +99,7 @@ bool HiZReflectionPass::Initialize(VkPhysicalDevice physicalDevice,
         if (nriDevice == nullptr || mImpl->Core == nullptr)
             throw std::runtime_error("NRI SSR device is unavailable");
         // 8: the scene colour (the filter composes water over it).
-        const std::array<nri::DescriptorRangeDesc, 9> ranges{{
+        const std::array<nri::DescriptorRangeDesc, 10> ranges{{
             {0, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER},
             {1, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER},
             {2, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER},
@@ -103,7 +109,8 @@ bool HiZReflectionPass::Initialize(VkPhysicalDevice physicalDevice,
             {5, 1, nri::DescriptorType::SAMPLER, nri::StageBits::COMPUTE_SHADER},
             {6, 1, nri::DescriptorType::SAMPLER, nri::StageBits::COMPUTE_SHADER},
             {7, 1, nri::DescriptorType::CONSTANT_BUFFER, nri::StageBits::COMPUTE_SHADER},
-            {8, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER}}};
+            {8, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER},
+            {9, 1, nri::DescriptorType::STRUCTURED_BUFFER, nri::StageBits::COMPUTE_SHADER}}};
         nri::DescriptorSetDesc set{};
         set.ranges = ranges.data();
         set.rangeNum = static_cast<uint32_t>(ranges.size());
@@ -173,6 +180,26 @@ bool HiZReflectionPass::Initialize(VkPhysicalDevice physicalDevice,
                 throw std::runtime_error("NRI SSR water uniform mapping failed");
             const HiZWaterUniforms none{};
             std::memcpy(mImpl->WaterMapped[slot], &none, sizeof(none));
+            constexpr uint64_t mapBytes =
+                uint64_t(Renderer3ds::kPicaWaterMapSize) * Renderer3ds::kPicaWaterMapSize * 2U * sizeof(float);
+            nri::BufferDesc mapDesc{};
+            mapDesc.size = mapBytes;
+            mapDesc.structureStride = 2U * sizeof(float);
+            mapDesc.usage = nri::BufferUsageBits::SHADER_RESOURCE;
+            if (mImpl->Core->CreateCommittedBuffer(*nriDevice, nri::MemoryLocation::HOST_UPLOAD, 0.0F, mapDesc,
+                                                   mImpl->MapBuffers[slot]) != nri::Result::SUCCESS)
+                throw std::runtime_error("NRI SSR water map creation failed");
+            nri::BufferViewDesc mapView{};
+            mapView.buffer = mImpl->MapBuffers[slot];
+            mapView.type = nri::BufferView::STRUCTURED_BUFFER;
+            mapView.size = mapBytes;
+            mapView.structureStride = 2U * sizeof(float);
+            if (mImpl->Core->CreateBufferView(mapView, mImpl->MapViews[slot]) != nri::Result::SUCCESS)
+                throw std::runtime_error("NRI SSR water map view creation failed");
+            mImpl->MapMapped[slot] = mImpl->Core->MapBuffer(*mImpl->MapBuffers[slot], 0, mapBytes);
+            if (mImpl->MapMapped[slot] == nullptr)
+                throw std::runtime_error("NRI SSR water map mapping failed");
+            mImpl->MapVersions[slot] = 0;
         }
         mImpl->Initialized = true;
         mImpl->Reason.clear();
@@ -248,6 +275,7 @@ bool HiZReflectionPass::Configure(
         pool.textureMaxNum = 10U * kWaterSlots;
         pool.storageTextureMaxNum = 2U * kWaterSlots;
         pool.constantBufferMaxNum = 2U * kWaterSlots;
+        pool.structuredBufferMaxNum = 2U * kWaterSlots;
         nri::Device* device = NriInteropAccess::Device(*mImpl->Interop);
         if (mImpl->Core->CreateDescriptorPool(
                 *device, pool, mImpl->DescriptorPool) != nri::Result::SUCCESS)
@@ -268,7 +296,7 @@ bool HiZReflectionPass::Configure(
                 *mImpl->Interop, destinationImage, true);
             if (destination == nullptr)
                 throw std::runtime_error("NRI SSR storage view failed");
-            std::array<nri::UpdateDescriptorRangeDesc, 9> updates{};
+            std::array<nri::UpdateDescriptorRangeDesc, 10> updates{};
             for (uint32_t i = 0; i < sources.size(); ++i)
                 updates[i] = {set, i, 0, &sources[i], 1};
             updates[4] = {set, 4, 0, &destination, 1};
@@ -276,6 +304,7 @@ bool HiZReflectionPass::Configure(
             updates[6] = {set, 6, 0, &mImpl->NearestSampler, 1};
             updates[7] = {set, 7, 0, &mImpl->WaterViews[slot], 1};
             updates[8] = {set, 8, 0, &inputViews[0], 1};
+            updates[9] = {set, 9, 0, &mImpl->MapViews[slot], 1};
             mImpl->Core->UpdateDescriptorRanges(
                 updates.data(), static_cast<uint32_t>(updates.size()));
         };
@@ -308,7 +337,8 @@ bool HiZReflectionPass::Execute(VkCommandBuffer commandBuffer,
                                 const EffectsSettings& settings,
                                 const EffectPassBarrierPlan& barrierPlan,
                                 std::optional<PicaSurfaceCoordinates> coordinates,
-                                const HiZWaterUniforms& water) {
+                                const HiZWaterUniforms& water,
+                                const Renderer3ds::PicaWaterMap* waterMap, uint64_t waterMapVersion) {
     const auto* outputBarrier = barrierPlan.Find(
         EffectResource::ReflectionColor);
     if (!barrierPlan.Valid() || mImpl->OutputStates == nullptr ||
@@ -319,12 +349,22 @@ bool HiZReflectionPass::Execute(VkCommandBuffer commandBuffer,
 #ifndef ENABLE_OOT3D_NRI
     (void)commandBuffer; (void)frameSlot; (void)hiZMipCount;
     (void)view; (void)settings;
-    (void)barrierPlan; (void)water;
+    (void)barrierPlan; (void)water; (void)waterMap; (void)waterMapVersion;
     return false;
 #else
     const uint32_t slot = frameSlot % kWaterSlots;
     if (mImpl->RaySets[slot] == nullptr || mImpl->FilterSets[slot] == nullptr) return false;
     std::memcpy(mImpl->WaterMapped[slot], &water, sizeof(water));
+    // A new map version: its texels (no water as -1e30, never NaN).
+    if (waterMap != nullptr && waterMap->Size == Renderer3ds::kPicaWaterMapSize &&
+        mImpl->MapVersions[slot] != waterMapVersion) {
+        auto* texels = static_cast<float*>(mImpl->MapMapped[slot]);
+        for (size_t i = 0; i < waterMap->Texels.size(); ++i) {
+            texels[2U * i] = std::isnan(waterMap->Texels[i][0]) ? -1.0e30F : waterMap->Texels[i][0];
+            texels[2U * i + 1U] = waterMap->Texels[i][1];
+        }
+        mImpl->MapVersions[slot] = waterMapVersion;
+    }
     nri::CommandBuffer* command =
         NriInteropAccess::CommandBuffer(*mImpl->Interop, frameSlot);
     if (command == nullptr) return false;
@@ -435,6 +475,10 @@ void HiZReflectionPass::Shutdown() {
                 mImpl->Core->UnmapBuffer(*mImpl->WaterBuffers[slot]);
             if (mImpl->WaterViews[slot] != nullptr) mImpl->Core->DestroyDescriptor(mImpl->WaterViews[slot]);
             if (mImpl->WaterBuffers[slot] != nullptr) mImpl->Core->DestroyBuffer(mImpl->WaterBuffers[slot]);
+            if (mImpl->MapMapped[slot] != nullptr && mImpl->MapBuffers[slot] != nullptr)
+                mImpl->Core->UnmapBuffer(*mImpl->MapBuffers[slot]);
+            if (mImpl->MapViews[slot] != nullptr) mImpl->Core->DestroyDescriptor(mImpl->MapViews[slot]);
+            if (mImpl->MapBuffers[slot] != nullptr) mImpl->Core->DestroyBuffer(mImpl->MapBuffers[slot]);
         }
     }
 #endif

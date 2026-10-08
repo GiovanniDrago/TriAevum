@@ -39,7 +39,8 @@ class HiZReflectionPass final {
                  const EffectsSettings& settings,
                  const EffectPassBarrierPlan& barrierPlan,
                  std::optional<PicaSurfaceCoordinates> coordinates = std::nullopt,
-                 const HiZWaterUniforms& water = {});
+                 const HiZWaterUniforms& water = {},
+                 const Renderer3ds::PicaWaterMap* waterMap = nullptr, uint64_t waterMapVersion = 0);
     void InvalidateScreenResources();
     void Shutdown();
 

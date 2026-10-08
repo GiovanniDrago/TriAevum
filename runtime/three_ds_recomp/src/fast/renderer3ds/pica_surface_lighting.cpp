@@ -375,11 +375,14 @@ bool pica_surface_water(vec3 face) {
                                     dot(pica_surface.view_to_world_linear[2].xyz, view_position));
     vec3 world = pica_surface_water_world;
     if (abs(world_face.y) >= 0.95 * face_length) {
-        // A whole water draw is traced on the plane past the gameplay boxes
-        // (the reflection trace's margin); a mixed mesh only over them.
-        float margin = whole ? 400.0 : 0.0;
+        // A whole water draw's level faces are the reflection trace's (its
+        // water map); a mixed mesh's over a body.
+        if (whole && world_face.y > 0.0) {
+            pica_surface_water_traced = true;
+            return true;
+        }
         for (uint slot = 0u; slot < min(count, 4u); ++slot) {
-            vec4 footprint = pica_surface.water_footprints[slot] + vec4(-margin, -margin, margin, margin);
+            vec4 footprint = pica_surface.water_footprints[slot];
             if (abs(world.y - pica_surface.water_heights[slot]) <= 4.0 && world.x >= footprint.x &&
                 world.z >= footprint.y && world.x <= footprint.z && world.z <= footprint.w) {
                 pica_surface_water_traced = true;
@@ -798,6 +801,13 @@ std::string_view PicaSurfaceLightingBody() noexcept {
             vec3 flow = pica_surface_water_flow_world(water_uv_dx, water_uv_dy, water_view_dx, water_view_dy);
             pica_surface_water_flow = vec2(dot(flow, pica_surface_water_tangent),
                                            dot(flow, pica_surface_water_bitangent));
+            // A steep face falls (a waterfall, a river's drop between its
+            // pieces): white water running down it, whatever its texture does.
+            if (abs(pica_surface_water_up.y) < 0.75) {
+                vec3 down = vec3(0.0, -1.0, 0.0) + pica_surface_water_up * pica_surface_water_up.y;
+                vec2 slope_down = vec2(dot(down, pica_surface_water_tangent), dot(down, pica_surface_water_bitangent));
+                pica_surface_water_flow = 150.0 * slope_down / max(length(slope_down), 1.0e-3);
+            }
         }
     }
     if ((pica_surface.control.x != 0u || pica_surface.environment_parameters.w != 0.0 ||

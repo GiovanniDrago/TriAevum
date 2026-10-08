@@ -1,6 +1,7 @@
 #pragma once
 
 #include "fast/renderer3ds/pica_scene_water.h"
+#include "fast/renderer3ds/pica_water_map.h"
 
 #include <array>
 #include <cstdint>
@@ -34,8 +35,15 @@ struct alignas(16) HiZWaterUniforms {
     std::array<float, 4> Medium{};
     // Movers' ripple rings: centre x, z, birth (wave time), strength.
     std::array<std::array<float, 4>, Renderer3ds::kPicaWaterRings> Rings{};
+    // The drawn water's map (PicaWaterMap, binding 9): origin x, z, world
+    // units per texel and texels per side (0: none); its levels (surface
+    // heights, ascending) and their count. A level is water where the map
+    // holds its height.
+    std::array<float, 4> MapInfo{};
+    std::array<std::array<float, 4>, Renderer3ds::kPicaWaterMapLevels / 4U> MapLevels{};
+    std::array<float, 4> MapCounts{};
 };
-static_assert(sizeof(HiZWaterUniforms) == 496U);
+static_assert(sizeof(HiZWaterUniforms) == 592U);
 
 // The bodies below the camera (seen from above), nearest first; without a
 // valid view, none. waterOnly is kept either way.
@@ -43,6 +51,7 @@ static_assert(sizeof(HiZWaterUniforms) == 496U);
                                                      const Renderer3ds::PicaSceneWaterBodies* bodies,
                                                      float seconds, bool waterOnly,
                                                      const std::array<Renderer3ds::PicaWaterRing,
-                                                                      Renderer3ds::kPicaWaterRings>* rings = nullptr);
+                                                                      Renderer3ds::kPicaWaterRings>* rings = nullptr,
+                                                     const Renderer3ds::PicaWaterMap* map = nullptr);
 
 } // namespace Fast::Oot3d

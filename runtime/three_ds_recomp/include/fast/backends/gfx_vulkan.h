@@ -205,7 +205,17 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         std::optional<::Fast::Renderer3ds::PicaSceneWaterBody> Plane;
         // Its catalog roles (PicaWaterTextureRole).
         uint8_t Roles = 0;
+        // A whole water draw's world triangles by slope (the water map's
+        // pieces) and their placement key.
+        std::shared_ptr<const ::Fast::Renderer3ds::PicaWaterTriangles> Pieces;
+        uint64_t PiecesKey = 0;
     };
+    // Water triangles per rigid placement (PicaGiInstance::RigidSignature).
+    std::unordered_map<uint64_t, std::shared_ptr<const ::Fast::Renderer3ds::PicaWaterTriangles>> mWaterTriangles;
+    // The drawn water's map, rebuilt when the set of pieces on screen changes.
+    ::Fast::Renderer3ds::PicaWaterMap mWaterMap;
+    uint64_t mWaterMapSignature = 0;
+    uint64_t mWaterMapVersion = 0;
     // Ripples of the actors moving through the water (their collision
     // cylinders), advanced once per frame on the water ripple clock.
     ::Fast::Renderer3ds::PicaWaterRippleField mWaterRipples;
@@ -714,6 +724,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         // Water planes of catalog water without a body, this frame.
         Renderer3ds::PicaSceneWaterBodies WaterPlanes;
         uint64_t WaterPlanesFrame = 0;
+        // Whole water draws' pieces this frame (the water map).
+        std::vector<std::shared_ptr<const Renderer3ds::PicaWaterTriangles>> WaterPieces;
+        std::vector<uint64_t> WaterPieceKeys;
+        uint64_t WaterPiecesFrame = 0;
         bool AuxiliaryNeedsClear = false;
         bool WBuffering = false;
         bool NriOwned = false;

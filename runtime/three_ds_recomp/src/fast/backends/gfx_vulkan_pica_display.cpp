@@ -2240,6 +2240,24 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             }
             if (activeReflectionProvider ==
                 Oot3d::ReflectionProvider::HiZ) {
+                // The drawn water's map: rebuilt when the pieces on screen
+                // change (their keys, in order).
+                const Renderer3ds::PicaWaterMap* waterMap = nullptr;
+                if (effectGuideTarget != nullptr && effectGuideTarget->WaterPiecesFrame == mFrameCounter &&
+                    !effectGuideTarget->WaterPieces.empty()) {
+                    auto keys = effectGuideTarget->WaterPieceKeys;
+                    std::sort(keys.begin(), keys.end());
+                    uint64_t signature = 1469598103934665603ULL;
+                    for (const uint64_t key : keys) signature = (signature ^ key) * 1099511628211ULL;
+                    if (signature != mWaterMapSignature) {
+                        std::vector<const Renderer3ds::PicaWaterTriangles*> sets;
+                        for (const auto& pieces : effectGuideTarget->WaterPieces) sets.push_back(pieces.get());
+                        mWaterMap = Renderer3ds::BuildPicaWaterMap(sets);
+                        mWaterMapSignature = signature;
+                        ++mWaterMapVersion;
+                    }
+                    waterMap = &mWaterMap;
+                }
                 const bool hiZExecuted =
                     transientReflectionOutput != nullptr &&
                     mHiZReflectionPass.Configure(
@@ -2281,8 +2299,9 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                                 water ? &bodies : nullptr,
                                 std::chrono::duration<float>(std::chrono::steady_clock::now() - mWaterEpoch).count(),
                                 mWaterOnlyReflections,
-                                mWaterRipplesFrame == mFrameCounter ? &mWaterRings : nullptr);
-                        }());
+                                mWaterRipplesFrame == mFrameCounter ? &mWaterRings : nullptr, waterMap);
+                        }(),
+                        waterMap, mWaterMapVersion);
                 if (hiZExecuted) {
                     recordEffectPassTransitions(
                         mHiZReflectionPass.LastBarrierExecution());
