@@ -172,7 +172,7 @@ public:
     changed |= DrawPlacedLights(value, state);
     ImGui::EndDisabled();
     if (changed)
-      mRuntime->Preview(value);
+      mRuntime->Preview(value, state.Revision);
     if (ImGui::Button("Save scene environment"))
       mRuntime->Save();
     ImGui::SameLine();
@@ -180,7 +180,7 @@ public:
       mRuntime->Reload();
     if (ImGui::Button("Use native environment")) {
       value.Enabled = false;
-      mRuntime->Preview(value);
+      mRuntime->Preview(value, state.Revision);
     }
     const auto status = mRuntime->Snapshot();
     if (!status.Error.empty())

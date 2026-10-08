@@ -4,6 +4,8 @@
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <numbers>
 
 namespace Oot3dNativeGame {
@@ -22,6 +24,26 @@ constexpr float kRadians = std::numbers::pi_v<float> / 180.0F;
 
 std::string Join(const std::string &pointer, const std::string &key) { return pointer + "/" + key; }
 std::string Join(const std::string &pointer, size_t index) { return pointer + "/" + std::to_string(index); }
+
+// A whole number within low..high: an integer, or an integral float (5.0).
+std::optional<int64_t> WholeNumber(const Json &value, int64_t low, int64_t high) {
+  if (value.is_number_unsigned()) {
+    const auto result = value.get<uint64_t>();
+    if (result <= uint64_t(INT64_MAX) && int64_t(result) >= low && int64_t(result) <= high) return int64_t(result);
+    return std::nullopt;
+  }
+  if (value.is_number_integer()) {
+    const auto result = value.get<int64_t>();
+    if (result >= low && result <= high) return result;
+    return std::nullopt;
+  }
+  if (value.is_number_float()) {
+    const double result = value.get<double>();
+    if (std::isfinite(result) && std::floor(result) == result && result >= double(low) && result <= double(high))
+      return static_cast<int64_t>(result);
+  }
+  return std::nullopt;
+}
 
 std::string RangeText(float low, float high) {
   char text[64];
@@ -116,11 +138,10 @@ PlacedLight DecodePlacedLight(Reader &read, const Json &object, const std::strin
   }
   if (const auto *id = read.Member(object, pointer, "id")) {
     // A whole number 1..4294967295: no fraction, no sign, no overflow.
-    if (!id->is_number_integer() || id->is_number_float() || id->get<int64_t>() < 1 ||
-        id->get<int64_t>() > int64_t{UINT32_MAX})
-      read.Error(Join(pointer, "id"), "must be a whole number within 1..4294967295");
+    if (const auto value = WholeNumber(*id, 1, int64_t{UINT32_MAX}))
+      light.Id = static_cast<uint32_t>(*value);
     else
-      light.Id = static_cast<uint32_t>(id->get<int64_t>());
+      read.Error(Join(pointer, "id"), "must be a whole number within 1..4294967295");
   }
   light.Name = read.String(object, pointer, "name");
   light.Type = read.Name<PlacedLightType>(object, pointer, "type", kPlacedLightTypeNames);
@@ -265,16 +286,16 @@ SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<u
     read.Error("/schema", "must be \"triaevum.scene-environment\"");
   int version = 0;
   if (const auto *value = read.Member(doc, "", "version")) {
-    if (!value->is_number_integer() || value->get<int64_t>() < 1 || value->get<int64_t>() > 5)
-      read.Error("/version", "must be a whole number within 1..5");
+    if (const auto number = WholeNumber(*value, 1, 5))
+      version = static_cast<int>(*number);
     else
-      version = static_cast<int>(value->get<int64_t>());
+      read.Error("/version", "must be a whole number within 1..5");
   }
   if (const auto *value = read.Member(doc, "", "sceneId")) {
-    if (!value->is_number_integer() || value->get<int64_t>() < 0 || value->get<int64_t>() > 0xFFFF)
-      read.Error("/sceneId", "must be a whole number within 0..65535");
+    if (const auto number = WholeNumber(*value, 0, 0xFFFF))
+      out.SceneId = static_cast<uint16_t>(*number);
     else
-      out.SceneId = static_cast<uint16_t>(value->get<int64_t>());
+      read.Error("/sceneId", "must be a whole number within 0..65535");
   }
   if (out.SceneId && expectedScene && *out.SceneId != *expectedScene)
     read.Error("/sceneId", "names scene " + std::to_string(*out.SceneId) + "; the file is scene " +
@@ -309,6 +330,10 @@ SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<u
       for (size_t i = 0; i < result.Lights.size(); ++i) {
         auto &light = result.Lights[i];
         const auto pointer = Join("/directionalLights", i);
+        if (!(*lights)[i].is_object()) {
+          read.Error(pointer, "must be an object");
+          continue;
+        }
         light.Azimuth = read.Scalar((*lights)[i], pointer, "azimuth", -180.0F, 180.0F);
         light.Elevation = read.Scalar((*lights)[i], pointer, "elevation", -90.0F, 90.0F);
         light.Intensity = read.Scalar((*lights)[i], pointer, "intensity", 0.0F, 4.0F);
@@ -335,6 +360,10 @@ SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<u
         for (size_t i = 0; i < result.PointLights.size(); ++i) {
           auto &light = result.PointLights[i];
           const auto pointer = Join("/pointLights", i);
+          if (!(*points)[i].is_object()) {
+            read.Error(pointer, "must be an object");
+            continue;
+          }
           light.Enabled = read.Boolean((*points)[i], pointer, "enabled");
           light.Intensity = read.Scalar((*points)[i], pointer, "intensity", 0.0F, 8.0F);
           light.RadiusScale = read.Scalar((*points)[i], pointer, "radiusScale", 0.1F, 8.0F, 1.0F);
@@ -360,10 +389,48 @@ SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<u
     out.Errors = ValidateSceneEnvironment(result);
     if (out.Errors.empty()) out.Profile = std::move(result);
   } else {
-    for (auto &error : ValidateSceneEnvironment(result))
-      if (error.Message.starts_with("repeats the id")) out.Errors.push_back(std::move(error));
+    // The values that failed to read hold placeholders: report the other
+    // problems (counts, names, repeated ids) at pointers not reported yet.
+    const auto reported = out.Errors;
+    for (auto &error : ValidateSceneEnvironment(result)) {
+      const bool known = std::any_of(reported.begin(), reported.end(), [&](const auto &existing) {
+        return error.Pointer == existing.Pointer || error.Pointer.starts_with(existing.Pointer + "/");
+      });
+      if (!known) out.Errors.push_back(std::move(error));
+    }
   }
   return out;
+}
+
+SceneEnvironmentFile LoadSceneEnvironmentFile(const std::filesystem::path &path,
+                                              std::optional<uint16_t> expectedScene,
+                                              std::optional<bool> expectedNight) {
+  SceneEnvironmentFile file;
+  std::error_code error;
+  file.Exists = std::filesystem::exists(path, error);
+  if (!file.Exists) {
+    file.Document.Errors.push_back({"", "does not exist"});
+    return file;
+  }
+  const auto size = std::filesystem::file_size(path, error);
+  if (error || size > kMaximumSceneEnvironmentFileBytes) {
+    file.Document.Errors.push_back({"", error ? "cannot be read" : "exceeds 64 KiB"});
+    return file;
+  }
+  std::ifstream stream(path, std::ios::binary);
+  std::ostringstream text;
+  text << stream.rdbuf();
+  if (!stream) {
+    file.Document.Errors.push_back({"", "cannot be read"});
+    return file;
+  }
+  file.Text = text.str();
+  try {
+    file.Document = DecodeSceneEnvironment(Json::parse(file.Text), expectedScene, expectedNight);
+  } catch (const Json::parse_error &parse) {
+    file.Document.Errors.push_back({"", std::string("is not valid JSON: ") + parse.what()});
+  }
+  return file;
 }
 
 Json EncodeSceneEnvironment(const SceneEnvironmentProfile &value, uint16_t scene, bool night) {
@@ -494,8 +561,17 @@ Fast::Renderer3ds::PicaEnvironmentLighting ResolveSceneEnvironment(const SceneEn
 
 Json ExplainSceneEnvironment(const SceneEnvironmentProfile &profile, uint16_t scene, bool night) {
   const auto resolved = ResolveSceneEnvironment(profile, scene, night);
+  Json groups = Json::array();
+  static constexpr const char *kGroups[] = {"navi", "fairies"};
+  for (size_t i = 0; i < resolved.PointLights.size(); ++i)
+    groups.push_back({{"group", i < std::size(kGroups) ? kGroups[i] : "group"},
+                      {"enabled", resolved.PointLights[i].Enabled},
+                      {"intensity", Number(resolved.PointLights[i].Intensity)},
+                      {"radiusScale", Number(resolved.PointLights[i].RadiusScale)},
+                      {"colorTint", Triple(resolved.PointLights[i].ColorTint)}});
   Json renderer = {{"enabled", resolved.Enabled},
-                   {"scopeIdentity", resolved.ScopeIdentity},
+                   {"scopeIdentity", std::to_string(resolved.ScopeIdentity)},
+                   {"scenePointLightGroups", std::move(groups)},
                    {"preserveSceneBrightness", resolved.PreserveSceneBrightness},
                    {"nativeStrengths",
                     {{"direct", Number(resolved.NativeDirectStrength)},
@@ -505,7 +581,10 @@ Json ExplainSceneEnvironment(const SceneEnvironmentProfile &profile, uint16_t sc
                    {"fogStrength", Number(resolved.FogStrength)},
                    {"keyLight",
                     {{"follows", EncodeKeyDirection(resolved.KeyDirection)},
-                     {"directionTowardSource", DirectionJson(resolved.Lights[0].DirectionTowardSource)},
+                     {"offsetDegrees", Json::array({Number(profile.KeyAzimuthOffset), Number(profile.KeyElevationOffset)})},
+                     {resolved.KeyDirection == KeyDirection::Authored ? "directionTowardSource"
+                                                                      : "fallbackDirectionTowardSource",
+                      DirectionJson(resolved.Lights[0].DirectionTowardSource)},
                      {"color", Triple(resolved.Lights[0].Color)},
                      {"intensity", Number(resolved.Lights[0].Intensity)}}},
                    {"fillLight",
@@ -516,8 +595,10 @@ Json ExplainSceneEnvironment(const SceneEnvironmentProfile &profile, uint16_t sc
   static constexpr const char *kKinds[] = {"omni", "point", "spot", "rectangle", "disc", "sun"};
   for (uint32_t i = 0; i < resolved.PlacedLightCount; ++i) {
     const auto &light = resolved.PlacedLights[i];
+    char identity[24];
+    std::snprintf(identity, sizeof(identity), "0x%016llX", static_cast<unsigned long long>(light.SourceIdentity));
     Json entry = {{"id", static_cast<uint32_t>(light.SourceIdentity & 0xFFFFFFFFULL)},
-                  {"identity", light.SourceIdentity},
+                  {"identity", identity},
                   {"kind", kKinds[static_cast<size_t>(light.Kind)]},
                   {"positionWorld", Triple(light.PositionWorld)},
                   {"emissionAxisWorld", DirectionJson(light.AxisWorld)},
@@ -573,6 +654,8 @@ Json ExplainSceneEnvironment(const SceneEnvironmentProfile &profile, uint16_t sc
     notes.push_back(std::to_string(shadowing) + " placed light(s) compete for " + std::to_string(kPointShadowRows) +
                     " point-shadow cube maps shared with Navi and the fairies; a large surface's shadow is "
                     "approximated from its centre");
+  notes.push_back("not resolved offline: the graphics mode and the device's capabilities decide which of these "
+                  "apply (the Native surface lighting mode uses none of them)");
   notes.push_back("placed lights apply to the whole scene (all rooms), " + std::to_string(kMaximumPlacedLights) +
                   " at most");
   notes.push_back("units: world units (Link is about 50 tall), linear RGB 0..1, angles in degrees; yaw 0 faces +Z, "

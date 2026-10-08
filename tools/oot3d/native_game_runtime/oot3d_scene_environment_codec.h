@@ -7,6 +7,7 @@
 // inputs a profile resolves to.
 
 #include "oot3d_scene_environment.h"
+#include <filesystem>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -35,6 +36,18 @@ struct SceneEnvironmentDocument {
 [[nodiscard]] SceneEnvironmentDocument
 DecodeSceneEnvironment(const nlohmann::json &document, std::optional<uint16_t> expectedScene = std::nullopt,
                        std::optional<bool> expectedNight = std::nullopt);
+// A profile file as the runtime reads it: at most 64 KiB, then decoded.
+inline constexpr uintmax_t kMaximumSceneEnvironmentFileBytes = 65536U;
+struct SceneEnvironmentFile {
+  bool Exists = false;
+  // The bytes read (empty when missing, unreadable or too large).
+  std::string Text;
+  SceneEnvironmentDocument Document;
+};
+[[nodiscard]] SceneEnvironmentFile LoadSceneEnvironmentFile(const std::filesystem::path &path,
+                                                            std::optional<uint16_t> expectedScene = std::nullopt,
+                                                            std::optional<bool> expectedNight = std::nullopt);
+
 // Ranges, counts and identities of a profile (pointers as in the file).
 [[nodiscard]] std::vector<SceneEnvironmentDiagnostic>
 ValidateSceneEnvironment(const SceneEnvironmentProfile &profile);

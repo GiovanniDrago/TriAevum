@@ -110,6 +110,10 @@ struct SceneEnvironmentSnapshot {
   bool EditingNight = false;
   // The player in this scene, when known.
   std::optional<ScenePlayerPlacement> Player;
+  // Advances whenever the profile is replaced from outside the editor (scene
+  // change, reload, a file applied from disk): an edit made on an older
+  // revision is refused rather than overwriting what replaced it.
+  uint64_t Revision = 0;
 };
 
 class SceneEnvironmentRuntime final {
@@ -122,7 +126,9 @@ public:
   void ObserveScene(std::optional<uint16_t> scene, bool night = false,
                     std::optional<ScenePlayerPlacement> player = std::nullopt);
   [[nodiscard]] SceneEnvironmentSnapshot Snapshot() const;
-  void Preview(SceneEnvironmentProfile profile);
+  // False (and an error) when the profile does not validate, or when
+  // `basedOnRevision` is older than the profile in use.
+  bool Preview(SceneEnvironmentProfile profile, std::optional<uint64_t> basedOnRevision = std::nullopt);
   bool Save();
   bool Reload();
   // Saves the values shown as the scene's night profile; at night it becomes
@@ -143,13 +149,21 @@ public:
   // keeps the profile in use; unsaved F1 edits are never replaced. Each
   // outcome is reported on stderr (TRIAEVUM_ENVIRONMENT_RELOAD).
   void SetHotReload(bool enabled);
-  // Renderer order, once per frame; looks at the files at most every 250 ms.
+  // Renderer order, once per frame; looks at the files at most every 250 ms
+  // and acts on a change once two looks agree (a file still being written
+  // changes between them). No-op outside developer builds.
   void PollProfileFiles();
+  void PollProfileFiles(std::chrono::steady_clock::time_point now);
 
 private:
   bool ReloadLocked();
-  // The day and night files as they are on disk (existence, size, time).
-  [[nodiscard]] std::string FileSignatureLocked() const;
+  // Reads the day or night file and, when it validates (or is absent: the
+  // base environment), makes it the profile in use together with that
+  // selection; otherwise only records the error.
+  bool LoadSelectionLocked(bool editingNight, bool nightExists);
+  // A file as it is on disk: "-" when absent, otherwise size and time.
+  [[nodiscard]] std::string FileStampLocked(bool night) const;
+  void AcknowledgeFilesLocked();
   void PublishLocked();
   [[nodiscard]] std::filesystem::path ProfilePathLocked(bool night) const;
   void SelectLocked(std::optional<uint16_t> scene, bool night);
@@ -164,7 +178,14 @@ private:
   bool mGizmoPublished = false;
   bool mHotReload = false;
   std::chrono::steady_clock::time_point mLastFilePoll{};
-  std::string mFileSignature;
+  // [day, night]: the stamps handled, the last look, the last reported as
+  // waiting for unsaved edits.
+  std::array<std::string, 2> mFileStamps{};
+  std::array<std::string, 2> mPendingStamps{};
+  std::array<std::string, 2> mReportedStamps{};
+  // The content of the file in use (unchanged content is no change).
+  size_t mAppliedHash = 0;
+  uint64_t mRevision = 0;
 };
 
 std::shared_ptr<Fast::Oot3d::GraphicsSettingsPanelTab>

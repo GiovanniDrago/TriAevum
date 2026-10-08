@@ -10,6 +10,7 @@
 // A file named scene-XXXX[.night].environment.json must name that scene and
 // time of day. Exit status: 0 success, 1 invalid or not canonical, 2 usage.
 #include "oot3d_scene_environment_codec.h"
+#include "ship/config/ConfigPersistence.h"
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -27,16 +28,9 @@ struct Loaded {
   SceneEnvironmentDocument Document;
 };
 
+// As the runtime reads it (64 KiB at most); a file named
+// scene-XXXX[.night].environment.json must name that scene and time of day.
 Loaded Load(const std::filesystem::path &path) {
-  Loaded loaded;
-  std::ifstream file(path, std::ios::binary);
-  if (!file) {
-    loaded.Document.Errors.push_back({"", "cannot be read"});
-    return loaded;
-  }
-  std::ostringstream text;
-  text << file.rdbuf();
-  loaded.Text = text.str();
   std::optional<uint16_t> scene;
   std::optional<bool> night;
   std::smatch match;
@@ -46,13 +40,8 @@ Loaded Load(const std::filesystem::path &path) {
     scene = static_cast<uint16_t>(std::stoul(match[1].str(), nullptr, 16));
     night = match[2].matched;
   }
-  const auto json = Json::parse(loaded.Text, nullptr, false);
-  if (json.is_discarded()) {
-    loaded.Document.Errors.push_back({"", "is not valid JSON"});
-    return loaded;
-  }
-  loaded.Document = DecodeSceneEnvironment(json, scene, night);
-  return loaded;
+  auto file = LoadSceneEnvironmentFile(path, scene, night);
+  return {std::move(file.Text), std::move(file.Document)};
 }
 
 Json Report(const std::filesystem::path &path, const SceneEnvironmentDocument &document) {
@@ -100,10 +89,10 @@ int main(int argc, char **argv) try {
           EncodeSceneEnvironment(*loaded.Document.Profile, *loaded.Document.SceneId, loaded.Document.Night));
       const bool same = canonical == loaded.Text;
       if (!same && !check) {
-        std::ofstream file(path, std::ios::binary | std::ios::trunc);
-        file << canonical;
-        if (!file) {
-          std::cout << Json{{"file", path.string()}, {"formatted", false}, {"error", "cannot be written"}}.dump() << "\n";
+        // Atomically, as the runtime saves: a failed write keeps the original.
+        const auto written = Ship::WriteConfigFileAtomically(path, canonical);
+        if (!written.Success) {
+          std::cout << Json{{"file", path.string()}, {"formatted", false}, {"error", written.Error}}.dump() << "\n";
           status = 1;
           continue;
         }
