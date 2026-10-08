@@ -723,6 +723,20 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
             std::clamp(rule.MaximumSlopeDegrees, 0.0F, 90.0F);
         rule.NormalOffset =
             std::clamp(rule.NormalOffset, -1000.0F, 1000.0F);
+        // Active rectangles inside the mask, ordered corners, no empty ones.
+        if (rule.ActiveRects.size() > kMaximumGrassMaskRects) {
+            rule.ActiveRects.resize(kMaximumGrassMaskRects);
+        }
+        for (auto& rect : rule.ActiveRects) {
+            const auto unit = [](float value) {
+                return std::isfinite(value) ? std::clamp(value, 0.0F, 1.0F) : 0.0F;
+            };
+            rect = {unit(std::min(rect.MinU, rect.MaxU)), unit(std::min(rect.MinV, rect.MaxV)),
+                    unit(std::max(rect.MinU, rect.MaxU)), unit(std::max(rect.MinV, rect.MaxV))};
+        }
+        std::erase_if(rule.ActiveRects, [](const GrassMaskRect& rect) {
+            return !(rect.MaxU > rect.MinU) || !(rect.MaxV > rect.MinV);
+        });
     }
     if (value.AntiAliasing == AntiAliasingMode::Taa &&
         (!capabilities.Has(GraphicsCapability::MotionVectors) ||

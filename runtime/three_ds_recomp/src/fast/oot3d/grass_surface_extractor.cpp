@@ -358,6 +358,27 @@ float EvaluateGrassMaskLevel(
     return level > kDisplayBlackThreshold ? level : 0.0F;
 }
 
+bool GrassMaskPositionActive(
+    const GrassPlacementRule& rule, float u, float v) noexcept {
+    if (rule.ActiveRects.empty()) {
+        return true;
+    }
+    return std::any_of(
+        rule.ActiveRects.begin(), rule.ActiveRects.end(),
+        [u, v](const GrassMaskRect& rect) {
+            return u >= rect.MinU && u <= rect.MaxU &&
+                   v >= rect.MinV && v <= rect.MaxV;
+        });
+}
+
+float EvaluateGrassMaskLevel(
+    float sample, const GrassPlacementRule& rule, float u,
+    float v) noexcept {
+    return GrassMaskPositionActive(rule, u, v)
+        ? EvaluateGrassMaskLevel(sample, rule)
+        : 0.0F;
+}
+
 uint64_t GrassPlacementRuleVersion(
     const GrassPlacementRule& rule,
     const GrassGenerationSettings& generation) noexcept {
@@ -386,6 +407,13 @@ uint64_t GrassPlacementRuleVersion(
     mixFloat(rule.OutputWhite);
     mixFloat(rule.MaximumSlopeDegrees);
     mixFloat(rule.NormalOffset);
+    mix(rule.ActiveRects.size());
+    for (const auto& rect : rule.ActiveRects) {
+        mixFloat(rect.MinU);
+        mixFloat(rect.MinV);
+        mixFloat(rect.MaxU);
+        mixFloat(rect.MaxV);
+    }
     mixFloat(generation.InstancesPerSquareMeter);
     mixFloat(generation.MinimumSpacing);
     mix(generation.Seed);
@@ -562,7 +590,9 @@ static std::vector<GrassAnchor> ExtractAnchors(
                     a.Uv[1] * w + b.Uv[1] * u + c.Uv[1] * v};
                 float sample = EvaluateGrassMaskLevel(
                     SampleMask(mask, uv[0], uv[1], wrapS, wrapT),
-                    rule);
+                    rule,
+                    WrapGrassTextureCoordinate(uv[0], wrapS),
+                    WrapGrassTextureCoordinate(uv[1], wrapT));
                 PendingAnchor pending;
                 auto& anchor = pending.Anchor;
                 if (surface.TriangleSources.empty()) {

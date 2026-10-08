@@ -104,8 +104,10 @@ Fast::Oot3d::GraphicsSettings CompleteSettings() {
     grassRule.OutputWhite = 0.93F;
     grassRule.MaximumSlopeDegrees = 37.0F;
     grassRule.NormalOffset = 0.7F;
+    grassRule.ActiveRects = {{0.1F, 0.2F, 0.5F, 0.6F}, {0.7F, 0.0F, 1.0F, 0.25F}};
     grass.Rules.push_back(grassRule);
     GrassPlacementRule secondGrassRule = grassRule;
+    secondGrassRule.ActiveRects.clear();
     secondGrassRule.RuleId = 8U;
     secondGrassRule.Target.AssetName = "field/flowers_mask";
     secondGrassRule.Target.Rgba8Hash = 0x1020304050607080ULL;
@@ -437,6 +439,10 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsCompleteSettings) {
     ASSERT_EQ(loaded.Value.Grass.Rules.size(), 2U);
     EXPECT_EQ(loaded.Value.Grass.Rules[0].Target.Rgba8Hash,
               0xFEDCBA9876543210ULL);
+    ASSERT_EQ(loaded.Value.Grass.Rules[0].ActiveRects.size(), 2U);
+    EXPECT_EQ(loaded.Value.Grass.Rules[0].ActiveRects[1],
+              (Fast::Oot3d::GrassMaskRect{0.7F, 0.0F, 1.0F, 0.25F}));
+    EXPECT_TRUE(loaded.Value.Grass.Rules[1].ActiveRects.empty());
     EXPECT_EQ(
         loaded.Value.Grass.Rules[1].Channel,
         Fast::Oot3d::GrassSampleChannel::Alpha);

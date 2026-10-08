@@ -380,6 +380,12 @@ Json SerializeGrassRule(const GrassPlacementRule& rule) {
         {"OutputWhite", rule.OutputWhite},
         {"MaximumSlopeDegrees", rule.MaximumSlopeDegrees},
         {"NormalOffset", rule.NormalOffset},
+        {"ActiveRects", [&rule] {
+             Json rects = Json::array();
+             for (const auto& rect : rule.ActiveRects)
+                 rects.push_back({rect.MinU, rect.MinV, rect.MaxU, rect.MaxV});
+             return rects;
+         }()},
     };
 }
 
@@ -618,6 +624,22 @@ GrassPlacementRule DeserializeGrassRule(
                prefix + ".MaximumSlopeDegrees", result);
     ReadScalar(document, "NormalOffset", rule.NormalOffset,
                prefix + ".NormalOffset", result);
+    // Optional: absent means the whole mask applies (earlier files).
+    if (const Json* rects = FindMember(document, "ActiveRects"); rects != nullptr) {
+        bool valid = rects->is_array();
+        for (size_t i = 0; valid && i < rects->size(); ++i) {
+            const auto& entry = (*rects)[i];
+            valid = entry.is_array() && entry.size() == 4U &&
+                    std::all_of(entry.begin(), entry.end(), [](const Json& value) { return value.is_number(); });
+            if (valid)
+                rule.ActiveRects.push_back({entry[0].get<float>(), entry[1].get<float>(), entry[2].get<float>(),
+                                            entry[3].get<float>()});
+        }
+        if (!valid) {
+            rule.ActiveRects.clear();
+            Correct(result, prefix + ".ActiveRects", "invalid active rectangles removed");
+        }
+    }
     return rule;
 }
 

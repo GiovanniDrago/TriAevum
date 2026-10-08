@@ -33,6 +33,7 @@
 #include "fast/oot3d/grass_shading_environment.h"
 #include "fast/oot3d/grass_surface_eligibility.h"
 #include "fast/oot3d/grass_surface_extractor.h"
+#include "fast/oot3d/grass_mask_interior.h"
 #include "fast/oot3d/grass_texture_source_cache.h"
 #include "fast/oot3d/grass_visibility.h"
 #include "fast/oot3d/pica_shader_instrumentation.h"
@@ -1211,6 +1212,29 @@ TEST(Oot3dGrassMaskLevels,
     EXPECT_GT(
         EvaluateGrassMaskLevel(1.0F / 255.0F, rule),
         0.0F);
+}
+
+TEST(Oot3dGrassMaskLevels,
+     ActiveRectanglesKeepTheMaskOnlyInsideThem) {
+    using namespace Fast::Oot3d;
+    GrassPlacementRule rule;
+    rule.InputBlack = 0.0F;
+    rule.InputWhite = 1.0F;
+    // None listed: all of the mask applies.
+    EXPECT_TRUE(GrassMaskPositionActive(rule, 0.9F, 0.9F));
+    EXPECT_FLOAT_EQ(EvaluateGrassMaskLevel(1.0F, rule, 0.9F, 0.9F), 1.0F);
+    rule.ActiveRects = {{0.1F, 0.1F, 0.4F, 0.3F}, {0.6F, 0.5F, 0.9F, 1.0F}};
+    EXPECT_FLOAT_EQ(EvaluateGrassMaskLevel(1.0F, rule, 0.2F, 0.2F), 1.0F);
+    EXPECT_FLOAT_EQ(EvaluateGrassMaskLevel(0.5F, rule, 0.8F, 0.9F), 0.5F);
+    // Outside every rectangle: zero, as for a black mask.
+    EXPECT_FLOAT_EQ(EvaluateGrassMaskLevel(1.0F, rule, 0.5F, 0.5F), 0.0F);
+    EXPECT_FLOAT_EQ(EvaluateGrassMaskLevel(1.0F, rule, 0.2F, 0.4F), 0.0F);
+    // Inactive texels are never interior for midrange grouping.
+    const std::vector<uint8_t> white(16U * 16U, 255U);
+    const GrassMaskInterior interior(16U, 16U, white, [](uint8_t) { return true; },
+                                     [&](float u, float v) { return GrassMaskPositionActive(rule, u, v); });
+    EXPECT_TRUE(interior.Contains({0.15F, 0.15F}, {0.35F, 0.25F}));
+    EXPECT_FALSE(interior.Contains({0.45F, 0.45F}, {0.55F, 0.55F}));
 }
 
 TEST(Oot3dGrassTextureCoordinates,
