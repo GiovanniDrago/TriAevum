@@ -2262,12 +2262,23 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                         [&] {
                             // Water surfaces the trace finds itself (the
                             // title's transparent water writes no depth).
+                            // The title's bodies and the planes of catalog
+                            // water without one.
                             const auto worldToView = effectGuideTarget->SampleView.Resolve(mFrameCounter);
-                            const bool water = effectGuideTarget->WaterBodies &&
-                                effectGuideTarget->WaterBodiesFrame == mFrameCounter && worldToView;
+                            Renderer3ds::PicaSceneWaterBodies bodies;
+                            if (effectGuideTarget->WaterBodies &&
+                                effectGuideTarget->WaterBodiesFrame == mFrameCounter)
+                                bodies = *effectGuideTarget->WaterBodies;
+                            if (effectGuideTarget->WaterPlanesFrame == mFrameCounter) {
+                                const auto& planes = effectGuideTarget->WaterPlanes;
+                                for (uint32_t i = 0; i < planes.Count &&
+                                     bodies.Count < Renderer3ds::kMaximumPicaSceneWaterBodies; ++i)
+                                    bodies.Bodies[bodies.Count++] = planes.Bodies[i];
+                            }
+                            const bool water = bodies.Count != 0U && worldToView;
                             return Oot3d::BuildHiZWaterUniforms(
                                 water ? &*worldToView : nullptr,
-                                water ? effectGuideTarget->WaterBodies.get() : nullptr,
+                                water ? &bodies : nullptr,
                                 std::chrono::duration<float>(std::chrono::steady_clock::now() - mWaterEpoch).count(),
                                 mWaterOnlyReflections);
                         }());

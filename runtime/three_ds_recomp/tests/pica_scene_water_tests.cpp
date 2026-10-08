@@ -72,6 +72,25 @@ int main() {
     AdvancePicaWaterFlow(step, 3, 30.0F, {0.02F, 0.0F});
     expect(std::abs(step.Velocity[0] - 0.42F) < 1e-4F, "smoothed velocity");
     checks += 6;
+    // Decorative water without a body: a flat draw is a plane at its middle
+    // height (the castle moat); a tall one (a waterfall) is not.
+    const auto moat = PicaWaterSurfaceFromBounds({-1946, 1508, -964}, {800, 1511, 669});
+    expect(moat && moat->SurfaceY == 1509.5F && moat->MinimumXZ[1] == -964.0F && moat->MaximumXZ[0] == 800.0F,
+           "flat water plane");
+    expect(!PicaWaterSurfaceFromBounds({362, -15, -568}, {409, 274, -496}), "waterfall is no plane");
+    // The water texture catalog: hex hash, size and roles; malformed is none.
+    const auto catalog = PicaWaterTextureCatalog::Parse(
+        "triaevum-water-textures 1\r\n7304e8d17265fb40 64 64 3\n0110f86224e7ac39 128 128 4\n\n");
+    expect(catalog && catalog->Size() == 2U, "catalog entries");
+    expect(catalog->Roles(0x7304e8d17265fb40ULL, 64, 64) == (kPicaWaterTextureSurface | kPicaWaterTextureRiver),
+           "catalog roles");
+    expect(catalog->Roles(0x0110f86224e7ac39ULL, 128, 128) == kPicaWaterTextureWaterfall, "second entry");
+    expect(catalog->Roles(0x7304e8d17265fb40ULL, 64, 32) == 0U, "size is part of the identity");
+    expect(!PicaWaterTextureCatalog::Parse("triaevum-water-textures 2\n"), "unknown version");
+    expect(!PicaWaterTextureCatalog::Parse("triaevum-water-textures 1\n7304e8d17265fb4g 64 64 1\n"), "bad hash");
+    expect(!PicaWaterTextureCatalog::Parse("triaevum-water-textures 1\n7304e8d17265fb40 64 64\n"), "missing role");
+    expect(!PicaWaterTextureCatalog::Parse("triaevum-water-textures 1\n7304e8d17265fb40 64 64 1 9\n"), "extra field");
+    checks += 10;
     std::cout << "pica_scene_water_tests: " << checks << " checks passed\n";
     return 0;
 }

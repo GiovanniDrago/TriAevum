@@ -79,9 +79,10 @@ struct alignas(16) PicaSurfaceLightingUniforms {
     // Placed lights; Control[3] bits 8-15 hold their count.
     std::array<PicaPlacedLightUniforms, kMaximumPicaPlacedLights> Placed{};
     // Water bodies under this draw (AssignPicaSurfaceWater): the view's
-    // translation (xyz; w = body count), each body's world footprint (min x,
-    // min z, max x, max z) and the bodies' surface heights. A fragment on one
-    // of those surfaces keeps its native colour.
+    // translation (xyz; w = body count, plus 8 when the whole draw is water),
+    // each body's world footprint (min x, min z, max x, max z) and the
+    // bodies' surface heights. A fragment on one of those surfaces, or any
+    // fragment of a whole-water draw, keeps its native colour.
     std::array<float, 4> WaterViewTranslation{};
     std::array<std::array<float, 4>, kMaximumPicaSurfaceWaterBodies> WaterFootprints{};
     std::array<float, 4> WaterHeights{};
@@ -127,12 +128,15 @@ std::optional<PicaSurfaceLightingView> BuildPicaSurfaceLightingView(
     const PicaSurfaceLightingView* cameraView,
     const PicaPointShadowAssignment* pointShadows = nullptr) noexcept;
 
-// The water bodies a draw's world bounds reach (the nearest heights first;
+// The water bodies a draw's world bounds reach (the largest overlaps first;
 // at most kMaximumPicaSurfaceWaterBodies): water drawn in a mixed room mesh is
-// found per fragment, on a body's surface with a horizontal face.
+// found per fragment, on a body's surface with a horizontal face. A whole
+// water draw (a catalog water texture) is water on every face; its fragments
+// on a body's surface are those the reflection trace finds.
 void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSurfaceLightingView& view,
                             const PicaSceneWaterBodies& bodies, const std::array<float, 3>& worldMinimum,
-                            const std::array<float, 3>& worldMaximum, float seconds) noexcept;
+                            const std::array<float, 3>& worldMaximum, float seconds,
+                            bool wholeDraw = false) noexcept;
 
 [[nodiscard]] std::string_view PicaSurfaceLightingDeclarations() noexcept;
 [[nodiscard]] std::string_view PicaSurfaceLightingBody() noexcept;

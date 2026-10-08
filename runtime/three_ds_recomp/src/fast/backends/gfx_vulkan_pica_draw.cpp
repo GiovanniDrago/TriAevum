@@ -5,6 +5,10 @@
 #include "fast/renderer3ds/pica_surface_appearance.h"
 #include "fast/renderer3ds/pica_surface_debug.h"
 
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
 namespace Fast {
 
 bool PublishNativePicaGrassSurface(
@@ -223,11 +227,37 @@ bool GfxRenderingAPIVulkan::WantsPicaSequenceDrawPreparation(
            !draw.Composition.NativeProjectedShadow;
 }
 
+const Renderer3ds::PicaWaterTextureCatalog* GfxRenderingAPIVulkan::WaterTextureCatalog() {
+    if (!mWaterTextureCatalogLoaded) {
+        mWaterTextureCatalogLoaded = true;
+        if (const char* path = std::getenv("TRIAEVUM_WATER_TEXTURE_CATALOG"); path != nullptr && *path != '\0') {
+            std::ifstream stream(std::filesystem::u8path(path), std::ios::binary);
+            const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+            mWaterTextureCatalog = Renderer3ds::PicaWaterTextureCatalog::Parse(text);
+            if (mWaterTextureCatalog)
+                spdlog::info("Water texture catalog: {} textures", mWaterTextureCatalog->Size());
+            else
+                spdlog::warn("Water texture catalog is unreadable: {}", path);
+        }
+    }
+    return mWaterTextureCatalog ? &*mWaterTextureCatalog : nullptr;
+}
+
 GfxRenderingAPIVulkan::NativePicaWaterSurface GfxRenderingAPIVulkan::ResolveNativePicaWaterSurface(
     const GfxNativePicaDrawView& draw) {
     NativePicaWaterSurface result;
+    // One material per draw: a water texture in any of its slots makes all of
+    // it water.
+    uint8_t roles = 0;
+    if (const auto* catalog = WaterTextureCatalog())
+        for (const auto& texture : draw.Textures)
+            if (texture.NativeType == 0U && texture.Slot < 3U)
+                if (const auto hash = ResolveNativeTextureBaseLevelContentHash(texture))
+                    roles |= catalog->Roles(*hash, texture.Width, texture.Height);
+    const bool catalogWater = (roles & Renderer3ds::kPicaWaterTextureWater) != 0U;
+    const bool bodies = draw.LightBinding.Water && draw.LightBinding.Water->Count != 0U;
     Oot3d::DirectionalShadowMatrix viewToWorld;
-    if (!draw.LightBinding.Water || draw.LightBinding.Water->Count == 0U || !draw.GeometryIdentityAvailable ||
+    if ((!bodies && !catalogWater) || !draw.GeometryIdentityAvailable ||
         draw.VertexCount == 0U || draw.VertexBindings.empty() || draw.VertexAttributes.empty() ||
         draw.VertexUniformBytes.size() < Oot3d::kPicaPackedVertexFloatOffset || !draw.LightBinding.WorldToView ||
         !Oot3d::InvertDirectionalShadowMatrix(*draw.LightBinding.WorldToView, viewToWorld))
@@ -275,12 +305,20 @@ GfxRenderingAPIVulkan::NativePicaWaterSurface GfxRenderingAPIVulkan::ResolveNati
         mNativePicaGeometryBuffers[geometry.Identity].GiGeometry);
     if (!instance.Valid()) return result;
     result.WorldBounds = instance.WorldBounds;
-    const auto& bodies = *draw.LightBinding.Water;
-    for (uint32_t i = 0; i < std::min(bodies.Count, Renderer3ds::kMaximumPicaSceneWaterBodies); ++i)
-        result.ReachesWater |= Renderer3ds::PicaWaterSurfaceReaches(instance.WorldBounds.Minimum,
-                                                                    instance.WorldBounds.Maximum, bodies.Bodies[i]);
-    result.Body = Renderer3ds::MatchPicaWaterSurface(instance.WorldBounds.Minimum, instance.WorldBounds.Maximum,
-                                                     *draw.LightBinding.Water);
+    if (bodies) {
+        const auto& water = *draw.LightBinding.Water;
+        for (uint32_t i = 0; i < std::min(water.Count, Renderer3ds::kMaximumPicaSceneWaterBodies); ++i)
+            result.ReachesWater |= Renderer3ds::PicaWaterSurfaceReaches(
+                instance.WorldBounds.Minimum, instance.WorldBounds.Maximum, water.Bodies[i]);
+        result.Body = Renderer3ds::MatchPicaWaterSurface(instance.WorldBounds.Minimum,
+                                                         instance.WorldBounds.Maximum, water);
+    }
+    if (catalogWater) {
+        result.WholeDraw = true;
+        if (!result.ReachesWater)
+            result.Plane = Renderer3ds::PicaWaterSurfaceFromBounds(instance.WorldBounds.Minimum,
+                                                                   instance.WorldBounds.Maximum);
+    }
     return result;
 }
 
@@ -860,14 +898,22 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     ? std::array<float, 4>{}
                     : std::array<float, 4>{sources.Weights[0], sources.Weights[1], sources.Weights[2], 0.0F};
             }
-            // Water in a mixed mesh (a room's water and banks in one draw).
+            // Water in a mixed mesh (a room's water and banks in one draw),
+            // or a whole water draw (on its own plane when it has no body).
             if (surfaceLighting && waterSurface.WorldBounds.Available && mSurfaceLightingView &&
-                draw.LightBinding.Water)
-                Renderer3ds::AssignPicaSurfaceWater(*surfaceLighting, *mSurfaceLightingView, *draw.LightBinding.Water,
-                                                    waterSurface.WorldBounds.Minimum,
-                                                    waterSurface.WorldBounds.Maximum,
-                                                    std::chrono::duration<float>(
-                                                        std::chrono::steady_clock::now() - mWaterEpoch).count());
+                (draw.LightBinding.Water || waterSurface.WholeDraw)) {
+                Renderer3ds::PicaSceneWaterBodies plane;
+                if (waterSurface.Plane) {
+                    plane.Bodies[0] = *waterSurface.Plane;
+                    plane.Count = 1U;
+                }
+                Renderer3ds::AssignPicaSurfaceWater(
+                    *surfaceLighting, *mSurfaceLightingView,
+                    waterSurface.Plane || !draw.LightBinding.Water ? plane : *draw.LightBinding.Water,
+                    waterSurface.WorldBounds.Minimum, waterSurface.WorldBounds.Maximum,
+                    std::chrono::duration<float>(std::chrono::steady_clock::now() - mWaterEpoch).count(),
+                    waterSurface.WholeDraw);
+            }
             // Its texture's scrolling (coordinate 0) over native frames.
             if (surfaceLighting && surfaceLighting->WaterViewTranslation[3] > 0.0F) {
                 const auto& sample = mPicaSceneFrame.TemporalSample();
@@ -1099,7 +1145,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 // Authored appearance, like an isolated object, publishes no
                 // ambient occlusion response and no GI albedo; nor does a
                 // draw that is all water.
-                isolatedLighting || authoredAppearance || waterSurface.Body.has_value(),
+                isolatedLighting || authoredAppearance || waterSurface.Body.has_value() || waterSurface.WholeDraw,
             },
             mTemporalMotionEnabled && !nativeMemoryOnly,
             resolvedReflectionMaterial.has_value()
@@ -1191,9 +1237,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 char water[256];
                 std::snprintf(water, sizeof(water),
                     ",\"worldMin\":[%.1f,%.1f,%.1f],\"worldMax\":[%.1f,%.1f,%.1f],\"waterBody\":%d,"
-                    "\"reachesWater\":%d}",
+                    "\"reachesWater\":%d,\"wholeWater\":%d,\"waterPlane\":%d}",
                     b.Minimum[0], b.Minimum[1], b.Minimum[2], b.Maximum[0], b.Maximum[1], b.Maximum[2],
-                    waterSurface.Body ? static_cast<int>(*waterSurface.Body) : -1, waterSurface.ReachesWater ? 1 : 0);
+                    waterSurface.Body ? static_cast<int>(*waterSurface.Body) : -1, waterSurface.ReachesWater ? 1 : 0,
+                    waterSurface.WholeDraw ? 1 : 0, waterSurface.Plane ? 1 : 0);
                 record.pop_back();
                 record += water;
             }
@@ -2669,6 +2716,17 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             if (draw.LightBinding.Water && draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Scene) {
                 renderTarget.WaterBodies = draw.LightBinding.Water;
                 renderTarget.WaterBodiesFrame = mFrameCounter;
+            }
+            if (waterSurface.Plane && draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Scene) {
+                auto& planes = renderTarget.WaterPlanes;
+                if (renderTarget.WaterPlanesFrame != mFrameCounter) {
+                    planes.Count = 0U;
+                    renderTarget.WaterPlanesFrame = mFrameCounter;
+                }
+                const auto end = planes.Bodies.begin() + planes.Count;
+                if (planes.Count < Renderer3ds::kMaximumPicaSceneWaterBodies &&
+                    std::find(planes.Bodies.begin(), end, *waterSurface.Plane) == end)
+                    planes.Bodies[planes.Count++] = *waterSurface.Plane;
             }
             if (opaqueWorldDraw)
                 if (const auto projection = Oot3d::DecodePicaPerspectiveProjection(draw.VertexUniformBytes))

@@ -71,6 +71,7 @@ void PrintOot3dNativeGameUsage() {
                  "[--pica-semantic-trace <trace.jsonl>] [--pica-parametric-tev] "
                  "[--pica-aot-shader-pack <pack.o3ps>] "
                  "[--renderer-cache-directory <directory>] "
+                 "[--water-texture-catalog <water_textures.txt>] "
                  "[--pica-aot-shader-strict] "
                  "[--pica-effective-shader-inventory <inventory.json>] "
                  "[--pica-pipeline-inventory <inventory.json>] "
@@ -193,6 +194,9 @@ bool ParseOot3dNativeGameArgs(int argc, char** argv, Oot3dNativeGameLaunch& laun
             launch.PicaParametricTev = true;
         } else if (arg == "--renderer-cache-directory" && index + 1 < argc) {
             launch.RendererCacheDirectory =
+                std::filesystem::absolute(std::filesystem::u8path(argv[++index])).lexically_normal();
+        } else if (arg == "--water-texture-catalog" && index + 1 < argc) {
+            launch.WaterTextureCatalogPath =
                 std::filesystem::absolute(std::filesystem::u8path(argv[++index])).lexically_normal();
         } else if (arg == "--pica-aot-shader-pack" &&
                    index + 1 < argc) {

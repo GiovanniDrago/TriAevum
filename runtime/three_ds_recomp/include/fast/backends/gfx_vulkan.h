@@ -198,8 +198,18 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         ::Fast::Renderer3ds::ShadowBounds WorldBounds;
         // Its bounds reach a body's surface: it may hold water fragments.
         bool ReachesWater = false;
+        // A catalog water texture: all of the draw is water (a waterfall, a
+        // river's rapids); flat and reaching no body, its own plane (water
+        // the title publishes no body for: a moat, a well).
+        bool WholeDraw = false;
+        std::optional<::Fast::Renderer3ds::PicaSceneWaterBody> Plane;
     };
     NativePicaWaterSurface ResolveNativePicaWaterSurface(const GfxNativePicaDrawView& draw);
+    // The title's water textures (TRIAEVUM_WATER_TEXTURE_CATALOG, generated
+    // by the installer from the user's RomFS), loaded on first use.
+    const ::Fast::Renderer3ds::PicaWaterTextureCatalog* WaterTextureCatalog();
+    std::optional<::Fast::Renderer3ds::PicaWaterTextureCatalog> mWaterTextureCatalog;
+    bool mWaterTextureCatalogLoaded = false;
     // Water ripple time origin (cosmetic animation, presentation clock).
     std::chrono::steady_clock::time_point mWaterEpoch = std::chrono::steady_clock::now();
     // Texture scrolling of water draws, per geometry (native time).
@@ -692,6 +702,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         // it was last seen (reflections find water surfaces from it).
         std::shared_ptr<const Renderer3ds::PicaSceneWaterBodies> WaterBodies;
         uint64_t WaterBodiesFrame = 0;
+        // Water planes of catalog water without a body, this frame.
+        Renderer3ds::PicaSceneWaterBodies WaterPlanes;
+        uint64_t WaterPlanesFrame = 0;
         bool AuxiliaryNeedsClear = false;
         bool WBuffering = false;
         bool NriOwned = false;

@@ -48,7 +48,7 @@ std::optional<PicaSurfaceLightingView> BuildPicaSurfaceLightingView(
 
 void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSurfaceLightingView& view,
                             const PicaSceneWaterBodies& bodies, const std::array<float, 3>& worldMinimum,
-                            const std::array<float, 3>& worldMaximum, float seconds) noexcept {
+                            const std::array<float, 3>& worldMaximum, float seconds, bool wholeDraw) noexcept {
     std::array<uint32_t, kMaximumPicaSceneWaterBodies> reached{};
     uint32_t count = 0;
     for (uint32_t i = 0; i < std::min(bodies.Count, kMaximumPicaSceneWaterBodies); ++i) {
@@ -68,7 +68,8 @@ void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSur
         uniforms.WaterFootprints[slot] = {body.MinimumXZ[0], body.MinimumXZ[1], body.MaximumXZ[0], body.MaximumXZ[1]};
         uniforms.WaterHeights[slot] = body.SurfaceY;
     }
-    uniforms.WaterViewTranslation = {view.Rows[0][3], view.Rows[1][3], view.Rows[2][3], static_cast<float>(count)};
+    uniforms.WaterViewTranslation = {view.Rows[0][3], view.Rows[1][3], view.Rows[2][3],
+                                     static_cast<float>(count + (wholeDraw ? 8U : 0U))};
     uniforms.WaterOptics = kPicaSurfaceWaterOptics;
     uniforms.WaterRipples = {std::fmod(std::max(seconds, 0.0F), 3600.0F), kPicaSurfaceWaterRipples[0],
                              kPicaSurfaceWaterRipples[1], 0.0F};
@@ -312,21 +313,31 @@ layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
 } pica_surface;
 vec3 pica_surface_water_world = vec3(0.0);
 float pica_surface_water_footprint = 0.0;
+// The water face: its world normal (up on a body's plane) and tangent frame
+// (world x and z on a horizontal plane), and whether it lies on a body's
+// plane, where the reflection trace finds it.
+vec3 pica_surface_water_up = vec3(0.0, 1.0, 0.0);
+vec3 pica_surface_water_tangent = vec3(1.0, 0.0, 0.0);
+vec3 pica_surface_water_bitangent = vec3(0.0, 0.0, 1.0);
+bool pica_surface_water_traced = false;
 
-// World-space flow (units per second, xz) of the water's texture pattern.
+// Flow (world units per second, in the face's tangent frame) of the water's
+// texture pattern.
 vec2 pica_surface_water_flow = vec2(0.0);
 // The pattern's world motion: the scrolling texture coordinate moves the
 // pattern the other way, mapped to the surface through the screen-space
 // derivatives of the coordinate and of the view position.
-vec2 pica_surface_water_flow_world(vec2 uv_dx, vec2 uv_dy, vec3 view_dx, vec3 view_dy) {
-    if (pica_surface.water_flow.z <= 0.0) return vec2(0.0);
-    vec2 world_dx = vec2(dot(pica_surface.view_to_world_linear[0].xyz, -view_dx),
+vec3 pica_surface_water_flow_world(vec2 uv_dx, vec2 uv_dy, vec3 view_dx, vec3 view_dy) {
+    if (pica_surface.water_flow.z <= 0.0) return vec3(0.0);
+    vec3 world_dx = vec3(dot(pica_surface.view_to_world_linear[0].xyz, -view_dx),
+                         dot(pica_surface.view_to_world_linear[1].xyz, -view_dx),
                          dot(pica_surface.view_to_world_linear[2].xyz, -view_dx));
-    vec2 world_dy = vec2(dot(pica_surface.view_to_world_linear[0].xyz, -view_dy),
+    vec3 world_dy = vec3(dot(pica_surface.view_to_world_linear[0].xyz, -view_dy),
+                         dot(pica_surface.view_to_world_linear[1].xyz, -view_dy),
                          dot(pica_surface.view_to_world_linear[2].xyz, -view_dy));
     mat2 texture_from_screen = mat2(uv_dx, uv_dy);
-    if (abs(determinant(texture_from_screen)) < 1.0e-12) return vec2(0.0);
-    vec2 flow = -(mat2(world_dx, world_dy) * (inverse(texture_from_screen) * pica_surface.water_flow.xy));
+    if (abs(determinant(texture_from_screen)) < 1.0e-12) return vec3(0.0);
+    vec3 flow = -(mat2x3(world_dx, world_dy) * (inverse(texture_from_screen) * pica_surface.water_flow.xy));
     float speed = length(flow);
     return speed > 400.0 ? flow * (400.0 / speed) : flow;
 }
@@ -335,30 +346,45 @@ vec2 pica_surface_water_flow_world(vec2 uv_dx, vec2 uv_dy, vec3 view_dx, vec3 vi
 float pica_surface_water_fast() {
     return smoothstep(10.0, 80.0, length(pica_surface_water_flow));
 }
-// A fragment of gameplay water (pica_scene_water.h): a horizontal face at a
-// listed body's surface height, inside its footprint. face: the view-space
-// face normal (any length or sign).
+// A fragment of water (pica_scene_water.h): a horizontal face at a listed
+// body's surface height, inside its footprint; or, in a draw that is all
+// water (water_view_translation.w >= 8: a catalog water texture), any face,
+// on its own plane (waterfalls, rapids). face: the view-space face normal
+// (any length or sign).
 bool pica_surface_water(vec3 face) {
-    uint count = uint(pica_surface.water_view_translation.w);
-    if (count == 0u) return false;
+    uint mode = uint(pica_surface.water_view_translation.w);
+    uint count = mode & 7u;
+    bool whole = mode >= 8u;
+    if (count == 0u && !whole) return false;
+    // Toward the camera (pica_view: from the fragment to the camera).
+    if (dot(face, pica_view) < 0.0) face = -face;
     vec3 world_face = vec3(dot(pica_surface.view_to_world_linear[0].xyz, face),
                            dot(pica_surface.view_to_world_linear[1].xyz, face),
                            dot(pica_surface.view_to_world_linear[2].xyz, face));
     float face_length = length(world_face);
-    if (face_length <= 0.0 || abs(world_face.y) < 0.95 * face_length) return false;
+    if (face_length <= 0.0) return false;
     vec3 view_position = -pica_view - pica_surface.water_view_translation.xyz;
-    vec3 world = vec3(dot(pica_surface.view_to_world_linear[0].xyz, view_position),
-                      dot(pica_surface.view_to_world_linear[1].xyz, view_position),
-                      dot(pica_surface.view_to_world_linear[2].xyz, view_position));
-    for (uint slot = 0u; slot < min(count, 4u); ++slot) {
-        vec4 footprint = pica_surface.water_footprints[slot];
-        if (abs(world.y - pica_surface.water_heights[slot]) <= 4.0 && world.x >= footprint.x &&
-            world.z >= footprint.y && world.x <= footprint.z && world.z <= footprint.w) {
-            pica_surface_water_world = world;
-            return true;
+    pica_surface_water_world = vec3(dot(pica_surface.view_to_world_linear[0].xyz, view_position),
+                                    dot(pica_surface.view_to_world_linear[1].xyz, view_position),
+                                    dot(pica_surface.view_to_world_linear[2].xyz, view_position));
+    vec3 world = pica_surface_water_world;
+    if (abs(world_face.y) >= 0.95 * face_length) {
+        for (uint slot = 0u; slot < min(count, 4u); ++slot) {
+            vec4 footprint = pica_surface.water_footprints[slot];
+            if (abs(world.y - pica_surface.water_heights[slot]) <= 4.0 && world.x >= footprint.x &&
+                world.z >= footprint.y && world.x <= footprint.z && world.z <= footprint.w) {
+                pica_surface_water_traced = true;
+                return true;
+            }
         }
     }
-    return false;
+    if (!whole) return false;
+    vec3 up = world_face / face_length;
+    pica_surface_water_up = up;
+    pica_surface_water_tangent = abs(up.y) > 0.95 ? vec3(1.0, 0.0, 0.0)
+                                                   : normalize(cross(vec3(0.0, 1.0, 0.0), up));
+    pica_surface_water_bitangent = cross(pica_surface_water_tangent, up);
+    return true;
 }
 vec3 pica_surface_unit(vec3 value) {
     float squared = dot(value, value);
@@ -632,7 +658,9 @@ vec3 pica_surface_water_specular(vec3 normal, vec3 view_dir, vec3 direction, vec
 // phase speeds (slowed), each faded out where a pixel covers its wavelength.
 vec2 pica_surface_water_slope() {
     float time = pica_surface.water_ripples.x;
-    vec2 position = pica_surface_water_world.xz - pica_surface_water_flow * time;
+    vec2 position = vec2(dot(pica_surface_water_world, pica_surface_water_tangent),
+                         dot(pica_surface_water_world, pica_surface_water_bitangent)) -
+                    pica_surface_water_flow * time;
     float fast = pica_surface_water_fast();
     float scale = max(pica_surface.water_ripples.z, 0.05) * mix(1.0, 0.6, fast);
     // Wavelength (world units), direction (degrees from the wind) and slope.
@@ -663,17 +691,18 @@ vec3 pica_surface_water_shade(vec3 native_rgb, vec3 sky) {
     if (pica_surface.water_optics.w == -3.0)
         return pica_surface.water_flow.z <= 0.0 ? vec3(0.2, 1.0, 0.2)
                                                 : mix(vec3(0.0, 0.3, 1.0), vec3(1.0, 0.2, 0.0), pica_surface_water_fast());
-    vec3 normal = pica_surface_view_direction(vec3(-slope.x, 1.0, -slope.y));
+    vec3 normal = pica_surface_view_direction(pica_surface_water_up - slope.x * pica_surface_water_tangent -
+                                              slope.y * pica_surface_water_bitangent);
     // Seen from below (underwater), the surface faces down.
     if (dot(normal, view_dir) < 0.0) normal = -normal;
     float reflectance = pica_surface_water_fresnel(dot(normal, view_dir));
     // The environment: the fog colour, unless the reflection trace owns it
-    // (water_flow.w), which mixes its hits and the screen's sky over the
-    // native colour by the same reflectance.
-    vec3 color = mix(native_rgb, sky,
-                     pica_surface.water_flow.w > 0.0 ? 0.0 : reflectance * pica_surface.water_optics.z);
+    // (water_flow.w) on a body's plane, where it mixes its hits and the
+    // screen's sky over the native colour by the same reflectance.
+    bool traced = pica_surface.water_flow.w > 0.0 && pica_surface_water_traced;
+    vec3 color = mix(native_rgb, sky, traced ? 0.0 : reflectance * pica_surface.water_optics.z);
     if (pica_surface.water_optics.w == -4.0)
-        return vec3(pica_surface.water_flow.w, reflectance, 0.0);
+        return vec3(traced ? 1.0 : 0.0, reflectance, pica_surface_water_traced ? 0.0 : 1.0);
     vec3 specular = vec3(0.0);
     for (uint slot = 0u; slot < pica_surface.control.z; ++slot)
         specular += pica_surface_water_specular(normal, view_dir,
@@ -720,9 +749,11 @@ std::string_view PicaSurfaceLightingBody() noexcept {
         vec2 water_uv_dy = dFdy(pica_texcoord0);
         vec3 water_view_dx = dFdx(pica_view);
         vec3 water_view_dy = dFdy(pica_view);
-        if (surface_water)
-            pica_surface_water_flow = pica_surface_water_flow_world(water_uv_dx, water_uv_dy, water_view_dx,
-                                                                   water_view_dy);
+        if (surface_water) {
+            vec3 flow = pica_surface_water_flow_world(water_uv_dx, water_uv_dy, water_view_dx, water_view_dy);
+            pica_surface_water_flow = vec2(dot(flow, pica_surface_water_tangent),
+                                           dot(flow, pica_surface_water_bitangent));
+        }
     }
     if ((pica_surface.control.x != 0u || pica_surface.environment_parameters.w != 0.0 ||
          pica_surface.control.y != 0u || pica_surface.control.z != 0u) && !surface_water) {
