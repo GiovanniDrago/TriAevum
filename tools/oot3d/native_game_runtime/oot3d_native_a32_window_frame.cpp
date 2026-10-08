@@ -1,5 +1,6 @@
 // Native A32 window session: one frame of the loop and the renderer-side work it schedules.
 #include "oot3d_native_a32_window_session.h"
+#include "fast/renderer3ds/pica_surface_debug.h"
 
 namespace Oot3dA32Window {
 
@@ -2126,7 +2127,19 @@ void NativeA32WindowSession::UpdateDevLab(uint64_t guestFrame) {
     const auto &command = *devLabCommand;
     const std::string op = command["op"].get<std::string>();
     try {
-      if (op == "warp") {
+      if (op == "warp" && command.contains("better")) {
+        // An entrance of the Debug Warp Screen's Better list ([scene, entrance]
+        // indices), with age ("child"/"adult") and time ("day"/"night").
+        const auto scenes = Oot3dNativeGame::DevWarpBetterScenes();
+        const auto scene = command["better"].at(0).get<size_t>();
+        const auto entrance = command["better"].at(1).get<size_t>();
+        if (scene >= scenes.size() || entrance >= scenes[scene].Count)
+          throw std::out_of_range("no such Better scene/entrance");
+        devWarp->WarpTo(Oot3dNativeGame::DevWarpBetterEntrances()[scenes[scene].First + entrance],
+                        command.value("age", std::string("child")) == "adult" ? Oot3dNativeGame::DevWarpAge::Adult
+                                                                               : Oot3dNativeGame::DevWarpAge::Child,
+                        command.value("time", std::string("day")) == "night");
+      } else if (op == "warp") {
         // Link respawns at the position in the room (SoH's warp point), facing yaw.
         Oot3dNativeGame::DevWarpPoint point;
         point.EntranceId = command.value("entrance", 0);
@@ -2167,6 +2180,16 @@ void NativeA32WindowSession::UpdateDevLab(uint64_t guestFrame) {
         finish(applied.Accepted() && !decoded.UnsupportedFutureVersion ? "ok" : "failed",
                {{"frame", guestFrame}, {"decodeIssues", decoded.Issues.size()},
                 {"applyIssues", applied.Issues.size()}});
+      } else if (op == "surface_trace") {
+        // The surface-lighting candidates of the next frames, one JSON line each.
+        Fast::Renderer3ds::PicaSurfaceDebug::Instance().RequestTrace(command.at("path").get<std::string>(),
+                                                                     command.value("frames", 1U));
+        finish("ok", {{"frame", guestFrame}});
+      } else if (op == "surface_exempt") {
+        // Candidates first..last keep their native appearance ({} clears).
+        Fast::Renderer3ds::PicaSurfaceDebug::Instance().SetExemptRange(command.value("first", 1U),
+                                                                       command.value("last", 0U));
+        finish("ok", {{"frame", guestFrame}});
       } else if (op == "gizmos") {
         sceneEnvironment->ShowLightGizmos(command.value("shown", true));
         finish("ok", {{"frame", guestFrame}});

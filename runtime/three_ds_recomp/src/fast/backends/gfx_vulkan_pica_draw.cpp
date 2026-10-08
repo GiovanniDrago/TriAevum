@@ -2,6 +2,8 @@
 #ifdef ENABLE_OOT3D_VULKAN
 #include "gfx_vulkan_pica_internal.h"
 #include "fast/renderer3ds/pica_draw_coverage.h"
+#include "fast/renderer3ds/pica_surface_appearance.h"
+#include "fast/renderer3ds/pica_surface_debug.h"
 
 namespace Fast {
 
@@ -690,7 +692,23 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         // environment profile, shadows, GI or ambient occlusion.
         const bool isolatedLighting = !nativeMemoryOnly && draw.Composition.IsolatedLighting &&
             Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting);
-        const bool directionalShadowReceiver = !nativeMemoryOnly && !isolatedLighting &&
+        // Authored appearance (additive light, colour no light produced) is
+        // never relit or shadowed (pica_surface_appearance.h). Vertex lighting
+        // is the typed surface program's boolean; unknown counts as lit.
+        bool nativeVertexLighting = true;
+        if (const auto* surfaceProgram = draw.TemporalVertexProgram.Hooks.SurfaceProgram();
+            surfaceProgram != nullptr &&
+            draw.VertexUniformBytes.size() >= Oot3d::kPicaPackedVertexBooleanMaskOffset + sizeof(uint32_t)) {
+            uint32_t vertexBooleans = 0U;
+            std::memcpy(&vertexBooleans, draw.VertexUniformBytes.data() + Oot3d::kPicaPackedVertexBooleanMaskOffset,
+                        sizeof(vertexBooleans));
+            nativeVertexLighting = ((vertexBooleans >> surfaceProgram->LightingBooleanUniform) & 1U) != 0U;
+        }
+        const auto surfaceAppearance = Renderer3ds::ClassifyPicaSurfaceAppearance(
+            draw.Blend, nativeVertexLighting, draw.FragmentFeatures.FragmentLightingEnabled);
+        const bool authoredAppearance = Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
+            surfaceAppearance != Renderer3ds::PicaSurfaceAppearance::Relightable;
+        const bool directionalShadowReceiver = !nativeMemoryOnly && !isolatedLighting && !authoredAppearance &&
             Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
             mDirectionalShadowMapBarrierPlan.Valid() &&
             Oot3d::PicaExtensionPassEnabled(
@@ -699,6 +717,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             grassPerspectiveProjection;
         // Point lights with a cube map: only NRI-owned draws bind the atlas.
         const bool pointShadowReceiver = !nativeMemoryOnly && !mNativeFidelityProfile && !isolatedLighting &&
+            !authoredAppearance &&
             graphicsSettings.Effects.PointShadows.Mode == Oot3d::PointShadowMode::CubeMaps &&
             Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) &&
             mPointShadowMapBarrierPlan.Valid() &&
@@ -728,12 +747,22 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         const auto* environmentWorldToView = draw.LightBinding.WorldToView
             ? &*draw.LightBinding.WorldToView : nullptr;
         Oot3d::DirectionalShadowMatrix environmentViewToWorld{};
-        if (!nativeMemoryOnly && !mNativeFidelityProfile &&
+        const bool surfaceCandidate = !nativeMemoryOnly && !mNativeFidelityProfile &&
             graphicsSettings.Effects.SurfaceLighting != Oot3d::SurfaceLightingMode::Native &&
             draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Scene &&
             Renderer3ds::PicaCompositionReceivesSurfaceLighting(draw.Composition.Layer) &&
             grassPerspectiveProjection && draw.FragmentOperationMode != 3U &&
-            draw.VertexUniformBytes.size() >= Oot3d::kPicaPackedVertexFloatOffset) {
+            draw.VertexUniformBytes.size() >= Oot3d::kPicaPackedVertexFloatOffset;
+#if defined(TRIAEVUM_RENDERER_DEVELOPER_TOOLS)
+        // Developer lab: candidates are numbered per frame; a debug range keeps
+        // its native appearance (finding the draw an effect belongs to).
+        auto& surfaceDebug = Renderer3ds::PicaSurfaceDebug::Instance();
+        const uint32_t surfaceOrdinal = surfaceCandidate ? surfaceDebug.NextOrdinal() : 0U;
+        const bool surfaceExempt = surfaceCandidate && surfaceDebug.Exempt(surfaceOrdinal);
+#else
+        constexpr bool surfaceExempt = false;
+#endif
+        if (surfaceCandidate && !surfaceExempt && !authoredAppearance) {
             uint32_t booleanUniforms = 0U;
             std::memcpy(&booleanUniforms, draw.VertexUniformBytes.data() +
                         Oot3d::kPicaPackedVertexBooleanMaskOffset, sizeof(booleanUniforms));
@@ -933,6 +962,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             mDiagnostics.RecordAoReliefDraw(reliefTexture < 3U);
         }
         finishCpuStage(cpuTimings.TextureMilliseconds);
+        // Nor does it reflect: its colour is not a surface's.
+        if (authoredAppearance) resolvedReflectionMaterial.reset();
         const Oot3d::PicaShaderPipelineRequest variantRequest{
             draw.VertexShaderSource,
             draw.VertexShaderKey,
@@ -952,7 +983,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 draw.DepthCompare,
                 draw.Composition.Layer,
                 pointShadowReceiver && surfaceLighting.has_value(),
-                isolatedLighting,
+                // Authored appearance, like an isolated object, publishes no
+                // ambient occlusion response and no GI albedo.
+                isolatedLighting || authoredAppearance,
             },
             mTemporalMotionEnabled && !nativeMemoryOnly,
             resolvedReflectionMaterial.has_value()
@@ -975,6 +1008,67 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 variantRequest,
                 nativeMemoryOnly ? nativeMemoryEffects : graphicsSettings.Effects,
                 &variantCacheHit);
+#if defined(TRIAEVUM_RENDERER_DEVELOPER_TOOLS)
+        if (surfaceCandidate && surfaceDebug.Tracing()) {
+            // One candidate: its native colour computation and what Modern did.
+            Renderer3ds::PicaTevProgram tev{};
+            const bool tevKnown = draw.FragmentUniformBytes.size() >=
+                Oot3d::kPicaPackedFragmentTevProgramOffset + sizeof(tev);
+            if (tevKnown)
+                std::memcpy(&tev, draw.FragmentUniformBytes.data() + Oot3d::kPicaPackedFragmentTevProgramOffset,
+                            sizeof(tev));
+            const bool pbrApplied = Oot3d::HasPicaShaderInstrumentationFeature(
+                shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::PbrMaterial);
+            const bool perPixelApplied = Oot3d::HasPicaShaderInstrumentationFeature(
+                shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::NativePerPixelLighting);
+            const bool vertexLightingKnown = draw.TemporalVertexProgram.Hooks.SurfaceProgram() != nullptr;
+            char line[1024];
+            std::snprintf(line, sizeof(line),
+                "{\"frame\":%llu,\"ordinal\":%u,\"submission\":%llu,\"layer\":%u,\"provenance\":%u,"
+                "\"actor\":%d,\"actorIdentity\":\"%llx\",\"isolated\":%d,\"vertexLit\":%d,\"fragmentLighting\":%d,"
+                "\"fog\":%d,\"blend\":[%d,%u,%u,%u],\"alphaTest\":%d,\"depthWrite\":%d,\"textures\":%zu,"
+                "\"vertices\":%u,\"tevColorSources\":\"%04x\",\"tevKnown\":%d,\"fragmentProgram\":\"%llx\","
+                "\"geometry\":\"%llx\",\"surfaceUniforms\":%d,\"perPixel\":%d,\"pbr\":%d,\"exempt\":%d,"
+                "\"appearance\":%u,\"vertexLightingKnown\":%d}",
+                static_cast<unsigned long long>(surfaceDebug.Frame()), surfaceOrdinal,
+                static_cast<unsigned long long>(draw.SubmissionId), static_cast<unsigned>(draw.Composition.Layer),
+                static_cast<unsigned>(draw.Composition.Provenance), draw.Composition.NativeActorGeometry ? 1 : 0,
+                static_cast<unsigned long long>(draw.Composition.NativeActorIdentity),
+                draw.Composition.IsolatedLighting ? 1 : 0,
+                nativeVertexLighting ? 1 : 0,
+                draw.FragmentFeatures.FragmentLightingEnabled ? 1 : 0, draw.FragmentFeatures.FogEnabled ? 1 : 0,
+                draw.Blend.Enabled ? 1 : 0, static_cast<unsigned>(draw.Blend.EquationRgb),
+                static_cast<unsigned>(draw.Blend.SourceRgb), static_cast<unsigned>(draw.Blend.DestRgb),
+                draw.AlphaTestEnabled ? 1 : 0, draw.DepthWriteEnabled ? 1 : 0, draw.Textures.size(),
+                draw.VertexCount, tevKnown ? Renderer3ds::PicaTevColorSourceMask(tev) : 0U, tevKnown ? 1 : 0,
+                static_cast<unsigned long long>(draw.CanonicalFragmentProgramId),
+                static_cast<unsigned long long>(draw.GeometryIdentity), surfaceLighting.has_value() ? 1 : 0,
+                perPixelApplied ? 1 : 0, pbrApplied ? 1 : 0, surfaceExempt ? 1 : 0,
+                static_cast<unsigned>(surfaceAppearance), vertexLightingKnown ? 1 : 0);
+            std::string record = line;
+            if (surfaceLighting) {
+                // The native material and lights the replacement read.
+                const auto& s = *surfaceLighting;
+                char material[512];
+                std::snprintf(material, sizeof(material),
+                    ",\"materialDiffuse\":[%.3f,%.3f,%.3f],\"materialAmbient\":[%.3f,%.3f,%.3f],"
+                    "\"resolvedAmbient\":[%.3f,%.3f,%.3f],\"nativeLights\":[[%.3f,%.3f,%.3f,%.0f],"
+                    "[%.3f,%.3f,%.3f,%.0f],[%.3f,%.3f,%.3f,%.0f]]}",
+                    s.MaterialDiffuse[0], s.MaterialDiffuse[1], s.MaterialDiffuse[2], s.MaterialAmbient[0],
+                    s.MaterialAmbient[1], s.MaterialAmbient[2], s.ResolvedAmbient[0], s.ResolvedAmbient[1],
+                    s.ResolvedAmbient[2], s.Lights[0].Diffuse[0], s.Lights[0].Diffuse[1], s.Lights[0].Diffuse[2],
+                    s.Lights[0].DirectionEnabled[3], s.Lights[1].Diffuse[0], s.Lights[1].Diffuse[1],
+                    s.Lights[1].Diffuse[2], s.Lights[1].DirectionEnabled[3], s.Lights[2].Diffuse[0],
+                    s.Lights[2].Diffuse[1], s.Lights[2].Diffuse[2], s.Lights[2].DirectionEnabled[3]);
+                record.pop_back();
+                record += material;
+            }
+            surfaceDebug.Write(record);
+            // An exempted candidate's native shaders, next to the trace.
+            if (surfaceExempt)
+                surfaceDebug.WriteSource(surfaceOrdinal, draw.VertexShaderSource, draw.FragmentShaderSource);
+        }
+#endif
         if (pbrMaterial != nullptr && pbrMaterial->Material->ColorReplacement &&
             Oot3d::HasPicaShaderInstrumentationFeature(
                 shaderVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::PbrMaterial))

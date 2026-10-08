@@ -1,6 +1,7 @@
 // Vulkan backend: presentation settings and the frame (StartFrame, EndFrame, FinishRender).
 #ifdef ENABLE_OOT3D_VULKAN
 #include "gfx_vulkan_internal.h"
+#include "fast/renderer3ds/pica_surface_debug.h"
 
 namespace Fast {
 
@@ -358,6 +359,9 @@ void GfxRenderingAPIVulkan::StartFrame() {
         }
     }
     auto graphicsSnapshot = settingsRuntime.SnapshotForRendering();
+#if defined(TRIAEVUM_RENDERER_DEVELOPER_TOOLS)
+    Renderer3ds::PicaSurfaceDebug::Instance().BeginFrame();
+#endif
     const auto& nextGraphicsSettings = graphicsSnapshot.Value;
     if (mFrameEnvironment != graphicsSnapshot.Environment) {
         mTemporalAaPass.ResetHistory();
