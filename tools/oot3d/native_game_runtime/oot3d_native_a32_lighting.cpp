@@ -374,15 +374,16 @@ void NativeA32LightingProbe::ContinueSceneLights(Fast::Renderer3ds::PicaSceneDir
 }
 
 // A flame actor's light: En_Light (0x008, fire objects such as the Fire
-// Temple's great flames) and Obj_Syokudai (0x05E, torches). Neither registers
+// Temple's great flames), Obj_Syokudai (0x05E, torches) and Bg_Po_Syokudai
+// (0x105, the Forest Temple's coloured torches). Neither registers
 // a LightContext record in OOT3D. Position: the actor's world position
 // (+0x28) raised to the flame; reach from its scale (+0x54); colour from the
 // flame's kind (OoT's En_Light table: 2 blue, 3 green, else orange). A torch
 // is lit while its timer (s16 +0x27C, OoT's litTimer: -1 for good, a count
 // down when the player lit it, 0 unlit) is non-zero: the same test
 // ObjSyokudai_Draw (00286590) makes before drawing its flame.
-static bool CaptureFlameEmitter(oot3d::recomp::a32::MemoryBus& memory, uint32_t actor, uint16_t id,
-                                uint16_t params, Fast::Renderer3ds::PicaScenePointLight& light) {
+static bool CaptureFlameEmitter(oot3d::recomp::a32::MemoryBus& memory, uint32_t playState, uint32_t actor,
+                                uint16_t id, uint16_t params, Fast::Renderer3ds::PicaScenePointLight& light) {
     std::array<float, 3> position{};
     float scale = 0.0F;
     uint32_t bits = 0;
@@ -402,6 +403,24 @@ static bool CaptureFlameEmitter(oot3d::recomp::a32::MemoryBus& memory, uint32_t 
         case 3U: light.Color = {0.65F, 1.0F, 0.3F}; break;
         default: light.Color = {1.0F, 0.62F, 0.28F}; break;
         }
+        return true;
+    }
+    if (id == 0x105U) {
+        // Bg_Po_Syokudai (the Poe sisters' torches): BgPoSyokudai_Draw
+        // (0029D5A0) draws the flame while the room switch flag in params is
+        // set (Flags_GetSwitch 0036E864: PlayState +0x2228/+0x222C), coloured
+        // by the index at +0x1A4 into its table at 005134FC.
+        const uint32_t flag = static_cast<uint32_t>(static_cast<int16_t>(params));
+        uint32_t flags = 0;
+        uint8_t colour = 0;
+        if (flag >= 64U || !memory.Read32(playState + (flag < 32U ? 0x2228U : 0x222CU), &flags) ||
+            ((flags >> (flag & 31U)) & 1U) == 0U || !memory.Read8(actor + 0x1A4U, &colour))
+            return false;
+        static constexpr std::array<std::array<float, 3>, 4> kPoeFlames{{
+            {1.0F, 0.67F, 1.0F}, {1.0F, 0.78F, 0.0F}, {0.0F, 0.67F, 1.0F}, {0.67F, 1.0F, 0.0F}}};
+        light.Color = kPoeFlames[colour & 3U];
+        light.PositionWorld[1] += 90.0F;
+        light.Radius = 600.0F;
         return true;
     }
     uint16_t litTimer = 0;
@@ -507,10 +526,10 @@ void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recom
                 }
                 // Flames the title draws but never lights (group 2): their
                 // light is only baked into room vertex colours natively.
-                if ((id == 0x008U || id == 0x05EU) && update != 0 &&
+                if ((id == 0x008U || id == 0x05EU || id == 0x105U) && update != 0 &&
                     memory.Read16(actor + offsetof(Oot3dActor, params), &params)) {
                     PicaScenePointLight light;
-                    if (CaptureFlameEmitter(memory, actor, id, params, light)) {
+                    if (CaptureFlameEmitter(memory, playState, actor, id, params, light)) {
                         const auto end = snapshot.Lights.begin() + snapshot.Count;
                         if (std::none_of(snapshot.Lights.begin(), end,
                                          [&](const auto& existing) {

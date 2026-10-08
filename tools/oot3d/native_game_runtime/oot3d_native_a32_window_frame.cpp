@@ -2161,6 +2161,7 @@ void NativeA32WindowSession::UpdateDevLab(uint64_t guestFrame) {
       } else if (op == "status") {
         const auto environment = sceneEnvironment->Snapshot();
         auto detail = place();
+        detail["playState"] = sceneViewProbe.Stats().LastPlayStateAddress;
         detail["warp"] = status.Message;
         detail["profile"] = {{"file", environment.FileExists ? environment.Path.string() : std::string()},
                              {"enabled", environment.Profile.Enabled},
