@@ -2280,7 +2280,8 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                                 water ? &*worldToView : nullptr,
                                 water ? &bodies : nullptr,
                                 std::chrono::duration<float>(std::chrono::steady_clock::now() - mWaterEpoch).count(),
-                                mWaterOnlyReflections);
+                                mWaterOnlyReflections,
+                                mWaterRipplesFrame == mFrameCounter ? &mWaterRings : nullptr);
                         }());
                 if (hiZExecuted) {
                     recordEffectPassTransitions(

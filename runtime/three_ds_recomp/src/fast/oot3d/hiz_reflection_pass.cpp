@@ -92,7 +92,8 @@ bool HiZReflectionPass::Initialize(VkPhysicalDevice physicalDevice,
         mImpl->Core = NriInteropAccess::Core(interop);
         if (nriDevice == nullptr || mImpl->Core == nullptr)
             throw std::runtime_error("NRI SSR device is unavailable");
-        const std::array<nri::DescriptorRangeDesc, 8> ranges{{
+        // 8: the scene colour (the filter composes water over it).
+        const std::array<nri::DescriptorRangeDesc, 9> ranges{{
             {0, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER},
             {1, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER},
             {2, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER},
@@ -101,7 +102,8 @@ bool HiZReflectionPass::Initialize(VkPhysicalDevice physicalDevice,
              nri::StageBits::COMPUTE_SHADER},
             {5, 1, nri::DescriptorType::SAMPLER, nri::StageBits::COMPUTE_SHADER},
             {6, 1, nri::DescriptorType::SAMPLER, nri::StageBits::COMPUTE_SHADER},
-            {7, 1, nri::DescriptorType::CONSTANT_BUFFER, nri::StageBits::COMPUTE_SHADER}}};
+            {7, 1, nri::DescriptorType::CONSTANT_BUFFER, nri::StageBits::COMPUTE_SHADER},
+            {8, 1, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER}}};
         nri::DescriptorSetDesc set{};
         set.ranges = ranges.data();
         set.rangeNum = static_cast<uint32_t>(ranges.size());
@@ -243,7 +245,7 @@ bool HiZReflectionPass::Configure(
         nri::DescriptorPoolDesc pool{};
         pool.descriptorSetMaxNum = 2U * kWaterSlots;
         pool.samplerMaxNum = 4U * kWaterSlots;
-        pool.textureMaxNum = 8U * kWaterSlots;
+        pool.textureMaxNum = 10U * kWaterSlots;
         pool.storageTextureMaxNum = 2U * kWaterSlots;
         pool.constantBufferMaxNum = 2U * kWaterSlots;
         nri::Device* device = NriInteropAccess::Device(*mImpl->Interop);
@@ -266,13 +268,14 @@ bool HiZReflectionPass::Configure(
                 *mImpl->Interop, destinationImage, true);
             if (destination == nullptr)
                 throw std::runtime_error("NRI SSR storage view failed");
-            std::array<nri::UpdateDescriptorRangeDesc, 8> updates{};
+            std::array<nri::UpdateDescriptorRangeDesc, 9> updates{};
             for (uint32_t i = 0; i < sources.size(); ++i)
                 updates[i] = {set, i, 0, &sources[i], 1};
             updates[4] = {set, 4, 0, &destination, 1};
             updates[5] = {set, 5, 0, &mImpl->LinearSampler, 1};
             updates[6] = {set, 6, 0, &mImpl->NearestSampler, 1};
             updates[7] = {set, 7, 0, &mImpl->WaterViews[slot], 1};
+            updates[8] = {set, 8, 0, &inputViews[0], 1};
             mImpl->Core->UpdateDescriptorRanges(
                 updates.data(), static_cast<uint32_t>(updates.size()));
         };

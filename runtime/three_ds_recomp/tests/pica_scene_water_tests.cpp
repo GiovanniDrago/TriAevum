@@ -91,6 +91,37 @@ int main() {
     expect(!PicaWaterTextureCatalog::Parse("triaevum-water-textures 1\n7304e8d17265fb40 64 64\n"), "missing role");
     expect(!PicaWaterTextureCatalog::Parse("triaevum-water-textures 1\n7304e8d17265fb40 64 64 1 9\n"), "extra field");
     checks += 10;
+    // Ripples: a mover whose cylinder crosses the main pool's surface (y 0).
+    PicaWaterRippleField field;
+    const auto live = [&](float strength) {
+        size_t count = 0;
+        for (const auto& ring : field.Rings()) count += ring.Strength >= strength ? 1U : 0U;
+        return count;
+    };
+    PicaWaterMover link{7, {0.0F, 60.0F, -500.0F}, 15.0F, 50.0F};
+    field.Advance(1.0F, &link, 1, bodies);
+    expect(live(0.01F) == 0U, "above the water: no ring");
+    link.Base[1] = -30.0F;
+    field.Advance(1.1F, &link, 1, bodies);
+    expect(live(1.0F) == 1U, "entering: a splash");
+    link.Base[0] = 4.0F;
+    field.Advance(1.2F, &link, 1, bodies);
+    expect(live(0.01F) == 1U, "less than the spacing: nothing more");
+    link.Base[0] = 20.0F;
+    field.Advance(1.3F, &link, 1, bodies);
+    expect(live(0.01F) == 2U, "travelling: a ring");
+    field.Advance(2.5F, &link, 1, bodies);
+    expect(live(0.01F) == 3U && live(0.25F) == 2U, "at rest: a faint ring");
+    link.Base[1] = -200.0F;
+    field.Advance(2.6F, &link, 1, bodies);
+    expect(live(0.01F) == 3U, "under the water: none");
+    field.Advance(4.45F, &link, 1, bodies);
+    expect(live(0.01F) == 1U, "rings die after their lifetime");
+    field.Advance(1.0F, &link, 1, bodies);
+    expect(live(0.01F) == 0U, "time going back restarts");
+    PicaWaterMover outside{8, {5000.0F, -10.0F, 0.0F}, 15.0F, 50.0F};
+    expect(!PicaWaterRippleField::CrossesSurface(outside, bodies), "outside every footprint");
+    checks += 9;
     std::cout << "pica_scene_water_tests: " << checks << " checks passed\n";
     return 0;
 }

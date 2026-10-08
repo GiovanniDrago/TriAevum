@@ -203,7 +203,16 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         // the title publishes no body for: a moat, a well).
         bool WholeDraw = false;
         std::optional<::Fast::Renderer3ds::PicaSceneWaterBody> Plane;
+        // Its catalog roles (PicaWaterTextureRole).
+        uint8_t Roles = 0;
     };
+    // Ripples of the actors moving through the water (their collision
+    // cylinders), advanced once per frame on the water ripple clock.
+    ::Fast::Renderer3ds::PicaWaterRippleField mWaterRipples;
+    uint64_t mWaterRipplesFrame = 0;
+    const std::array<::Fast::Renderer3ds::PicaWaterRing, ::Fast::Renderer3ds::kPicaWaterRings>& AdvanceWaterRipples(
+        const ::Fast::Renderer3ds::PicaSceneWaterBodies& bodies, float seconds);
+    std::array<::Fast::Renderer3ds::PicaWaterRing, ::Fast::Renderer3ds::kPicaWaterRings> mWaterRings{};
     NativePicaWaterSurface ResolveNativePicaWaterSurface(const GfxNativePicaDrawView& draw);
     // The title's water textures (TRIAEVUM_WATER_TEXTURE_CATALOG, generated
     // by the installer from the user's RomFS), loaded on first use.

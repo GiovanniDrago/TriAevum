@@ -89,15 +89,19 @@ struct alignas(16) PicaSurfaceLightingUniforms {
     // Water optics: F0, GGX alpha, environment reflection and direct
     // specular strengths (kPicaSurfaceWaterOptics unless a scene sets them).
     std::array<float, 4> WaterOptics{};
-    // Water ripples: time (seconds, wrapped), slope strength, wavelength scale.
+    // Water ripples: time (seconds, wrapped), slope strength, wavelength scale
+    // and a tall waterfall's base height (foam where it lands; -1e9: none).
     std::array<float, 4> WaterRipples{};
     // Water flow: texture coordinate 0's scrolling (texture units per second,
     // xy) and whether it is known (z); w: the reflection trace owns the
     // water's environment term (the Hi-Z trace finds water surfaces).
     std::array<float, 4> WaterFlow{};
+    // Movers' ripple rings (PicaWaterRippleField): centre x, z, birth (water
+    // ripple time) and strength (0: none).
+    std::array<std::array<float, 4>, kPicaWaterRings> WaterRings{};
 };
 
-static_assert(sizeof(PicaSurfaceLightingUniforms) == 2656U);
+static_assert(sizeof(PicaSurfaceLightingUniforms) == 2912U);
 
 // Water's Fresnel reflectance at normal incidence, its GGX alpha, and its
 // environment reflection (subdued: the environment is the fog colour until
@@ -136,7 +140,8 @@ std::optional<PicaSurfaceLightingView> BuildPicaSurfaceLightingView(
 void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSurfaceLightingView& view,
                             const PicaSceneWaterBodies& bodies, const std::array<float, 3>& worldMinimum,
                             const std::array<float, 3>& worldMaximum, float seconds,
-                            bool wholeDraw = false) noexcept;
+                            bool wholeDraw = false,
+                            const std::array<PicaWaterRing, kPicaWaterRings>* rings = nullptr) noexcept;
 
 [[nodiscard]] std::string_view PicaSurfaceLightingDeclarations() noexcept;
 [[nodiscard]] std::string_view PicaSurfaceLightingBody() noexcept;

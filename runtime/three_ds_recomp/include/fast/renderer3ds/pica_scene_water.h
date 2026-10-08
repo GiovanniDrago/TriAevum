@@ -208,4 +208,115 @@ inline void AdvancePicaWaterFlow(PicaWaterFlowTrack& track, uint64_t frame, floa
     ++track.Samples;
 }
 
+// Ripples of what moves through the water: rings that a mover (an actor's
+// collision cylinder) emits where its cylinder crosses a body's surface. A
+// ring spreads from its centre and fades (the surface shaders add its slope
+// to the waves): a splash when the mover enters, a ring every few units it
+// travels (a wake when swimming), a faint ring now and then at rest.
+inline constexpr uint32_t kPicaWaterRings = 16U;
+// Seconds a ring lives.
+inline constexpr float kPicaWaterRingLifetime = 3.0F;
+
+struct PicaWaterMover {
+    uint64_t Identity = 0;
+    // The cylinder's base (world) and its radius and height.
+    std::array<float, 3> Base{};
+    float Radius = 0.0F;
+    float Height = 0.0F;
+};
+
+struct PicaWaterRing {
+    std::array<float, 2> CenterXZ{};
+    // Birth (water time, seconds) and strength (0: none).
+    float Birth = 0.0F;
+    float Strength = 0.0F;
+};
+
+class PicaWaterRippleField {
+public:
+    // One step at the water time (seconds; a time going back restarts).
+    void Advance(float seconds, const PicaWaterMover* movers, size_t moverCount,
+                 const PicaSceneWaterBodies& bodies) {
+        if (seconds < mTime) Reset();
+        mTime = seconds;
+        for (size_t m = 0; m < moverCount; ++m) {
+            const auto& mover = movers[m];
+            const bool inWater = CrossesSurface(mover, bodies);
+            auto track = std::find_if(mTracks.begin(), mTracks.end(),
+                                      [&](const Track& item) { return item.Identity == mover.Identity; });
+            const std::array<float, 2> position{mover.Base[0], mover.Base[2]};
+            if (track == mTracks.end()) {
+                mTracks.push_back({mover.Identity, position, seconds, seconds, inWater});
+                if (inWater) Emit(position, seconds, 0.3F);
+                continue;
+            }
+            track->Seen = seconds;
+            if (inWater && !track->InWater) {
+                // Entering: a splash.
+                Emit(position, seconds, 1.4F);
+                track->Last = position;
+                track->Emitted = seconds;
+            } else if (inWater) {
+                const float moved = std::hypot(position[0] - track->Last[0], position[1] - track->Last[1]);
+                const float spacing = std::max(0.8F * mover.Radius, 8.0F);
+                const float elapsed = std::max(seconds - track->Emitted, 1.0e-3F);
+                if (moved >= spacing) {
+                    Emit(position, seconds, std::clamp(0.35F + moved / elapsed / 200.0F, 0.35F, 1.0F));
+                    track->Last = position;
+                    track->Emitted = seconds;
+                } else if (elapsed >= 1.1F) {
+                    Emit(position, seconds, 0.2F);
+                    track->Emitted = seconds;
+                }
+            }
+            track->InWater = inWater;
+        }
+        // Movers no longer seen are forgotten after a second.
+        std::erase_if(mTracks, [&](const Track& item) { return seconds - item.Seen > 1.0F; });
+    }
+
+    void Reset() {
+        mTracks.clear();
+        mRings = {};
+        mNext = 0;
+        mTime = 0.0F;
+    }
+
+    // The live rings (strength 0: an empty slot).
+    [[nodiscard]] std::array<PicaWaterRing, kPicaWaterRings> Rings() const noexcept {
+        auto result = mRings;
+        for (auto& ring : result)
+            if (mTime - ring.Birth > kPicaWaterRingLifetime) ring = {};
+        return result;
+    }
+
+    [[nodiscard]] static bool CrossesSurface(const PicaWaterMover& mover, const PicaSceneWaterBodies& bodies) {
+        for (uint32_t i = 0; i < std::min(bodies.Count, kMaximumPicaSceneWaterBodies); ++i) {
+            const auto& body = bodies.Bodies[i];
+            if (mover.Base[0] >= body.MinimumXZ[0] && mover.Base[0] <= body.MaximumXZ[0] &&
+                mover.Base[2] >= body.MinimumXZ[1] && mover.Base[2] <= body.MaximumXZ[1] &&
+                mover.Base[1] <= body.SurfaceY + 2.0F && mover.Base[1] + mover.Height >= body.SurfaceY - 2.0F)
+                return true;
+        }
+        return false;
+    }
+
+private:
+    struct Track {
+        uint64_t Identity = 0;
+        std::array<float, 2> Last{};
+        float Emitted = 0.0F;
+        float Seen = 0.0F;
+        bool InWater = false;
+    };
+    void Emit(const std::array<float, 2>& center, float seconds, float strength) {
+        mRings[mNext] = {center, seconds, strength};
+        mNext = (mNext + 1U) % kPicaWaterRings;
+    }
+    std::vector<Track> mTracks;
+    std::array<PicaWaterRing, kPicaWaterRings> mRings{};
+    uint32_t mNext = 0;
+    float mTime = 0.0F;
+};
+
 } // namespace Fast::Renderer3ds

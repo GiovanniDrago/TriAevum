@@ -4,6 +4,7 @@
 #include "fast/renderer3ds/pica_draw_coverage.h"
 #include "fast/renderer3ds/pica_surface_appearance.h"
 #include "fast/renderer3ds/pica_surface_debug.h"
+#include "fast/oot3d/grass_interaction_bridge.h"
 
 #include <filesystem>
 #include <fstream>
@@ -243,6 +244,22 @@ const Renderer3ds::PicaWaterTextureCatalog* GfxRenderingAPIVulkan::WaterTextureC
     return mWaterTextureCatalog ? &*mWaterTextureCatalog : nullptr;
 }
 
+const std::array<Renderer3ds::PicaWaterRing, Renderer3ds::kPicaWaterRings>&
+GfxRenderingAPIVulkan::AdvanceWaterRipples(const Renderer3ds::PicaSceneWaterBodies& bodies, float seconds) {
+    if (mWaterRipplesFrame != mFrameCounter) {
+        mWaterRipplesFrame = mFrameCounter;
+        // The actors of the native frame on screen (the grass interactors).
+        const auto actors = Oot3d::GrassInteractionBridge::Instance().LatestActors();
+        std::vector<Renderer3ds::PicaWaterMover> movers;
+        movers.reserve(actors.size());
+        for (const auto& actor : actors)
+            movers.push_back({actor.StableId, actor.Position, actor.Radius, 2.0F * actor.HalfHeight});
+        mWaterRipples.Advance(seconds, movers.data(), movers.size(), bodies);
+        mWaterRings = mWaterRipples.Rings();
+    }
+    return mWaterRings;
+}
+
 GfxRenderingAPIVulkan::NativePicaWaterSurface GfxRenderingAPIVulkan::ResolveNativePicaWaterSurface(
     const GfxNativePicaDrawView& draw) {
     NativePicaWaterSurface result;
@@ -313,6 +330,7 @@ GfxRenderingAPIVulkan::NativePicaWaterSurface GfxRenderingAPIVulkan::ResolveNati
         result.Body = Renderer3ds::MatchPicaWaterSurface(instance.WorldBounds.Minimum,
                                                          instance.WorldBounds.Maximum, water);
     }
+    result.Roles = roles;
     if (catalogWater) {
         result.WholeDraw = true;
         if (!result.ReachesWater)
@@ -907,12 +925,23 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     plane.Bodies[0] = *waterSurface.Plane;
                     plane.Count = 1U;
                 }
+                const float seconds =
+                    std::chrono::duration<float>(std::chrono::steady_clock::now() - mWaterEpoch).count();
+                const auto* rings = draw.LightBinding.Water
+                    ? &AdvanceWaterRipples(*draw.LightBinding.Water, std::fmod(std::max(seconds, 0.0F), 3600.0F))
+                    : nullptr;
                 Renderer3ds::AssignPicaSurfaceWater(
                     *surfaceLighting, *mSurfaceLightingView,
                     waterSurface.Plane || !draw.LightBinding.Water ? plane : *draw.LightBinding.Water,
-                    waterSurface.WorldBounds.Minimum, waterSurface.WorldBounds.Maximum,
-                    std::chrono::duration<float>(std::chrono::steady_clock::now() - mWaterEpoch).count(),
-                    waterSurface.WholeDraw);
+                    waterSurface.WorldBounds.Minimum, waterSurface.WorldBounds.Maximum, seconds,
+                    waterSurface.WholeDraw, rings);
+                // A tall catalog waterfall: foam where it lands (its base).
+                const auto& minimum = waterSurface.WorldBounds.Minimum;
+                const auto& maximum = waterSurface.WorldBounds.Maximum;
+                if (waterSurface.WholeDraw &&
+                    (waterSurface.Roles & Renderer3ds::kPicaWaterTextureWaterfall) != 0U &&
+                    maximum[1] - minimum[1] > 0.5F * std::max(maximum[0] - minimum[0], maximum[2] - minimum[2]))
+                    surfaceLighting->WaterRipples[3] = minimum[1];
             }
             // Its texture's scrolling (coordinate 0) over native frames.
             if (surfaceLighting && surfaceLighting->WaterViewTranslation[3] > 0.0F) {

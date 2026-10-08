@@ -39,6 +39,8 @@ layout(set = 0, binding = 7, std140) uniform HiZWater {
     vec4 footprints[8];
     vec4 heights[2];
     vec4 parameters;
+    vec4 medium;
+    vec4 rings[16];
 } hiz_water;
 vec3 hiz_water_view_direction(vec2 uv) {
     vec2 ndc = oot3d_surface_view_ndc(uv, pc.surface_orientation);
@@ -65,7 +67,9 @@ float hiz_water_surface(vec2 uv, float scene_depth, out vec3 world_position, out
         if (camera.y <= height || ray.y >= -1.0e-6) continue;
         float depth = (height - camera.y) / ray.y;
         vec3 position = camera + ray * depth;
-        vec4 footprint = hiz_water.footprints[i];
+        // The drawn water reaches past the gameplay boxes; land above the
+        // water stands in front of the plane (rejected below).
+        vec4 footprint = hiz_water.footprints[i] + vec4(-400.0, -400.0, 400.0, 400.0);
         if (position.x < footprint.x || position.z < footprint.y || position.x > footprint.z ||
             position.z > footprint.w) continue;
         if (nearest == 0.0 || depth < nearest) {
@@ -92,6 +96,19 @@ vec2 hiz_water_slope(vec2 position, float footprint) {
         float speed = 0.33 * sqrt(981.0 / number);
         float phase = number * (dot(direction, position) - speed * time) + float(wave) * 1.618;
         slope += direction * (waves[wave].z * cos(phase) * fade);
+    }
+    // Movers' rings (the surface shader's).
+    float ring_fade = clamp(1.5 - 3.0 * footprint / 12.0, 0.0, 1.0);
+    for (int i = 0; ring_fade > 0.0 && i < 16; ++i) {
+        vec4 ring = hiz_water.rings[i];
+        float age = time - ring.z;
+        if (ring.w <= 0.0 || age < 0.0 || age > 3.0) continue;
+        vec2 offset = position - ring.xy;
+        float distance_world = length(offset);
+        float front = distance_world - (6.0 + 55.0 * age);
+        float width = 6.0 + 5.0 * age;
+        float envelope = ring.w * exp(-1.2 * age) * exp(-0.5 * front * front / (width * width));
+        slope += offset / max(distance_world, 1.0e-3) * (0.9 * ring_fade * envelope * sin(0.5236 * front));
     }
     return slope;
 }
@@ -289,12 +306,69 @@ layout(set = 0, binding = 3) uniform texture2D material_guide;
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D filtered_output;
 layout(set = 0, binding = 5) uniform sampler linear_sampler;
 layout(set = 0, binding = 6) uniform sampler nearest_sampler;
+layout(set = 0, binding = 8) uniform texture2D scene_color;
 )glsl";
     source += kPushBlock;
     source += Renderer3ds::PicaMaterialGuideShaderLibrary;
     source += EffectSurfaceCoordinateShaderLibrary;
     source += kWaterLibrary;
     source += R"glsl(
+vec2 water_project(vec3 position) {
+    float inverse_w = 1.0 / max(-position.z, 1.0e-5);
+    vec2 ndc = vec2(pc.projection_scale_x * position.x * inverse_w - pc.projection_offset_x,
+                    pc.projection_scale_y * position.y * inverse_w - pc.projection_offset_y);
+    return oot3d_view_ndc_surface_uv(ndc, pc.surface_orientation);
+}
+// A drifting pattern in [0, 1] (world units): warped directional sines, no
+// lattice (cell noise shows square tiles).
+float water_pattern(vec2 p, float time) {
+    float a = sin(dot(p, vec2(0.071, 0.043)) + 1.9 * sin(dot(p, vec2(-0.033, 0.058)) + 0.6 * time));
+    float b = sin(dot(p, vec2(-0.052, 0.087)) + 1.5 * sin(dot(p, vec2(0.061, 0.029)) - 0.45 * time) + 1.3);
+    float c = sin(dot(p, vec2(0.113, -0.097)) + 1.2 * sin(dot(p, vec2(0.021, 0.104)) + 0.8 * time) + 2.1);
+    return 0.5 + 0.2 * a + 0.17 * b + 0.13 * c;
+}
+// The water as a medium (hiz_water.medium): what is seen through the
+// surface, displaced by its ripples (refraction) and absorbed along the
+// view path below it, with foam where the water is shallow (shores, around
+// what stands in it); the reflection then by its Fresnel weight.
+vec3 water_compose(vec2 uv, vec3 world, vec3 direction, float water_depth, float scene_depth,
+                   vec3 reflection, float reflection_weight) {
+    vec3 normal = hiz_water_normal(world, water_depth, direction);
+    vec3 flat_normal = normalize(hiz_water.view_to_world[1].xyz);
+    vec3 ray_world = hiz_water_to_world(direction);
+    bool bed = !(isnan(scene_depth) || isinf(scene_depth)) && scene_depth < pc.far_plane;
+    // Depth below the surface (vertical) and the view path through it.
+    float below = bed ? max(scene_depth - water_depth, 0.0) : 1.0e4;
+    float column = below * abs(ray_world.y);
+    float path = below * length(ray_world);
+    // Refraction: the view of the bed shifts with the slope, more where the
+    // water is deeper; a shifted sample in front of the water is not its bed.
+    vec3 surface = direction * water_depth;
+    vec2 refracted_uv = water_project(surface + (normal - flat_normal) * hiz_water.medium.y * min(column, 80.0));
+    vec2 sample_uv = uv;
+    if (all(greaterThan(refracted_uv, vec2(0.0))) && all(lessThan(refracted_uv, vec2(1.0)))) {
+        float refracted_depth = textureLod(sampler2D(hiz_depth, nearest_sampler), refracted_uv, 0.0).r;
+        if (!(refracted_depth < water_depth + 1.0)) sample_uv = refracted_uv;
+    }
+    vec3 color = textureLod(sampler2D(scene_color, linear_sampler), sample_uv, 0.0).rgb;
+    // Absorption (red first), never to black: the title's water colour stays.
+    vec3 transmission = exp(-hiz_water.medium.x * vec3(2.6, 1.0, 0.75) * path);
+    color *= mix(vec3(0.6), vec3(1.0), transmission);
+    // Shore foam: broken by drifting noise, densest at the waterline.
+    float width = max(hiz_water.medium.z, 1.0e-3);
+    float shore = bed ? 1.0 - smoothstep(0.0, width, column) : 0.0;
+    float time = hiz_water.parameters.y;
+    float foam = 0.0;
+    if (shore > 0.0) {
+        float noise = water_pattern(world.xz, time);
+        foam = shore * shore * smoothstep(0.6, 0.9, noise + 0.45 * shore);
+    }
+    if (foam > 0.0) {
+        float light = clamp(dot(color, vec3(0.299, 0.587, 0.114)) * 1.6 + 0.3, 0.35, 1.0);
+        color = mix(color, vec3(light), 0.75 * foam);
+    }
+    return mix(color, reflection, clamp(reflection_weight, 0.0, 1.0));
+}
 // An 8x8 workgroup shares its two-texel halo. Keep the full 5x5 bilateral
 // kernel; only redundant guide/reflection fetches and normalization disappear.
 shared vec4 tile_reflection[144];
@@ -312,8 +386,9 @@ void main() {
     float reflection_weight = pica_reflection_weight(material);
     float center_scene_depth = textureLod(sampler2D(hiz_depth,nearest_sampler), uv, 0.0).r;
     vec3 water_world, water_direction;
-    bool water = inside && hiz_water_surface(uv, isnan(center_scene_depth) || isinf(center_scene_depth)
-        ? 1.0e30 : center_scene_depth, water_world, water_direction) > 0.0;
+    float water_depth = inside ? hiz_water_surface(uv, isnan(center_scene_depth) || isinf(center_scene_depth)
+        ? 1.0e30 : center_scene_depth, water_world, water_direction) : 0.0;
+    bool water = water_depth > 0.0;
     bool participates = water || (inside && hiz_water.parameters.w <= 0.5 && material.r > 0.001 &&
         reflection_weight > 0.0 && center_guide.a >= 0.5);
     if (participates) atomicOr(tile_active, 1u);
@@ -358,8 +433,17 @@ void main() {
                 water_confidence += reflection.a * spatial_weight;
             }
         }
-        imageStore(filtered_output, pixel, vec4(water_confidence > 1.0e-5 ? water_color / water_confidence : vec3(0.0),
-                                                water_confidence / water_total));
+        vec3 reflection = water_confidence > 1.0e-5 ? water_color / water_confidence : vec3(0.0);
+        float weight = water_confidence / water_total;
+        if (hiz_water.medium.w > 0.0) {
+            // The composed water over the scene at its opacity (medium.w; the
+            // composite's strength scales the weight: undone).
+            imageStore(filtered_output, pixel,
+                       vec4(water_compose(uv, water_world, water_direction, water_depth, center_scene_depth,
+                                          reflection, weight), hiz_water.medium.w / max(pc.strength, 1.0e-3)));
+            return;
+        }
+        imageStore(filtered_output, pixel, vec4(reflection, weight));
         return;
     }
     float center_depth = tile_depth[center_index];
@@ -401,9 +485,15 @@ void main() {
 
 HiZWaterUniforms BuildHiZWaterUniforms(const std::array<float, 16>* worldToView,
                                        const Renderer3ds::PicaSceneWaterBodies* bodies, float seconds,
-                                       bool waterOnly) {
+                                       bool waterOnly,
+                                       const std::array<Renderer3ds::PicaWaterRing, Renderer3ds::kPicaWaterRings>* rings) {
     HiZWaterUniforms result;
+    if (rings != nullptr)
+        for (uint32_t i = 0; i < Renderer3ds::kPicaWaterRings; ++i)
+            result.Rings[i] = {(*rings)[i].CenterXZ[0], (*rings)[i].CenterXZ[1], (*rings)[i].Birth,
+                               (*rings)[i].Strength};
     result.Parameters = {0.0F, std::fmod(std::max(seconds, 0.0F), 3600.0F), 0.02F, waterOnly ? 1.0F : 0.0F};
+    result.Medium = {0.0022F, 3.0F, 4.0F, 0.6F};
     if (worldToView == nullptr || bodies == nullptr) return result;
     // Column-major world-to-view: rows of its linear part and translation.
     std::array<std::array<float, 3>, 3> linear{};

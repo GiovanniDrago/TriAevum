@@ -26,13 +26,23 @@ struct alignas(16) HiZWaterUniforms {
     // Body count, wave time (seconds), Fresnel F0, water only (1: nothing
     // else reflects).
     std::array<float, 4> Parameters{};
+    // The water as a medium, composed by the filter over the scene: light
+    // absorption per world unit of path (green; red and blue scale it),
+    // refraction (view units of displacement per unit of slope and of
+    // water depth, capped), shore foam width (world units of depth) and
+    // the composed water's opacity over the scene (0: reflections only).
+    std::array<float, 4> Medium{};
+    // Movers' ripple rings: centre x, z, birth (wave time), strength.
+    std::array<std::array<float, 4>, Renderer3ds::kPicaWaterRings> Rings{};
 };
-static_assert(sizeof(HiZWaterUniforms) == 224U);
+static_assert(sizeof(HiZWaterUniforms) == 496U);
 
 // The bodies below the camera (seen from above), nearest first; without a
 // valid view, none. waterOnly is kept either way.
 [[nodiscard]] HiZWaterUniforms BuildHiZWaterUniforms(const std::array<float, 16>* worldToView,
                                                      const Renderer3ds::PicaSceneWaterBodies* bodies,
-                                                     float seconds, bool waterOnly);
+                                                     float seconds, bool waterOnly,
+                                                     const std::array<Renderer3ds::PicaWaterRing,
+                                                                      Renderer3ds::kPicaWaterRings>* rings = nullptr);
 
 } // namespace Fast::Oot3d

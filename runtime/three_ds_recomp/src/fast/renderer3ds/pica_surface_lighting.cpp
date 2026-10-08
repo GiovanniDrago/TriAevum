@@ -48,7 +48,8 @@ std::optional<PicaSurfaceLightingView> BuildPicaSurfaceLightingView(
 
 void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSurfaceLightingView& view,
                             const PicaSceneWaterBodies& bodies, const std::array<float, 3>& worldMinimum,
-                            const std::array<float, 3>& worldMaximum, float seconds, bool wholeDraw) noexcept {
+                            const std::array<float, 3>& worldMaximum, float seconds, bool wholeDraw,
+                            const std::array<PicaWaterRing, kPicaWaterRings>* rings) noexcept {
     std::array<uint32_t, kMaximumPicaSceneWaterBodies> reached{};
     uint32_t count = 0;
     for (uint32_t i = 0; i < std::min(bodies.Count, kMaximumPicaSceneWaterBodies); ++i) {
@@ -72,7 +73,11 @@ void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSur
                                      static_cast<float>(count + (wholeDraw ? 8U : 0U))};
     uniforms.WaterOptics = kPicaSurfaceWaterOptics;
     uniforms.WaterRipples = {std::fmod(std::max(seconds, 0.0F), 3600.0F), kPicaSurfaceWaterRipples[0],
-                             kPicaSurfaceWaterRipples[1], 0.0F};
+                             kPicaSurfaceWaterRipples[1], -1.0e9F};
+    if (rings != nullptr)
+        for (uint32_t i = 0; i < kPicaWaterRings; ++i)
+            uniforms.WaterRings[i] = {(*rings)[i].CenterXZ[0], (*rings)[i].CenterXZ[1], (*rings)[i].Birth,
+                                      (*rings)[i].Strength};
 }
 
 std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
@@ -310,6 +315,7 @@ layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
     vec4 water_optics;
     vec4 water_ripples;
     vec4 water_flow;
+    vec4 water_rings[16];
 } pica_surface;
 vec3 pica_surface_water_world = vec3(0.0);
 float pica_surface_water_footprint = 0.0;
@@ -369,8 +375,11 @@ bool pica_surface_water(vec3 face) {
                                     dot(pica_surface.view_to_world_linear[2].xyz, view_position));
     vec3 world = pica_surface_water_world;
     if (abs(world_face.y) >= 0.95 * face_length) {
+        // A whole water draw is traced on the plane past the gameplay boxes
+        // (the reflection trace's margin); a mixed mesh only over them.
+        float margin = whole ? 400.0 : 0.0;
         for (uint slot = 0u; slot < min(count, 4u); ++slot) {
-            vec4 footprint = pica_surface.water_footprints[slot];
+            vec4 footprint = pica_surface.water_footprints[slot] + vec4(-margin, -margin, margin, margin);
             if (abs(world.y - pica_surface.water_heights[slot]) <= 4.0 && world.x >= footprint.x &&
                 world.z >= footprint.y && world.x <= footprint.z && world.z <= footprint.w) {
                 pica_surface_water_traced = true;
@@ -681,7 +690,24 @@ vec2 pica_surface_water_slope() {
         float phase = number * (dot(direction, position) - speed * time) + float(wave) * 1.618;
         slope += direction * (waves[wave].z * cos(phase) * fade);
     }
-    return slope * pica_surface.water_ripples.y * mix(1.0, 1.8, fast);
+    slope *= pica_surface.water_ripples.y * mix(1.0, 1.8, fast);
+    // Movers' rings on a level surface (water_rings: centre xz, birth,
+    // strength): a wave packet spreading from the centre and fading.
+    if (pica_surface_water_up.y > 0.95) {
+        float fade = clamp(1.5 - 3.0 * pica_surface_water_footprint / 12.0, 0.0, 1.0);
+        for (int i = 0; fade > 0.0 && i < 16; ++i) {
+            vec4 ring = pica_surface.water_rings[i];
+            float age = time - ring.z;
+            if (ring.w <= 0.0 || age < 0.0 || age > 3.0) continue;
+            vec2 offset = pica_surface_water_world.xz - ring.xy;
+            float distance_world = length(offset);
+            float front = distance_world - (6.0 + 55.0 * age);
+            float width = 6.0 + 5.0 * age;
+            float envelope = ring.w * exp(-1.2 * age) * exp(-0.5 * front * front / (width * width));
+            slope += offset / max(distance_world, 1.0e-3) * (0.9 * fade * envelope * sin(0.5236 * front));
+        }
+    }
+    return slope;
 }
 vec3 pica_surface_water_shade(vec3 native_rgb, vec3 sky) {
     if (pica_surface.water_optics.w == -1.0) return vec3(1.0, 0.0, 1.0);
@@ -703,6 +729,25 @@ vec3 pica_surface_water_shade(vec3 native_rgb, vec3 sky) {
     vec3 color = mix(native_rgb, sky, traced ? 0.0 : reflectance * pica_surface.water_optics.z);
     if (pica_surface.water_optics.w == -4.0)
         return vec3(traced ? 1.0 : 0.0, reflectance, pica_surface_water_traced ? 0.0 : 1.0);
+    // White water where the flow is fast (waterfalls, rapids): streaks
+    // running with the flow (warped sines: no lattice).
+    float fast = pica_surface_water_fast();
+    if (fast > 0.0) {
+        float speed = length(pica_surface_water_flow);
+        vec2 along_direction = pica_surface_water_flow / max(speed, 1.0e-3);
+        vec2 position = vec2(dot(pica_surface_water_world, pica_surface_water_tangent),
+                             dot(pica_surface_water_world, pica_surface_water_bitangent));
+        float along = dot(position, along_direction) - speed * pica_surface.water_ripples.x;
+        float across = dot(position, vec2(-along_direction.y, along_direction.x));
+        float first = sin(across * 0.13 + 1.7 * sin(along * 0.021 + across * 0.017));
+        float second = sin(across * 0.31 - 1.3 * sin(along * 0.047 + 0.7) + along * 0.013);
+        float streak = smoothstep(0.35, 0.95, 0.5 + 0.3 * first + 0.2 * second);
+        // A waterfall churns white where it lands (the bottom of its sheet).
+        float landing = 1.0 - smoothstep(0.0, 60.0, pica_surface_water_world.y - pica_surface.water_ripples.w);
+        float light = clamp(dot(native_rgb, vec3(0.299, 0.587, 0.114)) * 1.3, 0.5, 1.0);
+        color = mix(color, vec3(light), max(0.45 * fast * streak,
+                                            0.7 * landing * smoothstep(0.2, 0.7, 0.5 + 0.3 * first + 0.2 * second)));
+    }
     vec3 specular = vec3(0.0);
     for (uint slot = 0u; slot < pica_surface.control.z; ++slot)
         specular += pica_surface_water_specular(normal, view_dir,
