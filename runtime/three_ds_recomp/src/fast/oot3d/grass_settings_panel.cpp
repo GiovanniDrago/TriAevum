@@ -459,6 +459,8 @@ bool DrawInteraction(InteractiveGrassSettings& grass) {
         "Velocity response",
         &grass.CollisionVelocityResponse,
         0.0F, 3.0F, "%.2f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Extra bend of the trail a moving actor leaves; it recovers like the rest of the trail.");
     changed |= ImGui::SliderFloat(
         "Collider radius",
         &grass.ColliderRadiusMultiplier,

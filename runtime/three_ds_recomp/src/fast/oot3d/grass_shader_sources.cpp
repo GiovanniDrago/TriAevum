@@ -797,14 +797,11 @@ vec2 resolve_direct_collision(vec3 base, float blade_height, ActorCollider actor
         else
             delta = vec2(1.0, 0.0);
     }
-    float speed =
-        length(actor.velocity_teleported.xz);
-    float velocity_gain =
-        1.0 + clamp(speed / 300.0, 0.0, 2.0) *
-            state.collision.w;
+    // Contact alone, as ResolveGrassCollision: the velocity response is the
+    // trail's, which recovers with its spring.
     float weight =
         (1.0 - distance / radius) *
-        state.collision.z * velocity_gain;
+        state.collision.z;
     return delta * min(weight, state.bend.x);
 }
 

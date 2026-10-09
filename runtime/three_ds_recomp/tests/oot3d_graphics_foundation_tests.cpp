@@ -6073,6 +6073,25 @@ TEST(Oot3dGrassCollision, SweptCapsuleCatchesMotionAndRejectsOtherFloors) {
     EXPECT_FLOAT_EQ(otherFloor.Weight, 0.0F);
 }
 
+TEST(Oot3dGrassCollision, DirectPushDoesNotDropWhenTheActorStops) {
+    Fast::Oot3d::InteractiveGrassSettings settings;
+    settings.CollisionPush = 1.0F;
+    settings.CollisionVelocityResponse = 3.0F;
+    settings.MaximumBend = 1.0F;
+    Fast::Oot3d::GrassInteractor link;
+    link.PreviousPosition = {0.0F, 0.0F, 0.0F};
+    link.Position = {0.0F, 0.0F, 0.0F};
+    link.Velocity = {600.0F, 0.0F, 0.0F};
+    link.Radius = 10.0F;
+    link.HalfHeight = 40.0F;
+    const auto running = Fast::Oot3d::ResolveGrassCollision({5.0F, 0.0F, 0.0F}, 20.0F, link, settings);
+    link.Velocity = {};
+    const auto stopped = Fast::Oot3d::ResolveGrassCollision({5.0F, 0.0F, 0.0F}, 20.0F, link, settings);
+    EXPECT_FLOAT_EQ(running.Weight, 0.5F);
+    EXPECT_FLOAT_EQ(stopped.Weight, running.Weight);
+    EXPECT_EQ(stopped.Bend, running.Bend);
+}
+
 TEST(Oot3dGrassInteractionField, KeepsTrailAtWorldCoordinatesWhenRecentering) {
     Fast::Oot3d::InteractiveGrassSettings settings;
     settings.InteractionFieldResolution = 32;
