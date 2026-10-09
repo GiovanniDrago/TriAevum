@@ -575,7 +575,13 @@ void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recom
     mSelectionScene = scene;
     mSelector.Select(candidates, player, discontinuity, snapshot);
     static const bool selectionTrace = std::getenv("TRIAEVUM_LIGHT_SELECTION_TRACE") != nullptr;
-    if (selectionTrace && (mSceneLightFrames % 30U) == 0U) {
+    // Every 30 captures, or every N with TRIAEVUM_LIGHT_SELECTION_TRACE_EVERY.
+    static const uint64_t traceEvery = [] {
+        const char* every = std::getenv("TRIAEVUM_LIGHT_SELECTION_TRACE_EVERY");
+        const long value = every ? std::strtol(every, nullptr, 10) : 30L;
+        return static_cast<uint64_t>(std::max(1L, value));
+    }();
+    if (selectionTrace && (mSceneLightFrames % traceEvery) == 0U) {
         uint32_t byGroup[4]{};
         for (const auto& light : candidates) ++byGroup[std::min<uint32_t>(light.Group, 3U)];
         const auto rooms = NativeLoadedRooms(playState, memory);
