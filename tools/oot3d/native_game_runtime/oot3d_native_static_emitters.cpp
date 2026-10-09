@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <sstream>
 
 namespace Oot3dNativeGame {
 namespace {
@@ -34,96 +35,149 @@ bool ReadTriple(const nlohmann::json& value, std::array<float, 3>& out) {
     return true;
 }
 
+std::string ReadString(const nlohmann::json& object, const char* key) {
+    const auto found = object.find(key);
+    return found != object.end() && found->is_string() ? found->get<std::string>() : std::string();
+}
+
+bool ReadFinite(const nlohmann::json& object, const char* key, float& out) {
+    const auto found = object.find(key);
+    if (found == object.end() || !found->is_number()) return false;
+    out = found->get<float>();
+    return std::isfinite(out);
+}
+
+bool ReadFingerprint(const nlohmann::json& value, uint64_t& out) {
+    if (!value.is_string()) return false;
+    const auto text = value.get<std::string>();
+    if (text.size() != 16U) return false;
+    out = 0;
+    for (const char c : text) {
+        const int digit = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+        if (digit < 0) return false;
+        out = (out << 4U) | static_cast<uint64_t>(digit);
+    }
+    return true;
+}
+
 } // namespace
 
-std::shared_ptr<const NativeStaticEmitterCatalog> NativeStaticEmitterCatalog::LoadFile(
-    const std::filesystem::path& path, std::string* error) {
+uint64_t NativeRoomFingerprint(std::span<const uint8_t> commands) noexcept {
+    uint64_t hash = 1469598103934665603ULL;
+    for (const uint8_t byte : commands) hash = (hash ^ byte) * 0x100000001B3ULL;
+    return hash;
+}
+
+std::shared_ptr<const NativeStaticEmitterCatalog> NativeStaticEmitterCatalog::Parse(std::string_view text,
+                                                                                    std::string* error) {
     const auto fail = [&](const std::string& message) -> std::shared_ptr<const NativeStaticEmitterCatalog> {
         if (error) *error = message;
         return nullptr;
     };
-    std::ifstream file(path, std::ios::binary);
-    if (!file) return fail("cannot open " + path.string());
-    const auto document = nlohmann::json::parse(file, nullptr, false);
-    if (document.is_discarded() || !document.is_object() ||
-        document.value("schema", std::string()) != "triaevum.static-emitters.v1" ||
-        !document.contains("scenes") || !document["scenes"].is_object())
-        return fail(path.string() + " is not a triaevum.static-emitters.v1 catalog");
+    const auto document = nlohmann::json::parse(text, nullptr, false);
+    if (document.is_discarded() || !document.is_object() || ReadString(document, "schema") != "triaevum.scene-lights" ||
+        !document.contains("version") || document["version"] != 1 || !document.contains("rooms") ||
+        !document["rooms"].is_array())
+        return fail("not a triaevum.scene-lights version 1 catalog");
     auto catalog = std::make_shared<NativeStaticEmitterCatalog>();
-    for (const auto& [name, scene] : document["scenes"].items()) {
-        if (!scene.is_object() || !scene.contains("scene") || !scene["scene"].is_number_unsigned() ||
-            !scene.contains("rooms") || !scene["rooms"].is_object())
-            return fail("scene " + name + " is malformed");
-        if (scene.value("masterQuest", false)) continue;
-        const auto sceneId = scene["scene"].get<uint32_t>();
-        if (sceneId > 0xFFFFU) return fail("scene " + name + " has an invalid id");
-        for (const auto& [roomName, emitters] : scene["rooms"].items()) {
-            char* end = nullptr;
-            const long room = std::strtol(roomName.c_str(), &end, 10);
-            if (end == roomName.c_str() || *end != '\0' || room < 0 || room > 127 || !emitters.is_array())
-                return fail("scene " + name + " room " + roomName + " is malformed");
-            auto& out = catalog->mRooms[{static_cast<uint16_t>(sceneId), static_cast<int>(room)}];
-            for (const auto& e : emitters) {
+    // Every read below checks its type first; a conversion that still throws
+    // refuses the catalog rather than the game.
+    try {
+        for (const auto& room : document["rooms"]) {
+            uint64_t fingerprint = 0;
+            if (!room.is_object() || !room.contains("scene") || !room["scene"].is_number_unsigned() ||
+                room["scene"].get<uint64_t>() > 0xFFFFU || !room.contains("room") ||
+                !room["room"].is_number_unsigned() || room["room"].get<uint64_t>() > 127U ||
+                !ReadFingerprint(room.value("fingerprint", nlohmann::json()), fingerprint) ||
+                !room.contains("emitters") || !room["emitters"].is_array())
+                return fail("a room is malformed");
+            const auto scene = room["scene"].get<uint16_t>();
+            const auto number = room["room"].get<int>();
+            const std::string where = "scene " + std::to_string(scene) + " room " + std::to_string(number);
+            auto [entry, added] = catalog->mRooms.try_emplace({scene, number, fingerprint});
+            if (!added) return fail(where + " is listed twice");
+            for (const auto& e : room["emitters"]) {
                 NativeStaticEmitter emitter;
                 if (!e.is_object() || !ReadTriple(e.value("position", nlohmann::json()), emitter.Position) ||
                     !ReadTriple(e.value("colour", nlohmann::json()), emitter.Colour) ||
-                    !ParseCategory(e.value("category", std::string()), emitter.Category) ||
-                    !e.contains("radius") || !e["radius"].is_number() || !e.contains("intensity") ||
-                    !e["intensity"].is_number())
-                    return fail("scene " + name + " room " + roomName + " has a malformed emitter");
-                emitter.Radius = e["radius"].get<float>();
-                emitter.Gain = e["intensity"].get<float>();
-                if (!(emitter.Radius > 0.0F) || !(emitter.Gain >= 0.0F) || emitter.Gain > 4.0F)
-                    return fail("scene " + name + " room " + roomName + " has an emitter out of range");
+                    !ParseCategory(ReadString(e, "category"), emitter.Category) ||
+                    !ReadFinite(e, "radius", emitter.Radius) || !ReadFinite(e, "gain", emitter.Gain))
+                    return fail(where + " has a malformed emitter");
+                if (!(emitter.Radius > 0.0F) || emitter.Radius > 100000.0F || !(emitter.Gain >= 0.0F) ||
+                    emitter.Gain > 4.0F)
+                    return fail(where + " has an emitter out of range");
                 for (auto& channel : emitter.Colour) channel = std::clamp(channel, 0.0F, 1.0F);
-                out.push_back(emitter);
+                entry->second.push_back(emitter);
                 ++catalog->mCount;
             }
         }
+    } catch (const nlohmann::json::exception& exception) {
+        return fail(std::string("malformed catalog: ") + exception.what());
     }
     return catalog;
 }
 
+std::shared_ptr<const NativeStaticEmitterCatalog> NativeStaticEmitterCatalog::LoadFile(
+    const std::filesystem::path& path, std::string* error) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        if (error) *error = "cannot open " + path.string();
+        return nullptr;
+    }
+    std::stringstream text;
+    text << file.rdbuf();
+    auto catalog = Parse(text.str(), error);
+    if (!catalog && error) *error = path.string() + ": " + *error;
+    return catalog;
+}
+
 std::shared_ptr<const NativeStaticEmitterCatalog> NativeStaticEmitterCatalog::FromEnvironment() {
-    const char* path = std::getenv("TRIAEVUM_STATIC_EMITTERS");
+    const char* path = std::getenv("TRIAEVUM_SCENE_LIGHT_CATALOG");
     if (path == nullptr || *path == '\0') return nullptr;
     std::string error;
     auto catalog = LoadFile(path, &error);
     if (catalog)
-        std::fprintf(stderr, "TRIAEVUM_STATIC_EMITTERS loaded=%zu path=%s\n", catalog->Count(), path);
+        std::fprintf(stderr, "TRIAEVUM_SCENE_LIGHT_CATALOG loaded=%zu path=%s\n", catalog->Count(), path);
     else
-        std::fprintf(stderr, "TRIAEVUM_STATIC_EMITTERS rejected: %s\n", error.c_str());
+        std::fprintf(stderr, "TRIAEVUM_SCENE_LIGHT_CATALOG rejected: %s\n", error.c_str());
     return catalog;
 }
 
-std::span<const NativeStaticEmitter> NativeStaticEmitterCatalog::Room(uint16_t scene, int room) const {
-    const auto found = mRooms.find({scene, room});
+std::span<const NativeStaticEmitter> NativeStaticEmitterCatalog::Room(uint16_t scene, int room,
+                                                                      uint64_t fingerprint) const {
+    const auto found = mRooms.find({scene, room, fingerprint});
     return found == mRooms.end() ? std::span<const NativeStaticEmitter>{} : std::span(found->second);
 }
 
-std::vector<int> NativeLoadedRooms(uint32_t playState, oot3d::recomp::a32::MemoryBus& memory) {
-    std::vector<int> rooms;
+std::vector<NativeLoadedRoom> NativeLoadedRooms(uint32_t playState, oot3d::recomp::a32::MemoryBus& memory) {
+    std::vector<NativeLoadedRoom> rooms;
     if (playState == 0U) return rooms;
     for (const auto& [number, commands] : {std::pair{0x4C30U, 0x4FFCU}, std::pair{0x500CU, 0x53D8U}}) {
         uint8_t raw = 0;
         uint32_t installed = 0;
         if (!memory.Read8(playState + number, &raw) || !memory.Read32(playState + commands, &installed)) continue;
         const int room = std::bit_cast<int8_t>(raw);
-        if (room >= 0 && installed != 0U && std::find(rooms.begin(), rooms.end(), room) == rooms.end())
-            rooms.push_back(room);
+        if (room < 0 || installed == 0U ||
+            std::any_of(rooms.begin(), rooms.end(), [&](const auto& loaded) { return loaded.Number == room; }))
+            continue;
+        std::array<uint8_t, kNativeRoomFingerprintBytes> bytes{};
+        bool readable = true;
+        for (uint32_t i = 0; i < bytes.size() && readable; ++i) readable = memory.Read8(installed + i, &bytes[i]);
+        if (readable) rooms.push_back({room, NativeRoomFingerprint(bytes)});
     }
     return rooms;
 }
 
-void CaptureStaticEmitters(const NativeStaticEmitterCatalog& catalog, uint16_t scene, std::span<const int> rooms,
+void CaptureStaticEmitters(const NativeStaticEmitterCatalog& catalog, uint16_t scene,
+                           std::span<const NativeLoadedRoom> rooms,
                            std::vector<Fast::Renderer3ds::PicaScenePointLight>& lights) {
-    for (const int room : rooms) {
-        const auto emitters = catalog.Room(scene, room);
+    for (const auto& room : rooms) {
+        const auto emitters = catalog.Room(scene, room.Number, room.Fingerprint);
         for (size_t i = 0; i < emitters.size(); ++i) {
             const auto& e = emitters[i];
             Fast::Renderer3ds::PicaScenePointLight light;
             light.SourceIdentity = (uint64_t{0xA5U} << 56U) | (uint64_t{scene} << 40U) |
-                                   (uint64_t(static_cast<uint32_t>(room) & 0xFFU) << 32U) | uint64_t(i);
+                                   (uint64_t(static_cast<uint32_t>(room.Number) & 0xFFU) << 32U) | uint64_t(i);
             light.Group = 3U;
             light.PositionWorld = e.Position;
             light.Radius = e.Radius;

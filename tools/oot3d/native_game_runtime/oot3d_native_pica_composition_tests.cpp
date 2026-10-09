@@ -4,6 +4,7 @@
 #include "oot3d_native_a32_fire_emitters.h"
 #include "oot3d_native_a32_light_selection.h"
 #include "oot3d_native_a32_memory.h"
+#include "oot3d_native_static_emitters.h"
 #include "oot3d_typed_gameplay_bridge.h"
 #include "recomp/a32_runtime.h"
 #include "oot3d/actor_spawn.h"
@@ -13,6 +14,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <numbers>
 #include <iostream>
@@ -472,6 +474,74 @@ void TestFireEmittersAndSelection() {
     Require(lights.empty(), "a buried fire wall still emitted light");
 }
 
+void TestSceneLightCatalog() {
+    using namespace Oot3dNativeGame;
+    // A standard and a Master Quest room 1 of scene 10: the loaded file's
+    // command list (fingerprint) chooses which.
+    NativeA32Memory memory;
+    constexpr uint32_t play = 0x10000000U, file = play + 0x8000U;
+    Map(memory, play, 0x10000U);
+    std::array<uint8_t, kNativeRoomFingerprintBytes> commands{};
+    for (size_t i = 0; i < commands.size(); ++i) commands[i] = static_cast<uint8_t>(i * 7U);
+    for (size_t i = 0; i < commands.size(); ++i)
+        Require(memory.Write8(file + static_cast<uint32_t>(i), commands[i]), "could not seed the room file");
+    Require(memory.Write8(play + 0x4C30U, 1U) && memory.Write32(play + 0x4FFCU, file) &&
+                memory.Write8(play + 0x500CU, 0xFFU),
+            "could not seed the loaded room");
+    const uint64_t standard = NativeRoomFingerprint(commands);
+    char hex[17]{};
+    std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(standard));
+    const std::string text =
+        std::string(R"({"schema":"triaevum.scene-lights","version":1,"rooms":[)") +
+        R"({"scene":10,"room":1,"masterQuest":false,"fingerprint":")" + hex +
+        R"(","emitters":[{"category":"torch","position":[1,2,3],"radius":450,"gain":1.0,"colour":[1,0.5,0.25]},)" +
+        R"({"category":"fire-lava","position":[4,5,6],"radius":600,"gain":0.5,"colour":[1,0.4,0.2]}]},)" +
+        R"({"scene":10,"room":1,"masterQuest":true,"fingerprint":"0123456789abcdef","emitters":[)" +
+        R"({"category":"window-lamp","position":[7,8,9],"radius":300,"gain":0.9,"colour":[1,1,1]}]}]})";
+    std::string error;
+    const auto catalog = NativeStaticEmitterCatalog::Parse(text, &error);
+    Require(catalog && catalog->Count() == 3U, "the scene light catalog was rejected: " + error);
+    const auto rooms = NativeLoadedRooms(play, memory);
+    Require(rooms.size() == 1U && rooms[0].Number == 1 && rooms[0].Fingerprint == standard,
+            "the loaded room or its fingerprint was not read");
+    std::vector<Fast::Renderer3ds::PicaScenePointLight> lights;
+    CaptureStaticEmitters(*catalog, 10U, rooms, lights);
+    Require(lights.size() == 2U && lights[0].Group == 3U && lights[0].CastsShadow && !lights[1].CastsShadow &&
+                lights[0].PositionWorld == std::array<float, 3>{1.0F, 2.0F, 3.0F} &&
+                std::abs(lights[1].Color[0] - 0.5F) < 1.0e-6F && lights[0].SourceIdentity != lights[1].SourceIdentity,
+            "the standard room's lights were not published");
+    // Another file loaded as room 1 (the Master Quest one here differs): only
+    // its own lights, none of another variant's.
+    Require(memory.Write8(file, 0xEEU), "could not change the room file");
+    lights.clear();
+    CaptureStaticEmitters(*catalog, 10U, NativeLoadedRooms(play, memory), lights);
+    Require(lights.empty(), "an unknown room file took another variant's lights");
+    lights.clear();
+    CaptureStaticEmitters(*catalog, 11U, rooms, lights);
+    Require(lights.empty(), "another scene took this scene's lights");
+    // Malformed catalogs are refused whole.
+    Require(!NativeStaticEmitterCatalog::Parse(R"({"schema":"triaevum.static-emitters.v1","scenes":{}})") &&
+                !NativeStaticEmitterCatalog::Parse(
+                    R"({"schema":"triaevum.scene-lights","version":1,"rooms":[{"scene":1,"room":0,)"
+                    R"("fingerprint":"xyz","emitters":[]}]})") &&
+                !NativeStaticEmitterCatalog::Parse(
+                    R"({"schema":"triaevum.scene-lights","version":1,"rooms":[{"scene":1,"room":0,)"
+                    R"("fingerprint":"0123456789abcdef","emitters":[{"category":"torch","position":[0,0,0],)"
+                    R"("radius":0,"gain":1,"colour":[1,1,1]}]}]})"),
+            "a malformed scene light catalog was accepted");
+    // Wrong types and unbounded values are refused, never thrown.
+    Require(!NativeStaticEmitterCatalog::Parse(R"({"schema":123,"version":1,"rooms":[]})") &&
+                !NativeStaticEmitterCatalog::Parse(
+                    R"({"schema":"triaevum.scene-lights","version":1,"rooms":[{"scene":1,"room":0,)"
+                    R"("fingerprint":"0123456789abcdef","emitters":[{"category":7,"position":[0,0,0],)"
+                    R"("radius":10,"gain":1,"colour":[1,1,1]}]}]})") &&
+                !NativeStaticEmitterCatalog::Parse(
+                    R"({"schema":"triaevum.scene-lights","version":1,"rooms":[{"scene":1,"room":0,)"
+                    R"("fingerprint":"0123456789abcdef","emitters":[{"category":"torch","position":[0,0,0],)"
+                    R"("radius":1e100,"gain":1,"colour":[1,1,1]}]}]})"),
+            "a mistyped or unbounded scene light catalog was accepted");
+}
+
 void TestRestoredNativeEnvironmentLights() {
     using namespace Oot3dNativeGame;
     NativeA32Memory memory;
@@ -640,6 +710,7 @@ int main() {
     TestDeferredActorOwnership();
     TestRestoredSceneLightOwnership();
     TestFireEmittersAndSelection();
+    TestSceneLightCatalog();
     TestRestoredNativeEnvironmentLights();
     TestTimeDrivenEnvironmentLights();
     TestEnvironmentKeyDirection();

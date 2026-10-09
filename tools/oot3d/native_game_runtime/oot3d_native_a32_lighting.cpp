@@ -6,6 +6,7 @@
 #include <cstddef>
 
 #include <algorithm>
+#include <string_view>
 #include <bit>
 #include <cmath>
 #include <cstdio>
@@ -582,9 +583,20 @@ void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recom
         std::fprintf(stderr,
                      "[light-selection] scene=%u rooms=%d,%d catalog=%zu candidates=%u/%u/%u/%u selected=%u "
                      "fading=%u snapshot=%u light@link=%.3f exposure=%.3f\n",
-                     scene, rooms.size() > 0 ? rooms[0] : -1, rooms.size() > 1 ? rooms[1] : -1,
+                     scene, rooms.size() > 0 ? rooms[0].Number : -1, rooms.size() > 1 ? rooms[1].Number : -1,
                      mStaticEmitters ? mStaticEmitters->Count() : size_t{0}, byGroup[0], byGroup[1], byGroup[2],
                      byGroup[3], stats.Selected, stats.Fading, snapshot.Count, stats.SummedLight, stats.Exposure);
+        // TRIAEVUM_LIGHT_SELECTION_TRACE=2: every light the renderer receives.
+        static const bool lightsTrace = std::string_view(std::getenv("TRIAEVUM_LIGHT_SELECTION_TRACE")) == "2";
+        for (uint32_t i = 0; lightsTrace && i < snapshot.Count; ++i) {
+            const auto& light = snapshot.Lights[i];
+            std::fprintf(stderr,
+                         "[light-selection]   group=%u id=%016llx at=%.0f,%.0f,%.0f radius=%.0f "
+                         "colour=%.3f,%.3f,%.3f shadow=%d\n",
+                         light.Group, static_cast<unsigned long long>(light.SourceIdentity), light.PositionWorld[0],
+                         light.PositionWorld[1], light.PositionWorld[2], light.Radius, light.Color[0], light.Color[1],
+                         light.Color[2], light.CastsShadow ? 1 : 0);
+        }
     }
     if (snapshot.Count == 0)
         mScenePoints.reset();

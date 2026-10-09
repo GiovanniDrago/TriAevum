@@ -63,6 +63,7 @@ void SetRendererEnvironment(const char* name,
 void ConfigurePicaAotShaders(const Oot3dNativeGameLaunch& launch) {
     SetRendererEnvironment("TRIAEVUM_RENDERER_CACHE_DIR", launch.RendererCacheDirectory);
     SetRendererEnvironment("TRIAEVUM_WATER_TEXTURE_CATALOG", launch.WaterTextureCatalogPath);
+    SetRendererEnvironment("TRIAEVUM_SCENE_LIGHT_CATALOG", launch.SceneLightCatalogPath);
     SetRendererEnvironment("OOT3D_PICA_AOT_SHADER_PACK",
                            launch.PicaAotShaderPackPath);
     SetRendererEnvironment("OOT3D_PICA_EFFECTIVE_SHADER_INVENTORY",

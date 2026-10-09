@@ -64,6 +64,7 @@ def validate_installed_runtime(
     for field, option, label in (
         ("topscreen_textures", "--topscreen-texture-overrides", "TopScreen textures"),
         ("water_textures", "--water-texture-catalog", "water texture catalog"),
+        ("scene_lights", "--scene-light-catalog", "scene light catalog"),
         ("pica_shader_pack", "--pica-aot-shader-pack", "PICA shader pack"),
     ):
         resource = runtime.get(field)

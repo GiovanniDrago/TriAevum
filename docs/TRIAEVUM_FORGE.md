@@ -19,6 +19,13 @@ Forge currently provides the release-safe preparation and packaging boundary:
   (surface, river, waterfall, underwater light) of the title's water
   textures, read by name from the RomFS models, so the renderer recognises
   water the title publishes no water body for (waterfalls, rapids, a moat);
+- a local scene light catalog (`cache/scene-lights/<key>/scene_lights.json`,
+  `--scene-light-catalog`): the light sources drawn into the rooms' meshes
+  (torch stands, lava and fire surfaces, windows and lamps, light shafts,
+  magic glows), found by texture name in the room CMBs, placed as point
+  lights with their textures' colour, per room file (standard and Master
+  Quest rooms by the fingerprint of their command list), so the Modern
+  renderer lights the architecture with them;
 - a local file-identity hash cache so unchanged large inputs are not rehashed;
 - a deterministic content key and private `content.tap` index;
 - an explicit, content-addressed structural whole-AOT IR stage driven only by

@@ -63,7 +63,7 @@ class NativeA32LightingProbe {
     [[nodiscard]] static std::optional<std::array<float, 16>> CaptureWorldToView(oot3d::recomp::a32::MemoryBus& memory);
     void CaptureSceneLights(uint32_t playState, oot3d::recomp::a32::MemoryBus& memory);
     void Reset() noexcept;
-    // The architecture's catalog (by default from TRIAEVUM_STATIC_EMITTERS).
+    // The architecture's catalog (by default from TRIAEVUM_SCENE_LIGHT_CATALOG).
     void SetStaticEmitters(std::shared_ptr<const NativeStaticEmitterCatalog> catalog) {
         mStaticEmitters = std::move(catalog);
         mStaticEmittersResolved = true;
