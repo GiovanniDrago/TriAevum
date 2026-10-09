@@ -363,6 +363,9 @@ struct GraphicsSettings {
     FrameRateMode FrameRate = FrameRateMode::Original30;
     bool VSync = true;
     float FovMultiplier = 1.0F;
+    // Actors at 5x the native distance, native foliage groups spawned
+    // farther and the Kokiri fade removed. Off keeps the title's ranges.
+    bool ExtendedDrawDistance = false;
     InteractiveGrassSettings Grass;
     InteractiveGrassSettings GrassSavedPreset;
     EffectsSettings Effects;

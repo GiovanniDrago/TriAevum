@@ -35,6 +35,7 @@
 #include "oot3d_native_a32_savestate.h"
 #include "oot3d_native_a32_scene_view.h"
 #include "oot3d_native_actor_interactions.h"
+#include "oot3d_native_a32_actor_visibility.h"
 #include "fast/oot3d/grass_interaction_bridge.h"
 #include "oot3d_native_a32_timing_probe.h"
 #include "oot3d_native_compiled_functions.h"
@@ -429,6 +430,7 @@ struct NativeWidescreenProjectionState {
   };
 
   NativeSceneProjectionState Projection;
+  Oot3dNativeGame::NativeActorVisibilityState ActorVisibility;
   bool CollectExtendedDiagnostics = false;
   uint32_t CurrentHostFrame = 0;
   uint32_t EnMagInitCalls = 0;

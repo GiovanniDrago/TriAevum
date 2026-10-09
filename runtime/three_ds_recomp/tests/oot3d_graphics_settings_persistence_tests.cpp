@@ -382,6 +382,27 @@ TEST(Oot3dGraphicsSettingsPersistence, RoundTripsAoTextureReliefAndDefaultsOlder
     EXPECT_FALSE(corrected.Issues.empty());
 }
 
+TEST(Oot3dGraphicsSettingsPersistence, RoundTripsExtendedDrawDistanceAndDefaultsOlderFilesToNative) {
+    using namespace Fast::Oot3d;
+    auto settings = CompleteSettings();
+    settings.ExtendedDrawDistance = true;
+    const auto saved = SerializeGraphicsSettings(settings);
+    EXPECT_EQ(saved["Camera"]["ExtendedDrawDistance"], true);
+    const auto loaded = DeserializeGraphicsSettings(saved);
+    EXPECT_TRUE(loaded.Issues.empty());
+    EXPECT_TRUE(loaded.Value.ExtendedDrawDistance);
+    auto older = saved;
+    older["Camera"].erase("ExtendedDrawDistance");
+    const auto defaults = DeserializeGraphicsSettings(older);
+    EXPECT_TRUE(defaults.Issues.empty());
+    EXPECT_FALSE(defaults.Value.ExtendedDrawDistance);
+    auto invalid = saved;
+    invalid["Camera"]["ExtendedDrawDistance"] = "far";
+    const auto corrected = DeserializeGraphicsSettings(invalid);
+    EXPECT_FALSE(corrected.Value.ExtendedDrawDistance);
+    EXPECT_FALSE(corrected.Issues.empty());
+}
+
 TEST(Oot3dGraphicsSettingsPersistence, MigratesSingleCascadeWithoutLosingTheOffChoiceOrLightResponse) {
     using namespace Fast::Oot3d;
     auto document = SerializeGraphicsSettings(CompleteSettings());

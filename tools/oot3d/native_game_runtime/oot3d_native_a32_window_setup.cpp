@@ -171,6 +171,12 @@ void NativeA32WindowSession::Setup() {
       Oot3dNativeGame::kOot3dFramePacingCommitEntry,
       Oot3dNativeGame::kOot3dMeshCommandPacketSubmitEntry,
   };
+  const auto actorVisibilityHooks =
+      Oot3dNativeGame::NativeActorVisibilityHookPcs();
+  blockEntryHooks.insert(blockEntryHooks.end(), actorVisibilityHooks.begin(),
+                         actorVisibilityHooks.end());
+  widescreenProjection.ActorVisibility.Diagnostics =
+      std::getenv("OOT3D_ACTOR_VISIBILITY_DIAGNOSTICS") != nullptr;
   picaCompositionHooks =
       Oot3dNativeGame::Oot3dNativePicaCompositionHookPcs();
   blockEntryHooks.insert(blockEntryHooks.end(),
@@ -446,6 +452,7 @@ void NativeA32WindowSession::Setup() {
   auto &process = processStorage.emplace(
       Oot3dNativeGame::Oot3dNativeA32Registry(), hostServices);
   widescreenProjection.TraceMemory = &process.Memory();
+  widescreenProjection.ActorVisibility.HostMemory = &process.Memory();
   process.Memory().EnableWriteTraceFingerprint(
       widescreenProjection.TraceA32Blocks);
   auto &uiLifecycleBridge = uiLifecycleBridgeStorage.emplace(
@@ -1081,10 +1088,12 @@ void NativeA32WindowSession::UpdateScenePresentation() {
       Fast::Oot3d::ResolveScenePresentationPolicy(
           std::max<uint32_t>(1, window.GetWidth()),
           std::max<uint32_t>(1, window.GetHeight()));
-  widescreenProjection.Projection.FovMultiplier =
-      Fast::Oot3d::GraphicsSettingsRuntime::Instance()
-          .Snapshot()
-          .FovMultiplier;
+  const auto graphics = Fast::Oot3d::GraphicsSettingsRuntime::Instance().Snapshot();
+  widescreenProjection.Projection.FovMultiplier = graphics.FovMultiplier;
+  auto &visibility = widescreenProjection.ActorVisibility;
+  visibility.ExtendedDrawDistance = graphics.ExtendedDrawDistance;
+  visibility.Presentation = widescreenProjection.Projection.Presentation;
+  visibility.FovMultiplier = graphics.FovMultiplier;
 }
 
 Fast::Renderer3ds::PicaFrameCompositionPolicy NativeA32WindowSession::ResolveFrameCompositionPolicy(const Fast::Oot3d::PresentationPacingPolicy& pacing) {

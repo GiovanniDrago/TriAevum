@@ -883,6 +883,7 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         value.MsaaSamples = 1;
         value.FrameRate = FrameRateMode::Original30;
         value.FovMultiplier = 1.0F;
+        value.ExtendedDrawDistance = false;
         value.Grass = {};
         value.Effects = {};
         value.Grass.Rules = std::move(grassRules);

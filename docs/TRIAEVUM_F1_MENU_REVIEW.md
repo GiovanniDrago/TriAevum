@@ -1,5 +1,53 @@
 # F1 settings rationalization
 
+## Extended draw distance and presented actor culling (2026-10-09)
+
+**Display > Extended draw distance** (off by default, off in Authentic) turns
+on Ship of Harkinian's actor draw distance at 5x, the native foliage groups'
+5x spawn ranges and the end of the Kokiri fade, as one choice. Distant actors
+are also updated, as in SoH, so gameplay can differ from the title's. SoH's
+LOD and glitch-actor options are not carried over. The setting persists as
+the optional `Graphics.Camera.ExtendedDrawDistance`; older documents keep the
+native ranges.
+
+Actor culling now always matches the presented view. The title culls actors
+with its own view-projection (play+0x5BB4), built without the frustum hook, so
+at 16:9 and a wider FOV actors at the margins of the picture were culled as if
+the screen were 5:3. The culling decision is re-evaluated with the presented
+view's extent, derived from that matrix through `ResolvePerspectiveFov`; it
+has no control.
+
+Owner: `GraphicsSettings::ExtendedDrawDistance` (Display), snapshotted each
+host frame into the title adapter's `NativeActorVisibilityState`; the pure
+policy is `oot3d_actor_visibility_policy.{h,cpp}` and the EUR hooks
+`oot3d_native_a32_actor_visibility.{h,cpp}`, all at existing A32 block
+entries:
+
+- `0x00461904` Actor_UpdateCulling entry (`r0` = play): the presented
+  volume is resolved once per walk from the live play state.
+- `0x00461AC4` Actor_UpdateCulling result: an extended pass sets the title's
+  own pass (state 0, `r0 = 1`), so the native fade and update flag follow;
+  a failure inside the extended depth becomes "outside", not "far". En_Viewer
+  keeps the native test.
+- `0x003BC5DC`/`0x003CC298` Obj_Mure: its distance table and retirement
+  margin are written (5x or native) before each use, host-owned, known EUR
+  values only.
+- `0x003B30AC`/`0x003AEF48` Obj_Mure2: the distance scalar the update just
+  stored becomes at least 25 (5x on squared distances) and sees the presented
+  width.
+- `0x0034E854` En_Wood02 offspring: extended, spawn in the extended volume.
+- `0x001B5FE0`/`0x001B60E8` En_Ko: extended, the fade distance reads 0.
+- `0x00341CD8` Actor_UpdateAlphaByDistance, Mido's and Saria's fade (as in
+  SoH's Kokiri option): extended, their distance reads 0, so they fade in
+  with the title's smoothing; Mido's house and Saria's cutscene stay native.
+
+Verification (developer build): actual-widget smoke **9,400 assertions**
+(toggle applies and saves once, and restores); policy tests; foundation
+352/352 with the persistence round trip and the Authentic reset;
+deterministic walks from a Kokiri Forest savestate, off and on: on shows the
+distant Kokiri and otherwise the same frames; facing the Lost Woods tunnel,
+Mido is visible at once instead of when Link gets close.
+
 ## User graphics presets (2026-10-07)
 
 **Graphics preset** lists the built-in presets (Authentic, Enhanced, Toon),

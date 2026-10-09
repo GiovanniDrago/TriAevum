@@ -151,6 +151,19 @@ endif()
 set_property(TARGET oot3d_graphics_settings_schedule_tests PROPERTY
     FOLDER Tests)
 
+add_executable(oot3d_actor_visibility_policy_tests EXCLUDE_FROM_ALL
+    tools/oot3d/native_game_runtime/oot3d_actor_visibility_policy.cpp
+    tools/oot3d/native_game_runtime/oot3d_actor_visibility_policy_tests.cpp
+)
+target_compile_options(oot3d_actor_visibility_policy_tests PRIVATE
+    "${WARNING_OVERRIDE}")
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set_property(TARGET oot3d_actor_visibility_policy_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+set_property(TARGET oot3d_actor_visibility_policy_tests PROPERTY
+    FOLDER Tests)
+
 add_library(oot3d_native_crash_diagnostics STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_crash_diagnostics.cpp
 )
@@ -208,6 +221,8 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
         tools/oot3d/native_game_runtime/oot3d_native_render_command_stream.cpp
         tools/oot3d/native_game_runtime/oot3d_top_screen_ocarina_text_runtime.cpp
         tools/oot3d/native_game_runtime/oot3d_native_actor_interactions.cpp
+        tools/oot3d/native_game_runtime/oot3d_actor_visibility_policy.cpp
+        tools/oot3d/native_game_runtime/oot3d_native_a32_actor_visibility.cpp
         tools/oot3d/native_game_runtime/oot3d_native_pcm_diagnostics.cpp
         tools/oot3d/native_game_runtime/oot3d_native_controls_settings_panel.cpp
         tools/oot3d/native_game_runtime/oot3d_game_language_panel.cpp

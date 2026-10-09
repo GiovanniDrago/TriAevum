@@ -2012,6 +2012,16 @@ int main() try {
     io.AddMouseButtonEvent(0, false);
     Frame(); Frame();
     Check(store->Stores == beforeDrag + 1, "UI slider release did not save once");
+    const bool extendedBefore = runtime.Snapshot().ExtendedDrawDistance;
+    const int beforeExtended = store->Stores;
+    Click("Extended draw distance");
+    Frame(); Frame();
+    Check(runtime.Snapshot().ExtendedDrawDistance != extendedBefore, "draw distance checkbox not applied");
+    Check(store->Stores == beforeExtended + 1, "draw distance checkbox did not save once");
+    Click("Extended draw distance");
+    Frame(); Frame();
+    Check(runtime.Snapshot().ExtendedDrawDistance == extendedBefore, "draw distance checkbox did not restore");
+    pending = runtime.Snapshot();
     store->Fail = true;
     pending.FovMultiplier = 1.1F;
     runtime.Apply(pending);

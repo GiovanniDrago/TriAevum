@@ -5287,9 +5287,11 @@ TEST(Oot3dGraphicsSettings, AuthenticForcesCompatibilityDefaults) {
         Fast::Oot3d::GraphicsPreset::Enhanced);
     candidate.Preset = Fast::Oot3d::GraphicsPreset::Authentic;
     candidate.FovMultiplier = 1.5F;
+    candidate.ExtendedDrawDistance = true;
     const auto result = Fast::Oot3d::GraphicsSettingsService::Validate(
         candidate, capabilities);
     EXPECT_TRUE(result.Accepted());
+    EXPECT_FALSE(result.Value.ExtendedDrawDistance);
     EXPECT_EQ(result.Value.AntiAliasing,
               Fast::Oot3d::AntiAliasingMode::Off);
     EXPECT_EQ(result.Value.FrameRate,

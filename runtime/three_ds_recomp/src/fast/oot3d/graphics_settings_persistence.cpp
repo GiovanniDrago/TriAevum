@@ -1211,6 +1211,7 @@ std::string_view EnhancedPresetDocument() noexcept {
     }
   },
   "Camera": {
+    "ExtendedDrawDistance": false,
     "FovMultiplier": 1.100000023841858
   },
   "Effects": {
@@ -1511,7 +1512,9 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
          {{"Mode", EnumName(settings.FrameRate,
                             kFrameRateNames)}}},
         {"Presentation", {{"VSync", settings.VSync}}},
-        {"Camera", {{"FovMultiplier", settings.FovMultiplier}}},
+        {"Camera",
+         {{"FovMultiplier", settings.FovMultiplier},
+          {"ExtendedDrawDistance", settings.ExtendedDrawDistance}}},
         {"TexturePacks",
          {
              {"Azahar",
@@ -1800,6 +1803,11 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
         ReadScalar(*camera, "FovMultiplier",
                    result.Value.FovMultiplier,
                    "Graphics.Camera.FovMultiplier", result);
+        // Optional: documents from before keep the native ranges.
+        if (FindMember(*camera, "ExtendedDrawDistance") != nullptr)
+            ReadScalar(*camera, "ExtendedDrawDistance",
+                       result.Value.ExtendedDrawDistance,
+                       "Graphics.Camera.ExtendedDrawDistance", result);
     }
     if (version >= 8U) {
         if (const Json* texturePacks =
