@@ -127,6 +127,13 @@ bool ReadPosition(oot3d::recomp::a32::MemoryBus& memory, uint32_t address, std::
     return true;
 }
 
+bool ReadFloat(oot3d::recomp::a32::MemoryBus& memory, uint32_t address, float& value) {
+    uint32_t bits = 0;
+    if (!memory.Read32(address, &bits)) return false;
+    value = std::bit_cast<float>(bits);
+    return std::isfinite(value);
+}
+
 bool CaptureFairyEmitter(oot3d::recomp::a32::MemoryBus& memory, uint32_t actor,
                          Fast::Renderer3ds::PicaScenePointLight& light) {
     // EnElf_Draw (EUR 001D6EC4) gates the glow with phase, flags, scale
@@ -375,8 +382,9 @@ void NativeA32LightingProbe::ContinueSceneLights(Fast::Renderer3ds::PicaSceneDir
 
 // A flame actor's light: En_Light (0x008, fire objects such as the Fire
 // Temple's great flames), Obj_Syokudai (0x05E, torches) and Bg_Po_Syokudai
-// (0x105, the Forest Temple's coloured torches). Neither registers
-// a LightContext record in OOT3D. Position: the actor's world position
+// (0x105, the Forest Temple's coloured torches). Their Init inserts a
+// LightContext record, which this capture does not read; the light follows
+// the flame the title draws instead. Position: the actor's world position
 // (+0x28) raised to the flame; reach from its scale (+0x54); colour from the
 // flame's kind (OoT's En_Light table: 2 blue, 3 green, else orange). A torch
 // is lit while its timer (s16 +0x27C, OoT's litTimer: -1 for good, a count
@@ -429,6 +437,92 @@ static bool CaptureFlameEmitter(oot3d::recomp::a32::MemoryBus& memory, uint32_t 
     light.Radius = 500.0F;
     light.Color = {1.0F, 0.6F, 0.25F};
     return true;
+}
+
+// Fire actors with no LightContext record at all, lit while the title draws
+// their flame (traced with Codex in the EUR code):
+// - En_Firefly (0x013), a Keese while its aura (u8 +0x250) is fire (1); its
+//   invisible draw (0x002A3F04) needs the lens (u8 PlayState +0x208F). The
+//   light sits between the burning wings (+0x1A4, +0x1B0, stored 5 lower).
+// - En_Honotrap (0x11C), the flame variants (params 1 and 2, EnHonotrap_Draw
+//   0x00269F00), growing from scale 0.0001 to 0.004 / 0.0048 and shrinking
+//   when it vanishes; it bobs through its shape offset (+0xC4).
+// - Bg_Hidan_Firewall (0x00C), while its draw is installed (+0x140): its
+//   height scale rises from 0.01 to 0.1 and falls back.
+// - En_Fire_Rock (0x0B5), the burning kinds (s16 +0x1E4: 0 and 3 falling, 6
+//   on the floor); 5 spawns them unseen and 1, 2 are fragments.
+// Bg_Gnd_Firemeiro (0x1B3) is the Fire Trial's sinking platform, not a flame.
+static bool CaptureFireActorEmitter(oot3d::recomp::a32::MemoryBus& memory, uint32_t playState, uint32_t actor,
+                                    uint16_t id, uint16_t params, Fast::Renderer3ds::PicaScenePointLight& light) {
+    std::array<float, 3> position{};
+    std::array<float, 3> scale{};
+    float shapeOffset = 0.0F;
+    uint32_t draw = 0;
+    if (!ReadPosition(memory, actor + 0x28U, position) || !ReadPosition(memory, actor + 0x54U, scale) ||
+        !ReadFloat(memory, actor + 0xC4U, shapeOffset) || !memory.Read32(actor + 0x140U, &draw) || draw == 0U)
+        return false;
+    // The title draws the model at its position raised by the shape offset.
+    position[1] += shapeOffset * scale[1];
+    constexpr std::array<float, 3> kFire{1.0F, 0.6F, 0.25F};
+    light.SourceIdentity = actor + 0x28U;
+    light.Group = 2U;
+    light.PositionWorld = position;
+    light.Color = kFire;
+    const auto dim = [&](float level) {
+        for (auto& channel : light.Color) channel *= level;
+    };
+    switch (id) {
+    case 0x013U: {
+        uint8_t aura = 0;
+        if (!memory.Read8(actor + 0x250U, &aura) || aura != 1U) return false;
+        if (draw == 0x002A3F04U) {
+            uint8_t lens = 0;
+            if (!memory.Read8(playState + 0x208FU, &lens) || lens == 0U) return false;
+        }
+        std::array<float, 3> left{}, right{};
+        if (ReadPosition(memory, actor + 0x1A4U, left) && ReadPosition(memory, actor + 0x1B0U, right)) {
+            const std::array<float, 3> wings{(left[0] + right[0]) * 0.5F, (left[1] + right[1]) * 0.5F + 5.0F,
+                                             (left[2] + right[2]) * 0.5F};
+            // The wing points are the last drawn ones: use them only near
+            // the Keese, else its position.
+            const float dx = wings[0] - position[0], dy = wings[1] - position[1], dz = wings[2] - position[2];
+            if (std::isfinite(dx + dy + dz) && dx * dx + dy * dy + dz * dz < 100.0F * 100.0F)
+                light.PositionWorld = wings;
+        }
+        light.Radius = 300.0F;
+        return true;
+    }
+    case 0x11CU: {
+        if (params != 1U && params != 2U) return false;
+        const float grown = params == 1U ? 0.004F : 0.0048F;
+        const float level = std::clamp((scale[0] - 0.0001F) / (grown - 0.0001F), 0.0F, 1.0F);
+        if (!(level > 0.0F)) return false;
+        const float size = scale[0] / 0.004F;
+        light.PositionWorld[1] += 20.0F * size;
+        light.Radius = 500.0F * size;
+        dim(level);
+        return true;
+    }
+    case 0x00CU: {
+        const float level = std::clamp(scale[1] / 0.1F, 0.0F, 1.0F);
+        if (!(level > 0.0F)) return false;
+        light.PositionWorld[1] += 40.0F * level;
+        light.Radius = 1000.0F * std::sqrt(level);
+        dim(level);
+        return true;
+    }
+    case 0x0B5U: {
+        uint16_t kind = 0;
+        if (!memory.Read16(actor + 0x1E4U, &kind) || (kind != 0U && kind != 3U && kind != 6U)) return false;
+        if (!std::isfinite(scale[0]) || scale[0] <= 0.0F) return false;
+        // Its flames spawn around the position, not the raised rock.
+        light.PositionWorld = {position[0], position[1] - shapeOffset * scale[1], position[2]};
+        light.Radius = 400.0F * std::clamp(scale[0] / 0.03F, 0.3F, 2.0F);
+        return true;
+    }
+    default:
+        return false;
+    }
 }
 
 void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recomp::a32::MemoryBus& memory) {
@@ -526,10 +620,13 @@ void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recom
                 }
                 // Flames the title draws but never lights (group 2): their
                 // light is only baked into room vertex colours natively.
-                if ((id == 0x008U || id == 0x05EU || id == 0x105U) && update != 0 &&
+                const bool flame = id == 0x008U || id == 0x05EU || id == 0x105U;
+                const bool fire = id == 0x013U || id == 0x11CU || id == 0x00CU || id == 0x0B5U;
+                if ((flame || fire) && update != 0 &&
                     memory.Read16(actor + offsetof(Oot3dActor, params), &params)) {
                     PicaScenePointLight light;
-                    if (CaptureFlameEmitter(memory, playState, actor, id, params, light)) {
+                    if (flame ? CaptureFlameEmitter(memory, playState, actor, id, params, light)
+                              : CaptureFireActorEmitter(memory, playState, actor, id, params, light)) {
                         const auto end = snapshot.Lights.begin() + snapshot.Count;
                         if (std::none_of(snapshot.Lights.begin(), end,
                                          [&](const auto& existing) {
