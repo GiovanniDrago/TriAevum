@@ -2518,7 +2518,10 @@ void NativeA32WindowSession::ExecuteVisualSample(const Oot3dNativeGame::Oot3dPic
   auto &api = *apiPointer;
   const auto started = std::chrono::steady_clock::now();
   (void)api.PublishPicaFrameTemporalSample(temporalSample);
-  Fast::Oot3d::GrassInteractionBridge::Instance().SelectSample(temporalSample);
+  // Only displayed samples advance the grass colliders: the authoritative
+  // replay of a new frame is not shown, and taking it as the previous position
+  // gave the next displayed sample a backward sweep.
+  if (present) Fast::Oot3d::GrassInteractionBridge::Instance().SelectSample(temporalSample);
   PinGpuCopyResources(sample);
   if (!picaPresentationScheduler.Execute(
           api, sample, renderTargetNamespace, kind,

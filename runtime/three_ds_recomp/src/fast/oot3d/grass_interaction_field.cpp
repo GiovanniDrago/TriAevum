@@ -13,6 +13,21 @@ constexpr float kNoInteractionHeight =
 
 float PlanarLength(float x, float z) { return std::sqrt(x * x + z * z); }
 
+// Holds a displacement at the maximum bend and drops the velocity that pushes
+// it further out: a pinned blade must not store outward speed that keeps it
+// pinned after the push ends.
+void ClampBend(std::array<float, 2>& displacement, std::array<float, 2>& velocity, float maximum) {
+    const float length = PlanarLength(displacement[0], displacement[1]);
+    if (length <= maximum || length <= 1.0e-6F) return;
+    const float ux = displacement[0] / length, uz = displacement[1] / length;
+    displacement = {ux * maximum, uz * maximum};
+    const float outward = velocity[0] * ux + velocity[1] * uz;
+    if (outward > 0.0F) {
+        velocity[0] -= outward * ux;
+        velocity[1] -= outward * uz;
+    }
+}
+
 } // namespace
 
 GrassInteractionField::GrassInteractionField(uint32_t resolution,
@@ -182,9 +197,7 @@ void GrassInteractionField::UpdateActors(
                 const float length = PlanarLength(mDisplacement[index][0],
                                                   mDisplacement[index][1]);
                 if (length > settings.MaximumBend && length > 1.0e-6F) {
-                    const float scale = settings.MaximumBend / length;
-                    mDisplacement[index][0] *= scale;
-                    mDisplacement[index][1] *= scale;
+                    ClampBend(mDisplacement[index], mVelocity[index], settings.MaximumBend);
                 } else if (length < 1.0e-4F &&
                            PlanarLength(mVelocity[index][0],
                                         mVelocity[index][1]) < 1.0e-4F) {
@@ -296,13 +309,7 @@ void GrassInteractionField::Stamp(const InteractiveGrassSettings& settings, cons
             mVelocity[index][1] += dz * impulse * (2.0F / recovery);
             mInteractionHeight[index] =
                 link->PreviousPosition[1] + segmentY * t;
-            const float bend = PlanarLength(mDisplacement[index][0],
-                                            mDisplacement[index][1]);
-            if (bend > settings.MaximumBend && bend > 1.0e-6F) {
-                const float scale = settings.MaximumBend / bend;
-                mDisplacement[index][0] *= scale;
-                mDisplacement[index][1] *= scale;
-            }
+            ClampBend(mDisplacement[index], mVelocity[index], settings.MaximumBend);
         }
     }
 }
