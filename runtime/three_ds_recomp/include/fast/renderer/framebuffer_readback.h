@@ -28,4 +28,24 @@ inline bool CopyScaledFramebufferRgba5551(
     }
     return true;
 }
+// The same nearest resampling, to 8-bit RGB.
+inline bool CopyScaledFramebufferRgb8(
+    std::span<const uint8_t> source, uint32_t sourceWidth, uint32_t sourceHeight,
+    bool bgra, std::span<uint8_t> destination, uint32_t width, uint32_t height) {
+    if (!sourceWidth || !sourceHeight || !width || !height ||
+        uint64_t(sourceWidth) * sourceHeight > source.size() / 4 ||
+        uint64_t(width) * height * 3 > destination.size()) return false;
+    for (uint32_t y = 0; y < height; ++y) {
+        const auto sourceY = uint64_t(y) * sourceHeight / height;
+        for (uint32_t x = 0; x < width; ++x) {
+            const auto sourceX = uint64_t(x) * sourceWidth / width;
+            const auto offset = (sourceY * sourceWidth + sourceX) * 4;
+            const auto target = (uint64_t(y) * width + x) * 3;
+            destination[target + 0] = source[offset + (bgra ? 2 : 0)];
+            destination[target + 1] = source[offset + 1];
+            destination[target + 2] = source[offset + (bgra ? 0 : 2)];
+        }
+    }
+    return true;
+}
 } // namespace Fast::Renderer

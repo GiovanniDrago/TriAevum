@@ -52,12 +52,19 @@ void MaybeWriteFramebufferScreenshot(const Args& args, Fast::GfxRenderingAPI& ap
         return;
     }
 
-    std::vector<uint16_t> framebuffer(static_cast<size_t>(width) * height, 0);
     if (!grassDiagnostics) grass = Fast::Oot3d::GrassRenderTelemetry::Instance().Snapshot();
-    api.ReadFramebufferToCPU(0, width, height, framebuffer.data());
     const auto screenshotPath = forced ? std::exchange(state.ForcedPath, {})
         : args.ScreenshotSequence ? ScreenshotSequenceFramePath(args.ScreenshotPath, frameCount) : args.ScreenshotPath;
-    WriteBmpFromRgba5551Framebuffer(screenshotPath, width, height, framebuffer);
+    // Forced (developer lab) captures keep the full 8-bit precision; the
+    // deterministic captures keep their RGBA5551 baseline.
+    std::vector<uint8_t> rgb(forced ? static_cast<size_t>(width) * height * 3u : 0U);
+    if (forced && api.ReadFramebufferRgb8ToCPU(width, height, rgb.data())) {
+        WriteBmpFromRgb8Framebuffer(screenshotPath, width, height, rgb);
+    } else {
+        std::vector<uint16_t> framebuffer(static_cast<size_t>(width) * height, 0);
+        api.ReadFramebufferToCPU(0, width, height, framebuffer.data());
+        WriteBmpFromRgba5551Framebuffer(screenshotPath, width, height, framebuffer);
+    }
     nlohmann::json metadata = {
         {"format", "triaevum_framebuffer_sample_v1"}, {"host_frame", frameCount},
         {"width", width}, {"height", height}, {"temporal_sample", nullptr},

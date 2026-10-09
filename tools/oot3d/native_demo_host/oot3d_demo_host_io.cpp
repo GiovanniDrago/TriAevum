@@ -51,12 +51,12 @@ uint8_t ExpandRgba5551Channel(uint16_t value) {
 
 } // namespace
 
-void WriteBmpFromRgba5551Framebuffer(
+void WriteBmpFromRgb8Framebuffer(
     const std::filesystem::path& path,
     uint32_t width,
     uint32_t height,
-    const std::vector<uint16_t>& rgba16) {
-    if (path.empty() || width == 0 || height == 0 || rgba16.size() < static_cast<size_t>(width) * height) {
+    const std::vector<uint8_t>& rgb) {
+    if (path.empty() || width == 0 || height == 0 || rgb.size() < static_cast<size_t>(width) * height * 3u) {
         return;
     }
 
@@ -100,16 +100,33 @@ void WriteBmpFromRgba5551Framebuffer(
         const uint32_t srcY = height - 1u - y;
         std::fill(row.begin(), row.end(), 0);
         for (uint32_t x = 0; x < width; ++x) {
-            const uint16_t pixel = rgba16[static_cast<size_t>(srcY) * width + x];
-            const uint8_t r = ExpandRgba5551Channel(pixel >> 11);
-            const uint8_t g = ExpandRgba5551Channel(pixel >> 6);
-            const uint8_t b = ExpandRgba5551Channel(pixel >> 1);
+            const size_t source = (static_cast<size_t>(srcY) * width + x) * 3u;
+            const uint8_t r = rgb[source + 0u];
+            const uint8_t g = rgb[source + 1u];
+            const uint8_t b = rgb[source + 2u];
             row[x * 3u + 0u] = b;
             row[x * 3u + 1u] = g;
             row[x * 3u + 2u] = r;
         }
         file.write(reinterpret_cast<const char*>(row.data()), static_cast<std::streamsize>(row.size()));
     }
+}
+
+void WriteBmpFromRgba5551Framebuffer(
+    const std::filesystem::path& path,
+    uint32_t width,
+    uint32_t height,
+    const std::vector<uint16_t>& rgba16) {
+    if (rgba16.size() < static_cast<size_t>(width) * height) {
+        return;
+    }
+    std::vector<uint8_t> rgb(static_cast<size_t>(width) * height * 3u);
+    for (size_t index = 0; index < static_cast<size_t>(width) * height; ++index) {
+        rgb[index * 3u + 0u] = ExpandRgba5551Channel(rgba16[index] >> 11);
+        rgb[index * 3u + 1u] = ExpandRgba5551Channel(rgba16[index] >> 6);
+        rgb[index * 3u + 2u] = ExpandRgba5551Channel(rgba16[index] >> 1);
+    }
+    WriteBmpFromRgb8Framebuffer(path, width, height, rgb);
 }
 
 std::filesystem::path ScreenshotSequenceFramePath(const std::filesystem::path& path, uint32_t frameIndex) {

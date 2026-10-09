@@ -855,18 +855,18 @@ void GfxRenderingAPIVulkan::ClearFramebuffer(bool, bool) {
     }
 }
 
-void GfxRenderingAPIVulkan::ReadFramebufferToCPU(int, uint32_t width, uint32_t height, uint16_t* rgba16Buf) {
-    if (rgba16Buf == nullptr || width == 0 || height == 0 ||
-        mSwapchainExtent.width == 0 || mSwapchainExtent.height == 0 || mDevice == VK_NULL_HANDLE ||
+std::vector<uint8_t> GfxRenderingAPIVulkan::ReadSwapchainRgba8(uint32_t& copyWidthOut, uint32_t& copyHeightOut,
+                                                               bool& bgraOut) {
+    if (mSwapchainExtent.width == 0 || mSwapchainExtent.height == 0 || mDevice == VK_NULL_HANDLE ||
         (mSwapchain == VK_NULL_HANDLE && !mNriSwapchain.Active()) ||
         mCurrentFramebuffer != 0) {
-        return;
+        return {};
     }
     if (mFrameActive) {
         EndFrame();
     }
     if (!mFrameSubmitted) {
-        return;
+        return {};
     }
     CheckVk(vkWaitForFences(mDevice, 1, &mInFlightFences[mCurrentFrame], VK_TRUE,
                             std::numeric_limits<uint64_t>::max()),
@@ -914,13 +914,37 @@ void GfxRenderingAPIVulkan::ReadFramebufferToCPU(int, uint32_t width, uint32_t h
     EndImmediateCommands(commandBuffer);
 
     const auto* rgba8 = static_cast<const uint8_t*>(readback.Mapped);
-    const bool bgra = mSwapchainFormat == VK_FORMAT_B8G8R8A8_UNORM ||
-                      mSwapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
-    const bool copied = Renderer::CopyScaledFramebufferRgba5551(
-        {rgba8, static_cast<size_t>(byteCount)}, copyWidth, copyHeight, bgra,
-        {rgba16Buf, static_cast<size_t>(width) * height}, width, height);
+    std::vector<uint8_t> pixels(rgba8, rgba8 + byteCount);
     DestroyBuffer(readback);
-    if (!copied) throw std::runtime_error("invalid framebuffer readback extent");
+    copyWidthOut = copyWidth;
+    copyHeightOut = copyHeight;
+    bgraOut = mSwapchainFormat == VK_FORMAT_B8G8R8A8_UNORM ||
+              mSwapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
+    return pixels;
+}
+
+void GfxRenderingAPIVulkan::ReadFramebufferToCPU(int, uint32_t width, uint32_t height, uint16_t* rgba16Buf) {
+    if (rgba16Buf == nullptr || width == 0 || height == 0)
+        return;
+    uint32_t copyWidth = 0, copyHeight = 0;
+    bool bgra = false;
+    const auto pixels = ReadSwapchainRgba8(copyWidth, copyHeight, bgra);
+    if (pixels.empty())
+        return;
+    if (!Renderer::CopyScaledFramebufferRgba5551(pixels, copyWidth, copyHeight, bgra,
+                                                 {rgba16Buf, static_cast<size_t>(width) * height}, width, height))
+        throw std::runtime_error("invalid framebuffer readback extent");
+}
+
+bool GfxRenderingAPIVulkan::ReadFramebufferRgb8ToCPU(uint32_t width, uint32_t height, uint8_t* rgb) {
+    if (rgb == nullptr || width == 0 || height == 0)
+        return false;
+    uint32_t copyWidth = 0, copyHeight = 0;
+    bool bgra = false;
+    const auto pixels = ReadSwapchainRgba8(copyWidth, copyHeight, bgra);
+    return !pixels.empty() &&
+           Renderer::CopyScaledFramebufferRgb8(pixels, copyWidth, copyHeight, bgra,
+                                               {rgb, static_cast<size_t>(width) * height * 3u}, width, height);
 }
 
 void GfxRenderingAPIVulkan::ResolveMSAAColorBuffer(int, int) {

@@ -322,6 +322,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
                          int dstX0, int dstY0, int dstX1, int dstY1) override;
     void ClearFramebuffer(bool color, bool depth) override;
     void ReadFramebufferToCPU(int fbId, uint32_t width, uint32_t height, uint16_t* rgba16Buf) override;
+    bool ReadFramebufferRgb8ToCPU(uint32_t width, uint32_t height, uint8_t* rgb) override;
+    // The presented swapchain image as 8-bit RGBA (or BGRA); empty when none.
+    std::vector<uint8_t> ReadSwapchainRgba8(uint32_t& width, uint32_t& height, bool& bgra);
     void ResolveMSAAColorBuffer(int fbIdTarget, int fbIdSrc) override;
     std::unordered_map<std::pair<float, float>, uint16_t, hash_pair_ff>
     GetPixelDepth(int fbId, const std::set<std::pair<float, float>>& coordinates) override;

@@ -261,6 +261,14 @@ class GfxRenderingAPI : public ::Fast::Renderer3ds::PicaRenderBackend {
         ClearFramebuffer(false, true);
     }
     virtual void ReadFramebufferToCPU(int fbId, uint32_t width, uint32_t height, uint16_t* rgba16Buf) = 0;
+    // Full-precision readback (RGB bytes, top row first) where a backend has
+    // one; false leaves the caller on the RGBA5551 readback.
+    virtual bool ReadFramebufferRgb8ToCPU(uint32_t width, uint32_t height, uint8_t* rgb) {
+        (void)width;
+        (void)height;
+        (void)rgb;
+        return false;
+    }
     virtual void ResolveMSAAColorBuffer(int fbIdTarger, int fbIdSrc) = 0;
     virtual std::unordered_map<std::pair<float, float>, uint16_t, hash_pair_ff>
     GetPixelDepth(int fb_id, const std::set<std::pair<float, float>>& coordinates) = 0;
