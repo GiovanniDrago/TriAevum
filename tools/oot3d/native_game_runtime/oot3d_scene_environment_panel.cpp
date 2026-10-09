@@ -183,7 +183,7 @@ public:
     ImGui::EndDisabled();
     ImGui::TextWrapped("Directional shadow casters keep the title's back-face culling. Off: both faces of every "
                        "caster draw into the shadow map, for one-sided or open meshes whose culled faces leave "
-                       "holes or leak light.");
+                       "holes or leak light. The base profile (scenes without their own) keeps it off.");
     if (changed)
       mRuntime->Preview(value, state.Revision);
     if (ImGui::Button("Save scene environment"))

@@ -34,6 +34,9 @@ SceneEnvironmentProfile BaseSceneEnvironmentProfile() {
   base.KeyAzimuthOffset = 0.0F;
   base.KeyElevationOffset = 0.0F;
   base.PointLights = {};
+  // Both faces of the shadow casters cast: the title's single-sided walls
+  // and foliage would otherwise let the light through.
+  base.ShadowCasterCulling = false;
   return base;
 }
 

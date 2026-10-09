@@ -141,9 +141,10 @@ int main() try {
   f.Settle();
   Check(f.Ambient() == 0.85F, "a missing file replaced the profile in use");
 
-  // The shadow casters' face culling: on without the key, off read, written
-  // and handed to the renderer.
+  // The shadow casters' face culling: off in the base profile, on without the
+  // key (older profiles), off read, written and handed to the renderer.
   {
+    Check(!BaseSceneEnvironmentProfile().ShadowCasterCulling, "the base profile culls the shadow casters' faces");
     auto document = EncodeSceneEnvironment(BaseSceneEnvironmentProfile(), 0x55, false);
     document.erase("shadowCasterCulling");
     const auto older = DecodeSceneEnvironment(document);
