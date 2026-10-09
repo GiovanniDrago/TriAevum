@@ -4,6 +4,7 @@
 #include <bit>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace Fast::Oot3d {
 namespace {
@@ -161,10 +162,17 @@ void GrassInteractionField::UpdateActors(
         const auto snap = [cell](float value) {
             return std::round(value / cell) * cell;
         };
-        // Keep finite trail storage around motion, not the first (often static)
-        // scene object. Direct colliders remain active outside the trail field.
-        const auto focus = std::max_element(actors.begin(), actors.end(), [](const auto& a, const auto& b) {
-            return std::hypot(a.Velocity[0], a.Velocity[2]) < std::hypot(b.Velocity[0], b.Velocity[2]);
+        // Keep finite trail storage around Link, whose trail the camera follows;
+        // without him, around the fastest actor rather than the first (often
+        // static) scene object. Following whichever actor moved fastest moved
+        // the field away from a stopped Link and wiped his trail at once.
+        // Direct colliders remain active outside the trail field.
+        const auto rank = [](const GrassInteractor& actor) {
+            return std::pair(actor.Type == GrassInteractor::Kind::PlayerLink,
+                             std::hypot(actor.Velocity[0], actor.Velocity[2]));
+        };
+        const auto focus = std::max_element(actors.begin(), actors.end(), [&](const auto& a, const auto& b) {
+            return rank(a) < rank(b);
         });
         if (!mInitialized || std::hypot(focus->Velocity[0], focus->Velocity[2]) > 0.01F)
             ShiftTo({snap(focus->Position[0]), snap(focus->Position[2])});

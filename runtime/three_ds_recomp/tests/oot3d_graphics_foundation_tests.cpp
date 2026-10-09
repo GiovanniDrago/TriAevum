@@ -6124,6 +6124,48 @@ TEST(Oot3dGrassInteractionField, KeepsTrailAtWorldCoordinatesWhenRecentering) {
     EXPECT_FLOAT_EQ(otherFloor[1], 0.0F);
 }
 
+TEST(Oot3dGrassInteractionField, KeepsLinksTrailWhenHeStopsAndAFarActorMoves) {
+    using namespace Fast::Oot3d;
+    InteractiveGrassSettings settings;
+    settings.InteractionFieldResolution = 32;
+    settings.InteractionFieldRadius = 160.0F;
+    settings.CollisionPush = 1.0F;
+    settings.MaximumBend = 2.0F;
+    settings.RecoverySeconds = 10.0F;
+    GrassInteractionField field;
+    std::array<GrassInteractor, 2> actors;
+    auto& link = actors[0];
+    link.StableId = 1U;
+    link.PreviousPosition = {-40.0F, 0.0F, 0.0F};
+    link.Position = {40.0F, 0.0F, 0.0F};
+    link.Velocity = {100.0F, 0.0F, 0.0F};
+    link.Radius = 30.0F;
+    link.FrameId = 1U;
+    auto& kokiri = actors[1];
+    kokiri.Type = GrassInteractor::Kind::SceneActor;
+    kokiri.StableId = 2U;
+    kokiri.PreviousPosition = kokiri.Position = {2000.0F, 0.0F, 2000.0F};
+    kokiri.Radius = 20.0F;
+    kokiri.FrameId = 1U;
+    field.UpdateActors(1.0F / 60.0F, settings, actors);
+    const auto before = field.Sample(5.0F, 15.0F, 0.0F, 5.0F);
+    EXPECT_GT(std::hypot(before[0], before[1]), 0.0F);
+
+    // Link stops; the far actor is now the fastest. The trail around Link is
+    // what the camera sees, so the field must stay on him.
+    link.PreviousPosition = link.Position;
+    link.Velocity = {};
+    link.FrameId = 2U;
+    kokiri.PreviousPosition = kokiri.Position;
+    kokiri.Position[0] += 2.0F;
+    kokiri.Velocity = {120.0F, 0.0F, 0.0F};
+    kokiri.FrameId = 2U;
+    field.UpdateActors(0.0F, settings, actors);
+    const auto after = field.Sample(5.0F, 15.0F, 0.0F, 5.0F);
+    EXPECT_NEAR(after[0], before[0], 1.0e-5F);
+    EXPECT_NEAR(after[1], before[1], 1.0e-5F);
+}
+
 TEST(Oot3dHiZ, BuildsCompleteOddSizedPyramid) {
     const auto layout = Fast::Oot3d::BuildHiZPyramidLayout(5U, 3U);
     ASSERT_EQ(layout.Mips.size(), 3U);
