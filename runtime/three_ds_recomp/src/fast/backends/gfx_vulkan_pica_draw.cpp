@@ -2640,6 +2640,25 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 destination.Integer = false;
             }
             {
+                // The contact shadows' visibility where this sample has it.
+                const bool contactBound = directionalShadowHistoryBound && directionalShadowHistory.ContactValid();
+                auto& destination = nriDraw.ContactShadowTexture;
+                destination.Image = contactBound ? directionalShadowHistory.ContactImage : mFallbackTexture.NriImage;
+                destination.Format = contactBound ? VK_FORMAT_R8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
+                destination.Usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+                destination.Width = contactBound ? directionalShadowHistory.ContactWidth : mFallbackTexture.Width;
+                destination.Height = contactBound ? directionalShadowHistory.ContactHeight : mFallbackTexture.Height;
+                destination.MipLevels = 1U;
+                destination.MinFilter = VK_FILTER_LINEAR;
+                destination.MagFilter = VK_FILTER_LINEAR;
+                destination.MipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+                destination.AddressU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                destination.AddressV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                destination.MinLod = 0.0F;
+                destination.MaxLod = 0.0F;
+                destination.Integer = false;
+            }
+            {
                 // The cube atlas only where the variant reads it.
                 const bool pointShadowBound = pointShadowHistory.Valid() &&
                     Oot3d::HasPicaShaderInstrumentationFeature(
@@ -3463,9 +3482,18 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
                     ? std::optional(mFrameEnvironment.Lights[0]) : std::nullopt,
                 mFrameEnvironment.Enabled ? mFrameEnvironment.NativeDirectStrength : 1.0F,
                 mFrameEnvironment.Enabled ? &mFrameEnvironment : nullptr,
+                target.Width,
+                target.Height,
+                mTemporalJitterEnabled ? mTemporalJitterSequence : 0U,
+                [this](const char* label) {
+                    mGpuProfiler.Mark(mCurrentFrame, label, mCommandBuffers[mCurrentFrame]);
+                },
             },
             mPreparedShadowCasterView,
             mDirectionalShadowMapBarrierPlan);
+    // The contact shadows' marks end where the map's own work ends.
+    if (executionRequested && settings.Effects.DirectionalShadows.ContactShadows.Enabled)
+        mGpuProfiler.Mark(mCurrentFrame, "directional_shadows", mCommandBuffers[mCurrentFrame]);
     if (executionRequested) {
         const auto& shadowMapTransitions =
             mNriDirectionalShadowPass.LastShadowMapBarrierExecution();

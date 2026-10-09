@@ -496,6 +496,8 @@ void GfxRenderingAPIVulkan::StartFrame() {
             (screenSpaceGlobalIlluminationRequested &&
              Oot3d::GlobalIlluminationReadsFaceNormal(graphicsSettings.Effects.GlobalIllumination)),
         screenSpaceGlobalIlluminationRequested,
+        graphicsSettings.Effects.DirectionalShadows.Mode == Oot3d::DirectionalShadowMode::VirtualShadowMaps &&
+            graphicsSettings.Effects.DirectionalShadows.ContactShadows.Enabled,
     };
     if (!mPicaExtensionRequests.has_value() ||
         *mPicaExtensionRequests != extensionRequests) {

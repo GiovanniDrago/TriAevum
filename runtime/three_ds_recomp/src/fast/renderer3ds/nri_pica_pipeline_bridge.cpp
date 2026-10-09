@@ -31,6 +31,10 @@
 namespace Fast::Renderer3ds {
 namespace {
 
+// Image/sampler pairs a PICA draw binds: the native units and the extension
+// samplers (shadow atlases, contact shadows).
+constexpr size_t kTextureSlotCount = 11U;
+
 #ifdef ENABLE_RENDERER3DS_NRI
 nri::Topology ToNriTopology(VkPrimitiveTopology topology) {
     switch (topology) {
@@ -261,7 +265,7 @@ struct NriPicaPipelineBridge::Impl {
     std::vector<FrameDescriptors> Frames;
     std::map<NriPicaSamplerKey, nri::Descriptor*> Samplers;
     // Last sampler per texture slot in BindOwnedDraw.
-    std::array<std::pair<NriPicaSamplerKey, nri::Descriptor*>, 10> RecentSamplers{};
+    std::array<std::pair<NriPicaSamplerKey, nri::Descriptor*>, kTextureSlotCount> RecentSamplers{};
     bool OwnedDraws = false;
     bool PreferOwnedUploads = false;
     bool PipelineLibrariesEnabled = false;
@@ -280,9 +284,9 @@ struct NriPicaPipelineBridge::Impl {
         pool.constantBufferMaxNum =
             static_cast<uint32_t>(std::tuple_size_v<decltype(NriPicaOwnedDrawDesc::Uniforms)>) *
             DescriptorSetsPerPool;
-        pool.textureMaxNum = 10U * DescriptorSetsPerPool;
+        pool.textureMaxNum = static_cast<uint32_t>(kTextureSlotCount) * DescriptorSetsPerPool;
         pool.storageTextureMaxNum = DescriptorSetsPerPool;
-        pool.samplerMaxNum = 10U * DescriptorSetsPerPool;
+        pool.samplerMaxNum = static_cast<uint32_t>(kTextureSlotCount) * DescriptorSetsPerPool;
         pool.structuredBufferMaxNum = DescriptorSetsPerPool;
         if (core.CreateDescriptorPool(device, pool, block.Pool) != nri::Result::SUCCESS ||
             core.AllocateDescriptorSets(*block.Pool, *DescriptorLayout, 0,
@@ -1007,15 +1011,16 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
         seamBuffer = frame.SeamFallback;
     }
 
-    std::array<NriPicaTextureBindingDesc, 10> textureSources{};
+    std::array<NriPicaTextureBindingDesc, kTextureSlotCount> textureSources{};
     std::copy(desc.Textures.begin(), desc.Textures.end(),
               textureSources.begin());
     textureSources[3] = desc.DirectionalShadowTexture;
     textureSources[4] = desc.LightingLutTexture;
     std::copy(desc.PbrTextures.begin(), desc.PbrTextures.end(), textureSources.begin() + 5);
     textureSources[9] = desc.PointShadowTexture;
-    std::array<nri::Descriptor*, 10> textures{};
-    std::array<nri::Descriptor*, 10> samplers{};
+    textureSources[10] = desc.ContactShadowTexture;
+    std::array<nri::Descriptor*, kTextureSlotCount> textures{};
+    std::array<nri::Descriptor*, kTextureSlotCount> samplers{};
     for (size_t index = 0; index < textures.size(); ++index) {
         const auto& source = textureSources[index];
         if (source.Image == VK_NULL_HANDLE ||
@@ -1115,6 +1120,8 @@ bool NriPicaPipelineBridge::BindOwnedDraw(
         {set, 25, 0, &samplers[8], 1},
         {set, 27, 0, &textures[9], 1},
         {set, 28, 0, &samplers[9], 1},
+        {set, 29, 0, &textures[10], 1},
+        {set, 30, 0, &samplers[10], 1},
         // The draw's seam data, or the frame's fallback view.
         {set, 26, 0, &seamBuffer, 1},
     }};

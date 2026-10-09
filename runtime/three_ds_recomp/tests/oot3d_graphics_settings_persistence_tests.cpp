@@ -133,6 +133,7 @@ Fast::Oot3d::GraphicsSettings CompleteSettings() {
     effects.DirectionalShadows.Strength = 3.25F;
     effects.DirectionalShadows.PcfRadius = 2U;
     effects.DirectionalShadows.NormalBias = 2.5F;
+    effects.DirectionalShadows.ContactShadows = {true, 2U, 0.02F, 0.75F, 0.5F, false};
     effects.PointShadows.Mode = PointShadowMode::CubeMaps;
     effects.PointShadows.Resolution = 1024U;
     effects.PointShadows.MaxLights = 6U;
@@ -390,6 +391,7 @@ TEST(Oot3dGraphicsSettingsPersistence, MigratesSingleCascadeWithoutLosingTheOffC
     shadows["Resolution"] = 1024;
     shadows["MaximumDistance"] = 1310;
     shadows.erase("NormalBias");
+    shadows.erase("ContactShadows");
     shadows["DepthPadding"] = 30;
     shadows["Stabilize"] = false;
     const auto migrated = DeserializeGraphicsSettings(document);
@@ -401,6 +403,7 @@ TEST(Oot3dGraphicsSettingsPersistence, MigratesSingleCascadeWithoutLosingTheOffC
     EXPECT_FLOAT_EQ(migrated.Value.Effects.DirectionalShadows.DepthBiasSlope, 2.25F);
     // Documents from before the normal bias take its default.
     EXPECT_FLOAT_EQ(migrated.Value.Effects.DirectionalShadows.NormalBias, DirectionalShadowSettings{}.NormalBias);
+    EXPECT_EQ(migrated.Value.Effects.DirectionalShadows.ContactShadows, ContactShadowSettings{});
     const auto saved = SerializeGraphicsSettings(migrated.Value);
     const auto reloaded = DeserializeGraphicsSettings(saved);
     EXPECT_FALSE(reloaded.NeedsRewrite);

@@ -165,6 +165,7 @@ DirectionalShadowFramePlan BuildDirectionalShadowFramePlan(const DirectionalShad
     plan.NormalBias = std::isfinite(input.Settings.NormalBias) ? std::clamp(input.Settings.NormalBias, 0.0F, 10.0F)
                                                                : 0.0F;
     plan.CullCasters = input.CullCasters;
+    plan.ContactShadows = input.Settings.ContactShadows;
     plan.Status = DirectionalShadowPlanStatus::Ready;
     return plan;
 }

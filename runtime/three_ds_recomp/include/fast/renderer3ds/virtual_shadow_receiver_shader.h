@@ -24,10 +24,12 @@ struct PicaVirtualShadowLayout {
 };
 layout(set=0,binding=12,std140) uniform PicaVirtualShadowReceiver {
     vec4 shadow_state;
-    // x: smooth-shaded receivers' normal bias (texels); w: light mask.
+    // x: smooth-shaded receivers' normal bias (texels); y: 1 with contact
+    // shadows; w: light mask.
     vec4 receiver;
     uvec4 extent;
     vec4 dissolve;
+    mat4 contact_projection;
     PicaVirtualShadowLayout layouts[2];
 } pica_vsm;
 uint pica_vsm_page(int layout_index, int level, ivec2 cell) {

@@ -301,6 +301,16 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
         std::isfinite(directionalShadows.NormalBias)
             ? std::clamp(directionalShadows.NormalBias, 0.0F, 10.0F)
             : DirectionalShadowSettings{}.NormalBias;
+    {
+        // Godot's ranges: thickness > 0, opacity 0..1, blur 0..10.
+        auto& contact = directionalShadows.ContactShadows;
+        const ContactShadowSettings defaults;
+        contact.Length = std::min<uint8_t>(contact.Length, 2U);
+        contact.SurfaceThickness = std::isfinite(contact.SurfaceThickness)
+            ? std::clamp(contact.SurfaceThickness, 0.001F, 0.1F) : defaults.SurfaceThickness;
+        contact.Opacity = std::isfinite(contact.Opacity) ? std::clamp(contact.Opacity, 0.0F, 1.0F) : defaults.Opacity;
+        contact.Blur = std::isfinite(contact.Blur) ? std::clamp(contact.Blur, 0.0F, 10.0F) : defaults.Blur;
+    }
     if (directionalShadows.Mode ==
             DirectionalShadowMode::VirtualShadowMaps &&
         !capabilities.Has(GraphicsCapability::NriDirectionalShadows)) {

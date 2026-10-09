@@ -1247,6 +1247,14 @@ std::string_view EnhancedPresetDocument() noexcept {
       "DepthBiasSlope": 1.75,
       "MaximumDistance": 6550.0,
       "Mode": "VirtualShadowMaps",
+      "ContactShadows": {
+        "Blur": 1.0,
+        "Enabled": false,
+        "HalfResolution": true,
+        "Length": 1,
+        "Opacity": 1.0,
+        "SurfaceThickness": 0.009999999776482582
+      },
       "NormalBias": 1.0,
       "PcfRadius": 2,
       "Resolution": 2048,
@@ -1542,6 +1550,13 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
                   {"Strength", directionalShadows.Strength},
                   {"PcfRadius", directionalShadows.PcfRadius},
                   {"NormalBias", directionalShadows.NormalBias},
+                  {"ContactShadows",
+                   {{"Enabled", directionalShadows.ContactShadows.Enabled},
+                    {"Length", directionalShadows.ContactShadows.Length},
+                    {"SurfaceThickness", directionalShadows.ContactShadows.SurfaceThickness},
+                    {"Opacity", directionalShadows.ContactShadows.Opacity},
+                    {"Blur", directionalShadows.ContactShadows.Blur},
+                    {"HalfResolution", directionalShadows.ContactShadows.HalfResolution}}},
               }},
              {"PointShadows",
               {
@@ -1911,6 +1926,23 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                 if (FindMember(*shadows, "NormalBias") != nullptr)
                     ReadScalar(*shadows, "NormalBias", settings.NormalBias,
                                "Graphics.Effects.DirectionalShadows.NormalBias", result);
+                // Optional: documents from before keep the defaults (off).
+                if (const Json* contact = FindMember(*shadows, "ContactShadows"); contact != nullptr) {
+                    const std::string contactPath = "Graphics.Effects.DirectionalShadows.ContactShadows.";
+                    auto& value = settings.ContactShadows;
+                    if (!contact->is_object()) {
+                        Correct(result, contactPath + "*", "non-object value restored from defaults");
+                    } else {
+                        ReadScalar(*contact, "Enabled", value.Enabled, contactPath + "Enabled", result);
+                        ReadScalar(*contact, "Length", value.Length, contactPath + "Length", result);
+                        ReadScalar(*contact, "SurfaceThickness", value.SurfaceThickness,
+                                   contactPath + "SurfaceThickness", result);
+                        ReadScalar(*contact, "Opacity", value.Opacity, contactPath + "Opacity", result);
+                        ReadScalar(*contact, "Blur", value.Blur, contactPath + "Blur", result);
+                        ReadScalar(*contact, "HalfResolution", value.HalfResolution,
+                                   contactPath + "HalfResolution", result);
+                    }
+                }
                 if (version < 12U || legacyMode) {
                     // The old distance sized a camera-fitted map; it is not a
                     // virtual-map coverage limit. Preserve strength/filter/bias.

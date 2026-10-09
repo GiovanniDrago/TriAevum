@@ -10,6 +10,7 @@
 #include "fast/renderer3ds/pica_surface_passthrough_scale.h"
 #include "fast/oot3d/display_effect_plan.h"
 #include "fast/oot3d/directional_shadows.h"
+#include "fast/oot3d/contact_shadows.h"
 #include "fast/oot3d/sample_view.h"
 #include "fast/oot3d/ambient_occlusion_composite.h"
 #include "fast/oot3d/anti_aliasing_frame_policy.h"
@@ -527,6 +528,110 @@ TEST(Oot3dDirectionalShadows, RejectsMissingDirectionAndDisabledMode) {
     input.Settings.Mode = DirectionalShadowMode::VirtualShadowMaps;
     EXPECT_EQ(BuildDirectionalShadowFramePlan(input).Status, DirectionalShadowPlanStatus::InvalidLightDirection);
 }
+
+TEST(Oot3dContactShadows, ProjectsNativeViewToReverseZ) {
+    using namespace Fast::Oot3d;
+    // A native perspective (column-major): x and y scales, w = -z_view.
+    DirectionalShadowMatrix projection{};
+    projection[0] = 1.5F;
+    projection[5] = 2.0F;
+    projection[10] = -1.0F;
+    projection[11] = -1.0F;
+    projection[14] = -2.0F;
+    DirectionalShadowMatrix clipToWorld{};
+    ASSERT_TRUE(InvertDirectionalShadowMatrix(projection, clipToWorld));
+    const auto contact = BuildContactShadowProjection(clipToWorld, IdentityDirectionalShadowMatrix());
+    ASSERT_TRUE(contact.has_value());
+    // A view point 10 units ahead keeps the native x and y; its depth is
+    // near / distance.
+    const std::array<float, 4> point{ 3.0F, -2.0F, -10.0F, 1.0F };
+    std::array<float, 4> clip{};
+    for (size_t row = 0; row < 4U; ++row)
+        for (size_t column = 0; column < 4U; ++column)
+            clip[row] += (*contact)[column * 4U + row] * point[column];
+    ASSERT_NEAR(clip[3], 10.0F, 1.0e-4F);
+    EXPECT_NEAR(clip[0] / clip[3], 0.45F, 1.0e-5F);
+    EXPECT_NEAR(clip[1] / clip[3], -0.4F, 1.0e-5F);
+    EXPECT_NEAR(clip[2] / clip[3], kContactShadowNearPlane / 10.0F, 1.0e-6F);
+
+    const DirectionalShadowMatrix singular{};
+    EXPECT_FALSE(BuildContactShadowProjection(singular, IdentityDirectionalShadowMatrix()).has_value());
+}
+
+TEST(Oot3dContactShadows, ResolvesGodotDispatchForConvergingDivergingAndParallelLight) {
+    using namespace Fast::Oot3d;
+    DirectionalShadowMatrix projection{};
+    projection[0] = 1.0F;
+    projection[5] = 1.0F;
+    projection[11] = -1.0F;
+    projection[14] = kContactShadowNearPlane;
+    ContactShadowSettings settings;
+    settings.Enabled = true;
+
+    // A light ahead on the view axis: converging rays toward the screen
+    // centre, groups around it covering the whole screen.
+    const auto ahead = ResolveContactShadowDispatch(projection, { 0.0F, 0.0F, -1.0F }, 1920U, 1080U, settings, 7U);
+    ASSERT_TRUE(ahead.Valid());
+    EXPECT_FLOAT_EQ(ahead.Constants.LightCoordinate[0], 960.0F);
+    EXPECT_FLOAT_EQ(ahead.Constants.LightCoordinate[1], 540.0F);
+    EXPECT_FLOAT_EQ(ahead.Constants.LightCoordinate[3], 1.0F);
+    EXPECT_EQ(ahead.Groups[0], kContactShadowWaveSize);
+    EXPECT_EQ(ahead.Constants.LightOffset[0], (-15 - 1) * 64);
+    EXPECT_EQ(ahead.Constants.LightOffset[1], (-9 - 1) * 64);
+    EXPECT_EQ(ahead.Groups[1], uint32_t(15 + 2 + 16));
+    EXPECT_EQ(ahead.Groups[2], uint32_t(9 + 2 + 10));
+    EXPECT_EQ(ahead.Constants.ScreenSize[0], 1920);
+    EXPECT_EQ(ahead.Constants.ScreenSize[1], 1080);
+    EXPECT_FLOAT_EQ(ahead.Constants.FrameCount, 7.0F);
+
+    // Behind the camera: diverging rays.
+    const auto behind = ResolveContactShadowDispatch(projection, { 0.0F, 0.0F, 1.0F }, 1920U, 1080U, settings, 7U);
+    ASSERT_TRUE(behind.Valid());
+    EXPECT_FLOAT_EQ(behind.Constants.LightCoordinate[3], -1.0F);
+
+    // Across the view: parallel screen rays, normalised to the major axis.
+    const auto across = ResolveContactShadowDispatch(projection, { 1.0F, 0.5F, 0.0F }, 1920U, 1080U, settings, 7U);
+    ASSERT_TRUE(across.Valid());
+    EXPECT_FLOAT_EQ(across.Constants.LightCoordinate[3], 0.0F);
+    EXPECT_FLOAT_EQ(std::max(std::abs(across.Constants.LightCoordinate[0]),
+                             std::abs(across.Constants.LightCoordinate[1])),
+                    1.0F);
+
+    EXPECT_FALSE(ResolveContactShadowDispatch(projection, { 0.0F, 0.0F, -1.0F }, 0U, 1080U, settings, 7U).Valid());
+    EXPECT_FALSE(ResolveContactShadowDispatch(projection, { 0.0F, 0.0F, 0.0F }, 1920U, 1080U, settings, 7U).Valid());
+}
+
+TEST(Oot3dContactShadows, ClampsShaderParameters) {
+    using namespace Fast::Oot3d;
+    DirectionalShadowMatrix projection{};
+    projection[0] = 1.0F;
+    projection[5] = 1.0F;
+    projection[11] = -1.0F;
+    ContactShadowSettings settings;
+    settings.SurfaceThickness = 0.0F;
+    settings.Opacity = 2.0F;
+    settings.Blur = -1.0F;
+    const auto dispatch = ResolveContactShadowDispatch(projection, { 0.0F, 0.0F, -1.0F }, 64U, 64U, settings, 2048U);
+    ASSERT_TRUE(dispatch.Valid());
+    EXPECT_GT(dispatch.Constants.SurfaceThickness, 0.0F);
+    EXPECT_FLOAT_EQ(dispatch.Constants.Opacity, 1.0F);
+    EXPECT_FLOAT_EQ(dispatch.Constants.Blur, 0.0F);
+    EXPECT_FLOAT_EQ(dispatch.Constants.FrameCount, 0.0F);
+}
+
+#ifdef OOT3D_FOUNDATION_HAS_SHADERC
+TEST(Oot3dContactShadows, ComputeShadersCompileForEveryLength) {
+    shaderc::Compiler compiler;
+    shaderc::CompileOptions options;
+    options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
+    for (uint32_t length = 0; length < Fast::Oot3d::kContactShadowLengthCount; ++length) {
+        const auto source = Fast::Oot3d::ContactShadowComputeShader(length);
+        EXPECT_NE(source.find("#define READ_COUNT " + std::to_string(2U + length)), std::string::npos);
+        const auto result = compiler.CompileGlslToSpv(source, shaderc_compute_shader, "contact_shadows.comp", options);
+        EXPECT_EQ(result.GetCompilationStatus(), shaderc_compilation_status_success) << result.GetErrorMessage();
+    }
+}
+#endif
 
 TEST(Renderer3dsVirtualShadows, RetainsWorldPagesAndRetriesUncommittedCasterChanges) {
     using namespace Fast::Renderer3ds;
