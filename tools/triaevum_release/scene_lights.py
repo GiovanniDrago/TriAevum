@@ -74,10 +74,16 @@ SCALAR = {PICA_S8: "b", PICA_U8: "B", PICA_S16: "h", PICA_U16: "H", PICA_S32: "i
 MATERIAL_SIZE = 0x15C
 
 # Per category: the merge distance of neighbouring emitters, the most kept per
-# room, the light's gain and whether it casts point shadows (flames only).
+# room, the light's gain (calibrated in the lab against the title's own
+# lighting: these sources add to light the rooms already bake) and the
+# largest reach a merged emitter may grow to.
 MERGE = {"torch": 120, "window-lamp": 300, "magic-glow": 300, "fire-lava": 500, "light-shaft": 200}
 CAP = {"torch": 16, "window-lamp": 12, "magic-glow": 8, "fire-lava": 12, "light-shaft": 8}
+GAIN = {"torch": 1.0, "window-lamp": 0.45, "magic-glow": 0.6, "fire-lava": 0.45, "light-shaft": 0.55}
+REACH = {"torch": 450, "window-lamp": 700, "magic-glow": 500, "fire-lava": 1000, "light-shaft": 600}
 FIRE_COLOUR = [1.0, 0.55, 0.22]
+# Lamplight behind a window: its pale texture tinted toward a warm interior.
+LAMP_TINT = [1.0, 0.78, 0.5]
 
 
 # --- Model files --------------------------------------------------------------------------------------------
@@ -442,7 +448,7 @@ def emitters_for(cat: str, colour: list[float], boxes: list) -> list[dict]:
             length = math.sqrt(sum(v * v for v in sum_normal)) or 1.0
             normal = [v / length for v in sum_normal]
             p = [p[k] + normal[k] * 60 for k in range(3)] if abs(normal[1]) < 0.5 else [p[0], p[1] + 60, p[2]]
-            out.append({"position": p, "radius": round(min(900, 300 + math.sqrt(area) * 0.8)), "gain": 0.7,
+            out.append({"position": p, "radius": round(min(900, 300 + math.sqrt(area) * 0.8)), "gain": GAIN[cat],
                         "colour": colour, "weight": area})
         return out
     for low, high, tris in boxes:
@@ -454,14 +460,14 @@ def emitters_for(cat: str, colour: list[float], boxes: list) -> list[dict]:
                 continue
             # Above the stand, where its flame burns: inside the stand the
             # light's own point shadow would hide it.
-            out.append({"position": [middle[0], high[1] + 25, middle[2]], "radius": 450, "gain": 1.0,
+            out.append({"position": [middle[0], high[1] + 25, middle[2]], "radius": 450, "gain": GAIN[cat],
                         "colour": colour, "weight": 1.0})
         elif cat == "window-lamp":
             p = [middle[k] + normal[k] * 40 for k in range(3)] if area > 0 else middle
-            out.append({"position": p, "radius": round(min(600, 250 + size * 0.6)), "gain": 0.9,
+            out.append({"position": p, "radius": round(min(600, 250 + size * 0.6)), "gain": GAIN[cat],
                         "colour": colour, "weight": 1.0})
         elif cat == "magic-glow":
-            out.append({"position": middle, "radius": round(min(500, 250 + size)), "gain": 0.8,
+            out.append({"position": middle, "radius": round(min(500, 250 + size)), "gain": GAIN[cat],
                         "colour": colour, "weight": 1.0})
         elif cat == "light-shaft":
             # Where the shaft lands, lighting the ground around it.
@@ -469,7 +475,7 @@ def emitters_for(cat: str, colour: list[float], boxes: list) -> list[dict]:
                 continue
             width = max(high[0] - low[0], high[2] - low[2])
             out.append({"position": [middle[0], low[1] + 40, middle[2]],
-                        "radius": round(min(900, max(400, width * 1.5))), "gain": 0.8, "colour": colour,
+                        "radius": round(min(600, max(400, width * 1.5))), "gain": GAIN[cat], "colour": colour,
                         "weight": 1.0})
     return out
 
@@ -492,7 +498,7 @@ def consolidate(emitters: list[dict]) -> list[dict]:
                         w = a["weight"] + b["weight"]
                         a["position"] = [(a["position"][k] * a["weight"] + b["position"][k] * b["weight"]) / w
                                          for k in range(3)]
-                        a["radius"] = round(max(a["radius"], b["radius"]) + 0.5 * distance)
+                        a["radius"] = round(min(REACH[cat], max(a["radius"], b["radius"]) + 0.5 * distance))
                         a["weight"] = w
                         del group[j]
                         merged = True
@@ -541,6 +547,8 @@ def model_emitters(model: Model) -> list[dict]:
         # Greyscale fire textures take their colour from the combiner.
         if cat in ("fire-lava", "torch") and min(colour) > 0.85:
             colour = list(FIRE_COLOUR)
+        elif cat == "window-lamp":
+            colour = [c * w for c, w in zip(colour, LAMP_TINT)]
         triangles = []
         for shape in shapes:
             triangles += [tuple(((shape, index), p) for index, p in tri) for tri in model.triangles(shape)]
