@@ -1,6 +1,7 @@
 #include "oot3d_native_pica_composition.h"
 #include "fast/renderer3ds/pica_environment_lighting.h"
 
+#include "oot3d_native_a32_fire_emitters.h"
 #include "oot3d_native_a32_memory.h"
 #include "oot3d_typed_gameplay_bridge.h"
 #include "recomp/a32_runtime.h"
@@ -400,6 +401,60 @@ void TestRestoredSceneLightOwnership() {
             "a recycled LightNode remained attributed to its old actor");
 }
 
+void TestFireEmittersAndSelection() {
+    using namespace Oot3dNativeGame;
+    using Fast::Renderer3ds::PicaScenePointLight;
+    // Selection: Navi and fairies first, then the nearest to Link, by
+    // identity on ties, whatever the actor-list order.
+    std::vector<PicaScenePointLight> candidates;
+    for (uint32_t i = 0; i < 40U; ++i) {
+        PicaScenePointLight light;
+        light.SourceIdentity = 1000U + i;
+        light.Group = 2U;
+        light.Radius = 100.0F;
+        light.PositionWorld = {static_cast<float>(40U - i) * 100.0F, 0.0F, 0.0F};
+        candidates.push_back(light);
+    }
+    PicaScenePointLight navi;
+    navi.SourceIdentity = 7U;
+    navi.PositionWorld = {9000.0F, 0.0F, 0.0F};
+    candidates.push_back(navi);
+    candidates.push_back(candidates.front());
+    const std::array<float, 3> link{};
+    Fast::Renderer3ds::PicaScenePointLights snapshot;
+    SelectScenePointLights(candidates, &link, snapshot);
+    Require(snapshot.Count == Fast::Renderer3ds::kMaximumPicaScenePointLights &&
+                snapshot.Lights[0].SourceIdentity == 7U && snapshot.Lights[1].SourceIdentity == 1039U &&
+                std::none_of(snapshot.Lights.begin(), snapshot.Lights.end(),
+                             [](const auto& light) { return light.SourceIdentity == 1000U; }),
+            "light selection did not keep Navi and the flames nearest to Link");
+
+    // Bg_Hidan_Fwbig half raised (0.1 scale: 240 tall, risen 120 of it):
+    // three distinct points across the exposed wall at half intensity.
+    NativeA32Memory memory;
+    constexpr uint32_t play = 0x10000000U, wall = play + 0x4000U;
+    Map(memory, play, 0x10000U);
+    const auto scalar = [&](uint32_t offset, float value) {
+        return memory.Write32(wall + offset, std::bit_cast<uint32_t>(value));
+    };
+    Require(scalar(0x28U, 0.0F) && scalar(0x2CU, -120.0F) && scalar(0x30U, 0.0F) && scalar(0x0CU, 0.0F) &&
+                scalar(0x54U, 0.1F) && scalar(0x58U, 0.1F) && scalar(0x5CU, 0.1F) && scalar(0xC4U, 0.0F) &&
+                memory.Write32(wall + 0x140U, 0x0029B1C8U) && memory.Write32(wall + 0x204U, 1U) &&
+                memory.Write16(wall + 0xBEU, 0x4000U),
+            "could not seed the great fire wall");
+    std::vector<PicaScenePointLight> lights;
+    CaptureNativeFireEmitters(memory, play, wall, 0x08DU, 0U, lights);
+    Require(lights.size() == 3U && lights[0].SourceIdentity != lights[1].SourceIdentity &&
+                lights[0].SourceIdentity == wall + 0x28U && std::abs(lights[0].PositionWorld[1] - 60.0F) < 1.0e-3F &&
+                std::abs(lights[0].PositionWorld[2] - 264.0F) < 1.0e-2F &&
+                std::abs(lights[1].Color[0] - 0.5F) < 1.0e-3F,
+            "the half-raised great fire wall did not light three points across it");
+    Require(scalar(0x2CU, -240.0F), "could not bury the wall");
+    lights.clear();
+    CaptureNativeFireEmitters(memory, play, wall, 0x08DU, 0U, lights);
+    Require(lights.empty(), "a buried fire wall still emitted light");
+}
+
 void TestRestoredNativeEnvironmentLights() {
     using namespace Oot3dNativeGame;
     NativeA32Memory memory;
@@ -567,6 +622,7 @@ int main() {
     TestDeferredAtmosphereOwnership();
     TestDeferredActorOwnership();
     TestRestoredSceneLightOwnership();
+    TestFireEmittersAndSelection();
     TestRestoredNativeEnvironmentLights();
     TestTimeDrivenEnvironmentLights();
     TestEnvironmentKeyDirection();
