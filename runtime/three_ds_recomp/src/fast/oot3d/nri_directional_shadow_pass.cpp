@@ -1722,7 +1722,7 @@ bool NriDirectionalShadowPass::ExecutePointMaps(const NriPointShadowExecuteDesc&
                 const auto& point = draw.ScenePoints->Lights[light];
                 if (point.Group >= environment.PointLights.size()) continue;
                 const auto& group = environment.PointLights[point.Group];
-                if (!group.Enabled || group.Intensity <= 0.0F || point.Radius <= 0.0F) continue;
+                if (!group.Enabled || group.Intensity <= 0.0F || point.Radius <= 0.0F || !point.CastsShadow) continue;
                 addCandidate({ point.SourceIdentity, point.PositionWorld, point.Radius * group.RadiusScale,
                                std::max({ point.Color[0], point.Color[1], point.Color[2] }) * group.Intensity });
             }

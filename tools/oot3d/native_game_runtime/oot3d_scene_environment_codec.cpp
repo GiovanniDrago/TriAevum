@@ -359,7 +359,7 @@ SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<u
       // Profiles from before the flames group list two; it keeps its defaults.
       if (!points->is_array() || points->size() < 2U || points->size() > result.PointLights.size()) {
         read.Error("/pointLights", "must be an array of 2 or " + std::to_string(result.PointLights.size()) +
-                                       " point-light groups (Navi, fairies, flames)");
+                                       " point-light groups (Navi, fairies, flames, architecture)");
       } else {
         for (size_t i = 0; i < points->size(); ++i) {
           auto &light = result.PointLights[i];

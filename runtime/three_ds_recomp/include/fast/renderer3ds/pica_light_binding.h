@@ -30,7 +30,9 @@ struct PicaNativeLightSource {
 inline constexpr uint32_t kMaximumPicaScenePointLights = 32U;
 // Scene point-light groups: 0 Navi, 1 fairies, 2 flames (lights the title
 // draws as flames but never registers: torches, fire objects).
-inline constexpr uint32_t kPicaScenePointLightGroups = 3U;
+// Navi, fairies, flames, and the architecture's light (room torches, lava,
+// windows, shafts, glows).
+inline constexpr uint32_t kPicaScenePointLightGroups = 4U;
 
 struct PicaScenePointLight {
     uint64_t SourceIdentity = 0;
@@ -38,6 +40,9 @@ struct PicaScenePointLight {
     std::array<float, 3> Color{};
     float Radius = 0.0F;
     uint32_t Group = 0;
+    // Competes for a point-shadow cube map. Broad, soft sources (lava, windows,
+    // shafts) light without one.
+    bool CastsShadow = true;
     bool operator==(const PicaScenePointLight&) const = default;
 };
 

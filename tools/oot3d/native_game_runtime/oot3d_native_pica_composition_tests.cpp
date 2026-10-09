@@ -2,6 +2,7 @@
 #include "fast/renderer3ds/pica_environment_lighting.h"
 
 #include "oot3d_native_a32_fire_emitters.h"
+#include "oot3d_native_a32_light_selection.h"
 #include "oot3d_native_a32_memory.h"
 #include "oot3d_typed_gameplay_bridge.h"
 #include "recomp/a32_runtime.h"
@@ -420,14 +421,30 @@ void TestFireEmittersAndSelection() {
     navi.PositionWorld = {9000.0F, 0.0F, 0.0F};
     candidates.push_back(navi);
     candidates.push_back(candidates.front());
-    const std::array<float, 3> link{};
+    for (auto& light : candidates) {
+        light.Color = {0.3F, 0.2F, 0.1F};
+        light.Radius = 500.0F;
+    }
+    const std::optional<std::array<float, 3>> link = std::array<float, 3>{};
     Fast::Renderer3ds::PicaScenePointLights snapshot;
-    SelectScenePointLights(candidates, &link, snapshot);
-    Require(snapshot.Count == Fast::Renderer3ds::kMaximumPicaScenePointLights &&
-                snapshot.Lights[0].SourceIdentity == 7U && snapshot.Lights[1].SourceIdentity == 1039U &&
-                std::none_of(snapshot.Lights.begin(), snapshot.Lights.end(),
+    NativeSceneLightSelector selector;
+    selector.Settings.Ceiling = 100.0F;
+    selector.Select(candidates, link, true, snapshot);
+    // The first frame fades the chosen lights in.
+    Require(snapshot.Count == 1U + selector.Settings.MaximumAddedLights && snapshot.Lights[0].SourceIdentity == 7U &&
+                snapshot.Lights[1].SourceIdentity == 1039U &&
+                std::abs(snapshot.Lights[1].Color[0] - 0.3F * selector.Settings.FadeStep) < 1.0e-4F,
+            "light selection did not keep Navi and fade in the flames nearest to Link");
+    for (int frame = 0; frame < 10; ++frame) selector.Select(candidates, link, false, snapshot);
+    Require(std::abs(snapshot.Lights[1].Color[0] - 0.3F) < 1.0e-4F &&
+                std::none_of(snapshot.Lights.begin(), snapshot.Lights.begin() + snapshot.Count,
                              [](const auto& light) { return light.SourceIdentity == 1000U; }),
-            "light selection did not keep Navi and the flames nearest to Link");
+            "selected lights did not reach full light, or a far light was chosen");
+    // Too much light at Link dims the added lights together.
+    selector.Settings.Ceiling = 0.05F;
+    for (int frame = 0; frame < 20; ++frame) selector.Select(candidates, link, false, snapshot);
+    Require(selector.Stats().Exposure < 1.0F && snapshot.Lights[1].Color[0] < 0.3F,
+            "the brightness ceiling did not dim the added lights");
 
     // Bg_Hidan_Fwbig half raised (0.1 scale: 240 tall, risen 120 of it):
     // three distinct points across the exposed wall at half intensity.

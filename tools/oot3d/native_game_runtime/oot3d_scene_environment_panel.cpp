@@ -149,11 +149,14 @@ public:
     ImGui::EndDisabled();
     ImGui::SeparatorText("Dynamic scene point lights");
     ImGui::TextWrapped("Replace Navi and fairy vertex-light contributions with spatial scene lights, and light "
-                       "the flames the game only draws (torches, fire objects). Native positions, colors and "
-                       "ranges are retained. These controls are independent of Use scene environment and affect "
+                       "the flames the game only draws (torches, fire objects). Architecture lights the room "
+                       "torches, lava, windows, light shafts and glows of the room geometry, in the rooms the "
+                       "game has loaded. Native positions, colors and ranges are retained. These controls are independent of Use scene environment and affect "
                        "only the Modern lighting model.");
-    const char *pointLabels[] = {"Navi point lights", "Fairy point lights", "Flame point lights"};
-    const char *pointNames[] = {"Navi", "Fairy", "Flame"};
+    const char *pointLabels[] = {"Navi point lights", "Fairy point lights", "Flame point lights",
+                                 "Architecture point lights"};
+    const char *pointNames[] = {"Navi", "Fairy", "Flame", "Architecture"};
+    static_assert(std::size(pointLabels) == Fast::Renderer3ds::kPicaScenePointLightGroups);
     for (size_t i = 0; i < value.PointLights.size(); ++i) {
       auto &light = value.PointLights[i];
       ImGui::PushID(pointLabels[i]);

@@ -1,8 +1,10 @@
 #pragma once
 
-// Point lights for the fire the EUR title draws but never lights: actors with
-// no LightContext record, lit while their flame is drawn (traced with Codex in
-// the EUR code). Group 2, the flames group, as En_Light and the torches.
+// Point lights for the fire and glows the EUR title draws but never lights:
+// actors with no LightContext record, lit while their flame or glow is drawn
+// (traced with Codex in the EUR code). Group 2, the flames group, as En_Light
+// and the torches. Actors that insert a LightContext record (the Poes'
+// lanterns, blue fire, King Dodongo's breath, warps) already light natively.
 
 #include "fast/renderer3ds/pica_light_binding.h"
 
@@ -26,12 +28,5 @@ void CaptureNativeFireEmitters(oot3d::recomp::a32::MemoryBus& memory, uint32_t p
                                uint16_t id, uint16_t params,
                                std::vector<Fast::Renderer3ds::PicaScenePointLight>& lights);
 
-// Fills the fixed snapshot from all candidates: groups 0 and 1 (Navi and the
-// fairies) first, then the others nearest to the player (distance less
-// reach), ties by identity, so a full room keeps the lights around Link
-// whatever the actor-list order.
-void SelectScenePointLights(std::span<const Fast::Renderer3ds::PicaScenePointLight> candidates,
-                            const std::array<float, 3>* player,
-                            Fast::Renderer3ds::PicaScenePointLights& snapshot);
 
 } // namespace Oot3dNativeGame

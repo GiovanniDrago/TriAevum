@@ -15,6 +15,8 @@ using Vec3 = std::array<float, 3>;
 
 constexpr Vec3 kFire{1.0F, 0.6F, 0.25F};
 constexpr Vec3 kBlueFire{0.35F, 0.7F, 1.0F};
+constexpr Vec3 kWarpCrystal{0.5F, 0.8F, 1.0F};
+constexpr Vec3 kLightRing{0.6F, 0.9F, 1.0F};
 
 // Actor fields (EUR): world position, home Y, world yaw, scale, shape yaw,
 // shape offset and the draw callback.
@@ -122,8 +124,9 @@ Centroid SekizouJet(const Vec3& origin, int32_t yaw, int timer, int phase) {
 
 bool IsNativeFireEmitterActor(uint16_t id) noexcept {
     switch (id) {
-    case 0x00CU: case 0x012U: case 0x013U: case 0x038U: case 0x044U: case 0x045U: case 0x046U: case 0x049U:
-    case 0x08DU: case 0x09FU: case 0x0A3U: case 0x0B5U: case 0x0E1U: case 0x10AU: case 0x11CU:
+    case 0x000U: case 0x00CU: case 0x012U: case 0x013U: case 0x038U: case 0x044U: case 0x045U: case 0x046U:
+    case 0x049U: case 0x05DU: case 0x08BU: case 0x08DU: case 0x099U: case 0x09FU: case 0x0A3U: case 0x0B5U:
+    case 0x0E1U: case 0x10AU: case 0x11CU: case 0x176U:
         return true;
     default:
         return false;
@@ -359,37 +362,121 @@ void CaptureNativeFireEmitters(oot3d::recomp::a32::MemoryBus& memory, uint32_t p
         out.Add(0U, p, 350.0F * size / 3.0F, size / 3.0F, (params & 0x8000U) != 0U ? kBlueFire : kFire);
         return;
     }
-    default:
+    case 0x000U: {
+        // Player: the lit Deku stick (held item s8 +0x1A9 == 6, flame timer
+        // s16 +0x2248 > 0, flame f32 +0x2244 > 0), at the stick tip the post-
+        // limb draw stores (+0x22A8, from the previous draw). The flame grows
+        // in and dies out as the title's (literals 0x0025133C..364, frame
+        // divisor s16 at [0x0051B2F4] + 0x110).
+        uint8_t item = 0;
+        int16_t timer = 0;
+        float flame = 0.0F;
+        Vec3 tip{};
+        if (!a.U8(0x1A9U, item) || item != 6U || !a.S16(0x2248U, timer) || timer <= 0 || !a.F(0x2244U, flame) ||
+            !(flame > 0.0F) || !a.V(0x22A8U, tip))
+            return;
+        uint32_t clock = 0;
+        uint16_t divisorRaw = 1;
+        float q = 1.0F;
+        if (memory.Read32(0x0051B2F4U, &clock) && clock != 0U && memory.Read16(clock + 0x110U, &divisorRaw) &&
+            std::bit_cast<int16_t>(divisorRaw) > 0)
+            q = static_cast<float>(std::bit_cast<int16_t>(divisorRaw));
+        const auto n = [&](float x) { return static_cast<float>(static_cast<int>(x / q + 0.5F)); };
+        float level = 1.0F;
+        const float t = static_cast<float>(timer);
+        if (t > n(600.0F)) level = (n(30.0F) - (t - n(600.0F))) / std::max(1.0F, n(30.0F));
+        else if (t < n(60.0F)) level = t / std::max(1.0F, n(60.0F));
+        out.Add(0U, tip, 250.0F, std::clamp(level, 0.0F, 1.0F) * 0.6F);
         return;
     }
-}
-
-void SelectScenePointLights(std::span<const PicaScenePointLight> candidates, const Vec3* player,
-                            Fast::Renderer3ds::PicaScenePointLights& snapshot) {
-    std::vector<const PicaScenePointLight*> order;
-    order.reserve(candidates.size());
-    for (const auto& light : candidates)
-        if (std::none_of(order.begin(), order.end(),
-                         [&](const auto* kept) { return kept->SourceIdentity == light.SourceIdentity; }))
-            order.push_back(&light);
-    const auto score = [&](const PicaScenePointLight& light) {
-        if (light.Group < 2U || player == nullptr) return 0.0F;
-        const float dx = light.PositionWorld[0] - (*player)[0], dy = light.PositionWorld[1] - (*player)[1],
-                    dz = light.PositionWorld[2] - (*player)[2];
-        return std::sqrt(dx * dx + dy * dy + dz * dz) - light.Radius;
-    };
-    std::stable_sort(order.begin(), order.end(), [&](const auto* a, const auto* b) {
-        const bool fixedA = a->Group < 2U, fixedB = b->Group < 2U;
-        if (fixedA != fixedB) return fixedA;
-        if (fixedA) return false;
-        const float sa = score(*a), sb = score(*b);
-        if (sa != sb) return sa < sb;
-        return a->SourceIdentity < b->SourceIdentity;
-    });
-    snapshot.Count = 0;
-    for (const auto* light : order) {
-        if (snapshot.Count == snapshot.Lights.size()) break;
-        snapshot.Lights[snapshot.Count++] = *light;
+    case 0x099U: {
+        // En_Fd, the Flare Dancer: its flame effects (100 at +0xE58, stride
+        // 0x3C; type byte 2, scale f32 +4, RGBA bytes +0xC, position +0x14),
+        // drawn at effect alpha times the body fade (f32 +0x628 / 255). One
+        // light at their weighted centre.
+        float fade = 0.0F;
+        if (!a.F(0x628U, fade)) return;
+        Centroid centroid;
+        Vec3 colour{};
+        float strongest = 0.0F;
+        for (uint32_t i = 0; i < 100U; ++i) {
+            const uint32_t e = 0xE58U + i * 0x3CU;
+            uint8_t type = 0, r = 0, g = 0, b = 0, alpha = 0;
+            float size = 0.0F;
+            Vec3 at{};
+            if (!a.U8(e, type) || type != 2U || !a.U8(e + 0xFU, alpha) || alpha == 0U || !a.F(e + 4U, size) ||
+                !(size > 0.0F) || !a.V(e + 0x14U, at) || !a.U8(e + 0xCU, r) || !a.U8(e + 0xDU, g) ||
+                !a.U8(e + 0xEU, b))
+                continue;
+            const float opacity = (alpha / 255.0F) * std::clamp(fade / 255.0F, 0.0F, 1.0F);
+            const float weight = opacity * size * size;
+            if (!(weight > 0.0F)) continue;
+            centroid.Add(at, weight);
+            colour = {colour[0] + r / 255.0F * weight, colour[1] + g / 255.0F * weight,
+                      colour[2] + b / 255.0F * weight};
+            strongest = std::max(strongest, opacity);
+        }
+        if (!(centroid.Weight > 0.0F)) return;
+        Vec3 tint{colour[0] / centroid.Weight, colour[1] / centroid.Weight, colour[2] / centroid.Weight};
+        const float peak = std::max({tint[0], tint[1], tint[2], 1.0e-3F});
+        for (auto& channel : tint) channel /= peak;
+        out.Add(0U, centroid.Point(), 500.0F, strongest * 0.7F, tint);
+        return;
+    }
+    case 0x05DU: {
+        // Door_Warp1's blue warp crystal (params -2, no native light): crystal
+        // alpha f32 +0x478 / 255 (DoorWarp1_Draw 0x002456FC).
+        float alpha = 0.0F;
+        if (params != 0xFFFEU || !a.F(0x478U, alpha) || !(alpha > 0.0F)) return;
+        out.Add(0U, {p[0], p[1] + 40.0F, p[2]}, 250.0F, std::clamp(alpha / 255.0F, 0.0F, 1.0F) * 0.5F,
+                kWarpCrystal);
+        return;
+    }
+    case 0x08BU: {
+        // Demo_Effect's light rings (params 7, 16, 17): draw 0x00262D34
+        // installed at +0x2A0, model +0x2A8, alpha u8 +0x28A.
+        const uint32_t kind = params & 0xFFU;
+        uint32_t ringDraw = 0;
+        uint8_t alpha = 0;
+        if ((kind != 7U && kind != 16U && kind != 17U) || !a.U32(0x2A0U, ringDraw) || ringDraw != 0x00262D34U ||
+            !a.NonZero32(0x2A8U) || !a.U8(0x28AU, alpha) || alpha == 0U)
+            return;
+        out.Add(0U, p, 400.0F, alpha / 255.0F * 0.5F, kLightRing);
+        return;
+    }
+    case 0x176U: {
+        // Efc_Erupc, the volcano's eruption (a cutscene): its particles (100 at
+        // +0x1B4, stride 0x4C: active byte +0x34, size f32 +4, position +0x10,
+        // alpha s16 +0x36, RGB +0x3C), one light at their weighted centre.
+        Centroid centroid;
+        Vec3 colour{};
+        float strongest = 0.0F;
+        for (uint32_t i = 0; i < 100U; ++i) {
+            const uint32_t e = 0x1B4U + i * 0x4CU;
+            uint8_t active = 0, r = 0, g = 0, b = 0;
+            int16_t alpha = 0;
+            float size = 0.0F;
+            Vec3 at{};
+            if (!a.U8(e + 0x34U, active) || active == 0U || !a.S16(e + 0x36U, alpha) || alpha <= 0 ||
+                !a.F(e + 4U, size) || !(size > 0.0F) || !a.V(e + 0x10U, at) || !a.U8(e + 0x3CU, r) ||
+                !a.U8(e + 0x3DU, g) || !a.U8(e + 0x3EU, b))
+                continue;
+            const float opacity = std::clamp(alpha / 255.0F, 0.0F, 1.0F);
+            const float weight = opacity * size;
+            centroid.Add(at, weight);
+            colour = {colour[0] + r / 255.0F * weight, colour[1] + g / 255.0F * weight,
+                      colour[2] + b / 255.0F * weight};
+            strongest = std::max(strongest, opacity);
+        }
+        if (!(centroid.Weight > 0.0F)) return;
+        Vec3 tint{colour[0] / centroid.Weight, colour[1] / centroid.Weight, colour[2] / centroid.Weight};
+        const float peak = std::max({tint[0], tint[1], tint[2], 1.0e-3F});
+        for (auto& channel : tint) channel /= peak;
+        out.Add(0U, centroid.Point(), 800.0F, strongest * 0.6F, tint);
+        return;
+    }
+    default:
+        return;
     }
 }
 
