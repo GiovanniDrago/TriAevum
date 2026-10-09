@@ -1,10 +1,11 @@
 import json
+import math
 import struct
 import tempfile
 import unittest
 from pathlib import Path
 
-from scene_lights import (CATALOG_SCHEMA, GENERATOR_REVISION, build_catalog, category, content_hash,
+from scene_lights import (CATALOG_SCHEMA, GENERATOR_REVISION, build_catalog, category, content_hash, is_halo,
                           prepare_scene_lights, room_emitters, room_fingerprint, texture_colour)
 
 RGBA8 = (0x6752, 0x1401)
@@ -111,6 +112,25 @@ GREY = bytes([255, 0x80, 0x80, 0x80]) * 64
 
 
 class SceneLightsTests(unittest.TestCase):
+    def test_glow_cards_with_a_round_halo_are_lamps(self):
+        # A 16x16 RGBA8 radial glow (stored in 8x8 Morton tiles) is a halo; a flat one is not.
+        def stored(value):
+            texels = [b"\0"] * 256
+            for y in range(16):
+                for x in range(16):
+                    tile = (y // 8) * 2 + x // 8
+                    m = sum((((x % 8) >> i) & 1) << (2 * i) | (((y % 8) >> i) & 1) << (2 * i + 1) for i in range(3))
+                    level = round(255 * value(x, y))
+                    texels[tile * 64 + m] = bytes([255, level, level, level])
+            return b"".join(texels)
+        radial = stored(lambda x, y: max(0.0, 1.0 - (math.hypot(x - 7.5, y - 7.5) / 6.5) ** 2))
+        flat = stored(lambda x, y: 0.8)
+        self.assertTrue(is_halo(*RGBA8, radial, 16, 16))
+        self.assertFalse(is_halo(*RGBA8, flat, 16, 16))
+        self.assertEqual(category("anything", True, halo=True), "lamp")
+        self.assertEqual(category("anything", False, halo=True), None)
+        self.assertEqual(category("shop_any_lant_0", False), "lamp")
+
     def test_categories_follow_the_first_texture(self):
         self.assertEqual(category("gnn_torch_03", False), "torch")
         self.assertEqual(category("spot01_mado", False), "window-lamp")

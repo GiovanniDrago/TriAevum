@@ -2,10 +2,11 @@
 
 // The architecture's own light: emitters found in the room geometry by the
 // installer (tools/triaevum_release/scene_lights.py over the room CMBs:
-// torches drawn in the room mesh, lava and fire surfaces, windows and lamps,
-// light shafts, magic glows), published as scene point lights of the rooms
-// the title has loaded. ROM-derived data, kept with the user's other
-// generated files; without a catalog nothing changes.
+// torches drawn in the room mesh, lava and fire surfaces, windows, light
+// shafts, magic glows, and the lamps interiors draw as glow cards or glowing
+// bodies), published as scene point lights of the rooms the title has
+// loaded. ROM-derived data, kept with the user's other generated files;
+// without a catalog nothing changes.
 
 #include "fast/renderer3ds/pica_light_binding.h"
 
@@ -26,7 +27,7 @@ class MemoryBus;
 
 namespace Oot3dNativeGame {
 
-enum class NativeStaticEmitterCategory : uint8_t { Torch, FireLava, WindowLamp, LightShaft, MagicGlow };
+enum class NativeStaticEmitterCategory : uint8_t { Torch, FireLava, WindowLamp, LightShaft, MagicGlow, Lamp };
 
 struct NativeStaticEmitter {
     std::array<float, 3> Position{};

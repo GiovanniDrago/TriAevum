@@ -21,6 +21,7 @@ bool ParseCategory(const std::string& name, NativeStaticEmitterCategory& categor
     else if (name == "window-lamp") category = NativeStaticEmitterCategory::WindowLamp;
     else if (name == "light-shaft") category = NativeStaticEmitterCategory::LightShaft;
     else if (name == "magic-glow") category = NativeStaticEmitterCategory::MagicGlow;
+    else if (name == "lamp") category = NativeStaticEmitterCategory::Lamp;
     else return false;
     return true;
 }

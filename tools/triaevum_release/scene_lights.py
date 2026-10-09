@@ -77,10 +77,18 @@ MATERIAL_SIZE = 0x15C
 # room, the light's gain (calibrated in the lab against the title's own
 # lighting: these sources add to light the rooms already bake) and the
 # largest reach a merged emitter may grow to.
-MERGE = {"torch": 120, "window-lamp": 300, "magic-glow": 300, "fire-lava": 500, "light-shaft": 200}
-CAP = {"torch": 16, "window-lamp": 12, "magic-glow": 8, "fire-lava": 12, "light-shaft": 8}
-GAIN = {"torch": 1.0, "window-lamp": 0.45, "magic-glow": 0.6, "fire-lava": 0.45, "light-shaft": 0.55}
-REACH = {"torch": 450, "window-lamp": 700, "magic-glow": 500, "fire-lava": 1000, "light-shaft": 600}
+MERGE = {"torch": 120, "window-lamp": 300, "magic-glow": 300, "fire-lava": 500, "light-shaft": 200, "lamp": 60}
+CAP = {"torch": 16, "window-lamp": 12, "magic-glow": 8, "fire-lava": 12, "light-shaft": 8, "lamp": 16}
+GAIN = {"torch": 1.0, "window-lamp": 0.45, "magic-glow": 0.6, "fire-lava": 0.45, "light-shaft": 0.55, "lamp": 0.5}
+REACH = {"torch": 450, "window-lamp": 700, "magic-glow": 500, "fire-lava": 1000, "light-shaft": 600, "lamp": 500}
+# Lamp bodies the rooms draw without a glow card (shared atlases, so named):
+# the light's colour, as their atlas's mean says nothing about the lamp.
+LAMP_BODIES = {
+    "shop_any_lant_0": [1.0, 0.8, 0.5],    # Bazaar lanterns
+    "rm_shat_torc_01": [1.0, 0.8, 0.45],   # shooting gallery wall lanterns
+    "shop_bomchu_bin": [1.0, 0.75, 0.55],  # Bombchu shop's glowing jars
+    "turi_rantan_lig": [1.0, 0.82, 0.5],   # fishing pond lanterns
+}
 FIRE_COLOUR = [1.0, 0.55, 0.22]
 # Lamplight behind a window: its pale texture tinted toward a warm interior.
 LAMP_TINT = [1.0, 0.78, 0.5]
@@ -329,6 +337,67 @@ def texels(fmt: int, kind: int, data: bytes) -> Iterator[tuple[int, int, int, in
                 yield r, g, b, ((alphas >> (4 * n)) & 15) * 17 if alpha else 255
 
 
+def texel_grid(fmt: int, kind: int, data: bytes, width: int, height: int) -> list[list[tuple]] | None:
+    """The base level's (r, g, b, a) texels by position (row 0 as stored),
+    undoing the PICA 8x8 tiling (Morton order inside a tile; ETC1 tiles hold
+    four 4x4 blocks)."""
+    if width <= 0 or height <= 0 or width > 1024 or height > 1024:
+        return None
+    grid = [[(0, 0, 0, 0)] * width for _ in range(height)]
+    tiles_x = (max(8, width) + 7) // 8
+    if fmt in (0x675A, 0x675B):
+        alpha = fmt == 0x675B
+        stride = 16 if alpha else 8
+        for index in range(len(data) // stride):
+            tile, sub = divmod(index, 4)
+            tile_y, tile_x = divmod(tile, tiles_x)
+            base = index * stride
+            alphas = int.from_bytes(data[base:base + 8], "little") if alpha else 0
+            block = int.from_bytes(data[base + (8 if alpha else 0):base + stride], "little")
+            for n, (r, g, b) in enumerate(_etc1_texels(block)):
+                x = tile_x * 8 + (sub % 2) * 4 + n // 4
+                y = tile_y * 8 + (sub // 2) * 4 + n % 4
+                if x < width and y < height:
+                    grid[y][x] = (r, g, b, ((alphas >> (4 * n)) & 15) * 17 if alpha else 255)
+        return grid
+    for index, texel in enumerate(texels(fmt, kind, data)):
+        tile, m = divmod(index, 64)
+        tile_y, tile_x = divmod(tile, tiles_x)
+        x = tile_x * 8 + sum(((m >> (2 * i)) & 1) << i for i in range(3))
+        y = tile_y * 8 + sum(((m >> (2 * i + 1)) & 1) << i for i in range(3))
+        if x < width and y < height:
+            grid[y][x] = texel
+    return grid
+
+
+def is_halo(fmt: int, kind: int, data: bytes, width: int, height: int) -> bool:
+    """A glow card's texture: bright in the middle, dark at the rim, round and
+    smooth around its centre (the halos the rooms draw around their lamps,
+    whatever their names)."""
+    if width != height or width < 16:
+        return False
+    grid = texel_grid(fmt, kind, data, width, height)
+    if grid is None:
+        return False
+    weighted = fmt in (0x6752, 0x675B, 0x6758, 0x6756)
+    rings, sectors = defaultdict(list), [[] for _ in range(8)]
+    centre = (width - 1) / 2
+    for y, row in enumerate(grid):
+        for x, (r, g, b, a) in enumerate(row):
+            value = max(r, g, b) / 255.0 * (a / 255.0 if weighted else 1.0)
+            dx, dy = (x - centre) / (width / 2), (y - centre) / (height / 2)
+            d = math.hypot(dx, dy)
+            rings[min(4, int(d * 4))].append(value)
+            if 0.2 <= d <= 0.6:
+                sectors[int((math.atan2(dy, dx) + math.pi) / (2 * math.pi) * 8) % 8].append(value)
+    mean = lambda values: sum(values) / len(values) if values else 0.0
+    middle, rim = mean(rings[0]), (mean(rings[3]) + mean(rings[4])) / 2
+    band = [mean(s) for s in sectors if s]
+    level = mean(band)
+    spread = math.sqrt(mean([(v - level) ** 2 for v in band])) / level if level > 0 else 1.0
+    return middle >= 0.45 and rim <= 0.12 and middle - rim >= 0.4 and level >= 0.4 and spread <= 0.35
+
+
 def texture_colour(fmt: int, kind: int, data: bytes) -> list[float] | None:
     """The texture's emitted colour: the mean of its opaque texels, the bright
     ones weighted more."""
@@ -348,8 +417,11 @@ def texture_colour(fmt: int, kind: int, data: bytes) -> list[float] | None:
 
 # --- Classification and emitters ----------------------------------------------------------------------------
 
-def category(first_texture: str, additive: bool) -> str | None:
-    """The emitting category of a material, by its first texture's name."""
+def category(first_texture: str, additive: bool, halo: bool = False) -> str | None:
+    """The emitting category of a material: a glow card's halo or a named lamp
+    body is a lamp; otherwise its first texture's name decides."""
+    if (additive and halo) or first_texture in LAMP_BODIES:
+        return "lamp"
     first = first_texture.lower()
     if re.search(r"doughnut|^ido_|kja_|mir_decal", first):
         return None
@@ -455,7 +527,11 @@ def emitters_for(cat: str, colour: list[float], boxes: list) -> list[dict]:
         size = max(high[k] - low[k] for k in range(3))
         middle = [(low[k] + high[k]) / 2 for k in range(3)]
         normal, area = area_normal(tris)
-        if cat == "torch":
+        if cat == "lamp":
+            # A halo is centred on its lamp; a lamp body is the lamp.
+            out.append({"position": middle, "radius": round(min(REACH[cat], max(250, size * 2.5))),
+                        "gain": GAIN[cat], "colour": colour, "weight": 1.0})
+        elif cat == "torch":
             if size > 400:
                 continue
             # Above the stand, where its flame burns: inside the stand the
@@ -534,10 +610,10 @@ def model_emitters(model: Model) -> list[dict]:
         textures = [model.textures[i] for i in texture_indices if 0 <= i < len(model.textures)]
         if not textures:
             continue
-        cat = category(textures[0][0], additive)
+        name, width, height, fmt, kind, pixels = textures[0]
+        cat = category(name, additive, additive and is_halo(fmt, kind, pixels, width, height))
         if not cat:
             continue
-        name, _, _, fmt, kind, pixels = textures[0]
         raw = texture_colour(fmt, kind, pixels)
         # Fire found by loose name stems must look like fire.
         if cat == "fire-lava" and raw is not None and not (raw[0] >= raw[2] and max(raw) > 0.25):
@@ -549,10 +625,14 @@ def model_emitters(model: Model) -> list[dict]:
             colour = list(FIRE_COLOUR)
         elif cat == "window-lamp":
             colour = [c * w for c, w in zip(colour, LAMP_TINT)]
+        elif cat == "lamp" and name in LAMP_BODIES:
+            colour = list(LAMP_BODIES[name])
         triangles = []
         for shape in shapes:
             triangles += [tuple(((shape, index), p) for index, p in tri) for tri in model.triangles(shape)]
-        for emitter in emitters_for(cat, colour, objects(triangles)):
+        # A lamp's crossed glow cards coincide, and separate lamps may hang
+        # close: halos group tightly; bodies (frame and glass apart) loosely.
+        for emitter in emitters_for(cat, colour, objects(triangles, 10.0 if cat == "lamp" and additive else 40.0)):
             emitter.update({"category": cat, "texture": name})
             emitters.append(emitter)
     return emitters
