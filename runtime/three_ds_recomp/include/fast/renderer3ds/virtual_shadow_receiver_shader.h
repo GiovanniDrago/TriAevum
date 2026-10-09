@@ -135,8 +135,8 @@ vec2 pica_vsm_occlusion(int layout_index, vec3 light, vec2 depth_gradient) {
     return vec2(1.0 - visibility, fade);
 }
 // Visibility of an input-space position in one layout; dx and dy span the
-// receiver's surface in input space; normal is its vertex normal in input
-// space (zero: no normal bias).
+// receiver's surface in input space for a receiver-plane depth slope (zero:
+// none); normal is its vertex normal in input space (zero: no normal bias).
 float pica_vsm_layout_visibility(int layout_index, vec3 position, vec3 dx, vec3 dy, vec3 normal) {
     vec4 light = pica_vsm.layouts[layout_index].input_to_light * vec4(position, 1.0);
     if (abs(light.w) <= 1.0e-7) return 1.0;

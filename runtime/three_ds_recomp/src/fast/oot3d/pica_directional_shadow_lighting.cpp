@@ -12,7 +12,7 @@ namespace {
 uint64_t LightingVariantKey(uint64_t original, bool fragmentPrimary) {
     constexpr uint64_t kOffset = 1469598103934665603ULL;
     constexpr uint64_t kPrime = 1099511628211ULL;
-    constexpr std::string_view kSalt = "OOT3D_PICA_VIRTUAL_SHADOW_LIGHTING_V9";
+    constexpr std::string_view kSalt = "OOT3D_PICA_VIRTUAL_SHADOW_LIGHTING_V10";
     uint64_t hash = kOffset;
     for (unsigned shift = 0U; shift < 64U; shift += 8U) {
         hash ^= static_cast<uint8_t>(original >> shift);
@@ -44,13 +44,17 @@ float oot3d_contact_shadow_visibility(vec3 position) {
 // visibility of a fragment is looked up once. A smooth-shaded receiver passes
 // its vertex normal (view space) for the normal bias, others zero. As Godot,
 // the contact shadows join the map by min().
+// The filter gets no receiver-plane depth slope: the slope of a flat triangle
+// is constant across it and breaks at its edges, so on a smooth-shaded
+// low-poly receiver the shadows showed its facets. The depth and normal
+// biases cover the filter's footprint instead.
 bool oot3d_directional_shadow_ready = false;
 vec3 oot3d_directional_shadow_value = vec3(1.0);
 vec3 oot3d_directional_shadow_visibility(vec3 normal) {
     if ((pica_vsm.extent.w & 1u) == 0u) return vec3(1.0);
     if (!oot3d_directional_shadow_ready) {
         oot3d_directional_shadow_value =
-            vec3(min(pica_vsm_visibility(-pica_view, dFdx(-pica_view), dFdy(-pica_view), normal),
+            vec3(min(pica_vsm_visibility(-pica_view, vec3(0.0), vec3(0.0), normal),
                      oot3d_contact_shadow_visibility(-pica_view)));
         oot3d_directional_shadow_ready = true;
     }

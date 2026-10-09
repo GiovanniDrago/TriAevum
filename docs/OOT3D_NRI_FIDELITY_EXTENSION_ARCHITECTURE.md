@@ -2517,6 +2517,21 @@ bias, including when the user bias is zero. The hair comparison retains
 world shadows without the previous dark striping or the diagnostic iteration's
 precision grid.
 
+PICA draw receivers (2026-10-09) no longer pass a receiver-plane slope; the
+grid-based Grass receiver keeps its own. The derivatives of a flat triangle are
+constant across it and change at its edges. On smooth-shaded low-poly actors
+the filtered shadows therefore showed the triangles they fell on, as facets
+with hard edges along the mesh. The depth bias, its two-ULP minimum and the
+normal bias now cover the filter footprint. Two other corrections, tried and
+rejected on Link's savestate, did not remove the facets:
+- moving the lookup point onto the surface implied by the vertex normals
+  (Hanika's shadow terminator offset, Phong tessellation);
+- drawing the casters' back faces.
+In interleaved same-pose 8-bit captures, the slope-free filter ranked best, tied
+with Phong plus slope-free. It was chosen because it needs no
+fragment-barycentric support. The game-camera ratio map against shadows off
+shows no new acne on the platform, tree, cliffs or fences.
+
 CPU caster bounds resolve packed attribute streams once per draw and compose
 each used palette matrix once, retaining native post-skin homogeneous W even
 when weights do not sum to one. Grass selection emits directly during stable
