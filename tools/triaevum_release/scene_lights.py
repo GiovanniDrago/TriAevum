@@ -81,6 +81,14 @@ MERGE = {"torch": 120, "window-lamp": 300, "magic-glow": 300, "fire-lava": 500, 
 CAP = {"torch": 16, "window-lamp": 12, "magic-glow": 8, "fire-lava": 12, "light-shaft": 8, "lamp": 16}
 GAIN = {"torch": 1.0, "window-lamp": 0.45, "magic-glow": 0.6, "fire-lava": 0.45, "light-shaft": 0.55, "lamp": 0.5}
 REACH = {"torch": 450, "window-lamp": 700, "magic-glow": 500, "fire-lava": 1000, "light-shaft": 600, "lamp": 500}
+# Lamps drawn inside a shared atlas: texture name -> [(u0, v0, u1, v1, colour)]
+# boxes in the material's transformed first texture coordinates (wrapped into
+# 0..1); only the triangles whose centre falls in a box are the lamp.
+LAMP_REGIONS: dict[str, list[tuple]] = {
+    "rm_ten_obj_02": [(0.750, 0.550, 0.875, 0.815, (1.0, 0.84, 0.52))],   # the tent's lantern
+    "tar_rm_kana_01": [(0.500, 0.000, 0.750, 0.285, (1.0, 0.80, 0.45))],  # the warehouse's lanterns
+    "kok_rm_obj_04": [(0.0, 0.508, 1.0, 1.0, (1.0, 0.55, 0.22))],         # a Kokiri house's painted hearth
+}
 # Lamp bodies the rooms draw without a glow card (shared atlases, so named):
 # the light's colour, as their atlas's mean says nothing about the lamp.
 LAMP_BODIES = {
@@ -127,12 +135,17 @@ class Model:
             size = min(base, data_size)
             self.textures.append((name, width, height, fmt, kind, d[start:start + size] if start + size <= len(d) else b""))
         self.materials = []
+        self.uv_transforms = []
         for i in range(self._u32(mats + 8)):
             base = mats + 0x0C + i * MATERIAL_SIZE
             texture_indices = [self._unpack("<h", base + 0x10 + k * 0x18)[0] for k in range(3)]
             blend_mode = self._u32(base + 0x138)
             blend_dst = self._unpack("<H", base + 0x13E)[0]
             self.materials.append((texture_indices, bool(blend_mode) and blend_dst == GL_ONE))
+            # The first texture coordinate's scale and translation (rotation
+            # is not used by the rooms' lamps).
+            su, sv, _, tu, tv = self._unpack("<5f", base + 0x58 + 4)
+            self.uv_transforms.append((su or 1.0, sv or 1.0, tu, tv))
         mshs = sklm + self._u32(sklm + 8)
         shp = sklm + self._u32(sklm + 0x0C)
         if d[mshs:mshs + 4] != b"mshs" or d[shp:shp + 4] != b"shp ":
@@ -142,6 +155,7 @@ class Model:
         self._bones = self._bone_transforms(skl)
         self._shp, self._vatr, self._indices, self._index_count = shp, vatr, indices, index_count
         self._shapes: dict[int, list] = {}
+        self._uvs: dict[int, list] = {}
 
     def _unpack(self, fmt: str, offset: int) -> tuple:
         if offset < 0 or offset + struct.calcsize(fmt) > len(self.data):
@@ -206,6 +220,23 @@ class Model:
         if code is None or not math.isfinite(scale) or not all(math.isfinite(c) for c in constant):
             raise ValueError("CMB positions are not readable")
         fmt, width = "<" + code * 3, struct.calcsize("<" + code) * 3
+        # The first texture coordinates (flag 8), for lamps inside atlases.
+        uv_offset, uv_scale, uv_kind, uv_mode = self._unpack("<IfHH", sepd + 0x78)
+        uv_constant = self._unpack("<2f", sepd + 0x84)
+        uv_length, uv_start = self._unpack("<II", self._vatr + 0x24)
+        uv_code = SCALAR.get(uv_kind)
+        uv_fixed = not (flags & 8) or (auto_flags & 8) or uv_mode != 0 or uv_code is None
+        uv_width = struct.calcsize("<" + uv_code) * 2 if uv_code else 0
+
+        def uv(index: int) -> tuple:
+            if uv_fixed or not math.isfinite(uv_scale):
+                return uv_constant
+            if uv_offset + (index + 1) * uv_width > uv_length:
+                raise ValueError("CMB texture coordinate is out of range")
+            s, t_ = self._unpack("<" + uv_code * 2, self._vatr + uv_start + uv_offset + index * uv_width)
+            return (s * uv_scale, t_ * uv_scale)
+
+        uvs = []
 
         def position(index: int) -> tuple:
             if fixed:
@@ -248,8 +279,16 @@ class Model:
                         raise ValueError("CMB vertex is not finite")
                     corners.append((values[i + k], placed))
                 triangles.append(tuple(corners))
+                coordinates = [uv(values[i + k]) for k in range(3)]
+                uvs.append((sum(c[0] for c in coordinates) / 3, sum(c[1] for c in coordinates) / 3))
         self._shapes[shape] = triangles
+        self._uvs[shape] = uvs
         return triangles
+
+    def triangle_uvs(self, shape: int) -> list:
+        """The texture coordinates at the centre of each of triangles(shape)."""
+        self.triangles(shape)
+        return self._uvs[shape]
 
 
 def embedded_models(data: bytes) -> Iterator[Model]:
@@ -420,7 +459,7 @@ def texture_colour(fmt: int, kind: int, data: bytes) -> list[float] | None:
 def category(first_texture: str, additive: bool, halo: bool = False) -> str | None:
     """The emitting category of a material: a glow card's halo or a named lamp
     body is a lamp; otherwise its first texture's name decides."""
-    if (additive and halo) or first_texture in LAMP_BODIES:
+    if (additive and halo) or first_texture in LAMP_BODIES or first_texture in LAMP_REGIONS:
         return "lamp"
     first = first_texture.lower()
     if re.search(r"doughnut|^ido_|kja_|mir_decal", first):
@@ -627,14 +666,25 @@ def model_emitters(model: Model) -> list[dict]:
             colour = [c * w for c, w in zip(colour, LAMP_TINT)]
         elif cat == "lamp" and name in LAMP_BODIES:
             colour = list(LAMP_BODIES[name])
-        triangles = []
-        for shape in shapes:
-            triangles += [tuple(((shape, index), p) for index, p in tri) for tri in model.triangles(shape)]
-        # A lamp's crossed glow cards coincide, and separate lamps may hang
-        # close: halos group tightly; bodies (frame and glass apart) loosely.
-        for emitter in emitters_for(cat, colour, objects(triangles, 10.0 if cat == "lamp" and additive else 40.0)):
-            emitter.update({"category": cat, "texture": name})
-            emitters.append(emitter)
+        # An atlas lamp is only its regions' triangles, each region its colour.
+        regions = LAMP_REGIONS.get(name) if cat == "lamp" else None
+        batches = [(colour, (0.0, 0.0, 1.0, 1.0))] if regions is None else [(list(r[4]), r[:4]) for r in regions]
+        su, sv, tu, tv = model.uv_transforms[material]
+        for batch_colour, (u0, v0, u1, v1) in batches:
+            triangles = []
+            for shape in shapes:
+                for tri, (u, v) in zip(model.triangles(shape), model.triangle_uvs(shape)):
+                    if regions is not None:
+                        u, v = (u * su + tu) % 1.0, (v * sv + tv) % 1.0
+                        if not (u0 <= u <= u1 and v0 <= v <= v1):
+                            continue
+                    triangles.append(tuple(((shape, index), p) for index, p in tri))
+            # A lamp's crossed glow cards coincide, and separate lamps may hang
+            # close: halos group tightly; bodies (frame and glass apart) loosely.
+            merge = 10.0 if cat == "lamp" and additive else 40.0
+            for emitter in emitters_for(cat, batch_colour, objects(triangles, merge)):
+                emitter.update({"category": cat, "texture": name})
+                emitters.append(emitter)
     return emitters
 
 

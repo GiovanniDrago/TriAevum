@@ -3,8 +3,10 @@ import math
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
+import scene_lights
 from scene_lights import (CATALOG_SCHEMA, GENERATOR_REVISION, build_catalog, category, content_hash, is_halo,
                           prepare_scene_lights, room_emitters, room_fingerprint, texture_colour)
 
@@ -130,6 +132,17 @@ class SceneLightsTests(unittest.TestCase):
         self.assertEqual(category("anything", True, halo=True), "lamp")
         self.assertEqual(category("anything", False, halo=True), None)
         self.assertEqual(category("shop_any_lant_0", False), "lamp")
+
+    def test_atlas_lamps_are_only_their_regions_triangles(self):
+        # The synthetic shapes carry no texture coordinates: every triangle sits at (0, 0).
+        stand, triangles = cube((100.0, 50.0, -200.0), 40.0)
+        data = room(cmb([(0, False)], [("atlas_obj_01", RGBA8, GREY)], [(0, stand, triangles)]))
+        with patch.dict(scene_lights.LAMP_REGIONS, {"atlas_obj_01": [(0.0, 0.0, 0.25, 0.25, (1.0, 0.7, 0.4))]}):
+            lamps = room_emitters(data)
+        self.assertEqual([(e["category"], e["colour"]) for e in lamps], [("lamp", [1.0, 0.7, 0.4])])
+        with patch.dict(scene_lights.LAMP_REGIONS, {"atlas_obj_01": [(0.5, 0.5, 1.0, 1.0, (1.0, 0.7, 0.4))]}):
+            self.assertEqual(room_emitters(data), [])
+        self.assertEqual(room_emitters(data), [])
 
     def test_categories_follow_the_first_texture(self):
         self.assertEqual(category("gnn_torch_03", False), "torch")
