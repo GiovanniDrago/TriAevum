@@ -1,102 +1,105 @@
 # Rim light
 
-The modern surface renderer adds a restrained edge response from the lights a
-surface already evaluates. It adds no light sources, passes or shadow maps and
-does not change native draw order, blending, alpha, depth or stencil.
+The default rim is an **independent virtual light**, fixed to the camera. It
+needs no scene lights, ambient color or shadow visibility. Its added radiance
+is the same in an unlit interior and daylight for the same settings, normal
+and view. The final image still includes ordinary surface lighting, material
+composition, fog and post-processing.
 
-`SceneEnvironmentRuntime` owns the settings, saved with the day/night scene
-profile. The only controls are **F1 > Lighting > Lights & Shadows > Scene
-lights > Rim light**: enable, intensity (0–8x), sharpness (1–16), ambient rim
-(0–0.25), and Actors / Actors and world. Larger sharpness narrows the edge.
-All evaluated lights participate; there is no second global override.
+`SceneEnvironmentRuntime` is the sole owner. The one F1 group is **Lighting >
+Lights & Shadows > Scene lights > Rim light**, saved with the scene's day/night
+profile. Both the plain per-pixel and PerPixelPBR material paths implement it.
+The latter uses the final normal-mapped, seam-adjusted normal. Settings:
 
-The built-in base environment enables
-actors with intensity 0.35, sharpness 4 and ambient 0.05. Existing files without
-the optional `rimLight` object retain their rim-off appearance. To update an
-existing play profile, merge this object, preserving its other settings:
+- **Source**: Independent (default), or Scene lights for the previous direct
+  light response. Switching retains the independent controls' saved values.
+- **Color**: independent RGB, each channel 0..1; default warm white `[1, .96, .9]`.
+- **Intensity**: 0..8, default 1. No division by grazing angle or light count.
+- **Sharpness**: 1..16, default 4. Higher values narrow the edge.
+- **Azimuth**: -180..180 degrees in camera coordinates. 0 lights the top of the
+  silhouette, 90 the right, -90 the left, and either 180 the bottom. The source
+  is always behind the subject; this selects its side around the view axis.
+- **Coverage**: 0..1, default .25. Zero uses only the directional lobe; raising
+  it fills the remaining silhouette, reaching an even full rim at 1.
+- **Scope**: Actors (default), or Actors and world. Enable is on in the built-in
+  base profile. Intensity zero also produces zero rim uniforms.
+
+For normalized view-space shading normal `N` and surface-to-camera direction
+`V`, the independent term is:
+
+```text
+F = clamp(1 - abs(dot(N,V)), 0, 1) ^ sharpness
+D = (sin(azimuth), cos(azimuth))
+S = smoothstep(-0.25, 0.75, dot(normalize(N.xy), D))
+rim = color * intensity * F * mix(S, 1, coverage)
+```
+
+Degenerate normals/views give no Fresnel response; a zero projected normal
+uses S=0 without normalizing it. Every factor except intensity lies in 0..1,
+so the virtual source is bounded by `color * intensity`. It has no distance,
+scene-color, native-gain, material-AO or shadow multiplier. PBR adds it directly
+to linear lighting after scene evaluation. The plain path adds it to the
+primary surface response before native tint/TEV composition. It is excluded
+from directional-shadow capture and GI source radiance in both paths.
+
+Scene lights retains the previous cheap per-light weight:
+`intensity * F * smoothstep(-.25, .5, dot(L,-V)) * clamp((dot(N,L)+.5)/1.5, 0, 1)`.
+This multiplies each evaluated light's existing shadowed radiance, preserving
+its attenuation, cone/area terms and gains. Unshadowed lights remain unshadowed.
+Color, azimuth and coverage are disabled in this mode. The old ambient rim is
+removed: the independent source supplies the requested interior response
+without a second ambient-dependent system.
+
+The OOT3D adapter keeps the existing actor attribution and opaque-draw policy:
+no UI, atmosphere, transparent/additive or fading passes, projected shadows,
+authored unlit appearance or isolated lighting. World scope is opt-in. There
+are no extra passes, resources or pipeline variants, and no draw-order, alpha,
+blend, depth or stencil changes. Off zeroes all rim uniforms; disabled edits
+canonicalize to unchanged renderer inputs. Modern scene profiles remain
+bypassed by Native/NativePBR, Authentic, F2 and Use native environment.
+
+The optional version-5 `rimLight` object remains backward readable; no version
+bump is needed for optional fields. A missing object stays off. A round-27
+object missing the new fields takes Independent, warm white, azimuth 0 and
+coverage .25, retaining its saved enable/intensity/sharpness/scope. Its old
+`ambient` is range/type-checked on read, ignored, and omitted on save. New
+fields also receive strict type, finite/range and enum validation. Save/reload,
+night profiles and hot reload share this codec. Different profiles can still
+author different rims; day/night illumination itself never drives Independent.
+
+Claude can merge this object into the play-kokiri profiles while preserving
+all other settings (none of those files were edited here):
 
 ```json
 "rimLight": {
   "enabled": true,
-  "intensity": 0.35,
-  "sharpness": 4,
-  "ambient": 0.05,
+  "source": "independent",
+  "color": [1.0, 0.96, 0.9],
+  "intensity": 1.0,
+  "sharpness": 4.0,
+  "azimuth": 0.0,
+  "coverage": 0.25,
   "scope": "actors"
 }
 ```
 
-The version-5 schema and runtime codec validate types, finite ranges, scope,
-missing members and misspelled rim keys. Preview rejects invalid values before
-publication. Save/reload, night profiles and hot reload use that same codec.
-No files under `I:/_triaevum_work/perf-levers/play-kokiri*` are modified by this
-implementation; Claude applies the object to those profiles.
+Verification uses owner codec/persistence tests, adapter/uniform tests, actual
+F1 widgets (all RGB channels), production surface equations on Vulkan and both complete PBR
+shader bodies. GPU cases cover dark interiors, all scene-source kinds and
+shadow states, distance, cardinal directions, coverage, color, maximum gain,
+sharpness, degenerate inputs, off and GI isolation. No game is run by Codex.
 
-For normalized shading normal `N`, surface-to-camera vector `V` and direction
-toward a light `L`, the added light weight is:
+Verified 2026-10-10: `TriAevum.exe` and touched targets build; environment tests
+pass 92 checks, pipeline tests 54/54, foundation 352/352, GPU 121 cases and two
+PBR shader compilations, and focused F1 smoke 1,978 assertions. Full F1 still
+fails before this panel at the unchanged material-editor texture-identity
+assertion (see the F1 review). No game or play-kokiri profile was touched.
 
-```text
-F = (1 - clamp(abs(dot(N,V)), 0, 1)) ^ sharpness
-B = smoothstep(-0.25, 0.5, dot(L,-V))
-W = clamp((dot(N,L) + 0.5) / 1.5, 0, 1)
-rim_i = intensity * F * B * W * shadowed_radiance_i
-```
-
-The backlight gate rejects a camera-facing light and admits side/back lights;
-the wrap allows an edge response beyond Lambert's terminator. Each multiplier
-is bounded, with no division by a grazing cosine. This is an artistic addition,
-not an energy-conserving BRDF: each light's added weight is at most intensity,
-and many lights sum as ordinary illumination does. Attenuation, native gains,
-spot cones, area form factors, source color and shadow visibility are reused,
-so a fully shadowed source contributes no rim. Fill and placed Sun remain
-unshadowed because their existing direct contributions are unshadowed. A light
-without an allocated shadow retains the existing renderer's visibility policy;
-the rim does not create shadow coverage that its light lacks.
-
-The plain per-pixel path applies the term before native tint/TEV composition.
-PBR applies it in linear lighting, weighted by albedo, using the final mapped
-and seam-adjusted normal. The optional ambient term is `ambient * F` times
-resolved ambient color/radiance; PBR also respects material AO. It has no
-directional shadow and can remain visible in an interior or key shadow. Set
-Ambient rim to zero when checking direct-shadow behavior. Rims are excluded
-from GI source radiance: moving the camera must not create bounce lighting.
-
-The OOT3D adapter admits proven opaque world draws using the existing native
-actor attribution, independently of skinning or texture. Actors are the default;
-static architecture requires Actors and world. UI, screen content, atmosphere,
-unknown layers, transparent/additive blends, projected shadows, authored unlit
-appearance and isolated lighting are excluded. Alpha-tested opaque geometry
-keeps its original alpha test. Fade passes are intentionally excluded.
-
-Both the plain per-pixel surface path and PerPixelPBR's material path implement
-the response. Scene profiles remain a Modern-only feature: Native/NativePBR,
-Authentic, F2 and disabling Use scene environment bypass the rim and retain its
-saved preference. Disabling rim canonicalizes its renderer settings and zeroes
-the uniform; changing disabled knobs cannot change rendering inputs or histories.
-The uniform controls the existing shader, with no rim shader/pipeline variant,
-extra resource, effect decision or blend-state change.
-
-Verification uses the environment owner tests, adapter/surface-uniform tests,
-the actual ImGui F1 widget smoke, and a Vulkan equation test executing the
-production surface evaluator. The GPU test covers all source kinds, off,
-front/back/grazing, visibility, range, ambient, invalid normals and GI isolation;
-it also compiles the complete PBR shader bodies with and without native fragment
-lighting. Game appearance and performance remain the lab's responsibility.
-
-Verified on 2026-10-10: `TriAevum.exe` and all affected targets build with
-`build-host.cmd`; environment tests pass 69 checks, pipeline tests pass 54/54,
-graphics foundation passes 352/352, and the RTX 3060 passes 66 GPU cases plus
-both PBR shader compilations. `triaevum_f1_settings_smoke --scene-environment`
-passes the actual scene/rim widgets. The full F1 suite stops earlier in the
-unchanged material-editor test at "creation used the catalog hash instead of
-the native texture's Azahar identity"; it does not reach the scene panel.
-The scene-0000 template passes the environment tool's validation and canonical
-format check. No game was run.
-
-Claude's lab should use the host-build savestates: compare fixed-frame off/on
-views in Kokiri, Deku, Zora, Shadow Temple, Temple of Time and a house. Rotate
-the camera and move an actor through key and local-light shadows; first set
-ambient rim to zero, then restore 0.05. Check normal-mapped actors, sharpness
-1/4/16, stacked local lights, actor fade passes, a rigid prop, UI/particles and
-Actors versus Actors and world. Verify F2 restoration, scene/night transitions,
-save/reload, unchanged alpha/depth/stencil and no new passes or pipeline churn.
-Record GPU time and watch for excessively bright edges at maximum intensity.
+Claude's lab should use `I:/_triaevum_work/devwarp/host-build/savestates`: compare
+fixed-pose daylight and dark-interior captures, with all real lights/ambient
+zeroed and with full key/local shadows. The independent rim must remain.
+Rotate the camera; check top/right/left/bottom azimuths, coverage 0/.25/1,
+sharpness 1/4/16, color and intensity 0/1/8, normal-mapped actors and both surface
+paths. Switch to Scene lights and confirm shadows affect that mode. Check
+actor/world scope, fades, UI/particles, F2 restoration, save/reload and night
+transitions. Watch clipping at high intensity and measure GPU cost.

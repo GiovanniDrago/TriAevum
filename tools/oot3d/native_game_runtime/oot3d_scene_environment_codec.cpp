@@ -21,6 +21,7 @@ constexpr size_t kPointShadowRows = Fast::Renderer3ds::kMaximumPointShadowLights
 constexpr const char *kPlacedLightTypeNames[] = {"sun", "spot", "point", "surface", "omni"};
 constexpr const char *kPlacedLightShapeNames[] = {"rectangle", "disc"};
 constexpr const char *kRimScopeNames[] = {"actors", "actorsAndWorld"};
+constexpr const char *kRimSourceNames[] = {"independent", "sceneLights"};
 constexpr float kRadians = std::numbers::pi_v<float> / 180.0F;
 
 std::string Join(const std::string &pointer, const std::string &key) { return pointer + "/" + key; }
@@ -220,7 +221,11 @@ std::vector<SceneEnvironmentDiagnostic> ValidateSceneEnvironment(const SceneEnvi
   scalar(profile.FogStrength, "/fogStrength", 0.0F, 1.0F);
   scalar(profile.Rim.Intensity, "/rimLight/intensity", 0.0F, Fast::Renderer3ds::kMaximumPicaRimIntensity);
   scalar(profile.Rim.Sharpness, "/rimLight/sharpness", 1.0F, 16.0F);
-  scalar(profile.Rim.Ambient, "/rimLight/ambient", 0.0F, 0.25F);
+  scalar(profile.Rim.Azimuth, "/rimLight/azimuth", -180.0F, 180.0F);
+  scalar(profile.Rim.Coverage, "/rimLight/coverage", 0.0F, 1.0F);
+  triple(profile.Rim.Color, "/rimLight/color", 0.0F, 1.0F);
+  if (profile.Rim.Source > Fast::Renderer3ds::PicaRimLightSource::SceneLights)
+    read.Error("/rimLight/source", "is unknown");
   if (profile.Rim.Scope > Fast::Renderer3ds::PicaRimLightScope::ActorsAndWorld)
     read.Error("/rimLight/scope", "is unknown");
   triple(profile.AmbientColor, "/ambientColor", 0.0F, 1.0F);
@@ -401,11 +406,19 @@ SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<u
       result.Rim.Intensity = read.Scalar(*rim, "/rimLight", "intensity", 0.0F,
                                          Fast::Renderer3ds::kMaximumPicaRimIntensity);
       result.Rim.Sharpness = read.Scalar(*rim, "/rimLight", "sharpness", 1.0F, 16.0F, 4.0F);
-      result.Rim.Ambient = read.Scalar(*rim, "/rimLight", "ambient", 0.0F, 0.25F);
+      // Round-27 objects need no new members. Ambient is accepted/validated
+      // for migration but is no longer a rendering control or encoded field.
+      if (rim->contains("ambient")) (void)read.Scalar(*rim, "/rimLight", "ambient", 0.0F, 0.25F);
+      if (rim->contains("source"))
+        result.Rim.Source = read.Name<Fast::Renderer3ds::PicaRimLightSource>(*rim, "/rimLight", "source", kRimSourceNames);
+      if (rim->contains("color")) result.Rim.Color = read.Triple(*rim, "/rimLight", "color", 0.0F, 1.0F);
+      if (rim->contains("azimuth")) result.Rim.Azimuth = read.Scalar(*rim, "/rimLight", "azimuth", -180.0F, 180.0F);
+      if (rim->contains("coverage")) result.Rim.Coverage = read.Scalar(*rim, "/rimLight", "coverage", 0.0F, 1.0F);
       result.Rim.Scope = read.Name<Fast::Renderer3ds::PicaRimLightScope>(*rim, "/rimLight", "scope", kRimScopeNames);
       for (auto it = rim->begin(); it != rim->end(); ++it)
         if (it.key() != "enabled" && it.key() != "intensity" && it.key() != "sharpness" &&
-            it.key() != "ambient" && it.key() != "scope")
+            it.key() != "ambient" && it.key() != "scope" && it.key() != "source" &&
+            it.key() != "color" && it.key() != "azimuth" && it.key() != "coverage")
           read.Error(Join("/rimLight", it.key()), "is unknown");
     }
   }
@@ -495,7 +508,10 @@ Json EncodeSceneEnvironment(const SceneEnvironmentProfile &value, uint16_t scene
                  {"ambientIntensity", Number(value.AmbientIntensity)},
                  {"fogStrength", Number(value.FogStrength)},
                  {"rimLight", {{"enabled", value.Rim.Enabled}, {"intensity", Number(value.Rim.Intensity)},
-                               {"sharpness", Number(value.Rim.Sharpness)}, {"ambient", Number(value.Rim.Ambient)},
+                               {"sharpness", Number(value.Rim.Sharpness)}, {"color", Triple(value.Rim.Color)},
+                               {"azimuth", Number(value.Rim.Azimuth)}, {"coverage", Number(value.Rim.Coverage)},
+                               {"source", value.Rim.Source == Fast::Renderer3ds::PicaRimLightSource::SceneLights
+                                              ? "sceneLights" : "independent"},
                                {"scope", value.Rim.Scope == Fast::Renderer3ds::PicaRimLightScope::ActorsAndWorld
                                              ? "actorsAndWorld" : "actors"}}},
                  {"pointLights", std::move(points)},

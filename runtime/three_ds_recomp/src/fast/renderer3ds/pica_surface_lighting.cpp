@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <numbers>
 
 namespace Fast::Renderer3ds {
 namespace {
@@ -274,12 +275,25 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
 
 void AssignPicaSurfaceRim(PicaSurfaceLightingUniforms& uniforms, const PicaRimLightSettings& settings) noexcept {
     uniforms.Rim = {};
+    uniforms.RimColor = {};
+    uniforms.RimDirection = {};
     if (!settings.Enabled || !std::isfinite(settings.Intensity) || !std::isfinite(settings.Sharpness) ||
-        !std::isfinite(settings.Ambient)) return;
+        !std::isfinite(settings.Azimuth) || !std::isfinite(settings.Coverage)) return;
     if (settings.Intensity < 0.0F || settings.Intensity > kMaximumPicaRimIntensity || settings.Sharpness < 1.0F ||
-        settings.Sharpness > 16.0F || settings.Ambient < 0.0F || settings.Ambient > 0.25F) return;
-    if (settings.Intensity == 0.0F && settings.Ambient == 0.0F) return;
-    uniforms.Rim = {settings.Intensity, settings.Sharpness, settings.Ambient, 0.0F};
+        settings.Sharpness > 16.0F || settings.Azimuth < -180.0F || settings.Azimuth > 180.0F ||
+        settings.Coverage < 0.0F || settings.Coverage > 1.0F ||
+        settings.Source > PicaRimLightSource::SceneLights) return;
+    for (float channel : settings.Color)
+        if (!std::isfinite(channel) || channel < 0.0F || channel > 1.0F) return;
+    if (settings.Intensity == 0.0F) return;
+    if (settings.Source == PicaRimLightSource::SceneLights) {
+        uniforms.Rim = {settings.Intensity, settings.Sharpness, 2.0F, 0.0F};
+        return; // Independent-only controls do not change these rendering inputs.
+    }
+    uniforms.Rim = {settings.Intensity, settings.Sharpness, 1.0F, settings.Coverage};
+    uniforms.RimColor = {settings.Color[0], settings.Color[1], settings.Color[2], 0.0F};
+    const float azimuth = settings.Azimuth * std::numbers::pi_v<float> / 180.0F;
+    uniforms.RimDirection = {std::sin(azimuth), std::cos(azimuth), 0.0F, 0.0F};
 }
 
 std::string_view PicaSurfaceLightingDeclarations() noexcept {
@@ -327,6 +341,8 @@ layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
     vec4 water_flow;
     vec4 water_rings[16];
     vec4 rim;
+    vec4 rim_color;
+    vec4 rim_direction;
 } pica_surface;
 vec3 pica_surface_water_world = vec3(0.0);
 float pica_surface_water_footprint = 0.0;
@@ -437,16 +453,22 @@ float pica_surface_rim_fresnel(vec3 n, vec3 v) {
     return pow(clamp(1.0 - abs(dot(n, v)), 0.0, 1.0), pica_surface.rim.y);
 }
 float pica_surface_rim_weight(vec3 n, vec3 v, vec3 l) {
-    if (pica_surface.rim.x <= 0.0) return 0.0;
+    if (pica_surface.rim.x <= 0.0 || pica_surface.rim.z != 2.0) return 0.0;
     l = pica_surface_unit(l);
     if (dot(l, l) < 0.5) return 0.0;
     float back = smoothstep(-0.25, 0.5, dot(l, -v));
     float wrap = clamp((dot(n, l) + 0.5) / 1.5, 0.0, 1.0);
     return pica_surface.rim.x * pica_surface_rim_fresnel(n, v) * back * wrap;
 }
-float pica_surface_rim_ambient(vec3 n, vec3 v) {
-    if (pica_surface.rim.z <= 0.0) return 0.0;
-    return pica_surface.rim.z * pica_surface_rim_fresnel(n, v);
+vec3 pica_surface_rim_independent(vec3 n, vec3 v) {
+    if (pica_surface.rim.x <= 0.0 || pica_surface.rim.z != 1.0) return vec3(0.0);
+    float projected = dot(n.xy, n.xy);
+    // Undefined silhouette direction: no division by a zero projected normal.
+    float side = projected > 1.0e-8
+        ? smoothstep(-0.25, 0.75, dot(n.xy * inversesqrt(projected), pica_surface.rim_direction.xy)) : 0.0;
+    float coverage = mix(side, 1.0, pica_surface.rim.w);
+    return pica_surface.rim_color.rgb * pica_surface.rim.x *
+        pica_surface_rim_fresnel(n, v) * coverage;
 }
 float pica_surface_diffuse_rim(vec3 n, vec3 l, bool rim) {
     float diffuse = max(dot(n, l), 0.0);
@@ -625,8 +647,9 @@ vec3 pica_surface_native_response(vec3 normal_view, uint capture_mask, out vec3 
         captured *= pica_surface.environment_parameters.x;
     }
     color += pica_surface.resolved_ambient.rgb;
-    if (pica_surface.rim.z > 0.0)
-        color += pica_surface.resolved_ambient.rgb * pica_surface_rim_ambient(normal_view, pica_surface_unit(pica_view));
+    // This virtual source bypasses all scene gains and shadow capture. It is
+    // deliberately absent from pica_surface_gi_direct.
+    color += pica_surface_rim_independent(normal_view, pica_surface_unit(pica_view));
     if (pica_surface.environment_parameters.w != 0.0) {
         for (int slot = 0; slot < 2; ++slot) {
             if (pica_surface.environment_directions[slot].w <= 0.0) continue;

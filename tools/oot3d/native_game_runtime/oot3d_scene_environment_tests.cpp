@@ -176,16 +176,39 @@ int main() try {
   {
     using Scope = Fast::Renderer3ds::PicaRimLightScope;
     auto profile = BaseSceneEnvironmentProfile();
-    Check(profile.Rim.Enabled && profile.Rim.Scope == Scope::Actors && profile.Rim.Intensity == 0.35F &&
-              profile.Rim.Sharpness == 4.0F && profile.Rim.Ambient == 0.05F, "base rim defaults changed");
+    Check(profile.Rim.Enabled && profile.Rim.Scope == Scope::Actors && profile.Rim.Intensity == 1.0F &&
+              profile.Rim.Sharpness == 4.0F && profile.Rim.Source == Fast::Renderer3ds::PicaRimLightSource::Independent &&
+              profile.Rim.Color == (std::array<float, 3>{1, 0.96F, 0.9F}) && profile.Rim.Azimuth == 0 &&
+              profile.Rim.Coverage == 0.25F, "base rim defaults changed");
     auto document = EncodeSceneEnvironment(profile, 0x55, false);
     const auto decoded = DecodeSceneEnvironment(document);
     Check(decoded.Profile && decoded.Profile->Rim == profile.Rim, "rim did not round trip");
     Check(ResolveSceneEnvironment(profile, 0x55, false).Rim == profile.Rim, "renderer lost rim settings");
+    auto round27 = document;
+    for (const auto* key : {"source", "color", "azimuth", "coverage"}) round27["rimLight"].erase(key);
+    round27["rimLight"]["ambient"] = 0.05;
+    round27["rimLight"]["intensity"] = 0.35;
+    const auto migrated = DecodeSceneEnvironment(round27);
+    Check(migrated.Profile && migrated.Profile->Rim.Source == Fast::Renderer3ds::PicaRimLightSource::Independent &&
+              migrated.Profile->Rim.Color == profile.Rim.Color && migrated.Profile->Rim.Coverage == 0.25F &&
+              migrated.Profile->Rim.Azimuth == 0 && migrated.Profile->Rim.Intensity == 0.35F,
+          "round-27 rim did not acquire independent defaults or lost its saved intensity");
+    Check(!EncodeSceneEnvironment(*migrated.Profile, 0x55, false)["rimLight"].contains("ambient"),
+          "retired ambient control was saved again");
+    for (const auto* key : {"source", "color", "azimuth", "coverage"}) {
+      auto optional = document; optional["rimLight"].erase(key);
+      Check(DecodeSceneEnvironment(optional).Profile->Rim == profile.Rim, "optional rim member lost its default");
+      optional = document; optional["rimLight"][key] = nullptr;
+      Check(!DecodeSceneEnvironment(optional).Profile, "null optional rim member accepted");
+    }
     document.erase("rimLight");
     const auto legacy = DecodeSceneEnvironment(document);
     Check(legacy.Profile && !legacy.Profile->Rim.Enabled, "legacy profile acquired a rim");
     profile.Rim.Scope = Scope::ActorsAndWorld;
+    profile.Rim.Source = Fast::Renderer3ds::PicaRimLightSource::SceneLights;
+    profile.Rim.Color = {0.4F, 0.5F, 0.8F};
+    profile.Rim.Azimuth = -90;
+    profile.Rim.Coverage = 0.75F;
     Check(DecodeSceneEnvironment(EncodeSceneEnvironment(profile, 0x55, true)).Profile->Rim == profile.Rim,
           "world scope or night rim did not round trip");
     document = EncodeSceneEnvironment(profile, 0x55, false);
@@ -193,7 +216,7 @@ int main() try {
       auto bad = document; bad["rimLight"] = invalid;
       Check(!DecodeSceneEnvironment(bad).Profile, "mistyped rim accepted");
     }
-    for (const auto& key : {"enabled", "intensity", "sharpness", "ambient", "scope"}) {
+    for (const auto& key : {"enabled", "intensity", "sharpness", "scope"}) {
       auto bad = document; bad["rimLight"].erase(key);
       const auto result = DecodeSceneEnvironment(bad);
       Check(!result.Profile && result.Errors.front().Pointer == std::string("/rimLight/") + key,
@@ -203,7 +226,10 @@ int main() try {
     }
     for (const auto& [key, badValue] : std::vector<std::pair<std::string, nlohmann::json>>{
         {"enabled", 1}, {"intensity", 8.01}, {"intensity", -0.1}, {"sharpness", 0}, {"sharpness", 17},
-        {"ambient", 0.26}, {"scope", "all"}, {"shaprness", 4}}) {
+        {"ambient", 0.26}, {"scope", "all"}, {"shaprness", 4}, {"source", "moon"},
+        {"source", 1}, {"color", nlohmann::json::array({1, 0})}, {"color", nlohmann::json::array({1, 1.1, 0})},
+        {"color", nlohmann::json::array({1, "white", 0})}, {"azimuth", 181}, {"azimuth", -181},
+        {"azimuth", false}, {"coverage", -0.1}, {"coverage", 1.1}, {"coverage", "wide"}}) {
       auto bad = document; bad["rimLight"][key] = badValue;
       Check(!DecodeSceneEnvironment(bad).Profile, "invalid rim value accepted");
     }
@@ -212,8 +238,12 @@ int main() try {
       Check(!ValidateSceneEnvironment(bad).empty(), "nonfinite direct rim accepted");
       bad = profile; bad.Rim.Sharpness = invalid;
       Check(!ValidateSceneEnvironment(bad).empty(), "nonfinite rim exponent accepted");
-      bad = profile; bad.Rim.Ambient = invalid;
-      Check(!ValidateSceneEnvironment(bad).empty(), "nonfinite ambient rim accepted");
+      bad = profile; bad.Rim.Coverage = invalid;
+      Check(!ValidateSceneEnvironment(bad).empty(), "nonfinite rim coverage accepted");
+      bad = profile; bad.Rim.Azimuth = invalid;
+      Check(!ValidateSceneEnvironment(bad).empty(), "nonfinite rim azimuth accepted");
+      bad = profile; bad.Rim.Color[2] = invalid;
+      Check(!ValidateSceneEnvironment(bad).empty(), "nonfinite rim color accepted");
       auto badJson = document; badJson["rimLight"]["intensity"] = invalid;
       Check(!DecodeSceneEnvironment(badJson).Profile, "nonfinite JSON rim accepted");
     }

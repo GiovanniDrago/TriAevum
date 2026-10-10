@@ -99,12 +99,15 @@ struct alignas(16) PicaSurfaceLightingUniforms {
     // Movers' ripple rings (PicaWaterRippleField): centre x, z, birth (water
     // ripple time) and strength (0: none).
     std::array<std::array<float, 4>, kPicaWaterRings> WaterRings{};
-    // Direct intensity, grazing exponent, ambient intensity, reserved.
+    // Intensity, grazing exponent, source (1 independent, 2 scene), coverage.
     // Zero for disabled/ineligible draws; no shader or pipeline variant.
     std::array<float, 4> Rim{};
+    std::array<float, 4> RimColor{};
+    // XY: camera-relative unit direction around the view axis; ZW reserved.
+    std::array<float, 4> RimDirection{};
 };
 
-static_assert(sizeof(PicaSurfaceLightingUniforms) == 2928U);
+static_assert(sizeof(PicaSurfaceLightingUniforms) == 2960U);
 
 // Water's Fresnel reflectance at normal incidence, its GGX alpha, and its
 // environment reflection (subdued: the environment is the fog colour until

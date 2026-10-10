@@ -21,7 +21,7 @@ int main() try {
     std::vector<V4> expected;
     const auto add = [&](const Case& c, float gain) {
         cases.push_back(c);
-        expected.push_back({0.3F * gain, 0.2F * gain, 0.1F * gain, 0});
+        expected.push_back({std::min(0.3F * gain, 1.0F), std::min(0.2F * gain, 1.0F), std::min(0.1F * gain, 1.0F), 0});
     };
     constexpr V4 color{0.3F, 0.2F, 0.1F, 0};
     constexpr float window = (1.0F - 0.0625F) * (1.0F - 0.0625F);
@@ -34,7 +34,7 @@ int main() try {
         s.GlobalIlluminationSources = {1, 1, 1, 0};
         for (int i = 0; i < 3; ++i) s.ViewToWorldLinear[i][i] = 1;
         PicaRimLightSettings rim;
-        rim.Enabled = true; rim.Intensity = 0.3F; rim.Ambient = 0;
+        rim.Enabled = true; rim.Intensity = 0.3F; rim.Source = PicaRimLightSource::SceneLights;
         AssignPicaSurfaceRim(s, rim);
         float attenuation = 1;
         if (source < 2) {
@@ -78,10 +78,55 @@ int main() try {
     c.Lighting.Rim[1] = 8;
     add(c, 0.3F * (1.0F / 256.0F) * (7.0F / 27.0F) / 3.0F);
     c = cases[0]; c.Normal = {}; add(c, 0); // Invalid normal is not a full-strength edge.
-    c = cases[0]; c.Lighting.EnvironmentDirections = {}; c.Lighting.ResolvedAmbient = color;
-    c.Lighting.Rim = {0, 4, 0.1F, 0}; add(c, 1.1F); // Only the separately controlled ambient edge remains.
     // Outside a point's range: no direct illumination and no rim.
     c = cases[5 * 5]; c.Lighting.ScenePoints[0].PositionRadius[3] = 50; add(c, 0);
+
+    PicaRimLightSettings independent;
+    independent.Enabled = true;
+    independent.Color = {0.3F, 0.2F, 0.1F};
+    independent.Azimuth = 90;
+    // Each existing source, lit or fully shadowed, leaves the independent
+    // rim unchanged (N.L=0). This includes placed area lights and their range.
+    for (unsigned source = 0; source < 12; ++source) {
+        c = cases[source * 5];
+        AssignPicaSurfaceRim(c.Lighting, independent);
+        add(c, 1);
+        c.Visibility = {}; add(c, 1);
+    }
+    Case dark;
+    dark.Lighting.Control[0] = 1;
+    dark.Lighting.EnvironmentParameters = {0, 0, 0, 1};
+    dark.Lighting.GlobalIlluminationSources = {1, 1, 1, 0};
+    AssignPicaSurfaceRim(dark.Lighting, independent);
+    add(dark, 1); // No scene radiance or native gains at all.
+    c = dark; c.Lighting.Control[0] = 0; add(c, 1); // Plain, non-native-lit surface.
+    c.Lighting.Control[3] = 1; add(c, 1); // Preserve native appearance branch.
+    c = dark; c.Lighting.Rim = {}; add(c, 0);
+    c = dark; c.Lighting.Rim[2] = 2; add(c, 0); // Scene mode has no independent source.
+    c = dark; c.Normal = {}; add(c, 0);
+    c = dark; c.View = {}; add(c, 0);
+    c = dark; c.Normal = {0, 0, 1, 0}; add(c, 0);
+    c = dark; c.Normal = {std::sqrt(0.75F), 0, 0.5F, 0}; add(c, 1.0F / 16);
+    c.Lighting.Rim[1] = 8; add(c, 1.0F / 256);
+    c = dark; c.Lighting.Rim[0] = kMaximumPicaRimIntensity; add(c, 8);
+    c = dark; c.Lighting.RimColor = {}; add(c, 0);
+    c = dark; c.Lighting.ResolvedAmbient = color; add(c, 2); // Ambient changes only the baseline.
+    c = dark; c.Lighting.EnvironmentParameters = {2, 2, 1, 1}; add(c, 1);
+    c = dark; c.View = {0, 0, 1000, 0}; add(c, 1); // Distance cannot attenuate the rim.
+    // Direction is in camera coordinates. At every cardinal azimuth the
+    // selected silhouette receives full light, its opposite only coverage.
+    const std::array<V4, 4> normals{{{0,1,0,0}, {1,0,0,0}, {0,-1,0,0}, {-1,0,0,0}}};
+    const std::array<float, 4> azimuths{0, 90, 180, -90};
+    for (size_t direction = 0; direction < normals.size(); ++direction) {
+        independent.Azimuth = azimuths[direction];
+        c = dark; c.Normal = normals[direction];
+        AssignPicaSurfaceRim(c.Lighting, independent); add(c, 1);
+        c.Normal = normals[(direction + 2) % 4]; add(c, 0.25F);
+        c.Lighting.Rim[3] = 0; add(c, 0);
+        c.Lighting.Rim[3] = 1; add(c, 1);
+    }
+    c = dark; c.Lighting.RimDirection = {0, 1, 0, 0};
+    add(c, 0.25F + 0.75F * 0.15625F); // Side lobe smoothstep at dot=0.
 
     auto declarations = std::regex_replace(std::string(PicaSurfaceLightingDeclarations()),
                                            std::regex(R"(layout\([^)]*\)\s*)"), "");
@@ -104,8 +149,11 @@ void main() {
     pica_surface_normal = inputs.cases[i].normal.xyz;
     pica_surface_tint = vec4(1.0);
     test_visibility = inputs.cases[i].visibility;
+    vec3 captured;
+    pica_surface_native_response(pica_surface_normal, 0xffffffffu, captured);
+    float independent_capture = pica_surface.rim.z == 1.0 ? length(captured) : 0.0;
     outputs.values[i] = vec4(pica_surface_primary(vec3(0), pica_surface_normal),
-                             length(pica_surface_gi_direct(pica_surface_normal)));
+                             length(pica_surface_gi_direct(pica_surface_normal)) + independent_capture);
 }
 )glsl";
     std::vector<V4> results(cases.size());

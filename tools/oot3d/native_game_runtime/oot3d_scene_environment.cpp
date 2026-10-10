@@ -34,7 +34,7 @@ SceneEnvironmentProfile BaseSceneEnvironmentProfile() {
   base.KeyAzimuthOffset = 0.0F;
   base.KeyElevationOffset = 0.0F;
   base.PointLights = {};
-  // Modern actors get a restrained light-driven edge, with a weaker ambient rim.
+  // Modern actors get an independent warm-white, camera-relative top rim.
   base.Rim.Enabled = true;
   // Keep interior roofs/walls two-sided while the first outer shell admits
   // the key light once its room cache is ready.

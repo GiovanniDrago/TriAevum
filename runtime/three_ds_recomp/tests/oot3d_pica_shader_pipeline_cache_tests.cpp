@@ -77,17 +77,43 @@ TEST(Oot3dRimLight, DisabledAndInvalidSettingsPublishCanonicalZeroUniforms) {
     EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{}));
     rim.Enabled = true;
     AssignPicaSurfaceRim(uniforms, rim);
-    EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{0.35F, 4.0F, 0.05F, 0.0F}));
-    rim.Enabled = false; rim.Intensity = 1; rim.Sharpness = 16; rim.Ambient = 0.25F;
+    EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{1.0F, 4.0F, 1.0F, 0.25F}));
+    EXPECT_EQ(uniforms.RimColor, (std::array<float, 4>{1.0F, 0.96F, 0.9F, 0.0F}));
+    EXPECT_EQ(uniforms.RimDirection, (std::array<float, 4>{0, 1, 0, 0}));
+    rim.Intensity = kMaximumPicaRimIntensity; rim.Azimuth = 90;
+    AssignPicaSurfaceRim(uniforms, rim);
+    EXPECT_FLOAT_EQ(uniforms.Rim[0], 8.0F);
+    EXPECT_NEAR(uniforms.RimDirection[0], 1.0F, 1.e-6F);
+    EXPECT_NEAR(uniforms.RimDirection[1], 0.0F, 1.e-6F);
+    rim.Source = PicaRimLightSource::SceneLights;
+    AssignPicaSurfaceRim(uniforms, rim);
+    EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{8, 4, 2, 0}));
+    EXPECT_EQ(uniforms.RimColor, (std::array<float, 4>{}));
+    EXPECT_EQ(uniforms.RimDirection, (std::array<float, 4>{}));
+    rim.Enabled = false; rim.Intensity = 1; rim.Sharpness = 16; rim.Coverage = 0.7F;
     AssignPicaSurfaceRim(uniforms, rim);
     EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{}));
+    EXPECT_EQ(uniforms.RimColor, (std::array<float, 4>{}));
+    EXPECT_EQ(uniforms.RimDirection, (std::array<float, 4>{}));
     rim.Enabled = true;
     for (float bad : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -1.0F, 17.0F}) {
         auto invalid = rim; invalid.Sharpness = bad;
         AssignPicaSurfaceRim(uniforms, invalid);
         EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{}));
     }
-    rim.Intensity = rim.Ambient = 0;
+    for (auto member : {&PicaRimLightSettings::Intensity, &PicaRimLightSettings::Azimuth,
+                        &PicaRimLightSettings::Coverage}) {
+        auto invalid = rim; invalid.*member = std::numeric_limits<float>::quiet_NaN();
+        AssignPicaSurfaceRim(uniforms, invalid);
+        EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{}));
+    }
+    auto invalid = rim; invalid.Color[1] = 1.1F;
+    AssignPicaSurfaceRim(uniforms, invalid);
+    EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{}));
+    invalid = rim; invalid.Source = static_cast<PicaRimLightSource>(2);
+    AssignPicaSurfaceRim(uniforms, invalid);
+    EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{}));
+    rim.Intensity = 0;
     AssignPicaSurfaceRim(uniforms, rim);
     EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{}));
 }

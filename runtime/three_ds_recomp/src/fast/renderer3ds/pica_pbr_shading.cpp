@@ -309,8 +309,6 @@ constexpr std::string_view kPbrSurfaceLoop = R"glsl(
 constexpr std::string_view kPbrShadingEnd = R"glsl(
     vec3 pbr_indirect = pbr_ambient *
         pbr_albedo * (1.0 - pbr_metallic) * pbr_ao;
-    if (pica_surface.rim.z > 0.0)
-        pbr_indirect += pbr_ambient * pbr_albedo * pbr_ao * pica_surface_rim_ambient(pbr_normal, pbr_view);
     if (pica_surface.environment_parameters.w != 0.0) {
         if (!pbr_unlit_reference) {
             float pbr_native_scale = pica_surface.control.x != 0u || pbr_material.native_control.x != 0u
@@ -367,6 +365,9 @@ constexpr std::string_view kPbrShadingEnd = R"glsl(
         pbr_gi_direct += diffuse * radiance * pica_surface.gi_sources.z;
     }
     vec3 pbr_gi_radiance = max(pbr_gi_native + pbr_gi_direct, vec3(0.0));
+    // A camera-relative virtual source: no albedo, native gain, AO, scene
+    // attenuation or shadow multiplier; never part of the GI source above.
+    pbr_direct += pica_surface_rim_independent(pbr_normal, pbr_view);
     vec3 pbr_lit = max(pbr_direct + pbr_indirect + pbr_emission, vec3(0.0));
     vec3 pbr_ao_response = clamp(pbr_indirect / max(pbr_lit, vec3(1.0e-6)), 0.0, 1.0);
     float pbr_reflectivity = clamp(max(max(pbr_f0.r, pbr_f0.g), pbr_f0.b), 0.0, 1.0);

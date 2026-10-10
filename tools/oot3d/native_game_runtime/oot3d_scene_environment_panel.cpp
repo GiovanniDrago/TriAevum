@@ -81,22 +81,33 @@ public:
     ImGui::SeparatorText("Rim light");
     changed |= ImGui::Checkbox("Enable rim light", &value.Rim.Enabled);
     ImGui::BeginDisabled(!value.Rim.Enabled);
+    int rimSource = static_cast<int>(value.Rim.Source);
+    if (ImGui::Combo("Rim source", &rimSource, "Independent\0Scene lights\0")) {
+      value.Rim.Source = static_cast<Fast::Renderer3ds::PicaRimLightSource>(rimSource);
+      changed = true;
+    }
     changed |= ImGui::SliderFloat("Rim intensity", &value.Rim.Intensity, 0.0F,
                                   Fast::Renderer3ds::kMaximumPicaRimIntensity, "%.2fx",
                                   ImGuiSliderFlags_AlwaysClamp);
     changed |= ImGui::SliderFloat("Rim sharpness", &value.Rim.Sharpness, 1.0F, 16.0F, "%.1f",
                                   ImGuiSliderFlags_AlwaysClamp);
-    changed |= ImGui::SliderFloat("Ambient rim", &value.Rim.Ambient, 0.0F, 0.25F, "%.2f",
+    ImGui::BeginDisabled(value.Rim.Source != Fast::Renderer3ds::PicaRimLightSource::Independent);
+    changed |= ImGui::ColorEdit3("Rim color", value.Rim.Color.data(), ImGuiColorEditFlags_Float);
+    changed |= ImGui::SliderFloat("Rim azimuth", &value.Rim.Azimuth, -180.0F, 180.0F, "%.0f deg",
                                   ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::SliderFloat("Rim coverage", &value.Rim.Coverage, 0.0F, 1.0F, "%.2f",
+                                  ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
     int rimScope = static_cast<int>(value.Rim.Scope);
     if (ImGui::Combo("Rim scope", &rimScope, "Actors\0Actors and world\0")) {
       value.Rim.Scope = static_cast<Fast::Renderer3ds::PicaRimLightScope>(rimScope);
       changed = true;
     }
     ImGui::EndDisabled();
-    ImGui::TextWrapped("An edge highlight from the existing lights, strongest when they are beside or behind "
-                       "the surface. Uses their shadows; sharper means a narrower edge. Ambient adds a weaker, "
-                       "unshadowed edge from the scene's ambient light. Opaque surfaces only.");
+    ImGui::TextWrapped("Independent is a camera-relative edge light, unchanged by scene lights or shadows. "
+                       "Azimuth: 0 top, 90 right, -90 left, 180 bottom. Coverage: 0 directional, 1 whole silhouette. "
+                       "Scene lights uses the existing lights and their shadows. Sharpness narrows the edge. "
+                       "Opaque surfaces only.");
     ImGui::TextUnformatted("Additional environment lights");
     if (ImGui::BeginTabBar("Scene lights")) {
       const char *labels[] = {"Key light", "Fill light"};

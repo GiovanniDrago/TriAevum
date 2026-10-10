@@ -101,6 +101,19 @@ void Frame(bool logText = false) {
     }
 }
 Item Find(const char* label) {
+    // ColorEdit3 publishes its actual ##X/##Y/##Z drag widgets beneath
+    // PushID(label), rather than a labelled parent item. Resolve that scope.
+    const std::string_view path(label);
+    if (const auto slash = path.find("/##"); slash != std::string_view::npos) {
+        const auto parent = path.substr(0, slash);
+        const auto child = path.substr(slash + 1);
+        for (const auto& [id, item] : items) {
+            const auto parentId = ImHashStr(parent.data(), parent.size(), item.Seed);
+            const auto childId = ImHashStr(child.data(), child.size(), parentId);
+            const auto found = items.find(childId);
+            if (found != items.end() && found->second.Rect.GetHeight() > 0.0F) return found->second;
+        }
+    }
     std::optional<Item> found;
     for (const auto& [id, item] : items)
         if ((item.Label == label || ImHashStr(label, 0, item.Seed) == id) &&
@@ -525,24 +538,53 @@ void CheckSceneEnvironment() {
           "base actor rim is not enabled");
     EditScalar("Rim intensity", "0.45");
     EditScalar("Rim sharpness", "6");
-    EditScalar("Ambient rim", "0.08");
+    EditScalar("Rim azimuth", "90");
+    EditScalar("Rim coverage", "0.6");
+    EditScalar("Rim color/##X", "0.8");
+    EditScalar("Rim color/##Y", "0.7");
+    EditScalar("Rim color/##Z", "0.6");
+    Check(environment->Snapshot().Profile.Rim.Color[0] == 0.8F, "rim color widget did not apply");
+    Select("Rim source", "Scene lights");
+    Check(Find("Rim color/##X").Disabled && Find("Rim azimuth").Disabled && Find("Rim coverage").Disabled &&
+              !Find("Rim intensity").Disabled &&
+              graphics.SnapshotForRendering().Environment.Rim.Source == Fast::Renderer3ds::PicaRimLightSource::SceneLights,
+          "scene source did not disable independent controls or publish");
+    Select("Rim source", "Independent");
+    Check(!Find("Rim color/##X").Disabled && !Find("Rim azimuth").Disabled && !Find("Rim coverage").Disabled,
+          "independent source did not restore its controls");
     Select("Rim scope", "Actors and world");
     Check(graphics.SnapshotForRendering().Environment.Rim.Intensity == 0.45F &&
               graphics.SnapshotForRendering().Environment.Rim.Sharpness == 6.0F &&
-              graphics.SnapshotForRendering().Environment.Rim.Ambient == 0.08F &&
+              graphics.SnapshotForRendering().Environment.Rim.Azimuth == 90 &&
+              graphics.SnapshotForRendering().Environment.Rim.Coverage == 0.6F &&
+              graphics.SnapshotForRendering().Environment.Rim.Color[0] == 0.8F &&
+              graphics.SnapshotForRendering().Environment.Rim.Source == Fast::Renderer3ds::PicaRimLightSource::Independent &&
               graphics.SnapshotForRendering().Environment.Rim.Scope == Fast::Renderer3ds::PicaRimLightScope::ActorsAndWorld,
           "rim widgets did not reach the rendering snapshot");
     Select("Rim scope", "Actors");
     Click("Enable rim light");
-    Check(Find("Rim intensity").Disabled && Find("Rim sharpness").Disabled && Find("Ambient rim").Disabled &&
+    Check(Find("Rim intensity").Disabled && Find("Rim sharpness").Disabled && Find("Rim source").Disabled &&
+              Find("Rim color/##X").Disabled && Find("Rim azimuth").Disabled && Find("Rim coverage").Disabled &&
               Find("Rim scope").Disabled && !graphics.SnapshotForRendering().Environment.Rim.Enabled,
           "rim Off did not disable its controls and rendering");
     const auto rimOff = graphics.SnapshotForRendering().Environment;
     auto rimEdit = environment->Snapshot().Profile;
     rimEdit.Rim.Intensity = 0.6F;
+    rimEdit.Rim.Source = Fast::Renderer3ds::PicaRimLightSource::SceneLights;
+    rimEdit.Rim.Azimuth = -45;
+    rimEdit.Rim.Color = {0.1F, 0.2F, 0.3F};
+    rimEdit.Rim.Coverage = 1;
     Check(environment->Preview(rimEdit) && graphics.SnapshotForRendering().Environment == rimOff,
           "inactive rim edits changed renderer state");
     Click("Enable rim light");
+    Select("Rim source", "Independent");
+    EditScalar("Rim azimuth", "90");
+    EditScalar("Rim coverage", "0.6");
+    EditScalar("Rim color/##X", "0.8");
+    EditScalar("Rim color/##Y", "0.7");
+    EditScalar("Rim color/##Z", "0.6");
+    EditScalar("Rim intensity", "8");
+    Check(graphics.SnapshotForRendering().Environment.Rim.Intensity == 8, "rim intensity lost 0..8 range");
     EditScalar("Rim intensity", "0.45");
     EditScalar("Native scene direct contribution", "0.25");
     EditScalar("Native local contribution", "0.7");
@@ -594,7 +636,9 @@ void CheckSceneEnvironment() {
     const auto saved = environment->Snapshot();
     Check(saved.FileExists && !saved.Dirty && saved.Error.empty(), "scene environment was not saved");
     Check(saved.Profile.Rim.Enabled && saved.Profile.Rim.Intensity == 0.45F && saved.Profile.Rim.Sharpness == 6.0F &&
-              saved.Profile.Rim.Ambient == 0.08F && saved.Profile.Rim.Scope == Fast::Renderer3ds::PicaRimLightScope::Actors,
+              saved.Profile.Rim.Azimuth == 90 && saved.Profile.Rim.Coverage == 0.6F &&
+              saved.Profile.Rim.Color == (std::array<float, 3>{0.8F, 0.7F, 0.6F}) &&
+              saved.Profile.Rim.Source == Fast::Renderer3ds::PicaRimLightSource::Independent && saved.Profile.Rim.Scope == Fast::Renderer3ds::PicaRimLightScope::Actors,
           "rim settings were not saved with the scene profile");
     Check(saved.Profile.KeyDirection == KeyDirection::SceneMain && saved.Profile.KeyAzimuthOffset == 30.0F &&
               saved.Profile.KeyElevationOffset == -10.0F,
@@ -1157,7 +1201,7 @@ int main(int argc, char** argv) try {
     if (argc == 2 && std::string_view(argv[1]) == "--scene-environment") {
         CheckSceneEnvironment();
         ImGui::DestroyContext();
-        std::puts("F1 scene environment smoke passed");
+        std::cout << "F1 scene environment smoke passed: " << assertions << " assertions\n";
         return 0;
     }
 

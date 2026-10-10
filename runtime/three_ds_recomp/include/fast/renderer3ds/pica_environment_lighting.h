@@ -37,15 +37,18 @@ struct PicaScenePointLightSettings {
 };
 
 enum class PicaRimLightScope : uint8_t { Actors, ActorsAndWorld };
-// Artistic, bounded grazing response to the existing lights; no new sources.
+enum class PicaRimLightSource : uint8_t { Independent, SceneLights };
+// Bounded artistic edge light, camera-relative by default.
 // Scope eligibility belongs to the title adapter, not the surface shader.
-// Intensity multiplies each light's shadowed radiance at the edge (up to 8x).
 inline constexpr float kMaximumPicaRimIntensity = 8.0F;
 struct PicaRimLightSettings {
     bool Enabled = false;
-    float Intensity = 0.35F;
+    float Intensity = 1.0F;
     float Sharpness = 4.0F;
-    float Ambient = 0.05F;
+    PicaRimLightSource Source = PicaRimLightSource::Independent;
+    std::array<float, 3> Color{1.0F, 0.96F, 0.9F};
+    float Azimuth = 0.0F; // Camera-relative degrees: 0 top, 90 right.
+    float Coverage = 0.25F; // 0 directional edge, 1 full silhouette.
     PicaRimLightScope Scope = PicaRimLightScope::Actors;
     bool operator==(const PicaRimLightSettings&) const = default;
 };
