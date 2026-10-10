@@ -44,13 +44,39 @@ Each direction projects the whole room into a square 512-by-512 raster with
 a one-texel border. The greatest `dot(position,d)` owns each covered pixel
 centre. A natively back-culled triangle is a shell only if its world-space
 winding normal has `dot(normal,d) < -0.25` and it owns at least half of its
-covered pixels. Uncovered triangles keep casting. Layers are never peeled
-again after the first surface; inner roofs at every height remain occluders.
+covered pixels **and the space on its front side is enclosed**. Uncovered
+triangles keep casting. Layers are never peeled again after the first surface;
+inner roofs at every height remain occluders.
+
+Enclosure is computed once per triangle, independently of the 64 light
+directions, and ANDed into their masks. Its constants are part of criterion
+version 2:
+
+- Cast **32** deterministic, uniform solid-angle Fibonacci rays over the
+  hemisphere around the triangle's winding/front normal. Room shells face
+  inward, so this is the space light enters after passing the shell.
+- Start at the centroid plus **0.01 world units** along that normal, exclude
+  the source triangle, and accept intersections at distances greater than
+  `1e-6` and no farther than **4000 world units**.
+- Require **at least 24 hits out of 32 (0.75)**. Stop counting early only when
+  the final pass/fail result is already determined.
+- Intersect the room's opaque, non-alpha-tested triangles with either winding,
+  including double-sided triangles, through a deterministic median-split BVH
+  with at most eight triangles per leaf. Rays and triangle intersections use
+  double precision; there is no dependency on runtime visibility or actors.
+
+For sample `i`, local hemisphere height is `(i+0.5)/32` and azimuth is
+`i*pi*(3-sqrt(5))`. A tangent basis around the front normal rotates these
+directions into world space. This keeps a lone wall over a ground plane
+casting from behind: the open sky prevents 75% enclosure. Closed room walls
+and ceilings qualify; a broad opening can disqualify the wall facing it.
+A small doorway can still leave enough of the hemisphere enclosed to qualify.
+
 The renderer selects the maximum-dot sector for each shadow keyframe and
 degenerates masked triangles in a cull-none vertex shader. The mesh checksum,
 sector, and raster bias enter its static-page content identity.
 
-## Cache format, version 1
+## Cache format/criterion, version 2
 
 Location: `${TRIAEVUM_RENDERER_CACHE_DIR}/shadow-shells/<16-digit-lowercase-fingerprint>.bin`.
 An unset/empty directory disables persistence, but still allows an in-memory
@@ -69,6 +95,8 @@ Reads validate version, key, exact byte length, checksum, finite coordinates,
 counts, and indices. Runtime disk loads require the production raster size
 512; smaller test rasters cannot be reused by the runtime. Bad/missing files
 are rebuilt; writes use the renderer's atomic replacement helper.
+Version 2 keeps the byte layout but adds the enclosure criterion. Version 1
+files are rejected even with a valid checksum and rebuilt at the same path.
 
 ## Validation
 
@@ -78,6 +106,28 @@ Owning-boundary targets: `renderer3ds_room_shadow_shell_tests`,
 The adapter test optionally accepts an extracted ROM scene directory for
 read-only CMB validation. GPU and in-game visual checks are separate; the
 implementation work does not launch the game. A Forge prebuild mode is deferred.
+Builder tests include closed ceilings/walls, a lone wall on a ground plane,
+a box with an open side, the 4000-unit range, two-sided enclosure occluders,
+non-occluding alpha/transparent geometry, first-layer/majority behavior, and
+rejection of checksummed version 1 caches.
+
+`oot3d_native_room_shadow_shell_tests --benchmark-room <room_info.zsi>` reads
+a raw RomFS room and performs five fresh production-resolution builds,
+reporting minimum/median/maximum milliseconds and checking deterministic output.
+Timing includes welding, BVH construction, enclosure rays, all sector masks,
+and cache encoding; it excludes file I/O, CMB parsing, and cache hits.
+
+Local optimized host build, 2026-10-10, five consecutive builds per room
+(room benchmarks run sequentially):
+
+| RomFS room | Triangles | Builder ms, median (min–max) |
+| --- | ---: | ---: |
+| Deku Tree, `ydan_0_info.zsi` (`3e6fb0db85447539`) | 1,596 | 211.0 (204.7–213.7) |
+| Zora's Domain, `spot07_1_info.zsi` (`bc5756509000714f`) | 3,887 | 321.6 (319.1–322.5) |
+
+All five outputs per room had identical content hashes. Geometry and shell
+selection in the runtime renderer are unchanged; only cached mask construction
+and acceptance of the new criterion version changed.
 
 `TRIAEVUM_ROOM_SHADOW_SHELL` stderr events cover enable changes, room requests,
 capture errors, cache hits/misses, build completion (triangle count and

@@ -12,7 +12,7 @@ namespace Fast::Renderer3ds {
 enum class ShadowCasterFaces : uint8_t { Native, BothFaces, InteriorShells };
 inline constexpr uint32_t kRoomShadowSectorCount = 64;
 inline constexpr uint32_t kRoomShadowRasterSize = 512;
-inline constexpr uint32_t kRoomShadowShellVersion = 1;
+inline constexpr uint32_t kRoomShadowShellVersion = 2;
 inline constexpr size_t kMaximumRoomShadowTriangles = 500000;
 
 struct RoomShadowTriangle {
@@ -53,8 +53,9 @@ struct RoomShadowShellScene {
 [[nodiscard]] uint32_t RoomShadowSector(const ShadowVector& towardLight) noexcept;
 // The highest dot(position,towardLight) is the first intersection. Only a
 // natively back-culled triangle with dot(normal,towardLight)<-0.25 can be a
-// shell, and only when first at >= half its covered pixel centres. Uncovered
-// (subpixel/edge-on) triangles remain casters. Other layers are not peeled.
+// shell, and only when first at >= half its covered pixel centres and its front
+// hemisphere is enclosed (>=24 of 32 rays hit within 4000 world units).
+// Uncovered (subpixel/edge-on) triangles remain casters. Other layers are not peeled.
 [[nodiscard]] std::shared_ptr<const RoomShadowShell> BuildRoomShadowShell(uint64_t fingerprint,
                                                                           std::span<const RoomShadowTriangle> triangles,
                                                                           uint32_t rasterSize = kRoomShadowRasterSize,

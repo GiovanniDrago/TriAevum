@@ -9,6 +9,7 @@
 #include <limits>
 #include <map>
 #include <numbers>
+#include <numeric>
 #include <stdexcept>
 
 namespace Fast::Renderer3ds {
@@ -79,6 +80,203 @@ bool Valid(const RoomShadowShell& m) {
 }
 struct Projected {
     double X, Y, Z;
+};
+
+// Criterion version 2: room-facing space must be enclosed before any light
+// sector may omit a triangle. All distances are in the room's world units.
+constexpr uint32_t kEnclosureRays = 32;
+constexpr uint32_t kEnclosureRequiredHits = 24; // 0.75 of the uniform hemisphere.
+constexpr double kEnclosureDistance = 4000.0;
+constexpr double kEnclosureOriginOffset = 0.01;
+using RayVector = std::array<double, 3>;
+RayVector RaySub(const RayVector& a, const RayVector& b) {
+    return { a[0] - b[0], a[1] - b[1], a[2] - b[2] };
+}
+RayVector RayCross(const RayVector& a, const RayVector& b) {
+    return { a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0] };
+}
+double RayDot(const RayVector& a, const RayVector& b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+RayVector RayUnit(RayVector a) {
+    const double length = std::sqrt(RayDot(a, a));
+    if (length < 1.e-12)
+        return {};
+    for (auto& component : a)
+        component /= length;
+    return a;
+}
+
+class EnclosureBvh {
+    struct Triangle {
+        RayVector A, E1, E2, Centre;
+        ShadowVector Minimum, Maximum;
+    };
+    struct Node {
+        ShadowVector Minimum, Maximum;
+        uint32_t Begin = 0, Count = 0, Left = 0, Right = 0;
+    };
+    std::vector<Triangle> mTriangles;
+    std::vector<uint32_t> mOrder;
+    std::vector<Node> mNodes;
+
+    uint32_t BuildNode(uint32_t begin, uint32_t end, std::stop_token stop) {
+        if (stop.stop_requested())
+            return 0;
+        const uint32_t index = uint32_t(mNodes.size());
+        Node node;
+        node.Minimum = mTriangles[mOrder[begin]].Minimum;
+        node.Maximum = mTriangles[mOrder[begin]].Maximum;
+        for (uint32_t i = begin + 1; i < end; ++i)
+            for (size_t axis = 0; axis < 3; ++axis) {
+                node.Minimum[axis] = std::min(node.Minimum[axis], mTriangles[mOrder[i]].Minimum[axis]);
+                node.Maximum[axis] = std::max(node.Maximum[axis], mTriangles[mOrder[i]].Maximum[axis]);
+            }
+        mNodes.push_back(node);
+        if (end - begin <= 8) {
+            mNodes[index].Begin = begin;
+            mNodes[index].Count = end - begin;
+        } else {
+            size_t axis = 0;
+            for (size_t k = 1; k < 3; ++k)
+                if (node.Maximum[k] - node.Minimum[k] > node.Maximum[axis] - node.Minimum[axis])
+                    axis = k;
+            const uint32_t middle = begin + (end - begin) / 2;
+            std::nth_element(mOrder.begin() + begin, mOrder.begin() + middle, mOrder.begin() + end,
+                             [&](uint32_t a, uint32_t b) {
+                                 const auto x = mTriangles[a].Centre[axis], y = mTriangles[b].Centre[axis];
+                                 return x != y ? x < y : a < b;
+                             });
+            const auto left = BuildNode(begin, middle, stop);
+            const auto right = BuildNode(middle, end, stop);
+            mNodes[index].Left = left;
+            mNodes[index].Right = right;
+        }
+        return index;
+    }
+
+    static bool Intersects(const Node& node, const RayVector& origin, const RayVector& direction) {
+        double near = 0, far = kEnclosureDistance;
+        for (size_t axis = 0; axis < 3; ++axis) {
+            if (std::abs(direction[axis]) < 1.e-15) {
+                if (origin[axis] < node.Minimum[axis] || origin[axis] > node.Maximum[axis])
+                    return false;
+                continue;
+            }
+            double a = (node.Minimum[axis] - origin[axis]) / direction[axis];
+            double b = (node.Maximum[axis] - origin[axis]) / direction[axis];
+            if (a > b)
+                std::swap(a, b);
+            near = std::max(near, a);
+            far = std::min(far, b);
+            if (near > far)
+                return false;
+        }
+        return true;
+    }
+
+    // Two-sided Moller-Trumbore: a front or back intersection encloses space.
+    static bool Intersects(const Triangle& triangle, const RayVector& origin, const RayVector& direction) {
+        const auto p = RayCross(direction, triangle.E2);
+        const double determinant = RayDot(triangle.E1, p);
+        if (std::abs(determinant) < 1.e-12)
+            return false;
+        const auto offset = RaySub(origin, triangle.A);
+        const double u = RayDot(offset, p) / determinant;
+        if (u < -1.e-10 || u > 1 + 1.e-10)
+            return false;
+        const auto q = RayCross(offset, triangle.E1);
+        const double v = RayDot(direction, q) / determinant;
+        if (v < -1.e-10 || u + v > 1 + 1.e-10)
+            return false;
+        const double distance = RayDot(triangle.E2, q) / determinant;
+        return distance > 1.e-6 && distance <= kEnclosureDistance;
+    }
+
+    bool Hit(const RayVector& origin, const RayVector& direction, uint32_t source) const {
+        // Median splitting bounds depth below 20 at the 500k triangle cap.
+        std::array<uint32_t, 64> stack{};
+        size_t count = 1;
+        while (count != 0) {
+            const auto& node = mNodes[stack[--count]];
+            if (!Intersects(node, origin, direction))
+                continue;
+            if (node.Count == 0) {
+                stack[count++] = node.Left;
+                stack[count++] = node.Right;
+            } else {
+                for (uint32_t i = node.Begin; i < node.Begin + node.Count; ++i) {
+                    const uint32_t triangle = mOrder[i];
+                    if (triangle != source && Intersects(mTriangles[triangle], origin, direction))
+                        return true;
+                }
+            }
+        }
+        return false;
+    }
+
+  public:
+    EnclosureBvh(const RoomShadowShell& mesh, std::stop_token stop) {
+        const auto count = mesh.Indices.size() / 3;
+        mTriangles.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            if (stop.stop_requested())
+                return;
+            const auto a = mesh.Positions[mesh.Indices[i * 3]];
+            const auto b = mesh.Positions[mesh.Indices[i * 3 + 1]];
+            const auto c = mesh.Positions[mesh.Indices[i * 3 + 2]];
+            Triangle triangle;
+            for (size_t k = 0; k < 3; ++k) {
+                triangle.A[k] = a[k];
+                triangle.E1[k] = double(b[k]) - a[k];
+                triangle.E2[k] = double(c[k]) - a[k];
+                triangle.Centre[k] = (double(a[k]) + b[k] + c[k]) / 3;
+                triangle.Minimum[k] = std::min({ a[k], b[k], c[k] });
+                triangle.Maximum[k] = std::max({ a[k], b[k], c[k] });
+            }
+            mTriangles.push_back(triangle);
+        }
+        mOrder.resize(count);
+        std::iota(mOrder.begin(), mOrder.end(), 0U);
+        mNodes.reserve(count);
+        if (count != 0)
+            BuildNode(0, uint32_t(count), stop);
+    }
+
+    bool Enclosed(uint32_t triangle) const {
+        const auto& face = mTriangles[triangle];
+        const auto normal = RayUnit(RayCross(face.E1, face.E2));
+        if (RayDot(normal, normal) < .5)
+            return false;
+        const auto right =
+            RayUnit(RayCross(std::abs(normal[1]) > .9 ? RayVector{ 1, 0, 0 } : RayVector{ 0, 1, 0 }, normal));
+        const auto up = RayCross(normal, right);
+        RayVector origin = face.Centre;
+        for (size_t k = 0; k < 3; ++k)
+            origin[k] += normal[k] * kEnclosureOriginOffset;
+        // Uniform solid-angle Fibonacci hemisphere, independently of light.
+        static const auto hemisphere = [] {
+            std::array<RayVector, kEnclosureRays> result{};
+            const double angle = std::numbers::pi * (3 - std::sqrt(5.0));
+            for (uint32_t i = 0; i < kEnclosureRays; ++i) {
+                const double z = (i + .5) / kEnclosureRays, r = std::sqrt(1 - z * z);
+                result[i] = { r * std::cos(i * angle), r * std::sin(i * angle), z };
+            }
+            return result;
+        }();
+        uint32_t hits = 0;
+        for (uint32_t i = 0; i < kEnclosureRays; ++i) {
+            RayVector direction;
+            for (size_t k = 0; k < 3; ++k)
+                direction[k] = right[k] * hemisphere[i][0] + up[k] * hemisphere[i][1] + normal[k] * hemisphere[i][2];
+            hits += Hit(origin, direction, triangle);
+            if (hits >= kEnclosureRequiredHits)
+                return true;
+            if (hits + kEnclosureRays - i - 1 < kEnclosureRequiredHits)
+                return false;
+        }
+        return false;
+    }
 };
 double Edge(const Projected& a, const Projected& b, double x, double y) {
     return (b.X - a.X) * (y - a.Y) - (b.Y - a.Y) * (x - a.X);
@@ -165,6 +363,14 @@ std::shared_ptr<const RoomShadowShell> BuildRoomShadowShell(uint64_t fingerprint
     }
     result->ShellMasks.resize(normals.size());
     Bounds(*result);
+    if (!normals.empty()) {
+        const EnclosureBvh enclosure(*result, stop);
+        for (uint32_t i = 0; i < eligible.size(); ++i) {
+            if (stop.stop_requested())
+                return {};
+            eligible[i] = eligible[i] && enclosure.Enclosed(i);
+        }
+    }
     if (!normals.empty())
         for (uint32_t sector = 0; sector < kRoomShadowSectorCount; ++sector) {
             if (stop.stop_requested())
@@ -300,12 +506,14 @@ std::shared_ptr<const RoomShadowShell> LoadRoomShadowShell(const std::filesystem
 }
 bool SaveRoomShadowShell(const std::filesystem::path& directory, const RoomShadowShell& mesh, std::string* error) {
     if (directory.empty()) {
-        if (error) *error = "cache directory is empty";
+        if (error)
+            *error = "cache directory is empty";
         return false;
     }
     const auto bytes = EncodeRoomShadowShell(mesh);
     if (bytes.empty()) {
-        if (error) *error = "invalid shell mesh";
+        if (error)
+            *error = "invalid shell mesh";
         return false;
     }
     return Renderer::WriteCacheFileAtomically(RoomShadowShellPath(directory, mesh.Fingerprint), {}, bytes, error);

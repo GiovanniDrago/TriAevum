@@ -354,6 +354,59 @@ void RomCheck(const std::filesystem::path &sceneDirectory) {
       "ROM parser: %zu rooms, %zu models, %zu triangles, %zu incomplete\n",
       rooms, models, triangles, incomplete);
 }
+// Fresh synchronous builds from raw RomFS: excludes I/O, parsing and any disk
+// cache, includes welding, enclosure BVH/rays, sector masks and encoding.
+void BenchmarkRoom(const std::filesystem::path &file) {
+  std::ifstream in(file, std::ios::binary | std::ios::ate);
+  const auto length = in.tellg();
+  Check(length >= 0x90 && length <= 64 * 1024 * 1024,
+        "invalid benchmark room file");
+  Memory memory(size_t(length) + 0x1000);
+  in.seekg(0);
+  in.read(reinterpret_cast<char *>(memory.Bytes.data() + 0x100), length);
+  Check(bool(in), "benchmark room read failed");
+  constexpr uint32_t base = 0x110;
+  const NativeLoadedRoom room{
+      0, NativeRoomFingerprint(std::span(memory.Bytes).subspan(base, 128)),
+      base};
+  const auto captured =
+      CaptureNativeRoomShadowCmbs(room, memory, NativeRoomShadowSource::File);
+  Check(bool(captured), "benchmark room capture failed");
+  std::vector<RoomShadowTriangle> triangles;
+  for (const auto &bytes : *captured) {
+    const auto geometry = ParseNativeRoomShadowCmb(bytes);
+    Check(geometry && geometry->Complete, "benchmark room geometry incomplete");
+    triangles.insert(triangles.end(), geometry->Triangles.begin(),
+                     geometry->Triangles.end());
+  }
+  Check(!triangles.empty(), "benchmark room has no triangles");
+  std::array<double, 5> milliseconds{};
+  uint64_t version = 0;
+  size_t marked = 0;
+  for (size_t run = 0; run < milliseconds.size(); ++run) {
+    const auto start = std::chrono::steady_clock::now();
+    const auto mesh = BuildRoomShadowShell(room.Fingerprint, triangles);
+    milliseconds[run] = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - start)
+                            .count();
+    Check(mesh && mesh->ShellMasks.size() == triangles.size(),
+          "benchmark room build failed");
+    Check(run == 0 || version == mesh->ContentVersion,
+          "benchmark room build is nondeterministic");
+    version = mesh->ContentVersion;
+    marked = std::count_if(mesh->ShellMasks.begin(), mesh->ShellMasks.end(),
+                           [](uint64_t mask) { return mask != 0; });
+  }
+  std::sort(milliseconds.begin(), milliseconds.end());
+  std::printf(
+      "room benchmark file=%s fingerprint=%016llx version=%u triangles=%zu "
+      "marked=%zu runs=5 "
+      "builder_ms_min=%.3f builder_ms_median=%.3f builder_ms_max=%.3f\n",
+      file.filename().string().c_str(),
+      static_cast<unsigned long long>(room.Fingerprint),
+      kRoomShadowShellVersion, triangles.size(), marked, milliseconds.front(),
+      milliseconds[2], milliseconds.back());
+}
 // Optional offline capture: little-endian guest base followed by installed
 // room bytes. No ROM data is committed; this exercises a real saved room.
 void GuestRoomCheck(const std::filesystem::path &file) {
@@ -394,6 +447,8 @@ int main(int argc, char **argv) try {
     RomCheck(argv[1]);
   if (argc == 3 && std::string_view(argv[1]) == "--guest-room")
     GuestRoomCheck(argv[2]);
+  if (argc == 3 && std::string_view(argv[1]) == "--benchmark-room")
+    BenchmarkRoom(argv[2]);
   std::puts("native room shadow shell tests passed");
   return 0;
 } catch (const std::exception &e) {
