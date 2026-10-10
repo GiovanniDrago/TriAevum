@@ -22,6 +22,7 @@ bool ParseCategory(const std::string& name, NativeStaticEmitterCategory& categor
     else if (name == "light-shaft") category = NativeStaticEmitterCategory::LightShaft;
     else if (name == "magic-glow") category = NativeStaticEmitterCategory::MagicGlow;
     else if (name == "lamp") category = NativeStaticEmitterCategory::Lamp;
+    else if (name == "doorway") category = NativeStaticEmitterCategory::Doorway;
     else return false;
     return true;
 }
@@ -182,10 +183,14 @@ void CaptureStaticEmitters(const NativeStaticEmitterCatalog& catalog, uint16_t s
             light.Group = 3U;
             light.PositionWorld = e.Position;
             light.Radius = e.Radius;
-            for (size_t c = 0; c < 3U; ++c) light.Color[c] = std::clamp(e.Colour[c] * e.Gain, 0.0F, 1.0F);
-            // Torches are small, strong flames worth a cube map; broad sources
-            // light without one.
-            light.CastsShadow = e.Category == NativeStaticEmitterCategory::Torch;
+            // A gain above 1 (daylight through a doorway) is a brighter source,
+            // not a whiter one: bounded, not clipped to 1.
+            for (size_t c = 0; c < 3U; ++c) light.Color[c] = std::clamp(e.Colour[c] * e.Gain, 0.0F, 4.0F);
+            // Torches are small, strong flames worth a cube map, and daylight
+            // through a doorway casts the shadows of whatever stands in it;
+            // broad sources light without one.
+            light.CastsShadow = e.Category == NativeStaticEmitterCategory::Torch ||
+                                e.Category == NativeStaticEmitterCategory::Doorway;
             lights.push_back(light);
         }
     }

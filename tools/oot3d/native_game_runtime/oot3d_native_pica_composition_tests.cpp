@@ -495,18 +495,21 @@ void TestSceneLightCatalog() {
         std::string(R"({"schema":"triaevum.scene-lights","version":1,"rooms":[)") +
         R"({"scene":10,"room":1,"masterQuest":false,"fingerprint":")" + hex +
         R"(","emitters":[{"category":"torch","position":[1,2,3],"radius":450,"gain":1.0,"colour":[1,0.5,0.25]},)" +
-        R"({"category":"fire-lava","position":[4,5,6],"radius":600,"gain":0.5,"colour":[1,0.4,0.2]}]},)" +
+        R"({"category":"fire-lava","position":[4,5,6],"radius":600,"gain":0.5,"colour":[1,0.4,0.2]},)" +
+        R"({"category":"doorway","position":[0,95,820],"radius":1330,"gain":1.6,"colour":[1,0.95,0.85]}]},)" +
         R"({"scene":10,"room":1,"masterQuest":true,"fingerprint":"0123456789abcdef","emitters":[)" +
         R"({"category":"window-lamp","position":[7,8,9],"radius":300,"gain":0.9,"colour":[1,1,1]}]}]})";
     std::string error;
     const auto catalog = NativeStaticEmitterCatalog::Parse(text, &error);
-    Require(catalog && catalog->Count() == 3U, "the scene light catalog was rejected: " + error);
+    Require(catalog && catalog->Count() == 4U, "the scene light catalog was rejected: " + error);
     const auto rooms = NativeLoadedRooms(play, memory);
     Require(rooms.size() == 1U && rooms[0].Number == 1 && rooms[0].Fingerprint == standard,
             "the loaded room or its fingerprint was not read");
     std::vector<Fast::Renderer3ds::PicaScenePointLight> lights;
     CaptureStaticEmitters(*catalog, 10U, rooms, lights);
-    Require(lights.size() == 2U && lights[0].Group == 3U && lights[0].CastsShadow && !lights[1].CastsShadow &&
+    // Torches and doorways (daylight) cast point shadows; broad sources do not.
+    Require(lights.size() == 3U && lights[0].Group == 3U && lights[0].CastsShadow && !lights[1].CastsShadow &&
+                lights[2].CastsShadow && std::abs(lights[2].Color[0] - 1.6F) < 1.0e-6F &&
                 lights[0].PositionWorld == std::array<float, 3>{1.0F, 2.0F, 3.0F} &&
                 std::abs(lights[1].Color[0] - 0.5F) < 1.0e-6F && lights[0].SourceIdentity != lights[1].SourceIdentity,
             "the standard room's lights were not published");

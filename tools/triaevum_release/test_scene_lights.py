@@ -170,6 +170,25 @@ class SceneLightsTests(unittest.TestCase):
         self.assertEqual(torch["colour"], [1.0, 0.502, 0.125])
         self.assertEqual(torch["texture"], "gnn_torch_03")
 
+    def test_a_white_doorway_volume_lets_daylight_in_from_its_outer_end(self):
+        # A room around the origin; a white additive corridor volume 180 x 190 x 220 at its +z edge, and a flat
+        # white mist sheet (not a doorway).
+        floor = ([(-500.0, 0.0, -500.0), (500.0, 0.0, -500.0), (500.0, 0.0, 500.0), (-500.0, 0.0, 500.0)],
+                 [(0, 1, 2), (0, 2, 3)])
+        corridor = ([(x, y, z) for x in (-90.0, 90.0) for y in (0.0, 190.0) for z in (600.0, 820.0)],
+                    cube((0, 0, 0), 1)[1])
+        mist = ([(-300.0, 50.0, -300.0), (300.0, 50.0, -300.0), (300.0, 50.0, 300.0)], [(0, 1, 2)])
+        white = bytes([255, 255, 255, 255]) * 64
+        model = cmb([(0, False), (1, True)], [("floor_01", RGBA8, GREY), ("dg01_white", RGBA8, white)],
+                    [(0, *floor), (1, *corridor), (1, *mist)])
+        emitters = room_emitters(room(model))
+        self.assertEqual([e["category"] for e in emitters], ["doorway"])
+        door = emitters[0]
+        self.assertEqual(door["position"], [0.0, 114.0, 787.0])
+        self.assertEqual(door["colour"], scene_lights.DAYLIGHT)
+        self.assertEqual(door["radius"], 1540)
+        self.assertEqual(door["texture"], "dg01_white")
+
     def test_malformed_or_nonfinite_models_add_no_lights(self):
         stand, triangles = cube((0.0, 0.0, 0.0), 40.0)
         good = cmb([(0, False)], [("gnn_torch_03", RGBA8, ORANGE)], [(0, stand, triangles)])

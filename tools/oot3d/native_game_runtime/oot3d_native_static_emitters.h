@@ -27,7 +27,7 @@ class MemoryBus;
 
 namespace Oot3dNativeGame {
 
-enum class NativeStaticEmitterCategory : uint8_t { Torch, FireLava, WindowLamp, LightShaft, MagicGlow, Lamp };
+enum class NativeStaticEmitterCategory : uint8_t { Torch, FireLava, WindowLamp, LightShaft, MagicGlow, Lamp, Doorway };
 
 struct NativeStaticEmitter {
     std::array<float, 3> Position{};

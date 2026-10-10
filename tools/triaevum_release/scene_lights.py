@@ -6,7 +6,9 @@ title bakes their light into vertex colours; the Modern renderer lights the
 scene with them instead. Each room's materials are classified by their first
 texture's name; the triangles of an emitting material become objects
 (connected triangles, merged when close), each object one point light
-(lava: area clusters), coloured by its texture's mean. The catalog is
+(lava: area clusters), coloured by its texture's mean. Plain white additive
+volumes shaped like an opening are doorways: daylight, lit near their outer
+end. The catalog is
 private, ROM-derived data: it is generated on the user's machine, never
 shipped. Format (JSON):
 
@@ -41,7 +43,7 @@ CATALOG_SCHEMA = "triaevum.scene-lights"
 CATALOG_VERSION = 1
 # Bumped with any change to the emitters' placement, so installed catalogs
 # are regenerated.
-GENERATOR_REVISION = 1
+GENERATOR_REVISION = 2
 
 # Scene file stems by scene id (the title's scene table order).
 SCENE_NAMES = {
@@ -77,10 +79,18 @@ MATERIAL_SIZE = 0x15C
 # room, the light's gain (calibrated in the lab against the title's own
 # lighting: these sources add to light the rooms already bake) and the
 # largest reach a merged emitter may grow to.
-MERGE = {"torch": 120, "window-lamp": 300, "magic-glow": 300, "fire-lava": 500, "light-shaft": 200, "lamp": 60}
-CAP = {"torch": 16, "window-lamp": 12, "magic-glow": 8, "fire-lava": 12, "light-shaft": 8, "lamp": 16}
-GAIN = {"torch": 1.0, "window-lamp": 0.45, "magic-glow": 0.6, "fire-lava": 0.45, "light-shaft": 0.55, "lamp": 0.5}
-REACH = {"torch": 450, "window-lamp": 700, "magic-glow": 500, "fire-lava": 1000, "light-shaft": 600, "lamp": 500}
+MERGE = {"torch": 120, "window-lamp": 300, "magic-glow": 300, "fire-lava": 500, "light-shaft": 200, "lamp": 60,
+         "doorway": 150}
+CAP = {"torch": 16, "window-lamp": 12, "magic-glow": 8, "fire-lava": 12, "light-shaft": 8, "lamp": 16, "doorway": 8}
+GAIN = {"torch": 1.0, "window-lamp": 0.45, "magic-glow": 0.6, "fire-lava": 0.45, "light-shaft": 0.55, "lamp": 0.5,
+        "doorway": 1.6}
+REACH = {"torch": 450, "window-lamp": 700, "magic-glow": 500, "fire-lava": 1000, "light-shaft": 600, "lamp": 500,
+         "doorway": 1800}
+# Daylight through a doorway: the openings' glow volumes are plain white.
+DAYLIGHT = [1.0, 0.95, 0.85]
+# A doorway's glow volume: opening height and the largest horizontal extent.
+DOORWAY_HEIGHT = (90.0, 400.0)
+DOORWAY_WIDTH = 500.0
 # Lamps drawn inside a shared atlas: texture name -> [(u0, v0, u1, v1, colour)]
 # boxes in the material's transformed first texture coordinates (wrapped into
 # 0..1); only the triangles whose centre falls in a box are the lamp.
@@ -480,6 +490,31 @@ def category(first_texture: str, additive: bool, halo: bool = False) -> str | No
     return None
 
 
+def is_daylight(colour: list[float] | None) -> bool:
+    """A plain white texture: the glow the rooms fill their openings with."""
+    return colour is not None and sum(colour) / 3 >= 0.95 and max(colour) - min(colour) <= 0.02
+
+
+def doorway_emitter(low: list[float], high: list[float], centre: list[float]) -> dict | None:
+    """A white additive volume shaped like an opening (a doorway's height, a
+    corridor's width, not flat) lets daylight in: a light near its outer end,
+    the end away from the room's centre, lighting the way inward. Other white
+    volumes (mist sheets, fog banks) are not doorways."""
+    size = [high[k] - low[k] for k in range(3)]
+    if not DOORWAY_HEIGHT[0] <= size[1] <= DOORWAY_HEIGHT[1] or max(size[0], size[2]) > DOORWAY_WIDTH \
+            or min(size) < 25.0:
+        return None
+    middle = [(low[k] + high[k]) / 2 for k in range(3)]
+    # The horizontal axis along which the opening lies farthest from the room's centre, for its size.
+    axis = max((0, 2), key=lambda k: abs(middle[k] - centre[k]) / max(size[k], 1.0))
+    position = list(middle)
+    position[axis] += math.copysign(size[axis] * 0.35, middle[axis] - centre[axis])
+    position[1] = low[1] + 0.6 * size[1]
+    reach = max(size[1], size[0], size[2]) * 7.0
+    return {"position": position, "radius": round(min(REACH["doorway"], max(900.0, reach))),
+            "gain": GAIN["doorway"], "colour": list(DAYLIGHT), "weight": size[0] * size[1] * size[2]}
+
+
 def objects(triangles: list, merge: float = 40.0) -> list:
     """Connected triangle sets (shared vertices), merged when their bounding
     boxes come within `merge` units: [low corner, high corner, triangles]."""
@@ -637,6 +672,20 @@ def room_fingerprint(data: bytes) -> str:
     return f"{content_hash(data[FINGERPRINT_OFFSET:FINGERPRINT_OFFSET + FINGERPRINT_BYTES]):016x}"
 
 
+def model_centre(model: Model) -> list[float]:
+    """The centre of the model's bounding box (its room, for a room model)."""
+    if getattr(model, "_centre", None) is None:
+        points = []
+        for shape, _ in model.meshes:
+            try:
+                points += [p for tri in model.triangles(shape) for _, p in tri]
+            except ValueError:
+                continue
+        model._centre = [(min(p[k] for p in points) + max(p[k] for p in points)) / 2 for k in range(3)] \
+            if points else [0.0, 0.0, 0.0]
+    return model._centre
+
+
 def model_emitters(model: Model) -> list[dict]:
     """The emitters of one model, before the room's consolidation."""
     emitters = []
@@ -651,9 +700,23 @@ def model_emitters(model: Model) -> list[dict]:
             continue
         name, width, height, fmt, kind, pixels = textures[0]
         cat = category(name, additive, additive and is_halo(fmt, kind, pixels, width, height))
+        raw = texture_colour(fmt, kind, pixels)
+        boxes = None
+        if additive and is_daylight(raw):
+            # Doorway-shaped white volumes let daylight in; the material's other
+            # objects keep its named category.
+            triangles = [tuple(((shape, index), p) for index, p in tri)
+                         for shape in shapes for tri in model.triangles(shape)]
+            boxes = []
+            for low, high, tris in objects(triangles, 10.0):
+                emitter = doorway_emitter(low, high, model_centre(model))
+                if emitter is None:
+                    boxes.append((low, high, tris))
+                else:
+                    emitter.update({"category": "doorway", "texture": name})
+                    emitters.append(emitter)
         if not cat:
             continue
-        raw = texture_colour(fmt, kind, pixels)
         # Fire found by loose name stems must look like fire.
         if cat == "fire-lava" and raw is not None and not (raw[0] >= raw[2] and max(raw) > 0.25):
             continue
@@ -668,6 +731,11 @@ def model_emitters(model: Model) -> list[dict]:
             colour = list(LAMP_BODIES[name])
         # An atlas lamp is only its regions' triangles, each region its colour.
         regions = LAMP_REGIONS.get(name) if cat == "lamp" else None
+        if boxes is not None and regions is None:
+            for emitter in emitters_for(cat, colour, boxes):
+                emitter.update({"category": cat, "texture": name})
+                emitters.append(emitter)
+            continue
         batches = [(colour, (0.0, 0.0, 1.0, 1.0))] if regions is None else [(list(r[4]), r[:4]) for r in regions]
         su, sv, tu, tv = model.uv_transforms[material]
         for batch_colour, (u0, v0, u1, v1) in batches:
