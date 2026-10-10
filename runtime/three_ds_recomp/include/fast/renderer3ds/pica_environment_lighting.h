@@ -101,6 +101,10 @@ struct PicaPlacedLight {
 // The title owns profile identity, persistence and world-axis conventions.
 struct PicaEnvironmentLighting {
     uint64_t ScopeIdentity = 0;
+    // Nonzero: the owner publishes continuous animation within this epoch.
+    // Edits, time cuts and scene/load changes advance it. The renderer's
+    // shadow keyframe scheduler follows direction motion within an epoch.
+    uint64_t ContinuityEpoch = 0;
     bool Enabled = false;
     // Keep the native low-frequency reference independently of source gains.
     bool PreserveSceneBrightness = true;
@@ -132,6 +136,13 @@ struct PicaEnvironmentLighting {
     ShadowCasterFaces CasterFaces = ShadowCasterFaces::Native;
     bool operator==(const PicaEnvironmentLighting&) const = default;
 };
+
+[[nodiscard]] inline bool ContinuousPicaEnvironmentChange(const PicaEnvironmentLighting& before,
+                                                          const PicaEnvironmentLighting& after) noexcept {
+    return before.ContinuityEpoch != 0 && before.ContinuityEpoch == after.ContinuityEpoch &&
+           before.ScopeIdentity == after.ScopeIdentity && before.Enabled == after.Enabled &&
+           before.CasterFaces == after.CasterFaces && before.KeyDirection == after.KeyDirection;
+}
 
 // Light 0's colour for a draw with this scene snapshot. A key that follows
 // the scene's lights also takes its main light's colour and brightness (after

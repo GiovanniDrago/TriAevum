@@ -229,6 +229,7 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
         tools/oot3d/native_game_runtime/oot3d_savestate_panel.cpp
         tools/oot3d/native_game_runtime/oot3d_savestate_settings.cpp
         tools/oot3d/native_game_runtime/oot3d_scene_environment.cpp
+        tools/oot3d/native_game_runtime/oot3d_scene_environment_blend.cpp
         tools/oot3d/native_game_runtime/oot3d_light_gizmo.cpp
         tools/oot3d/native_game_runtime/oot3d_scene_environment_codec.cpp
         tools/oot3d/native_game_runtime/oot3d_scene_environment_panel.cpp
@@ -271,6 +272,7 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
         add_executable(triaevum_environment_tests EXCLUDE_FROM_ALL
             tools/oot3d/native_game_runtime/oot3d_scene_environment_tests.cpp
             tools/oot3d/native_game_runtime/oot3d_scene_environment.cpp
+            tools/oot3d/native_game_runtime/oot3d_scene_environment_blend.cpp
             tools/oot3d/native_game_runtime/oot3d_scene_environment_codec.cpp
             tools/oot3d/native_game_runtime/oot3d_light_gizmo.cpp)
         target_include_directories(triaevum_environment_tests PRIVATE

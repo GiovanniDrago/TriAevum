@@ -37,6 +37,8 @@ class GraphicsSettingsPanelTab {
     // the tab is top-level under its own label.
     [[nodiscard]] virtual const char* Group() const noexcept { return nullptr; }
     virtual void Draw() = 0;
+    // Session-only previews end when F1 closes or F2 is pressed.
+    virtual void EndPreview() {}
 };
 
 // Game frontends may contribute application-owned settings tabs without
@@ -47,6 +49,9 @@ void InstallGraphicsSettingsPanelTabs(
 // Backward-compatible convenience wrapper for frontends with one tab.
 void InstallGraphicsSettingsPanelTab(
     std::shared_ptr<GraphicsSettingsPanelTab> tab);
+void EndGraphicsSettingsPreviews();
+// The host F2 action, including ending application-owned previews.
+void ToggleGraphicsNativePresentation();
 
 class GraphicsSettingsPanel final {
   public:

@@ -2391,11 +2391,9 @@ void NativeA32WindowSession::PublishNativeSceneView() {
   // Guest memory is read here; the scene environment, the duplicate check
   // and the publish belong to the renderer and run in its order.
   auto snapshot = sceneViewProbe.Capture(process.Memory());
-  // SaveContext nightFlag (+0x10): 1 at night; picks a scene's night profile.
-  constexpr uint32_t kSaveContextNightFlag = 0x00587968U;
-  uint32_t nightFlag = 0U;
-  const bool night =
-      process.Memory().Read32(kSaveContextNightFlag, &nightFlag) && nightFlag != 0U;
+  const auto environmentTime = snapshot
+      ? Oot3dNativeGame::CaptureSceneEnvironmentTime(snapshot->PlayStateAddress, process.Memory())
+      : std::nullopt;
   // Where Link is (world position +0x28, shape yaw +0xBE: 0 faces +Z,
   // 0x4000 +X), for lights placed from F1.
   std::optional<Oot3dNativeGame::ScenePlayerPlacement> player;
@@ -2422,8 +2420,9 @@ void NativeA32WindowSession::PublishNativeSceneView() {
   if (devEmitterLog && snapshot)
     devEmitterLog->Observe(++devEmitterFrames, snapshot->PlayStateAddress, snapshot->SceneId, process.Memory());
 #endif
-  renderStream.Submit([&, snapshot, night, player, freeCamera] {
-  sceneEnvironment->ObserveScene(snapshot ? snapshot->SceneId : std::nullopt, night, player);
+  renderStream.Submit([&, snapshot, environmentTime, player, freeCamera] {
+  sceneEnvironment->ObserveScene(snapshot ? snapshot->SceneId : std::nullopt,
+      environmentTime.value_or(Oot3dNativeGame::SceneEnvironmentTime{}), player);
   sceneEnvironment->PollProfileFiles();
   const auto shadowSettings = Fast::Oot3d::GraphicsSettingsRuntime::Instance().SnapshotForRendering();
   picaCompositionTracker.SetRoomShadowShellsEnabled(

@@ -88,6 +88,8 @@ void Frame(bool logText = false) {
             ImGui::LogFinish();
         }
         ImGui::End();
+    } else {
+        EndGraphicsSettingsPreviews(); // Same close boundary as the host F1 window.
     }
     DrawDisplayConfirmation();
     ImGui::Render();
@@ -401,7 +403,7 @@ void CheckSceneEnvironment() {
     auto environment = std::make_shared<SceneEnvironmentRuntime>(root, [&](const auto& value) {
         graphics.PublishSceneEnvironment(value);
     });
-    environment->ObserveScene(0x55);
+    environment->ObserveScene(0x55, {true, 0x8000, false});
     // A scene without its own profile takes the base environment.
     Check(environment->Snapshot().Profile == BaseSceneEnvironmentProfile() &&
               !environment->Snapshot().FileExists && graphics.SnapshotForRendering().Environment.Enabled &&
@@ -632,7 +634,7 @@ void CheckSceneEnvironment() {
     Check(graphics.SnapshotForRendering().Environment.PreserveSceneBrightness &&
               Find("Native ambient contribution").Disabled,
           "scene brightness reference did not apply independently of native source gains");
-    Click("Save scene environment");
+    Click(environment->Snapshot().EditingNight ? "Save night" : "Save day");
     const auto saved = environment->Snapshot();
     Check(saved.FileExists && !saved.Dirty && saved.Error.empty(), "scene environment was not saved");
     Check(saved.Profile.Rim.Enabled && saved.Profile.Rim.Intensity == 0.45F && saved.Profile.Rim.Sharpness == 6.0F &&
@@ -656,7 +658,7 @@ void CheckSceneEnvironment() {
     environment->Preview(inactiveEdit);
     Check(graphics.SnapshotForRendering().Environment == inactiveEnvironment,
           "disabled profile edits changed rendering inputs and invalidated history");
-    Click("Reload scene environment");
+    Click(environment->Snapshot().EditingNight ? "Revert night" : "Revert day");
     Check(environment->Snapshot().Profile == saved.Profile, "scene profile reload lost authored settings");
     settings = graphics.Snapshot();
     settings.Effects.SurfaceLighting = SurfaceLightingMode::NativePbr;
@@ -682,54 +684,101 @@ void CheckSceneEnvironment() {
           "F2 did not bypass rim while retaining its preference");
     graphics.ToggleNativePresentationOverride();
     Check(graphics.SnapshotForRendering().Environment.Enabled, "F2 did not restore the authored environment");
-    environment->ObserveScene(0x56);
+    environment->ObserveScene(0x56, {true, 0x8000, false});
     Check(environment->Snapshot().Profile == BaseSceneEnvironmentProfile() &&
               graphics.SnapshotForRendering().Environment.AmbientIntensity == 0.0F,
           "previous scene's environment leaked across a transition instead of the base");
-    environment->ObserveScene(0x55);
+    environment->ObserveScene(0x55, {true, 0x8000, false});
     Check(environment->Snapshot().Profile == saved.Profile, "returning to scene did not restore its file");
-    // Day and night: one profile until the scene has a night profile, then
-    // the game's night flag picks it.
-    environment->ObserveScene(0x55, true);
+    // Both real editor tabs are available at any game time. Editing does not
+    // change the preview selection; the indicator reports the applied blend.
+    environment->ObserveScene(0x55, {true, 0, true});
+    Frame();
     Check(environment->Snapshot().Night && !environment->Snapshot().EditingNight &&
               environment->Snapshot().Profile == saved.Profile,
-          "night without a night profile did not keep the scene's profile");
+          "night without a night profile did not keep the day profile");
     const auto dayScope = graphics.SnapshotForRendering().Environment.ScopeIdentity;
-    Click("Create night profile");
+    Click("Create night (from day)");
     const auto nightPath = root / "scene-0055.night.environment.json";
     Check(std::filesystem::exists(nightPath) && environment->Snapshot().EditingNight &&
               environment->Snapshot().Path == nightPath &&
-              graphics.SnapshotForRendering().Environment.ScopeIdentity != dayScope,
-          "creating the night profile did not make it the night scope");
-    auto nightEdit = saved.Profile;
-    nightEdit.AmbientIntensity = 0.4F;
-    nightEdit.AmbientColor = {0.2F, 0.3F, 0.8F};
-    environment->Preview(nightEdit);
-    Click("Save scene environment");
+              graphics.SnapshotForRendering().Environment.ScopeIdentity == dayScope,
+          "creating night did not select its draft or changed the continuous scope");
+    EditScalar("Ambient intensity", "0.4");
+    Click("Save night");
+    const auto savedNight = environment->Snapshot().Profile;
     nlohmann::json nightDocument;
     { std::ifstream file(nightPath); file >> nightDocument; }
     Check(nightDocument.value("timeOfDay", "") == "night" && nightDocument.at("ambientIntensity").get<float>() == 0.4F,
-          "the night profile was not saved to its own file");
-    environment->ObserveScene(0x55, false);
-    Check(!environment->Snapshot().EditingNight && environment->Snapshot().Profile == saved.Profile &&
+          "night was not saved to its own file");
+    environment->ObserveScene(0x55, {true, 0x8000, false});
+    Frame();
+    Check(environment->Snapshot().EditingNight && environment->Snapshot().Profile == savedNight &&
               graphics.SnapshotForRendering().Environment.AmbientIntensity == saved.Profile.AmbientIntensity,
-          "day did not return to the scene's own profile");
-    environment->ObserveScene(0x55, true);
-    Check(environment->Snapshot().Profile == nightEdit &&
-              graphics.SnapshotForRendering().Environment.AmbientIntensity == 0.4F,
-          "night did not take the night profile");
-    environment->ObserveScene(0x56, true);
-    Check(environment->Snapshot().Profile == BaseSceneEnvironmentProfile() && !environment->Snapshot().EditingNight,
-          "a scene without a night profile took another scene's");
-    environment->ObserveScene(0x55, true);
-    Click("Remove night profile");
-    Click("Remove");
+          "day time changed the editor or failed to use day lighting");
+    EditScalar("Ambient intensity", "0.8");
+    Select("Preview", "Force night");
+    Check(graphics.SnapshotForRendering().Environment.AmbientIntensity == 0.8F, "force night did not preview the night draft by day");
+    Click("Day");
+    Check(!environment->Snapshot().EditingNight && environment->Snapshot().Profile == saved.Profile,
+          "Day tab did not restore its own draft");
+    EditScalar("Ambient intensity", "1.1");
+    environment->ObserveScene(0x55, {true, 0, true});
+    Frame();
+    Check(!environment->Snapshot().EditingNight && environment->Snapshot().DirtyTabs == (std::array<bool,2>{true,true}),
+          "native time change discarded a draft or selected a different tab");
+    Select("Preview", "Force day");
+    Frame(true);
+    Check(graphics.SnapshotForRendering().Environment.AmbientIntensity == 1.1F &&
+              loggedPanelText.find("day 100% / night 0%") != std::string::npos,
+          "force day/indicator does not show the actual applied blend");
+    Select("Preview", "Auto");
+    environment->SetForcedNightWeight(0.5F);
+    Frame(true);
+    Check(loggedPanelText.find("day 50% / night 50%") != std::string::npos &&
+              std::abs(graphics.SnapshotForRendering().Environment.AmbientIntensity - 0.95F) < 1e-6F,
+          "half-weight indicator disagrees with the applied profiles");
+    environment->SetForcedNightWeight(std::nullopt);
+    Select("Preview", "Force day");
+    ToggleGraphicsNativePresentation(); // Actual host F2 action, no game/window.
+    Check(environment->Snapshot().PreviewMode == SceneEnvironmentPreview::Auto, "F2 did not clear forced preview");
+    ToggleGraphicsNativePresentation();
+    Frame();
+    Select("Preview", "Force day");
+    showPanel = false; Frame();
+    Check(environment->Snapshot().PreviewMode == SceneEnvironmentPreview::Auto &&
+              graphics.SnapshotForRendering().Environment.AmbientIntensity == 0.8F,
+          "closing F1 did not restore Auto");
+    showPanel = true; Frame(); Frame();
+    Click("Night");
+    Click("Revert night");
+    Check(environment->Snapshot().Profile == savedNight && environment->Snapshot().DirtyTabs[0] &&
+              !environment->Snapshot().DirtyTabs[1], "revert night discarded the day draft");
+    Click("Copy day -> night"); Click("Cancel");
+    Check(environment->Snapshot().Profile == savedNight, "cancel copy changed night");
+    Click("Copy day -> night"); Click("Copy");
+    Check(environment->Snapshot().EditingNight && environment->Snapshot().Dirty &&
+              environment->Snapshot().Profile.AmbientIntensity == 1.1F, "copy did not populate the unsaved night draft");
+    { std::ifstream file(nightPath); file >> nightDocument; }
+    Check(nightDocument.at("ambientIntensity").get<float>() == 0.4F, "copy persisted before Save night");
+    Click("Save night");
+    Click("Day"); Click("Revert day");
+    Check(environment->Snapshot().Profile == saved.Profile, "revert day changed its saved profile");
+    Click("Remove night"); Click("Cancel");
+    Check(std::filesystem::exists(nightPath), "cancel remove deleted the night file");
+    Click("Remove night"); Click("Remove");
     Check(!std::filesystem::exists(nightPath) && !environment->Snapshot().EditingNight &&
-              environment->Snapshot().Profile == saved.Profile,
-          "removing the night profile did not return night to the scene's profile");
-    environment->ObserveScene(0x55, false);
+              environment->Snapshot().Profile == saved.Profile && environment->Snapshot().AppliedNightWeight == 0,
+          "remove night failed to preserve the day draft");
+    environment->ObserveScene(0x56, {false,0,true}); Frame(true);
+    for (const char* label : {"Day", "Night", "Preview", "Create night (from day)", "Copy day -> night", "Remove night"})
+        Check(std::none_of(items.begin(),items.end(),[&](const auto& item){ return item.second.Label == label; }),
+              std::string("fixed scene shows day/night UI: ") + label);
+    Check(loggedPanelText.find("Fixed scene lighting") != std::string::npos && !Find("Save profile").Disabled,
+          "fixed scene does not show one editable profile");
+    environment->ObserveScene(0x55, {true, 0x8000, false}); Frame(); Frame();
     // Placed lights: added where Link is, edited by type, saved in the profile.
-    environment->ObserveScene(0x55, false, ScenePlayerPlacement{{100.0F, 0.0F, 200.0F}, 90.0F});
+    environment->ObserveScene(0x55, {true, 0x8000, false}, ScenePlayerPlacement{{100.0F, 0.0F, 200.0F}, 90.0F});
     Click("Add light at Link");
     {
         const auto placed = environment->Snapshot().Profile.PlacedLights;
@@ -807,7 +856,7 @@ void CheckSceneEnvironment() {
                   std::abs(vertices[0].ClipTo[1] / vertices[0].ClipTo[3] + 0.1F) < 1.0e-5F,
               "world debug lines are not cut at the near plane or not turned into the framebuffer");
     }
-    Click("Save scene environment");
+    Click(environment->Snapshot().EditingNight ? "Save night" : "Save day");
     {
         nlohmann::json document;
         { std::ifstream file(saved.Path); file >> document; }
@@ -824,12 +873,12 @@ void CheckSceneEnvironment() {
     Check(environment->Snapshot().Profile.PlacedLights.empty() &&
               graphics.SnapshotForRendering().Environment.PlacedLightCount == 0U,
           "deleted lights are still drawn");
-    Click("Reload scene environment");
+    Click(environment->Snapshot().EditingNight ? "Revert night" : "Revert day");
     Check(environment->Snapshot().Profile.PlacedLights.size() == 1U, "reload lost the saved placed light");
     auto withoutLights = environment->Snapshot().Profile;
     withoutLights.PlacedLights.clear();
     environment->Preview(withoutLights);
-    Click("Save scene environment");
+    Click(environment->Snapshot().EditingNight ? "Save night" : "Save day");
     const auto backup = root / "saved.json";
     std::filesystem::rename(saved.Path, backup);
     std::filesystem::create_directory(saved.Path);
@@ -838,13 +887,13 @@ void CheckSceneEnvironment() {
     { std::ofstream file(saved.Path); file << "{invalid"; }
     Check(!environment->Reload() && environment->Snapshot().Profile == saved.Profile,
           "malformed reload replaced the last valid live environment");
-    environment->ObserveScene(0x56);
-    environment->ObserveScene(0x55);
+    environment->ObserveScene(0x56, {true, 0x8000, false});
+    environment->ObserveScene(0x55, {true, 0x8000, false});
     Check(!graphics.SnapshotForRendering().Environment.Enabled && !environment->Snapshot().Error.empty(),
           "invalid destination profile inherited another scene's lights");
     std::filesystem::remove(saved.Path);
     std::filesystem::rename(backup, saved.Path);
-    Click("Reload scene environment");
+    Click(environment->Snapshot().EditingNight ? "Revert night" : "Revert day");
     nlohmann::json originalProfile;
     { std::ifstream file(saved.Path); file >> originalProfile; }
     for (int version : {1, 2, 3}) {
@@ -854,7 +903,7 @@ void CheckSceneEnvironment() {
         legacy.erase("preserveSceneBrightness");
         if (version == 1) legacy.erase("pointLights");
         { std::ofstream file(saved.Path); file << legacy; }
-        Click("Reload scene environment");
+        Click(environment->Snapshot().EditingNight ? "Revert night" : "Revert day");
         const auto migrated = environment->Snapshot();
         Check(migrated.Error.empty() && !migrated.Dirty &&
                   migrated.Profile.NativeDirectStrength == 0.25F &&

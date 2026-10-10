@@ -1,5 +1,28 @@
 # F1 settings rationalization
 
+## Day/night profiles (2026-10-10, round 32)
+
+**Lighting > Lights & Shadows > Scene lights** now separates the editor from
+playback: **Day / Night** tabs edit independent drafts at any game time, while
+**Auto / Force day / Force night** controls the preview. The live percentage
+indicator reports the published blend. F2 and closing F1 restore Auto;
+preview is never saved. Fixed-lighting scenes have one profile and no
+clock-related controls. This remains one `SceneEnvironmentRuntime` owner.
+
+Create night copies day to the new file. Copy day -> night confirms replacing
+the night draft, then Save night persists it. Remove night confirms deleting
+its file and draft. Each tab saves/reverts separately; time changes retain
+both unsaved drafts. The existing two-file schema remains compatible.
+
+Focused actual-widget smoke passes **2,364 assertions**, including editing
+Night by day, both dirty drafts across native time changes, preview/percentage
+agreement, copy cancel/confirm/save, removal cancel/confirm, per-tab revert,
+F2/close reset and absence of day/night controls for fixed scenes. The full
+suite still stops earlier at the pre-existing material-editor assertion
+"creation used the catalog hash instead of the native texture's Azahar
+identity" (also recorded in round 28). The native curve and cache simulation
+are documented in [Scene environment profiles](TRIAEVUM_SCENE_ENVIRONMENT_TOOLING.md).
+
 ## Interior sun / offline (2026-10-10, round 29)
 
 The base default remains JSON `shadowCasterFaces: "interiorShells"`. The actual

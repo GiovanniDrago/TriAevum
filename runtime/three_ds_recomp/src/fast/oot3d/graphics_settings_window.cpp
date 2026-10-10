@@ -41,6 +41,14 @@ void InstallGraphicsSettingsPanelTab(
     InstallGraphicsSettingsPanelTabs(std::move(tabs));
 }
 
+void EndGraphicsSettingsPreviews() {
+    for (const auto& tab : SnapshotPanelTabs()) if (tab) tab->EndPreview();
+}
+void ToggleGraphicsNativePresentation() {
+    GraphicsSettingsRuntime::Instance().ToggleNativePresentationOverride();
+    EndGraphicsSettingsPreviews();
+}
+
 namespace {
 struct HostNotice {
     std::string Text;

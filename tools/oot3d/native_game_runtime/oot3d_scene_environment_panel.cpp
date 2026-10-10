@@ -18,20 +18,45 @@ public:
   const char *Group() const noexcept override {
     return Fast::Oot3d::kLightingSettingsGroup;
   }
+  void EndPreview() override { mRuntime->EndPreview(); }
   void Draw() override {
     ImGui::SeparatorText("Scene lights");
-    const auto state = mRuntime->Snapshot();
+    auto state = mRuntime->Snapshot();
     if (!state.SceneId) {
-      ImGui::TextWrapped("No native gameplay scene is available. Environment "
-                         "overrides are inactive.");
+      ImGui::TextWrapped("No native gameplay scene is available. Environment overrides are inactive.");
       return;
     }
     ImGui::Text("Native scene: 0x%04X (all rooms)", unsigned(*state.SceneId));
-    ImGui::TextWrapped(state.FileExists
-                           ? "Profile: %s"
-                           : "Base environment (the title intro's). Saving creates %s for this scene only.",
-                       state.Path.string().c_str());
+    if (!state.TimeDriven) {
+      ImGui::TextWrapped("Fixed scene lighting: one profile applies at every time.");
+      DrawProfile(state);
+      mLastScene.reset();
+      return;
+    }
+    if (mLastScene != state.SceneId) { mRequestedTab = state.EditingNight; mLastScene = state.SceneId; }
+    if (state.EditingNight != mLastEditingNight) mRequestedTab = state.EditingNight;
     DrawDayNight(state);
+    state = mRuntime->Snapshot();
+    if (ImGui::BeginTabBar("##SceneEnvironmentProfiles")) {
+      for (bool night : {false, true}) {
+        ImGuiTabItemFlags flags = state.DirtyTabs[night ? 1 : 0] ? ImGuiTabItemFlags_UnsavedDocument : ImGuiTabItemFlags_None;
+        if (mRequestedTab && *mRequestedTab == night) flags |= ImGuiTabItemFlags_SetSelected;
+        ImGui::BeginDisabled(night && !state.NightProfileExists);
+        if (ImGui::BeginTabItem(night ? "Night" : "Day", nullptr, flags)) {
+          if (mRuntime->SelectTab(night)) DrawProfile(mRuntime->Snapshot());
+          ImGui::EndTabItem();
+        }
+        ImGui::EndDisabled();
+      }
+      ImGui::EndTabBar();
+    }
+    mRequestedTab.reset();
+    mLastEditingNight = mRuntime->Snapshot().EditingNight;
+  }
+private:
+  void DrawProfile(const SceneEnvironmentSnapshot& state) {
+    ImGui::TextWrapped(state.FileExists ? "Profile: %s"
+        : "Base environment (the title intro's). Saving creates %s for this scene only.", state.Path.string().c_str());
     auto value = state.Profile;
     auto &graphics = Fast::Oot3d::GraphicsSettingsRuntime::Instance();
     const auto settings = graphics.Snapshot();
@@ -220,10 +245,10 @@ public:
                        "walls and foliage still cast. Rooms use both faces while their local cache is prepared.");
     if (changed)
       mRuntime->Preview(value, state.Revision);
-    if (ImGui::Button("Save scene environment"))
+    if (ImGui::Button(!state.TimeDriven ? "Save profile" : state.EditingNight ? "Save night" : "Save day"))
       mRuntime->Save();
     ImGui::SameLine();
-    if (ImGui::Button("Reload scene environment"))
+    if (ImGui::Button(!state.TimeDriven ? "Revert profile" : state.EditingNight ? "Revert night" : "Revert day"))
       mRuntime->Reload();
     if (ImGui::Button("Use native environment")) {
       value.Enabled = false;
@@ -233,10 +258,7 @@ public:
     if (!status.Error.empty())
       ImGui::TextWrapped("Environment error: %s", status.Error.c_str());
     if (status.Dirty)
-      ImGui::TextWrapped(
-          status.NightProfileExists
-              ? "Unsaved live preview. Save before leaving this scene or before the time of day changes."
-              : "Unsaved live preview. Save before leaving this scene.");
+      ImGui::TextWrapped("Unsaved changes in this tab. Time changes keep both drafts; save before leaving this scene.");
     else
       ImGui::TextUnformatted(
           status.FileExists ? "Scene profile saved."
@@ -442,35 +464,53 @@ private:
   static constexpr float kPlacedLightHeadHeight = 50.0F;
   uint32_t mSelectedLight = 0;
   bool mShowGizmos = true;
-  // A scene with day and night (Kakariko Village, Hyrule Field) may keep a
-  // second profile for the night; the game's night flag picks it.
-  void DrawDayNight(const SceneEnvironmentSnapshot &state) {
-    ImGui::Text("Time of day: %s", state.Night ? "night" : "day");
+  std::optional<bool> mRequestedTab;
+  std::optional<uint16_t> mLastScene;
+  bool mLastEditingNight = false;
+  void DrawDayNight(const SceneEnvironmentSnapshot& state) {
+    if (!state.NightError.empty()) ImGui::TextWrapped("Night profile: %s", state.NightError.c_str());
+    int preview = static_cast<int>(state.PreviewMode);
+    if (ImGui::BeginCombo("Preview", preview == 0 ? "Auto" : preview == 1 ? "Force day" : "Force night")) {
+      const char* names[] = {"Auto", "Force day", "Force night"};
+      for (int i = 0; i < 3; ++i) {
+        ImGui::BeginDisabled(i == 2 && !state.NightProfileExists);
+        if (ImGui::Selectable(names[i], preview == i))
+          mRuntime->SetPreviewMode(static_cast<SceneEnvironmentPreview>(i));
+        ImGui::EndDisabled();
+      }
+      ImGui::EndCombo();
+    }
+    const auto applied = mRuntime->Snapshot();
+    ImGui::Text("Applied: day %.0f%% / night %.0f%%", (1 - applied.AppliedNightWeight) * 100,
+                 applied.AppliedNightWeight * 100);
+    if (applied.ForcedWeight) ImGui::TextUnformatted("Lab weight override active (process environment).");
+    ImGui::TextWrapped("Edit either tab at any time. Auto follows native dawn and dusk; forced preview ends on F2 or closing F1.");
     if (!state.NightProfileExists) {
-      ImGui::TextWrapped("The same profile applies by day and by night.");
-      if (ImGui::Button("Create night profile"))
-        mRuntime->CreateNightProfile();
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Saves the values shown as this scene's night profile. At night it is the "
-                          "profile in use and edited here; by day, the scene's own profile is.");
+      ImGui::TextWrapped("Day applies at all times until a night profile is created.");
+      if (ImGui::Button("Create night (from day)") && mRuntime->CreateNightProfile()) mRequestedTab = true;
       return;
     }
-    ImGui::TextWrapped(state.EditingNight
-                           ? "Separate day and night profiles: editing the night profile."
-                           : "Separate day and night profiles: editing the day profile (the night "
-                             "profile applies at night).");
-    if (ImGui::Button("Remove night profile"))
-      ImGui::OpenPopup("Remove night profile?");
-    if (ImGui::BeginPopupModal("Remove night profile?", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-      ImGui::TextUnformatted("Delete this scene's night profile? The day profile will apply at night too.");
-      if (ImGui::Button("Remove")) {
-        mRuntime->RemoveNightProfile();
+    if (ImGui::Button("Copy day -> night")) ImGui::OpenPopup("Copy day to night?");
+    if (ImGui::BeginPopupModal("Copy day to night?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextUnformatted("Replace the night draft with the day draft? Save night to keep the copy.");
+      if (ImGui::Button("Copy")) {
+        if (mRuntime->CopyDayToNight()) mRequestedTab = true;
         ImGui::CloseCurrentPopup();
       }
       ImGui::SameLine();
-      if (ImGui::Button("Cancel"))
+      if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+      ImGui::EndPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Remove night")) ImGui::OpenPopup("Remove night profile?");
+    if (ImGui::BeginPopupModal("Remove night profile?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextUnformatted("Delete the night file and discard its unsaved edits? Day will apply at all times.");
+      if (ImGui::Button("Remove")) {
+        if (mRuntime->RemoveNightProfile()) mRequestedTab = false;
         ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
       ImGui::EndPopup();
     }
   }

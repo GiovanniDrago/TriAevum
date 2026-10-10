@@ -3,6 +3,9 @@
 #include "oot3d_scene_environment.h"
 #include "oot3d_scene_environment_codec.h"
 #include <chrono>
+#include <cmath>
+#include <unordered_map>
+#include "fast/renderer3ds/virtual_shadow_keyframes.h"
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -36,11 +39,12 @@ struct Fixture {
   SceneEnvironmentRuntime Runtime;
   std::chrono::steady_clock::time_point Now = std::chrono::steady_clock::now();
   int Publications = 0;
+  Fast::Renderer3ds::PicaEnvironmentLighting Applied;
 
   explicit Fixture(const std::filesystem::path &directory)
       : Directory(directory), Day(directory / "scene-0055.environment.json"),
         Night(directory / "scene-0055.night.environment.json"),
-        Runtime(directory, [this](const Fast::Renderer3ds::PicaEnvironmentLighting &) { ++Publications; }) {}
+        Runtime(directory, [this](const Fast::Renderer3ds::PicaEnvironmentLighting &value) { ++Publications; Applied = value; }) {}
 
   // Two looks 300 ms apart: a change is acted on once they agree.
   void Settle() {
@@ -51,15 +55,233 @@ struct Fixture {
   }
   float Ambient() const { return Runtime.Snapshot().Profile.AmbientIntensity; }
 };
+
+void Near(float actual, float expected, const char* what) { Check(std::abs(actual - expected) < 2e-6F, what); }
+void CheckNativeTime() {
+  // Independent fixture: the audited native table, decoded from code.bin,
+  // includes all weather modes. Test every clock tick against its component
+  // lerp rather than duplicating the implementation's four breakpoints.
+  auto path = std::filesystem::path(__FILE__).parent_path().parent_path() /
+      "native_demo_host/lighting_tables/oot3d_pica_lighting_semantics.json";
+  std::ifstream file(path);
+  nlohmann::json document; file >> document;
+  for (const auto& mode : document["runtime_environment_light_settings_consumer"]["transition_modes"]) {
+    for (unsigned clock = 0; clock < 65536; ++clock) {
+      bool found = false;
+      for (const auto& e : mode["entries"]) {
+        const unsigned start = e["start_angle"], end = e["end_angle"];
+        if (clock < start || (clock >= end && end != 65535)) continue;
+        const float t = 1.0F - float(end - clock) / float(end - start);
+        const float a = (e["from_light_setting_index"].get<unsigned>() & 3) == 3 ? 1.0F : 0.0F;
+        const float b = (e["to_light_setting_index"].get<unsigned>() & 3) == 3 ? 1.0F : 0.0F;
+        Near(NativeEnvironmentNightWeight(uint16_t(clock)), std::lerp(a, b, t), "native curve mismatch");
+        found = true; break;
+      }
+      Check(found, "native table has a clock hole");
+    }
+  }
+  Near(NativeEnvironmentNightWeight(0x3556), 0.5F, "dawn midpoint");
+  Near(NativeEnvironmentNightWeight(0), NativeEnvironmentNightWeight(65535), "midnight wrap discontinuity");
+  struct Bus {
+    std::unordered_map<uint32_t, uint32_t> Values;
+    bool Read8(uint32_t at, uint8_t* out) { if (!Values.contains(at)) return false; *out = uint8_t(Values.at(at)); return true; }
+    bool Read16(uint32_t at, uint16_t* out) { if (!Values.contains(at)) return false; *out = uint16_t(Values.at(at)); return true; }
+    bool Read32(uint32_t at, uint32_t* out) { if (!Values.contains(at)) return false; *out = Values.at(at); return true; }
+  } bus;
+  constexpr uint32_t play = 0x10000000;
+  bus.Values = {{play + 0x31B0, 0}, {play + 0x3237, 0xFF}, {0x588F00, 0x3556}, {0x587968, 0}, {0x587964, 0x8000}};
+  auto sample = CaptureSceneEnvironmentTime(play, bus);
+  Check(sample && sample->TimeDriven && sample->Clock == 0x3556 && !sample->Night && sample->Owner == play,
+        "adapter did not use effective clock independent of save clock/night flag");
+  bus.Values[play + 0x31B0] = 1;
+  Check(!CaptureSceneEnvironmentTime(play, bus)->TimeDriven, "fixed envLightMode got a clock");
+  bus.Values[play + 0x31B0] = 0; bus.Values[play + 0x3237] = 2;
+  Check(!CaptureSceneEnvironmentTime(play, bus)->TimeDriven, "setting override got a clock");
+  bus.Values.erase(0x588F00);
+  Check(!CaptureSceneEnvironmentTime(play, bus) && !CaptureSceneEnvironmentTime(0, bus) &&
+            !CaptureSceneEnvironmentTime(0xFFFFFF00, bus), "bad native time read accepted");
+}
+void CheckBlend() {
+  using namespace Fast::Renderer3ds;
+  auto day = BaseSceneEnvironmentProfile(), night = day;
+  day.Lights[0].Azimuth = day.Rim.Azimuth = day.KeyAzimuthOffset = 170;
+  night.Lights[0].Azimuth = night.Rim.Azimuth = night.KeyAzimuthOffset = -170;
+  day.AmbientColor = day.Lights[0].Color = day.Rim.Color = {0,0,0};
+  night.AmbientColor = night.Lights[0].Color = night.Rim.Color = {1,1,1};
+  day.AmbientIntensity = 0; night.AmbientIntensity = 2;
+  day.FogStrength = 0; night.FogStrength = 1;
+  day.NativeDirectStrength = 0; night.NativeDirectStrength = 2;
+  day.NativeLocalStrength = 1; night.NativeLocalStrength = 3;
+  day.NativeAmbientStrength = 0; night.NativeAmbientStrength = 1;
+  day.Rim.Enabled = false; night.Rim.Enabled = true; night.Rim.Intensity = 2;
+  day.Rim.Sharpness = 2; night.Rim.Sharpness = 8;
+  day.Rim.Coverage = 0; night.Rim.Coverage = 1;
+  day.Rim.Source = PicaRimLightSource::Independent; night.Rim.Source = PicaRimLightSource::SceneLights;
+  day.Rim.Scope = PicaRimLightScope::Actors; night.Rim.Scope = PicaRimLightScope::ActorsAndWorld;
+  day.CasterFaces = ShadowCasterFaces::Native; night.CasterFaces = ShadowCasterFaces::BothFaces;
+  day.Enabled = true; night.Enabled = false;
+  day.PointLights[0].Enabled = false; night.PointLights[0].Intensity = 3;
+  day.PointLights[0].ColorTint = {0,0,0}; night.PointLights[0].ColorTint = {1,1,1};
+  day.PointLights[0].RadiusScale = 1; night.PointLights[0].RadiusScale = 3;
+  night.PlacedLights.push_back({.Id=999, .Name="night-only", .Intensity=4});
+  const auto mid = BlendSceneEnvironmentProfiles(day, night, 0.5F);
+  Near(std::abs(mid.Lights[0].Azimuth), 180, "key long arc");
+  Near(std::abs(mid.Rim.Azimuth), 180, "rim long arc");
+  Near(std::abs(mid.KeyAzimuthOffset), 180, "offset long arc");
+  Near(mid.AmbientColor[0], 0.5F, "ambient not blended in linear light");
+  Near(mid.Lights[0].Color[0], 0.5F, "key not blended in linear light");
+  Near(mid.Rim.Color[0], 0.5F, "rim not blended in linear light");
+  Near(mid.PointLights[0].ColorTint[0], 0.5F, "point tint not blended in linear light");
+  Check(mid.AmbientIntensity == 1 && mid.FogStrength == 0.5F && mid.NativeDirectStrength == 1 &&
+        mid.NativeLocalStrength == 2 && mid.NativeAmbientStrength == 0.5F, "scalar blend");
+  Check(mid.Rim.Enabled && mid.Rim.Intensity == 1 && mid.Rim.Sharpness == 5 && mid.Rim.Coverage == 0.5F,
+        "rim enable did not fade");
+  Check(mid.PointLights[0].Enabled && mid.PointLights[0].Intensity == 1.5F && mid.PointLights[0].RadiusScale == 2,
+        "point enable did not fade");
+  Check(mid.CasterFaces == night.CasterFaces && mid.Rim.Source == night.Rim.Source && mid.Rim.Scope == night.Rim.Scope &&
+        mid.Enabled == night.Enabled, "discrete midpoint switch");
+  Check(BlendSceneEnvironmentProfiles(day,night,0.499F).CasterFaces == day.CasterFaces, "early discrete switch");
+  Check(mid.PlacedLights.size() == 1 && mid.PlacedLights[0].Visible && mid.PlacedLights[0].Intensity == 2 &&
+        mid.PlacedLights[0].Id == 1, "missing placed light did not fade from zero with index identity");
+  Check(!BlendSceneEnvironmentProfiles(day,night,0).PlacedLights[0].Visible, "missing endpoint emits");
+  Check(BlendSceneEnvironmentProfiles(day,night,1).PlacedLights[0].Id == 1, "placed identity changed at endpoint");
+  Near(BlendSceneEnvironmentProfiles(day,night,0).Lights[0].Azimuth, 170, "day endpoint");
+  Near(BlendSceneEnvironmentProfiles(day,night,1).Lights[0].Azimuth, -170, "night endpoint");
+  day.PlacedLights = night.PlacedLights;
+  day.PlacedLights[0].Position = {0,0,0}; night.PlacedLights[0].Position = {4,8,12};
+  day.PlacedLights[0].Rotation = {170,0,170}; night.PlacedLights[0].Rotation = {-170,20,-170};
+  const auto placed = BlendSceneEnvironmentProfiles(day,night,0.5F).PlacedLights[0];
+  Check(placed.Position == (std::array<float,3>{2,4,6}) && std::abs(placed.Rotation[0]) == 180 &&
+        placed.Rotation[1] == 10 && std::abs(placed.Rotation[2]) == 180, "placed transform blend");
+}
+void CheckProfileRuntime(const std::filesystem::path& directory) {
+  std::filesystem::create_directory(directory);
+  Fixture f(directory);
+  Write(f.Day, Profile(0.2F, false)); Write(f.Night, Profile(1.2F, true));
+  f.Runtime.ObserveScene(0x55, {true,0x3556,false,0x1000});
+  Near(f.Applied.AmbientIntensity, 0.7F, "runtime did not apply native half weight");
+  Check(!f.Runtime.Snapshot().EditingNight && f.Runtime.Snapshot().AppliedNightWeight == 0.5F, "time chose editor");
+  const auto scope = f.Applied.ScopeIdentity;
+  const auto epoch = f.Applied.ContinuityEpoch;
+  f.Runtime.ObserveScene(0x55, {true,0x355A,false,0x1000});
+  Check(f.Applied.ContinuityEpoch == epoch && f.Runtime.Snapshot().AppliedNightWeight < 0.5F,
+        "ordinary native time movement reset continuity");
+  f.Runtime.ObserveScene(0x55, {true,0x3556,false,0x1000});
+  auto day = f.Runtime.Snapshot().Profile; day.AmbientIntensity = 0.4F;
+  f.Runtime.Preview(day);
+  Check(f.Runtime.SelectTab(true), "night unavailable by day");
+  auto night = f.Runtime.Snapshot().Profile; night.AmbientIntensity = 1.4F;
+  f.Runtime.Preview(night);
+  const auto revision = f.Runtime.Snapshot().Revision;
+  f.Runtime.ObserveScene(0x55, {true,0,true,0x1000});
+  Check(f.Runtime.Snapshot().Revision == revision && f.Runtime.Snapshot().EditingNight &&
+        f.Runtime.Snapshot().DirtyTabs == (std::array<bool,2>{true,true}), "time discarded drafts/editor revision");
+  Near(f.Applied.AmbientIntensity, 1.4F, "time warp did not snap to night draft");
+  Check(f.Applied.ContinuityEpoch > epoch, "clock jump did not cut history");
+  Check(f.Applied.ScopeIdentity == scope, "day/night changed shadow scope");
+  f.Runtime.SetPreviewMode(SceneEnvironmentPreview::Day);
+  Near(f.Applied.AmbientIntensity, 0.4F, "force day preview");
+  f.Runtime.EndPreview();
+  Near(f.Applied.AmbientIntensity, 1.4F, "end preview did not restore Auto");
+  Check(f.Runtime.SetForcedNightWeight(0.25F), "valid forced weight rejected");
+  Near(f.Applied.AmbientIntensity, 0.65F, "forced weight not applied");
+  Check(!f.Runtime.SetForcedNightWeight(-1) && !f.Runtime.SetForcedNightWeight(std::numeric_limits<float>::quiet_NaN()),
+        "invalid forced weight accepted");
+  f.Runtime.SetForcedNightWeight(std::nullopt);
+  f.Runtime.Save();
+  Check(f.Runtime.Snapshot().DirtyTabs[0] && !f.Runtime.Snapshot().DirtyTabs[1], "saving night affected day draft");
+  f.Runtime.SelectTab(false);
+  Near(f.Ambient(), 0.4F, "switch lost unsaved day");
+  f.Runtime.Reload();
+  Near(f.Ambient(), 0.2F, "revert did not read day file");
+  f.Runtime.SelectTab(true);
+  Near(f.Ambient(), 1.4F, "revert day affected night");
+  f.Runtime.ObserveScene(0x55, {false,0,true,0x1000});
+  Check(!f.Runtime.Snapshot().TimeDriven && !f.Runtime.Snapshot().EditingNight && f.Runtime.Snapshot().AppliedNightWeight == 0,
+        "fixed scene selected night");
+  Near(f.Applied.AmbientIntensity, 0.2F, "fixed lighting blended");
+  Check(!f.Runtime.SelectTab(true) && !f.Runtime.CreateNightProfile(), "fixed lighting offers night edits");
+  f.Runtime.ObserveScene(std::nullopt); // The real savestate reset boundary.
+  f.Runtime.ObserveScene(0x55, {true,0,true,0x1000});
+  Near(f.Applied.AmbientIntensity, 1.4F, "savestate did not snap to saved night");
+  Check(f.Runtime.Snapshot().PreviewMode == SceneEnvironmentPreview::Auto, "savestate retained preview");
+  f.Runtime.RemoveNightProfile();
+  Check(!f.Runtime.Snapshot().NightProfileExists && f.Runtime.Snapshot().AppliedNightWeight == 0, "removed night still blends");
+  Near(f.Applied.AmbientIntensity, 0.2F, "no-night scene was blended");
+}
+void CheckDraftHotReload(const std::filesystem::path& directory) {
+  std::filesystem::create_directory(directory);
+  Fixture f(directory);
+  Write(f.Day, Profile(0.2F,false)); Write(f.Night, Profile(1.2F,true));
+  f.Runtime.ObserveScene(0x55,{true,0x8000,false});
+  f.Runtime.SetHotReload(true);
+  auto day = f.Runtime.Snapshot().Profile; day.AmbientIntensity = 0.4F; f.Runtime.Preview(day);
+  f.Runtime.SelectTab(true);
+  auto night = f.Runtime.Snapshot().Profile; night.AmbientIntensity = 1.4F; f.Runtime.Preview(night);
+  f.Runtime.SelectTab(false);
+  Write(f.Day,Profile(0.8F,false)); Write(f.Night,Profile(0.6F,true));
+  f.Settle();
+  Near(f.Ambient(),0.4F,"hot reload replaced dirty day");
+  f.Runtime.SelectTab(true); Near(f.Ambient(),1.4F,"hot reload replaced dirty inactive night");
+  Check(f.Runtime.Snapshot().DirtyTabs == (std::array<bool,2>{true,true}), "hot reload lost dirty flags");
+  f.Runtime.SelectTab(false); f.Runtime.Reload();
+  Near(f.Ambient(),0.8F,"day revert did not take latest file");
+  f.Runtime.SelectTab(true); Near(f.Ambient(),1.4F,"day revert lost dirty night");
+  f.Runtime.Save(); f.Runtime.SelectTab(false); f.Settle();
+  Check(f.Runtime.Snapshot().DirtyTabs == (std::array<bool,2>{false,false}), "independent save/revert did not settle drafts");
+  f.Runtime.ObserveScene(std::nullopt);
+  Write(f.Night,"{");
+  f.Runtime.ObserveScene(0x55,{true,0,true});
+  Check(!f.Runtime.Snapshot().NightProfileExists && !f.Runtime.Snapshot().NightError.empty(), "invalid night enabled blending");
+  Check(!f.Runtime.CreateNightProfile(), "Create night overwrote an invalid existing file");
+  std::ifstream invalid(f.Night); std::string text; std::getline(invalid,text);
+  Check(text == "{", "failed Create night modified existing bytes");
+}
+
+void CheckShadowScheduling() {
+  using namespace Fast::Renderer3ds;
+  auto day = BaseSceneEnvironmentProfile(), night = day;
+  day.KeyDirection = night.KeyDirection = PicaEnvironmentKeyDirection::Authored;
+  day.Lights[0].Azimuth = 170; night.Lights[0].Azimuth = -170;
+  VirtualShadowKeyframes scheduler;
+  PicaEnvironmentLighting before;
+  unsigned resets = 0, cuts = 0, starts = 0, rotations = 0, pending = 0, peakBudget = 0, frames = 0;
+  for (unsigned clock = 0xC001; clock <= 0xD556; clock += 4) {
+    auto after = ResolveSceneEnvironment(BlendSceneEnvironmentProfiles(day,night,NativeEnvironmentNightWeight(uint16_t(clock))),0x55,false);
+    after.ContinuityEpoch = 9;
+    if (!ContinuousPicaEnvironmentChange(before,after)) { ++resets; scheduler.Reset(); }
+    const auto plan = scheduler.Begin(after.Lights[0].DirectionTowardSource, 1, 1, 256);
+    cuts += plan.Cut; starts += plan.ConstructionStarted;
+    if (plan.ConstructionStarted) pending = 256;
+    peakBudget = std::max(peakBudget, plan.ConstructionBudget);
+    pending -= std::min(pending, plan.ConstructionBudget);
+    rotations += scheduler.EndConstruction(pending).Rotated;
+    before = after; ++frames;
+  }
+  Check(resets == 1 && cuts == 1 && rotations > 1 && rotations < frames / 4 && peakBudget <= 64,
+        "continuous blend thrashed shadow resets or exceeded existing page budget");
+  auto edited = before; ++edited.ContinuityEpoch;
+  Check(!ContinuousPicaEnvironmentChange(before,edited), "manual edit/cut reused stale history");
+  edited = before; edited.CasterFaces = ShadowCasterFaces::Native;
+  Check(!ContinuousPicaEnvironmentChange(before,edited), "discrete caster policy reused stale history");
+  std::printf("Profile blend shadow schedule: %u frames, %u reset, %u cut, %u starts, %u rotations, peak page budget %u\n",
+              frames,resets,cuts,starts,rotations,peakBudget);
+}
+
 } // namespace
 
 int main() try {
   const auto directory = std::filesystem::temp_directory_path() / "triaevum_environment_tests";
   std::filesystem::remove_all(directory);
   std::filesystem::create_directories(directory);
+  CheckNativeTime();
+  CheckBlend();
+  CheckShadowScheduling();
+  CheckProfileRuntime(directory / "blend");
+  CheckDraftHotReload(directory / "reload");
   Fixture f(directory);
   Write(f.Day, Profile(0.3F, false));
-  f.Runtime.ObserveScene(0x55, false);
+  f.Runtime.ObserveScene(0x55, {true, 0x8000, false});
   f.Runtime.SetHotReload(true);
   Check(f.Ambient() == 0.3F, "the scene's profile was not loaded");
 
@@ -121,7 +343,7 @@ int main() try {
 
   // Night: the day file until a night file appears; an invalid night file
   // changes neither the profile nor which file a save writes.
-  f.Runtime.ObserveScene(0x55, true);
+  f.Runtime.ObserveScene(0x55, {true, 0, true});
   Check(!f.Runtime.Snapshot().EditingNight && f.Ambient() == 0.85F, "night without a night file left the day file");
   Write(f.Night, "{");
   f.Settle();
@@ -129,6 +351,7 @@ int main() try {
         "an invalid night file changed the profile or the file saved");
   Write(f.Night, Profile(0.15F, true));
   f.Settle();
+  Check(f.Runtime.SelectTab(true), "cannot select the loaded night draft");
   Check(f.Runtime.Snapshot().EditingNight && f.Runtime.Snapshot().Path == f.Night && f.Ambient() == 0.15F,
         "a night file created on disk was not used at night");
   std::filesystem::remove(f.Night);
@@ -137,7 +360,7 @@ int main() try {
         "removing the night file did not return the night to the day file");
 
   // A missing file keeps the profile in use.
-  f.Runtime.ObserveScene(0x55, false);
+  f.Runtime.ObserveScene(0x55, {true, 0x8000, false});
   std::filesystem::remove(f.Day);
   f.Settle();
   Check(f.Ambient() == 0.85F, "a missing file replaced the profile in use");

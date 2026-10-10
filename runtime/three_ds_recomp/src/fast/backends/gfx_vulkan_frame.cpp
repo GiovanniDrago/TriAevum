@@ -381,10 +381,12 @@ void GfxRenderingAPIVulkan::StartFrame() {
 #endif
     const auto& nextGraphicsSettings = graphicsSnapshot.Value;
     if (mFrameEnvironment != graphicsSnapshot.Environment) {
+      if (!Renderer3ds::ContinuousPicaEnvironmentChange(mFrameEnvironment, graphicsSnapshot.Environment)) {
         mTemporalAaPass.ResetHistory();
         mTaaOutputValid = false;
         // Never use a previous scene/sun's depth map for a new lighting direction.
-        if (mFrameEnvironment.ScopeIdentity != graphicsSnapshot.Environment.ScopeIdentity ||
+        if (mFrameEnvironment.ContinuityEpoch != graphicsSnapshot.Environment.ContinuityEpoch ||
+            mFrameEnvironment.ScopeIdentity != graphicsSnapshot.Environment.ScopeIdentity ||
             mFrameEnvironment.Enabled != graphicsSnapshot.Environment.Enabled ||
             mFrameEnvironment.KeyDirection != graphicsSnapshot.Environment.KeyDirection ||
             mFrameEnvironment.KeyAzimuthOffset != graphicsSnapshot.Environment.KeyAzimuthOffset ||
@@ -393,6 +395,10 @@ void GfxRenderingAPIVulkan::StartFrame() {
             mFrameEnvironment.Lights[0].DirectionTowardSource !=
                 graphicsSnapshot.Environment.Lights[0].DirectionTowardSource)
             mNriDirectionalShadowPass.InvalidateHistory();
+      }
+        // Continuous profile motion uses VirtualShadowKeyframes' existing
+        // page budget/dissolve, just like the moving native sun. Do not reset
+        // its construction (or TAA history) for every interpolated sample.
         mFrameEnvironment = graphicsSnapshot.Environment;
     }
     if (mFrameGraphicsSettings.Effects.DirectionalShadows.Mode != nextGraphicsSettings.Effects.DirectionalShadows.Mode ||
