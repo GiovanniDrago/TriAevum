@@ -110,8 +110,8 @@ void main() {
         raw = pica_surface_native_response(normal, mask, directional);
         mode = 2.0;
     } else if (pica_surface.control.y != 0u || pica_surface.control.z != 0u) {
-        raw = pica_surface_scene_point_primary(normal) +
-            pica_surface_scene_directional_response(normal, mask, directional);
+        raw = pica_surface_scene_point_primary(normal, true) +
+            pica_surface_scene_directional_response(normal, mask, directional, true);
         mode = 3.0;
     }
     surface_primary = vec4(appearance, mode);

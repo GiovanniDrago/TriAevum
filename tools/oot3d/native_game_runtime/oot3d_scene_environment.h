@@ -80,6 +80,7 @@ struct SceneEnvironmentProfile {
   std::array<Fast::Renderer3ds::PicaScenePointLightSettings,
              Fast::Renderer3ds::kPicaScenePointLightGroups> PointLights{};
   std::vector<PlacedLight> PlacedLights;
+  Fast::Renderer3ds::PicaRimLightSettings Rim;
   Fast::Renderer3ds::ShadowCasterFaces CasterFaces = Fast::Renderer3ds::ShadowCasterFaces::Native;
   bool operator==(const SceneEnvironmentProfile &) const = default;
 };

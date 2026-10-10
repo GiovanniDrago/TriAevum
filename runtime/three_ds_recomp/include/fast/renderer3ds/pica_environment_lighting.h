@@ -36,6 +36,20 @@ struct PicaScenePointLightSettings {
     bool operator==(const PicaScenePointLightSettings&) const = default;
 };
 
+enum class PicaRimLightScope : uint8_t { Actors, ActorsAndWorld };
+// Artistic, bounded grazing response to the existing lights; no new sources.
+// Scope eligibility belongs to the title adapter, not the surface shader.
+// Intensity multiplies each light's shadowed radiance at the edge (up to 8x).
+inline constexpr float kMaximumPicaRimIntensity = 8.0F;
+struct PicaRimLightSettings {
+    bool Enabled = false;
+    float Intensity = 0.35F;
+    float Sharpness = 4.0F;
+    float Ambient = 0.05F;
+    PicaRimLightScope Scope = PicaRimLightScope::Actors;
+    bool operator==(const PicaRimLightSettings&) const = default;
+};
+
 // A light the title placed in the scene. Applies while the environment is
 // enabled; a shadowing light (not a sun) competes for a point-shadow cube map
 // at its position.
@@ -110,6 +124,7 @@ struct PicaEnvironmentLighting {
     // Lights placed in the scene (their own per-draw slots).
     std::array<PicaPlacedLight, kMaximumPicaPlacedLights> PlacedLights{};
     uint32_t PlacedLightCount = 0;
+    PicaRimLightSettings Rim;
     // Independent of the lighting override.
     ShadowCasterFaces CasterFaces = ShadowCasterFaces::Native;
     bool operator==(const PicaEnvironmentLighting&) const = default;

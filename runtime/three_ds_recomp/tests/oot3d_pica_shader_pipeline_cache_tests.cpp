@@ -4,6 +4,7 @@
 #include "fast/oot3d/pica_reactive_mask.h"
 #include "fast/oot3d/pica_rigid_motion.h"
 #include "fast/oot3d/pica_shader_pipeline_cache.h"
+#include "fast/oot3d/pica_rim_light.h"
 #include "fast/oot3d/pica_uber_effect_program.h"
 #include "fast/renderer3ds/pica_surface_lighting.h"
 
@@ -14,8 +15,82 @@
 
 #include <stdexcept>
 #include <cmath>
+#include <limits>
 
 namespace {
+
+TEST(Oot3dRimLight, ScopeUsesNativeActorOwnershipAndRejectsNonOpaquePasses) {
+    using namespace Fast::Renderer3ds;
+    PicaEnvironmentLighting environment;
+    environment.Enabled = environment.Rim.Enabled = true;
+    PicaCompositionAttribution composition;
+    composition.Layer = PicaCompositionLayer::OpaqueWorld;
+    NativeBlendState blend;
+    auto domain = PicaCompositionDomain::Scene;
+    auto appearance = PicaSurfaceAppearance::Relightable;
+    bool depthTest = true, depthWrite = true;
+    uint8_t operation = 0;
+    const auto eligible = [&] { return Fast::Oot3d::PicaDrawReceivesRimLight(
+        environment, domain, composition, blend, appearance, depthTest, depthWrite, operation); };
+    EXPECT_FALSE(eligible()); // A room material is not an actor, even with the same shader.
+    composition.NativeActorGeometry = true;
+    EXPECT_TRUE(eligible()); // Rigid props and skinned characters use the same ownership.
+    composition.NativeActorGeometry = false;
+    environment.Rim.Scope = PicaRimLightScope::ActorsAndWorld;
+    EXPECT_TRUE(eligible());
+    for (auto layer : {PicaCompositionLayer::Unknown, PicaCompositionLayer::TransparentWorld,
+                       PicaCompositionLayer::Atmosphere, PicaCompositionLayer::Ui}) {
+        composition.Layer = layer;
+        EXPECT_FALSE(eligible());
+    }
+    composition.Layer = PicaCompositionLayer::OpaqueWorld;
+    for (auto excluded : {PicaCompositionDomain::Unknown, PicaCompositionDomain::Ui, PicaCompositionDomain::Screen}) {
+        domain = excluded;
+        EXPECT_FALSE(eligible());
+    }
+    domain = PicaCompositionDomain::Scene;
+    blend.Enabled = true;
+    EXPECT_TRUE(eligible()); // Native ONE/ZERO replacement blending.
+    blend.SourceRgb = NativeBlendFactor::SourceAlpha;
+    blend.DestRgb = NativeBlendFactor::OneMinusSourceAlpha;
+    EXPECT_FALSE(eligible()); // Fades are excluded even if they write depth.
+    blend.DestRgb = NativeBlendFactor::One;
+    EXPECT_FALSE(eligible());
+    blend = {};
+    composition.IsolatedLighting = true; EXPECT_FALSE(eligible()); composition.IsolatedLighting = false;
+    composition.NativeProjectedShadow = true; EXPECT_FALSE(eligible()); composition.NativeProjectedShadow = false;
+    appearance = PicaSurfaceAppearance::Unlit; EXPECT_FALSE(eligible());
+    appearance = PicaSurfaceAppearance::AdditiveComposition; EXPECT_FALSE(eligible());
+    appearance = PicaSurfaceAppearance::Relightable;
+    depthTest = false; EXPECT_FALSE(eligible()); depthTest = true;
+    depthWrite = false; EXPECT_FALSE(eligible()); depthWrite = true;
+    operation = 3; EXPECT_FALSE(eligible()); operation = 0;
+    environment.Enabled = false; EXPECT_FALSE(eligible()); environment.Enabled = true;
+    environment.Rim.Enabled = false; EXPECT_FALSE(eligible());
+}
+
+TEST(Oot3dRimLight, DisabledAndInvalidSettingsPublishCanonicalZeroUniforms) {
+    using namespace Fast::Renderer3ds;
+    PicaSurfaceLightingUniforms uniforms;
+    PicaRimLightSettings rim;
+    AssignPicaSurfaceRim(uniforms, rim);
+    EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{}));
+    rim.Enabled = true;
+    AssignPicaSurfaceRim(uniforms, rim);
+    EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{0.35F, 4.0F, 0.05F, 0.0F}));
+    rim.Enabled = false; rim.Intensity = 1; rim.Sharpness = 16; rim.Ambient = 0.25F;
+    AssignPicaSurfaceRim(uniforms, rim);
+    EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{}));
+    rim.Enabled = true;
+    for (float bad : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -1.0F, 17.0F}) {
+        auto invalid = rim; invalid.Sharpness = bad;
+        AssignPicaSurfaceRim(uniforms, invalid);
+        EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{}));
+    }
+    rim.Intensity = rim.Ambient = 0;
+    AssignPicaSurfaceRim(uniforms, rim);
+    EXPECT_EQ(uniforms.Rim, (std::array<float, 4>{}));
+}
 
 Oot3d::Renderer::PicaTemporalVertexProgramView
 BaseTemporalVertexProgram();

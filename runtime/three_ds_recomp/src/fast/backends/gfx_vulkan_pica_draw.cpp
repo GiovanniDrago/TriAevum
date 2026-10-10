@@ -3,6 +3,7 @@
 #include "gfx_vulkan_pica_internal.h"
 #include "fast/renderer3ds/pica_draw_coverage.h"
 #include "fast/renderer3ds/pica_surface_appearance.h"
+#include "fast/oot3d/pica_rim_light.h"
 #include "fast/renderer3ds/pica_surface_debug.h"
 #include "fast/oot3d/grass_interaction_bridge.h"
 #include "fast/oot3d/grass_texture_twins.h"
@@ -926,6 +927,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 environmentWorldToView && mSurfaceLightingView ? &*mSurfaceLightingView : nullptr,
                 pointShadowHistory.Valid() ? &pointShadowAssignment : nullptr);
             if (surfaceLighting) {
+                if (Oot3d::PicaDrawReceivesRimLight(mFrameEnvironment, draw.CompositionDomain,
+                        draw.Composition, draw.Blend, surfaceAppearance,
+                        draw.DepthTestEnabled, draw.DepthWriteEnabled, draw.FragmentOperationMode))
+                    Renderer3ds::AssignPicaSurfaceRim(*surfaceLighting, mFrameEnvironment.Rim);
                 // Relative source weights (the guide's 8-bit radiance would
                 // clip gains above one); the gain applies when GI is composed.
                 const auto sources =

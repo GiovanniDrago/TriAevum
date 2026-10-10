@@ -78,6 +78,25 @@ public:
     changed |=
         ImGui::SliderFloat("Native fog contribution", &value.FogStrength, 0.0F,
                            1.0F, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SeparatorText("Rim light");
+    changed |= ImGui::Checkbox("Enable rim light", &value.Rim.Enabled);
+    ImGui::BeginDisabled(!value.Rim.Enabled);
+    changed |= ImGui::SliderFloat("Rim intensity", &value.Rim.Intensity, 0.0F,
+                                  Fast::Renderer3ds::kMaximumPicaRimIntensity, "%.2fx",
+                                  ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::SliderFloat("Rim sharpness", &value.Rim.Sharpness, 1.0F, 16.0F, "%.1f",
+                                  ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::SliderFloat("Ambient rim", &value.Rim.Ambient, 0.0F, 0.25F, "%.2f",
+                                  ImGuiSliderFlags_AlwaysClamp);
+    int rimScope = static_cast<int>(value.Rim.Scope);
+    if (ImGui::Combo("Rim scope", &rimScope, "Actors\0Actors and world\0")) {
+      value.Rim.Scope = static_cast<Fast::Renderer3ds::PicaRimLightScope>(rimScope);
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::TextWrapped("An edge highlight from the existing lights, strongest when they are beside or behind "
+                       "the surface. Uses their shadows; sharper means a narrower edge. Ambient adds a weaker, "
+                       "unshadowed edge from the scene's ambient light. Opaque surfaces only.");
     ImGui::TextUnformatted("Additional environment lights");
     if (ImGui::BeginTabBar("Scene lights")) {
       const char *labels[] = {"Key light", "Fill light"};

@@ -520,6 +520,30 @@ void CheckSceneEnvironment() {
     Check(Find("Native ambient contribution").Disabled, "scene reference did not own the ambient baseline");
     Click("Preserve scene brightness");
     EditScalar("Ambient intensity", "0.12");
+    // Rim is a scene-profile property: real widgets, no second graphics owner.
+    Check(environment->Snapshot().Profile.Rim.Enabled && !Find("Rim intensity").Disabled,
+          "base actor rim is not enabled");
+    EditScalar("Rim intensity", "0.45");
+    EditScalar("Rim sharpness", "6");
+    EditScalar("Ambient rim", "0.08");
+    Select("Rim scope", "Actors and world");
+    Check(graphics.SnapshotForRendering().Environment.Rim.Intensity == 0.45F &&
+              graphics.SnapshotForRendering().Environment.Rim.Sharpness == 6.0F &&
+              graphics.SnapshotForRendering().Environment.Rim.Ambient == 0.08F &&
+              graphics.SnapshotForRendering().Environment.Rim.Scope == Fast::Renderer3ds::PicaRimLightScope::ActorsAndWorld,
+          "rim widgets did not reach the rendering snapshot");
+    Select("Rim scope", "Actors");
+    Click("Enable rim light");
+    Check(Find("Rim intensity").Disabled && Find("Rim sharpness").Disabled && Find("Ambient rim").Disabled &&
+              Find("Rim scope").Disabled && !graphics.SnapshotForRendering().Environment.Rim.Enabled,
+          "rim Off did not disable its controls and rendering");
+    const auto rimOff = graphics.SnapshotForRendering().Environment;
+    auto rimEdit = environment->Snapshot().Profile;
+    rimEdit.Rim.Intensity = 0.6F;
+    Check(environment->Preview(rimEdit) && graphics.SnapshotForRendering().Environment == rimOff,
+          "inactive rim edits changed renderer state");
+    Click("Enable rim light");
+    EditScalar("Rim intensity", "0.45");
     EditScalar("Native scene direct contribution", "0.25");
     EditScalar("Native local contribution", "0.7");
     EditScalar("Native ambient contribution", "0.15");
@@ -569,11 +593,15 @@ void CheckSceneEnvironment() {
     Click("Save scene environment");
     const auto saved = environment->Snapshot();
     Check(saved.FileExists && !saved.Dirty && saved.Error.empty(), "scene environment was not saved");
+    Check(saved.Profile.Rim.Enabled && saved.Profile.Rim.Intensity == 0.45F && saved.Profile.Rim.Sharpness == 6.0F &&
+              saved.Profile.Rim.Ambient == 0.08F && saved.Profile.Rim.Scope == Fast::Renderer3ds::PicaRimLightScope::Actors,
+          "rim settings were not saved with the scene profile");
     Check(saved.Profile.KeyDirection == KeyDirection::SceneMain && saved.Profile.KeyAzimuthOffset == 30.0F &&
               saved.Profile.KeyElevationOffset == -10.0F,
           "the saved profile lost the key light direction");
     Click("Use native environment");
     Check(!graphics.SnapshotForRendering().Environment.Enabled, "native environment restore was not immediate");
+    Check(!graphics.SnapshotForRendering().Environment.Rim.Enabled, "disabled environment kept its rim");
     Check(graphics.SnapshotForRendering().Environment.PointLights[0].Intensity == 2.5F &&
               !graphics.SnapshotForRendering().Environment.PointLights[1].Enabled,
           "using native environment erased independent scene point-light controls");
@@ -592,6 +620,7 @@ void CheckSceneEnvironment() {
     const auto nativePbrEnvironment = graphics.SnapshotForRendering().Environment;
     Check(!nativePbrEnvironment.Enabled && environment->Snapshot().Profile.Enabled,
           "Native PBR applied the scene environment or erased its profile");
+    Check(!nativePbrEnvironment.Rim.Enabled, "Native PBR consumed modern scene rim settings");
     auto nativePbrEdit = saved.Profile;
     nativePbrEdit.NativeDirectStrength = 0;
     nativePbrEdit.NativeLocalStrength = 0;
@@ -605,6 +634,8 @@ void CheckSceneEnvironment() {
     graphics.ToggleNativePresentationOverride();
     Check(!graphics.SnapshotForRendering().Environment.Enabled && environment->Snapshot().Profile.Enabled,
           "F2 did not bypass scene relighting without erasing its profile");
+    Check(!graphics.SnapshotForRendering().Environment.Rim.Enabled && environment->Snapshot().Profile.Rim.Enabled,
+          "F2 did not bypass rim while retaining its preference");
     graphics.ToggleNativePresentationOverride();
     Check(graphics.SnapshotForRendering().Environment.Enabled, "F2 did not restore the authored environment");
     environment->ObserveScene(0x56);

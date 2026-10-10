@@ -1,5 +1,28 @@
 # F1 settings rationalization
 
+## Rim light (2026-10-10)
+
+**Lighting > Lights & Shadows > Scene lights > Rim light** is owned solely by
+`SceneEnvironmentRuntime`, saved in the optional scene-profile `rimLight`
+object. Enable, intensity, sharpness, ambient and Actors / Actors and world
+preview through that owner and save with **Save scene environment**. The base
+enables actors (0.35 intensity, 4 sharpness, 0.05 ambient); existing profiles
+without the field stay off. Controls disable with the rim/environment and
+renderer capability. Native/NativePBR, Authentic and F2 bypass the Modern
+profile without erasing it. Disabled rim edits canonicalize to unchanged
+rendering inputs. There is no duplicate graphics-global control.
+
+The actual-widget fixture exercises every rim control, renderer publication,
+Off and disabled-input stability, scope, save/reload, native-environment and
+F2 bypass, and the existing scene/day/night transition paths. See
+[RIM_LIGHT.md](RIM_LIGHT.md) for the formulation and the separate game lab.
+
+Verification: `triaevum_f1_settings_smoke --scene-environment` passes. The full
+suite stops before this panel at the unchanged material-editor assertion
+"creation used the catalog hash instead of the native texture's Azahar
+identity". Environment owner tests (69 checks), pipeline tests (54/54), graphics
+foundation (352/352), 66 GPU rim cases and both PBR shader compilations pass.
+
 ## Extended draw distance and presented actor culling (2026-10-09)
 
 **Display > Extended draw distance** (off by default, off in Authentic) turns

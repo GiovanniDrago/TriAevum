@@ -99,9 +99,12 @@ struct alignas(16) PicaSurfaceLightingUniforms {
     // Movers' ripple rings (PicaWaterRippleField): centre x, z, birth (water
     // ripple time) and strength (0: none).
     std::array<std::array<float, 4>, kPicaWaterRings> WaterRings{};
+    // Direct intensity, grazing exponent, ambient intensity, reserved.
+    // Zero for disabled/ineligible draws; no shader or pipeline variant.
+    std::array<float, 4> Rim{};
 };
 
-static_assert(sizeof(PicaSurfaceLightingUniforms) == 2912U);
+static_assert(sizeof(PicaSurfaceLightingUniforms) == 2928U);
 
 // Water's Fresnel reflectance at normal incidence, its GGX alpha, and its
 // environment reflection (subdued: the environment is the fog colour until
@@ -144,6 +147,9 @@ void AssignPicaSurfaceWater(PicaSurfaceLightingUniforms& uniforms, const PicaSur
                             const std::array<PicaWaterRing, kPicaWaterRings>* rings = nullptr) noexcept;
 
 [[nodiscard]] std::string_view PicaSurfaceLightingDeclarations() noexcept;
+// Called only after the adapter admits this draw. Disabled or invalid input
+// publishes the same all-zero value, independent of the saved controls.
+void AssignPicaSurfaceRim(PicaSurfaceLightingUniforms& uniforms, const PicaRimLightSettings& settings) noexcept;
 // Last of the material guide writes: a water fragment marks the guide (B at
 // 1.0, a value reflection weights never take: pica_encode_reflection_weight
 // stops at 254/255), keeping the reactive alpha; the reflection trace frames

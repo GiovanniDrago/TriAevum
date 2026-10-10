@@ -266,12 +266,14 @@ constexpr std::string_view kPbrNativeLoopEnd = R"glsl(
         vec3 diffuse, specular;
         pbr_ggx(pbr_normal, pbr_view, l, pbr_albedo, pbr_f0, pbr_roughness, pbr_metallic,
                 two_sided, diffuse, specular);
+        vec3 rim = pbr_albedo * pica_surface_rim_weight(pbr_normal, pbr_view, l);
         if ((flags & 16u) != 0u) {
             if ((pbr_material.native_control.w & 2u) != 0u) diffuse *= pica_shadow_factor.rgb;
             if ((pbr_material.native_control.w & 4u) != 0u) specular *= pica_shadow_factor.rgb;
+            if ((pbr_material.native_control.w & 6u) != 0u) rim *= pica_shadow_factor.rgb;
         }
         vec3 radiance = fragment_uniforms.lighting_diffuse[i].rgb;
-        pbr_direct += (diffuse + specular) * radiance * attenuation * pica_surface_shadow(int(i));
+        pbr_direct += (diffuse + specular + rim) * radiance * attenuation * pica_surface_shadow(int(i));
         pbr_gi_native += diffuse * radiance * attenuation * pica_surface_shadow(int(i)) *
             ((flags & 1u) != 0u ? pica_surface.gi_sources.x : pica_surface.gi_sources.z);
         }
@@ -291,7 +293,8 @@ constexpr std::string_view kPbrSurfaceLoop = R"glsl(
             vec3 diffuse, specular;
             pbr_ggx(pbr_normal, pbr_view, pica_surface_unit(l), pbr_albedo, pbr_f0,
                 pbr_roughness, pbr_metallic, false, diffuse, specular);
-            pbr_direct += (diffuse + specular) * radiance * pica_surface.material_diffuse.rgb * pica_surface_shadow(slot);
+            vec3 rim = pbr_albedo * pica_surface_rim_weight(pbr_normal, pbr_view, l);
+            pbr_direct += (diffuse + specular + rim) * radiance * pica_surface.material_diffuse.rgb * pica_surface_shadow(slot);
             pbr_gi_native += diffuse * radiance * pica_surface.material_diffuse.rgb * pica_surface_shadow(slot) *
                 (pica_surface.lights[slot].position_radius.w > 0.0 ? pica_surface.gi_sources.z
                                                                    : pica_surface.gi_sources.x);
@@ -306,6 +309,8 @@ constexpr std::string_view kPbrSurfaceLoop = R"glsl(
 constexpr std::string_view kPbrShadingEnd = R"glsl(
     vec3 pbr_indirect = pbr_ambient *
         pbr_albedo * (1.0 - pbr_metallic) * pbr_ao;
+    if (pica_surface.rim.z > 0.0)
+        pbr_indirect += pbr_ambient * pbr_albedo * pbr_ao * pica_surface_rim_ambient(pbr_normal, pbr_view);
     if (pica_surface.environment_parameters.w != 0.0) {
         if (!pbr_unlit_reference) {
             float pbr_native_scale = pica_surface.control.x != 0u || pbr_material.native_control.x != 0u
@@ -319,7 +324,9 @@ constexpr std::string_view kPbrShadingEnd = R"glsl(
             pbr_ggx(pbr_normal, pbr_view,
                 pica_surface_unit(pica_surface.environment_directions[slot].xyz),
                 pbr_albedo, pbr_f0, pbr_roughness, pbr_metallic, false, diffuse, specular);
-            pbr_direct += (diffuse + specular) * pica_surface.environment_colors[slot].rgb *
+            vec3 rim = pbr_albedo * pica_surface_rim_weight(pbr_normal, pbr_view,
+                pica_surface.environment_directions[slot].xyz);
+            pbr_direct += (diffuse + specular + rim) * pica_surface.environment_colors[slot].rgb *
                 pica_surface.environment_directions[slot].w * pica_surface_shadow(8 + slot);
             if (slot == 0)
                 pbr_gi_direct += diffuse * pica_surface.environment_colors[0].rgb *
@@ -332,7 +339,9 @@ constexpr std::string_view kPbrShadingEnd = R"glsl(
         pbr_ggx(pbr_normal, pbr_view,
             pica_surface_unit(pica_surface.scene_directions[slot].xyz),
             pbr_albedo, pbr_f0, pbr_roughness, pbr_metallic, false, diffuse, specular);
-        pbr_direct += (diffuse + specular) * pica_surface.scene_directional_colors[slot].rgb *
+        vec3 rim = pbr_albedo * pica_surface_rim_weight(pbr_normal, pbr_view,
+            pica_surface.scene_directions[slot].xyz);
+        pbr_direct += (diffuse + specular + rim) * pica_surface.scene_directional_colors[slot].rgb *
             pica_surface_shadow(10 + int(slot));
         pbr_gi_direct += diffuse * pica_surface.scene_directional_colors[slot].rgb *
             pica_surface_shadow(10 + int(slot)) * pica_surface.gi_sources.x;
@@ -343,7 +352,8 @@ constexpr std::string_view kPbrShadingEnd = R"glsl(
         if (all(equal(radiance, vec3(0.0)))) continue;
         pbr_ggx(pbr_normal, pbr_view, direction, pbr_albedo, pbr_f0,
             pbr_roughness, pbr_metallic, false, diffuse, specular);
-        pbr_direct += (diffuse + specular) * radiance;
+        vec3 rim = pbr_albedo * pica_surface_rim_weight(pbr_normal, pbr_view, direction);
+        pbr_direct += (diffuse + specular + rim) * radiance;
         pbr_gi_direct += diffuse * radiance * pica_surface.gi_sources.z;
     }
     for (uint slot = 0u; slot < pica_surface_placed_count(); ++slot) {
@@ -352,7 +362,8 @@ constexpr std::string_view kPbrShadingEnd = R"glsl(
         if (all(equal(radiance, vec3(0.0)))) continue;
         pbr_ggx(pbr_normal, pbr_view, direction, pbr_albedo, pbr_f0,
             pbr_roughness, pbr_metallic, false, diffuse, specular);
-        pbr_direct += (diffuse + specular) * radiance;
+        vec3 rim = pbr_albedo * pica_surface_rim_weight(pbr_normal, pbr_view, direction);
+        pbr_direct += (diffuse + specular + rim) * radiance;
         pbr_gi_direct += diffuse * radiance * pica_surface.gi_sources.z;
     }
     vec3 pbr_gi_radiance = max(pbr_gi_native + pbr_gi_direct, vec3(0.0));

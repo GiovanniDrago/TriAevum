@@ -442,6 +442,8 @@ VersionedGraphicsSettings GraphicsSettingsRuntime::SnapshotForRendering() const 
             result.Environment.CasterFaces = mSceneEnvironment.CasterFaces;
         }
     }
+    // Inactive rim edits neither change renderer state nor invalidate histories.
+    if (!result.Environment.Rim.Enabled) result.Environment.Rim = {};
     return result;
 }
 void GraphicsSettingsRuntime::PublishSceneEnvironment(

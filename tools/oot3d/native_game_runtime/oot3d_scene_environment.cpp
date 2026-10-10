@@ -34,6 +34,8 @@ SceneEnvironmentProfile BaseSceneEnvironmentProfile() {
   base.KeyAzimuthOffset = 0.0F;
   base.KeyElevationOffset = 0.0F;
   base.PointLights = {};
+  // Modern actors get a restrained light-driven edge, with a weaker ambient rim.
+  base.Rim.Enabled = true;
   // Keep interior roofs/walls two-sided while the first outer shell admits
   // the key light once its room cache is ready.
   base.CasterFaces = Fast::Renderer3ds::ShadowCasterFaces::InteriorShells;

@@ -20,6 +20,7 @@ constexpr float kPlacedLightMaximumSize = 20000.0F;
 constexpr size_t kPointShadowRows = Fast::Renderer3ds::kMaximumPointShadowLights;
 constexpr const char *kPlacedLightTypeNames[] = {"sun", "spot", "point", "surface", "omni"};
 constexpr const char *kPlacedLightShapeNames[] = {"rectangle", "disc"};
+constexpr const char *kRimScopeNames[] = {"actors", "actorsAndWorld"};
 constexpr float kRadians = std::numbers::pi_v<float> / 180.0F;
 
 std::string Join(const std::string &pointer, const std::string &key) { return pointer + "/" + key; }
@@ -217,6 +218,11 @@ std::vector<SceneEnvironmentDiagnostic> ValidateSceneEnvironment(const SceneEnvi
   scalar(profile.NativeAmbientStrength, "/nativeAmbientStrength", 0.0F, 2.0F);
   scalar(profile.AmbientIntensity, "/ambientIntensity", 0.0F, 2.0F);
   scalar(profile.FogStrength, "/fogStrength", 0.0F, 1.0F);
+  scalar(profile.Rim.Intensity, "/rimLight/intensity", 0.0F, Fast::Renderer3ds::kMaximumPicaRimIntensity);
+  scalar(profile.Rim.Sharpness, "/rimLight/sharpness", 1.0F, 16.0F);
+  scalar(profile.Rim.Ambient, "/rimLight/ambient", 0.0F, 0.25F);
+  if (profile.Rim.Scope > Fast::Renderer3ds::PicaRimLightScope::ActorsAndWorld)
+    read.Error("/rimLight/scope", "is unknown");
   triple(profile.AmbientColor, "/ambientColor", 0.0F, 1.0F);
   for (size_t i = 0; i < profile.Lights.size(); ++i) {
     const auto &light = profile.Lights[i];
@@ -386,6 +392,23 @@ SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<u
       }
     }
   }
+  // Optional extension: old profiles retain their exact rim-off behavior.
+  if (const auto rim = doc.find("rimLight"); rim != doc.end()) {
+    if (!rim->is_object()) {
+      read.Error("/rimLight", "must be an object");
+    } else {
+      result.Rim.Enabled = read.Boolean(*rim, "/rimLight", "enabled");
+      result.Rim.Intensity = read.Scalar(*rim, "/rimLight", "intensity", 0.0F,
+                                         Fast::Renderer3ds::kMaximumPicaRimIntensity);
+      result.Rim.Sharpness = read.Scalar(*rim, "/rimLight", "sharpness", 1.0F, 16.0F, 4.0F);
+      result.Rim.Ambient = read.Scalar(*rim, "/rimLight", "ambient", 0.0F, 0.25F);
+      result.Rim.Scope = read.Name<Fast::Renderer3ds::PicaRimLightScope>(*rim, "/rimLight", "scope", kRimScopeNames);
+      for (auto it = rim->begin(); it != rim->end(); ++it)
+        if (it.key() != "enabled" && it.key() != "intensity" && it.key() != "sharpness" &&
+            it.key() != "ambient" && it.key() != "scope")
+          read.Error(Join("/rimLight", it.key()), "is unknown");
+    }
+  }
   // Optional in version 5: a profile without placed lights omits them, and
   // a runtime that predates them ignores the field.
   if (const auto placed = doc.find("placedLights"); placed != doc.end()) {
@@ -471,6 +494,10 @@ Json EncodeSceneEnvironment(const SceneEnvironmentProfile &value, uint16_t scene
                  {"ambientColor", Triple(value.AmbientColor)},
                  {"ambientIntensity", Number(value.AmbientIntensity)},
                  {"fogStrength", Number(value.FogStrength)},
+                 {"rimLight", {{"enabled", value.Rim.Enabled}, {"intensity", Number(value.Rim.Intensity)},
+                               {"sharpness", Number(value.Rim.Sharpness)}, {"ambient", Number(value.Rim.Ambient)},
+                               {"scope", value.Rim.Scope == Fast::Renderer3ds::PicaRimLightScope::ActorsAndWorld
+                                             ? "actorsAndWorld" : "actors"}}},
                  {"pointLights", std::move(points)},
                  {"directionalLights", std::move(lights)},
                  {"keyLightDirection", EncodeKeyDirection(value.KeyDirection)},
@@ -550,6 +577,7 @@ Fast::Renderer3ds::PicaEnvironmentLighting ResolveSceneEnvironment(const SceneEn
   result.AmbientColor = value.AmbientColor;
   result.AmbientIntensity = value.AmbientIntensity;
   result.FogStrength = value.FogStrength;
+  result.Rim = value.Rim;
   result.PointLights = value.PointLights;
   for (const auto &light : value.PlacedLights) {
     if (!light.Visible || result.PlacedLightCount == result.PlacedLights.size()) continue;
@@ -587,6 +615,7 @@ Json ExplainSceneEnvironment(const SceneEnvironmentProfile &profile, uint16_t sc
                       {"radiusScale", Number(resolved.PointLights[i].RadiusScale)},
                       {"colorTint", Triple(resolved.PointLights[i].ColorTint)}});
   Json renderer = {{"enabled", resolved.Enabled},
+                   {"rimLight", EncodeSceneEnvironment(profile, scene, night).at("rimLight")},
                    {"scopeIdentity", std::to_string(resolved.ScopeIdentity)},
                    {"scenePointLightGroups", std::move(groups)},
                    {"preserveSceneBrightness", resolved.PreserveSceneBrightness},

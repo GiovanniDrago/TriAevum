@@ -272,6 +272,16 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
     return result;
 }
 
+void AssignPicaSurfaceRim(PicaSurfaceLightingUniforms& uniforms, const PicaRimLightSettings& settings) noexcept {
+    uniforms.Rim = {};
+    if (!settings.Enabled || !std::isfinite(settings.Intensity) || !std::isfinite(settings.Sharpness) ||
+        !std::isfinite(settings.Ambient)) return;
+    if (settings.Intensity < 0.0F || settings.Intensity > kMaximumPicaRimIntensity || settings.Sharpness < 1.0F ||
+        settings.Sharpness > 16.0F || settings.Ambient < 0.0F || settings.Ambient > 0.25F) return;
+    if (settings.Intensity == 0.0F && settings.Ambient == 0.0F) return;
+    uniforms.Rim = {settings.Intensity, settings.Sharpness, settings.Ambient, 0.0F};
+}
+
 std::string_view PicaSurfaceLightingDeclarations() noexcept {
     return R"glsl(
 layout(location=9) in vec3 pica_surface_normal;
@@ -316,6 +326,7 @@ layout(set=0,binding=16,std140) uniform PicaSurfaceLighting {
     vec4 water_ripples;
     vec4 water_flow;
     vec4 water_rings[16];
+    vec4 rim;
 } pica_surface;
 vec3 pica_surface_water_world = vec3(0.0);
 float pica_surface_water_footprint = 0.0;
@@ -418,6 +429,30 @@ vec3 pica_surface_unit(vec3 value) {
 }
 vec3 pica_surface_resolved_ambient(vec3 native_ambient) {
     return native_ambient * pica_surface.environment_parameters.y + pica_surface.environment_ambient.rgb;
+}
+// Bounded artistic scattering, not a new light or a GI source. N and V are
+// the final shading normal and surface-to-camera direction in view space.
+float pica_surface_rim_fresnel(vec3 n, vec3 v) {
+    if (dot(n, n) < 0.5 || dot(v, v) < 0.5) return 0.0;
+    return pow(clamp(1.0 - abs(dot(n, v)), 0.0, 1.0), pica_surface.rim.y);
+}
+float pica_surface_rim_weight(vec3 n, vec3 v, vec3 l) {
+    if (pica_surface.rim.x <= 0.0) return 0.0;
+    l = pica_surface_unit(l);
+    if (dot(l, l) < 0.5) return 0.0;
+    float back = smoothstep(-0.25, 0.5, dot(l, -v));
+    float wrap = clamp((dot(n, l) + 0.5) / 1.5, 0.0, 1.0);
+    return pica_surface.rim.x * pica_surface_rim_fresnel(n, v) * back * wrap;
+}
+float pica_surface_rim_ambient(vec3 n, vec3 v) {
+    if (pica_surface.rim.z <= 0.0) return 0.0;
+    return pica_surface.rim.z * pica_surface_rim_fresnel(n, v);
+}
+float pica_surface_diffuse_rim(vec3 n, vec3 l, bool rim) {
+    float diffuse = max(dot(n, l), 0.0);
+    if (rim && pica_surface.rim.x > 0.0)
+        diffuse += pica_surface_rim_weight(n, pica_surface_unit(pica_view), l);
+    return diffuse;
 }
 vec3 pica_surface_shadow(int slot);
 float pica_point_shadow(float slot, vec3 light_to_fragment, float radius);
@@ -535,26 +570,26 @@ void pica_surface_placed_light(int slot, out vec3 direction, out vec3 radiance) 
     }
     radiance *= pica_point_shadow(light.color.w, -to_light, reach);
 }
-vec3 pica_surface_scene_point_primary(vec3 normal_view) {
+vec3 pica_surface_scene_point_primary(vec3 normal_view, bool rim) {
     vec3 color = vec3(0.0);
     for (uint slot = 0u; slot < pica_surface.control.y; ++slot) {
         vec3 direction, radiance;
         pica_surface_scene_point(int(slot), direction, radiance);
-        color += max(dot(normal_view, direction), 0.0) * radiance;
+        color += pica_surface_diffuse_rim(normal_view, direction, rim) * radiance;
     }
     for (uint slot = 0u; slot < pica_surface_placed_count(); ++slot) {
         vec3 direction, radiance;
         pica_surface_placed_light(int(slot), direction, radiance);
-        color += max(dot(normal_view, direction), 0.0) * radiance;
+        color += pica_surface_diffuse_rim(normal_view, direction, rim) * radiance;
     }
     return color;
 }
-vec3 pica_surface_scene_directional_response(vec3 normal_view, uint capture_mask, out vec3 captured) {
+vec3 pica_surface_scene_directional_response(vec3 normal_view, uint capture_mask, out vec3 captured, bool rim) {
     captured = vec3(0.0);
     vec3 color = vec3(0.0);
     for (uint slot = 0u; slot < pica_surface.control.z; ++slot) {
         vec3 direction = pica_surface_unit(pica_surface.scene_directions[slot].xyz);
-        vec3 response = max(dot(normal_view, direction), 0.0) *
+        vec3 response = pica_surface_diffuse_rim(normal_view, direction, rim) *
             pica_surface.scene_directional_colors[slot].rgb * pica_surface_shadow(10 + int(slot));
         color += response;
         if ((capture_mask & (1u << (10u + slot))) != 0u) captured += response;
@@ -563,7 +598,7 @@ vec3 pica_surface_scene_directional_response(vec3 normal_view, uint capture_mask
 }
 vec3 pica_surface_scene_directional_primary(vec3 normal_view) {
     vec3 unused;
-    return pica_surface_scene_directional_response(normal_view, 0u, unused);
+    return pica_surface_scene_directional_response(normal_view, 0u, unused, false);
 }
 // Raw radiance and the selected directional contribution, before tint,
 // abs/clamp and native colour quantization. A zero capture mask eliminates
@@ -578,7 +613,7 @@ vec3 pica_surface_native_response(vec3 normal_view, uint capture_mask, out vec3 
         if (any(notEqual(pica_surface.lights[slot].diffuse.rgb, vec3(0.0)))) {
         vec3 direction, radiance;
         pica_surface_light(slot, direction, radiance);
-        vec3 response = max(dot(normal_view, direction), 0.0) * radiance * pica_surface_shadow(slot);
+        vec3 response = pica_surface_diffuse_rim(normal_view, direction, true) * radiance * pica_surface_shadow(slot);
         direct += response;
         if ((capture_mask & (1u << uint(slot))) != 0u) captured += response;
         }
@@ -590,20 +625,22 @@ vec3 pica_surface_native_response(vec3 normal_view, uint capture_mask, out vec3 
         captured *= pica_surface.environment_parameters.x;
     }
     color += pica_surface.resolved_ambient.rgb;
+    if (pica_surface.rim.z > 0.0)
+        color += pica_surface.resolved_ambient.rgb * pica_surface_rim_ambient(normal_view, pica_surface_unit(pica_view));
     if (pica_surface.environment_parameters.w != 0.0) {
         for (int slot = 0; slot < 2; ++slot) {
             if (pica_surface.environment_directions[slot].w <= 0.0) continue;
             vec3 direction = pica_surface_unit(pica_surface.environment_directions[slot].xyz);
-            vec3 response = max(dot(normal_view, direction), 0.0) *
+            vec3 response = pica_surface_diffuse_rim(normal_view, direction, true) *
                 pica_surface.environment_colors[slot].rgb * pica_surface.environment_directions[slot].w *
                 pica_surface_shadow(8 + slot);
             color += response;
             if ((capture_mask & (1u << uint(8 + slot))) != 0u) captured += response;
         }
     }
-    color += pica_surface_scene_point_primary(normal_view);
+    color += pica_surface_scene_point_primary(normal_view, true);
     vec3 scene_captured;
-    color += pica_surface_scene_directional_response(normal_view, capture_mask, scene_captured);
+    color += pica_surface_scene_directional_response(normal_view, capture_mask, scene_captured, true);
     captured += scene_captured;
     return color;
 }
@@ -638,7 +675,7 @@ vec3 pica_surface_gi_direct(vec3 normal_view) {
                 pica_surface.environment_colors[0].rgb * pica_surface.environment_directions[0].w *
                 pica_surface_shadow(8) * weight.y;
     }
-    color += pica_surface_scene_point_primary(normal_view) * weight.z;
+    color += pica_surface_scene_point_primary(normal_view, false) * weight.z;
     color += pica_surface_scene_directional_primary(normal_view) * weight.x;
     return min(abs(color * pica_surface_tint.rgb), vec3(1.0));
 }
@@ -650,7 +687,7 @@ vec3 pica_surface_primary(vec3 native_color, vec3 normal_view) {
     // The scene reference keeps it intact even when the override is active.
     if (pica_surface.environment_parameters.w != 0.0)
         return min(native_color + pica_surface_native_primary(normal_view), vec3(1.0));
-    return min(native_color + (pica_surface_scene_point_primary(normal_view) +
+    return min(native_color + (pica_surface_scene_point_primary(normal_view, true) +
                pica_surface_scene_directional_primary(normal_view)) * pica_surface_tint.rgb, vec3(1.0));
 }
 // Gameplay water (pica_surface_water): its native colour is its appearance.

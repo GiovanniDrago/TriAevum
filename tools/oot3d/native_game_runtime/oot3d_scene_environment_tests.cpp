@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -172,6 +173,57 @@ int main() try {
     Check(!DecodeSceneEnvironment(document).Errors.empty(), "non-boolean legacy setting accepted");
   }
 
+  {
+    using Scope = Fast::Renderer3ds::PicaRimLightScope;
+    auto profile = BaseSceneEnvironmentProfile();
+    Check(profile.Rim.Enabled && profile.Rim.Scope == Scope::Actors && profile.Rim.Intensity == 0.35F &&
+              profile.Rim.Sharpness == 4.0F && profile.Rim.Ambient == 0.05F, "base rim defaults changed");
+    auto document = EncodeSceneEnvironment(profile, 0x55, false);
+    const auto decoded = DecodeSceneEnvironment(document);
+    Check(decoded.Profile && decoded.Profile->Rim == profile.Rim, "rim did not round trip");
+    Check(ResolveSceneEnvironment(profile, 0x55, false).Rim == profile.Rim, "renderer lost rim settings");
+    document.erase("rimLight");
+    const auto legacy = DecodeSceneEnvironment(document);
+    Check(legacy.Profile && !legacy.Profile->Rim.Enabled, "legacy profile acquired a rim");
+    profile.Rim.Scope = Scope::ActorsAndWorld;
+    Check(DecodeSceneEnvironment(EncodeSceneEnvironment(profile, 0x55, true)).Profile->Rim == profile.Rim,
+          "world scope or night rim did not round trip");
+    document = EncodeSceneEnvironment(profile, 0x55, false);
+    for (const auto& invalid : {nlohmann::json(1), nlohmann::json(nullptr), nlohmann::json("on")}) {
+      auto bad = document; bad["rimLight"] = invalid;
+      Check(!DecodeSceneEnvironment(bad).Profile, "mistyped rim accepted");
+    }
+    for (const auto& key : {"enabled", "intensity", "sharpness", "ambient", "scope"}) {
+      auto bad = document; bad["rimLight"].erase(key);
+      const auto result = DecodeSceneEnvironment(bad);
+      Check(!result.Profile && result.Errors.front().Pointer == std::string("/rimLight/") + key,
+            "missing rim member not diagnosed at owning boundary");
+      bad = document; bad["rimLight"][key] = nlohmann::json::array();
+      Check(!DecodeSceneEnvironment(bad).Profile, "mistyped rim member accepted");
+    }
+    for (const auto& [key, badValue] : std::vector<std::pair<std::string, nlohmann::json>>{
+        {"enabled", 1}, {"intensity", 8.01}, {"intensity", -0.1}, {"sharpness", 0}, {"sharpness", 17},
+        {"ambient", 0.26}, {"scope", "all"}, {"shaprness", 4}}) {
+      auto bad = document; bad["rimLight"][key] = badValue;
+      Check(!DecodeSceneEnvironment(bad).Profile, "invalid rim value accepted");
+    }
+    for (float invalid : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+      auto bad = profile; bad.Rim.Intensity = invalid;
+      Check(!ValidateSceneEnvironment(bad).empty(), "nonfinite direct rim accepted");
+      bad = profile; bad.Rim.Sharpness = invalid;
+      Check(!ValidateSceneEnvironment(bad).empty(), "nonfinite rim exponent accepted");
+      bad = profile; bad.Rim.Ambient = invalid;
+      Check(!ValidateSceneEnvironment(bad).empty(), "nonfinite ambient rim accepted");
+      auto badJson = document; badJson["rimLight"]["intensity"] = invalid;
+      Check(!DecodeSceneEnvironment(badJson).Profile, "nonfinite JSON rim accepted");
+    }
+    Check(f.Runtime.Preview(profile) && f.Runtime.Save() && f.Runtime.Reload() &&
+              f.Runtime.Snapshot().Profile.Rim == profile.Rim, "runtime did not save/reload rim");
+    const auto previous = f.Runtime.Snapshot();
+    profile.Rim.Intensity = 9.0F;
+    Check(!f.Runtime.Preview(profile) && f.Runtime.Snapshot().Profile == previous.Profile,
+          "invalid rim preview replaced the accepted profile");
+  }
   std::filesystem::remove_all(directory);
   std::printf("scene environment tests passed: %d checks\n", gChecks);
   return 0;
