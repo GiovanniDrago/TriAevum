@@ -1,5 +1,14 @@
 # F1 settings rationalization
 
+## Interior sun / offline (2026-10-10, round 29)
+
+The base default remains JSON `shadowCasterFaces: "interiorShells"`. The actual
+F1 choice now reads **Interior sun / offline** and explains authored interiors,
+offline preparation, inner occluders and the two-sided fallback. This remains
+owned by `SceneEnvironmentRuntime`; no duplicate graphics setting was added.
+Focused actual-widget smoke passes **1,978 assertions**, including selection
+of the new label. See [the builder and Forge contract](ROOM_SHADOW_SHELLS.md).
+
 ## Independent rim light (2026-10-10, round 28)
 
 **Lighting > Lights & Shadows > Scene lights > Rim light** is owned solely by

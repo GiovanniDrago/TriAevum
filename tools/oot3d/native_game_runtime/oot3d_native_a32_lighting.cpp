@@ -552,7 +552,7 @@ void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recom
     const uint16_t scene = environmentState ? environmentState->Scene : uint16_t{0xFFFFU};
     const bool shellsEnabled = mRoomShellsEnabled.load(std::memory_order_relaxed) && environmentState.has_value();
     mRoomShells = shellsEnabled ? mRoomShellCache.Capture(true, (uint64_t(playState) << 16U) | scene,
-                                                        NativeLoadedRooms(playState, memory), memory) : nullptr;
+                                                        NativeLoadedRooms(playState, memory), memory, playState) : nullptr;
     if (!mStaticEmittersResolved) {
         mStaticEmitters = NativeStaticEmitterCatalog::FromEnvironment();
         mStaticEmittersResolved = true;

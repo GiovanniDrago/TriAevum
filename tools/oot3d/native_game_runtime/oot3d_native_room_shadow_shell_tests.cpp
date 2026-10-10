@@ -1,3 +1,4 @@
+#include "oot3d_interior_sun_prebuild.h"
 #include "oot3d_native_a32_lighting.h"
 #include "oot3d_native_pica_composition.h"
 #include "oot3d_native_room_shadow_shell.h"
@@ -10,6 +11,8 @@
 #include <cstdio>
 #include <fstream>
 #include <limits>
+#include <nlohmann/json.hpp>
+#include <regex>
 #include <stdexcept>
 #include <thread>
 
@@ -108,6 +111,201 @@ struct Memory : oot3d::recomp::a32::MemoryBus {
   }
   bool Write32(uint32_t, uint32_t) override { return false; }
 };
+void HeaderTests() {
+  Memory m(0x1000);
+  const uint32_t room = 0x100, scene = 0x500;
+  Put(m.Bytes, room, 0x12);
+  Put(m.Bytes, room + 8, 0x14);
+  Put(m.Bytes, scene, 0x11);
+  Put(m.Bytes, scene + 8, 0x14);
+  for (auto sun : {0, 1})
+    for (auto mode : {0, 1, 2})
+      for (auto sky : {0, 1, 4, 5, 6, 8, 0x1d, 99}) {
+        m.Bytes[room + 5] = uint8_t(sun);
+        m.Bytes[scene + 6] = uint8_t(mode);
+        m.Bytes[scene + 4] = uint8_t(sky);
+        Check(NativeRoomIsInterior(ReadNativeSunHeader(room, 0, m),
+                                   ReadNativeSunHeader(scene, 0, m)) ==
+                  (sun || (mode == 1 && sky == 0)),
+              "authored sun/sky/mode classification");
+      }
+  Check(!NativeRoomIsInterior({}, ReadNativeSunHeader(scene, 0, m)),
+        "unknown room must be outdoor");
+  m.Bytes[room + 5] = 0;
+  Check(!NativeRoomIsInterior(ReadNativeSunHeader(room, 0, m), {}),
+        "unknown scene must be outdoor");
+  Put(m.Bytes, room, 0x0318);
+  Put(m.Bytes, room + 4, 0x80);
+  Put(m.Bytes, room + 8, 0x12);
+  Put(m.Bytes, room + 16, 0x14);
+  Put(m.Bytes, room + 0x84, 0x100);
+  Put(m.Bytes, room + 0x100, 0x12);
+  m.Bytes[room + 0x105] = 1;
+  Put(m.Bytes, room + 0x108, 0x14);
+  Check(!NativeRoomIsInterior(ReadNativeSunHeader(room, 0, m), {}),
+        "base setup classification");
+  Check(!NativeRoomIsInterior(ReadNativeSunHeader(room, 1, m), {}),
+        "null alternate must use base");
+  auto alternate = ReadNativeSunHeader(room, 2, m);
+  Check(alternate && alternate->CommandOffset == 0x100 &&
+            NativeRoomIsInterior(alternate, {}),
+        "selected setup ignored");
+  Check(ReadNativeSunHeader(room, 3, m)->CommandOffset == 0x100,
+        "setup 3 fallback ignored");
+  Check(NativeRoomSunFingerprint(1, 0) != NativeRoomSunFingerprint(1, 0x100),
+        "alternate geometry cache alias");
+  Put(m.Bytes, room + 0x100, 0x0318);
+  Put(m.Bytes, room + 0x104, 0x80);
+  Check(!ReadNativeSunHeader(room, 2, m), "alternate cycle accepted");
+  Check(!ReadNativeSunHeader(room, 17, m), "unbounded setup accepted");
+  auto a = std::vector<std::vector<uint8_t>>{Cmb()}, b = a;
+  b[0][0x550] ^= 1;
+  Check(NativeRoomSunContentFingerprint(1, a) !=
+            NativeRoomSunContentFingerprint(1, b),
+        "different CMB content aliases");
+}
+void SelectedMeshTests() {
+  Memory m(0x2400);
+  constexpr uint32_t base = 0x100;
+  Put(m.Bytes, base, 0x118);
+  Put(m.Bytes, base + 4, 0x80);
+  Put(m.Bytes, base + 8, 0x0a);
+  Put(m.Bytes, base + 12, 0x90);
+  Put(m.Bytes, base + 16, 0x14);
+  Put(m.Bytes, base + 0x80, 0x40);
+  Put(m.Bytes, base + 0x40, 0x0a);
+  Put(m.Bytes, base + 0x44, 0xb0);
+  Put(m.Bytes, base + 0x48, 0x14);
+  m.Bytes[base + 0x91] = 1;
+  Put(m.Bytes, base + 0x94, 0xa0);
+  Put(m.Bytes, base + 0xa0, 0x400);
+  m.Bytes[base + 0xb1] = 1;
+  Put(m.Bytes, base + 0xb4, 0xc0);
+  Put(m.Bytes, base + 0xc0, 0x1000);
+  auto a = Cmb(), b = a;
+  Float(b, 0x60 + 28, 30);
+  std::copy(a.begin(), a.end(), m.Bytes.begin() + base + 0x400);
+  std::copy(b.begin(), b.end(), m.Bytes.begin() + base + 0x1000);
+  NativeLoadedRoom room{
+      0, NativeRoomFingerprint(std::span(m.Bytes).subspan(base, 128)), base};
+  const auto first = CaptureNativeRoomShadowCmbs(
+      room, m, NativeRoomShadowSource::File, nullptr, 0);
+  const auto second = CaptureNativeRoomShadowCmbs(
+      room, m, NativeRoomShadowSource::File, nullptr, 1);
+  Check(first && second && first->front() == a && second->front() == b,
+        "selected mesh command ignored");
+  Put(m.Bytes, base + 0xb4, base + 0xc0);
+  const auto installed = CaptureNativeRoomShadowCmbs(
+      room, m, NativeRoomShadowSource::Installed, nullptr, 1);
+  Check(installed && installed->front() == b,
+        "selected installed mesh relocation failed");
+}
+void OfflineTests() {
+  const auto root =
+      std::filesystem::temp_directory_path() /
+      ("interior-sun-test-" +
+       std::to_string(
+           std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(root / "romfs" / "scene");
+  const auto write = [](const auto &path, const std::vector<uint8_t> &bytes) {
+    std::ofstream out(path, std::ios::binary);
+    out.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+    Check(bool(out), "fixture write failed");
+  };
+  std::vector<uint8_t> room(0x1000), scene(0x100);
+  Put(room, 0, 0x0149535a);
+  Put(scene, 0, 0x0149535a);
+  Put(room, 0x10, 0x12);
+  room[0x15] = 0;
+  Put(room, 0x18, 0x0a);
+  Put(room, 0x1c, 0x80);
+  Put(room, 0x20, 0x14);
+  room[0x91] = 1;
+  Put(room, 0x94, 0x90);
+  Put(room, 0xa0, 0x100);
+  const auto cmb = Cmb();
+  std::copy(cmb.begin(), cmb.end(), room.begin() + 0x110);
+  Put(scene, 0x10, 0x318);
+  Put(scene, 0x14, 0x80);
+  Put(scene, 0x18, 0x11);
+  Put(scene, 0x20, 0x14); // base mode 0: outdoor
+  Put(scene, 0x94, 0x40); // setup 2; null setup 3 falls back to 2
+  Put(scene, 0x50, 0x11);
+  scene[0x56] = 1;
+  Put(scene, 0x58, 0x14);
+  std::vector<std::pair<std::string, std::vector<uint8_t>>> files{
+      {"test_0_info.zsi", room},
+      {"test_info.zsi", scene},
+      {"test_0_dd_info.zsi", room},
+      {"test_dd_info.zsi", scene}};
+  for (const auto &[name, bytes] : files)
+    write(root / "romfs" / "scene" / name, bytes);
+  const auto first = PrebuildInteriorSun(root / "romfs", root / "cache");
+  Check(first["rooms"] == 2 && first["built"] == 2 && first["fallback"] == 0,
+        "standard/MQ offline inventory failed");
+  Check(first["entries"].size() == 8 &&
+            first["entries"][0]["interior"] == false &&
+            first["entries"][2]["interior"] == true &&
+            first["entries"][3]["interior"] == true,
+        "offline classification differs");
+  const auto second = PrebuildInteriorSun(root / "romfs", root / "cache");
+  Check(second["built"] == 0 && second["hits"] == 2,
+        "offline cache not reused");
+  // Minimal Level-3 image with root and scene directory. Also wrap it in IVFC.
+  std::vector<uint8_t> dirs(60);
+  Put(dirs, 20, 0);
+  Put(dirs, 24 + 20, 10);
+  for (size_t k = 0; k < 5; ++k)
+    dirs[48 + k * 2] = uint8_t("scene"[k]);
+  std::vector<uint8_t> table, payload;
+  for (const auto &[name, bytes] : files) {
+    const auto p = table.size();
+    table.resize(p + ((32 + name.size() * 2 + 3) & ~size_t(3)));
+    Put(table, p, 24);
+    Put(table, p + 8, uint32_t(payload.size()));
+    Put(table, p + 16, uint32_t(bytes.size()));
+    Put(table, p + 28, uint32_t(name.size() * 2));
+    for (size_t k = 0; k < name.size(); ++k)
+      table[p + 32 + k * 2] = uint8_t(name[k]);
+    payload.insert(payload.end(), bytes.begin(), bytes.end());
+  }
+  std::vector<uint8_t> image(40);
+  Put(image, 0, 40);
+  Put(image, 12, 40);
+  Put(image, 16, uint32_t(dirs.size()));
+  Put(image, 28, uint32_t(40 + dirs.size()));
+  Put(image, 32, uint32_t(table.size()));
+  Put(image, 36, uint32_t(40 + dirs.size() + table.size()));
+  image.insert(image.end(), dirs.begin(), dirs.end());
+  image.insert(image.end(), table.begin(), table.end());
+  image.insert(image.end(), payload.begin(), payload.end());
+  for (bool ivfc : {false, true}) {
+    auto data = image;
+    if (ivfc) {
+      data.insert(data.begin(), 0x1000, 0);
+      Put(data, 0, 0x43465649);
+    }
+    write(root / "romfs.bin", data);
+    const auto fromImage =
+        PrebuildInteriorSun(root / "romfs.bin", root / "cache");
+    Check(fromImage["rooms"] == 2 && fromImage["hits"] == 2 &&
+              fromImage["entries"][0]["fingerprint"] ==
+                  second["entries"][0]["fingerprint"],
+          "RomFS directory/image results differ");
+  }
+  // Reject corrupt input extents without starting a guest or publishing a
+  // receipt.
+  Put(image, 36, 0xfffffff0);
+  write(root / "bad.bin", image);
+  bool rejected = false;
+  try {
+    (void)PrebuildInteriorSun(root / "bad.bin", root / "cache");
+  } catch (const std::exception &) {
+    rejected = true;
+  }
+  Check(rejected, "invalid RomFS bounds accepted");
+  std::filesystem::remove_all(root);
+}
 void UnitTests() {
   for (auto kind : {0x1401, 0x1403, 0x1405}) {
     auto b = Cmb(uint16_t(kind));
@@ -167,7 +365,8 @@ void UnitTests() {
   const uint32_t base = 0x100;
   Put(memory.Bytes, base, 0x0a);
   Put(memory.Bytes, base + 4, 0x80);
-  Put(memory.Bytes, base + 8, 0x14);
+  Put(memory.Bytes, base + 8, 0x12);
+  Put(memory.Bytes, base + 16, 0x14);
   memory.Bytes[base + 0x80] = 2;
   memory.Bytes[base + 0x81] = 1;
   Put(memory.Bytes, base + 0x84, 0x90);
@@ -194,6 +393,8 @@ void UnitTests() {
             !error.empty(),
         "out-of-room relocated pointer accepted or unreported");
   Put(memory.Bytes, base + 0x84, base + 0x90);
+  const auto cacheFingerprint = NativeRoomSunContentFingerprint(
+      room.Fingerprint, *CaptureNativeRoomShadowCmbs(room, memory));
   NativeRoomShadowShells cache;
   auto reads = memory.Reads;
   Check(!cache.Capture(false, 123, std::span(&room, 1), memory) &&
@@ -207,11 +408,11 @@ void UnitTests() {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
     scene = cache.Capture(true, 123, std::span(&room, 1), memory);
   }
-  Check(scene->Ready() && scene->Rooms[0].Fingerprint == room.Fingerprint,
+  Check(scene->Ready() && scene->Rooms[0].Fingerprint == cacheFingerprint,
         "worker did not publish mesh");
   reads = memory.Reads;
   Check(cache.Capture(true, 123, std::span(&room, 1), memory) == scene &&
-            memory.Reads == reads,
+            memory.Reads <= reads + 40,
         "unchanged room recopied or republished");
   Check(!cache.Capture(true, 123, {}, memory),
         "unloaded room snapshot retained");
@@ -239,8 +440,31 @@ void UnitTests() {
   } while (std::chrono::steady_clock::now() < readyUntil);
   Check(publication.RoomShadows && publication.RoomShadows->Ready() &&
             publication.RoomShadows->Rooms.front().Fingerprint ==
-                room.Fingerprint,
+                cacheFingerprint,
         "enabled lighting probe did not publish the installed room");
+  // The same room geometry in a different authored scene class cannot reuse
+  // its old masks, even when live sun/moon flags disagree with the header.
+  constexpr uint32_t sceneHeader = 0xc00;
+  Put(memory.Bytes, play + 0x110, sceneHeader);
+  Put(memory.Bytes, sceneHeader, 0x11);
+  Put(memory.Bytes, sceneHeader + 8, 0x14);
+  memory.Bytes[sceneHeader + 6] = 1; // selected scene: no sky + indoor mode
+  memory.Bytes[play + 0x31a6] =
+      0; // live mutable flag deliberately says otherwise
+  const auto classUntil =
+      std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  do {
+    lighting.CaptureSceneLights(play, memory);
+    publication = lighting.CaptureRenderer(0, memory);
+    if (publication.RoomShadows && publication.RoomShadows->Ready())
+      break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  } while (std::chrono::steady_clock::now() < classUntil);
+  Check(publication.RoomShadows && publication.RoomShadows->Ready() &&
+            publication.RoomShadows->Rooms[0].Interior &&
+            publication.RoomShadows->Rooms[0].Mesh->Interior,
+        "authored class change reused outdoor snapshot");
+  memory.Bytes[sceneHeader + 6] = 0;
   lighting.SetRoomShadowShellsEnabled(false);
   lighting.CaptureSceneLights(play, memory);
   Check(!lighting.CaptureRenderer(0, memory).RoomShadows,
@@ -250,7 +474,7 @@ void UnitTests() {
   // snapshot even when the geometry and command-list addresses stay fixed.
   Oot3dNativePicaCompositionTracker tracker;
   tracker.SetRoomShadowShellsEnabled(true);
-  constexpr uint32_t packet = 0x800, commands = 0x2000;
+  constexpr uint32_t packet = 0xb00, commands = 0x2000;
   Put(memory.Bytes, packet + 0x10, 8);
   Put(memory.Bytes, 0x54cc4c, commands);
   const auto captureDraw = [&]() {
@@ -304,7 +528,7 @@ void UnitTests() {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   } while (std::chrono::steady_clock::now() < frontendReadyUntil);
   Check(frontendScene && frontendScene->Ready() &&
-            frontendScene->Rooms.front().Fingerprint == room.Fingerprint,
+            frontendScene->Rooms.front().Fingerprint == cacheFingerprint,
         "worker readiness never reached frontend draw");
   Check(captureDraw() == frontendScene,
         "unchanged frontend room snapshot was not shared");
@@ -355,7 +579,7 @@ void RomCheck(const std::filesystem::path &sceneDirectory) {
       rooms, models, triangles, incomplete);
 }
 // Fresh synchronous builds from raw RomFS: excludes I/O, parsing and any disk
-// cache, includes welding, enclosure BVH/rays, sector masks and encoding.
+// cache; includes welding, voxel closure/flood, sector masks and encoding.
 void BenchmarkRoom(const std::filesystem::path &file) {
   std::ifstream in(file, std::ios::binary | std::ios::ate);
   const auto length = in.tellg();
@@ -380,12 +604,28 @@ void BenchmarkRoom(const std::filesystem::path &file) {
                      geometry->Triangles.end());
   }
   Check(!triangles.empty(), "benchmark room has no triangles");
-  std::array<double, 5> milliseconds{};
+  const auto name = file.filename().string();
+  std::smatch match;
+  std::regex expression(R"(^(.+)_([0-9]+)(_dd)?_info\.zsi$)");
+  Check(std::regex_match(name, match, expression), "benchmark room filename");
+  std::ifstream sceneIn(file.parent_path() /
+                            (match[1].str() + match[3].str() + "_info.zsi"),
+                        std::ios::binary);
+  std::vector<uint8_t> sceneBytes{std::istreambuf_iterator<char>(sceneIn), {}};
+  Memory sceneMemory(sceneBytes.size() + 0x100);
+  std::copy(sceneBytes.begin(), sceneBytes.end(),
+            sceneMemory.Bytes.begin() + 0x100);
+  const bool interior =
+      NativeRoomIsInterior(ReadNativeSunHeader(base, 0, memory),
+                           ReadNativeSunHeader(base, 0, sceneMemory));
+  std::array<double, 3> milliseconds{};
+  RoomInteriorSunStats stats;
   uint64_t version = 0;
   size_t marked = 0;
   for (size_t run = 0; run < milliseconds.size(); ++run) {
     const auto start = std::chrono::steady_clock::now();
-    const auto mesh = BuildRoomShadowShell(room.Fingerprint, triangles);
+    const auto mesh = BuildRoomShadowShell(room.Fingerprint, triangles, 512, {},
+                                           interior, &stats);
     milliseconds[run] = std::chrono::duration<double, std::milli>(
                             std::chrono::steady_clock::now() - start)
                             .count();
@@ -400,12 +640,56 @@ void BenchmarkRoom(const std::filesystem::path &file) {
   std::sort(milliseconds.begin(), milliseconds.end());
   std::printf(
       "room benchmark file=%s fingerprint=%016llx version=%u triangles=%zu "
-      "marked=%zu runs=5 "
+      "marked=%zu runs=3 "
       "builder_ms_min=%.3f builder_ms_median=%.3f builder_ms_max=%.3f\n",
       file.filename().string().c_str(),
       static_cast<unsigned long long>(room.Fingerprint),
       kRoomShadowShellVersion, triangles.size(), marked, milliseconds.front(),
-      milliseconds[2], milliseconds.back());
+      milliseconds[1], milliseconds.back());
+  std::printf("voxels=%llu peak_grid_bytes=%llu closing=%u interior=%llu "
+              "samples=%llu rays=%llu\n",
+              stats.Voxels, stats.PeakWorkingBytes, stats.ClosingSteps,
+              stats.InteriorVoxels, stats.VoxelSamples, stats.RaySteps);
+}
+// Developer validation only: read the approved v2 geometry, rebuild using the
+// production v3 builder, and compare all 64 bits with the trial result.
+void CompareTrial(const std::filesystem::path &file) {
+  std::ifstream in(file, std::ios::binary);
+  std::vector<uint8_t> b{std::istreambuf_iterator<char>(in), {}};
+  auto get = [&](size_t at, size_t n) {
+    uint64_t v = 0;
+    for (size_t k = 0; k < n; ++k)
+      v |= uint64_t(b.at(at + k)) << (8 * k);
+    return v;
+  };
+  Check(get(0, 4) == 0x48535352 && get(4, 4) == 2,
+        "expected approved v2 cache");
+  const auto fp = get(8, 8), vertices = get(24, 4), count = get(28, 4);
+  Check(b.size() == 32 + vertices * 12 + count * 20 + 8, "trial size invalid");
+  std::vector<RoomShadowTriangle> triangles(count);
+  const size_t indices = 32 + vertices * 12, masks = indices + count * 12;
+  for (size_t t = 0; t < count; ++t)
+    for (size_t j = 0; j < 3; ++j)
+      for (size_t k = 0; k < 3; ++k)
+        triangles[t].Positions[j][k] = std::bit_cast<float>(uint32_t(
+            get(32 + get(indices + (t * 3 + j) * 4, 4) * 12 + k * 4, 4)));
+  RoomInteriorSunStats stats;
+  const auto start = std::chrono::steady_clock::now();
+  const auto mesh = BuildRoomShadowShell(fp, triangles, 512, {}, true, &stats);
+  Check(bool(mesh), "trial build failed");
+  const double ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - start)
+                        .count();
+  size_t differing = 0;
+  for (size_t t = 0; t < count; ++t)
+    differing += std::popcount(mesh->ShellMasks[t] ^ get(masks + t * 8, 8));
+  std::printf(
+      "trial=%s triangles=%zu differing_bits=%zu total_bits=%zu agreement=%.6f "
+      "ms=%.3f voxels=%llu closing=%u interior=%llu peak_grid_bytes=%llu\n",
+      file.filename().string().c_str(), size_t(count), differing,
+      size_t(count * 64), 100.0 * (1 - double(differing) / (count * 64)), ms,
+      stats.Voxels, stats.ClosingSteps, stats.InteriorVoxels,
+      stats.PeakWorkingBytes);
 }
 // Optional offline capture: little-endian guest base followed by installed
 // room bytes. No ROM data is committed; this exercises a real saved room.
@@ -442,7 +726,14 @@ void GuestRoomCheck(const std::filesystem::path &file) {
 }
 } // namespace
 int main(int argc, char **argv) try {
+  if (argc == 3 && std::string_view(argv[1]) == "--compare-trial") {
+    CompareTrial(argv[2]);
+    return 0;
+  }
+  HeaderTests();
+  SelectedMeshTests();
   UnitTests();
+  OfflineTests();
   if (argc == 2)
     RomCheck(argv[1]);
   if (argc == 3 && std::string_view(argv[1]) == "--guest-room")

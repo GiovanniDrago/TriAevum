@@ -467,7 +467,7 @@ void CheckSceneEnvironment() {
     Select("Shadow caster faces", "Both faces");
     Check(graphics.SnapshotForRendering().Environment.CasterFaces == Fast::Renderer3ds::ShadowCasterFaces::BothFaces,
           "both faces combo did not publish");
-    Select("Shadow caster faces", "Interior shells pass light");
+    Select("Shadow caster faces", "Interior sun / offline");
     Check(graphics.SnapshotForRendering().Environment.CasterFaces == Fast::Renderer3ds::ShadowCasterFaces::InteriorShells,
           "interior shells combo did not publish");
     {

@@ -283,10 +283,108 @@ ParseNativeRoomShadowCmb(std::span<const uint8_t> bytes) {
   }
 }
 
-std::optional<std::vector<std::vector<uint8_t>>>
-CaptureNativeRoomShadowCmbs(const NativeLoadedRoom &room,
-                            oot3d::recomp::a32::MemoryBus &memory,
-                            NativeRoomShadowSource source, std::string *error) {
+std::optional<NativeSunHeader>
+ReadNativeSunHeader(uint32_t base, uint32_t setup,
+                    oot3d::recomp::a32::MemoryBus &memory) {
+  if (!base || base > UINT32_MAX - kMaximumCmbBytes || setup > 16)
+    return {};
+  NativeSunHeader result;
+  uint32_t at = base;
+  std::set<uint32_t> visited;
+  for (uint32_t n = 0; n < 256; ++n, at += 8) {
+    if (at < base || at - base > kMaximumCmbBytes - 8 ||
+        !visited.insert(at).second)
+      return {};
+    std::array<uint8_t, 8> command{};
+    if (!ReadGuest(memory, at, command))
+      return {};
+    const Reader r{command};
+    const auto arg = r.U32(4);
+    switch (command[0]) {
+    case 0x14:
+      return result;
+    case 0x0a:
+      result.MeshOffset = arg;
+      break;
+    case 0x11:
+      result.Skybox = command[4];
+      result.EnvironmentLightMode = command[6];
+      break;
+    case 0x12:
+      result.SunMoonDisabled = command[5];
+      break;
+    case 0x18:
+      if (setup) {
+        // EUR handler 00378ff8: null setup 3 falls back to setup 2;
+        // other null alternatives continue the base header.
+        if (setup > command[1] || command[1] > 16 ||
+            arg > kMaximumCmbBytes - 64)
+          return {};
+        uint32_t offset = 0;
+        if (!memory.Read32(base + arg + (setup - 1) * 4, &offset))
+          return {};
+        if (!offset && setup == 3 && !memory.Read32(base + arg + 4, &offset))
+          return {};
+        if (offset) {
+          if (offset > kMaximumCmbBytes - 8 || (offset & 7))
+            return {};
+          at = base + offset - 8;
+          result.CommandOffset = offset;
+        }
+      }
+      break;
+    default:
+      break;
+    }
+  }
+  return {};
+}
+bool NativeRoomIsInterior(const std::optional<NativeSunHeader> &room,
+                          const std::optional<NativeSunHeader> &scene) {
+  if (!room || !room->SunMoonDisabled)
+    return false;
+  if (*room->SunMoonDisabled)
+    return true;
+  if (!scene || !scene->EnvironmentLightMode)
+    return false;
+  if (*scene->EnvironmentLightMode == 0)
+    return false;
+  if (*scene->EnvironmentLightMode != 1 || !scene->Skybox)
+    return false;
+  if (*scene->Skybox == 0)
+    return true;
+  // Authored sky family 1,4,5,0x1d,6,8 and unknown values are both outdoor.
+  return false;
+}
+uint64_t NativeRoomSunFingerprint(uint64_t fingerprint, uint32_t offset) {
+  if (!offset)
+    return fingerprint;
+  std::array<uint8_t, 13> key{};
+  for (size_t k = 0; k < 8; ++k)
+    key[k] = uint8_t(fingerprint >> (8 * k));
+  for (size_t k = 0; k < 4; ++k)
+    key[8 + k] = uint8_t(offset >> (8 * k));
+  key[12] = 3;
+  return NativeRoomFingerprint(key);
+}
+
+uint64_t
+NativeRoomSunContentFingerprint(uint64_t fingerprint,
+                                std::span<const std::vector<uint8_t>> cmbs) {
+  uint64_t hash = fingerprint;
+  for (const auto &bytes : cmbs) {
+    for (size_t k = 0; k < 8; ++k)
+      hash = (hash ^ uint8_t(uint64_t(bytes.size()) >> (8 * k))) *
+             1099511628211ULL;
+    for (auto byte : bytes)
+      hash = (hash ^ byte) * 1099511628211ULL;
+  }
+  return hash;
+}
+
+std::optional<std::vector<std::vector<uint8_t>>> CaptureNativeRoomShadowCmbs(
+    const NativeLoadedRoom &room, oot3d::recomp::a32::MemoryBus &memory,
+    NativeRoomShadowSource source, std::string *error, uint32_t setup) {
   if (error)
     *error = "unreadable or malformed room data";
   const uint32_t base = room.CommandsAddress;
@@ -302,21 +400,10 @@ CaptureNativeRoomShadowCmbs(const NativeLoadedRoom &room,
     if (!ReadGuest(memory, base, fingerprint) ||
         NativeRoomFingerprint(fingerprint) != room.Fingerprint)
       return {};
-    uint32_t mesh = 0;
-    for (uint32_t i = 0; i < 32; ++i) {
-      uint32_t command = 0, arg = 0;
-      if (!memory.Read32(base + i * 8, &command) ||
-          !memory.Read32(base + i * 8 + 4, &arg))
-        return {};
-      if ((command & 255) == 0x0a) {
-        mesh = relative(arg, 8);
-        break;
-      }
-      if ((command & 255) == 0x14)
-        break;
-    }
-    if (!mesh)
+    const auto header = ReadNativeSunHeader(base, setup, memory);
+    if (!header || !header->MeshOffset)
       return {};
+    const uint32_t mesh = relative(*header->MeshOffset, 8);
     uint8_t type = 0, count = 0;
     uint32_t entries = 0;
     if (!memory.Read8(mesh, &type) || !memory.Read8(mesh + 1, &count) ||
@@ -371,16 +458,25 @@ CaptureNativeRoomShadowCmbs(const NativeLoadedRoom &room,
 }
 
 struct NativeRoomShadowShells::Impl {
+  struct Key {
+    uint64_t Fingerprint = 0;
+    bool Interior = false;
+    uint32_t Commands = 0;
+    uint64_t Scope = 0;
+    auto operator<=>(const Key &) const = default;
+  };
   struct Entry {
+    Key RequestKey;
     uint64_t Fingerprint = 0;
     int Room = -1;
+    bool Interior = false;
     std::vector<std::vector<uint8_t>> Cmbs;
     std::shared_ptr<const RoomShadowShell> Mesh;
   };
   std::filesystem::path Directory;
   std::mutex Mutex;
   std::condition_variable_any Wake;
-  std::map<uint64_t, std::shared_ptr<Entry>> Entries;
+  std::map<Key, std::shared_ptr<Entry>> Entries;
   std::deque<std::shared_ptr<Entry>> Queue;
   std::shared_ptr<const RoomShadowShellScene> Published;
   // Declared last: joins before the state it accesses is destroyed.
@@ -401,7 +497,8 @@ struct NativeRoomShadowShells::Impl {
         }
         try {
           const auto started = std::chrono::steady_clock::now();
-          auto mesh = LoadRoomShadowShell(Directory, entry->Fingerprint);
+          auto mesh = LoadRoomShadowShell(Directory, entry->Fingerprint,
+                                          entry->Interior);
           std::fprintf(stderr,
                        "TRIAEVUM_ROOM_SHADOW_SHELL event=cache_%s "
                        "fingerprint=%016llx room=%d persistence=%d\n",
@@ -424,7 +521,8 @@ struct NativeRoomShadowShells::Impl {
             }
             if (complete)
               mesh = BuildRoomShadowShell(entry->Fingerprint, triangles,
-                                          kRoomShadowRasterSize, stop);
+                                          kRoomShadowRasterSize, stop,
+                                          entry->Interior);
             const double ms = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - started)
                                   .count();
@@ -447,7 +545,8 @@ struct NativeRoomShadowShells::Impl {
                   saved ? "done" : "failed",
                   static_cast<unsigned long long>(entry->Fingerprint),
                   entry->Room,
-                  RoomShadowShellPath(Directory, entry->Fingerprint)
+                  RoomShadowShellPath(Directory, entry->Fingerprint,
+                                      entry->Interior)
                       .string()
                       .c_str(),
                   error.c_str());
@@ -471,30 +570,53 @@ struct NativeRoomShadowShells::Impl {
 };
 NativeRoomShadowShells::NativeRoomShadowShells() = default;
 NativeRoomShadowShells::~NativeRoomShadowShells() = default;
-std::shared_ptr<const RoomShadowShellScene>
-NativeRoomShadowShells::Capture(bool enabled, uint64_t scope,
-                                std::span<const NativeLoadedRoom> rooms,
-                                oot3d::recomp::a32::MemoryBus &memory) {
+std::shared_ptr<const RoomShadowShellScene> NativeRoomShadowShells::Capture(
+    bool enabled, uint64_t scope, std::span<const NativeLoadedRoom> rooms,
+    oot3d::recomp::a32::MemoryBus &memory, uint32_t playState) {
   if (!enabled || rooms.size() > 2)
     return {};
   if (!mImpl && rooms.empty())
     return {};
   if (!mImpl)
     mImpl = std::make_unique<Impl>();
-  // Retain only installed rooms. The worker may finish one retired room,
-  // but queued room copies cannot accumulate during rapid room changes.
+  uint32_t setup = 0, sceneBase = 0;
+  bool setupKnown = !playState;
+  if (playState && playState <= UINT32_MAX - 0x110) {
+    // EUR selected setup (SaveContext+4e8) and authored scene resource base.
+    setupKnown = memory.Read32(0x588e40, &setup) && setup <= 16;
+    (void)memory.Read32(playState + 0x110, &sceneBase);
+  }
+  const auto sceneHeader =
+      setupKnown ? ReadNativeSunHeader(sceneBase, setup, memory) : std::nullopt;
+  struct Request {
+    const NativeLoadedRoom *Room;
+    Impl::Key Key;
+    bool Valid;
+  };
+  std::vector<Request> requests;
+  for (const auto &room : rooms) {
+    const auto header =
+        setupKnown ? ReadNativeSunHeader(room.CommandsAddress, setup, memory)
+                   : std::nullopt;
+    requests.push_back(
+        {&room,
+         {NativeRoomSunFingerprint(room.Fingerprint,
+                                   header ? header->CommandOffset : 0),
+          NativeRoomIsInterior(header, sceneHeader), room.CommandsAddress,
+          scope},
+         header.has_value()});
+  }
+  // Retain only installed room/setup/class combinations, including transitions.
   {
     std::lock_guard lock(mImpl->Mutex);
-    const auto loaded = [&](uint64_t fingerprint) {
-      return std::any_of(rooms.begin(), rooms.end(), [&](const auto &room) {
-        return room.Fingerprint == fingerprint;
-      });
+    const auto loaded = [&](const Impl::Key &key) {
+      return std::any_of(requests.begin(), requests.end(),
+                         [&](const auto &r) { return r.Key == key; });
     };
     std::erase_if(mImpl->Entries,
                   [&](const auto &pair) { return !loaded(pair.first); });
-    std::erase_if(mImpl->Queue, [&](const auto &entry) {
-      return !loaded(entry->Fingerprint);
-    });
+    std::erase_if(mImpl->Queue,
+                  [&](const auto &e) { return !loaded(e->RequestKey); });
   }
   if (rooms.empty()) {
     mImpl->Published.reset();
@@ -502,19 +624,26 @@ NativeRoomShadowShells::Capture(bool enabled, uint64_t scope,
   }
   std::array<RoomShadowShellInstance, 2> current;
   size_t count = 0;
-  for (const auto &room : rooms) {
-    if (std::any_of(
-            current.begin(), current.begin() + count,
-            [&](const auto &r) { return r.Fingerprint == room.Fingerprint; }))
+  std::set<Impl::Key> seen;
+  for (const auto &request : requests) {
+    const auto &room = *request.Room;
+    if (!seen.insert(request.Key).second)
       continue;
+    if (!request.Valid) {
+      current[count++] = {request.Key.Fingerprint, {}, false};
+      continue; // Retry unreadable metadata next frame, without pinning
+                // failure.
+    }
     std::shared_ptr<Impl::Entry> entry;
     bool added = false;
     {
       std::lock_guard lock(mImpl->Mutex);
-      auto [it, inserted] = mImpl->Entries.try_emplace(room.Fingerprint);
+      auto [it, inserted] = mImpl->Entries.try_emplace(request.Key);
       if (inserted) {
         it->second = std::make_shared<Impl::Entry>();
-        it->second->Fingerprint = room.Fingerprint;
+        it->second->Fingerprint = request.Key.Fingerprint;
+        it->second->RequestKey = request.Key;
+        it->second->Interior = request.Key.Interior;
         it->second->Room = room.Number;
       }
       entry = it->second;
@@ -528,10 +657,15 @@ NativeRoomShadowShells::Capture(bool enabled, uint64_t scope,
                    room.Number, room.CommandsAddress,
                    static_cast<unsigned long long>(scope));
       std::string error;
-      auto cmbs = CaptureNativeRoomShadowCmbs(
-          room, memory, NativeRoomShadowSource::Installed, &error);
+      auto cmbs = request.Valid
+                      ? CaptureNativeRoomShadowCmbs(
+                            room, memory, NativeRoomShadowSource::Installed,
+                            &error, setup)
+                      : std::nullopt;
       if (cmbs) {
         std::lock_guard lock(mImpl->Mutex);
+        entry->Fingerprint =
+            NativeRoomSunContentFingerprint(request.Key.Fingerprint, *cmbs);
         entry->Cmbs = std::move(*cmbs);
         mImpl->Queue.push_back(entry);
         mImpl->Wake.notify_one();
@@ -545,7 +679,7 @@ NativeRoomShadowShells::Capture(bool enabled, uint64_t scope,
     }
     {
       std::lock_guard lock(mImpl->Mutex);
-      current[count++] = {room.Fingerprint, entry->Mesh};
+      current[count++] = {entry->Fingerprint, entry->Mesh, entry->Interior};
     }
   }
   if (mImpl->Published && mImpl->Published->ScopeIdentity == scope &&

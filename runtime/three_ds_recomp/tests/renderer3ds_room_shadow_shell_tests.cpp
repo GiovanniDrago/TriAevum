@@ -144,168 +144,92 @@ TEST(RoomShadowShell, SelectsPublishedSnapshotIndependentlyOfRoomCasterRejection
     EXPECT_STREQ(selected.Status, "no_snapshot");
 }
 
-TEST(RoomShadowShell, FirstBackLayerOnlyAndBothFaceOccluders) {
-    const auto sector = RoomShadowSector({ 0, 1, 0 });
+TEST(RoomShadowShell, InteriorSunRoofPlatformAndInnerRoofStack) {
     std::vector<RoomShadowTriangle> triangles;
-    Roof(triangles, 20);
-    Roof(triangles, 10);
-    Roof(triangles, 0);
-    EncloseBelow(triangles, 20);
-    auto mesh = BuildRoomShadowShell(123, triangles, 128);
+    Box(triangles, 200, -200, 200);
+    Roof(triangles, 80);
+    Roof(triangles, -20);
+    RoomInteriorSunStats stats;
+    const auto mesh = BuildRoomShadowShell(123, triangles, 512, {}, true, &stats);
     ASSERT_TRUE(mesh);
+    EXPECT_GT(stats.InteriorVoxels, 0U);
+    EXPECT_GE(stats.ClosingSteps, 4U);
+    EXPECT_LE(stats.Voxels, kMaximumRoomInteriorVoxels);
+    const auto sector = RoomShadowSector({ 0, 1, 0 });
     EXPECT_TRUE(Shell(*mesh, 0, sector));
     EXPECT_TRUE(Shell(*mesh, 1, sector));
-    for (size_t i = 2; i < 6; ++i)
+    for (size_t i : { 2U, 3U, 12U, 13U, 14U, 15U })
         EXPECT_FALSE(Shell(*mesh, i, sector));
-    EXPECT_EQ(mesh->Positions.size(), 16U);
-    // An outward-facing first layer does not expose a back-facing layer below.
-    for (size_t i = 0; i < 2; ++i)
-        std::swap(triangles[i].Positions[1], triangles[i].Positions[2]);
-    mesh = BuildRoomShadowShell(123, triangles, 128);
-    ASSERT_TRUE(mesh);
-    for (size_t i = 0; i < 6; ++i)
-        EXPECT_FALSE(Shell(*mesh, i, sector));
-    triangles.clear();
-    Roof(triangles, 20, false);
-    Roof(triangles, 10);
-    EncloseBelow(triangles, 20);
-    mesh = BuildRoomShadowShell(123, triangles, 128);
-    ASSERT_TRUE(mesh);
-    for (size_t i = 0; i < 4; ++i)
-        EXPECT_FALSE(Shell(*mesh, i, sector));
+    // Both-face source materials and reversed winding retain the same criterion.
+    for (auto& t : triangles) {
+        t.CullBack = false;
+        std::swap(t.Positions[1], t.Positions[2]);
+    }
+    const auto reversed = BuildRoomShadowShell(123, triangles);
+    ASSERT_TRUE(reversed);
+    EXPECT_EQ(reversed->ShellMasks, mesh->ShellMasks);
+    const auto repeated = BuildRoomShadowShell(123, triangles);
+    ASSERT_TRUE(repeated);
+    EXPECT_EQ(EncodeRoomShadowShell(*reversed), EncodeRoomShadowShell(*repeated));
 }
-TEST(RoomShadowShell, AlphaTransparencyGrazingAndCancellation) {
-    const auto sector = RoomShadowSector({ 0, 1, 0 });
+TEST(RoomShadowShell, InteriorSunDoesNotRestartAfterLeavingAndReentering) {
     std::vector<RoomShadowTriangle> triangles;
-    Roof(triangles, 20, true, true);
-    Roof(triangles, 10);
-    EncloseBelow(triangles, 10);
-    auto mesh = BuildRoomShadowShell(1, triangles, 64);
+    // The 800-unit gap exceeds even the maximum closing diameter (480).
+    Box(triangles, 300, -600, -400);
+    Box(triangles, 300, 400, 600);
+    const auto mesh = BuildRoomShadowShell(1, triangles);
     ASSERT_TRUE(mesh);
-    ASSERT_EQ(mesh->ShellMasks.size(), 12U);
-    EXPECT_TRUE(Shell(*mesh, 0, sector));
-    triangles.clear();
+    const auto sector = RoomShadowSector({ 0, 1, 0 });
+    // A source ray enters the upper box, exits into the gap and reenters the
+    // lower one. Only the upper outer roof is before its first admission.
+    EXPECT_TRUE(Shell(*mesh, 12, sector));
+    EXPECT_TRUE(Shell(*mesh, 13, sector));
+    EXPECT_FALSE(Shell(*mesh, 0, sector));
+    EXPECT_FALSE(Shell(*mesh, 1, sector));
+    EXPECT_FALSE(Shell(*mesh, 2, sector));
+}
+TEST(RoomShadowShell, AuthoredOutdoorCourtyardKeepsBothFacesWithoutVoxelWork) {
+    std::vector<RoomShadowTriangle> triangles;
     Box(triangles);
-    mesh = BuildRoomShadowShell(1, triangles, 64);
+    triangles.erase(triangles.begin(), triangles.begin() + 2); // open-sky courtyard
+    RoomInteriorSunStats stats;
+    const auto mesh = BuildRoomShadowShell(1, triangles, 512, {}, false, &stats);
     ASSERT_TRUE(mesh);
-    EXPECT_FALSE(Shell(*mesh, 4, sector)); // Enclosed but grazing vertical wall.
-    EXPECT_NE(mesh->ShellMasks[4], 0U);
-    triangles[0].Positions[0][0] = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FALSE(mesh->Interior);
+    EXPECT_EQ(stats.Voxels, 0U);
+    for (auto mask : mesh->ShellMasks)
+        EXPECT_EQ(mask, 0U);
+    EXPECT_TRUE(DecodeRoomShadowShell(EncodeRoomShadowShell(*mesh), 1, false));
+    EXPECT_FALSE(DecodeRoomShadowShell(EncodeRoomShadowShell(*mesh), 1, true));
+    EXPECT_NE(RoomShadowShellPath("cache", 1, false), RoomShadowShellPath("cache", 1, true));
+    RoomShadowShellScene scene{ 1, { { 1, mesh, false } } };
+    EXPECT_TRUE(scene.Ready());
+    scene.Rooms[0].Interior = true;
+    EXPECT_FALSE(scene.Ready());
+}
+TEST(RoomShadowShell, InteriorSunAlphaMalformedBoundsAndCancellation) {
+    std::vector<RoomShadowTriangle> triangles;
+    Roof(triangles, 300, true, true);
+    Box(triangles, 200, -200, 200);
+    auto mesh = BuildRoomShadowShell(1, triangles);
+    ASSERT_TRUE(mesh);
+    EXPECT_EQ(mesh->ShellMasks.size(), 12U);
+    EXPECT_TRUE(Shell(*mesh, 0, RoomShadowSector({ 0, 1, 0 })));
+    triangles[1].Positions[0][0] = std::numeric_limits<float>::quiet_NaN();
+    triangles[1].AlphaTest = false;
     EXPECT_FALSE(BuildRoomShadowShell(1, triangles));
     std::stop_source stop;
     stop.request_stop();
-    EXPECT_FALSE(BuildRoomShadowShell(1, triangles, 64, stop.get_token()));
-}
-TEST(RoomShadowShell, MajorityOfCoveredTexelsRequired) {
-    const uint32_t sector = 63;
-    const auto d = RoomShadowDirections()[sector];
-    // Perpendicular frame; triangle winding cross(right,-up)=-d (back face).
-    const float n = std::sqrt(d[0] * d[0] + d[2] * d[2]);
-    const ShadowVector right{ d[2] / n, 0, -d[0] / n };
-    const ShadowVector up{ d[1] * right[2], d[2] * right[0] - d[0] * right[2], -d[1] * right[0] };
-    auto triangle = [&](float scale, float height, bool cull) {
-        RoomShadowTriangle t{};
-        t.CullBack = cull;
-        for (size_t k = 0; k < 3; ++k) {
-            t.Positions[0][k] = d[k] * height;
-            t.Positions[1][k] = d[k] * height + right[k] * 100 * scale;
-            t.Positions[2][k] = d[k] * height - up[k] * 100 * scale;
-        }
-        return t;
-    };
-    for (const auto [scale, expected] : { std::pair{ .8F, false }, std::pair{ .6F, true } }) {
-        std::vector triangles{ triangle(1, 0, true), triangle(scale, 10, false) };
-        std::vector<RoomShadowTriangle> box;
-        Box(box, 200, -200, 0);
-        for (size_t i = 2; i < box.size(); ++i) {
-            auto t = box[i];
-            t.CullBack = false;
-            for (auto& p : t.Positions) {
-                const auto source = p;
-                for (size_t k = 0; k < 3; ++k)
-                    p[k] = right[k] * source[0] + d[k] * source[1] + up[k] * source[2];
-            }
-            triangles.push_back(t);
-        }
-        auto m = BuildRoomShadowShell(1, triangles, 256);
-        ASSERT_TRUE(m);
-        EXPECT_EQ(Shell(*m, 0, sector), expected);
-    }
-}
-TEST(RoomShadowShell, ClosedBoxCeilingAndWallsAreShellsFromOutside) {
-    std::vector<RoomShadowTriangle> triangles;
-    Box(triangles);
-    const auto mesh = BuildRoomShadowShell(1, triangles, 128);
-    ASSERT_TRUE(mesh);
-    for (size_t i = 0; i < triangles.size(); ++i) {
-        if (i == 2 || i == 3)
-            continue; // Floor faces up; light sectors are above the room.
-        EXPECT_NE(mesh->ShellMasks[i], 0U) << "face triangle " << i;
-    }
-    EXPECT_TRUE(Shell(*mesh, 0, RoomShadowSector({ 0, 1, 0 })));
-    // Enclosure occluders work with either winding and without back culling.
-    for (size_t i = 2; i < triangles.size(); ++i) {
-        triangles[i].CullBack = false;
-        std::swap(triangles[i].Positions[1], triangles[i].Positions[2]);
-    }
-    const auto bothFaces = BuildRoomShadowShell(1, triangles, 128);
-    ASSERT_TRUE(bothFaces);
-    EXPECT_EQ(bothFaces->ShellMasks[0], mesh->ShellMasks[0]);
-    EXPECT_EQ(bothFaces->ShellMasks[1], mesh->ShellMasks[1]);
-    for (size_t i = 2; i < triangles.size(); ++i)
-        EXPECT_EQ(bothFaces->ShellMasks[i], 0U);
-    // Rebuilding the same geometry must produce byte-identical masks/cache.
-    const auto repeated = BuildRoomShadowShell(1, triangles, 128);
-    ASSERT_TRUE(repeated);
-    EXPECT_EQ(EncodeRoomShadowShell(*bothFaces), EncodeRoomShadowShell(*repeated));
-}
-TEST(RoomShadowShell, LoneWallOnGroundKeepsCastingFromBehind) {
-    std::vector<RoomShadowTriangle> triangles;
-    Quad(triangles, { 0, 0, -100 }, { 0, 200, -100 }, { 0, 200, 100 }, { 0, 0, 100 });
-    Quad(triangles, { -2000, 0, -2000 }, { -2000, 0, 2000 }, { 2000, 0, 2000 }, { 2000, 0, -2000 });
-    const auto mesh = BuildRoomShadowShell(1, triangles, 256);
-    ASSERT_TRUE(mesh);
-    EXPECT_EQ(mesh->ShellMasks[0], 0U);
-    EXPECT_EQ(mesh->ShellMasks[1], 0U);
-}
-TEST(RoomShadowShell, OpenSideDoesNotEncloseTheWallFacingTheOpening) {
-    std::vector<RoomShadowTriangle> triangles;
-    Box(triangles);
-    // Wide, shallow room: the open front occupies most of the back wall's
-    // hemisphere, unlike a small doorway which may still meet 75% enclosure.
-    for (auto& t : triangles)
-        for (auto& p : t.Positions)
-            p[2] *= .1F;
-    const auto closed = BuildRoomShadowShell(1, triangles, 128);
-    ASSERT_TRUE(closed);
-    EXPECT_NE(closed->ShellMasks[8], 0U);
-    EXPECT_NE(closed->ShellMasks[9], 0U);
-    triangles.resize(10); // Remove the entire front wall.
-    const auto open = BuildRoomShadowShell(1, triangles, 128);
-    ASSERT_TRUE(open);
-    EXPECT_EQ(open->ShellMasks[8], 0U);
-    EXPECT_EQ(open->ShellMasks[9], 0U);
-}
-TEST(RoomShadowShell, EnclosureIsBoundedInDistanceAndExcludesAlphaAndTransparentOccluders) {
-    std::vector<RoomShadowTriangle> triangles;
+    EXPECT_FALSE(BuildRoomShadowShell(1, triangles, 512, stop.get_token()));
+    triangles.clear();
     Box(triangles, 10000, -10000, 10000);
-    const auto far = BuildRoomShadowShell(1, triangles, 64);
-    ASSERT_TRUE(far);
-    for (const auto mask : far->ShellMasks)
-        EXPECT_EQ(mask, 0U);
-    for (bool alpha : { false, true }) {
-        triangles.clear();
-        Box(triangles);
-        for (size_t i = 2; i < triangles.size(); ++i) {
-            triangles[i].Opaque = alpha;
-            triangles[i].AlphaTest = alpha;
-        }
-        const auto open = BuildRoomShadowShell(1, triangles, 64);
-        ASSERT_TRUE(open);
-        ASSERT_EQ(open->ShellMasks.size(), 2U);
-        EXPECT_EQ(open->ShellMasks[0], 0U);
-        EXPECT_EQ(open->ShellMasks[1], 0U);
-    }
+    EXPECT_FALSE(BuildRoomShadowShell(1, triangles)); // bounded, native fallback
+    triangles.clear();
+    Roof(triangles, 0);
+    mesh = BuildRoomShadowShell(1, triangles);
+    ASSERT_TRUE(mesh);
+    for (auto mask : mesh->ShellMasks)
+        EXPECT_EQ(mask, 0U); // no interior => conservative
 }
 TEST(RoomShadowShell, SectorsWeldingFormatCorruptionAndPersistence) {
     const auto& directions = RoomShadowDirections();
@@ -325,10 +249,9 @@ TEST(RoomShadowShell, SectorsWeldingFormatCorruptionAndPersistence) {
     EXPECT_EQ(decoded->ShellMasks, mesh->ShellMasks);
     EXPECT_EQ(decoded->ContentVersion, mesh->ContentVersion);
     EXPECT_FALSE(DecodeRoomShadowShell(bytes, 42));
-    // The layout is unchanged in v2. A v1 payload with a correct checksum must
-    // still be rejected so masks built without enclosure cannot be reused.
+    // Version 2 is never reused even with a correct checksum.
     auto legacy = bytes;
-    legacy[4] = 1;
+    legacy[4] = 2;
     uint64_t legacyChecksum = 1469598103934665603ULL;
     for (size_t i = 0; i < legacy.size() - 8; ++i)
         legacyChecksum = (legacyChecksum ^ legacy[i]) * 1099511628211ULL;

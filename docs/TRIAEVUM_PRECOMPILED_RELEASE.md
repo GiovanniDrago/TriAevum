@@ -32,6 +32,17 @@ decision and remaining work are in [desktop packaging](TRIAEVUM_DESKTOP_PACKAGIN
   and grass snapshot described in `TRIAEVUM_GRAPHICS_DEFAULTS_AND_GRASS_PERFORMANCE.md`.
   This is not a change to the shared renderer's Authentic preset.
 
+## Offline interior sun
+
+Forge runs the catalogued neutral runtime's `--prebuild-interior-sun` tool mode
+before activation, passing the user's RomFS, the installation renderer cache,
+and an output manifest. This never boots a title or invokes a compiler/SDK.
+Standard and Master Quest room/setup caches are local ROM-derived data and must
+not be included in a release package. Receipts bind RomFS SHA-256, criterion
+version, runtime identity and output hashes; lazy runtime building handles a
+missing cache. See [Interior sun / offline](ROOM_SHADOW_SHELLS.md) for the command,
+format, bounds and fallback contract.
+
 ## Package boundary
 
 Ship the neutral runtime, explicitly identified translated title logic, Forge,

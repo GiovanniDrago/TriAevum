@@ -226,6 +226,7 @@ add_library(oot3d_native_pica_composition STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_a32_light_selection.cpp
     tools/oot3d/native_game_runtime/oot3d_native_static_emitters.cpp
     tools/oot3d/native_game_runtime/oot3d_native_room_shadow_shell.cpp
+    tools/oot3d/native_game_runtime/oot3d_interior_sun_prebuild.cpp
 )
 set_source_files_properties(
     tools/oot3d/native_game_runtime/oot3d_native_a32_lighting.cpp

@@ -16,24 +16,10 @@ namespace Fast::Renderer3ds {
 namespace {
 constexpr uint64_t kBasis = 1469598103934665603ULL; // Renderer FNV basis (intentionally nonstandard).
 constexpr uint32_t kMagic = 0x48535352U;            // RSSH
-constexpr size_t kHeaderBytes = 32;
+constexpr size_t kHeaderBytes = 40;
 constexpr size_t kMaximumBytes = kHeaderBytes + kMaximumRoomShadowTriangles * (3 * 12 + 3 * 4 + 8) + 8;
 double Dot(const ShadowVector& a, const ShadowVector& b) {
     return double(a[0]) * b[0] + double(a[1]) * b[1] + double(a[2]) * b[2];
-}
-ShadowVector Sub(const ShadowVector& a, const ShadowVector& b) {
-    return { a[0] - b[0], a[1] - b[1], a[2] - b[2] };
-}
-ShadowVector Cross(const ShadowVector& a, const ShadowVector& b) {
-    return { a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0] };
-}
-ShadowVector Unit(ShadowVector a) {
-    const double length = std::sqrt(Dot(a, a));
-    if (!std::isfinite(length) || length < 1.e-12)
-        return {};
-    for (auto& v : a)
-        v = float(v / length);
-    return a;
 }
 bool Finite(const ShadowVector& p) {
     return std::all_of(p.begin(), p.end(), [](float v) { return std::isfinite(v) && std::abs(v) <= 1.e8F; });
@@ -73,238 +59,179 @@ bool Valid(const RoomShadowShell& m) {
     for (const auto& p : m.Positions)
         if (!Finite(p))
             return false;
+    if (!m.Interior && std::any_of(m.ShellMasks.begin(), m.ShellMasks.end(), [](auto mask) { return mask != 0; }))
+        return false;
     for (auto i : m.Indices)
         if (i >= m.Positions.size())
             return false;
     return true;
 }
-struct Projected {
-    double X, Y, Z;
-};
-
-// Criterion version 2: room-facing space must be enclosed before any light
-// sector may omit a triangle. All distances are in the room's world units.
-constexpr uint32_t kEnclosureRays = 32;
-constexpr uint32_t kEnclosureRequiredHits = 24; // 0.75 of the uniform hemisphere.
-constexpr double kEnclosureDistance = 4000.0;
-constexpr double kEnclosureOriginOffset = 0.01;
-using RayVector = std::array<double, 3>;
-RayVector RaySub(const RayVector& a, const RayVector& b) {
-    return { a[0] - b[0], a[1] - b[1], a[2] - b[2] };
-}
-RayVector RayCross(const RayVector& a, const RayVector& b) {
-    return { a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0] };
-}
-double RayDot(const RayVector& a, const RayVector& b) {
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-RayVector RayUnit(RayVector a) {
-    const double length = std::sqrt(RayDot(a, a));
-    if (length < 1.e-12)
-        return {};
-    for (auto& component : a)
-        component /= length;
-    return a;
-}
-
-class EnclosureBvh {
-    struct Triangle {
-        RayVector A, E1, E2, Centre;
-        ShadowVector Minimum, Maximum;
-    };
-    struct Node {
-        ShadowVector Minimum, Maximum;
-        uint32_t Begin = 0, Count = 0, Left = 0, Right = 0;
-    };
-    std::vector<Triangle> mTriangles;
-    std::vector<uint32_t> mOrder;
-    std::vector<Node> mNodes;
-
-    uint32_t BuildNode(uint32_t begin, uint32_t end, std::stop_token stop) {
-        if (stop.stop_requested())
-            return 0;
-        const uint32_t index = uint32_t(mNodes.size());
-        Node node;
-        node.Minimum = mTriangles[mOrder[begin]].Minimum;
-        node.Maximum = mTriangles[mOrder[begin]].Maximum;
-        for (uint32_t i = begin + 1; i < end; ++i)
-            for (size_t axis = 0; axis < 3; ++axis) {
-                node.Minimum[axis] = std::min(node.Minimum[axis], mTriangles[mOrder[i]].Minimum[axis]);
-                node.Maximum[axis] = std::max(node.Maximum[axis], mTriangles[mOrder[i]].Maximum[axis]);
-            }
-        mNodes.push_back(node);
-        if (end - begin <= 8) {
-            mNodes[index].Begin = begin;
-            mNodes[index].Count = end - begin;
-        } else {
-            size_t axis = 0;
-            for (size_t k = 1; k < 3; ++k)
-                if (node.Maximum[k] - node.Minimum[k] > node.Maximum[axis] - node.Minimum[axis])
-                    axis = k;
-            const uint32_t middle = begin + (end - begin) / 2;
-            std::nth_element(mOrder.begin() + begin, mOrder.begin() + middle, mOrder.begin() + end,
-                             [&](uint32_t a, uint32_t b) {
-                                 const auto x = mTriangles[a].Centre[axis], y = mTriangles[b].Centre[axis];
-                                 return x != y ? x < y : a < b;
-                             });
-            const auto left = BuildNode(begin, middle, stop);
-            const auto right = BuildNode(middle, end, stop);
-            mNodes[index].Left = left;
-            mNodes[index].Right = right;
-        }
-        return index;
+// The exact trial convention: samples (2*centroid + corner)/3, not
+// two-thirds toward the corner. Double precision matches NumPy's float64.
+using D3 = std::array<double, 3>;
+constexpr double kVoxel = 12.0;
+constexpr uint8_t kMaxClosing = 20, kFar = kMaxClosing + 1;
+constexpr uint64_t kMaximumVoxelSamples = 128ULL * 1024 * 1024;
+constexpr uint64_t kMaximumRaySteps = 512ULL * 1024 * 1024;
+struct InteriorGrid {
+    D3 Low{};
+    std::array<uint32_t, 3> Size{};
+    std::vector<uint8_t> SolidDistance, Interior, Distance;
+    std::vector<uint32_t> Queue;
+    uint32_t Row = 0, Plane = 0;
+    uint32_t At(uint32_t x, uint32_t y, uint32_t z) const {
+        return x * Plane + y * Row + z;
     }
-
-    static bool Intersects(const Node& node, const RayVector& origin, const RayVector& direction) {
-        double near = 0, far = kEnclosureDistance;
-        for (size_t axis = 0; axis < 3; ++axis) {
-            if (std::abs(direction[axis]) < 1.e-15) {
-                if (origin[axis] < node.Minimum[axis] || origin[axis] > node.Maximum[axis])
+    template <class F> void Neighbours(uint32_t i, F visit) const {
+        const auto z = i % Row, x = i / Plane, y = (i % Plane) / Row;
+        if (z)
+            visit(i - 1);
+        if (z + 1 < Size[2])
+            visit(i + 1);
+        if (y)
+            visit(i - Row);
+        if (y + 1 < Size[1])
+            visit(i + Row);
+        if (x)
+            visit(i - Plane);
+        if (x + 1 < Size[0])
+            visit(i + Plane);
+    }
+    // Separable exact Manhattan distance, capped at 21: six linear passes,
+    // independent of sealing radius. No repeated dilation allocations.
+    bool Transform(std::vector<uint8_t>& d, std::stop_token stop) const {
+        for (uint32_t stride : { 1U, Row, Plane }) {
+            const uint32_t axisSize = stride == 1 ? Size[2] : stride == Row ? Size[1] : Size[0];
+            for (uint32_t i = 0; i < d.size(); ++i) {
+                if ((i & 0xfffffU) == 0 && stop.stop_requested())
                     return false;
-                continue;
+                if ((i / stride) % axisSize)
+                    d[i] = std::min(d[i], uint8_t(d[i - stride] + 1));
             }
-            double a = (node.Minimum[axis] - origin[axis]) / direction[axis];
-            double b = (node.Maximum[axis] - origin[axis]) / direction[axis];
-            if (a > b)
-                std::swap(a, b);
-            near = std::max(near, a);
-            far = std::min(far, b);
-            if (near > far)
-                return false;
+            for (uint32_t i = uint32_t(d.size()); i-- > 0;) {
+                if ((i & 0xfffffU) == 0 && stop.stop_requested())
+                    return false;
+                if ((i / stride) % axisSize + 1 < axisSize)
+                    d[i] = std::min(d[i], uint8_t(d[i + stride] + 1));
+            }
         }
         return true;
     }
-
-    // Two-sided Moller-Trumbore: a front or back intersection encloses space.
-    static bool Intersects(const Triangle& triangle, const RayVector& origin, const RayVector& direction) {
-        const auto p = RayCross(direction, triangle.E2);
-        const double determinant = RayDot(triangle.E1, p);
-        if (std::abs(determinant) < 1.e-12)
-            return false;
-        const auto offset = RaySub(origin, triangle.A);
-        const double u = RayDot(offset, p) / determinant;
-        if (u < -1.e-10 || u > 1 + 1.e-10)
-            return false;
-        const auto q = RayCross(offset, triangle.E1);
-        const double v = RayDot(direction, q) / determinant;
-        if (v < -1.e-10 || u + v > 1 + 1.e-10)
-            return false;
-        const double distance = RayDot(triangle.E2, q) / determinant;
-        return distance > 1.e-6 && distance <= kEnclosureDistance;
-    }
-
-    bool Hit(const RayVector& origin, const RayVector& direction, uint32_t source) const {
-        // Median splitting bounds depth below 20 at the 500k triangle cap.
-        std::array<uint32_t, 64> stack{};
-        size_t count = 1;
-        while (count != 0) {
-            const auto& node = mNodes[stack[--count]];
-            if (!Intersects(node, origin, direction))
-                continue;
-            if (node.Count == 0) {
-                stack[count++] = node.Left;
-                stack[count++] = node.Right;
-            } else {
-                for (uint32_t i = node.Begin; i < node.Begin + node.Count; ++i) {
-                    const uint32_t triangle = mOrder[i];
-                    if (triangle != source && Intersects(mTriangles[triangle], origin, direction))
-                        return true;
+    bool Build(const RoomShadowShell& mesh, RoomInteriorSunStats& stats, std::stop_token stop) {
+        uint64_t count = 1;
+        for (size_t k = 0; k < 3; ++k) {
+            Low[k] = double(mesh.Bounds.Minimum[k]) - kVoxel * (kMaxClosing + 3);
+            const double extent = (double(mesh.Bounds.Maximum[k]) - mesh.Bounds.Minimum[k]) / kVoxel;
+            const double dim = std::ceil(extent + 2 * (kMaxClosing + 3)) + 1;
+            if (dim > kMaximumRoomInteriorVoxels || dim < 1)
+                return false;
+            Size[k] = uint32_t(dim);
+            if (count > kMaximumRoomInteriorVoxels / Size[k])
+                return false;
+            count *= Size[k];
+        }
+        stats.Voxels = count;
+        stats.PeakWorkingBytes = count * 7; // three byte grids and one u32 flood queue.
+        Row = Size[2];
+        Plane = Size[1] * Row;
+        SolidDistance.assign(size_t(count), kFar);
+        Distance.resize(size_t(count));
+        Interior.resize(size_t(count));
+        Queue.reserve(size_t(count));
+        for (size_t t = 0; t < mesh.Indices.size(); t += 3) {
+            if (stop.stop_requested())
+                return false;
+            D3 a{}, u{}, v{};
+            double edgeSquared = 0;
+            for (size_t k = 0; k < 3; ++k) {
+                a[k] = mesh.Positions[mesh.Indices[t]][k];
+                u[k] = double(mesh.Positions[mesh.Indices[t + 1]][k]) - a[k];
+                v[k] = double(mesh.Positions[mesh.Indices[t + 2]][k]) - a[k];
+            }
+            double aa = 0, bb = 0, cc = 0;
+            for (size_t k = 0; k < 3; ++k) {
+                aa += u[k] * u[k];
+                bb += v[k] * v[k];
+                cc += (v[k] - u[k]) * (v[k] - u[k]);
+            }
+            edgeSquared = std::max({ aa, bb, cc });
+            const uint64_t steps = std::max<uint64_t>(2, uint64_t(std::ceil(std::sqrt(edgeSquared) / (kVoxel * .4))));
+            const uint64_t samples = (steps + 1) * (steps + 2) / 2;
+            if (samples > kMaximumVoxelSamples - stats.VoxelSamples)
+                return false;
+            stats.VoxelSamples += samples;
+            for (uint32_t i = 0; i <= steps; ++i) {
+                if ((i & 63U) == 0 && stop.stop_requested())
+                    return false;
+                for (uint32_t j = 0; j <= steps - i; ++j) {
+                    std::array<uint32_t, 3> p{};
+                    for (size_t k = 0; k < 3; ++k)
+                        p[k] = uint32_t(
+                            std::floor((a[k] + double(i) / steps * u[k] + double(j) / steps * v[k] - Low[k]) / kVoxel));
+                    SolidDistance[At(p[0], p[1], p[2])] = 0;
                 }
             }
         }
-        return false;
-    }
-
-  public:
-    EnclosureBvh(const RoomShadowShell& mesh, std::stop_token stop) {
-        const auto count = mesh.Indices.size() / 3;
-        mTriangles.reserve(count);
-        for (size_t i = 0; i < count; ++i) {
-            if (stop.stop_requested())
-                return;
-            const auto a = mesh.Positions[mesh.Indices[i * 3]];
-            const auto b = mesh.Positions[mesh.Indices[i * 3 + 1]];
-            const auto c = mesh.Positions[mesh.Indices[i * 3 + 2]];
-            Triangle triangle;
-            for (size_t k = 0; k < 3; ++k) {
-                triangle.A[k] = a[k];
-                triangle.E1[k] = double(b[k]) - a[k];
-                triangle.E2[k] = double(c[k]) - a[k];
-                triangle.Centre[k] = (double(a[k]) + b[k] + c[k]) / 3;
-                triangle.Minimum[k] = std::min({ a[k], b[k], c[k] });
-                triangle.Maximum[k] = std::max({ a[k], b[k], c[k] });
-            }
-            mTriangles.push_back(triangle);
-        }
-        mOrder.resize(count);
-        std::iota(mOrder.begin(), mOrder.end(), 0U);
-        mNodes.reserve(count);
-        if (count != 0)
-            BuildNode(0, uint32_t(count), stop);
-    }
-
-    bool Enclosed(uint32_t triangle) const {
-        const auto& face = mTriangles[triangle];
-        const auto normal = RayUnit(RayCross(face.E1, face.E2));
-        if (RayDot(normal, normal) < .5)
+        if (!Transform(SolidDistance, stop))
             return false;
-        const auto right =
-            RayUnit(RayCross(std::abs(normal[1]) > .9 ? RayVector{ 1, 0, 0 } : RayVector{ 0, 1, 0 }, normal));
-        const auto up = RayCross(normal, right);
-        RayVector origin = face.Centre;
-        for (size_t k = 0; k < 3; ++k)
-            origin[k] += normal[k] * kEnclosureOriginOffset;
-        // Uniform solid-angle Fibonacci hemisphere, independently of light.
-        static const auto hemisphere = [] {
-            std::array<RayVector, kEnclosureRays> result{};
-            const double angle = std::numbers::pi * (3 - std::sqrt(5.0));
-            for (uint32_t i = 0; i < kEnclosureRays; ++i) {
-                const double z = (i + .5) / kEnclosureRays, r = std::sqrt(1 - z * z);
-                result[i] = { r * std::cos(i * angle), r * std::sin(i * angle), z };
+        uint64_t previous = 0, bestNumerator = 0, bestDenominator = 1;
+        for (uint8_t closing = 2; closing <= kMaxClosing; closing += 2) {
+            std::fill(Distance.begin(), Distance.end(), kFar);
+            Queue.clear();
+            Queue.push_back(0);
+            Distance[0] = 0;
+            // The 23-voxel border is connected and remains outside even at
+            // closing=20; seeding one corner is identical to all border faces.
+            for (size_t q = 0; q < Queue.size(); ++q) {
+                if ((q & 0xfffffU) == 0 && stop.stop_requested())
+                    return false;
+                Neighbours(Queue[q], [&](uint32_t next) {
+                    if (SolidDistance[next] > closing && Distance[next] != 0) {
+                        Distance[next] = 0;
+                        Queue.push_back(next);
+                    }
+                });
             }
-            return result;
-        }();
-        uint32_t hits = 0;
-        for (uint32_t i = 0; i < kEnclosureRays; ++i) {
-            RayVector direction;
-            for (size_t k = 0; k < 3; ++k)
-                direction[k] = right[k] * hemisphere[i][0] + up[k] * hemisphere[i][1] + normal[k] * hemisphere[i][2];
-            hits += Hit(origin, direction, triangle);
-            if (hits >= kEnclosureRequiredHits)
-                return true;
-            if (hits + kEnclosureRays - i - 1 < kEnclosureRequiredHits)
+            if (!Transform(Distance, stop))
                 return false;
+            uint64_t volume = 0;
+            for (size_t i = 0; i < count; ++i)
+                volume += SolidDistance[i] != 0 && Distance[i] > closing;
+            const auto denominator = std::max<uint64_t>(previous, 1);
+            if (closing > 2 && (stats.ClosingSteps == 0 || volume * bestDenominator > bestNumerator * denominator)) {
+                bestNumerator = volume;
+                bestDenominator = denominator;
+                stats.ClosingSteps = closing;
+                stats.InteriorVoxels = volume;
+                for (size_t i = 0; i < count; ++i)
+                    Interior[i] = SolidDistance[i] != 0 && Distance[i] > closing;
+            }
+            previous = volume;
         }
-        return false;
+        return true;
+    }
+    bool Entered(const D3& sample, const D3& direction, RoomInteriorSunStats& stats, std::stop_token stop) const {
+        for (uint32_t step = 0;; ++step) {
+            if (++stats.RaySteps > kMaximumRaySteps || ((step & 255U) == 0 && stop.stop_requested()))
+                throw std::runtime_error("interior-sun trace cancelled or work bound exceeded");
+            const double distance = 2 * kVoxel + step * (.5 * kVoxel);
+            std::array<int, 3> p{};
+            for (size_t k = 0; k < 3; ++k) {
+                p[k] = int(std::floor((sample[k] + direction[k] * distance - Low[k]) / kVoxel));
+                if (p[k] < 0 || p[k] >= int(Size[k]))
+                    return false;
+            }
+            if (Interior[At(p[0], p[1], p[2])])
+                return true;
+        }
     }
 };
-double Edge(const Projected& a, const Projected& b, double x, double y) {
-    return (b.X - a.X) * (y - a.Y) - (b.Y - a.Y) * (x - a.X);
-}
-// Identical sample coverage in both passes; stable lower-index ownership of
-// exact depth ties. Double-sided occluders take part in the first-depth pass.
-template <class F> void Raster(const std::array<Projected, 3>& p, uint32_t size, F visit) {
-    const double area = Edge(p[0], p[1], p[2].X, p[2].Y);
-    if (std::abs(area) < 1.e-10)
-        return;
-    const int x0 = std::max(0, int(std::ceil(std::min({ p[0].X, p[1].X, p[2].X }) - .5)));
-    const int x1 = std::min(int(size) - 1, int(std::floor(std::max({ p[0].X, p[1].X, p[2].X }) - .5)));
-    const int y0 = std::max(0, int(std::ceil(std::min({ p[0].Y, p[1].Y, p[2].Y }) - .5)));
-    const int y1 = std::min(int(size) - 1, int(std::floor(std::max({ p[0].Y, p[1].Y, p[2].Y }) - .5)));
-    for (int y = y0; y <= y1; ++y)
-        for (int x = x0; x <= x1; ++x) {
-            const double a = Edge(p[1], p[2], x + .5, y + .5) / area;
-            const double b = Edge(p[2], p[0], x + .5, y + .5) / area;
-            const double c = 1 - a - b;
-            if (a >= -1.e-10 && b >= -1.e-10 && c >= -1.e-10)
-                visit(size_t(y) * size + x, a * p[0].Z + b * p[1].Z + c * p[2].Z);
-        }
-}
 } // namespace
 
 bool RoomShadowShellScene::Ready() const noexcept {
-    return !Rooms.empty() && std::all_of(Rooms.begin(), Rooms.end(),
-                                         [](const auto& r) { return r.Mesh && r.Mesh->Fingerprint == r.Fingerprint; });
+    return !Rooms.empty() && std::all_of(Rooms.begin(), Rooms.end(), [](const auto& r) {
+        return r.Mesh && r.Mesh->Fingerprint == r.Fingerprint && r.Mesh->Interior == r.Interior;
+    });
 }
 const std::array<ShadowVector, kRoomShadowSectorCount>& RoomShadowDirections() {
     static const auto directions = [] {
@@ -332,93 +259,83 @@ uint32_t RoomShadowSector(const ShadowVector& light) noexcept {
 }
 std::shared_ptr<const RoomShadowShell> BuildRoomShadowShell(uint64_t fingerprint,
                                                             std::span<const RoomShadowTriangle> input, uint32_t size,
-                                                            std::stop_token stop) {
-    if (input.size() > kMaximumRoomShadowTriangles || size < 8 || size > 2048)
+                                                            std::stop_token stop, bool interior,
+                                                            RoomInteriorSunStats* suppliedStats) {
+    RoomInteriorSunStats stats;
+    struct Publish {
+        RoomInteriorSunStats* Output;
+        RoomInteriorSunStats& Value;
+        ~Publish() {
+            if (Output)
+                *Output = Value;
+        }
+    } publish{ suppliedStats, stats };
+    if (input.size() > kMaximumRoomShadowTriangles || size < 8 || size > 2048 || stop.stop_requested())
         return {};
     auto result = std::make_shared<RoomShadowShell>();
     result->Fingerprint = fingerprint;
     result->RasterSize = size;
+    result->Interior = interior;
     std::map<ShadowVector, uint32_t> welded;
-    std::vector<ShadowVector> normals;
-    std::vector<bool> eligible;
     for (const auto& t : input) {
         if (stop.stop_requested())
             return {};
         if (!t.Opaque || t.AlphaTest)
             continue;
-        for (const auto& p : t.Positions)
+        for (auto p : t.Positions) {
             if (!Finite(p))
                 return {};
-        for (auto p : t.Positions) {
             for (auto& v : p)
                 if (v == 0)
-                    v = 0; // canonical +0
+                    v = 0;
             auto [it, added] = welded.try_emplace(p, uint32_t(result->Positions.size()));
             if (added)
                 result->Positions.push_back(p);
             result->Indices.push_back(it->second);
         }
-        normals.push_back(Unit(Cross(Sub(t.Positions[1], t.Positions[0]), Sub(t.Positions[2], t.Positions[0]))));
-        eligible.push_back(t.CullBack);
     }
-    result->ShellMasks.resize(normals.size());
+    result->ShellMasks.resize(result->Indices.size() / 3);
     Bounds(*result);
-    if (!normals.empty()) {
-        const EnclosureBvh enclosure(*result, stop);
-        for (uint32_t i = 0; i < eligible.size(); ++i) {
-            if (stop.stop_requested())
+    if (interior && !result->Indices.empty()) {
+        try {
+            InteriorGrid grid;
+            if (!grid.Build(*result, stats, stop))
                 return {};
-            eligible[i] = eligible[i] && enclosure.Enclosed(i);
-        }
-    }
-    if (!normals.empty())
-        for (uint32_t sector = 0; sector < kRoomShadowSectorCount; ++sector) {
-            if (stop.stop_requested())
-                return {};
-            const auto direction = RoomShadowDirections()[sector];
-            const auto right = Unit(
-                Cross(std::abs(direction[1]) > .9F ? ShadowVector{ 1, 0, 0 } : ShadowVector{ 0, 1, 0 }, direction));
-            const auto up = Cross(direction, right);
-            std::vector<Projected> positions;
-            double minX = 1.e300, minY = 1.e300, maxX = -1.e300, maxY = -1.e300;
-            for (const auto& p : result->Positions) {
-                Projected q{ Dot(p, right), Dot(p, up), Dot(p, direction) };
-                positions.push_back(q);
-                minX = std::min(minX, q.X);
-                maxX = std::max(maxX, q.X);
-                minY = std::min(minY, q.Y);
-                maxY = std::max(maxY, q.Y);
-            }
-            const double scale = double(size - 2) / std::max({ maxX - minX, maxY - minY, 1.e-6 });
-            for (auto& p : positions) {
-                p.X = 1 + (p.X - minX) * scale;
-                p.Y = 1 + (p.Y - minY) * scale;
-            }
-            std::vector<double> depth(size_t(size) * size, -std::numeric_limits<double>::infinity());
-            std::vector<uint32_t> first(depth.size(), UINT32_MAX), covered(normals.size()), visible(normals.size());
-            for (uint32_t i = 0; i < normals.size(); ++i) {
-                if ((i & 1023U) == 0 && stop.stop_requested())
-                    return {};
-                std::array<Projected, 3> p;
-                for (size_t j = 0; j < 3; ++j)
-                    p[j] = positions[result->Indices[size_t(i) * 3 + j]];
-                Raster(p, size, [&](size_t pixel, double z) {
-                    ++covered[i];
-                    if (z > depth[pixel]) {
-                        depth[pixel] = z;
-                        first[pixel] = i;
+            // No detected interior: conservative two-sided geometry, not all
+            // triangles omitted. This is reported in prebuild diagnostics.
+            if (stats.InteriorVoxels) {
+                const double angle = std::numbers::pi * (3 - std::sqrt(5.0));
+                for (uint32_t sector = 0; sector < kRoomShadowSectorCount; ++sector) {
+                    const double y = (sector + .5) / kRoomShadowSectorCount, r = std::sqrt(1 - y * y);
+                    const D3 d{ r * std::cos(sector * angle), y, r * std::sin(sector * angle) };
+                    for (size_t t = 0; t < result->ShellMasks.size(); ++t) {
+                        if (stop.stop_requested())
+                            return {};
+                        std::array<D3, 4> samples{};
+                        for (size_t k = 0; k < 3; ++k) {
+                            for (size_t j = 0; j < 3; ++j)
+                                samples[0][k] += double(result->Positions[result->Indices[3 * t + j]][k]);
+                            samples[0][k] /= 3;
+                            for (size_t j = 0; j < 3; ++j)
+                                samples[j + 1][k] =
+                                    (2 * samples[0][k] + result->Positions[result->Indices[3 * t + j]][k]) / 3;
+                        }
+                        uint32_t entered = 0;
+                        for (const auto& sample : samples) {
+                            entered += grid.Entered(sample, d, stats, stop);
+                            if (entered >= 2)
+                                break;
+                        }
+                        if (entered <= 1)
+                            result->ShellMasks[t] |= uint64_t{ 1 } << sector;
                     }
-                });
+                }
             }
-            for (auto i : first)
-                if (i != UINT32_MAX)
-                    ++visible[i];
-            for (size_t i = 0; i < normals.size(); ++i)
-                if (eligible[i] && Dot(normals[i], direction) < -.25 && covered[i] != 0 &&
-                    uint64_t(visible[i]) * 2 >= covered[i])
-                    result->ShellMasks[i] |= uint64_t{ 1 } << sector;
-        }
+        } catch (const std::exception&) { return {}; }
+    }
     const auto encoded = EncodeRoomShadowShell(*result);
+    if (encoded.empty())
+        return {};
     result->ContentVersion = Get(encoded, encoded.size() - 8, 8);
     return result;
 }
@@ -434,6 +351,8 @@ std::vector<uint8_t> EncodeRoomShadowShell(const RoomShadowShell& mesh) {
     Put(bytes, mesh.RasterSize, 4);
     Put(bytes, mesh.Positions.size(), 4);
     Put(bytes, mesh.ShellMasks.size(), 4);
+    Put(bytes, mesh.Interior ? 1 : 0, 4);
+    Put(bytes, 0, 4);
     for (const auto& p : mesh.Positions)
         for (auto v : p)
             Put(bytes, std::bit_cast<uint32_t>(v), 4);
@@ -444,11 +363,13 @@ std::vector<uint8_t> EncodeRoomShadowShell(const RoomShadowShell& mesh) {
     Put(bytes, Checksum(bytes), 8);
     return bytes;
 }
-std::shared_ptr<const RoomShadowShell> DecodeRoomShadowShell(std::span<const uint8_t> bytes, uint64_t fingerprint) {
+std::shared_ptr<const RoomShadowShell> DecodeRoomShadowShell(std::span<const uint8_t> bytes, uint64_t fingerprint,
+                                                             bool interior) {
     try {
         if (bytes.size() < kHeaderBytes + 8 || bytes.size() > kMaximumBytes || Get(bytes, 0, 4) != kMagic ||
             Get(bytes, 4, 4) != kRoomShadowShellVersion || Get(bytes, 8, 8) != fingerprint ||
-            Get(bytes, 16, 4) != kRoomShadowSectorCount || Get(bytes, 20, 4) < 8 || Get(bytes, 20, 4) > 2048)
+            Get(bytes, 16, 4) != kRoomShadowSectorCount || Get(bytes, 20, 4) < 8 || Get(bytes, 20, 4) > 2048 ||
+            Get(bytes, 32, 4) != uint32_t(interior) || Get(bytes, 36, 4) != 0)
             return {};
         const size_t vertices = Get(bytes, 24, 4), triangles = Get(bytes, 28, 4);
         if (triangles > kMaximumRoomShadowTriangles || vertices > kMaximumRoomShadowTriangles * 3 ||
@@ -459,6 +380,7 @@ std::shared_ptr<const RoomShadowShell> DecodeRoomShadowShell(std::span<const uin
             return {};
         auto mesh = std::make_shared<RoomShadowShell>();
         mesh->Fingerprint = fingerprint;
+        mesh->Interior = interior;
         mesh->ContentVersion = checksum;
         mesh->RasterSize = uint32_t(Get(bytes, 20, 4));
         size_t at = kHeaderBytes;
@@ -484,16 +406,17 @@ std::shared_ptr<const RoomShadowShell> DecodeRoomShadowShell(std::span<const uin
         return mesh;
     } catch (const std::exception&) { return {}; }
 }
-std::filesystem::path RoomShadowShellPath(const std::filesystem::path& directory, uint64_t fingerprint) {
+std::filesystem::path RoomShadowShellPath(const std::filesystem::path& directory, uint64_t fingerprint, bool interior) {
     char name[32];
-    std::snprintf(name, sizeof(name), "%016llx.bin", static_cast<unsigned long long>(fingerprint));
+    std::snprintf(name, sizeof(name), "%016llx%s.bin", static_cast<unsigned long long>(fingerprint),
+                  interior ? "" : "-exterior");
     return directory / "shadow-shells" / name;
 }
-std::shared_ptr<const RoomShadowShell> LoadRoomShadowShell(const std::filesystem::path& directory,
-                                                           uint64_t fingerprint) {
+std::shared_ptr<const RoomShadowShell> LoadRoomShadowShell(const std::filesystem::path& directory, uint64_t fingerprint,
+                                                           bool interior) {
     if (directory.empty())
         return {};
-    std::ifstream file(RoomShadowShellPath(directory, fingerprint), std::ios::binary | std::ios::ate);
+    std::ifstream file(RoomShadowShellPath(directory, fingerprint, interior), std::ios::binary | std::ios::ate);
     const auto length = file.tellg();
     if (!file || length < 0 || uint64_t(length) > kMaximumBytes)
         return {};
@@ -501,7 +424,7 @@ std::shared_ptr<const RoomShadowShell> LoadRoomShadowShell(const std::filesystem
     file.seekg(0);
     if (!file.read(reinterpret_cast<char*>(bytes.data()), std::streamsize(bytes.size())))
         return {};
-    auto mesh = DecodeRoomShadowShell(bytes, fingerprint);
+    auto mesh = DecodeRoomShadowShell(bytes, fingerprint, interior);
     return mesh && mesh->RasterSize == kRoomShadowRasterSize ? mesh : nullptr;
 }
 bool SaveRoomShadowShell(const std::filesystem::path& directory, const RoomShadowShell& mesh, std::string* error) {
@@ -516,7 +439,8 @@ bool SaveRoomShadowShell(const std::filesystem::path& directory, const RoomShado
             *error = "invalid shell mesh";
         return false;
     }
-    return Renderer::WriteCacheFileAtomically(RoomShadowShellPath(directory, mesh.Fingerprint), {}, bytes, error);
+    return Renderer::WriteCacheFileAtomically(RoomShadowShellPath(directory, mesh.Fingerprint, mesh.Interior), {},
+                                              bytes, error);
 }
 std::vector<RoomShadowShellVertex> RoomShadowShellVertices(const RoomShadowShell& mesh) {
     std::vector<RoomShadowShellVertex> result;

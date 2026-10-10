@@ -1,3 +1,4 @@
+#include "oot3d_interior_sun_prebuild.h"
 #include <cstdlib>
 #include "oot3d_game_language.h"
 #include <array>
@@ -140,6 +141,8 @@ NativeGameArguments PrepareNativeGameArguments(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     try {
+        if (argc >= 2 && std::string_view(argv[1]) == "--prebuild-interior-sun")
+            return Oot3dNativeGame::InteriorSunToolMain(argc, argv);
 #if defined(__ANDROID__)
         InitializeAndroidGameHost();
 #endif

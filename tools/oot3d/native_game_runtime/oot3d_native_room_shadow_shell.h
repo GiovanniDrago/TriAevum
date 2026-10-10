@@ -20,11 +20,30 @@ ParseNativeRoomShadowCmb(std::span<const uint8_t> bytes);
 // The room loader relocates mesh+4 to an absolute guest pointer. Command
 // arguments and CMB entry offsets remain relative to CommandsAddress.
 enum class NativeRoomShadowSource { Installed, File };
+// Authored selected headers, never the mutable live environment flags.
+struct NativeSunHeader {
+  uint32_t CommandOffset = 0;
+  std::optional<uint32_t> MeshOffset;
+  std::optional<uint8_t> SunMoonDisabled, Skybox, EnvironmentLightMode;
+};
+[[nodiscard]] std::optional<NativeSunHeader>
+ReadNativeSunHeader(uint32_t commandsBase, uint32_t setup,
+                    oot3d::recomp::a32::MemoryBus &memory);
+[[nodiscard]] bool
+NativeRoomIsInterior(const std::optional<NativeSunHeader> &room,
+                     const std::optional<NativeSunHeader> &scene);
+[[nodiscard]] uint64_t NativeRoomSunFingerprint(uint64_t roomFingerprint,
+                                                uint32_t commandOffset);
+// Include copied CMB content: standard/MQ rooms can share the first 128 header
+// bytes while containing different geometry. Also invalidates edited RomFS.
+[[nodiscard]] uint64_t
+NativeRoomSunContentFingerprint(uint64_t setupFingerprint,
+                                std::span<const std::vector<uint8_t>> cmbs);
 [[nodiscard]] std::optional<std::vector<std::vector<uint8_t>>>
 CaptureNativeRoomShadowCmbs(
     const NativeLoadedRoom &room, oot3d::recomp::a32::MemoryBus &memory,
     NativeRoomShadowSource source = NativeRoomShadowSource::Installed,
-    std::string *error = nullptr);
+    std::string *error = nullptr, uint32_t setup = 0);
 
 class NativeRoomShadowShells {
 public:
@@ -35,7 +54,7 @@ public:
   // Disabled: no directory lookup, guest reads, allocations or worker start.
   [[nodiscard]] std::shared_ptr<const Fast::Renderer3ds::RoomShadowShellScene>
   Capture(bool enabled, uint64_t scope, std::span<const NativeLoadedRoom> rooms,
-          oot3d::recomp::a32::MemoryBus &memory);
+          oot3d::recomp::a32::MemoryBus &memory, uint32_t playState = 0);
 
 private:
   struct Impl;

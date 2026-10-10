@@ -210,13 +210,13 @@ public:
     ImGui::SeparatorText("Shadows");
     ImGui::BeginDisabled(!supported);
     int faces = static_cast<int>(value.CasterFaces);
-    if (ImGui::Combo("Shadow caster faces", &faces, "Native\0Both faces\0Interior shells pass light\0")) {
+    if (ImGui::Combo("Shadow caster faces", &faces, "Native\0Both faces\0Interior sun / offline\0")) {
       value.CasterFaces = static_cast<Fast::Renderer3ds::ShadowCasterFaces>(faces);
       changed = true;
     }
     ImGui::EndDisabled();
     ImGui::TextWrapped("Native uses the title's face culling. Both faces closes one-sided gaps. "
-                       "Interior shells pass light lets the outer ceiling admit the key light while inner roofs, "
+                       "Interior sun uses offline room data to admit the key light into authored interiors. Inner roofs, "
                        "walls and foliage still cast. Rooms use both faces while their local cache is prepared.");
     if (changed)
       mRuntime->Preview(value, state.Revision);

@@ -1,159 +1,196 @@
-# Interior shells pass light
+# Interior sun / offline
 
 `shadowCasterFaces` accepts `native`, `both`, and `interiorShells`. The base
-environment uses `interiorShells`; existing `shadowCasterCulling` values keep
-their meaning (`true` = native, `false` = both). The new field takes precedence.
-F1 exposes these choices under Lighting > Lights & Shadows.
+modern environment still defaults to `interiorShells`. F1 calls it **Interior
+sun / offline**, under Lighting > Lights & Shadows > Scene lights > Shadows.
+The JSON spelling is retained for compatibility. Legacy `shadowCasterCulling`
+keeps its meaning (`true` = native, `false` = both); the new field takes precedence.
 
-The OOT3D adapter snapshots the installed room command lists and bounded CMB
-payloads on the guest thread. One lazy worker parses rigid bind geometry,
-computes shell masks, and writes a local cache. Alpha-tested/blended geometry
-stays native. Unsupported skinned or non-triangle opaque geometry makes that
-room ineligible for replacement. No worker or room reads start while this
-mode or directional shadows are disabled.
+Forge computes room masks from the user's own RomFS during installation. The
+shipped runtime has an offline tool mode; no title plugin, guest process, GPU,
+window, compiler, or SDK is needed. Missing or invalid caches use the same
+shared builder in a lazy runtime worker. Nothing ROM-derived is packaged.
 
-Installed room mesh headers differ from raw ZSI files: the title relocates
-`mesh+4` (the entry-table pointer) to an absolute guest address. Command
-arguments and CMB offsets in that table remain relative to the command-list
-base. The adapter explicitly distinguishes installed memory from raw files
-and validates the relocated table against the same bounded room span.
+## Authored indoor/outdoor classification
 
-Draws do not identify individual rooms, so replacement is atomic across all
-loaded rooms. Pending, malformed, unsupported, or failed GPU uploads retain
-the previous two-sided native caster path. Immutable room snapshots travel
-with the scene's light binding. Contact shadows still use native geometry.
-Actors and alpha-tested draws remain native two-sided directional casters.
+The OOT3D adapter reads the **selected setup's authored commands**, independently
+of mutable live environment flags:
 
-Opaque CMB draws commonly keep the PICA blend unit enabled with ADD and
-ONE/ZERO for both RGB and alpha. This is opaque replacement and qualifies for
-room shells; the enable bit alone does not imply translucency. Replacement
-requires scene-domain opaque CMB ownership, without actor/projected-shadow or
-isolated-lighting ownership. Unknown, UI, atmosphere, transparent-pass,
-alpha-tested, and genuinely blended draws keep their native geometry.
+| Room command 0x12 byte 5 | Scene command 0x11 | Classification |
+| --- | --- | --- |
+| Sun/moon disabled, nonzero | Any | Indoor |
+| Sun/moon enabled, zero | Environment mode (byte 6) = 0 | Outdoor |
+| Sun/moon enabled, zero | Mode = 1, skybox ID (byte 4) = 0 | Indoor |
+| Sun/moon enabled, zero | Mode = 1, sky family 1/4/5/0x1d/6/8 | Outdoor |
+| Missing, malformed, or unknown | Otherwise | Outdoor |
 
-The shared builder welds exact world positions. For sector `s` in `[0,63]`,
-its Y-up Fibonacci direction is:
+The EUR adapter reads the scene resource base at `PlayState+0x110` and selected
+setup at `SaveContext+0x4e8` (`0x588e40`). Command 0x18 chooses the relative
+alternate header. A null alternative continues the base header; null setup 3
+first tries setup 2, matching native handler `00378ff8`. Traversal, pointers,
+setup counts, and cycles are bounded. The offline tool uses this same parser
+for every advertised setup, including standard and Master Quest room files.
+
+Indoor rooms receive interior-sun masks. Outdoor and unknown rooms keep all
+opaque geometry casting from both faces, with zero masks and no voxel work.
+Unusable geometry retains native two-sided casting. There are no scene-name
+exceptions. Class is explicit in the cache header, filename and published
+snapshot; a mesh from the other class cannot become ready.
+
+## Shared version-3 builder
+
+1. Extract complete rigid opaque room geometry. Bind transforms use
+   `Rz * Ry * Rx * S` and the parent chain. Weld exact world positions while
+   retaining triangle order. Alpha-tested/blended geometry stays native;
+   unsupported opaque skinning or topology prevents partial replacement.
+2. Voxelize at **12 world units**, with a 23-voxel border. For each triangle,
+   sample the barycentric lattice with `k=max(2,ceil(longest_edge/4.8))`.
+3. For closing radii **2,4,...,20**, dilate solid with six-neighbour connectivity,
+   flood the exterior from the grid border, and regrow that exterior by the
+   same radius. Interior is neither original solid nor regrown exterior.
+   Choose the largest consecutive relative increase in interior volume,
+   dividing by `max(previous_volume,1)`. First tie wins; the first candidate
+   is radius 4. Capped Manhattan distance transforms implement the exact
+   six-neighbour dilations; padding makes a corner flood equivalent to seeding
+   every border face.
+4. For each triangle and each of **64 Y-up Fibonacci directions toward the
+   source**, sample the centroid and `(2*centroid+corner)/3` for each corner.
+   These are one-third toward the corners, following the approved Python
+   code (the trial's prose described them differently).
+5. March each sample toward the light, starting at **24 units**, stepping by
+   **6 units** until outside the grid. Record whether it ever meets an interior
+   voxel. Set the triangle's drop bit only if **at least 3 of 4 samples never
+   enter**. Once a source ray has entered, later exits/reentries never reset
+   admission. Winding and native face culling do not change this criterion.
+
+For sector `s`, `y=(s+.5)/64`, `a=s*pi*(3-sqrt(5))`, and
+`d=(sqrt(1-y*y)*cos(a), y, sqrt(1-y*y)*sin(a))`. The renderer chooses the
+maximum-dot sector and degenerates masked triangles in its cull-none vertex
+shader. Mesh checksum, sector and raster bias invalidate static shadow pages.
+
+Bounds are **500,000 input triangles**, **64 Mi voxels**, **128 Mi voxelization
+samples**, and **512 Mi ray steps** per build. The grid's maximum allocation is
+seven bytes per voxel (three byte grids and one u32 flood queue), at most
+448 MiB, plus bounded geometry/encoding storage. Cancellation is checked during
+voxelization, distance passes, flood fill and tracing. Bounds/cancellation return
+no replacement mesh, preserving native two-sided casting. If no interior is
+detected, a valid zero-mask mesh is published conservatively; this deliberately
+differs from the trial's all-drop result for a wholly empty interior volume.
+
+This implements the approved per-room triangle-mask trial. It does not add
+inter-room admission domains or receiver-specific admission pages from the
+longer-term design discussion. Openings smaller than the chosen closing radius
+may be sealed; geometry within the 24-unit sample start remains subject to the
+trial's sampling approximation.
+
+## Offline invocation and Forge receipt
 
 ```
-y = (s + 0.5) / 64
-a = s * pi * (3 - sqrt(5))
-d = (sqrt(1-y*y)*cos(a), y, sqrt(1-y*y)*sin(a))
+TriAevum.exe --prebuild-interior-sun --romfs <directory-or-image> \
+  --renderer-cache-directory <renderer-cache> --manifest <result.json>
 ```
 
-Each direction projects the whole room into a square 512-by-512 raster with
-a one-texel border. The greatest `dot(position,d)` owns each covered pixel
-centre. A natively back-culled triangle is a shell only if its world-space
-winding normal has `dot(normal,d) < -0.25` and it owns at least half of its
-covered pixels **and the space on its front side is enclosed**. Uncovered
-triangles keep casting. Layers are never peeled again after the first surface;
-inner roofs at every height remain occluders.
+The mode accepts a RomFS directory containing `scene/`, a raw Level-3 image,
+or an IVFC image with Level-3 at 0x1000, matching Forge's existing RomFS inputs.
+It reads bounded metadata/payloads, enumerates standard and `_dd` room files,
+resolves scene and room alternatives together, and writes caches atomically.
+The JSON manifest records each room/setup, class, cache path, build/hit/fallback,
+triangle count, time, chosen closing radius, interior voxels and peak grid bytes.
+Repeated identical identities reuse the first result. Missing/unsupported
+geometry or a work bound produces an explained native fallback. Invalid input
+images, failed cache writes and failed manifest writes return a tool error.
 
-Enclosure is computed once per triangle, independently of the 64 light
-directions, and ANDed into their masks. Its constants are part of criterion
-version 2:
+`tools/triaevum_release/interior_sun.py` invokes the integrity-checked catalog
+runtime through `native_process.run_native`, preserving the frozen-app DLL
+search/environment handling and hidden-window convention. The stage runs before
+transactional activation and uses the same renderer directory passed to the
+game. Receipts under `data/interior-sun/` bind **actual RomFS SHA-256, criterion
+version 3, runtime SHA-256 and cache directory**. Reuse verifies manifest identity,
+cache headers and every output SHA-256. Missing, altered or old outputs rerun the
+tool. A failed process cannot publish a successful receipt. No compilation path
+or packaged ROM-derived asset is introduced.
 
-- Cast **32** deterministic, uniform solid-angle Fibonacci rays over the
-  hemisphere around the triangle's winding/front normal. Room shells face
-  inward, so this is the space light enters after passing the shell.
-- Start at the centroid plus **0.01 world units** along that normal, exclude
-  the source triangle, and accept intersections at distances greater than
-  `1e-6` and no farther than **4000 world units**.
-- Require **at least 24 hits out of 32 (0.75)**. Stop counting early only when
-  the final pass/fail result is already determined.
-- Intersect the room's opaque, non-alpha-tested triangles with either winding,
-  including double-sided triangles, through a deterministic median-split BVH
-  with at most eight triangles per leaf. Rays and triangle intersections use
-  double precision; there is no dependency on runtime visibility or actors.
+## Cache format and identity, version 3
 
-For sample `i`, local hemisphere height is `(i+0.5)/32` and azimuth is
-`i*pi*(3-sqrt(5))`. A tangent basis around the front normal rotates these
-directions into world space. This keeps a lone wall over a ground plane
-casting from behind: the open sky prevents 75% enclosure. Closed room walls
-and ceilings qualify; a broad opening can disqualify the wall facing it.
-A small doorway can still leave enough of the hemisphere enclosed to qualify.
+Files live under `${TRIAEVUM_RENDERER_CACHE_DIR}/shadow-shells/`:
+`<16-hex-fingerprint>.bin` for indoor and `<fingerprint>-exterior.bin` for outdoor.
+An empty renderer directory disables persistence but permits lazy memory builds.
 
-The renderer selects the maximum-dot sector for each shadow keyframe and
-degenerates masked triangles in a cull-none vertex shader. The mesh checksum,
-sector, and raster bias enter its static-page content identity.
+The OOT3D key starts with the legacy FNV hash of command bytes `[0,128)` (file
+`[0x10,0x90)`). Nonzero selected command offsets are folded into a 13-byte key:
+base hash as u64, offset as u32, and byte 3. The resulting value seeds hashing of
+each captured CMB's u64 length and bytes, in relative-address order. Thus rooms
+with identical headers but different standard/MQ CMB content cannot share masks.
+The installed room's relocated mesh entry-table pointer is handled separately;
+command arguments and CMB offsets remain relative to the resource base.
 
-## Cache format/criterion, version 2
+All fields are little-endian. The **40-byte header** is `u32 magic` (`RSSH`),
+`u32 version`, `u64 fingerprint`, `u32 sector count`, `u32 legacy raster size`,
+`u32 vertex count`, `u32 triangle count`, `u32 interior` (0/1), `u32 reserved` (0).
+Payload is float32 XYZ welded positions, three u32 indices per triangle, u64
+masks, then a u64 checksum of all preceding bytes. The FNV-1a basis is the
+intentionally nonstandard **1469598103934665603**, prime **1099511628211**.
 
-Location: `${TRIAEVUM_RENDERER_CACHE_DIR}/shadow-shells/<16-digit-lowercase-fingerprint>.bin`.
-An unset/empty directory disables persistence, but still allows an in-memory
-build. Cache contents are ROM-derived and local. Only installed room entries
-and one active worker build are retained; stale queued builds are discarded.
+Reads check version, identity/class, exact length, checksum, finite coordinates,
+counts and indices; outdoor masks must be zero. Versions 1/2 are rejected and
+rebuilt. The legacy raster field remains 512 for runtime compatibility but is
+not used by the voxel algorithm. Writes use the renderer's atomic cache helper.
 
-All fields are little-endian. The 32-byte header is `u32 magic` (`RSSH`),
-`u32 version`, `u64 room fingerprint`, `u32 sector count`, `u32 raster size`,
-`u32 vertex count`, `u32 triangle count`. It is followed by float32 XYZ welded
-positions, three u32 indices per triangle, a u64 mask per triangle, and a u64
-checksum of all preceding bytes. Both checksum and room fingerprint use the
-renderer FNV-1a basis **1469598103934665603** (intentionally nonstandard) and
-prime 1099511628211. The room fingerprint covers file bytes `[0x10,0x90)`.
+Only loaded room requests and one active worker build remain in memory; retired
+queued work is dropped. Runtime request identity also includes source address
+and scene scope. Immutable snapshots carry class through the light binding.
+Replacement is atomic across loaded rooms because native draws have no individual
+room provenance. Pending, failed or mixed snapshots retain native two-sided
+architecture. Actors, foliage/alpha draws and contact shadows retain native
+geometry. Enabled PICA blend with ADD and ONE/ZERO is treated as opaque.
 
-Reads validate version, key, exact byte length, checksum, finite coordinates,
-counts, and indices. Runtime disk loads require the production raster size
-512; smaller test rasters cannot be reused by the runtime. Bad/missing files
-are rebuilt; writes use the renderer's atomic replacement helper.
-Version 2 keeps the byte layout but adds the enclosure criterion. Version 1
-files are rejected even with a valid checksum and rebuilt at the same path.
+## Validation and game lab
 
-## Validation
+- `renderer3ds_room_shadow_shell_tests`: roof and inner platform/stack, separated
+  volumes with leave/reentry, winding independence, authored outdoor zero masks,
+  cancellation/bounds, v3 corruption/persistence/class checks and GPU shader.
+- `oot3d_native_room_shadow_shell_tests`: CMB parsing, synthetic selected headers,
+  setup-3 fallback/cycles, class changes, publication, standard/MQ inventory,
+  directory/raw-Level-3/IVFC equivalence, malformed images and cache reuse.
+  Optional scene-directory argument validates user ROM geometry; developer
+  `--compare-trial <approved-v2-cache>` compares all 64 bits, and
+  `--benchmark-room <room.zsi>` measures fresh builds using authored classification.
+- Forge `test_interior_sun.py` and `test_precompiled_titles.py`: receipt reuse,
+  corruption/missing-output regeneration, RomFS/runtime/version invalidation,
+  failed tool/malformed manifest and shared cache routing before activation.
+- `triaevum_f1_settings_smoke --scene-environment`: real mode-label selection,
+  preview/publication, defaults and persistence.
 
-Owning-boundary targets: `renderer3ds_room_shadow_shell_tests`,
-`oot3d_native_room_shadow_shell_tests`, `oot3d_pica_scene_frame_tests`,
-`triaevum_environment_tests`, `triaevum_f1_settings_smoke --scene-environment`.
-The adapter test optionally accepts an extracted ROM scene directory for
-read-only CMB validation. GPU and in-game visual checks are separate; the
-implementation work does not launch the game. A Forge prebuild mode is deferred.
-Builder tests include closed ceilings/walls, a lone wall on a ground plane,
-a box with an open side, the 4000-unit range, two-sided enclosure occluders,
-non-occluding alpha/transparent geometry, first-layer/majority behavior, and
-rejection of checksummed version 1 caches.
+In the game lab, check Deku Tree admission and inner platforms against the approved
+trial; Zora's Domain, Temple of Time and Shadow Temple; Forest Temple courtyards
+and Hyrule Field remaining two-sided; alternate setups/Master Quest; room
+transitions with both loaded rooms; and first launch showing `event=cache_hit`
+for prebuilt rooms. Remove one disposable cache and verify one lazy rebuild.
+Use a separate lab profile/cache; no play-kokiri settings are required to change.
 
-`oot3d_native_room_shadow_shell_tests --benchmark-room <room_info.zsi>` reads
-a raw RomFS room and performs five fresh production-resolution builds,
-reporting minimum/median/maximum milliseconds and checking deterministic output.
-Timing includes welding, BVH construction, enclosure rays, all sector masks,
-and cache encoding; it excludes file I/O, CMB parsing, and cache hits.
+`TRIAEVUM_INTERIOR_SUN` tool logs report offline progress. Runtime
+`TRIAEVUM_ROOM_SHADOW_SHELL` logs report request, cache hit/miss, build and write
+outcomes. Existing shadow-pass diagnostics report ready/pending snapshots,
+replacement counts and ownership rejection reasons. Developer `--guest-room`
+accepts a u32 guest base plus an installed room span, without running the title.
 
-Local optimized host build, 2026-10-10, five consecutive builds per room
-(room benchmarks run sequentially):
+## Round 29 qualification
 
-| RomFS room | Triangles | Builder ms, median (min–max) |
-| --- | ---: | ---: |
-| Deku Tree, `ydan_0_info.zsi` (`3e6fb0db85447539`) | 1,596 | 211.0 (204.7–213.7) |
-| Zora's Domain, `spot07_1_info.zsi` (`bc5756509000714f`) | 3,887 | 321.6 (319.1–322.5) |
+The twelve approved Deku rooms agree at **100% each** (0 differing bits out of
+767,808), including the actual caches produced from raw RomFS. The full local
+RomFS pass processed 610 standard/MQ rooms and 1,185 room/setup entries, writing
+879 caches. Sixteen distinct builds (23 room/setup entries) exceeded the voxel
+bound and retained native two-sided casting: `ganon_demo_0` setups 0..3;
+`hakadan_21` standard/MQ setup 0; `kenjyanoma_0` setups 0..6; `spot00_0` setups
+4..6; `spot02_1` setups 4/5; `spot08_0` setups 1..3; `spot13_1` setup 0;
+`spot16_0` setup 8. Ordinary field setup 0 and Forest Temple courtyards classify
+outdoor and allocate no volume. Counters for built/hit/fallback count distinct
+identities; `entries` also includes duplicate room/setup references.
 
-All five outputs per room had identical content hashes. Geometry and shell
-selection in the runtime renderer are unchanged; only cached mask construction
-and acceptance of the new criterion version changed.
-
-`TRIAEVUM_ROOM_SHADOW_SHELL` stderr events cover enable changes, room requests,
-capture errors, cache hits/misses, build completion (triangle count and
-milliseconds), and cache-write success/failure with the filesystem error.
-The shadow pass reports native-caster replacement counts, shell-triangle
-counts, or its fallback reason at most once every two seconds. `native_casters`
-counts actual replacements; `native_candidates` and `native_drawable` count
-casters before and after native pipeline admission. `room_candidates` counts
-replaceable architecture. Each drawable caster belongs to one class: room,
-unknown domain, other domain, actor, other pass, alpha test, or translucent
-blend. The `reject_*` fields count the latter six; separate alpha-program and
-pipeline rejection counts cover admission failures. `snapshots`,
-`ready_snapshots`, and `missing_snapshots` count publication on all drawable
-casters, independently of classification. `rooms` and `scope` describe the
-first published snapshot, even when no room caster qualifies. They no longer
-report a false publication failure when geometry is rejected. Missing,
-pending, or mixed architecture snapshots still prevent replacement.
-
-Publication regression tests cover gameplay capture through CMB command spans
-and frontend packets, draw-plan shader-cache reuse and interpolation
-(`oot3d_native_pica_vulkan_plan_tests`), presentation preparation/submission
-(`oot3d_native_pica_vulkan_bridge_tests`), and scene-frame selection. The shared
-shell tests exercise native ONE/ZERO replacement and every rejection class.
-
-Developer-lab
-graphics acknowledgments also include decode/apply issue details and the
-effective lighting/shadow settings; an accepted correction is not a rejected
-command. The optional adapter test `--guest-room <file>` accepts a u32 guest
-base followed by an installed room memory span, for offline savestate checks.
+Three-build median timings (ms), measured alongside another prebuild worker:
+Deku 0 1415.620, Zora 1 7823.609, Temple of Time 0 5561.096, Shadow Temple 0
+618.278, Hyrule Field 0 2.022. Their peak voxel counts are respectively 4,700,184,
+18,618,228, 16,246,604, 1,563,510 and 0. The largest grid over the full inventory
+was 48,634,290 voxels (324.67 MiB of grid buffers). A cold full pass took about
+13.5 minutes; the actual populated-cache Forge tool stage took 6.73 seconds and
+receipt reuse 1.85 seconds. A saved installed Deku room hit its offline cache.
