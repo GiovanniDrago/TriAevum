@@ -21,6 +21,23 @@ struct alignas(16) PicaSurfaceLightUniforms {
     std::array<float, 4> PositionRadius{};
 };
 
+enum class PicaNativeSurfaceLightingClass : uint8_t { Unlit, AmbientOnly, DirectLit };
+
+// Raw native inputs, before profile gains, source deduplication or point-light
+// reconstruction. A nonzero material coefficient alone does not imply direct
+// lighting: at least one enabled light must supply diffuse RGB to that channel.
+struct PicaNativeSurfaceLighting {
+    std::array<float, 4> MaterialDiffuse{}, MaterialAmbient{}, ResolvedAmbient{};
+    std::array<PicaSurfaceLightUniforms, 3> Lights{};
+    uint32_t Enabled = 0;
+    uint32_t DirectSlotMask = 0;
+    PicaNativeSurfaceLightingClass Classification = PicaNativeSurfaceLightingClass::Unlit;
+};
+
+[[nodiscard]] std::optional<PicaNativeSurfaceLighting> ReadPicaNativeSurfaceLighting(
+    const PicaVertexShaderHookLayout& hooks, uint32_t booleanUniforms,
+    std::span<const uint8_t> floatUniformBytes) noexcept;
+
 struct alignas(16) PicaScenePointLightUniforms {
     std::array<float, 4> PositionRadius{};
     // RGB colour; W: point-shadow atlas row, negative for none.
@@ -105,9 +122,15 @@ struct alignas(16) PicaSurfaceLightingUniforms {
     std::array<float, 4> RimColor{};
     // XY: camera-relative unit direction around the view axis; ZW reserved.
     std::array<float, 4> RimDirection{};
+    // View-space normal of the horizontal lit reference; W enables baked
+    // outdoor calibration. Only unlit/ambient-only surfaces under sky lights.
+    // Native presentation, fragment-lit materials and interiors leave W zero.
+    std::array<float, 4> BakedReferenceUp{};
+    // Unit key radiance before the user's colour tint (RGB), reserved W.
+    std::array<float, 4> BakedReferenceKey{};
 };
 
-static_assert(sizeof(PicaSurfaceLightingUniforms) == 2960U);
+static_assert(sizeof(PicaSurfaceLightingUniforms) == 2992U);
 
 // Water's Fresnel reflectance at normal incidence, its GGX alpha, and its
 // environment reflection (subdued: the environment is the fog colour until

@@ -17,6 +17,7 @@
 #include "fast/renderer3ds/pica_pbr_material.h"
 #include "fast/renderer3ds/pica_pbr_seams.h"
 #include "fast/renderer3ds/pica_surface_lighting.h"
+#include "fast/renderer3ds/pica_surface_calibration_trace.h"
 #include "fast/backends/oot3d_vulkan_diagnostics.h"
 #include "fast/backends/oot3d_vulkan_gpu_profiler.h"
 #include "fast/backends/oot3d_vulkan_validation.h"
@@ -224,6 +225,11 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         const ::Fast::Renderer3ds::PicaSceneWaterBodies& bodies, float seconds);
     std::array<::Fast::Renderer3ds::PicaWaterRing, ::Fast::Renderer3ds::kPicaWaterRings> mWaterRings{};
     NativePicaWaterSurface ResolveNativePicaWaterSurface(const GfxNativePicaDrawView& draw);
+    void TraceSurfaceCalibrationDraw(const GfxNativePicaDrawView& draw,
+        const Oot3d::PicaShaderPipelineResult& variant,
+        const std::optional<Renderer3ds::PicaSurfaceLightingUniforms>& lighting,
+        bool candidate, bool exempt, bool authoredAppearance, bool isolated, bool perspective, bool uber);
+    void FinishSurfaceCalibrationTrace();
     // The title's water textures (TRIAEVUM_WATER_TEXTURE_CATALOG, generated
     // by the installer from the user's RomFS), loaded on first use.
     const ::Fast::Renderer3ds::PicaWaterTextureCatalog* WaterTextureCatalog();
@@ -1619,6 +1625,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     uint32_t mCurrentFrame = 0;
     uint32_t mCurrentImage = 0;
     uint32_t mFrameCounter = 0;
+    Renderer3ds::PicaSurfaceCalibrationTrace mSurfaceCalibrationTrace;
     uint32_t mDrawCallCountThisFrame = 0;
     uint32_t mRequestedWidth = 0;
     uint32_t mRequestedHeight = 0;

@@ -773,6 +773,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
     mFrameActive = true;
     PrepareRecordedDlssFeature();
     ++mFrameCounter;
+    mSurfaceCalibrationTrace.BeginFrame(mFrameCounter);
     mDrawCallCountThisFrame = 0;
     mRenderPassActive = false;
     mOverlayRenderPassActive = false;
@@ -942,6 +943,7 @@ void GfxRenderingAPIVulkan::FinishRender() {
     mDiagnostics.RecordRendererValidation(
         mValidationTelemetry.Snapshot());
     mDiagnostics.EndFrame();
+    FinishSurfaceCalibrationTrace();
     mFrameSubmitted = false;
     mCurrentFrame = (mCurrentFrame + 1) % kFramesInFlight;
 }

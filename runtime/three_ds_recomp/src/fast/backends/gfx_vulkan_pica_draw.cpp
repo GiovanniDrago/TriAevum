@@ -773,6 +773,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             // Consume native ordering and its graph boundaries, but do not
             // rasterize the legacy projected shadow into presentation or guides.
             // The canonical native-memory replay remains untouched.
+            if (mSurfaceCalibrationTrace.Sampling())
+                mSurfaceCalibrationTrace.Count("domain=scene replay=presentation path=skipped admitted=0 reason=native-projected-shadow", draw.VertexCount);
             auto& target = GetOrCreateNativePicaRenderTarget(draw);
             ExecuteNativePicaBeforeDrawAnchors(target, draw,
                 cpuTimings.DirectionalShadowMilliseconds, cpuTimings.GrassRenderMilliseconds);
@@ -927,6 +929,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 environmentWorldToView && mSurfaceLightingView ? &*mSurfaceLightingView : nullptr,
                 pointShadowHistory.Valid() ? &pointShadowAssignment : nullptr);
             if (surfaceLighting) {
+                if (!Oot3d::UsesFullSceneLighting(graphicsSettings.Effects.SurfaceLighting) ||
+                    isolatedLighting || draw.FragmentFeatures.FragmentLightingEnabled)
+                    surfaceLighting->BakedReferenceUp = {};
                 if (Oot3d::PicaDrawReceivesRimLight(mFrameEnvironment, draw.CompositionDomain,
                         draw.Composition, draw.Blend, surfaceAppearance,
                         draw.DepthTestEnabled, draw.DepthWriteEnabled, draw.FragmentOperationMode))
@@ -1876,6 +1881,9 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             mNriPicaPipelineBridge.DescriptorLayoutOwnedByNri());
         // Everything below binds what the selected program declares.
         const auto& drawVariant = *selectedVariant;
+        if (mSurfaceCalibrationTrace.Sampling())
+            TraceSurfaceCalibrationDraw(draw, drawVariant, surfaceLighting, surfaceCandidate, surfaceExempt,
+                authoredAppearance, isolatedLighting, grassPerspectiveProjection, selectedDraw == &uberDraw);
         auto& pipelineRecord = *selectedPipeline;
         VkPipeline pipeline = pipelineRecord.Vulkan;
         cpuTimings.PipelineLookupHits = mNativePicaPipelines.size() == previousPipelineCount ? 1U : 0U;

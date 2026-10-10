@@ -826,7 +826,25 @@ endif()
 gtest_discover_tests(oot3d_graphics_foundation_tests DISCOVERY_TIMEOUT 30)
 
 # Small GPU contract test: no runtime/title rebuild or game assets required.
+add_executable(pica_surface_calibration_trace_tests
+    pica_surface_calibration_trace_tests.cpp
+    ../src/fast/renderer3ds/pica_surface_lighting.cpp)
+target_compile_features(pica_surface_calibration_trace_tests PRIVATE cxx_std_20)
+target_include_directories(pica_surface_calibration_trace_tests PRIVATE ../include)
+target_link_libraries(pica_surface_calibration_trace_tests PRIVATE gtest_main)
+gtest_discover_tests(pica_surface_calibration_trace_tests DISCOVERY_TIMEOUT 30)
+
 if(TARGET three_ds_recomp_shaderc AND TARGET Vulkan::Vulkan)
+    add_executable(pica_baked_lighting_gpu_tests
+        pica_baked_lighting_gpu_tests.cpp
+        ../src/fast/renderer3ds/pica_surface_lighting.cpp
+        ../src/fast/renderer3ds/pica_pbr_shading.cpp
+        ../src/fast/renderer3ds/pica_pbr_seam_shader.cpp)
+    target_compile_features(pica_baked_lighting_gpu_tests PRIVATE cxx_std_20)
+    target_include_directories(pica_baked_lighting_gpu_tests PRIVATE ../include
+        "${CMAKE_CURRENT_LIST_DIR}/../../../tools/renderer/tev_program")
+    target_link_libraries(pica_baked_lighting_gpu_tests PRIVATE three_ds_recomp_shaderc Vulkan::Vulkan)
+    add_test(NAME pica_baked_lighting_gpu_tests COMMAND pica_baked_lighting_gpu_tests)
     add_executable(pica_rim_light_gpu_tests
         pica_rim_light_gpu_tests.cpp
         ../src/fast/renderer3ds/pica_surface_lighting.cpp
