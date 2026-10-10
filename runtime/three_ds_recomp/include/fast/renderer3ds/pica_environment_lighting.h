@@ -1,6 +1,7 @@
 #pragma once
 
 #include "fast/renderer3ds/pica_light_binding.h"
+#include "fast/renderer3ds/room_shadow_shell.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -109,11 +110,8 @@ struct PicaEnvironmentLighting {
     // Lights placed in the scene (their own per-draw slots).
     std::array<PicaPlacedLight, kMaximumPicaPlacedLights> PlacedLights{};
     uint32_t PlacedLightCount = 0;
-    // Directional shadow casters keep the title's face culling; off, both
-    // faces of every caster draw into the map (open or one-sided meshes
-    // whose culled faces leave holes or leak light). Independent of the
-    // lighting override.
-    bool ShadowCasterCulling = true;
+    // Independent of the lighting override.
+    ShadowCasterFaces CasterFaces = ShadowCasterFaces::Native;
     bool operator==(const PicaEnvironmentLighting&) const = default;
 };
 

@@ -448,6 +448,25 @@ void CheckSceneEnvironment() {
     graphics.Apply(settings);
     Check(lightsAndShadowsOffered(), "Lights & Shadows not offered with the Modern model");
     Click("Lights & Shadows");
+    Select("Shadow caster faces", "Native");
+    Check(environment->Snapshot().Profile.CasterFaces == Fast::Renderer3ds::ShadowCasterFaces::Native,
+          "native caster faces combo did not apply");
+    Select("Shadow caster faces", "Both faces");
+    Check(graphics.SnapshotForRendering().Environment.CasterFaces == Fast::Renderer3ds::ShadowCasterFaces::BothFaces,
+          "both faces combo did not publish");
+    Select("Shadow caster faces", "Interior shells pass light");
+    Check(graphics.SnapshotForRendering().Environment.CasterFaces == Fast::Renderer3ds::ShadowCasterFaces::InteriorShells,
+          "interior shells combo did not publish");
+    {
+        const auto enabled = environment->Snapshot().Profile;
+        auto disabled = enabled;
+        disabled.Enabled = false;
+        environment->Preview(disabled, environment->Snapshot().Revision);
+        Check(!graphics.SnapshotForRendering().Environment.Enabled &&
+                  graphics.SnapshotForRendering().Environment.CasterFaces == Fast::Renderer3ds::ShadowCasterFaces::InteriorShells,
+              "disabled light override erased the independent shell policy");
+        environment->Preview(enabled, environment->Snapshot().Revision);
+    }
     Select("Shadow mode", "Off");
     Select("Shadow mode", "Virtual Shadow Maps");
     Check(graphics.SnapshotForRendering().Value.Effects.DirectionalShadows.Mode == DirectionalShadowMode::VirtualShadowMaps,
@@ -1069,7 +1088,7 @@ const char* ImGuiTestEngine_FindItemDebugLabel(ImGuiContext*, ImGuiID id) {
     return it == items.end() ? nullptr : it->second.Label.c_str();
 }
 
-int main() try {
+int main(int argc, char** argv) try {
     PresentationSettingsTransaction delayedConfirmation(500);
     PresentationSettingsValue previousDisplay;
     auto nextDisplay = previousDisplay;
@@ -1102,6 +1121,14 @@ int main() try {
     int width, height;
     ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
     Frame(); Frame();
+
+    // Run the owning panel independently of unrelated material/controls UI.
+    if (argc == 2 && std::string_view(argv[1]) == "--scene-environment") {
+        CheckSceneEnvironment();
+        ImGui::DestroyContext();
+        std::puts("F1 scene environment smoke passed");
+        return 0;
+    }
 
     // Top-level tabs in their order; the former Renderer/Textures/TopScreen
     // tabs no longer exist.

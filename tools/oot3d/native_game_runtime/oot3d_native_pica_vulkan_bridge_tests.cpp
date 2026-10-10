@@ -48,6 +48,7 @@ class RecordingBackend final : public Oot3d::Renderer::PicaRenderBackend {
         DrawCommandListAddress = draw.CommandListAddress;
         DrawCompositionDomain = draw.CompositionDomain;
         DrawComposition = draw.Composition;
+        DrawRoomShadows = draw.LightBinding.RoomShadows;
         DrawTopology = draw.Topology;
         DrawVertexCount = draw.VertexCount;
         DrawWBuffering = draw.WBuffering;
@@ -88,6 +89,7 @@ class RecordingBackend final : public Oot3d::Renderer::PicaRenderBackend {
         PreparedFragmentUniformBytes = draw.FragmentUniformBytes.size();
         PreparedTextureCount = draw.Textures.size();
         PreparedAlphaTestEnabled = draw.AlphaTestEnabled;
+        PreparedRoomShadows = draw.LightBinding.RoomShadows;
         return true;
     }
 
@@ -147,6 +149,8 @@ class RecordingBackend final : public Oot3d::Renderer::PicaRenderBackend {
     std::vector<Fast::Renderer3ds::PicaTextureCopyReference>
         DrawTextureCopyReferences;
     bool DrawAlphaTestEnabled = false;
+    std::shared_ptr<const Fast::Renderer3ds::RoomShadowShellScene> DrawRoomShadows;
+    std::shared_ptr<const Fast::Renderer3ds::RoomShadowShellScene> PreparedRoomShadows;
     Oot3d::Renderer::PicaCompareFunction DrawAlphaCompare =
         Oot3d::Renderer::PicaCompareFunction::Always;
     uint8_t DrawAlphaReference = 0U;
@@ -175,6 +179,9 @@ int main() {
     RecordingBackend backend;
     Oot3dNativeGame::Oot3dPicaVulkanDrawPlan plan;
     plan.SubmissionId = 17;
+    auto roomShadows = std::make_shared<Fast::Renderer3ds::RoomShadowShellScene>();
+    roomShadows->ScopeIdentity = 123;
+    plan.LightBinding.RoomShadows = roomShadows;
     plan.CommandListAddress = 0x14003000U;
     plan.CompositionDomain =
         Oot3dNativeGame::Oot3dPicaCompositionDomain::Scene;
@@ -248,6 +255,7 @@ int main() {
     Require(Oot3dNativeGame::SubmitOot3dPicaVulkanDrawPlan(
                 backend, plan, &error, 9),
             error);
+    Require(backend.DrawRoomShadows == roomShadows, "draw bridge lost room shell publication");
     float packedDiffuse = 0.0F;
     float packedGlobalAmbient = 0.0F;
     int32_t packedShadowTextureBias = 0;
@@ -594,6 +602,8 @@ int main() {
                 opaqueBackend.PreparedTextureCount == 0U &&
                 !opaqueBackend.PreparedAlphaTestEnabled,
             "a prepared draw without an alpha test carried fragment state");
+    Require(opaqueBackend.PreparedRoomShadows == roomShadows && opaqueBackend.DrawRoomShadows == roomShadows,
+            "presentation preparation or submission lost room shell publication");
     RecordingBackend nativeMemoryBackend;
     nativeMemoryBackend.PreparedLayer =
         Oot3d::Renderer::PicaCompositionLayer::OpaqueWorld;

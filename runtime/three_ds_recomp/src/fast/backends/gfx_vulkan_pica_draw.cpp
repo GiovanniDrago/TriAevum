@@ -559,6 +559,7 @@ bool GfxRenderingAPIVulkan::PreparePicaSequenceDraw(
             .LightingWorldToView = draw.LightBinding.WorldToView,
             .SceneDirectionals = draw.LightBinding.SceneDirectionals,
             .ScenePoints = draw.LightBinding.ScenePoints,
+                .RoomShadows = draw.LightBinding.RoomShadows,
             .NativeLightSources = draw.LightBinding.Sources,
             .ShadowCaster = shadowCaster,
             .Raster = {
@@ -2921,6 +2922,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 .LightingWorldToView = draw.LightBinding.WorldToView,
                 .SceneDirectionals = draw.LightBinding.SceneDirectionals,
                 .ScenePoints = draw.LightBinding.ScenePoints,
+                .RoomShadows = draw.LightBinding.RoomShadows,
                 .NativeLightSources = draw.LightBinding.Sources,
                 .ShadowCaster = shadowCaster,
                 .Raster = {

@@ -229,6 +229,8 @@ std::vector<SceneEnvironmentDiagnostic> ValidateSceneEnvironment(const SceneEnvi
   scalar(profile.KeyAzimuthOffset, "/keyLightAzimuthOffset", -180.0F, 180.0F);
   scalar(profile.KeyElevationOffset, "/keyLightElevationOffset", -90.0F, 90.0F);
   if (profile.KeyDirection > KeyDirection::SceneAmbient) read.Error("/keyLightDirection", "is unknown");
+  if (profile.CasterFaces > Fast::Renderer3ds::ShadowCasterFaces::InteriorShells)
+    read.Error("/shadowCasterFaces", "is unknown");
   for (size_t i = 0; i < profile.PointLights.size(); ++i) {
     const auto &light = profile.PointLights[i];
     const auto pointer = Join("/pointLights", i);
@@ -351,9 +353,17 @@ SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<u
     result.KeyAzimuthOffset = read.Scalar(doc, "", "keyLightAzimuthOffset", -180.0F, 180.0F);
     result.KeyElevationOffset = read.Scalar(doc, "", "keyLightElevationOffset", -90.0F, 90.0F);
   }
-  // Optional: profiles without it keep the title's culling.
-  if (doc.contains("shadowCasterCulling"))
-    result.ShadowCasterCulling = read.Boolean(doc, "", "shadowCasterCulling");
+  // New enum takes precedence; older profiles retain their exact policy.
+  using Faces = Fast::Renderer3ds::ShadowCasterFaces;
+  if (doc.contains("shadowCasterFaces")) {
+    const auto faces = read.String(doc, "", "shadowCasterFaces");
+    if (faces == "native") result.CasterFaces = Faces::Native;
+    else if (faces == "both") result.CasterFaces = Faces::BothFaces;
+    else if (faces == "interiorShells") result.CasterFaces = Faces::InteriorShells;
+    else read.Error("/shadowCasterFaces", "must be native, both or interiorShells");
+  } else if (doc.contains("shadowCasterCulling")) {
+    result.CasterFaces = read.Boolean(doc, "", "shadowCasterCulling") ? Faces::Native : Faces::BothFaces;
+  }
   if (version >= 2) {
     if (const auto *points = read.Member(doc, "", "pointLights")) {
       // Profiles from before the flames group list two; it keeps its defaults.
@@ -466,7 +476,8 @@ Json EncodeSceneEnvironment(const SceneEnvironmentProfile &value, uint16_t scene
                  {"keyLightDirection", EncodeKeyDirection(value.KeyDirection)},
                  {"keyLightAzimuthOffset", Number(value.KeyAzimuthOffset)},
                  {"keyLightElevationOffset", Number(value.KeyElevationOffset)},
-                 {"shadowCasterCulling", value.ShadowCasterCulling}};
+                 {"shadowCasterFaces", value.CasterFaces == Fast::Renderer3ds::ShadowCasterFaces::Native ? "native" :
+                      value.CasterFaces == Fast::Renderer3ds::ShadowCasterFaces::BothFaces ? "both" : "interiorShells"}};
   if (night) result["timeOfDay"] = "night";
   if (!value.PlacedLights.empty()) {
     Json placed = Json::array();
@@ -545,7 +556,7 @@ Fast::Renderer3ds::PicaEnvironmentLighting ResolveSceneEnvironment(const SceneEn
     result.PlacedLights[result.PlacedLightCount++] =
         ResolvePlacedLight(light, PlacedLightIdentity(scene, night, light.Id));
   }
-  result.ShadowCasterCulling = value.ShadowCasterCulling;
+  result.CasterFaces = value.CasterFaces;
   result.KeyDirection = value.KeyDirection;
   result.KeyAzimuthOffset = value.KeyAzimuthOffset * kRadians;
   result.KeyElevationOffset = value.KeyElevationOffset * kRadians;
@@ -585,7 +596,8 @@ Json ExplainSceneEnvironment(const SceneEnvironmentProfile &profile, uint16_t sc
                      {"ambient", Number(resolved.NativeAmbientStrength)}}},
                    {"ambient", {{"color", Triple(resolved.AmbientColor)}, {"intensity", Number(resolved.AmbientIntensity)}}},
                    {"fogStrength", Number(resolved.FogStrength)},
-                   {"shadowCasterCulling", resolved.ShadowCasterCulling},
+                   {"shadowCasterFaces", resolved.CasterFaces == Fast::Renderer3ds::ShadowCasterFaces::Native ? "native" :
+                      resolved.CasterFaces == Fast::Renderer3ds::ShadowCasterFaces::BothFaces ? "both" : "interiorShells"},
                    {"keyLight",
                     {{"follows", EncodeKeyDirection(resolved.KeyDirection)},
                      {"offsetDegrees", Json::array({Number(profile.KeyAzimuthOffset), Number(profile.KeyElevationOffset)})},

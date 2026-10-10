@@ -434,6 +434,11 @@ static bool CaptureFlameEmitter(oot3d::recomp::a32::MemoryBus& memory, uint32_t 
     return true;
 }
 
+void NativeA32LightingProbe::SetRoomShadowShellsEnabled(bool enabled) {
+    if (mRoomShellsEnabled.exchange(enabled, std::memory_order_relaxed) != enabled)
+        std::fprintf(stderr, "TRIAEVUM_ROOM_SHADOW_SHELL event=enabled value=%d\n", enabled);
+}
+
 void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recomp::a32::MemoryBus& memory) {
     using namespace Fast::Renderer3ds;
     TraceSceneLights(++mSceneLightFrames, playState, memory, mSceneLightTrace);
@@ -545,6 +550,9 @@ void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recom
     // The architecture's own light, in the rooms the title has loaded.
     const auto environmentState = ReadNativeEnvironmentState(playState, memory);
     const uint16_t scene = environmentState ? environmentState->Scene : uint16_t{0xFFFFU};
+    const bool shellsEnabled = mRoomShellsEnabled.load(std::memory_order_relaxed) && environmentState.has_value();
+    mRoomShells = shellsEnabled ? mRoomShellCache.Capture(true, (uint64_t(playState) << 16U) | scene,
+                                                        NativeLoadedRooms(playState, memory), memory) : nullptr;
     if (!mStaticEmittersResolved) {
         mStaticEmitters = NativeStaticEmitterCatalog::FromEnvironment();
         mStaticEmittersResolved = true;
@@ -657,6 +665,7 @@ NativeA32LightingProbe::CaptureRenderer(uint32_t renderer, oot3d::recomp::a32::M
     result.ScenePoints = mScenePoints;
     result.SceneDirectionals = mSceneDirectionals;
     result.Water = mWater;
+    result.RoomShadows = mRoomShells;
     return result;
 }
 
@@ -696,6 +705,7 @@ void NativeA32LightingProbe::Reset() noexcept {
     mScenePoints.reset();
     mSceneDirectionals.reset();
     mWater.reset();
+    mRoomShells.reset();
     mSceneLightTrace = {};
     // A state load is a discontinuity.
     mContinuityPlayState = 0;

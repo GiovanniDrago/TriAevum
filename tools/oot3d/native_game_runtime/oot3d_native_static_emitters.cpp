@@ -164,7 +164,7 @@ std::vector<NativeLoadedRoom> NativeLoadedRooms(uint32_t playState, oot3d::recom
         std::array<uint8_t, kNativeRoomFingerprintBytes> bytes{};
         bool readable = true;
         for (uint32_t i = 0; i < bytes.size() && readable; ++i) readable = memory.Read8(installed + i, &bytes[i]);
-        if (readable) rooms.push_back({room, NativeRoomFingerprint(bytes)});
+        if (readable) rooms.push_back({room, NativeRoomFingerprint(bytes), installed});
     }
     return rooms;
 }

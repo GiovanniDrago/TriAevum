@@ -66,6 +66,7 @@ private:
 struct NativeLoadedRoom {
     int Number = -1;
     uint64_t Fingerprint = 0;
+    uint32_t CommandsAddress = 0; // file+0x10; adapter-only, never sent to the renderer
     bool operator==(const NativeLoadedRoom&) const = default;
 };
 

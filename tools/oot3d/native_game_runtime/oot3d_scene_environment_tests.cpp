@@ -141,22 +141,35 @@ int main() try {
   f.Settle();
   Check(f.Ambient() == 0.85F, "a missing file replaced the profile in use");
 
-  // The shadow casters' face culling: off in the base profile, on without the
-  // key (older profiles), off read, written and handed to the renderer.
   {
-    Check(!BaseSceneEnvironmentProfile().ShadowCasterCulling, "the base profile culls the shadow casters' faces");
+    using Faces = Fast::Renderer3ds::ShadowCasterFaces;
+    Check(BaseSceneEnvironmentProfile().CasterFaces == Faces::InteriorShells, "base profile does not pass interior shells");
     auto document = EncodeSceneEnvironment(BaseSceneEnvironmentProfile(), 0x55, false);
-    document.erase("shadowCasterCulling");
+    Check(document["shadowCasterFaces"] == "interiorShells" && !document.contains("shadowCasterCulling"),
+          "new enum was not encoded canonically");
+    document.erase("shadowCasterFaces");
     const auto older = DecodeSceneEnvironment(document);
-    Check(older.Profile && older.Profile->ShadowCasterCulling, "a profile without the key lost the culling");
-    auto profile = BaseSceneEnvironmentProfile();
-    profile.ShadowCasterCulling = false;
-    const auto decoded = DecodeSceneEnvironment(EncodeSceneEnvironment(profile, 0x55, false));
-    Check(decoded.Profile && !decoded.Profile->ShadowCasterCulling, "the culling switch did not round trip");
-    Check(!ResolveSceneEnvironment(profile, 0x55, false).ShadowCasterCulling,
-          "the renderer did not receive the culling switch");
-    document["shadowCasterCulling"] = 1;
-    Check(!DecodeSceneEnvironment(document).Errors.empty(), "a non-boolean culling switch was accepted");
+    Check(older.Profile && older.Profile->CasterFaces == Faces::Native, "missing legacy key lost native culling");
+    for (bool enabled : {true, false}) {
+      document["shadowCasterCulling"] = enabled;
+      const auto decoded = DecodeSceneEnvironment(document);
+      Check(decoded.Profile && decoded.Profile->CasterFaces == (enabled ? Faces::Native : Faces::BothFaces),
+            "legacy boolean policy changed");
+    }
+    for (auto mode : {Faces::Native, Faces::BothFaces, Faces::InteriorShells}) {
+      auto profile = BaseSceneEnvironmentProfile(); profile.CasterFaces = mode;
+      auto encoded = EncodeSceneEnvironment(profile, 0x55, false);
+      encoded["shadowCasterCulling"] = true; // explicit new setting takes precedence
+      const auto decoded = DecodeSceneEnvironment(encoded);
+      Check(decoded.Profile && decoded.Profile->CasterFaces == mode, "caster faces did not round trip");
+      Check(ResolveSceneEnvironment(profile, 0x55, false).CasterFaces == mode, "renderer lost caster faces");
+    }
+    for (const auto& invalid : {nlohmann::json(1), nlohmann::json(true), nlohmann::json("bad"), nlohmann::json(nullptr)}) {
+      document["shadowCasterFaces"] = invalid;
+      Check(!DecodeSceneEnvironment(document).Errors.empty(), "invalid enum accepted");
+    }
+    document.erase("shadowCasterFaces"); document["shadowCasterCulling"] = 1;
+    Check(!DecodeSceneEnvironment(document).Errors.empty(), "non-boolean legacy setting accepted");
   }
 
   std::filesystem::remove_all(directory);

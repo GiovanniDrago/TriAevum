@@ -179,11 +179,15 @@ public:
     ImGui::EndDisabled();
     ImGui::SeparatorText("Shadows");
     ImGui::BeginDisabled(!supported);
-    changed |= ImGui::Checkbox("Cull shadow caster faces", &value.ShadowCasterCulling);
+    int faces = static_cast<int>(value.CasterFaces);
+    if (ImGui::Combo("Shadow caster faces", &faces, "Native\0Both faces\0Interior shells pass light\0")) {
+      value.CasterFaces = static_cast<Fast::Renderer3ds::ShadowCasterFaces>(faces);
+      changed = true;
+    }
     ImGui::EndDisabled();
-    ImGui::TextWrapped("Directional shadow casters keep the title's back-face culling. Off: both faces of every "
-                       "caster draw into the shadow map, for one-sided or open meshes whose culled faces leave "
-                       "holes or leak light. The base profile (scenes without their own) keeps it off.");
+    ImGui::TextWrapped("Native uses the title's face culling. Both faces closes one-sided gaps. "
+                       "Interior shells pass light lets the outer ceiling admit the key light while inner roofs, "
+                       "walls and foliage still cast. Rooms use both faces while their local cache is prepared.");
     if (changed)
       mRuntime->Preview(value, state.Revision);
     if (ImGui::Button("Save scene environment"))

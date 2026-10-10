@@ -77,6 +77,10 @@ int main() {
         0x0030F4D0U,
         0U,
     };
+    auto roomPending = std::make_shared<Fast::Renderer3ds::RoomShadowShellScene>();
+    roomPending->ScopeIdentity = 123;
+    roomPending->Rooms.push_back({456, {}});
+    submission.Packet.LightBinding.RoomShadows = roomPending;
     submission.Packet.VertexShader.Program[0] = 0x88000000U;
     submission.Packet.VertexShader.ProgramWordCount = 1U;
     submission.Packet.VertexShader.SwizzleWordCount = 1U;
@@ -137,6 +141,7 @@ int main() {
     Require(Oot3dNativeGame::BuildOot3dPicaVulkanDrawPlan(
                 submission, plan, &error, &shaderCache),
             error);
+    Require(plan.LightBinding.RoomShadows == roomPending, "draw plan lost the room snapshot");
     Require(plan.SubmissionId == 9U && plan.CommandListAddress == 0x14001200U &&
                 plan.CommandListOffsetWords == 0x34U && plan.Indexed &&
                 plan.CompositionDomain ==
@@ -214,10 +219,14 @@ int main() {
     const std::string fragmentSource(plan.ResolvedFragmentShaderSource());
     submission.Packet.VertexShader.BooleanUniforms[3] = true;
     submission.Packet.Registers[0x0C3U] = 0x44332211U;
+    auto roomPublished = std::make_shared<Fast::Renderer3ds::RoomShadowShellScene>(*roomPending);
+    submission.Packet.LightBinding.RoomShadows = roomPublished;
     Oot3dNativeGame::Oot3dPicaVulkanDrawPlan cachedPlan;
     Require(Oot3dNativeGame::BuildOot3dPicaVulkanDrawPlan(
                 submission, cachedPlan, &error, &shaderCache),
             error);
+    Require(cachedPlan.LightBinding.RoomShadows == roomPublished,
+            "shader cache reused an old room snapshot");
     Require(shaderCache.VertexHits == 1U &&
                 shaderCache.VertexMisses == 1U &&
                 shaderCache.FragmentHits == 1U &&
@@ -333,6 +342,7 @@ int main() {
     previousPoint.PositionWorld = {2.0F, 0.0F, 0.0F};
     previousPoint.Radius = 10.0F;
     cachedPlan.LightBinding = plan.LightBinding;
+    cachedPlan.LightBinding.RoomShadows = roomPublished;
     cachedPlan.LightBinding.Sources[0].PositionWorld[0] = 6.0F;
     plan.LightBinding.Sources[1] = previousPoint;
     cachedPlan.LightBinding.Sources[1] = cachedPlan.LightBinding.Sources[0];
@@ -379,6 +389,8 @@ int main() {
                     cachedPlan.VertexShader.Uniforms.BooleanMask,
             "visual interpolation did not separate continuous and discrete state");
     const auto points = interpolated.LightBinding.ScenePoints;
+    Require(interpolated.LightBinding.RoomShadows == roomPublished,
+            "interpolation dropped or blended the current room snapshot");
     Require(points && points->Lights[0].SourceIdentity == 22 &&
                 points->Lights[0].PositionWorld[0] == 10 &&
                 points->Lights[1].PositionWorld[0] == 4 && points->Lights[1].Radius == 40 &&

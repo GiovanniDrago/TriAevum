@@ -1,6 +1,7 @@
 #pragma once
 
 #include "fast/renderer3ds/pica_scene_water.h"
+#include "fast/renderer3ds/room_shadow_shell.h"
 
 #include <algorithm>
 #include <array>
@@ -216,6 +217,7 @@ struct PicaNativeLightBinding {
     std::shared_ptr<const PicaScenePointLights> ScenePoints;
     std::shared_ptr<const PicaSceneDirectionalLights> SceneDirectionals;
     std::shared_ptr<const PicaSceneWaterBodies> Water;
+    std::shared_ptr<const RoomShadowShellScene> RoomShadows;
 
     bool operator==(const PicaNativeLightBinding&) const = default;
 };

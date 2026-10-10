@@ -2178,9 +2178,25 @@ void NativeA32WindowSession::UpdateDevLab(uint64_t guestFrame) {
                                                     command.at("graphics")),
             current);
         const auto applied = graphicsSettings.Apply(decoded.Value, false);
+        const auto issueDetails = [](const auto& issues, const char* phase) {
+          auto details = Json::array();
+          for (const auto& issue : issues) {
+            details.push_back({{"field", issue.Field}, {"message", issue.Message}, {"corrected", issue.Corrected}});
+            std::fprintf(stderr, "TRIAEVUM_DEV_LAB_GRAPHICS_ISSUE phase=%s field=\"%s\" corrected=%d message=\"%s\"\n",
+                         phase, issue.Field.c_str(), issue.Corrected, issue.Message.c_str());
+          }
+          return details;
+        };
+        const auto effective = graphicsSettings.SnapshotForRendering();
+        const auto effectiveJson = Fast::Oot3d::SerializeGraphicsSettings(effective.Value);
         finish(applied.Accepted() && !decoded.UnsupportedFutureVersion ? "ok" : "failed",
                {{"frame", guestFrame}, {"decodeIssues", decoded.Issues.size()},
-                {"applyIssues", applied.Issues.size()}});
+                {"applyIssues", applied.Issues.size()},
+                {"decodeIssueDetails", issueDetails(decoded.Issues, "decode")},
+                {"applyIssueDetails", issueDetails(applied.Issues, "apply")},
+                {"effectiveSurfaceLighting", effectiveJson["Effects"]["SurfaceLighting"]},
+                {"effectiveDirectionalShadows", effectiveJson["Effects"]["DirectionalShadows"]["Mode"]},
+                {"effectiveCasterFaces", static_cast<unsigned>(effective.Environment.CasterFaces)}});
       } else if (op == "surface_trace") {
         // The surface-lighting candidates of the next frames, one JSON line each.
         Fast::Renderer3ds::PicaSurfaceDebug::Instance().RequestTrace(command.at("path").get<std::string>(),
@@ -2409,6 +2425,10 @@ void NativeA32WindowSession::PublishNativeSceneView() {
   renderStream.Submit([&, snapshot, night, player, freeCamera] {
   sceneEnvironment->ObserveScene(snapshot ? snapshot->SceneId : std::nullopt, night, player);
   sceneEnvironment->PollProfileFiles();
+  const auto shadowSettings = Fast::Oot3d::GraphicsSettingsRuntime::Instance().SnapshotForRendering();
+  picaCompositionTracker.SetRoomShadowShellsEnabled(
+      shadowSettings.Environment.CasterFaces == Fast::Renderer3ds::ShadowCasterFaces::InteriorShells &&
+      shadowSettings.Value.Effects.DirectionalShadows.Mode == Fast::Oot3d::DirectionalShadowMode::VirtualShadowMaps);
   sceneEnvironment->PublishLightGizmo(
       snapshot && snapshot->CameraAvailable ? std::optional(snapshot->Eye) : std::nullopt, freeCamera);
   if (!snapshot.has_value() ||

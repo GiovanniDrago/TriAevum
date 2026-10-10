@@ -16,7 +16,7 @@
 
 namespace Fast::Renderer3ds {
 
-inline constexpr uint32_t kPicaResolvedDrawStreamSchemaVersion = 8U;
+inline constexpr uint32_t kPicaResolvedDrawStreamSchemaVersion = 9U;
 
 struct PicaResolvedVertexLayout {
     uint64_t StructuralKey = 0U;
@@ -36,6 +36,7 @@ struct PicaResolvedDrawRecord {
     std::optional<std::array<float, 16>> LightingWorldToView;
     std::shared_ptr<const PicaSceneDirectionalLights> SceneDirectionals;
     std::shared_ptr<const PicaScenePointLights> ScenePoints;
+    std::shared_ptr<const ::Fast::Renderer3ds::RoomShadowShellScene> RoomShadows;
     std::array<PicaNativeLightSource, 3U> NativeLightSources{};
     VirtualShadowCaster ShadowCaster;
     PicaSceneResolvedRasterState Raster;

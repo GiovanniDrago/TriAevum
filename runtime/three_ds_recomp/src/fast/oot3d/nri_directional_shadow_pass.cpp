@@ -8,6 +8,7 @@
 #include "fast/oot3d/pica_directional_shadow_caster.h"
 #include "fast/oot3d/pica_directional_shadow_semantics.h"
 #include "fast/oot3d/resource_state_tracker.h"
+#include "fast/renderer3ds/pica_room_shadow_selection.h"
 #include "fast/renderer3ds/virtual_shadow_keyframes.h"
 
 #ifdef ENABLE_OOT3D_NRI
@@ -17,10 +18,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdio>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <optional>
 #include <iterator>
 #include <stdexcept>
@@ -293,6 +297,13 @@ struct NriDirectionalShadowPass::Impl {
         uint32_t ContactUsed = 0U;
     };
     std::array<FrameDescriptors, kFrameSlots> Frames;
+    struct ShellGpu {
+        nri::Buffer* Buffer = nullptr;
+        uint32_t VertexCount = 0;
+        uint64_t LastFrame = 0;
+    };
+    std::map<uint64_t, ShellGpu> ShellBuffers;
+    std::chrono::steady_clock::time_point LastShellDiagnostic{};
     std::unordered_map<uint64_t, nri::Pipeline*> ShadowPipelines;
     std::unordered_set<uint64_t> FailedShadowPipelines;
     std::unordered_map<uint64_t, nri::Pipeline*> PointPipelines;
@@ -570,6 +581,101 @@ struct NriDirectionalShadowPass::Impl {
         return result;
     }
 
+    nri::Pipeline* ShellPipeline(const DirectionalShadowFramePlan& plan) {
+        uint64_t key = HashValue(0x5348454c4c565331ULL, plan.DepthBiasConstant);
+        key = HashValue(key, plan.DepthBiasSlope);
+        if (const auto it = ShadowPipelines.find(key); it != ShadowPipelines.end())
+            return it->second;
+        if (FailedShadowPipelines.contains(key))
+            return nullptr;
+        const auto reject = [&]() -> nri::Pipeline* {
+            FailedShadowPipelines.insert(key);
+            return nullptr;
+        };
+        try {
+            auto vertex = Compile(Interop->Shaders(), std::string(Renderer3ds::RoomShadowShellVertexShader()),
+                                  Renderer::SpirvStage::Vertex, "room_shadow_shell.vert");
+            auto fragment = Compile(Interop->Shaders(), kPicaDirectionalShadowFragmentShader,
+                                    Renderer::SpirvStage::Fragment, "room_shadow_shell.frag");
+            const std::array<nri::ShaderDesc, 2> shaders{
+                { { nri::StageBits::VERTEX_SHADER, vertex.data(), vertex.size() * sizeof(uint32_t) },
+                  { nri::StageBits::FRAGMENT_SHADER, fragment.data(), fragment.size() * sizeof(uint32_t) } }
+            };
+            const nri::VertexStreamDesc stream{ 0, nri::VertexStreamStepRate::PER_VERTEX,
+                                                sizeof(Renderer3ds::RoomShadowShellVertex) };
+            std::array<nri::VertexAttributeDesc, 2> attributes{};
+            attributes[0].vk.location = 0;
+            attributes[0].format = nri::Format::RGB32_SFLOAT;
+            attributes[1].vk.location = 1;
+            attributes[1].format = nri::Format::RG32_UINT;
+            attributes[1].offset = offsetof(Renderer3ds::RoomShadowShellVertex, Mask);
+            const nri::VertexInputDesc input{ attributes.data(), 2, &stream, 1 };
+            nri::MultisampleDesc multisample{};
+            multisample.sampleMask = 0xffffffffU;
+            multisample.sampleNum = 1;
+            nri::GraphicsPipelineDesc desc{};
+            desc.pipelineLayout = ShadowLayout;
+            desc.vertexInput = &input;
+            desc.inputAssembly.topology = nri::Topology::TRIANGLE_LIST;
+            desc.rasterization.fillMode = nri::FillMode::SOLID;
+            desc.rasterization.cullMode = nri::CullMode::NONE;
+            desc.rasterization.depthBias = { plan.DepthBiasConstant, 0.0F, plan.DepthBiasSlope };
+            desc.multisample = &multisample;
+            desc.outputMerger.depth.compareOp = nri::CompareOp::LESS_EQUAL;
+            desc.outputMerger.depth.write = true;
+            desc.outputMerger.depthStencilFormat = nri::Format::D32_SFLOAT;
+            desc.shaders = shaders.data();
+            desc.shaderNum = uint32_t(shaders.size());
+            desc.cache = NriInteropAccess::PipelineCache(*Interop);
+            nri::Pipeline* pipeline = nullptr;
+            if (Core->CreateGraphicsPipeline(*NriInteropAccess::Device(*Interop), desc, pipeline) !=
+                nri::Result::SUCCESS)
+                return reject();
+            ShadowPipelines.emplace(key, pipeline);
+            return pipeline;
+        } catch (const std::exception&) { return reject(); }
+    }
+
+    ShellGpu* ShellBuffer(const Renderer3ds::RoomShadowShell& mesh, uint64_t frameId) {
+        // Frame-slot fence has completed; buffers absent for a full rotation
+        // can be reclaimed. Static pages retain depth, not buffer references.
+        for (auto it = ShellBuffers.begin(); it != ShellBuffers.end();) {
+            if (frameId > it->second.LastFrame && frameId - it->second.LastFrame > kFrameSlots) {
+                Core->DestroyBuffer(it->second.Buffer);
+                it = ShellBuffers.erase(it);
+            } else
+                ++it;
+        }
+        auto [it, inserted] = ShellBuffers.try_emplace(mesh.ContentVersion);
+        auto& gpu = it->second;
+        gpu.LastFrame = frameId;
+        if (!inserted)
+            return &gpu;
+        const auto vertices = Renderer3ds::RoomShadowShellVertices(mesh);
+        if (vertices.empty()) {
+            ShellBuffers.erase(it);
+            return nullptr;
+        }
+        nri::BufferDesc desc{};
+        desc.size = vertices.size() * sizeof(vertices[0]);
+        desc.usage = nri::BufferUsageBits::VERTEX_BUFFER;
+        if (Core->CreateCommittedBuffer(*NriInteropAccess::Device(*Interop), nri::MemoryLocation::HOST_UPLOAD, 0.0F,
+                                        desc, gpu.Buffer) != nri::Result::SUCCESS) {
+            ShellBuffers.erase(it);
+            return nullptr;
+        }
+        void* mapped = Core->MapBuffer(*gpu.Buffer, 0, desc.size);
+        if (!mapped) {
+            Core->DestroyBuffer(gpu.Buffer);
+            ShellBuffers.erase(it);
+            return nullptr;
+        }
+        std::memcpy(mapped, vertices.data(), size_t(desc.size));
+        Core->UnmapBuffer(*gpu.Buffer);
+        gpu.VertexCount = uint32_t(vertices.size());
+        return &gpu;
+    }
+
     PointTarget* EnsurePointTarget(const ShadowTargetKey& key, const Renderer3ds::PointShadowLayout& layout,
                                    uint64_t frameId) {
         auto found = PointTargets.find(key);
@@ -790,6 +896,21 @@ struct NriDirectionalShadowPass::Impl {
         return true;
     }
 
+    bool BindShell(FrameDescriptors& frame, const ShellGpu& gpu, const DirectionalShadowMatrix& worldToLightClip,
+                   PreparedCaster& draw) {
+        if (frame.CastersUsed == frame.CasterSets.size())
+            return false;
+        const uint32_t slot = frame.CastersUsed++;
+        ShadowTransformUniforms transform{};
+        transform.WorldToLightClip = worldToLightClip;
+        std::memcpy(frame.ShadowUniformMapped + frame.ShadowUniformStride * slot, &transform, sizeof(transform));
+        draw.Geometry = gpu.Buffer;
+        draw.Set = frame.CasterSets[slot];
+        const nri::UpdateDescriptorRangeDesc update{ draw.Set, TransformRange, 0, &frame.ShadowUniformViews[slot], 1 };
+        Core->UpdateDescriptorRanges(&update, 1);
+        return true;
+    }
+
     // Godot's contact shadow compute for a length (2 + length reads).
     nri::Pipeline* ContactPipeline(uint32_t length) {
         if (length >= ContactPipelines.size() || FailedContactPipelines[length])
@@ -823,8 +944,9 @@ struct NriDirectionalShadowPass::Impl {
     // ContactShadowMap). The depth is private to the pass.
     bool RenderContactShadows(const NriDirectionalShadowExecuteDesc& desc, nri::CommandBuffer& command,
                               FrameDescriptors& frame, const PicaSceneFrame& sceneFrame,
-                              std::span<const PicaSceneDrawRecord*> drawable, const DirectionalShadowFramePlan& plan,
-                              TargetHistory& target, const DirectionalShadowMatrix& worldToContactClip,
+                              std::span<const PicaSceneDrawRecord* const> drawable,
+                              const DirectionalShadowFramePlan& plan, TargetHistory& target,
+                              const DirectionalShadowMatrix& worldToContactClip,
                               const Renderer3ds::ShadowVector& lightDirection, const EffectPassOutputBarrier& barrier) {
         if (ContactLayout == nullptr || ContactDepthSampler == nullptr || frame.ContactPool == nullptr ||
             frame.ContactUsed >= frame.ContactSets.size())
@@ -1261,7 +1383,8 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     input.CameraWorld = { viewToWorld[12], viewToWorld[13], viewToWorld[14] };
     input.LightDirectionTowardSource = light.WorldDirectionTowardSource;
     input.Settings = desc.Settings;
-    input.CullCasters = desc.Environment == nullptr || desc.Environment->ShadowCasterCulling;
+    input.CullCasters =
+        desc.Environment == nullptr || desc.Environment->CasterFaces == Renderer3ds::ShadowCasterFaces::Native;
     // Validates the settings and the light. Each layout is planned at its own
     // direction below.
     const auto plan = BuildDirectionalShadowFramePlan(input);
@@ -1274,19 +1397,104 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     // the map for the others. A discarding alpha test without its program
     // never becomes a solid caster.
     std::array<nri::Pipeline*, kMaximumCasters> pipelines{};
+    const size_t nativeCandidates = casterCount;
+    size_t rejectedAlphaProgram = 0, rejectedPipeline = 0;
     size_t drawableCount = 0;
     for (size_t index = 0; index < casterCount; ++index) {
         const auto& material = casterStorage[index]->Material;
         if (material.AlphaTestEnabled && material.AlphaCompare != PicaCompareFunction::Always &&
-            !UsesAlphaCasterProgram(*casterStorage[index]))
+            !UsesAlphaCasterProgram(*casterStorage[index])) {
+            ++rejectedAlphaProgram;
             continue;
+        }
         auto* pipeline = mImpl->GetOrCreatePipeline(*casterStorage[index], plan);
-        if (pipeline == nullptr)
+        if (pipeline == nullptr) {
+            ++rejectedPipeline;
             continue;
+        }
         pipelines[drawableCount] = pipeline;
         casterStorage[drawableCount++] = casterStorage[index];
     }
     casterCount = drawableCount;
+    // Camera/contact depth keeps the native architecture, including the shell.
+    std::array<const PicaSceneDrawRecord*, kMaximumCasters> contactStorage;
+    std::copy_n(casterStorage.begin(), casterCount, contactStorage.begin());
+    const auto contactCasters = std::span(contactStorage).first(casterCount);
+    std::array<const Renderer3ds::RoomShadowShell*, kMaximumCasters> shellMeshes{};
+    std::array<Impl::ShellGpu*, kMaximumCasters> shellBuffers{};
+    const bool shellsRequested =
+        desc.Environment && desc.Environment->CasterFaces == Renderer3ds::ShadowCasterFaces::InteriorShells;
+    const auto selection = shellsRequested ? Renderer3ds::SelectPicaRoomShadowScene(contactCasters)
+                                           : Renderer3ds::PicaRoomShadowSelection{};
+    const auto* roomScene = selection.ReplacementScene;
+    bool replaceRooms = roomScene != nullptr;
+    const char* shellStatus = selection.Status;
+    size_t replacedCasters = 0, shellTriangles = 0;
+    const auto architecture = [](const PicaSceneDrawRecord& draw) {
+        return Renderer3ds::ClassifyPicaRoomShadowCaster(draw) == Renderer3ds::PicaRoomShadowCasterClass::Room;
+    };
+    nri::Pipeline* shellPipeline = nullptr;
+    std::vector<std::pair<const Renderer3ds::RoomShadowShell*, Impl::ShellGpu*>> rooms;
+    if (replaceRooms && roomScene) {
+        shellPipeline = mImpl->ShellPipeline(plan);
+        replaceRooms = shellPipeline != nullptr && casterCount + roomScene->Rooms.size() <= kMaximumCasters;
+        shellStatus = shellPipeline ? "caster_limit" : "pipeline_failed";
+        for (const auto& room : roomScene->Rooms) {
+            if (!replaceRooms)
+                break;
+            if (room.Mesh->Indices.empty())
+                continue;
+            auto* gpu = mImpl->ShellBuffer(*room.Mesh, desc.FrameId);
+            if (!gpu) {
+                shellStatus = "upload_failed";
+                replaceRooms = false;
+                break;
+            }
+            rooms.emplace_back(room.Mesh.get(), gpu);
+        }
+        if (replaceRooms) {
+            size_t kept = 0;
+            for (size_t i = 0; i < casterCount; ++i)
+                if (!architecture(*casterStorage[i])) {
+                    casterStorage[kept] = casterStorage[i];
+                    pipelines[kept++] = pipelines[i];
+                }
+            replacedCasters = casterCount - kept;
+            casterCount = kept;
+            shellStatus = "replaced";
+            for (const auto& [mesh, gpu] : rooms) {
+                shellTriangles += mesh->ShellMasks.size();
+                shellMeshes[casterCount] = mesh;
+                shellBuffers[casterCount] = gpu;
+                casterStorage[casterCount] = nullptr;
+                pipelines[casterCount++] = shellPipeline;
+            }
+        }
+    }
+    if (shellsRequested) {
+        const auto now = std::chrono::steady_clock::now();
+        if (mImpl->LastShellDiagnostic.time_since_epoch().count() == 0 ||
+            now - mImpl->LastShellDiagnostic >= std::chrono::seconds(2)) {
+            mImpl->LastShellDiagnostic = now;
+            using Class = Renderer3ds::PicaRoomShadowCasterClass;
+            const auto* published = selection.PublishedScene;
+            std::fprintf(stderr,
+                         "TRIAEVUM_ROOM_SHADOW_SHELL event=replace status=%s frame=%llu native_casters=%zu "
+                         "shell_triangles=%zu rooms=%zu scope=%llu native_candidates=%zu native_drawable=%zu "
+                         "room_candidates=%zu snapshots=%zu ready_snapshots=%zu missing_snapshots=%zu "
+                         "reject_unknown_domain=%zu reject_other_domain=%zu reject_actor=%zu reject_other_pass=%zu "
+                         "reject_alpha_test=%zu reject_translucent=%zu reject_alpha_program=%zu reject_pipeline=%zu\n",
+                         shellStatus, static_cast<unsigned long long>(desc.FrameId), replacedCasters, shellTriangles,
+                         published ? published->Rooms.size() : 0,
+                         static_cast<unsigned long long>(published ? published->ScopeIdentity : 0), nativeCandidates,
+                         contactCasters.size(), selection.Count(Class::Room), selection.Snapshots,
+                         selection.ReadySnapshots, contactCasters.size() - selection.Snapshots,
+                         selection.Count(Class::UnknownDomain), selection.Count(Class::OtherDomain),
+                         selection.Count(Class::Actor), selection.Count(Class::OtherPass),
+                         selection.Count(Class::AlphaTest), selection.Count(Class::Translucent), rejectedAlphaProgram,
+                         rejectedPipeline);
+        }
+    }
     const auto drawable = std::span(casterStorage).first(casterCount);
     auto* target = mImpl->EnsureTarget({ desc.RenderTargetNamespace, desc.ColorPhysicalAddress },
                                        plan.Virtual.AtlasResolution, desc.FrameId);
@@ -1297,12 +1505,15 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     mImpl->LastStage = NriDirectionalShadowExecutionStage::ResourcesReady;
     std::array<Renderer3ds::VirtualShadowCaster, kMaximumCasters> geometry{};
     for (size_t index = 0; index < casterCount; ++index) {
+        if (const auto* mesh = shellMeshes[index]) {
+            geometry[index] = Renderer3ds::RoomShadowCaster(*mesh, 0);
+            continue;
+        }
         geometry[index] = drawable[index]->ShadowCaster;
         if (geometry[index].ContentVersion != 0)
             geometry[index].ContentVersion =
                 HashValue(geometry[index].ContentVersion, mImpl->PipelineKey(*drawable[index], plan));
     }
-    const auto casterGeometry = std::span<const Renderer3ds::VirtualShadowCaster>(geometry).first(casterCount);
 
     // Shadow keyframes: which layouts are displayed, which one is constructed
     // and with what page budget. The scene's continuity epoch marks its cuts.
@@ -1375,7 +1586,17 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         if (!slotPlan.Ready())
             return false;
         slot.Layout = slotPlan.Virtual;
-        slot.Cache.Prepare(slot.Layout, casterGeometry, desc.FrameId, construction);
+        // Each displayed/construction keyframe uses its own sector; changing
+        // the selected bit invalidates static pages even within one sector grid.
+        auto slotGeometry = geometry;
+        const uint32_t sector = Renderer3ds::RoomShadowSector(slotPlan.LightDirectionTowardSource);
+        for (size_t i = 0; i < casterCount; ++i)
+            if (shellMeshes[i])
+                slotGeometry[i] = Renderer3ds::RoomShadowCaster(
+                    *shellMeshes[i], sector, HashValue(HashValue(0, plan.DepthBiasConstant), plan.DepthBiasSlope));
+        slot.Cache.Prepare(slot.Layout,
+                           std::span<const Renderer3ds::VirtualShadowCaster>(slotGeometry).first(casterCount),
+                           desc.FrameId, construction);
         const auto& statistics = slot.Cache.Statistics();
         pages.Requested += statistics.Requested;
         pages.Resident += statistics.Resident;
@@ -1400,8 +1621,12 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
             auto& draw = prepared[static_cast<size_t>(slotIndex)][index];
             draw = {};
             draw.Pipeline = pipelines[index];
-            if (draw.Pipeline == nullptr ||
-                !mImpl->BindCaster(frame, sceneFrame, *drawable[index], slot.Layout.WorldToLight, draw))
+            if (draw.Pipeline == nullptr)
+                return false;
+            if (shellBuffers[index]) {
+                if (!mImpl->BindShell(frame, *shellBuffers[index], slot.Layout.WorldToLight, draw))
+                    return false;
+            } else if (!mImpl->BindCaster(frame, sceneFrame, *drawable[index], slot.Layout.WorldToLight, draw))
                 return false;
         }
         return true;
@@ -1424,6 +1649,7 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         const uint32_t offsetX = staticLayer ? 0U : regionOffset(slotIndex);
         const auto& slot = target->Layouts[static_cast<size_t>(slotIndex)];
         const auto& draws = prepared[static_cast<size_t>(slotIndex)];
+        const uint32_t sector = Renderer3ds::RoomShadowSector(keyframes.Direction(slotIndex));
         nri::RenderingDesc rendering{};
         rendering.depth.descriptor = NriInteropAccess::DepthAttachmentView(*mImpl->Interop, image);
         if (rendering.depth.descriptor == nullptr)
@@ -1453,11 +1679,15 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
             const float scale = 2.0F * coverage / slot.Layout.Levels[page.Key.Level].PageWorldSize;
             const std::array<float, 4> pageTransform{ scale, scale, (-2.0F * float(page.Key.X) - 1.0F) * coverage,
                                                       (-2.0F * float(page.Key.Y) - 1.0F) * coverage };
-            const nri::SetRootConstantsDesc constants{ 0, pageTransform.data(), sizeof(pageTransform) };
+            struct PageConstants {
+                std::array<float, 4> Transform;
+                uint32_t Sector;
+            };
+            const PageConstants push{ pageTransform, sector };
+            const nri::SetRootConstantsDesc constants{ 0, &push, sizeof(push) };
             mImpl->Core->CmdSetRootConstants(*command, constants);
             const auto indices = staticLayer ? slot.Cache.StaticCasters(page) : slot.Cache.DynamicCasters(page);
             for (auto index : indices) {
-                const auto& caster = *drawable[index];
                 const auto& draw = draws[index];
                 if (boundPipeline != draw.Pipeline) {
                     mImpl->Core->CmdSetPipeline(*command, *draw.Pipeline);
@@ -1465,6 +1695,15 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
                 }
                 const nri::SetDescriptorSetDesc set{ 0, draw.Set, nri::BindPoint::GRAPHICS };
                 mImpl->Core->CmdSetDescriptorSet(*command, set);
+                if (shellBuffers[index]) {
+                    const nri::VertexBufferDesc vertex{ draw.Geometry, 0, sizeof(Renderer3ds::RoomShadowShellVertex) };
+                    mImpl->Core->CmdSetVertexBuffers(*command, 0, &vertex, 1);
+                    const nri::DrawDesc shellDraw{ shellBuffers[index]->VertexCount, 1, 0, 0 };
+                    mImpl->Core->CmdDraw(*command, shellDraw);
+                    ++mImpl->LastCasters;
+                    continue;
+                }
+                const auto& caster = *drawable[index];
                 for (const auto& binding : sceneFrame.VertexBindings(caster)) {
                     const nri::VertexBufferDesc vertex{ draw.Geometry, binding.Offset, binding.Stride };
                     mImpl->Core->CmdSetVertexBuffers(*command, binding.Binding, &vertex, 1);
@@ -1636,9 +1875,9 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
             // Receivers and casters reach it through the lighting view.
             const auto worldToContactClip =
                 MultiplyDirectionalShadowMatrices(*projection, *reference.LightingWorldToView);
-            const bool contactRendered = mImpl->RenderContactShadows(desc, *command, frame, sceneFrame, drawable, plan,
-                                                                     *target, worldToContactClip, lightDirection,
-                                                                     *contactBarrier);
+            const bool contactRendered =
+                mImpl->RenderContactShadows(desc, *command, frame, sceneFrame, contactCasters, plan, *target,
+                                            worldToContactClip, lightDirection, *contactBarrier);
             if (contactRendered) {
                 history.State.ContactShadows = true;
                 history.State.WorldToContactClip = worldToContactClip;
@@ -2000,6 +2239,10 @@ void NriDirectionalShadowPass::Shutdown() {
             if (frame.ContactPool != nullptr) {
                 mImpl->Core->DestroyDescriptorPool(frame.ContactPool);
             }
+        }
+        for (auto& [key, buffer] : mImpl->ShellBuffers) {
+            (void)key;
+            mImpl->Core->DestroyBuffer(buffer.Buffer);
         }
         for (auto& [key, pipeline] : mImpl->ShadowPipelines) {
             (void)key;

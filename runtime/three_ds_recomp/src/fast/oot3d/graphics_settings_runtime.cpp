@@ -438,6 +438,8 @@ VersionedGraphicsSettings GraphicsSettingsRuntime::SnapshotForRendering() const 
         else {
             result.Environment.ScopeIdentity = mSceneEnvironment.ScopeIdentity;
             result.Environment.PointLights = mSceneEnvironment.PointLights;
+            // Caster policy is independent of the authored light override.
+            result.Environment.CasterFaces = mSceneEnvironment.CasterFaces;
         }
     }
     return result;

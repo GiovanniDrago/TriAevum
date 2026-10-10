@@ -110,6 +110,7 @@ class Oot3dNativePicaCompositionTracker final
         std::string* error = nullptr) override;
 
     void Reset() noexcept;
+    void SetRoomShadowShellsEnabled(bool enabled) { mLighting.SetRoomShadowShellsEnabled(enabled); }
     [[nodiscard]] const Oot3dNativePicaCompositionStats& Stats() const
         noexcept;
 

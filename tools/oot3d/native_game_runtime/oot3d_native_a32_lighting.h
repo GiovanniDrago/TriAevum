@@ -4,6 +4,8 @@
 #include "fast/renderer3ds/pica_scene_light_continuity.h"
 #include "oot3d_native_a32_light_selection.h"
 #include "oot3d_native_static_emitters.h"
+#include "oot3d_native_room_shadow_shell.h"
+#include <atomic>
 
 #include <array>
 #include <cstdint>
@@ -62,6 +64,7 @@ class NativeA32LightingProbe {
     CaptureRenderer(uint32_t renderer, oot3d::recomp::a32::MemoryBus& memory) const;
     [[nodiscard]] static std::optional<std::array<float, 16>> CaptureWorldToView(oot3d::recomp::a32::MemoryBus& memory);
     void CaptureSceneLights(uint32_t playState, oot3d::recomp::a32::MemoryBus& memory);
+    void SetRoomShadowShellsEnabled(bool enabled);
     void Reset() noexcept;
     // The architecture's catalog (by default from TRIAEVUM_SCENE_LIGHT_CATALOG).
     void SetStaticEmitters(std::shared_ptr<const NativeStaticEmitterCatalog> catalog) {
@@ -89,6 +92,9 @@ class NativeA32LightingProbe {
     std::shared_ptr<const Fast::Renderer3ds::PicaScenePointLights> mScenePoints;
     std::shared_ptr<const Fast::Renderer3ds::PicaSceneDirectionalLights> mSceneDirectionals;
     std::shared_ptr<const Fast::Renderer3ds::PicaSceneWaterBodies> mWater;
+    std::atomic<bool> mRoomShellsEnabled{false};
+    NativeRoomShadowShells mRoomShellCache;
+    std::shared_ptr<const Fast::Renderer3ds::RoomShadowShellScene> mRoomShells;
     uint64_t mSceneLightFrames = 0;
     NativeSceneLightTraceRecord mSceneLightTrace;
     // Continuous scene light (docs/TRIAEVUM_ANIMATED_LIGHTING_STRATEGY.md):
