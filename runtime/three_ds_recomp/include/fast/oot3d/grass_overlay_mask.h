@@ -13,7 +13,7 @@ namespace Fast::Oot3d {
 
 // Static room coverage, evaluated at placement time. One world unit is 1 cm.
 inline constexpr float kGrassOverlayPlaneTolerance = 1.0F;
-inline constexpr uint64_t kGrassOverlayVersion = 1;
+inline constexpr uint64_t kGrassOverlayVersion = 2;
 struct GrassOverlayAlpha {
     Renderer3ds::PicaTevProgram Program;
     std::array<std::array<float, 4>, 6> Constants{};
@@ -27,6 +27,9 @@ struct GrassOverlayAlpha {
     Renderer3ds::PicaCompareFunction Compare = Renderer3ds::PicaCompareFunction::Always;
     uint8_t Reference = 0;
     uint64_t Version = 0;
+    bool NativeSupported = true;
+    GrassMaskRule Rule;
+    std::shared_ptr<const GrassScalarMask> CustomMask;
 };
 // Alpha-only dependency analysis. Unsupported fragment-light/procedural or
 // RGB-previous dependencies are declined, never approximated as opaque.
@@ -45,6 +48,10 @@ DecodeGrassOverlayPrimaryAlpha(const Renderer3ds::PicaVertexShaderHookLayout& ho
 [[nodiscard]] GrassOverlayAlphaInputs GrassOverlayRequiredAlphaInputs(const GrassOverlayAlpha& alpha);
 [[nodiscard]] float EvaluateGrassOverlayCoverage(const GrassOverlayAlpha& alpha, const std::array<float, 2>& uv,
                                                  float primaryAlpha);
+[[nodiscard]] float EvaluateGrassOverlayNativeCoverage(const GrassOverlayAlpha& alpha, const std::array<float, 2>& uv,
+                                                       float primaryAlpha);
+[[nodiscard]] float SampleGrassOverlayTexture(const GrassScalarMask& mask, const std::array<float, 2>& uv,
+                                              const GrassOverlayAlpha& alpha);
 [[nodiscard]] uint64_t GrassOverlayAlphaVersion(const GrassOverlayAlpha& alpha, uint64_t textureIdentity);
 
 struct GrassOverlayVertex {
@@ -59,6 +66,24 @@ struct GrassOverlayTriangle {
     std::array<float, 3> Low{}, High{}, Normal{}, Edge1{}, Edge2{};
     float D11 = 0, D12 = 0, D22 = 0, InverseDeterminant = 0;
 };
+struct GrassOverlayFootprint {
+    GrassTextureSelector Texture;
+    GrassTextureSelector Source;
+    uint64_t Draw = 0;
+    uint64_t NativeIdentity = 0;
+    GrassMaskMode Mode = GrassMaskMode::Automatic;
+    bool NativeSupported = true;
+    // Area-weighted, deterministic quadrature over actual clipped overlap.
+    double Area = 0;
+    double CoverageArea = 0;
+    std::array<double, 16> TextureAlphaArea{};
+    std::array<double, 16> NativeAlphaArea{};
+    std::vector<std::array<std::array<float, 3>, 3>> Triangles;
+};
+// Clip an overlay onto a source triangle and accumulate its footprint/alpha.
+void MeasureGrassOverlayFootprint(const std::array<std::array<float, 3>, 3>& source,
+                                  const GrassOverlayTriangle& overlay, GrassOverlayFootprint& footprint);
+
 struct GrassOverlaySet {
     uint64_t Version = 0;
     std::vector<GrassOverlayTriangle> Triangles;

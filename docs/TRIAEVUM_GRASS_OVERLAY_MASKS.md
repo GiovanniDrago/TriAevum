@@ -1,5 +1,198 @@
 # Native room overlays and grass placement
 
+## Round 36: mask identification and overrides
+
+F1 > Grass > **Masks**, beside Sources, lists current observed overlaps and saved
+rules. Each texture has a thumbnail, exact catalog hash/dimensions, source hashes,
+mode, summed overlap area and estimated coverage. The Sources and Masks catalogs
+show **MASK auto**, **MASK custom**, or **MASK off**. Measurements arrive
+asynchronously; a saved rule without current overlap is marked as such.
+
+- **Automatic** evaluates the native draw's alpha coverage. Missing rules and
+  unknown mode strings select Automatic.
+- **Custom** reuses the source editor's channel, inversion, input/output levels,
+  response exponent, wrapping, active rectangles and interactive preview, with
+  an additional strength. White suppresses grass; black lets it pass. Coverage
+  is `clamp(EvaluateGrassMaskLevel(sample, rule, wrappedUV) * strength, 0, 1)`.
+  The preview includes strength. Custom ignores native TEV/primary alpha and can
+  override an unsupported native alpha/blend path when static geometry and UVs
+  are available.
+- **Off** gives zero coverage. It remains selectable when renderer capabilities
+  disappear. It does not turn the overlay into a source.
+- **Add selected texture mask** creates/selects a Custom rule from the catalog.
+  **Remove mask rule** removes its persisted override; an observed overlay then
+  returns to Automatic. **Reset mask to automatic** removes the override and
+  its custom tuning. Eligible configured source rules retain priority.
+
+`Graphics.Grass.Masks` and `Graphics.GrassSavedPreset.Masks` are optional arrays.
+Each entry uses the source rule's `Target` (`Rgba8Hash`, Width, Height) and coverage
+fields, plus `Mode` and `Strength`. The shared codec accepts earlier files without
+Masks. Active rules are normalized, bounded to 256, and duplicate exact targets
+are removed. Global graphics presets preserve Masks alongside Sources; the
+explicit grass saved preset includes both. Persistence failures use the existing
+visible **Settings applied, but could not be saved** notice and retry action.
+
+Mask identity deliberately does **not** use approximate texture twins. Similar
+RGB dirt/path images can contain materially different alpha or cutout locations;
+source twin inheritance still works independently. A manual rule applies only to
+eligible static room draws, never actors, skinned meshes or projected shadows.
+
+The mode and every effective Custom control participate in the overlay version.
+The existing async/static/world-placement caches therefore rebuild on edits.
+No special texture hashes, scene IDs or hand-authored path shapes are in the
+implementation.
+
+### Highlight boundary and measurement cost
+
+**Highlight mask in scene** draws amber edges of the actual clipped overlap. It
+is ephemeral and cleared on tab changes, F1 closure, F2, room reset and stale
+frames; a 500 ms lease also prevents a lost UI owner from leaving it active.
+Geometry is scoped to the source's current frame, target namespace and color
+framebuffer. It is capped at 4,096 clipped triangles per footprint and the
+existing 16,384 debug-line limit. Targets without a proven BeforeUi boundary
+are not highlighted.
+
+The existing world-debug-line draw now occurs at the presentation BeforeUi
+anchor **after scene effects and the clean pre-UI upscaler snapshot**, before
+native UI. Mask edges and light-editor gizmos share that one debug draw. They
+write neither depth nor effect guides and never enter the scene-effect input or
+clean upscaler image. Native UI covers them normally; an upscaler carries them
+with the presentation decoration. With no selection/gizmos, the path returns
+before beginning a render pass, creating a pipeline or uploading vertices.
+Native draw shaders and ordering are unchanged. Live UI/upscaler acceptance
+still belongs to the lab.
+
+Area/histogram work runs in **one asynchronous CPU job**, using immutable
+snapshots and rejecting results whose source version/room epoch is stale.
+Placement preparation does not wait for it. Histograms use 64 deterministic
+barycentric samples per clipped triangle. Area is a sum of source/overlay
+triangle intersections, not a union across overlapping draws; placement itself
+still unions triangles within a draw and composes separate draws by alpha-over.
+The wireframe and statistics are editor data, separate from placement payloads.
+
+On the private Graveyard fixture, Release build, no diagnostic printing:
+
+| Measurement | Round 36 |
+| --- | ---: |
+| Cold placement preparation, including job submission | 0.575 ms |
+| Warm overlay lookup | 0.688 us |
+| Republish 19 prepared meshes + lookup | 3.554 us |
+| Empty-overlay lookup | 0.023 us |
+| Roots before / after (same assumed-alpha fixture) | 542,260 / 490,943 |
+
+The roughly 30 ms histogram workload moved off the render thread. These are
+local CPU measurements, not live frame-time guarantees.
+
+### Graveyard evidence and the outstanding native comparison
+
+The supplied `round35_graveyard_trace.jsonl` identifies room draw 18 as
+`s2_tsuchi_02` (`c018f0023fa65419`, 64x128), draw 19 as `s2_tsuchi_01`
+(`78795509fbe0ffeb`, 256x128), both alpha-over with alpha testing disabled.
+**Draw 20, `dd5aab0feaa345b3`, has `actor=1`; it is excluded before mask
+capture.** It cannot be the third grass mask under the round-35/36 producer.
+
+Native base-level texture alpha, decoded from the installed room CMB:
+
+| Texture | Pixels | Alpha zero | Alpha one | Mean alpha |
+| --- | ---: | ---: | ---: | ---: |
+| s2_tsuchi_01, full atlas | 32,768 | 7,132 (21.765%) | 17,377 (53.030%) | 0.637948 |
+| s2_tsuchi_02, full atlas | 8,192 | 945 (11.536%) | 5,055 (61.707%) | 0.736898 |
+| s2_tsuchi_01, rightmost 64 columns | 8,192 | 938 (11.450%) | 5,540 (67.627%) | 0.783276 |
+
+Full texel histograms, in byte-alpha order
+`0,17,34,51,68,85,102,119,136,153,170,187,204,221,238,255`:
+
+- s2_tsuchi_01: `7132,1118,853,741,666,589,565,531,466,486,427,464,425,422,506,17377`
+- s2_tsuchi_02: `945,246,212,188,166,161,151,140,153,134,127,115,145,125,129,5055`
+
+The green between slabs is **not uniformly transparent**. In the displayed
+atlas (top-left origin after the decoder's vertical display flip), samples
+`(218,9)=(95,103,62,255)`, `(226,40)=(132,140,91,255)` and
+`(243,48)=(69,86,53,255)` are green/brown opaque pixels. A soft sample is
+`(226,95)=(94,94,26,102)`. Green visible in a screenshot therefore does not by
+itself establish that the ground texture is showing through. Custom Green or
+Luminance controls can express a different artistic coverage rule.
+
+Using the real room triangles/UVs, clipping to the ground source and native
+bilinear base-level filtering, the **offline texture-alpha** histogram over
+covered area is:
+
+| Alpha bin | s2_tsuchi_01 area % | s2_tsuchi_02 area % |
+| --- | ---: | ---: |
+| exactly 0 | 4.2212 | 3.5115 |
+| (0,1/14) | 3.2428 | 3.4129 |
+| [1/14,2/14) | 2.5988 | 2.6187 |
+| [2/14,3/14) | 2.5843 | 3.3479 |
+| [3/14,4/14) | 2.4218 | 2.7514 |
+| [4/14,5/14) | 2.3386 | 2.4359 |
+| [5/14,6/14) | 2.0617 | 3.1819 |
+| [6/14,7/14) | 2.0522 | 2.8251 |
+| [7/14,8/14) | 2.1253 | 3.1046 |
+| [8/14,9/14) | 1.7716 | 1.9126 |
+| [9/14,10/14) | 2.2065 | 1.8179 |
+| [10/14,11/14) | 2.0876 | 2.7779 |
+| [11/14,12/14) | 2.2405 | 2.9285 |
+| [12/14,13/14) | 2.7301 | 2.7321 |
+| [13/14,1) | 4.6169 | 3.5045 |
+| exactly 1 | 60.7001 | 57.1366 |
+
+Clipped areas are 66.122757 m2 and 1.469483 m2 respectively. With the existing
+fixture's **assumed** `texture alpha * primary alpha 1` TEV, mean coverage is
+0.787003 and 0.766186. Those are not measured live native-output alpha values.
+
+The trace does not record alpha constants/operands/vertex alpha. The supplied
+savestate's `runtime.native_pica_visual_replay_state.available` is false and its
+replay payload is empty. Thus the real native primary/constant/TEV output and its
+agreement with the displayed blend **remain unverified**. No universal
+native-alpha correction or claim that automatic coverage is fixed is justified
+by this evidence. The scalar supported-path operations were checked against
+`pica_tev_program.cpp`; no arithmetic discrepancy was established. The new
+producer retains real UVs for constant-alpha textured overlays, needed by Custom
+rules and atlas diagnostics, and retains unsupported alpha paths as identifiable
+zero-coverage Automatic candidates rather than silently making them opaque.
+
+### Lab continuation
+
+Enable `TRIAEVUM_GRASS_MASK_DIAGNOSTICS=1`, then load
+`state-2026-10-11_16-21-37.oot3dsav` (scene 0x53, room 1, child night).
+
+1. Capture the `program` and six `tev` records for draws 18/19: native/catalog
+   identities, primary-alpha min/max, buffer RGBA, constants, TEV words, alpha
+   test and support status. The asynchronous `coverage` lines report clipped
+   area, effective mean, texture histogram and native-coverage histogram.
+   Bins are exactly zero, fourteen equal-width interior bins, exactly one.
+   For opaque draws, native coverage means replacement/alpha-test coverage,
+   not raw shader alpha. `pair` records retain configured source rule IDs.
+2. Compare texture/native coverage at visible soft edges and specific slab gaps
+   with grass Off/On at the same camera. If native output differs from the CPU
+   evaluation, fix that generic dependency/sampling/primary path; do not add
+   texture-specific data. Keep replacement-pack alpha/mip limitations in mind.
+3. In F1 > Grass > Masks, identify both thumbnails and source relationships;
+   inspect any additional room masks. Verify draw 20 is absent. Toggle each
+   mask Off, Automatic and Custom, then use Green/Luminance, inversion, levels,
+   strength and rectangles to let the desired green regions pass. Confirm live
+   rebuilds settle, removal/reset work, and settings survive restart.
+4. Highlight, change tabs, close F1, toggle F2 and re-enter the room. Check the
+   wireframe follows only the selected surface and never the HUD. Exercise
+   native presentation, MSAA/TAA and FSR/DLSS modes; inspect the clean scene
+   snapshot/effect inputs to confirm there is no highlight contamination.
+5. Compare warm capture and placement costs with diagnostics off, including a
+   room without overlapping masks. Confirm Grass Off bypasses mask capture.
+
+### Round 36 validation
+
+Built `TriAevum.exe`, `oot3d_graphics_foundation_tests` and
+`triaevum_f1_settings_smoke`. Full foundation run: **371 passed**, one optional
+fixture skipped; the private fixture passed separately. Focused actual-widget
+smoke: **489 assertions passed**, including visible save failure and retry.
+The full F1 smoke still stops at the documented unrelated material-editor
+Azahar-identity assertion. Tests cover every Custom control, all modes/channels,
+codec defaults/round trip, exact target identity, cache version changes,
+clipped overlap, stale/in-flight room results, scoped/inert highlighting and
+F1/tab/F2 cleanup. No game or git commands were run.
+
+## Round 35 baseline
+
 Round 35, 2026-10-11. Native decals previously failed grass-source admission,
 but had no way to suppress placements from the surface underneath them. This
 produced grass through the Graveyard stone path.
@@ -15,7 +208,8 @@ captures immutable CPU data; it does not submit or reorder native draws.
 source can use only later overlays in the same frame, composition sequence,
 render-target namespace and color framebuffer. Configured, eligible grass
 sources do not become masks. Actor geometry, projected shadows, stencil draws,
-skinned geometry, unsupported UV programs and non-alpha-over blends are excluded.
+skinned geometry and unsupported UV programs are excluded. Non-alpha-over
+blends have no Automatic coverage; Custom may override their coverage.
 
 `grass_overlay_mask` prepares world triangles once per cached overlay set. For
 each source triangle it requires overlapping bounds, normals within one degree,
@@ -71,8 +265,8 @@ the world transform. The first observed pose can mask until motion is detected.
 Animation history is bounded to 4,096 instances; prepared sets to 256 sources.
 Material/texture-alpha changes invalidate and rebuild static placement.
 
-Grass Off bypasses capture and masking. The feature adds **zero GPU passes,
-draws, texture uploads or readbacks**. The GPU receives the existing grass data
+Grass Off bypasses capture and masking. With editor highlighting disabled,
+the masking feature adds **zero GPU passes, draws, texture uploads or readbacks**. The GPU receives the existing grass data
 with fewer roots. Exact GPU savings and total live CPU frame cost require a lab
 run; CPU capture still has a cost even when the resulting overlays do not
 intersect a source. No claim of zero total-frame overhead is made.
@@ -119,8 +313,8 @@ Offline texture inspection and triangle counts identify these room draws in
 | 18 | `c018f0023fa65419` | `s2_tsuchi_02`, dirt overlay | 10 |
 | 19 | `78795509fbe0ffeb` | `s2_tsuchi_01`, dirt/stone-path atlas | 205 |
 
-Draw 20 (`dd5aab0feaa345b3`) was not identified in this room CMB. Runtime capture
-can determine its eligibility; it is not hardcoded. None of these asset names,
+Draw 20 (`dd5aab0feaa345b3`) was not identified in this room CMB. Round 36
+confirmed its trace actor flag, which excludes it from masks; this is not hardcoded. None of these asset names,
 IDs or scene IDs are used by the feature.
 
 Enable `TRIAEVUM_GRASS_MASK_DIAGNOSTICS=1` for the lab. A `pair` line gives native

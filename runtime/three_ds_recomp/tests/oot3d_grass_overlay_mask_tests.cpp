@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
@@ -45,6 +46,16 @@ GrassSceneMesh Mesh(uint64_t id, uint64_t order, float height = 0) {
     m.Indices = std::make_shared<const std::vector<uint32_t>>(std::initializer_list<uint32_t>{ 0, 1, 2 });
     return m;
 }
+auto WaitForMaskObservations(GrassSceneBridge& bridge, const GrassSceneMesh& source) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    auto observed = bridge.ObservedMasks();
+    while (observed.empty() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+        (void)bridge.OverlaysFor(source);
+        observed = bridge.ObservedMasks();
+    }
+    return observed;
+}
 struct OverlayFixture : testing::Test {
     GrassSceneBridge& Bridge = GrassSceneBridge::Instance();
     GrassSceneMesh Source = Mesh(1, 10);
@@ -74,6 +85,162 @@ struct OverlayFixture : testing::Test {
         return GrassSurfaceExtractor::Extract(s, rule, g, *Mask({ 255 }), 10000);
     }
 };
+TEST(GrassMaskRules, ModesChannelsLevelsRectanglesAndStrength) {
+    auto& cache = GrassTextureSourceCache::Instance();
+    const std::array<uint8_t, 8> pixels{ 51, 102, 153, 204, 255, 0, 0, 0 };
+    cache.ObserveDecoded(0x123456, 2, 1, pixels);
+    auto alpha = Alpha();
+    alpha.WrapS = GrassTextureWrap::Clamp;
+    alpha.Texture[3] = cache.AcquireMaskShared(0x123456, GrassSampleChannel::Alpha);
+    EXPECT_NEAR(EvaluateGrassOverlayCoverage(alpha, { .25F, .5F }, 1), .8F, 1e-6);
+    alpha.Rule.Mode = GrassMaskMode::Off;
+    EXPECT_EQ(EvaluateGrassOverlayCoverage(alpha, { .25F, .5F }, 1), 0);
+    alpha.Rule.Mode = GrassMaskMode::Custom;
+    for (unsigned channel = 0; channel < 5; ++channel) {
+        alpha.Rule.Coverage.Channel = static_cast<GrassSampleChannel>(channel);
+        alpha.CustomMask = cache.AcquireMaskShared(0x123456, alpha.Rule.Coverage.Channel);
+        ASSERT_TRUE(alpha.CustomMask);
+        const float expected = alpha.CustomMask->Samples.front() / 255.0F;
+        EXPECT_NEAR(EvaluateGrassOverlayCoverage(alpha, { .25F, .5F }, 0), expected, 1e-6);
+        alpha.Rule.Coverage.Invert = true;
+        alpha.Rule.Strength = .5F;
+        EXPECT_NEAR(EvaluateGrassOverlayCoverage(alpha, { .25F, .5F }, 0), .5F * (1 - expected), 1e-6);
+        alpha.Rule.Coverage.Invert = false;
+        alpha.Rule.Strength = 1;
+    }
+    alpha.CustomMask = cache.AcquireMaskShared(0x123456, GrassSampleChannel::Red);
+    auto& rule = alpha.Rule.Coverage;
+    rule.InputBlack = .1F;
+    rule.InputWhite = .3F;
+    rule.ResponseExponent = 2;
+    rule.OutputBlack = .2F;
+    rule.OutputWhite = .6F;
+    EXPECT_NEAR(EvaluateGrassOverlayCoverage(alpha, { .25F, .5F }, 0), .3F, 1e-6);
+    rule.ActiveRects = { { 0, 0, .5F, 1 } };
+    EXPECT_EQ(EvaluateGrassOverlayCoverage(alpha, { .75F, .5F }, 1), 0);
+    rule.Wrap = GrassWrapOverride::Repeat;
+    EXPECT_NEAR(EvaluateGrassOverlayCoverage(alpha, { 1.25F, .5F }, 0), .3F, 1e-6);
+    rule.Wrap = GrassWrapOverride::Clamp;
+    EXPECT_EQ(EvaluateGrassOverlayCoverage(alpha, { 1.25F, .5F }, 0), 0);
+    alpha.Rule.Strength = 0;
+    EXPECT_EQ(EvaluateGrassOverlayCoverage(alpha, { .25F, .5F }, 1), 0);
+    alpha.NativeSupported = false;
+    alpha.Rule.Strength = 1;
+    EXPECT_NEAR(EvaluateGrassOverlayCoverage(alpha, { .25F, .5F }, 1), .3F, 1e-6);
+    alpha.Rule.Mode = GrassMaskMode::Automatic;
+    EXPECT_EQ(EvaluateGrassOverlayCoverage(alpha, { .25F, .5F }, 1), 0);
+}
+
+TEST_F(OverlayFixture, RuleChangesInvalidatePlacementAndLeaveOffMasksIdentifiable) {
+    Material->Rule.Mode = GrassMaskMode::Custom;
+    Material->CustomMask = Mask({ 255 });
+    Material->Version = GrassOverlayAlphaVersion(*Material, 123);
+    Bridge.Publish(Overlay);
+    auto full = Bridge.OverlaysFor(Source);
+    (void)WaitForMaskObservations(Bridge, Source);
+    ASSERT_TRUE(full);
+    EXPECT_TRUE(Extract(full).empty());
+    const auto change = [&] {
+        Material = std::make_shared<GrassOverlayAlpha>(*Material);
+        Overlay.Overlay = Material;
+    };
+    change();
+    Material->Rule.Strength = .5F;
+    Material->Version = GrassOverlayAlphaVersion(*Material, 123);
+    Bridge.Publish(Overlay);
+    auto half = Bridge.OverlaysFor(Source);
+    (void)WaitForMaskObservations(Bridge, Source);
+    EXPECT_NE(full->Version, half->Version);
+    EXPECT_FALSE(Extract(half).empty());
+    change();
+    Material->Rule.Mode = GrassMaskMode::Off;
+    Material->Version = GrassOverlayAlphaVersion(*Material, 123);
+    Bridge.Publish(Overlay);
+    auto off = Bridge.OverlaysFor(Source);
+    EXPECT_NE(half->Version, off->Version);
+    EXPECT_EQ(Extract(off).size(), Extract().size());
+    const auto observed = WaitForMaskObservations(Bridge, Source);
+    ASSERT_EQ(observed.size(), 1);
+    EXPECT_EQ(observed[0].Mode, GrassMaskMode::Off);
+    EXPECT_NEAR(observed[0].Area, 20000, 1e-3);
+    EXPECT_EQ(observed[0].CoverageArea, 0);
+    EXPECT_TRUE(Bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty());
+    Bridge.HighlightMask(observed[0].Texture);
+    EXPECT_FALSE(Bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty());
+    EXPECT_TRUE(Bridge.MaskHighlight({ 2, 1, 0 }).Lines.empty());
+    EXPECT_TRUE(Bridge.MaskHighlight({ 1, 2, 0 }).Lines.empty());
+    EXPECT_TRUE(Bridge.MaskHighlight({ 1, 1, 99 }).Lines.empty());
+    Bridge.HighlightMask(std::nullopt);
+    EXPECT_TRUE(Bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty());
+    Bridge.HighlightMask(observed[0].Texture);
+    Bridge.PruneBeforeFrame(2);
+    EXPECT_TRUE(Bridge.ObservedMasks().empty());
+    EXPECT_TRUE(Bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty());
+}
+
+TEST_F(OverlayFixture, RoomResetDiscardsAnInFlightMeasurement) {
+    Bridge.Publish(Overlay);
+    (void)Bridge.OverlaysFor(Source);
+    Bridge.Clear();
+    Source.FrameId = Overlay.FrameId = 3;
+    Overlay.TextureHash = 999;
+    Bridge.Publish(Source);
+    Bridge.Publish(Overlay);
+    (void)Bridge.OverlaysFor(Source);
+    const auto observations = WaitForMaskObservations(Bridge, Source);
+    ASSERT_EQ(observations.size(), 1);
+    EXPECT_EQ(observations[0].Texture.Rgba8Hash, 999);
+    Bridge.HighlightMask(observations[0].Texture);
+    EXPECT_TRUE(Bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty());
+    EXPECT_FALSE(Bridge.MaskHighlight({ 3, 1, 0 }).Lines.empty());
+}
+
+TEST(GrassMaskRules, EveryCustomControlContributesToVersion) {
+    auto alpha = Alpha();
+    alpha.Rule.Mode = GrassMaskMode::Custom;
+    const auto original = GrassOverlayAlphaVersion(alpha, 123);
+    const auto different = [&](auto mutate) {
+        auto modified = alpha;
+        mutate(modified.Rule);
+        EXPECT_NE(original, GrassOverlayAlphaVersion(modified, 123));
+    };
+    different([](auto& r) { r.Mode = GrassMaskMode::Off; });
+    different([](auto& r) { r.Coverage.Channel = GrassSampleChannel::Red; });
+    different([](auto& r) { r.Coverage.Wrap = GrassWrapOverride::Mirror; });
+    different([](auto& r) { r.Coverage.Invert = true; });
+    different([](auto& r) { r.Coverage.InputBlack = .2F; });
+    different([](auto& r) { r.Coverage.InputWhite = .8F; });
+    different([](auto& r) { r.Coverage.OutputBlack = .2F; });
+    different([](auto& r) { r.Coverage.OutputWhite = .8F; });
+    different([](auto& r) { r.Coverage.ResponseExponent = 2; });
+    different([](auto& r) { r.Coverage.ActiveRects = { { 0, 0, .5F, 1 } }; });
+    different([](auto& r) { r.Strength = .8F; });
+}
+
+TEST_F(OverlayFixture, FootprintsClipToSourceAndRejectWallAndStaleRoom) {
+    auto vertices = std::make_shared<std::vector<GrassSourceVertex>>(*Overlay.Vertices);
+    for (auto& vertex : *vertices) {
+        vertex.Position[0] *= 2;
+        vertex.Position[2] *= 2;
+    }
+    Overlay.Vertices = vertices;
+    Bridge.Publish(Overlay);
+    auto masks = Bridge.OverlaysFor(Source);
+    ASSERT_TRUE(masks);
+    const auto measured = WaitForMaskObservations(Bridge, Source);
+    ASSERT_EQ(measured.size(), 1);
+    EXPECT_NEAR(measured[0].Area, 20000, 1e-3);
+    EXPECT_NEAR(measured[0].NativeAlphaArea[15], 20000, 1e-3);
+    EXPECT_EQ(measured[0].NativeAlphaArea[0], 0);
+    Bridge.RemoveRoom(1);
+    EXPECT_TRUE(Bridge.ObservedMasks().empty());
+    Overlay = Mesh(2, 20, 2);
+    Overlay.Overlay = Material;
+    Bridge.Publish(Overlay);
+    (void)Bridge.OverlaysFor(Source);
+    EXPECT_TRUE(Bridge.ObservedMasks().empty());
+}
+
 TEST_F(OverlayFixture, FullyOpaqueOverlayRemovesRootsWithoutBecomingSource) {
     ASSERT_FALSE(Extract().empty());
     Bridge.Publish(Overlay);
@@ -356,7 +523,8 @@ TEST(Oot3dGrassOverlayBenchmark, OfflineRoomFixture) {
         }
         m.Vertices = vertices;
         m.Indices = indices;
-        m.NativeTextureIdentity = m.TextureHash = std::stoull(j.at("hash").get<std::string>(), nullptr, 16);
+        m.ObservedTextureHash = m.NativeTextureIdentity = m.TextureHash =
+            std::stoull(j.at("hash").get<std::string>(), nullptr, 16);
         auto mask = std::make_shared<GrassScalarMask>();
         mask->Width = m.TextureWidth = j.at("width");
         mask->Height = m.TextureHeight = j.at("height");
@@ -387,6 +555,7 @@ TEST(Oot3dGrassOverlayBenchmark, OfflineRoomFixture) {
     auto begin = Clock::now();
     auto overlays = bridge.OverlaysFor(source);
     const auto prepareMs = elapsed(begin);
+    (void)WaitForMaskObservations(bridge, source);
     ASSERT_TRUE(overlays);
     size_t sourceTriangles = 0, pairs = 0;
     for (size_t i = 0; i + 2 < source.Indices->size(); i += 3) {

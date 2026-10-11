@@ -1,5 +1,17 @@
 # F1 settings rationalization
 
+## Grass masks (2026-10-11, round 36)
+
+Grass > Masks identifies current overlay/source overlaps with thumbnails,
+catalog badges, estimated coverage and an optional world wireframe. Automatic,
+Custom and Off persist beside Sources; Custom reuses the source mask editor
+and adds strength. Manual add, removal, reset, capability-safe Off, explicit
+save failure/retry, and F1/tab/F2 highlight cleanup are exercised by
+`triaevum_f1_settings_smoke --grass-masks` (489 assertions). The full smoke
+still stops at the previously documented Azahar-identity assertion.
+See [overlay masks](TRIAEVUM_GRASS_OVERLAY_MASKS.md) for the persistence,
+presentation boundary, diagnosis numbers and outstanding native-alpha lab check.
+
 ## Group environment standards (2026-10-11, round 34)
 
 **Lighting > Lights & Shadows > Scene lights** shows the authored scene group:
@@ -606,7 +618,7 @@ Current surfaces (since the 2026-10-06 tab rationalization above):
 | --- | --- | --- |
 | Display | Screen, Antialiasing and upscaling, Motion and camera | GraphicsSettingsRuntime |
 | Lighting | Lighting & GI, Shadows, Occlusion, Reflections, Scene environment, Toon | GraphicsSettingsRuntime; SceneEnvironmentRuntime (Scene environment) |
-| Grass | Sources, Generation, Appearance, Performance, Wind, Interaction | GraphicsSettingsRuntime / grass module |
+| Grass | Sources, Masks, Generation, Appearance, Performance, Wind, Interaction | GraphicsSettingsRuntime / grass module |
 | Materials | Texture packs, Material editor, Reflection materials | GraphicsSettingsRuntime / texture-pack module / material JSON |
 | Controls | Bindings, Camera, Devices, Shortcuts | NativeControlConfigRuntime / TopScreenUiConfigRuntime |
 | HUD | TopScreen 2.1.1 HUD and layout | TopScreenUiConfigRuntime |

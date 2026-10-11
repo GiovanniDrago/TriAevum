@@ -8,6 +8,7 @@
 #include "oot3d_scene_environment.h"
 #include "oot3d_scene_environment_codec.h"
 #include "fast/oot3d/world_debug_lines.h"
+#include "fast/oot3d/grass_scene_bridge.h"
 #include "fast/MouseCapturePolicy.h"
 #include <imgui_internal.h>
 #include <nlohmann/json.hpp>
@@ -1289,6 +1290,125 @@ int main(int argc, char** argv) try {
     int width, height;
     ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
     Frame(); Frame();
+
+    if (argc == 2 && std::string_view(argv[1]) == "--grass-masks") {
+        auto& bridge = GrassSceneBridge::Instance();
+        bridge.Clear();
+        GrassSceneMesh source;
+        source.GeometryId = source.InstanceId = 1;
+        source.DrawOrder = 1;
+        source.FrameId = 1;
+        source.RenderTargetNamespace = 1;
+        source.TextureHash = 0xCC00;
+        source.TextureWidth = source.TextureHeight = 32;
+        source.Vertices = std::make_shared<const std::vector<GrassSourceVertex>>(
+            std::initializer_list<GrassSourceVertex>{ { { 0, 0, 0 }, { 0, 1, 0 }, { 0, 0 } },
+                                                      { { 100, 0, 0 }, { 0, 1, 0 }, { 1, 0 } },
+                                                      { { 0, 0, 100 }, { 0, 1, 0 }, { 0, 1 } } });
+        source.Indices = std::make_shared<const std::vector<uint32_t>>(std::initializer_list<uint32_t>{ 0, 1, 2 });
+        auto overlay = source;
+        overlay.GeometryId = overlay.InstanceId = 2;
+        overlay.DrawOrder = 2;
+        overlay.TextureHash = firstTextureHash;
+        overlay.Overlay = std::make_shared<GrassOverlayAlpha>();
+        bridge.Publish(source);
+        bridge.Publish(overlay);
+        (void)bridge.OverlaysFor(source);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (bridge.ObservedMasks().empty() && std::chrono::steady_clock::now() < deadline)
+            (void)bridge.OverlaysFor(source);
+        TextureCatalogRuntime::Instance().Clear();
+        TextureCatalogRuntime::Instance().Observe(firstTextureHash, 0x1000, 32, 32, 0);
+        TextureCatalogRuntime::Instance().Observe(secondTextureHash, 0x2000, 64, 64, 0);
+        std::vector<uint8_t> rgba(32 * 32 * 4, 128);
+        GrassTextureSourceCache::Instance().ObserveDecoded(firstTextureHash, 32, 32, rgba);
+        auto settings = runtime.Snapshot();
+        settings.Preset = GraphicsPreset::Custom;
+        settings.Grass.Masks.clear();
+        runtime.Apply(settings);
+        Click("Grass");
+        Click("Masks");
+        Frame(true);
+        Check(loggedPanelText.find("Covered source area") != std::string::npos, "mask overlap absent from panel");
+        Check(loggedPanelText.find("MASK auto") != std::string::npos, "automatic catalog badge missing");
+        Click("Overlay mask");
+        ClickTexture(firstTextureHash);
+        Check(bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty(), "highlight active without request");
+        Click("Highlight mask in scene");
+        Check(!bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty(), "selected mask did not highlight");
+        Click("Sources");
+        Check(bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty(), "tab switch retained highlight");
+        Click("Masks");
+        ToggleGraphicsNativePresentation();
+        Frame();
+        Check(bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty(), "F2 retained highlight");
+        ToggleGraphicsNativePresentation();
+        Frame();
+        showPanel = false;
+        Frame();
+        Check(bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty(), "closed F1 retained highlight");
+        showPanel = true;
+        Frame();
+        Click("Highlight mask in scene");
+        AllCapabilities(false);
+        Select("Mask mode", "Off");
+        Check(runtime.Snapshot().Grass.Masks.size() == 1 &&
+                  runtime.Snapshot().Grass.Masks[0].Mode == GrassMaskMode::Off,
+              "capability loss prevented mask Off");
+        AllCapabilities(true);
+        Select("Mask mode", "Custom");
+        size.y = 2200;
+        Frame();
+        Frame();
+        Select("Sample channel", "Green");
+        Click("Invert mask");
+        EditScalar("Mask strength", "0.4");
+        EditScalar("Input black", "0.2");
+        EditScalar("Input white", "0.8");
+        EditScalar("Response exponent", "2");
+        EditScalar("Output black", "0.1");
+        EditScalar("Output white", "0.7");
+        Click("Add rectangle");
+        const auto custom = runtime.Snapshot().Grass.Masks.front();
+        Check(custom.Mode == GrassMaskMode::Custom && custom.Coverage.Channel == GrassSampleChannel::Green &&
+                  custom.Coverage.Invert && custom.Strength == .4F && custom.Coverage.InputBlack == .2F &&
+                  custom.Coverage.InputWhite == .8F && custom.Coverage.ResponseExponent == 2 &&
+                  custom.Coverage.OutputBlack == .1F && custom.Coverage.OutputWhite == .7F &&
+                  custom.Coverage.ActiveRects.size() == 1,
+              "shared custom mask controls failed");
+        const auto saved = DeserializeGraphicsSettings(store->Root["Graphics"]);
+        Check(saved.Value.Grass.Masks.front().Coverage.ActiveRects.size() == 1, "mask controls were not persisted");
+        Frame(true);
+        Check(loggedPanelText.find("MASK custom") != std::string::npos, "custom catalog badge missing");
+        store->Fail = true;
+        Select("Mask mode", "Off");
+        Frame(true);
+        Check(loggedPanelText.find("Settings applied, but could not be saved.") != std::string::npos &&
+                  runtime.SaveState() == GraphicsSettingsSaveState::Failed,
+              "mask persistence failure not shown");
+        Check(runtime.Snapshot().Grass.Masks[0].Mode == GrassMaskMode::Off, "failed save prevented live Off");
+        store->Fail = false;
+        Click("Retry saving graphics");
+        Check(runtime.SaveState() == GraphicsSettingsSaveState::Saved, "mask save retry failed");
+        Click("Reset mask to automatic");
+        Check(runtime.Snapshot().Grass.Masks.empty(), "reset to automatic retained override");
+        Click("Texture catalog selection");
+        ClickTexture(secondTextureHash);
+        Click("Add selected texture mask");
+        Check(runtime.Snapshot().Grass.Masks.size() == 1 &&
+                  runtime.Snapshot().Grass.Masks[0].Coverage.Target.Rgba8Hash == secondTextureHash,
+              "manual catalog mask used wrong identity");
+        Click("Remove mask rule");
+        Check(runtime.Snapshot().Grass.Masks.empty(), "remove mask failed");
+        size.y = 680;
+        Frame();
+        Frame();
+        bridge.Clear();
+        EndGraphicsSettingsPreviews();
+        ImGui::DestroyContext();
+        std::cout << "F1 grass masks smoke passed: " << assertions << " assertions\n";
+        return 0;
+    }
 
     // Run the owning panel independently of unrelated material/controls UI.
     if (argc == 2 && std::string_view(argv[1]) == "--scene-environment") {

@@ -1,4 +1,5 @@
 #include "fast/oot3d/graphics_settings_window.h"
+#include "fast/oot3d/grass_scene_bridge.h"
 #include "fast/oot3d/graphics_settings_runtime.h"
 #include "fast/oot3d/settings_panel_widgets.h"
 #include <algorithm>
@@ -42,7 +43,10 @@ void InstallGraphicsSettingsPanelTab(
 }
 
 void EndGraphicsSettingsPreviews() {
-    for (const auto& tab : SnapshotPanelTabs()) if (tab) tab->EndPreview();
+    GrassSceneBridge::Instance().HighlightMask(std::nullopt);
+    for (const auto& tab : SnapshotPanelTabs())
+        if (tab)
+            tab->EndPreview();
 }
 void ToggleGraphicsNativePresentation() {
     GraphicsSettingsRuntime::Instance().ToggleNativePresentationOverride();
@@ -172,6 +176,7 @@ void GraphicsSettingsPanel::DrawPresentationStatus() {
 }
 
 void GraphicsSettingsPanel::Draw() {
+    GrassSceneBridge::Instance().HighlightMask(std::nullopt);
     const bool nativeRequired = GraphicsSettingsRuntime::Instance().NativePresentationOverrideRequired();
     if (nativeRequired) {
         ImGui::TextWrapped("Native presentation: Grass, Toon/outline, AO and reflections are unavailable in this build.");

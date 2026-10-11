@@ -1,4 +1,5 @@
 #include "fast/oot3d/grass_overlay_mask.h"
+#include "fast/oot3d/grass_surface_extractor.h"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -59,7 +60,8 @@ int WrapIndex(int x, int size, GrassTextureWrap wrap) {
     x = (x % period + period) % period;
     return x < size ? x : period - 1 - x;
 }
-float Sample(const GrassScalarMask& mask, const std::array<float, 2>& uv, const GrassOverlayAlpha& alpha) {
+float Sample(const GrassScalarMask& mask, const std::array<float, 2>& uv, bool linear, GrassTextureWrap wrapS,
+             GrassTextureWrap wrapT) {
     if (!mask.Width || !mask.Height || mask.Samples.size() != size_t(mask.Width) * mask.Height ||
         !std::isfinite(uv[0]) || !std::isfinite(uv[1]))
         return 0;
@@ -69,15 +71,14 @@ float Sample(const GrassScalarMask& mask, const std::array<float, 2>& uv, const 
             return std::clamp(x, 0.0F, 1.0F);
         return std::fmod(x, wrap == GrassTextureWrap::Mirror ? 2.0F : 1.0F);
     };
-    const float x = coordinate(uv[0], alpha.WrapS) * mask.Width - (alpha.Linear ? .5F : 0);
-    const float y = coordinate(uv[1], alpha.WrapT) * mask.Height - (alpha.Linear ? .5F : 0);
+    const float x = coordinate(uv[0], wrapS) * mask.Width - (linear ? .5F : 0);
+    const float y = coordinate(uv[1], wrapT) * mask.Height - (linear ? .5F : 0);
     const int ix = int(std::floor(x)), iy = int(std::floor(y));
     const auto at = [&](int a, int b) {
-        return mask.Samples[size_t(WrapIndex(b, mask.Height, alpha.WrapT)) * mask.Width +
-                            WrapIndex(a, mask.Width, alpha.WrapS)] /
+        return mask.Samples[size_t(WrapIndex(b, mask.Height, wrapT)) * mask.Width + WrapIndex(a, mask.Width, wrapS)] /
                255.0F;
     };
-    if (!alpha.Linear)
+    if (!linear)
         return at(ix, iy);
     return std::lerp(std::lerp(at(ix, iy), at(ix + 1, iy), x - ix),
                      std::lerp(at(ix, iy + 1), at(ix + 1, iy + 1), x - ix), y - iy);
@@ -106,6 +107,28 @@ bool Compare(float a, const GrassOverlayAlpha& p) {
     return false;
 }
 } // namespace
+
+float SampleGrassOverlayTexture(const GrassScalarMask& mask, const std::array<float, 2>& uv,
+                                const GrassOverlayAlpha& alpha) {
+    return Sample(mask, uv, alpha.Linear, alpha.WrapS, alpha.WrapT);
+}
+
+float EvaluateGrassOverlayCoverage(const GrassOverlayAlpha& alpha, const std::array<float, 2>& uv, float primary) {
+    if (alpha.Rule.Mode == GrassMaskMode::Off)
+        return 0;
+    if (alpha.Rule.Mode == GrassMaskMode::Automatic)
+        return EvaluateGrassOverlayNativeCoverage(alpha, uv, primary);
+    if (!alpha.CustomMask)
+        return 0;
+    const auto& rule = alpha.Rule.Coverage;
+    const auto wrapS = ResolveGrassTextureWrap(rule.Wrap, alpha.WrapS);
+    const auto wrapT = ResolveGrassTextureWrap(rule.Wrap, alpha.WrapT);
+    const float u = WrapGrassTextureCoordinate(uv[0], wrapS);
+    const float v = WrapGrassTextureCoordinate(uv[1], wrapT);
+    return std::clamp(EvaluateGrassMaskLevel(Sample(*alpha.CustomMask, uv, alpha.Linear, wrapS, wrapT), rule, u, v) *
+                          alpha.Rule.Strength,
+                      0.0F, 1.0F);
+}
 
 GrassOverlayPrimaryAlpha DecodeGrassOverlayPrimaryAlpha(const Renderer3ds::PicaVertexShaderHookLayout& hooks,
                                                         std::span<const uint8_t> uniforms) {
@@ -174,13 +197,16 @@ GrassOverlayAlphaInputs GrassOverlayRequiredAlphaInputs(const GrassOverlayAlpha&
     return { (previous & unsupported) == 0, (previous & primary) != 0, uint8_t(previous & 15) };
 }
 
-float EvaluateGrassOverlayCoverage(const GrassOverlayAlpha& alpha, const std::array<float, 2>& uv, float primary) {
+float EvaluateGrassOverlayNativeCoverage(const GrassOverlayAlpha& alpha, const std::array<float, 2>& uv,
+                                         float primary) {
+    if (!alpha.NativeSupported)
+        return 0;
     if (!alpha.Translucent && !alpha.AlphaTest)
         return 1;
     std::array<float, 4> texture{};
     for (size_t c = 0; c < 4; ++c)
         if (alpha.Texture[c])
-            texture[c] = Sample(*alpha.Texture[c], uv, alpha);
+            texture[c] = Sample(*alpha.Texture[c], uv, alpha.Linear, alpha.WrapS, alpha.WrapT);
     primary = Quantize(primary);
     float previous = 0, buffer = 0, next = alpha.Buffer[3];
     const float unknown = std::numeric_limits<float>::quiet_NaN();
@@ -222,6 +248,12 @@ uint64_t GrassOverlayAlphaVersion(const GrassOverlayAlpha& alpha, uint64_t textu
             hash = (hash ^ uint8_t(uint64_t(value) >> (i * 8))) * 1099511628211ULL;
     };
     mix(kGrassOverlayVersion);
+    mix(alpha.NativeSupported);
+    mix(static_cast<uint8_t>(alpha.Rule.Mode));
+    if (alpha.Rule.Mode == GrassMaskMode::Custom) {
+        mix(GrassPlacementRuleVersion(alpha.Rule.Coverage, GrassGenerationSettings{}));
+        mix(std::bit_cast<uint32_t>(alpha.Rule.Strength));
+    }
     mix(textureIdentity);
     for (const auto& stage : alpha.Program.Stages)
         for (auto w : stage)
@@ -300,6 +332,90 @@ std::vector<const GrassOverlayTriangle*> GrassOverlaysForTriangle(const std::arr
     std::stable_sort(result.begin(), result.end(), [](auto a, auto b) { return a->Draw < b->Draw; });
     return result;
 }
+void MeasureGrassOverlayFootprint(const std::array<Point, 3>& source, const GrassOverlayTriangle& overlay,
+                                  GrassOverlayFootprint& footprint) {
+    const auto e1 = Sub(source[1], source[0]), e2 = Sub(source[2], source[0]);
+    const double d11 = Dot(e1, e1), d12 = Dot(e1, e2), d22 = Dot(e2, e2);
+    const double determinant = d11 * d22 - d12 * d12;
+    if (!(determinant > 1e-12))
+        return;
+    struct Vertex {
+        GrassOverlayVertex Value;
+        std::array<float, 3> Bary;
+    };
+    std::vector<Vertex> polygon;
+    for (const auto& v : overlay.Vertices) {
+        const auto p = Sub(v.Position, source[0]);
+        const double a = Dot(p, e1), b = Dot(p, e2);
+        const float u = float((a * d22 - b * d12) / determinant), v1 = float((b * d11 - a * d12) / determinant);
+        polygon.push_back({ v, { 1 - u - v1, u, v1 } });
+    }
+    // Sutherland-Hodgman in the source's barycentric plane. Unlike an AABB,
+    // this measures only the atlas portions that actually cover grass.
+    for (size_t edge = 0; edge < 3 && !polygon.empty(); ++edge) {
+        std::vector<Vertex> clipped;
+        auto previous = polygon.back();
+        for (const auto& current : polygon) {
+            const float a = previous.Bary[edge], b = current.Bary[edge];
+            if ((a >= 0) != (b >= 0)) {
+                const float t = a / (a - b);
+                Vertex intersection;
+                for (size_t axis = 0; axis < 3; ++axis) {
+                    intersection.Bary[axis] = std::lerp(previous.Bary[axis], current.Bary[axis], t);
+                    intersection.Value.Position[axis] =
+                        std::lerp(previous.Value.Position[axis], current.Value.Position[axis], t);
+                }
+                for (size_t axis = 0; axis < 2; ++axis)
+                    intersection.Value.Uv[axis] = std::lerp(previous.Value.Uv[axis], current.Value.Uv[axis], t);
+                intersection.Value.Alpha = std::lerp(previous.Value.Alpha, current.Value.Alpha, t);
+                clipped.push_back(intersection);
+            }
+            if (b >= 0)
+                clipped.push_back(current);
+            previous = current;
+        }
+        polygon = std::move(clipped);
+    }
+    const auto bin = [](float x) -> size_t {
+        if (x <= 0)
+            return 0;
+        if (x >= 1)
+            return 15;
+        return 1 + std::min(size_t(x * 14), size_t(13));
+    };
+    for (size_t i = 1; i + 1 < polygon.size(); ++i) {
+        const std::array<GrassOverlayVertex, 3> v{ polygon[0].Value, polygon[i].Value, polygon[i + 1].Value };
+        const auto cross = Cross(Sub(v[1].Position, v[0].Position), Sub(v[2].Position, v[0].Position));
+        const double area = .5 * std::sqrt(Dot(cross, cross));
+        if (!(area > 1e-8))
+            continue;
+        footprint.Area += area;
+        // Bound editor-only wireframe storage independently of scene size.
+        if (footprint.Triangles.size() < 4096)
+            footprint.Triangles.push_back({ v[0].Position, v[1].Position, v[2].Position });
+        for (unsigned row = 0; row < 8; ++row)
+            for (unsigned column = 0; column < 8; ++column) {
+                const float r = std::sqrt((row + .5F) / 8), t = (column + .5F) / 8;
+                const std::array<float, 3> weights{ 1 - r, r * (1 - t), r * t };
+                std::array<float, 2> uv{};
+                float primary = 0;
+                for (size_t corner = 0; corner < 3; ++corner) {
+                    primary += weights[corner] * v[corner].Alpha;
+                    for (size_t axis = 0; axis < 2; ++axis)
+                        uv[axis] += weights[corner] * v[corner].Uv[axis];
+                }
+                const auto* alpha = overlay.Alpha.get();
+                const float texture =
+                    alpha && alpha->Texture[3] ? SampleGrassOverlayTexture(*alpha->Texture[3], uv, *alpha) : 1;
+                const float native = alpha ? EvaluateGrassOverlayNativeCoverage(*alpha, uv, primary) : 1;
+                const float effective = alpha ? EvaluateGrassOverlayCoverage(*alpha, uv, primary) : 1;
+                footprint.TextureAlphaArea[bin(texture)] += area / 64;
+                footprint.NativeAlphaArea[bin(native)] += area / 64;
+                footprint.CoverageArea += area / 64 * effective;
+            }
+    }
+}
+
 float GrassOverlaySurvival(const Point& point, std::span<const GrassOverlayTriangle* const> triangles) {
     float survival = 1, coverage = 0;
     uint64_t draw = 0;

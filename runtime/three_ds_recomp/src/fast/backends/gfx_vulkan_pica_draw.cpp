@@ -99,11 +99,6 @@ void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
             Oot3d::EffectGeometryProviderInvocationKind::DeclaredBoundary);
     if (timed)
         grassMilliseconds += std::chrono::duration<double, std::milli>(Clock::now() - begin).count();
-    // The finished scene, before its first UI draw and the scene stages.
-    if (draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui &&
-        mNativePicaCompositionSchedule.FindAnchorBeforeDraw(
-            Oot3d::EffectStage::BeforeUi, reference.Target, draw.SubmissionId) != nullptr)
-        TryRenderWorldDebugLines(target);
     const auto& effects = mFrameGraphicsSettings.Effects;
     // Scene stages, same-extent anti-aliasing included: it resolves the scene
     // here so the UI that follows is drawn over the result, never through it.
@@ -167,6 +162,13 @@ void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
             }
         }
     }
+    // Editor geometry is presentation decoration. The effect graph has already
+    // consumed/published the clean scene, including the upscaler snapshot.
+    // Native UI is submitted afterwards, so it remains above the wireframe.
+    if (!mNativeFidelityProfile && draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui &&
+        mNativePicaCompositionSchedule.FindAnchorBeforeDraw(Oot3d::EffectStage::BeforeUi, reference.Target,
+                                                            draw.SubmissionId) != nullptr)
+        TryRenderWorldDebugLines(target);
 }
 
 GfxRenderingAPIVulkan::NativePicaGeometryPlacement GfxRenderingAPIVulkan::PlaceNativePicaGeometry(
@@ -3269,8 +3271,17 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
 }
 
 void GfxRenderingAPIVulkan::TryRenderWorldDebugLines(NativePicaRenderTarget& target) {
-    const auto lines = Oot3d::WorldDebugLineRuntime::Instance().Latest();
-    if (lines == nullptr) return;
+    const auto lights = Oot3d::WorldDebugLineRuntime::Instance().Latest();
+    auto combined = Oot3d::GrassSceneBridge::Instance().MaskHighlight(
+        { mFrameCounter, target.Key.RenderTargetNamespace, target.Key.ColorPhysicalAddress });
+    if (lights) {
+        combined.WidthPixels = lights->WidthPixels;
+        combined.HiddenOpacity = lights->HiddenOpacity;
+        combined.Lines.insert(combined.Lines.end(), lights->Lines.begin(), lights->Lines.end());
+    }
+    if (combined.Lines.empty())
+        return;
+    const auto* lines = &combined;
     // The projection the target's draws applied, so the lines meet its depth.
     const auto perspective = SamplePerspective(&target);
     if (!perspective.has_value() || !perspective->CameraAvailable) return;
@@ -3774,32 +3785,41 @@ bool PublishNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
     Oot3d::GrassOverlayAlphaInputs alphaInputs;
     if (masksOnly) {
         overlay = std::make_shared<Oot3d::GrassOverlayAlpha>();
+        if (texture != draw.Textures.end()) {
+            if (const auto* rule =
+                    Oot3d::FindGrassMaskRule(settings.Masks, observedTextureHash, texture->Width, texture->Height))
+                overlay->Rule = *rule;
+            overlay->Rule.Coverage.Target = { "", observedTextureHash, texture->Width, texture->Height };
+        }
         const auto& blend = draw.Blend;
         overlay->Translucent = UsesTranslucentBlend(blend);
         if (overlay->Translucent && !(blend.EquationRgb == GfxNativeBlendEquation::Add &&
                                       blend.SourceRgb == GfxNativeBlendFactor::SourceAlpha &&
                                       blend.DestRgb == GfxNativeBlendFactor::OneMinusSourceAlpha))
-            return rejectConfiguredSource("mask blend is not alpha-over or replacement");
+            overlay->NativeSupported = false;
         overlay->AlphaTest = draw.AlphaTestEnabled;
         overlay->Compare = draw.AlphaCompare;
         overlay->Reference = draw.AlphaReference;
         if (overlay->Translucent || overlay->AlphaTest) {
             if (draw.FragmentUniformBytes.size() <
-                Oot3d::kPicaPackedFragmentTevProgramOffset + sizeof(overlay->Program))
-                return rejectConfiguredSource("mask TEV unavailable");
-            std::memcpy(&overlay->Program,
-                        draw.FragmentUniformBytes.data() + Oot3d::kPicaPackedFragmentTevProgramOffset,
-                        sizeof(overlay->Program));
-            std::memcpy(overlay->Constants.data(), draw.FragmentUniformBytes.data(), sizeof(overlay->Constants));
-            std::memcpy(overlay->Buffer.data(),
-                        draw.FragmentUniformBytes.data() + Oot3d::kPicaPackedFragmentCombinerBufferOffset,
-                        sizeof(overlay->Buffer));
-            alphaInputs = Oot3d::GrassOverlayRequiredAlphaInputs(*overlay);
-            if (!alphaInputs.Supported)
-                return rejectConfiguredSource("unsupported mask TEV alpha dependency");
+                Oot3d::kPicaPackedFragmentTevProgramOffset + sizeof(overlay->Program)) {
+                overlay->NativeSupported = false;
+            } else {
+                std::memcpy(&overlay->Program,
+                            draw.FragmentUniformBytes.data() + Oot3d::kPicaPackedFragmentTevProgramOffset,
+                            sizeof(overlay->Program));
+                std::memcpy(overlay->Constants.data(), draw.FragmentUniformBytes.data(), sizeof(overlay->Constants));
+                std::memcpy(overlay->Buffer.data(),
+                            draw.FragmentUniformBytes.data() + Oot3d::kPicaPackedFragmentCombinerBufferOffset,
+                            sizeof(overlay->Buffer));
+                alphaInputs = Oot3d::GrassOverlayRequiredAlphaInputs(*overlay);
+                overlay->NativeSupported &= alphaInputs.Supported;
+            }
         }
     }
-    const bool needsTexture = !masksOnly || alphaInputs.TextureChannels != 0;
+    // Even constant-alpha draws retain real UVs: custom rules and the editor's
+    // texture-alpha histogram must address the same atlas as the native draw.
+    const bool needsTexture = !masksOnly || texture != draw.Textures.end();
     if (needsTexture &&
         (texture == draw.Textures.end() || texture->NativeType != 0 || !texture->CopyReferences.empty()))
         return rejectConfiguredSource("mask requires an immutable 2D texture");
@@ -3834,13 +3854,15 @@ bool PublishNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
         overlay->WrapT = *materialWrapT;
         overlay->Linear = needsTexture && (texture->MinLinear || texture->MagLinear);
         for (size_t c = 0; c < 4; ++c)
-            if (alphaInputs.TextureChannels & (1U << c)) {
+            if ((alphaInputs.TextureChannels & (1U << c)) || (needsTexture && c == 3)) {
                 overlay->Texture[c] = Oot3d::GrassTextureSourceCache::Instance().AcquireMaskShared(
                     *textureHash, static_cast<Oot3d::GrassSampleChannel>(c));
                 if (!overlay->Texture[c])
-                    return rejectConfiguredSource("mask texture has no decoded CPU samples");
+                    overlay->NativeSupported = false;
             }
-        overlay->Version = Oot3d::GrassOverlayAlphaVersion(*overlay, *textureHash);
+        if (overlay->Rule.Mode == Oot3d::GrassMaskMode::Custom && needsTexture)
+            overlay->CustomMask = Oot3d::GrassTextureSourceCache::Instance().AcquireMaskShared(
+                *textureHash, overlay->Rule.Coverage.Channel);
     }
 
     // OoT3D's common rigid CMB vertex program transforms attribute 0 through
@@ -3980,27 +4002,60 @@ bool PublishNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
     if (overlay && alphaInputs.Primary) {
         const auto primary =
             Oot3d::DecodeGrassOverlayPrimaryAlpha(draw.TemporalVertexProgram.Hooks, draw.VertexUniformBytes);
-        if (!primary.Valid)
-            return rejectConfiguredSource("native primary alpha program unavailable");
-        if (primary.InputRegister != 0xff) {
+        overlay->NativeSupported &= primary.Valid;
+        if (primary.Valid && primary.InputRegister != 0xff) {
             const auto* color = FindNativeAttribute(draw, primary.InputRegister);
             const auto* binding = color ? FindNativeBinding(draw, color->Binding) : nullptr;
-            if (!color || color->ComponentCount < 4 || !binding || binding->PerInstance)
-                return rejectConfiguredSource("primary alpha attribute unavailable");
-            const uint16_t scalarSize = color->Format == GfxNativePicaVertexFormat::Float         ? 4
-                                        : color->Format == GfxNativePicaVertexFormat::SignedShort ? 2
-                                                                                                  : 1;
-            geometryRequest.Alpha = { binding->Bytes, binding->ByteStride, color->Format, 1,
-                                      uint16_t(color->ByteOffset + 3 * scalarSize) };
+            if (!color || color->ComponentCount < 4 || !binding || binding->PerInstance) {
+                overlay->NativeSupported = false;
+            } else {
+                const uint16_t scalarSize = color->Format == GfxNativePicaVertexFormat::Float         ? 4
+                                            : color->Format == GfxNativePicaVertexFormat::SignedShort ? 2
+                                                                                                      : 1;
+                geometryRequest.Alpha = { binding->Bytes, binding->ByteStride, color->Format, 1,
+                                          uint16_t(color->ByteOffset + 3 * scalarSize) };
+            }
         }
-        geometryRequest.AlphaScale = primary.Scale;
+        if (primary.Valid)
+            geometryRequest.AlphaScale = primary.Scale;
     }
+    if (overlay)
+        overlay->Version = Oot3d::GrassOverlayAlphaVersion(*overlay, *textureHash);
     const auto grassGeometryResolution = geometryRegistry.Resolve(geometryRequest);
     if (grassGeometryResolution.Geometry == nullptr) {
         return rejectConfiguredSource("geometry extraction failed");
     }
-    const auto& grassGeometry =
-        *grassGeometryResolution.Geometry;
+    const auto& grassGeometry = *grassGeometryResolution.Geometry;
+    if (overlay && std::getenv("TRIAEVUM_GRASS_MASK_DIAGNOSTICS")) {
+        static std::unordered_set<uint64_t> reported;
+        const auto key = overlay->Version ^ grassGeometry.ContentVersion;
+        if (reported.size() < 4096 && reported.insert(key).second) {
+            float minAlpha = 1, maxAlpha = 1;
+            if (grassGeometry.Alphas && !grassGeometry.Alphas->empty()) {
+                const auto [low, high] =
+                    std::minmax_element(grassGeometry.Alphas->begin(), grassGeometry.Alphas->end());
+                minAlpha = *low;
+                maxAlpha = *high;
+            }
+            std::fprintf(
+                stderr,
+                "TRIAEVUM_GRASS_MASK program native=%016llx rgba8=%016llx order=%llu supported=%d translucent=%d "
+                "alpha_test=%d compare=%u reference=%u primary=[%.9g,%.9g] buffer=[%.9g,%.9g,%.9g,%.9g] control=%08x\n",
+                static_cast<unsigned long long>(texture == draw.Textures.end() ? 0 : texture->NativeContentHash),
+                static_cast<unsigned long long>(observedTextureHash), static_cast<unsigned long long>(drawOrder),
+                overlay->NativeSupported ? 1 : 0, overlay->Translucent ? 1 : 0, overlay->AlphaTest ? 1 : 0,
+                unsigned(overlay->Compare), overlay->Reference, minAlpha, maxAlpha, overlay->Buffer[0],
+                overlay->Buffer[1], overlay->Buffer[2], overlay->Buffer[3], overlay->Program.Control[0]);
+            for (size_t stage = 0; stage < 6; ++stage) {
+                const auto& w = overlay->Program.Stages[stage];
+                const auto& c = overlay->Constants[stage];
+                std::fprintf(
+                    stderr,
+                    "TRIAEVUM_GRASS_MASK tev stage=%zu words=[%08x,%08x,%08x,%08x] constant=[%.9g,%.9g,%.9g,%.9g]\n",
+                    stage, w[0], w[1], w[2], w[3], c[0], c[1], c[2], c[3]);
+            }
+        }
+    }
     Oot3d::GrassSceneMesh mesh;
     mesh.SubmissionId = draw.SubmissionId;
     mesh.DrawOrder = drawOrder;

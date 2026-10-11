@@ -1059,3 +1059,53 @@ TEST(Oot3dGraphicsSettingsPersistence, ScreenSpaceGlobalIllumination) {
     EXPECT_FLOAT_EQ(partial.Value.Effects.GlobalIllumination.ScreenSpace.Thickness, ScreenSpaceGiSettings{}.Thickness);
     EXPECT_EQ(partial.Value.Effects.GlobalIllumination.ScreenSpace.Sectors, 128U);
 }
+
+TEST(GrassMaskPersistence, RoundTripDefaultsValidationAndPresetOwnership) {
+    using namespace Fast::Oot3d;
+    GraphicsSettings settings;
+    settings.Preset = GraphicsPreset::Custom;
+    for (auto mode : { GrassMaskMode::Automatic, GrassMaskMode::Custom, GrassMaskMode::Off }) {
+        GrassMaskRule rule;
+        rule.Mode = mode;
+        rule.Coverage.Target = { "", 0x1234 + uint64_t(mode), 64, 128 };
+        rule.Coverage.Channel = GrassSampleChannel::Green;
+        rule.Coverage.Invert = true;
+        rule.Coverage.InputBlack = .2F;
+        rule.Coverage.InputWhite = .8F;
+        rule.Coverage.OutputBlack = .1F;
+        rule.Coverage.OutputWhite = .7F;
+        rule.Coverage.ResponseExponent = 2;
+        rule.Coverage.ActiveRects = { { .1F, .2F, .7F, .8F } };
+        rule.Strength = .4F;
+        settings.Grass.Masks.push_back(rule);
+    }
+    auto document = SerializeGraphicsSettings(settings);
+    const auto loaded = DeserializeGraphicsSettings(document);
+    ASSERT_EQ(loaded.Value.Grass.Masks.size(), 3);
+    EXPECT_EQ(SerializeGraphicsSettings(loaded.Value)["Grass"]["Masks"], document["Grass"]["Masks"]);
+    EXPECT_EQ(loaded.Value.Grass.Masks[1].Coverage.ActiveRects, settings.Grass.Masks[1].Coverage.ActiveRects);
+    auto kept = GraphicsSettingsService::KeepHostOwnedSettings(GraphicsSettings{}, settings);
+    EXPECT_EQ(kept.Grass.Masks.size(), 3);
+    document["Grass"].erase("Masks");
+    EXPECT_TRUE(DeserializeGraphicsSettings(document).Value.Grass.Masks.empty());
+    document["Grass"]["Masks"] = nlohmann::json::array(
+        { { { "Target", { { "Rgba8Hash", "0000000000001234" }, { "Width", 64 }, { "Height", 128 } } },
+            { "Mode", "unknown" },
+            { "Channel", "unknown" },
+            { "InputBlack", "mistyped" },
+            { "Strength", 2.0 } } });
+    auto defaults = DeserializeGraphicsSettings(document);
+    ASSERT_EQ(defaults.Value.Grass.Masks.size(), 1);
+    const auto& mask = defaults.Value.Grass.Masks[0];
+    EXPECT_EQ(mask.Mode, GrassMaskMode::Automatic);
+    EXPECT_EQ(mask.Coverage.Channel, GrassSampleChannel::Alpha);
+    EXPECT_EQ(mask.Coverage.InputBlack, 0);
+    EXPECT_EQ(mask.Strength, 1);
+    EXPECT_TRUE(FindGrassMaskRule(defaults.Value.Grass.Masks, 0x1234, 64, 128));
+    EXPECT_FALSE(FindGrassMaskRule(defaults.Value.Grass.Masks, 0x1234, 128, 64));
+    document["Grass"]["Masks"].push_back(document["Grass"]["Masks"][0]);
+    document["Grass"]["Masks"].push_back(17);
+    EXPECT_EQ(DeserializeGraphicsSettings(document).Value.Grass.Masks.size(), 1);
+    document["Grass"]["Masks"] = "mistyped";
+    EXPECT_TRUE(DeserializeGraphicsSettings(document).Value.Grass.Masks.empty());
+}

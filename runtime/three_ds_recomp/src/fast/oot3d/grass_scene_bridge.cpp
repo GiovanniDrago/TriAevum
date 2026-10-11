@@ -24,6 +24,7 @@ void GrassSceneBridge::Publish(GrassSceneMesh mesh) {
             mesh.TextureHash, mesh.TextureWidth,
             mesh.TextureHeight);
     std::scoped_lock lock(mMutex);
+    mLatestFrame = std::max(mLatestFrame, mesh.FrameId);
     if (mesh.Overlay) {
         if (mOverlayHistory.size() >= 4096 && !mOverlayHistory.contains(mesh.InstanceId)) {
             const auto oldest =
@@ -112,7 +113,9 @@ void GrassSceneBridge::RemoveInstance(uint64_t instanceId) {
     std::scoped_lock lock(mMutex);
     mStaticAnchors.erase(instanceId);
     mOverlayHistory.erase(instanceId);
+    mMaskMeasurements.erase(instanceId);
     mOverlaySets.erase(instanceId);
+    mOverlaySetScopes.erase(instanceId);
     const auto found = mMeshes.find(instanceId);
     if (found == mMeshes.end()) {
         return;
@@ -125,9 +128,11 @@ void GrassSceneBridge::RemoveRoom(uint64_t roomId) {
     std::scoped_lock lock(mMutex);
     std::erase_if(mOverlayHistory, [roomId](const auto& entry) { return entry.second.Namespace == roomId; });
     mOverlaySets.clear();
-    std::erase_if(mStaticAnchors, [roomId](const auto& entry) {
-        return entry.second.RenderTargetNamespace == roomId;
-    });
+    mMaskMeasurements.clear();
+    ++mMeasurementEpoch;
+    mOverlaySetScopes.clear();
+    mHighlightedMask.reset();
+    std::erase_if(mStaticAnchors, [roomId](const auto& entry) { return entry.second.RenderTargetNamespace == roomId; });
     for (auto entry = mMeshes.begin(); entry != mMeshes.end();) {
         if (entry->second.RenderTargetNamespace != roomId) {
             ++entry;
@@ -140,6 +145,15 @@ void GrassSceneBridge::RemoveRoom(uint64_t roomId) {
 
 void GrassSceneBridge::PruneBeforeFrame(uint64_t frameId) {
     std::scoped_lock lock(mMutex);
+    mLatestFrame = std::max(mLatestFrame, frameId);
+    for (auto it = mOverlaySetScopes.begin(); it != mOverlaySetScopes.end();) {
+        if (it->second.FrameId < frameId) {
+            mOverlaySets.erase(it->first);
+            mMaskMeasurements.erase(it->first);
+            it = mOverlaySetScopes.erase(it);
+        } else
+            ++it;
+    }
     for (auto entry = mMeshes.begin(); entry != mMeshes.end();) {
         if (entry->second.FrameId == 0 ||
             entry->second.FrameId >= frameId) {
@@ -234,7 +248,12 @@ void GrassSceneBridge::Clear() {
     mAnchorUse = 0;
     mOverlayHistory.clear();
     mOverlaySets.clear();
+    mMaskMeasurements.clear();
+    ++mMeasurementEpoch;
+    mOverlaySetScopes.clear();
+    mHighlightedMask.reset();
     mOverlayCount = 0;
+    mLatestFrame = 0;
 }
 
 void GrassSceneBridge::ResolveStaticAnchor(GrassSceneMesh& mesh) {
@@ -301,8 +320,12 @@ void GrassSceneBridge::UnindexMesh(const GrassSceneMesh& mesh) {
 
 std::shared_ptr<const GrassOverlaySet> GrassSceneBridge::OverlaysFor(const GrassSceneMesh& source) {
     std::scoped_lock lock(mMutex);
-    if (!mOverlayCount || !source.Vertices || !source.Indices)
+    if (!mOverlayCount || !source.Vertices || !source.Indices) {
+        mOverlaySets.erase(source.InstanceId);
+        mMaskMeasurements.erase(source.InstanceId);
+        mOverlaySetScopes.erase(source.InstanceId);
         return {};
+    }
     const auto start = std::chrono::steady_clock::now();
     std::vector<const GrassSceneMesh*> overlays;
     for (const auto& [id, mesh] : mMeshes)
@@ -310,8 +333,14 @@ std::shared_ptr<const GrassOverlaySet> GrassSceneBridge::OverlaysFor(const Grass
             mesh.DrawOrder > source.DrawOrder && mesh.RenderTargetNamespace == source.RenderTargetNamespace &&
             mesh.FramebufferColorPhysicalAddress == source.FramebufferColorPhysicalAddress)
             overlays.push_back(&mesh);
-    if (overlays.empty())
+    if (overlays.empty()) {
+        mOverlaySets.erase(source.InstanceId);
+        mMaskMeasurements.erase(source.InstanceId);
+        mOverlaySetScopes.erase(source.InstanceId);
         return {};
+    }
+    mOverlaySetScopes[source.InstanceId] = { source.FrameId, source.RenderTargetNamespace,
+                                             source.FramebufferColorPhysicalAddress };
     std::sort(overlays.begin(), overlays.end(), [](auto a, auto b) { return a->InstanceId < b->InstanceId; });
     uint64_t version = 14695981039346656037ULL;
     const auto mix = [&](uint64_t x) { version ^= x + 0x9e3779b97f4a7c15ULL + (version << 6) + (version >> 2); };
@@ -329,8 +358,10 @@ std::shared_ptr<const GrassOverlaySet> GrassSceneBridge::OverlaysFor(const Grass
             mix(std::bit_cast<uint32_t>(x));
     }
     if (const auto found = mOverlaySets.find(source.InstanceId);
-        found != mOverlaySets.end() && found->second->Version == version)
+        found != mOverlaySets.end() && found->second->Version == version) {
+        QueueMaskMeasurement(source, overlays, found->second);
         return found->second->Triangles.empty() ? nullptr : found->second;
+    }
     auto result = std::make_shared<GrassOverlaySet>();
     result->Version = version ? version : 1;
     const auto world = [](const GrassSceneMesh& mesh, const std::array<float, 3>& p) {
@@ -399,10 +430,184 @@ std::shared_ptr<const GrassOverlaySet> GrassSceneBridge::OverlaysFor(const Grass
                      static_cast<unsigned long long>(source.GeometryId), overlays.size(), result->Triangles.size(),
                      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
                      static_cast<unsigned long long>(result->Version));
-    if (mOverlaySets.size() > 256)
-        mOverlaySets.clear(); // immutable worker references remain valid
+    if (mOverlaySets.size() > 256) {
+        mOverlaySets.clear();
+        mMaskMeasurements.clear();
+        ++mMeasurementEpoch; // immutable worker references remain valid
+        mOverlaySetScopes.clear();
+        mOverlaySetScopes[source.InstanceId] = { source.FrameId, source.RenderTargetNamespace,
+                                                 source.FramebufferColorPhysicalAddress };
+    }
     mOverlaySets[source.InstanceId] = result;
+    QueueMaskMeasurement(source, overlays, result);
     return result->Triangles.empty() ? nullptr : result;
+}
+
+void GrassSceneBridge::CollectMaskMeasurement() const {
+    if (!mMaskMeasurement.valid() || mMaskMeasurement.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        return;
+    auto measurement = mMaskMeasurement.get();
+    const auto found = mOverlaySets.find(measurement.Instance);
+    if (measurement.Epoch == mMeasurementEpoch && found != mOverlaySets.end() &&
+        found->second->Version == measurement.Version)
+        mMaskMeasurements.insert_or_assign(measurement.Instance, std::move(measurement));
+}
+
+void GrassSceneBridge::QueueMaskMeasurement(const GrassSceneMesh& source,
+                                            const std::vector<const GrassSceneMesh*>& overlays,
+                                            std::shared_ptr<const GrassOverlaySet> set) {
+    CollectMaskMeasurement();
+    if (mMaskMeasurement.valid())
+        return; // One bounded editor statistics job.
+    if (const auto found = mMaskMeasurements.find(source.InstanceId);
+        found != mMaskMeasurements.end() && found->second.Version == set->Version)
+        return;
+    mMaskMeasurements.erase(source.InstanceId);
+    std::vector<GrassSceneMesh> captured;
+    captured.reserve(overlays.size());
+    for (auto mesh : overlays) {
+        captured.push_back(*mesh);
+        captured.back().Overlay = std::make_shared<const GrassOverlayAlpha>(*mesh->Overlay);
+    }
+    // Histogram sampling is editor work, not a synchronous placement rebuild.
+    // Only immutable CPU snapshots cross this boundary; no renderer/UI state.
+    mMaskMeasurement = std::async(
+        std::launch::async, [source, captured = std::move(captured), set = std::move(set), epoch = mMeasurementEpoch] {
+            MaskMeasurement measurement;
+            measurement.Instance = source.InstanceId;
+            measurement.Version = set->Version;
+            measurement.Epoch = epoch;
+            const auto world = [](const GrassSceneMesh& mesh, const std::array<float, 3>& p) {
+                if (mesh.TransformBakedIntoVertices)
+                    return p;
+                const auto& m = mesh.ModelToWorld;
+                const float w = m[12] * p[0] + m[13] * p[1] + m[14] * p[2] + m[15];
+                const float inv = std::abs(w) > 1e-6F ? 1 / w : 1;
+                return std::array<float, 3>{ (m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3]) * inv,
+                                             (m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7]) * inv,
+                                             (m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11]) * inv };
+            };
+            std::unordered_map<uint64_t, size_t> footprintByDraw;
+            for (const auto& ownedMesh : captured) {
+                const auto* mesh = &ownedMesh;
+                GrassOverlayFootprint footprint;
+                footprint.Texture = { "", mesh->ObservedTextureHash, mesh->TextureWidth, mesh->TextureHeight };
+                footprint.Source = { "", source.ObservedTextureHash, source.TextureWidth, source.TextureHeight };
+                footprint.Draw = mesh->InstanceId;
+                footprint.NativeIdentity = mesh->NativeTextureIdentity;
+                footprint.Mode = mesh->Overlay->Rule.Mode;
+                footprint.NativeSupported = mesh->Overlay->NativeSupported;
+                footprintByDraw[footprint.Draw] = measurement.Footprints.size();
+                measurement.Footprints.push_back(std::move(footprint));
+            }
+            for (size_t i = 0; i + 2 < source.Indices->size(); i += 3) {
+                std::array<std::array<float, 3>, 3> triangle;
+                bool valid = true;
+                for (size_t j = 0; j < 3; ++j) {
+                    const auto index = (*source.Indices)[i + j];
+                    if (index >= source.Vertices->size()) {
+                        valid = false;
+                        break;
+                    }
+                    triangle[j] = world(source, (*source.Vertices)[index].Position);
+                }
+                if (!valid)
+                    continue;
+                for (auto overlay : GrassOverlaysForTriangle(triangle, *set)) {
+                    auto triangleSnapshot = *overlay;
+                    const auto index = footprintByDraw.at(overlay->Draw);
+                    triangleSnapshot.Alpha = captured[index].Overlay;
+                    MeasureGrassOverlayFootprint(triangle, triangleSnapshot, measurement.Footprints[index]);
+                }
+            }
+            std::erase_if(measurement.Footprints, [](const auto& footprint) { return footprint.Area <= 0; });
+            if (std::getenv("TRIAEVUM_GRASS_MASK_DIAGNOSTICS"))
+                for (const auto& footprint : measurement.Footprints) {
+                    std::fprintf(stderr,
+                                 "TRIAEVUM_GRASS_MASK coverage native=%016llx rgba8=%016llx size=%ux%u source=%016llx "
+                                 "area_m2=%.6f effective_mean=%.6f supported=%d texture_hist=",
+                                 static_cast<unsigned long long>(footprint.NativeIdentity),
+                                 static_cast<unsigned long long>(footprint.Texture.Rgba8Hash), footprint.Texture.Width,
+                                 footprint.Texture.Height, static_cast<unsigned long long>(footprint.Source.Rgba8Hash),
+                                 footprint.Area / 10000, footprint.CoverageArea / footprint.Area,
+                                 footprint.NativeSupported ? 1 : 0);
+                    for (double area : footprint.TextureAlphaArea)
+                        std::fprintf(stderr, "%.6f,", area / footprint.Area);
+                    std::fprintf(stderr, " native_hist=");
+                    for (double area : footprint.NativeAlphaArea)
+                        std::fprintf(stderr, "%.6f,", area / footprint.Area);
+                    std::fprintf(stderr, "\n");
+                }
+            return measurement;
+        });
+}
+
+std::vector<GrassOverlayFootprint> GrassSceneBridge::ObservedMasks() const {
+    std::scoped_lock lock(mMutex);
+    std::vector<GrassOverlayFootprint> result;
+    CollectMaskMeasurement();
+    for (const auto& [instance, measurement] : mMaskMeasurements) {
+        const auto set = mOverlaySets.find(instance);
+        if (set == mOverlaySets.end() || set->second->Version != measurement.Version)
+            continue;
+        const auto scope = mOverlaySetScopes.find(instance);
+        if (scope == mOverlaySetScopes.end() || scope->second.FrameId + 1 < mLatestFrame)
+            continue;
+        for (const auto& footprint : measurement.Footprints) {
+            GrassOverlayFootprint copy{ footprint.Texture,
+                                        footprint.Source,
+                                        footprint.Draw,
+                                        footprint.NativeIdentity,
+                                        footprint.Mode,
+                                        footprint.NativeSupported,
+                                        footprint.Area,
+                                        footprint.CoverageArea,
+                                        footprint.TextureAlphaArea,
+                                        footprint.NativeAlphaArea,
+                                        {} };
+            result.push_back(std::move(copy));
+        }
+    }
+    return result;
+}
+
+void GrassSceneBridge::HighlightMask(std::optional<GrassTextureSelector> texture) {
+    std::scoped_lock lock(mMutex);
+    mHighlightedMask = texture;
+    mHighlightUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+}
+
+WorldDebugLineSet GrassSceneBridge::MaskHighlight(const GrassSceneScope& scope) const {
+    std::scoped_lock lock(mMutex);
+    WorldDebugLineSet lines;
+    if (!mHighlightedMask || std::chrono::steady_clock::now() > mHighlightUntil)
+        return lines;
+    CollectMaskMeasurement();
+    for (const auto& [instance, measurement] : mMaskMeasurements) {
+        const auto set = mOverlaySets.find(instance);
+        if (set == mOverlaySets.end() || set->second->Version != measurement.Version)
+            continue;
+        const auto found = mOverlaySetScopes.find(instance);
+        if (found == mOverlaySetScopes.end())
+            continue;
+        const auto& current = found->second;
+        if (current.FrameId != scope.FrameId || current.RenderTargetNamespace != scope.RenderTargetNamespace ||
+            current.FramebufferColorPhysicalAddress != scope.FramebufferColorPhysicalAddress)
+            continue;
+        for (const auto& footprint : measurement.Footprints) {
+            if (footprint.Texture.Rgba8Hash != mHighlightedMask->Rgba8Hash ||
+                footprint.Texture.Width != mHighlightedMask->Width ||
+                footprint.Texture.Height != mHighlightedMask->Height)
+                continue;
+            for (const auto& triangle : footprint.Triangles)
+                for (size_t edge = 0; edge < 3; ++edge) {
+                    if (lines.Lines.size() >= kMaximumWorldDebugLines)
+                        return lines;
+                    lines.Lines.push_back({ triangle[edge], triangle[(edge + 1) % 3], { 1.0F, .65F, .05F, 1.0F } });
+                }
+        }
+    }
+    return lines;
 }
 
 } // namespace Fast::Oot3d

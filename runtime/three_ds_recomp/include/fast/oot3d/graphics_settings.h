@@ -260,6 +260,7 @@ struct InteractiveGrassSettings {
     uint16_t InteractionFieldResolution = 128;
     float InteractionVerticalMargin = 12.0F;
     std::vector<GrassPlacementRule> Rules;
+    std::vector<GrassMaskRule> Masks;
 };
 
 void ApplyGrassQualityPreset(

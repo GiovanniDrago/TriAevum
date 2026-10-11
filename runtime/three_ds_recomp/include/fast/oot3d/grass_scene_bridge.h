@@ -4,7 +4,11 @@
 #include "fast/oot3d/grass_surface_extractor.h"
 #include "fast/oot3d/grass_overlay_mask.h"
 
+#include "fast/oot3d/world_debug_lines.h"
 #include <array>
+#include <chrono>
+#include <future>
+#include <optional>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -82,9 +86,22 @@ class GrassSceneBridge final {
     [[nodiscard]] size_t Size() const;
     [[nodiscard]] std::vector<GrassTextureSelector> AvailableTextures() const;
     void Clear();
+    [[nodiscard]] std::vector<GrassOverlayFootprint> ObservedMasks() const;
+    void HighlightMask(std::optional<GrassTextureSelector> texture);
+    [[nodiscard]] WorldDebugLineSet MaskHighlight(const GrassSceneScope& scope) const;
     [[nodiscard]] std::shared_ptr<const GrassOverlaySet> OverlaysFor(const GrassSceneMesh& source);
 
   private:
+    struct MaskMeasurement {
+        uint64_t Instance = 0, Version = 0, Epoch = 0;
+        std::vector<GrassOverlayFootprint> Footprints;
+    };
+    void CollectMaskMeasurement() const;
+    void QueueMaskMeasurement(const GrassSceneMesh& source, const std::vector<const GrassSceneMesh*>& overlays,
+                              std::shared_ptr<const GrassOverlaySet> set);
+    mutable std::future<MaskMeasurement> mMaskMeasurement;
+    mutable std::unordered_map<uint64_t, MaskMeasurement> mMaskMeasurements;
+    uint64_t mMeasurementEpoch = 0;
     struct StaticAnchor {
         uint64_t GeometryId;
         uint64_t AnchorVersion;
@@ -109,6 +126,10 @@ class GrassSceneBridge final {
     };
     std::unordered_map<uint64_t, OverlayHistory> mOverlayHistory;
     std::unordered_map<uint64_t, std::shared_ptr<const GrassOverlaySet>> mOverlaySets;
+    std::unordered_map<uint64_t, GrassSceneScope> mOverlaySetScopes;
+    uint64_t mLatestFrame = 0;
+    std::optional<GrassTextureSelector> mHighlightedMask;
+    std::chrono::steady_clock::time_point mHighlightUntil;
     size_t mOverlayCount = 0;
     // Only transforms survive draw-liveness pruning, never stale draw payloads.
     std::unordered_map<uint64_t, StaticAnchor> mStaticAnchors;
