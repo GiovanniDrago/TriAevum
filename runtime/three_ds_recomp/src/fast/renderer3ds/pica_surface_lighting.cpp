@@ -730,17 +730,20 @@ float pica_surface_baked_diffuse(vec3 normal_view, vec3 up, vec3 direction) {
     return min(max(dot(normal_view, direction), 0.0), max(dot(up, direction), 0.0)) +
         pica_surface_rim_weight(normal_view, pica_surface_unit(pica_view), direction);
 }
-vec3 pica_surface_baked_response(vec3 normal_view, out vec3 reference) {
+vec3 pica_surface_baked_response(vec3 normal_view, uint capture_mask, out vec3 reference, out vec3 captured) {
     vec3 up = pica_surface_unit(pica_surface.baked_reference_up.xyz);
     vec3 response = pica_surface_baked_ambient();
     reference = response;
+    captured = vec3(0.0);
     if (pica_surface.environment_parameters.w != 0.0) {
         for (int slot = 0; slot < 2; ++slot) {
             vec3 direction = pica_surface_unit(pica_surface.environment_directions[slot].xyz);
             vec3 color = pica_surface.environment_colors[slot].rgb;
             float gain = pica_surface.environment_directions[slot].w;
-            response += color * gain * pica_surface_baked_diffuse(normal_view, up, direction) *
+            vec3 direct = color * gain * pica_surface_baked_diffuse(normal_view, up, direction) *
                 pica_surface_shadow(8 + slot);
+            response += direct;
+            if ((capture_mask & (1u << uint(8 + slot))) != 0u) captured += direct;
             reference += (slot == 0 ? pica_surface.baked_reference_key.rgb : color * gain) *
                 max(dot(up, direction), 0.0);
         }
@@ -748,11 +751,17 @@ vec3 pica_surface_baked_response(vec3 normal_view, out vec3 reference) {
     for (uint slot = 0u; slot < pica_surface.control.z; ++slot) {
         vec3 direction = pica_surface_unit(pica_surface.scene_directions[slot].xyz);
         vec3 color = pica_surface.scene_directional_colors[slot].rgb;
-        response += color * pica_surface_baked_diffuse(normal_view, up, direction) *
+        vec3 direct = color * pica_surface_baked_diffuse(normal_view, up, direction) *
             pica_surface_shadow(10 + int(slot));
+        response += direct;
+        if ((capture_mask & (1u << (10u + slot))) != 0u) captured += direct;
         reference += color * max(dot(up, direction), 0.0);
     }
     return response;
+}
+vec3 pica_surface_baked_response(vec3 normal_view, out vec3 reference) {
+    vec3 unused;
+    return pica_surface_baked_response(normal_view, 0u, reference, unused);
 }
 // Direct light that seeds global illumination: the native scene directionals
 // (gi_sources.x), the added key (y) and the dynamic lights (z: native local

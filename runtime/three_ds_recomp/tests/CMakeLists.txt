@@ -835,6 +835,15 @@ target_link_libraries(pica_surface_calibration_trace_tests PRIVATE gtest_main)
 gtest_discover_tests(pica_surface_calibration_trace_tests DISCOVERY_TIMEOUT 30)
 
 if(TARGET three_ds_recomp_shaderc AND TARGET Vulkan::Vulkan)
+    add_executable(grass_lighting_gpu_tests
+        grass_lighting_gpu_tests.cpp
+        ../src/fast/oot3d/grass_shader_sources.cpp
+        ../src/fast/renderer3ds/pica_surface_lighting.cpp)
+    target_compile_features(grass_lighting_gpu_tests PRIVATE cxx_std_20)
+    target_include_directories(grass_lighting_gpu_tests PRIVATE ../include
+        "${CMAKE_CURRENT_LIST_DIR}/../../../tools/renderer/tev_program")
+    target_link_libraries(grass_lighting_gpu_tests PRIVATE three_ds_recomp_shaderc Vulkan::Vulkan)
+    add_test(NAME grass_lighting_gpu_tests COMMAND grass_lighting_gpu_tests)
     add_executable(pica_baked_lighting_gpu_tests
         pica_baked_lighting_gpu_tests.cpp
         ../src/fast/renderer3ds/pica_surface_lighting.cpp

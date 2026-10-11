@@ -128,6 +128,7 @@ layout(location=6) out vec3 blade_view_direction;
 layout(location=7) flat out float blade_rim_weight;
 layout(location=8) out vec4 blade_current_clip;
 layout(location=9) out vec4 blade_previous_clip;
+layout(location=10) out vec3 blade_lit_ceiling;
 
 void evaluate_shading(
     uint environment_index, vec3 world_normal,
@@ -459,6 +460,10 @@ void main() {
         evaluate_blade_color(
             grass.flags.w, height_factor, lighting, in_surface_color),
         1.0);
+    // Root/tip texture gains and the optional toon rim are appearance controls,
+    // not emission. Their combined result may not exceed the native terrain's
+    // lit white response (including its TEV scale). Unlit grass keeps its opt-out.
+    blade_lit_ceiling = grass_native_material_rgb(vec3(1.0), lighting, source_light);
     // Lighting is constant over a blade. The unclamped toon transform is
     // linear in color, so it commutes with perspective interpolation.
     ToonSurfaceParameters toon = environment_state.records[grass.flags.w].toon;
@@ -511,6 +516,7 @@ layout(location=3) in vec4 tuft_sample;
 layout(location=4) flat in float lod_visibility;
 layout(location=6) in vec3 blade_view_direction;
 layout(location=7) flat in float blade_rim_weight;
+layout(location=10) in vec3 blade_lit_ceiling;
 struct GrassEnvironmentRecord {
     vec4 color_and_mode;
     vec2 lut[128];
@@ -578,8 +584,9 @@ void main() {
     if (toon.flags.x > 0.5)
         resolved_color.rgb = clamp(resolved_color.rgb, 0.0, 1.0);
     if (toon.flags.x > 0.5 && blade_rim_weight > 0.0)
-        resolved_color.rgb = clamp(resolved_color.rgb + blade_rim_weight *
+        resolved_color.rgb = clamp(resolved_color.rgb + blade_lit_ceiling * blade_rim_weight *
             oot3d_toon_rim(blade_normal_guide.xyz * 2.0 - 1.0, blade_view_direction, toon), 0.0, 1.0);
+    resolved_color.rgb = min(resolved_color.rgb, blade_lit_ceiling);
 #if GRASS_AUXILIARY_OUTPUTS
     out_normal_guide = blade_normal_guide;
     out_geometry_guide = uvec4(0u, pica_geometry_encode_normal(pica_geometry_face_normal(

@@ -174,3 +174,71 @@ the largest-draw list resolve texture hashes. The recorder and raw native
 classification are covered by `pica_surface_calibration_trace_tests`; the GPU
 test also covers the newly admitted ambient-only case in all three evaluators.
 The controlled tests do not establish which draw produces the live ground ROI.
+
+## Generated grass: terrain reference (round 33)
+
+Grass replays the source terrain's native vertex program into a per-vertex
+lighting atlas. The placement carries source-triangle indices and barycentric
+weights, so every blade samples the terrain it grows on. Root/tip colours mix
+with the observed terrain texture (including texture twins) at the saved
+texture influence and brightness. Those settings are appearance, not emission.
+The native TEV passthrough scale/rounding still applies. Receive Lighting off
+keeps the explicit unlit opt-out; native fog is composed after grass shading.
+
+The shadow-enabled atlas previously used `pica_surface_native_response` even
+when the ground was admitted to the baked-reference evaluator. It therefore
+replaced/added illumination in absolute profile units and lost the native
+primary colour reference at night. The non-shadow atlas already called the
+correct `pica_surface_primary` evaluator. The disagreement was inside the
+coefficient producer, not in texture-twin matching or the day/night clock.
+
+The coefficient producer now shares `pica_surface_baked_response` with the
+ground. For native primary C, response R, horizontal reference H, and selected
+shadow-casting directional contribution D, it stores:
+
+```
+raw         = C * R / max(H, epsilon) + additive_local_and_scene_rim
+shadow_part = C * D / max(H, epsilon)
+lighting    = clamp(raw - shadow_part * (1 - visibility), 0, 1)
+```
+
+Only the selected source is removed by the grass shadow grid; ambient, fill
+and point/placed lights retain the same ownership as the terrain. Mode 5 of
+the existing three-layer coefficient atlas carries this calibrated result.
+No extra atlas, GPU readback, day/night heuristic or exposure constant is used.
+The existing shader's source gains, orientation bounds, key reference and
+colour-space convention are shared, including the native encoded primary.
+
+Native surface-lighting mode deliberately keeps blades tied to the native
+terrain primary too: generated grass is a modern addition, but should not
+acquire an independent night-time light. Its atlas remains the native replay
+without a modern profile response. No native terrain draw is modified.
+
+A new interpolant carries the terrain's lit-white response, evaluated with
+the same native material rounding/TEV scale. The grass-specific toon rim is
+multiplied by this response. The combined tip/root colour, toon bands and rim
+are capped by it before native fog. Thus high texture-tip brightness or a
+bright rim cannot recreate a daylight ceiling over a dark native surface.
+Scene-level local lights and rim can still illuminate both terrain and grass.
+
+`grass_lighting_gpu_tests` executes the production coefficient producer,
+recomposition, grass appearance functions and fragment colour/rim block on
+Vulkan, comparing the atlas against the production ground evaluator. Its 330
+cases cover day/night, unlit/ambient-only terrain, profile and preservation
+on/off, partial/full shadows, slopes, twilight/dark channels, camera basis,
+fill/local lights, TEV gain, fixed interiors, directly lit materials, Native
+presentation, Receive Lighting off and extreme tip/rim values. It compiles all
+nine grass/atlas shader variants. The existing baked-ground suite (88 cases
+in three paths plus two native-fragment cases) and 110 grass/toon foundation
+tests also pass.
+
+A controlled unshadowed unit-reference day case, using the user's root/tip
+colours, texture influence 0.22 and brightness 2.87/4.0, stays RGB
+**(128,222,40)**: **0% change**. Holding the raw profile fixed and setting the
+native reference to 0.25 changes its old night RGB **(128,222,40)** to
+**(32,56,10)**, approximately 75% lower after native rounding. These are
+production-shader numeric measurements, not game captures. A daytime surface
+whose old absolute-profile response already exceeded its native reference
+will be corrected too; the live below-a-few-percent target must be measured
+with the user's daytime save and camera. No fitted day-only compensation is
+introduced to conceal that mismatch.
