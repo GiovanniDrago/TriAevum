@@ -566,11 +566,15 @@ TEST_F(GrassDiskFixture, NewBuilderLoadsWithoutExtractionMaskDecodeOrColorSource
     {
         GrassAsyncPlacementBuilder first;
         first.SetCacheDirectory(Directory);
+        first.SetDiskSettleDelay({});
         auto result = first.ResolveOrQueue(r);
         result.WaitUntilReady();
         first.WaitForIdle();
         ASSERT_TRUE(result.Placement);
         original = result.Placement;
+        EXPECT_EQ(first.Stats().DiskWrites, 0); // written once it is used again
+        (void)first.ResolveOrQueue(r);
+        first.WaitForIdle();
         EXPECT_EQ(first.Stats().DiskWrites, 1);
     }
     textures.Clear(); // There is no texture payload left to decode or sample.
@@ -591,6 +595,34 @@ TEST_F(GrassDiskFixture, NewBuilderLoadsWithoutExtractionMaskDecodeOrColorSource
         EXPECT_EQ(result.Placement->LastUsedFrame, 55);
         ExpectSamePlacement(*original, *result.Placement);
     }
+}
+TEST_F(GrassDiskFixture, OnlySettledPlacementsAreWritten) {
+    using namespace Fast::Oot3d;
+    GrassAsyncPlacementBuilder builder;
+    builder.SetCacheDirectory(Directory);
+    builder.SetDiskSettleDelay(std::chrono::hours(1));
+    // An F1 edit: every step is a new placement, used for a moment, then replaced.
+    auto r = BaseRequest();
+    for (int step = 0; step < 3; ++step) {
+        r.PlacementKey.ContentVersion += 1;
+        r.Generation.InstancesPerSquareMeter += 1.0F;
+        auto result = builder.ResolveOrQueue(r);
+        result.WaitUntilReady();
+        builder.WaitForIdle();
+        ASSERT_TRUE(result.Placement);
+        (void)builder.ResolveOrQueue(r);
+        builder.WaitForIdle();
+    }
+    EXPECT_EQ(builder.Stats().DiskWrites, 0);
+    EXPECT_TRUE(!std::filesystem::exists(Directory) || std::filesystem::is_empty(Directory));
+    // The last one stays in use past the settle delay: written once.
+    builder.SetDiskSettleDelay({});
+    (void)builder.ResolveOrQueue(r);
+    builder.WaitForIdle();
+    (void)builder.ResolveOrQueue(r);
+    builder.WaitForIdle();
+    EXPECT_EQ(builder.Stats().DiskWrites, 1);
+    EXPECT_TRUE(GrassPersistentPlacementCache(Directory).Load(GrassPlacementPersistentKey(r)));
 }
 TEST_F(GrassDiskFixture, PersistentFingerprintUsesGeometryPayloadAndEveryBakeSetting) {
     using namespace Fast::Oot3d;
@@ -713,12 +745,15 @@ TEST_F(GrassDiskFixture, F1MaskEditInvalidatesMemoryAndDiskWithoutRunningDeferre
     r.Overlays = overlay(settings.Grass.Masks[0]);
     GrassAsyncPlacementBuilder builder;
     builder.SetCacheDirectory(Directory);
+    builder.SetDiskSettleDelay({});
     auto masked = builder.ResolveOrQueue(r);
     masked.WaitUntilReady();
     builder.WaitForIdle();
     ASSERT_TRUE(masked.Placement);
     EXPECT_TRUE(masked.Placement->Anchors.empty());
     EXPECT_EQ(decodes, 1);
+    (void)builder.ResolveOrQueue(r); // settled: persisted
+    builder.WaitForIdle();
     builder.Clear();
     auto hit = builder.ResolveOrQueue(r);
     hit.WaitUntilReady();

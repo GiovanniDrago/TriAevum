@@ -82,6 +82,10 @@ class RecordingBackend final : public Oot3d::Renderer::PicaRenderBackend {
         return PreparedLayer.has_value() && draw.Composition.Layer == *PreparedLayer;
     }
 
+    bool PicaSequenceDrawPreparationNeedsFragmentState() const override {
+        return PreparationNeedsFragmentState;
+    }
+
     bool PreparePicaSequenceDraw(
         const Oot3d::Renderer::PicaDrawView& draw, std::string*) override {
         Operations.push_back("prepare:" + std::to_string(draw.SubmissionId));
@@ -155,6 +159,7 @@ class RecordingBackend final : public Oot3d::Renderer::PicaRenderBackend {
         Oot3d::Renderer::PicaCompareFunction::Always;
     uint8_t DrawAlphaReference = 0U;
     std::optional<Oot3d::Renderer::PicaCompositionLayer> PreparedLayer;
+    bool PreparationNeedsFragmentState = false;
     size_t PreparedVertexUniformBytes = 0U;
     size_t PreparedFragmentUniformBytes = 0U;
     size_t PreparedTextureCount = 0U;
@@ -598,10 +603,25 @@ int main() {
                     true, preparedDraws);
     Require(preparedDraws == 1U &&
                 opaqueBackend.PreparedVertexUniformBytes != 0U &&
-                opaqueBackend.PreparedFragmentUniformBytes == 0U &&
-                opaqueBackend.PreparedTextureCount == 0U &&
+                opaqueBackend.PreparedFragmentUniformBytes == Fast::Oot3d::kPicaPackedFragmentUniformSize &&
+                opaqueBackend.PreparedTextureCount == plan.Textures.size() &&
                 !opaqueBackend.PreparedAlphaTestEnabled,
-            "a prepared draw without an alpha test carried fragment state");
+            "an opaque prepared draw lost source-classification fragment state");
+    // A backend reading native overlay alpha during preparation receives the
+    // fragment state of draws without an alpha test too.
+    RecordingBackend overlayBackend;
+    overlayBackend.PreparedLayer =
+        Oot3d::Renderer::PicaCompositionLayer::OpaqueWorld;
+    overlayBackend.PreparationNeedsFragmentState = true;
+    executePrepared(overlayBackend,
+                    Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::CurrentFrame,
+                    true, preparedDraws);
+    Require(preparedDraws == 1U &&
+                overlayBackend.PreparedFragmentUniformBytes ==
+                    Fast::Oot3d::kPicaPackedFragmentUniformSize &&
+                overlayBackend.PreparedTextureCount == plan.Textures.size() &&
+                !overlayBackend.PreparedAlphaTestEnabled,
+            "a prepared draw lost the fragment state its backend asked for");
     Require(opaqueBackend.PreparedRoomShadows == roomShadows && opaqueBackend.DrawRoomShadows == roomShadows,
             "presentation preparation or submission lost room shell publication");
     RecordingBackend nativeMemoryBackend;

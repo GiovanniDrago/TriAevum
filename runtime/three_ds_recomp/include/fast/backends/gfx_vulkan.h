@@ -192,6 +192,11 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         const ::Fast::Renderer3ds::PicaCompositionDrawReference& draw) const override;
     bool PreparePicaSequenceDraw(const GfxNativePicaDrawView& draw,
                                  std::string* error = nullptr) override;
+    // Grass masks read the output alpha of the overlays they capture during
+    // preparation, translucent ones included.
+    [[nodiscard]] bool PicaSequenceDrawPreparationNeedsFragmentState() const override {
+        return mInteractiveGrassProviderPlan.Valid();
+    }
     // A scene draw lying on one of its binding's water bodies (flat, at the
     // body's height, over it): the body index. World bounds come from the
     // draw's cached triangle geometry; unknown geometry is not water.

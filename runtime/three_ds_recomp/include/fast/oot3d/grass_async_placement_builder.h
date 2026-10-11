@@ -4,6 +4,7 @@
 #include "fast/oot3d/grass_world_placement_cache.h"
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <future>
@@ -96,6 +97,11 @@ class GrassAsyncPlacementBuilder final {
     [[nodiscard]] GrassAsyncPlacementResult ResolveOrQueue(GrassAsyncPlacementRequest request);
     [[nodiscard]] GrassAsyncPlacementStats Stats() const;
     void SetCacheDirectory(std::filesystem::path directory);
+    // Batch owner debounces edits. Loads/builds remain immediate; only current,
+    // settled results may publish to disk. A new revision cancels queued writes.
+    void SetPersistenceState(uint64_t revision, bool settled);
+    // How long a built placement must stay in use before it is persisted.
+    void SetDiskSettleDelay(std::chrono::steady_clock::duration delay);
     void Clear();
     void WaitForIdle();
 

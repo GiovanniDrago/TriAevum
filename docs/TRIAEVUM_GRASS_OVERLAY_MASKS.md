@@ -450,3 +450,29 @@ roundtrip/version/corruption/bounds/eviction, and a cache hit with no source pix
 left available. The Vulkan test compares cached and freshly compacted instance
 bytes and color/material/motion captures exactly (zero differing values), while
 retaining the previous motion-history tests.
+
+## Translucent overlays reach preparation with their fragment state
+
+Masks are captured while the sequence is prepared, before the grass insertion
+point. The OOT3D bridge used to hand prepared draws their fragment uniforms and
+textures only when they ran an alpha test (the shadow-caster need), so every
+translucent decal arrived without a texture: its alpha was "mask TEV
+unavailable" and it failed open. In the Graveyard both s2_tsuchi decals
+(orders 22 and 23) were never masks, and a per-texture rule could not find
+them (identity 0). The renderer backend now declares
+`PicaSequenceDrawPreparationNeedsFragmentState()`; the Vulkan backend asks for
+it while the grass provider is active, so prepared draws carry their fragment
+state and the decals resolve to their native identity (path atlas
+78795509fbe0ffeb). Grass Off keeps the vertex-only preparation.
+
+Lab, user configuration with the ground as an explicit source, grass minus
+grass Off on the slabs: Automatic 17.3, the path mask Off 33.6 (lawn 17.6 in
+both).
+
+## Placements persist only once settled
+
+A built placement is written to `grass_placements_v1` only after it has stayed
+in use for the settle delay (2 s): every step of an F1 slider drag is a new
+placement that is replaced before it settles, so none of them reaches the disk
+(before, one drag wrote about 1 GB). The in-memory rebuild stays immediate;
+the write runs on a placement worker.

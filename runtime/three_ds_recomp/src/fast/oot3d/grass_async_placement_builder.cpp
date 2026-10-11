@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
@@ -210,6 +211,12 @@ struct GrassAsyncPlacementBuilder::Impl {
         std::shared_ptr<const GrassWorldPlacement> Placement;
         double BuildMilliseconds = 0.0;
         std::shared_future<GrassPlacementCompletion> Completion;
+        // A built placement reaches the disk only after it stayed in use for
+        // the settle delay, so the intermediate states of an F1 edit (one per
+        // slider step) are never written.
+        std::optional<GrassPlacementDiskKey> PendingDiskKey;
+        std::filesystem::path PendingDiskDirectory;
+        std::chrono::steady_clock::time_point ReadyTime;
     };
 
     struct Job {
@@ -218,6 +225,9 @@ struct GrassAsyncPlacementBuilder::Impl {
         GrassAsyncPlacementRequest Request;
         std::filesystem::path Directory;
         std::shared_ptr<std::promise<GrassPlacementCompletion>> Completion;
+        // A store job: no build, no completion.
+        std::shared_ptr<const GrassWorldPlacement> Store;
+        GrassPlacementDiskKey StoreKey;
     };
 
     Impl(size_t capacity, size_t workerCount, size_t byteCapacity)
@@ -256,14 +266,28 @@ struct GrassAsyncPlacementBuilder::Impl {
                 Jobs.pop_front();
                 ++RunningJobs;
             }
+            if (job.Store) {
+                bool written = false;
+                try {
+                    written = GrassPersistentPlacementCache(job.Directory).Store(job.StoreKey, *job.Store);
+                } catch (...) {}
+                std::scoped_lock lock(Mutex);
+                --RunningJobs;
+                Statistics.DiskWrites += written;
+                if (Jobs.empty() && RunningJobs == 0U)
+                    Idle.notify_all();
+                continue;
+            }
 
             std::shared_ptr<const GrassWorldPlacement> placement;
             bool failed = false;
-            bool diskHit = false, diskMiss = false, diskReject = false, diskWrite = false;
+            bool diskHit = false, diskMiss = false, diskReject = false;
+            const bool diskEnabled = !job.Directory.empty() && !job.Request.PlacementView.Enabled;
+            GrassPlacementDiskKey diskKey;
             const auto begin = std::chrono::steady_clock::now();
             try {
-                const bool diskEnabled = !job.Directory.empty() && !job.Request.PlacementView.Enabled;
-                const auto diskKey = diskEnabled ? GrassPlacementPersistentKey(job.Request) : GrassPlacementDiskKey{};
+                if (diskEnabled)
+                    diskKey = GrassPlacementPersistentKey(job.Request);
                 GrassPersistentPlacementCache disk(job.Directory);
                 if (diskEnabled) {
                     auto cached = disk.Load(diskKey, &diskReject);
@@ -288,11 +312,8 @@ struct GrassAsyncPlacementBuilder::Impl {
                     } else
                         diskMiss = true;
                 }
-                if (!placement) {
+                if (!placement)
                     placement = Build(job.Request);
-                    if (diskEnabled && placement)
-                        diskWrite = disk.Store(diskKey, *placement);
-                }
             } catch (...) { failed = true; }
             const double elapsed =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
@@ -306,13 +327,17 @@ struct GrassAsyncPlacementBuilder::Impl {
                 if (job.Generation == Generation && found != Entries.end() &&
                     found->second.Generation == job.Generation && found->second.State == EntryState::Pending) {
                     found->second.State = failed ? EntryState::Failed : EntryState::Ready;
+                    if (diskEnabled && !diskHit && placement) {
+                        found->second.PendingDiskKey = diskKey;
+                        found->second.PendingDiskDirectory = job.Directory;
+                        found->second.ReadyTime = std::chrono::steady_clock::now();
+                    }
                     found->second.Placement = std::move(placement);
                     found->second.BuildMilliseconds = elapsed;
                     Statistics.Builds += !diskHit;
                     Statistics.DiskHits += diskHit;
                     Statistics.DiskMisses += diskMiss;
                     Statistics.DiskRejects += diskReject;
-                    Statistics.DiskWrites += diskWrite;
                     Statistics.BuildMilliseconds += elapsed;
                     if (failed) {
                         ++Statistics.Failures;
@@ -362,6 +387,21 @@ struct GrassAsyncPlacementBuilder::Impl {
         Statistics.ResidentBytes=resident;
     }
 
+    // Queues the write of a ready placement still in use after the settle
+    // delay; true when a worker must be woken.
+    bool QueueSettledStore(Entry& entry) {
+        if (!entry.PendingDiskKey || !entry.Placement ||
+            std::chrono::steady_clock::now() - entry.ReadyTime < DiskSettleDelay)
+            return false;
+        Job job;
+        job.Directory = std::move(entry.PendingDiskDirectory);
+        job.Store = entry.Placement;
+        job.StoreKey = *entry.PendingDiskKey;
+        entry.PendingDiskKey.reset();
+        Jobs.push_back(std::move(job));
+        return true;
+    }
+
     void RefreshCounts() {
         Statistics.Entries = Entries.size();
         Statistics.Pending = static_cast<size_t>(std::count_if(Entries.begin(), Entries.end(), [](const auto& entry) {
@@ -382,6 +422,7 @@ struct GrassAsyncPlacementBuilder::Impl {
     uint64_t Generation = 1U;
     size_t RunningJobs = 0U;
     bool Stopping = false;
+    std::chrono::steady_clock::duration DiskSettleDelay = std::chrono::seconds(2);
 };
 
 GrassAsyncPlacementBuilder::GrassAsyncPlacementBuilder(size_t capacity, size_t workerCount, size_t byteCapacity)
@@ -401,6 +442,18 @@ GrassAsyncPlacementResult GrassAsyncPlacementBuilder::ResolveOrQueue(GrassAsyncP
     };
 
     std::shared_future<GrassPlacementCompletion> completion;
+    bool storeQueued = false;
+    const auto ready = [&](Impl::Entry& entry) {
+        entry.LastUsedFrame = request.FrameId;
+        ++mImpl->Statistics.Hits;
+        storeQueued = mImpl->QueueSettledStore(entry);
+        return GrassAsyncPlacementResult{
+            GrassAsyncPlacementState::Ready,
+            entry.Placement,
+            false,
+            entry.BuildMilliseconds,
+        };
+    };
     {
         std::scoped_lock lock(mImpl->Mutex);
         // A placement built with the shadow grid carries every field of one
@@ -409,27 +462,21 @@ GrassAsyncPlacementResult GrassAsyncPlacementBuilder::ResolveOrQueue(GrassAsyncP
             const BuildKey shadowed{key.Placement, key.WorldIdentity, TransformVersion(request, true)};
             if (const auto found = mImpl->Entries.find(shadowed);
                 found != mImpl->Entries.end() && found->second.State == Impl::EntryState::Ready) {
-                found->second.LastUsedFrame = request.FrameId;
-                ++mImpl->Statistics.Hits;
-                return {
-                    GrassAsyncPlacementState::Ready,
-                    found->second.Placement,
-                    false,
-                    found->second.BuildMilliseconds,
-                };
+                auto result = ready(found->second);
+                if (storeQueued)
+                    mImpl->WorkReady.notify_one();
+                return result;
             }
         }
         if (const auto found = mImpl->Entries.find(key); found != mImpl->Entries.end()) {
             found->second.LastUsedFrame = request.FrameId;
             switch (found->second.State) {
-                case Impl::EntryState::Ready:
-                    ++mImpl->Statistics.Hits;
-                    return {
-                        GrassAsyncPlacementState::Ready,
-                        found->second.Placement,
-                        false,
-                        found->second.BuildMilliseconds,
-                    };
+                case Impl::EntryState::Ready: {
+                    auto result = ready(found->second);
+                    if (storeQueued)
+                        mImpl->WorkReady.notify_one();
+                    return result;
+                }
                 case Impl::EntryState::Pending:
                     ++mImpl->Statistics.PendingHits;
                     return {
@@ -491,6 +538,11 @@ GrassAsyncPlacementStats GrassAsyncPlacementBuilder::Stats() const {
             return entry.second.State == Impl::EntryState::Pending;
         }));
     return stats;
+}
+
+void GrassAsyncPlacementBuilder::SetDiskSettleDelay(std::chrono::steady_clock::duration delay) {
+    std::scoped_lock lock(mImpl->Mutex);
+    mImpl->DiskSettleDelay = delay;
 }
 
 void GrassAsyncPlacementBuilder::SetCacheDirectory(std::filesystem::path directory) {
