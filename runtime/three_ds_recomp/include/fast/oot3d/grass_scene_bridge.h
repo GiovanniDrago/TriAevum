@@ -57,6 +57,8 @@ struct GrassSceneMesh {
     std::shared_ptr<const GrassOverlayAlpha> Overlay;
     std::shared_ptr<const std::vector<float>> Alphas;
     uint64_t CoordinateVersion = 0;
+    // Native draw memo already resolved the immutable catalog identity.
+    bool ObservedTextureResolved = false;
 };
 
 struct GrassSceneScope {
@@ -102,6 +104,7 @@ class GrassSceneBridge final {
     mutable std::future<MaskMeasurement> mMaskMeasurement;
     mutable std::unordered_map<uint64_t, MaskMeasurement> mMaskMeasurements;
     uint64_t mMeasurementEpoch = 0;
+    mutable uint64_t mMaskStatisticsFrame = 0;
     struct StaticAnchor {
         uint64_t GeometryId;
         uint64_t AnchorVersion;

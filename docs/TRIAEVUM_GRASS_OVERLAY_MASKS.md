@@ -353,3 +353,100 @@ scope/sequence isolation, animation exclusion, geometry alpha capture, and
 static/world-cache invalidation/restoration. Standalone `grass_spacing_tests`
 (36 brute-force reference cases) and `texture_source_cache_tests` also passed.
 No game execution or visual acceptance was performed by Codex.
+
+
+## Round 37: draw memo and final placement persistence
+
+Static native draws now retain their resolved source, overlay, or neither result
+in a renderer-owned 4,096-entry LRU memo. The key includes native geometry
+identity/content version; command-list location and render-target scope; native
+base texture identity, dimensions, format/type, sampler and immutable payload
+extent; index/attribute/binding layout; eligibility flags; shader identities and
+typed UV/primary-alpha hooks; UV uniforms, TEV constants/buffer/program and only
+the alpha-relevant vertex-light scalars; source/mask rule versions and texture
+signature generation. Camera matrices and RGB light directions are excluded.
+Unversioned or copy-produced textures/geometry bypass the memo. Transient invalid
+camera/world transforms are retried instead of becoming permanent rejections.
+
+A hit refreshes exact PICA model-to-clip, draw order, sequence and liveness.
+Source lighting/fog/depth are still refreshed: a stationary camera does not imply
+stationary lighting. A rigid draw must agree with its stored world anchor when
+reconstructed through the current captured camera, within the existing bridge's
+0.05-unit translation / 1e-4 linear **world-space** tolerance. The camera inverse
+is memoized separately (eight exact camera states); the per-draw matrix check
+remains necessary to detect animation. Actual within-tolerance transforms still
+reach the bridge so accumulated motion cannot disappear after a rule edit.
+A mismatch takes the cold path;
+an animated overlay remains subject to the existing exclusion guard. There is
+no camera quantization or tolerance in **selection** reuse. Neither hits do not
+publish a mesh. The native publisher alone marks its observed texture identity
+as already resolved; external scene publishers retain the original resolution
+contract.
+
+F1 source channel/levels/rects/wrap/twin mapping/slope/offset, mask
+Automatic/Custom/Off/strength/coverage, rule add/remove, quality and generation
+changes invalidate capture at the next immutable frame-settings snapshot.
+Placement independently keys generation, effective rule, geometry, transforms,
+cluster policy, blade height scale and shadow support. New/cleared texture
+signatures invalidate memo decisions, including earlier neither/twin results.
+Native geometry/texture edits require their producer content identity to change.
+Renderer reset clears the memo. Base-only identity deliberately ignores mip-only
+changes. Replacement texture packs still do **not** supply mask alpha or placement
+RGB: these use the original native base-level contract established in round 36.
+Reloading a pack alone therefore cannot leave an obsolete pack-derived mask;
+there is no such mask input. Native content or F1 edits take the normal invalidation
+paths above.
+
+Final per-source placements, including their later room overlays, are stored in
+`<renderer cache directory>/grass_placements_v1/*.grass`. This is local
+ROM/config-derived data, never release content. The renderer directory follows
+`TRIAEVUM_RENDERER_CACHE_DIR`, or the existing SDL renderer preference directory.
+The two-part content/settings key hashes actual source vertices/indices, overlay
+world triangles/UV/primary alpha and material version, native texture identities
+(or explicit decoded mask/color payloads), effective source/twin rules,
+generation/spacing/slope/normal offset, transforms, candidate budget, cluster
+settings, height scale, shadow support and algorithm version. Transient content
+counters, frame/sequence IDs and process-local placement IDs are not persisted.
+The original geometry identity **is** included because the pre-existing random
+seed uses it; a changed guest geometry address is a safe miss, not a new seed.
+Exact world-transform differences also miss rather than approximate placement.
+
+Files contain final packed world anchors **with RGB and surface references**,
+culling anchors, clusters/visibility hierarchy, midrange membership/hierarchy,
+and shadow-grid geometry/references. No texture sampling or extraction is needed
+to load these streams. Source channel/color conversion and overlay texture decode
+are deferred to worker misses. Classification of a first-ever eligible texture
+may need a native twin signature; that signature is now persisted for the next
+scene entry. Native scene rendering still owns its ordinary texture uploads.
+The F1 area/histogram worker is requested only while its observations are being
+read, or with mask diagnostics enabled, so a closed editor cannot force a decode
+on a placement hit.
+
+The whole room batch is queued before waiting, as before. A hit loads on workers;
+a miss bakes/writes on workers. The batch is admitted together: there is no
+asynchronous grass pop-in. Initial disk I/O, native draw discovery, membership
+checks and budget measurement still cost time; this is not a pre-scene room
+manifest. The existing 32-entry / 768 MiB resident budget remains, with disk
+limits of **128 files / 1 GiB total / 512 MiB per file**, oldest access first.
+Temporary writes never expose partial final files. Missing/unwritable cache
+storage falls back to normal construction. Magic, algorithm version, endian/ABI
+sizes, total byte count, per-vector counts, checksum, finite values and tree/index
+bounds are checked before use; rejected files are rebuilt and replaced. The
+checksum is a local, non-cryptographic word mixer. Increase
+`kGrassPlacementDiskVersion` whenever bake/packing/overlay semantics change.
+
+Blade shaders sample neither source nor mask textures. Baked anchor RGB feeds
+color; the native surface-lighting atlas remains a separate dynamic lighting
+input. Exact unchanged selections now also reuse each fenced GPU slot's visible
+index upload. Full compaction is reused only with an unchanged static/selection
+revision, no actors, an exactly resting field, and no motion-vector consumer.
+Normal gameplay with Link/interactions retains its dispatch and bend history.
+Wind, lighting, fog, shadows and blade draws continue each presentation.
+
+See [grass cost and measurement commands](TRIAEVUM_GRASS_PRESET_RENDER_COST.md#round-37-mask-and-placement-cache)
+for telemetry, numbers, A/B switches and live acceptance. The cache tests cover
+memo inputs/camera separation, native base changes, F1 edit-to-rebuild,
+roundtrip/version/corruption/bounds/eviction, and a cache hit with no source pixels
+left available. The Vulkan test compares cached and freshly compacted instance
+bytes and color/material/motion captures exactly (zero differing values), while
+retaining the previous motion-history tests.

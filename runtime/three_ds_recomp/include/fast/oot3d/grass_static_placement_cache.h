@@ -17,6 +17,9 @@ class GrassStaticPlacementCache final {
     [[nodiscard]] GrassAsyncPlacementStats Stats() const {
         return mBuilder.Stats();
     }
+    void SetCacheDirectory(std::filesystem::path directory) {
+        mBuilder.SetCacheDirectory(std::move(directory));
+    }
     void Clear();
     void WaitForIdle() {
         mBuilder.WaitForIdle();

@@ -39,6 +39,7 @@
 #include "fast/oot3d/effect_graph.h"
 #include "fast/oot3d/fidelityfx_sssr_pass.h"
 #include "fast/oot3d/grass_geometry_registry.h"
+#include "fast/oot3d/grass_draw_memo.h"
 #include "fast/oot3d/hiz_depth_pyramid_pass.h"
 #include "fast/oot3d/hiz_reflection_pass.h"
 #include "fast/oot3d/interactive_grass_pass.h"
@@ -1215,6 +1216,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     std::unordered_map<uint64_t, Renderer3ds::VirtualShadowCaster> mPreparedShadowCasters;
     Oot3d::PicaScenePublicationAdapter mPicaScenePublications;
     Oot3d::GrassGeometryRegistry mGrassGeometryRegistry;
+    Oot3d::GrassDrawMemo mGrassDrawMemo;
     std::unordered_map<uint64_t, NativePicaGeometryBuffer> mNativePicaGeometryBuffers;
     // Distance field of the native opaque geometry (global illumination).
     Oot3d::BrixelizerScene mBrixelizerScene;

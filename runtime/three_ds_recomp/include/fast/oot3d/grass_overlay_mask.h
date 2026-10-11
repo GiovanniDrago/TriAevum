@@ -6,6 +6,7 @@
 #include "fast/renderer3ds/pica_shader_hooks.h"
 #include <array>
 #include <memory>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -15,6 +16,8 @@ namespace Fast::Oot3d {
 inline constexpr float kGrassOverlayPlaneTolerance = 1.0F;
 inline constexpr uint64_t kGrassOverlayVersion = 2;
 struct GrassOverlayAlpha {
+    // Invoked on a private worker copy only, after the persistent placement miss.
+    std::function<void(GrassOverlayAlpha&)> LoadTextures;
     Renderer3ds::PicaTevProgram Program;
     std::array<std::array<float, 4>, 6> Constants{};
     std::array<float, 4> Buffer{};
@@ -97,5 +100,8 @@ GrassOverlaysForTriangle(const std::array<std::array<float, 3>, 3>& source, cons
 // survival probability (1-coverage), not a hard UV-rectangle cutout.
 [[nodiscard]] float GrassOverlaySurvival(const std::array<float, 3>& point,
                                          std::span<const GrassOverlayTriangle* const> triangles);
+
+[[nodiscard]] std::shared_ptr<const GrassOverlaySet>
+ResolveGrassOverlayTextures(std::shared_ptr<const GrassOverlaySet> set);
 
 } // namespace Fast::Oot3d

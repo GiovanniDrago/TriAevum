@@ -261,6 +261,8 @@ void GfxRenderingAPIVulkan::Init() {
                     mNriPicaPipelineBridge.PipelineStatistics().InitialCacheBytes);
     }
     LoadDlssFeatureRecord();
+    if (const auto directory = VulkanShaderCacheDirectory(); !directory.empty())
+        mInteractiveGrassPass.SetCacheDirectory(directory / "grass_placements_v1");
     // Grass rule textures' signatures, for their twins in scenes that do not
     // draw them.
     if (const auto directory = VulkanShaderCacheDirectory(); !directory.empty())

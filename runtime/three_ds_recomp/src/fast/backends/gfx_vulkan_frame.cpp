@@ -1,6 +1,7 @@
 // Vulkan backend: presentation settings and the frame (StartFrame, EndFrame, FinishRender).
 #ifdef ENABLE_OOT3D_VULKAN
 #include "gfx_vulkan_internal.h"
+#include "fast/oot3d/grass_stage_profile.h"
 #include "fast/renderer3ds/pica_surface_debug.h"
 
 namespace Fast {
@@ -779,6 +780,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
     mFrameActive = true;
     PrepareRecordedDlssFeature();
     ++mFrameCounter;
+    Oot3d::BeginGrassStageFrame(mFrameCounter);
     mSurfaceCalibrationTrace.BeginFrame(mFrameCounter);
     mDrawCallCountThisFrame = 0;
     mRenderPassActive = false;
@@ -821,10 +823,17 @@ void GfxRenderingAPIVulkan::StartFrame() {
         static_cast<uint32_t>(mSwapchainImages.size()),
         nriAcquire,
         nriAcquire);
-    if (const auto timings = mGpuProfiler.BeginFrame(
-            mCurrentFrame, mFrameCounter, mCommandBuffers[mCurrentFrame]);
-        timings.has_value() && mFrameCounter > kFramesInFlight) {
-        mDiagnostics.SetGpuTimings(mFrameCounter - kFramesInFlight, *timings);
+    if (const auto timings = mGpuProfiler.BeginFrame(mCurrentFrame, mFrameCounter, mCommandBuffers[mCurrentFrame]);
+        mFrameCounter > kFramesInFlight) {
+        if (timings)
+            mDiagnostics.SetGpuTimings(mFrameCounter - kFramesInFlight, *timings);
+        if (Oot3d::GrassStageProfileEnabled()) {
+            const auto measured = timings.value_or(Oot3dVulkanGpuTimings{});
+            Oot3d::ReportGrassStageFrame(
+                mFrameCounter - kFramesInFlight, measured.GrassMilliseconds.value_or(-1),
+                measured.GrassCompactionMilliseconds.value_or(-1), measured.GrassBladesMilliseconds.value_or(-1),
+                measured.GrassShadowsMilliseconds.value_or(-1), measured.GrassLightingMilliseconds.value_or(-1));
+        }
     }
     mViewport = { 0.0f, 0.0f, static_cast<float>(mSwapchainExtent.width),
                   static_cast<float>(mSwapchainExtent.height), 0.0f, 1.0f };

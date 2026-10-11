@@ -1,3 +1,4 @@
+#include "fast/oot3d/grass_persistent_placement_cache.h"
 #include "fast/oot3d/grass_overlay_mask.h"
 #include "fast/oot3d/grass_scene_bridge.h"
 #include "fast/oot3d/grass_async_placement_builder.h"
@@ -612,6 +613,64 @@ TEST(Oot3dGrassOverlayBenchmark, OfflineRoomFixture) {
         ASSERT_EQ(p, overlays);
     }
     const auto publishUs = elapsed(begin) * .1;
+    GrassAsyncPlacementRequest request;
+    request.PlacementKey = { source.GeometryId, source.ContentVersion, source.TextureHash, rule.RuleId };
+    request.SourceContentVersion = source.ContentVersion;
+    request.WorldIdentity = source.InstanceId;
+    request.FrameId = 1;
+    request.TextureHash = source.TextureHash;
+    request.Vertices = source.Vertices;
+    request.Indices = source.Indices;
+    request.Mask = std::make_shared<const GrassScalarMask>(sourceMask);
+    request.Overlays = overlays;
+    request.Rule = rule;
+    request.Generation = generation;
+    request.Budget = budget;
+    request.ClusterSize = 100;
+    request.NormalOffset = rule.NormalOffset;
+    const auto directory = std::filesystem::temp_directory_path() /
+                           ("grass-offline-round37-" + std::to_string(Clock::now().time_since_epoch().count()));
+    std::array<double, 5> buildTimes{}, loadTimes{};
+    size_t finalCount = 0;
+    std::shared_ptr<const GrassWorldPlacement> reference;
+    for (size_t i = 0; i < 5; ++i) {
+        GrassAsyncPlacementBuilder worker;
+        begin = Clock::now();
+        auto built = worker.ResolveOrQueue(request);
+        built.WaitUntilReady();
+        worker.WaitForIdle();
+        buildTimes[i] = elapsed(begin);
+        ASSERT_TRUE(built.Placement);
+        reference = built.Placement;
+        finalCount = reference->Anchors.size();
+    }
+    GrassPersistentPlacementCache disk(directory);
+    const auto diskKey = GrassPlacementPersistentKey(request);
+    ASSERT_TRUE(disk.Store(diskKey, *reference));
+    for (size_t i = 0; i < 5; ++i) {
+        GrassAsyncPlacementBuilder worker;
+        worker.SetCacheDirectory(directory);
+        begin = Clock::now();
+        auto loaded = worker.ResolveOrQueue(request);
+        loaded.WaitUntilReady();
+        worker.WaitForIdle();
+        loadTimes[i] = elapsed(begin);
+        ASSERT_TRUE(loaded.Placement);
+        ASSERT_EQ(worker.Stats().DiskHits, 1);
+        ASSERT_EQ(worker.Stats().Builds, 0);
+        ASSERT_EQ(loaded.Placement->Anchors.size(), reference->Anchors.size());
+        EXPECT_EQ(std::memcmp(loaded.Placement->Anchors.data(), reference->Anchors.data(),
+                              reference->Anchors.size() * sizeof(GrassWorldAnchor)),
+                  0);
+    }
+    std::sort(buildTimes.begin(), buildTimes.end());
+    std::sort(loadTimes.begin(), loadTimes.end());
+    std::printf("GRASS_PLACEMENT_OFFLINE anchors=%zu file_bytes=%llu build_median_ms=%.3f load_median_ms=%.3f "
+                "samples=5 exact_anchor_bytes=1\n",
+                finalCount, static_cast<unsigned long long>(std::filesystem::file_size(disk.Path(diskKey))),
+                buildTimes[2], loadTimes[2]);
+    std::error_code cleanupError;
+    std::filesystem::remove_all(directory, cleanupError);
     bridge.Clear();
     begin = Clock::now();
     for (size_t i = 0; i < 100000; ++i)

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <future>
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -35,6 +36,9 @@ struct GrassAsyncPlacementRequest {
     std::shared_ptr<const std::vector<uint32_t>> Indices;
     std::shared_ptr<const GrassScalarMask> Mask;
     GrassTextureColorSource ColorSource;
+    // Native renderer already owns the source RGBA; channel/color conversion is
+    // deferred until a disk miss, never required to load baked anchors.
+    uint64_t LazyMaskTexture = 0, LazyColorTexture = 0;
     GrassPlacementRule Rule;
     GrassGenerationSettings Generation;
     uint32_t Budget = 0U;
@@ -73,6 +77,7 @@ struct GrassAsyncPlacementStats {
     uint64_t PendingHits = 0U;
     uint64_t Builds = 0U;
     uint64_t Failures = 0U;
+    uint64_t DiskHits = 0, DiskMisses = 0, DiskRejects = 0, DiskWrites = 0;
     size_t Entries = 0U;
     size_t Pending = 0U;
     double BuildMilliseconds = 0.0;
@@ -90,6 +95,7 @@ class GrassAsyncPlacementBuilder final {
 
     [[nodiscard]] GrassAsyncPlacementResult ResolveOrQueue(GrassAsyncPlacementRequest request);
     [[nodiscard]] GrassAsyncPlacementStats Stats() const;
+    void SetCacheDirectory(std::filesystem::path directory);
     void Clear();
     void WaitForIdle();
 

@@ -19,10 +19,9 @@ void GrassSceneBridge::Publish(GrassSceneMesh mesh) {
     if (mesh.GeometryId == 0 || mesh.InstanceId == 0 ||
         mesh.Vertices == nullptr || mesh.Indices == nullptr ||
         mesh.Vertices->empty() || mesh.Indices->empty()) return;
-    mesh.ObservedTextureHash =
-        GrassTextureSourceCache::Instance().ResolveObservedHash(
-            mesh.TextureHash, mesh.TextureWidth,
-            mesh.TextureHeight);
+    if (!mesh.ObservedTextureResolved)
+        mesh.ObservedTextureHash = GrassTextureSourceCache::Instance().ResolveObservedHash(
+            mesh.TextureHash, mesh.TextureWidth, mesh.TextureHeight);
     std::scoped_lock lock(mMutex);
     mLatestFrame = std::max(mLatestFrame, mesh.FrameId);
     if (mesh.Overlay) {
@@ -130,6 +129,7 @@ void GrassSceneBridge::RemoveRoom(uint64_t roomId) {
     mOverlaySets.clear();
     mMaskMeasurements.clear();
     ++mMeasurementEpoch;
+    mMaskStatisticsFrame = 0;
     mOverlaySetScopes.clear();
     mHighlightedMask.reset();
     std::erase_if(mStaticAnchors, [roomId](const auto& entry) { return entry.second.RenderTargetNamespace == roomId; });
@@ -250,6 +250,7 @@ void GrassSceneBridge::Clear() {
     mOverlaySets.clear();
     mMaskMeasurements.clear();
     ++mMeasurementEpoch;
+    mMaskStatisticsFrame = 0;
     mOverlaySetScopes.clear();
     mHighlightedMask.reset();
     mOverlayCount = 0;
@@ -457,6 +458,9 @@ void GrassSceneBridge::QueueMaskMeasurement(const GrassSceneMesh& source,
                                             const std::vector<const GrassSceneMesh*>& overlays,
                                             std::shared_ptr<const GrassOverlaySet> set) {
     CollectMaskMeasurement();
+    if ((mMaskStatisticsFrame == 0 || mMaskStatisticsFrame + 2 < mLatestFrame) &&
+        !std::getenv("TRIAEVUM_GRASS_MASK_DIAGNOSTICS"))
+        return;
     if (mMaskMeasurement.valid())
         return; // One bounded editor statistics job.
     if (const auto found = mMaskMeasurements.find(source.InstanceId);
@@ -471,8 +475,18 @@ void GrassSceneBridge::QueueMaskMeasurement(const GrassSceneMesh& source,
     }
     // Histogram sampling is editor work, not a synchronous placement rebuild.
     // Only immutable CPU snapshots cross this boundary; no renderer/UI state.
-    mMaskMeasurement = std::async(
-        std::launch::async, [source, captured = std::move(captured), set = std::move(set), epoch = mMeasurementEpoch] {
+    mMaskMeasurement =
+        std::async(std::launch::async, [source, captured = std::move(captured), set = std::move(set),
+                                        epoch = mMeasurementEpoch]() mutable {
+            set = ResolveGrassOverlayTextures(std::move(set));
+            for (auto& mesh : captured) {
+                auto alpha = std::make_shared<GrassOverlayAlpha>(*mesh.Overlay);
+                if (alpha->LoadTextures) {
+                    alpha->LoadTextures(*alpha);
+                    alpha->LoadTextures = {};
+                }
+                mesh.Overlay = std::move(alpha);
+            }
             MaskMeasurement measurement;
             measurement.Instance = source.InstanceId;
             measurement.Version = set->Version;
@@ -544,6 +558,7 @@ void GrassSceneBridge::QueueMaskMeasurement(const GrassSceneMesh& source,
 
 std::vector<GrassOverlayFootprint> GrassSceneBridge::ObservedMasks() const {
     std::scoped_lock lock(mMutex);
+    mMaskStatisticsFrame = mLatestFrame;
     std::vector<GrassOverlayFootprint> result;
     CollectMaskMeasurement();
     for (const auto& [instance, measurement] : mMaskMeasurements) {

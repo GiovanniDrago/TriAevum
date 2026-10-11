@@ -41,6 +41,8 @@ struct Oot3dVulkanGpuTimings {
     std::optional<double> NativePicaMilliseconds;
     std::optional<double> ToonRasterMilliseconds;
     std::optional<double> GrassMilliseconds;
+    std::optional<double> GrassCompactionMilliseconds, GrassBladesMilliseconds, GrassShadowsMilliseconds,
+        GrassLightingMilliseconds;
     std::optional<double> AmbientOcclusionMilliseconds;
     std::optional<double> DepthPreparationMilliseconds;
     std::optional<double> ReflectionMilliseconds;

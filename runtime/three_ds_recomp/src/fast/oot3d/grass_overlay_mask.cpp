@@ -1,3 +1,4 @@
+#include <unordered_map>
 #include "fast/oot3d/grass_overlay_mask.h"
 #include "fast/oot3d/grass_surface_extractor.h"
 #include <algorithm>
@@ -440,5 +441,24 @@ float GrassOverlaySurvival(const Point& point, std::span<const GrassOverlayTrian
         coverage = std::max(coverage, t->Alpha ? EvaluateGrassOverlayCoverage(*t->Alpha, uv, alpha) : 1.0F);
     }
     return survival * (1 - coverage);
+}
+std::shared_ptr<const GrassOverlaySet> ResolveGrassOverlayTextures(std::shared_ptr<const GrassOverlaySet> set) {
+    if (!set || std::none_of(set->Triangles.begin(), set->Triangles.end(),
+                             [](const auto& t) { return t.Alpha && bool(t.Alpha->LoadTextures); }))
+        return set;
+    auto copy = std::make_shared<GrassOverlaySet>(*set);
+    std::unordered_map<const GrassOverlayAlpha*, std::shared_ptr<const GrassOverlayAlpha>> resolved;
+    for (auto& t : copy->Triangles)
+        if (t.Alpha && t.Alpha->LoadTextures) {
+            auto [it, inserted] = resolved.try_emplace(t.Alpha.get());
+            if (inserted) {
+                auto alpha = std::make_shared<GrassOverlayAlpha>(*t.Alpha);
+                alpha->LoadTextures(*alpha);
+                alpha->LoadTextures = {};
+                it->second = std::move(alpha);
+            }
+            t.Alpha = it->second;
+        }
+    return copy;
 }
 } // namespace Fast::Oot3d

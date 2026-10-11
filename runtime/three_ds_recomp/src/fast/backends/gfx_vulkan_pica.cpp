@@ -238,6 +238,7 @@ void GfxRenderingAPIVulkan::DestroyNativePicaGeometryResources() {
     mPreparedShadowCasters.clear();
     mPicaScenePublications.Reset();
     mGrassGeometryRegistry.Clear();
+    mGrassDrawMemo.Clear();
     Oot3d::GrassSceneBridge::Instance().Clear();
 }
 
