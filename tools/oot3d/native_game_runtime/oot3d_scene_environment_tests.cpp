@@ -238,6 +238,84 @@ void CheckDraftHotReload(const std::filesystem::path& directory) {
   Check(text == "{", "failed Create night modified existing bytes");
 }
 
+void CheckGroupProfiles(const std::filesystem::path& directory) {
+  std::filesystem::create_directories(directory);
+  Fixture f(directory);
+  const auto group=SceneEnvironmentGroup::TimeAtEntry;
+  const auto day=directory/"group-outdoor-time-at-entry.environment.json";
+  const auto night=directory/"group-outdoor-time-at-entry.night.environment.json";
+  auto standard=BaseSceneEnvironmentProfile(); standard.AmbientIntensity=.4F;
+  const auto encode=[&](float ambient,bool isNight) {
+    auto p=standard; p.AmbientIntensity=ambient;
+    return FormatSceneEnvironment(EncodeGroupEnvironment(p,group,isNight));
+  };
+  Write(day,encode(.4F,false)); Write(night,encode(.8F,true));
+  const SceneEnvironmentTime time{true,0x8000,false,123,group};
+  f.Runtime.ObserveScene(0x55,time); f.Runtime.SetHotReload(true);
+  Check(f.Runtime.Snapshot().Group==group,"group not published");
+  Near(f.Ambient(),.4F,"group day fallback");
+  Check(f.Runtime.Snapshot().Sources[0]==SceneEnvironmentSource::Group &&
+        f.Runtime.Snapshot().Sources[1]==SceneEnvironmentSource::Group,"group sources missing");
+  Check(f.Runtime.Snapshot().NightProfileExists && !f.Runtime.Snapshot().FileExists,"group night unavailable or own-file confusion");
+  f.Runtime.SelectTab(true); Near(f.Ambient(),.8F,"group night fallback");
+  f.Runtime.SelectTab(false);
+  auto edited=f.Runtime.Snapshot().Profile; edited.AmbientIntensity=.6F;
+  f.Runtime.Preview(edited); Check(f.Runtime.Save(),"save fallback as scene file");
+  Check(std::filesystem::exists(f.Day) && f.Runtime.Snapshot().Sources[0]==SceneEnvironmentSource::Scene,"save mutated group instead of creating own scene");
+  f.Runtime.ObserveScene(0x55,{true,0,true,123,group});
+  Near(f.Applied.AmbientIntensity,.8F,"own day incorrectly hid group night");
+  f.Runtime.SelectTab(true); edited=f.Runtime.Snapshot().Profile; edited.AmbientIntensity=.9F;
+  f.Runtime.Preview(edited); Check(f.Runtime.Save(),"save own night");
+  Write(night,encode(.7F,true)); f.Settle(); Near(f.Ambient(),.9F,"group reload overrode own night");
+  Check(f.Runtime.UseGroupStandard(),"remove own night for group");
+  Near(f.Ambient(),.7F,"night group not adopted"); Check(!std::filesystem::exists(f.Night),"own night not removed");
+  Write(night,encode(.3F,true)); f.Settle(); Near(f.Ambient(),.3F,"group night live reload");
+  Near(f.Applied.AmbientIntensity,.3F,"reloaded group not published");
+  edited=f.Runtime.Snapshot().Profile; edited.AmbientIntensity=1.2F; f.Runtime.Preview(edited);
+  Write(night,encode(.2F,true)); f.Settle(); Near(f.Ambient(),1.2F,"group reload discarded draft");
+  Check(f.Runtime.SaveAsGroupStandard(),"save group standard failed");
+  auto file=LoadSceneEnvironmentFile(night,std::nullopt,true,group);
+  Check(file.Document.Profile && file.Document.Group==group && !file.Document.SceneId,"group codec identity");
+  Near(file.Document.Profile->AmbientIntensity,1.2F,"standard did not persist draft");
+  Check(!f.Runtime.Snapshot().Dirty,"standard save left fallback dirty");
+  f.Runtime.ObserveScene(0x52,{true,0,true,123,group});
+  Near(f.Applied.AmbientIntensity,1.2F,"group standard not shared by another scene");
+  f.Runtime.ObserveScene(0x55,time); Near(f.Ambient(),.6F,"own day lost precedence");
+  Check(f.Runtime.UseGroupStandard(),"remove own day"); Near(f.Ambient(),.4F,"group day after removal");
+  Write(day,encode(.55F,false)); f.Settle(); Near(f.Ambient(),.55F,"group day live reload");
+  Write(day,"{"); f.Settle(); Near(f.Ambient(),.55F,"invalid group replaced last good");
+  Check(!f.Runtime.Snapshot().Error.empty(),"invalid standard not diagnosed");
+  std::filesystem::remove(day); f.Settle();
+  Check(f.Runtime.Snapshot().Profile==BaseSceneEnvironmentProfile() && f.Runtime.Snapshot().Sources[0]==SceneEnvironmentSource::Base,"missing group day did not use base");
+  std::filesystem::remove(night); f.Settle();
+  Check(!f.Runtime.Snapshot().NightProfileExists && f.Runtime.Snapshot().Sources[1]==SceneEnvironmentSource::Day,"missing group night did not use day");
+  // A mixed scene's later room has another class: keep this visit's group.
+  f.Runtime.ObserveScene(0x55,{true,0x8000,false,123,SceneEnvironmentGroup::Indoor});
+  Check(f.Runtime.Snapshot().Group==group,"mixed scene flipped group on room change");
+  auto resource=time; resource.AuthoredScene=1; f.Runtime.ObserveScene(0x55,resource);
+  resource.AuthoredScene=2; resource.Group=SceneEnvironmentGroup::Indoor;
+  f.Runtime.ObserveScene(0x55,resource);
+  Check(f.Runtime.Snapshot().Group==SceneEnvironmentGroup::Indoor,"new selected resource/setup did not reclassify same scene");
+  f.Runtime.ObserveScene(std::nullopt);
+  f.Runtime.ObserveScene(0x55,{true,0x8000,false,123,SceneEnvironmentGroup::FixedTime});
+  Check(f.Runtime.Snapshot().Group==SceneEnvironmentGroup::FixedTime && !f.Runtime.Snapshot().TimeDriven,"fixed-time group still exposes blending");
+  f.Runtime.ObserveScene(0x56,{true,0x8000,false});
+  Check(!f.Runtime.Snapshot().Group && !f.Runtime.SaveAsGroupStandard(),"unknown group persisted standard");
+  f.Runtime.ObserveScene(0x56,time);
+  Check(f.Runtime.Snapshot().Group==group,"late authored headers not accepted");
+  auto doc=EncodeGroupEnvironment(standard,group,false);
+  Check(!DecodeSceneEnvironment(doc,0x55).Profile,"group accepted as scene profile");
+  doc["groupId"]="no-such-group"; Check(!DecodeSceneEnvironment(doc).Profile,"unknown group ID accepted");
+  doc=EncodeGroupEnvironment(standard,group,false); doc["sceneId"]=0x55;
+  Check(!DecodeSceneEnvironment(doc).Profile,"both group/scene identities accepted");
+  doc=EncodeGroupEnvironment(standard,group,false); doc["groupId"]=true;
+  Check(!DecodeSceneEnvironment(doc).Profile,"mistyped group ID accepted");
+  doc=EncodeGroupEnvironment(standard,group,false); doc["version"]=5;
+  Check(!DecodeSceneEnvironment(doc).Profile,"legacy group schema accepted");
+  // Write failure is surfaced and preserves the draft.
+  std::filesystem::create_directory(day);
+  Check(!f.Runtime.SaveAsGroupStandard() && !f.Runtime.Snapshot().Error.empty(),"failed standard write hidden");
+}
 void CheckShadowScheduling() {
   using namespace Fast::Renderer3ds;
   auto day = BaseSceneEnvironmentProfile(), night = day;
@@ -279,6 +357,7 @@ int main() try {
   CheckShadowScheduling();
   CheckProfileRuntime(directory / "blend");
   CheckDraftHotReload(directory / "reload");
+  CheckGroupProfiles(directory / "groups");
   Fixture f(directory);
   Write(f.Day, Profile(0.3F, false));
   f.Runtime.ObserveScene(0x55, {true, 0x8000, false});

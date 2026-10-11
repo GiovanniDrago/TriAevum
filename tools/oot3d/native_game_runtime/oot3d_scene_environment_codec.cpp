@@ -288,7 +288,7 @@ std::string DescribeSceneEnvironmentErrors(const std::vector<SceneEnvironmentDia
 }
 
 SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<uint16_t> expectedScene,
-                                                std::optional<bool> expectedNight) {
+                                                std::optional<bool> expectedNight, std::optional<SceneEnvironmentGroup> expectedGroup) {
   SceneEnvironmentDocument out;
   Reader read;
   if (!doc.is_object()) {
@@ -299,12 +299,18 @@ SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<u
     read.Error("/schema", "must be \"triaevum.scene-environment\"");
   int version = 0;
   if (const auto *value = read.Member(doc, "", "version")) {
-    if (const auto number = WholeNumber(*value, 1, 5))
+    if (const auto number = WholeNumber(*value, 1, 6))
       version = static_cast<int>(*number);
     else
-      read.Error("/version", "must be a whole number within 1..5");
+      read.Error("/version", "must be a whole number within 1..6");
   }
-  if (const auto *value = read.Member(doc, "", "sceneId")) {
+  if (doc.contains("groupId")) {
+    out.Group = ParseEnvironmentGroup(read.String(doc, "", "groupId"));
+    if (!out.Group) read.Error("/groupId", "must name a supported environment group");
+    if (version != 6) read.Error("/version", "group profiles require version 6");
+    if (doc.contains("sceneId")) read.Error("/sceneId", "group profiles must not name a scene");
+    if (expectedScene) read.Error("/groupId", "a scene file cannot contain a group standard");
+  } else if (const auto *value = read.Member(doc, "", "sceneId")) {
     if (const auto number = WholeNumber(*value, 0, 0xFFFF))
       out.SceneId = static_cast<uint16_t>(*number);
     else
@@ -313,6 +319,8 @@ SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<u
   if (out.SceneId && expectedScene && *out.SceneId != *expectedScene)
     read.Error("/sceneId", "names scene " + std::to_string(*out.SceneId) + "; the file is scene " +
                                std::to_string(*expectedScene) + "'s");
+  if (expectedGroup && out.Group != expectedGroup)
+    read.Error("/groupId", "must match the group named by the file");
   // A night profile names its time of day; the scene's own profile does not.
   if (const auto time = doc.find("timeOfDay"); time != doc.end()) {
     if (!time->is_string() || (*time != "day" && *time != "night"))
@@ -454,10 +462,15 @@ SceneEnvironmentDocument DecodeSceneEnvironment(const Json &doc, std::optional<u
 
 SceneEnvironmentFile LoadSceneEnvironmentFile(const std::filesystem::path &path,
                                               std::optional<uint16_t> expectedScene,
-                                              std::optional<bool> expectedNight) {
+                                              std::optional<bool> expectedNight, std::optional<SceneEnvironmentGroup> expectedGroup) {
   SceneEnvironmentFile file;
   std::error_code error;
   file.Exists = std::filesystem::exists(path, error);
+  if (error) {
+    file.Exists = true; // Unreadable is not absent; do not silently fall back.
+    file.Document.Errors.push_back({"", "cannot inspect file: " + error.message()});
+    return file;
+  }
   if (!file.Exists) {
     file.Document.Errors.push_back({"", "does not exist"});
     return file;
@@ -476,11 +489,19 @@ SceneEnvironmentFile LoadSceneEnvironmentFile(const std::filesystem::path &path,
   }
   file.Text = text.str();
   try {
-    file.Document = DecodeSceneEnvironment(Json::parse(file.Text), expectedScene, expectedNight);
+    file.Document = DecodeSceneEnvironment(Json::parse(file.Text), expectedScene, expectedNight, expectedGroup);
   } catch (const Json::parse_error &parse) {
     file.Document.Errors.push_back({"", std::string("is not valid JSON: ") + parse.what()});
   }
   return file;
+}
+
+Json EncodeGroupEnvironment(const SceneEnvironmentProfile& profile, SceneEnvironmentGroup group, bool night) {
+  auto result = EncodeSceneEnvironment(profile, 0, night);
+  result.erase("sceneId");
+  result["version"] = 6;
+  result["groupId"] = EnvironmentGroupId(group);
+  return result;
 }
 
 Json EncodeSceneEnvironment(const SceneEnvironmentProfile &value, uint16_t scene, bool night) {

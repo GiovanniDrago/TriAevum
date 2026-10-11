@@ -263,10 +263,11 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
         # explain), without starting the game.
         add_executable(triaevum_environment_tool EXCLUDE_FROM_ALL
             tools/oot3d/native_game_runtime/oot3d_environment_tool.cpp
+            tools/oot3d/native_game_runtime/oot3d_interior_sun_prebuild.cpp
             tools/oot3d/native_game_runtime/oot3d_scene_environment_codec.cpp)
         target_include_directories(triaevum_environment_tool PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/oot3d/native_game_runtime")
-        target_link_libraries(triaevum_environment_tool PRIVATE three_ds_recomp_runtime)
+        target_link_libraries(triaevum_environment_tool PRIVATE three_ds_recomp_runtime oot3d_native_pica_composition)
         oot3d_target_defaults(triaevum_environment_tool FOLDER Tools)
         # The scene environment runtime's developer hot reload.
         add_executable(triaevum_environment_tests EXCLUDE_FROM_ALL

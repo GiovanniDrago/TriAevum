@@ -111,6 +111,59 @@ struct Memory : oot3d::recomp::a32::MemoryBus {
   }
   bool Write32(uint32_t, uint32_t) override { return false; }
 };
+void GroupHeaderTests() {
+  Memory m(0x1000);
+  constexpr uint32_t room=0x100, scene=0x500;
+  Put(m.Bytes,room,0x12); Put(m.Bytes,room+8,0x10); Put(m.Bytes,room+16,0x14);
+  Put(m.Bytes,scene,0x11); m.Bytes[scene+4]=1; Put(m.Bytes,scene+8,0x14);
+  m.Bytes[room+12]=m.Bytes[room+13]=0xFF;
+  const auto classify=[&](uint32_t setup=0) {
+    return ClassifyNativeEnvironmentGroup(ReadNativeSunHeader(room,setup,m),ReadNativeSunHeader(scene,setup,m));
+  };
+  m.Bytes[room+14]=10;
+  Check(classify()==SceneEnvironmentGroup::TimeFlows,"authored flowing clock group");
+  for (uint8_t speed : {uint8_t(0),uint8_t(255)}) {
+    m.Bytes[room+14]=speed;
+    Check(classify()==SceneEnvironmentGroup::TimeAtEntry,"0/FF held clock group");
+  }
+  m.Bytes[room+12]=11; m.Bytes[room+13]=0;
+  Check(classify()==SceneEnvironmentGroup::FixedTime,"fixed room hour group");
+  m.Bytes[room+5]=1;
+  Check(classify()==SceneEnvironmentGroup::Indoor,"interior wins over fixed hour");
+  m.Bytes[room+5]=0; m.Bytes[scene+6]=1; m.Bytes[scene+4]=0;
+  Check(classify()==SceneEnvironmentGroup::Indoor,"authored no-sky interior group");
+  m.Bytes[scene+4]=1; m.Bytes[room+12]=0xFF;
+  Check(classify()==SceneEnvironmentGroup::TimeAtEntry,"partial FF does not set time");
+  m.Bytes[room+12]=24;
+  Check(!classify(),"invalid fixed hour must remain unknown");
+  Check(!ClassifyNativeEnvironmentGroup({},ReadNativeSunHeader(scene,0,m)),"unknown room got group");
+  Check(!ClassifyNativeEnvironmentGroup(ReadNativeSunHeader(room,0,m),{}),"unknown scene got group");
+  // Alternative setup points at an indoor room with its own time command.
+  Put(m.Bytes,room,0x0118); Put(m.Bytes,room+4,0x80); Put(m.Bytes,room+0x80,0x100);
+  Put(m.Bytes,room+0x100,0x12); m.Bytes[room+0x105]=1; Put(m.Bytes,room+0x108,0x14);
+  Check(classify(1)==SceneEnvironmentGroup::Indoor,"group ignored selected setup");
+  Put(m.Bytes,room+0x108,0x18); m.Bytes[room+0x109]=1; Put(m.Bytes,room+0x10c,0x80);
+  Check(!classify(1),"cyclic selected group header accepted");
+  // Capture uses authored selected headers, not mutable env flags, and never
+  // falls back to the previous room while the current room is uninstalled.
+  Memory live(0x600000);
+  constexpr uint32_t play=0x1000, liveRoom=0x8000, liveScene=0x9000;
+  Put(live.Bytes,0x588E40,0); Put(live.Bytes,play+0x110,liveScene);
+  Put(live.Bytes,play+0x4C30,0); Put(live.Bytes,play+0x4FFC,liveRoom);
+  Put(live.Bytes,liveScene,0x11); live.Bytes[liveScene+4]=1; Put(live.Bytes,liveScene+8,0x14);
+  Put(live.Bytes,liveRoom,0x12); Put(live.Bytes,liveRoom+8,0x10);
+  live.Bytes[liveRoom+12]=live.Bytes[liveRoom+13]=255; live.Bytes[liveRoom+14]=10;
+  Put(live.Bytes,liveRoom+16,0x14);
+  uint64_t identity=0;
+  Check(CaptureNativeEnvironmentGroup(play,live,&identity)==SceneEnvironmentGroup::TimeFlows &&
+        identity==(uint64_t(liveScene)<<8),"captured group/resource identity incorrect");
+  live.Bytes[play+0x31B0]=1; live.Bytes[play+0x3237]=5;
+  Check(CaptureNativeEnvironmentGroup(play,live)==SceneEnvironmentGroup::TimeFlows,"mutable environment flags changed group");
+  Put(live.Bytes,play+0x4FFC,0); Put(live.Bytes,play+0x500C,0); Put(live.Bytes,play+0x53D8,liveRoom);
+  Check(!CaptureNativeEnvironmentGroup(play,live),"previous room used while current room loads");
+  Check(!CaptureNativeEnvironmentGroup(UINT32_MAX,live),"overflowing group capture accepted");
+
+}
 void HeaderTests() {
   Memory m(0x1000);
   const uint32_t room = 0x100, scene = 0x500;
@@ -219,7 +272,8 @@ void OfflineTests() {
   room[0x15] = 0;
   Put(room, 0x18, 0x0a);
   Put(room, 0x1c, 0x80);
-  Put(room, 0x20, 0x14);
+  Put(room, 0x20, 0x10); room[0x24]=room[0x25]=255; room[0x26]=10;
+  Put(room, 0x28, 0x14);
   room[0x91] = 1;
   Put(room, 0x94, 0x90);
   Put(room, 0xa0, 0x100);
@@ -248,6 +302,10 @@ void OfflineTests() {
             first["entries"][2]["interior"] == true &&
             first["entries"][3]["interior"] == true,
         "offline classification differs");
+  const auto groups=ListNativeEnvironmentGroups(root/"romfs");
+  Check(groups["entries"].size()==8 && groups["entries"][0]["firstRoomGroup"]=="outdoor-time-flows" &&
+        groups["entries"][2]["firstRoomGroup"]=="indoor" && groups["entries"][3]["firstRoomGroup"]=="indoor",
+        "offline selected-setup group inventory wrong");
   const auto second = PrebuildInteriorSun(root / "romfs", root / "cache");
   Check(second["built"] == 0 && second["hits"] == 2,
         "offline cache not reused");
@@ -286,6 +344,7 @@ void OfflineTests() {
       Put(data, 0, 0x43465649);
     }
     write(root / "romfs.bin", data);
+    Check(ListNativeEnvironmentGroups(root/"romfs.bin")==groups,"directory/image group inventory differs");
     const auto fromImage =
         PrebuildInteriorSun(root / "romfs.bin", root / "cache");
     Check(fromImage["rooms"] == 2 && fromImage["hits"] == 2 &&
@@ -731,6 +790,7 @@ int main(int argc, char **argv) try {
     return 0;
   }
   HeaderTests();
+  GroupHeaderTests();
   SelectedMeshTests();
   UnitTests();
   OfflineTests();

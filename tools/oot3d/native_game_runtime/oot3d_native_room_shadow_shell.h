@@ -3,6 +3,7 @@
 #include "fast/renderer3ds/room_shadow_shell.h"
 #include "oot3d_native_static_emitters.h"
 #include <optional>
+#include "oot3d_environment_group.h"
 
 namespace Oot3dNativeGame {
 
@@ -25,6 +26,7 @@ struct NativeSunHeader {
   uint32_t CommandOffset = 0;
   std::optional<uint32_t> MeshOffset;
   std::optional<uint8_t> SunMoonDisabled, Skybox, EnvironmentLightMode;
+  std::optional<uint8_t> TimeHour, TimeMinute, TimeSpeed;
 };
 [[nodiscard]] std::optional<NativeSunHeader>
 ReadNativeSunHeader(uint32_t commandsBase, uint32_t setup,
@@ -32,6 +34,14 @@ ReadNativeSunHeader(uint32_t commandsBase, uint32_t setup,
 [[nodiscard]] bool
 NativeRoomIsInterior(const std::optional<NativeSunHeader> &room,
                      const std::optional<NativeSunHeader> &scene);
+[[nodiscard]] std::optional<SceneEnvironmentGroup>
+ClassifyNativeEnvironmentGroup(const std::optional<NativeSunHeader>& room,
+                              const std::optional<NativeSunHeader>& scene);
+// Current installed room first; the environment owner latches the first
+// readable authored class for the visit, so mixed-room scenes never flip it.
+[[nodiscard]] std::optional<SceneEnvironmentGroup>
+CaptureNativeEnvironmentGroup(uint32_t play, oot3d::recomp::a32::MemoryBus& memory,
+                              uint64_t* authoredScene = nullptr);
 [[nodiscard]] uint64_t NativeRoomSunFingerprint(uint64_t roomFingerprint,
                                                 uint32_t commandOffset);
 // Include copied CMB content: standard/MQ rooms can share the first 128 header

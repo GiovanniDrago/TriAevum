@@ -415,7 +415,7 @@ void CheckSceneEnvironment() {
     Frame(); Frame(); Click("Lighting"); Click("Lights & Shadows");
     Frame(true);
     Check(loggedPanelText.find("Scene lights") != std::string::npos &&
-              loggedPanelText.find("Base environment (the title intro's)") != std::string::npos &&
+              loggedPanelText.find("Profile source: Base") != std::string::npos &&
               loggedPanelText.find("Directional shadows") != std::string::npos,
           "Lights & Shadows does not show the scene lights, the base environment and the shadows");
     for (const char* old : {"Shadows", "Scene environment", "Occlusion"})
@@ -777,6 +777,50 @@ void CheckSceneEnvironment() {
     Check(loggedPanelText.find("Fixed scene lighting") != std::string::npos && !Find("Save profile").Disabled,
           "fixed scene does not show one editable profile");
     environment->ObserveScene(0x55, {true, 0x8000, false}); Frame(); Frame();
+    // Group standards use the real widgets and persistence path.
+    environment->ObserveScene(0x58,{true,0x8000,false,0,SceneEnvironmentGroup::TimeFlows}); Frame(true); Frame(true);
+    Check(loggedPanelText.find("Outdoor, time flows")!=std::string::npos &&
+          loggedPanelText.find("Day source: Base")!=std::string::npos,"group/source labels missing");
+    const auto groupDay=root/"group-outdoor-time-flows.environment.json";
+    const auto groupNight=root/"group-outdoor-time-flows.night.environment.json";
+    const auto ownGroupScene=root/"scene-0058.environment.json";
+    EditScalar("Ambient intensity","0.37");
+    Click("Save as group standard"); Click("Cancel");
+    Check(!std::filesystem::exists(groupDay),"cancel persisted group standard");
+    Click("Save as group standard"); Click("Save standard");
+    Check(std::filesystem::exists(groupDay) && !std::filesystem::exists(ownGroupScene) &&
+          environment->Snapshot().Sources[0]==SceneEnvironmentSource::Group && !environment->Snapshot().Dirty,
+          "save standard did not commit fallback draft");
+    EditScalar("Ambient intensity","0.62"); Click("Save day");
+    Check(std::filesystem::exists(ownGroupScene) && environment->Snapshot().Sources[0]==SceneEnvironmentSource::Scene,
+          "editing fallback did not create scene own profile");
+    Click("Use group standard"); Click("Cancel");
+    Check(std::filesystem::exists(ownGroupScene),"cancel removed scene profile");
+    Click("Use group standard"); Click("Use standard");
+    Check(!std::filesystem::exists(ownGroupScene) && std::abs(environment->Snapshot().Profile.AmbientIntensity-.37F)<1e-6F,
+          "use group standard did not discard own values");
+    auto groupValue=environment->Snapshot().Profile; groupValue.AmbientIntensity=.73F;
+    { std::ofstream file(groupNight); file<<FormatSceneEnvironment(EncodeGroupEnvironment(groupValue,SceneEnvironmentGroup::TimeFlows,true)); }
+    environment->ObserveScene(0x51,{true,0,true,0,SceneEnvironmentGroup::TimeFlows}); Frame(); Frame();
+    Check(std::abs(graphics.SnapshotForRendering().Environment.AmbientIntensity-.73F)<1e-6F,
+          "another group scene did not inherit night standard");
+    Click("Night"); Frame(true);
+    Check(loggedPanelText.find("Night source: Group standard")!=std::string::npos,"night provenance missing");
+    EditScalar("Ambient intensity","0.81");
+    Click("Save as group standard"); Click("Save standard");
+    Check(!std::filesystem::exists(root/"scene-0051.night.environment.json") && !environment->Snapshot().Dirty,
+          "night group save wrote a scene file");
+    // Confirmation cannot apply to a scene/tab that changed while it was open.
+    Click("Use group standard");
+    environment->ObserveScene(0x58,{true,0x8000,false,0,SceneEnvironmentGroup::TimeFlows}); Frame();
+    Check(Find("Use standard").Disabled,"stale group confirmation remained enabled"); Click("Cancel");
+    // Errors remain visible in the same control surface.
+    std::filesystem::remove(groupDay); std::filesystem::create_directory(groupDay);
+    Click("Save as group standard"); Click("Save standard"); Frame(true);
+    Check(!environment->Snapshot().Error.empty() && loggedPanelText.find("Environment error:")!=std::string::npos,
+          "group persistence failure hidden");
+    std::filesystem::remove(groupDay);
+    environment->ObserveScene(0x55,{true,0x8000,false}); Frame(); Frame();
     // Placed lights: added where Link is, edited by type, saved in the profile.
     environment->ObserveScene(0x55, {true, 0x8000, false}, ScenePlayerPlacement{{100.0F, 0.0F, 200.0F}, 90.0F});
     Click("Add light at Link");

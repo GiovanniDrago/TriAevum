@@ -1,6 +1,7 @@
 // Native A32 window session: one frame of the loop and the renderer-side work it schedules.
 #include "oot3d_native_a32_window_session.h"
 #include "fast/renderer3ds/pica_surface_debug.h"
+#include "oot3d_native_room_shadow_shell.h"
 
 namespace Oot3dA32Window {
 
@@ -2391,9 +2392,12 @@ void NativeA32WindowSession::PublishNativeSceneView() {
   // Guest memory is read here; the scene environment, the duplicate check
   // and the publish belong to the renderer and run in its order.
   auto snapshot = sceneViewProbe.Capture(process.Memory());
-  const auto environmentTime = snapshot
+  auto environmentTime = snapshot
       ? Oot3dNativeGame::CaptureSceneEnvironmentTime(snapshot->PlayStateAddress, process.Memory())
       : std::nullopt;
+  if (environmentTime)
+    environmentTime->Group = Oot3dNativeGame::CaptureNativeEnvironmentGroup(
+        snapshot->PlayStateAddress, process.Memory(), &environmentTime->AuthoredScene);
   // Where Link is (world position +0x28, shape yaw +0xBE: 0 faces +Z,
   // 0x4000 +X), for lights placed from F1.
   std::optional<Oot3dNativeGame::ScenePlayerPlacement> player;

@@ -92,8 +92,8 @@ struct ScenePlayerPlacement {
   float Yaw = 0.0F;
   bool operator==(const ScenePlayerPlacement &) const = default;
 };
-// The environment of every scene without its own profile: the title intro's
-// (scene 0x6B) tuned lights. Saving stores a profile for the current scene only.
+// Final day fallback when neither scene nor group has a profile: the title
+// intro's (scene 0x6B) tuned lights. Normal Save writes the current scene only.
 [[nodiscard]] SceneEnvironmentProfile BaseSceneEnvironmentProfile();
 
 // Profile RGB is already linear and is interpolated directly. Directions/
@@ -106,6 +106,9 @@ enum class SceneEnvironmentPreview : uint8_t { Auto, Day, Night };
 struct SceneEnvironmentSnapshot {
   std::optional<uint16_t> SceneId;
   SceneEnvironmentProfile Profile;
+  std::optional<SceneEnvironmentGroup> Group;
+  std::array<SceneEnvironmentSource, 2> Sources{SceneEnvironmentSource::Base, SceneEnvironmentSource::Day};
+  std::array<std::filesystem::path, 2> SourcePaths;
   // The explicitly selected editor tab, independent of native time.
   std::filesystem::path Path;
   std::string Error;
@@ -114,7 +117,7 @@ struct SceneEnvironmentSnapshot {
   bool FileExists = false;
   // The game's time of day (SaveContext nightFlag).
   bool Night = false;
-  // The scene keeps a separate night profile (scene-XXXX.night.environment.json).
+  // A separate night endpoint exists, from either the scene or its group.
   bool NightProfileExists = false;
   // The night profile is the one being edited, independent of applied weight.
   bool EditingNight = false;
@@ -145,6 +148,8 @@ public:
   // `basedOnRevision` is older than the profile in use.
   bool Preview(SceneEnvironmentProfile profile, std::optional<uint64_t> basedOnRevision = std::nullopt);
   bool Save();
+  bool SaveAsGroupStandard();
+  bool UseGroupStandard();
   bool Reload();
   bool SelectTab(bool night);
   void SetPreviewMode(SceneEnvironmentPreview mode);
@@ -156,7 +161,7 @@ public:
   bool CreateNightProfile();
   // Copies the day draft into the night draft; Save night commits it.
   bool CopyDayToNight();
-  // Deletes the night profile: the scene's own profile applies day and night.
+  // Deletes the scene's night file, resolving group night then the day result.
   bool RemoveNightProfile();
   // Light gizmos: the light the placed-light editor selected and whether it
   // wants gizmos, told while the editor is drawn.
@@ -167,10 +172,10 @@ public:
   // lines) while the editor was drawn within the last half second or while
   // `forced` (the free camera), none otherwise. `eye`: the scene's camera.
   void PublishLightGizmo(const std::optional<std::array<float, 3>> &eye, bool forced = false);
-  // Developer builds (TRIAEVUM_ENVIRONMENT_HOT_RELOAD): the scene's profile
-  // files are re-read when they change on disk, so an agent can edit them
-  // while the game runs. A file that does not validate, or is missing,
-  // keeps the profile in use; unsaved F1 edits are never replaced. Each
+  // Developer builds (TRIAEVUM_ENVIRONMENT_HOT_RELOAD): scene files and their
+  // group fallbacks are re-read on disk changes. Invalid files keep the last
+  // accepted value; removal resolves the next fallback (legacy unknown-group
+  // day removal keeps its last value). Unsaved F1 edits are never replaced. Each
   // outcome is reported on stderr (TRIAEVUM_ENVIRONMENT_RELOAD).
   void SetHotReload(bool enabled);
   // Renderer order, once per frame; looks at the files at most every 250 ms
@@ -182,6 +187,7 @@ public:
 private:
   bool LoadSlotLocked(bool night);
   void SyncSelectionLocked();
+  [[nodiscard]] std::filesystem::path GroupPathLocked(bool night) const;
   // A file as it is on disk: "-" when absent, otherwise size and time.
   [[nodiscard]] std::string FileStampLocked(bool night) const;
   void AcknowledgeFilesLocked();
@@ -197,6 +203,8 @@ private:
     std::string Error;
     bool Exists = false, Available = false;
     size_t AppliedHash = 0;
+    SceneEnvironmentSource Source = SceneEnvironmentSource::Base;
+    std::filesystem::path SourcePath;
   };
   std::array<Draft, 2> mDrafts;
   SceneEnvironmentTime mTime;

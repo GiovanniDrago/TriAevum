@@ -67,7 +67,10 @@ void SceneEnvironmentRuntime::ObserveScene(std::optional<uint16_t> scene, SceneE
                                            std::optional<ScenePlayerPlacement> player) {
   std::scoped_lock lock(mMutex);
   ++mObservations;
-  const bool changedScene = scene != mState.SceneId;
+  const bool changedScene = scene != mState.SceneId ||
+      (scene && time.Owner && mTime.Owner && time.Owner != mTime.Owner) ||
+      (scene && time.AuthoredScene && mTime.AuthoredScene && time.AuthoredScene != mTime.AuthoredScene);
+  if (!changedScene && !time.AuthoredScene) time.AuthoredScene = mTime.AuthoredScene;
   // Values always come straight from the new native sample, including cuts.
   // The 8-degree threshold is the existing shadow scheduler's cut threshold,
   // not a smoothing duration or a change to the native dawn/dusk curve.
@@ -76,6 +79,18 @@ void SceneEnvironmentRuntime::ObserveScene(std::optional<uint16_t> scene, SceneE
       std::abs(clockStep) > 1456) ++mContinuityEpoch;
   mTime = time;
   if (changedScene) SelectLocked(scene);
+  else if (scene && !mState.Group && time.Group) {
+    // Headers may become readable after the first camera sample. Once known,
+    // the first installed room defines this visit, even in mixed dungeons.
+    mState.Group = time.Group;
+    for (bool night : {false, true}) {
+      auto& draft = mDrafts[night ? 1 : 0];
+      if (draft.Profile == draft.Saved) LoadSlotLocked(night);
+    }
+    mState.Revision = ++mRevision; ++mContinuityEpoch;
+    AcknowledgeFilesLocked();
+  }
+  if (mState.Group == SceneEnvironmentGroup::FixedTime) time.TimeDriven = false;
   mState.Player = scene ? player : std::nullopt;
   mState.Night = time.Night;
   mState.TimeDriven = time.TimeDriven;
@@ -94,10 +109,16 @@ std::filesystem::path SceneEnvironmentRuntime::ProfilePathLocked(bool night) con
                 unsigned(mState.SceneId.value_or(0)));
   return mDirectory / name;
 }
+std::filesystem::path SceneEnvironmentRuntime::GroupPathLocked(bool night) const {
+  if (!mState.Group) return {};
+  return mDirectory / (std::string("group-") + EnvironmentGroupId(*mState.Group) +
+      (night ? ".night.environment.json" : ".environment.json"));
+}
 void SceneEnvironmentRuntime::SelectLocked(std::optional<uint16_t> scene) {
   mState = {};
   mDrafts = {};
   mState.SceneId = scene;
+  mState.Group = scene ? mTime.Group : std::nullopt;
   mState.Revision = ++mRevision;
   if (scene) { LoadSlotLocked(false); LoadSlotLocked(true); }
   AcknowledgeFilesLocked();
@@ -109,7 +130,11 @@ void SceneEnvironmentRuntime::SyncSelectionLocked() {
     mState.EditingNight = false;
     if (mState.PreviewMode == SceneEnvironmentPreview::Night) mState.PreviewMode = SceneEnvironmentPreview::Auto;
   }
-  for (size_t i = 0; i < 2; ++i) mState.DirtyTabs[i] = mDrafts[i].Profile != mDrafts[i].Saved;
+  for (size_t i = 0; i < 2; ++i) {
+    mState.DirtyTabs[i] = mDrafts[i].Profile != mDrafts[i].Saved;
+    mState.Sources[i] = i == 1 && !mDrafts[1].Available ? SceneEnvironmentSource::Day : mDrafts[i].Source;
+    mState.SourcePaths[i] = i == 1 && !mDrafts[1].Available ? mDrafts[0].SourcePath : mDrafts[i].SourcePath;
+  }
   const auto& draft = mDrafts[mState.EditingNight ? 1 : 0];
   mState.Profile = draft.Profile;
   mState.FileExists = draft.Exists;
@@ -172,6 +197,7 @@ bool SceneEnvironmentRuntime::Save() {
   draft.Error = saved.Error;
   if (saved.Success) {
     draft.Saved = draft.Profile; draft.Exists = draft.Available = true;
+    draft.Source = SceneEnvironmentSource::Scene; draft.SourcePath = ProfilePathLocked(mState.EditingNight);
     draft.AppliedHash = std::hash<std::string>{}(text);
     const size_t i = mState.EditingNight ? 1 : 0;
     mFileStamps[i] = mPendingStamps[i] = FileStampLocked(mState.EditingNight);
@@ -194,6 +220,7 @@ bool SceneEnvironmentRuntime::CreateNightProfile() {
   if (!saved.Success) { mDrafts[0].Error = saved.Error; SyncSelectionLocked(); return false; }
   auto& night = mDrafts[1];
   night = {mDrafts[0].Profile, mDrafts[0].Profile, {}, true, true, std::hash<std::string>{}(text)};
+  night.Source = SceneEnvironmentSource::Scene; night.SourcePath = ProfilePathLocked(true);
   mState.EditingNight = true; mState.Revision = ++mRevision;
   mFileStamps[1] = mPendingStamps[1] = FileStampLocked(true);
   ++mContinuityEpoch;
@@ -217,25 +244,72 @@ bool SceneEnvironmentRuntime::RemoveNightProfile() {
   std::filesystem::remove(ProfilePathLocked(true), error);
   if (error) { mDrafts[1].Error = error.message(); SyncSelectionLocked(); return false; }
   mDrafts[1] = {};
+  LoadSlotLocked(true);
   mState.EditingNight = false; mState.PreviewMode = SceneEnvironmentPreview::Auto;
   mState.Revision = ++mRevision;
-  mFileStamps[1] = mPendingStamps[1] = "-";
+  mFileStamps[1] = mPendingStamps[1] = FileStampLocked(true);
   ++mContinuityEpoch;
   SyncSelectionLocked(); PublishLocked();
   return true;
 }
+bool SceneEnvironmentRuntime::SaveAsGroupStandard() {
+  std::scoped_lock lock(mMutex);
+  if (!mState.SceneId || !mState.Group) return false;
+  const bool night = mState.EditingNight;
+  auto& draft = mDrafts[night ? 1 : 0];
+  std::error_code error;
+  std::filesystem::create_directories(mDirectory, error);
+  if (error) { draft.Error = error.message(); SyncSelectionLocked(); return false; }
+  const auto saved = Ship::WriteConfigFileAtomically(GroupPathLocked(night),
+      FormatSceneEnvironment(EncodeGroupEnvironment(draft.Profile, *mState.Group, night)));
+  if (!saved.Success) { draft.Error = saved.Error; SyncSelectionLocked(); return false; }
+  draft.Error.clear();
+  // Committing a fallback draft to the standard saves that draft. Own scene
+  // files retain precedence, and unrelated unsaved drafts are never discarded.
+  if (!draft.Exists) LoadSlotLocked(night);
+  mState.Revision = ++mRevision; ++mContinuityEpoch;
+  mFileStamps[night ? 1 : 0] = mPendingStamps[night ? 1 : 0] = FileStampLocked(night);
+  SyncSelectionLocked(); PublishLocked();
+  return true;
+}
+bool SceneEnvironmentRuntime::UseGroupStandard() {
+  std::scoped_lock lock(mMutex);
+  if (!mState.SceneId || !mState.Group) return false;
+  const bool night = mState.EditingNight;
+  auto& draft = mDrafts[night ? 1 : 0];
+  std::error_code error;
+  std::filesystem::remove(ProfilePathLocked(night), error);
+  if (error) { draft.Error = error.message(); SyncSelectionLocked(); return false; }
+  const bool loaded = LoadSlotLocked(night);
+  mState.Revision = ++mRevision; ++mContinuityEpoch;
+  mFileStamps[night ? 1 : 0] = mPendingStamps[night ? 1 : 0] = FileStampLocked(night);
+  SyncSelectionLocked(); PublishLocked();
+  return loaded;
+}
 bool SceneEnvironmentRuntime::LoadSlotLocked(bool night) {
   if (!mState.SceneId) return false;
   auto& draft = mDrafts[night ? 1 : 0];
-  auto file = LoadSceneEnvironmentFile(ProfilePathLocked(night), *mState.SceneId, night);
+  auto path = ProfilePathLocked(night);
+  auto file = LoadSceneEnvironmentFile(path, *mState.SceneId, night);
+  const bool own = file.Exists;
+  SceneEnvironmentSource source = own ? SceneEnvironmentSource::Scene : SceneEnvironmentSource::Base;
+  if (!own && mState.Group) {
+    path = GroupPathLocked(night);
+    file = LoadSceneEnvironmentFile(path, std::nullopt, night, mState.Group);
+    if (file.Exists) source = SceneEnvironmentSource::Group;
+  }
   if (file.Exists && !file.Document.Profile) {
-    draft.Error = DescribeSceneEnvironmentErrors(file.Document.Errors);
-    // On first selection a corrupt day file leaves overrides disabled,
-    // never inheriting the previous scene. A corrupt night cannot blend.
+    draft.Error = path.filename().string() + ": " + DescribeSceneEnvironmentErrors(file.Document.Errors);
+    draft.Exists = own;
+    // Keep the last accepted value on a bad reload. First-entry failure stays
+    // disabled, and cannot silently fall through an invalid higher priority file.
     return false;
   }
-  auto profile = file.Document.Profile ? *file.Document.Profile : BaseSceneEnvironmentProfile();
-  draft = {profile, profile, {}, file.Exists, !night || file.Exists, std::hash<std::string>{}(file.Text)};
+  auto profile = file.Document.Profile ? *file.Document.Profile
+      : night ? mDrafts[0].Profile : BaseSceneEnvironmentProfile();
+  draft = {profile, profile, {}, own, !night || file.Exists, std::hash<std::string>{}(file.Text),
+           night && !file.Exists ? SceneEnvironmentSource::Day : source,
+           file.Exists ? path : std::filesystem::path{}};
   return true;
 }
 bool SceneEnvironmentRuntime::Reload() {
@@ -262,12 +336,21 @@ void SceneEnvironmentRuntime::SetHotReload(bool enabled) {
 }
 std::string SceneEnvironmentRuntime::FileStampLocked(bool night) const {
   if (!mState.SceneId) return "-";
-  std::error_code error;
-  const auto path = ProfilePathLocked(night);
-  const auto size = std::filesystem::file_size(path, error);
-  if (error) return "-";
-  const auto time = std::filesystem::last_write_time(path, error);
-  return std::to_string(size) + ":" + std::to_string(error ? 0 : time.time_since_epoch().count());
+  const auto stamp = [](const std::filesystem::path& path) {
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error) {
+      // An unreadable file is not an absent one; retry/diagnose through loader.
+      const bool exists = std::filesystem::exists(path, error);
+      return exists || error ? std::string("unreadable") : std::string("-");
+    }
+    const auto time = std::filesystem::last_write_time(path, error);
+    return std::to_string(size) + ":" + std::to_string(error ? 0 : time.time_since_epoch().count());
+  };
+  auto own = stamp(ProfilePathLocked(night));
+  if (own != "-") return "scene:" + own;
+  if (mState.Group) return "group:" + stamp(GroupPathLocked(night));
+  return "-";
 }
 void SceneEnvironmentRuntime::AcknowledgeFilesLocked() {
   mFileStamps = {FileStampLocked(false), FileStampLocked(true)};
@@ -288,8 +371,9 @@ void SceneEnvironmentRuntime::PollProfileFiles(std::chrono::steady_clock::time_p
     if (stamp != mPendingStamps[i]) { mPendingStamps[i] = stamp; continue; }
     auto& draft = mDrafts[i];
     const auto report = [&](const char* result) {
+      const auto path = stamp.starts_with("group:") ? GroupPathLocked(night) : ProfilePathLocked(night);
       std::fprintf(stderr, "TRIAEVUM_ENVIRONMENT_RELOAD scene=0x%04X time=%s result=%s file=%s error=%s\n",
-          unsigned(*mState.SceneId), night ? "night" : "day", result, ProfilePathLocked(night).filename().string().c_str(),
+          unsigned(*mState.SceneId), night ? "night" : "day", result, path.filename().string().c_str(),
           draft.Error.empty() ? "-" : draft.Error.c_str());
     };
     if (draft.Profile != draft.Saved) {
@@ -301,17 +385,15 @@ void SceneEnvironmentRuntime::PollProfileFiles(std::chrono::steady_clock::time_p
       continue;
     }
     mFileStamps[i] = stamp;
-    if (stamp == "-" && !night) { report("kept-missing"); continue; }
-    auto file = LoadSceneEnvironmentFile(ProfilePathLocked(night), *mState.SceneId, night);
-    if (file.Exists && !file.Document.Profile) {
-      draft.Error = DescribeSceneEnvironmentErrors(file.Document.Errors); report("kept-invalid"); continue;
-    }
-    if (file.Exists && std::hash<std::string>{}(file.Text) == draft.AppliedHash) { draft.Error.clear(); continue; }
+    if (stamp == "-" && !night && !mState.Group) { report("kept-missing"); continue; }
+    const auto previous = draft;
     if (LoadSlotLocked(night)) {
+      if (draft.Profile == previous.Profile && draft.Source == previous.Source &&
+          draft.Available == previous.Available && draft.Exists == previous.Exists) continue;
       changed = true;
       if (night == mState.EditingNight || (night && !draft.Available)) mState.Revision = ++mRevision;
       report("applied");
-    }
+    } else report("kept-invalid");
   }
   SyncSelectionLocked();
   if (changed) { ++mContinuityEpoch; PublishLocked(); }
@@ -343,11 +425,13 @@ void SceneEnvironmentRuntime::PublishLocked(bool edited) {
   // Full weight on each publication; unchanged native samples are silent.
   // A short record is sufficient to reproduce native/forced/preview selection.
   if (mState.SceneId && (!mPublished || *mPublished != resolved || mObservations % 120 == 0))
-    std::fprintf(stderr, "TRIAEVUM_ENVIRONMENT_SELECT scene=0x%04X clock=%04X timeDriven=%d nativeNight=%d nativeWeight=%.6f weight=%.6f preview=%u forced=%d nightProfile=%d edit=%s dirty=%d,%d epoch=%llu\n",
+    std::fprintf(stderr, "TRIAEVUM_ENVIRONMENT_SELECT scene=0x%04X clock=%04X timeDriven=%d nativeNight=%d nativeWeight=%.6f weight=%.6f preview=%u forced=%d nightProfile=%d edit=%s dirty=%d,%d epoch=%llu group=%s daySource=%u nightSource=%u\n",
         unsigned(*mState.SceneId), mTime.Clock, mState.TimeDriven, mState.Night, mState.NativeNightWeight, weight,
         unsigned(mState.PreviewMode), mState.ForcedWeight, mDrafts[1].Available,
         mState.EditingNight ? "night" : "day", mState.DirtyTabs[0], mState.DirtyTabs[1],
-        static_cast<unsigned long long>(mContinuityEpoch));
+        static_cast<unsigned long long>(mContinuityEpoch),
+        mState.Group ? EnvironmentGroupId(*mState.Group) : "unknown",
+        unsigned(mState.Sources[0]), unsigned(mState.Sources[1]));
 #endif
   if (!mPublished || *mPublished != resolved) { mPublished = resolved; mPublish(resolved); }
 }

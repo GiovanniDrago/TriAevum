@@ -1,5 +1,43 @@
 # F1 settings rationalization
 
+## Group environment standards (2026-10-11, round 34)
+
+**Lighting > Lights & Shadows > Scene lights** shows the authored scene group:
+Indoor, Outdoor time flows, Outdoor time at entry, or Outdoor fixed time.
+The first readable installed room fixes the group for the visit, including
+mixed dungeons. Unknown groups retain the previous fallback behavior.
+
+Each slot shows **Scene's own**, **Group standard**, **Base**, or (for a night
+without either night file) **Day result**, plus the selected source filename.
+Day resolves scene -> group -> Base; night resolves scene -> group -> day.
+An own day file therefore no longer prevents inheriting the group's night.
+The existing blend and independent drafts remain; fixed-time and other
+non-clock-driven scenes still expose one profile.
+
+**Save as group standard** confirms replacing the group's current slot and
+explains that scene-owned files keep precedence. **Use group standard**
+confirms deleting the scene's current-slot file and discarding custom values
+and unsaved edits. Ordinary Save still writes only the scene's file. Both
+actions disable for unknown groups and surface persistence errors. An open
+confirmation disables its commit when the scene or editor revision changes;
+its popup ID is outside the day/night tabs, so Cancel remains usable across
+a tab change. Capability-safe Off controls are retained.
+
+The actual-widget fixture `triaevum_f1_settings_smoke --scene-environment`
+passes **2,660 assertions**, including group labels/provenance, save/use
+cancel and confirm, scene override creation, shared night standards, stale
+confirmation after a scene/tab change, and visible group-write failure.
+`triaevum_environment_tests` passes **655,553 checks**; native room/header
+tests pass, including all four classes, selected headers, capture offsets,
+unknown/mixed behavior and directory/Level-3/IVFC inventory equivalence.
+TriAevum, the environment tool and all touched test targets build.
+
+The full F1 smoke was also run and still stops at the existing unrelated
+material-editor assertion: "creation used the catalog hash instead of the
+native texture's Azahar identity". No game was run for round 34. See
+[environment tooling](TRIAEVUM_SCENE_ENVIRONMENT_TOOLING.md) for the native
+addresses, group file schema, hot reload and offline `list-groups` command.
+
 ## Day/night profiles (2026-10-10, round 32)
 
 **Lighting > Lights & Shadows > Scene lights** now separates the editor from

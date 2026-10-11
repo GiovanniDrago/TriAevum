@@ -313,6 +313,11 @@ ReadNativeSunHeader(uint32_t base, uint32_t setup,
     case 0x12:
       result.SunMoonDisabled = command[5];
       break;
+    case 0x10:
+      result.TimeHour = command[4];
+      result.TimeMinute = command[5];
+      result.TimeSpeed = command[6];
+      break;
     case 0x18:
       if (setup) {
         // EUR handler 00378ff8: null setup 3 falls back to setup 2;
@@ -355,6 +360,35 @@ bool NativeRoomIsInterior(const std::optional<NativeSunHeader> &room,
     return true;
   // Authored sky family 1,4,5,0x1d,6,8 and unknown values are both outdoor.
   return false;
+}
+std::optional<SceneEnvironmentGroup> ClassifyNativeEnvironmentGroup(
+    const std::optional<NativeSunHeader>& room, const std::optional<NativeSunHeader>& scene) {
+  if (!room || !scene || !room->SunMoonDisabled || !scene->EnvironmentLightMode ||
+      !scene->Skybox) return {};
+  if (*scene->EnvironmentLightMode > 1) return {};
+  if (NativeRoomIsInterior(room, scene)) return SceneEnvironmentGroup::Indoor;
+  if (!room->TimeHour || !room->TimeMinute || !room->TimeSpeed) return {};
+  const auto hour = *room->TimeHour, minute = *room->TimeMinute;
+  if ((hour != 0xFF && hour > 23) || (minute != 0xFF && minute > 59)) return {};
+  // EUR command 10 handler 00217A5C sets time only when BOTH are non-FF.
+  if (hour != 0xFF && minute != 0xFF) return SceneEnvironmentGroup::FixedTime;
+  return *room->TimeSpeed == 0 || *room->TimeSpeed == 0xFF
+      ? SceneEnvironmentGroup::TimeAtEntry : SceneEnvironmentGroup::TimeFlows;
+}
+std::optional<SceneEnvironmentGroup> CaptureNativeEnvironmentGroup(
+    uint32_t play, oot3d::recomp::a32::MemoryBus& memory, uint64_t* authoredScene) {
+  if (authoredScene) *authoredScene = 0;
+  uint32_t setup = 0, scene = 0;
+  if (!play || play > UINT32_MAX - 0x53DC || !memory.Read32(0x588E40, &setup) ||
+      setup > 16 || !memory.Read32(play + 0x110, &scene)) return {};
+  if (authoredScene && scene) *authoredScene = (uint64_t(scene) << 8) | setup;
+  uint8_t room = 0xFF;
+  uint32_t commands = 0;
+  // Never latch a previous-room resource while the new current room loads.
+  if (!memory.Read8(play + 0x4C30, &room) || room >= 0x80 ||
+      !memory.Read32(play + 0x4FFC, &commands) || !commands) return {};
+  return ClassifyNativeEnvironmentGroup(ReadNativeSunHeader(commands, setup, memory),
+                                       ReadNativeSunHeader(scene, setup, memory));
 }
 uint64_t NativeRoomSunFingerprint(uint64_t fingerprint, uint32_t offset) {
   if (!offset)

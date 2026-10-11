@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include "oot3d_environment_group.h"
 
 namespace Oot3dNativeGame {
 
@@ -11,6 +12,8 @@ struct SceneEnvironmentTime {
   uint16_t Clock = 0x8000;
   bool Night = false; // Native flag, diagnostic only; never selects the editor.
   uint32_t Owner = 0; // PlayState identity, for discontinuities.
+  std::optional<SceneEnvironmentGroup> Group; // Authored headers, latched per scene visit by the owner.
+  uint64_t AuthoredScene = 0; // Scene resource + selected setup; independent of room changes.
 };
 
 // EUR Environment_Update (0045DD50), table 00531EFC: nine 6-byte
