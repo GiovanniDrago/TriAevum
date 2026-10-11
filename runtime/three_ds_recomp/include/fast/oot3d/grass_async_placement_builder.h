@@ -46,6 +46,7 @@ struct GrassAsyncPlacementRequest {
     uint32_t MidrangeAdaptiveCapacity = kGrassDefaultAdaptiveClusterCapacity;
     GrassPlacementView PlacementView;
     bool ShadowGrid = false;
+    std::shared_ptr<const GrassOverlaySet> Overlays;
 };
 
 struct GrassPlacementCompletion {

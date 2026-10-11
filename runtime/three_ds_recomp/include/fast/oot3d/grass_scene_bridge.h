@@ -2,6 +2,7 @@
 
 #include "fast/oot3d/grass_shading_environment.h"
 #include "fast/oot3d/grass_surface_extractor.h"
+#include "fast/oot3d/grass_overlay_mask.h"
 
 #include <array>
 #include <cstdint>
@@ -43,6 +44,15 @@ struct GrassSceneMesh {
     GrassShadingEnvironment Shading;
     std::shared_ptr<const std::vector<GrassSourceVertex>> Vertices;
     std::shared_ptr<const std::vector<uint32_t>> Indices;
+    uint64_t DrawOrder = 0;
+    uint64_t SequenceId = 0;
+    uint64_t NativeTextureIdentity = 0;
+    uint64_t ConfiguredRuleHash = 0;
+    uint32_t ConfiguredRuleId = 0;
+    // Non-null only for room overlays; these are never indexed as grass sources.
+    std::shared_ptr<const GrassOverlayAlpha> Overlay;
+    std::shared_ptr<const std::vector<float>> Alphas;
+    uint64_t CoordinateVersion = 0;
 };
 
 struct GrassSceneScope {
@@ -72,6 +82,7 @@ class GrassSceneBridge final {
     [[nodiscard]] size_t Size() const;
     [[nodiscard]] std::vector<GrassTextureSelector> AvailableTextures() const;
     void Clear();
+    [[nodiscard]] std::shared_ptr<const GrassOverlaySet> OverlaysFor(const GrassSceneMesh& source);
 
   private:
     struct StaticAnchor {
@@ -91,6 +102,14 @@ class GrassSceneBridge final {
 
     mutable std::mutex mMutex;
     std::unordered_map<uint64_t, GrassSceneMesh> mMeshes;
+    struct OverlayHistory {
+        uint64_t CoordinateVersion = 0, AnchorVersion = 0, Namespace = 0, LastFrame = 0;
+        std::array<float, 16> ModelToWorld{};
+        bool Animated = false;
+    };
+    std::unordered_map<uint64_t, OverlayHistory> mOverlayHistory;
+    std::unordered_map<uint64_t, std::shared_ptr<const GrassOverlaySet>> mOverlaySets;
+    size_t mOverlayCount = 0;
     // Only transforms survive draw-liveness pruning, never stale draw payloads.
     std::unordered_map<uint64_t, StaticAnchor> mStaticAnchors;
     uint64_t mAnchorUse = 0;

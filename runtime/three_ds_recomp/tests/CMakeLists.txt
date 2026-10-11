@@ -690,6 +690,7 @@ add_executable(oot3d_graphics_foundation_tests
     oot3d_azahar_texture_pack_tests.cpp
     oot3d_graphics_settings_persistence_tests.cpp
     oot3d_graphics_settings_runtime_tests.cpp
+    oot3d_grass_overlay_mask_tests.cpp
     oot3d_grass_async_placement_builder_tests.cpp
     oot3d_grass_geometry_registry_tests.cpp
     oot3d_grass_world_placement_cache_tests.cpp
@@ -722,6 +723,7 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/grass_scene_bridge.cpp
     ../src/fast/oot3d/grass_shading_environment.cpp
     ../src/fast/oot3d/pica_scene_semantics.cpp
+    ../src/fast/oot3d/grass_overlay_mask.cpp
     ../src/fast/oot3d/grass_surface_extractor.cpp
     ../src/fast/oot3d/grass_texture_source_cache.cpp
     ../src/fast/oot3d/grass_texture_twins.cpp

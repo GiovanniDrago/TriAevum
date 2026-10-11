@@ -1,4 +1,5 @@
 #include "fast/oot3d/grass_async_placement_builder.h"
+#include "fast/oot3d/grass_overlay_mask.h"
 
 #include <algorithm>
 #include <bit>
@@ -52,6 +53,8 @@ uint64_t GrassPlacementSourceVersion(const GrassAsyncPlacementRequest& request) 
     HashValue(hash, request.MaterialWrapS);
     HashValue(hash, request.MaterialWrapT);
     HashValue(hash, request.ColorSource.ContentVersion());
+    if (request.Overlays)
+        HashValue(hash, request.Overlays->Version);
     return hash == 0U ? 1U : hash;
 }
 
@@ -110,6 +113,7 @@ std::shared_ptr<const GrassWorldPlacement> Build(const GrassAsyncPlacementReques
     surface.Vertices = *request.Vertices;
     surface.Indices = *request.Indices;
     surface.PlacementView = request.PlacementView;
+    surface.Overlays = request.Overlays;
 
     const bool diagnose = std::getenv("OOT3D_GRASS_DIAGNOSTICS") != nullptr;
     const auto started = diagnose ? std::chrono::steady_clock::now()

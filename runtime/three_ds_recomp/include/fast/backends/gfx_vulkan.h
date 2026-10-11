@@ -1826,6 +1826,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         mPointShadowInsertionAttemptedTargetsThisFrame;
     std::unordered_map<uint64_t, uint32_t>
         mGrassSurfaceOccurrencesThisFrame;
+    std::unordered_map<uint64_t, uint32_t> mGrassOverlayOccurrences;
+    std::unordered_map<uint64_t, uint64_t> mGrassDrawOrdinals;
     std::unordered_map<uint64_t, uint32_t>
         mRigidMotionOccurrencesThisFrame;
     std::unordered_map<uint64_t, PreviousPicaVertexUniforms>

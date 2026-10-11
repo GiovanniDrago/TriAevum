@@ -1083,6 +1083,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 placementRequest.Vertices = mesh.Vertices;
                 placementRequest.Indices = mesh.Indices;
                 placementRequest.Mask = mask;
+                placementRequest.Overlays = GrassSceneBridge::Instance().OverlaysFor(mesh);
                 placementRequest.ColorSource = GrassTextureSourceCache::Instance().AcquireColorSource(mesh.ObservedTextureHash);
                 placementRequest.Rule = rule;
                 placementRequest.Generation =
