@@ -138,7 +138,7 @@ TEST(SpirvPack, EmbeddedFamiliesHoldTheirModules) {
     ExpectSpirvModules(Fast::Oot3d::ToonFragmentArtifacts(), 200U);
     ExpectSpirvModules(Fast::Oot3d::UberFragmentArtifacts(), 24U);
     ExpectSpirvModules(Fast::Oot3d::CasterFragmentArtifacts(), 4U);
-    ExpectSpirvModules(BuiltinPassArtifacts(), 80U); // 70 + 9 diffuse GI pass kernels + its OOT3D adapter (M5)
+    ExpectSpirvModules(BuiltinPassArtifacts(), 85U); // 70 + 9 diffuse GI pass kernels + its OOT3D adapter (M5), 2 grass raster-depth fragments, 3 contact shadow lengths
 #ifdef ENABLE_OOT3D_IMMERSE
     ExpectSpirvModules(Fast::Immerse::MxaoPassArtifacts(), 6U);
 #endif
