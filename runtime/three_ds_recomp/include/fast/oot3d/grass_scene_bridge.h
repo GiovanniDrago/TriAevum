@@ -72,6 +72,9 @@ struct GrassSceneMatch {
     std::vector<GrassSceneMesh> ScopedMeshes;
 };
 
+// Frames between placement changes driven by covering overlays.
+inline constexpr uint64_t kGrassOverlaySettleFrames = 20;
+
 class GrassSceneBridge final {
   public:
     static GrassSceneBridge& Instance();
@@ -129,6 +132,13 @@ class GrassSceneBridge final {
     };
     std::unordered_map<uint64_t, OverlayHistory> mOverlayHistory;
     std::unordered_map<uint64_t, std::shared_ptr<const GrassOverlaySet>> mOverlaySets;
+    // A covering overlay change applies at once; another within the settle
+    // window waits until it holds that long, so an animated mask keeps its
+    // last settled placement instead of rebuilding the source every frame.
+    struct PendingOverlayPlacement {
+        uint64_t Version = 0, Since = 0;
+    };
+    std::unordered_map<uint64_t, PendingOverlayPlacement> mPendingOverlayPlacements;
     std::unordered_map<uint64_t, GrassSceneScope> mOverlaySetScopes;
     uint64_t mLatestFrame = 0;
     std::optional<GrassTextureSelector> mHighlightedMask;

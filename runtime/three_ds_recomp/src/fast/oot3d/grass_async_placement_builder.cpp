@@ -58,7 +58,7 @@ uint64_t GrassPlacementSourceVersion(const GrassAsyncPlacementRequest& request) 
     HashValue(hash, request.LazyMaskTexture);
     HashValue(hash, request.LazyColorTexture);
     if (request.Overlays)
-        HashValue(hash, request.Overlays->Version);
+        HashValue(hash, request.Overlays->PlacementVersion);
     return hash == 0U ? 1U : hash;
 }
 

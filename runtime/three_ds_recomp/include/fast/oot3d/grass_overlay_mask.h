@@ -88,9 +88,21 @@ void MeasureGrassOverlayFootprint(const std::array<std::array<float, 3>, 3>& sou
                                   const GrassOverlayTriangle& overlay, GrassOverlayFootprint& footprint);
 
 struct GrassOverlaySet {
+    // Every later coplanar draw: what the mask editor measures and lists.
     uint64_t Version = 0;
+    // What a placement depends on: the source and only the overlays that can
+    // remove grass. Off and unsupported Automatic overlays stay listed without
+    // rebuilding placements while they animate (dusk mist scrolls every frame).
+    uint64_t PlacementVersion = 0;
+    uint64_t SourceVersion = 0;
+    // The frame a change of the covering overlays produced this placement
+    // version; zero for the first set of a source.
+    uint64_t PlacementChangedFrame = 0;
     std::vector<GrassOverlayTriangle> Triangles;
 };
+// False when the overlay's coverage is zero everywhere: mode Off, or
+// Automatic on a native alpha path the evaluator does not support.
+[[nodiscard]] bool GrassOverlayCanCover(const GrassOverlayAlpha& alpha) noexcept;
 // Rejects degenerate/non-finite triangles; prepares camera-independent bounds
 // and barycentrics once, before the parallel candidate walk.
 [[nodiscard]] bool PrepareGrassOverlayTriangle(GrassOverlayTriangle& triangle);

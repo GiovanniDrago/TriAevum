@@ -114,6 +114,7 @@ void GrassSceneBridge::RemoveInstance(uint64_t instanceId) {
     mOverlayHistory.erase(instanceId);
     mMaskMeasurements.erase(instanceId);
     mOverlaySets.erase(instanceId);
+    mPendingOverlayPlacements.erase(instanceId);
     mOverlaySetScopes.erase(instanceId);
     const auto found = mMeshes.find(instanceId);
     if (found == mMeshes.end()) {
@@ -127,6 +128,7 @@ void GrassSceneBridge::RemoveRoom(uint64_t roomId) {
     std::scoped_lock lock(mMutex);
     std::erase_if(mOverlayHistory, [roomId](const auto& entry) { return entry.second.Namespace == roomId; });
     mOverlaySets.clear();
+    mPendingOverlayPlacements.clear();
     mMaskMeasurements.clear();
     ++mMeasurementEpoch;
     mMaskStatisticsFrame = 0;
@@ -149,6 +151,7 @@ void GrassSceneBridge::PruneBeforeFrame(uint64_t frameId) {
     for (auto it = mOverlaySetScopes.begin(); it != mOverlaySetScopes.end();) {
         if (it->second.FrameId < frameId) {
             mOverlaySets.erase(it->first);
+            mPendingOverlayPlacements.erase(it->first);
             mMaskMeasurements.erase(it->first);
             it = mOverlaySetScopes.erase(it);
         } else
@@ -248,6 +251,7 @@ void GrassSceneBridge::Clear() {
     mAnchorUse = 0;
     mOverlayHistory.clear();
     mOverlaySets.clear();
+    mPendingOverlayPlacements.clear();
     mMaskMeasurements.clear();
     ++mMeasurementEpoch;
     mMaskStatisticsFrame = 0;
@@ -323,6 +327,7 @@ std::shared_ptr<const GrassOverlaySet> GrassSceneBridge::OverlaysFor(const Grass
     std::scoped_lock lock(mMutex);
     if (!mOverlayCount || !source.Vertices || !source.Indices) {
         mOverlaySets.erase(source.InstanceId);
+        mPendingOverlayPlacements.erase(source.InstanceId);
         mMaskMeasurements.erase(source.InstanceId);
         mOverlaySetScopes.erase(source.InstanceId);
         return {};
@@ -336,6 +341,7 @@ std::shared_ptr<const GrassOverlaySet> GrassSceneBridge::OverlaysFor(const Grass
             overlays.push_back(&mesh);
     if (overlays.empty()) {
         mOverlaySets.erase(source.InstanceId);
+        mPendingOverlayPlacements.erase(source.InstanceId);
         mMaskMeasurements.erase(source.InstanceId);
         mOverlaySetScopes.erase(source.InstanceId);
         return {};
@@ -343,28 +349,55 @@ std::shared_ptr<const GrassOverlaySet> GrassSceneBridge::OverlaysFor(const Grass
     mOverlaySetScopes[source.InstanceId] = { source.FrameId, source.RenderTargetNamespace,
                                              source.FramebufferColorPhysicalAddress };
     std::sort(overlays.begin(), overlays.end(), [](auto a, auto b) { return a->InstanceId < b->InstanceId; });
-    uint64_t version = 14695981039346656037ULL;
-    const auto mix = [&](uint64_t x) { version ^= x + 0x9e3779b97f4a7c15ULL + (version << 6) + (version >> 2); };
-    mix(kGrassOverlayVersion);
-    mix(source.ContentVersion);
-    mix(source.TransformBakedIntoVertices);
+    const auto mix = [](uint64_t& hash, uint64_t x) { hash ^= x + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2); };
+    uint64_t sourceVersion = 14695981039346656037ULL;
+    mix(sourceVersion, kGrassOverlayVersion);
+    mix(sourceVersion, source.ContentVersion);
+    mix(sourceVersion, source.TransformBakedIntoVertices);
     for (float x : source.ModelToWorld)
-        mix(std::bit_cast<uint32_t>(x));
+        mix(sourceVersion, std::bit_cast<uint32_t>(x));
+    uint64_t version = sourceVersion, placementVersion = sourceVersion;
     for (auto mesh : overlays) {
-        mix(mesh->InstanceId);
-        mix(mesh->ContentVersion);
-        mix(mesh->Overlay->Version);
-        mix(mesh->TransformBakedIntoVertices);
+        uint64_t overlay = mesh->InstanceId;
+        mix(overlay, mesh->ContentVersion);
+        mix(overlay, mesh->Overlay->Version);
+        mix(overlay, mesh->TransformBakedIntoVertices);
         for (float x : mesh->ModelToWorld)
-            mix(std::bit_cast<uint32_t>(x));
+            mix(overlay, std::bit_cast<uint32_t>(x));
+        mix(version, overlay);
+        if (GrassOverlayCanCover(*mesh->Overlay))
+            mix(placementVersion, overlay);
     }
-    if (const auto found = mOverlaySets.find(source.InstanceId);
-        found != mOverlaySets.end() && found->second->Version == version) {
-        QueueMaskMeasurement(source, overlays, found->second);
-        return found->second->Triangles.empty() ? nullptr : found->second;
+    const auto previous = mOverlaySets.find(source.InstanceId);
+    if (previous != mOverlaySets.end() && previous->second->Version == version) {
+        QueueMaskMeasurement(source, overlays, previous->second);
+        return previous->second->Triangles.empty() ? nullptr : previous->second;
     }
+    const bool sameSource = previous != mOverlaySets.end() && previous->second->SourceVersion == sourceVersion;
+    const bool overlaysChanged = sameSource && previous->second->PlacementVersion != placementVersion;
+    if (overlaysChanged) {
+        // The same source under changed covering overlays. A change right
+        // after another waits until it settles; an animated mask never does
+        // and keeps its last settled placement.
+        const auto changed = previous->second->PlacementChangedFrame;
+        const auto pending = mPendingOverlayPlacements.find(source.InstanceId);
+        if (pending != mPendingOverlayPlacements.end() ||
+            (changed != 0 && source.FrameId < changed + kGrassOverlaySettleFrames)) {
+            auto& waiting = mPendingOverlayPlacements[source.InstanceId];
+            if (waiting.Version != placementVersion)
+                waiting = { placementVersion, source.FrameId };
+            if (source.FrameId < waiting.Since + kGrassOverlaySettleFrames)
+                return previous->second->Triangles.empty() ? nullptr : previous->second;
+        }
+    }
+    mPendingOverlayPlacements.erase(source.InstanceId);
     auto result = std::make_shared<GrassOverlaySet>();
     result->Version = version ? version : 1;
+    result->PlacementVersion = placementVersion ? placementVersion : 1;
+    result->SourceVersion = sourceVersion;
+    result->PlacementChangedFrame = overlaysChanged ? std::max<uint64_t>(source.FrameId, 1)
+                                    : sameSource    ? previous->second->PlacementChangedFrame
+                                                    : 0;
     const auto world = [](const GrassSceneMesh& mesh, const std::array<float, 3>& p) {
         if (mesh.TransformBakedIntoVertices)
             return p;
@@ -433,6 +466,7 @@ std::shared_ptr<const GrassOverlaySet> GrassSceneBridge::OverlaysFor(const Grass
                      static_cast<unsigned long long>(result->Version));
     if (mOverlaySets.size() > 256) {
         mOverlaySets.clear();
+        mPendingOverlayPlacements.clear();
         mMaskMeasurements.clear();
         ++mMeasurementEpoch; // immutable worker references remain valid
         mOverlaySetScopes.clear();

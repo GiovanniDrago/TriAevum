@@ -242,6 +242,18 @@ float EvaluateGrassOverlayNativeCoverage(const GrassOverlayAlpha& alpha, const s
         return 0;
     return alpha.Translucent ? previous : 1.0F;
 }
+bool GrassOverlayCanCover(const GrassOverlayAlpha& alpha) noexcept {
+    switch (alpha.Rule.Mode) {
+        case GrassMaskMode::Off:
+            return false;
+        case GrassMaskMode::Custom:
+            return true;
+        case GrassMaskMode::Automatic:
+            break;
+    }
+    return alpha.NativeSupported;
+}
+
 uint64_t GrassOverlayAlphaVersion(const GrassOverlayAlpha& alpha, uint64_t textureIdentity) {
     uint64_t hash = 14695981039346656037ULL;
     const auto mix = [&](auto value) {

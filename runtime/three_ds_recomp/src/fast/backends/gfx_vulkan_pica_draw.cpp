@@ -4090,6 +4090,13 @@ bool ResolveNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
                 overlay->NativeSupported ? 1 : 0, overlay->Translucent ? 1 : 0, overlay->AlphaTest ? 1 : 0,
                 unsigned(overlay->Compare), overlay->Reference, minAlpha, maxAlpha, overlay->Buffer[0],
                 overlay->Buffer[1], overlay->Buffer[2], overlay->Buffer[3], overlay->Program.Control[0]);
+            const auto& uvRows = geometryRequest.TextureCoordinates.RawToSample;
+            std::fprintf(stderr,
+                         "TRIAEVUM_GRASS_MASK geometry draw_content=%016llx geometry=%016llx alpha_scale=%.9g "
+                         "uv=[%.9g,%.9g,%.9g,%.9g,%.9g,%.9g]\n",
+                         static_cast<unsigned long long>(draw.GeometryContentVersion),
+                         static_cast<unsigned long long>(grassGeometry.ContentVersion), geometryRequest.AlphaScale,
+                         uvRows[0], uvRows[1], uvRows[2], uvRows[3], uvRows[4], uvRows[5]);
             for (size_t stage = 0; stage < 6; ++stage) {
                 const auto& w = overlay->Program.Stages[stage];
                 const auto& c = overlay->Constants[stage];

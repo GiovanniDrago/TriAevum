@@ -411,6 +411,55 @@ TEST(Oot3dGrassStaticPlacement, CameraCutsDistanceChangesAndReturningSourcesNeve
     EXPECT_EQ(builder.Stats().Builds,beforeTransient);
 }
 
+TEST(Oot3dGrassStaticPlacement, OverlayAndShadowGridChangesKeepTheShownPlacementUntilReady) {
+    using namespace Fast::Oot3d;
+    auto request = BaseRequest();
+    request.Generation.InstancesPerSquareMeter = 4096;
+    std::vector<GrassAsyncPlacementRequest> requests{ request };
+    GrassStaticPlacementCache cache;
+    const auto shown = cache.Resolve(requests)[0].Placement;
+    ASSERT_NE(shown, nullptr);
+    // Overlays change twice in a row (a decal appears, then fades) before
+    // the first rebuild finishes: the frame never waits for either.
+    const auto overlays = [](uint64_t version) {
+        auto set = std::make_shared<GrassOverlaySet>();
+        set->Version = set->PlacementVersion = version;
+        return set;
+    };
+    for (uint64_t version : { 1U, 2U }) {
+        requests[0].Overlays = overlays(version);
+        ++requests[0].FrameId;
+        const auto result = cache.Resolve(requests)[0];
+        EXPECT_EQ(result.State, GrassAsyncPlacementState::Ready);
+        EXPECT_EQ(result.Placement, shown);
+    }
+    cache.WaitForIdle();
+    ++requests[0].FrameId;
+    const auto rebuilt = cache.Resolve(requests)[0].Placement;
+    ASSERT_NE(rebuilt, nullptr);
+    EXPECT_NE(rebuilt, shown);
+    EXPECT_TRUE(rebuilt->ShadowPoints.empty());
+    // Shadows begin to reach the grass: the placement without a shadow grid
+    // stays (drawn unshadowed) until the one with it is built.
+    requests[0].ShadowGrid = true;
+    ++requests[0].FrameId;
+    const auto shadowing = cache.Resolve(requests)[0];
+    EXPECT_EQ(shadowing.State, GrassAsyncPlacementState::Ready);
+    EXPECT_EQ(shadowing.Placement, rebuilt);
+    cache.WaitForIdle();
+    ++requests[0].FrameId;
+    const auto shadowed = cache.Resolve(requests)[0].Placement;
+    ASSERT_NE(shadowed, nullptr);
+    EXPECT_FALSE(shadowed->ShadowPoints.empty());
+    EXPECT_EQ(shadowed->ShadowReferences.size(), shadowed->Anchors.size());
+    // Anything else still applies in the same frame.
+    requests[0].HeightScale *= 2;
+    ++requests[0].FrameId;
+    const auto resized = cache.Resolve(requests)[0];
+    EXPECT_EQ(resized.State, GrassAsyncPlacementState::Ready);
+    EXPECT_NE(resized.Placement, shadowed);
+}
+
 TEST(Oot3dGrassStaticPlacement, FirstAdmissionHasCompleteCoverageWithoutIgnoringBlackMasks) {
     using namespace Fast::Oot3d;
     auto request = BaseRequest();
@@ -707,6 +756,14 @@ TEST_F(GrassDiskFixture, ExplicitOverlayMaskLayoutAndChannelSlotsInvalidateDiskK
     const auto custom = GrassPlacementPersistentKey(r);
     std::swap(scalar->Width, scalar->Height);
     EXPECT_NE(custom, GrassPlacementPersistentKey(r));
+    // An overlay that cannot cover leaves the key alone, wherever it scrolls.
+    alpha->CustomMask.reset();
+    alpha->NativeSupported = false;
+    const auto hidden = GrassPlacementPersistentKey(r);
+    set->Triangles[0].Vertices[0].Uv = { 0.5F, 0.5F };
+    EXPECT_EQ(hidden, GrassPlacementPersistentKey(r));
+    alpha->NativeSupported = true;
+    EXPECT_NE(hidden, GrassPlacementPersistentKey(r));
 }
 TEST_F(GrassDiskFixture, F1MaskEditInvalidatesMemoryAndDiskWithoutRunningDeferredDecoderOnHit) {
     using namespace Fast::Oot3d;
@@ -732,7 +789,7 @@ TEST_F(GrassDiskFixture, F1MaskEditInvalidatesMemoryAndDiskWithoutRunningDeferre
             target.CustomMask = scalar;
         };
         auto set = std::make_shared<GrassOverlaySet>();
-        set->Version = alpha->Version;
+        set->Version = set->PlacementVersion = alpha->Version;
         GrassOverlayTriangle t;
         t.Draw = 20;
         t.Alpha = alpha;

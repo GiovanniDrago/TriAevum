@@ -476,3 +476,53 @@ in use for the settle delay (2 s): every step of an F1 slider drag is a new
 placement that is replaced before it settles, so none of them reaches the disk
 (before, one drag wrote about 1 GB). The in-memory rebuild stays immediate;
 the write runs on a placement worker.
+
+## Dusk in a time-flowing scene: placements never stall the frame
+
+Hyrule Field's dusk and dawn drew heavy stutter. Lab: Kokiri savestate, warp to
+Hyrule Field by day, clock just before 0xC001, 2,400 frames through the ramp
+and into night (`TRIAEVUM_SLOW_STEP_MS=12`). Three independent causes:
+
+- Mist layers that scroll over the field appear at dusk. Their texture
+  transform changes every frame, so each frame was a new overlay content; the
+  scroll lives in the uniforms, not in the vertex coordinates, and their draw
+  identity does not stay in the animated-overlay exclusion. Every frame the
+  overlay set changed and all four field sources rebuilt synchronously: 122
+  placement rebuilds of about 1.2 s inside the frame. Those layers are
+  translucent on an alpha path the evaluator does not support: in Automatic
+  their coverage is zero everywhere.
+- A covering overlay (an opaque decal for a frame or two) or the key light's
+  shadows starting to reach the grass are legitimate placement changes, but
+  each still rebuilt the field inside the frame (1-2 s).
+- Pipeline creation for the dusk and night programs (one 65 KB fragment
+  program) took 4.6 s on the render thread because the developer play harness
+  never kept its renderer cache, and the persisted NRI cache of the play
+  profile predated a driver update (rejected, as it must be). With a kept
+  cache a session creates the same 283 pipelines in 0.7 s instead of 58.6 s.
+  An installed game keeps its cache; `play_run.sh` now copies it back.
+
+Fixes, generic at their owners:
+
+- `GrassOverlaySet` keeps two versions. `Version` covers every later
+  coplanar draw (what the mask editor lists and measures, so an unsupported
+  layer can still be set to Custom). `PlacementVersion` covers the source and
+  only the overlays that can remove grass (`GrassOverlayCanCover`: Custom, or
+  Automatic on a supported native alpha path; Off never). The placement key
+  and the persistent disk key use only those overlays.
+- A covering overlay change applies at once; another within
+  `kGrassOverlaySettleFrames` (20) waits until it holds that long. An animated
+  covering mask keeps its last settled placement instead of rebuilding every
+  frame. Source changes are never held back.
+- `GrassStaticPlacementCache` keeps showing a source's previous placement
+  while a new one builds when only its overlays or its shadow grid changed.
+  The first admission of a source and any other setting change (density,
+  height, rules) still wait, as before. A shown placement without the shadow
+  grid is drawn unshadowed until the one with it is ready, rather than the
+  pass refusing it.
+
+Result, same lab path with a kept cache: worst frame of the ramp 5,287 ms ->
+119 ms, night 4,682 ms -> 54 ms; placement rebuilds inside a frame during the
+ramp 122 -> 0. `OOT3D_GRASS_DIAGNOSTICS` reports `[grass-wait]` when a
+pending placement cannot fall back to the shown one, and
+`TRIAEVUM_GRASS_MASK_DIAGNOSTICS` now prints each overlay's draw content,
+geometry content, primary alpha scale and texture transform.

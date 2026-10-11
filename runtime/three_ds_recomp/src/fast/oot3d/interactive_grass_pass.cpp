@@ -102,6 +102,12 @@ void HashGrassIdentityValue(
     }
 }
 
+// Shadow grid data for every anchor of a non-empty placement.
+bool GrassPlacementHasShadowGrid(const GrassWorldPlacement& placement) noexcept {
+    return placement.ShadowReferences.size() == placement.Anchors.size() && !placement.ShadowPoints.empty() &&
+           !placement.ShadowSurfaces.empty();
+}
+
 uint64_t GrassWorldPlacementIdentity(
     const GrassSceneMesh& mesh,
     const GrassPlacementKey& key) noexcept {
@@ -487,6 +493,7 @@ struct InteractiveGrassPass::Impl {
         bool operator==(const ActivePlacement&) const = default;
     };
     std::vector<ActivePlacement> ActivePlacements;
+    bool ActiveShadowGrid = false;
     uint64_t StaticRevision = 0U;
     std::unique_ptr<BS::thread_pool> WorkerPool;
     std::vector<GrassWorkerOutput> WorkerOutputs;
@@ -999,10 +1006,10 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         return finish(GrassRenderStatus::NoBudget, false);
     }
     try {
-        const bool receiveShadows = settings.Appearance.ReceiveLighting &&
-            providerPlan.Requires(EffectResource::DirectionalShadowHistory) && shadowHistory.Valid() &&
-            shadowHistory.State.ProducedFrameId <= frameId && shadowHistory.State.Strength > 0.0F;
-        auto& surfaceLighting = receiveShadows ? mImpl->ShadowSurfaceLighting : mImpl->SurfaceLighting;
+        const bool requestShadows = settings.Appearance.ReceiveLighting &&
+                                    providerPlan.Requires(EffectResource::DirectionalShadowHistory) &&
+                                    shadowHistory.Valid() && shadowHistory.State.ProducedFrameId <= frameId &&
+                                    shadowHistory.State.Strength > 0.0F;
         const auto actors = GrassInteractionBridge::Instance().LatestActors();
         const auto clock = VisualClock::Instance().Snapshot();
         float deltaSeconds = 0.0F;
@@ -1113,7 +1120,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 placementRequest.MidrangeAdaptiveCapacity = settings.MidrangeAdaptiveCapacity;
                 placementRequest.HeightScale =
                     settings.Appearance.HeightScale;
-                placementRequest.ShadowGrid = receiveShadows;
+                placementRequest.ShadowGrid = requestShadows;
                 GrassPushConstants push = ProjectionForMesh(mesh, view);
                 push.JitterNdc[0] = currentJitterNdc[0];
                 push.JitterNdc[1] = currentJitterNdc[1];
@@ -1150,6 +1157,15 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         if (profiler)
             profiler->BeginScope(frameSlot, GpuProfileScope::GrassLighting, commandBuffer);
         grassSteps.Mark("placements");
+        // Shadows that begin to reach shown grass (the key light at dusk)
+        // need a shadow grid its placement may still be building: until it
+        // is ready the grass stays unshadowed instead of the frame waiting.
+        bool receiveShadows = requestShadows;
+        for (const auto& result : placements)
+            if (result.Placement && !result.Placement->Anchors.empty() &&
+                !GrassPlacementHasShadowGrid(*result.Placement))
+                receiveShadows = false;
+        auto& surfaceLighting = receiveShadows ? mImpl->ShadowSurfaceLighting : mImpl->SurfaceLighting;
         if (!surfaceLighting.Sampler() && !surfaceLighting.Initialize(
                 mImpl->PhysicalDevice, mImpl->Device, *mImpl->SurfaceShaders, receiveShadows,
                 mImpl->PipelineCache))
@@ -1229,8 +1245,9 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             activePlacements.push_back(
                 { prepared.World->Identity, prepared.World->ContentVersion, prepared.World->Anchors.size() });
         }
-        if (activePlacements != mImpl->ActivePlacements) {
+        if (activePlacements != mImpl->ActivePlacements || receiveShadows != mImpl->ActiveShadowGrid) {
             mImpl->ActivePlacements = std::move(activePlacements);
+            mImpl->ActiveShadowGrid = receiveShadows;
             mImpl->StaticAnchors.clear();
             mImpl->ShadowPoints.clear();
             mImpl->ShadowReferences.clear();
@@ -1238,8 +1255,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             mImpl->StaticAnchors.reserve(totalStaticAnchors);
             for (const auto& prepared : preparedPlacements) {
                 if (receiveShadows) {
-                    if (prepared.World->ShadowReferences.size() != prepared.World->Anchors.size() ||
-                        prepared.World->ShadowPoints.empty() || prepared.World->ShadowSurfaces.empty())
+                    if (!GrassPlacementHasShadowGrid(*prepared.World))
                         throw std::runtime_error("grass shadow grid does not cover the immutable placement");
                     const auto pointBase = static_cast<uint32_t>(mImpl->ShadowPoints.size());
                     if (prepared.World->ShadowPoints.size() > std::numeric_limits<uint32_t>::max() - pointBase)
@@ -1931,6 +1947,7 @@ void InteractiveGrassPass::Shutdown() {
     mImpl->ShadowReferences.clear();
     mImpl->ShadowSurfaces.clear();
     mImpl->ActivePlacements.clear();
+    mImpl->ActiveShadowGrid = false;
     mImpl->ClusterWork.clear();
     mImpl->SelectionRoots.clear();
     mImpl->SelectionOutputs.clear();

@@ -57,6 +57,17 @@ auto WaitForMaskObservations(GrassSceneBridge& bridge, const GrassSceneMesh& sou
     }
     return observed;
 }
+// Later frames of the scene: the source and the overlay are drawn again.
+void NextFrame(GrassSceneBridge& bridge, GrassSceneMesh& source, GrassSceneMesh& overlay, uint64_t frames = 1) {
+    source.FrameId += frames;
+    overlay.FrameId = source.FrameId;
+    bridge.Publish(source);
+    bridge.Publish(overlay);
+}
+// Past the settle window of the previous covering change (a separate edit).
+void Settle(GrassSceneBridge& bridge, GrassSceneMesh& source, GrassSceneMesh& overlay) {
+    NextFrame(bridge, source, overlay, kGrassOverlaySettleFrames);
+}
 struct OverlayFixture : testing::Test {
     GrassSceneBridge& Bridge = GrassSceneBridge::Instance();
     GrassSceneMesh Source = Mesh(1, 10);
@@ -156,7 +167,8 @@ TEST_F(OverlayFixture, RuleChangesInvalidatePlacementAndLeaveOffMasksIdentifiabl
     change();
     Material->Rule.Mode = GrassMaskMode::Off;
     Material->Version = GrassOverlayAlphaVersion(*Material, 123);
-    Bridge.Publish(Overlay);
+    Settle(Bridge, Source, Overlay);
+    const uint64_t frame = Source.FrameId;
     auto off = Bridge.OverlaysFor(Source);
     EXPECT_NE(half->Version, off->Version);
     EXPECT_EQ(Extract(off).size(), Extract().size());
@@ -165,18 +177,18 @@ TEST_F(OverlayFixture, RuleChangesInvalidatePlacementAndLeaveOffMasksIdentifiabl
     EXPECT_EQ(observed[0].Mode, GrassMaskMode::Off);
     EXPECT_NEAR(observed[0].Area, 20000, 1e-3);
     EXPECT_EQ(observed[0].CoverageArea, 0);
-    EXPECT_TRUE(Bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty());
+    EXPECT_TRUE(Bridge.MaskHighlight({ frame, 1, 0 }).Lines.empty());
     Bridge.HighlightMask(observed[0].Texture);
-    EXPECT_FALSE(Bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty());
-    EXPECT_TRUE(Bridge.MaskHighlight({ 2, 1, 0 }).Lines.empty());
-    EXPECT_TRUE(Bridge.MaskHighlight({ 1, 2, 0 }).Lines.empty());
-    EXPECT_TRUE(Bridge.MaskHighlight({ 1, 1, 99 }).Lines.empty());
+    EXPECT_FALSE(Bridge.MaskHighlight({ frame, 1, 0 }).Lines.empty());
+    EXPECT_TRUE(Bridge.MaskHighlight({ frame + 1, 1, 0 }).Lines.empty());
+    EXPECT_TRUE(Bridge.MaskHighlight({ frame, 2, 0 }).Lines.empty());
+    EXPECT_TRUE(Bridge.MaskHighlight({ frame, 1, 99 }).Lines.empty());
     Bridge.HighlightMask(std::nullopt);
-    EXPECT_TRUE(Bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty());
+    EXPECT_TRUE(Bridge.MaskHighlight({ frame, 1, 0 }).Lines.empty());
     Bridge.HighlightMask(observed[0].Texture);
-    Bridge.PruneBeforeFrame(2);
+    Bridge.PruneBeforeFrame(frame + 1);
     EXPECT_TRUE(Bridge.ObservedMasks().empty());
-    EXPECT_TRUE(Bridge.MaskHighlight({ 1, 1, 0 }).Lines.empty());
+    EXPECT_TRUE(Bridge.MaskHighlight({ frame, 1, 0 }).Lines.empty());
 }
 
 TEST_F(OverlayFixture, RoomResetDiscardsAnInFlightMeasurement) {
@@ -350,7 +362,7 @@ TEST_F(OverlayFixture, CacheChangesWithMaterialGeometryOrderAndRemoval) {
     ASSERT_TRUE(b);
     EXPECT_NE(a->Version, b->Version);
     Overlay.ContentVersion = 2;
-    Bridge.Publish(Overlay);
+    Settle(Bridge, Source, Overlay);
     auto c = Bridge.OverlaysFor(Source);
     EXPECT_NE(b->Version, c->Version);
     Overlay.DrawOrder = 5;
@@ -361,6 +373,71 @@ TEST_F(OverlayFixture, CacheChangesWithMaterialGeometryOrderAndRemoval) {
     ASSERT_TRUE(Bridge.OverlaysFor(Source));
     Bridge.RemoveInstance(Overlay.InstanceId);
     EXPECT_FALSE(Bridge.OverlaysFor(Source));
+}
+TEST_F(OverlayFixture, OverlaysThatCannotCoverNeverChangeThePlacement) {
+    // Dusk mist in Hyrule Field: translucent on an alpha path the evaluator
+    // does not support, its texture scrolling every frame (a new geometry
+    // content each time, with a draw identity that does not stay animated).
+    Material->NativeSupported = false;
+    Bridge.Publish(Overlay);
+    const auto first = Bridge.OverlaysFor(Source);
+    ASSERT_TRUE(first); // still listed for the mask editor
+    for (uint64_t step = 2; step < 6; ++step) {
+        Overlay.ContentVersion = step;
+        NextFrame(Bridge, Source, Overlay);
+        const auto set = Bridge.OverlaysFor(Source);
+        ASSERT_TRUE(set);
+        EXPECT_NE(set->Version, first->Version);
+        EXPECT_EQ(set->PlacementVersion, first->PlacementVersion);
+    }
+    // Off masks nothing either; Custom can, whatever the native support.
+    auto off = std::make_shared<GrassOverlayAlpha>(*Material);
+    off->NativeSupported = true;
+    off->Rule.Mode = GrassMaskMode::Off;
+    off->Version = 7;
+    Overlay.Overlay = off;
+    NextFrame(Bridge, Source, Overlay);
+    EXPECT_EQ(Bridge.OverlaysFor(Source)->PlacementVersion, first->PlacementVersion);
+    auto custom = std::make_shared<GrassOverlayAlpha>(*Material);
+    custom->Rule.Mode = GrassMaskMode::Custom;
+    custom->Version = 8;
+    EXPECT_FALSE(GrassOverlayCanCover(*Material));
+    EXPECT_FALSE(GrassOverlayCanCover(*off));
+    EXPECT_TRUE(GrassOverlayCanCover(*custom));
+    Overlay.Overlay = custom;
+    NextFrame(Bridge, Source, Overlay);
+    EXPECT_NE(Bridge.OverlaysFor(Source)->PlacementVersion, first->PlacementVersion);
+}
+TEST_F(OverlayFixture, AnimatedCoveringOverlayKeepsItsSettledPlacement) {
+    Bridge.Publish(Overlay);
+    const auto first = Bridge.OverlaysFor(Source);
+    ASSERT_TRUE(first);
+    // An edit applies at once.
+    Overlay.ContentVersion = 2;
+    NextFrame(Bridge, Source, Overlay);
+    const auto edited = Bridge.OverlaysFor(Source);
+    EXPECT_NE(edited->PlacementVersion, first->PlacementVersion);
+    // Changing every frame afterwards: the placement stays where it settled.
+    for (uint64_t step = 3; step < 3 + 3 * kGrassOverlaySettleFrames; ++step) {
+        Overlay.ContentVersion = step;
+        NextFrame(Bridge, Source, Overlay);
+        EXPECT_EQ(Bridge.OverlaysFor(Source)->PlacementVersion, edited->PlacementVersion);
+    }
+    // Once it holds still for the settle window, the placement follows it.
+    std::shared_ptr<const GrassOverlaySet> settled;
+    for (uint64_t frame = 0; frame <= kGrassOverlaySettleFrames; ++frame) {
+        NextFrame(Bridge, Source, Overlay);
+        settled = Bridge.OverlaysFor(Source);
+    }
+    EXPECT_NE(settled->PlacementVersion, edited->PlacementVersion);
+    EXPECT_GT(settled->PlacementChangedFrame, 0U);
+    // A change of the source itself is never held back.
+    Overlay.ContentVersion = 100;
+    Source.ContentVersion = 2;
+    NextFrame(Bridge, Source, Overlay);
+    const auto moved = Bridge.OverlaysFor(Source);
+    EXPECT_NE(moved->PlacementVersion, settled->PlacementVersion);
+    EXPECT_NE(moved->SourceVersion, settled->SourceVersion);
 }
 TEST_F(OverlayFixture, ScrollingUvIsExcludedUntilReset) {
     Bridge.Publish(Overlay);
@@ -489,6 +566,11 @@ TEST_F(OverlayFixture, AsyncAndWorldCachesIncludeOverlayVersion) {
     ASSERT_FALSE(base[0].Placement->Anchors.empty());
     Bridge.Publish(Overlay);
     r.Overlays = Bridge.OverlaysFor(Source);
+    // The shown placement stays while the masked one builds, then replaces it.
+    auto building = cache.Resolve(std::span(&r, 1));
+    EXPECT_TRUE(building[0].Queued);
+    EXPECT_EQ(building[0].Placement, base[0].Placement);
+    cache.WaitForIdle();
     auto masked = cache.Resolve(std::span(&r, 1));
     ASSERT_TRUE(masked[0].Placement);
     EXPECT_TRUE(masked[0].Placement->Anchors.empty());

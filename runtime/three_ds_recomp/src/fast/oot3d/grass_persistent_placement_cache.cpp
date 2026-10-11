@@ -170,10 +170,13 @@ GrassPlacementDiskKey GrassPlacementPersistentKey(const GrassAsyncPlacementReque
     content.Add(r.LazyMaskTexture);
     content.Add(r.LazyColorTexture);
     if (r.Overlays) {
-        content.Add(uint64_t(r.Overlays->Triangles.size()));
-        uint64_t previous = 0, draw = 0;
+        // Only overlays that can remove grass shape the placement.
+        uint64_t previous = 0, draw = 0, covering = 0;
         std::unordered_set<const GrassOverlayAlpha*> materials;
         for (const auto& t : r.Overlays->Triangles) {
+            if (t.Alpha && !GrassOverlayCanCover(*t.Alpha))
+                continue;
+            ++covering;
             if (t.Draw != previous) {
                 previous = t.Draw;
                 ++draw;
@@ -202,6 +205,7 @@ GrassPlacementDiskKey GrassPlacementPersistentKey(const GrassAsyncPlacementReque
                 }
             }
         }
+        content.Add(covering);
     }
     settings.Add(GrassPlacementRuleVersion(r.Rule, r.Generation));
     settings.Add(r.ModelToWorld);
