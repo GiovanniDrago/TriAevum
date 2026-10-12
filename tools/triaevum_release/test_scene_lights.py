@@ -145,7 +145,8 @@ class SceneLightsTests(unittest.TestCase):
         self.assertEqual(room_emitters(data), [])
 
     def test_categories_follow_the_first_texture(self):
-        self.assertEqual(category("gnn_torch_03", False), "torch")
+        self.assertIsNone(category("gnn_torch_03", False))
+        self.assertIsNone(category("s00_syoku_01", False))
         self.assertEqual(category("spot01_mado", False), "window-lamp")
         self.assertEqual(category("dg05_kabe_al", True), "fire-lava")
         self.assertIsNone(category("dg05_kabe_al", False))
@@ -157,25 +158,31 @@ class SceneLightsTests(unittest.TestCase):
         self.assertAlmostEqual(g, 0x80 / 255.0, places=3)
         self.assertAlmostEqual(b, 0x20 / 255.0, places=3)
 
-    def test_a_torch_stand_lights_above_its_top_in_its_colour(self):
+    def test_a_torch_stand_is_not_a_light(self):
+        # Its flame is an actor's, lit by the runtime while it burns.
         stand, triangles = cube((100.0, 50.0, -200.0), 40.0)
         wall, wall_triangles = cube((0.0, 0.0, 0.0), 300.0)
         model = cmb([(0, False), (1, False)], [("gnn_torch_03", RGBA8, ORANGE), ("ganon_kabe", RGBA8, GREY)],
                     [(0, stand, triangles), (1, wall, wall_triangles)])
+        self.assertEqual(room_emitters(room(model)), [])
+
+    def test_a_glow_lights_in_its_colour_and_names_its_surface(self):
+        glow, triangles = cube((100.0, 50.0, -200.0), 40.0)
+        model = cmb([(0, False)], [("mark_lt_01", RGBA8, ORANGE)], [(0, glow, triangles)])
         emitters = room_emitters(room(model))
         self.assertEqual(len(emitters), 1)
-        torch = emitters[0]
-        self.assertEqual(torch["category"], "torch")
-        self.assertEqual(torch["position"], [100.0, 95.0, -200.0])
-        self.assertEqual(torch["colour"], [1.0, 0.502, 0.125])
-        self.assertEqual(torch["texture"], "gnn_torch_03")
+        light = emitters[0]
+        self.assertEqual(light["category"], "magic-glow")
+        self.assertEqual(light["position"], [100.0, 50.0, -200.0])
+        self.assertEqual(light["colour"], [1.0, 0.502, 0.125])
+        self.assertEqual(light["texture"], "mark_lt_01")
         # The light names its surface: the runtime lights it as strongly as the game draws it.
-        self.assertEqual(torch["surfaces"], [f"{content_hash(ORANGE):016x}"])
+        self.assertEqual(light["surfaces"], [f"{content_hash(ORANGE):016x}"])
 
-    def test_neighbouring_flames_merge_into_one_light_of_both_surfaces(self):
+    def test_neighbouring_glows_merge_into_one_light_of_both_surfaces(self):
         left, triangles = cube((100.0, 50.0, -200.0), 40.0)
         right, _ = cube((160.0, 50.0, -200.0), 40.0)
-        model = cmb([(0, False), (1, False)], [("gnn_torch_03", RGBA8, ORANGE), ("gnn_torch_04", RGBA8, GREY)],
+        model = cmb([(0, False), (1, False)], [("mark_lt_01", RGBA8, ORANGE), ("mark_lt_02", RGBA8, GREY)],
                     [(0, left, triangles), (1, right, triangles)])
         emitters = room_emitters(room(model))
         self.assertEqual(len(emitters), 1)
@@ -215,7 +222,7 @@ class SceneLightsTests(unittest.TestCase):
 
     def test_malformed_or_nonfinite_models_add_no_lights(self):
         stand, triangles = cube((0.0, 0.0, 0.0), 40.0)
-        good = cmb([(0, False)], [("gnn_torch_03", RGBA8, ORANGE)], [(0, stand, triangles)])
+        good = cmb([(0, False)], [("mark_lt_01", RGBA8, ORANGE)], [(0, stand, triangles)])
         # The shape's position stream offset far outside the file.
         broken = bytearray(good)
         sepd = broken.index(b"sepd")
@@ -226,7 +233,7 @@ class SceneLightsTests(unittest.TestCase):
         struct.pack_into("<f", nan, sepd + 0x28, float("nan"))
         self.assertEqual(room_emitters(room(bytes(nan))), [])
         # Bones parenting each other (a cycle).
-        cyclic = cmb([(0, False)], [("gnn_torch_03", RGBA8, ORANGE)], [(0, stand, triangles)],
+        cyclic = cmb([(0, False)], [("mark_lt_01", RGBA8, ORANGE)], [(0, stand, triangles)],
                      bones=[(0, 1), (1, 0)])
         self.assertEqual(room_emitters(room(cyclic)), [])
         # Indices beyond the model's index buffer.
@@ -238,16 +245,16 @@ class SceneLightsTests(unittest.TestCase):
 
     def test_bones_place_rigid_primitives(self):
         stand, triangles = cube((0.0, 0.0, 0.0), 40.0)
-        model = bytearray(cmb([(0, False)], [("gnn_torch_03", RGBA8, ORANGE)], [(0, stand, triangles)]))
+        model = bytearray(cmb([(0, False)], [("mark_lt_01", RGBA8, ORANGE)], [(0, stand, triangles)]))
         # One bone translated by (1000, 0, -500), rotated a quarter turn about Y.
         skl = model.index(b"skl ")
         struct.pack_into("<hh9f", model, skl + 0x10, 0, -1, 1, 1, 1, 0, 1.5707963267948966, 0, 1000, 0, -500)
         emitters = room_emitters(room(bytes(model)))
-        self.assertEqual(emitters[0]["position"], [1000.0, 45.0, -500.0])
+        self.assertEqual(emitters[0]["position"], [1000.0, 0.0, -500.0])
 
     def test_catalog_names_scene_room_variant_and_fingerprint(self):
         stand, triangles = cube((0.0, 0.0, 0.0), 40.0)
-        data = room(cmb([(0, False)], [("gnn_torch_03", RGBA8, ORANGE)], [(0, stand, triangles)]))
+        data = room(cmb([(0, False)], [("mark_lt_01", RGBA8, ORANGE)], [(0, stand, triangles)]))
         with tempfile.TemporaryDirectory() as directory:
             romfs = Path(directory)
             (romfs / "scene").mkdir()
@@ -263,11 +270,11 @@ class SceneLightsTests(unittest.TestCase):
         self.assertEqual(catalog["rooms"][0]["fingerprint"], f"{content_hash(data[16:144]):016x}")
         self.assertNotEqual(catalog["rooms"][0]["fingerprint"], catalog["rooms"][1]["fingerprint"])
         self.assertEqual(room_fingerprint(data), catalog["rooms"][0]["fingerprint"])
-        self.assertEqual(summary, {"rooms": 2, "emitters": {"torch": 2}})
+        self.assertEqual(summary, {"rooms": 2, "emitters": {"magic-glow": 2}})
 
     def test_prepare_reuses_the_catalog_while_its_receipt_matches(self):
         stand, triangles = cube((0.0, 0.0, 0.0), 40.0)
-        data = room(cmb([(0, False)], [("gnn_torch_03", RGBA8, ORANGE)], [(0, stand, triangles)]))
+        data = room(cmb([(0, False)], [("mark_lt_01", RGBA8, ORANGE)], [(0, stand, triangles)]))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "romfs/scene").mkdir(parents=True)

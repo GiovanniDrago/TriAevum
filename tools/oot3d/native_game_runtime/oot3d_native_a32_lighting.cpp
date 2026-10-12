@@ -559,22 +559,8 @@ void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recom
     }
     if (mStaticEmitters && environmentState) {
         const auto rooms = NativeLoadedRooms(playState, memory);
-        const size_t first = candidates.size();
         CaptureStaticEmitters(*mStaticEmitters, scene, rooms, candidates,
                               &Fast::Renderer3ds::PicaSurfaceEmissionRegistry::Instance());
-        // A room-mesh torch stand often holds a torch actor's flame, already
-        // lit (group 2): the architecture's light there would count twice.
-        const auto lit = [&](const PicaScenePointLight& light) {
-            return std::any_of(candidates.begin(), candidates.begin() + static_cast<std::ptrdiff_t>(first),
-                               [&](const PicaScenePointLight& flame) {
-                                   const float dx = flame.PositionWorld[0] - light.PositionWorld[0];
-                                   const float dy = flame.PositionWorld[1] - light.PositionWorld[1];
-                                   const float dz = flame.PositionWorld[2] - light.PositionWorld[2];
-                                   return flame.Group == 2U && dx * dx + dy * dy + dz * dz < 150.0F * 150.0F;
-                               });
-        };
-        candidates.erase(std::remove_if(candidates.begin() + static_cast<std::ptrdiff_t>(first), candidates.end(), lit),
-                         candidates.end());
     }
     // More lights than slots (the Fire Temple's maze room alone places 41
     // flames): keep Navi and the fairies, then choose and fade the added

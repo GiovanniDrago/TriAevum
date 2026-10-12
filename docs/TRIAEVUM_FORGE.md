@@ -21,8 +21,9 @@ Forge currently provides the release-safe preparation and packaging boundary:
   water the title publishes no water body for (waterfalls, rapids, a moat);
 - a local scene light catalog (`cache/scene-lights/<key>/scene_lights.json`,
   `--scene-light-catalog`): the light sources drawn into the rooms' meshes
-  (torch stands, lava and fire surfaces, windows and lamps, light shafts,
-  magic glows), found by texture name in the room CMBs, placed as point
+  (lava and fire surfaces, windows and lamps, light shafts, magic glows;
+  not torch stands, whose flames are actors the runtime lights while they
+  burn), found by texture name in the room CMBs, placed as point
   lights with their textures' colour, per room file (standard and Master
   Quest rooms by the fingerprint of their command list), so the Modern
   renderer lights the architecture with them. Each light names the textures

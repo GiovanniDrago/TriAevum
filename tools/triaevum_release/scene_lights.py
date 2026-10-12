@@ -1,7 +1,9 @@
 """Local scene light catalog for the renderer, from the user's RomFS.
 
-The rooms' own light sources are drawn into their meshes: torch stands,
-lava and fire surfaces, windows and lamps, light shafts, magic glows. The
+The rooms' own light sources are drawn into their meshes: lava and fire
+surfaces, windows and lamps, light shafts, magic glows. A torch stand is not
+one: the flame it holds is drawn by an actor (a torch, a fire object, the
+drawbridge), which the runtime lights while the title draws its flame. The
 title bakes their light into vertex colours; the Modern renderer lights the
 scene with them instead. Each room's materials are classified by their first
 texture's name; the triangles of an emitting material become objects
@@ -11,14 +13,14 @@ volumes shaped like an opening are doorways: daylight, lit near their outer
 end. Each light names its surfaces: the content hashes of the textures it is
 the light of (the renderer's base-level hash). The runtime lights it with the
 strength the game draws them with, so a glow the game fades by day (lit
-windows, torch halos) is dark by day. Where a room draws its lit windows as
+windows, halos) is dark by day. Where a room draws its lit windows as
 additive glow, the opaque panes are not lights. The catalog is
 private, ROM-derived data: it is generated on the user's machine, never
 shipped. Format (JSON):
 
     {"schema": "triaevum.scene-lights", "version": 1, "rooms": [
         {"scene": 10, "room": 1, "masterQuest": false, "fingerprint": "<16 hex>",
-         "emitters": [{"category": "torch", "position": [x, y, z], "radius": r,
+         "emitters": [{"category": "window-lamp", "position": [x, y, z], "radius": r,
                        "gain": g, "colour": [r, g, b], "texture": "name",
                        "surfaces": ["<16 hex>"]}]}]}
 
@@ -48,7 +50,7 @@ CATALOG_SCHEMA = "triaevum.scene-lights"
 CATALOG_VERSION = 1
 # Bumped with any change to the emitters' placement, so installed catalogs
 # are regenerated.
-GENERATOR_REVISION = 3
+GENERATOR_REVISION = 4
 # A merged light names at most this many surfaces.
 MAX_SURFACES = 2
 
@@ -86,13 +88,10 @@ MATERIAL_SIZE = 0x15C
 # room, the light's gain (calibrated in the lab against the title's own
 # lighting: these sources add to light the rooms already bake) and the
 # largest reach a merged emitter may grow to.
-MERGE = {"torch": 120, "window-lamp": 300, "magic-glow": 300, "fire-lava": 500, "light-shaft": 200, "lamp": 60,
-         "doorway": 150}
-CAP = {"torch": 16, "window-lamp": 12, "magic-glow": 8, "fire-lava": 12, "light-shaft": 8, "lamp": 16, "doorway": 8}
-GAIN = {"torch": 1.0, "window-lamp": 0.45, "magic-glow": 0.6, "fire-lava": 0.45, "light-shaft": 0.55, "lamp": 0.5,
-        "doorway": 1.6}
-REACH = {"torch": 450, "window-lamp": 700, "magic-glow": 500, "fire-lava": 1000, "light-shaft": 600, "lamp": 500,
-         "doorway": 1800}
+MERGE = {"window-lamp": 300, "magic-glow": 300, "fire-lava": 500, "light-shaft": 200, "lamp": 60, "doorway": 150}
+CAP = {"window-lamp": 12, "magic-glow": 8, "fire-lava": 12, "light-shaft": 8, "lamp": 16, "doorway": 8}
+GAIN = {"window-lamp": 0.45, "magic-glow": 0.6, "fire-lava": 0.45, "light-shaft": 0.55, "lamp": 0.5, "doorway": 1.6}
+REACH = {"window-lamp": 700, "magic-glow": 500, "fire-lava": 1000, "light-shaft": 600, "lamp": 500, "doorway": 1800}
 # Daylight through a doorway: the openings' glow volumes are plain white.
 DAYLIGHT = [1.0, 0.95, 0.85]
 # A doorway's glow volume: opening height and the largest horizontal extent.
@@ -481,8 +480,11 @@ def category(first_texture: str, additive: bool, halo: bool = False) -> str | No
     first = first_texture.lower()
     if re.search(r"doughnut|^ido_|kja_|mir_decal", first):
         return None
+    # A torch stand is not a light: the flame on it is (an actor's, lit by
+    # the runtime while it burns). An unlit stand, or one whose flame burns
+    # only at night, gives no light.
     if re.search(r"shokudai|shoku_|syoku|torch|taimatsu|rousoku|candle", first):
-        return "torch"
+        return None
     if re.search(r"mado|window|lamp|neon", first):
         return "window-lamp"
     if re.search(r"mark_lt|mark_tam|maho_star", first):
@@ -612,13 +614,6 @@ def emitters_for(cat: str, colour: list[float], boxes: list) -> list[dict]:
             # A halo is centred on its lamp; a lamp body is the lamp.
             out.append({"position": middle, "radius": round(min(REACH[cat], max(250, size * 2.5))),
                         "gain": GAIN[cat], "colour": colour, "weight": 1.0})
-        elif cat == "torch":
-            if size > 400:
-                continue
-            # Above the stand, where its flame burns: inside the stand the
-            # light's own point shadow would hide it.
-            out.append({"position": [middle[0], high[1] + 25, middle[2]], "radius": 450, "gain": GAIN[cat],
-                        "colour": colour, "weight": 1.0})
         elif cat == "window-lamp":
             p = [middle[k] + normal[k] * 40 for k in range(3)] if area > 0 else middle
             out.append({"position": p, "radius": round(min(600, 250 + size * 0.6)), "gain": GAIN[cat],
@@ -744,7 +739,7 @@ def model_emitters(model: Model) -> list[dict]:
         peak = max(raw) if raw else 0.0
         colour = [c / peak for c in raw] if peak > 0.0 else [1.0, 0.7, 0.4]
         # Greyscale fire textures take their colour from the combiner.
-        if cat in ("fire-lava", "torch") and min(colour) > 0.85:
+        if cat == "fire-lava" and min(colour) > 0.85:
             colour = list(FIRE_COLOUR)
         elif cat == "window-lamp":
             colour = [c * w for c, w in zip(colour, LAMP_TINT)]

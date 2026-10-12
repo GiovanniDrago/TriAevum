@@ -3470,21 +3470,39 @@ although the game showed no light there: it draws those glow cards in every
 frame and fades them with a combiner constant's alpha (0 by day, 1 at night;
 Kakariko's window shafts 0.5 at night).
 
-- A scene point light may name the textures of the surfaces it is the light of
-  (`PicaScenePointLight::SurfaceTextures`, base-level content hashes).
-  `PicaSurfaceEmissionTracker` (shared renderer) measures how strongly each
-  frame draws them: the combiner's output for white textures and vertex colour
-  (`EvaluatePicaTevProgram`, the CPU mirror of `pica_evaluate_tev_resolved`),
-  weighed by the blend's source factor (`PicaUnitSurfaceEmission`). The next
-  frame's snapshot scales the light by that strength; at zero it keeps its
-  identity with no reach. Surface lighting, point-shadow selection and every
-  other consumer read the scaled snapshot. A surface not drawn in a frame
-  keeps its last strength; one never drawn leaves the light as published.
-- The OoT3D adapter passes the catalog's `surfaces`; Forge's generator names
-  them (merged lights name both) and no longer takes the opaque panes of a room
-  that draws lit windows as additive glow for lights.
-- Lamplight through a window now casts point shadows, like torches and
-  doorways: it sits off the facade.
+- `PicaSurfaceEmissionRegistry` (shared renderer, `pica_surface_emission.h`)
+  follows the surfaces a title names (base-level texture content hashes) and
+  measures how strongly each frame draws them: the combiner's output for white
+  textures and vertex colour (`EvaluatePicaTevProgram`, the CPU mirror of
+  `pica_evaluate_tev_resolved`), weighed by the blend's source factor
+  (`PicaUnitSurfaceEmission`); the strongest draw of a frame counts. Strengths
+  are read one frame late. A surface not drawn in a frame keeps its last
+  strength; one never drawn reads full.
+- The OoT3D adapter follows each catalog light's `surfaces` and scales the
+  light by the strongest of them before light selection; a light whose
+  surfaces were drawn dark is left out, so it takes no slot and no shadow.
+  Forge's generator names the surfaces (merged lights name both) and no longer
+  takes the opaque panes of a room that draws lit windows as additive glow for
+  lights.
+- Lamplight through a window now casts point shadows, like doorways: it sits
+  off the facade.
+
+### Torch stands are not lights (2026-10-12)
+
+The scene light catalog placed a light above every torch stand drawn in a
+room mesh, whether a flame burned on it or not. By day, Hyrule Field's
+drawbridge gate was lit, with shadows, by two torches that burn only at night;
+unlit stands in the Spirit Temple and Ganon's Castle lit their rooms too.
+
+- The flame on a stand is always an actor's: En_Light or Obj_Syokudai in the
+  dungeons (already lit as flames, group 2, while they burn), and at the
+  drawbridge Bg_Spot00_Hanebasi itself, which draws both flames at a scale
+  that grows from 0 as the bridge rises at night. The adapter now lights
+  those two flames from that scale (`oot3d_native_a32_fire_emitters.cpp`).
+- Forge's generator no longer turns torch stands into lights (catalog
+  revision 4: 127 fewer); the runtime refuses a catalog that still lists the
+  `torch` category, so an older one is regenerated, and no longer needs to
+  drop a stand's light where a flame actor already burns.
 
 ### Presentation stages under native UI
 

@@ -126,7 +126,7 @@ bool IsNativeFireEmitterActor(uint16_t id) noexcept {
     switch (id) {
     case 0x000U: case 0x00CU: case 0x012U: case 0x013U: case 0x038U: case 0x044U: case 0x045U: case 0x046U:
     case 0x049U: case 0x05DU: case 0x08BU: case 0x08DU: case 0x099U: case 0x09FU: case 0x0A3U: case 0x0B5U:
-    case 0x0E1U: case 0x10AU: case 0x11CU: case 0x176U:
+    case 0x0E1U: case 0x10AU: case 0x11CU: case 0x176U: case 0x04AU:
         return true;
     default:
         return false;
@@ -473,6 +473,25 @@ void CaptureNativeFireEmitters(oot3d::recomp::a32::MemoryBus& memory, uint32_t p
         const float peak = std::max({tint[0], tint[1], tint[2], 1.0e-3F});
         for (auto& channel : tint) channel /= peak;
         out.Add(0U, centroid.Point(), 800.0F, strongest * 0.6F, tint);
+        return;
+    }
+    case 0x04AU: {
+        // Bg_Spot00_Hanebasi, Hyrule Field's drawbridge: the bridge itself
+        // (params -1) draws the two torch flames beside the gate at world
+        // (+-260, 128, 690) (BgSpot00Hanebasi_Draw 0x0038AF04, literals
+        // 0x0038B2F8..304), scaled by the static at 0x005135B4: 0 while the
+        // bridge is down, growing to 0.008 as it rises at night, 0.008 in
+        // the later scene layers. Layer 12 (save context +0x14E8 at
+        // 0x00588E40) draws none and leaves the static as it was.
+        constexpr uint32_t kFlameScale = 0x005135B4U, kSceneLayer = 0x00588E40U;
+        uint32_t scaleBits = 0, layer = 0;
+        if (params != 0xFFFFU || !memory.Read32(kSceneLayer, &layer) || layer == 12U ||
+            !memory.Read32(kFlameScale, &scaleBits))
+            return;
+        const float level = std::bit_cast<float>(scaleBits) / 0.008F;
+        if (!std::isfinite(level)) return;
+        for (uint32_t slot = 0; slot < 2U; ++slot)
+            out.Add(slot, {slot == 0U ? 260.0F : -260.0F, 128.0F + 40.0F, 690.0F}, 500.0F, level);
         return;
     }
     default:

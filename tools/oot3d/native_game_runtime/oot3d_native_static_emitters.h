@@ -2,13 +2,13 @@
 
 // The architecture's own light: emitters found in the room geometry by the
 // installer (tools/triaevum_release/scene_lights.py over the room CMBs:
-// torches drawn in the room mesh, lava and fire surfaces, windows, light
-// shafts, magic glows, and the lamps interiors draw as glow cards or glowing
-// bodies), published as scene point lights of the rooms the title has
+// lava and fire surfaces, windows, light shafts, magic glows, and the lamps
+// interiors draw as glow cards or glowing bodies), published as scene point lights of the rooms the title has
 // loaded. ROM-derived data, kept with the user's other generated files;
 // without a catalog nothing changes. An emitter names the textures of the
 // surfaces it is the light of; it shines with the strength the frame draws
-// them with (a glow the title fades by day is dark by day).
+// them with (a glow the title fades by day is dark by day). Torch stands
+// are not emitters: their flames are actors', lit while drawn (group 2).
 
 #include "fast/renderer3ds/pica_light_binding.h"
 #include "fast/renderer3ds/pica_surface_emission.h"
@@ -30,14 +30,14 @@ class MemoryBus;
 
 namespace Oot3dNativeGame {
 
-enum class NativeStaticEmitterCategory : uint8_t { Torch, FireLava, WindowLamp, LightShaft, MagicGlow, Lamp, Doorway };
+enum class NativeStaticEmitterCategory : uint8_t { FireLava, WindowLamp, LightShaft, MagicGlow, Lamp, Doorway };
 
 struct NativeStaticEmitter {
     std::array<float, 3> Position{};
     std::array<float, 3> Colour{};
     float Radius = 0.0F;
     float Gain = 0.0F;
-    NativeStaticEmitterCategory Category = NativeStaticEmitterCategory::Torch;
+    NativeStaticEmitterCategory Category = NativeStaticEmitterCategory::FireLava;
     // Base-level content hashes of its emitting surfaces' textures; none: it
     // always shines.
     std::array<uint64_t, 2> Surfaces{};
