@@ -4163,11 +4163,24 @@ bool GfxRenderingAPIVulkan::PrepareOverlay(
     if (!mLastPresentedNativePicaDisplayTransfer.has_value()) {
         return true;
     }
-    GfxNativePicaDisplayTransferView transfer =
-        *mLastPresentedNativePicaDisplayTransfer;
-    transfer.Present = true;
-    if (!SubmitPicaDisplayTransfer(transfer, error)) {
-        return false;
+    if (mNativePicaPresentedThisFrame) {
+        // This frame's scanout already wrote the swapchain image and left it
+        // presentable, as the overlay pass loads it: presenting the display
+        // again would run its effect graph and scanout a second time for the
+        // same image.
+        EndNativePicaRenderPass();
+        if (mRenderPassActive) {
+            vkCmdEndRenderPass(mCommandBuffers[mCurrentFrame]);
+            mRenderPassActive = false;
+            mOverlayRenderPassActive = false;
+        }
+    } else {
+        GfxNativePicaDisplayTransferView transfer =
+            *mLastPresentedNativePicaDisplayTransfer;
+        transfer.Present = true;
+        if (!SubmitPicaDisplayTransfer(transfer, error)) {
+            return false;
+        }
     }
     if (mOverlayRenderPass == VK_NULL_HANDLE ||
         mSwapchainFramebuffers.empty()) {
