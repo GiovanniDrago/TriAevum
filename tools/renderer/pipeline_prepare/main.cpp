@@ -3,6 +3,7 @@
 #include "fast/renderer3ds/pica_startup_programs.h"
 #include "fast/renderer3ds/pica_native_fragment_binaries.h"
 #include "fast/oot3d/pica_uber_fragment_binaries.h"
+#include "fast/oot3d/pica_builtin_fragment_families.h"
 #include "headless_device.h"
 #include "fast/oot3d/pica_pipeline_preparation.h"
 // Translated title vertex family (title code, like the runtime executable's).
@@ -199,7 +200,8 @@ int main(int argc, char** argv) {
         std::optional<Renderer::PipelinePreparationJob> job;
         if (!entries.empty() && !startup.Cancelled) {
             job.emplace(entries.size(), [&](size_t index, std::string& why) {
-                const auto item = Fast::Oot3d::ResolvePicaPipelinePreparationItem(entries[index], pack, depthFormat);
+                const auto item = Fast::Oot3d::ResolvePicaPipelinePreparationItem(entries[index], pack, depthFormat,
+                                                                                &Fast::Oot3d::FindPicaBuiltInFragmentSpirv);
                 if (!bridge.PreparePipeline(item.Descriptor)) { why = "NRI rejected pipeline " + std::to_string(index); return false; }
                 if (device.ValidationErrors()) { why = "NRI/Vulkan validation reported errors"; return false; }
                 return true;

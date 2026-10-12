@@ -1860,9 +1860,11 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     uberDraw.FragmentShaderSourceIdentity = draw.UberFragmentShaderSourceIdentity;
                     uberDraw.FragmentShaderHooks = draw.UberFragmentShaderHooks;
                     const auto acquireStart = std::chrono::steady_clock::now();
+                    // Linked from the startup program parts, never a recipe of
+                    // the portable pack: it stays out of the pipeline inventory.
                     auto& uberPipeline = GetOrCreateNativePicaPipeline(
                         uberDraw, *uberProgram, shaderVariant.Reactive, shaderVariant.Domain,
-                        shaderVariant.RequestedFeatures, shaderVariant.AppliedFeatures, true, false, false,
+                        shaderVariant.RequestedFeatures, shaderVariant.AppliedFeatures, false, false, false,
                         NativePicaPipelineAcquisition::Libraries);
                     const double acquired = std::chrono::duration<double, std::milli>(
                         std::chrono::steady_clock::now() - acquireStart).count();
@@ -3150,7 +3152,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             ? &GetOrCreateNativePicaPipeline(
                 *selectedDraw, *selectedProgram, drawVariant.Reactive,
                 drawVariant.Domain, drawVariant.RequestedFeatures, drawVariant.AppliedFeatures,
-                true, true, !nriOwnedDraw,
+                selectedDraw != &uberDraw, true, !nriOwnedDraw,
                 selectedDraw == &uberDraw && nriOwnedDraw
                     ? NativePicaPipelineAcquisition::Libraries
                     : NativePicaPipelineAcquisition::Blocking)

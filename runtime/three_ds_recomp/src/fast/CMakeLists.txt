@@ -173,6 +173,7 @@ if(NOT THREE_DS_RECOMP_ENABLE_VULKAN)
     list(REMOVE_ITEM Source_Files__Oot3dRenderer
         "oot3d/pica_nri_pipeline_state.cpp"
         "oot3d/pica_pipeline_preparation.cpp"
+        "oot3d/pica_builtin_fragment_families.cpp"
         "oot3d/pica_guide_sampling_barriers.cpp")
 endif()
 source_group("oot3d" FILES ${Source_Files__Oot3dRenderer})
