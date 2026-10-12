@@ -492,7 +492,12 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 presentationSettings.Effects.MxaoTemporal && mMxaoPass.Available(),
             .AmbientOcclusionFaceNormal =
                 Oot3d::EffectsReadFaceNormal(presentationSettings.Effects) && mMxaoPass.Available(),
-            .Reflections = presentationSettings.Effects.Reflections,
+            // A water-only trace reflects only the water this frame drew (the
+            // title's bodies, catalog planes); without any it writes zero
+            // everywhere, so the frame plans no reflection, Hi-Z included.
+            .Reflections = mWaterOnlyReflections && mReflectableWaterFrame != mFrameCounter
+                ? Oot3d::ReflectionMode::Off
+                : presentationSettings.Effects.Reflections,
             .GlobalIllumination =
                 (presentationSettings.Effects.GlobalIllumination.Mode ==
                      Oot3d::GlobalIlluminationMode::BrixelizerGi &&

@@ -3473,6 +3473,12 @@ carried was taken for motion.
   motion. Where motion is computed anyway (GI runs in every execution), an
   output of an earlier execution that shares its slot (reflection, working
   colour, composite, SMAA, upscaled colour) is computed again, not reused.
+- Water reflections with Reflections Off trace Hi-Z for water only: a pixel
+  off the title's water bodies and the catalog's water planes writes zero. A
+  frame whose scene draws published neither (`mReflectableWaterFrame`) plans
+  no reflection, Hi-Z included; its image is unchanged. Temple of Time
+  cutscene, medians: frames with a text box 18.4 -> 16.6 ms on the GPU, frames
+  without 21.4 -> 15.7 ms (reflection 0.44 / 1.67 ms -> 0).
 
 ### Lights that follow their surfaces (2026-10-12)
 

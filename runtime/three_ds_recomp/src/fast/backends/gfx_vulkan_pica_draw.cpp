@@ -2905,6 +2905,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             if (draw.LightBinding.Water && draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Scene) {
                 renderTarget.WaterBodies = draw.LightBinding.Water;
                 renderTarget.WaterBodiesFrame = mFrameCounter;
+                if (draw.LightBinding.Water->Count != 0U) mReflectableWaterFrame = mFrameCounter;
             }
             if (waterSurface.Pieces && draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Scene) {
                 if (renderTarget.WaterPiecesFrame != mFrameCounter) {
@@ -2928,6 +2929,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 if (planes.Count < Renderer3ds::kMaximumPicaSceneWaterBodies &&
                     std::find(planes.Bodies.begin(), end, *waterSurface.Plane) == end)
                     planes.Bodies[planes.Count++] = *waterSurface.Plane;
+                mReflectableWaterFrame = mFrameCounter;
             }
             if (opaqueWorldDraw)
                 if (const auto projection = Oot3d::DecodePicaPerspectiveProjection(draw.VertexUniformBytes))

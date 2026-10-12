@@ -247,6 +247,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     std::unordered_map<uint64_t, ::Fast::Renderer3ds::PicaWaterFlowTrack> mWaterFlow;
     // This frame traces reflections for water only (Reflections Off).
     bool mWaterOnlyReflections = false;
+    // The frame whose scene draws last published water a water-only trace
+    // finds (the title's bodies or catalog water planes).
+    uint64_t mReflectableWaterFrame = UINT64_MAX;
     bool SubmitPicaDisplayTransfer(
         const GfxNativePicaDisplayTransferView& transfer,
         std::string* error = nullptr) override;
