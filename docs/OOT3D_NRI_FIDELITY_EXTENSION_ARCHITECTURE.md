@@ -248,7 +248,7 @@ historical measurements, not the current instrumented layout. See
 - Each compiled pass exposes its declared resource bindings and the diagnostics stream records the aggregate binding contract. A 30-frame Native Fidelity run resolved `1` pass, `2` resources/bindings and attachment count/mask `1/0`; a TAA run resolved `4` passes, `8` resource lifetimes, `13` bindings, `6` declared barriers and attachment count/mask `5/0x06`.
 - The TAA run executed 29 temporal and 29 motion passes, used direct typed fragment/vertex programs for all 5,202 instrumented draws and reported zero legacy analyses, rejected draws or Vulkan/NRI warnings and errors. Reproducible artifacts use the `graph-dispatch-native-*` and `graph-dispatch-taa-*` prefixes.
 - Every compiled display pass now has a fixed-size execution ledger. It distinguishes newly executed, reused, fused, skipped, failed and unresolved work, rejects duplicate or undeclared records, and reports both pass masks and active binding counts without per-frame heap allocation.
-- Ledger integration exposed two declaration/runtime mismatches. FSR now declares and depends on its real HiZ depth preparation rather than claiming native-depth input, and non-world display surfaces cannot request world effects. Duplicate presentations of the same world surface now reuse the already generated guide, motion and TAA outputs instead of silently scanning out an unprocessed image.
+- Ledger integration exposed two declaration/runtime mismatches. FSR now declares and depends on its real HiZ depth preparation rather than claiming native-depth input, and non-world display surfaces cannot request world effects. Duplicate presentations of the same world surface now reuse the already generated guide and TAA outputs instead of silently scanning out an unprocessed image (motion is computed by each execution since 2026-10-12, see Upscaler motion).
 - Native Fidelity validation over 30 frames records 59 declared/executed scanouts, 5,202 canonical draws, attachment count/mask `1/0`, and zero skipped, failed, unresolved, duplicate or undeclared outcomes. The equivalent TAA run records 29 motion and 29 TAA executions, 29 fused and 87 reused logical passes across 59 presentations, and zero skipped, failed or unresolved outcomes. Both runs have zero Vulkan/NRI warnings and errors; artifacts use the `graph-execution-native-*-v2` and `graph-execution-taa-*-v3` prefixes.
 - `DisplayEffectResourceTable` is the first concrete graph-binding layer. It maps every typed `EffectResource` to a versioned image or semantic identity using a fixed array, validates declared reads, and carries native image/view handles, format, extent and color-space metadata without per-frame allocation.
 - Scanout now selects its primary input from the compiled graph and resolves the seven auxiliary descriptor slots by resource identity rather than parallel image/view conditionals. A compatibility fallback is explicit and counted. Native Fidelity and TAA each resolve all `59/59` scanout reads with zero missing resources or fallbacks, while preserving the execution counts above and zero Vulkan/NRI warnings or errors. Artifacts use the `graph-bindings-native-*-v1` and `graph-bindings-taa-*-v1` prefixes.
@@ -3434,6 +3434,32 @@ render resolution`, 357 of 360 frames; the scene was black). DLSS failed alike.
   The field FSR frame takes 2.35 ms, the upscaler scope (with the resampling)
   0.74 ms. Diagnostics: `upscaler_guide_resample_count`,
   `upscaler_guide_width/height`.
+
+### Upscaler motion (2026-10-12)
+
+DLSS shook with a still camera: in Hyrule Field the presented frame moved 0.44
+pixels from one frame to the next (AA off 0.003, TAA 0.09), following the
+jitter phases; with the jitter off it held still. The vectors it read were
+zero. The motion vectors are a transient of the graph execution that computes
+them, and their slot is taken by the plan's later passes once their last reader
+ran (`EffectTransientAllocationPlan`); the presentation that dispatches DLSS
+reused the vectors of the native boundary executed before it in the frame, so
+it read the slot's later contents (no motion), and the jitter step the colour
+carried was taken for motion.
+
+- Every graph execution that reads motion computes it (a compute pass at the
+  render resolution); none reads another execution's motion.
+- The upscalers take motion without the projection jitter: `UpscalerGuidePass`
+  now prepares the guides for every dispatch, resampled or not, and adds the
+  jitter step back to each texel that has motion (`UpscalerMotionWithoutJitter`);
+  texels without motion (the sky, backdrops drawn without depth) stay still.
+  FSR, DLSS and the D3D12 DLSS bridge no longer declare jittered motion.
+- Scene draws whose vertex program does not add the jitter (no temporal
+  variant) take the same sub-pixel step through their viewport, so the whole
+  scene the upscaler reads is jittered alike.
+- Field, still camera, DLSS Quality 1280x720: 0.002 pixels frame to frame
+  upright and stored (was 0.44), temporal flicker 0.99 (was 2.46; TAA 1.08).
+  Mid-pan the image is sharper (edge energy 10.94 against 8.70) with no trails.
 
 ### Presentation stages under native UI
 

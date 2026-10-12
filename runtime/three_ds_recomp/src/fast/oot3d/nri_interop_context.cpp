@@ -1180,8 +1180,7 @@ bool NriInteropContext::DispatchFsr(
             (inputSrgb ? nri::UpscalerBits::SRGB
                        : nri::UpscalerBits::HDR) |
             nri::UpscalerBits::USE_REACTIVE |
-            nri::UpscalerBits::DEPTH_LINEAR |
-            nri::UpscalerBits::MV_JITTERED;
+            nri::UpscalerBits::DEPTH_LINEAR; // motion without jitter (upscaler_guides.h)
         if (mImpl->UpscalerInterface.CreateUpscaler(
                 *mImpl->Device, upscaler, fsr) !=
             nri::Result::SUCCESS) {
@@ -1277,8 +1276,7 @@ bool NriInteropContext::EnsureDlssFeature(uint32_t frameIndex,
     upscaler.flags =
         (key.InputSrgb ? nri::UpscalerBits::SRGB
                        : nri::UpscalerBits::HDR) |
-        nri::UpscalerBits::USE_REACTIVE |
-        nri::UpscalerBits::MV_JITTERED;
+        nri::UpscalerBits::USE_REACTIVE; // motion without jitter (upscaler_guides.h)
     // NGX records feature-creation commands into the already-open frame
     // command buffer, avoiding an out-of-band queue submission.
     upscaler.commandBuffer = command->second;

@@ -2638,6 +2638,32 @@ TEST(Oot3dUpscalerGuides, CoverTheDisplayTransferFootprint) {
     EXPECT_FLOAT_EQ(jitter[1], -0.25F);
 }
 
+// The upscalers take motion without the jitter. A still surface's motion is
+// the step between its jittered positions and becomes zero; texels without
+// motion (the sky, backdrops drawn without depth) stay still instead of
+// moving against the jitter.
+TEST(Oot3dUpscalerGuides, MotionLeavesTheJitterOut) {
+    using namespace Fast::Oot3d;
+    const std::array<float, 2> current{0.25F / 480.0F, -0.125F / 853.0F};
+    const std::array<float, 2> previous{-0.375F / 480.0F, 0.3F / 853.0F};
+    const auto correction = UpscalerMotionJitterCorrection(current, previous);
+    // Still surface: previous jittered uv minus current jittered uv.
+    const std::array<float, 4> still{previous[0] - current[0], previous[1] - current[1], 0.0F, 0.0F};
+    const auto unjittered = UpscalerMotionWithoutJitter(still, correction);
+    EXPECT_NEAR(unjittered[0], 0.0F, 1.0e-9F);
+    EXPECT_NEAR(unjittered[1], 0.0F, 1.0e-9F);
+    // A moving surface keeps its motion.
+    const std::array<float, 4> moving{0.01F + still[0], -0.02F + still[1], 0.0F, 0.5F};
+    const auto kept = UpscalerMotionWithoutJitter(moving, correction);
+    EXPECT_NEAR(kept[0], 0.01F, 1.0e-7F);
+    EXPECT_NEAR(kept[1], -0.02F, 1.0e-7F);
+    EXPECT_FLOAT_EQ(kept[3], 0.5F);
+    // A disoccluded texel has no motion and keeps none.
+    const auto sky = UpscalerMotionWithoutJitter({0.0F, 0.0F, 1.0F, 0.0F}, correction);
+    EXPECT_FLOAT_EQ(sky[0], 0.0F);
+    EXPECT_FLOAT_EQ(sky[1], 0.0F);
+}
+
 // The upscaler sees the surface the way the screen shows it: an upright texel
 // is the surface texel PresentationToStorage names at its centre, for both
 // display-transfer flips, and the output turn is the exact inverse.

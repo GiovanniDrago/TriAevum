@@ -270,7 +270,6 @@ void GfxRenderingAPIVulkan::StartFrame() {
         Oot3d::SceneColorEncoding::Unknown;
     mGrassExecutedThisFrame = false;
     mLinearColorExecutedThisFrame = false;
-    mMotionExecutedThisFrame = false;
     mUpscalerExecutedThisFrame = false;
     mNativeUiOverlayExecutedThisFrame = false;
     mUpscalerUsedD3d12ThisFrame = false;

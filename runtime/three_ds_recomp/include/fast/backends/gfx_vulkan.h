@@ -1771,7 +1771,6 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     std::optional<Oot3d::SceneSurfaceKey> mMotionSurface;
     std::optional<Oot3d::SceneSurfaceKey> mLinearColorSurface;
     bool mLinearColorExecutedThisFrame = false;
-    bool mMotionExecutedThisFrame = false;
     bool mUpscalerExecutedThisFrame = false;
     bool mUpscalerUsedD3d12ThisFrame = false;
     Oot3d::UpscalerProvider mUpscalerProviderThisFrame =

@@ -2774,6 +2774,17 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                       nativeDrawPush.Jitter.end(),
                       nriDraw.RootConstants.begin() + 4);
             nriDraw.Viewport = mViewport;
+            // The whole scene carries the projection jitter, as a temporal
+            // upscaler takes every input texel to be jittered. A scene draw
+            // whose vertex program does not add it (no temporal variant: the
+            // sky, backdrops and effects drawn without depth) moves by the
+            // same sub-pixel step through its viewport.
+            if (sceneDraw && (jitterUv[0] != 0.0F || jitterUv[1] != 0.0F) &&
+                !Oot3d::HasPicaShaderInstrumentationFeature(
+                    drawVariant.AppliedFeatures, Oot3d::PicaShaderInstrumentationFeature::TemporalVertex)) {
+                nriDraw.Viewport.x += jitterUv[0] * nriDraw.Viewport.width;
+                nriDraw.Viewport.y += jitterUv[1] * nriDraw.Viewport.height;
+            }
             nriDraw.Scissor = mScissor;
             std::copy(std::begin(draw.Blend.ConstantColor),
                       std::end(draw.Blend.ConstantColor),

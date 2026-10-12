@@ -1335,13 +1335,14 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 effectGuideTarget->Key.ColorPhysicalAddress,
                 Oot3d::SceneSurfaceKind::Motion};
         }
-        const bool canReuseMotion =
-            wantsMotionVectors && mMotionExecutedThisFrame &&
-            motionKey.has_value() && mMotionSurface.has_value() &&
-            *mMotionSurface == *motionKey;
+        // Every graph execution that reads motion computes it. The vectors
+        // are a transient of the executing plan, whose slot the plan's later
+        // passes reuse once their last reader ran (EffectTransientAllocation
+        // Plan), so another execution of the frame (a native boundary before
+        // its presentation) cannot read them: they read as no motion.
+        constexpr bool canReuseMotion = false;
         bool motionForDisplay = wantsMotionVectors && temporalState.has_value() &&
-                                effectGuideTarget != nullptr &&
-                                !mMotionExecutedThisFrame;
+                                effectGuideTarget != nullptr;
         const bool motionAttempted = motionForDisplay;
         if (motionForDisplay) {
             const auto motionReads = resolveEffectPassReads(
@@ -1410,7 +1411,6 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     effectGuideTarget->Width, effectGuideTarget->Height);
                 mMotionSurface = *motionKey;
-                mMotionExecutedThisFrame = true;
             }
             mDiagnostics.RecordMotionVectors(
                 motionForDisplay, temporalState->HistoryValid,
@@ -2731,8 +2731,10 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         // guides keep the scene target's, which differs when the native display
         // transfer resized the colour: they are then resampled to the colour's
         // extent, and the jitter (applied in target pixels) is given in input
-        // pixels.
-        const auto prepareUpscalerGuides = [&](Oot3d::NriTemporalUpscaleDispatchDesc& desc) {
+        // pixels. Its motion is taken without the jitter (upscaler_guides.h),
+        // so the guides are prepared for every dispatch.
+        const auto prepareUpscalerGuides = [&](Oot3d::NriTemporalUpscaleDispatchDesc& desc,
+                                               const Oot3d::TemporalViewState& temporal) {
             const uint32_t guideWidth = effectGuideTarget->Width;
             const uint32_t guideHeight = effectGuideTarget->Height;
             desc.JitterPixels = Oot3d::UpscalerJitterInInputPixels(
@@ -2740,13 +2742,12 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             const bool resample = Oot3d::UpscalerGuidesNeedResample(
                 desc.InputWidth, desc.InputHeight, guideWidth, guideHeight);
             mDiagnostics.RecordUpscalerGuides(resample, guideWidth, guideHeight);
-            if (!resample)
-                return true;
             if (!mUpscalerGuidePass.Execute(
                     mCurrentFrame,
                     {desc.DepthImage, desc.DepthFormat, desc.MotionImage, desc.MotionFormat,
                      desc.ReactiveImage, desc.ReactiveFormat, guideWidth, guideHeight},
-                    desc.InputWidth, desc.InputHeight))
+                    desc.InputWidth, desc.InputHeight,
+                    Oot3d::UpscalerMotionJitterCorrection(temporal.CurrentJitterUv, temporal.PreviousJitterUv)))
                 return false;
             recordEffectPassTransitions(mUpscalerGuidePass.LastBarrierExecution());
             desc.DepthImage = mUpscalerGuidePass.DepthImage();
@@ -2830,7 +2831,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 Oot3d::GpuProfileScope::Upscaler,
                 command);
             fsrForDisplay = transientUpscaledOutput != nullptr &&
-                prepareUpscalerGuides(fsr) &&
+                prepareUpscalerGuides(fsr, *temporalState) &&
                 mNriUpscalerPass.Configure(*transientUpscaledOutput) &&
                 mNriUpscalerPass.ExecuteFsr(
                     command, fsr, temporalUpscalerBarrierPlan);
@@ -2893,7 +2894,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             dlss.DlssPreset = Oot3d::DlssRenderPreset(presentationSettings.UpscalerDlssModel,
                                                       presentationSettings.UpscalerMode);
             transitionEffectPassGuides(Oot3d::DisplayEffectPass::TemporalUpscaler);
-            const bool dlssGuidesReady = prepareUpscalerGuides(dlss);
+            const bool dlssGuidesReady = prepareUpscalerGuides(dlss, *temporalState);
             bool d3d12FrameDlss = false;
             bool d3d12FrameContractReady = false;
             bool d3d12FramePrepared = false;
@@ -2903,7 +2904,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             uint64_t d3d12FrameDispatchCount = 0U;
 #if defined(_WIN32) && defined(ENABLE_OOT3D_D3D12_NGX_PROVIDER)
             if (d3d12FrameDlssRequested && dlssGuidesReady) {
-                const bool dlssGuidesResampled =
+                const bool dlssGuidesPrepared =
                     dlss.DepthImage != reinterpret_cast<VkImage>(dlssDepthBinding.NativeImage);
                 const Oot3d::D3d12NgxFrameContract contract{
                     dlss.InputWidth,
@@ -2926,14 +2927,14 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 d3d12FrameContractReady = mD3d12NgxProvider.ConfiguredForFrameContract(contract);
                 Oot3d::D3d12NgxFrameInputs bridgeInputs{
                     reinterpret_cast<VkImageView>(dlssInputBinding->NativeView),
-                    dlssGuidesResampled ? mUpscalerGuidePass.DepthView()
+                    dlssGuidesPrepared ? mUpscalerGuidePass.DepthView()
                                         : reinterpret_cast<VkImageView>(dlssDepthBinding.NativeView),
-                    dlssGuidesResampled ? mUpscalerGuidePass.MotionView()
+                    dlssGuidesPrepared ? mUpscalerGuidePass.MotionView()
                                         : reinterpret_cast<VkImageView>(dlssMotionBinding.NativeView),
-                    dlssGuidesResampled ? mUpscalerGuidePass.ReactiveView()
+                    dlssGuidesPrepared ? mUpscalerGuidePass.ReactiveView()
                                         : reinterpret_cast<VkImageView>(dlssReactiveBinding.NativeView),
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    dlssGuidesResampled ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                    dlssGuidesPrepared ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                                         : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
