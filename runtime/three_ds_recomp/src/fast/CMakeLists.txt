@@ -84,6 +84,7 @@ set(Source_Files__Renderer3dsPica
     renderer3ds/pica_semantic_scene_view.cpp
     renderer3ds/pica_vertex_surface.cpp
     renderer3ds/pica_surface_lighting.cpp
+    renderer3ds/pica_surface_emission.cpp
     renderer3ds/pica_pbr_shading.cpp
     renderer3ds/pica_pbr_seams.cpp
     renderer3ds/pica_pbr_seam_shader.cpp

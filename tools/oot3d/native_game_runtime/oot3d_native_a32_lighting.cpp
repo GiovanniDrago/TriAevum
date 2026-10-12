@@ -560,7 +560,8 @@ void NativeA32LightingProbe::CaptureSceneLights(uint32_t playState, oot3d::recom
     if (mStaticEmitters && environmentState) {
         const auto rooms = NativeLoadedRooms(playState, memory);
         const size_t first = candidates.size();
-        CaptureStaticEmitters(*mStaticEmitters, scene, rooms, candidates);
+        CaptureStaticEmitters(*mStaticEmitters, scene, rooms, candidates,
+                              &Fast::Renderer3ds::PicaSurfaceEmissionRegistry::Instance());
         // A room-mesh torch stand often holds a torch actor's flame, already
         // lit (group 2): the architecture's light there would count twice.
         const auto lit = [&](const PicaScenePointLight& light) {

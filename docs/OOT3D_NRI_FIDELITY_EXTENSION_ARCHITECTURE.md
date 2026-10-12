@@ -3461,6 +3461,31 @@ carried was taken for motion.
   upright and stored (was 0.44), temporal flicker 0.99 (was 2.46; TAA 1.08).
   Mid-pan the image is sharper (edge energy 10.94 against 8.70) with no trails.
 
+### Lights that follow their surfaces (2026-10-12)
+
+The architecture's lights (Forge's scene light catalog) shone whenever their
+room was loaded. In Hyrule Castle the lit windows of the town below (glow
+cards) lit the hill by day, and Kakariko's windows lit the village by day,
+although the game showed no light there: it draws those glow cards in every
+frame and fades them with a combiner constant's alpha (0 by day, 1 at night;
+Kakariko's window shafts 0.5 at night).
+
+- A scene point light may name the textures of the surfaces it is the light of
+  (`PicaScenePointLight::SurfaceTextures`, base-level content hashes).
+  `PicaSurfaceEmissionTracker` (shared renderer) measures how strongly each
+  frame draws them: the combiner's output for white textures and vertex colour
+  (`EvaluatePicaTevProgram`, the CPU mirror of `pica_evaluate_tev_resolved`),
+  weighed by the blend's source factor (`PicaUnitSurfaceEmission`). The next
+  frame's snapshot scales the light by that strength; at zero it keeps its
+  identity with no reach. Surface lighting, point-shadow selection and every
+  other consumer read the scaled snapshot. A surface not drawn in a frame
+  keeps its last strength; one never drawn leaves the light as published.
+- The OoT3D adapter passes the catalog's `surfaces`; Forge's generator names
+  them (merged lights name both) and no longer takes the opaque panes of a room
+  that draws lit windows as additive glow for lights.
+- Lamplight through a window now casts point shadows, like torches and
+  doorways: it sits off the facade.
+
 ### Presentation stages under native UI
 
 On the Kokiri walk the HUD reaches the scene target before its display transfer,

@@ -8,14 +8,19 @@ texture's name; the triangles of an emitting material become objects
 (connected triangles, merged when close), each object one point light
 (lava: area clusters), coloured by its texture's mean. Plain white additive
 volumes shaped like an opening are doorways: daylight, lit near their outer
-end. The catalog is
+end. Each light names its surfaces: the content hashes of the textures it is
+the light of (the renderer's base-level hash). The runtime lights it with the
+strength the game draws them with, so a glow the game fades by day (lit
+windows, torch halos) is dark by day. Where a room draws its lit windows as
+additive glow, the opaque panes are not lights. The catalog is
 private, ROM-derived data: it is generated on the user's machine, never
 shipped. Format (JSON):
 
     {"schema": "triaevum.scene-lights", "version": 1, "rooms": [
         {"scene": 10, "room": 1, "masterQuest": false, "fingerprint": "<16 hex>",
          "emitters": [{"category": "torch", "position": [x, y, z], "radius": r,
-                       "gain": g, "colour": [r, g, b], "texture": "name"}]}]}
+                       "gain": g, "colour": [r, g, b], "texture": "name",
+                       "surfaces": ["<16 hex>"]}]}]}
 
 A scene's standard and Master Quest rooms share scene and room numbers; the
 runtime tells them apart by the fingerprint of the room file it has loaded.
@@ -43,7 +48,9 @@ CATALOG_SCHEMA = "triaevum.scene-lights"
 CATALOG_VERSION = 1
 # Bumped with any change to the emitters' placement, so installed catalogs
 # are regenerated.
-GENERATOR_REVISION = 2
+GENERATOR_REVISION = 3
+# A merged light names at most this many surfaces.
+MAX_SURFACES = 2
 
 # Scene file stems by scene id (the title's scene table order).
 SCENE_NAMES = {
@@ -650,6 +657,10 @@ def consolidate(emitters: list[dict]) -> list[dict]:
                                          for k in range(3)]
                         a["radius"] = round(min(REACH[cat], max(a["radius"], b["radius"]) + 0.5 * distance))
                         a["weight"] = w
+                        # The merged light is the light of both emitters' surfaces.
+                        for surface in b.get("surfaces", []):
+                            if surface not in a.setdefault("surfaces", []) and len(a["surfaces"]) < MAX_SURFACES:
+                                a["surfaces"].append(surface)
                         del group[j]
                         merged = True
                         break
@@ -693,13 +704,23 @@ def model_emitters(model: Model) -> list[dict]:
     for shape, material in model.meshes:
         if material < len(model.materials):
             shapes_by_material[material].append(shape)
-    for material, shapes in shapes_by_material.items():
+    materials = {}
+    for material in shapes_by_material:
         texture_indices, additive = model.materials[material]
         textures = [model.textures[i] for i in texture_indices if 0 <= i < len(model.textures)]
-        if not textures:
+        if textures:
+            name, width, height, fmt, kind, pixels = textures[0]
+            materials[material] = (textures[0], additive,
+                                   category(name, additive, additive and is_halo(fmt, kind, pixels, width, height)))
+    # Lit windows drawn as additive glow: the glow is the light, the panes are glass.
+    window_glow = any(cat == "window-lamp" and additive for _, additive, cat in materials.values())
+    for material, shapes in shapes_by_material.items():
+        if material not in materials:
             continue
-        name, width, height, fmt, kind, pixels = textures[0]
-        cat = category(name, additive, additive and is_halo(fmt, kind, pixels, width, height))
+        (name, width, height, fmt, kind, pixels), additive, cat = materials[material]
+        if cat == "window-lamp" and not additive and window_glow:
+            cat = None
+        surface = f"{content_hash(pixels):016x}"
         raw = texture_colour(fmt, kind, pixels)
         boxes = None
         if additive and is_daylight(raw):
@@ -713,7 +734,7 @@ def model_emitters(model: Model) -> list[dict]:
                 if emitter is None:
                     boxes.append((low, high, tris))
                 else:
-                    emitter.update({"category": "doorway", "texture": name})
+                    emitter.update({"category": "doorway", "texture": name, "surfaces": [surface]})
                     emitters.append(emitter)
         if not cat:
             continue
@@ -733,7 +754,7 @@ def model_emitters(model: Model) -> list[dict]:
         regions = LAMP_REGIONS.get(name) if cat == "lamp" else None
         if boxes is not None and regions is None:
             for emitter in emitters_for(cat, colour, boxes):
-                emitter.update({"category": cat, "texture": name})
+                emitter.update({"category": cat, "texture": name, "surfaces": [surface]})
                 emitters.append(emitter)
             continue
         batches = [(colour, (0.0, 0.0, 1.0, 1.0))] if regions is None else [(list(r[4]), r[:4]) for r in regions]
@@ -751,7 +772,7 @@ def model_emitters(model: Model) -> list[dict]:
             # close: halos group tightly; bodies (frame and glass apart) loosely.
             merge = 10.0 if cat == "lamp" and additive else 40.0
             for emitter in emitters_for(cat, batch_colour, objects(triangles, merge)):
-                emitter.update({"category": cat, "texture": name})
+                emitter.update({"category": cat, "texture": name, "surfaces": [surface]})
                 emitters.append(emitter)
     return emitters
 

@@ -5,6 +5,7 @@
 #include "fast/renderer3ds/pica_surface_appearance.h"
 #include "fast/oot3d/pica_rim_light.h"
 #include "fast/renderer3ds/pica_surface_debug.h"
+#include "fast/renderer3ds/pica_surface_emission.h"
 #include "fast/oot3d/grass_interaction_bridge.h"
 #include "fast/oot3d/grass_texture_twins.h"
 #include "fast/oot3d/grass_overlay_mask.h"
@@ -3023,6 +3024,33 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 destination.MinLinear = texture.MinLinear;
                 destination.MagLinear = texture.MagLinear;
                 destination.MipLinear = texture.MipLinear;
+            }
+            // A surface the title follows (lights that are its glow): how
+            // strongly this draw shows it.
+            auto& surfaceEmissions = Renderer3ds::PicaSurfaceEmissionRegistry::Instance();
+            std::optional<float> surfaceEmission;
+            for (const auto& texture : sceneTextures) {
+                if (!texture.Bound || !texture.NativeBaseLevelContentHashAvailable ||
+                    !surfaceEmissions.Follows(texture.NativeBaseLevelContentHash))
+                    continue;
+                if (!surfaceEmission) {
+                    Renderer3ds::PicaTevProgram tev{};
+                    std::array<std::array<float, 4>, 6> constants{};
+                    std::array<float, 4> bufferColor{};
+                    const auto& bytes = draw.FragmentUniformBytes;
+                    if (bytes.size() >= Oot3d::kPicaPackedFragmentTevProgramOffset + sizeof(tev) &&
+                        bytes.size() >= Oot3d::kPicaPackedFragmentCombinerBufferOffset + sizeof(bufferColor)) {
+                        std::memcpy(&tev, bytes.data() + Oot3d::kPicaPackedFragmentTevProgramOffset, sizeof(tev));
+                        std::memcpy(constants.data(), bytes.data() + Oot3d::kPicaPackedFragmentTevConstantsOffset,
+                                    sizeof(constants));
+                        std::memcpy(bufferColor.data(), bytes.data() + Oot3d::kPicaPackedFragmentCombinerBufferOffset,
+                                    sizeof(bufferColor));
+                        surfaceEmission = Renderer3ds::PicaUnitSurfaceEmission(tev, constants, bufferColor, draw.Blend);
+                    } else {
+                        surfaceEmission = 1.0F;
+                    }
+                }
+                surfaceEmissions.Observe(texture.NativeBaseLevelContentHash, *surfaceEmission);
             }
             Oot3d::PicaSceneTextureBinding orderedLightingLut;
             if (lightingLutInteger) {

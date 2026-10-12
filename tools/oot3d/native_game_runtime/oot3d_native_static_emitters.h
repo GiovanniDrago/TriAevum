@@ -6,9 +6,12 @@
 // shafts, magic glows, and the lamps interiors draw as glow cards or glowing
 // bodies), published as scene point lights of the rooms the title has
 // loaded. ROM-derived data, kept with the user's other generated files;
-// without a catalog nothing changes.
+// without a catalog nothing changes. An emitter names the textures of the
+// surfaces it is the light of; it shines with the strength the frame draws
+// them with (a glow the title fades by day is dark by day).
 
 #include "fast/renderer3ds/pica_light_binding.h"
+#include "fast/renderer3ds/pica_surface_emission.h"
 
 #include <array>
 #include <cstdint>
@@ -35,6 +38,9 @@ struct NativeStaticEmitter {
     float Radius = 0.0F;
     float Gain = 0.0F;
     NativeStaticEmitterCategory Category = NativeStaticEmitterCategory::Torch;
+    // Base-level content hashes of its emitting surfaces' textures; none: it
+    // always shines.
+    std::array<uint64_t, 2> Surfaces{};
 };
 
 // A room file's identity: FNV-1a 64 of the first bytes of its command list
@@ -78,9 +84,12 @@ struct NativeLoadedRoom {
 
 // Appends the lights of the loaded rooms of the scene (group 3). Identities
 // are synthetic (0xA5 in the top byte, then scene, room and index): no guest
-// address can take them.
+// address can take them. With `emission`, the emitters' surfaces are followed
+// and each light shines as strongly as the renderer last saw them drawn; a
+// light whose surfaces were drawn dark is left out.
 void CaptureStaticEmitters(const NativeStaticEmitterCatalog& catalog, uint16_t scene,
                            std::span<const NativeLoadedRoom> rooms,
-                           std::vector<Fast::Renderer3ds::PicaScenePointLight>& lights);
+                           std::vector<Fast::Renderer3ds::PicaScenePointLight>& lights,
+                           Fast::Renderer3ds::PicaSurfaceEmissionRegistry* emission = nullptr);
 
 } // namespace Oot3dNativeGame

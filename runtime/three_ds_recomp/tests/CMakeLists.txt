@@ -776,6 +776,7 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/pica_rigid_motion.cpp
     ../src/fast/renderer3ds/pica_vertex_surface.cpp
     ../src/fast/renderer3ds/pica_surface_lighting.cpp
+    ../src/fast/renderer3ds/pica_surface_emission.cpp
     ../src/fast/renderer3ds/point_shadow_map.cpp
     ../src/fast/renderer3ds/pica_pbr_shading.cpp
     ../src/fast/renderer3ds/pica_pbr_seam_shader.cpp
@@ -815,6 +816,7 @@ target_link_libraries(oot3d_graphics_foundation_tests PRIVATE
     gtest_main
     nlohmann_json::nlohmann_json
     ThreeDsRecomp::RendererExtensionCore
+    ThreeDsRecomp::TevProgram
     spdlog::spdlog
     stb
     ZLIB::ZLIB

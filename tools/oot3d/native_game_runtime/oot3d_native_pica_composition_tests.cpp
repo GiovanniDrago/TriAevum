@@ -522,6 +522,49 @@ void TestSceneLightCatalog() {
     lights.clear();
     CaptureStaticEmitters(*catalog, 11U, rooms, lights);
     Require(lights.empty(), "another scene took this scene's lights");
+    // Lamplight through a window casts point shadows too; a shaft does not.
+    {
+        const auto windows = NativeStaticEmitterCatalog::Parse(
+            std::string(R"({"schema":"triaevum.scene-lights","version":1,"rooms":[{"scene":82,"room":0,)") +
+            R"("masterQuest":false,"fingerprint":")" + hex + R"(","emitters":[)" +
+            R"({"category":"window-lamp","position":[7,8,9],"radius":300,"gain":0.45,"colour":[1,0.8,0.5],)" +
+            R"("surfaces":["285c1b592e3e8731","299c35318a700c1e"]},)" +
+            R"({"category":"light-shaft","position":[7,0,9],"radius":400,"gain":0.55,"colour":[1,1,1]}]}]})");
+        Require(windows != nullptr, "the window catalog was rejected");
+        std::vector<NativeLoadedRoom> room0{{0, standard, file}};
+        lights.clear();
+        CaptureStaticEmitters(*windows, 82U, room0, lights);
+        Require(lights.size() == 2U && lights[0].CastsShadow && !lights[1].CastsShadow,
+                "a window's lamplight does not cast point shadows");
+        // The window shines as strongly as the renderer last drew its glow;
+        // drawn dark (by day) it is left out. The shaft names no surface.
+        Fast::Renderer3ds::PicaSurfaceEmissionRegistry emission;
+        const auto capture = [&] {
+            lights.clear();
+            CaptureStaticEmitters(*windows, 82U, room0, lights, &emission);
+        };
+        capture();
+        Require(lights.size() == 2U && std::abs(lights[0].Color[0] - 0.45F) < 1.0e-6F,
+                "a window not drawn yet is not at full strength");
+        emission.BeginFrame();
+        Require(emission.Follows(0x285c1b592e3e8731ULL) && emission.Follows(0x299c35318a700c1eULL),
+                "the window's surfaces are not followed");
+        emission.Observe(0x285c1b592e3e8731ULL, 0.0F);
+        emission.Observe(0x299c35318a700c1eULL, 0.0F);
+        emission.BeginFrame();
+        capture();
+        Require(lights.size() == 1U && !lights[0].CastsShadow, "a window drawn dark still shines");
+        emission.Observe(0x299c35318a700c1eULL, 0.5F);
+        emission.BeginFrame();
+        capture();
+        Require(lights.size() == 2U && std::abs(lights[0].Color[0] - 0.225F) < 1.0e-6F,
+                "a window does not shine as strongly as its brightest surface");
+        Require(!NativeStaticEmitterCatalog::Parse(
+                    std::string(R"({"schema":"triaevum.scene-lights","version":1,"rooms":[{"scene":82,"room":0,)") +
+                    R"("fingerprint":")" + hex + R"(","emitters":[{"category":"lamp","position":[0,0,0],)" +
+                    R"("radius":300,"gain":0.5,"colour":[1,1,1],"surfaces":["xyz"]}]}]})"),
+                "malformed emitter surfaces were accepted");
+    }
     // Malformed catalogs are refused whole.
     Require(!NativeStaticEmitterCatalog::Parse(R"({"schema":"triaevum.static-emitters.v1","scenes":{}})") &&
                 !NativeStaticEmitterCatalog::Parse(

@@ -3,6 +3,7 @@
 #include "gfx_vulkan_internal.h"
 #include "fast/oot3d/grass_stage_profile.h"
 #include "fast/renderer3ds/pica_surface_debug.h"
+#include "fast/renderer3ds/pica_surface_emission.h"
 
 namespace Fast {
 
@@ -270,6 +271,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
         Oot3d::SceneColorEncoding::Unknown;
     mGrassExecutedThisFrame = false;
     mLinearColorExecutedThisFrame = false;
+    Renderer3ds::PicaSurfaceEmissionRegistry::Instance().BeginFrame();
     mUpscalerExecutedThisFrame = false;
     mNativeUiOverlayExecutedThisFrame = false;
     mUpscalerUsedD3d12ThisFrame = false;

@@ -2,6 +2,7 @@
 #include "fast/renderer3ds/pica_ui_canvas.h"
 #include "fast/renderer3ds/pica_draw_coverage.h"
 #include "fast/renderer3ds/pica_shadow_geometry.h"
+#include "fast/renderer3ds/pica_surface_emission.h"
 #include "fast/renderer3ds/pica_scene_light_continuity.h"
 #include "fast/renderer3ds/virtual_shadow_keyframes.h"
 #include "fast/renderer3ds/pica_geometry_guide.h"
@@ -2642,6 +2643,74 @@ TEST(Oot3dUpscalerGuides, CoverTheDisplayTransferFootprint) {
 // the step between its jittered positions and becomes zero; texels without
 // motion (the sky, backdrops drawn without depth) stay still instead of
 // moving against the jitter.
+// A glow card the title fades with the time of day: colour = texture x
+// vertex colour, alpha = the stage's constant alpha, blended SRC_ALPHA/ONE.
+// Its light follows: off by day (alpha 0), full at night, half for a shaft.
+namespace {
+Fast::Renderer3ds::PicaTevProgram FadedGlowProgram() {
+    Fast::Renderer3ds::PicaTevProgram program{};
+    // Stage 0: rgb = texture0 * primary (modulate), alpha = constant.
+    program.Stages[0] = {0x3U | (0x0U << 4U) | (0xEU << 16U), 0U, 0x1U | (0x0U << 16U), 0U};
+    // Stages 1-5 pass the previous result on.
+    for (size_t stage = 1; stage < 6; ++stage) program.Stages[stage] = {0xFU | (0xFU << 16U), 0U, 0U, 0U};
+    return program;
+}
+} // namespace
+
+TEST(Oot3dSurfaceEmission, FollowsTheCombinerConstant) {
+    using namespace Fast::Renderer3ds;
+    NativeBlendState additive;
+    additive.Enabled = true;
+    additive.SourceRgb = NativeBlendFactor::SourceAlpha;
+    additive.DestRgb = NativeBlendFactor::One;
+    std::array<std::array<float, 4>, 6> constants{};
+    const auto emission = [&](float alpha) {
+        constants[0] = {0.0F, 0.0F, 0.0F, alpha};
+        return PicaUnitSurfaceEmission(FadedGlowProgram(), constants, {}, additive);
+    };
+    EXPECT_FLOAT_EQ(emission(0.0F), 0.0F);
+    EXPECT_FLOAT_EQ(emission(1.0F), 1.0F);
+    EXPECT_NEAR(emission(0.498F), 0.498F, 1.0F / 255.0F);
+    // An opaque surface shows its colour whatever its alpha.
+    EXPECT_FLOAT_EQ(PicaUnitSurfaceEmission(FadedGlowProgram(), constants, {}, NativeBlendState{}), 1.0F);
+    // The CPU combiner agrees with the native operations.
+    PicaTevInputs inputs;
+    inputs.Primary = {0.5F, 1.0F, 1.0F, 1.0F};
+    inputs.Textures[0] = {0.5F, 0.25F, 1.0F, 1.0F};
+    inputs.Constants[0] = {0.0F, 0.0F, 0.0F, 0.6F};
+    const auto out = EvaluatePicaTevProgram(FadedGlowProgram(), inputs);
+    EXPECT_NEAR(out[0], 0.25F, 1.0F / 255.0F);
+    EXPECT_NEAR(out[1], 0.25F, 1.0F / 255.0F);
+    EXPECT_NEAR(out[3], 0.6F, 1.0F / 255.0F);
+}
+
+TEST(Oot3dSurfaceEmission, StrengthIsHowTheLastFrameDrewTheSurface) {
+    using namespace Fast::Renderer3ds;
+    constexpr uint64_t halo = 0x264dcff34c144b3dULL, other = 0x1234U;
+    PicaSurfaceEmissionRegistry registry;
+    const std::array<uint64_t, 1> followed{halo};
+    registry.Follow(followed);
+    // Never drawn: full; only followed surfaces are observed.
+    EXPECT_FLOAT_EQ(registry.Strength(halo), 1.0F);
+    registry.BeginFrame();
+    EXPECT_TRUE(registry.Follows(halo));
+    EXPECT_FALSE(registry.Follows(other));
+    // Drawn twice in a frame: the stronger counts, from the next frame on.
+    registry.Observe(halo, 0.0F);
+    registry.Observe(halo, 0.25F);
+    EXPECT_FLOAT_EQ(registry.Strength(halo), 1.0F);
+    registry.BeginFrame();
+    EXPECT_FLOAT_EQ(registry.Strength(halo), 0.25F);
+    // A frame that does not draw it (out of view) keeps the last strength.
+    registry.BeginFrame();
+    EXPECT_FLOAT_EQ(registry.Strength(halo), 0.25F);
+    // No longer followed: forgotten.
+    registry.Follow({});
+    registry.BeginFrame();
+    EXPECT_FLOAT_EQ(registry.Strength(halo), 1.0F);
+    EXPECT_FALSE(registry.Follows(halo));
+}
+
 TEST(Oot3dUpscalerGuides, MotionLeavesTheJitterOut) {
     using namespace Fast::Oot3d;
     const std::array<float, 2> current{0.25F / 480.0F, -0.125F / 853.0F};

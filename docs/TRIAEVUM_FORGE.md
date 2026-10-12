@@ -25,7 +25,10 @@ Forge currently provides the release-safe preparation and packaging boundary:
   magic glows), found by texture name in the room CMBs, placed as point
   lights with their textures' colour, per room file (standard and Master
   Quest rooms by the fingerprint of their command list), so the Modern
-  renderer lights the architecture with them;
+  renderer lights the architecture with them. Each light names the textures
+  of its surfaces and shines as strongly as the game draws them: a glow the
+  game fades by day (lit windows, distant lamps) is dark by day. Where a room
+  draws its lit windows as additive glow, the panes are glass, not lights;
 - a local file-identity hash cache so unchanged large inputs are not rehashed;
 - a deterministic content key and private `content.tap` index;
 - an explicit, content-addressed structural whole-AOT IR stage driven only by

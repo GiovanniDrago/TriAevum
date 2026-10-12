@@ -169,6 +169,30 @@ class SceneLightsTests(unittest.TestCase):
         self.assertEqual(torch["position"], [100.0, 95.0, -200.0])
         self.assertEqual(torch["colour"], [1.0, 0.502, 0.125])
         self.assertEqual(torch["texture"], "gnn_torch_03")
+        # The light names its surface: the runtime lights it as strongly as the game draws it.
+        self.assertEqual(torch["surfaces"], [f"{content_hash(ORANGE):016x}"])
+
+    def test_neighbouring_flames_merge_into_one_light_of_both_surfaces(self):
+        left, triangles = cube((100.0, 50.0, -200.0), 40.0)
+        right, _ = cube((160.0, 50.0, -200.0), 40.0)
+        model = cmb([(0, False), (1, False)], [("gnn_torch_03", RGBA8, ORANGE), ("gnn_torch_04", RGBA8, GREY)],
+                    [(0, left, triangles), (1, right, triangles)])
+        emitters = room_emitters(room(model))
+        self.assertEqual(len(emitters), 1)
+        self.assertEqual(sorted(emitters[0]["surfaces"]),
+                         sorted([f"{content_hash(ORANGE):016x}", f"{content_hash(GREY):016x}"]))
+
+    def test_lit_window_glow_is_the_light_not_the_panes(self):
+        # Panes (opaque) on one facade, an additive glow on another, far apart.
+        pane, triangles = cube((0.0, 100.0, 0.0), 60.0)
+        glow, _ = cube((2000.0, 100.0, 0.0), 60.0)
+        panes_only = cmb([(0, False)], [("s01_mado_01", RGBA8, GREY)], [(0, pane, triangles)])
+        self.assertEqual([e["category"] for e in room_emitters(room(panes_only))], ["window-lamp"])
+        both = cmb([(0, False), (1, True)], [("s01_mado_01", RGBA8, GREY), ("s01_mado_light_", RGBA8, ORANGE)],
+                   [(0, pane, triangles), (1, glow, triangles)])
+        lights = room_emitters(room(both))
+        self.assertEqual([(e["category"], e["texture"]) for e in lights], [("window-lamp", "s01_mado_light_")])
+        self.assertEqual(lights[0]["surfaces"], [f"{content_hash(ORANGE):016x}"])
 
     def test_a_white_doorway_volume_lets_daylight_in_from_its_outer_end(self):
         # A room around the origin; a white additive corridor volume 180 x 190 x 220 at its +z edge, and a flat

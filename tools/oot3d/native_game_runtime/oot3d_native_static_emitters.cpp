@@ -109,6 +109,13 @@ std::shared_ptr<const NativeStaticEmitterCatalog> NativeStaticEmitterCatalog::Pa
                     emitter.Gain > 4.0F)
                     return fail(where + " has an emitter out of range");
                 for (auto& channel : emitter.Colour) channel = std::clamp(channel, 0.0F, 1.0F);
+                if (const auto surfaces = e.find("surfaces"); surfaces != e.end()) {
+                    if (!surfaces->is_array() || surfaces->size() > emitter.Surfaces.size())
+                        return fail(where + " has malformed emitter surfaces");
+                    for (size_t i = 0; i < surfaces->size(); ++i)
+                        if (!ReadFingerprint((*surfaces)[i], emitter.Surfaces[i]))
+                            return fail(where + " has malformed emitter surfaces");
+                }
                 entry->second.push_back(emitter);
                 ++catalog->mCount;
             }
@@ -172,11 +179,24 @@ std::vector<NativeLoadedRoom> NativeLoadedRooms(uint32_t playState, oot3d::recom
 
 void CaptureStaticEmitters(const NativeStaticEmitterCatalog& catalog, uint16_t scene,
                            std::span<const NativeLoadedRoom> rooms,
-                           std::vector<Fast::Renderer3ds::PicaScenePointLight>& lights) {
+                           std::vector<Fast::Renderer3ds::PicaScenePointLight>& lights,
+                           Fast::Renderer3ds::PicaSurfaceEmissionRegistry* emission) {
+    std::vector<uint64_t> followed;
     for (const auto& room : rooms) {
         const auto emitters = catalog.Room(scene, room.Number, room.Fingerprint);
         for (size_t i = 0; i < emitters.size(); ++i) {
             const auto& e = emitters[i];
+            // The strongest of its surfaces, as last drawn; full without any.
+            float strength = 1.0F;
+            if (emission != nullptr && e.Surfaces[0] != 0U) {
+                strength = 0.0F;
+                for (const uint64_t surface : e.Surfaces) {
+                    if (surface == 0U) continue;
+                    followed.push_back(surface);
+                    strength = std::max(strength, std::clamp(emission->Strength(surface), 0.0F, 1.0F));
+                }
+            }
+            if (strength <= 0.0F) continue;
             Fast::Renderer3ds::PicaScenePointLight light;
             light.SourceIdentity = (uint64_t{0xA5U} << 56U) | (uint64_t{scene} << 40U) |
                                    (uint64_t(static_cast<uint32_t>(room.Number) & 0xFFU) << 32U) | uint64_t(i);
@@ -185,15 +205,19 @@ void CaptureStaticEmitters(const NativeStaticEmitterCatalog& catalog, uint16_t s
             light.Radius = e.Radius;
             // A gain above 1 (daylight through a doorway) is a brighter source,
             // not a whiter one: bounded, not clipped to 1.
-            for (size_t c = 0; c < 3U; ++c) light.Color[c] = std::clamp(e.Colour[c] * e.Gain, 0.0F, 4.0F);
-            // Torches are small, strong flames worth a cube map, and daylight
-            // through a doorway casts the shadows of whatever stands in it;
-            // broad sources light without one.
+            for (size_t c = 0; c < 3U; ++c) light.Color[c] = std::clamp(e.Colour[c] * e.Gain, 0.0F, 4.0F) * strength;
+            // Torches are small, strong flames worth a cube map, lamplight
+            // through a window falls past the frame and whatever stands
+            // outside it (the light sits off the facade, so the wall does not
+            // shadow it), and daylight through a doorway casts the shadows of
+            // whatever stands in it; broad sources light without one.
             light.CastsShadow = e.Category == NativeStaticEmitterCategory::Torch ||
+                                e.Category == NativeStaticEmitterCategory::WindowLamp ||
                                 e.Category == NativeStaticEmitterCategory::Doorway;
             lights.push_back(light);
         }
     }
+    if (emission != nullptr) emission->Follow(followed);
 }
 
 } // namespace Oot3dNativeGame
