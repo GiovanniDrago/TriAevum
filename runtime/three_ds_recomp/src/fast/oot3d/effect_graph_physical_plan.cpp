@@ -40,7 +40,7 @@ ResolveTransientStorageIdentity(
             kOot3dTransientStorageSchemaVersion ||
         identity.Class == 0U ||
         identity.Class > static_cast<uint64_t>(
-                             EffectTransientStorageClass::ExecutionImage)) {
+                             EffectTransientStorageClass::ShadowDepth)) {
         return std::nullopt;
     }
     return static_cast<EffectTransientStorageClass>(identity.Class);
@@ -121,14 +121,13 @@ EffectTransientStorageClass ClassifyEffectTransientStorage(
         case EffectResource::SpecularIllumination:
         case EffectResource::ReflectionColor:
         case EffectResource::OutlineColor:
+        case EffectResource::MotionVectors:
+        case EffectResource::ReactiveMask:
         case EffectResource::LinearWorkingColor:
         case EffectResource::CompositeColor:
         case EffectResource::UpscaledColor:
         case EffectResource::AntiAliasedColor:
             return EffectTransientStorageClass::SinglePlaneImage;
-        case EffectResource::MotionVectors:
-        case EffectResource::ReactiveMask:
-            return EffectTransientStorageClass::ExecutionImage;
         default:
             return EffectTransientStorageClass::None;
     }

@@ -2046,52 +2046,6 @@ TEST(Oot3dEffectTransientConfigurationCache,
     EXPECT_FALSE(cache.Select(first).Hit);
 }
 
-// The presentation of a frame without native UI ran twice: the second
-// execution reused the first's reflection and wrote this frame's motion again
-// into the slot the reflection shared with it, so the scanout composed the
-// motion as reflection (black where the reactive mask is 1: additive
-// surfaces under temporal MXAO).
-TEST(Oot3dEffectGraphPhysicalPlan, MotionNeverTakesTheSlotOfAReusableOutput) {
-    EffectGraph graph;
-    graph.Add({ .Name = "motion",
-                .Stage = EffectStage::AfterOpaque,
-                .Contract = EffectContractKind::ComposerPass,
-                .Resources = { Write(EffectResource::MotionVectors) } });
-    graph.Add({ .Name = "ao",
-                .DependsOn = { "motion" },
-                .Stage = EffectStage::AfterOpaque,
-                .Contract = EffectContractKind::ComposerPass,
-                .Resources = { Read(EffectResource::MotionVectors),
-                               Write(EffectResource::AmbientOcclusion) } });
-    graph.Add({ .Name = "reflections",
-                .DependsOn = { "ao" },
-                .Stage = EffectStage::AfterOpaque,
-                .Contract = EffectContractKind::ComposerPass,
-                .Resources = { Write(EffectResource::ReflectionColor) } });
-    graph.Add({ .Name = "scanout",
-                .DependsOn = { "reflections" },
-                .Stage = EffectStage::BeforeUi,
-                .Contract = EffectContractKind::ComposerPass,
-                .Resources = { Read(EffectResource::ReflectionColor),
-                               Read(EffectResource::AmbientOcclusion) } });
-    const auto compiled = graph.Compile();
-    ASSERT_TRUE(compiled.Valid()) << compiled.Error;
-    const std::array<EffectTransientImageRequirement, 3> requirements{{
-        {EffectResource::MotionVectors, 97U, 400U, 240U, 1U, 1U, 1U, 0x3U},
-        {EffectResource::ReflectionColor, 97U, 400U, 240U, 1U, 1U, 1U, 0x3U},
-        {EffectResource::AmbientOcclusion, 100U, 400U, 240U, 1U, 1U, 1U, 0x3U},
-    }};
-    const auto plan = BuildEffectTransientAllocationPlan(compiled, requirements);
-    ASSERT_TRUE(plan.Complete());
-    const auto* motion = plan.Find(EffectResource::MotionVectors);
-    const auto* reflection = plan.Find(EffectResource::ReflectionColor);
-    ASSERT_NE(motion, nullptr);
-    ASSERT_NE(reflection, nullptr);
-    EXPECT_EQ(motion->StorageClass, EffectTransientStorageClass::ExecutionImage);
-    EXPECT_NE(motion->Slot, reflection->Slot);
-    EXPECT_EQ(plan.SlotCount(), 3U);
-}
-
 TEST(Oot3dEffectGraphPhysicalPlan,
      AliasesActualSssrAndSmaaOutputsAcrossDisjointPasses) {
     DisplayEffectPlanInput input;
@@ -2122,8 +2076,8 @@ TEST(Oot3dEffectGraphPhysicalPlan,
         display.Graph, requirements);
     ASSERT_TRUE(plan.Complete());
     ASSERT_EQ(plan.ResourceCount(), 6U);
-    ASSERT_EQ(plan.SlotCount(), 5U);
-    EXPECT_EQ(plan.Summary().AliasOpportunityCount, 1U);
+    ASSERT_EQ(plan.SlotCount(), 4U);
+    EXPECT_EQ(plan.Summary().AliasOpportunityCount, 2U);
     EXPECT_EQ(plan.Summary().PeakLiveResourceCount, 3U);
 
     const auto* reflection = plan.Find(EffectResource::ReflectionColor);
@@ -2139,8 +2093,7 @@ TEST(Oot3dEffectGraphPhysicalPlan,
     ASSERT_NE(motion, nullptr);
     ASSERT_NE(reactive, nullptr);
     EXPECT_EQ(linear->Slot, antiAliased->Slot);
-    // Motion is written by every execution; the composite may be reused.
-    EXPECT_NE(motion->Slot, composite->Slot);
+    EXPECT_EQ(motion->Slot, composite->Slot);
     EXPECT_NE(reflection->Slot, linear->Slot);
     EXPECT_NE(reflection->Slot, composite->Slot);
     EXPECT_NE(linear->Slot, composite->Slot);

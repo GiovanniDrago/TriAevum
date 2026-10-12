@@ -1335,15 +1335,62 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 effectGuideTarget->Key.ColorPhysicalAddress,
                 Oot3d::SceneSurfaceKind::Motion};
         }
-        // Every graph execution that reads motion computes it. The vectors
-        // are a transient of the executing plan, whose slot the plan's later
-        // passes reuse once their last reader ran (EffectTransientAllocation
+        // Every graph execution that runs a reader of motion computes it. The
+        // vectors are a transient of the executing plan, whose slot the plan's
+        // later passes reuse once their last reader ran (EffectTransientAllocation
         // Plan), so another execution of the frame (a native boundary before
         // its presentation) cannot read them: they read as no motion.
         constexpr bool canReuseMotion = false;
-        bool motionForDisplay = wantsMotionVectors && temporalState.has_value() &&
-                                effectGuideTarget != nullptr;
+        std::optional<Oot3d::SceneSurfaceKey> taaKey;
+        if (effectGuideTarget != nullptr) {
+            taaKey = Oot3d::SceneSurfaceKey{
+                transfer.RenderTargetNamespace,
+                effectGuideTarget->Key.ColorPhysicalAddress,
+                Oot3d::SceneSurfaceKind::Output};
+        }
+        const bool canReuseTaa =
+            wantsTaa && mTaaExecutedThisFrame && mTaaOutputValid &&
+            taaKey.has_value() && mTaaSurface.has_value() &&
+            *mTaaSurface == *taaKey;
+        const bool canReuseUpscalerOutput =
+            (wantsTemporalUpscaler || wantsNis) &&
+            mUpscalerExecutedThisFrame &&
+            mUpscalerProviderThisFrame == effectPlan.Upscaler &&
+            mUpscalerRenderTargetNamespace ==
+                transfer.RenderTargetNamespace &&
+            mUpscalerDisplayPhysicalAddress ==
+                transfer.OutputPhysicalAddress;
+        const auto aoBindings = effectPlan.Bindings(Oot3d::DisplayEffectPass::AmbientOcclusion);
+        const bool aoReadsMotion = std::any_of(
+            aoBindings.begin(), aoBindings.end(), [](const Oot3d::EffectResourceUse& use) {
+                return Oot3d::ReadsEffectResource(use.Access) &&
+                       use.Resource == Oot3d::EffectResource::MotionVectors;
+            });
+        const bool sssrReflectionReusable =
+            mReflectionExecutedThisFrame && mHiZReflectionSurface.has_value() &&
+            *mHiZReflectionSurface == Oot3d::SceneSurfaceKey{transfer.RenderTargetNamespace,
+                                                             transfer.OutputPhysicalAddress,
+                                                             Oot3d::SceneSurfaceKind::Reflection};
+        // A later execution of the same plan in the frame (a frame without
+        // native UI presents it twice) reuses its readers' results; computing
+        // motion there would only overwrite the slot it shares with an output
+        // that execution reuses (the reflection), so it computes none.
+        const bool motionReaderRuns =
+            (wantsAmbientOcclusion && aoReadsMotion && !mAmbientOcclusionExecutedThisFrame) ||
+            (wantsFidelityFxSssr && !sssrReflectionReusable) || wantsGlobalIllumination ||
+            (wantsTaa && !canReuseTaa) || (wantsTemporalUpscaler && !canReuseUpscalerOutput);
+        bool motionForDisplay = wantsMotionVectors && motionReaderRuns &&
+                                temporalState.has_value() && effectGuideTarget != nullptr;
         const bool motionAttempted = motionForDisplay;
+        // Where motion is computed anyway, an output of an earlier execution
+        // that shares its slot is not reused but computed again.
+        const auto motionOverwrites = [&](const Oot3d::NriEffectGraphTransientImageBinding* output) {
+            const auto shares = [output](const Oot3d::NriEffectGraphTransientImageBinding* motion) {
+                return motion != nullptr && motion->Slot == output->Slot;
+            };
+            return motionAttempted && output != nullptr && output->Slot != Oot3d::kNoEffectAliasSlot &&
+                   (shares(transientMotionOutput) || shares(transientReactiveOutput));
+        };
         if (motionForDisplay) {
             const auto motionReads = resolveEffectPassReads(
                 Oot3d::DisplayEffectPass::Motion);
@@ -1443,12 +1490,6 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         bool aoAttempted = false;
         bool aoExecutedNow = false;
         // An AO that declares the motion vectors (temporal MXAO) runs with them.
-        const auto aoBindings = effectPlan.Bindings(Oot3d::DisplayEffectPass::AmbientOcclusion);
-        const bool aoReadsMotion = std::any_of(
-            aoBindings.begin(), aoBindings.end(), [](const Oot3d::EffectResourceUse& use) {
-                return Oot3d::ReadsEffectResource(use.Access) &&
-                       use.Resource == Oot3d::EffectResource::MotionVectors;
-            });
         if (wantsAmbientOcclusion && effectGuideTarget != nullptr &&
             !mAmbientOcclusionExecutedThisFrame &&
             (!aoReadsMotion || motionAvailableForDisplay)) {
@@ -1811,6 +1852,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         }
         const bool canReuseWorkingColor =
             wantsWorkingColor && mLinearColorExecutedThisFrame &&
+            !motionOverwrites(transientLinearWorkingColor) &&
             linearKey.has_value() && mLinearColorSurface.has_value() &&
             *mLinearColorSurface == *linearKey &&
             mLinearSceneColorPass.OutputImage() != VK_NULL_HANDLE &&
@@ -1910,6 +1952,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         const bool canReuseReflections =
             reflectionRequestedForDisplay &&
             mReflectionExecutedThisFrame && reflectionKey.has_value() &&
+            !motionOverwrites(transientReflectionOutput) &&
             mHiZReflectionSurface.has_value() &&
             *mHiZReflectionSurface == *reflectionKey;
         const bool reflectionsAttempted =
@@ -2407,17 +2450,6 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 effectGuideTarget->Width, effectGuideTarget->Height,
                 reflectionOutputEncoding);
         }
-        std::optional<Oot3d::SceneSurfaceKey> taaKey;
-        if (effectGuideTarget != nullptr) {
-            taaKey = Oot3d::SceneSurfaceKey{
-                transfer.RenderTargetNamespace,
-                effectGuideTarget->Key.ColorPhysicalAddress,
-                Oot3d::SceneSurfaceKind::Output};
-        }
-        const bool canReuseTaa =
-            wantsTaa && mTaaExecutedThisFrame && mTaaOutputValid &&
-            taaKey.has_value() && mTaaSurface.has_value() &&
-            *mTaaSurface == *taaKey;
         std::optional<Oot3d::SceneSurfaceKey> compositeKey;
         if (effectGuideTarget != nullptr) {
             compositeKey = Oot3d::SceneSurfaceKey{
@@ -2433,16 +2465,11 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
         const bool canReuseComposite =
             effectPlan.Enabled(Oot3d::DisplayEffectPass::Composite) &&
             mCompositeExecutedThisFrame && compositeKey.has_value() &&
+            !motionOverwrites(transientCompositeOutput) &&
             mCompositeSurface.has_value() &&
             *mCompositeSurface == *compositeKey;
         const bool canReuseUpscaler =
-            (wantsTemporalUpscaler || wantsNis) &&
-            mUpscalerExecutedThisFrame &&
-            mUpscalerProviderThisFrame == effectPlan.Upscaler &&
-            mUpscalerRenderTargetNamespace ==
-                transfer.RenderTargetNamespace &&
-            mUpscalerDisplayPhysicalAddress ==
-                transfer.OutputPhysicalAddress;
+            canReuseUpscalerOutput && !motionOverwrites(transientUpscaledOutput);
         // A boundary always composes when any scene stage applies, because its
         // consumer samples the composed colour instead of a later presentation
         // fusing those stages in. Presentation keeps its existing gate.
@@ -3072,6 +3099,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
             outlineForDisplay;
         const bool canReuseSmaa = wantsSmaa &&
             mSmaaExecutedThisFrame &&
+            !motionOverwrites(transientAntiAliasedOutput) &&
             mSmaaRenderTargetNamespace ==
                 transfer.RenderTargetNamespace &&
             mSmaaDisplayPhysicalAddress ==
