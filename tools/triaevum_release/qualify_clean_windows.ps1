@@ -75,8 +75,11 @@ try {
     $data = Join-Path $installation 'data'
     if (Test-Path -LiteralPath $data) { throw 'Package already contains private data.' }
     $null = New-Item -ItemType Directory -Path $data
+    # Installation now also catalogues water and scene lights, prebuilds the
+    # interior sun (about 13 minutes cold) and prepares the device's pipelines
+    # (about 9 minutes cold): about half an hour on the 12-thread reference PC.
     Invoke-RecordedProcess 'forge' (Join-Path $installation 'TriAevumForge.exe') @(
-        '--install-worker', '--rom', $romPath, '--data-root', $data, '--owner-pid', "$PID") 180
+        '--install-worker', '--rom', $romPath, '--data-root', $data, '--owner-pid', "$PID") 3600
     $events = @(Get-Content -LiteralPath (Join-Path $outputPath 'forge.stdout.log') |
         Where-Object { $_ -match '^\s*\{"forge_worker_event":' } |
         ForEach-Object { $_ | ConvertFrom-Json })
