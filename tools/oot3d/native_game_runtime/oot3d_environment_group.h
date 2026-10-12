@@ -17,13 +17,17 @@ inline std::optional<SceneEnvironmentGroup> ParseEnvironmentGroup(std::string_vi
     if (id == kEnvironmentGroupIds[i]) return SceneEnvironmentGroup(i);
   return {};
 }
-enum class SceneEnvironmentSource : uint8_t { Scene, Group, Base, Day };
+// DefaultScene and DefaultGroup: the release's read-only profiles
+// (resources/environments), each after the user's file of the same level.
+enum class SceneEnvironmentSource : uint8_t { Scene, Group, Base, Day, DefaultScene, DefaultGroup };
 inline const char* EnvironmentSourceLabel(SceneEnvironmentSource source) {
   switch (source) {
   case SceneEnvironmentSource::Scene: return "Scene's own";
   case SceneEnvironmentSource::Group: return "Group standard";
   case SceneEnvironmentSource::Base: return "Base";
   case SceneEnvironmentSource::Day: return "Day result";
+  case SceneEnvironmentSource::DefaultScene: return "TriAevum default (scene)";
+  case SceneEnvironmentSource::DefaultGroup: return "TriAevum default (group)";
   }
   return "Base";
 }

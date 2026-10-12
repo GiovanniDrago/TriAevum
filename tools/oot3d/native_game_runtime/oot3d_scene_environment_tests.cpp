@@ -316,6 +316,48 @@ void CheckGroupProfiles(const std::filesystem::path& directory) {
   std::filesystem::create_directory(day);
   Check(!f.Runtime.SaveAsGroupStandard() && !f.Runtime.Snapshot().Error.empty(),"failed standard write hidden");
 }
+// The release's profiles sit after the user's file of the same level.
+void CheckReleaseDefaults(const std::filesystem::path& root) {
+  const auto user = root / "user", defaults = root / "defaults";
+  std::filesystem::create_directories(user);
+  std::filesystem::create_directories(defaults);
+  const auto group = SceneEnvironmentGroup::TimeAtEntry;
+  const auto groupProfile = [&](float ambient) {
+    auto p = BaseSceneEnvironmentProfile(); p.AmbientIntensity = ambient;
+    return FormatSceneEnvironment(EncodeGroupEnvironment(p, group, false));
+  };
+  Fast::Renderer3ds::PicaEnvironmentLighting applied;
+  SceneEnvironmentRuntime runtime(user, [&](const Fast::Renderer3ds::PicaEnvironmentLighting& value) { applied = value; },
+                                  defaults);
+  const SceneEnvironmentTime time{true, 0x8000, false, 0, group};
+  const auto ambient = [&] { return runtime.Snapshot().Profile.AmbientIntensity; };
+  const auto source = [&] { return runtime.Snapshot().Sources[0]; };
+  runtime.ObserveScene(0x55, time);
+  Check(source() == SceneEnvironmentSource::Base, "no file should resolve the base profile");
+  Write(defaults / "group-outdoor-time-at-entry.environment.json", groupProfile(0.1F));
+  runtime.ObserveScene(std::nullopt); runtime.ObserveScene(0x55, time);
+  Check(source() == SceneEnvironmentSource::DefaultGroup && std::abs(ambient() - 0.1F) < 1e-6F,
+        "the release's group default was not used");
+  Write(user / "group-outdoor-time-at-entry.environment.json", groupProfile(0.2F));
+  runtime.ObserveScene(std::nullopt); runtime.ObserveScene(0x55, time);
+  Check(source() == SceneEnvironmentSource::Group && std::abs(ambient() - 0.2F) < 1e-6F,
+        "the user's group standard does not precede the release's");
+  Write(defaults / "scene-0055.environment.json", Profile(0.3F, false));
+  runtime.ObserveScene(std::nullopt); runtime.ObserveScene(0x55, time);
+  Check(source() == SceneEnvironmentSource::DefaultScene && std::abs(ambient() - 0.3F) < 1e-6F &&
+            !runtime.Snapshot().FileExists,
+        "the release's scene default does not precede group standards or reads as the user's file");
+  auto edited = runtime.Snapshot().Profile; edited.AmbientIntensity = 0.4F;
+  runtime.Preview(edited);
+  Check(runtime.Save() && std::filesystem::exists(user / "scene-0055.environment.json") &&
+            source() == SceneEnvironmentSource::Scene,
+        "saving a default did not write the user's own scene file");
+  Check(std::abs(ambient() - 0.4F) < 1e-6F, "the user's scene file does not precede the defaults");
+  Check(runtime.UseGroupStandard() && source() == SceneEnvironmentSource::DefaultScene &&
+            std::abs(ambient() - 0.3F) < 1e-6F,
+        "removing the user's scene file did not return to the release's scene default");
+}
+
 void CheckShadowScheduling() {
   using namespace Fast::Renderer3ds;
   auto day = BaseSceneEnvironmentProfile(), night = day;
@@ -358,6 +400,7 @@ int main() try {
   CheckProfileRuntime(directory / "blend");
   CheckDraftHotReload(directory / "reload");
   CheckGroupProfiles(directory / "groups");
+  CheckReleaseDefaults(directory / "defaults");
   Fixture f(directory);
   Write(f.Day, Profile(0.3F, false));
   f.Runtime.ObserveScene(0x55, {true, 0x8000, false});

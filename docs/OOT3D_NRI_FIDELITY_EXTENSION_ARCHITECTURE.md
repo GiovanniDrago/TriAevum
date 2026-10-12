@@ -2193,6 +2193,15 @@ unit test.
 
 ### Optional Scene Environment Profiles (2026-09-23)
 
+Release defaults (2026-10-12): a package ships read-only profiles in
+`resources/environments/` (source `runtime/triaevum_resources/environments/`,
+release role `default_environment_profile`). A slot resolves the user's scene
+file, the release's scene file, the user's group standard, the release's group
+standard, then the base profile; F1 shows the release's files as "TriAevum
+default" and always saves to the user's directory. "Use group standard"
+removes the user's scene file, so a scene the release profiles returns to that
+profile.
+
 `oot3d_scene_environment` owns authored lighting profiles in the OOT3D adapter.
 The key is the native scene ID read from `PlayState + 0x104`, not a room,
 texture hash, actor, or renderer-generated identifier. Kokiri Forest is scene

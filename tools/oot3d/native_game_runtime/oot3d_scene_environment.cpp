@@ -52,8 +52,9 @@ SceneEnvironmentProfile BaseSceneEnvironmentProfile() {
   return base;
 }
 
-SceneEnvironmentRuntime::SceneEnvironmentRuntime(std::filesystem::path directory, Publisher publish)
-    : mDirectory(std::move(directory)), mPublish(std::move(publish)) {
+SceneEnvironmentRuntime::SceneEnvironmentRuntime(std::filesystem::path directory, Publisher publish,
+                                                 std::filesystem::path defaults)
+    : mDirectory(std::move(directory)), mDefaults(std::move(defaults)), mPublish(std::move(publish)) {
   if (const char* value = std::getenv("TRIAEVUM_ENVIRONMENT_NIGHT_WEIGHT")) {
     char* end = nullptr;
     const float weight = std::strtof(value, &end);
@@ -293,10 +294,24 @@ bool SceneEnvironmentRuntime::LoadSlotLocked(bool night) {
   auto file = LoadSceneEnvironmentFile(path, *mState.SceneId, night);
   const bool own = file.Exists;
   SceneEnvironmentSource source = own ? SceneEnvironmentSource::Scene : SceneEnvironmentSource::Base;
-  if (!own && mState.Group) {
-    path = GroupPathLocked(night);
-    file = LoadSceneEnvironmentFile(path, std::nullopt, night, mState.Group);
-    if (file.Exists) source = SceneEnvironmentSource::Group;
+  // The first existing file of: the release's scene default, the user's
+  // group standard, the release's group default.
+  const auto fallBackTo = [&](const std::filesystem::path& candidate, SceneEnvironmentSource kind, bool group) {
+    if (file.Exists || candidate.empty()) return;
+    auto next = group ? LoadSceneEnvironmentFile(candidate, std::nullopt, night, mState.Group)
+                      : LoadSceneEnvironmentFile(candidate, *mState.SceneId, night);
+    if (!next.Exists) return;
+    path = candidate;
+    file = std::move(next);
+    source = kind;
+  };
+  const auto releaseDefault = [this](const std::filesystem::path& user) {
+    return mDefaults.empty() || user.empty() ? std::filesystem::path{} : mDefaults / user.filename();
+  };
+  fallBackTo(releaseDefault(ProfilePathLocked(night)), SceneEnvironmentSource::DefaultScene, false);
+  if (mState.Group) {
+    fallBackTo(GroupPathLocked(night), SceneEnvironmentSource::Group, true);
+    fallBackTo(releaseDefault(GroupPathLocked(night)), SceneEnvironmentSource::DefaultGroup, true);
   }
   if (file.Exists && !file.Document.Profile) {
     draft.Error = path.filename().string() + ": " + DescribeSceneEnvironmentErrors(file.Document.Errors);

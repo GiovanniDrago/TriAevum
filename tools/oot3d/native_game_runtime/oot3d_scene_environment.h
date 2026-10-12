@@ -142,7 +142,12 @@ class SceneEnvironmentRuntime final {
 public:
   using Publisher =
       std::function<void(const Fast::Renderer3ds::PicaEnvironmentLighting &)>;
-  SceneEnvironmentRuntime(std::filesystem::path directory, Publisher publish);
+  // `defaults`: the release's read-only profiles, named as in `directory`.
+  // A slot resolves the user's scene file, the default scene file, the
+  // user's group file, the default group file, then the base profile; edits
+  // are always saved to `directory`.
+  SceneEnvironmentRuntime(std::filesystem::path directory, Publisher publish,
+                          std::filesystem::path defaults = {});
   // Time selects the blend, never the editable draft. Scene changes reload.
   void ObserveScene(std::optional<uint16_t> scene, SceneEnvironmentTime time = {},
                     std::optional<ScenePlayerPlacement> player = std::nullopt);
@@ -198,6 +203,7 @@ private:
   [[nodiscard]] std::filesystem::path ProfilePathLocked(bool night) const;
   void SelectLocked(std::optional<uint16_t> scene);
   std::filesystem::path mDirectory;
+  std::filesystem::path mDefaults;
   Publisher mPublish;
   mutable std::mutex mMutex;
   SceneEnvironmentSnapshot mState;

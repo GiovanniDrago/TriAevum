@@ -109,6 +109,12 @@ def prepare(args) -> dict:
     for item in layout["files"]:
         if item["source"].startswith("build-release/"):
             item["source"] = str(artifacts[Path(item["source"]).name].resolve())
+    # The release's default scene environment profiles (read-only; the user's
+    # own profiles in the data directory take precedence).
+    for profile in sorted((ROOT / "runtime/triaevum_resources/environments").glob("*.environment.json")):
+        layout["files"].append({"source": str(profile.resolve()),
+                                "path": f"resources/environments/{profile.name}",
+                                "role": "default_environment_profile"})
     layout_path = work / "release-layout.json"
     layout["files"].extend(title_layout(
         runtime=Path(targets["runtime"]), native_module=artifacts["oot3d_game_module.dll"],

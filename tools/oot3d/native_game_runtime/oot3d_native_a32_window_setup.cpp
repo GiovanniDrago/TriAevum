@@ -595,11 +595,15 @@ void NativeA32WindowSession::Setup() {
                                 kMinimumHostAudioPrebufferMilliseconds +
                             999U) /
                            1000U));
+  // The user's profiles beside the configuration; the release's defaults in
+  // the runtime resources.
   sceneEnvironment = std::make_shared<Oot3dNativeGame::SceneEnvironmentRuntime>(
       std::filesystem::path(launch.Host.ConfigurationPath).parent_path() / "environments",
       [](const Fast::Renderer3ds::PicaEnvironmentLighting& environment) {
         Fast::Oot3d::GraphicsSettingsRuntime::Instance().PublishSceneEnvironment(environment);
-      });
+      },
+      launch.Host.ResourceRoot.empty() ? std::filesystem::path{}
+                                       : std::filesystem::path(launch.Host.ResourceRoot) / "environments");
   // F1 order: the scene lights join Lighting > Lights & Shadows; then
   // Controls, HUD and Game (Save states, Language) after the graphics tabs.
   applicationSettingsTabs.push_back(Oot3dNativeGame::CreateSceneEnvironmentPanel(sceneEnvironment));

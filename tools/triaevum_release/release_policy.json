@@ -3,6 +3,7 @@
   "manifest_format": "triaevum_public_release_manifest_v1",
   "allowed_roles": {
     "forge_clang_header": ["forge/clang/include/*.h", "forge/clang/include/**/*.h", "forge/clang/include/*.modulemap", "forge/clang/include/**/*.modulemap", "forge/clang/include/cuda_wrappers/algorithm", "forge/clang/include/cuda_wrappers/bits/basic_string.tcc", "forge/clang/include/cuda_wrappers/cmath", "forge/clang/include/cuda_wrappers/complex", "forge/clang/include/cuda_wrappers/new", "forge/clang/include/openmp_wrappers/cmath", "forge/clang/include/openmp_wrappers/complex", "forge/clang/include/openmp_wrappers/new", "forge/clang/include/profile/InstrProfData.inc"],
+    "default_environment_profile": ["resources/environments/*.environment.json"],
     "title_neutral_resource": ["resources/*", "resources/**/*", "gamecontrollerdb.txt"],
     "configuration": ["config/*", "config/**/*"],
     "documentation": ["README.md", "LICENSE_SCOPE.md", "THIRD_PARTY_NOTICES.md", "SOURCE_OFFER.md", "docs/*", "docs/**/*"],

@@ -57,6 +57,7 @@ FILES = {
     "LICENSES/LLVM-exception.txt": ("license", b"LLVM exception fixture\n"),
     "LICENSES/iMMERSE-MXAO.md": ("license", b"iMMERSE module exception fixture\n"),
     "LICENSES/iMMERSE-LICENSE.txt": ("license", b"iMMERSE license fixture\n"),
+    "resources/environments/scene-0043.environment.json": ("default_environment_profile", b"{}\n"),
     "recipes/oot3d.json": ("revision_recipe", b'{"format":"recipe-test"}\n'),
 }
 
