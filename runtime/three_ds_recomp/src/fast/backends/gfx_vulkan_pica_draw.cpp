@@ -956,6 +956,58 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         auto& surfaceDebug = Renderer3ds::PicaSurfaceDebug::Instance();
         const uint32_t surfaceOrdinal = surfaceCandidate ? surfaceDebug.NextOrdinal() : 0U;
         const bool surfaceExempt = surfaceCandidate && surfaceDebug.Exempt(surfaceOrdinal);
+        if (surfaceDebug.Census()) {
+            // Every draw: what it samples, how it blends, its TEV constants.
+            Renderer3ds::PicaTevProgram tev{};
+            const bool tevKnown = draw.FragmentUniformBytes.size() >=
+                Oot3d::kPicaPackedFragmentTevProgramOffset + sizeof(tev);
+            if (tevKnown)
+                std::memcpy(&tev, draw.FragmentUniformBytes.data() + Oot3d::kPicaPackedFragmentTevProgramOffset,
+                            sizeof(tev));
+            char head[320];
+            std::snprintf(head, sizeof(head),
+                "{\"census\":1,\"frame\":%llu,\"submission\":%llu,\"layer\":%u,\"actor\":%d,\"blend\":[%d,%u,%u],"
+                "\"depthWrite\":%d,\"depthTest\":%d,\"domain\":%u,\"fragmentMode\":%u,\"vertices\":%u,"
+                "\"geometry\":\"%llx\",\"textures\":[",
+                static_cast<unsigned long long>(surfaceDebug.Frame()),
+                static_cast<unsigned long long>(draw.SubmissionId), static_cast<unsigned>(draw.Composition.Layer),
+                draw.Composition.NativeActorGeometry ? 1 : 0, draw.Blend.Enabled ? 1 : 0,
+                static_cast<unsigned>(draw.Blend.SourceRgb), static_cast<unsigned>(draw.Blend.DestRgb),
+                draw.DepthWriteEnabled ? 1 : 0, draw.DepthTestEnabled ? 1 : 0,
+                static_cast<unsigned>(draw.CompositionDomain), static_cast<unsigned>(draw.FragmentOperationMode),
+                draw.VertexCount, static_cast<unsigned long long>(draw.GeometryIdentity));
+            std::string record = head;
+            for (size_t i = 0; i < draw.Textures.size(); ++i) {
+                const auto& texture = draw.Textures[i];
+                char entry[128];
+                std::snprintf(entry, sizeof(entry), "%s[\"%016llx\",\"%016llx\",%u,%u,%u,\"%08x\"]", i ? "," : "",
+                              static_cast<unsigned long long>(
+                                  texture.NativeContentHashAvailable ? texture.NativeContentHash : 0ULL),
+                              static_cast<unsigned long long>(
+                                  texture.NativeBaseLevelContentHashAvailable
+                                      ? texture.NativeBaseLevelContentHash
+                                      : ResolveNativeTextureBaseLevelContentHash(texture).value_or(0ULL)),
+                              static_cast<unsigned>(texture.Width), static_cast<unsigned>(texture.Height),
+                              static_cast<unsigned>(texture.NativeFormat), texture.PhysicalAddress);
+                record += entry;
+            }
+            record += "],\"tevConstants\":[";
+            for (size_t stage = 0; stage < 6U; ++stage) {
+                float colour[4] = {};
+                const size_t offset = Oot3d::kPicaPackedFragmentTevConstantsOffset + stage * sizeof(colour);
+                if (draw.FragmentUniformBytes.size() >= offset + sizeof(colour))
+                    std::memcpy(colour, draw.FragmentUniformBytes.data() + offset, sizeof(colour));
+                char entry[64];
+                std::snprintf(entry, sizeof(entry), "%s[%.3f,%.3f,%.3f,%.3f]", stage ? "," : "", colour[0],
+                              colour[1], colour[2], colour[3]);
+                record += entry;
+            }
+            char sources[48];
+            std::snprintf(sources, sizeof(sources), "],\"tevSources\":\"%04x\"}",
+                          tevKnown ? Renderer3ds::PicaTevColorSourceMask(tev) : 0U);
+            record += sources;
+            surfaceDebug.Write(record);
+        }
 #else
         constexpr bool surfaceExempt = false;
 #endif

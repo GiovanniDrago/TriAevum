@@ -2201,7 +2201,8 @@ void NativeA32WindowSession::UpdateDevLab(uint64_t guestFrame) {
       } else if (op == "surface_trace") {
         // The surface-lighting candidates of the next frames, one JSON line each.
         Fast::Renderer3ds::PicaSurfaceDebug::Instance().RequestTrace(command.at("path").get<std::string>(),
-                                                                     command.value("frames", 1U));
+                                                                     command.value("frames", 1U),
+                                                                     command.value("census", false));
         finish("ok", {{"frame", guestFrame}});
       } else if (op == "surface_exempt") {
         // Candidates first..last keep their native appearance ({} clears).
