@@ -2963,10 +2963,27 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
 #endif
             dlssForDisplay = d3d12FrameDlss;
             if (!dlssForDisplay && dlssGuidesReady && mNriUpscalerPass.DlssAvailable()) {
+                // DLSS reconstructs the frame upright, as the screen shows it
+                // (upscaler_orientation.h); TRIAEVUM_DLSS_UPRIGHT=0 keeps the
+                // stored orientation for comparison.
+                static const bool uprightDisabled = [] {
+                    const char* value = std::getenv("TRIAEVUM_DLSS_UPRIGHT");
+                    return value != nullptr && value[0] == '0';
+                }();
+                const auto dlssUpright = uprightDisabled
+                    ? std::nullopt
+                    : std::optional(Oot3d::PicaSurfaceCoordinates::FromTransferFlags(transfer.Flags));
                 mGpuProfiler.BeginScope(mCurrentFrame, Oot3d::GpuProfileScope::Upscaler, command);
                 dlssForDisplay = transientUpscaledOutput != nullptr &&
                                  mNriUpscalerPass.Configure(*transientUpscaledOutput) &&
-                                 mNriUpscalerPass.ExecuteDlss(command, dlss, temporalUpscalerBarrierPlan);
+                                 mNriUpscalerPass.ExecuteDlss(command, dlss, temporalUpscalerBarrierPlan, dlssUpright);
+                static bool uprightReported = false;
+                if (dlssForDisplay && !uprightReported) {
+                    uprightReported = true;
+                    std::fprintf(stderr, "TRIAEVUM_DLSS_ORIENTATION upright=%d flip_y=%d input=%ux%u\n",
+                                 mNriUpscalerPass.LastDispatchUpright() ? 1 : 0,
+                                 dlssUpright && dlssUpright->FlipY ? 1 : 0, dlss.InputWidth, dlss.InputHeight);
+                }
                 mGpuProfiler.EndScope(mCurrentFrame, Oot3d::GpuProfileScope::Upscaler, command);
             }
             if (dlssForDisplay) {

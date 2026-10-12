@@ -101,6 +101,7 @@
 #include "fast/oot3d/reflection_material_profile.h"
 #include "fast/oot3d/toon_outline_shader.h"
 #include "fast/oot3d/upscaler_guides.h"
+#include "fast/oot3d/upscaler_orientation.h"
 #include "fast/oot3d/native_ui_overlay.h"
 
 #include <gtest/gtest.h>
@@ -2636,6 +2637,57 @@ TEST(Oot3dUpscalerGuides, CoverTheDisplayTransferFootprint) {
     EXPECT_FLOAT_EQ(jitter[0], 0.25F);
     EXPECT_FLOAT_EQ(jitter[1], -0.25F);
 }
+
+// The upscaler sees the surface the way the screen shows it: an upright texel
+// is the surface texel PresentationToStorage names at its centre, for both
+// display-transfer flips, and the output turn is the exact inverse.
+TEST(Oot3dUpscalerOrientation, UprightTexelsAreThePresentedSurface) {
+    using namespace Fast::Oot3d;
+    constexpr uint32_t width = 720U, height = 1280U;
+    const auto upright = UprightExtent(width, height);
+    EXPECT_EQ(upright[0], 1280U);
+    EXPECT_EQ(upright[1], 720U);
+    for (const bool flip : {false, true}) {
+        const PicaSurfaceCoordinates coordinates{flip};
+        for (const auto texel : {std::array<uint32_t, 2>{0U, 0U}, std::array<uint32_t, 2>{1279U, 719U},
+                                 std::array<uint32_t, 2>{17U, 3U}, std::array<uint32_t, 2>{640U, 360U},
+                                 std::array<uint32_t, 2>{1000U, 701U}}) {
+            const std::array<float, 2> uv{(float(texel[0]) + 0.5F) / float(upright[0]),
+                                          (float(texel[1]) + 0.5F) / float(upright[1])};
+            const auto storage = coordinates.PresentationToStorage(uv);
+            const auto surface = UprightToSurfaceTexel(texel, width, height, coordinates);
+            EXPECT_EQ(surface[0], uint32_t(storage[0] * float(width))) << flip;
+            EXPECT_EQ(surface[1], uint32_t(storage[1] * float(height))) << flip;
+            const auto back = SurfaceToUprightTexel(surface, width, height, coordinates);
+            EXPECT_EQ(back[0], texel[0]);
+            EXPECT_EQ(back[1], texel[1]);
+        }
+        // A displacement follows the texels: one upright step right and one
+        // down land where the turned offsets say on the surface.
+        const std::array<uint32_t, 2> origin{100U, 200U};
+        const auto from = UprightToSurfaceTexel(origin, width, height, coordinates);
+        for (const auto step : {std::array<uint32_t, 2>{1U, 0U}, std::array<uint32_t, 2>{0U, 1U}}) {
+            const auto to = UprightToSurfaceTexel({origin[0] + step[0], origin[1] + step[1]}, width, height,
+                                                  coordinates);
+            const std::array<float, 2> surfaceStep{float(int(to[0]) - int(from[0])), float(int(to[1]) - int(from[1]))};
+            const auto turned = UprightOffset(surfaceStep, coordinates);
+            EXPECT_FLOAT_EQ(turned[0], float(step[0])) << flip;
+            EXPECT_FLOAT_EQ(turned[1], float(step[1])) << flip;
+        }
+    }
+}
+
+#ifdef OOT3D_FOUNDATION_HAS_SHADERC
+TEST(Oot3dUpscalerOrientation, ShadersCompile) {
+    shaderc::Compiler compiler;
+    for (const auto& [source, name] :
+         {std::pair{Fast::Oot3d::BuildUpscalerUprightInputShader(), "oot3d_upscaler_upright_inputs.comp"},
+          std::pair{Fast::Oot3d::BuildUpscalerUprightOutputShader(), "oot3d_upscaler_upright_output.comp"}}) {
+        const auto result = compiler.CompileGlslToSpv(source, shaderc_compute_shader, name);
+        EXPECT_EQ(result.GetCompilationStatus(), shaderc_compilation_status_success) << result.GetErrorMessage();
+    }
+}
+#endif
 
 #ifdef OOT3D_FOUNDATION_HAS_SHADERC
 TEST(Oot3dUpscalerGuides, ResampleShaderCompiles) {
