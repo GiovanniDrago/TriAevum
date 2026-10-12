@@ -456,6 +456,15 @@ TEST(Oot3dGeometryProviderPlan,
     EXPECT_FALSE(plan.Requires(EffectResource::AmbientGuide));
     EXPECT_TRUE(plan.ProducesExtensionGeometry());
     EXPECT_TRUE(plan.ExportsExtensionGeometry());
+    EXPECT_FALSE(plan.Requires(EffectResource::DirectionalShadowStaticHistory));
+    // With directional shadows the grass reads the composed map and the
+    // static casters' depth.
+    const auto shadowed = BuildEffectGeometryProviderPlan(
+        BuildPicaExtensionGraph({ .DirectionalShadows = true, .InteractiveGrass = true }),
+        PicaExtensionPassName(PicaExtensionPass::InteractiveGrass));
+    ASSERT_TRUE(shadowed.Valid());
+    EXPECT_TRUE(shadowed.Requires(EffectResource::DirectionalShadowHistory));
+    EXPECT_TRUE(shadowed.Requires(EffectResource::DirectionalShadowStaticHistory));
 
     GeometryProviderSceneFixture scene;
     scene.Publish();
@@ -2106,9 +2115,11 @@ TEST(Oot3dEffectPassBarrierPlan,
     const auto* staticOutput = shadowMap.Find(EffectResource::DirectionalShadowStaticCache);
     ASSERT_NE(staticOutput, nullptr);
     EXPECT_EQ(staticOutput->DispatchAccess, ResourceAccess::DepthAttachment);
-    EXPECT_EQ(staticOutput->CompletionAccess, ResourceAccess::TransferRead);
+    // Copied into the composed map, then readable (the grass's coarse grid).
+    EXPECT_EQ(staticOutput->IntermediateAccess, ResourceAccess::TransferRead);
+    EXPECT_EQ(staticOutput->CompletionAccess, ResourceAccess::ShaderRead);
     EXPECT_TRUE(graph.ExportsResource(EffectResource::DirectionalShadowStaticCache));
-    EXPECT_EQ(shadowMap.BeginExecution().PlannedGraphTransitionCount(), 5U);
+    EXPECT_EQ(shadowMap.BeginExecution().PlannedGraphTransitionCount(), 6U);
     const auto* mapOutput = shadowMap.Find(
         EffectResource::DirectionalShadowMap);
     ASSERT_NE(mapOutput, nullptr);

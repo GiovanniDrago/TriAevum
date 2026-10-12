@@ -213,6 +213,8 @@ struct NriDirectionalShadowPass::Impl {
     struct HistorySlot {
         NriOwnedTexture2D Texture;
         PicaDirectionalShadowHistoryState State;
+        // The layout slots State displays (newest, older; -1: none).
+        std::array<int32_t, 2> DisplayedLayouts{ -1, -1 };
     };
 
     // One shadow layout (a keyframe of the light): its static depth, its
@@ -1319,7 +1321,8 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         sceneView.PicaFrame()->FrameId() != desc.FrameId || sceneView.PicaFrame()->FrameSlot() != desc.FrameSlot ||
         !shadowMapBarrierPlan.Valid() || mapBarrier == nullptr || staticBarrier == nullptr ||
         staticBarrier->DispatchAccess != ResourceAccess::DepthAttachment ||
-        staticBarrier->CompletionAccess != ResourceAccess::TransferRead ||
+        staticBarrier->IntermediateAccess != ResourceAccess::TransferRead ||
+        staticBarrier->CompletionAccess != ResourceAccess::ShaderRead ||
         mapBarrier->DispatchAccess != ResourceAccess::TransferWrite ||
         mapBarrier->IntermediateAccess != ResourceAccess::DepthAttachment ||
         mapBarrier->CompletionAccess != ResourceAccess::ShaderRead || !mapBarrier->DownstreamRead)
@@ -1734,7 +1737,7 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
         auto* source = NriInteropAccess::Texture(*mImpl->Interop, slot.StaticTexture.Image);
         auto* destination = NriInteropAccess::Texture(*mImpl->Interop, history.Texture.Image);
         if (source == nullptr || destination == nullptr ||
-            !transition(slot.StaticTexture.Image, staticBarrier->CompletionAccess))
+            !transition(slot.StaticTexture.Image, staticBarrier->IntermediateAccess))
             return false;
         for (const auto& page : slot.Cache.Updates()) {
             nri::TextureRegionDesc from{};
@@ -1821,6 +1824,13 @@ bool NriDirectionalShadowPass::ExecuteMap(const NriDirectionalShadowExecuteDesc&
     mImpl->LastStage = NriDirectionalShadowExecutionStage::ShadowRasterized;
     if (!transition(history.Texture.Image, mapBarrier->CompletionAccess))
         return false;
+    // The displayed layouts' static depth, without the actors, is read too.
+    for (const int32_t slotIndex : displayed)
+        if (slotIndex >= 0 &&
+            !transition(target->Layouts[static_cast<size_t>(slotIndex)].StaticTexture.Image,
+                        staticBarrier->CompletionAccess))
+            return false;
+    history.DisplayedLayouts = displayed;
     for (const int32_t slotIndex : displayed)
         if (slotIndex >= 0)
             target->Layouts[static_cast<size_t>(slotIndex)].Cache.Commit();
@@ -2178,6 +2188,10 @@ NriDirectionalShadowHistorySnapshot NriDirectionalShadowPass::FindLatestHistory(
     result.View = slot.Texture.SampledView;
     result.Sampler = mImpl->ReceiverSampler;
     result.State = slot.State;
+    for (size_t i = 0; i < result.StaticViews.size(); ++i)
+        if (slot.DisplayedLayouts[i] >= 0)
+            result.StaticViews[i] =
+                found->second.Layouts[static_cast<size_t>(slot.DisplayedLayouts[i])].StaticTexture.SampledView;
     // The contact shadows are screen space: only the frame that produced
     // them may read them. A skipped or disabled production leaves the
     // receivers on the shadow map alone.

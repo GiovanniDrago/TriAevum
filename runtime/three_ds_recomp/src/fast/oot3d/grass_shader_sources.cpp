@@ -899,7 +899,10 @@ void main() {
 }
 
 std::string BuildGrassShadowGridComputeShader() {
-    return std::string("#version 450\n") + std::string(Renderer3ds::VirtualShadowReceiverShader()) +
+    // The coarse grid and the refinement bind different atlases (static
+    // depth, or the composed map); layout 1 has its own.
+    return std::string("#version 450\n#define PICA_VSM_LAYOUT_ATLASES\n") +
+        std::string(Renderer3ds::VirtualShadowReceiverShader()) +
         std::string(kGrassShadowRefinementShader) + R"glsl(
 layout(local_size_x=64) in;
 struct GrassGridPoint { vec4 position; vec4 normal; };

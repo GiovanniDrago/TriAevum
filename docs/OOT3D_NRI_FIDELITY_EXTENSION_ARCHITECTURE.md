@@ -3504,6 +3504,32 @@ unlit stands in the Spirit Temple and Ganon's Castle lit their rooms too.
   `torch` category, so an older one is regenerated, and no longer needs to
   drop a stand's light where a flame actor already burns.
 
+### Grass coarse grid without actor shadows (2026-10-12)
+
+Link's and the actors' shadows reached the grass twice: through the local
+grids around Link and Epona, blade by blade, and through the coarse 4x4
+texture-colour grid, whose nodes sampled the composed shadow map and spread an
+actor's shadow over whole grid cells.
+
+- The directional shadow pass already keeps each layout's static casters'
+  depth (`DirectionalShadowStaticCache`), copied into the composed map before
+  the actors are drawn. That copy is now its intermediate phase (TransferRead),
+  and the pass completes with the displayed layouts' static atlases readable
+  (ShaderRead). The history snapshot names them (`StaticViews`: the newest
+  layout, then the older one while a dissolve runs).
+- The Grass pass declares a read of `DirectionalShadowStaticHistory` with the
+  composed history. Its grid compute runs twice over one pipeline: the coarse
+  nodes with the static atlases, the local nodes with the composed map. Each
+  layout of the static depth is its own one-region atlas, so the receiver
+  shader can read layout 1 from its own binding (`PICA_VSM_LAYOUT_ATLASES`).
+- Static shadows on the grass are unchanged (a pillar's shade: 69 against 70
+  of 255 in the same low-sun frame). With the local grids disabled, Link's
+  long shadow leaves the blades lit and stays on the ground only.
+- Actors without a local grid (all but Link and Epona) no longer shadow the
+  grass.
+- The geometry-provider plan's read mask accepted only the first 32 resources;
+  it now covers the graph's 64.
+
 ### Presentation stages under native UI
 
 On the Kokiri walk the HUD reaches the scene target before its display transfer,
