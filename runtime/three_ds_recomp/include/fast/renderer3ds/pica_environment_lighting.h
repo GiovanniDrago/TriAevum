@@ -92,6 +92,11 @@ struct PicaPlacedLight {
     // Spot: cosines of the beam's half angle and of its hard core.
     float CosOuter = 0.0F;
     float CosInner = 0.0F;
+    // Rectangle and disc: the full angle (degrees, 1..180) around the axis
+    // within which each point of the surface emits. 180 is a diffuse
+    // surface; less straightens its light along the axis, so it draws a
+    // sharper footprint of its shape, as bright under the surface.
+    float Spread = 180.0F;
     bool TwoSided = false;
     bool CastShadows = false;
     bool operator==(const PicaPlacedLight&) const = default;

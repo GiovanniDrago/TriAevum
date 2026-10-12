@@ -352,6 +352,7 @@ void CheckSceneEnvironmentCodec() {
     high.Name = "High id";
     high.Type = PlacedLightType::Spot;
     high.Intensity = 0.6F;
+    high.Spread = 30.0F;
     profile.PlacedLights.push_back(high);
     const auto document = EncodeSceneEnvironment(profile, 0x55, true);
     const auto text = FormatSceneEnvironment(document);
@@ -367,9 +368,16 @@ void CheckSceneEnvironmentCodec() {
               PlacedLightIdentity(0x55, false, 0x80000001U) != PlacedLightIdentity(0x55, true, 1U) &&
               PlacedLightIdentity(0x55, false, 1U) != PlacedLightIdentity(0x56, false, 1U),
           "placed light identities collide across time of day, scene or high ids");
+    // A light saved before the spread existed is a diffuse surface.
+    auto older = document;
+    older["placedLights"][0].erase("spread");
+    const auto olderDecoded = DecodeSceneEnvironment(older, 0x55, true);
+    Check(olderDecoded.Profile && olderDecoded.Profile->PlacedLights[0].Spread == 180.0F,
+          "a placed light without a spread is not a diffuse surface");
     auto broken = document;
     broken["placedLights"][0]["id"] = 2.5;
     broken["placedLights"][0]["intensity"] = 30;
+    broken["placedLights"][0]["spread"] = 0;
     broken["directionalLights"][1]["color"] = nlohmann::json::array({1, 2});
     broken.erase("fogStrength");
     broken["placedLights"].push_back(document["placedLights"][0]);
@@ -378,7 +386,8 @@ void CheckSceneEnvironmentCodec() {
     const auto has = [&](const char* pointer) {
         return std::any_of(errors.begin(), errors.end(), [&](const auto& error) { return error.Pointer == pointer; });
     };
-    Check(has("/placedLights/0/id") && has("/placedLights/0/intensity") && has("/directionalLights/1/color") &&
+    Check(has("/placedLights/0/id") && has("/placedLights/0/intensity") && has("/placedLights/0/spread") &&
+              has("/directionalLights/1/color") &&
               has("/fogStrength") && has("/placedLights/2/id"),
           "profile errors are not all reported at their JSON pointers");
     const auto explained = ExplainSceneEnvironment(profile, 0x55, true);
@@ -851,6 +860,12 @@ void CheckSceneEnvironment() {
               graphics.SnapshotForRendering().Environment.PlacedLights[0].Kind == PicaPlacedLightKind::Rectangle &&
               graphics.SnapshotForRendering().Environment.PlacedLights[0].HalfWidth == 50.0F,
           "the surface light controls are missing or it is not drawn as a rectangle");
+    Check(graphics.SnapshotForRendering().Environment.PlacedLights[0].Spread == 180.0F,
+          "a new surface light is not diffuse");
+    EditScalar("Surface spread", "40");
+    Check(environment->Snapshot().Profile.PlacedLights[0].Spread == 40.0F &&
+              graphics.SnapshotForRendering().Environment.PlacedLights[0].Spread == 40.0F,
+          "the surface spread control does not reach the rendered light");
     Select("Surface shape", "Disc");
     Check(graphics.SnapshotForRendering().Environment.PlacedLights[0].Kind == PicaPlacedLightKind::Disc &&
               Find("Surface radius").Rect.GetHeight() > 0.0F,

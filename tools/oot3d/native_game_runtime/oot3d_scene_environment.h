@@ -46,6 +46,9 @@ struct PlacedLight {
   PlacedLightShape Shape = PlacedLightShape::Rectangle;
   // Surface: emits from both faces.
   bool TwoSided = false;
+  // Surface: the full angle (degrees, 1..180) within which each of its points
+  // emits around its axis; 180 is diffuse, less straightens its light.
+  float Spread = 180.0F;
   // Spot: the full beam angle and the soft edge (a fraction of it).
   float BeamAngle = 45.0F;
   float BeamSoftness = 0.2F;

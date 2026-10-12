@@ -51,7 +51,8 @@ struct alignas(16) PicaPlacedLightUniforms {
     std::array<float, 4> PositionReach{};
     // RGB colour times reflectance; W: point-shadow atlas row, negative for none.
     std::array<float, 4> Color{};
-    // XYZ: world emission axis; W: PicaPlacedLightKind, plus 8 when two-sided.
+    // XYZ: world emission axis; W: PicaPlacedLightKind, plus 8 when two-sided,
+    // plus 16 times (180 - spread) for a straightened surface (whole degrees).
     std::array<float, 4> AxisKind{};
     // Rectangle: XYZ the world width axis times the half width, W the half
     // height. Disc: XYZ any in-plane axis times the radius. Spot: X, Y the

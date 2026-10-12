@@ -73,6 +73,7 @@ SceneEnvironmentProfile BlendSceneEnvironmentProfiles(const SceneEnvironmentProf
     light.Range = Mix(x.Range, y.Range, w);
     light.BeamAngle = Mix(x.BeamAngle, y.BeamAngle, w);
     light.BeamSoftness = Mix(x.BeamSoftness, y.BeamSoftness, w);
+    light.Spread = Mix(x.Spread, y.Spread, w);
     out.PlacedLights.push_back(std::move(light));
   }
   return out;

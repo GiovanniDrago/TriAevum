@@ -247,8 +247,12 @@ std::optional<PicaSurfaceLightingUniforms> BuildPicaSurfaceLightingUniforms(
         auto& placed = result.Placed[placedCount++];
         placed.PositionReach[3] = source.Reach;
         placed.Color[3] = source.CastShadows && !sun ? pointShadowRow(source.SourceIdentity) : -1.0F;
+        const bool surface = source.Kind == PicaPlacedLightKind::Rectangle ||
+                             source.Kind == PicaPlacedLightKind::Disc;
+        const float straightening = surface ? 180.0F - std::round(std::clamp(source.Spread, 1.0F, 180.0F)) : 0.0F;
         placed.AxisKind = { source.AxisWorld[0], source.AxisWorld[1], source.AxisWorld[2],
-                            static_cast<float>(source.Kind) + (source.TwoSided ? 8.0F : 0.0F) };
+                            static_cast<float>(source.Kind) + (source.TwoSided ? 8.0F : 0.0F) +
+                                16.0F * straightening };
         if (source.Kind == PicaPlacedLightKind::Spot)
             placed.TangentShape = { source.CosOuter, source.CosInner, 0.0F, 0.0F };
         else
@@ -568,12 +572,25 @@ float pica_surface_reach_window(float distance_world, float reach) {
     float window = clamp(1.0 - ratio * ratio * ratio * ratio, 0.0, 1.0);
     return window * window;
 }
+// The area shared by discs of radii a and b whose centres are d apart.
+float pica_surface_disc_overlap(float a, float b, float d) {
+    if (d >= a + b) return 0.0;
+    float smaller = min(a, b);
+    if (d <= abs(a - b)) return 3.14159265 * smaller * smaller;
+    float cos_a = clamp((d * d + a * a - b * b) / (2.0 * d * a), -1.0, 1.0);
+    float cos_b = clamp((d * d + b * b - a * a) / (2.0 * d * b), -1.0, 1.0);
+    float k = (-d + a + b) * (d + a - b) * (d - a + b) * (d + a + b);
+    return a * a * acos(cos_a) + b * b * acos(cos_b) - 0.5 * sqrt(max(k, 0.0));
+}
 // Placed light kinds (PicaPlacedLightKind): 0 omni, 1 point, 2 spot,
-// 3 rectangle, 4 disc, 5 sun; 8 is added for a two-sided surface.
+// 3 rectangle, 4 disc, 5 sun; 8 is added for a two-sided surface, and 16
+// times (180 - spread degrees) for a straightened surface.
 void pica_surface_placed_light(int slot, out vec3 direction, out vec3 radiance) {
     PicaPlacedLight light = pica_surface.placed_lights[slot];
-    bool two_sided = light.axis_kind.w >= 7.5;
-    int kind = int(light.axis_kind.w - (two_sided ? 8.0 : 0.0) + 0.5);
+    uint code = uint(light.axis_kind.w + 0.5);
+    bool two_sided = (code & 8u) != 0u;
+    int kind = int(code & 7u);
+    float straightening = float(code >> 4u);
     vec3 axis = light.axis_kind.xyz;
     radiance = light.color.rgb;
     if (kind == 5) {
@@ -593,27 +610,64 @@ void pica_surface_placed_light(int slot, out vec3 direction, out vec3 radiance) 
             radiance = vec3(0.0);
             return;
         }
+        // A straightened surface reaches the fragment only from its points
+        // that see it within half the spread of the axis: those inside a
+        // footprint of radius height * tan(spread / 2) around the fragment's
+        // projection on the surface. That part of the shape emits, from its
+        // centre's angle, and a gain keeps the light under a surface that
+        // covers the footprint as bright as the diffuse surface's.
+        float height = abs(side);
+        float footprint = straightening > 0.0 ? height * tan(radians(180.0 - straightening) * 0.5) : -1.0;
+        vec3 emitting_center = vec3(0.0);
         vec3 closest;
         float area;
+        float shape_area;
         if (kind == 3) {
             float half_width = length(light.tangent_shape.xyz);
             vec3 tangent = light.tangent_shape.xyz / max(half_width, 1.0e-6);
             vec3 bitangent = cross(axis, tangent);
             float half_height = light.tangent_shape.w;
-            closest = tangent * clamp(dot(from_center, tangent), -half_width, half_width) +
-                      bitangent * clamp(dot(from_center, bitangent), -half_height, half_height);
+            vec2 projected = vec2(dot(from_center, tangent), dot(from_center, bitangent));
+            closest = tangent * clamp(projected.x, -half_width, half_width) +
+                      bitangent * clamp(projected.y, -half_height, half_height);
             area = 4.0 * half_width * half_height;
+            shape_area = area;
+            if (footprint >= 0.0) {
+                // The footprint as the square of its area.
+                vec2 low = max(vec2(-half_width, -half_height), projected - footprint * 0.886226925);
+                vec2 high = min(vec2(half_width, half_height), projected + footprint * 0.886226925);
+                vec2 extent = max(high - low, vec2(0.0));
+                area = extent.x * extent.y;
+                emitting_center = tangent * (0.5 * (low.x + high.x)) + bitangent * (0.5 * (low.y + high.y));
+            }
         } else {
             float radius = length(light.tangent_shape.xyz);
             vec3 planar = from_center - axis * side;
             float planar_length = length(planar);
             closest = planar_length > radius ? planar * (radius / planar_length) : planar;
             area = 3.14159265 * radius * radius;
+            shape_area = area;
+            if (footprint >= 0.0) {
+                area = pica_surface_disc_overlap(radius, footprint, planar_length);
+                // Midway across the overlap, on the line from the disc's
+                // centre to the fragment's projection.
+                float near_edge = max(-radius, planar_length - footprint);
+                float far_edge = min(radius, planar_length + footprint);
+                emitting_center = planar_length > 1.0e-3 ? planar * (0.5 * (near_edge + far_edge) / planar_length)
+                                                  : vec3(0.0);
+            }
         }
         // From the fragment to the closest point of the surface.
         vec3 to_surface = closest - from_center;
-        float cos_light = abs(side) / max(distance_world, 1.0e-3);
+        float cos_light = height / max(footprint >= 0.0 ? length(emitting_center - from_center) : distance_world, 1.0e-3);
         float form = area * cos_light / (3.14159265 * dot(to_surface, to_surface) + area);
+        if (footprint >= 0.0) {
+            // The diffuse surface's form factor straight under its centre
+            // over the footprint's (no more of it than the shape).
+            float reached = min(shape_area, 3.14159265 * footprint * footprint);
+            float spread_disc = 3.14159265 * height * height;
+            form *= shape_area / (spread_disc + shape_area) * (spread_disc + reached) / max(reached, 1.0e-12);
+        }
         direction = pica_surface_view_direction(to_surface);
         radiance *= form * pica_surface_reach_window(distance_world, reach);
     } else {

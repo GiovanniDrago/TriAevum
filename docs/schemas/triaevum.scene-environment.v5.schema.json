@@ -316,6 +316,12 @@
           "twoSided": {
             "type": "boolean"
           },
+          "spread": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 180,
+            "description": "Optional (180 when missing). Surface: full angle, degrees, within which each point emits around the axis; 180 is diffuse, less straightens the light"
+          },
           "beamAngle": {
             "type": "number",
             "minimum": 1,

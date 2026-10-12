@@ -159,6 +159,8 @@ PlacedLight DecodePlacedLight(Reader &read, const Json &object, const std::strin
   light.Height = read.Scalar(object, pointer, "height", 1.0F, kPlacedLightMaximumSize, 1.0F);
   light.Shape = read.Name<PlacedLightShape>(object, pointer, "shape", kPlacedLightShapeNames);
   light.TwoSided = read.Boolean(object, pointer, "twoSided");
+  // Optional: lights saved before it are diffuse surfaces.
+  if (object.contains("spread")) light.Spread = read.Scalar(object, pointer, "spread", 1.0F, 180.0F, 180.0F);
   light.BeamAngle = read.Scalar(object, pointer, "beamAngle", 1.0F, 179.0F, 1.0F);
   light.BeamSoftness = read.Scalar(object, pointer, "beamSoftness", 0.0F, 1.0F);
   light.Range = read.Scalar(object, pointer, "range", 1.0F, kPlacedLightMaximumSize, 1.0F);
@@ -189,6 +191,7 @@ Json EncodePlacedLight(const PlacedLight &light) {
           {"height", Number(light.Height)},
           {"shape", kPlacedLightShapeNames[static_cast<size_t>(light.Shape)]},
           {"twoSided", light.TwoSided},
+          {"spread", Number(light.Spread)},
           {"beamAngle", Number(light.BeamAngle)},
           {"beamSoftness", Number(light.BeamSoftness)},
           {"range", Number(light.Range)}};
@@ -275,6 +278,7 @@ std::vector<SceneEnvironmentDiagnostic> ValidateSceneEnvironment(const SceneEnvi
     scalar(light.Range, pointer + "/range", 1.0F, kPlacedLightMaximumSize);
     scalar(light.BeamAngle, pointer + "/beamAngle", 1.0F, 179.0F);
     scalar(light.BeamSoftness, pointer + "/beamSoftness", 0.0F, 1.0F);
+    scalar(light.Spread, pointer + "/spread", 1.0F, 180.0F);
   }
   return read.Errors;
 }
@@ -593,6 +597,7 @@ Fast::Renderer3ds::PicaPlacedLight ResolvePlacedLight(const PlacedLight &light, 
     result.HalfWidth = light.Shape == PlacedLightShape::Disc ? light.Radius : light.Width * 0.5F;
     result.HalfHeight = light.Shape == PlacedLightShape::Disc ? light.Radius : light.Height * 0.5F;
     result.TwoSided = light.TwoSided;
+    result.Spread = light.Spread;
   }
   const float halfAngle = light.BeamAngle * 0.5F * kRadians;
   result.CosOuter = std::cos(halfAngle);
@@ -699,6 +704,7 @@ Json ExplainSceneEnvironment(const SceneEnvironmentProfile &profile, uint16_t sc
       entry["widthAxisWorld"] = DirectionJson(light.TangentWorld);
       entry["halfExtents"] = Json::array({Number(light.HalfWidth), Number(light.HalfHeight)});
       entry["twoSided"] = light.TwoSided;
+      entry["spreadDegrees"] = Number(light.Spread);
     }
     placed.push_back(std::move(entry));
   }

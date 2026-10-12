@@ -464,6 +464,10 @@ private:
                                       ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
       }
       changed |= ImGui::Checkbox("Emit from both sides", &light.TwoSided);
+      changed |= ImGui::SliderFloat("Surface spread", &light.Spread, 1.0F, 180.0F, "%.0f deg",
+                                    ImGuiSliderFlags_AlwaysClamp);
+      ImGui::TextWrapped("180 is a diffuse surface. Less straightens its light along its axis: a sharper "
+                         "footprint of its shape, as bright under it.");
       changed |= ImGui::SliderFloat("Surface reach", &light.Range, 1.0F, 5000.0F, "%.0f",
                                     ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
       break;
