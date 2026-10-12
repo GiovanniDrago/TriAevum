@@ -84,7 +84,9 @@ option(THREE_DS_RECOMP_ENABLE_CACAO "Enable original FidelityFX CACAO alongside 
 # The iMMERSE module (src/fast/immerse: MXAO by Pascal Gilcher) is not covered
 # by TriAevum's GPL: it stays under the original iMMERSE licence and is used
 # under the author's explicit permission, granted exclusively to TriAevum (see
-# src/fast/immerse/LICENSE.md). OFF builds the complete GPL runtime without it.
+# src/fast/immerse/LICENSE.md). ON builds it as its own shared library,
+# triaevum_immerse, which the runtime loads when installed; the runtime is the
+# same either way and complete without it.
 cmake_dependent_option(THREE_DS_RECOMP_ENABLE_IMMERSE
 	"Build the iMMERSE module (MXAO), under its own licence" ON
 	"THREE_DS_RECOMP_ENABLE_VULKAN;THREE_DS_RECOMP_ENABLE_NRI" OFF)

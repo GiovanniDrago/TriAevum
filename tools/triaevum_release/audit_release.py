@@ -281,6 +281,14 @@ def audit_release(
         roles_seen.add(role)
         declared[relative] = item
 
+    # A separately licensed module (the iMMERSE library) ships under its own
+    # role, never as an ordinary runtime library.
+    separate_modules = {str(name).lower() for name in policy.get("separately_licensed_modules", [])}
+    for relative, item in declared.items():
+        if (relative.rsplit("/", 1)[-1].lower() in separate_modules
+                and item.get("role") != "separately_licensed_module"):
+            reject(f"{relative} is separately licensed; declare it as separately_licensed_module")
+
     manifest_relative = manifest_path.relative_to(root).as_posix()
     contract = release.get("runtime_contract")
     if contract is not None:

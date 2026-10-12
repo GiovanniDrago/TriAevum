@@ -70,6 +70,8 @@ endif()
 target_include_directories(three_ds_recomp_runtime
     PRIVATE ${CMAKE_CURRENT_BINARY_DIR}
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${INCLUDE_DIR} ${ADDITIONAL_LIB_INCLUDES}
+    # The interface of the separately licensed iMMERSE module (MIT).
+    ${CMAKE_CURRENT_SOURCE_DIR}/../module_interface
 )
 
 #=================== Linking ===================
@@ -216,7 +218,8 @@ if(THREE_DS_RECOMP_ENABLE_VULKAN)
         target_link_libraries(three_ds_recomp_runtime PRIVATE oot3d_cacao)
         target_compile_definitions(three_ds_recomp_runtime PRIVATE ENABLE_OOT3D_CACAO)
     endif()
-    # The iMMERSE module is under its own licence (fast/immerse/LICENSE.md).
+    # The iMMERSE module is under its own licence (fast/immerse/LICENSE.md):
+    # a separate shared library the runtime loads when it is installed.
     if(THREE_DS_RECOMP_ENABLE_IMMERSE)
         include(${CMAKE_CURRENT_SOURCE_DIR}/fast/immerse/immerse.cmake)
     endif()

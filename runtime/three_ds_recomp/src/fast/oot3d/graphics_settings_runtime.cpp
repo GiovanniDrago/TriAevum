@@ -430,6 +430,13 @@ VersionedGraphicsSettings GraphicsSettingsRuntime::SnapshotForRendering() const 
         (globalIllumination.Mode == GlobalIlluminationMode::ScreenSpace &&
          !mCapabilities.Has(GraphicsCapability::ScreenSpaceGlobalIllumination)))
         globalIllumination.Mode = GlobalIlluminationMode::Off;
+    // Likewise an AO provider that is not available (MXAO without the
+    // separately installed iMMERSE module, CACAO without its SDK) renders Off;
+    // the preference stays saved for when it is.
+    auto& ambientOcclusion = result.Value.Effects.AmbientOcclusion;
+    if ((ambientOcclusion == AmbientOcclusionMode::Mxao && !mCapabilities.Has(GraphicsCapability::ImmerseMxao)) ||
+        (ambientOcclusion == AmbientOcclusionMode::Cacao && !mCapabilities.Has(GraphicsCapability::FidelityFxCacao)))
+        ambientOcclusion = AmbientOcclusionMode::Off;
     // Inactive directional/ambient edits must not invalidate histories.
     // Point-light groups remain independently controllable in per-pixel modes.
     if (!mNativePresentation.Active() && result.Value.Preset != GraphicsPreset::Authentic &&

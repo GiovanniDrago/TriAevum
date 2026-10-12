@@ -3257,11 +3257,18 @@ Private captures, checkpoints, profiles and measurement reports remain under
 MXAO from Pascal Gilcher's iMMERSE is a separate module under its own licence,
 `runtime/three_ds_recomp/src/fast/immerse/` (see `LICENSE.md` there): it is not
 covered by TriAevum's GPL, and it is compiled only with
-`THREE_DS_RECOMP_ENABLE_IMMERSE`. Its graph contract is GTAO's: native FP32
-depth and the coverage-bearing normal guide in, the published R32F visibility
-out, composited before UI. TriAevum reaches it through `fast/oot3d/mxao_pass.h`;
-the port, its options, the temporal mode and their validation are documented
-in the module's [README](../runtime/three_ds_recomp/src/fast/immerse/README.md).
+`THREE_DS_RECOMP_ENABLE_IMMERSE`, into its own shared library
+(`triaevum_immerse`) beside the runtime. Its graph contract is GTAO's: native
+FP32 depth and the coverage-bearing normal guide in, the published R32F
+visibility out, composited before UI. TriAevum reaches it through
+`fast/oot3d/mxao_pass.h`, whose implementation loads the library through the
+MIT module interface `module_interface/triaevum/immerse_module.h` and serves
+it the renderer's NRI device, textures, programs and barriers (the pass's
+transitions are recorded as before). Without the library MXAO is unavailable,
+and `GraphicsSettingsRuntime::SnapshotForRendering` renders a configuration
+that selects it, like an unavailable CACAO, with AO Off. The port, its
+options, the temporal mode and their validation are documented in the
+module's [README](../runtime/three_ds_recomp/src/fast/immerse/README.md).
 
 ### Native AO normals
 

@@ -57,6 +57,7 @@ FILES = {
     "LICENSES/LLVM-exception.txt": ("license", b"LLVM exception fixture\n"),
     "LICENSES/iMMERSE-MXAO.md": ("license", b"iMMERSE module exception fixture\n"),
     "LICENSES/iMMERSE-LICENSE.txt": ("license", b"iMMERSE license fixture\n"),
+    "triaevum_immerse.dll": ("separately_licensed_module", b"MZ iMMERSE module fixture"),
     "resources/environments/scene-0043.environment.json": ("default_environment_profile", b"{}\n"),
     "recipes/oot3d.json": ("revision_recipe", b'{"format":"recipe-test"}\n'),
 }
@@ -171,6 +172,20 @@ class PublicReleaseAuditTests(unittest.TestCase):
                                     version="test", source_commit="0" * 40,
                                     enforce_readiness=False)
             self.assertFalse((root / "output").exists())
+
+    def test_separately_licensed_module_keeps_its_role(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_clean_package(root)
+            manifest_path = root / "release-manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for item in manifest["files"]:
+                if item["path"] == "triaevum_immerse.dll":
+                    item["role"] = "runtime_library"
+            atomic_write_json(manifest_path, manifest)
+            result = audit_release(root)
+            self.assertFalse(result.ok)
+            self.assertTrue(any("separately licensed" in error for error in result.errors), result.errors)
 
     def test_accepts_exact_clean_allowlist(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

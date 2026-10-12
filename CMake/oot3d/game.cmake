@@ -84,8 +84,15 @@ if(OOT3D_DIRECT_AOT_PLUGIN)
     set_property(TARGET oot3d_native_game PROPERTY OUTPUT_NAME TriAevum)
     add_custom_target(triaevum_public_runtime
         DEPENDS oot3d_native_game triaevum_title_aot_stub)
+    # The separately licensed iMMERSE module, a library of its own beside the
+    # runtime (runtime/three_ds_recomp/src/fast/immerse/LICENSE.md).
+    set(_triaevum_immerse_target "")
+    if(TARGET triaevum_immerse)
+        add_dependencies(triaevum_public_runtime triaevum_immerse)
+        set(_triaevum_immerse_target ",\n  \"immerse\": \"$<TARGET_FILE:triaevum_immerse>\"")
+    endif()
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/triaevum-runtime-targets-$<CONFIG>.json"
-        CONTENT "{\n  \"format\": \"triaevum_runtime_targets_v1\",\n  \"source_commit\": \"${GIT_COMMIT_HASH}\",\n  \"runtime\": \"$<TARGET_FILE:oot3d_native_game>\",\n  \"stub\": \"$<TARGET_FILE:triaevum_title_aot_stub>\"\n}\n")
+        CONTENT "{\n  \"format\": \"triaevum_runtime_targets_v1\",\n  \"source_commit\": \"${GIT_COMMIT_HASH}\",\n  \"runtime\": \"$<TARGET_FILE:oot3d_native_game>\",\n  \"stub\": \"$<TARGET_FILE:triaevum_title_aot_stub>\"${_triaevum_immerse_target}\n}\n")
 endif()
 set(TRIAEVUM_PRODUCT_NRI 0)
 if(THREE_DS_RECOMP_ENABLE_NRI AND OOT3D_ENABLE_VULKAN_RENDERER)

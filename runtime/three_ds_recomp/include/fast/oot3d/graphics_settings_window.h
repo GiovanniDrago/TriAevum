@@ -75,8 +75,8 @@ class GraphicsSettingsPanel final {
     bool DrawLightingSettings(GraphicsSettings&, const GraphicsCapabilities&);
     bool DrawShadowSettings(GraphicsSettings&, const GraphicsCapabilities&);
     bool DrawAmbientOcclusionSettings(GraphicsSettings&, const GraphicsCapabilities&);
-    // In the iMMERSE module (fast/immerse/mxao_settings_panel.cpp, under its
-    // own licence); without it, fast/oot3d/immerse_unavailable.cpp.
+    // MXAO's controls, labelled with the texts of the iMMERSE module
+    // (fast/oot3d/mxao_settings_panel.cpp); none without the module.
     bool DrawMxaoSettings(EffectsSettings&);
     // MXAO's credit and licence exception, at the foot of Ambient Occlusion.
     void DrawMxaoCredits();

@@ -1936,6 +1936,13 @@ int main(int argc, char** argv) try {
 #endif
     runtime.SetCapability(GraphicsCapability::ImmerseMxao, false, "provider unavailable");
     Frame();
+#ifdef ENABLE_OOT3D_IMMERSE
+    // A selected provider that is not available (the iMMERSE module is not
+    // installed) renders Off; the preference stays.
+    Check(runtime.Snapshot().Effects.AmbientOcclusion == AmbientOcclusionMode::Mxao &&
+              runtime.SnapshotForRendering().Value.Effects.AmbientOcclusion == AmbientOcclusionMode::Off,
+          "an unavailable MXAO is rendered, or its preference was dropped");
+#endif
     Select("Ambient occlusion", "Off");
     Click("Ambient occlusion");
     Check(Find("iMMERSE MXAO").Disabled && !Find("Multiscale GTAO").Disabled,

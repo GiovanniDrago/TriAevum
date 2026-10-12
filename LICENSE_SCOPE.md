@@ -55,11 +55,17 @@ GPL grant above. It ports MXAO from Pascal Gilcher's iMMERSE, and:
   exclusively to the TriAevum project. The permission does not pass to
   recipients, forks or other projects.
 
-The directory's `LICENSE.md` states these terms and the boundary. TriAevum's
-GPL code reaches the module only through integration points it owns, and
-building with `THREE_DS_RECOMP_ENABLE_IMMERSE=OFF` produces the complete GPL
-runtime without it. Anyone else distributing TriAevum must build that way and
-omit the directory, unless the author has given them permission.
+The directory's `LICENSE.md` states these terms and the boundary. The module
+is built as a separate shared library (`triaevum_immerse.dll`,
+`libtriaevum_immerse.so`) that contains only the module and links nothing of
+TriAevum; packages ship it beside the runtime as a separately licensed
+component. TriAevum's GPL code reaches it only through the module interface
+`runtime/three_ds_recomp/module_interface/triaevum/immerse_module.h`, which the
+maintainer licenses under MIT so that the module may implement it. The GPL
+runtime is complete without the library: building with
+`THREE_DS_RECOMP_ENABLE_IMMERSE=OFF`, or leaving the library out, gives every
+feature except MXAO. Anyone else distributing TriAevum must do so and omit the
+directory, unless the author has given them permission.
 
 ## Release review
 

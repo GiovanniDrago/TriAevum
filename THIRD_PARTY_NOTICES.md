@@ -253,11 +253,19 @@ projects. The module's `LICENSE.md` records this exception and its boundary to
 TriAevum's GPL code, and `LICENSE_SCOPE.md` excludes the module from the GPL grant.
 
 This material is not an original TriAevum contribution. It is compiled only with
-`THREE_DS_RECOMP_ENABLE_IMMERSE`; with the option off TriAevum builds without it.
-Binary packages built with it carry the module's `LICENSE.md` and the original
-license under `LICENSES/`. Before a public source or binary package includes
-it, record the written permission and confirm that it covers distribution of source
-and binaries together with the GPL-licensed runtime.
+`THREE_DS_RECOMP_ENABLE_IMMERSE`, into its own shared library
+(`triaevum_immerse.dll`, `libtriaevum_immerse.so`) that contains nothing of
+TriAevum and is loaded by the runtime through the MIT module interface
+`runtime/three_ds_recomp/module_interface/triaevum/immerse_module.h`; without
+the library TriAevum runs without MXAO. Binary packages that include the
+library ship it beside the runtime as a separately licensed component, with
+the module's `LICENSE.md` and the original license under `LICENSES/`.
+
+The permission, as the maintainer reports it on 2026-10-12, expressly allows
+the distribution and modification of MXAO for the exclusive use of this
+repository of the TriAevum project, on the condition that all rights in it,
+and the license for any further use, remain the author's
+(`docs/TRIAEVUM_RELEASE_APPROVAL_RECORD.md`).
 
 ## TopScreen single-screen modifications
 

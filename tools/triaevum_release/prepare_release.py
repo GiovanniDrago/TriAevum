@@ -109,6 +109,12 @@ def prepare(args) -> dict:
     for item in layout["files"]:
         if item["source"].startswith("build-release/"):
             item["source"] = str(artifacts[Path(item["source"]).name].resolve())
+    # The separately licensed iMMERSE module (MXAO), its own library beside the
+    # runtime; its licences are already in the layout.
+    if "immerse" in targets:
+        layout["files"].append({"source": str(Path(targets["immerse"]).resolve()),
+                                "path": Path(targets["immerse"]).name,
+                                "role": "separately_licensed_module"})
     # The release's default scene environment profiles (read-only; the user's
     # own profiles in the data directory take precedence).
     for profile in sorted((ROOT / "runtime/triaevum_resources/environments").glob("*.environment.json")):
