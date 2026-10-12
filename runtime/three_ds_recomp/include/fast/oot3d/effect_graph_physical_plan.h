@@ -22,6 +22,11 @@ enum class EffectTransientStorageClass : uint8_t {
     SinglePlaneImage,
     DepthPyramid,
     ShadowDepth,
+    // Written by every execution of a plan (motion vectors and the reactive
+    // mask). A later execution of the same plan in a frame reuses outputs an
+    // earlier one wrote (AO, Hi-Z, reflections, composite) from their slots,
+    // so these never share a slot with them.
+    ExecutionImage,
 };
 
 inline constexpr uint8_t kNoEffectAliasSlot = 0xffU;

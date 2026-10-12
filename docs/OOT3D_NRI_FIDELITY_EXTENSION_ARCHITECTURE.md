@@ -3460,6 +3460,17 @@ carried was taken for motion.
 - Field, still camera, DLSS Quality 1280x720: 0.002 pixels frame to frame
   upright and stored (was 0.44), temporal flicker 0.99 (was 2.46; TAA 1.08).
   Mid-pan the image is sharper (edge energy 10.94 against 8.70) with no trails.
+- Motion and the reactive mask have their own transient storage class
+  (`EffectTransientStorageClass::ExecutionImage`): they never share a slot with
+  the plan's other outputs. A frame without native UI (the Temple of Time
+  cutscene between text boxes) presents the same plan twice; the second
+  execution reuses the first's AO, Hi-Z and reflection, and wrote this frame's
+  motion again into the slot the reflection shared with it, so the scanout
+  composed the motion as reflection. With temporal MXAO (which reads motion)
+  and the water reflections on, additive surfaces, where the reactive mask is
+  1, turned black: the light from the windows, Navi's glow. Frames with a text
+  box compose at the boundary before UI and were not affected. The plan keeps
+  one more full-resolution image while motion is on.
 
 ### Lights that follow their surfaces (2026-10-12)
 
