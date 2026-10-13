@@ -139,7 +139,7 @@ class InstalledRuntimeTests(unittest.TestCase):
                 self.assertTrue(all(call.args[0] == executable for call in query.call_args_list))
         finally:
             package.chmod(old_mode)
-        arguments = [expand_profile_argument(arg, profile) for arg in load_json_object(profile)["arguments"]]
+        arguments = [expand_profile_argument(arg, profile, package) for arg in load_json_object(profile)["arguments"]]
         self.assertEqual(Path(arguments[arguments.index("--resource-root") + 1]), package / "resources")
         self.assertEqual({p.name: p.read_bytes() for p in package.iterdir()}, before)
         self.assertEqual(marker.read_bytes(), b"existing save")

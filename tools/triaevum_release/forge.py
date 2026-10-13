@@ -1024,7 +1024,7 @@ def publish_private_runtime(
     for index, argument in enumerate(profile["arguments"][:-1]):
         if argument in path_options:
             target = Path(profile["arguments"][index + 1])
-            profile["arguments"][index + 1] = context.profile_argument(target, profile_path)
+            profile["arguments"][index + 1] = context.profile_argument(target, profile_path, runtime_dir=package)
             scopes[argument] = context.scope(target, profile_path.parent)
     profile["path_scopes"] = scopes
     if not destination.is_file() or sha256_file(destination) != plugin_hash:

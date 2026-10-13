@@ -38,7 +38,7 @@ def validate_installed_runtime(
             or not isinstance(arguments, list)
             or not all(isinstance(value, str) for value in arguments)):
         raise ValueError("Invalid installed launch profile")
-    arguments = [expand_profile_argument(argument, profile) for argument in arguments]
+    arguments = [expand_profile_argument(argument, profile, executable.parent) for argument in arguments]
     if "--title-plugin" in arguments:
         index = arguments.index("--title-plugin") + 1
         if (arguments.count("--title-plugin") != 1 or index >= len(arguments)
