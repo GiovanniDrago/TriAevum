@@ -905,6 +905,13 @@ bool SuppressTopScreenTouchButtonDraw(std::uint32_t pauseState) noexcept {
   return pauseState >= 12U && pauseState <= 19U;
 }
 
+bool SuppressTopScreenTouchButtonPageDraw(
+    std::uint32_t pauseState, const TopScreenPauseDrawInputs &inputs) noexcept {
+  return SuppressTopScreenTouchButtonDraw(pauseState) || inputs.ChildStates[0] != 0U ||
+         inputs.ChildStates[1] != 0U || inputs.ChildStates[2] != 0U ||
+         inputs.ChildStates[3] != 0U;
+}
+
 bool BeginTopScreenPauseChildSuppression(NativeA32Memory &memory,
                                          TopScreenPauseChildSuppressionSet set,
                                          TopScreenPauseChildState *saved,

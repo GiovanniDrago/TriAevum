@@ -874,6 +874,12 @@ bool NativeA32WindowSession::UpdateGuestServicesForRefresh(
                                                        &pauseInputs)) {
       nativeCandidateDispatch.TopScreenPauseAotBarrier = true;
     } else {
+      // ChildStates: [0] Gear 0x00504484, [1] Items 0x0050672C,
+      // [2] Dungeon/World Map 0x00506CE8.
+      Oot3dNativeGame::ObserveTopScreenStartRoutingPage(
+          pauseInputs.ChildStates[1] != 0U, pauseInputs.ChildStates[0] != 0U,
+          pauseInputs.ChildStates[2] != 0U,
+          nativeCandidateDispatch.TopScreenStartRouting);
       const auto closePlan =
           Oot3dNativeGame::ResolveTopScreenPauseStartClose(
               pauseInputs,

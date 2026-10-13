@@ -395,6 +395,17 @@ void MarkTopScreenStartCloseGestureConsumed(
     state.CloseGestureHeld = true;
 }
 
+void ObserveTopScreenStartRoutingPage(bool itemsActive, bool gearActive,
+                                      bool mapActive,
+                                      TopScreenStartRoutingState& state) noexcept {
+    if (itemsActive)
+        state.LastPage = NativeA32TopScreenPage::Items;
+    else if (gearActive)
+        state.LastPage = NativeA32TopScreenPage::Gear;
+    else if (mapActive)
+        state.LastPage = NativeA32TopScreenPage::Map;
+}
+
 void ReleaseTopScreenStartRoutingLatch(
     bool physicalStartHeld, TopScreenStartRoutingState& state) noexcept {
     if (!physicalStartHeld) {
@@ -479,8 +490,8 @@ void ApplyTopScreenStartRouting(NativeA32InputFrame& frame,
         if (startHeld) {
             frame.Hid.Buttons &= ~start;
             if (!nativePauseOpen && routeGameplayStartToItems) {
-                const auto items = MapTopScreenPageShortcutToNativeTouch(
-                    NativeA32TopScreenPage::Items);
+                const auto items =
+                    MapTopScreenPageShortcutToNativeTouch(state.LastPage);
                 frame.Hid.TouchX = items.X;
                 frame.Hid.TouchY = items.Y;
                 frame.Hid.TouchPressed = items.Pressed;
@@ -494,8 +505,7 @@ void ApplyTopScreenStartRouting(NativeA32InputFrame& frame,
     }
 
     frame.Hid.Buttons &= ~start;
-    const auto items = MapTopScreenPageShortcutToNativeTouch(
-        NativeA32TopScreenPage::Items);
+    const auto items = MapTopScreenPageShortcutToNativeTouch(state.LastPage);
     frame.Hid.TouchX = items.X;
     frame.Hid.TouchY = items.Y;
     frame.Hid.TouchPressed = items.Pressed;

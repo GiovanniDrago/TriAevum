@@ -560,6 +560,24 @@ int main(int argc, char** argv) {
                 ResolveNativeA32TouchInputEnabled(true, true, false, true),
             "TopScreen did not retain frontend or pause-page touch ownership");
 
+    // TopScreen 2.1.1 reopens the last page that owned the pause UI
+    // (005E21C8): Items first, then Gear, then Map; other states keep it.
+    {
+        TopScreenStartRoutingState pageMemory;
+        const auto opened = [&](bool items, bool gear, bool map) {
+            ObserveTopScreenStartRoutingPage(items, gear, map, pageMemory);
+            NativeA32InputFrame start;
+            start.Hid.Buttons = NativeA32HidButtonMask(NativeA32HidButton::Start);
+            pageMemory.OpenGestureHeld = false;
+            ApplyTopScreenStartRouting(start, true, true, false, true, pageMemory);
+            return start.Hid.TouchPressed ? start.Hid.TouchX : 0U;
+        };
+        Require(opened(false, false, false) == 224U && opened(false, true, false) == 96U &&
+                    opened(false, false, false) == 96U && opened(false, false, true) == 160U &&
+                    opened(true, true, true) == 224U,
+                "TopScreen START did not reopen the last native pause page");
+    }
+
     NativeA32InputFrame gameplayStart;
     gameplayStart.Hid.Buttons =
         NativeA32HidButtonMask(NativeA32HidButton::A) |

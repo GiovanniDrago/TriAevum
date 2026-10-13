@@ -390,21 +390,25 @@ struct TopScreenAuxiliaryTouchInputs {
   std::uint8_t StateSubtype = 0;
   std::int16_t PlayerHudMode = 0;
   std::uint32_t TouchLayoutState = 0;
+  bool ViewActorMode20 = false;
   std::uint32_t PauseState = 0;
   bool NestedSceneOwnerActive = false;
   bool AlternateHudRendererActive = false;
+  // Snapshot of 005E3D88, computed before the next 005E3D8C sample.
+  bool SuppressBCopies = false;
 };
 
 struct TopScreenAuxiliaryTouchGeometry {
   std::array<TopScreenTexturedQuad, 5> Quads{};
 };
 
-// Exact group-39 quads 34..38 produced by payload 0x005C9940. The visibility
-// flag formerly stored at payload BSS 0x005D4118 is derived directly from its
-// native PlayState, pause-state and alternate-renderer owners.
+// Auxiliary geometry consumes the native-update suppression snapshot.
+// Reading the current nested owner at draw time loses the one-update delay.
 bool ReadTopScreenAuxiliaryTouchInputs(NativeA32Memory &memory,
                                        TopScreenAuxiliaryTouchInputs *inputs,
                                        std::string *error = nullptr);
+// 005E2204 starts at 1 and advances once per native 41EAE0 update.
+bool AdvanceTopScreenViewAlpha(NativeA32Memory &memory, float *alpha);
 TopScreenAuxiliaryTouchGeometry BuildTopScreenAuxiliaryTouchGeometry(
     const TopScreenAuxiliaryTouchInputs &inputs,
     const std::array<float, 4> &nativeVerticalOffsets,
@@ -414,6 +418,19 @@ std::size_t AppendTopScreenAuxiliaryTouchPresentation(
     const TopScreenAuxiliaryTouchGeometry &geometry,
     const oot3d::ui::UiTextureIdentity &pauseTopPage,
     std::vector<oot3d::ui::UiPrimitive> &output);
+
+// Typed equivalents of payload words 005E3D8C (previous player state) and
+// 005E3D88 (this update's suppression). Never advance from presentation.
+struct TopScreenTouchCopyState {
+  bool PreviousNestedOwnerActive = false;
+  bool SuppressBCopies = false;
+};
+bool BeginTopScreenTouchCopyUpdate(NativeA32Memory &memory,
+                                  TopScreenTouchCopyState *state);
+// Call after input transactions. Retain exits bypass 005D5778..57A0.
+bool FinishTopScreenTouchCopyUpdate(NativeA32Memory &memory,
+                                   bool retainPrevious,
+                                   TopScreenTouchCopyState *state);
 
 struct TopScreenNativeTouchCopyStats {
   std::uint32_t SourceQuadsRead = 0;
@@ -430,7 +447,8 @@ bool AppendTopScreenNativeTouchCopies(
     NativeA32Memory &memory, const oot3d::ui::UiTextureIdentity &pauseTopPage,
     std::vector<oot3d::ui::UiPrimitive> &output,
     TopScreenNativeTouchCopyStats *stats = nullptr,
-    std::string *error = nullptr, const TopScreenUiConfig *config = nullptr);
+    std::string *error = nullptr, const TopScreenUiConfig *config = nullptr,
+    bool suppressBCopies = false);
 
 // Clips native gameplay HUD primitives to OoT3D's 400x240 top surface.
 // Renderer presentation maps that logical surface to the host output;
@@ -819,6 +837,14 @@ bool ResolveTopScreenPauseIconBuild(TopScreenPauseIconBuild *build,
 // Payload wrapper 0x005D005C skips the lower-screen touch-button callback for
 // the contiguous native pause states 12..19.
 bool SuppressTopScreenTouchButtonDraw(std::uint32_t pauseState) noexcept;
+
+// The draw call 0x0042F5CC goes through payload predicate 0x005CB5E8, which
+// also rejects the four native page predicates 0x002FCAD4, 0x002FCAEC,
+// 0x002FCDD4 and 0x004392B0 (Gear, Items, Map and System page states). Its
+// remaining clause belongs to the mod's in-game settings overlay, which the
+// F1 panel replaces. The submit call keeps the narrower state interval.
+bool SuppressTopScreenTouchButtonPageDraw(
+    std::uint32_t pauseState, const TopScreenPauseDrawInputs &inputs) noexcept;
 
 struct TopScreenControlFlowContract {
   std::uint32_t Entry = 0;

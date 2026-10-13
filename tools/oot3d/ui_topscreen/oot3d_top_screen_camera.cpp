@@ -78,9 +78,10 @@ float TopScreenBinaryCosine(std::uint16_t angle) noexcept {
 TopScreenCameraFovOwnership ResolveTopScreenCameraFovOwnership(
     const TopScreenCameraFovOwnershipInput &input) noexcept {
   TopScreenCameraFovOwnership ownership;
-  ownership.Active = input.OutputAddress != 0U && input.CameraIndex == 0 &&
-                     !IsTopScreenFreeCameraSettingBlocked(
-                         input.CameraSetting);
+  // 2.1.1 005DF318 keeps two flags: 005E3D2C (main camera) gates the FOV
+  // at 005DF388, while the blocked camera settings only clear the zoom flag
+  // 005E3D28. The FOV therefore applies in every main-camera setting.
+  ownership.Active = input.OutputAddress != 0U && input.CameraIndex == 0;
   if (ownership.Active) {
     // Official 2.1.1 stores output + 0x198 and compares it with the value
     // address loaded by the camera projection owner.

@@ -13,7 +13,9 @@ bool ExecuteTopScreenUiSourcePortBlock(
   auto &memory = *dispatch.Memory;
   if (pc == Oot3dNativeGame::kTopScreenInputUpdateBoundary) {
     // One guest continuation owns the boundary at a time; a requested pause
-    // transaction runs before the song text of the same update.
+    // transaction runs before the song text of the same update. The product
+    // build reaches TopScreen only through this boundary, so 2.1.1's
+    // 0x0041EAE0 controller work is delivered here, in the same update.
     const bool textInFlight = dispatch.OcarinaText != nullptr && dispatch.OcarinaText->Pending();
     if (!textInFlight && dispatch.PauseTransaction != nullptr &&
         dispatch.PauseTransaction->Execute(state, result, blocksConsumed))
@@ -262,55 +264,35 @@ bool ExecuteTopScreenUiSourcePortBlock(
     if (!Oot3dNativeGame::ReadTopScreenPauseDrawInputs(memory, &inputs)) {
       return false;
     }
-    if (inputs.HasScene && inputs.SceneMode == 7U) {
+    if (inputs.HasScene && (inputs.SceneMode == 5U || inputs.SceneMode == 7U)) {
       return branchFromCallsite(pc + 4U, pc + 4U);
     }
     return branchFromCallsite(kPauseSceneSevenNativeDraw, pc + 4U);
   }
-  if (pc == kPauseSceneViewportDrawCall) {
-    auto branch = [&](uint32_t target, uint32_t returnAddress) {
-      state.r[14] = returnAddress;
-      state.r[15] = target;
-      *result = {oot3d::recomp::a32::ExitKind::Branch, target,
-                 oot3d::recomp::a32::FallbackReason::None, pc};
-      if (blocksConsumed != nullptr)
-        *blocksConsumed = 1U;
-      return true;
-    };
-    if (dispatch.TopScreenSceneViewportDrawPhase == 0U) {
-      Oot3dNativeGame::TopScreenPauseDrawInputs inputs;
-      if (!Oot3dNativeGame::ReadTopScreenPauseDrawInputs(memory, &inputs)) {
-        return false;
-      }
-      if (!Oot3dNativeGame::UseTopScreenSceneFiveViewport(inputs)) {
-        return branch(kPauseSceneViewportNativeDraw, pc + 4U);
-      }
-      dispatch.TopScreenSceneViewportDrawArgument = state.r[0];
-      dispatch.TopScreenSceneViewportDrawPhase = 1U;
-      state.r[0] = 0U;
-      state.r[1] = static_cast<uint32_t>(-80);
-      state.r[2] = 240U;
-      state.r[3] = 480U;
-      return branch(kGlViewportEntry, pc);
+  // 2.1.1 005DF518 / 005D3CBC: scene type 5 skips these calls.
+  // The 1.2 message viewport transaction is not present in 2.1.1.
+  if (pc == kPauseSceneFiveDrawCall || pc == kPauseSceneViewportDrawCall) {
+    Oot3dNativeGame::TopScreenPauseDrawInputs inputs;
+    if (!Oot3dNativeGame::ReadTopScreenPauseDrawInputs(memory, &inputs)) {
+      return false;
     }
-    if (dispatch.TopScreenSceneViewportDrawPhase == 1U) {
-      dispatch.TopScreenSceneViewportDrawPhase = 2U;
-      state.r[0] = dispatch.TopScreenSceneViewportDrawArgument;
-      return branch(kPauseSceneViewportNativeDraw, pc);
+    if (inputs.HasScene && inputs.SceneMode == 5U) {
+      return branchFromCallsite(pc + 4U, pc + 4U);
     }
-    dispatch.TopScreenSceneViewportDrawPhase = 0U;
-    dispatch.TopScreenSceneViewportDrawArgument = 0U;
-    state.r[0] = 0U;
-    state.r[1] = 0U;
-    state.r[2] = 240U;
-    state.r[3] = 320U;
-    return branch(kGlViewportEntry, pc + 4U);
+    return branchFromCallsite(pc == kPauseSceneFiveDrawCall
+                                  ? kPauseSceneFiveNativeDraw
+                                  : kPauseSceneViewportNativeDraw,
+                              pc + 4U);
   }
   if (pc == kPauseAlternateRendererUpdateCall) {
     if (!dispatch.TopScreenAlternateRendererRestore.has_value()) {
       Oot3dNativeGame::TopScreenPauseDrawInputs inputs;
       if (!Oot3dNativeGame::ReadTopScreenPauseDrawInputs(memory, &inputs)) {
         return false;
+      }
+      // 005D1920 tests scene type 5 before saving any renderer fields.
+      if (inputs.HasScene && inputs.SceneMode == 5U) {
+        return branchFromCallsite(pc + 4U, pc + 4U);
       }
       if (Oot3dNativeGame::UseTopScreenAlternatePauseViewport(inputs)) {
         Oot3dNativeGame::TopScreenAlternateRendererState saved;
@@ -591,9 +573,10 @@ bool ExecuteTopScreenUiSourcePortBlock(
     }
   }
   if (pc == kTopScreenCameraFovScalar) {
+    // 005DF388 scales and clamps to 20..110 degrees at every percentage,
+    // 100 included.
     if (!dispatch.TopScreenCameraFov.Active ||
-        dispatch.TopScreenCameraFov.ValueAddress != state.r[4] + 0x10U ||
-        dispatch.TopScreenCamera.Camera.FovPercent == 100U) {
+        dispatch.TopScreenCameraFov.ValueAddress != state.r[4] + 0x10U) {
       return false;
     }
     std::uint32_t nativeFovBits = 0U;
@@ -747,9 +730,11 @@ bool ExecuteTopScreenUiSourcePortBlock(
       return false;
     }
     uint32_t pauseState = 0U;
-    if (!memory.Read32(0x0050AF68U, &pauseState))
+    Oot3dNativeGame::TopScreenPauseDrawInputs pageInputs;
+    if (!memory.Read32(0x0050AF68U, &pauseState) ||
+        !Oot3dNativeGame::ReadTopScreenPauseDrawInputs(memory, &pageInputs))
       return false;
-    if (Oot3dNativeGame::SuppressTopScreenTouchButtonDraw(pauseState)) {
+    if (Oot3dNativeGame::SuppressTopScreenTouchButtonPageDraw(pauseState, pageInputs)) {
       nextPc = pc + 4U;
     } else {
       state.r[14] = pc + 4U;
@@ -762,6 +747,14 @@ bool ExecuteTopScreenUiSourcePortBlock(
     // native BEQ therefore always takes the no-touch continuation.
     state.cpsr = (state.cpsr & ~((1U << 31U) | (1U << 30U))) | (1U << 30U);
     nextPc = kPauseTouchButtonsNoTouchExit;
+    break;
+  case kPauseTouchButtonsHeldDownQuery:
+    // TopScreen 2.1.1 replaces this PauseInput_GetHeldButtons call with
+    // `mov r0, #0`: held D-pad Down (0x80) never reaches the native 30-update
+    // counter at 0x0042E654 that calls PauseTouchButtons_TogglePrimaryRestriction
+    // (0x002F009C). The mod owns D-pad Down (Ocarina by default).
+    state.r[0] = 0U;
+    nextPc = kPauseTouchButtonsHeldDownTest;
     break;
   case kPauseLowerScreenBlock:
     nextPc = kPauseLowerScreenBlockEnd;

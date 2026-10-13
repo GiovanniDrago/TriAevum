@@ -121,7 +121,17 @@ void ApplyNativeControlShortcutTouch(
 struct TopScreenStartRoutingState {
     bool OpenGestureHeld = false;
     bool CloseGestureHeld = false;
+    // TopScreen 2.1.1 005D52C4..537C records the page that owns the pause UI
+    // (Items 0xC, Gear 0x10, Map 0x14 in 005E21C8, initial 0xC) on every
+    // update, and the START open at 005D5B0C..5B24 reopens that page.
+    NativeA32TopScreenPage LastPage = NativeA32TopScreenPage::Items;
 };
+
+// Source form of the 005E21C8 page memory: Items, then Gear, then Map, as in
+// 005D52C4..537C. Other states (System Menu, no page) keep the last value.
+void ObserveTopScreenStartRoutingPage(bool itemsActive, bool gearActive,
+                                      bool mapActive,
+                                      TopScreenStartRoutingState& state) noexcept;
 
 void MarkTopScreenStartOpenGestureConsumed(
     TopScreenStartRoutingState& state) noexcept;

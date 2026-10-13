@@ -19,6 +19,26 @@ void ApplyNativeWidescreenProjectionPolicy(
     *runtime.TopScreenInput = runtime.TopScreenInputClock->Advance();
     if (runtime.UiLifecycleBridge != nullptr)
       runtime.UiLifecycleBridge->SetTopScreenInputFrame(*runtime.TopScreenInput);
+    if (runtime.UiLifecycleBridge != nullptr && runtime.TraceMemory != nullptr) {
+      // 2.1.1 0x005DF65C, once per native UI update: consume the previous
+      // update's B-copy latch, sample the player after the pause
+      // transaction (skipped when one runs in this update or while the
+      // runtime scene latch holds), and advance the View icon alpha.
+      std::uint8_t runtimeGate = 0U, type = 0U;
+      std::uint32_t play = 0U;
+      auto &guest = *runtime.TraceMemory;
+      if (!guest.Read8(0x005C3F71U, &runtimeGate) || !guest.Read32(0x005043E0U, &play) ||
+          (play != 0U && !guest.Read8(play + 0x100U, &type)))
+        throw std::runtime_error("TopScreen copy latch: cannot read the native scene");
+      const bool retainPrevious =
+          (runtime.PauseTransaction != nullptr && runtime.PauseTransaction->Requested()) ||
+          (play != 0U && type == 3U && runtime.TopScreenTouchCoordinateRoute != nullptr &&
+           runtime.TopScreenTouchCoordinateRoute->RuntimeSceneLatch && runtimeGate != 0U);
+      if (!runtime.UiLifecycleBridge->BeginTopScreenTouchCopies() ||
+          !runtime.UiLifecycleBridge->FinishTopScreenTouchCopies(retainPrevious) ||
+          !runtime.UiLifecycleBridge->AdvanceTopScreenViewIcon())
+        throw std::runtime_error("TopScreen copy latch: native update failed");
+    }
     if (runtime.UiLifecycleBridge != nullptr && runtime.OcarinaText != nullptr) {
       Oot3dNativeGame::TopScreenOcarinaGeometry geometry;
       std::string textError;

@@ -488,8 +488,6 @@ bool NativeA32WindowSession::LoadState(const std::filesystem::path &path,
   nativeCandidateDispatch.TopScreenPauseSystemOpen = {};
   nativeCandidateDispatch.TopScreenViewportDrawPhase = 0U;
   nativeCandidateDispatch.TopScreenViewportDrawArgument = 0U;
-  nativeCandidateDispatch.TopScreenSceneViewportDrawPhase = 0U;
-  nativeCandidateDispatch.TopScreenSceneViewportDrawArgument = 0U;
   nativeCandidateDispatch.TopScreenOverlayViewportDrawPhase = 0U;
   nativeCandidateDispatch.TopScreenTouchCoordinateUpdatePhase = 0U;
   nativeCandidateDispatch.TopScreenAlternateRendererRestore.reset();

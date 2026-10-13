@@ -2427,8 +2427,6 @@ void WriteNativeA32WindowRuntimeSummary(const NativeA32WindowSummaryInputs &in) 
                    {"topscreen_temporal_state",
                     {{"viewport_draw_phase",
                       nativeCandidateDispatch.TopScreenViewportDrawPhase},
-                     {"scene_viewport_draw_phase",
-                      nativeCandidateDispatch.TopScreenSceneViewportDrawPhase},
                      {"overlay_viewport_draw_phase",
                       nativeCandidateDispatch.TopScreenOverlayViewportDrawPhase},
                      {"touch_coordinate_update_phase",

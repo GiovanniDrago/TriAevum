@@ -1169,6 +1169,8 @@ int main() {
   auxiliaryInputs.PlayerHudMode = 1;
   auxiliaryInputs.NestedSceneOwnerActive = true;
   auxiliaryInputs.AlternateHudRendererActive = true;
+  // 005E3D88, latched at the previous native update.
+  auxiliaryInputs.SuppressBCopies = true;
   const auto auxiliaryGeometry = BuildTopScreenAuxiliaryTouchGeometry(
       auxiliaryInputs, dynamicTouch.VerticalOffsets, dynamicTouch.Alpha);
   Require(auxiliaryGeometry.Quads[0].Visible &&
@@ -1178,8 +1180,8 @@ int main() {
               auxiliaryGeometry.Quads[2].Position.X == 227.0F &&
               auxiliaryGeometry.Quads[2].AtlasOrigin.Y == 174.0F &&
               !auxiliaryGeometry.Quads[3].Visible &&
-              auxiliaryGeometry.Quads[4].Position.X == 22.0F &&
-              auxiliaryGeometry.Quads[4].Size.Y == 16.0F &&
+              auxiliaryGeometry.Quads[4].Position.X == 23.0F &&
+              auxiliaryGeometry.Quads[4].Size.Y == 14.0F &&
               auxiliaryGeometry.Quads[4].AtlasSize.Y == 48.0F,
           "TopScreen group-39 auxiliary geometry is incorrect");
   std::vector<oot3d::ui::UiPrimitive> auxiliaryPrimitives;
@@ -1215,8 +1217,9 @@ int main() {
   auxiliaryInputs.TouchLayoutState = 1U;
   const auto fixedAuxiliaryGeometry = BuildTopScreenAuxiliaryTouchGeometry(
       auxiliaryInputs, dynamicTouch.VerticalOffsets, 1.0F);
-  Require(fixedAuxiliaryGeometry.Quads[4].Position.X == 21.0F &&
-              fixedAuxiliaryGeometry.Quads[4].Position.Y == 43.0F &&
+  // 2.1.1 centers it on the lane; the presentation adds the lane offset.
+  Require(fixedAuxiliaryGeometry.Quads[4].Position.X == 20.0F &&
+              fixedAuxiliaryGeometry.Quads[4].Position.Y == 40.0F &&
               fixedAuxiliaryGeometry.Quads[4].Size.X == 20.0F &&
               fixedAuxiliaryGeometry.Quads[4].AtlasOrigin.Y == 56.0F &&
               fixedAuxiliaryGeometry.Quads[4].AtlasSize.Y == 24.0F,
@@ -1394,12 +1397,16 @@ int main() {
                                       {}},
                                      &error),
           "could not map TopScreen counter save fixture");
+  constexpr std::uint32_t kRootPlayState = 0x00528000U;
   Require(touchStateMemory.Write16(0x00587958U + 0x48U, 123U) &&
               touchStateMemory.Write16(0x00587958U + 0x1592U, 0U) &&
               touchStateMemory.Write8(0x00587958U + 0xD4U, 5U) &&
-              touchStateMemory.Write8(kPlayState + 0x100U, 3U) &&
-              touchStateMemory.Write8(kPlayState + 0x101U, 2U) &&
-              touchStateMemory.Write16(kPlayState + 0x104U, 3U) &&
+              // The key gate reads the root PlayState; the ammo counters
+              // stay on the touch-button owner (PauseTouchButton+14).
+              touchStateMemory.Write32(0x005043D4U + 0x0CU, kRootPlayState) &&
+              touchStateMemory.Write8(kRootPlayState + 0x100U, 3U) &&
+              touchStateMemory.Write8(kRootPlayState + 0x101U, 2U) &&
+              touchStateMemory.Write16(kRootPlayState + 0x104U, 3U) &&
               touchStateMemory.Write32(kPlayState + 0x224U, 4U) &&
               touchStateMemory.Write8(kPlayState + 0x435U, 1U) &&
               touchStateMemory.Write32(kPlayState + 0x32CU, 42U) &&
@@ -1713,7 +1720,8 @@ int main() {
           near(scaledSpecialHud[0].destination.y, 7.4F) &&
           near(scaledSpecialHud[0].destination.width, 25.6F) &&
           near(scaledSpecialHud[1].destination.x, 142.4F) &&
-          near(scaledSpecialHud[1].destination.y, 215.0F) &&
+          // 2.1.1 005CE554: about (200, 240) without the HUD margins.
+          near(scaledSpecialHud[1].destination.y, 216.0F) &&
           near(scaledSpecialHud[1].destination.width, 19.2F) &&
           near(scaledSpecialHud[2].destination.x, 349.6F) &&
           near(scaledSpecialHud[2].destination.y, 4.2F) &&
@@ -1749,7 +1757,7 @@ int main() {
   Require(
       nativeTouchMemory.Write32(kRenderer, 92U) &&
           nativeTouchMemory.Write32(0x0050AF34U + 0x34U, 2U) &&
-          nativeTouchMemory.Write32(0x0050AF34U + 0x14U, kTouchQuadPlayState) &&
+          nativeTouchMemory.Write32(0x005043D4U + 0x0CU, kTouchQuadPlayState) &&
           nativeTouchMemory.Write16(kTouchQuadPlayState + 0x2DD4U, 0U) &&
           writeFloats(kPositions + kNativeNaviViewEyeQuad * 0x30U,
                       touchQuadPositions),
@@ -2602,6 +2610,20 @@ int main() {
               SuppressTopScreenTouchButtonDraw(19U) &&
               !SuppressTopScreenTouchButtonDraw(20U),
           "TopScreen touch-button draw state interval is incorrect");
+  {
+    TopScreenPauseDrawInputs pages;
+    bool pagesGate = !SuppressTopScreenTouchButtonPageDraw(2U, pages) &&
+                     SuppressTopScreenTouchButtonPageDraw(12U, pages);
+    for (std::size_t page = 0; page < 4U; ++page) {
+      pages = {};
+      pages.ChildStates[page] = 2U;
+      pagesGate = pagesGate && SuppressTopScreenTouchButtonPageDraw(2U, pages);
+    }
+    pages = {};
+    pages.ChildStates[4] = 1U;
+    Require(pagesGate && !SuppressTopScreenTouchButtonPageDraw(2U, pages),
+            "TopScreen touch-button draw must skip every native pause page (0x005CB5E8)");
+  }
 
   TopScreenPauseDrawInputs viewportInputs;
   viewportInputs.HasScene = true;
@@ -3123,7 +3145,9 @@ int main() {
   Require(mainCameraFovOwner.Active &&
               mainCameraFovOwner.ValueAddress == 0x08001198U &&
               !secondaryCameraFovOwner.Active &&
-              !blockedCameraFovOwner.Active &&
+              // The blocked settings gate only the zoom (005E3D28).
+              blockedCameraFovOwner.Active &&
+              ResolveTopScreenCameraFovDegrees(130.0F, 100U) == 110.0F &&
               std::abs(ResolveTopScreenCameraFovDegrees(60.0F, 115U) -
                        69.0F) < 0.001F &&
               ResolveTopScreenCameraFovDegrees(10.0F, 70U) == 20.0F &&

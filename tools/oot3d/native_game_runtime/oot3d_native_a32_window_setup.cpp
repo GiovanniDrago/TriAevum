@@ -387,12 +387,14 @@ void NativeA32WindowSession::Setup() {
   if (launch.UiProfile == Oot3dNativeGame::Oot3dUiProfile::TopScreen) {
     topScreenSourcePortBlocks = {
         kPauseTouchButtonsDrawCall,       kPauseTouchButtonsTouchBranch,
+        kPauseTouchButtonsHeldDownQuery,
         kPauseLowerScreenBlock,           kPauseDungeonMapCursorInput,
         kPauseUiNativeUpdateCall,         kPauseProjectionPrepareCall,
         kPauseAlternateViewportDrawCall,  kPauseConditionalDrawCall,
         kPauseRoutedCommandCallA,         kPauseRoutedCommandCallB,
         kPauseOverlayViewportDrawCall,    kPauseAlternateRendererUpdateCall,
         kPauseSceneSevenDrawCall,         kPauseSceneViewportDrawCall,
+        kPauseSceneFiveDrawCall,
         kPauseTouchCoordinateUpdateCall,  kPauseRendererVisibilityCall,
         kPauseControllerDrawCall,         kTopScreenCameraNormal1Scalar,
         kTopScreenCameraUpdateEntry,      kTopScreenCameraUpdatePatchSite,

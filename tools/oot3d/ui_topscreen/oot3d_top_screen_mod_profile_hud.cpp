@@ -285,8 +285,12 @@ bool ApplyTopScreenNativeTouchQuad28Layout(
   result.Eligible = true;
 
   float lowerEdge = kDefaultLowerEdge;
+  // 2.1.1 005D6760..6844 tests Play+2DD4 through the root PlayState
+  // *(005043D4+C). PauseTouchButton+14 is a separate renderer-side object
+  // (its +100/+101/+104/+2DD4 are not PlayState fields).
+  constexpr std::uint32_t kPlayStateRoot = 0x005043D4U + 0x0CU;
   std::uint32_t playState = 0U;
-  if (!memory.Read32(kPauseTouchButtonState + 0x14U, &playState)) {
+  if (!memory.Read32(kPlayStateRoot, &playState)) {
     SetError(error, "cannot read native TopScreen touch-quad PlayState owner");
     return false;
   }
@@ -755,7 +759,6 @@ bool AppendTopScreenNativeCounters(
     SetError(error, "native TopScreen number-glyph texture is unavailable");
     return false;
   }
-  constexpr std::uint32_t kPauseTouchButtonState = 0x0050AF34U;
   constexpr std::uint32_t kSaveContext = 0x00587958U;
   std::uint16_t rupees = 0U;
   if (!memory.Read16(kSaveContext + 0x48U, &rupees)) {
@@ -766,12 +769,20 @@ bool AppendTopScreenNativeCounters(
                                      4U, 24.0F, 218.0F, 0.85F, numberGlyphs,
                                      output);
 
+  // 2.1.1 005D8434..8540 gates the key digits on the root PlayState
+  // *(005043D4+C): type 3, subtype 2, scene 3..16, signed key count >= 0.
+  // The ammo counters below belong to the touch-button owner
+  // PauseTouchButton+14, whose +100/+101/+104 are not PlayState fields: the
+  // key gate read through it never passed.
+  constexpr std::uint32_t kPauseTouchButtonState = 0x0050AF34U;
   std::uint32_t playState = 0U;
-  if (!memory.Read32(kPauseTouchButtonState + 0x14U, &playState)) {
+  std::uint32_t touchOwner = 0U;
+  if (!memory.Read32(0x005043D4U + 0x0CU, &playState) ||
+      !memory.Read32(kPauseTouchButtonState + 0x14U, &touchOwner)) {
     SetError(error, "cannot read native TopScreen PlayState");
     return false;
   }
-  if (playState == 0U) {
+  if (touchOwner == 0U) {
     return true;
   }
 
@@ -780,9 +791,10 @@ bool AppendTopScreenNativeCounters(
   std::uint16_t sceneId = 0U;
   std::uint16_t mapIndex = 0U;
   std::uint8_t keyCountRaw = 0U;
-  if (!memory.Read8(playState + 0x100U, &stateType) ||
-      !memory.Read8(playState + 0x101U, &stateSubtype) ||
-      !memory.Read16(playState + 0x104U, &sceneId) ||
+  if ((playState != 0U &&
+       (!memory.Read8(playState + 0x100U, &stateType) ||
+        !memory.Read8(playState + 0x101U, &stateSubtype) ||
+        !memory.Read16(playState + 0x104U, &sceneId))) ||
       !memory.Read16(kSaveContext + 0x1592U, &mapIndex) ||
       !memory.Read8(kSaveContext + 0xD4U + mapIndex, &keyCountRaw)) {
     SetError(error, "cannot read native TopScreen dungeon-key gate");
@@ -801,7 +813,7 @@ bool AppendTopScreenNativeCounters(
   constexpr std::array<float, 4> kAmmoY{44.0F, 68.0F, 20.0F, 44.0F};
   constexpr std::array<std::uint8_t, 4> kOffsetLane{2U, 3U, 0U, 1U};
   std::uint32_t activeSlots = 0U;
-  if (!memory.Read32(playState + 0x224U, &activeSlots)) {
+  if (!memory.Read32(touchOwner + 0x224U, &activeSlots)) {
     SetError(error, "cannot read native TopScreen ammo slot count");
     return false;
   }
@@ -815,8 +827,8 @@ bool AppendTopScreenNativeCounters(
     }
     std::uint8_t visible = 0U;
     std::uint32_t valueRaw = 0U;
-    if (!memory.Read8(playState + 0x435U + index, &visible) ||
-        !memory.Read32(playState + 0x32CU + index * 4U, &valueRaw)) {
+    if (!memory.Read8(touchOwner + 0x435U + index, &visible) ||
+        !memory.Read32(touchOwner + 0x32CU + index * 4U, &valueRaw)) {
       SetError(error, "cannot read native TopScreen ammo counter state");
       return false;
     }
@@ -826,7 +838,7 @@ bool AppendTopScreenNativeCounters(
     }
 
     std::uint32_t sourceCounter = 0U;
-    if (!memory.Read32(playState + 0x10U + index * 4U, &sourceCounter)) {
+    if (!memory.Read32(touchOwner + 0x10U + index * 4U, &sourceCounter)) {
       SetError(error, "cannot read native TopScreen source counter");
       return false;
     }
@@ -899,7 +911,7 @@ bool AppendTopScreenNativeCounters(
     if (!copiedSpecialGeometry) {
       const auto offsetLane = kOffsetLane[index];
       (void)AppendTopScreenCounterDigits(
-          0x005C9940U, playState + 0x32CU + index * 4U,
+          0x005C9940U, touchOwner + 0x32CU + index * 4U,
           static_cast<std::uint32_t>(value), 0U, kAmmoX[index],
           kAmmoY[index] + 3.0F + nativeVerticalOffsets[offsetLane], 0.7F,
           numberGlyphs, output);
@@ -978,9 +990,23 @@ bool ReadTopScreenAuxiliaryTouchInputs(NativeA32Memory &memory,
     return false;
   }
   inputs->AlternateHudRendererActive = alternateRenderer != 0U;
-  if (playState == 0U) {
+  // Read the actor only when the earlier touch/Navi alternatives do not win.
+  const auto readViewActor = [&]() {
+    if (inputs->TouchLayoutState == 1U ||
+        (inputs->HasPlayState && inputs->StateType == 3U &&
+         inputs->StateSubtype == 2U && inputs->PlayerHudMode != 0)) return true;
+    // 005D91FC..9220: 20x10 UV(128,56,48,24), extra X +1.
+    std::uint32_t viewActor = 0U;
+    std::uint16_t viewActorMode = 0U;
+    if (!memory.Read32(0x0051B2F4U, &viewActor) ||
+        (viewActor != 0U && !memory.Read16(viewActor + 0x4B2U, &viewActorMode))) {
+      SetError(error, "cannot read native TopScreen View variant");
+      return false;
+    }
+    inputs->ViewActorMode20 = viewActor != 0U && viewActorMode == 0x20U;
     return true;
-  }
+  };
+  if (playState == 0U) return readViewActor();
 
   inputs->HasPlayState = true;
   if (!memory.Read8(playState + 0x100U, &inputs->StateType) ||
@@ -1011,6 +1037,30 @@ bool ReadTopScreenAuxiliaryTouchInputs(NativeA32Memory &memory,
     }
     inputs->PlayerHudMode = static_cast<std::int16_t>(playerHudMode);
   }
+  return readViewActor();
+}
+
+bool AdvanceTopScreenViewAlpha(NativeA32Memory &memory, float *alpha) {
+  if (alpha == nullptr) return false;
+  std::uint32_t mode = 0U, play = 0U, player = 0U;
+  if (!memory.Read32(0x0050AF68U, &mode) ||
+      !memory.Read32(0x005043E0U, &play)) return false;
+  float target = 1.0F;
+  if (mode == 2U && play != 0U) {
+    std::uint8_t type = 0U, subtype = 0U;
+    if (!memory.Read8(play + 0x100U, &type) ||
+        !memory.Read8(play + 0x101U, &subtype)) return false;
+    if (type == 3U && subtype == 2U) {
+      if (!memory.Read32(play + 0x20ACU, &player)) return false;
+      if (player != 0U) {
+        std::uint32_t bits = 0U;
+        if (!memory.Read32(player + 0x6CU, &bits)) return false;
+        if (std::bit_cast<float>(bits) > 0.1F) target = 0.72F;
+      }
+    }
+  }
+  // 005D5204..5218. No per-icon blink or 0.9 multiplier.
+  *alpha += (target - *alpha) * 0.2F;
   return true;
 }
 
@@ -1022,9 +1072,7 @@ TopScreenAuxiliaryTouchGeometry BuildTopScreenAuxiliaryTouchGeometry(
   constexpr std::array<float, 4> kCentersY{20.0F, 44.0F, 44.0F, 68.0F};
   constexpr std::array<float, 4> kAtlasY{142.0F, 158.0F, 126.0F, 190.0F};
   const float auxiliaryAlpha = std::clamp(nativeAlpha * 0.9F, 0.0F, 1.0F);
-  const bool conditionalVisible =
-      inputs.AlternateHudRendererActive &&
-      (inputs.NestedSceneOwnerActive || inputs.PauseState == 11U);
+  const bool conditionalVisible = inputs.SuppressBCopies;
 
   TopScreenAuxiliaryTouchGeometry result;
   for (std::size_t index = 0U; index < 4U; ++index) {
@@ -1049,25 +1097,37 @@ TopScreenAuxiliaryTouchGeometry BuildTopScreenAuxiliaryTouchGeometry(
   }
 
   auto &layoutQuad = result.Quads[4];
-  layoutQuad.Visible = nativeAlpha > 0.0F;
-  layoutQuad.Color = {1.0F, 1.0F, 1.0F, std::clamp(nativeAlpha, 0.0F, 1.0F)};
+  const bool hiddenMode =
+      (inputs.PauseState >= 12U && inputs.PauseState <= 19U) ||
+      inputs.PauseState == 23U;
+  const float viewAlpha = hiddenMode ? 0.0F : std::clamp(nativeAlpha, 0.0F, 1.0F);
+  layoutQuad.Visible = viewAlpha > 0.0F;
+  layoutQuad.Color = {1.0F, 1.0F, 1.0F, viewAlpha};
+  float extraX = 0.0F;
+  // Variant priority is touch+70 == 1, then Navi, then actor mode / eye.
   if (inputs.TouchLayoutState == 1U) {
-    layoutQuad.Position = {21.0F, 43.0F};
     layoutQuad.Size = {20.0F, 10.0F};
     layoutQuad.AtlasOrigin = {176.0F, 56.0F};
     layoutQuad.AtlasSize = {48.0F, 24.0F};
   } else if (inputs.HasPlayState && inputs.StateType == 3U &&
              inputs.StateSubtype == 2U && inputs.PlayerHudMode != 0) {
-    layoutQuad.Position = {22.0F, 35.0F};
-    layoutQuad.Size = {16.0F, 16.0F};
+    layoutQuad.Size = {14.0F, 14.0F};
     layoutQuad.AtlasOrigin = {176.0F, 0.0F};
     layoutQuad.AtlasSize = {48.0F, 48.0F};
+  } else if (inputs.ViewActorMode20) {
+    layoutQuad.Size = {20.0F, 10.0F};
+    layoutQuad.AtlasOrigin = {128.0F, 56.0F};
+    layoutQuad.AtlasSize = {48.0F, 24.0F};
+    extraX = 1.0F;
   } else {
-    layoutQuad.Position = {23.0F, 40.0F};
     layoutQuad.Size = {16.0F, 10.0F};
-    layoutQuad.AtlasOrigin = {128.0F, 0.0F};
-    layoutQuad.AtlasSize = {48.0F, 30.0F};
+    layoutQuad.AtlasOrigin = {129.0F, 0.0F};
+    layoutQuad.AtlasSize = {47.0F, 30.0F};
   }
+  // Base center, not the Up lane: singleton Navi has no lane correction.
+  // AppendTopScreenDpadPresentation adds {1,2,0,0} only for mapped lanes.
+  layoutQuad.Position = {30.0F - layoutQuad.Size.X * 0.5F + extraX,
+                         45.0F - layoutQuad.Size.Y * 0.5F};
   return result;
 }
 
@@ -1101,11 +1161,46 @@ std::size_t AppendTopScreenAuxiliaryTouchPresentation(
   return output.size() - startSize;
 }
 
+bool BeginTopScreenTouchCopyUpdate(NativeA32Memory &memory,
+                                  TopScreenTouchCopyState *state) {
+  if (state == nullptr) return false;
+  std::uint32_t mode = 0U, alternate = 0U;
+  if (!memory.Read32(0x0050AF68U, &mode) ||
+      !memory.Read32(0x004FC688U, &alternate)) return false;
+  // 005D4AAC..4AE0: consume the OLD latch BEFORE input transactions.
+  state->SuppressBCopies =
+      (state->PreviousNestedOwnerActive || mode == 11U) && alternate != 0U;
+  return true;
+}
+
+bool FinishTopScreenTouchCopyUpdate(NativeA32Memory &memory,
+                                   bool retainPrevious,
+                                   TopScreenTouchCopyState *state) {
+  if (state == nullptr) return false;
+  if (retainPrevious) return true;
+  // 005D51BC / 005D5340 clear outside gameplay; 005D5778..57A0 samples
+  // the player only after input routing. Null player also clears the latch.
+  std::uint32_t play = 0U, player = 0U, nested = 0U;
+  std::uint8_t type = 0U, subtype = 0U;
+  if (!memory.Read32(0x005043E0U, &play)) return false;
+  if (play != 0U) {
+    if (!memory.Read8(play + 0x100U, &type) ||
+        !memory.Read8(play + 0x101U, &subtype)) return false;
+    if (type == 3U && subtype == 2U) {
+      if (!memory.Read32(play + 0x20ACU, &player)) return false;
+      if (player != 0U && !memory.Read32(player + 0x12B8U, &nested))
+        return false;
+    }
+  }
+  state->PreviousNestedOwnerActive = nested != 0U;
+  return true;
+}
+
 bool AppendTopScreenNativeTouchCopies(
     NativeA32Memory &memory, const oot3d::ui::UiTextureIdentity &pauseTopPage,
     std::vector<oot3d::ui::UiPrimitive> &output,
     TopScreenNativeTouchCopyStats *stats, std::string *error,
-    const TopScreenUiConfig *config) {
+    const TopScreenUiConfig *config, bool suppressBCopies) {
   TopScreenNativeTouchCopyStats result;
   constexpr std::uint32_t kPauseTouchButtonState = 0x0050AF34U;
   std::uint32_t touchState = 0U;
@@ -1222,6 +1317,9 @@ bool AppendTopScreenNativeTouchCopies(
     primitive.destination = {transformed[0].X, transformed[0].Y,
                              transformed[1].X - transformed[0].X,
                              transformed[2].Y - transformed[0].Y};
+    // 005D6914..6948 collapses only the first two copies (B label/icon).
+    const bool suppressed = contractIndex < 2U && suppressBCopies;
+    if (suppressed) primitive.destination = {500.0F, 300.0F, 0.0F, 0.0F};
     primitive.uv = NativePicaQuadUvToHost(uvs);
     primitive.color = {colors[0], colors[1], colors[2], colors[3]};
     // 005D6C50..005D6C88: do not expose stale contextual quads while
@@ -1232,7 +1330,7 @@ bool AppendTopScreenNativeTouchCopies(
       primitive.color.alpha = 0.0F;
     }
     primitive.layer = 13U;
-    primitive.visible = primitive.color.alpha != 0.0F;
+    primitive.visible = !suppressed && primitive.color.alpha != 0.0F;
     if (primitive.visible) {
       ++result.AlphaVisiblePrimitives;
       if (horseStamina) {
@@ -1311,10 +1409,11 @@ void ApplyTopScreenHudScale(
     // 2.1.1 005CE554 scales copied stamina quads 28..33 as one row
     // about (200, 240), not as independent left/right HUD groups.
     const bool stamina = primitive.role == oot3d::ui::UiPrimitiveRole::HorseStamina;
+    // Its pivot literals 005CF558/005CF55C are (200, 240), with no margins.
     const float pivotX = stamina ? 200.0F : (left ? 0.0F : 400.0F);
-    const float pivotY = top ? 0.0F : 240.0F;
+    const float pivotY = stamina ? 240.0F : (top ? 0.0F : 240.0F);
     const float insetX = stamina ? 0.0F : (left ? marginX : -marginX);
-    const float insetY = top ? marginY : -marginY;
+    const float insetY = stamina ? 0.0F : (top ? marginY : -marginY);
     destination.x =
         pivotX + (destination.x - pivotX) * scale + insetX;
     destination.y =

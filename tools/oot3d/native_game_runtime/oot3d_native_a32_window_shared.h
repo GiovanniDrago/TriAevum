@@ -166,6 +166,8 @@ inline constexpr uint32_t kPauseAlternateRendererUpdateCall = 0x00300538U;
 inline constexpr uint32_t kPauseAlternateRendererNativeUpdate = 0x0042A278U;
 inline constexpr uint32_t kPauseSceneSevenDrawCall = 0x00300520U;
 inline constexpr uint32_t kPauseSceneSevenNativeDraw = 0x004228E4U;
+inline constexpr uint32_t kPauseSceneFiveDrawCall = 0x0030052CU;
+inline constexpr uint32_t kPauseSceneFiveNativeDraw = 0x0042CB54U;
 inline constexpr uint32_t kPauseSceneViewportDrawCall = 0x00300550U;
 inline constexpr uint32_t kPauseSceneViewportNativeDraw = 0x0042CBCCU;
 inline constexpr uint32_t kPauseTouchCoordinateUpdateCall = 0x0041E984U;
@@ -188,6 +190,9 @@ inline constexpr uint32_t kPauseIconBuild = 0x002E6CD4U;
 inline constexpr uint32_t kPauseTouchButtonsDrawCall = 0x0042F5CCU;
 inline constexpr uint32_t kPauseTouchButtonsTouchBranch = 0x0042EC2CU;
 inline constexpr uint32_t kPauseTouchButtonsNoTouchExit = 0x0042F294U;
+// IPS 0x0042E644: `bl PauseInput_GetHeldButtons` -> `mov r0, #0`.
+inline constexpr uint32_t kPauseTouchButtonsHeldDownQuery = 0x0042E644U;
+inline constexpr uint32_t kPauseTouchButtonsHeldDownTest = 0x0042E648U;
 inline constexpr uint32_t kPauseLowerScreenBlock = 0x0041DDC8U;
 inline constexpr uint32_t kPauseLowerScreenBlockEnd = 0x0041DEC8U;
 inline constexpr uint32_t kPauseDungeonMapCursorInput = 0x00442F38U;
@@ -561,8 +566,6 @@ struct NativeCandidateDispatchState {
       TopScreenGameplayActionRuntime;
   uint8_t TopScreenViewportDrawPhase = 0U;
   uint32_t TopScreenViewportDrawArgument = 0U;
-  uint8_t TopScreenSceneViewportDrawPhase = 0U;
-  uint32_t TopScreenSceneViewportDrawArgument = 0U;
   uint8_t TopScreenOverlayViewportDrawPhase = 0U;
   uint8_t TopScreenTouchCoordinateUpdatePhase = 0U;
   std::optional<Oot3dNativeGame::TopScreenAlternateRendererState>

@@ -79,6 +79,16 @@ public:
   NativeUiLifecycleObservation ObserveGuestEntry(uint32_t guestEntry);
   void ObserveGameplayComposition() noexcept;
   bool ApplyTopScreenGuestHook(uint32_t guestPc, uint32_t guestR0 = 0U);
+  bool AdvanceTopScreenViewIcon() {
+    return AdvanceTopScreenViewAlpha(mMemory, &mTopScreenViewAlpha);
+  }
+  bool BeginTopScreenTouchCopies() {
+    return BeginTopScreenTouchCopyUpdate(mMemory, &mTopScreenTouchCopies);
+  }
+  bool FinishTopScreenTouchCopies(bool retainPrevious) {
+    return FinishTopScreenTouchCopyUpdate(mMemory, retainPrevious,
+                                         &mTopScreenTouchCopies);
+  }
   std::vector<oot3d::ui::UiPrimitive>
   BuildShadowPresentation(oot3d::ui::UiSubsystem subsystem);
   std::vector<oot3d::ui::UiPrimitive>
@@ -152,6 +162,8 @@ private:
   TopScreenExtendedInputFrame mTopScreenInput;
   TopScreenOcarinaBrowser mTopScreenOcarina;
   TopScreenItemsHintRuntimeState mTopScreenItemsHint;
+  TopScreenTouchCopyState mTopScreenTouchCopies;
+  float mTopScreenViewAlpha = 1.0F;
   bool mVersionChoiceRevealRequired = false;
   bool mVersionChoiceRevealed = false;
   TopScreenUiConfig mTopScreenConfig;
