@@ -245,6 +245,7 @@ int main(int argc, char** argv) {
         ConfigurePicaAotShaders(launch);
 #ifdef OOT3D_NATIVE_A32_WINDOW_AVAILABLE
         RunOot3dNativeA32Window(launch);
+        ClearLaunchMarkerForDemo();
         // The A32 window owns objects that refer back to the host context.
         // Destroy those locals on return before tearing the context down.
         DestroyContextForDemo();

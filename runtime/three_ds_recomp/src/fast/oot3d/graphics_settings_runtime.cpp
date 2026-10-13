@@ -6,6 +6,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <string_view>
 #include <vector>
@@ -391,6 +392,27 @@ GraphicsSettingsRuntime::GraphicsSettingsRuntime() {
     if (customized) {
         initial.Preset = GraphicsPreset::Custom;
         selectedInitial = true;
+    }
+    // The host found that the previous launch with these settings ended in
+    // its first minute (TRIAEVUM_SAFE_PRESENTATION carries why): the stored
+    // presentation (resolutions, window mode, anti-aliasing and upscaler) may
+    // be what ends it, so it restarts from the defaults and is stored so,
+    // instead of failing at every launch. Everything else is kept.
+    if (const char* safe = std::getenv("TRIAEVUM_SAFE_PRESENTATION");
+        selectedInitial && safe != nullptr && *safe != '\0') {
+        const GraphicsSettings defaults{};
+        initial.Window = defaults.Window;
+        initial.OutputWidth = defaults.OutputWidth;
+        initial.OutputHeight = defaults.OutputHeight;
+        initial.InternalResolutionScale = defaults.InternalResolutionScale;
+        initial.AntiAliasing = defaults.AntiAliasing;
+        initial.MsaaSamples = defaults.MsaaSamples;
+        initial.Upscaler = defaults.Upscaler;
+        initial.UpscalerMode = defaults.UpscalerMode;
+        rewriteLoadedSettings = true;
+        SPDLOG_WARN("OOT3D graphics: {}; display, resolution, anti-aliasing and upscaler settings were reset "
+                    "to their defaults", safe);
+        std::fprintf(stderr, "TRIAEVUM_SAFE_PRESENTATION reason=\"%s\"\n", safe);
     }
     if (selectedInitial) {
         mService = GraphicsSettingsService(std::move(initial));
