@@ -257,19 +257,11 @@ uint32_t RoomShadowSector(const ShadowVector& light) noexcept {
     }
     return result;
 }
-std::shared_ptr<const RoomShadowShell> BuildRoomShadowShell(uint64_t fingerprint,
-                                                            std::span<const RoomShadowTriangle> input, uint32_t size,
-                                                            std::stop_token stop, bool interior,
-                                                            RoomInteriorSunStats* suppliedStats) {
-    RoomInteriorSunStats stats;
-    struct Publish {
-        RoomInteriorSunStats* Output;
-        RoomInteriorSunStats& Value;
-        ~Publish() {
-            if (Output)
-                *Output = Value;
-        }
-    } publish{ suppliedStats, stats };
+namespace {
+// Opaque triangles with exactly coincident positions welded, in input order;
+// zero masks. Null on bounds, cancellation or a non-finite position.
+std::shared_ptr<RoomShadowShell> WeldRoomShadowShell(uint64_t fingerprint, std::span<const RoomShadowTriangle> input,
+                                                     uint32_t size, std::stop_token stop, bool interior) {
     if (input.size() > kMaximumRoomShadowTriangles || size < 8 || size > 2048 || stop.stop_requested())
         return {};
     auto result = std::make_shared<RoomShadowShell>();
@@ -296,6 +288,47 @@ std::shared_ptr<const RoomShadowShell> BuildRoomShadowShell(uint64_t fingerprint
     }
     result->ShellMasks.resize(result->Indices.size() / 3);
     Bounds(*result);
+    return result;
+}
+
+std::shared_ptr<const RoomShadowShell> Seal(std::shared_ptr<RoomShadowShell> result) {
+    const auto encoded = EncodeRoomShadowShell(*result);
+    if (encoded.empty())
+        return {};
+    result->ContentVersion = Get(encoded, encoded.size() - 8, 8);
+    return result;
+}
+} // namespace
+
+std::shared_ptr<const RoomShadowShell> AssembleRoomShadowShell(uint64_t fingerprint,
+                                                               std::span<const RoomShadowTriangle> input,
+                                                               std::span<const uint64_t> masks, uint32_t size,
+                                                               bool interior) {
+    auto result = WeldRoomShadowShell(fingerprint, input, size, {}, interior);
+    if (!result || masks.size() != result->ShellMasks.size())
+        return {};
+    if (!interior && std::any_of(masks.begin(), masks.end(), [](uint64_t mask) { return mask != 0; }))
+        return {};
+    std::copy(masks.begin(), masks.end(), result->ShellMasks.begin());
+    return Seal(std::move(result));
+}
+
+std::shared_ptr<const RoomShadowShell> BuildRoomShadowShell(uint64_t fingerprint,
+                                                            std::span<const RoomShadowTriangle> input, uint32_t size,
+                                                            std::stop_token stop, bool interior,
+                                                            RoomInteriorSunStats* suppliedStats) {
+    RoomInteriorSunStats stats;
+    struct Publish {
+        RoomInteriorSunStats* Output;
+        RoomInteriorSunStats& Value;
+        ~Publish() {
+            if (Output)
+                *Output = Value;
+        }
+    } publish{ suppliedStats, stats };
+    auto result = WeldRoomShadowShell(fingerprint, input, size, stop, interior);
+    if (!result)
+        return {};
     if (interior && !result->Indices.empty()) {
         try {
             InteriorGrid grid;
@@ -333,11 +366,7 @@ std::shared_ptr<const RoomShadowShell> BuildRoomShadowShell(uint64_t fingerprint
             }
         } catch (const std::exception&) { return {}; }
     }
-    const auto encoded = EncodeRoomShadowShell(*result);
-    if (encoded.empty())
-        return {};
-    result->ContentVersion = Get(encoded, encoded.size() - 8, 8);
-    return result;
+    return Seal(std::move(result));
 }
 std::vector<uint8_t> EncodeRoomShadowShell(const RoomShadowShell& mesh) {
     if (!Valid(mesh))

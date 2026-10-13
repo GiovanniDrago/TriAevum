@@ -309,6 +309,40 @@ void OfflineTests() {
   const auto second = PrebuildInteriorSun(root / "romfs", root / "cache");
   Check(second["built"] == 0 && second["hits"] == 2,
         "offline cache not reused");
+  // An exported mask table gives a fresh cache the same bytes, without
+  // building the interior; the exterior welds locally. A damaged table fails.
+  (void)PrebuildInteriorSun(root / "romfs", root / "export-cache", {},
+                            root / "masks.bin");
+  const auto assembled = PrebuildInteriorSun(
+      root / "romfs", root / "table-cache", root / "masks.bin");
+  Check(assembled["built"] == 1 && assembled["precomputed"] == 1 &&
+            assembled["precomputed_entries"] == 1 &&
+            assembled["entries"][2]["status"] == "precomputed",
+        "mask table not applied");
+  for (const auto &entry : assembled["entries"]) {
+    const auto read = [](const std::filesystem::path &path) {
+      std::ifstream in(path, std::ios::binary);
+      return std::vector<char>(std::istreambuf_iterator<char>(in), {});
+    };
+    const auto relative = entry["path"].get<std::string>();
+    Check(read(root / "table-cache" / relative) ==
+              read(root / "cache" / relative),
+          "mask table cache differs from a built cache");
+  }
+  {
+    std::fstream table(root / "masks.bin",
+                       std::ios::binary | std::ios::in | std::ios::out);
+    table.seekp(16);
+    table.put('\x5a');
+  }
+  bool damaged = false;
+  try {
+    (void)PrebuildInteriorSun(root / "romfs", root / "damaged-cache",
+                              root / "masks.bin");
+  } catch (const std::exception &) {
+    damaged = true;
+  }
+  Check(damaged, "damaged mask table accepted");
   // Minimal Level-3 image with root and scene directory. Also wrap it in IVFC.
   std::vector<uint8_t> dirs(60);
   Put(dirs, 20, 0);

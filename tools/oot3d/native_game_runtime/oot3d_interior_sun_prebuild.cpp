@@ -2,13 +2,18 @@
 #include "oot3d_native_room_shadow_shell.h"
 #include "recomp/a32_runtime.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <nlohmann/json.hpp>
+#include <numeric>
+#include <optional>
 #include <regex>
 #include <stdexcept>
+#include <thread>
 
 namespace Oot3dNativeGame {
 namespace {
@@ -151,20 +156,190 @@ std::string Hex(uint64_t value) {
                 static_cast<unsigned long long>(value));
   return b;
 }
+// Interior-sun masks the release computed for identical room content, keyed
+// by the content fingerprint; the table carries no geometry. Little-endian:
+// "TISP", u32 format 1, u32 criterion version, u32 entry count; per entry u64
+// fingerprint (strictly increasing), u32 triangles, u32 kind (0 masks, 1 the
+// work/memory bound fallback), u64 first mask; the u64 masks; then a u64
+// FNV-1a checksum of everything before it, with the cache's basis.
+constexpr uint32_t kTableMagic = 0x50534954;
+constexpr uint32_t kTableFormat = 1;
+constexpr uint64_t kTableMaxBytes = 256ULL * 1024 * 1024;
+constexpr const char *kBoundReason = "interior-sun work or memory bound exceeded";
+uint64_t Checksum(std::span<const uint8_t> bytes) {
+  uint64_t hash = 1469598103934665603ULL;
+  for (const auto byte : bytes) {
+    hash ^= byte;
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+struct MaskTable {
+  struct Entry {
+    uint32_t Triangles = 0, Kind = 0;
+    uint64_t First = 0;
+  };
+  std::map<uint64_t, Entry> Entries;
+  std::vector<uint64_t> Masks;
+};
+MaskTable LoadMaskTable(const std::filesystem::path &path) {
+  MaskTable table;
+  if (path.empty())
+    return table;
+  const auto size = std::filesystem::file_size(path);
+  if (size < 24 || size > kTableMaxBytes)
+    throw std::runtime_error("invalid interior-sun table size");
+  Bytes b(static_cast<size_t>(size));
+  std::ifstream in(path, std::ios::binary);
+  if (!in.read(reinterpret_cast<char *>(b.data()), std::streamsize(b.size())))
+    throw std::runtime_error("interior-sun table read failed");
+  if (U32(b, 0) != kTableMagic || U32(b, 4) != kTableFormat ||
+      U32(b, 8) != Fast::Renderer3ds::kRoomShadowShellVersion)
+    throw std::runtime_error("interior-sun table version differs");
+  if (U64(b, b.size() - 8) != Checksum(std::span(b).first(b.size() - 8)))
+    throw std::runtime_error("interior-sun table checksum differs");
+  const uint64_t count = U32(b, 12), masksAt = 16 + count * 24;
+  if (masksAt > b.size() - 8 || (b.size() - 8 - masksAt) % 8)
+    throw std::runtime_error("invalid interior-sun table extent");
+  uint64_t previous = 0, next = 0;
+  for (uint64_t i = 0; i < count; ++i) {
+    const size_t at = size_t(16 + i * 24);
+    const uint64_t fingerprint = U64(b, at), first = U64(b, at + 16);
+    const uint32_t triangles = U32(b, at + 8), kind = U32(b, at + 12);
+    if ((i && fingerprint <= previous) || kind > 1 || first != next ||
+        (kind == 1 && triangles) ||
+        triangles > Fast::Renderer3ds::kMaximumRoomShadowTriangles)
+      throw std::runtime_error("invalid interior-sun table entry");
+    table.Entries.emplace(fingerprint, MaskTable::Entry{triangles, kind, first});
+    previous = fingerprint;
+    next += triangles;
+  }
+  if (next != (b.size() - 8 - masksAt) / 8)
+    throw std::runtime_error("invalid interior-sun table mask count");
+  table.Masks.resize(size_t(next));
+  for (size_t k = 0; k < table.Masks.size(); ++k)
+    table.Masks[k] = U64(b, size_t(masksAt + k * 8));
+  return table;
+}
+void PutLe(Bytes &b, uint64_t value, size_t bytes) {
+  for (size_t i = 0; i < bytes; ++i)
+    b.push_back(uint8_t(value >> (8 * i)));
+}
+// One room content and class: its geometry, then its outcome.
+struct RoomJob {
+  uint64_t Fingerprint = 0;
+  bool Interior = false;
+  bool Complete = true;
+  std::vector<Fast::Renderer3ds::RoomShadowTriangle> Triangles;
+  std::string Status = "fallback", Error;
+  std::shared_ptr<const Fast::Renderer3ds::RoomShadowShell> Mesh;
+  Fast::Renderer3ds::RoomInteriorSunStats Stats;
+  double Milliseconds = 0;
+};
+void RunRoomJob(RoomJob &job, const std::filesystem::path &cache,
+                const MaskTable &table) {
+  using namespace Fast::Renderer3ds;
+  const auto started = std::chrono::steady_clock::now();
+  if (!job.Complete) {
+    job.Error = "unsupported or incomplete CMB geometry";
+  } else if ((job.Mesh = LoadRoomShadowShell(cache, job.Fingerprint, job.Interior))) {
+    job.Status = "hit";
+  } else {
+    const auto known = job.Interior ? table.Entries.find(job.Fingerprint)
+                                    : table.Entries.end();
+    if (known != table.Entries.end() && known->second.Kind == 1) {
+      job.Error = kBoundReason;
+    } else {
+      if (known != table.Entries.end()) {
+        job.Mesh = AssembleRoomShadowShell(
+            job.Fingerprint, job.Triangles,
+            std::span(table.Masks).subspan(size_t(known->second.First),
+                                           known->second.Triangles),
+            kRoomShadowRasterSize, true);
+        if (job.Mesh)
+          job.Status = "precomputed";
+      }
+      if (!job.Mesh) {
+        job.Mesh = BuildRoomShadowShell(job.Fingerprint, job.Triangles,
+                                        kRoomShadowRasterSize, {},
+                                        job.Interior, &job.Stats);
+        if (job.Mesh)
+          job.Status = "built";
+        else
+          job.Error = kBoundReason;
+      }
+      if (job.Mesh) {
+        std::string error;
+        if (!SaveRoomShadowShell(cache, *job.Mesh, &error))
+          throw std::runtime_error("interior-sun cache write failed: " + error);
+      }
+    }
+  }
+  job.Triangles = {};
+  job.Milliseconds += std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - started)
+                          .count();
+}
+void ExportMaskTable(const std::filesystem::path &path,
+                     const std::vector<RoomJob> &jobs) {
+  std::map<uint64_t, const RoomJob *> interior;
+  for (const auto &job : jobs)
+    if (job.Interior && (job.Mesh || job.Error == kBoundReason))
+      interior.emplace(job.Fingerprint, &job);
+  Bytes b;
+  PutLe(b, kTableMagic, 4);
+  PutLe(b, kTableFormat, 4);
+  PutLe(b, Fast::Renderer3ds::kRoomShadowShellVersion, 4);
+  PutLe(b, interior.size(), 4);
+  uint64_t first = 0;
+  for (const auto &[fingerprint, job] : interior) {
+    const uint64_t triangles = job->Mesh ? job->Mesh->ShellMasks.size() : 0;
+    PutLe(b, fingerprint, 8);
+    PutLe(b, triangles, 4);
+    PutLe(b, job->Mesh ? 0 : 1, 4);
+    PutLe(b, first, 8);
+    first += triangles;
+  }
+  for (const auto &[fingerprint, job] : interior)
+    if (job->Mesh)
+      for (const auto mask : job->Mesh->ShellMasks)
+        PutLe(b, mask, 8);
+  PutLe(b, Checksum(b), 8);
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out.write(reinterpret_cast<const char *>(b.data()), std::streamsize(b.size()));
+  out.close();
+  if (!out)
+    throw std::runtime_error("cannot write interior-sun table");
+}
 } // namespace
 nlohmann::json
 PrebuildInteriorSun(const std::filesystem::path &romfs,
-                    const std::filesystem::path &cacheDirectory) {
+                    const std::filesystem::path &cacheDirectory,
+                    const std::filesystem::path &maskTable,
+                    const std::filesystem::path &exportTable) {
   using namespace Fast::Renderer3ds;
   if (cacheDirectory.empty())
     throw std::runtime_error("renderer cache directory is required");
   const auto cache =
       std::filesystem::absolute(cacheDirectory).lexically_normal();
+  const auto table = LoadMaskTable(maskTable);
   Romfs source(romfs);
   const std::regex roomName(R"(^(.+)_([0-9]+)(_dd)?_info\.zsi$)");
-  auto entries = nlohmann::json::array();
-  size_t roomCount = 0, built = 0, hits = 0, fallback = 0;
-  std::map<std::pair<uint64_t, bool>, nlohmann::json> completed;
+  // Every room and setup in inventory order; identical content and class
+  // share one job, prepared once.
+  struct Visit {
+    std::string Room;
+    uint32_t Setup = 0;
+    bool Interior = false;
+    uint64_t Fingerprint = 0;
+    std::optional<size_t> Job;
+    bool Reused = false;
+    std::string Error;
+  };
+  std::vector<Visit> visits;
+  std::vector<RoomJob> jobs;
+  std::map<std::pair<uint64_t, bool>, size_t> jobOf;
+  size_t roomCount = 0;
   for (const auto &[name, file] : source.Files) {
     std::smatch match;
     if (!std::regex_match(name, match, roomName))
@@ -180,94 +355,125 @@ PrebuildInteriorSun(const std::filesystem::path &romfs,
     for (uint32_t setup = 0; setup <= setups; ++setup) {
       const auto started = std::chrono::steady_clock::now();
       const auto header = ReadNativeSunHeader(0x10, setup, room);
-      const bool interior =
-          NativeRoomIsInterior(header, ReadNativeSunHeader(0x10, setup, scene));
-      uint64_t fingerprint = NativeRoomSunFingerprint(
-          loaded.Fingerprint, header ? header->CommandOffset : 0);
-      auto entry = nlohmann::json{{"room", name},
-                                  {"setup", setup},
-                                  {"interior", interior},
-                                  {"status", "fallback"}};
-      std::string error;
+      Visit visit{name, setup,
+                  NativeRoomIsInterior(header,
+                                       ReadNativeSunHeader(0x10, setup, scene)),
+                  NativeRoomSunFingerprint(loaded.Fingerprint,
+                                           header ? header->CommandOffset : 0)};
       auto cmbs = CaptureNativeRoomShadowCmbs(
-          loaded, room, NativeRoomShadowSource::File, &error, setup);
-      std::shared_ptr<const RoomShadowShell> mesh;
-      RoomInteriorSunStats stats;
+          loaded, room, NativeRoomShadowSource::File, &visit.Error, setup);
       if (cmbs) {
-        fingerprint = NativeRoomSunContentFingerprint(fingerprint, *cmbs);
-        const auto key = std::pair{fingerprint, interior};
-        if (const auto found = completed.find(key); found != completed.end()) {
-          auto reused = found->second;
-          reused["room"] = name;
-          reused["setup"] = setup;
-          reused["reused_in_run"] = true;
-          entries.push_back(std::move(reused));
-          continue;
-        }
-        mesh = LoadRoomShadowShell(cache, fingerprint, interior);
-        if (mesh) {
-          entry["status"] = "hit";
-          ++hits;
+        visit.Fingerprint =
+            NativeRoomSunContentFingerprint(visit.Fingerprint, *cmbs);
+        const auto key = std::pair{visit.Fingerprint, visit.Interior};
+        if (const auto found = jobOf.find(key); found != jobOf.end()) {
+          visit.Job = found->second;
+          visit.Reused = true;
         } else {
-          std::vector<RoomShadowTriangle> triangles;
-          bool complete = true;
+          RoomJob job{visit.Fingerprint, visit.Interior};
           for (const auto &bytes : *cmbs) {
             const auto geometry = ParseNativeRoomShadowCmb(bytes);
             if (!geometry || !geometry->Complete ||
-                triangles.size() + geometry->Triangles.size() >
+                job.Triangles.size() + geometry->Triangles.size() >
                     kMaximumRoomShadowTriangles) {
-              complete = false;
-              error = "unsupported or incomplete CMB geometry";
+              job.Complete = false;
+              job.Triangles = {};
               break;
             }
-            triangles.insert(triangles.end(), geometry->Triangles.begin(),
-                             geometry->Triangles.end());
+            job.Triangles.insert(job.Triangles.end(),
+                                 geometry->Triangles.begin(),
+                                 geometry->Triangles.end());
           }
-          if (complete) {
-            mesh = BuildRoomShadowShell(fingerprint, triangles,
-                                        kRoomShadowRasterSize, {}, interior,
-                                        &stats);
-            if (!mesh)
-              error = "interior-sun work or memory bound exceeded";
-          }
-          if (mesh) {
-            if (!SaveRoomShadowShell(cache, *mesh, &error))
-              throw std::runtime_error("interior-sun cache write failed: " +
-                                       error);
-            entry["status"] = "built";
-            ++built;
-          }
+          job.Milliseconds = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - started)
+                                 .count();
+          visit.Job = jobs.size();
+          jobOf.emplace(key, jobs.size());
+          jobs.push_back(std::move(job));
         }
       }
-      entry["fingerprint"] = Hex(fingerprint);
-      entry["voxels"] = stats.Voxels;
-      entry["peak_grid_bytes"] = stats.PeakWorkingBytes;
-      entry["interior_voxels"] = stats.InteriorVoxels;
-      entry["closing_steps"] = stats.ClosingSteps;
-      entry["ms"] = std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - started)
-                        .count();
-      if (mesh) {
-        entry["path"] =
-            RoomShadowShellPath({}, fingerprint, interior).generic_string();
-        entry["triangles"] = mesh->ShellMasks.size();
-      } else {
-        ++fallback;
-        entry["reason"] = error;
-      }
-      completed.emplace(std::pair{fingerprint, interior}, entry);
-      std::fprintf(stderr,
-                   "TRIAEVUM_INTERIOR_SUN room=%s setup=%u interior=%d "
-                   "status=%s ms=%.3f voxels=%llu\n",
-                   name.c_str(), setup, interior,
-                   entry["status"].get<std::string>().c_str(),
-                   entry["ms"].get<double>(),
-                   static_cast<unsigned long long>(stats.Voxels));
-      entries.push_back(std::move(entry));
+      visits.push_back(std::move(visit));
     }
   }
   if (!roomCount)
     throw std::runtime_error("RomFS contains no room files");
+  // Rooms are independent: the largest first, over a bounded worker set
+  // (each build's grid stays under its own memory bound).
+  std::vector<size_t> order(jobs.size());
+  std::iota(order.begin(), order.end(), size_t{0});
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    return jobs[a].Triangles.size() > jobs[b].Triangles.size();
+  });
+  std::atomic<size_t> next{0};
+  std::mutex failureMutex;
+  std::string failure;
+  const unsigned threads = std::min<unsigned>(
+      std::clamp(std::thread::hardware_concurrency() / 2U, 1U, 6U),
+      unsigned(std::max<size_t>(jobs.size(), 1)));
+  std::vector<std::thread> workers;
+  for (unsigned t = 0; t < threads; ++t)
+    workers.emplace_back([&] {
+      for (size_t i; (i = next++) < order.size();) {
+        try {
+          RunRoomJob(jobs[order[i]], cache, table);
+        } catch (const std::exception &exception) {
+          std::lock_guard lock(failureMutex);
+          if (failure.empty())
+            failure = exception.what();
+          next = order.size();
+        }
+      }
+    });
+  for (auto &worker : workers)
+    worker.join();
+  if (!failure.empty())
+    throw std::runtime_error(failure);
+  auto entries = nlohmann::json::array();
+  size_t built = 0, hits = 0, precomputed = 0, fallback = 0;
+  for (const auto &visit : visits) {
+    auto entry = nlohmann::json{{"room", visit.Room},
+                                {"setup", visit.Setup},
+                                {"interior", visit.Interior},
+                                {"status", "fallback"},
+                                {"fingerprint", Hex(visit.Fingerprint)}};
+    if (!visit.Job) {
+      ++fallback;
+      entry["reason"] = visit.Error;
+      entries.push_back(std::move(entry));
+      continue;
+    }
+    const auto &job = jobs[*visit.Job];
+    entry["status"] = job.Status;
+    entry["voxels"] = job.Stats.Voxels;
+    entry["peak_grid_bytes"] = job.Stats.PeakWorkingBytes;
+    entry["interior_voxels"] = job.Stats.InteriorVoxels;
+    entry["closing_steps"] = job.Stats.ClosingSteps;
+    entry["ms"] = job.Milliseconds;
+    if (job.Mesh) {
+      entry["path"] = RoomShadowShellPath({}, job.Fingerprint, job.Interior)
+                          .generic_string();
+      entry["triangles"] = job.Mesh->ShellMasks.size();
+    } else {
+      entry["reason"] = job.Error;
+    }
+    if (visit.Reused) {
+      entry["reused_in_run"] = true;
+    } else {
+      built += job.Status == "built";
+      hits += job.Status == "hit";
+      precomputed += job.Status == "precomputed";
+      fallback += !job.Mesh;
+      std::fprintf(stderr,
+                   "TRIAEVUM_INTERIOR_SUN room=%s setup=%u interior=%d "
+                   "status=%s ms=%.3f voxels=%llu\n",
+                   visit.Room.c_str(), visit.Setup, visit.Interior,
+                   job.Status.c_str(), job.Milliseconds,
+                   static_cast<unsigned long long>(job.Stats.Voxels));
+    }
+    entries.push_back(std::move(entry));
+  }
+  if (!exportTable.empty())
+    ExportMaskTable(exportTable, jobs);
   return {{"format", "triaevum_interior_sun_v1"},
           {"criterion_version", kRoomShadowShellVersion},
           {"game_booted", false},
@@ -275,6 +481,9 @@ PrebuildInteriorSun(const std::filesystem::path &romfs,
           {"rooms", roomCount},
           {"built", built},
           {"hits", hits},
+          {"precomputed", precomputed},
+          {"precomputed_entries", table.Entries.size()},
+          {"threads", threads},
           {"fallback", fallback},
           {"entries", std::move(entries)}};
 }
@@ -422,7 +631,7 @@ nlohmann::json ListNativeEnvironmentGroups(const std::filesystem::path& romfs) {
   return {{"schema","triaevum.environment-groups"},{"version",1},{"gameBooted",false},{"entries",entries}};
 }
 int InteriorSunToolMain(int argc, char **argv) {
-  std::filesystem::path romfs, cache, manifest;
+  std::filesystem::path romfs, cache, manifest, masks, exportMasks;
   for (int i = 2; i < argc; i += 2) {
     if (i + 1 == argc)
       throw std::runtime_error("missing interior-sun tool argument");
@@ -430,6 +639,8 @@ int InteriorSunToolMain(int argc, char **argv) {
     auto *target = option == "--romfs"                      ? &romfs
                    : option == "--renderer-cache-directory" ? &cache
                    : option == "--manifest"                 ? &manifest
+                   : option == "--mask-table"               ? &masks
+                   : option == "--export-mask-table"        ? &exportMasks
                                                             : nullptr;
     if (!target || !target->empty())
       throw std::runtime_error(
@@ -438,8 +649,9 @@ int InteriorSunToolMain(int argc, char **argv) {
   }
   if (romfs.empty() || cache.empty() || manifest.empty())
     throw std::runtime_error("usage: --prebuild-interior-sun --romfs PATH "
-                             "--renderer-cache-directory PATH --manifest PATH");
-  const auto result = PrebuildInteriorSun(romfs, cache);
+                             "--renderer-cache-directory PATH --manifest PATH "
+                             "[--mask-table PATH] [--export-mask-table PATH]");
+  const auto result = PrebuildInteriorSun(romfs, cache, masks, exportMasks);
   std::ofstream out(manifest, std::ios::binary | std::ios::trunc);
   out << result.dump(2) << '\n';
   out.close();

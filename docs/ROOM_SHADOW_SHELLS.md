@@ -9,7 +9,8 @@ keeps its meaning (`true` = native, `false` = both); the new field takes precede
 Forge computes room masks from the user's own RomFS during installation. The
 shipped runtime has an offline tool mode; no title plugin, guest process, GPU,
 window, compiler, or SDK is needed. Missing or invalid caches use the same
-shared builder in a lazy runtime worker. Nothing ROM-derived is packaged.
+shared builder in a lazy runtime worker. The release ships only a mask table
+for the supported rooms (below); no geometry is packaged.
 
 ## Authored indoor/outdoor classification
 
@@ -87,8 +88,27 @@ trial's sampling approximation.
 
 ```
 TriAevum.exe --prebuild-interior-sun --romfs <directory-or-image> \
-  --renderer-cache-directory <renderer-cache> --manifest <result.json>
+  --renderer-cache-directory <renderer-cache> --manifest <result.json> \
+  [--mask-table <interior-sun.masks>] [--export-mask-table <path>]
 ```
+
+Rooms are read and fingerprinted in inventory order; each distinct content and
+class is then prepared once, largest first, on up to six workers (half the
+logical cores). A cold run of the supported RomFS took 235 s instead of about
+13 minutes on the 12-thread reference PC, with byte-identical caches.
+
+**Mask table.** The release computes every interior room once and ships its
+masks, keyed by the content fingerprint below: `"TISP"`, u32 format 1, u32
+criterion version, u32 entry count; per entry u64 fingerprint (strictly
+increasing), u32 triangle count, u32 kind (0 masks, 1 the work/memory bound
+fallback), u64 first mask; the u64 masks; then the u64 FNV-1a checksum below of
+everything before it. It holds no positions or indices. A room found in the
+table is welded from the user's RomFS and takes its masks (`precomputed`) when
+the welded triangle count matches; otherwise it is built. A known bound fallback
+is reported without repeating the work. With the table the supported RomFS
+prepares in about 2.4 s, byte-identical to a local build. `--export-mask-table`
+writes the table of a run (publisher step:
+`python -m tools.triaevum_release.precomputed_tables`).
 
 The mode accepts a RomFS directory containing `scene/`, a raw Level-3 image,
 or an IVFC image with Level-3 at 0x1000, matching Forge's existing RomFS inputs.

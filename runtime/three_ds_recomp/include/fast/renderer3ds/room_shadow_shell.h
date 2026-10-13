@@ -67,6 +67,13 @@ struct RoomShadowShellScene {
 BuildRoomShadowShell(uint64_t fingerprint, std::span<const RoomShadowTriangle> triangles,
                      uint32_t rasterSize = kRoomShadowRasterSize, std::stop_token stop = {}, bool interior = true,
                      RoomInteriorSunStats* stats = nullptr);
+// The same welded mesh with masks computed earlier for identical content (a
+// shipped interior-sun table): null unless there is exactly one mask per
+// welded triangle. Exterior meshes accept only zero masks.
+[[nodiscard]] std::shared_ptr<const RoomShadowShell>
+AssembleRoomShadowShell(uint64_t fingerprint, std::span<const RoomShadowTriangle> triangles,
+                        std::span<const uint64_t> masks, uint32_t rasterSize = kRoomShadowRasterSize,
+                        bool interior = true);
 
 // Little-endian, versioned local cache. Header and payload are checksummed;
 // counts, coordinates, indices, fingerprint and exact length are validated.

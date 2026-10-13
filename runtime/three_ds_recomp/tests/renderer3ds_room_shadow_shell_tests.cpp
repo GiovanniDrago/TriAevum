@@ -171,6 +171,18 @@ TEST(RoomShadowShell, InteriorSunRoofPlatformAndInnerRoofStack) {
     const auto repeated = BuildRoomShadowShell(123, triangles);
     ASSERT_TRUE(repeated);
     EXPECT_EQ(EncodeRoomShadowShell(*reversed), EncodeRoomShadowShell(*repeated));
+    // Masks computed earlier for the same content reproduce the built mesh
+    // exactly; a different triangle count or outdoor masks are refused.
+    const auto assembled = AssembleRoomShadowShell(123, triangles, repeated->ShellMasks);
+    ASSERT_TRUE(assembled);
+    EXPECT_EQ(EncodeRoomShadowShell(*assembled), EncodeRoomShadowShell(*repeated));
+    EXPECT_EQ(assembled->ContentVersion, repeated->ContentVersion);
+    auto shorter = repeated->ShellMasks;
+    shorter.pop_back();
+    EXPECT_FALSE(AssembleRoomShadowShell(123, triangles, shorter));
+    EXPECT_FALSE(AssembleRoomShadowShell(123, triangles, repeated->ShellMasks, 512, false));
+    const std::vector<uint64_t> none(repeated->ShellMasks.size());
+    EXPECT_TRUE(AssembleRoomShadowShell(123, triangles, none, 512, false));
 }
 TEST(RoomShadowShell, InteriorSunDoesNotRestartAfterLeavingAndReentering) {
     std::vector<RoomShadowTriangle> triangles;
