@@ -794,9 +794,28 @@ bool NativeA32WindowSession::UpdateGuestServicesForRefresh(
     const bool rightShoulderHeld =
         (buttons &
          button(Oot3dNativeGame::NativeA32HidButton::R)) != 0U;
-    const bool selectPressed =
+    bool selectPressed =
         (pressed &
          button(Oot3dNativeGame::NativeA32HidButton::Select)) != 0U;
+    // R6 (2.1.1 0x005D5730..5BC0): on an open Items/Gear page SELECT toggles
+    // the item description; it reaches the gameplay routes (minimap, Save)
+    // only while the pause controller is in its gameplay state.
+    if (Oot3dNativeGame::TopScreenItemDescriptionInputs description;
+        Oot3dNativeGame::ReadTopScreenItemDescriptionInputs(process.Memory(), &description)) {
+      auto &descriptionRuntime = *nativeCandidateDispatch.ItemDescription;
+      if (Oot3dNativeGame::UpdateTopScreenItemDescription(
+              description, selectPressed, descriptionRuntime.VisibleState())) {
+        descriptionRuntime.CountToggle();
+        std::string soundError;
+        if (!Oot3dNativeGame::PlayTopScreenUiSound(process, 0x01000498U,
+                                                   kTopScreenDirectCallReturn, &soundError))
+          throw std::runtime_error("TopScreen description sound failed: " + soundError);
+      }
+      if (selectPressed && Oot3dNativeGame::TopScreenItemDescriptionOwnsSelect(description)) {
+        selectPressed = false;
+        inputFrame.Hid.Buttons &= ~button(Oot3dNativeGame::NativeA32HidButton::Select);
+      }
+    }
     if (topScreenDpadActions.WasPressed(
             Oot3dNativeGame::TopScreenDpadAction::MinimapToggle) ||
         (selectPressed &&
@@ -908,6 +927,8 @@ bool NativeA32WindowSession::UpdateGuestServicesForRefresh(
             Oot3dNativeGame::TopScreenPauseClosePage::None) {
           nativeCandidateDispatch.PauseTransaction->RequestSystemOpen(
               systemOpenPlan);
+          // 0x005D5478..5558: B-to-Save clears the description.
+          nativeCandidateDispatch.ItemDescription->Hide();
         }
       }
       const bool sceneRuntimeRoute = pauseInputs.HasScene &&

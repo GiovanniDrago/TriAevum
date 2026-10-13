@@ -74,7 +74,7 @@ stable, generic contracts.
 | Item input | ZR/ZL item lanes, native item-query compatibility and direct child-item lifetime handling |
 | Camera | Zoom percentage, FOV percentage, free-camera speed/inversion and C-stick aiming speed/inversion |
 | Filtering | Five official smoothing levels, exact coefficient table, half-unit deadband, update only on guest refresh |
-| Pause behavior | Configurable Select action and configurable Items-to-Save B behavior |
+| Pause behavior | Configurable Select action and configurable Items-to-Save B behavior; START reopens the last page (0x005E21C8); on an open Items or Gear page SELECT shows the native item description over the page (0x005E3D3C, 0x005D3344..0x005D3410) |
 | Items hint | Native selected-model bounds, 90-update delay, 12-update fade, 90-update pulse and exact atlas geometry |
 | Assets | Original-size localized CTXB replacements plus named 2.1.1 menu/font profile assets in O3TU v2 |
 | Version choice | The title's normal / Master Quest choice on the upper screen with the frontend menus, native input unchanged (`TRIAEVUM_TOPSCREEN_FRONTEND_SKY.md`, #28) |
@@ -83,6 +83,28 @@ stable, generic contracts.
 Equipment and direct-item routes deliberately call or mutate the same native
 OoT3D contracts recovered from the payload. They are gameplay intents handled
 by the application adapter, not renderer substitutions.
+
+### Product hooks
+
+Product builds (`OOT3D_WHOLE_AOT_PRODUCT_MODE`) run the same source port as
+developer builds. Every TopScreen source-port block is an observable exit of
+the whole-AOT graph, and `ExecuteProductTopScreenHook` accepts exactly that
+sorted list (`ProductTopScreenBlocks`); before 0.8.0-beta.1b it accepted only
+the camera, item and 0x0041E988 entries, so the FOV setting, the scene-5
+guards and the touch-button draw predicate were inert in packages.
+
+Exits that run guest continuations are conditional: 0x0041E988 leaves the
+graph only while the pause transaction or song text has work, and the page
+draw return 0x00419830 only while the item description is drawing or may
+start. The page-child restore at 0x00419830 runs before that exit, because a
+resumed graph skips the entry it left from.
+
+The item description is the native message 0x005C1878, which the native page
+draws under the relocated page. `TopScreenItemDescriptionRuntime` redraws it
+after the page with the payload's native calls (material bind, the payload's
+two matrices from guest stack scratch, viewport X 0 or 300 by cursor row).
+While a page is open SELECT belongs to the description; it reaches the
+minimap and Save routes only in the gameplay pause state.
 
 ## Deliberate host adaptations
 

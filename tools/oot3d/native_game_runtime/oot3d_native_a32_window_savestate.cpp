@@ -272,6 +272,7 @@ NativeA32WindowSession::SaveState(const std::filesystem::path &path, bool withSe
   // Host-owned continuation registers must never escape into a standalone savestate.
   if (ocarinaText.Pending()) return SaveStateOutcome::Deferred;
   if (pauseTransactionStorage->NeedsExecution()) return SaveStateOutcome::Deferred;
+  if (itemDescriptionStorage->Pending()) return SaveStateOutcome::Deferred;
   const auto started = std::chrono::steady_clock::now();
   Oot3dNativeGame::NativeA32SavestateRuntimeState runtime;
   runtime.FrameCount = frameCount;
@@ -470,6 +471,7 @@ bool NativeA32WindowSession::LoadState(const std::filesystem::path &path,
   hdFonts.Reset();
   ocarinaText.Reset();
   pauseTransactionStorage->Reset();
+  itemDescriptionStorage->Reset();
   uiLifecycleBridge.SetTopScreenConfig(activeTopScreenConfig);
   widescreenProjection.TopScreenPauseDrawRouting = {};
   widescreenProjection.TopScreenPausePageRedraw = {};

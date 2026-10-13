@@ -838,6 +838,37 @@ bool ResolveTopScreenPauseIconBuild(TopScreenPauseIconBuild *build,
 // the contiguous native pause states 12..19.
 bool SuppressTopScreenTouchButtonDraw(std::uint32_t pauseState) noexcept;
 
+// TopScreen 2.1.1 shows the native item/gear description (message context
+// 0x005C1878, drawn under the relocated page) over the page when SELECT is
+// pressed on an open Items or Gear page. Typed form of payload word
+// 0x005E3D3C; see I:/_triaevum_work/topscreen-r6/R6_SPEC.md.
+struct TopScreenItemDescriptionInputs {
+  std::uint32_t Items = 0;      // 0x0050672C
+  std::uint32_t Gear = 0;       // 0x00504484
+  std::uint32_t System = 0;     // 0x0050A530
+  std::uint32_t Controller = 0; // 0x0050AF68
+  std::int32_t ItemsCursorRow = 0; // 0x00506774
+  std::int32_t GearCursor = 0;     // 0x0050448C
+};
+bool ReadTopScreenItemDescriptionInputs(NativeA32Memory &memory,
+                                        TopScreenItemDescriptionInputs *inputs);
+// 0x005D5730..5BBC: the description clears unless Items or Gear is browsing
+// (state 2) with no System page, then a SELECT edge toggles it. Returns true
+// when it toggled, which plays sound 0x01000498.
+bool UpdateTopScreenItemDescription(const TopScreenItemDescriptionInputs &inputs,
+                                    bool selectPressed, bool &visible) noexcept;
+// 0x005D5BC0: SELECT reaches the gameplay routes (minimap, Save) only while
+// the pause controller is in its gameplay state 2.
+bool TopScreenItemDescriptionOwnsSelect(
+    const TopScreenItemDescriptionInputs &inputs) noexcept;
+// 0x005D3344..33B0: redraw over the page while visible, no System page and
+// Items or Gear browsing; X is 300 (other half of the screen) when the Items
+// cursor row is >= 2, or the Gear cursor is in 0x13..0x19.
+bool TopScreenItemDescriptionDrawEligible(const TopScreenItemDescriptionInputs &inputs,
+                                          bool visible) noexcept;
+std::uint32_t ResolveTopScreenItemDescriptionOffset(
+    const TopScreenItemDescriptionInputs &inputs) noexcept;
+
 // The draw call 0x0042F5CC goes through payload predicate 0x005CB5E8, which
 // also rejects the four native page predicates 0x002FCAD4, 0x002FCAEC,
 // 0x002FCDD4 and 0x004392B0 (Gear, Items, Map and System page states). Its

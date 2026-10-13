@@ -2611,6 +2611,49 @@ int main() {
               !SuppressTopScreenTouchButtonDraw(20U),
           "TopScreen touch-button draw state interval is incorrect");
   {
+    // R6: SELECT description toggle of TopScreen 2.1.1 (0x005E3D3C).
+    TopScreenItemDescriptionInputs page;
+    page.Items = 2U;
+    bool visible = false;
+    Require(UpdateTopScreenItemDescription(page, true, visible) && visible &&
+                !UpdateTopScreenItemDescription(page, false, visible) && visible &&
+                TopScreenItemDescriptionDrawEligible(page, visible) &&
+                UpdateTopScreenItemDescription(page, true, visible) && !visible,
+            "SELECT must toggle the description on a browsing Items page");
+    visible = true;
+    page.Items = 0xEU;
+    Require(!UpdateTopScreenItemDescription(page, true, visible) && !visible,
+            "leaving the browsing state must clear the description");
+    page.Items = 0U;
+    page.Gear = 2U;
+    page.System = 1U;
+    visible = false;
+    Require(UpdateTopScreenItemDescription(page, true, visible) && visible &&
+                !TopScreenItemDescriptionDrawEligible(page, visible),
+            "a System page clears before the toggle and blocks the redraw");
+    page.System = 0U;
+    page.GearCursor = 0x12;
+    bool offsets = ResolveTopScreenItemDescriptionOffset(page) == 0U;
+    page.GearCursor = 0x13;
+    offsets = offsets && ResolveTopScreenItemDescriptionOffset(page) == 300U;
+    page.GearCursor = 0x19;
+    offsets = offsets && ResolveTopScreenItemDescriptionOffset(page) == 300U;
+    page.GearCursor = 0x1A;
+    offsets = offsets && ResolveTopScreenItemDescriptionOffset(page) == 0U;
+    page.Items = 1U;
+    page.ItemsCursorRow = 1;
+    offsets = offsets && ResolveTopScreenItemDescriptionOffset(page) == 0U;
+    page.ItemsCursorRow = 2;
+    offsets = offsets && ResolveTopScreenItemDescriptionOffset(page) == 300U;
+    page.ItemsCursorRow = -1;
+    offsets = offsets && ResolveTopScreenItemDescriptionOffset(page) == 0U;
+    Require(offsets, "description offset must follow the 2.1.1 cursor rule");
+    page.Controller = 2U;
+    Require(!TopScreenItemDescriptionOwnsSelect(page), "gameplay keeps SELECT");
+    page.Controller = 0U;
+    Require(TopScreenItemDescriptionOwnsSelect(page), "an open page owns SELECT");
+  }
+  {
     TopScreenPauseDrawInputs pages;
     bool pagesGate = !SuppressTopScreenTouchButtonPageDraw(2U, pages) &&
                      SuppressTopScreenTouchButtonPageDraw(12U, pages);

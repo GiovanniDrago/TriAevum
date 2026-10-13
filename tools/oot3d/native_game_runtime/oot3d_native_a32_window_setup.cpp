@@ -232,6 +232,8 @@ void NativeA32WindowSession::Setup() {
         kPauseAlternateRendererUpdateCall,
         kPauseSceneSevenDrawCall,
         kPauseSceneViewportDrawCall,
+        kPauseSceneFiveDrawCall,
+        kPauseTouchButtonsHeldDownQuery,
         kPauseTouchCoordinateUpdateCall,
         kPauseRendererVisibilityCall,
         kPauseControllerDrawCall,
@@ -384,6 +386,8 @@ void NativeA32WindowSession::Setup() {
         typedGameplayObservableExitHooks.end());
   }
 #endif
+  // Sorted TopScreen entries the product hook owns (product builds only).
+  std::vector<uint32_t> productTopScreenBlocks;
   if (launch.UiProfile == Oot3dNativeGame::Oot3dUiProfile::TopScreen) {
     topScreenSourcePortBlocks = {
         kPauseTouchButtonsDrawCall,       kPauseTouchButtonsTouchBranch,
@@ -394,7 +398,7 @@ void NativeA32WindowSession::Setup() {
         kPauseRoutedCommandCallA,         kPauseRoutedCommandCallB,
         kPauseOverlayViewportDrawCall,    kPauseAlternateRendererUpdateCall,
         kPauseSceneSevenDrawCall,         kPauseSceneViewportDrawCall,
-        kPauseSceneFiveDrawCall,
+        kPauseSceneFiveDrawCall,          kPauseUiDrawReturn,
         kPauseTouchCoordinateUpdateCall,  kPauseRendererVisibilityCall,
         kPauseControllerDrawCall,         kTopScreenCameraNormal1Scalar,
         kTopScreenCameraUpdateEntry,      kTopScreenCameraUpdatePatchSite,
@@ -428,8 +432,20 @@ void NativeA32WindowSession::Setup() {
         topScreenObservableExitBlocks.begin(),
         topScreenObservableExitBlocks.end());
 #else
-    wholeAotObservableExitBlocks.push_back(kTopScreenCameraUpdateEntry);
-    wholeAotObservableExitBlocks.push_back(kTopScreenCameraNormal1Scalar);
+    // The product runs the same TopScreen source port as developer builds:
+    // every block is an observable exit of the whole-AOT graph, because the
+    // product keeps whole-AOT execution through pause routes.
+    wholeAotObservableExitBlocks.insert(wholeAotObservableExitBlocks.end(),
+                                       topScreenObservableExitBlocks.begin(),
+                                       topScreenObservableExitBlocks.end());
+    wholeAotObservableExitBlocks.insert(wholeAotObservableExitBlocks.end(),
+                                       topScreenSourcePortBlocks.begin(),
+                                       topScreenSourcePortBlocks.end());
+    productTopScreenBlocks = topScreenSourcePortBlocks;
+    productTopScreenBlocks.push_back(kPauseRendererVisibilityNativeDraw);
+    productTopScreenBlocks.insert(productTopScreenBlocks.end(), itemEntries.begin(),
+                                  itemEntries.end());
+    std::sort(productTopScreenBlocks.begin(), productTopScreenBlocks.end());
 #endif
     wholeAotObservableExitBlocks.push_back(Oot3dNativeGame::kTopScreenInputUpdateBoundary);
     wholeAotObservableExitBlocks.push_back(kPauseRendererVisibilityNativeDraw);
@@ -493,6 +509,8 @@ void NativeA32WindowSession::Setup() {
   };
   nativeCandidateDispatch.TopScreenUiProfile =
       launch.UiProfile == Oot3dNativeGame::Oot3dUiProfile::TopScreen;
+  // After the rebuild above, which would discard an earlier assignment.
+  nativeCandidateDispatch.ProductTopScreenBlocks = std::move(productTopScreenBlocks);
   widescreenProjection.TopScreenInput =
       &nativeCandidateDispatch.TopScreenInput;
   widescreenProjection.TopScreenInputClock =
@@ -764,6 +782,9 @@ void NativeA32WindowSession::Setup() {
   auto &pauseTransaction = pauseTransactionStorage.emplace(process.Memory());
   nativeCandidateDispatch.PauseTransaction = &pauseTransaction;
   widescreenProjection.PauseTransaction = &pauseTransaction;
+  auto &itemDescription = itemDescriptionStorage.emplace(process.Memory());
+  nativeCandidateDispatch.ItemDescription = &itemDescription;
+  widescreenProjection.ItemDescription = &itemDescription;
   auto &uiRenderBackend = uiRenderBackendStorage.emplace(api);
   auto &n64UiRenderer = n64UiRendererStorage.emplace(uiRenderBackend,
                                                &ocarinaText);

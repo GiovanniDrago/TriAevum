@@ -63,6 +63,7 @@
 #include "oot3d_native_ui_texture_provider.h"
 #include "oot3d_top_screen_ocarina_text_runtime.h"
 #include "oot3d_top_screen_pause_transaction.h"
+#include "oot3d_top_screen_item_description_runtime.h"
 #include "oot3d_native_whole_aot_runtime.h"
 #ifdef OOT3D_NATIVE_DIRECT_AOT_PLUGIN
 #include "oot3d_native_direct_aot.h"
@@ -469,6 +470,7 @@ struct NativeWidescreenProjectionState {
   Oot3dNativeGame::Oot3dNativeUiLifecycleBridge *UiLifecycleBridge = nullptr;
   Oot3dNativeGame::TopScreenOcarinaTextRuntime *OcarinaText = nullptr;
   Oot3dNativeGame::TopScreenPauseTransactionRuntime *PauseTransaction = nullptr;
+  Oot3dNativeGame::TopScreenItemDescriptionRuntime *ItemDescription = nullptr;
   Oot3dNativeGame::Oot3dPicaCompositionDomain *PicaCompositionDomain =
       nullptr;
   Oot3dNativeGame::Oot3dNativePicaCompositionTracker
@@ -553,6 +555,9 @@ struct NativeCandidateDispatchState {
   Oot3dNativeGame::TopScreenVersionChoiceRevealState TopScreenVersionChoiceReveal;
   Oot3dNativeGame::TopScreenPauseSystemOpenState TopScreenPauseSystemOpen;
   Oot3dNativeGame::TopScreenPauseTransactionRuntime *PauseTransaction = nullptr;
+  Oot3dNativeGame::TopScreenItemDescriptionRuntime *ItemDescription = nullptr;
+  // Sorted TopScreen entries the product hook owns (product builds only).
+  std::vector<uint32_t> ProductTopScreenBlocks;
   uint64_t TopScreenAimProjectileCycleAttempts = 0U;
   uint64_t TopScreenAimProjectileCycleUpdates = 0U;
   uint64_t TopScreenAimProjectileCycleSoundCalls = 0U;

@@ -23,6 +23,12 @@ bool ExecuteTopScreenUiSourcePortBlock(
     return dispatch.OcarinaText != nullptr &&
            dispatch.OcarinaText->Execute(state, result, blocksConsumed);
   }
+  // R6: the description is redrawn over the page this draw just placed on
+  // the upper screen (2.1.1 0x005D3344..0x005D3410).
+  if (pc == Oot3dNativeGame::kTopScreenItemDescriptionBoundary &&
+      dispatch.ItemDescription != nullptr &&
+      dispatch.ItemDescription->Execute(state, result, blocksConsumed))
+    return true;
   uint32_t nextPc = 0U;
   auto branchFromCallsite = [&](uint32_t target, uint32_t returnAddress) {
     state.r[14] = returnAddress;
@@ -780,13 +786,11 @@ bool ExecuteProductTopScreenHook(uint32_t pc, oot3d::recomp::a32::GuestState &st
                                    oot3d::recomp::a32::ExecutionResult *result,
                                    uint32_t blockBudget, uint32_t *blocksConsumed, void *user) {
   auto &dispatch = *static_cast<NativeCandidateDispatchState *>(user);
-  // Product opt-in UI mod, not the experimental source/gameplay dispatcher.
+  // Product opt-in UI mod, not the experimental source/gameplay dispatcher:
+  // the whole TopScreen source port, and nothing else.
   if (!dispatch.TopScreenUiProfile || dispatch.Memory == nullptr ||
-      (pc != kTopScreenCameraUpdateEntry && pc != kTopScreenCameraUpdatePatchSite &&
-       pc != kTopScreenCameraNormal1Scalar &&
-       pc != Oot3dNativeGame::kTopScreenInputUpdateBoundary &&
-       pc != kPauseRendererVisibilityNativeDraw &&
-       !Oot3dNativeGame::IsTopScreenItemDispatchEntry(pc))) return false;
+      !std::binary_search(dispatch.ProductTopScreenBlocks.begin(),
+                          dispatch.ProductTopScreenBlocks.end(), pc)) return false;
   if (pc == kPauseRendererVisibilityNativeDraw) {
     auto &phase = dispatch.TopScreenGameOverDrawPhase;
     auto &saved = dispatch.TopScreenGameOverDrawRegisters;
@@ -852,7 +856,17 @@ bool ExecuteProductTopScreenHook(uint32_t pc, oot3d::recomp::a32::GuestState &st
         dispatch.BlockEntryPcs.data(), dispatch.BlockEntryPcs.size(), true, true, true);
   }
   const bool handled = ExecuteTopScreenUiSourcePortBlock(pc, state, dispatch, result, blocksConsumed);
-  if (handled) return true;
+  if (handled) {
+    ++dispatch.TopScreenSourcePortCalls;
+    if (pc == kTopScreenGameplayCompositionPrefix) {
+      ++dispatch.TopScreenLowerCompositionSkips;
+      if (dispatch.PicaCompositionDomain != nullptr)
+        *dispatch.PicaCompositionDomain = Oot3dNativeGame::Oot3dPicaCompositionDomain::Ui;
+      if (dispatch.UiLifecycleBridge != nullptr)
+        dispatch.UiLifecycleBridge->ObserveGameplayComposition();
+    }
+    return true;
+  }
   // This entry was already observed before returning to the dispatcher. If
   // native ownership wins, resume it once instead of trapping the same entry.
   return Oot3dNativeGame::ExecuteOot3dCompiledFunction(

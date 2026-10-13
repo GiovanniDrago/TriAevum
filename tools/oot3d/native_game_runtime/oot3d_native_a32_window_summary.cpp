@@ -2323,6 +2323,10 @@ void WriteNativeA32WindowRuntimeSummary(const NativeA32WindowSummaryInputs &in) 
                     nativeCandidateDispatch.PauseTransaction->SystemOpens()},
                    {"topscreen_pause_retired_transactions",
                     nativeCandidateDispatch.PauseTransaction->Retired()},
+                   {"topscreen_item_description_toggles",
+                    nativeCandidateDispatch.ItemDescription->Toggles()},
+                   {"topscreen_item_description_redraws",
+                    nativeCandidateDispatch.ItemDescription->Redraws()},
                    {"topscreen_aim_projectile_cycle_attempts",
                     nativeCandidateDispatch
                         .TopScreenAimProjectileCycleAttempts},

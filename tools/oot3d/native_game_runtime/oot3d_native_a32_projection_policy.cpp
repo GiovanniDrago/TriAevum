@@ -47,6 +47,15 @@ void ApplyNativeWidescreenProjectionPolicy(
         throw std::runtime_error("TopScreen song text preparation: " + textError);
     }
   }
+  // The page draw returned: restore its children before the return can
+  // leave the compiled graph, which resumes past this block entry.
+  if (pc == kPauseUiDrawReturn && runtime.TopScreenUiProfile &&
+      runtime.TraceMemory != nullptr &&
+      runtime.PendingTopScreenPauseChildRestore.has_value()) {
+    Oot3dNativeGame::EndTopScreenPauseChildSuppression(
+        *runtime.TraceMemory, *runtime.PendingTopScreenPauseChildRestore);
+    runtime.PendingTopScreenPauseChildRestore.reset();
+  }
   const bool enabledTopScreenCameraExit =
       (pc != kTopScreenCameraUpdateEntry ||
        runtime.TopScreenConfig.FreeCameraEnabled ||
@@ -72,6 +81,8 @@ void ApplyNativeWidescreenProjectionPolicy(
       (pc != Oot3dNativeGame::kTopScreenInputUpdateBoundary ||
        (runtime.OcarinaText != nullptr && runtime.OcarinaText->NeedsExecution()) ||
        (runtime.PauseTransaction != nullptr && runtime.PauseTransaction->NeedsExecution())) &&
+      (pc != kPauseUiDrawReturn ||
+       (runtime.ItemDescription != nullptr && runtime.ItemDescription->NeedsExecution())) &&
       std::binary_search(runtime.WholeAotObservableExitPcs.begin(),
                          runtime.WholeAotObservableExitPcs.end(), pc)) {
 #if defined(OOT3D_NATIVE_DIRECT_AOT_PLUGIN)
@@ -306,6 +317,7 @@ void ApplyNativeWidescreenProjectionPolicy(
         runtime.LastTopScreenPauseChildrenSuppressed =
             action ==
             Oot3dNativeGame::TopScreenPauseDrawAction::SuppressNativeChildren;
+        if (runtime.ItemDescription != nullptr) runtime.ItemDescription->DisarmPageDraw();
         if (!runtime.LastTopScreenPauseChildrenSuppressed) {
           runtime.TopScreenPausePageRedrawActive = false;
           if (runtime.UiLifecycleBridge != nullptr) {
@@ -326,6 +338,8 @@ void ApplyNativeWidescreenProjectionPolicy(
               Oot3dNativeGame::ResolveTopScreenPausePageRedraw(
                   pageInputs, &runtime.TopScreenPausePageRedraw);
           runtime.TopScreenPausePageRedrawActive = pageRedraw;
+          if (pageRedraw && runtime.ItemDescription != nullptr)
+            runtime.ItemDescription->ArmPageDraw();
           if (runtime.UiLifecycleBridge != nullptr) {
             runtime.UiLifecycleBridge
                 ->SetTopScreenPausePageRedrawEdgePresentation(
@@ -359,11 +373,6 @@ void ApplyNativeWidescreenProjectionPolicy(
         runtime.UiLifecycleBridge->SetTopScreenPausePageRedrawEdgePresentation(
             std::nullopt);
       }
-    } else if (pc == kPauseUiDrawReturn &&
-               runtime.PendingTopScreenPauseChildRestore.has_value()) {
-      Oot3dNativeGame::EndTopScreenPauseChildSuppression(
-          *runtime.TraceMemory, *runtime.PendingTopScreenPauseChildRestore);
-      runtime.PendingTopScreenPauseChildRestore.reset();
     }
   }
   if (pc == Oot3dNativeGame::kOot3dFramePacingBeginEntry &&
