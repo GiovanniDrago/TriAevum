@@ -759,6 +759,9 @@ void NativeA32WindowSession::Setup() {
   auto &ocarinaText = ocarinaTextStorage.emplace(process.Memory(), nativeUiTextureProvider);
   nativeCandidateDispatch.OcarinaText = &ocarinaText;
   widescreenProjection.OcarinaText = &ocarinaText;
+  auto &pauseTransaction = pauseTransactionStorage.emplace(process.Memory());
+  nativeCandidateDispatch.PauseTransaction = &pauseTransaction;
+  widescreenProjection.PauseTransaction = &pauseTransaction;
   auto &uiRenderBackend = uiRenderBackendStorage.emplace(api);
   auto &n64UiRenderer = n64UiRendererStorage.emplace(uiRenderBackend,
                                                &ocarinaText);

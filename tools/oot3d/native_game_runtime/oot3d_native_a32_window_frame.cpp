@@ -868,6 +868,7 @@ bool NativeA32WindowSession::UpdateGuestServicesForRefresh(
     nativeCandidateDispatch.PreviousTopScreenButtons = buttons;
     nativeCandidateDispatch.TopScreenItems.DirectItemId =
         nativeCandidateDispatch.TopScreenGameplayActionRuntime.DirectItem.ActiveItemId;
+    nativeCandidateDispatch.PauseTransaction->AgeUndelivered();
     Oot3dNativeGame::TopScreenPauseDrawInputs pauseInputs;
     if (!Oot3dNativeGame::ReadTopScreenPauseDrawInputs(process.Memory(),
                                                        &pauseInputs)) {
@@ -878,28 +879,19 @@ bool NativeA32WindowSession::UpdateGuestServicesForRefresh(
               pauseInputs,
               (pressed &
                button(Oot3dNativeGame::NativeA32HidButton::Start)) != 0U);
+      // The transactions run inside this refresh's native UI update
+      // (oot3d_top_screen_pause_transaction.h), not here: the guest may be
+      // suspended inside a routine whose tail would undo them.
       if (closePlan.Page !=
           Oot3dNativeGame::TopScreenPauseClosePage::None) {
-        std::string closeError;
-        if (!ApplyTopScreenPauseClose(process, closePlan, &closeError)) {
-          throw std::runtime_error(
-              "TopScreen START pause-close transaction failed: " +
-              closeError);
-        }
+        nativeCandidateDispatch.PauseTransaction->RequestStartClose();
         Oot3dNativeGame::MarkTopScreenStartCloseGestureConsumed(
             nativeCandidateDispatch.TopScreenStartRouting);
         inputFrame.Hid.Buttons &=
             ~button(Oot3dNativeGame::NativeA32HidButton::Start);
-        ++nativeCandidateDispatch.TopScreenPauseStartCloseCalls;
-        nativeCandidateDispatch.TopScreenPauseLastClosedPage =
-            closePlan.Page;
-        if (!Oot3dNativeGame::ReadTopScreenPauseDrawInputs(
-                process.Memory(), &pauseInputs)) {
-          throw std::runtime_error("TopScreen pause state could not be "
-                                   "read after START close");
-        }
-      }
-      if (activeTopScreenConfig.ExitItemsToSaveScreen) {
+        // START wins: a pending Save/Quit of the same page is dropped.
+        nativeCandidateDispatch.TopScreenPauseSystemOpen = {};
+      } else if (activeTopScreenConfig.ExitItemsToSaveScreen) {
         const auto systemOpenPlan =
             Oot3dNativeGame::ResolveTopScreenPauseBSystemOpen(
                 pauseInputs,
@@ -908,21 +900,8 @@ bool NativeA32WindowSession::UpdateGuestServicesForRefresh(
                 nativeCandidateDispatch.TopScreenPauseSystemOpen);
         if (systemOpenPlan.Page !=
             Oot3dNativeGame::TopScreenPauseClosePage::None) {
-          std::string systemOpenError;
-          if (!ApplyTopScreenPauseSystemOpen(
-                  process, systemOpenPlan, &systemOpenError)) {
-            throw std::runtime_error(
-                "TopScreen B system-menu transaction failed: " +
-                systemOpenError);
-          }
-          ++nativeCandidateDispatch.TopScreenPauseSystemOpenCalls;
-          nativeCandidateDispatch.TopScreenPauseSystemSourcePage =
-              systemOpenPlan.Page;
-          if (!Oot3dNativeGame::ReadTopScreenPauseDrawInputs(
-                  process.Memory(), &pauseInputs)) {
-            throw std::runtime_error("TopScreen pause state could not be "
-                                     "read after B system-menu open");
-          }
+          nativeCandidateDispatch.PauseTransaction->RequestSystemOpen(
+              systemOpenPlan);
         }
       }
       const bool sceneRuntimeRoute = pauseInputs.HasScene &&

@@ -14,6 +14,7 @@ void ApplyNativeWidescreenProjectionPolicy(
   if (runtime.TopScreenUiProfile &&
       pc == Oot3dNativeGame::kTopScreenInputUpdateBoundary &&
       (runtime.OcarinaText == nullptr || !runtime.OcarinaText->Pending()) &&
+      (runtime.PauseTransaction == nullptr || !runtime.PauseTransaction->Pending()) &&
       runtime.TopScreenInputClock != nullptr && runtime.TopScreenInput != nullptr) {
     *runtime.TopScreenInput = runtime.TopScreenInputClock->Advance();
     if (runtime.UiLifecycleBridge != nullptr)
@@ -49,7 +50,8 @@ void ApplyNativeWidescreenProjectionPolicy(
   if (wholeAotExecutionActive &&
       enabledTopScreenCameraExit && enabledTopScreenItemExit &&
       (pc != Oot3dNativeGame::kTopScreenInputUpdateBoundary ||
-       (runtime.OcarinaText != nullptr && runtime.OcarinaText->NeedsExecution())) &&
+       (runtime.OcarinaText != nullptr && runtime.OcarinaText->NeedsExecution()) ||
+       (runtime.PauseTransaction != nullptr && runtime.PauseTransaction->NeedsExecution())) &&
       std::binary_search(runtime.WholeAotObservableExitPcs.begin(),
                          runtime.WholeAotObservableExitPcs.end(), pc)) {
 #if defined(OOT3D_NATIVE_DIRECT_AOT_PLUGIN)

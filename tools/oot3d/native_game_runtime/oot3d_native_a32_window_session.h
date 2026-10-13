@@ -421,6 +421,7 @@ private:
   std::shared_ptr<Ship::Gui> gui{};
   std::optional<Oot3dNativeGame::Oot3dNativeA32UiTextureProvider> nativeUiTextureProviderStorage;
   std::optional<Oot3dNativeGame::TopScreenOcarinaTextRuntime> ocarinaTextStorage;
+  std::optional<Oot3dNativeGame::TopScreenPauseTransactionRuntime> pauseTransactionStorage;
   std::optional<oot3d::ui::Fast3dUiRenderBackend> uiRenderBackendStorage;
   std::optional<oot3d::ui::N64UiFast3dRenderer> n64UiRendererStorage;
   std::array<std::vector<oot3d::ui::UiPrimitive>, oot3d::ui::kUiSubsystemCount> lastTopScreenPrimitivesBySubsystem;

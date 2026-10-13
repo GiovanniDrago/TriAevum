@@ -11,8 +11,15 @@ bool ExecuteTopScreenUiSourcePortBlock(
     NativeCandidateDispatchState &dispatch,
     oot3d::recomp::a32::ExecutionResult *result, uint32_t *blocksConsumed) {
   auto &memory = *dispatch.Memory;
-  if (pc == Oot3dNativeGame::kTopScreenInputUpdateBoundary && dispatch.OcarinaText != nullptr) {
-    return dispatch.OcarinaText->Execute(state, result, blocksConsumed);
+  if (pc == Oot3dNativeGame::kTopScreenInputUpdateBoundary) {
+    // One guest continuation owns the boundary at a time; a requested pause
+    // transaction runs before the song text of the same update.
+    const bool textInFlight = dispatch.OcarinaText != nullptr && dispatch.OcarinaText->Pending();
+    if (!textInFlight && dispatch.PauseTransaction != nullptr &&
+        dispatch.PauseTransaction->Execute(state, result, blocksConsumed))
+      return true;
+    return dispatch.OcarinaText != nullptr &&
+           dispatch.OcarinaText->Execute(state, result, blocksConsumed);
   }
   uint32_t nextPc = 0U;
   auto branchFromCallsite = [&](uint32_t target, uint32_t returnAddress) {

@@ -2318,9 +2318,11 @@ void WriteNativeA32WindowRuntimeSummary(const NativeA32WindowSummaryInputs &in) 
                    {"topscreen_pause_target_rewrites",
                     widescreenProjection.TopScreenPauseTargetRewrites},
                    {"topscreen_pause_start_close_calls",
-                    nativeCandidateDispatch.TopScreenPauseStartCloseCalls},
+                    nativeCandidateDispatch.PauseTransaction->StartCloses()},
                    {"topscreen_pause_system_open_calls",
-                    nativeCandidateDispatch.TopScreenPauseSystemOpenCalls},
+                    nativeCandidateDispatch.PauseTransaction->SystemOpens()},
+                   {"topscreen_pause_retired_transactions",
+                    nativeCandidateDispatch.PauseTransaction->Retired()},
                    {"topscreen_aim_projectile_cycle_attempts",
                     nativeCandidateDispatch
                         .TopScreenAimProjectileCycleAttempts},
@@ -2340,10 +2342,10 @@ void WriteNativeA32WindowRuntimeSummary(const NativeA32WindowSummaryInputs &in) 
                     nativeCandidateDispatch.TopScreenOcarinaActivations},
                    {"topscreen_pause_last_closed_page",
                     static_cast<uint32_t>(
-                        nativeCandidateDispatch.TopScreenPauseLastClosedPage)},
+                        nativeCandidateDispatch.PauseTransaction->LastClosedPage())},
                    {"topscreen_pause_system_source_page",
-                    static_cast<uint32_t>(nativeCandidateDispatch
-                                              .TopScreenPauseSystemSourcePage)},
+                    static_cast<uint32_t>(nativeCandidateDispatch.PauseTransaction
+                                              ->LastSystemSourcePage())},
                    {"topscreen_pause_child_suppressions",
                     widescreenProjection.TopScreenPauseChildSuppressions},
                    {"topscreen_pause_child_native_draws",

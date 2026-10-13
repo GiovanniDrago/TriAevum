@@ -62,6 +62,7 @@
 #include "oot3d_native_ui_lifecycle_bridge.h"
 #include "oot3d_native_ui_texture_provider.h"
 #include "oot3d_top_screen_ocarina_text_runtime.h"
+#include "oot3d_top_screen_pause_transaction.h"
 #include "oot3d_native_whole_aot_runtime.h"
 #ifdef OOT3D_NATIVE_DIRECT_AOT_PLUGIN
 #include "oot3d_native_direct_aot.h"
@@ -174,8 +175,6 @@ inline constexpr uint32_t kPauseRendererVisibilityNativeDraw = 0x00427A3CU;
 inline constexpr uint32_t kPauseControllerDrawCall = 0x0041988CU;
 inline constexpr uint32_t kPauseControllerNativeDraw = 0x0041AFACU;
 inline constexpr uint32_t kPauseControllerRendererDraw = 0x002F1280U;
-inline constexpr uint32_t kPauseInputSetTouchEnabled = 0x002FD84CU;
-inline constexpr uint32_t kPauseSystemMenuOpen = 0x0043ACA8U;
 inline constexpr uint32_t kTopScreenPauseState = 0x0050AF68U;
 inline constexpr uint32_t kTopScreenPauseSceneControl = 0x005043E8U;
 inline constexpr uint32_t kTopScreenDirectCallReturn = 0x60000000U;
@@ -464,6 +463,7 @@ struct NativeWidescreenProjectionState {
   std::deque<A32BlockTraceRecord> BlockTrace;
   Oot3dNativeGame::Oot3dNativeUiLifecycleBridge *UiLifecycleBridge = nullptr;
   Oot3dNativeGame::TopScreenOcarinaTextRuntime *OcarinaText = nullptr;
+  Oot3dNativeGame::TopScreenPauseTransactionRuntime *PauseTransaction = nullptr;
   Oot3dNativeGame::Oot3dPicaCompositionDomain *PicaCompositionDomain =
       nullptr;
   Oot3dNativeGame::Oot3dNativePicaCompositionTracker
@@ -547,8 +547,7 @@ struct NativeCandidateDispatchState {
   Oot3dNativeGame::TopScreenStartRoutingState TopScreenStartRouting;
   Oot3dNativeGame::TopScreenVersionChoiceRevealState TopScreenVersionChoiceReveal;
   Oot3dNativeGame::TopScreenPauseSystemOpenState TopScreenPauseSystemOpen;
-  uint64_t TopScreenPauseStartCloseCalls = 0U;
-  uint64_t TopScreenPauseSystemOpenCalls = 0U;
+  Oot3dNativeGame::TopScreenPauseTransactionRuntime *PauseTransaction = nullptr;
   uint64_t TopScreenAimProjectileCycleAttempts = 0U;
   uint64_t TopScreenAimProjectileCycleUpdates = 0U;
   uint64_t TopScreenAimProjectileCycleSoundCalls = 0U;
@@ -560,10 +559,6 @@ struct NativeCandidateDispatchState {
       TopScreenGameplayActions;
   Oot3dNativeGame::TopScreenGameplayActionConsumerRuntime
       TopScreenGameplayActionRuntime;
-  Oot3dNativeGame::TopScreenPauseClosePage TopScreenPauseLastClosedPage =
-      Oot3dNativeGame::TopScreenPauseClosePage::None;
-  Oot3dNativeGame::TopScreenPauseClosePage TopScreenPauseSystemSourcePage =
-      Oot3dNativeGame::TopScreenPauseClosePage::None;
   uint8_t TopScreenViewportDrawPhase = 0U;
   uint32_t TopScreenViewportDrawArgument = 0U;
   uint8_t TopScreenSceneViewportDrawPhase = 0U;
@@ -685,14 +680,5 @@ bool ResolveNativeA32TouchInputEnabled(
     Oot3dNativeGame::NativeA32Memory &memory,
     const Oot3dNativeGame::Oot3dNativeUiLifecycleBridge &uiLifecycleBridge,
     bool topScreenUiProfile);
-
-bool ApplyTopScreenPauseClose(
-    Oot3dNativeGame::NativeA32Process &process,
-    const Oot3dNativeGame::TopScreenPauseClosePlan &plan, std::string *error);
-
-bool ApplyTopScreenPauseSystemOpen(
-    Oot3dNativeGame::NativeA32Process &process,
-    const Oot3dNativeGame::TopScreenPauseSystemOpenPlan &plan,
-    std::string *error);
 
 } // namespace Oot3dA32Window
