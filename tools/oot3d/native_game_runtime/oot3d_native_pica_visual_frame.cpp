@@ -1,6 +1,7 @@
 #include "oot3d_native_pica_visual_frame.h"
 #include "fast/renderer3ds/pica_vertex_temporal_policy.h"
 #include "fast/renderer3ds/pica_camera_temporal_policy.h"
+#include "fast/renderer3ds/pica_rigid_interpolation.h"
 
 #include <algorithm>
 #include <bit>
@@ -1062,15 +1063,43 @@ void InterpolateVisualVertexUniforms(
     const Oot3dPicaVulkanDrawPlan& current, float alpha,
     Oot3dPicaVertexUniformState& vertexUniforms) {
     alpha = std::clamp(alpha, 0.0F, 1.0F);
-    for (size_t index = 0; index < vertexUniforms.Floats.size(); ++index) {
+    const auto& before = previous.VertexShader.Uniforms.Floats;
+    const auto& after = current.VertexShader.Uniforms.Floats;
+    for (size_t index = 0; index < vertexUniforms.Floats.size();) {
         if (!IsContinuousVertexUniform(index)) {
+            ++index;
             continue;
+        }
+        // Model, view and bone transforms are 3x4 rows: a rigid one is
+        // blended flip-aware (pica_rigid_interpolation.h), so a model that
+        // turns round between two simulated frames is shown turned part of
+        // the way instead of flattened.
+        if (alpha > 0.0F && alpha < 1.0F && index + 2U < vertexUniforms.Floats.size() &&
+            IsContinuousVertexUniform(index + 1U) && IsContinuousVertexUniform(index + 2U)) {
+            Fast::Renderer3ds::PicaAffineRows from{};
+            Fast::Renderer3ds::PicaAffineRows to{};
+            for (size_t row = 0; row < 3U; ++row) {
+                for (size_t component = 0; component < 4U; ++component) {
+                    from[row][component] = before[index + row][component];
+                    to[row][component] = after[index + row][component];
+                }
+            }
+            if (from != to) {
+                if (const auto rigid = Fast::Renderer3ds::InterpolatePicaRigidRows(from, to, alpha)) {
+                    for (size_t row = 0; row < 3U; ++row) {
+                        for (size_t component = 0; component < 4U; ++component)
+                            vertexUniforms.Floats[index + row][component] = (*rigid)[row][component];
+                    }
+                    index += 3U;
+                    continue;
+                }
+            }
         }
         for (size_t component = 0; component < 4U; ++component) {
             vertexUniforms.Floats[index][component] =
-                InterpolateFinite(previous.VertexShader.Uniforms.Floats[index][component],
-                                  current.VertexShader.Uniforms.Floats[index][component], alpha);
+                InterpolateFinite(before[index][component], after[index][component], alpha);
         }
+        ++index;
     }
 }
 

@@ -120,6 +120,7 @@
 #include <vector>
 #include <unordered_map>
 #include <sstream>
+#include "fast/renderer3ds/pica_rigid_interpolation.h"
 
 namespace {
 
@@ -7183,3 +7184,49 @@ TEST(Oot3dDirectionalShadowReceiver, PacksTheOlderLayoutOnlyWhileItDissolves) {
 }
 
 } // namespace
+
+// A model that turns round between two simulated frames: blending the two
+// transforms per element flattens it (the rotation rows shrink towards zero);
+// the flip-aware blend keeps it rigid and turned half way, with exact ends.
+TEST(PicaRigidInterpolation, TurningRoundStaysRigidInsteadOfFlattening) {
+    using namespace Fast::Renderer3ds;
+    const PicaAffineRows facing{{{1.0F, 0.0F, 0.0F, 10.0F}, {0.0F, 1.0F, 0.0F, 2.0F}, {0.0F, 0.0F, 1.0F, -4.0F}}};
+    // Turned 180 degrees about Y, a little further away.
+    const PicaAffineRows turned{{{-1.0F, 0.0F, 0.0F, 12.0F}, {0.0F, 1.0F, 0.0F, 2.0F}, {0.0F, 0.0F, -1.0F, -6.0F}}};
+    const auto half = InterpolatePicaRigidRows(facing, turned, 0.5F);
+    ASSERT_TRUE(half.has_value());
+    for (size_t row = 0; row < 3U; ++row) {
+        const float length = std::sqrt((*half)[row][0] * (*half)[row][0] + (*half)[row][1] * (*half)[row][1] +
+                                        (*half)[row][2] * (*half)[row][2]);
+        EXPECT_NEAR(length, 1.0F, 1.0e-4F) << "row " << row;
+    }
+    // A quarter turn about Y: the X row points along +Z or -Z, never shrunk.
+    EXPECT_NEAR(std::abs((*half)[0][2]), 1.0F, 1.0e-4F);
+    EXPECT_NEAR((*half)[0][3], 11.0F, 1.0e-4F);
+    EXPECT_NEAR((*half)[2][3], -5.0F, 1.0e-4F);
+    const auto start = InterpolatePicaRigidRows(facing, turned, 0.0F);
+    const auto end = InterpolatePicaRigidRows(facing, turned, 1.0F);
+    ASSERT_TRUE(start.has_value() && end.has_value());
+    for (size_t row = 0; row < 3U; ++row) {
+        for (size_t column = 0; column < 4U; ++column) {
+            EXPECT_NEAR((*start)[row][column], facing[row][column], 1.0e-5F);
+            EXPECT_NEAR((*end)[row][column], turned[row][column], 1.0e-5F);
+        }
+    }
+    // Scaled rows keep their scale.
+    const PicaAffineRows scaled{{{2.0F, 0.0F, 0.0F, 0.0F}, {0.0F, 2.0F, 0.0F, 0.0F}, {0.0F, 0.0F, 2.0F, 0.0F}}};
+    const auto grown = InterpolatePicaRigidRows(facing, scaled, 0.5F);
+    ASSERT_TRUE(grown.has_value());
+    EXPECT_NEAR((*grown)[1][1], 1.5F, 1.0e-4F);
+}
+
+TEST(PicaRigidInterpolation, LeavesNonRigidUniformsToPerElementBlending) {
+    using namespace Fast::Renderer3ds;
+    const PicaAffineRows rigid{{{1.0F, 0.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F, 0.0F}, {0.0F, 0.0F, 1.0F, 0.0F}}};
+    const PicaAffineRows projection{{{1.8F, 0.0F, 0.0F, 0.0F}, {0.0F, 2.4F, 0.3F, 0.0F}, {0.0F, 0.0F, -1.0F, -0.2F}}};
+    const PicaAffineRows mirror{{{-1.0F, 0.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F, 0.0F}, {0.0F, 0.0F, 1.0F, 0.0F}}};
+    const PicaAffineRows colours{{{0.5F, 0.5F, 0.5F, 1.0F}, {0.2F, 0.2F, 0.2F, 1.0F}, {0.0F, 0.0F, 0.0F, 1.0F}}};
+    EXPECT_FALSE(InterpolatePicaRigidRows(rigid, projection, 0.5F).has_value());
+    EXPECT_FALSE(InterpolatePicaRigidRows(rigid, mirror, 0.5F).has_value());
+    EXPECT_FALSE(InterpolatePicaRigidRows(colours, colours, 0.5F).has_value());
+}
