@@ -209,9 +209,17 @@ struct NriInteropContext::Impl {
     // can succeed, so choosing it never fails mid-frame.
     static std::string FidelityFxRuntimeReason() {
 #if defined(_WIN32)
+        // Quietly: an older Vulkan loader lacks commands the runtime imports,
+        // and that load failure must withdraw FSR, not show a system dialog.
+        DWORD previousMode = 0;
+        SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &previousMode);
         HMODULE library = LoadLibraryA("amd_fidelityfx_vk.dll");
+        const DWORD error = library == nullptr ? GetLastError() : 0U;
+        SetThreadErrorMode(previousMode, nullptr);
         if (library == nullptr)
-            return "FSR needs amd_fidelityfx_vk.dll beside TriAevum";
+            return error == ERROR_PROC_NOT_FOUND
+                ? "FSR's FidelityFX runtime needs a newer Vulkan loader (update the graphics driver)"
+                : "FSR needs amd_fidelityfx_vk.dll beside TriAevum";
         FreeLibrary(library);
         return {};
 #else

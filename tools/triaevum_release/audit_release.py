@@ -312,6 +312,10 @@ def audit_release(
     sdk_policy = policy.get("proprietary_sdk_markers", {})
     sdk_markers = [str(marker).encode("ascii") for marker in sdk_policy.get("markers", [])]
     sdk_roles = {str(role) for role in sdk_policy.get("scanned_roles", [])}
+    # A library loaded only on demand (LoadLibrary) whose load may fail on an
+    # older Vulkan loader without ending the process: its provider is then
+    # simply not offered. Everything loaded at startup stays checked.
+    vulkan_exempt_roles = {str(role) for role in policy.get("vulkan_import_exempt_roles", [])}
 
     manifest_relative = manifest_path.relative_to(root).as_posix()
     contract = release.get("runtime_contract")
@@ -373,7 +377,8 @@ def audit_release(
         role = str(item.get("role", ""))
         # A Windows binary that imports a Vulkan command an older loader lacks
         # cannot start there at all (0xC0000139).
-        if platform.target == WINDOWS.target and pure.suffix.lower() in (".exe", ".dll"):
+        if (platform.target == WINDOWS.target and pure.suffix.lower() in (".exe", ".dll")
+                and role not in vulkan_exempt_roles):
             for error in vulkan_import_errors(path, relative, require_pe=False):
                 reject(error)
         if role in sdk_roles:

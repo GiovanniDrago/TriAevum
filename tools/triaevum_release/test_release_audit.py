@@ -295,6 +295,25 @@ class PublicReleaseAuditTests(unittest.TestCase):
             self.assertEqual(audit(["vkCreateInstance", "vkWaitSemaphores"]),
                              ["TriAevum.exe imports Vulkan commands that older loaders lack: vkWaitSemaphores"])
 
+    def test_on_demand_vulkan_runtime_may_import_newer_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_clean_package(root)
+            manifest_path = root / "release-manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            library = root / "amd_fidelityfx_vk.dll"
+            library.write_bytes(pe_import_fixture({"vulkan-1.dll": ["vkWaitSemaphores"]}))
+            entry = {"path": "amd_fidelityfx_vk.dll", "role": "optional_vulkan_runtime",
+                     "bytes": library.stat().st_size, "sha256": sha256_file(library)}
+            manifest["files"].append(entry)
+            atomic_write_json(manifest_path, manifest)
+            self.assertEqual(list(audit_release(root).errors), [])
+            # The same library as an ordinary runtime library loads at startup.
+            entry["role"] = "runtime_library"
+            atomic_write_json(manifest_path, manifest)
+            self.assertEqual(list(audit_release(root).errors),
+                             ["amd_fidelityfx_vk.dll imports Vulkan commands that older loaders lack: vkWaitSemaphores"])
+
     def test_rejects_private_file_hidden_in_source_archive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

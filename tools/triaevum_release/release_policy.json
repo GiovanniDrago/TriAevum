@@ -51,6 +51,7 @@
         "forge_runtime_module": ["forge/*.dll"],
         "runtime_library": ["*.dll", "bin/*.dll"],
         "separately_licensed_module": ["triaevum_immerse.dll", "triaevum_dlss.dll", "nvngx_dlss.dll"],
+        "optional_vulkan_runtime": ["amd_fidelityfx_vk.dll"],
         "precompiled_title": ["titles/*/triaevum_title_aot.dll"]
       },
       "required_paths": ["TriAevum.exe", "TriAevumForge.exe", "forge/oot3d_game_module.dll", "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "LICENSES/Microsoft-Visual-Cpp-Runtime.md", "LICENSES/Python-3.13.txt"]
@@ -79,6 +80,7 @@
     "corresponding_source"
   ],
   "separately_licensed_modules": ["triaevum_immerse.dll", "libtriaevum_immerse.so", "triaevum_dlss.dll", "libtriaevum_dlss.so", "nvngx_dlss.dll", "libnvidia-ngx-dlss.so.*"],
+  "vulkan_import_exempt_roles": ["optional_vulkan_runtime"],
   "proprietary_sdk_markers": {
     "markers": ["NVSDK_NGX_"],
     "scanned_roles": ["runtime_executable", "runtime_library", "forge_executable", "forge_tool", "forge_runtime_module", "shader_preparation_tool", "precompiled_title"]

@@ -143,11 +143,12 @@ def prepare(args) -> dict:
     # distributed under (runtime/three_ds_recomp/src/fast/dlss/LICENSE.md).
     layout["files"].extend(dlss_layout(targets))
     # FidelityFX's FSR runtime (MIT), which NRI loads by name beside the
-    # runtime; FSR is offered only when it loads.
+    # runtime, on demand: FSR is offered only when it loads, so an older
+    # Vulkan loader that lacks its imports only withdraws FSR.
     if "fidelityfx_runtime" in targets:
         layout["files"].append({"source": str(Path(targets["fidelityfx_runtime"]).resolve()),
                                 "path": Path(targets["fidelityfx_runtime"]).name,
-                                "role": "runtime_library"})
+                                "role": "optional_vulkan_runtime"})
     # The release's default scene environment profiles (read-only; the user's
     # own profiles in the data directory take precedence).
     for profile in sorted((ROOT / "runtime/triaevum_resources/environments").glob("*.environment.json")):
