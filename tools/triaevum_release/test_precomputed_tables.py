@@ -100,18 +100,21 @@ class PrecomputedTablesTests(unittest.TestCase):
                               {"inputs": {"romfs": {"sha256": "cd" * 32}}}]}
         bound, items = tables.bind_precomputed_tables(catalog, masks, lights)
         self.assertNotIn("precomputed_tables", catalog["titles"][0])
-        self.assertIn("precomputed_tables", bound["titles"][0])
-        self.assertNotIn("precomputed_tables", bound["titles"][1])
+        # Keyed by room content: another revision's identical rooms use them too.
+        self.assertEqual(bound["titles"][0]["precomputed_tables"], bound["titles"][1]["precomputed_tables"])
+        self.assertEqual(bound["titles"][1]["precomputed_tables"]["source_romfs_sha256"], ROMFS)
         package = self.root / "package"
         declared = {}
         for item in items:
             self.write(f"package/{item['path']}", Path(item["source"]).read_bytes())
             declared[item["path"]] = {"role": item["role"]}
         tables.validate_precomputed_tables(package, bound, declared)
-        self.assertEqual(set(tables.title_tables(package, bound["titles"][0])), {"interior_sun_masks", "scene_lights"})
-        self.assertEqual(tables.title_tables(package, bound["titles"][1]), {})
+        self.assertEqual(set(tables.title_tables(package, bound["titles"][1])), {"interior_sun_masks", "scene_lights"})
+        self.assertEqual(tables.title_tables(package, catalog["titles"][1]), {})
         with self.assertRaisesRegex(ValueError, "Uncatalogued"):
             tables.validate_precomputed_tables(package, catalog, declared)
+        with self.assertRaisesRegex(ValueError, "uncatalogued RomFS"):
+            tables.validate_precomputed_tables(package, {"titles": bound["titles"][1:]}, declared)
         (package / tables.LIGHTS_PATH).write_bytes(b"{}")
         with self.assertRaises(ValueError):
             tables.validate_precomputed_tables(package, bound, declared)

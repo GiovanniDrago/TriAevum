@@ -173,18 +173,18 @@ def generate(*, runtime: Path, romfs: Path, romfs_sha256: str, output: Path) -> 
 
 
 def bind_precomputed_tables(catalog: dict, masks: Path, lights: Path) -> tuple[dict, list[dict]]:
-    """Every title of the tables' RomFS revision names both tables."""
+    """Every title names both tables. They are computed from a catalogued
+    revision's RomFS, but apply by room content: another revision's identical
+    rooms use them too, and its other rooms are computed locally."""
     read_interior_sun_masks(masks)
     romfs = read_scene_lights_table(lights)["romfs_sha256"]
+    titles = catalog.get("titles", [])
+    if not any(title.get("inputs", {}).get("romfs", {}).get("sha256") == romfs for title in titles):
+        raise ValueError("The precomputed tables come from an uncatalogued RomFS")
     records = {"interior_sun_masks": artifact(masks, MASKS_PATH), "scene_lights": artifact(lights, LIGHTS_PATH)}
     result = copy.deepcopy(catalog)
-    bound = 0
-    for title in result.get("titles", []):
-        if title.get("inputs", {}).get("romfs", {}).get("sha256") == romfs:
-            title["precomputed_tables"] = {"format": FORMAT, "romfs_sha256": romfs, **copy.deepcopy(records)}
-            bound += 1
-    if not bound:
-        raise ValueError("No title has the precomputed tables' RomFS")
+    for title in result["titles"]:
+        title["precomputed_tables"] = {"format": FORMAT, "source_romfs_sha256": romfs, **copy.deepcopy(records)}
     return result, [{"source": str(masks.resolve()), "path": MASKS_PATH, "role": MASKS_ROLE},
                     {"source": str(lights.resolve()), "path": LIGHTS_PATH, "role": LIGHTS_ROLE}]
 
@@ -194,12 +194,13 @@ def validate_precomputed_tables(root: Path, catalog: dict, declared: dict) -> No
     roles = {MASKS_ROLE: "interior_sun_masks", LIGHTS_ROLE: "scene_lights"}
     actual = {path for path, record in declared.items() if record["role"] in roles}
     expected = set()
+    sources = {title["inputs"]["romfs"]["sha256"] for title in catalog.get("titles", [])}
     for title in catalog.get("titles", []):
         tables = title.get("precomputed_tables")
         if tables is None:
             continue
-        if tables.get("format") != FORMAT or tables.get("romfs_sha256") != title["inputs"]["romfs"]["sha256"]:
-            raise ValueError("Precomputed tables do not belong to this title")
+        if tables.get("format") != FORMAT or tables.get("source_romfs_sha256") not in sources:
+            raise ValueError("Precomputed tables come from an uncatalogued RomFS")
         for role, key in roles.items():
             record = tables[key]
             if declared.get(record["path"], {}).get("role") != role:
@@ -207,7 +208,7 @@ def validate_precomputed_tables(root: Path, catalog: dict, declared: dict) -> No
             path = checked_file(root, record)
             if role == MASKS_ROLE:
                 read_interior_sun_masks(path)
-            elif read_scene_lights_table(path)["romfs_sha256"] != tables["romfs_sha256"]:
+            elif read_scene_lights_table(path)["romfs_sha256"] != tables["source_romfs_sha256"]:
                 raise ValueError("Scene-light table names another RomFS")
             expected.add(record["path"])
     if actual != expected:
