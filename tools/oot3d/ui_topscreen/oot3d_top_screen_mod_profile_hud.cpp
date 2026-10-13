@@ -892,11 +892,18 @@ bool AppendTopScreenNativeCounters(
             // 2.1.1 FUN_005CD254 retains the destination counter's geometry;
             // only UV, color and per-digit translation come from the source.
             // Copying source positions duplicates the mounted B counter nearby.
+            // It scales the destination first (0x005CC5F4) and sets the
+            // translation last (0x005C778C), so the HUD scale applied to the
+            // whole primitive later must leave the translation unscaled.
             const auto offsetLane = kOffsetLane[index];
             constexpr float counterScale = 0.7F;
+            const float hudScale =
+                config != nullptr && config->HudScale > 0.0F ? config->HudScale : 1.0F;
             primitive.destination = {
-                kAmmoX[index] + (1U - digit) * 10.0F * counterScale + translation[0],
-                kAmmoY[index] + 3.0F + nativeVerticalOffsets[offsetLane] + translation[1],
+                kAmmoX[index] + (1U - digit) * 10.0F * counterScale +
+                    translation[0] / hudScale,
+                kAmmoY[index] + 3.0F + nativeVerticalOffsets[offsetLane] +
+                    translation[1] / hudScale,
                 11.0F * counterScale, kCounterGlyphHeight[0] * counterScale};
             primitive.uv = NativePicaQuadUvToHost(uvs);
             primitive.color = {colors[0], colors[1], colors[2], colors[3]};

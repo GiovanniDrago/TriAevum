@@ -1456,6 +1456,39 @@ int main() {
               styledCounters[4].destination.y == 49.0F &&
               std::abs(styledCounters[4].destination.width - 7.7F) < 0.001F,
           "styled ammo copied the native B placement instead of the destination layout");
+  {
+    // R11: at HUD scale 0.8 the source translation stays unscaled (0x005CD254).
+    TopScreenUiConfig scaledCounterConfig;
+    scaledCounterConfig.HudScale = 0.8F;
+    std::vector<oot3d::ui::UiPrimitive> still;
+    Require(AppendTopScreenNativeCounters(touchStateMemory, dynamicTouch.VerticalOffsets,
+                                           numberGlyphTexture, still, &error,
+                                           &scaledCounterConfig),
+            "cannot build the untranslated scaled ammo counter");
+    const std::array<float, 2> digitTranslation{5.0F, -3.0F};
+    Require(touchStateMemory.WriteBytes(
+                kItemTranslations,
+                std::span<const std::uint8_t>(
+                    reinterpret_cast<const std::uint8_t *>(digitTranslation.data()),
+                    sizeof(digitTranslation))),
+            "cannot seed the ammo source translation");
+    std::vector<oot3d::ui::UiPrimitive> moved;
+    Require(AppendTopScreenNativeCounters(touchStateMemory, dynamicTouch.VerticalOffsets,
+                                           numberGlyphTexture, moved, &error,
+                                           &scaledCounterConfig) &&
+                moved.size() == still.size() && still.size() == 6U,
+            "cannot build the translated scaled ammo counter");
+    ApplyTopScreenHudScale(still, scaledCounterConfig);
+    ApplyTopScreenHudScale(moved, scaledCounterConfig);
+    Require(std::abs(moved[4].destination.x - still[4].destination.x - 5.0F) < 0.001F &&
+                std::abs(moved[4].destination.y - still[4].destination.y + 3.0F) < 0.001F &&
+                std::abs(moved[5].destination.x - still[5].destination.x) < 0.001F &&
+                std::abs(moved[4].destination.width - still[4].destination.width) < 0.001F,
+            "the HUD scale must not scale the ammo digit translation");
+    Require(touchStateMemory.Write32(kItemTranslations, 0U) &&
+                touchStateMemory.Write32(kItemTranslations + 4U, 0U),
+            "cannot clear the ammo source translation");
+  }
 
   const auto fixedPauseEdges =
       BuildTopScreenPauseEdgeGeometry(true, 5U, 0U, 0U, 0, 1.0F, 1.0F);
