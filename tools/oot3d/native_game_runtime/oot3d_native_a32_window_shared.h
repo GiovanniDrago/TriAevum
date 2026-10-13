@@ -483,6 +483,9 @@ struct NativeWidescreenProjectionState {
   Oot3dNativeGame::TopScreenInputCadence *TopScreenInputClock = nullptr;
   const Oot3dNativeGame::TopScreenItemDispatchRuntime *TopScreenItems = nullptr;
   std::span<const uint32_t> WholeAotObservableExitPcs;
+  // Set to the pc of each observable exit this policy raises (see
+  // NativeCandidateDispatchState::ObservedExitPc).
+  std::optional<uint32_t> *ObservedExitPc = nullptr;
   std::optional<Oot3dNativeGame::TopScreenPauseTargetPlan>
       PendingTopScreenPauseTarget;
   uint32_t PendingTopScreenPauseRenderer = 0U;
@@ -549,6 +552,9 @@ struct NativeCandidateDispatchState {
   Oot3dNativeGame::NativeFreeCameraInputAccumulator TopScreenCameraInput;
   Oot3dNativeGame::TopScreenExtendedInputFrame TopScreenInput;
   Oot3dNativeGame::TopScreenInputCadence TopScreenInputClock;
+  // The pc whose block policy raised the last observable exit: the product
+  // dispatcher resumes it without running that policy a second time.
+  std::optional<uint32_t> ObservedExitPc;
   uint32_t PreviousTopScreenButtons = 0U;
   Oot3dNativeGame::NativeA32PolledButtonLatch StartButtonLatch;
   Oot3dNativeGame::TopScreenStartRoutingState TopScreenStartRouting;

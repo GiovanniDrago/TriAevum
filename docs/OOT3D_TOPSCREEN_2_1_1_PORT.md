@@ -89,21 +89,31 @@ by the application adapter, not renderer substitutions.
 Product builds (`OOT3D_WHOLE_AOT_PRODUCT_MODE`) execute the precompiled
 whole-AOT graph through pause routes. `ExecuteProductTopScreenHook` accepts the
 sorted list `ProductTopScreenBlocks` (every TopScreen source-port block), and
-those blocks are observable exits, but the graph reports only the starts of
-its basic blocks. Blocks end after branches and calls, not at TopScreen sites,
-so a site in the middle of a block is never reached in a product build. Those
-sites still work in developer builds, whose pause barrier leaves whole-AOT
-execution.
+those blocks are observable exits. The graph reports only the starts of its
+basic blocks, and blocks end after branches and calls, so a site in the middle
+of a block would never be reached.
 
-Reached in product builds (block starts): 0x0041E988, 0x0041EAE0, 0x00419830,
-0x0041DDC8, 0x0042EC2C, 0x0042E644, the item dispatch entries, the GameOver
-draw entry and the camera entries.
+`tools/oot3d/native_a32_runtime/whole_aot_observed_sites.json` lists the hook
+and resume pcs that are not natural block starts (touch-button draw predicate
+0x0042F5CC, the page draw calls 0x00419838/50/74/8C, 0x0041952C, 0x004198B0,
+0x0041E984, 0x0041EB28, the scene sites 0x00300520..0x0030055C, the FOV scalar
+0x00478EB8 and its resume, the control-flow and float-load contracts, and the
+planned layout sites). `whole_aot_program.py` starts a block at each of them,
+so a title module generated from it reaches all of them. The product runtime
+checks the title module's entry points at startup and refuses one that lacks
+any TopScreen site, instead of silently skipping it.
 
-Not reached in product builds (mid-block): 0x0042F5CC (touch-button draw
-predicate), 0x00442F38, 0x0041EB28, 0x00419838/50/74/8C, 0x0041952C,
-0x004198B0, 0x0041E984, the scene sites 0x00300520/52C/538/544/550, and the
-FOV scalar 0x00478EB8 (also absent from the product list). Making them
-reachable needs block splits at these sites in the generated title module.
+The developer interpreter runs the block policy at every dispatcher entry
+before the hook; `ExecuteProductTopScreenHook` does the same, except for the
+entry that its own observable exit left, whose policy already ran in compiled
+code. A hook that branches to another hooked entry (0x0041E984 resumes at the
+input boundary 0x0041E988) therefore still runs that entry's policy.
+
+The camera update entry 0x002D84C4 is observed whenever the TopScreen profile
+is active, because it resolves the FOV owner. 2.1.1 stores the play view's
+FOV address (`camera->play + 0x198`, its hook at 0x002D92B4) and 005DF388
+scales and clamps the value that 0x00478EB8 loads from that address, at every
+percentage.
 
 Exits that run guest continuations are conditional: 0x0041E988 leaves the
 graph only while the pause transaction or song text has work, and the page

@@ -56,9 +56,11 @@ void ApplyNativeWidescreenProjectionPolicy(
         *runtime.TraceMemory, *runtime.PendingTopScreenPauseChildRestore);
     runtime.PendingTopScreenPauseChildRestore.reset();
   }
+  // The camera update entry resolves the FOV owner of 0x00478EB8, which
+  // 2.1.1 scales and clamps at every percentage, so it is observed whenever
+  // the TopScreen profile is active, not only for the free camera.
   const bool enabledTopScreenCameraExit =
-      (pc != kTopScreenCameraUpdateEntry ||
-       runtime.TopScreenConfig.FreeCameraEnabled ||
+      (pc != kTopScreenCameraUpdateEntry || runtime.TopScreenUiProfile ||
        (runtime.DevFreeCamera != nullptr && runtime.DevFreeCamera->Active())) &&
       (pc != kTopScreenCameraNormal1Scalar ||
        runtime.TopScreenConfig.CameraZoomPercent != 100U);
@@ -85,6 +87,8 @@ void ApplyNativeWidescreenProjectionPolicy(
        (runtime.ItemDescription != nullptr && runtime.ItemDescription->NeedsExecution())) &&
       std::binary_search(runtime.WholeAotObservableExitPcs.begin(),
                          runtime.WholeAotObservableExitPcs.end(), pc)) {
+    if (runtime.ObservedExitPc != nullptr)
+      *runtime.ObservedExitPc = pc;
 #if defined(OOT3D_NATIVE_DIRECT_AOT_PLUGIN)
     Oot3dNativeGame::Oot3dWholeAotPluginObservableExit(pc, state);
 #else

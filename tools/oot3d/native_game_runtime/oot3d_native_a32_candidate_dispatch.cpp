@@ -432,13 +432,15 @@ bool ExecuteTopScreenUiSourcePortBlock(
             Oot3dNativeGame::TopScreenCameraGuestPhase::Idle) {
       std::uint16_t cameraSetting = 0U;
       std::uint16_t cameraIndex = 0xFFFFU;
+      std::uint32_t play = 0U;
       if (!memory.Read16(state.r[1] + 0x18AU, &cameraSetting) ||
-          !memory.Read16(state.r[1] + 0x1ACU, &cameraIndex)) {
+          !memory.Read16(state.r[1] + 0x1ACU, &cameraIndex) ||
+          !memory.Read32(state.r[1] + 0xD4U, &play)) {
         return false;
       }
       dispatch.TopScreenCameraFov =
           Oot3dNativeGame::ResolveTopScreenCameraFovOwnership(
-              {state.r[0], static_cast<std::int16_t>(cameraSetting),
+              {play, static_cast<std::int16_t>(cameraSetting),
                static_cast<std::int16_t>(cameraIndex)});
     }
     if (!dispatch.TopScreenCamera.Camera.Enabled) {
@@ -782,15 +784,27 @@ bool ExecuteTopScreenUiSourcePortBlock(
 } // namespace
 
 bool ExecuteProductTopScreenHook(uint32_t pc, oot3d::recomp::a32::GuestState &state,
-                                   oot3d::recomp::a32::MemoryBus &,
+                                   oot3d::recomp::a32::MemoryBus &memory,
                                    oot3d::recomp::a32::ExecutionResult *result,
                                    uint32_t blockBudget, uint32_t *blocksConsumed, void *user) {
   auto &dispatch = *static_cast<NativeCandidateDispatchState *>(user);
+  const bool observedExit = dispatch.ObservedExitPc == pc;
+  dispatch.ObservedExitPc.reset();
   // Product opt-in UI mod, not the experimental source/gameplay dispatcher:
   // the whole TopScreen source port, and nothing else.
   if (!dispatch.TopScreenUiProfile || dispatch.Memory == nullptr ||
       !std::binary_search(dispatch.ProductTopScreenBlocks.begin(),
                           dispatch.ProductTopScreenBlocks.end(), pc)) return false;
+  // As the developer interpreter does, the entry's block policy runs before
+  // its hook. An entry resumed after its own observable exit already ran it
+  // in compiled code; one reached by a hook's branch (0x0041E984 resumes at
+  // the input boundary 0x0041E988) or after a block budget has not. Outside
+  // compiled execution the policy cannot raise another exit.
+  if (!observedExit && dispatch.BlockEntry != nullptr &&
+      (dispatch.BlockEntryPcs.empty() ||
+       std::find(dispatch.BlockEntryPcs.begin(), dispatch.BlockEntryPcs.end(), pc) !=
+           dispatch.BlockEntryPcs.end()))
+    dispatch.BlockEntry(pc, state, memory, dispatch.BlockEntryUser);
   if (pc == kPauseRendererVisibilityNativeDraw) {
     auto &phase = dispatch.TopScreenGameOverDrawPhase;
     auto &saved = dispatch.TopScreenGameOverDrawRegisters;
@@ -867,8 +881,8 @@ bool ExecuteProductTopScreenHook(uint32_t pc, oot3d::recomp::a32::GuestState &st
     }
     return true;
   }
-  // This entry was already observed before returning to the dispatcher. If
-  // native ownership wins, resume it once instead of trapping the same entry.
+  // The entry's policy ran above or before its observable exit. If native
+  // ownership wins, resume it once instead of trapping the same entry.
   return Oot3dNativeGame::ExecuteOot3dCompiledFunction(
       pc, state, *dispatch.Memory, result, blockBudget, blocksConsumed,
       dispatch.BlockEntry, dispatch.BlockEntryUser,

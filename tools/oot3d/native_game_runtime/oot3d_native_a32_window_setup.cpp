@@ -1,5 +1,6 @@
 // Native A32 window session: setup (process image, host services, renderer, UI, initial state).
 #include "oot3d_native_a32_window_session.h"
+#include "oot3d_native_direct_aot.h"
 
 namespace Oot3dA32Window {
 
@@ -401,6 +402,7 @@ void NativeA32WindowSession::Setup() {
         kPauseSceneFiveDrawCall,          kPauseUiDrawReturn,
         kPauseTouchCoordinateUpdateCall,  kPauseRendererVisibilityCall,
         kPauseControllerDrawCall,         kTopScreenCameraNormal1Scalar,
+        kTopScreenCameraFovScalar,
         kTopScreenCameraUpdateEntry,      kTopScreenCameraUpdatePatchSite,
         kTopScreenTitleLogoFadeHoldPrefix};
     for (const auto &contract :
@@ -446,6 +448,35 @@ void NativeA32WindowSession::Setup() {
     productTopScreenBlocks.insert(productTopScreenBlocks.end(), itemEntries.begin(),
                                   itemEntries.end());
     std::sort(productTopScreenBlocks.begin(), productTopScreenBlocks.end());
+    // The whole-AOT graph reports only its block starts: a hook or resume pc
+    // that is not an entry of the title module would silently never run.
+    // tools/oot3d/native_a32_runtime/whole_aot_observed_sites.json makes the
+    // generator start a block at each of them.
+    {
+      std::vector<uint32_t> required = productTopScreenBlocks;
+      for (const auto &contract :
+           Oot3dNativeGame::TopScreenVerifiedControlFlowContracts())
+        required.push_back(contract.Target);
+      for (const auto &contract :
+           Oot3dNativeGame::TopScreenVerifiedFloatLoadContracts())
+        required.push_back(contract.Entry + 4U);
+      required.push_back(kTopScreenCameraFovScalar + 4U);
+      const auto entries = Oot3dNativeGame::Oot3dWholeAotEntryPoints();
+      std::vector<uint32_t> sortedEntries(entries.begin(), entries.end());
+      std::sort(sortedEntries.begin(), sortedEntries.end());
+      std::string missing;
+      for (const uint32_t pc : required) {
+        if (!std::binary_search(sortedEntries.begin(), sortedEntries.end(), pc)) {
+          char text[16];
+          std::snprintf(text, sizeof(text), " 0x%08X", pc);
+          missing += text;
+        }
+      }
+      if (!missing.empty())
+        throw std::runtime_error(
+            "the title module does not start a block at the TopScreen sites" + missing +
+            "; rebuild it with whole_aot_observed_sites.json");
+    }
 #endif
     wholeAotObservableExitBlocks.push_back(Oot3dNativeGame::kTopScreenInputUpdateBoundary);
     wholeAotObservableExitBlocks.push_back(kPauseRendererVisibilityNativeDraw);
@@ -515,6 +546,7 @@ void NativeA32WindowSession::Setup() {
       &nativeCandidateDispatch.TopScreenInput;
   widescreenProjection.TopScreenInputClock =
       &nativeCandidateDispatch.TopScreenInputClock;
+  widescreenProjection.ObservedExitPc = &nativeCandidateDispatch.ObservedExitPc;
   widescreenProjection.TopScreenItems = &nativeCandidateDispatch.TopScreenItems;
   // After the dispatch state is rebuilt: an earlier pointer would name the
   // free camera that assignment destroyed.
