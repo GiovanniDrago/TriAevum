@@ -2264,7 +2264,8 @@ int main() {
           questStateMemory.Write32(projectionOffset + 4U,
                                    std::bit_cast<std::uint32_t>(100.0F)) &&
           questStateMemory.Write8(0x00587966U, 0U) &&
-          questStateMemory.Write32(0x004FC688U, 1U),
+          questStateMemory.Write32(0x004FC688U, 1U) &&
+          questStateMemory.Write32(0x00504484U, 0U),
       "cannot seed pause projection fixture");
   projectionState = {};
   Require(
@@ -2338,6 +2339,26 @@ int main() {
           std::bit_cast<float>(projectedXBits) == 221.0F &&
           projectionState.OffsetX == 211.0F,
       "TopScreen 1.2 secondary-layer minimap margin was not decoded");
+  {
+    // 2.1.1 0x005CDC78: an open pause page (here the dungeon map, owner
+    // 0x00506CB0+0x38) leaves the shared map markers and anchor native.
+    const std::uint32_t nativeMarker = std::bit_cast<std::uint32_t>(42.0F);
+    std::uint32_t markerBits = 0U, anchorBits = 0U;
+    Require(questStateMemory.Write32(0x00506CE8U, 1U) &&
+                questStateMemory.Write32(indicatorPositions, nativeMarker) &&
+                questStateMemory.Write32(projectionOffset,
+                                         std::bit_cast<std::uint32_t>(10.0F)) &&
+                ApplyTopScreenPauseProjection(questStateMemory, projectionState,
+                                              &error) &&
+                questStateMemory.Read32(indicatorPositions, &markerBits) &&
+                questStateMemory.Read32(projectionOffset, &anchorBits) &&
+                markerBits == nativeMarker &&
+                std::bit_cast<float>(anchorBits) == 10.0F &&
+                projectionState.OffsetX == 0.0F,
+            "an open pause page must keep the shared map markers native");
+    Require(questStateMemory.Write32(0x00506CE8U, 0U),
+            "cannot close the map page fixture");
+  }
 
   constexpr std::uint32_t systemLayerRenderer = 0x00560000U;
   constexpr std::uint32_t systemLayerPositions = 0x00561000U;
