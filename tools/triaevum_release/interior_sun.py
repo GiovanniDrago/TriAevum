@@ -34,7 +34,7 @@ def _outputs(result: dict, cache: Path) -> dict[str, str]:
         raise ValueError("Invalid interior-sun prebuild manifest")
     hashes = {}
     for entry in result["entries"]:
-        if not isinstance(entry, dict) or entry.get("status") not in ("built", "hit", "fallback"):
+        if not isinstance(entry, dict) or entry.get("status") not in ("built", "hit", "precomputed", "fallback"):
             raise ValueError("Invalid interior-sun room result")
         if entry["status"] == "fallback":
             if not isinstance(entry.get("reason"), str) or not entry["reason"]:
@@ -67,13 +67,18 @@ def _outputs(result: dict, cache: Path) -> dict[str, str]:
 
 def prepare_interior_sun(*, root: Path, data_root: Path, runtime_record: dict,
                          romfs: Path, romfs_sha256: str, cache_directory: Path,
+                         mask_table: Path | None = None,
                          report: Callable[[str, str], None] = lambda *_: None) -> dict:
+    """A release mask table (integrity-checked by the caller) supplies the
+    masks of the rooms it covers; the runtime builds the others."""
     runtime = checked_file(root, runtime_record)
     if not re.fullmatch(r"[0-9a-f]{64}", romfs_sha256):
         raise ValueError("Invalid RomFS content identity")
     cache = cache_directory.resolve()
     identity = {"romfs_sha256": romfs_sha256, "criterion_version": CRITERION_VERSION,
                 "runtime_sha256": sha256_file(runtime), "cache_directory": str(cache)}
+    if mask_table is not None:
+        identity["mask_table_sha256"] = sha256_file(mask_table)
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     receipts = data_root.resolve() / "interior-sun"
     receipt_path = receipts / f"{key}.json"
@@ -90,6 +95,8 @@ def prepare_interior_sun(*, root: Path, data_root: Path, runtime_record: dict,
         manifest = Path(temporary) / "result.json"
         command = [str(runtime), "--prebuild-interior-sun", "--romfs", str(romfs.resolve()),
                    "--renderer-cache-directory", str(cache), "--manifest", str(manifest)]
+        if mask_table is not None:
+            command += ["--mask-table", str(mask_table.resolve())]
         completed = run_native(command, cwd=root, env=native_helper_environment(runtime),
                                capture_output=True, text=True, errors="replace", timeout=3600,
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -98,5 +105,6 @@ def prepare_interior_sun(*, root: Path, data_root: Path, runtime_record: dict,
         result = load_json_object(manifest)
         outputs = _outputs(result, cache)
         atomic_write_json(receipt_path, {"identity": identity, "outputs": outputs, "result": result})
-    report("interior-sun", f"Interior sun ready: {len(outputs)} caches, {result.get('fallback', 0)} native fallbacks")
+    report("interior-sun", f"Interior sun ready: {len(outputs)} caches ({result.get('precomputed', 0)} from the "
+                           f"release table), {result.get('fallback', 0)} native fallbacks")
     return {**result, "receipt_reused": False}

@@ -22,6 +22,7 @@ try:
     from .input_adapters import validate_adapter
     from .source_contracts import source_contract_errors
     from .shader_corpus_layout import validate_bundled_corpus
+    from .precomputed_tables import validate_precomputed_tables
     from .qualified_input_coverage import require_coverage
     from .vulkan_imports import vulkan_import_errors
 except ImportError:
@@ -33,6 +34,7 @@ except ImportError:
     from input_adapters import validate_adapter
     from source_contracts import source_contract_errors
     from shader_corpus_layout import validate_bundled_corpus
+    from precomputed_tables import validate_precomputed_tables
     from qualified_input_coverage import require_coverage
     from vulkan_imports import vulkan_import_errors
 
@@ -413,6 +415,7 @@ def audit_release(
         try:
             catalog = load_catalog(root)
             validate_bundled_corpus(root, catalog, declared)
+            validate_precomputed_tables(root, catalog, declared)
             if catalog_platform(catalog) != platform:
                 raise ValueError("Catalog target differs from release target")
             recipes = load_json_object(root / "recipes/oot3d.json")["recipes"]
@@ -472,6 +475,8 @@ def audit_release(
         reject("title artifacts require the precompiled distribution model")
     if not precompiled and roles_seen & {"portable_shader_corpus", "portable_pipeline_recipes"}:
         reject("bundled shader artifacts require a validated precompiled catalog")
+    if not precompiled and roles_seen & {"precomputed_interior_sun", "precomputed_scene_lights"}:
+        reject("precomputed tables require a validated precompiled catalog")
     if {name for name, item in declared.items() if item["role"] == "input_copy_adapter"} != adapter_paths:
         reject("Uncatalogued COPY adapter in release")
 

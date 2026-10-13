@@ -21,6 +21,7 @@ try:
     from .qualified_input_coverage import bind as bind_input_coverage
     from .shader_release_layout import bind_renderer_compiler
     from .shader_corpus_layout import bind_shader_corpus
+    from .precomputed_tables import bind_precomputed_tables
     from .forge import load_recipe, DEFAULT_RECIPES
 except ImportError:
     from build_forge_binary import build as build_forge
@@ -35,6 +36,7 @@ except ImportError:
     from qualified_input_coverage import bind as bind_input_coverage
     from shader_release_layout import bind_renderer_compiler
     from shader_corpus_layout import bind_shader_corpus
+    from precomputed_tables import bind_precomputed_tables
     from forge import load_recipe, DEFAULT_RECIPES
 
 
@@ -144,6 +146,12 @@ def prepare(args) -> dict:
     catalog, corpus_files = bind_shader_corpus(catalog, args.shader_pack,
         args.pipeline_manifest, args.pipeline_helper)
     layout["files"].extend(corpus_files)
+    # The release's own interior-sun and scene-light results for the supported
+    # rooms, keyed to their content (precomputed_tables).
+    if args.precomputed is not None:
+        catalog, table_files = bind_precomputed_tables(catalog, args.precomputed / "interior-sun.masks",
+                                                       args.precomputed / "scene-lights.json")
+        layout["files"].extend(table_files)
     atomic_write_json(catalog_path, catalog)
     atomic_write_json(layout_path, layout)
     result = package_release(layout_path, args.output, source_root=ROOT,
@@ -177,6 +185,8 @@ def main() -> int:
                         help="Publisher input: bundled portable corpus, never a user choice")
     parser.add_argument("--pipeline-manifest", type=Path, action="append", required=True)
     parser.add_argument("--pipeline-helper", type=Path, required=True)
+    parser.add_argument("--precomputed", type=Path,
+                        help="Publisher directory from precomputed_tables (interior-sun.masks, scene-lights.json)")
     args = parser.parse_args()
     print(json.dumps(prepare(args), indent=2))
     return 0

@@ -15,8 +15,10 @@ the light of (the renderer's base-level hash). The runtime lights it with the
 strength the game draws them with, so a glow the game fades by day (lit
 windows, halos) is dark by day. Where a room draws its lit windows as
 additive glow, the opaque panes are not lights. The catalog is
-private, ROM-derived data: it is generated on the user's machine, never
-shipped. Format (JSON):
+generated on the user's machine from the user's rooms; the release supplies
+the emitters it computed for the supported rooms, keyed by each room file's
+SHA-256 (precomputed_tables), and only rooms it does not cover are analysed
+here. Format (JSON):
 
     {"schema": "triaevum.scene-lights", "version": 1, "rooms": [
         {"scene": 10, "room": 1, "masterQuest": false, "fingerprint": "<16 hex>",
@@ -30,6 +32,7 @@ runtime tells them apart by the fingerprint of the room file it has loaded.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -809,13 +812,20 @@ def romfs_room_files(romfs: Path) -> Iterator[tuple[str, bytes]]:
             yield relative, data
 
 
-def build_catalog(romfs: Path) -> tuple[bytes, dict]:
-    rooms, counts = [], defaultdict(int)
+def build_catalog(romfs: Path, known: dict[str, list] | None = None) -> tuple[bytes, dict]:
+    """The catalog; `known` holds the release's emitters by room file
+    SHA-256 (precomputed_tables), used for exactly those rooms."""
+    rooms, counts, reused = [], defaultdict(int), 0
     for path, data in romfs_room_files(romfs):
         match = ROOM_FILE.fullmatch(path)
         if not match or match.group(1) not in SCENE_IDS:
             continue
-        emitters = room_emitters(data)
+        digest = hashlib.sha256(data).hexdigest() if known else None
+        if digest in (known or {}):
+            emitters = copy.deepcopy(known[digest])
+            reused += 1
+        else:
+            emitters = room_emitters(data)
         if not emitters:
             continue
         rooms.append({"scene": SCENE_IDS[match.group(1)], "room": int(match.group(2)),
@@ -839,20 +849,31 @@ def build_catalog(romfs: Path) -> tuple[bytes, dict]:
     payload = json.dumps({"schema": CATALOG_SCHEMA, "version": CATALOG_VERSION, "rooms": rooms},
                          separators=(",", ":"), allow_nan=False).encode("ascii")
     summary = {"rooms": len(rooms), "emitters": dict(sorted(counts.items()))}
+    if known:
+        summary["precomputed_rooms"] = reused
     if ambiguous:
         summary["ambiguous_rooms"] = ambiguous
     return payload, summary
 
 
-def prepare_scene_lights(*, data_root: Path, recipe: dict, romfs: Path,
+def prepare_scene_lights(*, data_root: Path, recipe: dict, romfs: Path, table: Path | None = None,
                          report: Callable[[str, str], None] = lambda *_: None) -> Path | None:
     """The catalog for this RomFS, generated once and reused while its receipt
-    matches."""
+    matches. A release table (integrity-checked by the caller) supplies the
+    rooms it covers."""
     source = recipe.get("inputs", {}).get("romfs", {}).get("sha256")
     if not source:
         return None
     identity = {"catalog_version": CATALOG_VERSION, "generator_revision": GENERATOR_REVISION,
                 "romfs_sha256": source}
+    known = None
+    if table is not None:
+        try:
+            from .precomputed_tables import read_scene_lights_table
+        except ImportError:
+            from precomputed_tables import read_scene_lights_table
+        known = read_scene_lights_table(table)["rooms"]
+        identity["table_sha256"] = hashlib.sha256(table.read_bytes()).hexdigest()
     key = hashlib.sha256(repr(sorted(identity.items())).encode("ascii")).hexdigest()
     directory = data_root / "cache" / "scene-lights" / key
     catalog = directory / "scene_lights.json"
@@ -863,7 +884,7 @@ def prepare_scene_lights(*, data_root: Path, recipe: dict, romfs: Path,
                 receipt.get("catalog_sha256") == hashlib.sha256(catalog.read_bytes()).hexdigest():
             return catalog
     report("scene_lights", "Cataloguing the rooms' light sources...")
-    payload, summary = build_catalog(romfs)
+    payload, summary = build_catalog(romfs, known)
     directory.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(catalog, payload)
     atomic_write_json(receipt_path, {"source": identity, "summary": summary,

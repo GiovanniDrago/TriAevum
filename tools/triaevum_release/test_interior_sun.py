@@ -99,6 +99,23 @@ class InteriorSunTests(unittest.TestCase):
                     cache_directory=self.cache)
         self.assertFalse(list((self.root / "data" / "interior-sun").glob("*.json")))
 
+    def test_release_mask_table_is_passed_and_bound_to_the_receipt(self):
+        table = self.root / "interior-sun.masks"
+        table.write_bytes(b"first table")
+        self.mutate = lambda r: r["entries"][0].update(status="precomputed")
+        with patch.object(sun, "run_native", side_effect=self.invoke):
+            prepare = lambda: sun.prepare_interior_sun(root=self.root, data_root=self.root / "data",
+                runtime_record=self.record, romfs=self.root / "user-romfs", romfs_sha256="a" * 64,
+                cache_directory=self.cache, mask_table=table)
+            self.assertFalse(prepare()["receipt_reused"])
+            self.assertTrue(prepare()["receipt_reused"])
+            table.write_bytes(b"second table")
+            self.assertFalse(prepare()["receipt_reused"])
+        command = self.calls[0][0]
+        self.assertEqual(command[command.index("--mask-table") + 1], str(table.resolve()))
+        self.assertFalse(self.prepare()["receipt_reused"])
+        self.assertNotIn("--mask-table", self.calls[-1][0])
+
     def test_documented_native_fallback_is_reusable(self):
         self.mutate = lambda r: r.update(fallback=1, entries=[
             {"status": "fallback", "reason": "unsupported CMB geometry"}])
