@@ -261,6 +261,7 @@ int main(int argc, char** argv) {
 #if defined(__SWITCH__)
         WriteSwitchBootStatus("failed", ex.what());
 #endif
+        LogFatalErrorForDemo(ex.what());
         DestroyContextForDemo();
         return 1;
     }

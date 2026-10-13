@@ -518,6 +518,12 @@ void GfxRenderingAPIVulkan::Init() {
         SPDLOG_INFO("OOT3D Vulkan DLSS unavailable: {}",
                     dlssCapabilityDetail);
     }
+    // What a tester's console shows of the upscalers this device offers.
+    std::fprintf(stderr,
+                 "TRIAEVUM_UPSCALERS nis=%d fsr=%d dlss=%d nis_reason=\"%s\" fsr_reason=\"%s\" dlss_detail=\"%s\"\n",
+                 mNriUpscalerPass.Available() ? 1 : 0, mNriUpscalerPass.FsrAvailable() ? 1 : 0,
+                 dlssAvailable ? 1 : 0, mNriUpscalerPass.UnavailableReason().c_str(),
+                 mNriInterop.FsrUnavailableReason().c_str(), dlssCapabilityDetail.c_str());
     settingsRuntime.SetCapability(
         Oot3d::GraphicsCapability::Msaa2x,
         (mNativePicaSupportedSampleCounts & VK_SAMPLE_COUNT_2_BIT) != 0U,

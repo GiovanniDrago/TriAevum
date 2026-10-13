@@ -132,8 +132,32 @@ current integration to revision `4b485316463969f182db15e67aad2aec2f40a3d7`.
 NRI is licensed under the MIT License, copyright 2021 NVIDIA Corporation.
 TriAevum must ship that notice with runtime binaries that contain NRI.
 
-NRI is distinct from proprietary NGX/DLSS SDK components. No proprietary SDK,
-model or DLL is part of the clean public release baseline.
+NRI is distinct from proprietary NGX/DLSS SDK components. The runtime is built
+with NRI's NGX support disabled; NGX is only in the DLSS module below.
+
+## NVIDIA DLSS (separately licensed DLSS module)
+
+Upscaling by NVIDIA DLSS. NVIDIA and DLSS are trademarks and/or registered
+trademarks of NVIDIA Corporation. TriAevum is not sponsored or endorsed by
+NVIDIA.
+
+The DLSS module (`triaevum_dlss.dll`, `libtriaevum_dlss.so`; source in
+`runtime/three_ds_recomp/src/fast/dlss/`) links the NGX SDK library from
+NVIDIA's public [DLSS SDK](https://github.com/NVIDIA/DLSS) and is distributed
+beside NVIDIA's DLSS runtime (`nvngx_dlss.dll`,
+`libnvidia-ngx-dlss.so.<version>`), both unmodified and from the same SDK
+release. They are NVIDIA's property and are distributed under the NVIDIA RTX
+SDKs licence reproduced in `LICENSES/NVIDIA-DLSS-SDK-LICENSE.txt`, not under
+TriAevum's GPL; the module's own integration code is MIT. See the module's
+`LICENSE.md` and `LICENSE_SCOPE.md`. Without the module, DLSS is not offered.
+
+## AMD FidelityFX SDK (FSR runtime)
+
+On Windows, FSR runs through AMD's signed FidelityFX runtime
+`amd_fidelityfx_vk.dll` from the [FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK)
+(`PrebuiltSignedDLL/`), which NRI loads by name. The FidelityFX SDK is
+licensed under the MIT License, copyright Advanced Micro Devices, Inc.; its
+notice is in `LICENSES/FidelityFX-SDK-MIT.txt`.
 
 ## AMD FidelityFX CACAO
 

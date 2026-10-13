@@ -92,6 +92,22 @@ def _matches_any(path: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatchcase(lowered, pattern.lower()) for pattern in patterns)
 
 
+def _binary_marker(path: Path, markers: Sequence[bytes]) -> bytes | None:
+    """The first of `markers` found in the file, read in overlapping chunks."""
+    if not markers:
+        return None
+    overlap = max(len(marker) for marker in markers) - 1
+    tail = b""
+    with path.open("rb") as stream:
+        while chunk := stream.read(8 * 1024 * 1024):
+            window = tail + chunk
+            for marker in markers:
+                if marker in window:
+                    return marker
+            tail = window[-overlap:] if overlap > 0 else b""
+    return None
+
+
 def _path_policy_errors(
     relative: str,
     *,
@@ -283,13 +299,19 @@ def audit_release(
         roles_seen.add(role)
         declared[relative] = item
 
-    # A separately licensed module (the iMMERSE library) ships under its own
-    # role, never as an ordinary runtime library.
-    separate_modules = {str(name).lower() for name in policy.get("separately_licensed_modules", [])}
+    # A separately licensed module (the iMMERSE library, the DLSS module and
+    # NVIDIA's DLSS runtime) ships under its own role, never as an ordinary
+    # runtime library.
+    separate_modules = [str(name) for name in policy.get("separately_licensed_modules", [])]
     for relative, item in declared.items():
-        if (relative.rsplit("/", 1)[-1].lower() in separate_modules
+        if (_matches_any(relative.rsplit("/", 1)[-1], separate_modules)
                 and item.get("role") != "separately_licensed_module"):
             reject(f"{relative} is separately licensed; declare it as separately_licensed_module")
+    # Proprietary SDK code stays inside its separately licensed module: no
+    # other binary may contain its marker.
+    sdk_policy = policy.get("proprietary_sdk_markers", {})
+    sdk_markers = [str(marker).encode("ascii") for marker in sdk_policy.get("markers", [])]
+    sdk_roles = {str(role) for role in sdk_policy.get("scanned_roles", [])}
 
     manifest_relative = manifest_path.relative_to(root).as_posix()
     contract = release.get("runtime_contract")
@@ -354,6 +376,11 @@ def audit_release(
         if platform.target == WINDOWS.target and pure.suffix.lower() in (".exe", ".dll"):
             for error in vulkan_import_errors(path, relative, require_pe=False):
                 reject(error)
+        if role in sdk_roles:
+            marker = _binary_marker(path, sdk_markers)
+            if marker is not None:
+                reject(f"{relative} contains proprietary SDK code ({marker.decode('ascii')}); "
+                       "it belongs only in its separately licensed module")
         package_forbidden_extensions = {
             extension
             for extension in forbidden_extensions

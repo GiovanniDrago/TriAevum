@@ -4,6 +4,7 @@
 #ifdef ENABLE_OOT3D_VULKAN
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <tuple>
@@ -20,7 +21,18 @@
 #include <Extensions/NRIUpscaler.h>
 #include <Extensions/NRIWrapperVK.h>
 #include "nri_interop_internal.h"
+#include "fast/oot3d/dlss_module_loader.h"
 #include "fast/renderer3ds/pica_vulkan_device_profile.h"
+#if defined(_WIN32)
+// Only the loader is needed here; GDI's ERROR macro would hide nri::Message::ERROR.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef NOGDI
+#define NOGDI
+#endif
+#include <windows.h>
+#endif
 #endif
 
 namespace Fast::Oot3d {
@@ -30,14 +42,16 @@ namespace {
 // Live instances of one temporal upscaler, one per output contract: a native
 // boundary composed at its scene target's extent and the presentation at the
 // display's extent are separate streams with separate outputs, so neither
-// recreates the other's instance. FSR keys carry preset 0.
+// recreates the other's instance. FSR keys carry preset 0. `Handle` is an NRI
+// upscaler (FSR) or a DLSS module feature; `destroy` releases one.
+template <typename Handle>
 class UpscalerInstances {
   public:
     // Instances with the current quality and preset: the presentation's and
     // a native boundary's outputs, plus one spare extent.
     static constexpr size_t kMaximum = 3U;
 
-    nri::Upscaler* Find(const NriDlssFeatureKey& key) {
+    Handle Find(const NriDlssFeatureKey& key) {
         for (auto& entry : mEntries) {
             if (entry.Key == key) {
                 entry.LastUse = ++mUseClock;
@@ -48,13 +62,13 @@ class UpscalerInstances {
     }
     // Instances of other settings are not used again; among the current
     // settings' extents the least recently used one makes room.
-    void MakeRoom(const NriDlssFeatureKey& key,
-                  const nri::UpscalerInterface& upscalers) {
+    template <typename Destroy>
+    void MakeRoom(const NriDlssFeatureKey& key, const Destroy& destroy) {
         std::erase_if(mEntries, [&](const Entry& entry) {
             if (entry.Key.Quality == key.Quality &&
                 entry.Key.Preset == key.Preset)
                 return false;
-            Retire(entry, upscalers);
+            Retire(entry, destroy);
             return true;
         });
         if (mEntries.size() < kMaximum) return;
@@ -63,21 +77,22 @@ class UpscalerInstances {
             [](const Entry& left, const Entry& right) {
                 return left.LastUse < right.LastUse;
             });
-        Retire(*oldest, upscalers);
+        Retire(*oldest, destroy);
         mEntries.erase(oldest);
     }
-    void Add(const NriDlssFeatureKey& key, nri::Upscaler* upscaler) {
+    void Add(const NriDlssFeatureKey& key, Handle upscaler) {
         mEntries.push_back({key, upscaler, ++mUseClock});
         ++mGeneration;
     }
-    void Clear(const nri::UpscalerInterface& upscalers) {
-        for (const auto& entry : mEntries) Retire(entry, upscalers);
+    template <typename Destroy>
+    void Clear(const Destroy& destroy) {
+        for (const auto& entry : mEntries) Retire(entry, destroy);
         mEntries.clear();
     }
     // A dispatch that resumes an instance after another instance's dispatch
     // finds an older history: it restarts it, as one shared instance did
     // when it was recreated for that stream.
-    bool Resumes(const nri::Upscaler* upscaler) {
+    bool Resumes(Handle upscaler) {
         const bool resumed = mLastDispatched != upscaler;
         mLastDispatched = upscaler;
         return resumed;
@@ -102,19 +117,19 @@ class UpscalerInstances {
   private:
     struct Entry {
         NriDlssFeatureKey Key;
-        nri::Upscaler* Upscaler = nullptr;
+        Handle Upscaler = nullptr;
         uint64_t LastUse = 0;
     };
-    void Retire(const Entry& entry, const nri::UpscalerInterface& upscalers) {
+    template <typename Destroy>
+    void Retire(const Entry& entry, const Destroy& destroy) {
         if (mLastDispatched == entry.Upscaler) mLastDispatched = nullptr;
-        if (upscalers.DestroyUpscaler != nullptr)
-            upscalers.DestroyUpscaler(entry.Upscaler);
+        destroy(entry.Upscaler);
         ++mGeneration;
     }
     std::vector<Entry> mEntries;
     uint64_t mUseClock = 0;
     uint64_t mGeneration = 0;
-    const nri::Upscaler* mLastDispatched = nullptr;
+    Handle mLastDispatched = nullptr;
 };
 } // namespace
 #endif
@@ -135,10 +150,13 @@ struct NriInteropContext::Impl {
     UpscalerQuality NisQuality = UpscalerQuality::Quality;
     bool NisInputSrgb = true;
     std::string NisReason = "NRI NIS support is unavailable";
-    UpscalerInstances Fsr;
+    UpscalerInstances<nri::Upscaler*> Fsr;
     std::string FsrReason = "NRI FSR support is unavailable";
-    UpscalerInstances Dlss;
-    std::string DlssReason = "NRI DLSS support is unavailable";
+    // DLSS is the DLSS module's (triaevum/dlss_module.h), on this device.
+    const TriaevumDlssModule* DlssModule = nullptr;
+    TriaevumDlssDevice* DlssDevice = nullptr;
+    UpscalerInstances<TriaevumDlssFeature*> Dlss;
+    std::string DlssReason = "the DLSS module is unavailable";
     bool DynamicRendering = false;
     nri::PipelineCache* LentPipelineCache = nullptr;
     std::unordered_map<uint32_t, nri::CommandBuffer*> CommandBuffers;
@@ -172,6 +190,55 @@ struct NriInteropContext::Impl {
             nri::Result::SUCCESS)
             descriptor = nullptr;
         return descriptor;
+    }
+
+    auto FsrDestroyer() {
+        return [this](nri::Upscaler* upscaler) {
+            if (UpscalerInterface.DestroyUpscaler != nullptr)
+                UpscalerInterface.DestroyUpscaler(upscaler);
+        };
+    }
+    auto DlssDestroyer() {
+        return [this](TriaevumDlssFeature* feature) {
+            if (DlssModule != nullptr) DlssModule->DestroyFeature(feature);
+        };
+    }
+
+    // NRI loads FidelityFX's Vulkan runtime only when it creates FSR, by
+    // name from the default search path: FSR is offered only when that load
+    // can succeed, so choosing it never fails mid-frame.
+    static std::string FidelityFxRuntimeReason() {
+#if defined(_WIN32)
+        HMODULE library = LoadLibraryA("amd_fidelityfx_vk.dll");
+        if (library == nullptr)
+            return "FSR needs amd_fidelityfx_vk.dll beside TriAevum";
+        FreeLibrary(library);
+        return {};
+#else
+        return "FSR's FidelityFX runtime is available on Windows only";
+#endif
+    }
+
+    // DLSS through the DLSS module on this device: offered on NVIDIA GPUs
+    // when the module is installed and NGX confirms DLSS Super Resolution.
+    void InitializeDlss(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device) {
+        DlssModule = Oot3d::DlssModule();
+        if (DlssModule == nullptr) {
+            DlssReason = DlssModuleUnavailableReason();
+            return;
+        }
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+        constexpr uint32_t kNvidiaVendor = 0x10DEU;
+        if (properties.vendorID != kNvidiaVendor) {
+            DlssReason = "DLSS needs an NVIDIA GPU";
+            return;
+        }
+        const TriaevumDlssDeviceDesc desc{instance, physicalDevice, device,
+                                          vkGetInstanceProcAddr, vkGetDeviceProcAddr};
+        std::array<char, 256> reason{};
+        DlssDevice = DlssModule->CreateDevice(&desc, reason.data(), reason.size());
+        DlssReason = DlssDevice != nullptr ? std::string{} : std::string(reason.data());
     }
 
     nri::UpscalerResource GetUpscalerResource(
@@ -625,16 +692,13 @@ bool NriInteropContext::Initialize(VkInstance instance, VkPhysicalDevice physica
         if (mImpl->UpscalerInterface.IsUpscalerSupported(
                 *mImpl->Device, nri::UpscalerType::FSR) &&
             fsrDeviceFeaturesEnabled)
-            mImpl->FsrReason.clear();
-        if (mImpl->UpscalerInterface.IsUpscalerSupported(
-                *mImpl->Device, nri::UpscalerType::DLSR))
-            mImpl->DlssReason.clear();
+            mImpl->FsrReason = Impl::FidelityFxRuntimeReason();
     } else {
         mImpl->UpscalerInterface = {};
         mImpl->NisReason = "NRI was built without a Vulkan NIS provider";
         mImpl->FsrReason = "NRI was built without a Vulkan FSR provider";
-        mImpl->DlssReason = "NRI was built without a Vulkan DLSS provider";
     }
+    mImpl->InitializeDlss(instance, physicalDevice, device);
     mImpl->Reason.clear();
     return true;
 #else
@@ -656,8 +720,12 @@ void NriInteropContext::Shutdown() {
             mImpl->UpscalerInterface.DestroyUpscaler(mImpl->Nis);
         }
         mImpl->Nis = nullptr;
-        mImpl->Fsr.Clear(mImpl->UpscalerInterface);
-        mImpl->Dlss.Clear(mImpl->UpscalerInterface);
+        mImpl->Fsr.Clear(mImpl->FsrDestroyer());
+        mImpl->Dlss.Clear(mImpl->DlssDestroyer());
+        if (mImpl->DlssDevice != nullptr)
+            mImpl->DlssModule->DestroyDevice(mImpl->DlssDevice);
+        mImpl->DlssDevice = nullptr;
+        mImpl->DlssReason = "the DLSS module is unavailable";
         for (auto& [_, texture] : mImpl->Textures) {
             for (nri::Descriptor* view : texture.ExtraViews)
                 mImpl->Core.DestroyDescriptor(view);
@@ -1169,7 +1237,7 @@ bool NriInteropContext::DispatchFsr(
     nri::Upscaler* fsr = mImpl->Fsr.Find(key);
     if (fsr == nullptr) {
         const auto started = std::chrono::steady_clock::now();
-        mImpl->Fsr.MakeRoom(key, mImpl->UpscalerInterface);
+        mImpl->Fsr.MakeRoom(key, mImpl->FsrDestroyer());
         nri::UpscalerDesc upscaler{};
         upscaler.upscaleResolution = {
             static_cast<nri::Dim_t>(desc.OutputWidth),
@@ -1244,8 +1312,7 @@ bool NriInteropContext::DispatchFsr(
 
 bool NriInteropContext::DlssAvailable() const {
 #ifdef ENABLE_OOT3D_NRI
-    return Available() && mImpl->UpscalerInterface.CreateUpscaler != nullptr &&
-           mImpl->DlssReason.empty();
+    return Available() && mImpl->DlssDevice != nullptr && mImpl->DlssReason.empty();
 #else
     return false;
 #endif
@@ -1265,28 +1332,25 @@ bool NriInteropContext::EnsureDlssFeature(uint32_t frameIndex,
     if (mImpl->Dlss.Find(key) != nullptr) return true;
     const auto command = mImpl->CommandBuffers.find(frameIndex);
     if (command == mImpl->CommandBuffers.end()) return false;
+    if (mImpl->DlssDevice == nullptr) return false;
     const auto started = std::chrono::steady_clock::now();
-    mImpl->Dlss.MakeRoom(key, mImpl->UpscalerInterface);
-    nri::UpscalerDesc upscaler{};
-    upscaler.upscaleResolution = {
-        static_cast<nri::Dim_t>(key.OutputWidth),
-        static_cast<nri::Dim_t>(key.OutputHeight)};
-    upscaler.type = nri::UpscalerType::DLSR;
-    upscaler.mode = ToNriUpscalerMode(key.Quality);
-    upscaler.flags =
-        (key.InputSrgb ? nri::UpscalerBits::SRGB
-                       : nri::UpscalerBits::HDR) |
-        nri::UpscalerBits::USE_REACTIVE; // motion without jitter (upscaler_guides.h)
+    mImpl->Dlss.MakeRoom(key, mImpl->DlssDestroyer());
+    // The mode in NRI's UpscalerMode order (TriaevumDlssMode); motion without
+    // jitter at render resolution (upscaler_guides.h).
+    const TriaevumDlssFeatureDesc feature{
+        key.OutputWidth, key.OutputHeight,
+        static_cast<uint32_t>(ToNriUpscalerMode(key.Quality)), key.Preset,
+        key.InputSrgb ? 0U : static_cast<uint32_t>(TRIAEVUM_DLSS_FLAG_HDR)};
     // NGX records feature-creation commands into the already-open frame
     // command buffer, avoiding an out-of-band queue submission.
-    upscaler.commandBuffer = command->second;
-    upscaler.preset = key.Preset;
-    nri::Upscaler* created = nullptr;
-    if (mImpl->UpscalerInterface.CreateUpscaler(
-            *mImpl->Device, upscaler, created) !=
-        nri::Result::SUCCESS) {
-        mImpl->DlssReason =
-            "NRI failed to create DLSS (NGX runtime or GPU support unavailable)";
+    const auto commandBuffer = static_cast<VkCommandBuffer>(
+        mImpl->Core.GetCommandBufferNativeObject(command->second));
+    std::array<char, 256> reason{};
+    TriaevumDlssFeature* created = mImpl->DlssModule->CreateFeature(
+        mImpl->DlssDevice, commandBuffer, &feature, reason.data(), reason.size());
+    if (created == nullptr) {
+        // DLSS is withdrawn for the session: the next frame plans without it.
+        mImpl->DlssReason = reason.data();
         return false;
     }
     mImpl->Dlss.Add(key, created);
@@ -1366,39 +1430,47 @@ bool NriInteropContext::DispatchDlss(
                                 inputSrgb, desc.DlssPreset};
     if (!EnsureDlssFeature(desc.FrameIndex, key))
         return false;
-    nri::Upscaler* const feature = mImpl->Dlss.Find(key);
+    TriaevumDlssFeature* const feature = mImpl->Dlss.Find(key);
 
-    nri::DispatchUpscaleDesc dispatch{};
-    dispatch.output =
-        mImpl->GetUpscalerResource(desc.OutputImage, true);
-    dispatch.input =
-        mImpl->GetUpscalerResource(desc.InputImage);
-    dispatch.guides.upscaler.depth =
-        mImpl->GetUpscalerResource(desc.DepthImage);
-    dispatch.guides.upscaler.mv =
-        mImpl->GetUpscalerResource(desc.MotionImage);
-    dispatch.guides.upscaler.reactive =
-        mImpl->GetUpscalerResource(desc.ReactiveImage);
-    if (dispatch.output.descriptor == nullptr ||
-        dispatch.input.descriptor == nullptr ||
-        dispatch.guides.upscaler.depth.descriptor == nullptr ||
-        dispatch.guides.upscaler.mv.descriptor == nullptr ||
-        dispatch.guides.upscaler.reactive.descriptor == nullptr)
+    // The views NRI made of the host's images, as NRI's own NGX path used.
+    const auto image = [&](VkImage source, VkFormat format, uint32_t width,
+                           uint32_t height, bool storage) {
+        nri::Descriptor* view = mImpl->GetUpscalerView(source, storage);
+        return TriaevumDlssImage{
+            source,
+            view != nullptr ? reinterpret_cast<VkImageView>(
+                                  mImpl->Core.GetDescriptorNativeObject(view))
+                            : VK_NULL_HANDLE,
+            format, width, height};
+    };
+    TriaevumDlssEvaluateDesc evaluate{};
+    evaluate.Output = image(desc.OutputImage, desc.OutputFormat,
+                            desc.OutputWidth, desc.OutputHeight, true);
+    evaluate.Color = image(desc.InputImage, desc.InputFormat,
+                           desc.InputWidth, desc.InputHeight, false);
+    evaluate.Depth = image(desc.DepthImage, desc.DepthFormat,
+                           desc.InputWidth, desc.InputHeight, false);
+    evaluate.Motion = image(desc.MotionImage, desc.MotionFormat,
+                            desc.InputWidth, desc.InputHeight, false);
+    evaluate.Reactive = image(desc.ReactiveImage, desc.ReactiveFormat,
+                              desc.InputWidth, desc.InputHeight, false);
+    if (evaluate.Output.View == VK_NULL_HANDLE ||
+        evaluate.Color.View == VK_NULL_HANDLE ||
+        evaluate.Depth.View == VK_NULL_HANDLE ||
+        evaluate.Motion.View == VK_NULL_HANDLE ||
+        evaluate.Reactive.View == VK_NULL_HANDLE)
         return false;
-    dispatch.currentResolution = {
-        static_cast<nri::Dim_t>(desc.InputWidth),
-        static_cast<nri::Dim_t>(desc.InputHeight)};
-    dispatch.cameraJitter = {desc.JitterPixels[0], desc.JitterPixels[1]};
-    dispatch.mvScale = {
-        static_cast<float>(desc.InputWidth),
-        static_cast<float>(desc.InputHeight)};
+    evaluate.RenderWidth = desc.InputWidth;
+    evaluate.RenderHeight = desc.InputHeight;
+    evaluate.JitterX = desc.JitterPixels[0];
+    evaluate.JitterY = desc.JitterPixels[1];
+    evaluate.MotionScaleX = static_cast<float>(desc.InputWidth);
+    evaluate.MotionScaleY = static_cast<float>(desc.InputHeight);
     const bool resumed = mImpl->Dlss.Resumes(feature);
-    dispatch.flags = desc.ResetHistory || resumed
-        ? nri::DispatchUpscaleBits::RESET_HISTORY
-        : nri::DispatchUpscaleBits::NONE;
-    mImpl->UpscalerInterface.CmdDispatchUpscale(
-        *command->second, *feature, dispatch);
-    return true;
+    evaluate.ResetHistory = desc.ResetHistory || resumed ? 1U : 0U;
+    const auto commandBuffer = static_cast<VkCommandBuffer>(
+        mImpl->Core.GetCommandBufferNativeObject(command->second));
+    return mImpl->DlssModule->Evaluate(feature, commandBuffer, &evaluate) != 0;
 #else
     (void)desc;
     return false;

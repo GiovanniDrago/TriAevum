@@ -178,6 +178,8 @@ void GfxRenderingAPIVulkan::PickPhysicalDevice() {
             hasSwapchain,
             hasFormats,
             hasPresentModes,
+            VK_VERSION_MAJOR(properties.apiVersion),
+            VK_VERSION_MINOR(properties.apiVersion),
         });
         SPDLOG_INFO(
             "OOT3D Vulkan adapter [{}]: {} (suitable={}, score={})",
@@ -238,10 +240,16 @@ void GfxRenderingAPIVulkan::PickPhysicalDevice() {
     mUniformBufferAlignment =
         std::max(mStorageBufferAlignment,
                  std::max<VkDeviceSize>(16, properties.limits.minUniformBufferOffsetAlignment));
-    SPDLOG_INFO("OOT3D Vulkan device [{}]: {} (api {}.{}.{})",
-                 mVulkanAdapterIndex, properties.deviceName,
-                 VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion),
-                 VK_VERSION_PATCH(properties.apiVersion));
+    // Release logs keep warnings only; the device is what a tester's report
+    // needs first, so it is written at that level and to the console.
+    SPDLOG_WARN("OOT3D Vulkan device [{}]: {} (api {}.{}.{}, vendor 0x{:04X}, driver 0x{:08X})",
+                mVulkanAdapterIndex, properties.deviceName,
+                VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion),
+                VK_VERSION_PATCH(properties.apiVersion), properties.vendorID, properties.driverVersion);
+    std::fprintf(stderr, "TRIAEVUM_VULKAN_DEVICE index=%u name=\"%s\" api=%u.%u.%u vendor=0x%04X driver=0x%08X\n",
+                 mVulkanAdapterIndex, properties.deviceName, VK_VERSION_MAJOR(properties.apiVersion),
+                 VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion),
+                 properties.vendorID, properties.driverVersion);
 }
 
 void GfxRenderingAPIVulkan::CreateLogicalDevice() {

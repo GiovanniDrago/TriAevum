@@ -476,6 +476,24 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                                             Oot3d::GlobalIlluminationMode::ScreenSpace;
         const bool screenSpaceGiReady = screenSpaceGiRequested && mScreenSpaceGi.Prepare();
         PublishGlobalIlluminationStatus(presentationSettings.Effects.GlobalIllumination.Mode);
+        // Only a provider that can execute is planned: one that is missing or
+        // was withdrawn after a failure leaves the display unscaled.
+        const bool upscalerAvailable = [&] {
+            switch (presentationSettings.Upscaler) {
+                case Oot3d::UpscalerProvider::Nis:
+                    return mNriUpscalerPass.Available();
+                case Oot3d::UpscalerProvider::Fsr:
+                    return mNriUpscalerPass.FsrAvailable();
+                case Oot3d::UpscalerProvider::Dlss:
+#if defined(_WIN32) && defined(ENABLE_OOT3D_D3D12_NGX_PROVIDER)
+                    if (mD3d12NgxProvider.Available()) return true;
+#endif
+                    return mNriUpscalerPass.DlssAvailable();
+                case Oot3d::UpscalerProvider::Xess:
+                    return false;
+            }
+            return false;
+        }();
         const auto effectPlan = Oot3d::BuildDisplayEffectPlan({
             .AlphaOverlay = alphaOverlay,
             .WorldSurface = worldSurface,
@@ -510,6 +528,7 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 presentationSettings.Effects.ToonStyle.OutlineEnabled,
             .AntiAliasing = presentationSettings.AntiAliasing,
             .Upscaler = presentationSettings.Upscaler,
+            .UpscalerAvailable = upscalerAvailable,
             .GuideDiagnostics = Oot3d::PicaGuideDiagnosticMode() != 0,
             .NativeSceneBoundary = copyBoundary,
             .BeforeNativeUi = copyBoundary && beforeNativeUi && antiAliasingAvailableHere,
@@ -3613,6 +3632,48 @@ bool GfxRenderingAPIVulkan::ExecuteNativePicaDisplayGraph(
                 VK_FORMAT_R16G16B16A16_SFLOAT,
                 mSmaaWidth, mSmaaHeight,
                 mSmaaOutputEncodingThisFrame);
+        }
+        // A planned upscaler that wrote no output this frame (its provider
+        // failed, or its inputs were not ready) does not end the game: the
+        // scanout shows the colour the upscaler was to read, at that colour's
+        // extent. That colour is already in the shader-read layout the
+        // upscaler declared; the memory barrier extends the visibility of its
+        // writes to the scanout's fragment reads. A provider that failed is
+        // withdrawn (its capability with it), so later frames plan without it.
+        if ((wantsTemporalUpscaler || wantsNis) &&
+            effectResources.Find(Oot3d::EffectResource::UpscaledColor) == nullptr) {
+            const auto imageBinding = [&](Oot3d::EffectResource resource)
+                -> const Oot3d::EffectResourceBinding* {
+                const auto* binding = effectResources.Find(resource);
+                return binding != nullptr &&
+                               binding->Kind == Oot3d::EffectResourceBindingKind::Image
+                           ? binding : nullptr;
+            };
+            // Over the native UI the display's own colour carries the UI the
+            // overlay would have laid over the upscaled scene.
+            const auto* shown = imageBinding(effectPlan.NativeUiOverlay
+                                                 ? Oot3d::EffectResource::SceneColor
+                                                 : upscalerColor);
+            if (shown == nullptr)
+                shown = imageBinding(Oot3d::EffectResource::SceneColor);
+            if (shown == nullptr) {
+                throw std::runtime_error(
+                    "display effect upscaler fallback has no colour to show");
+            }
+            const Oot3d::EffectResourceBinding unscaled = *shown;
+            VkMemoryBarrier visible{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            visible.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+            visible.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1,
+                                 &visible, 0, nullptr, 0, nullptr);
+            bindEffectImage(
+                Oot3d::EffectResource::UpscaledColor,
+                reinterpret_cast<VkImage>(unscaled.NativeImage),
+                reinterpret_cast<VkImageView>(unscaled.NativeView),
+                static_cast<VkFormat>(unscaled.Format),
+                unscaled.Width, unscaled.Height, unscaled.ColorEncoding);
+            WithdrawFailedUpscaler(presentationSettings.Upscaler);
         }
 
         transitionEffectPassGuides(Oot3d::DisplayEffectPass::Scanout);

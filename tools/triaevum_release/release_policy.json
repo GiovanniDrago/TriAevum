@@ -50,7 +50,7 @@
         "forge_tool_resource": ["lib/clang/*", "lib/clang/**/*"],
         "forge_runtime_module": ["forge/*.dll"],
         "runtime_library": ["*.dll", "bin/*.dll"],
-        "separately_licensed_module": ["triaevum_immerse.dll"],
+        "separately_licensed_module": ["triaevum_immerse.dll", "triaevum_dlss.dll", "nvngx_dlss.dll"],
         "precompiled_title": ["titles/*/triaevum_title_aot.dll"]
       },
       "required_paths": ["TriAevum.exe", "TriAevumForge.exe", "forge/oot3d_game_module.dll", "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "LICENSES/Microsoft-Visual-Cpp-Runtime.md", "LICENSES/Python-3.13.txt"]
@@ -62,7 +62,7 @@
         "forge_runtime_module": ["forge/oot3d_game_module.so", "forge/libshaderc.so.1", "forge/libshaderc_shared.so", "forge/libshaderc_shared.so.*", "forge/libglslang.so", "forge/libglslang.so.*", "forge/libSPIRV-Tools.so", "forge/libSPIRV-Tools.so.*", "forge/libSPIRV-Tools-opt.so", "forge/libSPIRV-Tools-opt.so.*"],
         "shader_preparation_tool": ["forge/oot3d_native_pica_aot_compiler", "forge/oot3d_native_nri_pipeline_prepare"],
         "runtime_library": ["triaevum_title_aot.so", "lib/*.so", "lib/*.so.*"],
-        "separately_licensed_module": ["libtriaevum_immerse.so", "lib/libtriaevum_immerse.so"],
+        "separately_licensed_module": ["libtriaevum_immerse.so", "lib/libtriaevum_immerse.so", "libtriaevum_dlss.so", "lib/libtriaevum_dlss.so", "libnvidia-ngx-dlss.so.*", "lib/libnvidia-ngx-dlss.so.*"],
         "forge_frozen_resource": ["_internal/*", "_internal/**/*"],
         "precompiled_title": ["titles/*/triaevum_title_aot.so"]
       },
@@ -78,7 +78,11 @@
     "revision_recipe",
     "corresponding_source"
   ],
-  "separately_licensed_modules": ["triaevum_immerse.dll", "libtriaevum_immerse.so"],
+  "separately_licensed_modules": ["triaevum_immerse.dll", "libtriaevum_immerse.so", "triaevum_dlss.dll", "libtriaevum_dlss.so", "nvngx_dlss.dll", "libnvidia-ngx-dlss.so.*"],
+  "proprietary_sdk_markers": {
+    "markers": ["NVSDK_NGX_"],
+    "scanned_roles": ["runtime_executable", "runtime_library", "forge_executable", "forge_tool", "forge_runtime_module", "shader_preparation_tool", "precompiled_title"]
+  },
   "forbidden_basenames": [
     "AGENTS.md",
     "code.bin",
@@ -115,7 +119,8 @@
     "tools/oot3d/ui_contract/CMakeLists.txt",
     "tools/oot3d/ui_contract/README.md",
     "runtime/three_ds_recomp/src/fast/immerse/LICENSE.md",
-    "runtime/three_ds_recomp/src/fast/immerse/LICENSE-iMMERSE.txt"
+    "runtime/three_ds_recomp/src/fast/immerse/LICENSE-iMMERSE.txt",
+    "runtime/three_ds_recomp/src/fast/dlss/LICENSE.md"
   ],
   "source_archive_required_manifests": [
     "tools/oot3d/ui_contract/SOURCE_MANIFEST.json"

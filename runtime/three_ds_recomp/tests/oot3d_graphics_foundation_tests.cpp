@@ -6653,6 +6653,31 @@ TEST(Oot3dVulkanAdapter, ExplicitSelectionIsStrictAndDeterministic) {
     EXPECT_NE(missing.Reason.find("not enumerated"), std::string::npos);
 }
 
+// A driver below Vulkan 1.2 is never selected (the renderer would fail at its
+// first render pass), and the refusal names the device, its version and the
+// remedy instead of a missing entry point.
+TEST(Oot3dVulkanAdapter, RequiresVulkan12AndExplainsAnOutdatedDriver) {
+    using namespace Fast::Oot3d;
+    const std::vector<VulkanAdapterCandidate> candidates = {
+        { 0U, "old integrated", VulkanAdapterClass::Integrated, 16384U, true, true, true, true, true, 1U, 1U },
+        { 1U, "current discrete", VulkanAdapterClass::Discrete, 8192U, true, true, true, true, true, 1U, 3U },
+    };
+    const auto selected = SelectVulkanAdapter(candidates);
+    ASSERT_TRUE(selected.CandidatePosition.has_value());
+    EXPECT_EQ(*selected.CandidatePosition, 1U);
+
+    const std::vector<VulkanAdapterCandidate> outdated(candidates.begin(), candidates.begin() + 1);
+    const auto refused = SelectVulkanAdapter(outdated);
+    EXPECT_FALSE(refused.CandidatePosition.has_value());
+    EXPECT_NE(refused.Reason.find("old integrated"), std::string::npos);
+    EXPECT_NE(refused.Reason.find("Vulkan 1.1"), std::string::npos);
+    EXPECT_NE(refused.Reason.find("update the graphics driver"), std::string::npos);
+
+    const auto explicitRefusal = SelectVulkanAdapter(outdated, 0U);
+    EXPECT_FALSE(explicitRefusal.CandidatePosition.has_value());
+    EXPECT_NE(explicitRefusal.Reason.find("Vulkan 1.2 or newer"), std::string::npos);
+}
+
 TEST(Oot3dTexturePreviewArtifact,
      EncodesTopDownBgraBmpWithoutChangingSourcePixels) {
     const std::array<uint8_t, 8> rgba{

@@ -1041,6 +1041,37 @@ TEST(Oot3dDisplayEffectPlan, DeclaresFsrDepthPreparation) {
               bindings.end());
 }
 
+// A selected upscaler whose provider cannot execute (missing, or withdrawn
+// after a failure) is not planned: nothing declares an UpscaledColor that no
+// pass writes, and the scanout reads the colour it would have upscaled.
+TEST(Oot3dDisplayEffectPlan, PlansNoUpscalerWithoutItsProvider) {
+    for (const auto provider : {UpscalerProvider::Nis, UpscalerProvider::Fsr, UpscalerProvider::Dlss}) {
+        DisplayEffectPlanInput input;
+        input.WorldSurface = true;
+        input.PerspectiveAvailable = true;
+        input.CameraAvailable = true;
+        input.AntiAliasing = AntiAliasingMode::Upscaler;
+        input.Upscaler = provider;
+        input.UpscalerAvailable = false;
+        const auto plan = BuildDisplayEffectPlan(input);
+        ASSERT_TRUE(plan.Graph.Valid()) << plan.Graph.Error;
+        EXPECT_FALSE(plan.Enabled(DisplayEffectPass::Nis));
+        EXPECT_FALSE(plan.Enabled(DisplayEffectPass::TemporalUpscaler));
+        const auto scanout = plan.Bindings(DisplayEffectPass::Scanout);
+        EXPECT_EQ(std::find(scanout.begin(), scanout.end(), Read(EffectResource::UpscaledColor)),
+                  scanout.end());
+
+        input.UpscalerAvailable = true;
+        const auto available = BuildDisplayEffectPlan(input);
+        ASSERT_TRUE(available.Graph.Valid()) << available.Graph.Error;
+        EXPECT_TRUE(available.Enabled(provider == UpscalerProvider::Nis ? DisplayEffectPass::Nis
+                                                                        : DisplayEffectPass::TemporalUpscaler));
+        const auto upscaled = available.Bindings(DisplayEffectPass::Scanout);
+        EXPECT_NE(std::find(upscaled.begin(), upscaled.end(), Read(EffectResource::UpscaledColor)),
+                  upscaled.end());
+    }
+}
+
 TEST(Oot3dDisplayEffectPlan, KeepsNonWorldDisplaysCanonical) {
     DisplayEffectPlanInput input;
     input.PerspectiveAvailable = true;

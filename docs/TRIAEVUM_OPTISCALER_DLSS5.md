@@ -9,10 +9,12 @@ is packaged.
 ## How it attaches
 
 - It loads as `winmm.dll` beside `TriAevum.exe` (the executable imports
-  `WINMM.dll`) and intercepts NGX. TriAevum's DLSS runs through NRI's NGX
-  upscaler on Vulkan; after each `NVSDK_NGX_VULKAN_EvaluateFeature` the mod
-  runs the model on the same command buffer (`EvaluateAfterUpscaleVk`), with
-  the colour, depth and motion vectors of TriAevum's DLSS parameters.
+  `WINMM.dll`) and intercepts NGX. TriAevum's DLSS runs on Vulkan in the
+  separately licensed DLSS module (`triaevum_dlss.dll`, the only binary that
+  links NGX; `src/fast/dlss/LICENSE.md`); after each
+  `NVSDK_NGX_VULKAN_EvaluateFeature` the mod runs the model on the same
+  command buffer (`EvaluateAfterUpscaleVk`), with the colour, depth and motion
+  vectors of TriAevum's DLSS parameters.
 - The two NVIDIA extensions the model loads through (`VK_NVX_binary_import`,
   `VK_NVX_image_view_handle`) are already enabled by TriAevum for NGX; the
   mod adds `VK_KHR_buffer_device_address`.
@@ -29,15 +31,24 @@ keeps the sampled usage on a storage view whose texture is also a shader
 resource (the image itself already allows it). Nothing else in TriAevum uses
 the extra usage.
 
-## Install (developer layout)
+## Install
 
-Beside `TriAevum.exe`: `OptiScaler.dll` renamed `winmm.dll`, `OptiScaler.ini`
+Beside `TriAevum.exe`, which already has `triaevum_dlss.dll` and NVIDIA's
+`nvngx_dlss.dll` from the package: `OptiScaler.dll` renamed `winmm.dll`, `OptiScaler.ini`
 with `[DlssNr] Enabled=true`, the mod's `nvngx.dll_dlssnr.dll` forwarder, and
 `nvngx_dlssnr.dll`. In F1 set anti-aliasing to Upscaler with the DLSS provider
 (the mod does nothing without the game's DLSS running). Insert opens the
 OptiScaler menu (DLSS 5 tab); F6 cycles optimised / vanilla / off.
 
 ## Observations
+
+- 2026-10-13, beta.1b candidate (DLSS module), RTX 3060, Kokiri savestate,
+  3840x2160 DLSS Ultra Performance: the mod proxies the module's
+  `NVSDK_NGX_VULKAN_Init_Ext2`, the DLSS feature and the model come up
+  (`feature up at 3840x2160`, `running natively`). With the mod loaded the
+  process ends with an access violation after NGX releases the feature at
+  exit, with this runtime and with beta.1 alike; without the mod both exit
+  cleanly.
 
 - DLSS reconstructs the frame upright (below), so the model is created at the
   presented size (log: `feature up at 1280x720`) and sees the picture as the

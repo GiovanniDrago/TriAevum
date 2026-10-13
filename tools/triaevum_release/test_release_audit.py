@@ -58,6 +58,11 @@ FILES = {
     "LICENSES/iMMERSE-MXAO.md": ("license", b"iMMERSE module exception fixture\n"),
     "LICENSES/iMMERSE-LICENSE.txt": ("license", b"iMMERSE license fixture\n"),
     "triaevum_immerse.dll": ("separately_licensed_module", b"MZ iMMERSE module fixture"),
+    # The DLSS module is the one binary allowed to contain NGX code.
+    "triaevum_dlss.dll": ("separately_licensed_module", b"MZ DLSS module fixture NVSDK_NGX_VULKAN_Init"),
+    "nvngx_dlss.dll": ("separately_licensed_module", b"MZ NVIDIA DLSS runtime fixture"),
+    "LICENSES/NVIDIA-DLSS-SDK-LICENSE.txt": ("license", b"NVIDIA RTX SDKs licence fixture\n"),
+    "LICENSES/TriAevum-DLSS-module.md": ("license", b"DLSS module boundary fixture\n"),
     "resources/environments/scene-0043.environment.json": ("default_environment_profile", b"{}\n"),
     "recipes/oot3d.json": ("revision_recipe", b'{"format":"recipe-test"}\n'),
 }
@@ -186,6 +191,41 @@ class PublicReleaseAuditTests(unittest.TestCase):
             result = audit_release(root)
             self.assertFalse(result.ok)
             self.assertTrue(any("separately licensed" in error for error in result.errors), result.errors)
+
+    def test_dlss_module_and_nvidia_runtime_keep_their_role(self) -> None:
+        for relative in ("triaevum_dlss.dll", "nvngx_dlss.dll"):
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_clean_package(root)
+                manifest_path = root / "release-manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                for item in manifest["files"]:
+                    if item["path"] == relative:
+                        item["role"] = "runtime_library"
+                atomic_write_json(manifest_path, manifest)
+                result = audit_release(root)
+                self.assertFalse(result.ok)
+                self.assertTrue(any(relative in error and "separately licensed" in error
+                                    for error in result.errors), result.errors)
+
+    def test_rejects_ngx_code_outside_the_dlss_module(self) -> None:
+        for relative in ("TriAevum.exe", "msvcp140.dll"):
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_clean_package(root)
+                path = root / relative
+                # Across the scanner's chunk boundary, too.
+                path.write_bytes(b"MZ" + b"\0" * (8 * 1024 * 1024 - 5) + b"NVSDK_NGX_Init")
+                manifest_path = root / "release-manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                for item in manifest["files"]:
+                    if item["path"] == relative:
+                        item.update(bytes=path.stat().st_size, sha256=sha256_file(path))
+                atomic_write_json(manifest_path, manifest)
+                result = audit_release(root)
+                self.assertFalse(result.ok)
+                self.assertTrue(any(relative in error and "proprietary SDK code" in error
+                                    for error in result.errors), result.errors)
 
     def test_accepts_exact_clean_allowlist(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

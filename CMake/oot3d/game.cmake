@@ -91,6 +91,20 @@ if(OOT3D_DIRECT_AOT_PLUGIN)
         add_dependencies(triaevum_public_runtime triaevum_immerse)
         set(_triaevum_immerse_target ",\n  \"immerse\": \"$<TARGET_FILE:triaevum_immerse>\"")
     endif()
+    # The separately licensed DLSS module with NVIDIA's DLSS runtime and the
+    # NGX SDK licence (runtime/three_ds_recomp/src/fast/dlss/LICENSE.md), and
+    # FidelityFX's FSR runtime (MIT), each beside the runtime.
+    if(TARGET triaevum_dlss AND THREE_DS_RECOMP_DLSS_VK_DLL)
+        add_dependencies(triaevum_public_runtime triaevum_dlss)
+        string(APPEND _triaevum_immerse_target
+            ",\n  \"dlss\": \"$<TARGET_FILE:triaevum_dlss>\""
+            ",\n  \"dlss_runtime\": \"${THREE_DS_RECOMP_DLSS_VK_DLL}\""
+            ",\n  \"dlss_license\": \"${THREE_DS_RECOMP_NGX_SOURCE_DIR}/LICENSE.txt\"")
+    endif()
+    if(THREE_DS_RECOMP_FFX_VK_DLL)
+        string(APPEND _triaevum_immerse_target
+            ",\n  \"fidelityfx_runtime\": \"${THREE_DS_RECOMP_FFX_VK_DLL}\"")
+    endif()
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/triaevum-runtime-targets-$<CONFIG>.json"
         CONTENT "{\n  \"format\": \"triaevum_runtime_targets_v1\",\n  \"source_commit\": \"${GIT_COMMIT_HASH}\",\n  \"runtime\": \"$<TARGET_FILE:oot3d_native_game>\",\n  \"stub\": \"$<TARGET_FILE:triaevum_title_aot_stub>\"${_triaevum_immerse_target}\n}\n")
 endif()

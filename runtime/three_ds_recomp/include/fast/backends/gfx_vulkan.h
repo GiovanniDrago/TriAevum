@@ -1249,6 +1249,11 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     // The GI provider state last published to the settings runtime (F1).
     Oot3d::GlobalIlluminationProviderStatus mPublishedGlobalIlluminationStatus;
     void PublishGlobalIlluminationStatus(Oot3d::GlobalIlluminationMode mode);
+    // A planned upscaler wrote no output and the display showed its input
+    // unscaled: reported once per provider and cause, and a provider that is
+    // no longer available is withdrawn from F1 (its capability).
+    void WithdrawFailedUpscaler(Oot3d::UpscalerProvider provider);
+    std::string mReportedUpscalerFallback;
     std::array<std::vector<BufferAllocation>, kFramesInFlight> mRetiredNativePicaGeometryBuffers;
     Oot3d::PicaShaderPipelineCache mPicaShaderPipelineCache;
     Oot3d::PicaAotShaderPack mPicaAotShaderPack;

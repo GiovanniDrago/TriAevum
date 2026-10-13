@@ -142,6 +142,16 @@ void DestroyContextForDemo() noexcept {
     Ship::Context::DestroyInstance();
 }
 
+void LogFatalErrorForDemo(const char* message) noexcept {
+    try {
+        if (auto* context = Ship::Context::GetRawInstance(); context != nullptr && context->GetLogger() != nullptr) {
+            context->GetLogger()->critical("oot3d_native_game: {}", message != nullptr ? message : "unknown error");
+            context->GetLogger()->flush();
+        }
+    } catch (...) {
+    }
+}
+
 Fast::Fast3dWindow& GetActiveFast3dWindowForDemo() {
     auto window = std::dynamic_pointer_cast<Fast::Fast3dWindow>(Ship::Context::GetRawInstance()->GetWindow());
     if (window == nullptr) {
