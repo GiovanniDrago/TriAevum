@@ -86,12 +86,24 @@ by the application adapter, not renderer substitutions.
 
 ### Product hooks
 
-Product builds (`OOT3D_WHOLE_AOT_PRODUCT_MODE`) run the same source port as
-developer builds. Every TopScreen source-port block is an observable exit of
-the whole-AOT graph, and `ExecuteProductTopScreenHook` accepts exactly that
-sorted list (`ProductTopScreenBlocks`); before 0.8.0-beta.1b it accepted only
-the camera, item and 0x0041E988 entries, so the FOV setting, the scene-5
-guards and the touch-button draw predicate were inert in packages.
+Product builds (`OOT3D_WHOLE_AOT_PRODUCT_MODE`) execute the precompiled
+whole-AOT graph through pause routes. `ExecuteProductTopScreenHook` accepts the
+sorted list `ProductTopScreenBlocks` (every TopScreen source-port block), and
+those blocks are observable exits, but the graph reports only the starts of
+its basic blocks. Blocks end after branches and calls, not at TopScreen sites,
+so a site in the middle of a block is never reached in a product build. Those
+sites still work in developer builds, whose pause barrier leaves whole-AOT
+execution.
+
+Reached in product builds (block starts): 0x0041E988, 0x0041EAE0, 0x00419830,
+0x0041DDC8, 0x0042EC2C, 0x0042E644, the item dispatch entries, the GameOver
+draw entry and the camera entries.
+
+Not reached in product builds (mid-block): 0x0042F5CC (touch-button draw
+predicate), 0x00442F38, 0x0041EB28, 0x00419838/50/74/8C, 0x0041952C,
+0x004198B0, 0x0041E984, the scene sites 0x00300520/52C/538/544/550, and the
+FOV scalar 0x00478EB8 (also absent from the product list). Making them
+reachable needs block splits at these sites in the generated title module.
 
 Exits that run guest continuations are conditional: 0x0041E988 leaves the
 graph only while the pause transaction or song text has work, and the page
