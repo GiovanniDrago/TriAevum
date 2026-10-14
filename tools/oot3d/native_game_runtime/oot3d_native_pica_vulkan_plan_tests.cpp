@@ -255,6 +255,24 @@ void TestFactoredCmbUniformInterpolation() {
     values=sample(before,after,0.5F);
     Require(near(values[4][0],0)&&near(values[4][3],100)&&std::isnan(values[49][3]),
             "invalid residual left partially factored output");
+    // A limb swinging 40 degrees in slot 0 against a body whose nine other
+    // bones only translate: the common motion must be the body's. The limb as
+    // reference would carry the body along the limb's arc (the Iron Knuckle
+    // in the title demo trembled by up to 17 pixels on synthetic samples).
+    before=make();after=before;
+    {
+        const float c=std::cos(0.698132F), s=std::sin(0.698132F);
+        put(after,20,Rows{{{c,-s,0,30},{s,c,0,-12},{0,0,1,5}}});
+        for(size_t slot=1;slot<10;++slot) put(after,20+3*slot,Rows{{{1,0,0,4},{0,1,0,10},{0,0,1,-6}}});
+        values=sample(before,after,0.5F);
+        for(size_t slot=1;slot<10;++slot) {
+            const size_t first=20+3*slot;
+            Require(near(values[first][3],2)&&near(values[first+1][3],5)&&near(values[first+2][3],-3),
+                    "body bones left the straight path: a swinging limb was the reference");
+            Require(near(values[first][0],1)&&near(values[first+1][1],1)&&near(values[first][1],0),
+                    "body bones rotated with the swinging limb");
+        }
+    }
     // Signed-zero and cancellation-heavy endpoint copy (not x+(y-x)*1).
     before=make();after=before;
     before.VertexShader.Uniforms.Floats[20][3]=1e20F;after.VertexShader.Uniforms.Floats[20][3]=1;

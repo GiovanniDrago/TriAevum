@@ -137,22 +137,60 @@ inline Rows GroupMatrix(std::span<const std::array<float, 4>> uniforms,
 }
 } // namespace PicaFactoredDetail
 
-// Rigid motion D = T1 * inverse(T0) of the group's first selected matrix whose
-// endpoints are both scaled proper rotations: the common left motion.
 using PicaRigidMotionRows = PicaFactoredDetail::Rows;
+using PicaAffineEndpoints = std::array<PicaFactoredDetail::Rows, 2>;
+
+// The common left motion of a set of matrices that share an output space.
+// Any common motion keeps shared joints (see InterpolatePicaFactoredUniformGroup),
+// but the residual each matrix keeps is blended linearly: a reference that is
+// a limb swinging against the body would carry the whole body along that
+// limb's arc on the synthetic samples. The candidates are the matrices' own
+// rigid motions D = T1 * inverse(T0); the one leaving the least residual
+// sum ||inverse(D) N1 - N0|| is the motion of the body. A common whole-body
+// motion leaves none and is found exactly. Ties keep the first candidate.
+inline std::optional<PicaRigidMotionRows> PicaLeastResidualMotion(
+    std::span<const PicaAffineEndpoints> matrices) {
+    using namespace PicaFactoredDetail;
+    std::optional<Rows> best;
+    double bestResidual = std::numeric_limits<double>::infinity();
+    for (const auto& candidate : matrices) {
+        const auto a = RigidPart(candidate[0]), b = RigidPart(candidate[1]);
+        if (!a || !b) continue;
+        const Rows motion = Product(*b, InverseRigid(*a));
+        const Rows inverse = InverseRigid(motion);
+        double residual = 0.0;
+        for (const auto& matrix : matrices) {
+            const Rows carried = Product(inverse, matrix[1]);
+            double squared = 0.0;
+            for (size_t i = 0; i < 3; ++i) for (size_t j = 0; j < 4; ++j) {
+                const double d = carried[i][j] - matrix[0][i][j];
+                squared += d * d;
+            }
+            residual += std::sqrt(squared);
+            if (!(residual < bestResidual)) break;
+        }
+        if (residual < bestResidual) {
+            bestResidual = residual;
+            best = motion;
+        }
+    }
+    return best;
+}
+
+// The common left motion of one group's selected matrices.
 inline std::optional<PicaRigidMotionRows> PicaFactoredReferenceMotion(
     std::span<const std::array<float, 4>> previous,
     std::span<const std::array<float, 4>> current,
     PicaAffineUniformGroup group, uint32_t selected) {
     using namespace PicaFactoredDetail;
     if (!ValidFactoredGroup(previous, current, group, selected)) return {};
+    std::array<PicaAffineEndpoints, 32> matrices{};
+    size_t count = 0;
     for (size_t slot = 0; slot < group.MatrixCount; ++slot) {
         if (!(selected & (uint32_t{1} << slot))) continue;
-        const auto a = RigidPart(GroupMatrix(previous, group, slot));
-        const auto b = RigidPart(GroupMatrix(current, group, slot));
-        if (a && b) return Product(*b,InverseRigid(*a));
+        matrices[count++] = {GroupMatrix(previous, group, slot), GroupMatrix(current, group, slot)};
     }
-    return {};
+    return PicaLeastResidualMotion({matrices.data(), count});
 }
 
 // All selected matrices share one output space and one left motion. The

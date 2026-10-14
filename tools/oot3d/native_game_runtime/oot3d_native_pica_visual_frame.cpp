@@ -1205,10 +1205,10 @@ struct VisualFactoredPalette {
 // share joints across draws: the hand continues the arm. The factored proof
 // keeps such a joint only if both draws use the SAME left motion, so the
 // draws of one actor whose palettes share an output space (equal model-view
-// rows, the same at both endpoints for every member) take the reference of
-// the draw referencing the most matrices, normally the body. Native actor
-// evidence (owner and lifetime) defines the actor; without it each draw keeps
-// its own reference.
+// rows, the same at both endpoints for every member) take one motion: the
+// least-residual motion over all the actor's bones, the body's rather than a
+// swinging limb's (PicaLeastResidualMotion). Native actor evidence (owner and
+// lifetime) defines the actor; without it each draw keeps its own reference.
 //
 // The game also swaps pieces between frames (Link's open and closed hands
 // when he turns). Such a draw has no previous match: shown at its new pose
@@ -1224,10 +1224,19 @@ std::vector<VisualFactoredPalette> ShareVisualPaletteMotions(
     using Key = std::tuple<uint64_t, uint64_t, VisualMatrixBits>;
     struct Group {
         VisualMatrixBits PriorSpace{};
-        int Matrices = 0;
         std::optional<Fast::Renderer3ds::PicaRigidMotionRows> Motion;
         // Current bone matrix -> its previous pose; empty when ambiguous.
         std::map<VisualMatrixBits, std::optional<VisualMatrixBits>> Bones;
+        // Each distinct bone once, whichever draws reference it.
+        std::vector<Fast::Renderer3ds::PicaAffineEndpoints> Matrices;
+    };
+    const auto endpoints = [](const VisualUniformFloats& before, const VisualUniformFloats& after, size_t first) {
+        Fast::Renderer3ds::PicaAffineEndpoints matrix{};
+        for (size_t row = 0; row < 3; ++row) for (size_t c = 0; c < 4; ++c) {
+            matrix[0][row][c] = before[first + row][c];
+            matrix[1][row][c] = after[first + row][c];
+        }
+        return matrix;
     };
     std::map<Key, Group> groups;
     std::vector<std::optional<Key>> keys(current.Draws.size());
@@ -1262,17 +1271,14 @@ std::vector<VisualFactoredPalette> ShareVisualPaletteMotions(
             const size_t first = layout.Palette.FirstUniform + 3 * slot;
             const auto prior = AffineBits(before.VertexShader.Uniforms.Floats, first);
             const auto [bone, added] = group.Bones.try_emplace(AffineBits(after.VertexShader.Uniforms.Floats, first), prior);
-            if (!added && bone->second != prior) bone->second.reset();
-        }
-        const int matrices = std::popcount(*entry.Selected);
-        if (matrices <= group.Matrices) continue;
-        if (auto motion = Fast::Renderer3ds::PicaFactoredReferenceMotion(
-                before.VertexShader.Uniforms.Floats, after.VertexShader.Uniforms.Floats,
-                layout.Palette, *entry.Selected)) {
-            group.Matrices = matrices;
-            group.Motion = *motion;
+            if (added)
+                group.Matrices.push_back(endpoints(before.VertexShader.Uniforms.Floats,
+                                                   after.VertexShader.Uniforms.Floats, first));
+            else if (bone->second != prior)
+                bone->second.reset();
         }
     }
+    for (auto& [key, group] : groups) group.Motion = Fast::Renderer3ds::PicaLeastResidualMotion(group.Matrices);
     for (size_t index = 0; index < current.Draws.size(); ++index)
         if (keys[index]) result[index].SharedMotion = groups[*keys[index]].Motion;
     for (size_t index = 0; index < current.Draws.size(); ++index) {
