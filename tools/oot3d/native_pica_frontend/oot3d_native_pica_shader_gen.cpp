@@ -1262,6 +1262,7 @@ bool GenerateOot3dPicaVertexShader(
     auto temporalProgram =
         std::make_shared<Oot3dPicaTemporalVertexProgram>();
     temporalProgram->AffineLayout = DescribeOot3dAffineUniforms(packet, state);
+    temporalProgram->CmbTextureCoordinates = DescribeOot3dCmbTextureCoordinates(packet, state);
     auto& hooks = temporalProgram->Hooks;
     hooks.SchemaVersion =
         Oot3d::Renderer::kPicaShaderHookSchemaVersion;

@@ -385,9 +385,228 @@ void TestSharedActorPaletteMotion() {
     }
 }
 
+void TestPeriodicTextureInterpolationContract() {
+    using namespace Fast::Renderer3ds;
+    std::array<std::array<float,4>,96> a{},b{},output{};
+    a[10][3]=0.875F; b[10][3]=0.125F;
+    PicaTextureTranslations before{},after{};
+    before[0].UniformRow=after[0].UniformRow=10;
+    before[0].CoordinateSet=after[0].CoordinateSet=0;
+    before[0].InputRegister=after[0].InputRegister=3;
+    before[0].Wrap=after[0].Wrap=PicaTextureWrap::Repeat;
+    const auto run = [&](float alpha) {
+        output[10][3]=0.5F;
+        InterpolatePicaTextureTranslations(a,b,before,after,alpha,output);
+        return output[10][3];
+    };
+    Require(run(0.5F)==1.0F,"shared renderer did not unwrap a proven UV translation");
+    for (float alpha : {0.0F,1.0F,-1.0F,2.0F,std::numeric_limits<float>::quiet_NaN()})
+        Require(run(alpha)==0.5F,"periodic refinement changed a caller-owned endpoint/invalid sample");
+    // A pre-linear/input-space offset is NOT a proven unit UV translation.
+    before[0].CoordinateScale=after[0].CoordinateScale=2;
+    Require(run(0.5F)==0.5F,"non-unit output coefficient was guessed periodic");
+    before[0].CoordinateScale=after[0].CoordinateScale=1;
+    after[0].InputRegister=0;
+    Require(run(0.5F)==0.5F,"changed source route was blended periodically");
+    after[0].InputRegister=before[0].InputRegister;
+    a[10][3]=std::numeric_limits<float>::infinity();
+    Require(run(0.5F)==0.5F,"non-finite endpoint was wrapped");
+    a[10][3]=0.75F; b[10][3]=0.25F;
+    Require(run(0.5F)==0.5F,"exact half-period tie changed scalar output");
+}
+
+// A captured CMB board draw: clouds use c10.w as a post-matrix UV
+// translation. 0.99888891 -> 0 is a repeat seam, not a half-texture pan.
+void TestPeriodicTextureTranslationSampling() {
+    using namespace Oot3dNativeGame;
+    const auto make = [] {
+        Oot3dPicaVulkanDrawPlan plan;
+        auto program = std::make_shared<Oot3dPicaTemporalVertexProgram>();
+        program->AffineLayout = kOot3dCmbAffineLayout;
+        program->CmbTextureCoordinates = {true, true, true};
+        plan.VertexShader.TemporalProgram = program;
+        plan.VertexShader.StateKey = 0x0F8A8E0C7D2C1963ULL;
+        plan.Composition.TemporalIdentity = {0, 0x100, 0x200, 1, 1};
+        auto& u = plan.VertexShader.Uniforms;
+        u.BooleanMask = 98;
+        u.Floats[4] = {1,0,0,0}; u.Floats[5] = {0,1,0,0}; u.Floats[6] = {0,0,1,0};
+        for (size_t row : {10U,14U,17U}) {
+            u.Floats[row] = {1,-0.0F,0,0};
+            u.Floats[row+1] = {0,1,0,0};
+        }
+        u.Floats[89] = {0,0,0,2}; // board, NOT a factored model palette
+        u.Floats[91] = {0.000122073994F,1,1,0};
+        u.Floats[92] = {1,0,0,1};
+        u.Floats[93] = {0,1,2,3};
+        u.Floats[95] = {3,4,5,32};
+        plan.State.Textures[0].Enabled = true;
+        plan.State.Textures[0].WrapS = plan.State.Textures[0].WrapT = 2;
+        plan.Textures.push_back({.Slot=0, .State=plan.State.Textures[0]});
+        plan.VertexAttributes.push_back({2,2,Oot3dPicaVertexFormat::UnsignedByte,4,0});
+        Oot3dPicaVulkanVertexBinding colors;
+        colors.Binding = 2; colors.ByteStride = 4; colors.Bytes = {100,110,120,255};
+        plan.VertexBindings.push_back(colors);
+        plan.VertexCount = 1;
+        return plan;
+    };
+    // liftedEnd is a known equivalent endpoint, not an implementation of the
+    // wrap algorithm. For a seam 0.9989 -> 0 the visible path ends at 1.
+    const auto check = [&](Oot3dPicaVulkanDrawPlan a, Oot3dPicaVulkanDrawPlan b,
+                           size_t row, float liftedEnd, const char* message) {
+        // The bridge consumes these copies of the decoded sampler state.
+        for (auto* plan : {&a,&b}) {
+            plan->Textures.clear();
+            for (uint8_t unit=0; unit<3; ++unit)
+                if (a.State.Textures[unit].Enabled || b.State.Textures[unit].Enabled)
+                    plan->Textures.push_back({.Slot=unit, .State=plan->State.Textures[unit]});
+        }
+        const auto aFloats = a.VertexShader.Uniforms.Floats, bFloats = b.VertexShader.Uniforms.Floats;
+        Oot3dPicaVisualFrame before, after;
+        before.Sequence = 915; after.Sequence = 916;
+        before.Draws = {a}; after.Draws = {b};
+        Oot3dPicaPreparedVisualTransition prepared;
+        Require(prepared.Prepare(before,after), "texture transition prepare failed");
+        Oot3dPicaVisualFrameViewSample view; // deliberately reused after alpha 0
+        for (float alpha : {0.0F,0.5F,1.0F/3.0F,2.0F/3.0F,1.0F,0.5F,0.0F}) {
+            Oot3dPicaVulkanDrawPlan draw;
+            Oot3dPicaVisualFrameSample frame;
+            Require(InterpolateOot3dPicaVisualDraw(a,b,alpha,draw) &&
+                    SampleOot3dPicaVisualFrame(before,after,alpha,frame) &&
+                    prepared.Sample(before,after,alpha,view), "texture sample failed");
+            Require(frame.MatchedDraws == 1 && view.MatchedDraws == 1 && view.Draws.size() == 1,
+                    "texture test lost native matching");
+            const auto& values = draw.VertexShader.Uniforms.Floats;
+            const auto& viewed = view.Draws[0].VertexUniforms ? view.Draws[0].VertexUniforms->Floats
+                : view.Draws[0].BasePlan->VertexShader.Uniforms.Floats;
+            Require(values == viewed && values == frame.Draws[0].VertexShader.Uniforms.Floats,
+                    "draw/full-frame/prepared texture interpolation differs");
+            if (alpha == 0 || alpha == 1) {
+                const auto& expected = alpha == 0 ? aFloats : bFloats;
+                Require(std::memcmp(values.data(),expected.data(),sizeof(values)) == 0,
+                        "texture interpolation changed an endpoint (including signed zero)");
+            } else {
+                const float expected = aFloats[row][3] + (liftedEnd-aFloats[row][3])*alpha;
+                // Compare final S/T at a vertex, including input quantization
+                // and a non-unit linear part, rather than a uniform-array hash.
+                const auto uv = [&](float translation) {
+                    return double(values[row][0])*1024.0*aFloats[91][0] +
+                           double(values[row][1])*2048.0*aFloats[91][0] + values[row][2] + translation;
+                };
+                Require(std::abs(uv(values[row][3])-uv(expected)) < 1e-6, message);
+                if (liftedEnd == bFloats[row][3])
+                    Require(values[row][3] == expected, "ordinary scalar rounding changed");
+                for (size_t r=0; r<96; ++r) for (size_t c=0; c<4; ++c) {
+                    if (r == row && c == 3) continue;
+                    const float scalar = r < 89 || r == 90 || r == 91
+                        ? aFloats[r][c]+(bFloats[r][c]-aFloats[r][c])*alpha : bFloats[r][c];
+                    Require(values[r][c] == scalar, "periodic policy touched an unrelated component");
+                }
+            }
+            Require(draw.VertexBindings[0].ResolvedBytes()[0] == b.VertexBindings[0].ResolvedBytes()[0],
+                    "texture policy changed discrete vertex colors");
+        }
+        Require(before.Draws[0].VertexShader.Uniforms.Floats == aFloats &&
+                after.Draws[0].VertexShader.Uniforms.Floats == bFloats, "texture endpoints were mutated");
+    };
+    auto a=make(), b=a;
+    a.VertexShader.Uniforms.Floats[10][3] = 0.99888891F;
+    b.VertexBindings[0].Bytes[0] = 101;
+    a.VertexShader.Uniforms.Floats[20] = {228.074738F,-0.00248193741F,-224.459167F,-0.000244140625F};
+    b.VertexShader.Uniforms.Floats[20] = {228.833298F,0.0100636492F,-223.685776F,0.000244140625F};
+    a.VertexShader.Uniforms.Floats[76] = {0.712733507F,0.164386511F,0.681900203F,2412.73706F};
+    b.VertexShader.Uniforms.Floats[76] = {0.715104043F,0.164238676F,0.679449737F,2412.55225F};
+    check(a,b,10,1.0F,"captured cloud scroll crossed half the texture");
+    check(b,a,10,-0.00111109F,"reverse repeat seam took the long path");
+    auto from=a, to=b;
+    from.VertexShader.Uniforms.Floats[10][0]=2; to.VertexShader.Uniforms.Floats[10][0]=4;
+    from.VertexShader.Uniforms.Floats[10][1]=to.VertexShader.Uniforms.Floats[10][1]=-3;
+    check(from,to,10,1,"post-linear UV period was incorrectly divided by matrix/input scale");
+    from=a; to=b;
+    from.VertexShader.Uniforms.Floats[10][3]=0.125F; to.VertexShader.Uniforms.Floats[10][3]=0.375F;
+    check(from,to,10,0.375F,"non-wrapping scroll changed");
+    for (uint8_t mode : {0U,1U,4U,5U,6U,7U}) {
+        from=a; to=b; from.State.Textures[0].WrapS=to.State.Textures[0].WrapS=mode;
+        check(from,to,10,0,"clamp/border/unproven wrap mode was treated as periodic");
+    }
+    from=a; to=b; from.State.Textures[0].WrapS=to.State.Textures[0].WrapS=3;
+    from.VertexShader.Uniforms.Floats[10][3]=1.875F; to.VertexShader.Uniforms.Floats[10][3]=0.125F;
+    check(from,to,10,2.125F,"mirrored repeat did not use period two");
+    from.VertexShader.Uniforms.Floats[10][3]=0.875F;
+    check(from,to,10,0.125F,"mirrored repeat was incorrectly reduced modulo one");
+    from=a; to=b; to.State.Textures[0].WrapS=3;
+    check(from,to,10,0,"changed endpoint wrap modes acquired a periodic path");
+    from=a; to=b; from.VertexShader.TemporalProgram.reset(); to.VertexShader.TemporalProgram.reset();
+    check(from,to,10,0,"unknown shader acquired CMB translation semantics");
+    from=a; to=b;
+    auto unproven=std::make_shared<Oot3dPicaTemporalVertexProgram>(*a.VertexShader.TemporalProgram);
+    unproven->CmbTextureCoordinates={};
+    from.VertexShader.TemporalProgram=to.VertexShader.TemporalProgram=unproven;
+    check(from,to,10,0,"unproven output mapping acquired translation semantics");
+    for (unsigned gate=0; gate<6; ++gate) {
+        from=a; to=b;
+        for (auto* plan : {&from,&to}) {
+            auto& u=plan->VertexShader.Uniforms;
+            if (gate==0) u.BooleanMask &= ~2U;
+            if (gate==1) u.BooleanMask &= ~64U;
+            if (gate==2) u.Floats[89][3]=3;
+            if (gate==3) { u.Floats[89][3]=0; u.Floats[92][0]=4; }
+            if (gate==4) plan->State.Textures[0].Type=3;
+            if (gate==5) plan->FragmentShader.Uniforms.FragmentControl[2] |= 1U << 10U;
+        }
+        check(from,to,10,0,"unproven/disabled/procedural/projective route was wrapped");
+    }
+    // Board ignores c92; the model's ordinary UV branch is also proven.
+    for (float mode : {0.0F,1.0F,2.0F}) {
+        from=make(); to=from;
+        from.VertexShader.Uniforms.Floats[10][3]=0.99888891F;
+        from.VertexShader.Uniforms.Floats[89][3]=to.VertexShader.Uniforms.Floats[89][3]=mode;
+        if (mode==2) from.VertexShader.Uniforms.Floats[92][0]=to.VertexShader.Uniforms.Floats[92][0]=4;
+        check(from,to,10,1,"active CMB UV branch was not wrapped");
+    }
+    // Each unit and S/T axis: rows 12/13/16/19 are never guessed translations.
+    for (uint8_t unit=0; unit<3; ++unit) for (uint8_t axis=0; axis<2; ++axis) {
+        from=make(); to=from;
+        const size_t row=std::array<size_t,3>{10,14,17}[unit]+axis;
+        for (auto* plan : {&from,&to}) {
+            plan->State.Textures[0].Enabled=false;
+            auto& texture=plan->State.Textures[unit];
+            texture.Enabled=true; texture.WrapS=texture.WrapT=2;
+        }
+        from.VertexShader.Uniforms.Floats[row][3]=0.875F; to.VertexShader.Uniforms.Floats[row][3]=0.125F;
+        check(from,to,row,1.125F,"texture unit/axis mapping was lost");
+    }
+    for (size_t row : {12U,13U,16U,19U,8U,76U}) {
+        from=make(); to=from;
+        from.VertexShader.Uniforms.Floats[row][3]=0.875F; to.VertexShader.Uniforms.Floats[row][3]=0.125F;
+        check(from,to,row,0.125F,"an unproven uniform row was wrapped");
+    }
+    // row.z and row.w both multiply homogeneous 1 in the proven branch.
+    from=make(); to=from;
+    from.VertexShader.Uniforms.Floats[10][2]=0.125F; from.VertexShader.Uniforms.Floats[10][3]=0.875F;
+    to.VertexShader.Uniforms.Floats[10][2]=0.25F; to.VertexShader.Uniforms.Floats[10][3]=-0.25F;
+    check(from,to,10,0.75F,"combined additive translation lost its period");
+    // Unit 2 can share coordinate 1: all consumers must agree on periodicity.
+    for (uint8_t secondWrap : {0U,2U,3U}) {
+        from=make(); to=from;
+        for (auto* plan : {&from,&to}) {
+            plan->State.Textures[0].Enabled=false;
+            plan->State.Texture2UsesCoordinate1=true;
+            for (uint8_t unit : {1U,2U}) {
+                plan->State.Textures[unit].Enabled=true;
+                plan->State.Textures[unit].WrapS=unit==1 ? 2U : secondWrap;
+                plan->State.Textures[unit].WrapT=2;
+            }
+        }
+        from.VertexShader.Uniforms.Floats[14][3]=1.875F; to.VertexShader.Uniforms.Floats[14][3]=0.125F;
+        check(from,to,14,secondWrap==0 ? 0.125F : 2.125F,"aliased coordinate ignored a sampler consumer");
+    }
+}
+
 } // namespace
 
 int main() {
+    TestPeriodicTextureInterpolationContract();
+    TestPeriodicTextureTranslationSampling();
     TestFactoredCmbUniformInterpolation();
     TestSharedActorPaletteMotion();
     Oot3dNativeGame::Oot3dPicaShaderState mutableShader;

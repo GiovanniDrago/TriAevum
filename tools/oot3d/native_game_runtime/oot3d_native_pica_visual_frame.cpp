@@ -1354,7 +1354,20 @@ void InterpolateVisualVertexUniforms(
                 : alpha == 1.0F ? after[index][component]
                 : InterpolateFinite(before[index][component],after[index][component],alpha);
     }
-    if (!(alpha > 0.0F && alpha < 1.0F) || !CmbAffineLayouts(previous, current)) return;
+    if (!(alpha > 0.0F && alpha < 1.0F)) return;
+    const auto& previousProgram = previous.VertexShader.TemporalProgram;
+    const auto& currentProgram = current.VertexShader.TemporalProgram;
+    if (previousProgram && currentProgram) {
+        const auto previousTranslations = DescribeOot3dTextureTranslations(
+            previousProgram->CmbTextureCoordinates, before, previous.VertexShader.Uniforms.BooleanMask,
+            previous.State, previous.FragmentShader.Uniforms.FragmentControl[2]);
+        const auto currentTranslations = DescribeOot3dTextureTranslations(
+            currentProgram->CmbTextureCoordinates, after, current.VertexShader.Uniforms.BooleanMask,
+            current.State, current.FragmentShader.Uniforms.FragmentControl[2]);
+        Fast::Renderer3ds::InterpolatePicaTextureTranslations(
+            before, after, previousTranslations, currentTranslations, alpha, vertexUniforms.Floats);
+    }
+    if (!CmbAffineLayouts(previous, current)) return;
     const auto selected = palette && palette->Prepared ? palette->Selected : CmbPaletteSlots(previous,current);
     if (!selected) return;
     const auto& layout = current.VertexShader.TemporalProgram->AffineLayout;

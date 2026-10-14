@@ -1,6 +1,7 @@
 #pragma once
 
 #include "oot3d_native_pica_draw_state.h"
+#include "oot3d_native_pica_texture_interpolation.h"
 #include "fast/renderer3ds/pica_affine_uniform_layout.h"
 #include "oot3d/renderer/pica_shader_hooks.h"
 #include "oot3d/renderer/pica_shader_source_identity.h"
@@ -21,6 +22,7 @@ struct Oot3dPicaVertexUniformState {
 struct Oot3dPicaTemporalVertexProgram {
     Oot3d::Renderer::PicaVertexShaderHookLayout Hooks;
     Fast::Renderer3ds::PicaAffineUniformLayout AffineLayout;
+    Oot3dCmbTextureCoordinates CmbTextureCoordinates{};
     std::string PreviousRegisterState;
     std::string PreviousMainBody;
 };
