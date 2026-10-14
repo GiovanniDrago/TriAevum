@@ -115,6 +115,13 @@ FOV address (`camera->play + 0x198`, its hook at 0x002D92B4) and 005DF388
 scales and clamps the value that 0x00478EB8 loads from that address, at every
 percentage.
 
+One 2.1.1 patch is deliberately not ported. 2.1.1 branches 0x0041EB40 to
+0x0041EC10 and so skips the pause scene dim (a translucent grey submitted
+through `EnvironmentRenderer_SubmitViewportConfig`). At 400x240 the page covers
+the scene; with wider output the scene shows beside the page, so the port keeps
+the native dim and those strips stay dark during the pause. The site stays in
+the observed-sites catalogue; an extra block start is harmless.
+
 Exits that run guest continuations are conditional: 0x0041E988 leaves the
 graph only while the pause transaction or song text has work, and the page
 draw return 0x00419830 only while the item description is drawing or may

@@ -3145,8 +3145,10 @@ int main() {
   }
 
   const auto flowContracts = TopScreenVerifiedControlFlowContracts();
-  Require(flowContracts.size() == 10U,
+  Require(flowContracts.size() == 9U,
           "TopScreen control-flow contract count is incorrect");
+  Require(!ResolveTopScreenControlFlow(0x0041EB40U, nullptr),
+          "the pause scene dim is skipped beside the page");
   for (const auto &contract : flowContracts) {
     std::uint32_t target = 0U;
     Require(ResolveTopScreenControlFlow(contract.Entry, &target) &&

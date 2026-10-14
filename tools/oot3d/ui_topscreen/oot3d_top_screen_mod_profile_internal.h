@@ -340,11 +340,13 @@ constexpr std::array kVerifiedItemQueryContracts{
                                0x48U, 0x02000000U, "item_ii_held"},
 };
 
+// 2.1.1 also branches 0x0041EB40 -> 0x0041EC10, skipping the pause scene dim
+// (EnvironmentRenderer_SubmitViewportConfig with a translucent grey). At
+// 400x240 the page covers the scene; wider output shows it beside the page, so
+// the port keeps the native dim there.
 constexpr std::array kVerifiedControlFlowContracts{
     TopScreenControlFlowContract{0x0042BF6CU, 0x0042BF84U,
                                  "pause_quest_prompt_use_top_screen_geometry"},
-    TopScreenControlFlowContract{0x0041EB40U, 0x0041EC10U,
-                                 "pause_update_skip_lower_screen_projection"},
     TopScreenControlFlowContract{
         0x002E27C0U, 0x002E2A04U,
         "gameplay_draw_skip_native_lower_screen_composition"},
