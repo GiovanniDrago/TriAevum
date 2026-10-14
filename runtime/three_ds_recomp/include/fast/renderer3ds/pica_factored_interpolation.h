@@ -120,35 +120,70 @@ inline Rows Screw(const Rows& d, double alpha) {
     for (size_t i = 0; i < 3; ++i) out[i][3] = alpha*v[i]+b*wv[i]+c*wwv[i];
     return out;
 }
+inline bool ValidFactoredGroup(std::span<const std::array<float, 4>> previous,
+                               std::span<const std::array<float, 4>> current,
+                               PicaAffineUniformGroup group, uint32_t selected) {
+    return group.Valid() && group.MatrixCount <= 32U && selected &&
+           (group.MatrixCount == 32U || !(selected >> group.MatrixCount)) &&
+           previous.size() >= unsigned(group.FirstUniform)+3U*group.MatrixCount &&
+           current.size() >= previous.size();
+}
+inline Rows GroupMatrix(std::span<const std::array<float, 4>> uniforms,
+                        PicaAffineUniformGroup group, size_t slot) {
+    Rows rows{};
+    for (size_t i = 0; i < 3; ++i) for (size_t j = 0; j < 4; ++j)
+        rows[i][j] = uniforms[group.FirstUniform+3*slot+i][j];
+    return rows;
+}
 } // namespace PicaFactoredDetail
+
+// Rigid motion D = T1 * inverse(T0) of the group's first selected matrix whose
+// endpoints are both scaled proper rotations: the common left motion.
+using PicaRigidMotionRows = PicaFactoredDetail::Rows;
+inline std::optional<PicaRigidMotionRows> PicaFactoredReferenceMotion(
+    std::span<const std::array<float, 4>> previous,
+    std::span<const std::array<float, 4>> current,
+    PicaAffineUniformGroup group, uint32_t selected) {
+    using namespace PicaFactoredDetail;
+    if (!ValidFactoredGroup(previous, current, group, selected)) return {};
+    for (size_t slot = 0; slot < group.MatrixCount; ++slot) {
+        if (!(selected & (uint32_t{1} << slot))) continue;
+        const auto a = RigidPart(GroupMatrix(previous, group, slot));
+        const auto b = RigidPart(GroupMatrix(current, group, slot));
+        if (a && b) return Product(*b,InverseRigid(*a));
+    }
+    return {};
+}
 
 // All selected matrices share one output space and one left motion. The
 // caller supplies the proven span and referenced slots; no sliding scan.
-// No partial writes on failure. Endpoints copy exactly, including signed zero.
+// Matrices of several draws that share joints must also share the motion:
+// the owner passes one sharedMotion to each of them. Without it the group's
+// own reference is used. No partial writes on failure. Endpoints copy
+// exactly, including signed zero.
 inline bool InterpolatePicaFactoredUniformGroup(
     std::span<const std::array<float, 4>> previous,
     std::span<const std::array<float, 4>> current,
     PicaAffineUniformGroup group, uint32_t selected, float alpha,
-    std::span<std::array<float, 4>> output) {
+    std::span<std::array<float, 4>> output,
+    const PicaRigidMotionRows* sharedMotion = nullptr) {
     using namespace PicaFactoredDetail;
-    if (!group.Valid() || group.MatrixCount > 32U || !selected ||
-        (group.MatrixCount < 32U && (selected >> group.MatrixCount)) ||
-        previous.size() < unsigned(group.FirstUniform)+3U*group.MatrixCount ||
-        current.size() < previous.size() || output.size() < previous.size() ||
+    if (!ValidFactoredGroup(previous, current, group, selected) || output.size() < previous.size() ||
         !std::isfinite(alpha) || alpha < 0.0F || alpha > 1.0F) return false;
     std::array<Rows, 32> before{}, after{};
-    std::optional<Rows> delta;
     for (size_t slot = 0; slot < group.MatrixCount; ++slot) {
         if (!(selected & (uint32_t{1} << slot))) continue;
-        for (size_t i = 0; i < 3; ++i) for (size_t j = 0; j < 4; ++j) {
-            const size_t row = group.FirstUniform+3*slot+i;
-            before[slot][i][j] = previous[row][j]; after[slot][i][j] = current[row][j];
+        before[slot] = GroupMatrix(previous, group, slot);
+        after[slot] = GroupMatrix(current, group, slot);
+        for (size_t i = 0; i < 3; ++i) for (size_t j = 0; j < 4; ++j)
             if (!std::isfinite(before[slot][i][j]) || !std::isfinite(after[slot][i][j])) return false;
-        }
-        if (!delta) {
-            const auto a = RigidPart(before[slot]), b = RigidPart(after[slot]);
-            if (a && b) delta = Product(*b,InverseRigid(*a));
-        }
+    }
+    std::optional<Rows> delta;
+    if (sharedMotion) {
+        for (const auto& row : *sharedMotion) for (double x : row) if (!std::isfinite(x)) return false;
+        delta = *sharedMotion;
+    } else {
+        delta = PicaFactoredReferenceMotion(previous, current, group, selected);
     }
     if (!delta) return false;
     const auto inverse = InverseRigid(*delta), motion = Screw(*delta,alpha);

@@ -265,10 +265,113 @@ void TestFactoredCmbUniformInterpolation() {
     Require(values[20][3]==1,"endpoint suffered cancellation");
 }
 
+// An actor drawn in pieces: the body draw references a still bone and the
+// arm bone, the hand draw only the arm bone (same matrix, same joint). Each
+// draw choosing its own reference would move the shared joint along two
+// paths on the synthetic frame (0.5,0.5) vs (0.707,0.707): the hand detached.
+// Draws of one actor share the body's motion; without actor evidence each
+// draw keeps its own.
+void TestSharedActorPaletteMotion() {
+    using namespace Oot3dNativeGame;
+    using Rows = std::array<std::array<float,4>,3>;
+    const Rows identity{{{1,0,0,0},{0,1,0,0},{0,0,1,0}}};
+    const Rows quarter{{{0,-1,0,0},{1,0,0,0},{0,0,1,0}}};
+    const auto put = [](auto& plan, size_t first, const Rows& rows) {
+        for (size_t i=0; i<3; ++i) plan.VertexShader.Uniforms.Floats[first+i]=rows[i];
+    };
+    const auto make = [&](std::vector<uint8_t> bones, uint64_t owner, uint64_t slot) {
+        Oot3dPicaVulkanDrawPlan plan;
+        auto program = std::make_shared<Oot3dPicaTemporalVertexProgram>();
+        program->AffineLayout = kOot3dCmbAffineLayout;
+        plan.VertexShader.TemporalProgram = program;
+        plan.VertexShader.StateKey = 17;
+        plan.VertexShader.Uniforms.BooleanMask = 4;
+        plan.VertexShader.Uniforms.Floats[93] = {0,1,2,3};
+        plan.VertexShader.Uniforms.Floats[95] = {3,4,5,32};
+        plan.VertexCount = static_cast<uint32_t>(bones.size());
+        plan.VertexAttributes.push_back({6,0,Oot3dPicaVertexFormat::UnsignedByte,1,0});
+        Oot3dPicaVulkanVertexBinding binding;
+        binding.ByteStride = 1;
+        binding.Bytes = bones;
+        plan.VertexBindings.push_back(binding);
+        put(plan,4,identity);
+        for (size_t i=0;i<10;++i) put(plan,20+3*i,identity);
+        plan.Composition.TemporalIdentity = {owner, 0x100, 0x200, slot, owner ? 1U : 0U};
+        if (!owner) plan.Composition.TemporalIdentity = {};
+        return plan;
+    };
+    for (const uint64_t owner : {uint64_t{0x77}, uint64_t{0}}) {
+        auto body = make({0,1}, owner, 1), hand = make({0}, owner, 2);
+        auto bodyAfter = body, handAfter = hand;
+        put(bodyAfter,23,quarter);   // arm bone: body slot 1
+        put(handAfter,20,quarter);   // same bone: hand slot 0
+        Oot3dPicaVisualFrame aFrame,bFrame;
+        aFrame.Sequence=1; bFrame.Sequence=2;
+        aFrame.Draws={body,hand}; bFrame.Draws={bodyAfter,handAfter};
+        Oot3dPicaPreparedVisualTransition prepared;
+        Require(prepared.Prepare(aFrame,bFrame),"actor transition prepare failed");
+        for (float alpha : {0.25F,0.5F,0.75F}) {
+            Oot3dPicaVisualFrameSample frame;
+            Oot3dPicaVisualFrameViewSample view;
+            Require(SampleOot3dPicaVisualFrame(aFrame,bFrame,alpha,frame) && frame.Draws.size()==2,
+                    "actor full-frame sample failed");
+            Require(prepared.Sample(aFrame,bFrame,alpha,view) && view.Draws.size()==2,
+                    "actor prepared sample failed");
+            const auto viewFloats = [&](size_t i) -> const auto& {
+                return view.Draws[i].VertexUniforms ? view.Draws[i].VertexUniforms->Floats
+                    : view.Draws[i].BasePlan->VertexShader.Uniforms.Floats;
+            };
+            const auto& bodyFloats = frame.Draws[0].VertexShader.Uniforms.Floats;
+            const auto& handFloats = frame.Draws[1].VertexShader.Uniforms.Floats;
+            Require(viewFloats(0)==bodyFloats && viewFloats(1)==handFloats,
+                    "actor full-frame and prepared-view outputs differ");
+            // Joint (1,0,0) in the arm bone's space.
+            float gap = 0;
+            for (size_t r=0;r<3;++r)
+                gap = std::max(gap, std::abs((bodyFloats[23+r][0]+bodyFloats[23+r][3]) -
+                                             (handFloats[20+r][0]+handFloats[20+r][3])));
+            if (owner) Require(gap < 1e-5F, "hand separated from the arm across draws of one actor");
+            else Require(gap > 0.1F, "draws without actor evidence were grouped");
+        }
+    }
+    // The actor swaps its hand piece between the two frames (open -> closed):
+    // the new piece has no previous match. Its bone is the arm bone the body
+    // also uses, so it must follow exactly that bone's path instead of being
+    // shown at the new pose while the body is still in between.
+    // (Without actor evidence the legacy matcher pairs the pieces by order.)
+    for (const uint64_t owner : {uint64_t{0x77}}) {
+        auto body = make({0,1}, owner, 1);
+        auto openHand = make({0}, owner, 2), closedHand = make({0}, owner, 3);
+        auto bodyAfter = body;
+        put(bodyAfter,23,quarter);
+        put(closedHand,20,quarter);
+        Oot3dPicaVisualFrame aFrame,bFrame;
+        aFrame.Sequence=1; bFrame.Sequence=2;
+        aFrame.Draws={body,openHand}; bFrame.Draws={bodyAfter,closedHand};
+        Oot3dPicaPreparedVisualTransition prepared;
+        Require(prepared.Prepare(aFrame,bFrame),"swapped-piece transition prepare failed");
+        Oot3dPicaVisualFrameSample frame;
+        Oot3dPicaVisualFrameViewSample view;
+        Require(SampleOot3dPicaVisualFrame(aFrame,bFrame,0.5F,frame) && frame.Draws.size()==2,
+                "swapped-piece full-frame sample failed");
+        Require(prepared.Sample(aFrame,bFrame,0.5F,view) && view.Draws.size()==2,
+                "swapped-piece prepared sample failed");
+        const auto& bodyFloats = frame.Draws[0].VertexShader.Uniforms.Floats;
+        const auto& handFloats = frame.Draws[1].VertexShader.Uniforms.Floats;
+        const auto& viewHand = view.Draws[1].VertexUniforms ? view.Draws[1].VertexUniforms->Floats
+            : view.Draws[1].BasePlan->VertexShader.Uniforms.Floats;
+        Require(viewHand==handFloats, "swapped piece differs between full-frame and prepared view");
+        for (size_t r=0;r<3;++r) {
+            Require(handFloats[20+r]==bodyFloats[23+r], "swapped hand piece left the arm bone's path");
+        }
+    }
+}
+
 } // namespace
 
 int main() {
     TestFactoredCmbUniformInterpolation();
+    TestSharedActorPaletteMotion();
     Oot3dNativeGame::Oot3dPicaShaderState mutableShader;
     mutableShader.Program[0] = 0x88000000U;
     const uint64_t sharedProgramIdentity =
