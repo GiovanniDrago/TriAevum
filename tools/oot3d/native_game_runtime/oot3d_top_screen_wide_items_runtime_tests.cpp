@@ -1,4 +1,5 @@
 #include "oot3d_top_screen_wide_items_runtime.h"
+#include "oot3d_top_screen_mod_profile.h"
 
 #include <bit>
 #include <cstdlib>
@@ -10,6 +11,8 @@ void Require(bool condition, const char *message) {
 }
 
 constexpr std::uint32_t kItemsState = 0x0050672CU;
+constexpr std::uint32_t kMapState = 0x00506CE8U;
+constexpr std::uint32_t kMapMode = 0x004FDABCU;
 constexpr std::uint32_t kItemsModel = 0x00506714U;
 constexpr std::uint32_t kIconGroup = 0x00506734U;
 constexpr std::uint32_t kStackTop = 0x005FF000U;
@@ -47,7 +50,11 @@ oot3d::recomp::a32::GuestState CallerState(std::uint32_t pc) {
 bool Same(const oot3d::recomp::a32::GuestState &a, const oot3d::recomp::a32::GuestState &b) {
   for (std::size_t index = 0; index < 16U; ++index)
     if (index != 15U && a.r[index] != b.r[index]) return false;
-  return a.vfp[0] == b.vfp[0] && a.cpsr == b.cpsr;
+  return a.vfp == b.vfp && a.cpsr == b.cpsr && a.fpscr == b.fpscr &&
+         a.thread_pointer == b.thread_pointer &&
+         a.exclusive_address == b.exclusive_address &&
+         a.exclusive_token == b.exclusive_token &&
+         a.exclusive_size == b.exclusive_size && a.exclusive_valid == b.exclusive_valid;
 }
 
 // The runtime issues `entry` returning to `site`; the callee then returns.
@@ -97,7 +104,7 @@ int main() {
   using namespace Oot3dNativeGame;
   NativeA32Memory memory;
   std::string error;
-  Require(memory.MapRegion({"wide-items-test", 0x00500000, 0x00300000, true, false, {}}, &error),
+  Require(memory.MapRegion({"wide-items-test", 0x004F0000, 0x00310000, true, false, {}}, &error),
           "cannot map wide Items fixture");
   BuildItemsPage(memory);
 
@@ -223,6 +230,110 @@ int main() {
           "a cursor outside the Items draw changed projection");
   Require(runtime.WidePages() == 1U && runtime.WideItemsDraws() == 1U && runtime.CursorDraws() == 1U,
           "wide Items counters are wrong");
-  std::cout << "TopScreen wide Items runtime tests passed\n";
+  // Map follows the native page-active && mode == 1 predicates. Exercise the
+  // same decision at viewport planning and projection upload, including exits.
+  struct PageCase {
+    std::uint32_t Items, Map, Mode;
+    bool OnTop, Wide, ItemsWide;
+  };
+  constexpr std::array pageCases{
+      PageCase{0U, 1U, 1U, true, true, false},
+      PageCase{0U, 1U, 0U, true, false, false},
+      PageCase{0U, 1U, 2U, true, false, false},
+      PageCase{0U, 0U, 1U, true, false, false},
+      PageCase{0U, 2U, 1U, false, false, false},
+      PageCase{0U, 2U, 1U, true, true, false},
+      PageCase{2U, 1U, 1U, true, true, true},
+      PageCase{2U, 0U, 0U, true, true, true},
+      PageCase{0U, 0U, 0U, true, false, false}};
+  for (const auto &test : pageCases) {
+    Require(memory.Write32(kItemsState, test.Items) &&
+                memory.Write32(kMapState, test.Map) && memory.Write32(kMapMode, test.Mode),
+            "cannot seed wide-page predicates");
+    TopScreenWidePageState width;
+    Require(ReadTopScreenWidePageState(memory, &width) &&
+                width.ItemsActive == (test.Items != 0U) &&
+                width.DungeonMapActive == (test.Map != 0U && test.Mode == 1U),
+            "wide-page predicate differs from the native map/Items checks");
+    auto plan = ResolveTopScreenPauseTargetCommand({true, 0x401U, false}, test.OnTop);
+    WidenTopScreenPauseTargetForPage(plan, width.Wide());
+    Require((plan.BindTopTarget && plan.ViewportY == 0U && plan.ViewportHeight == 400U) ==
+                test.Wide,
+            "page projection and target viewport disagree");
+    WriteFloat(memory, kMatrix + 0x10U, -0.00625F);
+    WriteFloat(memory, kMatrix + 0x1CU, 1.0F);
+    auto mapPage = CallerState(kTopScreenPageProjectionUploadCall);
+    const auto before = mapPage;
+    Require(!runtime.ExecutePageProjection(mapPage, test.OnTop) &&
+                Same(mapPage, before) && mapPage.r[15] == before.r[15] &&
+                runtime.PageWide() == test.Wide &&
+                ReadFloat(memory, kMatrix + 0x10U) ==
+                    (test.Wide ? std::bit_cast<float>(0xBBA3D70AU) : -0.00625F) &&
+                ReadFloat(memory, kMatrix + 0x1CU) ==
+                    (test.Wide ? std::bit_cast<float>(0x3F4CCCCDU) : 1.0F),
+            "page upload changed guest state or used the wrong map projection");
+    if (!test.ItemsWide) {
+      const float gridX = ReadFloat(memory, stream);
+      auto inactiveItems = CallerState(kTopScreenItemsPageDrawCall);
+      const auto inactiveCaller = inactiveItems;
+      Require(!runtime.ExecuteItemsDraw(inactiveItems, &result, &blocks) &&
+                  Same(inactiveItems, inactiveCaller) &&
+                  ReadFloat(memory, stream) == gridX &&
+                  runtime.WideItemsDraws() == 1U,
+              "a dungeon/world map draw invoked the Items geometry wrapper");
+    }
+  }
+  Require(memory.Write32(kItemsState, 1U), "cannot arm Items before reset");
+  auto armedPage = CallerState(kTopScreenPageProjectionUploadCall);
+  Require(!runtime.ExecutePageProjection(armedPage, true) && runtime.PageWide(),
+          "Items was not armed before reset");
+  runtime.Reset();
+  Require(!runtime.PageWide(), "reset retained the wide-page projection");
+  auto resetItems = CallerState(kTopScreenItemsPageDrawCall);
+  Require(!runtime.ExecuteItemsDraw(resetItems, &result, &blocks),
+          "reset retained an armed Items draw");
+
+  NativeA32Memory missingPage;
+  TopScreenWidePageState missingWidth{true, true};
+  Require(!ReadTopScreenWidePageState(missingPage, &missingWidth) && !missingWidth.Wide(),
+          "a failed page-state read retained the previous wide decision");
+
+  // All six instruction sites are coordinate-only replacements; the native
+  // branch still owns icon index, Y, size, flags and LR.
+  constexpr std::array<std::uint32_t, 6> iconSites{
+      0x004426B4U, 0x004426D4U, 0x00442704U,
+      0x00442730U, 0x00442760U, 0x0044278CU};
+  const auto registeredSites = TopScreenDungeonMapIconCoordinateSites();
+  Require(registeredSites.size() == iconSites.size(), "missing dungeon icon hook sites");
+  for (std::size_t index = 0; index < iconSites.size(); ++index) {
+    const auto pc = iconSites[index];
+    Require(registeredSites[index] == pc, "wrong dungeon icon hook site");
+    auto icon = CallerState(pc);
+    icon.r[1] = static_cast<std::uint32_t>(index / 2U);
+    icon.r[2] = 10U;
+    icon.r[3] = 112U - static_cast<std::uint32_t>(index / 2U) * 50U;
+    icon.fpscr = 0x1000000U;
+    icon.vfp[31] = 0x12345678U;
+    const std::uint32_t size = index % 2U == 0U ? 42U : 0U;
+    Require(memory.Write32(icon.r[13], size) && memory.Write32(icon.r[13] + 4U, size),
+            "cannot seed icon size arguments");
+    auto expected = icon;
+    expected.r[2] = 0xFFFFFFE2U;
+    std::uint32_t width = 0U, height = 0U;
+    blocks = 0U;
+    Require(ExecuteTopScreenDungeonMapIconCoordinate(pc, icon, &result, &blocks) &&
+                Same(icon, expected) && icon.r[15] == pc + 4U &&
+                result.kind == oot3d::recomp::a32::ExitKind::Branch &&
+                result.pc == pc + 4U && blocks == 1U &&
+                memory.Read32(icon.r[13], &width) && width == size &&
+                memory.Read32(icon.r[13] + 4U, &height) && height == size,
+            "dungeon icon hook changed more than R2 and the resume PC");
+    auto resume = CallerState(pc + 4U);
+    const auto resumeCaller = resume;
+    Require(!ExecuteTopScreenDungeonMapIconCoordinate(pc + 4U, resume, &result, &blocks) &&
+                Same(resume, resumeCaller) && resume.r[15] == resumeCaller.r[15],
+            "dungeon icon hook intercepted its native continuation");
+  }
+  std::cout << "TopScreen wide page runtime tests passed\n";
   return 0;
 }

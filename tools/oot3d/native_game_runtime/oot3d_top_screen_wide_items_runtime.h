@@ -5,11 +5,29 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 namespace Oot3dNativeGame {
 
-// PauseUi_Draw 0x0041EC50 call sites that 2.1.1 patches for its widened
-// Items page.
+struct TopScreenWidePageState {
+  bool ItemsActive = false;
+  bool DungeonMapActive = false;
+  bool Wide() const noexcept { return ItemsActive || DungeonMapActive; }
+};
+
+// 0x005D325C..0x005D329C / 0x005D345C: Items, or an active Map page
+// whose native map mode is exactly 1. World Map keeps the centred viewport.
+bool ReadTopScreenWidePageState(NativeA32Memory &memory,
+                                TopScreenWidePageState *page);
+
+// MOV R2,#10 -> MVN R2,#29 at the six map/compass/key producer sites.
+// The native owned/absent branches retain their Y, size and visibility.
+std::span<const std::uint32_t> TopScreenDungeonMapIconCoordinateSites() noexcept;
+bool ExecuteTopScreenDungeonMapIconCoordinate(
+    std::uint32_t pc, oot3d::recomp::a32::GuestState &state,
+    oot3d::recomp::a32::ExecutionResult *result, std::uint32_t *blocksConsumed);
+
+// PauseUi_Draw 0x0041EC50 shared projection and Items draw call sites.
 inline constexpr std::uint32_t kTopScreenPageProjectionUploadCall = 0x0041EE1CU;
 inline constexpr std::uint32_t kTopScreenItemsPageDrawCall = 0x0041EE74U;
 // PauseItemsPage_Draw 0x00434C80 cursor subdraws (PauseQuadGroup_Draw).
@@ -31,8 +49,8 @@ public:
   explicit TopScreenWideItemsRuntime(NativeA32Memory &memory) : mMemory(memory) {}
 
   // 0x0041EE1C, the page projection upload: patches the projection and lets
-  // the native upload run. `pageOnTop`: this PauseUi_Draw is the upper-screen
-  // page.
+  // the native upload run for widened Items or dungeon Map. `pageOnTop`:
+  // this PauseUi_Draw is the upper-screen page.
   bool ExecutePageProjection(oot3d::recomp::a32::GuestState &state, bool pageOnTop);
   // 0x0041EE74, the Items page draw.
   bool ExecuteItemsDraw(oot3d::recomp::a32::GuestState &state,
@@ -79,6 +97,7 @@ private:
 
   NativeA32Memory &mMemory;
   bool mPageWide = false;
+  bool mItemsWide = false;
   bool mItemsDrawing = false;
   Sequence mItems{};
   Sequence mCursor{};

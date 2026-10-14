@@ -259,6 +259,8 @@ void NativeA32WindowSession::Setup() {
          Oot3dNativeGame::TopScreenVerifiedFloatLoadContracts()) {
       blockEntryHooks.push_back(contract.Entry);
     }
+    for (const auto pc : Oot3dNativeGame::TopScreenDungeonMapIconCoordinateSites())
+      blockEntryHooks.push_back(pc);
     const auto itemHooks = Oot3dNativeGame::TopScreenItemDispatchEntries();
     blockEntryHooks.insert(blockEntryHooks.end(), itemHooks.begin(), itemHooks.end());
     blockEntryHooks.push_back(Oot3dNativeGame::kTopScreenInputUpdateBoundary);
@@ -421,6 +423,10 @@ void NativeA32WindowSession::Setup() {
          Oot3dNativeGame::TopScreenVerifiedFloatLoadContracts()) {
       topScreenSourcePortBlocks.push_back(contract.Entry);
     }
+    const auto mapIconSites =
+        Oot3dNativeGame::TopScreenDungeonMapIconCoordinateSites();
+    topScreenSourcePortBlocks.insert(topScreenSourcePortBlocks.end(),
+                                    mapIconSites.begin(), mapIconSites.end());
     const auto itemEntries = Oot3dNativeGame::TopScreenItemDispatchEntries();
     topScreenSourcePortBlocks.insert(topScreenSourcePortBlocks.end(),
                                     itemEntries.begin(), itemEntries.end());
@@ -468,6 +474,8 @@ void NativeA32WindowSession::Setup() {
       for (const auto &contract :
            Oot3dNativeGame::TopScreenVerifiedFloatLoadContracts())
         required.push_back(contract.Entry + 4U);
+      for (const auto pc : mapIconSites)
+        required.push_back(pc + 4U);
       required.push_back(kTopScreenCameraFovScalar + 4U);
       const auto entries = Oot3dNativeGame::Oot3dWholeAotEntryPoints();
       std::vector<uint32_t> sortedEntries(entries.begin(), entries.end());

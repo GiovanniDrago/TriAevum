@@ -8,6 +8,11 @@
 namespace Oot3dNativeGame {
 namespace {
 constexpr std::uint32_t kItemsPageState = 0x0050672CU;
+constexpr std::uint32_t kMapPageState = 0x00506CE8U;
+constexpr std::uint32_t kMapMode = 0x004FDABCU;
+constexpr std::array<std::uint32_t, 6> kDungeonMapIconCoordinateSites{
+    0x004426B4U, 0x004426D4U, 0x00442704U,
+    0x00442730U, 0x00442760U, 0x0044278CU};
 constexpr std::uint32_t kItemsModel = 0x00506714U;
 constexpr std::uint32_t kItemsIconGroup = 0x00506734U;
 constexpr std::uint32_t kItemsIconGroupB = 0x0050673CU;
@@ -98,6 +103,41 @@ constexpr std::array<std::uint32_t, 16> kIdentity{
     0, 0, 0x3F800000U, 0, 0, 0, 0, 0x3F800000U};
 } // namespace
 
+bool ReadTopScreenWidePageState(NativeA32Memory &memory,
+                                TopScreenWidePageState *page) {
+  if (page == nullptr) return false;
+  *page = {};
+  std::uint32_t items = 0U, map = 0U, mode = 0U;
+  if (!memory.Read32(kItemsPageState, &items) ||
+      !memory.Read32(kMapPageState, &map))
+    return false;
+  // PauseCameraControl_IsActive (0x002FCDD4) actually reads Map owner+0x38.
+  // 0x002F1268 returns true only for shared map owner 0x004FDA6C+0x50 == 1.
+  if (map != 0U && !memory.Read32(kMapMode, &mode)) return false;
+  page->ItemsActive = items != 0U;
+  page->DungeonMapActive = map != 0U && mode == 1U;
+  return true;
+}
+
+std::span<const std::uint32_t> TopScreenDungeonMapIconCoordinateSites() noexcept {
+  return kDungeonMapIconCoordinateSites;
+}
+
+bool ExecuteTopScreenDungeonMapIconCoordinate(
+    std::uint32_t pc, oot3d::recomp::a32::GuestState &state,
+    oot3d::recomp::a32::ExecutionResult *result, std::uint32_t *blocksConsumed) {
+  if (std::find(kDungeonMapIconCoordinateSites.begin(),
+                kDungeonMapIconCoordinateSites.end(), pc) ==
+      kDungeonMapIconCoordinateSites.end())
+    return false;
+  state.r[2] = 0xFFFFFFE2U; // MVN R2,#29: -30, without changing flags.
+  state.r[15] = pc + 4U;
+  *result = {oot3d::recomp::a32::ExitKind::Branch, pc + 4U,
+             oot3d::recomp::a32::FallbackReason::None, pc};
+  if (blocksConsumed != nullptr) *blocksConsumed = 1U;
+  return true;
+}
+
 bool ApplyTopScreenWideItemsGeometry(NativeA32Memory &memory) {
   // 0x005D1A10..0x005D1A50: the Items model's selected stream.
   std::uint32_t model = 0U, stream = 0U;
@@ -153,6 +193,7 @@ bool ApplyTopScreenWideItemsGeometry(NativeA32Memory &memory) {
 
 void TopScreenWideItemsRuntime::Reset() noexcept {
   mPageWide = false;
+  mItemsWide = false;
   mItemsDrawing = false;
   mItems = {};
   mCursor = {};
@@ -224,13 +265,14 @@ std::uint32_t TopScreenWideItemsRuntime::AppendProjection(Sequence &sequence, st
 bool TopScreenWideItemsRuntime::ExecutePageProjection(oot3d::recomp::a32::GuestState &state,
                                                       bool pageOnTop) {
   mPageWide = false;
-  std::uint32_t items = 0U;
+  mItemsWide = false;
   if (!pageOnTop) return false;
-  if (!mMemory.Read32(kItemsPageState, &items))
-    throw std::runtime_error("TopScreen wide Items cannot read the Items page state");
-  if (items == 0U) return false;
+  TopScreenWidePageState page;
+  if (!ReadTopScreenWidePageState(mMemory, &page))
+    throw std::runtime_error("TopScreen cannot read the wide page state");
+  if (!page.Wide()) return false;
   // 0x005DF428: the projection in r1, before the native upload. The page
-  // target already has the full viewport (WidenTopScreenPauseTargetForItems).
+  // target already has the full viewport (WidenTopScreenPauseTargetForPage).
   // No other call may run here: PicaCommandWriter 0x0032471C (0x0041EE08) has
   // bound the material writer at the command cursor, and a GL call in
   // between would write over the same commands.
@@ -238,6 +280,7 @@ bool TopScreenWideItemsRuntime::ExecutePageProjection(oot3d::recomp::a32::GuestS
       !mMemory.Write32(state.r[1] + 0x1CU, kPageOffset))
     throw std::runtime_error("TopScreen wide Items cannot write the page projection");
   mPageWide = true;
+  mItemsWide = page.ItemsActive;
   ++mWidePages;
   return false;
 }
@@ -250,8 +293,9 @@ bool TopScreenWideItemsRuntime::ExecuteItemsDraw(oot3d::recomp::a32::GuestState 
     mItemsDrawing = mItems.Next == 4U;
     return Step(mItems, state, result, blocksConsumed, true);
   }
-  if (!mPageWide) return false;
+  if (!mItemsWide) return false;
   mPageWide = false;
+  mItemsWide = false;
   if (!ApplyTopScreenWideItemsGeometry(mMemory))
     throw std::runtime_error("TopScreen wide Items cannot edit the Items page geometry");
   Begin(mItems, kTopScreenItemsPageDrawCall, state, kScratch);

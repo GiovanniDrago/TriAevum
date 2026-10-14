@@ -344,7 +344,7 @@ bool ApplyTopScreenNativeTouchQuad28Layout(
 TopScreenPauseEdgeGeometry BuildTopScreenPauseEdgeGeometry(
     bool hasScene, std::uint8_t sceneMode, std::uint32_t runtimeMode,
     std::uint8_t sceneFade, std::int32_t transitionStep, float nativeVisibility,
-    float globalColorScale, bool itemsActive) noexcept {
+    float globalColorScale, bool itemsActive, bool dungeonMapActive) noexcept {
   float visibility = nativeVisibility;
   float sceneScale = 1.0F;
   if (hasScene && sceneMode == 3U) {
@@ -358,7 +358,8 @@ TopScreenPauseEdgeGeometry BuildTopScreenPauseEdgeGeometry(
   const float retraction = (1.0F - visibility) * 32.0F;
   TopScreenPauseEdgeGeometry result;
   result.Positions = {{{288.0F + retraction, 0.0F}, {-retraction, 0.0F}}};
-  result.Sizes = {{{itemsActive ? 0.0F : 32.0F, 240.0F}, {32.0F, 240.0F}}};
+  result.Sizes = {{{itemsActive || dungeonMapActive ? 0.0F : 32.0F, 240.0F},
+                   {dungeonMapActive ? 0.0F : 32.0F, 240.0F}}};
   result.AtlasOrigins = {{{192.0F, 0.0F}, {256.0F, 0.0F}}};
   result.AtlasSizes = {{{64.0F, 240.0F}, {-64.0F, 240.0F}}};
   const float payloadScale = sceneScale * globalColorScale * visibility;

@@ -60,8 +60,8 @@ Oot3dNativeGame::NativeA32Memory BuildLayoutFixture() {
   NativeA32Memory memory;
   std::string error;
   Require(memory.MapRegion({"topscreen-layout-fixture",
-                            0x00460000U,
-                            0x000B0000U,
+                            0x002F0000U,
+                            0x00220000U,
                             true,
                             false,
                             {}},
@@ -509,6 +509,16 @@ int main() {
           "touch-label presenter lost its recovered texture semantics");
 
   auto memory = BuildLayoutFixture();
+  // Native floor producer rows retain their Y while X moves outward.
+  for (std::uint32_t row = 0; row < 5U; ++row) {
+    Require(memory.Write32(0x004D4E98U + row * 8U,
+                           std::bit_cast<std::uint32_t>(6.0F + row * 46.0F)) &&
+                memory.Write32(0x004D4EC0U + row * 8U,
+                               std::bit_cast<std::uint32_t>(8.0F + row * 46.0F)) &&
+                memory.Write32(0x004D4EE8U + row * 8U,
+                               std::bit_cast<std::uint32_t>(17.0F + row * 46.0F)),
+            "cannot seed native dungeon floor rows");
+  }
   TopScreenLayoutApplyStats stats;
   std::string error;
   Require(ApplyTopScreenVerifiedLayout(memory, &stats, &error),
@@ -527,6 +537,47 @@ int main() {
           "layout replacement value was not written");
     }
   }
+  const auto layoutFloat = [&memory](std::uint32_t address) {
+    std::uint32_t bits = 0U;
+    Require(memory.Read32(address, &bits), "cannot read dungeon map layout");
+    return std::bit_cast<float>(bits);
+  };
+  Require(layoutFloat(0x00506D60U) == 24.0F &&
+              layoutFloat(0x00506EF0U) == 272.0F &&
+              layoutFloat(0x00506DE0U) == 24.0F &&
+              layoutFloat(0x00506F70U) == 272.0F &&
+              layoutFloat(0x00506D68U) == -40.0F &&
+              layoutFloat(0x00506D70U) == 296.0F &&
+              layoutFloat(0x002F0404U) == 300.0F &&
+              layoutFloat(0x002F0410U) == -32.0F &&
+              layoutFloat(0x0044262CU) == 301.0F &&
+              layoutFloat(0x0044264CU) == 344.0F &&
+              layoutFloat(0x0042D9F0U) == -20.0F,
+          "dungeon panels, columns or dynamic producer literals remain narrow");
+  for (std::uint32_t row = 0; row < 5U; ++row) {
+    Require(layoutFloat(0x004D4E94U + row * 8U) == 302.0F &&
+                layoutFloat(0x004D4EBCU + row * 8U) == 304.0F &&
+                layoutFloat(0x004D4EE4U + row * 8U) == 314.0F &&
+                layoutFloat(0x004D4E98U + row * 8U) == 6.0F + row * 46.0F &&
+                layoutFloat(0x004D4EC0U + row * 8U) == 8.0F + row * 46.0F &&
+                layoutFloat(0x004D4EE8U + row * 8U) == 17.0F + row * 46.0F,
+            "dungeon floor row movement changed its native vertical spacing");
+  }
+  for (std::uint32_t row = 0; row < 8U; ++row)
+    Require(layoutFloat(0x004D4DBCU + row * 8U) == 417.0F,
+            "dungeon floor-number UV origin is incorrect");
+  for (std::uint32_t row = 0; row < 4U; ++row)
+    Require(layoutFloat(0x004D4DFCU + row * 8U) == 321.0F,
+            "dungeon basement-number UV origin is incorrect");
+  Require(layoutFloat(0x005075C0U) == 7.5F &&
+              layoutFloat(0x005075E0U) == 7.5F &&
+              layoutFloat(0x005075F0U) == -7.5F &&
+              layoutFloat(0x005076E0U) == 351.5F &&
+              layoutFloat(0x004D2E6CU) == 0.0F &&
+              layoutFloat(0x004D2E70U) == 0.0F &&
+              layoutFloat(0x004D2E84U) == 0.0F &&
+              layoutFloat(0x004D2E88U) == 0.0F,
+          "map shared UVs or overlay width/height quartet are incomplete");
   TopScreenLayoutApplyStats repeatedLayoutStats;
   Require(ApplyTopScreenVerifiedLayout(memory, &repeatedLayoutStats, &error) &&
               repeatedLayoutStats.WordsChanged == 0U,
@@ -671,6 +722,20 @@ int main() {
     }
     ++runtimeStreamIndex;
   }
+  // The already-constructed dungeon panel/title both span X 24..296.
+  const std::uint32_t mapPositions = 0x08020100U;
+  Require(readFloat(mapPositions) == 24.0F &&
+              readFloat(mapPositions + 12U) == 296.0F &&
+              readFloat(mapPositions + 16U * 48U) == 24.0F &&
+              readFloat(mapPositions + 16U * 48U + 36U) == 296.0F &&
+              readFloat(mapPositions + 48U) == -40.0F &&
+              readFloat(mapPositions + 2U * 48U) == 296.0F &&
+              readFloat(mapPositions + 44U) == 7.0F,
+          "restored dungeon geometry did not retain its widened native rectangles");
+  const std::uint32_t mirroredUv = 0x08034000U + 14U * 32U;
+  Require(readFloat(mirroredUv) == 351.5F / 512.0F &&
+              readFloat(mirroredUv + 8U) == 344.0F / 512.0F,
+          "restored map UVs lost their negative extent");
   Require(RebindTopScreenVerifiedRuntimeGeometry(runtimeGeometry, nullptr,
                                                  &error),
           "runtime geometry rebind is not idempotent");
@@ -1585,6 +1650,10 @@ int main() {
   Require(itemsPauseEdges.Sizes[0].X == 0.0F && itemsPauseEdges.Sizes[1].X == 32.0F &&
               itemsPauseEdges.Positions[1].X == 0.0F,
           "the Items page keeps the right pause edge (2.1.1 0x005D0494)");
+  const auto dungeonPauseEdges =
+      BuildTopScreenPauseEdgeGeometry(true, 5U, 0U, 0U, 0, 1.0F, 1.0F, false, true);
+  Require(dungeonPauseEdges.Sizes[0].X == 0.0F && dungeonPauseEdges.Sizes[1].X == 0.0F,
+          "the dungeon map retains extra pause edges (2.1.1 0x005D3A6C)");
   const auto transitioningPauseEdges =
       BuildTopScreenPauseEdgeGeometry(true, 3U, 1U, 0x7FU, 10, 1.0F, 0.8F);
   Require(transitioningPauseEdges.Positions[0].X == 304.0F &&
@@ -2563,15 +2632,15 @@ int main() {
               pageRedrawTarget.ViewportHeight == 320U,
           "TopScreen pause target command contract is incorrect");
   auto wideTarget = pageRedrawTarget;
-  WidenTopScreenPauseTargetForItems(wideTarget, true);
+  WidenTopScreenPauseTargetForPage(wideTarget, true);
   auto narrowTarget = pageRedrawTarget;
-  WidenTopScreenPauseTargetForItems(narrowTarget, false);
+  WidenTopScreenPauseTargetForPage(narrowTarget, false);
   auto wideHalfTarget = halfTarget;
-  WidenTopScreenPauseTargetForItems(wideHalfTarget, true);
+  WidenTopScreenPauseTargetForPage(wideHalfTarget, true);
   Require(wideTarget.ViewportY == 0U && wideTarget.ViewportWidth == 480U &&
               wideTarget.ViewportHeight == 400U && narrowTarget.ViewportY == 40U &&
               narrowTarget.ViewportHeight == 320U && wideHalfTarget.ViewportY == 40U,
-          "the Items page target is not the full 400-wide viewport");
+          "the wide page target is not the full 400-wide viewport");
 
   NativeA32Memory suppressionMemory;
   Require(suppressionMemory.MapRegion(

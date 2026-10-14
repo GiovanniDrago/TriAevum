@@ -129,7 +129,7 @@ While Items is active (word 0x0050672C; the payload's 0x005E21F4 is a constant
 the projection offset by 0.8 instead of the centred (0, 40, 480, 320) one.
 `TopScreenWideItemsRuntime` (native_game_runtime) ports it on native calls:
 
-- `WidenTopScreenPauseTargetForItems` gives the page target plan the full
+- `WidenTopScreenPauseTargetForPage` gives the page target plan the full
   viewport. The plan rewrites the next `glViewport`, so a viewport call of its
   own would be overwritten.
 - 0x0041EE1C (005DF428) writes -0.005 and 0.8 into the projection in r1 and
@@ -146,6 +146,13 @@ the projection offset by 0.8 instead of the centred (0, 40, 480, 320) one.
   bounds (0x005E40A8..BC) is read only by payload code and is not ported.
 - 0x005D0494 gives the right pause edge quad no width while Items is active,
   because the page covers that side; the left edge stays.
+
+Dungeon Map shares the full viewport and page projection: Map state
+0x00506CE8 must be nonzero and shared map mode 0x004FDABC must equal 1.
+World Map stays centred. Verified scalar contracts widen both the dungeon
+panel and title to 272 pixels and move the side columns; six native icon
+coordinate hooks set R2 to -30 while retaining the ownership branches.
+Dungeon Map omits both extra pause edges but keeps the tab hints.
 
 Exits that run guest continuations are conditional: 0x0041E988 leaves the
 graph only while the pause transaction or song text has work, and the page

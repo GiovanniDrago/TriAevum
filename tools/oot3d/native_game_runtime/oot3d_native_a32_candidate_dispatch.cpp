@@ -11,6 +11,9 @@ bool ExecuteTopScreenUiSourcePortBlock(
     NativeCandidateDispatchState &dispatch,
     oot3d::recomp::a32::ExecutionResult *result, uint32_t *blocksConsumed) {
   auto &memory = *dispatch.Memory;
+  if (Oot3dNativeGame::ExecuteTopScreenDungeonMapIconCoordinate(
+          pc, state, result, blocksConsumed))
+    return true;
   if (pc == Oot3dNativeGame::kTopScreenInputUpdateBoundary) {
     // One guest continuation owns the boundary at a time; a requested pause
     // transaction runs before the song text of the same update. The product

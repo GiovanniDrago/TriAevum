@@ -284,9 +284,10 @@ void ApplyNativeWidescreenProjectionPolicy(
         if (frontendPlan.Handled) {
           plan = frontendPlan;
         } else {
-          std::uint32_t items = 0U;
-          Oot3dNativeGame::WidenTopScreenPauseTargetForItems(
-              plan, runtime.TraceMemory->Read32(0x0050672CU, &items) && items != 0U);
+          Oot3dNativeGame::TopScreenWidePageState page;
+          Oot3dNativeGame::WidenTopScreenPauseTargetForPage(
+              plan, Oot3dNativeGame::ReadTopScreenWidePageState(
+                        *runtime.TraceMemory, &page) && page.Wide());
         }
         if (plan.Handled && plan.BindTopTarget) {
           runtime.PendingTopScreenPauseTarget = plan;
@@ -349,6 +350,11 @@ void ApplyNativeWidescreenProjectionPolicy(
           if (pageRedraw && runtime.ItemDescription != nullptr)
             runtime.ItemDescription->ArmPageDraw();
           if (runtime.UiLifecycleBridge != nullptr) {
+            Oot3dNativeGame::TopScreenWidePageState page;
+            const bool dungeonMap =
+                pageRedraw && Oot3dNativeGame::ReadTopScreenWidePageState(
+                                  *runtime.TraceMemory, &page) &&
+                page.DungeonMapActive;
             runtime.UiLifecycleBridge
                 ->SetTopScreenPausePageRedrawEdgePresentation(
                     pageRedraw
@@ -357,7 +363,8 @@ void ApplyNativeWidescreenProjectionPolicy(
                                   pageInputs.Pause.HasScene,
                                   pageInputs.Pause.SceneMode,
                                   pageInputs.Pause.RuntimeMode, 0U, 0, 1.0F,
-                                  1.0F, pageInputs.Pause.ChildStates[1] != 0U))
+                                  1.0F, pageInputs.Pause.ChildStates[1] != 0U,
+                                  dungeonMap))
                         : std::nullopt);
           }
           const auto suppressionSet =
