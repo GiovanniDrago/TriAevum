@@ -598,6 +598,7 @@ void NativeA32WindowSession::ServiceSavestateRequests() {
     }
     switch (SaveState(path, request->WithSettings)) {
     case SaveStateOutcome::Deferred:
+      ++savestateStats.SaveDeferralCount;
       savestateLibrary->Request(*request);  // Retried at the next boundary.
       return;
     case SaveStateOutcome::Failed:
