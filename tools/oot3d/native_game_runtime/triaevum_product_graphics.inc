@@ -120,6 +120,26 @@ R"json({
           "Width": 128
         },
         "Wrap": "Material"
+      },
+      {
+        "Channel": "Blue",
+        "InputBlack": 0.8550000190734863,
+        "InputWhite": 0.8989999890327454,
+        "Invert": true,
+        "MaximumSlopeDegrees": 48.0,
+        "NormalOffset": 0.5,
+        "OutputBlack": 0.0,
+        "OutputWhite": 1.0,
+        "ResponseExponent": 4.019999980926514,
+        "RuleId": 7,
+        "Target": {
+          "AssetName": "",
+          "Height": 256,
+          "MapperSlotMask": 7,
+          "Rgba8Hash": "a35e3fe6f83ca9c2",
+          "Width": 128
+        },
+        "Wrap": "Material"
       }
     ]
   }
