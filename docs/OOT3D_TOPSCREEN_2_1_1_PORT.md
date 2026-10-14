@@ -154,6 +154,20 @@ panel and title to 272 pixels and move the side columns; six native icon
 coordinate hooks set R2 to -30 while retaining the ownership branches.
 Dungeon Map omits both extra pause edges but keeps the tab hints.
 
+The Save (System) page overlays gameplay on the upper screen. 2.1.1 replaces
+the queue-5 draw at 0x0030055C: after the original 0x004228D4 it calls its
+compositor before the top transfer. While System is active (0x0050A530) the
+compositor sets viewport (0, 0, 480, 400), saves the pause root's
+backdrop skip (0x005043F4) and touch (0x0050AF68), writes 1 and 0, calls
+`PauseUi_Draw` on the gameplay target and restores both values and the
+viewport. `TopScreenSystemPageRuntime` (pause transaction unit) runs the same
+native calls and resumes at 0x00300560. System joins the shared wide
+predicate, so 0x0041EE1C applies the same projection. The page keeps the
+native framebuffer plan rather than PageRedraw's lower-target swap, draws no
+pause edges or tab hints, and its later lower-tail draw uses the Tail
+suppression set. The payload's Mod Options affordance (0x005DCA80,
+0x005DF178) is not drawn; mod settings live in F1.
+
 Exits that run guest continuations are conditional: 0x0041E988 leaves the
 graph only while the pause transaction or song text has work, and the page
 draw return 0x00419830 only while the item description is drawing or may

@@ -56,6 +56,11 @@ void ApplyNativeWidescreenProjectionPolicy(
         *runtime.TraceMemory, *runtime.PendingTopScreenPauseChildRestore);
     runtime.PendingTopScreenPauseChildRestore.reset();
   }
+  // Its injected PauseUi_Draw returns here; close UI attribution before an
+  // observable exit skips the remaining block-entry observations.
+  if (pc == Oot3dNativeGame::kTopScreenSystemPageBoundary &&
+      runtime.PicaCompositionTracker != nullptr)
+    runtime.PicaCompositionTracker->ObserveBlockEntry(pc, state, memory);
   // The camera update entry resolves the FOV owner of 0x00478EB8, which
   // 2.1.1 scales and clamps at every percentage, so it is observed whenever
   // the TopScreen profile is active, not only for the free camera.
@@ -101,7 +106,8 @@ void ApplyNativeWidescreenProjectionPolicy(
         pc, state, memory,
         runtime.FrameRatePolicy->GameplayClock().Context());
   }
-  if (runtime.PicaCompositionTracker != nullptr) {
+  if (runtime.PicaCompositionTracker != nullptr &&
+      pc != Oot3dNativeGame::kTopScreenSystemPageBoundary) {
     runtime.PicaCompositionTracker->ObserveBlockEntry(pc, state, memory);
   }
   if (runtime.TraceA32Blocks) {
@@ -255,27 +261,45 @@ void ApplyNativeWidescreenProjectionPolicy(
           runtime.TraceMemory->Read8(state.r[0] + 0x75U, &halfHeight)) {
         Oot3dNativeGame::TopScreenPauseDrawInputs inputs;
         bool routeActive = false;
+        if (state.r[1] == 0x400U && runtime.SystemPage != nullptr)
+          runtime.SystemPage->Prepare(false);
         if (Oot3dNativeGame::ReadTopScreenPauseDrawInputs(*runtime.TraceMemory,
                                                           &inputs) &&
             runtime.TopScreenPauseTargetRoute != nullptr) {
           ++runtime.TopScreenPauseTargetObservations;
           routeActive = Oot3dNativeGame::ResolveTopScreenPauseRouteActive(
               inputs, runtime.TopScreenPauseTargetRoute);
-          routeActive = routeActive || runtime.TopScreenPausePageRedrawActive;
           runtime.HasTopScreenPauseDrawInputs = true;
           runtime.LastTopScreenPauseDrawInputs = inputs;
           runtime.LastTopScreenPauseRouteActive = routeActive;
           Oot3dNativeGame::ObserveTopScreenPauseTargetCommand(
               inputs, state.r[1], &runtime.TopScreenPauseDrawRouting);
+          if (state.r[1] == 0x400U && runtime.SystemPage != nullptr) {
+            bool redraw = false;
+            if (enabled != 0U && inputs.ChildStates[3] != 0U && !routeActive) {
+              Oot3dNativeGame::TopScreenPausePageRedrawInputs pageInputs;
+              const bool sceneLatch = runtime.TopScreenTouchCoordinateRoute != nullptr &&
+                                     runtime.TopScreenTouchCoordinateRoute->RuntimeSceneLatch;
+              auto routing = runtime.TopScreenPauseDrawRouting;
+              if (!Oot3dNativeGame::ReadTopScreenPausePageRedrawInputs(
+                      *runtime.TraceMemory, sceneLatch, &pageInputs))
+                throw std::runtime_error("TopScreen System cannot read redraw inputs");
+              redraw = Oot3dNativeGame::ResolveTopScreenPauseDrawAction(inputs, &routing) ==
+                           Oot3dNativeGame::TopScreenPauseDrawAction::SuppressNativeChildren &&
+                       Oot3dNativeGame::ResolveTopScreenPausePageRedraw(
+                           pageInputs, &runtime.TopScreenPausePageRedraw);
+            }
+            runtime.SystemPage->Prepare(redraw);
+          }
         }
+        if (state.r[1] == 0x400U && runtime.UiLifecycleBridge != nullptr)
+          runtime.UiLifecycleBridge->SetTopScreenSystemPagePresentation(inputs.ChildStates[3] != 0U);
         const Oot3dNativeGame::TopScreenPauseTargetCommand command{
             enabled != 0U, state.r[1], halfHeight != 0U};
-        auto plan =
-            runtime.TopScreenPausePageRedrawActive
-                ? Oot3dNativeGame::ResolveTopScreenPausePageRedrawTargetCommand(
-                      command)
-                : Oot3dNativeGame::ResolveTopScreenPauseTargetCommand(
-                      command, routeActive);
+        auto plan = Oot3dNativeGame::ResolveTopScreenPauseCompositionTargetCommand(
+            command, routeActive,
+            runtime.TopScreenPausePageRedrawActive && inputs.AnyPageGateActive,
+            inputs.ChildStates[3] != 0U);
         const auto frontendPlan =
             Oot3dNativeGame::ResolveTopScreenFrontendTargetCommand(
                 command,
@@ -341,13 +365,15 @@ void ApplyNativeWidescreenProjectionPolicy(
           const bool runtimeSceneLatch =
               runtime.TopScreenTouchCoordinateRoute != nullptr &&
               runtime.TopScreenTouchCoordinateRoute->RuntimeSceneLatch;
-          const bool pageRedraw =
-              Oot3dNativeGame::ReadTopScreenPausePageRedrawInputs(
+          const bool systemPage = inputs.ChildStates[3] != 0U;
+          const bool pageRedraw = systemPage
+              ? runtime.SystemPage != nullptr && runtime.SystemPage->Redraw()
+              : Oot3dNativeGame::ReadTopScreenPausePageRedrawInputs(
                   *runtime.TraceMemory, runtimeSceneLatch, &pageInputs) &&
               Oot3dNativeGame::ResolveTopScreenPausePageRedraw(
                   pageInputs, &runtime.TopScreenPausePageRedraw);
           runtime.TopScreenPausePageRedrawActive = pageRedraw;
-          if (pageRedraw && runtime.ItemDescription != nullptr)
+          if (pageRedraw && !systemPage && runtime.ItemDescription != nullptr)
             runtime.ItemDescription->ArmPageDraw();
           if (runtime.UiLifecycleBridge != nullptr) {
             Oot3dNativeGame::TopScreenWidePageState page;
@@ -357,7 +383,7 @@ void ApplyNativeWidescreenProjectionPolicy(
                 page.DungeonMapActive;
             runtime.UiLifecycleBridge
                 ->SetTopScreenPausePageRedrawEdgePresentation(
-                    pageRedraw
+                    pageRedraw && !systemPage
                         ? std::optional(
                               Oot3dNativeGame::BuildTopScreenPauseEdgeGeometry(
                                   pageInputs.Pause.HasScene,
@@ -368,7 +394,7 @@ void ApplyNativeWidescreenProjectionPolicy(
                         : std::nullopt);
           }
           const auto suppressionSet =
-              pageRedraw
+              pageRedraw && !systemPage
                   ? Oot3dNativeGame::TopScreenPauseChildSuppressionSet::
                         PageRedraw
                   : Oot3dNativeGame::TopScreenPauseChildSuppressionSet::Tail;

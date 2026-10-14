@@ -422,6 +422,7 @@ private:
   std::optional<Oot3dNativeGame::Oot3dNativeA32UiTextureProvider> nativeUiTextureProviderStorage;
   std::optional<Oot3dNativeGame::TopScreenOcarinaTextRuntime> ocarinaTextStorage;
   std::optional<Oot3dNativeGame::TopScreenPauseTransactionRuntime> pauseTransactionStorage;
+  std::optional<Oot3dNativeGame::TopScreenSystemPageRuntime> systemPageStorage;
   std::optional<Oot3dNativeGame::TopScreenItemDescriptionRuntime> itemDescriptionStorage;
   std::optional<Oot3dNativeGame::TopScreenWideItemsRuntime> wideItemsStorage;
   std::optional<oot3d::ui::Fast3dUiRenderBackend> uiRenderBackendStorage;

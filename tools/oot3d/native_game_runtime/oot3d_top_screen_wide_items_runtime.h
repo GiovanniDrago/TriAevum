@@ -12,11 +12,12 @@ namespace Oot3dNativeGame {
 struct TopScreenWidePageState {
   bool ItemsActive = false;
   bool DungeonMapActive = false;
-  bool Wide() const noexcept { return ItemsActive || DungeonMapActive; }
+  bool SystemActive = false;
+  bool Wide() const noexcept { return ItemsActive || DungeonMapActive || SystemActive; }
 };
 
-// 0x005D325C..0x005D329C / 0x005D345C: Items, or an active Map page
-// whose native map mode is exactly 1. World Map keeps the centred viewport.
+// 0x005D325C..0x005D329C / 0x005D345C: Items, System, or an active Map
+// page whose native mode is exactly 1. World Map keeps the centred viewport.
 bool ReadTopScreenWidePageState(NativeA32Memory &memory,
                                 TopScreenWidePageState *page);
 
@@ -49,7 +50,7 @@ public:
   explicit TopScreenWideItemsRuntime(NativeA32Memory &memory) : mMemory(memory) {}
 
   // 0x0041EE1C, the page projection upload: patches the projection and lets
-  // the native upload run for widened Items or dungeon Map. `pageOnTop`:
+  // the native upload run for Items, dungeon Map or System. `pageOnTop`:
   // this PauseUi_Draw is the upper-screen page.
   bool ExecutePageProjection(oot3d::recomp::a32::GuestState &state, bool pageOnTop);
   // 0x0041EE74, the Items page draw.

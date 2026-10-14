@@ -124,6 +124,7 @@ void Oot3dNativeUiLifecycleBridge::ResetAfterStateLoad(
   mTopScreenPauseProjection.AlternatePage = mTopScreenConfig.MinimapVisible;
   mTopScreenPauseEdgeGeometry.reset();
   mTopScreenPausePageRedrawEdgeGeometry.reset();
+  mTopScreenSystemPagePresentation = false;
   mTopScreenItemsHint = {};
   mTopScreenTouchCopies = {};
   mTopScreenViewAlpha = 1.0F;
@@ -443,12 +444,15 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
       mStats.topscreen_horse_stamina_visible_primitives += visibleHorseStamina;
     }
   }
+  std::uint32_t systemPage = 0U;
+  const bool systemActive = mTopScreenSystemPagePresentation ||
+                            (mMemory.Read32(0x0050A530U, &systemPage) && systemPage != 0U);
   const auto *pauseEdge = mTopScreenPausePageRedrawEdgeGeometry.has_value()
                               ? &*mTopScreenPausePageRedrawEdgeGeometry
                               : (mTopScreenPauseEdgeGeometry.has_value()
                                      ? &*mTopScreenPauseEdgeGeometry
                                      : nullptr);
-  if (pauseEdge != nullptr) {
+  if (!systemActive && pauseEdge != nullptr) {
     if (const auto itemPage = NativePauseSharedTextureIdentity(
             oot3d::ui::UiPauseSharedTextureSlot::ItemPage);
         itemPage.has_value()) {
@@ -456,7 +460,7 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
     }
   }
   // 2.1.1 0x005D3A84: the tab hints follow the redrawn page.
-  if (mTopScreenPausePageRedrawEdgeGeometry.has_value()) {
+  if (!systemActive && mTopScreenPausePageRedrawEdgeGeometry.has_value()) {
     TopScreenTabHintInputs tabHints;
     const auto cursor =
         NativePauseSharedTextureIdentity(oot3d::ui::UiPauseSharedTextureSlot::Cursor);

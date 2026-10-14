@@ -945,4 +945,13 @@ void WidenTopScreenPauseTargetForPage(TopScreenPauseTargetPlan &plan,
   plan.ViewportHeight = 400U;
 }
 
+TopScreenPauseTargetPlan ResolveTopScreenPauseCompositionTargetCommand(
+    const TopScreenPauseTargetCommand &command, bool routeActive,
+    bool pageRedrawActive, bool systemActive) noexcept {
+  if (systemActive)
+    return ResolveTopScreenPauseTargetCommand(command, routeActive);
+  return pageRedrawActive ? ResolveTopScreenPausePageRedrawTargetCommand(command)
+                         : ResolveTopScreenPauseTargetCommand(command, routeActive);
+}
+
 } // namespace Oot3dNativeGame

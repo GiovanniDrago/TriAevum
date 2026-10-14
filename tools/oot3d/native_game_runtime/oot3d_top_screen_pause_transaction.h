@@ -70,4 +70,32 @@ private:
   TopScreenPauseClosePage mLastSystemSourcePage = TopScreenPauseClosePage::None;
 };
 
+inline constexpr std::uint32_t kTopScreenSystemPageBoundary = 0x0030055CU;
+
+// 0x005DF694 / 0x005D320C: preserve the native final view draw, then draw
+// System over that same gameplay target. Independent of the input transaction.
+class TopScreenSystemPageRuntime final {
+public:
+  explicit TopScreenSystemPageRuntime(NativeA32Memory &memory) : mMemory(memory) {}
+  void Prepare(bool redraw);
+  bool Redraw() const noexcept { return mRedraw; }
+  bool Pending() const noexcept { return mPhase != 0U; }
+  bool Drawing() const noexcept { return mRestoreChildren && mPhase == 3U; }
+  bool Execute(oot3d::recomp::a32::GuestState &state,
+               oot3d::recomp::a32::ExecutionResult *result,
+               std::uint32_t *blocksConsumed);
+  void Cancel();
+  // After a state load, discard the old snapshot without writing into the
+  // newly loaded guest memory, as for the other guest continuations.
+  void Reset() noexcept;
+
+private:
+  NativeA32Memory &mMemory;
+  bool mRedraw = false;
+  bool mRestoreChildren = false;
+  std::uint8_t mPhase = 0;
+  TopScreenPauseChildState mChildren{};
+  oot3d::recomp::a32::GuestState mResume{};
+};
+
 } // namespace Oot3dNativeGame

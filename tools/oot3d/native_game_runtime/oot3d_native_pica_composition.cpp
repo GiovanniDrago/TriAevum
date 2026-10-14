@@ -18,6 +18,8 @@ constexpr uint32_t kMeshPacketByteCountOffset = 0x10U;
 constexpr std::array kUiViews{
     std::pair{0x0042B9F4U, 0x003004E0U},
     std::pair{0x0041EC50U, 0x00419830U},
+    // TopScreen System overlay inside the completed gameplay view.
+    std::pair{0x0041EC50U, 0x0030055CU},
     std::pair{0x0041F308U, 0x0041983CU},
     std::pair{0x00425930U, 0x0041EB14U},
     // Orthographic renderer-local backdrop (single model at GraphRenderer+743C).

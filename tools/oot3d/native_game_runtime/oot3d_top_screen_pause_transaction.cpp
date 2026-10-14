@@ -134,4 +134,83 @@ bool TopScreenPauseTransactionRuntime::Execute(oot3d::recomp::a32::GuestState &s
   return false;
 }
 
+void TopScreenSystemPageRuntime::Prepare(bool redraw) {
+  if (Pending())
+    throw std::runtime_error("TopScreen System draw crossed a target boundary");
+  mRedraw = redraw;
+}
+
+void TopScreenSystemPageRuntime::Reset() noexcept {
+  mRedraw = false;
+  mRestoreChildren = false;
+  mPhase = 0U;
+  mChildren = {};
+  mResume = {};
+}
+
+void TopScreenSystemPageRuntime::Cancel() {
+  if (mRestoreChildren && !EndTopScreenPauseChildSuppression(mMemory, mChildren))
+    throw std::runtime_error("TopScreen System cannot restore its draw state");
+  Reset();
+}
+
+bool TopScreenSystemPageRuntime::Execute(oot3d::recomp::a32::GuestState &state,
+                                         oot3d::recomp::a32::ExecutionResult *result,
+                                         std::uint32_t *blocksConsumed) {
+  const auto branch = [&](std::uint32_t entry) {
+    state.r[14] = kTopScreenSystemPageBoundary;
+    state.r[15] = entry;
+    *result = {oot3d::recomp::a32::ExitKind::Branch, entry,
+               oot3d::recomp::a32::FallbackReason::None, kTopScreenSystemPageBoundary};
+    if (blocksConsumed != nullptr) *blocksConsumed = 1U;
+    return true;
+  };
+  if (!Pending()) {
+    if (!mRedraw) return false;
+    if (state.r[13] < kCallStackReservation ||
+        !mMemory.IsWritable(state.r[13] - kCallStackReservation, kCallStackReservation))
+      throw std::runtime_error("TopScreen System has no valid caller stack");
+    mPhase = 1U;
+    // The original BL, with its original arguments and stack, exactly once.
+    return branch(0x004228D4U);
+  }
+  if (mPhase == 1U) {
+    mResume = state;
+    mResume.r[14] = kTopScreenSystemPageBoundary + 4U;
+    mPhase = 2U;
+  } else if (mPhase == 2U) {
+    if (!BeginTopScreenPauseChildSuppression(
+            mMemory, TopScreenPauseChildSuppressionSet::SystemPageRedraw, &mChildren)) {
+      Cancel();
+      throw std::runtime_error("TopScreen System cannot prepare its draw state");
+    }
+    mRestoreChildren = true;
+    mPhase = 3U;
+    state = mResume;
+    state.r[13] -= kCallStackReservation;
+    // 0x005D32C0 / 0x005D32C4 are the Mod Options affordance and active
+    // flag. Host settings live in F1, so take the ordinary 0x005D3C54 path.
+    return branch(0x0041EC50U);
+  } else if (mPhase == 3U) {
+    if (!EndTopScreenPauseChildSuppression(mMemory, mChildren))
+      throw std::runtime_error("TopScreen System cannot restore its draw state");
+    mRestoreChildren = false;
+    mPhase = 4U;
+  } else {
+    state = mResume;
+    mPhase = 0U;
+    const auto handled = branch(kTopScreenSystemPageBoundary + 4U);
+    state.r[14] = kTopScreenSystemPageBoundary + 4U;
+    return handled;
+  }
+  // 0x005D32B4 / 0x005D3C68: before the draw and after its writer completes.
+  state = mResume;
+  state.r[13] -= kCallStackReservation;
+  state.r[0] = 0U;
+  state.r[1] = 0U;
+  state.r[2] = 480U;
+  state.r[3] = 400U;
+  return branch(0x002FEABCU);
+}
+
 } // namespace Oot3dNativeGame

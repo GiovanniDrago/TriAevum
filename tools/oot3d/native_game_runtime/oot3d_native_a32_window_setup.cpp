@@ -234,6 +234,7 @@ void NativeA32WindowSession::Setup() {
         kPauseSceneSevenDrawCall,
         kPauseSceneViewportDrawCall,
         kPauseSceneFiveDrawCall,
+        Oot3dNativeGame::kTopScreenSystemPageBoundary,
         kPauseTouchButtonsHeldDownQuery,
         kPauseTouchCoordinateUpdateCall,
         kPauseRendererVisibilityCall,
@@ -406,6 +407,7 @@ void NativeA32WindowSession::Setup() {
         kPauseOverlayViewportDrawCall,    kPauseAlternateRendererUpdateCall,
         kPauseSceneSevenDrawCall,         kPauseSceneViewportDrawCall,
         kPauseSceneFiveDrawCall,          kPauseUiDrawReturn,
+        Oot3dNativeGame::kTopScreenSystemPageBoundary,
         kPauseTouchCoordinateUpdateCall,  kPauseRendererVisibilityCall,
         kPauseControllerDrawCall,         kTopScreenCameraNormal1Scalar,
         kTopScreenCameraFovScalar,
@@ -832,6 +834,9 @@ void NativeA32WindowSession::Setup() {
   auto &pauseTransaction = pauseTransactionStorage.emplace(process.Memory());
   nativeCandidateDispatch.PauseTransaction = &pauseTransaction;
   widescreenProjection.PauseTransaction = &pauseTransaction;
+  auto &systemPage = systemPageStorage.emplace(process.Memory());
+  nativeCandidateDispatch.SystemPage = &systemPage;
+  widescreenProjection.SystemPage = &systemPage;
   auto &itemDescription = itemDescriptionStorage.emplace(process.Memory());
   nativeCandidateDispatch.ItemDescription = &itemDescription;
   widescreenProjection.ItemDescription = &itemDescription;

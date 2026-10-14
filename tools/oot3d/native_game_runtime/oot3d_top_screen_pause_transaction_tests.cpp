@@ -132,6 +132,75 @@ int main() {
   Require(CallsAndReturns(runtime, state, kItemsReset, 0, 0), "cannot start a transaction");
   runtime.Reset();
   Require(!runtime.NeedsExecution(), "reset kept an in-flight transaction");
+  // The draw transaction is independent of input/reset delivery. Its native
+  // call, both viewports, suppression scope and BL continuation are explicit.
+  TopScreenSystemPageRuntime system(memory);
+  auto draw = CallerState();
+  draw.r[15] = kTopScreenSystemPageBoundary;
+  Require(!system.Execute(draw, &result, &blocks), "inactive System intercepted the native call");
+  Require(memory.Write32(0x0050A530U, 2U) && memory.Write32(0x005043F4U, 9U) &&
+              memory.Write32(kControllerState, 7U), "cannot seed System draw");
+  system.Prepare(true);
+  const auto originalDraw = draw;
+  Require(system.Execute(draw, &result, &blocks) && result.pc == 0x004228D4U &&
+              draw.r[0] == originalDraw.r[0] && draw.r[13] == originalDraw.r[13] &&
+              draw.r[14] == kTopScreenSystemPageBoundary,
+          "System did not preserve the original native BL");
+  draw.r[15] = kTopScreenSystemPageBoundary;
+  draw.r[0] = 0xABCDU;
+  draw.vfp[0] = 0x1234U;
+  draw.cpsr = 0x60000010U;
+  auto resumedDraw = draw;
+  resumedDraw.r[14] = resumedDraw.r[15] = kTopScreenSystemPageBoundary + 4U;
+  const auto viewport = [&]() {
+    return result.pc == 0x002FEABCU && draw.r[0] == 0U && draw.r[1] == 0U &&
+           draw.r[2] == 480U && draw.r[3] == 400U &&
+           draw.r[13] == originalDraw.r[13] - 0x20U;
+  };
+  Require(system.Execute(draw, &result, &blocks) && viewport() && !system.Drawing(),
+          "System did not install the full viewport before binding its writer");
+  Require(memory.Read32(0x005043F4U, &value) && value == 9U,
+          "System changed the backdrop flag before its redraw");
+  draw.r[15] = kTopScreenSystemPageBoundary;
+  Require(system.Execute(draw, &result, &blocks) && result.pc == 0x0041EC50U && system.Drawing(),
+          "System did not call the native pause draw in the view pass");
+  Require(memory.Read32(0x005043F4U, &value) && value == 1U &&
+              memory.Read32(kControllerState, &value) && value == 0U &&
+              memory.Read32(0x0050A530U, &value) && value == 2U,
+          "System draw has the wrong backdrop/touch/page state");
+  draw.r[15] = kTopScreenSystemPageBoundary;
+  Require(system.Execute(draw, &result, &blocks) && viewport() && !system.Drawing() &&
+              memory.Read32(0x005043F4U, &value) && value == 9U &&
+              memory.Read32(kControllerState, &value) && value == 7U,
+          "System failed to restore its native draw state");
+  draw.r[15] = kTopScreenSystemPageBoundary;
+  Require(system.Execute(draw, &result, &blocks) && !system.Pending() &&
+              result.pc == kTopScreenSystemPageBoundary + 4U && Same(draw, resumedDraw),
+          "System did not resume the original BL result exactly once");
+  draw = originalDraw;
+  system.Prepare(true);
+  for (int call = 0; call < 3; ++call) {
+    Require(system.Execute(draw, &result, &blocks), "cannot start cancellable System draw");
+    draw.r[15] = kTopScreenSystemPageBoundary;
+  }
+  system.Cancel();
+  Require(!system.Pending() && !system.Redraw() &&
+              memory.Read32(0x005043F4U, &value) && value == 9U &&
+              memory.Read32(kControllerState, &value) && value == 7U,
+          "cancel did not unwind System child overrides");
+  system.Prepare(true);
+  draw = originalDraw;
+  for (int call = 0; call < 3; ++call) {
+    Require(system.Execute(draw, &result, &blocks), "cannot start System before a state load");
+    draw.r[15] = kTopScreenSystemPageBoundary;
+  }
+  Require(memory.Write32(0x005043F4U, 42U) && memory.Write32(kControllerState, 43U),
+          "cannot simulate loaded guest memory");
+  system.Reset();
+  Require(!system.Pending() && !system.Redraw() &&
+              memory.Read32(0x005043F4U, &value) && value == 42U &&
+              memory.Read32(kControllerState, &value) && value == 43U,
+          "state load retained System continuation or overwrote loaded guest state");
   std::cout << "pause transaction tests passed\n";
   return 0;
 }

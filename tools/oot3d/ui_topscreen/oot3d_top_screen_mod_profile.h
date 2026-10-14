@@ -632,8 +632,14 @@ ResolveTopScreenPauseTargetCommand(const TopScreenPauseTargetCommand &command,
                                    bool routeActive) noexcept;
 TopScreenPauseTargetPlan ResolveTopScreenPausePageRedrawTargetCommand(
     const TopScreenPauseTargetCommand &command) noexcept;
-// 2.1.1 0x005D32A4: widened Items and dungeon Map use the full 400-wide
-// viewport instead of the centred (0, 40, 480, 320).
+// Ordinary System draws inside DrawViewPass, before the top transfer. A
+// previous page redraw must not swap its scene into the lower framebuffer.
+TopScreenPauseTargetPlan ResolveTopScreenPauseCompositionTargetCommand(
+    const TopScreenPauseTargetCommand &command, bool routeActive,
+    bool pageRedrawActive, bool systemActive) noexcept;
+// 2.1.1 0x005D32A4: widened Items, dungeon Map and System use the full
+// 400-wide viewport; World Map and ordinary pages stay centred. The System
+// compositor sets its viewport explicitly while retaining native targets.
 void WidenTopScreenPauseTargetForPage(TopScreenPauseTargetPlan &plan,
                                       bool widePage) noexcept;
 
@@ -651,6 +657,8 @@ enum class TopScreenPauseChildSuppressionSet : std::uint8_t {
   // The stable page path in 0x005CE57C suppresses only the touch owner before
   // redrawing the complete active page in the top-screen viewport.
   PageRedraw,
+  // 2.1.1 0x005D3234..0x005D324C: touch 0, backdrop-skip 1; System stays live.
+  SystemPageRedraw,
 };
 
 struct TopScreenAlternateRendererState {

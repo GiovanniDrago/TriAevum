@@ -2642,6 +2642,24 @@ int main() {
               narrowTarget.ViewportHeight == 320U && wideHalfTarget.ViewportY == 40U,
           "the wide page target is not the full 400-wide viewport");
 
+  for (const bool halfHeight : {false, true}) {
+    for (const auto command : {0x400U, 0x401U}) {
+      const TopScreenPauseTargetCommand native{true, command, halfHeight};
+      const auto system = ResolveTopScreenPauseCompositionTargetCommand(native, false, true, true);
+      const auto transition = ResolveTopScreenPauseCompositionTargetCommand(native, true, true, true);
+      const auto routed = ResolveTopScreenPauseTargetCommand(native, true);
+      Require(!system.Handled && transition.FramebufferBindingOffset == routed.FramebufferBindingOffset &&
+                  transition.ViewportWidth == routed.ViewportWidth &&
+                  transition.ViewportY == routed.ViewportY,
+              "System inherited the preceding page swap or lost the alternate route");
+      const auto page = ResolveTopScreenPauseCompositionTargetCommand(native, false, true, false);
+      const auto previous = ResolveTopScreenPausePageRedrawTargetCommand(native);
+      Require(page.FramebufferBindingOffset == previous.FramebufferBindingOffset &&
+                  page.ViewportWidth == previous.ViewportWidth && page.ViewportY == previous.ViewportY,
+              "System composition changed ordinary page target plans");
+    }
+  }
+
   NativeA32Memory suppressionMemory;
   Require(suppressionMemory.MapRegion(
               {"pause-child-state", 0x00500000U, 0x00010000U, true, false, {}},
@@ -2703,6 +2721,23 @@ int main() {
   Require(EndTopScreenPauseChildSuppression(suppressionMemory, savedChildState,
                                             &error),
           "cannot restore page-redraw child state");
+
+  Require(BeginTopScreenPauseChildSuppression(
+              suppressionMemory, TopScreenPauseChildSuppressionSet::SystemPageRedraw,
+              &savedChildState, &error), "cannot begin System redraw");
+  for (std::size_t index = 0; index < suppressionAddresses.size(); ++index) {
+    std::uint32_t value = 0U;
+    Require(suppressionMemory.Read32(suppressionAddresses[index], &value) &&
+                value == (index == 4U ? 1U : index == 5U ? 0U : index + 1U),
+            "System redraw did not set backdrop-skip 1 and touch 0 while preserving pages");
+  }
+  Require(EndTopScreenPauseChildSuppression(suppressionMemory, savedChildState, &error),
+          "cannot end System redraw");
+  for (std::size_t index = 0; index < suppressionAddresses.size(); ++index) {
+    std::uint32_t value = 0U;
+    Require(suppressionMemory.Read32(suppressionAddresses[index], &value) && value == index + 1U,
+            "System redraw did not restore the exact prior child state");
+  }
 
   TopScreenPauseDrawInputs drawInputs;
   {

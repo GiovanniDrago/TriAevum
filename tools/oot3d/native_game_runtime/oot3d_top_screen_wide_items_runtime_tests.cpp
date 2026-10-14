@@ -4,6 +4,7 @@
 #include <bit>
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 
 namespace {
 void Require(bool condition, const char *message) {
@@ -13,6 +14,7 @@ void Require(bool condition, const char *message) {
 constexpr std::uint32_t kItemsState = 0x0050672CU;
 constexpr std::uint32_t kMapState = 0x00506CE8U;
 constexpr std::uint32_t kMapMode = 0x004FDABCU;
+constexpr std::uint32_t kSystemState = 0x0050A530U;
 constexpr std::uint32_t kItemsModel = 0x00506714U;
 constexpr std::uint32_t kIconGroup = 0x00506734U;
 constexpr std::uint32_t kStackTop = 0x005FF000U;
@@ -230,31 +232,37 @@ int main() {
           "a cursor outside the Items draw changed projection");
   Require(runtime.WidePages() == 1U && runtime.WideItemsDraws() == 1U && runtime.CursorDraws() == 1U,
           "wide Items counters are wrong");
-  // Map follows the native page-active && mode == 1 predicates. Exercise the
-  // same decision at viewport planning and projection upload, including exits.
+  // System joins Items and the native active-Map && mode == 1 predicate.
+  // Exercise the shared viewport/projection decision, including lower draws and exits.
   struct PageCase {
-    std::uint32_t Items, Map, Mode;
+    std::uint32_t Items, Map, Mode, System;
     bool OnTop, Wide, ItemsWide;
   };
   constexpr std::array pageCases{
-      PageCase{0U, 1U, 1U, true, true, false},
-      PageCase{0U, 1U, 0U, true, false, false},
-      PageCase{0U, 1U, 2U, true, false, false},
-      PageCase{0U, 0U, 1U, true, false, false},
-      PageCase{0U, 2U, 1U, false, false, false},
-      PageCase{0U, 2U, 1U, true, true, false},
-      PageCase{2U, 1U, 1U, true, true, true},
-      PageCase{2U, 0U, 0U, true, true, true},
-      PageCase{0U, 0U, 0U, true, false, false}};
+      PageCase{0U, 0U, 0U, 1U, true, true, false},
+      PageCase{0U, 0U, 0U, 2U, true, true, false},
+      PageCase{0U, 0U, 0U, 2U, false, false, false},
+      PageCase{0U, 1U, 0U, 2U, true, true, false},
+      PageCase{0U, 1U, 1U, 0U, true, true, false},
+      PageCase{0U, 1U, 0U, 0U, true, false, false},
+      PageCase{0U, 1U, 2U, 0U, true, false, false},
+      PageCase{0U, 0U, 1U, 0U, true, false, false},
+      PageCase{0U, 2U, 1U, 0U, false, false, false},
+      PageCase{0U, 2U, 1U, 0U, true, true, false},
+      PageCase{2U, 1U, 1U, 0U, true, true, true},
+      PageCase{2U, 0U, 0U, 0U, true, true, true},
+      PageCase{0U, 0U, 0U, 0U, true, false, false}};
   for (const auto &test : pageCases) {
     Require(memory.Write32(kItemsState, test.Items) &&
-                memory.Write32(kMapState, test.Map) && memory.Write32(kMapMode, test.Mode),
+                memory.Write32(kMapState, test.Map) && memory.Write32(kMapMode, test.Mode) &&
+                memory.Write32(kSystemState, test.System),
             "cannot seed wide-page predicates");
     TopScreenWidePageState width;
     Require(ReadTopScreenWidePageState(memory, &width) &&
                 width.ItemsActive == (test.Items != 0U) &&
-                width.DungeonMapActive == (test.Map != 0U && test.Mode == 1U),
-            "wide-page predicate differs from the native map/Items checks");
+                width.DungeonMapActive == (test.Map != 0U && test.Mode == 1U) &&
+                width.SystemActive == (test.System != 0U),
+            "wide-page predicate differs from the native Map/Items/System checks");
     auto plan = ResolveTopScreenPauseTargetCommand({true, 0x401U, false}, test.OnTop);
     WidenTopScreenPauseTargetForPage(plan, width.Wide());
     Require((plan.BindTopTarget && plan.ViewportY == 0U && plan.ViewportHeight == 400U) ==
@@ -271,7 +279,7 @@ int main() {
                     (test.Wide ? std::bit_cast<float>(0xBBA3D70AU) : -0.00625F) &&
                 ReadFloat(memory, kMatrix + 0x1CU) ==
                     (test.Wide ? std::bit_cast<float>(0x3F4CCCCDU) : 1.0F),
-            "page upload changed guest state or used the wrong map projection");
+            "page upload changed guest state or used the wrong wide projection");
     if (!test.ItemsWide) {
       const float gridX = ReadFloat(memory, stream);
       auto inactiveItems = CallerState(kTopScreenItemsPageDrawCall);
@@ -280,7 +288,7 @@ int main() {
                   Same(inactiveItems, inactiveCaller) &&
                   ReadFloat(memory, stream) == gridX &&
                   runtime.WideItemsDraws() == 1U,
-              "a dungeon/world map draw invoked the Items geometry wrapper");
+              "a Map/System draw invoked the Items geometry wrapper");
     }
   }
   Require(memory.Write32(kItemsState, 1U), "cannot arm Items before reset");
@@ -293,8 +301,22 @@ int main() {
   Require(!runtime.ExecuteItemsDraw(resetItems, &result, &blocks),
           "reset retained an armed Items draw");
 
+  Require(memory.Write32(kItemsState, 0U) && memory.Write32(kSystemState, 2U),
+          "cannot seed System projection failure");
+  auto failedPage = CallerState(kTopScreenPageProjectionUploadCall);
+  failedPage.r[1] = 0U;
+  const auto failedCaller = failedPage;
+  bool failed = false;
+  try { runtime.ExecutePageProjection(failedPage, true); }
+  catch (const std::runtime_error &) { failed = true; }
+  Require(failed && !runtime.PageWide() && Same(failedPage, failedCaller) &&
+              failedPage.r[15] == failedCaller.r[15],
+          "failed System projection changed guest state or armed a wide draw");
+  Require(!runtime.ExecuteItemsDraw(resetItems, &result, &blocks),
+          "failed System projection armed the Items geometry wrapper");
+
   NativeA32Memory missingPage;
-  TopScreenWidePageState missingWidth{true, true};
+  TopScreenWidePageState missingWidth{true, true, true};
   Require(!ReadTopScreenWidePageState(missingPage, &missingWidth) && !missingWidth.Wide(),
           "a failed page-state read retained the previous wide decision");
 

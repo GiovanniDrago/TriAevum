@@ -97,6 +97,11 @@ public:
       std::optional<TopScreenPauseEdgeGeometry> geometry) noexcept;
   void SetTopScreenPausePageRedrawEdgePresentation(
       std::optional<TopScreenPauseEdgeGeometry> geometry) noexcept;
+  // Retained across host refreshes, including the native tail's temporary
+  // System suppression. Updated before the first render-target bind.
+  void SetTopScreenSystemPagePresentation(bool active) noexcept {
+    mTopScreenSystemPagePresentation = active;
+  }
   void
   SetTopScreenInputFrame(const TopScreenExtendedInputFrame &input) noexcept;
   void SetTopScreenConfig(const TopScreenUiConfig &config) noexcept;
@@ -159,6 +164,7 @@ private:
   std::optional<TopScreenPauseEdgeGeometry> mTopScreenPauseEdgeGeometry;
   std::optional<TopScreenPauseEdgeGeometry>
       mTopScreenPausePageRedrawEdgeGeometry;
+  bool mTopScreenSystemPagePresentation = false;
   TopScreenExtendedInputFrame mTopScreenInput;
   TopScreenOcarinaBrowser mTopScreenOcarina;
   TopScreenItemsHintRuntimeState mTopScreenItemsHint;

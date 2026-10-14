@@ -10,6 +10,7 @@ namespace {
 constexpr std::uint32_t kItemsPageState = 0x0050672CU;
 constexpr std::uint32_t kMapPageState = 0x00506CE8U;
 constexpr std::uint32_t kMapMode = 0x004FDABCU;
+constexpr std::uint32_t kSystemPageState = 0x0050A530U;
 constexpr std::array<std::uint32_t, 6> kDungeonMapIconCoordinateSites{
     0x004426B4U, 0x004426D4U, 0x00442704U,
     0x00442730U, 0x00442760U, 0x0044278CU};
@@ -107,15 +108,17 @@ bool ReadTopScreenWidePageState(NativeA32Memory &memory,
                                 TopScreenWidePageState *page) {
   if (page == nullptr) return false;
   *page = {};
-  std::uint32_t items = 0U, map = 0U, mode = 0U;
+  std::uint32_t items = 0U, map = 0U, mode = 0U, system = 0U;
   if (!memory.Read32(kItemsPageState, &items) ||
-      !memory.Read32(kMapPageState, &map))
+      !memory.Read32(kMapPageState, &map) ||
+      !memory.Read32(kSystemPageState, &system))
     return false;
   // PauseCameraControl_IsActive (0x002FCDD4) actually reads Map owner+0x38.
   // 0x002F1268 returns true only for shared map owner 0x004FDA6C+0x50 == 1.
   if (map != 0U && !memory.Read32(kMapMode, &mode)) return false;
   page->ItemsActive = items != 0U;
   page->DungeonMapActive = map != 0U && mode == 1U;
+  page->SystemActive = system != 0U; // PauseSystemMenu_IsActive, 0x004392B0.
   return true;
 }
 
@@ -272,13 +275,13 @@ bool TopScreenWideItemsRuntime::ExecutePageProjection(oot3d::recomp::a32::GuestS
     throw std::runtime_error("TopScreen cannot read the wide page state");
   if (!page.Wide()) return false;
   // 0x005DF428: the projection in r1, before the native upload. The page
-  // target already has the full viewport (WidenTopScreenPauseTargetForPage).
+  // viewport is already full (target plan or System compositor transaction).
   // No other call may run here: PicaCommandWriter 0x0032471C (0x0041EE08) has
   // bound the material writer at the command cursor, and a GL call in
   // between would write over the same commands.
   if (!mMemory.Write32(state.r[1] + 0x10U, kWideScale) ||
       !mMemory.Write32(state.r[1] + 0x1CU, kPageOffset))
-    throw std::runtime_error("TopScreen wide Items cannot write the page projection");
+    throw std::runtime_error("TopScreen cannot write the wide page projection");
   mPageWide = true;
   mItemsWide = page.ItemsActive;
   ++mWidePages;

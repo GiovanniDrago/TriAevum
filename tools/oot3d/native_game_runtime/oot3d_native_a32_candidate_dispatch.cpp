@@ -26,16 +26,26 @@ bool ExecuteTopScreenUiSourcePortBlock(
     return dispatch.OcarinaText != nullptr &&
            dispatch.OcarinaText->Execute(state, result, blocksConsumed);
   }
+  if (pc == Oot3dNativeGame::kTopScreenSystemPageBoundary && dispatch.SystemPage != nullptr)
+    return dispatch.SystemPage->Execute(state, result, blocksConsumed);
   // R6: the description is redrawn over the page this draw just placed on
   // the upper screen (2.1.1 0x005D3344..0x005D3410).
   if (pc == Oot3dNativeGame::kTopScreenItemDescriptionBoundary &&
       dispatch.ItemDescription != nullptr &&
       dispatch.ItemDescription->Execute(state, result, blocksConsumed))
     return true;
-  // 2.1.1's widened Items page (0x005DF428, 0x005D19F8, 0x005D1CBC,
-  // 0x005D1BE8).
+  // Shared wide-page upload (0x005DF428) and Items-only draw/cursor hooks
+  // (0x005D19F8, 0x005D1CBC, 0x005D1BE8).
   if (dispatch.WideItems != nullptr) {
     if (pc == Oot3dNativeGame::kTopScreenPageProjectionUploadCall) {
+      if (dispatch.SystemPage != nullptr && dispatch.SystemPage->Drawing()) {
+        try {
+          return dispatch.WideItems->ExecutePageProjection(state, true);
+        } catch (...) {
+          dispatch.SystemPage->Cancel();
+          throw;
+        }
+      }
       Oot3dNativeGame::TopScreenPauseDrawInputs inputs;
       if (!Oot3dNativeGame::ReadTopScreenPauseDrawInputs(memory, &inputs)) {
         return false;

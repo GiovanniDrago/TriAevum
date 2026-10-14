@@ -989,6 +989,7 @@ int main() {
     tracker.ObserveBlockEntry(0x003004E0U, state, memory);
     Require(tracker.Stats().UiScopeExits == 0, "reset retained a UI view scope");
     for (const auto [entry, returnPc] : std::array{
+             std::pair{0x0041EC50U, 0x0030055CU},
              std::pair{0x0041F308U, 0x0041983CU},
              std::pair{0x00425930U, 0x0041EB14U},
             std::pair{0x0041AFACU, 0x00419890U},

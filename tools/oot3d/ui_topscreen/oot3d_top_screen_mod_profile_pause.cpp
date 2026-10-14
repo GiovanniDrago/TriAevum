@@ -974,6 +974,9 @@ bool BeginTopScreenPauseChildSuppression(NativeA32Memory &memory,
   case TopScreenPauseChildSuppressionSet::PageRedraw:
     snapshot.SuppressedMask = kTopScreenPausePageRedrawSuppressionMask;
     break;
+  case TopScreenPauseChildSuppressionSet::SystemPageRedraw:
+    snapshot.SuppressedMask = 0x30U;
+    break;
   }
   for (std::size_t index = 0; index < kTopScreenPauseChildStateAddresses.size();
        ++index) {
@@ -990,7 +993,10 @@ bool BeginTopScreenPauseChildSuppression(NativeA32Memory &memory,
        ++index) {
     if ((snapshot.SuppressedMask & (1U << index)) == 0U)
       continue;
-    if (!memory.Write32(kTopScreenPauseChildStateAddresses[index], 0U)) {
+    const auto value = set == TopScreenPauseChildSuppressionSet::SystemPageRedraw &&
+                               index == 4U ? 1U : 0U;
+    if (!memory.Write32(kTopScreenPauseChildStateAddresses[index], value)) {
+      (void)EndTopScreenPauseChildSuppression(memory, snapshot);
       if (error != nullptr)
         *error = "cannot suppress pause child state";
       return false;

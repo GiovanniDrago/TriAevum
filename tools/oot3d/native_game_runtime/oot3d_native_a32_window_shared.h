@@ -471,6 +471,7 @@ struct NativeWidescreenProjectionState {
   Oot3dNativeGame::Oot3dNativeUiLifecycleBridge *UiLifecycleBridge = nullptr;
   Oot3dNativeGame::TopScreenOcarinaTextRuntime *OcarinaText = nullptr;
   Oot3dNativeGame::TopScreenPauseTransactionRuntime *PauseTransaction = nullptr;
+  Oot3dNativeGame::TopScreenSystemPageRuntime *SystemPage = nullptr;
   Oot3dNativeGame::TopScreenItemDescriptionRuntime *ItemDescription = nullptr;
   Oot3dNativeGame::Oot3dPicaCompositionDomain *PicaCompositionDomain =
       nullptr;
@@ -564,6 +565,7 @@ struct NativeCandidateDispatchState {
   Oot3dNativeGame::TopScreenVersionChoiceRevealState TopScreenVersionChoiceReveal;
   Oot3dNativeGame::TopScreenPauseSystemOpenState TopScreenPauseSystemOpen;
   Oot3dNativeGame::TopScreenPauseTransactionRuntime *PauseTransaction = nullptr;
+  Oot3dNativeGame::TopScreenSystemPageRuntime *SystemPage = nullptr;
   Oot3dNativeGame::TopScreenItemDescriptionRuntime *ItemDescription = nullptr;
   Oot3dNativeGame::TopScreenWideItemsRuntime *WideItems = nullptr;
   // Sorted TopScreen entries the product hook owns (product builds only).
