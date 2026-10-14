@@ -1,5 +1,6 @@
 #include "fast/oot3d/nri_interop_context.h"
 #include "fast/oot3d/nri_stage_scope.h"
+#include "fast/oot3d/nri_upscaler_instances.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
 #include "fast/renderer3ds/vulkan_image_contract.h"
@@ -38,103 +39,6 @@
 
 namespace Fast::Oot3d {
 
-#ifdef ENABLE_OOT3D_NRI
-namespace {
-// Live instances of one temporal upscaler, one per output contract: a native
-// boundary composed at its scene target's extent and the presentation at the
-// display's extent are separate streams with separate outputs, so neither
-// recreates the other's instance. FSR keys carry preset 0. `Handle` is an NRI
-// upscaler (FSR) or a DLSS module feature; `destroy` releases one.
-template <typename Handle>
-class UpscalerInstances {
-  public:
-    // Instances with the current quality and preset: the presentation's and
-    // a native boundary's outputs, plus one spare extent.
-    static constexpr size_t kMaximum = 3U;
-
-    Handle Find(const NriDlssFeatureKey& key) {
-        for (auto& entry : mEntries) {
-            if (entry.Key == key) {
-                entry.LastUse = ++mUseClock;
-                return entry.Upscaler;
-            }
-        }
-        return nullptr;
-    }
-    // Instances of other settings are not used again; among the current
-    // settings' extents the least recently used one makes room.
-    template <typename Destroy>
-    void MakeRoom(const NriDlssFeatureKey& key, const Destroy& destroy) {
-        std::erase_if(mEntries, [&](const Entry& entry) {
-            if (entry.Key.Quality == key.Quality &&
-                entry.Key.Preset == key.Preset)
-                return false;
-            Retire(entry, destroy);
-            return true;
-        });
-        if (mEntries.size() < kMaximum) return;
-        const auto oldest = std::min_element(
-            mEntries.begin(), mEntries.end(),
-            [](const Entry& left, const Entry& right) {
-                return left.LastUse < right.LastUse;
-            });
-        Retire(*oldest, destroy);
-        mEntries.erase(oldest);
-    }
-    void Add(const NriDlssFeatureKey& key, Handle upscaler) {
-        mEntries.push_back({key, upscaler, ++mUseClock});
-        ++mGeneration;
-    }
-    template <typename Destroy>
-    void Clear(const Destroy& destroy) {
-        for (const auto& entry : mEntries) Retire(entry, destroy);
-        mEntries.clear();
-    }
-    // A dispatch that resumes an instance after another instance's dispatch
-    // finds an older history: it restarts it, as one shared instance did
-    // when it was recreated for that stream.
-    bool Resumes(Handle upscaler) {
-        const bool resumed = mLastDispatched != upscaler;
-        mLastDispatched = upscaler;
-        return resumed;
-    }
-    [[nodiscard]] std::vector<NriDlssFeatureKey> Keys() const {
-        std::vector<NriDlssFeatureKey> keys;
-        for (const auto& entry : mEntries) keys.push_back(entry.Key);
-        std::sort(keys.begin(), keys.end(),
-                  [](const auto& left, const auto& right) {
-                      return std::tuple(left.OutputWidth, left.OutputHeight,
-                                        left.Quality, left.InputSrgb,
-                                        left.Preset) <
-                             std::tuple(right.OutputWidth, right.OutputHeight,
-                                        right.Quality, right.InputSrgb,
-                                        right.Preset);
-                  });
-        return keys;
-    }
-    [[nodiscard]] size_t Size() const { return mEntries.size(); }
-    [[nodiscard]] uint64_t Generation() const { return mGeneration; }
-
-  private:
-    struct Entry {
-        NriDlssFeatureKey Key;
-        Handle Upscaler = nullptr;
-        uint64_t LastUse = 0;
-    };
-    template <typename Destroy>
-    void Retire(const Entry& entry, const Destroy& destroy) {
-        if (mLastDispatched == entry.Upscaler) mLastDispatched = nullptr;
-        destroy(entry.Upscaler);
-        ++mGeneration;
-    }
-    std::vector<Entry> mEntries;
-    uint64_t mUseClock = 0;
-    uint64_t mGeneration = 0;
-    Handle mLastDispatched = nullptr;
-};
-} // namespace
-#endif
-
 struct NriInteropContext::Impl {
     std::string Reason = "NRI support was not compiled into this build";
     RendererValidationTelemetry* ValidationTelemetry = nullptr;
@@ -170,8 +74,10 @@ struct NriInteropContext::Impl {
         nri::Descriptor* DepthAttachment = nullptr;
         std::vector<nri::Descriptor*> ExtraViews;
         bool Owned = false;
+        uint64_t Generation = 0;
     };
     std::unordered_map<VkImage, WrappedTexture> Textures;
+    uint64_t NextTextureGeneration = 1U;
     std::unordered_map<VkBuffer, nri::Buffer*> Buffers;
 
     nri::Descriptor* GetUpscalerView(VkImage image, bool storage) {
@@ -817,6 +723,7 @@ bool NriInteropContext::WrapTexture(VkImage image, VkFormat format, VkImageType 
     Impl::WrappedTexture record;
     record.Texture = wrapped;
     record.Format = nriFormat;
+    record.Generation = mImpl->NextTextureGeneration++;
     mImpl->Textures.emplace(image, record);
     return true;
 #else
@@ -1034,6 +941,7 @@ bool NriInteropContext::CreateOwnedTexture2D(
         output = {};
         return false;
     }
+    record.Generation = mImpl->NextTextureGeneration++;
     mImpl->Textures.emplace(output.Image, record);
     return true;
 #else
@@ -1049,6 +957,16 @@ bool NriInteropContext::OwnsTexture(VkImage image) const {
 #else
     (void)image;
     return false;
+#endif
+}
+
+uint64_t NriInteropContext::TextureGeneration(VkImage image) const {
+#ifdef ENABLE_OOT3D_NRI
+    const auto found = mImpl->Textures.find(image);
+    return found != mImpl->Textures.end() ? found->second.Generation : 0U;
+#else
+    (void)image;
+    return 0U;
 #endif
 }
 
@@ -1230,8 +1148,7 @@ bool NriInteropContext::DispatchFsr(
         !IsKnownSceneColorEncoding(desc.InputEncoding))
         return false;
     const bool inputSrgb = SceneColorIsSrgb(desc.InputEncoding);
-    const auto command = mImpl->CommandBuffers.find(desc.FrameIndex);
-    if (command == mImpl->CommandBuffers.end()) return false;
+    if (!mImpl->CommandBuffers.contains(desc.FrameIndex)) return false;
     const auto wrapSampled = [&](VkImage image, VkFormat format,
                                  uint32_t width, uint32_t height) {
         return WrapTexture(image, format, VK_IMAGE_TYPE_2D,
@@ -1255,7 +1172,8 @@ bool NriInteropContext::DispatchFsr(
     nri::Upscaler* fsr = mImpl->Fsr.Find(key);
     if (fsr == nullptr) {
         const auto started = std::chrono::steady_clock::now();
-        mImpl->Fsr.MakeRoom(key, mImpl->FsrDestroyer());
+        if (!mImpl->Fsr.MakeRoom(key, [this] { return CompleteRecordedWork(); }, mImpl->FsrDestroyer()))
+            return false;
         nri::UpscalerDesc upscaler{};
         upscaler.upscaleResolution = {
             static_cast<nri::Dim_t>(desc.OutputWidth),
@@ -1319,6 +1237,8 @@ bool NriInteropContext::DispatchFsr(
     dispatch.flags = desc.ResetHistory || resumed
         ? nri::DispatchUpscaleBits::RESET_HISTORY
         : nri::DispatchUpscaleBits::NONE;
+    const auto command = mImpl->CommandBuffers.find(desc.FrameIndex);
+    if (command == mImpl->CommandBuffers.end()) return false;
     mImpl->UpscalerInterface.CmdDispatchUpscale(
         *command->second, *fsr, dispatch);
     return true;
@@ -1348,11 +1268,15 @@ bool NriInteropContext::EnsureDlssFeature(uint32_t frameIndex,
                                           const NriDlssFeatureKey& key) {
 #ifdef ENABLE_OOT3D_NRI
     if (mImpl->Dlss.Find(key) != nullptr) return true;
-    const auto command = mImpl->CommandBuffers.find(frameIndex);
-    if (command == mImpl->CommandBuffers.end()) return false;
+    if (!mImpl->CommandBuffers.contains(frameIndex)) return false;
     if (mImpl->DlssDevice == nullptr) return false;
     const auto started = std::chrono::steady_clock::now();
-    mImpl->Dlss.MakeRoom(key, mImpl->DlssDestroyer());
+    if (!mImpl->Dlss.MakeRoom(key, [this] { return CompleteRecordedWork(); }, mImpl->DlssDestroyer()))
+        return false;
+    // Completing a prefix replaces the NRI command wrapper and invalidates
+    // iterators into CommandBuffers. Acquire it only after retirement.
+    const auto command = mImpl->CommandBuffers.find(frameIndex);
+    if (command == mImpl->CommandBuffers.end()) return false;
     // The mode in NRI's UpscalerMode order (TriaevumDlssMode); motion without
     // jitter at render resolution (upscaler_guides.h).
     const TriaevumDlssFeatureDesc feature{
@@ -1424,8 +1348,7 @@ bool NriInteropContext::DispatchDlss(
         !IsKnownSceneColorEncoding(desc.InputEncoding))
         return false;
     const bool inputSrgb = SceneColorIsSrgb(desc.InputEncoding);
-    const auto command = mImpl->CommandBuffers.find(desc.FrameIndex);
-    if (command == mImpl->CommandBuffers.end()) return false;
+    if (!mImpl->CommandBuffers.contains(desc.FrameIndex)) return false;
     const auto wrapSampled = [&](VkImage image, VkFormat format,
                                  uint32_t width, uint32_t height) {
         return WrapTexture(image, format, VK_IMAGE_TYPE_2D,
@@ -1486,6 +1409,8 @@ bool NriInteropContext::DispatchDlss(
     evaluate.MotionScaleY = static_cast<float>(desc.InputHeight);
     const bool resumed = mImpl->Dlss.Resumes(feature);
     evaluate.ResetHistory = desc.ResetHistory || resumed ? 1U : 0U;
+    const auto command = mImpl->CommandBuffers.find(desc.FrameIndex);
+    if (command == mImpl->CommandBuffers.end()) return false;
     const auto commandBuffer = static_cast<VkCommandBuffer>(
         mImpl->Core.GetCommandBufferNativeObject(command->second));
     return mImpl->DlssModule->Evaluate(feature, commandBuffer, &evaluate) != 0;

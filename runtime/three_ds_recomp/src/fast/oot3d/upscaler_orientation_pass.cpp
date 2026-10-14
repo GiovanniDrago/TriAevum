@@ -3,6 +3,7 @@
 #include "fast/oot3d/nri_interop_context.h"
 #include "fast/oot3d/resource_state_tracker.h"
 #include "fast/oot3d/upscaler_orientation.h"
+#include "fast/oot3d/upscaler_descriptor_key.h"
 #ifdef ENABLE_OOT3D_NRI
 #include "nri_interop_internal.h"
 #endif
@@ -154,10 +155,14 @@ bool UpscalerOrientationPass::Initialize(VkPhysicalDevice physical, VkDevice dev
 #ifdef ENABLE_OOT3D_NRI
 nri::DescriptorSet* UpscalerOrientationPass::Impl::FindOrBuildSet(bool input, const std::vector<Binding>& images) {
     auto& impl = *this;
-    std::vector<uint64_t> key{ input ? 1U : 0U };
+    std::vector<UpscalerDescriptorBinding> bindings;
+    bindings.reserve(images.size());
     for (const auto& image : images)
-        key.push_back(reinterpret_cast<uint64_t>(image.Image));
-    if (const auto found = impl.Sets.find(key); found != impl.Sets.end())
+        bindings.push_back({reinterpret_cast<uint64_t>(image.Image),
+                            impl.Interop->TextureGeneration(image.Image), image.Storage});
+    auto key = BuildUpscalerDescriptorKey(input, bindings);
+    if (!key) return nullptr;
+    if (const auto found = impl.Sets.find(*key); found != impl.Sets.end())
         return found->second;
     if (impl.Pool == nullptr || impl.Sets.size() >= kMaximumSets) {
         // Recorded frames may still read the sets about to go.
@@ -192,7 +197,7 @@ nri::DescriptorSet* UpscalerOrientationPass::Impl::FindOrBuildSet(bool input, co
     for (uint32_t range = 0; range < views.size(); ++range)
         updates.push_back({ set, range, 0, &views[range], 1 });
     impl.Core->UpdateDescriptorRanges(updates.data(), uint32_t(updates.size()));
-    impl.Sets.emplace(std::move(key), set);
+    impl.Sets.emplace(std::move(*key), set);
     return set;
 }
 #endif
@@ -215,6 +220,7 @@ bool UpscalerOrientationPass::TurnInputs(uint32_t frameSlot, const Inputs& input
         if (impl.InputWidth != 0U && !impl.Interop->CompleteRecordedWork())
             return false;
         for (auto* texture : { &impl.Color, &impl.Depth, &impl.Motion, &impl.Reactive }) {
+            impl.States.Forget(reinterpret_cast<uintptr_t>(texture->Image));
             impl.Interop->DestroyOwnedTexture(texture->Image);
             *texture = {};
         }
@@ -289,6 +295,7 @@ bool UpscalerOrientationPass::BeginOutput(uint32_t frameSlot, uint32_t width, ui
     if (impl.OutputWidth != upright[0] || impl.OutputHeight != upright[1]) {
         if (impl.OutputWidth != 0U && !impl.Interop->CompleteRecordedWork())
             return false;
+        impl.States.Forget(reinterpret_cast<uintptr_t>(impl.Output.Image));
         impl.Interop->DestroyOwnedTexture(impl.Output.Image);
         impl.Output = {};
         impl.Sets.clear();

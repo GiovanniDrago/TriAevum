@@ -87,6 +87,7 @@
 #include "fast/oot3d/nri_pica_render_target_init_pass.h"
 #include "fast/oot3d/nri_pica_render_target_owner.h"
 #include "fast/oot3d/nri_swapchain.h"
+#include "fast/oot3d/nri_upscaler_instances.h"
 #include "fast/oot3d/presentation_settings_transaction.h"
 #include "fast/oot3d/renderer_presentation_controller.h"
 #include "fast/oot3d/vulkan_adapter_policy.h"
@@ -103,6 +104,7 @@
 #include "fast/oot3d/toon_outline_shader.h"
 #include "fast/oot3d/upscaler_guides.h"
 #include "fast/oot3d/upscaler_orientation.h"
+#include "fast/oot3d/upscaler_descriptor_key.h"
 #include "fast/oot3d/native_ui_overlay.h"
 
 #include <gtest/gtest.h>
@@ -117,6 +119,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <map>
 #include <vector>
 #include <unordered_map>
 #include <sstream>
@@ -2732,6 +2735,127 @@ TEST(Oot3dUpscalerGuides, MotionLeavesTheJitterOut) {
     const auto sky = UpscalerMotionWithoutJitter({0.0F, 0.0F, 1.0F, 0.0F}, correction);
     EXPECT_FLOAT_EQ(sky[0], 0.0F);
     EXPECT_FLOAT_EQ(sky[1], 0.0F);
+}
+
+TEST(Oot3dUpscalerDescriptors, RecycledImageCannotSelectRetiredViews) {
+    using namespace Fast::Oot3d;
+    // Same image values, formats and extents after guide recreation. Only the
+    // owner's lifetime distinguishes the new views from the retired set.
+    std::array<UpscalerDescriptorBinding, 2> bindings{{{0x10U, 1U, false}, {0x20U, 2U, true}}};
+    const auto oldKey = BuildUpscalerDescriptorKey(true, bindings);
+    ASSERT_TRUE(oldKey);
+    std::map<std::vector<uint64_t>, int> sets;
+    sets.emplace(*oldKey, 11);
+    EXPECT_EQ(sets.at(*BuildUpscalerDescriptorKey(true, bindings)), 11);
+
+    bindings[0].Generation = 3U;
+    const auto replacement = BuildUpscalerDescriptorKey(true, bindings);
+    ASSERT_TRUE(replacement);
+    EXPECT_EQ(sets.find(*replacement), sets.end());
+    sets.emplace(*replacement, 22);
+    EXPECT_EQ(sets.at(*replacement), 22);
+    // Allocate a new set, do not update a set an earlier submission can hold.
+    EXPECT_EQ(sets.at(*oldKey), 11);
+    bindings[1].Generation = 4U;
+    EXPECT_EQ(sets.find(*BuildUpscalerDescriptorKey(true, bindings)), sets.end());
+}
+
+TEST(Oot3dUpscalerDescriptors, MissingLifetimeAndDifferentBindingContractsCannotHit) {
+    using namespace Fast::Oot3d;
+    std::array<UpscalerDescriptorBinding, 1> bindings{{{0x10U, 1U, false}}};
+    const auto sampled = BuildUpscalerDescriptorKey(true, bindings);
+    ASSERT_TRUE(sampled);
+    EXPECT_NE(sampled, BuildUpscalerDescriptorKey(false, bindings));
+    bindings[0].Storage = true;
+    EXPECT_NE(sampled, BuildUpscalerDescriptorKey(true, bindings));
+    bindings[0].Generation = 0U;
+    EXPECT_FALSE(BuildUpscalerDescriptorKey(true, bindings));
+    bindings[0] = {0U, 1U, false};
+    EXPECT_FALSE(BuildUpscalerDescriptorKey(true, bindings));
+    EXPECT_FALSE(BuildUpscalerDescriptorKey(true, {}));
+}
+
+TEST(Oot3dUpscalerInstances, SpareCapacityDoesNotDrainRecordedWork) {
+    using namespace Fast::Oot3d;
+    UpscalerInstances<int*> instances;
+    int a = 0, b = 0;
+    const NriDlssFeatureKey keyA{3840U, 2160U};
+    const NriDlssFeatureKey keyB{3840U, 4320U};
+    instances.Add(keyA, &a);
+    bool completed = false, destroyed = false;
+    EXPECT_TRUE(instances.MakeRoom(keyB, [&] { completed = true; return true; },
+                                  [&](int*) { destroyed = true; }));
+    EXPECT_FALSE(completed);
+    EXPECT_FALSE(destroyed);
+    instances.Add(keyB, &b);
+    EXPECT_EQ(instances.Find(keyA), &a);
+    EXPECT_EQ(instances.Find(keyB), &b);
+}
+
+TEST(Oot3dUpscalerInstances, FailedCompletionPreservesFeaturesAndHistory) {
+    using namespace Fast::Oot3d;
+    UpscalerInstances<int*> instances;
+    int a = 0, b = 0, c = 0;
+    const NriDlssFeatureKey keyA{3840U, 2160U}, keyB{3840U, 4320U}, keyC{1920U, 1080U};
+    const NriDlssFeatureKey keyD{2560U, 1440U};
+    instances.Add(keyA, &a);
+    instances.Add(keyB, &b);
+    instances.Add(keyC, &c);
+    EXPECT_TRUE(instances.Resumes(&a));
+    const auto generation = instances.Generation();
+    bool destroyed = false;
+    EXPECT_FALSE(instances.MakeRoom(keyD, [] { return false; }, [&](int*) { destroyed = true; }));
+    EXPECT_FALSE(destroyed);
+    EXPECT_EQ(instances.Size(), 3U);
+    EXPECT_EQ(instances.Generation(), generation);
+    EXPECT_EQ(instances.Find(keyA), &a);
+    EXPECT_EQ(instances.Find(keyB), &b);
+    EXPECT_EQ(instances.Find(keyC), &c);
+    EXPECT_FALSE(instances.Resumes(&a));
+}
+
+TEST(Oot3dUpscalerInstances, EvictionCompletesPrefixBeforeReleasingTheLeastRecentlyUsedFeature) {
+    using namespace Fast::Oot3d;
+    UpscalerInstances<int*> instances;
+    int a = 0, b = 0, c = 0;
+    const NriDlssFeatureKey keyA{3840U, 2160U}, keyB{3840U, 4320U}, keyC{1920U, 1080U};
+    const NriDlssFeatureKey keyD{2560U, 1440U};
+    instances.Add(keyA, &a);
+    instances.Add(keyB, &b);
+    instances.Add(keyC, &c);
+    EXPECT_EQ(instances.Find(keyA), &a); // B is now oldest.
+    bool completed = false;
+    int* retired = nullptr;
+    ASSERT_TRUE(instances.MakeRoom(keyD, [&] {
+        EXPECT_EQ(instances.Size(), 3U);
+        completed = true;
+        return true;
+    }, [&](int* feature) {
+        EXPECT_TRUE(completed);
+        retired = feature;
+    }));
+    EXPECT_EQ(retired, &b);
+    EXPECT_EQ(instances.Find(keyB), nullptr);
+    EXPECT_EQ(instances.Find(keyA), &a);
+    EXPECT_EQ(instances.Find(keyC), &c);
+}
+
+TEST(Oot3dUpscalerInstances, SettingsRetirementCompletesOnceBeforeAllReleases) {
+    using namespace Fast::Oot3d;
+    UpscalerInstances<int*> instances;
+    int a = 0, b = 0;
+    instances.Add({3840U, 2160U}, &a);
+    instances.Add({3840U, 4320U}, &b);
+    NriDlssFeatureKey changed{3840U, 2160U};
+    changed.Preset = 1U;
+    unsigned completed = 0U, released = 0U;
+    ASSERT_TRUE(instances.MakeRoom(changed, [&] { ++completed; return true; }, [&](int*) {
+        EXPECT_EQ(completed, 1U);
+        ++released;
+    }));
+    EXPECT_EQ(completed, 1U);
+    EXPECT_EQ(released, 2U);
+    EXPECT_EQ(instances.Size(), 0U);
 }
 
 // The upscaler sees the surface the way the screen shows it: an upright texel
