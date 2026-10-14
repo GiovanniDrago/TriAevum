@@ -24,6 +24,11 @@ target_compile_features(native_presentation_policy_tests PRIVATE cxx_std_20)
 target_include_directories(native_presentation_policy_tests PRIVATE ../include)
 add_test(NAME native_presentation_policy_tests COMMAND native_presentation_policy_tests)
 
+add_executable(pica_temporal_occurrences_tests pica_temporal_occurrences_tests.cpp)
+target_compile_features(pica_temporal_occurrences_tests PRIVATE cxx_std_20)
+target_include_directories(pica_temporal_occurrences_tests PRIVATE ../include)
+add_test(NAME pica_temporal_occurrences_tests COMMAND pica_temporal_occurrences_tests)
+
 add_executable(pica_surface_coordinates_tests pica_surface_coordinates_tests.cpp)
 target_compile_features(pica_surface_coordinates_tests PRIVATE cxx_std_20)
 target_include_directories(pica_surface_coordinates_tests PRIVATE ../include)

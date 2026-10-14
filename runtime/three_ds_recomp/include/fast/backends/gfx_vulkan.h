@@ -9,6 +9,7 @@
 #include "fast/backends/gfx_rendering_api.h"
 #include "fast/renderer/spirv_cache.h"
 #include "fast/renderer3ds/pica_shader_module_identity.h"
+#include "fast/renderer3ds/pica_temporal_occurrences.h"
 #include "fast/renderer3ds/pica_program_preparation.h"
 #include "fast/renderer3ds/pica_preparation_queue.h"
 #include "fast/renderer3ds/pica_texture_copy_plan.h"
@@ -1842,8 +1843,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         mGrassSurfaceOccurrencesThisFrame;
     std::unordered_map<uint64_t, uint32_t> mGrassOverlayOccurrences;
     std::unordered_map<uint64_t, uint64_t> mGrassDrawOrdinals;
-    std::unordered_map<uint64_t, uint32_t>
-        mRigidMotionOccurrencesThisFrame;
+    Renderer3ds::PicaTemporalOccurrences mRigidMotionOccurrencesThisFrame;
     std::unordered_map<uint64_t, PreviousPicaVertexUniforms>
         mPreviousPicaVertexUniforms;
     uint32_t mNativePicaDepthWritingDrawsThisFrame = 0;

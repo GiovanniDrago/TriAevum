@@ -1831,7 +1831,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 mixIdentity(HashNativeBytes(draw.IndexBytes));
             }
             const uint32_t occurrence =
-                mRigidMotionOccurrencesThisFrame[temporalIdentity]++;
+                mRigidMotionOccurrencesThisFrame.Next(
+                    temporalIdentity, draw.RenderTargetNamespace);
             mixIdentity(occurrence);
             repeatedTemporalIdentity = occurrence != 0U;
             mixIdentity(draw.RenderTargetNamespace);
