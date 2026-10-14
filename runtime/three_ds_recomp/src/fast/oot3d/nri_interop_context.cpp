@@ -2,6 +2,7 @@
 #include "fast/oot3d/nri_stage_scope.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
+#include "fast/renderer3ds/vulkan_image_contract.h"
 
 #include <algorithm>
 #include <array>
@@ -881,6 +882,15 @@ bool NriInteropContext::CreateOwnedTexture2D(
         (desc.Width != desc.Height || desc.Layers != 6U ||
          desc.Samples != VK_SAMPLE_COUNT_1_BIT))
         return false;
+    const auto physical = reinterpret_cast<VkPhysicalDevice>(
+        mImpl->Wrapper.GetPhysicalDeviceVK(*mImpl->Device));
+    if (!Renderer3ds::VulkanImage2DSupported(physical, desc.Format, desc.Usage,
+            desc.Width, desc.Height, desc.MipLevels, desc.Layers, desc.Samples, desc.CubeSampledView)) {
+        std::fprintf(stderr, "TRIAEVUM_VULKAN_IMAGE_UNSUPPORTED format=%u usage=%u width=%u height=%u mips=%u layers=%u samples=%u\n",
+            unsigned(desc.Format), unsigned(desc.Usage), desc.Width, desc.Height,
+            desc.MipLevels, desc.Layers, unsigned(desc.Samples));
+        return false;
+    }
     const nri::Format nriFormat =
         nri::nriConvertVKFormatToNRI(desc.Format);
     if (nriFormat == nri::Format::UNKNOWN) return false;

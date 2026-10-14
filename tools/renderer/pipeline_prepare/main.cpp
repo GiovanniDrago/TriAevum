@@ -16,6 +16,8 @@
 #include <atomic>
 #include <chrono>
 #include <charconv>
+#include <cstdlib>
+#include <string_view>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -33,7 +35,8 @@ using TriAevum::Tools::HeadlessDevice;
 // driver's compilation scales sub-linearly, yet the 1872 cold pipelines of
 // the reference PC took 204 s on 6 threads and 175 s on 12 (sequential
 // recipes took about 9 minutes). The bridge and the device's pipeline cache
-// accept concurrent creation.
+// accept concurrent creation. TRIAEVUM_PIPELINE_PREPARE_THREADS (1..16)
+// bounds the compiler working set on a machine short of memory.
 struct ParallelPreparation {
     unsigned Threads = 0;
     std::atomic<size_t> Next{0};
@@ -52,6 +55,12 @@ struct ParallelPreparation {
         if (count == 0) return;
         const auto begin = std::chrono::steady_clock::now();
         Threads = std::clamp(std::thread::hardware_concurrency(), 1U, 16U);
+        if (const char* value = std::getenv("TRIAEVUM_PIPELINE_PREPARE_THREADS")) {
+            const std::string_view text(value);
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), Threads);
+            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || Threads < 1 || Threads > 16)
+                throw std::runtime_error("TRIAEVUM_PIPELINE_PREPARE_THREADS must be 1..16");
+        }
         Threads = std::min<unsigned>(Threads, static_cast<unsigned>(std::min<size_t>(count, 16)));
         std::vector<std::thread> workers;
         Running = Threads;
@@ -173,6 +182,7 @@ int main(int argc, char** argv) {
         execution.FrameSlotCount = 1;
         execution.DescriptorSetsPerPool = 1;
         execution.PipelineLibrariesAvailable = device.PipelineLibraries;
+        execution.PipelineLibrariesEnabled = device.AllPipelinesUseLibraries;
         if (!bridge.Initialize(device, execution)) throw std::runtime_error(bridge.UnavailableReason());
         std::vector<uint8_t> cache;
         const bool loaded = Renderer3ds::LoadPipelineCacheData(cachePath, identity, cache,
