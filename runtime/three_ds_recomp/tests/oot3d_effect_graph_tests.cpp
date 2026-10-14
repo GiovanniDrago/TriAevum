@@ -2077,6 +2077,86 @@ TEST(Oot3dEffectTransientConfigurationCache,
     EXPECT_FALSE(cache.Select(first).Hit);
 }
 
+EffectTransientAllocationPlan BothPlan(const CompiledEffectGraph& graph, uint32_t width) {
+    const std::array<EffectTransientImageRequirement, 2> requirements{{
+        {EffectResource::AmbientOcclusion, 97U, width, 240U, 1U, 1U, 1U, 0x3U},
+        {EffectResource::MotionVectors, 97U, width, 240U, 1U, 1U, 1U, 0x3U},
+    }};
+    return BuildEffectTransientAllocationPlan(graph, requirements);
+}
+
+TEST(Oot3dEffectTransientConfigurationCache,
+     ReusesACoveringConfigurationForAPlanThatDropsAResource) {
+    // A pause page drops one scene effect: its plan is the gameplay plan
+    // minus a resource and must keep the gameplay images, not allocate new
+    // ones that every pass would then rebuild its resources around.
+    const auto graph = AlternatingPlansGraph();
+    ASSERT_TRUE(graph.Valid()) << graph.Error;
+    const auto gameplay = BothPlan(graph, 400U);
+    const auto pause = AlternatingPlan(graph, EffectResource::AmbientOcclusion, 400U);
+    ASSERT_TRUE(gameplay.Complete());
+    ASSERT_EQ(gameplay.SlotCount(), 2U);
+    EXPECT_TRUE(EffectTransientAllocationCovers(gameplay, pause));
+    EXPECT_FALSE(EffectTransientAllocationCovers(pause, gameplay));
+    EXPECT_FALSE(EffectTransientAllocationCovers(
+        gameplay, AlternatingPlan(graph, EffectResource::AmbientOcclusion, 401U)));
+
+    EffectTransientConfigurationCache cache;
+    auto selection = cache.Select(gameplay);
+    cache.Commit(selection.Index, gameplay);
+    const size_t gameplayIndex = selection.Index;
+    for (int toggle = 0; toggle < 3; ++toggle) {
+        selection = cache.Select(pause);
+        EXPECT_TRUE(selection.Hit);
+        EXPECT_TRUE(selection.Covers);
+        EXPECT_FALSE(selection.Evicts);
+        EXPECT_EQ(selection.Index, gameplayIndex);
+        cache.Touch(selection.Index);
+        selection = cache.Select(gameplay);
+        EXPECT_TRUE(selection.Hit);
+        EXPECT_FALSE(selection.Covers);
+        EXPECT_EQ(selection.Index, gameplayIndex);
+        cache.Commit(selection.Index, gameplay);
+    }
+    EXPECT_EQ(cache.Count(), 1U);
+
+    // An exact configuration is preferred over a covering one.
+    selection = cache.Select(pause);
+    ASSERT_TRUE(selection.Covers);
+    const size_t other = gameplayIndex == 0U ? 1U : 0U;
+    cache.Commit(other, pause);
+    selection = cache.Select(pause);
+    EXPECT_TRUE(selection.Hit);
+    EXPECT_FALSE(selection.Covers);
+    EXPECT_EQ(selection.Index, other);
+}
+
+TEST(Oot3dEffectTransientConfigurationCache,
+     DoesNotCoverResourcesThatOverlapWhereTheCachedPlanAliasedThem) {
+    EffectGraph sequential;
+    sequential.Add({ .Name = "ao", .Stage = EffectStage::AfterOpaque,
+                     .Contract = EffectContractKind::ComposerPass,
+                     .Resources = { Write(EffectResource::AmbientOcclusion) } });
+    sequential.Add({ .Name = "ao_read", .DependsOn = { "ao" }, .Stage = EffectStage::AfterOpaque,
+                     .Contract = EffectContractKind::ComposerPass,
+                     .Resources = { Read(EffectResource::AmbientOcclusion) } });
+    sequential.Add({ .Name = "mv", .DependsOn = { "ao_read" }, .Stage = EffectStage::BeforeUi,
+                     .Contract = EffectContractKind::ComposerPass,
+                     .Resources = { Write(EffectResource::MotionVectors) } });
+    sequential.Add({ .Name = "mv_read", .DependsOn = { "mv" }, .Stage = EffectStage::BeforeUi,
+                     .Contract = EffectContractKind::ComposerPass,
+                     .Resources = { Read(EffectResource::MotionVectors) } });
+    const auto sequentialGraph = sequential.Compile();
+    ASSERT_TRUE(sequentialGraph.Valid()) << sequentialGraph.Error;
+    const auto aliased = BothPlan(sequentialGraph, 400U);
+    ASSERT_TRUE(aliased.Complete());
+    ASSERT_EQ(aliased.SlotCount(), 1U);
+    const auto overlapping = BothPlan(AlternatingPlansGraph(), 400U);
+    ASSERT_EQ(overlapping.SlotCount(), 2U);
+    EXPECT_FALSE(EffectTransientAllocationCovers(aliased, overlapping));
+    EXPECT_TRUE(EffectTransientAllocationCovers(overlapping, aliased));
+}
+
 TEST(Oot3dEffectGraphPhysicalPlan,
      AliasesActualSssrAndSmaaOutputsAcrossDisjointPasses) {
     DisplayEffectPlanInput input;
