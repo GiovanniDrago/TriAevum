@@ -4,6 +4,7 @@
 #include "oot3d_native_pica_frontend.h"
 #include "oot3d_native_pica_program_descriptor.h"
 #include "oot3d_native_pica_shader_gen.h"
+#include "oot3d_native_pica_affine_layout.h"
 
 #include <array>
 #include <bit>
@@ -209,6 +210,24 @@ int main(int argc, char** argv) {
         for (size_t entry = 0; entry < count; ++entry) {
             Oot3dNativeGame::Oot3dPicaDecodedDrawState state{};
             state.ShaderInterface.VertexMainOffset = word(word(8 + entry*4) + 8);
+            const auto layout = Oot3dNativeGame::DescribeOot3dAffineUniforms(packet,state);
+            const bool cmb = packet.VertexShader.ProgramWordCount == 310 &&
+                             packet.VertexShader.SwizzleWordCount == 54;
+            Require((layout == Oot3dNativeGame::kOot3dCmbAffineLayout) == cmb,
+                    "original shader layout identity mismatch");
+            const auto entryOffset = state.ShaderInterface.VertexMainOffset;
+            state.ShaderInterface.VertexMainOffset = 1;
+            Require(!Oot3dNativeGame::DescribeOot3dAffineUniforms(packet,state).Palette.Valid(),
+                    "unproven entrypoint acquired a palette");
+            state.ShaderInterface.VertexMainOffset = entryOffset;
+            packet.VertexShader.Program[0] ^= 1;
+            Require(!Oot3dNativeGame::DescribeOot3dAffineUniforms(packet,state).Palette.Valid(),
+                    "changed code acquired a palette");
+            packet.VertexShader.Program[0] ^= 1;
+            packet.VertexShader.Swizzles[0] ^= 1;
+            Require(!Oot3dNativeGame::DescribeOot3dAffineUniforms(packet,state).Palette.Valid(),
+                    "changed operand descriptor acquired a palette");
+            packet.VertexShader.Swizzles[0] ^= 1;
             state.ShaderInterface.OutputMask = 0x7f;
             for (uint32_t variant = 0; variant < 8; ++variant) {
                 for (uint32_t row = 0; row < 7; ++row) {
@@ -222,6 +241,9 @@ int main(int argc, char** argv) {
                 std::string error;
                 Require(Oot3dNativeGame::GenerateOot3dPicaVertexShader(packet, state, reference, &error), error);
                 Require(Oot3dNativeGame::GenerateOot3dPicaVertexShader(packet, state, translated, &error, true), error);
+                Require(reference.TemporalProgram->AffineLayout == layout &&
+                        translated.TemporalProgram->AffineLayout == layout,
+                        "shader generation dropped the proven affine layout");
                 Require(reference.Source == translated.Source && reference.StateKey == translated.StateKey &&
                         reference.TemporalProgram->PreviousRegisterState == translated.TemporalProgram->PreviousRegisterState &&
                         reference.TemporalProgram->PreviousMainBody == translated.TemporalProgram->PreviousMainBody &&

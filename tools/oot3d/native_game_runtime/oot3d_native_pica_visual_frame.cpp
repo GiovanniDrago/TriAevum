@@ -1,7 +1,8 @@
 #include "oot3d_native_pica_visual_frame.h"
 #include "fast/renderer3ds/pica_vertex_temporal_policy.h"
 #include "fast/renderer3ds/pica_camera_temporal_policy.h"
-#include "fast/renderer3ds/pica_rigid_interpolation.h"
+#include "fast/renderer3ds/pica_factored_interpolation.h"
+#include "oot3d_native_pica_affine_layout.h"
 
 #include <algorithm>
 #include <bit>
@@ -1058,6 +1059,84 @@ void InterpolateVisualLightBinding(
     }
 }
 
+// Return a conservative exact mask of the slots referenced by this draw.
+// A missing snapshot or an unfamiliar addressing mode disables factoring;
+// selecting rigid-looking rows from an unknown active palette could separate
+// a joint shared with an excluded, non-rigid matrix.
+std::optional<uint32_t> CmbPaletteSlots(
+    const Oot3dPicaVulkanDrawPlan& previous, const Oot3dPicaVulkanDrawPlan& current) {
+    const auto& a = previous.VertexShader.Uniforms;
+    const auto& b = current.VertexShader.Uniforms;
+    if (a.BooleanMask != b.BooleanMask || a.Integers != b.Integers) return {};
+    for (size_t row : {89U, 92U, 93U, 94U, 95U}) if (a.Floats[row] != b.Floats[row]) return {};
+    if (b.Floats[93] != std::array<float,4>{0,1,2,3} ||
+        b.Floats[95][0] != 3.0F || b.Floats[95][1] != 4.0F ||
+        (b.Floats[89][3] != 0.0F && b.Floats[89][3] != 1.0F)) return {};
+    if (!(b.BooleanMask & 4U)) return 1U; // unskinned CMB: c20..22 only
+    size_t influences = 1;
+    if (b.BooleanMask & 8U) {
+        const float count = b.Floats[92][3];
+        if (count != 2.0F && count != 3.0F && count != 4.0F) return {};
+        influences = static_cast<size_t>(count);
+    }
+    const auto findAttribute = [](const auto& plan, uint8_t location) -> const Oot3dPicaVulkanVertexAttribute* {
+        const auto it = std::find_if(plan.VertexAttributes.begin(), plan.VertexAttributes.end(),
+            [=](const auto& attribute) { return attribute.Location == location; });
+        return it == plan.VertexAttributes.end() ? nullptr : &*it;
+    };
+    const auto* left = findAttribute(previous,6), *right = findAttribute(current,6);
+    if (!left || !right || left->ComponentCount < influences || right->ComponentCount < influences ||
+        !current.VertexCount || previous.VertexCount != current.VertexCount ||
+        previous.Indexed != current.Indexed || previous.BaseVertex != current.BaseVertex ||
+        previous.IndicesAre16Bit != current.IndicesAre16Bit || !EqualIndexBytes(previous,current)) return {};
+    const auto read = [](const auto& plan, const auto& attribute, size_t vertex, size_t component)
+        -> std::optional<float> {
+        const auto* binding = FindVertexBinding(plan,attribute.Binding);
+        if (!binding || !binding->ByteStride) return {};
+        const size_t size = VertexFormatByteSize(attribute.Format);
+        if (!size || attribute.ByteOffset > binding->ByteStride ||
+            size*attribute.ComponentCount > binding->ByteStride-attribute.ByteOffset) return {};
+        const auto bytes = binding->ResolvedBytes();
+        const size_t record = binding->InputRate == Oot3dPicaVertexInputRate::PerInstance ? 0 : vertex;
+        if (record >= bytes.size()/binding->ByteStride) return {};
+        const size_t offset = record*binding->ByteStride+attribute.ByteOffset+component*size;
+        switch (attribute.Format) {
+        case Oot3dPicaVertexFormat::UnsignedByte: return float(bytes[offset]);
+        case Oot3dPicaVertexFormat::SignedByte: return float(static_cast<int8_t>(bytes[offset]));
+        case Oot3dPicaVertexFormat::SignedShort: {
+            int16_t value; std::memcpy(&value,bytes.data()+offset,2); return float(value);
+        }
+        case Oot3dPicaVertexFormat::Float: {
+            float value; std::memcpy(&value,bytes.data()+offset,4); return value;
+        }
+        }
+        return {};
+    };
+    uint32_t selected = 0;
+    const auto indices = current.ResolvedIndexBytes();
+    const size_t indexSize = current.IndicesAre16Bit ? 2 : 1;
+    if (current.Indexed && current.VertexCount > indices.size()/indexSize) return {};
+    for (size_t i = 0; i < current.VertexCount; ++i) {
+        int64_t vertex = static_cast<int64_t>(i);
+        if (current.Indexed) {
+            vertex = indices[i*indexSize];
+            if (indexSize == 2) vertex |= int64_t(indices[i*indexSize+1]) << 8;
+            vertex += current.BaseVertex;
+        }
+        if (vertex < 0) return {};
+        for (size_t component = 0; component < influences; ++component) {
+            const auto from = read(previous,*left,size_t(vertex),component);
+            const auto to = read(current,*right,size_t(vertex),component);
+            // Reject fractional, wrapped and out-of-palette addresses instead
+            // of approximating PICA's MOVA/wrap semantics with a guessed span.
+            if (!from || !to || !std::isfinite(*to) || *from != *to ||
+                *to < 0 || *to >= 10 || std::floor(*to) != *to) return {};
+            selected |= 1U << static_cast<uint32_t>(*to);
+        }
+    }
+    return selected;
+}
+
 void InterpolateVisualVertexUniforms(
     const Oot3dPicaVulkanDrawPlan& previous,
     const Oot3dPicaVulkanDrawPlan& current, float alpha,
@@ -1065,42 +1144,28 @@ void InterpolateVisualVertexUniforms(
     alpha = std::clamp(alpha, 0.0F, 1.0F);
     const auto& before = previous.VertexShader.Uniforms.Floats;
     const auto& after = current.VertexShader.Uniforms.Floats;
-    for (size_t index = 0; index < vertexUniforms.Floats.size();) {
-        if (!IsContinuousVertexUniform(index)) {
-            ++index;
-            continue;
-        }
-        // Model, view and bone transforms are 3x4 rows: a rigid one is
-        // blended flip-aware (pica_rigid_interpolation.h), so a model that
-        // turns round between two simulated frames is shown turned part of
-        // the way instead of flattened.
-        if (alpha > 0.0F && alpha < 1.0F && index + 2U < vertexUniforms.Floats.size() &&
-            IsContinuousVertexUniform(index + 1U) && IsContinuousVertexUniform(index + 2U)) {
-            Fast::Renderer3ds::PicaAffineRows from{};
-            Fast::Renderer3ds::PicaAffineRows to{};
-            for (size_t row = 0; row < 3U; ++row) {
-                for (size_t component = 0; component < 4U; ++component) {
-                    from[row][component] = before[index + row][component];
-                    to[row][component] = after[index + row][component];
-                }
-            }
-            if (from != to) {
-                if (const auto rigid = Fast::Renderer3ds::InterpolatePicaRigidRows(from, to, alpha)) {
-                    for (size_t row = 0; row < 3U; ++row) {
-                        for (size_t component = 0; component < 4U; ++component)
-                            vertexUniforms.Floats[index + row][component] = (*rigid)[row][component];
-                    }
-                    index += 3U;
-                    continue;
-                }
-            }
-        }
-        for (size_t component = 0; component < 4U; ++component) {
-            vertexUniforms.Floats[index][component] =
-                InterpolateFinite(before[index][component], after[index][component], alpha);
-        }
-        ++index;
+    for (size_t index = 0; index < vertexUniforms.Floats.size(); ++index) {
+        if (!IsContinuousVertexUniform(index)) continue;
+        for (size_t component = 0; component < 4; ++component)
+            vertexUniforms.Floats[index][component] = alpha == 0.0F ? before[index][component]
+                : alpha == 1.0F ? after[index][component]
+                : InterpolateFinite(before[index][component],after[index][component],alpha);
     }
+    if (!(alpha > 0.0F && alpha < 1.0F)) return;
+    const auto& from = previous.VertexShader.TemporalProgram;
+    const auto& to = current.VertexShader.TemporalProgram;
+    if (!from || !to || from->AffineLayout != kOot3dCmbAffineLayout ||
+        to->AffineLayout != from->AffineLayout) return;
+    const auto selected = CmbPaletteSlots(previous,current);
+    if (!selected) return;
+    auto factored = vertexUniforms.Floats;
+    // Palette outputs feed model-view inputs: two coordinate spaces, hence
+    // separate motions. Commit both groups together or keep scalar fallback.
+    if (Fast::Renderer3ds::InterpolatePicaFactoredUniformGroup(
+            before,after,to->AffineLayout.Palette,*selected,alpha,factored) &&
+        Fast::Renderer3ds::InterpolatePicaFactoredUniformGroup(
+            before,after,to->AffineLayout.ModelView,1U,alpha,factored))
+        vertexUniforms.Floats = factored;
 }
 
 void InterpolateVisualFragmentUniforms(

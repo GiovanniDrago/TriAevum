@@ -1,6 +1,8 @@
 #include "oot3d_native_pica_visual_frame.h"
 #include "oot3d_native_pica_vulkan_plan.h"
 #include "fast/renderer3ds/pica_camera_temporal_policy.h"
+#include "oot3d_native_pica_affine_layout.h"
+#include <limits>
 
 #include <algorithm>
 #include <array>
@@ -41,9 +43,232 @@ uint64_t HashBytes(std::span<const uint8_t> bytes) {
     return hash == 0U ? 1U : hash;
 }
 
+void TestFactoredCmbUniformInterpolation() {
+    using namespace Oot3dNativeGame;
+    using Rows = std::array<std::array<float,4>,3>;
+    const Rows identity{{{1,0,0,0},{0,1,0,0},{0,0,1,0}}};
+    const Rows turn{{{-1,0,0,200},{0,-1,0,40},{0,0,1,12}}};
+    const auto put = [](auto& plan, size_t first, const Rows& rows) {
+        for (size_t i=0; i<3; ++i) plan.VertexShader.Uniforms.Floats[first+i]=rows[i];
+    };
+    const auto make = [&] {
+        Oot3dPicaVulkanDrawPlan plan;
+        auto program = std::make_shared<Oot3dPicaTemporalVertexProgram>();
+        // Exercise the consumer with the adapter's typed contract. Actual
+        // SHBIN -> generator recognition is covered by the frontend suite.
+        program->AffineLayout = kOot3dCmbAffineLayout;
+        plan.VertexShader.TemporalProgram = program;
+        plan.VertexShader.StateKey = 17;
+        plan.VertexShader.Uniforms.BooleanMask = 4;
+        plan.VertexShader.Uniforms.Floats[93] = {0,1,2,3};
+        plan.VertexShader.Uniforms.Floats[95] = {3,4,5,32};
+        plan.VertexCount = 10;
+        plan.VertexAttributes.push_back({6,0,Oot3dPicaVertexFormat::UnsignedByte,1,0});
+        Oot3dPicaVulkanVertexBinding binding;
+        binding.ByteStride = 1;
+        for (uint8_t i=0;i<10;++i) binding.Bytes.push_back(i);
+        plan.VertexBindings.push_back(binding);
+        put(plan,4,identity);
+        for (size_t i=0;i<10;++i) put(plan,20+3*i,identity);
+        return plan;
+    };
+    const auto sample = [&](const auto& a, const auto& b, float alpha) {
+        Oot3dPicaVulkanDrawPlan out;
+        Require(InterpolateOot3dPicaVisualDraw(a,b,alpha,out),"factored draws incompatible");
+        return out.VertexShader.Uniforms.Floats;
+    };
+    const auto near = [](float a,float b) { return std::abs(a-b)<0.0003F; };
+    const auto scalar = [&](const auto& a,const auto& b) {
+        const auto actual=sample(a,b,0.5F);
+        for (size_t r=0;r<96;++r) for(size_t c=0;c<4;++c) {
+            const float x=a.VertexShader.Uniforms.Floats[r][c], y=b.VertexShader.Uniforms.Floats[r][c];
+            const float expected=(r<89 || r==90 || r==91) ? x+(y-x)*0.5F : y;
+            Require(near(actual[r][c],expected),"whole-draw scalar fallback changed");
+        }
+    };
+    auto before=make(), after=before;
+    for (size_t i=0;i<10;++i) put(after,20+3*i,turn);
+    // Orthogonal-looking non-matrices and boundary sentinels must remain scalar.
+    for (size_t r : {0U,7U,10U,17U,19U,50U,76U,80U,81U,82U,88U,90U,91U}) {
+        before.VertexShader.Uniforms.Floats[r]={1,2,3,4};
+        after.VertexShader.Uniforms.Floats[r]={-1,6,-3,8};
+    }
+    Oot3dPicaVisualFrame aFrame,bFrame;
+    aFrame.Sequence=1; bFrame.Sequence=2;
+    aFrame.Draws.push_back(before); bFrame.Draws.push_back(after);
+    Oot3dPicaPreparedVisualTransition prepared;
+    Require(prepared.Prepare(aFrame,bFrame),"factored transition prepare failed");
+    for(float alpha : {0.0F,1.0F/3,0.5F,2.0F/3,1.0F}) {
+        const auto values=sample(before,after,alpha);
+        Oot3dPicaVisualFrameViewSample view;
+        Oot3dPicaVisualFrameSample frame;
+        Require(prepared.Sample(aFrame,bFrame,alpha,view) && view.Draws.size()==1,
+                "factored prepared sample failed");
+        Require(SampleOot3dPicaVisualFrame(aFrame,bFrame,alpha,frame) && frame.Draws.size()==1,
+                "factored full-frame sample failed");
+        const auto& vu=view.Draws[0].VertexUniforms ? *view.Draws[0].VertexUniforms
+            : view.Draws[0].BasePlan->VertexShader.Uniforms;
+        Require(vu.Floats==values && frame.Draws[0].VertexShader.Uniforms.Floats==values,
+                "draw/full-frame/prepared-view factored output differs");
+        if(alpha==0 || alpha==1) {
+            const auto& endpoint=alpha==0 ? before : after;
+            Require(std::memcmp(values.data(),endpoint.VertexShader.Uniforms.Floats.data(),sizeof(values))==0,
+                    "factored endpoint is not bit-exact");
+        }
+        for(size_t slot=0;slot<10;++slot) {
+            const size_t first=20+3*slot;
+            for(size_t i=0;i<3;++i) for(size_t j=0;j<3;++j) {
+                float dot=0;for(size_t k=0;k<3;++k)dot+=values[first+i][k]*values[first+j][k];
+                Require(near(dot,i==j?1.0F:0.0F),"whole-body half turn lost rigidity");
+            }
+            // The screw goes around (100,20,0), advancing 12 along Z.
+            for(size_t i=0;i<3;++i) {
+                const float pivot=100*values[first+i][0]+20*values[first+i][1]+values[first+i][3];
+                Require(near(pivot,i==0?100.0F:i==1?20.0F:12*alpha),"screw pivot/axial translation wrong");
+            }
+        }
+        for(size_t row=0;row<96;++row) if(!(row>=4&&row<7)&&!(row>=20&&row<50))
+            for(size_t c=0;c<4;++c) {
+                const float x=before.VertexShader.Uniforms.Floats[row][c],y=after.VertexShader.Uniforms.Floats[row][c];
+                const float expected=(row<89||row==90||row==91)?x+(y-x)*alpha:y;
+                Require(near(values[row][c],expected),"factoring crossed a proven matrix boundary");
+            }
+    }
+    // Local motion about the shared bind-space joint, followed by a global
+    // half turn plus translation. One selected matrix is deliberately sheared.
+    before=make(); after=before;
+    const Rows local{{{1,0.25F,0,0},{0,0,-1,0},{0,1,0,0}}};
+    put(after,20,turn);
+    Rows composed{};
+    for(size_t i=0;i<3;++i)for(size_t j=0;j<4;++j) {
+        composed[i][j]=j==3?turn[i][3]:0;
+        for(size_t k=0;k<3;++k)composed[i][j]+=turn[i][k]*local[k][j];
+    }
+    put(after,23,composed);
+    for(float alpha : {1.0F/3,0.5F,2.0F/3}) {
+        auto values=sample(before,after,alpha);
+        for(size_t r=0;r<3;++r)
+            Require(near(100*values[20+r][0]+values[20+r][3],100*values[23+r][0]+values[23+r][3]),
+                    "shared joint separated during factored local animation");
+    }
+    // Original aligned fixed-pivot counterexample, including the static bone.
+    before=make();after=before;
+    put(after,20,Rows{{{-1,0,0,200},{0,-1,0,0},{0,0,1,0}}});
+    for(float alpha : {1.0F/3,0.5F,2.0F/3}) {
+        auto values=sample(before,after,alpha);
+        for(size_t base : {20U,23U})for(size_t r=0;r<3;++r)
+            Require(near(100*values[base+r][0]+values[base+r][3],r==0?100.0F:0.0F),
+                    "fixed skeletal pivot moved");
+    }
+    // Unchanged first bone reserves its rows. B's translation must never
+    // make [A.row1,A.row2,B.row0] become a reference matrix.
+    before=make();after=before;
+    put(after,23,Rows{{{1,0,0,1},{0,-1,0,0},{0,0,-1,0}}});
+    auto values=sample(before,after,0.5F);
+    for(size_t r=0;r<3;++r) Require(values[20+r]==identity[r],"unchanged palette slot was split");
+    Require(near(values[23][3],0.5F)&&near(values[24][1],0)&&near(values[25][2],0),
+            "local residual unexpectedly used a second per-bone motion");
+    // Ref must be selected, not a stale lower-numbered slot; only slot 9 used.
+    before=make(); before.VertexBindings[0].Bytes.assign(10,9); after=before;
+    put(after,47,turn);
+    values=sample(before,after,0.5F);
+    Require(near(std::abs(values[47][1]),1),"last active palette slot was not factored");
+    for(size_t r=20;r<47;++r) Require(values[r]==before.VertexShader.Uniforms.Floats[r],"unused slot changed");
+    // Model-view has its own output space and rigid motion.
+    before=make();after=before;put(after,4,turn);
+    values=sample(before,after,0.5F);
+    Require(near(std::abs(values[4][1]),1),"model-view turn flattened");
+    for(size_t r=20;r<50;++r)Require(values[r]==before.VertexShader.Uniforms.Floats[r],"model-view motion leaked into palette");
+    // Nonuniform column scale stays in the residual; tiny and pure rotations
+    // do not suffer screw-axis cancellation. Reflections fall back as a group.
+    before=make();after=before;
+    for(size_t slot=0;slot<10;++slot)for(size_t r=0;r<3;++r) {
+        before.VertexShader.Uniforms.Floats[20+3*slot+r][r]=float(r+1);
+        Rows scaled=turn;
+        for(size_t i=0;i<3;++i)for(size_t j=0;j<3;++j)scaled[i][j]*=float(j+1);
+        put(after,20+3*slot,scaled);
+    }
+    values=sample(before,after,0.5F);
+    Require(near(std::abs(values[20][1]),2)&&near(std::abs(values[21][0]),1)&&near(values[22][2],3),
+            "column scale convention lost");
+    for(float angle : {0.0F,1e-7F,1e-4F,3.1415925F}) {
+        before=make();after=before;
+        Rows motion{{{std::cos(angle),-std::sin(angle),0,10},{std::sin(angle),std::cos(angle),0,2},{0,0,1,3}}};
+        for(size_t i=0;i<10;++i)put(after,20+3*i,motion);
+        values=sample(before,after,0.5F);
+        Require(near(values[20][0],std::cos(angle/2))&&near(values[21][0],std::sin(angle/2)),"near-zero/pi screw rotation unstable");
+        Require(near(values[22][3],1.5F),"screw translation lost");
+    }
+    before=make();after=before;
+    for(size_t i=0;i<10;++i)put(after,20+3*i,turn);
+    auto unknownBefore=before,unknownAfter=after;
+    unknownBefore.VertexShader.TemporalProgram.reset();unknownAfter.VertexShader.TemporalProgram.reset();
+    scalar(unknownBefore,unknownAfter);
+    auto changed=after;changed.VertexShader.Uniforms.BooleanMask^=8;scalar(before,changed);
+    changed=after;changed.VertexShader.Uniforms.Integers[0][0]=1;scalar(before,changed);
+    changed=after;changed.VertexShader.Uniforms.Floats[92][3]=3;scalar(before,changed);
+    changed=after;changed.VertexShader.Uniforms.Floats[93][3]=4;scalar(before,changed);
+    changed=after;changed.VertexBindings[0].Bytes[0]=1;scalar(before,changed);
+    changed=after;changed.VertexBindings[0].Bytes.clear();scalar(before,changed);
+    changed=after;changed.VertexShader.Uniforms.Floats[4][0]=0;scalar(before,changed);
+    for(size_t i=0;i<10;++i) before.VertexShader.Uniforms.Floats[20+3*i][0]=-1;
+    scalar(before,after); // all reference candidates reflected
+    // Indexed 16-bit fetch uses BaseVertex; smooth skinning consumes exactly
+    // the enabled components, including slot 9 and ignoring unused garbage.
+    before=make(); before.Indexed=true;before.IndicesAre16Bit=true;before.BaseVertex=-5;before.VertexCount=1;
+    before.IndexBytes={5,0};before.VertexBindings[0].ByteStride=4;
+    before.VertexBindings[0].Bytes={9,0,255,255};before.VertexAttributes[0].ComponentCount=4;
+    before.VertexShader.Uniforms.BooleanMask=12;before.VertexShader.Uniforms.Floats[92][3]=2;
+    after=before;put(after,20,turn);put(after,47,turn);
+    values=sample(before,after,0.5F);
+    Require(near(std::abs(values[47][1]),1)&&near(std::abs(values[20][1]),1),"indexed/smooth palette selection failed");
+    for(float count : {3.0F,4.0F}) {
+        before.VertexShader.Uniforms.Floats[92][3]=count;
+        before.VertexBindings[0].Bytes={9,0,1,2};after=before;
+        for(size_t slot : {0U,1U,2U,9U})put(after,20+3*slot,turn);
+        values=sample(before,after,0.5F);
+        Require(near(std::abs(values[23][1]),1),"third influence was omitted");
+        Require(near(std::abs(values[26][1]),count==4?1.0F:0.0F),"fourth influence selection wrong");
+    }
+    // Unskinned draws consume only slot zero even with no bone-index input.
+    before=make();before.VertexShader.Uniforms.BooleanMask=0;before.VertexAttributes.clear();before.VertexBindings.clear();
+    after=before;put(after,20,turn);values=sample(before,after,0.5F);
+    Require(near(std::abs(values[20][1]),1),"unskinned palette transform flattened");
+    // A bad address or changed mode must also reject the independent view group.
+    before=make();after=before;put(after,4,turn);
+    before.VertexBindings[0].Bytes[0]=10;after.VertexBindings[0].Bytes[0]=10;scalar(before,after);
+    before=make();after=before;put(after,4,turn);
+    before.VertexShader.Uniforms.Floats[89][3]=2;after.VertexShader.Uniforms.Floats[89][3]=2;scalar(before,after);
+    // Non-identity reference endpoints catch the multiplication order:
+    // D = M1 * inverse(M0), with an X-oriented source and Y screw motion.
+    before=make();after=before;
+    const Rows sourcePose{{{1,0,0,7},{0,0,-1,-3},{0,1,0,11}}};
+    const Rows targetPose{{{-1,0,0,193},{0,0,-1,3},{0,-1,0,-111}}};
+    const Rows expectedMid{{{0,1,0,161},{0,0,-1,0},{-1,0,0,43}}};
+    for(size_t slot=0;slot<10;++slot){put(before,20+3*slot,sourcePose);put(after,20+3*slot,targetPose);}
+    values=sample(before,after,0.5F);
+    for(size_t r=0;r<3;++r)for(size_t c=0;c<4;++c)
+        Require(near(values[20+r][c],expectedMid[r][c]),"relative screw used the wrong coordinate space/order");
+    // Any non-finite used residual rejects BOTH groups without partial writes.
+    before=make();after=before;put(after,4,turn);
+    after.VertexShader.Uniforms.Floats[49][3]=std::numeric_limits<float>::quiet_NaN();
+    values=sample(before,after,0.5F);
+    Require(near(values[4][0],0)&&near(values[4][3],100)&&std::isnan(values[49][3]),
+            "invalid residual left partially factored output");
+    // Signed-zero and cancellation-heavy endpoint copy (not x+(y-x)*1).
+    before=make();after=before;
+    before.VertexShader.Uniforms.Floats[20][3]=1e20F;after.VertexShader.Uniforms.Floats[20][3]=1;
+    before.VertexShader.Uniforms.Floats[21][3]=-0.0F;
+    values=sample(before,after,0);
+    Require(std::signbit(values[21][3]),"endpoint lost signed zero");
+    values=sample(before,after,1);
+    Require(values[20][3]==1,"endpoint suffered cancellation");
+}
+
 } // namespace
 
 int main() {
+    TestFactoredCmbUniformInterpolation();
     Oot3dNativeGame::Oot3dPicaShaderState mutableShader;
     mutableShader.Program[0] = 0x88000000U;
     const uint64_t sharedProgramIdentity =
