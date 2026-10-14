@@ -154,6 +154,14 @@ panel and title to 272 pixels and move the side columns; six native icon
 coordinate hooks set R2 to -30 while retaining the ownership branches.
 Dungeon Map omits both extra pause edges but keeps the tab hints.
 
+Scene mode 5 (the file select and the other frontend screens) has no pause
+edges: 2.1.1 0x005D2078 leaves through 0x005D18F0 (scene owner byte +0x100
+== 5) before its edge producer 0x005D0374. The record-33 site 0x00419838
+keeps the mode-5 viewport but no longer adds the 1.2 payload's edges; they
+showed as stone strips beside the file select once 29d0375 made the site
+reachable in product builds. Azahar captures of 2.1.1 show the file select's
+sky to the screen edges.
+
 The Save (System) page overlays gameplay on the upper screen. 2.1.1 replaces
 the queue-5 draw at 0x0030055C: after the original 0x004228D4 it calls its
 compositor before the top transfer. While System is active (0x0050A530) the

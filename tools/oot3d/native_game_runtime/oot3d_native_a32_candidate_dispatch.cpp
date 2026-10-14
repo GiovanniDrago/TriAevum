@@ -211,11 +211,14 @@ bool ExecuteTopScreenUiSourcePortBlock(
         return false;
       }
       if (dispatch.UiLifecycleBridge != nullptr) {
+        // 2.1.1 0x005D18F0: scene mode 5 has no pause edges.
         dispatch.UiLifecycleBridge->SetTopScreenPauseEdgePresentation(
-            Oot3dNativeGame::BuildTopScreenPauseEdgeGeometry(
-                inputs.Pause.HasScene, inputs.Pause.SceneMode,
-                inputs.Pause.RuntimeMode, 0U, 0, 1.0F, 1.0F,
-                inputs.Pause.ChildStates[1] != 0U));
+            Oot3dNativeGame::UseTopScreenSceneFiveViewport(inputs.Pause)
+                ? std::nullopt
+                : std::optional(Oot3dNativeGame::BuildTopScreenPauseEdgeGeometry(
+                      inputs.Pause.HasScene, inputs.Pause.SceneMode,
+                      inputs.Pause.RuntimeMode, 0U, 0, 1.0F, 1.0F,
+                      inputs.Pause.ChildStates[1] != 0U)));
       }
       return branchFromCallsite(pc + 4U, pc + 4U);
     }
@@ -283,18 +286,15 @@ bool ExecuteTopScreenUiSourcePortBlock(
     if (!Oot3dNativeGame::ReadTopScreenPauseDrawInputs(memory, &inputs)) {
       return false;
     }
-    if (!Oot3dNativeGame::UseTopScreenSceneFiveViewport(inputs)) {
-      if (dispatch.UiLifecycleBridge != nullptr) {
-        dispatch.UiLifecycleBridge->SetTopScreenPauseEdgePresentation(
-            std::nullopt);
-      }
-      return branchFromCallsite(pc + 4U, pc + 4U);
-    }
+    // No pause edges here: in scene mode 5 (the file select and the other
+    // frontend screens) 2.1.1 0x005D2078 leaves through 0x005D18F0 before its
+    // edge producer 0x005D0374.
     if (dispatch.UiLifecycleBridge != nullptr) {
       dispatch.UiLifecycleBridge->SetTopScreenPauseEdgePresentation(
-          Oot3dNativeGame::BuildTopScreenPauseEdgeGeometry(
-              inputs.HasScene, inputs.SceneMode, inputs.RuntimeMode, 0U, 0,
-              1.0F, 1.0F, inputs.ChildStates[1] != 0U));
+          std::nullopt);
+    }
+    if (!Oot3dNativeGame::UseTopScreenSceneFiveViewport(inputs)) {
+      return branchFromCallsite(pc + 4U, pc + 4U);
     }
     state.r[0] = 0U;
     state.r[1] = 0U;
