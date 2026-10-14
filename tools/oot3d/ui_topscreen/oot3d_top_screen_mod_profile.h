@@ -84,7 +84,9 @@ struct TopScreenRuntimeGeometryApplyStats {
 // Pause-page constructors copy their scalar geometry tables into heap-backed
 // render streams once. A savestate captured before selecting TopScreen already
 // contains those streams, so rebuild their base positions and texcoords from
-// the verified tables without touching per-frame offsets or depth.
+// the verified tables without touching per-frame offsets or depth. Also
+// restore the Gear texture stages' verified nearest filters; WordsWritten
+// includes those sampler words.
 std::span<const TopScreenRuntimeQuadStreamContract>
 TopScreenVerifiedRuntimeQuadStreams() noexcept;
 

@@ -60,8 +60,8 @@ Oot3dNativeGame::NativeA32Memory BuildLayoutFixture() {
   NativeA32Memory memory;
   std::string error;
   Require(memory.MapRegion({"topscreen-layout-fixture",
-                            0x004D0000U,
-                            0x00040000U,
+                            0x00460000U,
+                            0x000B0000U,
                             true,
                             false,
                             {}},
@@ -79,6 +79,85 @@ Oot3dNativeGame::NativeA32Memory BuildLayoutFixture() {
 }
 
 
+void TestGearTextureFilters() {
+  using namespace Oot3dNativeGame;
+  auto memory = BuildLayoutFixture();
+  std::string error;
+  std::uint32_t value = 0U;
+  // The two IPS records are constructor literals, not quad coordinates.
+  for (const auto address : {0x004673BCU, 0x00467688U}) {
+    Require(memory.Read32(address, &value) && value == 0x2601U,
+            "Gear constructor filter contract is missing");
+  }
+  Require(ApplyTopScreenVerifiedLayout(memory, nullptr, &error),
+          "could not apply Gear constructor filters");
+  for (const auto address : {0x004673BCU, 0x00467688U}) {
+    Require(memory.Read32(address, &value) && value == 0x2600U,
+            "Gear constructors retained linear filtering");
+  }
+
+  constexpr std::array kOwners{0x0050446CU, 0x005044C4U, 0x005044C8U};
+  constexpr std::uint32_t kStages = 0x08000000U;
+  constexpr std::uint32_t kStageBytes = 0x1B8U;
+  constexpr std::uint32_t kSentinel = 0xA5A5A5A5U;
+  Require(memory.MapRegion(
+              {"gear-texture-stages", kStages, 0x1000U, true, false, {}},
+              &error),
+          "could not map Gear texture-stage fixture");
+  // Three restored Gear stages and an unrelated stage sharing the atlas.
+  for (std::uint32_t index = 0U; index < 4U; ++index) {
+    const auto stage = kStages + index * 0x200U;
+    Require(memory.Fill(stage, kStageBytes, 0xA5U) &&
+                memory.Write32(stage + 0x13CU, 1U) &&
+                memory.Write32(stage + 0x140U, 3U),
+            "could not seed restored texture-stage filters");
+    if (index < kOwners.size()) {
+      Require(memory.Write32(kOwners[index], stage),
+              "could not bind restored Gear texture stage");
+    }
+  }
+  TopScreenRuntimeGeometryApplyStats stats;
+  Require(RebindTopScreenVerifiedRuntimeGeometry(memory, &stats, &error) &&
+              stats.StreamsRebound == 0U &&
+              stats.StreamsNotInitialized == 5U && stats.WordsWritten == 6U,
+          "restored Gear samplers were not rebound without quad streams");
+  for (std::uint32_t index = 0U; index < 4U; ++index) {
+    const auto stage = kStages + index * 0x200U;
+    for (std::uint32_t offset = 0U; offset < kStageBytes; offset += 4U) {
+      auto expected = kSentinel;
+      if (offset == 0x13CU) expected = index < kOwners.size() ? 0U : 1U;
+      if (offset == 0x140U) expected = index < kOwners.size() ? 0U : 3U;
+      Require(memory.Read32(stage + offset, &value) && value == expected,
+              "Gear sampler rebind changed unrelated native state");
+    }
+  }
+  Require(RebindTopScreenVerifiedRuntimeGeometry(memory, &stats, &error) &&
+              stats.WordsWritten == 6U,
+          "Gear sampler rebind is not idempotent");
+
+  // A late invalid stage must reject the whole staged rebind.
+  for (std::uint32_t index = 0U; index < kOwners.size(); ++index) {
+    const auto stage = kStages + index * 0x200U;
+    Require(memory.Write32(stage + 0x13CU, 1U) &&
+                memory.Write32(stage + 0x140U, index == 2U ? 4U : 3U),
+            "could not seed incompatible Gear filter");
+  }
+  Require(!RebindTopScreenVerifiedRuntimeGeometry(memory, nullptr, &error) &&
+              error.find("filters are incompatible") != std::string::npos,
+          "incompatible Gear sampler was not rejected");
+  for (std::uint32_t index = 0U; index < kOwners.size(); ++index) {
+    const auto stage = kStages + index * 0x200U;
+    Require(memory.Read32(stage + 0x13CU, &value) && value == 1U &&
+                memory.Read32(stage + 0x140U, &value) &&
+                value == (index == 2U ? 4U : 3U),
+            "failed Gear sampler preflight partially changed native state");
+  }
+  Require(memory.Write32(kOwners.back(), 0x09000000U) &&
+              !RebindTopScreenVerifiedRuntimeGeometry(memory, nullptr, &error) &&
+              memory.Read32(kStages + 0x13CU, &value) && value == 1U,
+          "unmapped Gear stage was accepted or caused partial writes");
+}
+
 } // namespace
 
 void RunTopScreenItemDispatchTests();
@@ -86,6 +165,7 @@ void RunTopScreenOcarinaTests();
 void RunTopScreenDpadPresentationTests();
 
 int main() {
+  TestGearTextureFilters();
   RunTopScreenItemDispatchTests();
   RunTopScreenOcarinaTests();
   RunTopScreenDpadPresentationTests();
