@@ -1,5 +1,6 @@
 #pragma once
 
+#include "oot3d_native_a32_input.h"
 #include "oot3d_native_a32_memory.h"
 #include "oot3d_top_screen_input_cadence.h"
 #include "oot3d_top_screen_mod_profile.h"
@@ -10,7 +11,8 @@
 namespace Oot3dNativeGame {
 
 // The TopScreen pause transactions of payload 0x005C9940: START closes the
-// active page, and B on a closing page opens Save/Quit. Both call original
+// active page, and B on a closing page opens Save/Quit. START in gameplay
+// opens the last page through 2.1.1 0x005D5A54..0x005D5B38. These use original
 // OoT3D page resets and pause services. They run as guest calls at the
 // native UI input boundary inside PauseUi_Update, the frame position of the
 // payload's own controller, and never at the host refresh boundary: there the
@@ -25,6 +27,9 @@ public:
   // The page is resolved again at delivery, so a page that has already
   // closed or changed hands is not reset on behalf of the previous one.
   void RequestStartClose() noexcept;
+  // A captured START edge, not the held level. Delivery rechecks the native
+  // gates; release before delivery must not lose a short press.
+  void RequestOpenLastPage(NativeA32TopScreenPage page) noexcept;
   void RequestSystemOpen(const TopScreenPauseSystemOpenPlan &plan) noexcept;
   // Called once per host refresh. The native UI update runs at the title's
   // 30 or 20 Hz, so a request waits a few refreshes for it; one it never
@@ -39,6 +44,7 @@ public:
                std::uint32_t *blocksConsumed);
   void Reset() noexcept;
 
+  std::uint64_t LastPageOpens() const noexcept { return mLastPageOpens; }
   std::uint64_t StartCloses() const noexcept { return mStartCloses; }
   std::uint64_t SystemOpens() const noexcept { return mSystemOpens; }
   std::uint64_t Retired() const noexcept { return mRetired; }
@@ -46,7 +52,7 @@ public:
   TopScreenPauseClosePage LastSystemSourcePage() const noexcept { return mLastSystemSourcePage; }
 
 private:
-  enum class Request : std::uint8_t { None, StartClose, SystemOpen };
+  enum class Request : std::uint8_t { None, StartClose, SystemOpen, OpenLastPage };
   struct Step {
     bool Call = false;
     std::uint32_t Address = 0;
@@ -54,15 +60,21 @@ private:
     std::uint32_t Value1 = 0;
   };
   bool Begin();
+  bool ReadOpenGates(std::uint32_t *play, bool checkBit29);
 
   NativeA32Memory &mMemory;
   Request mRequest = Request::None;
   std::uint32_t mRequestAge = 0;
   TopScreenPauseSystemOpenPlan mSystemOpenPlan;
-  std::array<Step, 5> mSteps{};
+  NativeA32TopScreenPage mOpenPage = NativeA32TopScreenPage::None;
+  bool mOpening = false;
+  bool mNativeTransitionActive = false;
+  std::uint32_t mOpenPlay = 0;
+  std::array<Step, 6> mSteps{};
   std::size_t mStepCount = 0;
   std::size_t mNextStep = 0;
   oot3d::recomp::a32::GuestState mCallerState{};
+  std::uint64_t mLastPageOpens = 0;
   std::uint64_t mStartCloses = 0;
   std::uint64_t mSystemOpens = 0;
   std::uint64_t mRetired = 0;

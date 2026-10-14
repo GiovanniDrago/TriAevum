@@ -916,6 +916,9 @@ bool NativeA32WindowSession::UpdateGuestServicesForRefresh(
             ~button(Oot3dNativeGame::NativeA32HidButton::Start);
         // START wins: a pending Save/Quit of the same page is dropped.
         nativeCandidateDispatch.TopScreenPauseSystemOpen = {};
+      } else if (nativeCandidateDispatch.TopScreenStartRouting.OpenRequested) {
+        nativeCandidateDispatch.PauseTransaction->RequestOpenLastPage(
+            nativeCandidateDispatch.TopScreenStartRouting.LastPage);
       } else if (activeTopScreenConfig.ExitItemsToSaveScreen) {
         const auto systemOpenPlan =
             Oot3dNativeGame::ResolveTopScreenPauseBSystemOpen(
@@ -942,6 +945,7 @@ bool NativeA32WindowSession::UpdateGuestServicesForRefresh(
               &nativeCandidateDispatch.TopScreenAotPauseRoute);
     }
   }
+  nativeCandidateDispatch.TopScreenStartRouting.OpenRequested = false;
   if (scenarioBootstrap.has_value() && !scenarioBootstrap->Finished()) {
     std::string scenarioError;
     if (!scenarioBootstrap->Advance(

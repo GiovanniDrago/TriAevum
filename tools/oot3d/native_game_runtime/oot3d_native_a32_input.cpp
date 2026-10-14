@@ -409,6 +409,7 @@ void ObserveTopScreenStartRoutingPage(bool itemsActive, bool gearActive,
 void ReleaseTopScreenStartRoutingLatch(
     bool physicalStartHeld, TopScreenStartRoutingState& state) noexcept {
     if (!physicalStartHeld) {
+        state.StartHeld = false;
         state.OpenGestureHeld = false;
         state.CloseGestureHeld = false;
     }
@@ -465,50 +466,37 @@ bool ApplyTopScreenVersionChoiceReveal(
 
 void ApplyTopScreenStartRouting(NativeA32InputFrame& frame,
                                 bool topScreenProfile,
-                                bool routeGameplayStartToItems,
+                                bool routeGameplayStartToLastPage,
                                 bool nativePauseOpen,
                                 bool guestRefreshWillConsume,
                                 TopScreenStartRoutingState& state) noexcept {
     if (!guestRefreshWillConsume) {
         return;
     }
+    state.OpenRequested = false;
     const uint32_t start = NativeA32HidButtonMask(NativeA32HidButton::Start);
     const bool startHeld = (frame.Hid.Buttons & start) != 0U;
+    const bool startPressed = startHeld && !state.StartHeld;
+    state.StartHeld = startHeld;
     if (!topScreenProfile) {
         state.OpenGestureHeld = false;
         state.CloseGestureHeld = false;
         return;
     }
-    if (state.CloseGestureHeld) {
+    if (state.CloseGestureHeld || state.OpenGestureHeld) {
         if (startHeld) {
             frame.Hid.Buttons &= ~start;
             return;
         }
         state.CloseGestureHeld = false;
-    }
-    if (state.OpenGestureHeld) {
-        if (startHeld) {
-            frame.Hid.Buttons &= ~start;
-            if (!nativePauseOpen && routeGameplayStartToItems) {
-                const auto items =
-                    MapTopScreenPageShortcutToNativeTouch(state.LastPage);
-                frame.Hid.TouchX = items.X;
-                frame.Hid.TouchY = items.Y;
-                frame.Hid.TouchPressed = items.Pressed;
-            }
-            return;
-        }
         state.OpenGestureHeld = false;
     }
-    if (nativePauseOpen || !routeGameplayStartToItems || !startHeld) {
+    if (nativePauseOpen || !routeGameplayStartToLastPage || !startPressed) {
         return;
     }
 
     frame.Hid.Buttons &= ~start;
-    const auto items = MapTopScreenPageShortcutToNativeTouch(state.LastPage);
-    frame.Hid.TouchX = items.X;
-    frame.Hid.TouchY = items.Y;
-    frame.Hid.TouchPressed = items.Pressed;
+    state.OpenRequested = true;
     MarkTopScreenStartOpenGestureConsumed(state);
 }
 

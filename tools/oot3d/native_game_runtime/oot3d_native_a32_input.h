@@ -119,6 +119,9 @@ void ApplyNativeControlShortcutTouch(
 // suppressed until that physical gesture is released so it cannot also close
 // the page it just opened.
 struct TopScreenStartRoutingState {
+    bool StartHeld = false;
+    // One consuming sample's START edge, transferred to the pause transaction.
+    bool OpenRequested = false;
     bool OpenGestureHeld = false;
     bool CloseGestureHeld = false;
     // TopScreen 2.1.1 005D52C4..537C records the page that owns the pause UI
@@ -170,13 +173,12 @@ bool ApplyTopScreenVersionChoiceReveal(
     NativeA32InputFrame& frame, bool awaitingReveal, bool prompting,
     TopScreenVersionChoiceRevealState& state) noexcept;
 
-// The TopScreen payload routes START to the native Items touch target while
-// gameplay owns the UI. Once Pause owns the UI, this boundary leaves START
-// available for the source-level pause-close dispatcher. Routing state changes
-// only when a guest refresh will consume the sample.
+// Capture one OpenLastPage request on a gameplay START edge, without touch.
+// Once Pause owns the UI, leave START for the pause-close dispatcher. Routing
+// state changes only when a guest refresh will consume the sample.
 void ApplyTopScreenStartRouting(NativeA32InputFrame& frame,
                                 bool topScreenProfile,
-                                bool routeGameplayStartToItems,
+                                bool routeGameplayStartToLastPage,
                                 bool nativePauseOpen,
                                 bool guestRefreshWillConsume,
                                 TopScreenStartRoutingState& state) noexcept;

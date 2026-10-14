@@ -8,6 +8,13 @@ namespace {
 // 0x005C9940, and the original OoT3D services it calls.
 constexpr std::uint32_t kPauseControllerState = 0x0050AF68U;
 constexpr std::uint32_t kPauseSceneControl = 0x005043E8U;
+constexpr std::uint32_t kPauseTouchCounter = 0x0050AF90U;
+constexpr std::uint32_t kPauseSuppression = 0x0050AF9CU;
+constexpr std::uint32_t kPlayPointer = 0x005043E0U;
+constexpr std::uint32_t kMagicState = 0x00588ED8U;
+constexpr std::uint32_t kNativeTransitionPredicate = 0x0035B164U;
+constexpr std::uint32_t kPauseOpenPredicate = 0x002F43E8U;
+constexpr std::uint32_t kPlayOpenPredicate = 0x00374BE8U;
 constexpr std::uint32_t kPauseInputSetTouchEnabled = 0x002FD84CU;
 constexpr std::uint32_t kPauseSystemMenuOpen = 0x0043ACA8U;
 constexpr std::uint32_t kCallStackReservation = 0x20U;
@@ -31,6 +38,15 @@ void TopScreenPauseTransactionRuntime::RequestStartClose() noexcept {
   mRequestAge = 0;
 }
 
+void TopScreenPauseTransactionRuntime::RequestOpenLastPage(
+    NativeA32TopScreenPage page) noexcept {
+  // Never displace a close, or refresh the age of an earlier edge.
+  if (Requested() || Pending()) return;
+  mRequest = Request::OpenLastPage;
+  mRequestAge = 0;
+  mOpenPage = page;
+}
+
 void TopScreenPauseTransactionRuntime::RequestSystemOpen(
     const TopScreenPauseSystemOpenPlan &plan) noexcept {
   // A START close requested in the same refresh wins over Save/Quit.
@@ -50,22 +66,70 @@ void TopScreenPauseTransactionRuntime::Reset() noexcept {
   mRequest = Request::None;
   mRequestAge = 0;
   mSystemOpenPlan = {};
+  mOpenPage = NativeA32TopScreenPage::None;
+  mOpening = false;
+  mNativeTransitionActive = false;
+  mOpenPlay = 0;
   mStepCount = 0;
   mNextStep = 0;
+}
+
+bool TopScreenPauseTransactionRuntime::ReadOpenGates(std::uint32_t *play, bool checkBit29) {
+  std::uint32_t controller = 0U, suppression = 0U;
+  std::uint16_t magic = 0U;
+  std::uint8_t type = 0U, gameplayState = 0U;
+  if (!mMemory.Read32(kPlayPointer, play) ||
+      !mMemory.Read32(kPauseControllerState, &controller) ||
+      !mMemory.Read32(kPauseSuppression, &suppression) ||
+      !mMemory.Read16(kMagicState, &magic) ||
+      (*play != 0U && (!mMemory.Read8(*play + 0x100U, &type) ||
+                      !mMemory.Read8(*play + 0x101U, &gameplayState))))
+    throw std::runtime_error("TopScreen START open cannot read native gates");
+  // 0x005D51A8..51B8, 0x005D5334..533C, 0x005D5720..572C.
+  if (*play == 0U || type != 3U || gameplayState != 2U || controller != 2U)
+    return false;
+  // 0x005D5A60..5A8C: UXTH(magic - 8) <= 1, or native 0x0035B164 != 0.
+  return !checkBit29 || (suppression & 0x20000000U) == 0U ||
+         static_cast<std::uint16_t>(magic - 8U) <= 1U || mNativeTransitionActive;
 }
 
 bool TopScreenPauseTransactionRuntime::Begin() {
   const auto request = mRequest;
   mRequest = Request::None;
-  TopScreenPauseDrawInputs inputs;
-  if (!ReadTopScreenPauseDrawInputs(mMemory, &inputs))
-    throw std::runtime_error("TopScreen pause transaction cannot read native pause state");
+  mOpening = false;
   mStepCount = 0;
   mNextStep = 0;
   const auto add = [&](bool call, std::uint32_t address, std::uint32_t value0 = 0U,
                        std::uint32_t value1 = 0U) {
     mSteps[mStepCount++] = {call, address, value0, value1};
   };
+  if (request == Request::OpenLastPage) {
+    std::uint32_t pageState = 0U;
+    switch (mOpenPage) {
+    case NativeA32TopScreenPage::Items: pageState = 12U; break;
+    case NativeA32TopScreenPage::Gear: pageState = 16U; break;
+    case NativeA32TopScreenPage::Map: pageState = 20U; break;
+    default: break;
+    }
+    if (pageState == 0U || !ReadOpenGates(&mOpenPlay, false)) {
+      ++mRetired;
+      return false;
+    }
+    mOpening = true;
+    mNativeTransitionActive = false;
+    // 0x005D5708..5714 supplies the exception to the later bit-29 gate.
+    add(true, kNativeTransitionPredicate);
+    add(true, kPauseOpenPredicate);
+    add(true, kPlayOpenPredicate, mOpenPlay, 3U);
+    // Ordinary 0x005D5B0C..5B2C, without the conditional direct-Items branch.
+    add(false, kPauseSceneControl, 1U);
+    add(false, kPauseControllerState, pageState);
+    add(false, kPauseTouchCounter, 0U);
+    return true;
+  }
+  TopScreenPauseDrawInputs inputs;
+  if (!ReadTopScreenPauseDrawInputs(mMemory, &inputs))
+    throw std::runtime_error("TopScreen pause transaction cannot read native pause state");
   if (request == Request::StartClose) {
     const auto plan = ResolveTopScreenPauseStartClose(inputs, true);
     if (plan.Page == TopScreenPauseClosePage::None || plan.ResetFunction == 0U) {
@@ -102,6 +166,21 @@ bool TopScreenPauseTransactionRuntime::Begin() {
 bool TopScreenPauseTransactionRuntime::Execute(oot3d::recomp::a32::GuestState &state,
                                                oot3d::recomp::a32::ExecutionResult *result,
                                                std::uint32_t *blocksConsumed) {
+  if (Pending() && mOpening) {
+    if (mNextStep == 1U) mNativeTransitionActive = state.r[0] != 0U;
+    std::uint32_t play = 0U;
+    const bool rejected = (mNextStep >= 2U && state.r[0] != 0U) ||
+        !ReadOpenGates(&play, mNextStep >= 2U) || play != mOpenPlay;
+    if (rejected || mRequest == Request::StartClose) {
+      // No open writes precede the predicate results. A newer START close
+      // can take ownership at this same boundary after restoring its caller.
+      state = mCallerState;
+      mOpening = false;
+      mStepCount = 0;
+      mNextStep = 0;
+      ++mRetired;
+    }
+  }
   if (!Pending()) {
     if (!Requested() || !Begin()) return false;
     if (state.r[13] < kCallStackReservation ||
@@ -129,6 +208,8 @@ bool TopScreenPauseTransactionRuntime::Execute(oot3d::recomp::a32::GuestState &s
   }
   // Every call returned to the boundary: the native UI update continues.
   state = mCallerState;
+  if (mOpening) ++mLastPageOpens;
+  mOpening = false;
   mStepCount = 0;
   mNextStep = 0;
   return false;

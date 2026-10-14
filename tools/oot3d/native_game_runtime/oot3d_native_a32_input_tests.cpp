@@ -551,6 +551,7 @@ int main(int argc, char** argv) {
                 !startRouting.OpenGestureHeld &&
                 !startRouting.CloseGestureHeld,
             "default profile did not preserve native START");
+    startRouting = {};
 
     Require(ResolveNativeA32TouchInputEnabled(false, true, false, false),
             "default profile ignored native touch ownership");
@@ -568,13 +569,17 @@ int main(int argc, char** argv) {
             ObserveTopScreenStartRoutingPage(items, gear, map, pageMemory);
             NativeA32InputFrame start;
             start.Hid.Buttons = NativeA32HidButtonMask(NativeA32HidButton::Start);
-            pageMemory.OpenGestureHeld = false;
+            ReleaseTopScreenStartRoutingLatch(false, pageMemory);
             ApplyTopScreenStartRouting(start, true, true, false, true, pageMemory);
-            return start.Hid.TouchPressed ? start.Hid.TouchX : 0U;
+            Require(pageMemory.OpenRequested && !start.Hid.TouchPressed,
+                    "START did not capture a request without synthetic touch");
+            return pageMemory.LastPage;
         };
-        Require(opened(false, false, false) == 224U && opened(false, true, false) == 96U &&
-                    opened(false, false, false) == 96U && opened(false, false, true) == 160U &&
-                    opened(true, true, true) == 224U,
+        Require(opened(false, false, false) == NativeA32TopScreenPage::Items &&
+                    opened(false, true, false) == NativeA32TopScreenPage::Gear &&
+                    opened(false, false, false) == NativeA32TopScreenPage::Gear &&
+                    opened(false, false, true) == NativeA32TopScreenPage::Map &&
+                    opened(true, true, true) == NativeA32TopScreenPage::Items,
                 "TopScreen START did not reopen the last native pause page");
     }
 
@@ -596,12 +601,11 @@ int main(int argc, char** argv) {
                                startRouting);
     Require(gameplayStart.Hid.Buttons ==
                 NativeA32HidButtonMask(NativeA32HidButton::A) &&
-                gameplayStart.Hid.TouchPressed &&
-                gameplayStart.Hid.TouchX == 224U &&
-                gameplayStart.Hid.TouchY == 221U &&
+                !gameplayStart.Hid.TouchPressed &&
+                startRouting.OpenRequested &&
                 startRouting.OpenGestureHeld &&
                 !startRouting.CloseGestureHeld,
-            "TopScreen gameplay START did not route to native Items");
+            "TopScreen gameplay START did not request the last page");
 
     NativeA32InputFrame continuedOpeningStart;
     continuedOpeningStart.Hid.Buttons =
@@ -609,12 +613,11 @@ int main(int argc, char** argv) {
     ApplyTopScreenStartRouting(continuedOpeningStart, true, true, false, true,
                                startRouting);
     Require(continuedOpeningStart.Hid.Buttons == 0U &&
-                continuedOpeningStart.Hid.TouchPressed &&
-                continuedOpeningStart.Hid.TouchX == 224U &&
-                continuedOpeningStart.Hid.TouchY == 221U &&
+                !continuedOpeningStart.Hid.TouchPressed &&
+                !startRouting.OpenRequested &&
                 startRouting.OpenGestureHeld &&
                 !startRouting.CloseGestureHeld,
-            "held opening START did not sustain the native Items touch");
+            "held opening START repeated its request or synthesized touch");
 
     NativeA32InputFrame heldOpeningStart;
     heldOpeningStart.Hid.Buttons =
@@ -688,12 +691,35 @@ int main(int argc, char** argv) {
         NativeA32HidButtonMask(NativeA32HidButton::Start);
     ApplyTopScreenStartRouting(repressedStart, true, true, false, true,
                                startRouting);
-    Require(repressedStart.Hid.TouchPressed &&
+    Require(!repressedStart.Hid.TouchPressed && startRouting.OpenRequested &&
                 startRouting.OpenGestureHeld &&
                 !startRouting.CloseGestureHeld,
             "START re-press after a poll-rate release was swallowed");
 
     ReleaseTopScreenStartRoutingLatch(false, startRouting);
+
+    // A held START that began outside gameplay does not become a fresh edge.
+    {
+        TopScreenStartRoutingState route;
+        NativeA32InputFrame sample;
+        sample.Hid.Buttons = NativeA32HidButtonMask(NativeA32HidButton::Start);
+        ApplyTopScreenStartRouting(sample, true, false, false, true, route);
+        Require(!route.OpenRequested, "ineligible START requested a page");
+        ApplyTopScreenStartRouting(sample, true, true, false, true, route);
+        Require(!route.OpenRequested, "held START became an edge on entering gameplay");
+        ReleaseTopScreenStartRoutingLatch(false, route);
+        sample.Hid.TouchPressed = true;
+        sample.Hid.TouchX = 31U;
+        sample.Hid.TouchY = 47U;
+        ApplyTopScreenStartRouting(sample, true, true, false, true, route);
+        Require(route.OpenRequested && sample.Hid.TouchPressed &&
+                    sample.Hid.TouchX == 31U && sample.Hid.TouchY == 47U,
+                "START changed an independent native touch sample");
+        sample.Hid.Buttons = 0U;
+        ApplyTopScreenStartRouting(sample, true, true, false, true, route);
+        Require(!route.OpenRequested && !route.OpenGestureHeld,
+                "short START request or gesture survived its consuming sample");
+    }
 
     // One-screen title: the withheld version choice receives nothing until a
     // START, A or touch press reveals it; that press never reaches the guest.
