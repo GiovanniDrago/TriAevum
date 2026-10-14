@@ -936,4 +936,13 @@ TopScreenPauseTargetPlan ResolveTopScreenPausePageRedrawTargetCommand(
   return result;
 }
 
+void WidenTopScreenPauseTargetForItems(TopScreenPauseTargetPlan &plan,
+                                       bool itemsActive) noexcept {
+  if (!itemsActive || !plan.BindTopTarget || plan.ViewportWidth != 480U ||
+      plan.ViewportY != 40U || plan.ViewportHeight != 320U)
+    return;
+  plan.ViewportY = 0U;
+  plan.ViewportHeight = 400U;
+}
+
 } // namespace Oot3dNativeGame

@@ -122,6 +122,31 @@ the scene; with wider output the scene shows beside the page, so the port keeps
 the native dim and those strips stay dark during the pause. The site stays in
 the observed-sites catalogue; an extra block start is harmless.
 
+### Widened Items page
+
+While Items is active (word 0x0050672C; the payload's 0x005E21F4 is a constant
+1), 2.1.1 draws `PauseUi_Draw` in the full 400-wide viewport (0x005D32A4) with
+the projection offset by 0.8 instead of the centred (0, 40, 480, 320) one.
+`TopScreenWideItemsRuntime` (native_game_runtime) ports it on native calls:
+
+- `WidenTopScreenPauseTargetForItems` gives the page target plan the full
+  viewport. The plan rewrites the next `glViewport`, so a viewport call of its
+  own would be overwritten.
+- 0x0041EE1C (005DF428) writes -0.005 and 0.8 into the projection in r1 and
+  lets the native upload run. No other call may run there: 0x0041EE08 has
+  bound the material's PicaCommandWriter at the command cursor (0x0054CC4C),
+  and a GL call in between writes over the same commands. Doing so turned the
+  page background white in every other command buffer.
+- 0x0041EE74 (005D19F8) moves the page's background columns by -40, its grid
+  and icon groups by -17 and its assignment origins to -17 on the selected
+  model streams, which the native update rewrites every frame. It then uploads
+  the projection with 0.6, calls `PauseItemsPage_Draw` and restores 0.8.
+- The cursor subdraws 0x00434CDC (005D1CBC) and 0x00434D48 (005D1BE8) use 0.685
+  for a cursor over the grid. The payload's record of the selected cursor's
+  bounds (0x005E40A8..BC) is read only by payload code and is not ported.
+- 0x005D0494 gives the right pause edge quad no width while Items is active,
+  because the page covers that side; the left edge stays.
+
 Exits that run guest continuations are conditional: 0x0041E988 leaves the
 graph only while the pause transaction or song text has work, and the page
 draw return 0x00419830 only while the item description is drawing or may

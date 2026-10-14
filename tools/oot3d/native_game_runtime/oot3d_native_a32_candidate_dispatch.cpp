@@ -29,6 +29,29 @@ bool ExecuteTopScreenUiSourcePortBlock(
       dispatch.ItemDescription != nullptr &&
       dispatch.ItemDescription->Execute(state, result, blocksConsumed))
     return true;
+  // 2.1.1's widened Items page (0x005DF428, 0x005D19F8, 0x005D1CBC,
+  // 0x005D1BE8).
+  if (dispatch.WideItems != nullptr) {
+    if (pc == Oot3dNativeGame::kTopScreenPageProjectionUploadCall) {
+      Oot3dNativeGame::TopScreenPauseDrawInputs inputs;
+      if (!Oot3dNativeGame::ReadTopScreenPauseDrawInputs(memory, &inputs)) {
+        return false;
+      }
+      // The page goes to the upper screen as the target routing decides.
+      const bool pageRedraw = dispatch.TopScreenPausePageRedrawActive != nullptr &&
+                              *dispatch.TopScreenPausePageRedrawActive;
+      return dispatch.WideItems->ExecutePageProjection(
+          state,
+          Oot3dNativeGame::ResolveTopScreenPauseRouteActive(
+              inputs, &dispatch.TopScreenPauseRoute) ||
+              pageRedraw);
+    }
+    if (pc == Oot3dNativeGame::kTopScreenItemsPageDrawCall)
+      return dispatch.WideItems->ExecuteItemsDraw(state, result, blocksConsumed);
+    if (pc == Oot3dNativeGame::kTopScreenItemsCursorDrawCallA ||
+        pc == Oot3dNativeGame::kTopScreenItemsCursorDrawCallB)
+      return dispatch.WideItems->ExecuteCursorDraw(pc, state, result, blocksConsumed);
+  }
   uint32_t nextPc = 0U;
   auto branchFromCallsite = [&](uint32_t target, uint32_t returnAddress) {
     state.r[14] = returnAddress;
@@ -178,7 +201,8 @@ bool ExecuteTopScreenUiSourcePortBlock(
         dispatch.UiLifecycleBridge->SetTopScreenPauseEdgePresentation(
             Oot3dNativeGame::BuildTopScreenPauseEdgeGeometry(
                 inputs.Pause.HasScene, inputs.Pause.SceneMode,
-                inputs.Pause.RuntimeMode, 0U, 0, 1.0F, 1.0F));
+                inputs.Pause.RuntimeMode, 0U, 0, 1.0F, 1.0F,
+                inputs.Pause.ChildStates[1] != 0U));
       }
       return branchFromCallsite(pc + 4U, pc + 4U);
     }
@@ -257,7 +281,7 @@ bool ExecuteTopScreenUiSourcePortBlock(
       dispatch.UiLifecycleBridge->SetTopScreenPauseEdgePresentation(
           Oot3dNativeGame::BuildTopScreenPauseEdgeGeometry(
               inputs.HasScene, inputs.SceneMode, inputs.RuntimeMode, 0U, 0,
-              1.0F, 1.0F));
+              1.0F, 1.0F, inputs.ChildStates[1] != 0U));
     }
     state.r[0] = 0U;
     state.r[1] = 0U;

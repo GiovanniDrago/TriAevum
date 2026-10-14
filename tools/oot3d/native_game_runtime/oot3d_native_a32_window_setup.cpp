@@ -243,6 +243,10 @@ void NativeA32WindowSession::Setup() {
         kTopScreenCameraUpdateEntry,
         kTopScreenCameraUpdatePatchSite,
         kTopScreenGameplayCompositionPrefix,
+        Oot3dNativeGame::kTopScreenPageProjectionUploadCall,
+        Oot3dNativeGame::kTopScreenItemsPageDrawCall,
+        Oot3dNativeGame::kTopScreenItemsCursorDrawCallA,
+        Oot3dNativeGame::kTopScreenItemsCursorDrawCallB,
     };
     blockEntryHooks.insert(blockEntryHooks.end(),
                            topScreenSourcePortHooks.begin(),
@@ -404,7 +408,11 @@ void NativeA32WindowSession::Setup() {
         kPauseControllerDrawCall,         kTopScreenCameraNormal1Scalar,
         kTopScreenCameraFovScalar,
         kTopScreenCameraUpdateEntry,      kTopScreenCameraUpdatePatchSite,
-        kTopScreenTitleLogoFadeHoldPrefix};
+        kTopScreenTitleLogoFadeHoldPrefix,
+        Oot3dNativeGame::kTopScreenPageProjectionUploadCall,
+        Oot3dNativeGame::kTopScreenItemsPageDrawCall,
+        Oot3dNativeGame::kTopScreenItemsCursorDrawCallA,
+        Oot3dNativeGame::kTopScreenItemsCursorDrawCallB};
     for (const auto &contract :
          Oot3dNativeGame::TopScreenVerifiedControlFlowContracts()) {
       topScreenSourcePortBlocks.push_back(contract.Entry);
@@ -547,6 +555,8 @@ void NativeA32WindowSession::Setup() {
   widescreenProjection.TopScreenInputClock =
       &nativeCandidateDispatch.TopScreenInputClock;
   widescreenProjection.ObservedExitPc = &nativeCandidateDispatch.ObservedExitPc;
+  nativeCandidateDispatch.TopScreenPausePageRedrawActive =
+      &widescreenProjection.TopScreenPausePageRedrawActive;
   widescreenProjection.TopScreenItems = &nativeCandidateDispatch.TopScreenItems;
   // After the dispatch state is rebuilt: an earlier pointer would name the
   // free camera that assignment destroyed.
@@ -817,6 +827,8 @@ void NativeA32WindowSession::Setup() {
   auto &itemDescription = itemDescriptionStorage.emplace(process.Memory());
   nativeCandidateDispatch.ItemDescription = &itemDescription;
   widescreenProjection.ItemDescription = &itemDescription;
+  auto &wideItems = wideItemsStorage.emplace(process.Memory());
+  nativeCandidateDispatch.WideItems = &wideItems;
   auto &uiRenderBackend = uiRenderBackendStorage.emplace(api);
   auto &n64UiRenderer = n64UiRendererStorage.emplace(uiRenderBackend,
                                                &ocarinaText);

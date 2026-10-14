@@ -243,6 +243,7 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
         tools/oot3d/native_game_runtime/oot3d_top_screen_ocarina_text_runtime.cpp
         tools/oot3d/native_game_runtime/oot3d_top_screen_pause_transaction.cpp
         tools/oot3d/native_game_runtime/oot3d_top_screen_item_description_runtime.cpp
+        tools/oot3d/native_game_runtime/oot3d_top_screen_wide_items_runtime.cpp
         tools/oot3d/native_game_runtime/oot3d_native_actor_interactions.cpp
         tools/oot3d/native_game_runtime/oot3d_actor_visibility_policy.cpp
         tools/oot3d/native_game_runtime/oot3d_native_a32_actor_visibility.cpp

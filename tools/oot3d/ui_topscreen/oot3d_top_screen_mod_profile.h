@@ -260,10 +260,12 @@ struct TopScreenPauseEdgeGeometry {
 
 // Exact two-quad geometry and color math from payload producer 0x005CD1E0.
 // The caller supplies values owned by its recovered route/controller.
+// `itemsActive` (word 0x0050672C): 2.1.1 0x005D0494 gives the right quad no
+// width, because the widened Items page covers that side.
 TopScreenPauseEdgeGeometry BuildTopScreenPauseEdgeGeometry(
     bool hasScene, std::uint8_t sceneMode, std::uint32_t runtimeMode,
     std::uint8_t sceneFade, std::int32_t transitionStep, float nativeVisibility,
-    float globalColorScale) noexcept;
+    float globalColorScale, bool itemsActive = false) noexcept;
 
 // The ordinary gameplay producer at payload 0x005C9940 reuses the native
 // PauseTouchButton renderer. These are its exact six primary quads; the first
@@ -606,6 +608,10 @@ ResolveTopScreenPauseTargetCommand(const TopScreenPauseTargetCommand &command,
                                    bool routeActive) noexcept;
 TopScreenPauseTargetPlan ResolveTopScreenPausePageRedrawTargetCommand(
     const TopScreenPauseTargetCommand &command) noexcept;
+// 2.1.1 0x005D32A4: while Items is active (word 0x0050672C) the page is drawn
+// in the full 400-wide viewport instead of the centred (0, 40, 480, 320).
+void WidenTopScreenPauseTargetForItems(TopScreenPauseTargetPlan &plan,
+                                       bool itemsActive) noexcept;
 
 struct TopScreenPauseChildState {
   std::array<std::uint32_t, 6> Values{};

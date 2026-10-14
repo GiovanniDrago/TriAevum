@@ -64,6 +64,7 @@
 #include "oot3d_top_screen_ocarina_text_runtime.h"
 #include "oot3d_top_screen_pause_transaction.h"
 #include "oot3d_top_screen_item_description_runtime.h"
+#include "oot3d_top_screen_wide_items_runtime.h"
 #include "oot3d_native_whole_aot_runtime.h"
 #ifdef OOT3D_NATIVE_DIRECT_AOT_PLUGIN
 #include "oot3d_native_direct_aot.h"
@@ -555,6 +556,8 @@ struct NativeCandidateDispatchState {
   // The pc whose block policy raised the last observable exit: the product
   // dispatcher resumes it without running that policy a second time.
   std::optional<uint32_t> ObservedExitPc;
+  // The projection policy's page redraw to the upper screen.
+  const bool *TopScreenPausePageRedrawActive = nullptr;
   uint32_t PreviousTopScreenButtons = 0U;
   Oot3dNativeGame::NativeA32PolledButtonLatch StartButtonLatch;
   Oot3dNativeGame::TopScreenStartRoutingState TopScreenStartRouting;
@@ -562,6 +565,7 @@ struct NativeCandidateDispatchState {
   Oot3dNativeGame::TopScreenPauseSystemOpenState TopScreenPauseSystemOpen;
   Oot3dNativeGame::TopScreenPauseTransactionRuntime *PauseTransaction = nullptr;
   Oot3dNativeGame::TopScreenItemDescriptionRuntime *ItemDescription = nullptr;
+  Oot3dNativeGame::TopScreenWideItemsRuntime *WideItems = nullptr;
   // Sorted TopScreen entries the product hook owns (product builds only).
   std::vector<uint32_t> ProductTopScreenBlocks;
   uint64_t TopScreenAimProjectileCycleAttempts = 0U;

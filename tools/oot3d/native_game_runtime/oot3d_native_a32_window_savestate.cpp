@@ -472,6 +472,7 @@ bool NativeA32WindowSession::LoadState(const std::filesystem::path &path,
   ocarinaText.Reset();
   pauseTransactionStorage->Reset();
   itemDescriptionStorage->Reset();
+  wideItemsStorage->Reset();
   uiLifecycleBridge.SetTopScreenConfig(activeTopScreenConfig);
   widescreenProjection.TopScreenPauseDrawRouting = {};
   widescreenProjection.TopScreenPausePageRedraw = {};

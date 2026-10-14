@@ -283,6 +283,10 @@ void ApplyNativeWidescreenProjectionPolicy(
                     runtime.UiLifecycleBridge->NativeFrontendPresentationActive());
         if (frontendPlan.Handled) {
           plan = frontendPlan;
+        } else {
+          std::uint32_t items = 0U;
+          Oot3dNativeGame::WidenTopScreenPauseTargetForItems(
+              plan, runtime.TraceMemory->Read32(0x0050672CU, &items) && items != 0U);
         }
         if (plan.Handled && plan.BindTopTarget) {
           runtime.PendingTopScreenPauseTarget = plan;
@@ -353,7 +357,7 @@ void ApplyNativeWidescreenProjectionPolicy(
                                   pageInputs.Pause.HasScene,
                                   pageInputs.Pause.SceneMode,
                                   pageInputs.Pause.RuntimeMode, 0U, 0, 1.0F,
-                                  1.0F))
+                                  1.0F, pageInputs.Pause.ChildStates[1] != 0U))
                         : std::nullopt);
           }
           const auto suppressionSet =

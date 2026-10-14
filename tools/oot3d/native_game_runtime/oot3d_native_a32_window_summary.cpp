@@ -2327,6 +2327,12 @@ void WriteNativeA32WindowRuntimeSummary(const NativeA32WindowSummaryInputs &in) 
                     nativeCandidateDispatch.ItemDescription->Toggles()},
                    {"topscreen_item_description_redraws",
                     nativeCandidateDispatch.ItemDescription->Redraws()},
+                   {"topscreen_wide_pages",
+                    nativeCandidateDispatch.WideItems->WidePages()},
+                   {"topscreen_wide_items_draws",
+                    nativeCandidateDispatch.WideItems->WideItemsDraws()},
+                   {"topscreen_wide_items_cursor_draws",
+                    nativeCandidateDispatch.WideItems->CursorDraws()},
                    {"topscreen_aim_projectile_cycle_attempts",
                     nativeCandidateDispatch
                         .TopScreenAimProjectileCycleAttempts},

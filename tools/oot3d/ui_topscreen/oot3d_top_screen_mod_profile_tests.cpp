@@ -1500,6 +1500,11 @@ int main() {
               fixedPauseEdges.AtlasSizes[1].X == -64.0F &&
               fixedPauseEdges.RgbScale == 1.0F,
           "TopScreen pause-edge fixed geometry is incorrect");
+  const auto itemsPauseEdges =
+      BuildTopScreenPauseEdgeGeometry(true, 5U, 0U, 0U, 0, 1.0F, 1.0F, true);
+  Require(itemsPauseEdges.Sizes[0].X == 0.0F && itemsPauseEdges.Sizes[1].X == 32.0F &&
+              itemsPauseEdges.Positions[1].X == 0.0F,
+          "the Items page keeps the right pause edge (2.1.1 0x005D0494)");
   const auto transitioningPauseEdges =
       BuildTopScreenPauseEdgeGeometry(true, 3U, 1U, 0x7FU, 10, 1.0F, 0.8F);
   Require(transitioningPauseEdges.Positions[0].X == 304.0F &&
@@ -2454,6 +2459,16 @@ int main() {
               pageRedrawTarget.ViewportWidth == 480U &&
               pageRedrawTarget.ViewportHeight == 320U,
           "TopScreen pause target command contract is incorrect");
+  auto wideTarget = pageRedrawTarget;
+  WidenTopScreenPauseTargetForItems(wideTarget, true);
+  auto narrowTarget = pageRedrawTarget;
+  WidenTopScreenPauseTargetForItems(narrowTarget, false);
+  auto wideHalfTarget = halfTarget;
+  WidenTopScreenPauseTargetForItems(wideHalfTarget, true);
+  Require(wideTarget.ViewportY == 0U && wideTarget.ViewportWidth == 480U &&
+              wideTarget.ViewportHeight == 400U && narrowTarget.ViewportY == 40U &&
+              narrowTarget.ViewportHeight == 320U && wideHalfTarget.ViewportY == 40U,
+          "the Items page target is not the full 400-wide viewport");
 
   NativeA32Memory suppressionMemory;
   Require(suppressionMemory.MapRegion(
