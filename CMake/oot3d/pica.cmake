@@ -277,6 +277,12 @@ target_link_libraries(oot3d_native_pica_vulkan_plan PUBLIC
     oot3d_native_pica_submission)
 oot3d_target_defaults(oot3d_native_pica_vulkan_plan FOLDER Tools)
 
+add_executable(oot3d_native_pica_temporal_tests EXCLUDE_FROM_ALL
+    tools/oot3d/native_game_runtime/oot3d_native_pica_temporal_tests.cpp)
+target_link_libraries(oot3d_native_pica_temporal_tests PRIVATE
+    oot3d_native_pica_composition oot3d_native_pica_vulkan_plan)
+oot3d_target_defaults(oot3d_native_pica_temporal_tests FOLDER Tests)
+
 add_executable(oot3d_native_pica_vulkan_plan_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_pica_vulkan_plan_tests.cpp
 )

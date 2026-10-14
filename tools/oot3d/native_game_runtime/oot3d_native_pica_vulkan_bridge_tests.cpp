@@ -196,6 +196,7 @@ int main() {
         0x0030F4D0U,
         1U,
     };
+    plan.Composition.TemporalIdentity = {9, 10, 11, 12, 13};
     plan.VertexCount = 3;
     plan.FragmentFeatures.FogEnabled = true;
     plan.FragmentFeatures.FogFlip = true;
@@ -261,6 +262,8 @@ int main() {
                 backend, plan, &error, 9),
             error);
     Require(backend.DrawRoomShadows == roomShadows, "draw bridge lost room shell publication");
+    Require(backend.DrawComposition.TemporalIdentity == plan.Composition.TemporalIdentity,
+            "draw bridge lost native temporal identity");
     float packedDiffuse = 0.0F;
     float packedGlobalAmbient = 0.0F;
     int32_t packedShadowTextureBias = 0;

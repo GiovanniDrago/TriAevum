@@ -102,6 +102,9 @@ struct PicaDrawView {
     PicaCompareFunction DepthCompare = PicaCompareFunction::Always;
     PicaStencilState Stencil;
     std::span<const PicaVertexArtifact> VertexArtifacts;
+    // Explicit producer proof of a stationary world surface. Unknown/moving
+    // draws must not inherit camera-only history after a correspondence miss.
+    bool TemporalCameraOnly = false;
 };
 
 // Projects the full transient draw facade into the compact ordered metadata

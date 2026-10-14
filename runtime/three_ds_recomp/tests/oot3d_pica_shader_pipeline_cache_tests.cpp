@@ -725,7 +725,7 @@ void main() {
 }
 
 TEST(Oot3dPicaShaderPipelineCache,
-     OmitsTemporalInstrumentationWithoutTypedFrontendProgram) {
+     PublishesFallbackProvenanceWithoutTypedFrontendProgram) {
     Fast::Oot3d::PicaShaderPipelineCache cache;
     Fast::Oot3d::EffectsSettings effects;
     auto request = BaseRequest();
@@ -736,8 +736,10 @@ TEST(Oot3dPicaShaderPipelineCache,
     const auto& result = cache.Resolve(request, effects);
     EXPECT_FALSE(Fast::Oot3d::HasPicaShaderInstrumentationFeature(
         result.AppliedFeatures, Fast::Oot3d::PicaShaderInstrumentationFeature::TemporalVertex));
-    EXPECT_FALSE(Fast::Oot3d::HasPicaShaderInstrumentationFeature(
+    EXPECT_TRUE(Fast::Oot3d::HasPicaShaderInstrumentationFeature(
         result.AppliedFeatures, Fast::Oot3d::PicaShaderInstrumentationFeature::RigidMotionGuide));
+    EXPECT_EQ(result.FragmentShaderSource.find("layout(location=7) in"), std::string::npos);
+    EXPECT_NE(result.FragmentShaderSource.find("vec4(oot3d_draw.rigid_motion.xyz, 0.0)"), std::string::npos);
     EXPECT_EQ(cache.Stats().TypedInstrumentationContractRejects, 1U);
 }
 
@@ -1741,7 +1743,7 @@ void main() {
                                  firstLocation + 1U),
               std::string::npos);
     const size_t motionWrite = result.Source.find(
-        "pica_rigid_motion_guide = vec4(oot3d_motion.xy");
+        "pica_rigid_motion_guide = oot3d_motion");
     const size_t depthWrite = result.Source.find(
         "pica_rigid_motion_guide.a = pica_color.a");
     ASSERT_NE(motionWrite, std::string::npos);

@@ -9,7 +9,8 @@
 #include "fast/backends/gfx_rendering_api.h"
 #include "fast/renderer/spirv_cache.h"
 #include "fast/renderer3ds/pica_shader_module_identity.h"
-#include "fast/renderer3ds/pica_temporal_occurrences.h"
+#include "fast/renderer3ds/pica_temporal_history.h"
+#include "fast/renderer3ds/pica_motion_provenance.h"
 #include "fast/renderer3ds/pica_program_preparation.h"
 #include "fast/renderer3ds/pica_preparation_queue.h"
 #include "fast/renderer3ds/pica_texture_copy_plan.h"
@@ -1707,11 +1708,6 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::RendererValidationTelemetry mValidationTelemetry;
     Oot3dVulkanValidation mVulkanValidation;
 
-    struct PreviousPicaVertexUniforms {
-        uint64_t FrameId = 0;
-        std::vector<uint8_t> Bytes;
-        std::array<float, 2> JitterNdc{};
-    };
     Oot3dVulkanGpuProfiler mGpuProfiler;
 #if defined(_WIN32) && defined(ENABLE_OOT3D_D3D12_NGX_PROVIDER)
     Oot3d::D3d12NgxProvider mD3d12NgxProvider;
@@ -1756,7 +1752,6 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::UpscalerGuidePass mUpscalerGuidePass;
     Oot3d::NativeUiOverlayPass mNativeUiOverlayPass;
     Oot3d::TemporalHistoryManager mTemporalHistory;
-    Oot3d::PicaRigidMotionTracker mRigidMotionTracker;
     Oot3d::SceneCompositePass mSceneCompositePass;
     Oot3d::Smaa1xPass mSmaa1xPass;
     Oot3d::ReflectionIblPass mReflectionIblPass;
@@ -1843,9 +1838,7 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         mGrassSurfaceOccurrencesThisFrame;
     std::unordered_map<uint64_t, uint32_t> mGrassOverlayOccurrences;
     std::unordered_map<uint64_t, uint64_t> mGrassDrawOrdinals;
-    Renderer3ds::PicaTemporalOccurrences mRigidMotionOccurrencesThisFrame;
-    std::unordered_map<uint64_t, PreviousPicaVertexUniforms>
-        mPreviousPicaVertexUniforms;
+    Renderer3ds::PicaTemporalHistory mPicaTemporalHistory;
     uint32_t mNativePicaDepthWritingDrawsThisFrame = 0;
     Oot3d::SceneSurfaceRegistry mSceneSurfaces;
     Oot3d::ResourceStateTracker mResourceStates;

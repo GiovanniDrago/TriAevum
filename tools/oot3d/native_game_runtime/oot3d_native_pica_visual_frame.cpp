@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -816,6 +817,40 @@ VisualDrawMatching BuildVisualDrawMatching(
     std::vector<bool> noPreviousMatches(previous.Draws.size(), false);
     std::vector<bool> previousMatched(previous.Draws.size(), false);
     std::vector<bool> currentMatched(current.Draws.size(), false);
+    // Native instance matches are independent of draw order and cardinality.
+    // Reserve every evidenced draw from the legacy interpolation matcher,
+    // including unmatched/ambiguous ones, so it cannot pair their uniforms by
+    // occurrence. Unknown producers retain their existing visual sampling,
+    // but cannot acquire exact renderer motion history.
+    using NativeKey = std::pair<Fast::Renderer3ds::PicaTemporalIdentity, std::array<uint64_t, 8>>;
+    const auto nativeKey = [](const Oot3dPicaVulkanDrawPlan& draw) -> NativeKey {
+        const auto& fb = draw.State.Framebuffer;
+        return {draw.Composition.TemporalIdentity, {fb.ColorPhysicalAddress, fb.DepthPhysicalAddress,
+            fb.Width, fb.Height, fb.ColorFormat, fb.DepthFormat,
+            uint64_t(uint16_t(draw.State.Viewport.CornerX)), uint64_t(uint16_t(draw.State.Viewport.CornerY))}};
+    };
+    std::map<NativeKey, std::vector<size_t>> oldInstances, newInstances;
+    for (size_t i = 0; i < previous.Draws.size(); ++i)
+        if (previous.Draws[i].Composition.TemporalIdentity.Available()) {
+            oldInstances[nativeKey(previous.Draws[i])].push_back(i);
+            previousMatched[i] = true;
+        }
+    for (size_t i = 0; i < current.Draws.size(); ++i)
+        if (current.Draws[i].Composition.TemporalIdentity.Available()) {
+            newInstances[nativeKey(current.Draws[i])].push_back(i);
+            currentMatched[i] = true;
+        }
+    for (const auto& [key, indices] : oldInstances)
+        if (indices.size() != 1) matching.AmbiguousPrevious += indices.size();
+    for (const auto& [key, indices] : newInstances) {
+        if (indices.size() != 1) matching.AmbiguousCurrent += indices.size();
+        const auto old = oldInstances.find(key);
+        if (indices.size() == 1 && old != oldInstances.end() && old->second.size() == 1 &&
+            HaveMatchingPipelineLayout(previous.Draws[old->second[0]], current.Draws[indices[0]])) {
+            matching.PreviousByCurrent[indices[0]] = {old->second[0], VisualDrawMatchKind::StrictUnique};
+            ++matching.StrictUniqueMatches;
+        }
+    }
     const auto previousStrict =
         ResolveVisualIdentities(previous.StrictDrawIdentities, previous.Draws, ComputeOot3dPicaVisualDrawIdentity);
     const auto currentStrict =
@@ -857,10 +892,11 @@ VisualDrawMatching BuildVisualDrawMatching(
         HaveMatchingPipelineLayout, VisualDrawMatchKind::PipelineOrdinal,
         matching.PipelineOrdinalMatches);
 
-    matching.UnmatchedPrevious = static_cast<size_t>(std::count(
-        previousMatched.begin(), previousMatched.end(), false));
-    matching.UnmatchedCurrent = static_cast<size_t>(std::count(
-        currentMatched.begin(), currentMatched.end(), false));
+    const auto actualMatches = static_cast<size_t>(std::count_if(
+        matching.PreviousByCurrent.begin(), matching.PreviousByCurrent.end(),
+        [](const auto& match) { return match.has_value(); }));
+    matching.UnmatchedPrevious = previous.Draws.size() - actualMatches;
+    matching.UnmatchedCurrent = current.Draws.size() - actualMatches;
     return matching;
 }
 
@@ -1609,6 +1645,9 @@ ComputeOot3dPicaVisualDrawIdentity(const Oot3dPicaVulkanDrawPlan& plan) {
     HashValue(hash, plan.Composition.NativeProjectedShadow);
     HashValue(hash, plan.Composition.NativeActorGeometry);
     HashValue(hash, plan.Composition.NativeActorIdentity);
+    const auto& temporal = plan.Composition.TemporalIdentity;
+    HashValue(hash, temporal.Owner); HashValue(hash, temporal.Instance);
+    HashValue(hash, temporal.Part); HashValue(hash, temporal.Slot); HashValue(hash, temporal.Lifetime);
     HashValue(hash, plan.Composition.IsolatedLighting);
     HashValue(hash, plan.VertexShader.StateKey);
     HashValue(hash, plan.FragmentShader.StateKey);

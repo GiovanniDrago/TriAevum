@@ -299,16 +299,10 @@ void GfxRenderingAPIVulkan::StartFrame() {
     mDirectionalShadowInsertionAttemptedTargetsThisFrame.clear();
     mPointShadowInsertionAttemptedTargetsThisFrame.clear();
     mGrassSurfaceOccurrencesThisFrame.clear();
-    mRigidMotionOccurrencesThisFrame.clear();
     mNativePicaDepthWritingDrawsThisFrame = 0;
     mCustomTextureUploadBytesThisFrame = 0;
     if (mFrameCounter > 3U) {
         Oot3d::GrassSceneBridge::Instance().PruneBeforeFrame(mFrameCounter - 2U);
-        mRigidMotionTracker.PruneBeforeFrame(mFrameCounter - 2U);
-        std::erase_if(mPreviousPicaVertexUniforms,
-            [this](const auto& item) {
-                return item.second.FrameId + 2U < mFrameCounter;
-            });
     }
     settingsRuntime.SetCapability(
         Oot3d::GraphicsCapability::ValidViewMetadata,
@@ -593,8 +587,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
               aaPolicy.TemporalJitterPhases).PixelOffset
         : std::array<float, 2>{};
     if (!mTemporalMotionEnabled) {
-        mRigidMotionTracker.Reset();
-        mPreviousPicaVertexUniforms.clear();
+        mPicaTemporalHistory.Reset();
     }
     if (!mTemporalJitterEnabled) {
         mTaaOutputValid = false;

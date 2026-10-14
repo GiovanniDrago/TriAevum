@@ -592,8 +592,8 @@ void main() {
     out_geometry_guide = uvec4(0u, pica_geometry_encode_normal(pica_geometry_face_normal(
         blade_view_direction, blade_face_dx, blade_face_dy)), 2u, 0u);
     // With the placement's previous frame the blade writes exact motion and
-    // keeps its temporal history. Without it, the motion pass reconstructs
-    // camera motion from depth and the reactive mask rejects the history,
+    // keeps its temporal history. Without it, the motion pass invalidates
+    // motion and the reactive mask rejects the history,
     // since wind and interaction still move the blade.
     bool exact_motion = environment_state.records[grass.flags.w].motion_state.z > 0.5 &&
         blade_current_clip.w > 1.0e-7 && blade_previous_clip.w > 1.0e-7;
@@ -603,7 +603,7 @@ void main() {
     if (exact_motion) {
         vec2 current_uv = blade_current_clip.xy / blade_current_clip.w * 0.5 + 0.5;
         vec2 previous_uv = blade_previous_clip.xy / blade_previous_clip.w * 0.5 + 0.5;
-        out_rigid_motion.xyz = vec3(previous_uv - current_uv, 1.0);
+        out_rigid_motion.xyz = vec3(previous_uv - current_uv, 3.0);
     }
 #endif
     float resolved_depth = gl_FragCoord.z;

@@ -24,6 +24,11 @@ target_compile_features(native_presentation_policy_tests PRIVATE cxx_std_20)
 target_include_directories(native_presentation_policy_tests PRIVATE ../include)
 add_test(NAME native_presentation_policy_tests COMMAND native_presentation_policy_tests)
 
+add_executable(pica_temporal_history_tests pica_temporal_history_tests.cpp)
+target_compile_features(pica_temporal_history_tests PRIVATE cxx_std_20)
+target_include_directories(pica_temporal_history_tests PRIVATE ../include)
+add_test(NAME pica_temporal_history_tests COMMAND pica_temporal_history_tests)
+
 add_executable(pica_temporal_occurrences_tests pica_temporal_occurrences_tests.cpp)
 target_compile_features(pica_temporal_occurrences_tests PRIVATE cxx_std_20)
 target_include_directories(pica_temporal_occurrences_tests PRIVATE ../include)
@@ -257,6 +262,17 @@ if(MSVC)
 endif()
 gtest_discover_tests(oot3d_pica_shader_pipeline_cache_tests
     DISCOVERY_TIMEOUT 30)
+
+# Exercise all three source generators without a GPU. Optional argv[1]
+# exports shaders for offline glslang validation.
+get_target_property(_pica_motion_sources oot3d_pica_shader_pipeline_cache_tests SOURCES)
+list(REMOVE_ITEM _pica_motion_sources oot3d_pica_shader_pipeline_cache_tests.cpp)
+add_executable(pica_motion_provenance_tests pica_motion_provenance_tests.cpp
+    ${_pica_motion_sources} ../src/fast/oot3d/motion_vectors.cpp)
+target_compile_features(pica_motion_provenance_tests PRIVATE cxx_std_20)
+target_include_directories(pica_motion_provenance_tests PRIVATE ../include)
+add_test(NAME pica_motion_provenance_tests COMMAND pica_motion_provenance_tests)
+unset(_pica_motion_sources)
 
 add_executable(oot3d_pica_pipeline_manifest_tests
     oot3d_pica_pipeline_manifest_tests.cpp

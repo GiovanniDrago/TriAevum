@@ -525,8 +525,7 @@ void GfxRenderingAPIVulkan::ApplyNativePicaSampleCount(VkSampleCountFlagBits sam
     mInteractiveGrassPass.Shutdown();
     mWorldDebugLinePass.Shutdown();
     mTemporalHistory.Reset();
-    mRigidMotionTracker.Reset();
-    mPreviousPicaVertexUniforms.clear();
+    mPicaTemporalHistory.Reset();
     for (auto& [key, target] : mNativePicaRenderTargets) {
         DestroyNativePicaRenderTarget(target);
     }
@@ -2033,7 +2032,7 @@ void GfxRenderingAPIVulkan::ReleaseEffectGraphImageClients() {
     mAmbientOcclusionOutputValid = false;
     mHiZOutputValid = false;
     mTemporalHistory.Reset();
-    mRigidMotionTracker.Reset();
+    mPicaTemporalHistory.Reset();
 }
 
 void GfxRenderingAPIVulkan::ApplyInternalResolutionScale(float scale) {
@@ -2089,8 +2088,7 @@ void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayIma
     mHiZOutputValid = false;
     mAmbientOcclusionOutputValid = false;
     mTemporalHistory.Reset();
-    mRigidMotionTracker.Reset();
-    mPreviousPicaVertexUniforms.clear();
+    mPicaTemporalHistory.Reset();
     for (auto texture = mNativePicaTextures.begin();
          texture != mNativePicaTextures.end();) {
         if (!texture->second.ImageBorrowed) {

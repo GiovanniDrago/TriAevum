@@ -109,6 +109,7 @@ struct PicaFragmentInstrumentationRequest {
     // (normal tilt per unit change of log2 luminance across one texel).
     uint8_t ReliefTexture = 0xffU;
     float ReliefGain = 0.0F;
+    bool TemporalInputs = true;
 };
 
 struct PicaFragmentInstrumentationOutputLayout {

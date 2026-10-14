@@ -52,6 +52,11 @@ bool GfxRenderingAPIVulkan::PublishPicaCompositionSequence(
                 "native PICA composition schedule failed: " +
                 compileError);
         }
+        if (mTemporalMotionEnabled && !mPicaTemporalHistory.PrepareSequence(sequence, mFrameCounter) &&
+            mPicaTemporalHistory.DuplicateTargetSequences == 1U)
+            std::fprintf(stderr, "TRIAEVUM_TEMPORAL_DUPLICATE_TARGET frame=%llu: a target was presented twice in one "
+                         "host frame; its second sequence draws without motion history\n",
+                         static_cast<unsigned long long>(mFrameCounter));
         mNativePicaCompositionSchedule = std::move(compiled);
         mGrassDrawOrdinals.clear();
         mGrassOverlayOccurrences.clear();
@@ -1814,67 +1819,38 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             sceneDraw &&
             draw.FragmentOperationMode == 0U &&
             draw.DepthTestEnabled && draw.DepthWriteEnabled;
-        uint64_t temporalIdentity = draw.GeometryIdentityAvailable ? draw.GeometryIdentity : draw.VertexShaderKey;
-        bool repeatedTemporalIdentity = false;
+        std::span<const uint8_t> previousVertexUniformBytes = draw.VertexUniformBytes;
+        std::array<float, 2> previousJitterNdc{2.0F * jitterUv[0], 2.0F * jitterUv[1]};
+        Renderer3ds::PicaTemporalMatch temporalMatch;
         if (temporalEligible) {
-            const auto mixIdentity = [&temporalIdentity](uint64_t value) {
-                temporalIdentity ^= value + 0x9e3779b97f4a7c15ULL +
-                            (temporalIdentity << 6U) +
-                            (temporalIdentity >> 2U);
-            };
-            if (!draw.GeometryIdentityAvailable) {
-                for (const auto& binding : draw.VertexBindings) {
-                    if (!binding.PerInstance) {
-                        mixIdentity(HashNativeBytes(binding.Bytes));
-                    }
-                }
-                mixIdentity(HashNativeBytes(draw.IndexBytes));
+            temporalMatch = mPicaTemporalHistory.Track(draw, mFrameCounter,
+                mPicaSceneFrame.TemporalSample(), previousJitterNdc);
+            if (temporalMatch.Exact()) {
+                previousVertexUniformBytes = temporalMatch.Previous->Bytes;
+                previousJitterNdc = temporalMatch.Previous->JitterNdc;
             }
-            const uint32_t occurrence =
-                mRigidMotionOccurrencesThisFrame.Next(
-                    temporalIdentity, draw.RenderTargetNamespace);
-            mixIdentity(occurrence);
-            repeatedTemporalIdentity = occurrence != 0U;
-            mixIdentity(draw.RenderTargetNamespace);
-            if (temporalIdentity == 0U) temporalIdentity = 1U;
         }
-        const bool rigidEligible = temporalEligible &&
-            Oot3d::DecodeCommonRigidOriginClip(
-                draw.VertexUniformBytes, draw.FramebufferFlipped,
-                rigidOriginClip);
+        const bool repeatedTemporalIdentity =
+            temporalMatch.Reason == Renderer3ds::PicaTemporalMatchReason::Ambiguous;
+        const bool rigidEligible = temporalEligible && temporalMatch.Exact() &&
+            draw.TemporalVertexProgram.Hooks.TransformProgram() != nullptr &&
+            Oot3d::DecodeCommonRigidOriginClip(draw.VertexUniformBytes, draw.FramebufferFlipped, rigidOriginClip);
         if (rigidEligible) {
-            rigidMotion = mRigidMotionTracker.Track(
-                temporalIdentity, mFrameCounter,
-                rigidOriginClip, jitterUv);
-        }
-        std::span<const uint8_t> previousVertexUniformBytes =
-            draw.VertexUniformBytes;
-        // Owns the previous sample's uniforms for this draw: the history entry
-        // is replaced below, which would free the storage under the span.
-        std::vector<uint8_t> previousVertexUniformStorage;
-        std::array<float, 2> previousJitterNdc{
-            2.0F * jitterUv[0], 2.0F * jitterUv[1]};
-        bool exactMotionHistory = false;
-        if (temporalEligible) {
-            const auto previous =
-                mPreviousPicaVertexUniforms.find(temporalIdentity);
-            if (previous != mPreviousPicaVertexUniforms.end() &&
-                previous->second.FrameId + 1U == mFrameCounter &&
-                previous->second.Bytes.size() ==
-                    draw.VertexUniformBytes.size()) {
-                previousVertexUniformStorage = std::move(previous->second.Bytes);
-                previousVertexUniformBytes = previousVertexUniformStorage;
-                previousJitterNdc = previous->second.JitterNdc;
-                exactMotionHistory = true;
+            std::array<float, 4> previousClip{};
+            if (Oot3d::DecodeCommonRigidOriginClip(previousVertexUniformBytes, draw.FramebufferFlipped, previousClip) &&
+                rigidOriginClip[3] > 1.0e-7F && previousClip[3] > 1.0e-7F) {
+                for (size_t axis = 0; axis < 2; ++axis)
+                    rigidMotion.MotionUv[axis] = (previousClip[axis] / previousClip[3] -
+                        rigidOriginClip[axis] / rigidOriginClip[3]) * 0.5F + previousJitterNdc[axis] * 0.5F - jitterUv[axis];
+                rigidMotion.Valid = std::isfinite(rigidMotion.MotionUv[0]) && std::isfinite(rigidMotion.MotionUv[1]) &&
+                    std::abs(rigidMotion.MotionUv[0]) <= 1.0F && std::abs(rigidMotion.MotionUv[1]) <= 1.0F;
             }
-            PreviousPicaVertexUniforms next;
-            next.FrameId = mFrameCounter;
-            next.Bytes.assign(draw.VertexUniformBytes.begin(),
-                              draw.VertexUniformBytes.end());
-            next.JitterNdc = {
-                2.0F * jitterUv[0], 2.0F * jitterUv[1]};
-            mPreviousPicaVertexUniforms[temporalIdentity] = std::move(next);
         }
+        const bool exactMotionHistory = temporalMatch.Exact() && shaderVariant.TemporalVertexApplied &&
+            shaderVariant.RigidMotionApplied;
+        const auto motionProvenance = Renderer3ds::ResolvePicaMotionProvenance(exactMotionHistory,
+            rigidMotion.Valid && shaderVariant.RigidMotionApplied,
+            temporalEligible && draw.TemporalCameraOnly && shaderVariant.RigidMotionApplied);
         finishCpuStage(cpuTimings.TemporalStateMilliseconds);
         cpuTimings.DrawStateMilliseconds =
             cpuTimings.GrassSurfaceMilliseconds +
@@ -2650,15 +2626,19 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         } nativeDrawPush;
         nativeDrawPush.RigidMotion = {
             rigidMotion.MotionUv[0], rigidMotion.MotionUv[1],
-            rigidMotion.Valid ? 1.0F : 0.0F,
+            static_cast<float>(Renderer3ds::ResolvePicaMotionProvenance(false,
+                rigidMotion.Valid, temporalEligible && draw.TemporalCameraOnly)),
             exactMotionHistory ? 1.0F : 0.0F};
         nativeDrawPush.Jitter = {
             2.0F * jitterUv[0], 2.0F * jitterUv[1],
             previousJitterNdc[0], previousJitterNdc[1]};
-        if (temporalEligible)
+        if (temporalEligible) {
+            mDiagnostics.RecordTemporalCorrespondence(static_cast<uint32_t>(temporalMatch.Reason),
+                static_cast<uint32_t>(motionProvenance));
             mDiagnostics.RecordTemporalDraw(
                 rigidMotion.Valid, exactMotionHistory,
                 exactMotionHistory && !rigidEligible, repeatedTemporalIdentity);
+        }
 
         Oot3d::NriPicaOwnedDrawDesc nriDraw;
         Oot3d::PicaNriVertexInputLayout sceneVertexLayout;
