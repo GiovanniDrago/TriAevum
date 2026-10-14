@@ -183,11 +183,19 @@ void ApplyTopScreenStartRouting(NativeA32InputFrame& frame,
                                 bool guestRefreshWillConsume,
                                 TopScreenStartRoutingState& state) noexcept;
 
-// SaveContext.game_mode uses 0 for ordinary play and 1 for gameplay
-// cutscenes. Frontend/title ownership begins at 2 and must retain START.
+// SaveContext.game_mode uses 0 for ordinary play and 1 for the title
+// screen's gameplay demo; frontend modes begin at 2.
 constexpr bool
 IsTopScreenGameplayInputMode(std::uint32_t nativeGameMode) noexcept {
   return nativeGameMode <= 1U;
+}
+
+// START opens the last page only in ordinary play, as 2.1.1 0x005D5A54
+// does. The title demo draws the gameplay HUD but owns START: routing it
+// there swallowed the press that leaves the title.
+constexpr bool
+IsTopScreenStartRoutingMode(std::uint32_t nativeGameMode) noexcept {
+  return nativeGameMode == 0U;
 }
 
 NativeA32TouchMapping MapHostPointerToNativeA32Touch(

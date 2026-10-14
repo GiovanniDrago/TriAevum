@@ -509,6 +509,10 @@ int main(int argc, char** argv) {
                      NativeA32TopScreenPage::None),
                  false, false, 0, 0,
                  "inactive page shortcut synthesized a touch");
+    Require(IsTopScreenStartRoutingMode(0U) &&
+                !IsTopScreenStartRoutingMode(1U) &&
+                !IsTopScreenStartRoutingMode(2U),
+            "TopScreen START routing must leave the title demo's START alone");
     Require(IsTopScreenGameplayInputMode(0U) &&
                 IsTopScreenGameplayInputMode(1U) &&
                 !IsTopScreenGameplayInputMode(2U) &&

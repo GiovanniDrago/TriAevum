@@ -217,7 +217,8 @@ bool NativeA32WindowSession::RunFrame() {
           : Oot3dNativeGame::Oot3dPicaCompositionDomain::Unknown;
   bool topScreenStartRoutingEligible =
       uiLifecycleBridge.NativeGameplayPresentationActive() &&
-      topScreenGameplayInputMode;
+      topScreenGameplayInputMode &&
+      Oot3dNativeGame::IsTopScreenStartRoutingMode(topScreenNativeGameMode);
   Oot3dNativeGame::NativeAimProfileTransform aimProfileTransform;
   if (nativeCandidateDispatch.TopScreenUiProfile) {
     const auto topScreenAim =
@@ -636,7 +637,8 @@ bool NativeA32WindowSession::SampleGuestRefreshInput(
             topScreenNativeGameMode);
     topScreenStartRoutingEligible =
         uiLifecycleBridge.NativeGameplayPresentationActive() &&
-        refreshedTopScreenGameplayInputMode;
+        refreshedTopScreenGameplayInputMode &&
+        Oot3dNativeGame::IsTopScreenStartRoutingMode(topScreenNativeGameMode);
     picaCompositionDomain =
         refreshedTopScreenGameplayInputMode
             ? Oot3dNativeGame::Oot3dPicaCompositionDomain::Scene
