@@ -301,6 +301,25 @@ std::size_t AppendTopScreenPauseEdgePresentation(
     const oot3d::ui::UiTextureIdentity &itemPage,
     std::vector<oot3d::ui::UiPrimitive> &output);
 
+// TopScreen 2.1.1 L/R tab hints beside GEAR/MAP/ITEMS (payload
+// 0x005CFE48..0x005D0370, drawn after the redrawn page): shown while the
+// Items, Gear or Map page is open (not System); a held L or R (0x005655A0
+// bits 0x200/0x100) dims its hint to RGB 0.55.
+struct TopScreenTabHintInputs {
+  bool PageOpen = false;
+  bool LeftHeld = false;
+  bool RightHeld = false;
+};
+bool ReadTopScreenTabHintInputs(NativeA32Memory &memory, TopScreenTabHintInputs *inputs);
+// Appends the two backing quads (EquipmentPage atlas, 512x256) and then the
+// two glyphs (Cursor atlas, 128x128, stored a quarter turn), in the 400x240
+// top-screen domain: the payload's 320-wide page coordinates plus the
+// page's 40-pixel offset. Returns the number of primitives appended.
+std::size_t AppendTopScreenTabHintPresentation(
+    const TopScreenTabHintInputs &inputs, const oot3d::ui::UiTextureIdentity &cursor,
+    const oot3d::ui::UiTextureIdentity &equipmentPage,
+    std::vector<oot3d::ui::UiPrimitive> &output);
+
 struct TopScreenTexturedQuad {
   bool Visible = false;
   TopScreenVec2 Position{};

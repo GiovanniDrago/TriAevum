@@ -1530,6 +1530,29 @@ int main() {
               pauseEdgePrimitives[0].destination.height == 240.0F &&
               std::abs(pauseEdgePrimitives[1].destination.x) < 0.001F,
           "TopScreen pause-edge presentation is incorrect");
+  {
+    // 2.1.1 L/R tab hints (0x005CFE48): backings first, glyphs a quarter turn.
+    const oot3d::ui::UiTextureIdentity cursor{0U, 0U, "oot3d/native/pause_shared/cursor"};
+    const oot3d::ui::UiTextureIdentity equipment{0U, 0U, "oot3d/native/pause_shared/equipment"};
+    std::vector<oot3d::ui::UiPrimitive> hints;
+    TopScreenTabHintInputs closed;
+    Require(AppendTopScreenTabHintPresentation(closed, cursor, equipment, hints) == 0U,
+            "tab hints must stay hidden without an open Items/Gear/Map page");
+    TopScreenTabHintInputs open;
+    open.PageOpen = true;
+    open.RightHeld = true;
+    Require(AppendTopScreenTabHintPresentation(open, cursor, equipment, hints) == 4U &&
+                hints[0].destination.x == 64.0F && hints[1].destination.x == 294.0F &&
+                hints[2].destination.x == 66.0F && hints[2].destination.y == 208.0F &&
+                hints[2].destination.width == 36.0F && hints[2].uv_quarter_turn &&
+                hints[2].uv.x == 100.0F / 128.0F && hints[3].uv.x == 72.0F / 128.0F &&
+                hints[3].destination.x == 298.0F && hints[2].color.red == 1.0F &&
+                hints[3].color.red == 0.55F && !hints[0].uv_quarter_turn,
+            "TopScreen tab hints diverge from 2.1.1 0x005CFE48");
+    hints.clear();
+    Require(AppendTopScreenTabHintPresentation(open, cursor, {}, hints) == 2U,
+            "a missing backing atlas must skip only the backings");
+  }
 
   NativeA32Memory nativeTouchMemory;
   Require(nativeTouchMemory.MapRegion(

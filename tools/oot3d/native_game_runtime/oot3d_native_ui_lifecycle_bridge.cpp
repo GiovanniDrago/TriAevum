@@ -455,6 +455,17 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
       (void)AppendTopScreenPauseEdgePresentation(*pauseEdge, *itemPage, output);
     }
   }
+  // 2.1.1 0x005D3A84: the tab hints follow the redrawn page.
+  if (mTopScreenPausePageRedrawEdgeGeometry.has_value()) {
+    TopScreenTabHintInputs tabHints;
+    const auto cursor =
+        NativePauseSharedTextureIdentity(oot3d::ui::UiPauseSharedTextureSlot::Cursor);
+    const auto equipment = NativePauseSharedTextureIdentity(
+        oot3d::ui::UiPauseSharedTextureSlot::EquipmentPage);
+    if (cursor.has_value() && ReadTopScreenTabHintInputs(mMemory, &tabHints))
+      (void)AppendTopScreenTabHintPresentation(
+          tabHints, *cursor, equipment.value_or(oot3d::ui::UiTextureIdentity{}), output);
+  }
   oot3d::ui::UiTextureIdentity itemsHintAtlas;
   itemsHintAtlas.semantic_name = kTopScreen211MenuAtlasSemantic;
   (void)AppendTopScreenItemsHintPresentation(
