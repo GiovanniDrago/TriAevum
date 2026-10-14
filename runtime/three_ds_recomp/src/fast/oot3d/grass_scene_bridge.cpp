@@ -262,17 +262,22 @@ void GrassSceneBridge::Clear() {
 }
 
 void GrassSceneBridge::ResolveStaticAnchor(GrassSceneMesh& mesh) {
+    // A world instance keeps one anchor in every render target it is drawn
+    // into, so a redrawn scene does not re-derive a slightly different
+    // matrix (and new placements) from another target's projection.
+    const bool worldInstance = mesh.WorldInstanceId != 0U;
+    const uint64_t key = worldInstance ? mesh.WorldInstanceId : mesh.InstanceId;
     if (!mesh.PreserveWorldAnchor) {
-        mStaticAnchors.erase(mesh.InstanceId);
+        mStaticAnchors.erase(key);
         return;
     }
-    const auto found = mStaticAnchors.find(mesh.InstanceId);
+    const auto found = mStaticAnchors.find(key);
     if (found != mStaticAnchors.end()) {
         auto& anchor = found->second;
         if (anchor.GeometryId == mesh.GeometryId &&
             anchor.AnchorVersion == mesh.AnchorVersion &&
             anchor.TextureHash == mesh.TextureHash &&
-            anchor.RenderTargetNamespace == mesh.RenderTargetNamespace &&
+            (worldInstance || anchor.RenderTargetNamespace == mesh.RenderTargetNamespace) &&
             anchor.TextureWidth == mesh.TextureWidth &&
             anchor.TextureHeight == mesh.TextureHeight &&
             anchor.MapperSlot == mesh.MapperSlot) {
@@ -292,7 +297,7 @@ void GrassSceneBridge::ResolveStaticAnchor(GrassSceneMesh& mesh) {
             });
         mStaticAnchors.erase(oldest);
     }
-    mStaticAnchors.emplace(mesh.InstanceId, StaticAnchor{
+    mStaticAnchors.emplace(key, StaticAnchor{
         mesh.GeometryId, mesh.AnchorVersion, mesh.TextureHash, mesh.RenderTargetNamespace,
         ++mAnchorUse, mesh.TextureWidth, mesh.TextureHeight,
         mesh.MapperSlot, mesh.ModelToWorld});
@@ -358,7 +363,7 @@ std::shared_ptr<const GrassOverlaySet> GrassSceneBridge::OverlaysFor(const Grass
         mix(sourceVersion, std::bit_cast<uint32_t>(x));
     uint64_t version = sourceVersion, placementVersion = sourceVersion;
     for (auto mesh : overlays) {
-        uint64_t overlay = mesh->InstanceId;
+        uint64_t overlay = mesh->WorldInstanceId != 0U ? mesh->WorldInstanceId : mesh->InstanceId;
         mix(overlay, mesh->ContentVersion);
         mix(overlay, mesh->Overlay->Version);
         mix(overlay, mesh->TransformBakedIntoVertices);

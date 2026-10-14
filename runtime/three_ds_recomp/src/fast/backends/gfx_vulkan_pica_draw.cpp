@@ -3764,6 +3764,16 @@ const GfxNativePicaVertexAttributeView* FindNativeAttribute(
     return found == draw.VertexAttributes.end() ? nullptr : &*found;
 }
 
+// Occurrences of one draw identity are counted per render target, so the
+// n-th draw of a surface has the same world instance in every target.
+static uint64_t GrassTargetOccurrenceKey(uint64_t drawIdentity, uint64_t renderTargetNamespace,
+                                         uint32_t colorPhysicalAddress) noexcept {
+    uint64_t key = drawIdentity;
+    key ^= renderTargetNamespace + 0x9e3779b97f4a7c15ULL + (key << 6U) + (key >> 2U);
+    key ^= uint64_t{colorPhysicalAddress} + 0x9e3779b97f4a7c15ULL + (key << 6U) + (key >> 2U);
+    return key;
+}
+
 bool ResolveNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t frameId,
                                    std::unordered_map<uint64_t, uint32_t>& occurrences,
                                    const Oot3d::InteractiveGrassSettings& settings, bool worldSurface,
@@ -4250,10 +4260,12 @@ bool ResolveNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
          (mesh.GeometryId >> 2U));
     if (masksOnly)
         drawIdentity = mesh.GeometryId ^ 0x67726173736d6173ULL;
-    const uint32_t occurrence = occurrences[drawIdentity]++;
+    const uint32_t occurrence = occurrences[GrassTargetOccurrenceKey(
+        drawIdentity, draw.RenderTargetNamespace, draw.FramebufferColorPhysicalAddress)]++;
     mesh.InstanceId = drawIdentity ^
         (static_cast<uint64_t>(occurrence) + 0x9e3779b97f4a7c15ULL +
          (drawIdentity << 6U) + (drawIdentity >> 2U));
+    mesh.WorldInstanceId = mesh.InstanceId == 0U ? 1U : mesh.InstanceId;
     mesh.InstanceId ^= draw.RenderTargetNamespace + 0x9e3779b97f4a7c15ULL +
                        (mesh.InstanceId << 6U) + (mesh.InstanceId >> 2U);
     mesh.InstanceId ^=
@@ -4339,8 +4351,11 @@ bool PublishNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
                                                    (mesh.GeometryId >> 2));
             if (masksOnly)
                 identity = mesh.GeometryId ^ 0x67726173736d6173ULL;
-            mesh.InstanceId = identity ^ (uint64_t(occurrences[identity]++) + 0x9e3779b97f4a7c15ULL + (identity << 6) +
+            const uint32_t occurrence = occurrences[GrassTargetOccurrenceKey(
+                identity, draw.RenderTargetNamespace, draw.FramebufferColorPhysicalAddress)]++;
+            mesh.InstanceId = identity ^ (uint64_t(occurrence) + 0x9e3779b97f4a7c15ULL + (identity << 6) +
                                           (identity >> 2));
+            mesh.WorldInstanceId = mesh.InstanceId == 0U ? 1U : mesh.InstanceId;
             mesh.InstanceId ^=
                 draw.RenderTargetNamespace + 0x9e3779b97f4a7c15ULL + (mesh.InstanceId << 6) + (mesh.InstanceId >> 2);
             mesh.InstanceId ^= uint64_t(draw.FramebufferColorPhysicalAddress) + 0x9e3779b97f4a7c15ULL +

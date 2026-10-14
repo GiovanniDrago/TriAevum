@@ -6055,6 +6055,64 @@ TEST(Oot3dGrassSceneBridge, PreservesStaticAnchorAcrossPresentationGaps) {
     bridge.Clear();
 }
 
+TEST(Oot3dGrassSceneBridge, KeepsWorldAnchorWhenRedrawnIntoAnotherTarget) {
+    // A pause page redraws the scene into another framebuffer: the same world
+    // instance must keep its anchor there instead of re-deriving the matrix
+    // from that target's projection, while target scoping stays per target.
+    auto& bridge = Fast::Oot3d::GrassSceneBridge::Instance();
+    bridge.Clear();
+    Fast::Oot3d::GrassSceneMesh mesh;
+    mesh.GeometryId = 10U;
+    mesh.InstanceId = 20U;
+    mesh.WorldInstanceId = 99U;
+    mesh.RenderTargetNamespace = 7U;
+    mesh.FramebufferColorPhysicalAddress = 0x123400U;
+    mesh.FrameId = 100U;
+    mesh.TextureHash = 30U;
+    mesh.TextureWidth = 1U;
+    mesh.TextureHeight = 1U;
+    mesh.ModelToWorld = {1, 0, 0, 10, 0, 1, 0, 0,
+                         0, 0, 1, 0, 0, 0, 0, 1};
+    mesh.PicaModelToClipAvailable = true;
+    mesh.TransformBakedIntoVertices = false;
+    mesh.PreserveWorldAnchor = true;
+    mesh.Vertices = std::make_shared<const std::vector<
+        Fast::Oot3d::GrassSourceVertex>>(3U);
+    mesh.Indices = std::make_shared<const std::vector<uint32_t>>(
+        std::initializer_list<uint32_t>{0U, 1U, 2U});
+    bridge.Publish(mesh);
+
+    mesh.InstanceId = 21U;
+    mesh.RenderTargetNamespace = 8U;
+    mesh.FramebufferColorPhysicalAddress = 0x567800U;
+    mesh.FrameId = 101U;
+    mesh.ModelToWorld[3] = 10.00006F;
+    bridge.Publish(mesh);
+    Fast::Oot3d::GrassTextureSelector selector;
+    selector.Rgba8Hash = 30U;
+    selector.Width = 1U;
+    selector.Height = 1U;
+    const Fast::Oot3d::GrassSceneScope redrawn{101U, 8U, 0x567800U};
+    const auto scoped = bridge.Matching(selector, &redrawn);
+    ASSERT_EQ(scoped.size(), 1U);
+    EXPECT_EQ(scoped.front().InstanceId, 21U);
+    EXPECT_FLOAT_EQ(scoped.front().ModelToWorld[3], 10.0F);
+    const Fast::Oot3d::GrassSceneScope original{101U, 7U, 0x123400U};
+    EXPECT_TRUE(bridge.Matching(selector, &original).empty());
+
+    // Without a world instance the anchor stays per render target.
+    mesh.WorldInstanceId = 0U;
+    mesh.InstanceId = 22U;
+    mesh.FrameId = 102U;
+    mesh.ModelToWorld[3] = 10.00006F;
+    bridge.Publish(mesh);
+    const Fast::Oot3d::GrassSceneScope legacy{102U, 8U, 0x567800U};
+    const auto unanchored = bridge.Matching(selector, &legacy);
+    ASSERT_EQ(unanchored.size(), 1U);
+    EXPECT_FLOAT_EQ(unanchored.front().ModelToWorld[3], 10.00006F);
+    bridge.Clear();
+}
+
 TEST(Oot3dVisualClock, AdvancesOncePerPresentationAndFreezesOnPause) {
     auto& clock = Fast::Oot3d::VisualClock::Instance();
     clock.Reset();

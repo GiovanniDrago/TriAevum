@@ -24,6 +24,11 @@ struct GrassSceneMesh {
     uint64_t AnchorVersion = 0;
     uint64_t ContentVersion = 0;
     uint64_t InstanceId = 0;
+    // The same instance in whichever render target it was drawn into: the
+    // draw identity and its occurrence within that target. World placement
+    // and overlay versions use it, so a scene redrawn into another target
+    // (a pause page) keeps its placements. Zero: use InstanceId.
+    uint64_t WorldInstanceId = 0;
     uint64_t RenderTargetNamespace = 0;
     uint32_t FramebufferColorPhysicalAddress = 0;
     uint64_t FrameId = 0;

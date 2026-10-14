@@ -112,7 +112,7 @@ uint64_t GrassWorldPlacementIdentity(
     const GrassSceneMesh& mesh,
     const GrassPlacementKey& key) noexcept {
     uint64_t hash = kGrassIdentityFnvOffset;
-    HashGrassIdentityValue(hash, mesh.InstanceId);
+    HashGrassIdentityValue(hash, mesh.WorldInstanceId != 0U ? mesh.WorldInstanceId : mesh.InstanceId);
     HashGrassIdentityValue(hash, key.GeometryId);
     HashGrassIdentityValue(hash, key.ContentVersion);
     HashGrassIdentityValue(hash, key.TextureHash);
