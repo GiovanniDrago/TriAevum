@@ -901,13 +901,14 @@ int main() {
             "cannot write the over-EOF File:Read request");
     state.r[0] = romFsFile;
     Require(host.HandleSvc(0x32, state, memory, context).Action ==
-                NativeA32HostAction::Wait,
-            "over-EOF RomFS read changed its error behavior");
+                NativeA32HostAction::Resume,
+            "over-EOF RomFS read did not return a short read");
     std::array<uint8_t, invalidReadSentinel.size()> invalidReadBytes{};
     Require(memory.ReadBytes(readAddress, invalidReadBytes) &&
-                invalidReadBytes == invalidReadSentinel &&
-                host.RuntimeProfile().RomFsReadCalls == 3U,
-            "rejected over-EOF read touched memory or the backing stream");
+                invalidReadBytes[0] == romFsBytes.back() && invalidReadBytes[1] == invalidReadSentinel[1] &&
+                memory.Read32(0x1FF82088, &response) && response == 1U &&
+                host.RuntimeProfile().RomFsReadCalls == 4U,
+            "short read changed bytes past EOF");
 
     Require(memory.Write32(0x1FF82080, 0x08080000),
             "cannot write File:Close request");
@@ -963,13 +964,13 @@ int main() {
                 "WaitSynchronizationN event name changed format");
         const std::array<uint32_t, 4> saved{
             state.r[0], state.r[1], state.r[2], state.r[3]};
-        state.r[0] = 0xFFFFFFF0U;  // no such arbiter: the call waits
+        state.r[0] = 0xFFFFFFF0U;  // no such arbiter: report a host fault
         state.r[1] = 0x0000ABCDU;
         state.r[2] = 3U;
         state.r[3] = static_cast<uint32_t>(-5);
         Require(host.HandleSvc(0x22, state, memory, context).Action ==
-                    NativeA32HostAction::Wait,
-                "ArbitrateAddress on an invalid handle did not wait");
+                    NativeA32HostAction::Fault,
+                "ArbitrateAddress on an invalid handle did not fault");
         std::ostringstream arbitrate;
         arbitrate << "ArbitrateAddress:address=0x" << std::hex << std::setw(8)
                   << std::setfill('0') << 0x0000ABCDU << ":type=" << std::dec

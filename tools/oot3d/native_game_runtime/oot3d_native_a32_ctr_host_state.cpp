@@ -68,6 +68,7 @@ nlohmann::json NativeA32CtrHostServices::CaptureState() const {
             {"file_offset", object.FileOffset},
             {"file_size", object.FileSize},
             {"file_open_mode", object.FileOpenMode},
+            {"file_closed", object.FileClosed},
             {"mapped_address", object.MappedAddress.has_value()
                                    ? nlohmann::json(*object.MappedAddress)
                                    : nlohmann::json(nullptr)},
@@ -328,7 +329,12 @@ bool NativeA32CtrHostServices::RestoreState(const nlohmann::json& state,
             object->FileOffset = encoded.at("file_offset").get<uint64_t>();
             object->FileSize = encoded.at("file_size").get<uint64_t>();
             object->FileOpenMode = encoded.at("file_open_mode").get<uint32_t>();
-            if (mConfig.Filesystem != nullptr && (isRomFsFile || isSaveFile)) {
+            object->FileClosed = encoded.value("file_closed", false);
+            if (isRomFsFile && (object->FileOffset != mConfig.RomFsImageOffset ||
+                                object->FileSize != mConfig.RomFsImageSize)) {
+                throw std::runtime_error("restored RomFS service view is incompatible");
+            }
+            if (!object->FileClosed && mConfig.Filesystem != nullptr && (isRomFsFile || isSaveFile)) {
                 uint32_t openFlags = 0U;
                 if (isRomFsFile || (object->FileOpenMode & 1U) != 0U) {
                     openFlags |= NativeA32CtrFileOpenRead;
@@ -352,7 +358,7 @@ bool NativeA32CtrHostServices::RestoreState(const nlohmann::json& state,
                     throw std::runtime_error(
                         "restored RomFS range exceeds its backing file");
                 }
-            } else if (isRomFsFile) {
+            } else if (isRomFsFile && !object->FileClosed) {
                 object->RomFsBacking =
                     std::make_shared<RomFsBackingFile>(object->FilePath);
             }
@@ -642,6 +648,7 @@ bool NativeA32CtrHostServices::RestoreState(const nlohmann::json& state,
         staged.mNdmSchedulerRunsInBackground =
             state.at("ndm_scheduler_runs_in_background").get<bool>();
 
+        staged.mRuntimeProfile.FsUnservedRequests = mRuntimeProfile.FsUnservedRequests;
         *this = std::move(staged);
         return true;
     } catch (const std::exception& exception) {

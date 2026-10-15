@@ -12,6 +12,7 @@ void WriteNativeA32WindowRuntimeSummary(const NativeA32WindowSummaryInputs &in) 
   auto &hdFontsLoaded = in.hdFontsLoaded;
   auto &quickStatePath = in.quickStatePath;
   auto &hostServices = in.hostServices;
+  hostServices.WriteFsRequestSummary();
   auto &frameRatePolicy = in.frameRatePolicy;
   auto &sceneViewProbe = in.sceneViewProbe;
   auto &playerTimingProbe = in.playerTimingProbe;
@@ -2208,6 +2209,7 @@ void WriteNativeA32WindowRuntimeSummary(const NativeA32WindowSummaryInputs &in) 
                    {"romfs_stream_open_calls",
                     ctrTiming.RomFsStreamOpenCalls},
                    {"romfs_read_calls", ctrTiming.RomFsReadCalls},
+                   {"fs_unserved_requests", ctrTiming.FsUnservedRequests},
                    {"romfs_read_bytes", ctrTiming.RomFsReadBytes},
                    {"romfs_read_seconds",
                     ctrTiming.RomFsReadNanoseconds * nanosecondsToSeconds},

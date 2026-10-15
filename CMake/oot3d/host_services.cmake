@@ -197,6 +197,14 @@ target_link_libraries(oot3d_native_a32_ctr_host_tests PRIVATE
     oot3d_native_a32_ctr_host)
 oot3d_target_defaults(oot3d_native_a32_ctr_host_tests FOLDER Tests)
 
+# Exercise FS IPC through the same service-only host used by the product module.
+add_executable(oot3d_native_a32_ctr_fs_tests EXCLUDE_FROM_ALL
+    tools/oot3d/native_game_runtime/oot3d_native_a32_ctr_fs_tests.cpp
+    tools/oot3d/native_game_runtime/triaevum_ctr_filesystem_client_bridge.cpp)
+target_link_libraries(oot3d_native_a32_ctr_fs_tests PRIVATE
+    oot3d_native_a32_ctr_service_host triaevum_module)
+oot3d_target_defaults(oot3d_native_a32_ctr_fs_tests FOLDER Tests)
+
 add_executable(oot3d_native_render_command_stream_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_render_command_stream_tests.cpp
     tools/oot3d/native_game_runtime/oot3d_native_render_command_stream.cpp
