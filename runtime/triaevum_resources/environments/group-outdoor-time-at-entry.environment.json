@@ -30,7 +30,7 @@
   "enabled": true,
   "fogStrength": 1.0,
   "groupId": "outdoor-time-at-entry",
-  "keyLightAzimuthOffset": -66.5,
+  "keyLightAzimuthOffset": 126.9,
   "keyLightDirection": "scene_main",
   "keyLightElevationOffset": -20.1,
   "nativeAmbientStrength": 0.3,

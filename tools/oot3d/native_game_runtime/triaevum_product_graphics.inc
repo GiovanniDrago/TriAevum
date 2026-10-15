@@ -130,27 +130,6 @@ R"json({
       {
         "ActiveRects": null,
         "Channel": "Green",
-        "InputBlack": 0.2709999978542328,
-        "InputWhite": 0.38199999928474426,
-        "Invert": false,
-        "MaximumSlopeDegrees": 48.0,
-        "NormalOffset": 0.5,
-        "OutputBlack": 0.0,
-        "OutputWhite": 1.0,
-        "ResponseExponent": 2.2699999809265137,
-        "RuleId": 7,
-        "Target": {
-          "AssetName": "",
-          "Height": 256,
-          "MapperSlotMask": 7,
-          "Rgba8Hash": "8bbe4b35b0af27a9",
-          "Width": 256
-        },
-        "Wrap": "Material"
-      },
-      {
-        "ActiveRects": null,
-        "Channel": "Green",
         "InputBlack": 0.3499999940395355,
         "InputWhite": 0.45899999141693115,
         "Invert": false,
@@ -459,6 +438,97 @@ R"json({
           "Height": 256,
           "MapperSlotMask": 7,
           "Rgba8Hash": "62d5ae1053b31e2e",
+          "Width": 256
+        },
+        "Wrap": "Material"
+      },
+      {
+        "ActiveRects": null,
+        "Channel": "Green",
+        "InputBlack": 0.5270000100135803,
+        "InputWhite": 0.5569999814033508,
+        "Invert": false,
+        "MaximumSlopeDegrees": 48.0,
+        "NormalOffset": 0.5,
+        "OutputBlack": 0.0,
+        "OutputWhite": 1.0,
+        "ResponseExponent": 8.0,
+        "RuleId": 23,
+        "Target": {
+          "AssetName": "",
+          "Height": 256,
+          "MapperSlotMask": 7,
+          "Rgba8Hash": "7e5075b79d5c5dcd",
+          "Width": 256
+        },
+        "Wrap": "Material"
+      },
+      {
+        "ActiveRects": null,
+        "Channel": "Green",
+        "InputBlack": 0.0,
+        "InputWhite": 0.5879999995231628,
+        "Invert": false,
+        "MaximumSlopeDegrees": 48.0,
+        "NormalOffset": 0.5,
+        "OutputBlack": 0.0,
+        "OutputWhite": 1.0,
+        "ResponseExponent": 8.0,
+        "RuleId": 24,
+        "Target": {
+          "AssetName": "",
+          "Height": 128,
+          "MapperSlotMask": 7,
+          "Rgba8Hash": "86f3d2415641fc84",
+          "Width": 256
+        },
+        "Wrap": "Material"
+      },
+      {
+        "ActiveRects": [
+          [
+            0.5,
+            0.0,
+            1.0,
+            0.5
+          ]
+        ],
+        "Channel": "Luminance",
+        "InputBlack": 0.6470000147819519,
+        "InputWhite": 0.800000011920929,
+        "Invert": true,
+        "MaximumSlopeDegrees": 48.0,
+        "NormalOffset": 0.5,
+        "OutputBlack": 0.0,
+        "OutputWhite": 1.0,
+        "ResponseExponent": 2.0399999618530273,
+        "RuleId": 25,
+        "Target": {
+          "AssetName": "",
+          "Height": 128,
+          "MapperSlotMask": 7,
+          "Rgba8Hash": "14dd64ec10e5bbd6",
+          "Width": 256
+        },
+        "Wrap": "Material"
+      },
+      {
+        "ActiveRects": null,
+        "Channel": "Green",
+        "InputBlack": 0.35499998927116394,
+        "InputWhite": 0.46700000762939453,
+        "Invert": true,
+        "MaximumSlopeDegrees": 48.0,
+        "NormalOffset": 0.5,
+        "OutputBlack": 0.0,
+        "OutputWhite": 1.0,
+        "ResponseExponent": 8.0,
+        "RuleId": 7,
+        "Target": {
+          "AssetName": "",
+          "Height": 256,
+          "MapperSlotMask": 7,
+          "Rgba8Hash": "8bbe4b35b0af27a9",
           "Width": 256
         },
         "Wrap": "Material"
