@@ -85,8 +85,11 @@ def _search_paths(relative: str, elf: Elf) -> list[str]:
             else:
                 parts.append(part)
         paths.append("/".join(parts))
-    # AppRun's LD_LIBRARY_PATH precedes RUNPATH but follows old DT_RPATH.
-    return ["lib", *paths] if elf.runpath or not elf.rpath else [*paths, "lib"]
+    # AppRun's LD_LIBRARY_PATH precedes RUNPATH but follows old DT_RPATH. It
+    # adds lib/compat-cxx (the SDK libstdc++/libgcc_s) unless the host's is
+    # newer, so the bundled copy must satisfy every requirement on its own.
+    preload = ["lib/compat-cxx", "lib"]
+    return [*preload, *paths] if elf.runpath or not elf.rpath else [*paths, *preload]
 
 def dependency_errors(objects: dict[str, Elf], *, max_glibc=(2, 40)) -> list[str]:
     errors = []

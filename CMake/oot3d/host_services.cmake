@@ -137,6 +137,14 @@ if (OOT3D_WHOLE_AOT_PRODUCT_MODE AND
     set_target_properties(oot3d_game_module PROPERTIES
         PREFIX ""
         OUTPUT_NAME "oot3d_game_module")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # Packaged as forge/oot3d_game_module.so: never record the
+        # publisher's build directory as a library search path.
+        set_target_properties(oot3d_game_module PROPERTIES
+            BUILD_RPATH_USE_ORIGIN TRUE
+            BUILD_RPATH "$ORIGIN;$ORIGIN/../lib"
+            INSTALL_RPATH "$ORIGIN;$ORIGIN/../lib")
+    endif()
     oot3d_target_defaults(oot3d_game_module NO_WARNING_OVERRIDE FOLDER Tools)
 
     add_executable(oot3d_game_module_smoke EXCLUDE_FROM_ALL

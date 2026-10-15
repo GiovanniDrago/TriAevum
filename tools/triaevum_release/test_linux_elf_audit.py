@@ -52,6 +52,16 @@ class LinuxElfTests(unittest.TestCase):
             self.assertTrue(dependency_errors({"lib/libstdc++.so.6": Elf(
                 {"libc.so.6"}, {"libc.so.6": {version}})}))
 
+    def test_compat_cxx_directory_provides_cpp_runtime(self):
+        requirement = {"libstdc++.so.6": {"CXXABI_1.3.15"}}
+        objects = {"TriAevum": Elf({"libstdc++.so.6"}, requirement, runpath=("$ORIGIN/lib",)),
+                   "forge/module.so": Elf({"libstdc++.so.6"}, requirement, runpath=("$ORIGIN/../lib",)),
+                   "lib/compat-cxx/libstdc++.so.6": Elf({"libgcc_s.so.1"}, definitions={"CXXABI_1.3.14"}),
+                   "lib/compat-cxx/libgcc_s.so.1": Elf()}
+        self.assertEqual(len(dependency_errors(objects)), 2)
+        objects["lib/compat-cxx/libstdc++.so.6"].definitions.add("CXXABI_1.3.15")
+        self.assertEqual(dependency_errors(objects), [])
+
     def test_adjacent_helper_requires_origin_runpath(self):
         objects = {"forge/helper": Elf({"libshaderc.so.1"}), "forge/libshaderc.so.1": Elf()}
         self.assertTrue(dependency_errors(objects))
