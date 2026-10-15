@@ -128,12 +128,20 @@ void NativeA32WindowSession::Setup() {
                 "oot3d_native_savedata"
           : launch.SaveDataDirectory;
   saveDataDirectory = hostConfig.SaveDataDirectory;
-  // Save states default to a folder beside the executable; --quick-state pins one file for scripted runs.
+  // Save states default to a folder beside the executable on Windows and beside
+  // the save data elsewhere; --quick-state pins one file for scripted runs.
+#if defined(_WIN32)
+  constexpr bool kSavestatesBesideExecutable = true;
+#else
+  constexpr bool kSavestatesBesideExecutable = false;
+#endif
   savestateLibrary = std::make_shared<Oot3dNativeGame::SavestateLibrary>(
       std::filesystem::path(launch.Host.ConfigurationPath).parent_path() / "savestates.json",
-      std::filesystem::path(std::u8string(
-          reinterpret_cast<const char8_t *>(Ship::Context::GetAppBundlePath().c_str()))) /
-          "savestates",
+      Oot3dNativeGame::DefaultSavestateDirectory(
+          kSavestatesBesideExecutable,
+          std::filesystem::path(std::u8string(
+              reinterpret_cast<const char8_t *>(Ship::Context::GetAppBundlePath().c_str()))),
+          hostConfig.SaveDataDirectory),
       launch.QuickStatePath);
   quickStatePath = launch.QuickStatePath.empty() ? savestateLibrary->Directory()
                                                  : launch.QuickStatePath;
