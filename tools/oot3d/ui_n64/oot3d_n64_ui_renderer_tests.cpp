@@ -1,5 +1,6 @@
 #include "oot3d_n64_ui_renderer.h"
 
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <string_view>
@@ -112,6 +113,86 @@ void TestPreparedTextures() {
             "Release kept prepared UI texture keys");
 }
 
+// A texture pack that is still decoding a replacement, then finishes it.
+class CustomTextureProvider final : public oot3d::ui::UiTextureProvider {
+  public:
+    bool Resolve(const oot3d::ui::UiTextureIdentity&,
+                 oot3d::ui::UiTexturePixels& pixels,
+                 std::string*) const override {
+        ++calls;
+        const uint16_t extent = ready ? 4U : 2U;
+        pixels.width = extent;
+        pixels.height = extent;
+        pixels.rgba8.assign(std::size_t(extent) * extent * 4U, 0xFF);
+        pixels.provisional = !ready;
+        return true;
+    }
+    std::uint64_t Revision() const noexcept override { return revision; }
+    bool ready = false;
+    std::uint64_t revision = 1U;
+    mutable int calls = 0;
+};
+
+class SizeRecordingBackend final : public Oot3d::Renderer::UiRenderBackend {
+  public:
+    bool PrepareUiOverlay(const Oot3d::Renderer::UiOverlayViewport&,
+                          std::string*) override {
+        return true;
+    }
+    bool IsUiFramebufferYInverted() const noexcept override { return false; }
+    uint32_t CreateUiTexture(std::span<const uint8_t>, uint16_t width, uint16_t,
+                             std::string*) override {
+        widths.push_back(width);
+        return static_cast<uint32_t>(widths.size());
+    }
+    void DeleteUiTexture(uint32_t id) noexcept override { deleted.push_back(id); }
+    bool DrawUiTriangles(std::span<const Oot3d::Renderer::UiOverlayVertex>,
+                         uint32_t textureId, std::string*) override {
+        drawn = textureId;
+        return true;
+    }
+    std::vector<uint16_t> widths;
+    std::vector<uint32_t> deleted;
+    uint32_t drawn = 0;
+};
+
+// Provisional pixels are drawn until the final payload is ready, which then
+// replaces them once; a new provider revision resolves every texture again.
+void TestProvisionalTextures() {
+    using namespace oot3d::ui;
+    const std::vector<UiPrimitive> primitives = {
+        TexturedPrimitive("oot3d/native/hud")};
+    CustomTextureProvider provider;
+    SizeRecordingBackend backend;
+    N64UiFast3dRenderer renderer(backend, &provider);
+    std::string error;
+    const auto render = [&] {
+        Require(renderer.Render(primitives, 400, 240,
+                                N64UiCanvasMode::NativeTopScreen400x240,
+                                renderer.PrepareTextures(primitives), &error),
+                "provisional UI rendering failed");
+    };
+    render();
+    render();
+    Require(provider.calls == 2 && backend.widths == std::vector<uint16_t>{2U} &&
+                backend.drawn == 1U,
+            "an unchanged provisional UI texture was uploaded again");
+    provider.ready = true;
+    render();
+    Require(backend.widths == std::vector<uint16_t>({2U, 4U}) &&
+                backend.deleted == std::vector<uint32_t>{1U} && backend.drawn == 2U,
+            "the final UI texture did not replace the provisional one");
+    render();
+    Require(provider.calls == 3 && backend.widths.size() == 2U,
+            "a final UI texture was resolved again");
+    provider.revision = 2U;
+    render();
+    Require(provider.calls == 4 && backend.widths.size() == 3U &&
+                backend.deleted == std::vector<uint32_t>({1U, 2U}) &&
+                backend.drawn == 3U,
+            "a new provider revision did not resolve the UI texture again");
+}
+
 } // namespace
 
 int main() {
@@ -159,6 +240,7 @@ int main() {
                 archiveIdentity.semantic_name,
             "archive texture cache identity unexpectedly changed");
     TestPreparedTextures();
+    TestProvisionalTextures();
     std::cout << "oot3d_n64_ui_renderer_tests: ok\n";
     return 0;
 }

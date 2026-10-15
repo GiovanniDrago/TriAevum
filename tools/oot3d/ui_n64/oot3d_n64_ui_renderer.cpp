@@ -187,6 +187,7 @@ void N64UiFast3dRenderer::Release() noexcept {
     textures_.clear();
     failed_textures_.clear();
     prepared_keys_.clear();
+    provisional_keys_.clear();
     staged_textures_.clear();
 }
 
@@ -279,6 +280,16 @@ bool DrawsPrimitive(const UiPrimitive& primitive) {
 void N64UiFast3dRenderer::Stage(PreparedUiTextures prepared) {
     for (auto& texture : prepared) {
         std::string key = texture.key;
+        // A payload prepared again (final pixels for a provisional one, or a
+        // new provider revision) supersedes the texture uploaded before.
+        if (const auto resident = textures_.find(key);
+            resident != textures_.end()) {
+            if (resident->second.renderer_id != 0U) {
+                rendering_api_.DeleteUiTexture(resident->second.renderer_id);
+            }
+            textures_.erase(resident);
+        }
+        failed_textures_.erase(key);
         staged_textures_.insert_or_assign(std::move(key), std::move(texture));
     }
 }
@@ -286,13 +297,24 @@ void N64UiFast3dRenderer::Stage(PreparedUiTextures prepared) {
 PreparedUiTextures N64UiFast3dRenderer::PrepareTextures(
     std::span<const UiPrimitive> primitives) {
     PreparedUiTextures prepared;
+    if (texture_provider_ != nullptr &&
+        texture_provider_->Revision() != prepared_revision_) {
+        prepared_revision_ = texture_provider_->Revision();
+        prepared_keys_.clear();
+        provisional_keys_.clear();
+    }
+    std::unordered_set<std::string> seen;
     for (const UiPrimitive& primitive : primitives) {
         if (!DrawsPrimitive(primitive) ||
             primitive.texture.semantic_name.empty()) {
             continue;
         }
         std::string key = BuildUiTextureCacheKey(primitive.texture);
-        if (!prepared_keys_.insert(key).second) {
+        if (!seen.insert(key).second) {
+            continue;
+        }
+        const bool again = !prepared_keys_.insert(key).second;
+        if (again && !provisional_keys_.contains(key)) {
             continue;
         }
         PreparedUiTexture texture;
@@ -310,6 +332,15 @@ PreparedUiTextures N64UiFast3dRenderer::PrepareTextures(
                     static_cast<std::size_t>(pixels.width) * pixels.height * 4U;
             texture.status = resolved ? PreparedUiTexture::Status::Resolved
                                       : PreparedUiTexture::Status::Invalid;
+            if (resolved && pixels.provisional) {
+                provisional_keys_.insert(texture.key);
+                // The provisional pixels handed earlier are still current.
+                if (again) {
+                    continue;
+                }
+            } else {
+                provisional_keys_.erase(texture.key);
+            }
         }
         prepared.push_back(std::move(texture));
     }

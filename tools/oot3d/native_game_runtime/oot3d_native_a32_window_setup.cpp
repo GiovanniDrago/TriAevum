@@ -3,6 +3,7 @@
 #include "oot3d_native_direct_aot.h"
 #include "oot3d_title_grass_rules.h"
 #include "fast/oot3d/graphics_settings_persistence.h"
+#include "oot3d/renderer/azahar_texture_pack.h"
 
 namespace Oot3dA32Window {
 
@@ -836,6 +837,33 @@ void NativeA32WindowSession::Setup() {
 #endif
   auto &nativeUiTextureProvider = nativeUiTextureProviderStorage.emplace(
       picaMemoryView, topScreenTextureOverridePackPointer);
+  // The HUD the UI renderer draws resolves the user's texture pack exactly as
+  // native PICA uploads do (same identity, same dumping, same async decode).
+  nativeUiTextureProvider.SetCustomTextureSource({
+      [](const Oot3dNativeGame::Oot3dNativeUiCustomTextureRequest &request) {
+        using Oot3d::Renderer::AzaharTextureResolveState;
+        const auto result = Oot3d::Renderer::AzaharTexturePackRuntime::Instance().ResolveOrQueue({
+            .Width = request.width,
+            .Height = request.height,
+            .NativeFormat = request.native_pica_format,
+            .MipLevel = 0U,
+            .NativeBytes = request.encoded_base_level,
+            .NativeRgba8 = request.rgba8,
+        });
+        Oot3dNativeGame::Oot3dNativeUiCustomTexture custom;
+        if (result.State == AzaharTextureResolveState::Pending) {
+          custom.state = Oot3dNativeGame::Oot3dNativeUiCustomTexture::State::Pending;
+        } else if (result.State == AzaharTextureResolveState::Ready && result.Replacement &&
+                   result.Replacement->Rgba8) {
+          custom.state = Oot3dNativeGame::Oot3dNativeUiCustomTexture::State::Ready;
+          custom.width = result.Replacement->Width;
+          custom.height = result.Replacement->Height;
+          custom.rgba8 = result.Replacement->Rgba8;
+        }
+        return custom;
+      },
+      [] { return Oot3d::Renderer::AzaharTexturePackRuntime::Instance().Generation(); },
+  });
   if (hdFontsLoaded) nativeUiTextureProvider.SetGeneratedTextureTransform(
       [&](const Oot3dNativeGame::Oot3dPicaTextureState& texture,
           Oot3dNativeGame::Oot3dPicaResourceSnapshot& resource) {
