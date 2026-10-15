@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -16,6 +18,16 @@ namespace Fast::Oot3d {
 namespace {
 
 using Json = nlohmann::json;
+
+std::mutex& TitleGrassRuleMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::optional<Json>& TitleGrassRules() {
+    static std::optional<Json> rules;
+    return rules;
+}
 
 template <typename Enum>
 using EnumNames = std::initializer_list<std::pair<Enum, std::string_view>>;
@@ -1475,7 +1487,7 @@ std::string_view EnhancedPresetDocument() noexcept {
   },
   "Preset": "Enhanced",
   "RenderScale": 1.0,
-  "SchemaVersion": 14
+  "SchemaVersion": 15
 })json";
 }
 
@@ -1908,6 +1920,29 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                 "Graphics.GrassSavedPreset", version, result);
         }
     }
+    // Schema 15: the title's shipped source and mask rules replace the
+    // configuration's own, once; everything else about the grass is kept.
+    if (version < 15U) {
+        std::optional<Json> rules;
+        {
+            std::scoped_lock lock(TitleGrassRuleMutex());
+            rules = TitleGrassRules();
+        }
+        if (rules.has_value()) {
+            const auto replace = [&](InteractiveGrassSettings& grass, const char* path) {
+                auto document = SerializeInteractiveGrassSettings(grass);
+                document["Sources"] = rules->value("Sources", Json::array());
+                document["Masks"] = rules->value("Masks", Json::array());
+                DeserializeInteractiveGrassSettings(document, grass, path,
+                                                    kGraphicsSettingsSchemaVersion, result);
+            };
+            replace(result.Value.Grass, "Graphics.Grass");
+            replace(result.Value.GrassSavedPreset, "Graphics.GrassSavedPreset");
+            result.NeedsRewrite = true;
+            result.Issues.push_back({"Graphics.Grass.Sources",
+                                     "grass source and mask rules replaced by the title's defaults", true});
+        }
+    }
 
     if (const Json* effects =
             RequireObject(document, "Effects",
@@ -2313,6 +2348,16 @@ GraphicsSettingsLoadResult LoadGraphicsSettingsConfig(
                                            std::move(fallback));
     }
     return MigrateLegacy(configRoot, std::move(fallback));
+}
+
+void InstallTitleGrassRuleDefaults(const nlohmann::json& rules) {
+    std::scoped_lock lock(TitleGrassRuleMutex());
+    TitleGrassRules() = rules;
+}
+
+void ClearTitleGrassRuleDefaults() {
+    std::scoped_lock lock(TitleGrassRuleMutex());
+    TitleGrassRules().reset();
 }
 
 bool ShouldPersistGraphicsSettings(

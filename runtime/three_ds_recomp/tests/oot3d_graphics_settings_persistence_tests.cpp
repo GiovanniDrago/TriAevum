@@ -819,6 +819,55 @@ TEST(Oot3dGraphicsSettingsPersistence,
 }
 
 TEST(Oot3dGraphicsSettingsPersistence,
+     Schema15TakesTitleGrassRulesAndKeepsOtherGrassSettings) {
+    auto document =
+        Fast::Oot3d::SerializeGraphicsSettings(CompleteSettings());
+    ASSERT_FALSE(document["Grass"]["Sources"].empty());
+    auto titleRule = document["Grass"]["Sources"][0];
+    titleRule["Target"]["Rgba8Hash"] = "a35e3fe6f83ca9c2";
+    titleRule["InputWhite"] = 0.5;
+    const nlohmann::json titleRules = {
+        {"Sources", nlohmann::json::array({titleRule})},
+        {"Masks", nlohmann::json::array()}};
+
+    document["SchemaVersion"] = 14U;
+    document["Grass"]["Budget"]["DrawDistance"] = 1234.0;
+    document["Grass"]["Performance"]["FarDensity"] = 0.25;
+    document["Grass"]["Generation"]["Seed"] = 77U;
+    document["GrassSavedPreset"] = document["Grass"];
+    document["GrassSavedPreset"]["Budget"]["DrawDistance"] = 4321.0;
+
+    Fast::Oot3d::InstallTitleGrassRuleDefaults(titleRules);
+    const auto migrated = Fast::Oot3d::DeserializeGraphicsSettings(document);
+    auto current = document;
+    current["SchemaVersion"] = Fast::Oot3d::kGraphicsSettingsSchemaVersion;
+    const auto unchanged = Fast::Oot3d::DeserializeGraphicsSettings(current);
+    Fast::Oot3d::ClearTitleGrassRuleDefaults();
+    const auto withoutTitle = Fast::Oot3d::DeserializeGraphicsSettings(document);
+
+    EXPECT_TRUE(migrated.NeedsRewrite);
+    const auto saved = Fast::Oot3d::SerializeGraphicsSettings(migrated.Value);
+    for (const char* block : {"Grass", "GrassSavedPreset"}) {
+        ASSERT_EQ(saved[block]["Sources"].size(), 1U);
+        EXPECT_EQ(saved[block]["Sources"][0]["Target"]["Rgba8Hash"], "a35e3fe6f83ca9c2");
+        EXPECT_FLOAT_EQ(saved[block]["Sources"][0]["InputWhite"].get<float>(), 0.5F);
+        EXPECT_TRUE(saved[block]["Masks"].empty());
+        EXPECT_FLOAT_EQ(saved[block]["Performance"]["FarDensity"].get<float>(), 0.25F);
+        EXPECT_EQ(saved[block]["Generation"]["Seed"], 77U);
+    }
+    EXPECT_FLOAT_EQ(saved["Grass"]["Budget"]["DrawDistance"].get<float>(), 1234.0F);
+    EXPECT_FLOAT_EQ(saved["GrassSavedPreset"]["Budget"]["DrawDistance"].get<float>(), 4321.0F);
+
+    // A current-schema configuration keeps its own rules, and without
+    // installed title rules an old one keeps them too.
+    const auto ownHash = document["Grass"]["Sources"][0]["Target"]["Rgba8Hash"];
+    EXPECT_EQ(Fast::Oot3d::SerializeGraphicsSettings(unchanged.Value)["Grass"]["Sources"][0]["Target"]["Rgba8Hash"],
+              ownHash);
+    EXPECT_EQ(Fast::Oot3d::SerializeGraphicsSettings(withoutTitle.Value)["Grass"]["Sources"][0]["Target"]["Rgba8Hash"],
+              ownHash);
+}
+
+TEST(Oot3dGraphicsSettingsPersistence,
      PreservesUnsupportedFutureSchema) {
     auto fallback = CompleteSettings();
     fallback.OutputWidth = 3440U;

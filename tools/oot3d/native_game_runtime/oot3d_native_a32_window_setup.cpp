@@ -1,6 +1,8 @@
 // Native A32 window session: setup (process image, host services, renderer, UI, initial state).
 #include "oot3d_native_a32_window_session.h"
 #include "oot3d_native_direct_aot.h"
+#include "oot3d_title_grass_rules.h"
+#include "fast/oot3d/graphics_settings_persistence.h"
 
 namespace Oot3dA32Window {
 
@@ -23,6 +25,9 @@ BuildPicaMemoryRegions(
 } // namespace
 
 void NativeA32WindowSession::Setup() {
+  // Before any settings load: configurations older than schema 15 take the
+  // title's shipped grass source and mask rules.
+  Fast::Oot3d::InstallTitleGrassRuleDefaults(Oot3dNativeGame::Oot3dTitleGrassRuleDefaults());
   if (launch.Host.Renderer != "opengl" &&
       launch.Host.Renderer != "nri" &&
       launch.Host.Renderer != "vulkan") {
