@@ -5,6 +5,7 @@
 // here are pure; oot3d_native_a32_actor_visibility applies them to the guest.
 
 #include <cstdint>
+#include <span>
 
 namespace Oot3dNativeGame {
 
@@ -64,6 +65,35 @@ enum class ActorCullingClass : uint8_t { Inside = 0, Outside = 1, Far = 2 };
 [[nodiscard]] float ObjMure2DistanceScalar(float nativeScalar, float projectedX,
                                            float projectedZ, float horizontal,
                                            bool extended) noexcept;
+
+// 0x4000 / 0x80 records. Admission targets 120, leaving eight records of
+// physical headroom. Four of the 120 are also left unassigned: two cover
+// the singleton gameplay/weather records even when already measured, and
+// two are extra headroom. Per-actor auxiliary draws need their own reserve.
+inline constexpr uint32_t kActorLightCapacity = 128U;
+inline constexpr uint32_t kActorLightBudget = 120U;
+inline constexpr uint32_t kActorLightAuxiliaryReserve = 4U;
+// A visual policy ceiling, NOT an estimate of native light demand.
+inline constexpr uint32_t kActorExtensionLimit = 32U;
+
+struct ActorExtensionCandidate {
+    uint64_t Identity = 0U;
+    float DistanceSquared = 0.0F;
+    bool Retained = false;
+    bool Selected = false;
+};
+
+// Stable incumbents first, then distance, then identity; input order is kept.
+void SelectActorExtensions(std::span<ActorExtensionCandidate> candidates);
+
+// remaining includes the current actor and every not-yet-resolved actor,
+// including deferred draws. used is measured in the CURRENT arena epoch.
+[[nodiscard]] bool ActorLightBudgetAllows(uint32_t used, uint32_t remaining) noexcept;
+
+// Native false-result fade branch (Actor_DrawAll): Far decrements; Outside
+// clears. Used to restore native history after an extension-only draw.
+[[nodiscard]] uint8_t NativeCulledActorFade(ActorCullingClass classification,
+                                         uint8_t fade) noexcept;
 
 inline constexpr float kExtendedActorDistanceMultiplier = 5.0F;
 

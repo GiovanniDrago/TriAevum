@@ -275,6 +275,8 @@ NativeA32WindowSession::SaveState(const std::filesystem::path &path, bool withSe
   if (systemPageStorage->Pending() || widescreenProjection.PendingTopScreenPauseChildRestore.has_value())
     return SaveStateOutcome::Deferred;
   if (itemDescriptionStorage->Pending()) return SaveStateOutcome::Deferred;
+  if (Oot3dNativeGame::NativeActorVisibilityHasPendingRestore(widescreenProjection.ActorVisibility))
+    return SaveStateOutcome::Deferred;
   const auto started = std::chrono::steady_clock::now();
   Oot3dNativeGame::NativeA32SavestateRuntimeState runtime;
   runtime.FrameCount = frameCount;
@@ -437,6 +439,7 @@ bool NativeA32WindowSession::LoadState(const std::filesystem::path &path,
   // the scale they select.
   ApplyLoadedSavestateSettings(runtime, applySettings);
   Oot3dNativeGame::ResetOot3dTypedGameplayTransientState();
+  Oot3dNativeGame::ResetNativeActorVisibilityAfterStateLoad(widescreenProjection.ActorVisibility);
   picaCompositionTracker.Reset();
   const auto restoredGravity = hostServices.HidRuntimeProfile().LastAccelerometer;
   nativeControlPollingState.VirtualMotion.RestoreGravity(

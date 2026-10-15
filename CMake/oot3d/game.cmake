@@ -185,6 +185,24 @@ endif()
 set_property(TARGET oot3d_actor_visibility_policy_tests PROPERTY
     FOLDER Tests)
 
+add_executable(oot3d_native_a32_actor_visibility_tests EXCLUDE_FROM_ALL
+    tools/oot3d/native_game_runtime/oot3d_actor_visibility_policy.cpp
+    tools/oot3d/native_game_runtime/oot3d_native_a32_actor_visibility.cpp
+    tools/oot3d/native_game_runtime/oot3d_native_a32_actor_visibility_tests.cpp
+    runtime/three_ds_recomp/src/fast/oot3d/perspective_fov_policy.cpp
+)
+target_include_directories(oot3d_native_a32_actor_visibility_tests PRIVATE
+    runtime/three_ds_recomp/include)
+target_link_libraries(oot3d_native_a32_actor_visibility_tests PRIVATE
+    oot3d_native_a32_process)
+target_compile_options(oot3d_native_a32_actor_visibility_tests PRIVATE
+    "${WARNING_OVERRIDE}")
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set_property(TARGET oot3d_native_a32_actor_visibility_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+set_property(TARGET oot3d_native_a32_actor_visibility_tests PROPERTY FOLDER Tests)
+
 add_library(oot3d_native_crash_diagnostics STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_crash_diagnostics.cpp
 )

@@ -10,12 +10,14 @@
 
 #include <cstdint>
 #include <span>
+#include <vector>
 
 namespace Oot3dNativeGame {
 
 class NativeA32Memory;
 
-// Actor_UpdateCulling (0x00461904, r0 = play) walks every actor list. Its
+// Actor_DrawAll (0x00461904, r0 = play, r1 = actor context) interleaves
+// culling and drawing across every actor list. Its
 // result block: r4 = actor, r0 = native result (0 culled), r1 = the previous
 // culling state, r7 = play + 0x2000; actor+0x120 already holds the new state.
 inline constexpr uint32_t kActorCullingEntry = 0x00461904U;
@@ -39,6 +41,34 @@ inline constexpr uint32_t kEnKoFadeDistanceB = 0x001B60E8U;
 // cutscene action set full alpha without reaching it.
 inline constexpr uint32_t kAlphaByDistanceCompare = 0x00341CD8U;
 
+// All are existing emitted block entries, including the post-reset boundary.
+inline constexpr uint32_t kActorLightAllocate = 0x0035BFB4U;
+inline constexpr uint32_t kActorLightEpochReset = 0x0041633CU;
+inline constexpr uint32_t kActorDrawEntry = 0x002D5F68U;
+inline constexpr uint32_t kActorCullingNext = 0x00461BBCU;
+inline constexpr uint32_t kActorDeferredDrawReturn = 0x00461D2CU;
+inline constexpr uint32_t kActorCullingEnd = 0x00461EC8U;
+
+struct NativeActorVisibilityReservation {
+    uint32_t Actor = 0U;
+    uint32_t Draw = 0U;
+    uint16_t Id = 0U;
+    uint32_t LightCost = 1U;
+    bool Reserved = true;
+    bool Selected = false;
+    bool Extended = false;
+    bool Restore = false;
+    bool NativeDraw = false;
+    uint8_t NativeState = 0U;
+    uint8_t NativeFade = 0U;
+    uint8_t ExtendedFade = 0U;
+};
+
+struct NativeActorVisibilityRetention {
+    uint64_t Identity = 0U;
+    uint8_t Fade = 0U;
+};
+
 struct NativeActorVisibilityState {
     // Snapshot of the settings and presentation, taken between host frames.
     bool ExtendedDrawDistance = false;
@@ -56,7 +86,31 @@ struct NativeActorVisibilityState {
     uint64_t NativeVisible = 0U;
     uint64_t NativeCulled = 0U;
     uint64_t Extended = 0U;
+    // Observational counts only; admission always reads the live arena. A
+    // savestate load/first partial epoch cannot lend stale credits.
+    uint64_t LightEpoch = 0U;
+    uint32_t LightAllocations = 0U;
+    uint32_t PreviousLightAllocations = 0U;
+    uint32_t PeakLightAllocations = 0U;
+    uint64_t BudgetLimitedWalks = 0U;
+    uint64_t BudgetDenied = 0U;
+    uint64_t BudgetInvalidWalks = 0U;
+    uint32_t WalkDenied = 0U;
+    uint32_t RemainingLights = 0U;
+    uint32_t Arena = 0U;
+    uint32_t DeferredCountBefore = 0U;
+    uint32_t DeferredActor = 0U;
+    bool BudgetWalk = false;
+    bool BudgetValid = false;
+    std::vector<NativeActorVisibilityReservation> Reservations;
+    std::vector<NativeActorVisibilityRetention> Retained;
 };
+
+// A standalone save must wait until temporary guest culling fields have
+// been restored. Successful loads discard outgoing host state, without
+// restoring it into the incoming guest memory; settings/pointers survive.
+[[nodiscard]] bool NativeActorVisibilityHasPendingRestore(const NativeActorVisibilityState& visibility) noexcept;
+void ResetNativeActorVisibilityAfterStateLoad(NativeActorVisibilityState& visibility) noexcept;
 
 [[nodiscard]] std::span<const uint32_t> NativeActorVisibilityHookPcs() noexcept;
 

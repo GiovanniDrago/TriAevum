@@ -1,5 +1,7 @@
 #include "oot3d_actor_visibility_policy.h"
 
+#include <algorithm>
+#include <array>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -89,6 +91,34 @@ int main() {
                "an extended depth reclassifies a far actor aside");
         Expect(ClassifyExtendedActorCulling(Actor(0, 0, 6000, 6000), far) == ActorCullingClass::Far,
                "beyond the extended depth stays far");
+
+        // A burst can consume every remaining reservation this epoch. No
+        // previous-frame average appears in the admission calculation.
+        for (uint32_t used = 0; used <= 150; ++used)
+            for (uint32_t remaining = 0; remaining <= 300; ++remaining)
+                Expect(ActorLightBudgetAllows(used, remaining) ==
+                           (used + remaining + kActorLightAuxiliaryReserve <= kActorLightBudget),
+                       "exact reservation boundary");
+        Expect(!ActorLightBudgetAllows(UINT32_MAX, 1), "used overflow fails closed");
+        Expect(!ActorLightBudgetAllows(1, UINT32_MAX), "reservation overflow fails closed");
+        Expect(NativeCulledActorFade(ActorCullingClass::Far, 10) == 9, "native fade decrements");
+        Expect(NativeCulledActorFade(ActorCullingClass::Far, 1) == 0, "last native fade expires");
+        Expect(NativeCulledActorFade(ActorCullingClass::Outside, 10) == 0, "native aside cuts");
+
+        std::array<ActorExtensionCandidate, 40> candidates{};
+        for (size_t i = 0; i < candidates.size(); ++i)
+            candidates[i] = {i + 1, static_cast<float>(i + 1), false, false};
+        candidates.back().Retained = true;
+        SelectActorExtensions(candidates);
+        Expect(candidates.back().Selected && candidates[30].Selected && !candidates[31].Selected,
+               "incumbents then nearer newcomers");
+        std::reverse(candidates.begin(), candidates.end());
+        SelectActorExtensions(candidates);
+        for (const auto& c : candidates)
+            Expect(c.Selected == (c.Identity <= 31 || c.Identity == 40), "list order does not change rank");
+        candidates[0].DistanceSquared = std::numeric_limits<float>::quiet_NaN();
+        SelectActorExtensions(candidates);
+        Expect(!candidates[0].Selected, "NaN incumbent cannot monopolize the budget");
 
         // Obj_Mure2's radial scalar.
         Expect(ObjMure2DistanceScalar(1.0F, 300.0F, 400.0F, 1.0F, false) == 1.0F, "native scalar kept");

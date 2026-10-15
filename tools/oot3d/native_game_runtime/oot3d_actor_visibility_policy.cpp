@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace Oot3dNativeGame {
 namespace {
@@ -63,6 +64,33 @@ float ObjMure2DistanceScalar(float nativeScalar, float projectedX,
         if (presented > 1.0e-6F && std::isfinite(full)) scalar *= full / presented;
     }
     return scalar;
+}
+
+void SelectActorExtensions(std::span<ActorExtensionCandidate> candidates) {
+    std::vector<ActorExtensionCandidate*> ordered;
+    ordered.reserve(candidates.size());
+    for (auto& candidate : candidates) {
+        candidate.Selected = false;
+        if (std::isfinite(candidate.DistanceSquared) && candidate.DistanceSquared >= 0.0F)
+            ordered.push_back(&candidate);
+    }
+    std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) {
+        if (a->Retained != b->Retained) return a->Retained;
+        if (a->DistanceSquared != b->DistanceSquared) return a->DistanceSquared < b->DistanceSquared;
+        return a->Identity < b->Identity;
+    });
+    for (size_t i = 0; i < std::min<size_t>(ordered.size(), kActorExtensionLimit); ++i)
+        ordered[i]->Selected = true;
+}
+
+bool ActorLightBudgetAllows(uint32_t used, uint32_t remaining) noexcept {
+    constexpr auto available = kActorLightBudget - kActorLightAuxiliaryReserve;
+    return used <= available && remaining <= available - used;
+}
+
+uint8_t NativeCulledActorFade(ActorCullingClass classification, uint8_t fade) noexcept {
+    return classification == ActorCullingClass::Far && fade != 0U
+        ? static_cast<uint8_t>(fade - 1U) : 0U;
 }
 
 } // namespace Oot3dNativeGame
