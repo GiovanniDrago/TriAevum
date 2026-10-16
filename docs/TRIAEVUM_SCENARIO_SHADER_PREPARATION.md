@@ -289,6 +289,13 @@ preparation (see `TRIAEVUM_NRI_PIPELINE_PREPARATION.md`, Graphics Profile
 Coverage). Recorded shader text (`*-shaders.json`) is no longer an input: it
 went stale with every generator change (issue #76).
 
+Alpha-tested shadow casters run their draw's fragment program up to the native
+alpha test. A program with a parametric (always-available) form uses the
+built-in caster family (`build_fragment_artifacts --casters`); any other is
+title-derived, so the replay adds its caster as an NRI fragment of the corpus
+and the pass compiler finds it in the pack (`TRIAEVUM_BUILTIN_PASS_ARTIFACTS
+title_hits`) instead of compiling it.
+
 A recorded session also holds `runtime-inputs.json`, written right after the
 recording by `shader_corpus_qualification.py record-inputs --build BUILD
 --target TriAevum`. Three gates keep a stale corpus out of a release:

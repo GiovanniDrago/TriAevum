@@ -175,6 +175,7 @@ void CachedPassShaderCompiler::Configure(std::filesystem::path directory) {
     mDirectory = std::move(directory);
     mVariants.clear();
     mBuiltinArtifactHits = 0;
+    mTitleArtifactHits = 0;
 }
 
 std::span<const uint32_t> FindBuiltinPassShaderSpirv(std::string_view source,
@@ -203,6 +204,12 @@ std::vector<uint32_t> CachedPassShaderCompiler::Resolve(
     if (!artifact.empty()) {
         ++mBuiltinArtifactHits;
         return {artifact.begin(), artifact.end()};
+    }
+    if (mTitleArtifacts && defines.empty()) {
+        if (const auto title = mTitleArtifacts(source, stage); !title.empty()) {
+            ++mTitleArtifactHits;
+            return {title.begin(), title.end()};
+        }
     }
     // A fixed pass absent from the built-in catalogue (resolved once per pipeline).
     std::fprintf(stderr, "TRIAEVUM_PASS_ARTIFACT_MISS name=%s stage=%d defines=%zu\n",

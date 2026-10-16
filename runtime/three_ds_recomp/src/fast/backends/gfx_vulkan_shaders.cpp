@@ -101,6 +101,20 @@ void GfxRenderingAPIVulkan::ConfigureNativePicaAotShaders() {
     mNriInterop.Shaders().Configure(VulkanShaderCacheDirectory());
     // Alpha shadow casters of the parametric bases (built-in, finite).
     mNriInterop.Shaders().AddArtifacts(Oot3d::CasterFragmentArtifacts());
+    // Alpha shadow casters of specialized programs are title-derived: the
+    // corpus carries them as NRI fragments (variant replay, issue #76).
+    mNriInterop.Shaders().SetTitleArtifacts(
+        [this](std::string_view source, Renderer::SpirvStage stage) -> std::span<const uint32_t> {
+            if (stage != Renderer::SpirvStage::Fragment || !mPicaAotShaderPack.Loaded()) return {};
+            const auto binary = mPicaAotShaderPack.Find(Oot3d::PicaAotShaderStage::NriFragment, source);
+            if (!binary.empty()) {
+                ++mPicaAotShaderHits;
+                std::lock_guard lock(mPicaAotShaderLogMutex);
+                mPicaAotShaderHitIdentities.insert(
+                    {Oot3d::PicaAotShaderStage::NriFragment, Oot3d::IdentifyPicaAotShaderSource(source).Id});
+            }
+            return binary;
+        });
     mCompiledShaderCacheSummaryLogged = false;
     if (!mCompiledShaderCache.Enabled())
         SPDLOG_WARN("SPIR-V disk reuse disabled: cache directory or compiler identity unavailable");
@@ -112,6 +126,7 @@ void GfxRenderingAPIVulkan::ConfigureNativePicaAotShaders() {
     JoinStartupPreparation();
     if (mPreparationQueue) mPreparationQueue->Drain();
     mPicaAotShaderMissesLogged.clear();
+    mPicaAotShaderHitIdentities.clear();
     mPicaAotShaderHits = 0;
     mNativeFragmentArtifactHits = 0;
     mNativeVertexArtifactHits = 0;
@@ -211,8 +226,9 @@ void GfxRenderingAPIVulkan::FinishNativePicaAotShaders() {
     const auto passes = mNriInterop.Shaders().Stats();
     if ((cache.Requests || passes.Requests || mNriInterop.Shaders().BuiltinArtifactHits() ||
          mPicaAotShaderPack.Loaded()) && !mCompiledShaderCacheSummaryLogged) {
-        std::fprintf(stderr, "TRIAEVUM_BUILTIN_PASS_ARTIFACTS hits=%llu\n",
-                     static_cast<unsigned long long>(mNriInterop.Shaders().BuiltinArtifactHits()));
+        std::fprintf(stderr, "TRIAEVUM_BUILTIN_PASS_ARTIFACTS hits=%llu title_hits=%llu\n",
+                     static_cast<unsigned long long>(mNriInterop.Shaders().BuiltinArtifactHits()),
+                     static_cast<unsigned long long>(mNriInterop.Shaders().TitleArtifactHits()));
         std::fprintf(stderr,
             "TRIAEVUM_PASS_SHADER_CACHE requests=%llu hits=%llu compiled=%llu compile_failed=%llu "
             "writes=%llu write_failed=%llu compile_ms=%.3f enabled=%d\n",

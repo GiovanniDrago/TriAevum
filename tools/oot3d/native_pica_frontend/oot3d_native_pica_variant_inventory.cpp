@@ -13,10 +13,18 @@
 // With an unchanged generator every regenerated identity must equal the
 // recorded witness (--require-witness). With a changed generator the
 // witnesses only link recipes; every request must still resolve.
+//
+// Alpha-tested shadow casters run their draw's fragment program up to the
+// native alpha test. A draw with a parametric (always-available) form uses the
+// built-in caster family; any other derives its caster from the canonical
+// program, so the replay adds that variant as an NRI fragment of the corpus.
 
 #include "oot3d_native_pica_draw_state.h"
 #include "oot3d_native_pica_raw_draw_record.h"
+#include "oot3d_native_pica_vulkan_bridge.h"
 #include "oot3d_native_pica_vulkan_plan.h"
+
+#include "fast/oot3d/pica_directional_shadow_caster.h"
 
 #include "fast/oot3d/pica_aot_shader_pack.h"
 #include "fast/oot3d/pica_nri_shader_contract.h"
@@ -44,6 +52,9 @@ using Json = nlohmann::json;
 using namespace Oot3dNativeGame;
 using Fast::Oot3d::PicaShaderPipelineRequest;
 using Fast::Oot3d::PicaVariantShaderIdentity;
+
+// PicaCompareFunction::Always in the alpha test register.
+constexpr uint32_t kPicaCompareAlways = 1U;
 
 std::string Hex64(uint64_t value) {
     char text[17];
@@ -135,7 +146,7 @@ int Run(const Options& options) {
         shaderCache.UberFragments = raw.UberFragments;
         std::map<uint64_t, CanonicalPlan> plans;
         Json planFailures = Json::array();
-        uint64_t canonicalWitnessMismatches = 0;
+        uint64_t canonicalWitnessMismatches = 0, casterFragments = 0, alphaTested = 0, alphaTestedParametric = 0;
         for (const auto& draw : raw.Draws) {
             Oot3dPicaDrawSubmission submission;
             submission.Packet = draw.Packet;
@@ -169,6 +180,23 @@ int Run(const Options& options) {
                            witness.FragmentShaderKey},
                 Regenerated{Identity(canonical.VertexIdentity), Identity(canonical.FragmentIdentity), {}, false,
                             canonical.VertexKey, canonical.FragmentKey});
+            // The caster the shadow passes derive (gfx_vulkan_pica_draw.cpp:
+            // alpha-tested, not Always, no valid parametric form).
+            const auto alphaTest = DecodeOot3dPicaAlphaTest(plan.FragmentShader.Uniforms.FragmentControl[1]);
+            const bool parametric = plan.SharedUberFragmentShaderSource != nullptr &&
+                                    plan.UberFragmentShader.Hooks.ValidFor(*plan.SharedUberFragmentShaderSource);
+            if (alphaTest.Enabled && alphaTest.Compare != kPicaCompareAlways) ++alphaTested;
+            if (alphaTest.Enabled && alphaTest.Compare != kPicaCompareAlways && parametric) ++alphaTestedParametric;
+            if (alphaTest.Enabled && alphaTest.Compare != kPicaCompareAlways && !parametric) {
+                const auto caster = Fast::Oot3d::BuildPicaShadowCasterAlphaFragmentShader(
+                    canonical.FragmentSource, canonical.FragmentKey, canonical.FragmentHooks);
+                if (caster.Applied()) {
+                    inventory.Observe(Fast::Oot3d::PicaAotShaderStage::NriFragment, caster.Source,
+                                      canonical.DescriptorSchemaVersion, draw.CanonicalPipelineId,
+                                      canonical.FragmentKey, 0U);
+                    ++casterFragments;
+                }
+            }
             plans.emplace(draw.CanonicalPipelineId, std::move(canonical));
         }
 
@@ -253,6 +281,9 @@ int Run(const Options& options) {
                             {"canonical_plans", plans.size()},
                             {"plan_failures", planFailures},
                             {"canonical_witness_mismatches", canonicalWitnessMismatches},
+                            {"shadow_caster_fragments", casterFragments},
+                            {"alpha_tested_draws", alphaTested},
+                            {"alpha_tested_parametric", alphaTestedParametric},
                             {"effects", requests.Effects.size()},
                             {"requests", requests.Requests.size()},
                             {"instrumented_requests", instrumented},

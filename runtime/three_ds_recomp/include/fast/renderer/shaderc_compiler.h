@@ -1,5 +1,6 @@
 #pragma once
 #include "fast/renderer/spirv_cache.h"
+#include <functional>
 #include <map>
 #include <utility>
 #include <span>
@@ -37,10 +38,18 @@ class CachedPassShaderCompiler {
     // Programs built with a title or effect family (derived from its own
     // programs at development time), consulted after the built-in catalogue.
     void AddArtifacts(std::span<const PassShaderArtifact> artifacts);
+    // Title-derived programs a publisher compiled ahead of time (the title's
+    // portable shader pack), looked up by source after the catalogues and
+    // before the disk cache and the compiler. Macro variants are never there.
+    using TitleArtifactLookup = std::function<std::span<const uint32_t>(std::string_view, SpirvStage)>;
+    void SetTitleArtifacts(TitleArtifactLookup lookup) { mTitleArtifacts = std::move(lookup); }
+    uint64_t TitleArtifactHits() const { return mTitleArtifactHits; }
   private:
     std::filesystem::path mDirectory;
     std::vector<std::pair<const PassShaderArtifact*, size_t>> mArtifacts;
     std::map<std::string, SpirvCache> mVariants;
+    TitleArtifactLookup mTitleArtifacts;
     uint64_t mBuiltinArtifactHits = 0;
+    uint64_t mTitleArtifactHits = 0;
 };
 }
