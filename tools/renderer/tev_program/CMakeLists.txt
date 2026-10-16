@@ -304,6 +304,8 @@ endif()
 
 add_executable(grass_motion_gpu_tests grass_motion_gpu_tests.cpp
     "${runtime}/src/fast/oot3d/grass_gpu_instance_compactor.cpp"
+    "${runtime}/src/fast/oot3d/grass_gpu_selection.cpp"
+    "${runtime}/src/fast/oot3d/grass_visibility.cpp"
     "${runtime}/src/fast/oot3d/grass_interaction_field.cpp")
 triaevum_add_pass_shader_sources(grass_motion_gpu_tests)
 target_compile_features(grass_motion_gpu_tests PRIVATE cxx_std_20)
