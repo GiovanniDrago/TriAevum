@@ -1356,12 +1356,14 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             reliefTexture,
         };
         static const Oot3d::EffectsSettings nativeMemoryEffects;
+        const auto& variantEffects = nativeMemoryOnly ? nativeMemoryEffects : graphicsSettings.Effects;
         bool variantCacheHit = false;
         const auto& shaderVariant =
             mPicaShaderPipelineCache.Resolve(
-                variantRequest,
-                nativeMemoryOnly ? nativeMemoryEffects : graphicsSettings.Effects,
-                &variantCacheHit);
+                variantRequest, variantEffects, &variantCacheHit);
+        // Cache hits too: the recording is of requests, not of misses.
+        mPicaVariantRequestRecorder.Observe(draw.CanonicalPipelineId, variantRequest, variantEffects,
+                                            graphicsSettings, mFrameGraphicsSettingsRevision, shaderVariant);
 #if defined(TRIAEVUM_RENDERER_DEVELOPER_TOOLS)
         if (surfaceCandidate && surfaceDebug.Tracing()) {
             // One candidate: its native colour computation and what Modern did.

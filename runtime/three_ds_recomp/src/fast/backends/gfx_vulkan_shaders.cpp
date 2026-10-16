@@ -158,6 +158,12 @@ void GfxRenderingAPIVulkan::ConfigureNativePicaAotShaders() {
         SPDLOG_INFO("Native PICA effective shader inventory enabled: {}",
                     mPicaEffectiveShaderInventory.Path().string());
     }
+    if (const char* path = std::getenv("OOT3D_PICA_VARIANT_REQUESTS"); path != nullptr && path[0] != '\0') {
+        std::string error;
+        if (!mPicaVariantRequestRecorder.Configure(path, &error))
+            throw std::runtime_error("could not configure native PICA variant requests: " + error);
+        SPDLOG_INFO("Native PICA variant request recording enabled: {}", path);
+    }
     if (const char* path =
             std::getenv("OOT3D_PICA_PIPELINE_INVENTORY");
         path != nullptr && path[0] != '\0') {

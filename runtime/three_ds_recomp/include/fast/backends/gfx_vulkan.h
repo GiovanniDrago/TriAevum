@@ -79,6 +79,7 @@
 #include "fast/oot3d/pica_geometry_registry.h"
 #include "fast/oot3d/pica_scene_frame.h"
 #include "fast/oot3d/pica_shader_pipeline_cache.h"
+#include "fast/oot3d/pica_variant_request_record.h"
 #include "fast/oot3d/scene_surface_registry.h"
 #include "fast/oot3d/scene_composite_pass.h"
 #include "fast/oot3d/smaa_1x_pass.h"
@@ -1269,6 +1270,8 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Renderer::SpirvCache mCompiledShaderCache;
     bool mCompiledShaderCacheSummaryLogged = false;
     Oot3d::PicaEffectiveShaderInventory mPicaEffectiveShaderInventory;
+    // OOT3D_PICA_VARIANT_REQUESTS: every distinct variant request, for offline replay.
+    Oot3d::PicaVariantRequestRecorder mPicaVariantRequestRecorder;
     Oot3d::PicaGraphicsPipelineInventory mPicaPipelineInventory;
     Oot3d::PicaGraphicsPipelineManifest mPicaPipelineManifest;
     std::set<uint64_t> mPicaPipelinePrewarmedProfiles;

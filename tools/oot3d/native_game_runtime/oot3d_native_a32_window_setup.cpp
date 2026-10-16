@@ -1042,6 +1042,11 @@ void NativeA32WindowSession::Setup() {
       ? Oot3dNativeGame::Oot3dPicaTevMode::Parametric
       : Oot3dNativeGame::Oot3dPicaTevMode::Specialized;
   shaderSourceCache.UberFragments = alwaysAvailablePrograms;
+  if (const char *path = std::getenv("OOT3D_PICA_RAW_DRAWS"); path != nullptr && path[0] != '\0') {
+    std::string recordError;
+    if (!picaRawDrawRecorder.Configure(path, launch.PicaParametricTev, alwaysAvailablePrograms, &recordError))
+      throw std::runtime_error(recordError);
+  }
   auto &picaSemanticTrace = picaSemanticTraceStorage.emplace(
       launch.PicaSemanticTracePath);
   picaSemanticTrace.BeginSession(

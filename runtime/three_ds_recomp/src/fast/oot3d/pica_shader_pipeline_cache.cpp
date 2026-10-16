@@ -13,14 +13,17 @@
 #include <vector>
 
 namespace Fast::Oot3d {
-namespace {
-bool FaceNormalGuideDiagnosticRequested() {
+
+bool PicaFaceNormalGuideDiagnosticRequested() noexcept {
     static const bool requested = [] {
         const char* value = std::getenv("OOT3D_GRAPHICS_FACE_NORMAL_GUIDE");
         return value != nullptr && value[0] == '1';
     }();
     return requested;
 }
+
+namespace {
+bool FaceNormalGuideDiagnosticRequested() noexcept { return PicaFaceNormalGuideDiagnosticRequested(); }
 
 void HashCombine(size_t& seed, size_t value) noexcept {
     seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6U) +

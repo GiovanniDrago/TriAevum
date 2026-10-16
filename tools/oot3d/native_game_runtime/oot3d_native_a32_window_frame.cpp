@@ -1378,6 +1378,16 @@ void NativeA32WindowSession::RunGuestRefresh() {
                                  error);
       }
       phaseTiming.PicaPlanSeconds += SecondsSince(drawPhaseStart);
+      if (picaRawDrawRecorder.Enabled() &&
+          !picaRawDrawRecorder.Seen(plan.CanonicalIdentity.PipelineId)) {
+        const auto &vertex = plan.VertexShader.SourceIdentity;
+        const auto &fragment = plan.FragmentShader.SourceIdentity;
+        picaRawDrawRecorder.Observe(
+            plan.CanonicalIdentity.PipelineId, draw.Packet,
+            {plan.VertexShader.StateKey, plan.FragmentShader.StateKey, vertex.Id,
+             vertex.SecondaryHash, vertex.Size, fragment.Id, fragment.SecondaryHash,
+             fragment.Size});
+      }
       picaSemanticTrace.RecordDraw(
           presentationFrameCount, frameCount, draw, plan,
           suppressNativeFrontendBackdropDraw, usesCommonBackground,

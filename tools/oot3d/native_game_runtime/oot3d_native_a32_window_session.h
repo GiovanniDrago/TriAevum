@@ -49,6 +49,7 @@
 #include "oot3d_native_pica_frontend.h"
 #include "oot3d_native_pica_composition.h"
 #include "oot3d_native_pica_presentation_scheduler.h"
+#include "oot3d_native_pica_raw_draw_record.h"
 #include "oot3d_native_render_command_stream.h"
 #include "oot3d_native_pica_semantic_trace.h"
 #include "oot3d_native_pica_submission.h"
@@ -440,6 +441,9 @@ private:
   NativeControlPollingState nativeControlPollingState;
   Oot3dNativeGame::Oot3dPicaVulkanShaderSourceCache shaderSourceCache;
   std::optional<Oot3dNativeGame::Oot3dPicaSemanticTraceWriter> picaSemanticTraceStorage;
+  // OOT3D_PICA_RAW_DRAWS: the raw PICA state of each canonical pipeline, for
+  // offline variant replay (with OOT3D_PICA_VARIANT_REQUESTS).
+  Oot3dNativeGame::Oot3dPicaRawDrawRecorder picaRawDrawRecorder;
   std::optional<Oot3dNativeGame::NativeA32DspHle> dspHleStorage;
   Ship::Context *context{};
   std::shared_ptr<Ship::Audio> audio{};
