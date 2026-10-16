@@ -706,6 +706,39 @@ GrassLodDecision ResolveGrassLodWithStableVisibility(const GrassLodPolicy& polic
     return result;
 }
 
+GrassLodEvaluator::GrassLodEvaluator(const GrassLodPolicy& policy) noexcept : mPolicy(policy) {
+    mReference = policy.LodReferenceDistance > 0.0F ? policy.LodReferenceDistance : policy.DrawDistance;
+    mTuftEnd = policy.LodEnd + policy.TuftTransitionFraction;
+    // The general path at progress 1: both segment weights must be exactly 1
+    // so that every stable choice (< 1) selects the far segments.
+    const float halfBand = policy.SegmentLodSoftness / 6.0F;
+    const bool segmentsFar = GrassTuftWeight(1.0F, 1.0F/3.0F-halfBand, 1.0F/3.0F+halfBand) == 1.0F &&
+                             GrassTuftWeight(1.0F, 2.0F/3.0F-halfBand, 2.0F/3.0F+halfBand) == 1.0F;
+    // Past mTuftEnd the tuft weight is exactly 1 (start < end: rounding is
+    // monotone; start >= end: a step at start <= mTuftEnd).
+    mFarBand = segmentsFar && policy.TuftTransitionFraction >= 0.0F && mReference > 0.0F;
+    mFarScale = policy.FarTuftsEnabled
+        ? GrassTuftRetentionScale(1.0F, policy.FarTuftBladeCount, policy.FarTuftDensity) : 1.0F;
+}
+
+GrassLodDecision GrassLodEvaluator::Resolve(float distance, float stableVisibility) const noexcept {
+    if (mFarBand && std::isfinite(distance) && distance >= 0.0F && distance <= mPolicy.DrawDistance &&
+        mPolicy.DrawDistance > 0.0F &&
+        distance > mPolicy.SegmentStartDistance && distance >= mPolicy.SegmentEndDistance) {
+        const float normalized = distance / mReference;
+        if (normalized >= mTuftEnd) {
+            GrassLodDecision result;
+            result.BladeSegments = mPolicy.FarBladeSegments;
+            result.PlaneCount = 1U;
+            result.DistantTuft = mPolicy.FarTuftsEnabled;
+            result.Retention = std::clamp(GrassDensityRetention(mPolicy, normalized) * mFarScale, 0.0F, 1.0F);
+            result.Visible = stableVisibility <= result.Retention;
+            return result;
+        }
+    }
+    return ResolveGrassLodWithStableVisibility(mPolicy, distance, stableVisibility);
+}
+
 GrassLodDecision ResolveGrassLodWithStableVisibility(const InteractiveGrassSettings& settings, float distance,
                                                      float stableVisibility) noexcept {
     return ResolveGrassLodWithStableVisibility(BuildGrassLodPolicy(settings), distance, stableVisibility);

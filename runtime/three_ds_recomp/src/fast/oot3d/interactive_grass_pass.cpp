@@ -111,6 +111,16 @@ bool GrassSelectionVerifyEnabled() {
     return enabled;
 }
 
+// Diagnostic: TRIAEVUM_GRASS_SELECTION_HASH=1 adds a per-frame hash of the
+// selected roots and batches to TRIAEVUM_GRASS_PROFILE (about 0.3 ms).
+bool GrassSelectionHashEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("TRIAEVUM_GRASS_SELECTION_HASH");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
 // Eye radius (world units), clip-row delta and translation scale of a
 // candidate envelope. TRIAEVUM_GRASS_ENVELOPE="radius,delta,scale" tunes them.
 std::array<float, 3> GrassCandidateEnvelopeParameters() {
@@ -1546,6 +1556,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
 
         const float drawDistanceSquared = settings.DrawDistance * settings.DrawDistance;
         const auto lodPolicy = BuildGrassLodPolicy(settings);
+        const GrassLodEvaluator lodEvaluator(lodPolicy);
         const float bladeRadiusScale = GrassBladeRadiusScale(
             settings.Appearance.BladeCurvature,
             settings.Appearance.ShapeVariation, settings.MaximumBend) +
@@ -1641,7 +1652,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                         }
                         const float distance = std::sqrt(distanceSquared);
                         const auto lod =
-                            ResolveGrassLodWithStableVisibility(lodPolicy, distance, anchor.StableVisibility);
+                            lodEvaluator.Resolve(distance, anchor.StableVisibility);
                         if (!lod.Visible) {
                             continue;
                         }
@@ -1951,17 +1962,15 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             }
         }
         selectionTimer.Stop();
-        if (GrassStageProfileEnabled()) {
+        if (GrassStageProfileEnabled() && GrassSelectionHashEnabled()) {
             // Identity of the selection for A/B runs: roots, order and batches.
             GrassStageTimer diagnosticsTimer(GrassStage::Diagnostics);
             uint64_t hash = kGrassIdentityFnvOffset;
-            for (const uint32_t index : mImpl->VisibleAnchorIndices) HashGrassIdentityValue(hash, index);
-            for (const auto& batch : batches) {
-                HashGrassIdentityValue(hash, batch.FirstInstance);
-                HashGrassIdentityValue(hash, batch.InstanceCount);
-                HashGrassIdentityValue(hash, batch.BladeSegments);
-                HashGrassIdentityValue(hash, batch.PlaneCount);
-            }
+            const auto mix = [&hash](uint64_t value) { hash = (hash ^ value) * kGrassIdentityFnvPrime; };
+            for (const uint32_t index : mImpl->VisibleAnchorIndices) mix(index);
+            for (const auto& batch : batches)
+                mix((static_cast<uint64_t>(batch.FirstInstance) << 32U) ^ batch.InstanceCount ^
+                    (static_cast<uint64_t>(batch.BladeSegments) << 24U) ^ (static_cast<uint64_t>(batch.PlaneCount) << 16U));
             GrassStageCurrent().SelectHash ^= hash;
         }
 

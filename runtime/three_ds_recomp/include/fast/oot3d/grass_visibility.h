@@ -217,4 +217,21 @@ BuildGrassFrustumRadiusScale(
 [[nodiscard]] GrassLodDecision ResolveGrassLodWithStableVisibility(const GrassLodPolicy& policy, float distance,
                                                                    float stableVisibility) noexcept;
 
+// ResolveGrassLodWithStableVisibility with the far band precomputed. Beyond
+// the segment and tuft transitions every topology weight is exactly 1, so the
+// decision there is constant except for the density retention, which uses the
+// same expressions. Results are bit-identical to the general function.
+class GrassLodEvaluator {
+  public:
+    explicit GrassLodEvaluator(const GrassLodPolicy& policy) noexcept;
+    [[nodiscard]] GrassLodDecision Resolve(float distance, float stableVisibility) const noexcept;
+
+  private:
+    GrassLodPolicy mPolicy;
+    float mReference = 0.0F;
+    float mTuftEnd = 0.0F;
+    float mFarScale = 1.0F;
+    bool mFarBand = false;
+};
+
 } // namespace Fast::Oot3d

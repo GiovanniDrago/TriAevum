@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <vector>
 #include <cmath>
 
@@ -856,4 +857,52 @@ TEST(Oot3dGrassActorCells, EveryActorThatCanTouchARootIsListedInItsCellInOrder) 
     invalid[1].Position[0] = NAN;
     EXPECT_EQ(BuildGrassActorCells(invalid, 1.0F).Width, 0U);
     EXPECT_EQ(BuildGrassActorCells({}, 1.0F).Width, 0U);
+}
+
+TEST(Oot3dGrassVisibility, LodEvaluatorFarBandIsBitIdentical) {
+    using namespace Fast::Oot3d;
+    InteractiveGrassSettings base;
+    base.DrawDistance = 50000;
+    base.LodReferenceDistance = 2282;
+    base.LodStartFraction = 0.32F;
+    base.LodEndFraction = 0.32F;
+    base.TuftTransitionFraction = 0.48F;
+    base.FarTuftsEnabled = true;
+    base.FarTuftBladeCount = 4;
+    base.FarTuftDensity = 2;
+    base.FarDensity = 1;
+    base.Appearance.BladeSegments = 5;
+    base.FarBladeSegments = 1;
+    base.SegmentLodStartDistance = 501;
+    base.SegmentLodEndDistance = 1000;
+    base.SegmentLodSoftness = 0.75F;
+    std::vector<InteractiveGrassSettings> variants(8, base);
+    variants[1].TuftTransitionFraction = 0;
+    variants[2].FarTuftsEnabled = false;
+    variants[3].SegmentLodSoftness = 0;
+    variants[4].SegmentLodSoftness = 1;
+    variants[5].SegmentLodEndDistance = 400;  // end below start
+    variants[6].LodReferenceDistance = 0;
+    variants[6].DrawDistance = 3000;
+    variants[7].FarDensity = 0.3F;
+    variants[7].FarTuftDensity = 0.5F;
+    size_t far = 0;
+    for (const auto& settings : variants) {
+        const auto policy = BuildGrassLodPolicy(settings);
+        const GrassLodEvaluator evaluator(policy);
+        for (float distance = -10.0F; distance <= 9000.0F; distance += 0.37F) {
+            for (uint32_t id = 1; id < 400; id += 7) {
+                const float stable = GrassStableVisibilityValue(id * 2654435761U);
+                const auto expected = ResolveGrassLodWithStableVisibility(policy, distance, stable);
+                const auto actual = evaluator.Resolve(distance, stable);
+                ASSERT_EQ(actual.Visible, expected.Visible) << distance;
+                ASSERT_EQ(actual.BladeSegments, expected.BladeSegments) << distance;
+                ASSERT_EQ(actual.PlaneCount, expected.PlaneCount) << distance;
+                ASSERT_EQ(actual.DistantTuft, expected.DistantTuft) << distance;
+                ASSERT_EQ(std::bit_cast<uint32_t>(actual.Retention), std::bit_cast<uint32_t>(expected.Retention)) << distance;
+            }
+            far += distance >= 1826.0F;
+        }
+    }
+    EXPECT_GT(far, 0U);
 }
