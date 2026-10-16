@@ -1224,6 +1224,13 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     Oot3d::PicaSceneFrame mPreparedShadowCasterFrame;
     Oot3d::NativeSceneView mPreparedShadowCasterView;
     std::unordered_map<uint64_t, Renderer3ds::VirtualShadowCaster> mPreparedShadowCasters;
+    // Accepted caster poses per instance: native geometry identity and the
+    // temporal owner part that draws it (see PicaShadowCasterAnchor).
+    std::unordered_map<uint64_t, Renderer3ds::PicaShadowCasterAnchor> mShadowCasterAnchors;
+    Renderer3ds::PicaShadowCasterAnchor* ShadowCasterAnchor(uint64_t geometryIdentity,
+                                                            const Renderer3ds::PicaTemporalIdentity& identity,
+                                                            uint64_t submissionId);
+    uint64_t mNextShadowCasterAnchorSweep = 0;
     Oot3d::PicaScenePublicationAdapter mPicaScenePublications;
     Oot3d::GrassGeometryRegistry mGrassGeometryRegistry;
     Oot3d::GrassDrawMemo mGrassDrawMemo;

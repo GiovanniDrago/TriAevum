@@ -24,6 +24,26 @@ bool PublishNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
                                    Oot3d::GrassGeometryRegistry& geometryRegistry, Oot3d::GrassDrawMemo& memo,
                                    uint64_t sequenceId, uint64_t drawOrder, bool masksOnly = false);
 
+Renderer3ds::PicaShadowCasterAnchor* GfxRenderingAPIVulkan::ShadowCasterAnchor(
+    uint64_t geometryIdentity, const Renderer3ds::PicaTemporalIdentity& identity, uint64_t submissionId) {
+    // Only a proven instance owns an anchor: without one, several placements
+    // of one mesh would share it, so the stateless version is used instead.
+    // An identity that two draws of one frame share (one renderer drawing a
+    // packet twice) is ambiguous for as long as its anchor lives.
+    if (geometryIdentity == 0U || !identity.Available())
+        return nullptr;
+    uint64_t key = 1469598103934665603ULL;
+    for (const uint64_t value : {geometryIdentity, identity.Owner, identity.Instance, identity.Part, identity.Slot,
+                                 identity.Lifetime})
+        key ^= value + 0x9e3779b97f4a7c15ULL + (key << 6U) + (key >> 2U);
+    auto& anchor = mShadowCasterAnchors[key];
+    if (anchor.LastFrame == mFrameCounter && anchor.LastSubmission != submissionId)
+        anchor.Ambiguous = true;
+    anchor.LastFrame = mFrameCounter;
+    anchor.LastSubmission = submissionId;
+    return anchor.Ambiguous ? nullptr : &anchor;
+}
+
 bool GfxRenderingAPIVulkan::PublishPicaCompositionSequence(
     const ::Fast::Renderer3ds::PicaCompositionSequenceView& sequence,
     std::string* error) {
@@ -67,6 +87,13 @@ bool GfxRenderingAPIVulkan::PublishPicaCompositionSequence(
         // Prepared casters belong to exactly one published sequence.
         mPreparedShadowCasterFrame.BeginFrame(mCurrentFrame, mFrameCounter);
         mPreparedShadowCasters.clear();
+        // Caster instances unseen for ten seconds give up their anchors.
+        if (mFrameCounter >= mNextShadowCasterAnchorSweep) {
+            mNextShadowCasterAnchorSweep = mFrameCounter + 600U;
+            std::erase_if(mShadowCasterAnchors, [this](const auto& entry) {
+                return entry.second.LastFrame + 600U < mFrameCounter;
+            });
+        }
         mDiagnostics.RecordPicaCompositionSchedule(
             mNativePicaCompositionSchedule.Stats());
         return true;
@@ -547,8 +574,12 @@ bool GfxRenderingAPIVulkan::PreparePicaSequenceDraw(
             {geometry.Payload, bindings, layout.Attributes, layout.Bindings, placement.BaseOffset,
              geometry.IndexOffset, geometry.VertexOrIndexCount, draw.BaseVertex, geometry.Indexed},
             draw.TemporalVertexProgram.Hooks, booleanUniforms,
-            draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset), viewToWorld, version, shadowCache);
-        shadowCaster.Dynamic = draw.Composition.NativeActorGeometry;
+            draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset), viewToWorld, version, shadowCache,
+            resolution.Cacheable
+                ? ShadowCasterAnchor(geometry.Identity, draw.Composition.TemporalIdentity, draw.SubmissionId)
+                : nullptr);
+        shadowCaster.Dynamic =
+            draw.Composition.NativeActorGeometry && !draw.Composition.StaticShadowCacheEligible;
         shadowCaster.OwnerIdentity = draw.Composition.NativeActorIdentity;
         std::array<Oot3d::PicaSceneTextureBinding, 3> sceneTextures{};
         Oot3d::PicaSceneTextureBinding sceneLightingLut;
@@ -2877,9 +2908,14 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                      draw.BaseVertex, geometry.Indexed},
                     draw.TemporalVertexProgram.Hooks, booleanUniforms,
                     draw.VertexUniformBytes.subspan(Oot3d::kPicaPackedVertexFloatOffset),
-                    shadowViewToWorld, version, shadowCache);
+                    shadowViewToWorld, version, shadowCache,
+                    geometryResolution.Cacheable
+                        ? ShadowCasterAnchor(geometry.Identity, draw.Composition.TemporalIdentity,
+                                             draw.SubmissionId)
+                        : nullptr);
             }
-            shadowCaster.Dynamic = draw.Composition.NativeActorGeometry;
+            shadowCaster.Dynamic =
+                draw.Composition.NativeActorGeometry && !draw.Composition.StaticShadowCacheEligible;
             shadowCaster.OwnerIdentity = draw.Composition.NativeActorIdentity;
             if (opaqueWorldDraw && draw.LightBinding.WorldToView)
                 renderTarget.SampleView.Observe(mFrameCounter, *draw.LightBinding.WorldToView);
@@ -3669,7 +3705,7 @@ bool GfxRenderingAPIVulkan::TryRenderDirectionalShadowMap(
         mDiagnostics.RecordNriVirtualShadowKeyframes(
             keyframes.DisplayedLayouts, keyframes.NewerWeight, keyframes.ConstructionPages,
             keyframes.ConstructionBudget, keyframes.Cut, keyframes.Rotated,
-            keyframes.DisplayedDirectionTowardSource, keyframes.LagDegrees);
+            keyframes.DisplayedDirectionTowardSource, keyframes.LagDegrees, keyframes.ConstructionUnbounded);
         mDiagnostics.RecordNriDirectionalShadowLightSelection(
             lightTelemetry.CandidateCount,
             lightTelemetry.ClusterCount,
