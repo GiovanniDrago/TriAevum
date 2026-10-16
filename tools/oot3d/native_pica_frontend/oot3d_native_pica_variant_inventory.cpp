@@ -14,6 +14,13 @@
 // recorded witness (--require-witness). With a changed generator the
 // witnesses only link recipes; every request must still resolve.
 //
+// --infer-report is a dry run of inferred coverage (strategy §4): each
+// recorded request is resolved again with one unresolved per-draw semantic
+// changed at a time (surface availability, receivers, isolation, temporal
+// motion, relief, reflection), and the report counts the modules that are not
+// already observed. Nothing it finds reaches the inventory: widening the corpus
+// is a budgeted decision taken on this report.
+//
 // Alpha-tested shadow casters run their draw's fragment program up to the
 // native alpha test. A draw with a parametric (always-available) form uses the
 // built-in caster family; any other derives its caster from the canonical
@@ -106,13 +113,38 @@ struct Options {
     std::filesystem::path ShaderInventory;
     std::filesystem::path PipelineManifest;
     std::filesystem::path Report;
+    std::filesystem::path InferReport;
     bool RequireWitness = false;
+};
+
+// One unresolved per-draw semantic of a variant request, changed in place.
+struct InferredSemantic {
+    const char* Name;
+    void (*Apply)(PicaShaderPipelineRequest& request);
+};
+
+constexpr InferredSemantic kInferredSemantics[] = {
+    {"surface_lighting", [](PicaShaderPipelineRequest& r) { r.SurfaceLightingAvailable = !r.SurfaceLightingAvailable; }},
+    {"directional_shadow_receiver",
+     [](PicaShaderPipelineRequest& r) { r.Draw.DirectionalShadowReceiver = !r.Draw.DirectionalShadowReceiver; }},
+    {"point_shadow_receiver",
+     [](PicaShaderPipelineRequest& r) { r.Draw.PointShadowReceiver = !r.Draw.PointShadowReceiver; }},
+    {"isolated_lighting", [](PicaShaderPipelineRequest& r) { r.Draw.IsolatedLighting = !r.Draw.IsolatedLighting; }},
+    {"temporal_motion", [](PicaShaderPipelineRequest& r) { r.TemporalMotionEnabled = !r.TemporalMotionEnabled; }},
+    {"relief_texture", [](PicaShaderPipelineRequest& r) { r.ReliefTexture = r.ReliefTexture == 0xffU ? 0U : 0xffU; }},
+    {"reflection",
+     [](PicaShaderPipelineRequest& r) {
+         if (r.ReflectionProfile.has_value())
+             r.ReflectionProfile.reset();
+         else
+             r.ReflectionProfile = Fast::Oot3d::ReflectionMaterialParameters{};
+     }},
 };
 
 int Usage() {
     std::cerr << "usage: oot3d_native_pica_variant_inventory --session RAW_DRAWS VARIANT_REQUESTS [...]\n"
                  "       [--pipelines SESSION_PIPELINE_INVENTORY ...] --shader-inventory OUT\n"
-                 "       [--pipeline-manifest OUT] --report OUT [--require-witness]\n";
+                 "       [--pipeline-manifest OUT] --report OUT [--require-witness] [--infer-report OUT]\n";
     return 64;
 }
 
@@ -131,6 +163,14 @@ int Run(const Options& options) {
     std::map<ProgramKey, std::set<ProgramKey>> recipeLinks;
     std::map<ProgramKey, Regenerated> regeneratedByIdentity;
     uint64_t totalFailures = 0, totalWitnessMismatches = 0;
+    // Inferred coverage dry run: (stage, source id) observed vs. reachable.
+    struct InferredEntry {
+        uint64_t Candidates = 0, Rejected = 0, SourceBytes = 0;
+        std::set<std::pair<uint32_t, uint64_t>> Modules;
+    };
+    std::set<std::pair<uint32_t, uint64_t>> observedModules, inferredModules;
+    uint64_t observedBytes = 0, inferredBytes = 0;
+    std::map<std::string, InferredEntry> inferred;
 
     for (const auto& [rawPath, requestPath] : options.Sessions) {
         Oot3dPicaRawDrawSession raw;
@@ -209,14 +249,9 @@ int Run(const Options& options) {
         Fast::Oot3d::PicaShaderPipelineCache cache;
         uint64_t unresolvedRaw = 0, resolveFailures = 0, outputWitnessMismatches = 0, instrumented = 0;
         Json failures = Json::array();
-        for (const auto* record : ordered) {
-            const auto plan = plans.find(record->CanonicalPipelineId);
-            if (plan == plans.end()) {
-                ++unresolvedRaw;
-                continue;
-            }
-            const auto& canonical = plan->second;
-            PicaShaderPipelineRequest request = record->Request;
+        // The recorded request bound to this build's regenerated canonical plan.
+        const auto bind = [](const Fast::Oot3d::PicaVariantRequestRecord& record, const CanonicalPlan& canonical) {
+            PicaShaderPipelineRequest request = record.Request;
             request.VertexShaderSource = canonical.VertexSource;
             request.FragmentShaderSource = canonical.FragmentSource;
             request.VertexShaderKey = canonical.VertexKey;
@@ -228,6 +263,16 @@ int Run(const Options& options) {
                                                  canonical.Temporal->PreviousRegisterState,
                                                  canonical.Temporal->PreviousMainBody};
             request.FragmentShaderHooks = canonical.FragmentHooks;
+            return request;
+        };
+        for (const auto* record : ordered) {
+            const auto plan = plans.find(record->CanonicalPipelineId);
+            if (plan == plans.end()) {
+                ++unresolvedRaw;
+                continue;
+            }
+            const auto& canonical = plan->second;
+            const PicaShaderPipelineRequest request = bind(*record, canonical);
             const auto& effects = requests.Effects.at(record->EffectsId);
             cache.BeginFrame(record->EffectsId);
             const Fast::Oot3d::PicaShaderPipelineResult* result = nullptr;
@@ -259,18 +304,52 @@ int Run(const Options& options) {
                                     result->FragmentOutputs,
                                     result->IsCanonical()};
             const auto nri = Fast::Oot3d::BuildPicaNriFragmentShaderVariant(result->FragmentShaderSource);
+            observedModules.insert({1U, regenerated.Vertex.Id});
+            observedModules.insert({2U, regenerated.Fragment.Id});
             if (nri.Applied) {
                 regenerated.NriAvailable = true;
                 regenerated.NriFragment = Identity(Fast::Oot3d::IdentifyPicaAotShaderSource(nri.Source));
                 inventory.Observe(Fast::Oot3d::PicaAotShaderStage::NriFragment, nri.Source, schema,
                                   record->CanonicalPipelineId, result->FragmentShaderKey, record->SettingsRevision);
+                observedModules.insert({3U, regenerated.NriFragment.Id});
+                observedBytes += nri.Source.size();
             }
+            observedBytes += result->VertexShaderSource.size() + result->FragmentShaderSource.size();
             const ProgramKey recorded{record->Witness.Vertex.Id, record->Witness.Fragment.Id,
                                       record->Witness.VertexKey, record->Witness.FragmentKey};
             const ProgramKey current{regenerated.Vertex.Id, regenerated.Fragment.Id, regenerated.VertexKey,
                                      regenerated.FragmentKey};
             recipeLinks[recorded].insert(current);
             regeneratedByIdentity.insert_or_assign(current, regenerated);
+        }
+        if (!options.InferReport.empty()) {
+            for (const auto& semantic : kInferredSemantics) {
+                auto& entry = inferred[semantic.Name];
+                for (const auto* record : ordered) {
+                    const auto plan = plans.find(record->CanonicalPipelineId);
+                    if (plan == plans.end()) continue;
+                    auto request = bind(*record, plan->second);
+                    semantic.Apply(request);
+                    ++entry.Candidates;
+                    cache.BeginFrame(record->EffectsId);
+                    try {
+                        const auto& result = cache.Resolve(request, requests.Effects.at(record->EffectsId));
+                        const auto add = [&](uint32_t stage, std::string_view source) {
+                            const auto id = Fast::Oot3d::IdentifyPicaAotShaderSource(source).Id;
+                            if (observedModules.contains({stage, id})) return;
+                            if (entry.Modules.insert({stage, id}).second) entry.SourceBytes += source.size();
+                            if (inferredModules.insert({stage, id}).second) inferredBytes += source.size();
+                        };
+                        add(1U, result.VertexShaderSource);
+                        add(2U, result.FragmentShaderSource);
+                        if (const auto nri = Fast::Oot3d::BuildPicaNriFragmentShaderVariant(result.FragmentShaderSource);
+                            nri.Applied)
+                            add(3U, nri.Source);
+                    } catch (const std::exception&) {
+                        ++entry.Rejected;
+                    }
+                }
+            }
         }
         totalFailures += unresolvedRaw + resolveFailures;
         totalWitnessMismatches += canonicalWitnessMismatches + outputWitnessMismatches;
@@ -360,6 +439,25 @@ int Run(const Options& options) {
                          {"witness_mismatches", totalWitnessMismatches},
                          {"require_witness", options.RequireWitness}};
     std::ofstream(options.Report) << report.dump(2) << '\n';
+    if (!options.InferReport.empty()) {
+        Json semantics = Json::object();
+        for (const auto& [name, entry] : inferred) {
+            Json byStage = {{"vertex", 0}, {"fragment", 0}, {"nri_fragment", 0}};
+            for (const auto& [stage, id] : entry.Modules)
+                byStage[stage == 1U ? "vertex" : stage == 2U ? "fragment" : "nri_fragment"] =
+                    byStage[stage == 1U ? "vertex" : stage == 2U ? "fragment" : "nri_fragment"].get<uint64_t>() + 1U;
+            semantics[name] = {{"candidates", entry.Candidates}, {"rejected", entry.Rejected},
+                               {"new_modules", byStage}, {"new_source_bytes", entry.SourceBytes}};
+        }
+        const Json inferredReport = {
+            {"format", "oot3d_pica_inferred_coverage_dry_run_v1"},
+            {"observed_modules", observedModules.size()},
+            {"observed_source_bytes", observedBytes},
+            {"inferred_new_modules", inferredModules.size()},
+            {"inferred_new_source_bytes", inferredBytes},
+            {"semantics", semantics}};
+        std::ofstream(options.InferReport) << inferredReport.dump(2) << '\n';
+    }
     std::cout << report.dump(2) << '\n';
     if (totalFailures != 0U) return 3;
     if (options.RequireWitness && totalWitnessMismatches != 0U) return 4;
@@ -388,6 +486,8 @@ int main(int argc, char** argv) {
             options.Report = next();
         } else if (argument == "--require-witness") {
             options.RequireWitness = true;
+        } else if (argument == "--infer-report") {
+            options.InferReport = next();
         } else {
             return Usage();
         }

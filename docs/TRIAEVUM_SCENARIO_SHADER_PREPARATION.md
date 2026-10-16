@@ -289,6 +289,15 @@ preparation (see `TRIAEVUM_NRI_PIPELINE_PREPARATION.md`, Graphics Profile
 Coverage). Recorded shader text (`*-shaders.json`) is no longer an input: it
 went stale with every generator change (issue #76).
 
+`oot3d_native_pica_variant_inventory --infer-report OUT` is a dry run of
+inferred coverage: every recorded request is resolved again with one per-draw
+semantic changed at a time (surface availability, directional and point shadow
+receivers, isolated lighting, temporal motion, relief, reflection) and the
+report counts the modules not already observed. It never adds to the corpus.
+On the Kokiri rain session (126 observed modules, 16.3 MB of source) it found
+221 more modules (9.0 MB), temporal motion the largest; widening is a budgeted
+decision (+25 % of pack bytes and preparation time), not a default.
+
 The AOT compiler runs up to 8 workers (`--jobs`) and, with `--compile-cache
 DIR`, reuses a module compiled earlier for the same source, stage, compiler
 build and options; a regeneration that changes a few programs recompiles only
