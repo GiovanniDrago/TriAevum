@@ -920,6 +920,7 @@ def publish_private_runtime(
     data_root: Path,
     topscreen_texture_pack: Path | None = None,
     topscreen_link_animations: Path | None = None,
+    topscreen_ui_atlas_hd: Path | None = None,
     water_texture_catalog: Path | None = None,
     scene_light_catalog: Path | None = None,
     package_root: Path | None = None,
@@ -1006,6 +1007,10 @@ def publish_private_runtime(
         if not topscreen_link_animations.is_file():
             raise ForgeError("SingleScreen 3.0 Link animations are missing before activation")
         profile["arguments"].extend(("--topscreen-link-animations", str(topscreen_link_animations.resolve())))
+    if topscreen_ui_atlas_hd is not None:
+        if not topscreen_ui_atlas_hd.is_file():
+            raise ForgeError("SingleScreen 3.0 HD UI atlas is missing before activation")
+        profile["arguments"].extend(("--topscreen-ui-atlas-hd", str(topscreen_ui_atlas_hd.resolve())))
     if water_texture_catalog is not None:
         if not water_texture_catalog.is_file():
             raise ForgeError("Water texture catalog is missing before activation")
@@ -1024,6 +1029,7 @@ def publish_private_runtime(
     path_options = {"--title-plugin", "--a32-process-manifest", "--resource-root",
                     "--config", "--topscreen-config", "--save-data", "--output",
                     "--topscreen-texture-overrides", "--topscreen-link-animations",
+                    "--topscreen-ui-atlas-hd",
                     "--water-texture-catalog", "--scene-light-catalog",
                     "--pica-aot-shader-pack", "--renderer-cache-directory"}
     scopes = {}
@@ -1071,6 +1077,11 @@ def publish_private_runtime(
         prepared.state["runtime"]["topscreen_link_animations"] = {
             "path": context.reference(topscreen_link_animations, prepared.directory),
             "sha256": sha256_file(topscreen_link_animations),
+        }
+    if topscreen_ui_atlas_hd is not None:
+        prepared.state["runtime"]["topscreen_ui_atlas_hd"] = {
+            "path": context.reference(topscreen_ui_atlas_hd, prepared.directory),
+            "sha256": sha256_file(topscreen_ui_atlas_hd),
         }
     if water_texture_catalog is not None:
         prepared.state["runtime"]["water_textures"] = {

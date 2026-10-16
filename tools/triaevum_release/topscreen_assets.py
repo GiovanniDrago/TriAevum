@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import struct
 import zipfile
 from pathlib import Path
 from typing import Callable
@@ -24,10 +25,18 @@ except ImportError:
 
 
 # 2: SingleScreen 3.0 UI atlas, native localized labels (2.1.1 ones retired).
-IMPORT_VERSION = 2
+# 3: SingleScreen 3.0 HD UI atlas.
+IMPORT_VERSION = 3
 FONT_IMPORT_VERSION = 2
 ARCHIVE_NAME = "topscreen211.zip"
 LINK_ANIMATIONS = "zelda_link_ext.zar"
+# The author's HD custom_ui01, shipped in the archive as an emulator texture
+# replacement. It also draws elements the native atlas lacks (SELECT/START,
+# ZL/ZR labels). TriAevum uses it as the 3.0 atlas, keyed by its native
+# content, so it needs no separate texture pack.
+UI_ATLAS_HD = "ui_atlas_hd.png"
+UI_ATLAS_HD_MEMBER = ("SingleScreen_3.0/EUR/Emulator/load/textures/0004000000033600/"
+                      "tex1_512x256_1FAF9B5B2ADF6038_13_mip0.png")
 
 
 def acquire_archive(root: Path, data_root: Path, contract: dict,
@@ -78,6 +87,28 @@ def extract_link_animations(archive: Path) -> bytes:
     raise ValueError("SingleScreen 3.0 archive has no EUR Link animations")
 
 
+def extract_ui_atlas_hd(archive: Path) -> bytes:
+    """The HD custom_ui01: a PNG with the native atlas's 2:1 aspect, data only."""
+    with zipfile.ZipFile(archive) as source:
+        if UI_ATLAS_HD_MEMBER not in source.namelist():
+            raise ValueError("SingleScreen 3.0 archive has no HD UI atlas")
+        data = source.read(UI_ATLAS_HD_MEMBER)
+    if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        raise ValueError("SingleScreen 3.0 HD UI atlas is not a PNG")
+    width, height = struct.unpack(">II", data[16:24])
+    if width < 512 or width % 512 != 0 or width != height * 2:
+        raise ValueError(f"SingleScreen 3.0 HD UI atlas has unexpected dimensions {width}x{height}")
+    return data
+
+
+def topscreen_ui_atlas_hd(pack: Path | None) -> Path | None:
+    """The imported HD UI atlas beside a prepared texture pack."""
+    if pack is None:
+        return None
+    candidate = pack.parent / UI_ATLAS_HD
+    return candidate if candidate.is_file() else None
+
+
 def topscreen_link_animations(pack: Path | None) -> Path | None:
     """The imported zelda_link_ext.zar beside a prepared texture pack."""
     if pack is None:
@@ -106,6 +137,7 @@ def prepare_topscreen_assets(*, root: Path, data_root: Path, recipe: dict,
     directory = data_root / "mods" / "topscreen" / key
     pack = directory / "atlas_overrides.o3tu"
     animations = directory / LINK_ANIMATIONS
+    ui_atlas_hd = directory / UI_ATLAS_HD
     font_pack = directory / "font_coverage.zip"
     font_receipt_path = directory / "fonts_import.json"
     receipt_path = directory / "import.json"
@@ -116,7 +148,9 @@ def prepare_topscreen_assets(*, root: Path, data_root: Path, recipe: dict,
                           receipt.get("pack_sha256") == sha256_file(pack) and
                           (singlescreen is None or
                            (animations.is_file() and
-                            receipt.get("link_animations_sha256") == sha256_file(animations))))
+                            receipt.get("link_animations_sha256") == sha256_file(animations) and
+                            ui_atlas_hd.is_file() and
+                            receipt.get("ui_atlas_hd_sha256") == sha256_file(ui_atlas_hd))))
     font_identity = {**identity, "font_import_version": FONT_IMPORT_VERSION}
     fonts_valid = False
     if font_pack.is_file() and font_receipt_path.is_file():
@@ -140,6 +174,9 @@ def prepare_topscreen_assets(*, root: Path, data_root: Path, recipe: dict,
             report("topscreen", "Importing SingleScreen 3.0 Link animations...")
             atomic_write_bytes(animations, extract_link_animations(singlescreen))
             receipt["link_animations_sha256"] = sha256_file(animations)
+            report("topscreen", "Importing the SingleScreen 3.0 HD UI atlas...")
+            atomic_write_bytes(ui_atlas_hd, extract_ui_atlas_hd(singlescreen))
+            receipt["ui_atlas_hd_sha256"] = sha256_file(ui_atlas_hd)
         atomic_write_json(receipt_path, receipt)
     if not fonts_valid:
         report("topscreen", "Preparing TopScreen font coverage...")

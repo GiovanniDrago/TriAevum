@@ -19,6 +19,9 @@ struct Oot3dNativeGameLaunch {
     std::filesystem::path TopScreenTextureOverridePackPath;
     // SingleScreen 3.0 zelda_link_ext.zar imported by Forge (Roll Dash).
     std::filesystem::path TopScreenLinkAnimationsPath;
+    // SingleScreen 3.0 HD custom_ui01 imported by Forge: the 3.0 UI atlas at
+    // a higher resolution, keyed by the native atlas content.
+    std::filesystem::path TopScreenUiAtlasHdPath;
     std::filesystem::path TopScreenConfigPath;
     std::filesystem::path ControlConfigPath;
     std::filesystem::path SaveDataDirectory;

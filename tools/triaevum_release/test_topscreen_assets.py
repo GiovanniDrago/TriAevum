@@ -8,7 +8,8 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from topscreen_assets import acquire_archive, prepare_topscreen_assets, topscreen_link_animations
+from topscreen_assets import (UI_ATLAS_HD_MEMBER, acquire_archive, extract_ui_atlas_hd,
+                              prepare_topscreen_assets, topscreen_link_animations, topscreen_ui_atlas_hd)
 from tools.oot3d.decomp_support.scripts.build_topscreen_texture_override_pack import (
     LANGUAGES, LAYOUT_PROBE, TEXTURES, PROFILE_TEXTURES, build_texture_pack,
 )
@@ -96,11 +97,17 @@ class TopScreenAssetsTests(unittest.TestCase):
                 self.prepare()
             self.assertEqual(build.call_count, 1)
 
-    def make_singlescreen_archive(self, path, *, animations=b"ZAR\x01 animation fixture"):
+    @staticmethod
+    def png_header(width, height):
+        return (b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" +
+                struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0) + b"fixture")
+
+    def make_singlescreen_archive(self, path, *, animations=b"ZAR\x01 animation fixture", atlas=None):
         prefix = "SingleScreen_3.0/EUR/Emulator/load/mods/0004000000033600/romfs/"
         with zipfile.ZipFile(path, "w") as output:
             output.writestr(prefix + "actor/zelda_link_ext.zar", animations)
             output.writestr(prefix + "../code.ips", b"DO NOT IMPORT EXECUTABLE PATCH")
+            output.writestr(UI_ATLAS_HD_MEMBER, atlas if atlas is not None else self.png_header(4096, 2048))
         data = path.read_bytes()
         return {"name": path.name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
@@ -119,6 +126,9 @@ class TopScreenAssetsTests(unittest.TestCase):
             receipt = json.loads((pack.parent / "import.json").read_text())
             self.assertEqual(receipt["link_animations_sha256"],
                              hashlib.sha256(animations.read_bytes()).hexdigest())
+            atlas = topscreen_ui_atlas_hd(pack)
+            self.assertEqual(atlas.read_bytes(), self.png_header(4096, 2048))
+            self.assertEqual(receipt["ui_atlas_hd_sha256"], hashlib.sha256(atlas.read_bytes()).hexdigest())
             # The verified import is reused; a changed animation file is re-imported.
             self.assertEqual(self.prepare(), pack)
             self.assertEqual(build.call_count, 1)
@@ -126,7 +136,22 @@ class TopScreenAssetsTests(unittest.TestCase):
             self.assertEqual(self.prepare(), pack)
             self.assertEqual(build.call_count, 2)
             self.assertEqual(animations.read_bytes(), b"ZAR\x01 animation fixture")
+            atlas.write_bytes(b"tampered")
+            self.assertEqual(self.prepare(), pack)
+            self.assertEqual(build.call_count, 3)
+            self.assertEqual(atlas.read_bytes(), self.png_header(4096, 2048))
             network.assert_not_called()
+
+    def test_hd_ui_atlas_must_be_a_two_to_one_png(self):
+        for name, atlas in (("square", self.png_header(2048, 2048)), ("odd", self.png_header(4000, 2000)),
+                            ("text", b"not a png at all, padded to the IHDR length")):
+            path = self.root / f"{name}.zip"
+            self.make_singlescreen_archive(path, atlas=atlas)
+            with self.subTest(name), self.assertRaises(ValueError):
+                extract_ui_atlas_hd(path)
+        path = self.root / "native.zip"
+        self.make_singlescreen_archive(path, atlas=self.png_header(512, 256))
+        self.assertEqual(extract_ui_atlas_hd(path), self.png_header(512, 256))
 
     def test_missing_singlescreen_archive_is_optional_and_never_downloaded(self):
         (self.root / "topscreen211.zip").write_bytes(self.archive_bytes)
@@ -140,6 +165,7 @@ class TopScreenAssetsTests(unittest.TestCase):
                                             romfs=self.root / "romfs.bin",
                                             report=lambda _, text: messages.append(text))
             self.assertIsNone(topscreen_link_animations(pack))
+            self.assertIsNone(topscreen_ui_atlas_hd(pack))
             self.assertTrue(any("singlescreen_30_25aeb.zip" in text for text in messages))
             network.assert_not_called()
 

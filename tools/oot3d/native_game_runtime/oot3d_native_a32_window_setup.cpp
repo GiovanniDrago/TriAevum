@@ -5,6 +5,8 @@
 #include "fast/oot3d/graphics_settings_persistence.h"
 #include "oot3d/renderer/azahar_texture_pack.h"
 
+#include <stb_image.h>
+
 namespace Oot3dA32Window {
 
 namespace {
@@ -899,10 +901,38 @@ void NativeA32WindowSession::Setup() {
 #endif
   auto &nativeUiTextureProvider = nativeUiTextureProviderStorage.emplace(
       picaMemoryView, topScreenTextureOverridePackPointer);
+  // SingleScreen 3.0 HD UI atlas (Forge import): the 3.0 atlas at a higher
+  // resolution, which also draws elements the native atlas lacks. It applies
+  // to the exact native atlas bytes only, and a user's texture pack that
+  // replaces the atlas wins. UI coordinates are normalized.
+  std::shared_ptr<const std::vector<uint8_t>> uiAtlasHdPixels;
+  uint32_t uiAtlasHdWidth = 0, uiAtlasHdHeight = 0;
+  std::span<const uint8_t> uiAtlasNativePayload;
+  if (!launch.TopScreenUiAtlasHdPath.empty()) {
+    const auto *atlas = topScreenTextureOverridePack.FindProfileTexture("oot3d/topscreen/3.0/ui_atlas");
+    if (atlas == nullptr)
+      throw std::runtime_error("--topscreen-ui-atlas-hd needs the SingleScreen 3.0 atlas in the TopScreen pack");
+    int width = 0, height = 0, channels = 0;
+    stbi_uc *decoded = stbi_load(launch.TopScreenUiAtlasHdPath.string().c_str(), &width, &height, &channels, 4);
+    if (decoded == nullptr)
+      throw std::runtime_error("cannot decode the TopScreen HD UI atlas " + launch.TopScreenUiAtlasHdPath.string());
+    const bool scaled = width > 0 && width % atlas->Width == 0 && height > 0 &&
+                        static_cast<uint64_t>(width) * atlas->Height == static_cast<uint64_t>(height) * atlas->Width;
+    if (scaled)
+      uiAtlasHdPixels = std::make_shared<const std::vector<uint8_t>>(
+          decoded, decoded + static_cast<size_t>(width) * static_cast<size_t>(height) * 4U);
+    stbi_image_free(decoded);
+    if (!scaled)
+      throw std::runtime_error("the TopScreen HD UI atlas is not a multiple of the native atlas size");
+    uiAtlasHdWidth = static_cast<uint32_t>(width);
+    uiAtlasHdHeight = static_cast<uint32_t>(height);
+    uiAtlasNativePayload = atlas->EncodedPayload;
+  }
   // The HUD the UI renderer draws resolves the user's texture pack exactly as
   // native PICA uploads do (same identity, same dumping, same async decode).
   nativeUiTextureProvider.SetCustomTextureSource({
-      [](const Oot3dNativeGame::Oot3dNativeUiCustomTextureRequest &request) {
+      [uiAtlasHdPixels, uiAtlasHdWidth, uiAtlasHdHeight, uiAtlasNativePayload](
+          const Oot3dNativeGame::Oot3dNativeUiCustomTextureRequest &request) {
         using Oot3d::Renderer::AzaharTextureResolveState;
         const auto result = Oot3d::Renderer::AzaharTexturePackRuntime::Instance().ResolveOrQueue({
             .Width = request.width,
@@ -921,6 +951,12 @@ void NativeA32WindowSession::Setup() {
           custom.width = result.Replacement->Width;
           custom.height = result.Replacement->Height;
           custom.rgba8 = result.Replacement->Rgba8;
+        } else if (uiAtlasHdPixels != nullptr &&
+                   std::ranges::equal(request.encoded_base_level, uiAtlasNativePayload)) {
+          custom.state = Oot3dNativeGame::Oot3dNativeUiCustomTexture::State::Ready;
+          custom.width = uiAtlasHdWidth;
+          custom.height = uiAtlasHdHeight;
+          custom.rgba8 = uiAtlasHdPixels;
         }
         return custom;
       },
