@@ -524,7 +524,17 @@ struct InteractiveGrassPass::Impl {
     GrassVisibleIndexBins VisibleIndexBins;
     std::array<std::vector<std::array<uint32_t, 2>>, kGrassLodBinCount> SelectedClusterRanges;
     std::vector<uint32_t> VisibleAnchorIndices;
-    std::vector<GrassWorldAnchor> StaticAnchors;
+    // The active sources' immutable anchors, addressed by global static index
+    // (source base + local index) without a concatenated copy.
+    std::vector<std::shared_ptr<const GrassWorldPlacement>> StaticSources;
+    std::vector<uint32_t> StaticBases;
+    std::vector<std::span<const GrassWorldAnchor>> StaticSegments;
+    size_t StaticAnchorCount = 0U;
+    const GrassWorldAnchor& StaticAnchor(uint32_t index) const {
+        const auto source = static_cast<size_t>(std::upper_bound(StaticBases.begin(), StaticBases.end(), index) -
+                                                StaticBases.begin()) - 1U;
+        return StaticSegments[source][index - StaticBases[source]];
+    }
     std::vector<GrassShadowGridPoint> ShadowPoints;
     std::vector<GrassShadowGridReference> ShadowReferences;
     std::vector<GrassShadowSurface> ShadowSurfaces;
@@ -1516,13 +1526,27 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 { prepared.World->Identity, prepared.World->ContentVersion, prepared.World->Anchors.size() });
         }
         if (activePlacements != mImpl->ActivePlacements || receiveShadows != mImpl->ActiveShadowGrid) {
+            const auto rebuildStart = std::chrono::steady_clock::now();
             mImpl->ActivePlacements = std::move(activePlacements);
             mImpl->ActiveShadowGrid = receiveShadows;
-            mImpl->StaticAnchors.clear();
+            mImpl->StaticSources.clear();
+            mImpl->StaticBases.clear();
+            mImpl->StaticSegments.clear();
+            mImpl->StaticAnchorCount = totalStaticAnchors;
             mImpl->ShadowPoints.clear();
             mImpl->ShadowReferences.clear();
             mImpl->ShadowSurfaces.clear();
-            mImpl->StaticAnchors.reserve(totalStaticAnchors);
+            if (receiveShadows) {
+                size_t points = 0U, references = 0U, surfaces = 0U;
+                for (const auto& prepared : preparedPlacements) {
+                    points += prepared.World->ShadowPoints.size();
+                    references += prepared.World->ShadowReferences.size();
+                    surfaces += prepared.World->ShadowSurfaces.size();
+                }
+                mImpl->ShadowPoints.reserve(points);
+                mImpl->ShadowReferences.reserve(references);
+                mImpl->ShadowSurfaces.reserve(surfaces);
+            }
             for (const auto& prepared : preparedPlacements) {
                 if (receiveShadows) {
                     if (!GrassPlacementHasShadowGrid(*prepared.World))
@@ -1545,13 +1569,19 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                         mImpl->ShadowReferences.push_back(reference);
                     }
                 }
-                mImpl->StaticAnchors.insert(mImpl->StaticAnchors.end(), prepared.World->Anchors.begin(),
-                                            prepared.World->Anchors.end());
+                mImpl->StaticSources.push_back(prepared.World);
+                mImpl->StaticBases.push_back(prepared.StaticBaseIndex);
+                mImpl->StaticSegments.emplace_back(prepared.World->Anchors);
             }
             ++mImpl->StaticRevision;
             if (mImpl->StaticRevision == 0U) {
                 ++mImpl->StaticRevision;
             }
+            if (GrassDiagnosticsEnabled())
+                std::fprintf(stderr, "[grass-entry] frame=%llu static_rebuild_ms=%.3f sources=%zu anchors=%zu "
+                    "shadow_points=%zu\n", static_cast<unsigned long long>(frameId),
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rebuildStart).count(),
+                    mImpl->ActivePlacements.size(), mImpl->StaticAnchorCount, mImpl->ShadowPoints.size());
         }
 
         const float drawDistanceSquared = settings.DrawDistance * settings.DrawDistance;
@@ -1981,7 +2011,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             float maxBend = 0;
             const size_t step = std::max<size_t>(1, mImpl->VisibleAnchorIndices.size() / 4096);
             for (size_t i = 0; i < mImpl->VisibleAnchorIndices.size(); i += step) {
-                const auto& anchor = mImpl->StaticAnchors[mImpl->VisibleAnchorIndices[i]];
+                const auto& anchor = mImpl->StaticAnchor(mImpl->VisibleAnchorIndices[i]);
                 ++samples;
                 for (const auto& actor : actors) {
                     // The compactor's swept-box rejection: pairs that pass it
@@ -2021,7 +2051,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                     frameSlot,
                     frameId,
                     mImpl->StaticRevision,
-                    std::span<const GrassWorldAnchor>(mImpl->StaticAnchors),
+                    GrassStaticAnchorSegments{mImpl->StaticSegments, mImpl->StaticAnchorCount},
                     std::span<const uint32_t>(mImpl->VisibleAnchorIndices),
                     &mImpl->InteractionField,
                     actors,
@@ -2050,10 +2080,10 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             auto* instanceOutput = static_cast<GrassInstance*>(instanceBuffer.Mapped);
             for (size_t instanceIndex = 0U; instanceIndex < mImpl->VisibleAnchorIndices.size(); ++instanceIndex) {
                 const uint32_t anchorIndex = mImpl->VisibleAnchorIndices[instanceIndex];
-                if (anchorIndex >= mImpl->StaticAnchors.size()) {
+                if (anchorIndex >= mImpl->StaticAnchorCount) {
                     throw std::runtime_error("interactive grass visible anchor is invalid");
                 }
-                const auto& anchor = mImpl->StaticAnchors[anchorIndex];
+                const auto& anchor = mImpl->StaticAnchor(anchorIndex);
                 const std::array<float, 3> base{ anchor.BaseHeight[0], anchor.BaseHeight[1], anchor.BaseHeight[2] };
                 const auto interaction =
                     mImpl->InteractionField.Contains(base[0], base[2])
@@ -2356,7 +2386,10 @@ void InteractiveGrassPass::Shutdown() {
     }
     for (auto& ranges : mImpl->SelectedClusterRanges) ranges.clear();
     mImpl->VisibleAnchorIndices.clear();
-    mImpl->StaticAnchors.clear();
+    mImpl->StaticSources.clear();
+    mImpl->StaticBases.clear();
+    mImpl->StaticSegments.clear();
+    mImpl->StaticAnchorCount = 0U;
     mImpl->ShadowPoints.clear();
     mImpl->ShadowReferences.clear();
     mImpl->ShadowSurfaces.clear();

@@ -16,13 +16,22 @@
 
 namespace Fast::Oot3d {
 
+// The static anchors of every active source, in source order, without
+// concatenating them: global static index = segment base + local index.
+struct GrassStaticAnchorSegments {
+    std::span<const std::span<const GrassWorldAnchor>> Segments;
+    size_t Count = 0U;
+    [[nodiscard]] size_t size() const noexcept { return Count; }
+    [[nodiscard]] bool empty() const noexcept { return Count == 0U; }
+};
+
 struct GrassGpuInstanceCompactionRequest {
     VkCommandBuffer CommandBuffer = VK_NULL_HANDLE;
     uint32_t FrameSlot = 0U;
     // Consecutive frame ids keep each blade's previous interaction bend.
     uint64_t FrameId = 0U;
     uint64_t StaticRevision = 0U;
-    std::span<const GrassWorldAnchor> StaticAnchors;
+    GrassStaticAnchorSegments StaticAnchors;
     std::span<const uint32_t> VisibleAnchorIndices;
     const GrassInteractionField* InteractionField = nullptr;
     std::span<const GrassInteractor> Actors;

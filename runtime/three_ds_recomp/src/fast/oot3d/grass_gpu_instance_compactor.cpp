@@ -9,7 +9,10 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -355,12 +358,25 @@ bool GrassGpuInstanceCompactor::Compact(const GrassGpuInstanceCompactionRequest&
             mImpl->StaticRevision != request.StaticRevision || mImpl->StaticAnchorCount != request.StaticAnchors.size();
         bool staticResized = false;
         if (staticChanged) {
+            const auto uploadStart = std::chrono::steady_clock::now();
+            const bool hadBuffer = mImpl->StaticAnchors.Handle != VK_NULL_HANDLE;
             staticResized = mImpl->EnsureBuffer(mImpl->StaticAnchors, staticBytes,
                                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, true);
+            const auto deviceReady = std::chrono::steady_clock::now();
             mImpl->EnsureBuffer(mImpl->StaticStaging[slot], staticBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false);
-            std::memcpy(mImpl->StaticStaging[slot].Mapped, request.StaticAnchors.data(), static_cast<size_t>(staticBytes));
+            const auto stagingReady = std::chrono::steady_clock::now();
+            auto* staging = static_cast<uint8_t*>(mImpl->StaticStaging[slot].Mapped);
+            size_t copied = 0U;
+            for (const auto& segment : request.StaticAnchors.Segments) {
+                if (segment.size() > request.StaticAnchors.size() - copied)
+                    throw std::runtime_error("grass static anchor segments exceed their count");
+                std::memcpy(staging + copied * kStaticAnchorBytes, segment.data(), segment.size_bytes());
+                copied += segment.size();
+            }
+            if (copied != request.StaticAnchors.size())
+                throw std::runtime_error("grass static anchor segments do not match their count");
             if (!staticResized) {
                 const VkBufferMemoryBarrier beforeCopy{
                     VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
@@ -382,6 +398,15 @@ bool GrassGpuInstanceCompactor::Compact(const GrassGpuInstanceCompactionRequest&
             mImpl->StaticRevision = request.StaticRevision;
             mImpl->StaticAnchorCount = request.StaticAnchors.size();
             result.StaticUploadedBytes = static_cast<uint64_t>(staticBytes);
+            static const bool diagnose = std::getenv("OOT3D_GRASS_DIAGNOSTICS") != nullptr;
+            if (diagnose)
+                std::fprintf(stderr, "[grass-entry] static_upload_ms=%.3f device_buffer_ms=%.3f staging_buffer_ms=%.3f "
+                    "bytes=%llu resized=%d waited_idle=%d\n",
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - uploadStart).count(),
+                    std::chrono::duration<double, std::milli>(deviceReady - uploadStart).count(),
+                    std::chrono::duration<double, std::milli>(stagingReady - deviceReady).count(),
+                    static_cast<unsigned long long>(staticBytes), staticResized ? 1 : 0,
+                    staticResized && hadBuffer ? 1 : 0);
         }
 
         // The bend history follows static anchor indices: a new static set,
