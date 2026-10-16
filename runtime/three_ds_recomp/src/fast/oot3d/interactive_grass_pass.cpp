@@ -37,6 +37,7 @@
 #include <BS_thread_pool.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <bit>
 #include <chrono>
@@ -87,6 +88,40 @@ bool GrassDiagnosticsEnabled() {
     return enabled;
 }
 inline constexpr size_t kGrassClustersForParallelSelection = 8192U;
+// A few sources times the views that render grass in one frame.
+inline constexpr size_t kGrassCandidateCacheEntries = 16U;
+
+// Diagnostic A/B: TRIAEVUM_GRASS_CANDIDATE_CACHE=0 selects every view with
+// the full traversal again.
+bool GrassCandidateCacheEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("TRIAEVUM_GRASS_CANDIDATE_CACHE");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+// Diagnostic: TRIAEVUM_GRASS_SELECTION_VERIFY=1 also runs the full traversal
+// for every view and logs any difference in the cluster work.
+bool GrassSelectionVerifyEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("TRIAEVUM_GRASS_SELECTION_VERIFY");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+// Eye radius (world units), clip-row delta and translation scale of a
+// candidate envelope. TRIAEVUM_GRASS_ENVELOPE="radius,delta,scale" tunes them.
+std::array<float, 3> GrassCandidateEnvelopeParameters() {
+    static const std::array<float, 3> parameters = [] {
+        std::array<float, 3> result{96.0F, 0.04F, 2.0F};
+        if (const char* value = std::getenv("TRIAEVUM_GRASS_ENVELOPE"))
+            std::sscanf(value, "%f,%f,%f", &result[0], &result[1], &result[2]);
+        return result;
+    }();
+    return parameters;
+}
 inline constexpr uint64_t kGrassIdentityFnvOffset =
     14695981039346656037ULL;
 inline constexpr uint64_t kGrassIdentityFnvPrime = 1099511628211ULL;
@@ -486,6 +521,23 @@ struct InteractiveGrassPass::Impl {
     std::vector<GrassClusterWork> ClusterWork;
     std::vector<uint32_t> SelectionRoots;
     std::vector<std::vector<GrassClusterWork>> SelectionOutputs;
+    // Conservative cluster candidates per source and camera envelope.
+    struct CandidateCacheEntry {
+        uint64_t Identity = 0U;
+        uint64_t ContentVersion = 0U;
+        GrassLodPolicy Policy{};
+        float BladeRadiusScale = 0.0F;
+        bool FrustumCulling = false;
+        GrassCandidateEnvelope Envelope{};
+        std::vector<GrassClusterCandidate> Candidates;
+        uint64_t LastUsed = 0U;
+    };
+    std::vector<CandidateCacheEntry> CandidateCache;
+    uint64_t CandidateClock = 0U;
+    std::vector<std::vector<GrassClusterCandidate>> CandidateOutputs;
+    std::vector<std::vector<GrassClusterWork>> RefineOutputs;
+    std::vector<GrassClusterWork> VerifyClusterWork;
+    uint64_t VerifyChecks = 0U, VerifyMismatches = 0U;
     struct ActivePlacement {
         uint64_t Identity = 0U;
         uint64_t ContentVersion = 0U;
@@ -555,9 +607,12 @@ struct InteractiveGrassPass::Impl {
         if (WorkerPool == nullptr) {
             const uint32_t hardware =
                 std::thread::hardware_concurrency();
-            const uint32_t count = hardware > 2U
+            uint32_t count = hardware > 2U
                 ? std::min(hardware - 2U, 12U)
                 : 1U;
+            // Diagnostic: TRIAEVUM_GRASS_WORKERS=n for worker-count sweeps.
+            if (const char* value = std::getenv("TRIAEVUM_GRASS_WORKERS"))
+                count = std::clamp<uint32_t>(static_cast<uint32_t>(std::strtoul(value, nullptr, 10)), 1U, 32U);
             WorkerPool =
                 std::make_unique<BS::thread_pool>(count);
         }
@@ -565,26 +620,32 @@ struct InteractiveGrassPass::Impl {
             WorkerPool->get_thread_count());
     }
 
-    GrassClusterSelectionStats SelectClusterWork(const GrassWorldPlacement& world,
+    GrassClusterSelectionStats SelectExactClusterWork(const GrassWorldPlacement& world,
         const std::array<float, 16>& clip, const std::array<float, 3>& eye,
-        const GrassLodPolicy& policy, float bladeRadiusScale, bool frustumCulling) {
+        const GrassLodPolicy& policy, float bladeRadiusScale, bool frustumCulling,
+        std::vector<GrassClusterWork>& clusterWork) {
         SelectionRoots.clear();
+        GrassStageTimer traverseTimer(GrassStage::SelectTraverse);
         if (world.Clusters.size() < kGrassClustersForParallelSelection || world.VisibilityNodes.empty() || WorkerCount() < 2)
-            return SelectGrassClusterWork(world, clip, eye, policy, bladeRadiusScale, frustumCulling, ClusterWork);
+            return SelectGrassClusterWork(world, clip, eye, policy, bladeRadiusScale, frustumCulling, clusterWork);
         GrassClusterSelectionStats stats;
         stats.TestedNodes = SplitGrassClusterSelection(world, clip, eye, policy, bladeRadiusScale,
             frustumCulling, static_cast<uint32_t>(WorkerCount()), SelectionRoots);
-        ClusterWork.clear();
+        clusterWork.clear();
         SelectionOutputs.resize(SelectionRoots.size());
         std::vector<std::future<GrassClusterSelectionStats>> tasks;
         tasks.reserve(SelectionRoots.size());
+        std::vector<GrassJobTiming> timings(SelectionRoots.size());
         // Immutable inputs and per-job output only. Admission and draw ordering
         // happen after all jobs complete, never in completion order.
         try {
             for (size_t i = 0; i < SelectionRoots.size(); ++i) {
                 tasks.push_back(WorkerPool->submit_task([&, i] {
-                    return SelectGrassClusterSubtreeWork(world, clip, eye, policy, bladeRadiusScale,
+                    const auto start = GrassJobTiming::Start();
+                    const auto result = SelectGrassClusterSubtreeWork(world, clip, eye, policy, bladeRadiusScale,
                         frustumCulling, SelectionRoots[i], SelectionOutputs[i]);
+                    timings[i].Finish(start);
+                    return result;
                 }));
             }
             for (auto& task : tasks) {
@@ -597,10 +658,209 @@ struct InteractiveGrassPass::Impl {
             for (auto& task : tasks) if (task.valid()) task.wait();
             throw;
         }
-        ClusterWork.reserve(stats.CandidateClusters);
+        if (GrassStageProfileEnabled()) {
+            auto& f = GrassStageCurrent();
+            AddGrassJobTimings(f.TraverseJobs, f.TraverseJobMs, f.TraverseMaxJobMs, timings.data(), timings.size());
+        }
+        clusterWork.reserve(stats.CandidateClusters);
         for (const auto& output : SelectionOutputs)
-            ClusterWork.insert(ClusterWork.end(), output.begin(), output.end());
-        OrderGrassClusters(ClusterWork, [](const auto& work) { return work.ClusterIndex; });
+            clusterWork.insert(clusterWork.end(), output.begin(), output.end());
+        traverseTimer.Stop();
+        GrassStageTimer orderTimer(GrassStage::SelectOrder);
+        OrderGrassClusters(clusterWork, [](const auto& work) { return work.ClusterIndex; });
+        return stats;
+    }
+
+    // Runs count independent jobs on the pool (inline when there is one) and
+    // joins them all before returning, also when one throws.
+    template<class Job> void RunJobs(size_t count, Job&& job, uint64_t& jobs, double& total, double& maximum) {
+        std::vector<GrassJobTiming> timings(count);
+        if (count <= 1U) {
+            for (size_t i = 0; i < count; ++i) {
+                const auto start = GrassJobTiming::Start();
+                job(i);
+                timings[i].Finish(start);
+            }
+        } else {
+            std::vector<std::future<void>> tasks;
+            tasks.reserve(count);
+            try {
+                for (size_t i = 0; i < count; ++i)
+                    tasks.push_back(WorkerPool->submit_task([&, i] {
+                        const auto start = GrassJobTiming::Start();
+                        job(i);
+                        timings[i].Finish(start);
+                    }));
+                for (auto& task : tasks) task.get();
+            } catch (...) {
+                for (auto& task : tasks) if (task.valid()) task.wait();
+                throw;
+            }
+        }
+        AddGrassJobTimings(jobs, total, maximum, timings.data(), timings.size());
+    }
+
+    // Conservative candidates of one envelope, in cluster-index order.
+    GrassClusterSelectionStats BuildCandidates(const GrassWorldPlacement& world, const GrassCandidateEnvelope& envelope,
+        const GrassLodPolicy& policy, float bladeRadiusScale, bool frustumCulling,
+        std::vector<GrassClusterCandidate>& candidates) {
+        GrassStageTimer traverseTimer(GrassStage::SelectTraverse);
+        SelectionRoots.clear();
+        const bool parallel = world.Clusters.size() >= kGrassClustersForParallelSelection &&
+            !world.VisibilityNodes.empty() && WorkerCount() >= 2;
+        GrassClusterSelectionStats stats;
+        if (!parallel) {
+            stats = SelectGrassClusterCandidates(world, envelope, policy, bladeRadiusScale, frustumCulling, 0U, candidates);
+        } else {
+            stats.TestedNodes = SplitGrassClusterCandidates(world, envelope, policy, bladeRadiusScale, frustumCulling,
+                static_cast<uint32_t>(WorkerCount()), SelectionRoots);
+            CandidateOutputs.resize(SelectionRoots.size());
+            std::vector<GrassClusterSelectionStats> results(SelectionRoots.size());
+            auto& f = GrassStageCurrent();
+            uint64_t ignoredJobs = 0;
+            double ignoredTotal = 0, ignoredMaximum = 0;
+            const bool profile = GrassStageProfileEnabled();
+            RunJobs(SelectionRoots.size(), [&](size_t i) {
+                results[i] = SelectGrassClusterCandidates(world, envelope, policy, bladeRadiusScale, frustumCulling,
+                    SelectionRoots[i], CandidateOutputs[i]);
+            }, profile ? f.TraverseJobs : ignoredJobs, profile ? f.TraverseJobMs : ignoredTotal,
+               profile ? f.TraverseMaxJobMs : ignoredMaximum);
+            candidates.clear();
+            for (size_t i = 0; i < results.size(); ++i) {
+                stats.TestedNodes += results[i].TestedNodes;
+                stats.CandidateAnchors += results[i].CandidateAnchors;
+                candidates.insert(candidates.end(), CandidateOutputs[i].begin(), CandidateOutputs[i].end());
+            }
+        }
+        traverseTimer.Stop();
+        GrassStageTimer orderTimer(GrassStage::SelectOrder);
+        OrderGrassClusters(candidates, [](const auto& candidate) { return candidate.ClusterIndex; });
+        stats.CandidateClusters = static_cast<uint32_t>(candidates.size());
+        return stats;
+    }
+
+    // The exact cluster work of the current view from an envelope's candidates.
+    bool RefineCandidates(const GrassWorldPlacement& world, std::span<const GrassClusterCandidate> candidates,
+        const std::array<float, 16>& clip, const std::array<float, 3>& eye, const GrassLodPolicy& policy,
+        float bladeRadiusScale, bool frustumCulling, std::vector<GrassClusterWork>& clusterWork, uint64_t& anchors) {
+        GrassStageTimer refineTimer(GrassStage::SelectRefine);
+        const size_t jobs = candidates.size() >= kGrassClustersForParallelSelection && WorkerCount() >= 2
+            ? std::min<size_t>(WorkerCount(), candidates.size() / (kGrassClustersForParallelSelection / 2U)) : 1U;
+        if (jobs <= 1U)
+            return RefineGrassClusterCandidates(world, candidates, clip, eye, policy, bladeRadiusScale, frustumCulling,
+                clusterWork, anchors);
+        RefineOutputs.resize(jobs);
+        std::vector<uint64_t> jobAnchors(jobs);
+        std::vector<uint8_t> valid(jobs);
+        const size_t perJob = (candidates.size() + jobs - 1U) / jobs;
+        auto& f = GrassStageCurrent();
+        uint64_t ignoredJobs = 0;
+        double ignoredTotal = 0, ignoredMaximum = 0;
+        const bool profile = GrassStageProfileEnabled();
+        RunJobs(jobs, [&](size_t i) {
+            const size_t first = std::min(i * perJob, candidates.size());
+            valid[i] = RefineGrassClusterCandidates(world, candidates.subspan(first,
+                std::min(perJob, candidates.size() - first)), clip, eye, policy, bladeRadiusScale, frustumCulling,
+                RefineOutputs[i], jobAnchors[i]) ? 1U : 0U;
+        }, profile ? f.RefineJobs : ignoredJobs, profile ? f.RefineJobMs : ignoredTotal,
+           profile ? f.RefineMaxJobMs : ignoredMaximum);
+        clusterWork.clear();
+        anchors = 0U;
+        for (size_t i = 0; i < jobs; ++i) {
+            if (!valid[i]) return false;
+            anchors += jobAnchors[i];
+            clusterWork.insert(clusterWork.end(), RefineOutputs[i].begin(), RefineOutputs[i].end());
+        }
+        return true;
+    }
+
+    // The candidates of the envelope that contains this view, built when none
+    // does. Callers refine them with the exact decisions of this view, so the
+    // selection never depends on which earlier view built them.
+    CandidateCacheEntry& AcquireCandidates(const GrassWorldPlacement& world,
+        const std::array<float, 16>& clip, const std::array<float, 3>& eye,
+        const GrassLodPolicy& policy, float bladeRadiusScale, bool frustumCulling, uint32_t& testedNodes) {
+        ++CandidateClock;
+        CandidateCacheEntry* entry = nullptr;
+        for (auto& candidate : CandidateCache)
+            if (candidate.Identity == world.Identity && candidate.ContentVersion == world.ContentVersion &&
+                candidate.Policy == policy && candidate.BladeRadiusScale == bladeRadiusScale &&
+                candidate.FrustumCulling == frustumCulling &&
+                GrassCandidateEnvelopeContains(candidate.Envelope, clip, eye)) {
+                entry = &candidate;
+                break;
+            }
+        if (entry != nullptr) {
+            if (GrassStageProfileEnabled())
+                ++GrassStageCurrent().CandidateHit;
+        } else {
+            if (CandidateCache.size() < kGrassCandidateCacheEntries) entry = &CandidateCache.emplace_back();
+            else entry = &*std::min_element(CandidateCache.begin(), CandidateCache.end(),
+                [](const auto& a, const auto& b) { return a.LastUsed < b.LastUsed; });
+            const auto parameters = GrassCandidateEnvelopeParameters();
+            entry->Identity = world.Identity;
+            entry->ContentVersion = world.ContentVersion;
+            entry->Policy = policy;
+            entry->BladeRadiusScale = bladeRadiusScale;
+            entry->FrustumCulling = frustumCulling;
+            entry->Envelope = MakeGrassCandidateEnvelope(clip, eye, std::max(parameters[0], 0.0F),
+                std::max(parameters[1], 0.0F), std::max(parameters[2], 0.0F));
+            testedNodes += BuildCandidates(world, entry->Envelope, policy, bladeRadiusScale, frustumCulling,
+                entry->Candidates).TestedNodes;
+            if (GrassStageProfileEnabled())
+                ++GrassStageCurrent().CandidateMiss;
+        }
+        entry->LastUsed = CandidateClock;
+        return *entry;
+    }
+
+    // A retained prefix reached past its conservative end: drop the envelope.
+    void RejectCandidates(CandidateCacheEntry& entry) {
+        entry.Identity = 0U;
+        entry.ContentVersion = 0U;
+        if (GrassStageProfileEnabled())
+            ++GrassStageCurrent().CandidateViolation;
+    }
+
+    // Cluster work of one source for the current view, materialized (the
+    // render loop fuses the refinement into root evaluation instead).
+    GrassClusterSelectionStats SelectClusterWork(const GrassWorldPlacement& world,
+        const std::array<float, 16>& clip, const std::array<float, 3>& eye,
+        const GrassLodPolicy& policy, float bladeRadiusScale, bool frustumCulling) {
+        if (!GrassCandidateCacheEnabled())
+            return SelectExactClusterWork(world, clip, eye, policy, bladeRadiusScale, frustumCulling, ClusterWork);
+        GrassClusterSelectionStats stats;
+        uint64_t anchors = 0U;
+        bool refined = false;
+        for (int attempt = 0; attempt < 2 && !refined; ++attempt) {
+            auto& entry = AcquireCandidates(world, clip, eye, policy, bladeRadiusScale, frustumCulling, stats.TestedNodes);
+            refined = RefineCandidates(world, entry.Candidates, clip, eye, policy, bladeRadiusScale, frustumCulling,
+                ClusterWork, anchors);
+            if (!refined) RejectCandidates(entry);
+        }
+        // The reference view lies inside its own envelope; failing twice means
+        // a broken bound, so take the full traversal.
+        if (!refined)
+            return SelectExactClusterWork(world, clip, eye, policy, bladeRadiusScale, frustumCulling, ClusterWork);
+        stats.CandidateClusters = static_cast<uint32_t>(ClusterWork.size());
+        stats.CandidateAnchors = anchors;
+        if (GrassSelectionVerifyEnabled()) {
+            GrassStageTimer diagnosticsTimer(GrassStage::Diagnostics);
+            const auto exact = SelectExactClusterWork(world, clip, eye, policy, bladeRadiusScale, frustumCulling,
+                VerifyClusterWork);
+            if (VerifyClusterWork != ClusterWork || exact.CandidateAnchors != anchors) {
+                ++VerifyMismatches;
+                size_t first = 0;
+                while (first < std::min(VerifyClusterWork.size(), ClusterWork.size()) &&
+                       VerifyClusterWork[first] == ClusterWork[first]) ++first;
+                std::fprintf(stderr, "[grass-candidates] verify mismatch=%llu source=%llx exact=%zu cached=%zu first=%zu "
+                    "exact_cluster=%u cached_cluster=%u\n", static_cast<unsigned long long>(VerifyMismatches),
+                    static_cast<unsigned long long>(world.Identity), VerifyClusterWork.size(), ClusterWork.size(), first,
+                    first < VerifyClusterWork.size() ? VerifyClusterWork[first].ClusterIndex : 0U,
+                    first < ClusterWork.size() ? ClusterWork[first].ClusterIndex : 0U);
+            }
+            ++VerifyChecks;
+        }
         return stats;
     }
 
@@ -1410,24 +1670,124 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 const auto selectionStart = std::chrono::steady_clock::now();
                 auto& clusterWork = mImpl->ClusterWork;
                 const bool clusterOwned = settings.MidrangeClustersEnabled && !prepared.World->Midrange.Groups.empty();
-                const auto selection = clusterOwned ? GrassClusterSelectionStats{} : mImpl->SelectClusterWork(
-                    *prepared.World, prepared.Push.PositionToClip, prepared.Eye, lodPolicy,
-                    bladeRadiusScale, settings.FrustumCulling);
-                const auto clusterSelectionEnd = std::chrono::steady_clock::now();
-                if (!clusterOwned)
+                size_t parallelWorkerCount = 0U;
+                uint64_t retainedCandidates = 0U;
+                size_t selectedClusters = 0U;
+                bool fused = false;
+                // Envelope candidates: the exact decision of each cluster for this
+                // view runs right before its roots, in the same cluster order and
+                // with the same budget admission as the materialized path.
+                if (!clusterOwned && GrassCandidateCacheEnabled() && !GrassSelectionVerifyEnabled()) {
+                    uint32_t testedNodes = 0U;
+                    auto& entry = mImpl->AcquireCandidates(*prepared.World, prepared.Push.PositionToClip, prepared.Eye,
+                        lodPolicy, bladeRadiusScale, settings.FrustumCulling, testedNodes);
+                    telemetry.VisibilityNodesTested += testedNodes;
+                    GrassStageTimer fusedTimer(GrassStage::SelectEvaluate);
+                    const GrassClusterRefiner refiner(*prepared.World, prepared.Push.PositionToClip, prepared.Eye,
+                        lodPolicy, bladeRadiusScale, settings.FrustumCulling);
+                    const auto& candidates = entry.Candidates;
+                    const size_t jobs = remaining >= kGrassAnchorsPerWorker &&
+                            candidates.size() >= kGrassClustersForParallelSelection && mImpl->WorkerCount() >= 2U
+                        ? std::min(mImpl->WorkerCount(), candidates.size() / (kGrassClustersForParallelSelection / 2U))
+                        : 1U;
+                    std::atomic<bool> violation{false};
+                    struct FusedStats {
+                        GrassClusterCounters Counters;
+                        uint64_t Clusters = 0U, Anchors = 0U;
+                    };
+                    std::vector<FusedStats> jobStats(jobs);
+                    const auto evaluateRange = [&](size_t first, size_t last, GrassVisibleIndexBins& bins,
+                                                   FusedStats& stats) {
+                        uint32_t workerRemaining = remaining;
+                        GrassClusterWork work;
+                        for (size_t i = first; i < last && workerRemaining != 0U; ++i) {
+                            const auto result = refiner.Refine(candidates[i], work);
+                            if (result == GrassClusterRefiner::Result::Rejected) continue;
+                            if (result == GrassClusterRefiner::Result::Violation ||
+                                violation.load(std::memory_order_relaxed)) {
+                                violation.store(true, std::memory_order_relaxed);
+                                return;
+                            }
+                            ++stats.Clusters;
+                            stats.Anchors += work.AnchorEnd - prepared.World->Clusters[work.ClusterIndex].FirstAnchor;
+                            const auto counters = processCluster(work, bins, workerRemaining);
+                            stats.Counters.Evaluated += counters.Evaluated;
+                            stats.Counters.Visible += counters.Visible;
+                            workerRemaining -= counters.Visible;
+                        }
+                    };
+                    if (jobs > 1U) {
+                        mImpl->WorkerOutputs.resize(jobs);
+                        for (size_t workerIndex = 0U; workerIndex < jobs; ++workerIndex)
+                            mImpl->WorkerOutputs[workerIndex].Clear();
+                        const size_t perJob = (candidates.size() + jobs - 1U) / jobs;
+                        auto& f = GrassStageCurrent();
+                        uint64_t ignoredJobs = 0;
+                        double ignoredTotal = 0, ignoredMaximum = 0;
+                        const bool profile = GrassStageProfileEnabled();
+                        mImpl->RunJobs(jobs, [&](size_t i) {
+                            evaluateRange(std::min(i * perJob, candidates.size()),
+                                std::min((i + 1U) * perJob, candidates.size()), mImpl->WorkerOutputs[i].Bins, jobStats[i]);
+                        }, profile ? f.EvaluateJobs : ignoredJobs, profile ? f.EvaluateJobMs : ignoredTotal,
+                           profile ? f.EvaluateMaxJobMs : ignoredMaximum);
+                    } else {
+                        evaluateRange(0U, candidates.size(), mImpl->VisibleIndexBins, jobStats[0]);
+                    }
+                    if (violation.load(std::memory_order_relaxed)) {
+                        mImpl->RejectCandidates(entry);
+                        for (auto& bin : mImpl->VisibleIndexBins) bin.clear();
+                    } else {
+                        fused = true;
+                        for (const auto& stats : jobStats) {
+                            selectedClusters += stats.Clusters;
+                            retainedCandidates += stats.Anchors;
+                        }
+                        telemetry.CullingWorkers = std::max(telemetry.CullingWorkers, static_cast<uint32_t>(jobs));
+                        uint32_t visible = 0U;
+                        if (jobs > 1U) {
+                            parallelWorkerCount = jobs;
+                            for (size_t workerIndex = 0U; workerIndex < jobs; ++workerIndex) {
+                                auto& output = mImpl->WorkerOutputs[workerIndex];
+                                output.Counters = jobStats[workerIndex].Counters;
+                                telemetry.EvaluatedAnchors += output.Counters.Evaluated;
+                                output.Counters.Visible = LimitGrassSelectionBins(output.Bins, remaining);
+                                remaining -= output.Counters.Visible;
+                                visible += output.Counters.Visible;
+                            }
+                        } else {
+                            telemetry.EvaluatedAnchors += jobStats[0].Counters.Evaluated;
+                            visible = jobStats[0].Counters.Visible;
+                            remaining -= visible;
+                        }
+                        mImpl->LastBlades += visible;
+                        telemetry.VisibleBlades += visible;
+                    }
+                }
+                GrassClusterSelectionStats selection{};
+                if (!fused && !clusterOwned) {
+                    selection = mImpl->SelectClusterWork(*prepared.World, prepared.Push.PositionToClip, prepared.Eye,
+                        lodPolicy, bladeRadiusScale, settings.FrustumCulling);
                     telemetry.CullingWorkers = std::max(telemetry.CullingWorkers,
                         static_cast<uint32_t>(mImpl->SelectionRoots.size()));
+                    selectedClusters = clusterWork.size();
+                    retainedCandidates = selection.CandidateAnchors;
+                }
+                const auto clusterSelectionEnd = std::chrono::steady_clock::now();
                 telemetry.VisibilityNodesTested += selection.TestedNodes;
-                telemetry.CandidateClusters += selection.CandidateClusters;
-                const auto retainedCandidates = selection.CandidateAnchors;
-                size_t parallelWorkerCount = 0U;
-                if (!clusterOwned && retainedCandidates >= kGrassAnchorsPerWorker * 2U &&
+                telemetry.CandidateClusters += selectedClusters;
+                if (GrassStageProfileEnabled()) {
+                    GrassStageCurrent().SelectClusters += selectedClusters;
+                    GrassStageCurrent().SelectCandidates += retainedCandidates;
+                }
+                GrassStageTimer evaluateTimer(GrassStage::SelectEvaluate);
+                if (!fused && !clusterOwned && retainedCandidates >= kGrassAnchorsPerWorker * 2U &&
                     remaining >= kGrassAnchorsPerWorker && clusterWork.size() > 1U) {
                     parallelWorkerCount =
                         std::min({ mImpl->WorkerCount(), clusterWork.size(),
                                    static_cast<size_t>(retainedCandidates / kGrassAnchorsPerWorker) });
                 }
-                if (clusterOwned) {
+                if (fused) {
+                } else if (clusterOwned) {
                     uint64_t evaluated = 0;
                     const auto visible = SelectGrassDrawableClusters(*prepared.World, prepared.Push.PositionToClip,
                         prepared.Eye, lodPolicy, settings.MidrangeFarBladeFraction, bladeRadiusScale, settings.FrustumCulling, remaining, evaluated,
@@ -1458,12 +1818,14 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                     }
                     std::vector<std::future<void>> tasks;
                     tasks.reserve(parallelWorkerCount);
+                    std::vector<GrassJobTiming> timings(parallelWorkerCount);
                     const size_t clustersPerWorker =
                         (clusterWork.size() + parallelWorkerCount - 1U) / parallelWorkerCount;
                     for (size_t workerIndex = 0U; workerIndex < parallelWorkerCount; ++workerIndex) {
                         const size_t beginCluster = workerIndex * clustersPerWorker;
                         const size_t endCluster = std::min(beginCluster + clustersPerWorker, clusterWork.size());
                         tasks.push_back(mImpl->WorkerPool->submit_task([&, workerIndex, beginCluster, endCluster] {
+                            const auto start = GrassJobTiming::Start();
                             auto& output = mImpl->WorkerOutputs[workerIndex];
                             uint32_t workerRemaining = remaining;
                             for (size_t clusterIndex = beginCluster; clusterIndex < endCluster && workerRemaining != 0;
@@ -1473,10 +1835,15 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                                 output.Counters.Visible += counters.Visible;
                                 workerRemaining -= counters.Visible;
                             }
+                            timings[workerIndex].Finish(start);
                         }));
                     }
                     for (auto& task : tasks) {
                         task.get();
+                    }
+                    if (GrassStageProfileEnabled()) {
+                        auto& f = GrassStageCurrent();
+                        AddGrassJobTimings(f.EvaluateJobs, f.EvaluateJobMs, f.EvaluateMaxJobMs, timings.data(), timings.size());
                     }
                     uint32_t visible = 0U;
                     for (size_t workerIndex = 0U; workerIndex < parallelWorkerCount; ++workerIndex) {
@@ -1502,17 +1869,19 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                         telemetry.VisibleBlades += counters.Visible;
                     }
                 }
+                evaluateTimer.Stop();
                 telemetry.SelectionMilliseconds +=
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - selectionStart)
                         .count();
                 if (GrassDiagnosticsEnabled() && frameId % 60 == 0) {
                     std::fprintf(stderr, "[grass-selection] frame=%llu source=%u clusters=%zu candidates=%llu cluster_ms=%.3f evaluate_ms=%.3f\n",
-                        static_cast<unsigned long long>(frameId), placementIndex, clusterWork.size(),
+                        static_cast<unsigned long long>(frameId), placementIndex, selectedClusters,
                         static_cast<unsigned long long>(retainedCandidates),
                         std::chrono::duration<double, std::milli>(clusterSelectionEnd-selectionStart).count(),
                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-clusterSelectionEnd).count());
                 }
 
+                GrassStageTimer assembleTimer(GrassStage::SelectAssemble);
                 const uint32_t environmentRecordIndex = placementIndex;
                 bool hasInstances = false;
                 if (parallelWorkerCount > 1U) {
@@ -1576,16 +1945,43 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 }
             }
             mImpl->SelectionCache.Store(std::move(selectionKey));
+            if (GrassStageProfileEnabled()) {
+                GrassStageCurrent().SelectEvaluated += telemetry.EvaluatedAnchors;
+                GrassStageCurrent().SelectVisible += telemetry.VisibleBlades;
+            }
+        }
+        selectionTimer.Stop();
+        if (GrassStageProfileEnabled()) {
+            // Identity of the selection for A/B runs: roots, order and batches.
+            GrassStageTimer diagnosticsTimer(GrassStage::Diagnostics);
+            uint64_t hash = kGrassIdentityFnvOffset;
+            for (const uint32_t index : mImpl->VisibleAnchorIndices) HashGrassIdentityValue(hash, index);
+            for (const auto& batch : batches) {
+                HashGrassIdentityValue(hash, batch.FirstInstance);
+                HashGrassIdentityValue(hash, batch.InstanceCount);
+                HashGrassIdentityValue(hash, batch.BladeSegments);
+                HashGrassIdentityValue(hash, batch.PlaneCount);
+            }
+            GrassStageCurrent().SelectHash ^= hash;
         }
 
         const uint32_t instanceCount = static_cast<uint32_t>(mImpl->VisibleAnchorIndices.size());
         if (GrassDiagnosticsEnabled() && frameId % 60 == 0) {
-            size_t contacts = 0;
+            GrassStageTimer diagnosticsTimer(GrassStage::Diagnostics);
+            size_t contacts = 0, samples = 0, boxPairs = 0;
             float maxBend = 0;
             const size_t step = std::max<size_t>(1, mImpl->VisibleAnchorIndices.size() / 4096);
             for (size_t i = 0; i < mImpl->VisibleAnchorIndices.size(); i += step) {
                 const auto& anchor = mImpl->StaticAnchors[mImpl->VisibleAnchorIndices[i]];
+                ++samples;
                 for (const auto& actor : actors) {
+                    // The compactor's swept-box rejection: pairs that pass it
+                    // pay the projection, roots and normalization.
+                    const float radius = std::max(0.01F, actor.Radius * settings.ColliderRadiusMultiplier);
+                    boxPairs += anchor.BaseHeight[0] >= std::min(actor.PreviousPosition[0], actor.Position[0]) - radius &&
+                        anchor.BaseHeight[0] <= std::max(actor.PreviousPosition[0], actor.Position[0]) + radius &&
+                        anchor.BaseHeight[2] >= std::min(actor.PreviousPosition[2], actor.Position[2]) - radius &&
+                        anchor.BaseHeight[2] <= std::max(actor.PreviousPosition[2], actor.Position[2]) + radius;
                     const auto collision = ResolveGrassCollision(
                         {anchor.BaseHeight[0], anchor.BaseHeight[1], anchor.BaseHeight[2]},
                         anchor.BaseHeight[3], actor, settings);
@@ -1595,14 +1991,14 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                     }
                 }
             }
-            std::fprintf(stderr, "[grass-interaction] frame=%llu actors=%zu sampled_contacts=%zu max_bend=%.4f\n",
-                static_cast<unsigned long long>(frameId), actors.size(), contacts, maxBend);
+            std::fprintf(stderr, "[grass-interaction] frame=%llu actors=%zu sampled_roots=%zu sampled_box_pairs=%zu "
+                "sampled_contacts=%zu max_bend=%.4f\n",
+                static_cast<unsigned long long>(frameId), actors.size(), samples, boxPairs, contacts, maxBend);
         }
         if (instanceCount == 0U || batches.empty()) {
             return finish(GrassRenderStatus::Culled, false);
         }
 
-        selectionTimer.Stop();
         const auto uploadStart = std::chrono::steady_clock::now();
         GrassStageTimer compactionTimer(GrassStage::Compaction);
         if (profiler)
@@ -1814,6 +2210,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         return finish(GrassRenderStatus::Drawn, true);
     } catch (const std::exception& exception) {
         mImpl->SelectionCache.Reset();
+        mImpl->CandidateCache.clear();
         mImpl->Reason = exception.what();
         return finish(GrassRenderStatus::Error, false);
     }
@@ -1852,6 +2249,12 @@ bool InteractiveGrassPass::DrawPrepared(
         const VkPipeline wanted = rasterDepthPipeline != VK_NULL_HANDLE &&
                 GrassDepthIsRasterDepth(batch.Push)
             ? rasterDepthPipeline : pipeline;
+        if (GrassStageProfileEnabled()) {
+            auto& f = GrassStageCurrent();
+            const bool raster = wanted == rasterDepthPipeline;
+            ++(raster ? f.RasterDepthBatches : f.ExplicitDepthBatches);
+            (raster ? f.RasterDepthInstances : f.ExplicitDepthInstances) += batch.InstanceCount;
+        }
         if (wanted != bound) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wanted);
             bound = wanted;
@@ -1877,6 +2280,7 @@ void InteractiveGrassPass::SetCacheDirectory(std::filesystem::path directory) {
 }
 void InteractiveGrassPass::ResetTemporalState() {
     mImpl->SelectionCache.Reset();
+    mImpl->CandidateCache.clear();
     mImpl->InteractionField.Reset();
     mImpl->MotionHistory.clear();
     mImpl->InstanceCompactor.ResetHistory();
@@ -1933,6 +2337,7 @@ void InteractiveGrassPass::Shutdown() {
     mImpl->PreparedDescriptorSet = VK_NULL_HANDLE;
     mImpl->Batches.clear();
     mImpl->SelectionCache.Reset();
+    mImpl->CandidateCache.clear();
     mImpl->IndexedTopology = {};
     mImpl->EnvironmentRecords.clear();
     mImpl->PreparedPlacements.clear();

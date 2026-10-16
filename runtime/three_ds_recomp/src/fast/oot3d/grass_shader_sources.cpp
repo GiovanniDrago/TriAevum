@@ -690,6 +690,10 @@ layout(std430, set=0, binding=5) buffer BendHistory {
 layout(std430, set=0, binding=6) writeonly buffer PreviousBends {
     vec2 values[];
 } previous_bends;
+// GrassActorCells: cell offsets, then the actor indices of every cell.
+layout(std430, set=0, binding=7) readonly buffer ActorCells {
+    uint words[];
+} actor_cells;
 
 layout(push_constant) uniform CompactionState {
     uvec4 counts_flags;
@@ -698,6 +702,9 @@ layout(push_constant) uniform CompactionState {
     vec4 bend;
     // current frame stamp, previous frame stamp (0 without continuity)
     uvec4 history;
+    // actor cells: origin X/Z, inverse cell size; width, height, cell count
+    vec4 actor_grid;
+    uvec4 actor_grid_size;
 } state;
 
 vec2 sample_interaction(vec3 base) {
@@ -843,8 +850,29 @@ void main() {
     stable ^= stable >> 16u;
     vec4 world_normal = vec4(normalize(normal), float(stable >> 8u) / 16777216.0);
     vec2 dynamic_bend = sample_interaction(base_height.xyz);
-    for (uint i = 0u; i < (state.counts_flags.w >> 1u); ++i)
-        dynamic_bend += resolve_direct_collision(base_height.xyz, base_height.w, actors.values[i]);
+    uint actor_count = state.counts_flags.w >> 1u;
+    if (state.actor_grid_size.x == 0u || any(isnan(base_height.xz)) || any(isinf(base_height.xz))) {
+        for (uint i = 0u; i < actor_count; ++i)
+            dynamic_bend += resolve_direct_collision(base_height.xyz, base_height.w, actors.values[i]);
+    } else {
+        // Only the actors whose swept box can contain this root, in order;
+        // every other actor would add an exact zero.
+        vec2 cell = floor((base_height.xz - state.actor_grid.xy) * state.actor_grid.z);
+        uint first = 0u;
+        uint last = 0u;
+        if (cell.x >= 0.0 && cell.y >= 0.0 &&
+            cell.x < float(state.actor_grid_size.x) && cell.y < float(state.actor_grid_size.y)) {
+            uint index = uint(cell.y) * state.actor_grid_size.x + uint(cell.x);
+            first = actor_cells.words[index];
+            last = actor_cells.words[index + 1u];
+        }
+        uint list = state.actor_grid_size.z + 1u;
+        for (uint i = first; i < last; ++i)
+            dynamic_bend += resolve_direct_collision(
+                base_height.xyz, base_height.w, actors.values[actor_cells.words[list + i]]);
+        if (last - first < actor_count)
+            dynamic_bend += vec2(0.0);
+    }
     float bend_length = length(dynamic_bend);
     if (bend_length > state.bend.x && bend_length > 0.0)
         dynamic_bend *= state.bend.x / bend_length;
