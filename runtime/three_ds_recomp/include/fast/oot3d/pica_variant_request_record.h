@@ -56,6 +56,8 @@ struct PicaVariantRequestWitness {
 struct PicaVariantRequestRecord {
     uint64_t CanonicalPipelineId = 0;
     uint32_t EffectsId = 0;
+    // Provenance only: the settings revision the runtime resolved it under.
+    uint64_t SettingsRevision = 0;
     PicaShaderPipelineRequest Request;
     PicaVariantRequestWitness Witness;
 };
@@ -69,14 +71,15 @@ struct PicaVariantRequestSession {
 [[nodiscard]] PicaVariantRequestWitness WitnessPicaVariantRequest(
     const PicaShaderPipelineRequest& request, const PicaShaderPipelineResult& result);
 [[nodiscard]] nlohmann::json EncodePicaVariantRequest(uint64_t canonicalPipelineId, uint32_t effectsId,
+                                                      uint64_t settingsRevision,
                                                       const PicaShaderPipelineRequest& request,
                                                       const PicaVariantRequestWitness& witness);
 bool DecodePicaVariantRequest(const nlohmann::json& line, PicaVariantRequestRecord& record,
                               std::string* error = nullptr);
-// EffectsSettings through the settings persistence (the "Graphics" block).
-// The other fields come from the session's settings, so the validation that
-// decoding runs sees the context the runtime validated (anti-aliasing,
-// motion vectors); the preset is Custom, which keeps the effects as given.
+// EffectsSettings through the settings persistence (the "Graphics" block),
+// with the session's other settings and preset Custom for context. They are
+// the effective effects the cache resolved, so decoding reads the fields
+// without settings validation and requires the Effects block to round-trip.
 [[nodiscard]] nlohmann::json EncodePicaVariantEffects(const EffectsSettings& effects,
                                                       const GraphicsSettings& context = {});
 bool DecodePicaVariantEffects(const nlohmann::json& value, EffectsSettings& effects,

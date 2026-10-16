@@ -33,6 +33,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <tuple>
 #include <string>
 #include <vector>
 
@@ -70,6 +71,10 @@ struct CanonicalPlan {
     std::shared_ptr<const Oot3dPicaTemporalVertexProgram> Temporal;
     Oot3d::Renderer::PicaShaderHookLayout FragmentHooks;
 };
+
+// A program as a pipeline recipe names it: output source identities and the
+// effective shader keys. One source pair can carry several keys.
+using ProgramKey = std::tuple<uint64_t, uint64_t, uint64_t, uint64_t>;
 
 struct Regenerated {
     PicaVariantShaderIdentity Vertex;
@@ -110,10 +115,10 @@ int Run(const Options& options) {
     if (!inventory.Configure(options.ShaderInventory, &error)) throw std::runtime_error(error);
 
     Json sessions = Json::array();
-    // Recorded output identities (as the session's pipeline inventories name
-    // them) -> regenerated program, for recipe rewriting.
-    std::map<std::pair<uint64_t, uint64_t>, std::set<std::pair<uint64_t, uint64_t>>> recipeLinks;
-    std::map<std::pair<uint64_t, uint64_t>, Regenerated> regeneratedByIdentity;
+    // Recorded programs (as the session's pipeline inventories name them)
+    // -> regenerated programs, for recipe rewriting.
+    std::map<ProgramKey, std::set<ProgramKey>> recipeLinks;
+    std::map<ProgramKey, Regenerated> regeneratedByIdentity;
     uint64_t totalFailures = 0, totalWitnessMismatches = 0;
 
     for (const auto& [rawPath, requestPath] : options.Sessions) {
@@ -160,7 +165,8 @@ int Run(const Options& options) {
                 ++canonicalWitnessMismatches;
             // Canonical recipes link through their canonical identities.
             regeneratedByIdentity.try_emplace(
-                {witness.VertexSourceId, witness.FragmentSourceId},
+                ProgramKey{witness.VertexSourceId, witness.FragmentSourceId, witness.VertexShaderKey,
+                           witness.FragmentShaderKey},
                 Regenerated{Identity(canonical.VertexIdentity), Identity(canonical.FragmentIdentity), {}, false,
                             canonical.VertexKey, canonical.FragmentKey});
             plans.emplace(draw.CanonicalPipelineId, std::move(canonical));
@@ -211,9 +217,9 @@ int Run(const Options& options) {
             if (!result->IsCanonical()) ++instrumented;
             const auto schema = canonical.DescriptorSchemaVersion;
             inventory.Observe(Fast::Oot3d::PicaAotShaderStage::Vertex, result->VertexShaderSource, schema,
-                              record->CanonicalPipelineId, result->VertexShaderKey, record->EffectsId);
+                              record->CanonicalPipelineId, result->VertexShaderKey, record->SettingsRevision);
             inventory.Observe(Fast::Oot3d::PicaAotShaderStage::Fragment, result->FragmentShaderSource, schema,
-                              record->CanonicalPipelineId, result->FragmentShaderKey, record->EffectsId);
+                              record->CanonicalPipelineId, result->FragmentShaderKey, record->SettingsRevision);
             Regenerated regenerated{Identity(result->VertexShaderSourceIdentity),
                                     Identity(result->FragmentShaderSourceIdentity),
                                     {},
@@ -229,10 +235,12 @@ int Run(const Options& options) {
                 regenerated.NriAvailable = true;
                 regenerated.NriFragment = Identity(Fast::Oot3d::IdentifyPicaAotShaderSource(nri.Source));
                 inventory.Observe(Fast::Oot3d::PicaAotShaderStage::NriFragment, nri.Source, schema,
-                                  record->CanonicalPipelineId, result->FragmentShaderKey, record->EffectsId);
+                                  record->CanonicalPipelineId, result->FragmentShaderKey, record->SettingsRevision);
             }
-            const std::pair recorded{record->Witness.Vertex.Id, record->Witness.Fragment.Id};
-            const std::pair current{regenerated.Vertex.Id, regenerated.Fragment.Id};
+            const ProgramKey recorded{record->Witness.Vertex.Id, record->Witness.Fragment.Id,
+                                      record->Witness.VertexKey, record->Witness.FragmentKey};
+            const ProgramKey current{regenerated.Vertex.Id, regenerated.Fragment.Id, regenerated.VertexKey,
+                                     regenerated.FragmentKey};
             recipeLinks[recorded].insert(current);
             regeneratedByIdentity.insert_or_assign(current, regenerated);
         }
@@ -266,8 +274,9 @@ int Run(const Options& options) {
             schema = manifest.DescriptorSchemaVersion();
             for (auto entry : manifest.Entries()) {
                 ++input;
-                const std::pair recorded{entry.VertexSource.Id, entry.FragmentSource.Id};
-                std::set<std::pair<uint64_t, uint64_t>> targets;
+                const ProgramKey recorded{entry.VertexSource.Id, entry.FragmentSource.Id, entry.VertexShaderKey,
+                                          entry.FragmentShaderKey};
+                std::set<ProgramKey> targets;
                 if (const auto link = recipeLinks.find(recorded); link != recipeLinks.end()) targets = link->second;
                 else if (regeneratedByIdentity.contains(recorded)) targets.insert(recorded);
                 if (targets.empty()) {

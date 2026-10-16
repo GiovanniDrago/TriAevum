@@ -78,7 +78,7 @@ PicaVariantRequestWitness WitnessPicaVariantRequest(const PicaShaderPipelineRequ
     return witness;
 }
 
-Json EncodePicaVariantRequest(uint64_t canonicalPipelineId, uint32_t effectsId,
+Json EncodePicaVariantRequest(uint64_t canonicalPipelineId, uint32_t effectsId, uint64_t settingsRevision,
                               const PicaShaderPipelineRequest& request, const PicaVariantRequestWitness& witness) {
     const auto& draw = request.Draw;
     const auto& blend = draw.Blend;
@@ -92,6 +92,7 @@ Json EncodePicaVariantRequest(uint64_t canonicalPipelineId, uint32_t effectsId,
         {"record", "request"},
         {"pipeline_id", Hex64(canonicalPipelineId)},
         {"effects", effectsId},
+        {"revision", settingsRevision},
         {"vertex_key", Hex64(request.VertexShaderKey)},
         {"fragment_key", Hex64(request.FragmentShaderKey)},
         {"draw",
@@ -142,6 +143,7 @@ bool DecodePicaVariantRequest(const Json& line, PicaVariantRequestRecord& record
         PicaVariantRequestRecord decoded;
         decoded.CanonicalPipelineId = ParseHex64(line.at("pipeline_id"));
         decoded.EffectsId = line.at("effects").get<uint32_t>();
+        decoded.SettingsRevision = line.at("revision").get<uint64_t>();
         auto& request = decoded.Request;
         request.VertexShaderKey = ParseHex64(line.at("vertex_key"));
         request.FragmentShaderKey = ParseHex64(line.at("fragment_key"));
@@ -215,7 +217,10 @@ Json EncodePicaVariantEffects(const EffectsSettings& effects, const GraphicsSett
 }
 
 bool DecodePicaVariantEffects(const Json& value, EffectsSettings& effects, std::string* error) {
-    const auto loaded = DeserializeGraphicsSettings(value);
+    // The recorded effects are the effective ones the cache resolved (after
+    // capability fallbacks and F2 overrides), not user settings: decode the
+    // fields without the settings validation, which would "correct" them.
+    const auto loaded = DeserializeGraphicsSettingsFields(value);
     // A recording is valid only if its effects decode exactly: re-encoding
     // must reproduce the stored document (no field corrected or unknown).
     if (loaded.UnsupportedFutureVersion) {
@@ -345,6 +350,7 @@ void PicaVariantRequestRecorder::Observe(uint64_t canonicalPipelineId, const Pic
     const auto& draw = request.Draw;
     append(canonicalPipelineId);
     append(effectsId);
+    append(settingsRevision);
     append(request.VertexShaderKey);
     append(request.FragmentShaderKey);
     append(draw.FramebufferWidth);
@@ -380,7 +386,7 @@ void PicaVariantRequestRecorder::Observe(uint64_t canonicalPipelineId, const Pic
     append(result.VertexShaderSourceIdentity.Id);
     append(result.FragmentShaderSourceIdentity.Id);
     if (!mSeen.insert(std::move(key)).second) return;
-    const auto line = EncodePicaVariantRequest(canonicalPipelineId, effectsId, request,
+    const auto line = EncodePicaVariantRequest(canonicalPipelineId, effectsId, settingsRevision, request,
                                                WitnessPicaVariantRequest(request, result))
                           .dump();
     mStream << line << '\n';

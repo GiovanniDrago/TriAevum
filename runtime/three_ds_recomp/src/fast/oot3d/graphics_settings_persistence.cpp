@@ -1717,15 +1717,17 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
     };
 }
 
-GraphicsSettingsLoadResult DeserializeGraphicsSettings(
-    const nlohmann::json& document, GraphicsSettings fallback) {
+namespace {
+GraphicsSettingsLoadResult DecodeGraphicsSettings(
+    const nlohmann::json& document, GraphicsSettings fallback, bool normalize) {
     GraphicsSettingsLoadResult result;
     result.Value = std::move(fallback);
     result.Found = true;
     if (!document.is_object()) {
         Correct(result, "Graphics",
                 "graphics settings block is not an object");
-        Normalize(result);
+        if (normalize)
+            Normalize(result);
         return result;
     }
 
@@ -2337,8 +2339,20 @@ GraphicsSettingsLoadResult DeserializeGraphicsSettings(
                        result);
         }
     }
-    Normalize(result);
+    if (normalize)
+        Normalize(result);
     return result;
+}
+} // namespace
+
+GraphicsSettingsLoadResult DeserializeGraphicsSettings(
+    const nlohmann::json& document, GraphicsSettings fallback) {
+    return DecodeGraphicsSettings(document, std::move(fallback), true);
+}
+
+GraphicsSettingsLoadResult DeserializeGraphicsSettingsFields(
+    const nlohmann::json& document, GraphicsSettings fallback) {
+    return DecodeGraphicsSettings(document, std::move(fallback), false);
 }
 
 GraphicsSettingsLoadResult LoadGraphicsSettingsConfig(
