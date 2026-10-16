@@ -11,6 +11,15 @@ struct PassShaderArtifact;
 const std::string& ShadercCompilerContract();
 std::vector<uint32_t> CompileShadercSpirv(std::string_view source, SpirvStage stage, const char* name);
 
+// Every PICA and pass shader compilation of the process, counted at the
+// compiler call independently of the caches in front of it. Release
+// qualification requires zero after Forge preparation.
+struct ShadercAudit {
+    uint64_t Calls = 0;
+    uint64_t Nanoseconds = 0;
+};
+ShadercAudit ShadercCompilationAudit();
+
 using ShaderDefines = std::vector<std::pair<std::string, std::string>>;
 std::span<const uint32_t> FindBuiltinPassShaderSpirv(std::string_view source,
     SpirvStage stage, const ShaderDefines& defines = {}, uint32_t vulkanMinor = 2);

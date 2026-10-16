@@ -1278,6 +1278,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     std::mutex mPicaAotShaderLogMutex;
     std::set<std::pair<Oot3d::PicaAotShaderStage, uint64_t>>
         mPicaAotShaderMissesLogged;
+    // Distinct pack modules served, for release qualification (counts per
+    // identity, not per request).
+    std::set<std::pair<Oot3d::PicaAotShaderStage, uint64_t>> mPicaAotShaderHitIdentities;
     std::atomic<uint64_t> mPicaAotShaderHits = 0;
     std::atomic<uint64_t> mNativeFragmentArtifactHits = 0;
     std::atomic<uint64_t> mNativeVertexArtifactHits = 0;

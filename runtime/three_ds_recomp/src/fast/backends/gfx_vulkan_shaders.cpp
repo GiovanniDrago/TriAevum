@@ -230,6 +230,9 @@ void GfxRenderingAPIVulkan::FinishNativePicaAotShaders() {
             static_cast<unsigned long long>(cache.Writes), static_cast<unsigned long long>(cache.WriteFailures),
             cache.CompileNanoseconds / 1e6, cache.ReadNanoseconds / 1e6, cache.WriteNanoseconds / 1e6,
             mCompiledShaderCache.Enabled() ? 1 : 0);
+        const auto audit = Fast::Renderer::ShadercCompilationAudit();
+        std::fprintf(stderr, "TRIAEVUM_SHADERC_AUDIT calls=%llu compile_ms=%.3f\n",
+                     static_cast<unsigned long long>(audit.Calls), audit.Nanoseconds / 1e6);
         mCompiledShaderCacheSummaryLogged = true;
     }
     if (mPicaEffectiveShaderInventory.Enabled()) {
@@ -287,13 +290,19 @@ void GfxRenderingAPIVulkan::FinishNativePicaAotShaders() {
          mPicaAotShaderMisses != 0U)) {
         SPDLOG_INFO("Native PICA AOT shader resolution: {} hits, {} misses",
                     mPicaAotShaderHits.load(), mPicaAotShaderMisses.load());
+        size_t uniqueHits = 0, uniqueMisses = 0;
+        {
+            std::lock_guard lock(mPicaAotShaderLogMutex);
+            uniqueHits = mPicaAotShaderHitIdentities.size();
+            uniqueMisses = mPicaAotShaderMissesLogged.size();
+        }
         std::fprintf(stderr,
                      "OOT3D_PICA_AOT_SHADER_RESOLUTION hits=%llu misses=%llu "
-                     "strict=%u entries=%zu\n",
+                     "strict=%u entries=%zu unique_hits=%zu unique_misses=%zu\n",
                      static_cast<unsigned long long>(mPicaAotShaderHits),
                      static_cast<unsigned long long>(mPicaAotShaderMisses),
                      mPicaAotShaderStrict ? 1U : 0U,
-                     mPicaAotShaderPack.EntryCount());
+                     mPicaAotShaderPack.EntryCount(), uniqueHits, uniqueMisses);
         mPicaAotShaderSummaryLogged = true;
         std::fprintf(stderr, "TRIAEVUM_NATIVE_FRAGMENT_ARTIFACTS hits=%llu modules=%zu\n",
                      static_cast<unsigned long long>(mNativeFragmentArtifactHits),
@@ -366,6 +375,10 @@ GfxRenderingAPIVulkan::ResolveNativePicaShaderSpirv(
     const auto binary = mPicaAotShaderPack.Find(stage, source);
     if (!binary.empty()) {
         ++mPicaAotShaderHits;
+        {
+            std::lock_guard lock(mPicaAotShaderLogMutex);
+            mPicaAotShaderHitIdentities.insert({stage, Oot3d::IdentifyPicaAotShaderSource(source).Id});
+        }
         return {binary.begin(), binary.end()};
     }
 

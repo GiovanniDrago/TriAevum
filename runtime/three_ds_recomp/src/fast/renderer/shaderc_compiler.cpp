@@ -9,6 +9,8 @@
 #include <shaderc/shaderc.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <array>
 #include <cctype>
@@ -120,6 +122,28 @@ std::string IdentifyCompiler() {
 }
 }
 
+namespace {
+std::atomic<uint64_t> gShadercCalls{0};
+std::atomic<uint64_t> gShadercNanoseconds{0};
+
+// Counts one compiler call, whatever cache or catalogue sits in front of it.
+class ShadercAuditScope {
+  public:
+    ShadercAuditScope() : mStart(std::chrono::steady_clock::now()) { ++gShadercCalls; }
+    ~ShadercAuditScope() {
+        gShadercNanoseconds += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - mStart).count());
+    }
+
+  private:
+    std::chrono::steady_clock::time_point mStart;
+};
+}
+
+ShadercAudit ShadercCompilationAudit() {
+    return {gShadercCalls.load(), gShadercNanoseconds.load()};
+}
+
 const std::string& ShadercCompilerContract() {
     static const std::string contract = [] {
         try { return IdentifyCompiler(); }
@@ -136,6 +160,7 @@ std::vector<uint32_t> CompileShadercSpirv(std::string_view source, SpirvStage st
         case SpirvStage::Compute: kind = shaderc_compute_shader; break;
         default: throw std::invalid_argument("unsupported shader stage");
     }
+    const ShadercAuditScope audit;
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_1);
@@ -199,6 +224,7 @@ std::vector<uint32_t> CachedPassShaderCompiler::Resolve(
             case SpirvStage::Compute: kind = shaderc_compute_shader; break;
             default: throw std::invalid_argument("unsupported pass shader stage");
         }
+        const ShadercAuditScope audit;
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
         options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);

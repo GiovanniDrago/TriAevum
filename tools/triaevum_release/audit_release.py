@@ -505,7 +505,8 @@ def audit_release(
             reject(f"invalid precompiled release: {exc}")
     elif roles_seen & title_roles:
         reject("title artifacts require the precompiled distribution model")
-    if not precompiled and roles_seen & {"portable_shader_corpus", "portable_pipeline_recipes"}:
+    if not precompiled and roles_seen & {"portable_shader_corpus", "portable_pipeline_recipes",
+                                         "portable_shader_qualification"}:
         reject("bundled shader artifacts require a validated precompiled catalog")
     if not precompiled and roles_seen & {"precomputed_interior_sun", "precomputed_scene_lights"}:
         reject("precomputed tables require a validated precompiled catalog")

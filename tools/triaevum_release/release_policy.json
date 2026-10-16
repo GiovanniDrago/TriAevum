@@ -13,6 +13,7 @@
     "precompiled_catalog": ["recipes/precompiled-titles.json"],
     "portable_shader_corpus": ["forge/shader-corpus/portable.o3ps"],
     "portable_pipeline_recipes": ["forge/shader-corpus/pipelines-*.json"],
+    "portable_shader_qualification": ["forge/shader-corpus/qualification.json"],
     "precomputed_interior_sun": ["forge/precomputed/interior-sun.masks"],
     "precomputed_scene_lights": ["forge/precomputed/scene-lights.json"],
     "translated_title_source": ["source/titles/*-translated.zip"],
