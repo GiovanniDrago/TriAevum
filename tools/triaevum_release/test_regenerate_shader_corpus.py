@@ -53,7 +53,7 @@ class VariantRecordTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no recorded session"):
             regeneration.variant_sessions([self.root / "text"])
 
-    def _regenerate(self, pack_modules):
+    def _regenerate(self, pack_modules, **options):
         session = _session(self.root / "records" / "kokiri")
         output = self.root / "out"
         commands = []
@@ -79,7 +79,8 @@ class VariantRecordTests(unittest.TestCase):
         generator = _inputs({"generator.cpp": "1" * 64})
         with patch.object(regeneration, "_run", fake_run), \
                 patch.object(regeneration, "inputs_record", lambda *arguments: generator):
-            receipt = regeneration.regenerate(self.root / "tools", [], [], output, [self.root / "records"])
+            receipt = regeneration.regenerate(self.root / "tools", [], [], output, [self.root / "records"],
+                                              **options)
         return session, output, commands, receipt
 
     def test_replay_requires_witness_and_feeds_a_qualified_union(self):
@@ -99,6 +100,12 @@ class VariantRecordTests(unittest.TestCase):
         self.assertEqual(qualification["generator_inputs"]["files"], {"generator.cpp": "1" * 64})
         self.assertEqual(qualification["policy_inputs"][0]["files"], {"runtime.cpp": "0" * 64})
         self.assertNotIn(str(self.root), json.dumps(qualification))
+
+    def test_compile_cache_and_jobs_reach_the_compiler(self):
+        both = [(1, 0x11, 0x12, 13), (2, 0x21, 0x22, 23)]
+        _, _, commands, _ = self._regenerate(both, compile_cache=self.root / "spirv", jobs=4)
+        self.assertEqual(_option(commands[1], "--compile-cache"), str(self.root / "spirv"))
+        self.assertEqual(_option(commands[1], "--jobs"), "4")
 
     def test_pack_that_misses_a_recipe_module_is_refused(self):
         with self.assertRaisesRegex(RuntimeError, "does not close"):

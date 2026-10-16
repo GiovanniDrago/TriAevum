@@ -105,7 +105,8 @@ def variant_sessions(directories: list[Path]) -> list[dict[str, Path]]:
 
 
 def regenerate(tools: Path, captures: list[Path], caches: list[Path], output: Path,
-               variant_records: list[Path] | None = None, root: Path = ROOT) -> dict:
+               variant_records: list[Path] | None = None, root: Path = ROOT,
+               compile_cache: Path | None = None, jobs: int | None = None) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     suffix = ".exe" if (tools / "oot3d_native_pica_aot_compiler.exe").exists() else ""
     tool = {name: str(tools / f"oot3d_native_pica_{name}{suffix}")
@@ -177,6 +178,11 @@ def regenerate(tools: Path, captures: list[Path], caches: list[Path], output: Pa
         command += ["--inventory", str(inventory)]
     command += ["--pack", str(pack), "--manifest", str(output / "expanded-compile.json"),
                 "--merged-inventory", str(output / "expanded-union-inventory.json")]
+    # A module is reused only for the same source, stage, compiler and options.
+    if compile_cache is not None:
+        command += ["--compile-cache", str(compile_cache)]
+    if jobs is not None:
+        command += ["--jobs", str(jobs)]
     seconds, _ = _run(command, output / "compile.log")
     compiled = json.loads((output / "expanded-compile.json").read_text(encoding="utf-8"))
     # Gate 2, closure: what the replay produced and every recipe needs is in the pack.
@@ -198,6 +204,7 @@ def regenerate(tools: Path, captures: list[Path], caches: list[Path], output: Pa
         "format": "triaevum_shader_corpus_regeneration_v2",
         "steps": steps,
         "compile_seconds": round(seconds, 1),
+        "compilation": compiled.get("compilation"),
         "modules": compiled["shader_count"],
         "descriptor_schema_version": compiled["descriptor_schema_version"],
         "pack": pack.name,
@@ -223,11 +230,15 @@ def main() -> int:
                         help="Directory of recorded game sessions (raw-draws.jsonl, variant-requests.jsonl, "
                              "session-pipelines.json, runtime-inputs.json), searched recursively (repeatable)")
     parser.add_argument("--output", type=Path, required=True, help="New private output directory")
+    parser.add_argument("--compile-cache", type=Path,
+                        help="Publisher SPIR-V cache shared between regenerations (private)")
+    parser.add_argument("--jobs", type=int, help="Parallel compiler workers (default: up to 8)")
     args = parser.parse_args()
     if not args.capture_corpus and not args.citra_cache:
         parser.error("at least one capture corpus or Citra cache is required")
     print(json.dumps(regenerate(args.tools, args.capture_corpus, args.citra_cache, args.output,
-                                args.variant_records), indent=2))
+                                args.variant_records, compile_cache=args.compile_cache, jobs=args.jobs),
+                     indent=2))
     return 0
 
 

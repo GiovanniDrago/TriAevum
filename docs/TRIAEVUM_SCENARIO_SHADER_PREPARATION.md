@@ -289,6 +289,12 @@ preparation (see `TRIAEVUM_NRI_PIPELINE_PREPARATION.md`, Graphics Profile
 Coverage). Recorded shader text (`*-shaders.json`) is no longer an input: it
 went stale with every generator change (issue #76).
 
+The AOT compiler runs up to 8 workers (`--jobs`) and, with `--compile-cache
+DIR`, reuses a module compiled earlier for the same source, stage, compiler
+build and options; a regeneration that changes a few programs recompiles only
+those. On 2026-10-16 (1066 modules) the union took 48 s serially, 13 s with 8
+workers and under 1 s from a warm cache, with byte-identical packs.
+
 Alpha-tested shadow casters run their draw's fragment program up to the native
 alpha test. A program with a parametric (always-available) form uses the
 built-in caster family (`build_fragment_artifacts --casters`); any other is
