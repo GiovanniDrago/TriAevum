@@ -2,6 +2,7 @@
 
 #ifdef ENABLE_OOT3D_VULKAN
 
+#include "fast/oot3d/grass_gpu_selection.h"
 #include "fast/oot3d/grass_interaction_field.h"
 #include "fast/oot3d/grass_world_placement_cache.h"
 #include "fast/renderer/shaderc_compiler.h"
@@ -38,6 +39,11 @@ struct GrassGpuInstanceCompactionRequest {
     const InteractiveGrassSettings* Settings = nullptr;
     uint64_t SelectionRevision = 0;
     bool AllowIdleReuse = false;
+    // GPU selection instead of VisibleAnchorIndices: recorded right after the
+    // static anchors upload; the visible roots and their count stay on the
+    // GPU and the compaction dispatch is indirect.
+    GrassGpuSelector* Selector = nullptr;
+    GrassGpuSelectionRequest Selection{};
 };
 
 struct GrassGpuInstanceCompactionResult {
@@ -51,6 +57,9 @@ struct GrassGpuInstanceCompactionResult {
     // One vec2 per instance: the interaction bend the previous frame drew,
     // or the current one where the blade has no previous frame.
     VkBuffer PreviousBendBuffer = VK_NULL_HANDLE;
+    // GPU selection: draw arguments and counts; InstanceCount is the capacity.
+    VkBuffer SelectionControl = VK_NULL_HANDLE;
+    bool GpuSelection = false;
 };
 
 class GrassGpuInstanceCompactor final {

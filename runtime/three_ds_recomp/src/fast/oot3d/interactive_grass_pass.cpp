@@ -37,6 +37,7 @@
 #include <BS_thread_pool.hpp>
 
 #include <algorithm>
+#include <iterator>
 #include <atomic>
 #include <array>
 #include <bit>
@@ -67,6 +68,10 @@ struct GrassDrawBatch {
     uint32_t PlacementIndex = 0;
     bool Grouped = false;
     uint32_t GroupDrawCapacity = 0;
+    // GPU selection: instance count and first instance come from this
+    // VkDrawIndexedIndirectCommand in the selection control buffer.
+    bool Indirect = false;
+    VkDeviceSize IndirectOffset = 0;
 };
 
 struct GrassPreparedPlacement {
@@ -107,6 +112,26 @@ bool GrassCandidateCacheEnabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("TRIAEVUM_GRASS_CANDIDATE_CACHE");
         return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+// GPU fine selection (default when the device supports the compactor and the
+// selector); TRIAEVUM_GRASS_GPU_SELECTION=0 keeps the CPU selection.
+bool GrassGpuSelectionEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("TRIAEVUM_GRASS_GPU_SELECTION");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+// Diagnostic: TRIAEVUM_GRASS_GPU_SELECTION_VERIFY=1 also runs the CPU
+// selection and compares it with the GPU's when the frame slot comes back.
+bool GrassGpuSelectionVerifyEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("TRIAEVUM_GRASS_GPU_SELECTION_VERIFY");
+        return value != nullptr && value[0] == '1';
     }();
     return enabled;
 }
@@ -204,6 +229,26 @@ size_t GrassLodBinIndex(
     const auto planes = std::clamp<uint8_t>(planeCount, 1U, 2U);
     return (static_cast<size_t>(segments) - 1U) * 2U +
            (static_cast<size_t>(planes) - 1U);
+}
+
+// The bins the policy can produce (far, middle and near segments with one or
+// two planes, distant tufts), in bin order, with their index ranges.
+std::vector<GrassGpuSelectionSlot> BuildGrassGpuSelectionSlots(const GrassLodPolicy& policy,
+                                                               const GrassIndexedTopology& topology) {
+    std::vector<uint32_t> bins;
+    const uint8_t middle = std::max<uint8_t>(policy.FarBladeSegments, (policy.NearBladeSegments + 1U) / 2U);
+    for (const uint8_t segments : {policy.FarBladeSegments, middle, policy.NearBladeSegments})
+        for (const uint8_t planes : {uint8_t(1U), uint8_t(2U)})
+            bins.push_back(static_cast<uint32_t>(GrassLodBinIndex(segments, planes)));
+    if (policy.FarTuftsEnabled) bins.push_back(static_cast<uint32_t>(kGrassLodBinCount - 1U));
+    std::sort(bins.begin(), bins.end());
+    bins.erase(std::unique(bins.begin(), bins.end()), bins.end());
+    std::vector<GrassGpuSelectionSlot> slots;
+    for (const auto bin : bins) {
+        const auto& range = bin == kGrassLodBinCount - 1U ? topology.Tuft : topology.Blades[bin / 2U][bin % 2U];
+        slots.push_back({bin, range.Count, range.First});
+    }
+    return slots;
 }
 
 GrassEnvironmentRecord BuildGrassEnvironmentRecord(
@@ -582,6 +627,13 @@ struct InteractiveGrassPass::Impl {
     GrassStaticPlacementCache PlacementBuilder;
     GrassGpuInstanceCompactor InstanceCompactor;
     bool GpuCompactorAvailable = false;
+    GrassGpuSelector GpuSelector;
+    bool GpuSelectorAvailable = false;
+    VkBuffer PreparedSelectionControl = VK_NULL_HANDLE;
+    // GPU selection verification: the CPU selection of each frame slot.
+    std::array<std::vector<uint32_t>, 2> VerifyCpuSelection;
+    std::array<bool, 2> VerifyCpuValid{};
+    uint64_t GpuVerifyFrames = 0U, GpuVerifyMismatchFrames = 0U, GpuVerifyMismatchRoots = 0U;
     GrassInteractionField InteractionField;
     uint64_t LastClockSequence = 0;
     uint64_t LastFallbackFrame = 0;
@@ -1198,6 +1250,10 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
         mImpl->GpuCompactorAvailable =
             mImpl->InstanceCompactor.Initialize(
                 physicalDevice, device, shaders, pipelineCache);
+        mImpl->GpuSelectorAvailable = mImpl->GpuCompactorAvailable &&
+            mImpl->GpuSelector.Initialize(physicalDevice, device, shaders, pipelineCache);
+        if (mImpl->GpuCompactorAvailable && !mImpl->GpuSelectorAvailable)
+            std::fprintf(stderr, "[grass] GPU selection unavailable: %s\n", mImpl->GpuSelector.UnavailableReason().c_str());
         mImpl->IndexedTopology = BuildGrassIndexedTopology();
         const auto indexBytes = mImpl->IndexedTopology.Indices.size() * sizeof(uint32_t);
         mImpl->EnsureBuffer(mImpl->IndexBuffer, indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, 4096);
@@ -1640,7 +1696,13 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             std::erase_if(mImpl->MotionHistory, [frameId](const auto& item) { return item.second.FrameId + 1U < frameId; });
         }
         GrassStageTimer selectionTimer(GrassStage::Selection);
-        const bool reuseSelection = mImpl->SelectionCache.Matches(selectionKey);
+        const bool gpuSelection = GrassGpuSelectionEnabled() && mImpl->GpuCompactorAvailable &&
+            mImpl->GpuSelectorAvailable && preparedPlacements.size() <= kGrassGpuSelectionMaximumSources &&
+            !(settings.MidrangeClustersEnabled && std::any_of(preparedPlacements.begin(), preparedPlacements.end(),
+                [](const auto& prepared) { return !prepared.World->Midrange.Groups.empty(); }));
+        const bool cpuSelection = !gpuSelection || GrassGpuSelectionVerifyEnabled();
+        if (!cpuSelection) mImpl->SelectionCache.Reset();
+        const bool reuseSelection = cpuSelection && mImpl->SelectionCache.Matches(selectionKey);
         if (GrassStageProfileEnabled()) {
             if (reuseSelection)
                 ++GrassStageCurrent().SelectionHit;
@@ -1649,7 +1711,11 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         }
         if (!reuseSelection)
             ++mImpl->SelectionRevision;
-        if (reuseSelection) {
+        if (!cpuSelection) {
+            batches.clear();
+            mImpl->DrawGroups.clear();
+            mImpl->VisibleAnchorIndices.clear();
+        } else if (reuseSelection) {
             mImpl->LastBlades = static_cast<uint32_t>(mImpl->VisibleAnchorIndices.size());
             telemetry.VisibleBlades = mImpl->LastBlades;
             for (auto& batch : batches) {
@@ -2013,6 +2079,79 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 GrassStageCurrent().SelectVisible += telemetry.VisibleBlades;
             }
         }
+        std::vector<GrassGpuSelectionSource> gpuSources;
+        std::vector<GrassGpuSelectionSlot> gpuSlots;
+        GrassGpuSelectionReadback gpuReadback;
+        if (gpuSelection) {
+            gpuReadback = mImpl->GpuSelector.ReadBack(frameSlot);
+            const size_t verifySlot = frameSlot % mImpl->VerifyCpuSelection.size();
+            if (GrassGpuSelectionVerifyEnabled()) {
+                if (gpuReadback.Available && mImpl->VerifyCpuValid[verifySlot]) {
+                    const auto& cpu = mImpl->VerifyCpuSelection[verifySlot];
+                    const auto& gpu = gpuReadback.Visible;
+                    // Roots only one side selected (a root at a threshold moves
+                    // every later position, so positions alone overstate it).
+                    auto cpuSorted = cpu, gpuSorted = gpu;
+                    std::sort(cpuSorted.begin(), cpuSorted.end());
+                    std::sort(gpuSorted.begin(), gpuSorted.end());
+                    std::vector<uint32_t> onlyCpu, onlyGpu;
+                    std::set_difference(cpuSorted.begin(), cpuSorted.end(), gpuSorted.begin(), gpuSorted.end(),
+                                        std::back_inserter(onlyCpu));
+                    std::set_difference(gpuSorted.begin(), gpuSorted.end(), cpuSorted.begin(), cpuSorted.end(),
+                                        std::back_inserter(onlyGpu));
+                    size_t differing = onlyCpu.size() + onlyGpu.size();
+                    size_t first = 0U;
+                    while (differing == 0U && first < cpu.size() && first < gpu.size() && cpu[first] == gpu[first]) ++first;
+                    // Same roots in a different order is a layout error, not a threshold.
+                    if (differing == 0U && (first != cpu.size() || cpu.size() != gpu.size())) differing = 1U;
+                    if (!onlyCpu.empty() || !onlyGpu.empty())
+                        std::fprintf(stderr, "[grass-gpu-selection-roots] frame=%llu only_cpu=%zu only_gpu=%zu "
+                            "cpu_first=%u gpu_first=%u\n", static_cast<unsigned long long>(frameId), onlyCpu.size(),
+                            onlyGpu.size(), onlyCpu.empty() ? 0U : onlyCpu.front(), onlyGpu.empty() ? 0U : onlyGpu.front());
+                    ++mImpl->GpuVerifyFrames;
+                    if (differing != 0U) {
+                        ++mImpl->GpuVerifyMismatchFrames;
+                        mImpl->GpuVerifyMismatchRoots += differing;
+                    }
+                    if (differing != 0U || frameId % 60 == 0)
+                        std::fprintf(stderr, "[grass-gpu-selection] frame=%llu cpu=%zu gpu=%zu differing=%zu first=%zu "
+                            "frames=%llu mismatch_frames=%llu mismatch_roots=%llu\n",
+                            static_cast<unsigned long long>(frameId), cpu.size(), gpu.size(), differing,
+                            differing != 0U ? first : size_t(0),
+                            static_cast<unsigned long long>(mImpl->GpuVerifyFrames),
+                            static_cast<unsigned long long>(mImpl->GpuVerifyMismatchFrames),
+                            static_cast<unsigned long long>(mImpl->GpuVerifyMismatchRoots));
+                }
+                mImpl->VerifyCpuSelection[verifySlot] = mImpl->VisibleAnchorIndices;
+                mImpl->VerifyCpuValid[verifySlot] = true;
+            }
+            gpuSlots = BuildGrassGpuSelectionSlots(lodPolicy, mImpl->IndexedTopology);
+            batches.clear();
+            mImpl->DrawGroups.clear();
+            for (uint32_t placementIndex = 0; placementIndex < preparedPlacements.size(); ++placementIndex) {
+                const auto& prepared = preparedPlacements[placementIndex];
+                gpuSources.push_back({prepared.World->Clusters, prepared.StaticBaseIndex, prepared.Push.PositionToClip,
+                                      prepared.Eye});
+                for (uint32_t k = 0; k < gpuSlots.size(); ++k) {
+                    const auto bin = gpuSlots[k].Bin;
+                    const bool tuft = bin == kGrassLodBinCount - 1U;
+                    const auto segments = static_cast<uint8_t>(tuft ? 0U : bin / 2U + 1U);
+                    const auto planes = static_cast<uint8_t>(bin % 2U + 1U);
+                    auto push = prepared.Push;
+                    push.Flags[1] = segments;
+                    push.Flags[2] = planes;
+                    push.Flags[3] = placementIndex;
+                    GrassDrawBatch batch{0U, 0U, segments, planes, push, placementIndex};
+                    batch.Indirect = true;
+                    batch.IndirectOffset = GrassGpuSelectionDrawOffset(placementIndex, k);
+                    batches.push_back(batch);
+                }
+            }
+            if (gpuReadback.Available) {
+                mImpl->LastBlades = gpuReadback.Admitted;
+                telemetry.VisibleBlades = gpuReadback.Admitted;
+            }
+        }
         selectionTimer.Stop();
         if (GrassStageProfileEnabled() && GrassSelectionHashEnabled()) {
             // Identity of the selection for A/B runs: roots, order and batches.
@@ -2026,7 +2165,10 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             GrassStageCurrent().SelectHash ^= hash;
         }
 
-        const uint32_t instanceCount = static_cast<uint32_t>(mImpl->VisibleAnchorIndices.size());
+        // With the GPU selection the count is only known on the GPU: buffers and
+        // descriptor ranges use the budget.
+        const uint32_t instanceCount = gpuSelection ? settings.MaxInstancesPerRoom
+                                                    : static_cast<uint32_t>(mImpl->VisibleAnchorIndices.size());
         if (GrassDiagnosticsEnabled() && frameId % 60 == 0) {
             GrassStageTimer diagnosticsTimer(GrassStage::Diagnostics);
             size_t contacts = 0, samples = 0, boxPairs = 0;
@@ -2059,6 +2201,17 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         if (instanceCount == 0U || batches.empty()) {
             return finish(GrassRenderStatus::Culled, false);
         }
+        GrassGpuSelectionRequest selectionRequest;
+        if (gpuSelection) {
+            selectionRequest.Sources = gpuSources;
+            selectionRequest.Slots = gpuSlots;
+            selectionRequest.Policy = lodPolicy;
+            selectionRequest.DrawDistanceSquared = drawDistanceSquared;
+            selectionRequest.BladeRadiusScale = bladeRadiusScale;
+            selectionRequest.FrustumCulling = settings.FrustumCulling;
+            selectionRequest.Budget = settings.MaxInstancesPerRoom;
+            selectionRequest.ReadBackVisible = GrassGpuSelectionVerifyEnabled();
+        }
 
         const auto uploadStart = std::chrono::steady_clock::now();
         GrassStageTimer compactionTimer(GrassStage::Compaction);
@@ -2080,6 +2233,8 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                     &settings,
                     mImpl->SelectionRevision,
                     !temporalMotion,
+                    gpuSelection ? &mImpl->GpuSelector : nullptr,
+                    selectionRequest,
                 },
                 compaction);
             if (!gpuCompacted || compaction.InstanceBuffer == VK_NULL_HANDLE ||
@@ -2088,6 +2243,15 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 gpuCompacted = false;
             }
         }
+        if (gpuSelection && !gpuCompacted) {
+            // No CPU selection to fall back on in this frame; the next frame
+            // selects on the CPU.
+            std::fprintf(stderr, "[grass] GPU selection disabled: %s\n",
+                mImpl->InstanceCompactor.UnavailableReason().c_str());
+            mImpl->GpuSelectorAvailable = false;
+            return finish(GrassRenderStatus::Culled, false);
+        }
+        mImpl->PreparedSelectionControl = gpuSelection ? compaction.SelectionControl : VK_NULL_HANDLE;
 
         uint64_t dynamicUploadedBytes = 0U;
         uint64_t staticUploadedBytes = 0U;
@@ -2168,7 +2332,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             shadowBuffers[0] = grid.Visibility;
             shadowBuffers[1] = grid.References;
             shadowBuffers[3] = grid.Patches;
-            const VkDeviceSize visibleBytes = mImpl->VisibleAnchorIndices.size() * sizeof(uint32_t);
+            const VkDeviceSize visibleBytes = VkDeviceSize(instanceCount) * sizeof(uint32_t);
             staticUploadedBytes += grid.StaticUploadedBytes;
             dynamicUploadedBytes += grid.DynamicUploadedBytes;
             if (gpuCompacted) {
@@ -2248,8 +2412,13 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         previousBendsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; previousBendsWrite.descriptorCount = 1;
         previousBendsWrite.pBufferInfo = &previousBends;
         vkUpdateDescriptorSets(mImpl->Device, 1, &previousBendsWrite, 0, nullptr);
+        if (gpuSelection && gpuReadback.Available)
+            for (uint32_t s = 0; s < preparedPlacements.size(); ++s)
+                if (environmentRecords[s].MotionState[2] > 0.5F)
+                    for (uint32_t k = 0; k < gpuSlots.size(); ++k) mImpl->LastMotionBlades += gpuReadback.Counts[s][k];
         for (const auto& batch : batches) {
             if (environmentRecords[batch.Push.Flags[3]].MotionState[2] <= 0.5F) continue;
+            if (batch.Indirect) continue;
             if (!batch.Grouped) mImpl->LastMotionBlades += batch.InstanceCount;
             else for (uint32_t group = 0; group < batch.InstanceCount; ++group)
                 mImpl->LastMotionBlades += mImpl->DrawGroups[batch.FirstInstance + group][1];
@@ -2326,7 +2495,11 @@ bool InteractiveGrassPass::DrawPrepared(
         const auto& range = batch.Grouped ? mImpl->IndexedTopology.Groups[batch.BladeSegments-1][batch.PlaneCount-1] : batch.BladeSegments == 0U ? mImpl->IndexedTopology.Tuft :
             mImpl->IndexedTopology.Blades[batch.BladeSegments - 1U][batch.PlaneCount - 1U];
         const uint32_t count = batch.Grouped ? range.Count / kGrassMidrangeClusterCapacity * batch.GroupDrawCapacity : range.Count;
-        vkCmdDrawIndexed(commandBuffer, count, batch.InstanceCount, range.First, 0, batch.FirstInstance);
+        if (batch.Indirect)
+            vkCmdDrawIndexedIndirect(commandBuffer, mImpl->PreparedSelectionControl, batch.IndirectOffset, 1U,
+                                     sizeof(VkDrawIndexedIndirectCommand));
+        else
+            vkCmdDrawIndexed(commandBuffer, count, batch.InstanceCount, range.First, 0, batch.FirstInstance);
     }
     mImpl->Prepared = false;
     return true;
@@ -2356,6 +2529,8 @@ void InteractiveGrassPass::Shutdown() {
     if (!mImpl) return;
     mImpl->WorkerPool.reset();
     mImpl->WorkerOutputs.clear();
+    mImpl->GpuSelector.Shutdown();
+    mImpl->GpuSelectorAvailable = false;
     mImpl->InstanceCompactor.Shutdown();
     mImpl->SurfaceLighting.Shutdown();
     mImpl->ShadowSurfaceLighting.Shutdown();
