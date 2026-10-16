@@ -165,10 +165,19 @@ def build_texture_pack(*, archive: Path | None = None,
                        mod_romfs: Path | None = None,
                        original_romfs: Path | None = None,
                        original_romfs_image: Path | None = None,
-                       singlescreen_archive: Path | None = None) -> bytes:
-    if (archive is None) == (mod_romfs is None):
-        raise ValueError("provide exactly one replacement source")
-    if (original_romfs is None) == (original_romfs_image is None):
+                       singlescreen_archive: Path | None = None,
+                       singlescreen_ui_atlas: bytes | None = None) -> bytes:
+    """singlescreen_ui_atlas is the custom_ui01.ctxb TriAevum ships (Forge);
+    the archives remain for developer imports and the Switch staging."""
+    if archive is not None and mod_romfs is not None:
+        raise ValueError("provide at most one TopScreen 2.1.1 replacement source")
+    if singlescreen_archive is not None and singlescreen_ui_atlas is not None:
+        raise ValueError("provide at most one SingleScreen 3.0 source")
+    if (archive is None and mod_romfs is None and singlescreen_archive is None and
+            singlescreen_ui_atlas is None):
+        raise ValueError("provide a TopScreen 2.1.1 or SingleScreen 3.0 source")
+    if ((archive is not None or mod_romfs is not None) and
+            (original_romfs is None) == (original_romfs_image is None)):
         raise ValueError("provide exactly one original RomFS source")
     entries_by_original: dict[int, tuple[int, bytes, str]] = {}
     profile_textures: list[tuple[str, int, int, int, bytes]] = []
@@ -209,6 +218,9 @@ def build_texture_pack(*, archive: Path | None = None,
         profile_textures.append(
             (semantic, width, height, native_format, payload))
 
+    # SingleScreen 3.0 alone carries no 2.1.1 textures.
+    legacy = archive is not None or mod_romfs is not None
+    archive_context = None
     if archive is not None:
         archive_context = zipfile.ZipFile(archive)
         names = set(archive_context.namelist())
@@ -231,14 +243,13 @@ def build_texture_pack(*, archive: Path | None = None,
             f"{archive_romfs_prefix}menu/{language}/{texture}")
         read_profile_texture = lambda texture: archive_context.read(
             f"{archive_romfs_prefix}menu/{texture}")
-    else:
-        archive_context = None
+    elif mod_romfs is not None:
         read_replacement = lambda language, texture: (
             mod_romfs / "menu" / language / texture).read_bytes()
         read_profile_texture = lambda texture: (
             mod_romfs / "menu" / texture).read_bytes()
     try:
-        for language in LANGUAGES:
+        for language in LANGUAGES if legacy else ():
             for texture in TEXTURES:
                 replacement = read_replacement(language, texture)
                 if original_romfs is not None:
@@ -250,7 +261,7 @@ def build_texture_pack(*, archive: Path | None = None,
                         original_romfs_image,
                         f"menu/{language}/{texture}")
                 add_entry(original, replacement, f"{language}/{texture}")
-        for texture, semantic in PROFILE_TEXTURES:
+        for texture, semantic in PROFILE_TEXTURES if legacy else ():
             parse_profile_texture(read_profile_texture(texture), semantic)
     finally:
         if archive_context is not None:
@@ -264,6 +275,8 @@ def build_texture_pack(*, archive: Path | None = None,
                 raise ValueError("archive has no supported EUR SingleScreen 3.0 RomFS")
             for texture, semantic in SINGLESCREEN_PROFILE_TEXTURES:
                 parse_profile_texture(singlescreen.read(f"{prefix}menu/{texture}"), semantic)
+    if singlescreen_ui_atlas is not None:
+        parse_profile_texture(singlescreen_ui_atlas, SINGLESCREEN_PROFILE_TEXTURES[0][1])
 
     entries = [
         (original_hash, replacement_hash, payload)
@@ -288,7 +301,7 @@ def build_texture_pack(*, archive: Path | None = None,
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group()
     source.add_argument("--archive", type=Path)
     source.add_argument("--mod-romfs", type=Path)
     originals = parser.add_mutually_exclusive_group(required=True)

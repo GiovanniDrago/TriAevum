@@ -1,9 +1,11 @@
 #include "oot3d_top_screen_dpad_presentation.h"
+#include "oot3d_top_screen_items_hint.h"
 #include "oot3d_ui/ui_pause_atlas_regions.h"
 
 #include <cstdlib>
 #include <cmath>
 #include <iostream>
+#include <string>
 
 void RunTopScreenDpadPresentationTests() {
   using namespace Oot3dNativeGame;
@@ -21,12 +23,13 @@ void RunTopScreenDpadPresentationTests() {
   state.ItemZr = 0x0E;
   state.ItemZl = 6;
   state.Boomerang = state.Slingshot = true;
-  oot3d::ui::UiTextureIdentity items, page;
+  oot3d::ui::UiTextureIdentity items, page, menu;
   items.semantic_name = "native-items";
   page.semantic_name = "native-pause";
+  menu.semantic_name = std::string(kTopScreen211MenuAtlasSemantic);
   const auto render = [&] {
     std::vector<oot3d::ui::UiPrimitive> result;
-    AppendTopScreenDpadPresentation(config, state, {}, 1, items, page, result);
+    AppendTopScreenDpadPresentation(config, state, {}, 1, items, page, menu, result);
     return result;
   };
   require(render().size() == 4,
@@ -56,6 +59,11 @@ void RunTopScreenDpadPresentationTests() {
                 "mapped icon must fit its native atlas");
       }
       if (badges) {
+        // Installed from the SingleScreen 3.0 archive alone, without the
+        // 2.1.1 atlas, the icons stay and the cycle marks are left out.
+        std::vector<oot3d::ui::UiPrimitive> withoutMenu;
+        AppendTopScreenDpadPresentation(config, state, {}, 1, items, page, {}, withoutMenu);
+        require(withoutMenu.size() == 4, "cycle marks need the 2.1.1 custom-menu atlas");
         for (std::size_t direction = 0; direction < 4; ++direction) {
           const auto &icon = result[direction];
           const auto &badge = result[4 + direction];
@@ -79,7 +87,7 @@ void RunTopScreenDpadPresentationTests() {
                      TopScreenDpadAction::IronBoots};
   state.ItemOpacity = {0.5F, 0.25F, 0.0F};
   std::vector<oot3d::ui::UiPrimitive> dimmed;
-  AppendTopScreenDpadPresentation(config, state, {}, 0.6F, items, page, dimmed);
+  AppendTopScreenDpadPresentation(config, state, {}, 0.6F, items, page, menu, dimmed);
   require(dimmed.size() == 4 &&
               std::abs(dimmed[0].color.alpha - 0.3F) < 0.0001F &&
               std::abs(dimmed[1].color.alpha - 0.15F) < 0.0001F &&
@@ -113,7 +121,7 @@ void RunTopScreenDpadPresentationTests() {
   TopScreenAuxiliaryTouchInputs view;
   const auto viewQuad = [&]() {
     std::vector<oot3d::ui::UiPrimitive> result;
-    AppendTopScreenDpadPresentation(config, state, view, 1, items, page, result);
+    AppendTopScreenDpadPresentation(config, state, view, 1, items, page, menu, result);
     oot3d::ui::UiPrimitive found{};
     for (const auto &primitive : result)
       if (primitive.source_quad >= 38) found = primitive;

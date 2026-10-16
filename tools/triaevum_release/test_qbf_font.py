@@ -7,7 +7,9 @@ from unittest.mock import patch
 import zipfile
 
 from tools.oot3d.decomp_support.scripts.qbf_font import parse_qbf, pair_font_coverage
-from tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack import FONT_SOURCES, prepare_font_pack
+from tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack import (
+    FONT_SOURCES, SINGLESCREEN_FONT_SOURCES, prepare_font_pack,
+)
 
 
 def font_bytes(size=16, records=((32, 0, b"\x06\x04\0\0"), (42, 1, b"\x05\x06\0\0"))):
@@ -95,6 +97,24 @@ class QbfFontTests(unittest.TestCase):
                 self.assertEqual(len(prepared.namelist()), 3)
                 self.assertEqual(json.loads(prepared.read("manifest.json")), manifest)
             self.assertNotIn(b"DO NOT IMPORT", first)
+
+    def test_singlescreen_layout_supplies_the_usa_font(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive, output = root / "singlescreen.zip", root / "font.zip"
+            with zipfile.ZipFile(archive, "w") as source:
+                for _, member in SINGLESCREEN_FONT_SOURCES:
+                    source.writestr(member, font_bytes(64))
+                source.writestr("SingleScreen_3.0/EUR/Emulator/load/mods/0004000000033600/romfs/"
+                                "message/sys8.qbf", b"not an A4 coverage font")
+            def read_font(_, path):
+                if path == SINGLESCREEN_FONT_SOURCES[1][0]:
+                    return font_bytes()
+                raise FileNotFoundError(path)
+            with patch("tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack.read_level3_romfs_file",
+                       side_effect=read_font):
+                manifest = prepare_font_pack(archive=archive, romfs=root / "romfs", output=output)
+            self.assertEqual([font["romfs_path"] for font in manifest["fonts"]], ["message/us/ltn16.qbf"])
 
     def test_invalid_import_does_not_replace_existing_output(self):
         with tempfile.TemporaryDirectory() as directory:
