@@ -88,6 +88,16 @@ bool GrassDiagnosticsEnabled() {
     return enabled;
 }
 inline constexpr size_t kGrassClustersForParallelSelection = 8192U;
+inline constexpr size_t kGrassClusterPrefetchDistance = 16U;
+inline constexpr size_t kGrassAnchorPrefetchDistance = 8U;
+
+inline void GrassPrefetch(const void* address) noexcept {
+#if defined(__clang__) || defined(__GNUC__)
+    __builtin_prefetch(address, 0, 3);
+#else
+    _mm_prefetch(static_cast<const char*>(address), _MM_HINT_T0);
+#endif
+}
 // A few sources times the views that render grass in one frame.
 inline constexpr size_t kGrassCandidateCacheEntries = 16U;
 
@@ -1741,7 +1751,19 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                                                    FusedStats& stats) {
                         uint32_t workerRemaining = remaining;
                         GrassClusterWork work;
+                        const auto& clusters = prepared.World->Clusters;
+                        const auto& cullingAnchors = prepared.World->CullingAnchors;
                         for (size_t i = first; i < last && workerRemaining != 0U; ++i) {
+                            // The candidates are sparse in index order: fetch the
+                            // cluster records ahead, then the first culling anchors
+                            // of clusters whose records are already on their way.
+                            if (i + kGrassClusterPrefetchDistance < last)
+                                GrassPrefetch(&clusters[candidates[i + kGrassClusterPrefetchDistance].ClusterIndex]);
+                            if (i + kGrassAnchorPrefetchDistance < last) {
+                                const auto& ahead = clusters[candidates[i + kGrassAnchorPrefetchDistance].ClusterIndex];
+                                if (ahead.FirstAnchor < cullingAnchors.size())
+                                    GrassPrefetch(&cullingAnchors[ahead.FirstAnchor]);
+                            }
                             const auto result = refiner.Refine(candidates[i], work);
                             if (result == GrassClusterRefiner::Result::Rejected) continue;
                             if (result == GrassClusterRefiner::Result::Violation ||
