@@ -275,6 +275,7 @@ private:
   void Finish();
   // The setup's former lambdas.
   void ApplyTopScreenConfigSnapshot();
+  void ApplyTopScreenRainConfig();
   void SetTopScreenSessionMinimapVisible(bool visible);
   void ApplySelectedUiProfile();
   void UpdateScenePresentation();
@@ -425,6 +426,9 @@ private:
   std::optional<Oot3dNativeGame::TopScreenSystemPageRuntime> systemPageStorage;
   std::optional<Oot3dNativeGame::TopScreenItemDescriptionRuntime> itemDescriptionStorage;
   std::optional<Oot3dNativeGame::TopScreenWideItemsRuntime> wideItemsStorage;
+  std::optional<Oot3dNativeGame::TopScreenGameplayRuntime> gameplayStorage;
+  std::optional<Oot3dNativeGame::ObjectBankExtension> objectBankStorage;
+  std::optional<Oot3dNativeGame::TopScreenRainAdapter> rainStorage;
   std::optional<oot3d::ui::Fast3dUiRenderBackend> uiRenderBackendStorage;
   std::optional<oot3d::ui::N64UiFast3dRenderer> n64UiRendererStorage;
   std::array<std::vector<oot3d::ui::UiPrimitive>, oot3d::ui::kUiSubsystemCount> lastTopScreenPrimitivesBySubsystem;

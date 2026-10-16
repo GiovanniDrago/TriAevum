@@ -23,6 +23,10 @@ inline constexpr std::uint8_t kTopScreenCameraZoomMinimum = 75U;
 inline constexpr std::uint8_t kTopScreenCameraZoomMaximum = 170U;
 inline constexpr std::uint8_t kTopScreenCameraFovMinimum = 70U;
 inline constexpr std::uint8_t kTopScreenCameraFovMaximum = 140U;
+// SingleScreen 3.0 Rain Density: 25..300 percent in 25 percent steps.
+inline constexpr std::uint16_t kTopScreenRainDensityMinimum = 25U;
+inline constexpr std::uint16_t kTopScreenRainDensityMaximum = 300U;
+inline constexpr std::uint16_t kTopScreenRainDensityStep = 25U;
 
 enum class TopScreenHudLayout {
   Normal,
@@ -114,6 +118,16 @@ struct TopScreenUiConfig {
   std::uint8_t CStickAimSpeedLevel = 3U;
   bool CStickAimInvertX = false;
   bool CStickAimInvertY = false;
+  // SingleScreen 3.0 gameplay options, off by default.
+  bool QuickPutAway = false;
+  bool LandingRollFix = false;
+  bool RollDash = false;
+  bool AimingReticle = false;
+  bool Rain3d = false;
+  std::uint16_t Rain3dDensityPercent = 100U;
+  // SingleScreen 3.0 Items shortcut column: the four action rows in display
+  // order (config+0x34, a permutation of 0..3; identity is the 3.0 default).
+  std::array<std::uint8_t, 4> ItemsShortcutOrder{0U, 1U, 2U, 3U};
 
   bool operator==(const TopScreenUiConfig &) const = default;
 };

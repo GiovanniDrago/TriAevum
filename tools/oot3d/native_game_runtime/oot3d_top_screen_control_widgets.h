@@ -23,6 +23,34 @@ inline void CopyTopScreenControlSettings(const TopScreenUiConfig& source, TopScr
     target.CStickAimSpeedLevel = source.CStickAimSpeedLevel;
     target.CStickAimInvertX = source.CStickAimInvertX;
     target.CStickAimInvertY = source.CStickAimInvertY;
+    target.QuickPutAway = source.QuickPutAway;
+    target.LandingRollFix = source.LandingRollFix;
+    target.RollDash = source.RollDash;
+    target.AimingReticle = source.AimingReticle;
+    target.Rain3d = source.Rain3d;
+    target.Rain3dDensityPercent = source.Rain3dDensityPercent;
+}
+
+// SingleScreen 3.0 gameplay options; each is off by default.
+inline bool DrawTopScreenGameplay(TopScreenUiConfig& config) {
+    bool changed = ImGui::Checkbox("Quick put away", &config.QuickPutAway);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Items can be put away immediately instead of after one second.");
+    changed |= ImGui::Checkbox("Landing roll", &config.LandingRollFix);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Roll when holding forward after a fall, as on the N64.");
+    changed |= ImGui::Checkbox("Roll dash", &config.RollDash);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hold the action button after a roll to dash.");
+    changed |= ImGui::Checkbox("Aiming reticle", &config.AimingReticle);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show a reticle while aiming the bow or slingshot.");
+    changed |= ImGui::Checkbox("3D rain", &config.Rain3d);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rain falls in the world around the camera and stops at roofs.");
+    int density = config.Rain3dDensityPercent;
+    if (ControlWidgets::SliderInt("Rain density", &density, kTopScreenRainDensityMinimum,
+                                  kTopScreenRainDensityMaximum, "%d%%")) {
+        config.Rain3dDensityPercent =
+            static_cast<uint16_t>(density / kTopScreenRainDensityStep * kTopScreenRainDensityStep);
+        changed = true;
+    }
+    return changed;
 }
 
 inline bool DrawTopScreenCameraBehavior(TopScreenUiConfig& config) {

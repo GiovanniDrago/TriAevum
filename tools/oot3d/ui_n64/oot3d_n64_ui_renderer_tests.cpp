@@ -1,8 +1,10 @@
 #include "oot3d_n64_ui_renderer.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -193,6 +195,192 @@ void TestProvisionalTextures() {
             "a new provider revision did not resolve the UI texture again");
 }
 
+class VertexRecordingBackend final : public Oot3d::Renderer::UiRenderBackend {
+  public:
+    bool PrepareUiOverlay(const Oot3d::Renderer::UiOverlayViewport&,
+                          std::string*) override {
+        return true;
+    }
+    bool IsUiFramebufferYInverted() const noexcept override { return false; }
+    uint32_t CreateUiTexture(std::span<const uint8_t>, uint16_t, uint16_t,
+                             std::string*) override {
+        return 1U;
+    }
+    void DeleteUiTexture(uint32_t) noexcept override {}
+    bool DrawUiTriangles(std::span<const Oot3d::Renderer::UiOverlayVertex> vertices,
+                         uint32_t, std::string*) override {
+        draws.emplace_back(vertices.begin(), vertices.end());
+        return true;
+    }
+    std::vector<std::vector<Oot3d::Renderer::UiOverlayVertex>> draws;
+};
+
+bool Near(float left, float right) {
+    return left - right < 1.0e-5F && right - left < 1.0e-5F;
+}
+
+// Free corners draw as the strip (0,1,2) (2,1,3) with their own UVs, even
+// with an empty destination; rectangles keep their corner order.
+void TestFreeCorners() {
+    using namespace oot3d::ui;
+    UiPrimitive quad;
+    quad.corners = std::array<UiVertex, 4>{{{100.0F, 60.0F, 0.25F, 0.5F},
+                                            {200.0F, 60.0F, 0.75F, 0.5F},
+                                            {120.0F, 180.0F, 0.25F, 1.0F},
+                                            {180.0F, 180.0F, 0.75F, 1.0F}}};
+    UiPrimitive hidden = quad;
+    hidden.visible = false;
+    UiPrimitive rectangle;
+    rectangle.destination = {0.0F, 0.0F, 200.0F, 120.0F};
+    rectangle.uv = {0.0F, 0.0F, 1.0F, 1.0F};
+    const std::vector<UiPrimitive> primitives = {quad, hidden, rectangle};
+    VertexRecordingBackend backend;
+    N64UiFast3dRenderer renderer(backend);
+    std::string error;
+    Require(renderer.Render(primitives, 400, 240,
+                            N64UiCanvasMode::NativeTopScreen400x240,
+                            renderer.PrepareTextures(primitives), &error),
+            "free-corner UI rendering failed");
+    Require(backend.draws.size() == 2U,
+            "a hidden free-corner quad was drawn or a visible one was rejected");
+    const auto& strip = backend.draws[0];
+    Require(strip.size() == 6U, "a free-corner quad is not two triangles");
+    const std::array<std::size_t, 6> order{0U, 1U, 2U, 2U, 1U, 3U};
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        const auto& corner = (*quad.corners)[order[i]];
+        Require(Near(strip[i].X, corner.x / 200.0F - 1.0F) &&
+                    Near(strip[i].Y, 1.0F - corner.y / 120.0F) &&
+                    Near(strip[i].U, corner.u) && Near(strip[i].V, corner.v),
+                "a free corner lost its position or UV");
+    }
+    const auto& box = backend.draws[1];
+    Require(box.size() == 6U && Near(box[0].X, -1.0F) && Near(box[0].Y, 1.0F) &&
+                Near(box[1].X, -1.0F) && Near(box[1].Y, 0.0F) &&
+                Near(box[2].X, 0.0F) && Near(box[2].Y, 0.0F) &&
+                Near(box[5].U, 1.0F) && Near(box[5].V, 0.0F),
+            "the rectangle path changed");
+}
+
+class PixelRecordingBackend final : public Oot3d::Renderer::UiRenderBackend {
+  public:
+    bool PrepareUiOverlay(const Oot3d::Renderer::UiOverlayViewport&,
+                          std::string*) override {
+        return true;
+    }
+    bool IsUiFramebufferYInverted() const noexcept override { return false; }
+    uint32_t CreateUiTexture(std::span<const uint8_t> rgba8, uint16_t, uint16_t,
+                             std::string*) override {
+        uploads.emplace_back(rgba8.begin(), rgba8.end());
+        return static_cast<uint32_t>(uploads.size());
+    }
+    void DeleteUiTexture(uint32_t) noexcept override {}
+    bool DrawUiTriangles(std::span<const Oot3d::Renderer::UiOverlayVertex>,
+                         uint32_t textureId, std::string*) override {
+        drawn.push_back(textureId);
+        return true;
+    }
+    std::vector<std::vector<uint8_t>> uploads;
+    std::vector<uint32_t> drawn;
+};
+
+class DarkProvider final : public oot3d::ui::UiTextureProvider {
+  public:
+    bool Resolve(const oot3d::ui::UiTextureIdentity&, oot3d::ui::UiTexturePixels& pixels,
+                 std::string*) const override {
+        pixels.width = 2;
+        pixels.height = 1;
+        pixels.rgba8 = {0x10, 0x20, 0x30, 0x00, 0x00, 0x00, 0x00, 0xFF};
+        return true;
+    }
+};
+
+// An alpha-only primitive draws a white-RGB copy that keeps the texel alpha;
+// the ordinary primitive of the same texture keeps the payload unchanged.
+void TestAlphaOnlyTexture() {
+    using namespace oot3d::ui;
+    UiPrimitive normal = TexturedPrimitive("oot3d/native/ocarina");
+    UiPrimitive mask = normal;
+    mask.texture_alpha_only = true;
+    Require(BuildUiPrimitiveTextureKey(mask) != BuildUiPrimitiveTextureKey(normal),
+            "an alpha-only texture shares the ordinary texture's key");
+    const std::vector<UiPrimitive> primitives = {normal, mask};
+    DarkProvider provider;
+    PixelRecordingBackend backend;
+    N64UiFast3dRenderer renderer(backend, &provider);
+    std::string error;
+    Require(renderer.Render(primitives, 400, 240,
+                            N64UiCanvasMode::NativeTopScreen400x240,
+                            renderer.PrepareTextures(primitives), &error),
+            "alpha-only UI rendering failed");
+    const std::vector<uint8_t> original{0x10, 0x20, 0x30, 0x00, 0x00, 0x00, 0x00, 0xFF};
+    const std::vector<uint8_t> white{0xFF, 0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0xFF};
+    Require(backend.uploads.size() == 2U && backend.uploads[0] == original &&
+                backend.uploads[1] == white,
+            "the alpha-only texture did not keep only the texel alpha");
+    Require(backend.drawn == std::vector<uint32_t>({1U, 2U}),
+            "the alpha-only primitive did not draw its own texture");
+}
+
+class SaturatingBackend final : public Oot3d::Renderer::UiRenderBackend {
+  public:
+    bool PrepareUiOverlay(const Oot3d::Renderer::UiOverlayViewport&,
+                          std::string*) override {
+        return true;
+    }
+    bool IsUiFramebufferYInverted() const noexcept override { return false; }
+    uint32_t CreateUiTexture(std::span<const uint8_t>, uint16_t, uint16_t,
+                             std::string*) override {
+        return 1U;
+    }
+    void DeleteUiTexture(uint32_t) noexcept override {}
+    bool DrawUiTriangles(std::span<const Oot3d::Renderer::UiOverlayVertex> vertices,
+                         uint32_t, std::string*) override {
+        draws.push_back({false, vertices.front().Alpha});
+        return true;
+    }
+    bool DrawUiTrianglesSaturated(std::span<const Oot3d::Renderer::UiOverlayVertex> vertices,
+                                  uint32_t, std::string*) override {
+        draws.push_back({true, vertices.front().Alpha});
+        return true;
+    }
+    std::vector<std::pair<bool, float>> draws;
+};
+
+// A texture alpha scale multiplies the vertex alpha and asks the backend for
+// its saturating combiner; scale 1 keeps the ordinary path, and a backend
+// without that combiner draws the alpha clamped to 1.
+void TestTextureAlphaScale() {
+    using namespace oot3d::ui;
+    UiPrimitive ordinary = TexturedPrimitive("oot3d/native/ocarina");
+    ordinary.color.alpha = 0.5F;
+    UiPrimitive scaled = ordinary;
+    scaled.texture_alpha_scale = 2.0F;
+    UiPrimitive solid;
+    solid.destination = {0.0F, 0.0F, 8.0F, 8.0F};
+    solid.texture_alpha_scale = 2.0F;
+    const std::vector<UiPrimitive> primitives = {ordinary, scaled, solid};
+    CountingProvider provider;
+    SaturatingBackend backend;
+    N64UiFast3dRenderer renderer(backend, &provider);
+    std::string error;
+    Require(renderer.Render(primitives, 400, 240, N64UiCanvasMode::NativeTopScreen400x240,
+                            renderer.PrepareTextures(primitives), &error),
+            "alpha-scaled UI rendering failed");
+    Require(backend.draws.size() == 3U && !backend.draws[0].first && Near(backend.draws[0].second, 0.5F) &&
+                backend.draws[1].first && Near(backend.draws[1].second, 1.0F) &&
+                !backend.draws[2].first && Near(backend.draws[2].second, 1.0F),
+            "texture alpha scale did not reach the saturating combiner");
+    UiPrimitive opaque = scaled;
+    opaque.color.alpha = 1.0F;
+    VertexRecordingBackend fallback;
+    N64UiFast3dRenderer plain(fallback, &provider);
+    const std::vector<UiPrimitive> single = {opaque};
+    Require(plain.Render(single, 400, 240, N64UiCanvasMode::NativeTopScreen400x240,
+                         plain.PrepareTextures(single), &error) &&
+                fallback.draws.size() == 1U && Near(fallback.draws[0][0].Alpha, 1.0F),
+            "a backend without a saturating combiner did not clamp the scaled alpha");
+}
+
 } // namespace
 
 int main() {
@@ -241,6 +429,9 @@ int main() {
             "archive texture cache identity unexpectedly changed");
     TestPreparedTextures();
     TestProvisionalTextures();
+    TestFreeCorners();
+    TestAlphaOnlyTexture();
+    TestTextureAlphaScale();
     std::cout << "oot3d_n64_ui_renderer_tests: ok\n";
     return 0;
 }

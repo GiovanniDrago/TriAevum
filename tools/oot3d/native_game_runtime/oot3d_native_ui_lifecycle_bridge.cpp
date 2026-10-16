@@ -1,4 +1,5 @@
 #include "oot3d_native_ui_lifecycle_bridge.h"
+#include "oot3d_top_screen_wide_items_runtime.h"
 #include "oot3d_top_screen_dpad_presentation.h"
 
 #include "oot3d_native_a32_input.h"
@@ -126,6 +127,9 @@ void Oot3dNativeUiLifecycleBridge::ResetAfterStateLoad(
   mTopScreenPausePageRedrawEdgeGeometry.reset();
   mTopScreenSystemPagePresentation = false;
   mTopScreenItemsHint = {};
+  mTopScreenDpadPickerCursor = {};
+  mTopScreenItemsShortcutCursor = {};
+  if (mTopScreenItemsShortcuts != nullptr) mTopScreenItemsShortcuts->CancelDpadPicker();
   mTopScreenTouchCopies = {};
   mTopScreenViewAlpha = 1.0F;
   mTopScreenOcarina.Reset();
@@ -329,6 +333,9 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
   if (subsystem != oot3d::ui::UiSubsystem::GameplayHud) {
     return output;
   }
+  mTopScreenDpadPickerCursor = {};
+  mTopScreenItemsShortcutCursor = {};
+  if (mTopScreenItemsShortcuts != nullptr) mTopScreenItemsShortcuts->ObserveDpadPickerPage();
   TopScreenHudCompositorGate compositorGate;
   std::string compositorGateError;
   const bool compositorGateKnown = ReadTopScreenHudCompositorGate(
@@ -459,22 +466,49 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
       (void)AppendTopScreenPauseEdgePresentation(*pauseEdge, *itemPage, output);
     }
   }
-  // 2.1.1 0x005D3A84: the tab hints follow the redrawn page.
+  // 3.0 0x005E0E6C -> 0x005D4A0C: tab hints follow Items/Gear/Map redraw.
   if (!systemActive && mTopScreenPausePageRedrawEdgeGeometry.has_value()) {
     TopScreenTabHintInputs tabHints;
-    const auto cursor =
-        NativePauseSharedTextureIdentity(oot3d::ui::UiPauseSharedTextureSlot::Cursor);
-    const auto equipment = NativePauseSharedTextureIdentity(
-        oot3d::ui::UiPauseSharedTextureSlot::EquipmentPage);
-    if (cursor.has_value() && ReadTopScreenTabHintInputs(mMemory, &tabHints))
-      (void)AppendTopScreenTabHintPresentation(
-          tabHints, *cursor, equipment.value_or(oot3d::ui::UiTextureIdentity{}), output);
+    oot3d::ui::UiTextureIdentity uiAtlas;
+    uiAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
+    if (ReadTopScreenTabHintInputs(mMemory, &tabHints))
+      (void)AppendTopScreenTabHintPresentation(tabHints, uiAtlas, output);
+  }
+  std::uint32_t itemsPage = 0U;
+  if (systemActive && mTopScreenItemsShortcuts != nullptr) mTopScreenItemsShortcuts->CancelDpadPicker();
+  if (!systemActive && mTopScreenItemsShortcuts != nullptr &&
+      mMemory.Read32(0x0050672CU, &itemsPage) && itemsPage != 0U) {
+    const auto itemIcons = NativePauseSharedTextureIdentity(oot3d::ui::UiPauseSharedTextureSlot::ItemIcons);
+    oot3d::ui::UiTextureIdentity uiAtlas;
+    uiAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
+    (void)AppendTopScreenItemsShortcutPresentation(
+        mTopScreenItemsShortcuts->Shortcuts(), mTopScreenItemsShortcuts->ShortcutDraw(),
+        itemIcons.value_or(oot3d::ui::UiTextureIdentity{}), uiAtlas, output);
+    if (itemsPage == 2U && mTopScreenItemsShortcuts->ShortcutDraw().Active &&
+        !mTopScreenItemsShortcuts->DpadPicker().Active()) {
+      TopScreenItemsHintCursorBounds bounds;
+      // Read the selected stream after native cursor positioning, including
+      // host refreshes without another guest update. Rendering owns no timer.
+      if (ReadTopScreenItemsHintCursorBounds(mMemory, &bounds)) {
+        mTopScreenItemsShortcutCursor = BuildTopScreenItemsShortcutHoldCursor(
+            mTopScreenItemsShortcuts->Shortcuts(), bounds);
+        (void)AppendTopScreenItemsShortcutHoldPresentation(
+            mTopScreenItemsShortcutCursor, uiAtlas, output);
+      }
+    }
+    if (itemsPage == 2U)
+      (void)AppendTopScreenDpadPickerPresentation(
+          mTopScreenItemsShortcuts->DpadPicker(), mTopScreenItemsShortcuts->DpadPickerDraw(),
+          itemIcons.value_or(oot3d::ui::UiTextureIdentity{}), uiAtlas, output,
+          &mTopScreenDpadPickerCursor);
   }
   oot3d::ui::UiTextureIdentity itemsHintAtlas;
   itemsHintAtlas.semantic_name = kTopScreen211MenuAtlasSemantic;
   (void)AppendTopScreenItemsHintPresentation(
       BuildTopScreenItemsHintGeometry(mTopScreenItemsHint,
-                                      mTopScreenConfig.RenderItemsHint),
+                                      mTopScreenConfig.RenderItemsHint &&
+                                           (mTopScreenItemsShortcuts == nullptr ||
+                                            !mTopScreenItemsShortcuts->DpadPicker().Active())),
       itemsHintAtlas, output);
   bool fileSelectStripActive = false;
   std::string fileSelectStripError;
@@ -696,6 +730,7 @@ void Oot3dNativeUiLifecycleBridge::CaptureState() {
     mVersionChoiceRevealed = false;
   }
   mRouter.ObserveState(capture.state);
+  if (mTopScreenItemsShortcuts != nullptr) mTopScreenItemsShortcuts->ObserveDpadPickerPage();
   TopScreenItemsHintCursorBounds itemsHintCursor;
   std::string itemsHintError;
   if (!ReadTopScreenItemsHintCursorBounds(mMemory, &itemsHintCursor,

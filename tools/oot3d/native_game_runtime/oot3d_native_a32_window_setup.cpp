@@ -190,6 +190,13 @@ void NativeA32WindowSession::Setup() {
       Oot3dNativeGame::NativeActorVisibilityHookPcs();
   blockEntryHooks.insert(blockEntryHooks.end(), actorVisibilityHooks.begin(),
                          actorVisibilityHooks.end());
+  // Object bank extension (any UI profile): the block policy raises an
+  // observable exit at these entries while the extension is active.
+  const auto objectBankHooks = Oot3dNativeGame::ObjectBankExtension::HookPcs();
+  blockEntryHooks.insert(blockEntryHooks.end(), objectBankHooks.begin(),
+                         objectBankHooks.end());
+  const auto rainHooks = Oot3dNativeGame::TopScreenRainAdapter::HookPcs();
+  blockEntryHooks.insert(blockEntryHooks.end(), rainHooks.begin(), rainHooks.end());
   widescreenProjection.ActorVisibility.Diagnostics =
       std::getenv("OOT3D_ACTOR_VISIBILITY_DIAGNOSTICS") != nullptr;
   picaCompositionHooks =
@@ -262,6 +269,9 @@ void NativeA32WindowSession::Setup() {
         Oot3dNativeGame::kTopScreenItemsPageDrawCall,
         Oot3dNativeGame::kTopScreenItemsCursorDrawCallA,
         Oot3dNativeGame::kTopScreenItemsCursorDrawCallB,
+        Oot3dNativeGame::kTopScreenItemsUpdateBoundary,
+        Oot3dNativeGame::kTopScreenItemsShortcutCursorBoundary,
+        Oot3dNativeGame::kTopScreenGearModelDrawCall,
     };
     blockEntryHooks.insert(blockEntryHooks.end(),
                            topScreenSourcePortHooks.begin(),
@@ -279,6 +289,8 @@ void NativeA32WindowSession::Setup() {
     const auto itemHooks = Oot3dNativeGame::TopScreenItemDispatchEntries();
     blockEntryHooks.insert(blockEntryHooks.end(), itemHooks.begin(), itemHooks.end());
     blockEntryHooks.push_back(Oot3dNativeGame::kTopScreenInputUpdateBoundary);
+    const auto gameplayHooks = Oot3dNativeGame::TopScreenGameplayRuntime::HookPcs();
+    blockEntryHooks.insert(blockEntryHooks.end(), gameplayHooks.begin(), gameplayHooks.end());
   }
   if (launch.ExtendedDiagnostics) {
     const std::array diagnosticHooks{
@@ -430,7 +442,10 @@ void NativeA32WindowSession::Setup() {
         Oot3dNativeGame::kTopScreenPageProjectionUploadCall,
         Oot3dNativeGame::kTopScreenItemsPageDrawCall,
         Oot3dNativeGame::kTopScreenItemsCursorDrawCallA,
-        Oot3dNativeGame::kTopScreenItemsCursorDrawCallB};
+        Oot3dNativeGame::kTopScreenItemsCursorDrawCallB,
+        Oot3dNativeGame::kTopScreenItemsUpdateBoundary,
+        Oot3dNativeGame::kTopScreenItemsShortcutCursorBoundary,
+        Oot3dNativeGame::kTopScreenGearModelDrawCall};
     for (const auto &contract :
          Oot3dNativeGame::TopScreenVerifiedControlFlowContracts()) {
       topScreenSourcePortBlocks.push_back(contract.Entry);
@@ -448,6 +463,13 @@ void NativeA32WindowSession::Setup() {
                                     itemEntries.begin(), itemEntries.end());
     topScreenSourcePortBlocks.push_back(kTopScreenGameplayCompositionPrefix);
     topScreenSourcePortBlocks.push_back(Oot3dNativeGame::kTopScreenInputUpdateBoundary);
+    // SingleScreen 3.0 gameplay options leave compiled execution only while
+    // enabled (TopScreenGameplayRuntime::ShouldObserve).
+    const auto gameplayBlocks = Oot3dNativeGame::TopScreenGameplayRuntime::HookPcs();
+    topScreenSourcePortBlocks.insert(topScreenSourcePortBlocks.end(),
+                                    gameplayBlocks.begin(), gameplayBlocks.end());
+    wholeAotObservableExitBlocks.insert(wholeAotObservableExitBlocks.end(),
+                                        gameplayBlocks.begin(), gameplayBlocks.end());
     // These source ports are reached from inside large AOT regions. Make
     // their native entries observable so execution returns to the dispatcher
     // before applying the typed replacement. Keep this list sorted because
@@ -517,6 +539,46 @@ void NativeA32WindowSession::Setup() {
     nativeCandidateEntries.insert(nativeCandidateEntries.end(),
                                   topScreenSourcePortBlocks.begin(),
                                   topScreenSourcePortBlocks.end());
+  }
+  {
+    // Object bank extension, in every UI profile: its entries leave compiled
+    // execution (while active) and reach the native-block dispatch.
+    const auto hooks = Oot3dNativeGame::ObjectBankExtension::HookPcs();
+    wholeAotObservableExitBlocks.insert(wholeAotObservableExitBlocks.end(), hooks.begin(),
+                                        hooks.end());
+    nativeCandidateEntries.insert(nativeCandidateEntries.end(), hooks.begin(), hooks.end());
+    // SingleScreen 3.0 rain, observed the same way.
+    const auto rainHooks = Oot3dNativeGame::TopScreenRainAdapter::HookPcs();
+    wholeAotObservableExitBlocks.insert(wholeAotObservableExitBlocks.end(), rainHooks.begin(),
+                                        rainHooks.end());
+    nativeCandidateEntries.insert(nativeCandidateEntries.end(), rainHooks.begin(),
+                                  rainHooks.end());
+#if defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
+    // Hooks, resumes and native calls must start blocks of the title module.
+    std::vector<uint32_t> required(hooks.begin(), hooks.end());
+    const auto resumes = Oot3dNativeGame::ObjectBankExtension::ResumePcs();
+    const auto calls = Oot3dNativeGame::ObjectBankExtension::NativeCallPcs();
+    required.insert(required.end(), resumes.begin(), resumes.end());
+    required.insert(required.end(), calls.begin(), calls.end());
+    for (const auto pcs : {Oot3dNativeGame::TopScreenRainAdapter::HookPcs(),
+                           Oot3dNativeGame::TopScreenRainAdapter::ResumePcs(),
+                           Oot3dNativeGame::TopScreenRainAdapter::NativeCallPcs()})
+      required.insert(required.end(), pcs.begin(), pcs.end());
+    const auto entries = Oot3dNativeGame::Oot3dWholeAotEntryPoints();
+    std::vector<uint32_t> sortedEntries(entries.begin(), entries.end());
+    std::sort(sortedEntries.begin(), sortedEntries.end());
+    std::string missing;
+    for (const uint32_t pc : required) {
+      if (!std::binary_search(sortedEntries.begin(), sortedEntries.end(), pc)) {
+        char text[16];
+        std::snprintf(text, sizeof(text), " 0x%08X", pc);
+        missing += text;
+      }
+    }
+    if (!missing.empty())
+      throw std::runtime_error("the title module does not start a block at the object bank sites" +
+                               missing + "; rebuild it with whole_aot_observed_sites.json");
+#endif
   }
   std::sort(wholeAotObservableExitBlocks.begin(),
             wholeAotObservableExitBlocks.end());
@@ -611,10 +673,10 @@ void NativeA32WindowSession::Setup() {
                                    &nativeCandidateDispatch);
   }
 #else
-  if (nativeCandidateDispatch.TopScreenUiProfile) {
-    process.SetNativeBlockCallback(&ExecuteProductTopScreenHook,
-                                   &nativeCandidateDispatch);
-  }
+  // The object bank extension runs in every UI profile; TopScreen blocks
+  // are still gated inside the hook.
+  process.SetNativeBlockCallback(&ExecuteProductTopScreenHook,
+                                 &nativeCandidateDispatch);
 #endif
   if (!Oot3dNativeGame::MountNativeA32ProcessImage(
           process, *manifest, std::filesystem::path{}, &error)) {
@@ -883,6 +945,40 @@ void NativeA32WindowSession::Setup() {
   widescreenProjection.ItemDescription = &itemDescription;
   auto &wideItems = wideItemsStorage.emplace(process.Memory());
   nativeCandidateDispatch.WideItems = &wideItems;
+  // SingleScreen 3.0 shortcut column: reordering previews the host config;
+  // saving stays an explicit F1 action.
+  wideItems.SetShortcutOrder(activeTopScreenConfig.ItemsShortcutOrder);
+  wideItems.SetShortcutOrderChanged(
+      [this](const Oot3dNativeGame::TopScreenItemsShortcutOrder &order) {
+        auto config = topScreenConfigRuntime->Snapshot().Config;
+        config.ItemsShortcutOrder = order;
+        topScreenConfigRuntime->Preview(config);
+      });
+  // Hold A on a shortcut row: 3.0's in-page D-pad picker previews the
+  // age's mapping; saving stays an explicit F1 action.
+  wideItems.SetDpadAssignments(activeTopScreenConfig.ChildDpad,
+                               activeTopScreenConfig.AdultDpad);
+  wideItems.SetDpadAssignmentChanged(
+      [this](bool child, const Oot3dNativeGame::TopScreenDpadAssignments &mapping) {
+        auto config = topScreenConfigRuntime->Snapshot().Config;
+        (child ? config.ChildDpad : config.AdultDpad) = mapping;
+        topScreenConfigRuntime->Preview(config);
+      });
+  uiLifecycleBridge.SetTopScreenItemsShortcutSource(&wideItems);
+  auto &gameplay = gameplayStorage.emplace(process.Memory(),
+                                           launch.TopScreenLinkAnimationsPath);
+  gameplay.SetConfig(activeTopScreenConfig);
+  nativeCandidateDispatch.Gameplay = &gameplay;
+  widescreenProjection.TopScreenGameplay = &gameplay;
+  // Extended draw distance enables it (UpdateScenePresentation); its region
+  // maps on first use.
+  auto &objectBank = objectBankStorage.emplace(process.Memory());
+  nativeCandidateDispatch.ObjectBank = &objectBank;
+  widescreenProjection.ObjectBank = &objectBank;
+  auto &rain = rainStorage.emplace(process.Memory());
+  nativeCandidateDispatch.Rain = &rain;
+  widescreenProjection.Rain = &rain;
+  ApplyTopScreenRainConfig();
   auto &uiRenderBackend = uiRenderBackendStorage.emplace(api);
   auto &n64UiRenderer = n64UiRendererStorage.emplace(uiRenderBackend,
                                                &ocarinaText);
@@ -1157,6 +1253,16 @@ void NativeA32WindowSession::Setup() {
 #endif
 }
 
+// Rain is a TopScreen gameplay option: other UI profiles keep native rain.
+void NativeA32WindowSession::ApplyTopScreenRainConfig() {
+  if (!rainStorage) return;
+  rainStorage->SetConfig(nativeCandidateDispatch.TopScreenUiProfile
+                             ? Oot3dNativeGame::TopScreenRainConfig{
+                                   activeTopScreenConfig.Rain3d,
+                                   activeTopScreenConfig.Rain3dDensityPercent}
+                             : Oot3dNativeGame::TopScreenRainConfig{});
+}
+
 void NativeA32WindowSession::ApplyTopScreenConfigSnapshot() {
   auto &uiLifecycleBridge = *uiLifecycleBridgeStorage;
   const auto snapshot = topScreenConfigRuntime->Snapshot();
@@ -1167,6 +1273,13 @@ void NativeA32WindowSession::ApplyTopScreenConfigSnapshot() {
   appliedTopScreenConfigRevision = snapshot.Revision;
   uiLifecycleBridge.SetTopScreenConfig(activeTopScreenConfig);
   widescreenProjection.TopScreenConfig = activeTopScreenConfig;
+  if (gameplayStorage) gameplayStorage->SetConfig(activeTopScreenConfig);
+  ApplyTopScreenRainConfig();
+  if (wideItemsStorage) {
+    wideItemsStorage->SetShortcutOrder(activeTopScreenConfig.ItemsShortcutOrder);
+    wideItemsStorage->SetDpadAssignments(activeTopScreenConfig.ChildDpad,
+                                         activeTopScreenConfig.AdultDpad);
+  }
   Oot3dNativeGame::ApplyTopScreenFreeCameraConfig(
       nativeCandidateDispatch.TopScreenCamera.Camera,
       activeTopScreenConfig);
@@ -1222,6 +1335,9 @@ void NativeA32WindowSession::UpdateScenePresentation() {
   visibility.ExtendedDrawDistance = graphics.ExtendedDrawDistance;
   visibility.Presentation = widescreenProjection.Projection.Presentation;
   visibility.FovMultiplier = graphics.FovMultiplier;
+  // Off stops new extra loads; resident slots keep their hooks until they
+  // retire (ObjectBankExtension::ShouldObserve).
+  if (objectBankStorage) objectBankStorage->SetEnabled(graphics.ExtendedDrawDistance);
 }
 
 Fast::Renderer3ds::PicaFrameCompositionPolicy NativeA32WindowSession::ResolveFrameCompositionPolicy(const Fast::Oot3d::PresentationPacingPolicy& pacing) {

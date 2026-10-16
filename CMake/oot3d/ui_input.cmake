@@ -49,6 +49,12 @@ target_link_libraries(oot3d_top_screen_mod_profile_tests PRIVATE
     oot3d_ui_topscreen)
 oot3d_target_defaults(oot3d_top_screen_mod_profile_tests FOLDER Tests)
 
+add_executable(oot3d_top_screen_link_ext_tests EXCLUDE_FROM_ALL
+    tools/oot3d/native_game_runtime/oot3d_top_screen_link_ext.cpp
+    tools/oot3d/native_game_runtime/oot3d_top_screen_link_ext_tests.cpp
+)
+oot3d_target_defaults(oot3d_top_screen_link_ext_tests FOLDER Tests)
+
 add_executable(oot3d_top_screen_items_hint_tests EXCLUDE_FROM_ALL
     tools/oot3d/ui_topscreen/oot3d_top_screen_items_hint_tests.cpp
 )

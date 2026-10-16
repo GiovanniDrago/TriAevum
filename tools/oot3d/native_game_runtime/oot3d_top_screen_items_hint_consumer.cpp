@@ -99,8 +99,8 @@ bool ReadTopScreenItemsHintCursorBounds(const NativeA32Memory &memory,
     return true;
   }
 
-  // FUN_005CA270 scans exactly four quads of four xyz vertices and ignores
-  // the native hidden-vertex sentinel lane at x >= 390.
+  // 3.0 0x005CB298 scans four quads, skipping a whole quad when its first
+  // vertex has the native hidden sentinel X >= 390.
   std::array<float, 4U * 4U * 3U> vertices{};
   if (!memory.ReadBytes(positions,
                         std::span<std::uint8_t>(
@@ -118,7 +118,8 @@ bool ReadTopScreenItemsHintCursorBounds(const NativeA32Memory &memory,
   for (std::size_t vertex = 0U; vertex < 16U; ++vertex) {
     const float x = vertices[vertex * 3U];
     const float y = vertices[vertex * 3U + 1U];
-    if (!std::isfinite(x) || !std::isfinite(y) || x >= kMaximumHintVertexX) {
+    if (!std::isfinite(x) || !std::isfinite(y) ||
+        !(vertices[(vertex / 4U) * 12U] < kMaximumHintVertexX)) {
       continue;
     }
     if (!found) {
@@ -136,7 +137,10 @@ bool ReadTopScreenItemsHintCursorBounds(const NativeA32Memory &memory,
     return true;
   }
 
-  *bounds = {true, (minimumX + maximumX) * 0.5F, minimumY, maximumY,
+  // 0x005E3264 draws this group at projection 0.58 below X 256, else 0.6.
+  // With -0.005 X scale these place native X at X+84 or X+80 on top.
+  const float screenOffsetX = vertices[0] < 256.0F ? 84.0F : 80.0F;
+  *bounds = {true, (minimumX + maximumX) * 0.5F + screenOffsetX, minimumY, maximumY,
              maximumX - minimumX};
   return true;
 }

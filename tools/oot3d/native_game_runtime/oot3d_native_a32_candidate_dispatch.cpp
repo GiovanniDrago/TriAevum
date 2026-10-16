@@ -26,6 +26,8 @@ bool ExecuteTopScreenUiSourcePortBlock(
     return dispatch.OcarinaText != nullptr &&
            dispatch.OcarinaText->Execute(state, result, blocksConsumed);
   }
+  if (dispatch.Gameplay != nullptr && dispatch.Gameplay->Execute(pc, state, result, blocksConsumed))
+    return true;
   if (pc == Oot3dNativeGame::kTopScreenSystemPageBoundary && dispatch.SystemPage != nullptr)
     return dispatch.SystemPage->Execute(state, result, blocksConsumed);
   // R6: the description is redrawn over the page this draw just placed on
@@ -61,6 +63,12 @@ bool ExecuteTopScreenUiSourcePortBlock(
     }
     if (pc == Oot3dNativeGame::kTopScreenItemsPageDrawCall)
       return dispatch.WideItems->ExecuteItemsDraw(state, result, blocksConsumed);
+    if (pc == Oot3dNativeGame::kTopScreenItemsUpdateBoundary)
+      return dispatch.WideItems->ExecuteItemsUpdate(state, result, blocksConsumed);
+    if (pc == Oot3dNativeGame::kTopScreenItemsShortcutCursorBoundary)
+      return dispatch.WideItems->ExecuteShortcutCursor(state, result, blocksConsumed);
+    if (pc == Oot3dNativeGame::kTopScreenGearModelDrawCall)
+      return dispatch.WideItems->ExecuteGearModelDraw(state, result, blocksConsumed);
     if (pc == Oot3dNativeGame::kTopScreenItemsCursorDrawCallA ||
         pc == Oot3dNativeGame::kTopScreenItemsCursorDrawCallB)
       return dispatch.WideItems->ExecuteCursorDraw(pc, state, result, blocksConsumed);
@@ -827,21 +835,48 @@ bool ExecuteProductTopScreenHook(uint32_t pc, oot3d::recomp::a32::GuestState &st
   auto &dispatch = *static_cast<NativeCandidateDispatchState *>(user);
   const bool observedExit = dispatch.ObservedExitPc == pc;
   dispatch.ObservedExitPc.reset();
-  // Product opt-in UI mod, not the experimental source/gameplay dispatcher:
-  // the whole TopScreen source port, and nothing else.
-  if (!dispatch.TopScreenUiProfile || dispatch.Memory == nullptr ||
-      !std::binary_search(dispatch.ProductTopScreenBlocks.begin(),
-                          dispatch.ProductTopScreenBlocks.end(), pc)) return false;
   // As the developer interpreter does, the entry's block policy runs before
   // its hook. An entry resumed after its own observable exit already ran it
   // in compiled code; one reached by a hook's branch (0x0041E984 resumes at
   // the input boundary 0x0041E988) or after a block budget has not. Outside
   // compiled execution the policy cannot raise another exit.
-  if (!observedExit && dispatch.BlockEntry != nullptr &&
-      (dispatch.BlockEntryPcs.empty() ||
-       std::find(dispatch.BlockEntryPcs.begin(), dispatch.BlockEntryPcs.end(), pc) !=
-           dispatch.BlockEntryPcs.end()))
-    dispatch.BlockEntry(pc, state, memory, dispatch.BlockEntryUser);
+  const auto runBlockEntry = [&] {
+    if (!observedExit && dispatch.BlockEntry != nullptr &&
+        (dispatch.BlockEntryPcs.empty() ||
+         std::find(dispatch.BlockEntryPcs.begin(), dispatch.BlockEntryPcs.end(), pc) !=
+             dispatch.BlockEntryPcs.end()))
+      dispatch.BlockEntry(pc, state, memory, dispatch.BlockEntryUser);
+  };
+  // Extended draw distance object slots, in every UI profile. Their entries
+  // never coincide with TopScreen blocks. If native ownership wins, resume
+  // the entry once instead of trapping it again.
+  const auto objectBankHooks = Oot3dNativeGame::ObjectBankExtension::HookPcs();
+  if (dispatch.ObjectBank != nullptr && dispatch.Memory != nullptr &&
+      std::binary_search(objectBankHooks.begin(), objectBankHooks.end(), pc)) {
+    runBlockEntry();
+    if (dispatch.ObjectBank->Execute(pc, state, result, blocksConsumed)) return true;
+    return Oot3dNativeGame::ExecuteOot3dCompiledFunction(
+        pc, state, *dispatch.Memory, result, blockBudget, blocksConsumed,
+        dispatch.BlockEntry, dispatch.BlockEntryUser,
+        dispatch.BlockEntryPcs.data(), dispatch.BlockEntryPcs.size(), true, true, true);
+  }
+  // SingleScreen 3.0 rain around the native weather draw.
+  const auto rainHooks = Oot3dNativeGame::TopScreenRainAdapter::HookPcs();
+  if (dispatch.Rain != nullptr && dispatch.Memory != nullptr &&
+      std::find(rainHooks.begin(), rainHooks.end(), pc) != rainHooks.end()) {
+    runBlockEntry();
+    if (dispatch.Rain->Execute(pc, state, result, blocksConsumed)) return true;
+    return Oot3dNativeGame::ExecuteOot3dCompiledFunction(
+        pc, state, *dispatch.Memory, result, blockBudget, blocksConsumed,
+        dispatch.BlockEntry, dispatch.BlockEntryUser,
+        dispatch.BlockEntryPcs.data(), dispatch.BlockEntryPcs.size(), true, true, true);
+  }
+  // Product opt-in UI mod, not the experimental source/gameplay dispatcher:
+  // the whole TopScreen source port, and nothing else.
+  if (!dispatch.TopScreenUiProfile || dispatch.Memory == nullptr ||
+      !std::binary_search(dispatch.ProductTopScreenBlocks.begin(),
+                          dispatch.ProductTopScreenBlocks.end(), pc)) return false;
+  runBlockEntry();
   if (pc == kPauseRendererVisibilityNativeDraw) {
     auto &phase = dispatch.TopScreenGameOverDrawPhase;
     auto &saved = dispatch.TopScreenGameOverDrawRegisters;
@@ -940,6 +975,12 @@ bool ExecuteNativeCandidate(uint32_t pc, oot3d::recomp::a32::GuestState &state,
   }
   const auto sampleStart = sample ? std::chrono::steady_clock::now()
                                   : std::chrono::steady_clock::time_point{};
+  // Extended draw distance object slots, in every UI profile.
+  if (dispatch.ObjectBank != nullptr &&
+      dispatch.ObjectBank->Execute(pc, state, result, blocksConsumed))
+    return true;
+  if (dispatch.Rain != nullptr && dispatch.Rain->Execute(pc, state, result, blocksConsumed))
+    return true;
   const bool topScreenUi =
       dispatch.TopScreenUiProfile && dispatch.Memory != nullptr &&
       ExecuteTopScreenUiSourcePortBlock(pc, state, dispatch, result,
