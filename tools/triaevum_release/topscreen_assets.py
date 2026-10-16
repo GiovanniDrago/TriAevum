@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import zipfile
 from pathlib import Path
 from typing import Callable
 
-from tools.oot3d.decomp_support.scripts.build_topscreen_texture_override_pack import build_texture_pack
+from tools.oot3d.decomp_support.scripts.build_topscreen_texture_override_pack import (
+    SINGLESCREEN_ROMFS_PREFIXES, build_texture_pack,
+)
 from tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack import prepare_font_pack
 
 try:
@@ -20,9 +23,11 @@ except ImportError:
     from release_platform import host_platform
 
 
-IMPORT_VERSION = 1
+# 2: SingleScreen 3.0 UI atlas, native localized labels (2.1.1 ones retired).
+IMPORT_VERSION = 2
 FONT_IMPORT_VERSION = 2
 ARCHIVE_NAME = "topscreen211.zip"
+LINK_ANIMATIONS = "zelda_link_ext.zar"
 
 
 def acquire_archive(root: Path, data_root: Path, contract: dict,
@@ -47,17 +52,60 @@ def acquire_archive(root: Path, data_root: Path, contract: dict,
             f"or place the official {ARCHIVE_NAME} beside {host_platform().forge}.") from exc
 
 
+def find_singlescreen_archive(root: Path, data_root: Path, contract: dict) -> Path | None:
+    """The user's SingleScreen 3.0 archive, verified; it is never downloaded."""
+    name = contract["name"]
+    for candidate in (root / name, root / "mods" / name, data_root / "downloads" / name):
+        if candidate.is_file():
+            if (candidate.stat().st_size != contract["bytes"] or
+                    sha256_file(candidate) != contract["sha256"]):
+                raise ValueError(f"SingleScreen 3.0 archive failed verification: {candidate}")
+            return candidate
+    return None
+
+
+def extract_link_animations(archive: Path) -> bytes:
+    """Link's Roll Dash animations, data only."""
+    with zipfile.ZipFile(archive) as source:
+        names = set(source.namelist())
+        for prefix in SINGLESCREEN_ROMFS_PREFIXES:
+            member = f"{prefix}actor/{LINK_ANIMATIONS}"
+            if member in names:
+                data = source.read(member)
+                if data[:4] != b"ZAR\x01":
+                    raise ValueError("SingleScreen 3.0 Link animations are not a ZAR archive")
+                return data
+    raise ValueError("SingleScreen 3.0 archive has no EUR Link animations")
+
+
+def topscreen_link_animations(pack: Path | None) -> Path | None:
+    """The imported zelda_link_ext.zar beside a prepared texture pack."""
+    if pack is None:
+        return None
+    candidate = pack.parent / LINK_ANIMATIONS
+    return candidate if candidate.is_file() else None
+
+
 def prepare_topscreen_assets(*, root: Path, data_root: Path, recipe: dict,
                             romfs: Path,
                             report: Callable[[str, str], None] = lambda *_: None) -> Path | None:
-    contract = recipe.get("optional_inputs", {}).get("topscreen_2_1_1_archive")
+    optional = recipe.get("optional_inputs", {})
+    contract = optional.get("topscreen_2_1_1_archive")
     if contract is None:
         return None  # Other title/revision recipes do not inherit OOT3D UI assets.
+    singlescreen_contract = optional.get("singlescreen_3_0_archive")
+    singlescreen = (find_singlescreen_archive(root, data_root, singlescreen_contract)
+                    if singlescreen_contract is not None else None)
+    if singlescreen_contract is not None and singlescreen is None:
+        report("topscreen", f"SingleScreen 3.0 extras skipped: place {singlescreen_contract['name']} "
+                            f"beside {host_platform().forge} to install them.")
     identity = {"import_version": IMPORT_VERSION, "archive_sha256": contract["sha256"],
-                "romfs_sha256": recipe["inputs"]["romfs"]["sha256"]}
+                "romfs_sha256": recipe["inputs"]["romfs"]["sha256"],
+                "singlescreen_sha256": singlescreen_contract["sha256"] if singlescreen else None}
     key = hashlib.sha256(repr(sorted(identity.items())).encode("ascii")).hexdigest()
     directory = data_root / "mods" / "topscreen" / key
     pack = directory / "atlas_overrides.o3tu"
+    animations = directory / LINK_ANIMATIONS
     font_pack = directory / "font_coverage.zip"
     font_receipt_path = directory / "fonts_import.json"
     receipt_path = directory / "import.json"
@@ -65,7 +113,10 @@ def prepare_topscreen_assets(*, root: Path, data_root: Path, recipe: dict,
     if pack.is_file() and receipt_path.is_file():
         receipt = load_json_object(receipt_path)
         textures_valid = (receipt.get("source") == identity and
-                          receipt.get("pack_sha256") == sha256_file(pack))
+                          receipt.get("pack_sha256") == sha256_file(pack) and
+                          (singlescreen is None or
+                           (animations.is_file() and
+                            receipt.get("link_animations_sha256") == sha256_file(animations))))
     font_identity = {**identity, "font_import_version": FONT_IMPORT_VERSION}
     fonts_valid = False
     if font_pack.is_file() and font_receipt_path.is_file():
@@ -79,11 +130,17 @@ def prepare_topscreen_assets(*, root: Path, data_root: Path, recipe: dict,
     directory.mkdir(parents=True, exist_ok=True)
     if not textures_valid:
         report("topscreen", "Importing native TopScreen UI textures...")
-        payload = build_texture_pack(archive=archive, original_romfs_image=romfs)
+        payload = build_texture_pack(archive=archive, original_romfs_image=romfs,
+                                     singlescreen_archive=singlescreen)
         atomic_write_bytes(pack, payload)
-        atomic_write_json(receipt_path, {"source": identity, "pack_sha256": sha256_file(pack),
-                                       "attribution": "TopScreen / Single Screen Experience by M-1",
-                                       "source_url": "https://gamebanana.com/mods/695893"})
+        receipt = {"source": identity, "pack_sha256": sha256_file(pack),
+                   "attribution": "TopScreen / Single Screen Experience by M-1",
+                   "source_url": "https://gamebanana.com/mods/695893"}
+        if singlescreen is not None:
+            report("topscreen", "Importing SingleScreen 3.0 Link animations...")
+            atomic_write_bytes(animations, extract_link_animations(singlescreen))
+            receipt["link_animations_sha256"] = sha256_file(animations)
+        atomic_write_json(receipt_path, receipt)
     if not fonts_valid:
         report("topscreen", "Preparing TopScreen font coverage...")
         manifest = prepare_font_pack(archive=archive, romfs=romfs, output=font_pack)

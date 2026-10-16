@@ -14,11 +14,24 @@ LANGUAGES = (
     "03_EU_GERMAN", "04_EU_FRENCH", "05_US_FRENCH",
     "06_EU_SPANISH", "07_US_SPANISH", "08_EU_ITALIAN",
 )
-TEXTURES = ("menu_top_parts00.ctxb", "menu_cursor00.ctxb")
+# SingleScreen 3.0 restores the native localized menu_top_parts00 /
+# menu_cursor00 (I/II labels, native Items/Gear anchors): the 2.1.1
+# replacements are no longer imported. menu_cursor00 still identifies the
+# 2.1.1 archive layout.
+TEXTURES: tuple[str, ...] = ()
+LAYOUT_PROBE = "menu/01_US_ENGLISH/menu_cursor00.ctxb"
 CTXB_HEADER_SIZE = 0x48
 PROFILE_TEXTURES = (
     ("custom_menu00.ctxb", "oot3d/topscreen/2.1.1/menu_atlas"),
     ("custom_font00.ctxb", "oot3d/topscreen/2.1.1/font_atlas"),
+)
+# SingleScreen 3.0 UI atlas (Items shortcut column, D-pad and HUD parts).
+SINGLESCREEN_PROFILE_TEXTURES = (
+    ("custom_ui01.ctxb", "oot3d/topscreen/3.0/ui_atlas"),
+)
+SINGLESCREEN_ROMFS_PREFIXES = (
+    "SingleScreen_3.0/EUR/Emulator/load/mods/0004000000033600/romfs/",
+    "SingleScreen_3.0/EUR/3DS Hardware/luma/titles/0004000000033600/romfs/",
 )
 
 PICA_FORMATS = {
@@ -151,7 +164,8 @@ def read_level3_romfs_file(image: Path, relative_path: str) -> bytes:
 def build_texture_pack(*, archive: Path | None = None,
                        mod_romfs: Path | None = None,
                        original_romfs: Path | None = None,
-                       original_romfs_image: Path | None = None) -> bytes:
+                       original_romfs_image: Path | None = None,
+                       singlescreen_archive: Path | None = None) -> bytes:
     if (archive is None) == (mod_romfs is None):
         raise ValueError("provide exactly one replacement source")
     if (original_romfs is None) == (original_romfs_image is None):
@@ -208,7 +222,7 @@ def build_texture_pack(*, archive: Path | None = None,
                 "0004000000033600/romfs/",
             )
             for candidate in candidates:
-                if candidate + "menu/01_US_ENGLISH/menu_cursor00.ctxb" in names:
+                if candidate + LAYOUT_PROBE in names:
                     return candidate
             raise ValueError("archive has no supported EUR TopScreen RomFS")
 
@@ -241,6 +255,15 @@ def build_texture_pack(*, archive: Path | None = None,
     finally:
         if archive_context is not None:
             archive_context.close()
+    if singlescreen_archive is not None:
+        with zipfile.ZipFile(singlescreen_archive) as singlescreen:
+            names = set(singlescreen.namelist())
+            prefix = next((candidate for candidate in SINGLESCREEN_ROMFS_PREFIXES
+                           if candidate + "menu/custom_ui01.ctxb" in names), None)
+            if prefix is None:
+                raise ValueError("archive has no supported EUR SingleScreen 3.0 RomFS")
+            for texture, semantic in SINGLESCREEN_PROFILE_TEXTURES:
+                parse_profile_texture(singlescreen.read(f"{prefix}menu/{texture}"), semantic)
 
     entries = [
         (original_hash, replacement_hash, payload)
@@ -271,12 +294,14 @@ def main() -> int:
     originals = parser.add_mutually_exclusive_group(required=True)
     originals.add_argument("--original-romfs", type=Path)
     originals.add_argument("--original-romfs-image", type=Path)
+    parser.add_argument("--singlescreen-archive", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     output = build_texture_pack(
         archive=args.archive, mod_romfs=args.mod_romfs,
         original_romfs=args.original_romfs,
-        original_romfs_image=args.original_romfs_image)
+        original_romfs_image=args.original_romfs_image,
+        singlescreen_archive=args.singlescreen_archive)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(output)
     print(f"wrote {len(output)} bytes: {args.output}")
