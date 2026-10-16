@@ -523,7 +523,7 @@ std::size_t AppendTopScreenPauseEdgePresentation(
 
 bool ReadTopScreenTabHintInputs(NativeA32Memory &memory, TopScreenTabHintInputs *inputs) {
   if (inputs == nullptr) return false;
-  // 0x005CFE58..0x005CFEA4: Items 0x0050672C, Gear 0x00504484, Map 0x00506CE8.
+  // 3.0 0x005D4A0C: Items 0x0050672C, Gear 0x00504484, Map 0x00506CE8.
   std::uint32_t items = 0U, gear = 0U, map = 0U, held = 0U;
   if (!memory.Read32(0x0050672CU, &items) || !memory.Read32(0x00504484U, &gear) ||
       !memory.Read32(0x00506CE8U, &map) || !memory.Read32(0x005655A0U, &held))
@@ -535,42 +535,43 @@ bool ReadTopScreenTabHintInputs(NativeA32Memory &memory, TopScreenTabHintInputs 
 }
 
 std::size_t AppendTopScreenTabHintPresentation(
-    const TopScreenTabHintInputs &inputs, const oot3d::ui::UiTextureIdentity &cursor,
-    const oot3d::ui::UiTextureIdentity &equipmentPage,
+    const TopScreenTabHintInputs &inputs, const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output) {
-  if (!inputs.PageOpen || cursor.semantic_name.empty()) return 0U;
+  if (!inputs.PageOpen || uiAtlas.semantic_name.empty()) return 0U;
   constexpr float kPageOffsetX = 40.0F;
   const std::size_t startSize = output.size();
-  // 0x005CFEF0..0x005CFFF0: optional 42x42 backings from atlas index 4,
-  // crop (255,103,136,28), at (24,205) and (254,205). They precede the glyphs.
-  if (!equipmentPage.semantic_name.empty()) {
-    for (const float x : {24.0F, 254.0F}) {
-      oot3d::ui::UiPrimitive backing;
-      backing.subsystem = oot3d::ui::UiSubsystem::GameplayHud;
-      backing.role = oot3d::ui::UiPrimitiveRole::PauseBackground;
-      backing.owner_address = 0x005E4030U;
-      backing.source_quad = x < 100.0F ? 0U : 1U;
-      backing.texture = equipmentPage;
-      backing.destination = {x + kPageOffsetX, 205.0F, 42.0F, 42.0F};
-      backing.uv = {255.0F / 512.0F, 103.0F / 256.0F, 136.0F / 512.0F, 28.0F / 256.0F};
-      backing.layer = 14U;
-      output.push_back(std::move(backing));
-    }
+  // 0x005D1644 binds both models to custom_ui01. 0x005D4A0C draws the
+  // 41x42 backings first, using its (401,196,18,18) crop without dimming.
+  for (unsigned index = 0; index < 2; ++index) {
+    oot3d::ui::UiPrimitive backing;
+    backing.subsystem = oot3d::ui::UiSubsystem::GameplayHud;
+    backing.role = oot3d::ui::UiPrimitiveRole::PauseBackground;
+    backing.owner_address = 0x005D4A0CU;
+    backing.source_quad = index;
+    backing.texture = uiAtlas;
+    backing.destination = {(index == 0 ? 25.5F : 253.5F) + kPageOffsetX,
+                           206.0F, 41.0F, 42.0F};
+    backing.uv = {401.0F / 512.0F, 196.0F / 256.0F, 18.0F / 512.0F, 18.0F / 256.0F};
+    backing.layer = 14U;
+    output.push_back(std::move(backing));
   }
-  // 0x005D0150..0x005D0364: the L glyph (crop X 100) at x 26 and the R glyph
-  // (crop X 72) at x 258, 36x28 at y 208, from the 28x36 crop at y 89.
-  struct Glyph { float X, CropX; bool Held; };
-  for (const Glyph glyph : {Glyph{26.0F, 100.0F, inputs.LeftHeld},
-                            Glyph{258.0F, 72.0F, inputs.RightHeld}}) {
+  // 0x0060A568 rects 20/21 are upright 37x28 glyphs. The payload grows
+  // each by 1.05 around its centre, with +1.5/-1.5 X and +1 Y offsets.
+  constexpr float kWidth = 37.0F, kHeight = 28.0F, kScale = 1.05F;
+  constexpr float kCentreOffset = (1.0F - kScale) * 0.5F;
+  struct Glyph { float X, CropX, CropY; bool Held; };
+  unsigned glyphIndex = 2;
+  for (const Glyph glyph : {Glyph{62.0F - kWidth + 1.5F, 462.0F, 108.0F, inputs.LeftHeld},
+                            Glyph{258.0F - 1.5F, 240.0F, 117.0F, inputs.RightHeld}}) {
     oot3d::ui::UiPrimitive hint;
     hint.subsystem = oot3d::ui::UiSubsystem::GameplayHud;
     hint.role = oot3d::ui::UiPrimitiveRole::TouchControl;
-    hint.owner_address = 0x005E4058U;
-    hint.source_quad = glyph.X < 100.0F ? 0U : 1U;
-    hint.texture = cursor;
-    hint.destination = {glyph.X + kPageOffsetX, 208.0F, 36.0F, 28.0F};
-    hint.uv = {glyph.CropX / 128.0F, 89.0F / 128.0F, 28.0F / 128.0F, 36.0F / 128.0F};
-    hint.uv_quarter_turn = true;
+    hint.owner_address = 0x005D4A0CU;
+    hint.source_quad = glyphIndex++;
+    hint.texture = uiAtlas;
+    hint.destination = {glyph.X + kWidth * kCentreOffset + kPageOffsetX,
+                        209.0F + kHeight * kCentreOffset, kWidth * kScale, kHeight * kScale};
+    hint.uv = {glyph.CropX / 512.0F, glyph.CropY / 256.0F, kWidth / 512.0F, kHeight / 256.0F};
     const float rgb = glyph.Held ? 0.55F : 1.0F;
     hint.color = {rgb, rgb, rgb, 1.0F};
     hint.layer = 14U;

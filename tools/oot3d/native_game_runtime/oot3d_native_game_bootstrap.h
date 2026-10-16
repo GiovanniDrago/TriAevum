@@ -17,6 +17,8 @@ struct Oot3dNativeGameLaunch {
     Args Host;
     std::filesystem::path A32ProcessManifestPath;
     std::filesystem::path TopScreenTextureOverridePackPath;
+    // SingleScreen 3.0 zelda_link_ext.zar imported by Forge (Roll Dash).
+    std::filesystem::path TopScreenLinkAnimationsPath;
     std::filesystem::path TopScreenConfigPath;
     std::filesystem::path ControlConfigPath;
     std::filesystem::path SaveDataDirectory;

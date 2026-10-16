@@ -53,15 +53,13 @@ struct TopScreenItemsHintGeometry {
   std::array<TopScreenItemsHintQuad, 2> Quads{};
 };
 
-// Exact source equivalent of the Items hint lane in TopScreen 2.1.1 payload
-// function 0x005D2078. The texture regions, 90-update delay, 12-update fade,
-// pulse waveform, cursor-relative placement, and 320-wide clamps come from
-// the official EUR payload.
+// Retains the 2.1.1 hint atlas and timing until the 3.0 atlas is installed.
+// Cursor bounds and horizontal clamps use the 3.0 upper 400x240 canvas.
 TopScreenItemsHintGeometry
 BuildTopScreenItemsHintGeometry(const TopScreenItemsHintRuntimeState &state,
                                 bool enabled) noexcept;
 
-// Converts the 320x240 payload geometry into the promoted 400x240 UI canvas.
+// Emits the upper-screen geometry directly on the 400x240 UI canvas.
 // The renderer receives only ordinary resolved UI primitives.
 std::size_t AppendTopScreenItemsHintPresentation(
     const TopScreenItemsHintGeometry &geometry,

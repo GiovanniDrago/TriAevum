@@ -57,9 +57,13 @@ void ApplyNativeWidescreenProjectionPolicy(
     runtime.PendingTopScreenPauseChildRestore.reset();
   }
   // Its injected PauseUi_Draw returns here; close UI attribution before an
-  // observable exit skips the remaining block-entry observations.
-  if (pc == Oot3dNativeGame::kTopScreenSystemPageBoundary &&
-      runtime.PicaCompositionTracker != nullptr)
+  // observable exit skips the remaining block-entry observations. The rain
+  // adapter's exit at the weather return likewise must not leave the
+  // precipitation atmosphere scope open.
+  const bool compositionBeforeExit =
+      pc == Oot3dNativeGame::kTopScreenSystemPageBoundary ||
+      pc == Oot3dNativeGame::kTopScreenRainWeatherReturn;
+  if (compositionBeforeExit && runtime.PicaCompositionTracker != nullptr)
     runtime.PicaCompositionTracker->ObserveBlockEntry(pc, state, memory);
   // The camera update entry resolves the FOV owner of 0x00478EB8, which
   // 2.1.1 scales and clamps at every percentage, so it is observed whenever
@@ -83,8 +87,23 @@ void ApplyNativeWidescreenProjectionPolicy(
   const bool wholeAotExecutionActive =
       Oot3dNativeGame::Oot3dWholeAotExecutionActive();
 #endif
+  const auto gameplayHooks = Oot3dNativeGame::TopScreenGameplayRuntime::HookPcs();
+  const bool enabledTopScreenGameplayExit =
+      !std::binary_search(gameplayHooks.begin(), gameplayHooks.end(), pc) ||
+      (runtime.TopScreenGameplay != nullptr && runtime.TopScreenGameplay->ShouldObserve(pc));
+  // Object slots stay observed while any extra slot is resident, even after
+  // Extended draw distance is turned off.
+  const auto objectBankHooks = Oot3dNativeGame::ObjectBankExtension::HookPcs();
+  const bool enabledObjectBankExit =
+      !std::binary_search(objectBankHooks.begin(), objectBankHooks.end(), pc) ||
+      (runtime.ObjectBank != nullptr && runtime.ObjectBank->ShouldObserve(pc));
+  const auto rainHooks = Oot3dNativeGame::TopScreenRainAdapter::HookPcs();
+  const bool enabledRainExit =
+      std::find(rainHooks.begin(), rainHooks.end(), pc) == rainHooks.end() ||
+      (runtime.Rain != nullptr && runtime.Rain->ShouldObserve(pc));
   if (wholeAotExecutionActive &&
       enabledTopScreenCameraExit && enabledTopScreenItemExit &&
+      enabledTopScreenGameplayExit && enabledObjectBankExit && enabledRainExit &&
       (pc != Oot3dNativeGame::kTopScreenInputUpdateBoundary ||
        (runtime.OcarinaText != nullptr && runtime.OcarinaText->NeedsExecution()) ||
        (runtime.PauseTransaction != nullptr && runtime.PauseTransaction->NeedsExecution())) &&
@@ -106,8 +125,7 @@ void ApplyNativeWidescreenProjectionPolicy(
         pc, state, memory,
         runtime.FrameRatePolicy->GameplayClock().Context());
   }
-  if (runtime.PicaCompositionTracker != nullptr &&
-      pc != Oot3dNativeGame::kTopScreenSystemPageBoundary) {
+  if (runtime.PicaCompositionTracker != nullptr && !compositionBeforeExit) {
     runtime.PicaCompositionTracker->ObserveBlockEntry(pc, state, memory);
   }
   if (runtime.TraceA32Blocks) {

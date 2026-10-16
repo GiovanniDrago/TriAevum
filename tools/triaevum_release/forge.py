@@ -919,6 +919,7 @@ def publish_private_runtime(
     launch_profile: Path,
     data_root: Path,
     topscreen_texture_pack: Path | None = None,
+    topscreen_link_animations: Path | None = None,
     water_texture_catalog: Path | None = None,
     scene_light_catalog: Path | None = None,
     package_root: Path | None = None,
@@ -1001,6 +1002,10 @@ def publish_private_runtime(
         if not topscreen_texture_pack.is_file():
             raise ForgeError("TopScreen texture pack is missing before activation")
         profile["arguments"].extend(("--topscreen-texture-overrides", str(topscreen_texture_pack.resolve())))
+    if topscreen_link_animations is not None:
+        if not topscreen_link_animations.is_file():
+            raise ForgeError("SingleScreen 3.0 Link animations are missing before activation")
+        profile["arguments"].extend(("--topscreen-link-animations", str(topscreen_link_animations.resolve())))
     if water_texture_catalog is not None:
         if not water_texture_catalog.is_file():
             raise ForgeError("Water texture catalog is missing before activation")
@@ -1018,7 +1023,8 @@ def publish_private_runtime(
         profile["arguments"].extend(("--renderer-cache-directory", str(renderer_cache_directory.resolve())))
     path_options = {"--title-plugin", "--a32-process-manifest", "--resource-root",
                     "--config", "--topscreen-config", "--save-data", "--output",
-                    "--topscreen-texture-overrides", "--water-texture-catalog", "--scene-light-catalog",
+                    "--topscreen-texture-overrides", "--topscreen-link-animations",
+                    "--water-texture-catalog", "--scene-light-catalog",
                     "--pica-aot-shader-pack", "--renderer-cache-directory"}
     scopes = {}
     for index, argument in enumerate(profile["arguments"][:-1]):
@@ -1060,6 +1066,11 @@ def publish_private_runtime(
         prepared.state["runtime"]["topscreen_textures"] = {
             "path": context.reference(topscreen_texture_pack, prepared.directory),
             "sha256": sha256_file(topscreen_texture_pack),
+        }
+    if topscreen_link_animations is not None:
+        prepared.state["runtime"]["topscreen_link_animations"] = {
+            "path": context.reference(topscreen_link_animations, prepared.directory),
+            "sha256": sha256_file(topscreen_link_animations),
         }
     if water_texture_catalog is not None:
         prepared.state["runtime"]["water_textures"] = {

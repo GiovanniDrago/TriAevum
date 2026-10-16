@@ -375,6 +375,21 @@ int main() {
               &parsedConfig, &configError) &&
               configError.find("native value") != std::string::npos,
           "TopScreen config accepted a non-native free-camera speed");
+  TopScreenUiConfig rainConfig;
+  Require(ParseTopScreenUiConfigText(
+              R"({"schema":"oot3d_topscreen_ui_v2","rain_3d":true,"rain_3d_density_percent":275})",
+              &rainConfig, &configError) &&
+              rainConfig.Rain3d && rainConfig.Rain3dDensityPercent == 275U,
+          "TopScreen config did not parse the 3D rain options");
+  Require(!ParseTopScreenUiConfigText(
+              R"({"schema":"oot3d_topscreen_ui_v2","rain_3d_density_percent":110})",
+              &rainConfig, &configError) &&
+              configError.find("25 percent") != std::string::npos,
+          "TopScreen config accepted a non-native rain density step");
+  Require(!ParseTopScreenUiConfigText(
+              R"({"schema":"oot3d_topscreen_ui_v2","rain_3d_density_percent":325})",
+              &rainConfig, &configError),
+          "TopScreen config accepted an out-of-range rain density");
   Require(!ParseTopScreenUiConfigText(
               R"({"schema":"oot3d_topscreen_ui_v1","controller_toggle":true})",
               &parsedConfig, &configError) &&
@@ -509,6 +524,19 @@ int main() {
           "touch-label presenter lost its recovered texture semantics");
 
   auto memory = BuildLayoutFixture();
+  // 3.0 removes the 2.1.1 anchor-zeroing patches: keep the native six-column
+  // Items grid and Gear anchors through both initial and repeated layout apply.
+  struct NativeAnchor { std::uint32_t Address; float X, Y; };
+  constexpr std::array nativeAnchors{
+      NativeAnchor{0x005068F8U, 50.0F, 38.0F}, NativeAnchor{0x00506900U, 8.0F, 38.0F},
+      NativeAnchor{0x00506908U, 56.0F, 36.0F}, NativeAnchor{0x005069B0U, 40.0F, 36.0F},
+      NativeAnchor{0x005069B8U, 16.0F, 36.0F}, NativeAnchor{0x00504704U, 50.0F, 38.0F},
+      NativeAnchor{0x0050470CU, 8.0F, 38.0F}, NativeAnchor{0x00504714U, 56.0F, 36.0F},
+      NativeAnchor{0x0050472CU, 40.0F, 36.0F}, NativeAnchor{0x00504734U, 16.0F, 36.0F}};
+  for (const auto &anchor : nativeAnchors)
+    Require(memory.Write32(anchor.Address, std::bit_cast<std::uint32_t>(anchor.X)) &&
+                memory.Write32(anchor.Address + 4U, std::bit_cast<std::uint32_t>(anchor.Y)),
+            "cannot seed native Items/Gear anchors");
   // Native floor producer rows retain their Y while X moves outward.
   for (std::uint32_t row = 0; row < 5U; ++row) {
     Require(memory.Write32(0x004D4E98U + row * 8U,
@@ -582,6 +610,9 @@ int main() {
   Require(ApplyTopScreenVerifiedLayout(memory, &repeatedLayoutStats, &error) &&
               repeatedLayoutStats.WordsChanged == 0U,
           "verified layout application is not idempotent");
+  for (const auto &anchor : nativeAnchors)
+    Require(layoutFloat(anchor.Address) == anchor.X && layoutFloat(anchor.Address + 4U) == anchor.Y,
+            "3.0 native Items/Gear anchors were overwritten");
 
   auto runtimeGeometry = BuildLayoutFixture();
   Require(runtimeGeometry.MapRegion({"topscreen-runtime-geometry-fixture",
@@ -1680,27 +1711,65 @@ int main() {
               std::abs(pauseEdgePrimitives[1].destination.x) < 0.001F,
           "TopScreen pause-edge presentation is incorrect");
   {
-    // 2.1.1 L/R tab hints (0x005CFE48): backings first, glyphs a quarter turn.
-    const oot3d::ui::UiTextureIdentity cursor{0U, 0U, "oot3d/native/pause_shared/cursor"};
-    const oot3d::ui::UiTextureIdentity equipment{0U, 0U, "oot3d/native/pause_shared/equipment"};
+    // 3.0 0x005D4A0C uses custom_ui01 for both backings and upright L/R.
+    const oot3d::ui::UiTextureIdentity atlas{0U, 0U, "oot3d/topscreen/3.0/ui_atlas"};
     std::vector<oot3d::ui::UiPrimitive> hints;
-    TopScreenTabHintInputs closed;
-    Require(AppendTopScreenTabHintPresentation(closed, cursor, equipment, hints) == 0U,
+    Require(AppendTopScreenTabHintPresentation({}, atlas, hints) == 0U && hints.empty(),
             "tab hints must stay hidden without an open Items/Gear/Map page");
-    TopScreenTabHintInputs open;
-    open.PageOpen = true;
-    open.RightHeld = true;
-    Require(AppendTopScreenTabHintPresentation(open, cursor, equipment, hints) == 4U &&
-                hints[0].destination.x == 64.0F && hints[1].destination.x == 294.0F &&
-                hints[2].destination.x == 66.0F && hints[2].destination.y == 208.0F &&
-                hints[2].destination.width == 36.0F && hints[2].uv_quarter_turn &&
-                hints[2].uv.x == 100.0F / 128.0F && hints[3].uv.x == 72.0F / 128.0F &&
-                hints[3].destination.x == 298.0F && hints[2].color.red == 1.0F &&
-                hints[3].color.red == 0.55F && !hints[0].uv_quarter_turn,
-            "TopScreen tab hints diverge from 2.1.1 0x005CFE48");
-    hints.clear();
-    Require(AppendTopScreenTabHintPresentation(open, cursor, {}, hints) == 2U,
-            "a missing backing atlas must skip only the backings");
+    Require(AppendTopScreenTabHintPresentation({true}, {}, hints) == 0U && hints.empty(),
+            "tab hints require the 3.0 atlas");
+    Require(AppendTopScreenTabHintPresentation({true}, atlas, hints) == 4U,
+            "tab hints must append two backings before two glyphs");
+    for (unsigned i = 0; i < hints.size(); ++i) {
+      Require(hints[i].owner_address == 0x005D4A0CU && hints[i].source_quad == i &&
+                  hints[i].texture.semantic_name == atlas.semantic_name && !hints[i].uv_quarter_turn &&
+                  hints[i].layer == 14U && hints[i].color.alpha == 1.0F,
+              "tab hints retained the retired native atlases or rotated crops");
+    }
+    Require(hints[0].destination.x == 65.5F && hints[1].destination.x == 293.5F &&
+                hints[0].destination.y == 206.0F && hints[0].destination.width == 41.0F &&
+                hints[0].destination.height == 42.0F &&
+                hints[0].uv.x == 401.0F / 512.0F && hints[0].uv.y == 196.0F / 256.0F &&
+                hints[0].uv.width == 18.0F / 512.0F && hints[0].uv.height == 18.0F / 256.0F &&
+                hints[0].role == oot3d::ui::UiPrimitiveRole::PauseBackground,
+            "tab backings diverge from the 3.0 atlas and geometry");
+    Require(std::abs(hints[2].destination.x - 65.575F) < 0.001F &&
+                std::abs(hints[3].destination.x - 295.575F) < 0.001F &&
+                std::abs(hints[2].destination.y - 208.3F) < 0.001F &&
+                std::abs(hints[2].destination.width - 38.85F) < 0.001F &&
+                std::abs(hints[2].destination.height - 29.4F) < 0.001F &&
+                hints[2].uv.x == 462.0F / 512.0F && hints[2].uv.y == 108.0F / 256.0F &&
+                hints[3].uv.x == 240.0F / 512.0F && hints[3].uv.y == 117.0F / 256.0F &&
+                hints[2].uv.width == 37.0F / 512.0F && hints[2].uv.height == 28.0F / 256.0F &&
+                hints[2].role == oot3d::ui::UiPrimitiveRole::TouchControl,
+            "L/R hints diverge from 3.0 rects 20/21 or their 1.05 centre scaling");
+    NativeA32Memory tabMemory;
+    Require(tabMemory.MapRegion({"tab-state", 0x00500000U, 0x70000U, true, false, {}}, &error),
+            "cannot map tab-hint state");
+    for (const auto page : {0x0050672CU, 0x00504484U, 0x00506CE8U}) {
+      for (const auto pageState : {1U, 2U, 3U}) {
+        Require(tabMemory.Write32(page, pageState), "cannot activate tab-hint page");
+        for (const auto held : {0U, 0x100U, 0x200U, 0x300U}) {
+          Require(tabMemory.Write32(0x005655A0U, held), "cannot write tab-hint buttons");
+          TopScreenTabHintInputs inputs;
+          Require(ReadTopScreenTabHintInputs(tabMemory, &inputs) && inputs.PageOpen &&
+                      inputs.LeftHeld == ((held & 0x200U) != 0) &&
+                      inputs.RightHeld == ((held & 0x100U) != 0),
+                  "tab-hint page or shoulder state was decoded incorrectly");
+          hints.clear();
+          Require(AppendTopScreenTabHintPresentation(inputs, atlas, hints) == 4U &&
+                      hints[0].color.red == 1.0F && hints[1].color.red == 1.0F &&
+                      hints[2].color.red == (inputs.LeftHeld ? 0.55F : 1.0F) &&
+                      hints[3].color.red == (inputs.RightHeld ? 0.55F : 1.0F) &&
+                      hints[2].color.alpha == 1.0F && hints[3].color.alpha == 1.0F,
+                  "held shoulder dimmed the wrong glyph, backing or alpha");
+        }
+      }
+      Require(tabMemory.Write32(page, 0U), "cannot close tab-hint page");
+    }
+    TopScreenTabHintInputs closed;
+    Require(ReadTopScreenTabHintInputs(tabMemory, &closed) && !closed.PageOpen,
+            "tab hints retained a closed page");
   }
 
   NativeA32Memory nativeTouchMemory;

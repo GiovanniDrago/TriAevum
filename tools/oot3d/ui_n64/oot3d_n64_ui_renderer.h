@@ -76,6 +76,9 @@ std::uint64_t N64UiShaderId1() noexcept;
 std::string_view ResolveN64UiTexturePath(
     std::string_view semanticName) noexcept;
 std::string BuildUiTextureCacheKey(const UiTextureIdentity& identity);
+// The resident texture a primitive draws with: its identity's key, or a
+// white-RGB variant of it for texture_alpha_only.
+std::string BuildUiPrimitiveTextureKey(const UiPrimitive& primitive);
 
 // Draws typed N64-layout UI primitives after the native PICA scene through a
 // renderer-owned 2D backend contract.
@@ -121,7 +124,7 @@ class N64UiFast3dRenderer {
         std::uint16_t height = 0;
     };
 
-    const ResidentTexture* ResolveTexture(const UiTextureIdentity& identity,
+    const ResidentTexture* ResolveTexture(const std::string& semanticKey,
                                           std::string* error);
     Oot3d::Renderer::UiRenderBackend& rendering_api_;
     const UiTextureProvider* texture_provider_ = nullptr;

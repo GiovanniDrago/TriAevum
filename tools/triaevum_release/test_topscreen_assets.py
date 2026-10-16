@@ -8,9 +8,9 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from topscreen_assets import acquire_archive, prepare_topscreen_assets
+from topscreen_assets import acquire_archive, prepare_topscreen_assets, topscreen_link_animations
 from tools.oot3d.decomp_support.scripts.build_topscreen_texture_override_pack import (
-    LANGUAGES, TEXTURES, PROFILE_TEXTURES, build_texture_pack,
+    LANGUAGES, LAYOUT_PROBE, TEXTURES, PROFILE_TEXTURES, build_texture_pack,
 )
 
 
@@ -43,7 +43,8 @@ class TopScreenAssetsTests(unittest.TestCase):
                 patch("verified_download.urllib.request.urlopen") as network:
             pack = prepare_topscreen_assets(root=self.root, data_root=self.data,
                                            recipe=self.recipe, romfs=self.root / "romfs.bin")
-            build.assert_called_once_with(archive=archive, original_romfs_image=self.root / "romfs.bin")
+            build.assert_called_once_with(archive=archive, original_romfs_image=self.root / "romfs.bin",
+                                          singlescreen_archive=None)
             archive.unlink()
             self.assertEqual(prepare_topscreen_assets(root=self.root, data_root=self.data,
                              recipe=self.recipe, romfs=self.root / "romfs.bin"), pack)
@@ -95,6 +96,64 @@ class TopScreenAssetsTests(unittest.TestCase):
                 self.prepare()
             self.assertEqual(build.call_count, 1)
 
+    def make_singlescreen_archive(self, path, *, animations=b"ZAR\x01 animation fixture"):
+        prefix = "SingleScreen_3.0/EUR/Emulator/load/mods/0004000000033600/romfs/"
+        with zipfile.ZipFile(path, "w") as output:
+            output.writestr(prefix + "actor/zelda_link_ext.zar", animations)
+            output.writestr(prefix + "../code.ips", b"DO NOT IMPORT EXECUTABLE PATCH")
+        data = path.read_bytes()
+        return {"name": path.name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+    def test_singlescreen_archive_beside_forge_installs_atlas_and_animations(self):
+        (self.root / "topscreen211.zip").write_bytes(self.archive_bytes)
+        singlescreen = self.root / "singlescreen_30_25aeb.zip"
+        self.recipe["optional_inputs"]["singlescreen_3_0_archive"] = \
+            self.make_singlescreen_archive(singlescreen)
+        with patch("topscreen_assets.build_texture_pack", return_value=b"O3TU fixture") as build, \
+                patch("topscreen_assets.prepare_font_pack", side_effect=self.fake_font_pack), \
+                patch("verified_download.urllib.request.urlopen") as network:
+            pack = self.prepare()
+            self.assertEqual(build.call_args.kwargs["singlescreen_archive"], singlescreen)
+            animations = topscreen_link_animations(pack)
+            self.assertEqual(animations.read_bytes(), b"ZAR\x01 animation fixture")
+            receipt = json.loads((pack.parent / "import.json").read_text())
+            self.assertEqual(receipt["link_animations_sha256"],
+                             hashlib.sha256(animations.read_bytes()).hexdigest())
+            # The verified import is reused; a changed animation file is re-imported.
+            self.assertEqual(self.prepare(), pack)
+            self.assertEqual(build.call_count, 1)
+            animations.write_bytes(b"ZAR\x01 tampered")
+            self.assertEqual(self.prepare(), pack)
+            self.assertEqual(build.call_count, 2)
+            self.assertEqual(animations.read_bytes(), b"ZAR\x01 animation fixture")
+            network.assert_not_called()
+
+    def test_missing_singlescreen_archive_is_optional_and_never_downloaded(self):
+        (self.root / "topscreen211.zip").write_bytes(self.archive_bytes)
+        self.recipe["optional_inputs"]["singlescreen_3_0_archive"] = {
+            "name": "singlescreen_30_25aeb.zip", "bytes": 1, "sha256": "0" * 64}
+        messages = []
+        with patch("topscreen_assets.build_texture_pack", return_value=b"O3TU fixture"), \
+                patch("topscreen_assets.prepare_font_pack", side_effect=self.fake_font_pack), \
+                patch("verified_download.urllib.request.urlopen") as network:
+            pack = prepare_topscreen_assets(root=self.root, data_root=self.data, recipe=self.recipe,
+                                            romfs=self.root / "romfs.bin",
+                                            report=lambda _, text: messages.append(text))
+            self.assertIsNone(topscreen_link_animations(pack))
+            self.assertTrue(any("singlescreen_30_25aeb.zip" in text for text in messages))
+            network.assert_not_called()
+
+    def test_corrupt_singlescreen_archive_rejected(self):
+        (self.root / "topscreen211.zip").write_bytes(self.archive_bytes)
+        singlescreen = self.root / "singlescreen_30_25aeb.zip"
+        contract = self.make_singlescreen_archive(singlescreen)
+        singlescreen.write_bytes(b"tampered")
+        self.recipe["optional_inputs"]["singlescreen_3_0_archive"] = contract
+        with patch("topscreen_assets.build_texture_pack") as build:
+            with self.assertRaisesRegex(ValueError, "SingleScreen 3.0 archive failed verification"):
+                self.prepare()
+            build.assert_not_called()
+
     def test_corrupt_local_archive_rejected_before_import(self):
         (self.root / "topscreen211.zip").write_bytes(b"bad")
         with patch("topscreen_assets.build_texture_pack") as build:
@@ -139,12 +198,27 @@ class TopScreenAssetsTests(unittest.TestCase):
                     output.writestr("TopScreenMod/romfs/" + relative, header + bytes([1]) * 256)
             for name, _ in PROFILE_TEXTURES:
                 output.writestr("TopScreenMod/romfs/menu/" + name, header + bytes([2]) * 256)
+            # The localized 2.1.1 labels identify the layout but are not imported.
+            output.writestr("TopScreenMod/romfs/" + LAYOUT_PROBE, header + bytes([1]) * 256)
             output.writestr("TopScreenMod/code.ips", b"DO NOT IMPORT EXECUTABLE PATCH")
             output.writestr("../../escape", b"not extracted")
         pack = build_texture_pack(archive=archive, original_romfs=original)
-        self.assertEqual(struct.unpack_from("<4sIII", pack), (b"O3TU", 2, 1, 2))
+        self.assertEqual(struct.unpack_from("<4sIII", pack), (b"O3TU", 2, 0, 2))
         self.assertNotIn(b"DO NOT IMPORT", pack)
         self.assertFalse((self.root / "escape").exists())
+
+        singlescreen = self.root / "singlescreen.zip"
+        prefix = "SingleScreen_3.0/EUR/Emulator/load/mods/0004000000033600/romfs/"
+        with zipfile.ZipFile(singlescreen, "w") as output:
+            output.writestr(prefix + "menu/custom_ui01.ctxb", header + bytes([3]) * 256)
+            output.writestr(prefix + "actor/zelda_link_ext.zar", b"ZAR\x01")
+            output.writestr("SingleScreen_3.0/EUR/Emulator/load/mods/0004000000033600/code.ips",
+                            b"DO NOT IMPORT EXECUTABLE PATCH")
+        pack = build_texture_pack(archive=archive, original_romfs=original,
+                                  singlescreen_archive=singlescreen)
+        self.assertEqual(struct.unpack_from("<4sIII", pack), (b"O3TU", 2, 0, 3))
+        self.assertIn(b"oot3d/topscreen/3.0/ui_atlas", pack)
+        self.assertNotIn(b"DO NOT IMPORT", pack)
 
 
 if __name__ == "__main__":
