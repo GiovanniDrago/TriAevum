@@ -240,6 +240,10 @@ bool Oot3dNativeUiLifecycleBridge::ApplyTopScreenGuestHook(uint32_t guestPc,
   context.HudScale = mTopScreenConfig.HudScale;
   context.HudMarginX = static_cast<float>(mTopScreenConfig.HudMarginX);
   context.HudMarginY = static_cast<float>(mTopScreenConfig.HudMarginY);
+  const auto buttonGroup = ResolveTopScreenButtonGroupPlacement(mTopScreenConfig);
+  context.ButtonGroupScale = buttonGroup.Scale;
+  context.ButtonGroupOffsetX = buttonGroup.OffsetX;
+  context.ButtonGroupOffsetY = buttonGroup.OffsetY;
   TopScreenQuestRenderBufferStats stats;
   if (!TransformTopScreenQuestRenderBuffer(mMemory, renderBuffer, context,
                                            &stats, &error)) {

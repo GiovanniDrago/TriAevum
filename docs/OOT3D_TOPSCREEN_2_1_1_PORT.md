@@ -427,8 +427,15 @@ minimap and Save routes only in the gameplay pause state.
   copies, such as the rupee icon, are not the D-pad) and the cross. Button
   group, 0x005C84B8: X, Y, ZR and ZL with their items, counts and labels
   scale about the top-right corner; the offset moves them by offset x HUD
-  scale, clamped to [-20, 10] and [-10, 40] px (hub 0x005DB6B4). A and B
-  stay in place.
+  scale, clamped to [-20, 10] and [-10, 40] px (hub 0x005DB6B4). The B
+  circle stays in place. The native A group (Quest render buffer, x 330..398,
+  y > 150) goes to (288, 24) with the group's size and offset
+  (0x005C89D0..0x005C8B8C): quads whose bounds are within 0.6..1.4 of square
+  (the A ring) are normalized to 32 px, the wide label takes 0.68, and
+  alternate HUD mode 1 or 4 (0x004FC648+0x48, 0x005DA3D4) hides the label.
+  2.1.1 scaled the whole group by 0.95, which left 3.0's A ring 13% and its
+  label 40% larger (Azahar oracle, on foot and on Epona). Not ported: the
+  0x0060EDB4 path (target (382, 44)) and 3.0's Vanilla HUD Layout.
 - **Rupee counter** (hub 0x005DE318): the digits start at x 24 whatever
   their count, y 217; a full wallet (count >= capacity 0x0053CC04) uses the
   next glyph row; zero rupees draw at alpha 0.3.

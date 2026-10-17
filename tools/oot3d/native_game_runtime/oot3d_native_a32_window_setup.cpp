@@ -846,6 +846,23 @@ void NativeA32WindowSession::Setup() {
                                                      : Oot3dNativeGame::DevWarpAge::Child,
                     std::string_view(time) == "night");
   }
+  // TRIAEVUM_DEV_WARP_ENTRANCE=<entrance>:<scene>:<child|adult>:<day|night>:
+  // any native entrance, for oracle fixtures outside the Better list (0x28A,
+  // the Lon Lon fence jump, spawns the adult player mounted on Epona).
+  if (const char *script = std::getenv("TRIAEVUM_DEV_WARP_ENTRANCE")) {
+    int entrance = -1, scene = -1;
+    char age[8]{}, time[8]{};
+    if (std::sscanf(script, "%i:%i:%7[a-z]:%7[a-z]", &entrance, &scene, age, time) != 4 || entrance < 0 ||
+        entrance > 0xFFFF || scene < 0 || scene > 0xFF) {
+      throw std::runtime_error("TRIAEVUM_DEV_WARP_ENTRANCE must be <entrance>:<scene>:<child|adult>:<day|night>");
+    }
+    const Oot3dNativeGame::DevWarpEntrance target{script, script, script, static_cast<uint16_t>(entrance),
+                                                  static_cast<uint8_t>(scene), 0, -1};
+    devWarp->WarpTo(target,
+                    std::string_view(age) == "adult" ? Oot3dNativeGame::DevWarpAge::Adult
+                                                     : Oot3dNativeGame::DevWarpAge::Child,
+                    std::string_view(time) == "night");
+  }
 #endif
   Fast::Oot3d::InstallGraphicsSettingsPanelTabs(
       std::move(applicationSettingsTabs));

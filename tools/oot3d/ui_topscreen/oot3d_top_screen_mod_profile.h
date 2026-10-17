@@ -497,6 +497,17 @@ void ApplyTopScreenHudScale(
     std::span<oot3d::ui::UiPrimitive> primitives,
     const TopScreenUiConfig &config) noexcept;
 
+// SingleScreen 3.0 button group placement before the HUD scale: size
+// (modopts+0x2D) and offset (+0x2E/+0x2F), which the hub 0x005DB6B4..0x005DB75C
+// clamps to [-20, 10] x [-10, 40] px after the HUD scale.
+struct TopScreenButtonGroupPlacement {
+  float Scale = 1.0F;
+  float OffsetX = 0.0F;
+  float OffsetY = 0.0F;
+};
+TopScreenButtonGroupPlacement ResolveTopScreenButtonGroupPlacement(
+    const TopScreenUiConfig &config) noexcept;
+
 struct TopScreenVec3 {
   float X = 0.0F;
   float Y = 0.0F;
@@ -517,6 +528,13 @@ struct TopScreenQuestGeometryContext {
   float HudScale = 1.0F;
   float HudMarginX = 0.0F;
   float HudMarginY = 0.0F;
+  // SingleScreen 3.0 0x005C84B8 places the A group with the button group:
+  // its size (0x0060D20C) and its offset, here before the HUD scale.
+  float ButtonGroupScale = 1.0F;
+  float ButtonGroupOffsetX = 0.0F;
+  float ButtonGroupOffsetY = 0.0F;
+  // 0x005DA3D4: alternate HUD mode 1 or 4 (0x004FC648+0x48) hides the A label.
+  bool ActionLabelHidden = false;
 };
 
 struct TopScreenSystemMenuLayerStats {

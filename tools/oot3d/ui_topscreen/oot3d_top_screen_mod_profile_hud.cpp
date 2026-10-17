@@ -1531,6 +1531,20 @@ bool IsTopScreenDpadPrimitive(const oot3d::ui::UiPrimitive &primitive) noexcept 
 }
 } // namespace
 
+TopScreenButtonGroupPlacement ResolveTopScreenButtonGroupPlacement(
+    const TopScreenUiConfig &config) noexcept {
+  const float placementScale = config.HudScale > 0.0F ? config.HudScale : 1.0F;
+  TopScreenButtonGroupPlacement result;
+  result.Scale = static_cast<float>(config.ButtonGroupSizePercent) * 0.01F;
+  result.OffsetX =
+      std::clamp(static_cast<float>(config.ButtonGroupOffsetX) * placementScale,
+                 -20.0F, 10.0F) / placementScale;
+  result.OffsetY =
+      std::clamp(static_cast<float>(config.ButtonGroupOffsetY) * placementScale,
+                 -10.0F, 40.0F) / placementScale;
+  return result;
+}
+
 void ApplyTopScreenHudScale(
     std::span<oot3d::ui::UiPrimitive> primitives,
     const TopScreenUiConfig &config) noexcept {
@@ -1548,15 +1562,10 @@ void ApplyTopScreenHudScale(
   const float dpadSize = static_cast<float>(config.DpadSizePercent) * 0.01F;
   const float dpadX = static_cast<float>(config.DpadOffsetX);
   const float dpadY = static_cast<float>(config.DpadOffsetY);
-  const float groupSize =
-      static_cast<float>(config.ButtonGroupSizePercent) * 0.01F;
-  const float placementScale = scale > 0.0F ? scale : 1.0F;
-  const float groupX =
-      std::clamp(static_cast<float>(config.ButtonGroupOffsetX) * placementScale,
-                 -20.0F, 10.0F) / placementScale;
-  const float groupY =
-      std::clamp(static_cast<float>(config.ButtonGroupOffsetY) * placementScale,
-                 -10.0F, 40.0F) / placementScale;
+  const auto group = ResolveTopScreenButtonGroupPlacement(config);
+  const float groupSize = group.Scale;
+  const float groupX = group.OffsetX;
+  const float groupY = group.OffsetY;
   const bool placed = dpadSize != 1.0F || dpadX != 0.0F || dpadY != 0.0F ||
                       groupSize != 1.0F || groupX != 0.0F || groupY != 0.0F;
   if (!placed && scale == 1.0F && marginX == 0.0F && marginY == 0.0F &&
