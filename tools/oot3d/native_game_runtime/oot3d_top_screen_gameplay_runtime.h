@@ -15,8 +15,7 @@ namespace Oot3dNativeGame {
 
 // SingleScreen 3.0 gameplay options at EUR block entries. Each policy issues
 // only native OoT3D calls or register/memory changes the 3.0 payload makes;
-// no payload code runs. Every option is off by default and a disabled option
-// never leaves compiled execution.
+// no payload code runs. A disabled option never leaves compiled execution.
 
 // FUN_003c45f4 0x003C49CC `mov r0, #0x1E`, the 30-update wait before an item
 // can be put away, then `b 0x003C4B00`. 3.0 (0x005F399C) loads 1 instead.

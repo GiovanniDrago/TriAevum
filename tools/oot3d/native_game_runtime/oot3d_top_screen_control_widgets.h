@@ -32,7 +32,7 @@ inline void CopyTopScreenControlSettings(const TopScreenUiConfig& source, TopScr
     target.Rain3dDensityPercent = source.Rain3dDensityPercent;
 }
 
-// SingleScreen 3.0 gameplay options; each is off by default.
+// SingleScreen 3.0 gameplay options.
 inline bool DrawTopScreenGameplay(TopScreenUiConfig& config) {
     bool changed = ImGui::Checkbox("Quick put away", &config.QuickPutAway);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Items can be put away immediately instead of after one second.");

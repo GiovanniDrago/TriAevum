@@ -15,8 +15,12 @@ inline constexpr std::string_view kTopScreenUiLegacyConfigSchema =
     "oot3d_topscreen_ui_v1";
 inline constexpr float kTopScreenHudScaleMinimum = 0.60F;
 inline constexpr float kTopScreenHudScaleMaximum = 1.20F;
-inline constexpr float kTopScreenHudScaleDefault = 0.80F;
 inline constexpr float kTopScreenHudScaleStep = 0.05F;
+// The two HUD sizes F1 offers: the game's own size and the size that fits the
+// HUD to the single wide screen (the default).
+inline constexpr float kTopScreenHudScaleNative = 1.00F;
+inline constexpr float kTopScreenHudScaleOptimized = 0.70F;
+inline constexpr float kTopScreenHudScaleDefault = kTopScreenHudScaleOptimized;
 inline constexpr std::int8_t kTopScreenHudMarginMinimum = -3;
 inline constexpr std::int8_t kTopScreenHudMarginMaximum = 16;
 // SingleScreen 3.0 D-pad Placement and Button Group Placement (settings
@@ -103,14 +107,17 @@ inline constexpr std::array<TopScreenDpadAction, 4>
                                 TopScreenDpadAction::IronBoots,
                                 TopScreenDpadAction::HoverBoots};
 
+// The defaults are TriAevum's standard TopScreen profile. F1 offers only the
+// HUD size; the layout fields keep these values unless a developer
+// configuration file sets them.
 struct TopScreenUiConfig {
   TopScreenHudLayout HudLayout = TopScreenHudLayout::Normal;
   float HudScale = kTopScreenHudScaleDefault;
   std::int8_t HudMarginX = 4;
   std::int8_t HudMarginY = 1;
-  std::uint8_t MagicBarY = 0U;
+  std::uint8_t MagicBarY = 2U;
   std::int8_t DpadOffsetX = 0;
-  std::int8_t DpadOffsetY = 0;
+  std::int8_t DpadOffsetY = -1;
   std::uint8_t DpadSizePercent = 100U;
   std::int8_t ButtonGroupOffsetX = 0;
   std::int8_t ButtonGroupOffsetY = 0;
@@ -136,11 +143,12 @@ struct TopScreenUiConfig {
   std::uint8_t CStickAimSpeedLevel = 3U;
   bool CStickAimInvertX = false;
   bool CStickAimInvertY = false;
-  // SingleScreen 3.0 gameplay options, off by default.
-  bool QuickPutAway = false;
-  bool LandingRollFix = false;
-  bool RollDash = false;
-  bool AimingReticle = false;
+  // SingleScreen 3.0 gameplay options; the standard profile turns all but the
+  // 3D rain on.
+  bool QuickPutAway = true;
+  bool LandingRollFix = true;
+  bool RollDash = true;
+  bool AimingReticle = true;
   bool Rain3d = false;
   std::uint16_t Rain3dDensityPercent = 100U;
   // SingleScreen 3.0 Items shortcut column: the four action rows in display
