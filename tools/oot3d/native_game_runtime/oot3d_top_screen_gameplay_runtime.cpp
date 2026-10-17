@@ -21,6 +21,14 @@ constexpr std::uint32_t kPlayerAnimationAge = 0x1B3U;
 constexpr std::uint32_t kLandingAnimationTable = 0x198U;
 constexpr std::uint32_t kLandingAnimationStack = 0x30U;
 constexpr std::uint32_t kLandingTimer = 0x38U;
+// The floor web (3.1 0x005F4DA0): its "Link above" byte, Link's action, the
+// landing actions it accepts natively and the roll action per age (3.1
+// literal 0x005F4DE8, the table the landing roll's animations come from).
+constexpr std::uint32_t kPlayStatePlayerFromWeb = 0xACU; // r8 = play + 0x2000
+constexpr std::uint32_t kWebLinkAbove = 0x2C9U;
+constexpr std::uint32_t kWebLandingAction = 0x6BU;
+constexpr std::uint32_t kWebLandingActionHeavy = 0x95U;
+constexpr std::uint32_t kLandingRollActionTable = 0x0053A790U;
 
 // 3.0 0x005D8BA8 inputs.
 constexpr std::uint32_t kPlayStatePointer = 0x005043D4U + 0x0CU;
@@ -66,6 +74,25 @@ constexpr std::uint32_t kRollSpeedReturn = 0x002BE8BCU;
 constexpr std::uint32_t kRollSpeedCall = 0x002DD8B0U;
 constexpr std::uint32_t kDashRunSkip = 0x00129680U;
 
+// 3.1 dash cross-fade (0x005D11A8, literals 0x005D14EC..0x005D151C).
+constexpr std::uint32_t kPlayStateFrames = 0x5BF4U;
+constexpr std::uint32_t kPlayStateAnimationContext = 0x3410U;
+constexpr std::uint32_t kAnimationContextEntries = 0x3414U;
+constexpr std::uint32_t kAnimationContextLimit = 0x28U;
+constexpr std::uint32_t kPlayerLimbCount = 0x2C8U;
+constexpr std::uint32_t kPlayerJointTable = 0x2CCU;
+constexpr std::uint32_t kPlayerFrameTable = 0x27CU;
+constexpr std::uint32_t kPlayerAnimationFlags = 0x2D5U;
+constexpr std::uint32_t kPlayerRunFrame = 0x2254U;
+constexpr std::uint32_t kBlendLimbLimit = 0x19U;
+constexpr std::uint32_t kDashFrameRateObject = 0x0051B2F4U; // (s16)+0x110 update rate
+constexpr std::uint32_t kDashFrameRate = 0x110U;
+constexpr std::uint32_t kAnimationContextAdd = 0x00324154U;   // AnimationContext_AddEntry
+constexpr std::uint32_t kAnimationDecodeFrame = 0x002BD9ECU;  // AnimationEntry_DecodeFrame
+constexpr std::uint32_t kAnimationInterpolate = 0x002C3814U;  // AnimationEntry_InitInterpAll
+constexpr float kBlendRateScale = 0.5F, kBlendStep = 1.0F / 6.0F, kBlendMinSpeed = 1.0e-4F,
+                kBlendMinRatio = 0.5F, kBlendMaxRatio = 2.0F, kBlendRunFrames = 1.0F / 29.0F;
+
 
 // Aiming Reticle (3.0 0x005D8C60..0x005D9844).
 constexpr std::uint32_t kPlayStateReticleBusy = 0x2134U;
@@ -99,8 +126,9 @@ constexpr std::uint32_t kReticleScaleCall = 0x003721E0U;
 constexpr std::uint32_t kReticleScaleReturn = 0x0047B8BCU;
 
 // Sorted: the dispatcher's hook lists keep their order with binary_search.
-constexpr std::array<std::uint32_t, 10> kHookPcs{
-    kTopScreenDashRunSite,       kTopScreenDashStateEntry,    kTopScreenDashTurnSpeedSite,
+constexpr std::array<std::uint32_t, 11> kHookPcs{
+    kTopScreenDashRunSite,       kTopScreenLandingRollWebSite, kTopScreenDashStateEntry,
+    kTopScreenDashTurnSpeedSite,
     kTopScreenDashMoveSpeedSite, kTopScreenDashRollSpeedSite, kTopScreenLinkCsabQuery,
     kTopScreenQuickPutAwayDelay, kTopScreenReticleEntry,      kTopScreenReticleScaleBlock,
     kTopScreenLandingRollSite};
@@ -144,6 +172,8 @@ bool TopScreenGameplayRuntime::ShouldObserve(std::uint32_t pc) const noexcept {
     return mConfig.QuickPutAway;
   case kTopScreenLandingRollSite:
     return mConfig.LandingRollFix || mLandingPending;
+  case kTopScreenLandingRollWebSite:
+    return mConfig.LandingRollFix;
   case kTopScreenDashStateEntry:
     return mConfig.RollDash || mRestorePending ||
            mDashQueryPending || mIdleShifted;
@@ -151,7 +181,8 @@ bool TopScreenGameplayRuntime::ShouldObserve(std::uint32_t pc) const noexcept {
   case kTopScreenDashMoveSpeedSite:
     return mConfig.RollDash && mRunScale != 1.0F;
   case kTopScreenDashRollSpeedSite:
-    return mConfig.RollDash && mRollScale != 1.0F;
+    // The cross-fade watches every call to see the dash answer switch.
+    return mConfig.RollDash || mRollStep != RollStep::None;
   case kTopScreenDashRunSite:
     return mConfig.RollDash && mInRoll;
   case kTopScreenLinkCsabQuery:
@@ -174,6 +205,14 @@ void TopScreenGameplayRuntime::Reset() noexcept {
   mAirborneFrames = 0;
   mRunScale = 1.0F;
   mRollScale = 1.0F;
+  mBlendFrame = mBlendArchive = mBlendIndex = 0U;
+  mBlendDash = mBlendFromDash = false;
+  mBlendWeight = mBlendSpeed = 0.0F;
+  mBlendRatio = 1.0F;
+  mBlendRegionFailed = false;
+  mRollStep = RollStep::None;
+  mRollCaller = {};
+  mRollSource = mRollEntry = 0U;
   mReticleStep = ReticleStep::None;
   mReticleCaller = {};
   mReticleStableFrames = 0;
@@ -207,11 +246,14 @@ bool TopScreenGameplayRuntime::Execute(std::uint32_t pc, oot3d::recomp::a32::Gue
     return true;
   case kTopScreenLandingRollSite:
     return LandingRoll(state, result, blocksConsumed);
+  case kTopScreenLandingRollWebSite:
+    return LandingRollWeb(state, result, blocksConsumed);
   case kTopScreenDashStateEntry:
     return DashStateEntry(state, result, blocksConsumed);
+  case kTopScreenDashRollSpeedSite:
+    return DashRollSite(state, result, blocksConsumed);
   case kTopScreenDashTurnSpeedSite:
   case kTopScreenDashMoveSpeedSite:
-  case kTopScreenDashRollSpeedSite:
   case kTopScreenDashRunSite:
     return DashSpeedSite(pc, state, result, blocksConsumed);
   case kTopScreenLinkCsabQuery:
@@ -263,6 +305,34 @@ bool TopScreenGameplayRuntime::LandingRoll(oot3d::recomp::a32::GuestState &state
   state.r[14] = kTopScreenLandingRollSite;
   ++mLandingRolls;
   Branch(state, kTopScreenLandingRollSite, kAnimationChange, result, blocksConsumed);
+  return true;
+}
+
+bool TopScreenGameplayRuntime::LandingRollWeb(oot3d::recomp::a32::GuestState &state,
+                                              oot3d::recomp::a32::ExecutionResult *result,
+                                              std::uint32_t *blocksConsumed) {
+  if (!mConfig.LandingRollFix) return false;
+  // 3.1 0x005F4DA0: Link is above the web, in the air, and in the roll the
+  // landing roll plays for his age. Any other action keeps the native block.
+  const auto player = Read32(state.r[8] + kPlayStatePlayerFromWeb);
+  const auto action = Read32(player + kPlayerRollAction);
+  if (action == kWebLandingAction || action == kWebLandingActionHeavy) return false;
+  std::uint8_t linkAbove = 0U, age = 0U;
+  std::uint16_t ground = 0U;
+  if (!mMemory.Read8(state.r[4] + kWebLinkAbove, &linkAbove) ||
+      !mMemory.Read16(player + kPlayerGroundFlags, &ground) ||
+      !mMemory.Read8(player + kPlayerAnimationAge, &age))
+    throw std::runtime_error("TopScreen landing roll cannot read the floor web");
+  if (linkAbove != 1U || (ground & 1U) != 0U ||
+      action != Read32(kLandingRollActionTable + age * 4U))
+    return false;
+  // The native block's registers and flags at its landing continuation.
+  state.r[0] = player;
+  state.r[1] = action;
+  state.cpsr = (state.cpsr & 0x0FFFFFFFU) | SubtractFlags(action, kWebLandingActionHeavy);
+  ++mLandingRollWebBreaks;
+  Branch(state, kTopScreenLandingRollWebSite, kTopScreenLandingRollWebBreak, result,
+         blocksConsumed);
   return true;
 }
 
@@ -532,16 +602,6 @@ bool TopScreenGameplayRuntime::DashSpeedSite(std::uint32_t pc,
     Branch(state, pc, kMoveSpeedCall, result, blocksConsumed);
     return true;
   }
-  case kTopScreenDashRollSpeedSite:
-    if (mRollScale == 1.0F) return false;
-    // mov r1, r9; mov r0, r4; bl 0x002DD8B0 with s0 x roll scale.
-    state.r[1] = state.r[9];
-    state.r[0] = state.r[4];
-    state.vfp[0] = Bits(Float(state.vfp[0]) * mRollScale);
-    state.r[14] = kRollSpeedReturn;
-    ++mDashSpeedApplications;
-    Branch(state, pc, kRollSpeedCall, result, blocksConsumed);
-    return true;
   case kTopScreenDashRunSite:
     // The dash keeps the run going: skip the run-end flag (+0x714 0x100000).
     if (!mInRoll) return false;
@@ -550,6 +610,184 @@ bool TopScreenGameplayRuntime::DashSpeedSite(std::uint32_t pc,
   default:
     return false;
   }
+}
+
+bool TopScreenGameplayRuntime::DashRollSite(oot3d::recomp::a32::GuestState &state,
+                                            oot3d::recomp::a32::ExecutionResult *result,
+                                            std::uint32_t *blocksConsumed) {
+  if (mRollStep != RollStep::None) return DashRollStep(state, result, blocksConsumed);
+  if (!mConfig.RollDash) return false;
+  // The block `mov r1, r9; mov r0, r4; bl 0x002DD8B0`: r4 the player, r9 the
+  // PlayState, r8 the animation index, s0 the speed. 3.1 0x005D11A8 scales the
+  // speed, then cross-fades when the dash answer for this animation switches.
+  const std::uint32_t player = state.r[4];
+  const std::uint32_t play = state.r[9];
+  const std::uint32_t index = state.r[8];
+  float speed = Float(state.vfp[0]) * mRollScale;
+  if (mRollScale != 1.0F) ++mDashSpeedApplications;
+  const std::uint32_t archive = Read32(player + kPlayerArchive);
+  bool fade = false;
+  if (Read32(play + kPlayStatePlayer) == player && archive != 0U) {
+    const std::uint32_t frame = Read32(play + kPlayStateFrames);
+    // 0x005CA8A8: the current group's animation count.
+    const std::uint32_t group = Read32(archive + kArchiveGroup);
+    const std::uint32_t count = group == 0xFFFFFFFFU
+        ? 0U : Read32(Read32(archive + kArchiveGroupTable) + group * 0x10U);
+    const std::uint32_t nativeEntry =
+        index < count ? Read32(Read32(archive + kArchiveAnimationTable) + index * 4U) : 0U;
+    // 0x005D1224..0x005D12B8: with Link's animations ready, this dash
+    // animation's slot, and whether the query answers it now.
+    std::uint32_t dashEntry = 0U;
+    bool dash = false;
+    if (archive == mLinkArchive && mLinkArchive != 0U && mLinkExt.has_value() &&
+        count == kLinkArchiveAnimations) {
+      for (std::size_t i = 0; i < kTopScreenLinkExtAnimations.size(); ++i) {
+        if (kTopScreenLinkExtAnimations[i].NativeIndex != index) continue;
+        if (mLinkExt->Present[mLinkAge][i]) {
+          dashEntry = TopScreenLinkExtImage::SlotAddress(kTopScreenLinkExtBase, mLinkAge, i);
+          dash = mAnswerDash;
+        }
+        break;
+      }
+    }
+    // 0x005D12BC..0x005D1438: the same animation on consecutive frames whose
+    // answer switched starts a fade from the other animation.
+    if (mBlendFrame + 1U == frame && mBlendArchive == archive && mBlendIndex == index) {
+      if (mBlendDash != dash) {
+        mBlendWeight = 1.0F - mBlendWeight;
+        mBlendFromDash = mBlendDash;
+        mBlendRatio = speed <= kBlendMinSpeed
+            ? 1.0F : std::clamp(mBlendSpeed / speed, kBlendMinRatio, kBlendMaxRatio);
+        ++mDashBlends;
+      }
+    } else {
+      mBlendWeight = 0.0F;
+    }
+    mBlendArchive = archive;
+    mBlendIndex = index;
+    mBlendFrame = frame;
+    mBlendDash = dash;
+    if (mBlendWeight > 0.0F) {
+      // 0x005D1318..0x005D1458: one sixth per update at 30 Hz.
+      float rate = 1.0F;
+      if (const std::uint32_t object = Read32(kDashFrameRateObject); object != 0U) {
+        std::uint16_t updateRate = 0U;
+        if (!mMemory.Read16(object + kDashFrameRate, &updateRate))
+          throw std::runtime_error("TopScreen roll dash cannot read the update rate");
+        rate = static_cast<float>(std::bit_cast<std::int16_t>(updateRate)) * kBlendRateScale;
+      }
+      const float weight = mBlendWeight - rate * kBlendStep;
+      if (weight > 0.0F) {
+        speed *= 1.0F + (mBlendRatio - 1.0F) * weight;
+        mBlendWeight = weight;
+      } else {
+        mBlendWeight = 0.0F;
+      }
+    }
+    mBlendSpeed = speed;
+    fade = mBlendWeight > 0.0F;
+    mRollSource = mBlendFromDash ? dashEntry : nativeEntry;
+  }
+  mRollCaller = state;
+  state.r[0] = player;
+  state.r[1] = play;
+  state.vfp[0] = Bits(speed);
+  // While fading, the animation call returns here to fade the pose.
+  state.r[14] = fade ? kTopScreenDashRollSpeedSite : kRollSpeedReturn;
+  mRollStep = fade ? RollStep::Animate : RollStep::None;
+  Branch(state, kTopScreenDashRollSpeedSite, kRollSpeedCall, result, blocksConsumed);
+  return true;
+}
+
+bool TopScreenGameplayRuntime::DashRollStep(oot3d::recomp::a32::GuestState &state,
+                                            oot3d::recomp::a32::ExecutionResult *result,
+                                            std::uint32_t *blocksConsumed) {
+  const auto &caller = mRollCaller;
+  const std::uint32_t player = caller.r[4];
+  const std::uint32_t play = caller.r[9];
+  const std::uint32_t stack = caller.r[13] - (mRollStep == RollStep::Decode ? 0x20U : 0U);
+  if (state.r[13] != stack || state.thread_pointer != caller.thread_pointer)
+    throw std::runtime_error("TopScreen roll dash re-entry caller does not match");
+  const auto call = [&](RollStep next, std::uint32_t target, std::uint32_t returnPc) {
+    mRollStep = next;
+    state.r[14] = returnPc;
+    Branch(state, kTopScreenDashRollSpeedSite, target, result, blocksConsumed);
+    return true;
+  };
+  std::uint8_t limbs = 0U;
+  if (!mMemory.Read8(player + kPlayerLimbCount, &limbs))
+    throw std::runtime_error("TopScreen roll dash cannot read Link's skeleton");
+  switch (mRollStep) {
+  case RollStep::Animate:
+    // 0x005D136C..0x005D13C0: fade the pose only from a loaded animation, a
+    // skeleton the buffer holds and an animation context with room.
+    if (mRollSource == 0U || Read32(mRollSource) == 0U || limbs > kBlendLimbLimit ||
+        Read32(play + kAnimationContextEntries) > kAnimationContextLimit ||
+        !EnsureDashBlendRegion()) {
+      mBlendWeight = 0.0F;
+      mRollStep = RollStep::None;
+      Branch(state, kTopScreenDashRollSpeedSite, kRollSpeedReturn, result, blocksConsumed);
+      return true;
+    }
+    state.r[0] = play + kPlayStateAnimationContext;
+    state.r[1] = player + kPlayerSkeleton;
+    return call(RollStep::DecodeEntry, kAnimationContextAdd, kTopScreenDashRollSpeedSite);
+  case RollStep::DecodeEntry: {
+    // 0x005D145C..0x005D14B8: the faded-from animation's frame at the run's
+    // position, decoded into the buffer.
+    mRollEntry = state.r[0];
+    const std::uint32_t csab = Read32(mRollSource);
+    const std::int32_t frames =
+        std::bit_cast<std::int32_t>(Read32(csab + Read32(csab + 0x14U) + 0x10U));
+    const float frame = (static_cast<float>(frames) + 1.0F) * kBlendRunFrames *
+                        Float(Read32(player + kPlayerRunFrame));
+    std::uint8_t flags = 0U;
+    const std::uint32_t arguments = caller.r[13] - 0x20U;
+    if (!mMemory.Read8(player + kPlayerAnimationFlags, &flags) ||
+        !mMemory.Write32(arguments, kTopScreenDashBlendBase) ||
+        !mMemory.Write32(arguments + 4U, flags) || !mMemory.Write32(arguments + 8U, 0U))
+      throw std::runtime_error("TopScreen roll dash cannot pass the frame decode");
+    state.r[13] = arguments;
+    state.r[0] = mRollEntry;
+    state.r[1] = Read32(player + kPlayerFrameTable);
+    state.r[2] = mRollSource;
+    state.r[3] = limbs;
+    state.vfp[0] = Bits(frame);
+    return call(RollStep::Decode, kAnimationDecodeFrame, kTopScreenDashRollSpeedSite);
+  }
+  case RollStep::Decode:
+    state.r[13] = caller.r[13];
+    state.r[0] = play + kPlayStateAnimationContext;
+    state.r[1] = player + kPlayerSkeleton;
+    return call(RollStep::InterpEntry, kAnimationContextAdd, kTopScreenDashRollSpeedSite);
+  case RollStep::InterpEntry:
+    // 0x005D14CC..0x005D14E8: blend Link's joints toward it by the weight;
+    // the call returns to the native continuation.
+    state.r[1] = limbs;
+    state.r[2] = Read32(player + kPlayerJointTable);
+    state.r[3] = kTopScreenDashBlendBase;
+    state.vfp[0] = Bits(mBlendWeight);
+    ++mDashBlendPoses;
+    return call(RollStep::None, kAnimationInterpolate, kRollSpeedReturn);
+  case RollStep::None:
+    break;
+  }
+  return false;
+}
+
+bool TopScreenGameplayRuntime::EnsureDashBlendRegion() {
+  if (mMemory.IsWritable(kTopScreenDashBlendBase, kTopScreenDashBlendSize) &&
+      !mMemory.IsExecutable(kTopScreenDashBlendBase, kTopScreenDashBlendSize))
+    return true;
+  if (mBlendRegionFailed) return false;
+  std::string error;
+  if (mMemory.MapRegion({"topscreen_dash_blend", kTopScreenDashBlendBase, kTopScreenDashBlendSize,
+                         true, false, {}},
+                        &error))
+    return true;
+  std::cerr << "TopScreen roll dash cannot map its blend buffer: " << error << '\n';
+  mBlendRegionFailed = true;
+  return false;
 }
 
 bool TopScreenGameplayRuntime::ReticleEntry(oot3d::recomp::a32::GuestState &state,

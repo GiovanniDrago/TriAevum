@@ -218,6 +218,22 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 endif()
 set_property(TARGET oot3d_object_bank_extension_tests PROPERTY FOLDER Tests)
 
+# SingleScreen gameplay options: native-call sequences at their block entries.
+add_executable(oot3d_top_screen_gameplay_runtime_tests EXCLUDE_FROM_ALL
+    tools/oot3d/native_game_runtime/oot3d_top_screen_gameplay_runtime.cpp
+    tools/oot3d/native_game_runtime/oot3d_top_screen_link_ext.cpp
+    tools/oot3d/native_game_runtime/oot3d_top_screen_gameplay_runtime_tests.cpp
+)
+target_link_libraries(oot3d_top_screen_gameplay_runtime_tests PRIVATE
+    oot3d_native_a32_process oot3d_ui_topscreen)
+target_compile_options(oot3d_top_screen_gameplay_runtime_tests PRIVATE
+    "${WARNING_OVERRIDE}")
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set_property(TARGET oot3d_top_screen_gameplay_runtime_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+set_property(TARGET oot3d_top_screen_gameplay_runtime_tests PROPERTY FOLDER Tests)
+
 # SingleScreen 3.0 rain: title policy (runtime) and its whole-AOT adapter.
 # The policy math must not contract into FMAs (3.0 parity goldens).
 if (MSVC)

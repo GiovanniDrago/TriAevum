@@ -36,6 +36,25 @@ constexpr std::uint32_t kDestroy = 0x0044E778U;
 constexpr std::uint32_t kDestroyArchive = 0x002F70C4U;
 constexpr std::uint32_t kFree = 0x0034FC6CU;
 constexpr std::uint32_t kDestroyContinue = 0x0046053CU;
+// SingleScreen 3.1 lifetime fixes. FUN_003a7558 replaces a room's object at
+// 0x003A75E0..0x003A762C: with its archive loaded it queues the archive on the
+// native deferred list, which holds 19, then resumes at 0x003A763C.
+constexpr std::uint32_t kRoomReplace = 0x003A75F0U;       // 3.1 0x00606ADC
+constexpr std::uint32_t kRoomReplaceResume = 0x003A763CU;
+constexpr std::uint32_t kReleaseDestroy = 0x0044E768U;    // Play_Destroy, 3.1 0x00606B18
+constexpr std::uint32_t kReleaseMain = 0x00452430U;       // Play_Main, 3.1 0x00606A78
+constexpr std::uint32_t kDestroyFileRequest = 0x0031B99CU; // AsyncFileRequest_Destroy
+constexpr std::uint32_t kNativeSlots = 0x3A5CU;
+constexpr std::uint32_t kDeferredCount = 0x43DCU;
+constexpr std::uint32_t kDeferredPending = 0x43DEU;
+constexpr std::uint32_t kNativeDeferredSlots = 19U;
+constexpr std::uint32_t kArchiveBuffer = 0x18U;
+constexpr std::uint32_t kQueue = kObjectBankReleaseQueueBase;
+constexpr std::uint32_t kQueueEntries = kQueue + 0x10U;
+constexpr std::uint32_t kQueueSignature = kQueue + 0xFF0U;
+constexpr std::uint32_t kQueueMagic = 0x5144334FU; // O3DQ
+static_assert(kQueueEntries + kObjectBankReleaseQueueSlots * kObjectBankArchiveBytes <=
+              kQueueSignature);
 
 constexpr std::array kLookupSites{
     0x00164BC8U, 0x00167DA4U, 0x00167E38U, 0x00168B20U, 0x0018D7ACU,
@@ -48,15 +67,18 @@ constexpr std::array kHooks{
     0x002293ACU, 0x0022AB70U, 0x0022DEC4U, kSweep, kSpawn, kSpawnAllocated,
     0x00339DFCU, 0x0033A950U, kResolve, kArchive, 0x0034FE68U,
     0x00352F28U, 0x00353CE4U, kIndexMiss, 0x0036A96CU, 0x00372F7CU,
-    kLoaded, kRoomMark, kRoomFinish, kDestroy, kReady};
+    kLoaded, kRoomReplace, kRoomMark, kRoomFinish, kReleaseDestroy, kDestroy,
+    kReleaseMain, kReady};
 constexpr std::array kResumes{
     0x00164BCCU, 0x00167DA8U, 0x00167E3CU, 0x00168B24U, 0x0018D7B0U,
     0x001B3134U, 0x001B320CU, 0x001BBCA0U, 0x001F85B4U, 0x00215A64U,
     0x002293B0U, 0x0022AB74U, 0x0022DEC8U, 0x00339E00U, 0x0033A954U,
     kResolveResume, kResolveFailure, 0x0034F274U, 0x0034FE6CU,
     0x00352F2CU, 0x00353CE8U, 0x0036A970U, 0x00372F80U,
-    0x003A76ACU, kRoomFinish, 0x0044E784U, 0x004849FCU};
-constexpr std::array kCalls{kDestroyArchive, kSpawn, kFree, kDestroyContinue};
+    kRoomReplaceResume, 0x003A76ACU, kRoomFinish, 0x0044E784U, 0x004849FCU};
+constexpr std::array kCalls{kDestroyArchive, kSpawn, kDestroyFileRequest, kFree,
+                            kDestroyContinue};
+static_assert(std::is_sorted(kHooks.begin(), kHooks.end()));
 
 std::uint32_t Add(std::uint32_t address, std::uint32_t offset) {
   if (address > UINT32_MAX - offset)
@@ -173,6 +195,32 @@ bool ObjectBankExtension::EnsureRegion(std::string *error) {
   return mMemory.MapRegion({"object_bank_extension", kBase, bytes.size(), true, false, bytes}, error);
 }
 
+bool ObjectBankExtension::HasReleaseQueue() const {
+  std::uint32_t magic = 0, version = 0;
+  return mMemory.IsWritable(kQueue, kObjectBankReleaseQueueSize) &&
+      !mMemory.IsExecutable(kQueue, kObjectBankReleaseQueueSize) &&
+      mMemory.Read32(kQueueSignature, &magic) && magic == kQueueMagic &&
+      mMemory.Read32(kQueueSignature + 4U, &version) && version == 1U;
+}
+
+bool ObjectBankExtension::EnsureReleaseQueue(std::string *error) {
+  if (HasReleaseQueue()) return true;
+  std::array<std::uint8_t, kObjectBankReleaseQueueSize> bytes{};
+  for (unsigned i = 0; i < 4U; ++i)
+    bytes[0xFF0U + i] = static_cast<std::uint8_t>(kQueueMagic >> (8U * i));
+  bytes[0xFF4U] = 1U;
+  return mMemory.MapRegion({"object_bank_release_queue", kQueue, bytes.size(), true, false, bytes},
+                           error);
+}
+
+std::uint8_t ObjectBankExtension::QueuedReleases() const {
+  if (!HasReleaseQueue()) return 0U;
+  const auto count = Read8(kQueue);
+  if (count > kObjectBankReleaseQueueSlots)
+    throw std::runtime_error("object bank release queue count is invalid");
+  return count;
+}
+
 std::uint32_t ObjectBankExtension::Play() const { return Read32(kPlayPointer); }
 std::uint8_t ObjectBankExtension::Count() const {
   const auto count = Read8(kBase);
@@ -187,7 +235,12 @@ bool ObjectBankExtension::Active() const {
   return mEnabled || Pending() || (HasRegion() && Count() != 0U);
 }
 bool ObjectBankExtension::ShouldObserve(std::uint32_t pc) const {
-  return std::binary_search(kHooks.begin(), kHooks.end(), pc) && Active();
+  if (!std::binary_search(kHooks.begin(), kHooks.end(), pc)) return false;
+  if (Pending()) return true;
+  // The lifetime fixes do not depend on the extension.
+  if (pc == kRoomReplace || pc == kDestroy) return true;
+  if (pc == kReleaseMain || pc == kReleaseDestroy) return QueuedReleases() != 0U;
+  return Active();
 }
 
 std::int32_t ObjectBankExtension::FindExtra(std::uint32_t objectId) {
@@ -269,7 +322,7 @@ void ObjectBankExtension::Begin(Operation op, const GuestState &state) {
   if (Pending()) throw std::runtime_error("object bank continuation is already active");
   if (state.r[13] < 0x20U || !mMemory.IsWritable(state.r[13] - 0x20U, 0x20U))
     throw std::runtime_error("object bank native call has no caller stack");
-  mContinuation = {op, Call::None, 0U, state};
+  mContinuation = {op, Call::None, 0U, 0U, state};
 }
 
 bool ObjectBankExtension::Issue(Call call, std::uint32_t entry, std::uint32_t arg0,
@@ -306,12 +359,144 @@ bool ObjectBankExtension::NextFree(GuestState &state, ExecutionResult *result,
   return Issue(Call::FreeBuffer, kFree, Read32(slot + 4U), state, result, blocksConsumed);
 }
 
+bool ObjectBankExtension::NativeSlotsMapped(std::uint32_t play) const {
+  constexpr auto bytes = kObjectBankNativeSlots * kObjectBankSlotStride;
+  return play != 0U && play <= UINT32_MAX - kNativeSlots - bytes &&
+      mMemory.IsWritable(play + kNativeSlots, bytes);
+}
+
+std::uint32_t ObjectBankExtension::CancelRecord(std::uint32_t index) const {
+  // 3.1 0x006069F4 at scene teardown (r5 = PlayState): native, then extra.
+  if (index < kObjectBankNativeSlots)
+    return Add(mContinuation.Caller.r[5], kNativeSlots + index * kObjectBankSlotStride);
+  return Extra(index - kObjectBankNativeSlots);
+}
+
+void ObjectBankExtension::ClearRecord(std::uint32_t record) {
+  Write32(Add(record, 0xCU), 0U);
+  Write32(Add(record, 4U), 0U);
+  Write32(Add(record, 8U), 0U);
+  Write16(record, 0U);
+  ++mStats.LoadingCancels;
+}
+
+bool ObjectBankExtension::NextCancel(GuestState &state, ExecutionResult *result,
+                                     std::uint32_t *blocksConsumed) {
+  // 3.1 0x00606960: a record still loading (negative id) has its file
+  // request destroyed, which waits for the read, before its buffer is freed.
+  const auto limit = kObjectBankNativeSlots + (HasRegion() ? kObjectBankExtraSlots : 0U);
+  for (; mContinuation.Index < limit; ++mContinuation.Index) {
+    const auto record = CancelRecord(mContinuation.Index);
+    if (std::bit_cast<std::int16_t>(Read16(record)) >= 0) continue;
+    if (const auto request = Read32(Add(record, 0xCU)); request != 0U)
+      return Issue(Call::DestroyFileRequest, kDestroyFileRequest, request,
+                   state, result, blocksConsumed);
+    if (const auto buffer = Read32(Add(record, 4U)); buffer != 0U)
+      return Issue(Call::FreeBuffer, kFree, buffer, state, result, blocksConsumed);
+    ClearRecord(record);
+  }
+  if (HasRegion()) {
+    // Then 3.0's teardown of the ready extra records (0x00605FA0).
+    mContinuation.Op = Operation::Destroy;
+    mContinuation.Awaiting = Call::None;
+    mContinuation.Index = 0U;
+    return NextFree(state, result, blocksConsumed);
+  }
+  state = mContinuation.Caller;
+  mContinuation = {};
+  return false; // the native block: two NOPs, then its call
+}
+
+bool ObjectBankExtension::RecordReleased(GuestState &state, ExecutionResult *result,
+                                         std::uint32_t *blocksConsumed) {
+  const bool room = mContinuation.Op == Operation::RoomReplace;
+  const auto record = room ? mContinuation.Caller.r[4] : CancelRecord(mContinuation.Index);
+  if (mContinuation.Awaiting == Call::DestroyFileRequest) {
+    Write32(Add(record, 0xCU), 0U);
+    if (const auto buffer = Read32(Add(record, 4U)); buffer != 0U)
+      return Issue(Call::FreeBuffer, kFree, buffer, state, result, blocksConsumed);
+  } else if (mContinuation.Awaiting != Call::FreeBuffer) {
+    throw std::runtime_error("object bank record release has no native call");
+  }
+  ClearRecord(record);
+  if (!room) {
+    ++mContinuation.Index;
+    return NextCancel(state, result, blocksConsumed);
+  }
+  const auto site = mContinuation.Caller.r[15];
+  state = mContinuation.Caller;
+  mContinuation = {};
+  return Branch(site, kRoomReplaceResume, state, result, blocksConsumed);
+}
+
+bool ObjectBankExtension::NextRelease(GuestState &state, ExecutionResult *result,
+                                      std::uint32_t *blocksConsumed) {
+  // 3.1 0x00606A78, beside the native list's release in Play_Main and
+  // Play_Destroy: destroy each queued archive, then free its buffer.
+  if (mContinuation.Index < QueuedReleases()) {
+    const auto entry = kQueueEntries + mContinuation.Index * kObjectBankArchiveBytes;
+    mContinuation.Buffer = Read32(entry + kArchiveBuffer);
+    return Issue(Call::DestroyArchive, kDestroyArchive, entry, state, result, blocksConsumed);
+  }
+  Write8(kQueue, 0U);
+  state = mContinuation.Caller;
+  mContinuation = {};
+  return false; // the native block
+}
+
+bool ObjectBankExtension::RoomReplace(GuestState &state, ExecutionResult *result,
+                                      std::uint32_t *blocksConsumed) {
+  // r4: the room slot being replaced, its archive loaded; r9: PlayState.
+  const auto record = state.r[4];
+  const auto play = state.r[9];
+  if (record > UINT32_MAX - kObjectBankSlotStride ||
+      !mMemory.IsWritable(record, kObjectBankSlotStride) ||
+      play > UINT32_MAX - kDeferredPending - 2U ||
+      !mMemory.IsWritable(play + kDeferredCount, 4U))
+    return false; // not the native PlayState replacement: leave it native
+  if (const auto request = Read32(Add(record, 0xCU)); request != 0U) {
+    // 3.1 0x006069BC: its file request is still open; destroy it, then free
+    // the buffer, instead of queueing the archive.
+    Begin(Operation::RoomReplace, state);
+    return Issue(Call::DestroyFileRequest, kDestroyFileRequest, request,
+                 state, result, blocksConsumed);
+  }
+  if (Read16(Add(play, kDeferredCount)) < kNativeDeferredSlots) return false;
+  // 3.1 0x00606A1C: the native list is full; queue the archive in the
+  // overflow page. A full queue drops it, as 3.1 does.
+  std::string error;
+  if (!EnsureReleaseQueue(&error)) throw std::runtime_error(error);
+  const auto count = QueuedReleases();
+  if (count < kObjectBankReleaseQueueSlots) {
+    const auto entry = kQueueEntries + count * kObjectBankArchiveBytes;
+    for (std::uint32_t offset = 0; offset < kObjectBankArchiveBytes; offset += 4U)
+      Write32(entry + offset, Read32(Add(record, 0x10U + offset)));
+    Write8(kQueue, static_cast<std::uint8_t>(count + 1U));
+    ++mStats.DeferredQueued;
+  }
+  Write16(Add(play, kDeferredPending), 1U);
+  Write32(Add(record, 4U), 0U);
+  Write32(Add(record, 8U), 0U);
+  return Branch(kRoomReplace, kRoomReplaceResume, state, result, blocksConsumed);
+}
+
 bool ObjectBankExtension::Step(GuestState &state, ExecutionResult *result,
                                std::uint32_t *blocksConsumed) {
   const auto site = mContinuation.Caller.r[15];
   if (state.r[13] != mContinuation.Caller.r[13] - 0x20U ||
       state.thread_pointer != mContinuation.Caller.thread_pointer)
     throw std::runtime_error("object bank re-entry caller does not match");
+  if (mContinuation.Op == Operation::CancelLoading || mContinuation.Op == Operation::RoomReplace)
+    return RecordReleased(state, result, blocksConsumed);
+  if (mContinuation.Op == Operation::Release) {
+    if (mContinuation.Awaiting == Call::DestroyArchive)
+      return Issue(Call::FreeBuffer, kFree, mContinuation.Buffer, state, result, blocksConsumed);
+    if (mContinuation.Awaiting != Call::FreeBuffer)
+      throw std::runtime_error("object bank release has no native call");
+    ++mStats.DeferredReleases;
+    ++mContinuation.Index;
+    return NextRelease(state, result, blocksConsumed);
+  }
   const auto slot = Extra(mContinuation.Index);
   if (mContinuation.Awaiting == Call::Spawn) {
     const auto returned = std::bit_cast<std::int32_t>(state.r[0]);
@@ -538,9 +723,28 @@ bool ObjectBankExtension::Execute(std::uint32_t pc, GuestState &state,
     return NextFree(state, result, blocksConsumed);
   }
   if (pc == kDestroy) {
+    bool loading = false;
+    const bool native = NativeSlotsMapped(state.r[5]);
+    for (std::uint32_t i = native ? 0U : kObjectBankNativeSlots;
+         i < kObjectBankNativeSlots + (HasRegion() ? kObjectBankExtraSlots : 0U) && !loading; ++i) {
+      const auto record = i < kObjectBankNativeSlots ?
+          state.r[5] + kNativeSlots + i * kObjectBankSlotStride : Extra(i - kObjectBankNativeSlots);
+      loading = std::bit_cast<std::int16_t>(Read16(record)) < 0;
+    }
+    if (loading) {
+      Begin(Operation::CancelLoading, state);
+      mContinuation.Index = native ? 0U : kObjectBankNativeSlots;
+      return NextCancel(state, result, blocksConsumed);
+    }
     if (!HasRegion()) return false;
     Begin(Operation::Destroy, state);
     return NextFree(state, result, blocksConsumed);
+  }
+  if (pc == kRoomReplace) return RoomReplace(state, result, blocksConsumed);
+  if (pc == kReleaseMain || pc == kReleaseDestroy) {
+    if (QueuedReleases() == 0U) return false;
+    Begin(Operation::Release, state);
+    return NextRelease(state, result, blocksConsumed);
   }
   return false;
 }
@@ -554,9 +758,11 @@ nlohmann::json ObjectBankExtension::CaptureState() const {
   return {{"format", "oot3d_object_bank_extension_v1"}, {"region", HasRegion()},
           {"operation", static_cast<unsigned>(mContinuation.Op)},
           {"awaiting", static_cast<unsigned>(mContinuation.Awaiting)},
-          {"index", mContinuation.Index}, {"caller", EncodeCaller(mContinuation.Caller)},
+          {"index", mContinuation.Index}, {"buffer", mContinuation.Buffer},
+          {"caller", EncodeCaller(mContinuation.Caller)},
           {"stats", {mStats.Lookups, mStats.ExtraHits, mStats.Loads, mStats.LoadFailures,
-                     mStats.Frees, mStats.RoomMarks, mStats.Sweeps, mStats.NativeCalls}}};
+                     mStats.Frees, mStats.RoomMarks, mStats.Sweeps, mStats.NativeCalls,
+                     mStats.LoadingCancels, mStats.DeferredQueued, mStats.DeferredReleases}}};
 }
 
 bool ObjectBankExtension::RestoreState(const nlohmann::json &saved, std::string *error) {
@@ -566,17 +772,34 @@ bool ObjectBankExtension::RestoreState(const nlohmann::json &saved, std::string 
       throw std::runtime_error("object bank snapshot does not match guest memory");
     const auto op = saved.at("operation").get<unsigned>();
     const auto call = saved.at("awaiting").get<unsigned>();
-    if (op > 3U || call > 3U) throw std::runtime_error("object bank snapshot phase is invalid");
+    if (op > 6U || call > 4U) throw std::runtime_error("object bank snapshot phase is invalid");
+    // Snapshots before the 3.1 lifetime fixes have no buffer and 8 counters.
     Continuation next{static_cast<Operation>(op), static_cast<Call>(call),
-                      saved.at("index").get<std::uint32_t>(), DecodeCaller(saved.at("caller"))};
+                      saved.at("index").get<std::uint32_t>(),
+                      saved.value("buffer", std::uint32_t{0}), DecodeCaller(saved.at("caller"))};
     if (HasRegion()) {
       Count();
       if (Read8(kRetiring) > 1U || (Read8(kRetiring) != 0U && Read32(kOwner) == 0U))
         throw std::runtime_error("object bank retirement metadata is invalid");
     }
+    QueuedReleases();
     if (next.Op == Operation::Idle) {
       if (next.Awaiting != Call::None || next.Index != 0U)
         throw std::runtime_error("idle object bank snapshot has a continuation");
+    } else if (next.Op == Operation::CancelLoading || next.Op == Operation::RoomReplace ||
+               next.Op == Operation::Release) {
+      const bool release = next.Op == Operation::Release;
+      const bool hook = next.Op == Operation::CancelLoading ? next.Caller.r[15] == kDestroy :
+          next.Op == Operation::RoomReplace ? next.Caller.r[15] == kRoomReplace :
+          next.Caller.r[15] == kReleaseMain || next.Caller.r[15] == kReleaseDestroy;
+      const auto limit = next.Op == Operation::CancelLoading ?
+          kObjectBankNativeSlots + (HasRegion() ? kObjectBankExtraSlots : 0U) :
+          next.Op == Operation::RoomReplace ? 1U : QueuedReleases();
+      if (!hook || next.Index >= limit || next.Caller.r[13] < 0x20U ||
+          !mMemory.IsWritable(next.Caller.r[13] - 0x20U, 0x20U) ||
+          (release ? next.Awaiting != Call::DestroyArchive && next.Awaiting != Call::FreeBuffer :
+              next.Awaiting != Call::DestroyFileRequest && next.Awaiting != Call::FreeBuffer))
+        throw std::runtime_error("object bank snapshot continuation is invalid");
     } else {
       const auto hook = next.Op == Operation::Load ? kResolve :
           next.Op == Operation::Sweep ? kSweep : kDestroy;
@@ -593,13 +816,14 @@ bool ObjectBankExtension::RestoreState(const nlohmann::json &saved, std::string 
         throw std::runtime_error("object bank snapshot retirement index is invalid");
     }
     const auto &stats = saved.at("stats");
-    if (!stats.is_array() || stats.size() != 8U)
+    if (!stats.is_array() || (stats.size() != 8U && stats.size() != 11U))
       throw std::runtime_error("object bank snapshot counters are invalid");
-    ObjectBankExtensionStats decoded{
-        stats[0].get<std::uint64_t>(), stats[1].get<std::uint64_t>(),
-        stats[2].get<std::uint64_t>(), stats[3].get<std::uint64_t>(),
-        stats[4].get<std::uint64_t>(), stats[5].get<std::uint64_t>(),
-        stats[6].get<std::uint64_t>(), stats[7].get<std::uint64_t>()};
+    const auto counter = [&](std::size_t index) {
+      return index < stats.size() ? stats[index].get<std::uint64_t>() : std::uint64_t{0};
+    };
+    ObjectBankExtensionStats decoded{counter(0), counter(1), counter(2), counter(3),
+                                     counter(4), counter(5), counter(6), counter(7),
+                                     counter(8), counter(9), counter(10)};
     mContinuation = next;
     mStats = decoded;
     return true;

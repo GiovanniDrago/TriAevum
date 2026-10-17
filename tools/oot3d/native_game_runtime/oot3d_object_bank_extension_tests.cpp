@@ -23,6 +23,12 @@ constexpr std::uint32_t kStack = 0x02008000U;
 constexpr std::uint32_t kResolve = 0x0033AB24U;
 constexpr std::uint32_t kSweep = 0x002E4FC8U;
 constexpr std::uint32_t kDestroy = 0x0044E778U;
+constexpr std::uint32_t kRoomReplace = 0x003A75F0U;
+constexpr std::uint32_t kReleaseMain = 0x00452430U;
+constexpr std::uint32_t kDestroyFileRequest = 0x0031B99CU;
+constexpr std::uint32_t kDestroyArchive = 0x002F70C4U;
+constexpr std::uint32_t kFree = 0x0034FC6CU;
+constexpr std::uint32_t kNativeSlot = kPlay + 0x3A5CU;
 
 void Require(bool condition, const char *message) {
   if (!condition) { std::cerr << message << '\n'; std::exit(1); }
@@ -176,7 +182,10 @@ void LookupAndDisabled() {
   ExecutionResult result{};
   std::uint32_t blocks = 123U;
   for (const auto pc : ObjectBankExtension::HookPcs()) {
-    Require(!disabled.ShouldObserve(pc) && !disabled.Execute(pc, state, &result, &blocks),
+    // The 3.1 lifetime fixes always look, and leave a foreign frame native.
+    const bool lifetime = pc == kRoomReplace || pc == kDestroy;
+    Require((lifetime || !disabled.ShouldObserve(pc)) &&
+                !disabled.Execute(pc, state, &result, &blocks),
             "disabled empty bank intercepted a hook");
   }
   Require(empty.RegionCount() == 0U && blocks == 123U && Same(state, original),
@@ -210,7 +219,7 @@ void LookupAndDisabled() {
   }
   Require(!f.Memory.IsExecutable(kBase, kObjectBankExtensionSize), "object region is executable");
   const auto hooks = ObjectBankExtension::HookPcs();
-  Require(hooks.size() == 31U && std::is_sorted(hooks.begin(), hooks.end()) &&
+  Require(hooks.size() == 34U && std::is_sorted(hooks.begin(), hooks.end()) &&
               std::adjacent_find(hooks.begin(), hooks.end()) == hooks.end(),
           "hook list is not complete/sorted/unique");
   Require(!f.Runtime.ShouldObserve(0x006063A4U), "payload pc was exposed as a runtime hook");
@@ -484,6 +493,7 @@ void TeardownAndSnapshots() {
   restored.Seed(1, 124U, 0U);
   restored.Seed(2, 125U);
   state = Caller(kDestroy);
+  state.r[5] = kPlay;
   const auto destroyCaller = state;
   Require(restored.Execute(kDestroy, state) && state.r[15] == 0x002F70C4U &&
               state.r[0] == Fixture::Slot(0) + 0x10U, "teardown did not destroy first native archive");
@@ -568,6 +578,140 @@ void RetirementSnapshotAndReuse() {
               restored.R8(kBase + 0xA04U) == 0U,
           "reused slot retained stale retirement state");
 }
+// Runs a continuation to its end; returns each native call (entry, r0).
+std::vector<std::pair<std::uint32_t, std::uint32_t>>
+Drive(Fixture &f, std::uint32_t pc, GuestState &state, const GuestState &caller) {
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> calls;
+  while (f.Runtime.Pending()) {
+    calls.emplace_back(state.r[15], state.r[0]);
+    Returned(state, caller);
+    f.Execute(pc, state);
+  }
+  return calls;
+}
+
+void LoadingCancelAtTeardown() {
+  // 3.1 0x00606AC8: loads still in flight at scene teardown, native and
+  // extra, release their file request and buffer before 3.0's teardown.
+  Fixture f;
+  f.Bank();
+  const auto native = kNativeSlot + 2U * 0x80U;
+  f.W16(native, static_cast<std::uint16_t>(-0x10));
+  f.W32(native + 4U, kPlay + 0x12000U);
+  f.W32(native + 8U, 0x55U);
+  f.W32(native + 0xCU, kPlay + 0x13000U);
+  f.W8(kBase, 2U);
+  f.Seed(0, 0x20U);
+  f.Seed(1, static_cast<std::uint16_t>(-0x21));
+  auto state = Caller(kDestroy);
+  state.r[5] = kPlay;
+  const auto caller = state;
+  Require(f.Execute(kDestroy, state), "teardown with loading slots stayed native");
+  const auto calls = Drive(f, kDestroy, state, caller);
+  const std::vector<std::pair<std::uint32_t, std::uint32_t>> expected{
+      {kDestroyFileRequest, kPlay + 0x13000U}, {kFree, kPlay + 0x12000U},
+      {kFree, kPlay + 0x10200U},
+      {kDestroyArchive, Fixture::Slot(0) + 0x10U}, {kFree, kPlay + 0x10000U}};
+  Require(calls == expected, "teardown released loads in the wrong order or with the wrong arguments");
+  auto continuation = caller;
+  continuation.r[14] = 0x0044E784U;
+  continuation.r[15] = 0x0046053CU;
+  Require(Same(state, continuation), "teardown did not resume the native continuation");
+  Require(f.R16(native) == 0U && f.R32(native + 4U) == 0U && f.R32(native + 8U) == 0U &&
+              f.R32(native + 0xCU) == 0U && f.R16(Fixture::Slot(1)) == 0U &&
+              f.Runtime.Stats().LoadingCancels == 2U,
+          "loading records were not cleared");
+}
+
+void LoadingCancelWithoutExtension() {
+  Fixture f;
+  f.Runtime.SetEnabled(false);
+  auto state = Caller(kDestroy);
+  state.r[5] = kPlay;
+  const auto caller = state;
+  Require(!f.Execute(kDestroy, state) && Same(state, caller),
+          "teardown without loads left the native block");
+  f.W16(kNativeSlot, static_cast<std::uint16_t>(-7));
+  f.W32(kNativeSlot + 0xCU, kPlay + 0x13000U);
+  Require(f.Execute(kDestroy, state) && state.r[15] == kDestroyFileRequest &&
+              state.r[0] == kPlay + 0x13000U, "loading native slot was not released");
+  Returned(state, caller);
+  Require(!f.Execute(kDestroy, state) && Same(state, caller) && !f.Runtime.Pending() &&
+              f.R16(kNativeSlot) == 0U && f.R32(kNativeSlot + 0xCU) == 0U &&
+              !f.Memory.IsWritable(kBase, kObjectBankExtensionSize),
+          "teardown without the extension did not return to its native block untouched");
+}
+
+void RoomReplaceLifetime() {
+  Fixture f;
+  f.Runtime.SetEnabled(false);
+  const auto record = kNativeSlot + 5U * 0x80U;
+  // 3.1 0x006069BC: a replaced slot whose file request is still open.
+  f.W32(record + 4U, kPlay + 0x14000U);
+  f.W32(record + 8U, 0x77U);
+  f.W32(record + 0xCU, kPlay + 0x15000U);
+  auto state = Caller(kRoomReplace);
+  state.r[4] = record;
+  state.r[9] = kPlay;
+  const auto caller = state;
+  Require(f.Execute(kRoomReplace, state), "open request on a replaced slot stayed native");
+  const auto calls = Drive(f, kRoomReplace, state, caller);
+  const std::vector<std::pair<std::uint32_t, std::uint32_t>> expected{
+      {kDestroyFileRequest, kPlay + 0x15000U}, {kFree, kPlay + 0x14000U}};
+  auto resumed = caller;
+  resumed.r[15] = 0x003A763CU;
+  Require(calls == expected && Same(state, resumed) && f.R32(record + 4U) == 0U &&
+              f.R32(record + 8U) == 0U && f.R32(record + 0xCU) == 0U,
+          "replaced slot was not released before the loop continued");
+
+  // Room on the native deferred list: native.
+  f.W32(record + 8U, 0x77U);
+  f.W16(kPlay + 0x43DCU, 18U);
+  state = caller;
+  Require(!f.Execute(kRoomReplace, state) && Same(state, caller) &&
+              !f.Memory.IsWritable(kObjectBankReleaseQueueBase, kObjectBankReleaseQueueSize),
+          "replacement with room on the native list left native code");
+  Require(!f.Runtime.ShouldObserve(kReleaseMain), "empty release queue was observed");
+
+  // 3.1 0x00606A1C: the native list is full; the archive goes to the queue.
+  f.W16(kPlay + 0x43DCU, 19U);
+  for (std::uint32_t offset = 0; offset < 0x70U; offset += 4U)
+    f.W32(record + 0x10U + offset, 0xA0000000U + offset);
+  f.W32(record + 0x28U, kPlay + 0x16000U);
+  f.W32(record + 4U, kPlay + 0x16000U);
+  Require(f.Execute(kRoomReplace, state) && Same(state, resumed) &&
+              f.R16(kPlay + 0x43DEU) == 1U && f.R32(record + 4U) == 0U &&
+              f.R32(record + 8U) == 0U && f.R8(kObjectBankReleaseQueueBase) == 1U &&
+              f.R32(kObjectBankReleaseQueueBase + 0x10U) == 0xA0000000U &&
+              f.R32(kObjectBankReleaseQueueBase + 0x28U) == kPlay + 0x16000U &&
+              f.Runtime.Stats().DeferredQueued == 1U &&
+              !f.Memory.IsExecutable(kObjectBankReleaseQueueBase, kObjectBankReleaseQueueSize),
+          "archive overflowing the native list was not queued");
+
+  // Play_Main releases the queue; the pending release survives a snapshot.
+  Require(f.Runtime.ShouldObserve(kReleaseMain), "queued archive is not released");
+  state = Caller(kReleaseMain);
+  const auto mainCaller = state;
+  Require(f.Execute(kReleaseMain, state) && state.r[15] == kDestroyArchive &&
+              state.r[0] == kObjectBankReleaseQueueBase + 0x10U,
+          "queued archive destructor was not called");
+  ObjectBankExtension replacement(f.Memory);
+  std::string error;
+  Require(replacement.RestoreState(f.Runtime.CaptureState(), &error) && replacement.Pending(),
+          "pending release did not restore");
+  ExecutionResult result{};
+  std::uint32_t blocks = 0;
+  Returned(state, mainCaller);
+  Require(replacement.Execute(kReleaseMain, state, &result, &blocks) && state.r[15] == kFree &&
+              state.r[0] == kPlay + 0x16000U,
+          "released archive's buffer was not freed");
+  Returned(state, mainCaller);
+  Require(!replacement.Execute(kReleaseMain, state, &result, &blocks) && Same(state, mainCaller) &&
+              !replacement.Pending() && f.R8(kObjectBankReleaseQueueBase) == 0U &&
+              replacement.Stats().DeferredReleases == 1U &&
+              !replacement.ShouldObserve(kReleaseMain),
+          "release did not return to the native Play_Main block");
+}
 } // namespace
 
 int main() {
@@ -580,5 +724,8 @@ int main() {
   SceneAndPauseGates();
   TeardownAndSnapshots();
   RetirementSnapshotAndReuse();
+  LoadingCancelAtTeardown();
+  LoadingCancelWithoutExtension();
+  RoomReplaceLifetime();
   std::cout << "SingleScreen 3.0 object bank extension tests passed\n";
 }

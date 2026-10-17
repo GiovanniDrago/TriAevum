@@ -26,6 +26,12 @@ inline constexpr std::uint32_t kTopScreenQuickPutAwayContinue = 0x003C4B00U;
 // the end of a landing. 3.0 (0x005F48EC) first replays the landing as a roll.
 inline constexpr std::uint32_t kTopScreenLandingRollSite = 0x004BBE10U;
 inline constexpr std::uint32_t kTopScreenLandingRollContinue = 0x004BBCFCU;
+// BgYdanSp_FloorWebIdle 0x0019AB08 `ldr r0, [r8, #0xAC]; ldr r1, [r0, #0x284];
+// cmp r1, #0x6B; cmpne r1, #0x95; bne 0x0019AD1C`: the Deku Tree floor web
+// gives way only under a landing action. With the landing roll, SingleScreen
+// 3.1 (0x0019AB18 -> 0x005F4DA0) also lets the roll's action break it.
+inline constexpr std::uint32_t kTopScreenLandingRollWebSite = 0x0019AB08U;
+inline constexpr std::uint32_t kTopScreenLandingRollWebBreak = 0x0019AB1CU;
 
 // Roll Dash. 3.0 computes the dash state once per frame
 // (0x005D8BA8) and the player update consumes it; here it is computed at the
@@ -42,6 +48,12 @@ inline constexpr std::uint32_t kTopScreenDashRollSpeedSite = 0x002BE8B0U;
 // Host-reserved guest region for zelda_link_ext.zar, outside every CTR
 // mapping: the image ends below 0x00600000 and the heap starts at 0x08000000.
 inline constexpr std::uint32_t kTopScreenLinkExtBase = 0x06000000U;
+// SingleScreen 3.1 cross-fades Link between the dash and the normal run
+// (0x002BE8B8 -> 0x005D11A8): the previous animation's frame is decoded into
+// a joint buffer the native animation context reads later in the frame.
+// One host-reserved page, mapped on first use; 25 joints of 16 bytes.
+inline constexpr std::uint32_t kTopScreenDashBlendBase = 0x06210000U;
+inline constexpr std::uint32_t kTopScreenDashBlendSize = 0x1000U;
 // ZAR_GetCSABByIndex (r0 archive, r1 index), the leaf 3.0 redirects
 // (0x0034807C -> 0x005D10A8). Link's archive table stays native: the archive
 // destructor (0x002F7188) frees every table entry through the allocator.
@@ -75,11 +87,14 @@ public:
   std::uint64_t QuickPutAways() const noexcept { return mQuickPutAways; }
   std::uint64_t LandingRolls() const noexcept { return mLandingRolls; }
   std::uint64_t LandingRollReturns() const noexcept { return mLandingRollReturns; }
+  std::uint64_t LandingRollWebBreaks() const noexcept { return mLandingRollWebBreaks; }
   std::uint64_t DashQueries() const noexcept { return mDashQueries; }
   std::uint64_t DashFrames() const noexcept { return mDashFrames; }
   std::uint64_t LinkExtAnswers() const noexcept { return mLinkExtAnswers; }
   std::uint64_t LinkExtEntryRestores() const noexcept { return mLinkExtEntryRestores; }
   std::uint64_t DashSpeedApplications() const noexcept { return mDashSpeedApplications; }
+  std::uint64_t DashBlends() const noexcept { return mDashBlends; }
+  std::uint64_t DashBlendPoses() const noexcept { return mDashBlendPoses; }
   std::uint64_t ReticleCasts() const noexcept { return mReticleCasts; }
   std::uint64_t ReticleHits() const noexcept { return mReticleHits; }
   // Empty when the animations are available or not requested.
@@ -89,12 +104,23 @@ private:
   bool LandingRoll(oot3d::recomp::a32::GuestState &state,
                    oot3d::recomp::a32::ExecutionResult *result,
                    std::uint32_t *blocksConsumed);
+  bool LandingRollWeb(oot3d::recomp::a32::GuestState &state,
+                      oot3d::recomp::a32::ExecutionResult *result,
+                      std::uint32_t *blocksConsumed);
   bool DashStateEntry(oot3d::recomp::a32::GuestState &state,
                       oot3d::recomp::a32::ExecutionResult *result,
                       std::uint32_t *blocksConsumed);
   bool DashSpeedSite(std::uint32_t pc, oot3d::recomp::a32::GuestState &state,
                      oot3d::recomp::a32::ExecutionResult *result,
                      std::uint32_t *blocksConsumed);
+  // FUN_002be660's animation call with 3.1's roll scale and cross-fade.
+  bool DashRollSite(oot3d::recomp::a32::GuestState &state,
+                    oot3d::recomp::a32::ExecutionResult *result,
+                    std::uint32_t *blocksConsumed);
+  bool DashRollStep(oot3d::recomp::a32::GuestState &state,
+                    oot3d::recomp::a32::ExecutionResult *result,
+                    std::uint32_t *blocksConsumed);
+  bool EnsureDashBlendRegion();
   bool ReticleEntry(oot3d::recomp::a32::GuestState &state,
                     oot3d::recomp::a32::ExecutionResult *result,
                     std::uint32_t *blocksConsumed);
@@ -133,6 +159,24 @@ private:
   // 3.0 0x0060D2C0 (run) and 0x0060D2C4 (roll) speed scales.
   float mRunScale = 1.0F;
   float mRollScale = 1.0F;
+  // 3.1 cross-fade (0x0060F4D4..0x0060F4E8, ratio 0x0060D8BC): the last call's frame, archive,
+  // animation index and dash answer, the animation faded from, the weight,
+  // the last speed and the speed ratio at the switch.
+  std::uint32_t mBlendFrame = 0;
+  std::uint32_t mBlendArchive = 0;
+  std::uint32_t mBlendIndex = 0;
+  bool mBlendDash = false;
+  bool mBlendFromDash = false;
+  float mBlendWeight = 0.0F;
+  float mBlendSpeed = 0.0F;
+  float mBlendRatio = 1.0F;
+  bool mBlendRegionFailed = false;
+  // The animation call and the pose fade's native calls return to the site.
+  enum class RollStep : std::uint8_t { None, Animate, DecodeEntry, Decode, InterpEntry };
+  RollStep mRollStep = RollStep::None;
+  oot3d::recomp::a32::GuestState mRollCaller{};
+  std::uint32_t mRollSource = 0; // the faded-from animation entry
+  std::uint32_t mRollEntry = 0;  // the animation context entry
   // zelda_link_ext.zar image; the region is verified again after a load.
   std::filesystem::path mLinkExtPath;
   bool mLinkExtAttempted = false;
@@ -165,11 +209,14 @@ private:
   std::uint64_t mQuickPutAways = 0;
   std::uint64_t mLandingRolls = 0;
   std::uint64_t mLandingRollReturns = 0;
+  std::uint64_t mLandingRollWebBreaks = 0;
   std::uint64_t mDashQueries = 0;
   std::uint64_t mDashFrames = 0;
   std::uint64_t mLinkExtAnswers = 0;
   std::uint64_t mLinkExtEntryRestores = 0;
   std::uint64_t mDashSpeedApplications = 0;
+  std::uint64_t mDashBlends = 0;
+  std::uint64_t mDashBlendPoses = 0;
 };
 
 } // namespace Oot3dNativeGame
