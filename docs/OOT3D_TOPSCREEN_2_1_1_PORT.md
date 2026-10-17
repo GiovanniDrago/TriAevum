@@ -344,10 +344,10 @@ duplicate swap/unassign, input ownership, cancel/clear timing, callback
 reentrancy, config changes, page/age/reset cleanup and native call restoration.
 Presentation tests check frame/cross/crops, confirmation animation, exact
 ring geometry/material, the A-hold interval and live placement, and lifecycle
-cleanup. The original legend also has a third entry, Y View Model. Its submode (0x005D24FC / 0x005D2274 /
-0x005D21E8, transform wrapper 0x005D2734 at native 0x00425880) is ported
-only from the Gear page (see "SingleScreen 3.0 HUD, camera and frontend"):
-no Y legend or handler is advertised in this picker.
+cleanup. When the picked action has an item with a model (0x005D289C), the
+legend gains a third entry, [Y] View Model, and the line is refitted to the
+panel. Y then opens the View Model in mode 1 (see "SingleScreen 3.0 HUD,
+camera and frontend").
 Rendered parity, the complete original modal including that viewer, and
 end-to-end host Preview persistence are not established by these tests.
 
@@ -461,9 +461,37 @@ minimap and Save routes only in the gameplay pause state.
   scene, the 3D model of the Gear cursor item with its description, keeps
   the upper screen: `TopScreenPauseDrawRoutingState::NativeSceneRequested`
   makes `ResolveTopScreenPauseDrawAction` return NativeDraw, which also
-  stops the page redraw. Not ported: mode 1 (Y in the Items D-pad picker,
-  0x005D29E4 -> 0x005D24FC(1, item from 0x005D0B2C)) with its equipment
-  restore and the Items hint's Y View Model legend (0x005E9A58).
+  stops the page redraw.
+- **View Model, D-pad picker** (mode 1: 0x005D2CF0 in the picker
+  0x005D29E4). In Choosing, a new Y with no direction or A/B opens it for
+  the picked action's item (0x005D0B2C: none for View, the minimap or the
+  Kokiri Boots; 0x3D shows 0x7B or 0x55 by the carried sword) when the
+  preview table 0x004D2EC0 has an object for it: 0x002E9B00(item) previews
+  that item and the previous preview (0x004FC6AC) is kept. The picker stays
+  frozen while the viewer runs from its own held edge; X zooms in at once,
+  Y only after its entry release. B closes and restores the kept preview
+  (0x005D21E8(1): 0x002E9B00(-1) when there was none, else 0x002E112C on
+  the model); a picker closed from outside, an unloading model or leaving
+  the page closes without restoring. In the shortcut column only the
+  Ocarina and the all-boots rows can have an item.
+- **View Model overlays** (0x005E0E6C). While the viewer is open, every
+  other overlay of that function (tab hints, shortcut column, picker,
+  Items hint) gives way to 0x005E9C3C: "[X] Zoom In  [Y] Zoom Out  [D-pad]
+  Pan  [B] Back" at scale 0.75 (narrowed to 360), centred on native X 160
+  over a custom_ui01 nine-slice panel (0x005E70A4) 32 wider and 24 high at
+  Y 210. The D-pad glyph 0x16 keeps the old (434,219) crop in its record;
+  0x005E517C remaps it to (385,108). On the Gear page, after 90 updates on
+  one cursor slot (0x006102C0; slots 0..26, a cursor owner 0x00504480 and a
+  viewable preview), 0x005E2BA8 draws "[X] View Model" (0x005E9A58: button
+  0.85, text 0.62, projection 0.8) one pixel below the cursor bounds of
+  0x005CB298, centred and kept within native X 2..318. It pulses with
+  0x006102C4 (0.73 + 0.27 x triangle over 90 updates), fades in over 12
+  updates, follows "Show Items Screen Hints" (setting byte 0x18) and is
+  hidden for the update that closes the View Model (0x0060F224).
+- Not ported: 3.0's Gear-page A hold (0x005E4740: 15 updates on a sword,
+  shield, tunic or boots slot open the D-pad picker through 0x005D0878 ->
+  0x005D2014(action | 0x1000, 3)), so mode 1 is reachable only from the
+  Items shortcut column.
 - Not ported: 3.0's Save-screen "Mod Options" entry and its resource
   bookkeeping (0x0041CD40..0x0041CE40; the F1 panel replaces it), the 1 px
   File Select/Name Entry quad trims, the PauseSystemMenu y 202 -> 162 words

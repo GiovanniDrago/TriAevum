@@ -917,6 +917,196 @@ void TestViewModel(Oot3dNativeGame::NativeA32Memory &memory) {
   WriteWord(memory, 0x0050AF10U, 0U);
 }
 
+// Mode 1 (Y in the picker) and the Gear legend counters; after TestViewModel,
+// whose sine table and item model fixture it reuses.
+void TestPickerViewModel(Oot3dNativeGame::NativeA32Memory &memory) {
+  using namespace Oot3dNativeGame;
+  std::string error;
+  Require(memory.MapRegion({"view-model-preview", 0x004D2000U, 0x1000U, true, false, {}}, &error),
+          "cannot map the item preview table fixture");
+  constexpr std::uint32_t model = kHeap + 0x20000U;
+  constexpr std::uint32_t matrix = kHeap + 0x20800U;
+  constexpr std::uint32_t save = 0x00587958U;
+  Require(memory.Write8(model + 0x11DU, 1U) && memory.Write8(model + 0x11AU, 0U) &&
+              memory.Write8(model + 0x11BU, 0U) && memory.Write8(0x004D2EC0U + 8U, 0x20U) &&
+              memory.Write8(0x0053CC44U + 7U, 0xFFU) && memory.Write8(0x0053CC44U + 8U, 3U) &&
+              memory.Write8(save + 0x8CU + 3U, 8U),
+          "cannot write the picker View Model fixture");
+  WriteWord(memory, 0x004FC67CU, model);
+  WriteWord(memory, 0x00504484U, 0U);
+  WriteWord(memory, 0x005655ACU, 0U);
+  TopScreenWideItemsRuntime runtime(memory);
+  struct NativeCall { std::uint32_t Pc, R0, R1; };
+  std::vector<NativeCall> calls;
+  const auto update = [&](std::uint32_t held, std::uint32_t lanes = 0U) {
+    calls.clear();
+    WriteWord(memory, 0x0050AF10U, held);
+    for (const auto address : {0x0050AF14U, 0x0050AF18U, 0x0050AF2CU, 0x0050AF30U})
+      WriteWord(memory, address, lanes);
+    auto state = CallerState(kTopScreenItemsUpdateBoundary);
+    oot3d::recomp::a32::ExecutionResult result;
+    std::uint32_t sound = 0;
+    for (unsigned n = 0; n < 20; ++n) {
+      runtime.ExecuteItemsUpdate(state, &result, nullptr);
+      if (result.pc == kTopScreenItemsInsetNextCall) return sound;
+      if (result.pc == 0x0037547CU) sound = state.r[0];
+      else calls.push_back({result.pc, state.r[0], state.r[1]});
+    }
+    Require(false, "picker View Model update did not finish");
+    return 0U;
+  };
+  const auto called = [&](std::uint32_t pc, std::uint32_t r0, std::uint32_t r1) {
+    for (const auto &call : calls)
+      if (call.Pc == pc && call.R0 == r0 && (pc == 0x002E9B00U || call.R1 == r1)) return true;
+    return false;
+  };
+  const auto nativeCalls = [&] {
+    return std::count_if(calls.begin(), calls.end(), [](const NativeCall &call) {
+      return call.Pc == 0x002E9B00U || call.Pc == 0x002E112CU;
+    });
+  };
+  const auto zoom = [&] {
+    for (std::uint32_t lane = 0; lane < 12U; ++lane) WriteFloat(memory, matrix + lane * 4U, 7.0F);
+    WriteFloat(memory, matrix + 0x24U, 0.0F);
+    auto state = CallerState(kTopScreenViewModelTransformBlock);
+    state.r[6] = kHeap + 0x20400U;
+    state.r[8] = matrix;
+    oot3d::recomp::a32::ExecutionResult result;
+    Require(runtime.ExecuteViewModelTransform(state, &result, nullptr),
+            "open picker View Model left the native transform");
+    return ReadFloat(memory, matrix) / ReadFloat(memory, model + 0x14U);
+  };
+  // 0x005D2014 opens the picker after a 15-update A hold on the first row.
+  const auto open = [&](const TopScreenItemsShortcutOrder &order) {
+    runtime.Reset();
+    runtime.SetShortcutOrder(order);
+    WriteWord(memory, kItemsState, 2);
+    WriteWord(memory, 0x0058795CU, 0U);
+    for (const auto address : {0x00506770U, 0x00506774U, 0x00506758U, 0x0050677CU})
+      WriteWord(memory, address, 0U);
+    WriteWord(memory, 0x0050AF10U, 0U);
+    for (const auto address : {0x0050AF14U, 0x0050AF18U, 0x0050AF2CU}) WriteWord(memory, address, 0U);
+    WriteWord(memory, 0x0050AF30U, 0x20U);
+    auto state = CallerState(kTopScreenItemsUpdateBoundary);
+    oot3d::recomp::a32::ExecutionResult result;
+    for (unsigned n = 0; n < 20 && result.pc != kTopScreenItemsInsetNextCall; ++n)
+      runtime.ExecuteItemsUpdate(state, &result, nullptr);
+    WriteWord(memory, 0x0050AF18U, 1U);
+    WriteWord(memory, 0x0050AF10U, 1U);
+    for (unsigned frame = 0; frame < 16; ++frame) {
+      auto hold = CallerState(kTopScreenItemsUpdateBoundary);
+      result = {};
+      for (unsigned n = 0; n < 20 && result.pc != kTopScreenItemsInsetNextCall; ++n)
+        runtime.ExecuteItemsUpdate(hold, &result, nullptr);
+    }
+    Require(runtime.DpadPicker().Active(), "A hold did not open the picker");
+    for (unsigned frame = 0; frame < 8; ++frame) update(0U);
+    Require(runtime.DpadPicker().Phase == TopScreenDpadPickerPhase::Choosing,
+            "picker did not settle on Choosing");
+  };
+  constexpr TopScreenItemsShortcutOrder ocarinaFirst{2, 1, 0, 3};
+
+  // The Ocarina row: 0x005D289C adds [Y] View Model, and Y previews item 8.
+  WriteWord(memory, 0x004FC6ACU, 0x50U);
+  open(ocarinaFirst);
+  Require(runtime.DpadPickerDraw().ViewModel, "picker legend has no [Y] for the Ocarina");
+  Require(update(0x800U) == 0x01000497U && runtime.ViewModelActive() && called(0x002E9B00U, 8U, 0U) &&
+              runtime.DpadPicker().Phase == TopScreenDpadPickerPhase::Choosing,
+          "Y did not open mode 1 with 0x002E9B00(8) and the entry sound");
+  WriteWord(memory, 0x004FC6ACU, 0x20U); // 0x002E9B00 stores the preview object.
+  const auto frame = runtime.DpadPicker().Frame;
+  const auto assignments = runtime.DpadPicker().Assignments;
+  // Y opened mode 1, so it zooms out only after its release; X zooms at once.
+  update(0x800U);
+  Require(zoom() == 1.0F, "the entry Y zoomed out before its release");
+  update(0x400U);
+  Require(zoom() == 1.04F, "X did not zoom in at once in mode 1");
+  update(0x800U);
+  Require(zoom() == 1.0F, "released Y did not zoom out");
+  update(0x40U, 0xFFFFU);
+  for (const auto address : {0x0050AF14U, 0x0050AF18U, 0x0050AF2CU, 0x0050AF30U})
+    Require(ReadWord(memory, address) == 0U, "mode 1 leaked native input");
+  Require(runtime.DpadPicker().Frame == frame && runtime.DpadPicker().Assignments == assignments &&
+              runtime.DpadPicker().Phase == TopScreenDpadPickerPhase::Choosing,
+          "the picker advanced or assigned under mode 1");
+  // B closes and restores the item previewed at entry (0x002E112C).
+  Require(update(2U) == 0x01000496U && !runtime.ViewModelActive() && called(0x002E112CU, model, 0x50U) &&
+              ReadWord(memory, 0x004FC6ACU) == 0x50U && runtime.DpadPicker().Active(),
+          "B did not restore the previewed item and return to the picker");
+  update(2U);
+  Require(runtime.DpadPicker().Phase == TopScreenDpadPickerPhase::Choosing,
+          "the B that closed the View Model also closed the picker");
+  // No previewed item at entry: B clears the preview through 0x002E9B00(-1).
+  update(0U);
+  WriteWord(memory, 0x004FC6ACU, 0xFFFFFFFFU);
+  update(0x800U);
+  WriteWord(memory, 0x004FC6ACU, 0x20U);
+  update(0U);
+  Require(update(2U) == 0x01000496U && called(0x002E9B00U, 0xFFFFFFFFU, 0U),
+          "B did not clear a preview that had no item at entry");
+  // An unchanged preview needs no restore.
+  update(0U);
+  WriteWord(memory, 0x004FC6ACU, 0x20U);
+  update(0x800U);
+  update(0U);
+  Require(update(2U) == 0x01000496U && nativeCalls() == 0, "B restored an unchanged preview");
+  // A picker closed from outside closes mode 1 without a restore.
+  update(0U);
+  WriteWord(memory, 0x004FC6ACU, 0x50U);
+  update(0x800U);
+  WriteWord(memory, 0x004FC6ACU, 0x20U);
+  runtime.CancelDpadPicker();
+  update(0U);
+  Require(!runtime.ViewModelActive() && !called(0x002E112CU, model, 0x50U) &&
+              ReadWord(memory, 0x004FC6ACU) == 0x20U,
+          "closing the picker kept mode 1 or restored the preview");
+  // No item model in the preview table, and actions without an item.
+  open(ocarinaFirst);
+  Require(memory.Write8(0x004D2EC0U + 8U, 0x8AU), "cannot write the preview table");
+  Require(update(0x800U) == 0U && !runtime.ViewModelActive() && nativeCalls() == 0,
+          "Y opened an item without a preview object");
+  Require(memory.Write8(0x004D2EC0U + 8U, 0x20U), "cannot write the preview table");
+  open(kTopScreenItemsShortcutIdentity);
+  Require(!runtime.DpadPickerDraw().ViewModel && update(0x800U) == 0U && !runtime.ViewModelActive(),
+          "the minimap action offered a View Model");
+  runtime.Reset();
+  WriteWord(memory, kItemsState, 0U);
+
+  // 0x005E46A0 / 0x005E2B10: the Gear legend after 90 updates on one slot.
+  WriteWord(memory, 0x00504484U, 2U);
+  WriteWord(memory, 0x0050448CU, 5U);
+  WriteWord(memory, 0x00504480U, kHeap + 0x21000U);
+  WriteWord(memory, 0x004FC6ACU, 0x3BU);
+  std::uint32_t fade = 0, pulse = 0;
+  for (unsigned n = 0; n < 91; ++n) update(0U);
+  Require(!runtime.GearViewModelLegend(&fade, &pulse), "Gear legend appeared before 90 updates");
+  update(0U);
+  Require(runtime.GearViewModelLegend(&fade, &pulse) && fade == 1U && pulse == 92U,
+          "Gear legend did not fade in after 90 updates on one slot");
+  for (unsigned n = 0; n < 30; ++n) update(0U);
+  Require(runtime.GearViewModelLegend(&fade, &pulse) && fade == 12U, "Gear legend fade is not capped");
+  update(0x400U);
+  Require(runtime.ViewModelActive() && !runtime.GearViewModelLegend(&fade, &pulse),
+          "Gear legend stayed under the View Model");
+  update(0U);
+  update(2U);
+  Require(!runtime.GearViewModelLegend(&fade, &pulse), "Gear legend skipped the closing update");
+  update(0U);
+  Require(runtime.GearViewModelLegend(&fade, &pulse), "Gear legend did not return after the View Model");
+  for (const auto [address, value] : std::array<std::array<std::uint32_t, 2>, 3>{
+           {{0x004FC6ACU, 0x8AU}, {0x0050448CU, 0x1BU}, {0x00504480U, 0U}}}) {
+    const auto previous = ReadWord(memory, address);
+    WriteWord(memory, address, value);
+    Require(!runtime.GearViewModelLegend(&fade, &pulse), "Gear legend ignored a 0x005E2B10 condition");
+    WriteWord(memory, address, previous);
+  }
+  WriteWord(memory, 0x0050448CU, 6U);
+  update(0U);
+  Require(!runtime.GearViewModelLegend(&fade, &pulse), "Gear legend survived a cursor move");
+  WriteWord(memory, 0x00504484U, 0U);
+  WriteWord(memory, 0x0050AF10U, 0U);
+}
+
 void TestShortcutRuntime(Oot3dNativeGame::NativeA32Memory &memory) {
   using namespace Oot3dNativeGame;
   TopScreenWideItemsRuntime runtime(memory);
@@ -1454,6 +1644,7 @@ int main() {
   TestDpadPickerRuntime(memory);
   TestShortcutInputOwnership(memory);
   TestViewModel(memory);
+  TestPickerViewModel(memory);
   std::cout << "SingleScreen 3.0 wide page runtime tests passed\n";
   return 0;
 }

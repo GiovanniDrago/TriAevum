@@ -43,8 +43,14 @@ constexpr std::uint32_t kViewModel = 0x004FC67CU;
 constexpr std::uint32_t kViewEquipment = 0x004FC6ACU;
 // 0x002FCAD4 reads 0x0050446C+0x18, this same word, so Gear is active at 2.
 constexpr std::uint32_t kGearPageState = 0x00504484U;
+constexpr std::uint32_t kGearCursorSlot = 0x0050448CU;
 constexpr std::uint32_t kCirclePadX = 0x005655ACU; // s16, then Y at +2.
 constexpr std::uint32_t kModelHandleCopyOverrideTransform = 0x003721E0U;
+// 0x002E9B00(item) previews an item's model (table 0x004D2EC0, 0x8A none);
+// 0x002E112C(model, object) requests that object directly.
+constexpr std::uint32_t kPreviewItem = 0x002E9B00U;
+constexpr std::uint32_t kPreviewObject = 0x002E112CU;
+constexpr std::uint32_t kItemPreviewObjects = 0x004D2EC0U;
 
 std::uint32_t Word(float value) { return std::bit_cast<std::uint32_t>(value); }
 
@@ -159,6 +165,8 @@ void TopScreenWideItemsRuntime::Reset() noexcept {
   mDpadPickerDraw = {};
   mShortcutDescriptionDirty = false;
   mViewModel = {};
+  mGearLegendBlink = mGearLegendHover = 0U;
+  mGearLegendSlot = -1;
   mAssignmentFrame = 0U;
   mAssignmentDelay = 0;
 }
@@ -229,7 +237,10 @@ bool TopScreenWideItemsRuntime::ExecuteItemsUpdate(
   UpdateItemsInset();
   Begin(mUpdate, kTopScreenItemsUpdateBoundary, state, 0x20U);
   try {
+    // 0x005E461C: the View Model's one-update "just closed" flag.
+    mViewModel.Closed = false;
     UpdateShortcuts(mUpdate);
+    UpdateGearLegend();
     UpdateViewModel(mUpdate);
   } catch (...) {
     mUpdate = {};
@@ -312,6 +323,28 @@ void TopScreenWideItemsRuntime::ReadDpadPickerDrawState() {
   group(TopScreenDpadAction::SwordToggle, 0, 6, 0x3BU);
   group(TopScreenDpadAction::TunicToggle, 8, 7, 0x41U);
   group(TopScreenDpadAction::ShieldToggle, 4, 6, 0x3EU);
+  mDpadPickerDraw.ViewModel = mDpadPicker.Active() && ReadWord(kViewModel) != 0U &&
+                              PickerViewItem() >= 0;
+}
+
+std::int32_t TopScreenWideItemsRuntime::PickerViewItem() {
+  // 0x005D0B2C: the picked action's item through 0x005D09E8. View and the
+  // minimap have none; 0x005D0B4C shows the sword actually carried as 0x3D.
+  const auto action = static_cast<unsigned>(mDpadPicker.Action);
+  if (action <= 1U || mDpadPicker.Action == TopScreenDpadAction::MinimapToggle ||
+      action >= mDpadPickerDraw.Items.size())
+    return -1;
+  std::int32_t item = mDpadPickerDraw.Items[action];
+  if (item == 0x3D) {
+    constexpr std::uint32_t save = 0x00587958U;
+    std::uint8_t flag = 0U;
+    std::uint16_t owned = 0U;
+    if (!mMemory.Read8(save + 0x52U, &flag) || !mMemory.Read16(save + 0xB6U, &owned))
+      throw std::runtime_error("SingleScreen View Model cannot read the sword state");
+    if (flag != 0U) item = 0x7B;
+    else if ((owned & 8U) != 0U) item = 0x55;
+  }
+  return item == 0x44 || item > 0x7B ? -1 : item;
 }
 
 void TopScreenWideItemsRuntime::ReadShortcutDrawState() {
@@ -370,6 +403,18 @@ void TopScreenWideItemsRuntime::UpdateShortcuts(Sequence &sequence) {
   const auto pressed = ReadWord(0x0050AF18U);
   input.Pressed = pressed != 0U ? pressed : ReadWord(0x0050AF14U);
   input.Held = ReadWord(0x0050AF10U);
+  const bool pickerViewModel = mViewModel.Active && mViewModel.Mode == 1U;
+  if (pickerViewModel && mDpadPicker.Active() && input.Active &&
+      mShortcutDraw.Child == mDpadPicker.Child) {
+    // 0x005D2AC0: mode 1 runs inside the picker, which stays frozen. Its
+    // edge uses the picker's previous held buttons (0x0060F230).
+    const auto pressed = input.Held & ~mDpadPicker.PreviousHeld;
+    mDpadPicker.PreviousHeld = input.Held;
+    StepViewModel(sequence, input.Held, pressed);
+    ConsumePickerInput();
+    ReadDpadPickerDrawState();
+    return;
+  }
   if (mDpadPicker.Active()) {
     const bool wasChild = mDpadPicker.Child;
     const auto update = AdvanceTopScreenDpadPicker(
@@ -385,9 +430,16 @@ void TopScreenWideItemsRuntime::UpdateShortcuts(Sequence &sequence) {
     AppendUiSound(sequence, update.Sound);
     if (input.Active) {
       ReadDpadPickerDrawState();
+      if (update.ViewModel) {
+        // 0x005D2CF8: 0x005D24FC(1, item) previews the picked item.
+        const auto item = PickerViewItem();
+        if (item >= 0) EnterViewModel(sequence, 1U, item);
+      }
       return;
     }
   }
+  // 0x005D2A58 / 0x005D2A8C: a closed picker closes mode 1 without restore.
+  if (pickerViewModel) ExitViewModel(sequence, false);
   for (unsigned row = 0; row < 4; ++row)
     input.Available[row] = TopScreenItemsShortcutAvailable(
         ResolveTopScreenItemsShortcutAction(mShortcuts.Order, row), mShortcutDraw);
@@ -476,26 +528,55 @@ void TopScreenWideItemsRuntime::UpdateViewModel(Sequence &sequence) {
   mViewModel.PreviousHeld = held;
   const bool gear = ReadWord(kGearPageState) == 2U;
   if (mViewModel.Active) {
+    // 0x005D28EC: the picker owns mode 1.
+    if (mViewModel.Mode != 2U) return;
     if (gear) StepViewModel(sequence, held, pressed);
-    else ExitViewModel(sequence);
+    else ExitViewModel(sequence, false);
     ConsumePickerInput();
     return;
   }
   if (mDpadPicker.Active() || (pressed & 0x400U) == 0U || !gear) return;
   const auto equipment = static_cast<std::int32_t>(ReadWord(kViewEquipment));
   if (equipment < 0 || equipment == 0x8A) return;
-  EnterViewModel(sequence);
+  EnterViewModel(sequence, 2U, -1);
   ConsumePickerInput();
 }
 
-void TopScreenWideItemsRuntime::EnterViewModel(Sequence &sequence) {
-  // 0x005D24FC(2, -1): no preview item, so no 0x002E9B00 call.
+void TopScreenWideItemsRuntime::UpdateGearLegend() {
+  // 0x005E46A0: pulse every update; hover while the Gear cursor stays put.
+  ++mGearLegendBlink;
+  if (ReadWord(kGearPageState) != 2U) {
+    mGearLegendHover = 0U;
+    mGearLegendSlot = -1;
+    return;
+  }
+  const auto slot = static_cast<std::int32_t>(ReadWord(kGearCursorSlot));
+  if (slot != mGearLegendSlot) {
+    mGearLegendHover = 0U;
+    mGearLegendSlot = slot;
+  } else if (mGearLegendHover <= 0x65U) {
+    ++mGearLegendHover;
+  }
+}
+
+void TopScreenWideItemsRuntime::EnterViewModel(Sequence &sequence, std::uint32_t mode,
+                                               std::int32_t item) {
+  // 0x005D24FC(mode, item): mode 2 (Gear) passes no item; mode 1 (picker)
+  // previews the picked item through 0x002E9B00 and restores it on B.
   const auto model = ReadWord(kViewModel);
   std::uint8_t ready = 0U;
   if (model == 0U || (model & 3U) != 0U) return;
   if (!mMemory.Read8(model + 0x11DU, &ready))
-    throw std::runtime_error("SingleScreen View Model cannot read the Gear item model");
+    throw std::runtime_error("SingleScreen View Model cannot read the item model");
   if (ready == 0U) return;
+  const auto saved = static_cast<std::int32_t>(ReadWord(kViewEquipment));
+  if (item >= 0) {
+    std::uint8_t object = 0U;
+    if (!mMemory.Read8(kItemPreviewObjects + static_cast<std::uint32_t>(item), &object))
+      throw std::runtime_error("SingleScreen View Model cannot read the item preview table");
+    if (object == 0x8AU) return;
+    sequence.Calls.push_back({kPreviewItem, static_cast<std::uint32_t>(item)});
+  }
   std::uint16_t angle = 0U;
   if (!mMemory.Read16(model + 0x118U, &angle))
     throw std::runtime_error("SingleScreen View Model cannot read the model angle");
@@ -505,22 +586,29 @@ void TopScreenWideItemsRuntime::EnterViewModel(Sequence &sequence) {
   mViewModel.Released = false;
   mViewModel.Zoom = 1.0F;
   mViewModel.OffsetX = mViewModel.OffsetY = 0.0F;
+  mViewModel.Mode = mode;
+  mViewModel.EntryButton = mode == 2U ? 0x400U : 0x800U;
+  mViewModel.SavedEquipment = saved;
   mViewModel.Active = true;
   AppendUiSound(sequence, 0x01000497U);
 }
 
 void TopScreenWideItemsRuntime::StepViewModel(Sequence &sequence, std::uint32_t held,
                                               std::uint32_t pressed) {
-  // 0x005D2274: an invalid or unloading (0x8C, 0x8C) model, or B, exits.
+  // 0x005D2274: an invalid or unloading (0x8C, 0x8C) model exits; B exits
+  // and restores the previewed item.
   const auto model = ReadWord(kViewModel);
   std::uint8_t ready = 0U, first = 0U, second = 0U;
   if (model != 0U && (model & 3U) == 0U &&
       (!mMemory.Read8(model + 0x11DU, &ready) || !mMemory.Read8(model + 0x11AU, &first) ||
        !mMemory.Read8(model + 0x11BU, &second)))
-    throw std::runtime_error("SingleScreen View Model cannot read the Gear item model");
-  if (model == 0U || (model & 3U) != 0U || ready == 0U || (first == 0x8CU && second == 0x8CU) ||
-      (pressed & 2U) != 0U) {
-    ExitViewModel(sequence);
+    throw std::runtime_error("SingleScreen View Model cannot read the item model");
+  if (model == 0U || (model & 3U) != 0U || ready == 0U || (first == 0x8CU && second == 0x8CU)) {
+    ExitViewModel(sequence, false);
+    return;
+  }
+  if ((pressed & 2U) != 0U) {
+    ExitViewModel(sequence, true);
     return;
   }
   std::uint16_t stickX = 0U, stickY = 0U;
@@ -532,11 +620,14 @@ void TopScreenWideItemsRuntime::StepViewModel(Sequence &sequence, std::uint32_t 
   if (static_cast<std::uint32_t>(y + 12) > 24U)
     mViewModel.Pitch = static_cast<std::int16_t>(
         std::clamp(mViewModel.Pitch + y * 512 / -105, -0x3800, 0x3800));
-  // X entered the View Model, so it zooms only after its first release.
-  if ((held & 0x400U) == 0U) mViewModel.Released = true;
-  if ((held & 0x400U) != 0U && mViewModel.Released)
+  // X zooms in, Y out; the button that opened the View Model only after
+  // its first release.
+  const auto entry = mViewModel.EntryButton;
+  if ((held & entry) == 0U) mViewModel.Released = true;
+  if ((held & 0x400U) != 0U && (entry != 0x400U || mViewModel.Released))
     mViewModel.Zoom = std::min(mViewModel.Zoom * 1.04F, 2.5F);
-  if ((held & 0x800U) != 0U) mViewModel.Zoom = std::max(mViewModel.Zoom / 1.04F, 0.5F);
+  if ((held & 0x800U) != 0U && (entry != 0x800U || mViewModel.Released))
+    mViewModel.Zoom = std::max(mViewModel.Zoom / 1.04F, 0.5F);
   if ((held & 0x10U) != 0U) mViewModel.OffsetX += 0.4F;
   if ((held & 0x20U) != 0U) mViewModel.OffsetX -= 0.4F;
   if ((held & 0x40U) != 0U) mViewModel.OffsetY += 0.4F;
@@ -548,9 +639,22 @@ void TopScreenWideItemsRuntime::StepViewModel(Sequence &sequence, std::uint32_t 
     throw std::runtime_error("SingleScreen View Model cannot write the model angle");
 }
 
-void TopScreenWideItemsRuntime::ExitViewModel(Sequence &sequence) {
-  // 0x005D21E8: mode 2 never changes the previewed item, so restore is a no-op.
+void TopScreenWideItemsRuntime::ExitViewModel(Sequence &sequence, bool restore) {
+  // 0x005D21E8(restore): put back the item previewed at entry, if it changed.
   mViewModel.Active = false;
+  mViewModel.Closed = true;
+  if (restore) {
+    const auto saved = mViewModel.SavedEquipment;
+    const auto model = ReadWord(kViewModel);
+    if (static_cast<std::int32_t>(ReadWord(kViewEquipment)) != saved && model != 0U) {
+      if (saved < 0) {
+        sequence.Calls.push_back({kPreviewItem, 0xFFFFFFFFU});
+      } else {
+        WriteWord(kViewEquipment, static_cast<std::uint32_t>(saved));
+        sequence.Calls.push_back({kPreviewObject, model, static_cast<std::uint32_t>(saved) & 0xFFU});
+      }
+    }
+  }
   AppendUiSound(sequence, 0x01000496U);
 }
 

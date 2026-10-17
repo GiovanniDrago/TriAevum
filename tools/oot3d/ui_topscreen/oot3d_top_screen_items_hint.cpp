@@ -234,7 +234,7 @@ struct PickerGlyph {
   float X, Y, Width, Height, OffsetY, OffsetX, Advance;
 };
 // Used glyph metrics from 0x00609F1C; custom_ui01 stays 512x256.
-constexpr std::array<PickerGlyph, 16> kPickerGlyphs{{
+constexpr std::array<PickerGlyph, 27> kPickerGlyphs{{
     {'B',350,170,21,25,3,-1,19}, {'a',143,208,20,20,8,-2,16},
     {'c',25,209,19,20,8,-2,16}, {'k',149,180,20,25,3,-2,15},
     {'C',77,124,22,26,2,-2,19}, {'l',374,197,11,25,3,-2,9},
@@ -242,12 +242,158 @@ constexpr std::array<PickerGlyph, 16> kPickerGlyphs{{
     {' ',0,0,0,0,0,0,10}, {'A',462,139,24,25,3,-3,19},
     {'(',349,108,15,31,1,-2,11}, {'H',102,152,22,25,3,-1,21},
     {'o',296,199,21,20,8,-2,17}, {'d',486,167,20,25,3,-2,17},
-    {')',367,108,15,31,1,-3,11}, {'V',300,143,23,25,3,-3,19}}};
+    {')',367,108,15,31,1,-3,11}, {'V',300,143,23,25,3,-3,19},
+    {'i',441,196,11,25,3,-2,8}, {'w',224,204,26,20,8,-3,21},
+    {'M',165,124,25,25,3,-1,24}, {'Z',250,176,21,25,3,-2,18},
+    {'m',195,204,26,20,8,-2,23}, {'I',388,197,11,25,3,-1,10},
+    {'n',79,153,20,20,8,-2,17}, {'O',435,140,24,25,3,-2,21},
+    {'u',97,208,20,20,8,-2,17}, {'t',320,46,16,24,4,-3,11},
+    {'P',296,171,21,25,3,-1,18}}};
 const PickerGlyph *PickerCharacter(char character) {
   for (const auto &glyph : kPickerGlyphs) if (glyph.Character == character) return &glyph;
   return nullptr;
 }
+
+// 0x0060A2D4 rects for the button glyphs of 0x005E7B44: 0x0E X, 0x0F Y,
+// 0x15 B and 0x16 D-pad, all at rect scale 1. The D-pad record keeps the
+// old (434,219) crop; its 0x005E5578 path remaps it through 0x005E517C.
+struct LegendButton { char Character; float X, Y, Width, Height; };
+constexpr std::array<LegendButton, 4> kLegendButtons{{
+    {'\x0E', 116, 89, 32, 32}, {'\x0F', 151, 89, 32, 32},
+    {'\x15', 81, 89, 32, 32}, {'\x16', 385, 108, 29, 29}}};
+const LegendButton *LegendButtonCharacter(char character) {
+  for (const auto &button : kLegendButtons) if (button.Character == character) return &button;
+  return nullptr;
+}
+// 0x005E6D20 / 0x005E7B44 text units: 0.74 * 0.5714 per scale unit.
+constexpr float kLegendUnit = 0.422836F;
+float LegendButtonHeight(float scale) { return scale * kLegendUnit * 19.0F * 1.55F; }
+
+float MeasureLegend(std::string_view text, float scale) {
+  float width = 0;
+  for (const char c : text) {
+    if (const auto *button = LegendButtonCharacter(c))
+      width += LegendButtonHeight(scale) * button->Width / button->Height + 2;
+    else if (const auto *glyph = PickerCharacter(c))
+      width += glyph->Advance * scale * kLegendUnit;
+  }
+  return width;
+}
+
+// 0x005E7B44(text, x, y, scale) in native page coordinates. Button glyphs sit
+// on the line y + 2 + 15.5 units; font glyphs hang from y + 2.
+void AppendLegend(std::string_view text, float x, float y, float scale, float alpha,
+                  float canvasOffsetX, std::uint32_t owner, unsigned layer,
+                  const oot3d::ui::UiTextureIdentity &uiAtlas,
+                  std::vector<oot3d::ui::UiPrimitive> &output) {
+  const float unit = scale * kLegendUnit;
+  const auto append = [&](float px, float py, float w, float h,
+                          float ax, float ay, float aw, float ah) {
+    oot3d::ui::UiPrimitive p;
+    p.subsystem = oot3d::ui::UiSubsystem::Items;
+    p.role = oot3d::ui::UiPrimitiveRole::PauseText;
+    p.owner_address = owner;
+    p.source_quad = static_cast<std::uint32_t>(output.size());
+    p.texture = uiAtlas;
+    p.destination = {px + canvasOffsetX, py, w, h};
+    p.uv = {ax / 512.0F, ay / 256.0F, aw / 512.0F, ah / 256.0F};
+    p.color.alpha = alpha;
+    p.layer = layer;
+    output.push_back(std::move(p));
+  };
+  for (const char c : text) {
+    if (const auto *button = LegendButtonCharacter(c)) {
+      const float h = LegendButtonHeight(scale), w = h * button->Width / button->Height;
+      append(x + 1, y + 2 + 15.5F * unit - h / 2, w, h,
+             button->X, button->Y, button->Width, button->Height);
+      x += w + 2;
+    } else if (const auto *g = PickerCharacter(c)) {
+      if (g->Width > 0)
+        append(x + g->OffsetX * unit, y + 2 + g->OffsetY * unit, g->Width * unit,
+               g->Height * unit, g->X, g->Y, g->Width, g->Height);
+      x += g->Advance * unit;
+    }
+  }
+}
+
+// 0x005E70A4: the custom_ui01 nine-slice panel, corners 12x6 or half the size.
+void AppendLegendPanel(float x, float y, float width, float height, float alpha,
+                       float canvasOffsetX, std::uint32_t owner, unsigned layer,
+                       const oot3d::ui::UiTextureIdentity &uiAtlas,
+                       std::vector<oot3d::ui::UiPrimitive> &output) {
+  const float cornerW = width < 24 ? width * 0.5F : 12, cornerH = height < 12 ? height * 0.5F : 6;
+  constexpr std::array<float, 3> atlasX{375, 387, 491}, atlasY{38, 44, 64};
+  constexpr std::array<float, 3> atlasW{12, 1, 12}, atlasH{6, 1, 6};
+  const std::array<float, 3> xs{x, x + cornerW, x + width - cornerW};
+  const std::array<float, 3> ys{y, y + cornerH, y + height - cornerH};
+  const std::array<float, 3> ws{cornerW, width - 2 * cornerW, cornerW};
+  const std::array<float, 3> hs{cornerH, height - 2 * cornerH, cornerH};
+  for (unsigned row = 0; row < 3; ++row)
+    for (unsigned column = 0; column < 3; ++column) {
+      if (ws[column] <= 0 || hs[row] <= 0) continue;
+      oot3d::ui::UiPrimitive p;
+      p.subsystem = oot3d::ui::UiSubsystem::Items;
+      p.role = oot3d::ui::UiPrimitiveRole::PauseBackground;
+      p.owner_address = owner;
+      p.source_quad = static_cast<std::uint32_t>(output.size());
+      p.texture = uiAtlas;
+      p.destination = {xs[column] + canvasOffsetX, ys[row], ws[column], hs[row]};
+      p.uv = {atlasX[column] / 512.0F, atlasY[row] / 256.0F,
+              atlasW[column] / 512.0F, atlasH[row] / 256.0F};
+      p.color.alpha = alpha;
+      p.layer = layer;
+      output.push_back(std::move(p));
+    }
+}
 } // namespace
+
+std::size_t AppendTopScreenGearViewModelLegendPresentation(
+    const TopScreenItemsHintCursorBounds &cursor, std::uint32_t fade, std::uint32_t pulse,
+    const oot3d::ui::UiTextureIdentity &uiAtlas, std::vector<oot3d::ui::UiPrimitive> &output) {
+  if (!cursor.Active || fade == 0U || uiAtlas.semantic_name.empty() ||
+      !std::isfinite(cursor.CenterX) || !std::isfinite(cursor.MaximumY))
+    return 0U;
+  // 0x005E2BA8: the hint pulse, faded in over the first 12 updates.
+  const std::uint32_t phase = pulse % 90U;
+  float t = static_cast<float>(phase) / 45.0F;
+  if (phase > 44U) t = 2.0F - t;
+  float alpha = 0.73F + t * 0.27F;
+  if (fade <= 11U) alpha *= static_cast<float>(fade) / 12.0F;
+  // 0x005E9A58, projection 0.8: [X] at 0.85 and "View Model" at 0.62,
+  // centred under the cursor and kept within native X 2..318.
+  const float centerX = cursor.CenterX - cursor.ScreenOffsetX, y = cursor.MaximumY + 1.0F;
+  const float button = MeasureLegend("\x0E", 0.85F), space = MeasureLegend(" ", 0.62F);
+  const float total = button + space + MeasureLegend("View Model", 0.62F);
+  float x = std::max(centerX - total * 0.5F, 2.0F);
+  if (x + total > 318.0F) x = 318.0F - total;
+  const auto start = output.size();
+  AppendLegend("\x0E", x, y + 0.4291358F, 0.85F, alpha, cursor.ScreenOffsetX, 0x005E9A58U,
+               15U, uiAtlas, output);
+  AppendLegend("View Model", x + button + space, y + 1.9365458F, 0.62F, alpha,
+               cursor.ScreenOffsetX, 0x005E9A58U, 15U, uiAtlas, output);
+  return output.size() - start;
+}
+
+std::size_t AppendTopScreenViewModelControlsPresentation(
+    const oot3d::ui::UiTextureIdentity &uiAtlas, std::vector<oot3d::ui::UiPrimitive> &output) {
+  if (uiAtlas.semantic_name.empty()) return 0U;
+  // 0x005E9C3C, projection 0.8 (native X + 40): one line at 0.75, narrowed
+  // to 360, on a 24-high panel at Y 210 that is 32 wider, centred on X 160.
+  constexpr std::string_view text = "\x0E Zoom In   \x0F Zoom Out   \x16 Pan   \x15 Back";
+  float scale = 0.75F;
+  float width = MeasureLegend(text, scale);
+  if (width > 360.0F) {
+    scale *= 360.0F / width;
+    width = MeasureLegend(text, scale);
+  }
+  const auto start = output.size();
+  AppendLegendPanel(160.0F - (width + 32.0F) * 0.5F, 210.0F, width + 32.0F, 24.0F, 1.0F,
+                    40.0F, 0x005E9C3CU, 31U, uiAtlas, output);
+  // 0x005E7EC0 centres the line on X 160 with its glyphs on Y 222.
+  AppendLegend(text, 160.0F - width * 0.5F, 222.0F - (2.0F + 15.5F * scale * kLegendUnit),
+               scale, 1.0F, 40.0F, 0x005E9C3CU, 36U, uiAtlas, output);
+  return output.size() - start;
+}
 
 
 TopScreenDpadPickerHoldCursor BuildTopScreenDpadPickerHoldCursor(
@@ -433,11 +579,14 @@ std::size_t AppendTopScreenDpadPickerPresentation(
       }
     }
   }
-  // 0x005E962C / 0x005E7B44: [B] Back  [X] Clear All (Hold), fitted as one
-  // centred line. Each glyph keeps the native atlas bearings and advances.
+  // 0x005E962C / 0x005E7B44: [B] Back  [X] Clear All (Hold), and [Y] View
+  // Model when 0x005D289C allows it, fitted as one centred line. Each glyph
+  // keeps the native atlas bearings and advances.
   constexpr float fontUnit = 0.422836F;
   constexpr float symbolUnit = 0.74F * 0.5714F * 19.0F * 1.55F;
-  constexpr std::array<std::string_view, 2> labels{"Back", "Clear All (Hold)"};
+  constexpr std::array<std::string_view, 3> labels{"Back", "Clear All (Hold)", "View Model"};
+  constexpr std::array<float, 3> buttonX{81, 116, 151};
+  const unsigned rows = draw.ViewModel ? 3U : 2U;
   const auto measure = [&](std::string_view label, float font) {
     float w = 0;
     for (const char c : label) if (const auto *g = PickerCharacter(c)) w += g->Advance * font * fontUnit;
@@ -445,8 +594,9 @@ std::size_t AppendTopScreenDpadPickerPresentation(
   };
   float font = 0.75F;
   const auto legendWidth = [&] {
-    return 2 * (2 + symbolUnit * font * 1.35F) +
-           measure(labels[0], font) + measure(labels[1], font) + 40 * font * fontUnit;
+    float w = rows * (2 + symbolUnit * font * 1.35F) + (10.0F * rows + 20.0F * (rows - 1)) * font * fontUnit;
+    for (unsigned i = 0; i < rows; ++i) w += measure(labels[i], font);
+    return w;
   };
   if (legendWidth() > width - 24) font *= (width - 24) / legendWidth();
   const float symbol = symbolUnit * font * 1.35F;
@@ -454,9 +604,9 @@ std::size_t AppendTopScreenDpadPickerPresentation(
   const float legendY = top + height - 22;
   unsigned glyphIndex = 0;
   float clearCenter = 0;
-  for (unsigned i = 0; i < labels.size(); ++i) {
+  for (unsigned i = 0; i < rows; ++i) {
     append(uiAtlas, 40U + i, Role::PauseText, legendX + 1, legendY + 8 - symbol / 2,
-           symbol, symbol, i == 0 ? 81.0F : 116.0F, 89, 32, 32, 256, alpha, 36);
+           symbol, symbol, buttonX[i], 89, 32, 32, 256, alpha, 36);
     if (i == 1) clearCenter = legendX + (symbol + 2) / 2;
     legendX += symbol + 2 + 10 * font * fontUnit;
     const float unit = font * fontUnit;

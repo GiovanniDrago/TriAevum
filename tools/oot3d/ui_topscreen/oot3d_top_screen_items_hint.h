@@ -66,4 +66,18 @@ std::size_t AppendTopScreenItemsHintPresentation(
     const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output);
 
+// SingleScreen 3.0 0x005E2BA8 -> 0x005E9A58: "[X] View Model" below the Gear
+// cursor. `fade` counts the updates past the 90-update delay and `pulse`
+// every update; `cursor` comes from ReadTopScreenGearCursorBounds.
+std::size_t AppendTopScreenGearViewModelLegendPresentation(
+    const TopScreenItemsHintCursorBounds &cursor, std::uint32_t fade, std::uint32_t pulse,
+    const oot3d::ui::UiTextureIdentity &uiAtlas,
+    std::vector<oot3d::ui::UiPrimitive> &output);
+
+// SingleScreen 3.0 0x005E9C3C: the View Model control line, drawn instead of
+// every other 0x005E0E6C overlay while the View Model is open.
+std::size_t AppendTopScreenViewModelControlsPresentation(
+    const oot3d::ui::UiTextureIdentity &uiAtlas,
+    std::vector<oot3d::ui::UiPrimitive> &output);
+
 } // namespace Oot3dNativeGame

@@ -15,4 +15,10 @@ bool ReadTopScreenItemsHintCursorBounds(const NativeA32Memory &memory,
                                         TopScreenItemsHintCursorBounds *bounds,
                                         std::string *error = nullptr);
 
+// 3.0 0x005E2BA8: the same scan of the Gear cursor owner 0x00504480, placed
+// with the legend's projection 0.8 (native X + 40) of 0x005E9A58.
+bool ReadTopScreenGearCursorBounds(const NativeA32Memory &memory,
+                                   TopScreenItemsHintCursorBounds *bounds,
+                                   std::string *error = nullptr);
+
 } // namespace Oot3dNativeGame

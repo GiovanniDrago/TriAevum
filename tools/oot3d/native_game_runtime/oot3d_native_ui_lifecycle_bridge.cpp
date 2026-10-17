@@ -469,8 +469,19 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
       (void)AppendTopScreenPauseEdgePresentation(*pauseEdge, *itemPage, output);
     }
   }
+  // 3.0 0x005E0E6C: while the View Model is open the upper screen shows the
+  // native scene (0x005CD348) and 0x005E9C3C replaces every overlay below.
+  const bool viewModel = !systemActive && mTopScreenItemsShortcuts != nullptr &&
+                         mTopScreenItemsShortcuts->ViewModelActive();
+  oot3d::ui::UiTextureIdentity overlayAtlas;
+  overlayAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
+  if (viewModel) {
+    mTopScreenItemsShortcutCursor = {};
+    mTopScreenDpadPickerCursor = {};
+    (void)AppendTopScreenViewModelControlsPresentation(overlayAtlas, output);
+  }
   // 3.0 0x005E0E6C -> 0x005D4A0C: tab hints follow Items/Gear/Map redraw.
-  if (!systemActive && mTopScreenPausePageRedrawEdgeGeometry.has_value()) {
+  if (!systemActive && !viewModel && mTopScreenPausePageRedrawEdgeGeometry.has_value()) {
     TopScreenTabHintInputs tabHints;
     oot3d::ui::UiTextureIdentity uiAtlas;
     uiAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
@@ -479,7 +490,7 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
   }
   std::uint32_t itemsPage = 0U;
   if (systemActive && mTopScreenItemsShortcuts != nullptr) mTopScreenItemsShortcuts->CancelDpadPicker();
-  if (!systemActive && mTopScreenItemsShortcuts != nullptr &&
+  if (!systemActive && !viewModel && mTopScreenItemsShortcuts != nullptr &&
       mMemory.Read32(0x0050672CU, &itemsPage) && itemsPage != 0U) {
     const auto itemIcons = NativePauseSharedTextureIdentity(oot3d::ui::UiPauseSharedTextureSlot::ItemIcons);
     oot3d::ui::UiTextureIdentity uiAtlas;
@@ -509,10 +520,18 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
   itemsHintAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
   (void)AppendTopScreenItemsHintPresentation(
       BuildTopScreenItemsHintGeometry(mTopScreenItemsHint,
-                                      mTopScreenConfig.RenderItemsHint &&
+                                      mTopScreenConfig.RenderItemsHint && !viewModel &&
                                            (mTopScreenItemsShortcuts == nullptr ||
                                             !mTopScreenItemsShortcuts->DpadPicker().Active())),
       itemsHintAtlas, output);
+  // 3.0 0x005E2AE0: the Gear "[X] View Model" legend obeys the same setting.
+  std::uint32_t gearLegendFade = 0U, gearLegendPulse = 0U;
+  TopScreenItemsHintCursorBounds gearCursor;
+  if (!systemActive && mTopScreenConfig.RenderItemsHint && mTopScreenItemsShortcuts != nullptr &&
+      mTopScreenItemsShortcuts->GearViewModelLegend(&gearLegendFade, &gearLegendPulse) &&
+      ReadTopScreenGearCursorBounds(mMemory, &gearCursor))
+    (void)AppendTopScreenGearViewModelLegendPresentation(gearCursor, gearLegendFade,
+                                                         gearLegendPulse, overlayAtlas, output);
   bool fileSelectStripActive = false;
   std::string fileSelectStripError;
   if (ReadTopScreenFileSelectStripActive(mMemory, &fileSelectStripActive,

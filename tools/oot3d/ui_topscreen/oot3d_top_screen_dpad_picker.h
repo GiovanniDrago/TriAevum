@@ -21,6 +21,8 @@ struct TopScreenDpadPickerState {
 struct TopScreenDpadPickerUpdate {
   bool Changed = false;
   std::uint32_t Sound = 0;
+  // 0x005D2CF0: a new Y with no direction or A/B asks for the View Model.
+  bool ViewModel = false;
 };
 
 // 3.0 0x005D2014(action | 0x1000, 0), with age-local host preferences.
@@ -94,6 +96,8 @@ inline TopScreenDpadPickerUpdate AdvanceTopScreenDpadPicker(
       state.Phase = Phase::Closing;
       state.Frame = 0;
       out.Sound = 0x01000496U;
+    } else if (pressed & 0x800U) {
+      out.ViewModel = true;
     }
   }
   return out;
@@ -104,6 +108,8 @@ inline TopScreenDpadPickerUpdate AdvanceTopScreenDpadPicker(
 struct TopScreenDpadPickerDrawState {
   std::array<std::uint8_t, 14> Items{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
                                      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  // 0x005D289C: the picked item has a View Model, so the legend adds [Y].
+  bool ViewModel = false;
 };
 // 0x005CCA90 / 0x005CBD64: free quads on native slot 5 (OcarinaPage),
 // linear min/mag, clamp-to-edge, top-left UVs. RGB is the vertex colour;

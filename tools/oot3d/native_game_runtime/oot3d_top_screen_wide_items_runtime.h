@@ -94,6 +94,25 @@ public:
                                  oot3d::recomp::a32::ExecutionResult *result,
                                  std::uint32_t *blocksConsumed);
   bool ViewModelActive() const noexcept { return mViewModel.Active; }
+  // 3.0 0x005E2B10..0x005E2B84: the Gear "[X] View Model" legend applies, and
+  // 0x006102C0 - 90 (its fade-in) and 0x006102C4 (its pulse). The caller
+  // still needs the cursor bounds of 0x00504480 and the hint setting.
+  bool GearViewModelLegend(std::uint32_t *fade, std::uint32_t *pulse) const noexcept {
+    // Gear page 2, no View Model, not modal (0x005D1F40), a viewable
+    // previewed item (0x004FC6AC), cursor slots 0..26 (0x0050448C) with a
+    // cursor owner (0x00504480) and 90 updates on the same slot.
+    std::uint32_t page = 0U, equipment = 0U, slot = 0U, owner = 0U;
+    if (fade == nullptr || pulse == nullptr || mViewModel.Active || mViewModel.Closed ||
+        mDpadPicker.Active() || mGearLegendHover <= 0x5AU ||
+        !mMemory.Read32(0x00504484U, &page) || page != 2U ||
+        !mMemory.Read32(0x004FC6ACU, &equipment) || !mMemory.Read32(0x0050448CU, &slot) ||
+        !mMemory.Read32(0x00504480U, &owner) || static_cast<std::int32_t>(equipment) < 0 ||
+        equipment == 0x8AU || slot > 0x1AU || owner == 0U)
+      return false;
+    *fade = mGearLegendHover - 0x5AU;
+    *pulse = mGearLegendBlink;
+    return true;
+  }
   void SetShortcutOrder(const TopScreenItemsShortcutOrder &order) noexcept;
   void SetShortcutOrderChanged(std::function<void(const TopScreenItemsShortcutOrder &)> changed) {
     mShortcutOrderChanged = std::move(changed);
@@ -174,12 +193,14 @@ private:
   void ConsumePickerInput();
   void UpdateShortcuts(Sequence &sequence);
   void AppendShortcutDescription(Sequence &sequence);
-  // 3.0 0x005D28C4 (Gear page entry and update), 0x005D24FC (enter),
-  // 0x005D2274 (update) and 0x005D21E8 (exit).
+  // 3.0 0x005D28C4 (Gear page entry and update), 0x005D0B2C (picker item),
+  // 0x005D24FC (enter), 0x005D2274 (update) and 0x005D21E8 (exit).
+  void UpdateGearLegend();
   void UpdateViewModel(Sequence &sequence);
-  void EnterViewModel(Sequence &sequence);
+  std::int32_t PickerViewItem();
+  void EnterViewModel(Sequence &sequence, std::uint32_t mode, std::int32_t item);
   void StepViewModel(Sequence &sequence, std::uint32_t held, std::uint32_t pressed);
-  void ExitViewModel(Sequence &sequence);
+  void ExitViewModel(Sequence &sequence, bool restore);
   void WriteViewModelTransform(std::uint32_t model, std::uint32_t matrix);
   void WriteWord(std::uint32_t address, std::uint32_t value);
   void TraceItemsState();
@@ -216,20 +237,30 @@ private:
   std::function<void(bool, const TopScreenDpadAssignments &)> mDpadAssignmentChanged;
   bool mShortcutDescriptionDirty = false;
   std::function<void(const TopScreenItemsShortcutOrder &)> mShortcutOrderChanged;
-  // 3.0 View Model state, Gear page mode 2 only: 0x0060ECC4 (open),
-  // 0x0060F23C/0x0060F23E (yaw, pitch), 0x0060F240 (X released since entry),
-  // 0x0060F244/0x0060F248 (offset), 0x0060D258 (zoom), 0x0060F254 (held).
-  // The picker's mode 1 and its equipment restore (0x0060D250) are not ported.
+  // 3.0 View Model state: 0x0060ECC4 (open), 0x0060F24C (mode: 1 picker,
+  // 2 Gear), 0x0060D254 (entry button), 0x0060D250 (previewed item to
+  // restore), 0x0060F23C/0x0060F23E (yaw, pitch), 0x0060F240 (entry button
+  // released), 0x0060F244/0x0060F248 (offset), 0x0060D258 (zoom),
+  // 0x0060F254 (Gear held), 0x0060F224 (closed during this update).
   struct ViewModelState {
     bool Active = false;
+    std::uint32_t Mode = 0;
+    std::uint32_t EntryButton = 0;
+    std::int32_t SavedEquipment = -1;
     std::uint16_t Yaw = 0;
     std::int16_t Pitch = 0;
     bool Released = false;
     float OffsetX = 0.0F, OffsetY = 0.0F;
     float Zoom = 1.0F;
     std::uint32_t PreviousHeld = 0;
+    bool Closed = false;
   };
   ViewModelState mViewModel{};
+  // 0x005E46A0..0x005E4738: 0x006102C4 counts every update, 0x006102C0 the
+  // updates on one Gear cursor slot (0x0060D30C), capped at 102.
+  std::uint32_t mGearLegendBlink = 0;
+  std::uint32_t mGearLegendHover = 0;
+  std::int32_t mGearLegendSlot = -1;
   std::uint32_t mAssignmentFrame = 0;
   std::int32_t mAssignmentDelay = 0;
   std::uint64_t mWidePages = 0;

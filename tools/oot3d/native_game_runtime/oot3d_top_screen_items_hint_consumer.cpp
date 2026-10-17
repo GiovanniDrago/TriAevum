@@ -14,6 +14,7 @@ namespace {
 constexpr std::uint32_t kPauseItemsState = 0x005066F8U;
 constexpr std::uint32_t kPauseItemsControllerStateOffset = 0x34U;
 constexpr std::uint32_t kPauseItemsSelectedModelOffset = 0xB0U;
+constexpr std::uint32_t kGearCursorOwner = 0x00504480U;
 constexpr float kMaximumHintVertexX = 390.0F;
 
 void SetError(std::string *error, const char *message) {
@@ -62,45 +63,27 @@ bool ResolveSelectedModelPositions(const NativeA32Memory &memory,
   return true;
 }
 
-} // namespace
+struct CursorQuadBounds {
+  bool Found = false;
+  float FirstX = 0.0F;
+  float MinimumX = 0.0F;
+  float MaximumX = 0.0F;
+  float MinimumY = 0.0F;
+  float MaximumY = 0.0F;
+};
 
-bool ReadTopScreenItemsHintCursorBounds(const NativeA32Memory &memory,
-                                        TopScreenItemsHintCursorBounds *bounds,
-                                        std::string *error) {
-  if (bounds == nullptr) {
-    SetError(error, "TopScreen Items hint bounds output is null");
-    return false;
-  }
+// 3.0 0x005CB298 via 0x005CAE40(owner, 4): scans four quads, skipping a
+// whole quad when its first vertex has the native hidden sentinel X >= 390.
+bool ScanCursorQuads(const NativeA32Memory &memory, std::uint32_t owner,
+                     CursorQuadBounds *bounds, std::string *error) {
   *bounds = {};
-  if (error != nullptr) {
-    error->clear();
-  }
-
-  std::uint32_t controllerState = 0U;
-  std::uint32_t selectedModel = 0U;
-  if (!memory.ReadFast(kPauseItemsState + kPauseItemsControllerStateOffset,
-                       &controllerState) ||
-      !memory.ReadFast(kPauseItemsState + kPauseItemsSelectedModelOffset,
-                       &selectedModel)) {
-    SetError(error, "cannot read the native Items hint owner");
-    return false;
-  }
-  if (controllerState == 0U || selectedModel == 0U ||
-      (selectedModel & 3U) != 0U) {
-    return true;
-  }
-
   std::uint32_t positions = 0U;
-  if (!ResolveSelectedModelPositions(memory, selectedModel, &positions,
-                                     error)) {
+  if (!ResolveSelectedModelPositions(memory, owner, &positions, error)) {
     return false;
   }
   if (positions == 0U) {
     return true;
   }
-
-  // 3.0 0x005CB298 scans four quads, skipping a whole quad when its first
-  // vertex has the native hidden sentinel X >= 390.
   std::array<float, 4U * 4U * 3U> vertices{};
   if (!memory.ReadBytes(positions,
                         std::span<std::uint8_t>(
@@ -136,12 +119,85 @@ bool ReadTopScreenItemsHintCursorBounds(const NativeA32Memory &memory,
   if (!found || maximumX <= minimumX) {
     return true;
   }
+  *bounds = {true, vertices[0], minimumX, maximumX, minimumY, maximumY};
+  return true;
+}
+
+} // namespace
+
+bool ReadTopScreenItemsHintCursorBounds(const NativeA32Memory &memory,
+                                        TopScreenItemsHintCursorBounds *bounds,
+                                        std::string *error) {
+  if (bounds == nullptr) {
+    SetError(error, "TopScreen Items hint bounds output is null");
+    return false;
+  }
+  *bounds = {};
+  if (error != nullptr) {
+    error->clear();
+  }
+
+  std::uint32_t controllerState = 0U;
+  std::uint32_t selectedModel = 0U;
+  if (!memory.ReadFast(kPauseItemsState + kPauseItemsControllerStateOffset,
+                       &controllerState) ||
+      !memory.ReadFast(kPauseItemsState + kPauseItemsSelectedModelOffset,
+                       &selectedModel)) {
+    SetError(error, "cannot read the native Items hint owner");
+    return false;
+  }
+  if (controllerState == 0U || selectedModel == 0U ||
+      (selectedModel & 3U) != 0U) {
+    return true;
+  }
+
+  CursorQuadBounds quads;
+  if (!ScanCursorQuads(memory, selectedModel, &quads, error)) {
+    return false;
+  }
+  if (!quads.Found) {
+    return true;
+  }
 
   // 0x005E3264 draws this group at projection 0.58 below X 256, else 0.6.
   // With -0.005 X scale these place native X at X+84 or X+80 on top.
-  const float screenOffsetX = vertices[0] < 256.0F ? 84.0F : 80.0F;
-  *bounds = {true, (minimumX + maximumX) * 0.5F + screenOffsetX, minimumY, maximumY,
-             maximumX - minimumX, screenOffsetX};
+  const float screenOffsetX = quads.FirstX < 256.0F ? 84.0F : 80.0F;
+  *bounds = {true, (quads.MinimumX + quads.MaximumX) * 0.5F + screenOffsetX,
+             quads.MinimumY, quads.MaximumY, quads.MaximumX - quads.MinimumX,
+             screenOffsetX};
+  return true;
+}
+
+bool ReadTopScreenGearCursorBounds(const NativeA32Memory &memory,
+                                   TopScreenItemsHintCursorBounds *bounds,
+                                   std::string *error) {
+  if (bounds == nullptr) {
+    SetError(error, "TopScreen Gear cursor bounds output is null");
+    return false;
+  }
+  *bounds = {};
+  if (error != nullptr) {
+    error->clear();
+  }
+  std::uint32_t owner = 0U;
+  if (!memory.ReadFast(kGearCursorOwner, &owner)) {
+    SetError(error, "cannot read the native Gear cursor owner");
+    return false;
+  }
+  if (owner == 0U) {
+    return true;
+  }
+  CursorQuadBounds quads;
+  if (!ScanCursorQuads(memory, owner, &quads, error)) {
+    return false;
+  }
+  if (!quads.Found) {
+    return true;
+  }
+  constexpr float screenOffsetX = 40.0F;
+  *bounds = {true, (quads.MinimumX + quads.MaximumX) * 0.5F + screenOffsetX,
+             quads.MinimumY, quads.MaximumY, quads.MaximumX - quads.MinimumX,
+             screenOffsetX};
   return true;
 }
 

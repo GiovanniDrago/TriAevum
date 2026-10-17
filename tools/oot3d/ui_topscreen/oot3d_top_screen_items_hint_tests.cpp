@@ -3,6 +3,7 @@
 
 #include "oot3d_ui/ui_backend.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -231,8 +232,74 @@ int main() {
               Near(findPicker(90).destination.y + 6.5F, holdCursor.CenterY),
           "clear-hold cursor is missing or detached from its native X glyph");
   picker.ClearHoldFrames = -1;
-  presentPicker();
+  const auto twoRows = presentPicker();
   Require(holdCursor.Count == 0, "released X retained the clear-hold cursor");
+  const float twoRowLeft = findPicker(40).destination.x;
+  const float twoRowButton = findPicker(40).destination.width;
+  // 0x005D289C: a viewable item adds [Y] View Model, refitted to the panel.
+  pickerDraw.ViewModel = true;
+  Require(presentPicker() == twoRows + 10 && Near(findPicker(42).uv.x, 151.0F / 512) &&
+              Near(findPicker(42).uv.y, 89.0F / 256) && findPicker(40).destination.x < twoRowLeft &&
+              findPicker(42).destination.width < twoRowButton,
+          "picker legend lacks the [Y] View Model row of 0x005E962C");
+  float legendRight = 0;
+  for (const auto &p : primitives)
+    if (p.layer == 36) legendRight = std::max(legendRight, p.destination.x + p.destination.width);
+  Require(legendRight <= 278 && twoRowLeft > 122, "three-row picker legend overflows the panel");
+  pickerDraw.ViewModel = false;
+
+  // 0x005E9A58: [X] at 0.85 and View Model at 0.62 below the Gear cursor.
+  constexpr float unit = 0.422836F;
+  const float gearButton = 0.85F * unit * 19 * 1.55F;
+  const float gearTotal = gearButton + 2 + (10 + 157) * 0.62F * unit;
+  const auto gearLegend = [&](float nativeX, std::uint32_t fade, std::uint32_t pulse) {
+    primitives.clear();
+    const TopScreenItemsHintCursorBounds gear{true, nativeX + 40, 50, 90, 40, 40};
+    return AppendTopScreenGearViewModelLegendPresentation(gear, fade, pulse, uiAtlas, primitives);
+  };
+  Require(gearLegend(160, 12, 0) == 10 && Near(primitives[0].uv.x, 116.0F / 512) &&
+              Near(primitives[0].destination.width, gearButton) &&
+              Near(primitives[0].destination.x, 200 - gearTotal / 2 + 1) &&
+              Near(primitives[0].destination.y + gearButton / 2, 99) &&
+              Near(primitives[1].uv.x, 300.0F / 512) &&
+              Near(primitives[1].destination.y, 91 + 1.9365458F + 2 + 3 * 0.62F * unit) &&
+              Near(primitives[0].color.alpha, 0.73F) && Near(primitives[9].color.alpha, 0.73F) &&
+              primitives[0].layer == 15 && primitives[0].texture.semantic_name == kTopScreen30UiAtlasSemantic,
+          "Gear legend glyphs, line or projection differ from 0x005E9A58");
+  Require(gearLegend(0, 12, 45) == 10 && Near(primitives[0].destination.x, 43) &&
+              Near(primitives[0].color.alpha, 1),
+          "Gear legend ignores the native X 2 clamp or the pulse peak");
+  Require(gearLegend(330, 6, 60) == 10 && Near(primitives[0].destination.x, 318 - gearTotal + 41) &&
+              Near(primitives[0].color.alpha, (0.73F + (2 - 60.0F / 45) * 0.27F) * 0.5F),
+          "Gear legend ignores the native X 318 clamp or its 12-update fade");
+  Require(gearLegend(160, 0, 0) == 0 && primitives.empty(), "Gear legend drew before its delay");
+  primitives.clear();
+  Require(AppendTopScreenGearViewModelLegendPresentation({}, 12, 0, uiAtlas, primitives) == 0,
+          "Gear legend drew without cursor bounds");
+
+  // 0x005E9C3C: the View Model control line on a centred 24-high panel.
+  primitives.clear();
+  Require(AppendTopScreenViewModelControlsPresentation(uiAtlas, primitives) == 9 + 4 + 20,
+          "View Model controls lost a panel slice, button or glyph");
+  Require(Near(primitives[0].destination.x + primitives[2].destination.x + primitives[2].destination.width, 400) &&
+              Near(primitives[0].destination.y, 210) &&
+              Near(primitives[6].destination.y + primitives[6].destination.height, 234) &&
+              Near(primitives[0].uv.x, 375.0F / 512) && primitives[0].layer == 31,
+          "View Model control panel differs from 0x005E70A4 at 160-centred Y 210");
+  const float controlButton = 0.75F * unit * 19 * 1.55F;
+  unsigned buttons = 0;
+  for (const auto &p : primitives) {
+    if (p.layer != 36 || !Near(p.destination.width, controlButton)) continue;
+    Require(Near(p.destination.y + controlButton / 2, 222), "View Model control button is off its line");
+    ++buttons;
+  }
+  Require(buttons == 4 && Near(primitives[9].uv.x, 116.0F / 512) && Near(primitives[16].uv.x, 151.0F / 512) &&
+              Near(primitives[24].uv.x, 385.0F / 512) && Near(primitives[24].uv.y, 108.0F / 256) &&
+              Near(primitives[9].destination.x, primitives[0].destination.x + 17),
+          "View Model controls lost [X] Zoom In / [Y] Zoom Out or the panel padding");
+  primitives.clear();
+  Require(AppendTopScreenViewModelControlsPresentation({}, primitives) == 0,
+          "View Model controls drew without the custom atlas");
   picker.Phase = TopScreenDpadPickerPhase::Confirming;
   picker.Direction = 3;
   picker.Frame = 6;
