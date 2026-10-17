@@ -412,7 +412,12 @@ minimap and Save routes only in the gameplay pause state.
   0 (97,3), cross rect 3 drawn as (385,108,29,29), 28 px centred on
   (30.5, 67), ZR rect 15 (47,231) at (364, lane + 31), ZL rect 14 (245,227)
   at (340, lane + 55), arrow rect 7 (46,124) from x + 2 or mirrored from
-  x + 28.
+  x + 28. The X/Y/B labels (rects 10, 11, 9) and the D-pad View icon (eye
+  rect 4, Navi rect 5, camera rect 6 at 36:21) also come from custom_ui01:
+  native menu_top_parts00 carries VIEW/BACK captions under those icons that
+  2.1.1 had erased. No TopScreen path reads a region where 2.1.1's textures
+  differed from the native ones; the pack builder, the HD font import and
+  the Switch staging accept SingleScreen 3.0 sources only.
 - **D-pad and Button Group Placement** (3.0 settings 0x0060A99C..0x0060AA3C,
   F1 HUD, `dpad_offset_x/y`, `dpad_size_percent`, `button_group_offset_x/y`,
   `button_group_size_percent`). Both apply before the HUD scale. D-pad,

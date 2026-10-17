@@ -16,26 +16,20 @@ from tools.oot3d.decomp_support.scripts.build_topscreen_texture_override_pack im
 from tools.oot3d.decomp_support.scripts.qbf_font import MAX_FONT_BYTES, pair_font_coverage, parse_qbf
 
 
-FONT_SOURCES = (
-    ("message/eu/ltn16.qbf", "TopScreen2.1.1/EUR/4K Textures/load/mods/0004000000033600/romfs/message/eu/ltn16.qbf"),
-    ("message/us/ltn16.qbf", "TopScreen2.1.1/USA/4K Textures/load/mods/0004000000033500/romfs/message/us/ltn16.qbf"),
-)
-# SingleScreen 3.0 carries the same HD Latin font in its emulator layout. Its
-# sys8.qbf is not an A4 coverage font and stays native.
+# SingleScreen 3.0 carries the HD Latin font in its emulator layout (TopScreen
+# 2.1.1 is retired). Its sys8.qbf is not an A4 coverage font and stays native.
 SINGLESCREEN_FONT_SOURCES = (
     ("message/eu/ltn16.qbf", "SingleScreen_3.0/EUR/Emulator/load/mods/0004000000033600/romfs/message/eu/ltn16.qbf"),
     ("message/us/ltn16.qbf", "SingleScreen_3.0/USA/Emulator/load/mods/0004000000033500/romfs/message/us/ltn16.qbf"),
 )
 
-
 def prepare_font_pack(*, archive: Path, romfs: Path, output: Path) -> dict:
-    """Pair the ROM's fonts with a TopScreen 2.1.1 or SingleScreen 3.0 archive."""
+    """Pair the ROM's fonts with a SingleScreen 3.0 archive."""
     assets = {}
     fonts = []
     with zipfile.ZipFile(archive) as source:
         names = set(source.namelist())
-        sources = (SINGLESCREEN_FONT_SOURCES
-                   if any(path in names for _, path in SINGLESCREEN_FONT_SOURCES) else FONT_SOURCES)
+        sources = SINGLESCREEN_FONT_SOURCES
         for native_path, archive_path in sources:
             try:
                 native = parse_qbf(read_level3_romfs_file(romfs, native_path))

@@ -438,9 +438,10 @@ TopScreenAuxiliaryTouchGeometry BuildTopScreenAuxiliaryTouchGeometry(
     const std::array<float, 4> &nativeVerticalOffsets,
     float nativeAlpha,
     TopScreenHudLayout layout = TopScreenHudLayout::Normal) noexcept;
+// Draws from the SingleScreen 3.0 UI atlas (custom_ui01, 512x256).
 std::size_t AppendTopScreenAuxiliaryTouchPresentation(
     const TopScreenAuxiliaryTouchGeometry &geometry,
-    const oot3d::ui::UiTextureIdentity &pauseTopPage,
+    const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output);
 
 // Typed equivalents of payload words 005E3D8C (previous player state) and

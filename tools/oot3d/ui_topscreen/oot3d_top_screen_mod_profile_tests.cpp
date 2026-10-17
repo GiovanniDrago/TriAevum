@@ -1375,7 +1375,9 @@ int main() {
               auxiliaryGeometry.Quads[0].Position.Y == 8.0F &&
               auxiliaryGeometry.Quads[2].Visible &&
               auxiliaryGeometry.Quads[2].Position.X == 227.0F &&
-              auxiliaryGeometry.Quads[2].AtlasOrigin.Y == 174.0F &&
+              auxiliaryGeometry.Quads[2].AtlasOrigin.X == 363.0F &&
+              auxiliaryGeometry.Quads[2].AtlasOrigin.Y == 225.0F &&
+              auxiliaryGeometry.Quads[0].AtlasOrigin.X == 207.0F &&
               !auxiliaryGeometry.Quads[3].Visible &&
               auxiliaryGeometry.Quads[4].Position.X == 23.0F &&
               auxiliaryGeometry.Quads[4].Size.Y == 14.0F &&
@@ -1415,11 +1417,12 @@ int main() {
   const auto fixedAuxiliaryGeometry = BuildTopScreenAuxiliaryTouchGeometry(
       auxiliaryInputs, dynamicTouch.VerticalOffsets, 1.0F);
   // 2.1.1 centers it on the lane; the presentation adds the lane offset.
-  Require(fixedAuxiliaryGeometry.Quads[4].Position.X == 20.0F &&
+  // SingleScreen 3.0 camera, custom_ui01 rect 6, 10 px high at 36:21.
+  Require(std::abs(fixedAuxiliaryGeometry.Quads[4].Position.X - (30.0F - 5.0F * 36.0F / 21.0F)) < 0.001F &&
               fixedAuxiliaryGeometry.Quads[4].Position.Y == 40.0F &&
-              fixedAuxiliaryGeometry.Quads[4].Size.X == 20.0F &&
-              fixedAuxiliaryGeometry.Quads[4].AtlasOrigin.Y == 56.0F &&
-              fixedAuxiliaryGeometry.Quads[4].AtlasSize.Y == 24.0F,
+              std::abs(fixedAuxiliaryGeometry.Quads[4].Size.X - 10.0F * 36.0F / 21.0F) < 0.001F &&
+              fixedAuxiliaryGeometry.Quads[4].AtlasOrigin.Y == 198.0F &&
+              fixedAuxiliaryGeometry.Quads[4].AtlasSize.Y == 21.0F,
           "TopScreen group-39 fixed layout is incorrect");
 
   NativeA32Memory compositorGateMemory;

@@ -117,7 +117,6 @@ std::size_t AppendTopScreenDpadPresentation(
     const TopScreenDpadPresentationState &state,
     const TopScreenAuxiliaryTouchInputs &viewState, float alpha,
     const oot3d::ui::UiTextureIdentity &itemIcons,
-    const oot3d::ui::UiTextureIdentity &pauseTopPage,
     const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output) {
   if (!config.RenderHud || !(alpha > 0) ||
@@ -134,14 +133,14 @@ std::size_t AppendTopScreenDpadPresentation(
   const auto firstView = std::find(actions.begin(), actions.end(), TopScreenDpadAction::View);
   std::uint32_t viewCount = 0U;
   const auto appendView = [&](std::size_t direction, bool laneCorrection) {
-    if (!view.Visible || pauseTopPage.semantic_name.empty()) return;
+    if (!view.Visible || uiAtlas.semantic_name.empty()) return;
     oot3d::ui::UiPrimitive p;
     p.subsystem = oot3d::ui::UiSubsystem::GameplayHud;
     p.role = oot3d::ui::UiPrimitiveRole::ActionButton;
     p.owner_address = 0x005D4A8CU;
     p.source_quad = 38U + viewCount++;
     p.layer = 13U;
-    p.texture = pauseTopPage;
+    p.texture = uiAtlas;
     p.color = view.Color;
     p.destination = {
         view.Position.X + kCenterX[direction] - kCenterX[0] +

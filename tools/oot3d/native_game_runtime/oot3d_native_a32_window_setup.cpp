@@ -97,11 +97,9 @@ void NativeA32WindowSession::Setup() {
     }
     topScreenTextureOverridePackPointer = &topScreenTextureOverridePack;
 #if defined(__SWITCH__)
-    gSwitchTopScreen211Assets =
+    gSwitchTopScreen30UiAtlas =
         topScreenTextureOverridePack.FindProfileTexture(
-            "oot3d/topscreen/2.1.1/menu_atlas") != nullptr &&
-        topScreenTextureOverridePack.FindProfileTexture(
-            "oot3d/topscreen/2.1.1/font_atlas") != nullptr;
+            "oot3d/topscreen/3.0/ui_atlas") != nullptr;
 #endif
   }
 

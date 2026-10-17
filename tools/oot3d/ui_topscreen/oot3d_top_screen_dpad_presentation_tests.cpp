@@ -23,13 +23,12 @@ void RunTopScreenDpadPresentationTests() {
   state.ItemZr = 0x0E;
   state.ItemZl = 6;
   state.Boomerang = state.Slingshot = true;
-  oot3d::ui::UiTextureIdentity items, page, menu;
+  oot3d::ui::UiTextureIdentity items, menu;
   items.semantic_name = "native-items";
-  page.semantic_name = "native-pause";
   menu.semantic_name = std::string(kTopScreen30UiAtlasSemantic);
   const auto render = [&] {
     std::vector<oot3d::ui::UiPrimitive> result;
-    AppendTopScreenDpadPresentation(config, state, {}, 1, items, page, menu, result);
+    AppendTopScreenDpadPresentation(config, state, {}, 1, items, menu, result);
     return result;
   };
   require(render().size() == 4,
@@ -61,7 +60,7 @@ void RunTopScreenDpadPresentationTests() {
       if (badges) {
         // Without the UI atlas the icons stay and the cycle marks are left out.
         std::vector<oot3d::ui::UiPrimitive> withoutAtlas;
-        AppendTopScreenDpadPresentation(config, state, {}, 1, items, page, {}, withoutAtlas);
+        AppendTopScreenDpadPresentation(config, state, {}, 1, items, {}, withoutAtlas);
         require(withoutAtlas.size() == 4, "cycle marks need the 3.0 UI atlas");
         for (std::size_t direction = 0; direction < 4; ++direction) {
           const auto &icon = result[direction];
@@ -86,7 +85,7 @@ void RunTopScreenDpadPresentationTests() {
                      TopScreenDpadAction::IronBoots};
   state.ItemOpacity = {0.5F, 0.25F, 0.0F};
   std::vector<oot3d::ui::UiPrimitive> dimmed;
-  AppendTopScreenDpadPresentation(config, state, {}, 0.6F, items, page, menu, dimmed);
+  AppendTopScreenDpadPresentation(config, state, {}, 0.6F, items, menu, dimmed);
   require(dimmed.size() == 4 &&
               std::abs(dimmed[0].color.alpha - 0.3F) < 0.0001F &&
               std::abs(dimmed[1].color.alpha - 0.15F) < 0.0001F &&
@@ -120,7 +119,7 @@ void RunTopScreenDpadPresentationTests() {
   TopScreenAuxiliaryTouchInputs view;
   const auto viewQuad = [&]() {
     std::vector<oot3d::ui::UiPrimitive> result;
-    AppendTopScreenDpadPresentation(config, state, view, 1, items, page, menu, result);
+    AppendTopScreenDpadPresentation(config, state, view, 1, items, menu, result);
     oot3d::ui::UiPrimitive found{};
     for (const auto &primitive : result)
       if (primitive.source_quad >= 38) found = primitive;
@@ -133,15 +132,15 @@ void RunTopScreenDpadPresentationTests() {
   config.AdultDpad = {TopScreenDpadAction::None, TopScreenDpadAction::View,
                       TopScreenDpadAction::None, TopScreenDpadAction::None};
   const auto eye = viewQuad();
-  require(at(eye, 29 - 8 + 2, 90 - 5, 16, 10) && eye.uv.x == 129.0F / 512 &&
-              eye.uv.width == 47.0F / 512,
-          "View eye must be 16x10 at its lane center with the 2.1.1 lane offset");
+  require(at(eye, 29 - 8 + 2, 90 - 5, 16, 10) && eye.uv.x == 451.0F / 512 &&
+              eye.uv.width == 48.0F / 512 && eye.texture.semantic_name == menu.semantic_name,
+          "View eye must be the 3.0 eye, 16x10 at its lane center with the 2.1.1 lane offset");
   view.HasPlayState = true;
   view.StateType = 3;
   view.StateSubtype = 2;
   view.PlayerHudMode = 0x0123;
   auto navi = viewQuad();
-  require(at(navi, 29 - 7 + 2, 90 - 7, 14, 14) && navi.uv.x == 176.0F / 512 &&
+  require(at(navi, 29 - 7 + 2, 90 - 7, 14, 14) && navi.uv.x == 199.0F / 512 &&
               navi.uv.height == 48.0F / 256,
           "Navi prompt must be 14x14 centered on the View lane");
   config.AdultDpad[1] = TopScreenDpadAction::Ocarina;

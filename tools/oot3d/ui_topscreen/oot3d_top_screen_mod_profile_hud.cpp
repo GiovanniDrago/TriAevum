@@ -1168,7 +1168,11 @@ TopScreenAuxiliaryTouchGeometry BuildTopScreenAuxiliaryTouchGeometry(
     float nativeAlpha, TopScreenHudLayout layout) noexcept {
   constexpr std::array<float, 4> kCentersX{358.0F, 334.0F, 382.0F, 358.0F};
   constexpr std::array<float, 4> kCentersY{20.0F, 44.0F, 44.0F, 68.0F};
-  constexpr std::array<float, 4> kAtlasY{142.0F, 158.0F, 126.0F, 190.0F};
+  // SingleScreen 3.0 hub 0x005DA708 label model (rects from table
+  // 0x00609808): X rect 10 (207,227), Y rect 11 (226,227), B rect 9
+  // (363,225) of custom_ui01; the fourth label is never drawn (II, rect 13).
+  constexpr std::array<TopScreenVec2, 4> kLabelAtlas{
+      {{207.0F, 227.0F}, {226.0F, 227.0F}, {363.0F, 225.0F}, {188.0F, 227.0F}}};
   const float auxiliaryAlpha = std::clamp(nativeAlpha * 0.9F, 0.0F, 1.0F);
   const bool conditionalVisible = inputs.SuppressBCopies;
 
@@ -1179,7 +1183,7 @@ TopScreenAuxiliaryTouchGeometry BuildTopScreenAuxiliaryTouchGeometry(
                    (index < 2U || (index == 2U && conditionalVisible));
     quad.Position = {500.0F, 300.0F};
     quad.Size = {16.0F, 16.0F};
-    quad.AtlasOrigin = {158.0F, kAtlasY[index]};
+    quad.AtlasOrigin = kLabelAtlas[index];
     quad.AtlasSize = {16.0F, 16.0F};
     quad.Color = {1.0F, 1.0F, 1.0F, auxiliaryAlpha};
     if (index < 2U) {
@@ -1190,7 +1194,6 @@ TopScreenAuxiliaryTouchGeometry BuildTopScreenAuxiliaryTouchGeometry(
           layout == TopScreenHudLayout::Restoration
               ? TopScreenVec2{337.0F, 54.0F}
               : TopScreenVec2{227.0F, 10.0F};
-      quad.AtlasOrigin.Y = 174.0F;
     }
   }
 
@@ -1203,24 +1206,29 @@ TopScreenAuxiliaryTouchGeometry BuildTopScreenAuxiliaryTouchGeometry(
   layoutQuad.Color = {1.0F, 1.0F, 1.0F, viewAlpha};
   float extraX = 0.0F;
   // Variant priority is touch+70 == 1, then Navi, then actor mode / eye.
+  // SingleScreen 3.0 hub 0x005DD200..0x005DD6C8 draws them from custom_ui01:
+  // camera rect 6 (320,198,36,21) 10 px high at its own aspect, Navi rect 5
+  // (199,3,48,48) 14 px, eye rect 4 (451,73,48,32) 16x10. The native
+  // menu_top_parts00 versions carry VIEW/BACK captions that 2.1.1 erased.
+  constexpr float kCameraWidth = 10.0F * 36.0F / 21.0F;
   if (inputs.TouchLayoutState == 1U) {
-    layoutQuad.Size = {20.0F, 10.0F};
-    layoutQuad.AtlasOrigin = {176.0F, 56.0F};
-    layoutQuad.AtlasSize = {48.0F, 24.0F};
+    layoutQuad.Size = {kCameraWidth, 10.0F};
+    layoutQuad.AtlasOrigin = {320.0F, 198.0F};
+    layoutQuad.AtlasSize = {36.0F, 21.0F};
   } else if (inputs.HasPlayState && inputs.StateType == 3U &&
              inputs.StateSubtype == 2U && inputs.PlayerHudMode != 0) {
     layoutQuad.Size = {14.0F, 14.0F};
-    layoutQuad.AtlasOrigin = {176.0F, 0.0F};
+    layoutQuad.AtlasOrigin = {199.0F, 3.0F};
     layoutQuad.AtlasSize = {48.0F, 48.0F};
   } else if (inputs.ViewActorMode20) {
-    layoutQuad.Size = {20.0F, 10.0F};
-    layoutQuad.AtlasOrigin = {128.0F, 56.0F};
-    layoutQuad.AtlasSize = {48.0F, 24.0F};
+    layoutQuad.Size = {kCameraWidth, 10.0F};
+    layoutQuad.AtlasOrigin = {320.0F, 198.0F};
+    layoutQuad.AtlasSize = {36.0F, 21.0F};
     extraX = 1.0F;
   } else {
     layoutQuad.Size = {16.0F, 10.0F};
-    layoutQuad.AtlasOrigin = {129.0F, 0.0F};
-    layoutQuad.AtlasSize = {47.0F, 30.0F};
+    layoutQuad.AtlasOrigin = {451.0F, 73.0F};
+    layoutQuad.AtlasSize = {48.0F, 32.0F};
   }
   // Base center, not the Up lane: singleton Navi has no lane correction.
   // AppendTopScreenDpadPresentation adds {1,2,0,0} only for mapped lanes.
@@ -1231,9 +1239,9 @@ TopScreenAuxiliaryTouchGeometry BuildTopScreenAuxiliaryTouchGeometry(
 
 std::size_t AppendTopScreenAuxiliaryTouchPresentation(
     const TopScreenAuxiliaryTouchGeometry &geometry,
-    const oot3d::ui::UiTextureIdentity &pauseTopPage,
+    const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output) {
-  if (pauseTopPage.semantic_name.empty()) {
+  if (uiAtlas.semantic_name.empty()) {
     return 0U;
   }
   const std::size_t startSize = output.size();
@@ -1247,7 +1255,7 @@ std::size_t AppendTopScreenAuxiliaryTouchPresentation(
     primitive.role = oot3d::ui::UiPrimitiveRole::TouchControl;
     primitive.owner_address = 0x005C9940U;
     primitive.source_quad = static_cast<std::uint32_t>(34U + index);
-    primitive.texture = pauseTopPage;
+    primitive.texture = uiAtlas;
     primitive.destination = {quad.Position.X, quad.Position.Y, quad.Size.X,
                              quad.Size.Y};
     primitive.uv = {quad.AtlasOrigin.X / 512.0F, quad.AtlasOrigin.Y / 256.0F,

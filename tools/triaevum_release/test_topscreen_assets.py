@@ -11,7 +11,7 @@ from topscreen_assets import (BUNDLED_DIRECTORY, LINK_ANIMATIONS, UI_ATLAS, UI_A
                               extract_ui_atlas_hd, prepare_topscreen_assets, topscreen_link_animations,
                               topscreen_ui_atlas_hd)
 from tools.oot3d.decomp_support.scripts.build_topscreen_texture_override_pack import (
-    LANGUAGES, LAYOUT_PROBE, TEXTURES, PROFILE_TEXTURES, build_texture_pack,
+    build_texture_pack,
 )
 
 ARCHIVE = "singlescreen_30_25aeb.zip"
@@ -155,53 +155,32 @@ class TopScreenAssetsTests(unittest.TestCase):
                                                    recipe={}, romfs=self.root / "other.bin"))
         self.assertFalse(self.data.exists())
 
-    def test_builder_imports_only_native_textures_not_executable_mod(self):
-        original = self.root / "romfs"
-        archive = self.root / "fixture.zip"
+    def test_builder_imports_only_the_singlescreen_atlas(self):
         header = bytearray(0x48)
         header[:4] = b"ctxb"
         struct.pack_into("<HHHH", header, 0x2c, 8, 8, 0x6752, 0x1401)
-        with zipfile.ZipFile(archive, "w") as output:
-            for language in LANGUAGES:
-                for name in TEXTURES:
-                    relative = f"menu/{language}/{name}"
-                    path = original / relative
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(header + bytes(256))
-                    output.writestr("TopScreenMod/romfs/" + relative, header + bytes([1]) * 256)
-            for name, _ in PROFILE_TEXTURES:
-                output.writestr("TopScreenMod/romfs/menu/" + name, header + bytes([2]) * 256)
-            # The localized 2.1.1 labels identify the layout but are not imported.
-            output.writestr("TopScreenMod/romfs/" + LAYOUT_PROBE, header + bytes([1]) * 256)
-            output.writestr("TopScreenMod/code.ips", b"DO NOT IMPORT EXECUTABLE PATCH")
-            output.writestr("../../escape", b"not extracted")
-        pack = build_texture_pack(archive=archive, original_romfs=original)
-        self.assertEqual(struct.unpack_from("<4sIII", pack), (b"O3TU", 2, 0, 2))
-        self.assertNotIn(b"DO NOT IMPORT", pack)
-        self.assertFalse((self.root / "escape").exists())
-
         singlescreen = self.root / "singlescreen.zip"
         prefix = "SingleScreen_3.0/EUR/Emulator/load/mods/0004000000033600/romfs/"
         with zipfile.ZipFile(singlescreen, "w") as output:
             output.writestr(prefix + "menu/custom_ui01.ctxb", header + bytes([3]) * 256)
             output.writestr("SingleScreen_3.0/EUR/Emulator/load/mods/0004000000033600/code.ips",
                             b"DO NOT IMPORT EXECUTABLE PATCH")
-        pack = build_texture_pack(archive=archive, original_romfs=original,
-                                  singlescreen_archive=singlescreen)
-        self.assertEqual(struct.unpack_from("<4sIII", pack), (b"O3TU", 2, 0, 3))
+            output.writestr("../../escape", b"not extracted")
+        pack = build_texture_pack(singlescreen_archive=singlescreen)
+        self.assertEqual(struct.unpack_from("<4sIII", pack), (b"O3TU", 2, 0, 1))
         self.assertIn(b"oot3d/topscreen/3.0/ui_atlas", pack)
         self.assertNotIn(b"DO NOT IMPORT", pack)
+        self.assertFalse((self.root / "escape").exists())
 
-        # Forge's install: the shipped 3.0 atlas alone, no ROM and no archive.
+        # Forge's install and Switch staging: the shipped 3.0 atlas alone.
         pack = build_texture_pack(singlescreen_ui_atlas=bytes(header + bytes([3]) * 256))
         self.assertEqual(struct.unpack_from("<4sIII", pack), (b"O3TU", 2, 0, 1))
         self.assertIn(b"oot3d/topscreen/3.0/ui_atlas", pack)
         self.assertNotIn(b"oot3d/topscreen/2.1.1/", pack)
-        with self.assertRaisesRegex(ValueError, "TopScreen 2.1.1 or SingleScreen 3.0"):
-            build_texture_pack(original_romfs=original)
-        with self.assertRaisesRegex(ValueError, "at most one SingleScreen 3.0 source"):
+        with self.assertRaisesRegex(ValueError, "exactly one SingleScreen 3.0 source"):
+            build_texture_pack()
+        with self.assertRaisesRegex(ValueError, "exactly one SingleScreen 3.0 source"):
             build_texture_pack(singlescreen_archive=singlescreen, singlescreen_ui_atlas=b"x")
-
 
 if __name__ == "__main__":
     unittest.main()

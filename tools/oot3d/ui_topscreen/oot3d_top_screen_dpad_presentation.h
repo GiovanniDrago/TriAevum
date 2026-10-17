@@ -27,7 +27,6 @@ std::size_t AppendTopScreenDpadPresentation(
     const TopScreenDpadPresentationState &state,
     const TopScreenAuxiliaryTouchInputs &viewState, float alpha,
     const oot3d::ui::UiTextureIdentity &itemIcons,
-    const oot3d::ui::UiTextureIdentity &pauseTopPage,
     const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output);
 

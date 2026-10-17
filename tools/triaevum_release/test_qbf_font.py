@@ -8,7 +8,7 @@ import zipfile
 
 from tools.oot3d.decomp_support.scripts.qbf_font import parse_qbf, pair_font_coverage
 from tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack import (
-    FONT_SOURCES, SINGLESCREEN_FONT_SOURCES, prepare_font_pack,
+    SINGLESCREEN_FONT_SOURCES, prepare_font_pack,
 )
 
 
@@ -78,10 +78,10 @@ class QbfFontTests(unittest.TestCase):
             root = Path(directory)
             archive, output = root / "mod.zip", root / "font.zip"
             with zipfile.ZipFile(archive, "w") as source:
-                source.writestr(FONT_SOURCES[0][1], font_bytes(64))
+                source.writestr(SINGLESCREEN_FONT_SOURCES[0][1], font_bytes(64))
                 source.writestr("code.ips", b"DO NOT IMPORT")
             def read_font(_, path):
-                if path == FONT_SOURCES[0][0]:
+                if path == SINGLESCREEN_FONT_SOURCES[0][0]:
                     return font_bytes()
                 raise FileNotFoundError(path)
             with patch("tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack.read_level3_romfs_file",
@@ -122,7 +122,7 @@ class QbfFontTests(unittest.TestCase):
             archive, output = root / "mod.zip", root / "font.zip"
             output.write_bytes(b"existing")
             with zipfile.ZipFile(archive, "w") as source:
-                source.writestr(FONT_SOURCES[0][1], b"broken")
+                source.writestr(SINGLESCREEN_FONT_SOURCES[0][1], b"broken")
             with patch("tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack.read_level3_romfs_file",
                        return_value=font_bytes()), self.assertRaises(ValueError):
                 prepare_font_pack(archive=archive, romfs=root / "romfs", output=output)

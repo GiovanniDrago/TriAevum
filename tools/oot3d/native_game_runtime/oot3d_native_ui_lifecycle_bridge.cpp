@@ -382,7 +382,7 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
                 mTopScreenConfig.HudLayout);
         auxiliaryGeometry.Quads[4].Visible = false;
         (void)AppendTopScreenAuxiliaryTouchPresentation(
-            auxiliaryGeometry, *texture, output);
+            auxiliaryGeometry, uiAtlas, output);
       }
       (void)AppendTopScreenTouchLabelsPresentation(
           BuildTopScreenTouchLabelsGeometry(touchState.VerticalOffsets,
@@ -403,7 +403,7 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
         dpadState.ItemOpacity = itemOpacity;
         (void)AppendTopScreenDpadPresentation(
             mTopScreenConfig, dpadState, auxiliaryInputs, mTopScreenViewAlpha,
-            itemIcons.value_or(oot3d::ui::UiTextureIdentity{}), *texture, uiAtlas, output);
+            itemIcons.value_or(oot3d::ui::UiTextureIdentity{}), uiAtlas, output);
       }
       if (const auto numberGlyphs = NativePauseSharedTextureIdentity(
               oot3d::ui::UiPauseSharedTextureSlot::NumberGlyphs);
