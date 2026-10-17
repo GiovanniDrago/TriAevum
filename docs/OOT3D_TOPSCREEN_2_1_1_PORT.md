@@ -436,6 +436,15 @@ minimap and Save routes only in the gameplay pause state.
   2.1.1 scaled the whole group by 0.95, which left 3.0's A ring 13% and its
   label 40% larger (Azahar oracle, on foot and on Epona). Not ported: the
   0x0060EDB4 path (target (382, 44)) and 3.0's Vanilla HUD Layout.
+- **B button order**: 3.0 draws its button circles (hub 0x005DCAD0, from the
+  Gameplay_Draw hook 0x002E27C0) before the native Quest page, so the B item
+  icon (Quest main renderer, ItemIcons) and its ammo digits (first child,
+  NumberGlyphs) lie above the B circle. TriAevum composes its HUD after the
+  native UI, which put the circle's translucent fill over the icon. At the
+  Quest draw (0x0042B9F4), while the gameplay HUD is composed, the quads
+  around the B button are copied for the host HUD (layer 12, after the
+  circles and under the B label) and moved off screen for the native draw;
+  the submit rebuilds them every frame.
 - **Rupee counter** (hub 0x005DE318): the digits start at x 24 whatever
   their count, y 217; a full wallet (count >= capacity 0x0053CC04) uses the
   next glyph row; zero rupees draw at alpha 0.3.
