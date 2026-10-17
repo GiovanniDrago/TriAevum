@@ -249,10 +249,22 @@ int main() {
   fastAimConfig.CStickAimSpeedLevel = 6U;
   fastAimConfig.CStickAimInvertX = true;
   const auto fastAimPolicy = ResolveTopScreenCStickAimPolicy(fastAimConfig);
-  Require(std::abs(fastAimPolicy.SpeedMultiplier - (16.0F / 6.0F)) <
+  Require(std::abs(fastAimPolicy.SpeedMultiplier - (110.0F / 62.0F)) <
                   0.0001F &&
               fastAimPolicy.InvertX && !fastAimPolicy.InvertY,
-          "TopScreen 2.1.1 C-stick aim policy is incorrect");
+          "SingleScreen 3.0 C-stick aim policy is incorrect");
+  fastAimConfig.CStickAimSpeedLevel = 8U;
+  TopScreenUiConfig aimSpeedConfig;
+  Require(std::abs(ResolveTopScreenCStickAimPolicy(fastAimConfig).SpeedMultiplier -
+                   (156.0F / 62.0F)) < 0.0001F &&
+              ParseTopScreenUiConfigText(
+                  R"({"schema":"oot3d_topscreen_ui_v2","c_stick_aim_speed_level":8})",
+                  &aimSpeedConfig, &configError) &&
+              aimSpeedConfig.CStickAimSpeedLevel == 8U &&
+              !ParseTopScreenUiConfigText(
+                  R"({"schema":"oot3d_topscreen_ui_v2","c_stick_aim_speed_level":9})",
+                  &aimSpeedConfig, &configError),
+          "SingleScreen 3.0 C-stick aim speed levels 0..8 are incorrect");
   Require(std::abs(ResolveTopScreenCStickSmoothingCoefficient(
                        TopScreenFreeCameraSmoothing::Off) -
                    1.0F) < 0.0001F &&
@@ -506,14 +518,18 @@ int main() {
 
   const auto touchLabels = BuildTopScreenTouchLabelsGeometry(
       std::array<float, 4>{0.0F, 0.0F, 4.0F, -3.0F}, 0.5F);
-  Require(touchLabels.Quads[0].Position.X == 362.0F &&
-              touchLabels.Quads[0].Position.Y == 37.0F &&
-              touchLabels.Quads[1].Position.X == 338.0F &&
-              touchLabels.Quads[1].Position.Y == 54.0F &&
-              touchLabels.Quads[0].AtlasOrigin.Y == 190.0F &&
-              touchLabels.Quads[1].AtlasOrigin.Y == 201.0F &&
+  // SingleScreen 3.0 custom_ui01 ZR (rect 15) and ZL (rect 14), 16 px.
+  Require(touchLabels.Quads[0].Position.X == 364.0F &&
+              touchLabels.Quads[0].Position.Y == 35.0F &&
+              touchLabels.Quads[1].Position.X == 340.0F &&
+              touchLabels.Quads[1].Position.Y == 52.0F &&
+              touchLabels.Quads[0].AtlasOrigin.X == 47.0F &&
+              touchLabels.Quads[0].AtlasOrigin.Y == 231.0F &&
+              touchLabels.Quads[1].AtlasOrigin.X == 245.0F &&
+              touchLabels.Quads[1].AtlasOrigin.Y == 227.0F &&
+              touchLabels.Quads[1].Size.X == 16.0F &&
               std::abs(touchLabels.Quads[0].Color.alpha - 0.45F) < 0.001F,
-          "touch-label geometry diverges from payload 0x005C9940");
+          "touch-label geometry diverges from SingleScreen 3.0");
   std::vector<oot3d::ui::UiPrimitive> touchLabelPresentation;
   const oot3d::ui::UiTextureIdentity navigationTexture{
       0x005D1000U, 0x18010000U, "oot3d/native/pause_shared/pause_top_page"};
@@ -1285,24 +1301,29 @@ int main() {
               touchCluster.Positions[3].Y == 55.0F &&
               touchCluster.Positions[4].X == 232.0F &&
               touchCluster.Positions[4].Y == 8.0F &&
-              touchCluster.Positions[5].X == 14.0F &&
-              touchCluster.Positions[5].Y == 52.0F &&
-              touchCluster.AtlasOrigins[0].X == 386.0F &&
-              touchCluster.AtlasOrigins[5].X == 432.0F &&
-              touchCluster.AtlasOrigins[5].Y == 218.0F &&
+              touchCluster.Positions[5].X == 16.5F &&
+              touchCluster.Positions[5].Y == 53.0F &&
+              touchCluster.AtlasOrigins[0].X == 148.0F &&
+              touchCluster.AtlasOrigins[4].X == 97.0F &&
+              touchCluster.AtlasOrigins[5].X == 385.0F &&
+              touchCluster.AtlasOrigins[5].Y == 108.0F &&
+              touchCluster.AtlasSizes[5].X == 29.0F &&
               touchCluster.Alpha[4] == 1.0F,
-          "TopScreen touch cluster payload geometry is incorrect");
+          "SingleScreen 3.0 touch cluster geometry is incorrect");
   std::vector<oot3d::ui::UiPrimitive> touchPrimitives;
-  Require(AppendTopScreenTouchClusterPresentation(touchCluster, heartTexture,
+  oot3d::ui::UiTextureIdentity touchAtlas;
+  touchAtlas.semantic_name = "oot3d/topscreen/3.0/ui_atlas";
+  Require(AppendTopScreenTouchClusterPresentation(touchCluster, touchAtlas,
                                                   touchPrimitives) == 6U &&
               touchPrimitives[0].owner_address == 0x005C9940U &&
-              touchPrimitives[0].uv.x == 386.0F / 512.0F &&
-              touchPrimitives[0].uv.y == 201.0F / 256.0F &&
+              touchPrimitives[0].texture.semantic_name == touchAtlas.semantic_name &&
+              touchPrimitives[0].uv.x == 148.0F / 512.0F &&
+              touchPrimitives[0].uv.y == 3.0F / 256.0F &&
               touchPrimitives[0].uv.height == 48.0F / 256.0F &&
               touchPrimitives[0].color.alpha == 0.5F &&
               touchPrimitives[4].color.alpha == 1.0F &&
-              touchPrimitives[5].destination.width == 30.0F,
-          "TopScreen touch cluster presentation is incorrect");
+              touchPrimitives[5].destination.width == 28.0F,
+          "SingleScreen 3.0 touch cluster presentation is incorrect");
 
   NativeA32Memory touchStateMemory;
   Require(touchStateMemory.MapRegion({"topscreen-touch-state-fixture",
@@ -1574,6 +1595,15 @@ int main() {
                                      &error),
           "could not map TopScreen counter save fixture");
   constexpr std::uint32_t kRootPlayState = 0x00528000U;
+  // Native wallet tables: upgrade mask 0x3000 >> 12, capacities 99/200/500/500.
+  Require(touchStateMemory.Write32(0x0053CBD4U, 0x3000U) &&
+              touchStateMemory.Write8(0x0053CB20U, 12U) &&
+              touchStateMemory.Write16(0x0053CC04U, 99U) &&
+              touchStateMemory.Write16(0x0053CC06U, 200U) &&
+              touchStateMemory.Write16(0x0053CC08U, 500U) &&
+              touchStateMemory.Write16(0x0053CC0AU, 500U) &&
+              touchStateMemory.Write32(0x00587958U + 0xB8U, 0x1000U),
+          "could not seed TopScreen wallet tables");
   Require(touchStateMemory.Write16(0x00587958U + 0x48U, 123U) &&
               touchStateMemory.Write16(0x00587958U + 0x1592U, 0U) &&
               touchStateMemory.Write8(0x00587958U + 0xD4U, 5U) &&
@@ -1603,13 +1633,40 @@ int main() {
               nativeCounters.size() == 6U &&
               nativeCounters[0].uv.x == 36.0F / 256.0F &&
               nativeCounters[0].uv.y == 60.0F / 128.0F &&
-              nativeCounters[0].destination.y == 218.0F &&
+              nativeCounters[0].destination.x == 41.0F &&
+              nativeCounters[0].destination.y == 217.0F &&
+              nativeCounters[0].color.alpha == 1.0F &&
               nativeCounters[3].descriptor_address == 0x00587958U + 0xD4U &&
               nativeCounters[4].destination.x == 389.0F &&
               nativeCounters[4].destination.y == 49.0F &&
               nativeCounters[4].role ==
                   oot3d::ui::UiPrimitiveRole::CounterDigit,
           "TopScreen native counter reconstruction is incomplete");
+  // SingleScreen 3.0 0x005DE318: one digit starts at x 24; a full wallet
+  // takes the next glyph row; zero rupees draw at alpha 0.3.
+  const auto rupeeDigits = [&](std::uint16_t rupees, std::uint32_t upgrades) {
+    std::vector<oot3d::ui::UiPrimitive> counters;
+    if (!touchStateMemory.Write16(0x00587958U + 0x48U, rupees) ||
+        !touchStateMemory.Write32(0x00587958U + 0xB8U, upgrades) ||
+        !AppendTopScreenNativeCounters(touchStateMemory,
+                                       dynamicTouch.VerticalOffsets,
+                                       numberGlyphTexture, counters, &error))
+      counters.clear();
+    return counters;
+  };
+  const auto fiveRupees = rupeeDigits(5U, 0x1000U);
+  const auto fullWallet = rupeeDigits(99U, 0U);
+  const auto noRupees = rupeeDigits(0U, 0x1000U);
+  Require(!fiveRupees.empty() && fiveRupees[0].destination.x == 24.0F &&
+              fiveRupees[0].uv.y == 60.0F / 128.0F &&
+              fiveRupees[1].descriptor_address != 0x00587958U + 0x48U &&
+              fullWallet.size() >= 2U && fullWallet[0].uv.y == 84.0F / 128.0F &&
+              fullWallet[0].destination.x == 32.5F &&
+              !noRupees.empty() && noRupees[0].color.alpha == 0.3F,
+          "SingleScreen 3.0 rupee counter placement or color diverged");
+  Require(touchStateMemory.Write16(0x00587958U + 0x48U, 123U) &&
+              touchStateMemory.Write32(0x00587958U + 0xB8U, 0x1000U),
+          "could not restore TopScreen rupee fixture");
 
   constexpr std::uint32_t sourceAmmo = kPlayState + 0x800U;
   Require(touchStateMemory.Write32(kPlayState + 0x10U, sourceAmmo) &&
@@ -2027,6 +2084,72 @@ int main() {
               near(marginHud[2].destination.x, 18.0F) &&
               near(marginHud[2].destination.y, 35.0F),
           "TopScreen 2.1.1 HUD margins or magic-bar offset diverged");
+
+  // SingleScreen 3.0 D-pad and Button Group Placement, before the HUD scale.
+  std::vector<oot3d::ui::UiPrimitive> placedHud(5U);
+  placedHud[4].destination = {225.0F, 5.0F, 16.0F, 16.0F}; // B: not in the group
+  placedHud[0].owner_address = 0x005C9940U;
+  placedHud[0].role = oot3d::ui::UiPrimitiveRole::TouchControl;
+  placedHud[0].layer = 12U;
+  placedHud[0].source_quad = 5U;
+  placedHud[0].destination = {14.0F, 52.0F, 30.0F, 30.0F};
+  placedHud[1].owner_address = 0x005D4A8CU;
+  placedHud[1].role = oot3d::ui::UiPrimitiveRole::ActionButton;
+  placedHud[1].destination = {23.0F, 38.0F, 14.0F, 14.0F};
+  // The same owner's native touch copies (the rupee icon) are not the D-pad.
+  placedHud.push_back({});
+  placedHud[5].owner_address = 0x005D4A8CU;
+  placedHud[5].role = oot3d::ui::UiPrimitiveRole::TouchControl;
+  placedHud[5].destination = {4.0F, 210.0F, 16.0F, 16.0F};
+  placedHud[2].destination = {342.0F, 4.0F, 32.0F, 32.0F};
+  placedHud[3].destination = {370.0F, 210.0F, 20.0F, 10.0F};
+  TopScreenUiConfig placedHudConfig;
+  placedHudConfig.HudScale = 1.2F;
+  placedHudConfig.HudMarginX = 0;
+  placedHudConfig.HudMarginY = 0;
+  placedHudConfig.DpadOffsetX = 10;
+  placedHudConfig.DpadOffsetY = -5;
+  placedHudConfig.DpadSizePercent = 150U;
+  placedHudConfig.ButtonGroupOffsetX = -20;
+  placedHudConfig.ButtonGroupOffsetY = 40;
+  placedHudConfig.ButtonGroupSizePercent = 50U;
+  ApplyTopScreenHudScale(placedHud, placedHudConfig);
+  Require(near(placedHud[0].destination.x, 19.2F) &&
+              near(placedHud[0].destination.y, 47.4F) &&
+              near(placedHud[0].destination.width, 54.0F) &&
+              near(placedHud[1].destination.x, 35.4F) &&
+              near(placedHud[1].destination.y, 22.2F) &&
+              near(placedHud[1].destination.width, 25.2F) &&
+              near(placedHud[5].destination.x, 4.8F) &&
+              near(placedHud[5].destination.y, 204.0F),
+          "SingleScreen 3.0 D-pad placement diverged");
+  // The group offset moves by offset x HUD scale, clamped to [-20, 10] and
+  // [-10, 40] px: -20 x 1.2 -> -20, 40 x 1.2 -> 40.
+  Require(near(placedHud[2].destination.x, 345.2F) &&
+              near(placedHud[2].destination.y, 42.4F) &&
+              near(placedHud[2].destination.width, 19.2F) &&
+              near(placedHud[3].destination.x, 364.0F) &&
+              near(placedHud[3].destination.y, 204.0F) &&
+              near(placedHud[4].destination.x, 190.0F) &&
+              near(placedHud[4].destination.y, 6.0F),
+          "SingleScreen 3.0 button group placement diverged");
+  TopScreenUiConfig placementConfig;
+  Require(ParseTopScreenUiConfigText(
+              R"({"schema":"oot3d_topscreen_ui_v2","dpad_offset_x":80,"dpad_offset_y":-10,"dpad_size_percent":55,"button_group_offset_x":-20,"button_group_offset_y":40,"button_group_size_percent":150})",
+              &placementConfig, &configError) &&
+              placementConfig.DpadOffsetX == 80 &&
+              placementConfig.DpadOffsetY == -10 &&
+              placementConfig.DpadSizePercent == 55U &&
+              placementConfig.ButtonGroupOffsetX == -20 &&
+              placementConfig.ButtonGroupOffsetY == 40 &&
+              placementConfig.ButtonGroupSizePercent == 150U &&
+              !ParseTopScreenUiConfigText(
+                  R"({"schema":"oot3d_topscreen_ui_v2","dpad_offset_y":19})",
+                  &placementConfig, &configError) &&
+              !ParseTopScreenUiConfigText(
+                  R"({"schema":"oot3d_topscreen_ui_v2","button_group_size_percent":52})",
+                  &placementConfig, &configError),
+          "SingleScreen 3.0 placement settings did not decode or validate");
 
   constexpr std::uint32_t kTouchQuadPlayState = 0x00609000U;
   constexpr std::uint32_t kNativeNaviViewEyeQuad = 28U;

@@ -19,6 +19,18 @@ inline constexpr float kTopScreenHudScaleDefault = 0.80F;
 inline constexpr float kTopScreenHudScaleStep = 0.05F;
 inline constexpr std::int8_t kTopScreenHudMarginMinimum = -3;
 inline constexpr std::int8_t kTopScreenHudMarginMaximum = 16;
+// SingleScreen 3.0 D-pad Placement and Button Group Placement (settings
+// table 0x0060A99C..0x0060AA3C): offsets in px, size in 5 percent steps.
+inline constexpr std::int8_t kTopScreenDpadOffsetXMinimum = -50;
+inline constexpr std::int8_t kTopScreenDpadOffsetXMaximum = 80;
+inline constexpr std::int8_t kTopScreenDpadOffsetYMinimum = -10;
+inline constexpr std::int8_t kTopScreenDpadOffsetYMaximum = 18;
+inline constexpr std::int8_t kTopScreenButtonGroupOffsetXMinimum = -20;
+inline constexpr std::int8_t kTopScreenButtonGroupOffsetXMaximum = 10;
+inline constexpr std::int8_t kTopScreenButtonGroupOffsetYMinimum = -10;
+inline constexpr std::int8_t kTopScreenButtonGroupOffsetYMaximum = 40;
+inline constexpr std::uint8_t kTopScreenPlacementSizeMinimum = 50U;
+inline constexpr std::uint8_t kTopScreenPlacementSizeMaximum = 150U;
 inline constexpr std::uint8_t kTopScreenCameraZoomMinimum = 75U;
 inline constexpr std::uint8_t kTopScreenCameraZoomMaximum = 170U;
 inline constexpr std::uint8_t kTopScreenCameraFovMinimum = 70U;
@@ -97,6 +109,12 @@ struct TopScreenUiConfig {
   std::int8_t HudMarginX = 4;
   std::int8_t HudMarginY = 1;
   std::uint8_t MagicBarY = 0U;
+  std::int8_t DpadOffsetX = 0;
+  std::int8_t DpadOffsetY = 0;
+  std::uint8_t DpadSizePercent = 100U;
+  std::int8_t ButtonGroupOffsetX = 0;
+  std::int8_t ButtonGroupOffsetY = 0;
+  std::uint8_t ButtonGroupSizePercent = 100U;
   bool MinimapVisible = true;
   bool RenderHud = true;
   bool RenderDpadIcons = true;

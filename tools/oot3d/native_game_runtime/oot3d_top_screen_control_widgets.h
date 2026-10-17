@@ -1,6 +1,7 @@
 #pragma once
 
 #include "oot3d_top_screen_config.h"
+#include "oot3d_top_screen_controls.h"
 #include "oot3d_control_settings_widgets.h"
 #include <imgui.h>
 #include <array>
@@ -78,7 +79,8 @@ inline bool DrawTopScreenStickAiming(TopScreenUiConfig& config) {
     ImGui::SeparatorText("C-stick aiming");
     bool changed = false;
     int speed = config.CStickAimSpeedLevel;
-    if (ControlWidgets::SliderInt("Speed##aim", &speed, 0, 6)) {
+    if (ControlWidgets::SliderInt("Speed##aim", &speed, 0,
+                                  static_cast<int>(kTopScreenCStickAimSpeeds.size()) - 1)) {
         config.CStickAimSpeedLevel = static_cast<uint8_t>(speed);
         changed = true;
     }

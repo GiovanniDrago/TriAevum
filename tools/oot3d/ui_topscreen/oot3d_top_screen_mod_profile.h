@@ -296,9 +296,10 @@ std::size_t AppendTopScreenMagicMeterPresentation(
     const oot3d::ui::UiTextureIdentity &pauseTopPage,
     std::vector<oot3d::ui::UiPrimitive> &output);
 
+// Draws from the SingleScreen 3.0 UI atlas (custom_ui01, 512x256).
 std::size_t AppendTopScreenTouchClusterPresentation(
     const TopScreenTouchClusterGeometry &geometry,
-    const oot3d::ui::UiTextureIdentity &pauseTopPage,
+    const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output);
 
 std::size_t AppendTopScreenPauseEdgePresentation(
@@ -401,9 +402,10 @@ TopScreenTouchLabelsGeometry BuildTopScreenTouchLabelsGeometry(
     float nativeAlpha,
     TopScreenHudLayout layout = TopScreenHudLayout::Normal) noexcept;
 
+// Draws from the SingleScreen 3.0 UI atlas (custom_ui01, 512x256).
 std::size_t AppendTopScreenTouchLabelsPresentation(
     const TopScreenTouchLabelsGeometry &geometry,
-    const oot3d::ui::UiTextureIdentity &pauseTopPage,
+    const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output);
 
 struct TopScreenAuxiliaryTouchInputs {

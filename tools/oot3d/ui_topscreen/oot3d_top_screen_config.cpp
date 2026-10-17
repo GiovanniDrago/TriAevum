@@ -198,13 +198,19 @@ bool DecodeTopScreenUiConfig(const nlohmann::json &document,
     return false;
   }
 
-  constexpr std::array<std::string_view, 32> kAllowedFields{
+  constexpr std::array<std::string_view, 38> kAllowedFields{
       "schema",
       "hud_layout",
       "hud_scale",
       "hud_margin_x",
       "hud_margin_y",
       "magic_bar_y",
+      "dpad_offset_x",
+      "dpad_offset_y",
+      "dpad_size_percent",
+      "button_group_offset_x",
+      "button_group_offset_y",
+      "button_group_size_percent",
       "minimap_visible",
       "render_hud",
       "render_dpad_icons",
@@ -306,7 +312,32 @@ bool DecodeTopScreenUiConfig(const nlohmann::json &document,
                    kTopScreenCameraZoomMaximum,
                    &parsed.CameraZoomPercent) ||
       !readPercent("camera_fov_percent", kTopScreenCameraFovMinimum,
-                   kTopScreenCameraFovMaximum, &parsed.CameraFovPercent)) {
+                   kTopScreenCameraFovMaximum, &parsed.CameraFovPercent) ||
+      !readPercent("dpad_size_percent", kTopScreenPlacementSizeMinimum,
+                   kTopScreenPlacementSizeMaximum, &parsed.DpadSizePercent) ||
+      !readPercent("button_group_size_percent", kTopScreenPlacementSizeMinimum,
+                   kTopScreenPlacementSizeMaximum,
+                   &parsed.ButtonGroupSizePercent)) {
+    return false;
+  }
+  const auto readOffset = [&](std::string_view key, std::int8_t minimum,
+                              std::int8_t maximum, std::int8_t *destination) {
+    if (!ReadInteger(document, key, minimum, maximum, &integer, error))
+      return false;
+    if (document.contains(std::string(key)))
+      *destination = static_cast<std::int8_t>(integer);
+    return true;
+  };
+  if (!readOffset("dpad_offset_x", kTopScreenDpadOffsetXMinimum,
+                  kTopScreenDpadOffsetXMaximum, &parsed.DpadOffsetX) ||
+      !readOffset("dpad_offset_y", kTopScreenDpadOffsetYMinimum,
+                  kTopScreenDpadOffsetYMaximum, &parsed.DpadOffsetY) ||
+      !readOffset("button_group_offset_x", kTopScreenButtonGroupOffsetXMinimum,
+                  kTopScreenButtonGroupOffsetXMaximum,
+                  &parsed.ButtonGroupOffsetX) ||
+      !readOffset("button_group_offset_y", kTopScreenButtonGroupOffsetYMinimum,
+                  kTopScreenButtonGroupOffsetYMaximum,
+                  &parsed.ButtonGroupOffsetY)) {
     return false;
   }
   if (document.contains("select_action") &&
@@ -331,7 +362,8 @@ bool DecodeTopScreenUiConfig(const nlohmann::json &document,
   }
   if (document.contains("free_camera_speed_level"))
     parsed.FreeCameraSpeedLevel = static_cast<std::uint8_t>(integer);
-  if (!ReadInteger(document, "c_stick_aim_speed_level", 0, 6, &integer,
+  // SingleScreen 3.0 C-Stick Aiming speed: levels 0..8.
+  if (!ReadInteger(document, "c_stick_aim_speed_level", 0, 8, &integer,
                    error)) {
     return false;
   }
@@ -595,6 +627,12 @@ bool SerializeTopScreenUiConfigText(const TopScreenUiConfig &config,
       {"hud_margin_x", config.HudMarginX},
       {"hud_margin_y", config.HudMarginY},
       {"magic_bar_y", config.MagicBarY},
+      {"dpad_offset_x", config.DpadOffsetX},
+      {"dpad_offset_y", config.DpadOffsetY},
+      {"dpad_size_percent", config.DpadSizePercent},
+      {"button_group_offset_x", config.ButtonGroupOffsetX},
+      {"button_group_offset_y", config.ButtonGroupOffsetY},
+      {"button_group_size_percent", config.ButtonGroupSizePercent},
       {"minimap_visible", config.MinimapVisible},
       {"render_hud", config.RenderHud},
       {"render_dpad_icons", config.RenderDpadIcons},

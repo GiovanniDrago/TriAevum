@@ -92,9 +92,12 @@ BuildTopScreenMagicMeterGeometry(const oot3d::ui::UiHudMagicContent &magic,
 TopScreenTouchClusterGeometry BuildTopScreenTouchClusterGeometry(
     const std::array<float, 4> &nativeVerticalOffsets,
     float nativeAlpha, TopScreenHudLayout layout) noexcept {
-  // Payload arrays 0x005D33A0/0x005D33B4 and literals
-  // 0x005CAF7C/0x005CAF9C/0x005CAFA0. FUN_005C7230 converts these atlas
-  // rectangles to PICA UVs after the producer has supplied top-origin pixels.
+  // SingleScreen 3.0 hub 0x005DCAD0..0x005DCCB0 (2.1.1 arrays
+  // 0x005D33A0/0x005D33B4): the four button circles centred on table
+  // 0x00609770/0x00609784, 32 px, custom_ui01 rect 1 (148,3,48,48); the A
+  // circle at (248, 24) with rect 0 (97,3,48,48); the D-pad cross centred on
+  // (30.5, 67), 28 px, rect 3 drawn as (385,108,29,29). The 2.1.1 drew them
+  // from its replaced menu_top_parts00, which TriAevum no longer has.
   constexpr std::array<TopScreenVec2, 4> kNativeCenters{
       {{358.0F, 20.0F}, {334.0F, 44.0F}, {382.0F, 44.0F}, {358.0F, 68.0F}}};
   TopScreenTouchClusterGeometry result;
@@ -103,7 +106,7 @@ TopScreenTouchClusterGeometry BuildTopScreenTouchClusterGeometry(
                                kNativeCenters[index].Y - 16.0F +
                                    nativeVerticalOffsets[index]};
     result.Sizes[index] = {32.0F, 32.0F};
-    result.AtlasOrigins[index] = {386.0F, 201.0F};
+    result.AtlasOrigins[index] = {148.0F, 3.0F};
     result.AtlasSizes[index] = {48.0F, 48.0F};
     result.Alpha[index] =
         layout == TopScreenHudLayout::Restoration && index >= 2U ? 0.0F
@@ -115,14 +118,14 @@ TopScreenTouchClusterGeometry BuildTopScreenTouchClusterGeometry(
           ? TopScreenVec2{342.0F, 52.0F}
           : TopScreenVec2{232.0F, 8.0F};
   result.Sizes[4] = {32.0F, 32.0F};
-  result.AtlasOrigins[4] = {386.0F, 201.0F};
+  result.AtlasOrigins[4] = {97.0F, 3.0F};
   result.AtlasSizes[4] = {48.0F, 48.0F};
   result.Alpha[4] = 1.0F;
 
-  result.Positions[5] = {14.0F, 52.0F};
-  result.Sizes[5] = {30.0F, 30.0F};
-  result.AtlasOrigins[5] = {432.0F, 218.0F};
-  result.AtlasSizes[5] = {30.0F, 30.0F};
+  result.Positions[5] = {30.5F - 14.0F, 67.0F - 14.0F};
+  result.Sizes[5] = {28.0F, 28.0F};
+  result.AtlasOrigins[5] = {385.0F, 108.0F};
+  result.AtlasSizes[5] = {29.0F, 29.0F};
   result.Alpha[5] = nativeAlpha;
   return result;
 }
@@ -451,9 +454,9 @@ std::size_t AppendTopScreenMagicMeterPresentation(
 
 std::size_t AppendTopScreenTouchClusterPresentation(
     const TopScreenTouchClusterGeometry &geometry,
-    const oot3d::ui::UiTextureIdentity &pauseTopPage,
+    const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output) {
-  if (pauseTopPage.semantic_name.empty()) {
+  if (uiAtlas.semantic_name.empty()) {
     return 0U;
   }
   const std::size_t startSize = output.size();
@@ -467,7 +470,7 @@ std::size_t AppendTopScreenTouchClusterPresentation(
     primitive.role = oot3d::ui::UiPrimitiveRole::TouchControl;
     primitive.owner_address = 0x005C9940U;
     primitive.source_quad = static_cast<std::uint32_t>(index);
-    primitive.texture = pauseTopPage;
+    primitive.texture = uiAtlas;
     primitive.destination = {geometry.Positions[index].X,
                              geometry.Positions[index].Y,
                              geometry.Sizes[index].X, geometry.Sizes[index].Y};
@@ -820,14 +823,39 @@ bool AppendTopScreenNativeCounters(
     return false;
   }
   constexpr std::uint32_t kSaveContext = 0x00587958U;
-  std::uint16_t rupees = 0U;
-  if (!memory.Read16(kSaveContext + 0x48U, &rupees)) {
+  std::uint16_t rupeesRaw = 0U;
+  std::uint32_t upgrades = 0U, walletMask = 0U;
+  std::uint8_t walletShift = 0U;
+  std::uint16_t walletCapacity = 0U;
+  if (!memory.Read16(kSaveContext + 0x48U, &rupeesRaw) ||
+      !memory.Read32(kSaveContext + 0xB8U, &upgrades) ||
+      !memory.Read32(0x0053CBD4U, &walletMask) ||
+      !memory.Read8(0x0053CB20U, &walletShift)) {
     SetError(error, "cannot read native TopScreen rupee count");
     return false;
   }
-  (void)AppendTopScreenCounterDigits(0x005C9940U, kSaveContext + 0x48U, rupees,
-                                     4U, 24.0F, 218.0F, 0.85F, numberGlyphs,
-                                     output);
+  const std::uint32_t walletIndex =
+      ((upgrades & walletMask) >> (walletShift & 31U)) & 3U;
+  if (!memory.Read16(0x0053CC04U + walletIndex * 2U, &walletCapacity)) {
+    SetError(error, "cannot read native TopScreen wallet capacity");
+    return false;
+  }
+  // SingleScreen 3.0 hub 0x005DE318..0x005DE3C8: the digits start at x 24
+  // whatever their count (origin 24 - (3 - n) x 8.5) at y 217; a full wallet
+  // (count >= the 0x0053CC04 capacity) takes the next glyph row and an empty
+  // one draws at alpha 0.3.
+  const auto rupees = static_cast<std::uint32_t>(
+      std::max<std::int16_t>(static_cast<std::int16_t>(rupeesRaw), 0));
+  const std::uint32_t rupeeDigits = rupees < 10U ? 1U : (rupees < 100U ? 2U : 3U);
+  const std::size_t rupeeStart = output.size();
+  (void)AppendTopScreenCounterDigits(
+      0x005C9940U, kSaveContext + 0x48U, rupees,
+      walletCapacity <= rupees ? 5U : 4U,
+      24.0F - static_cast<float>(3U - rupeeDigits) * 8.5F, 217.0F, 0.85F,
+      numberGlyphs, output);
+  for (std::size_t index = rupeeStart; index < output.size(); ++index) {
+    output[index].color.alpha = rupees == 0U ? 0.3F : 1.0F;
+  }
 
   // 2.1.1 005D8434..8540 gates the key digits on the root PlayState
   // *(005043D4+C): type 3, subtype 2, scene 3..16, signed key count >= 0.
@@ -994,21 +1022,24 @@ TopScreenTouchLabelsGeometry BuildTopScreenTouchLabelsGeometry(
       layout == TopScreenHudLayout::Restoration
           ? 0.0F
           : std::clamp(nativeAlpha * 0.9F, 0.0F, 1.0F);
+  // SingleScreen 3.0 hub 0x005DD0D8/0x005DD168: ZR at (364, lane 2 + 31)
+  // with custom_ui01 rect 15 (47,231), ZL at (340, lane 3 + 55) with rect 14
+  // (245,227), both 16 px.
   TopScreenTouchLabelsGeometry result;
-  result.Quads[0] = {alpha != 0.0F,  {362.0F, nativeVerticalOffsets[2] + 33.0F},
-                     {17.0F, 11.0F}, {440.0F, 190.0F},
-                     {17.0F, 11.0F}, {1.0F, 1.0F, 1.0F, alpha}};
-  result.Quads[1] = {alpha != 0.0F,  {338.0F, nativeVerticalOffsets[3] + 57.0F},
-                     {17.0F, 11.0F}, {440.0F, 201.0F},
-                     {17.0F, 11.0F}, {1.0F, 1.0F, 1.0F, alpha}};
+  result.Quads[0] = {alpha != 0.0F,  {364.0F, nativeVerticalOffsets[2] + 31.0F},
+                     {16.0F, 16.0F}, {47.0F, 231.0F},
+                     {16.0F, 16.0F}, {1.0F, 1.0F, 1.0F, alpha}};
+  result.Quads[1] = {alpha != 0.0F,  {340.0F, nativeVerticalOffsets[3] + 55.0F},
+                     {16.0F, 16.0F}, {245.0F, 227.0F},
+                     {16.0F, 16.0F}, {1.0F, 1.0F, 1.0F, alpha}};
   return result;
 }
 
 std::size_t AppendTopScreenTouchLabelsPresentation(
     const TopScreenTouchLabelsGeometry &geometry,
-    const oot3d::ui::UiTextureIdentity &pauseTopPage,
+    const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output) {
-  if (pauseTopPage.semantic_name.empty()) {
+  if (uiAtlas.semantic_name.empty()) {
     return 0U;
   }
   const std::size_t startSize = output.size();
@@ -1022,7 +1053,7 @@ std::size_t AppendTopScreenTouchLabelsPresentation(
     primitive.role = oot3d::ui::UiPrimitiveRole::TouchControl;
     primitive.owner_address = 0x005C9940U;
     primitive.source_quad = static_cast<std::uint32_t>(index);
-    primitive.texture = pauseTopPage;
+    primitive.texture = uiAtlas;
     primitive.destination = {quad.Position.X, quad.Position.Y, quad.Size.X,
                              quad.Size.Y};
     primitive.uv = {quad.AtlasOrigin.X / 512.0F, quad.AtlasOrigin.Y / 256.0F,
@@ -1452,13 +1483,49 @@ void ApplyTopScreenGameplayCanvas(
   }
 }
 
+namespace {
+bool IsTopScreenDpadPrimitive(const oot3d::ui::UiPrimitive &primitive) noexcept {
+  // The D-pad presentation (2.1.1 0x005D4A8C action buttons; that owner's
+  // native touch copies, the rupee and key icons among them, are touch
+  // controls) and the touch-cluster cross, quad 5 (layer 12; the touch labels
+  // share owner and indices on layer 13).
+  return (primitive.owner_address == 0x005D4A8CU &&
+          primitive.role == oot3d::ui::UiPrimitiveRole::ActionButton) ||
+         (primitive.owner_address == 0x005C9940U &&
+          primitive.role == oot3d::ui::UiPrimitiveRole::TouchControl &&
+          primitive.layer == 12U && primitive.source_quad == 5U);
+}
+} // namespace
+
 void ApplyTopScreenHudScale(
     std::span<oot3d::ui::UiPrimitive> primitives,
     const TopScreenUiConfig &config) noexcept {
   const float scale = config.HudScale;
   const float marginX = static_cast<float>(config.HudMarginX);
   const float marginY = static_cast<float>(config.HudMarginY);
-  if (scale == 1.0F && marginX == 0.0F && marginY == 0.0F &&
+  // SingleScreen 3.0 places the D-pad and the button group before the HUD
+  // scale. D-pad, helpers 0x005CA63C / 0x005CA66C: (30, 67) + (p - (30, 67))
+  // x size + offset; size modopts+0x2C (hub 0x005DB50C), offset +0x2A/+0x2B.
+  // Button group, 0x005C84B8: the X/Y/ZR/ZL cluster scales about the
+  // top-right corner like the HUD scale, and its offset (+0x2E/+0x2F) moves it
+  // by offset x HUD
+  // scale, which the hub (0x005DB6B4..0x005DB75C) clamps to [-20, 10] and
+  // [-10, 40] px.
+  const float dpadSize = static_cast<float>(config.DpadSizePercent) * 0.01F;
+  const float dpadX = static_cast<float>(config.DpadOffsetX);
+  const float dpadY = static_cast<float>(config.DpadOffsetY);
+  const float groupSize =
+      static_cast<float>(config.ButtonGroupSizePercent) * 0.01F;
+  const float placementScale = scale > 0.0F ? scale : 1.0F;
+  const float groupX =
+      std::clamp(static_cast<float>(config.ButtonGroupOffsetX) * placementScale,
+                 -20.0F, 10.0F) / placementScale;
+  const float groupY =
+      std::clamp(static_cast<float>(config.ButtonGroupOffsetY) * placementScale,
+                 -10.0F, 40.0F) / placementScale;
+  const bool placed = dpadSize != 1.0F || dpadX != 0.0F || dpadY != 0.0F ||
+                      groupSize != 1.0F || groupX != 0.0F || groupY != 0.0F;
+  if (!placed && scale == 1.0F && marginX == 0.0F && marginY == 0.0F &&
       config.MagicBarY == 0U) {
     return;
   }
@@ -1476,6 +1543,21 @@ void ApplyTopScreenHudScale(
     // 2.1.1 005CE554 scales copied stamina quads 28..33 as one row
     // about (200, 240), not as independent left/right HUD groups.
     const bool stamina = primitive.role == oot3d::ui::UiPrimitiveRole::HorseStamina;
+    if (IsTopScreenDpadPrimitive(primitive)) {
+      destination.x = 30.0F + (destination.x - 30.0F) * dpadSize + dpadX;
+      destination.y = 67.0F + (destination.y - 67.0F) * dpadSize + dpadY;
+      destination.width *= dpadSize;
+      destination.height *= dpadSize;
+    } else if (centerX > 300.0F && centerY < 90.0F && !stamina) {
+      // 0x005C84B8 moves the native button quads centred in X (330, 398)
+      // above y 90 (PICA y 150), and the hub moves their labels with them:
+      // X, Y, ZR and ZL with items, counts and labels (the Y label is centred
+      // at 322). A (248) and B (237) keep their place.
+      destination.x = 400.0F + (destination.x - 400.0F) * groupSize + groupX;
+      destination.y = destination.y * groupSize + groupY;
+      destination.width *= groupSize;
+      destination.height *= groupSize;
+    }
     // Its pivot literals 005CF558/005CF55C are (200, 240), with no margins.
     const float pivotX = stamina ? 200.0F : (left ? 0.0F : 400.0F);
     const float pivotY = stamina ? 240.0F : (top ? 0.0F : 240.0F);

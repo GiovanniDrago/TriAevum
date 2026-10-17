@@ -402,6 +402,46 @@ two matrices from guest stack scratch, viewport X 0 or 300 by cursor row).
 While a page is open SELECT belongs to the description; it reaches the
 minimap and Save routes only in the gameplay pause state.
 
+### SingleScreen 3.0 HUD, camera and frontend (2026-10-17)
+
+- **HUD art.** The button circles, the D-pad cross, the ZR/ZL labels and the
+  Ocarina page arrows came from 2.1.1's replaced `menu_top_parts00`; with
+  2.1.1 retired the native texture has nothing at those places. They now
+  follow the 3.0 hub (0x005DCAD0..0x005DCCB0, 0x005DD0D8/0x005DD168,
+  0x005CBFB8) with custom_ui01: circles rect 1 (148,3,48,48), A circle rect
+  0 (97,3), cross rect 3 drawn as (385,108,29,29), 28 px centred on
+  (30.5, 67), ZR rect 15 (47,231) at (364, lane + 31), ZL rect 14 (245,227)
+  at (340, lane + 55), arrow rect 7 (46,124) from x + 2 or mirrored from
+  x + 28.
+- **D-pad and Button Group Placement** (3.0 settings 0x0060A99C..0x0060AA3C,
+  F1 HUD, `dpad_offset_x/y`, `dpad_size_percent`, `button_group_offset_x/y`,
+  `button_group_size_percent`). Both apply before the HUD scale. D-pad,
+  helpers 0x005CA63C/0x005CA66C: (30, 67) + (p - (30, 67)) x size + offset,
+  for the mapped presenter (action buttons of 0x005D4A8C; that owner's touch
+  copies, such as the rupee icon, are not the D-pad) and the cross. Button
+  group, 0x005C84B8: X, Y, ZR and ZL with their items, counts and labels
+  scale about the top-right corner; the offset moves them by offset x HUD
+  scale, clamped to [-20, 10] and [-10, 40] px (hub 0x005DB6B4). A and B
+  stay in place.
+- **Rupee counter** (hub 0x005DE318): the digits start at x 24 whatever
+  their count, y 217; a full wallet (count >= capacity 0x0053CC04) uses the
+  next glyph row; zero rupees draw at alpha 0.3.
+- **C-Stick Aiming speed**: levels 0..8 with 3.0's table 28..156
+  (0x00608FA8+0x522, divided by 110), relative to level 3. The 0..6 table
+  2..16 belongs to the 3.0 Free Camera, which matches the existing orbit
+  (0x00607A88). 3.0's aiming "Enabled" is the Controls aim source. Zoom/FOV
+  ranges, defaults and the 20..110 degree clamp match; 3.0's view-level zoom
+  (0x004791A8) is only a preview while its own zoom menu is open.
+- **File Select and Name Entry anchors** (0x00505968, 0x00505B20,
+  0x00507C1C): zeroed exactly as 2.1.1 and 3.0 do, as verified layout
+  patches. On File Select this removes the lower screen's BACK button from
+  the upper screen.
+- Not ported: 3.0's Save-screen "Mod Options" entry and its resource
+  bookkeeping (0x0041CD40..0x0041CE40; the F1 panel replaces it), the 1 px
+  File Select/Name Entry quad trims, the PauseSystemMenu y 202 -> 162 words
+  (0x0050A5E0) and the default changes (HUD scale 0.9, child D-pad without
+  I/II), which the installer template keeps as product choices.
+
 ## Deliberate host adaptations
 
 - The mod's in-game settings overlay and preference chords are represented by

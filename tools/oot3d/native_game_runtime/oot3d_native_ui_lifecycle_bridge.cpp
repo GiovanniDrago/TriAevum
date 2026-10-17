@@ -300,8 +300,6 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
   if (ocarinaLane) {
     const auto ocarinaTexture = NativePauseSharedTextureIdentity(
         oot3d::ui::UiPauseSharedTextureSlot::OcarinaPage);
-    const auto pauseTexture = NativePauseSharedTextureIdentity(
-        oot3d::ui::UiPauseSharedTextureSlot::PauseTopPage);
     if (!ocarinaTexture.has_value()) {
       return output;
     }
@@ -313,9 +311,11 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
       (void)AppendTopScreenOcarinaPresentation(
           geometry, *ocarinaTexture, output,
           itemIcons.value_or(oot3d::ui::UiTextureIdentity{}));
-      if (geometry.Active && pauseTexture.has_value()) {
+      if (geometry.Active) {
+        oot3d::ui::UiTextureIdentity uiAtlas;
+        uiAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
         (void)AppendTopScreenOcarinaNavigationPresentation(
-            BuildTopScreenOcarinaNavigationGeometry(mTopScreenOcarina.Direction()), *pauseTexture,
+            BuildTopScreenOcarinaNavigationGeometry(mTopScreenOcarina.Direction()), uiAtlas,
             output);
       }
     } else {
@@ -367,7 +367,10 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
       if (!mTopScreenConfig.RenderDpadIcons) {
         touchGeometry.Alpha[5] = 0.0F;
       }
-      (void)AppendTopScreenTouchClusterPresentation(touchGeometry, *texture,
+      // Button circles, D-pad cross and ZR/ZL labels: SingleScreen 3.0 atlas.
+      oot3d::ui::UiTextureIdentity uiAtlas;
+      uiAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
+      (void)AppendTopScreenTouchClusterPresentation(touchGeometry, uiAtlas,
                                                     output);
       TopScreenAuxiliaryTouchInputs auxiliaryInputs;
       std::string auxiliaryInputError;
@@ -385,7 +388,7 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
           BuildTopScreenTouchLabelsGeometry(touchState.VerticalOffsets,
                                             touchState.Alpha,
                                             mTopScreenConfig.HudLayout),
-          *texture, output);
+          uiAtlas, output);
       TopScreenNativeItemOpacity itemOpacity;
       const auto itemIcons = NativePauseSharedTextureIdentity(
           oot3d::ui::UiPauseSharedTextureSlot::ItemIcons);
@@ -398,8 +401,6 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
       TopScreenDpadPresentationState dpadState;
       if (ReadTopScreenDpadPresentationState(mMemory, &dpadState)) {
         dpadState.ItemOpacity = itemOpacity;
-        oot3d::ui::UiTextureIdentity uiAtlas;
-        uiAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
         (void)AppendTopScreenDpadPresentation(
             mTopScreenConfig, dpadState, auxiliaryInputs, mTopScreenViewAlpha,
             itemIcons.value_or(oot3d::ui::UiTextureIdentity{}), *texture, uiAtlas, output);

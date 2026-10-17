@@ -156,6 +156,46 @@ private:
       mDirty = true;
     }
 
+    // SingleScreen 3.0 D-pad Placement and Button Group Placement.
+    ImGui::SeparatorText("D-pad placement");
+    DrawPlacement("dpad", &mDraft.DpadOffsetX, kTopScreenDpadOffsetXMinimum,
+                  kTopScreenDpadOffsetXMaximum, &mDraft.DpadOffsetY,
+                  kTopScreenDpadOffsetYMinimum, kTopScreenDpadOffsetYMaximum,
+                  &mDraft.DpadSizePercent);
+    ImGui::SeparatorText("Button group placement");
+    DrawPlacement("buttons", &mDraft.ButtonGroupOffsetX,
+                  kTopScreenButtonGroupOffsetXMinimum,
+                  kTopScreenButtonGroupOffsetXMaximum,
+                  &mDraft.ButtonGroupOffsetY,
+                  kTopScreenButtonGroupOffsetYMinimum,
+                  kTopScreenButtonGroupOffsetYMaximum,
+                  &mDraft.ButtonGroupSizePercent);
+  }
+  void DrawPlacement(const char *id, std::int8_t *offsetX, int minimumX,
+                     int maximumX, std::int8_t *offsetY, int minimumY,
+                     int maximumY, std::uint8_t *sizePercent) {
+    ImGui::PushID(id);
+    int x = *offsetX;
+    int y = *offsetY;
+    int size = *sizePercent;
+    if (ImGui::SliderInt("Offset X", &x, minimumX, maximumX, "%d px")) {
+      *offsetX = static_cast<std::int8_t>(x);
+      mDirty = true;
+    }
+    if (ImGui::SliderInt("Offset Y", &y, minimumY, maximumY, "%d px")) {
+      *offsetY = static_cast<std::int8_t>(y);
+      mDirty = true;
+    }
+    if (ImGui::SliderInt("Size", &size, kTopScreenPlacementSizeMinimum,
+                         kTopScreenPlacementSizeMaximum, "%d%%")) {
+      // 3.0 steps the size by 5 percent.
+      size = (size + 2) / 5 * 5;
+      *sizePercent = static_cast<std::uint8_t>(
+          std::clamp<int>(size, kTopScreenPlacementSizeMinimum,
+                          kTopScreenPlacementSizeMaximum));
+      mDirty = true;
+    }
+    ImGui::PopID();
   }
   std::shared_ptr<TopScreenUiConfigRuntime> mRuntime;
   TopScreenUiConfig mDraft;
