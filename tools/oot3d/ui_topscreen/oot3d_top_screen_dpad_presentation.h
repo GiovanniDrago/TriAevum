@@ -20,16 +20,15 @@ bool ReadTopScreenDpadPresentationState(NativeA32Memory &memory,
                                         TopScreenDpadPresentationState *state);
 
 // Emits mapped action icons and their native cycle marks. The cross, face buttons and global
-// HUD scale remain owned by the existing HUD compositor. The cycle marks come
-// from the 2.1.1 custom-menu atlas; without it (an empty identity) they are
-// left out.
+// HUD scale remain owned by the existing HUD compositor. The cycle marks use
+// the SingleScreen 3.0 cycle badge in uiAtlas (custom_ui01).
 std::size_t AppendTopScreenDpadPresentation(
     const TopScreenUiConfig &config,
     const TopScreenDpadPresentationState &state,
     const TopScreenAuxiliaryTouchInputs &viewState, float alpha,
     const oot3d::ui::UiTextureIdentity &itemIcons,
     const oot3d::ui::UiTextureIdentity &pauseTopPage,
-    const oot3d::ui::UiTextureIdentity &menuAtlas,
+    const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output);
 
 } // namespace Oot3dNativeGame

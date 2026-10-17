@@ -99,7 +99,7 @@ void NativeA32WindowSession::Setup() {
 #if defined(__SWITCH__)
     gSwitchTopScreen211Assets =
         topScreenTextureOverridePack.FindProfileTexture(
-            Oot3dNativeGame::kTopScreen211MenuAtlasSemantic) != nullptr &&
+            "oot3d/topscreen/2.1.1/menu_atlas") != nullptr &&
         topScreenTextureOverridePack.FindProfileTexture(
             "oot3d/topscreen/2.1.1/font_atlas") != nullptr;
 #endif
@@ -603,10 +603,6 @@ void NativeA32WindowSession::Setup() {
   auto &uiLifecycleBridge = uiLifecycleBridgeStorage.emplace(
       process.Memory());
   uiLifecycleBridge.SetTopScreenConfig(activeTopScreenConfig);
-  uiLifecycleBridge.SetTopScreen211MenuAtlasAvailable(
-      topScreenTextureOverridePackPointer != nullptr &&
-      topScreenTextureOverridePack.FindProfileTexture(
-          Oot3dNativeGame::kTopScreen211MenuAtlasSemantic) != nullptr);
   uiLifecycleBridge.SetVersionChoiceRevealRequired(
       launch.UiProfile == Oot3dNativeGame::Oot3dUiProfile::TopScreen);
   widescreenProjection.UiLifecycleBridge = &uiLifecycleBridge;

@@ -1,5 +1,5 @@
 #include "oot3d_top_screen_dpad_presentation.h"
-#include "oot3d_top_screen_items_hint.h"
+#include "oot3d_top_screen_items_shortcuts.h"
 #include "oot3d_ui/ui_pause_atlas_regions.h"
 
 #include <cstdlib>
@@ -26,7 +26,7 @@ void RunTopScreenDpadPresentationTests() {
   oot3d::ui::UiTextureIdentity items, page, menu;
   items.semantic_name = "native-items";
   page.semantic_name = "native-pause";
-  menu.semantic_name = std::string(kTopScreen211MenuAtlasSemantic);
+  menu.semantic_name = std::string(kTopScreen30UiAtlasSemantic);
   const auto render = [&] {
     std::vector<oot3d::ui::UiPrimitive> result;
     AppendTopScreenDpadPresentation(config, state, {}, 1, items, page, menu, result);
@@ -59,18 +59,17 @@ void RunTopScreenDpadPresentationTests() {
                 "mapped icon must fit its native atlas");
       }
       if (badges) {
-        // Installed from the SingleScreen 3.0 archive alone, without the
-        // 2.1.1 atlas, the icons stay and the cycle marks are left out.
-        std::vector<oot3d::ui::UiPrimitive> withoutMenu;
-        AppendTopScreenDpadPresentation(config, state, {}, 1, items, page, {}, withoutMenu);
-        require(withoutMenu.size() == 4, "cycle marks need the 2.1.1 custom-menu atlas");
+        // Without the UI atlas the icons stay and the cycle marks are left out.
+        std::vector<oot3d::ui::UiPrimitive> withoutAtlas;
+        AppendTopScreenDpadPresentation(config, state, {}, 1, items, page, {}, withoutAtlas);
+        require(withoutAtlas.size() == 4, "cycle marks need the 3.0 UI atlas");
         for (std::size_t direction = 0; direction < 4; ++direction) {
           const auto &icon = result[direction];
           const auto &badge = result[4 + direction];
-          require(badge.texture.semantic_name != icon.texture.semantic_name &&
-                      badge.uv.x == 458.0F / 512 && badge.uv.y == 2.0F / 512 &&
-                      badge.uv.width == 40.0F / 512 && badge.uv.height == 40.0F / 512,
-                  "cycle mark must use the original custom-menu atlas rect");
+          require(badge.texture.semantic_name == kTopScreen30UiAtlasSemantic &&
+                      badge.uv.x == 320.0F / 512 && badge.uv.y == 3.0F / 256 &&
+                      badge.uv.width == 40.0F / 512 && badge.uv.height == 40.0F / 256,
+                  "cycle mark must use the custom_ui01 cycle badge rect 0x0060A718");
           require(badge.destination.x == icon.destination.x +
                       ((action == 7 && direction < 2) ? 2.0F : 0.0F) &&
                       badge.destination.y == icon.destination.y - 1.0F &&

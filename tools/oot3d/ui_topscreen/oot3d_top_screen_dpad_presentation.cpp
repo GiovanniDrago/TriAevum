@@ -1,5 +1,4 @@
 #include "oot3d_top_screen_dpad_presentation.h"
-#include "oot3d_top_screen_items_hint.h"
 
 #include "oot3d_native_a32_memory.h"
 #include "oot3d_ui/ui_contract_types.h"
@@ -119,7 +118,7 @@ std::size_t AppendTopScreenDpadPresentation(
     const TopScreenAuxiliaryTouchInputs &viewState, float alpha,
     const oot3d::ui::UiTextureIdentity &itemIcons,
     const oot3d::ui::UiTextureIdentity &pauseTopPage,
-    const oot3d::ui::UiTextureIdentity &menuAtlas,
+    const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output) {
   if (!config.RenderHud || !(alpha > 0) ||
       (viewState.PauseState >= 12U && viewState.PauseState <= 19U) ||
@@ -202,9 +201,10 @@ std::size_t AppendTopScreenDpadPresentation(
       output.push_back(std::move(p));
   }
   // 005D818C..005D81FC: the original adds cycle marks only for boots/sword.
-  // Rect 005E1894 belongs to custom_menu, not either native item atlas.
+  // 3.0 draws no HUD cycle marks; the mark keeps the 2.1.1 placement and
+  // uses the 3.0 cycle badge (custom_ui01 rect 0x0060A718, 512x256).
   for (std::size_t direction = 0;
-       !menuAtlas.semantic_name.empty() && direction < actions.size(); ++direction) {
+       !uiAtlas.semantic_name.empty() && direction < actions.size(); ++direction) {
     const auto action = actions[direction];
     if ((action != TopScreenDpadAction::SwordToggle &&
          action != TopScreenDpadAction::AllBootsToggle) ||
@@ -216,12 +216,12 @@ std::size_t AppendTopScreenDpadPresentation(
     p.owner_address = 0x005D4A8CU;
     p.source_quad = static_cast<std::uint32_t>(4 + direction);
     p.layer = 14;
-    p.texture = menuAtlas;
+    p.texture = uiAtlas;
     p.color = {1, 1, 1, std::clamp(alpha, 0.0F, 1.0F)};
     const float shift = action == TopScreenDpadAction::SwordToggle && direction < 2 ? 2.0F : 0.0F;
     p.destination = {kCenterX[direction] - 7.0F + shift,
                      kCenterY[direction] - 8.0F, 14.0F, 14.0F};
-    p.uv = {458.0F / 512, 2.0F / 512, 40.0F / 512, 40.0F / 512};
+    p.uv = {320.0F / 512, 3.0F / 256, 40.0F / 512, 40.0F / 256};
     output.push_back(std::move(p));
   }
   return output.size() - start;

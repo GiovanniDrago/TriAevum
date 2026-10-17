@@ -68,8 +68,8 @@ reads them from the package instead of the archive.
   `forge.py` writes the launch arguments and the runtime receipt.
 - Runtime consumers: `tools/oot3d/ui_topscreen/oot3d_top_screen_texture_overrides.*`,
   `tools/oot3d/native_game_runtime/oot3d_native_ui_texture_provider.*`. The
-  2.1.1 menu atlas (Items hint, D-pad cycle marks) is absent, and the
-  primitives that used it are left out.
+  Items hint (SELECT ?) and the D-pad cycle marks draw from the shipped
+  custom_ui01 atlas; nothing reads the retired 2.1.1 menu atlas.
 
 Private outputs live in `data/mods/topscreen/<source-key>/`:
 `atlas_overrides.o3tu`, `zelda_link_ext.zar`, `import.json`, and with the HD

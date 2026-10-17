@@ -141,7 +141,7 @@ bool ReadTopScreenItemsHintCursorBounds(const NativeA32Memory &memory,
   // With -0.005 X scale these place native X at X+84 or X+80 on top.
   const float screenOffsetX = vertices[0] < 256.0F ? 84.0F : 80.0F;
   *bounds = {true, (minimumX + maximumX) * 0.5F + screenOffsetX, minimumY, maximumY,
-             maximumX - minimumX};
+             maximumX - minimumX, screenOffsetX};
   return true;
 }
 

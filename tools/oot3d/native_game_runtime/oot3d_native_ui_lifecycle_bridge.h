@@ -105,12 +105,6 @@ public:
   void SetTopScreenSystemPagePresentation(bool active) noexcept {
     mTopScreenSystemPagePresentation = active;
   }
-  // The 2.1.1 custom-menu atlas (Items hint, D-pad cycle marks) is present
-  // only when the user's TopScreen 2.1.1 archive was imported; SingleScreen
-  // 3.0 no longer carries it.
-  void SetTopScreen211MenuAtlasAvailable(bool available) noexcept {
-    mTopScreen211MenuAtlasAvailable = available;
-  }
   void
   SetTopScreenInputFrame(const TopScreenExtendedInputFrame &input) noexcept;
   void SetTopScreenConfig(const TopScreenUiConfig &config) noexcept;
@@ -188,7 +182,6 @@ private:
   std::optional<TopScreenPauseEdgeGeometry>
       mTopScreenPausePageRedrawEdgeGeometry;
   bool mTopScreenSystemPagePresentation = false;
-  bool mTopScreen211MenuAtlasAvailable = true;
   TopScreenExtendedInputFrame mTopScreenInput;
   TopScreenOcarinaBrowser mTopScreenOcarina;
   TopScreenItemsHintRuntimeState mTopScreenItemsHint;

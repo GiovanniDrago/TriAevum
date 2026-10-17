@@ -407,10 +407,11 @@ minimap and Save routes only in the gameplay pause state.
 - The mod's in-game settings overlay and preference chords are represented by
   the F1 panel and external JSON. This keeps gameplay inputs available and
   avoids mod-private guest save/config bytes.
-- Items-hint coordinates now follow the 3.0 cursor projection on the
-  400x240 upper canvas before becoming generic primitives.
-- `custom_menu00.ctxb` supplies the Items-hint atlas. `custom_font00.ctxb` is
-  retained as a named profile asset, but host F1 text uses the host UI font.
+- The Items hint follows SingleScreen 3.0 (0x005E0E6C): SELECT and ? from
+  custom_ui01 (rects 0x0060A6F8 / 0x0060A708), native X clamped to
+  [-80, 318] under the cursor's projection, placed on the 400x240 upper
+  canvas before becoming generic primitives. `custom_menu00.ctxb` and
+  `custom_font00.ctxb` are no longer read on PC (Switch staging only).
 - Preferences changed for the current session, such as minimap visibility,
   update typed host state only unless the user explicitly saves the JSON.
 

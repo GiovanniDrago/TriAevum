@@ -398,12 +398,11 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
       TopScreenDpadPresentationState dpadState;
       if (ReadTopScreenDpadPresentationState(mMemory, &dpadState)) {
         dpadState.ItemOpacity = itemOpacity;
-        oot3d::ui::UiTextureIdentity menuAtlas;
-        if (mTopScreen211MenuAtlasAvailable)
-          menuAtlas.semantic_name = kTopScreen211MenuAtlasSemantic;
+        oot3d::ui::UiTextureIdentity uiAtlas;
+        uiAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
         (void)AppendTopScreenDpadPresentation(
             mTopScreenConfig, dpadState, auxiliaryInputs, mTopScreenViewAlpha,
-            itemIcons.value_or(oot3d::ui::UiTextureIdentity{}), *texture, menuAtlas, output);
+            itemIcons.value_or(oot3d::ui::UiTextureIdentity{}), *texture, uiAtlas, output);
       }
       if (const auto numberGlyphs = NativePauseSharedTextureIdentity(
               oot3d::ui::UiPauseSharedTextureSlot::NumberGlyphs);
@@ -506,8 +505,7 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
           &mTopScreenDpadPickerCursor);
   }
   oot3d::ui::UiTextureIdentity itemsHintAtlas;
-  if (mTopScreen211MenuAtlasAvailable)
-    itemsHintAtlas.semantic_name = kTopScreen211MenuAtlasSemantic;
+  itemsHintAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
   (void)AppendTopScreenItemsHintPresentation(
       BuildTopScreenItemsHintGeometry(mTopScreenItemsHint,
                                       mTopScreenConfig.RenderItemsHint &&

@@ -64,31 +64,48 @@ int main() {
               Near(geometry.Quads[1].Y, 88.2F) &&
               Near(geometry.Quads[1].Width, 11.6F) &&
               Near(geometry.Quads[1].Height, 11.6F),
-          "the recovered Items hint geometry differs from payload 0x005D2078");
+          "the recovered Items hint geometry differs from 3.0 0x005E0E6C");
 
-  oot3d::ui::UiTextureIdentity menuAtlas;
-  menuAtlas.semantic_name = kTopScreen211MenuAtlasSemantic;
+  oot3d::ui::UiTextureIdentity hintAtlas;
+  hintAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
   std::vector<oot3d::ui::UiPrimitive> primitives;
   Require(
-      AppendTopScreenItemsHintPresentation(geometry, menuAtlas, primitives) ==
+      AppendTopScreenItemsHintPresentation(geometry, hintAtlas, primitives) ==
               2U &&
           primitives.size() == 2U &&
           primitives[0].subsystem == oot3d::ui::UiSubsystem::Items &&
-          primitives[0].texture.semantic_name ==
-              kTopScreen211MenuAtlasSemantic &&
+          primitives[0].texture.semantic_name == kTopScreen30UiAtlasSemantic &&
           Near(primitives[0].destination.x, 136.7F) &&
           Near(primitives[0].destination.width, 32.0F) &&
-          Near(primitives[0].uv.x, 434.0F / 512.0F) &&
-          Near(primitives[0].uv.y, 410.0F / 512.0F) &&
-          Near(primitives[1].uv.x, 492.0F / 512.0F) &&
-          Near(primitives[1].uv.y, 104.0F / 512.0F),
-      "the Items hint was not presented through generic 400x240 primitives");
+          Near(primitives[0].uv.x, 277.0F / 512.0F) &&
+          Near(primitives[0].uv.y, 222.0F / 256.0F) &&
+          Near(primitives[0].uv.width, 64.0F / 512.0F) &&
+          Near(primitives[0].uv.height, 16.0F / 256.0F) &&
+          Near(primitives[1].uv.x, 344.0F / 512.0F) &&
+          Near(primitives[1].uv.y, 222.0F / 256.0F),
+      "the Items hint does not use the custom_ui01 SELECT and ? rects");
+  primitives.clear();
+  Require(AppendTopScreenItemsHintPresentation(geometry, {}, primitives) == 0U,
+          "the Items hint drew without its atlas");
 
+  // 0x005E2A30 / 0x005E2A34 clamp native X to [-80, 318]: canvas [0, 398]
+  // at projection 0.6, [4, 402] at 0.58.
   auto right = state;
   right.Cursor.CenterX = 390.0F;
   const auto rightGeometry = BuildTopScreenItemsHintGeometry(right, true);
   Require(Near(rightGeometry.Quads[1].X + rightGeometry.Quads[1].Width, 398.0F),
           "right-column hint still clamps to the old 320-wide page");
+  auto left = state;
+  left.Cursor.CenterX = 10.0F;
+  left.Cursor.ScreenOffsetX = 84.0F;
+  Require(Near(BuildTopScreenItemsHintGeometry(left, true).Quads[0].X, 4.0F),
+          "the left clamp ignores the 0.58 grid projection");
+  auto gridRight = right;
+  gridRight.Cursor.ScreenOffsetX = 84.0F;
+  gridRight.Cursor.CenterX = 420.0F;
+  const auto gridRightQuad = BuildTopScreenItemsHintGeometry(gridRight, true).Quads[1];
+  Require(Near(gridRightQuad.X + gridRightQuad.Width, 402.0F),
+          "the right clamp ignores the 0.58 grid projection");
 
   AdvanceTopScreenItemsHintState(state,
                                  {true, cursor.CenterX + 0.6F, cursor.MinimumY,

@@ -17,10 +17,14 @@ constexpr std::uint16_t kMaximumStableFrames =
 constexpr std::uint32_t kPulsePeriod = 90U;
 constexpr float kCursorMovementEpsilon = 0.5F;
 
+// custom_ui01 rects 0x0060A6F8 (SELECT) and 0x0060A708 (?), 512x256.
 constexpr TopScreenItemsHintQuad kSelectTemplate{
-    true, 0.0F, 0.0F, 0.0F, 0.0F, 434.0F, 410.0F, 64.0F, 16.0F, 0.0F};
+    true, 0.0F, 0.0F, 0.0F, 0.0F, 277.0F, 222.0F, 64.0F, 16.0F, 0.0F};
 constexpr TopScreenItemsHintQuad kQuestionTemplate{
-    true, 0.0F, 0.0F, 0.0F, 0.0F, 492.0F, 104.0F, 16.0F, 16.0F, 0.0F};
+    true, 0.0F, 0.0F, 0.0F, 0.0F, 344.0F, 222.0F, 16.0F, 16.0F, 0.0F};
+// 0x005E2A30 / 0x005E2A34: native X clamps of the hint pair.
+constexpr float kMinimumNativeX = -80.0F;
+constexpr float kMaximumNativeX = 318.0F;
 
 float AspectHeight(float width, const TopScreenItemsHintQuad &source) noexcept {
   return source.AtlasWidth > 0.0F
@@ -105,13 +109,15 @@ BuildTopScreenItemsHintGeometry(const TopScreenItemsHintRuntimeState &state,
   question.Height = select.Height * 1.45F;
   question.Width = AspectWidth(question.Height, question);
   const float totalWidth = select.Width + 3.0F + question.Width;
-  select.X = 2.0F;
+  const float minimumX = state.Cursor.ScreenOffsetX + kMinimumNativeX;
+  const float maximumX = state.Cursor.ScreenOffsetX + kMaximumNativeX;
+  select.X = minimumX;
   const float centeredX = state.Cursor.CenterX - totalWidth * 0.5F;
-  if (centeredX >= 2.0F) {
+  if (centeredX >= minimumX) {
     select.X = centeredX;
   }
-  if (select.X + totalWidth > 398.0F) {
-    select.X = 398.0F - totalWidth;
+  if (select.X + totalWidth > maximumX) {
+    select.X = maximumX - totalWidth;
   }
   question.X = select.X + select.Width + 3.0F;
   question.Y = select.Y + (select.Height - question.Height) * 0.5F;
@@ -126,9 +132,9 @@ BuildTopScreenItemsHintGeometry(const TopScreenItemsHintRuntimeState &state,
 
 std::size_t AppendTopScreenItemsHintPresentation(
     const TopScreenItemsHintGeometry &geometry,
-    const oot3d::ui::UiTextureIdentity &menuAtlas,
+    const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output) {
-  if (!geometry.Visible || menuAtlas.semantic_name.empty()) {
+  if (!geometry.Visible || uiAtlas.semantic_name.empty()) {
     return 0U;
   }
   const std::size_t startSize = output.size();
@@ -140,12 +146,12 @@ std::size_t AppendTopScreenItemsHintPresentation(
     oot3d::ui::UiPrimitive primitive;
     primitive.subsystem = oot3d::ui::UiSubsystem::Items;
     primitive.role = oot3d::ui::UiPrimitiveRole::PauseText;
-    primitive.owner_address = 0x005D2078U;
+    primitive.owner_address = 0x005E0E6CU;
     primitive.source_quad = static_cast<std::uint32_t>(index);
-    primitive.texture = menuAtlas;
+    primitive.texture = uiAtlas;
     primitive.destination = {quad.X, quad.Y, quad.Width, quad.Height};
-    primitive.uv = {quad.AtlasX / 512.0F, quad.AtlasY / 512.0F,
-                    quad.AtlasWidth / 512.0F, quad.AtlasHeight / 512.0F};
+    primitive.uv = {quad.AtlasX / 512.0F, quad.AtlasY / 256.0F,
+                    quad.AtlasWidth / 512.0F, quad.AtlasHeight / 256.0F};
     primitive.color.alpha = quad.Alpha;
     primitive.layer = 15U;
     output.push_back(std::move(primitive));

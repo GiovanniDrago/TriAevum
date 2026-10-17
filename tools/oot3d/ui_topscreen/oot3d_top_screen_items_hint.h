@@ -9,15 +9,15 @@
 
 namespace Oot3dNativeGame {
 
-inline constexpr std::string_view kTopScreen211MenuAtlasSemantic =
-    "oot3d/topscreen/2.1.1/menu_atlas";
-
 struct TopScreenItemsHintCursorBounds {
   bool Active = false;
   float CenterX = 0.0F;
   float MinimumY = 0.0F;
   float MaximumY = 0.0F;
   float Width = 0.0F;
+  // Canvas X of native X 0 under the cursor's projection: 80 at 0.6 and
+  // 84 at 0.58. 0x005E0E6C draws the hint with the cursor's projection.
+  float ScreenOffsetX = 80.0F;
 };
 
 struct TopScreenItemsHintRuntimeState {
@@ -53,8 +53,8 @@ struct TopScreenItemsHintGeometry {
   std::array<TopScreenItemsHintQuad, 2> Quads{};
 };
 
-// Retains the 2.1.1 hint atlas and timing until the 3.0 atlas is installed.
-// Cursor bounds and horizontal clamps use the 3.0 upper 400x240 canvas.
+// SingleScreen 3.0 0x005E0E6C: SELECT and ? from custom_ui01, placed on the
+// upper 400x240 canvas with the native timing and clamps.
 TopScreenItemsHintGeometry
 BuildTopScreenItemsHintGeometry(const TopScreenItemsHintRuntimeState &state,
                                 bool enabled) noexcept;
@@ -63,7 +63,7 @@ BuildTopScreenItemsHintGeometry(const TopScreenItemsHintRuntimeState &state,
 // The renderer receives only ordinary resolved UI primitives.
 std::size_t AppendTopScreenItemsHintPresentation(
     const TopScreenItemsHintGeometry &geometry,
-    const oot3d::ui::UiTextureIdentity &menuAtlas,
+    const oot3d::ui::UiTextureIdentity &uiAtlas,
     std::vector<oot3d::ui::UiPrimitive> &output);
 
 } // namespace Oot3dNativeGame
