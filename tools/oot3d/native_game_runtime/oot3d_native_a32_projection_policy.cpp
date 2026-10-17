@@ -113,6 +113,79 @@ void ApplyNativeWidescreenProjectionPolicy(
                &suppressed) &&
            suppressed;
   };
+  // Player_Update is also the Roll Dash entry: an exit there skips the rest
+  // of this policy, so the PlayState and player probes observe it first.
+  if (pc == Oot3dNativeGame::kOot3dPlayerUpdateEntry) {
+    if (runtime.PlayerTimingProbe != nullptr) {
+      runtime.PlayerTimingProbe->ObserveUpdateEntry(state);
+    }
+    if (runtime.SceneViewProbe != nullptr) {
+      runtime.SceneViewProbe->ObservePlayState(state.r[1]);
+    }
+    if (runtime.CollectExtendedDiagnostics &&
+        runtime.PlayerTimingProbe != nullptr) {
+      constexpr size_t kMaximumPlayerTimingEvents = 4096U;
+      const auto snapshot = runtime.PlayerTimingProbe->Capture(memory);
+      if (snapshot.has_value() &&
+          runtime.TemporalEventLedger != nullptr &&
+          runtime.FrameRatePolicy != nullptr) {
+        runtime.TemporalEventLedger->ObservePlayer(
+            runtime.FrameRatePolicy->GameplayClock().Context(), *snapshot);
+      }
+      if (snapshot.has_value() &&
+          runtime.PlayerTimingEvents.size() < kMaximumPlayerTimingEvents) {
+        runtime.PlayerTimingEvents.push_back({
+            {"host_frame", runtime.CurrentHostFrame},
+            {"world_position",
+             {snapshot->WorldX, snapshot->WorldY, snapshot->WorldZ}},
+            {"velocity",
+             {snapshot->VelocityX, snapshot->VelocityY, snapshot->VelocityZ}},
+            {"actor_speed", snapshot->ActorSpeed},
+            {"player_speed", snapshot->PlayerSpeed},
+            {"floor_height", snapshot->FloorHeight},
+            {"underwater_timer", snapshot->UnderwaterTimer},
+            {"melee_weapon_action_timer",
+             snapshot->MeleeWeaponActionTimer},
+            {"melee_weapon_combo_state",
+             snapshot->MeleeWeaponComboState},
+            {"item_action_state_or_burn_timer",
+             snapshot->ItemActionStateOrBurnTimer},
+            {"ledge_climb_type", snapshot->LedgeClimbType},
+            {"ledge_climb_delay_timer",
+             snapshot->LedgeClimbDelayTimer},
+            {"textbox_button_cooldown_timer",
+             snapshot->TextboxButtonCooldownTimer},
+            {"damage_flicker_animation_counter",
+             snapshot->DamageFlickerAnimationCounter},
+            {"damage_run_timer", snapshot->DamageRunTimer},
+            {"item_action_cooldown_timer",
+             snapshot->ItemActionCooldownTimer},
+            {"collision_sfx_cooldown_timer",
+             snapshot->CollisionSfxCooldownTimer},
+            {"invincibility_timer", snapshot->InvincibilityTimer},
+            {"floor_type_timer", snapshot->FloorTypeTimer},
+            {"previous_floor_type", snapshot->PreviousFloorType},
+            {"respawn_damage_state", snapshot->RespawnDamageState},
+            {"random_turn_state", snapshot->RandomTurnState},
+            {"random_turn_timer", snapshot->RandomTurnTimer},
+            {"attention_persistence_counter",
+             snapshot->AttentionPersistenceCounter},
+            {"fairy_revive_grace_timer",
+             snapshot->FairyReviveGraceTimer},
+            {"background_check_flags", snapshot->BackgroundCheckFlags},
+            {"action_function", snapshot->ActionFunction},
+            {"animation_resource", snapshot->AnimationResource},
+            {"animation_frame", snapshot->AnimationFrame},
+            {"animation_play_speed", snapshot->AnimationPlaySpeed},
+            {"animation_mode", snapshot->AnimationMode},
+            {"time_state_address", snapshot->TimeStateAddress},
+            {"time_state_update_rate", snapshot->TimeStateUpdateRate},
+        });
+      } else if (snapshot.has_value()) {
+        runtime.PlayerTimingEventsTruncated = true;
+      }
+    }
+  }
   if (wholeAotExecutionActive &&
       enabledTopScreenCameraExit && enabledTopScreenItemExit &&
       enabledTopScreenGameplayExit && enabledObjectBankExit && enabledRainExit &&
@@ -452,77 +525,6 @@ void ApplyNativeWidescreenProjectionPolicy(
   if (pc == Oot3dNativeGame::kOot3dFramePacingBeginEntry &&
       runtime.FrameRatePolicy != nullptr) {
     runtime.FrameRatePolicy->BeginFramePacing(state.r[0]);
-  }
-  if (pc == Oot3dNativeGame::kOot3dPlayerUpdateEntry) {
-    if (runtime.PlayerTimingProbe != nullptr) {
-      runtime.PlayerTimingProbe->ObserveUpdateEntry(state);
-    }
-    if (runtime.SceneViewProbe != nullptr) {
-      runtime.SceneViewProbe->ObservePlayState(state.r[1]);
-    }
-    if (runtime.CollectExtendedDiagnostics &&
-        runtime.PlayerTimingProbe != nullptr) {
-      constexpr size_t kMaximumPlayerTimingEvents = 4096U;
-      const auto snapshot = runtime.PlayerTimingProbe->Capture(memory);
-      if (snapshot.has_value() &&
-          runtime.TemporalEventLedger != nullptr &&
-          runtime.FrameRatePolicy != nullptr) {
-        runtime.TemporalEventLedger->ObservePlayer(
-            runtime.FrameRatePolicy->GameplayClock().Context(), *snapshot);
-      }
-      if (snapshot.has_value() &&
-          runtime.PlayerTimingEvents.size() < kMaximumPlayerTimingEvents) {
-        runtime.PlayerTimingEvents.push_back({
-            {"host_frame", runtime.CurrentHostFrame},
-            {"world_position",
-             {snapshot->WorldX, snapshot->WorldY, snapshot->WorldZ}},
-            {"velocity",
-             {snapshot->VelocityX, snapshot->VelocityY, snapshot->VelocityZ}},
-            {"actor_speed", snapshot->ActorSpeed},
-            {"player_speed", snapshot->PlayerSpeed},
-            {"floor_height", snapshot->FloorHeight},
-            {"underwater_timer", snapshot->UnderwaterTimer},
-            {"melee_weapon_action_timer",
-             snapshot->MeleeWeaponActionTimer},
-            {"melee_weapon_combo_state",
-             snapshot->MeleeWeaponComboState},
-            {"item_action_state_or_burn_timer",
-             snapshot->ItemActionStateOrBurnTimer},
-            {"ledge_climb_type", snapshot->LedgeClimbType},
-            {"ledge_climb_delay_timer",
-             snapshot->LedgeClimbDelayTimer},
-            {"textbox_button_cooldown_timer",
-             snapshot->TextboxButtonCooldownTimer},
-            {"damage_flicker_animation_counter",
-             snapshot->DamageFlickerAnimationCounter},
-            {"damage_run_timer", snapshot->DamageRunTimer},
-            {"item_action_cooldown_timer",
-             snapshot->ItemActionCooldownTimer},
-            {"collision_sfx_cooldown_timer",
-             snapshot->CollisionSfxCooldownTimer},
-            {"invincibility_timer", snapshot->InvincibilityTimer},
-            {"floor_type_timer", snapshot->FloorTypeTimer},
-            {"previous_floor_type", snapshot->PreviousFloorType},
-            {"respawn_damage_state", snapshot->RespawnDamageState},
-            {"random_turn_state", snapshot->RandomTurnState},
-            {"random_turn_timer", snapshot->RandomTurnTimer},
-            {"attention_persistence_counter",
-             snapshot->AttentionPersistenceCounter},
-            {"fairy_revive_grace_timer",
-             snapshot->FairyReviveGraceTimer},
-            {"background_check_flags", snapshot->BackgroundCheckFlags},
-            {"action_function", snapshot->ActionFunction},
-            {"animation_resource", snapshot->AnimationResource},
-            {"animation_frame", snapshot->AnimationFrame},
-            {"animation_play_speed", snapshot->AnimationPlaySpeed},
-            {"animation_mode", snapshot->AnimationMode},
-            {"time_state_address", snapshot->TimeStateAddress},
-            {"time_state_update_rate", snapshot->TimeStateUpdateRate},
-        });
-      } else if (snapshot.has_value()) {
-        runtime.PlayerTimingEventsTruncated = true;
-      }
-    }
   }
   if (pc == kGameStateUpdate && runtime.FrameRatePolicy != nullptr &&
       !runtime.FrameRatePolicy->ApplyNativeTimeScaleAtGameStateUpdate(
