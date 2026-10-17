@@ -516,6 +516,28 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
           itemIcons.value_or(oot3d::ui::UiTextureIdentity{}), uiAtlas, output,
           &mTopScreenDpadPickerCursor);
   }
+  // 3.0 0x005E0F58 / 0x005E1030 on the Gear page: the A-hold ring beside
+  // the held slot, and a picker opened from there.
+  if (!systemActive && !viewModel && mTopScreenItemsShortcuts != nullptr) {
+    std::uint32_t gearSlot = 0U;
+    std::int32_t gearFrames = 0;
+    float ringX = 0.0F, ringY = 0.0F;
+    if (mTopScreenItemsShortcuts->GearHold(&gearSlot, &gearFrames) &&
+        ReadTopScreenGearHoldRingCenter(mMemory, gearSlot, &ringX, &ringY)) {
+      mTopScreenItemsShortcutCursor =
+          BuildTopScreenDpadPickerHoldCursor(ringX, ringY, gearFrames / 15.0F);
+      (void)AppendTopScreenItemsShortcutHoldPresentation(mTopScreenItemsShortcutCursor,
+                                                         overlayAtlas, output);
+    }
+    if (mTopScreenItemsShortcuts->DpadPicker().Gear) {
+      const auto itemIcons =
+          NativePauseSharedTextureIdentity(oot3d::ui::UiPauseSharedTextureSlot::ItemIcons);
+      (void)AppendTopScreenDpadPickerPresentation(
+          mTopScreenItemsShortcuts->DpadPicker(), mTopScreenItemsShortcuts->DpadPickerDraw(),
+          itemIcons.value_or(oot3d::ui::UiTextureIdentity{}), overlayAtlas, output,
+          &mTopScreenDpadPickerCursor);
+    }
+  }
   oot3d::ui::UiTextureIdentity itemsHintAtlas;
   itemsHintAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
   (void)AppendTopScreenItemsHintPresentation(

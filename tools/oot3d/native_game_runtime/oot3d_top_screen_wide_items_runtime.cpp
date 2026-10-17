@@ -167,6 +167,8 @@ void TopScreenWideItemsRuntime::Reset() noexcept {
   mViewModel = {};
   mGearLegendBlink = mGearLegendHover = 0U;
   mGearLegendSlot = -1;
+  mGearHoldSlot = -1;
+  mGearHoldFrames = 0;
   mAssignmentFrame = 0U;
   mAssignmentDelay = 0;
 }
@@ -237,10 +239,13 @@ bool TopScreenWideItemsRuntime::ExecuteItemsUpdate(
   UpdateItemsInset();
   Begin(mUpdate, kTopScreenItemsUpdateBoundary, state, 0x20U);
   try {
-    // 0x005E461C: the View Model's one-update "just closed" flag.
+    // 0x005E460C: clears the View Model's one-update "just closed" flag
+    // (0x005E461C), counts the Gear legend, runs the Gear A hold, then
+    // 0x005D29E4 advances the picker, possibly opened by that hold.
     mViewModel.Closed = false;
-    UpdateShortcuts(mUpdate);
     UpdateGearLegend();
+    UpdateGearHold(mUpdate);
+    UpdateShortcuts(mUpdate);
     UpdateViewModel(mUpdate);
   } catch (...) {
     mUpdate = {};
@@ -328,15 +333,38 @@ void TopScreenWideItemsRuntime::ReadDpadPickerDrawState() {
 }
 
 std::int32_t TopScreenWideItemsRuntime::PickerViewItem() {
-  // 0x005D0B2C: the picked action's item through 0x005D09E8. View and the
-  // minimap have none; 0x005D0B4C shows the sword actually carried as 0x3D.
-  const auto action = static_cast<unsigned>(mDpadPicker.Action);
-  if (action <= 1U || mDpadPicker.Action == TopScreenDpadAction::MinimapToggle ||
-      action >= mDpadPickerDraw.Items.size())
-    return -1;
-  std::int32_t item = mDpadPickerDraw.Items[action];
+  // 0x005D0B2C: the picked action's item. View and the minimap have none;
+  // 0x005D0B4C shows the sword actually carried as 0x3D.
+  using Action = TopScreenDpadAction;
+  const auto action = mDpadPicker.Action;
+  if (static_cast<unsigned>(action) <= 1U || action == Action::MinimapToggle) return -1;
+  constexpr std::uint32_t save = 0x00587958U;
+  std::uint16_t equipped = 0U;
+  std::uint8_t zr = 0xFF, zl = 0xFF;
+  if (!mMemory.Read16(save + 0x8AU, &equipped) || !mMemory.Read8(save + 0x83U, &zr) ||
+      !mMemory.Read8(save + 0x84U, &zl))
+    throw std::runtime_error("SingleScreen View Model cannot read the equipment");
+  // 0x005D09E8 reads the equipped member directly, without 0x005D07AC.
+  const auto member = [&](unsigned shift, std::int32_t base, std::int32_t fallback) {
+    const auto value = static_cast<std::int32_t>((equipped >> shift) & 15U);
+    return value >= 1 && value <= 3 ? base + value : fallback;
+  };
+  std::int32_t item = 0xFF;
+  switch (action) {
+  case Action::Ocarina: item = mShortcutDraw.Ocarina != 0xFF ? mShortcutDraw.Ocarina : 7; break;
+  case Action::IronBoots: item = 0x45; break;
+  case Action::HoverBoots: item = 0x46; break;
+  case Action::ItemZr: item = zr >= 0x3EU ? 0xFF : zr; break;
+  case Action::ItemZl: item = zl >= 0x3EU ? 0xFF : zl; break;
+  case Action::SwordToggle: item = member(0, 0x3A, 0x3B); break;
+  case Action::AllBootsToggle: item = member(12, 0x43, 0x44); break;
+  case Action::Boomerang: item = 0x0E; break;
+  case Action::Slingshot: item = 6; break;
+  case Action::TunicToggle: item = member(8, 0x40, 0x41); break;
+  case Action::ShieldToggle: item = member(4, 0x3D, 0x3E); break;
+  default: break;
+  }
   if (item == 0x3D) {
-    constexpr std::uint32_t save = 0x00587958U;
     std::uint8_t flag = 0U;
     std::uint16_t owned = 0U;
     if (!mMemory.Read8(save + 0x52U, &flag) || !mMemory.Read16(save + 0xB6U, &owned))
@@ -349,8 +377,6 @@ std::int32_t TopScreenWideItemsRuntime::PickerViewItem() {
 
 void TopScreenWideItemsRuntime::ReadShortcutDrawState() {
   mShortcutDraw = {};
-  if (ReadWord(kItemsPageState) == 0U || ReadWord(0x00506758U) != 0U ||
-      ReadWord(0x0050677CU) != 0U) return;
   constexpr std::uint32_t save = 0x00587958U;
   std::uint16_t owned = 0, equipped = 0;
   std::uint8_t iron = 0, hover = 0;
@@ -372,6 +398,10 @@ void TopScreenWideItemsRuntime::ReadShortcutDrawState() {
       throw std::runtime_error("SingleScreen Items cannot read shortcut inventory");
     if (slot < 24U && value == item) mShortcutDraw.Ocarina = item;
   }
+  // The column itself needs the Items page; a Gear-page picker reads the
+  // equipment above for its icons.
+  if (ReadWord(kItemsPageState) == 0U || ReadWord(0x00506758U) != 0U ||
+      ReadWord(0x0050677CU) != 0U) return;
   mShortcutDraw.Dimmed = static_cast<std::int32_t>(ReadWord(0x00506730U)) > 1;
   mShortcutDraw.Active = true;
 }
@@ -404,7 +434,9 @@ void TopScreenWideItemsRuntime::UpdateShortcuts(Sequence &sequence) {
   input.Pressed = pressed != 0U ? pressed : ReadWord(0x0050AF14U);
   input.Held = ReadWord(0x0050AF10U);
   const bool pickerViewModel = mViewModel.Active && mViewModel.Mode == 1U;
-  if (pickerViewModel && mDpadPicker.Active() && input.Active &&
+  // 0x005CD22C: a picker lives while the page that opened it is active.
+  const bool pickerPage = mDpadPicker.Gear ? ReadWord(kGearPageState) == 2U : input.Active;
+  if (pickerViewModel && mDpadPicker.Active() && pickerPage &&
       mShortcutDraw.Child == mDpadPicker.Child) {
     // 0x005D2AC0: mode 1 runs inside the picker, which stays frozen. Its
     // edge uses the picker's previous held buttons (0x0060F230).
@@ -418,7 +450,7 @@ void TopScreenWideItemsRuntime::UpdateShortcuts(Sequence &sequence) {
   if (mDpadPicker.Active()) {
     const bool wasChild = mDpadPicker.Child;
     const auto update = AdvanceTopScreenDpadPicker(
-        mDpadPicker, input.Active, mShortcutDraw.Child, input.Held);
+        mDpadPicker, pickerPage, mShortcutDraw.Child, input.Held);
     ConsumePickerInput();
     if (update.Changed) {
       // Store before the callback: Preview may synchronously refresh this runtime.
@@ -428,7 +460,7 @@ void TopScreenWideItemsRuntime::UpdateShortcuts(Sequence &sequence) {
       if (mDpadAssignmentChanged) mDpadAssignmentChanged(wasChild, snapshot);
     }
     AppendUiSound(sequence, update.Sound);
-    if (input.Active) {
+    if (pickerPage) {
       ReadDpadPickerDrawState();
       if (update.ViewModel) {
         // 0x005D2CF8: 0x005D24FC(1, item) previews the picked item.
@@ -455,7 +487,7 @@ void TopScreenWideItemsRuntime::UpdateShortcuts(Sequence &sequence) {
     if (input.TouchRow >= 0 && input.TouchRow == mShortcuts.SelectedRow) input.Pressed |= 1U;
   }
   const auto update = AdvanceTopScreenItemsShortcuts(mShortcuts, input);
-  if (!input.Active) mDpadPicker = {};
+  if (!input.Active && !mDpadPicker.Gear) mDpadPicker = {};
   if (update.ConsumeDirections != 0U) {
     for (const auto address : {0x0050AF2CU, 0x0050AF30U})
       WriteWord(address, ReadWord(address) & ~update.ConsumeDirections);
@@ -557,6 +589,102 @@ void TopScreenWideItemsRuntime::UpdateGearLegend() {
   } else if (mGearLegendHover <= 0x65U) {
     ++mGearLegendHover;
   }
+}
+
+std::int32_t TopScreenWideItemsRuntime::GearSlotAction(std::int32_t slot) {
+  // 0x005D0878: swords, shields and tunics cycle; slot 18 is the Ocarina.
+  TopScreenDpadAction action = TopScreenDpadAction::None;
+  if (slot >= 0 && slot <= 2) action = TopScreenDpadAction::SwordToggle;
+  else if (slot >= 3 && slot <= 5) action = TopScreenDpadAction::ShieldToggle;
+  else if (slot >= 6 && slot <= 8) action = TopScreenDpadAction::TunicToggle;
+  else if (slot == 18) action = TopScreenDpadAction::Ocarina;
+  else return -1;
+  constexpr std::uint32_t save = 0x00587958U;
+  const bool child = ReadWord(save + 4U) != 0U;
+  if (child && (action == TopScreenDpadAction::SwordToggle ||
+                action == TopScreenDpadAction::TunicToggle))
+    return -1;
+  std::uint16_t owned = 0U;
+  if (!mMemory.Read16(save + 0xB6U, &owned))
+    throw std::runtime_error("SingleScreen Gear hold cannot read the equipment");
+  // 0x005D07AC: a cycle needs two members (both adult shields, or Deku and
+  // Hylian as a child).
+  bool available = true;
+  if (action == TopScreenDpadAction::SwordToggle) {
+    available = (owned & 6U) == 6U;
+  } else if (action == TopScreenDpadAction::TunicToggle) {
+    available = std::popcount(static_cast<unsigned>((owned >> 8) & 7U)) >= 2;
+  } else if (action == TopScreenDpadAction::ShieldToggle) {
+    const unsigned mask = child ? 3U : 6U;
+    available = (mask & ~(static_cast<unsigned>(owned) >> 4)) == 0U;
+  }
+  if (!available) return -1;
+  // 0x002E9D78: the slot itself must be owned, through the native group
+  // masks (0x0053CB24) and shifts (0x0053CB08).
+  bool slotOwned = false;
+  if (action == TopScreenDpadAction::Ocarina) {
+    for (const std::uint8_t item : {7U, 8U}) {
+      std::uint8_t inventorySlot = 0xFF, value = 0xFF;
+      if (!mMemory.Read8(0x0053CC44U + item, &inventorySlot) ||
+          !mMemory.Read8(save + 0x8CU + inventorySlot, &value))
+        throw std::runtime_error("SingleScreen Gear hold cannot read the Ocarina");
+      slotOwned = slotOwned || value == item;
+    }
+  } else {
+    std::uint8_t shift = 0U;
+    const auto group = static_cast<std::uint32_t>(slot) / 3U;
+    if (!mMemory.Read8(0x0053CB08U + group, &shift))
+      throw std::runtime_error("SingleScreen Gear hold cannot read the equipment shifts");
+    const auto mask = ReadWord(0x0053CB24U + (static_cast<std::uint32_t>(slot) % 3U) * 4U);
+    slotOwned = (owned & (mask << shift)) != 0U;
+  }
+  return slotOwned ? static_cast<std::int32_t>(action) : -1;
+}
+
+void TopScreenWideItemsRuntime::UpdateGearHold(Sequence &sequence) {
+  // 0x005E46D8: only on Gear page state 2 without the picker or the View
+  // Model (0x005D1F40; its closed flag was just cleared).
+  if (mDpadPicker.Active() || mViewModel.Active || ReadWord(kGearPageState) != 2U) {
+    mGearHoldSlot = -1;
+    return;
+  }
+  const auto lane = ReadWord(0x0050AF18U);
+  const auto pressed = lane != 0U ? lane : ReadWord(0x0050AF14U);
+  const auto slot = static_cast<std::int32_t>(ReadWord(kGearCursorSlot));
+  const auto clearA = [this] {
+    for (const auto address : {0x0050AF14U, 0x0050AF18U})
+      WriteWord(address, ReadWord(address) & ~1U);
+  };
+  if (mGearHoldSlot < 0) {
+    // 0x005E475C: A on a cyclable slot is held back from the native page.
+    if ((pressed & 1U) == 0U || GearSlotAction(slot) < 0) return;
+    clearA();
+    mGearHoldSlot = slot;
+    mGearHoldFrames = 0;
+    return;
+  }
+  if (slot != mGearHoldSlot) {
+    mGearHoldSlot = -1;
+    return;
+  }
+  if ((ReadWord(0x0050AF10U) & 1U) == 0U) {
+    // 0x005E47D0: released early, the native page gets its A after all.
+    WriteWord(0x0050AF18U, ReadWord(0x0050AF18U) | 1U);
+    mGearHoldSlot = -1;
+    return;
+  }
+  clearA();
+  if (++mGearHoldFrames <= 14) return;
+  const auto action = GearSlotAction(mGearHoldSlot);
+  mGearHoldSlot = -1;
+  if (action < 0) return;
+  // 0x005D2014(action | 0x1000, 3); 0x005D29E4 advances it in this update.
+  ReadShortcutDrawState();
+  OpenTopScreenDpadPicker(mDpadPicker, static_cast<TopScreenDpadAction>(action),
+                          mShortcutDraw.Child, mShortcutDraw.Child ? mChildDpad : mAdultDpad,
+                          ReadWord(0x0050AF10U));
+  mDpadPicker.Gear = true;
+  AppendUiSound(sequence, 0x01000497U);
 }
 
 void TopScreenWideItemsRuntime::EnterViewModel(Sequence &sequence, std::uint32_t mode,

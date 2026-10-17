@@ -464,16 +464,38 @@ minimap and Save routes only in the gameplay pause state.
   stops the page redraw.
 - **View Model, D-pad picker** (mode 1: 0x005D2CF0 in the picker
   0x005D29E4). In Choosing, a new Y with no direction or A/B opens it for
-  the picked action's item (0x005D0B2C: none for View, the minimap or the
-  Kokiri Boots; 0x3D shows 0x7B or 0x55 by the carried sword) when the
+  the picked action's item (0x005D0B2C through 0x005D09E8, which takes the
+  equipped sword/shield/tunic/boots member without 0x005D07AC: none for
+  View, the minimap or the Kokiri Boots; 0x3D shows 0x7B or 0x55 by the
+  carried sword) when the
   preview table 0x004D2EC0 has an object for it: 0x002E9B00(item) previews
   that item and the previous preview (0x004FC6AC) is kept. The picker stays
   frozen while the viewer runs from its own held edge; X zooms in at once,
   Y only after its entry release. B closes and restores the kept preview
   (0x005D21E8(1): 0x002E9B00(-1) when there was none, else 0x002E112C on
   the model); a picker closed from outside, an unloading model or leaving
-  the page closes without restoring. In the shortcut column only the
-  Ocarina and the all-boots rows can have an item.
+  the page closes without restoring. From the Items shortcut column only
+  the Ocarina and all-boots rows have an item; a Gear-page picker adds the
+  sword, shield and tunic. On the Gear page the native page keeps
+  re-previewing its cursor item (0x00438AE4 / 0x00438B68 with its
+  description), so the viewer shows that item; not oracle-checked.
+- **Gear A hold** (0x005E4740 in 0x005E460C, before the picker update).
+  On Gear page state 2, without the picker or the View Model, a new A on a
+  slot that 0x005D0878 maps to an action is taken from both A lanes:
+  swords 0..2 (SwordToggle), shields 3..5 (ShieldToggle), tunics 6..8
+  (TunicToggle), slot 18 (Ocarina). Swords and tunics are adult-only; the
+  cycle must be available (0x005D07AC: Master + Biggoron; two tunics; Deku
+  + Hylian as a child, Hylian + Mirror as an adult) and the slot owned
+  (0x002E9D78 via masks 0x0053CB24 and shifts 0x0053CB08; the Ocarina by
+  inventory). Released early, A is put back on lane 0x0050AF18 so the
+  native page equips as usual; moving the cursor drops the hold. On the
+  fifteenth held update 0x005D2014(action | 0x1000, 3) opens the picker
+  with source 3 (`TopScreenDpadPickerState::Gear`): 0x005CD22C then keeps
+  it only while Gear page state is 2, and the picker uses the same icons,
+  assignments, clear-all and View Model as from Items. From the second
+  held update 0x005E0F58 draws the A ring (0x005CD470: frames / 15) beside
+  the slot of the native layout 0x00504BD4 (X + width + 12.133 - 2,
+  Y + height / 2, projection 0.8), in place of the Gear legend.
 - **View Model overlays** (0x005E0E6C). While the viewer is open, every
   other overlay of that function (tab hints, shortcut column, picker,
   Items hint) gives way to 0x005E9C3C: "[X] Zoom In  [Y] Zoom Out  [D-pad]
@@ -488,10 +510,6 @@ minimap and Save routes only in the gameplay pause state.
   0x006102C4 (0.73 + 0.27 x triangle over 90 updates), fades in over 12
   updates, follows "Show Items Screen Hints" (setting byte 0x18) and is
   hidden for the update that closes the View Model (0x0060F224).
-- Not ported: 3.0's Gear-page A hold (0x005E4740: 15 updates on a sword,
-  shield, tunic or boots slot open the D-pad picker through 0x005D0878 ->
-  0x005D2014(action | 0x1000, 3)), so mode 1 is reachable only from the
-  Items shortcut column.
 - Not ported: 3.0's Save-screen "Mod Options" entry and its resource
   bookkeeping (0x0041CD40..0x0041CE40; the F1 panel replaces it), the 1 px
   File Select/Name Entry quad trims, the PauseSystemMenu y 202 -> 162 words

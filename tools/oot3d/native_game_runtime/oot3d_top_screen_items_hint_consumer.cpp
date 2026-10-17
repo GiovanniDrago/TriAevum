@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <span>
@@ -198,6 +199,28 @@ bool ReadTopScreenGearCursorBounds(const NativeA32Memory &memory,
   *bounds = {true, (quads.MinimumX + quads.MaximumX) * 0.5F + screenOffsetX,
              quads.MinimumY, quads.MaximumY, quads.MaximumX - quads.MinimumX,
              screenOffsetX};
+  return true;
+}
+
+bool ReadTopScreenGearHoldRingCenter(const NativeA32Memory &memory, std::uint32_t slot,
+                                     float *centerX, float *centerY) {
+  constexpr std::uint32_t kGearSlotLayout = 0x00504BD4U;
+  if (centerX == nullptr || centerY == nullptr || slot > 0x1AU) {
+    return false;
+  }
+  std::array<std::uint32_t, 4> words{};
+  for (std::uint32_t lane = 0U; lane < words.size(); ++lane) {
+    if (!memory.ReadFast(kGearSlotLayout + (lane * 27U + slot) * 4U, &words[lane])) {
+      return false;
+    }
+  }
+  const auto value = [&](std::uint32_t lane) { return std::bit_cast<float>(words[lane]); };
+  const float x = value(0), y = value(1), width = value(2), height = value(3);
+  if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(width) || !std::isfinite(height)) {
+    return false;
+  }
+  *centerX = x + width + 12.133333F - 2.0F + 40.0F;
+  *centerY = y + height * 0.5F;
   return true;
 }
 

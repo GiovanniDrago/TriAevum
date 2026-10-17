@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -117,6 +118,34 @@ int main() {
                                                  &error) &&
               !selectedItemBounds.Active,
           "the inactive native Items controller retained hint geometry");
+  // 3.0 0x005E2BA8: the same scan of the Gear cursor owner, at projection 0.8.
+  for (std::size_t vertex = 0U; vertex < 4U; ++vertex)
+    selectedItemVertices[vertex * 3U] = vertex % 2U == 0U ? 100.0F : 140.0F;
+  Require(memory.WriteBytes(kSelectedItemPositions,
+                            std::span<const std::uint8_t>(
+                                reinterpret_cast<const std::uint8_t *>(selectedItemVertices.data()),
+                                sizeof(selectedItemVertices))) &&
+              memory.Write32(0x00504480U, kSelectedItemModel) &&
+              ReadTopScreenGearCursorBounds(memory, &selectedItemBounds, &error) &&
+              selectedItemBounds.Active && std::abs(selectedItemBounds.CenterX - 160.0F) < 0.0001F &&
+              std::abs(selectedItemBounds.MaximumY - 80.0F) < 0.0001F &&
+              std::abs(selectedItemBounds.ScreenOffsetX - 40.0F) < 0.0001F &&
+              memory.Write32(0x00504480U, 0U) &&
+              ReadTopScreenGearCursorBounds(memory, &selectedItemBounds, &error) &&
+              !selectedItemBounds.Active,
+          "the Gear cursor bounds differ from 0x005CB298 at projection 0.8");
+  // 3.0 0x005E0F80: the A-hold ring beside Gear slot 4 of 0x00504BD4.
+  constexpr std::array<float, 4> gearSlot{10.0F, 20.0F, 30.0F, 40.0F};
+  for (std::uint32_t lane = 0U; lane < 4U; ++lane)
+    Require(memory.Write32(0x00504BD4U + (lane * 27U + 4U) * 4U, std::bit_cast<std::uint32_t>(gearSlot[lane])),
+            "cannot seed the Gear slot layout");
+  float ringX = 0.0F, ringY = 0.0F;
+  Require(ReadTopScreenGearHoldRingCenter(memory, 4U, &ringX, &ringY) &&
+              std::abs(ringX - 90.133333F) < 0.0001F && std::abs(ringY - 40.0F) < 0.0001F &&
+              !ReadTopScreenGearHoldRingCenter(memory, 27U, &ringX, &ringY),
+          "the Gear A-hold ring is not beside the native slot");
+  for (std::uint32_t lane = 0U; lane < 4U; ++lane)
+    Require(memory.Write32(0x00504BD4U + (lane * 27U + 4U) * 4U, 0U), "cannot clear the Gear slot layout");
 
   Oot3dNativeUiLifecycleBridge bridge(memory);
   const auto backgroundIdentity = bridge.NativePauseSharedTextureIdentity(

@@ -101,8 +101,11 @@ public:
     // Gear page 2, no View Model, not modal (0x005D1F40), a viewable
     // previewed item (0x004FC6AC), cursor slots 0..26 (0x0050448C) with a
     // cursor owner (0x00504480) and 90 updates on the same slot.
-    std::uint32_t page = 0U, equipment = 0U, slot = 0U, owner = 0U;
-    if (fade == nullptr || pulse == nullptr || mViewModel.Active || mViewModel.Closed ||
+    // 0x005E0F54: a visible A-hold ring takes the legend's place.
+    std::uint32_t page = 0U, equipment = 0U, slot = 0U, owner = 0U, ringSlot = 0U;
+    std::int32_t ringFrames = 0;
+    if (fade == nullptr || pulse == nullptr || GearHold(&ringSlot, &ringFrames) ||
+        mViewModel.Active || mViewModel.Closed ||
         mDpadPicker.Active() || mGearLegendHover <= 0x5AU ||
         !mMemory.Read32(0x00504484U, &page) || page != 2U ||
         !mMemory.Read32(0x004FC6ACU, &equipment) || !mMemory.Read32(0x0050448CU, &slot) ||
@@ -126,16 +129,30 @@ public:
     mDpadPicker = {};
     mDpadPickerDraw = {};
     mShortcuts.HoldFrames = -1;
+    mGearHoldSlot = -1;
+    mGearHoldFrames = 0;
   }
   // A page/close/age transition may skip Items update, including before open.
   void ObserveDpadPickerPage() noexcept {
-    if (!mDpadPicker.Active() && mShortcuts.HoldFrames < 0) return;
+    if (!mDpadPicker.Active() && mShortcuts.HoldFrames < 0 && mGearHoldSlot < 0) return;
     const bool child = mDpadPicker.Active() ? mDpadPicker.Child : mShortcutDraw.Child;
+    const bool gear = mDpadPicker.Active() ? mDpadPicker.Gear : mShortcuts.HoldFrames < 0;
     std::uint32_t page = 0, age = 0;
-    if (!mMemory.Read32(0x0050672CU, &page) || page != 2U ||
-        !mMemory.Read32(0x0058795CU, &age) || (age != 0U) != child) {
-      CancelDpadPicker();
-    }
+    const bool pageActive = mMemory.Read32(gear ? 0x00504484U : 0x0050672CU, &page) && page == 2U;
+    // A Gear hold has no age yet; the picker and the Items hold do.
+    const bool ageKept = (gear && !mDpadPicker.Active()) ||
+                         (mMemory.Read32(0x0058795CU, &age) && (age != 0U) == child);
+    if (!pageActive || !ageKept) CancelDpadPicker();
+  }
+  // 3.0 0x005CD470 / 0x005E0F58: the Gear A hold on slot 0..26, shown from
+  // its second update until the picker opens on the fifteenth.
+  bool GearHold(std::uint32_t *slot, std::int32_t *frames) const noexcept {
+    if (slot == nullptr || frames == nullptr || mGearHoldSlot < 0 || mGearHoldSlot > 0x1A ||
+        mGearHoldFrames <= 1)
+      return false;
+    *slot = static_cast<std::uint32_t>(mGearHoldSlot);
+    *frames = mGearHoldFrames;
+    return true;
   }
   const TopScreenDpadPickerState &DpadPicker() const noexcept { return mDpadPicker; }
   const TopScreenDpadPickerDrawState &DpadPickerDraw() const noexcept { return mDpadPickerDraw; }
@@ -196,6 +213,9 @@ private:
   // 3.0 0x005D28C4 (Gear page entry and update), 0x005D0B2C (picker item),
   // 0x005D24FC (enter), 0x005D2274 (update) and 0x005D21E8 (exit).
   void UpdateGearLegend();
+  // 3.0 0x005E4740 (Gear A hold) and 0x005D0878 (slot to picker action).
+  void UpdateGearHold(Sequence &sequence);
+  std::int32_t GearSlotAction(std::int32_t slot);
   void UpdateViewModel(Sequence &sequence);
   std::int32_t PickerViewItem();
   void EnterViewModel(Sequence &sequence, std::uint32_t mode, std::int32_t item);
@@ -261,6 +281,9 @@ private:
   std::uint32_t mGearLegendBlink = 0;
   std::uint32_t mGearLegendHover = 0;
   std::int32_t mGearLegendSlot = -1;
+  // 0x0060D23C (held Gear slot, -1 none) and 0x0060ECCC (its updates).
+  std::int32_t mGearHoldSlot = -1;
+  std::int32_t mGearHoldFrames = 0;
   std::uint32_t mAssignmentFrame = 0;
   std::int32_t mAssignmentDelay = 0;
   std::uint64_t mWidePages = 0;

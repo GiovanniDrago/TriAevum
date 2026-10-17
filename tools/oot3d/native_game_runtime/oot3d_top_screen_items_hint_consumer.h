@@ -21,4 +21,10 @@ bool ReadTopScreenGearCursorBounds(const NativeA32Memory &memory,
                                    TopScreenItemsHintCursorBounds *bounds,
                                    std::string *error = nullptr);
 
+// 3.0 0x005E0F80: the native Gear slot layout (0x00504BD4: X, then Y, width
+// and height arrays of 27) and the A-hold ring beside it, at projection 0.8
+// (native X + 40): centre X + width + 12.133 - 2, Y + height / 2.
+bool ReadTopScreenGearHoldRingCenter(const NativeA32Memory &memory, std::uint32_t slot,
+                                     float *centerX, float *centerY);
+
 } // namespace Oot3dNativeGame

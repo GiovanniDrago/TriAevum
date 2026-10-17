@@ -13,6 +13,9 @@ struct TopScreenDpadPickerState {
   TopScreenDpadAction Action = TopScreenDpadAction::None;
   TopScreenDpadAssignments Assignments{};
   bool Child = false;
+  // 0x005D2014 source 3 (0x0060ECBC): opened from the Gear page, so
+  // 0x005CD22C keeps it only while Gear page state is 2.
+  bool Gear = false;
   unsigned Frame = 0, PulseFrame = 0;
   int Direction = -1, ClearHoldFrames = -1;
   std::uint32_t PreviousHeld = 0;

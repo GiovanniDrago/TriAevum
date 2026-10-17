@@ -1107,6 +1107,128 @@ void TestPickerViewModel(Oot3dNativeGame::NativeA32Memory &memory) {
   WriteWord(memory, 0x0050AF10U, 0U);
 }
 
+// 0x005E4740: the Gear-page A hold that opens the picker (after
+// TestPickerViewModel, whose Ocarina, model and preview fixtures it reuses).
+void TestGearHold(Oot3dNativeGame::NativeA32Memory &memory) {
+  using namespace Oot3dNativeGame;
+  constexpr std::uint32_t save = 0x00587958U;
+  for (std::uint32_t group = 0; group < 3U; ++group) {
+    Require(memory.Write8(0x0053CB08U + group, static_cast<std::uint8_t>(group * 4U)),
+            "cannot write the equipment shift fixture");
+    WriteWord(memory, 0x0053CB24U + group * 4U, 1U << group);
+  }
+  Require(memory.Write16(save + 0xB6U, 0x0777U) && memory.Write16(save + 0x8AU, 0x0112U) &&
+              memory.Write8(0x004D2EC0U + 0x3CU, 0x21U),
+          "cannot write the Gear hold fixture");
+  WriteWord(memory, 0x0058795CU, 0U);
+  WriteWord(memory, kItemsState, 0U);
+  WriteWord(memory, 0x00504484U, 2U);
+  WriteWord(memory, 0x0050448CU, 1U);
+  TopScreenWideItemsRuntime runtime(memory);
+  struct NativeCall { std::uint32_t Pc, R0; };
+  std::vector<NativeCall> calls;
+  const auto update = [&](std::uint32_t held, std::uint32_t pressed = 0U) {
+    calls.clear();
+    WriteWord(memory, 0x0050AF10U, held);
+    WriteWord(memory, 0x0050AF14U, pressed);
+    WriteWord(memory, 0x0050AF18U, pressed);
+    WriteWord(memory, 0x0050AF2CU, 0U);
+    WriteWord(memory, 0x0050AF30U, 0U);
+    auto state = CallerState(kTopScreenItemsUpdateBoundary);
+    oot3d::recomp::a32::ExecutionResult result;
+    std::uint32_t sound = 0;
+    for (unsigned n = 0; n < 20; ++n) {
+      runtime.ExecuteItemsUpdate(state, &result, nullptr);
+      if (result.pc == kTopScreenItemsInsetNextCall) return sound;
+      if (result.pc == 0x0037547CU) sound = state.r[0];
+      else calls.push_back({result.pc, state.r[0]});
+    }
+    Require(false, "Gear hold update did not finish");
+    return 0U;
+  };
+  const auto aLanes = [&] {
+    return (ReadWord(memory, 0x0050AF14U) & 1U) | (ReadWord(memory, 0x0050AF18U) & 1U);
+  };
+  std::uint32_t slot = 0;
+  std::int32_t frames = 0;
+
+  // A tap is held back, then handed to the native page on release.
+  update(1U, 1U);
+  Require(aLanes() == 0U && !runtime.DpadPicker().Active(), "Gear A press reached the native page at once");
+  update(0U);
+  Require((ReadWord(memory, 0x0050AF18U) & 1U) == 1U && !runtime.GearHold(&slot, &frames),
+          "released Gear A was not handed back to the native page");
+  // Fifteen held updates open the sword picker; the ring shows from update 2.
+  update(1U, 1U);
+  update(1U);
+  Require(!runtime.GearHold(&slot, &frames), "Gear ring appeared on the first held update");
+  update(1U);
+  Require(runtime.GearHold(&slot, &frames) && slot == 1U && frames == 2 && aLanes() == 0U,
+          "Gear ring or A ownership differs from 0x005CD470");
+  for (unsigned n = 0; n < 12; ++n) update(1U);
+  Require(!runtime.DpadPicker().Active(), "Gear picker opened before the fifteenth update");
+  Require(update(1U) == 0x01000497U && runtime.DpadPicker().Active() && runtime.DpadPicker().Gear &&
+              runtime.DpadPicker().Action == TopScreenDpadAction::SwordToggle &&
+              runtime.DpadPicker().Frame == 1 && !runtime.GearHold(&slot, &frames),
+          "Gear hold did not open the sword picker as 0x005D2014(7 | 0x1000, 3)");
+  for (unsigned n = 0; n < 8; ++n) update(0U);
+  Require(runtime.DpadPicker().Phase == TopScreenDpadPickerPhase::Choosing,
+          "Gear picker closed without the Items page");
+  // Mode 1 from the Gear picker: the carried Master Sword (0x3C).
+  update(0x800U);
+  bool previewed = false;
+  for (const auto &call : calls) previewed = previewed || (call.Pc == 0x002E9B00U && call.R0 == 0x3CU);
+  Require(runtime.ViewModelActive() && previewed, "Y in the Gear picker did not preview the sword");
+  update(2U);
+  Require(!runtime.ViewModelActive() && runtime.DpadPicker().Active(), "B did not return to the Gear picker");
+  WriteWord(memory, 0x00504484U, 1U);
+  update(0U);
+  Require(!runtime.DpadPicker().Active(), "leaving the Gear page kept its picker");
+  WriteWord(memory, 0x00504484U, 2U);
+  update(0U);
+
+  // Moving the cursor ends the hold; slots without an action pass A through.
+  update(1U, 1U);
+  WriteWord(memory, 0x0050448CU, 2U);
+  for (unsigned n = 0; n < 20; ++n) update(1U);
+  Require(!runtime.DpadPicker().Active(), "a moved cursor kept its Gear hold");
+  update(0U);
+  for (const std::uint32_t free : {9U, 17U, 19U}) {
+    WriteWord(memory, 0x0050448CU, free);
+    update(1U, 1U);
+    Require(aLanes() == 1U && !runtime.GearHold(&slot, &frames), "a slot without an action took A");
+    update(0U);
+  }
+  // Child: no sword or tunic cycle; Deku + Hylian shields and the Ocarina do.
+  WriteWord(memory, 0x0058795CU, 1U);
+  for (const std::uint32_t refused : {0U, 6U}) {
+    WriteWord(memory, 0x0050448CU, refused);
+    update(1U, 1U);
+    Require(aLanes() == 1U, "a child Gear hold started on a sword or tunic");
+    update(0U);
+  }
+  for (const auto [held, action] : std::array<std::pair<std::uint32_t, TopScreenDpadAction>, 2>{
+           {{3U, TopScreenDpadAction::ShieldToggle}, {18U, TopScreenDpadAction::Ocarina}}}) {
+    WriteWord(memory, 0x0050448CU, held);
+    update(1U, 1U);
+    for (unsigned n = 0; n < 15; ++n) update(1U);
+    Require(runtime.DpadPicker().Active() && runtime.DpadPicker().Action == action &&
+                runtime.DpadPicker().Child,
+            "child Gear hold did not open the shield or Ocarina picker");
+    runtime.CancelDpadPicker();
+    update(0U);
+  }
+  // An unowned slot (the Deku Shield, with the adult pair owned) refuses it.
+  WriteWord(memory, 0x0058795CU, 0U);
+  Require(memory.Write16(save + 0xB6U, 0x0767U), "cannot write equipment");
+  WriteWord(memory, 0x0050448CU, 3U);
+  update(1U, 1U);
+  Require(aLanes() == 1U, "an unowned Gear slot took A");
+  update(0U);
+  WriteWord(memory, 0x00504484U, 0U);
+  WriteWord(memory, 0x0050AF10U, 0U);
+}
+
 void TestShortcutRuntime(Oot3dNativeGame::NativeA32Memory &memory) {
   using namespace Oot3dNativeGame;
   TopScreenWideItemsRuntime runtime(memory);
@@ -1645,6 +1767,7 @@ int main() {
   TestShortcutInputOwnership(memory);
   TestViewModel(memory);
   TestPickerViewModel(memory);
+  TestGearHold(memory);
   std::cout << "SingleScreen 3.0 wide page runtime tests passed\n";
   return 0;
 }
