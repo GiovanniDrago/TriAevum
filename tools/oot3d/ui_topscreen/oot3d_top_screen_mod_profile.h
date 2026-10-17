@@ -228,6 +228,20 @@ bool ReadTopScreenHudCompositorGate(NativeA32Memory &memory,
                                     TopScreenHudCompositorGate *gate,
                                     std::string *error = nullptr);
 
+// Native Gameplay_InCsMode (0x0037577C) for a live play state and player.
+bool ReadTopScreenGameplayInCutsceneMode(NativeA32Memory &memory, std::uint32_t playState,
+                                         std::uint32_t player, bool *cutscene,
+                                         std::string *error = nullptr);
+
+// SingleScreen 3.0 replaces PauseQuestPage_Draw (0x0042B9F4) with 0x005C91D0,
+// which draws nothing while a pause owner (Items/Gear, Map, pause camera,
+// System) is active or while the runtime scene latch holds with native byte
+// 0x005C3F71 set: no page title and no Quest overlay over the paused scene.
+// `runtimeSceneLatch` is 0x005C8E0C's latch (TopScreenTouchCoordinateRoute).
+bool ReadTopScreenQuestPageDrawSuppressed(NativeA32Memory &memory,
+                                          bool runtimeSceneLatch, bool *suppressed,
+                                          std::string *error = nullptr);
+
 struct TopScreenNativeTouchQuad28LayoutStats {
   bool Eligible = false;
   bool Transformed = false;

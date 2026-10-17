@@ -823,6 +823,29 @@ bool ExecuteTopScreenUiSourcePortBlock(
   case kPauseDungeonMapCursorInput:
     nextPc = state.r[14];
     break;
+  case kPauseSceneDimBranch: {
+    // 3.0 always skips the dim: the View Model and the System page (Save)
+    // show the scene undimmed. Beside the pages the port keeps the native dim
+    // (16:9 side strips; see oot3d_top_screen_mod_profile_internal.h).
+    Oot3dNativeGame::TopScreenPauseDrawInputs inputs;
+    if (!Oot3dNativeGame::ReadTopScreenPauseDrawInputs(memory, &inputs)) return false;
+    const bool viewModel = dispatch.WideItems != nullptr && dispatch.WideItems->ViewModelActive();
+    if (!viewModel && inputs.ChildStates[3] == 0U) return false;
+    nextPc = kPauseSceneDimSkip;
+    break;
+  }
+  case Oot3dNativeGame::kTopScreenQuestDrawHook: {
+    // 3.0 0x005C91D0 returns at once while the pause owns the screen.
+    bool suppressed = false;
+    std::string error;
+    if (!Oot3dNativeGame::ReadTopScreenQuestPageDrawSuppressed(
+            memory, dispatch.TopScreenTouchCoordinateRoute.RuntimeSceneLatch, &suppressed,
+            &error))
+      throw std::runtime_error("TopScreen Quest draw gate: " + error);
+    if (!suppressed) return false;
+    nextPc = state.r[14];
+    break;
+  }
   default:
     return false;
   }

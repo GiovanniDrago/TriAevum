@@ -445,6 +445,24 @@ minimap and Save routes only in the gameplay pause state.
   around the B button are copied for the host HUD (layer 12, after the
   circles and under the B label) and moved off screen for the native draw;
   the submit rebuilds them every frame.
+- **Quest page during the pause**: 3.0 replaces PauseQuestPage_Draw
+  (0x0042B9F4) with 0x005C91D0, which returns at once while a pause owner is
+  active (0x002FCAD4, 0x002FCAEC, 0x002FCDD4, 0x004392B0) or while the runtime
+  scene latch holds with native byte 0x005C3F71 set. The native function
+  still drew the page title ("ITEMS"/"GEAR") at the top of the opening pause
+  and over the View Model. The candidate dispatch now returns from
+  0x0042B9F4 in those states; the rest of 0x005C91D0 is the native function
+  with the HUD transforms already ported.
+- **Pause scene dim**: 2.1.1 and 3.0 always take 0x0041EB40 -> 0x0041EC10.
+  The port keeps the native dim beside the pages (16:9 side strips), and
+  takes the branch only with no page beside the scene: the View Model and the
+  System page (Save) show the scene undimmed, as in 3.0.
+- **Cutscenes**: 3.0's HUD predicate 0x005DA570 adds 0x005CC87C, a present
+  player and Gameplay_InCsMode (0x0037577C). The host HUD gate does the same,
+  so the relocated lower-screen controls (circles, rupees, carrots, D-pad)
+  hide with the native top-screen HUD, for example in the Lon Lon fence jump
+  and while Link takes out the ocarina. Not ported: 0x005DA41C, the
+  minigame mode that keeps the HUD in those states, and 0x005CAD64.
 - **Rupee counter** (hub 0x005DE318): the digits start at x 24 whatever
   their count, y 217; a full wallet (count >= capacity 0x0053CC04) uses the
   next glyph row; zero rupees draw at alpha 0.3.

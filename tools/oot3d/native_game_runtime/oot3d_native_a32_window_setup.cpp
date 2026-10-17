@@ -244,6 +244,7 @@ void NativeA32WindowSession::Setup() {
         kPauseTouchButtonsTouchBranch,
         kPauseLowerScreenBlock,
         kPauseDungeonMapCursorInput,
+        kPauseSceneDimBranch,
         kPauseUiNativeUpdateCall,
         kPauseProjectionPrepareCall,
         kPauseAlternateViewportDrawCall,
@@ -447,7 +448,9 @@ void NativeA32WindowSession::Setup() {
         Oot3dNativeGame::kTopScreenItemsUpdateBoundary,
         Oot3dNativeGame::kTopScreenItemsShortcutCursorBoundary,
         Oot3dNativeGame::kTopScreenGearModelDrawCall,
-        Oot3dNativeGame::kTopScreenViewModelTransformBlock};
+        Oot3dNativeGame::kTopScreenViewModelTransformBlock,
+        Oot3dNativeGame::kTopScreenQuestDrawHook,
+        kPauseSceneDimBranch};
     for (const auto &contract :
          Oot3dNativeGame::TopScreenVerifiedControlFlowContracts()) {
       topScreenSourcePortBlocks.push_back(contract.Entry);
@@ -481,6 +484,9 @@ void NativeA32WindowSession::Setup() {
         kTopScreenCameraUpdateEntry,
         kTopScreenGameplayCompositionPrefix,
         kTopScreenTitleLogoFadeHoldPrefix,
+        // 3.0 0x005C91D0 skips the Quest draw in states the pause barrier
+        // does not cover (pause camera, runtime scene latch).
+        Oot3dNativeGame::kTopScreenQuestDrawHook,
     };
 #if !defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
     wholeAotObservableExitBlocks.insert(

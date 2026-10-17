@@ -606,7 +606,8 @@ constexpr std::array kVerifiedItemQueryContracts{
 // 2.1.1 also branches 0x0041EB40 -> 0x0041EC10, skipping the pause scene dim
 // (EnvironmentRenderer_SubmitViewportConfig with a translucent grey). At
 // 400x240 the page covers the scene; wider output shows it beside the page, so
-// the port keeps the native dim there.
+// the port keeps the native dim there. With no page beside the scene (the
+// View Model and the System page) the candidate dispatch takes the branch.
 constexpr std::array kVerifiedControlFlowContracts{
     TopScreenControlFlowContract{0x0042BF6CU, 0x0042BF84U,
                                  "pause_quest_prompt_use_top_screen_geometry"},

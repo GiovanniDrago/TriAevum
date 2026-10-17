@@ -1462,11 +1462,52 @@ int main() {
                                              &compositorGate, &error) &&
               compositorGate.Draw,
           "TopScreen compositor did not restore HUD after player suppression");
+  // 3.0 0x005CC87C: Gameplay_InCsMode hides the HUD (play cutscene state, or
+  // a Player_InCsMode blocking flag).
+  Require(compositorGateMemory.Write8(kGatePlayState + 0x22A0U, 1U) &&
+              ReadTopScreenHudCompositorGate(compositorGateMemory, &compositorGate, &error) &&
+              !compositorGate.Draw &&
+              compositorGateMemory.Write8(kGatePlayState + 0x22A0U, 0U) &&
+              compositorGateMemory.Write32(kGateSceneOwner + 0x1710U, 0x20000000U) &&
+              ReadTopScreenHudCompositorGate(compositorGateMemory, &compositorGate, &error) &&
+              !compositorGate.Draw &&
+              compositorGateMemory.Write32(kGateSceneOwner + 0x1710U, 0U) &&
+              ReadTopScreenHudCompositorGate(compositorGateMemory, &compositorGate, &error) &&
+              compositorGate.Draw,
+          "TopScreen compositor ignored the native cutscene mode");
   Require(compositorGateMemory.Write32(0x005066F8U + 0x34U, 1U) &&
               ReadTopScreenHudCompositorGate(compositorGateMemory,
                                              &compositorGate, &error) &&
               !compositorGate.Draw,
           "TopScreen compositor ignored a competing native pause owner");
+  // 3.0 0x005C91D0: no Quest draw (page title) while a pause owner is active.
+  bool questDrawSuppressed = false;
+  Require(ReadTopScreenQuestPageDrawSuppressed(compositorGateMemory, false,
+                                               &questDrawSuppressed, &error) &&
+              questDrawSuppressed,
+          "Quest draw ran under an active pause owner");
+  Require(compositorGateMemory.Write32(0x005066F8U + 0x34U, 0U) &&
+              ReadTopScreenQuestPageDrawSuppressed(compositorGateMemory, false,
+                                                   &questDrawSuppressed, &error) &&
+              !questDrawSuppressed,
+          "Quest draw was suppressed in gameplay");
+  NativeA32Memory latchGateMemory;
+  Require(latchGateMemory.MapRegion({"topscreen-quest-latch-fixture", 0x004FC000U,
+                                     0x000C8000U, true, false, {}},
+                                    &error) &&
+              ReadTopScreenQuestPageDrawSuppressed(latchGateMemory, true,
+                                                   &questDrawSuppressed, &error) &&
+              !questDrawSuppressed &&
+              latchGateMemory.Write8(0x005C3F71U, 1U) &&
+              ReadTopScreenQuestPageDrawSuppressed(latchGateMemory, false,
+                                                   &questDrawSuppressed, &error) &&
+              !questDrawSuppressed &&
+              ReadTopScreenQuestPageDrawSuppressed(latchGateMemory, true,
+                                                   &questDrawSuppressed, &error) &&
+              questDrawSuppressed,
+          "Quest draw ignored the runtime scene latch gate");
+  Require(compositorGateMemory.Write32(0x005066F8U + 0x34U, 1U),
+          "could not restore the competing pause owner");
   TopScreenAuxiliaryTouchInputs nativeAuxiliaryInputs;
   Require(ReadTopScreenAuxiliaryTouchInputs(compositorGateMemory,
                                             &nativeAuxiliaryInputs, &error) &&

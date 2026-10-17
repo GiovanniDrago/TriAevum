@@ -2,6 +2,8 @@
 // icons, touch clusters and labels, file select, HUD scale, timer).
 #include "oot3d_top_screen_mod_profile_internal.h"
 
+#include "oot3d_gameplay_player.h"
+
 namespace Oot3dNativeGame {
 
 TopScreenHealthGeometry
@@ -241,6 +243,85 @@ bool ReadTopScreenHudCompositorGate(NativeA32Memory &memory,
                playerTransition == 0U && runtimeMode == 0U &&
                (playerHudReady != 0U || alternateHudOwner != 0U) &&
                playerHudSuppressed == 0U && playerHudState == 0U;
+  // SingleScreen 3.0 0x005DA570 adds 0x005CC87C: no HUD while a player is
+  // present and Gameplay_InCsMode (0x0037577C) holds. The native top-screen
+  // HUD already hides then; the lower-screen controls this compositor
+  // relocates do not.
+  if (gate->Draw && player != 0U) {
+    bool cutscene = false;
+    if (!ReadTopScreenGameplayInCutsceneMode(memory, playState, player, &cutscene, error))
+      return false;
+    gate->Draw = !cutscene;
+  }
+  return true;
+}
+
+bool ReadTopScreenGameplayInCutsceneMode(NativeA32Memory &memory, std::uint32_t playState,
+                                         std::uint32_t player, bool *cutscene,
+                                         std::string *error) {
+  using oot3d::gameplay::PlayerPlayStateWire;
+  using oot3d::gameplay::PlayerWireState;
+  if (cutscene == nullptr) {
+    SetError(error, "TopScreen cutscene-mode output is null");
+    return false;
+  }
+  // 0x0037577C: the play cutscene state (+0x2298 +8), else Player_InCsMode
+  // (0x0036A7A0; mask and global state from its literals 0x0036A834/38).
+  constexpr std::uint32_t kPlayCutsceneState = 0x22A0U;
+  constexpr std::uint32_t kPlayerCutsceneBlockingMask = 0x20000080U;
+  constexpr std::uint32_t kPlayerCutsceneGlobalState = 0x00588E58U;
+  std::uint8_t playCutscene = 0U;
+  oot3d::gameplay::PlayerCutsceneModeState state;
+  std::uint8_t itemAction = 0U;
+  if (!memory.Read8(playState + kPlayCutsceneState, &playCutscene) ||
+      !memory.Read32(player + offsetof(PlayerWireState, StateFlags), &state.StateFlags) ||
+      !memory.Read8(player + offsetof(PlayerWireState, CutsceneActionMode),
+                    &state.CutsceneAction) ||
+      !memory.Read8(player + offsetof(PlayerWireState, StateFlagsByte), &state.StateFlagsByte) ||
+      !memory.Read8(player + offsetof(PlayerWireState, ItemAction), &itemAction) ||
+      !memory.Read8(player + offsetof(PlayerWireState, State1749), &state.State1749) ||
+      !memory.Read8(playState + offsetof(PlayerPlayStateWire, State5C2D),
+                    &state.PlayState5C2D) ||
+      !memory.Read16(kPlayerCutsceneGlobalState + 0x80U, &state.GlobalState80)) {
+    SetError(error, "cannot read native TopScreen cutscene mode");
+    return false;
+  }
+  state.ItemAction = static_cast<std::int8_t>(itemAction);
+  *cutscene = playCutscene != 0U ||
+              oot3d::gameplay::PlayerInCutsceneMode(state, {kPlayerCutsceneBlockingMask});
+  return true;
+}
+
+bool ReadTopScreenQuestPageDrawSuppressed(NativeA32Memory &memory,
+                                          bool runtimeSceneLatch, bool *suppressed,
+                                          std::string *error) {
+  if (suppressed == nullptr) {
+    SetError(error, "TopScreen Quest draw gate output is null");
+    return false;
+  }
+  *suppressed = false;
+  // 0x002FCAD4, 0x002FCAEC, 0x002FCDD4 and 0x004392B0, as in 0x005C91D0.
+  constexpr std::array<std::uint32_t, 4> kPauseOwnerStates{
+      0x0050446CU + 0x18U, 0x005066F8U + 0x34U, 0x00506CB0U + 0x38U,
+      0x0050A508U + 0x28U};
+  for (const auto address : kPauseOwnerStates) {
+    std::uint32_t active = 0U;
+    if (!memory.Read32(address, &active)) {
+      SetError(error, "cannot read native TopScreen pause owner");
+      return false;
+    }
+    if (active != 0U) {
+      *suppressed = true;
+      return true;
+    }
+  }
+  // 0x005CEE58 (the latch) and the native byte 0x005C3F71.
+  std::uint8_t runtimeGate = 0U;
+  if (runtimeSceneLatch && !memory.Read8(0x005C3F71U, &runtimeGate)) {
+    SetError(error, "cannot read native TopScreen runtime scene gate");
+    return false;
+  }
+  *suppressed = runtimeGate != 0U;
   return true;
 }
 
