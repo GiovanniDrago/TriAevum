@@ -248,12 +248,12 @@ void CheckControlPersistence() {
     Check(LoadTopScreenUiConfig(root / "topscreen.json", &savedTop) && savedTop.FreeCameraEnabled,
           "Save controls did not persist camera settings");
     // SingleScreen 3.0 gameplay options: the standard profile's values (all
-    // on but the 3D rain), previewed live and persisted by Save controls with
-    // the other TopScreen controls.
+    // on), previewed live and persisted by Save controls with the other
+    // TopScreen controls.
     Click("Gameplay");
     const auto beforeGameplay = top->Snapshot().Config;
     Check(beforeGameplay.QuickPutAway && beforeGameplay.LandingRollFix && beforeGameplay.RollDash &&
-              beforeGameplay.AimingReticle && !beforeGameplay.Rain3d &&
+              beforeGameplay.AimingReticle && beforeGameplay.Rain3d &&
               beforeGameplay.Rain3dDensityPercent == 100U,
           "SingleScreen gameplay options do not start from the standard profile");
     for (const char* label : {"Quick put away", "Landing roll", "Roll dash",
@@ -261,19 +261,19 @@ void CheckControlPersistence() {
         Click(label);
     const auto previewGameplay = top->Snapshot().Config;
     Check(!previewGameplay.QuickPutAway && !previewGameplay.LandingRollFix && !previewGameplay.RollDash &&
-              !previewGameplay.AimingReticle && previewGameplay.Rain3d,
+              !previewGameplay.AimingReticle && !previewGameplay.Rain3d,
           "Gameplay checkboxes did not preview their options");
     Click("Save controls");
     Check(LoadTopScreenUiConfig(root / "topscreen.json", &savedTop) && !savedTop.QuickPutAway &&
               !savedTop.LandingRollFix && !savedTop.RollDash &&
-              !savedTop.AimingReticle && savedTop.Rain3d && savedTop.FreeCameraEnabled,
+              !savedTop.AimingReticle && !savedTop.Rain3d && savedTop.FreeCameraEnabled,
           "Save controls did not persist the gameplay options");
     for (const char* label : {"Quick put away", "Landing roll", "Roll dash",
                               "Aiming reticle", "3D rain"})
         Click(label);
     Click("Save controls");
     Check(LoadTopScreenUiConfig(root / "topscreen.json", &savedTop) && savedTop.QuickPutAway &&
-              savedTop.RollDash && savedTop.AimingReticle && !savedTop.Rain3d,
+              savedTop.RollDash && savedTop.AimingReticle && savedTop.Rain3d,
           "Gameplay options could not be turned on again");
     Click("Camera");
     Click("Enabled##freecam");

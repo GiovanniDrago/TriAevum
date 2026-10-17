@@ -143,13 +143,12 @@ struct TopScreenUiConfig {
   std::uint8_t CStickAimSpeedLevel = 3U;
   bool CStickAimInvertX = false;
   bool CStickAimInvertY = false;
-  // SingleScreen 3.0 gameplay options; the standard profile turns all but the
-  // 3D rain on.
+  // SingleScreen 3.0 gameplay options; the standard profile turns them all on.
   bool QuickPutAway = true;
   bool LandingRollFix = true;
   bool RollDash = true;
   bool AimingReticle = true;
-  bool Rain3d = false;
+  bool Rain3d = true;
   std::uint16_t Rain3dDensityPercent = 100U;
   // SingleScreen 3.0 Items shortcut column: the four action rows in display
   // order (config+0x34, a permutation of 0..3; identity is the 3.0 default).

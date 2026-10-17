@@ -33,7 +33,7 @@
   "landing_roll_fix": true,
   "roll_dash": true,
   "aiming_reticle": true,
-  "rain_3d": false,
+  "rain_3d": true,
   "rain_3d_density_percent": 100,
   "items_shortcut_order": [0, 1, 2, 3]
 }

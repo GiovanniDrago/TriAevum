@@ -4,10 +4,11 @@
 
 The HUD tab is gone. TriAevum's standard TopScreen profile (the defaults of
 `TopScreenUiConfig` and `config/topscreen_ui.example.json`) fixes the HUD
-layout: HUD 0.70, margins 4/1, magic bar Y 2, D-pad Y -1, Normal layout, the
-gameplay options on except 3D rain. F1 offers only **Display > TopScreen HUD >
-HUD size**, Native (100%) or Optimized (70%, the default), with the
-SingleScreen credit below it. The choice applies and saves at once
+layout: HUD 0.70, margins 4/1, magic bar Y 2, D-pad Y -1, Normal layout, and
+every SingleScreen gameplay option on, 3D rain included. For the layout F1
+offers only **Display > TopScreen HUD > HUD size**, Native (100%) or Optimized
+(70%, the default), with the SingleScreen credit below it; the TopScreen
+sections of Controls (Shortcuts, Gameplay, C-stick aiming, free camera) stay. The choice applies and saves at once
 (`TopScreen: saved`, or the save error with the size kept for the session;
 `TopScreen: session only` without a configuration path). The section is an
 application tab in the new `kDisplaySettingsGroup`, drawn below the renderer's

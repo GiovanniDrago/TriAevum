@@ -42,14 +42,14 @@ class ProductGraphicsDefaultsTests(unittest.TestCase):
         self.assertFalse(config["free_camera_enabled"])
         self.assertEqual(config["dpad_child"], ["view", "ocarina", "item_zr", "item_zl"])
         self.assertTrue(all(config[option] for option in
-                            ("quick_put_away", "landing_roll_fix", "roll_dash", "aiming_reticle")))
-        self.assertFalse(config["rain_3d"])
+                            ("quick_put_away", "landing_roll_fix", "roll_dash", "aiming_reticle", "rain_3d")))
+        self.assertEqual(config["rain_3d_density_percent"], 100)
         # The C++ defaults are the same profile.
         header = (SOURCE.parents[0] / "ui_topscreen/oot3d_top_screen_config.h").read_text()
         for declaration in ("kTopScreenHudScaleDefault = kTopScreenHudScaleOptimized",
                             "kTopScreenHudScaleOptimized = 0.70F", "MagicBarY = 2U",
                             "DpadOffsetY = -1", "QuickPutAway = true", "LandingRollFix = true",
-                            "RollDash = true", "AimingReticle = true", "Rain3d = false"):
+                            "RollDash = true", "AimingReticle = true", "Rain3d = true"):
             self.assertIn(declaration, header)
 
     @unittest.skipUnless(os.environ.get("TRIAEVUM_PRODUCT_TEST_EXE"), "requires a built runtime")
