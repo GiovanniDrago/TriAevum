@@ -22,16 +22,20 @@
 // is a budgeted decision taken on this report.
 //
 // Alpha-tested shadow casters run their draw's fragment program up to the
-// native alpha test. A draw with a parametric (always-available) form uses the
-// built-in caster family; any other derives its caster from the canonical
-// program, so the replay adds that variant as an NRI fragment of the corpus.
+// native alpha test. A draw with a parametric (always-available) form derives
+// its caster from that parametric base, which the built-in caster family holds
+// for the bases it enumerates; any other derives its caster from the canonical
+// program. The replay adds every caster the family does not hold as an NRI
+// fragment of the corpus.
 
 #include "oot3d_native_pica_draw_state.h"
 #include "oot3d_native_pica_raw_draw_record.h"
 #include "oot3d_native_pica_vulkan_bridge.h"
 #include "oot3d_native_pica_vulkan_plan.h"
 
+#include "fast/oot3d/pica_caster_fragment_binaries.h"
 #include "fast/oot3d/pica_directional_shadow_caster.h"
+#include "fast/renderer/pass_shader_artifact.h"
 
 #include "fast/oot3d/pica_aot_shader_pack.h"
 #include "fast/oot3d/pica_nri_shader_contract.h"
@@ -186,7 +190,8 @@ int Run(const Options& options) {
         shaderCache.UberFragments = raw.UberFragments;
         std::map<uint64_t, CanonicalPlan> plans;
         Json planFailures = Json::array();
-        uint64_t canonicalWitnessMismatches = 0, casterFragments = 0, alphaTested = 0, alphaTestedParametric = 0;
+        uint64_t canonicalWitnessMismatches = 0, casterFragments = 0, alphaTested = 0, alphaTestedParametric = 0,
+                 parametricCastersOutsideFamily = 0;
         for (const auto& draw : raw.Draws) {
             Oot3dPicaDrawSubmission submission;
             submission.Packet = draw.Packet;
@@ -221,20 +226,31 @@ int Run(const Options& options) {
                 Regenerated{Identity(canonical.VertexIdentity), Identity(canonical.FragmentIdentity), {}, false,
                             canonical.VertexKey, canonical.FragmentKey});
             // The caster the shadow passes derive (gfx_vulkan_pica_draw.cpp:
-            // alpha-tested, not Always, no valid parametric form).
+            // alpha-tested, not Always): from the parametric base when the draw
+            // has a valid one, else from the canonical program.
             const auto alphaTest = DecodeOot3dPicaAlphaTest(plan.FragmentShader.Uniforms.FragmentControl[1]);
             const bool parametric = plan.SharedUberFragmentShaderSource != nullptr &&
                                     plan.UberFragmentShader.Hooks.ValidFor(*plan.SharedUberFragmentShaderSource);
-            if (alphaTest.Enabled && alphaTest.Compare != kPicaCompareAlways) ++alphaTested;
-            if (alphaTest.Enabled && alphaTest.Compare != kPicaCompareAlways && parametric) ++alphaTestedParametric;
-            if (alphaTest.Enabled && alphaTest.Compare != kPicaCompareAlways && !parametric) {
-                const auto caster = Fast::Oot3d::BuildPicaShadowCasterAlphaFragmentShader(
-                    canonical.FragmentSource, canonical.FragmentKey, canonical.FragmentHooks);
-                if (caster.Applied()) {
+            if (alphaTest.Enabled && alphaTest.Compare != kPicaCompareAlways) {
+                ++alphaTested;
+                if (parametric) ++alphaTestedParametric;
+                const auto caster = parametric
+                    ? Fast::Oot3d::BuildPicaShadowCasterAlphaFragmentShader(*plan.SharedUberFragmentShaderSource,
+                                                                            plan.UberFragmentShader.StateKey,
+                                                                            plan.UberFragmentShader.Hooks)
+                    : Fast::Oot3d::BuildPicaShadowCasterAlphaFragmentShader(
+                          canonical.FragmentSource, canonical.FragmentKey, canonical.FragmentHooks);
+                // The runtime resolves a caster from the built-in family first;
+                // any other compiles unless the corpus carries it.
+                const bool builtIn = parametric && caster.Applied() &&
+                    !Fast::Renderer::FindPassShaderArtifact(Fast::Oot3d::CasterFragmentArtifacts(), caster.Source,
+                                                            Fast::Renderer::SpirvStage::Fragment, {}).empty();
+                if (caster.Applied() && !builtIn) {
                     inventory.Observe(Fast::Oot3d::PicaAotShaderStage::NriFragment, caster.Source,
                                       canonical.DescriptorSchemaVersion, draw.CanonicalPipelineId,
-                                      canonical.FragmentKey, 0U);
+                                      parametric ? plan.UberFragmentShader.StateKey : canonical.FragmentKey, 0U);
                     ++casterFragments;
+                    if (parametric) ++parametricCastersOutsideFamily;
                 }
             }
             plans.emplace(draw.CanonicalPipelineId, std::move(canonical));
@@ -363,6 +379,7 @@ int Run(const Options& options) {
                             {"shadow_caster_fragments", casterFragments},
                             {"alpha_tested_draws", alphaTested},
                             {"alpha_tested_parametric", alphaTestedParametric},
+                            {"parametric_casters_outside_family", parametricCastersOutsideFamily},
                             {"effects", requests.Effects.size()},
                             {"requests", requests.Requests.size()},
                             {"instrumented_requests", instrumented},

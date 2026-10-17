@@ -151,6 +151,10 @@ foreach(_variant_target oot3d_native_pica_variant_inventory oot3d_native_pica_va
     triaevum_add_spirv_pack(${_variant_target}
         tools/oot3d/native_pica_frontend/oot3d_native_vertex_binaries.cpp
         tools/oot3d/native_pica_frontend/oot3d_native_vertex.spvpack)
+    # The built-in caster family, which the runtime consults before the corpus.
+    triaevum_add_spirv_pack(${_variant_target}
+        runtime/three_ds_recomp/src/fast/oot3d/pica_caster_fragment_binaries.cpp
+        runtime/three_ds_recomp/src/fast/oot3d/pica_caster_fragment.spvpack)
     target_include_directories(${_variant_target} PRIVATE tools/oot3d/native_game_runtime)
     target_link_libraries(${_variant_target} PRIVATE oot3d_native_pica_frontend)
 endforeach()
