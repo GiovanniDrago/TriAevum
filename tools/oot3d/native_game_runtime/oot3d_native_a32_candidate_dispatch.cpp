@@ -332,6 +332,12 @@ bool ExecuteTopScreenUiSourcePortBlock(
     if (inputs.HasScene && inputs.SceneMode == 5U) {
       return branchFromCallsite(pc + 4U, pc + 4U);
     }
+    // 3.0 0x005D6354 (at 0x00300550) also skips the page title and item
+    // description of 0x0042CBCC while the View Model is open.
+    if (pc == kPauseSceneViewportDrawCall && dispatch.WideItems != nullptr &&
+        dispatch.WideItems->ViewModelActive()) {
+      return branchFromCallsite(pc + 4U, pc + 4U);
+    }
     return branchFromCallsite(pc == kPauseSceneFiveDrawCall
                                   ? kPauseSceneFiveNativeDraw
                                   : kPauseSceneViewportNativeDraw,

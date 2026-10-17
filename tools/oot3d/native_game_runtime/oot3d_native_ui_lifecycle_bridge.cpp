@@ -370,8 +370,10 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
       // Button circles, D-pad cross and ZR/ZL labels: SingleScreen 3.0 atlas.
       oot3d::ui::UiTextureIdentity uiAtlas;
       uiAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
+      const std::size_t clusterStart = output.size();
       (void)AppendTopScreenTouchClusterPresentation(touchGeometry, uiAtlas,
                                                     output);
+      const std::size_t clusterEnd = output.size();
       TopScreenAuxiliaryTouchInputs auxiliaryInputs;
       std::string auxiliaryInputError;
       if (ReadTopScreenAuxiliaryTouchInputs(mMemory, &auxiliaryInputs,
@@ -397,6 +399,13 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
         (void)AppendTopScreenNativeItemIconCopies(
             mMemory, touchState.VerticalOffsets, touchState.Alpha, *itemIcons,
             output, &itemCopyError, false, &itemOpacity);
+      }
+      // 3.0 0x005DCC90: the cross takes 0x005CCF6C on top of the HUD alpha.
+      bool nestedOwner = false;
+      if (ReadTopScreenPlayerNestedOwner(mMemory, &nestedOwner)) {
+        const float dpadAlpha = ResolveTopScreenDpadGroupAlpha(itemOpacity, nestedOwner);
+        for (std::size_t index = clusterStart; index < clusterEnd; ++index)
+          if (output[index].source_quad == 5U) output[index].color.alpha *= dpadAlpha;
       }
       TopScreenDpadPresentationState dpadState;
       if (ReadTopScreenDpadPresentationState(mMemory, &dpadState)) {
@@ -540,11 +549,11 @@ Oot3dNativeUiLifecycleBridge::BuildTopScreenPresentation(
   }
   oot3d::ui::UiTextureIdentity itemsHintAtlas;
   itemsHintAtlas.semantic_name = kTopScreen30UiAtlasSemantic;
+  // The 3.0 oracle keeps SELECT ? under an open picker's dimmer (layer 15 <
+  // 30); only the View Model replaces it.
   (void)AppendTopScreenItemsHintPresentation(
       BuildTopScreenItemsHintGeometry(mTopScreenItemsHint,
-                                      mTopScreenConfig.RenderItemsHint && !viewModel &&
-                                           (mTopScreenItemsShortcuts == nullptr ||
-                                            !mTopScreenItemsShortcuts->DpadPicker().Active())),
+                                      mTopScreenConfig.RenderItemsHint && !viewModel),
       itemsHintAtlas, output);
   // 3.0 0x005E2AE0: the Gear "[X] View Model" legend obeys the same setting.
   std::uint32_t gearLegendFade = 0U, gearLegendPulse = 0U;
