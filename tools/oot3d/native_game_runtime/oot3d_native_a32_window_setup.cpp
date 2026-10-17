@@ -272,6 +272,7 @@ void NativeA32WindowSession::Setup() {
         Oot3dNativeGame::kTopScreenItemsUpdateBoundary,
         Oot3dNativeGame::kTopScreenItemsShortcutCursorBoundary,
         Oot3dNativeGame::kTopScreenGearModelDrawCall,
+        Oot3dNativeGame::kTopScreenViewModelTransformBlock,
     };
     blockEntryHooks.insert(blockEntryHooks.end(),
                            topScreenSourcePortHooks.begin(),
@@ -445,7 +446,8 @@ void NativeA32WindowSession::Setup() {
         Oot3dNativeGame::kTopScreenItemsCursorDrawCallB,
         Oot3dNativeGame::kTopScreenItemsUpdateBoundary,
         Oot3dNativeGame::kTopScreenItemsShortcutCursorBoundary,
-        Oot3dNativeGame::kTopScreenGearModelDrawCall};
+        Oot3dNativeGame::kTopScreenGearModelDrawCall,
+        Oot3dNativeGame::kTopScreenViewModelTransformBlock};
     for (const auto &contract :
          Oot3dNativeGame::TopScreenVerifiedControlFlowContracts()) {
       topScreenSourcePortBlocks.push_back(contract.Entry);
@@ -979,6 +981,7 @@ void NativeA32WindowSession::Setup() {
   widescreenProjection.ItemDescription = &itemDescription;
   auto &wideItems = wideItemsStorage.emplace(process.Memory());
   nativeCandidateDispatch.WideItems = &wideItems;
+  widescreenProjection.WideItems = &wideItems;
   // SingleScreen 3.0 shortcut column: reordering previews the host config;
   // saving stays an explicit F1 action.
   wideItems.SetShortcutOrder(activeTopScreenConfig.ItemsShortcutOrder);

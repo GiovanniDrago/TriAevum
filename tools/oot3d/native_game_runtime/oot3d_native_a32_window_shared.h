@@ -476,6 +476,7 @@ struct NativeWidescreenProjectionState {
   Oot3dNativeGame::TopScreenPauseTransactionRuntime *PauseTransaction = nullptr;
   Oot3dNativeGame::TopScreenSystemPageRuntime *SystemPage = nullptr;
   Oot3dNativeGame::TopScreenItemDescriptionRuntime *ItemDescription = nullptr;
+  const Oot3dNativeGame::TopScreenWideItemsRuntime *WideItems = nullptr;
   Oot3dNativeGame::Oot3dPicaCompositionDomain *PicaCompositionDomain =
       nullptr;
   Oot3dNativeGame::Oot3dNativePicaCompositionTracker

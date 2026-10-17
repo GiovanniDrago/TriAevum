@@ -1,5 +1,6 @@
 #include "oot3d_top_screen_wide_items_runtime.h"
 #include "oot3d_top_screen_items_layout.h"
+#include "oot3d_native_trigonometry.h"
 
 #include <algorithm>
 #include <array>
@@ -36,6 +37,14 @@ constexpr std::uint32_t kCursorOffset = 0x3F147AE1U; // 3.0 0x005D60CC: 0.58.
 constexpr std::uint32_t kScratch = 0x120U;
 constexpr std::uint32_t kQuadBytes = 48U;
 constexpr std::array<std::uint32_t, 6> kTransformOffsets{0xCU, 0x10U, 0x18U, 0x1CU, 0x20U, 0x28U};
+// View Model inputs: the native upper-screen 3D model of the Gear cursor item
+// and that item's id.
+constexpr std::uint32_t kViewModel = 0x004FC67CU;
+constexpr std::uint32_t kViewEquipment = 0x004FC6ACU;
+// 0x002FCAD4 reads 0x0050446C+0x18, this same word, so Gear is active at 2.
+constexpr std::uint32_t kGearPageState = 0x00504484U;
+constexpr std::uint32_t kCirclePadX = 0x005655ACU; // s16, then Y at +2.
+constexpr std::uint32_t kModelHandleCopyOverrideTransform = 0x003721E0U;
 
 std::uint32_t Word(float value) { return std::bit_cast<std::uint32_t>(value); }
 
@@ -149,6 +158,7 @@ void TopScreenWideItemsRuntime::Reset() noexcept {
   mDpadPicker = {};
   mDpadPickerDraw = {};
   mShortcutDescriptionDirty = false;
+  mViewModel = {};
   mAssignmentFrame = 0U;
   mAssignmentDelay = 0;
 }
@@ -220,6 +230,7 @@ bool TopScreenWideItemsRuntime::ExecuteItemsUpdate(
   Begin(mUpdate, kTopScreenItemsUpdateBoundary, state, 0x20U);
   try {
     UpdateShortcuts(mUpdate);
+    UpdateViewModel(mUpdate);
   } catch (...) {
     mUpdate = {};
     throw;
@@ -455,6 +466,141 @@ void TopScreenWideItemsRuntime::UpdateShortcuts(Sequence &sequence) {
                        0x0100048FU;
     AppendUiSound(sequence, sound);
   }
+}
+
+void TopScreenWideItemsRuntime::UpdateViewModel(Sequence &sequence) {
+  // 0x005D28C4 after the picker 0x005D29E4. Its 0x005CB8BC HID buttons are
+  // the native held lane; the edge is against the previous update.
+  const auto held = ReadWord(0x0050AF10U);
+  const auto pressed = held & ~mViewModel.PreviousHeld;
+  mViewModel.PreviousHeld = held;
+  const bool gear = ReadWord(kGearPageState) == 2U;
+  if (mViewModel.Active) {
+    if (gear) StepViewModel(sequence, held, pressed);
+    else ExitViewModel(sequence);
+    ConsumePickerInput();
+    return;
+  }
+  if (mDpadPicker.Active() || (pressed & 0x400U) == 0U || !gear) return;
+  const auto equipment = static_cast<std::int32_t>(ReadWord(kViewEquipment));
+  if (equipment < 0 || equipment == 0x8A) return;
+  EnterViewModel(sequence);
+  ConsumePickerInput();
+}
+
+void TopScreenWideItemsRuntime::EnterViewModel(Sequence &sequence) {
+  // 0x005D24FC(2, -1): no preview item, so no 0x002E9B00 call.
+  const auto model = ReadWord(kViewModel);
+  std::uint8_t ready = 0U;
+  if (model == 0U || (model & 3U) != 0U) return;
+  if (!mMemory.Read8(model + 0x11DU, &ready))
+    throw std::runtime_error("SingleScreen View Model cannot read the Gear item model");
+  if (ready == 0U) return;
+  std::uint16_t angle = 0U;
+  if (!mMemory.Read16(model + 0x118U, &angle))
+    throw std::runtime_error("SingleScreen View Model cannot read the model angle");
+  mViewModel.Yaw = static_cast<std::uint16_t>(
+      (static_cast<std::int32_t>(static_cast<std::int16_t>(angle)) << 16) / 360);
+  mViewModel.Pitch = 0;
+  mViewModel.Released = false;
+  mViewModel.Zoom = 1.0F;
+  mViewModel.OffsetX = mViewModel.OffsetY = 0.0F;
+  mViewModel.Active = true;
+  AppendUiSound(sequence, 0x01000497U);
+}
+
+void TopScreenWideItemsRuntime::StepViewModel(Sequence &sequence, std::uint32_t held,
+                                              std::uint32_t pressed) {
+  // 0x005D2274: an invalid or unloading (0x8C, 0x8C) model, or B, exits.
+  const auto model = ReadWord(kViewModel);
+  std::uint8_t ready = 0U, first = 0U, second = 0U;
+  if (model != 0U && (model & 3U) == 0U &&
+      (!mMemory.Read8(model + 0x11DU, &ready) || !mMemory.Read8(model + 0x11AU, &first) ||
+       !mMemory.Read8(model + 0x11BU, &second)))
+    throw std::runtime_error("SingleScreen View Model cannot read the Gear item model");
+  if (model == 0U || (model & 3U) != 0U || ready == 0U || (first == 0x8CU && second == 0x8CU) ||
+      (pressed & 2U) != 0U) {
+    ExitViewModel(sequence);
+    return;
+  }
+  std::uint16_t stickX = 0U, stickY = 0U;
+  if (!mMemory.Read16(kCirclePadX, &stickX) || !mMemory.Read16(kCirclePadX + 2U, &stickY))
+    throw std::runtime_error("SingleScreen View Model cannot read the circle pad");
+  const std::int32_t x = static_cast<std::int16_t>(stickX), y = static_cast<std::int16_t>(stickY);
+  if (static_cast<std::uint32_t>(x + 12) > 24U)
+    mViewModel.Yaw = static_cast<std::uint16_t>(mViewModel.Yaw + x * 0x300 / 105);
+  if (static_cast<std::uint32_t>(y + 12) > 24U)
+    mViewModel.Pitch = static_cast<std::int16_t>(
+        std::clamp(mViewModel.Pitch + y * 512 / -105, -0x3800, 0x3800));
+  // X entered the View Model, so it zooms only after its first release.
+  if ((held & 0x400U) == 0U) mViewModel.Released = true;
+  if ((held & 0x400U) != 0U && mViewModel.Released)
+    mViewModel.Zoom = std::min(mViewModel.Zoom * 1.04F, 2.5F);
+  if ((held & 0x800U) != 0U) mViewModel.Zoom = std::max(mViewModel.Zoom / 1.04F, 0.5F);
+  if ((held & 0x10U) != 0U) mViewModel.OffsetX += 0.4F;
+  if ((held & 0x20U) != 0U) mViewModel.OffsetX -= 0.4F;
+  if ((held & 0x40U) != 0U) mViewModel.OffsetY += 0.4F;
+  if ((held & 0x80U) != 0U) mViewModel.OffsetY -= 0.4F;
+  mViewModel.OffsetX = std::clamp(mViewModel.OffsetX, -12.0F, 12.0F);
+  mViewModel.OffsetY = std::clamp(mViewModel.OffsetY, -9.0F, 9.0F);
+  if (!mMemory.Write16(model + 0x118U, static_cast<std::uint16_t>(
+                                           (static_cast<std::uint32_t>(mViewModel.Yaw) * 360U) >> 16)))
+    throw std::runtime_error("SingleScreen View Model cannot write the model angle");
+}
+
+void TopScreenWideItemsRuntime::ExitViewModel(Sequence &sequence) {
+  // 0x005D21E8: mode 2 never changes the previewed item, so restore is a no-op.
+  mViewModel.Active = false;
+  AppendUiSound(sequence, 0x01000496U);
+}
+
+void TopScreenWideItemsRuntime::WriteViewModelTransform(std::uint32_t model, std::uint32_t matrix) {
+  // 0x005D2734, word for word: scale model+0x14 x zoom, translation model+8
+  // and +0xC plus the offset, model+0x10 as is. A matrix with m[9] == 0 keeps
+  // the scaled identity; otherwise pitch + 10 degrees (0x71C) and yaw.
+  const float scale = ReadScalar(model + 0x14U) * mViewModel.Zoom;
+  const float x = ReadScalar(model + 8U) + mViewModel.OffsetX;
+  const float y = ReadScalar(model + 0xCU) + mViewModel.OffsetY;
+  const auto z = ReadWord(model + 0x10U);
+  std::array<float, 11> m{};
+  if (ReadScalar(matrix + 0x24U) != 0.0F) {
+    const std::int32_t pitch = static_cast<std::int16_t>(mViewModel.Pitch + 0x71C);
+    const std::int32_t yaw = static_cast<std::int16_t>(mViewModel.Yaw);
+    const float sinA = NativeTrigonometry(mMemory, pitch, false);
+    const float cosA = NativeTrigonometry(mMemory, pitch, true);
+    const float sinB = NativeTrigonometry(mMemory, yaw, false);
+    const float cosB = NativeTrigonometry(mMemory, yaw, true);
+    const float sinASinB = sinA * sinB, sinACosB = -(sinA * cosB);
+    const float cosASinB = -(cosA * sinB), cosACosB = cosA * cosB;
+    m = {cosB * scale, scale * 0.0F, sinB * scale, x,
+         sinASinB * scale, cosA * scale, sinACosB * scale, y,
+         cosASinB * scale, sinA * scale, cosACosB * scale};
+  } else {
+    m = {1.0F * scale, scale * 0.0F, 0.0F * scale, x,
+         0.0F * scale, 1.0F * scale, 0.0F * scale, y,
+         0.0F * scale, 0.0F * scale, 1.0F * scale};
+  }
+  for (std::uint32_t lane = 0; lane < m.size(); ++lane)
+    WriteWord(matrix + lane * 4U, Word(m[lane]));
+  WriteWord(matrix + 0x2CU, z);
+}
+
+bool TopScreenWideItemsRuntime::ExecuteViewModelTransform(
+    oot3d::recomp::a32::GuestState &state, oot3d::recomp::a32::ExecutionResult *result,
+    std::uint32_t *blocksConsumed) {
+  if (!mViewModel.Active) return false;
+  // The block's own `ldr r0, [r6, #0xFC]; mov r1, r8`, then 3.0's
+  // replacement of its `bl ModelHandle_CopyOverrideTransform`.
+  state.r[0] = ReadWord(state.r[6] + 0xFCU);
+  state.r[1] = state.r[8];
+  const auto model = ReadWord(kViewModel);
+  if (model != 0U && state.r[8] != 0U) WriteViewModelTransform(model, state.r[8]);
+  state.r[14] = kTopScreenViewModelTransformReturn;
+  state.r[15] = kModelHandleCopyOverrideTransform;
+  *result = {oot3d::recomp::a32::ExitKind::Branch, kModelHandleCopyOverrideTransform,
+             oot3d::recomp::a32::FallbackReason::None, kTopScreenViewModelTransformBlock};
+  if (blocksConsumed != nullptr) *blocksConsumed = 1U;
+  return true;
 }
 
 bool TopScreenWideItemsRuntime::ExecuteShortcutCursor(

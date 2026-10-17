@@ -729,6 +729,10 @@ struct TopScreenPauseDrawRoutingState {
   bool NativeTransitionLatched = false;
   bool SuppressionDelayArmed = false;
   std::uint16_t SuppressionDelayCommands = 0;
+  // SingleScreen 3.0 0x005CD348 returns 0 while the View Model is open, so
+  // the native pause scene (the Gear item model) keeps the upper screen. Host
+  // input, refreshed before each decision.
+  bool NativeSceneRequested = false;
 };
 
 struct TopScreenPausePageRedrawInputs {

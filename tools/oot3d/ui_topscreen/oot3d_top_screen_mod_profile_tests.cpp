@@ -2973,6 +2973,11 @@ int main() {
   Require(ResolveTopScreenPauseDrawAction(drawInputs, &drawState) ==
               TopScreenPauseDrawAction::SuppressNativeChildren,
           "eligible pause pages must suppress their native child draws");
+  drawState.NativeSceneRequested = true;
+  Require(ResolveTopScreenPauseDrawAction(drawInputs, &drawState) ==
+              TopScreenPauseDrawAction::NativeDraw,
+          "an open View Model must keep the native pause scene on the upper screen");
+  drawState.NativeSceneRequested = false;
   drawInputs.AnyPageGateActive = false;
   Require(ResolveTopScreenPauseDrawAction(drawInputs, &drawState) ==
               TopScreenPauseDrawAction::NativeDraw,

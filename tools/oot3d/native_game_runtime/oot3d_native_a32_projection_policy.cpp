@@ -363,6 +363,8 @@ void ApplyNativeWidescreenProjectionPolicy(
                                                         &inputs)) {
         runtime.HasTopScreenPauseDrawInputs = true;
         runtime.LastTopScreenPauseDrawInputs = inputs;
+        runtime.TopScreenPauseDrawRouting.NativeSceneRequested =
+            runtime.WideItems != nullptr && runtime.WideItems->ViewModelActive();
         const auto action = Oot3dNativeGame::ResolveTopScreenPauseDrawAction(
             inputs, &runtime.TopScreenPauseDrawRouting);
         runtime.LastTopScreenPauseChildrenSuppressed =

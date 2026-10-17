@@ -51,6 +51,11 @@ inline constexpr std::uint32_t kTopScreenItemsShortcutCursorResume = 0x00434BA4U
 // PauseItemsPage_Draw 0x00434C80 cursor subdraws (PauseQuadGroup_Draw).
 inline constexpr std::uint32_t kTopScreenItemsCursorDrawCallA = 0x00434CDCU;
 inline constexpr std::uint32_t kTopScreenItemsCursorDrawCallB = 0x00434D48U;
+// The Gear item model's override transform: block `ldr r0, [r6, #0xFC];
+// mov r1, r8; bl ModelHandle_CopyOverrideTransform` (3.0 redirects the call
+// at 0x00425880 to 0x005D2734), returning to 0x00425884.
+inline constexpr std::uint32_t kTopScreenViewModelTransformBlock = 0x00425878U;
+inline constexpr std::uint32_t kTopScreenViewModelTransformReturn = 0x00425884U;
 
 // SingleScreen 3.0 0x005E3CA0 / 0x005E3728: native quad sub-ranges,
 // temporary model transforms and 0.6 / 0.58 projections. Quad 2 is updated
@@ -82,6 +87,13 @@ public:
   bool ExecuteShortcutCursor(oot3d::recomp::a32::GuestState &state,
                              oot3d::recomp::a32::ExecutionResult *result,
                              std::uint32_t *blocksConsumed);
+  // SingleScreen 3.0 View Model (0x005D2734): while it is open the Gear
+  // item model's transform takes its rotation, zoom and offset. Returns false
+  // (native block runs unchanged) while it is closed.
+  bool ExecuteViewModelTransform(oot3d::recomp::a32::GuestState &state,
+                                 oot3d::recomp::a32::ExecutionResult *result,
+                                 std::uint32_t *blocksConsumed);
+  bool ViewModelActive() const noexcept { return mViewModel.Active; }
   void SetShortcutOrder(const TopScreenItemsShortcutOrder &order) noexcept;
   void SetShortcutOrderChanged(std::function<void(const TopScreenItemsShortcutOrder &)> changed) {
     mShortcutOrderChanged = std::move(changed);
@@ -162,6 +174,13 @@ private:
   void ConsumePickerInput();
   void UpdateShortcuts(Sequence &sequence);
   void AppendShortcutDescription(Sequence &sequence);
+  // 3.0 0x005D28C4 (Gear page entry and update), 0x005D24FC (enter),
+  // 0x005D2274 (update) and 0x005D21E8 (exit).
+  void UpdateViewModel(Sequence &sequence);
+  void EnterViewModel(Sequence &sequence);
+  void StepViewModel(Sequence &sequence, std::uint32_t held, std::uint32_t pressed);
+  void ExitViewModel(Sequence &sequence);
+  void WriteViewModelTransform(std::uint32_t model, std::uint32_t matrix);
   void WriteWord(std::uint32_t address, std::uint32_t value);
   void TraceItemsState();
   void SaveWrite(Sequence &sequence, std::uint32_t address, std::uint32_t value);
@@ -197,6 +216,20 @@ private:
   std::function<void(bool, const TopScreenDpadAssignments &)> mDpadAssignmentChanged;
   bool mShortcutDescriptionDirty = false;
   std::function<void(const TopScreenItemsShortcutOrder &)> mShortcutOrderChanged;
+  // 3.0 View Model state, Gear page mode 2 only: 0x0060ECC4 (open),
+  // 0x0060F23C/0x0060F23E (yaw, pitch), 0x0060F240 (X released since entry),
+  // 0x0060F244/0x0060F248 (offset), 0x0060D258 (zoom), 0x0060F254 (held).
+  // The picker's mode 1 and its equipment restore (0x0060D250) are not ported.
+  struct ViewModelState {
+    bool Active = false;
+    std::uint16_t Yaw = 0;
+    std::int16_t Pitch = 0;
+    bool Released = false;
+    float OffsetX = 0.0F, OffsetY = 0.0F;
+    float Zoom = 1.0F;
+    std::uint32_t PreviousHeld = 0;
+  };
+  ViewModelState mViewModel{};
   std::uint32_t mAssignmentFrame = 0;
   std::int32_t mAssignmentDelay = 0;
   std::uint64_t mWidePages = 0;

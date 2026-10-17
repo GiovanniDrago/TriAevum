@@ -345,8 +345,9 @@ reentrancy, config changes, page/age/reset cleanup and native call restoration.
 Presentation tests check frame/cross/crops, confirmation animation, exact
 ring geometry/material, the A-hold interval and live placement, and lifecycle
 cleanup. The original legend also has a third entry, Y View Model. Its submode (0x005D24FC / 0x005D2274 /
-0x005D21E8, transform wrapper 0x005D2734 at native 0x00425880) is a separate
-follow-up: no Y legend or handler is advertised in this assignment-only port.
+0x005D21E8, transform wrapper 0x005D2734 at native 0x00425880) is ported
+only from the Gear page (see "SingleScreen 3.0 HUD, camera and frontend"):
+no Y legend or handler is advertised in this picker.
 Rendered parity, the complete original modal including that viewer, and
 end-to-end host Preview persistence are not established by these tests.
 
@@ -441,6 +442,28 @@ minimap and Save routes only in the gameplay pause state.
   0x00507C1C): zeroed exactly as 2.1.1 and 3.0 do, as verified layout
   patches. On File Select this removes the lower screen's BACK button from
   the upper screen.
+- **View Model, Gear page** (mode 2: 0x005D28C4 after 0x005D29E4 in update
+  wrapper 0x005F3BA0; enter 0x005D24FC, update 0x005D2274, exit
+  0x005D21E8). On the Gear page (0x00504484 == 2; 0x002FCAD4 reads the
+  same word) a new X press with a previewed item (0x004FC6AC >= 0 and not
+  0x8A) opens it, sound 0x01000497. While it is open the four native input
+  lanes are cleared each update; the circle pad (0x005655AC/AE, dead zone
+  12) turns yaw by x*0x300/105 and pitch by y*512/-105 within +-0x3800,
+  held X zooms x1.04 up to 2.5 once the entry X was released, held Y /1.04
+  down to 0.5, the D-pad pans 0.4 per update within +-12 / +-9, and the
+  model angle (+0x118) follows the yaw. B, leaving page state 2, or a model
+  marked 0x8C/0x8C closes it, sound 0x01000496. The transform block
+  0x00425878 (`ldr r0, [r6, #0xFC]; mov r1, r8; bl 0x003721E0`, return
+  0x00425884, both block starts) rewrites the matrix as 0x005D2734 does
+  (scale +0x14 x zoom, translation +8/+0xC plus the offset, rotation pitch
+  + 0x71C and yaw when m[9] != 0) and calls ModelHandle_CopyOverrideTransform.
+  3.0's 0x005CD348 returns 0 while it is open, so the native upper pause
+  scene, the 3D model of the Gear cursor item with its description, keeps
+  the upper screen: `TopScreenPauseDrawRoutingState::NativeSceneRequested`
+  makes `ResolveTopScreenPauseDrawAction` return NativeDraw, which also
+  stops the page redraw. Not ported: mode 1 (Y in the Items D-pad picker,
+  0x005D29E4 -> 0x005D24FC(1, item from 0x005D0B2C)) with its equipment
+  restore and the Items hint's Y View Model legend (0x005E9A58).
 - Not ported: 3.0's Save-screen "Mod Options" entry and its resource
   bookkeeping (0x0041CD40..0x0041CE40; the F1 panel replaces it), the 1 px
   File Select/Name Entry quad trims, the PauseSystemMenu y 202 -> 162 words

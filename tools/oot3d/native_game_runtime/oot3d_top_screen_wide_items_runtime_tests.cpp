@@ -1,4 +1,5 @@
 #include "oot3d_top_screen_wide_items_runtime.h"
+#include "oot3d_native_trigonometry.h"
 #include "oot3d_top_screen_mod_profile.h"
 #include "oot3d_top_screen_items_layout.h"
 
@@ -739,6 +740,183 @@ void TestDpadPickerRuntime(Oot3dNativeGame::NativeA32Memory &memory) {
   WriteWord(memory, 0x0050AF10U, 0);
 }
 
+void TestViewModel(Oot3dNativeGame::NativeA32Memory &memory) {
+  using namespace Oot3dNativeGame;
+  std::string error;
+  // Piecewise-constant table (zero slopes): angle a reads entry a >> 8.
+  Require(memory.MapRegion({"view-model-trig", 0x004DF000U, 0x2000U, true, false, {}}, &error),
+          "cannot map the sine table fixture");
+  const auto sine = [](std::uint32_t index, bool cosine) {
+    const float angle = static_cast<float>(index) * 6.28318530718F / 256.0F;
+    return cosine ? std::cos(angle) : std::sin(angle);
+  };
+  for (std::uint32_t index = 0; index < 256U; ++index) {
+    WriteFloat(memory, kNativeTrigonometryTable + index * 16U, sine(index, false));
+    WriteFloat(memory, kNativeTrigonometryTable + index * 16U + 4U, sine(index, true));
+    WriteWord(memory, kNativeTrigonometryTable + index * 16U + 8U, 0U);
+    WriteWord(memory, kNativeTrigonometryTable + index * 16U + 12U, 0U);
+  }
+  constexpr std::uint32_t model = kHeap + 0x20000U;
+  constexpr std::uint32_t owner = kHeap + 0x20400U;
+  constexpr std::uint32_t matrix = kHeap + 0x20800U;
+  WriteWord(memory, kItemsState, 0U);
+  WriteWord(memory, 0x00504484U, 2U);
+  WriteWord(memory, 0x004FC6ACU, 0x3BU);
+  WriteWord(memory, 0x004FC67CU, model);
+  WriteWord(memory, 0x005655ACU, 0U);
+  Require(memory.Write8(model + 0x11DU, 1U) && memory.Write8(model + 0x11AU, 0U) &&
+              memory.Write8(model + 0x11BU, 0U) && memory.Write16(model + 0x118U, 90U),
+          "cannot write View Model fixture");
+  WriteFloat(memory, model + 8U, 1.0F);
+  WriteFloat(memory, model + 0xCU, 2.0F);
+  WriteFloat(memory, model + 0x10U, 3.0F);
+  WriteFloat(memory, model + 0x14U, 0.5F);
+  WriteWord(memory, owner + 0xFCU, 0x00712340U);
+  TopScreenWideItemsRuntime runtime(memory);
+  const auto update = [&](std::uint32_t held) {
+    WriteWord(memory, 0x0050AF10U, held);
+    for (const auto address : {0x0050AF14U, 0x0050AF18U, 0x0050AF2CU, 0x0050AF30U})
+      WriteWord(memory, address, 0xFFFFU);
+    auto state = CallerState(kTopScreenItemsUpdateBoundary);
+    oot3d::recomp::a32::ExecutionResult result;
+    std::uint32_t sound = 0;
+    for (unsigned n = 0; n < 20; ++n) {
+      runtime.ExecuteItemsUpdate(state, &result, nullptr);
+      if (result.pc == kTopScreenItemsInsetNextCall) return sound;
+      if (result.pc == 0x0037547CU) sound = state.r[0];
+    }
+    Require(false, "View Model update did not finish");
+    return 0U;
+  };
+  const auto consumed = [&] {
+    for (const auto address : {0x0050AF14U, 0x0050AF18U, 0x0050AF2CU, 0x0050AF30U})
+      if (ReadWord(memory, address) != 0U) return false;
+    return true;
+  };
+  const auto transform = [&](float m9, bool *handled) {
+    for (std::uint32_t lane = 0; lane < 12U; ++lane) WriteFloat(memory, matrix + lane * 4U, 7.0F);
+    WriteFloat(memory, matrix + 0x24U, m9);
+    auto state = CallerState(kTopScreenViewModelTransformBlock);
+    state.r[6] = owner;
+    state.r[8] = matrix;
+    const auto caller = state;
+    oot3d::recomp::a32::ExecutionResult result;
+    std::uint32_t blocks = 0U;
+    *handled = runtime.ExecuteViewModelTransform(state, &result, &blocks);
+    if (!*handled) {
+      Require(Same(state, caller) && ReadFloat(memory, matrix) == 7.0F,
+              "closed View Model changed the native transform block");
+      return;
+    }
+    Require(state.r[0] == 0x00712340U && state.r[1] == matrix &&
+                state.r[14] == kTopScreenViewModelTransformReturn && state.r[15] == 0x003721E0U &&
+                result.pc == 0x003721E0U && result.kind == oot3d::recomp::a32::ExitKind::Branch &&
+                blocks == 1U,
+            "View Model transform did not continue into ModelHandle_CopyOverrideTransform");
+  };
+
+  bool handled = true;
+  transform(1.0F, &handled);
+  Require(!handled, "closed View Model intercepted the native transform");
+  WriteWord(memory, 0x00504484U, 0U);
+  update(0x400U);
+  WriteWord(memory, 0x00504484U, 2U);
+  Require(update(0x400U) == 0U && !runtime.ViewModelActive(),
+          "View Model opened on a held X without a new press");
+  update(0U);
+  constexpr std::array<std::array<std::uint32_t, 2>, 4> refusals{
+      {{0xFFFFFFFFU, 2U}, {0x8AU, 2U}, {0x3BU, 0U}, {0x3BU, 1U}}};
+  for (const auto &[equipment, pageState] : refusals) {
+    WriteWord(memory, 0x004FC6ACU, equipment);
+    WriteWord(memory, 0x00504484U, pageState);
+    Require(update(0x400U) == 0U && !runtime.ViewModelActive(),
+            "View Model opened without Gear page state 2 or a previewed item");
+    update(0U);
+  }
+  WriteWord(memory, 0x004FC6ACU, 0x3BU);
+  WriteWord(memory, 0x00504484U, 2U);
+  Require(update(0x400U) == 0x01000497U && runtime.ViewModelActive() && consumed(),
+          "X on the Gear page did not open the View Model with its sound and consume input");
+  transform(1.0F, &handled);
+  // Yaw (90 << 16) / 360 = 0x4000 (entry 64), pitch 0x71C (entry 7).
+  const float sinA = sine(7, false), cosA = sine(7, true), sinB = sine(64, false), cosB = sine(64, true);
+  const std::array<float, 12> rotated{cosB * 0.5F, 0.0F, sinB * 0.5F, 1.0F,
+                                      sinA * sinB * 0.5F, cosA * 0.5F, -(sinA * cosB) * 0.5F, 2.0F,
+                                      -(cosA * sinB) * 0.5F, sinA * 0.5F, cosA * cosB * 0.5F, 3.0F};
+  for (std::uint32_t lane = 0; lane < 12U; ++lane)
+    Require(handled && ReadFloat(memory, matrix + lane * 4U) == rotated[lane],
+            "View Model matrix differs from 0x005D2734");
+  transform(0.0F, &handled);
+  const std::array<float, 12> identity{0.5F, 0.0F, 0.0F, 1.0F, 0.0F, 0.5F, 0.0F, 2.0F, 0.0F, 0.0F, 0.5F, 3.0F};
+  for (std::uint32_t lane = 0; lane < 12U; ++lane)
+    Require(ReadFloat(memory, matrix + lane * 4U) == identity[lane],
+            "View Model matrix without rotation lost the scaled identity");
+
+  // The entry X zooms only after a release; Y zooms out at once.
+  update(0x400U);
+  transform(0.0F, &handled);
+  Require(ReadFloat(memory, matrix) == 0.5F, "the entry X zoomed before its release");
+  update(0U);
+  update(0x400U);
+  transform(0.0F, &handled);
+  Require(ReadFloat(memory, matrix) == 0.5F * 1.04F, "released X did not zoom by 1.04");
+  for (unsigned frame = 0; frame < 40; ++frame) update(0x400U);
+  transform(0.0F, &handled);
+  Require(ReadFloat(memory, matrix) == 0.5F * 2.5F, "X zoom is not capped at 2.5");
+  for (unsigned frame = 0; frame < 60; ++frame) update(0x800U);
+  transform(0.0F, &handled);
+  Require(ReadFloat(memory, matrix) == 0.5F * 0.5F && consumed(), "Y zoom is not capped at 0.5");
+
+  // D-pad pan, 0.4 per update, within +-12 / +-9.
+  for (unsigned frame = 0; frame < 40; ++frame) update(0x10U | 0x80U);
+  transform(0.0F, &handled);
+  Require(ReadFloat(memory, matrix + 0xCU) == 13.0F && ReadFloat(memory, matrix + 0x1CU) == -7.0F,
+          "D-pad pan is not clamped to +-12 / +-9");
+
+  // Circle pad: |value| <= 12 is dead; yaw x*0x300/105, pitch y*512/-105.
+  std::uint16_t angle = 0U;
+  Require(memory.Write16(0x005655ACU, 12U) && memory.Write16(0x005655AEU, 0xFFF4U), "cannot write stick");
+  update(0U);
+  Require(memory.Read16(model + 0x118U, &angle) && angle == 90U, "stick dead zone rotated the model");
+  Require(memory.Write16(0x005655ACU, 105U) && memory.Write16(0x005655AEU, 0U), "cannot write stick");
+  update(0U);
+  Require(memory.Read16(model + 0x118U, &angle) && angle == ((0x4000U + 0x300U) * 360U) >> 16,
+          "stick X did not turn the yaw and the model angle as 0x005D2274 does");
+  Require(memory.Write16(0x005655ACU, 0U) && memory.Write16(0x005655AEU, 0xFF97U), "cannot write stick");
+  for (unsigned frame = 0; frame < 40; ++frame) update(0U);
+  Require(memory.Write16(0x005655AEU, 0U), "cannot write stick");
+  transform(1.0F, &handled);
+  // Pitch +512 per update, capped at 0x3800: 0x3800 + 0x71C reads entry 63.
+  Require(ReadFloat(memory, matrix + 0x14U) == sine(63, true) * 0.25F,
+          "stick Y pitch is not clamped at 0x3800");
+
+  Require(update(2U) == 0x01000496U && !runtime.ViewModelActive() && consumed(),
+          "B did not close the View Model with its sound");
+  transform(1.0F, &handled);
+  Require(!handled, "closed View Model kept its transform");
+  update(0U);
+  Require(update(0x400U) == 0x01000497U && runtime.ViewModelActive(), "View Model did not reopen");
+  transform(1.0F, &handled);
+  // Reopening restarts pitch at zero: the pitch clamp above must not persist.
+  Require(ReadFloat(memory, matrix + 0x14U) == cosA * 0.5F, "reopened View Model kept its pitch");
+  WriteWord(memory, 0x00504484U, 1U);
+  Require(update(0U) == 0x01000496U && !runtime.ViewModelActive(),
+          "leaving Gear page state 2 did not close the View Model");
+  WriteWord(memory, 0x00504484U, 2U);
+  update(0U);
+  update(0x400U);
+  Require(memory.Write8(model + 0x11AU, 0x8CU) && memory.Write8(model + 0x11BU, 0x8CU), "cannot write model");
+  Require(update(0U) == 0x01000496U && !runtime.ViewModelActive(), "unloading model kept the View Model");
+  Require(memory.Write8(model + 0x11AU, 0U) && memory.Write8(model + 0x11BU, 0U), "cannot write model");
+  update(0U);
+  update(0x400U);
+  runtime.Reset();
+  transform(1.0F, &handled);
+  Require(!runtime.ViewModelActive() && !handled, "reset retained the View Model");
+  WriteWord(memory, 0x00504484U, 0U);
+  WriteWord(memory, 0x0050AF10U, 0U);
+}
+
 void TestShortcutRuntime(Oot3dNativeGame::NativeA32Memory &memory) {
   using namespace Oot3dNativeGame;
   TopScreenWideItemsRuntime runtime(memory);
@@ -1275,6 +1453,7 @@ int main() {
   TestShortcutRuntime(memory);
   TestDpadPickerRuntime(memory);
   TestShortcutInputOwnership(memory);
+  TestViewModel(memory);
   std::cout << "SingleScreen 3.0 wide page runtime tests passed\n";
   return 0;
 }

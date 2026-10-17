@@ -1,4 +1,5 @@
 #include "oot3d_top_screen_gameplay_runtime.h"
+#include "oot3d_native_trigonometry.h"
 
 #include <algorithm>
 #include <array>
@@ -78,7 +79,6 @@ constexpr std::uint32_t kPlayerYaw = 0x4AU;
 constexpr std::int16_t kActorEnArrow = 0x16;
 constexpr std::uint32_t kArrowPosition = 0x28U;
 constexpr std::uint32_t kArrowYaw = 0x36U;
-constexpr std::uint32_t kTrigTable = 0x004DF42CU; // oot3d_sin_idx8 / oot3d_cos_idx8
 constexpr std::uint32_t kLineTest = 0x00369F9CU;  // BgCheck_EntityLineTest1
 constexpr std::uint32_t kZarGetCmab = 0x00372F0CU;
 constexpr std::uint32_t kMaterialAnimationInit = 0x00372D94U;
@@ -552,23 +552,6 @@ bool TopScreenGameplayRuntime::DashSpeedSite(std::uint32_t pc,
   }
 }
 
-namespace {
-// oot3d_sin_idx8 0x002CFCA0 / oot3d_cos_idx8 0x00338F60: table value plus
-// slope x (low byte / 256), each product rounded as VFP vmul/vmla does.
-float Trigonometry(const NativeA32Memory &memory, std::int32_t angle, bool cosine) {
-  const auto index = static_cast<std::uint16_t>(angle);
-  const std::uint32_t entry = kTrigTable + (index >> 8U) * 16U;
-  std::uint32_t value = 0U, slope = 0U;
-  auto &bus = const_cast<NativeA32Memory &>(memory);
-  if (!bus.Read32(entry + (cosine ? 4U : 0U), &value) ||
-      !bus.Read32(entry + (cosine ? 0xCU : 8U), &slope))
-    throw std::runtime_error("TopScreen aiming reticle cannot read the sine table");
-  const float step = static_cast<float>(index & 0xFFU) * (1.0F / 256.0F);
-  const float product = Float(slope) * step;
-  return Float(value) + product;
-}
-} // namespace
-
 bool TopScreenGameplayRuntime::ReticleEntry(oot3d::recomp::a32::GuestState &state,
                                             oot3d::recomp::a32::ExecutionResult *result,
                                             std::uint32_t *blocksConsumed) {
@@ -691,17 +674,17 @@ bool TopScreenGameplayRuntime::ReticleEntry(oot3d::recomp::a32::GuestState &stat
     throw std::runtime_error("TopScreen aiming reticle has no caller stack");
   const std::int32_t pitch = static_cast<std::int16_t>(
       static_cast<std::uint16_t>(static_cast<std::int16_t>(playerPitch) - 0x82));
-  const float horizontal = Trigonometry(mMemory, pitch, true);
+  const float horizontal = NativeTrigonometry(mMemory, pitch, true);
   for (std::uint32_t axis = 0; axis < 3U; ++axis)
     mReticleOrigin[axis] = Float(Read32(arrow + kArrowPosition + axis * 4U));
   constexpr float kReach = 6000.0F;
   std::array<float, 3> end{};
-  float along = Trigonometry(mMemory, yaw, false) * horizontal;
+  float along = NativeTrigonometry(mMemory, yaw, false) * horizontal;
   float offset = along * kReach;
   end[0] = mReticleOrigin[0] + offset;
-  offset = Trigonometry(mMemory, pitch, false) * kReach;
+  offset = NativeTrigonometry(mMemory, pitch, false) * kReach;
   end[1] = mReticleOrigin[1] - offset;
-  along = Trigonometry(mMemory, yaw, true) * horizontal;
+  along = NativeTrigonometry(mMemory, yaw, true) * horizontal;
   offset = along * kReach;
   end[2] = mReticleOrigin[2] + offset;
   const std::array<std::uint32_t, 6> arguments{frame + 0x44U, 1U, 1U, 1U, 0U, frame + 0x48U};

@@ -69,6 +69,8 @@ bool ExecuteTopScreenUiSourcePortBlock(
       return dispatch.WideItems->ExecuteShortcutCursor(state, result, blocksConsumed);
     if (pc == Oot3dNativeGame::kTopScreenGearModelDrawCall)
       return dispatch.WideItems->ExecuteGearModelDraw(state, result, blocksConsumed);
+    if (pc == Oot3dNativeGame::kTopScreenViewModelTransformBlock)
+      return dispatch.WideItems->ExecuteViewModelTransform(state, result, blocksConsumed);
     if (pc == Oot3dNativeGame::kTopScreenItemsCursorDrawCallA ||
         pc == Oot3dNativeGame::kTopScreenItemsCursorDrawCallB)
       return dispatch.WideItems->ExecuteCursorDraw(pc, state, result, blocksConsumed);
