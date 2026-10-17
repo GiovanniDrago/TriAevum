@@ -1050,6 +1050,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
                                     VkFormat format, uint32_t rowOffset,
                                     uint32_t rowCount);
     void RetireNativePicaTexture(TextureRecord& texture);
+    // Retires every texture keyed by another texture-pack generation: lookups
+    // use only the frame's generation, so those records are unreachable.
+    void RetireNativePicaTexturesOfOtherGenerations(uint64_t generation);
     void RetireNativePicaMaterial(NativePicaMaterialBundle& material);
     NativePicaMaterialBundle* GetOrCreateNativePicaMaterial(
         const std::shared_ptr<const ::Oot3d::Renderer::AzaharPbrMaterial>& material);
@@ -1311,6 +1314,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     ::Fast::Renderer::ExtensionPassSchedulePlan
         mPointShadowSchedulePlan;
     uint64_t mFrameAzaharTextureGeneration = 0;
+    // The generation whose textures alone remain in mNativePicaTextures; reset
+    // when a texture restore may bring back records of another generation.
+    std::optional<uint64_t> mNativePicaTexturesGeneration;
     uint64_t mCustomTextureUploadBytesThisFrame = 0;
     std::map<std::vector<uint8_t>, Renderer3ds::PicaDevicePipelineRecord> mNativePicaPipelines;
     uint64_t mNextPicaPipelineId = 1;

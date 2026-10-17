@@ -881,6 +881,21 @@ void GfxRenderingAPIVulkan::RetireNativePicaTexture(TextureRecord& texture) {
     texture = {};
 }
 
+void GfxRenderingAPIVulkan::RetireNativePicaTexturesOfOtherGenerations(uint64_t generation) {
+    // Every texture-pack reconfiguration starts a generation, and every
+    // sampled texture is created again under it. Without this, each change of
+    // the pack settings kept a full copy of the scene's textures.
+    for (auto texture = mNativePicaTextures.begin(); texture != mNativePicaTextures.end();) {
+        if (texture->first.ReplacementGeneration == generation) {
+            ++texture;
+            continue;
+        }
+        RetireNativePicaTexture(texture->second);
+        texture = mNativePicaTextures.erase(texture);
+    }
+    mNativePicaTexturesGeneration = generation;
+}
+
 void GfxRenderingAPIVulkan::RetireNativePicaMaterial(NativePicaMaterialBundle& material) {
     for (auto& image : material.Images) RetireNativePicaTexture(image);
     material = {};
