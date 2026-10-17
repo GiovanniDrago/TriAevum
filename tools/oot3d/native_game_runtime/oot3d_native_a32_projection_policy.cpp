@@ -101,6 +101,18 @@ void ApplyNativeWidescreenProjectionPolicy(
   const bool enabledRainExit =
       std::find(rainHooks.begin(), rainHooks.end(), pc) == rainHooks.end() ||
       (runtime.Rain != nullptr && runtime.Rain->ShouldObserve(pc));
+  // The Quest draw leaves compiled execution only when 3.0 skips it: an exit
+  // skips the rest of this policy, the Quest hook (transforms, B copies)
+  // among it.
+  const auto questDrawExit = [&] {
+    if (pc != Oot3dNativeGame::kTopScreenQuestDrawHook) return true;
+    bool suppressed = false;
+    return runtime.TraceMemory != nullptr && runtime.TopScreenTouchCoordinateRoute != nullptr &&
+           Oot3dNativeGame::ReadTopScreenQuestPageDrawSuppressed(
+               *runtime.TraceMemory, runtime.TopScreenTouchCoordinateRoute->RuntimeSceneLatch,
+               &suppressed) &&
+           suppressed;
+  };
   if (wholeAotExecutionActive &&
       enabledTopScreenCameraExit && enabledTopScreenItemExit &&
       enabledTopScreenGameplayExit && enabledObjectBankExit && enabledRainExit &&
@@ -110,7 +122,8 @@ void ApplyNativeWidescreenProjectionPolicy(
       (pc != kPauseUiDrawReturn ||
        (runtime.ItemDescription != nullptr && runtime.ItemDescription->NeedsExecution())) &&
       std::binary_search(runtime.WholeAotObservableExitPcs.begin(),
-                         runtime.WholeAotObservableExitPcs.end(), pc)) {
+                         runtime.WholeAotObservableExitPcs.end(), pc) &&
+      questDrawExit()) {
     if (runtime.ObservedExitPc != nullptr)
       *runtime.ObservedExitPc = pc;
 #if defined(OOT3D_NATIVE_DIRECT_AOT_PLUGIN)
