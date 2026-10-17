@@ -1641,7 +1641,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         mNativePicaSceneBeforeUiDisplays;
     std::map<std::pair<uint64_t, uint32_t>, NativePicaRenderTargetKey>
         mNativePicaDisplayDepthTargets;
-    std::set<uint32_t> mInvalidatedNativePicaRenderTargetAddresses;
+    // Framebuffers transferred while they had no target (namespace, color
+    // address): presenting them is skipped until a draw recreates the target.
+    std::set<std::pair<uint64_t, uint32_t>> mInvalidatedNativePicaRenderTargetAddresses;
+    uint64_t mNativePicaTransfersWithoutTarget = 0U;
     NativePicaRenderTarget* mActiveNativePicaRenderTarget = nullptr;
     // The layout the active native PICA pass began with.
     Oot3d::PicaAttachmentRequirements mActiveNativePicaAttachments;

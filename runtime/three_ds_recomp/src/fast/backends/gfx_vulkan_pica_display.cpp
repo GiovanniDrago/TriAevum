@@ -94,8 +94,24 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                 }
             }
             if (source == nullptr) {
-                throw std::runtime_error(
-                    "native PICA display transfer source has no Vulkan render target");
+                // No draw reached this framebuffer since its target was
+                // created or reset: after a state load, after a target-extent
+                // reset at frame start, or for a screen whose draws the UI
+                // profile skips. The host holds no newer pixels than the
+                // display already shows, so the transfer keeps them, and the
+                // output presents nothing until a draw recreates the target.
+                mInvalidatedNativePicaRenderTargetAddresses.insert(
+                    {transfer.RenderTargetNamespace, transfer.InputPhysicalAddress});
+                if (++mNativePicaTransfersWithoutTarget <= 8U) {
+                    std::fprintf(stderr,
+                                 "TRIAEVUM_PICA_TRANSFER_WITHOUT_TARGET count=%llu namespace=%llu "
+                                 "input=0x%08X output=0x%08X frame=%llu\n",
+                                 static_cast<unsigned long long>(mNativePicaTransfersWithoutTarget),
+                                 static_cast<unsigned long long>(transfer.RenderTargetNamespace),
+                                 transfer.InputPhysicalAddress, transfer.OutputPhysicalAddress,
+                                 static_cast<unsigned long long>(mFrameCounter));
+                }
+                return true;
             }
             if (transfer.InputWidth > source->Key.Width ||
                 transfer.InputHeight > source->Key.Height) {
@@ -369,9 +385,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDisplayTransfer(
                            transfer.OutputPhysicalAddress));
         if (displayFound == mNativePicaDisplayImages.end() ||
             !displayFound->second.Initialized) {
-            if (transfer.RenderTargetNamespace == 0U &&
-                mInvalidatedNativePicaRenderTargetAddresses.contains(
-                    transfer.InputPhysicalAddress)) {
+            if (mInvalidatedNativePicaRenderTargetAddresses.contains(
+                    {transfer.RenderTargetNamespace, transfer.InputPhysicalAddress})) {
                 return true;
             }
             throw std::runtime_error(
