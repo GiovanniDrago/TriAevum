@@ -22,6 +22,7 @@
 #include "fast/renderer/gtao_shader.h"
 #include "fast/renderer3ds/pica_surface_lighting_shader.h"
 #include "fast/renderer3ds/pica_texture_copy_derive_gpu.h"
+#include "fast/renderer3ds/room_shadow_shell.h"
 
 namespace Fast::Oot3d {
 std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
@@ -65,6 +66,8 @@ std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
         {"pica_surface_lighting_coefficients.frag", Fragment, Renderer3ds::BuildPicaSurfaceLightingFragmentShader(true, true), {}},
         {"normal_space.comp", Compute, kNormalSpaceComputeShader, {}},
         {"oot3d_nri_directional_shadow.frag", Fragment, kPicaDirectionalShadowFragmentShader, {}},
+        // Interior room shells cast into the directional shadow with its fragment.
+        {"room_shadow_shell.vert", Vertex, std::string(Renderer3ds::RoomShadowShellVertexShader()), {}},
         {"oot3d_nri_pica_scanout_physical.frag", Fragment,
          BuildPicaScanoutFragmentShader(true, std::nullopt, PicaScanoutOrientation::PhysicalScreen), {}},
         {"oot3d_nri_pica_scanout_surface.frag", Fragment,
