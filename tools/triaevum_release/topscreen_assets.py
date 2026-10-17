@@ -4,8 +4,9 @@ SingleScreen 3.0 is part of TriAevum with the author's permission: its
 low-resolution UI atlas (custom_ui01.ctxb) and Link animations
 (zelda_link_ext.zar) are in the package. Its high-resolution graphics (the
 HD UI atlas and the HD fonts) stay out of the package until their author
-consents; Forge imports them only from a SingleScreen 3.0 archive the user
-places beside it, and never downloads one.
+consents; Forge imports them only from a SingleScreen 3.1 or 3.0 archive the
+user places beside it, and never downloads one. 3.1 carries the same
+low-resolution assets as 3.0.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import hashlib
 import shutil
 import struct
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -46,9 +48,37 @@ BUNDLED_ASSETS = {
 # (SELECT/START, ZL/ZR labels). TriAevum uses it as the 3.0 atlas, keyed by its
 # native content, so it needs no separate texture pack.
 UI_ATLAS_HD = "ui_atlas_hd.png"
-UI_ATLAS_HD_MEMBER = ("SingleScreen_3.0/EUR/Emulator/load/textures/0004000000033600/"
-                      "tex1_512x256_1FAF9B5B2ADF6038_13_mip0.png")
+UI_ATLAS_HD_TEXTURE = "tex1_512x256_1FAF9B5B2ADF6038_13_mip0.png"
 MOD_PAGE = "https://gamebanana.com/mods/695893"
+
+
+@dataclass(frozen=True)
+class SingleScreenArchive:
+    """How one SingleScreen release lays out the files Forge may read."""
+    version: str
+    root: str
+    ui_atlas_hd_member: str
+
+
+# Recipe optional inputs, newest first: a user archive of either release
+# provides the HD graphics. 3.1 moved the emulator textures into UI/.
+SINGLESCREEN_ARCHIVES = {
+    "singlescreen_3_1_archive": SingleScreenArchive(
+        "3.1", "SingleScreen_3.1",
+        "SingleScreen_3.1/EUR/Emulator/load/textures/0004000000033600/UI/" + UI_ATLAS_HD_TEXTURE),
+    "singlescreen_3_0_archive": SingleScreenArchive(
+        "3.0", "SingleScreen_3.0",
+        "SingleScreen_3.0/EUR/Emulator/load/textures/0004000000033600/" + UI_ATLAS_HD_TEXTURE),
+}
+
+
+def singlescreen_archive_contracts(recipe: dict) -> list[tuple[str, dict]]:
+    """The recipe's SingleScreen archive contracts, newest release first."""
+    optional = recipe.get("optional_inputs", {})
+    if not isinstance(optional, dict):
+        return []
+    return [(kind, optional[kind]) for kind in SINGLESCREEN_ARCHIVES
+            if isinstance(optional.get(kind), dict)]
 
 
 def bundled_assets(root: Path) -> dict[str, Path]:
@@ -63,29 +93,36 @@ def bundled_assets(root: Path) -> dict[str, Path]:
     return assets
 
 
-def find_singlescreen_archive(root: Path, data_root: Path, contract: dict) -> Path | None:
-    """The user's SingleScreen 3.0 archive for the HD graphics, verified; never downloaded."""
-    name = contract["name"]
-    for candidate in (root / name, root / "mods" / name, data_root / "downloads" / name):
-        if candidate.is_file():
-            if (candidate.stat().st_size != contract["bytes"] or
-                    sha256_file(candidate) != contract["sha256"]):
-                raise ValueError(f"SingleScreen 3.0 archive failed verification: {candidate}")
-            return candidate
+def find_singlescreen_archive(root: Path, data_root: Path,
+                              contracts: list[tuple[str, dict]]) -> tuple[str, dict, Path] | None:
+    """The user's SingleScreen archive for the HD graphics, verified; never downloaded.
+
+    The newest release placed by the user wins."""
+    for kind, contract in contracts:
+        name = contract["name"]
+        for candidate in (root / name, root / "mods" / name, data_root / "downloads" / name):
+            if candidate.is_file():
+                version = SINGLESCREEN_ARCHIVES[kind].version
+                if (candidate.stat().st_size != contract["bytes"] or
+                        sha256_file(candidate) != contract["sha256"]):
+                    raise ValueError(f"SingleScreen {version} archive failed verification: {candidate}")
+                return kind, contract, candidate
     return None
 
 
-def extract_ui_atlas_hd(archive: Path) -> bytes:
+def extract_ui_atlas_hd(archive: Path, kind: str = "singlescreen_3_0_archive") -> bytes:
     """The HD custom_ui01: a PNG with the native atlas's 2:1 aspect, data only."""
+    layout = SINGLESCREEN_ARCHIVES[kind]
     with zipfile.ZipFile(archive) as source:
-        if UI_ATLAS_HD_MEMBER not in source.namelist():
-            raise ValueError("SingleScreen 3.0 archive has no HD UI atlas")
-        data = source.read(UI_ATLAS_HD_MEMBER)
+        if layout.ui_atlas_hd_member not in source.namelist():
+            raise ValueError(f"SingleScreen {layout.version} archive has no HD UI atlas")
+        data = source.read(layout.ui_atlas_hd_member)
     if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
-        raise ValueError("SingleScreen 3.0 HD UI atlas is not a PNG")
+        raise ValueError(f"SingleScreen {layout.version} HD UI atlas is not a PNG")
     width, height = struct.unpack(">II", data[16:24])
     if width < 512 or width % 512 != 0 or width != height * 2:
-        raise ValueError(f"SingleScreen 3.0 HD UI atlas has unexpected dimensions {width}x{height}")
+        raise ValueError(f"SingleScreen {layout.version} HD UI atlas has unexpected dimensions "
+                         f"{width}x{height}")
     return data
 
 
@@ -108,15 +145,16 @@ def topscreen_link_animations(pack: Path | None) -> Path | None:
 def prepare_topscreen_assets(*, root: Path, data_root: Path, recipe: dict,
                             romfs: Path,
                             report: Callable[[str, str], None] = lambda *_: None) -> Path | None:
-    contract = recipe.get("optional_inputs", {}).get("singlescreen_3_0_archive")
-    if contract is None:
+    contracts = singlescreen_archive_contracts(recipe)
+    if not contracts:
         return None  # Other title/revision recipes do not inherit OOT3D UI assets.
     assets = bundled_assets(root)
-    hd_archive = find_singlescreen_archive(root, data_root, contract)
+    found = find_singlescreen_archive(root, data_root, contracts)
+    hd_kind, hd_contract, hd_archive = found if found else (None, None, None)
     identity = {"import_version": IMPORT_VERSION,
                 "ui_atlas_sha256": BUNDLED_ASSETS[UI_ATLAS][1],
                 "link_animations_sha256": BUNDLED_ASSETS[LINK_ANIMATIONS][1],
-                "hd_archive_sha256": contract["sha256"] if hd_archive else None,
+                "hd_archive_sha256": hd_contract["sha256"] if hd_contract else None,
                 "romfs_sha256": recipe["inputs"]["romfs"]["sha256"]}
     key = hashlib.sha256(repr(sorted(identity.items())).encode("ascii")).hexdigest()
     directory = data_root / "mods" / "topscreen" / key
@@ -154,13 +192,16 @@ def prepare_topscreen_assets(*, root: Path, data_root: Path, recipe: dict,
                    "attribution": "TopScreen / Single Screen Experience by M-1",
                    "source_url": MOD_PAGE}
         if hd_archive is not None:
-            report("topscreen", "Importing the SingleScreen 3.0 HD UI atlas from the local archive...")
-            atomic_write_bytes(ui_atlas_hd, extract_ui_atlas_hd(hd_archive))
+            version = SINGLESCREEN_ARCHIVES[hd_kind].version
+            report("topscreen", f"Importing the SingleScreen {version} HD UI atlas from the local archive...")
+            atomic_write_bytes(ui_atlas_hd, extract_ui_atlas_hd(hd_archive, hd_kind))
             receipt["ui_atlas_hd_sha256"] = sha256_file(ui_atlas_hd)
         atomic_write_json(receipt_path, receipt)
     if not fonts_valid:
-        report("topscreen", "Preparing the SingleScreen 3.0 HD fonts from the local archive...")
-        manifest = prepare_font_pack(archive=hd_archive, romfs=romfs, output=font_pack)
+        layout = SINGLESCREEN_ARCHIVES[hd_kind]
+        report("topscreen", f"Preparing the SingleScreen {layout.version} HD fonts from the local archive...")
+        manifest = prepare_font_pack(archive=hd_archive, romfs=romfs, output=font_pack,
+                                     archive_root=layout.root)
         atomic_write_json(font_receipt_path, {
             "source": font_identity, "pack_sha256": sha256_file(font_pack),
             "runtime_enabled": True,

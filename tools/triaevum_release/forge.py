@@ -293,26 +293,25 @@ def verify_sources(
 
     verified_mod: VerifiedInput | None = None
     if topscreen_archive is not None:
-        optional = recipe.get("optional_inputs", {})
-        contract = (
-            optional.get("singlescreen_3_0_archive")
-            if isinstance(optional, dict)
-            else None
-        )
-        if not isinstance(contract, dict):
+        try:
+            from .topscreen_assets import singlescreen_archive_contracts
+        except ImportError:
+            from topscreen_assets import singlescreen_archive_contracts
+        contracts = singlescreen_archive_contracts(recipe)
+        if not contracts:
             raise ForgeError("revision recipe does not support a TopScreen archive")
         resolved = topscreen_archive.expanduser().resolve()
         if not resolved.is_file() or resolved.is_symlink():
             raise ForgeError(f"TopScreen archive is not a regular file: {resolved}")
         digest = cache.digest(resolved)
-        expected = str(contract.get("sha256", "")).lower()
-        if digest != expected:
+        kind = next((kind for kind, contract in contracts
+                     if str(contract.get("sha256", "")).lower() == digest), None)
+        if kind is None:
+            expected = ", ".join(str(contract.get("sha256", "")).lower() for _, contract in contracts)
             raise ForgeError(
-                f"TopScreen archive SHA-256 mismatch: expected {expected}, got {digest}"
+                f"TopScreen archive SHA-256 mismatch: expected one of {expected}, got {digest}"
             )
-        verified_mod = VerifiedInput(
-            "singlescreen_3_0_archive", resolved, resolved.stat().st_size, digest
-        )
+        verified_mod = VerifiedInput(kind, resolved, resolved.stat().st_size, digest)
     cache.save()
     return verified, verified_mod
 

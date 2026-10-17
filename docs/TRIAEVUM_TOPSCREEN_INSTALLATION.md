@@ -27,6 +27,11 @@ in `resources/topscreen/singlescreen-3.0/` (repository:
 | `custom_ui01.ctxb` | 131,144 | `20290e417c56973cd19daa1f61a6c3963f075d61776db3d996954ee3296d07d8` | 3.0 UI atlas (profile texture `oot3d/topscreen/3.0/ui_atlas`) |
 | `zelda_link_ext.zar` | 186,404 | `06d60e05c493e86677497eb935b49951d613249c43f896816ae898bb8b005902` | Roll Dash and landing animations |
 
+SingleScreen 3.1 (`singlescreen_31_989c3.zip`, 28,384,023 bytes, SHA-256
+`f91485999a6b8e89b8d574064dc03c1c20704f2c718e93c5187251b6ef69dbcb`), the
+release GameBanana now offers, carries both files unchanged; its HD UI atlas
+has the same pixels as 3.0's.
+
 The files are identical in the archive's EUR, USA and JPN folders. Their notice
 is `LICENSES/SingleScreen-3.0.md`; the release audit accepts them only at these
 paths with these hashes (`topscreen_singlescreen_asset` role).
@@ -43,7 +48,10 @@ Not shipped:
 
 Forge imports the HD graphics only from an archive the user places beside
 `TriAevumForge.exe`, under `mods/` beside it, or in `data/downloads/`, verified
-by size and SHA-256; it never downloads one. With the archive present it adds:
+by size and SHA-256; it never downloads one. Either release works:
+`singlescreen_31_989c3.zip` (preferred when both are present) or
+`singlescreen_30_25aeb.zip`. 3.1 moved the emulator texture into a `UI/`
+folder; Forge reads each release's own layout. With the archive present it adds:
 - `ui_atlas_hd.png`, passed to the game with `--topscreen-ui-atlas-hd`; it
   applies to the exact native atlas bytes, and a user texture pack that replaces
   the atlas wins;
@@ -60,8 +68,9 @@ reads them from the package instead of the archive.
 - `tools/triaevum_release/topscreen_assets.py`: verifies the shipped assets,
   builds the O3TU pack, installs the animations, imports the optional HD
   graphics; content-addressed cache with atomic writes.
-- `supported_revisions.json`: the archive contract (name, size, hash) for the
-  optional HD import; no download URL.
+- `supported_revisions.json`: the archive contracts (name, size, hash) for the
+  optional HD import, `singlescreen_3_1_archive` and `singlescreen_3_0_archive`;
+  no download URL.
 - `tools/oot3d/decomp_support/scripts/build_topscreen_texture_override_pack.py`:
   `build_texture_pack(singlescreen_ui_atlas=...)` and O3TUv2 output.
 - `precompiled_titles.py` prepares the pack before transactional activation;

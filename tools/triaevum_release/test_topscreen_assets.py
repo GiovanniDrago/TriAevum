@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from topscreen_assets import (BUNDLED_DIRECTORY, LINK_ANIMATIONS, UI_ATLAS, UI_ATLAS_HD_MEMBER,
+from topscreen_assets import (BUNDLED_DIRECTORY, LINK_ANIMATIONS, SINGLESCREEN_ARCHIVES, UI_ATLAS,
                               extract_ui_atlas_hd, prepare_topscreen_assets, topscreen_link_animations,
                               topscreen_ui_atlas_hd)
 from tools.oot3d.decomp_support.scripts.build_topscreen_texture_override_pack import (
@@ -15,6 +15,9 @@ from tools.oot3d.decomp_support.scripts.build_topscreen_texture_override_pack im
 )
 
 ARCHIVE = "singlescreen_30_25aeb.zip"
+ARCHIVE_31 = "singlescreen_31_989c3.zip"
+KIND_30 = "singlescreen_3_0_archive"
+KIND_31 = "singlescreen_3_1_archive"
 REPOSITORY = Path(__file__).resolve().parents[2]
 SHIPPED = REPOSITORY / "runtime/triaevum_resources/topscreen/singlescreen-3.0"
 
@@ -33,8 +36,11 @@ class TopScreenAssetsTests(unittest.TestCase):
         staging.mkdir()
         self.contract = self.make_singlescreen_archive(staging / ARCHIVE)
         self.archive_bytes = (staging / ARCHIVE).read_bytes()
+        self.contract_31 = self.make_singlescreen_archive(
+            staging / ARCHIVE_31, kind=KIND_31, atlas=self.png_header(2048, 1024))
+        self.archive_31_bytes = (staging / ARCHIVE_31).read_bytes()
         self.recipe = {"inputs": {"romfs": {"sha256": "a" * 64}},
-                       "optional_inputs": {"singlescreen_3_0_archive": self.contract}}
+                       "optional_inputs": {KIND_31: self.contract_31, KIND_30: self.contract}}
 
     def prepare(self, report=lambda *_: None):
         return prepare_topscreen_assets(root=self.root, data_root=self.data, recipe=self.recipe,
@@ -44,8 +50,12 @@ class TopScreenAssetsTests(unittest.TestCase):
         (self.root / ARCHIVE).write_bytes(self.archive_bytes)
         return self.root / ARCHIVE
 
+    def place_archive_31(self):
+        (self.root / ARCHIVE_31).write_bytes(self.archive_31_bytes)
+        return self.root / ARCHIVE_31
+
     @staticmethod
-    def fake_font_pack(*, archive, romfs, output):
+    def fake_font_pack(*, archive, romfs, output, archive_root):
         output.write_bytes(b"validated font fixture")
         return {"fonts": [{"romfs_path": "message/eu/ltn16.qbf"}]}
 
@@ -54,11 +64,13 @@ class TopScreenAssetsTests(unittest.TestCase):
         return (b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" +
                 struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0) + b"fixture")
 
-    def make_singlescreen_archive(self, path, *, atlas=None):
+    def make_singlescreen_archive(self, path, *, atlas=None, kind=KIND_30):
+        layout = SINGLESCREEN_ARCHIVES[kind]
         with zipfile.ZipFile(path, "w") as output:
-            output.writestr("SingleScreen_3.0/EUR/Emulator/load/mods/0004000000033600/code.ips",
+            output.writestr(f"{layout.root}/EUR/Emulator/load/mods/0004000000033600/code.ips",
                             b"DO NOT IMPORT EXECUTABLE PATCH")
-            output.writestr(UI_ATLAS_HD_MEMBER, atlas if atlas is not None else self.png_header(4096, 2048))
+            output.writestr(layout.ui_atlas_hd_member,
+                            atlas if atlas is not None else self.png_header(4096, 2048))
         data = path.read_bytes()
         return {"name": path.name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
@@ -105,10 +117,35 @@ class TopScreenAssetsTests(unittest.TestCase):
             pack = self.prepare(report=lambda _, text: messages.append(text))
             network.assert_not_called()
         self.assertEqual(fonts.call_args.kwargs["archive"], archive)
+        self.assertEqual(fonts.call_args.kwargs["archive_root"], "SingleScreen_3.0")
         self.assertEqual(topscreen_ui_atlas_hd(pack).read_bytes(), self.png_header(4096, 2048))
         receipt = json.loads((pack.parent / "fonts_import.json").read_text())
         self.assertEqual(receipt["source"]["hd_archive_sha256"], self.contract["sha256"])
         self.assertTrue(any("local archive" in text for text in messages))
+
+    def test_singlescreen_31_archive_reads_its_own_layout_and_wins(self):
+        # GameBanana now offers 3.1 only; its emulator textures moved into UI/.
+        self.place_archive()
+        archive = self.place_archive_31()
+        messages = []
+        with patch("topscreen_assets.prepare_font_pack", side_effect=self.fake_font_pack) as fonts, \
+                patch("verified_download.urllib.request.urlopen") as network:
+            pack = self.prepare(report=lambda _, text: messages.append(text))
+            network.assert_not_called()
+        self.assertEqual(fonts.call_args.kwargs["archive"], archive)
+        self.assertEqual(fonts.call_args.kwargs["archive_root"], "SingleScreen_3.1")
+        self.assertEqual(topscreen_ui_atlas_hd(pack).read_bytes(), self.png_header(2048, 1024))
+        receipt = json.loads((pack.parent / "import.json").read_text())
+        self.assertEqual(receipt["source"]["hd_archive_sha256"], self.contract_31["sha256"])
+        self.assertTrue(any("SingleScreen 3.1 HD UI atlas" in text for text in messages))
+        # A 3.0 layout is not read from a 3.1 archive.
+        with self.assertRaisesRegex(ValueError, "SingleScreen 3.0 archive has no HD UI atlas"):
+            extract_ui_atlas_hd(archive, KIND_30)
+
+    def test_corrupt_31_archive_rejected(self):
+        (self.root / ARCHIVE_31).write_bytes(b"tampered")
+        with self.assertRaisesRegex(ValueError, "SingleScreen 3.1 archive failed verification"):
+            self.prepare()
 
     def test_corrupt_font_and_new_import_version_are_reprepared(self):
         self.place_archive()

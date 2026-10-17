@@ -25,6 +25,11 @@
         "executable_size": 3973120
       },
       "optional_inputs": {
+        "singlescreen_3_1_archive": {
+          "name": "singlescreen_31_989c3.zip",
+          "bytes": 28384023,
+          "sha256": "f91485999a6b8e89b8d574064dc03c1c20704f2c718e93c5187251b6ef69dbcb"
+        },
         "singlescreen_3_0_archive": {
           "name": "singlescreen_30_25aeb.zip",
           "bytes": 28883512,
@@ -57,6 +62,11 @@
         "executable_size": 3973120
       },
       "optional_inputs": {
+        "singlescreen_3_1_archive": {
+          "name": "singlescreen_31_989c3.zip",
+          "bytes": 28384023,
+          "sha256": "f91485999a6b8e89b8d574064dc03c1c20704f2c718e93c5187251b6ef69dbcb"
+        },
         "singlescreen_3_0_archive": {
           "name": "singlescreen_30_25aeb.zip",
           "bytes": 28883512,

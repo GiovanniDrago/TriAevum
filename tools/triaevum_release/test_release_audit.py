@@ -265,10 +265,13 @@ class PublicReleaseAuditTests(unittest.TestCase):
         errors = audit_with("resources/topscreen/extra.ctxb", "title_neutral_resource",
                             (SINGLESCREEN / "custom_ui01.ctxb").read_bytes())
         self.assertTrue(any("forbidden extension" in e for e in errors), errors)
-        # The archive, the HD UI atlas and the HD fonts wait for their author's consent.
+        # The archives, the HD UI atlases and the HD fonts wait for their author's
+        # consent, in 3.0 and in 3.1.
         forbidden = set(json.loads(DEFAULT_POLICY.read_text())["forbidden_sha256"])
         self.assertTrue({"5668640fec8dc2b47b4516fd0b871c4d7d90ca1c2203acc2a22adb59aaab5993",
                          "25e9f22720029c64ac729deef9c38b4dea3d5426d57d99678963c8f26b2908a1",
+                         "f91485999a6b8e89b8d574064dc03c1c20704f2c718e93c5187251b6ef69dbcb",
+                         "3a505b0beff8654d71c68e870c132975c6bc0209ab9c41aafbd782f7a5880e7a",
                          "8b83e081f721c6e1842b0a9cd90b71a3fb2849674d2b1040f3dc5c3221594169",
                          "9c401a41d142d153b7dfef9208f3a7982a018f89f729eece441cce0470aacb42"} <= forbidden)
 

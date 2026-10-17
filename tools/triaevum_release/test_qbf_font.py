@@ -78,7 +78,7 @@ class QbfFontTests(unittest.TestCase):
             root = Path(directory)
             archive, output = root / "mod.zip", root / "font.zip"
             with zipfile.ZipFile(archive, "w") as source:
-                source.writestr(SINGLESCREEN_FONT_SOURCES[0][1], font_bytes(64))
+                source.writestr("SingleScreen_3.0/" + SINGLESCREEN_FONT_SOURCES[0][1], font_bytes(64))
                 source.writestr("code.ips", b"DO NOT IMPORT")
             def read_font(_, path):
                 if path == SINGLESCREEN_FONT_SOURCES[0][0]:
@@ -104,8 +104,8 @@ class QbfFontTests(unittest.TestCase):
             archive, output = root / "singlescreen.zip", root / "font.zip"
             with zipfile.ZipFile(archive, "w") as source:
                 for _, member in SINGLESCREEN_FONT_SOURCES:
-                    source.writestr(member, font_bytes(64))
-                source.writestr("SingleScreen_3.0/EUR/Emulator/load/mods/0004000000033600/romfs/"
+                    source.writestr("SingleScreen_3.1/" + member, font_bytes(64))
+                source.writestr("SingleScreen_3.1/EUR/Emulator/load/mods/0004000000033600/romfs/"
                                 "message/sys8.qbf", b"not an A4 coverage font")
             def read_font(_, path):
                 if path == SINGLESCREEN_FONT_SOURCES[1][0]:
@@ -113,7 +113,8 @@ class QbfFontTests(unittest.TestCase):
                 raise FileNotFoundError(path)
             with patch("tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack.read_level3_romfs_file",
                        side_effect=read_font):
-                manifest = prepare_font_pack(archive=archive, romfs=root / "romfs", output=output)
+                manifest = prepare_font_pack(archive=archive, romfs=root / "romfs", output=output,
+                                             archive_root="SingleScreen_3.1")
             self.assertEqual([font["romfs_path"] for font in manifest["fonts"]], ["message/us/ltn16.qbf"])
 
     def test_invalid_import_does_not_replace_existing_output(self):
@@ -122,7 +123,7 @@ class QbfFontTests(unittest.TestCase):
             archive, output = root / "mod.zip", root / "font.zip"
             output.write_bytes(b"existing")
             with zipfile.ZipFile(archive, "w") as source:
-                source.writestr(SINGLESCREEN_FONT_SOURCES[0][1], b"broken")
+                source.writestr("SingleScreen_3.0/" + SINGLESCREEN_FONT_SOURCES[0][1], b"broken")
             with patch("tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack.read_level3_romfs_file",
                        return_value=font_bytes()), self.assertRaises(ValueError):
                 prepare_font_pack(archive=archive, romfs=root / "romfs", output=output)
