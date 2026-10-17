@@ -1533,6 +1533,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     void PublishGpuTextureCopySurface(GpuTextureCopySurface& surface);
     void DestroyGpuTextureCopySurface(uint64_t identity);
     void DestroyGpuTextureCopySurfaces();
+    // Retires the copies a render-target reset invalidates, keeping those whose
+    // bytes guest memory still defers to.
+    void RetireGpuTextureCopySurfacesForTargetReset();
     // Resolve a view's producer references into the regions to materialize.
     // Returns false, with `fallback` and `error` set, when the bytes cannot be
     // served from the GPU; that is never downgraded to a CPU sample.

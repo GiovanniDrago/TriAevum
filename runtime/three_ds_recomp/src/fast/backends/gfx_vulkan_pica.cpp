@@ -2096,7 +2096,7 @@ void GfxRenderingAPIVulkan::ResetNativePicaRenderTargets(bool preserveDisplayIma
         DestroyTexture(texture->second);
         texture = mNativePicaTextures.erase(texture);
     }
-    DestroyGpuTextureCopySurfaces();
+    RetireGpuTextureCopySurfacesForTargetReset();
     for (auto& [key, target] : mNativePicaRenderTargets) {
         DestroyNativePicaRenderTarget(target);
     }
