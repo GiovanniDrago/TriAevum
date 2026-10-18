@@ -747,6 +747,7 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/grass_interaction_bridge.cpp
     ../src/fast/oot3d/grass_interaction_field.cpp
     ../src/fast/oot3d/grass_motion.cpp
+    ../src/fast/oot3d/grass_placement_audit.cpp
     ../src/fast/oot3d/grass_placement_cache.cpp
     ../src/fast/oot3d/grass_primitive_topology.cpp
     ../src/fast/oot3d/grass_render_telemetry.cpp

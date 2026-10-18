@@ -35,6 +35,7 @@
 #include "fast/oot3d/grass_primitive_topology.h"
 #include "fast/oot3d/grass_scene_bridge.h"
 #include "fast/oot3d/grass_shading_environment.h"
+#include "fast/oot3d/grass_placement_audit.h"
 #include "fast/oot3d/grass_surface_eligibility.h"
 #include "fast/oot3d/grass_surface_extractor.h"
 #include "fast/oot3d/grass_mask_interior.h"
@@ -1278,6 +1279,13 @@ TEST(Oot3dGrassSurfaceEligibility,
     draw.PerspectiveProjection = false;
     EXPECT_FALSE(
         Fast::Oot3d::IsGrassSurfaceDrawEligible(draw));
+    EXPECT_STREQ(Fast::Oot3d::GrassSurfaceIneligibility(draw), "not_perspective");
+    draw.DepthWrite = false;
+    EXPECT_STREQ(Fast::Oot3d::GrassSurfaceIneligibility(draw), "depth_write_off");
+    draw.WorldSurface = false;
+    EXPECT_STREQ(Fast::Oot3d::GrassSurfaceIneligibility(draw), "not_world_surface");
+    draw.WorldSurface = draw.DepthWrite = draw.PerspectiveProjection = true;
+    EXPECT_EQ(Fast::Oot3d::GrassSurfaceIneligibility(draw), nullptr);
     EXPECT_FALSE(
         Fast::Oot3d::PicaFragmentSamplesGrassTexture0(
             "layout(binding=1) uniform sampler2D pica_texture0;"));
@@ -1287,6 +1295,44 @@ TEST(Oot3dGrassSurfaceEligibility,
     EXPECT_TRUE(
         Fast::Oot3d::PicaFragmentSamplesGrassTexture0(
             "vec4 c = textureProj(pica_texture0, uvw);"));
+}
+
+TEST(Oot3dGrassPlacementAudit, ReportsConfiguredOutcomesAndEachCatalogCandidateOnce) {
+    using namespace Fast::Oot3d;
+    GrassPlacementAudit audit(3);
+    const GrassAuditTexture grass{0xAU, 64, 64, true}, candidate{0xBU, 32, 32, false}, actor{0xCU, 16, 16, false};
+    audit.RecordSource(grass, "published", 100);
+    audit.RecordSource(grass, "skinned geometry unsupported", 20);
+    audit.RecordSource(candidate, "unconfigured", 5);
+    audit.RecordSource(candidate, "unconfigured", 5);
+    audit.RecordSource(actor, "layer_ui", 5); // not a catalog candidate
+    audit.RecordPlacement(0xAU, "ready", 500);
+    EXPECT_TRUE(audit.RecordPass(10, GrassRenderStatus::Drawn, 300).empty());
+    EXPECT_TRUE(audit.RecordPass(11, GrassRenderStatus::PlacementPending, 0).empty());
+    const auto report = audit.RecordPass(12, GrassRenderStatus::Drawn, 200);
+    const auto has = [&](std::string_view text) { return report.find(text) != std::string::npos; };
+    EXPECT_TRUE(has("TRIAEVUM_GRASS_AUDIT frames=10-12 passes=3 visible_min=0 visible_max=300 "
+                    "placement_pending=1 drawn=2\n")) << report;
+    EXPECT_TRUE(has("texture=000000000000000a size=64x64 outcome=published draws=1 vertices=100\n"));
+    EXPECT_TRUE(has("outcome=skinned_geometry_unsupported draws=1 vertices=20\n"));
+    EXPECT_TRUE(has("TRIAEVUM_GRASS_AUDIT_PLACEMENT texture=000000000000000a outcome=ready surfaces=1 anchors=500\n"));
+    EXPECT_TRUE(has("TRIAEVUM_GRASS_AUDIT_CANDIDATE texture=000000000000000b size=32x32 draws=2 vertices=10 new=1\n"));
+    EXPECT_FALSE(has("000000000000000c"));
+    const auto textures = audit.TakeNewTextures();
+    ASSERT_EQ(textures.size(), 2U);
+    EXPECT_TRUE(textures[0].Configured);
+    EXPECT_EQ(textures[1].Observed, 0xBU);
+    EXPECT_TRUE(audit.TakeNewTextures().empty());
+
+    audit.RecordSource(candidate, "unconfigured", 5);
+    EXPECT_TRUE(audit.Flush().empty()) << "no pass in the window yet";
+    for (uint64_t frame = 13; frame < 15; ++frame)
+        EXPECT_TRUE(audit.RecordPass(frame, GrassRenderStatus::Drawn, 1).empty());
+    const auto partial = audit.Flush();
+    EXPECT_NE(partial.find("frames=13-14 passes=2"), std::string::npos) << partial;
+    EXPECT_NE(partial.find("texture=000000000000000b size=32x32 draws=1 vertices=5 new=0\n"), std::string::npos);
+    EXPECT_EQ(partial.find("TRIAEVUM_GRASS_AUDIT_SOURCE"), std::string::npos);
+    EXPECT_TRUE(audit.Flush().empty());
 }
 
 TEST(Oot3dGrassPrimitiveTopology,

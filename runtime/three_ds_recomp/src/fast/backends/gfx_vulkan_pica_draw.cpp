@@ -9,6 +9,7 @@
 #include "fast/oot3d/grass_interaction_bridge.h"
 #include "fast/oot3d/grass_texture_twins.h"
 #include "fast/oot3d/grass_overlay_mask.h"
+#include "fast/oot3d/grass_placement_audit.h"
 #include "fast/oot3d/grass_stage_profile.h"
 
 #include <filesystem>
@@ -23,6 +24,8 @@ bool PublishNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
                                    bool fragmentUsesTexture0, bool perspectiveProjection,
                                    Oot3d::GrassGeometryRegistry& geometryRegistry, Oot3d::GrassDrawMemo& memo,
                                    uint64_t sequenceId, uint64_t drawOrder, bool masksOnly = false);
+void AuditNativePicaGrassGate(const GfxNativePicaDrawView& draw, const Oot3d::InteractiveGrassSettings& settings,
+                              const char* gate);
 
 Renderer3ds::PicaShadowCasterAnchor* GfxRenderingAPIVulkan::ShadowCasterAnchor(
     uint64_t geometryIdentity, const Renderer3ds::PicaTemporalIdentity& identity, uint64_t submissionId) {
@@ -1816,6 +1819,17 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                     mGrassDrawOrdinals.at(draw.SubmissionId));
             mInteractiveGrassProviderExecution.RecordSourceInspection(
                 grassSourceDecision, grassSourcePublished);
+            if (!grassSourceDecision.Authorized() || grassPerspective == nullptr)
+                AuditNativePicaGrassGate(draw, graphicsSettings.Grass,
+                                         !grassSourceDecision.Authorized() ? "provider_unauthorized"
+                                                                           : "no_perspective_camera");
+        } else if (!nativeMemoryOnly && sceneDraw && mInteractiveGrassProviderPlan.Valid()) {
+            AuditNativePicaGrassGate(
+                draw, graphicsSettings.Grass,
+                draw.Composition.Layer == ::Oot3d::Renderer::PicaCompositionLayer::TransparentWorld ? "layer_transparent_world"
+                : draw.Composition.Layer == ::Oot3d::Renderer::PicaCompositionLayer::Atmosphere   ? "layer_atmosphere"
+                : draw.Composition.Layer == ::Oot3d::Renderer::PicaCompositionLayer::Ui           ? "layer_ui"
+                                                                                                  : "layer_unknown");
         }
         finishCpuStage(cpuTimings.GrassSurfaceMilliseconds);
 
@@ -3793,19 +3807,65 @@ static uint64_t GrassTargetOccurrenceKey(uint64_t drawIdentity, uint64_t renderT
     return key;
 }
 
+// A first-ever source texture needs its native signature before it can be
+// classified (twin rules, overlays): decode it into the source cache once.
+template <typename Texture>
+static void ObserveNativePicaGrassTexture(const Texture& texture, uint64_t textureHash) {
+    if (texture.NativeType != 0 || !texture.CopyReferences.empty() || texture.Width < 16 || texture.Height < 16 ||
+        Oot3d::GrassTextureSourceCache::Instance().Find(textureHash, false))
+        return;
+    const auto size = NativePicaEncodedMipSize(texture.NativeFormat, texture.Width, texture.Height);
+    std::vector<uint8_t> rgba;
+    if (size && *size <= texture.NativeBytes.size() &&
+        Oot3d::DecodePicaTextureRgba8(texture.NativeFormat, texture.Width, texture.Height,
+                                      texture.NativeBytes.first(*size), rgba, nullptr)) {
+        auto& cache = Oot3d::GrassTextureSourceCache::Instance();
+        cache.ObserveDecoded(textureHash, texture.Width, texture.Height, rgba);
+        (void)cache.Find(textureHash, true);
+    }
+}
+
+// The placement audit's identity of a draw's texture 0.
+static std::optional<Oot3d::GrassAuditTexture> DescribeNativePicaGrassTexture(
+    const GfxNativePicaDrawView& draw, const Oot3d::InteractiveGrassSettings& settings) {
+    const auto texture = std::find_if(draw.Textures.begin(), draw.Textures.end(),
+                                      [](const auto& value) { return value.Slot == 0U; });
+    if (texture == draw.Textures.end()) return std::nullopt;
+    const auto hash = ResolveNativeTextureBaseLevelContentHash(*texture);
+    if (!hash) return std::nullopt;
+    ObserveNativePicaGrassTexture(*texture, *hash);
+    const uint64_t observed =
+        Oot3d::GrassTextureSourceCache::Instance().ResolveObservedHash(*hash, texture->Width, texture->Height);
+    return Oot3d::GrassAuditTexture{
+        observed, texture->Width, texture->Height,
+        Oot3d::GrassTwinRules::Instance().Configured(settings.Rules, observed, texture->Width, texture->Height, 0U)};
+}
+
+void AuditNativePicaGrassGate(const GfxNativePicaDrawView& draw, const Oot3d::InteractiveGrassSettings& settings,
+                              const char* gate) {
+    if (!Oot3d::GrassPlacementAuditEnabled() || settings.Rules.empty()) return;
+    if (const auto texture = DescribeNativePicaGrassTexture(draw, settings))
+        Oot3d::AuditGrassSource(*texture, gate, draw.VertexCount);
+}
+
 bool ResolveNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t frameId,
                                    std::unordered_map<uint64_t, uint32_t>& occurrences,
                                    const Oot3d::InteractiveGrassSettings& settings, bool worldSurface,
                                    bool fragmentUsesTexture0, bool perspectiveProjection,
                                    Oot3d::GrassGeometryRegistry& geometryRegistry, uint64_t sequenceId,
                                    uint64_t drawOrder, bool masksOnly, Oot3d::GrassSceneMesh& resolved,
-                                   bool& cacheable) {
+                                   bool& cacheable, const char** rejection = nullptr) {
     cacheable = true;
+    // The first stage that drops the draw, for the placement audit.
+    const auto reject = [rejection](const char* reason) {
+        if (rejection) *rejection = reason;
+        return false;
+    };
     Oot3d::GrassStageTimer eligibilityTimer(Oot3d::GrassStage::Eligibility);
     if (settings.Rules.empty() ||
         (masksOnly && (draw.Composition.NativeActorGeometry || draw.Composition.NativeProjectedShadow ||
                        !draw.GeometryIdentityAvailable || draw.Stencil.Enabled))) {
-        return false;
+        return reject("no_rules");
     }
     const auto texture = std::find_if(
         draw.Textures.begin(), draw.Textures.end(),
@@ -3835,7 +3895,7 @@ bool ResolveNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
                                eligibility.DepthTest && !eligibility.DepthCompareAlways &&
                                draw.DepthCompare != GfxNativePicaCompareFunction::Never && perspectiveProjection &&
                                eligibility.WritesRgb && eligibility.SupportedTopology;
-    if (!eligible && !maskCandidate && !diagnostics) {
+    if (!eligible && !maskCandidate && !diagnostics && rejection == nullptr) {
         return false;
     }
     eligibilityTimer.Stop();
@@ -3844,26 +3904,15 @@ bool ResolveNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
                                                             : std::optional<uint64_t>(0);
     hashTimer.Stop();
     if (!textureHash.has_value()) {
-        return false;
+        return reject("texture_hash_unavailable");
     }
     // Source priority includes texture twins. A first-ever eligible texture
     // needs its native signature before it can be classified as an overlay.
     // Keep that signature locally so subsequent scene-entry cache hits require
     // no grass texture decode merely to repeat the source/neither decision.
     Oot3d::GrassStageTimer ruleEligibilityTimer(Oot3d::GrassStage::Eligibility);
-    if (eligible && texture != draw.Textures.end() && texture->NativeType == 0 && texture->CopyReferences.empty() &&
-        texture->Width >= 16 && texture->Height >= 16 &&
-        !Oot3d::GrassTextureSourceCache::Instance().Find(*textureHash, false)) {
-        const auto size = NativePicaEncodedMipSize(texture->NativeFormat, texture->Width, texture->Height);
-        std::vector<uint8_t> rgba;
-        if (size && *size <= texture->NativeBytes.size() &&
-            Oot3d::DecodePicaTextureRgba8(texture->NativeFormat, texture->Width, texture->Height,
-                                          texture->NativeBytes.first(*size), rgba, nullptr)) {
-            auto& cache = Oot3d::GrassTextureSourceCache::Instance();
-            cache.ObserveDecoded(*textureHash, texture->Width, texture->Height, rgba);
-            (void)cache.Find(*textureHash, true);
-        }
-    }
+    if (eligible && texture != draw.Textures.end())
+        ObserveNativePicaGrassTexture(*texture, *textureHash);
     const uint64_t observedTextureHash = texture == draw.Textures.end()
                                              ? 0
                                              : Oot3d::GrassTextureSourceCache::Instance().ResolveObservedHash(
@@ -3900,10 +3949,12 @@ bool ResolveNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
         }
     }
     if (masksOnly ? (!maskCandidate || (eligible && configuredSource)) : (!eligible || !configuredSource)) {
-        return false;
+        if (masksOnly) return false;
+        return reject(!eligible ? Oot3d::GrassSurfaceIneligibility(eligibility) : "unconfigured");
     }
     ruleEligibilityTimer.Stop();
     const auto rejectConfiguredSource = [&](const char* reason) {
+        if (rejection) *rejection = reason;
         if (masksOnly && std::getenv("TRIAEVUM_GRASS_MASK_DIAGNOSTICS")) {
             static std::unordered_set<uint64_t> reported;
             const uint64_t key = draw.GeometryIdentity ^ std::hash<std::string_view>{}(reason);
@@ -4340,6 +4391,12 @@ bool PublishNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
         const auto* p = std::getenv("TRIAEVUM_GRASS_DRAW_MEMO");
         return p && std::string_view(p) == "0";
     }();
+    // The placement audit records each source draw's outcome; masks are not sources.
+    const bool audit = !masksOnly && GrassPlacementAuditEnabled() && !settings.Rules.empty();
+    const auto auditOutcome = [&](const char* outcome) {
+        if (const auto texture = DescribeNativePicaGrassTexture(draw, settings))
+            AuditGrassSource(*texture, outcome, draw.VertexCount);
+    };
     GrassStageTimer lookup(GrassStage::Memo);
     const auto key =
         BuildGrassDrawMemoKey(draw, memo.Rules(settings, frameId), GrassTextureSourceCache::Instance().Generation(),
@@ -4352,6 +4409,21 @@ bool PublishNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
             if (GrassStageProfileEnabled()) {
                 ++GrassStageCurrent().MemoHit;
                 ++GrassStageCurrent().NeitherHit;
+            }
+            if (audit) {
+                // The memo keeps no reason: resolve again, without publishing
+                // or storing, and flag a stored verdict the draw contradicts.
+                GrassSceneMesh unused;
+                bool cacheable = false;
+                const char* rejection = "rejected";
+                std::unordered_map<uint64_t, uint32_t> scratchOccurrences;
+                static thread_local GrassGeometryRegistry scratchRegistry;
+                auditOutcome(ResolveNativePicaGrassSurface(draw, frameId, scratchOccurrences, settings, worldSurface,
+                                                           fragmentUsesTexture0, perspectiveProjection,
+                                                           scratchRegistry, sequenceId, drawOrder, masksOnly, unused,
+                                                           cacheable, &rejection)
+                                 ? "memo_stale_neither"
+                                 : rejection);
             }
             return false;
         }
@@ -4385,6 +4457,8 @@ bool PublishNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
             mesh.SubmissionId = draw.SubmissionId;
             mesh.SequenceId = sequenceId;
             mesh.DrawOrder = drawOrder;
+            if (audit)
+                auditOutcome("published");
             GrassStageTimer publish(GrassStage::Publish);
             GrassSceneBridge::Instance().Publish(std::move(mesh));
             return true;
@@ -4397,11 +4471,15 @@ bool PublishNativePicaGrassSurface(const GfxNativePicaDrawView& draw, uint64_t f
         ++GrassStageCurrent().MemoMiss;
     GrassSceneMesh mesh;
     bool cacheable = false;
+    const char* rejection = "rejected";
     const bool resolved = ResolveNativePicaGrassSurface(draw, frameId, occurrences, settings, worldSurface,
                                                         fragmentUsesTexture0, perspectiveProjection, geometryRegistry,
-                                                        sequenceId, drawOrder, masksOnly, mesh, cacheable);
+                                                        sequenceId, drawOrder, masksOnly, mesh, cacheable,
+                                                        audit ? &rejection : nullptr);
     if (key && cacheable)
         memo.Store(*key, resolved ? std::optional(mesh) : std::nullopt, frameId);
+    if (audit)
+        auditOutcome(resolved ? "published" : rejection);
     if (resolved) {
         GrassStageTimer publish(GrassStage::Publish);
         GrassSceneBridge::Instance().Publish(std::move(mesh));

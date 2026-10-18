@@ -16,6 +16,7 @@
 #include "fast/oot3d/grass_distant_tuft.h"
 #include "fast/oot3d/grass_indexed_topology.h"
 #include "fast/oot3d/grass_selection_cache.h"
+#include "fast/oot3d/grass_placement_audit.h"
 #include "fast/oot3d/grass_selection_budget.h"
 #include "fast/oot3d/grass_collision_resolver.h"
 #include "fast/oot3d/grass_gpu_instance_compactor.h"
@@ -1327,6 +1328,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             f.DiskWrite += placementStatsAfter.DiskWrites - placementStatsBefore.DiskWrites;
         }
         GrassRenderTelemetry::Instance().Publish(telemetry);
+        AuditGrassPass(telemetry.FrameId, status, telemetry.VisibleBlades);
         return executed;
     };
     if (!providerPlan.Valid() ||
@@ -1421,6 +1423,9 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             telemetry.MatchingMeshes += sceneMatch.MatchingMeshes;
             const auto& scopedMeshes = sceneMatch.ScopedMeshes;
             telemetry.ScopedMeshes += scopedMeshes.size();
+            if (sceneMatch.MatchingMeshes > scopedMeshes.size())
+                AuditGrassPlacement(rule.Target.Rgba8Hash, "other_target",
+                                    sceneMatch.MatchingMeshes - scopedMeshes.size());
             for (const auto& mesh : scopedMeshes) {
                 if (mesh.Vertices == nullptr || mesh.Indices == nullptr) {
                     continue;
@@ -1546,6 +1551,15 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 telemetry.LastMissGeometryId = placementRequests[i].PlacementKey.GeometryId;
                 telemetry.LastMissContentVersion = placementRequests[i].SourceContentVersion;
             } else if (result.State == GrassAsyncPlacementState::Ready) ++telemetry.PlacementCacheHits;
+            if (GrassPlacementAuditEnabled()) {
+                const bool anchors = result.Placement && !result.Placement->Anchors.empty();
+                AuditGrassPlacement(placementRequests[i].Rule.Target.Rgba8Hash,
+                                    result.State == GrassAsyncPlacementState::Failed    ? "failed"
+                                    : anchors                                           ? "ready"
+                                    : result.State == GrassAsyncPlacementState::Ready   ? "no_anchors"
+                                                                                        : "pending",
+                                    anchors ? result.Placement->Anchors.size() : 0U);
+            }
             if (!result.Placement || result.Placement->Anchors.empty() ||
                 result.Placement->CullingAnchors.size() != result.Placement->Anchors.size()) continue;
             ++telemetry.Placements;
