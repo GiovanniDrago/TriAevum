@@ -820,9 +820,14 @@ bool ExecuteTopScreenUiSourcePortBlock(
   case kPauseLowerScreenBlock:
     nextPc = kPauseLowerScreenBlockEnd;
     break;
-  case kPauseDungeonMapCursorInput:
+  case kPauseDungeonMapCursorInput: {
+    std::uint32_t pressed = 0U;
+    if (!Oot3dNativeGame::ReadTopScreenPausePressedButtons(memory, &pressed) ||
+        !Oot3dNativeGame::SkipTopScreenDungeonMapCursorInput(pressed))
+      return false;
     nextPc = state.r[14];
     break;
+  }
   case kPauseSceneDimBranch: {
     // 3.0 always skips the dim: the View Model and the System page (Save)
     // show the scene undimmed. Beside the pages the port keeps the native dim

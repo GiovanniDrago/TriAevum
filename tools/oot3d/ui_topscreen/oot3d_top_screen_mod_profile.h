@@ -943,6 +943,16 @@ bool ResolveTopScreenPauseIconBuild(TopScreenPauseIconBuild *build,
 // the contiguous native pause states 12..19.
 bool SuppressTopScreenTouchButtonDraw(std::uint32_t pauseState) noexcept;
 
+// TopScreen 2.1.1 and SingleScreen 3.0/3.1 make PauseDungeonMap_HandleCursorInput
+// (0x00442F38) a `bx lr`, which also drops the native floor and dungeon-item
+// navigation (#89). The port keeps only the mod's ownership of B (the mod's
+// own path closes the page or opens Save) and runs the native navigation on
+// every other update. `pressedButtons` is the pause input word 0x0033B5EC
+// returns: 0x0050AF18, or 0x0050AF14 when that is zero.
+bool SkipTopScreenDungeonMapCursorInput(std::uint32_t pressedButtons) noexcept;
+bool ReadTopScreenPausePressedButtons(NativeA32Memory &memory,
+                                      std::uint32_t *pressedButtons);
+
 // TopScreen 2.1.1 shows the native item/gear description (message context
 // 0x005C1878, drawn under the relocated page) over the page when SELECT is
 // pressed on an open Items or Gear page. Typed form of payload word

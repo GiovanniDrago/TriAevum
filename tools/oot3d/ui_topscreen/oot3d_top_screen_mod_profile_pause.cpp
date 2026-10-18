@@ -906,6 +906,18 @@ bool SuppressTopScreenTouchButtonDraw(std::uint32_t pauseState) noexcept {
   return pauseState >= 12U && pauseState <= 19U;
 }
 
+bool SkipTopScreenDungeonMapCursorInput(std::uint32_t pressedButtons) noexcept {
+  // 0x00442F48 `tst r0, #2`: B leaves the native page state machine.
+  return (pressedButtons & 2U) != 0U;
+}
+
+bool ReadTopScreenPausePressedButtons(NativeA32Memory &memory,
+                                      std::uint32_t *pressedButtons) {
+  if (pressedButtons == nullptr || !memory.Read32(0x0050AF18U, pressedButtons))
+    return false;
+  return *pressedButtons != 0U || memory.Read32(0x0050AF14U, pressedButtons);
+}
+
 bool ReadTopScreenItemDescriptionInputs(NativeA32Memory &memory,
                                         TopScreenItemDescriptionInputs *inputs) {
   if (inputs == nullptr) return false;

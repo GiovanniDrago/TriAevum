@@ -3240,6 +3240,30 @@ int main() {
               !SuppressTopScreenTouchButtonDraw(20U),
           "TopScreen touch-button draw state interval is incorrect");
   {
+    // #89: the dungeon map keeps the native floor navigation; only B stays
+    // with the mod (2.1.1/3.0 `bx lr` at 0x00442F38).
+    Require(!SkipTopScreenDungeonMapCursorInput(0U) &&
+                !SkipTopScreenDungeonMapCursorInput(0x40U) &&
+                !SkipTopScreenDungeonMapCursorInput(0x80U) &&
+                !SkipTopScreenDungeonMapCursorInput(0x30U) &&
+                SkipTopScreenDungeonMapCursorInput(2U) &&
+                SkipTopScreenDungeonMapCursorInput(0x82U),
+            "dungeon map cursor input must run natively except on B");
+    NativeA32Memory pressedMemory;
+    std::string pressedError;
+    Require(pressedMemory.MapRegion({"topscreen-pause-pressed-fixture", 0x0050A000U,
+                                     0x00001000U, true, false, {}},
+                                    &pressedError),
+            "could not map TopScreen pause pressed-button fixture");
+    std::uint32_t pressed = 1U;
+    Require(pressedMemory.Write32(0x0050AF14U, 0x80U) &&
+                ReadTopScreenPausePressedButtons(pressedMemory, &pressed) &&
+                pressed == 0x80U &&
+                pressedMemory.Write32(0x0050AF18U, 2U) &&
+                ReadTopScreenPausePressedButtons(pressedMemory, &pressed) && pressed == 2U,
+            "pause pressed buttons must read 0x0050AF18, then 0x0050AF14");
+  }
+  {
     // R6: SELECT description toggle of TopScreen 2.1.1 (0x005E3D3C).
     TopScreenItemDescriptionInputs page;
     page.Items = 2U;
