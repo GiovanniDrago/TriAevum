@@ -4,7 +4,6 @@
 #include "fast/oot3d/grass_draw_state.h"
 #include "fast/oot3d/grass_gpu_instance_compactor.h"
 #include "fast/oot3d/grass_indexed_topology.h"
-#include "fast/oot3d/grass_instance_layout.h"
 #include "fast/oot3d/grass_interaction_field.h"
 #include "fast/oot3d/grass_shader_sources.h"
 #include "fast/oot3d/outline_occlusion_pass.h"
@@ -230,15 +229,16 @@ class Harness {
         return result;
     }
 
-    Readback Draw(VkBuffer instances, uint32_t instanceCount, VkBuffer previousBends,
+    Readback Draw(const GrassGpuInstanceCompactionResult& roots, uint32_t instanceCount,
                   const GrassEnvironmentRecord& record, const GrassPushConstants& push) {
         std::memcpy(mRecord.Mapped, &record, sizeof(record));
         const VkDescriptorBufferInfo recordInfo{mRecord.Handle, 0U, sizeof(record)};
         const VkDescriptorBufferInfo dummyInfo{mDummy.Handle, 0U, VK_WHOLE_SIZE};
-        const VkDescriptorBufferInfo rootsInfo{instances, 0U, VK_WHOLE_SIZE};
-        const VkDescriptorBufferInfo bendsInfo{previousBends, 0U, VK_WHOLE_SIZE};
+        const VkDescriptorBufferInfo anchorsInfo{roots.StaticAnchorBuffer, 0U, VK_WHOLE_SIZE};
+        const VkDescriptorBufferInfo bendsInfo{roots.RootBendBuffer, 0U, VK_WHOLE_SIZE};
+        const VkDescriptorBufferInfo indicesInfo{roots.VisibleIndicesBuffer, 0U, VK_WHOLE_SIZE};
         const VkDescriptorImageInfo lightingInfo{mSampler, mLighting.View, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        std::array<VkWriteDescriptorSet, 9> writes{};
+        std::array<VkWriteDescriptorSet, 10> writes{};
         for (uint32_t binding = 0U; binding < writes.size(); ++binding) {
             auto& write = writes[binding];
             write = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -248,8 +248,9 @@ class Harness {
             write.descriptorType = binding == 1U ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
                                                  : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             write.pImageInfo = binding == 1U ? &lightingInfo : nullptr;
-            write.pBufferInfo = binding == 0U ? &recordInfo : binding == 2U ? &rootsInfo
-                              : binding == 8U ? &bendsInfo : binding == 1U ? nullptr : &dummyInfo;
+            write.pBufferInfo = binding == 0U ? &recordInfo : binding == 2U ? &anchorsInfo
+                              : binding == 8U ? &bendsInfo : binding == 9U ? &indicesInfo
+                              : binding == 1U ? nullptr : &dummyInfo;
         }
         vkUpdateDescriptorSets(mDevice, static_cast<uint32_t>(writes.size()), writes.data(), 0U, nullptr);
         const auto& range = mIndices.Blades[kSegments - 1U][push.Flags[2] - 1U];
@@ -266,8 +267,6 @@ class Harness {
             vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, mPipeline);
             vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, mPipelineLayout, 0U, 1U,
                                     &mDescriptorSet, 0U, nullptr);
-            const VkDeviceSize offset = 0U;
-            vkCmdBindVertexBuffers(command, 0U, 1U, &instances, &offset);
             vkCmdBindIndexBuffer(command, mIndexBuffer.Handle, 0U, VK_INDEX_TYPE_UINT32);
             const VkViewport viewport{0.0F, 0.0F, float(kExtent), float(kExtent), 0.0F, 1.0F};
             const VkRect2D scissor{{0, 0}, {kExtent, kExtent}};
@@ -412,7 +411,7 @@ class Harness {
 
     // Same bindings, vertex input and blending as InteractiveGrassPass.
     void CreatePipeline() {
-        std::array<VkDescriptorSetLayoutBinding, 9> bindings{};
+        std::array<VkDescriptorSetLayoutBinding, 10> bindings{};
         for (uint32_t binding = 0U; binding < bindings.size(); ++binding)
             bindings[binding] = {binding, binding == 1U ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
                                                         : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U,
@@ -423,7 +422,7 @@ class Harness {
         layout.bindingCount = static_cast<uint32_t>(bindings.size());
         layout.pBindings = bindings.data();
         Check(vkCreateDescriptorSetLayout(mDevice, &layout, nullptr, &mSetLayout));
-        const std::array<VkDescriptorPoolSize, 2> sizes{{{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8U},
+        const std::array<VkDescriptorPoolSize, 2> sizes{{{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9U},
                                                          {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1U}}};
         VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pool.maxSets = 1U;
@@ -453,19 +452,8 @@ class Harness {
              "main", nullptr},
             {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0U, VK_SHADER_STAGE_FRAGMENT_BIT, fragment,
              "main", nullptr}}};
-        const VkVertexInputBindingDescription binding{0U, sizeof(GrassInstance), VK_VERTEX_INPUT_RATE_INSTANCE};
-        const std::array<VkVertexInputAttributeDescription, 6> attributes{{
-            {0U, 0U, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, BaseHeight)},
-            {1U, 0U, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, BendAndHalfWidth)},
-            {2U, 0U, VK_FORMAT_R32G32_SFLOAT, offsetof(GrassInstance, WidthAxis)},
-            {3U, 0U, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(GrassInstance, WorldNormal)},
-            {4U, 0U, VK_FORMAT_R32_UINT, offsetof(GrassInstance, SurfaceColor)},
-            {5U, 0U, VK_FORMAT_R32G32_UINT, offsetof(GrassInstance, SurfaceReference)}}};
-        VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-        vertexInput.vertexBindingDescriptionCount = 1U;
-        vertexInput.pVertexBindingDescriptions = &binding;
-        vertexInput.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size());
-        vertexInput.pVertexAttributeDescriptions = attributes.data();
+        const VkPipelineVertexInputStateCreateInfo vertexInput{
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -627,21 +615,22 @@ struct Scene {
     }
 };
 
-std::vector<std::array<float, 2>> Bends(Harness& harness, const GrassGpuInstanceCompactionResult& result) {
-    const auto words = harness.ReadWords(result.InstanceBuffer, kBlades * uint32_t(sizeof(GrassInstance) / 4U));
+// Root bends: the current bend (XY) or the previous frame's (ZW).
+std::vector<std::array<float, 2>> RootBends(Harness& harness, const GrassGpuInstanceCompactionResult& result,
+                                            bool previous) {
+    const auto words = harness.ReadWords(result.RootBendBuffer, kBlades * 4U);
     std::vector<std::array<float, 2>> bends(kBlades);
-    for (uint32_t index = 0U; index < kBlades; ++index) {
-        const size_t base = index * (sizeof(GrassInstance) / 4U);
-        std::memcpy(bends[index].data(), &words[base + 4U], sizeof(float) * 2U);
-    }
+    for (uint32_t index = 0U; index < kBlades; ++index)
+        std::memcpy(bends[index].data(), &words[index * 4U + (previous ? 2U : 0U)], sizeof(float) * 2U);
     return bends;
 }
 
+std::vector<std::array<float, 2>> Bends(Harness& harness, const GrassGpuInstanceCompactionResult& result) {
+    return RootBends(harness, result, false);
+}
+
 std::vector<std::array<float, 2>> PreviousBends(Harness& harness, const GrassGpuInstanceCompactionResult& result) {
-    const auto words = harness.ReadWords(result.PreviousBendBuffer, kBlades * 2U);
-    std::vector<std::array<float, 2>> bends(kBlades);
-    std::memcpy(bends.data(), words.data(), words.size() * sizeof(uint32_t));
-    return bends;
+    return RootBends(harness, result, true);
 }
 
 bool SameBits(const std::vector<std::array<float, 2>>& a, const std::vector<std::array<float, 2>>& b) {
@@ -743,20 +732,20 @@ void TestBladeMotion(Harness& harness, uint32_t planes) {
                              {-12.0F, 0.0F, -3.0F}, {4.0F, 0.0F, -3.0F}};
     const auto first = scene.Compact(harness, compactor, previous, 0U);
     const auto firstBends = Bends(harness, first);
-    const auto firstFrame = harness.Draw(first.InstanceBuffer, kBlades, first.PreviousBendBuffer,
+    const auto firstFrame = harness.Draw(first, kBlades,
                                          BuildRecord(previous, nullptr, false), Push(previous, planes));
     ExpectMotionGuides(firstFrame, false);
     const auto second = scene.Compact(harness, compactor, current, 1U);
     Require(SameBits(PreviousBends(harness, second), firstBends), "previous bends must be the drawn ones");
     Require(LargestChange(Bends(harness, second), firstBends) > 0.2F, "the actor sweep must move blades");
-    const auto exact = harness.Draw(second.InstanceBuffer, kBlades, second.PreviousBendBuffer,
+    const auto exact = harness.Draw(second, kBlades,
                                     BuildRecord(current, &previous, true), Push(current, planes));
     ExpectMotionGuides(exact, true);
     // What the motion pass had before: camera motion only (wind time and
     // bend unchanged), and no motion at all.
     SceneFrame cameraOnly = previous;
     cameraOnly.WindTime = current.WindTime;
-    const auto camera = harness.Draw(second.InstanceBuffer, kBlades, second.PreviousBendBuffer,
+    const auto camera = harness.Draw(second, kBlades,
                                      BuildRecord(current, &cameraOnly, false), Push(current, planes));
     const auto exactMatch = Reproject(firstFrame, exact, true);
     const auto cameraMatch = Reproject(firstFrame, camera, true);
@@ -840,16 +829,16 @@ void TestIdleCompactionReuse(Harness& harness) {
     const auto first = compact(0);
     const auto second = compact(1);
     Require(!first.Reused && !second.Reused, "each fenced slot must be initialized");
-    const auto original = harness.ReadWords(first.InstanceBuffer, kBlades * uint32_t(sizeof(GrassInstance) / 4));
+    const auto original = harness.ReadWords(first.RootBendBuffer, kBlades * 4U);
     const SceneFrame view{ 1, { { 0, 15, 70 }, { 0, 15, 0 } }, 10, {}, {}, {} };
-    const auto before = harness.Draw(first.InstanceBuffer, kBlades, first.PreviousBendBuffer,
+    const auto before = harness.Draw(first, kBlades,
                                      BuildRecord(view, nullptr, false), Push(view, 1));
     auto hit = compact(0);
     Require(hit.Reused && hit.SelectionUploadReused && hit.DynamicUploadedBytes == 0,
             "idle exact selection must reuse GPU data");
-    Require(original == harness.ReadWords(hit.InstanceBuffer, kBlades * uint32_t(sizeof(GrassInstance) / 4)),
-            "cached instance payload must be bit identical");
-    const auto after = harness.Draw(hit.InstanceBuffer, kBlades, hit.PreviousBendBuffer,
+    Require(original == harness.ReadWords(hit.RootBendBuffer, kBlades * 4U),
+            "cached root bends must be bit identical");
+    const auto after = harness.Draw(hit, kBlades,
                                     BuildRecord(view, nullptr, false), Push(view, 1));
     Require(before.Color == after.Color && before.Material == after.Material && before.Motion == after.Motion,
             "cached blade capture must be pixel identical");

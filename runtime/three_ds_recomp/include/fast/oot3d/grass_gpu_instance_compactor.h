@@ -46,17 +46,19 @@ struct GrassGpuInstanceCompactionRequest {
     GrassGpuSelectionRequest Selection{};
 };
 
+// The blades read their roots in place: root i is static anchor
+// VisibleIndicesBuffer[i] of StaticAnchorBuffer, bent by RootBendBuffer[i].
 struct GrassGpuInstanceCompactionResult {
-    VkBuffer InstanceBuffer = VK_NULL_HANDLE;
+    VkBuffer StaticAnchorBuffer = VK_NULL_HANDLE;
+    // One vec4 per root: the interaction bend (XY) and the bend the previous
+    // frame drew (ZW), or the current one where the blade has no previous frame.
+    VkBuffer RootBendBuffer = VK_NULL_HANDLE;
     uint32_t InstanceCount = 0U;
     uint64_t DynamicUploadedBytes = 0U;
     uint64_t StaticUploadedBytes = 0U;
     bool SelectionUploadReused = false;
     bool Reused = false;
     VkBuffer VisibleIndicesBuffer = VK_NULL_HANDLE;
-    // One vec2 per instance: the interaction bend the previous frame drew,
-    // or the current one where the blade has no previous frame.
-    VkBuffer PreviousBendBuffer = VK_NULL_HANDLE;
     // GPU selection: draw arguments and counts; InstanceCount is the capacity.
     VkBuffer SelectionControl = VK_NULL_HANDLE;
     bool GpuSelection = false;

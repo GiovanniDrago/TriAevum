@@ -50,7 +50,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <future>
-#include "fast/oot3d/grass_instance_layout.h"
 #include <limits>
 #include <numbers>
 #include <optional>
@@ -575,7 +574,11 @@ struct InteractiveGrassPass::Impl {
         VkDeviceSize Capacity = 0;
         void* Mapped = nullptr;
     };
-    std::array<BufferSlot, 2> InstanceBuffers{};
+    // CPU compaction: the selected anchors in root order, their bends and the
+    // identity root -> anchor map the blades read through.
+    std::array<BufferSlot, 2> CpuRootAnchors{};
+    std::array<BufferSlot, 2> CpuRootBends{};
+    std::array<BufferSlot, 2> CpuRootIndices{};
     std::array<BufferSlot, 2> EnvironmentBuffers{};
     std::array<BufferSlot, 2> GroupBuffers{};
     std::array<BufferSlot, 2> ShadowVisibleIndices{};
@@ -725,7 +728,7 @@ struct InteractiveGrassPass::Impl {
         uint32_t NativeProjection = 0U;
     };
     std::unordered_map<uint64_t, MotionHistoryRecord> MotionHistory;
-    VkBuffer PreparedInstanceBuffer = VK_NULL_HANDLE;
+    VkBuffer PreparedRootAnchors = VK_NULL_HANDLE;
     bool Prepared = false;
     std::string Reason;
     VkDescriptorSet AcquireDescriptorSet(size_t slotIndex, uint64_t frameId) {
@@ -740,7 +743,7 @@ struct InteractiveGrassPass::Impl {
         auto& invocation = frame.Additional[index];
         if (invocation.Set == VK_NULL_HANDLE) {
             const std::array<VkDescriptorPoolSize, 2> sizes{{
-                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}}};
+                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}}};
             VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
             pool.maxSets = 1; pool.poolSizeCount = static_cast<uint32_t>(sizes.size()); pool.pPoolSizes = sizes.data();
             if (vkCreateDescriptorPool(Device, &pool, nullptr, &invocation.Pool) != VK_SUCCESS)
@@ -1147,7 +1150,7 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                 shaders, device, rasterDepthSource.c_str(), Renderer::SpirvStage::Fragment,
                 "interactive_grass_instrumented_raster_depth.frag",
                 "GRASS_AUXILIARY_OUTPUTS", "1");
-            const std::array<VkDescriptorSetLayoutBinding, 9> environmentBindings{{
+            const std::array<VkDescriptorSetLayoutBinding, 10> environmentBindings{{
                 {0U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
                 {1U, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
                 {2U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
@@ -1156,7 +1159,8 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                 {5U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
                 {6U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
                 {7U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
-                {8U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr}}};
+                {8U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+                {9U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr}}};
             VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo{
                 VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
             descriptorLayoutInfo.bindingCount = static_cast<uint32_t>(environmentBindings.size());
@@ -1168,7 +1172,7 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                     "cannot create interactive grass descriptor layout");
             }
             const std::array<VkDescriptorPoolSize, 2> poolSizes{{
-                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}}};
+                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 18}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}}};
             VkDescriptorPoolCreateInfo poolInfo{
                 VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
             poolInfo.maxSets =
@@ -1221,28 +1225,9 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                  VK_SHADER_STAGE_VERTEX_BIT, vertex, "main", nullptr},
                 {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
                  VK_SHADER_STAGE_FRAGMENT_BIT, fragments[0], "main", nullptr}};
-            VkVertexInputBindingDescription binding{
-                0, sizeof(GrassInstance),
-                VK_VERTEX_INPUT_RATE_INSTANCE};
-            const VkVertexInputAttributeDescription attributes[] = {
-                {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
-                 offsetof(GrassInstance, BaseHeight)},
-                {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
-                 offsetof(GrassInstance, BendAndHalfWidth)},
-                {2, 0, VK_FORMAT_R32G32_SFLOAT,
-                 offsetof(GrassInstance, WidthAxis)},
-                {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
-                 offsetof(GrassInstance, WorldNormal)},
-                {4, 0, VK_FORMAT_R32_UINT,
-                 offsetof(GrassInstance, SurfaceColor)},
-                {5, 0, VK_FORMAT_R32G32_UINT, offsetof(GrassInstance, SurfaceReference)}};
+            // No vertex input: each root reads its anchor and bend from storage.
             VkPipelineVertexInputStateCreateInfo vertexInput{
                 VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-            vertexInput.vertexBindingDescriptionCount = 1;
-            vertexInput.pVertexBindingDescriptions = &binding;
-            vertexInput.vertexAttributeDescriptionCount =
-                static_cast<uint32_t>(std::size(attributes));
-            vertexInput.pVertexAttributeDescriptions = attributes;
             VkPipelineInputAssemblyStateCreateInfo assembly{
                 VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
             assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -1400,7 +1385,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                                    Fast::Oot3dVulkanGpuProfiler* profiler) {
     GrassStageTimer prepareTimer(GrassStage::Prepare);
     mImpl->Prepared = false;
-    mImpl->PreparedInstanceBuffer = VK_NULL_HANDLE;
+    mImpl->PreparedRootAnchors = VK_NULL_HANDLE;
     mImpl->LastBlades = 0;
     mImpl->LastMotionBlades = 0;
     const auto cpuStart = std::chrono::steady_clock::now();
@@ -1522,7 +1507,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         environmentRecords.reserve(settings.Rules.size());
         preparedPlacements.reserve(settings.Rules.size() * 2U);
         mImpl->VisibleAnchorIndices.reserve(visibleBudget);
-        const size_t slotIndex = frameSlot % mImpl->InstanceBuffers.size();
+        const size_t slotIndex = frameSlot % mImpl->EnvironmentBuffers.size();
         const std::array<float, 2> currentJitterNdc =
             temporalJitter ? std::array<float, 2>{ 2.0F * jitterPixels[0] / static_cast<float>(width),
                                                    2.0F * jitterPixels[1] / static_cast<float>(height) }
@@ -2432,7 +2417,8 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                     selectionRequest,
                 },
                 compaction);
-            if (!gpuCompacted || compaction.InstanceBuffer == VK_NULL_HANDLE ||
+            if (!gpuCompacted || compaction.StaticAnchorBuffer == VK_NULL_HANDLE ||
+                compaction.RootBendBuffer == VK_NULL_HANDLE || compaction.VisibleIndicesBuffer == VK_NULL_HANDLE ||
                 compaction.InstanceCount != instanceCount) {
                 // Memory comes back; a functional failure does not.
                 if (!gpuCompacted && mImpl->InstanceCompactor.LastFailureOutOfMemory()) {
@@ -2458,15 +2444,27 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
 
         uint64_t dynamicUploadedBytes = 0U;
         uint64_t staticUploadedBytes = 0U;
+        // Root i draws anchor rootIndices[i] of rootAnchors, bent by rootBends[i].
+        const VkDeviceSize rootIndexBytes = VkDeviceSize(instanceCount) * sizeof(uint32_t);
+        const VkDeviceSize rootBendBytes = VkDeviceSize(instanceCount) * 4U * sizeof(float);
+        VkDescriptorBufferInfo rootAnchors{}, rootBends{}, rootIndices{};
         if (gpuCompacted) {
-            mImpl->PreparedInstanceBuffer = compaction.InstanceBuffer;
+            rootAnchors = {compaction.StaticAnchorBuffer, 0, VK_WHOLE_SIZE};
+            rootBends = {compaction.RootBendBuffer, 0, rootBendBytes};
+            rootIndices = {compaction.VisibleIndicesBuffer, 0, rootIndexBytes};
             dynamicUploadedBytes = compaction.DynamicUploadedBytes;
             staticUploadedBytes = compaction.StaticUploadedBytes;
         } else {
-            auto& instanceBuffer = mImpl->InstanceBuffers[slotIndex];
-            const VkDeviceSize instanceBytes = static_cast<VkDeviceSize>(instanceCount) * sizeof(GrassInstance);
-            mImpl->EnsureBuffer(instanceBuffer, instanceBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-            auto* instanceOutput = static_cast<GrassInstance*>(instanceBuffer.Mapped);
+            const VkDeviceSize anchorBytes = VkDeviceSize(instanceCount) * sizeof(GrassWorldAnchor);
+            auto& anchorBuffer = mImpl->CpuRootAnchors[slotIndex];
+            auto& bendBuffer = mImpl->CpuRootBends[slotIndex];
+            auto& indexBuffer = mImpl->CpuRootIndices[slotIndex];
+            mImpl->EnsureBuffer(anchorBuffer, anchorBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+            mImpl->EnsureBuffer(bendBuffer, rootBendBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+            mImpl->EnsureBuffer(indexBuffer, rootIndexBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+            auto* anchorOutput = static_cast<GrassWorldAnchor*>(anchorBuffer.Mapped);
+            auto* bendOutput = static_cast<std::array<float, 4>*>(bendBuffer.Mapped);
+            auto* indexOutput = static_cast<uint32_t*>(indexBuffer.Mapped);
             for (size_t instanceIndex = 0U; instanceIndex < mImpl->VisibleAnchorIndices.size(); ++instanceIndex) {
                 const uint32_t anchorIndex = mImpl->VisibleAnchorIndices[instanceIndex];
                 if (anchorIndex >= mImpl->StaticAnchorCount) {
@@ -2488,24 +2486,17 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 if (bendLength > settings.MaximumBend && bendLength > 0) {
                     for (auto& value : dynamicBend) value *= settings.MaximumBend / bendLength;
                 }
-                instanceOutput[instanceIndex] = {
-                    anchor.BaseHeight,
-                    {
-                        dynamicBend[0],
-                        dynamicBend[1],
-                        anchor.HalfWidthPhase[0],
-                        anchor.HalfWidthPhase[1],
-                    },
-                    UnpackGrassDirection(anchor.PackedWidthAxis),
-                    UnpackGrassNormal(anchor.PackedWorldNormal),
-                    anchor.SurfaceColor,
-                    anchor.SurfaceReference,
-                };
-                instanceOutput[instanceIndex].WorldNormal[3] = GrassStableVisibilityValue(anchor.StableId);
+                anchorOutput[instanceIndex] = anchor;
+                // No bend history here: the blades reuse the current bend.
+                bendOutput[instanceIndex] = {dynamicBend[0], dynamicBend[1], dynamicBend[0], dynamicBend[1]};
+                indexOutput[instanceIndex] = static_cast<uint32_t>(instanceIndex);
             }
-            mImpl->PreparedInstanceBuffer = instanceBuffer.Buffer;
-            dynamicUploadedBytes = static_cast<uint64_t>(instanceBytes);
+            rootAnchors = {anchorBuffer.Buffer, 0, anchorBytes};
+            rootBends = {bendBuffer.Buffer, 0, rootBendBytes};
+            rootIndices = {indexBuffer.Buffer, 0, rootIndexBytes};
+            dynamicUploadedBytes = static_cast<uint64_t>(anchorBytes + rootBendBytes + rootIndexBytes);
         }
+        mImpl->PreparedRootAnchors = rootAnchors.buffer;
 
         compactionTimer.Stop();
         if (profiler)
@@ -2516,7 +2507,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         }
         // Disabled receivers reuse an already valid descriptor without a shadow
         // allocation, upload or dispatch. The shader never reads these bindings.
-        const VkDescriptorBufferInfo unusedShadow{mImpl->PreparedInstanceBuffer, 0, sizeof(GrassInstance)};
+        const VkDescriptorBufferInfo unusedShadow{rootAnchors.buffer, 0, sizeof(GrassWorldAnchor)};
         std::array<VkDescriptorBufferInfo, 4> shadowBuffers{unusedShadow, unusedShadow, unusedShadow, unusedShadow};
         if (receiveShadows) {
             GrassStageTimer shadowTimer(GrassStage::Shadows);
@@ -2599,26 +2590,16 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         mImpl->EnsureBuffer(groupBuffer, groupBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         if (!mImpl->DrawGroups.empty())
             std::memcpy(groupBuffer.Mapped, mImpl->DrawGroups.data(), mImpl->DrawGroups.size()*sizeof(std::array<uint32_t,2>));
-        const std::array<VkDescriptorBufferInfo,2> clusterBuffers{{
-            {mImpl->PreparedInstanceBuffer, 0, VkDeviceSize(instanceCount)*sizeof(GrassInstance)},
-            {groupBuffer.Buffer, 0, groupBytes}}};
-        for (uint32_t index = 0; index < 2; ++index) {
+        const VkDescriptorBufferInfo groups{groupBuffer.Buffer, 0, groupBytes};
+        const std::array<std::pair<uint32_t, const VkDescriptorBufferInfo*>, 4> rootBuffers{{
+            {2U, &rootAnchors}, {3U, &groups}, {8U, &rootBends}, {9U, &rootIndices}}};
+        for (const auto& [binding, info] : rootBuffers) {
             VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-            write.dstSet = descriptorSet; write.dstBinding = index+2;
+            write.dstSet = descriptorSet; write.dstBinding = binding;
             write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; write.descriptorCount = 1;
-            write.pBufferInfo = &clusterBuffers[index];
+            write.pBufferInfo = info;
             vkUpdateDescriptorSets(mImpl->Device, 1, &write, 0, nullptr);
         }
-        // The CPU fallback keeps no bend history: its blades reuse the current
-        // bend and never read this binding.
-        const VkDescriptorBufferInfo previousBends = gpuCompacted
-            ? VkDescriptorBufferInfo{compaction.PreviousBendBuffer, 0, VkDeviceSize(instanceCount) * 2U * sizeof(float)}
-            : clusterBuffers[0];
-        VkWriteDescriptorSet previousBendsWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        previousBendsWrite.dstSet = descriptorSet; previousBendsWrite.dstBinding = 8;
-        previousBendsWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; previousBendsWrite.descriptorCount = 1;
-        previousBendsWrite.pBufferInfo = &previousBends;
-        vkUpdateDescriptorSets(mImpl->Device, 1, &previousBendsWrite, 0, nullptr);
         if (gpuSelection && gpuReadback.Available)
             for (uint32_t s = 0; s < preparedPlacements.size(); ++s)
                 if (environmentRecords[s].MotionState[2] > 0.5F)
@@ -2674,7 +2655,7 @@ bool InteractiveGrassPass::DrawPrepared(
         !providerPlan.ProducesExtensionGeometry() ||
         !providerPlan.ExportsExtensionGeometry() ||
         !mImpl->Prepared ||
-        mImpl->PreparedInstanceBuffer == VK_NULL_HANDLE ||
+        mImpl->PreparedRootAnchors == VK_NULL_HANDLE ||
         pipeline == VK_NULL_HANDLE ||
         commandBuffer == VK_NULL_HANDLE) {
         return false;
@@ -2682,8 +2663,6 @@ bool InteractiveGrassPass::DrawPrepared(
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, mImpl->PipelineLayout, 0U, 1U,
                             &mImpl->PreparedDescriptorSet, 0U, nullptr);
-    const VkDeviceSize offset = 0U;
-    vkCmdBindVertexBuffers(commandBuffer, 0U, 1U, &mImpl->PreparedInstanceBuffer, &offset);
     vkCmdBindIndexBuffer(commandBuffer, mImpl->IndexBuffer.Buffer, 0, VK_INDEX_TYPE_UINT32);
     const VkViewport viewport{ 0.0F, 0.0F, static_cast<float>(width), static_cast<float>(height), 0.0F, 1.0F };
     const VkRect2D scissor{ { 0, 0 }, { width, height } };
@@ -2753,8 +2732,9 @@ void InteractiveGrassPass::Shutdown() {
     mImpl->GpuCompactorAvailable = false;
     if (mImpl->Device != VK_NULL_HANDLE) {
         mImpl->DestroyBuffer(mImpl->IndexBuffer);
-        for (auto& buffer : mImpl->InstanceBuffers)
-            mImpl->DestroyBuffer(buffer);
+        for (auto* slots : {&mImpl->CpuRootAnchors, &mImpl->CpuRootBends, &mImpl->CpuRootIndices})
+            for (auto& buffer : *slots)
+                mImpl->DestroyBuffer(buffer);
         for (auto& buffer : mImpl->EnvironmentBuffers)
             mImpl->DestroyBuffer(buffer);
         for (auto& buffer : mImpl->GroupBuffers)
@@ -2811,7 +2791,7 @@ void InteractiveGrassPass::Shutdown() {
     mImpl->SelectionRoots.clear();
     mImpl->SelectionOutputs.clear();
     mImpl->StaticRevision = 0U;
-    mImpl->PreparedInstanceBuffer = VK_NULL_HANDLE;
+    mImpl->PreparedRootAnchors = VK_NULL_HANDLE;
     mImpl->Prepared = false;
     mImpl->PlacementBuilder.Clear();
     ResetTemporalState();

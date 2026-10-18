@@ -2,7 +2,6 @@
 #include "fast/oot3d/grass_blade_shape.h"
 #include "fast/oot3d/grass_distant_tuft.h"
 #include "fast/oot3d/grass_indexed_topology.h"
-#include "fast/oot3d/grass_instance_layout.h"
 #include "fast/oot3d/grass_world_placement_cache.h"
 #include "fast/oot3d/toon_surface_response.h"
 #include "fast/renderer3ds/pica_geometry_guide.h"
@@ -21,6 +20,40 @@ vec2 grass_shadow_plane(vec3 p, uint axis) {
     return axis == 0u ? p.yz : axis == 1u ? p.zx : p.xy;
 }
 )glsl";
+
+// One GrassWorldAnchor (three uvec4) as a blade reads it: the anchors stay in
+// the resident store and each root addresses one, instead of a per-frame copy.
+constexpr char kGrassRootAnchorShader[] = R"glsl(
+struct GrassRoot {
+    vec4 base_height;
+    vec2 half_width_phase;
+    vec2 width_axis;
+    // W: GrassStableVisibilityValue of the anchor's stable id.
+    vec4 world_normal;
+    uint surface_color;
+    uvec2 surface_reference;
+};
+GrassRoot grass_decode_anchor(uvec4 a, uvec4 b, uvec4 c) {
+    GrassRoot root;
+    root.base_height = uintBitsToFloat(a);
+    root.half_width_phase = uintBitsToFloat(b.xy);
+    root.width_axis = unpackSnorm2x16(b.z);
+    vec2 oct = unpackSnorm2x16(b.w);
+    vec3 normal = vec3(oct, 1.0 - abs(oct.x) - abs(oct.y));
+    float fold = max(-normal.z, 0.0);
+    normal.xy += mix(vec2(fold), vec2(-fold), greaterThanEqual(normal.xy, vec2(0.0)));
+    uint stable = c.x;
+    stable ^= stable >> 16u;
+    stable *= 0x7feb352du;
+    stable ^= stable >> 15u;
+    stable *= 0x846ca68bu;
+    stable ^= stable >> 16u;
+    root.world_normal = vec4(normalize(normal), float(stable >> 8u) / 16777216.0);
+    root.surface_color = c.y;
+    root.surface_reference = c.zw;
+    return root;
+}
+)glsl";
 } // namespace
 
 std::string BuildGrassVertexShader() {
@@ -28,14 +61,10 @@ std::string BuildGrassVertexShader() {
             std::string("#version 450\n") + std::string(kToonSurfaceResponseShader) + std::string(kGrassBladeShapeShader) +
             std::string(kGrassDistantTuftShader) + std::string(kGrassIndexedVertexShader) +
             std::string(Renderer3ds::kPicaSurfaceLightingRecomposeShader) +
-            std::string(kGrassShadowRefinementShader) + R"glsl(
-layout(location=0) in vec4 attr_base_height;
-layout(location=1) in vec4 attr_bend_half_width;
-layout(location=2) in vec2 attr_width_axis;
-layout(location=3) in vec4 attr_world_normal;
-layout(location=4) in uint attr_surface_color;
-layout(location=5) in uvec2 attr_surface_reference;
-layout(std430,set=0,binding=2) readonly buffer GrassPreparedRoots { uint words[]; } prepared_roots;
+            std::string(kGrassShadowRefinementShader) + std::string(kGrassRootAnchorShader) + R"glsl(
+// Root i draws the anchor root_anchor_indices[i] of root_anchors.
+layout(std430,set=0,binding=2) readonly buffer GrassRootAnchors { uvec4 values[]; } root_anchors;
+layout(std430,set=0,binding=9) readonly buffer GrassRootAnchorIndices { uint values[]; } root_anchor_indices;
 layout(std430,set=0,binding=3) readonly buffer GrassPreparedGroups { uvec2 entries[]; } prepared_groups;
 layout(set=0,binding=1) uniform sampler2DArray native_surface_lighting;
 layout(std430,set=0,binding=4) readonly buffer GrassShadowVisibilityGrid {
@@ -112,7 +141,14 @@ struct GrassEnvironmentRecord {
 layout(std430, set=0, binding=0) readonly buffer GrassEnvironmentState {
     GrassEnvironmentRecord records[];
 } environment_state;
-layout(std430,set=0,binding=8) readonly buffer GrassPreviousBends { vec2 values[]; } previous_bends;
+// Per root: the interaction bend (XY) and the bend the previous frame drew (ZW).
+layout(std430,set=0,binding=8) readonly buffer GrassRootBends { vec4 values[]; } root_bends;
+
+GrassRoot grass_load_root(uint root) {
+    uint first = root_anchor_indices.values[root] * 3u;
+    return grass_decode_anchor(root_anchors.values[first], root_anchors.values[first + 1u],
+                               root_anchors.values[first + 2u]);
+}
 layout(push_constant) uniform GrassState {
     mat4 position_to_clip;
     vec4 jitter_ndc;
@@ -351,14 +387,7 @@ void main() {
     uint segments = clamp(segment_mode, 1u, 12u);
     uint vertex = uint(gl_VertexIndex);
     uint root_index = uint(gl_InstanceIndex);
-    vec4 in_base_height = attr_base_height;
-    vec4 in_bend_half_width = attr_bend_half_width;
-    vec2 in_width_axis = attr_width_axis;
-    vec4 in_world_normal = attr_world_normal;
-    uint in_surface_color = attr_surface_color;
-    uvec2 in_surface_reference = attr_surface_reference;
-    vec3 visibility_position = attr_base_height.xyz;
-    float visibility_seed = attr_world_normal.w;
+    uint representative = root_index;
     if (grouped) {
         uint vertices_per_child = grass.flags.z * (2u * segments + 1u);
         uint child = vertex / vertices_per_child;
@@ -366,16 +395,22 @@ void main() {
         uvec2 group = prepared_groups.entries[gl_InstanceIndex];
         if (child >= group.y) { gl_Position = vec4(0.0,0.0,2.0,1.0); return; }
         root_index = group.x + child;
-        uint representative = group.x * 17u;
-        visibility_position = uintBitsToFloat(uvec3(prepared_roots.words[representative], prepared_roots.words[representative+1u], prepared_roots.words[representative+2u]));
-        visibility_seed = uintBitsToFloat(prepared_roots.words[representative+13u]);
-        uint base = (group.x + child) * 17u;
-        in_base_height = uintBitsToFloat(uvec4(prepared_roots.words[base],prepared_roots.words[base+1u],prepared_roots.words[base+2u],prepared_roots.words[base+3u]));
-        in_bend_half_width = uintBitsToFloat(uvec4(prepared_roots.words[base+4u],prepared_roots.words[base+5u],prepared_roots.words[base+6u],prepared_roots.words[base+7u]));
-        in_width_axis = uintBitsToFloat(uvec2(prepared_roots.words[base+8u],prepared_roots.words[base+9u]));
-        in_world_normal = uintBitsToFloat(uvec4(prepared_roots.words[base+10u],prepared_roots.words[base+11u],prepared_roots.words[base+12u],prepared_roots.words[base+13u]));
-        in_surface_color = prepared_roots.words[base+14u];
-        in_surface_reference = uvec2(prepared_roots.words[base+15u],prepared_roots.words[base+16u]);
+        representative = group.x;
+    }
+    GrassRoot root = grass_load_root(root_index);
+    vec4 bends = root_bends.values[root_index];
+    vec4 in_base_height = root.base_height;
+    vec4 in_bend_half_width = vec4(bends.xy, root.half_width_phase);
+    vec2 in_width_axis = root.width_axis;
+    vec4 in_world_normal = root.world_normal;
+    uint in_surface_color = root.surface_color;
+    uvec2 in_surface_reference = root.surface_reference;
+    vec3 visibility_position = in_base_height.xyz;
+    float visibility_seed = in_world_normal.w;
+    if (representative != root_index) {
+        GrassRoot group_root = grass_load_root(representative);
+        visibility_position = group_root.base_height.xyz;
+        visibility_seed = group_root.world_normal.w;
     }
     uint plane;
     float height_factor;
@@ -411,7 +446,7 @@ void main() {
         float previous_coverage = tuft ? grass_tuft_coverage(grass_tuft_weight(
             length(visibility_position - previous_camera_time.xyz)/max(lod.y,1.0e-6), lod.x, lod.x+lod.w),
             in_world_normal.w, lod, tuft_style) : 1.0;
-        vec2 previous_bend = motion_state.w > 0.5 ? previous_bends.values[root_index] : in_bend_half_width.xy;
+        vec2 previous_bend = motion_state.w > 0.5 ? bends.zw : in_bend_half_width.xy;
         vec3 previous_position = grass_blade_position(
             grass.flags.w, previous_camera_time.xyz, previous_camera_time.w,
             previous_bend, previous_coverage, in_base_height, in_bend_half_width,
@@ -656,9 +691,7 @@ void main() {
 
 std::string BuildGrassCompactionComputeShader() {
     return std::string("#version 450\n#define GRASS_ANCHOR_WORDS ") +
-        std::to_string(sizeof(GrassWorldAnchor) / sizeof(uint32_t)) +
-        "u\n#define GRASS_INSTANCE_WORDS " +
-        std::to_string(sizeof(GrassInstance) / sizeof(uint32_t)) + "u\n" + R"glsl(
+        std::to_string(sizeof(GrassWorldAnchor) / sizeof(uint32_t)) + "u\n" + R"glsl(
 layout(local_size_x=256, local_size_y=1, local_size_z=1) in;
 
 layout(std430, set=0, binding=0) readonly buffer StaticAnchors {
@@ -670,9 +703,12 @@ layout(std430, set=0, binding=1) readonly buffer VisibleIndices {
 layout(std430, set=0, binding=2) readonly buffer InteractionSamples {
     vec4 values[];
 } interaction_samples;
-layout(std430, set=0, binding=3) writeonly buffer OutputInstances {
-    uint words[];
-} output_instances;
+// Per visible root: the interaction bend (XY) and the bend the previous frame
+// drew (ZW), or the current one where the blade has no previous frame. The
+// blades read everything else from the static anchors.
+layout(std430, set=0, binding=3) writeonly buffer RootBends {
+    vec4 values[];
+} root_bends;
 
 struct ActorCollider {
     vec4 previous_radius;
@@ -687,15 +723,12 @@ layout(std430, set=0, binding=4) readonly buffer Actors {
 layout(std430, set=0, binding=5) buffer BendHistory {
     uvec4 values[];
 } bend_history;
-layout(std430, set=0, binding=6) writeonly buffer PreviousBends {
-    vec2 values[];
-} previous_bends;
 // GrassActorCells: cell offsets, then the actor indices of every cell.
-layout(std430, set=0, binding=7) readonly buffer ActorCells {
+layout(std430, set=0, binding=6) readonly buffer ActorCells {
     uint words[];
 } actor_cells;
 // GPU selection control (word 3: admitted roots) when history.z is set.
-layout(std430, set=0, binding=8) readonly buffer SelectionControl {
+layout(std430, set=0, binding=7) readonly buffer SelectionControl {
     uint values[];
 } selection_control;
 
@@ -838,22 +871,6 @@ void main() {
         static_anchors.words[source + 1u],
         static_anchors.words[source + 2u],
         static_anchors.words[source + 3u]));
-    vec2 half_width_phase = uintBitsToFloat(uvec2(
-        static_anchors.words[source + 4u],
-        static_anchors.words[source + 5u]));
-    vec2 width_axis = unpackSnorm2x16(static_anchors.words[source + 6u]);
-    vec2 oct = unpackSnorm2x16(static_anchors.words[source + 7u]);
-    vec3 normal = vec3(oct, 1.0 - abs(oct.x) - abs(oct.y));
-    float fold = max(-normal.z, 0.0);
-    normal.xy += mix(vec2(fold), vec2(-fold), greaterThanEqual(normal.xy, vec2(0.0)));
-    // Identical to GrassStableVisibilityValue; W was unused in the instance ABI.
-    uint stable = static_anchors.words[source + 8u];
-    stable ^= stable >> 16u;
-    stable *= 0x7feb352du;
-    stable ^= stable >> 15u;
-    stable *= 0x846ca68bu;
-    stable ^= stable >> 16u;
-    vec4 world_normal = vec4(normalize(normal), float(stable >> 8u) / 16777216.0);
     vec2 dynamic_bend = sample_interaction(base_height.xyz);
     uint actor_count = state.counts_flags.w >> 1u;
     if (state.actor_grid_size.x == 0u || any(isnan(base_height.xz)) || any(isinf(base_height.xz))) {
@@ -893,40 +910,7 @@ void main() {
         bend_history.values[static_index] = uvec4(
             floatBitsToUint(dynamic_bend), state.history.x, packHalf2x16(previous_bend));
     }
-    previous_bends.values[visible_index] = previous_bend;
-
-    uint destination = visible_index * GRASS_INSTANCE_WORDS;
-    output_instances.words[destination + 0u] =
-        floatBitsToUint(base_height.x);
-    output_instances.words[destination + 1u] =
-        floatBitsToUint(base_height.y);
-    output_instances.words[destination + 2u] =
-        floatBitsToUint(base_height.z);
-    output_instances.words[destination + 3u] =
-        floatBitsToUint(base_height.w);
-    output_instances.words[destination + 4u] =
-        floatBitsToUint(dynamic_bend.x);
-    output_instances.words[destination + 5u] =
-        floatBitsToUint(dynamic_bend.y);
-    output_instances.words[destination + 6u] =
-        floatBitsToUint(half_width_phase.x);
-    output_instances.words[destination + 7u] =
-        floatBitsToUint(half_width_phase.y);
-    output_instances.words[destination + 8u] =
-        floatBitsToUint(width_axis.x);
-    output_instances.words[destination + 9u] =
-        floatBitsToUint(width_axis.y);
-    output_instances.words[destination + 10u] =
-        floatBitsToUint(world_normal.x);
-    output_instances.words[destination + 11u] =
-        floatBitsToUint(world_normal.y);
-    output_instances.words[destination + 12u] =
-        floatBitsToUint(world_normal.z);
-    output_instances.words[destination + 13u] =
-        floatBitsToUint(world_normal.w);
-    output_instances.words[destination + 14u] = static_anchors.words[source + 9u];
-    output_instances.words[destination + 15u] = static_anchors.words[source + 10u];
-    output_instances.words[destination + 16u] = static_anchors.words[source + 11u];
+    root_bends.values[visible_index] = vec4(dynamic_bend, previous_bend);
 }
 )glsl";
 }

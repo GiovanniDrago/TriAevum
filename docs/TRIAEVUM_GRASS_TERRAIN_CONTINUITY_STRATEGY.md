@@ -32,10 +32,10 @@ fallback. Native mask resolution and semantics are unchanged. No full texture
 sampling or nearest-point search occurs in the frame's Grass shader.
 
 `grass_texture_source_cache` owns the grid and shared source lifetime;
-`grass_world_placement_cache` samples it; `grass_instance_layout.h` owns the common
-CPU/compute/render instance layout. CPU fallback and compute expansion both copy
-the packed color. Compute output uses integer words to preserve packed bits,
-and shader strides derive from C++ layout sizes. Reused source observations no
+`grass_world_placement_cache` samples it; `GrassWorldAnchor` is the common
+CPU/compute/render root layout. The blades read the packed color from the
+anchor itself: the GPU path addresses the resident anchors through the visible
+indices, the CPU fallback uploads the selected anchors in root order. Reused source observations no
 longer construct a redundant texture-byte copy before `try_emplace`.
 
 This costs four additional bytes per retained world anchor (36 -> 40) and visible
