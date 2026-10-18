@@ -1741,6 +1741,42 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             (settings.FarTuftsEnabled ? settings.Generation.BladeWidthMax *
                 (1.0F + (settings.FarTuftBladeCount - 1U) * settings.FarTuftSpread) /
                 std::max(settings.Generation.BladeHeightMin, 0.001F) : 0.0F);
+        if (GrassPlacementAuditEnabled() && frameId % 100U == 0U) {
+            // Residency study: the anchors a camera-centred store would hold
+            // (each cluster's retained prefix at its nearest distance less a
+            // movement margin, any view direction) against the whole scene.
+            constexpr std::array<float, 4> margins{0.0F, 500.0F, 1000.0F, 2000.0F};
+            std::array<uint64_t, 4> needed{};
+            uint64_t total = 0;
+            for (const auto& prepared : preparedPlacements) {
+                const auto& world = *prepared.World;
+                total += world.CullingAnchors.size();
+                for (const auto& cluster : world.Clusters) {
+                    if (cluster.FirstAnchor >= world.CullingAnchors.size()) continue;
+                    const float radius = cluster.Radius + cluster.MaximumBladeHeight * (bladeRadiusScale - 1.0F);
+                    float distanceSquared = 0.0F;
+                    for (size_t axis = 0; axis < 3U; ++axis) {
+                        const float delta = cluster.Center[axis] - prepared.Eye[axis];
+                        distanceSquared += delta * delta;
+                    }
+                    const auto begin = world.CullingAnchors.begin() + cluster.FirstAnchor;
+                    const auto end = begin + std::min<size_t>(cluster.AnchorCount, world.CullingAnchors.end() - begin);
+                    for (size_t m = 0; m < margins.size(); ++m) {
+                        const float nearest = std::max(0.0F, std::sqrt(distanceSquared) - radius - margins[m]);
+                        if (nearest > lodPolicy.DrawDistance) continue;
+                        const float retention = GrassLodRetentionUpperBound(lodPolicy, nearest);
+                        needed[m] += std::upper_bound(begin, end, retention, [](float value, const auto& anchor) {
+                            return value < anchor.StableVisibility;
+                        }) - begin;
+                    }
+                }
+            }
+            std::fprintf(stderr, "TRIAEVUM_GRASS_RESIDENCY frame=%llu anchors=%llu margin0=%llu margin500=%llu "
+                         "margin1000=%llu margin2000=%llu\n", static_cast<unsigned long long>(frameId),
+                         static_cast<unsigned long long>(total), static_cast<unsigned long long>(needed[0]),
+                         static_cast<unsigned long long>(needed[1]), static_cast<unsigned long long>(needed[2]),
+                         static_cast<unsigned long long>(needed[3]));
+        }
         uint32_t remaining = visibleBudget;
         GrassSelectionKey selectionKey{mImpl->StaticRevision, lodPolicy, bladeRadiusScale,
             visibleBudget, settings.FrustumCulling, {}};
