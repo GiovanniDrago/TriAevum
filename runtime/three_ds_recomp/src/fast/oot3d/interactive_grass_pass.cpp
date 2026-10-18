@@ -18,6 +18,7 @@
 #include "fast/oot3d/grass_selection_cache.h"
 #include "fast/oot3d/grass_gpu_memory.h"
 #include "fast/oot3d/grass_placement_audit.h"
+#include "fast/oot3d/grass_residency.h"
 #include "fast/oot3d/grass_selection_budget.h"
 #include "fast/oot3d/grass_collision_resolver.h"
 #include "fast/oot3d/grass_gpu_instance_compactor.h"
@@ -134,6 +135,15 @@ bool GrassGpuSelectionVerifyEnabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("TRIAEVUM_GRASS_GPU_SELECTION_VERIFY");
         return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+// TRIAEVUM_GRASS_RESIDENCY=0 uploads the whole scene's anchors (A/B only).
+bool GrassResidencyEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("TRIAEVUM_GRASS_RESIDENCY");
+        return value == nullptr || value[0] != '0';
     }();
     return enabled;
 }
@@ -636,6 +646,56 @@ struct InteractiveGrassPass::Impl {
     // until the placements are built; a failure on settled placements halves
     // the static candidates and the visible budget (MemoryShift). Stepping
     // back up waits longer after each relapse.
+    // The camera-centred anchor store the GPU selection reads, the one being
+    // built in the background, and the upload revisions of the stores (high
+    // bit set, so they never equal a whole-scene StaticRevision).
+    std::shared_ptr<const GrassResidency> Residency;
+    std::future<std::shared_ptr<const GrassResidency>> ResidencyBuild;
+    uint64_t ResidencyRevision = 0;
+    uint64_t ResidencyUploadRevision = 0;
+    static constexpr float kResidencyMargin = 1000.0F;
+
+    void AdoptResidency(std::shared_ptr<const GrassResidency> residency) {
+        Residency = std::move(residency);
+        ResidencyUploadRevision = (1ULL << 63U) | ++ResidencyRevision;
+        if (GrassPlacementAuditEnabled())
+            std::fprintf(stderr, "TRIAEVUM_GRASS_RESIDENCY_STORE revision=%llu anchors=%zu eye=%.0f,%.0f,%.0f\n",
+                         static_cast<unsigned long long>(ResidencyRevision), Residency->Anchors.size(),
+                         Residency->Eye[0], Residency->Eye[1], Residency->Eye[2]);
+    }
+
+    // The store for this camera: the current one while it covers the eye; a
+    // background build once the camera nears its margin; a build now when the
+    // placements or the LOD policy changed (there is no valid store then).
+    const GrassResidency* UpdateResidency(const std::array<float, 3>& eye, const GrassLodPolicy& policy,
+                                          float bladeRadiusScale, bool shadowReferences) {
+        const uint64_t key = GrassResidencyPolicyKey(policy, bladeRadiusScale);
+        const auto matches = [&](const GrassResidency& residency) {
+            return residency.Placements == StaticRevision && residency.PolicyKey == key &&
+                   residency.ShadowReferences.empty() != shadowReferences;
+        };
+        if (ResidencyBuild.valid() && ResidencyBuild.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            auto built = ResidencyBuild.get();
+            if (built && matches(*built)) AdoptResidency(std::move(built));
+        }
+        const bool current = Residency && matches(*Residency);
+        if (current && GrassResidencyCovers(*Residency, eye)) return Residency.get();
+        if (!current) {
+            AdoptResidency(std::make_shared<const GrassResidency>(BuildGrassResidency(
+                StaticSources, StaticRevision, eye, policy, bladeRadiusScale, kResidencyMargin, shadowReferences)));
+            return Residency.get();
+        }
+        if (!ResidencyBuild.valid())
+            ResidencyBuild = std::async(std::launch::async, [sources = StaticSources, revision = StaticRevision, eye,
+                                                             policy, bladeRadiusScale, shadowReferences] {
+                return std::make_shared<const GrassResidency>(BuildGrassResidency(
+                    sources, revision, eye, policy, bladeRadiusScale, kResidencyMargin, shadowReferences));
+            });
+        // Until the next store is ready this one still covers the camera
+        // (its margin is twice the distance that triggered the rebuild).
+        return Residency.get();
+    }
+
     uint32_t MemoryShift = 0;
     uint32_t BaseCandidateCapacity = 8U * 1024U * 1024U;
     bool GpuSuspendedForMemory = false;
@@ -1820,6 +1880,12 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             !(settings.MidrangeClustersEnabled && std::any_of(preparedPlacements.begin(), preparedPlacements.end(),
                 [](const auto& prepared) { return !prepared.World->Midrange.Groups.empty(); }));
         const bool cpuSelection = !gpuSelection || GrassGpuSelectionVerifyEnabled();
+        // The GPU selection reads the camera-centred store; the CPU selection
+        // (and its verification) indexes the whole scene.
+        const GrassResidency* residency =
+            gpuSelection && !cpuSelection && GrassResidencyEnabled() && !preparedPlacements.empty()
+                ? mImpl->UpdateResidency(preparedPlacements.front().Eye, lodPolicy, bladeRadiusScale, receiveShadows)
+                : nullptr;
         if (!cpuSelection) mImpl->SelectionCache.Reset();
         const bool reuseSelection = cpuSelection && mImpl->SelectionCache.Matches(selectionKey);
         if (GrassStageProfileEnabled()) {
@@ -2249,8 +2315,12 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             mImpl->DrawGroups.clear();
             for (uint32_t placementIndex = 0; placementIndex < preparedPlacements.size(); ++placementIndex) {
                 const auto& prepared = preparedPlacements[placementIndex];
-                gpuSources.push_back({prepared.World->Clusters, prepared.StaticBaseIndex, prepared.Push.PositionToClip,
-                                      prepared.Eye});
+                if (residency)
+                    gpuSources.push_back({residency->Clusters[placementIndex], residency->SourceBase[placementIndex],
+                                          prepared.Push.PositionToClip, prepared.Eye});
+                else
+                    gpuSources.push_back({prepared.World->Clusters, prepared.StaticBaseIndex,
+                                          prepared.Push.PositionToClip, prepared.Eye});
                 for (uint32_t k = 0; k < gpuSlots.size(); ++k) {
                     const auto bin = gpuSlots[k].Bin;
                     const bool tuft = bin == kGrassLodBinCount - 1U;
@@ -2338,14 +2408,20 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             profiler->BeginScope(frameSlot, GpuProfileScope::GrassCompaction, commandBuffer);
         GrassGpuInstanceCompactionResult compaction;
         bool gpuCompacted = false;
+        const std::array<std::span<const GrassWorldAnchor>, 1> residentSegment{
+            residency ? std::span<const GrassWorldAnchor>(residency->Anchors) : std::span<const GrassWorldAnchor>{}};
+        const auto uploadedAnchors = residency
+            ? GrassStaticAnchorSegments{residentSegment, residency->Anchors.size()}
+            : GrassStaticAnchorSegments{mImpl->StaticSegments, mImpl->StaticAnchorCount};
+        const uint64_t uploadedRevision = residency ? mImpl->ResidencyUploadRevision : mImpl->StaticRevision;
         if (mImpl->GpuCompactorAvailable && !mImpl->GpuSuspendedForMemory) {
             gpuCompacted = mImpl->InstanceCompactor.Compact(
                 {
                     commandBuffer,
                     frameSlot,
                     frameId,
-                    mImpl->StaticRevision,
-                    GrassStaticAnchorSegments{mImpl->StaticSegments, mImpl->StaticAnchorCount},
+                    uploadedRevision,
+                    uploadedAnchors,
                     std::span<const uint32_t>(mImpl->VisibleAnchorIndices),
                     &mImpl->InteractionField,
                     actors,
@@ -2452,8 +2528,12 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             const auto focus = shadowHistory.State.ProducedFrameId == frameId && scene.FrameId == frameId
                 ? ResolveShadowFocus(actors, scene, renderTargetNamespace, framebufferColorPhysicalAddress)
                 : std::array<Renderer3ds::ShadowBounds, 2>{};
-            const auto grid = mImpl->ShadowGrid.Execute(commandBuffer, frameSlot, frameId, mImpl->StaticRevision,
-                mImpl->ShadowPoints, mImpl->ShadowReferences, mImpl->ShadowSurfaces, focus, providerPlan, shadowHistory);
+            // The references follow the uploaded anchors (one per root).
+            const auto grid = mImpl->ShadowGrid.Execute(commandBuffer, frameSlot, frameId, uploadedRevision,
+                mImpl->ShadowPoints,
+                residency ? std::span<const GrassShadowGridReference>(residency->ShadowReferences)
+                          : std::span<const GrassShadowGridReference>(mImpl->ShadowReferences),
+                mImpl->ShadowSurfaces, focus, providerPlan, shadowHistory);
             if (profiler)
                 profiler->EndScope(frameSlot, GpuProfileScope::GrassShadows, commandBuffer);
             shadowBuffers[0] = grid.Visibility;

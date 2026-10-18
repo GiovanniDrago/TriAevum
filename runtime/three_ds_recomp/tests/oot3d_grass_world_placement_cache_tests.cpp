@@ -3,6 +3,7 @@
 #include "fast/oot3d/grass_actor_cells.h"
 #include "fast/oot3d/grass_distant_tuft.h"
 #include "fast/oot3d/grass_indexed_topology.h"
+#include "fast/oot3d/grass_residency.h"
 #include "fast/oot3d/grass_selection_cache.h"
 #include "fast/oot3d/grass_selection_budget.h"
 #include "fast/oot3d/grass_surface_reference.h"
@@ -905,4 +906,79 @@ TEST(Oot3dGrassVisibility, LodEvaluatorFarBandIsBitIdentical) {
         }
     }
     EXPECT_GT(far, 0U);
+}
+
+TEST(Oot3dGrassResidency, StoresEveryPrefixACameraWithinTheMarginSelects) {
+    using namespace Fast::Oot3d;
+    InteractiveGrassSettings settings;
+    settings.DrawDistance = 50000;
+    settings.LodReferenceDistance = 2282;
+    settings.FarTuftsEnabled = true;
+    settings.FarDensity = 1.0F;
+    const auto policy = BuildGrassLodPolicy(settings);
+    const float bladeRadiusScale = 1.6F;
+    // A 12 km strip of clusters, 64 anchors each in stable-visibility order.
+    auto world = std::make_shared<GrassWorldPlacement>();
+    for (uint32_t c = 0; c < 400U; ++c) {
+        GrassWorldCluster cluster;
+        cluster.FirstAnchor = static_cast<uint32_t>(world->Anchors.size());
+        cluster.AnchorCount = 64U;
+        cluster.Center = {static_cast<float>(c) * 30.0F, 0.0F, static_cast<float>(c % 7U) * 11.0F};
+        cluster.Radius = 20.0F;
+        cluster.MaximumBladeHeight = 10.0F;
+        for (uint32_t a = 0; a < 64U; ++a) {
+            GrassWorldAnchor anchor;
+            anchor.StableId = c * 64U + a;
+            world->Anchors.push_back(anchor);
+            world->CullingAnchors.push_back({cluster.Center, (static_cast<float>(a) + 0.5F) / 64.0F});
+            world->ShadowReferences.push_back({c, a, 0.5F});
+        }
+        cluster.MinimumStableVisibility = world->CullingAnchors[cluster.FirstAnchor].StableVisibility;
+        world->Clusters.push_back(cluster);
+    }
+    const std::array<float, 3> eye{3000.0F, 5.0F, 40.0F};
+    const float margin = 1000.0F;
+    const auto residency = BuildGrassResidency({world}, 9U, eye, policy, bladeRadiusScale, margin, true);
+    ASSERT_EQ(residency.Clusters.size(), 1U);
+    ASSERT_EQ(residency.Clusters[0].size(), world->Clusters.size());
+    // Full density reaches 2282 + the margin; farther clusters keep short prefixes.
+    EXPECT_LT(residency.Anchors.size(), world->Anchors.size() * 3U / 5U);
+    EXPECT_EQ(residency.ShadowReferences.size(), residency.Anchors.size());
+
+    // Any camera within the margin: each cluster's selected prefix is stored.
+    for (float dx : {-1000.0F, -400.0F, 0.0F, 650.0F, 1000.0F}) {
+        const std::array<float, 3> camera{eye[0] + dx, eye[1], eye[2]};
+        for (size_t c = 0; c < world->Clusters.size(); ++c) {
+            const auto& original = world->Clusters[c];
+            const auto& stored = residency.Clusters[0][c];
+            float squared = 0.0F;
+            for (size_t axis = 0; axis < 3U; ++axis)
+                squared += (original.Center[axis] - camera[axis]) * (original.Center[axis] - camera[axis]);
+            const float radius = original.Radius + original.MaximumBladeHeight * (bladeRadiusScale - 1.0F);
+            const float retention = GrassLodRetentionUpperBound(policy, std::max(0.0F, std::sqrt(squared) - radius));
+            const auto begin = world->CullingAnchors.begin() + original.FirstAnchor;
+            const auto selected = std::upper_bound(begin, begin + original.AnchorCount, retention,
+                [](float value, const GrassWorldCullingAnchor& anchor) { return value < anchor.StableVisibility; }) -
+                begin;
+            ASSERT_LE(selected, static_cast<ptrdiff_t>(stored.AnchorCount)) << "cluster " << c << " camera " << dx;
+            // The store holds the same anchors, in the same order.
+            for (uint32_t a = 0; a < stored.AnchorCount; ++a) {
+                ASSERT_EQ(residency.Anchors[stored.FirstAnchor + a].StableId, original.FirstAnchor + a);
+                ASSERT_EQ(residency.ShadowReferences[stored.FirstAnchor + a].Second, a);
+            }
+        }
+    }
+    // A second source's references address its points after the first's.
+    world->ShadowPoints.resize(400U);
+    const auto pair = BuildGrassResidency({world, world}, 10U, eye, policy, bladeRadiusScale, margin, true);
+    ASSERT_EQ(pair.SourceBase.size(), 2U);
+    ASSERT_EQ(pair.SourceBase[1], residency.Anchors.size());
+    for (size_t a = 0; a < residency.Anchors.size(); ++a) {
+        ASSERT_EQ(pair.ShadowReferences[a].First, residency.ShadowReferences[a].First);
+        ASSERT_EQ(pair.ShadowReferences[pair.SourceBase[1] + a].First, residency.ShadowReferences[a].First + 400U);
+        ASSERT_EQ(pair.ShadowReferences[pair.SourceBase[1] + a].Second, residency.ShadowReferences[a].Second + 400U);
+    }
+    EXPECT_TRUE(GrassResidencyCovers(residency, {eye[0] + 499.0F, eye[1], eye[2]}));
+    EXPECT_FALSE(GrassResidencyCovers(residency, {eye[0] + 501.0F, eye[1], eye[2]}));
+    EXPECT_NE(GrassResidencyPolicyKey(policy, bladeRadiusScale), GrassResidencyPolicyKey(policy, 1.0F));
 }

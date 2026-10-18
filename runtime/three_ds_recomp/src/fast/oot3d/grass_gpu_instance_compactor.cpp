@@ -460,6 +460,9 @@ bool GrassGpuInstanceCompactor::Compact(const GrassGpuInstanceCompactionRequest&
             selectionRequest.FrameSlot = request.FrameSlot;
             selectionRequest.StaticAnchors = mImpl->StaticAnchors.Handle;
             selectionRequest.StaticAnchorCount = request.StaticAnchors.size();
+            // The cluster table belongs to these anchors: without their revision
+            // the selector re-uploaded it only when its slot layout changed.
+            selectionRequest.StaticRevision = request.StaticRevision;
             if (!request.Selector->Record(selectionRequest, gpu)) {
                 const auto reason = "grass GPU selection failed: " + request.Selector->UnavailableReason();
                 if (request.Selector->LastFailureOutOfMemory()) throw GrassGpuOutOfMemory(reason);

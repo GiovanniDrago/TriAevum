@@ -751,6 +751,7 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/grass_placement_cache.cpp
     ../src/fast/oot3d/grass_primitive_topology.cpp
     ../src/fast/oot3d/grass_render_telemetry.cpp
+    ../src/fast/oot3d/grass_residency.cpp
     ../src/fast/oot3d/grass_scene_bridge.cpp
     ../src/fast/oot3d/grass_shading_environment.cpp
     ../src/fast/oot3d/pica_scene_semantics.cpp
