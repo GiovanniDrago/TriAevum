@@ -145,7 +145,7 @@ struct GrassGpuInstanceCompactor::Impl {
 
     bool EnsureBuffer(Buffer& buffer, VkDeviceSize bytes, VkBufferUsageFlags usage,
                       VkMemoryPropertyFlags memoryProperties, bool waitBeforeResize) {
-        if (buffer.Handle != VK_NULL_HANDLE && bytes <= buffer.Capacity) {
+        if (!GrassBufferNeedsResize(buffer.Handle != VK_NULL_HANDLE, bytes, buffer.Capacity)) {
             return false;
         }
         if (waitBeforeResize && buffer.Handle != VK_NULL_HANDLE) {
@@ -165,7 +165,7 @@ struct GrassGpuInstanceCompactor::Impl {
 
     void CreateBuffer(Buffer& buffer, VkDeviceSize bytes, VkBufferUsageFlags usage,
                       VkMemoryPropertyFlags memoryProperties) {
-        buffer.Capacity = std::bit_ceil(std::max<VkDeviceSize>(bytes, 4096U));
+        buffer.Capacity = GrassBufferCapacity(bytes);
         const VkBufferCreateInfo bufferInfo{
             VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             nullptr,
@@ -192,7 +192,7 @@ struct GrassGpuInstanceCompactor::Impl {
             vkAllocateMemory(Device, &allocation, nullptr, &buffer.Memory) != VK_SUCCESS) {
             throw std::runtime_error("cannot allocate grass compaction buffer");
         }
-        TrackGrassGpuMemory(buffer.DeviceLocal, static_cast<int64_t>(buffer.Capacity));
+        TrackGrassGpuMemory(buffer.DeviceLocal, static_cast<int64_t>(buffer.Capacity), "compactor", usage);
         if (vkBindBufferMemory(Device, buffer.Handle, buffer.Memory, 0U) != VK_SUCCESS) {
             throw std::runtime_error("cannot bind grass compaction buffer");
         }
@@ -432,6 +432,11 @@ bool GrassGpuInstanceCompactor::Compact(const GrassGpuInstanceCompactionRequest&
                     std::chrono::duration<double, std::milli>(stagingReady - deviceReady).count(),
                     static_cast<unsigned long long>(staticBytes), staticResized ? 1 : 0,
                     staticResized && hadBuffer ? 1 : 0);
+        } else if (mImpl->StaticStaging[slot].Handle != VK_NULL_HANDLE) {
+            // The copy that used this slot's staging ran in this slot's
+            // previous frame, which has completed: the whole-scene copy is
+            // not kept resident (it doubled the static anchors' size).
+            mImpl->DestroyBuffer(mImpl->StaticStaging[slot]);
         }
 
         GrassGpuSelectionResult gpu;

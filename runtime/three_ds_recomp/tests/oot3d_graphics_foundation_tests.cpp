@@ -35,6 +35,7 @@
 #include "fast/oot3d/grass_primitive_topology.h"
 #include "fast/oot3d/grass_scene_bridge.h"
 #include "fast/oot3d/grass_shading_environment.h"
+#include "fast/oot3d/grass_gpu_memory.h"
 #include "fast/oot3d/grass_placement_audit.h"
 #include "fast/oot3d/grass_surface_eligibility.h"
 #include "fast/oot3d/grass_surface_extractor.h"
@@ -1339,6 +1340,24 @@ TEST(Oot3dGrassPlacementAudit, ReportsConfiguredOutcomesAndEachCatalogCandidateO
     EXPECT_NE(partial.find("texture=000000000000000b size=32x32 draws=1 vertices=5 new=0\n"), std::string::npos);
     EXPECT_EQ(partial.find("TRIAEVUM_GRASS_AUDIT_SOURCE"), std::string::npos);
     EXPECT_TRUE(audit.Flush().empty());
+}
+
+TEST(Oot3dGrassGpuMemory, LargeBuffersKeepHeadroomInsteadOfDoublingAndShrinkAfterAScene) {
+    using namespace Fast::Oot3d;
+    constexpr uint64_t MiB = 1ULL << 20U;
+    EXPECT_EQ(GrassBufferCapacity(1), 4096U);
+    EXPECT_EQ(GrassBufferCapacity(5000), 8192U);
+    EXPECT_EQ(GrassBufferCapacity(MiB), MiB);
+    // Hyrule Field's static anchors: 187 MB took 256 MiB as a power of two.
+    const uint64_t field = 4'680'000ULL * 40U;
+    EXPECT_GE(GrassBufferCapacity(field), field + field / 8U);
+    EXPECT_LT(GrassBufferCapacity(field), 202U * MiB);
+    EXPECT_EQ(GrassBufferCapacity(field) % MiB, 0U);
+    EXPECT_TRUE(GrassBufferNeedsResize(false, 1, 0));
+    EXPECT_FALSE(GrassBufferNeedsResize(true, 100 * MiB, 120 * MiB));
+    EXPECT_TRUE(GrassBufferNeedsResize(true, 121 * MiB, 120 * MiB));
+    EXPECT_TRUE(GrassBufferNeedsResize(true, 20 * MiB, 120 * MiB)) << "a peak buffer is given back";
+    EXPECT_FALSE(GrassBufferNeedsResize(true, 1 * MiB, 16 * MiB)) << "small buffers never shrink";
 }
 
 TEST(Oot3dGrassPrimitiveTopology,

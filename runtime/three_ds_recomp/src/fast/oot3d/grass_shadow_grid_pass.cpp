@@ -65,7 +65,7 @@ struct GrassShadowGridPass::Impl {
         buffer = {};
     }
     void Ensure(Buffer& buffer, VkDeviceSize bytes, VkBufferUsageFlags usage, bool mapped) {
-        if (bytes <= buffer.Capacity)
+        if (!GrassBufferNeedsResize(buffer.Handle != VK_NULL_HANDLE, bytes, buffer.Capacity))
             return;
         // This invocation slot is reused only after its owning frame fence.
         Destroy(buffer);
@@ -79,7 +79,7 @@ struct GrassShadowGridPass::Impl {
         }
     }
     void Create(Buffer& buffer, VkDeviceSize bytes, VkBufferUsageFlags usage, bool mapped) {
-        buffer.Capacity = std::bit_ceil(std::max<VkDeviceSize>(bytes, 4096));
+        buffer.Capacity = GrassBufferCapacity(bytes);
         VkBufferCreateInfo create{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         create.size = buffer.Capacity;
         create.usage = usage;
@@ -103,7 +103,7 @@ struct GrassShadowGridPass::Impl {
         if (GrassGpuAllocationRefused(buffer.Capacity))
             throw std::runtime_error("grass shadow grid Vulkan resource failure");
         Check(vkAllocateMemory(Device, &allocate, nullptr, &buffer.Memory));
-        TrackGrassGpuMemory(buffer.DeviceLocal, static_cast<int64_t>(buffer.Capacity));
+        TrackGrassGpuMemory(buffer.DeviceLocal, static_cast<int64_t>(buffer.Capacity), "shadow_grid", usage);
         Check(vkBindBufferMemory(Device, buffer.Handle, buffer.Memory, 0));
         if (mapped)
             Check(vkMapMemory(Device, buffer.Memory, 0, buffer.Capacity, 0, &buffer.Mapped));

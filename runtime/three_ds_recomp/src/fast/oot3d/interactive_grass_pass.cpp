@@ -974,7 +974,7 @@ struct InteractiveGrassPass::Impl {
     }
 
     void CreateBuffer(BufferSlot& slot, VkDeviceSize bytes, VkBufferUsageFlags usage, VkDeviceSize minimumCapacity) {
-        slot.Capacity = std::bit_ceil(std::max(bytes, minimumCapacity));
+        slot.Capacity = GrassBufferCapacity(std::max(bytes, minimumCapacity));
         VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bufferInfo.size = slot.Capacity;
         bufferInfo.usage = usage;
@@ -993,7 +993,7 @@ struct InteractiveGrassPass::Impl {
             vkAllocateMemory(Device, &allocation, nullptr, &slot.Memory) != VK_SUCCESS)
             throw std::runtime_error(
                 "cannot allocate interactive grass streaming buffer");
-        TrackGrassGpuMemory(false, static_cast<int64_t>(slot.Capacity));
+        TrackGrassGpuMemory(false, static_cast<int64_t>(slot.Capacity), "streaming", usage);
         if (vkBindBufferMemory(Device, slot.Buffer, slot.Memory, 0) != VK_SUCCESS ||
             vkMapMemory(Device, slot.Memory, 0, slot.Capacity, 0, &slot.Mapped) != VK_SUCCESS)
             throw std::runtime_error(

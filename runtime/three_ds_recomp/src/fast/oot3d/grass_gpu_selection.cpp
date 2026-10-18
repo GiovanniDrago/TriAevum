@@ -96,7 +96,7 @@ struct GrassGpuSelector::Impl {
     // frame: growing them waits for the device, as the compactor does.
     bool EnsureBuffer(Buffer& buffer, VkDeviceSize bytes, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
                       bool waitBeforeResize) {
-        if (buffer.Handle != VK_NULL_HANDLE && bytes <= buffer.Capacity) return false;
+        if (!GrassBufferNeedsResize(buffer.Handle != VK_NULL_HANDLE, bytes, buffer.Capacity)) return false;
         if (waitBeforeResize && buffer.Handle != VK_NULL_HANDLE) vkDeviceWaitIdle(Device);
         DestroyBuffer(buffer);
         try {
@@ -111,7 +111,7 @@ struct GrassGpuSelector::Impl {
     }
 
     void CreateBuffer(Buffer& buffer, VkDeviceSize bytes, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties) {
-        buffer.Capacity = std::bit_ceil(std::max<VkDeviceSize>(bytes, 4096U));
+        buffer.Capacity = GrassBufferCapacity(bytes);
         const VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, nullptr, 0U, buffer.Capacity, usage,
                                       VK_SHARING_MODE_EXCLUSIVE, 0U, nullptr};
         if (vkCreateBuffer(Device, &info, nullptr, &buffer.Handle) != VK_SUCCESS)
@@ -124,7 +124,7 @@ struct GrassGpuSelector::Impl {
         if (GrassGpuAllocationRefused(buffer.Capacity) ||
             vkAllocateMemory(Device, &allocation, nullptr, &buffer.Memory) != VK_SUCCESS)
             throw std::runtime_error("cannot allocate grass selection buffer");
-        TrackGrassGpuMemory(buffer.DeviceLocal, static_cast<int64_t>(buffer.Capacity));
+        TrackGrassGpuMemory(buffer.DeviceLocal, static_cast<int64_t>(buffer.Capacity), "selection", usage);
         if (vkBindBufferMemory(Device, buffer.Handle, buffer.Memory, 0U) != VK_SUCCESS)
             throw std::runtime_error("cannot bind grass selection buffer");
         if ((properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0U &&
@@ -277,6 +277,9 @@ bool GrassGpuSelector::Record(const GrassGpuSelectionRequest& request, GrassGpuS
             impl.ClusterRevision = request.StaticRevision;
             impl.ClusterSlots = clusterSlots;
             impl.GroupBase = groupBase;
+        } else if (impl.ClusterStaging[slot].Handle != VK_NULL_HANDLE) {
+            // Its copy ran in this slot's previous frame, which has completed.
+            impl.DestroyBuffer(impl.ClusterStaging[slot]);
         }
         impl.EnsureBuffer(impl.AnchorSlots, request.StaticAnchorCount * sizeof(uint32_t),
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, kDevice, true);

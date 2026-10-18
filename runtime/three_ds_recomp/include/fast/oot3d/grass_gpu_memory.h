@@ -11,8 +11,29 @@ struct GrassGpuMemoryUse {
     uint64_t HostVisible = 0;
 };
 
-void TrackGrassGpuMemory(bool deviceLocal, int64_t bytes) noexcept;
+// TRIAEVUM_GRASS_GPU_MEMORY_LOG=1 prints every allocation (owner, usage).
+void TrackGrassGpuMemory(bool deviceLocal, int64_t bytes, const char* owner = nullptr,
+                         uint32_t usage = 0) noexcept;
 [[nodiscard]] GrassGpuMemoryUse GrassGpuMemoryInUse() noexcept;
+
+// Capacity policy of the grass buffers. Small buffers round up to a power of
+// two (at least 4 KiB); large ones keep 1/8 headroom on a 1 MiB granule instead
+// of doubling, which cost up to half their size again on the static anchors.
+[[nodiscard]] constexpr uint64_t GrassBufferCapacity(uint64_t bytes) noexcept {
+    constexpr uint64_t kSmall = 1ULL << 20U;
+    if (bytes <= kSmall) {
+        uint64_t capacity = 4096U;
+        while (capacity < bytes) capacity <<= 1U;
+        return capacity;
+    }
+    return (bytes + bytes / 8U + kSmall - 1U) / kSmall * kSmall;
+}
+
+// A buffer is rebuilt when it is missing, too small, or a large one holds
+// over four times what is asked (a scene left behind keeps no peak buffers).
+[[nodiscard]] constexpr bool GrassBufferNeedsResize(bool exists, uint64_t bytes, uint64_t capacity) noexcept {
+    return !exists || bytes > capacity || (capacity > (16ULL << 20U) && bytes < capacity / 4U);
+}
 
 // Diagnostic fault injection: TRIAEVUM_GRASS_FAIL_ALLOCATIONS_ABOVE_MIB=<n>
 // refuses an allocation that would take the grass passes beyond n MiB, as a

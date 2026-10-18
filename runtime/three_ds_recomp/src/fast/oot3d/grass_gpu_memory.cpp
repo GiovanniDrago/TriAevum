@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 
 namespace Fast::Oot3d {
@@ -20,8 +21,13 @@ uint64_t RefusalThreshold() {
 
 } // namespace
 
-void TrackGrassGpuMemory(bool deviceLocal, int64_t bytes) noexcept {
+void TrackGrassGpuMemory(bool deviceLocal, int64_t bytes, const char* owner, uint32_t usage) noexcept {
     (deviceLocal ? gDeviceLocal : gHostVisible).fetch_add(bytes, std::memory_order_relaxed);
+    static const bool log = std::getenv("TRIAEVUM_GRASS_GPU_MEMORY_LOG") != nullptr;
+    if (log && bytes > 0)
+        std::fprintf(stderr, "TRIAEVUM_GRASS_GPU_ALLOC owner=%s device_local=%d usage=%08x bytes=%lld\n",
+                     owner != nullptr ? owner : "unknown", deviceLocal ? 1 : 0, usage,
+                     static_cast<long long>(bytes));
 }
 
 GrassGpuMemoryUse GrassGpuMemoryInUse() noexcept {
