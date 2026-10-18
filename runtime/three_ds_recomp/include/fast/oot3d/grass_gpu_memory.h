@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <stdexcept>
 
 namespace Fast::Oot3d {
 
@@ -12,6 +13,13 @@ struct GrassGpuMemoryUse {
 };
 
 // TRIAEVUM_GRASS_GPU_MEMORY_LOG=1 prints every allocation (owner, usage).
+// A grass buffer the device would not allocate (or the fault injection
+// refused): recoverable with less memory, unlike a functional failure.
+class GrassGpuOutOfMemory final : public std::runtime_error {
+  public:
+    using std::runtime_error::runtime_error;
+};
+
 void TrackGrassGpuMemory(bool deviceLocal, int64_t bytes, const char* owner = nullptr,
                          uint32_t usage = 0) noexcept;
 [[nodiscard]] GrassGpuMemoryUse GrassGpuMemoryInUse() noexcept;

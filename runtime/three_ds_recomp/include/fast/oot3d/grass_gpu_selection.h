@@ -94,9 +94,13 @@ class GrassGpuSelector {
     bool Record(const GrassGpuSelectionRequest& request, GrassGpuSelectionResult& result);
     // Reads the frame slot's previous results; call before Record reuses it.
     [[nodiscard]] GrassGpuSelectionReadback ReadBack(uint32_t frameSlot) const;
+    // Frees every data buffer (after the device is idle) and keeps the pipelines.
+    void ReleaseMemory();
     void Shutdown();
     [[nodiscard]] bool Available() const noexcept;
     [[nodiscard]] const std::string& UnavailableReason() const noexcept;
+    // The last failed Record could not allocate a buffer (recoverable).
+    [[nodiscard]] bool LastFailureOutOfMemory() const noexcept;
 
   private:
     struct Impl;

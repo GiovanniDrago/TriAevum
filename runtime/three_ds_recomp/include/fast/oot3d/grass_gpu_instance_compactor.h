@@ -76,9 +76,14 @@ class GrassGpuInstanceCompactor final {
                                GrassGpuInstanceCompactionResult& result);
     // Forget every previous bend (savestates, scene transitions).
     void ResetHistory();
+    // Frees every data buffer (after the device is idle) and keeps the
+    // pipeline: the next compaction uploads and allocates again.
+    void ReleaseMemory();
     void Shutdown();
 
     [[nodiscard]] const std::string& UnavailableReason() const;
+    // The last failed compaction could not allocate a buffer (recoverable).
+    [[nodiscard]] bool LastFailureOutOfMemory() const;
 
   private:
     struct Impl;

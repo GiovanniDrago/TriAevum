@@ -100,9 +100,9 @@ struct GrassShadowGridPass::Impl {
         allocate.allocationSize = requirements.size;
         allocate.memoryTypeIndex = type;
         buffer.DeviceLocal = !mapped;
-        if (GrassGpuAllocationRefused(buffer.Capacity))
-            throw std::runtime_error("grass shadow grid Vulkan resource failure");
-        Check(vkAllocateMemory(Device, &allocate, nullptr, &buffer.Memory));
+        if (GrassGpuAllocationRefused(buffer.Capacity) ||
+            vkAllocateMemory(Device, &allocate, nullptr, &buffer.Memory) != VK_SUCCESS)
+            throw GrassGpuOutOfMemory("cannot allocate grass shadow grid buffer");
         TrackGrassGpuMemory(buffer.DeviceLocal, static_cast<int64_t>(buffer.Capacity), "shadow_grid", usage);
         Check(vkBindBufferMemory(Device, buffer.Handle, buffer.Memory, 0));
         if (mapped)

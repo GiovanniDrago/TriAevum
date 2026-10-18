@@ -1316,7 +1316,8 @@ TEST(Oot3dGrassPlacementAudit, ReportsConfiguredOutcomesAndEachCatalogCandidateO
     // The first window counts evictions since the cache was created.
     EXPECT_TRUE(has("TRIAEVUM_GRASS_AUDIT frames=10-12 passes=3 visible_min=0 visible_max=300 "
                     "placement_pending=1 drawn=2 cache_resident_mib_max=900 cache_entries_max=4 "
-                    "cache_pending_max=1 cache_evictions=7 gpu_device_mib_max=0 gpu_host_mib_max=0\n")) << report;
+                    "cache_pending_max=1 cache_evictions=7 gpu_device_mib_max=0 gpu_host_mib_max=0 "
+                    "memory_shift_max=0\n")) << report;
     EXPECT_TRUE(has("TRIAEVUM_GRASS_AUDIT_ERROR passes=1 reason=cannot allocate grass compaction buffer\n"));
     EXPECT_TRUE(has("texture=000000000000000a size=64x64 outcome=published draws=1 vertices=100\n"));
     EXPECT_TRUE(has("outcome=skinned_geometry_unsupported draws=1 vertices=20\n"));

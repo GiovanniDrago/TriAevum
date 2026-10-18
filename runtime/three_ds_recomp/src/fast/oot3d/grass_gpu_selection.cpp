@@ -81,6 +81,18 @@ struct GrassGpuSelector::Impl {
     std::vector<uint32_t> GroupBase;
     std::vector<uint32_t> GroupCount;
     std::string Reason;
+    bool OutOfMemory = false;
+
+    void DestroyBuffers() {
+        for (auto* buffer : {&Clusters, &AnchorSlots, &Records, &Groups})
+            DestroyBuffer(*buffer);
+        for (auto* set : {&ClusterStaging, &Sources, &Visible, &Control, &Readback})
+            for (auto& buffer : *set) DestroyBuffer(buffer);
+        SlotStates = {};
+        ClusterRevision = 0U;
+        ClusterSlots = 0U;
+        GroupBase.clear();
+    }
 
     void DestroyBuffer(Buffer& buffer) {
         if (buffer.Mapped != nullptr) vkUnmapMemory(Device, buffer.Memory);
@@ -123,7 +135,7 @@ struct GrassGpuSelector::Impl {
         buffer.DeviceLocal = (properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0U;
         if (GrassGpuAllocationRefused(buffer.Capacity) ||
             vkAllocateMemory(Device, &allocation, nullptr, &buffer.Memory) != VK_SUCCESS)
-            throw std::runtime_error("cannot allocate grass selection buffer");
+            throw GrassGpuOutOfMemory("cannot allocate grass selection buffer");
         TrackGrassGpuMemory(buffer.DeviceLocal, static_cast<int64_t>(buffer.Capacity), "selection", usage);
         if (vkBindBufferMemory(Device, buffer.Handle, buffer.Memory, 0U) != VK_SUCCESS)
             throw std::runtime_error("cannot bind grass selection buffer");
@@ -394,9 +406,15 @@ bool GrassGpuSelector::Record(const GrassGpuSelectionRequest& request, GrassGpuS
         result.Control = impl.Control[slot].Handle;
         result.Capacity = request.Budget;
         impl.Reason.clear();
+        impl.OutOfMemory = false;
         return true;
+    } catch (const GrassGpuOutOfMemory& exception) {
+        mImpl->Reason = exception.what();
+        mImpl->OutOfMemory = true;
+        return false;
     } catch (const std::exception& exception) {
         mImpl->Reason = exception.what();
+        mImpl->OutOfMemory = false;
         return false;
     }
 }
@@ -405,10 +423,7 @@ void GrassGpuSelector::Shutdown() {
     if (!mImpl || mImpl->Device == VK_NULL_HANDLE) return;
     vkDeviceWaitIdle(mImpl->Device);
     auto& impl = *mImpl;
-    for (auto* buffer : {&impl.Clusters, &impl.AnchorSlots, &impl.Records, &impl.Groups})
-        impl.DestroyBuffer(*buffer);
-    for (auto* set : {&impl.ClusterStaging, &impl.Sources, &impl.Visible, &impl.Control, &impl.Readback})
-        for (auto& buffer : *set) impl.DestroyBuffer(buffer);
+    impl.DestroyBuffers();
     for (auto& pipeline : impl.Pipelines) {
         if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(impl.Device, pipeline, nullptr);
         pipeline = VK_NULL_HANDLE;
@@ -421,12 +436,16 @@ void GrassGpuSelector::Shutdown() {
     impl.DescriptorPool = VK_NULL_HANDLE;
     impl.DescriptorSetLayout = VK_NULL_HANDLE;
     impl.DescriptorSets = {};
-    impl.SlotStates = {};
-    impl.ClusterRevision = 0U;
-    impl.ClusterSlots = 0U;
-    impl.GroupBase.clear();
     impl.Device = VK_NULL_HANDLE;
 }
+
+void GrassGpuSelector::ReleaseMemory() {
+    if (!mImpl || mImpl->Device == VK_NULL_HANDLE) return;
+    vkDeviceWaitIdle(mImpl->Device);
+    mImpl->DestroyBuffers();
+}
+
+bool GrassGpuSelector::LastFailureOutOfMemory() const noexcept { return mImpl->OutOfMemory; }
 
 } // namespace Fast::Oot3d
 

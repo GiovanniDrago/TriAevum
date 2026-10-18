@@ -631,6 +631,17 @@ struct InteractiveGrassPass::Impl {
     bool GpuCompactorAvailable = false;
     GrassGpuSelector GpuSelector;
     bool GpuSelectorAvailable = false;
+    // Memory pressure. A grass buffer the device would not allocate frees the
+    // GPU path's buffers and suspends that path (the CPU path draws meanwhile)
+    // until the placements are built; a failure on settled placements halves
+    // the static candidates and the visible budget (MemoryShift). Stepping
+    // back up waits longer after each relapse.
+    uint32_t MemoryShift = 0;
+    uint32_t BaseCandidateCapacity = 8U * 1024U * 1024U;
+    bool GpuSuspendedForMemory = false;
+    uint64_t GpuRetryFrame = 0;
+    uint64_t LastMemoryChangeFrame = 0;
+    uint64_t MemoryStepUpFrames = 3600;
     VkBuffer PreparedSelectionControl = VK_NULL_HANDLE;
     // GPU selection verification: the CPU selection of each frame slot.
     std::array<std::vector<uint32_t>, 2> VerifyCpuSelection;
@@ -948,6 +959,35 @@ struct InteractiveGrassPass::Impl {
         return stats;
     }
 
+    static constexpr uint32_t kMaximumMemoryShift = 4;
+    static constexpr uint64_t kMemoryRetryFrames = 30;
+
+    void SetMemoryShift(uint32_t shift, uint64_t frameId) {
+        MemoryShift = shift;
+        PlacementBuilder.SetCandidateCapacity(BaseCandidateCapacity >> shift);
+        LastMemoryChangeFrame = frameId;
+    }
+
+    void OnOutOfMemory(uint64_t frameId) {
+        if (PlacementBuilder.Stats().Pending == 0U && MemoryShift < kMaximumMemoryShift) {
+            // A relapse soon after stepping up waits twice as long next time.
+            if (frameId - LastMemoryChangeFrame < MemoryStepUpFrames) MemoryStepUpFrames *= 2U;
+            SetMemoryShift(MemoryShift + 1U, frameId);
+        }
+        GpuSelector.ReleaseMemory();
+        InstanceCompactor.ReleaseMemory();
+        GpuSuspendedForMemory = true;
+        GpuRetryFrame = frameId + kMemoryRetryFrames;
+        std::fprintf(stderr, "[grass] out of GPU memory: GPU path suspended, scale 1/%u\n", 1U << MemoryShift);
+    }
+
+    void UpdateMemoryScale(uint64_t frameId) {
+        if (GpuSuspendedForMemory && frameId >= GpuRetryFrame && PlacementBuilder.Stats().Pending == 0U)
+            GpuSuspendedForMemory = false;
+        if (!GpuSuspendedForMemory && MemoryShift > 0U && frameId - LastMemoryChangeFrame >= MemoryStepUpFrames)
+            SetMemoryShift(MemoryShift - 1U, frameId);
+    }
+
     void DestroyBuffer(BufferSlot& slot) {
         if (slot.Mapped != nullptr) vkUnmapMemory(Device, slot.Memory);
         if (slot.Buffer != VK_NULL_HANDLE) vkDestroyBuffer(Device, slot.Buffer, nullptr);
@@ -991,7 +1031,7 @@ struct InteractiveGrassPass::Impl {
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (GrassGpuAllocationRefused(slot.Capacity) ||
             vkAllocateMemory(Device, &allocation, nullptr, &slot.Memory) != VK_SUCCESS)
-            throw std::runtime_error(
+            throw GrassGpuOutOfMemory(
                 "cannot allocate interactive grass streaming buffer");
         TrackGrassGpuMemory(false, static_cast<int64_t>(slot.Capacity), "streaming", usage);
         if (vkBindBufferMemory(Device, slot.Buffer, slot.Memory, 0) != VK_SUCCESS ||
@@ -1018,8 +1058,9 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
     mImpl->PipelineCache = pipelineCache;
     VkPhysicalDeviceProperties grassDeviceProperties{};
     vkGetPhysicalDeviceProperties(physicalDevice, &grassDeviceProperties);
-    mImpl->PlacementBuilder.SetCandidateCapacity(std::min(8U * 1024U * 1024U,
-        grassDeviceProperties.limits.maxStorageBufferRange / static_cast<uint32_t>(sizeof(GrassWorldAnchor))));
+    mImpl->BaseCandidateCapacity = std::min(8U * 1024U * 1024U,
+        grassDeviceProperties.limits.maxStorageBufferRange / static_cast<uint32_t>(sizeof(GrassWorldAnchor)));
+    mImpl->SetMemoryShift(mImpl->MemoryShift, 0);
     mImpl->Device = device;
     mImpl->SurfaceShaders = &shaders;
     try {
@@ -1352,7 +1393,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             AuditGrassPass(telemetry.FrameId, status, telemetry.VisibleBlades,
                            {placementStatsAfter.ResidentBytes, placementStatsAfter.Entries,
                             placementStatsAfter.Pending, placementStatsAfter.Evictions, gpu.DeviceLocal,
-                            gpu.HostVisible});
+                            gpu.HostVisible, mImpl->MemoryShift});
         }
         return executed;
     };
@@ -1378,6 +1419,8 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
     if (settings.MaxInstancesPerRoom == 0) {
         return finish(GrassRenderStatus::NoBudget, false);
     }
+    mImpl->UpdateMemoryScale(frameId);
+    const uint32_t visibleBudget = std::max(1U, settings.MaxInstancesPerRoom >> mImpl->MemoryShift);
     try {
         const bool requestShadows = settings.Appearance.ReceiveLighting &&
                                     providerPlan.Requires(EffectResource::DirectionalShadowHistory) &&
@@ -1418,7 +1461,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         batches.reserve(settings.Rules.size() * 4U);
         environmentRecords.reserve(settings.Rules.size());
         preparedPlacements.reserve(settings.Rules.size() * 2U);
-        mImpl->VisibleAnchorIndices.reserve(settings.MaxInstancesPerRoom);
+        mImpl->VisibleAnchorIndices.reserve(visibleBudget);
         const size_t slotIndex = frameSlot % mImpl->InstanceBuffers.size();
         const std::array<float, 2> currentJitterNdc =
             temporalJitter ? std::array<float, 2>{ 2.0F * jitterPixels[0] / static_cast<float>(width),
@@ -1698,9 +1741,9 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             (settings.FarTuftsEnabled ? settings.Generation.BladeWidthMax *
                 (1.0F + (settings.FarTuftBladeCount - 1U) * settings.FarTuftSpread) /
                 std::max(settings.Generation.BladeHeightMin, 0.001F) : 0.0F);
-        uint32_t remaining = settings.MaxInstancesPerRoom;
+        uint32_t remaining = visibleBudget;
         GrassSelectionKey selectionKey{mImpl->StaticRevision, lodPolicy, bladeRadiusScale,
-            settings.MaxInstancesPerRoom, settings.FrustumCulling, {}};
+            visibleBudget, settings.FrustumCulling, {}};
         selectionKey.ClusterFarBladeFraction = settings.MidrangeClustersEnabled ? settings.MidrangeFarBladeFraction : 0.0F;
         for (const auto& prepared : preparedPlacements) {
             selectionKey.Views.push_back({prepared.Push.PositionToClip, prepared.Eye});
@@ -1736,6 +1779,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         }
         GrassStageTimer selectionTimer(GrassStage::Selection);
         const bool gpuSelection = GrassGpuSelectionEnabled() && mImpl->GpuCompactorAvailable &&
+            !mImpl->GpuSuspendedForMemory &&
             mImpl->GpuSelectorAvailable && preparedPlacements.size() <= kGrassGpuSelectionMaximumSources &&
             !(settings.MidrangeClustersEnabled && std::any_of(preparedPlacements.begin(), preparedPlacements.end(),
                 [](const auto& prepared) { return !prepared.World->Midrange.Groups.empty(); }));
@@ -2206,7 +2250,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
 
         // With the GPU selection the count is only known on the GPU: buffers and
         // descriptor ranges use the budget.
-        const uint32_t instanceCount = gpuSelection ? settings.MaxInstancesPerRoom
+        const uint32_t instanceCount = gpuSelection ? visibleBudget
                                                     : static_cast<uint32_t>(mImpl->VisibleAnchorIndices.size());
         if (GrassDiagnosticsEnabled() && frameId % 60 == 0) {
             GrassStageTimer diagnosticsTimer(GrassStage::Diagnostics);
@@ -2248,7 +2292,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             selectionRequest.DrawDistanceSquared = drawDistanceSquared;
             selectionRequest.BladeRadiusScale = bladeRadiusScale;
             selectionRequest.FrustumCulling = settings.FrustumCulling;
-            selectionRequest.Budget = settings.MaxInstancesPerRoom;
+            selectionRequest.Budget = visibleBudget;
             selectionRequest.ReadBackVisible = GrassGpuSelectionVerifyEnabled();
         }
 
@@ -2258,7 +2302,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             profiler->BeginScope(frameSlot, GpuProfileScope::GrassCompaction, commandBuffer);
         GrassGpuInstanceCompactionResult compaction;
         bool gpuCompacted = false;
-        if (mImpl->GpuCompactorAvailable) {
+        if (mImpl->GpuCompactorAvailable && !mImpl->GpuSuspendedForMemory) {
             gpuCompacted = mImpl->InstanceCompactor.Compact(
                 {
                     commandBuffer,
@@ -2278,16 +2322,24 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 compaction);
             if (!gpuCompacted || compaction.InstanceBuffer == VK_NULL_HANDLE ||
                 compaction.InstanceCount != instanceCount) {
-                mImpl->GpuCompactorAvailable = false;
+                // Memory comes back; a functional failure does not.
+                if (!gpuCompacted && mImpl->InstanceCompactor.LastFailureOutOfMemory()) {
+                    AuditGrassError(mImpl->InstanceCompactor.UnavailableReason());
+                    mImpl->OnOutOfMemory(frameId);
+                } else {
+                    mImpl->GpuCompactorAvailable = false;
+                }
                 gpuCompacted = false;
             }
         }
         if (gpuSelection && !gpuCompacted) {
             // No CPU selection to fall back on in this frame; the next frame
             // selects on the CPU.
-            std::fprintf(stderr, "[grass] GPU selection disabled: %s\n",
-                mImpl->InstanceCompactor.UnavailableReason().c_str());
-            mImpl->GpuSelectorAvailable = false;
+            if (!mImpl->GpuSuspendedForMemory) {
+                std::fprintf(stderr, "[grass] GPU selection disabled: %s\n",
+                    mImpl->InstanceCompactor.UnavailableReason().c_str());
+                mImpl->GpuSelectorAvailable = false;
+            }
             return finish(GrassRenderStatus::Culled, false);
         }
         mImpl->PreparedSelectionControl = gpuSelection ? compaction.SelectionControl : VK_NULL_HANDLE;
@@ -2477,6 +2529,13 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         mImpl->PreparedDescriptorSet = descriptorSet;
         mImpl->Prepared = true;
         return finish(GrassRenderStatus::Drawn, true);
+    } catch (const GrassGpuOutOfMemory& exception) {
+        mImpl->SelectionCache.Reset();
+        mImpl->CandidateCache.clear();
+        mImpl->Reason = exception.what();
+        AuditGrassError(mImpl->Reason);
+        mImpl->OnOutOfMemory(frameId);
+        return finish(GrassRenderStatus::Error, false);
     } catch (const std::exception& exception) {
         mImpl->SelectionCache.Reset();
         mImpl->CandidateCache.clear();

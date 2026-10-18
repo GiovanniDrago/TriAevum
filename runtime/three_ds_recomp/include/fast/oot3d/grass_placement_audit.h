@@ -27,6 +27,8 @@ struct GrassAuditTexture {
 struct GrassAuditResources {
     uint64_t ResidentBytes = 0, Entries = 0, Pending = 0, Evictions = 0;
     uint64_t GpuDeviceLocal = 0, GpuHostVisible = 0;
+    // Memory pressure: candidates and visible budget divided by 2^MemoryShift.
+    uint64_t MemoryShift = 0;
 };
 
 // Where each candidate surface leaves the grass pipeline, aggregated per

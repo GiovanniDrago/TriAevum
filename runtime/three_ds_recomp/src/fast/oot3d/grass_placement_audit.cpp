@@ -154,6 +154,7 @@ std::string GrassPlacementAudit::RecordPass(uint64_t frameId, GrassRenderStatus 
     mCacheMaximum.Pending = std::max(mCacheMaximum.Pending, cache.Pending);
     mCacheMaximum.GpuDeviceLocal = std::max(mCacheMaximum.GpuDeviceLocal, cache.GpuDeviceLocal);
     mCacheMaximum.GpuHostVisible = std::max(mCacheMaximum.GpuHostVisible, cache.GpuHostVisible);
+    mCacheMaximum.MemoryShift = std::max(mCacheMaximum.MemoryShift, cache.MemoryShift);
     mEvictionsLast = cache.Evictions;
     return frameId - mWindowFirst + 1U < mInterval ? std::string{} : Report();
 }
@@ -174,9 +175,10 @@ std::string GrassPlacementAudit::Report() {
                    (unsigned long long)(mCacheMaximum.ResidentBytes >> 20U), (unsigned long long)mCacheMaximum.Entries,
                    (unsigned long long)mCacheMaximum.Pending,
                    (unsigned long long)(mEvictionsLast - std::min(mEvictionsBefore, mEvictionsLast)));
-    report += Line(" gpu_device_mib_max=%llu gpu_host_mib_max=%llu\n",
+    report += Line(" gpu_device_mib_max=%llu gpu_host_mib_max=%llu memory_shift_max=%llu\n",
                    (unsigned long long)(mCacheMaximum.GpuDeviceLocal >> 20U),
-                   (unsigned long long)(mCacheMaximum.GpuHostVisible >> 20U));
+                   (unsigned long long)(mCacheMaximum.GpuHostVisible >> 20U),
+                   (unsigned long long)mCacheMaximum.MemoryShift);
     for (const auto& [key, count] : mSources)
         report += Line("TRIAEVUM_GRASS_AUDIT_SOURCE texture=%016llx size=%ux%u outcome=%s draws=%llu vertices=%llu\n",
                        (unsigned long long)std::get<0>(key), unsigned(std::get<1>(key)), unsigned(std::get<2>(key)),
