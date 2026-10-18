@@ -1,4 +1,5 @@
 #include "fast/oot3d/grass_gpu_selection.h"
+#include "fast/oot3d/grass_gpu_memory.h"
 #include "fast/oot3d/grass_shader_sources.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
@@ -49,6 +50,7 @@ struct GrassGpuSelector::Impl {
         VkDeviceMemory Memory = VK_NULL_HANDLE;
         VkDeviceSize Capacity = 0U;
         void* Mapped = nullptr;
+        bool DeviceLocal = false;
     };
     struct SlotState {
         bool Recorded = false;
@@ -83,7 +85,10 @@ struct GrassGpuSelector::Impl {
     void DestroyBuffer(Buffer& buffer) {
         if (buffer.Mapped != nullptr) vkUnmapMemory(Device, buffer.Memory);
         if (buffer.Handle != VK_NULL_HANDLE) vkDestroyBuffer(Device, buffer.Handle, nullptr);
-        if (buffer.Memory != VK_NULL_HANDLE) vkFreeMemory(Device, buffer.Memory, nullptr);
+        if (buffer.Memory != VK_NULL_HANDLE) {
+            vkFreeMemory(Device, buffer.Memory, nullptr);
+            TrackGrassGpuMemory(buffer.DeviceLocal, -static_cast<int64_t>(buffer.Capacity));
+        }
         buffer = {};
     }
 
@@ -94,6 +99,18 @@ struct GrassGpuSelector::Impl {
         if (buffer.Handle != VK_NULL_HANDLE && bytes <= buffer.Capacity) return false;
         if (waitBeforeResize && buffer.Handle != VK_NULL_HANDLE) vkDeviceWaitIdle(Device);
         DestroyBuffer(buffer);
+        try {
+            CreateBuffer(buffer, bytes, usage, properties);
+        } catch (...) {
+            // Never keep a half-built buffer: the next frame would take its
+            // handle and capacity for a usable allocation.
+            DestroyBuffer(buffer);
+            throw;
+        }
+        return true;
+    }
+
+    void CreateBuffer(Buffer& buffer, VkDeviceSize bytes, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties) {
         buffer.Capacity = std::bit_ceil(std::max<VkDeviceSize>(bytes, 4096U));
         const VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, nullptr, 0U, buffer.Capacity, usage,
                                       VK_SHARING_MODE_EXCLUSIVE, 0U, nullptr};
@@ -103,13 +120,16 @@ struct GrassGpuSelector::Impl {
         vkGetBufferMemoryRequirements(Device, buffer.Handle, &requirements);
         const VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, requirements.size,
             FindMemoryType(PhysicalDevice, requirements.memoryTypeBits, properties)};
-        if (vkAllocateMemory(Device, &allocation, nullptr, &buffer.Memory) != VK_SUCCESS ||
-            vkBindBufferMemory(Device, buffer.Handle, buffer.Memory, 0U) != VK_SUCCESS)
+        buffer.DeviceLocal = (properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0U;
+        if (GrassGpuAllocationRefused(buffer.Capacity) ||
+            vkAllocateMemory(Device, &allocation, nullptr, &buffer.Memory) != VK_SUCCESS)
             throw std::runtime_error("cannot allocate grass selection buffer");
+        TrackGrassGpuMemory(buffer.DeviceLocal, static_cast<int64_t>(buffer.Capacity));
+        if (vkBindBufferMemory(Device, buffer.Handle, buffer.Memory, 0U) != VK_SUCCESS)
+            throw std::runtime_error("cannot bind grass selection buffer");
         if ((properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0U &&
             vkMapMemory(Device, buffer.Memory, 0U, buffer.Capacity, 0U, &buffer.Mapped) != VK_SUCCESS)
             throw std::runtime_error("cannot map grass selection buffer");
-        return true;
     }
 };
 

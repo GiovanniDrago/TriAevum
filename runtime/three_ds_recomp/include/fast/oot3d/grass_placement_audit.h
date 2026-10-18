@@ -22,6 +22,13 @@ struct GrassAuditTexture {
     bool Configured = false;
 };
 
+// After a pass: the placement cache (resident bytes, entries, placements still
+// building, evictions since it was created) and the grass passes' GPU memory.
+struct GrassAuditResources {
+    uint64_t ResidentBytes = 0, Entries = 0, Pending = 0, Evictions = 0;
+    uint64_t GpuDeviceLocal = 0, GpuHostVisible = 0;
+};
+
 // Where each candidate surface leaves the grass pipeline, aggregated per
 // report window: the scene draws that sample texture 0 (the first stage that
 // dropped them, or "published"), the placement of every scoped rule surface
@@ -34,8 +41,11 @@ class GrassPlacementAudit final {
     void RecordSource(const GrassAuditTexture& texture, std::string_view outcome, uint32_t vertices);
     // "other_target", "pending", "failed", "no_anchors" or "ready".
     void RecordPlacement(uint64_t ruleTexture, std::string_view outcome, uint64_t anchors);
+    // A grass pass that failed, with the renderer's reason.
+    void RecordError(std::string_view reason);
     // One grass pass. Returns the window's report when this pass closes it.
-    [[nodiscard]] std::string RecordPass(uint64_t frameId, GrassRenderStatus status, uint32_t visibleBlades);
+    [[nodiscard]] std::string RecordPass(uint64_t frameId, GrassRenderStatus status, uint32_t visibleBlades,
+                                         const GrassAuditResources& cache = {});
     // The open window's report, if it has any pass (at exit).
     [[nodiscard]] std::string Flush();
     // Configured textures and candidates first seen since the last call.
@@ -56,7 +66,10 @@ class GrassPlacementAudit final {
     std::map<SourceKey, Count> mSources;
     std::map<PlacementKey, Count> mPlacements;
     std::map<GrassRenderStatus, uint64_t> mStatuses;
+    std::map<std::string, uint64_t> mErrors;
     uint64_t mPasses = 0, mVisibleMinimum = UINT64_MAX, mVisibleMaximum = 0;
+    GrassAuditResources mCacheMaximum;
+    uint64_t mEvictionsBefore = 0, mEvictionsLast = 0;
     std::map<TextureKey, Count> mCandidates;
     std::set<TextureKey> mSeen, mNewThisWindow;
     std::vector<GrassAuditTexture> mNewTextures;
@@ -71,6 +84,8 @@ class GrassPlacementAudit final {
 [[nodiscard]] bool GrassPlacementAuditEnabled() noexcept;
 void AuditGrassSource(const GrassAuditTexture& texture, std::string_view outcome, uint32_t vertices);
 void AuditGrassPlacement(uint64_t ruleTexture, std::string_view outcome, uint64_t anchors);
-void AuditGrassPass(uint64_t frameId, GrassRenderStatus status, uint32_t visibleBlades);
+void AuditGrassError(std::string_view reason);
+void AuditGrassPass(uint64_t frameId, GrassRenderStatus status, uint32_t visibleBlades,
+                    const GrassAuditResources& cache);
 
 } // namespace Fast::Oot3d

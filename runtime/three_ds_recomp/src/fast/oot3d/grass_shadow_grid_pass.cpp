@@ -1,4 +1,5 @@
 #include "fast/oot3d/grass_shadow_grid_pass.h"
+#include "fast/oot3d/grass_gpu_memory.h"
 #include "fast/oot3d/grass_shader_sources.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
@@ -26,6 +27,7 @@ struct GrassShadowGridPass::Impl {
         VkDeviceMemory Memory{};
         VkDeviceSize Capacity{};
         void* Mapped{};
+        bool DeviceLocal{};
     };
     struct Invocation {
         Buffer Points, References, Visibility, Uniforms, StaticUniforms, SurfacePatches, Patches;
@@ -56,8 +58,10 @@ struct GrassShadowGridPass::Impl {
             vkUnmapMemory(Device, buffer.Memory);
         if (buffer.Handle)
             vkDestroyBuffer(Device, buffer.Handle, nullptr);
-        if (buffer.Memory)
+        if (buffer.Memory) {
             vkFreeMemory(Device, buffer.Memory, nullptr);
+            TrackGrassGpuMemory(buffer.DeviceLocal, -static_cast<int64_t>(buffer.Capacity));
+        }
         buffer = {};
     }
     void Ensure(Buffer& buffer, VkDeviceSize bytes, VkBufferUsageFlags usage, bool mapped) {
@@ -65,6 +69,16 @@ struct GrassShadowGridPass::Impl {
             return;
         // This invocation slot is reused only after its owning frame fence.
         Destroy(buffer);
+        try {
+            Create(buffer, bytes, usage, mapped);
+        } catch (...) {
+            // Never keep a half-built buffer: the next frame would take its
+            // capacity for a usable allocation.
+            Destroy(buffer);
+            throw;
+        }
+    }
+    void Create(Buffer& buffer, VkDeviceSize bytes, VkBufferUsageFlags usage, bool mapped) {
         buffer.Capacity = std::bit_ceil(std::max<VkDeviceSize>(bytes, 4096));
         VkBufferCreateInfo create{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         create.size = buffer.Capacity;
@@ -85,7 +99,11 @@ struct GrassShadowGridPass::Impl {
         VkMemoryAllocateInfo allocate{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
         allocate.allocationSize = requirements.size;
         allocate.memoryTypeIndex = type;
+        buffer.DeviceLocal = !mapped;
+        if (GrassGpuAllocationRefused(buffer.Capacity))
+            throw std::runtime_error("grass shadow grid Vulkan resource failure");
         Check(vkAllocateMemory(Device, &allocate, nullptr, &buffer.Memory));
+        TrackGrassGpuMemory(buffer.DeviceLocal, static_cast<int64_t>(buffer.Capacity));
         Check(vkBindBufferMemory(Device, buffer.Handle, buffer.Memory, 0));
         if (mapped)
             Check(vkMapMemory(Device, buffer.Memory, 0, buffer.Capacity, 0, &buffer.Mapped));

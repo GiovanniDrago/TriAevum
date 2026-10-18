@@ -2,6 +2,7 @@
 #include "fast/oot3d/grass_shader_sources.h"
 #include "fast/oot3d/grass_instance_layout.h"
 #include "fast/oot3d/grass_actor_cells.h"
+#include "fast/oot3d/grass_gpu_memory.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
 
@@ -96,6 +97,7 @@ struct GrassGpuInstanceCompactor::Impl {
         VkDeviceMemory Memory = VK_NULL_HANDLE;
         VkDeviceSize Capacity = 0U;
         void* Mapped = nullptr;
+        bool DeviceLocal = false;
     };
 
     VkPhysicalDevice PhysicalDevice = VK_NULL_HANDLE;
@@ -136,6 +138,7 @@ struct GrassGpuInstanceCompactor::Impl {
         }
         if (buffer.Memory != VK_NULL_HANDLE) {
             vkFreeMemory(Device, buffer.Memory, nullptr);
+            TrackGrassGpuMemory(buffer.DeviceLocal, -static_cast<int64_t>(buffer.Capacity));
         }
         buffer = {};
     }
@@ -149,6 +152,19 @@ struct GrassGpuInstanceCompactor::Impl {
             vkDeviceWaitIdle(Device);
         }
         DestroyBuffer(buffer);
+        try {
+            CreateBuffer(buffer, bytes, usage, memoryProperties);
+        } catch (...) {
+            // Never keep a half-built buffer: the next frame would take its
+            // handle and capacity for a usable allocation.
+            DestroyBuffer(buffer);
+            throw;
+        }
+        return true;
+    }
+
+    void CreateBuffer(Buffer& buffer, VkDeviceSize bytes, VkBufferUsageFlags usage,
+                      VkMemoryPropertyFlags memoryProperties) {
         buffer.Capacity = std::bit_ceil(std::max<VkDeviceSize>(bytes, 4096U));
         const VkBufferCreateInfo bufferInfo{
             VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -171,15 +187,19 @@ struct GrassGpuInstanceCompactor::Impl {
             requirements.size,
             FindMemoryType(PhysicalDevice, requirements.memoryTypeBits, memoryProperties),
         };
-        if (vkAllocateMemory(Device, &allocation, nullptr, &buffer.Memory) != VK_SUCCESS ||
-            vkBindBufferMemory(Device, buffer.Handle, buffer.Memory, 0U) != VK_SUCCESS) {
+        buffer.DeviceLocal = (memoryProperties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0U;
+        if (GrassGpuAllocationRefused(buffer.Capacity) ||
+            vkAllocateMemory(Device, &allocation, nullptr, &buffer.Memory) != VK_SUCCESS) {
             throw std::runtime_error("cannot allocate grass compaction buffer");
+        }
+        TrackGrassGpuMemory(buffer.DeviceLocal, static_cast<int64_t>(buffer.Capacity));
+        if (vkBindBufferMemory(Device, buffer.Handle, buffer.Memory, 0U) != VK_SUCCESS) {
+            throw std::runtime_error("cannot bind grass compaction buffer");
         }
         if ((memoryProperties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0U &&
             vkMapMemory(Device, buffer.Memory, 0U, buffer.Capacity, 0U, &buffer.Mapped) != VK_SUCCESS) {
             throw std::runtime_error("cannot map grass compaction buffer");
         }
-        return true;
     }
 };
 

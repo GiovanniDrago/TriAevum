@@ -132,7 +132,13 @@ void GrassPlacementAudit::RecordPlacement(uint64_t ruleTexture, std::string_view
     count.Amount += anchors;
 }
 
-std::string GrassPlacementAudit::RecordPass(uint64_t frameId, GrassRenderStatus status, uint32_t visibleBlades) {
+void GrassPlacementAudit::RecordError(std::string_view reason) {
+    std::scoped_lock lock(mMutex);
+    ++mErrors[std::string(reason)];
+}
+
+std::string GrassPlacementAudit::RecordPass(uint64_t frameId, GrassRenderStatus status, uint32_t visibleBlades,
+                                            const GrassAuditResources& cache) {
     std::scoped_lock lock(mMutex);
     if (!mWindowOpen) {
         mWindowOpen = true;
@@ -143,6 +149,12 @@ std::string GrassPlacementAudit::RecordPass(uint64_t frameId, GrassRenderStatus 
     ++mStatuses[status];
     mVisibleMinimum = std::min<uint64_t>(mVisibleMinimum, visibleBlades);
     mVisibleMaximum = std::max<uint64_t>(mVisibleMaximum, visibleBlades);
+    mCacheMaximum.ResidentBytes = std::max(mCacheMaximum.ResidentBytes, cache.ResidentBytes);
+    mCacheMaximum.Entries = std::max(mCacheMaximum.Entries, cache.Entries);
+    mCacheMaximum.Pending = std::max(mCacheMaximum.Pending, cache.Pending);
+    mCacheMaximum.GpuDeviceLocal = std::max(mCacheMaximum.GpuDeviceLocal, cache.GpuDeviceLocal);
+    mCacheMaximum.GpuHostVisible = std::max(mCacheMaximum.GpuHostVisible, cache.GpuHostVisible);
+    mEvictionsLast = cache.Evictions;
     return frameId - mWindowFirst + 1U < mInterval ? std::string{} : Report();
 }
 
@@ -158,7 +170,13 @@ std::string GrassPlacementAudit::Report() {
                               (unsigned long long)mVisibleMaximum);
     for (const auto& [key, passes] : mStatuses)
         report += Line(" %s=%llu", GrassRenderStatusKey(key), (unsigned long long)passes);
-    report += '\n';
+    report += Line(" cache_resident_mib_max=%llu cache_entries_max=%llu cache_pending_max=%llu cache_evictions=%llu",
+                   (unsigned long long)(mCacheMaximum.ResidentBytes >> 20U), (unsigned long long)mCacheMaximum.Entries,
+                   (unsigned long long)mCacheMaximum.Pending,
+                   (unsigned long long)(mEvictionsLast - std::min(mEvictionsBefore, mEvictionsLast)));
+    report += Line(" gpu_device_mib_max=%llu gpu_host_mib_max=%llu\n",
+                   (unsigned long long)(mCacheMaximum.GpuDeviceLocal >> 20U),
+                   (unsigned long long)(mCacheMaximum.GpuHostVisible >> 20U));
     for (const auto& [key, count] : mSources)
         report += Line("TRIAEVUM_GRASS_AUDIT_SOURCE texture=%016llx size=%ux%u outcome=%s draws=%llu vertices=%llu\n",
                        (unsigned long long)std::get<0>(key), unsigned(std::get<1>(key)), unsigned(std::get<2>(key)),
@@ -167,6 +185,8 @@ std::string GrassPlacementAudit::Report() {
         report += Line("TRIAEVUM_GRASS_AUDIT_PLACEMENT texture=%016llx outcome=%s surfaces=%llu anchors=%llu\n",
                        (unsigned long long)std::get<0>(key), std::get<1>(key).c_str(),
                        (unsigned long long)count.Events, (unsigned long long)count.Amount);
+    for (const auto& [reason, passes] : mErrors)
+        report += Line("TRIAEVUM_GRASS_AUDIT_ERROR passes=%llu reason=", (unsigned long long)passes) + reason + '\n';
     // Candidates by draw volume, the largest surfaces first.
     std::vector<std::pair<TextureKey, Count>> candidates(mCandidates.begin(), mCandidates.end());
     std::stable_sort(candidates.begin(), candidates.end(),
@@ -181,9 +201,12 @@ std::string GrassPlacementAudit::Report() {
     mSources.clear();
     mPlacements.clear();
     mStatuses.clear();
+    mErrors.clear();
     mPasses = 0;
     mVisibleMinimum = UINT64_MAX;
     mVisibleMaximum = 0;
+    mCacheMaximum = {};
+    mEvictionsBefore = mEvictionsLast;
     mCandidates.clear();
     mNewThisWindow.clear();
     return report;
@@ -206,10 +229,15 @@ void AuditGrassPlacement(uint64_t ruleTexture, std::string_view outcome, uint64_
     if (auto* global = Global()) global->Audit.RecordPlacement(ruleTexture, outcome, anchors);
 }
 
-void AuditGrassPass(uint64_t frameId, GrassRenderStatus status, uint32_t visibleBlades) {
+void AuditGrassError(std::string_view reason) {
+    if (auto* global = Global()) global->Audit.RecordError(reason);
+}
+
+void AuditGrassPass(uint64_t frameId, GrassRenderStatus status, uint32_t visibleBlades,
+                    const GrassAuditResources& cache) {
     auto* global = Global();
     if (global == nullptr) return;
-    const auto report = global->Audit.RecordPass(frameId, status, visibleBlades);
+    const auto report = global->Audit.RecordPass(frameId, status, visibleBlades, cache);
     if (report.empty()) return;
     std::fputs(report.c_str(), stderr);
     if (global->Dump.empty()) return;

@@ -16,6 +16,7 @@
 #include "fast/oot3d/grass_distant_tuft.h"
 #include "fast/oot3d/grass_indexed_topology.h"
 #include "fast/oot3d/grass_selection_cache.h"
+#include "fast/oot3d/grass_gpu_memory.h"
 #include "fast/oot3d/grass_placement_audit.h"
 #include "fast/oot3d/grass_selection_budget.h"
 #include "fast/oot3d/grass_collision_resolver.h"
@@ -950,7 +951,10 @@ struct InteractiveGrassPass::Impl {
     void DestroyBuffer(BufferSlot& slot) {
         if (slot.Mapped != nullptr) vkUnmapMemory(Device, slot.Memory);
         if (slot.Buffer != VK_NULL_HANDLE) vkDestroyBuffer(Device, slot.Buffer, nullptr);
-        if (slot.Memory != VK_NULL_HANDLE) vkFreeMemory(Device, slot.Memory, nullptr);
+        if (slot.Memory != VK_NULL_HANDLE) {
+            vkFreeMemory(Device, slot.Memory, nullptr);
+            TrackGrassGpuMemory(false, -static_cast<int64_t>(slot.Capacity));
+        }
         slot = {};
     }
 
@@ -959,6 +963,17 @@ struct InteractiveGrassPass::Impl {
         VkBufferUsageFlags usage, VkDeviceSize minimumCapacity = 1U << 20U) {
         if (bytes <= slot.Capacity) return;
         DestroyBuffer(slot);
+        try {
+            CreateBuffer(slot, bytes, usage, minimumCapacity);
+        } catch (...) {
+            // Never keep a half-built buffer: the next frame would take its
+            // capacity for a usable, mapped allocation.
+            DestroyBuffer(slot);
+            throw;
+        }
+    }
+
+    void CreateBuffer(BufferSlot& slot, VkDeviceSize bytes, VkBufferUsageFlags usage, VkDeviceSize minimumCapacity) {
         slot.Capacity = std::bit_ceil(std::max(bytes, minimumCapacity));
         VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bufferInfo.size = slot.Capacity;
@@ -974,8 +989,12 @@ struct InteractiveGrassPass::Impl {
         allocation.memoryTypeIndex = FindMemoryType(
             PhysicalDevice, requirements.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (vkAllocateMemory(Device, &allocation, nullptr, &slot.Memory) != VK_SUCCESS ||
-            vkBindBufferMemory(Device, slot.Buffer, slot.Memory, 0) != VK_SUCCESS ||
+        if (GrassGpuAllocationRefused(slot.Capacity) ||
+            vkAllocateMemory(Device, &allocation, nullptr, &slot.Memory) != VK_SUCCESS)
+            throw std::runtime_error(
+                "cannot allocate interactive grass streaming buffer");
+        TrackGrassGpuMemory(false, static_cast<int64_t>(slot.Capacity));
+        if (vkBindBufferMemory(Device, slot.Buffer, slot.Memory, 0) != VK_SUCCESS ||
             vkMapMemory(Device, slot.Memory, 0, slot.Capacity, 0, &slot.Mapped) != VK_SUCCESS)
             throw std::runtime_error(
                 "cannot map interactive grass streaming buffer");
@@ -1328,7 +1347,13 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             f.DiskWrite += placementStatsAfter.DiskWrites - placementStatsBefore.DiskWrites;
         }
         GrassRenderTelemetry::Instance().Publish(telemetry);
-        AuditGrassPass(telemetry.FrameId, status, telemetry.VisibleBlades);
+        if (GrassPlacementAuditEnabled()) {
+            const auto gpu = GrassGpuMemoryInUse();
+            AuditGrassPass(telemetry.FrameId, status, telemetry.VisibleBlades,
+                           {placementStatsAfter.ResidentBytes, placementStatsAfter.Entries,
+                            placementStatsAfter.Pending, placementStatsAfter.Evictions, gpu.DeviceLocal,
+                            gpu.HostVisible});
+        }
         return executed;
     };
     if (!providerPlan.Valid() ||
@@ -2456,6 +2481,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         mImpl->SelectionCache.Reset();
         mImpl->CandidateCache.clear();
         mImpl->Reason = exception.what();
+        AuditGrassError(mImpl->Reason);
         return finish(GrassRenderStatus::Error, false);
     }
 }
