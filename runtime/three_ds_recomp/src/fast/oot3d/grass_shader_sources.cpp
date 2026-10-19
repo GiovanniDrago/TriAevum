@@ -993,13 +993,16 @@ void main() {
 )glsl";
 }
 
-// GPU grass selection, three passes over one flat cluster index space (each
-// source padded to whole workgroups). The decisions follow the CPU selection
-// (GrassVisibilityQuery::Classify, the retained prefix, ResolveGrassLod...,
-// the per-blade frustum test); float rounding may differ at exact ties.
-// Output order is the CPU's: source, topology slot (bin order), cluster,
-// anchor; the budget keeps the first visible roots in that order. No atomics
-// decide an order, so the output is deterministic.
+// GPU grass selection over one flat cluster index space (each source padded
+// to whole workgroups): count (pass 0), scan (pass 1), recount under the
+// budget cut (pass 3), scan again, scatter (pass 2). The decisions follow the
+// CPU selection (GrassVisibilityQuery::Classify, the retained prefix,
+// ResolveGrassLod..., the per-blade frustum test); float rounding may differ
+// at exact ties. Output order is the CPU's: source, topology slot (bin
+// order), cluster, anchor. Over budget, the roots with the lowest thinning
+// key stay (grass_selection_budget.h): every cluster keeps the same fraction
+// and a root's admission depends on its own key, not on the camera. No
+// atomics decide an order, so the output is deterministic.
 std::string BuildGrassSelectionComputeShader() {
     return std::string("#version 450\n") + R"glsl(
 #ifndef GRASS_SELECTION_PASS
@@ -1017,6 +1020,11 @@ const uint SOURCE_WORDS = 32u;
 const uint DRAW_BASE = 4u;       // control: dispatch xyz, admitted total, draws
 const uint MAX_SOURCES = 16u;
 const uint RANK_BASE = DRAW_BASE + MAX_SOURCES * SLOT_COUNTERS * 5u;
+// Budget thinning (grass_selection_budget.h): the histogram of the visible
+// roots' keys, then the cut (BUCKETS admits every root).
+const uint BUCKETS = 1024u;
+const uint HISTOGRAM_BASE = RANK_BASE + MAX_SOURCES * SLOT_COUNTERS;
+const uint CUT_WORD = HISTOGRAM_BASE + BUCKETS;
 
 layout(std430, set=0, binding=0) readonly buffer StaticAnchors { uint words[]; } static_anchors;
 layout(std430, set=0, binding=1) readonly buffer Clusters { uint words[]; } clusters;
@@ -1101,8 +1109,10 @@ float stable_unit(uint value) {
     value ^= value >> 16u;
     return float(value >> 8u) / 16777216.0;
 }
-// Returns the CPU bin (0..24) or NO_SLOT when the root is not retained.
-uint resolve_bin(float d, float stable_visibility) {
+// Returns the CPU bin (0..24) or NO_SLOT when the root is not retained, and
+// the thinning bucket of a retained root (GrassBudgetBucket).
+uint resolve_bin(float d, float stable_visibility, out uint bucket) {
+    bucket = 0u;
     if (!distance_in_range(d)) return NO_SLOT;
     float normalized = d / policy.distance.z;
     float progress = 0.0;
@@ -1118,7 +1128,12 @@ uint resolve_bin(float d, float stable_visibility) {
     uint segments = choice < second ? far_segments : choice < first ? middle : near_segments;
     float tuft_w = tuft_weight(normalized, policy.lod.x, policy.lod.x + policy.tuft.x);
     bool distant = choice < tuft_w;
-    if (!(stable_visibility <= retention_from_normalized(normalized))) return NO_SLOT;
+    float retention = retention_from_normalized(normalized);
+    if (!(stable_visibility <= retention)) return NO_SLOT;
+    if (retention > 0.0) {
+        float scaled = stable_visibility / retention * float(BUCKETS);
+        if (scaled > 0.0) bucket = min(BUCKETS - 1u, uint(scaled));
+    }
     if (far_tufts() && distant) return 24u;
     uint planes = distant ? 1u : 2u;
     return (clamp(segments, 1u, 12u) - 1u) * 2u + (planes - 1u);
@@ -1163,9 +1178,11 @@ uint record_count(uint slot, uint counter) {
 
 #if GRASS_SELECTION_PASS == 0
 shared uint group_totals[SLOT_COUNTERS];
+shared uint histogram[BUCKETS];
 void main() {
     uint slot = gl_GlobalInvocationID.x;
     if (gl_LocalInvocationID.x < SLOT_COUNTERS) group_totals[gl_LocalInvocationID.x] = 0u;
+    for (uint b = gl_LocalInvocationID.x; b < BUCKETS; b += 256u) histogram[b] = 0u;
     barrier();
     uint counts[SLOT_COUNTERS];
     for (uint k = 0u; k < SLOT_COUNTERS; ++k) counts[k] = 0u;
@@ -1206,8 +1223,9 @@ void main() {
                 vec3 offset = base.xyz - eye;
                 float squared = offset.x * offset.x + offset.y * offset.y + offset.z * offset.z;
                 uint bin = NO_SLOT;
+                uint bucket = 0u;
                 if (!(squared > policy.distance.y)) {
-                    bin = resolve_bin(sqrt(squared), anchor_stable_visibility(a));
+                    bin = resolve_bin(sqrt(squared), anchor_stable_visibility(a), bucket);
                     if (bin != NO_SLOT && relation != 2u) {
                         float half_width = uintBitsToFloat(static_anchors.words[a * 12u + 4u]);
                         if (classify_sphere(source, base.xyz, base.w * policy.tuft.w + half_width * 2.0) == 0u)
@@ -1215,10 +1233,12 @@ void main() {
                     }
                 }
                 uint mapped = bin == NO_SLOT ? NO_SLOT : header(4u + bin);
-                anchor_slots.values[a] = mapped;
+                // The slot in the low byte, the thinning bucket above it.
+                anchor_slots.values[a] = mapped | (bucket << 8u);
                 if (mapped != NO_SLOT) {
                     ++counts[mapped];
                     ++counts[TOTAL];
+                    atomicAdd(histogram[bucket], 1u);
                 }
             }
         }
@@ -1226,6 +1246,37 @@ void main() {
     uint record = slot * RECORD_WORDS;
     records.words[record] = first;
     records.words[record + 1u] = end;
+    for (uint k = 0u; k < SLOT_COUNTERS; k += 2u)
+        records.words[record + 2u + k / 2u] = min(counts[k], 0xFFFFu) | (min(counts[k + 1u], 0xFFFFu) << 16u);
+    for (uint k = 0u; k < SLOT_COUNTERS; ++k)
+        if (counts[k] != 0u) atomicAdd(group_totals[k], counts[k]);
+    barrier();
+    if (gl_LocalInvocationID.x < SLOT_COUNTERS)
+        groups.values[gl_WorkGroupID.x * SLOT_COUNTERS + gl_LocalInvocationID.x] = group_totals[gl_LocalInvocationID.x];
+    for (uint b = gl_LocalInvocationID.x; b < BUCKETS; b += 256u)
+        if (histogram[b] != 0u) atomicAdd(control.values[HISTOGRAM_BASE + b], histogram[b]);
+}
+#elif GRASS_SELECTION_PASS == 3
+// Recount under the cut: the records and group totals of the admitted roots
+// only. Skipped as a whole when nothing is thinned (the counts stand).
+shared uint group_totals[SLOT_COUNTERS];
+void main() {
+    uint cut = control.values[CUT_WORD];
+    if (cut == BUCKETS) return;
+    uint slot = gl_GlobalInvocationID.x;
+    if (gl_LocalInvocationID.x < SLOT_COUNTERS) group_totals[gl_LocalInvocationID.x] = 0u;
+    barrier();
+    uint counts[SLOT_COUNTERS];
+    for (uint k = 0u; k < SLOT_COUNTERS; ++k) counts[k] = 0u;
+    uint record = slot * RECORD_WORDS;
+    uint end = records.words[record + 1u];
+    for (uint a = records.words[record]; a < end; ++a) {
+        uint value = anchor_slots.values[a];
+        uint mapped = value & 0xFFu;
+        if (mapped == NO_SLOT || (value >> 8u) >= cut) continue;
+        ++counts[mapped];
+        ++counts[TOTAL];
+    }
     for (uint k = 0u; k < SLOT_COUNTERS; k += 2u)
         records.words[record + 2u + k / 2u] = min(counts[k], 0xFFFFu) | (min(counts[k + 1u], 0xFFFFu) << 16u);
     for (uint k = 0u; k < SLOT_COUNTERS; ++k)
@@ -1278,36 +1329,20 @@ void main() {
     if (lane != 0u) return;
     uint budget = header(3u);
     uint slot_count = header(2u);
-    uint cut[SLOT_COUNTERS];
-    for (uint k = 0u; k < SLOT_COUNTERS; ++k) cut[k] = 0xFFFFFFFFu;
-    if (totals[TOTAL] > budget) {
-        // The workgroup holding visible rank `budget` (the last whose prefix
-        // does not exceed it), then its clusters and the roots of the
-        // cluster that crosses it.
-        uint low = 0u, high = group_count - 1u;
-        while (low < high) {
-            uint middle = (low + high + 1u) / 2u;
-            if (prefix(middle, TOTAL) <= budget) low = middle;
-            else high = middle - 1u;
+    // The cut from the histogram of every visible root (GrassBudgetCut): the
+    // first bucket whose cumulative count would exceed the budget. The
+    // histogram is the count pass's, so the second scan finds the same cut.
+    uint cut = BUCKETS;
+    uint running = 0u;
+    for (uint b = 0u; b < BUCKETS; ++b) {
+        uint count = control.values[HISTOGRAM_BASE + b];
+        if (running + count > budget) {
+            cut = b;
+            break;
         }
-        uint cut_group = low;
-        for (uint k = 0u; k < SLOT_COUNTERS; ++k) cut[k] = prefix(cut_group, k);
-        for (uint c = 0u; c < 256u && cut[TOTAL] < budget; ++c) {
-            uint slot = cut_group * 256u + c;
-            uint total = record_count(slot, TOTAL);
-            if (cut[TOTAL] + total <= budget) {
-                for (uint k = 0u; k < SLOT_COUNTERS; ++k) cut[k] += record_count(slot, k);
-                continue;
-            }
-            uint end = records.words[slot * RECORD_WORDS + 1u];
-            for (uint a = records.words[slot * RECORD_WORDS]; a < end && cut[TOTAL] < budget; ++a) {
-                uint mapped = anchor_slots.values[a];
-                if (mapped == NO_SLOT) continue;
-                ++cut[mapped];
-                ++cut[TOTAL];
-            }
-        }
+        running += count;
     }
+    control.values[CUT_WORD] = cut;
     uint offset = 0u;
     uint source_count = header(0u);
     for (uint s = 0u; s < source_count; ++s) {
@@ -1316,7 +1351,7 @@ void main() {
         for (uint k = 0u; k < slot_count; ++k) {
             uint start = prefix(begin_group, k);
             uint finish = prefix(end_group, k);
-            uint admitted = min(finish, cut[k]) - min(start, cut[k]);
+            uint admitted = finish - start;
             uint draw = DRAW_BASE + (s * SLOT_COUNTERS + k) * 5u;
             control.values[draw] = header(32u + k * 2u);
             control.values[draw + 1u] = admitted;
@@ -1358,13 +1393,17 @@ void main() {
     uint rank[SLOT_COUNTERS];
     for (uint k = 0u; k < SLOT_COUNTERS; ++k)
         rank[k] = groups.values[(group_count + gl_WorkGroupID.x) * SLOT_COUNTERS + k] + scan[half_index][k][lane] - own[k];
+    // The recount keeps the admitted total within the budget; the bound only
+    // guards the visible buffer.
     uint budget = header(3u);
     if (rank[TOTAL] >= budget) return;
+    uint cut = control.values[CUT_WORD];
     uint source = find_source(slot);
     uint end = records.words[slot * RECORD_WORDS + 1u];
     for (uint a = records.words[slot * RECORD_WORDS]; a < end && rank[TOTAL] < budget; ++a) {
-        uint mapped = anchor_slots.values[a];
-        if (mapped == NO_SLOT) continue;
+        uint value = anchor_slots.values[a];
+        uint mapped = value & 0xFFu;
+        if (mapped == NO_SLOT || (value >> 8u) >= cut) continue;
         visible.values[control.values[RANK_BASE + source * SLOT_COUNTERS + mapped] + rank[mapped]] = a;
         ++rank[mapped];
         ++rank[TOTAL];

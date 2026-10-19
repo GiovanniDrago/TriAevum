@@ -60,6 +60,7 @@ std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
         {"grass_selection_count.comp", Compute, BuildGrassSelectionComputeShader(), {{"GRASS_SELECTION_PASS", "0"}}},
         {"grass_selection_scan.comp", Compute, BuildGrassSelectionComputeShader(), {{"GRASS_SELECTION_PASS", "1"}}},
         {"grass_selection_scatter.comp", Compute, BuildGrassSelectionComputeShader(), {{"GRASS_SELECTION_PASS", "2"}}},
+        {"grass_selection_recount.comp", Compute, BuildGrassSelectionComputeShader(), {{"GRASS_SELECTION_PASS", "3"}}},
         {"pica_surface_lighting_native.frag", Fragment, Renderer3ds::BuildPicaSurfaceLightingFragmentShader(false), {}},
         {"pica_surface_lighting.frag", Fragment, Renderer3ds::BuildPicaSurfaceLightingFragmentShader(true), {}},
         {"pica_surface_lighting_native_coefficients.frag", Fragment, Renderer3ds::BuildPicaSurfaceLightingFragmentShader(false, true), {}},

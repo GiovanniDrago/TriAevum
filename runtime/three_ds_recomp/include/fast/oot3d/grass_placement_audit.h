@@ -1,6 +1,7 @@
 #pragma once
 
 #include "fast/oot3d/grass_render_telemetry.h"
+#include "fast/oot3d/grass_selection_budget.h"
 
 #include <cstdint>
 #include <map>
@@ -45,9 +46,12 @@ class GrassPlacementAudit final {
     void RecordPlacement(uint64_t ruleTexture, std::string_view outcome, uint64_t anchors);
     // A grass pass that failed, with the renderer's reason.
     void RecordError(std::string_view reason);
-    // One grass pass. Returns the window's report when this pass closes it.
+    // One grass pass, with its budget thinning cut (kGrassBudgetCutAll when
+    // every visible root was drawn). Returns the window's report when this
+    // pass closes it.
     [[nodiscard]] std::string RecordPass(uint64_t frameId, GrassRenderStatus status, uint32_t visibleBlades,
-                                         const GrassAuditResources& cache = {});
+                                         const GrassAuditResources& cache = {},
+                                         uint32_t thinningCut = kGrassBudgetCutAll);
     // The open window's report, if it has any pass (at exit).
     [[nodiscard]] std::string Flush();
     // Configured textures and candidates first seen since the last call.
@@ -70,6 +74,7 @@ class GrassPlacementAudit final {
     std::map<GrassRenderStatus, uint64_t> mStatuses;
     std::map<std::string, uint64_t> mErrors;
     uint64_t mPasses = 0, mVisibleMinimum = UINT64_MAX, mVisibleMaximum = 0;
+    uint64_t mThinningCutMinimum = kGrassBudgetCutAll;
     GrassAuditResources mCacheMaximum;
     uint64_t mEvictionsBefore = 0, mEvictionsLast = 0;
     std::map<TextureKey, Count> mCandidates;
@@ -88,6 +93,6 @@ void AuditGrassSource(const GrassAuditTexture& texture, std::string_view outcome
 void AuditGrassPlacement(uint64_t ruleTexture, std::string_view outcome, uint64_t anchors);
 void AuditGrassError(std::string_view reason);
 void AuditGrassPass(uint64_t frameId, GrassRenderStatus status, uint32_t visibleBlades,
-                    const GrassAuditResources& cache);
+                    const GrassAuditResources& cache, uint32_t thinningCut = kGrassBudgetCutAll);
 
 } // namespace Fast::Oot3d

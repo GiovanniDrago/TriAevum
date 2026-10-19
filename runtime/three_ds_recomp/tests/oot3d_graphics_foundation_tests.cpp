@@ -1310,12 +1310,12 @@ TEST(Oot3dGrassPlacementAudit, ReportsConfiguredOutcomesAndEachCatalogCandidateO
     audit.RecordSource(actor, "layer_ui", 5); // not a catalog candidate
     audit.RecordPlacement(0xAU, "ready", 500);
     audit.RecordError("cannot allocate grass compaction buffer");
-    EXPECT_TRUE(audit.RecordPass(10, GrassRenderStatus::Drawn, 300, {600ULL << 20U, 3, 0, 4}).empty());
+    EXPECT_TRUE(audit.RecordPass(10, GrassRenderStatus::Drawn, 300, {600ULL << 20U, 3, 0, 4}, 700).empty());
     EXPECT_TRUE(audit.RecordPass(11, GrassRenderStatus::PlacementPending, 0, {900ULL << 20U, 4, 1, 6}).empty());
     const auto report = audit.RecordPass(12, GrassRenderStatus::Drawn, 200, {700ULL << 20U, 3, 0, 7});
     const auto has = [&](std::string_view text) { return report.find(text) != std::string::npos; };
     // The first window counts evictions since the cache was created.
-    EXPECT_TRUE(has("TRIAEVUM_GRASS_AUDIT frames=10-12 passes=3 visible_min=0 visible_max=300 "
+    EXPECT_TRUE(has("TRIAEVUM_GRASS_AUDIT frames=10-12 passes=3 visible_min=0 visible_max=300 thinning_cut_min=700 "
                     "placement_pending=1 drawn=2 cache_resident_mib_max=900 cache_entries_max=4 "
                     "cache_pending_max=1 cache_evictions=7 gpu_device_mib_max=0 gpu_host_mib_max=0 "
                     "memory_shift_max=0\n")) << report;
@@ -1336,7 +1336,8 @@ TEST(Oot3dGrassPlacementAudit, ReportsConfiguredOutcomesAndEachCatalogCandidateO
     for (uint64_t frame = 13; frame < 15; ++frame)
         EXPECT_TRUE(audit.RecordPass(frame, GrassRenderStatus::Drawn, 1, {0, 1, 0, 9}).empty());
     const auto partial = audit.Flush();
-    EXPECT_NE(partial.find("frames=13-14 passes=2"), std::string::npos) << partial;
+    EXPECT_NE(partial.find("frames=13-14 passes=2 visible_min=1 visible_max=1 thinning_cut_min=1024 "),
+              std::string::npos) << partial;
     EXPECT_NE(partial.find("cache_evictions=2 "), std::string::npos) << partial;
     EXPECT_EQ(partial.find("TRIAEVUM_GRASS_AUDIT_ERROR"), std::string::npos);
     EXPECT_NE(partial.find("texture=000000000000000b size=32x32 draws=1 vertices=5 new=0\n"), std::string::npos);

@@ -70,15 +70,18 @@ struct GrassGpuSelectionResult {
 struct GrassGpuSelectionReadback {
     bool Available = false;
     uint32_t Admitted = 0U;
+    // Budget thinning cut (grass_selection_budget.h); kGrassBudgetCutAll when
+    // every visible root was admitted.
+    uint32_t Cut = 0U;
     std::array<std::array<uint32_t, kGrassGpuSelectionMaximumSlots>, kGrassGpuSelectionMaximumSources> Counts{};
     std::vector<uint32_t> Visible;
 };
 
 // Fine grass selection on the GPU: a flat pass over every cluster of every
-// active source, a single-workgroup scan with the global budget, and a
-// stable scatter into the CPU's layout, plus indirect draw and dispatch
-// arguments. Decisions follow the CPU selection; float rounding may differ
-// at exact thresholds.
+// active source, a single-workgroup scan that derives the budget thinning cut
+// (grass_selection_budget.h), a recount under the cut, and a stable scatter
+// into the CPU's layout, plus indirect draw and dispatch arguments. Decisions
+// follow the CPU selection; float rounding may differ at exact thresholds.
 class GrassGpuSelector {
   public:
     GrassGpuSelector();
@@ -88,7 +91,7 @@ class GrassGpuSelector {
 
     bool Initialize(VkPhysicalDevice physicalDevice, VkDevice device, Renderer::CachedPassShaderCompiler& shaders,
                     VkPipelineCache pipelineCache);
-    // Records the three passes; the caller has made StaticAnchors readable by
+    // Records the selection passes; the caller has made StaticAnchors readable by
     // compute shaders. Ends with the outputs readable by compute, vertex and
     // indirect-command stages.
     bool Record(const GrassGpuSelectionRequest& request, GrassGpuSelectionResult& result);

@@ -138,7 +138,7 @@ void GrassPlacementAudit::RecordError(std::string_view reason) {
 }
 
 std::string GrassPlacementAudit::RecordPass(uint64_t frameId, GrassRenderStatus status, uint32_t visibleBlades,
-                                            const GrassAuditResources& cache) {
+                                            const GrassAuditResources& cache, uint32_t thinningCut) {
     std::scoped_lock lock(mMutex);
     if (!mWindowOpen) {
         mWindowOpen = true;
@@ -149,6 +149,7 @@ std::string GrassPlacementAudit::RecordPass(uint64_t frameId, GrassRenderStatus 
     ++mStatuses[status];
     mVisibleMinimum = std::min<uint64_t>(mVisibleMinimum, visibleBlades);
     mVisibleMaximum = std::max<uint64_t>(mVisibleMaximum, visibleBlades);
+    mThinningCutMinimum = std::min<uint64_t>(mThinningCutMinimum, thinningCut);
     mCacheMaximum.ResidentBytes = std::max(mCacheMaximum.ResidentBytes, cache.ResidentBytes);
     mCacheMaximum.Entries = std::max(mCacheMaximum.Entries, cache.Entries);
     mCacheMaximum.Pending = std::max(mCacheMaximum.Pending, cache.Pending);
@@ -165,10 +166,13 @@ std::string GrassPlacementAudit::Flush() {
 }
 
 std::string GrassPlacementAudit::Report() {
-    std::string report = Line("TRIAEVUM_GRASS_AUDIT frames=%llu-%llu passes=%llu visible_min=%llu visible_max=%llu",
+    // thinning_cut_min: the lowest budget cut of the window, in buckets out of
+    // kGrassBudgetBuckets (that value: nothing thinned).
+    std::string report = Line("TRIAEVUM_GRASS_AUDIT frames=%llu-%llu passes=%llu visible_min=%llu visible_max=%llu "
+                              "thinning_cut_min=%llu",
                               (unsigned long long)mWindowFirst, (unsigned long long)mWindowLast,
                               (unsigned long long)mPasses, (unsigned long long)mVisibleMinimum,
-                              (unsigned long long)mVisibleMaximum);
+                              (unsigned long long)mVisibleMaximum, (unsigned long long)mThinningCutMinimum);
     for (const auto& [key, passes] : mStatuses)
         report += Line(" %s=%llu", GrassRenderStatusKey(key), (unsigned long long)passes);
     report += Line(" cache_resident_mib_max=%llu cache_entries_max=%llu cache_pending_max=%llu cache_evictions=%llu",
@@ -207,6 +211,7 @@ std::string GrassPlacementAudit::Report() {
     mPasses = 0;
     mVisibleMinimum = UINT64_MAX;
     mVisibleMaximum = 0;
+    mThinningCutMinimum = kGrassBudgetCutAll;
     mCacheMaximum = {};
     mEvictionsBefore = mEvictionsLast;
     mCandidates.clear();
@@ -236,10 +241,10 @@ void AuditGrassError(std::string_view reason) {
 }
 
 void AuditGrassPass(uint64_t frameId, GrassRenderStatus status, uint32_t visibleBlades,
-                    const GrassAuditResources& cache) {
+                    const GrassAuditResources& cache, uint32_t thinningCut) {
     auto* global = Global();
     if (global == nullptr) return;
-    const auto report = global->Audit.RecordPass(frameId, status, visibleBlades, cache);
+    const auto report = global->Audit.RecordPass(frameId, status, visibleBlades, cache, thinningCut);
     if (report.empty()) return;
     std::fputs(report.c_str(), stderr);
     if (global->Dump.empty()) return;

@@ -4,8 +4,10 @@
 #include "fast/oot3d/grass_anchor_codec.h"
 #include "fast/oot3d/grass_draw_state.h"
 #include "fast/oot3d/grass_gpu_instance_compactor.h"
+#include "fast/oot3d/grass_gpu_selection.h"
 #include "fast/oot3d/grass_indexed_topology.h"
 #include "fast/oot3d/grass_interaction_field.h"
+#include "fast/oot3d/grass_selection_budget.h"
 #include "fast/oot3d/grass_shader_sources.h"
 #include "fast/oot3d/outline_occlusion_pass.h"
 #include "fast/renderer/shaderc_compiler.h"
@@ -874,6 +876,127 @@ void TestIdleCompactionReuse(Harness& harness) {
                  "passed\n";
 }
 
+// Budget thinning in the GPU selection: over budget, the selector keeps the
+// roots with the lowest thinning keys in every cluster, the CPU rule of
+// grass_selection_budget.h, instead of the first clusters in index order.
+void TestSelectionThinning(Harness& harness) {
+    GrassGpuSelector selector;
+    Fast::Renderer::CachedPassShaderCompiler shaders;
+    Require(selector.Initialize(harness.Device().Physical, harness.Device().Device, shaders, VK_NULL_HANDLE),
+            selector.UnavailableReason().c_str());
+    // Six clusters of 200 roots across the view, each cluster's roots sorted by
+    // stable visibility (the retained-prefix contract of the placement).
+    constexpr uint32_t kClusters = 6U, kPerCluster = 200U, kRoots = kClusters * kPerCluster;
+    std::vector<GrassWorldAnchor> anchors;
+    std::vector<GrassWorldCluster> clusters;
+    uint32_t seed = 77U;
+    for (uint32_t c = 0U; c < kClusters; ++c) {
+        std::vector<GrassWorldAnchor> members;
+        for (uint32_t i = 0U; i < kPerCluster; ++i) {
+            GrassWorldAnchor anchor;
+            anchor.BaseHeight = {-100.0F + 40.0F * float(c) + 2.0F * float(i % 20U), 0.0F, -2.0F * float(i / 20U),
+                                 30.0F};
+            anchor.HalfWidthPhase = {1.5F, 0.0F};
+            seed = seed * 1664525U + 1013904223U;
+            anchor.StableId = seed;
+            members.push_back(anchor);
+        }
+        std::sort(members.begin(), members.end(), [](const auto& a, const auto& b) {
+            return GrassStableVisibilityValue(a.StableId) < GrassStableVisibilityValue(b.StableId);
+        });
+        GrassWorldCluster cluster;
+        cluster.FirstAnchor = static_cast<uint32_t>(anchors.size());
+        cluster.AnchorCount = kPerCluster;
+        cluster.Center = {-100.0F + 40.0F * float(c) + 19.0F, 15.0F, -9.0F};
+        cluster.Radius = 40.0F;
+        cluster.MaximumBladeHeight = 30.0F;
+        cluster.MinimumStableVisibility = GrassStableVisibilityValue(members.front().StableId);
+        clusters.push_back(cluster);
+        anchors.insert(anchors.end(), members.begin(), members.end());
+    }
+    auto& gpu = harness.Device();
+    auto staticAnchors = gpu.MakeBuffer(anchors.size() * sizeof(GrassWorldAnchor), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    std::memcpy(staticAnchors.Mapped, anchors.data(), anchors.size() * sizeof(GrassWorldAnchor));
+    // Full retention everywhere: the thinning key is the stable visibility.
+    GrassLodPolicy policy;
+    policy.DrawDistance = 5000.0F;
+    policy.LodStart = 1.0F;
+    policy.LodEnd = 1.0F;
+    policy.FarDensity = 1.0F;
+    policy.LodReferenceDistance = 5000.0F;
+    const Camera camera{{0.0F, 60.0F, 400.0F}, {0.0F, 0.0F, 0.0F}};
+    const std::array<GrassGpuSelectionSource, 1> sources{
+        GrassGpuSelectionSource{clusters, 0U, WorldToClip(camera), camera.Eye}};
+    // One blade segment, one or two planes: the bins the policy can produce.
+    const std::array<GrassGpuSelectionSlot, 2> slots{GrassGpuSelectionSlot{0U, 3U, 0U},
+                                                     GrassGpuSelectionSlot{1U, 6U, 3U}};
+    const auto select = [&](uint32_t budget) {
+        GrassGpuSelectionResult result;
+        bool recorded = false;
+        harness.Submit([&](VkCommandBuffer command) {
+            GrassGpuSelectionRequest request;
+            request.CommandBuffer = command;
+            request.FrameSlot = 0U;
+            request.StaticRevision = 1U;
+            request.StaticAnchors = staticAnchors.Handle;
+            request.StaticAnchorCount = anchors.size();
+            request.Sources = sources;
+            request.Slots = slots;
+            request.Policy = policy;
+            request.DrawDistanceSquared = policy.DrawDistance * policy.DrawDistance;
+            request.FrustumCulling = false;
+            request.Budget = budget;
+            request.ReadBackVisible = true;
+            recorded = selector.Record(request, result);
+        });
+        Require(recorded, selector.UnavailableReason().c_str());
+        const auto readback = selector.ReadBack(0U);
+        Require(readback.Available, "selection readback unavailable");
+        return readback;
+    };
+    // The CPU rule over the same roots.
+    const auto expected = [&](uint32_t budget) {
+        GrassBudgetHistogram histogram{};
+        std::vector<uint32_t> buckets;
+        for (const auto& anchor : anchors) {
+            buckets.push_back(GrassBudgetBucket(GrassStableVisibilityValue(anchor.StableId), 1.0F));
+            ++histogram[buckets.back()];
+        }
+        const auto cut = GrassBudgetCut(histogram, budget);
+        std::vector<uint32_t> visible;
+        for (uint32_t index = 0U; index < anchors.size(); ++index)
+            if (GrassBudgetAdmits(buckets[index], cut)) visible.push_back(index);
+        return std::pair{cut, visible};
+    };
+
+    const auto full = select(kRoots + 100U);
+    Require(full.Cut == kGrassBudgetCutAll && full.Admitted == kRoots, "within budget: every root, no cut");
+    Require(full.Counts[0][0] == 0U && full.Counts[0][1] == kRoots, "every root draws two planes");
+    Require(full.Visible == expected(kRoots + 100U).second, "within budget: the roots in anchor order");
+
+    for (const uint32_t budget : {uint32_t(600), uint32_t(150), uint32_t(1150)}) {
+        const auto readback = select(budget);
+        const auto [cut, visible] = expected(budget);
+        Require(readback.Admitted <= budget, "the admitted total exceeds the budget");
+        Require(readback.Cut == cut, "the GPU cut differs from the CPU cut");
+        Require(readback.Admitted == visible.size() && readback.Counts[0][1] == visible.size(),
+                "the admitted count differs from the CPU rule");
+        Require(readback.Visible == visible, "the admitted roots differ from the CPU rule");
+        std::array<uint32_t, kClusters> kept{};
+        for (const auto index : visible) ++kept[index / kPerCluster];
+        for (uint32_t c = 0U; c < kClusters; ++c) {
+            Require(kept[c] > 0U, "a cluster lost every root to the budget");
+            Require(kept[c] < kPerCluster, "a cluster kept every root while the budget thinned others");
+            Require(std::abs(int(kept[c]) - int(budget / kClusters)) <= int(kPerCluster / 10U),
+                    "clusters do not keep the same fraction");
+        }
+    }
+    selector.Shutdown();
+    gpu.Free(staticAnchors);
+    std::cout << "selection thinning: within-budget identity and over-budget per-cluster thinning equal to the "
+                 "CPU rule passed\n";
+}
+
 } // namespace
 
 int main() {
@@ -885,6 +1008,7 @@ int main() {
         Gpu gpu(features, VK_API_VERSION_1_2);
         {
             Harness harness(gpu);
+            TestSelectionThinning(harness);
             TestIdleCompactionReuse(harness);
             TestBendHistory(harness);
             TestBladeMotion(harness, 2U);

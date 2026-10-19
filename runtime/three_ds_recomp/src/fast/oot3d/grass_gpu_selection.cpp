@@ -1,5 +1,6 @@
 #include "fast/oot3d/grass_gpu_selection.h"
 #include "fast/oot3d/grass_gpu_memory.h"
+#include "fast/oot3d/grass_selection_budget.h"
 #include "fast/oot3d/grass_shader_sources.h"
 
 #ifdef ENABLE_OOT3D_VULKAN
@@ -20,9 +21,21 @@ constexpr uint32_t kCounters = 8U;
 constexpr uint32_t kRecordWords = 6U;
 constexpr uint32_t kHeaderWords = 64U;
 constexpr uint32_t kSourceWords = 32U;
-constexpr uint32_t kControlWords = 1024U;
+// Control buffer layout, mirrored by the selection shader: dispatch and
+// admitted total, the indirect draws, the per-source slot ranks, the thinning
+// histogram and the cut word.
+constexpr uint32_t kDrawBase = 4U;
+constexpr uint32_t kRankBase = kDrawBase + kGrassGpuSelectionMaximumSources * kCounters * 5U;
+constexpr uint32_t kHistogramBase = kRankBase + kGrassGpuSelectionMaximumSources * kCounters;
+constexpr uint32_t kCutWord = kHistogramBase + kGrassBudgetBuckets;
+constexpr uint32_t kControlWords = 2048U;
+static_assert(kRankBase == 644U && kHistogramBase == 772U && kCutWord == 1796U);
+static_assert(kCutWord < kControlWords);
 constexpr uint32_t kBindings = 8U;
 constexpr uint32_t kNoSlot = 0xFFU;
+constexpr uint32_t kPassCount = 4U;
+// Count, scan, recount under the cut, scan again, scatter.
+constexpr std::array<uint32_t, 5> kPassSequence{0U, 1U, 3U, 1U, 2U};
 static_assert(sizeof(GrassWorldCluster) == 8U * sizeof(uint32_t));
 
 struct alignas(16) SelectionPolicy {
@@ -65,7 +78,7 @@ struct GrassGpuSelector::Impl {
     VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
     std::array<VkDescriptorSet, kFrameSlots> DescriptorSets{};
     VkPipelineLayout PipelineLayout = VK_NULL_HANDLE;
-    std::array<VkPipeline, 3> Pipelines{};
+    std::array<VkPipeline, kPassCount> Pipelines{};
     Buffer Clusters;
     std::array<Buffer, kFrameSlots> ClusterStaging{};
     Buffer AnchorSlots;
@@ -189,10 +202,11 @@ bool GrassGpuSelector::Initialize(VkPhysicalDevice physicalDevice, VkDevice devi
                                                         1U, &mImpl->DescriptorSetLayout, 1U, &pushRange};
         if (vkCreatePipelineLayout(device, &pipelineLayout, nullptr, &mImpl->PipelineLayout) != VK_SUCCESS)
             throw std::runtime_error("cannot create grass selection pipeline layout");
-        constexpr std::array<const char*, 3> names{"grass_selection_count.comp", "grass_selection_scan.comp",
-                                                   "grass_selection_scatter.comp"};
+        constexpr std::array<const char*, kPassCount> names{"grass_selection_count.comp", "grass_selection_scan.comp",
+                                                            "grass_selection_scatter.comp",
+                                                            "grass_selection_recount.comp"};
         const auto source = BuildGrassSelectionComputeShader();
-        for (uint32_t pass = 0U; pass < 3U; ++pass) {
+        for (uint32_t pass = 0U; pass < kPassCount; ++pass) {
             const auto words = shaders.Resolve(source, Renderer::SpirvStage::Compute, names[pass],
                                                {{"GRASS_SELECTION_PASS", std::to_string(pass)}});
             const VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0U,
@@ -230,6 +244,7 @@ GrassGpuSelectionReadback GrassGpuSelector::ReadBack(uint32_t frameSlot) const {
     const auto* words = static_cast<const uint32_t*>(buffer.Mapped);
     readback.Available = true;
     readback.Admitted = words[3];
+    readback.Cut = words[kCutWord];
     for (uint32_t s = 0U; s < state.Sources; ++s)
         for (uint32_t k = 0U; k < state.Slots; ++k)
             readback.Counts[s][k] = words[GrassGpuSelectionDrawOffset(s, k) / sizeof(uint32_t) + 1U];
@@ -311,7 +326,11 @@ bool GrassGpuSelector::Record(const GrassGpuSelectionRequest& request, GrassGpuS
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, kDevice, false);
         impl.EnsureBuffer(impl.Control[slot], kControlWords * sizeof(uint32_t),
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT, kDevice, false);
+                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, kDevice, false);
+        // The count pass accumulates the thinning histogram into zeroed words;
+        // the cut word is zeroed with them (the scan writes it).
+        vkCmdFillBuffer(cmd, impl.Control[slot].Handle, VkDeviceSize(kHistogramBase) * sizeof(uint32_t),
+                        VkDeviceSize(kGrassBudgetBuckets + 1U) * sizeof(uint32_t), 0U);
         const VkDeviceSize readbackBytes =
             (kControlWords + (request.ReadBackVisible ? request.Budget : 0U)) * VkDeviceSize(sizeof(uint32_t));
         impl.EnsureBuffer(impl.Readback[slot], readbackBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, kHost, false);
@@ -376,18 +395,20 @@ bool GrassGpuSelector::Record(const GrassGpuSelectionRequest& request, GrassGpuS
                        policy.FarTuftBladeCount};
 
         const VkMemoryBarrier uploads{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
-            VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT};
+            VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0U, 1U, &uploads, 0U, nullptr, 0U, nullptr);
         const VkMemoryBarrier between{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT,
                                       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, impl.PipelineLayout, 0U, 1U,
                                 &impl.DescriptorSets[slot], 0U, nullptr);
-        for (uint32_t pass = 0U; pass < 3U; ++pass) {
+        for (size_t step = 0; step < kPassSequence.size(); ++step) {
+            const uint32_t pass = kPassSequence[step];
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, impl.Pipelines[pass]);
             vkCmdPushConstants(cmd, impl.PipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0U, sizeof(push), &push);
             vkCmdDispatch(cmd, pass == 1U ? 1U : groups, 1U, 1U);
-            if (pass != 2U)
+            if (step + 1U != kPassSequence.size())
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                      0U, 1U, &between, 0U, nullptr, 0U, nullptr);
         }

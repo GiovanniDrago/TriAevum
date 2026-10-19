@@ -182,27 +182,88 @@ TEST(Oot3dGrassSelectionCache, ReusesOnlyIdenticalSelectionInputs) {
     EXPECT_FALSE(cache.Matches(key));
 }
 
-TEST(Oot3dGrassSelectionBudget, ParallelBinsKeepExactlyTheSerialPrefixAtEveryBudget) {
+TEST(Oot3dGrassSelectionBudget, BucketQuantizesTheStableVisibilityOverRetention) {
     using namespace Fast::Oot3d;
-    constexpr size_t binCount = 25;
-    std::vector<uint32_t> all;
-    for(uint32_t i=0;i<400;++i) if(i%7!=0) all.push_back(10000+i*11);
-    for(uint32_t budget=0;budget<=all.size()+3;++budget) {
-        for(size_t workers : {1U,2U,3U,10U,12U}) {
-            std::array<std::vector<uint32_t>,binCount> merged;
-            uint32_t remaining=budget;
-            for(size_t worker=0;worker<workers;++worker) {
-                std::array<std::vector<uint32_t>,binCount> bins;
-                for(size_t i=all.size()*worker/workers;i<all.size()*(worker+1)/workers;++i)
-                    bins[(i*23)%binCount].push_back(all[i]);
-                remaining-=LimitGrassSelectionBins(bins,remaining);
-                for(size_t i=0;i<binCount;++i) merged[i].insert(merged[i].end(),bins[i].begin(),bins[i].end());
-            }
-            std::array<std::vector<uint32_t>,binCount> expected;
-            for(size_t i=0;i<std::min<size_t>(budget,all.size());++i) expected[(i*23)%binCount].push_back(all[i]);
-            EXPECT_EQ(merged,expected) << "budget " << budget << " workers " << workers;
+    EXPECT_EQ(GrassBudgetBucket(0.5F, 0.0F), 0U) << "no retention: every root in the first bucket";
+    EXPECT_EQ(GrassBudgetBucket(0.0F, 1.0F), 0U);
+    EXPECT_EQ(GrassBudgetBucket(0.5F, 1.0F), 512U);
+    EXPECT_EQ(GrassBudgetBucket(0.25F, 0.5F), 512U) << "the key is relative to the LOD retention";
+    EXPECT_EQ(GrassBudgetBucket(1.0F, 1.0F), kGrassBudgetBuckets - 1U) << "clamped to the last bucket";
+    EXPECT_EQ(GrassBudgetBucket(0.9F, 0.3F), kGrassBudgetBuckets - 1U);
+    EXPECT_EQ(GrassBudgetBucket(0.9999F, 1.0F), kGrassBudgetBuckets - 1U);
+    EXPECT_EQ(GrassBudgetBucket(1.0F / 1024.0F, 1.0F), 1U);
+    EXPECT_EQ(GrassBudgetBucket(-1.0F, 1.0F), 0U);
+}
+
+TEST(Oot3dGrassSelectionBudget, CutAdmitsTheLowestBucketsWithinTheBudget) {
+    using namespace Fast::Oot3d;
+    GrassBudgetHistogram histogram{};
+    EXPECT_EQ(GrassBudgetCut(histogram, 0), kGrassBudgetCutAll) << "nothing visible: nothing thinned";
+    histogram[0] = 10;
+    histogram[3] = 5;
+    histogram[7] = 1;
+    histogram[kGrassBudgetBuckets - 1U] = 4;
+    EXPECT_EQ(GrassBudgetCut(histogram, 20), kGrassBudgetCutAll);
+    EXPECT_EQ(GrassBudgetCut(histogram, 100), kGrassBudgetCutAll);
+    EXPECT_EQ(GrassBudgetCut(histogram, 19), kGrassBudgetBuckets - 1U) << "the last bucket does not fit";
+    EXPECT_EQ(GrassBudgetCut(histogram, 16), kGrassBudgetBuckets - 1U);
+    EXPECT_EQ(GrassBudgetCut(histogram, 15), 7U);
+    EXPECT_EQ(GrassBudgetCut(histogram, 14), 3U);
+    EXPECT_EQ(GrassBudgetCut(histogram, 10), 3U);
+    EXPECT_EQ(GrassBudgetCut(histogram, 9), 0U) << "the first bucket alone exceeds the budget";
+    EXPECT_EQ(GrassBudgetCut(histogram, 0), 0U);
+    EXPECT_TRUE(GrassBudgetAdmits(2U, 3U));
+    EXPECT_FALSE(GrassBudgetAdmits(3U, 3U));
+    EXPECT_FALSE(GrassBudgetAdmits(0U, 0U));
+    EXPECT_TRUE(GrassBudgetAdmits(kGrassBudgetBuckets - 1U, kGrassBudgetCutAll));
+    GrassBudgetHistogram overflow{};
+    overflow.fill(0xFFFFFFFFU);
+    EXPECT_EQ(GrassBudgetCut(overflow, 0xFFFFFFFFU), 1U) << "cumulative counts do not wrap";
+}
+
+// The property the thinning exists for: over budget, every cluster keeps the
+// same fraction of its roots and the admitted set is independent of the
+// cluster order, so turning the camera (which reorders and reselects
+// clusters) never empties one direction while another stays dense.
+TEST(Oot3dGrassSelectionBudget, ThinningKeepsEveryClusterAndIgnoresClusterOrder) {
+    using namespace Fast::Oot3d;
+    constexpr size_t clusters = 8, perCluster = 1000;
+    std::vector<std::vector<float>> keys(clusters);
+    uint32_t seed = 12345U;
+    for (auto& cluster : keys)
+        for (size_t i = 0; i < perCluster; ++i) {
+            seed = seed * 1664525U + 1013904223U;
+            cluster.push_back(float(seed >> 8U) / 16777216.0F);
         }
+    uint32_t largestBucket = 0;
+    const auto admitted = [&](const std::vector<size_t>& order, uint32_t budget) {
+        GrassBudgetHistogram histogram{};
+        for (const auto c : order)
+            for (const float key : keys[c]) ++histogram[GrassBudgetBucket(key, 1.0F)];
+        largestBucket = *std::max_element(histogram.begin(), histogram.end());
+        const auto cut = GrassBudgetCut(histogram, budget);
+        std::vector<std::vector<bool>> result(clusters);
+        for (const auto c : order)
+            for (const float key : keys[c]) result[c].push_back(GrassBudgetAdmits(GrassBudgetBucket(key, 1.0F), cut));
+        return result;
+    };
+    const std::vector<size_t> forward{0, 1, 2, 3, 4, 5, 6, 7}, backward{7, 6, 5, 4, 3, 2, 1, 0};
+    for (const uint32_t budget : {uint32_t(100), uint32_t(2000), uint32_t(4000), uint32_t(7999)}) {
+        const auto a = admitted(forward, budget), b = admitted(backward, budget);
+        EXPECT_EQ(a, b) << "budget " << budget;
+        size_t total = 0;
+        for (size_t c = 0; c < clusters; ++c) {
+            const auto kept = std::count(a[c].begin(), a[c].end(), true);
+            total += kept;
+            const double fraction = double(kept) / perCluster, expected = double(budget) / (clusters * perCluster);
+            EXPECT_NEAR(fraction, expected, 0.03) << "budget " << budget << " cluster " << c;
+        }
+        EXPECT_LE(total, budget);
+        // The budget is used up to one bucket.
+        EXPECT_GE(total + largestBucket, budget) << "budget " << budget;
     }
+    const auto full = admitted(forward, clusters * perCluster);
+    for (const auto& cluster : full) EXPECT_EQ(std::count(cluster.begin(), cluster.end(), false), 0);
 }
 
 TEST(Oot3dGrassSurfaceColor, WorldAnchorsRetainGridColorsWithoutChangingPlacement) {
