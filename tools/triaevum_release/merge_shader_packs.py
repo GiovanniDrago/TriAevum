@@ -17,7 +17,9 @@ except ImportError:
 
 HEADER = struct.Struct("<8s4I")
 ENTRY = struct.Struct("<IIQQQIIQQ")
-MAX_BYTES = 512 * 1024 * 1024
+# The runtime's kMaximumPackBytes (pica_aot_shader_pack.cpp): the closed Enhanced
+# corpus is larger than 512 MiB.
+MAX_BYTES = 4 * 1024 * 1024 * 1024
 
 
 def binary_hash(data):
