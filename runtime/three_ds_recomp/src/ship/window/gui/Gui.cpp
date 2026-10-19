@@ -77,7 +77,10 @@ void Gui::Init() {
     mImGuiIo->FontGlobalScale = 2.0f;
 #endif
 
+    // An installation keeps what it writes in data/, not beside the executable.
     mImGuiIniPath = Context::GetPathRelativeToAppDirectory("imgui.ini");
+    if (std::error_code error; std::filesystem::is_directory(Context::GetPathRelativeToAppDirectory("data"), error))
+        mImGuiIniPath = Context::GetPathRelativeToAppDirectory("data/imgui.ini");
     mImGuiLogPath = Context::GetPathRelativeToAppDirectory("imgui_log.txt");
     mImGuiIo->IniFilename = mImGuiIniPath.c_str();
     mImGuiIo->LogFilename = mImGuiLogPath.c_str();

@@ -146,6 +146,14 @@ target_include_directories(oot3d_native_game_launch_profile_tests PRIVATE
     tools/oot3d/native_game_runtime)
 target_link_libraries(oot3d_native_game_launch_profile_tests PRIVATE
     nlohmann_json::nlohmann_json)
+# ${runtime_dir} comes from SDL_GetBasePath; the renderer directory's SDL
+# import is not visible here.
+if (NOT TARGET SDL2::SDL2)
+    find_package(SDL2 CONFIG QUIET)
+endif()
+if (TARGET SDL2::SDL2)
+    target_link_libraries(oot3d_native_game_launch_profile_tests PRIVATE SDL2::SDL2)
+endif()
 target_compile_options(oot3d_native_game_launch_profile_tests PRIVATE
     "${WARNING_OVERRIDE}")
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
@@ -443,6 +451,12 @@ if (OOT3D_WHOLE_AOT_PRODUCT_MODE)
             "/OPT:NOREF"
             "/OPT:NOICF")
     endif()
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND OOT3D_ENABLE_VULKAN_RENDERER AND TARGET three_ds_recomp_shaderc)
+    # The Windows package keeps shaderc beside the other DLLs in runtime/; it
+    # loads after main registers that directory (UseRuntimeLibraryDirectory).
+    target_link_options(oot3d_native_game PRIVATE "/DELAYLOAD:shaderc_shared.dll")
+    target_link_libraries(oot3d_native_game PRIVATE delayimp)
 endif()
 option(TRIAEVUM_ENABLE_CPU_PHASE_PROBE
     "Developer-only Windows main-thread CPU/wall accounting (not clean performance timing)" OFF)
