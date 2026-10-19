@@ -670,6 +670,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
     // images are destroyed only once this frame's own submission completed.
     if (mNativePicaTexturesGeneration != mFrameAzaharTextureGeneration)
         RetireNativePicaTexturesOfOtherGenerations(mFrameAzaharTextureGeneration);
+    ReleaseIdleNativePicaTextures();
     mCompletedNativePicaIds.insert(mCompletedNativePicaIds.end(),
                                    frame.NativePicaCompletionIds.begin(),
                                    frame.NativePicaCompletionIds.end());

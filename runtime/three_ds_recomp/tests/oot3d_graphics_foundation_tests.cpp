@@ -36,6 +36,7 @@
 #include "fast/oot3d/grass_scene_bridge.h"
 #include "fast/oot3d/grass_shading_environment.h"
 #include "fast/oot3d/grass_gpu_memory.h"
+#include "fast/renderer3ds/gpu_memory_residency.h"
 #include "fast/oot3d/grass_placement_audit.h"
 #include "fast/oot3d/grass_surface_eligibility.h"
 #include "fast/oot3d/grass_surface_extractor.h"
@@ -1359,6 +1360,25 @@ TEST(Oot3dGrassGpuMemory, LargeBuffersKeepHeadroomInsteadOfDoublingAndShrinkAfte
     EXPECT_TRUE(GrassBufferNeedsResize(true, 121 * MiB, 120 * MiB));
     EXPECT_TRUE(GrassBufferNeedsResize(true, 20 * MiB, 120 * MiB)) << "a peak buffer is given back";
     EXPECT_FALSE(GrassBufferNeedsResize(true, 1 * MiB, 16 * MiB)) << "small buffers never shrink";
+}
+
+TEST(Renderer3dsGpuMemoryResidency, ReleasesWhatNoDrawSampledAndSoonerUnderPressure) {
+    using namespace Fast::Renderer3ds;
+    constexpr uint64_t MiB = 1ULL << 20U;
+    EXPECT_FALSE(DeviceLocalMemoryUnderPressure(5000 * MiB, 0)) << "no budget reported";
+    EXPECT_FALSE(DeviceLocalMemoryUnderPressure(5376 * MiB, 6144 * MiB));
+    EXPECT_TRUE(DeviceLocalMemoryUnderPressure(5377 * MiB, 6144 * MiB));
+    EXPECT_TRUE(DeviceLocalMemoryUnderPressure(6099 * MiB, 6144 * MiB)) << "issue #98";
+
+    const GpuMemoryResidencyPolicy policy;
+    EXPECT_FALSE(GpuResourceIdle(1000, 1000, false, policy)) << "used this frame";
+    EXPECT_FALSE(GpuResourceIdle(1000, 1001, true, policy)) << "a newer use is never idle";
+    EXPECT_FALSE(GpuResourceIdle(1000 + policy.IdleFrames, 1000, false, policy));
+    EXPECT_TRUE(GpuResourceIdle(1001 + policy.IdleFrames, 1000, false, policy));
+    EXPECT_FALSE(GpuResourceIdle(1000 + policy.PressureIdleFrames, 1000, true, policy));
+    EXPECT_TRUE(GpuResourceIdle(1001 + policy.PressureIdleFrames, 1000, true, policy));
+    EXPECT_GT(policy.PressureIdleFrames, 2U) << "longer than the frames in flight";
+    EXPECT_LE(policy.SweepIntervalFrames, policy.PressureIdleFrames);
 }
 
 TEST(Oot3dGrassPrimitiveTopology,

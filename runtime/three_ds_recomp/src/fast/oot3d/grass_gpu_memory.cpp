@@ -1,13 +1,14 @@
 #include "fast/oot3d/grass_gpu_memory.h"
 
+#ifdef ENABLE_OOT3D_VULKAN
+#include "fast/renderer3ds/vulkan_memory_budget.h"
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
-#include <mutex>
 #include <optional>
-#include <vector>
 
 namespace Fast::Oot3d {
 namespace {
@@ -49,27 +50,6 @@ bool GrassGpuAllocationRefused(uint64_t bytes) noexcept {
 #ifdef ENABLE_OOT3D_VULKAN
 namespace {
 
-bool SupportsMemoryBudget(VkPhysicalDevice physicalDevice) {
-    static std::mutex mutex;
-    static VkPhysicalDevice cached = VK_NULL_HANDLE;
-    static bool supported = false;
-    std::scoped_lock lock(mutex);
-    if (cached != physicalDevice) {
-        uint32_t count = 0;
-        std::vector<VkExtensionProperties> extensions;
-        if (vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr) == VK_SUCCESS) {
-            extensions.resize(count);
-            if (vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, extensions.data()) != VK_SUCCESS)
-                count = 0;
-        }
-        supported = std::any_of(extensions.begin(), extensions.begin() + count, [](const auto& extension) {
-            return std::strcmp(extension.extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0;
-        });
-        cached = physicalDevice;
-    }
-    return supported;
-}
-
 std::optional<uint64_t> ReserveOverride() {
     static const std::optional<uint64_t> reserve = []() -> std::optional<uint64_t> {
         const char* value = std::getenv("TRIAEVUM_GRASS_VRAM_RESERVE_MIB");
@@ -84,18 +64,16 @@ std::optional<uint64_t> ReserveOverride() {
 bool GrassGpuAllocationRefused(VkPhysicalDevice physicalDevice, uint32_t memoryType, uint64_t bytes) noexcept {
     if (GrassGpuAllocationRefused(bytes)) return true;
     try {
-        if (physicalDevice == VK_NULL_HANDLE || !SupportsMemoryBudget(physicalDevice)) return false;
-        VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
-        VkPhysicalDeviceMemoryProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, &budget};
-        vkGetPhysicalDeviceMemoryProperties2(physicalDevice, &properties);
-        const auto& memory = properties.memoryProperties;
+        if (physicalDevice == VK_NULL_HANDLE) return false;
+        VkPhysicalDeviceMemoryProperties memory{};
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memory);
         if (memoryType >= memory.memoryTypeCount) return false;
         const uint32_t heap = memory.memoryTypes[memoryType].heapIndex;
-        const uint64_t heapBudget = budget.heapBudget[heap];
-        if ((memory.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0U || heapBudget == 0U)
-            return false;
+        const auto heapMemory = Renderer3ds::QueryVulkanHeapMemory(physicalDevice, heap);
+        if (!heapMemory) return false;
+        const uint64_t heapBudget = heapMemory->Budget;
         const uint64_t reserve = ReserveOverride().value_or(heapBudget / 16U);
-        const uint64_t usage = budget.heapUsage[heap];
+        const uint64_t usage = heapMemory->Usage;
         static const bool log = std::getenv("TRIAEVUM_GRASS_GPU_MEMORY_LOG") != nullptr;
         if (log)
             std::fprintf(stderr, "TRIAEVUM_GRASS_VRAM_BUDGET heap=%u usage_mib=%llu budget_mib=%llu\n", heap,

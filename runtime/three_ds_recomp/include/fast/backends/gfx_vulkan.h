@@ -20,6 +20,8 @@
 #include "fast/renderer3ds/pica_pbr_seams.h"
 #include "fast/renderer3ds/pica_surface_lighting.h"
 #include "fast/renderer3ds/pica_surface_calibration_trace.h"
+#include "fast/renderer3ds/gpu_memory_residency.h"
+#include "fast/renderer3ds/vulkan_memory_budget.h"
 #include "fast/backends/oot3d_vulkan_diagnostics.h"
 #include "fast/backends/oot3d_vulkan_gpu_profiler.h"
 #include "fast/backends/oot3d_vulkan_validation.h"
@@ -422,6 +424,9 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         bool CustomReplacementApplied = false;
         bool CustomReplacementPending = false;
         bool CustomReplacementReady = false;
+        // The last frame a draw resolved this record: the texture cache
+        // releases records no draw samples (ReleaseIdleNativePicaTextures).
+        uint64_t LastUsedFrame = 0;
     };
 
     struct NativePicaMaterialBundle {
@@ -1066,10 +1071,20 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         const NativePicaTextureKey& textureKey,
         const GfxNativePicaTextureView& texture, uint32_t width,
         uint32_t height);
+    // Resolves the sampled record and marks it used this frame.
     TextureRecord* GetOrCreateNativePicaTexture(
         const GfxNativePicaTextureView& texture, std::string* error,
         uint64_t replacementGeneration, uint64_t renderTargetNamespace,
         const uint64_t* precomputedContentHash = nullptr);
+    TextureRecord* ResolveNativePicaTexture(
+        const GfxNativePicaTextureView& texture, std::string* error,
+        uint64_t replacementGeneration, uint64_t renderTargetNamespace,
+        const uint64_t* precomputedContentHash);
+    // Releases cached textures and lighting LUTs no draw sampled lately
+    // (Renderer3ds::GpuMemoryResidencyPolicy), sooner while the device-local
+    // heap is short of its budget. Records that another owner's lifetime
+    // governs (raw-copy samples, live render-target aliases) are left to it.
+    void ReleaseIdleNativePicaTextures();
     TextureRecord* GetOrCreateNativePicaLightingLut(
         const ::Oot3d::Renderer::PicaLightingLutView& lightingLut,
         std::string* error);
@@ -1634,6 +1649,18 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     bool SubmitNativePicaTextureCopy(const GfxNativePicaDisplayTransferView& transfer, std::string* error);
     std::map<uint64_t, NativePicaLightingLutTexture>
         mNativePicaLightingLuts;
+    // Texture-cache residency (ReleaseIdleNativePicaTextures): the policy, the
+    // last budget reading and what was released since the last report.
+    struct NativePicaTextureResidency {
+        Renderer3ds::GpuMemoryResidencyPolicy Policy;
+        uint64_t NextSweepFrame = 0;
+        uint64_t NextReportFrame = 0;
+        bool Pressure = false;
+        std::optional<Renderer3ds::VulkanDeviceLocalMemory> DeviceLocal;
+        uint64_t ReleasedRecords = 0;
+        uint64_t ReleasedBytes = 0;
+    };
+    NativePicaTextureResidency mNativePicaTextureResidency;
     std::map<NativePicaRenderTargetKey, NativePicaRenderTarget>
         mNativePicaRenderTargets;
     std::map<std::pair<uint64_t, uint32_t>, NativePicaDisplayImage>
