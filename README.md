@@ -48,9 +48,11 @@ See [ROM compatibility details](docs/TRIAEVUM_CONTENT_FAMILY_IMPORT.md).
 ### Windows
 
 1. Download the **Windows-x64 ZIP**, not GitHub's source-code archive, and
-   extract it into a writable folder.
+   extract it into a writable folder. Besides `README.md` and `LICENSE`, its
+   only file is `TriAevumForge.exe`; everything else is in subfolders.
 2. Run `TriAevumForge.exe` and select your decrypted ROM.
-3. When setup finishes, choose **Launch game**. Afterwards, use `TriAevum.exe`.
+3. When setup finishes, choose **Launch game**. Setup places `TriAevum.exe`
+   beside Forge; afterwards, use `TriAevum.exe`.
 
 ### Linux and Steam Deck
 

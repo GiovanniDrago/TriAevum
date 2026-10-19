@@ -18,14 +18,14 @@ from typing import Any, Callable
 
 try:
     from . import ctr_rom, forge, extracted_inputs, game_language
-    from .bundle_paths import installation_path
+    from .bundle_paths import installation_path, installation_root
     from .common import load_json_object
     from .installed_runtime import validate_installed_runtime
     from .activation_transaction import installation_lock, journal_path
     from .installation_context import resolve_reference
     from .precompiled_titles import load_catalog, select_title, install_precompiled_title
     from .input_adapters import import_contract, adapt_extracted_inputs
-    from .release_platform import host_platform
+    from .release_platform import host_platform, installed_runtime_path, place_installed_runtime
     from .native_process import popen_native
     from .host_layout import for_package
     from . import portal_picker
@@ -34,14 +34,14 @@ except ImportError:
     import forge
     import extracted_inputs
     import game_language
-    from bundle_paths import installation_path
+    from bundle_paths import installation_path, installation_root
     from common import load_json_object
     from installed_runtime import validate_installed_runtime
     from activation_transaction import installation_lock, journal_path
     from installation_context import resolve_reference
     from precompiled_titles import load_catalog, select_title, install_precompiled_title
     from input_adapters import import_contract, adapt_extracted_inputs
-    from release_platform import host_platform
+    from release_platform import host_platform, installed_runtime_path, place_installed_runtime
     from native_process import popen_native
     from host_layout import for_package
     import portal_picker
@@ -182,7 +182,7 @@ def install_private_title(
     try:
         report("preflight", "Checking the playable runtime and precompiled title catalog...")
         forge.query_product(runtime_path())
-        root = runtime_path().parent
+        root = installation_root()
         catalog = load_catalog(root)
         report("extract", "Extracting native title data from the decrypted ROM...")
         if request.rom.expanduser().is_dir():
@@ -251,17 +251,19 @@ def install_private_title(
 
 
 def runtime_path() -> Path:
-    return installation_path(host_platform().runtime).resolve()
+    return installed_runtime_path(installation_root(), host_platform()).resolve()
 
 
 def launch_runtime(data_root: Path | None = None) -> subprocess.Popen[bytes]:
     try:
         from tools.triaevum_release.package_update import refresh_packaged_runtime
-        layout = for_package(runtime_path().parent)
+        layout = for_package(installation_root())
         with installation_lock(layout.activation):
             if journal_path(layout.activation).exists():
                 raise forge.ForgeError("An activation was interrupted; run Forge again before playing")
-        if (runtime_path().parent / "recipes/precompiled-titles.json").is_file():
+            # A package unpacked over the installation brings a new runtime.
+            place_installed_runtime(installation_root(), host_platform())
+        if (installation_root() / "recipes/precompiled-titles.json").is_file():
             private_root = (data_root or default_gui_data_root()).expanduser().resolve()
             active = load_active_title(private_root / "active-title.json")
             if active is not None:
@@ -293,7 +295,7 @@ def _launch_runtime_locked(data_root: Path | None) -> subprocess.Popen[bytes]:
         raise forge.ForgeError(str(exc)) from exc
     return popen_native(
         [str(executable), "--launch-profile", str(profile)],
-        cwd=for_package(executable.parent).activation,
+        cwd=for_package(installation_root()).activation,
     )
 
 
@@ -432,7 +434,7 @@ class ForgeWindow:
     def _browse_extracted(self) -> None:
         if self.busy or self.picking:
             return
-        if for_package(runtime_path().parent).use_file_portal:
+        if for_package(installation_root()).use_file_portal:
             self._portal_browse(self.rom, "Select extracted title data", directory=True)
             return
         selected = self.filedialog.askdirectory(title="Select extracted title data", parent=self.root)
@@ -470,7 +472,7 @@ class ForgeWindow:
     ) -> None:
         if self.busy or self.picking:
             return
-        if for_package(runtime_path().parent).use_file_portal:
+        if for_package(installation_root()).use_file_portal:
             self._portal_browse(variable, title, directory=False)
             return
         arguments: dict[str, Any] = {"title": title, "parent": self.root}

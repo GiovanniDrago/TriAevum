@@ -15,7 +15,8 @@ from typing import Any, Callable, Sequence
 try:
     from . import TOOL_VERSION
     from .product_contract import ensure_runtime_config, query_product
-    from .release_platform import WINDOWS, for_target, host_platform
+    from .release_platform import WINDOWS, for_target, host_platform, place_installed_runtime
+    from .host_layout import installation_state
     from .activation_transaction import activation_transaction
     from .installation_context import InstallationContext, resolve_reference
     from .toolchain_probe import probe_toolchain
@@ -23,6 +24,7 @@ try:
         distribution_path,
         distribution_root,
         installation_path,
+        installation_layout,
         activation_path,
     )
     from .common import (
@@ -58,11 +60,12 @@ try:
 except ImportError:
     from __init__ import TOOL_VERSION
     from product_contract import ensure_runtime_config, query_product
-    from release_platform import WINDOWS, for_target, host_platform
+    from release_platform import WINDOWS, for_target, host_platform, place_installed_runtime
+    from host_layout import installation_state
     from activation_transaction import activation_transaction
     from installation_context import InstallationContext, resolve_reference
     from toolchain_probe import probe_toolchain
-    from bundle_paths import distribution_path, distribution_root, installation_path, activation_path
+    from bundle_paths import distribution_path, distribution_root, installation_path, installation_layout, activation_path
     from common import (
         atomic_write_bytes,
         atomic_write_json,
@@ -161,7 +164,13 @@ def default_runtime_plugin_path() -> Path:
 
 
 def default_runtime_launch_profile_path() -> Path:
-    return activation_path("TriAevum.launch.json")
+    activation = installation_layout().activation
+    legacy = activation / "TriAevum.launch.json"
+    # An installation made before the profile moved to data/ keeps it: the
+    # runtime prefers a profile beside it, so a second one would go stale.
+    if legacy.is_file():
+        return legacy
+    return installation_state(activation) / legacy.name
 
 
 class HashCache:
@@ -978,7 +987,9 @@ def publish_private_runtime(
     destination = installation / "private-plugins" / plugin_hash / platform.title_module
     profile_path = launch_profile.expanduser().resolve()
     private_root = data_root.expanduser().resolve()
-    product_receipt = query_product(package / platform.runtime)
+    # Installing a title places the runtime in the installation root.
+    runtime_executable = place_installed_runtime(package, platform)
+    product_receipt = query_product(runtime_executable)
     destination.parent.mkdir(parents=True, exist_ok=True)
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     private_root.mkdir(parents=True, exist_ok=True)
@@ -1091,7 +1102,7 @@ def publish_private_runtime(
             temporary.unlink(missing_ok=True)
     # Query the exact immutable generation in a short-lived process before the
     # single launch-profile replacement makes it visible to direct launches.
-    query_product(package / platform.runtime, plugin=destination)
+    query_product(runtime_executable, plugin=destination)
     atomic_write_json(profile_path, profile)
     prepared.state["runtime"] = {
         "status": "ready",

@@ -8,11 +8,11 @@ from typing import Any, Callable
 try:
     from .common import load_json_object, normalize_relative_path, sha256_file
     from .activation_transaction import activation_transaction
-    from .release_platform import catalog_platform, host_platform
+    from .release_platform import catalog_platform, host_platform, installed_runtime_path
 except ImportError:
     from common import load_json_object, normalize_relative_path, sha256_file
     from activation_transaction import activation_transaction
-    from release_platform import catalog_platform, host_platform
+    from release_platform import catalog_platform, host_platform, installed_runtime_path
 
 
 FORMAT = "triaevum_precompiled_titles_v1"
@@ -53,6 +53,12 @@ def load_catalog(root: Path) -> dict:
     return payload
 
 
+def runtime_record(root: Path, catalog: dict) -> dict:
+    """The catalog's runtime at its installed location (Forge places it in the root)."""
+    path = installed_runtime_path(root, catalog_platform(catalog))
+    return dict(catalog["runtime"], path=path.relative_to(root).as_posix())
+
+
 def validate_title(root: Path, recipe: dict, *, catalog: dict | None = None) -> dict:
     """Validate catalog content without executing binaries or requiring its host."""
     catalog = catalog or load_catalog(root)
@@ -83,7 +89,7 @@ def validate_title(root: Path, recipe: dict, *, catalog: dict | None = None) -> 
     identity = item.get("translator_identity_sha256", "")
     if not isinstance(identity, str) or len(identity) != 64 or any(c not in "0123456789abcdef" for c in identity):
         raise ValueError("Precompiled title has no valid translator identity")
-    checked_file(root, catalog["runtime"])
+    checked_file(root, runtime_record(root, catalog))
     checked_file(root, catalog["native_module"])
     checked_file(root, item["plugin"])
     renderer = item.get("renderer_shader_preparation")
@@ -165,7 +171,7 @@ def install_precompiled_title(prepared_directory: Path, *, root: Path, recipe: d
                                      title=item, report=report)
     renderer_cache = installation_cache_directory(data_root)
     adopt_existing_cache(renderer_cache, report=report)
-    interior_sun = prepare_interior_sun(root=root, data_root=data_root, runtime_record=catalog["runtime"],
+    interior_sun = prepare_interior_sun(root=root, data_root=data_root, runtime_record=runtime_record(root, catalog),
         romfs=prepared.inputs["romfs"].path, romfs_sha256=prepared.inputs["romfs"].sha256,
         cache_directory=renderer_cache, mask_table=tables.get("interior_sun_masks"), report=report)
     renderer_preparation = prepare_renderer_shader_cache(root=root, data_root=data_root,

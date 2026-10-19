@@ -7,7 +7,6 @@
     "title_neutral_resource": ["resources/*", "resources/**/*", "gamecontrollerdb.txt"],
     "topscreen_singlescreen_asset": ["resources/topscreen/singlescreen-3.0/custom_ui01.ctxb", "resources/topscreen/singlescreen-3.0/zelda_link_ext.zar"],
     "configuration": ["config/*", "config/**/*"],
-    "documentation": ["README.md", "LICENSE_SCOPE.md", "THIRD_PARTY_NOTICES.md", "SOURCE_OFFER.md", "docs/*", "docs/**/*"],
     "license": ["LICENSE", "LICENSES/*", "LICENSES/**/*"],
     "revision_recipe": ["recipes/*.json"],
     "input_copy_adapter": ["recipes/adapters/*.json"],
@@ -24,9 +23,6 @@
   "required_paths": [
     "resources/gamecontrollerdb.txt",
     "README.md",
-    "LICENSE_SCOPE.md",
-    "THIRD_PARTY_NOTICES.md",
-    "SOURCE_OFFER.md",
     "LICENSE",
     "LICENSES/GPL-2.0-or-later.txt",
     "LICENSES/SDL2-zlib.txt",
@@ -52,7 +48,7 @@
   "platforms": {
     "x86_64-pc-windows-msvc": {
       "allowed_roles": {
-        "runtime_executable": ["TriAevum.exe"],
+        "runtime_executable": ["runtime/TriAevum.exe"],
         "forge_executable": ["TriAevumForge.exe"],
         "forge_tool": ["forge/*.exe"],
         "shader_preparation_tool": ["forge/oot3d_native_pica_aot_compiler.exe", "forge/oot3d_native_nri_pipeline_prepare.exe"],
@@ -60,12 +56,13 @@
         "forge_link_library": ["forge/*.lib"],
         "forge_tool_resource": ["lib/clang/*", "lib/clang/**/*"],
         "forge_runtime_module": ["forge/*.dll"],
-        "runtime_library": ["*.dll", "bin/*.dll"],
-        "separately_licensed_module": ["triaevum_immerse.dll", "triaevum_dlss.dll", "nvngx_dlss.dll"],
-        "optional_vulkan_runtime": ["amd_fidelityfx_vk.dll"],
-        "precompiled_title": ["titles/*/triaevum_title_aot.dll"]
+        "runtime_library": ["runtime/*.dll"],
+        "separately_licensed_module": ["runtime/triaevum_immerse.dll", "runtime/triaevum_dlss.dll", "runtime/nvngx_dlss.dll"],
+        "optional_vulkan_runtime": ["runtime/amd_fidelityfx_vk.dll"],
+        "precompiled_title": ["titles/*/triaevum_title_aot.dll"],
+        "documentation": ["README.md", "docs/*", "docs/**/*"]
       },
-      "required_paths": ["TriAevum.exe", "TriAevumForge.exe", "forge/oot3d_game_module.dll", "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "LICENSES/Microsoft-Visual-Cpp-Runtime.md", "LICENSES/Python-3.13.txt"]
+      "required_paths": ["runtime/TriAevum.exe", "TriAevumForge.exe", "forge/oot3d_game_module.dll", "runtime/msvcp140.dll", "runtime/vcruntime140.dll", "runtime/vcruntime140_1.dll", "docs/LICENSE_SCOPE.md", "docs/THIRD_PARTY_NOTICES.md", "docs/SOURCE_OFFER.md", "LICENSES/Microsoft-Visual-Cpp-Runtime.md", "LICENSES/Python-3.13.txt"]
     },
     "x86_64-unknown-linux-gnu": {
       "allowed_roles": {
@@ -76,9 +73,10 @@
         "runtime_library": ["triaevum_title_aot.so", "lib/*.so", "lib/*.so.*", "lib/compat-cxx/*.so.*"],
         "separately_licensed_module": ["libtriaevum_immerse.so", "lib/libtriaevum_immerse.so", "libtriaevum_dlss.so", "lib/libtriaevum_dlss.so", "libnvidia-ngx-dlss.so.*", "lib/libnvidia-ngx-dlss.so.*"],
         "forge_frozen_resource": ["_internal/*", "_internal/**/*"],
-        "precompiled_title": ["titles/*/triaevum_title_aot.so"]
+        "precompiled_title": ["titles/*/triaevum_title_aot.so"],
+        "documentation": ["README.md", "LICENSE_SCOPE.md", "THIRD_PARTY_NOTICES.md", "SOURCE_OFFER.md", "docs/*", "docs/**/*"]
       },
-      "required_paths": ["TriAevum", "TriAevumForge", "forge/oot3d_game_module.so", "triaevum_title_aot.so", "_internal/base_library.zip", "LICENSES/Python-3.13.txt"],
+      "required_paths": ["TriAevum", "TriAevumForge", "forge/oot3d_game_module.so", "triaevum_title_aot.so", "_internal/base_library.zip", "LICENSES/Python-3.13.txt", "LICENSE_SCOPE.md", "THIRD_PARTY_NOTICES.md", "SOURCE_OFFER.md"],
       "forbidden_basenames": ["libc.so.6", "libpthread.so.0", "libdl.so.2", "ld-linux-x86-64.so.2", "libvulkan.so.1"],
       "forbidden_extensions": [".dll", ".exe", ".lib"]
     }

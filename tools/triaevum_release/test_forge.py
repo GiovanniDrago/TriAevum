@@ -220,7 +220,7 @@ class ForgeTests(unittest.TestCase):
                                      "sha256": sha256_file(manifest_path)}
         atomic_write_json(title / "content.tap", index)
         platform = host_platform()
-        exe, plugin = self.root / platform.runtime, self.root / platform.title_module
+        exe, plugin = self.root / platform.installed_runtime, self.root / platform.title_module
         exe.write_bytes(b"synthetic host")
         plugin.write_bytes(b"synthetic plugin")
         profile = self.root / "TriAevum.launch.json"
@@ -256,7 +256,7 @@ class ForgeTests(unittest.TestCase):
             shutil.copytree(self.root, moved)
             new_title = moved / title.relative_to(self.root)
             runtime = load_json_object(new_title / "forge-state.json")["runtime"]
-            validate_installed_runtime(moved / host_platform().runtime, new_title, moved / "forge-output", runtime)
+            validate_installed_runtime(moved / host_platform().installed_runtime, new_title, moved / "forge-output", runtime)
             self.assertEqual((moved / save.relative_to(self.root)).read_bytes(), save_before)
 
     def test_migration_rolls_back_every_metadata_file_on_late_failure(self):
@@ -287,10 +287,10 @@ class ForgeTests(unittest.TestCase):
             shutil.copytree(self.root, moved)
             new_title = moved / title.relative_to(self.root)
             runtime = load_json_object(new_title / "forge-state.json")["runtime"]
-            validate_installed_runtime(moved / host_platform().runtime, new_title, moved / "forge-output", runtime)
+            validate_installed_runtime(moved / host_platform().installed_runtime, new_title, moved / "forge-output", runtime)
             (moved / pack.relative_to(self.root)).write_bytes(b"corrupted")
             with self.assertRaisesRegex(ValueError, "PICA shader pack changed"):
-                validate_installed_runtime(moved / host_platform().runtime, new_title, moved / "forge-output", runtime)
+                validate_installed_runtime(moved / host_platform().installed_runtime, new_title, moved / "forge-output", runtime)
 
     def test_mutable_shader_cache_moves_with_install_and_is_not_a_required_artifact(self):
         title, save = self.prepare_legacy_installation()
@@ -313,7 +313,7 @@ class ForgeTests(unittest.TestCase):
             runtime = load_json_object(new_title / "forge-state.json")["runtime"]
             new_cache = moved / cache.relative_to(self.root)
             for _ in range(2):
-                validate_installed_runtime(moved / host_platform().runtime, new_title, moved / "forge-output", runtime)
+                validate_installed_runtime(moved / host_platform().installed_runtime, new_title, moved / "forge-output", runtime)
                 if new_cache.exists(): shutil.rmtree(new_cache)
             new_profile = moved / profile.relative_to(self.root)
             payload = load_json_object(new_profile)
@@ -321,7 +321,7 @@ class ForgeTests(unittest.TestCase):
             atomic_write_json(new_profile, payload)
             runtime["launch_profile_sha256"] = sha256_file(new_profile)
             with self.assertRaisesRegex(ValueError, "cache routing"):
-                validate_installed_runtime(moved / host_platform().runtime, new_title, moved / "forge-output", runtime)
+                validate_installed_runtime(moved / host_platform().installed_runtime, new_title, moved / "forge-output", runtime)
 
     def test_reuses_identical_content_addressed_output(self) -> None:
         recipe, verified, verified_mod = self.verify()
