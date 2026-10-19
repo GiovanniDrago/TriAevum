@@ -166,9 +166,24 @@ image. Interleaved runs, parallel / admission / serial, median (p95) ms and fps:
 | Barinade fight, 4K Enhanced | 31.7 (45.0), 59.8 | 16.0 (28.1), 59.9 | - |
 
 Uncapped (VSync off, no pacer) the lost overlap costs throughput: 588 against
-523 fps in the field. `TRIAEVUM_INPUT_ADMISSION=0` restores the early sampling.
-The remaining input age at 60 Hz is mostly the wait for the swapchain image
-(8-12 ms median after the pump), and the interpolation delay is on top.
+523 fps in the field.
+
+Late sampling (default, on top of admission) then begins the renderer frame
+synchronously (frame slot fence and swapchain image acquisition, where VSync
+waits) before the input section, and pumps the events again before polling:
+the 8-13 ms the input spent waiting for the image are gone. Interleaved
+admission / late, median (p95) ms and fps:
+
+| Scene | Admission | Late sampling |
+|---|---|---|
+| Hyrule Field, 720p | 16.1 (25.5), 59.9 | 9.1 (12.4), 59.8 |
+| Kokiri, 4K Enhanced | 17.6 (22.0), 56.2; 18.5 (22.6), 53.9 | 8.3 (12.7), 55.1; 8.3 (13.1), 53.3 |
+| Barinade fight, 4K Enhanced | 16.2 (32.0), 60.0 | 10.2 (17.4), 59.9 |
+
+GPU-bound Kokiri loses 0.6-1.1 fps (1-2 %); uncapped the field runs 520
+(admission) and 555 fps (late). `TRIAEVUM_INPUT_ADMISSION=1` keeps only the
+admission, `=0` restores the early sampling. The interpolation delay is on top
+of these host times.
 
 ## Qualification
 

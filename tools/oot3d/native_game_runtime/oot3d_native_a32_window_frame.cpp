@@ -151,21 +151,27 @@ bool NativeA32WindowSession::RunFrame() {
   widescreenProjection.CurrentHostFrame =
       static_cast<uint32_t>(presentationFrameCount);
   WindowDemoFrameTiming frameTiming;
-  // Input admission: with parallel presentation the next frame pumps events
-  // and polls input only once the previous frame has ended (presented).
-  // Sampled earlier, the input waited a whole frame behind it (33 ms instead
-  // of 16 at 60 Hz with VSync, same frame rate). TRIAEVUM_INPUT_ADMISSION=0
-  // restores the early sampling for comparisons.
-  static const bool inputAdmission = [] {
-    const char *value = std::getenv("TRIAEVUM_INPUT_ADMISSION");
-    return value == nullptr || std::string_view(value) != "0";
-  }();
+  // Input sampling waits come first. With parallel presentation the next
+  // frame starts only once the previous one has ended (presented); then it
+  // begins its renderer frame (frame slot fence and swapchain image
+  // acquisition, where VSync waits) and only then pumps events and polls
+  // input. Sampled before those waits, the input aged behind them: at 60 Hz
+  // with VSync, 33 ms median parallel and 16 serial, now 8-10 ms at the same
+  // frame rate (docs/TRIAEVUM_PARALLEL_PRESENTATION.md).
+  // TRIAEVUM_INPUT_ADMISSION=1 keeps only the wait for the previous frame and
+  // =0 restores the early sampling, for comparisons.
+  static const char *inputAdmissionMode = std::getenv("TRIAEVUM_INPUT_ADMISSION");
+  static const bool inputAdmission =
+      inputAdmissionMode == nullptr || std::string_view(inputAdmissionMode) != "0";
+  static const bool lateInputSample =
+      inputAdmission && (inputAdmissionMode == nullptr ||
+                         std::string_view(inputAdmissionMode) != "1");
   if (inputAdmission) renderStream.WaitForFramesInFlight(0U);
   if (!PrepareNextWindowDemoFrame(hostArgs, window, timing, frameTiming)) {
     return true;
   }
   // The SDL events just pumped are the physical input this frame polls.
-  const auto inputPumpTime = std::chrono::steady_clock::now();
+  auto inputPumpTime = std::chrono::steady_clock::now();
   const auto requestedPresentationPolicy =
       Fast::Oot3d::ResolvePresentationPacingPolicy(
           Fast::Oot3d::GraphicsSettingsRuntime::Instance()
@@ -252,6 +258,143 @@ bool NativeA32WindowSession::RunFrame() {
   renderStream.Submit([&] { window.StartFrame(); });
   hostStartSteps.Mark("render_start_frame");
   phaseTiming.HostFrameStartSeconds += SecondsSince(phaseStart);
+  // Developer qualification: scheduled settings take the F1 commit path
+  // (applied, not persisted) before this frame is rendered.
+  for (const auto *step : graphicsSettingsSchedule.TakeDue(runFrameCount)) {
+    auto &graphicsSettings = Fast::Oot3d::GraphicsSettingsRuntime::Instance();
+    const auto current = graphicsSettings.Snapshot();
+    const auto decoded = Fast::Oot3d::DeserializeGraphicsSettings(
+        Oot3dNativeGame::MergeScheduledGraphics(
+            Fast::Oot3d::SerializeGraphicsSettings(current), step->Graphics),
+        current);
+    const auto applied = graphicsSettings.Apply(decoded.Value, false);
+    std::fprintf(stderr,
+                 "TRIAEVUM_GRAPHICS_SETTINGS_SCHEDULE frame=%u accepted=%d "
+                 "decode_issues=%zu apply_issues=%zu\n",
+                 step->Frame, applied.Accepted() ? 1 : 0,
+                 decoded.Issues.size(), applied.Issues.size());
+    if (decoded.UnsupportedFutureVersion || !applied.Accepted())
+      throw std::runtime_error(
+          "graphics settings schedule step at frame " +
+          std::to_string(step->Frame) + " was rejected");
+  }
+  // The renderer frame begin; false when the frame ended early (no image
+  // was acquired, or the guest waits for the preparation screen).
+  Fast::Renderer3ds::PicaPreparationStatus preparationStatus{};
+  const auto beginGuestFrame = [&](bool forceSynchronous) -> bool {
+    const auto rendererFrameStart = std::chrono::steady_clock::now();
+    CpuProbe::Scope cpuRendererStart(CpuProbe::Phase::RendererStart);
+    const auto beginRendererFrame = [&, width, height,
+                                     presentationSerial =
+                                         presentationFrameCount] {
+      api.UpdateFramebufferParameters(0, width, height, 1, false, true, true,
+                                      true);
+      if (titleRenderBackend != nullptr) {
+        // Display settings are window operations: applied only by a frame
+        // begun on the window's thread.
+        titleRenderBackend->SetPresentationSettingsHeld(
+            !renderStream.InSynchronousCommand());
+      }
+      const auto beginStart = std::chrono::steady_clock::now();
+      api.StartFrame();
+      inputLatencyTrace.ObserveBegin(presentationSerial, beginStart,
+                                     std::chrono::steady_clock::now());
+      rendererFrameSkipped = !api.HasActiveFrame();
+      if (rendererFrameSkipped) {
+        rendererFrameWasInactive.store(true);
+        return;
+      }
+      picaPresentationScheduler.BeginPresentation(presentationSerial);
+      api.StartDrawToFramebuffer(0, 1.0F);
+      api.SetClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+      api.ClearFramebuffer(true, true);
+      api.SetViewport(0, 0, static_cast<int>(width), static_cast<int>(height));
+      api.SetScissor(0, 0, static_cast<int>(width), static_cast<int>(height));
+    };
+    // A frame begin may recreate targets (and so read back GPU copies into
+    // guest memory) after a resize or a graphics settings change, may apply
+    // display settings (window operations), and an inactive frame must not
+    // advance the guest: those begin synchronously, on this thread.
+    // Otherwise the guest goes on while the renderer finishes the previous
+    // frame.
+    const auto renderSettings = Fast::Oot3d::GraphicsSettingsRuntime::Instance()
+                                    .SnapshotWithRevision()
+                                    .Revision;
+    const bool renderNativePresentation =
+        Fast::Oot3d::GraphicsSettingsRuntime::Instance()
+            .NativePresentationOverrideActive();
+    const bool presentationTransactionActive =
+        Fast::Oot3d::GraphicsSettingsRuntime::Instance()
+            .PresentationStatus()
+            .Phase != Fast::Oot3d::PresentationTransactionPhase::Idle;
+    const bool previousRendererFrameInactive =
+        rendererFrameWasInactive.exchange(false);
+    const bool synchronousFrameBegin =
+        forceSynchronous ||
+        renderStream.CurrentMode() ==
+            Oot3dNativeGame::NativeRenderCommandStream::Mode::Inline ||
+        presentationTransactionActive || previousRendererFrameInactive ||
+        width != guestFrameBeginWidth ||
+        height != guestFrameBeginHeight ||
+        renderSettings != guestFrameBeginSettings ||
+        renderNativePresentation != guestFrameBeginNativePresentation;
+    guestFrameBeginWidth = width;
+    guestFrameBeginHeight = height;
+    guestFrameBeginSettings = renderSettings;
+    guestFrameBeginNativePresentation = renderNativePresentation;
+    bool rendererFrameActive = true;
+    if (synchronousFrameBegin) {
+      renderStream.Run(beginRendererFrame);
+      // The renderer is idle after Run: its frame state is readable.
+      rendererFrameActive = !rendererFrameSkipped;
+    } else {
+      renderStream.Submit(beginRendererFrame);
+    }
+    if (!rendererFrameActive) {
+      // A minimized or changing surface is not a guest/PICA failure. Keep events
+      // and UI balanced, but do not consume guest time without an acquired frame.
+      if (!presentationScheduler.Restore(presentationStateBeforeFrame, &error)) {
+        throw std::runtime_error("cannot restore suspended presentation clock: " + error);
+      }
+      gui->EndDraw();
+      inputLatencyTrace.DiscardPending(presentationFrameCount);
+      renderStream.Submit([&] { window.EndFrame(); }, true);
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      renderStream.Submit([&] { realtimePacer.ResetDeadline(); });
+      lastPresentationTime = std::chrono::steady_clock::now();
+      return false;
+    }
+    preparationStatus = programPreparation != nullptr
+        ? programPreparation->PreparationStatus()
+        : Fast::Renderer3ds::PicaPreparationStatus{};
+    if (preparationScreen.HoldsGuest(preparationStatus,
+                                     std::chrono::steady_clock::now())) {
+      // The guest waits for the initial preparation: its clock does not run
+      // and the frame shows the progress instead of a game image.
+      if (!presentationScheduler.Restore(presentationStateBeforeFrame, &error)) {
+        throw std::runtime_error("cannot restore the presentation clock during preparation: " + error);
+      }
+      preparationScreen.Draw(preparationStatus);
+      gui->EndDraw();
+      inputLatencyTrace.DiscardPending(presentationFrameCount);
+      renderStream.Submit([&] { window.EndFrame(); }, true);
+      std::this_thread::sleep_for(std::chrono::milliseconds(15));
+      renderStream.Submit([&] { realtimePacer.ResetDeadline(); });
+      lastPresentationTime = std::chrono::steady_clock::now();
+      lastCompletedFrameTime = lastPresentationTime;
+      return false;
+    }
+    phaseTiming.RendererFrameStartSeconds += SecondsSince(rendererFrameStart);
+    cpuRendererStart.Stop();
+    return true;
+  };
+  if (lateInputSample) {
+    // Synchronous, so the image is acquired when the input is sampled; the
+    // frame's events are pumped again for it.
+    if (!beginGuestFrame(true)) return true;
+    window.HandleEvents();
+    inputPumpTime = std::chrono::steady_clock::now();
+  }
   const auto inputPhaseStart = std::chrono::steady_clock::now();
   // F5 saves the game moment and F8 loads the last state; with Shift, the
   // settings are saved beside it / applied from it.
@@ -313,26 +456,6 @@ bool NativeA32WindowSession::RunFrame() {
   inputLatencyTrace.ObserveInput(presentationFrameCount, inputPumpTime,
                                  std::chrono::steady_clock::now(),
                                  visualInterpolationAlpha);
-  // Developer qualification: scheduled settings take the F1 commit path
-  // (applied, not persisted) before this frame is rendered.
-  for (const auto *step : graphicsSettingsSchedule.TakeDue(runFrameCount)) {
-    auto &graphicsSettings = Fast::Oot3d::GraphicsSettingsRuntime::Instance();
-    const auto current = graphicsSettings.Snapshot();
-    const auto decoded = Fast::Oot3d::DeserializeGraphicsSettings(
-        Oot3dNativeGame::MergeScheduledGraphics(
-            Fast::Oot3d::SerializeGraphicsSettings(current), step->Graphics),
-        current);
-    const auto applied = graphicsSettings.Apply(decoded.Value, false);
-    std::fprintf(stderr,
-                 "TRIAEVUM_GRAPHICS_SETTINGS_SCHEDULE frame=%u accepted=%d "
-                 "decode_issues=%zu apply_issues=%zu\n",
-                 step->Frame, applied.Accepted() ? 1 : 0,
-                 decoded.Issues.size(), applied.Issues.size());
-    if (decoded.UnsupportedFutureVersion || !applied.Accepted())
-      throw std::runtime_error(
-          "graphics settings schedule step at frame " +
-          std::to_string(step->Frame) + " was rejected");
-  }
   if (!inputTimeline.Enabled()) {
     const uint32_t start = Oot3dNativeGame::NativeA32HidButtonMask(
         Oot3dNativeGame::NativeA32HidButton::Start);
@@ -345,109 +468,7 @@ bool NativeA32WindowSession::RunFrame() {
   }
   Oot3dNativeGame::NativeA32InputFrame inputFrame;
   phaseTiming.InputPollSeconds += SecondsSince(inputPhaseStart);
-  const auto rendererFrameStart = std::chrono::steady_clock::now();
-  CpuProbe::Scope cpuRendererStart(CpuProbe::Phase::RendererStart);
-  const auto beginRendererFrame = [&, width, height,
-                                   presentationSerial =
-                                       presentationFrameCount] {
-    api.UpdateFramebufferParameters(0, width, height, 1, false, true, true,
-                                    true);
-    if (titleRenderBackend != nullptr) {
-      // Display settings are window operations: applied only by a frame
-      // begun on the window's thread.
-      titleRenderBackend->SetPresentationSettingsHeld(
-          !renderStream.InSynchronousCommand());
-    }
-    const auto beginStart = std::chrono::steady_clock::now();
-    api.StartFrame();
-    inputLatencyTrace.ObserveBegin(presentationSerial, beginStart,
-                                   std::chrono::steady_clock::now());
-    rendererFrameSkipped = !api.HasActiveFrame();
-    if (rendererFrameSkipped) {
-      rendererFrameWasInactive.store(true);
-      return;
-    }
-    picaPresentationScheduler.BeginPresentation(presentationSerial);
-    api.StartDrawToFramebuffer(0, 1.0F);
-    api.SetClearColor(0.0F, 0.0F, 0.0F, 1.0F);
-    api.ClearFramebuffer(true, true);
-    api.SetViewport(0, 0, static_cast<int>(width), static_cast<int>(height));
-    api.SetScissor(0, 0, static_cast<int>(width), static_cast<int>(height));
-  };
-  // A frame begin may recreate targets (and so read back GPU copies into
-  // guest memory) after a resize or a graphics settings change, may apply
-  // display settings (window operations), and an inactive frame must not
-  // advance the guest: those begin synchronously, on this thread.
-  // Otherwise the guest goes on while the renderer finishes the previous
-  // frame.
-  const auto renderSettings = Fast::Oot3d::GraphicsSettingsRuntime::Instance()
-                                  .SnapshotWithRevision()
-                                  .Revision;
-  const bool renderNativePresentation =
-      Fast::Oot3d::GraphicsSettingsRuntime::Instance()
-          .NativePresentationOverrideActive();
-  const bool presentationTransactionActive =
-      Fast::Oot3d::GraphicsSettingsRuntime::Instance()
-          .PresentationStatus()
-          .Phase != Fast::Oot3d::PresentationTransactionPhase::Idle;
-  const bool previousRendererFrameInactive =
-      rendererFrameWasInactive.exchange(false);
-  const bool synchronousFrameBegin =
-      renderStream.CurrentMode() ==
-          Oot3dNativeGame::NativeRenderCommandStream::Mode::Inline ||
-      presentationTransactionActive || previousRendererFrameInactive ||
-      width != guestFrameBeginWidth ||
-      height != guestFrameBeginHeight ||
-      renderSettings != guestFrameBeginSettings ||
-      renderNativePresentation != guestFrameBeginNativePresentation;
-  guestFrameBeginWidth = width;
-  guestFrameBeginHeight = height;
-  guestFrameBeginSettings = renderSettings;
-  guestFrameBeginNativePresentation = renderNativePresentation;
-  bool rendererFrameActive = true;
-  if (synchronousFrameBegin) {
-    renderStream.Run(beginRendererFrame);
-    // The renderer is idle after Run: its frame state is readable.
-    rendererFrameActive = !rendererFrameSkipped;
-  } else {
-    renderStream.Submit(beginRendererFrame);
-  }
-  if (!rendererFrameActive) {
-    // A minimized or changing surface is not a guest/PICA failure. Keep events
-    // and UI balanced, but do not consume guest time without an acquired frame.
-    if (!presentationScheduler.Restore(presentationStateBeforeFrame, &error)) {
-      throw std::runtime_error("cannot restore suspended presentation clock: " + error);
-    }
-    gui->EndDraw();
-    inputLatencyTrace.DiscardPending(presentationFrameCount);
-    renderStream.Submit([&] { window.EndFrame(); }, true);
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    renderStream.Submit([&] { realtimePacer.ResetDeadline(); });
-    lastPresentationTime = std::chrono::steady_clock::now();
-    return true;
-  }
-  const auto preparationStatus = programPreparation != nullptr
-      ? programPreparation->PreparationStatus()
-      : Fast::Renderer3ds::PicaPreparationStatus{};
-  if (preparationScreen.HoldsGuest(preparationStatus,
-                                   std::chrono::steady_clock::now())) {
-    // The guest waits for the initial preparation: its clock does not run
-    // and the frame shows the progress instead of a game image.
-    if (!presentationScheduler.Restore(presentationStateBeforeFrame, &error)) {
-      throw std::runtime_error("cannot restore the presentation clock during preparation: " + error);
-    }
-    preparationScreen.Draw(preparationStatus);
-    gui->EndDraw();
-    inputLatencyTrace.DiscardPending(presentationFrameCount);
-    renderStream.Submit([&] { window.EndFrame(); }, true);
-    std::this_thread::sleep_for(std::chrono::milliseconds(15));
-    renderStream.Submit([&] { realtimePacer.ResetDeadline(); });
-    lastPresentationTime = std::chrono::steady_clock::now();
-    lastCompletedFrameTime = lastPresentationTime;
-    return true;
-  }
-  phaseTiming.RendererFrameStartSeconds += SecondsSince(rendererFrameStart);
-  cpuRendererStart.Stop();
+  if (!lateInputSample && !beginGuestFrame(false)) return true;
   phaseTiming.FrameStartSeconds += SecondsSince(phaseStart);
   const uint32_t guestRefreshIterations =
       std::max<uint32_t>(1U, guestRefreshesDue);
