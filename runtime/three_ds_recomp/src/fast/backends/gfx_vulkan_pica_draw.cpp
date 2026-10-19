@@ -2245,9 +2245,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         const auto toonUniforms = Oot3d::PackToonSurfaceParameters(
             graphicsSettings.Effects.Toon, graphicsSettings.Effects.ToonStyle, false);
         // The superset effect program reads its decisions (and the toon
-        // parameters) from the toon binding.
+        // parameters) from the toon binding; a specialized program reads
+        // the draw's own where isolated lighting would change its text.
         std::optional<Oot3d::PicaUberEffectBlock> effectBlock;
-        if (selectedProgram->EffectBlock) {
+        if (selectedProgram->EffectBlock || drawVariant.ReadsDrawControl) {
             std::array<float, 32> toon{};
             static_assert(sizeof(toonUniforms) == sizeof(toon));
             std::memcpy(toon.data(), &toonUniforms, sizeof(toon));

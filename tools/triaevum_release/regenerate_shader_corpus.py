@@ -24,6 +24,15 @@ recipes into runtime-pipelines.json, a manifest for device preparation. Shader
 text a previous build wrote (*-shaders.json) is never an input: it goes stale
 with any generator change.
 
+Sessions sample the game; --synthesis-effects closes the corpus over the
+programs they never drew (fight effects, enemies, cutscenes). Every fragment
+program of the given Citra caches is transplanted onto a recorded draw and
+resolved under each context class the sessions recorded with the effects
+common to every session under those directories (the shipped profile). The
+replay also requires every resolved request, recorded or synthesized, to have
+an always-available program (strategy A.1): a draw without one would stall
+while its specialized program compiles.
+
 The output is checked before it is accepted: every replayed module and every
 recipe's module must be in the compiled pack (closure), and qualification.json
 records the generator inputs of the tools used and the runtime inputs of each
@@ -106,7 +115,8 @@ def variant_sessions(directories: list[Path]) -> list[dict[str, Path]]:
 
 def regenerate(tools: Path, captures: list[Path], caches: list[Path], output: Path,
                variant_records: list[Path] | None = None, root: Path = ROOT,
-               compile_cache: Path | None = None, jobs: int | None = None) -> dict:
+               compile_cache: Path | None = None, jobs: int | None = None,
+               synthesis_effects: list[Path] | None = None) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     suffix = ".exe" if (tools / "oot3d_native_pica_aot_compiler.exe").exists() else ""
     tool = {name: str(tools / f"oot3d_native_pica_{name}{suffix}")
@@ -144,6 +154,11 @@ def regenerate(tools: Path, captures: list[Path], caches: list[Path], output: Pa
                                                            for item in report["inputs"]),
                       "seconds": round(seconds, 1)})
     sessions = variant_sessions(variant_records or [])
+    targets = variant_sessions(synthesis_effects or [])
+    if targets and not sessions:
+        raise RuntimeError("--synthesis-effects needs recorded sessions (--variant-records)")
+    if targets and not caches:
+        raise RuntimeError("--synthesis-effects needs a Citra cache (--citra-cache)")
     policies = [json.loads(session["policy_inputs"].read_text(encoding="utf-8")) for session in sessions]
     requests = 0
     if sessions:
@@ -154,13 +169,19 @@ def regenerate(tools: Path, captures: list[Path], caches: list[Path], output: Pa
         for session in sessions:
             command += ["--session", str(session["raw_draws"]), str(session["variant_requests"]),
                         "--pipelines", str(session["pipelines"])]
+        for cache in caches if targets else []:
+            command += ["--synthesize-cache", str(cache)]
+        for target in targets:
+            command += ["--synthesize-effects", str(target["variant_requests"])]
         command += ["--shader-inventory", str(shaders), "--pipeline-manifest", str(manifest),
-                    "--report", str(report_path), "--require-witness"]
+                    "--report", str(report_path), "--require-witness", "--require-uber"]
         # Exit 3: a request or recipe could not be rebuilt; exit 4: a rebuilt
-        # output differs from the one the game produced. Both stop here.
+        # output differs from the one the game produced; exit 5: a request has
+        # no always-available program. All stop here.
         seconds, _ = _run(command, output / "variant-replay.log")
         report = json.loads(report_path.read_text(encoding="utf-8"))
         requests = sum(item["requests"] for item in report["sessions"])
+        synthesis = report.get("synthesis")
         inventories.append(shaders)
         pipelines.append(manifest)
         steps.append({"variant_sessions": [{"directory": str(session["directory"]),
@@ -170,6 +191,11 @@ def regenerate(tools: Path, captures: list[Path], caches: list[Path], output: Pa
                                            for session in sessions],
                       "requests": requests,
                       "witness_mismatches": report["witness_mismatches"],
+                      "uber_gaps": report.get("uber_gaps"),
+                      "synthesis": None if synthesis is None else {
+                          "effects_sessions": [str(target["directory"]) for target in targets],
+                          **{key: synthesis.get(key) for key in ("programs", "contexts", "resolves",
+                                                                  "new_modules", "uber_programs")}},
                       "recipes": report.get("recipes"), "shaders": shaders.name, "pipelines": manifest.name,
                       "report": report_path.name, "seconds": round(seconds, 1)})
     pack = output / "expanded-union.o3ps"
@@ -229,6 +255,9 @@ def main() -> int:
     parser.add_argument("--variant-records", type=Path, action="append", default=[],
                         help="Directory of recorded game sessions (raw-draws.jsonl, variant-requests.jsonl, "
                              "session-pipelines.json, runtime-inputs.json), searched recursively (repeatable)")
+    parser.add_argument("--synthesis-effects", type=Path, action="append", default=[],
+                        help="Directory of recorded sessions of the shipped profile: the Citra caches' programs "
+                             "are synthesized under the effects they all recorded (repeatable)")
     parser.add_argument("--output", type=Path, required=True, help="New private output directory")
     parser.add_argument("--compile-cache", type=Path,
                         help="Publisher SPIR-V cache shared between regenerations (private)")
@@ -237,7 +266,8 @@ def main() -> int:
     if not args.capture_corpus and not args.citra_cache:
         parser.error("at least one capture corpus or Citra cache is required")
     print(json.dumps(regenerate(args.tools, args.capture_corpus, args.citra_cache, args.output,
-                                args.variant_records, compile_cache=args.compile_cache, jobs=args.jobs),
+                                args.variant_records, compile_cache=args.compile_cache, jobs=args.jobs,
+                                synthesis_effects=args.synthesis_effects),
                      indent=2))
     return 0
 

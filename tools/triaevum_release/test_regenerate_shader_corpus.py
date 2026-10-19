@@ -53,7 +53,7 @@ class VariantRecordTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no recorded session"):
             regeneration.variant_sessions([self.root / "text"])
 
-    def _regenerate(self, pack_modules, **options):
+    def _regenerate(self, pack_modules, caches=(), **options):
         session = _session(self.root / "records" / "kokiri")
         output = self.root / "out"
         commands = []
@@ -61,10 +61,16 @@ class VariantRecordTests(unittest.TestCase):
         def fake_run(command, log, accept=(0,)):
             commands.append(command)
             name = Path(command[0]).name
-            if name.startswith("oot3d_native_pica_variant_inventory"):
+            if name.startswith("oot3d_native_pica_cache_inventory"):
+                log.write_text(json.dumps({"complete_import": True, "inputs": [
+                    {"failures": 0, "vertex_records_not_imported": 0, "geometry_records_not_imported": 0}]}),
+                    encoding="utf-8")
+            elif name.startswith("oot3d_native_pica_variant_inventory"):
+                synthesis = {"programs": 2, "contexts": 3, "resolves": 12, "new_modules": 4,
+                             "uber_programs": {"available": 12}} if "--synthesize-cache" in command else None
                 Path(_option(command, "--report")).write_text(json.dumps(
-                    {"sessions": [{"requests": 191}], "witness_mismatches": 0,
-                     "recipes": {"input": 1, "written": 1}}), encoding="utf-8")
+                    {"sessions": [{"requests": 191}], "witness_mismatches": 0, "uber_gaps": 0,
+                     "synthesis": synthesis, "recipes": {"input": 1, "written": 1}}), encoding="utf-8")
                 Path(_option(command, "--shader-inventory")).write_text(json.dumps(
                     {"shaders": [{"stage": "fragment", **FRAGMENT}]}), encoding="utf-8")
                 Path(_option(command, "--pipeline-manifest")).write_text(json.dumps(
@@ -79,8 +85,8 @@ class VariantRecordTests(unittest.TestCase):
         generator = _inputs({"generator.cpp": "1" * 64})
         with patch.object(regeneration, "_run", fake_run), \
                 patch.object(regeneration, "inputs_record", lambda *arguments: generator):
-            receipt = regeneration.regenerate(self.root / "tools", [], [], output, [self.root / "records"],
-                                              **options)
+            receipt = regeneration.regenerate(self.root / "tools", [], list(caches), output,
+                                              [self.root / "records"], **options)
         return session, output, commands, receipt
 
     def test_replay_requires_witness_and_feeds_a_qualified_union(self):
@@ -88,6 +94,8 @@ class VariantRecordTests(unittest.TestCase):
         session, output, commands, receipt = self._regenerate(both)
         replay = commands[0]
         self.assertIn("--require-witness", replay)
+        self.assertIn("--require-uber", replay)
+        self.assertNotIn("--synthesize-cache", replay)
         self.assertEqual(replay[replay.index("--session") + 1:replay.index("--session") + 3],
                          [str(session / regeneration.RAW_DRAWS), str(session / regeneration.VARIANT_REQUESTS)])
         self.assertIn(str(output / "variant-shaders.json"), commands[1])
@@ -110,6 +118,26 @@ class VariantRecordTests(unittest.TestCase):
     def test_pack_that_misses_a_recipe_module_is_refused(self):
         with self.assertRaisesRegex(RuntimeError, "does not close"):
             self._regenerate([(2, 0x21, 0x22, 23)])
+
+    def test_synthesis_closes_over_the_caches_under_the_shipped_effects(self):
+        both = [(1, 0x11, 0x12, 13), (2, 0x21, 0x22, 23)]
+        cache = self.root / "cache.bin"
+        cache.write_bytes(b"cache")
+        product = _session(self.root / "product" / "boot")
+        _, _, commands, receipt = self._regenerate(both, caches=[cache],
+                                                   synthesis_effects=[self.root / "product"])
+        replay = next(command for command in commands if "--session" in command)
+        self.assertEqual(_option(replay, "--synthesize-cache"), str(cache))
+        self.assertEqual(_option(replay, "--synthesize-effects"), str(product / regeneration.VARIANT_REQUESTS))
+        step = next(step for step in receipt["steps"] if "variant_sessions" in step)
+        self.assertEqual(step["uber_gaps"], 0)
+        self.assertEqual(step["synthesis"]["new_modules"], 4)
+        self.assertEqual(step["synthesis"]["effects_sessions"], [str(product)])
+
+    def test_synthesis_without_a_cache_is_refused(self):
+        _session(self.root / "product" / "boot")
+        with self.assertRaisesRegex(RuntimeError, "needs a Citra cache"):
+            self._regenerate([(1, 0x11, 0x12, 13)], synthesis_effects=[self.root / "product"])
 
 
 if __name__ == "__main__":
