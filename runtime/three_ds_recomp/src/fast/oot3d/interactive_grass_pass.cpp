@@ -21,6 +21,7 @@
 #include "fast/oot3d/grass_residency.h"
 #include "fast/oot3d/grass_selection_budget.h"
 #include "fast/oot3d/grass_collision_resolver.h"
+#include "fast/oot3d/grass_anchor_codec.h"
 #include "fast/oot3d/grass_gpu_instance_compactor.h"
 #include "fast/oot3d/grass_shadow_grid_pass.h"
 #include "fast/oot3d/grass_draw_state.h"
@@ -2446,7 +2447,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         uint64_t staticUploadedBytes = 0U;
         // Root i draws anchor rootIndices[i] of rootAnchors, bent by rootBends[i].
         const VkDeviceSize rootIndexBytes = VkDeviceSize(instanceCount) * sizeof(uint32_t);
-        const VkDeviceSize rootBendBytes = VkDeviceSize(instanceCount) * 4U * sizeof(float);
+        const VkDeviceSize rootBendBytes = VkDeviceSize(instanceCount) * kGrassRootBendWords * sizeof(uint32_t);
         VkDescriptorBufferInfo rootAnchors{}, rootBends{}, rootIndices{};
         if (gpuCompacted) {
             rootAnchors = {compaction.StaticAnchorBuffer, 0, VK_WHOLE_SIZE};
@@ -2463,7 +2464,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             mImpl->EnsureBuffer(bendBuffer, rootBendBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
             mImpl->EnsureBuffer(indexBuffer, rootIndexBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
             auto* anchorOutput = static_cast<GrassWorldAnchor*>(anchorBuffer.Mapped);
-            auto* bendOutput = static_cast<std::array<float, 4>*>(bendBuffer.Mapped);
+            auto* bendOutput = static_cast<std::array<uint32_t, kGrassRootBendWords>*>(bendBuffer.Mapped);
             auto* indexOutput = static_cast<uint32_t*>(indexBuffer.Mapped);
             for (size_t instanceIndex = 0U; instanceIndex < mImpl->VisibleAnchorIndices.size(); ++instanceIndex) {
                 const uint32_t anchorIndex = mImpl->VisibleAnchorIndices[instanceIndex];
@@ -2488,7 +2489,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 }
                 anchorOutput[instanceIndex] = anchor;
                 // No bend history here: the blades reuse the current bend.
-                bendOutput[instanceIndex] = {dynamicBend[0], dynamicBend[1], dynamicBend[0], dynamicBend[1]};
+                bendOutput[instanceIndex] = {PackGrassBend(dynamicBend), PackGrassBend(dynamicBend)};
                 indexOutput[instanceIndex] = static_cast<uint32_t>(instanceIndex);
             }
             rootAnchors = {anchorBuffer.Buffer, 0, anchorBytes};

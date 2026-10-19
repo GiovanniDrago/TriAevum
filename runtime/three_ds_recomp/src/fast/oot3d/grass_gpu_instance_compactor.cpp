@@ -56,8 +56,7 @@ static_assert(sizeof(GrassGpuCompactionPush) == 112U);
 
 // Bend history entry: bend XY bits, frame stamp, replaced bend (half2).
 constexpr VkDeviceSize kBendHistoryBytes = 4U * sizeof(uint32_t);
-// Root bend: current XY, previous XY.
-constexpr VkDeviceSize kRootBendBytes = 4U * sizeof(float);
+constexpr VkDeviceSize kRootBendBytes = kGrassRootBendWords * sizeof(uint32_t);
 constexpr uint32_t kDescriptorBindings = 8U;
 
 // Never zero, so a cleared history entry matches no frame.

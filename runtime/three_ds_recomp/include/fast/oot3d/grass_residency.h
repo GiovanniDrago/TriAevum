@@ -16,7 +16,8 @@ namespace Fast::Oot3d {
 // retains at the cluster's nearest distance. The store keeps, for each
 // cluster, the prefix retained at its nearest distance from the residency eye
 // less a margin: from any camera within the margin of that eye the selection
-// needs no anchor the store lacks. Clusters keep their order and bounds;
+// needs no anchor the store lacks. Only clusters with a stored prefix remain
+// (a source with none keeps one empty cluster), in order with their bounds;
 // FirstAnchor addresses the store, AnchorCount is the stored prefix.
 struct GrassResidency {
     uint64_t Placements = 0;   // the active placement set it was built for

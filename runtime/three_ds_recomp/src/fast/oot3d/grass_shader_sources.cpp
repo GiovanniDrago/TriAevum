@@ -141,8 +141,9 @@ struct GrassEnvironmentRecord {
 layout(std430, set=0, binding=0) readonly buffer GrassEnvironmentState {
     GrassEnvironmentRecord records[];
 } environment_state;
-// Per root: the interaction bend (XY) and the bend the previous frame drew (ZW).
-layout(std430,set=0,binding=8) readonly buffer GrassRootBends { vec4 values[]; } root_bends;
+// Per root, half precision: the interaction bend (X) and the bend the
+// previous frame drew (Y).
+layout(std430,set=0,binding=8) readonly buffer GrassRootBends { uvec2 values[]; } root_bends;
 
 GrassRoot grass_load_root(uint root) {
     uint first = root_anchor_indices.values[root] * 3u;
@@ -398,7 +399,8 @@ void main() {
         representative = group.x;
     }
     GrassRoot root = grass_load_root(root_index);
-    vec4 bends = root_bends.values[root_index];
+    uvec2 packed_bends = root_bends.values[root_index];
+    vec4 bends = vec4(unpackHalf2x16(packed_bends.x), unpackHalf2x16(packed_bends.y));
     vec4 in_base_height = root.base_height;
     vec4 in_bend_half_width = vec4(bends.xy, root.half_width_phase);
     vec2 in_width_axis = root.width_axis;
@@ -703,11 +705,11 @@ layout(std430, set=0, binding=1) readonly buffer VisibleIndices {
 layout(std430, set=0, binding=2) readonly buffer InteractionSamples {
     vec4 values[];
 } interaction_samples;
-// Per visible root: the interaction bend (XY) and the bend the previous frame
-// drew (ZW), or the current one where the blade has no previous frame. The
-// blades read everything else from the static anchors.
+// Per visible root, half precision: the interaction bend (X) and the bend the
+// previous frame drew (Y), or the current one where the blade has no previous
+// frame. The blades read everything else from the static anchors.
 layout(std430, set=0, binding=3) writeonly buffer RootBends {
-    vec4 values[];
+    uvec2 values[];
 } root_bends;
 
 struct ActorCollider {
@@ -910,7 +912,7 @@ void main() {
         bend_history.values[static_index] = uvec4(
             floatBitsToUint(dynamic_bend), state.history.x, packHalf2x16(previous_bend));
     }
-    root_bends.values[visible_index] = vec4(dynamic_bend, previous_bend);
+    root_bends.values[visible_index] = uvec2(packHalf2x16(dynamic_bend), packHalf2x16(previous_bend));
 }
 )glsl";
 }

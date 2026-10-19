@@ -1,6 +1,7 @@
 // Grass motion vectors with the production shader resolver (built-in or compiled): the compactor keeps each
 // blade's previous interaction bend, and a blade point moved by its motion
 // vector lands where the previous frame drew the same point.
+#include "fast/oot3d/grass_anchor_codec.h"
 #include "fast/oot3d/grass_draw_state.h"
 #include "fast/oot3d/grass_gpu_instance_compactor.h"
 #include "fast/oot3d/grass_indexed_topology.h"
@@ -615,13 +616,13 @@ struct Scene {
     }
 };
 
-// Root bends: the current bend (XY) or the previous frame's (ZW).
+// Root bends: the current bend or the previous frame's.
 std::vector<std::array<float, 2>> RootBends(Harness& harness, const GrassGpuInstanceCompactionResult& result,
                                             bool previous) {
-    const auto words = harness.ReadWords(result.RootBendBuffer, kBlades * 4U);
+    const auto words = harness.ReadWords(result.RootBendBuffer, kBlades * kGrassRootBendWords);
     std::vector<std::array<float, 2>> bends(kBlades);
     for (uint32_t index = 0U; index < kBlades; ++index)
-        std::memcpy(bends[index].data(), &words[index * 4U + (previous ? 2U : 0U)], sizeof(float) * 2U);
+        bends[index] = UnpackGrassBend(words[index * kGrassRootBendWords + (previous ? 1U : 0U)]);
     return bends;
 }
 
@@ -829,14 +830,14 @@ void TestIdleCompactionReuse(Harness& harness) {
     const auto first = compact(0);
     const auto second = compact(1);
     Require(!first.Reused && !second.Reused, "each fenced slot must be initialized");
-    const auto original = harness.ReadWords(first.RootBendBuffer, kBlades * 4U);
+    const auto original = harness.ReadWords(first.RootBendBuffer, kBlades * kGrassRootBendWords);
     const SceneFrame view{ 1, { { 0, 15, 70 }, { 0, 15, 0 } }, 10, {}, {}, {} };
     const auto before = harness.Draw(first, kBlades,
                                      BuildRecord(view, nullptr, false), Push(view, 1));
     auto hit = compact(0);
     Require(hit.Reused && hit.SelectionUploadReused && hit.DynamicUploadedBytes == 0,
             "idle exact selection must reuse GPU data");
-    Require(original == harness.ReadWords(hit.RootBendBuffer, kBlades * 4U),
+    Require(original == harness.ReadWords(hit.RootBendBuffer, kBlades * kGrassRootBendWords),
             "cached root bends must be bit identical");
     const auto after = harness.Draw(hit, kBlades,
                                     BuildRecord(view, nullptr, false), Push(view, 1));
