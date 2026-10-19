@@ -127,9 +127,8 @@ constexpr std::uint32_t kReticleScaleCall = 0x003721E0U;
 constexpr std::uint32_t kReticleScaleReturn = 0x0047B8BCU;
 
 // Sorted: the dispatcher's hook lists keep their order with binary_search.
-constexpr std::array<std::uint32_t, 12> kHookPcs{
-    kTopScreenDashNaviReturnSite, kTopScreenDashRunSite,
-    kTopScreenLandingRollWebSite, kTopScreenDashStateEntry,
+constexpr std::array<std::uint32_t, 11> kHookPcs{
+    kTopScreenDashRunSite,       kTopScreenLandingRollWebSite, kTopScreenDashStateEntry,
     kTopScreenDashTurnSpeedSite,
     kTopScreenDashMoveSpeedSite, kTopScreenDashRollSpeedSite, kTopScreenLinkCsabQuery,
     kTopScreenQuickPutAwayDelay, kTopScreenReticleEntry,      kTopScreenReticleScaleBlock,
@@ -185,7 +184,6 @@ bool TopScreenGameplayRuntime::ShouldObserve(std::uint32_t pc) const noexcept {
   case kTopScreenDashRollSpeedSite:
     // The cross-fade watches every call to see the dash answer switch.
     return mConfig.RollDash || mRollStep != RollStep::None;
-  case kTopScreenDashNaviReturnSite:
   case kTopScreenDashRunSite:
     return mConfig.RollDash && mInRoll;
   case kTopScreenLinkCsabQuery:
@@ -257,7 +255,6 @@ bool TopScreenGameplayRuntime::Execute(std::uint32_t pc, oot3d::recomp::a32::Gue
     return DashRollSite(state, result, blocksConsumed);
   case kTopScreenDashTurnSpeedSite:
   case kTopScreenDashMoveSpeedSite:
-  case kTopScreenDashNaviReturnSite:
   case kTopScreenDashRunSite:
     return DashSpeedSite(pc, state, result, blocksConsumed);
   case kTopScreenLinkCsabQuery:
@@ -624,11 +621,9 @@ bool TopScreenGameplayRuntime::DashSpeedSite(std::uint32_t pc,
     Branch(state, pc, kMoveSpeedCall, result, blocksConsumed);
     return true;
   }
-  case kTopScreenDashNaviReturnSite:
   case kTopScreenDashRunSite: {
-    // Navi returning to the hat while Link dashes: into the hat at once
-    // (the first state-7 frame) instead of trailing him and giving up
-    // (3.0 only redirected the reach timer's expiry).
+    // Navi's reach timer expired while Link dashes: into the hat (as 3.0
+    // and 3.1 do) instead of the native give-up that leaves her out.
     if (!mInRoll) return false;
     ++mDashNaviHides;
     Branch(state, pc, kNaviInHat, result, blocksConsumed);

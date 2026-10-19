@@ -40,11 +40,9 @@ inline constexpr std::uint32_t kTopScreenDashStateEntry = 0x001E1B54U; // Player
 // r7 the player + 0x1000). Returning to the hat (state 7) she has a reach
 // timer (+0x9AE, 45 frames); natively its expiry gives up: state 0 and
 // player +0x1714 |= 0x100000 (Navi out). At the dash speed she never
-// reaches Link, so 3.0 (0x005F40AC) sends the expiry to the "in the hat"
-// block 0x00129680 (state 8) while dashing. The port also takes the first
-// state-7 frame there while dashing, so she does not trail Link, lit, for
-// the 45 frames first; without the dash both sites stay native.
-inline constexpr std::uint32_t kTopScreenDashNaviReturnSite = 0x00129654U;
+// reaches Link, so 3.0/3.1 (0x005F40AC / 0x005F4510) send the expiry to the
+// "in the hat" block 0x00129680 (state 8) while dashing; without the dash
+// the block stays native.
 inline constexpr std::uint32_t kTopScreenDashRunSite = 0x0012966CU;
 // oot3d_player_action_turn_in_place 0x00251B48 / 0x00251D34 speed loads
 // (3.0 0x005F4088 / 0x005F4054) and FUN_002be660's roll animation call

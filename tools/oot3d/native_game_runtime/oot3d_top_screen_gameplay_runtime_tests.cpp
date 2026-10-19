@@ -134,7 +134,7 @@ void RollCallWithoutLinkAnimations() {
           "the roll call did not run as the native block");
   Require(!f.Memory.IsMapped(kTopScreenDashBlendBase, 1U), "the blend buffer was mapped unused");
 }
-void NaviReturnsToTheHatAtOnceWhileDashing() {
+void NaviEntersTheHatWhenHerReachTimerExpiresWhileDashing() {
   // The dash state from Player_Update's entry: the native query re-enters
   // with r0 = 0 (not blocked) and the roll action makes the dash.
   Fixture f;
@@ -156,16 +156,14 @@ void NaviReturnsToTheHatAtOnceWhileDashing() {
     state.r[5] = kNavi;
     state.r[7] = kPlayer + 0x1000U;
     state.r[13] = 0x02000000U;
-    state.r[15] = kTopScreenDashNaviReturnSite;
+    state.r[15] = kTopScreenDashRunSite;
     return state;
   };
   auto state = naviCaller();
   f.Configure(false, false);
-  Require(!f.Execute(kTopScreenDashNaviReturnSite, state) &&
-              !f.Execute(kTopScreenDashRunSite, state),
-          "Navi's return left the native block without Roll Dash");
+  Require(!f.Execute(kTopScreenDashRunSite, state), "Navi's return left the native block without Roll Dash");
   f.Configure(false, true);
-  Require(!f.Execute(kTopScreenDashNaviReturnSite, state), "Navi's return left the native block without a dash");
+  Require(!f.Execute(kTopScreenDashRunSite, state), "Navi's return left the native block without a dash");
 
   GuestState entry;
   entry.r[1] = kPlay;
@@ -178,20 +176,17 @@ void NaviReturnsToTheHatAtOnceWhileDashing() {
   Require(!f.Execute(kTopScreenDashStateEntry, entry) && f.Runtime.DashQueries() == 1U &&
               f.Runtime.DashFrames() == 1U,
           "the roll did not start the dash");
-  for (const std::uint32_t pc : {kTopScreenDashNaviReturnSite, kTopScreenDashRunSite}) {
-    state = naviCaller();
-    state.r[15] = pc;
-    Require(f.Execute(pc, state) && state.r[15] == 0x00129680U && state.r[4] == kNavi + 0x900U &&
-                state.r[5] == kNavi && state.r[7] == kPlayer + 0x1000U,
-            "Navi did not go into the hat while dashing");
-  }
-  Require(f.Runtime.DashNaviHides() == 2U, "the hat entries were not counted");
+  state = naviCaller();
+  Require(f.Execute(kTopScreenDashRunSite, state) && state.r[15] == 0x00129680U &&
+              state.r[4] == kNavi + 0x900U && state.r[5] == kNavi && state.r[7] == kPlayer + 0x1000U,
+          "Navi did not go into the hat while dashing");
+  Require(f.Runtime.DashNaviHides() == 1U, "the hat entry was not counted");
 }
 } // namespace
 
 int main() {
   FloorWebAcceptsTheLandingRoll();
   RollCallWithoutLinkAnimations();
-  NaviReturnsToTheHatAtOnceWhileDashing();
+  NaviEntersTheHatWhenHerReachTimerExpiresWhileDashing();
   std::cout << "SingleScreen gameplay runtime tests passed\n";
 }
