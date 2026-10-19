@@ -198,7 +198,7 @@ struct GrassGpuInstanceCompactor::Impl {
             FindMemoryType(PhysicalDevice, requirements.memoryTypeBits, memoryProperties),
         };
         buffer.DeviceLocal = (memoryProperties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0U;
-        if (GrassGpuAllocationRefused(buffer.Capacity) ||
+        if (GrassGpuAllocationRefused(PhysicalDevice, allocation.memoryTypeIndex, buffer.Capacity) ||
             vkAllocateMemory(Device, &allocation, nullptr, &buffer.Memory) != VK_SUCCESS) {
             throw GrassGpuOutOfMemory("cannot allocate grass compaction buffer");
         }

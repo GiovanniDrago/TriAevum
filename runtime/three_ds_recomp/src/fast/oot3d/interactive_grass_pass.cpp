@@ -703,6 +703,8 @@ struct InteractiveGrassPass::Impl {
     uint32_t MemoryShift = 0;
     uint32_t BaseCandidateCapacity = 8U * 1024U * 1024U;
     bool GpuSuspendedForMemory = false;
+    bool MemoryReleasePending = false;
+    uint64_t MemoryReleaseFrame = 0;
     uint64_t GpuRetryFrame = 0;
     uint64_t LastMemoryChangeFrame = 0;
     uint64_t MemoryStepUpFrames = 3600;
@@ -1038,14 +1040,22 @@ struct InteractiveGrassPass::Impl {
             if (frameId - LastMemoryChangeFrame < MemoryStepUpFrames) MemoryStepUpFrames *= 2U;
             SetMemoryShift(MemoryShift + 1U, frameId);
         }
-        GpuSelector.ReleaseMemory();
-        InstanceCompactor.ReleaseMemory();
+        // This frame's command buffer, still recording, may use the GPU path's
+        // buffers (an earlier invocation, or this one's selection upload):
+        // they are freed by the next frame, after it has been submitted.
+        MemoryReleasePending = true;
+        MemoryReleaseFrame = frameId;
         GpuSuspendedForMemory = true;
         GpuRetryFrame = frameId + kMemoryRetryFrames;
         std::fprintf(stderr, "[grass] out of GPU memory: GPU path suspended, scale 1/%u\n", 1U << MemoryShift);
     }
 
     void UpdateMemoryScale(uint64_t frameId) {
+        if (MemoryReleasePending && frameId != MemoryReleaseFrame) {
+            GpuSelector.ReleaseMemory();
+            InstanceCompactor.ReleaseMemory();
+            MemoryReleasePending = false;
+        }
         if (GpuSuspendedForMemory && frameId >= GpuRetryFrame && PlacementBuilder.Stats().Pending == 0U)
             GpuSuspendedForMemory = false;
         if (!GpuSuspendedForMemory && MemoryShift > 0U && frameId - LastMemoryChangeFrame >= MemoryStepUpFrames)
@@ -1093,7 +1103,7 @@ struct InteractiveGrassPass::Impl {
         allocation.memoryTypeIndex = FindMemoryType(
             PhysicalDevice, requirements.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (GrassGpuAllocationRefused(slot.Capacity) ||
+        if (GrassGpuAllocationRefused(PhysicalDevice, allocation.memoryTypeIndex, slot.Capacity) ||
             vkAllocateMemory(Device, &allocation, nullptr, &slot.Memory) != VK_SUCCESS)
             throw GrassGpuOutOfMemory(
                 "cannot allocate interactive grass streaming buffer");

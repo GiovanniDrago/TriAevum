@@ -51,6 +51,7 @@ struct GrassShadowGridPass::Impl {
         std::vector<std::unique_ptr<Invocation>> Invocations;
     };
     VkDevice Device{};
+    VkPhysicalDevice PhysicalDevice{};
     VkPhysicalDeviceMemoryProperties Memory{};
     VkDeviceSize MaximumStorageRange{};
     uint32_t DispatchCapacity = 0;
@@ -107,7 +108,7 @@ struct GrassShadowGridPass::Impl {
         allocate.allocationSize = requirements.size;
         allocate.memoryTypeIndex = type;
         buffer.DeviceLocal = !mapped;
-        if (GrassGpuAllocationRefused(buffer.Capacity) ||
+        if (GrassGpuAllocationRefused(PhysicalDevice, type, buffer.Capacity) ||
             vkAllocateMemory(Device, &allocate, nullptr, &buffer.Memory) != VK_SUCCESS)
             throw GrassGpuOutOfMemory("cannot allocate grass shadow grid buffer");
         TrackGrassGpuMemory(buffer.DeviceLocal, static_cast<int64_t>(buffer.Capacity), "shadow_grid", usage);
@@ -162,6 +163,7 @@ void GrassShadowGridPass::Initialize(VkPhysicalDevice physical, VkDevice device,
     Shutdown();
     auto& p = *mImpl;
     p.Device = device;
+    p.PhysicalDevice = physical;
     vkGetPhysicalDeviceMemoryProperties(physical, &p.Memory);
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical, &properties);

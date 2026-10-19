@@ -133,7 +133,7 @@ struct GrassGpuSelector::Impl {
         const VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, requirements.size,
             FindMemoryType(PhysicalDevice, requirements.memoryTypeBits, properties)};
         buffer.DeviceLocal = (properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0U;
-        if (GrassGpuAllocationRefused(buffer.Capacity) ||
+        if (GrassGpuAllocationRefused(PhysicalDevice, allocation.memoryTypeIndex, buffer.Capacity) ||
             vkAllocateMemory(Device, &allocation, nullptr, &buffer.Memory) != VK_SUCCESS)
             throw GrassGpuOutOfMemory("cannot allocate grass selection buffer");
         TrackGrassGpuMemory(buffer.DeviceLocal, static_cast<int64_t>(buffer.Capacity), "selection", usage);

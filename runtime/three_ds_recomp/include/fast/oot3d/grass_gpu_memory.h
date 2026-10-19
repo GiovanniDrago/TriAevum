@@ -3,6 +3,10 @@
 #include <cstdint>
 #include <stdexcept>
 
+#ifdef ENABLE_OOT3D_VULKAN
+#include <vulkan/vulkan.h>
+#endif
+
 namespace Fast::Oot3d {
 
 // Live GPU memory of the grass passes, counted where their buffers are
@@ -47,5 +51,17 @@ void TrackGrassGpuMemory(bool deviceLocal, int64_t bytes, const char* owner = nu
 // refuses an allocation that would take the grass passes beyond n MiB, as a
 // full card would. Unset: never refuses.
 [[nodiscard]] bool GrassGpuAllocationRefused(uint64_t bytes) noexcept;
+
+#ifdef ENABLE_OOT3D_VULKAN
+// The gate of every grass buffer: the fault injection above, then the
+// process's memory budget for a device-local heap (VK_EXT_memory_budget). A
+// buffer that would take the heap's usage past its budget less a reserve for
+// the rest of the renderer (a sixteenth of the budget, or
+// TRIAEVUM_GRASS_VRAM_RESERVE_MIB) is refused, so the grass scales down before
+// the scene's own resources are evicted or fail. Without the extension only
+// the driver refuses.
+[[nodiscard]] bool GrassGpuAllocationRefused(VkPhysicalDevice physicalDevice, uint32_t memoryType,
+                                             uint64_t bytes) noexcept;
+#endif
 
 } // namespace Fast::Oot3d
