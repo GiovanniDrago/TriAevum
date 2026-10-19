@@ -312,9 +312,11 @@ animations `zelda_link_ext.zar`, unchanged, from the official archive
 `singlescreen_30_25aeb.zip` (SHA-256
 `5668640fec8dc2b47b4516fd0b871c4d7d90ca1c2203acc2a22adb59aaab5993`;
 SingleScreen 3.1's `singlescreen_31_989c3.zip` carries them unchanged). They
-remain the author's; see `LICENSES/SingleScreen-3.0.md`. Its HD UI atlas and HD
-fonts are not distributed until their author consents; Forge imports them only
-from an archive the user places beside it. TopScreen 2.1.1 is no longer used.
+remain the author's; see `LICENSES/SingleScreen-3.0.md`. Its HD UI atlas (by
+chubbycubby) and HD fonts are not distributed until their author consents;
+Forge imports them only from the official archive, which the user places beside
+it, selects in Forge, or asks Forge to download from GameBanana. TopScreen 2.1.1
+is no longer used.
 
 The reverse-engineering method and implementation boundaries are documented in
 `docs/OOT3D_TOPSCREEN_MOD_SEMANTIC_PORT.md` and

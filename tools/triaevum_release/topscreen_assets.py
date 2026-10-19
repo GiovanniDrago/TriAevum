@@ -3,10 +3,11 @@
 SingleScreen 3.0 is part of TriAevum with the author's permission: its
 low-resolution UI atlas (custom_ui01.ctxb) and Link animations
 (zelda_link_ext.zar) are in the package. Its high-resolution graphics (the
-HD UI atlas and the HD fonts) stay out of the package until their author
-consents; Forge imports them only from a SingleScreen 3.1 or 3.0 archive the
-user places beside it, and never downloads one. 3.1 carries the same
-low-resolution assets as 3.0.
+HD UI atlas by chubbycubby and the HD fonts) stay out of the package until
+their author consents; Forge imports them only from a verified SingleScreen
+3.1 or 3.0 archive the user places beside it, or that Forge downloads or copies
+into data/downloads when the user asks (singlescreen_archive.py). 3.1 carries
+the same low-resolution assets as 3.0.
 """
 
 from __future__ import annotations
@@ -95,9 +96,10 @@ def bundled_assets(root: Path) -> dict[str, Path]:
 
 def find_singlescreen_archive(root: Path, data_root: Path,
                               contracts: list[tuple[str, dict]]) -> tuple[str, dict, Path] | None:
-    """The user's SingleScreen archive for the HD graphics, verified; never downloaded.
+    """The user's SingleScreen archive for the HD graphics, verified.
 
-    The newest release placed by the user wins."""
+    The newest release placed by the user, or obtained by Forge on the user's
+    request, wins."""
     for kind, contract in contracts:
         name = contract["name"]
         for candidate in (root / name, root / "mods" / name, data_root / "downloads" / name):

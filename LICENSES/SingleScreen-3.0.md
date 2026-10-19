@@ -22,9 +22,10 @@ outside TriAevum needs the author's own permission.
 
 Not distributed: the archive itself, its IPS patch and ARM payload (TriAevum
 reimplements the behavior as typed host code), and its high-resolution
-graphics: the HD UI atlas and the HD fonts. These stay out of the package until
-their author consents. Forge imports them only from the archive when the user
-places it beside Forge.
+graphics: the HD UI atlas (by chubbycubby) and the HD fonts. These stay out of
+the package until their author consents. Forge imports them only from the
+official archive, which the user places beside Forge, selects in Forge, or asks
+Forge to download from GameBanana.
 
 The original game, its characters and its assets belong to Nintendo; these
 files are not a license to any of them.

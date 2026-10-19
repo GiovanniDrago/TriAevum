@@ -48,7 +48,15 @@ Not shipped:
 
 Forge imports the HD graphics only from an archive the user places beside
 `TriAevumForge.exe`, under `mods/` beside it, or in `data/downloads/`, verified
-by size and SHA-256; it never downloads one. Either release works:
+by size and SHA-256. Forge's highlighted "HD fonts and TopScreen textures"
+section, which thanks RLG (M-1) for SingleScreen and chubbycubby for its HD
+textures, fills `data/downloads/` on request: **Download HD textures** fetches
+SingleScreen 3.1 from GameBanana (`https://gamebanana.com/dl/1851953`), and
+**Select 3.1 zip...** copies a zip the user downloaded from the mod page. Both
+keep the file only after its size and SHA-256 match; a newer release on the
+page fails verification and the user selects the 3.1 zip by hand. Forge never
+downloads without that click (`tools/triaevum_release/singlescreen_archive.py`).
+The archive applies at the next preparation. Either release works:
 `singlescreen_31_989c3.zip` (preferred when both are present) or
 `singlescreen_30_25aeb.zip`. 3.1 moved the emulator texture into a `UI/`
 folder; Forge reads each release's own layout. With the archive present it adds:
@@ -69,8 +77,10 @@ reads them from the package instead of the archive.
   builds the O3TU pack, installs the animations, imports the optional HD
   graphics; content-addressed cache with atomic writes.
 - `supported_revisions.json`: the archive contracts (name, size, hash) for the
-  optional HD import, `singlescreen_3_1_archive` and `singlescreen_3_0_archive`;
-  no download URL.
+  optional HD import, `singlescreen_3_1_archive` and `singlescreen_3_0_archive`.
+- `tools/triaevum_release/singlescreen_archive.py`: the on-request 3.1 download
+  (its URL lives here) and the import of a user-selected zip, both verified
+  against those contracts.
 - `tools/oot3d/decomp_support/scripts/build_topscreen_texture_override_pack.py`:
   `build_texture_pack(singlescreen_ui_atlas=...)` and O3TUv2 output.
 - `precompiled_titles.py` prepares the pack before transactional activation;

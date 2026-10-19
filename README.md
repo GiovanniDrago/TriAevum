@@ -50,7 +50,10 @@ See [ROM compatibility details](docs/TRIAEVUM_CONTENT_FAMILY_IMPORT.md).
 1. Download the **Windows-x64 ZIP**, not GitHub's source-code archive, and
    extract it into a writable folder. Besides `README.md` and `LICENSE`, its
    only file is `TriAevumForge.exe`; everything else is in subfolders.
-2. Run `TriAevumForge.exe` and select your decrypted ROM.
+2. Run `TriAevumForge.exe` and select your decrypted ROM. For HD fonts and
+   TopScreen textures, choose **Download HD textures** first (SingleScreen 3.1;
+   if it fails, select the 3.1 zip downloaded from
+   [the mod page](https://gamebanana.com/mods/695893)).
 3. When setup finishes, choose **Launch game**. Setup places `TriAevum.exe`
    beside Forge; afterwards, use `TriAevum.exe`.
 

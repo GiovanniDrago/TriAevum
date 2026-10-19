@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import uuid
+import webbrowser
 from dataclasses import dataclass
 import time
 from pathlib import Path
@@ -29,6 +30,7 @@ try:
     from .native_process import popen_native
     from .host_layout import for_package
     from . import portal_picker
+    from . import singlescreen_archive
 except ImportError:
     import ctr_rom
     import forge
@@ -45,6 +47,7 @@ except ImportError:
     from native_process import popen_native
     from host_layout import for_package
     import portal_picker
+    import singlescreen_archive
 
 
 StageReporter = Callable[[str, str], None]
@@ -338,9 +341,13 @@ class ForgeWindow:
         self.language = tk.StringVar()
         self.language_options = []
         self.status = tk.StringVar(value="Checking the local installation...")
+        self.hd_status = tk.StringVar()
+        self.hd_selection = tk.StringVar()
+        self.hd_contracts = singlescreen_archive.archive_contracts(forge.DEFAULT_RECIPES)
 
         self._build_layout()
         self.rom.trace_add("write", lambda *_args: self._refresh_actions())
+        self.hd_selection.trace_add("write", lambda *_args: self._import_hd())
         self._refresh_active_title()
         self._refresh_actions()
         self.status.trace_add("write", lambda *_args: self.root.after_idle(self._fit_to_content))
@@ -372,10 +379,7 @@ class ForgeWindow:
                 "Select your own decrypted Nintendo 3DS cartridge image. Forge "
                 "accepts .3ds and .cci ROMs, extracts the required native data, "
                 "and does not handle encryption keys. You can also select a folder "
-                "containing decompressed code.bin, exheader.bin and romfs.bin.\n\n"
-                "Forge will download the official TopScreen package and install its "
-                "modified HUD and menu textures for correct single-screen functionality. "
-                "Internet access is needed unless a verified local copy is already available."
+                "containing decompressed code.bin, exheader.bin and romfs.bin."
             ),
             wraplength=700,
             justify="left",
@@ -409,18 +413,19 @@ class ForgeWindow:
         self.language_combo = self.ttk.Combobox(outer, textvariable=self.language, state="disabled")
         self.language_combo.grid(row=5, column=1, columnspan=2, sticky="ew", pady=(10, 0))
         self.language_combo.bind("<<ComboboxSelected>>", self._select_language)
+        self._build_hd_section(outer, 6)
         separator = self.ttk.Separator(outer)
-        separator.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(18, 14))
+        separator.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(18, 14))
 
         self.status_label = self.ttk.Label(
             outer, textvariable=self.status, wraplength=700, justify="left"
         )
-        self.status_label.grid(row=7, column=0, columnspan=3, sticky="ew")
+        self.status_label.grid(row=8, column=0, columnspan=3, sticky="ew")
         self.progress = self.ttk.Progressbar(outer, mode="indeterminate")
-        self.progress.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(10, 18))
+        self.progress.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(10, 18))
 
         actions = self.ttk.Frame(outer)
-        actions.grid(row=9, column=0, columnspan=3, sticky="ew")
+        actions.grid(row=10, column=0, columnspan=3, sticky="ew")
         actions.columnconfigure(0, weight=1)
         self.install_button = self.ttk.Button(
             actions, text="Prepare and install", command=self._install
@@ -430,6 +435,82 @@ class ForgeWindow:
             actions, text="Launch game", command=self._launch
         )
         self.launch_button.grid(row=0, column=2, padx=(8, 0))
+
+    def _build_hd_section(self, parent: Any, row: int) -> None:
+        # The HD graphics are not in the package: make obtaining them obvious.
+        style = self.ttk.Style(self.root)
+        style.configure("HD.TLabelframe.Label", font=("Segoe UI", 11, "bold"))
+        style.configure("HD.TButton", font=("Segoe UI", 10, "bold"), padding=(12, 4))
+        style.configure("Link.TLabel", foreground="#1a5fb4")
+        section = self.ttk.Labelframe(
+            parent, text="HD fonts and TopScreen textures (recommended)",
+            style="HD.TLabelframe", padding=12)
+        section.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(16, 0))
+        section.columnconfigure(2, weight=1)
+        self.ttk.Label(
+            section,
+            text=(
+                "Thanks to RLG (M-1) for SingleScreen, the mod TriAevum's TopScreen is "
+                "based on, and to chubbycubby for its HD textures. The automatic download "
+                "is for SingleScreen 3.1. If it does not work, download the 3.1 zip from "
+                "the mod page and select it here, as you select the ROM."
+            ),
+            wraplength=680,
+            justify="left",
+        ).grid(row=0, column=0, columnspan=3, sticky="ew")
+        self.hd_download_button = self.ttk.Button(
+            section, text="Download HD textures", style="HD.TButton", command=self._download_hd)
+        self.hd_download_button.grid(row=1, column=0, sticky="w", pady=(10, 0))
+        self.hd_select_button = self.ttk.Button(
+            section, text="Select 3.1 zip...",
+            command=lambda: self._browse(self.hd_selection, "Select the SingleScreen 3.1 zip",
+                                         (("SingleScreen archive", "*.zip"),)))
+        self.hd_select_button.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
+        link = self.ttk.Label(section, text="Mod page", style="Link.TLabel", cursor="hand2")
+        link.grid(row=1, column=2, sticky="e", pady=(10, 0))
+        link.bind("<Button-1>", lambda _event: webbrowser.open(singlescreen_archive.MOD_PAGE))
+        self.ttk.Label(section, textvariable=self.hd_status, wraplength=680, justify="left").grid(
+            row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self._refresh_hd()
+
+    def _refresh_hd(self) -> None:
+        stored = singlescreen_archive.stored_archive(installation_root(), self.data_root, self.hd_contracts)
+        if stored is None:
+            self.hd_status.set("Not installed: the game uses the native textures and fonts.")
+        else:
+            self.hd_status.set(f"SingleScreen {stored.version} archive ready. "
+                               "It is applied when you prepare and install the title.")
+
+    def _download_hd(self) -> None:
+        def task(report):
+            return singlescreen_archive.download_archive(
+                self.data_root, self.hd_contracts,
+                progress=lambda done, total: report(f"Downloading SingleScreen 3.1... "
+                                                    f"{done * 100 // total}%"))
+        self._run_hd(task, "Downloading SingleScreen 3.1...")
+
+    def _import_hd(self) -> None:
+        selected = self.hd_selection.get().strip()
+        if not selected:
+            return
+        self._run_hd(lambda _report: singlescreen_archive.import_archive(
+            Path(selected), self.data_root, self.hd_contracts), "Verifying the selected archive...")
+
+    def _run_hd(self, task: Callable[[Callable[[str], None]], Any], message: str) -> None:
+        if self.busy or self.picking:
+            return
+        self.busy = True
+        self.progress.start(12)
+        self.hd_status.set(message)
+        self._refresh_actions()
+
+        def worker() -> None:
+            try:
+                contract, _path = task(lambda text: self.events.put(("hd_stage", text)))
+                self.events.put(("hd", (contract.version, None)))
+            except Exception as exc:
+                self.events.put(("hd", (None, str(exc))))
+        threading.Thread(target=worker, name="TriAevumHdTextures", daemon=True).start()
 
     def _browse_extracted(self) -> None:
         if self.busy or self.picking:
@@ -551,6 +632,8 @@ class ForgeWindow:
             if self.active_title is not None and not self.busy and not self.picking
             else "disabled"
         )
+        for button in (self.hd_download_button, self.hd_select_button):
+            button.configure(state="disabled" if self.busy or self.picking else "normal")
 
     def _install(self) -> None:
         if self.busy or self.picking:
@@ -627,6 +710,25 @@ class ForgeWindow:
                 elif event == "stage":
                     _stage, message = payload
                     self.status.set(str(message))
+                elif event == "hd_stage":
+                    self.hd_status.set(str(payload))
+                elif event == "hd":
+                    self.busy = False
+                    self.progress.stop()
+                    version, error = payload
+                    self._refresh_hd()
+                    self._refresh_actions()
+                    if error:
+                        self.messagebox.showerror(
+                            "TriAevum Forge",
+                            f"{error}\n\nDownload the SingleScreen 3.1 zip from the mod page "
+                            f"({singlescreen_archive.MOD_PAGE}) and select it with "
+                            "\"Select 3.1 zip...\".",
+                            parent=self.root,
+                        )
+                    elif self.active_title is not None:
+                        self.hd_status.set(f"SingleScreen {version} archive ready. Prepare and "
+                                           "install the title again to apply it.")
                 elif event == "error":
                     self.busy = False
                     self.progress.stop()
