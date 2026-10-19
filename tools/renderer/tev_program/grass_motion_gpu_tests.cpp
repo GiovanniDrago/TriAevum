@@ -880,6 +880,8 @@ int main() {
     try {
         VkPhysicalDeviceFeatures features{};
         features.independentBlend = VK_TRUE;
+        // The GPU selection's indirect draws start at each slot's first root.
+        features.drawIndirectFirstInstance = VK_TRUE;
         Gpu gpu(features, VK_API_VERSION_1_2);
         {
             Harness harness(gpu);

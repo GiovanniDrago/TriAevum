@@ -159,6 +159,13 @@ bool GrassGpuSelector::Initialize(VkPhysicalDevice physicalDevice, VkDevice devi
     mImpl->PhysicalDevice = physicalDevice;
     mImpl->Device = device;
     try {
+        // The indirect draws carry each slot's first root in firstInstance:
+        // the device enables drawIndirectFirstInstance wherever it exists
+        // (PicaVulkanCoreFeatures); elsewhere the CPU selection draws.
+        VkPhysicalDeviceFeatures features{};
+        vkGetPhysicalDeviceFeatures(physicalDevice, &features);
+        if (features.drawIndirectFirstInstance != VK_TRUE)
+            throw std::runtime_error("grass GPU selection needs drawIndirectFirstInstance");
         std::array<VkDescriptorSetLayoutBinding, kBindings> bindings{};
         for (uint32_t index = 0U; index < kBindings; ++index)
             bindings[index] = {index, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
