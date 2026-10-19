@@ -1236,7 +1236,9 @@ void main() {
 }
 #elif GRASS_SELECTION_PASS == 1
 shared uint totals[SLOT_COUNTERS];
-shared uint lane_sums[SLOT_COUNTERS][256];
+// Double-buffered: each scan step reads one half and writes the other, so no
+// invocation rewrites a value another may still read.
+shared uint lane_sums[2][SLOT_COUNTERS][256];
 uint prefix(uint group, uint counter) {
     uint group_count = header(1u);
     return group < group_count ? groups.values[(group_count + group) * SLOT_COUNTERS + counter] : totals[counter];
@@ -1251,23 +1253,24 @@ void main() {
     for (uint k = 0u; k < SLOT_COUNTERS; ++k) {
         uint sum = 0u;
         for (uint g = begin; g < end; ++g) sum += groups.values[g * SLOT_COUNTERS + k];
-        lane_sums[k][lane] = sum;
+        lane_sums[0][k][lane] = sum;
     }
     barrier();
+    uint half_index = 0u;
     for (uint stride = 1u; stride < 256u; stride <<= 1u) {
-        uint add[SLOT_COUNTERS];
-        for (uint k = 0u; k < SLOT_COUNTERS; ++k) add[k] = lane >= stride ? lane_sums[k][lane - stride] : 0u;
+        for (uint k = 0u; k < SLOT_COUNTERS; ++k)
+            lane_sums[half_index ^ 1u][k][lane] = lane_sums[half_index][k][lane] +
+                (lane >= stride ? lane_sums[half_index][k][lane - stride] : 0u);
         barrier();
-        for (uint k = 0u; k < SLOT_COUNTERS; ++k) lane_sums[k][lane] += add[k];
-        barrier();
+        half_index ^= 1u;
     }
     for (uint k = 0u; k < SLOT_COUNTERS; ++k) {
-        uint running = lane == 0u ? 0u : lane_sums[k][lane - 1u];
+        uint running = lane == 0u ? 0u : lane_sums[half_index][k][lane - 1u];
         for (uint g = begin; g < end; ++g) {
             groups.values[(group_count + g) * SLOT_COUNTERS + k] = running;
             running += groups.values[g * SLOT_COUNTERS + k];
         }
-        if (lane == 255u) totals[k] = lane_sums[k][255];
+        if (lane == 255u) totals[k] = lane_sums[half_index][k][255];
     }
     memoryBarrierBuffer();
     memoryBarrierShared();
@@ -1331,28 +1334,30 @@ void main() {
     control.values[3] = offset;
 }
 #else
-shared uint scan[SLOT_COUNTERS][256];
+// Double-buffered as the group scan.
+shared uint scan[2][SLOT_COUNTERS][256];
 void main() {
     uint slot = gl_GlobalInvocationID.x;
     uint lane = gl_LocalInvocationID.x;
     uint own[SLOT_COUNTERS];
     for (uint k = 0u; k < SLOT_COUNTERS; ++k) {
         own[k] = record_count(slot, k);
-        scan[k][lane] = own[k];
+        scan[0][k][lane] = own[k];
     }
     barrier();
+    uint half_index = 0u;
     for (uint stride = 1u; stride < 256u; stride <<= 1u) {
-        uint add[SLOT_COUNTERS];
-        for (uint k = 0u; k < SLOT_COUNTERS; ++k) add[k] = lane >= stride ? scan[k][lane - stride] : 0u;
+        for (uint k = 0u; k < SLOT_COUNTERS; ++k)
+            scan[half_index ^ 1u][k][lane] = scan[half_index][k][lane] +
+                (lane >= stride ? scan[half_index][k][lane - stride] : 0u);
         barrier();
-        for (uint k = 0u; k < SLOT_COUNTERS; ++k) scan[k][lane] += add[k];
-        barrier();
+        half_index ^= 1u;
     }
     if (own[TOTAL] == 0u) return;
     uint group_count = header(1u);
     uint rank[SLOT_COUNTERS];
     for (uint k = 0u; k < SLOT_COUNTERS; ++k)
-        rank[k] = groups.values[(group_count + gl_WorkGroupID.x) * SLOT_COUNTERS + k] + scan[k][lane] - own[k];
+        rank[k] = groups.values[(group_count + gl_WorkGroupID.x) * SLOT_COUNTERS + k] + scan[half_index][k][lane] - own[k];
     uint budget = header(3u);
     if (rank[TOTAL] >= budget) return;
     uint source = find_source(slot);
