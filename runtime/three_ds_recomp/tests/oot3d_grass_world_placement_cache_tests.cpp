@@ -940,34 +940,54 @@ TEST(Oot3dGrassResidency, StoresEveryPrefixACameraWithinTheMarginSelects) {
     const float margin = 1000.0F;
     const auto residency = BuildGrassResidency({world}, 9U, eye, policy, bladeRadiusScale, margin, true);
     ASSERT_EQ(residency.Clusters.size(), 1U);
-    ASSERT_EQ(residency.Clusters[0].size(), world->Clusters.size());
     // Full density reaches 2282 + the margin; farther clusters keep short prefixes.
     EXPECT_LT(residency.Anchors.size(), world->Anchors.size() * 3U / 5U);
     EXPECT_EQ(residency.ShadowReferences.size(), residency.Anchors.size());
 
-    // Any camera within the margin: each cluster's selected prefix is stored.
-    for (float dx : {-1000.0F, -400.0F, 0.0F, 650.0F, 1000.0F}) {
-        const std::array<float, 3> camera{eye[0] + dx, eye[1], eye[2]};
-        for (size_t c = 0; c < world->Clusters.size(); ++c) {
-            const auto& original = world->Clusters[c];
-            const auto& stored = residency.Clusters[0][c];
-            float squared = 0.0F;
-            for (size_t axis = 0; axis < 3U; ++axis)
-                squared += (original.Center[axis] - camera[axis]) * (original.Center[axis] - camera[axis]);
-            const float radius = original.Radius + original.MaximumBladeHeight * (bladeRadiusScale - 1.0F);
-            const float retention = GrassLodRetentionUpperBound(policy, std::max(0.0F, std::sqrt(squared) - radius));
-            const auto begin = world->CullingAnchors.begin() + original.FirstAnchor;
-            const auto selected = std::upper_bound(begin, begin + original.AnchorCount, retention,
-                [](float value, const GrassWorldCullingAnchor& anchor) { return value < anchor.StableVisibility; }) -
-                begin;
-            ASSERT_LE(selected, static_cast<ptrdiff_t>(stored.AnchorCount)) << "cluster " << c << " camera " << dx;
-            // The store holds the same anchors, in the same order.
-            for (uint32_t a = 0; a < stored.AnchorCount; ++a) {
-                ASSERT_EQ(residency.Anchors[stored.FirstAnchor + a].StableId, original.FirstAnchor + a);
-                ASSERT_EQ(residency.ShadowReferences[stored.FirstAnchor + a].Second, a);
+    // Any camera within the margin: each cluster's selected prefix is stored,
+    // and the store keeps only the clusters that have one, in order.
+    const auto expectCoverage = [&](const GrassResidency& stored, const GrassLodPolicy& lod) {
+        std::vector<const GrassWorldCluster*> storedFor(world->Clusters.size(), nullptr);
+        uint32_t previous = 0;
+        for (const auto& cluster : stored.Clusters[0]) {
+            ASSERT_GT(cluster.AnchorCount, 0U);
+            const uint32_t c = stored.Anchors[cluster.FirstAnchor].StableId / 64U;
+            ASSERT_TRUE(storedFor[c] == nullptr && c >= previous);
+            storedFor[c] = &cluster;
+            previous = c;
+        }
+        for (float dx : {-1000.0F, -400.0F, 0.0F, 650.0F, 1000.0F}) {
+            const std::array<float, 3> camera{eye[0] + dx, eye[1], eye[2]};
+            for (size_t c = 0; c < world->Clusters.size(); ++c) {
+                const auto& original = world->Clusters[c];
+                float squared = 0.0F;
+                for (size_t axis = 0; axis < 3U; ++axis)
+                    squared += (original.Center[axis] - camera[axis]) * (original.Center[axis] - camera[axis]);
+                const float radius = original.Radius + original.MaximumBladeHeight * (bladeRadiusScale - 1.0F);
+                const float nearest = std::max(0.0F, std::sqrt(squared) - radius);
+                const float retention = nearest <= lod.DrawDistance ? GrassLodRetentionUpperBound(lod, nearest) : 0.0F;
+                const auto begin = world->CullingAnchors.begin() + original.FirstAnchor;
+                const auto selected = std::upper_bound(begin, begin + original.AnchorCount, retention,
+                    [](float value, const GrassWorldCullingAnchor& anchor) { return value < anchor.StableVisibility; }) -
+                    begin;
+                const uint32_t count = storedFor[c] != nullptr ? storedFor[c]->AnchorCount : 0U;
+                ASSERT_LE(selected, static_cast<ptrdiff_t>(count)) << "cluster " << c << " camera " << dx;
+                // The store holds the same anchors, in the same order.
+                for (uint32_t a = 0; a < count; ++a) {
+                    ASSERT_EQ(stored.Anchors[storedFor[c]->FirstAnchor + a].StableId, original.FirstAnchor + a);
+                    ASSERT_EQ(stored.ShadowReferences[storedFor[c]->FirstAnchor + a].Second, a);
+                }
             }
         }
-    }
+    };
+    expectCoverage(residency, policy);
+    // A short draw distance leaves most clusters without resident anchors.
+    settings.DrawDistance = 1000;
+    const auto nearPolicy = BuildGrassLodPolicy(settings);
+    const auto nearResidency = BuildGrassResidency({world}, 9U, eye, nearPolicy, bladeRadiusScale, margin, true);
+    EXPECT_LT(nearResidency.Clusters[0].size(), world->Clusters.size() / 2U);
+    EXPECT_GT(nearResidency.Clusters[0].size(), 0U);
+    expectCoverage(nearResidency, nearPolicy);
     // A second source's references address its points after the first's.
     world->ShadowPoints.resize(400U);
     const auto pair = BuildGrassResidency({world, world}, 10U, eye, policy, bladeRadiusScale, margin, true);

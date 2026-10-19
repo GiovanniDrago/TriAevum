@@ -46,9 +46,11 @@ GrassResidency BuildGrassResidency(std::vector<std::shared_ptr<const GrassWorldP
         if (shadowReferences && source->ShadowReferences.size() != source->Anchors.size())
             throw std::runtime_error("grass residency source has no shadow references");
         residency.SourceBase.push_back(static_cast<uint32_t>(residency.Anchors.size()));
-        auto& clusters = residency.Clusters.emplace_back(source->Clusters);
+        // Only clusters with resident anchors: the selection visits clusters
+        // in table order, so dropping empty ones keeps the visible order.
+        auto& clusters = residency.Clusters.emplace_back();
         uint32_t stored = 0;
-        for (auto& cluster : clusters) {
+        for (auto cluster : source->Clusters) {
             const size_t first = std::min<size_t>(cluster.FirstAnchor, source->Anchors.size());
             const size_t count = std::min<size_t>(cluster.AnchorCount, source->Anchors.size() - first);
             float distanceSquared = 0.0F;
@@ -70,10 +72,12 @@ GrassResidency BuildGrassResidency(std::vector<std::shared_ptr<const GrassWorldP
                         return value < anchor.StableVisibility;
                     }) - begin);
             }
+            if (prefix == 0) continue;
             if (residency.Anchors.size() + prefix > std::numeric_limits<uint32_t>::max())
                 throw std::runtime_error("grass residency exceeds uint32 addressing");
             cluster.FirstAnchor = stored;
             cluster.AnchorCount = static_cast<uint32_t>(prefix);
+            clusters.push_back(cluster);
             stored += static_cast<uint32_t>(prefix);
             residency.Anchors.insert(residency.Anchors.end(), source->Anchors.begin() + first,
                                      source->Anchors.begin() + first + prefix);
@@ -84,6 +88,13 @@ GrassResidency BuildGrassResidency(std::vector<std::shared_ptr<const GrassWorldP
                     reference.Second += pointBase;
                     residency.ShadowReferences.push_back(reference);
                 }
+        }
+        // A source with nothing resident keeps one empty cluster, as a
+        // source always has at least one selection workgroup.
+        if (clusters.empty() && !source->Clusters.empty()) {
+            auto& empty = clusters.emplace_back(source->Clusters.front());
+            empty.FirstAnchor = 0;
+            empty.AnchorCount = 0;
         }
         pointBase += static_cast<uint32_t>(source->ShadowPoints.size());
     }
