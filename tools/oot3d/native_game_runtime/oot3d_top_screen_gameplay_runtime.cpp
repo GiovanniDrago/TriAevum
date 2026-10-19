@@ -72,7 +72,8 @@ constexpr std::uint32_t kMoveSpeedReturn = 0x00251D4CU;
 constexpr std::uint32_t kMoveSpeedCall = 0x0035FB14U; // Actor_UpdateVelocityXZGravity
 constexpr std::uint32_t kRollSpeedReturn = 0x002BE8BCU;
 constexpr std::uint32_t kRollSpeedCall = 0x002DD8B0U;
-constexpr std::uint32_t kDashRunSkip = 0x00129680U;
+// Navi's "in the hat" block: state 8, then the native hide call.
+constexpr std::uint32_t kNaviInHat = 0x00129680U;
 
 // 3.1 dash cross-fade (0x005D11A8, literals 0x005D14EC..0x005D151C).
 constexpr std::uint32_t kPlayStateFrames = 0x5BF4U;
@@ -126,8 +127,9 @@ constexpr std::uint32_t kReticleScaleCall = 0x003721E0U;
 constexpr std::uint32_t kReticleScaleReturn = 0x0047B8BCU;
 
 // Sorted: the dispatcher's hook lists keep their order with binary_search.
-constexpr std::array<std::uint32_t, 11> kHookPcs{
-    kTopScreenDashRunSite,       kTopScreenLandingRollWebSite, kTopScreenDashStateEntry,
+constexpr std::array<std::uint32_t, 12> kHookPcs{
+    kTopScreenDashNaviReturnSite, kTopScreenDashRunSite,
+    kTopScreenLandingRollWebSite, kTopScreenDashStateEntry,
     kTopScreenDashTurnSpeedSite,
     kTopScreenDashMoveSpeedSite, kTopScreenDashRollSpeedSite, kTopScreenLinkCsabQuery,
     kTopScreenQuickPutAwayDelay, kTopScreenReticleEntry,      kTopScreenReticleScaleBlock,
@@ -183,6 +185,7 @@ bool TopScreenGameplayRuntime::ShouldObserve(std::uint32_t pc) const noexcept {
   case kTopScreenDashRollSpeedSite:
     // The cross-fade watches every call to see the dash answer switch.
     return mConfig.RollDash || mRollStep != RollStep::None;
+  case kTopScreenDashNaviReturnSite:
   case kTopScreenDashRunSite:
     return mConfig.RollDash && mInRoll;
   case kTopScreenLinkCsabQuery:
@@ -254,6 +257,7 @@ bool TopScreenGameplayRuntime::Execute(std::uint32_t pc, oot3d::recomp::a32::Gue
     return DashRollSite(state, result, blocksConsumed);
   case kTopScreenDashTurnSpeedSite:
   case kTopScreenDashMoveSpeedSite:
+  case kTopScreenDashNaviReturnSite:
   case kTopScreenDashRunSite:
     return DashSpeedSite(pc, state, result, blocksConsumed);
   case kTopScreenLinkCsabQuery:
@@ -350,6 +354,24 @@ bool TopScreenGameplayRuntime::DashStateEntry(oot3d::recomp::a32::GuestState &st
   }
   // 0x005D9420..0x005D947C: the cheap preconditions before the native query.
   const std::uint32_t play = Read32(kPlayStatePointer);
+  // TRIAEVUM_DASH_TRACE=1: per Player_Update, the dash state, Link's
+  // position, linear speed (+0x6C), action (+0x284) and the Navi flag
+  // (+0x1714 bit 20).
+  {
+    static const bool dashTrace = std::getenv("TRIAEVUM_DASH_TRACE") != nullptr;
+    static long dashTraceCalls = 0;
+    if (dashTrace && play != 0U) {
+      const std::uint32_t player = Read32(play + kPlayStatePlayer);
+      if (player != 0U) {
+        std::fprintf(stderr,
+                     "TRIAEVUM_DASH update=%ld roll=%d run_scale=%.3f roll_scale=%.3f answer=%d pos=%.1f,%.1f,%.1f speed=%.3f action=%08x age=%u flags2=%08x\n",
+                     ++dashTraceCalls, mInRoll ? 1 : 0, mRunScale, mRollScale, mAnswerDash ? 1 : 0,
+                     Float(Read32(player + 0x28U)), Float(Read32(player + 0x2CU)), Float(Read32(player + 0x30U)),
+                     Float(Read32(player + 0x6CU)), Read32(player + kPlayerRollAction),
+                     Read32(player + kPlayerAnimationAge) & 0xFFU, Read32(player + 0x1714U));
+      }
+    }
+  }
   bool eligible = mConfig.RollDash && play != 0U;
   if (eligible) {
     std::uint8_t mode = 0, subMode = 0;
@@ -602,11 +624,16 @@ bool TopScreenGameplayRuntime::DashSpeedSite(std::uint32_t pc,
     Branch(state, pc, kMoveSpeedCall, result, blocksConsumed);
     return true;
   }
-  case kTopScreenDashRunSite:
-    // The dash keeps the run going: skip the run-end flag (+0x714 0x100000).
+  case kTopScreenDashNaviReturnSite:
+  case kTopScreenDashRunSite: {
+    // Navi returning to the hat while Link dashes: into the hat at once
+    // (the first state-7 frame) instead of trailing him and giving up
+    // (3.0 only redirected the reach timer's expiry).
     if (!mInRoll) return false;
-    Branch(state, pc, kDashRunSkip, result, blocksConsumed);
+    ++mDashNaviHides;
+    Branch(state, pc, kNaviInHat, result, blocksConsumed);
     return true;
+  }
   default:
     return false;
   }

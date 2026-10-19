@@ -36,7 +36,15 @@ inline constexpr std::uint32_t kTopScreenLandingRollWebBreak = 0x0019AB1CU;
 // (0x005D8BA8) and the player update consumes it; here it is computed at the
 // next Player_Update entry, which sees the same player fields.
 inline constexpr std::uint32_t kTopScreenDashStateEntry = 0x001E1B54U; // Player_Update
-// FUN_00129474's run continuation `ldr r0, [r7, #0x714]` (3.0 0x005F40AC).
+// Navi's follow action (FUN_00129474, EUR: r5 the fairy, r4 fairy + 0x900,
+// r7 the player + 0x1000). Returning to the hat (state 7) she has a reach
+// timer (+0x9AE, 45 frames); natively its expiry gives up: state 0 and
+// player +0x1714 |= 0x100000 (Navi out). At the dash speed she never
+// reaches Link, so 3.0 (0x005F40AC) sends the expiry to the "in the hat"
+// block 0x00129680 (state 8) while dashing. The port also takes the first
+// state-7 frame there while dashing, so she does not trail Link, lit, for
+// the 45 frames first; without the dash both sites stay native.
+inline constexpr std::uint32_t kTopScreenDashNaviReturnSite = 0x00129654U;
 inline constexpr std::uint32_t kTopScreenDashRunSite = 0x0012966CU;
 // oot3d_player_action_turn_in_place 0x00251B48 / 0x00251D34 speed loads
 // (3.0 0x005F4088 / 0x005F4054) and FUN_002be660's roll animation call
@@ -89,6 +97,7 @@ public:
   std::uint64_t LandingRollWebBreaks() const noexcept { return mLandingRollWebBreaks; }
   std::uint64_t DashQueries() const noexcept { return mDashQueries; }
   std::uint64_t DashFrames() const noexcept { return mDashFrames; }
+  std::uint64_t DashNaviHides() const noexcept { return mDashNaviHides; }
   std::uint64_t LinkExtAnswers() const noexcept { return mLinkExtAnswers; }
   std::uint64_t LinkExtEntryRestores() const noexcept { return mLinkExtEntryRestores; }
   std::uint64_t DashSpeedApplications() const noexcept { return mDashSpeedApplications; }
@@ -211,6 +220,7 @@ private:
   std::uint64_t mLandingRollWebBreaks = 0;
   std::uint64_t mDashQueries = 0;
   std::uint64_t mDashFrames = 0;
+  std::uint64_t mDashNaviHides = 0;
   std::uint64_t mLinkExtAnswers = 0;
   std::uint64_t mLinkExtEntryRestores = 0;
   std::uint64_t mDashSpeedApplications = 0;
