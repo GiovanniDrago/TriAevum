@@ -2537,6 +2537,25 @@ void NativeA32WindowSession::PublishNativeSceneView() {
   if (environmentTime)
     environmentTime->Group = Oot3dNativeGame::CaptureNativeEnvironmentGroup(
         snapshot->PlayStateAddress, process.Memory(), &environmentTime->AuthoredScene);
+  {
+    // TRIAEVUM_SCENE_VIEW_TRACE=1: per presentation frame, what the probes
+    // hold when the scene view is captured (the PlayState and player the
+    // Player_Update entry supplied, the snapshot's scene, camera and time).
+    static const bool sceneViewTrace = std::getenv("TRIAEVUM_SCENE_VIEW_TRACE") != nullptr;
+    static unsigned long sceneViewTraceFrames = 0;
+    if (sceneViewTrace) {
+      std::fprintf(stderr,
+                   "TRIAEVUM_SCENE_VIEW frame=%lu playState=%08x timingPlayState=%08x player=%08x snapshot=%d sceneId=%d camera=%d eye=%.1f,%.1f,%.1f time=%d night=%d clock=%u driven=%d\n",
+                   ++sceneViewTraceFrames, sceneViewProbe.Stats().LastPlayStateAddress,
+                   playerTimingProbe.Stats().LastPlayStateAddress, playerTimingProbe.Stats().LastPlayerAddress,
+                   snapshot ? 1 : 0, snapshot && snapshot->SceneId ? static_cast<int>(*snapshot->SceneId) : -1,
+                   snapshot && snapshot->CameraAvailable ? 1 : 0, snapshot ? snapshot->Eye[0] : 0.0F,
+                   snapshot ? snapshot->Eye[1] : 0.0F, snapshot ? snapshot->Eye[2] : 0.0F,
+                   environmentTime ? 1 : 0, environmentTime && environmentTime->Night ? 1 : 0,
+                   environmentTime ? static_cast<unsigned>(environmentTime->Clock) : 0U,
+                   environmentTime && environmentTime->TimeDriven ? 1 : 0);
+    }
+  }
   // Where Link is (world position +0x28, shape yaw +0xBE: 0 faces +Z,
   // 0x4000 +X), for lights placed from F1.
   std::optional<Oot3dNativeGame::ScenePlayerPlacement> player;

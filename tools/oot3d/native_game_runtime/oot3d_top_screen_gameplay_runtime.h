@@ -94,6 +94,9 @@ public:
   std::uint64_t LandingRollReturns() const noexcept { return mLandingRollReturns; }
   std::uint64_t LandingRollWebBreaks() const noexcept { return mLandingRollWebBreaks; }
   std::uint64_t DashQueries() const noexcept { return mDashQueries; }
+  // FUN_0037577c is in flight: the next Player_Update entry is its return,
+  // with the query's registers, not the title's call.
+  [[nodiscard]] bool DashQueryPending() const noexcept { return mDashQueryPending; }
   std::uint64_t DashFrames() const noexcept { return mDashFrames; }
   std::uint64_t DashNaviHides() const noexcept { return mDashNaviHides; }
   std::uint64_t LinkExtAnswers() const noexcept { return mLinkExtAnswers; }

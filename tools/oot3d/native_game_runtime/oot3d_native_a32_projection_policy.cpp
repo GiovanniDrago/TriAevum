@@ -115,7 +115,13 @@ void ApplyNativeWidescreenProjectionPolicy(
   };
   // Player_Update is also the Roll Dash entry: an exit there skips the rest
   // of this policy, so the PlayState and player probes observe it first.
-  if (pc == Oot3dNativeGame::kOot3dPlayerUpdateEntry) {
+  // While A is held, the Roll Dash hook calls FUN_0037577c from this entry
+  // and returns to it: that second entry carries the query's registers (r0
+  // its answer, r1 player+0x1000), not the title's (player, PlayState). Only
+  // the title's call is observed; the probes would otherwise lose the scene
+  // view, its environment and camera for as long as A is held (#91).
+  if (pc == Oot3dNativeGame::kOot3dPlayerUpdateEntry &&
+      (runtime.TopScreenGameplay == nullptr || !runtime.TopScreenGameplay->DashQueryPending())) {
     if (runtime.PlayerTimingProbe != nullptr) {
       runtime.PlayerTimingProbe->ObserveUpdateEntry(state);
     }

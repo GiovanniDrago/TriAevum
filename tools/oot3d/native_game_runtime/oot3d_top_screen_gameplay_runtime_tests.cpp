@@ -145,8 +145,8 @@ void NaviEntersTheHatWhenHerReachTimerExpiresWhileDashing() {
   f.W32(0x005043D4U + 0x0CU, kPlay); // the play state pointer
   f.W8(kPlay + 0x100U, 3U);
   f.W8(kPlay + 0x101U, 2U);
-  f.W32(kPlay + 0x14U, 1U);
-  f.W16(0x00587958U + 0x44U, 1U);
+  f.W32(kPlay + 0x14U, 1U);          // A held
+  f.W16(0x00587958U + 0x44U, 1U);    // alive
   f.W32(0x0014E9F0U * 4U + 4U, kRollAction); // roll action of animation age 1
   f.W32(kPlayer + 0x284U, kRollAction);
   constexpr std::uint32_t kNavi = 0x01400000U;
@@ -166,16 +166,25 @@ void NaviEntersTheHatWhenHerReachTimerExpiresWhileDashing() {
   Require(!f.Execute(kTopScreenDashRunSite, state), "Navi's return left the native block without a dash");
 
   GuestState entry;
+  entry.r[0] = kPlayer;
   entry.r[1] = kPlay;
   entry.r[13] = 0x02000000U;
   entry.r[15] = kTopScreenDashStateEntry;
+  Require(!f.Runtime.DashQueryPending(), "a query was pending before Player_Update");
   Require(f.Execute(kTopScreenDashStateEntry, entry) && entry.r[15] == 0x0037577CU &&
               entry.r[14] == kTopScreenDashStateEntry && entry.r[0] == kPlay,
           "the dash state did not query the native block");
+  // FUN_0037577c returns to the entry with its own registers (#91: the
+  // Player_Update probes must not take them for the player and PlayState).
+  Require(f.Runtime.DashQueryPending(), "the query's return is not announced");
   entry.r[0] = 0U;
+  entry.r[1] = kPlayer + 0x1000U;
+  entry.r[14] = 0x00375798U;
   Require(!f.Execute(kTopScreenDashStateEntry, entry) && f.Runtime.DashQueries() == 1U &&
               f.Runtime.DashFrames() == 1U,
           "the roll did not start the dash");
+  Require(!f.Runtime.DashQueryPending() && entry.r[0] == kPlayer && entry.r[1] == kPlay,
+          "the title's registers were not restored after the query");
   state = naviCaller();
   Require(f.Execute(kTopScreenDashRunSite, state) && state.r[15] == 0x00129680U &&
               state.r[4] == kNavi + 0x900U && state.r[5] == kNavi && state.r[7] == kPlayer + 0x1000U,

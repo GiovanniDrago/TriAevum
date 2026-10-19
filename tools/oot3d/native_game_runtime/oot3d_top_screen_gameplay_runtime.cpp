@@ -34,10 +34,11 @@ constexpr std::uint32_t kLandingRollActionTable = 0x0053A790U;
 constexpr std::uint32_t kPlayStatePointer = 0x005043D4U + 0x0CU;
 constexpr std::uint32_t kSaveContext = 0x00587958U;
 constexpr std::uint32_t kSaveLinkAge = kSaveContext + 0x04U;      // 0 adult, 1 child
-constexpr std::uint32_t kSaveDashEnabled = kSaveContext + 0x44U;  // s16
+constexpr std::uint32_t kSaveDashEnabled = kSaveContext + 0x44U;  // s16 health: alive
 constexpr std::uint32_t kPlayStateMode = 0x100U;                  // 3 = gameplay
 constexpr std::uint32_t kPlayStateSubMode = 0x101U;               // 2 = running
-constexpr std::uint32_t kPlayStateFrameFlags = 0x14U;
+// GameState input[0].cur.button; bit 0 is A, so the query runs while A is held.
+constexpr std::uint32_t kPlayStateButtons = 0x14U;
 constexpr std::uint32_t kPlayStatePlayer = 0x20ACU;
 constexpr std::uint32_t kDashBlockedQuery = 0x0037577CU; // FUN_0037577c(play)
 constexpr std::uint32_t kPlayerRollAction = 0x284U;
@@ -377,7 +378,7 @@ bool TopScreenGameplayRuntime::DashStateEntry(oot3d::recomp::a32::GuestState &st
                mMemory.Read8(play + kPlayStateSubMode, &subMode) && subMode == 2U &&
                Read32(play + kPlayStatePlayer) != 0U &&
                mMemory.Read16(kSaveDashEnabled, &dashEnabled) && dashEnabled != 0U &&
-               (Read32(play + kPlayStateFrameFlags) & 1U) != 0U;
+               (Read32(play + kPlayStateButtons) & 1U) != 0U;
   }
   if (!eligible) {
     UpdateDashState(false);
