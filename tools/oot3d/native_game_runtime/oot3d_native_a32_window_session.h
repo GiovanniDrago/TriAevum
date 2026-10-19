@@ -45,6 +45,7 @@
 #include "oot3d_native_game_bootstrap.h"
 #include "oot3d_native_mass_aot.h"
 #include "oot3d_native_pcm_diagnostics.h"
+#include "oot3d_native_input_latency_trace.h"
 #include "oot3d_native_presentation_pacer.h"
 #include "oot3d_native_pica_frontend.h"
 #include "oot3d_native_pica_composition.h"
@@ -496,6 +497,8 @@ private:
   Fast::Oot3d::PresentationPacingPolicy presentationPacingPolicy{};
   Fast::Renderer3ds::PicaFrameCompositionPolicy frameCompositionPolicy{};
   std::optional<Oot3dNativeGame::NativeRealtimeRefreshPacer> realtimePacerStorage;
+  Oot3dNativeGame::NativeInputLatencyTrace inputLatencyTrace{
+      Oot3dNativeGame::NativeInputLatencyTrace::EnabledByEnvironment()};
   bool visualInterpolationEnabled{};
   Fast::Renderer3ds::PicaFrameCompositionPolicy guestCompositionPolicy{};
   bool guestInterpolationEnabled{};

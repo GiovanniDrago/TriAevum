@@ -151,9 +151,21 @@ bool NativeA32WindowSession::RunFrame() {
   widescreenProjection.CurrentHostFrame =
       static_cast<uint32_t>(presentationFrameCount);
   WindowDemoFrameTiming frameTiming;
+  // Input admission: with parallel presentation the next frame pumps events
+  // and polls input only once the previous frame has ended (presented).
+  // Sampled earlier, the input waited a whole frame behind it (33 ms instead
+  // of 16 at 60 Hz with VSync, same frame rate). TRIAEVUM_INPUT_ADMISSION=0
+  // restores the early sampling for comparisons.
+  static const bool inputAdmission = [] {
+    const char *value = std::getenv("TRIAEVUM_INPUT_ADMISSION");
+    return value == nullptr || std::string_view(value) != "0";
+  }();
+  if (inputAdmission) renderStream.WaitForFramesInFlight(0U);
   if (!PrepareNextWindowDemoFrame(hostArgs, window, timing, frameTiming)) {
     return true;
   }
+  // The SDL events just pumped are the physical input this frame polls.
+  const auto inputPumpTime = std::chrono::steady_clock::now();
   const auto requestedPresentationPolicy =
       Fast::Oot3d::ResolvePresentationPacingPolicy(
           Fast::Oot3d::GraphicsSettingsRuntime::Instance()
@@ -298,6 +310,9 @@ bool NativeA32WindowSession::RunFrame() {
     window.Close();
     return false;
   }
+  inputLatencyTrace.ObserveInput(presentationFrameCount, inputPumpTime,
+                                 std::chrono::steady_clock::now(),
+                                 visualInterpolationAlpha);
   // Developer qualification: scheduled settings take the F1 commit path
   // (applied, not persisted) before this frame is rendered.
   for (const auto *step : graphicsSettingsSchedule.TakeDue(runFrameCount)) {
@@ -343,7 +358,10 @@ bool NativeA32WindowSession::RunFrame() {
       titleRenderBackend->SetPresentationSettingsHeld(
           !renderStream.InSynchronousCommand());
     }
+    const auto beginStart = std::chrono::steady_clock::now();
     api.StartFrame();
+    inputLatencyTrace.ObserveBegin(presentationSerial, beginStart,
+                                   std::chrono::steady_clock::now());
     rendererFrameSkipped = !api.HasActiveFrame();
     if (rendererFrameSkipped) {
       rendererFrameWasInactive.store(true);
@@ -401,6 +419,7 @@ bool NativeA32WindowSession::RunFrame() {
       throw std::runtime_error("cannot restore suspended presentation clock: " + error);
     }
     gui->EndDraw();
+    inputLatencyTrace.DiscardPending(presentationFrameCount);
     renderStream.Submit([&] { window.EndFrame(); }, true);
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     renderStream.Submit([&] { realtimePacer.ResetDeadline(); });
@@ -419,6 +438,7 @@ bool NativeA32WindowSession::RunFrame() {
     }
     preparationScreen.Draw(preparationStatus);
     gui->EndDraw();
+    inputLatencyTrace.DiscardPending(presentationFrameCount);
     renderStream.Submit([&] { window.EndFrame(); }, true);
     std::this_thread::sleep_for(std::chrono::milliseconds(15));
     renderStream.Submit([&] { realtimePacer.ResetDeadline(); });
@@ -531,6 +551,7 @@ bool NativeA32WindowSession::RunFrame() {
       capturedTemporalSample.reset();
       window.EndFrame();
       realtimePacer.ResetDeadline();
+      inputLatencyTrace.DiscardPending(presentationSerial);
       return;
     }
     MaybeWriteFramebufferScreenshot(
@@ -542,8 +563,12 @@ bool NativeA32WindowSession::RunFrame() {
     CpuProbe::Scope cpuPacing(CpuProbe::Phase::Pacing);
     realtimePacer.WaitForNextRefresh();
     cpuPacing.Stop();
-    rendererTiming->PacingWaitSeconds += SecondsSince(waitStart);
+    const auto waitEnd = std::chrono::steady_clock::now();
+    rendererTiming->PacingWaitSeconds +=
+        std::chrono::duration<double>(waitEnd - waitStart).count();
     window.EndFrame();
+    inputLatencyTrace.ObserveFrameEnd(presentationSerial, waitStart, waitEnd,
+                                      std::chrono::steady_clock::now());
   }, true);
   presentSteps.Mark("render_end_frame");
   picaSemanticTrace.RecordFrameBoundary(

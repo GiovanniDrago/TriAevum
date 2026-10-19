@@ -148,11 +148,27 @@ Queue depth is one packet: G may run guest frame f+1 while R presents frame f.
 
 ## Latency
 
-Pipelining adds one presentation frame of latency (16.7 ms at 60 Hz) on top of
-the one-guest-frame delay interpolation already has. The option stays off by
-default; the intended use is when the serial frame exceeds its budget. An
-adaptive policy (enable while over budget) can follow once the trade-off is
-measured.
+Pipelining as first built added one presentation frame of latency: G pumped
+and polled frame f+1's input as soon as it had queued frame f's end, so that
+input waited behind frame f. Measured with `TRIAEVUM_INPUT_LATENCY=1` (SDL
+pump to the return of the frame end, RTX 3060, VSync 60 Hz): 33.3 ms median
+parallel against 16.6 ms serial.
+
+Input admission (default) closes it: G waits until frame f has ended before
+it pumps events for f+1 (`NativeRenderCommandStream::WaitForFramesInFlight(0)`),
+and still runs guest f+1 while R waits for f+1's frame slot and swapchain
+image. Interleaved runs, parallel / admission / serial, median (p95) ms and fps:
+
+| Scene | Parallel | Admission | Serial |
+|---|---|---|---|
+| Hyrule Field, 720p | 33.3 (35.1), 59.8 | 15.9 (25.9), 59.8 | 16.6 (22.4), 59.9 |
+| Kokiri, 4K Enhanced (GPU-bound) | 36.0 (38.9), 55.5 | 17.8 (21.4), 55.3 | 18.5 (23.6), 54.8 |
+| Barinade fight, 4K Enhanced | 31.7 (45.0), 59.8 | 16.0 (28.1), 59.9 | - |
+
+Uncapped (VSync off, no pacer) the lost overlap costs throughput: 588 against
+523 fps in the field. `TRIAEVUM_INPUT_ADMISSION=0` restores the early sampling.
+The remaining input age at 60 Hz is mostly the wait for the swapchain image
+(8-12 ms median after the pump), and the interpolation delay is on top.
 
 ## Qualification
 
