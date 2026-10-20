@@ -54,17 +54,12 @@ class InteractiveGrassPass final {
                       uint32_t height,
                       const EffectGeometryProviderPlan& providerPlan,
                       const PicaAttachmentRequirements& attachments);
-    // The distant field of the last Prepare, after the blades in the same pass.
-    bool DrawPreparedField(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
-                           const EffectGeometryProviderPlan& providerPlan,
-                           const PicaAttachmentRequirements& attachments);
     void SetCacheDirectory(std::filesystem::path directory);
     void ResetTemporalState();
     void Shutdown();
 
     [[nodiscard]] uint32_t LastBladeCount() const;
     [[nodiscard]] uint32_t LastMotionBladeCount() const;
-    [[nodiscard]] uint64_t LastFieldTriangleCount() const;
     [[nodiscard]] const std::string& UnavailableReason() const;
 
   private:

@@ -451,7 +451,6 @@ bool GrassGpuInstanceCompactor::Compact(const GrassGpuInstanceCompactionRequest&
             mImpl->DestroyBuffer(mImpl->StaticStaging[slot]);
         }
 
-        if (request.ProfileMark) request.ProfileMark("grass_static_upload");
         GrassGpuSelectionResult gpu;
         if (gpuSelection) {
             auto selectionRequest = request.Selection;
@@ -467,7 +466,6 @@ bool GrassGpuInstanceCompactor::Compact(const GrassGpuInstanceCompactionRequest&
                 if (request.Selector->LastFailureOutOfMemory()) throw GrassGpuOutOfMemory(reason);
                 throw std::runtime_error(reason);
             }
-            if (request.ProfileMark) request.ProfileMark("grass_selection");
         }
 
         // The bend history follows static anchor indices: a new static set,
@@ -651,7 +649,6 @@ bool GrassGpuInstanceCompactor::Compact(const GrassGpuInstanceCompactionRequest&
         push.ActorGrid = {actorCells.Origin[0], actorCells.Origin[1], actorCells.InverseCellSize, 0.0F};
         push.ActorGridSize = {actorCells.Width, actorCells.Height, actorCells.Width * actorCells.Height, 0U};
 
-        if (request.ProfileMark) request.ProfileMark("grass_compaction_setup");
         vkCmdBindPipeline(request.CommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, mImpl->Pipeline);
         vkCmdBindDescriptorSets(request.CommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, mImpl->PipelineLayout, 0U, 1U,
                                 &mImpl->DescriptorSets[slot], 0U, nullptr);
@@ -668,7 +665,6 @@ bool GrassGpuInstanceCompactor::Compact(const GrassGpuInstanceCompactionRequest&
         };
         vkCmdPipelineBarrier(request.CommandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0U, 0U, nullptr, 1U, &outputReady, 0U, nullptr);
-        if (request.ProfileMark) request.ProfileMark("grass_compaction_dispatch");
 
         result.StaticAnchorBuffer = mImpl->StaticAnchors.Handle;
         result.RootBendBuffer = mImpl->RootBends[slot].Handle;

@@ -840,8 +840,7 @@ void GfxRenderingAPIVulkan::StartFrame() {
             Oot3d::ReportGrassStageFrame(
                 mFrameCounter - kFramesInFlight, measured.GrassMilliseconds.value_or(-1),
                 measured.GrassCompactionMilliseconds.value_or(-1), measured.GrassBladesMilliseconds.value_or(-1),
-                measured.GrassShadowsMilliseconds.value_or(-1), measured.GrassLightingMilliseconds.value_or(-1),
-                measured.GrassFieldMilliseconds.value_or(-1));
+                measured.GrassShadowsMilliseconds.value_or(-1), measured.GrassLightingMilliseconds.value_or(-1));
         }
     }
     mViewport = { 0.0f, 0.0f, static_cast<float>(mSwapchainExtent.width),

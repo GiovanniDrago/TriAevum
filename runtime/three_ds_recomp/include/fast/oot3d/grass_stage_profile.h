@@ -130,7 +130,7 @@ class GrassStageTimer {
     std::chrono::steady_clock::time_point mStart{};
 };
 inline void ReportGrassStageFrame(uint64_t frame, double total, double compact, double blades, double shadows,
-                                  double lighting, double field = -1.0) {
+                                  double lighting) {
     if (!GrassStageProfileEnabled())
         return;
     const auto& f = GrassStageFrames[frame % 8];
@@ -156,7 +156,7 @@ inline void ReportGrassStageFrame(uint64_t frame, double total, double compact, 
                  "raster_depth_instances=%llu explicit_depth_batches=%llu explicit_depth_instances=%llu "
                  "traverse_jobs=%llu traverse_job_ms=%.6f traverse_max_job_ms=%.6f evaluate_jobs=%llu "
                  "evaluate_job_ms=%.6f evaluate_max_job_ms=%.6f refine_jobs=%llu refine_job_ms=%.6f "
-                 "refine_max_job_ms=%.6f candidate_hit=%llu candidate_miss=%llu candidate_violation=%llu select_hash=%016llx gpu_field_ms=%.6f\n",
+                 "refine_max_job_ms=%.6f candidate_hit=%llu candidate_miss=%llu candidate_violation=%llu select_hash=%016llx\n",
                  (unsigned long long)f.MemoHit, (unsigned long long)f.MemoMiss, (unsigned long long)f.NeitherHit,
                  (unsigned long long)f.SelectionHit, (unsigned long long)f.SelectionMiss,
                  (unsigned long long)f.PlacementHit, (unsigned long long)f.PlacementMiss, (unsigned long long)f.DiskHit,
@@ -172,6 +172,6 @@ inline void ReportGrassStageFrame(uint64_t frame, double total, double compact, 
                  f.TraverseMaxJobMs, (unsigned long long)f.EvaluateJobs, f.EvaluateJobMs, f.EvaluateMaxJobMs,
                  (unsigned long long)f.RefineJobs, f.RefineJobMs, f.RefineMaxJobMs, (unsigned long long)f.CandidateHit,
                  (unsigned long long)f.CandidateMiss, (unsigned long long)f.CandidateViolation,
-                 (unsigned long long)f.SelectHash, field);
+                 (unsigned long long)f.SelectHash);
 }
 } // namespace Fast::Oot3d

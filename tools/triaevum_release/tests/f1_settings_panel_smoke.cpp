@@ -2114,18 +2114,6 @@ int main(int argc, char** argv) try {
           grassLod.TuftTransitionFraction == 0.35F && grassLod.FarTuftDensity == 2.5F &&
           grassLod.FarTuftSpread == 1.8F && grassLod.SegmentLodSoftness == 0.75F,
           "grass transition, tuft quantity/spread controls not applied");
-    EditScalar("Field starts at", "1500");
-    EditScalar("Blade to field blend", "0.40");
-    EditScalar("Field height", "1.25");
-    EditScalar("Field detail steps", "8");
-    const auto field = runtime.Snapshot().Grass;
-    Check(field.DistantFieldEnabled && field.DistantFieldStartDistance == 1500.0F &&
-          field.DistantFieldBlendFraction == 0.40F && field.DistantFieldHeightScale == 1.25F &&
-          field.DistantFieldSteps == 8U, "distant grass field controls not applied");
-    Click("Distant grass field");
-    Check(!runtime.Snapshot().Grass.DistantFieldEnabled, "distant grass field disable failed");
-    Click("Distant grass field");
-    Check(runtime.Snapshot().Grass.DistantFieldEnabled, "distant grass field enable failed");
     size.y = 680.0F;
     for (const char* section : {"Generation", "Appearance", "Performance", "Wind", "Interaction", "Sources"})
         Click(section);

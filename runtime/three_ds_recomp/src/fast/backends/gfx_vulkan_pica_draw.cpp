@@ -3522,15 +3522,8 @@ bool GfxRenderingAPIVulkan::TryRenderInteractiveGrass(
             target.Width, target.Height,
             mInteractiveGrassProviderPlan,
             mFramePicaAttachmentRequirements);
-        if (Oot3d::GrassStageProfileEnabled()) {
-            mGpuProfiler.EndScope(mCurrentFrame, Oot3d::GpuProfileScope::GrassBlades, mCommandBuffers[mCurrentFrame]);
-            mGpuProfiler.BeginScope(mCurrentFrame, Oot3d::GpuProfileScope::GrassField, mCommandBuffers[mCurrentFrame]);
-        }
-        executed |= mInteractiveGrassPass.DrawPreparedField(
-            mCommandBuffers[mCurrentFrame], target.Width, target.Height, mInteractiveGrassProviderPlan,
-            mFramePicaAttachmentRequirements);
         if (Oot3d::GrassStageProfileEnabled())
-            mGpuProfiler.EndScope(mCurrentFrame, Oot3d::GpuProfileScope::GrassField, mCommandBuffers[mCurrentFrame]);
+            mGpuProfiler.EndScope(mCurrentFrame, Oot3d::GpuProfileScope::GrassBlades, mCommandBuffers[mCurrentFrame]);
     }
     mGpuProfiler.EndScope(
         mCurrentFrame, Oot3d::GpuProfileScope::Grass,

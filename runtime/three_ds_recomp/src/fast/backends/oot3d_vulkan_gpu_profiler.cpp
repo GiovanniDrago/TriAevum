@@ -74,9 +74,6 @@ void StoreTiming(Oot3dVulkanGpuTimings& timings,
         case Oot3d::GpuProfileScope::GrassLighting:
             timings.GrassLightingMilliseconds = milliseconds;
             break;
-        case Oot3d::GpuProfileScope::GrassField:
-            timings.GrassFieldMilliseconds = milliseconds;
-            break;
         case Oot3d::GpuProfileScope::Count:
             break;
     }
@@ -100,8 +97,7 @@ constexpr std::array<const char*, Oot3d::kGpuProfileScopeCount> kScopeBeginLabel
                                                                                    "grass_compaction",
                                                                                    "grass_blades",
                                                                                    "grass_shadows",
-                                                                                   "grass_lighting",
-                                                                                   "grass_field" };
+                                                                                   "grass_lighting" };
 constexpr std::array<const char*, Oot3d::kGpuProfileScopeCount> kScopeEndLabels{ "after frame",
                                                                                  "after native_pica",
                                                                                  "after toon_raster",
@@ -120,8 +116,7 @@ constexpr std::array<const char*, Oot3d::kGpuProfileScopeCount> kScopeEndLabels{
                                                                                  "after grass_compaction",
                                                                                  "after grass_blades",
                                                                                  "after grass_shadows",
-                                                                                 "after grass_lighting",
-                                                                                 "after grass_field" };
+                                                                                 "after grass_lighting" };
 
 bool EnvironmentFlag(const char* name) {
     const char* value = std::getenv(name);
