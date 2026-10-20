@@ -59,7 +59,9 @@ struct NativeA32SceneViewProbeStats {
 class NativeA32SceneViewProbe {
 public:
   void ObservePlayState(uint32_t playStateAddress);
-  // FileSelect_Update ran: the file select owns the view for the next
+  // FileSelect_Update ran outside play (a frontend SaveContext.game_mode; in
+  // play PauseUi_Update calls it every frame, which is not the file select):
+  // the file select owns the view for the next
   // kOot3dFileSelectOwnershipRefreshes guest refreshes, or until a reset.
   void ObserveFileSelect();
   // One host refresh of the guest begins (before it runs to its wait).

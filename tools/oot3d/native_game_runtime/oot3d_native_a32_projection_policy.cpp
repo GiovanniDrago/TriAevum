@@ -273,9 +273,16 @@ void ApplyNativeWidescreenProjectionPolicy(
   // The file select's update is the only sign that the title scene on the
   // upper screen is the file select's (the title demo's PlayState keeps
   // updating behind its cards): the scene view takes its identity from it
-  // while this keeps running.
-  if (pc == kFileSelectUpdate && runtime.SceneViewProbe != nullptr) {
-    runtime.SceneViewProbe->ObserveFileSelect();
+  // while this keeps running. PauseUi_Update calls it every frame of play as
+  // well (the integrated file-select flow of the touch screen), so only a
+  // frontend SaveContext.game_mode makes it the file select's screen.
+  if (pc == kFileSelectUpdate && runtime.SceneViewProbe != nullptr &&
+      runtime.TraceMemory != nullptr) {
+    uint32_t nativeGameMode = 0U;
+    if (runtime.TraceMemory->Read32(kNativeGameMode, &nativeGameMode) &&
+        !Oot3dNativeGame::IsTopScreenGameplayInputMode(nativeGameMode)) {
+      runtime.SceneViewProbe->ObserveFileSelect();
+    }
   }
   if (runtime.TopScreenUiProfile && runtime.TraceMemory != nullptr &&
       runtime.UiLifecycleBridge != nullptr && pc == kPauseProjectionPrepare &&
