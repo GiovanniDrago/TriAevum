@@ -245,5 +245,6 @@ cp -a "$source_dir" ~/.local/share/TriAevum-dev/title-source/personalized
 
 The helper rebuilds `triaevum_title_aot.so`, rebinds the local catalog and
 reinstalls the changed title. The original downloaded release, your ROM and
-your saves are not modified.
+your saves are not modified. Once you have a personalized title, keep passing
+`--title-source-dir`; a plain run without it restores the release title.
 
