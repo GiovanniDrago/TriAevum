@@ -34,6 +34,7 @@ std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
         {"oot3d_hiz_reduce.comp", Compute, BuildHiZReductionComputeShader(), {}},
         {"oot3d_hiz_reflection.comp", Compute, BuildHiZReflectionComputeShader(), {}},
         {"oot3d_hiz_reflection_filter.comp", Compute, BuildHiZReflectionBilateralFilterShader(), {}},
+        {"oot3d_hiz_reflection_upsample.comp", Compute, BuildHiZReflectionUpsampleShader(), {}},
         {"oot3d_reflection_environment.comp", Compute, BuildReflectionEnvironmentComputeShader(), {}},
         {"oot3d_reflection_brdf.comp", Compute, BuildReflectionBrdfComputeShader(), {}},
         {"oot3d_reflection_material_resolve.comp", Compute, BuildReflectionMaterialResolveComputeShader(), {}},

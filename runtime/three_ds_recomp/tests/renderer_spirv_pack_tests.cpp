@@ -140,11 +140,11 @@ TEST(SpirvPack, EmbeddedFamiliesHoldTheirModules) {
     ExpectSpirvModules(Fast::Oot3d::ToonFragmentArtifacts(), 348U); // build_fragment_artifacts --toon
     ExpectSpirvModules(Fast::Oot3d::UberFragmentArtifacts(), 36U);
     ExpectSpirvModules(Fast::Oot3d::CasterFragmentArtifacts(), 6U);
-    ExpectSpirvModules(BuiltinPassArtifacts(), 99U); // 70 + 9 diffuse GI pass kernels + its OOT3D adapter (M5), 2 grass raster-depth fragments, 3 contact shadow lengths, 2 upscaler orientation turns, 4 GPU grass selection passes, the room shadow shell vertex shader, 5 grass card programs (vertex, 2 explicit-depth and 2 conservative-depth fragments), 2 whole-blade grass fragments without discard
+    ExpectSpirvModules(BuiltinPassArtifacts(), 100U); // 70 + 9 diffuse GI pass kernels + its OOT3D adapter (M5), 2 grass raster-depth fragments, 3 contact shadow lengths, 2 upscaler orientation turns, 4 GPU grass selection passes, the room shadow shell vertex shader, 5 grass card programs (vertex, 2 explicit-depth and 2 conservative-depth fragments), 2 whole-blade grass fragments without discard, the reflection upsample
 #ifdef ENABLE_OOT3D_IMMERSE
     // The iMMERSE module hands its pack to the host, which reads it.
     const auto mxaoEntries = ReadSpirvPack(Fast::Immerse::MxaoPassPack());
-    ExpectSpirvModules(PassShaderArtifactsFromPack(mxaoEntries), 6U);
+    ExpectSpirvModules(PassShaderArtifactsFromPack(mxaoEntries), 7U); // with the half-resolution upsample
 #endif
     ExpectSpirvModules(Oot3dNativeGame::TitleVertexArtifacts(), 8U);
     ExpectSpirvModules(Oot3dNativeGame::TitlePassArtifacts(), 6U);
