@@ -208,7 +208,8 @@ The extracted source is under
 address, function name, shard and line for every translated function:
 
 ```sh
-cd ~/.local/share/TriAevum-dev/title-source/*/
+cd "$(find ~/.local/share/TriAevum-dev/title-source -maxdepth 1 \
+  -mindepth 1 -type d ! -name personalized | head -1)"
 rg "Gameplay_CameraChangeSetting" .
 rg -n "Execute_Player_SetCsAction" function-index.tsv
 ```
