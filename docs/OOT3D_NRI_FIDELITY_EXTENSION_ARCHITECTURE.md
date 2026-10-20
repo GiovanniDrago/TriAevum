@@ -3747,6 +3747,43 @@ after, every changed pixel lies inside the logo's box at presentation frames
 Foundation 337/337, pipeline cache 52/52, composition, visual savestate and
 Vulkan bridge tests pass.
 
+## The title logo as a layer over the resolved scene (2026-10-20)
+
+In the intro's river shot the logo (actor 0x0171, `IsolatedLighting`) was
+mirrored, deformed, in the water: its 23 draws (17 opaque with depth write, 6
+transparent) are the last scene draws on the top target, right before its
+display transfer, so the Hi-Z reflection read a scene colour and depth that
+already held the logo. In the extension profile the logo is now a layer of
+its own over the completed scene, exactly as native UI is:
+
+- `PicaCompositionSchedule` treats a draw as an overlay when its domain is
+  `Ui` or when it is a scene draw with `IsolatedLighting`. A tail of overlay
+  draws ends the scene: the `SceneResolved`/`BeforeUi` anchors lie before its
+  first draw, and isolated draws are no world geometry for the stage analysis
+  (the logo's opaque draws after the atmosphere no longer make the intro's
+  opaque world non-contiguous). A world draw after an overlay draw withholds
+  the boundary as before.
+- `ExecuteNativePicaBeforeDrawAnchors` runs the pre-UI boundary for the
+  first overlay draw (`NativeSceneOverlayDraw`): the scene stages (AO, GI,
+  reflections, outline, same-extent TAA/SMAA) are composed and committed to
+  the target, or the scene is kept beside the display for an upscaler.
+- A logo draw after that boundary (`sceneOverlayDraw`: the target's
+  `SceneEffectsResolvedSerial` is current) is drawn like UI: no projection
+  jitter, no motion vectors, not a reflection-environment sample, and its
+  write keeps the resolved-scene and scene-before-UI serials, so the display
+  transfer carries the scene effects as resolved and the upscaler lays the
+  logo over its output through the native UI overlay. Its depth test against
+  the world is unchanged (the target's depth is not touched by the boundary).
+  Without a boundary (no scene stage enabled and no upscaler, or world draws
+  after the logo) it is a scene draw as before. Diagnostics count
+  `scene_overlay_draw_count`.
+- An isolated draw never casts a directional shadow nor feeds the scene
+  distance field, in any frame: it is an object of its own.
+
+The Native profile and F2 are unaffected. What the layer gives up: the
+logo is not temporally anti-aliased (it is drawn after the same-extent TAA
+resolve, like the HUD); SMAA/FSR/DLSS display stages still see it.
+
 ## Sky identity under visual interpolation (2026-10-06)
 
 In the title intro the sky and its clouds held still for two presentations and

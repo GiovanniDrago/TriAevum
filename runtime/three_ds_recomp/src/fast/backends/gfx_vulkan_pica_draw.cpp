@@ -145,10 +145,11 @@ void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
         (effects.Toon != Oot3d::ToonMode::Off && effects.ToonStyle.OutlineEnabled) ||
         mSceneAntiAliasing;
     // Presentation stages (AA, upscalers) read the display's world surface.
-    // When native UI reaches the target before its transfer, that surface is
-    // proven only by the scene completion recorded at this boundary.
+    // When an overlay (native UI, the isolated title logo) reaches the target
+    // before its transfer, that surface is proven only by the scene
+    // completion recorded at this boundary.
     if (!mNativeFidelityProfile && (sceneEffects || mPresentationWorldSurface) &&
-        draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui) {
+        NativeSceneOverlayDraw(draw)) {
         const auto* beforeUi = mNativePicaCompositionSchedule.FindAnchorBeforeDraw(
             Oot3d::EffectStage::BeforeUi, reference.Target, draw.SubmissionId);
         if (beforeUi != nullptr) {
@@ -202,7 +203,7 @@ void GfxRenderingAPIVulkan::ExecuteNativePicaBeforeDrawAnchors(
     // Editor geometry is presentation decoration. The effect graph has already
     // consumed/published the clean scene, including the upscaler snapshot.
     // Native UI is submitted afterwards, so it remains above the wireframe.
-    if (!mNativeFidelityProfile && draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui &&
+    if (!mNativeFidelityProfile && NativeSceneOverlayDraw(draw) &&
         mNativePicaCompositionSchedule.FindAnchorBeforeDraw(Oot3d::EffectStage::BeforeUi, reference.Target,
                                                             draw.SubmissionId) != nullptr)
         TryRenderWorldDebugLines(target);
@@ -1839,8 +1840,19 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             cpuTimings.DirectionalShadowMilliseconds, cpuTimings.GrassRenderMilliseconds);
         if (collectCpuTimings) cpuStageStart = CpuClock::now();
         renderTarget.WBuffering = draw.WBuffering;
+        // The isolated title logo once the boundary before it has resolved the
+        // scene: a layer over that result, drawn like native UI is (no
+        // projection jitter, no motion, no scene-effect input, and its pixels
+        // keep the completed scene's serials for the display and the upscaler).
+        // Without a boundary (no scene stage, or world draws after it) it is
+        // a scene draw as before.
+        const bool sceneOverlayDraw = sceneDraw && !nativeMemoryOnly &&
+            !mNativeFidelityProfile && draw.Composition.IsolatedLighting &&
+            renderTarget.SceneEffectsResolvedSerial != 0U &&
+            renderTarget.SceneEffectsResolvedSerial == renderTarget.ContentWriteSerial;
+        if (sceneOverlayDraw) mDiagnostics.RecordSceneOverlayDraw();
         const bool reflectionEnvironmentEligible =
-            sceneDraw &&
+            sceneDraw && !sceneOverlayDraw &&
             draw.FragmentOperationMode == 0U &&
             draw.DepthTestEnabled && draw.DepthWriteEnabled &&
             (draw.ColorWriteMask & 0x7U) != 0U;
@@ -1854,7 +1866,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             cpuTimings.GrassRenderMilliseconds +
             cpuTimings.ReflectionEnvironmentMilliseconds;
         Oot3d::RigidMotionSample rigidMotion{};
-        const std::array<float, 2> jitterUv = mTemporalJitterEnabled && !nativeMemoryOnly
+        const std::array<float, 2> jitterUv = mTemporalJitterEnabled && !nativeMemoryOnly && !sceneOverlayDraw
             ? std::array<float, 2>{
                   mTemporalJitterPixels[0] /
                       static_cast<float>(renderTarget.Width),
@@ -1863,7 +1875,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             : std::array<float, 2>{};
         std::array<float, 4> rigidOriginClip{};
         const bool temporalEligible = mTemporalMotionEnabled && !nativeMemoryOnly &&
-            sceneDraw &&
+            sceneDraw && !sceneOverlayDraw &&
             draw.FragmentOperationMode == 0U &&
             draw.DepthTestEnabled && draw.DepthWriteEnabled;
         std::span<const uint8_t> previousVertexUniformBytes = draw.VertexUniformBytes;
@@ -2592,14 +2604,16 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         // not the CPU-owned remainder of a padded texture. Nothing here uses the
         // raw draw viewport as a geometry proof, and a tiny mesh cannot qualify.
         {
-            // Native UI consumes the completed scene; its pixels must neither
-            // invalidate that completion nor become inputs to scene effects.
-            const bool retainResolvedScene =
-                draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui &&
+            // An overlay (native UI, the isolated title logo) consumes the
+            // completed scene; its pixels must neither invalidate that
+            // completion nor become inputs to scene effects.
+            const bool overlayDraw =
+                draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui ||
+                sceneOverlayDraw;
+            const bool retainResolvedScene = overlayDraw &&
                 renderTarget.SceneEffectsResolvedSerial != 0U &&
                 renderTarget.SceneEffectsResolvedSerial == renderTarget.ContentWriteSerial;
-            const bool retainSceneBeforeUi =
-                draw.CompositionDomain == Renderer3ds::PicaCompositionDomain::Ui &&
+            const bool retainSceneBeforeUi = overlayDraw &&
                 renderTarget.SceneBeforeUiSerial != 0U &&
                 renderTarget.SceneBeforeUiSerial == renderTarget.ContentWriteSerial;
             renderTarget.ContentWriteSerial = ++mGpuTextureCopyWriteSerial;
@@ -2882,8 +2896,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             sceneVertexLayout =
                 Oot3d::BuildPicaNriVertexInputLayout(shadowSourceBindings, nriDrawSourceAttributes);
         }
+        // An isolated draw (the title logo) is an object of its own: it casts
+        // no shadow into the scene and is no scene distance field geometry.
         const bool directionalShadowCaster =
-            nriOwnedDraw && opaqueWorldDraw && sceneVertexLayout.Valid() &&
+            nriOwnedDraw && opaqueWorldDraw && !isolatedLighting && sceneVertexLayout.Valid() &&
             !sceneVertexLayout.Bindings.empty() &&
             !sceneVertexLayout.Attributes.empty() &&
             mDirectionalShadowMapBarrierPlan.Valid() &&
@@ -2973,7 +2989,8 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             const bool sceneDistanceFieldGeometry =
                 Oot3d::PicaExtensionPassEnabled(
                     mPicaExtensionGraph, Oot3d::PicaExtensionPass::SceneDistanceField) &&
-                opaqueWorldDraw && sceneVertexLayout.Valid() && !sceneVertexLayout.Bindings.empty() &&
+                opaqueWorldDraw && !isolatedLighting && sceneVertexLayout.Valid() &&
+                !sceneVertexLayout.Bindings.empty() &&
                 AdmitsOpaqueSceneGeometry(draw) && draw.LightBinding.WorldToView &&
                 draw.VertexUniformBytes.size() >= Oot3d::kPicaPackedVertexFloatOffset;
             if (sceneDistanceFieldGeometry) {
