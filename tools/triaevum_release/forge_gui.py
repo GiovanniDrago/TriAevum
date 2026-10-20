@@ -343,11 +343,16 @@ class ForgeWindow:
         self.status = tk.StringVar(value="Checking the local installation...")
         self.hd_status = tk.StringVar()
         self.hd_selection = tk.StringVar()
+        # On by default: a title prepared without the archive stored gets
+        # SingleScreen 3.1 downloaded first, as part of "Prepare and install".
+        self.hd_auto_download = tk.BooleanVar(value=True)
         self.hd_contracts = singlescreen_archive.archive_contracts(forge.DEFAULT_RECIPES)
+        self.install_thread = None
 
         self._build_layout()
         self.rom.trace_add("write", lambda *_args: self._refresh_actions())
         self.hd_selection.trace_add("write", lambda *_args: self._import_hd())
+        self.hd_auto_download.trace_add("write", lambda *_args: self._refresh_hd())
         self._refresh_active_title()
         self._refresh_actions()
         self.status.trace_add("write", lambda *_args: self.root.after_idle(self._fit_to_content))
@@ -469,17 +474,49 @@ class ForgeWindow:
         link = self.ttk.Label(section, text="Mod page", style="Link.TLabel", cursor="hand2")
         link.grid(row=1, column=2, sticky="e", pady=(10, 0))
         link.bind("<Button-1>", lambda _event: webbrowser.open(singlescreen_archive.MOD_PAGE))
+        self.hd_auto_check = self.ttk.Checkbutton(
+            section, variable=self.hd_auto_download,
+            text="Download SingleScreen 3.1 with \"Prepare and install\" when it is not stored yet")
+        self.hd_auto_check.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self.ttk.Label(section, textvariable=self.hd_status, wraplength=680, justify="left").grid(
-            row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+            row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         self._refresh_hd()
 
+    def _stored_hd(self) -> singlescreen_archive.ArchiveContract | None:
+        return singlescreen_archive.stored_archive(installation_root(), self.data_root, self.hd_contracts)
+
     def _refresh_hd(self) -> None:
-        stored = singlescreen_archive.stored_archive(installation_root(), self.data_root, self.hd_contracts)
-        if stored is None:
-            self.hd_status.set("Not installed: the game uses the native textures and fonts.")
-        else:
+        stored = self._stored_hd()
+        if stored is not None:
             self.hd_status.set(f"SingleScreen {stored.version} archive ready. "
                                "It is applied when you prepare and install the title.")
+        elif self.hd_auto_download.get():
+            self.hd_status.set("Not stored yet: SingleScreen 3.1 is downloaded when you prepare and "
+                               "install the title. Without it the game uses the native textures and fonts.")
+        else:
+            self.hd_status.set("Not installed: the game uses the native textures and fonts.")
+
+    def _install_hd_download_needed(self) -> bool:
+        """Whether "Prepare and install" downloads SingleScreen 3.1 first."""
+        return bool(self.hd_auto_download.get()) and self._stored_hd() is None
+
+    def _download_hd_for_install(self) -> None:
+        """Worker-thread download before the title is prepared; a failure keeps
+        the native textures and reports why, it never stops the installation."""
+        self.events.put(("hd_stage", "Downloading SingleScreen 3.1..."))
+        try:
+            contract, _path = singlescreen_archive.download_archive(
+                self.data_root, self.hd_contracts,
+                progress=lambda done, total: self.events.put(
+                    ("hd_stage", f"Downloading SingleScreen 3.1... {done * 100 // total}%")))
+        except Exception as exc:
+            self.events.put(("hd_stage", (
+                f"SingleScreen 3.1 download failed: {exc} The title is prepared with the native "
+                f"textures and fonts. Download the 3.1 zip from the mod page and select it with "
+                "\"Select 3.1 zip...\", then prepare and install again.")))
+            return
+        self.events.put(("hd_stage", f"SingleScreen {contract.version} archive ready. "
+                                     "It is applied by this installation."))
 
     def _download_hd(self) -> None:
         def task(report):
@@ -632,20 +669,25 @@ class ForgeWindow:
             if self.active_title is not None and not self.busy and not self.picking
             else "disabled"
         )
-        for button in (self.hd_download_button, self.hd_select_button):
+        for button in (self.hd_download_button, self.hd_select_button, self.hd_auto_check):
             button.configure(state="disabled" if self.busy or self.picking else "normal")
 
     def _install(self) -> None:
         if self.busy or self.picking:
             return
         request = self._request()
+        download_hd = self._install_hd_download_needed()
         self.busy = True
         self.progress.start(12)
-        self.status.set("Starting title preparation...")
+        self.status.set("Downloading SingleScreen 3.1 before the title preparation..."
+                        if download_hd else "Starting title preparation...")
         self._refresh_actions()
 
         def worker() -> None:
             try:
+                if download_hd and not self.closing.is_set():
+                    self._download_hd_for_install()
+                    self.events.put(("stage", ("preflight", "Starting title preparation...")))
                 command = [sys.executable]
                 if not getattr(sys, "frozen", False):
                     command += ["-m", "tools.triaevum_release.forge_entry"]
@@ -687,7 +729,8 @@ class ForgeWindow:
             finally:
                 self.worker_process = None
 
-        threading.Thread(target=worker, name="TriAevumForge", daemon=True).start()
+        self.install_thread = threading.Thread(target=worker, name="TriAevumForge", daemon=True)
+        self.install_thread.start()
 
     def _launch(self) -> None:
         try:
@@ -742,6 +785,8 @@ class ForgeWindow:
                     self.progress.stop()
                     self._refresh_active_title()
                     self._refresh_actions()
+                    if self._stored_hd() is not None:
+                        self._refresh_hd()
                     self.messagebox.showinfo(
                         "TriAevum Forge",
                         "The title is ready. You can launch TriAevum — Echoes of Time now.",
