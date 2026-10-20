@@ -130,6 +130,7 @@ def install_precompiled_title(prepared_directory: Path, *, root: Path, recipe: d
         from .precomputed_tables import title_tables
         from .shader_preparation import prepare_shader_seed, prepare_renderer_shader_cache
         from .device_pipeline_preparation import prepare_device_pipelines, installation_cache_directory, adopt_existing_cache
+        from .romfs_mods import prepare_romfs_mods, romfs_service_view
     except ImportError:
         import forge
         from topscreen_assets import prepare_topscreen_assets, topscreen_link_animations, topscreen_ui_atlas_hd
@@ -139,6 +140,7 @@ def install_precompiled_title(prepared_directory: Path, *, root: Path, recipe: d
         from precomputed_tables import title_tables
         from shader_preparation import prepare_shader_seed, prepare_renderer_shader_cache
         from device_pipeline_preparation import prepare_device_pipelines, installation_cache_directory, adopt_existing_cache
+        from romfs_mods import prepare_romfs_mods, romfs_service_view
     catalog = load_catalog(root)
     item = select_title(root, recipe, catalog=catalog)
     prepared = forge.load_prepared_content(prepared_directory, required_inputs=("code", "exheader", "romfs"))
@@ -167,6 +169,13 @@ def install_precompiled_title(prepared_directory: Path, *, root: Path, recipe: d
     scene_lights = prepare_scene_lights(data_root=data_root, recipe=recipe,
                                         romfs=prepared.inputs["romfs"].path,
                                         table=tables.get("scene_lights"), report=report)
+    # The user's enabled RomFS mods (none by default): a local overlay over the
+    # verified RomFS, never a change to the prepared inputs.
+    romfs_overlay = prepare_romfs_mods(
+        root=root, data_root=data_root, recipe=recipe, romfs=prepared.inputs["romfs"].path,
+        romfs_sha256=prepared.inputs["romfs"].sha256,
+        service_view=lambda: romfs_service_view(prepared.directory / "process-manifest.json"),
+        report=report)
     shader_pack = prepare_shader_seed(root=root, data_root=data_root,
                                      title=item, report=report)
     renderer_cache = installation_cache_directory(data_root)
@@ -193,7 +202,7 @@ def install_precompiled_title(prepared_directory: Path, *, root: Path, recipe: d
             topscreen_link_animations=topscreen_link_animations(texture_pack),
             topscreen_ui_atlas_hd=topscreen_ui_atlas_hd(texture_pack),
             water_texture_catalog=water_textures,
-            scene_light_catalog=scene_lights, package_root=root,
+            scene_light_catalog=scene_lights, romfs_overlay=romfs_overlay, package_root=root,
             pica_shader_pack=shader_pack, renderer_cache_directory=renderer_cache)
         activation = forge.activate_prepared_title(prepared.directory, active_title_state=active_title_state)
     return {"status": "ready", "install_model": MODEL, "objects_compiled": 0,

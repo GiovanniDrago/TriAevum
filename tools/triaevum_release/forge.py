@@ -966,6 +966,7 @@ def publish_private_runtime(
     topscreen_ui_atlas_hd: Path | None = None,
     water_texture_catalog: Path | None = None,
     scene_light_catalog: Path | None = None,
+    romfs_overlay: Path | None = None,
     package_root: Path | None = None,
     pica_shader_pack: Path | None = None,
     renderer_cache_directory: Path | None = None,
@@ -1069,6 +1070,10 @@ def publish_private_runtime(
         if not scene_light_catalog.is_file():
             raise ForgeError("Scene light catalog is missing before activation")
         profile["arguments"].extend(("--scene-light-catalog", str(scene_light_catalog.resolve())))
+    if romfs_overlay is not None:
+        if not romfs_overlay.is_file():
+            raise ForgeError("RomFS mod overlay is missing before activation")
+        profile["arguments"].extend(("--romfs-overlay", str(romfs_overlay.resolve())))
     context = InstallationContext(installation)
     if pica_shader_pack is not None:
         if not pica_shader_pack.is_file():
@@ -1080,7 +1085,7 @@ def publish_private_runtime(
                     "--config", "--topscreen-config", "--save-data", "--output",
                     "--topscreen-texture-overrides", "--topscreen-link-animations",
                     "--topscreen-ui-atlas-hd",
-                    "--water-texture-catalog", "--scene-light-catalog",
+                    "--water-texture-catalog", "--scene-light-catalog", "--romfs-overlay",
                     "--pica-aot-shader-pack", "--renderer-cache-directory"}
     scopes = {}
     for index, argument in enumerate(profile["arguments"][:-1]):
@@ -1142,6 +1147,11 @@ def publish_private_runtime(
         prepared.state["runtime"]["scene_lights"] = {
             "path": context.reference(scene_light_catalog, prepared.directory),
             "sha256": sha256_file(scene_light_catalog),
+        }
+    if romfs_overlay is not None:
+        prepared.state["runtime"]["romfs_overlay"] = {
+            "path": context.reference(romfs_overlay, prepared.directory),
+            "sha256": sha256_file(romfs_overlay),
         }
     if pica_shader_pack is not None:
         prepared.state["runtime"]["pica_shader_pack"] = {

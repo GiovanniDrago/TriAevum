@@ -341,6 +341,18 @@ These references do not grant permission to redistribute the original mod
 archive. Project-authored reverse engineering and typed source changes remain
 traceable through this repository's Git history.
 
+## Vanilla+ - Link Remodel And HD Item Models (optional mod)
+
+Forge's "Optional mods" section can apply **Vanilla+ - Link Remodel And HD
+Item Models** 1.9 by **HugAMuffin** (3D art), tested by **Fado** (QA lead),
+**M-1** and **seiunsky_1084** (hardware testing), made with **Jameriquiah**'s
+CMB-Exporter (<https://gamebanana.com/mods/705890>). It is licensed CC BY-NC-ND
+4.0 (<https://creativecommons.org/licenses/by-nc-nd/4.0/>) and is not part of
+TriAevum: packages contain none of its files. Forge downloads the author's
+original archive on the user's request, verifies it and applies it to the
+user's local game data only. See `LICENSES/Vanilla-Plus-Link-Remodel.md` and
+`docs/TRIAEVUM_MOD_VANILLA_PLUS_LINK.md`.
+
 ## Fira Sans Condensed (in-game menu font)
 
 The in-game settings menu (Esc / R3) is drawn by TriAevum's own UI renderer

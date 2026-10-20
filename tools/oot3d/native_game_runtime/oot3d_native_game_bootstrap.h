@@ -23,6 +23,9 @@ struct Oot3dNativeGameLaunch {
     // a higher resolution, keyed by the native atlas content.
     std::filesystem::path TopScreenUiAtlasHdPath;
     std::filesystem::path TopScreenConfigPath;
+    // Forge's O3RO RomFS overlay of the user's enabled RomFS mods, built
+    // locally from verified mod archives over the user's own RomFS.
+    std::filesystem::path RomFsOverlayPath;
     std::filesystem::path ControlConfigPath;
     std::filesystem::path SaveDataDirectory;
     std::filesystem::path AudioPcmDumpPath;

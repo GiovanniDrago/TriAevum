@@ -120,6 +120,25 @@ void NativeA32WindowSession::Setup() {
   hostConfig.RomFsImagePath = manifest->RomFsImagePath;
   hostConfig.RomFsImageOffset = manifest->RomFsImageOffset;
   hostConfig.RomFsImageSize = manifest->RomFsImageSize;
+  if (!launch.RomFsOverlayPath.empty()) {
+    // User-enabled RomFS mods: Forge built the overlay over this exact image.
+    std::ifstream image(manifest->RomFsImagePath, std::ios::binary);
+    const uint64_t imageOffset = manifest->RomFsImageOffset;
+    hostConfig.RomFsOverlay = Oot3dNativeGame::NativeA32RomFsOverlay::Load(
+        launch.RomFsOverlayPath, manifest->RomFsImageSize,
+        [&](uint64_t offset, std::span<uint8_t> bytes) {
+          image.clear();
+          image.seekg(static_cast<std::streamoff>(imageOffset + offset), std::ios::beg);
+          image.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+          return static_cast<bool>(image);
+        },
+        &error);
+    if (!hostConfig.RomFsOverlay) throw std::runtime_error(error);
+    std::cout << "oot3d_native_game: RomFS mods active ("
+              << hostConfig.RomFsOverlay->PatchCount() << " metadata patches, "
+              << (hostConfig.RomFsOverlay->ViewSize() - manifest->RomFsImageSize)
+              << " appended bytes)\n";
+  }
   hostConfig.PicaFrontend = &picaFrontend;
   hostConfig.PicaCompositionDomain = &picaCompositionDomain;
   hostConfig.PicaCompositionProvider = &picaCompositionTracker;

@@ -18,6 +18,12 @@ Just as essential are **Azahar, Ship of Harkinian, libultraship, NVIDIA NRI**,
 and the SDL controller-mapping community. And, of course, **Nintendo and
 Grezzo**, who created the original game. [Full credits and licenses](THIRD_PARTY_NOTICES.md).
 
+Forge can also apply an optional mod on your machine: **[Vanilla+ - Link Remodel
+And HD Item Models](https://gamebanana.com/mods/705890)** by **HugAMuffin**
+(testing by Fado, M-1 and seiunsky_1084; tooling by Jameriquiah), CC BY-NC-ND
+4.0. TriAevum does not distribute it: Forge downloads the author's original
+archive when you turn it on ([details](docs/TRIAEVUM_MOD_VANILLA_PLUS_LINK.md)).
+
 > **alpha.3 and alpha.3b are BROKEN and withdrawn. Do not use these builds.**
 > Downloads have been removed pending further verification. Back up existing
 > saves/settings. [Release status and earlier releases](https://github.com/coccofresco/TriAevum/releases).
