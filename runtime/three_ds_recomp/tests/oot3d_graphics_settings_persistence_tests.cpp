@@ -14,6 +14,7 @@ Fast::Oot3d::GraphicsSettings CompleteSettings() {
     settings.OutputWidth = 2560U;
     settings.OutputHeight = 1440U;
     settings.RefreshRate = 144U;
+    settings.Aspect = AspectRatioMode::Ultrawide21x9;
     settings.InternalResolutionScale = 1.35F;
     settings.AntiAliasing = AntiAliasingMode::Upscaler;
     settings.Upscaler = UpscalerProvider::Fsr;
@@ -1167,4 +1168,39 @@ TEST(GrassMaskPersistence, RoundTripDefaultsValidationAndPresetOwnership) {
     EXPECT_EQ(DeserializeGraphicsSettings(document).Value.Grass.Masks.size(), 1);
     document["Grass"]["Masks"] = "mistyped";
     EXPECT_TRUE(DeserializeGraphicsSettings(document).Value.Grass.Masks.empty());
+}
+
+TEST(Oot3dGraphicsSettingsPersistence, RoundTripsTheAspectRatioAsHostOwnedOutputState) {
+    using namespace Fast::Oot3d;
+    auto settings = CompleteSettings();
+    settings.Aspect = AspectRatioMode::Native3ds;
+    auto document = SerializeGraphicsSettings(settings);
+    EXPECT_EQ(document["Output"]["Aspect"], "Native3ds");
+    EXPECT_EQ(DeserializeGraphicsSettings(document).Value.Aspect, AspectRatioMode::Native3ds);
+    for (const auto [mode, name] :
+         {std::pair{AspectRatioMode::Wide16x9, "Wide16x9"}, std::pair{AspectRatioMode::Ultrawide21x9, "Ultrawide21x9"},
+          std::pair{AspectRatioMode::Free, "Free"}}) {
+        settings.Aspect = mode;
+        const auto serialized = SerializeGraphicsSettings(settings);
+        EXPECT_EQ(serialized["Output"]["Aspect"], name);
+        EXPECT_EQ(DeserializeGraphicsSettings(serialized).Value.Aspect, mode);
+    }
+    // An older file without the key, or an unknown name, is 16:9 (the
+    // default) and asks for a rewrite.
+    document["Output"].erase("Aspect");
+    auto older = DeserializeGraphicsSettings(document);
+    EXPECT_EQ(older.Value.Aspect, AspectRatioMode::Wide16x9);
+    EXPECT_TRUE(older.NeedsRewrite);
+    document["Output"]["Aspect"] = "Cinemascope";
+    EXPECT_EQ(DeserializeGraphicsSettings(document).Value.Aspect, AspectRatioMode::Wide16x9);
+    // A preset keeps the current aspect, like the window and the output size.
+    settings.Aspect = AspectRatioMode::Ultrawide21x9;
+    const auto enhanced = GraphicsSettingsService::PresetForCurrent(GraphicsPreset::Enhanced, settings);
+    EXPECT_EQ(enhanced.Aspect, AspectRatioMode::Ultrawide21x9);
+    EXPECT_EQ(GraphicsSettingsService::KeepHostOwnedSettings(GraphicsSettings{}, settings).Aspect,
+              AspectRatioMode::Ultrawide21x9);
+    // The validator corrects an out-of-range value to the default.
+    settings.Aspect = static_cast<AspectRatioMode>(9);
+    EXPECT_EQ(GraphicsSettingsService::Validate(settings, GraphicsCapabilities{}).Value.Aspect,
+              AspectRatioMode::Wide16x9);
 }

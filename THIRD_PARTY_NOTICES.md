@@ -341,6 +341,21 @@ These references do not grant permission to redistribute the original mod
 archive. Project-authored reverse engineering and typed source changes remain
 traceable through this repository's Git history.
 
+## Fira Sans Condensed (in-game menu font)
+
+The in-game settings menu (Esc / R3) is drawn by TriAevum's own UI renderer
+from glyph atlases baked from
+[Fira Sans Condensed](https://github.com/mozilla/Fira) Regular and Bold,
+copyright (c) 2012-2015 The Mozilla Foundation and Telefonica S.A., under the
+SIL Open Font License, Version 1.1. The font files, the license and the atlas
+generator are in `tools/oot3d/ui_menu/font`; the baked atlases
+(`tools/oot3d/ui_menu/oot3d_menu_font_atlas_data.cpp`) are compiled into the
+runtime, so the license is also kept at `LICENSES/FiraSans-OFL.txt` for binary
+distributions. The reserved font name "Fira Sans" is not used for any derived
+font. The menu's layout follows Dusklight's settings menu (CC0-1.0, see the
+controller section above) as a design reference; no Dusklight code or assets
+are included.
+
 ## Forge and runtime binary dependencies
 
 Windows `TriAevumForge.exe` embeds CPython 3.13; the initial Linux Forge build

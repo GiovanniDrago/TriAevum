@@ -1,6 +1,7 @@
 // Native A32 window session: one frame of the loop and the renderer-side work it schedules.
 #include "oot3d_native_a32_window_session.h"
 #include "fast/renderer3ds/pica_surface_debug.h"
+#include "oot3d/renderer/ui_presentation_layout.h"
 #include "oot3d_native_room_shadow_shell.h"
 
 namespace Oot3dA32Window {
@@ -142,6 +143,7 @@ bool NativeA32WindowSession::RunFrame() {
   auto &preparationScreen = *preparationScreenStorage;
   auto &ocarinaText = *ocarinaTextStorage;
   auto &n64UiRenderer = *n64UiRendererStorage;
+  auto &inGameMenu = *inGameMenuStorage;
   auto &picaSemanticTrace = *picaSemanticTraceStorage;
   auto &presentationScheduler = *presentationSchedulerStorage;
   auto &realtimePacer = *realtimePacerStorage;
@@ -239,6 +241,7 @@ bool NativeA32WindowSession::RunFrame() {
   const float visualInterpolationAlpha = static_cast<float>(
       std::clamp(presentationStep.InterpolationAlpha, 0.0, 1.0));
   ApplyTopScreenConfigSnapshot();
+  ApplyPhotoModeHud();
   uiLifecycleBridge.BeginHostFrame(
       static_cast<uint32_t>(presentationFrameCount));
   if (topScreenTextureOverrideRuntime.has_value()) {
@@ -249,6 +252,10 @@ bool NativeA32WindowSession::RunFrame() {
   const uint32_t height = std::max<uint32_t>(1, window.GetHeight());
   hdFonts.SetOutputHeight(height);
   UpdateScenePresentation();
+  // The presentation picture every UI canvas is fitted into this frame.
+  const oot3d::ui::N64UiOutputRegion uiRegion{
+      presentationPicture.X, presentationPicture.Y, presentationPicture.Width,
+      presentationPicture.Height};
   phaseStart = std::chrono::steady_clock::now();
   Fast::Renderer3ds::SlowStepTrace hostStartSteps("host_frame_start");
   window.GetMouseStateManager()->StartFrame();
@@ -438,10 +445,15 @@ bool NativeA32WindowSession::RunFrame() {
     aimProfileTransform.RightStickInvertX = topScreenAim.InvertX;
     aimProfileTransform.RightStickInvertY = topScreenAim.InvertY;
   }
+  // The in-game menu withholds the game's input like an ImGui window; F1
+  // (or the menu bar) owns the input over it and closes it.
+  const auto f1Window = gui->GetGuiWindow("OOT3D Graphics");
+  const bool imGuiOwnsInput =
+      gui->GetMenuOrMenubarVisible() || (f1Window != nullptr && f1Window->IsVisible());
   const bool hostGuiVisible =
-      gui->GetMenuOrMenubarVisible() || gui->GetAnyGuiWindowVisible();
+      gui->GetMenuOrMenubarVisible() || gui->GetAnyGuiWindowVisible() || inGameMenu.IsOpen();
   auto physicalInputFrame =
-      PollNativeA32Input(window, nativeFrontendTouchEnabled,
+      PollNativeA32Input(window, presentationPicture, nativeFrontendTouchEnabled,
                          hostGuiVisible,
                          nativeCandidateDispatch.TopScreenUiProfile,
                          activeTopScreenConfig.FreeCameraEnabled,
@@ -449,6 +461,16 @@ bool NativeA32WindowSession::RunFrame() {
                          presentationElapsedSeconds,
                          guestRefreshesDue != 0U,
                          nativeControlPollingState);
+#if defined(TRIAEVUM_DEVELOPER_TOOLS)
+  // A dev lab "menu" command replaces the host controls with its presses.
+  inGameMenu.Update(devLabMenuDriving ? devLabMenuInput : nativeControlPollingState.Menu, imGuiOwnsInput,
+                    presentationElapsedSeconds);
+  // The lab's wheel is a delta for one menu update; the lab command advances
+  // per guest refresh, this update per presented frame.
+  devLabMenuInput.PointerWheel = 0.0F;
+#else
+  inGameMenu.Update(nativeControlPollingState.Menu, imGuiOwnsInput, presentationElapsedSeconds);
+#endif
   if (physicalInputFrame.Exit || devLabQuit) {
     window.Close();
     return false;
@@ -542,17 +564,34 @@ bool NativeA32WindowSession::RunFrame() {
     // Texture payloads are read from guest memory here; the renderer
     // only uploads them.
     auto preparedTextures = n64UiRenderer.PrepareTextures(primitives);
-    renderStream.Submit([&, primitives = std::move(primitives), width,
-                         height, canvasMode,
+    renderStream.Submit([&, primitives = std::move(primitives), uiRegion,
+                         canvasMode,
                          prepared = std::move(preparedTextures)]() mutable {
       if (rendererFrameSkipped) {
         n64UiRenderer.Stage(std::move(prepared));
         return;
       }
-      if (!n64UiRenderer.Render(primitives, width, height, canvasMode,
+      if (!n64UiRenderer.Render(primitives, uiRegion, canvasMode,
                                 std::move(prepared), &renderError)) {
         throw std::runtime_error("integrated N64 UI presentation failed: " +
                                  renderError);
+      }
+    });
+  }
+  // The in-game menu draws last in the UI domain, over the HUD and the
+  // native text, on the widescreen canvas so its dim covers the window.
+  if (inGameMenu.IsOpen()) {
+    auto menuPrimitives = inGameMenu.BuildPresentation(1280.0F / 3.0F, 240.0F);
+    auto menuTextures = n64UiRenderer.PrepareTextures(menuPrimitives);
+    renderStream.Submit([&, primitives = std::move(menuPrimitives), uiRegion,
+                         prepared = std::move(menuTextures)]() mutable {
+      if (rendererFrameSkipped) {
+        n64UiRenderer.Stage(std::move(prepared));
+        return;
+      }
+      if (!n64UiRenderer.Render(primitives, uiRegion, oot3d::ui::N64UiCanvasMode::Widescreen16x9,
+                                std::move(prepared), &renderError)) {
+        throw std::runtime_error("in-game menu presentation failed: " + renderError);
       }
     });
   }
@@ -781,9 +820,7 @@ bool NativeA32WindowSession::UpdateGuestServicesForRefresh(
   auto &uiLifecycleBridge = *uiLifecycleBridgeStorage;
   auto &window = *windowPointer;
   auto &dspHle = *dspHleStorage;
-#if defined(TRIAEVUM_DEVELOPER_TOOLS)
   UpdateDevFreeCamera(inputFrame);
-#endif
   const uint32_t topScreenButtons = inputFrame.Hid.Buttons;
   const uint32_t topScreenPressed =
       topScreenButtons &
@@ -2259,6 +2296,44 @@ void NativeA32WindowSession::UpdateDevLab(uint64_t guestFrame) {
   const auto vector3 = [](const Json &value) {
     return std::array<float, 3>{value.at(0).get<float>(), value.at(1).get<float>(), value.at(2).get<float>()};
   };
+  // The in-game menu as the agent sees it: open, tab, focused row and value,
+  // pane, status line and modal title.
+  const auto menuState = [&] {
+    const auto &model = inGameMenuStorage->Model();
+    Json state{{"frame", guestFrame},
+               {"open", model.IsOpen()},
+               {"tabIndex", model.TabIndex()},
+               {"rowIndex", model.RowIndex()},
+               {"statusLine", model.Status()},
+               {"statusError", model.StatusIsError()}};
+    if (model.TabIndex() < model.Doc().Tabs.size()) state["tab"] = model.Doc().Tabs[model.TabIndex()].Title;
+    if (const auto *row = model.FocusedRow(); row != nullptr) {
+      state["row"] = row->Key;
+      state["value"] = row->ValueText();
+      state["enabled"] = row->Enabled;
+      state["modified"] = row->IsModified;
+    }
+    switch (model.FocusPane()) {
+      case Oot3dNativeGame::Menu::Pane::Rows: state["pane"] = "rows"; break;
+      case Oot3dNativeGame::Menu::Pane::Choices: state["pane"] = "choices"; break;
+      case Oot3dNativeGame::Menu::Pane::Modal: state["pane"] = "modal"; break;
+    }
+    if (model.CurrentModal()) state["modal"] = model.CurrentModal()->Title;
+    // The pointer's targets as last drawn, in canvas units, when asked for.
+    if (devLabCommand && devLabCommand->value("regions", false)) {
+      Json regions = Json::array();
+      for (const auto &region : model.CurrentLayout().Regions) {
+        regions.push_back({{"kind", Oot3dNativeGame::Menu::MenuHitKindName(region.Kind)},
+                           {"index", region.Index},
+                           {"x", region.Area.X},
+                           {"y", region.Area.Y},
+                           {"width", region.Area.Width},
+                           {"height", region.Area.Height}});
+      }
+      state["regions"] = std::move(regions);
+    }
+    return state;
+  };
   if (!devLabCommand) {
     devLabCommand = devLab->Next();
     if (!devLabCommand) return;
@@ -2430,6 +2505,40 @@ void NativeA32WindowSession::UpdateDevLab(uint64_t guestFrame) {
       } else if (op == "gizmos") {
         sceneEnvironment->ShowLightGizmos(command.value("shown", true));
         finish("ok", {{"frame", guestFrame}});
+      } else if (op == "menu") {
+        // The in-game menu driven by synthetic presses ("steps": toggle, up,
+        // down, left, right, confirm, back, tab_prev, tab_next), each held
+        // one guest frame at the start of a "stepFrames" period (default 4);
+        // answered with the menu's state once the last press was released.
+        // Pointer steps: "move:<kind>[:<index>]" places the mouse on that
+        // region's centre, "click:..." presses it one frame, "press:..."
+        // holds it for the period, "wheel:<notches>", "pointer_out".
+        static constexpr std::array<std::string_view, 9> kMenuSteps{
+            "toggle", "up", "down", "left", "right", "confirm", "back", "tab_prev", "tab_next"};
+        static constexpr std::array<std::string_view, 5> kMenuPointerSteps{"move", "click", "press", "wheel",
+                                                                           "pointer_out"};
+        devLabMenuSteps.clear();
+        for (const auto &step : command.value("steps", Json::array())) {
+          const auto name = step.get<std::string>();
+          const std::string verb = name.substr(0, name.find(':'));
+          if (std::find(kMenuSteps.begin(), kMenuSteps.end(), name) == kMenuSteps.end() &&
+              std::find(kMenuPointerSteps.begin(), kMenuPointerSteps.end(), verb) == kMenuPointerSteps.end())
+            throw std::invalid_argument("unknown menu step " + name);
+          devLabMenuSteps.push_back(name);
+        }
+        // The pointer keeps its place from the previous command; only the
+        // presses start clear.
+        Oot3dNativeGame::InGameMenuHostInput pointerOnly;
+        pointerOnly.PointerPresent = devLabMenuInput.PointerPresent;
+        pointerOnly.PointerX = devLabMenuInput.PointerX;
+        pointerOnly.PointerY = devLabMenuInput.PointerY;
+        pointerOnly.PictureX = devLabMenuInput.PictureX;
+        pointerOnly.PictureY = devLabMenuInput.PictureY;
+        pointerOnly.PictureWidth = devLabMenuInput.PictureWidth;
+        pointerOnly.PictureHeight = devLabMenuInput.PictureHeight;
+        devLabMenuInput = pointerOnly;
+        devLabMenuMissingTarget.clear();
+        devLabMenuDriving = true;
       } else if (op == "quit") {
         finish("ok", place());
         devLabQuit = true;
@@ -2473,8 +2582,89 @@ void NativeA32WindowSession::UpdateDevLab(uint64_t guestFrame) {
       finish("timeout", {{"frame", guestFrame}, {"applied", applied}, {"activeCamera", activeCamera}});
   } else if (op == "wait") {
     if (devLabFrames >= command.value("frames", 30U)) finish("ok", place());
+  } else if (op == "menu") {
+    const uint32_t period = std::max(command.value("stepFrames", 4U), 2U);
+    const uint32_t elapsed = devLabFrames - 1U;
+    const size_t step = elapsed / period;
+    Oot3dNativeGame::InGameMenuHostInput input;
+    // The pointer keeps its place between steps (a "move" or "click" sets it
+    // on a region's centre, as the menu last laid it out); the other steps
+    // are one-frame presses.
+    input.PointerPresent = devLabMenuInput.PointerPresent;
+    input.PointerX = devLabMenuInput.PointerX;
+    input.PointerY = devLabMenuInput.PointerY;
+    input.PictureX = devLabMenuInput.PictureX;
+    input.PictureY = devLabMenuInput.PictureY;
+    input.PictureWidth = devLabMenuInput.PictureWidth;
+    input.PictureHeight = devLabMenuInput.PictureHeight;
+    if (step < devLabMenuSteps.size()) {
+      if (elapsed % period == 0U) {
+        const std::string &name = devLabMenuSteps[step];
+        input.Toggle = name == "toggle";
+        input.Up = name == "up";
+        input.Down = name == "down";
+        input.Left = name == "left";
+        input.Right = name == "right";
+        input.Confirm = name == "confirm";
+        input.Back = name == "back";
+        input.TabPrevious = name == "tab_prev";
+        input.TabNext = name == "tab_next";
+        // "move:<kind>[:<index>]", "click:<kind>[:<index>]", "press:<kind>[:<index>]"
+        // (held for the whole period), "wheel:<notches>", "pointer_out".
+        const auto colon = name.find(':');
+        const std::string verb = name.substr(0, colon);
+        const std::string target = colon == std::string::npos ? "" : name.substr(colon + 1);
+        if (verb == "move" || verb == "click" || verb == "press") {
+          const auto second = target.find(':');
+          const std::string kind = target.substr(0, second);
+          const size_t index = second == std::string::npos ? 0U : std::stoul(target.substr(second + 1));
+          bool found = false;
+          for (const auto &region : inGameMenuStorage->Model().CurrentLayout().Regions) {
+            if (Oot3dNativeGame::Menu::MenuHitKindName(region.Kind) != kind || region.Index != index) continue;
+            // Canvas units to window pixels through the same fit the menu
+            // uses, in the presentation picture the host poll last reported.
+            const auto &hostMenu = nativeControlPollingState.Menu;
+            const auto fit = Oot3d::Renderer::FitUiPresentation(hostMenu.PictureWidth, hostMenu.PictureHeight,
+                                                                1280.0F / 3.0F, 240.0F);
+            input.PointerPresent = true;
+            input.PictureX = hostMenu.PictureX;
+            input.PictureY = hostMenu.PictureY;
+            input.PictureWidth = hostMenu.PictureWidth;
+            input.PictureHeight = hostMenu.PictureHeight;
+            input.PointerX = static_cast<float>(hostMenu.PictureX) + fit.X +
+                             (region.Area.X + region.Area.Width * 0.5F) * fit.Width / (1280.0F / 3.0F);
+            input.PointerY = static_cast<float>(hostMenu.PictureY) + fit.Y +
+                             (region.Area.Y + region.Area.Height * 0.5F) * fit.Height / 240.0F;
+            found = true;
+            break;
+          }
+          if (!found) devLabMenuMissingTarget = name;
+          input.PointerPressed = found && verb != "move";
+        } else if (verb == "wheel") {
+          input.PointerWheel = std::stof(target);
+        } else if (verb == "pointer_out") {
+          input.PointerPresent = false;
+        }
+      } else if (devLabMenuSteps[step].rfind("press:", 0) == 0) {
+        input.PointerPressed = devLabMenuInput.PointerPressed;
+      }
+      devLabMenuInput = input;
+    } else {
+      devLabMenuInput = input;
+      // One more period after the last release: the menu's refresh and the
+      // presentation of the final state are then behind the answer.
+      if (elapsed >= (devLabMenuSteps.size() + 1U) * period) {
+        // The lab keeps driving the menu between commands (its pointer stays
+        // where the last step put it, no press held), so the host's real
+        // mouse over the window cannot refocus a row behind the lab's back.
+        auto state = menuState();
+        if (!devLabMenuMissingTarget.empty()) state["missingTarget"] = devLabMenuMissingTarget;
+        finish(devLabMenuMissingTarget.empty() ? "ok" : "missing_target", std::move(state));
+      }
+    }
   }
 }
+#endif
 
 void NativeA32WindowSession::UpdateDevFreeCamera(Oot3dNativeGame::NativeA32InputFrame &inputFrame) {
   auto &freeCamera = *nativeCandidateDispatch.DevFreeCamera;
@@ -2501,7 +2691,7 @@ void NativeA32WindowSession::UpdateDevFreeCamera(Oot3dNativeGame::NativeA32Input
   float forward = sources.DevPadLeftStick[1];
   float right = sources.DevPadLeftStick[0];
   float up = (sources.DevPadRightShoulder ? 1.0F : 0.0F) - (sources.DevPadLeftShoulder ? 1.0F : 0.0F);
-  float yaw = -sources.DevPadRightStick[0] * 120.0F * seconds;
+  float yaw = sources.DevPadRightStick[0] * 120.0F * seconds;
   float pitch = sources.DevPadRightStick[1] * 120.0F * seconds;
   float multiplier = 1.0F;
   if (keyboard) {
@@ -2512,9 +2702,12 @@ void NativeA32WindowSession::UpdateDevFreeCamera(Oot3dNativeGame::NativeA32Input
     if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) multiplier = 4.0F;
     if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) multiplier = 0.25F;
   }
-  // Right mouse button held: look (0.15 degrees per pixel).
-  if (sources.DevMouseRightHeld && !io.WantCaptureMouse) {
-    yaw -= mouseX * 0.15F;
+  // Left or right mouse button held: drag to look (0.15 degrees per pixel).
+  // Not io.WantCaptureMouse: the full-window "Main Game" ImGui surface always
+  // sets it, so looking never worked; only an open host menu or window
+  // (DevMouseLookHeld is false then) owns the mouse.
+  if (sources.DevMouseLookHeld) {
+    yaw += mouseX * 0.15F;
     pitch -= mouseY * 0.15F;
   }
   const auto clampAxis = [](float value) { return std::clamp(value, -1.0F, 1.0F); };
@@ -2525,7 +2718,6 @@ void NativeA32WindowSession::UpdateDevFreeCamera(Oot3dNativeGame::NativeA32Input
   inputFrame.Hid.TouchPressed = false;
   inputFrame.CStick = {};
 }
-#endif
 
 void NativeA32WindowSession::PublishNativeSceneView() {
   auto &process = *processStorage;

@@ -18,6 +18,10 @@ namespace Fast::Oot3d {
 
 enum class GraphicsPreset : uint8_t { Authentic, Enhanced, Toon, Custom };
 enum class WindowMode : uint8_t { Windowed, Borderless, ExclusiveFullscreen };
+// The picture's aspect ratio: the original top screen (5:3), 16:9, 21:9 (7:3)
+// or Free (the output's own ratio: the window as the user shapes it, the
+// whole screen in a fullscreen mode).
+enum class AspectRatioMode : uint8_t { Native3ds, Wide16x9, Ultrawide21x9, Free };
 enum class AntiAliasingMode : uint8_t { Off, Fxaa, Smaa1x, Msaa, Taa, Upscaler };
 enum class FrameRateMode : uint8_t {
     Original30,
@@ -360,6 +364,10 @@ struct GraphicsSettings {
     uint32_t OutputWidth = 1280;
     uint32_t OutputHeight = 720;
     uint32_t RefreshRate = 60;
+    // The picture's aspect ratio inside the output (presentation_picture.h):
+    // a fixed ratio is letterboxed and centred, Free fills the window or the
+    // screen. Host-owned, like the window and the output size.
+    AspectRatioMode Aspect = AspectRatioMode::Wide16x9;
     float InternalResolutionScale = 1.0F;
     AntiAliasingMode AntiAliasing = AntiAliasingMode::Off;
     uint8_t MsaaSamples = 1;

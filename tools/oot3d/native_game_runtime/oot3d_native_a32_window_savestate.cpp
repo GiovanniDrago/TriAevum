@@ -487,7 +487,7 @@ bool NativeA32WindowSession::LoadState(const std::filesystem::path &path,
   // (its extra-slot page included) is the whole object bank state.
   objectBankStorage->Reset();
   rainStorage->Reset();
-  uiLifecycleBridge.SetTopScreenConfig(activeTopScreenConfig);
+  PublishTopScreenUiConfig();
   widescreenProjection.TopScreenPauseDrawRouting = {};
   widescreenProjection.TopScreenPausePageRedraw = {};
   widescreenProjection.TopScreenPausePageRedrawActive = false;

@@ -79,6 +79,7 @@
 #include "fast/oot3d/perspective_fov_policy.h"
 #include "fast/oot3d/presentation_pacing_policy.h"
 #include "fast/oot3d/render_resolution_policy.h"
+#include "fast/oot3d/presentation_picture.h"
 #include "oot3d/renderer/ui_presentation_layout.h"
 #ifndef ENABLE_OOT3D_VULKAN
 #define OOT3D_TEST_DEFINED_VULKAN
@@ -164,6 +165,87 @@ TEST(Oot3dUiPresentationLayout, KeepsWidescreenCanvasIndependent) {
     EXPECT_EQ(viewport.Y, 96U);
     EXPECT_EQ(viewport.Width, 1024U);
     EXPECT_EQ(viewport.Height, 576U);
+}
+
+TEST(Oot3dPresentationPicture, FitsTheChosenRatioCentredAndFreeFillsTheOutput) {
+    using namespace Fast::Oot3d;
+    // Free: the output as it is, whatever its shape.
+    EXPECT_EQ(ResolvePresentationPicture(1000U, 700U, AspectRatioMode::Free),
+              (PresentationPicture{0U, 0U, 1000U, 700U}));
+    // 16:9 in a 16:9 output: the whole output, no bars.
+    EXPECT_EQ(ResolvePresentationPicture(1280U, 720U, AspectRatioMode::Wide16x9),
+              (PresentationPicture{0U, 0U, 1280U, 720U}));
+    // 16:9 in a taller output: letterbox, centred vertically.
+    EXPECT_EQ(ResolvePresentationPicture(1920U, 1200U, AspectRatioMode::Wide16x9),
+              (PresentationPicture{0U, 60U, 1920U, 1080U}));
+    // 16:9 in a wider output: pillarbox, centred horizontally.
+    EXPECT_EQ(ResolvePresentationPicture(3440U, 1440U, AspectRatioMode::Wide16x9),
+              (PresentationPicture{440U, 0U, 2560U, 1440U}));
+    // The original top screen (5:3) in a 16:9 output.
+    EXPECT_EQ(ResolvePresentationPicture(1280U, 720U, AspectRatioMode::Native3ds),
+              (PresentationPicture{40U, 0U, 1200U, 720U}));
+    // 21:9 (7:3) in a 16:9 output: letterbox.
+    const auto ultrawide =
+        ResolvePresentationPicture(1280U, 720U, AspectRatioMode::Ultrawide21x9);
+    EXPECT_EQ(ultrawide.Width, 1280U);
+    EXPECT_EQ(ultrawide.Height, 549U);
+    EXPECT_EQ(ultrawide.X, 0U);
+    EXPECT_EQ(ultrawide.Y, 85U);
+    // An empty output has no picture.
+    EXPECT_FALSE(ResolvePresentationPicture(0U, 720U, AspectRatioMode::Wide16x9).Valid());
+    // The picture is what the UI fit and the scene policy see: a 21:9 picture
+    // widens the scene by 7/5 over the native 5:3, a 5:3 one not at all.
+    const auto ultrawidePolicy =
+        ResolveScenePresentationPolicy(ultrawide.Width, ultrawide.Height);
+    EXPECT_EQ(ultrawidePolicy.Extension, SceneAspectExtension::Horizontal);
+    EXPECT_NEAR(ultrawidePolicy.HorizontalFovExpansion, 1.4F, 2.0e-3F);
+    const auto native = ResolvePresentationPicture(1280U, 720U, AspectRatioMode::Native3ds);
+    EXPECT_EQ(ResolveScenePresentationPolicy(native.Width, native.Height).Extension,
+              SceneAspectExtension::None);
+    // A pointer in the bars is outside the canvas; one in the picture maps
+    // as it would in a window of the picture's size.
+    const auto bars = ::Oot3d::Renderer::MapUiPresentationPoint(
+        ultrawide.Width, ultrawide.Height, 1280.0F / 3.0F, 240.0F, 640.0F,
+        10.0F - static_cast<float>(ultrawide.Y));
+    EXPECT_FALSE(bars.Inside);
+    const auto centre = ::Oot3d::Renderer::MapUiPresentationPoint(
+        ultrawide.Width, ultrawide.Height, 1280.0F / 3.0F, 240.0F, 640.0F,
+        360.0F - static_cast<float>(ultrawide.Y));
+    EXPECT_TRUE(centre.Inside);
+    EXPECT_NEAR(centre.X, 1280.0F / 6.0F, 0.5F);
+    EXPECT_NEAR(centre.Y, 120.0F, 0.5F);
+}
+
+TEST(Oot3dPresentationPicture, SnapsAWindowedOutputToTheChosenRatioOnly) {
+    using namespace Fast::Oot3d;
+    GraphicsSettings settings;
+    settings.Window = WindowMode::Windowed;
+    settings.OutputWidth = 1280U;
+    settings.OutputHeight = 720U;
+    settings.Aspect = AspectRatioMode::Ultrawide21x9;
+    EXPECT_TRUE(SnapWindowedOutputToAspect(settings));
+    EXPECT_EQ(settings.OutputWidth, 1280U);
+    EXPECT_EQ(settings.OutputHeight, 549U);
+    settings.Aspect = AspectRatioMode::Native3ds;
+    EXPECT_TRUE(SnapWindowedOutputToAspect(settings));
+    EXPECT_EQ(settings.OutputHeight, 768U);
+    settings.Aspect = AspectRatioMode::Wide16x9;
+    EXPECT_TRUE(SnapWindowedOutputToAspect(settings));
+    EXPECT_EQ(settings.OutputHeight, 720U);
+    // Already that shape: nothing to do.
+    EXPECT_FALSE(SnapWindowedOutputToAspect(settings));
+    // Free keeps the window as the user shaped it.
+    settings.OutputHeight = 700U;
+    settings.Aspect = AspectRatioMode::Free;
+    EXPECT_FALSE(SnapWindowedOutputToAspect(settings));
+    EXPECT_EQ(settings.OutputHeight, 700U);
+    // The display owns a fullscreen output's size.
+    settings.Aspect = AspectRatioMode::Wide16x9;
+    settings.Window = WindowMode::Borderless;
+    EXPECT_FALSE(SnapWindowedOutputToAspect(settings));
+    settings.Window = WindowMode::ExclusiveFullscreen;
+    EXPECT_FALSE(SnapWindowedOutputToAspect(settings));
+    EXPECT_EQ(settings.OutputHeight, 700U);
 }
 
 TEST(Oot3dPicaRasterCanvas, EachScreenContentHasItsMappingAndPlacedUiKeepsNativeFit) {

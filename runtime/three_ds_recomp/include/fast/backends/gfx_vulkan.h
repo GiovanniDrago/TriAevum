@@ -30,6 +30,8 @@
 #include "fast/oot3d/brixelizer_gi_pass.h"
 #include "fast/oot3d/brixelizer_scene.h"
 #include "fast/oot3d/graphics_settings_runtime.h"
+#include "fast/oot3d/presentation_picture.h"
+#include "fast/oot3d/render_resolution_policy.h"
 #include "fast/oot3d/screen_space_gi_provider.h"
 #include "fast/oot3d/sample_view.h"
 #include "fast/renderer3ds/pica_gi_geometry.h"
@@ -952,6 +954,16 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
         const Oot3d::PicaCompositionStageAnchor& anchor);
     void ReleaseEffectGraphImageClients();
     void ApplyInternalResolutionScale(float scale);
+    // The output the native PICA targets follow: the presentation picture of
+    // the acquired swapchain, or the whole swapchain before a frame resolved
+    // one.
+    [[nodiscard]] Oot3d::RenderExtent NativePicaOutputExtent() const noexcept {
+        return mPresentationPicture.Valid()
+            ? Oot3d::RenderExtent{mPresentationPicture.Width,
+                                  mPresentationPicture.Height}
+            : Oot3d::RenderExtent{mSwapchainExtent.width,
+                                  mSwapchainExtent.height};
+    }
     void ResetNativePicaRenderTargets(bool preserveDisplayImages = false);
     void ForgetNativePicaEffectNriTextures();
     void ApplyPendingNativePicaMemoryFills(NativePicaRenderTarget& target);
@@ -1154,6 +1166,10 @@ class GfxRenderingAPIVulkan final : public GfxRenderingAPI,
     VkSwapchainKHR mSwapchain = VK_NULL_HANDLE;
     VkFormat mSwapchainFormat = VK_FORMAT_UNDEFINED;
     VkExtent2D mSwapchainExtent{};
+    // The presentation picture inside the acquired swapchain: the aspect
+    // ratio's letterbox, centred (presentation_picture.h). Native PICA
+    // targets follow it and scanout places the display in it.
+    Oot3d::PresentationPicture mPresentationPicture{};
     VkSurfaceCapabilitiesKHR mSwapchainSurfaceCapabilities{};
     VkSurfaceFormatKHR mSwapchainSurfaceFormat{};
     std::vector<VkImage> mSwapchainImages;

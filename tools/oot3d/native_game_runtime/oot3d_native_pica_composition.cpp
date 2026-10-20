@@ -20,7 +20,7 @@ constexpr uint32_t kTemporalActorInit = 0x004615D8U;
 // Exact UI draw owners from ui_native_workflow_closure. The enclosing
 // DrawViewPass also executes scene callbacks and must NOT be classified UI.
 constexpr std::array kUiViews{
-    std::pair{0x0042B9F4U, 0x003004E0U},
+    std::pair{kOot3dGameplayHudDrawEntry, 0x003004E0U},
     std::pair{0x0041EC50U, 0x00419830U},
     // TopScreen System overlay inside the completed gameplay view.
     std::pair{0x0041EC50U, 0x0030055CU},

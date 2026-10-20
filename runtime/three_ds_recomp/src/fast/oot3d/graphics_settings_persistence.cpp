@@ -64,6 +64,12 @@ constexpr EnumNames<WindowMode> kWindowNames{
     {WindowMode::Borderless, "Borderless"},
     {WindowMode::ExclusiveFullscreen, "ExclusiveFullscreen"},
 };
+constexpr EnumNames<AspectRatioMode> kAspectNames{
+    {AspectRatioMode::Native3ds, "Native3ds"},
+    {AspectRatioMode::Wide16x9, "Wide16x9"},
+    {AspectRatioMode::Ultrawide21x9, "Ultrawide21x9"},
+    {AspectRatioMode::Free, "Free"},
+};
 constexpr EnumNames<AntiAliasingMode> kAaNames{
     {AntiAliasingMode::Off, "Off"},
     {AntiAliasingMode::Fxaa, "FXAA"},
@@ -1267,7 +1273,7 @@ std::string_view EnhancedPresetDocument() noexcept {
     }
   },
   "Camera": {
-    "ExtendedDrawDistance": false,
+    "ExtendedDrawDistance": true,
     "FovMultiplier": 1.100000023841858
   },
   "Effects": {
@@ -1544,6 +1550,7 @@ SerializeGraphicsSettings(const GraphicsSettings& settings) {
              {"Width", settings.OutputWidth},
              {"Height", settings.OutputHeight},
              {"RefreshRate", settings.RefreshRate},
+             {"Aspect", EnumName(settings.Aspect, kAspectNames)},
          }},
         {"RenderScale", settings.InternalResolutionScale},
         {"AA",
@@ -1800,6 +1807,8 @@ GraphicsSettingsLoadResult DecodeGraphicsSettings(
         ReadScalar(*output, "RefreshRate",
                    result.Value.RefreshRate,
                    "Graphics.Output.RefreshRate", result);
+        ReadEnum(*output, "Aspect", result.Value.Aspect, kAspectNames,
+                 "Graphics.Output.Aspect", result);
     }
     ReadScalar(document, "RenderScale",
                result.Value.InternalResolutionScale,

@@ -237,6 +237,7 @@ GraphicsSettings GraphicsSettingsService::KeepHostOwnedSettings(
     value.OutputWidth = current.OutputWidth;
     value.OutputHeight = current.OutputHeight;
     value.RefreshRate = current.RefreshRate;
+    value.Aspect = current.Aspect;
     value.VSync = current.VSync;
     value.TexturePacks = current.TexturePacks;
     value.Grass.Rules = current.Grass.Rules;
@@ -253,6 +254,8 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
     value.OutputWidth = std::max(320U, value.OutputWidth);
     value.OutputHeight = std::max(240U, value.OutputHeight);
     value.RefreshRate = std::clamp(value.RefreshRate, 30U, 1000U);
+    if (value.Aspect > AspectRatioMode::Free)
+        value.Aspect = AspectRatioMode::Wide16x9;
     value.InternalResolutionScale =
         std::clamp(value.InternalResolutionScale, 0.5F, 2.0F);
     value.FovMultiplier = std::clamp(value.FovMultiplier, 1.0F, 1.5F);

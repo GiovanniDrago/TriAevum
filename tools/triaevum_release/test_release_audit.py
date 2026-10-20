@@ -53,6 +53,8 @@ FILES = {
     "resources/topscreen/singlescreen-3.0/zelda_link_ext.zar": (
         "topscreen_singlescreen_asset", (SINGLESCREEN / "zelda_link_ext.zar").read_bytes()),
     "LICENSES/SingleScreen-3.0.md": ("license", b"SingleScreen 3.0 permission fixture\n"),
+    # The in-game menu's font atlases are compiled into the runtime.
+    "LICENSES/FiraSans-OFL.txt": ("license", b"SIL Open Font License fixture\n"),
     "runtime/msvcp140.dll": ("runtime_library", b"MZ C++ library fixture"),
     "runtime/vcruntime140.dll": ("runtime_library", b"MZ runtime fixture"),
     "runtime/vcruntime140_1.dll": ("runtime_library", b"MZ exception runtime fixture"),

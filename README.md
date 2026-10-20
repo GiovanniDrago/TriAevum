@@ -95,7 +95,10 @@ and is not migrated automatically.
 - Named settings profiles, audio and save states.
 - Procedural grass. A lot of grass. Possibly too much grass.
 
-Press **F1** for settings. **F2** temporarily disables the main added graphics
+Press **Esc** (or **R3** on a pad) for the in-game menu: the everyday
+settings, navigated with the D-pad or sticks, A to select, B to go back,
+LB / RB for the tabs, or with the mouse, while the game keeps running. Press **F1** for every
+setting. **F2** temporarily disables the main added graphics
 effects, then restores them without losing your configuration. Most of the
 presentation is configurable, so if my artistic decisions offend you
 personally, you can probably undo them. Effects can be expensive; adjust them
