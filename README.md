@@ -156,9 +156,9 @@ corresponding source. The release is downloaded once and verified.
 
 ```sh
 sudo pacman -S --needed base-devel cmake ninja clang llvm lld git curl python \
-  sdl2-compat sdl3 vulkan-headers vulkan-icd-loader glslang shaderc \
-  libpng zlib libzip bzip2 libvorbis libogg opus spdlog nlohmann-json \
-  tinyxml2 glew
+  python-pillow sdl2-compat sdl3 vulkan-headers vulkan-icd-loader glslang \
+  shaderc libpng zlib libzip bzip2 libvorbis libogg opus spdlog \
+  nlohmann-json tinyxml2 glew
 ```
 
 A Vulkan-capable GPU with current drivers is required (`nvidia-utils` or
@@ -192,12 +192,43 @@ Useful options:
 | `--title-source-dir PATH` | Build the title from an edited source tree (implies `--rebuild-title`). |
 | `--refresh-title-manifest` | Update title-source hashes after local edits. |
 | `--release PATH` | Use a local AppImage or an extracted release directory. |
+| `--hd-font PATH` | Generate the built-in HD dialogue font from this TTF/OTF (forces regeneration). |
+| `--no-hd-font` | Remove the built-in HD pack and use the native dialogue font. |
 | `--no-build` / `--no-launch` | Reuse the existing build / stop before launching. |
 | `--skip-source` | Do not extract/index the translated title source. |
 | `-j N` | Build parallelism. |
 
 Environment variables: `TRIAEVUM_BUILD_DIR`, `TRIAEVUM_DEV_ROOT`,
 `TRIAEVUM_BUILD_JOBS`, `TRIAEVUM_RELEASE_TAG`.
+
+### Fullscreen, resolution and HD dialogue font
+
+- **F11** toggles fullscreen.
+- **F1 → Display** selects Windowed / Borderless / Exclusive fullscreen,
+  the requested output resolution (720p through 4K, or custom), the internal
+  render scale (0.5x–2.0x) and VSync.
+- **F1 → Antialiasing and upscaling** offers FXAA, SMAA, MSAA, TAA and the
+  NRI upscaler providers (NIS, FSR, XeSS, DLSS). On an RTX 3080 Ti, 1440p/4K
+  with DLSS Quality or 1440p native with TAA/SMAA is a good quality target.
+- F1 persists the requested output size. The helper mirrors it into the launch
+  profile before every start, so it survives a restart.
+
+The helper also generates a **built-in HD dialogue font** by default. It renders
+the native `ltn16.qbf` character set from a desktop TTF at 4x coverage density
+(the default is Liberation Sans) while preserving every native character code,
+metric and glyph alias. The pack is written beside the TopScreen textures:
+
+```text
+~/.local/share/TriAevum-dev/data/mods/topscreen/<key>/font_coverage.zip
+```
+
+The runtime applies it when the output height is at least 480p. This replaces
+the pixelated dialogue/message font (`ltn16.qbf`). The small system font
+(`sys8.qbf`) is not an A4 coverage font and stays native. The default typeface
+is Liberation Sans; use `--hd-font /path/to/font.ttf` to choose another. Use
+`--no-hd-font` to remove the built-in pack and return to the native font; a
+`font_coverage.zip` imported from a user-provided SingleScreen archive is left
+untouched.
 
 ### Browsing the translated title source
 

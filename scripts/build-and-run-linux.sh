@@ -21,6 +21,8 @@ rebuild_title=0
 refresh_title_manifest=0
 skip_source=0
 title_source_dir=""
+hd_font_path=""
+do_hd_font=1
 jobs="${TRIAEVUM_BUILD_JOBS:-$(nproc)}"
 
 default_release_tag="v0.8.0-beta.1.1"
@@ -41,6 +43,9 @@ Options:
   --no-build                Reuse the existing runtime build.
   --no-launch               Prepare everything, then print the launch command.
   --skip-source             Do not extract/index the translated title source.
+  --hd-font PATH            Build the built-in HD dialogue font from this TTF/OTF
+                            (forces regeneration of font_coverage.zip).
+  --no-hd-font              Do not generate the built-in HD dialogue font.
   -j, --jobs N              Build parallelism (default: nproc).
   -h, --help                Show this help.
 
@@ -84,6 +89,11 @@ while (($#)); do
             do_launch=0; shift ;;
         --skip-source)
             skip_source=1; shift ;;
+        --hd-font)
+            (($# >= 2)) || die "--hd-font needs a path"
+            hd_font_path="$2"; shift 2 ;;
+        --no-hd-font)
+            do_hd_font=0; shift ;;
         -j|--jobs)
             (($# >= 2)) || die "$1 needs a number"
             jobs="$2"; shift 2 ;;
@@ -163,11 +173,14 @@ fi
 
 tag="${release_tag:-}"
 if [[ -z "$tag" ]]; then
-    tag="$(git -C "$root" describe --tags --exact-match HEAD 2>/dev/null || true)"
+    tag="$(git -C "$root" describe --tags --abbrev=0 2>/dev/null || true)"
 fi
 if [[ -z "$tag" ]]; then
     tag="$default_release_tag"
-    printf 'warning: HEAD is not tagged; using official release %s\n' "$tag" >&2
+fi
+if ! git -C "$root" describe --tags --exact-match HEAD >/dev/null 2>&1; then
+    printf 'warning: HEAD is not the exact %s tag; using its official release title/source\n' "$tag" >&2
+    printf '         pass --release with a matching package, or use --rebuild-title for local changes\n' >&2
 fi
 
 extract_release() {
@@ -291,6 +304,31 @@ if ! "$package/TriAevumForge" --install-worker --rom "$rom" \
         python3 "$root/scripts/linux/forge_progress.py"; then
     die "installation failed; see $install_log"
 fi
+
+if ((do_hd_font)); then
+    hd_args=(
+        --data-root "$dev_root/data"
+        --launch-profile "$package/TriAevum.launch.json"
+    )
+    if [[ -n "$hd_font_path" ]]; then
+        hd_args+=(--font "$hd_font_path")
+    fi
+    if ! python3 "$root/scripts/linux/prepare_hd_font.py" "${hd_args[@]}"; then
+        printf 'warning: the built-in HD font pack was not generated; the native font remains active\n' >&2
+    fi
+else
+    python3 "$root/scripts/linux/prepare_hd_font.py" --remove \
+        --data-root "$dev_root/data" \
+        --launch-profile "$package/TriAevum.launch.json" || \
+        printf 'warning: could not remove the built-in HD font pack\n' >&2
+fi
+
+# F1 stores the requested output resolution in the config.  The release
+# installer writes a fixed profile, so mirror the persisted value before launch.
+python3 "$root/scripts/linux/sync_launch_resolution.py" \
+    --config "$dev_root/data/config/TriAevum.json" \
+    --launch-profile "$package/TriAevum.launch.json" || \
+    printf 'warning: could not sync the launch resolution\n' >&2
 
 launch_command=("$package/TriAevum" --launch-profile "$package/TriAevum.launch.json")
 if ((do_launch)); then
