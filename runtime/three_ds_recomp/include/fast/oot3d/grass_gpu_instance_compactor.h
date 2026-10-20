@@ -10,6 +10,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -44,6 +45,8 @@ struct GrassGpuInstanceCompactionRequest {
     // GPU and the compaction dispatch is indirect.
     GrassGpuSelector* Selector = nullptr;
     GrassGpuSelectionRequest Selection{};
+    // Optional GPU timeline mark (TRIAEVUM_GPU_TIMELINE) between the stages.
+    std::function<void(const char*)> ProfileMark;
 };
 
 // Words per root bend: the interaction bend and the bend the previous frame

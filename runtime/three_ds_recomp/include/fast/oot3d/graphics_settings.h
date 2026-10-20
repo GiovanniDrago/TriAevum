@@ -239,6 +239,15 @@ struct InteractiveGrassSettings {
     float FarTuftDensity = 1.0F;
     float FarTuftSpread = 1.0F;
     float SegmentLodSoftness = 0.5F;
+    // Distant field (grass_distant_field.h): beyond the start distance the
+    // blades stop and the accepted surfaces draw once as a grass slab up to
+    // the draw distance. The blades fade out and the field fades in over the
+    // last blend fraction of the start distance.
+    bool DistantFieldEnabled = true;
+    float DistantFieldStartDistance = 700.0F;
+    float DistantFieldBlendFraction = 0.25F;
+    float DistantFieldHeightScale = 1.0F;
+    uint8_t DistantFieldSteps = 6U;
     GrassGenerationSettings Generation;
     GrassAppearanceSettings Appearance;
     float WindDirectionDegrees = 0.0F;

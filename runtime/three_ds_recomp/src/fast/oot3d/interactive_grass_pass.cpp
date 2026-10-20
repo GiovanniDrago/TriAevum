@@ -14,6 +14,7 @@
 #include "fast/oot3d/grass_blade_geometry.h"
 #include "fast/oot3d/grass_blade_shape.h"
 #include "fast/oot3d/grass_distant_tuft.h"
+#include "fast/oot3d/grass_distant_field.h"
 #include "fast/oot3d/grass_indexed_topology.h"
 #include "fast/oot3d/grass_selection_cache.h"
 #include "fast/oot3d/grass_gpu_memory.h"
@@ -84,7 +85,16 @@ struct GrassPreparedPlacement {
     GrassFrustumRadiusScale FrustumRadiusScale{};
     std::array<float, 3> Eye{};
     uint32_t StaticBaseIndex = 0U;
+    // What the distant field of this placement is built from.
+    std::shared_ptr<const std::vector<GrassSourceVertex>> Vertices;
+    std::array<float, 16> ModelToWorld{};
+    bool TransformBakedIntoVertices = true;
+    float NormalOffset = 0.0F;
+    double CandidateScale = 1.0;
 };
+
+// Grid edge of the distant field (world units, GrassDistantFieldInput).
+inline constexpr float kGrassFieldCellLength = 25.0F;
 
 inline constexpr size_t kGrassLodBinCount =
     static_cast<size_t>(kMaximumGrassBladeSegments) * 2U + 1U;
@@ -137,6 +147,16 @@ bool GrassGpuSelectionVerifyEnabled() {
         return value != nullptr && value[0] == '1';
     }();
     return enabled;
+}
+
+// Diagnostic: TRIAEVUM_GRASS_FIELD_DEBUG=1 draws the distant field's slab top
+// coloured by coverage, blade height and blend ramp instead of grass.
+uint32_t GrassFieldDebugMode() {
+    static const uint32_t mode = [] {
+        const char* value = std::getenv("TRIAEVUM_GRASS_FIELD_DEBUG");
+        return value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) & 0xffU : 0U;
+    }();
+    return mode;
 }
 
 // TRIAEVUM_GRASS_RESIDENCY=0 uploads the whole scene's anchors (A/B only).
@@ -599,6 +619,9 @@ struct InteractiveGrassPass::Impl {
     // (dynamic rendering only; grass leaves the albedo below it).
     // [0..2] explicit PICA depth, [3..5] the same with rasterized depth.
     std::array<VkPipeline, 6> Pipelines{};
+    // Distant field slab: same attachment/depth variants as the blades.
+    VkPipelineLayout FieldPipelineLayout = VK_NULL_HANDLE;
+    std::array<VkPipeline, 6> FieldPipelines{};
     struct BufferSlot {
         VkBuffer Buffer = VK_NULL_HANDLE;
         VkDeviceMemory Memory = VK_NULL_HANDLE;
@@ -765,6 +788,141 @@ struct InteractiveGrassPass::Impl {
     VkBuffer PreparedRootAnchors = VK_NULL_HANDLE;
     bool Prepared = false;
     std::string Reason;
+
+    // Distant field: one immutable field per placement version, built on its
+    // own thread; the active placements' fields concatenated for one upload.
+    struct FieldEntry {
+        std::shared_future<std::shared_ptr<const GrassDistantField>> Build;
+        std::shared_ptr<const GrassDistantField> Field;
+        bool Failed = false;
+        uint64_t LastFrame = 0;
+    };
+    std::unordered_map<uint64_t, FieldEntry> Fields;
+    std::vector<std::shared_ptr<const GrassDistantField>> ActiveFields;
+    std::vector<std::array<uint32_t, 2>> ActiveFieldRanges; // first triangle, triangle count
+    std::vector<GrassFieldTriangle> FieldTriangles;
+    std::vector<GrassFieldGridEntry> FieldGrid;
+    uint64_t FieldRevision = 0;
+    std::array<BufferSlot, 2> FieldTriangleBuffers{};
+    std::array<BufferSlot, 2> FieldGridBuffers{};
+    std::array<uint64_t, 2> FieldUploadedRevision{};
+    // Per prepared placement (StaticSources order): its first coarse shadow point.
+    std::vector<uint32_t> ShadowPointBases;
+    struct FieldDraw {
+        uint32_t FirstVertex = 0;
+        uint32_t VertexCount = 0;
+        GrassFieldPushConstants Push{};
+        bool RasterDepth = false;
+    };
+    std::vector<FieldDraw> FieldDraws;
+    bool FieldPrepared = false;
+    uint64_t FieldTriangleCount = 0;
+
+    static uint64_t FieldKey(const GrassPreparedPlacement& placement, const InteractiveGrassSettings& settings) {
+        uint64_t key = kGrassIdentityFnvOffset;
+        HashGrassIdentityValue(key, placement.World->Identity);
+        HashGrassIdentityValue(key, placement.World->ContentVersion);
+        HashGrassIdentityValue(key, placement.World->Anchors.size());
+        HashGrassIdentityValue(key, placement.CandidateScale);
+        HashGrassIdentityValue(key, std::bit_cast<uint32_t>(placement.NormalOffset));
+        HashGrassIdentityValue(key, std::bit_cast<uint32_t>(settings.Generation.InstancesPerSquareMeter));
+        HashGrassIdentityValue(key, std::bit_cast<uint32_t>(settings.Generation.MinimumSpacing));
+        HashGrassIdentityValue(key, std::bit_cast<uint32_t>(kGrassFieldCellLength));
+        return key;
+    }
+
+    // Every prepared placement's field, building those that are missing.
+    // True once all of them exist; until then the blades keep the whole
+    // draw distance, so the field never opens a hole while it builds.
+    bool ResolveFields(const std::vector<GrassPreparedPlacement>& placements, const InteractiveGrassSettings& settings,
+                       uint64_t frameId) {
+        bool ready = true;
+        std::vector<std::shared_ptr<const GrassDistantField>> active;
+        active.reserve(placements.size());
+        for (const auto& placement : placements) {
+            auto& entry = Fields[FieldKey(placement, settings)];
+            entry.LastFrame = frameId;
+            if (entry.Failed || !placement.Vertices) {
+                ready = false;
+                continue;
+            }
+            if (!entry.Field) {
+                if (!entry.Build.valid()) {
+                    GrassDistantFieldInput input;
+                    input.Placement = placement.World;
+                    input.Vertices = placement.Vertices;
+                    input.ModelToWorld = placement.ModelToWorld;
+                    input.TransformBakedIntoVertices = placement.TransformBakedIntoVertices;
+                    input.NormalOffset = placement.NormalOffset;
+                    input.InstancesPerSquareMeter = settings.Generation.InstancesPerSquareMeter;
+                    input.MinimumSpacing = settings.Generation.MinimumSpacing;
+                    input.CandidateScale = placement.CandidateScale;
+                    input.CellLength = kGrassFieldCellLength;
+                    entry.Build = std::async(std::launch::async, [input] {
+                        return std::make_shared<const GrassDistantField>(BuildGrassDistantField(input));
+                    }).share();
+                }
+                if (entry.Build.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                    ready = false;
+                    continue;
+                }
+                try {
+                    entry.Field = entry.Build.get();
+                } catch (const std::exception& exception) {
+                    entry.Failed = true;
+                    std::fprintf(stderr, "[grass-field] build failed: %s\n", exception.what());
+                    ready = false;
+                    continue;
+                }
+                if (GrassDiagnosticsEnabled() || GrassPlacementAuditEnabled()) {
+                    double coverage = 0.0, height = 0.0;
+                    size_t dense = 0U;
+                    for (const auto& value : entry.Field->Grid) {
+                        coverage += GrassFieldCoverage(value);
+                        height += GrassFieldHeightFraction(value);
+                        dense += GrassFieldCoverage(value) >= 0.5F;
+                    }
+                    const double entries = std::max<double>(1.0, double(entry.Field->Grid.size()));
+                    std::fprintf(stderr, "[grass-field] built identity=%llx triangles=%zu grid=%zu roots=%llu "
+                        "rejected=%llu slab=%.2f scale=%.3f mean_coverage=%.3f dense=%.3f mean_height=%.3f ms=%.1f\n",
+                        static_cast<unsigned long long>(entry.Field->Identity), entry.Field->Triangles.size(),
+                        entry.Field->Grid.size(), static_cast<unsigned long long>(entry.Field->Roots),
+                        static_cast<unsigned long long>(entry.Field->RejectedRoots), entry.Field->SlabHeight,
+                        placement.CandidateScale, coverage / entries, dense / entries, height / entries,
+                        entry.Field->BuildMilliseconds);
+                }
+            }
+            active.push_back(entry.Field);
+        }
+        // Forget fields unused for a while; a field still building stays (its
+        // future would block on destruction).
+        if (Fields.size() > 64U)
+            std::erase_if(Fields, [frameId](const auto& item) {
+                const auto& entry = item.second;
+                return entry.LastFrame + 600U < frameId &&
+                    (!entry.Build.valid() || entry.Field || entry.Failed);
+            });
+        if (!ready) return false;
+        if (active != ActiveFields) {
+            ActiveFields = std::move(active);
+            ActiveFieldRanges.clear();
+            FieldTriangles.clear();
+            FieldGrid.clear();
+            for (const auto& field : ActiveFields) {
+                const auto gridBase = static_cast<uint32_t>(FieldGrid.size());
+                ActiveFieldRanges.push_back({static_cast<uint32_t>(FieldTriangles.size()),
+                                             static_cast<uint32_t>(field->Triangles.size())});
+                for (auto triangle : field->Triangles) {
+                    triangle.Atlas[3] += gridBase;
+                    FieldTriangles.push_back(triangle);
+                }
+                FieldGrid.insert(FieldGrid.end(), field->Grid.begin(), field->Grid.end());
+            }
+            FieldTriangleCount = FieldTriangles.size();
+            ++FieldRevision;
+        }
+        return !FieldTriangles.empty();
+    }
     VkDescriptorSet AcquireDescriptorSet(size_t slotIndex, uint64_t frameId) {
         auto& frame = DescriptorFrames[slotIndex];
         if (frame.FrameId != frameId) {
@@ -777,7 +935,7 @@ struct InteractiveGrassPass::Impl {
         auto& invocation = frame.Additional[index];
         if (invocation.Set == VK_NULL_HANDLE) {
             const std::array<VkDescriptorPoolSize, 2> sizes{{
-                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}}};
+                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 11}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}}};
             VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
             pool.maxSets = 1; pool.poolSizeCount = static_cast<uint32_t>(sizes.size()); pool.pPoolSizes = sizes.data();
             if (vkCreateDescriptorPool(Device, &pool, nullptr, &invocation.Pool) != VK_SUCCESS)
@@ -1192,7 +1350,8 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                 shaders, device, rasterDepthSource.c_str(), Renderer::SpirvStage::Fragment,
                 "interactive_grass_instrumented_raster_depth.frag",
                 "GRASS_AUXILIARY_OUTPUTS", "1");
-            const std::array<VkDescriptorSetLayoutBinding, 10> environmentBindings{{
+            // 10/11: the distant field's triangles and grid (field pipelines only).
+            const std::array<VkDescriptorSetLayoutBinding, 12> environmentBindings{{
                 {0U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
                 {1U, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
                 {2U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
@@ -1202,7 +1361,9 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                 {6U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
                 {7U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
                 {8U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
-                {9U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr}}};
+                {9U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+                {10U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                {11U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}}};
             VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo{
                 VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
             descriptorLayoutInfo.bindingCount = static_cast<uint32_t>(environmentBindings.size());
@@ -1214,7 +1375,7 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                     "cannot create interactive grass descriptor layout");
             }
             const std::array<VkDescriptorPoolSize, 2> poolSizes{{
-                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 18}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}}};
+                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 22}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}}};
             VkDescriptorPoolCreateInfo poolInfo{
                 VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
             poolInfo.maxSets =
@@ -1382,6 +1543,58 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                         "cannot create interactive grass pipeline");
                 }
             }
+            // Distant field: the blades' raster/blend state with its own
+            // program and push range. Without it the blades keep their whole
+            // draw distance.
+            std::array<VkShaderModule, 5> fieldModules{};
+            try {
+                const VkPushConstantRange fieldPush{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                                    sizeof(GrassFieldPushConstants)};
+                VkPipelineLayoutCreateInfo fieldLayout = layoutInfo;
+                fieldLayout.pPushConstantRanges = &fieldPush;
+                if (vkCreatePipelineLayout(device, &fieldLayout, nullptr, &mImpl->FieldPipelineLayout) != VK_SUCCESS)
+                    throw std::runtime_error("cannot create distant field pipeline layout");
+                const auto fieldVertexSource = BuildGrassFieldVertexShader();
+                const auto fieldFragmentSource = BuildGrassFieldFragmentShader();
+                const auto fieldRasterSource = BuildGrassFieldFragmentShader(true);
+                fieldModules[0] = Compile(shaders, device, fieldVertexSource.c_str(), Renderer::SpirvStage::Vertex,
+                                          "interactive_grass_field.vert");
+                fieldModules[1] = Compile(shaders, device, fieldFragmentSource.c_str(), Renderer::SpirvStage::Fragment,
+                                          "interactive_grass_field_canonical.frag", "GRASS_AUXILIARY_OUTPUTS", "0");
+                fieldModules[2] = Compile(shaders, device, fieldFragmentSource.c_str(), Renderer::SpirvStage::Fragment,
+                                          "interactive_grass_field_instrumented.frag", "GRASS_AUXILIARY_OUTPUTS", "1");
+                fieldModules[3] = Compile(shaders, device, fieldRasterSource.c_str(), Renderer::SpirvStage::Fragment,
+                                          "interactive_grass_field_canonical_raster_depth.frag",
+                                          "GRASS_AUXILIARY_OUTPUTS", "0");
+                fieldModules[4] = Compile(shaders, device, fieldRasterSource.c_str(), Renderer::SpirvStage::Fragment,
+                                          "interactive_grass_field_instrumented_raster_depth.frag",
+                                          "GRASS_AUXILIARY_OUTPUTS", "1");
+                stages[0].module = fieldModules[0];
+                pipeline.layout = mImpl->FieldPipelineLayout;
+                for (size_t slot = 0U; slot < mImpl->FieldPipelines.size(); ++slot) {
+                    const size_t index = slot % 3U;
+                    const bool rasterDepth = slot >= 3U;
+                    if (index == 2U && !dynamicRendering) continue;
+                    stages[1].module = fieldModules[1U + std::min<size_t>(index, 1U) + (rasterDepth ? 2U : 0U)];
+                    blend.attachmentCount = attachmentCounts[index];
+                    if (dynamicRendering) rendering.colorAttachmentCount = attachmentCounts[index];
+                    else pipeline.renderPass = renderPasses[index];
+                    if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipeline, nullptr,
+                                                  &mImpl->FieldPipelines[slot]) != VK_SUCCESS)
+                        throw std::runtime_error("cannot create distant field pipeline");
+                }
+            } catch (const std::exception& exception) {
+                for (auto& fieldPipeline : mImpl->FieldPipelines) {
+                    if (fieldPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, fieldPipeline, nullptr);
+                    fieldPipeline = VK_NULL_HANDLE;
+                }
+                if (mImpl->FieldPipelineLayout != VK_NULL_HANDLE)
+                    vkDestroyPipelineLayout(device, mImpl->FieldPipelineLayout, nullptr);
+                mImpl->FieldPipelineLayout = VK_NULL_HANDLE;
+                std::fprintf(stderr, "[grass] distant field unavailable: %s\n", exception.what());
+            }
+            for (const auto module : fieldModules)
+                if (module != VK_NULL_HANDLE) vkDestroyShaderModule(device, module, nullptr);
         } catch (...) {
             for (const auto fragment : fragments) {
                 if (fragment != VK_NULL_HANDLE) {
@@ -1726,6 +1939,11 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             telemetry.MaximumClusterMembers = std::max(telemetry.MaximumClusterMembers, result.Placement->Midrange.MaximumMemberCount);
             telemetry.CapacityLimitedRanges += result.Placement->Midrange.CapacityLimitedRanges;
             preparedPlacements[i].World = std::move(result.Placement);
+            preparedPlacements[i].Vertices = placementRequests[i].Vertices;
+            preparedPlacements[i].ModelToWorld = placementRequests[i].ModelToWorld;
+            preparedPlacements[i].TransformBakedIntoVertices = placementRequests[i].TransformBakedIntoVertices;
+            preparedPlacements[i].NormalOffset = placementRequests[i].NormalOffset;
+            preparedPlacements[i].CandidateScale = result.CandidateScale;
         }
         std::erase_if(preparedPlacements, [](const auto& placement) { return placement.World == nullptr; });
 
@@ -1783,7 +2001,9 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 mImpl->ShadowReferences.reserve(references);
                 mImpl->ShadowSurfaces.reserve(surfaces);
             }
+            mImpl->ShadowPointBases.clear();
             for (const auto& prepared : preparedPlacements) {
+                mImpl->ShadowPointBases.push_back(static_cast<uint32_t>(mImpl->ShadowPoints.size()));
                 if (receiveShadows) {
                     if (!GrassPlacementHasShadowGrid(*prepared.World))
                         throw std::runtime_error("grass shadow grid does not cover the immutable placement");
@@ -1820,8 +2040,23 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                     mImpl->ActivePlacements.size(), mImpl->StaticAnchorCount, mImpl->ShadowPoints.size());
         }
 
-        const float drawDistanceSquared = settings.DrawDistance * settings.DrawDistance;
-        const auto lodPolicy = BuildGrassLodPolicy(settings);
+        // Distant field: once every placement has its field, the blades end at
+        // the field start and fade out (their draw fade) over the blend band
+        // the field fades in over. Selection, residency and the visible budget
+        // then only ever see the near band.
+        mImpl->FieldPrepared = false;
+        const float fieldStart = std::min(settings.DistantFieldStartDistance, settings.DrawDistance);
+        const bool fieldActive = settings.DistantFieldEnabled && mImpl->FieldPipelines[0] != VK_NULL_HANDLE &&
+            fieldStart < settings.DrawDistance && mImpl->ResolveFields(preparedPlacements, settings, frameId);
+        const float bladeDrawDistance = fieldActive ? fieldStart : settings.DrawDistance;
+        const float drawDistanceSquared = bladeDrawDistance * bladeDrawDistance;
+        auto lodPolicy = BuildGrassLodPolicy(settings);
+        lodPolicy.DrawDistance = bladeDrawDistance;
+        if (fieldActive)
+            for (auto& prepared : preparedPlacements) {
+                prepared.Environment.DistanceLod[0] = bladeDrawDistance;
+                prepared.Environment.TuftStyle[2] = settings.DistantFieldBlendFraction;
+            }
         const GrassLodEvaluator lodEvaluator(lodPolicy);
         const float bladeRadiusScale = GrassBladeRadiusScale(
             settings.Appearance.BladeCurvature,
@@ -2400,9 +2635,15 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                 "sampled_contacts=%zu max_bend=%.4f\n",
                 static_cast<unsigned long long>(frameId), actors.size(), samples, boxPairs, contacts, maxBend);
         }
-        if (instanceCount == 0U || batches.empty()) {
+        // With the distant field the near band may hold no blade at all (a
+        // ledge over a distant meadow): the field still draws, the blade
+        // buffers keep one unused root so every descriptor stays valid.
+        const bool bladesVisible = instanceCount != 0U && !batches.empty();
+        if (!bladesVisible && !fieldActive) {
             return finish(GrassRenderStatus::Culled, false);
         }
+        if (!bladesVisible) batches.clear();
+        const uint32_t bufferInstances = std::max(instanceCount, 1U);
         GrassGpuSelectionRequest selectionRequest;
         if (gpuSelection) {
             selectionRequest.Sources = gpuSources;
@@ -2427,7 +2668,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             ? GrassStaticAnchorSegments{residentSegment, residency->Anchors.size()}
             : GrassStaticAnchorSegments{mImpl->StaticSegments, mImpl->StaticAnchorCount};
         const uint64_t uploadedRevision = residency ? mImpl->ResidencyUploadRevision : mImpl->StaticRevision;
-        if (mImpl->GpuCompactorAvailable && !mImpl->GpuSuspendedForMemory) {
+        if (bladesVisible && mImpl->GpuCompactorAvailable && !mImpl->GpuSuspendedForMemory) {
             gpuCompacted = mImpl->InstanceCompactor.Compact(
                 {
                     commandBuffer,
@@ -2443,6 +2684,9 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
                     !temporalMotion,
                     gpuSelection ? &mImpl->GpuSelector : nullptr,
                     selectionRequest,
+                    profiler ? std::function<void(const char*)>([profiler, frameSlot, commandBuffer](const char* label) {
+                        profiler->Mark(frameSlot, label, commandBuffer);
+                    }) : std::function<void(const char*)>{},
                 },
                 compaction);
             if (!gpuCompacted || compaction.StaticAnchorBuffer == VK_NULL_HANDLE ||
@@ -2473,8 +2717,8 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
         uint64_t dynamicUploadedBytes = 0U;
         uint64_t staticUploadedBytes = 0U;
         // Root i draws anchor rootIndices[i] of rootAnchors, bent by rootBends[i].
-        const VkDeviceSize rootIndexBytes = VkDeviceSize(instanceCount) * sizeof(uint32_t);
-        const VkDeviceSize rootBendBytes = VkDeviceSize(instanceCount) * kGrassRootBendWords * sizeof(uint32_t);
+        const VkDeviceSize rootIndexBytes = VkDeviceSize(bufferInstances) * sizeof(uint32_t);
+        const VkDeviceSize rootBendBytes = VkDeviceSize(bufferInstances) * kGrassRootBendWords * sizeof(uint32_t);
         VkDescriptorBufferInfo rootAnchors{}, rootBends{}, rootIndices{};
         if (gpuCompacted) {
             rootAnchors = {compaction.StaticAnchorBuffer, 0, VK_WHOLE_SIZE};
@@ -2483,7 +2727,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             dynamicUploadedBytes = compaction.DynamicUploadedBytes;
             staticUploadedBytes = compaction.StaticUploadedBytes;
         } else {
-            const VkDeviceSize anchorBytes = VkDeviceSize(instanceCount) * sizeof(GrassWorldAnchor);
+            const VkDeviceSize anchorBytes = VkDeviceSize(bufferInstances) * sizeof(GrassWorldAnchor);
             auto& anchorBuffer = mImpl->CpuRootAnchors[slotIndex];
             auto& bendBuffer = mImpl->CpuRootBends[slotIndex];
             auto& indexBuffer = mImpl->CpuRootIndices[slotIndex];
@@ -2558,7 +2802,7 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             shadowBuffers[0] = grid.Visibility;
             shadowBuffers[1] = grid.References;
             shadowBuffers[3] = grid.Patches;
-            const VkDeviceSize visibleBytes = VkDeviceSize(instanceCount) * sizeof(uint32_t);
+            const VkDeviceSize visibleBytes = VkDeviceSize(bufferInstances) * sizeof(uint32_t);
             staticUploadedBytes += grid.StaticUploadedBytes;
             dynamicUploadedBytes += grid.DynamicUploadedBytes;
             if (gpuCompacted) {
@@ -2639,7 +2883,57 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             else for (uint32_t group = 0; group < batch.InstanceCount; ++group)
                 mImpl->LastMotionBlades += mImpl->DrawGroups[batch.FirstInstance + group][1];
         }
-        telemetry.DrawCalls = static_cast<uint32_t>(batches.size());
+        mImpl->FieldDraws.clear();
+        if (fieldActive) {
+            // Immutable per field revision; each frame slot keeps its own copy.
+            auto& triangleBuffer = mImpl->FieldTriangleBuffers[slotIndex];
+            auto& gridBuffer = mImpl->FieldGridBuffers[slotIndex];
+            const VkDeviceSize triangleBytes = mImpl->FieldTriangles.size() * sizeof(GrassFieldTriangle);
+            const VkDeviceSize gridBytes = std::max<size_t>(1U, mImpl->FieldGrid.size()) * sizeof(GrassFieldGridEntry);
+            if (mImpl->FieldUploadedRevision[slotIndex] != mImpl->FieldRevision || triangleBuffer.Buffer == VK_NULL_HANDLE) {
+                mImpl->EnsureBuffer(triangleBuffer, triangleBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 4096U);
+                mImpl->EnsureBuffer(gridBuffer, gridBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 4096U);
+                std::memcpy(triangleBuffer.Mapped, mImpl->FieldTriangles.data(), static_cast<size_t>(triangleBytes));
+                if (!mImpl->FieldGrid.empty())
+                    std::memcpy(gridBuffer.Mapped, mImpl->FieldGrid.data(),
+                                mImpl->FieldGrid.size() * sizeof(GrassFieldGridEntry));
+                mImpl->FieldUploadedRevision[slotIndex] = mImpl->FieldRevision;
+                staticUploadedBytes += static_cast<uint64_t>(triangleBytes + gridBytes);
+            }
+            const std::array<VkDescriptorBufferInfo, 2> fieldBuffers{{
+                {triangleBuffer.Buffer, 0, triangleBytes}, {gridBuffer.Buffer, 0, gridBytes}}};
+            for (uint32_t index = 0; index < fieldBuffers.size(); ++index) {
+                VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                write.dstSet = descriptorSet; write.dstBinding = 10U + index;
+                write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; write.descriptorCount = 1;
+                write.pBufferInfo = &fieldBuffers[index];
+                vkUpdateDescriptorSets(mImpl->Device, 1, &write, 0, nullptr);
+            }
+            const float blendStart = bladeDrawDistance * (1.0F - settings.DistantFieldBlendFraction);
+            const float cell = 100.0F / std::sqrt(std::max(settings.Generation.InstancesPerSquareMeter, 1.0F));
+            for (uint32_t placementIndex = 0; placementIndex < preparedPlacements.size(); ++placementIndex) {
+                const auto& range = mImpl->ActiveFieldRanges[placementIndex];
+                if (range[1] == 0U) continue;
+                const auto& prepared = preparedPlacements[placementIndex];
+                Impl::FieldDraw draw;
+                draw.FirstVertex = range[0] * 3U;
+                draw.VertexCount = range[1] * 3U;
+                draw.Push.PositionToClip = prepared.Push.PositionToClip;
+                draw.Push.JitterNdc = {prepared.Push.JitterNdc[0], prepared.Push.JitterNdc[1], cell,
+                    mImpl->ActiveFields[placementIndex]->SlabHeight * settings.DistantFieldHeightScale};
+                draw.Push.DepthState = prepared.Push.DepthState;
+                draw.Push.Flags = {prepared.Push.Flags[0], settings.DistantFieldSteps | (GrassFieldDebugMode() << 8U),
+                    receiveShadows && placementIndex < mImpl->ShadowPointBases.size()
+                        ? mImpl->ShadowPointBases[placementIndex] : 0U,
+                    placementIndex};
+                draw.Push.Field = {blendStart, bladeDrawDistance, settings.DrawDistance, settings.DrawFadeFraction};
+                draw.RasterDepth = GrassDepthIsRasterDepth(prepared.Push);
+                mImpl->FieldDraws.push_back(draw);
+            }
+            mImpl->FieldPrepared = !mImpl->FieldDraws.empty();
+            telemetry.DrawCalls += static_cast<uint32_t>(mImpl->FieldDraws.size());
+        }
+        telemetry.DrawCalls += static_cast<uint32_t>(batches.size());
         telemetry.ClusterDrawInstances = static_cast<uint32_t>(mImpl->DrawGroups.size());
         for (const auto& group : mImpl->DrawGroups) telemetry.ClusterRepresentedBlades += group[1];
         telemetry.UploadedBytes = static_cast<uint64_t>(dynamicUploadedBytes + staticUploadedBytes + environmentBytes + groupBytes);
@@ -2727,6 +3021,45 @@ bool InteractiveGrassPass::DrawPrepared(
     return true;
 }
 
+bool InteractiveGrassPass::DrawPreparedField(VkCommandBuffer commandBuffer, uint32_t width, uint32_t height,
+                                             const EffectGeometryProviderPlan& providerPlan,
+                                             const PicaAttachmentRequirements& attachments) {
+    const bool prepared = mImpl->FieldPrepared;
+    mImpl->FieldPrepared = false;
+    const size_t pipelineIndex = attachments.NativeColorOnly() ? 0U
+        : attachments.Requires(PicaAuxiliaryOutput::DiffuseAlbedoGuide) ? 2U : 1U;
+    const VkPipeline pipeline = mImpl->FieldPipelines[pipelineIndex];
+    const VkPipeline rasterDepthPipeline = mImpl->FieldPipelines[pipelineIndex + 3U];
+    if (!prepared || !providerPlan.Valid() || providerPlan.Stage() != EffectStage::BeforeTransparent ||
+        !providerPlan.ProducesExtensionGeometry() || !providerPlan.ExportsExtensionGeometry() ||
+        pipeline == VK_NULL_HANDLE || mImpl->PreparedDescriptorSet == VK_NULL_HANDLE ||
+        commandBuffer == VK_NULL_HANDLE)
+        return false;
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, mImpl->FieldPipelineLayout, 0U, 1U,
+                            &mImpl->PreparedDescriptorSet, 0U, nullptr);
+    const VkViewport viewport{0.0F, 0.0F, static_cast<float>(width), static_cast<float>(height), 0.0F, 1.0F};
+    const VkRect2D scissor{{0, 0}, {width, height}};
+    vkCmdSetViewport(commandBuffer, 0U, 1U, &viewport);
+    vkCmdSetScissor(commandBuffer, 0U, 1U, &scissor);
+    VkPipeline bound = pipeline;
+    for (const auto& draw : mImpl->FieldDraws) {
+        const VkPipeline wanted = draw.RasterDepth && rasterDepthPipeline != VK_NULL_HANDLE ? rasterDepthPipeline
+                                                                                            : pipeline;
+        if (wanted != bound) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wanted);
+            bound = wanted;
+        }
+        vkCmdPushConstants(commandBuffer, mImpl->FieldPipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0U, sizeof(draw.Push),
+                           &draw.Push);
+        vkCmdDraw(commandBuffer, draw.VertexCount, 1U, draw.FirstVertex, 0U);
+    }
+    return true;
+}
+
+uint64_t InteractiveGrassPass::LastFieldTriangleCount() const { return mImpl->FieldTriangleCount; }
+
 void InteractiveGrassPass::SetCacheDirectory(std::filesystem::path directory) {
     static const bool disabled = [] {
         const auto* p = std::getenv("TRIAEVUM_GRASS_DISK_CACHE");
@@ -2769,6 +3102,16 @@ void InteractiveGrassPass::Shutdown() {
             mImpl->DestroyBuffer(buffer);
         for (auto& buffer : mImpl->ShadowVisibleIndices)
             mImpl->DestroyBuffer(buffer);
+        for (auto* slots : {&mImpl->FieldTriangleBuffers, &mImpl->FieldGridBuffers})
+            for (auto& buffer : *slots)
+                mImpl->DestroyBuffer(buffer);
+        for (auto& pipeline : mImpl->FieldPipelines) {
+            if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(mImpl->Device, pipeline, nullptr);
+            pipeline = VK_NULL_HANDLE;
+        }
+        if (mImpl->FieldPipelineLayout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(mImpl->Device, mImpl->FieldPipelineLayout, nullptr);
+        mImpl->FieldPipelineLayout = VK_NULL_HANDLE;
         for (const auto pipeline : mImpl->Pipelines) {
             if (pipeline != VK_NULL_HANDLE) {
                 vkDestroyPipeline(mImpl->Device, pipeline, nullptr);
@@ -2817,6 +3160,15 @@ void InteractiveGrassPass::Shutdown() {
     mImpl->StaticRevision = 0U;
     mImpl->PreparedRootAnchors = VK_NULL_HANDLE;
     mImpl->Prepared = false;
+    mImpl->Fields.clear();
+    mImpl->ActiveFields.clear();
+    mImpl->ActiveFieldRanges.clear();
+    mImpl->FieldTriangles.clear();
+    mImpl->FieldGrid.clear();
+    mImpl->FieldDraws.clear();
+    mImpl->FieldPrepared = false;
+    mImpl->FieldUploadedRevision = {};
+    mImpl->ShadowPointBases.clear();
     mImpl->PlacementBuilder.Clear();
     ResetTemporalState();
     GrassRenderTelemetry::Instance().Reset();

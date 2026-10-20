@@ -457,6 +457,11 @@ Json SerializeInteractiveGrassSettings(
               { "FarTuftDensity", grass.FarTuftDensity },
               { "FarTuftSpread", grass.FarTuftSpread },
               { "SegmentLodSoftness", grass.SegmentLodSoftness },
+              { "DistantFieldEnabled", grass.DistantFieldEnabled },
+              { "DistantFieldStartDistance", grass.DistantFieldStartDistance },
+              { "DistantFieldBlendFraction", grass.DistantFieldBlendFraction },
+              { "DistantFieldHeightScale", grass.DistantFieldHeightScale },
+              { "DistantFieldSteps", grass.DistantFieldSteps },
           } },
         { "Generation", SerializeGrassGeneration(grass.Generation) },
         { "Appearance",
@@ -731,6 +736,15 @@ void DeserializeInteractiveGrassSettings(
         readOptional("FarTuftDensity", value.FarTuftDensity);
         readOptional("FarTuftSpread", value.FarTuftSpread);
         readOptional("SegmentLodSoftness", value.SegmentLodSoftness);
+        readOptional("DistantFieldStartDistance", value.DistantFieldStartDistance);
+        readOptional("DistantFieldBlendFraction", value.DistantFieldBlendFraction);
+        readOptional("DistantFieldHeightScale", value.DistantFieldHeightScale);
+        if (FindMember(*performance, "DistantFieldEnabled"))
+            ReadScalar(*performance, "DistantFieldEnabled", value.DistantFieldEnabled,
+                       path + ".Performance.DistantFieldEnabled", result);
+        if (FindMember(*performance, "DistantFieldSteps"))
+            ReadScalar(*performance, "DistantFieldSteps", value.DistantFieldSteps,
+                       path + ".Performance.DistantFieldSteps", result);
     }
     // Optional: old configurations use native alpha for every overlay.
     value.Masks.clear();
@@ -1453,6 +1467,11 @@ std::string_view EnhancedPresetDocument() noexcept {
     "Performance": {
       "CullingClusterSize": 25.0,
       "DensityFadeFraction": 1.0,
+      "DistantFieldBlendFraction": 0.25,
+      "DistantFieldEnabled": true,
+      "DistantFieldHeightScale": 1.0,
+      "DistantFieldStartDistance": 700.0,
+      "DistantFieldSteps": 6,
       "DrawFadeFraction": 0.15000000596046448,
       "FarBladeSegments": 1,
       "FarDensity": 1.0,

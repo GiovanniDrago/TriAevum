@@ -604,6 +604,11 @@ GraphicsSettingsValidation GraphicsSettingsService::Validate(
     value.Grass.MidrangeAdaptiveCapacity = std::clamp(value.Grass.MidrangeAdaptiveCapacity, 50U, 10000U);
     value.Grass.MidrangeFarBladeFraction = finiteGrass(value.Grass.MidrangeFarBladeFraction, 0.25F, 0.02F, 1.0F);
     value.Grass.SegmentLodSoftness = finiteGrass(value.Grass.SegmentLodSoftness, 0.5F, 0.0F, 1.0F);
+    value.Grass.DistantFieldStartDistance =
+        finiteGrass(value.Grass.DistantFieldStartDistance, 700.0F, 200.0F, 50000.0F);
+    value.Grass.DistantFieldBlendFraction = finiteGrass(value.Grass.DistantFieldBlendFraction, 0.25F, 0.02F, 0.9F);
+    value.Grass.DistantFieldHeightScale = finiteGrass(value.Grass.DistantFieldHeightScale, 1.0F, 0.25F, 2.0F);
+    value.Grass.DistantFieldSteps = std::clamp<uint8_t>(value.Grass.DistantFieldSteps, 2U, 16U);
     value.Grass.SegmentLodStartDistance =
         std::clamp(value.Grass.SegmentLodStartDistance, 0.0F, 10000.0F);
     value.Grass.SegmentLodEndDistance =

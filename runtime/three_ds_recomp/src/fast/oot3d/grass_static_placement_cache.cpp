@@ -93,6 +93,8 @@ GrassStaticPlacementCache::Resolve(std::span<const GrassAsyncPlacementRequest> r
         bases.push_back(version ^
                         (uint64_t(request.Budget) + 0x9e3779b97f4a7c15ULL + (version << 6U) + (version >> 2U)));
         results.push_back(mBuilder.ResolveOrQueue(std::move(request)));
+        const double candidates = demands[i].Weight;
+        results.back().CandidateScale = candidates > budgets[i] && candidates > 0.0 ? budgets[i] / candidates : 1.0;
     }
     // Admit the scene only when its requested geometry exists. Queue the whole
     // batch first so construction remains parallel. Tickets pin results even
@@ -103,8 +105,10 @@ GrassStaticPlacementCache::Resolve(std::span<const GrassAsyncPlacementRequest> r
         if (result.State == GrassAsyncPlacementState::Pending) {
             if (const auto shown = mShown.find(world); shown != mShown.end() && shown->second.Base == bases[i]) {
                 shown->second.LastFrame = requests[i].FrameId;
+                const double scale = result.CandidateScale;
                 result = { GrassAsyncPlacementState::Ready, shown->second.Placement, result.Queued,
                            shown->second.BuildMilliseconds };
+                result.CandidateScale = scale;
                 continue;
             }
             static const bool diagnose = std::getenv("OOT3D_GRASS_DIAGNOSTICS") != nullptr;

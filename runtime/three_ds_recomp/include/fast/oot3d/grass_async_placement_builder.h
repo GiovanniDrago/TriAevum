@@ -65,6 +65,9 @@ struct GrassAsyncPlacementResult {
     bool Queued = false;
     double BuildMilliseconds = 0.0;
     std::shared_future<GrassPlacementCompletion> Completion;
+    // Share of the surface's candidates its budget allowed (the static cache
+    // scales large rooms down uniformly to the shared candidate capacity).
+    double CandidateScale = 1.0;
     void WaitUntilReady();
 };
 

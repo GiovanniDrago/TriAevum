@@ -31,6 +31,8 @@ constexpr uint32_t kCutWord = kHistogramBase + kGrassBudgetBuckets;
 constexpr uint32_t kControlWords = 2048U;
 static_assert(kRankBase == 644U && kHistogramBase == 772U && kCutWord == 1796U);
 static_assert(kCutWord < kControlWords);
+// The scan pass finds the cut with four buckets per lane of its 256 lanes.
+static_assert(kGrassBudgetBuckets == 4U * 256U);
 constexpr uint32_t kBindings = 8U;
 constexpr uint32_t kNoSlot = 0xFFU;
 constexpr uint32_t kPassCount = 4U;

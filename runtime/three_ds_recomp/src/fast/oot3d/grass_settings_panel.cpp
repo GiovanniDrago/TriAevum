@@ -556,6 +556,21 @@ bool DrawPerformance(InteractiveGrassSettings& grass) {
             changed = true;
         }
     }
+    ImGui::SeparatorText("Distant field");
+    changed |= ImGui::Checkbox("Distant grass field", &grass.DistantFieldEnabled);
+    ImGui::BeginDisabled(!grass.DistantFieldEnabled);
+    changed |= ImGui::SliderFloat("Field starts at", &grass.DistantFieldStartDistance, 200.0F, 50000.0F,
+                                  "%.0f world units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::SliderFloat("Blade to field blend", &grass.DistantFieldBlendFraction, 0.02F, 0.9F,
+                                  "%.2f start distance", ImGuiSliderFlags_AlwaysClamp);
+    changed |= ImGui::SliderFloat("Field height", &grass.DistantFieldHeightScale, 0.25F, 2.0F, "%.2fx",
+                                  ImGuiSliderFlags_AlwaysClamp);
+    int fieldSteps = grass.DistantFieldSteps;
+    if (ImGui::SliderInt("Field detail steps", &fieldSteps, 2, 16, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+        grass.DistantFieldSteps = static_cast<uint8_t>(fieldSteps);
+        changed = true;
+    }
+    ImGui::EndDisabled();
     ImGui::SeparatorText("Segments by distance");
     int bladeSegments = static_cast<int>(grass.Appearance.BladeSegments);
     if (ImGui::SliderInt("Near blade segments", &bladeSegments,

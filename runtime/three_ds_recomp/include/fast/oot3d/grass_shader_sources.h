@@ -10,4 +10,8 @@ std::string BuildGrassCompactionComputeShader();
 std::string BuildGrassShadowGridComputeShader();
 // GRASS_SELECTION_PASS 0 (count), 1 (scan), 2 (scatter).
 std::string BuildGrassSelectionComputeShader();
+// Distant field slab (grass_distant_field.h), composed from the blades' own
+// environment, lighting, wind and projection helpers.
+std::string BuildGrassFieldVertexShader();
+std::string BuildGrassFieldFragmentShader(bool rasterDepth = false);
 }

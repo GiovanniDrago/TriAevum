@@ -8,6 +8,9 @@
 #include "fast/renderer3ds/pica_surface_lighting_shader.h"
 #include "fast/renderer3ds/virtual_shadow_receiver_shader.h"
 
+#include <stdexcept>
+#include <string_view>
+
 namespace Fast::Oot3d {
 namespace {
 constexpr char kGrassShadowRefinementShader[] = R"glsl(
@@ -1287,6 +1290,9 @@ void main() {
 }
 #elif GRASS_SELECTION_PASS == 1
 shared uint totals[SLOT_COUNTERS];
+// The budget cut: per-lane sums of four histogram buckets and their scan.
+shared uint bucket_sums[2][256];
+shared uint cut_lane;
 // Double-buffered: each scan step reads one half and writes the other, so no
 // invocation rewrites a value another may still read.
 shared uint lane_sums[2][SLOT_COUNTERS][256];
@@ -1323,25 +1329,45 @@ void main() {
         }
         if (lane == 255u) totals[k] = lane_sums[half_index][k][255];
     }
+    // The cut from the histogram of every visible root (GrassBudgetCut): the
+    // first bucket whose cumulative count would exceed the budget. The
+    // histogram is the count pass's, so the second scan finds the same cut.
+    // Every lane owns four consecutive buckets; a lane scan finds the one lane
+    // whose range crosses the budget (no serial walk over the histogram).
+    uint budget = header(3u);
+    if (lane == 0u) cut_lane = BUCKETS;
+    uint bucket_counts[4];
+    uint own_sum = 0u;
+    for (uint j = 0u; j < 4u; ++j) {
+        bucket_counts[j] = control.values[HISTOGRAM_BASE + lane * 4u + j];
+        own_sum += bucket_counts[j];
+    }
+    bucket_sums[0][lane] = own_sum;
+    barrier();
+    uint bucket_half = 0u;
+    for (uint stride = 1u; stride < 256u; stride <<= 1u) {
+        bucket_sums[bucket_half ^ 1u][lane] = bucket_sums[bucket_half][lane] +
+            (lane >= stride ? bucket_sums[bucket_half][lane - stride] : 0u);
+        barrier();
+        bucket_half ^= 1u;
+    }
+    uint inclusive = bucket_sums[bucket_half][lane];
+    uint running = inclusive - own_sum;
+    if (running <= budget && inclusive > budget) {
+        for (uint j = 0u; j < 4u; ++j) {
+            if (running + bucket_counts[j] > budget) {
+                cut_lane = lane * 4u + j;
+                break;
+            }
+            running += bucket_counts[j];
+        }
+    }
     memoryBarrierBuffer();
     memoryBarrierShared();
     barrier();
     if (lane != 0u) return;
-    uint budget = header(3u);
     uint slot_count = header(2u);
-    // The cut from the histogram of every visible root (GrassBudgetCut): the
-    // first bucket whose cumulative count would exceed the budget. The
-    // histogram is the count pass's, so the second scan finds the same cut.
-    uint cut = BUCKETS;
-    uint running = 0u;
-    for (uint b = 0u; b < BUCKETS; ++b) {
-        uint count = control.values[HISTOGRAM_BASE + b];
-        if (running + count > budget) {
-            cut = b;
-            break;
-        }
-        running += count;
-    }
+    uint cut = cut_lane;
     control.values[CUT_WORD] = cut;
     uint offset = 0u;
     uint source_count = header(0u);
@@ -1410,6 +1436,384 @@ void main() {
     }
 }
 #endif
+)glsl";
+}
+
+namespace {
+// A brace-balanced block (function or struct) of a blade shader. The distant
+// field composes the blades' own helpers, so both stay one definition.
+std::string GrassGlslBlock(const std::string& source, std::string_view head) {
+    const size_t start = source.find(head);
+    if (start == std::string::npos) throw std::logic_error("grass shader block not found: " + std::string(head));
+    int depth = 0;
+    for (size_t i = source.find('{', start); i < source.size(); ++i) {
+        if (source[i] == '{') ++depth;
+        else if (source[i] == '}' && --depth == 0) {
+            size_t end = i + 1U;
+            if (end < source.size() && source[end] == ';') ++end;
+            return source.substr(start, end - start) + "\n";
+        }
+    }
+    throw std::logic_error("grass shader block is unbalanced: " + std::string(head));
+}
+
+constexpr char kGrassFieldDeclarations[] = R"glsl(
+layout(std430, set=0, binding=0) readonly buffer GrassEnvironmentState {
+    GrassEnvironmentRecord records[];
+} environment_state;
+struct GrassFieldTriangle {
+    vec4 corner[3];
+    uvec4 atlas;
+    uvec4 shadow_first;
+    uvec4 shadow_second;
+    vec4 shadow_weight;
+};
+layout(std430,set=0,binding=10) readonly buffer GrassFieldTriangles { GrassFieldTriangle values[]; } field_triangles;
+// GrassFieldPushConstants.
+layout(push_constant) uniform GrassFieldState {
+    mat4 position_to_clip;
+    // xy: jitter, z: column cell size, w: slab height
+    vec4 jitter_ndc;
+    vec4 depth_state;
+    // x: native projection, y: march steps, z: shadow point base, w: environment record
+    uvec4 flags;
+    // x: blend start, y: field start, z: draw distance, w: draw fade fraction
+    vec4 field;
+} grass;
+vec3 grass_field_normal(uint bits) {
+    vec2 oct = unpackSnorm2x16(bits);
+    vec3 normal = vec3(oct, 1.0 - abs(oct.x) - abs(oct.y));
+    float fold = max(-normal.z, 0.0);
+    normal.xy += mix(vec2(fold), vec2(-fold), greaterThanEqual(normal.xy, vec2(0.0)));
+    return normalize(normal);
+}
+)glsl";
+} // namespace
+
+std::string BuildGrassFieldVertexShader() {
+    const std::string blade = BuildGrassVertexShader();
+    return std::string("#version 450\n") + std::string(kToonSurfaceResponseShader) +
+        std::string(Renderer3ds::kPicaSurfaceLightingRecomposeShader) + std::string(kGrassShadowRefinementShader) +
+        GrassGlslBlock(blade, "struct GrassEnvironmentRecord {") + kGrassFieldDeclarations + R"glsl(
+layout(set=0,binding=1) uniform sampler2DArray native_surface_lighting;
+layout(std430,set=0,binding=4) readonly buffer GrassShadowVisibilityGrid {
+    GrassShadowVisibility values[];
+} shadow_visibility_grid;
+layout(location=0) out vec3 field_lighting;
+layout(location=1) out vec3 field_ambient;
+layout(location=2) out vec3 field_lit_ceiling;
+layout(location=3) out vec3 field_top;
+layout(location=4) out vec3 field_barycentric;
+layout(location=5) flat out uint field_triangle;
+layout(location=6) out vec3 field_normal;
+layout(location=7) out vec3 field_view_direction;
+)glsl" + GrassGlslBlock(blade, "void evaluate_shading(") + GrassGlslBlock(blade, "vec3 grass_native_material_rgb(") +
+        GrassGlslBlock(blade, "vec4 grass_surface_sample(") + GrassGlslBlock(blade, "vec4 grass_clip_position(") +
+        R"glsl(
+// One unindexed triangle per accepted surface triangle: vertex i is corner
+// i % 3 of field triangle i / 3, lifted to the slab top along its smoothed normal.
+void main() {
+    uint triangle = uint(gl_VertexIndex) / 3u;
+    uint corner = uint(gl_VertexIndex) % 3u;
+    GrassFieldTriangle t = field_triangles.values[triangle];
+    uint record = grass.flags.w;
+    vec3 eye = environment_state.records[record].camera_position.xyz;
+    float slab = grass.jitter_ndc.w;
+    // Distance is convex: the farthest point of a triangle is a corner. A
+    // triangle that ends before the blend starts has no field fragment.
+    float farthest = 0.0;
+    for (uint c = 0u; c < 3u; ++c) farthest = max(farthest, length(t.corner[c].xyz - eye));
+    field_triangle = triangle;
+    field_barycentric = vec3(corner == 0u ? 1.0 : 0.0, corner == 1u ? 1.0 : 0.0, corner == 2u ? 1.0 : 0.0);
+    if (farthest + slab < grass.field.x) {
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        field_lighting = field_ambient = field_lit_ceiling = field_top = field_normal = field_view_direction = vec3(0.0);
+        return;
+    }
+    vec3 normal = grass_field_normal(floatBitsToUint(t.corner[corner].w));
+    vec3 top = t.corner[corner].xyz + normal * slab;
+    vec3 lighting;
+    vec3 ambient_response;
+    evaluate_shading(record, normal, lighting, ambient_response);
+    uvec4 source_light = environment_state.records[record].native_lighting;
+    if (source_light.y != 0u) {
+        // The native vertex's own lighting texel: exact Gouraud lighting of
+        // the terrain under the slab, shadowed like the blades' roots.
+        bool coefficients = (source_light.y & 2u) != 0u;
+        float visibility = 1.0;
+        uint first = t.shadow_first[corner];
+        if (coefficients && first != 0xffffffffu)
+            visibility = mix(shadow_visibility_grid.values[first + grass.flags.z].visibility,
+                             shadow_visibility_grid.values[t.shadow_second[corner] + grass.flags.z].visibility,
+                             t.shadow_weight[corner]);
+        vec3 original;
+        vec4 sample_value = grass_surface_sample(t.atlas[corner] + source_light.x, visibility, coefficients, original);
+        if (sample_value.a > 0.5) {
+            lighting = sample_value.rgb;
+            if (coefficients)
+                ambient_response = clamp(ambient_response * original / max(lighting, vec3(1.0e-6)), 0.0, 1.0);
+        }
+    }
+    field_lighting = lighting;
+    field_ambient = ambient_response;
+    field_lit_ceiling = grass_native_material_rgb(vec3(1.0), lighting, source_light);
+    field_top = top;
+    field_normal = normal;
+    vec3 toward_eye = eye - top;
+    field_view_direction = vec3(dot(environment_state.records[record].view_side.xyz, toward_eye),
+        dot(environment_state.records[record].view_up.xyz, toward_eye),
+        -dot(environment_state.records[record].view_forward.xyz, toward_eye));
+    gl_Position = grass_clip_position(grass.position_to_clip, top, grass.jitter_ndc.xy);
+}
+)glsl";
+}
+
+std::string BuildGrassFieldFragmentShader(bool rasterDepth) {
+    const std::string blade = BuildGrassVertexShader();
+    return std::string("#version 450\n") + (rasterDepth ? "#define GRASS_RASTER_DEPTH 1\n" : "") +
+        std::string(Renderer3ds::PicaGeometryGuideShaderLibrary()) + std::string(kToonSurfaceResponseShader) +
+        std::string(kGrassDistantTuftShader) + GrassGlslBlock(blade, "struct GrassEnvironmentRecord {") +
+        kGrassFieldDeclarations + R"glsl(
+layout(std430,set=0,binding=11) readonly buffer GrassFieldGrid { uvec2 values[]; } field_grid;
+layout(location=0) in vec3 field_lighting;
+layout(location=1) in vec3 field_ambient;
+layout(location=2) in vec3 field_lit_ceiling;
+layout(location=3) in vec3 field_top;
+layout(location=4) in vec3 field_barycentric;
+layout(location=5) flat in uint field_triangle;
+layout(location=6) in vec3 field_normal;
+layout(location=7) in vec3 field_view_direction;
+layout(location=0) out vec4 out_color;
+#if GRASS_AUXILIARY_OUTPUTS
+layout(location=1) out vec4 out_normal_guide;
+layout(location=2) out vec4 out_material_guide;
+layout(location=3) out vec4 out_rigid_motion;
+layout(location=4) out vec4 out_ambient_guide;
+layout(location=6) out uvec4 out_geometry_guide;
+#endif
+#ifdef GRASS_RASTER_DEPTH
+// The hit lies behind the slab top on the same pixel ray: early depth stays.
+layout(depth_greater) out float gl_FragDepth;
+#endif
+)glsl" + GrassGlslBlock(blade, "vec3 grass_native_material_rgb(") + GrassGlslBlock(blade, "vec2 evaluate_wind(") +
+        GrassGlslBlock(blade, "vec4 grass_clip_position(") + R"glsl(
+uint grass_field_hash(ivec2 cell, uint salt) {
+    uint value = (uint(cell.x) * 0x9e3779b9u) ^ (uint(cell.y) * 0x85ebca6bu) ^ salt;
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    value *= 0x846ca68bu;
+    value ^= value >> 16u;
+    return value;
+}
+float grass_field_unit(uint value) { return float(value >> 8u) / 16777216.0; }
+uint grass_field_grid_index(uint n, uint i, uint j) { return j * (n + 1u) - j * (j - 1u) / 2u + i; }
+
+// Triangle-linear interpolation of the root-derived grid (GrassDistantField):
+// coverage, blade height over the slab, surface colour.
+void grass_field_grid(GrassFieldTriangle t, vec3 barycentric, out float coverage, out float height,
+                      out vec4 surface) {
+    uint n = max(t.shadow_first.w, 1u);
+    uint offset = t.atlas.w;
+    vec2 p = clamp(barycentric.yz, 0.0, 1.0) * float(n);
+    uint i = min(uint(p.x), n - 1u);
+    uint j = min(uint(p.y), n - 1u - i);
+    vec2 f = p - vec2(float(i), float(j));
+    uvec3 cells;
+    vec3 weights;
+    if (f.x + f.y > 1.0 && i + j + 2u <= n) {
+        cells = uvec3(grass_field_grid_index(n, i + 1u, j + 1u), grass_field_grid_index(n, i, j + 1u),
+                      grass_field_grid_index(n, i + 1u, j));
+        weights = vec3(f.x + f.y - 1.0, 1.0 - f.x, 1.0 - f.y);
+    } else {
+        cells = uvec3(grass_field_grid_index(n, i, j), grass_field_grid_index(n, i + 1u, j),
+                      grass_field_grid_index(n, i, j + 1u));
+        weights = max(vec3(1.0 - f.x - f.y, f.x, f.y), vec3(0.0));
+        weights /= max(weights.x + weights.y + weights.z, 1.0e-6);
+    }
+    coverage = 0.0;
+    height = 0.0;
+    surface = vec4(0.0);
+    for (uint k = 0u; k < 3u; ++k) {
+        uvec2 entry = field_grid.values[offset + cells[k]];
+        coverage += weights[k] * unpackUnorm2x16(entry.y).x;
+        height += weights[k] * unpackUnorm2x16(entry.y).y;
+        surface += weights[k] * unpackUnorm4x8(entry.x);
+    }
+}
+
+// evaluate_blade_color with an interpolated surface colour.
+vec3 grass_field_color(uint record, float height_factor, vec3 lighting, vec4 surface) {
+    vec3 root = environment_state.records[record].appearance_root.rgb;
+    vec3 tip = environment_state.records[record].appearance_tip.rgb;
+    vec4 texture = environment_state.records[record].texture_color;
+    vec4 flags = environment_state.records[record].texture_brightness_flags;
+    vec3 surface_color = surface.a > 0.5 ? surface.rgb / surface.a : texture.rgb;
+    uvec4 response = environment_state.records[record].native_lighting;
+    vec3 root_color = grass_native_material_rgb(mix(root, surface_color * flags.x, texture.w), lighting, response);
+    vec3 tip_color = grass_native_material_rgb(mix(tip, surface_color * flags.y, texture.w), lighting, response);
+    return mix(root_color, tip_color, height_factor);
+}
+
+void main() {
+    uint record = grass.flags.w;
+    // Derivatives before any discard: they need the whole quad.
+    vec3 top = field_top;
+    float footprint = sqrt(length(dFdx(top)) * length(dFdy(top)));
+#if GRASS_AUXILIARY_OUTPUTS
+    vec3 face_dx = dFdx(field_view_direction), face_dy = dFdy(field_view_direction);
+#endif
+    vec3 eye = environment_state.records[record].camera_position.xyz;
+    vec3 to_top = top - eye;
+    float distance = length(to_top);
+    if (distance < grass.field.x) discard;
+    vec3 view = to_top / max(distance, 1.0e-6);
+    vec3 normal = normalize(field_normal);
+    float facing = -dot(normal, view);
+    if (facing <= 0.0) discard;
+    float coverage, height_fraction;
+    vec4 surface;
+    grass_field_grid(field_triangles.values[field_triangle], field_barycentric, coverage, height_fraction, surface);
+    // The blades fade out over [blend start, field start] (their draw fade);
+    // the field fades in over the same band and out at the draw distance.
+    float density = coverage * grass_tuft_weight(distance, grass.field.x, grass.field.y) *
+        (1.0 - grass_tuft_weight(distance, grass.field.z * (1.0 - grass.field.w), grass.field.z));
+    uint debug_mode = grass.flags.y >> 8u;
+    if (debug_mode == 1u || debug_mode == 2u || debug_mode == 3u) {
+        // Diagnostic (TRIAEVUM_GRASS_FIELD_DEBUG): the slab top, coloured by
+        // coverage (R), blade height (G) and the blend ramp (B) for 1, grey
+        // coverage for 2, grey blade height for 3.
+        out_color = debug_mode == 1u
+            ? vec4(coverage, height_fraction, grass_tuft_weight(distance, grass.field.x, grass.field.y), 1.0)
+            : vec4(vec3(debug_mode == 2u ? coverage : height_fraction), 1.0);
+        gl_FragDepth = gl_FragCoord.z;
+#if GRASS_AUXILIARY_OUTPUTS
+        out_normal_guide = vec4(0.5, 0.5, 1.0, 0.25098039215686274);
+        out_material_guide = vec4(0.0, 1.0, 0.0, 1.0);
+        out_ambient_guide = vec4(1.0);
+        out_rigid_motion = vec4(0.0, 0.0, 0.0, 1.0 - gl_FragCoord.z);
+        out_geometry_guide = uvec4(0u, 1u, 2u, 0u);
+#endif
+        return;
+    }
+    if (density <= 1.0 / 255.0 || height_fraction <= 0.0) discard;
+
+    // Columns on a world-anchored lattice: one per blade spacing near the
+    // field start, coarser octaves once a column is under a pixel, each
+    // pixel choosing its octave by a stable coarse-cell hash.
+    float slab = grass.jitter_ndc.w;
+    float base_cell = grass.jitter_ndc.z;
+    // A column never narrower than one and a half pixels: no single-pixel speckle.
+    float level = max(log2(max(footprint * 1.5, base_cell) / base_cell), 0.0);
+    float octave = floor(level);
+    float coarse = base_cell * exp2(octave + 1.0);
+    if (grass_field_unit(grass_field_hash(ivec2(floor(top.xz / coarse)), 0x51ed27u)) < level - octave)
+        octave += 1.0;
+    float cell = base_cell * exp2(octave);
+    uint salt = uint(octave) * 0x632be5abu;
+    vec2 lean = evaluate_wind(record, top, 0.0, environment_state.records[record].wind_direction_time.z) * slab;
+    float slope = max(facing, 0.08);
+    uint steps = clamp(grass.flags.y & 0xffu, 1u, 16u);
+    // A grazing ray crosses many columns between two height layers: test up
+    // to four along that run, so coverage saturates as it does with real
+    // blades instead of being amplified everywhere (seen from above, bare
+    // ground between the blades stays visible).
+    float layer_run = slab / float(steps) * sqrt(max(1.0 - slope * slope, 0.0)) / slope;
+    uint crossings = uint(clamp(ceil(layer_run / cell), 1.0, 4.0));
+    uint samples = steps * crossings;
+    bool hit = false;
+    vec3 hit_point = top;
+    float hit_height = 0.0;
+    for (uint k = 0u; k < samples && !hit; ++k) {
+        float h = slab * (1.0 - (float(k) + 0.5) / float(samples));
+        vec3 p = top + view * ((slab - h) / slope);
+        float above = h / slab;
+        vec2 q = (p.xz - lean * above * above) / cell;
+        ivec2 c = ivec2(floor(q));
+        uint a = grass_field_hash(c, salt);
+        if (grass_field_unit(a) >= density) continue;
+        uint b = grass_field_hash(c, salt ^ 0x2545f491u);
+        float column = height_fraction * (0.55 + 0.45 * grass_field_unit(b));
+        if (above >= column) continue;
+        vec2 center = 0.25 + 0.5 * vec2(grass_field_unit(a * 747796405u + 2891336453u),
+                                        grass_field_unit(b * 747796405u + 2891336453u));
+        float radius = 0.08 + 0.5 * sqrt(max(1.0 - above / column, 0.0));
+        if (length(fract(q) - center) > radius) continue;
+        hit = true;
+        hit_point = p;
+        hit_height = above / column;
+    }
+    if (debug_mode == 4u) {
+        // Diagnostic: red where the march hits a column, blue where it misses.
+        out_color = vec4(hit ? 1.0 : 0.0, density, hit ? 0.0 : 1.0, 1.0);
+        gl_FragDepth = gl_FragCoord.z;
+#if GRASS_AUXILIARY_OUTPUTS
+        out_normal_guide = vec4(0.5, 0.5, 1.0, 0.25098039215686274);
+        out_material_guide = vec4(0.0, 1.0, 0.0, 1.0);
+        out_ambient_guide = vec4(1.0);
+        out_rigid_motion = vec4(0.0, 0.0, 0.0, 1.0 - gl_FragCoord.z);
+        out_geometry_guide = uvec4(0u, 1u, 2u, 0u);
+#endif
+        return;
+    }
+    if (!hit) discard;
+
+    vec3 lighting = field_lighting;
+    // The first column a ray meets is hit near its top far more often than a
+    // blade's surface is seen there: weight the root-to-tip colour like the
+    // blades' visible surface (calibrated against the tufts it replaces).
+    vec4 resolved_color = vec4(grass_field_color(record, hit_height * hit_height * hit_height, lighting, surface), 1.0);
+    ToonSurfaceParameters toon = environment_state.records[record].toon;
+    if (toon.flags.x > 0.5) {
+        resolved_color.rgb = oot3d_toon_banded_color(resolved_color.rgb, lighting, toon.flags.y, true, toon);
+        resolved_color.rgb = clamp(resolved_color.rgb, 0.0, 1.0);
+    }
+    resolved_color.rgb = min(resolved_color.rgb, field_lit_ceiling);
+
+    vec4 clip = grass_clip_position(grass.position_to_clip, hit_point, grass.jitter_ndc.xy);
+    float window_z = clip.z / clip.w;
+    float resolved_depth = window_z;
+    if (grass.depth_state.w > 0.5) {
+        float pica_z_over_w = grass.flags.x != 0u ? -window_z : window_z;
+        resolved_depth = pica_z_over_w * grass.depth_state.x + grass.depth_state.y;
+        if (grass.depth_state.z > 0.5) resolved_depth /= max(1.0 / clip.w, 1.0e-7);
+    }
+    vec4 fog_color_and_mode = environment_state.records[record].color_and_mode;
+    if (fog_color_and_mode.w > 0.5) {
+        float fog_depth = fog_color_and_mode.w > 1.5 ? 1.0 - resolved_depth : resolved_depth;
+        float fog_index = fog_depth * 128.0;
+        float floor_index = clamp(floor(fog_index), 0.0, 127.0);
+        vec2 sample_pair = environment_state.records[record].lut[uint(floor_index)];
+        float fog_factor = clamp(sample_pair.x + sample_pair.y * (fog_index - floor_index), 0.0, 1.0);
+        resolved_color.rgb = mix(fog_color_and_mode.rgb, resolved_color.rgb, fog_factor);
+    }
+    out_color = resolved_color;
+#ifdef GRASS_RASTER_DEPTH
+    gl_FragDepth = clamp(window_z, 0.0, 1.0);
+#else
+    gl_FragDepth = clamp(resolved_depth, 0.0, 1.0);
+#endif
+#if GRASS_AUXILIARY_OUTPUTS
+    vec3 view_side = environment_state.records[record].view_side.xyz;
+    out_normal_guide = vec4((dot(view_side, view_side) > 1.0e-8
+        ? vec3(dot(view_side, normal), dot(environment_state.records[record].view_up.xyz, normal),
+               -dot(environment_state.records[record].view_forward.xyz, normal))
+        : vec3(0.0, 0.0, 1.0)) * 0.5 + 0.5, 0.25098039215686274);
+    out_geometry_guide = uvec4(0u, pica_geometry_encode_normal(pica_geometry_face_normal(
+        field_view_direction, face_dx, face_dy)), 2u, 0u);
+    // The slab is rigid with its surface: exact camera motion of the hit.
+    vec4 motion_state = environment_state.records[record].motion_state;
+    vec4 previous = grass_clip_position(environment_state.records[record].previous_position_to_clip,
+                                        hit_point, motion_state.xy);
+    bool exact_motion = motion_state.z > 0.5 && clip.w > 1.0e-7 && previous.w > 1.0e-7;
+    out_material_guide = vec4(0.0, 1.0, 0.0, exact_motion ? 0.0 : 1.0);
+    out_ambient_guide = vec4(field_ambient, 1.0);
+    out_rigid_motion = vec4(0.0);
+    if (exact_motion)
+        out_rigid_motion.xyz = vec3((previous.xy / previous.w - clip.xy / clip.w) * 0.5, 3.0);
+    out_rigid_motion.a = 1.0 - gl_FragDepth;
+#endif
+}
 )glsl";
 }
 
