@@ -539,6 +539,46 @@ TEST(Oot3dGraphicsSettingsPersistence, AddsSoftGrassLodDefaultsWithoutMovingExis
     EXPECT_EQ(loaded.Value.Grass.Rules.size(), original.Grass.Rules.size());
 }
 
+TEST(Oot3dGraphicsSettingsPersistence, AddsDistantCardDefaultsAndRoundTripsThem) {
+    using namespace Fast::Oot3d;
+    auto original = CompleteSettings();
+    original.Grass.CardLodEnabled = true;
+    original.Grass.CardLodBladeDistance = 1200.0F;
+    original.Grass.CardLodClumpDistance = 4500.0F;
+    original.Grass.CardLodGroupDistance = 16000.0F;
+    original.Grass.CardLodBlendFraction = 0.3F;
+    const auto roundTrip = DeserializeGraphicsSettings(SerializeGraphicsSettings(original));
+    EXPECT_TRUE(roundTrip.Issues.empty());
+    EXPECT_TRUE(roundTrip.Value.Grass.CardLodEnabled);
+    EXPECT_FLOAT_EQ(roundTrip.Value.Grass.CardLodBladeDistance, 1200.0F);
+    EXPECT_FLOAT_EQ(roundTrip.Value.Grass.CardLodClumpDistance, 4500.0F);
+    EXPECT_FLOAT_EQ(roundTrip.Value.Grass.CardLodGroupDistance, 16000.0F);
+    EXPECT_FLOAT_EQ(roundTrip.Value.Grass.CardLodBlendFraction, 0.3F);
+
+    auto document = SerializeGraphicsSettings(original);
+    for (const auto* section : {"Grass", "GrassSavedPreset"}) {
+        for (const auto* key : {"CardLodEnabled", "CardLodBladeDistance", "CardLodClumpDistance",
+                                "CardLodGroupDistance", "CardLodBlendFraction"})
+            document[section]["Performance"].erase(key);
+    }
+    const auto loaded = DeserializeGraphicsSettings(document);
+    EXPECT_TRUE(loaded.Issues.empty());
+    EXPECT_FALSE(loaded.Value.Grass.CardLodEnabled);
+    EXPECT_FLOAT_EQ(loaded.Value.Grass.CardLodBladeDistance, 1000.0F);
+    EXPECT_FLOAT_EQ(loaded.Value.Grass.CardLodClumpDistance, 4000.0F);
+    EXPECT_FLOAT_EQ(loaded.Value.Grass.CardLodGroupDistance, 15000.0F);
+    EXPECT_FLOAT_EQ(loaded.Value.Grass.CardLodBlendFraction, 0.25F);
+    EXPECT_FLOAT_EQ(loaded.Value.Grass.DrawDistance, original.Grass.DrawDistance);
+
+    // Tier ends stay ordered when the file disagrees.
+    document = SerializeGraphicsSettings(original);
+    document["Grass"]["Performance"]["CardLodClumpDistance"] = 500.0F;
+    document["Grass"]["Performance"]["CardLodGroupDistance"] = 50.0F;
+    const auto disordered = DeserializeGraphicsSettings(document);
+    EXPECT_GE(disordered.Value.Grass.CardLodClumpDistance, disordered.Value.Grass.CardLodBladeDistance);
+    EXPECT_GE(disordered.Value.Grass.CardLodGroupDistance, disordered.Value.Grass.CardLodClumpDistance);
+}
+
 TEST(Oot3dGraphicsSettingsPersistence, MigratesLegacyFixed60NameToInterpolated2x) {
     auto document = Fast::Oot3d::SerializeGraphicsSettings(CompleteSettings());
     document["FrameRate"]["Mode"] = "Fixed60";

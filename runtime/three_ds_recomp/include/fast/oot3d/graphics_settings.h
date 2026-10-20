@@ -243,6 +243,14 @@ struct InteractiveGrassSettings {
     float FarTuftDensity = 1.0F;
     float FarTuftSpread = 1.0F;
     float SegmentLodSoftness = 0.5F;
+    // Geometric LOD beyond the blades (grass_card_lod.h): cards per cluster,
+    // per group of clusters and per patch of clusters, the last without end.
+    // The blades end at the clump distance while it is enabled.
+    bool CardLodEnabled = false;
+    float CardLodBladeDistance = 1000.0F;
+    float CardLodClumpDistance = 4000.0F;
+    float CardLodGroupDistance = 15000.0F;
+    float CardLodBlendFraction = 0.25F;
     GrassGenerationSettings Generation;
     GrassAppearanceSettings Appearance;
     float WindDirectionDegrees = 0.0F;

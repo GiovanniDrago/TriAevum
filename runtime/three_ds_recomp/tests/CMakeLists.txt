@@ -722,6 +722,7 @@ add_executable(oot3d_graphics_foundation_tests
     oot3d_grass_draw_memo_tests.cpp
     oot3d_grass_geometry_registry_tests.cpp
     oot3d_grass_world_placement_cache_tests.cpp
+    oot3d_grass_card_lod_tests.cpp
     oot3d_pica_display_transfer_tests.cpp
     oot3d_pica_geometry_registry_tests.cpp
     oot3d_pica_texture_decode_tests.cpp
@@ -739,6 +740,8 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/grass_static_placement_cache.cpp
     ../src/fast/oot3d/grass_shader_sources.cpp
     ../src/fast/oot3d/grass_blade_geometry.cpp
+    ../src/fast/oot3d/grass_card_atlas.cpp
+    ../src/fast/oot3d/grass_card_lod.cpp
     ../src/fast/oot3d/grass_collision_resolver.cpp
     ../src/fast/oot3d/grass_draw_memo.cpp
     ../src/fast/oot3d/grass_geometry_registry.cpp

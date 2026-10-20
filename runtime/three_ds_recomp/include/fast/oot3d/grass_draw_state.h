@@ -53,10 +53,16 @@ struct alignas(16) GrassEnvironmentRecord {
     std::array<float, 4> PreviousCameraTime{};
     // Previous jitter NDC XY, motion enabled, previous bends bound.
     std::array<float, 4> MotionState{};
+    // Card tier ends (blades, clump cards, group cards) and the blend
+    // fraction (grass_card_lod.h); unused when the cards are off.
+    std::array<float, 4> CardDistances{};
+    // Card tile height over footprint radius per level, cards enabled.
+    std::array<float, 4> CardStyle{};
 };
 static_assert(offsetof(GrassEnvironmentRecord, Toon) == 1424U);
 static_assert(offsetof(GrassEnvironmentRecord, PreviousPositionToClip) == 1584U);
-static_assert(sizeof(GrassEnvironmentRecord) == 1680U);
+static_assert(offsetof(GrassEnvironmentRecord, CardDistances) == 1680U);
+static_assert(sizeof(GrassEnvironmentRecord) == 1712U);
 
 // Push constants of the grass draws (GrassState in the shaders).
 struct GrassPushConstants {

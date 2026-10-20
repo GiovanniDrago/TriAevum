@@ -458,6 +458,24 @@ void InGameMenu::BuildGraphicsTab(Menu::Document &document) {
     row.Modified = [this] { return mGraphics.Grass.Quality != GraphicsSettings{}.Grass.Quality; };
     tab.Rows.push_back(std::move(row));
   }
+  {
+    Row row;
+    row.Key = "Distant grass cards";
+    row.Kind = RowKind::Toggle;
+    row.Help = "Cut-out cards replace the blades beyond the blade distance: one per cluster, one per group "
+               "and one per patch without end. The blades then stop at the blade distance. Distances are "
+               "F1 > Grass > Performance.";
+    row.Read = [this] { return mGraphics.Grass.CardLodEnabled ? 1 : 0; };
+    row.Write = [this](int value) {
+      auto settings = mGraphics;
+      settings.Grass.CardLodEnabled = value != 0;
+      return ApplyGraphics(settings, false);
+    };
+    row.Modified = [this] { return mGraphics.Grass.CardLodEnabled != GraphicsSettings{}.Grass.CardLodEnabled; };
+    row.Available = [this] { return mGraphics.Grass.Quality != GrassQuality::Off; };
+    row.UnavailableReason = "Grass is off";
+    tab.Rows.push_back(std::move(row));
+  }
   document.Tabs.push_back(std::move(tab));
 }
 

@@ -2114,6 +2114,22 @@ int main(int argc, char** argv) try {
           grassLod.TuftTransitionFraction == 0.35F && grassLod.FarTuftDensity == 2.5F &&
           grassLod.FarTuftSpread == 1.8F && grassLod.SegmentLodSoftness == 0.75F,
           "grass transition, tuft quantity/spread controls not applied");
+    Check(!runtime.Snapshot().Grass.CardLodEnabled, "distant grass cards must default off");
+    Click("Distant grass cards");
+    Check(runtime.Snapshot().Grass.CardLodEnabled, "distant grass cards enable failed");
+    EditScalar("Blades up to (m)", "12");
+    EditScalar("Clump cards up to (m)", "45");
+    EditScalar("Group cards up to (m)", "160");
+    EditScalar("Card transition range", "0.30");
+    const auto grassCards = runtime.Snapshot().Grass;
+    Check(grassCards.CardLodBladeDistance == 1200.0F && grassCards.CardLodClumpDistance == 4500.0F &&
+          grassCards.CardLodGroupDistance == 16000.0F && grassCards.CardLodBlendFraction == 0.30F,
+          "distant grass card distances not applied in metres");
+    EditScalar("Blades up to (m)", "50");
+    Check(runtime.Snapshot().Grass.CardLodClumpDistance >= 5000.0F,
+          "clump card distance must follow the blade distance");
+    Click("Distant grass cards");
+    Check(!runtime.Snapshot().Grass.CardLodEnabled, "distant grass cards disable failed");
     size.y = 680.0F;
     for (const char* section : {"Generation", "Appearance", "Performance", "Wind", "Interaction", "Sources"})
         Click(section);

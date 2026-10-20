@@ -1,5 +1,7 @@
 #include "fast/oot3d/grass_shader_sources.h"
 #include "fast/oot3d/grass_blade_shape.h"
+#include "fast/oot3d/grass_card_atlas.h"
+#include "fast/oot3d/grass_card_lod.h"
 #include "fast/oot3d/grass_distant_tuft.h"
 #include "fast/oot3d/grass_indexed_topology.h"
 #include "fast/oot3d/grass_world_placement_cache.h"
@@ -7,6 +9,8 @@
 #include "fast/renderer3ds/pica_geometry_guide.h"
 #include "fast/renderer3ds/pica_surface_lighting_shader.h"
 #include "fast/renderer3ds/virtual_shadow_receiver_shader.h"
+
+#include <string>
 
 namespace Fast::Oot3d {
 namespace {
@@ -33,46 +37,106 @@ struct GrassRoot {
     uint surface_color;
     uvec2 surface_reference;
 };
+vec3 grass_unpack_normal(uint packed) {
+    vec2 oct = unpackSnorm2x16(packed);
+    vec3 normal = vec3(oct, 1.0 - abs(oct.x) - abs(oct.y));
+    float fold = max(-normal.z, 0.0);
+    normal.xy += mix(vec2(fold), vec2(-fold), greaterThanEqual(normal.xy, vec2(0.0)));
+    return normalize(normal);
+}
 GrassRoot grass_decode_anchor(uvec4 a, uvec4 b, uvec4 c) {
     GrassRoot root;
     root.base_height = uintBitsToFloat(a);
     root.half_width_phase = uintBitsToFloat(b.xy);
     root.width_axis = unpackSnorm2x16(b.z);
-    vec2 oct = unpackSnorm2x16(b.w);
-    vec3 normal = vec3(oct, 1.0 - abs(oct.x) - abs(oct.y));
-    float fold = max(-normal.z, 0.0);
-    normal.xy += mix(vec2(fold), vec2(-fold), greaterThanEqual(normal.xy, vec2(0.0)));
     uint stable = c.x;
     stable ^= stable >> 16u;
     stable *= 0x7feb352du;
     stable ^= stable >> 15u;
     stable *= 0x846ca68bu;
     stable ^= stable >> 16u;
-    root.world_normal = vec4(normalize(normal), float(stable >> 8u) / 16777216.0);
+    root.world_normal = vec4(grass_unpack_normal(b.w), float(stable >> 8u) / 16777216.0);
     root.surface_color = c.y;
     root.surface_reference = c.zw;
     return root;
 }
 )glsl";
-} // namespace
 
-std::string BuildGrassVertexShader() {
-    return
-            std::string("#version 450\n") + std::string(kToonSurfaceResponseShader) + std::string(kGrassBladeShapeShader) +
-            std::string(kGrassDistantTuftShader) + std::string(kGrassIndexedVertexShader) +
-            std::string(Renderer3ds::kPicaSurfaceLightingRecomposeShader) +
-            std::string(kGrassShadowRefinementShader) + std::string(kGrassRootAnchorShader) + R"glsl(
-// Root i draws the anchor root_anchor_indices[i] of root_anchors.
-layout(std430,set=0,binding=2) readonly buffer GrassRootAnchors { uvec4 values[]; } root_anchors;
-layout(std430,set=0,binding=9) readonly buffer GrassRootAnchorIndices { uint values[]; } root_anchor_indices;
-layout(std430,set=0,binding=3) readonly buffer GrassPreparedGroups { uvec2 entries[]; } prepared_groups;
+// Every grass program: the placement's environment record
+// (GrassEnvironmentRecord of grass_draw_state.h, one layout) and the draw's
+// push constants. Needs ToonSurfaceParameters.
+constexpr char kGrassEnvironmentShader[] = R"glsl(
+struct GrassEnvironmentRecord {
+    vec4 color_and_mode;
+    vec2 lut[128];
+    vec4 wind_direction_time;
+    vec4 wind_primary;
+    vec4 wind_detail;
+    vec4 camera_position;
+    vec4 appearance_root;
+    vec4 appearance_tip;
+    vec4 texture_color;
+    vec4 texture_brightness_flags;
+    vec4 light_directions[3];
+    vec4 light_diffuse[3];
+    vec4 light_ambient[3];
+    vec4 view_forward;
+    vec4 view_side;
+    vec4 view_up;
+    vec4 blade_shape;
+    vec4 tuft_lod;
+    vec4 distance_lod;
+    vec4 tuft_style;
+    ToonSurfaceParameters toon;
+    uvec4 native_lighting;
+    vec4 rim_distance;
+    mat4 previous_position_to_clip;
+    vec4 previous_camera_time;
+    vec4 motion_state;
+    // Card tier ends (blades, clumps, groups) and the blend fraction.
+    vec4 card_distances;
+    // Card tile height over footprint radius per level, cards enabled.
+    vec4 card_style;
+};
+layout(std430, set=0, binding=0) readonly buffer GrassEnvironmentState {
+    GrassEnvironmentRecord records[];
+} environment_state;
+layout(push_constant) uniform GrassState {
+    mat4 position_to_clip;
+    vec4 jitter_ndc;
+    vec4 depth_state;
+    uvec4 flags;
+} grass;
+
+// The clip transform of a world position, in both stages: the vertex
+// programs place their vertices with it and the card fragment program its
+// texel's blade.
+vec4 grass_clip_position(mat4 position_to_clip, vec3 position, vec2 jitter_ndc) {
+    vec4 clip = position_to_clip * vec4(position, 1.0);
+    vec4 result;
+    if (grass.flags.x != 0u) {
+        // Match the generated PICA vertex shader exactly. Its projection is
+        // already rotated for the physical CTR framebuffer.
+        result = vec4(clip.x, clip.y, -clip.z, clip.w);
+    } else {
+        // Renderer-owned world projections are logical/unrotated and must be
+        // transposed into the physical top framebuffer before scanout.
+        result = vec4(clip.y, clip.x, clip.z, clip.w);
+    }
+    result.xy += jitter_ndc * result.w;
+    return result;
+}
+)glsl";
+
+// Vertex-side shading the blades and the cards share: the native surface
+// lighting, the coarse shadow grid with the actor patches, the lights, the
+// root/tip colours and the wind. Needs the environment,
+// pica_surface_recompose and the shadow refinement types.
+constexpr char kGrassShadingShader[] = R"glsl(
 layout(set=0,binding=1) uniform sampler2DArray native_surface_lighting;
 layout(std430,set=0,binding=4) readonly buffer GrassShadowVisibilityGrid {
     GrassShadowVisibility values[];
 } shadow_visibility_grid;
-struct GrassShadowReference { uint first; uint second; float weight; };
-layout(std430,set=0,binding=5) readonly buffer GrassShadowReferences { GrassShadowReference values[]; } shadow_references;
-layout(std430,set=0,binding=6) readonly buffer GrassVisibleRoots { uint values[]; } visible_roots;
 layout(std430,set=0,binding=7) readonly buffer GrassShadowPatches { GrassShadowPatch values[]; } shadow_patches;
 
 float grass_local_shadow(float coarse, vec3 root, vec3 root_normal, uint packed_patches) {
@@ -109,63 +173,6 @@ float grass_local_shadow(float coarse, vec3 root, vec3 root_normal, uint packed_
     }
     return result;
 }
-
-struct GrassEnvironmentRecord {
-    vec4 color_and_mode;
-    vec2 lut[128];
-    vec4 wind_direction_time;
-    vec4 wind_primary;
-    vec4 wind_detail;
-    vec4 camera_position;
-    vec4 appearance_root;
-    vec4 appearance_tip;
-    vec4 texture_color;
-    vec4 texture_brightness_flags;
-    vec4 light_directions[3];
-    vec4 light_diffuse[3];
-    vec4 light_ambient[3];
-    vec4 view_forward;
-    vec4 view_side;
-    vec4 view_up;
-    vec4 blade_shape;
-    vec4 tuft_lod;
-    vec4 distance_lod;
-    vec4 tuft_style;
-    ToonSurfaceParameters toon;
-    uvec4 native_lighting;
-    vec4 rim_distance;
-    mat4 previous_position_to_clip;
-    vec4 previous_camera_time;
-    vec4 motion_state;
-};
-layout(std430, set=0, binding=0) readonly buffer GrassEnvironmentState {
-    GrassEnvironmentRecord records[];
-} environment_state;
-// Per root, half precision: the interaction bend (X) and the bend the
-// previous frame drew (Y).
-layout(std430,set=0,binding=8) readonly buffer GrassRootBends { uvec2 values[]; } root_bends;
-
-GrassRoot grass_load_root(uint root) {
-    uint first = root_anchor_indices.values[root] * 3u;
-    return grass_decode_anchor(root_anchors.values[first], root_anchors.values[first + 1u],
-                               root_anchors.values[first + 2u]);
-}
-layout(push_constant) uniform GrassState {
-    mat4 position_to_clip;
-    vec4 jitter_ndc;
-    vec4 depth_state;
-    uvec4 flags;
-} grass;
-layout(location=0) out vec4 blade_color;
-layout(location=1) out vec4 blade_normal_guide;
-layout(location=2) out vec4 blade_ambient_guide;
-layout(location=3) out vec4 tuft_sample;
-layout(location=4) flat out float lod_visibility;
-layout(location=6) out vec3 blade_view_direction;
-layout(location=7) flat out float blade_rim_weight;
-layout(location=8) out vec4 blade_current_clip;
-layout(location=9) out vec4 blade_previous_clip;
-layout(location=10) out vec3 blade_lit_ceiling;
 
 void evaluate_shading(
     uint environment_index, vec3 world_normal,
@@ -225,6 +232,39 @@ vec4 grass_surface_sample(uint index, float visibility, bool coefficients, out v
     vec3 directional = texelFetch(native_surface_lighting, cell + ivec3(0,0,2), 0).rgb;
     original = pica_surface_recompose(appearance, raw, directional, 1.0);
     return vec4(pica_surface_recompose(appearance, raw, directional, visibility), appearance.a);
+}
+
+bool grass_native_lighting_enabled(uint environment_index) {
+    return environment_state.records[environment_index].native_lighting.y != 0u;
+}
+bool grass_native_lighting_coefficients(uint environment_index) {
+    return (environment_state.records[environment_index].native_lighting.y & 2u) != 0u;
+}
+
+// The root's native surface lighting: its three surface vertices' texels,
+// weighted, with the shadow visibility applied to the directional part.
+void grass_apply_native_lighting(
+    uint environment_index, uvec2 surface_reference, float shadow_visibility,
+    inout vec3 lighting, inout vec3 ambient_response) {
+    uvec4 source_light = environment_state.records[environment_index].native_lighting;
+    if (source_light.y == 0u) return;
+    uvec3 vertices = uvec3(surface_reference.x & 65535u,
+        surface_reference.x >> 16u, surface_reference.y & 65535u) + source_light.x;
+    vec2 weights = vec2((surface_reference.y >> 16u) & 255u, surface_reference.y >> 24u) / 255.0;
+    bool coefficients = (source_light.y & 2u) != 0u;
+    vec3 original_a, original_b, original_c;
+    vec4 a = grass_surface_sample(vertices.x, shadow_visibility, coefficients, original_a);
+    vec4 b = grass_surface_sample(vertices.y, shadow_visibility, coefficients, original_b);
+    vec4 c = grass_surface_sample(vertices.z, shadow_visibility, coefficients, original_c);
+    if (min(a.a, min(b.a, c.a)) > 0.5) {
+        lighting = a.rgb * (1.0 - weights.x - weights.y) + b.rgb * weights.x + c.rgb * weights.y;
+        if (coefficients) {
+            vec3 original = original_a * (1.0 - weights.x - weights.y) + original_b * weights.x + original_c * weights.y;
+            // Preserve the existing ambient response when direct light is
+            // removed, instead of applying shadow a second time through AO.
+            ambient_response = clamp(ambient_response * original / max(lighting, vec3(1.0e-6)), 0.0, 1.0);
+        }
+    }
 }
 
 vec3 evaluate_blade_color(
@@ -305,6 +345,164 @@ vec2 evaluate_wind(
     return bend;
 }
 
+// A world vector in the view basis the guides use (side, up, toward eye).
+vec3 grass_view_space(uint environment_index, vec3 vector) {
+    vec3 view_side = environment_state.records[environment_index].view_side.xyz;
+    if (dot(view_side, view_side) <= 1.0e-8) return vec3(0.0, 0.0, 1.0);
+    return vec3(dot(view_side, vector),
+        dot(environment_state.records[environment_index].view_up.xyz, vector),
+        -dot(environment_state.records[environment_index].view_forward.xyz, vector));
+}
+)glsl";
+
+// Every grass fragment program ends in grass_write_fragment: the toon clamp
+// and rim, the lit ceiling, the guides, the PICA depth mapping, the fog LUT,
+// the colour and depth writes. Needs the environment, the toon response and
+// the geometry guide library.
+constexpr char kGrassFragmentOutputShader[] = R"glsl(
+layout(location=0) out vec4 out_color;
+#if GRASS_AUXILIARY_OUTPUTS
+layout(location=1) out vec4 out_normal_guide;
+layout(location=2) out vec4 out_material_guide;
+layout(location=3) out vec4 out_rigid_motion;
+layout(location=4) out vec4 out_ambient_guide;
+layout(location=6) out uvec4 out_geometry_guide;
+#endif
+// raster_z and inverse_w: the fragment's window depth and 1/w (gl_FragCoord
+// for a rasterized surface; a card passes its texel's blade).
+void grass_write_fragment(
+    vec4 resolved_color, vec4 normal_guide, vec4 ambient_guide, vec3 view_direction,
+    vec3 face_dx, vec3 face_dy, float rim_weight, vec3 lit_ceiling,
+    vec4 current_clip, vec4 previous_clip, float raster_z, float inverse_w) {
+    ToonSurfaceParameters toon = environment_state.records[grass.flags.w].toon;
+    if (toon.flags.x > 0.5)
+        resolved_color.rgb = clamp(resolved_color.rgb, 0.0, 1.0);
+    if (toon.flags.x > 0.5 && rim_weight > 0.0)
+        resolved_color.rgb = clamp(resolved_color.rgb + lit_ceiling * rim_weight *
+            oot3d_toon_rim(normal_guide.xyz * 2.0 - 1.0, view_direction, toon), 0.0, 1.0);
+    resolved_color.rgb = min(resolved_color.rgb, lit_ceiling);
+#if GRASS_AUXILIARY_OUTPUTS
+    out_normal_guide = normal_guide;
+    out_geometry_guide = uvec4(0u, pica_geometry_encode_normal(pica_geometry_face_normal(
+        view_direction, face_dx, face_dy)), 2u, 0u);
+    // With the placement's previous frame the grass writes exact motion and
+    // keeps its temporal history. Without it, the motion pass invalidates
+    // motion and the reactive mask rejects the history,
+    // since wind and interaction still move the grass.
+    bool exact_motion = environment_state.records[grass.flags.w].motion_state.z > 0.5 &&
+        current_clip.w > 1.0e-7 && previous_clip.w > 1.0e-7;
+    out_material_guide = vec4(0.0, 1.0, 0.0, exact_motion ? 0.0 : 1.0);
+    out_ambient_guide = ambient_guide;
+    out_rigid_motion = vec4(0.0);
+    if (exact_motion) {
+        vec2 current_uv = current_clip.xy / current_clip.w * 0.5 + 0.5;
+        vec2 previous_uv = previous_clip.xy / previous_clip.w * 0.5 + 0.5;
+        out_rigid_motion.xyz = vec3(previous_uv - current_uv, 3.0);
+    }
+#endif
+    float resolved_depth = raster_z;
+    if (grass.depth_state.w > 0.5) {
+        float pica_z_over_w =
+            grass.flags.x != 0u ? -raster_z : raster_z;
+        resolved_depth =
+            pica_z_over_w * grass.depth_state.x +
+            grass.depth_state.y;
+        if (grass.depth_state.z > 0.5)
+            resolved_depth /= max(inverse_w, 1.0e-7);
+    }
+    vec4 fog_color_and_mode =
+        environment_state.records[
+            grass.flags.w].color_and_mode;
+    if (fog_color_and_mode.w > 0.5) {
+        float fog_depth =
+            fog_color_and_mode.w > 1.5
+                ? 1.0 - resolved_depth
+                : resolved_depth;
+        float fog_index = fog_depth * 128.0;
+        float floor_index = clamp(floor(fog_index), 0.0, 127.0);
+        vec2 sample_pair =
+            environment_state.records[
+                grass.flags.w].lut[
+                uint(floor_index)];
+        float fog_factor = clamp(
+            sample_pair.x +
+                sample_pair.y * (fog_index - floor_index),
+            0.0, 1.0);
+        resolved_color.rgb = mix(
+            fog_color_and_mode.rgb,
+            resolved_color.rgb, fog_factor);
+    }
+    out_color = resolved_color;
+#ifdef GRASS_RASTER_DEPTH
+    float written_depth = raster_z;
+#else
+    gl_FragDepth = clamp(resolved_depth, 0.0, 1.0);
+    float written_depth = gl_FragDepth;
+#endif
+#if GRASS_AUXILIARY_OUTPUTS
+    // Only rasterized, depth-visible grass occludes native contours.
+    // The separate native geometry guide remains untouched.
+    out_rigid_motion.a = 1.0 - written_depth;
+#endif
+}
+)glsl";
+
+// The card tiers' visibility weight (GrassCardLevelWeight of grass_card_lod.h).
+constexpr char kGrassCardWeightShader[] = R"glsl(
+float grass_card_weight(uint level, float distance, vec4 card_distances) {
+    float blend = card_distances.w;
+    float half_blend = blend * 0.5;
+    float enter = level == 0u ? card_distances.x : level == 1u ? card_distances.y : card_distances.z;
+    float weight = grass_tuft_weight(distance, enter * (1.0 - blend), enter * (1.0 - half_blend));
+    if (level + 1u < 3u) {
+        float leave = level == 0u ? card_distances.y : card_distances.z;
+        weight *= 1.0 - grass_tuft_weight(distance, leave * (1.0 - half_blend), leave);
+    }
+    return weight;
+}
+)glsl";
+
+std::string GrassCardConstants() {
+    return "#define GRASS_CARD_ELEVATIONS " + std::to_string(kGrassCardAtlasElevations) + "u\n" +
+           "#define GRASS_CARD_VARIANTS " + std::to_string(kGrassCardAtlasVariants) + "u\n" +
+           "#define GRASS_CARD_LEVELS " + std::to_string(kGrassCardLevelCount) + "u\n";
+}
+} // namespace
+
+std::string BuildGrassVertexShader() {
+    return
+            std::string("#version 450\n") + std::string(kToonSurfaceResponseShader) + std::string(kGrassBladeShapeShader) +
+            std::string(kGrassDistantTuftShader) + std::string(kGrassIndexedVertexShader) +
+            std::string(Renderer3ds::kPicaSurfaceLightingRecomposeShader) +
+            std::string(kGrassShadowRefinementShader) + std::string(kGrassRootAnchorShader) +
+            std::string(kGrassEnvironmentShader) + std::string(kGrassShadingShader) + R"glsl(
+// Root i draws the anchor root_anchor_indices[i] of root_anchors.
+layout(std430,set=0,binding=2) readonly buffer GrassRootAnchors { uvec4 values[]; } root_anchors;
+layout(std430,set=0,binding=9) readonly buffer GrassRootAnchorIndices { uint values[]; } root_anchor_indices;
+layout(std430,set=0,binding=3) readonly buffer GrassPreparedGroups { uvec2 entries[]; } prepared_groups;
+struct GrassShadowReference { uint first; uint second; float weight; };
+layout(std430,set=0,binding=5) readonly buffer GrassShadowReferences { GrassShadowReference values[]; } shadow_references;
+layout(std430,set=0,binding=6) readonly buffer GrassVisibleRoots { uint values[]; } visible_roots;
+// Per root, half precision: the interaction bend (X) and the bend the
+// previous frame drew (Y).
+layout(std430,set=0,binding=8) readonly buffer GrassRootBends { uvec2 values[]; } root_bends;
+
+GrassRoot grass_load_root(uint root) {
+    uint first = root_anchor_indices.values[root] * 3u;
+    return grass_decode_anchor(root_anchors.values[first], root_anchors.values[first + 1u],
+                               root_anchors.values[first + 2u]);
+}
+layout(location=0) out vec4 blade_color;
+layout(location=1) out vec4 blade_normal_guide;
+layout(location=2) out vec4 blade_ambient_guide;
+layout(location=3) out vec4 tuft_sample;
+layout(location=4) flat out float lod_visibility;
+layout(location=6) out vec3 blade_view_direction;
+layout(location=7) flat out float blade_rim_weight;
+layout(location=8) out vec4 blade_current_clip;
+layout(location=9) out vec4 blade_previous_clip;
+layout(location=10) out vec3 blade_lit_ceiling;
+
 // Far tufts spread their blades with the camera distance.
 float grass_tuft_coverage(float tuft_weight, float lod_seed, vec4 lod, vec4 tuft_style) {
     float choice = grass_lod_choice(lod_seed);
@@ -363,22 +561,6 @@ vec3 grass_blade_position(
     position.xz += width_axis * bend_half_width.z *
                    width_factor * width_sign;
     return position;
-}
-
-vec4 grass_clip_position(mat4 position_to_clip, vec3 position, vec2 jitter_ndc) {
-    vec4 clip = position_to_clip * vec4(position, 1.0);
-    vec4 result;
-    if (grass.flags.x != 0u) {
-        // Match the generated PICA vertex shader exactly. Its projection is
-        // already rotated for the physical CTR framebuffer.
-        result = vec4(clip.x, clip.y, -clip.z, clip.w);
-    } else {
-        // Renderer-owned world projections are logical/unrotated and must be
-        // transposed into the physical top framebuffer before scanout.
-        result = vec4(clip.y, clip.x, clip.z, clip.w);
-    }
-    result.xy += jitter_ndc * result.w;
-    return result;
 }
 
 void main() {
@@ -466,12 +648,8 @@ void main() {
         lighting, ambient_response);
     uvec4 source_light = environment_state.records[grass.flags.w].native_lighting;
     if (source_light.y != 0u) {
-        uvec3 vertices = uvec3(in_surface_reference.x & 65535u,
-            in_surface_reference.x >> 16u, in_surface_reference.y & 65535u) + source_light.x;
-        vec2 weights = vec2((in_surface_reference.y >> 16u) & 255u, in_surface_reference.y >> 24u) / 255.0;
-        bool coefficients = (source_light.y & 2u) != 0u;
         float shadow_visibility = 1.0;
-        if (coefficients) {
+        if ((source_light.y & 2u) != 0u) {
             GrassShadowReference reference = shadow_references.values[visible_roots.values[root_index]];
             GrassShadowVisibility first = shadow_visibility_grid.values[reference.first];
             shadow_visibility = mix(first.visibility,
@@ -479,19 +657,7 @@ void main() {
             shadow_visibility = grass_local_shadow(
                 shadow_visibility, in_base_height.xyz, world_normal, first.patches);
         }
-        vec3 original_a, original_b, original_c;
-        vec4 a = grass_surface_sample(vertices.x, shadow_visibility, coefficients, original_a);
-        vec4 b = grass_surface_sample(vertices.y, shadow_visibility, coefficients, original_b);
-        vec4 c = grass_surface_sample(vertices.z, shadow_visibility, coefficients, original_c);
-        if (min(a.a, min(b.a, c.a)) > 0.5) {
-            lighting = a.rgb * (1.0 - weights.x - weights.y) + b.rgb * weights.x + c.rgb * weights.y;
-            if (coefficients) {
-                vec3 original = original_a * (1.0 - weights.x - weights.y) + original_b * weights.x + original_c * weights.y;
-                // Preserve the existing ambient response when direct light is
-                // removed, instead of applying shadow a second time through AO.
-                ambient_response = clamp(ambient_response * original / max(lighting, vec3(1.0e-6)), 0.0, 1.0);
-            }
-        }
+        grass_apply_native_lighting(grass.flags.w, in_surface_reference, shadow_visibility, lighting, ambient_response);
     }
     blade_color = vec4(
         evaluate_blade_color(
@@ -506,32 +672,13 @@ void main() {
     ToonSurfaceParameters toon = environment_state.records[grass.flags.w].toon;
     if (toon.flags.x > 0.5)
         blade_color.rgb = oot3d_toon_banded_color(blade_color.rgb, lighting, toon.flags.y, true, toon);
-    vec3 view_side =
-        environment_state.records[
-            grass.flags.w].view_side.xyz;
-    vec3 guide_normal =
-        dot(view_side, view_side) > 1.0e-8
-            ? vec3(
-                  dot(view_side, world_normal),
-                  dot(
-                      environment_state.records[
-                          grass.flags.w].view_up.xyz,
-                      world_normal),
-                  -dot(
-                      environment_state.records[
-                          grass.flags.w].view_forward.xyz,
-                      world_normal))
-            : vec3(0.0, 0.0, 1.0);
     blade_normal_guide = vec4(
-        guide_normal * 0.5 + 0.5,
+        grass_view_space(grass.flags.w, world_normal) * 0.5 + 0.5,
         0.25098039215686274);
     blade_ambient_guide =
         vec4(ambient_response, 1.0);
     vec3 eye = environment_state.records[grass.flags.w].camera_position.xyz;
-    vec3 toward_eye = eye - position;
-    blade_view_direction = vec3(dot(view_side, toward_eye),
-        dot(environment_state.records[grass.flags.w].view_up.xyz, toward_eye),
-        -dot(environment_state.records[grass.flags.w].view_forward.xyz, toward_eye));
+    blade_view_direction = grass_view_space(grass.flags.w, eye - position);
     vec4 rim_distance = environment_state.records[grass.flags.w].rim_distance;
     // Root distance is identical for all vertices and LOD representations.
     float root_distance = length(eye - in_base_height.xyz);
@@ -545,7 +692,8 @@ std::string BuildGrassFragmentShader(bool rasterDepth) {
             (rasterDepth ? "#define GRASS_RASTER_DEPTH 1\n" : "") +
             std::string(Renderer3ds::PicaGeometryGuideShaderLibrary()) +
             std::string(kToonSurfaceResponseShader) +
-            std::string(kGrassDistantTuftShader) + R"glsl(
+            std::string(kGrassDistantTuftShader) + std::string(kGrassEnvironmentShader) +
+            std::string(kGrassFragmentOutputShader) + R"glsl(
 layout(location=0) in vec4 blade_color;
 layout(location=1) in vec4 blade_normal_guide;
 layout(location=2) in vec4 blade_ambient_guide;
@@ -554,57 +702,17 @@ layout(location=4) flat in float lod_visibility;
 layout(location=6) in vec3 blade_view_direction;
 layout(location=7) flat in float blade_rim_weight;
 layout(location=10) in vec3 blade_lit_ceiling;
-struct GrassEnvironmentRecord {
-    vec4 color_and_mode;
-    vec2 lut[128];
-    vec4 wind_direction_time;
-    vec4 wind_primary;
-    vec4 wind_detail;
-    vec4 camera_position;
-    vec4 appearance_root;
-    vec4 appearance_tip;
-    vec4 texture_color;
-    vec4 texture_brightness_flags;
-    vec4 light_directions[3];
-    vec4 light_diffuse[3];
-    vec4 light_ambient[3];
-    vec4 view_forward;
-    vec4 view_side;
-    vec4 view_up;
-    vec4 blade_shape;
-    vec4 tuft_lod;
-    vec4 distance_lod;
-    vec4 tuft_style;
-    ToonSurfaceParameters toon;
-    uvec4 native_lighting;
-    vec4 rim_distance;
-    mat4 previous_position_to_clip;
-    vec4 previous_camera_time;
-    vec4 motion_state;
-};
-layout(std430, set=0, binding=0) readonly buffer GrassEnvironmentState {
-    GrassEnvironmentRecord records[];
-} environment_state;
-layout(push_constant) uniform GrassState {
-    mat4 position_to_clip;
-    vec4 jitter_ndc;
-    vec4 depth_state;
-    uvec4 flags;
-} grass;
-layout(location=0) out vec4 out_color;
 #if GRASS_AUXILIARY_OUTPUTS
 layout(location=8) in vec4 blade_current_clip;
 layout(location=9) in vec4 blade_previous_clip;
-layout(location=1) out vec4 out_normal_guide;
-layout(location=2) out vec4 out_material_guide;
-layout(location=3) out vec4 out_rigid_motion;
-layout(location=4) out vec4 out_ambient_guide;
-layout(location=6) out uvec4 out_geometry_guide;
 #endif
 void main() {
+    vec3 blade_face_dx = vec3(0.0), blade_face_dy = vec3(0.0);
+    vec4 current_clip = vec4(0.0), previous_clip = vec4(0.0);
 #if GRASS_AUXILIARY_OUTPUTS
     // Before any discard: derivatives need the whole quad.
-    vec3 blade_face_dx = dFdx(blade_view_direction), blade_face_dy = dFdy(blade_view_direction);
+    blade_face_dx = dFdx(blade_view_direction); blade_face_dy = dFdy(blade_view_direction);
+    current_clip = blade_current_clip; previous_clip = blade_previous_clip;
 #endif
     // Blade-local stipple, not frame/screen-space noise. Discard before every
     // guide/depth write; fading geometry cannot leave invisible occluders.
@@ -616,81 +724,296 @@ void main() {
     if (grass.flags.y == 0u && !grass_tuft_covered(tuft_sample,
             uint(environment_state.records[grass.flags.w].tuft_lod.z),
             environment_state.records[grass.flags.w].tuft_style.x)) discard;
-    vec4 resolved_color = blade_color;
-    ToonSurfaceParameters toon = environment_state.records[grass.flags.w].toon;
-    if (toon.flags.x > 0.5)
-        resolved_color.rgb = clamp(resolved_color.rgb, 0.0, 1.0);
-    if (toon.flags.x > 0.5 && blade_rim_weight > 0.0)
-        resolved_color.rgb = clamp(resolved_color.rgb + blade_lit_ceiling * blade_rim_weight *
-            oot3d_toon_rim(blade_normal_guide.xyz * 2.0 - 1.0, blade_view_direction, toon), 0.0, 1.0);
-    resolved_color.rgb = min(resolved_color.rgb, blade_lit_ceiling);
-#if GRASS_AUXILIARY_OUTPUTS
-    out_normal_guide = blade_normal_guide;
-    out_geometry_guide = uvec4(0u, pica_geometry_encode_normal(pica_geometry_face_normal(
-        blade_view_direction, blade_face_dx, blade_face_dy)), 2u, 0u);
-    // With the placement's previous frame the blade writes exact motion and
-    // keeps its temporal history. Without it, the motion pass invalidates
-    // motion and the reactive mask rejects the history,
-    // since wind and interaction still move the blade.
-    bool exact_motion = environment_state.records[grass.flags.w].motion_state.z > 0.5 &&
-        blade_current_clip.w > 1.0e-7 && blade_previous_clip.w > 1.0e-7;
-    out_material_guide = vec4(0.0, 1.0, 0.0, exact_motion ? 0.0 : 1.0);
-    out_ambient_guide = blade_ambient_guide;
-    out_rigid_motion = vec4(0.0);
-    if (exact_motion) {
-        vec2 current_uv = blade_current_clip.xy / blade_current_clip.w * 0.5 + 0.5;
-        vec2 previous_uv = blade_previous_clip.xy / blade_previous_clip.w * 0.5 + 0.5;
-        out_rigid_motion.xyz = vec3(previous_uv - current_uv, 3.0);
-    }
-#endif
-    float resolved_depth = gl_FragCoord.z;
-    if (grass.depth_state.w > 0.5) {
-        float pica_z_over_w =
-            grass.flags.x != 0u ? -gl_FragCoord.z : gl_FragCoord.z;
-        resolved_depth =
-            pica_z_over_w * grass.depth_state.x +
-            grass.depth_state.y;
-        if (grass.depth_state.z > 0.5)
-            resolved_depth /= max(gl_FragCoord.w, 1.0e-7);
-    }
-    vec4 fog_color_and_mode =
-        environment_state.records[
-            grass.flags.w].color_and_mode;
-    if (fog_color_and_mode.w > 0.5) {
-        float fog_depth =
-            fog_color_and_mode.w > 1.5
-                ? 1.0 - resolved_depth
-                : resolved_depth;
-        float fog_index = fog_depth * 128.0;
-        float floor_index = clamp(floor(fog_index), 0.0, 127.0);
-        vec2 sample_pair =
-            environment_state.records[
-                grass.flags.w].lut[
-                uint(floor_index)];
-        float fog_factor = clamp(
-            sample_pair.x +
-                sample_pair.y * (fog_index - floor_index),
-            0.0, 1.0);
-        resolved_color.rgb = mix(
-            fog_color_and_mode.rgb,
-            resolved_color.rgb, fog_factor);
-    }
-    out_color = resolved_color;
-#ifdef GRASS_RASTER_DEPTH
-    float written_depth = gl_FragCoord.z;
-#else
-    gl_FragDepth = clamp(resolved_depth, 0.0, 1.0);
-    float written_depth = gl_FragDepth;
-#endif
-#if GRASS_AUXILIARY_OUTPUTS
-    // Only rasterized, depth-visible blades/tufts occlude native contours.
-    // The separate native geometry guide remains untouched.
-    out_rigid_motion.a = 1.0 - written_depth;
-#endif
+    grass_write_fragment(blade_color, blade_normal_guide, blade_ambient_guide, blade_view_direction,
+        blade_face_dx, blade_face_dy, blade_rim_weight, blade_lit_ceiling, current_clip, previous_clip,
+        gl_FragCoord.z, gl_FragCoord.w);
 }
 )glsl";
 }
 
+std::string BuildGrassCardVertexShader() {
+    return std::string("#version 450\n") + GrassCardConstants() + std::string(kToonSurfaceResponseShader) +
+            std::string(kGrassDistantTuftShader) + std::string(Renderer3ds::kPicaSurfaceLightingRecomposeShader) +
+            std::string(kGrassShadowRefinementShader) + std::string(kGrassRootAnchorShader) +
+            std::string(kGrassEnvironmentShader) + std::string(kGrassShadingShader) +
+            std::string(kGrassCardWeightShader) + R"glsl(
+// GrassCardRecord of grass_card_lod.h.
+struct GrassCardRecord {
+    vec4 root_height;
+    vec4 extent_phase;
+    // normal (octahedral), seed, surface colour, first shadow point
+    uvec4 packed;
+    // second shadow point, shadow weight (float bits), surface reference
+    uvec4 shadow;
+};
+layout(std430,set=0,binding=10) readonly buffer GrassCardRecords { GrassCardRecord values[]; } card_records;
+
+layout(location=0) flat out vec4 card_root_color;
+layout(location=1) flat out vec4 card_tip_color;
+layout(location=2) flat out vec4 card_normal_guide;
+layout(location=3) flat out vec4 card_ambient_guide;
+// u across the card, the vertical position over the tile radius
+layout(location=4) out vec2 card_uv;
+// weight, dither seed, atlas layer of the lower and the upper elevation tile
+layout(location=5) flat out vec4 card_lod;
+layout(location=6) out vec3 card_view_direction;
+layout(location=7) flat out float card_rim_weight;
+layout(location=8) out vec4 card_current_clip;
+layout(location=9) out vec4 card_previous_clip;
+layout(location=10) flat out vec3 card_lit_ceiling;
+// tile mix, the tile set's height over radius, the lower tile's elevation
+// index, the blade depth scale (world units per encoded unit)
+layout(location=11) flat out vec4 card_tiles;
+// the point of the card plane (through the root) under the fragment
+layout(location=12) out vec3 card_world_position;
+// toward the eye (the atlas depth axis)
+layout(location=13) flat out vec3 card_toward;
+// how far toward the eye of the card plane the drawn fragment lies: the
+// largest blade offset the fragment may place in front of the plane
+layout(location=14) out float card_shift;
+
+const float kCardHalfPi = 1.57079632679;
+
+// The tile set whose height over radius is nearest the card's, in log space
+// (GrassCardAtlasSetFor).
+uint card_tile_set(float ratio, vec4 card_style, out float set_ratio) {
+    uint best = 0u;
+    set_ratio = card_style.x;
+    float nearest = abs(log(ratio) - log(card_style.x));
+    float d1 = abs(log(ratio) - log(card_style.y));
+    if (d1 < nearest) { nearest = d1; best = 1u; set_ratio = card_style.y; }
+    float d2 = abs(log(ratio) - log(card_style.z));
+    if (d2 < nearest) { best = 2u; set_ratio = card_style.z; }
+    return best;
+}
+
+// The quad corner of a card seen from an eye at a time: the plane through
+// the representative root that faces the eye, the tile's extent
+// (GrassCardTileExtentAt) and the wind shear of the top edge. The elevation
+// the tiles are mixed at is returned for the fragment's per-tile mapping.
+vec3 card_corner(vec3 eye, float wind_time, uint env, vec3 root, float height, float tile_radius,
+                 float set_ratio, float phase, float sx, float sy, out float elevation, out vec3 toward,
+                 out float vertical) {
+    vec3 to_eye = eye - root;
+    float distance = max(length(to_eye), 1.0e-3);
+    toward = to_eye / distance;
+    elevation = clamp(asin(clamp(toward.y, -1.0, 1.0)), 0.0, kCardHalfPi);
+    vec3 horizontal = vec3(toward.x, 0.0, toward.z);
+    float horizontal_length = length(horizontal);
+    vec3 side = horizontal_length > 1.0e-4 ? vec3(horizontal.z, 0.0, -horizontal.x) / horizontal_length
+                                           : environment_state.records[env].view_side.xyz;
+    vec3 up_axis = cross(toward, side);
+    float cos_e = cos(elevation), sin_e = sin(elevation);
+    float above = tile_radius * (set_ratio * cos_e + sin_e);
+    float below = tile_radius * sin_e;
+    float t = mix(-below, above, sy);
+    vertical = t / tile_radius;
+    vec3 position = root + side * (sx * tile_radius) + up_axis * t;
+    // The top shears with the wind like a blade's tip.
+    float bend_fraction = clamp(t / max(height, 1.0e-3), 0.0, 1.0);
+    vec2 wind = evaluate_wind(env, root, phase, wind_time);
+    position.xz += wind * height * bend_fraction * (0.65 + 0.35 * bend_fraction);
+    return position;
+}
+
+void main() {
+    uint env = grass.flags.w;
+    uint level = min(grass.flags.y, GRASS_CARD_LEVELS - 1u);
+    GrassCardRecord card = card_records.values[gl_InstanceIndex];
+    // Six vertices: two triangles of the quad (bottom-left, bottom-right,
+    // top-left; top-left, bottom-right, top-right).
+    uint corner = uint(gl_VertexIndex) % 6u;
+    uint quad = corner < 3u ? corner : corner == 3u ? 2u : corner == 4u ? 1u : 3u;
+    float sx = (quad & 1u) != 0u ? 1.0 : -1.0;
+    float sy = (quad >> 1u) != 0u ? 1.0 : 0.0;
+    vec3 root = card.root_height.xyz;
+    float height = max(card.root_height.w, 1.0e-3);
+    float radius = max(card.extent_phase.x, 1.0e-3);
+    vec4 card_distances = environment_state.records[env].card_distances;
+    vec4 card_style = environment_state.records[env].card_style;
+    vec3 eye = environment_state.records[env].camera_position.xyz;
+    float distance = length(eye - root);
+    float weight = card_style.w > 0.5 ? grass_card_weight(level, distance, card_distances) : 0.0;
+    card_lod = vec4(0.0);
+    card_tiles = vec4(0.0);
+    card_current_clip = vec4(0.0);
+    card_previous_clip = vec4(0.0);
+    if (weight <= 0.0 || distance <= 1.0e-3) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+    // The tile set nearest the card's blade height over footprint radius; the
+    // card is drawn at the radius at which that set's blades have its height,
+    // so the tile keeps its proportions (and its ground footprint).
+    float set_ratio;
+    uint tile_set = card_tile_set(height / radius, card_style, set_ratio);
+    float tile_radius = height / set_ratio;
+    float depth_scale = (1.0 + set_ratio) * tile_radius;
+    // Frustum test before the shading: a card none of whose points (the
+    // quad, its wind shear, its blade offsets, all within twice the depth
+    // scale of the root) can reach the clip volume collapses here. The
+    // projection's rows bound how far a world offset moves each clip term.
+    {
+        vec4 root_clip = grass.position_to_clip * vec4(root, 1.0);
+        float reach = 2.0 * depth_scale;
+        mat4 m = grass.position_to_clip;
+        float margin_w = reach * length(vec3(m[0][3], m[1][3], m[2][3]));
+        float margin_x = reach * length(vec3(m[0][0], m[1][0], m[2][0]));
+        float margin_y = reach * length(vec3(m[0][1], m[1][1], m[2][1]));
+        float w_max = root_clip.w + margin_w;
+        if (w_max <= 0.0 || abs(root_clip.x) - margin_x > w_max || abs(root_clip.y) - margin_y > w_max) {
+            gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+            return;
+        }
+    }
+    float elevation;
+    float vertical;
+    vec3 position = card_corner(eye, environment_state.records[env].wind_direction_time.z, env, root, height,
+                                tile_radius, set_ratio, card.extent_phase.y, sx, sy, elevation, card_toward, vertical);
+    card_world_position = position;
+    // Conservative depth: the corner is drawn on its own eye ray, pulled
+    // toward the eye by the largest blade offset the tile encodes (in view
+    // depth), so the blade the fragment places lies at or behind the drawn
+    // fragment and the raster-depth programs keep the early depth test. The
+    // projection is unchanged, the plane only moves along the rays.
+    vec3 forward = environment_state.records[env].view_forward.xyz;
+    if (dot(forward, forward) <= 1.0e-8) forward = -card_toward;
+    float cos_theta = max(-dot(card_toward, forward), 1.0e-3);
+    float view_depth = max(dot(position - eye, forward), 1.0e-3);
+    float ray = clamp(1.0 - depth_scale * cos_theta / view_depth, 0.1, 1.0);
+    card_shift = (1.0 - ray) * view_depth / cos_theta;
+    gl_Position = grass_clip_position(grass.position_to_clip, eye + (position - eye) * ray, grass.jitter_ndc.xy);
+    // Exact motion like the blades: the same corner with the previous
+    // frame's eye, wind time and jitter, on the same fraction of its ray.
+    vec4 motion_state = environment_state.records[env].motion_state;
+    if (motion_state.z > 0.5) {
+        vec4 previous_camera_time = environment_state.records[env].previous_camera_time;
+        float previous_elevation, previous_vertical;
+        vec3 previous_toward;
+        vec3 previous_position = card_corner(previous_camera_time.xyz, previous_camera_time.w, env, root, height,
+                                             tile_radius, set_ratio, card.extent_phase.y, sx, sy, previous_elevation,
+                                             previous_toward, previous_vertical);
+        card_current_clip = gl_Position;
+        card_previous_clip = grass_clip_position(
+            environment_state.records[env].previous_position_to_clip,
+            previous_camera_time.xyz + (previous_position - previous_camera_time.xyz) * ray, motion_state.xy);
+    }
+    card_uv = vec2(sx * 0.5 + 0.5, vertical);
+    // The two elevation tiles around the view's elevation, mixed per texel;
+    // each tile maps the vertical position through its own extent.
+    float tile_position = elevation / kCardHalfPi * float(GRASS_CARD_ELEVATIONS - 1u);
+    uint tile0 = min(uint(floor(tile_position)), GRASS_CARD_ELEVATIONS - 2u);
+    uint tile1 = tile0 + 1u;
+    uint variant = card.packed.y % GRASS_CARD_VARIANTS;
+    uint layer0 = (tile_set * GRASS_CARD_ELEVATIONS + tile0) * GRASS_CARD_VARIANTS + variant;
+    uint layer1 = (tile_set * GRASS_CARD_ELEVATIONS + tile1) * GRASS_CARD_VARIANTS + variant;
+    card_lod = vec4(weight, float(card.packed.y >> 8u) / 16777216.0, float(layer0), float(layer1));
+    card_tiles = vec4(clamp(tile_position - float(tile0), 0.0, 1.0), set_ratio, float(tile0), depth_scale);
+
+    vec3 world_normal = grass_unpack_normal(card.packed.x);
+    vec3 lighting;
+    vec3 ambient_response;
+    evaluate_shading(env, world_normal, lighting, ambient_response);
+    uvec4 source_light = environment_state.records[env].native_lighting;
+    if (source_light.y != 0u) {
+        float shadow_visibility = 1.0;
+        if ((source_light.y & 2u) != 0u && card.packed.w != 0xffffffffu) {
+            GrassShadowVisibility first = shadow_visibility_grid.values[card.packed.w];
+            shadow_visibility = mix(first.visibility,
+                shadow_visibility_grid.values[card.shadow.x].visibility, uintBitsToFloat(card.shadow.y));
+            shadow_visibility = grass_local_shadow(shadow_visibility, root, world_normal, first.patches);
+        }
+        grass_apply_native_lighting(env, card.shadow.zw, shadow_visibility, lighting, ambient_response);
+    }
+    card_root_color = vec4(evaluate_blade_color(env, 0.0, lighting, card.packed.z), 1.0);
+    card_tip_color = vec4(evaluate_blade_color(env, 1.0, lighting, card.packed.z), 1.0);
+    card_lit_ceiling = grass_native_material_rgb(vec3(1.0), lighting, source_light);
+    ToonSurfaceParameters toon = environment_state.records[env].toon;
+    if (toon.flags.x > 0.5) {
+        card_root_color.rgb = oot3d_toon_banded_color(card_root_color.rgb, lighting, toon.flags.y, true, toon);
+        card_tip_color.rgb = oot3d_toon_banded_color(card_tip_color.rgb, lighting, toon.flags.y, true, toon);
+    }
+    card_normal_guide = vec4(grass_view_space(env, world_normal) * 0.5 + 0.5, 0.25098039215686274);
+    card_ambient_guide = vec4(ambient_response, 1.0);
+    card_view_direction = grass_view_space(env, eye - position);
+    vec4 rim_distance = environment_state.records[env].rim_distance;
+    card_rim_weight = rim_distance.z * (1.0 - smoothstep(rim_distance.x, rim_distance.y, distance));
+}
+)glsl";
+}
+
+std::string BuildGrassCardFragmentShader(bool conservativeDepth) {
+    return std::string("#version 450\n") +
+            // The written depth is never nearer than the rasterized one (the
+            // vertex program pulls the quad toward the eye by the largest
+            // blade offset), which with the raster depth mapping keeps the
+            // early depth test.
+            (conservativeDepth ? "layout(depth_greater) out float gl_FragDepth;\n" : "") +
+            GrassCardConstants() +
+            std::string(Renderer3ds::PicaGeometryGuideShaderLibrary()) +
+            std::string(kToonSurfaceResponseShader) + std::string(kGrassEnvironmentShader) +
+            std::string(kGrassFragmentOutputShader) + R"glsl(
+layout(set=0,binding=11) uniform sampler2DArray grass_card_atlas;
+layout(location=0) flat in vec4 card_root_color;
+layout(location=1) flat in vec4 card_tip_color;
+layout(location=2) flat in vec4 card_normal_guide;
+layout(location=3) flat in vec4 card_ambient_guide;
+layout(location=4) in vec2 card_uv;
+layout(location=5) flat in vec4 card_lod;
+layout(location=6) in vec3 card_view_direction;
+layout(location=7) flat in float card_rim_weight;
+layout(location=10) flat in vec3 card_lit_ceiling;
+layout(location=11) flat in vec4 card_tiles;
+layout(location=12) in vec3 card_world_position;
+layout(location=13) flat in vec3 card_toward;
+layout(location=14) in float card_shift;
+#if GRASS_AUXILIARY_OUTPUTS
+layout(location=8) in vec4 card_current_clip;
+layout(location=9) in vec4 card_previous_clip;
+#endif
+const float kCardTileStep = 1.57079632679 / float(GRASS_CARD_ELEVATIONS - 1u);
+
+// The tile's v for the card's vertical position (over the tile radius): the
+// tile spans [-sin e, ratio cos e + sin e] at its own elevation.
+float card_tile_v(float vertical, float tile_elevation, float ratio) {
+    float sin_e = sin(tile_elevation), cos_e = cos(tile_elevation);
+    return (vertical + sin_e) / max(ratio * cos_e + 2.0 * sin_e, 1.0e-5);
+}
+
+void main() {
+    vec3 face_dx = vec3(0.0), face_dy = vec3(0.0);
+    vec4 current_clip = vec4(0.0), previous_clip = vec4(0.0);
+#if GRASS_AUXILIARY_OUTPUTS
+    face_dx = dFdx(card_view_direction); face_dy = dFdy(card_view_direction);
+    current_clip = card_current_clip; previous_clip = card_previous_clip;
+#endif
+    // Both elevation tiles before any discard (their derivatives select the mip).
+    float elevation0 = card_tiles.z * kCardTileStep;
+    vec2 uv0 = vec2(card_uv.x, card_tile_v(card_uv.y, elevation0, card_tiles.y));
+    vec2 uv1 = vec2(card_uv.x, card_tile_v(card_uv.y, elevation0 + kCardTileStep, card_tiles.y));
+    vec4 lower = texture(grass_card_atlas, vec3(uv0, card_lod.z));
+    vec4 upper = texture(grass_card_atlas, vec3(uv1, card_lod.w));
+    float coverage = mix(lower.x, upper.x, card_tiles.x);
+    if (coverage < 0.5) discard;
+    // Card-local stipple for the tier blend, like the blades' fade.
+    if (card_lod.x < 1.0) {
+        vec2 cell = floor(card_uv * 48.0);
+        float threshold = fract(sin(dot(cell, vec2(12.9898, 78.233)) + card_lod.y * 37.719) * 43758.5453);
+        if (card_lod.x <= threshold) discard;
+    }
+    float height_factor = mix(lower.y, upper.y, card_tiles.x);
+    vec4 color = mix(card_root_color, card_tip_color, height_factor);
+    // The texel's blade sits ahead of or behind the card plane: its depth is
+    // written, so the terrain and the actors inside the footprint resolve
+    // against the blade and not against the plane. Never ahead of the drawn
+    // fragment (card_shift): the conservative depth declaration holds.
+    float offset = min((mix(lower.z, upper.z, card_tiles.x) * 2.0 - 1.0) * card_tiles.w, card_shift);
+    vec4 blade_clip = grass_clip_position(grass.position_to_clip, card_world_position + card_toward * offset,
+                                          grass.jitter_ndc.xy);
+    float blade_w = max(blade_clip.w, 1.0e-6);
+    grass_write_fragment(color, card_normal_guide, card_ambient_guide, card_view_direction,
+        face_dx, face_dy, card_rim_weight, card_lit_ceiling, current_clip, previous_clip,
+        blade_clip.z / blade_w, 1.0 / blade_w);
+}
+)glsl";
+}
 std::string BuildGrassCompactionComputeShader() {
     return std::string("#version 450\n#define GRASS_ANCHOR_WORDS ") +
         std::to_string(sizeof(GrassWorldAnchor) / sizeof(uint32_t)) + "u\n" + R"glsl(

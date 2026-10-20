@@ -463,6 +463,11 @@ Json SerializeInteractiveGrassSettings(
               { "FarTuftDensity", grass.FarTuftDensity },
               { "FarTuftSpread", grass.FarTuftSpread },
               { "SegmentLodSoftness", grass.SegmentLodSoftness },
+              { "CardLodEnabled", grass.CardLodEnabled },
+              { "CardLodBladeDistance", grass.CardLodBladeDistance },
+              { "CardLodClumpDistance", grass.CardLodClumpDistance },
+              { "CardLodGroupDistance", grass.CardLodGroupDistance },
+              { "CardLodBlendFraction", grass.CardLodBlendFraction },
           } },
         { "Generation", SerializeGrassGeneration(grass.Generation) },
         { "Appearance",
@@ -737,6 +742,13 @@ void DeserializeInteractiveGrassSettings(
         readOptional("FarTuftDensity", value.FarTuftDensity);
         readOptional("FarTuftSpread", value.FarTuftSpread);
         readOptional("SegmentLodSoftness", value.SegmentLodSoftness);
+        // The card LOD (grass_card_lod.h): absent in profiles before it.
+        if (FindMember(*performance, "CardLodEnabled"))
+            ReadScalar(*performance, "CardLodEnabled", value.CardLodEnabled, path + ".Performance.CardLodEnabled", result);
+        readOptional("CardLodBladeDistance", value.CardLodBladeDistance);
+        readOptional("CardLodClumpDistance", value.CardLodClumpDistance);
+        readOptional("CardLodGroupDistance", value.CardLodGroupDistance);
+        readOptional("CardLodBlendFraction", value.CardLodBlendFraction);
     }
     // Optional: old configurations use native alpha for every overlay.
     value.Masks.clear();
@@ -1457,6 +1469,11 @@ std::string_view EnhancedPresetDocument() noexcept {
       "VerticalMargin": 69.0
     },
     "Performance": {
+      "CardLodBladeDistance": 1000.0,
+      "CardLodBlendFraction": 0.25,
+      "CardLodClumpDistance": 4000.0,
+      "CardLodEnabled": false,
+      "CardLodGroupDistance": 15000.0,
       "CullingClusterSize": 25.0,
       "DensityFadeFraction": 1.0,
       "DrawFadeFraction": 0.15000000596046448,
