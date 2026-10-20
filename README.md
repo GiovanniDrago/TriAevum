@@ -143,3 +143,106 @@ for where the main components live.
 TriAevum is independent and is not affiliated with or endorsed by Nintendo.
 
 Worst case scenario, at least we got more grass.
+
+## Building and running on Arch Linux
+
+This is a **developer build from this source checkout**. The public source tree
+contains the runtime, renderer and host services, but not the translated OoT3D
+title logic. The helper below builds the runtime from source and pairs it with
+the matching official Linux release, which carries the translated title and its
+corresponding source. The release is downloaded once and verified.
+
+### Dependencies
+
+```sh
+sudo pacman -S --needed base-devel cmake ninja clang llvm lld git curl python \
+  sdl2-compat sdl3 vulkan-headers vulkan-icd-loader glslang shaderc \
+  libpng zlib libzip bzip2 libvorbis libogg opus spdlog nlohmann-json \
+  tinyxml2 glew
+```
+
+A Vulkan-capable GPU with current drivers is required (`nvidia-utils` or
+`mesa`). The first CMake configure also downloads third-party sources
+(ImGui/NRI/FidelityFX), so network access is needed. If `spdlog` is missing the
+helper builds a private copy under `~/.local/share/TriAevum-dev/deps`.
+
+### Build, prepare and play
+
+```sh
+./scripts/build-and-run-linux.sh "/path/to/your/decrypted.cci"
+```
+
+The first run:
+
+- builds the runtime into `../triaevum-linux-build`
+- downloads the matching official Linux release into
+  `~/.local/share/TriAevum-dev/release/`
+- extracts the translated title source and writes `function-index.tsv`
+- imports the ROM with the release's Forge, prepares shader/pipeline caches,
+  and launches the game
+
+Later runs reuse the build, release, imported content and GPU caches. Saves,
+settings and caches live under `~/.local/share/TriAevum-dev/data`.
+
+Useful options:
+
+| Option | Effect |
+| --- | --- |
+| `--rebuild-title` | Compile the title from the release's translated source instead of using the release title binary. |
+| `--title-source-dir PATH` | Build the title from an edited source tree (implies `--rebuild-title`). |
+| `--refresh-title-manifest` | Update title-source hashes after local edits. |
+| `--release PATH` | Use a local AppImage or an extracted release directory. |
+| `--no-build` / `--no-launch` | Reuse the existing build / stop before launching. |
+| `--skip-source` | Do not extract/index the translated title source. |
+| `-j N` | Build parallelism. |
+
+Environment variables: `TRIAEVUM_BUILD_DIR`, `TRIAEVUM_DEV_ROOT`,
+`TRIAEVUM_BUILD_JOBS`, `TRIAEVUM_RELEASE_TAG`.
+
+### Browsing the translated title source
+
+The extracted source is under
+`~/.local/share/TriAevum-dev/title-source/<archive-sha256>/`. It contains
+257 generated C++ files (about 9.8 million lines) covering the complete
+12,439-function translated closure. `function-index.tsv` lists the guest
+address, function name, shard and line for every translated function:
+
+```sh
+cd ~/.local/share/TriAevum-dev/title-source/*/
+rg "Gameplay_CameraChangeSetting" .
+rg -n "Execute_Player_SetCsAction" function-index.tsv
+```
+
+This is whole-AOT generated C++, not the original hand-written source: function
+names are partly preserved, but bodies are register-level translations with
+guest-memory reads and writes. ROM assets (models, textures, audio, text and
+scene data) remain binary.
+
+### Personalizing the game
+
+This checkout is on the `personalization` branch. Host-side features (renderer,
+TopScreen UI, input, camera, settings, presentation) are ordinary C++ in this
+repository and only need a runtime rebuild.
+
+Game-logic changes use the translated title source, which can be rebuilt locally:
+
+```sh
+# A ready-to-edit copy already exists here:
+#   ~/.local/share/TriAevum-dev/title-source/personalized
+# To reset it from the pristine release copy:
+source_dir=$(find ~/.local/share/TriAevum-dev/title-source -maxdepth 1 \
+  -mindepth 1 -type d ! -name personalized | head -1)
+rm -rf ~/.local/share/TriAevum-dev/title-source/personalized
+cp -a "$source_dir" ~/.local/share/TriAevum-dev/title-source/personalized
+
+# Edit a shard, then rebuild and run.  The manifest refresh permits local edits;
+# only do this on a private development tree.
+./scripts/build-and-run-linux.sh \
+  --title-source-dir ~/.local/share/TriAevum-dev/title-source/personalized \
+  --refresh-title-manifest "/path/to/your/decrypted.cci"
+```
+
+The helper rebuilds `triaevum_title_aot.so`, rebinds the local catalog and
+reinstalls the changed title. The original downloaded release, your ROM and
+your saves are not modified.
+
