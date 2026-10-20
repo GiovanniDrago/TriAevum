@@ -1480,6 +1480,10 @@ layout(push_constant) uniform GrassFieldState {
     // x: blend start, y: field start, z: draw distance, w: draw fade fraction
     vec4 field;
 } grass;
+// A view ray never descends through the slab more slowly than this (facing
+// clamp): the slab top at distance d can hold columns standing as far as
+// d + slab / GRASS_FIELD_MINIMUM_SLOPE.
+const float GRASS_FIELD_MINIMUM_SLOPE = 0.08;
 vec3 grass_field_normal(uint bits) {
     vec2 oct = unpackSnorm2x16(bits);
     vec3 normal = vec3(oct, 1.0 - abs(oct.x) - abs(oct.y));
@@ -1520,12 +1524,14 @@ void main() {
     vec3 eye = environment_state.records[record].camera_position.xyz;
     float slab = grass.jitter_ndc.w;
     // Distance is convex: the farthest point of a triangle is a corner. A
-    // triangle that ends before the blend starts has no field fragment.
+    // triangle whose slab top no ray can leave at a column beyond the blend
+    // start (the longest descent through the slab is slab / minimum slope)
+    // has no field fragment.
     float farthest = 0.0;
     for (uint c = 0u; c < 3u; ++c) farthest = max(farthest, length(t.corner[c].xyz - eye));
     field_triangle = triangle;
     field_barycentric = vec3(corner == 0u ? 1.0 : 0.0, corner == 1u ? 1.0 : 0.0, corner == 2u ? 1.0 : 0.0);
-    if (farthest + slab < grass.field.x) {
+    if (farthest + slab / GRASS_FIELD_MINIMUM_SLOPE < grass.field.x) {
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
         field_lighting = field_ambient = field_lit_ceiling = field_top = field_normal = field_view_direction = vec3(0.0);
         return;
@@ -1608,6 +1614,13 @@ uint grass_field_hash(ivec2 cell, uint salt) {
 }
 float grass_field_unit(uint value) { return float(value >> 8u) / 16777216.0; }
 uint grass_field_grid_index(uint n, uint i, uint j) { return j * (n + 1u) - j * (j - 1u) / 2u + i; }
+// The blades fade out over [blend start, field start] (their draw fade); the
+// field fades in over the same band and out at the draw distance. Measured
+// where a column stands, never where the ray enters the slab top.
+float grass_field_blend(float column_distance) {
+    return grass_tuft_weight(column_distance, grass.field.x, grass.field.y) *
+        (1.0 - grass_tuft_weight(column_distance, grass.field.z * (1.0 - grass.field.w), grass.field.z));
+}
 
 // Triangle-linear interpolation of the root-derived grid (GrassDistantField):
 // coverage, blade height over the slab, surface colour.
@@ -1666,25 +1679,32 @@ void main() {
     vec3 eye = environment_state.records[record].camera_position.xyz;
     vec3 to_top = top - eye;
     float distance = length(to_top);
-    if (distance < grass.field.x) discard;
     vec3 view = to_top / max(distance, 1.0e-6);
     vec3 normal = normalize(field_normal);
     float facing = -dot(normal, view);
     if (facing <= 0.0) discard;
+    float slab = grass.jitter_ndc.w;
+    float slope = max(facing, GRASS_FIELD_MINIMUM_SLOPE);
+    // Every sample lies on this ray, at distance + its descent from the top:
+    // the columns stand up to slab / slope farther than the slab top the ray
+    // entered. A camera above the field looking along it enters the slab far
+    // nearer than it lands, so the blend band is measured per sample at the
+    // column's own distance; measured at the entry, the band's columns were
+    // only reached through the tops of nearer slabs, which left the field
+    // hollow under its top layer (grass floating above bare ground).
+    float ground_distance = distance + slab / slope;
+    if (ground_distance < grass.field.x) discard;
     float coverage, height_fraction;
     vec4 surface;
     grass_field_grid(field_triangles.values[field_triangle], field_barycentric, coverage, height_fraction, surface);
-    // The blades fade out over [blend start, field start] (their draw fade);
-    // the field fades in over the same band and out at the draw distance.
-    float density = coverage * grass_tuft_weight(distance, grass.field.x, grass.field.y) *
-        (1.0 - grass_tuft_weight(distance, grass.field.z * (1.0 - grass.field.w), grass.field.z));
+    float density = coverage * max(grass_field_blend(ground_distance), grass_field_blend(distance));
     uint debug_mode = grass.flags.y >> 8u;
     if (debug_mode == 1u || debug_mode == 2u || debug_mode == 3u) {
         // Diagnostic (TRIAEVUM_GRASS_FIELD_DEBUG): the slab top, coloured by
-        // coverage (R), blade height (G) and the blend ramp (B) for 1, grey
-        // coverage for 2, grey blade height for 3.
+        // coverage (R), blade height (G) and the blend ramp at the ground (B)
+        // for 1, grey coverage for 2, grey blade height for 3.
         out_color = debug_mode == 1u
-            ? vec4(coverage, height_fraction, grass_tuft_weight(distance, grass.field.x, grass.field.y), 1.0)
+            ? vec4(coverage, height_fraction, grass_tuft_weight(ground_distance, grass.field.x, grass.field.y), 1.0)
             : vec4(vec3(debug_mode == 2u ? coverage : height_fraction), 1.0);
         gl_FragDepth = gl_FragCoord.z;
 #if GRASS_AUXILIARY_OUTPUTS
@@ -1701,7 +1721,6 @@ void main() {
     // Columns on a world-anchored lattice: one per blade spacing near the
     // field start, coarser octaves once a column is under a pixel, each
     // pixel choosing its octave by a stable coarse-cell hash.
-    float slab = grass.jitter_ndc.w;
     float base_cell = grass.jitter_ndc.z;
     // A column never narrower than one and a half pixels: no single-pixel speckle.
     float level = max(log2(max(footprint * 1.5, base_cell) / base_cell), 0.0);
@@ -1712,7 +1731,6 @@ void main() {
     float cell = base_cell * exp2(octave);
     uint salt = uint(octave) * 0x632be5abu;
     vec2 lean = evaluate_wind(record, top, 0.0, environment_state.records[record].wind_direction_time.z) * slab;
-    float slope = max(facing, 0.08);
     uint steps = clamp(grass.flags.y & 0xffu, 1u, 16u);
     // A grazing ray crosses many columns between two height layers: test up
     // to four along that run, so coverage saturates as it does with real
@@ -1726,12 +1744,14 @@ void main() {
     float hit_height = 0.0;
     for (uint k = 0u; k < samples && !hit; ++k) {
         float h = slab * (1.0 - (float(k) + 0.5) / float(samples));
-        vec3 p = top + view * ((slab - h) / slope);
+        float descent = (slab - h) / slope;
+        vec3 p = top + view * descent;
         float above = h / slab;
         vec2 q = (p.xz - lean * above * above) / cell;
         ivec2 c = ivec2(floor(q));
         uint a = grass_field_hash(c, salt);
-        if (grass_field_unit(a) >= density) continue;
+        float sample_density = coverage * grass_field_blend(distance + descent);
+        if (grass_field_unit(a) >= sample_density) continue;
         uint b = grass_field_hash(c, salt ^ 0x2545f491u);
         float column = height_fraction * (0.55 + 0.45 * grass_field_unit(b));
         if (above >= column) continue;

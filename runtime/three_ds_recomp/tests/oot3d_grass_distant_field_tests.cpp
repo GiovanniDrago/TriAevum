@@ -113,6 +113,13 @@ TEST(Oot3dGrassDistantField, ShadersComposeTheBladeHelpers) {
         EXPECT_NE(vertex.find(shared), std::string::npos) << shared;
     }
     EXPECT_NE(fragment.find("vec2 evaluate_wind("), std::string::npos);
+    // The blend band is measured at each column's own distance (entry distance
+    // + descent), never at the slab-top entry, and the vertex cull keeps every
+    // slab whose longest descent can still reach the band.
+    EXPECT_NE(fragment.find("grass_field_blend(distance + descent)"), std::string::npos);
+    EXPECT_NE(fragment.find("if (ground_distance < grass.field.x) discard;"), std::string::npos);
+    EXPECT_EQ(fragment.find("if (distance < grass.field.x) discard;"), std::string::npos);
+    EXPECT_NE(vertex.find("farthest + slab / GRASS_FIELD_MINIMUM_SLOPE < grass.field.x"), std::string::npos);
     EXPECT_NE(BuildGrassFieldFragmentShader(true).find("layout(depth_greater) out float gl_FragDepth"),
               std::string::npos);
 }

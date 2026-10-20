@@ -72,6 +72,21 @@ stop, and every accepted surface triangle is drawn once as a thin grass slab:
   visible surface is, which made the field 10-20 levels brighter than tufts.
 - The GPU selection's budget cut (added by 33c9e31) walked 1,024 histogram
   buckets in one thread, twice per frame (~0.25 ms). It is now a 256-lane scan.
+- The blend band is measured where a column stands, not where the ray enters
+  the slab top (fix after the first release of the field). A third-person
+  camera above the field looking along it enters the slab far nearer than it
+  lands: with the fade evaluated at the entry, rays landing beyond T0 carried
+  the band's reduced density (or were discarded under T0 (1 - b)), so the
+  columns beyond T0 were only reached through the tops of nearer slabs. The
+  field was hollow under its top layer: a bright carpet of column tops floating
+  one slab height above bare ground, doubling the fading blades below it
+  ("grass repeated and shifted into the air", Kokiri Forest from the user's
+  save state, worse with `DistantFieldHeightScale` 2, gone at 0.25). Every
+  sample lies on the entry ray at entry distance + descent, so the fragment now
+  evaluates the fade per sample at that distance, discards only when even the
+  ground sample (entry + slab / minimum slope) is under the blend start, and
+  the vertex stage keeps every slab whose longest descent can still reach the
+  band.
 
 ## Settings
 
