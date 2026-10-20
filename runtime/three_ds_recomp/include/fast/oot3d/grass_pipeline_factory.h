@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstddef>
+#include <span>
 
 namespace Fast::Oot3d {
 
@@ -30,21 +31,23 @@ struct GrassPipelineTargets {
     VkPipelineCache PipelineCache = VK_NULL_HANDLE;
 };
 
-// [0..2] explicit PICA depth, [3..5] rasterized depth, each canonical,
-// instrumented, instrumented with the albedo guide (dynamic rendering only;
-// VK_NULL_HANDLE otherwise).
+// Groups of three pipelines, each canonical, instrumented, instrumented with
+// the albedo guide (dynamic rendering only; VK_NULL_HANDLE otherwise):
+// [0..2] explicit PICA depth, [3..5] rasterized depth, and for the blades
+// [6..8] rasterized depth without discard (GrassBladePipelineSet).
 using GrassPipelineSet = std::array<VkPipeline, 6>;
+using GrassBladePipelineSet = std::array<VkPipeline, 9>;
 
-// Fragments: canonical, instrumented, canonical raster depth, instrumented
-// raster depth. No vertex input (the shaders read storage buffers), triangle
-// list, no culling, depth test and write (less or equal), the grass blend and
-// write masks of every attachment. Throws std::runtime_error on failure
-// after destroying what it created.
+// Fragments: a canonical and an instrumented program per group of three
+// pipelines (explicit depth, raster depth, ...). No vertex input (the shaders
+// read storage buffers), triangle list, no culling, depth test and write (less
+// or equal), the grass blend and write masks of every attachment. Throws
+// std::runtime_error on failure after destroying what it created.
 void CreateGrassPipelineSet(VkDevice device, const GrassPipelineTargets& targets, VkPipelineLayout layout,
-                            VkShaderModule vertex, const std::array<VkShaderModule, 4>& fragments,
-                            GrassPipelineSet& pipelines);
+                            VkShaderModule vertex, std::span<const VkShaderModule> fragments,
+                            std::span<VkPipeline> pipelines);
 
-void DestroyGrassPipelineSet(VkDevice device, GrassPipelineSet& pipelines) noexcept;
+void DestroyGrassPipelineSet(VkDevice device, std::span<VkPipeline> pipelines) noexcept;
 
 } // namespace Fast::Oot3d
 

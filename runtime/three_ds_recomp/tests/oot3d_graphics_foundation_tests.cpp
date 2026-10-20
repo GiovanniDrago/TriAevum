@@ -1262,6 +1262,49 @@ TEST(Oot3dGrassDepth, RasterDepthProgramOnlyWhereDepthIsUnchanged) {
     EXPECT_NE(explicitDepth.find("#ifdef GRASS_RASTER_DEPTH"), std::string::npos);
     EXPECT_EQ(explicitDepth.find("#define GRASS_RASTER_DEPTH"), std::string::npos);
     EXPECT_EQ(rasterDepth.rfind("#version 450\n#define GRASS_RASTER_DEPTH 1\n", 0), 0U);
+    // The whole pass's program: raster depth and every discard compiled out.
+    const auto whole = BuildGrassFragmentShader(true, true);
+    EXPECT_EQ(whole.rfind("#version 450\n#define GRASS_RASTER_DEPTH 1\n#define GRASS_WHOLE_BLADES 1\n", 0), 0U);
+    EXPECT_EQ(rasterDepth.find("#define GRASS_WHOLE_BLADES"), std::string::npos);
+    const auto body = whole.find("void main()");
+    const auto guard = whole.find("#ifndef GRASS_WHOLE_BLADES", body);
+    const auto end = whole.find("#endif", guard);
+    ASSERT_NE(guard, std::string::npos);
+    EXPECT_LT(guard, whole.find("discard;", body));
+    EXPECT_EQ(whole.find("discard;", end), std::string::npos);
+    // The whole-blade distance and the segment bands that skip the fading
+    // pass (the user's Enhanced values: near 5, far 1, 501..1000, softness
+    // 0.75; density and tufts from 0.32 of 2282).
+    EXPECT_NEAR(GrassWholeBladeDistance(2282.0F, 0.32F, true, 0.32F, 50000.0F, 0.15F), 730.24F, 0.01F);
+    EXPECT_NEAR(GrassWholeBladeDistance(2282.0F, 0.32F, true, 0.2F, 50000.0F, 0.15F), 456.4F, 0.01F);
+    EXPECT_NEAR(GrassWholeBladeDistance(2282.0F, 0.32F, false, 0.2F, 50000.0F, 0.15F), 730.24F, 0.01F);
+    EXPECT_NEAR(GrassWholeBladeDistance(2282.0F, 0.32F, true, 0.32F, 600.0F, 0.5F), 300.0F, 0.01F);
+    GrassLodPolicy bands;
+    bands.NearBladeSegments = 5U;
+    bands.FarBladeSegments = 1U;
+    bands.SegmentStartDistance = 501.0F;
+    bands.SegmentEndDistance = 1000.0F;
+    bands.SegmentLodSoftness = 0.75F;
+    bands.DrawDistance = 50000.0F;
+    bands.LodReferenceDistance = 2282.0F;
+    bands.LodStart = bands.LodEnd = 0.32F;
+    bands.FarDensity = 1.0F;
+    const float nearEnd = GrassSegmentsMaximumDistance(bands, 5U);
+    const float middleEnd = GrassSegmentsMaximumDistance(bands, 3U);
+    EXPECT_NEAR(nearEnd, 729.71F, 0.01F);
+    EXPECT_NEAR(middleEnd, 896.04F, 0.01F);
+    EXPECT_TRUE(std::isinf(GrassSegmentsMaximumDistance(bands, 1U)));
+    EXPECT_EQ(GrassSegmentsMaximumDistance(bands, 2U), 0.0F);
+    for (float distance = nearEnd; distance < nearEnd + 400.0F; distance += 0.37F)
+        for (float choice = 0.0F; choice < 1.0F; choice += 1.0F / 512.0F) {
+            const auto lod = ResolveGrassLodWithStableVisibility(bands, distance, choice);
+            EXPECT_NE(lod.BladeSegments, 5U);
+            if (distance >= middleEnd) EXPECT_EQ(lod.BladeSegments, 1U);
+        }
+    // The split bits stay clear of the segment mode and the grouped flag.
+    EXPECT_EQ(kGrassWholePassFlag & (kGrassGroupedFlag | kGrassSegmentModeMask), 0U);
+    EXPECT_EQ(kGrassFadingPassFlag & (kGrassGroupedFlag | kGrassSegmentModeMask | kGrassWholePassFlag), 0U);
+    EXPECT_EQ(kGrassGroupedFlag | kGrassWholePassFlag | kGrassFadingPassFlag | kGrassSegmentModeMask, 0xFFFFFFFFU);
 }
 
 TEST(Oot3dGrassMotion, RequiresConsecutiveMatchingTopology) {
@@ -2254,6 +2297,9 @@ TEST(Oot3dGrassVisibility, CullsOutsideAndReducesFarGeometry) {
     settings.LodStartFraction = 0.4F;
     settings.LodEndFraction = 0.8F;
     settings.FarDensity = 1.0F;
+    // One camera-facing ribbon by default; crossed planes on request.
+    EXPECT_EQ(ResolveGrassLod(settings, 100.0F, 1U).PlaneCount, 1U);
+    settings.Appearance.CrossedBlades = true;
     const auto near = ResolveGrassLod(settings, 100.0F, 1U);
     const auto far = ResolveGrassLod(settings, 900.0F, 1U);
     const auto policy = BuildGrassLodPolicy(settings);

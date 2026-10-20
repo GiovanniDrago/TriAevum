@@ -483,6 +483,7 @@ Json SerializeInteractiveGrassSettings(
               { "ShapeVariation", grass.Appearance.ShapeVariation },
               { "BladeTwistDegrees", grass.Appearance.BladeTwistDegrees },
               { "BladeSegments", grass.Appearance.BladeSegments },
+              { "CrossedBlades", grass.Appearance.CrossedBlades },
               { "ReceiveLighting", grass.Appearance.ReceiveLighting },
               { "ToonRimEnabled", grass.Appearance.ToonRimEnabled },
               { "ToonRimFadeStart", grass.Appearance.ToonRimFadeStart },
@@ -836,6 +837,10 @@ void DeserializeInteractiveGrassSettings(
         ReadScalar(*appearance, "BladeSegments",
                    value.Appearance.BladeSegments,
                    path + ".Appearance.BladeSegments", result);
+        // Absent in profiles before the single-ribbon default (crossed off).
+        if (FindMember(*appearance, "CrossedBlades"))
+            ReadScalar(*appearance, "CrossedBlades", value.Appearance.CrossedBlades,
+                       path + ".Appearance.CrossedBlades", result);
         ReadScalar(*appearance, "ReceiveLighting",
                    value.Appearance.ReceiveLighting,
                    path + ".Appearance.ReceiveLighting", result);
@@ -1418,6 +1423,7 @@ std::string_view EnhancedPresetDocument() noexcept {
       "BladeDroop": 0.3499999940395355,
       "BladeSegments": 5,
       "BladeTwistDegrees": 141.0,
+      "CrossedBlades": false,
       "HeightScale": 1.149999976158142,
       "ReceiveFog": true,
       "ReceiveLighting": true,

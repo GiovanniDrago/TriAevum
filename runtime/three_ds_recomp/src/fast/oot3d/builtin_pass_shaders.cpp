@@ -55,6 +55,8 @@ std::vector<BuiltinPassShader> BuildBuiltinPassShaders() {
         {"interactive_grass_instrumented.frag", Fragment, BuildGrassFragmentShader(), {{"GRASS_AUXILIARY_OUTPUTS", "1"}}},
         {"interactive_grass_canonical_raster_depth.frag", Fragment, BuildGrassFragmentShader(true), {{"GRASS_AUXILIARY_OUTPUTS", "0"}}},
         {"interactive_grass_instrumented_raster_depth.frag", Fragment, BuildGrassFragmentShader(true), {{"GRASS_AUXILIARY_OUTPUTS", "1"}}},
+        {"interactive_grass_canonical_whole.frag", Fragment, BuildGrassFragmentShader(true, true), {{"GRASS_AUXILIARY_OUTPUTS", "0"}}},
+        {"interactive_grass_instrumented_whole.frag", Fragment, BuildGrassFragmentShader(true, true), {{"GRASS_AUXILIARY_OUTPUTS", "1"}}},
         {"interactive_grass_card.vert", Vertex, BuildGrassCardVertexShader(), {}},
         {"interactive_grass_card_canonical.frag", Fragment, BuildGrassCardFragmentShader(false), {{"GRASS_AUXILIARY_OUTPUTS", "0"}}},
         {"interactive_grass_card_instrumented.frag", Fragment, BuildGrassCardFragmentShader(false), {{"GRASS_AUXILIARY_OUTPUTS", "1"}}},

@@ -23,6 +23,7 @@ uint64_t GrassResidencyPolicyKey(const GrassLodPolicy& policy, float bladeRadius
     mix(policy.FarBladeSegments);
     mix(policy.FarTuftsEnabled ? 1U : 0U);
     mix(policy.FarTuftBladeCount);
+    mix(policy.CrossedBlades ? 1U : 0U);
     return hash;
 }
 

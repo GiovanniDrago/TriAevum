@@ -28,9 +28,11 @@ VkShaderModule CompileGrassShaderModule(Renderer::CachedPassShaderCompiler& shad
 }
 
 void CreateGrassPipelineSet(VkDevice device, const GrassPipelineTargets& targets, VkPipelineLayout layout,
-                            VkShaderModule vertex, const std::array<VkShaderModule, 4>& fragments,
-                            GrassPipelineSet& pipelines) {
-    pipelines = {};
+                            VkShaderModule vertex, std::span<const VkShaderModule> fragments,
+                            std::span<VkPipeline> pipelines) {
+    if (fragments.size() % 2U != 0U || pipelines.size() != fragments.size() / 2U * 3U)
+        throw std::runtime_error("interactive grass pipeline set does not match its fragments");
+    std::fill(pipelines.begin(), pipelines.end(), VK_NULL_HANDLE);
     VkPipelineShaderStageCreateInfo stages[] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertex, "main",
          nullptr},
@@ -110,9 +112,8 @@ void CreateGrassPipelineSet(VkDevice device, const GrassPipelineTargets& targets
     try {
         for (size_t slot = 0U; slot < pipelines.size(); ++slot) {
             const size_t index = slot % 3U;
-            const bool rasterDepth = slot >= 3U;
             if (index == 2U && !targets.DynamicRendering) continue;
-            stages[1].module = fragments[std::min<size_t>(index, 1U) + (rasterDepth ? 2U : 0U)];
+            stages[1].module = fragments[std::min<size_t>(index, 1U) + slot / 3U * 2U];
             blend.attachmentCount = attachmentCounts[index];
             if (targets.DynamicRendering) {
                 rendering.colorAttachmentCount = attachmentCounts[index];
@@ -131,7 +132,7 @@ void CreateGrassPipelineSet(VkDevice device, const GrassPipelineTargets& targets
     }
 }
 
-void DestroyGrassPipelineSet(VkDevice device, GrassPipelineSet& pipelines) noexcept {
+void DestroyGrassPipelineSet(VkDevice device, std::span<VkPipeline> pipelines) noexcept {
     for (auto& pipeline : pipelines) {
         if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, pipeline, nullptr);
         pipeline = VK_NULL_HANDLE;

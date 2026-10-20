@@ -178,6 +178,7 @@ TEST(Oot3dGrassSelectionCache, ReusesOnlyIdenticalSelectionInputs) {
     changes([](auto& v){v.Policy.TuftTransitionFraction+=0.01F;});
     changes([](auto& v){v.Policy.FarTuftDensity+=0.01F;});
     changes([](auto& v){v.Policy.SegmentLodSoftness+=0.01F;});
+    changes([](auto& v){v.Policy.CrossedBlades=!v.Policy.CrossedBlades;});
     cache.Reset();
     EXPECT_FALSE(cache.Matches(key));
 }

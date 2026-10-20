@@ -565,7 +565,7 @@ vec3 grass_blade_position(
 
 void main() {
     bool grouped = (grass.flags.y & 0x80000000u) != 0u;
-    uint segment_mode = grass.flags.y & 0x7fffffffu;
+    uint segment_mode = grass.flags.y & 0x1fffffffu;
     bool tuft = segment_mode == 0u;
     uint segments = clamp(segment_mode, 1u, 12u);
     uint vertex = uint(gl_VertexIndex);
@@ -611,6 +611,14 @@ void main() {
         retention *= grass_tuft_retention_scale(tuft_weight,lod.z,tuft_style.y);
     lod_visibility = grass_visibility_fade(clamp(retention,0.0,1.0),visibility_seed,distance_lod.w);
     lod_visibility *= 1.0-grass_tuft_weight(distance,distance_lod.x*(1.0-tuft_style.z),distance_lod.x);
+    // A batch drawn twice (kGrassWholePassFlag, kGrassFadingPassFlag): each
+    // pass drops the blades of the other whole. The whole pass's fragment
+    // program has no discard; its blades never needed one.
+    uint split = grass.flags.y & 0x60000000u;
+    if (split != 0u && ((!tuft && lod_visibility >= 1.0) != (split == 0x40000000u))) {
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        return;
+    }
     float tuft_coverage = tuft ? grass_tuft_coverage(tuft_weight, in_world_normal.w, lod, tuft_style) : 1.0;
     tuft_sample = vec4(width_sign, height_factor, tuft_coverage, in_bend_half_width.w);
 
@@ -687,9 +695,10 @@ void main() {
 )glsl";
 }
 
-std::string BuildGrassFragmentShader(bool rasterDepth) {
+std::string BuildGrassFragmentShader(bool rasterDepth, bool wholeBlades) {
     return std::string("#version 450\n") +
             (rasterDepth ? "#define GRASS_RASTER_DEPTH 1\n" : "") +
+            (wholeBlades ? "#define GRASS_WHOLE_BLADES 1\n" : "") +
             std::string(Renderer3ds::PicaGeometryGuideShaderLibrary()) +
             std::string(kToonSurfaceResponseShader) +
             std::string(kGrassDistantTuftShader) + std::string(kGrassEnvironmentShader) +
@@ -714,6 +723,7 @@ void main() {
     blade_face_dx = dFdx(blade_view_direction); blade_face_dy = dFdy(blade_view_direction);
     current_clip = blade_current_clip; previous_clip = blade_previous_clip;
 #endif
+#ifndef GRASS_WHOLE_BLADES
     // Blade-local stipple, not frame/screen-space noise. Discard before every
     // guide/depth write; fading geometry cannot leave invisible occluders.
     if (lod_visibility < 1.0) {
@@ -721,9 +731,11 @@ void main() {
         float threshold = fract(sin(dot(cell,vec2(12.9898,78.233))+tuft_sample.w*37.719)*43758.5453);
         if (lod_visibility <= threshold) discard;
     }
-    if (grass.flags.y == 0u && !grass_tuft_covered(tuft_sample,
+    // Ungrouped distant tufts (segment mode 0), in either pass.
+    if ((grass.flags.y & 0x9fffffffu) == 0u && !grass_tuft_covered(tuft_sample,
             uint(environment_state.records[grass.flags.w].tuft_lod.z),
             environment_state.records[grass.flags.w].tuft_style.x)) discard;
+#endif
     grass_write_fragment(blade_color, blade_normal_guide, blade_ambient_guide, blade_view_direction,
         blade_face_dx, blade_face_dy, blade_rim_weight, blade_lit_ceiling, current_clip, previous_clip,
         gl_FragCoord.z, gl_FragCoord.w);
@@ -1365,7 +1377,8 @@ layout(push_constant) uniform SelectionPolicy {
     vec4 lod;
     // tuft transition, far tuft density, segment softness, blade radius scale
     vec4 tuft;
-    // near segments, far segments, far tufts enabled | frustum culling << 1, far tuft blades
+    // near segments, far segments,
+    // far tufts enabled | frustum culling << 1 | crossed blades << 2, far tuft blades
     uvec4 counts;
 } policy;
 
@@ -1458,7 +1471,7 @@ uint resolve_bin(float d, float stable_visibility, out uint bucket) {
         if (scaled > 0.0) bucket = min(BUCKETS - 1u, uint(scaled));
     }
     if (far_tufts() && distant) return 24u;
-    uint planes = distant ? 1u : 2u;
+    uint planes = distant || (policy.counts.z & 4u) == 0u ? 1u : 2u;
     return (clamp(segments, 1u, 12u) - 1u) * 2u + (planes - 1u);
 }
 

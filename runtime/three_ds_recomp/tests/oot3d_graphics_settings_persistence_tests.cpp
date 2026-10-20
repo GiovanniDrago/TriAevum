@@ -539,6 +539,21 @@ TEST(Oot3dGraphicsSettingsPersistence, AddsSoftGrassLodDefaultsWithoutMovingExis
     EXPECT_EQ(loaded.Value.Grass.Rules.size(), original.Grass.Rules.size());
 }
 
+TEST(Oot3dGraphicsSettingsPersistence, CrossedBladesDefaultOffAndRoundTrip) {
+    using namespace Fast::Oot3d;
+    auto original = CompleteSettings();
+    original.Grass.Appearance.CrossedBlades = true;
+    const auto roundTrip = DeserializeGraphicsSettings(SerializeGraphicsSettings(original));
+    EXPECT_TRUE(roundTrip.Issues.empty());
+    EXPECT_TRUE(roundTrip.Value.Grass.Appearance.CrossedBlades);
+    auto document = SerializeGraphicsSettings(original);
+    for (const auto* section : {"Grass", "GrassSavedPreset"})
+        document[section]["Appearance"].erase("CrossedBlades");
+    const auto loaded = DeserializeGraphicsSettings(document);
+    EXPECT_TRUE(loaded.Issues.empty());
+    EXPECT_FALSE(loaded.Value.Grass.Appearance.CrossedBlades);
+}
+
 TEST(Oot3dGraphicsSettingsPersistence, AddsDistantCardDefaultsAndRoundTripsThem) {
     using namespace Fast::Oot3d;
     auto original = CompleteSettings();

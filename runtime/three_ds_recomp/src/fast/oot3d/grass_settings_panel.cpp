@@ -603,6 +603,9 @@ bool DrawPerformance(InteractiveGrassSettings& grass) {
             static_cast<uint8_t>(farSegments);
         changed = true;
     }
+    changed |= ImGui::Checkbox("Crossed blades (two planes)", &grass.Appearance.CrossedBlades);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Off: one ribbon per blade that turns toward the camera, half the cost.");
     changed |= ImGui::SliderFloat("Segment reduction begins", &grass.SegmentLodStartDistance,
                                    0.0F, 10000.0F, "%.0f world units");
     grass.SegmentLodEndDistance = std::max(grass.SegmentLodEndDistance, grass.SegmentLodStartDistance);

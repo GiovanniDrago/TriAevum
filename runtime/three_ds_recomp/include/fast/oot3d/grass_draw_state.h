@@ -69,10 +69,21 @@ struct GrassPushConstants {
     std::array<float, 16> PositionToClip{};
     std::array<float, 4> JitterNdc{};
     std::array<float, 4> DepthState{}; // scale, offset, w-buffer, valid
-    // native projection, segments, planes, fog-record index
+    // native projection, segments (0 = distant tufts) with the bits below,
+    // planes, fog-record index
     std::array<uint32_t, 4> Flags{};
 };
 static_assert(sizeof(GrassPushConstants) == 112U);
+
+// Flags[1] of a blade draw: grouped midrange children, and the visibility
+// split of a raster-depth batch drawn twice. The whole pass draws only the
+// blades that are wholly visible (no LOD stipple, no tufts) with the program
+// without discard, so early depth testing rejects hidden fragments; the
+// fading pass draws the rest with the stipple. Neither bit: every blade.
+inline constexpr uint32_t kGrassGroupedFlag = 0x80000000U;
+inline constexpr uint32_t kGrassWholePassFlag = 0x40000000U;
+inline constexpr uint32_t kGrassFadingPassFlag = 0x20000000U;
+inline constexpr uint32_t kGrassSegmentModeMask = 0x1FFFFFFFU;
 
 // The blades' PICA depth equals the rasterized depth (bit for bit): no PICA
 // mapping, or Z-buffering with scale -1 / offset 0 on the negated window

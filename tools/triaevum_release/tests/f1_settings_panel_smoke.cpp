@@ -2114,6 +2114,11 @@ int main(int argc, char** argv) try {
           grassLod.TuftTransitionFraction == 0.35F && grassLod.FarTuftDensity == 2.5F &&
           grassLod.FarTuftSpread == 1.8F && grassLod.SegmentLodSoftness == 0.75F,
           "grass transition, tuft quantity/spread controls not applied");
+    Check(!runtime.Snapshot().Grass.Appearance.CrossedBlades, "camera-facing ribbons must be the default");
+    Click("Crossed blades (two planes)");
+    Check(runtime.Snapshot().Grass.Appearance.CrossedBlades, "crossed grass blades enable failed");
+    Click("Crossed blades (two planes)");
+    Check(!runtime.Snapshot().Grass.Appearance.CrossedBlades, "crossed grass blades disable failed");
     Check(!runtime.Snapshot().Grass.CardLodEnabled, "distant grass cards must default off");
     Click("Distant grass cards");
     Check(runtime.Snapshot().Grass.CardLodEnabled, "distant grass cards enable failed");

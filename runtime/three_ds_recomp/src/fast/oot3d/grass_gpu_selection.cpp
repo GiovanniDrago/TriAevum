@@ -393,7 +393,8 @@ bool GrassGpuSelector::Record(const GrassGpuSelectionRequest& request, GrassGpuS
         push.Tuft = {policy.TuftTransitionFraction, policy.FarTuftDensity, policy.SegmentLodSoftness,
                      request.BladeRadiusScale};
         push.Counts = {policy.NearBladeSegments, policy.FarBladeSegments,
-                       (policy.FarTuftsEnabled ? 1U : 0U) | (request.FrustumCulling ? 2U : 0U),
+                       (policy.FarTuftsEnabled ? 1U : 0U) | (request.FrustumCulling ? 2U : 0U) |
+                           (policy.CrossedBlades ? 4U : 0U),
                        policy.FarTuftBladeCount};
 
         const VkMemoryBarrier uploads{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,

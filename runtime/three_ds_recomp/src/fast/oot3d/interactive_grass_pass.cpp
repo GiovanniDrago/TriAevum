@@ -601,8 +601,12 @@ struct InteractiveGrassPass::Impl {
     VkPipelineLayout PipelineLayout = VK_NULL_HANDLE;
     // Canonical, instrumented, instrumented with the GI albedo guide
     // (dynamic rendering only; grass leaves the albedo below it).
-    // [0..2] explicit PICA depth, [3..5] the same with rasterized depth.
-    std::array<VkPipeline, 6> Pipelines{};
+    // [0..2] explicit PICA depth, [3..5] the same with rasterized depth,
+    // [6..8] rasterized depth without discard (the whole pass).
+    GrassBladePipelineSet Pipelines{};
+    // Bit s: blades with s segments may fade (LOD stipple), so their batches
+    // need the fading pass after the whole one.
+    uint32_t FadingSegments = ~0U;
     struct BufferSlot {
         VkBuffer Buffer = VK_NULL_HANDLE;
         VkDeviceMemory Memory = VK_NULL_HANDLE;
@@ -1257,9 +1261,10 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
         const auto vertexSource = BuildGrassVertexShader();
         const auto fragmentSource = BuildGrassFragmentShader();
         const auto rasterDepthSource = BuildGrassFragmentShader(true);
+        const auto wholeSource = BuildGrassFragmentShader(true, true);
         VkShaderModule vertex = Compile(shaders, device, vertexSource.c_str(),
                                         Renderer::SpirvStage::Vertex, "interactive_grass.vert");
-        std::array<VkShaderModule, 4> fragments{};
+        std::array<VkShaderModule, 6> fragments{};
         try {
             fragments[0] = Compile(
                 shaders, device, fragmentSource.c_str(), Renderer::SpirvStage::Fragment,
@@ -1276,6 +1281,14 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
             fragments[3] = Compile(
                 shaders, device, rasterDepthSource.c_str(), Renderer::SpirvStage::Fragment,
                 "interactive_grass_instrumented_raster_depth.frag",
+                "GRASS_AUXILIARY_OUTPUTS", "1");
+            fragments[4] = Compile(
+                shaders, device, wholeSource.c_str(), Renderer::SpirvStage::Fragment,
+                "interactive_grass_canonical_whole.frag",
+                "GRASS_AUXILIARY_OUTPUTS", "0");
+            fragments[5] = Compile(
+                shaders, device, wholeSource.c_str(), Renderer::SpirvStage::Fragment,
+                "interactive_grass_instrumented_whole.frag",
                 "GRASS_AUXILIARY_OUTPUTS", "1");
             const std::array<VkDescriptorSetLayoutBinding, 10> environmentBindings{{
                 {0U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -1506,6 +1519,19 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             (1.0F + (settings.FarTuftBladeCount - 1U) * settings.FarTuftSpread) /
             std::max(settings.Generation.BladeHeightMin, 0.001F) : 0.0F);
     const GrassCardAtlasShape atlasShape = GrassCardAtlasShapeFromSettings(settings);
+    // Segment counts drawn only below the whole-blade distance (with a margin
+    // for the rounding of the two distance evaluations) have no fading blades:
+    // their batches skip the fading pass.
+    {
+        const float wholeDistance = GrassWholeBladeDistance(
+            settings.LodReferenceDistance > 0.0F ? settings.LodReferenceDistance : settings.DrawDistance,
+            settings.LodStartFraction, settings.FarTuftsEnabled && !settings.MidrangeClustersEnabled,
+            settings.LodEndFraction, lodPolicy.DrawDistance, bladeFadeFraction);
+        mImpl->FadingSegments = 0U;
+        for (uint32_t segments = kMinimumGrassBladeSegments; segments <= kMaximumGrassBladeSegments; ++segments)
+            if (!(GrassSegmentsMaximumDistance(lodPolicy, static_cast<uint8_t>(segments)) * 1.0001F < wholeDistance))
+                mImpl->FadingSegments |= 1U << segments;
+    }
     try {
         const bool requestShadows = settings.Appearance.ReceiveLighting &&
                                     providerPlan.Requires(EffectResource::DirectionalShadowHistory) &&
@@ -2767,23 +2793,15 @@ bool InteractiveGrassPass::DrawPrepared(
     vkCmdSetViewport(commandBuffer, 0U, 1U, &viewport);
     vkCmdSetScissor(commandBuffer, 0U, 1U, &scissor);
     VkPipeline bound = pipeline;
-    for (const auto& batch : mImpl->Batches) {
-        const VkPipeline wanted = rasterDepthPipeline != VK_NULL_HANDLE &&
-                GrassDepthIsRasterDepth(batch.Push)
-            ? rasterDepthPipeline : pipeline;
-        if (GrassStageProfileEnabled()) {
-            auto& f = GrassStageCurrent();
-            const bool raster = wanted == rasterDepthPipeline;
-            ++(raster ? f.RasterDepthBatches : f.ExplicitDepthBatches);
-            (raster ? f.RasterDepthInstances : f.ExplicitDepthInstances) += batch.InstanceCount;
-        }
+    const auto draw = [&](const GrassDrawBatch& batch, VkPipeline wanted, uint32_t passFlag) {
         if (wanted != bound) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, wanted);
             bound = wanted;
         }
+        GrassPushConstants push = batch.Push;
+        push.Flags[1] |= passFlag;
         vkCmdPushConstants(commandBuffer, mImpl->PipelineLayout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0U, sizeof(batch.Push),
-                           &batch.Push);
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0U, sizeof(push), &push);
         const auto& range = batch.Grouped ? mImpl->IndexedTopology.Groups[batch.BladeSegments-1][batch.PlaneCount-1] : batch.BladeSegments == 0U ? mImpl->IndexedTopology.Tuft :
             mImpl->IndexedTopology.Blades[batch.BladeSegments - 1U][batch.PlaneCount - 1U];
         const uint32_t count = batch.Grouped ? range.Count / kGrassMidrangeClusterCapacity * batch.GroupDrawCapacity : range.Count;
@@ -2792,6 +2810,36 @@ bool InteractiveGrassPass::DrawPrepared(
                                      sizeof(VkDrawIndexedIndirectCommand));
         else
             vkCmdDrawIndexed(commandBuffer, count, batch.InstanceCount, range.First, 0, batch.FirstInstance);
+    };
+    const auto rasterDepth = [&](const GrassDrawBatch& batch) {
+        return rasterDepthPipeline != VK_NULL_HANDLE && GrassDepthIsRasterDepth(batch.Push);
+    };
+    // A discard anywhere in the program forfeits the early depth test, and
+    // only fading blades and tufts need one. Raster-depth blade batches
+    // therefore draw twice: first their wholly visible blades with the program
+    // without discard, the batches with the most segments (the nearest) first,
+    // so the early depth test rejects what they hide; then, in batch order,
+    // their fading blades with the stipple, and every other batch. Segment
+    // counts that only occur below the whole-blade distance have no fading
+    // blades: the whole pass draws all of them and they skip the second.
+    const VkPipeline wholePipeline = mImpl->Pipelines[pipelineIndex + 6U];
+    const auto split = [&](const GrassDrawBatch& batch) {
+        return wholePipeline != VK_NULL_HANDLE && batch.BladeSegments != 0U && rasterDepth(batch);
+    };
+    const auto mayFade = [&](const GrassDrawBatch& batch) {
+        return batch.Grouped || ((mImpl->FadingSegments >> batch.BladeSegments) & 1U) != 0U;
+    };
+    for (auto batch = mImpl->Batches.rbegin(); batch != mImpl->Batches.rend(); ++batch)
+        if (split(*batch)) draw(*batch, wholePipeline, mayFade(*batch) ? kGrassWholePassFlag : 0U);
+    for (const auto& batch : mImpl->Batches) {
+        const bool raster = rasterDepth(batch);
+        if (GrassStageProfileEnabled()) {
+            auto& f = GrassStageCurrent();
+            ++(raster ? f.RasterDepthBatches : f.ExplicitDepthBatches);
+            (raster ? f.RasterDepthInstances : f.ExplicitDepthInstances) += batch.InstanceCount;
+        }
+        if (split(batch) && !mayFade(batch)) continue;
+        draw(batch, raster ? rasterDepthPipeline : pipeline, split(batch) ? kGrassFadingPassFlag : 0U);
     }
     DrawPreparedCards(commandBuffer, width, height, pipelineIndex);
     mImpl->Prepared = false;

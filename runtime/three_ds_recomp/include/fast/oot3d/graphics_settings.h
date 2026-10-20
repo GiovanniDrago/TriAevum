@@ -209,6 +209,9 @@ struct GrassAppearanceSettings {
     float ShapeVariation = 0.0F;
     float BladeTwistDegrees = 0.0F;
     uint8_t BladeSegments = 2U;
+    // Near blades as two crossed planes; otherwise one ribbon that turns its
+    // width toward the camera (half the vertices and fill, the default).
+    bool CrossedBlades = false;
     bool ReceiveLighting = true;
     bool ReceiveFog = true;
     bool ToonRimEnabled = true;
