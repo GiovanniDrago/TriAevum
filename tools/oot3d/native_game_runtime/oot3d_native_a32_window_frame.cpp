@@ -1198,6 +1198,7 @@ void NativeA32WindowSession::RunGuestRefresh() {
   // PPF unblocks the current guest refresh, not the next presentation.
   // The dependency capture keeps its plans for the complete visual frame.
   (void)FlushNativeDependencies();
+  sceneViewProbe.BeginGuestRefresh();
   phaseStart = std::chrono::steady_clock::now();
   processResult =
       RunUntilGuestWait(process, launch.WholeAotBlockBudget);
@@ -2531,12 +2532,18 @@ void NativeA32WindowSession::PublishNativeSceneView() {
   // Guest memory is read here; the scene environment, the duplicate check
   // and the publish belong to the renderer and run in its order.
   auto snapshot = sceneViewProbe.Capture(process.Memory());
-  auto environmentTime = snapshot
+  auto environmentTime = snapshot && !snapshot->FileSelect
       ? Oot3dNativeGame::CaptureSceneEnvironmentTime(snapshot->PlayStateAddress, process.Memory())
       : std::nullopt;
   if (environmentTime)
     environmentTime->Group = Oot3dNativeGame::CaptureNativeEnvironmentGroup(
         snapshot->PlayStateAddress, process.Memory(), &environmentTime->AuthoredScene);
+  // The file select's title scene is not read for time or headers (the title
+  // demo's PlayState may still be updating behind the cards, or the block may
+  // read scene 0): fixed time, no group, one profile (scene-00FF).
+  if (snapshot && snapshot->FileSelect)
+    environmentTime = Oot3dNativeGame::SceneEnvironmentTime{
+        .TimeDriven = false, .Clock = 0x8000, .Night = false, .Owner = snapshot->PlayStateAddress};
   {
     // TRIAEVUM_SCENE_VIEW_TRACE=1: per presentation frame, what the probes
     // hold when the scene view is captured (the PlayState and player the

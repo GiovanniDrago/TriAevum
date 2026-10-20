@@ -270,6 +270,13 @@ void ApplyNativeWidescreenProjectionPolicy(
       runtime.UiLifecycleBridge->ApplyTopScreenGuestHook(pc, state.r[0]);
     }
   }
+  // The file select's update is the only sign that the title scene on the
+  // upper screen is the file select's (the title demo's PlayState keeps
+  // updating behind its cards): the scene view takes its identity from it
+  // while this keeps running.
+  if (pc == kFileSelectUpdate && runtime.SceneViewProbe != nullptr) {
+    runtime.SceneViewProbe->ObserveFileSelect();
+  }
   if (runtime.TopScreenUiProfile && runtime.TraceMemory != nullptr &&
       runtime.UiLifecycleBridge != nullptr && pc == kPauseProjectionPrepare &&
       state.r[14] == kPauseProjectionPrepareCall + 4U) {
