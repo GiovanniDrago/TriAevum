@@ -93,9 +93,6 @@ struct GrassPreparedPlacement {
     double CandidateScale = 1.0;
 };
 
-// Grid edge of the distant field (world units, GrassDistantFieldInput).
-inline constexpr float kGrassFieldCellLength = 25.0F;
-
 inline constexpr size_t kGrassLodBinCount =
     static_cast<size_t>(kMaximumGrassBladeSegments) * 2U + 1U;
 inline constexpr size_t kGrassAnchorsPerWorker = 8192U;
@@ -802,9 +799,11 @@ struct InteractiveGrassPass::Impl {
     std::vector<std::array<uint32_t, 2>> ActiveFieldRanges; // first triangle, triangle count
     std::vector<GrassFieldTriangle> FieldTriangles;
     std::vector<GrassFieldGridEntry> FieldGrid;
+    std::vector<GrassFieldCellEntry> FieldCells;
     uint64_t FieldRevision = 0;
     std::array<BufferSlot, 2> FieldTriangleBuffers{};
     std::array<BufferSlot, 2> FieldGridBuffers{};
+    std::array<BufferSlot, 2> FieldCellBuffers{};
     std::array<uint64_t, 2> FieldUploadedRevision{};
     // Per prepared placement (StaticSources order): its first coarse shadow point.
     std::vector<uint32_t> ShadowPointBases;
@@ -883,10 +882,12 @@ struct InteractiveGrassPass::Impl {
                         dense += GrassFieldCoverage(value) >= 0.5F;
                     }
                     const double entries = std::max<double>(1.0, double(entry.Field->Grid.size()));
-                    std::fprintf(stderr, "[grass-field] built identity=%llx triangles=%zu grid=%zu roots=%llu "
-                        "rejected=%llu slab=%.2f scale=%.3f mean_coverage=%.3f dense=%.3f mean_height=%.3f ms=%.1f\n",
+                    std::fprintf(stderr, "[grass-field] built identity=%llx triangles=%zu grid=%zu cells=%llu/%zu "
+                        "roots=%llu rejected=%llu slab=%.2f scale=%.3f mean_coverage=%.3f dense=%.3f "
+                        "mean_height=%.3f ms=%.1f\n",
                         static_cast<unsigned long long>(entry.Field->Identity), entry.Field->Triangles.size(),
-                        entry.Field->Grid.size(), static_cast<unsigned long long>(entry.Field->Roots),
+                        entry.Field->Grid.size(), static_cast<unsigned long long>(entry.Field->OccupiedCells),
+                        entry.Field->Cells.size(), static_cast<unsigned long long>(entry.Field->Roots),
                         static_cast<unsigned long long>(entry.Field->RejectedRoots), entry.Field->SlabHeight,
                         placement.CandidateScale, coverage / entries, dense / entries, height / entries,
                         entry.Field->BuildMilliseconds);
@@ -908,15 +909,19 @@ struct InteractiveGrassPass::Impl {
             ActiveFieldRanges.clear();
             FieldTriangles.clear();
             FieldGrid.clear();
+            FieldCells.clear();
             for (const auto& field : ActiveFields) {
                 const auto gridBase = static_cast<uint32_t>(FieldGrid.size());
+                const auto cellBase = static_cast<uint32_t>(FieldCells.size());
                 ActiveFieldRanges.push_back({static_cast<uint32_t>(FieldTriangles.size()),
                                              static_cast<uint32_t>(field->Triangles.size())});
                 for (auto triangle : field->Triangles) {
                     triangle.Atlas[3] += gridBase;
+                    if (triangle.Cells[3] != 0U) triangle.Cells[3] += cellBase << 5U;
                     FieldTriangles.push_back(triangle);
                 }
                 FieldGrid.insert(FieldGrid.end(), field->Grid.begin(), field->Grid.end());
+                FieldCells.insert(FieldCells.end(), field->Cells.begin(), field->Cells.end());
             }
             FieldTriangleCount = FieldTriangles.size();
             ++FieldRevision;
@@ -1351,7 +1356,7 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                 "interactive_grass_instrumented_raster_depth.frag",
                 "GRASS_AUXILIARY_OUTPUTS", "1");
             // 10/11: the distant field's triangles and grid (field pipelines only).
-            const std::array<VkDescriptorSetLayoutBinding, 12> environmentBindings{{
+            const std::array<VkDescriptorSetLayoutBinding, 13> environmentBindings{{
                 {0U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
                 {1U, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
                 {2U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
@@ -1363,7 +1368,8 @@ bool InteractiveGrassPass::Initialize(VkPhysicalDevice physicalDevice,
                 {8U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
                 {9U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
                 {10U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-                {11U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}}};
+                {11U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                {12U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}}};
             VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo{
                 VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
             descriptorLayoutInfo.bindingCount = static_cast<uint32_t>(environmentBindings.size());
@@ -2888,20 +2894,27 @@ bool InteractiveGrassPass::Prepare(VkCommandBuffer commandBuffer, uint32_t width
             // Immutable per field revision; each frame slot keeps its own copy.
             auto& triangleBuffer = mImpl->FieldTriangleBuffers[slotIndex];
             auto& gridBuffer = mImpl->FieldGridBuffers[slotIndex];
+            auto& cellBuffer = mImpl->FieldCellBuffers[slotIndex];
             const VkDeviceSize triangleBytes = mImpl->FieldTriangles.size() * sizeof(GrassFieldTriangle);
             const VkDeviceSize gridBytes = std::max<size_t>(1U, mImpl->FieldGrid.size()) * sizeof(GrassFieldGridEntry);
+            const VkDeviceSize cellBytes = std::max<size_t>(1U, mImpl->FieldCells.size()) * sizeof(GrassFieldCellEntry);
             if (mImpl->FieldUploadedRevision[slotIndex] != mImpl->FieldRevision || triangleBuffer.Buffer == VK_NULL_HANDLE) {
                 mImpl->EnsureBuffer(triangleBuffer, triangleBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 4096U);
                 mImpl->EnsureBuffer(gridBuffer, gridBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 4096U);
+                mImpl->EnsureBuffer(cellBuffer, cellBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 4096U);
                 std::memcpy(triangleBuffer.Mapped, mImpl->FieldTriangles.data(), static_cast<size_t>(triangleBytes));
                 if (!mImpl->FieldGrid.empty())
                     std::memcpy(gridBuffer.Mapped, mImpl->FieldGrid.data(),
                                 mImpl->FieldGrid.size() * sizeof(GrassFieldGridEntry));
+                if (!mImpl->FieldCells.empty())
+                    std::memcpy(cellBuffer.Mapped, mImpl->FieldCells.data(),
+                                mImpl->FieldCells.size() * sizeof(GrassFieldCellEntry));
                 mImpl->FieldUploadedRevision[slotIndex] = mImpl->FieldRevision;
-                staticUploadedBytes += static_cast<uint64_t>(triangleBytes + gridBytes);
+                staticUploadedBytes += static_cast<uint64_t>(triangleBytes + gridBytes + cellBytes);
             }
-            const std::array<VkDescriptorBufferInfo, 2> fieldBuffers{{
-                {triangleBuffer.Buffer, 0, triangleBytes}, {gridBuffer.Buffer, 0, gridBytes}}};
+            const std::array<VkDescriptorBufferInfo, 3> fieldBuffers{{
+                {triangleBuffer.Buffer, 0, triangleBytes}, {gridBuffer.Buffer, 0, gridBytes},
+                {cellBuffer.Buffer, 0, cellBytes}}};
             for (uint32_t index = 0; index < fieldBuffers.size(); ++index) {
                 VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
                 write.dstSet = descriptorSet; write.dstBinding = 10U + index;
@@ -3102,7 +3115,7 @@ void InteractiveGrassPass::Shutdown() {
             mImpl->DestroyBuffer(buffer);
         for (auto& buffer : mImpl->ShadowVisibleIndices)
             mImpl->DestroyBuffer(buffer);
-        for (auto* slots : {&mImpl->FieldTriangleBuffers, &mImpl->FieldGridBuffers})
+        for (auto* slots : {&mImpl->FieldTriangleBuffers, &mImpl->FieldGridBuffers, &mImpl->FieldCellBuffers})
             for (auto& buffer : *slots)
                 mImpl->DestroyBuffer(buffer);
         for (auto& pipeline : mImpl->FieldPipelines) {

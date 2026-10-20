@@ -87,10 +87,40 @@ TEST(Oot3dGrassDistantField, BareGroundStaysBare) {
     const auto field = BuildGrassDistantField(LatticeInput(3.0F, [](float x, float) { return x < 400.0F; }, density));
     EXPECT_NEAR(CoverageAt(field, 200.0F, 200.0F), 1.0F, 0.08F);
     EXPECT_EQ(CoverageAt(field, 600.0F, 100.0F), 0.0F);
+    // The world cell table reads the same estimate where roots stand (also a
+    // slab height above them) and nothing one cell past the last root: a ray
+    // marching out of its entry triangle never finds columns over bare ground.
+    ASSERT_FALSE(field.Cells.empty());
+    EXPECT_GE(field.Cells.size(), field.OccupiedCells * 2U);
+    EXPECT_EQ(field.Cells.size() & (field.Cells.size() - 1U), 0U);
+    EXPECT_NE(field.Triangles[0].Cells[3], 0U);
+    EXPECT_NEAR(GrassFieldCellCoverage(field, {200.0F, 0.0F, 200.0F}, 50.0F), 1.0F, 0.08F);
+    EXPECT_NEAR(GrassFieldCellCoverage(field, {200.0F, 10.0F, 200.0F}, 50.0F), 1.0F, 0.08F);
+    EXPECT_GT(GrassFieldCellCoverage(field, {390.0F, 0.0F, 100.0F}, 50.0F), 0.3F);
+    EXPECT_EQ(GrassFieldCellCoverage(field, {460.0F, 0.0F, 100.0F}, 50.0F), 0.0F);
+    EXPECT_EQ(GrassFieldCellCoverage(field, {200.0F, 200.0F, 200.0F}, 50.0F), 0.0F);
     // No root, no triangle: the field never adds a surface.
     const auto empty = BuildGrassDistantField(LatticeInput(3.0F, [](float, float) { return false; }, density));
     EXPECT_TRUE(empty.Triangles.empty());
     EXPECT_TRUE(empty.Grid.empty());
+    EXPECT_TRUE(empty.Cells.empty());
+}
+
+TEST(Oot3dGrassDistantField, CellKeysAndHashMatchTheShader) {
+    const auto fragment = BuildGrassFieldFragmentShader();
+    EXPECT_NE(fragment.find("uint key = uint(cell.x) | (uint(cell.z) << 11u) | (uint(cell.y) << 22u);"),
+              std::string::npos);
+    EXPECT_NE(fragment.find("const float GRASS_FIELD_CELL = 25.000000;"), std::string::npos);
+    EXPECT_NE(fragment.find("grass_field_cell_coverage(entry_triangle, p)"), std::string::npos);
+    EXPECT_EQ(GrassFieldCellKey(5U, 7U, 9U), 5U | (9U << 11U) | (7U << 22U));
+    EXPECT_EQ(kGrassFieldCellKeyBitsXZ, 11U);
+    EXPECT_EQ(kGrassFieldCellKeyBitsY, 10U);
+    // The GLSL hash: key * 0x9e3779b1, ^= >> 15, *= 0x85ebca77, ^= >> 13.
+    uint32_t value = 12345U * 0x9e3779b1U;
+    value ^= value >> 15U;
+    value *= 0x85ebca77U;
+    value ^= value >> 13U;
+    EXPECT_EQ(GrassFieldCellHash(12345U), value);
 }
 
 TEST(Oot3dGrassDistantField, CandidateCapacityAndSpacingScaleTheExpectation) {

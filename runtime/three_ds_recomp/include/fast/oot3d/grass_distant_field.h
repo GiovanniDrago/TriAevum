@@ -26,8 +26,17 @@ namespace Fast::Oot3d {
 
 inline constexpr uint32_t kGrassFieldNoShadowPoint = 0xffffffffU;
 inline constexpr uint32_t kGrassFieldMaximumResolution = 128U;
+// Empty slot of the world cell table.
+inline constexpr uint32_t kGrassFieldEmptyCell = 0xffffffffU;
+// Cell key bits relative to the field's cell origin: x and z 11 bits, y 10.
+inline constexpr uint32_t kGrassFieldCellKeyBitsXZ = 11U;
+inline constexpr uint32_t kGrassFieldCellKeyBitsY = 10U;
+inline constexpr uint32_t kGrassFieldCellProbeLimit = 32U;
+// Grid edge and world cell edge of the distant field (world units,
+// GrassDistantFieldInput::CellLength in the game; the shaders embed it).
+inline constexpr float kGrassFieldCellLength = 25.0F;
 
-// std430, read by the field vertex and fragment shaders. 112 bytes.
+// std430, read by the field vertex and fragment shaders. 128 bytes.
 struct GrassFieldTriangle {
     // xyz: base world position (with the rule's normal offset), w: the
     // octahedral (snorm2x16) smoothed up-facing normal bits of the corner.
@@ -40,8 +49,12 @@ struct GrassFieldTriangle {
     std::array<uint32_t, 4> ShadowFirst{};
     std::array<uint32_t, 4> ShadowSecond{};
     std::array<float, 4> ShadowWeight{};
+    // xyz: the field's cell origin (int32 cell coordinates), w: the field's
+    // slice of the world cell table, first slot << 5 | log2(slots); 0 when
+    // the field has no table.
+    std::array<uint32_t, 4> Cells{};
 };
-static_assert(sizeof(GrassFieldTriangle) == 112U);
+static_assert(sizeof(GrassFieldTriangle) == 128U);
 
 // Push constants of a field draw (GrassFieldState in the field shaders).
 struct GrassFieldPushConstants {
@@ -60,6 +73,28 @@ static_assert(sizeof(GrassFieldPushConstants) == 128U);
 // GrassWorldAnchor::SurfaceColor), y = coverage (unorm16) | blade height over
 // the slab height (unorm16) << 16.
 using GrassFieldGridEntry = std::array<uint32_t, 2>;
+
+// World cell table entry: x = cell key (kGrassFieldEmptyCell when free),
+// y = coverage (unorm16) at the cell's roots. An open-addressing hash table
+// per field over the cells (edge CellLength) that contain roots: the march
+// reads it for samples that have left their entry triangle, so a slab's
+// columns never stand over a neighbouring surface without roots (water,
+// paths) while rays still cross into neighbouring grass triangles, whose
+// prisms have no side faces to enter.
+using GrassFieldCellEntry = std::array<uint32_t, 2>;
+
+// Cell key of cell coordinates relative to the origin, or nullopt outside
+// the key range. Mirrored in GLSL.
+[[nodiscard]] constexpr uint32_t GrassFieldCellKey(uint32_t x, uint32_t y, uint32_t z) noexcept {
+    return x | (z << kGrassFieldCellKeyBitsXZ) | (y << (2U * kGrassFieldCellKeyBitsXZ));
+}
+[[nodiscard]] constexpr uint32_t GrassFieldCellHash(uint32_t key) noexcept {
+    uint32_t value = key * 0x9e3779b1U;
+    value ^= value >> 15U;
+    value *= 0x85ebca77U;
+    value ^= value >> 13U;
+    return value;
+}
 
 // Grid vertices of a resolution-n triangle and the index of vertex (i, j),
 // i + j <= n, i along corner 1 and j along corner 2. Mirrored in GLSL.
@@ -88,6 +123,11 @@ struct GrassDistantField {
     uint64_t ContentVersion = 0U;
     std::vector<GrassFieldTriangle> Triangles;
     std::vector<GrassFieldGridEntry> Grid;
+    // World cell table (a power of two slots, at most half full); every
+    // triangle carries its origin and slice. Empty when the placement spans
+    // more cells than the key holds (the march then keeps its entry coverage).
+    std::vector<GrassFieldCellEntry> Cells;
+    uint64_t OccupiedCells = 0U;
     // The tallest blade of the placement: the slab's height.
     float SlabHeight = 0.0F;
     uint64_t Roots = 0U;
@@ -108,5 +148,12 @@ struct GrassDistantField {
 [[nodiscard]] inline float GrassFieldHeightFraction(const GrassFieldGridEntry& entry) noexcept {
     return static_cast<float>(entry[1] >> 16U) / 65535.0F;
 }
+
+// The world cell table's coverage at a world position: the cell containing
+// it, else the cell below (a sample in the slab stands up to one slab height
+// above its surface cell). 0 where no cell holds roots. Mirrors the GLSL
+// lookup (grass_field_cell_coverage).
+[[nodiscard]] float GrassFieldCellCoverage(const GrassDistantField& field, const std::array<float, 3>& position,
+                                           float cellLength) noexcept;
 
 } // namespace Fast::Oot3d

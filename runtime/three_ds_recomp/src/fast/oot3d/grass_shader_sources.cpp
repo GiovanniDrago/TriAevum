@@ -1,5 +1,6 @@
 #include "fast/oot3d/grass_shader_sources.h"
 #include "fast/oot3d/grass_blade_shape.h"
+#include "fast/oot3d/grass_distant_field.h"
 #include "fast/oot3d/grass_distant_tuft.h"
 #include "fast/oot3d/grass_indexed_topology.h"
 #include "fast/oot3d/grass_world_placement_cache.h"
@@ -1467,6 +1468,8 @@ struct GrassFieldTriangle {
     uvec4 shadow_first;
     uvec4 shadow_second;
     vec4 shadow_weight;
+    // xyz: the field's cell origin (int cell coordinates), w: first slot << 5 | log2(slots), 0 without a table
+    uvec4 cells;
 };
 layout(std430,set=0,binding=10) readonly buffer GrassFieldTriangles { GrassFieldTriangle values[]; } field_triangles;
 // GrassFieldPushConstants.
@@ -1579,8 +1582,9 @@ std::string BuildGrassFieldFragmentShader(bool rasterDepth) {
     return std::string("#version 450\n") + (rasterDepth ? "#define GRASS_RASTER_DEPTH 1\n" : "") +
         std::string(Renderer3ds::PicaGeometryGuideShaderLibrary()) + std::string(kToonSurfaceResponseShader) +
         std::string(kGrassDistantTuftShader) + GrassGlslBlock(blade, "struct GrassEnvironmentRecord {") +
-        kGrassFieldDeclarations + R"glsl(
+        kGrassFieldDeclarations + "const float GRASS_FIELD_CELL = " + std::to_string(kGrassFieldCellLength) + ";\n" + R"glsl(
 layout(std430,set=0,binding=11) readonly buffer GrassFieldGrid { uvec2 values[]; } field_grid;
+layout(std430,set=0,binding=12) readonly buffer GrassFieldCells { uvec2 values[]; } field_cells;
 layout(location=0) in vec3 field_lighting;
 layout(location=1) in vec3 field_ambient;
 layout(location=2) in vec3 field_lit_ceiling;
@@ -1614,6 +1618,42 @@ uint grass_field_hash(ivec2 cell, uint salt) {
 }
 float grass_field_unit(uint value) { return float(value >> 8u) / 16777216.0; }
 uint grass_field_grid_index(uint n, uint i, uint j) { return j * (n + 1u) - j * (j - 1u) / 2u + i; }
+
+// World cell table (GrassFieldCellEntry): the coverage at the cell holding
+// p, else at the cell below it (a sample stands up to a slab height above
+// its surface cell); 0 where no cell holds roots. Mirrors GrassFieldCellCoverage.
+uint grass_field_cell_hash(uint key) {
+    uint value = key * 0x9e3779b1u;
+    value ^= value >> 15u;
+    value *= 0x85ebca77u;
+    value ^= value >> 13u;
+    return value;
+}
+float grass_field_cell_lookup(GrassFieldTriangle t, vec3 p) {
+    ivec3 cell = ivec3(floor(p / GRASS_FIELD_CELL)) - ivec3(t.cells.xyz);
+    if (any(lessThan(cell, ivec3(0))) || cell.x >= 2048 || cell.z >= 2048 || cell.y >= 1024) return 0.0;
+    uint key = uint(cell.x) | (uint(cell.z) << 11u) | (uint(cell.y) << 22u);
+    uint mask = (1u << (t.cells.w & 31u)) - 1u;
+    uint first = t.cells.w >> 5u;
+    uint slot = grass_field_cell_hash(key) & mask;
+    for (uint probe = 0u; probe < 32u; ++probe) {
+        uvec2 entry = field_cells.values[first + ((slot + probe) & mask)];
+        if (entry.x == key) return float(entry.y & 0xffffu) / 65535.0;
+        if (entry.x == 0xffffffffu) return 0.0;
+    }
+    return 0.0;
+}
+float grass_field_cell_coverage(GrassFieldTriangle t, vec3 p) {
+    return max(grass_field_cell_lookup(t, p), grass_field_cell_lookup(t, p - vec3(0.0, GRASS_FIELD_CELL, 0.0)));
+}
+// Whether p lies over the triangle (its XZ footprint).
+bool grass_field_inside(GrassFieldTriangle t, vec3 p) {
+    vec2 a = t.corner[0].xz, b = t.corner[1].xz, c = t.corner[2].xz;
+    float e0 = (b.x - a.x) * (p.z - a.y) - (b.y - a.y) * (p.x - a.x);
+    float e1 = (c.x - b.x) * (p.z - b.y) - (c.y - b.y) * (p.x - b.x);
+    float e2 = (a.x - c.x) * (p.z - c.y) - (a.y - c.y) * (p.x - c.x);
+    return (e0 >= 0.0 && e1 >= 0.0 && e2 >= 0.0) || (e0 <= 0.0 && e1 <= 0.0 && e2 <= 0.0);
+}
 // The blades fade out over [blend start, field start] (their draw fade); the
 // field fades in over the same band and out at the draw distance. Measured
 // where a column stands, never where the ray enters the slab top.
@@ -1696,7 +1736,8 @@ void main() {
     if (ground_distance < grass.field.x) discard;
     float coverage, height_fraction;
     vec4 surface;
-    grass_field_grid(field_triangles.values[field_triangle], field_barycentric, coverage, height_fraction, surface);
+    GrassFieldTriangle entry_triangle = field_triangles.values[field_triangle];
+    grass_field_grid(entry_triangle, field_barycentric, coverage, height_fraction, surface);
     float density = coverage * max(grass_field_blend(ground_distance), grass_field_blend(distance));
     uint debug_mode = grass.flags.y >> 8u;
     if (debug_mode == 1u || debug_mode == 2u || debug_mode == 3u) {
@@ -1750,7 +1791,12 @@ void main() {
         vec2 q = (p.xz - lean * above * above) / cell;
         ivec2 c = ivec2(floor(q));
         uint a = grass_field_hash(c, salt);
-        float sample_density = coverage * grass_field_blend(distance + descent);
+        // Over the entry triangle the grid's interpolated coverage; once the
+        // ray has crossed into a neighbour, the world cell table's (0 over a
+        // surface without roots: the slab never leaks onto water or paths).
+        float sample_coverage = entry_triangle.cells.w == 0u || grass_field_inside(entry_triangle, p)
+            ? coverage : grass_field_cell_coverage(entry_triangle, p);
+        float sample_density = sample_coverage * grass_field_blend(distance + descent);
         if (grass_field_unit(a) >= sample_density) continue;
         uint b = grass_field_hash(c, salt ^ 0x2545f491u);
         float column = height_fraction * (0.55 + 0.45 * grass_field_unit(b));

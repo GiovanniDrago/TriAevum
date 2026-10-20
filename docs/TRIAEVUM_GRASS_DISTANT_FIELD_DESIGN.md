@@ -87,6 +87,21 @@ stop, and every accepted surface triangle is drawn once as a thin grass slab:
   ground sample (entry + slab / minimum slope) is under the blend start, and
   the vertex stage keeps every slab whose longest descent can still reach the
   band.
+- The march leaves its entry triangle with the entry's coverage, so a slab's
+  columns stood up to slab / minimum slope (180 units) past the grass over
+  neighbouring surfaces without roots (Kokiri's stream beyond the signpost was
+  covered). Clipping the march to the prism is not an option: the prisms have
+  no side faces, so the columns of the neighbouring grass triangle a ray
+  crosses into are only reachable through this march. Instead each field
+  carries a world cell table (`GrassFieldCellEntry`, binding 12): an
+  open-addressing hash over the 25-unit cells that contain roots, each with
+  the same cone-kernel estimate evaluated at its roots' mean position, so it is
+  continuous with the triangle grids. A sample over its entry triangle (XZ
+  footprint) keeps the interpolated grid coverage; a sample that has crossed
+  out reads the cell holding it or the cell below (a sample stands up to a slab
+  height above its surface cell), and 0 where no cell holds roots. Two probes
+  per outside sample. A placement wider than the key (2048 x 1024 x 2048 cells,
+  512 x 256 x 512 m) gets no table and keeps the entry coverage.
 
 ## Settings
 

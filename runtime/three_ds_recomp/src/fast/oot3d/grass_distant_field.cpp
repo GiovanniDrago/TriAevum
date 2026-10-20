@@ -241,9 +241,82 @@ GrassDistantField BuildGrassDistantField(const GrassDistantFieldInput& input) {
         }
     });
 
+    // World cell table: the cells (edge cellLength) that contain roots, each
+    // with the same kernel estimate evaluated at its roots' mean position, so
+    // the value is continuous with the triangle grids. The march reads it for
+    // samples outside their entry triangle.
+    std::array<uint32_t, 4> cellsHeader{};
+    {
+        const auto cellOf = [&](const GrassWorldAnchor& anchor) {
+            return std::array<int64_t, 3>{static_cast<int64_t>(std::floor(anchor.BaseHeight[0] / cellLength)),
+                                          static_cast<int64_t>(std::floor(anchor.BaseHeight[1] / cellLength)),
+                                          static_cast<int64_t>(std::floor(anchor.BaseHeight[2] / cellLength))};
+        };
+        std::array<int64_t, 3> origin{INT64_MAX, INT64_MAX, INT64_MAX};
+        std::array<int64_t, 3> extent{INT64_MIN, INT64_MIN, INT64_MIN};
+        for (const auto& anchor : anchors) {
+            const auto cell = cellOf(anchor);
+            for (size_t axis = 0; axis < 3; ++axis) {
+                origin[axis] = std::min(origin[axis], cell[axis]);
+                extent[axis] = std::max(extent[axis], cell[axis]);
+            }
+        }
+        const bool fits = !anchors.empty() &&
+            extent[0] - origin[0] < (int64_t(1) << kGrassFieldCellKeyBitsXZ) &&
+            extent[2] - origin[2] < (int64_t(1) << kGrassFieldCellKeyBitsXZ) &&
+            extent[1] - origin[1] < (int64_t(1) << kGrassFieldCellKeyBitsY);
+        if (fits) {
+            struct CellRoots { Vec3 Sum{}; uint32_t Count = 0U; };
+            std::unordered_map<uint32_t, CellRoots> cells;
+            cells.reserve(anchors.size() / 8U + 1U);
+            for (const auto& anchor : anchors) {
+                const auto cell = cellOf(anchor);
+                auto& roots = cells[GrassFieldCellKey(static_cast<uint32_t>(cell[0] - origin[0]),
+                                                      static_cast<uint32_t>(cell[1] - origin[1]),
+                                                      static_cast<uint32_t>(cell[2] - origin[2]))];
+                for (size_t axis = 0; axis < 3; ++axis) roots.Sum[axis] += anchor.BaseHeight[axis];
+                ++roots.Count;
+            }
+            std::vector<std::pair<uint32_t, Vec3>> occupied;
+            occupied.reserve(cells.size());
+            for (const auto& [key, roots] : cells)
+                occupied.emplace_back(key, Vec3{roots.Sum[0] / roots.Count, roots.Sum[1] / roots.Count,
+                                                roots.Sum[2] / roots.Count});
+            std::vector<uint32_t> coverage(occupied.size());
+            const size_t cellWorkers = std::min<size_t>(4U, GrassParallelWorkerCount(occupied.size() * 64ULL));
+            RunGrassParallelWork(cellWorkers, [&](size_t worker) {
+                for (size_t c = worker; c < occupied.size(); c += cellWorkers) {
+                    double mass = 0.0;
+                    index.Query(occupied[c].second, [&](uint32_t root) {
+                        const auto& anchor = anchors[root];
+                        const Vec3 p{anchor.BaseHeight[0], anchor.BaseHeight[1], anchor.BaseHeight[2]};
+                        const double distance = Length(Sub(p, occupied[c].second));
+                        if (distance < radius) mass += 1.0 - distance / radius;
+                    });
+                    coverage[c] = static_cast<uint32_t>(
+                        std::lround(std::clamp(expected > 0.0 ? mass / expected : 0.0, 0.0, 1.0) * 65535.0));
+                }
+            });
+            uint32_t bits = 1U;
+            while ((size_t(1) << bits) < occupied.size() * 2U) ++bits;
+            const uint32_t mask = (1U << bits) - 1U;
+            field.Cells.assign(size_t(1) << bits, GrassFieldCellEntry{kGrassFieldEmptyCell, 0U});
+            for (size_t c = 0; c < occupied.size(); ++c) {
+                uint32_t slot = GrassFieldCellHash(occupied[c].first) & mask;
+                while (field.Cells[slot][0] != kGrassFieldEmptyCell) slot = (slot + 1U) & mask;
+                field.Cells[slot] = {occupied[c].first, coverage[c]};
+            }
+            field.OccupiedCells = occupied.size();
+            cellsHeader = {std::bit_cast<uint32_t>(static_cast<int32_t>(origin[0])),
+                           std::bit_cast<uint32_t>(static_cast<int32_t>(origin[1])),
+                           std::bit_cast<uint32_t>(static_cast<int32_t>(origin[2])), bits};
+        }
+    }
+
     field.Triangles.reserve(triangles.size());
     for (const auto& triangle : triangles) {
         GrassFieldTriangle out;
+        out.Cells = cellsHeader;
         for (size_t c = 0; c < 3; ++c) {
             const auto& normal = smooth[triangle.Vertices[c]];
             for (size_t axis = 0; axis < 3; ++axis)
@@ -266,6 +339,34 @@ GrassDistantField BuildGrassDistantField(const GrassDistantFieldInput& input) {
     field.BuildMilliseconds =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     return field;
+}
+
+float GrassFieldCellCoverage(const GrassDistantField& field, const std::array<float, 3>& position,
+                             float cellLength) noexcept {
+    if (field.Cells.empty() || field.Triangles.empty()) return 0.0F;
+    const auto& header = field.Triangles.front().Cells;
+    const uint32_t bits = header[3] & 31U;
+    const uint32_t first = header[3] >> 5U;
+    const uint32_t mask = (1U << bits) - 1U;
+    const auto lookup = [&](std::array<float, 3> p) {
+        std::array<int64_t, 3> cell{};
+        for (size_t axis = 0; axis < 3; ++axis)
+            cell[axis] = static_cast<int64_t>(std::floor(p[axis] / cellLength)) -
+                std::bit_cast<int32_t>(header[axis]);
+        if (cell[0] < 0 || cell[1] < 0 || cell[2] < 0 || cell[0] >= (int64_t(1) << kGrassFieldCellKeyBitsXZ) ||
+            cell[2] >= (int64_t(1) << kGrassFieldCellKeyBitsXZ) || cell[1] >= (int64_t(1) << kGrassFieldCellKeyBitsY))
+            return 0.0F;
+        const uint32_t key = GrassFieldCellKey(static_cast<uint32_t>(cell[0]), static_cast<uint32_t>(cell[1]),
+                                               static_cast<uint32_t>(cell[2]));
+        uint32_t slot = GrassFieldCellHash(key) & mask;
+        for (uint32_t probe = 0; probe < kGrassFieldCellProbeLimit; ++probe) {
+            const auto& entry = field.Cells.at(first + ((slot + probe) & mask));
+            if (entry[0] == key) return static_cast<float>(entry[1] & 0xffffU) / 65535.0F;
+            if (entry[0] == kGrassFieldEmptyCell) return 0.0F;
+        }
+        return 0.0F;
+    };
+    return std::max(lookup(position), lookup({position[0], position[1] - cellLength, position[2]}));
 }
 
 } // namespace Fast::Oot3d
