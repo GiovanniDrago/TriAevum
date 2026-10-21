@@ -13,17 +13,26 @@ from __future__ import annotations
 import hashlib
 import shutil
 import struct
+import sys
 from pathlib import Path
 from typing import Callable
 
-from tools.oot3d.decomp_support.scripts.build_topscreen_texture_override_pack import build_texture_pack
-from tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack import ATTRIBUTION as FONT_ATTRIBUTION
-from tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack import prepare_font_pack
-
 try:
+    from .bundle_paths import distribution_root
     from .common import atomic_write_bytes, atomic_write_json, load_json_object, sha256_file
 except ImportError:
+    from bundle_paths import distribution_root
     from common import atomic_write_bytes, atomic_write_json, load_json_object, sha256_file
+
+# The pack builders live under tools/oot3d; the release tools also run as plain
+# modules from their own directory (the unittest suite), without the repository
+# root on the path.
+if str(distribution_root()) not in sys.path:
+    sys.path.insert(0, str(distribution_root()))
+
+from tools.oot3d.decomp_support.scripts.build_topscreen_texture_override_pack import build_texture_pack  # noqa: E402
+from tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack import ATTRIBUTION as FONT_ATTRIBUTION  # noqa: E402
+from tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack import prepare_font_pack  # noqa: E402
 
 
 # 2: SingleScreen 3.0 UI atlas, native localized labels (2.1.1 ones retired).
