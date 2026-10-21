@@ -62,6 +62,7 @@ void TopScreenReframedFileSelect::Reset() noexcept {
   mLogo = 0U;
   mTextContext = 0U;
   mGuidanceVisible = true;
+  mConfirmationNameY = {};
 }
 
 std::uint32_t TopScreenReframedFileSelect::Read32(std::uint32_t address) const {
@@ -224,8 +225,9 @@ bool TopScreenReframedFileSelect::Begin(std::uint32_t pc,
     case kReframedFileFinishCall: {
       const auto argument = state.r[0];
       // The native lower-screen file interface again, on the upper image:
-      // 56% x 70% on the left without Back's corner, then that corner alone
-      // against the screen's bottom-left edge.
+      // 56% x 70% on the left without Back's corner. Reframed then draws that
+      // corner alone against the screen's bottom-left edge; TopScreen has no
+      // Back there, so that pass is not replayed.
       const auto callback = Read32(state.r[4] + 0x7444U);
       const auto context = state.r[9];
       const auto drawInterface = [&] {
@@ -241,9 +243,6 @@ bool TopScreenReframedFileSelect::Begin(std::uint32_t pc,
       Scissor(3U, 0U, 0U, 479U, 345U);
       drawInterface();
       Scissor(3U, 110U, 346U, 479U, 399U);
-      drawInterface();
-      Viewport(0U, 176, 336U, 224);
-      Scissor(3U, 0U, 360U, 51U, 399U);
       drawInterface();
       Scissor(0U, 0U, 0U, 479U, 399U);
       Viewport(0U, 0, 480U, 400);
@@ -410,21 +409,97 @@ void TopScreenReframedFileSelect::AdjustBoard(std::uint32_t board) {
       }
     }
   }
+  // Copy/erase and their confirmations (states 11..42): each control is a
+  // group of quads (points relative to per-quad translations), scaled to
+  // 60% around the group's own center.
+  const auto scaleGroup = [&](std::uint32_t points, std::uint32_t translations,
+                              std::uint32_t first, std::uint32_t count) {
+    float left = 1000.0F, right = -1000.0F, top = 1000.0F, bottom = -1000.0F;
+    for (auto quad = first; quad < first + count; ++quad)
+      for (std::uint32_t corner = 0; corner < 4U; ++corner) {
+        const auto p = points + (quad * 12U + corner * 3U) * 4U;
+        const float x = ReadF(p) - ReadF(translations + quad * 8U);
+        const float y = ReadF(p + 4U) - ReadF(translations + quad * 8U + 4U);
+        left = std::min(left, x);
+        right = std::max(right, x);
+        top = std::min(top, y);
+        bottom = std::max(bottom, y);
+      }
+    const float cx = (left + right) * 0.5F, cy = (top + bottom) * 0.5F;
+    for (auto quad = first; quad < first + count; ++quad) {
+      const float tx = ReadF(translations + quad * 8U), ty = ReadF(translations + quad * 8U + 4U);
+      for (std::uint32_t corner = 0; corner < 4U; ++corner) {
+        const auto p = points + (quad * 12U + corner * 3U) * 4U;
+        WriteF(p, tx + cx + (ReadF(p) - tx - cx) * 0.6F);
+        WriteF(p + 4U, ty + cy + (ReadF(p + 4U) - ty - cy) * 0.6F);
+      }
+    }
+  };
+  if (const auto offsets = Read32(board + 0x1CU); fileState >= 11U && fileState <= 42U && offsets != 0U) {
+    // Each control's screen bounds before scaling, to tell whether the
+    // cursor frames one of them or a file slot.
+    std::array<std::array<float, 4>, 4> bounds{};
+    for (std::uint32_t control = 0; control < 4U; ++control) {
+      auto &box = bounds[control];
+      box = {1000.0F, -1000.0F, 1000.0F, -1000.0F};
+      for (auto quad = 134U + control * 7U; quad < 141U + control * 7U; ++quad)
+        for (std::uint32_t corner = 0; corner < 4U; ++corner) {
+          const float x = ReadF(vertex(quad, corner)), y = ReadF(vertex(quad, corner) + 4U);
+          box = {std::min(box[0], x), std::max(box[1], x), std::min(box[2], y), std::max(box[3], y)};
+        }
+      scaleGroup(positions, offsets, 134U + control * 7U, 7U);
+    }
+    // Reframed shrinks the cursor in every one of these states; it shrinks
+    // with its control only, not around a copy target's file slot.
+    const auto cursor = Read32(kFileCursor);
+    const auto cursorBoard = cursor != 0U ? Read32(cursor + 8U) : 0U;
+    if (cursorBoard != 0U && Read32(cursor + 0x24U) == 0U && Read32(cursorBoard) == 8U) {
+      const auto points = Read32(cursorBoard + 0x0CU), translations = Read32(cursorBoard + 0x1CU);
+      if (points != 0U && translations != 0U) {
+        // Its quads share one origin (translation) with local corner points:
+        // the frame's center is the middle of their screen extent.
+        float left = 1000.0F, right = -1000.0F, top = 1000.0F, bottom = -1000.0F;
+        for (std::uint32_t quad = 0; quad < 8U; ++quad)
+          for (std::uint32_t corner = 0; corner < 4U; ++corner) {
+            const auto p = points + (quad * 12U + corner * 3U) * 4U;
+            const float px = ReadF(translations + quad * 8U) + ReadF(p);
+            const float py = ReadF(translations + quad * 8U + 4U) + ReadF(p + 4U);
+            left = std::min(left, px);
+            right = std::max(right, px);
+            top = std::min(top, py);
+            bottom = std::max(bottom, py);
+          }
+        const float x = (left + right) * 0.5F, y = (top + bottom) * 0.5F;
+        const bool onControl = std::any_of(bounds.begin(), bounds.end(), [&](const auto &box) {
+          return x >= box[0] && x <= box[1] && y >= box[2] && y <= box[3];
+        });
+        if (onControl) scaleGroup(points, translations, 0U, 8U);
+      }
+    }
+  }
   for (std::uint32_t slot = 0; slot < 3U; ++slot) {
     // File names: eight outline nodes and the foreground, scaled together
     // from the left edge, centered in the row.
     const auto text = Read32(kFileTextOwners + slot * 4U);
     if (text != 0U && Read32(text + 0x40U) == 2U) {
       if (const auto foreground = Read32(text + 0x30U); foreground != 0U) {
+        // The name stays in its action-page row, visible, through the
+        // copy/erase confirmation.
+        if ((fileState == 8U || fileState == 10U) && ReadF(foreground + 0x3CU) > 0.0F)
+          mConfirmationNameY[slot] = ReadF(foreground + 0x40U);
+        const bool holdName = fileState >= 35U && fileState <= 42U &&
+                              mConfirmationNameY[slot] != 0.0F && ReadF(foreground + 0x3CU) > 0.0F;
+        const float shiftY = holdName ? mConfirmationNameY[slot] - ReadF(foreground + 0x40U) : 0.0F;
         const float left = ReadF(foreground + 0x3CU);
         const float centerY = ReadF(foreground + 0x40U) + 8.0F;
         for (std::uint32_t node = 0; node < 9U; ++node) {
           const auto address = Read32(text + 0x10U + node * 4U);
           if (address == 0U) continue;
           WriteF(address + 0x3CU, left + (ReadF(address + 0x3CU) - left) * 0.8F);
-          WriteF(address + 0x40U, centerY + (ReadF(address + 0x40U) - centerY) * 0.8F);
+          WriteF(address + 0x40U, centerY + (ReadF(address + 0x40U) - centerY) * 0.8F + shiftY);
           WriteF(address + 0x48U, 0.8F);
           WriteF(address + 0x4CU, 0.8F);
+          if (holdName) WriteF(address + 0xFCU, 1.0F);
         }
       }
     }
@@ -452,9 +527,13 @@ void TopScreenReframedFileSelect::AdjustBoard(std::uint32_t board) {
       scaleQuad(firstHeart + heart, heartsX, heartsTop, 0.8F, 0.8F);
   }
   // The heading's six slices (native x 12..308, y 4..44); its glyphs are a
-  // separate draw and keep their size.
+  // separate draw and keep their size. Copy/erase prompts are longer, and
+  // their confirmations longer still.
+  const float headingWidth = fileState >= 35U && fileState <= 42U ? 1.12F
+                             : fileState >= 11U                   ? 1.0F
+                                                                  : 0.60F;
   for (std::uint32_t quad = 0; quad < 6U; ++quad) {
-    scaleQuad(quad, 160.0F, 24.0F, 0.60F, 0.70F);
+    scaleQuad(quad, 160.0F, 24.0F, headingWidth, 0.70F);
     if (hideHeading)
       for (std::uint32_t corner = 0; corner < 4U; ++corner) {
         WriteF(vertex(quad, corner), -1000.0F);

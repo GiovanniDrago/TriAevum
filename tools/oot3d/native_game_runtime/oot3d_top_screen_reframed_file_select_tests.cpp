@@ -107,7 +107,7 @@ void TestFinishDrawsInterfaceTwice(NativeA32Memory &memory) {
   Write(memory, 0x0054CC50U, kCommands + 0x1000U);
   auto state = Caller(memory, kReframedFileFinishCall);
   const auto branches = Run(runtime, kReframedFileFinishCall, state);
-  Require(branches.size() == 13U, "the file interface sequence has the wrong length");
+  Require(branches.size() == 9U, "the file interface sequence has the wrong length");
   Require(branches[0].Target == 0x004228D4U && branches[0].Arguments[0] == kPass,
           "the native pass stage 5 did not run first");
   Require(IsViewport(branches[1], 56U, 164, 336U, 224), "interface viewport is not (56,164,336,224)");
@@ -115,25 +115,23 @@ void TestFinishDrawsInterfaceTwice(NativeA32Memory &memory) {
               branches[4].Target == kCallback && branches[4].Arguments[0] == kContext &&
               branches[5].Target == 0x0041EC50U && branches[7].Target == kCallback,
           "the lower interface was not drawn in both include regions");
-  Require(IsViewport(branches[8], 0U, 176, 336U, 224), "Back's viewport is not (0,176,336,224)");
-  Require(branches[11].Target == kCallback, "Back's pass did not draw the callback");
+  // Reframed's separate Back pass is not replayed: TopScreen has no Back.
   // The final viewport returns straight to the pass, with the caller's state.
-  Require(IsViewport(branches[12], 0U, 0, 480U, 400) &&
-              branches[12].Return == kReframedFileFinishCall + 4U && state.r[4] == kRoot &&
+  Require(IsViewport(branches[8], 0U, 0, 480U, 400) &&
+              branches[8].Return == kReframedFileFinishCall + 4U && state.r[4] == kRoot &&
               state.r[13] == kStack,
           "the full viewport was not restored before continuing the pass");
-  // Four scissors, all include (3) or disabled (0): the renderer has no
-  // exclude scissor. Interface without Back's corner, Back, then disable.
-  Require(Read(memory, 0x0054CC4CU) == kCommands + 24U * 4U, "four scissors were not written");
-  for (std::uint32_t index = 0; index < 4U; ++index)
+  // Three scissors, all include (3) or disabled (0): the renderer has no
+  // exclude scissor. Interface without Back's corner, then disable.
+  Require(Read(memory, 0x0054CC4CU) == kCommands + 18U * 4U, "three scissors were not written");
+  for (std::uint32_t index = 0; index < 3U; ++index)
     Require(Read(memory, kCommands + index * 24U + 4U) == 0x000F0065U &&
                 Read(memory, kCommands + index * 24U) != 1U,
             "an exclude scissor was written");
   Require(Read(memory, kCommands + 8U) == 0U && Read(memory, kCommands + 16U) == ((345U << 16U) | 479U) &&
               Read(memory, kCommands + 32U) == ((346U << 16U) | 110U) &&
-              Read(memory, kCommands + 56U) == ((360U << 16U) | 0U) &&
-              Read(memory, kCommands + 72U) == 0U,
-          "scissor rectangles differ from Reframed's interface and Back regions");
+              Read(memory, kCommands + 48U) == 0U,
+          "scissor rectangles differ from Reframed's interface regions");
 }
 
 void TestLogoSplitAndRestore(NativeA32Memory &memory) {
@@ -250,7 +248,8 @@ void TestBoardGeometry(NativeA32Memory &memory) {
 
   // Back from the native regeneration of the board at r6+0x30: the
   // adjustment, then the native continuation.
-  constexpr std::uint32_t owner = 0x00732000U;
+  // Past the 184-quad positions (0x00731000..0x00733280).
+  constexpr std::uint32_t owner = 0x00736000U;
   Write(memory, owner + 0x30U, kBoard);
   auto state = Caller(memory, kReframedFileBoardReturn);
   state.r[6] = owner;
@@ -270,6 +269,71 @@ void TestBoardGeometry(NativeA32Memory &memory) {
   state.r[6] = owner;
   (void)Run(runtime, kReframedFileBoardReturn, state);
   Require(ReadF(memory, badge) == 50.0F, "a foreign board was modified");
+
+  // An erase confirmation (state 36): each control's seven quads shrink to
+  // 60% around the group's center, and the heading widens.
+  SetFileSelect(memory, 36U);
+  Write(memory, kBoard, 184U);
+  constexpr std::uint32_t offsets = 0x00734000U;
+  Write(memory, kBoard + 0x1CU, offsets);
+  for (std::uint32_t index = 0; index < 184U * 2U; ++index) WriteF(memory, offsets + index * 4U, 0.0F);
+  Write(memory, 0x00504FD4U, 0U);
+  const std::array<std::array<float, 2>, 4> control{{{200, 200}, {240, 200}, {200, 220}, {240, 220}}};
+  for (std::uint32_t quad = 134U; quad < 141U; ++quad)
+    for (std::uint32_t corner = 0; corner < 4U; ++corner) {
+      WriteF(memory, kPositions + quad * 48U + corner * 12U, control[corner][0]);
+      WriteF(memory, kPositions + quad * 48U + corner * 12U + 4U, control[corner][1]);
+    }
+  WriteF(memory, kPositions, 20.0F);
+  WriteF(memory, kPositions + 4U, 10.0F);
+  state = Caller(memory, kReframedFileBoardReturn);
+  state.r[6] = owner;
+  (void)Run(runtime, kReframedFileBoardReturn, state);
+  const auto first = kPositions + 134U * 48U;
+  Require(std::fabs(ReadF(memory, first) - 208.0F) < 1e-4F &&
+              std::fabs(ReadF(memory, first + 4U) - 204.0F) < 1e-4F &&
+              std::fabs(ReadF(memory, first + 3U * 12U) - 232.0F) < 1e-4F,
+          "the confirmation control was not scaled to 60% around its center");
+  Require(std::fabs(ReadF(memory, kPositions) - (160.0F - 140.0F * 1.12F)) < 1e-4F,
+          "the confirmation heading was not widened");
+
+  // The cursor: eight corner quads at translations around a center, with
+  // points relative to them. It shrinks only while it frames a control.
+  constexpr std::uint32_t cursor = 0x00737000U, cursorBoard = 0x00737100U;
+  constexpr std::uint32_t cursorPoints = 0x00737200U, cursorTranslations = 0x00737600U;
+  Write(memory, 0x00504FD4U, cursor);
+  Write(memory, cursor + 8U, cursorBoard);
+  Write(memory, cursor + 0x24U, 0U);
+  Write(memory, cursorBoard, 8U);
+  Write(memory, cursorBoard + 0x0CU, cursorPoints);
+  Write(memory, cursorBoard + 0x1CU, cursorTranslations);
+  const auto placeCursor = [&](float cx, float cy) {
+    for (std::uint32_t quad = 0; quad < 8U; ++quad) {
+      WriteF(memory, cursorTranslations + quad * 8U, cx + (quad % 2U == 0U ? -30.0F : 30.0F));
+      WriteF(memory, cursorTranslations + quad * 8U + 4U, cy + (quad / 2U % 2U == 0U ? -10.0F : 10.0F));
+      for (std::uint32_t corner = 0; corner < 4U; ++corner) {
+        WriteF(memory, cursorPoints + quad * 48U + corner * 12U, corner % 2U == 0U ? 0.0F : 4.0F);
+        WriteF(memory, cursorPoints + quad * 48U + corner * 12U + 4U, corner < 2U ? 0.0F : 4.0F);
+      }
+    }
+  };
+  const auto runConfirmation = [&] {
+    for (std::uint32_t quad = 134U; quad < 141U; ++quad)
+      for (std::uint32_t corner = 0; corner < 4U; ++corner) {
+        WriteF(memory, kPositions + quad * 48U + corner * 12U, control[corner][0]);
+        WriteF(memory, kPositions + quad * 48U + corner * 12U + 4U, control[corner][1]);
+      }
+    state = Caller(memory, kReframedFileBoardReturn);
+    state.r[6] = owner;
+    (void)Run(runtime, kReframedFileBoardReturn, state);
+  };
+  placeCursor(220.0F, 210.0F);
+  runConfirmation();
+  Require(ReadF(memory, cursorPoints + 12U) != 4.0F, "the cursor framing a control did not shrink with it");
+  placeCursor(100.0F, 60.0F);
+  runConfirmation();
+  Require(ReadF(memory, cursorTranslations) == 70.0F && ReadF(memory, cursorPoints + 12U) == 4.0F,
+          "the cursor around a file slot was shrunk");
 }
 } // namespace
 

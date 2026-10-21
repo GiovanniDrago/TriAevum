@@ -81,6 +81,9 @@ private:
   // (context +0x890 == 2), from the latest upper pass.
   std::uint32_t mTextContext = 0U;
   bool mGuidanceVisible = true;
+  // Each file name's y on the action page, held while its copy/erase
+  // confirmation (states 35..42) slides the regenerated name away.
+  std::array<float, 3> mConfirmationNameY{};
 };
 
 } // namespace Oot3dNativeGame
