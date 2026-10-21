@@ -131,6 +131,7 @@ def install_precompiled_title(prepared_directory: Path, *, root: Path, recipe: d
         from .shader_preparation import prepare_shader_seed, prepare_renderer_shader_cache
         from .device_pipeline_preparation import prepare_device_pipelines, installation_cache_directory, adopt_existing_cache
         from .romfs_mods import prepare_romfs_mods, romfs_service_view
+        from .ui_texture_pack import prepare_ui_texture_pack, ui_atlas_hd
     except ImportError:
         import forge
         from topscreen_assets import prepare_topscreen_assets, topscreen_link_animations, topscreen_ui_atlas_hd
@@ -141,6 +142,7 @@ def install_precompiled_title(prepared_directory: Path, *, root: Path, recipe: d
         from shader_preparation import prepare_shader_seed, prepare_renderer_shader_cache
         from device_pipeline_preparation import prepare_device_pipelines, installation_cache_directory, adopt_existing_cache
         from romfs_mods import prepare_romfs_mods, romfs_service_view
+        from ui_texture_pack import prepare_ui_texture_pack, ui_atlas_hd
     catalog = load_catalog(root)
     item = select_title(root, recipe, catalog=catalog)
     prepared = forge.load_prepared_content(prepared_directory, required_inputs=("code", "exheader", "romfs"))
@@ -161,9 +163,12 @@ def install_precompiled_title(prepared_directory: Path, *, root: Path, recipe: d
     plugin = checked_file(root, item["plugin"])
     native_module = checked_file(root, catalog["native_module"])
     tables = title_tables(root, item)
+    # The HD UI texture pack, when the user has obtained it: the runtime loads
+    # it beneath the user's own texture pack, and TopScreen takes its HD atlas.
+    ui_textures = prepare_ui_texture_pack(root=root, data_root=data_root, recipe=recipe, report=report)
     texture_pack = prepare_topscreen_assets(
         root=root, data_root=data_root, recipe=recipe,
-        romfs=prepared.inputs["romfs"].path, report=report)
+        romfs=prepared.inputs["romfs"].path, ui_atlas_hd=ui_atlas_hd(ui_textures), report=report)
     water_textures = prepare_water_textures(data_root=data_root, recipe=recipe,
                                             romfs=prepared.inputs["romfs"].path, report=report)
     scene_lights = prepare_scene_lights(data_root=data_root, recipe=recipe,
@@ -201,6 +206,7 @@ def install_precompiled_title(prepared_directory: Path, *, root: Path, recipe: d
             topscreen_texture_pack=texture_pack,
             topscreen_link_animations=topscreen_link_animations(texture_pack),
             topscreen_ui_atlas_hd=topscreen_ui_atlas_hd(texture_pack),
+            ui_texture_pack=ui_textures,
             water_texture_catalog=water_textures,
             scene_light_catalog=scene_lights, romfs_overlay=romfs_overlay, package_root=root,
             pica_shader_pack=shader_pack, renderer_cache_directory=renderer_cache)

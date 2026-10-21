@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import singlescreen_archive
+import ui_texture_pack
 
 
 class FakeWorkerProcess:
@@ -40,18 +40,16 @@ class ForgeHdDownloadTests(unittest.TestCase):
         return root, window
 
     def _install(self, window, downloads):
-        contract = singlescreen_archive.ArchiveContract(
-            "singlescreen_3_1_archive", "SingleScreen31.zip", 1, "0" * 64)
-
-        def fake_download(data_root, contracts, progress=lambda *_: None, **_kwargs):
+        def fake_download(data_root, pack, contract, progress=lambda *_: None, **_kwargs):
+            self.assertIs(pack, ui_texture_pack.VANILLA_UI_HUD)
             downloads.append(data_root)
             progress(1, 1)
-            return contract, data_root / "downloads" / contract.name
+            return data_root / "downloads" / contract.name
 
         class Process(FakeWorkerProcess):
             pass
 
-        with (patch("forge_gui.singlescreen_archive.download_archive", side_effect=fake_download),
+        with (patch("forge_gui.romfs_mods.download_archive", side_effect=fake_download),
               patch("forge_gui.subprocess.Popen", Process),
               patch("forge_gui.installation_path", return_value=Path(".")),
               patch.object(window.messagebox, "showinfo"),
@@ -86,9 +84,7 @@ class ForgeHdDownloadTests(unittest.TestCase):
                 self._install(window, downloads)
                 self.assertEqual(downloads, [])
                 window.hd_auto_download.set(True)
-                stored = singlescreen_archive.ArchiveContract(
-                    "singlescreen_3_1_archive", "SingleScreen31.zip", 1, "0" * 64)
-                with patch("forge_gui.singlescreen_archive.stored_archive", return_value=stored):
+                with patch("forge_gui.ui_texture_pack.pack_status", return_value="archive"):
                     self._install(window, downloads)
                 self.assertEqual(downloads, [])
             finally:
@@ -99,7 +95,7 @@ class ForgeHdDownloadTests(unittest.TestCase):
             data = Path(folder)
             root, window = self._window(data)
             try:
-                with (patch("forge_gui.singlescreen_archive.download_archive",
+                with (patch("forge_gui.romfs_mods.download_archive",
                             side_effect=ValueError("offline")),
                       patch("forge_gui.subprocess.Popen", FakeWorkerProcess),
                       patch("forge_gui.installation_path", return_value=Path(".")),

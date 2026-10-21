@@ -111,6 +111,18 @@ void NativeA32WindowSession::Setup() {
       Oot3dNativeGame::DetectGameLanguages(manifest->RomFsImagePath,
           manifest->RomFsImageOffset, manifest->RomFsImageSize));
   hostConfig.SystemLanguage = languageSettings->SystemId();
+  if (!launch.UiTexturePackDirectory.empty()) {
+    // Forge's UI texture pack beneath the user's pack: the boot language's
+    // folders, then the language-neutral textures.
+    std::vector<std::filesystem::path> directories;
+    for (const auto &folder :
+         Oot3dNativeGame::UiTexturePackLanguageFolders(languageSettings->SystemId())) {
+      const auto directory = launch.UiTexturePackDirectory / "languages" / folder;
+      if (std::filesystem::is_directory(directory)) directories.push_back(directory);
+    }
+    directories.push_back(launch.UiTexturePackDirectory / "common");
+    Oot3d::Renderer::AzaharTexturePackRuntime::Instance().SetBaseDirectories(std::move(directories));
+  }
   hostConfig.ResourceLimitValues = manifest->ResourceLimitValues;
   hostConfig.ResourceCurrentValues = manifest->ResourceCurrentValues;
   hostConfig.LinearHeapBaseAddress = manifest->LinearHeapBaseAddress;

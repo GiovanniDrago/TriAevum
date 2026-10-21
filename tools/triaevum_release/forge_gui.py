@@ -31,7 +31,7 @@ try:
     from .host_layout import for_package
     from . import portal_picker
     from . import romfs_mods
-    from . import singlescreen_archive
+    from . import ui_texture_pack
 except ImportError:
     import ctr_rom
     import forge
@@ -49,7 +49,7 @@ except ImportError:
     from host_layout import for_package
     import portal_picker
     import romfs_mods
-    import singlescreen_archive
+    import ui_texture_pack
 
 
 StageReporter = Callable[[str, str], None]
@@ -345,10 +345,12 @@ class ForgeWindow:
         self.status = tk.StringVar(value="Checking the local installation...")
         self.hd_status = tk.StringVar()
         self.hd_selection = tk.StringVar()
-        # On by default: a title prepared without the archive stored gets
-        # SingleScreen 3.1 downloaded first, as part of "Prepare and install".
+        self.hd_folder = tk.StringVar()
+        # On by default: a title prepared without the archive stored gets the
+        # HD UI texture pack downloaded first, as part of "Prepare and install".
         self.hd_auto_download = tk.BooleanVar(value=True)
-        self.hd_contracts = singlescreen_archive.archive_contracts(forge.DEFAULT_RECIPES)
+        self.hd_pack = ui_texture_pack.VANILLA_UI_HUD
+        self.hd_contract = ui_texture_pack.pack_contract(forge.DEFAULT_RECIPES, self.hd_pack)
         # Optional RomFS mods: off by default. This section is the setting's
         # only control; "Prepare and install" applies it.
         self.mod = romfs_mods.VANILLA_PLUS_LINK
@@ -368,6 +370,7 @@ class ForgeWindow:
         self._build_layout()
         self.rom.trace_add("write", lambda *_args: self._refresh_actions())
         self.hd_selection.trace_add("write", lambda *_args: self._import_hd())
+        self.hd_folder.trace_add("write", lambda *_args: self._import_hd_folder())
         self.hd_auto_download.trace_add("write", lambda *_args: self._refresh_hd())
         self.mod_selection.trace_add("write", lambda *_args: self._import_mod_archive())
         self.mod_folder.trace_add("write", lambda *_args: self._import_mod_folder())
@@ -467,94 +470,127 @@ class ForgeWindow:
         style.configure("HD.TLabelframe.Label", font=("Segoe UI", 11, "bold"))
         style.configure("HD.TButton", font=("Segoe UI", 10, "bold"), padding=(12, 4))
         style.configure("Link.TLabel", foreground="#1a5fb4")
+        pack = self.hd_pack
         section = self.ttk.Labelframe(
-            parent, text="HD fonts and TopScreen textures (recommended)",
-            style="HD.TLabelframe", padding=12)
+            parent, text="HD UI textures (recommended)", style="HD.TLabelframe", padding=12)
         section.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(16, 0))
-        section.columnconfigure(2, weight=1)
+        section.columnconfigure(3, weight=1)
+        credits = ", ".join(credit.name for credit in pack.credits if credit.group == "Key Authors")
         self.ttk.Label(
             section,
             text=(
-                "Thanks to RLG (M-1) for SingleScreen, the mod TriAevum's TopScreen is "
-                "based on, and to chubbycubby for its HD textures. The automatic download "
-                "is for SingleScreen 3.1. If it does not work, download the 3.1 zip from "
-                "the mod page and select it here, as you select the ROM."
+                f"{pack.title} {pack.version} by {pack.author} (credits: {credits}): HD textures for "
+                "the HUD, the menus and TopScreen, in the game language you choose here or in game. "
+                f"Licensed {pack.license_name}: TriAevum does not distribute it. Forge downloads the "
+                "author's original archive from GameBanana, verifies it and keeps it in your private "
+                "data folder. If the download does not work, download the zip from the mod page and "
+                "select it here. Thanks to RLG (M-1) for SingleScreen, the mod TriAevum's TopScreen is "
+                "based on; its HD font is included with TriAevum."
             ),
             wraplength=680,
             justify="left",
-        ).grid(row=0, column=0, columnspan=3, sticky="ew")
+        ).grid(row=0, column=0, columnspan=4, sticky="ew")
         self.hd_download_button = self.ttk.Button(
             section, text="Download HD textures", style="HD.TButton", command=self._download_hd)
         self.hd_download_button.grid(row=1, column=0, sticky="w", pady=(10, 0))
         self.hd_select_button = self.ttk.Button(
-            section, text="Select 3.1 zip...",
-            command=lambda: self._browse(self.hd_selection, "Select the SingleScreen 3.1 zip",
-                                         (("SingleScreen archive", "*.zip"),)))
+            section, text="Select .zip...",
+            command=lambda: self._browse(
+                self.hd_selection,
+                f"Select {self.hd_contract.name if self.hd_contract else 'the texture pack zip'}",
+                (("Texture pack archive", "*.zip"),)))
         self.hd_select_button.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
-        link = self.ttk.Label(section, text="Mod page", style="Link.TLabel", cursor="hand2")
-        link.grid(row=1, column=2, sticky="e", pady=(10, 0))
-        link.bind("<Button-1>", lambda _event: webbrowser.open(singlescreen_archive.MOD_PAGE))
+        self.hd_folder_button = self.ttk.Button(
+            section, text="Select extracted folder...", command=self._select_hd_folder)
+        self.hd_folder_button.grid(row=1, column=2, sticky="w", padx=(8, 0), pady=(10, 0))
+        links = self.ttk.Frame(section)
+        links.grid(row=1, column=3, sticky="e", pady=(10, 0))
+        for column, (text, url) in enumerate((("Mod page", pack.page), ("License", pack.license_url))):
+            link = self.ttk.Label(links, text=text, style="Link.TLabel", cursor="hand2")
+            link.grid(row=0, column=column, padx=(8, 0))
+            link.bind("<Button-1>", lambda _event, target=url: webbrowser.open(target))
         self.hd_auto_check = self.ttk.Checkbutton(
             section, variable=self.hd_auto_download,
-            text="Download SingleScreen 3.1 with \"Prepare and install\" when it is not stored yet")
-        self.hd_auto_check.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+            text="Download the HD textures with \"Prepare and install\" when they are not stored yet")
+        self.hd_auto_check.grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
         self.ttk.Label(section, textvariable=self.hd_status, wraplength=680, justify="left").grid(
-            row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+            row=3, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         self._refresh_hd()
 
-    def _stored_hd(self) -> singlescreen_archive.ArchiveContract | None:
-        return singlescreen_archive.stored_archive(installation_root(), self.data_root, self.hd_contracts)
+    def _hd_state(self) -> str:
+        return ui_texture_pack.pack_status(installation_root(), self.data_root, self.hd_contract, self.hd_pack)
 
     def _refresh_hd(self) -> None:
-        stored = self._stored_hd()
-        if stored is not None:
-            self.hd_status.set(f"SingleScreen {stored.version} archive ready. "
-                               "It is applied when you prepare and install the title.")
+        if self.hd_contract is None:
+            self.hd_status.set("Not available for the supported game revisions of this package.")
+            return
+        state = self._hd_state()
+        if state == "ready":
+            self.hd_status.set("HD textures ready. They are applied when you prepare and install the title.")
+        elif state == "archive":
+            self.hd_status.set("HD texture archive stored. It is prepared and applied when you prepare "
+                               "and install the title.")
         elif self.hd_auto_download.get():
-            self.hd_status.set("Not stored yet: SingleScreen 3.1 is downloaded when you prepare and "
-                               "install the title. Without it the game uses the native textures and fonts.")
+            self.hd_status.set(f"Not stored yet: the HD textures ({self.hd_contract.bytes // 1_000_000} MB) "
+                               "are downloaded when you prepare and install the title. Without them the "
+                               "game uses the native textures.")
         else:
-            self.hd_status.set("Not installed: the game uses the native textures and fonts.")
+            self.hd_status.set("Not installed: the game uses the native textures.")
 
     def _install_hd_download_needed(self) -> bool:
-        """Whether "Prepare and install" downloads SingleScreen 3.1 first."""
-        return bool(self.hd_auto_download.get()) and self._stored_hd() is None
+        """Whether "Prepare and install" downloads the HD textures first."""
+        return (bool(self.hd_auto_download.get()) and self.hd_contract is not None
+                and self._hd_state() == "missing")
+
+    def _download_hd_task(self, report: Callable[[str], None]) -> None:
+        romfs_mods.download_archive(
+            self.data_root, self.hd_pack, self.hd_contract, report=report,
+            progress=lambda done, total: report(f"Downloading the HD textures... {done * 100 // total}%"))
 
     def _download_hd_for_install(self) -> None:
         """Worker-thread download before the title is prepared; a failure keeps
         the native textures and reports why, it never stops the installation."""
-        self.events.put(("hd_stage", "Downloading SingleScreen 3.1..."))
+        self.events.put(("hd_stage", "Downloading the HD textures..."))
         try:
-            contract, _path = singlescreen_archive.download_archive(
-                self.data_root, self.hd_contracts,
-                progress=lambda done, total: self.events.put(
-                    ("hd_stage", f"Downloading SingleScreen 3.1... {done * 100 // total}%")))
+            self._download_hd_task(lambda text: self.events.put(("hd_stage", text)))
         except Exception as exc:
             self.events.put(("hd_stage", (
-                f"SingleScreen 3.1 download failed: {exc} The title is prepared with the native "
-                f"textures and fonts. Download the 3.1 zip from the mod page and select it with "
-                "\"Select 3.1 zip...\", then prepare and install again.")))
+                f"HD texture download failed: {exc} The title is prepared with the native textures. "
+                "Download the zip from the mod page and select it with \"Select .zip...\", then "
+                "prepare and install again.")))
             return
-        self.events.put(("hd_stage", f"SingleScreen {contract.version} archive ready. "
-                                     "It is applied by this installation."))
+        self.events.put(("hd_stage", "HD texture archive ready. It is applied by this installation."))
 
     def _download_hd(self) -> None:
-        def task(report):
-            return singlescreen_archive.download_archive(
-                self.data_root, self.hd_contracts,
-                progress=lambda done, total: report(f"Downloading SingleScreen 3.1... "
-                                                    f"{done * 100 // total}%"))
-        self._run_hd(task, "Downloading SingleScreen 3.1...")
+        self._run_hd(self._download_hd_task, "Downloading the HD textures...")
 
     def _import_hd(self) -> None:
         selected = self.hd_selection.get().strip()
-        if not selected:
+        if not selected or self.hd_contract is None:
             return
-        self._run_hd(lambda _report: singlescreen_archive.import_archive(
-            Path(selected), self.data_root, self.hd_contracts), "Verifying the selected archive...")
+        self._run_hd(lambda _report: romfs_mods.import_archive(
+            Path(selected), self.data_root, self.hd_pack, self.hd_contract),
+            "Verifying the selected archive...")
+
+    def _select_hd_folder(self) -> None:
+        if self.busy or self.picking:
+            return
+        title = f"Select the extracted {self.hd_pack.title} folder"
+        if for_package(installation_root()).use_file_portal:
+            self._portal_browse(self.hd_folder, title, directory=True)
+            return
+        selected = self.filedialog.askdirectory(title=title, parent=self.root)
+        if selected:
+            self.hd_folder.set(selected)
+
+    def _import_hd_folder(self) -> None:
+        selected = self.hd_folder.get().strip()
+        if selected:
+            self._run_hd(lambda _report: ui_texture_pack.import_extracted(
+                Path(selected), self.data_root, self.hd_pack), "Verifying the extracted textures...")
 
     def _run_hd(self, task: Callable[[Callable[[str], None]], Any], message: str) -> None:
-        if self.busy or self.picking:
+        if self.busy or self.picking or self.hd_contract is None:
             return
         self.busy = True
         self.progress.start(12)
@@ -563,10 +599,10 @@ class ForgeWindow:
 
         def worker() -> None:
             try:
-                contract, _path = task(lambda text: self.events.put(("hd_stage", text)))
-                self.events.put(("hd", (contract.version, None)))
+                task(lambda text: self.events.put(("hd_stage", text)))
+                self.events.put(("hd", None))
             except Exception as exc:
-                self.events.put(("hd", (None, str(exc))))
+                self.events.put(("hd", str(exc)))
         threading.Thread(target=worker, name="TriAevumHdTextures", daemon=True).start()
 
     def _build_mods_section(self, parent: Any, row: int) -> None:
@@ -829,8 +865,10 @@ class ForgeWindow:
             if self.active_title is not None and not self.busy and not self.picking
             else "disabled"
         )
-        for button in (self.hd_download_button, self.hd_select_button, self.hd_auto_check):
-            button.configure(state="disabled" if self.busy or self.picking else "normal")
+        for button in (self.hd_download_button, self.hd_select_button, self.hd_folder_button,
+                       self.hd_auto_check):
+            button.configure(state="disabled" if self.busy or self.picking or self.hd_contract is None
+                             else "normal")
         mod_available = self.mod_contract is not None and not self.mod_settings_error
         for button in (self.mod_check, self.mod_download_button, self.mod_select_button,
                        self.mod_folder_button):
@@ -845,7 +883,7 @@ class ForgeWindow:
         download_mod = self._install_mod_download_needed()
         self.busy = True
         self.progress.start(12)
-        self.status.set("Downloading SingleScreen 3.1 before the title preparation..."
+        self.status.set("Downloading the HD textures before the title preparation..."
                         if download_hd else
                         "Downloading the enabled mod before the title preparation..."
                         if download_mod else "Starting title preparation...")
@@ -945,20 +983,18 @@ class ForgeWindow:
                 elif event == "hd":
                     self.busy = False
                     self.progress.stop()
-                    version, error = payload
                     self._refresh_hd()
                     self._refresh_actions()
-                    if error:
+                    if payload:
                         self.messagebox.showerror(
                             "TriAevum Forge",
-                            f"{error}\n\nDownload the SingleScreen 3.1 zip from the mod page "
-                            f"({singlescreen_archive.MOD_PAGE}) and select it with "
-                            "\"Select 3.1 zip...\".",
+                            f"{payload}\n\nDownload {self.hd_contract.name} from the mod page "
+                            f"({self.hd_pack.page}) and select it with \"Select .zip...\".",
                             parent=self.root,
                         )
                     elif self.active_title is not None:
-                        self.hd_status.set(f"SingleScreen {version} archive ready. Prepare and "
-                                           "install the title again to apply it.")
+                        self.hd_status.set("HD textures ready. Prepare and install the title again "
+                                           "to apply them.")
                 elif event == "error":
                     self.busy = False
                     self.progress.stop()
@@ -972,7 +1008,7 @@ class ForgeWindow:
                     self.progress.stop()
                     self._refresh_active_title()
                     self._refresh_actions()
-                    if self._stored_hd() is not None:
+                    if not self.hd_status.get().startswith("HD texture download failed"):
                         self._refresh_hd()
                     if not self.mod_status.get().startswith("Mod download failed"):
                         self._refresh_mod()

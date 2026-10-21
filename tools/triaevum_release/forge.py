@@ -277,7 +277,7 @@ def verify_sources(
     exheader_path: Path,
     romfs_path: Path,
     cache: HashCache,
-    topscreen_archive: Path | None = None,
+    ui_texture_archive: Path | None = None,
 ) -> tuple[dict[str, VerifiedInput], VerifiedInput | None]:
     contracts = recipe.get("inputs")
     if not isinstance(contracts, dict):
@@ -301,26 +301,23 @@ def verify_sources(
         verified[kind] = verify_input(kind, path, contract, cache)
 
     verified_mod: VerifiedInput | None = None
-    if topscreen_archive is not None:
+    if ui_texture_archive is not None:
         try:
-            from .topscreen_assets import singlescreen_archive_contracts
+            from .ui_texture_pack import pack_contract
         except ImportError:
-            from topscreen_assets import singlescreen_archive_contracts
-        contracts = singlescreen_archive_contracts(recipe)
-        if not contracts:
-            raise ForgeError("revision recipe does not support a TopScreen archive")
-        resolved = topscreen_archive.expanduser().resolve()
+            from ui_texture_pack import pack_contract
+        contract = pack_contract(recipe)
+        if contract is None:
+            raise ForgeError("revision recipe does not support the HD UI texture pack")
+        resolved = ui_texture_archive.expanduser().resolve()
         if not resolved.is_file() or resolved.is_symlink():
-            raise ForgeError(f"TopScreen archive is not a regular file: {resolved}")
+            raise ForgeError(f"HD UI texture pack archive is not a regular file: {resolved}")
         digest = cache.digest(resolved)
-        kind = next((kind for kind, contract in contracts
-                     if str(contract.get("sha256", "")).lower() == digest), None)
-        if kind is None:
-            expected = ", ".join(str(contract.get("sha256", "")).lower() for _, contract in contracts)
+        if digest != contract.sha256:
             raise ForgeError(
-                f"TopScreen archive SHA-256 mismatch: expected one of {expected}, got {digest}"
+                f"HD UI texture pack archive SHA-256 mismatch: expected {contract.sha256}, got {digest}"
             )
-        verified_mod = VerifiedInput(kind, resolved, resolved.stat().st_size, digest)
+        verified_mod = VerifiedInput(contract.kind, resolved, resolved.stat().st_size, digest)
     cache.save()
     return verified, verified_mod
 
@@ -964,6 +961,7 @@ def publish_private_runtime(
     topscreen_texture_pack: Path | None = None,
     topscreen_link_animations: Path | None = None,
     topscreen_ui_atlas_hd: Path | None = None,
+    ui_texture_pack: Path | None = None,
     water_texture_catalog: Path | None = None,
     scene_light_catalog: Path | None = None,
     romfs_overlay: Path | None = None,
@@ -1060,8 +1058,14 @@ def publish_private_runtime(
         profile["arguments"].extend(("--topscreen-link-animations", str(topscreen_link_animations.resolve())))
     if topscreen_ui_atlas_hd is not None:
         if not topscreen_ui_atlas_hd.is_file():
-            raise ForgeError("SingleScreen 3.0 HD UI atlas is missing before activation")
+            raise ForgeError("HD UI atlas is missing before activation")
         profile["arguments"].extend(("--topscreen-ui-atlas-hd", str(topscreen_ui_atlas_hd.resolve())))
+    ui_texture_receipt = None
+    if ui_texture_pack is not None:
+        ui_texture_receipt = ui_texture_pack / "source.json"
+        if not ui_texture_receipt.is_file() or not (ui_texture_pack / "common").is_dir():
+            raise ForgeError("HD UI texture pack is missing before activation")
+        profile["arguments"].extend(("--ui-texture-pack", str(ui_texture_pack.resolve())))
     if water_texture_catalog is not None:
         if not water_texture_catalog.is_file():
             raise ForgeError("Water texture catalog is missing before activation")
@@ -1084,7 +1088,7 @@ def publish_private_runtime(
     path_options = {"--title-plugin", "--a32-process-manifest", "--resource-root",
                     "--config", "--topscreen-config", "--save-data", "--output",
                     "--topscreen-texture-overrides", "--topscreen-link-animations",
-                    "--topscreen-ui-atlas-hd",
+                    "--topscreen-ui-atlas-hd", "--ui-texture-pack",
                     "--water-texture-catalog", "--scene-light-catalog", "--romfs-overlay",
                     "--pica-aot-shader-pack", "--renderer-cache-directory"}
     scopes = {}
@@ -1137,6 +1141,13 @@ def publish_private_runtime(
         prepared.state["runtime"]["topscreen_ui_atlas_hd"] = {
             "path": context.reference(topscreen_ui_atlas_hd, prepared.directory),
             "sha256": sha256_file(topscreen_ui_atlas_hd),
+        }
+    if ui_texture_receipt is not None:
+        # A directory: its receipt is pinned; the textures were verified when
+        # the pack was prepared.
+        prepared.state["runtime"]["ui_texture_pack"] = {
+            "path": context.reference(ui_texture_pack, prepared.directory),
+            "receipt_sha256": sha256_file(ui_texture_receipt),
         }
     if water_texture_catalog is not None:
         prepared.state["runtime"]["water_textures"] = {
@@ -1384,7 +1395,7 @@ def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--code", type=Path, required=True)
     parser.add_argument("--exheader", type=Path, required=True)
     parser.add_argument("--romfs", type=Path, required=True)
-    parser.add_argument("--topscreen-archive", type=Path)
+    parser.add_argument("--ui-texture-archive", type=Path)
     parser.add_argument("--output-root", type=Path, default=default_output_root())
     parser.add_argument(
         "--rehash",
@@ -1698,7 +1709,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 exheader_path=args.exheader,
                 romfs_path=args.romfs,
                 cache=cache,
-                topscreen_archive=args.topscreen_archive,
+                ui_texture_archive=args.ui_texture_archive,
             )
             if args.command == "verify":
                 result = {

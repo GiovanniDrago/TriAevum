@@ -11,6 +11,7 @@ from audit_release import DEFAULT_POLICY, audit_release
 from common import atomic_write_json, sha256_file
 from package_release import package_release
 from test_vulkan_imports import pe_import_fixture
+from ui_texture_pack import VANILLA_UI_HUD
 
 # The Windows package root holds only Forge, README.md and LICENSE.
 MANIFEST = "docs/release-manifest.json"
@@ -52,6 +53,8 @@ FILES = {
         "topscreen_singlescreen_asset", (SINGLESCREEN / "custom_ui01.ctxb").read_bytes()),
     "resources/topscreen/singlescreen-3.0/zelda_link_ext.zar": (
         "topscreen_singlescreen_asset", (SINGLESCREEN / "zelda_link_ext.zar").read_bytes()),
+    "resources/topscreen/singlescreen-3.1/ltn16.qbf": (
+        "topscreen_singlescreen_asset", (SINGLESCREEN.parent / "singlescreen-3.1/ltn16.qbf").read_bytes()),
     "LICENSES/SingleScreen-3.0.md": ("license", b"SingleScreen 3.0 permission fixture\n"),
     # The in-game menu's font atlases are compiled into the runtime.
     "LICENSES/FiraSans-OFL.txt": ("license", b"SIL Open Font License fixture\n"),
@@ -270,15 +273,23 @@ class PublicReleaseAuditTests(unittest.TestCase):
         errors = audit_with("resources/topscreen/extra.ctxb", "title_neutral_resource",
                             (SINGLESCREEN / "custom_ui01.ctxb").read_bytes())
         self.assertTrue(any("forbidden extension" in e for e in errors), errors)
-        # The archives, the HD UI atlases and the HD fonts wait for their author's
-        # consent, in 3.0 and in 3.1.
-        forbidden = set(json.loads(DEFAULT_POLICY.read_text())["forbidden_sha256"])
+        # The SingleScreen archives and HD UI atlases stay out, and so do the HD
+        # UI texture pack's archive and textures; the HD font ships, pinned.
+        policy = json.loads(DEFAULT_POLICY.read_text())
+        forbidden = set(policy["forbidden_sha256"])
         self.assertTrue({"5668640fec8dc2b47b4516fd0b871c4d7d90ca1c2203acc2a22adb59aaab5993",
                          "25e9f22720029c64ac729deef9c38b4dea3d5426d57d99678963c8f26b2908a1",
                          "f91485999a6b8e89b8d574064dc03c1c20704f2c718e93c5187251b6ef69dbcb",
                          "3a505b0beff8654d71c68e870c132975c6bc0209ab9c41aafbd782f7a5880e7a",
-                         "8b83e081f721c6e1842b0a9cd90b71a3fb2849674d2b1040f3dc5c3221594169",
-                         "9c401a41d142d153b7dfef9208f3a7982a018f89f729eece441cce0470aacb42"} <= forbidden)
+                         "9c401a41d142d153b7dfef9208f3a7982a018f89f729eece441cce0470aacb42",
+                         "5ff478db312c3f57f54263cd84f4caef15bbb391fd1dda3bdd3c25c4917938a1"} <= forbidden)
+        self.assertTrue({digest for _size, digest in VANILLA_UI_HUD.members.values()} <= forbidden)
+        font = "8b83e081f721c6e1842b0a9cd90b71a3fb2849674d2b1040f3dc5c3221594169"
+        self.assertNotIn(font, forbidden)
+        self.assertIn(font, policy["pinned_role_sha256"]["topscreen_singlescreen_asset"])
+        errors = audit_with("resources/topscreen/singlescreen-3.1/ltn16.qbf", "topscreen_singlescreen_asset",
+                            b"QBF1 another font")
+        self.assertTrue(any("not a pinned topscreen_singlescreen_asset" in e for e in errors), errors)
 
     def test_runtime_contract_excludes_experimental_global_illumination(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

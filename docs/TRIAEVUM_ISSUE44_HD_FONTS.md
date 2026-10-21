@@ -90,7 +90,7 @@ until the native atlas consumer exists. The manifest explicitly records
 Reproduce preparation from the repository root (local user inputs only):
 
 ```powershell
-python -m tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack --archive <topscreen211.zip> --romfs <romfs.bin> --output <local-font-coverage.zip>
+python -m tools.oot3d.decomp_support.scripts.prepare_qbf_font_pack --font runtime/triaevum_resources/topscreen/singlescreen-3.1/ltn16.qbf --romfs <romfs.bin> --output <local-font-coverage.zip>
 python -m unittest tools.triaevum_release.test_qbf_font -v
 ```
 

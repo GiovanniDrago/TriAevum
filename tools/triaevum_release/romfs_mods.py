@@ -24,20 +24,20 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import ssl
 import struct
 import subprocess
+import sys
 import tempfile
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Mapping
+from typing import Callable, Iterable, Mapping, Protocol
 
 try:
     from .common import atomic_write_json, load_json_object, sha256_file
-    from .singlescreen_archive import tls_context
 except ImportError:
     from common import atomic_write_json, load_json_object, sha256_file
-    from singlescreen_archive import tls_context
 
 
 SETTINGS_FORMAT = "triaevum_romfs_mods_v1"
@@ -49,6 +49,23 @@ IMPORT_VERSION = 1
 INVALID = 0xFFFFFFFF
 PAYLOAD_ALIGNMENT = 16
 MAXIMUM_MEMBER_BYTES = 64 * 1024 * 1024
+# Frozen Linux builds carry the SDK's OpenSSL, whose default CA path may not
+# exist on the host distribution.
+LINUX_CA_BUNDLES = (
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+    "/etc/ssl/cert.pem",
+)
+
+
+class CataloguedArchive(Protocol):
+    """What the archive functions need of a catalogued mod or texture pack
+    (ui_texture_pack.py shares them)."""
+    archive_kind: str
+    title: str
+    version: str
+    downloads: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -185,7 +202,7 @@ def set_mod_enabled(data_root: Path, mod_id: str, enabled: bool) -> tuple[str, .
 
 # --- The original archive -------------------------------------------------------
 
-def archive_contract(recipes: Path | dict, mod: RomFsMod) -> ArchiveContract | None:
+def archive_contract(recipes: Path | dict, mod: CataloguedArchive) -> ArchiveContract | None:
     """The archive the recipes (a recipes file, or one recipe) accept for
     `mod`, or None."""
     payload = recipes if isinstance(recipes, dict) else load_json_object(recipes)
@@ -229,7 +246,7 @@ def _keep(temporary: Path, data_root: Path, contract: ArchiveContract) -> Path:
     return destination
 
 
-def import_archive(source: Path, data_root: Path, mod: RomFsMod, contract: ArchiveContract) -> Path:
+def import_archive(source: Path, data_root: Path, mod: CataloguedArchive, contract: ArchiveContract) -> Path:
     """Copy a user-selected archive into data/downloads after verification."""
     source = source.expanduser().resolve()
     if not source.is_file():
@@ -254,7 +271,16 @@ def import_archive(source: Path, data_root: Path, mod: RomFsMod, contract: Archi
         temporary.unlink(missing_ok=True)
 
 
-def _download_once(url: str, data_root: Path, contract: ArchiveContract, mod: RomFsMod,
+def tls_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    if sys.platform.startswith("linux") and not context.get_ca_certs():
+        bundle = next((path for path in LINUX_CA_BUNDLES if os.path.isfile(path)), None)
+        if bundle is not None:
+            context.load_verify_locations(cafile=bundle)
+    return context
+
+
+def _download_once(url: str, data_root: Path, contract: ArchiveContract, mod: CataloguedArchive,
                    progress: Callable[[int, int], None], opener: Callable[..., object]) -> Path:
     directory = downloads_directory(data_root)
     directory.mkdir(parents=True, exist_ok=True)
@@ -278,7 +304,7 @@ def _download_once(url: str, data_root: Path, contract: ArchiveContract, mod: Ro
         temporary.unlink(missing_ok=True)
 
 
-def download_archive(data_root: Path, mod: RomFsMod, contract: ArchiveContract, *,
+def download_archive(data_root: Path, mod: CataloguedArchive, contract: ArchiveContract, *,
                      urls: Iterable[str] | None = None,
                      progress: Callable[[int, int], None] = lambda _done, _total: None,
                      report: Callable[[str], None] = lambda _message: None,

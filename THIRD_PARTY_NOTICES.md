@@ -311,12 +311,11 @@ package ships its low-resolution UI atlas `custom_ui01.ctxb` and its Link
 animations `zelda_link_ext.zar`, unchanged, from the official archive
 `singlescreen_30_25aeb.zip` (SHA-256
 `5668640fec8dc2b47b4516fd0b871c4d7d90ca1c2203acc2a22adb59aaab5993`;
-SingleScreen 3.1's `singlescreen_31_989c3.zip` carries them unchanged). They
-remain the author's; see `LICENSES/SingleScreen-3.0.md`. Its HD UI atlas (by
-chubbycubby) and HD fonts are not distributed until their author consents;
-Forge imports them only from the official archive, which the user places beside
-it, selects in Forge, or asks Forge to download from GameBanana. TopScreen 2.1.1
-is no longer used.
+SingleScreen 3.1's `singlescreen_31_989c3.zip` carries them unchanged), and
+SingleScreen 3.1's HD Latin font `ltn16.qbf`, unchanged. They remain the
+author's; see `LICENSES/SingleScreen-3.0.md`. The HD UI atlas (by chubbycubby)
+is not distributed; Forge takes it from chubbycubby's HD UI texture pack when
+the user obtains it (see below). TopScreen 2.1.1 is no longer used.
 
 The reverse-engineering method and implementation boundaries are documented in
 `docs/OOT3D_TOPSCREEN_MOD_SEMANTIC_PORT.md` and
@@ -352,6 +351,18 @@ TriAevum: packages contain none of its files. Forge downloads the author's
 original archive on the user's request, verifies it and applies it to the
 user's local game data only. See `LICENSES/Vanilla-Plus-Link-Remodel.md` and
 `docs/TRIAEVUM_MOD_VANILLA_PLUS_LINK.md`.
+
+## OoT3D Vanilla UI/HUD (optional HD UI texture pack)
+
+Forge's "HD UI textures" section can install **OoT3D Vanilla UI/HUD** 3.2 by
+**chubbycubby**, crediting **HenrikoMagnifico** and **M-1**
+(<https://gamebanana.com/mods/701929>), HD textures for the HUD, the menus and
+TopScreen in each game language. It is licensed CC BY-NC-ND 4.0
+(<https://creativecommons.org/licenses/by-nc-nd/4.0/>) and is not part of
+TriAevum: packages contain none of its files. Forge downloads the author's
+original archive on the user's request, verifies it and keeps its textures in
+the user's private data folder only. See `LICENSES/OoT3D-Vanilla-UI-HUD.md` and
+`docs/TRIAEVUM_UI_TEXTURE_PACK.md`.
 
 ## Fira Sans Condensed (in-game menu font)
 
