@@ -11,6 +11,12 @@ bool ExecuteTopScreenUiSourcePortBlock(
     NativeCandidateDispatchState &dispatch,
     oot3d::recomp::a32::ExecutionResult *result, uint32_t *blocksConsumed) {
   auto &memory = *dispatch.Memory;
+  // Reframed's file selection owns its sites (some shared with the
+  // SingleScreen port's scene-mode-5 handling) while it is shown, and every
+  // re-entry of its guest calls.
+  if (dispatch.ReframedFileSelect != nullptr &&
+      dispatch.ReframedFileSelect->Execute(pc, state, result, blocksConsumed))
+    return true;
   if (Oot3dNativeGame::ExecuteTopScreenDungeonMapIconCoordinate(
           pc, state, result, blocksConsumed))
     return true;
@@ -382,8 +388,11 @@ bool ExecuteTopScreenUiSourcePortBlock(
     if (!Oot3dNativeGame::ReadTopScreenPauseDrawInputs(memory, &inputs)) {
       return false;
     }
+    // Reframed's file selection keeps both native targets (its own upper
+    // pass draws the file interface).
     const bool routeActive = Oot3dNativeGame::ResolveTopScreenPauseRouteActive(
-        inputs, &dispatch.TopScreenPauseRoute);
+                                 inputs, &dispatch.TopScreenPauseRoute) &&
+                             !Oot3dNativeGame::TopScreenReframedFileSelect::Active(memory);
     state.r[1] = Oot3dNativeGame::ResolveTopScreenPauseRoutedCommand(
         state.r[1], routeActive);
     return branchFromCallsite(kPauseRoutedCommandNative, pc + 4U);
@@ -890,7 +899,9 @@ bool ExecuteTopScreenUiSourcePortBlock(
     uint32_t pauseState = 0U;
     if (!memory.Read32(0x0050AF68U, &pauseState))
       return false;
-    if (Oot3dNativeGame::SuppressTopScreenTouchButtonDraw(pauseState)) {
+    // Reframed's file selection keeps the native touch buttons (Back).
+    if (!Oot3dNativeGame::TopScreenReframedFileSelect::Active(memory) &&
+        Oot3dNativeGame::SuppressTopScreenTouchButtonDraw(pauseState)) {
       nextPc = pc + 4U;
     } else {
       state.r[14] = pc + 4U;
@@ -909,6 +920,11 @@ bool ExecuteTopScreenUiSourcePortBlock(
     nextPc = kPauseProjectionPrepare;
     break;
   case kPauseTouchButtonsDrawCall: {
+    if (Oot3dNativeGame::TopScreenReframedFileSelect::Active(memory)) {
+      state.r[14] = pc + 4U;
+      nextPc = state.r[1];
+      break;
+    }
     if (!Oot3dNativeGame::ApplyTopScreenNativeTouchQuad28Layout(memory)) {
       return false;
     }

@@ -309,6 +309,9 @@ void NativeA32WindowSession::Setup() {
     blockEntryHooks.insert(blockEntryHooks.end(),
                            topScreenSourcePortHooks.begin(),
                            topScreenSourcePortHooks.end());
+    const auto reframedFileHooks = Oot3dNativeGame::TopScreenReframedFileSelect::HookPcs();
+    blockEntryHooks.insert(blockEntryHooks.end(), reframedFileHooks.begin(),
+                           reframedFileHooks.end());
     for (const auto &contract :
          Oot3dNativeGame::TopScreenVerifiedControlFlowContracts()) {
       blockEntryHooks.push_back(contract.Entry);
@@ -484,6 +487,9 @@ void NativeA32WindowSession::Setup() {
         kPauseSceneDimBranch,
         Oot3dNativeGame::kTopScreenVisionsUpperDispatch,
         Oot3dNativeGame::kTopScreenVisionsLowerDispatch};
+    const auto reframedFileSites = Oot3dNativeGame::TopScreenReframedFileSelect::HookPcs();
+    topScreenSourcePortBlocks.insert(topScreenSourcePortBlocks.end(),
+                                     reframedFileSites.begin(), reframedFileSites.end());
     for (const auto &contract :
          Oot3dNativeGame::TopScreenVerifiedControlFlowContracts()) {
       topScreenSourcePortBlocks.push_back(contract.Entry);
@@ -1049,6 +1055,7 @@ void NativeA32WindowSession::Setup() {
   auto &wideItems = wideItemsStorage.emplace(process.Memory());
   nativeCandidateDispatch.WideItems = &wideItems;
   nativeCandidateDispatch.Visions = &visionsStorage.emplace(process.Memory());
+  nativeCandidateDispatch.ReframedFileSelect = &reframedFileSelectStorage.emplace(process.Memory());
   widescreenProjection.WideItems = &wideItems;
   // SingleScreen 3.0 shortcut column: reordering previews the host config;
   // saving stays an explicit F1 action.

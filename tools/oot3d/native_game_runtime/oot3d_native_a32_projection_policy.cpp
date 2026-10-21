@@ -428,7 +428,10 @@ void ApplyNativeWidescreenProjectionPolicy(
             Oot3dNativeGame::ResolveTopScreenFrontendTargetCommand(
                 command,
                 runtime.UiLifecycleBridge != nullptr &&
-                    runtime.UiLifecycleBridge->NativeFrontendPresentationActive());
+                    runtime.UiLifecycleBridge->NativeFrontendPresentationActive() &&
+                    // Reframed draws the file interface into the upper pass
+                    // itself; the lower targets stay native.
+                    !Oot3dNativeGame::TopScreenReframedFileSelect::Active(*runtime.TraceMemory));
         if (frontendPlan.Handled) {
           plan = frontendPlan;
         } else {
@@ -437,7 +440,8 @@ void ApplyNativeWidescreenProjectionPolicy(
               plan, Oot3dNativeGame::ReadTopScreenWidePageState(
                         *runtime.TraceMemory, &page) && page.Wide());
         }
-        if (plan.Handled && plan.BindTopTarget) {
+        if (plan.Handled && plan.BindTopTarget &&
+            !Oot3dNativeGame::TopScreenReframedFileSelect::Active(*runtime.TraceMemory)) {
           runtime.PendingTopScreenPauseTarget = plan;
           runtime.PendingTopScreenPauseRenderer = state.r[0];
           ++runtime.TopScreenPauseTargetCommands;

@@ -67,6 +67,7 @@
 #include "oot3d_top_screen_item_description_runtime.h"
 #include "oot3d_top_screen_wide_items_runtime.h"
 #include "oot3d_top_screen_visions_runtime.h"
+#include "oot3d_top_screen_reframed_file_select.h"
 #include "oot3d_top_screen_gameplay_runtime.h"
 #include "oot3d_object_bank_extension.h"
 #include "oot3d_top_screen_rain_adapter.h"
@@ -586,6 +587,7 @@ struct NativeCandidateDispatchState {
   Oot3dNativeGame::TopScreenItemDescriptionRuntime *ItemDescription = nullptr;
   Oot3dNativeGame::TopScreenWideItemsRuntime *WideItems = nullptr;
   Oot3dNativeGame::TopScreenVisionsRuntime *Visions = nullptr;
+  Oot3dNativeGame::TopScreenReframedFileSelect *ReframedFileSelect = nullptr;
   Oot3dNativeGame::TopScreenGameplayRuntime *Gameplay = nullptr;
   // Extended draw distance object slots, in every UI profile, ahead of the
   // TopScreen source port.

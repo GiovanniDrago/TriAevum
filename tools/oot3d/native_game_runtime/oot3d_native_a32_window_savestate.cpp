@@ -483,6 +483,7 @@ bool NativeA32WindowSession::LoadState(const std::filesystem::path &path,
   itemDescriptionStorage->Reset();
   wideItemsStorage->Reset();
   if (visionsStorage) visionsStorage->Reset();
+  if (reframedFileSelectStorage) reframedFileSelectStorage->Reset();
   gameplayStorage->Reset();
   // Saves wait for an in-flight native load or free, so the loaded memory
   // (its extra-slot page included) is the whole object bank state.

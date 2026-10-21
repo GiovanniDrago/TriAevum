@@ -364,6 +364,15 @@ original archive on the user's request, verifies it and keeps its textures in
 the user's private data folder only. See `LICENSES/OoT3D-Vanilla-UI-HUD.md` and
 `docs/TRIAEVUM_UI_TEXTURE_PACK.md`.
 
+## Ocarina Reframed (TopScreen file selection design)
+
+TopScreen's file selection (Link's pedestal on the right, the file interface on
+the left, Back in the corner) follows the single-screen presentation of
+**Ocarina Reframed** 2.0.2 by **OTPR26** (<https://github.com/OTPR26/OOT3DHud>,
+GPL-3.0-or-later). TriAevum reimplements that behavior as its own typed host
+code (`tools/oot3d/native_game_runtime/oot3d_top_screen_reframed_file_select.*`);
+it contains no Ocarina Reframed source, patch or artwork.
+
 ## Fira Sans Condensed (in-game menu font)
 
 The in-game settings menu (Esc / R3) is drawn by TriAevum's own UI renderer

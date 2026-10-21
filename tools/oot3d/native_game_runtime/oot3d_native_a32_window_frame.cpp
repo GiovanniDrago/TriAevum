@@ -1818,10 +1818,12 @@ void NativeA32WindowSession::PresentVisualFrame(
           ++picaStats.SelectedTopTransferCount;
           // TopScreen draws the relocated lower menu onto the upper target
           // after the upper snapshot: that work completes the same frame.
+          // Reframed's file selection draws inside the upper pass instead.
           const bool relocatedFrontend =
               Oot3dNativeGame::ShouldSuppressTopScreenFrontendBackdrop(
                   launch.UiProfile,
-                  uiLifecycleBridge.NativeFrontendPresentationActive());
+                  uiLifecycleBridge.NativeFrontendPresentationActive()) &&
+              !Oot3dNativeGame::TopScreenReframedFileSelect::Active(process.Memory());
           const auto frontendMenuCanvases =
               Oot3dNativeGame::TopScreenFrontendMenuCanvases();
           auto finishedFrames = picaPresentationScheduler.FinishFrames(

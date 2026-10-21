@@ -22,8 +22,12 @@ constexpr uint32_t kTemporalActorInit = 0x004615D8U;
 constexpr std::array kUiViews{
     std::pair{kOot3dGameplayHudDrawEntry, 0x003004E0U},
     std::pair{0x0041EC50U, 0x00419830U},
-    // TopScreen System overlay inside the completed gameplay view.
+    // TopScreen System overlay inside the completed gameplay view; Reframed's
+    // file interface drawn again there, with its overlay groups.
     std::pair{0x0041EC50U, 0x0030055CU},
+    std::pair{0x0041F308U, 0x0030055CU},
+    // Reframed's split title logo, drawn twice from its own call site.
+    std::pair{0x004228E4U, 0x00300520U},
     std::pair{0x0041F308U, 0x0041983CU},
     std::pair{0x00425930U, 0x0041EB14U},
     // Orthographic renderer-local backdrop (single model at GraphRenderer+743C).

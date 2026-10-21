@@ -336,6 +336,7 @@ if (TARGET oot3d_native_a32_aot OR TARGET oot3d_native_whole_aot OR
         tools/oot3d/native_game_runtime/oot3d_top_screen_item_description_runtime.cpp
         tools/oot3d/native_game_runtime/oot3d_top_screen_wide_items_runtime.cpp
         tools/oot3d/native_game_runtime/oot3d_top_screen_visions_runtime.cpp
+        tools/oot3d/native_game_runtime/oot3d_top_screen_reframed_file_select.cpp
         tools/oot3d/native_game_runtime/oot3d_top_screen_gameplay_runtime.cpp
         tools/oot3d/native_game_runtime/oot3d_top_screen_link_ext.cpp
         tools/oot3d/native_game_runtime/oot3d_object_bank_extension.cpp
