@@ -44,6 +44,9 @@ constexpr std::array kUiViews{
     std::pair{0x0042CB54U, 0x00300530U},
     std::pair{0x0042A278U, 0x0030053CU},
     std::pair{0x00427A3CU, 0x00300548U},
+    // TopScreen 3.1 Visions list, drawn before the upper transfer 0x0041952C.
+    std::pair{0x0041EC50U, 0x0041952CU},
+    std::pair{0x00427A3CU, 0x0041952CU},
     std::pair{0x0042CBCCU, 0x00300554U}};
 constexpr std::array kCmbReturnPcs{
     0x002FADDCU, 0x002FADF4U, 0x002FAEC0U, 0x002FAED8U,

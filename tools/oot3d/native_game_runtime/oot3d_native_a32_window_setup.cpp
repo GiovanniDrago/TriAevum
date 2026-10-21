@@ -450,7 +450,9 @@ void NativeA32WindowSession::Setup() {
         Oot3dNativeGame::kTopScreenGearModelDrawCall,
         Oot3dNativeGame::kTopScreenViewModelTransformBlock,
         Oot3dNativeGame::kTopScreenQuestDrawHook,
-        kPauseSceneDimBranch};
+        kPauseSceneDimBranch,
+        Oot3dNativeGame::kTopScreenVisionsUpperDispatch,
+        Oot3dNativeGame::kTopScreenVisionsLowerDispatch};
     for (const auto &contract :
          Oot3dNativeGame::TopScreenVerifiedControlFlowContracts()) {
       topScreenSourcePortBlocks.push_back(contract.Entry);
@@ -1015,6 +1017,7 @@ void NativeA32WindowSession::Setup() {
   widescreenProjection.ItemDescription = &itemDescription;
   auto &wideItems = wideItemsStorage.emplace(process.Memory());
   nativeCandidateDispatch.WideItems = &wideItems;
+  nativeCandidateDispatch.Visions = &visionsStorage.emplace(process.Memory());
   widescreenProjection.WideItems = &wideItems;
   // SingleScreen 3.0 shortcut column: reordering previews the host config;
   // saving stays an explicit F1 action.

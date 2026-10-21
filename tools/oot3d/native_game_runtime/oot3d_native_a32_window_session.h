@@ -449,6 +449,7 @@ private:
   std::optional<Oot3dNativeGame::TopScreenSystemPageRuntime> systemPageStorage;
   std::optional<Oot3dNativeGame::TopScreenItemDescriptionRuntime> itemDescriptionStorage;
   std::optional<Oot3dNativeGame::TopScreenWideItemsRuntime> wideItemsStorage;
+  std::optional<Oot3dNativeGame::TopScreenVisionsRuntime> visionsStorage;
   std::optional<Oot3dNativeGame::TopScreenGameplayRuntime> gameplayStorage;
   std::optional<Oot3dNativeGame::ObjectBankExtension> objectBankStorage;
   std::optional<Oot3dNativeGame::TopScreenRainAdapter> rainStorage;

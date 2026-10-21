@@ -3372,6 +3372,20 @@ int main() {
   Require(ResolveTopScreenPauseRoutedCommand(0x402U, true) == 0x402U &&
               ResolveTopScreenPauseRoutedCommand(0x400U, false) == 0x400U,
           "TopScreen command routing changed an unowned command");
+  // 3.1 0x005D67DC: Visions submode 4 outside a native transition.
+  TopScreenPauseDrawInputs visionsInputs;
+  visionsInputs.HasScene = true;
+  visionsInputs.SceneMode = 7U;
+  visionsInputs.SceneSubmode = 4U;
+  Require(IsTopScreenVisionsMenu(visionsInputs), "the Visions menu was not recognized");
+  visionsInputs.NativeTransitionActive = true;
+  Require(!IsTopScreenVisionsMenu(visionsInputs), "a native transition kept the Visions route");
+  visionsInputs.NativeTransitionActive = false;
+  visionsInputs.SceneSubmode = 1U;
+  Require(!IsTopScreenVisionsMenu(visionsInputs), "another Visions submode took the 0x6AC route");
+  Require(ResolveTopScreenVisionsFade(0) == 0.0F && ResolveTopScreenVisionsFade(12) == 0.5F &&
+              ResolveTopScreenVisionsFade(30) == 1.0F,
+          "the Visions fade is not min(step / 24, 1)");
 
   TopScreenTouchCoordinateRouteState touchRouteState;
   TopScreenPauseDrawInputs touchRouteInputs;

@@ -66,6 +66,7 @@
 #include "oot3d_top_screen_pause_transaction.h"
 #include "oot3d_top_screen_item_description_runtime.h"
 #include "oot3d_top_screen_wide_items_runtime.h"
+#include "oot3d_top_screen_visions_runtime.h"
 #include "oot3d_top_screen_gameplay_runtime.h"
 #include "oot3d_object_bank_extension.h"
 #include "oot3d_top_screen_rain_adapter.h"
@@ -584,6 +585,7 @@ struct NativeCandidateDispatchState {
   Oot3dNativeGame::TopScreenSystemPageRuntime *SystemPage = nullptr;
   Oot3dNativeGame::TopScreenItemDescriptionRuntime *ItemDescription = nullptr;
   Oot3dNativeGame::TopScreenWideItemsRuntime *WideItems = nullptr;
+  Oot3dNativeGame::TopScreenVisionsRuntime *Visions = nullptr;
   Oot3dNativeGame::TopScreenGameplayRuntime *Gameplay = nullptr;
   // Extended draw distance object slots, in every UI profile, ahead of the
   // TopScreen source port.
@@ -616,6 +618,14 @@ struct NativeCandidateDispatchState {
       TopScreenRendererVisibilityRoute;
   uint32_t TopScreenGameOverDrawPhase = 0U;
   std::array<uint32_t, 5> TopScreenGameOverDrawRegisters{};
+  // SingleScreen 3.1 0x005D67DC before the upper transfer in scene mode 7:
+  // +0x6AC (list routed), +0x990 (fade step), the draw sequence and what it
+  // saves (0x005CB848's six pause words, the transfer arguments).
+  bool TopScreenVisionsRouted = false;
+  int32_t TopScreenVisionsFadeStep = 0;
+  uint8_t TopScreenVisionsDrawPhase = 0U;
+  std::array<uint32_t, 4> TopScreenVisionsRegisters{};
+  std::array<uint32_t, 6> TopScreenVisionsPauseWords{};
   Oot3dNativeGame::TopScreenPauseChildState TopScreenGameOverChildRestore{};
   Oot3dNativeGame::TopScreenPauseControllerState TopScreenPauseController;
   uint8_t TopScreenPauseControllerDrawPhase = 0U;

@@ -737,6 +737,7 @@ struct TopScreenPauseDrawInputs {
   bool HasScene = false;
   std::uint8_t SceneMode = 0;
   std::uint8_t SceneVariant = 0;
+  std::uint32_t SceneSubmode = 0;
   std::uint16_t SceneSequence = 0;
   std::uint32_t RuntimeMode = 0;
   std::uint32_t EntranceIndex = 0;
@@ -828,7 +829,19 @@ struct TopScreenRendererVisibilityRouteState {
   std::int32_t FadeStep = 0;
   std::int32_t DelayCalls = 0;
   bool RendererConflict = false;
+  // SingleScreen 3.1 0x0060FA84+0x6AC in scene mode 7 (0x005D49FC): the
+  // Visions menu (submode 4) has a visible renderer, so its list goes on top.
+  bool VisionsRenderersRouted = false;
 };
+
+// SingleScreen 3.1 0x005D67DC, scene mode 7: the Sheikah Stone's Visions
+// menu (play+0x104 == 4) outside a native transition (0x0035B164).
+bool IsTopScreenVisionsMenu(const TopScreenPauseDrawInputs &inputs) noexcept;
+// 3.1 0x005D6DC8: the fade of the top-screen Visions backdrop and edges,
+// min(step / 24, 1); the step advances to 24 while the list is routed.
+float ResolveTopScreenVisionsFade(std::int32_t step) noexcept;
+bool RestoreTopScreenVisionsTerminalRenderer(NativeA32Memory &memory,
+                                             std::string *error = nullptr);
 
 struct TopScreenRendererVisibilityInputs {
   std::uint32_t ControllerAddress = 0;
