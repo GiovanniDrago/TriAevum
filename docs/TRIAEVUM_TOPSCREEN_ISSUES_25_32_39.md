@@ -313,7 +313,7 @@ Private artifacts (never package these):
 
 - Windows: `%TEMP%/TriAevum-ui-canvas-ultrawide/stone-complete-runtime.json`,
   `stone-cancel-runtime.json` and corresponding `*-framebuffer_*.bmp`.
-- Linux: `/home/xander/triaevum-linux-parity-20260911/ui-issues-20260915/movie/`,
+- Linux: `~/triaevum-linux-parity-20260911/ui-issues-20260915/movie/`,
   `complete-runtime.json`, `cancel-runtime.json`, framebuffer sequences and logs.
 - Inputs: `%TEMP%/stone-complete-input.json` (A at 60/180, B at 900/1050/1200,
   movement at 1350), `stone-cancel-input.json` (A at 60/180, B at 240/360/480,
@@ -404,16 +404,16 @@ issue tranche were also brought across through checked patches.
 - Wayland framebuffer runs: 1501-frame completion route, 901-frame cancellation
   route, and 121-frame 960x720 Visions route. All exited 0. Menu, movie and return
   to Kokiri were inspected from actual captures, not desktop screenshots.
-- Updated `/home/xander/triaevum-linux-play/TriAevum.linux.launch.json` to select
-  the qualified module in `/home/xander/triaevum-ui-movie-title-build/`; it had
-  still pointed to the older `/home/xander/triaevum-linux-title-build/` module.
-- Updated executable: `/home/xander/triaevum-linux-build/TriAevum`, SHA-256
+- Updated `~/triaevum-linux-play/TriAevum.linux.launch.json` to select
+  the qualified module in `~/triaevum-ui-movie-title-build/`; it had
+  still pointed to the older `~/triaevum-linux-title-build/` module.
+- Updated executable: `~/triaevum-linux-build/TriAevum`, SHA-256
   `3f66d41bbdd80143dfa543069f004e1ac769b4a48acf5380590d201486133470`.
   The qualified title module hash remains `fbf5291c...` above.
 
 Private check artifacts: `triaevum-ui-alignment.json`,
 `triaevum_check_ui_alignment.py`, and checked patch files in the Windows temp
-directory and `/home/xander/`. Capture root remains the Linux movie directory
+directory and `~/`. Capture root remains the Linux movie directory
 above (`complete-*`, `cancel-*`, `fourthree-*`).
 
 This is issue-fix parity, NOT full renderer/performance parity. The remaining
