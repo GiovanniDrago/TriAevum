@@ -1,4 +1,5 @@
 // Block-entry policy of the A32 window: widescreen projection and guest observation hooks.
+#include "oot3d_coop_dog.h"
 #include "oot3d_native_a32_window_shared.h"
 
 namespace Oot3dA32Window {
@@ -9,6 +10,8 @@ void ApplyNativeWidescreenProjectionPolicy(
   auto &runtime = *static_cast<NativeWidescreenProjectionState *>(user);
   (void)Oot3dNativeGame::ApplyNativeActorVisibilityHook(
       pc, state, memory, runtime.ActorVisibility);
+  if (runtime.CoopDog != nullptr && runtime.TraceMemory != nullptr)
+    runtime.CoopDog->ObserveBlockEntry(pc, state, *runtime.TraceMemory);
   if (pc == Oot3dNativeGame::kNativeQbfA4Blit && runtime.HdFonts && runtime.TraceMemory)
     runtime.HdFonts->ObserveBlit(state, *runtime.TraceMemory);
   if (runtime.TopScreenUiProfile &&

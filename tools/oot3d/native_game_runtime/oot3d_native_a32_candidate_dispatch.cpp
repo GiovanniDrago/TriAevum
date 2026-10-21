@@ -1,5 +1,6 @@
 // Per-block native candidates of the A32 window: TopScreen UI source-port blocks and product hooks.
 #include <cstring>
+#include "oot3d_coop_dog.h"
 #include "oot3d_native_a32_window_shared.h"
 
 namespace Oot3dA32Window {
@@ -878,6 +879,13 @@ bool ExecuteProductTopScreenHook(uint32_t pc, oot3d::recomp::a32::GuestState &st
              dispatch.BlockEntryPcs.end()))
       dispatch.BlockEntry(pc, state, memory, dispatch.BlockEntryUser);
   };
+  // Co-op object preload: branch into the guest's own Object_Spawn at the
+  // scene-load entry, then resume the interrupted function when it returns.
+  if (dispatch.CoopDog != nullptr && dispatch.Memory != nullptr &&
+      dispatch.CoopDog->ObserveNativeBlock(pc, state, *dispatch.Memory,
+                                           result, blocksConsumed)) {
+    return true;
+  }
   // Extended draw distance object slots, in every UI profile. Their entries
   // never coincide with TopScreen blocks. If native ownership wins, resume
   // the entry once instead of trapping it again.

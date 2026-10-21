@@ -185,6 +185,10 @@ void NativeA32WindowSession::Setup() {
       Oot3dNativeGame::kOot3dFramePacingDecisionEntry,
       Oot3dNativeGame::kOot3dFramePacingCommitEntry,
       Oot3dNativeGame::kOot3dMeshCommandPacketSubmitEntry,
+      Oot3dNativeGame::kCoopSceneExecuteCommands,
+      Oot3dNativeGame::kCoopActorListCommandHandler,
+      Oot3dNativeGame::kCoopEnDogDraw,
+      Oot3dNativeGame::kCoopEnDogUpdate,
   };
   const auto actorVisibilityHooks =
       Oot3dNativeGame::NativeActorVisibilityHookPcs();
@@ -561,6 +565,7 @@ void NativeA32WindowSession::Setup() {
                                         rainHooks.end());
     nativeCandidateEntries.insert(nativeCandidateEntries.end(), rainHooks.begin(),
                                   rainHooks.end());
+
 #if defined(OOT3D_WHOLE_AOT_PRODUCT_MODE)
     // Hooks, resumes and native calls must start blocks of the title module.
     std::vector<uint32_t> required(hooks.begin(), hooks.end());
@@ -1082,6 +1087,22 @@ void NativeA32WindowSession::Setup() {
   context = Ship::Context::GetRawInstance();
   audio = context != nullptr ? context->GetAudio() : nullptr;
   audioPlayer = audio != nullptr ? audio->GetAudioPlayer() : nullptr;
+  {
+    auto &coopDogRuntime = coopDogStorage.emplace();
+    std::filesystem::path coopConfigPath;
+    if (!launch.ControlConfigPath.empty()) {
+      coopConfigPath = launch.ControlConfigPath.parent_path() /
+                       "coop_controls.json";
+    }
+    std::string coopConfigError;
+    if (!coopDogRuntime.LoadConfig(coopConfigPath, &coopConfigError) &&
+        !coopConfigError.empty()) {
+      std::fprintf(stderr, "triaevum coop: %s\n", coopConfigError.c_str());
+    }
+    coopDog = &coopDogRuntime;
+    nativeCandidateDispatch.CoopDog = coopDog;
+    widescreenProjection.CoopDog = coopDog;
+  }
 #if defined(__SWITCH__)
   WriteSwitchBootStage("audio_runtime_initialized");
 #endif

@@ -139,6 +139,10 @@
 #endif
 
 
+namespace Oot3dNativeGame {
+class CoopDogRuntime;
+}
+
 namespace Oot3dA32Window {
 
 inline constexpr uint64_t kCtrArm11TicksPerSecond = 268111856ULL;
@@ -472,6 +476,7 @@ struct NativeWidescreenProjectionState {
   bool BlockTraceTruncated = false;
   uint64_t BlockTraceRecordsObserved = 0;
   Oot3dNativeGame::NativeA32Memory *TraceMemory = nullptr;
+  Oot3dNativeGame::CoopDogRuntime *CoopDog = nullptr;
   Oot3dNativeGame::NativeHdFontRuntime *HdFonts = nullptr;
   std::deque<A32BlockTraceRecord> BlockTrace;
   Oot3dNativeGame::Oot3dNativeUiLifecycleBridge *UiLifecycleBridge = nullptr;
@@ -586,6 +591,7 @@ struct NativeCandidateDispatchState {
   // Extended draw distance object slots, in every UI profile, ahead of the
   // TopScreen source port.
   Oot3dNativeGame::ObjectBankExtension *ObjectBank = nullptr;
+  Oot3dNativeGame::CoopDogRuntime *CoopDog = nullptr;
   Oot3dNativeGame::TopScreenRainAdapter *Rain = nullptr;
   // Sorted TopScreen entries the product hook owns (product builds only).
   std::vector<uint32_t> ProductTopScreenBlocks;

@@ -294,6 +294,7 @@ bool NativeA32WindowSession::RunFrame() {
                          presentationElapsedSeconds,
                          guestRefreshesDue != 0U,
                          nativeControlPollingState);
+  if (coopDog != nullptr) coopDog->PollInput();
   if (physicalInputFrame.Exit || devLabQuit) {
     window.Close();
     return false;
@@ -1152,6 +1153,7 @@ void NativeA32WindowSession::RunGuestRefresh() {
   // PPF unblocks the current guest refresh, not the next presentation.
   // The dependency capture keeps its plans for the complete visual frame.
   (void)FlushNativeDependencies();
+  if (coopDog != nullptr) coopDog->BeforeGuest(process);
   phaseStart = std::chrono::steady_clock::now();
   processResult =
       RunUntilGuestWait(process, launch.WholeAotBlockBudget);

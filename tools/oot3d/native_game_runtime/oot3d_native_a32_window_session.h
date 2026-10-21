@@ -29,6 +29,7 @@
 #include "oot3d_demo_host_window_timing.h"
 #include "oot3d_legacy_ui_adapters.h"
 #include "oot3d_n64_ui_renderer.h"
+#include "oot3d_coop_dog.h"
 #include "oot3d_native_a32_ctr_host.h"
 #include "oot3d_native_a32_dsp_hle.h"
 #include "oot3d_native_a32_dsp_memory_adapter.h"
@@ -401,6 +402,8 @@ private:
   std::vector<uint32_t> topScreenSourcePortBlocks;
   std::vector<uint32_t> wholeAotObservableExitBlocks;
   std::optional<Oot3dNativeGame::NativeA32Process> processStorage;
+  std::optional<Oot3dNativeGame::CoopDogRuntime> coopDogStorage;
+  Oot3dNativeGame::CoopDogRuntime *coopDog = nullptr;
   std::optional<Oot3dNativeGame::Oot3dNativeUiLifecycleBridge> uiLifecycleBridgeStorage;
   std::span<const uint32_t> nativeBlockEntryPcs{};
   NativeCandidateDispatchState nativeCandidateDispatch{};
