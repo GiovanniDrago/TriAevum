@@ -59,10 +59,13 @@ void ApplyNativeWidescreenProjectionPolicy(
   // Its injected PauseUi_Draw returns here; close UI attribution before an
   // observable exit skips the remaining block-entry observations. The rain
   // adapter's exit at the weather return likewise must not leave the
-  // precipitation atmosphere scope open.
+  // precipitation atmosphere scope open. Reframed's split title logo returns
+  // to its own call site, where the file selection exits again: a UI scope
+  // left open there would hold every later draw, gameplay included, as UI.
   const bool compositionBeforeExit =
       pc == Oot3dNativeGame::kTopScreenSystemPageBoundary ||
-      pc == Oot3dNativeGame::kTopScreenRainWeatherReturn;
+      pc == Oot3dNativeGame::kTopScreenRainWeatherReturn ||
+      pc == Oot3dNativeGame::kReframedFileLogoCall;
   if (compositionBeforeExit && runtime.PicaCompositionTracker != nullptr)
     runtime.PicaCompositionTracker->ObserveBlockEntry(pc, state, memory);
   // The camera update entry resolves the FOV owner of 0x00478EB8, which
