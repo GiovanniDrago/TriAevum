@@ -332,6 +332,39 @@ def content_key(recipe: dict[str, Any], verified: dict[str, VerifiedInput]) -> s
     return digest.hexdigest()
 
 
+# Windows refuses longer paths unless long paths are enabled system-wide,
+# which TriAevum does not require (#103).
+WINDOWS_MAX_PATH = 259
+TITLE_DIRECTORY_KEY_DIGITS = 16
+MODULE_NAME_KEY_DIGITS = 32
+
+
+def title_directory(output_root: Path, recipe_id: str, key: str) -> Path:
+    """The title's folder: the content key's first 16 digits, or the full key
+    that installations made before 0.8.0-beta.1.2 already use."""
+    base = output_root.expanduser().resolve() / recipe_id
+    legacy = base / key
+    return legacy if legacy.is_dir() else base / key[:TITLE_DIRECTORY_KEY_DIGITS]
+
+
+def check_title_path_length(output_root: Path, recipe_ids: Sequence[str], *,
+                            windows: bool = os.name == "nt") -> None:
+    """Stop before any work when the deepest title file would not fit in a
+    Windows path (the precompiled module, titles/<id>/<key>/modules/<key>.tam)."""
+    if not windows:
+        return
+    base = output_root.expanduser().resolve()
+    longest = max(len(str(base / recipe_id / ("0" * TITLE_DIRECTORY_KEY_DIGITS) / "modules"
+                          / ("0" * MODULE_NAME_KEY_DIGITS + ".tam")))
+                  for recipe_id in recipe_ids)
+    if longest > WINDOWS_MAX_PATH:
+        raise ForgeError(
+            f"the TriAevum folder's path is too long for Windows: its files would need "
+            f"{longest} characters and Windows allows {WINDOWS_MAX_PATH}. Move the TriAevum "
+            f"folder to a path at least {longest - WINDOWS_MAX_PATH} characters shorter, "
+            f"such as D:\\Games\\TriAevum, and run Forge again.")
+
+
 def _build_process_manifest(
     exheader_path: Path, code_path: Path, romfs_path: Path
 ) -> dict[str, object]:
@@ -431,7 +464,7 @@ def prepare_content(
     process_manifest_builder: ProcessManifestBuilder | None = None,
 ) -> dict[str, Any]:
     key = content_key(recipe, verified)
-    title_root = output_root.expanduser().resolve() / str(recipe["id"]) / key
+    title_root = title_directory(output_root, str(recipe["id"]), key)
     index_path = title_root / "content.tap"
     state_path = title_root / "forge-state.json"
     process_manifest_path = title_root / "process-manifest.json"
@@ -1259,7 +1292,7 @@ def package_private_module(
     # Keep paths comfortably below legacy Win32 limits even when the title
     # cache root already contains a recipe ID and full content hash. The full
     # cache key and all constituent identities remain in forge-state.json.
-    relative_module = Path("modules") / f"{module_cache_key[:32]}.tam"
+    relative_module = Path("modules") / f"{module_cache_key[:MODULE_NAME_KEY_DIGITS]}.tam"
     module_path = title_root / relative_module
     module_hash = hashlib.sha256(module).hexdigest()
     module_state = {
@@ -1702,6 +1735,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             recipe = load_recipe(args.recipes, args.recipe)
             output_root = args.output_root.expanduser().resolve()
+            if args.command != "verify":
+                check_title_path_length(output_root, [str(recipe["id"])])
             cache = HashCache(output_root / ".hash-cache.json", enabled=not args.rehash)
             verified, verified_mod = verify_sources(
                 recipe,

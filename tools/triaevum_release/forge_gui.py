@@ -187,6 +187,8 @@ def install_private_title(
     try:
         report("preflight", "Checking the playable runtime and precompiled title catalog...")
         forge.query_product(runtime_path())
+        forge.check_title_path_length(
+            output_root, [option.recipe_id for option in load_recipe_options()])
         root = installation_root()
         catalog = load_catalog(root)
         report("extract", "Extracting native title data from the decrypted ROM...")

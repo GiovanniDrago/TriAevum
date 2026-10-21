@@ -21,6 +21,8 @@ from forge import (
     HashCache,
     activate_prepared_title,
     build_private_aot_fallback,
+    check_title_path_length,
+    content_key,
     load_recipe,
     load_prepared_content,
     main as forge_main,
@@ -162,6 +164,30 @@ class ForgeTests(unittest.TestCase):
             digest((directory / "process-manifest.json").read_bytes()),
         )
         self.assertFalse((directory / "game.tam").exists())
+
+    def test_title_folder_is_short_and_keeps_an_existing_full_key_folder(self) -> None:
+        # #103: the full 64-digit key put the module past Windows' path limit.
+        recipe, verified, verified_mod = self.verify()
+        key = content_key(recipe, verified)
+        result = prepare_content(recipe, verified, output_root=self.output, verified_mod=verified_mod,
+                                 process_manifest_builder=self.build_process_manifest)
+        self.assertEqual(Path(result["directory"]), (self.output / "fixture" / key[:16]).resolve())
+        self.assertEqual(load_json_object(Path(result["directory"]) / "forge-state.json")["content_key"], key)
+        # An installation made before keeps (and reuses) its full-key folder.
+        legacy = self.output / "fixture" / key
+        Path(result["directory"]).rename(legacy)
+        reused = prepare_content(recipe, verified, output_root=self.output, verified_mod=verified_mod,
+                                 process_manifest_builder=self.build_process_manifest)
+        self.assertEqual((reused["status"], Path(reused["directory"])), ("reused", legacy.resolve()))
+
+    def test_path_length_check_names_the_characters_to_remove(self) -> None:
+        base = Path("/x")
+        short = base / "TriAevum" / "data" / "titles"
+        check_title_path_length(short, ["oot3d-eur-project-baseline-16a6b0aa"], windows=True)
+        deep = base / ("d" * 150) / "data" / "titles"
+        with self.assertRaisesRegex(ForgeError, r"too long for Windows.*at least \d+ characters shorter"):
+            check_title_path_length(deep, ["oot3d-eur-project-baseline-16a6b0aa"], windows=True)
+        check_title_path_length(deep, ["oot3d-eur-project-baseline-16a6b0aa"], windows=False)
 
     def test_prepared_content_survives_installation_move(self) -> None:
         recipe, verified, verified_mod = self.verify()
