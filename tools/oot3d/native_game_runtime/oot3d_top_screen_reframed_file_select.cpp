@@ -153,9 +153,13 @@ bool TopScreenReframedFileSelect::Begin(std::uint32_t pc,
     switch (pc) {
     case kReframedFileSceneBlock:
       // add r0, r4, #0x180; bl 0x004224AC. Link's pedestal: aligned with the
-      // bottom file slot, on the right.
+      // bottom file slot, on the right. Reframed's (119,-8,300,200) keeps
+      // 300/480 of the height but 200/400 of the width, so Link came out 80%
+      // as wide. The same fraction (5/8) on both axes keeps the scene's own
+      // projection undistorted at any output aspect ratio; the horizontal
+      // center (92) is Reframed's.
       state.r[0] = state.r[4] + 0x180U;
-      Viewport(119U, -8, 300U, 200);
+      Viewport(119U, 92 - 125, 300U, 250);
       Call(kSceneDraw, {state.r[0]});
       mContinue = 0x00300408U;
       break;

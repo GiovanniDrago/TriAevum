@@ -31,7 +31,7 @@ module needs no new sites.
 
 | Site | Reframed site | Behavior |
 | --- | --- | --- |
-| `0x00300400` | `0x00300404` | Scene at viewport (119,-8,300,200): Link to the right. |
+| `0x00300400` | `0x00300404` | Scene at viewport (119,-33,300,250): Link to the right. |
 | `0x0030046C` | `0x00300468` | Full viewport after the scene. |
 | `0x003004C8` | `0x003004D0` | Caption board at (56,2,264,192), composited 4x while the caption shows. |
 | `0x003004D4` | `0x003004DC` | Presentation at (290,114,324,324). |
@@ -47,6 +47,12 @@ exclude scissor and then draws Back alone at the bottom-left edge. The host
 Vulkan backend has no exclude scissor, so two disjoint include scissors cover
 the rest of the viewport. TopScreen has no Back there, and its pass is not
 replayed.
+
+Reframed draws the scene at (119,-8,300,200). On the rotated surface that is
+300/480 of the height but 200/400 of the width, so Link is 80% as wide as the
+scene's projection intends. TopScreen keeps 300/480 on both axes (width 250
+around Reframed's horizontal center 92), so Link keeps his proportions at any
+output aspect ratio.
 
 ## Board geometry
 

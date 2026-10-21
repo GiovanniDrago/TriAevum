@@ -134,6 +134,20 @@ void TestFinishDrawsInterfaceTwice(NativeA32Memory &memory) {
           "scissor rectangles differ from Reframed's interface regions");
 }
 
+void TestSceneKeepsAspect(NativeA32Memory &memory) {
+  TopScreenReframedFileSelect runtime(memory);
+  SetFileSelect(memory, 2U);
+  auto state = Caller(memory, 0x00300400U);
+  const auto branches = Run(runtime, 0x00300400U, state);
+  Require(branches.size() == 2U && branches[1].Target == 0x004224ACU &&
+              branches[1].Arguments[0] == kRoot + 0x180U,
+          "the file scene was not drawn after its viewport");
+  // The rotated surface: x/width vertical of 480, y/height horizontal of 400.
+  // Link's viewport takes the same fraction of both, so he is not squeezed.
+  Require(IsViewport(branches[0], 119U, -33, 300U, 250) && 300U * 400U == 250U * 480U,
+          "Link's viewport does not keep the scene's aspect ratio");
+}
+
 void TestLogoSplitAndRestore(NativeA32Memory &memory) {
   TopScreenReframedFileSelect runtime(memory);
   SetFileSelect(memory, 2U);
@@ -345,6 +359,7 @@ int main() {
           "cannot map the file selection fixture");
   TestInactiveLeavesNativeCalls(memory);
   TestFinishDrawsInterfaceTwice(memory);
+  TestSceneKeepsAspect(memory);
   TestLogoSplitAndRestore(memory);
   TestCaptionCallbackAndBoards(memory);
   TestLeatherSkipped(memory);
