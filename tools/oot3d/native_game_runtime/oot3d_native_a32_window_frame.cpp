@@ -2773,6 +2773,16 @@ void NativeA32WindowSession::PublishNativeSceneView() {
           std::isfinite(placement.Position[2]))
         player = placement;
     }
+    // With TRIAEVUM_SCENE_VIEW_TRACE, also the raw placement words (oracle
+    // fixtures put Link at the same spot).
+    static const bool placementTrace = std::getenv("TRIAEVUM_SCENE_VIEW_TRACE") != nullptr;
+    if (placementTrace) {
+      uint32_t rotation[2]{};
+      process.Memory().Read32(actor + 0x34U, &rotation[0]);
+      process.Memory().Read32(actor + 0x38U, &rotation[1]);
+      std::fprintf(stderr, "TRIAEVUM_SCENE_VIEW_PLAYER actor=%08x pos=%08x,%08x,%08x rot34=%08x,%08x yaw=%04x\n",
+                   actor, bits[0], bits[1], bits[2], rotation[0], rotation[1], yaw);
+    }
   }
   // Light gizmos also show while the developer free camera looks around.
   bool freeCamera = false;
