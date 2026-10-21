@@ -138,6 +138,26 @@ bool ButtonHeld(SDL_GameController* controller, int button) {
                                      static_cast<SDL_GameControllerButton>(button)) != 0;
 }
 
+bool ActionHeld(SDL_GameController* controller, const std::string& value) {
+  std::string name;
+  for (const char character : Lowercase(value)) {
+    if (character != ' ' && character != '_' && character != '-') {
+      name.push_back(character);
+    }
+  }
+  if (name == "zl" || name == "lefttrigger" || name == "lt" || name == "l2") {
+    return controller != nullptr &&
+           SDL_GameControllerGetAxis(controller,
+                                     SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 8192;
+  }
+  if (name == "zr" || name == "righttrigger" || name == "rt" || name == "r2") {
+    return controller != nullptr &&
+           SDL_GameControllerGetAxis(controller,
+                                     SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 8192;
+  }
+  return ButtonHeld(controller, ButtonForName(value));
+}
+
 } // namespace
 
 bool CoopDogRuntime::LoadConfig(const std::filesystem::path& path,
@@ -185,7 +205,12 @@ void CoopDogRuntime::WriteDefaultConfig(const std::filesystem::path& path) const
       {"bark_button", config_.BarkButton},
       {"respawn_button", config_.RespawnButton},
       {"summon_button", config_.SummonButton},
+      {"sprint_button", config_.SprintButton},
       {"move_speed", config_.MoveSpeed},
+      {"sprint_speed", config_.SprintSpeed},
+      {"bark_range", config_.BarkRange},
+      {"bark_damage", config_.BarkDamage},
+      {"rupee_pickup_range", config_.RupeePickupRange},
       {"acceleration", config_.Acceleration},
       {"deceleration", config_.Deceleration},
       {"turn_speed", config_.TurnSpeed},
@@ -236,7 +261,13 @@ bool CoopDogRuntime::ParseConfig(const std::filesystem::path& path,
     config_.BarkButton = document.value("bark_button", config_.BarkButton);
     config_.RespawnButton = document.value("respawn_button", config_.RespawnButton);
     config_.SummonButton = document.value("summon_button", config_.SummonButton);
+    config_.SprintButton = document.value("sprint_button", config_.SprintButton);
     config_.MoveSpeed = std::max(0.0F, document.value("move_speed", config_.MoveSpeed));
+    config_.SprintSpeed = std::max(config_.MoveSpeed,
+                                   document.value("sprint_speed", config_.SprintSpeed));
+    config_.BarkRange = std::max(0.0F, document.value("bark_range", config_.BarkRange));
+    config_.BarkDamage = std::clamp(document.value("bark_damage", config_.BarkDamage), 0, 255);
+    config_.RupeePickupRange = std::max(0.0F, document.value("rupee_pickup_range", config_.RupeePickupRange));
     config_.Acceleration = std::max(0.0F, document.value("acceleration", config_.Acceleration));
     config_.Deceleration = std::max(0.0F, document.value("deceleration", config_.Deceleration));
     config_.TurnSpeed = std::max(0.0F, document.value("turn_speed", config_.TurnSpeed));
@@ -297,13 +328,17 @@ void CoopDogRuntime::PollInput() {
       }
     }
     if (physical.size() >= 2U) {
-      for (const int32_t instanceId : virtualPads) {
+      // P1 gets the first real pad; P2 gets the second.  Every other device
+      // (including Steam's virtual mirrors) is kept away from both ports.
+      const int32_t p1 = physical[0];
+      const int32_t p2 = physical[1];
+      for (const auto& [instanceId, name] : allPads) {
+        (void)name;
         manager->IgnoreInstanceIdForPort(0, instanceId);
         manager->IgnoreInstanceIdForPort(config_.ControllerPort, instanceId);
       }
-      const int32_t chosen = physical[1];
-      manager->UnignoreInstanceIdForPort(config_.ControllerPort, chosen);
-      manager->IgnoreInstanceIdForPort(0, chosen);
+      manager->UnignoreInstanceIdForPort(0, p1);
+      manager->UnignoreInstanceIdForPort(config_.ControllerPort, p2);
     }
   }
 
@@ -373,6 +408,7 @@ void CoopDogRuntime::PollInput() {
   const bool bark = ButtonHeld(controller, ButtonForName(config_.BarkButton));
   const bool respawn = ButtonHeld(controller, ButtonForName(config_.RespawnButton));
   const bool summon = ButtonHeld(controller, ButtonForName(config_.SummonButton));
+  input_.Sprinting = ActionHeld(controller, config_.SprintButton);
   if (jump && !jumpHeldPrevious_) jumpLatch_ = true;
   if (bark && !barkHeldPrevious_) barkLatch_ = true;
   if (respawn && !respawnHeldPrevious_) {
@@ -523,7 +559,7 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
   if (play != lastPlay_) {
     lastPlay_ = play;
     dogActor_ = 0U;
-    sceneSpawnPending_ = true;
+    sceneSpawnPending_ = config_.AutoSpawnOnSceneChange;
     spawnCooldown_ = 0U;
     hasGameplayFrame_ = false;
     cameraProbeLogged_ = false;
@@ -533,7 +569,7 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
   if (memory.Read16(play + kPlaySceneId, &scene) && scene != lastScene_) {
     lastScene_ = scene;
     dogActor_ = 0U;
-    sceneSpawnPending_ = true;
+    sceneSpawnPending_ = config_.AutoSpawnOnSceneChange;
     spawnCooldown_ = 0U;
     hasGameplayFrame_ = false;
     cameraProbeLogged_ = false;
@@ -548,30 +584,6 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
   if (testWarpEntrance_ != 0U && !testWarpRequested_ && canMove) {
     testWarpRequested_ = true;
     RequestTestWarp(process, play, testWarpEntrance_);
-  }
-
-  if (dogActor_ == 0U && config_.Log) {
-    uint32_t gameplayFrames = 0U;
-    memory.Read32(play + 0x5BF4U, &gameplayFrames);
-    if (gameplayFrames - lastObjectContextLogFrame_ >= 60U) {
-      lastObjectContextLogFrame_ = gameplayFrames;
-      uint8_t count = 0U;
-      memory.Read8(play + kObjectContext, &count);
-      std::string ids;
-      for (uint32_t index = 0U; index < std::min<uint32_t>(count, 19U); ++index) {
-        uint16_t id = 0U;
-        if (!memory.Read16(play + kObjectContext + 4U + index * 0x80U, &id)) break;
-        char item[16]{};
-        std::snprintf(item, sizeof(item), " %04X", static_cast<uint32_t>(id));
-        ids += item;
-      }
-      char text[240]{};
-      std::snprintf(text, sizeof(text),
-                    "context scene=0x%04X frames=%u count=%u ids:%s",
-                    static_cast<uint32_t>(scene), gameplayFrames,
-                    static_cast<uint32_t>(count), ids.c_str());
-      Log(text);
-    }
   }
 
   if (dogActor_ != 0U && !IsDog(process, dogActor_)) {
@@ -595,7 +607,7 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
     sceneSpawnPending_ = false;
   } else {
     const bool wantsSpawn =
-        respawnLatch_ || summonLatch_ ||
+        respawnLatch_ ||
         (sceneSpawnPending_ && config_.SpawnIfMissing &&
          config_.AutoSpawnOnSceneChange);
     if (wantsSpawn) {
@@ -605,9 +617,15 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
         dogActor_ = FindDog(process, play);
         if (dogActor_ != 0U) {
           sceneSpawnPending_ = false;
-        } else {
-          spawnCooldown_ = 90U;
+          // Do not also teleport/animate in the same frame as Actor_Spawn:
+          // the actor model is initialized by the next guest draw.
+          respawnLatch_ = false;
+          summonLatch_ = false;
+          jumpLatch_ = false;
+          barkLatch_ = false;
+          return;
         }
+        spawnCooldown_ = 90U;
       } else {
         spawnCooldown_ = 90U;
       }
@@ -615,7 +633,8 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
     if (dogActor_ == 0U) {
       jumpLatch_ = false;
       barkLatch_ = false;
-      respawnLatch_ = false;
+      // Keep Start latched until the object/scene is ready, so the first
+      // summon cannot be lost to a scene-load timing window.
       summonLatch_ = false;
       return;
     }
@@ -631,7 +650,7 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
     UpdateDog(process, play, dogActor_, canMove);
   }
   if (barkLatch_) {
-    CallBark(process, dogActor_);
+    CallBark(process, play, dogActor_);
     barkLatch_ = false;
   }
   jumpLatch_ = false;
@@ -781,12 +800,13 @@ bool CoopDogRuntime::CallObjectSpawn(NativeA32Process& process, uint32_t play) {
     Log("Object_GetIndex(OBJECT_DOG) failed: " + error);
     return false;
   }
-  if (config_.Log) {
-    objectIndexProbeLogged_ = true;
-    Log("OBJECT_DOG object-context index=" + std::to_string(
-        static_cast<int32_t>(slot)));
+  if (static_cast<int32_t>(slot) < 0) {
+    if (!objectIndexProbeLogged_ && config_.Log) {
+      objectIndexProbeLogged_ = true;
+      Log("OBJECT_DOG object context is not ready yet");
+    }
+    return false;
   }
-  if (static_cast<int32_t>(slot) < 0) return false;
   return true;
 }
 
@@ -870,14 +890,135 @@ bool CoopDogRuntime::RequestTestWarp(NativeA32Process& process, uint32_t play,
   return true;
 }
 
-void CoopDogRuntime::CallBark(NativeA32Process& process, uint32_t actor) {
-  const std::array<uint32_t, 2> arguments{
-      actor, static_cast<uint32_t>(kDogBarkSound)};
-  std::string error;
-  if (!process.InvokeFunction(kAudioPlayActorSound2, arguments,
-                              kDirectCallReturn, &error) &&
-      config_.Log) {
-    Log("dog bark sound failed: " + error);
+void CoopDogRuntime::CallBark(NativeA32Process& process, uint32_t play,
+                              uint32_t actor) {
+  // The native Audio_PlayActorSound2 entry point requires more guest runtime
+  // state than a host-side call provides and faults when invoked this way, so
+  // keep the bark visual and the gameplay damage instead of the sound effect.
+  ApplyBarkAttack(process, play, actor);
+}
+
+void CoopDogRuntime::ApplyBarkAttack(NativeA32Process& process, uint32_t play,
+                                     uint32_t dog) {
+  auto& memory = process.Memory();
+  const float dogX = ReadFloat(memory, dog + kActorWorldPos);
+  const float dogY = ReadFloat(memory, dog + kActorWorldPos + 4U);
+  const float dogZ = ReadFloat(memory, dog + kActorWorldPos + 8U);
+  const int16_t yaw = ReadS16(memory, dog + kActorWorldRot + 2U);
+  const float forwardX =
+      std::sin(static_cast<float>(yaw) * 6.28318530717958647692F / 65536.0F);
+  const float forwardZ =
+      std::cos(static_cast<float>(yaw) * 6.28318530717958647692F / 65536.0F);
+  uint32_t player = 0U;
+  memory.Read32(play + kPlayPlayer, &player);
+  uint32_t hitCount = 0U;
+  const float range = config_.BarkRange;
+  for (uint32_t list = 0U; list < kActorListCount; ++list) {
+    uint32_t actor = 0U;
+    if (!memory.Read32(play + kActorContext + kActorListOffset + list * 8U + 4U,
+                       &actor)) {
+      continue;
+    }
+    for (uint32_t index = 0U; actor != 0U && index < 512U; ++index) {
+      uint16_t id = 0U;
+      memory.Read16(actor + kActorId, &id);
+      if (id != 0U && actor != dog && actor != player) {
+        const uint8_t category = ReadU8(memory, actor + 2U);
+        if (id != kCoopActorItem00 &&
+            (category == 3U || category == 4U || category == 5U ||
+             category == 8U)) {
+          const float x = ReadFloat(memory, actor + kActorWorldPos);
+          const float y = ReadFloat(memory, actor + kActorWorldPos + 4U);
+          const float z = ReadFloat(memory, actor + kActorWorldPos + 8U);
+          const float dx = x - dogX;
+          const float dz = z - dogZ;
+          const float distance = std::sqrt(dx * dx + dz * dz);
+          const float vertical = std::fabs(y - dogY);
+          if (distance <= range && vertical <= range) {
+            const float facing =
+                distance > 0.001F
+                    ? (dx * forwardX + dz * forwardZ) / distance
+                    : 1.0F;
+            if (facing >= 0.15F) {
+              const uint8_t health = ReadU8(memory, actor + kActorHealth);
+              if (health != 0U) {
+                memory.Write8(actor + 0xB8U,
+                              static_cast<uint8_t>(config_.BarkDamage));
+                const std::array<uint32_t, 1> arguments{actor};
+                std::string damageError;
+                process.InvokeFunctionWithResult(
+                    kCoopActorApplyDamage, arguments, kDirectCallReturn,
+                    nullptr, &damageError);
+                if (category == 5U) {
+                  process.InvokeFunction(kCoopActorKill, arguments,
+                                         kDirectCallReturn, &damageError);
+                }
+                ++hitCount;
+              }
+            }
+          }
+        }
+      }
+      uint32_t next = 0U;
+      if (!memory.Read32(actor + kActorNext, &next)) break;
+      actor = next;
+    }
+  }
+  if (config_.Log && hitCount != 0U) {
+    Log("dog bark hit " + std::to_string(hitCount) + " target(s)");
+  }
+}
+
+void CoopDogRuntime::CollectRupees(NativeA32Process& process, uint32_t play,
+                                   uint32_t dog) {
+  auto& memory = process.Memory();
+  const float dogX = ReadFloat(memory, dog + kActorWorldPos);
+  const float dogY = ReadFloat(memory, dog + kActorWorldPos + 4U);
+  const float dogZ = ReadFloat(memory, dog + kActorWorldPos + 8U);
+  for (uint32_t list = 0U; list < kActorListCount; ++list) {
+    uint32_t actor = 0U;
+    if (!memory.Read32(play + kActorContext + kActorListOffset + list * 8U + 4U,
+                       &actor)) {
+      continue;
+    }
+    for (uint32_t index = 0U; actor != 0U && index < 512U; ++index) {
+      uint16_t id = 0U;
+      memory.Read16(actor + kActorId, &id);
+      if (id == kCoopActorItem00) {
+        const uint16_t params = static_cast<uint16_t>(ReadS16(
+            memory, actor + kActorParams));
+        const uint16_t item = params & 0xFFU;
+        uint32_t amount = 0U;
+        if (item == 0x84U) amount = 1U;
+        else if (item == 0x85U) amount = 5U;
+        else if (item == 0x86U) amount = 20U;
+        else if (item == 0x87U) amount = 50U;
+        else if (item == 0x88U) amount = 200U;
+        if (amount != 0U) {
+          const float x = ReadFloat(memory, actor + kActorWorldPos);
+          const float y = ReadFloat(memory, actor + kActorWorldPos + 4U);
+          const float z = ReadFloat(memory, actor + kActorWorldPos + 8U);
+          const float dx = x - dogX;
+          const float dz = z - dogZ;
+          if (std::sqrt(dx * dx + dz * dz) <= config_.RupeePickupRange &&
+              std::fabs(y - dogY) <= 60.0F) {
+            const std::array<uint32_t, 1> amountArguments{amount};
+            std::string itemError;
+            process.InvokeFunction(kCoopRupeesChangeBy, amountArguments,
+                                   kDirectCallReturn, &itemError);
+            const std::array<uint32_t, 1> actorArguments{actor};
+            process.InvokeFunction(kCoopActorKill, actorArguments,
+                                   kDirectCallReturn, &itemError);
+            if (config_.Log) {
+              Log("dog collected a rupee (" + std::to_string(amount) + ")");
+            }
+          }
+        }
+      }
+      uint32_t next = 0U;
+      if (!memory.Read32(actor + kActorNext, &next)) break;
+      actor = next;
+    }
   }
 }
 
@@ -1076,7 +1217,8 @@ void CoopDogRuntime::UpdateDog(NativeA32Process& process, uint32_t play,
     const float normalized = std::min(1.0F, magnitude);
     directionX /= magnitude;
     directionZ /= magnitude;
-    const float speed = config_.MoveSpeed * normalized;
+    const float speed =
+        (input_.Sprinting ? config_.SprintSpeed : config_.MoveSpeed) * normalized;
     targetVelocityX = directionX * speed;
     targetVelocityZ = directionZ * speed;
     int16_t targetYaw = static_cast<int16_t>(std::lround(
@@ -1115,8 +1257,12 @@ void CoopDogRuntime::UpdateDog(NativeA32Process& process, uint32_t play,
   uint32_t animation = 4U; // ENDOG_ANIM_4: sit
   if (barkLatch_) {
     animation = 3U; // bark
+  } else if (!onGround || jumpLatch_) {
+    // The dog object has no dedicated jump clip; use the run pose in the air
+    // instead of leaving the sitting animation frozen.
+    animation = 2U;
   } else if (hasInput || horizontalSpeed > 1.0F) {
-    animation = 1U; // walk
+    animation = input_.Sprinting ? 2U : 1U;
   }
   if (animationInfo != 0U && animation != desiredAnimation_) {
     const std::array<uint32_t, 3> arguments{
@@ -1180,6 +1326,7 @@ void CoopDogRuntime::UpdateDog(NativeA32Process& process, uint32_t play,
   desiredYaw_ = yaw;
   hasDesiredState_ = true;
   ApplyDesiredState(memory, actor);
+  CollectRupees(process, play, actor);
 }
 
 void CoopDogRuntime::Log(const std::string& message) const {

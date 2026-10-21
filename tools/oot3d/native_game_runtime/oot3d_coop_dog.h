@@ -29,6 +29,10 @@ inline constexpr uint32_t kCoopEnDogSkelAnime = 0x01A4U;
 inline constexpr uint32_t kCoopDogAnimationInfoPointer = 0x001D6C88U;
 inline constexpr uint32_t kCoopSkelAnimeUpdate = 0x00370734U;
 inline constexpr uint32_t kCoopAnimationChangeByInfo = 0x003717ACU;
+inline constexpr uint32_t kCoopActorKill = 0x00374428U;
+inline constexpr uint32_t kCoopActorApplyDamage = 0x00375EB8U;
+inline constexpr uint32_t kCoopRupeesChangeBy = 0x00376A60U;
+inline constexpr uint16_t kCoopActorItem00 = 0x0015U;
 
 // The co-op companion reads this from data/config/coop_controls.json.  The
 // controller port is zero-based: port 1 is the second SDL gamepad, so the
@@ -43,12 +47,17 @@ struct CoopDogConfig {
   std::string BarkButton = "b";
   std::string RespawnButton = "start";
   std::string SummonButton = "dpad_down";
+  std::string SprintButton = "zl";
 
   // Movement and jump values are expressed in world units per second.
   // TurnSpeed is in degrees per second; gravity is positive downward.
-  float MoveSpeed = 90.0F;
-  float Acceleration = 500.0F;
-  float Deceleration = 700.0F;
+  float MoveSpeed = 120.0F;
+  float SprintSpeed = 200.0F;
+  float Acceleration = 600.0F;
+  float Deceleration = 800.0F;
+  float BarkRange = 55.0F;
+  int BarkDamage = 2;
+  float RupeePickupRange = 45.0F;
   float TurnSpeed = 180.0F;
   // Camera-relative sign correction, exposed for easy validation on hardware.
   float CameraForwardSign = 1.0F;
@@ -60,13 +69,13 @@ struct CoopDogConfig {
   // The dog can always be sent back to Link with the respawn button.  It is
   // never teleported automatically because it wandered away or died.
   float RespawnOffset = 45.0F;
-  bool AutoSpawnOnSceneChange = true;
+  bool AutoSpawnOnSceneChange = false;
   bool SpawnIfMissing = true;
   bool Invincible = true;
 
   // 0 means "first dog in the actor list".  The low colour nibble selects the
   // Dog Lady's palette; the default keeps the native dark dog when present.
-  uint16_t DogParams = 0x8300U;
+  uint16_t DogParams = 0x8001U;
   bool Log = true;
 };
 
@@ -110,6 +119,7 @@ class CoopDogRuntime {
     float MoveX = 0.0F;
     float MoveY = 0.0F;
     bool Connected = false;
+    bool Sprinting = false;
   };
 
   bool ParseConfig(const std::filesystem::path& path, std::string* error);
@@ -122,7 +132,9 @@ class CoopDogRuntime {
                       float x, float y, float z, uint32_t* actor);
   bool CallActorBgCheck(NativeA32Process& process, uint32_t play, uint32_t actor);
   bool RequestTestWarp(NativeA32Process& process, uint32_t play, uint16_t entrance);
-  void CallBark(NativeA32Process& process, uint32_t actor);
+  void CallBark(NativeA32Process& process, uint32_t play, uint32_t actor);
+  void ApplyBarkAttack(NativeA32Process& process, uint32_t play, uint32_t actor);
+  void CollectRupees(NativeA32Process& process, uint32_t play, uint32_t actor);
   void TeleportDog(NativeA32Process& process, uint32_t play, uint32_t actor);
   void UpdateDog(NativeA32Process& process, uint32_t play, uint32_t actor,
                  bool canMove);
@@ -136,7 +148,7 @@ class CoopDogRuntime {
   uint32_t dogActor_ = 0U;
   uint32_t lastPlay_ = 0U;
   uint16_t lastScene_ = 0xFFFFU;
-  bool sceneSpawnPending_ = true;
+  bool sceneSpawnPending_ = false;
   uint32_t spawnCooldown_ = 0U;
   bool jumpLatch_ = false;
   bool barkLatch_ = false;
