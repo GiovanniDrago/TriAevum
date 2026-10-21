@@ -91,12 +91,15 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(gtest PRIVATE -Wno-character-conversion)
-    target_compile_options(gtest_main PRIVATE -Wno-character-conversion)
-    if(MSVC)
-        target_compile_options(gtest PRIVATE /WX-)
-        target_compile_options(gtest_main PRIVATE /WX-)
-    endif()
+    # gmock compiles gtest-all.cc too; the default `all` target builds it.
+    foreach(googletest_target IN ITEMS gtest gtest_main gmock gmock_main)
+        if(TARGET ${googletest_target})
+            target_compile_options(${googletest_target} PRIVATE -Wno-character-conversion)
+            if(MSVC)
+                target_compile_options(${googletest_target} PRIVATE /WX-)
+            endif()
+        endif()
+    endforeach()
 endif()
 
 add_executable(three_ds_recomp_tests

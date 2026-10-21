@@ -1,4 +1,5 @@
 #include "fast/oot3d/pica_shader_instrumentation.h"
+#include "fast/oot3d/pica_rigid_motion.h"
 #include "fast/oot3d/pica_uber_effect_program.h"
 #include "fast/renderer3ds/pica_motion_provenance.h"
 #include "fast/renderer3ds/point_shadow_map.h"
@@ -1347,9 +1348,9 @@ vec3 pica_surface_shadow(int slot) {
         if (request.TemporalInputs) {
             declarations += "layout(location=7) in vec4 oot3d_current_clip;\n"
                             "layout(location=8) in vec4 oot3d_previous_clip;\n";
-            epilogue += Renderer3ds::PicaMotionGuideAssignment;
+            epilogue += Fast::Oot3d::PicaMotionGuideAssignment;
         } else {
-            epilogue += Renderer3ds::PicaMotionFallbackAssignment;
+            epilogue += Fast::Oot3d::PicaMotionFallbackAssignment;
             result.FragmentKey ^= 0x4e4f434c4950494eULL;
         }
         result.FragmentKey ^= 0x52494749444d4f55ULL;
