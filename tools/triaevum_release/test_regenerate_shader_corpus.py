@@ -139,6 +139,55 @@ class VariantRecordTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "needs a Citra cache"):
             self._regenerate([(1, 0x11, 0x12, 13)], synthesis_effects=[self.root / "product"])
 
+    def _capture_import(self, name: str, *, inventory_format=regeneration.CAPTURE_INVENTORY_FORMAT,
+                        manifest_format=regeneration.PIPELINE_MANIFEST_FORMAT) -> tuple[Path, Path]:
+        inventory = self.root / f"{name}-inventory.json"
+        manifest = self.root / f"{name}-pipelines.json"
+        inventory.write_text(json.dumps({"format": inventory_format, "shaders": [
+            {"stage": "fragment", "source_id": "0x31", "secondary_hash": "0x32", "source_size": 33}]}),
+            encoding="utf-8")
+        manifest.write_text(json.dumps({"format": manifest_format, "pipeline_count": 1, "pipelines": [
+            {"vertex_source": VERTEX, "fragment_source": {"source_id": "0x31", "secondary_hash": "0x32",
+                                                           "source_size": 33},
+             "nri_fragment_available": False}]}), encoding="utf-8")
+        return inventory, manifest
+
+    def test_reused_capture_import_is_copied_checked_and_recorded(self):
+        inventory, manifest = self._capture_import("earlier")
+        modules = [(1, 0x11, 0x12, 13), (2, 0x21, 0x22, 23), (2, 0x31, 0x32, 33)]
+        _, output, commands, receipt = self._regenerate(modules, capture_imports=[(inventory, manifest)])
+        copied = output / "captures-0-inventory.json"
+        self.assertEqual(copied.read_bytes(), inventory.read_bytes())
+        self.assertEqual((output / "captures-0-pipelines.json").read_bytes(), manifest.read_bytes())
+        compile_command = next(command for command in commands if "--pack" in command)
+        self.assertIn(str(copied), compile_command)
+        step = receipt["steps"][0]
+        self.assertTrue(step["reused_import"])
+        self.assertEqual(step["input"], str(inventory))
+        self.assertEqual(step["pipelines_input"], str(manifest))
+        self.assertEqual(len(step["input_sha256"]), 64)
+        self.assertEqual(len(step["pipelines_input_sha256"]), 64)
+        self.assertIsNone(step["importer_sha256"])
+        self.assertEqual(receipt["pipeline_manifests"], ["captures-0-pipelines.json", "runtime-pipelines.json"])
+        self.assertEqual(receipt["pipeline_counts"], [1, 1])
+
+    def test_reused_capture_import_of_another_format_is_refused(self):
+        inventory, manifest = self._capture_import("stale", inventory_format="oot3d_pica_pipeline_manifest_v2")
+        with self.assertRaisesRegex(RuntimeError, "expected 'oot3d_pica_effective_shader_inventory_v1'"):
+            self._regenerate([(1, 0x11, 0x12, 13)], capture_imports=[(inventory, manifest)])
+
+    def test_unreadable_capture_import_is_refused(self):
+        inventory, manifest = self._capture_import("short")
+        manifest.write_text("{", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "not a readable capture import"):
+            self._regenerate([(1, 0x11, 0x12, 13)], capture_imports=[(inventory, manifest)])
+
+    def test_reused_capture_import_whose_module_is_missing_is_refused(self):
+        inventory, manifest = self._capture_import("earlier")
+        with self.assertRaisesRegex(RuntimeError, "does not close"):
+            self._regenerate([(1, 0x11, 0x12, 13), (2, 0x21, 0x22, 23)],
+                             capture_imports=[(inventory, manifest)])
+
 
 if __name__ == "__main__":
     unittest.main()
