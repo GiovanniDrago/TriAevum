@@ -36,6 +36,7 @@
 #include "fast/oot3d/grass_scene_bridge.h"
 #include "fast/oot3d/grass_shading_environment.h"
 #include "fast/oot3d/grass_gpu_memory.h"
+#include "fast/renderer3ds/vulkan_memory_budget.h"
 #include "fast/renderer3ds/gpu_memory_residency.h"
 #include "fast/oot3d/grass_placement_audit.h"
 #include "fast/oot3d/grass_surface_eligibility.h"
@@ -1486,6 +1487,16 @@ TEST(Oot3dGrassGpuMemory, LargeBuffersKeepHeadroomInsteadOfDoublingAndShrinkAfte
     EXPECT_TRUE(GrassBufferNeedsResize(true, 121 * MiB, 120 * MiB));
     EXPECT_TRUE(GrassBufferNeedsResize(true, 20 * MiB, 120 * MiB)) << "a peak buffer is given back";
     EXPECT_FALSE(GrassBufferNeedsResize(true, 1 * MiB, 16 * MiB)) << "small buffers never shrink";
+}
+
+TEST(Renderer3dsGpuMemoryResidency, BudgetQueriesReportNothingWithoutTheLoaderCommand) {
+    using namespace Fast::Renderer3ds;
+    // The Vulkan 1.1 query is bound from the instance at run time (never
+    // imported, so an older vulkan-1.dll still loads the executable): without a
+    // bound instance there is no budget, and no physical device is touched.
+    BindVulkanMemoryBudgetInstance(VK_NULL_HANDLE);
+    EXPECT_FALSE(QueryVulkanDeviceLocalMemory(VK_NULL_HANDLE).has_value());
+    EXPECT_FALSE(QueryVulkanHeapMemory(VK_NULL_HANDLE, 0).has_value());
 }
 
 TEST(Renderer3dsGpuMemoryResidency, ReleasesWhatNoDrawSampledAndSoonerUnderPressure) {

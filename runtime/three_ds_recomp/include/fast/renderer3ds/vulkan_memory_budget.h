@@ -16,6 +16,13 @@ struct VulkanDeviceLocalMemory {
     uint64_t Size = 0;
 };
 
+// vkGetPhysicalDeviceMemoryProperties2 is a Vulkan 1.1 command, obtained from
+// the loader through the instance (vulkan_commands.h) rather than imported, so
+// an older vulkan-1.dll still loads the executable. The backend binds its
+// instance once it exists; until then, or without the command, the queries
+// below report nullopt. VK_NULL_HANDLE unbinds.
+void BindVulkanMemoryBudgetInstance(VkInstance instance) noexcept;
+
 [[nodiscard]] bool VulkanMemoryBudgetSupported(VkPhysicalDevice physicalDevice) noexcept;
 
 // The heap's usage and budget; nullopt without the extension, for a heap that

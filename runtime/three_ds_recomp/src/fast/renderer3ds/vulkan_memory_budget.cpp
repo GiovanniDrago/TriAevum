@@ -1,11 +1,32 @@
 #include "fast/renderer3ds/vulkan_memory_budget.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <mutex>
 #include <vector>
 
+#include "fast/renderer3ds/vulkan_commands.h"
+
 namespace Fast::Renderer3ds {
+
+namespace {
+
+std::atomic<PFN_vkGetPhysicalDeviceMemoryProperties2> gGetMemoryProperties2{nullptr};
+
+} // namespace
+
+void BindVulkanMemoryBudgetInstance(VkInstance instance) noexcept {
+    PFN_vkGetPhysicalDeviceMemoryProperties2 command = nullptr;
+    if (instance != VK_NULL_HANDLE) {
+        command = VulkanInstanceCommand<PFN_vkGetPhysicalDeviceMemoryProperties2>(
+            instance, "vkGetPhysicalDeviceMemoryProperties2");
+        if (command == nullptr)
+            command = VulkanInstanceCommand<PFN_vkGetPhysicalDeviceMemoryProperties2>(
+                instance, "vkGetPhysicalDeviceMemoryProperties2KHR");
+    }
+    gGetMemoryProperties2.store(command, std::memory_order_release);
+}
 
 bool VulkanMemoryBudgetSupported(VkPhysicalDevice physicalDevice) noexcept {
     static std::mutex mutex;
@@ -41,9 +62,12 @@ struct BudgetProperties {
 };
 
 bool ReadBudget(VkPhysicalDevice physicalDevice, BudgetProperties& properties) noexcept {
-    if (physicalDevice == VK_NULL_HANDLE || !VulkanMemoryBudgetSupported(physicalDevice)) return false;
+    const auto getMemoryProperties2 = gGetMemoryProperties2.load(std::memory_order_acquire);
+    if (physicalDevice == VK_NULL_HANDLE || getMemoryProperties2 == nullptr ||
+        !VulkanMemoryBudgetSupported(physicalDevice))
+        return false;
     properties.Properties.pNext = &properties.Budget;
-    vkGetPhysicalDeviceMemoryProperties2(physicalDevice, &properties.Properties);
+    getMemoryProperties2(physicalDevice, &properties.Properties);
     return true;
 }
 

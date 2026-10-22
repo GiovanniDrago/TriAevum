@@ -775,6 +775,7 @@ add_executable(oot3d_graphics_foundation_tests
     ../src/fast/oot3d/sample_view.cpp
     ../src/fast/renderer3ds/virtual_shadow_map.cpp
     ../src/fast/renderer3ds/pica_shadow_geometry.cpp
+    ../src/fast/renderer3ds/vulkan_memory_budget.cpp
     ../src/fast/oot3d/graphics_settings_persistence.cpp
     ../src/fast/oot3d/graphics_preset_library.cpp
     ../src/fast/oot3d/graphics_settings_runtime.cpp
@@ -848,6 +849,7 @@ if(NOT TARGET Vulkan::Headers)
 endif()
 target_link_libraries(oot3d_graphics_foundation_tests PRIVATE
     Vulkan::Headers
+    Vulkan::Vulkan
     gtest_main
     nlohmann_json::nlohmann_json
     ThreeDsRecomp::RendererExtensionCore
