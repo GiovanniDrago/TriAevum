@@ -82,6 +82,11 @@ upgrades can be reviewed. Reinstall it with:
 specify preset update triaevum-parallel --dev ./presets/triaevum-parallel
 ```
 
+`specify integration status` may report the two preset-modified command files
+(`speckit.tasks` and `speckit.implement`) as modified managed files. This is
+expected: the preset deliberately prepends reviewed orchestration rules to the
+core commands. Review the diff before upgrading or refreshing the integration.
+
 ## Reproducibility Rules
 
 - Do not commit ROMs (`*.cci`, `*.3ds`, `*.z64`, `*.n64`, `*.v64`), saves,

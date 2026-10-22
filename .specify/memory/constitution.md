@@ -95,4 +95,4 @@ documentation, and records the version change.
 All reviews must verify compliance. Complexity or an exception to a principle
 must be justified in the specification or plan and approved by the maintainer.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-10-22
+**Version**: 1.1.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-10-23
