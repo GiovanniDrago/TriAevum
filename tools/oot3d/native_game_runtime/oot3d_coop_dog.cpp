@@ -56,6 +56,11 @@ constexpr uint32_t kActorShape = 0xBCU;
 constexpr uint32_t kActorShapeYaw = kActorShape + 0x02U;
 constexpr uint32_t kActorPrevPos = 0x108U;
 constexpr uint32_t kActorDestroyState = 0x198U;
+constexpr uint32_t kActorModelContext = 0x178U;
+constexpr uint32_t kActorLastOwnedModel = 0x194U;
+constexpr uint32_t kActorModelsInitialized = 0x19AU;
+constexpr uint32_t kActorObjectSlot = 0x1EU;
+constexpr uint32_t kSkelAnimeModelHandle = 0x28U;
 constexpr uint32_t kActorId = 0x00U;
 constexpr uint32_t kActorParams = 0x1CU;
 constexpr uint32_t kActorNoop = 0x00161640U;
@@ -556,24 +561,33 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
   uint8_t mode = 0U;
   if (!memory.Read8(play + kPlayMode, &mode) || mode != 3U) return;
 
+  const auto resetTransientDogState = [this]() {
+    pendingDogActor_ = 0U;
+    pendingDogFrames_ = 0U;
+    hasDesiredState_ = false;
+    desiredAnimation_ = 0xFFFFFFFFU;
+    currentVelocityX_ = currentVelocityZ_ = 0.0F;
+    animationFailureLogged_ = false;
+  };
+
   if (play != lastPlay_) {
     lastPlay_ = play;
     dogActor_ = 0U;
+    resetTransientDogState();
     sceneSpawnPending_ = config_.AutoSpawnOnSceneChange;
     spawnCooldown_ = 0U;
     hasGameplayFrame_ = false;
     cameraProbeLogged_ = false;
-    currentVelocityX_ = currentVelocityZ_ = 0.0F;
   }
   uint16_t scene = 0U;
   if (memory.Read16(play + kPlaySceneId, &scene) && scene != lastScene_) {
     lastScene_ = scene;
     dogActor_ = 0U;
+    resetTransientDogState();
     sceneSpawnPending_ = config_.AutoSpawnOnSceneChange;
     spawnCooldown_ = 0U;
     hasGameplayFrame_ = false;
     cameraProbeLogged_ = false;
-    currentVelocityX_ = currentVelocityZ_ = 0.0F;
   }
 
   // Play mode 3 is the gameplay state; the sub-mode also changes in
@@ -586,23 +600,100 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
     RequestTestWarp(process, play, testWarpEntrance_);
   }
 
-  if (dogActor_ != 0U && !IsDog(process, dogActor_)) {
+  if (dogActor_ != 0U && !IsDogUsable(process, dogActor_)) {
+    // A scene/room transition can leave a stale pointer in memory whose id is
+    // still EN_DOG, but whose model context has already been released.  Never
+    // drive SkelAnime on that actor: discard it and let Start create a fresh
+    // dog.  Do not log every frame; one line is enough to diagnose the scene.
+    if (config_.Log) {
+      char text[80]{};
+      std::snprintf(text, sizeof(text), "discarding stale dog actor 0x%08X",
+                    dogActor_);
+      Log(text);
+    }
     dogActor_ = 0U;
+    resetTransientDogState();
   }
+
+  if (pendingDogActor_ != 0U) {
+    ++pendingDogFrames_;
+    if (IsDogUsable(process, pendingDogActor_)) {
+      dogActor_ = pendingDogActor_;
+      pendingDogActor_ = 0U;
+      pendingDogFrames_ = 0U;
+      sceneSpawnPending_ = false;
+      respawnLatch_ = false;
+      summonLatch_ = false;
+      jumpLatch_ = false;
+      barkLatch_ = false;
+      hasDesiredState_ = false;
+      desiredAnimation_ = 0xFFFFFFFFU;
+      // Let the guest draw initialize lastOwnedModel before animating.
+      return;
+    }
+    if (pendingDogFrames_ > 20U) {
+      if (config_.Log) {
+        auto& diagnosticMemory = process.Memory();
+        uint16_t id = 0U;
+        uint32_t draw = 0U;
+        uint32_t update = 0U;
+        uint32_t modelContext = 0U;
+        uint32_t lastModel = 0U;
+        uint32_t skelModel = 0U;
+        uint8_t modelsInitialized = 0U;
+        diagnosticMemory.Read16(pendingDogActor_ + kActorId, &id);
+        diagnosticMemory.Read32(pendingDogActor_ + kActorDraw, &draw);
+        diagnosticMemory.Read32(pendingDogActor_ + kActorUpdate, &update);
+        diagnosticMemory.Read32(pendingDogActor_ + kActorModelContext,
+                                &modelContext);
+        diagnosticMemory.Read32(pendingDogActor_ + kActorLastOwnedModel,
+                                &lastModel);
+        diagnosticMemory.Read32(
+            pendingDogActor_ + kCoopEnDogSkelAnime + kSkelAnimeModelHandle,
+            &skelModel);
+        diagnosticMemory.Read8(pendingDogActor_ + kActorModelsInitialized,
+                               &modelsInitialized);
+        uint32_t diagnosticPlay = 0U;
+        diagnosticMemory.Read32(kPlayStatePointer, &diagnosticPlay);
+        char text[240]{};
+        std::snprintf(
+            text, sizeof(text),
+            "dog init timeout id=0x%04X draw=0x%08X update=0x%08X "
+            "models=%u modelCtx=0x%08X lastModel=0x%08X skelModel=0x%08X "
+            "inLists=%d",
+            static_cast<uint32_t>(id), draw, update,
+            static_cast<uint32_t>(modelsInitialized), modelContext, lastModel,
+            skelModel,
+            diagnosticPlay != 0U &&
+                    ActorInCurrentLists(process, diagnosticPlay,
+                                        pendingDogActor_)
+                ? 1
+                : 0);
+        Log(text);
+      }
+      AbandonDog(process);
+      spawnCooldown_ = 90U;
+    }
+    return;
+  }
+
   if (dogActor_ == 0U) {
+    // Recover only a fully usable actor with our exact params.  In particular
+    // do not adopt an uninitialized native dog (Market/Dog Lady) or a stale
+    // actor left in freed memory.
     dogActor_ = FindDog(process, play);
-    if (dogActor_ != 0U && config_.Log) {
-      uint16_t params = 0U;
-      memory.Read16(dogActor_ + kActorParams, &params);
-      char actorText[16]{};
-      char paramsText[8]{};
-      std::snprintf(actorText, sizeof(actorText), "%08X", dogActor_);
-      std::snprintf(paramsText, sizeof(paramsText), "%04X",
-                    static_cast<uint32_t>(params));
-      Log("using dog actor 0x" + std::string(actorText) + " params=0x" +
-          std::string(paramsText));
+    if (dogActor_ != 0U) {
+      if (config_.Log) {
+        char text[80]{};
+        std::snprintf(text, sizeof(text), "reusing initialized dog 0x%08X",
+                      dogActor_);
+        Log(text);
+      }
+      hasGameplayFrame_ = false;
+      animationFailureLogged_ = false;
     }
   }
+
   if (dogActor_ != 0U) {
     sceneSpawnPending_ = false;
   } else {
@@ -614,18 +705,9 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
       if (spawnCooldown_ > 0U) {
         --spawnCooldown_;
       } else if (SpawnDog(process, play)) {
-        dogActor_ = FindDog(process, play);
-        if (dogActor_ != 0U) {
-          sceneSpawnPending_ = false;
-          // Do not also teleport/animate in the same frame as Actor_Spawn:
-          // the actor model is initialized by the next guest draw.
-          respawnLatch_ = false;
-          summonLatch_ = false;
-          jumpLatch_ = false;
-          barkLatch_ = false;
-          return;
-        }
-        spawnCooldown_ = 90U;
+        // SpawnDog installs a pending actor; the next guest draw initializes
+        // its model, and the next BeforeGuest publishes it.
+        return;
       } else {
         spawnCooldown_ = 90U;
       }
@@ -648,6 +730,7 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
     jumpLatch_ = false;
   } else {
     UpdateDog(process, play, dogActor_, canMove);
+    if (dogActor_ == 0U) return;
   }
   if (barkLatch_) {
     CallBark(process, play, dogActor_);
@@ -658,9 +741,6 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
 
 uint32_t CoopDogRuntime::FindDog(NativeA32Process& process, uint32_t play) const {
   auto& memory = process.Memory();
-  uint32_t first = 0U;
-  uint32_t exact = 0U;
-  uint32_t colour = 0U;
   const uint16_t wantedParams = config_.DogParams;
   for (uint32_t list = 0U; list < kActorListCount; ++list) {
     uint32_t head = 0U;
@@ -671,37 +751,89 @@ uint32_t CoopDogRuntime::FindDog(NativeA32Process& process, uint32_t play) const
     uint32_t actor = head;
     for (uint32_t index = 0U; actor != 0U && index < 512U; ++index) {
       uint16_t id = 0U;
+      uint16_t params = 0U;
       if (!memory.Read16(actor + kActorId, &id)) break;
-      if (id == kActorEnDog) {
-        uint16_t params = 0U;
-        memory.Read16(actor + kActorParams, &params);
-        if (first == 0U) first = actor;
-        if (wantedParams != 0U && params == wantedParams && exact == 0U) {
-          exact = actor;
-        }
-        if (wantedParams != 0U &&
-            (params & 0x0F00U) == (wantedParams & 0x0F00U) &&
-            colour == 0U) {
-          colour = actor;
-        }
+      memory.Read16(actor + kActorParams, &params);
+      if (id == kActorEnDog && params == wantedParams &&
+          IsDogUsable(process, actor) &&
+          IsDogReadyForAnimation(process, actor)) {
+        return actor;
       }
       uint32_t next = 0U;
       if (!memory.Read32(actor + kActorNext, &next)) break;
       actor = next;
     }
   }
-  if (exact != 0U) return exact;
-  if (colour != 0U) return colour;
-  return first;
+  return 0U;
 }
 
-bool CoopDogRuntime::IsDog(NativeA32Process& process, uint32_t actor) const {
+bool CoopDogRuntime::ActorInCurrentLists(NativeA32Process& process,
+                                         uint32_t play,
+                                         uint32_t actor) const {
+  if (actor == 0U) return false;
+  auto& memory = process.Memory();
+  for (uint32_t list = 0U; list < kActorListCount; ++list) {
+    uint32_t candidate = 0U;
+    if (!memory.Read32(play + kActorContext + kActorListOffset + list * 8U + 4U,
+                       &candidate)) {
+      continue;
+    }
+    for (uint32_t index = 0U; candidate != 0U && index < 512U; ++index) {
+      if (candidate == actor) return true;
+      uint32_t next = 0U;
+      if (!memory.Read32(candidate + kActorNext, &next)) break;
+      candidate = next;
+    }
+  }
+  return false;
+}
+
+bool CoopDogRuntime::IsDogUsable(NativeA32Process& process,
+                                 uint32_t actor) const {
   if (actor == 0U) return false;
   auto& memory = process.Memory();
   uint16_t id = 0U;
   uint32_t draw = 0U;
-  return memory.Read16(actor + kActorId, &id) && id == kActorEnDog &&
-         memory.Read32(actor + kActorDraw, &draw) && draw != 0U;
+  if (!memory.Read16(actor + kActorId, &id) || id != kActorEnDog) {
+    return false;
+  }
+  if (!memory.Read32(actor + kActorDraw, &draw) || draw == 0U) {
+    return false;
+  }
+  uint32_t play = 0U;
+  if (!memory.Read32(kPlayStatePointer, &play) || play == 0U) return false;
+  return ActorInCurrentLists(process, play, actor);
+}
+
+bool CoopDogRuntime::IsDogReadyForAnimation(NativeA32Process& process,
+                                            uint32_t actor) const {
+  if (actor == 0U) return false;
+  auto& memory = process.Memory();
+  uint32_t skelAnimeModel = 0U;
+  return memory.Read32(actor + kCoopEnDogSkelAnime + kSkelAnimeModelHandle,
+                       &skelAnimeModel) &&
+         skelAnimeModel != 0U;
+}
+
+void CoopDogRuntime::AbandonDog(NativeA32Process& process) {
+  const uint32_t actor = pendingDogActor_;
+  pendingDogActor_ = 0U;
+  pendingDogFrames_ = 0U;
+  dogActor_ = 0U;
+  hasDesiredState_ = false;
+  desiredAnimation_ = 0xFFFFFFFFU;
+  currentVelocityX_ = currentVelocityZ_ = 0.0F;
+  if (actor == 0U) return;
+  uint16_t id = 0U;
+  if (!process.Memory().Read16(actor + kActorId, &id) || id != kActorEnDog) {
+    return;
+  }
+  uint32_t play = 0U;
+  if (!process.Memory().Read32(kPlayStatePointer, &play) || play == 0U) return;
+  if (!ActorInCurrentLists(process, play, actor)) return;
+  const std::array<uint32_t, 1> arguments{actor};
+  std::string error;
+  process.InvokeFunction(kCoopActorKill, arguments, kDirectCallReturn, &error);
 }
 
 bool CoopDogRuntime::SpawnDog(NativeA32Process& process, uint32_t play) {
@@ -728,37 +860,31 @@ bool CoopDogRuntime::SpawnDog(NativeA32Process& process, uint32_t play) {
 
   uint32_t actor = 0U;
   if (!CallActorSpawn(process, play, x, y, z, &actor)) return false;
-  if (actor == 0U && config_.Log) {
-    Log("Actor_Spawn(EN_DOG) returned 0");
-  }
-  if (actor != 0U && IsDog(process, actor)) {
-    dogActor_ = actor;
-  } else {
-    dogActor_ = FindDog(process, play);
-  }
-  if (dogActor_ == 0U) {
-    Log("Actor_Spawn returned no EN_DOG actor");
+  if (actor == 0U) {
+    if (config_.Log) Log("Actor_Spawn(EN_DOG) returned 0");
     return false;
   }
-  process.Memory().Write32(dogActor_ + kActorUpdate, kActorNoop);
+  uint16_t id = 0U;
+  if (!process.Memory().Read16(actor + kActorId, &id) || id != kActorEnDog) {
+    if (config_.Log) Log("Actor_Spawn did not return an EN_DOG actor");
+    return false;
+  }
+
+  process.Memory().Write32(actor + kActorUpdate, kActorNoop);
+  pendingDogActor_ = actor;
+  pendingDogFrames_ = 0U;
+  dogActor_ = 0U;
+  hasDesiredState_ = false;
   desiredAnimation_ = 0xFFFFFFFFU;
-  desiredX_ = ReadFloat(process.Memory(), dogActor_ + kActorWorldPos);
-  desiredY_ = ReadFloat(process.Memory(), dogActor_ + kActorWorldPos + 4U);
-  desiredZ_ = ReadFloat(process.Memory(), dogActor_ + kActorWorldPos + 8U);
-  desiredYaw_ = ReadS16(process.Memory(), dogActor_ + kActorWorldRot + 2U);
-  hasDesiredState_ = true;
+  animationFailureLogged_ = false;
   if (config_.Log) {
     uint16_t params = 0U;
-    process.Memory().Read16(dogActor_ + kActorParams, &params);
-    Log("spawned co-op dog at 0x" + [&] {
-      char text[16]{};
-      std::snprintf(text, sizeof(text), "%08X", dogActor_);
-      return std::string(text);
-    }() + " params=0x" + [&] {
-      char text[8]{};
-      std::snprintf(text, sizeof(text), "%04X", static_cast<uint32_t>(params));
-      return std::string(text);
-    }());
+    process.Memory().Read16(actor + kActorParams, &params);
+    char text[128]{};
+    std::snprintf(text, sizeof(text),
+                  "spawned co-op dog at 0x%08X params=0x%04X (waiting init)",
+                  actor, static_cast<uint32_t>(params));
+    Log(text);
   }
   return true;
 }
@@ -1148,6 +1274,17 @@ void CoopDogRuntime::UpdateDog(NativeA32Process& process, uint32_t play,
   // The native AI owns its own movement and often chooses to sit/run away.
   // Disable it; the co-op runtime drives SkelAnime explicitly below.
   memory.Write32(actor + kActorUpdate, kActorNoop);
+  if (!IsDogUsable(process, actor)) {
+    if (config_.Log && !animationFailureLogged_) {
+      Log("dog actor became unusable; waiting for Start to respawn");
+    }
+    animationFailureLogged_ = true;
+    dogActor_ = 0U;
+    hasDesiredState_ = false;
+    desiredAnimation_ = 0xFFFFFFFFU;
+    currentVelocityX_ = currentVelocityZ_ = 0.0F;
+    return;
+  }
   if (config_.Invincible) {
     memory.Write8(actor + kActorHealth, 8U);
   }
@@ -1264,24 +1401,36 @@ void CoopDogRuntime::UpdateDog(NativeA32Process& process, uint32_t play,
   } else if (hasInput || horizontalSpeed > 1.0F) {
     animation = input_.Sprinting ? 2U : 1U;
   }
-  if (animationInfo != 0U && animation != desiredAnimation_) {
-    const std::array<uint32_t, 3> arguments{
-        actor + kCoopEnDogSkelAnime, animationInfo, animation};
-    std::string animationError;
-    if (!process.InvokeFunction(kCoopAnimationChangeByInfo, arguments,
-                                kDirectCallReturn, &animationError)) {
-      if (config_.Log) Log("dog animation change failed: " + animationError);
-    } else {
+  const auto dropUnusableDog = [&](const std::string& reason) {
+    if (config_.Log && !animationFailureLogged_) {
+      Log(reason);
+    }
+    animationFailureLogged_ = true;
+    dogActor_ = 0U;
+    hasDesiredState_ = false;
+    desiredAnimation_ = 0xFFFFFFFFU;
+    currentVelocityX_ = currentVelocityZ_ = 0.0F;
+  };
+  if (animationInfo != 0U && IsDogReadyForAnimation(process, actor)) {
+    if (animation != desiredAnimation_) {
+      const std::array<uint32_t, 3> arguments{
+          actor + kCoopEnDogSkelAnime, animationInfo, animation};
+      std::string animationError;
+      if (!process.InvokeFunction(kCoopAnimationChangeByInfo, arguments,
+                                  kDirectCallReturn, &animationError)) {
+        dropUnusableDog("dog animation change failed; waiting for Start: " +
+                        animationError);
+        return;
+      }
       desiredAnimation_ = animation;
     }
-  }
-  {
     const std::array<uint32_t, 1> arguments{actor + kCoopEnDogSkelAnime};
     std::string animationError;
     if (!process.InvokeFunction(kCoopSkelAnimeUpdate, arguments,
-                                kDirectCallReturn, &animationError) &&
-        config_.Log) {
-      Log("dog SkelAnime update failed: " + animationError);
+                                kDirectCallReturn, &animationError)) {
+      dropUnusableDog("dog SkelAnime update failed; waiting for Start: " +
+                      animationError);
+      return;
     }
   }
   if (jumpLatch_ && onGround) {

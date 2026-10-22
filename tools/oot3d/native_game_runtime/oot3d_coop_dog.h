@@ -61,7 +61,8 @@ struct CoopDogConfig {
   float TurnSpeed = 180.0F;
   // Camera-relative sign correction, exposed for easy validation on hardware.
   float CameraForwardSign = 1.0F;
-  float CameraStrafeSign = 1.0F;
+  // The native camera yaw uses the opposite screen-right convention.
+  float CameraStrafeSign = -1.0F;
   float JumpVelocity = 200.0F;
   float Gravity = 600.0F;
   float TickSeconds = 1.0F / 30.0F;
@@ -125,7 +126,12 @@ class CoopDogRuntime {
   bool ParseConfig(const std::filesystem::path& path, std::string* error);
   void WriteDefaultConfig(const std::filesystem::path& path) const;
   uint32_t FindDog(NativeA32Process& process, uint32_t play) const;
-  bool IsDog(NativeA32Process& process, uint32_t actor) const;
+  bool IsDogUsable(NativeA32Process& process, uint32_t actor) const;
+  bool ActorInCurrentLists(NativeA32Process& process, uint32_t play,
+                           uint32_t actor) const;
+  bool IsDogReadyForAnimation(NativeA32Process& process,
+                              uint32_t actor) const;
+  void AbandonDog(NativeA32Process& process);
   bool SpawnDog(NativeA32Process& process, uint32_t play);
   bool CallObjectSpawn(NativeA32Process& process, uint32_t play);
   bool CallActorSpawn(NativeA32Process& process, uint32_t play,
@@ -146,6 +152,8 @@ class CoopDogRuntime {
   CoopDogConfig config_{};
   InputState input_{};
   uint32_t dogActor_ = 0U;
+  uint32_t pendingDogActor_ = 0U;
+  uint32_t pendingDogFrames_ = 0U;
   uint32_t lastPlay_ = 0U;
   uint16_t lastScene_ = 0xFFFFU;
   bool sceneSpawnPending_ = false;
@@ -166,6 +174,7 @@ class CoopDogRuntime {
   bool hasGameplayFrame_ = false;
   bool cameraProbeLogged_ = false;
   bool enDogUpdateProbeLogged_ = false;
+  bool animationFailureLogged_ = false;
   uint32_t desiredAnimation_ = 0xFFFFFFFFU;
   bool testWarpRequested_ = false;
   uint16_t testWarpEntrance_ = 0U;
