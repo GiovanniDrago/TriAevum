@@ -20,6 +20,13 @@ expected/
 notes/
 baserom/
 /work/
+# User-provided game content and local runtime state
+*.cci
+*.3ds
+saves/
+/data/
+/logs/
+
 docs/doxygen/
 *.elf
 *.sra
