@@ -317,13 +317,24 @@ recording by `shader_corpus_qualification.py record-inputs --build BUILD
 
 1. Freshness (CPU, seconds). Regeneration writes `qualification.json`: every
    repository file the generating tools were compiled from (sources, headers,
-   embedded data, from the Ninja graph) and every file of each recording
-   runtime, with SHA-256s. `prepare_release.py --shader-qualification` refuses
-   the corpus when a generator input changed (regenerate) or a runtime input
-   changed (record again), and when the pack or recipes are not the qualified
-   ones. The release audit repeats the check against the corresponding source
-   archive in the package. Both over-invalidate: any change to a listed file
-   counts.
+   embedded data, from the Ninja graph) and, of each recording runtime's
+   inputs, the decision-policy subset: the files the generator shares with
+   the runtime (shader text, identity, settings and semantics types) and the
+   runtime modules that compose a draw's variant request (the Vulkan PICA
+   draw path, PICA scene semantics and composition, effect, settings and
+   reflection policies, the PICA frontend; `POLICY_PATTERNS` in
+   `shader_corpus_qualification.py`, listed for a session by its
+   `policy-inputs` command), with SHA-256s. `prepare_release.py
+   --shader-qualification` refuses the corpus when a generator input changed
+   (regenerate) or a policy input changed (record again), and when the pack
+   or recipes are not the qualified ones. The release audit repeats the check
+   against the corresponding source archive in the package. Both
+   over-invalidate within their set: any change to a listed file counts.
+   Runtime files outside the set (window, input, audio, UI, game logic, GPU
+   memory and upload management, pipeline caches) cannot change a request, so
+   a release runtime that differs from the recording runtime only there keeps
+   the recordings, the regeneration and the gate 3 result: the release work
+   after a freeze stays offline.
 2. Closure (CPU, during regeneration). Every replayed module and every recipe's
    module must be in the compiled pack.
 3. Shipped artifacts (GPU). `qualify_shader_handoff.py --package PACKAGE

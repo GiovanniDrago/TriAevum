@@ -21,7 +21,7 @@ def _session(directory: Path, *, pipelines: bool = True) -> Path:
     directory.mkdir(parents=True)
     (directory / regeneration.RAW_DRAWS).write_text("raw\n", encoding="utf-8")
     (directory / regeneration.VARIANT_REQUESTS).write_text("requests\n", encoding="utf-8")
-    (directory / regeneration.POLICY_INPUTS).write_text(json.dumps(_inputs({"runtime.cpp": "0" * 64})),
+    (directory / regeneration.POLICY_INPUTS).write_text(json.dumps(_inputs({"runtime/three_ds_recomp/src/fast/backends/gfx_vulkan_pica_draw.cpp": "0" * 64})),
                                                         encoding="utf-8")
     if pipelines:
         (directory / regeneration.SESSION_PIPELINES).write_text("{}", encoding="utf-8")
@@ -106,7 +106,7 @@ class VariantRecordTests(unittest.TestCase):
         qualification = json.loads((output / receipt["qualification"]).read_text(encoding="utf-8"))
         self.assertEqual(qualification["variant_requests"], 191)
         self.assertEqual(qualification["generator_inputs"]["files"], {"generator.cpp": "1" * 64})
-        self.assertEqual(qualification["policy_inputs"][0]["files"], {"runtime.cpp": "0" * 64})
+        self.assertEqual(qualification["policy_inputs"][0]["files"], {"runtime/three_ds_recomp/src/fast/backends/gfx_vulkan_pica_draw.cpp": "0" * 64})
         self.assertNotIn(str(self.root), json.dumps(qualification))
 
     def test_compile_cache_and_jobs_reach_the_compiler(self):
