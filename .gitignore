@@ -27,6 +27,9 @@ saves/
 /data/
 /logs/
 
+# Spec Kit generated composition cache
+.specify/presets/*/.composed/
+
 docs/doxygen/
 *.elf
 *.sra

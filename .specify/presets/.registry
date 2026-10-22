@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "presets": {
+    "triaevum-parallel": {
+      "version": "1.0.0",
+      "source": "local",
+      "manifest_hash": "sha256:4f2efced12d7dd92f77d44bbb075c94c027e6dc0d34809538b8b5ae9a08efdaf",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "opencode": [
+          "speckit.tasks",
+          "speckit.implement"
+        ]
+      },
+      "registered_skills": {},
+      "installed_at": "2026-10-22T22:42:01.916716+00:00"
+    }
+  }
+}

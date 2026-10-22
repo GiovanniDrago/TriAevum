@@ -1,11 +1,59 @@
 ---
-name: "speckit-tasks"
-description: "Generate an actionable, dependency-ordered tasks.md for the feature based on available design artifacts."
-compatibility: "Requires spec-kit project structure with .specify/ directory"
-metadata:
-  author: "github-spec-kit"
-  source: "templates/commands/tasks.md"
+description: Generate an actionable, dependency-ordered tasks.md for the feature based on available design artifacts.
+handoffs:
+- label: Analyze For Consistency
+  agent: speckit.analyze
+  prompt: Run a project analysis for consistency
+  send: true
+- label: Implement Project
+  agent: speckit.implement
+  prompt: Start the implementation in phases
+  send: true
+scripts:
+  sh: .specify/scripts/bash/setup-tasks.sh --json
+  ps: .specify/scripts/powershell/setup-tasks.ps1 -Json
+  py: .specify/scripts/python/setup_tasks.py --json
 ---
+
+
+<!-- Source: triaevum-parallel -->
+## TriAevum Parallel Task Metadata (Project Override)
+
+This project requires task metadata that is precise enough for a parent agent to
+schedule independent work without file conflicts.
+
+For every generated task, include:
+
+- **Files**: the exact repository-relative paths the task may create or modify;
+- **Depends on**: the task IDs that must be complete first, or `none`;
+- the existing task ID, `[P]` marker when applicable, user-story label, and action.
+
+Example:
+
+```text
+- [ ] T012 [P] [US1] Create entity model — Files: src/models/a.py, src/models/b.py; Depends on: T010
+```
+
+Rules:
+
+1. A task with unknown or unbounded file ownership must use `Files: TBD` and
+   must not carry `[P]`.
+2. `[P]` is valid only when all of these are true:
+   - the task is in the current dependency phase;
+   - its prerequisites are explicit;
+   - its `Files` set is disjoint from every other `[P]` task in the same round;
+   - it does not edit `tasks.md`, generated artifacts, build outputs, or shared
+     configuration unless those files are explicitly listed.
+3. Tasks that touch the same file, or whose file ownership cannot be
+   determined, remain sequential even if the core template would mark them
+   parallel.
+4. Keep phase boundaries: Setup → Foundational → user stories → Polish.
+5. Tests that must fail before implementation remain ordered before their
+   implementation tasks.
+
+Do not invent file paths. If the plan or contracts do not determine the exact
+paths, keep the task sequential and say so in the task description.
+
 
 
 ## User Input
@@ -26,7 +74,6 @@ You **MUST** consider the user input before proceeding (if not empty).
 - For each remaining hook, do **not** attempt to interpret or evaluate hook `condition` expressions:
   - If the hook has no `condition` field, or it is null/empty, treat the hook as executable
   - If the hook defines a non-empty `condition`, skip the hook and leave condition evaluation to the HookExecutor implementation
-- When constructing command invocations from hook command names, replace dots (`.`) with hyphens (`-`). For example, `speckit.git.commit` → `/speckit-git-commit`.
 - For each executable hook, output the following based on its `optional` flag:
   - **Optional hook** (`optional: true`):
     ```
@@ -98,7 +145,6 @@ Check if `.specify/extensions.yml` exists in the project root.
 - For each remaining hook, do **not** attempt to interpret or evaluate hook `condition` expressions:
   - If the hook has no `condition` field, or it is null/empty, treat the hook as executable
   - If the hook defines a non-empty `condition`, skip the hook and leave condition evaluation to the HookExecutor implementation
-- When constructing command invocations from hook command names, replace dots (`.`) with hyphens (`-`). For example, `speckit.git.commit` → `/speckit-git-commit`.
 - For each executable hook, output the following based on its `optional` flag:
   - **Mandatory hook** (`optional: false`) — **You MUST emit `EXECUTE_COMMAND:` for each mandatory hook**:
     ```

@@ -80,6 +80,11 @@ Feature branches are short-lived and merge through a reviewable commit history.
   remains manual.
 - Changes touching guest memory, actor lifecycle, rendering, or build scripts
   require an explicit review of failure paths and cleanup.
+- Independent tasks marked `[P]` with disjoint file ownership must run through
+  the configured subagent lanes. The parent agent remains the only writer of
+  `tasks.md` and the only actor allowed to commit, push, or run integrated
+  verification. If subagents are unavailable, stop rather than silently
+  serializing parallel work.
 
 ## Governance
 

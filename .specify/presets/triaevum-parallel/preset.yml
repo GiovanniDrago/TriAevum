@@ -1,0 +1,32 @@
+schema_version: "1.0"
+
+preset:
+  id: "triaevum-parallel"
+  name: "TriAevum Parallel Subagents"
+  version: "1.0.0"
+  description: "Require explicit file ownership and safe OpenCode subagent lanes for parallelizable Spec Kit tasks."
+  author: "TriAevum contributors"
+  license: "GPL-3.0-only"
+
+requires:
+  speckit_version: ">=1.2.3"
+
+provides:
+  templates:
+    - type: "command"
+      name: "speckit.tasks"
+      file: "commands/speckit.tasks.md"
+      description: "Add explicit file and dependency metadata required by the parallel scheduler."
+      strategy: "prepend"
+
+    - type: "command"
+      name: "speckit.implement"
+      file: "commands/speckit.implement.md"
+      description: "Run independent task lanes through OpenCode subagents with parent verification."
+      strategy: "prepend"
+
+tags:
+  - "parallel"
+  - "subagents"
+  - "opencode"
+  - "workflow"

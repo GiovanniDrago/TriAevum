@@ -10,7 +10,7 @@ The project was initialized with:
 
 ```text
 specify-cli 1.2.3
-integration: copilot
+integration: opencode
 script type: sh
 ```
 
@@ -21,9 +21,9 @@ uv tool install specify-cli==1.2.3
 specify --version
 ```
 
-The GitHub Copilot integration installs skills under
-`.github/skills/speckit-*/SKILL.md`. Shared templates, scripts, workflows, and
-the constitution live under `.specify/`.
+The OpenCode integration installs process commands under
+`.opencode/commands/`. Shared templates, scripts, workflows, and the constitution
+live under `.specify/`.
 
 ## Branch Model
 
@@ -40,23 +40,47 @@ deliberately disabled.
 
 ## Workflow
 
-Run the Spec Kit skills inside GitHub Copilot or another supported agent, one
-step at a time, reviewing each artifact before continuing:
+Run the Spec Kit commands inside OpenCode, one step at a time, reviewing each
+artifact before continuing:
 
 ```text
-/speckit-constitution   # only when project principles change
-/speckit-specify        # define the next bounded change
-/speckit-clarify        # optional, before planning
-/speckit-plan
-/speckit-tasks
-/speckit-analyze        # optional consistency gate
-/speckit-implement
-/speckit-converge
+/speckit.constitution   # only when project principles change
+/speckit.specify        # define the next bounded change
+/speckit.clarify        # optional, before planning
+/speckit.plan
+/speckit.tasks
+/speckit.analyze        # optional consistency gate
+/speckit.implement
+/speckit.converge
 ```
 
 Features are written under `specs/<feature>/`. Keep specifications, plans, and
 tasks in version control. Do not commit local feature pointers, extension
 configs, caches, or agent credentials.
+
+## Parallel Task Execution
+
+The project-local preset `presets/triaevum-parallel/` is installed into
+`.specify/presets/triaevum-parallel/` and adds mandatory rules to
+`/speckit.tasks` and `/speckit.implement`.
+
+- `/speckit.tasks` must emit exact `Files:` and `Depends on:` metadata.
+- Only tasks with disjoint file ownership may be marked `[P]`.
+- `/speckit.implement` must launch OpenCode subagents for eligible `[P]` tasks,
+  at most four lanes per round.
+- Subagents only edit their listed files. They must not edit `tasks.md`, commit,
+  push, or change branches.
+- The parent agent owns `tasks.md`, Git, integrated build/tests, and final
+  verification.
+- If subagents are unavailable, implementation stops instead of silently
+  running parallelizable tasks in sequence.
+
+The preset source is versioned separately from the installed copy so Spec Kit
+upgrades can be reviewed. Reinstall it with:
+
+```sh
+specify preset update triaevum-parallel --dev ./presets/triaevum-parallel
+```
 
 ## Reproducibility Rules
 
@@ -76,9 +100,9 @@ Pin and review every update:
 
 ```sh
 uv tool install --force specify-cli==<version>
-specify integration upgrade copilot
+specify integration upgrade opencode
 ```
 
-Review the generated `.specify/` and `.github/skills/` diff before committing.
-Do not change integration layouts or hand-edit generated skills without a
-documented reason.
+Review the generated `.specify/`, `.opencode/commands/`, and preset diff before
+committing. Do not hand-edit generated commands or preset installations; update
+`presets/triaevum-parallel/` and reinstall the preset instead.

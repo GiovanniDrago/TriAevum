@@ -1,11 +1,123 @@
 ---
-name: "speckit-implement"
-description: "Execute the implementation plan by processing and executing all tasks defined in tasks.md"
-compatibility: "Requires spec-kit project structure with .specify/ directory"
-metadata:
-  author: "github-spec-kit"
-  source: "templates/commands/implement.md"
+description: Execute the implementation plan by processing and executing all tasks defined in tasks.md
+scripts:
+  sh: .specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
+  ps: .specify/scripts/powershell/check-prerequisites.ps1 -Json -RequireTasks -IncludeTasks
+  py: .specify/scripts/python/check_prerequisites.py --json --require-tasks --include-tasks
 ---
+
+
+<!-- Source: triaevum-parallel -->
+## TriAevum Parallel Subagent Execution (Project Override)
+
+This section is **mandatory** and applies before the core implementation
+workflow. The parent agent is the orchestrator. It owns `tasks.md`, Git
+operations, integration, and final verification.
+
+### Non-negotiable rule
+
+If any pending tasks are parallelizable, you **MUST** launch OpenCode
+subagents for those tasks. Use the `subagent` tool with `background: true`.
+
+If the `subagent` tool is unavailable, stop and report:
+
+> Parallel task execution requires the OpenCode subagent tool. No parallel
+> tasks were started.
+
+Do not silently execute parallel tasks sequentially and do not claim that
+subagents were used when they were not.
+
+### Scheduling algorithm
+
+1. Read `tasks.md`, `spec.md`, `plan.md`, and the project constitution.
+2. Build a dependency graph using:
+   - phase barriers: Setup → Foundational → user stories → Polish;
+   - explicit `Depends on: Txxx` fields;
+   - test-before-implementation ordering;
+   - file mutexes: tasks that touch the same file cannot run concurrently.
+3. A task is eligible for the current round only when:
+   - its checkbox is unchecked;
+   - all dependencies are checked;
+   - it is marked `[P]`;
+   - its `Files` set is non-empty and disjoint from every other eligible task
+     in the round.
+4. If `Files` is missing or `TBD`, the task is sequential.
+5. Respect a maximum of **4 concurrent subagents**. Group sequential tasks in
+   the same lane rather than launching a new agent for every task.
+6. Never start a task from the next phase until the current phase's checkpoint
+   has been verified.
+
+### Subagent brief
+
+For each lane, call the `subagent` tool with:
+
+- `agent: "general"`
+- `description`: a short label containing the task IDs
+- `background: true`
+- `prompt`: a self-contained brief containing the following
+
+```text
+You are implementing one bounded lane of TriAevum task T### (and any explicitly
+listed sequential follow-up tasks in this lane).
+
+Read:
+- <absolute path to spec.md>
+- <absolute path to plan.md>
+- <absolute path to tasks.md>
+- <relevant contracts/data-model/research files>
+
+Allowed files:
+- <exact repository-relative paths>
+
+Forbidden:
+- Do not edit any file outside Allowed files.
+- Do not edit tasks.md.
+- Do not run git add, git commit, git push, or change branches.
+- Do not touch ROMs, saves, caches, generated title source, build outputs, or
+  personal/runtime data.
+- Do not start work belonging to another lane.
+
+Implement the task exactly as specified. Follow the repository constitution and
+the existing code style. Run only checks that are local to your lane when
+possible; the parent will run integrated build/tests.
+
+Report exactly:
+STATUS: DONE | FAILED | BLOCKED
+TASKS: T###, T###
+FILES CHANGED: ...
+CHECKS: commands run and results
+BLOCKERS: ...
+```
+
+Launch all lanes of the round in parallel. Do not wait for one lane before
+starting the next lane.
+
+### Parent verification gate
+
+After every lane finishes:
+
+1. Inspect the diff and confirm that each subagent stayed inside its allowed
+   files.
+2. If a lane edited an unallowed file, stop, revert or repair the change, and
+   report the violation before continuing.
+3. Run the integrated build and the relevant tests for the round.
+4. Only after the checks pass, mark the completed tasks `[X]` in `tasks.md`.
+5. Commit and push only from the parent, after verification.
+6. If a lane fails or is blocked, do not mark its tasks complete and do not
+   advance to the next round. Retry once with a narrower brief or ask the user
+   for a decision.
+
+### Progress and completion
+
+- `tasks.md` has a single writer: the parent.
+- A round is complete only when all lanes report success and the parent's
+  verification passes.
+- Continue with the next eligible round until no parallel work remains.
+- Then execute the remaining sequential tasks using the core implementation
+  workflow.
+- Report each round: task IDs, subagent descriptions, files changed, checks,
+  and any skipped parallelism with the reason.
+
 
 
 ## User Input
@@ -26,7 +138,6 @@ You **MUST** consider the user input before proceeding (if not empty).
 - For each remaining hook, do **not** attempt to interpret or evaluate hook `condition` expressions:
   - If the hook has no `condition` field, or it is null/empty, treat the hook as executable
   - If the hook defines a non-empty `condition`, skip the hook and leave condition evaluation to the HookExecutor implementation
-- When constructing command invocations from hook command names, replace dots (`.`) with hyphens (`-`). For example, `speckit.git.commit` → `/speckit-git-commit`.
 - For each executable hook, output the following based on its `optional` flag:
   - **Optional hook** (`optional: true`):
     ```
@@ -58,7 +169,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 2. **Check checklists status** (if FEATURE_DIR/checklists/ exists):
    - Treat checklist markers as a read-only gate: scan checkbox state, report status, and ask before proceeding when needed; do NOT modify checklist files or markers
-   - `checklists/requirements.md` is the built-in spec-quality checklist maintained by `/speckit-specify` and `/speckit-clarify`; custom checklists generated by `/speckit-checklist` are reviewer-owned requirements-quality review artifacts
+   - `checklists/requirements.md` is the built-in spec-quality checklist maintained by `/speckit.specify` and `/speckit.clarify`; custom checklists generated by `/speckit.checklist` are reviewer-owned requirements-quality review artifacts
    - For custom checklists, `[x]` means the reviewer determined the requirements-quality criterion is satisfied; it does NOT mean implementation work is complete
    - Scan all checklist files in the checklists/ directory
    - For each checklist, count:
@@ -177,7 +288,7 @@ You **MUST** consider the user input before proceeding (if not empty).
    - Validate that tests pass and coverage meets requirements
    - Confirm the implementation follows the technical plan
 
-Note: This command assumes a complete task breakdown exists in tasks.md. If tasks are incomplete or missing, suggest running `/speckit-tasks` first to regenerate the task list.
+Note: This command assumes a complete task breakdown exists in tasks.md. If tasks are incomplete or missing, suggest running `/speckit.tasks` first to regenerate the task list.
 
 ## Mandatory Post-Execution Hooks
 
@@ -191,7 +302,6 @@ Check if `.specify/extensions.yml` exists in the project root.
 - For each remaining hook, do **not** attempt to interpret or evaluate hook `condition` expressions:
   - If the hook has no `condition` field, or it is null/empty, treat the hook as executable
   - If the hook defines a non-empty `condition`, skip the hook and leave condition evaluation to the HookExecutor implementation
-- When constructing command invocations from hook command names, replace dots (`.`) with hyphens (`-`). For example, `speckit.git.commit` → `/speckit-git-commit`.
 - For each executable hook, output the following based on its `optional` flag:
   - **Mandatory hook** (`optional: false`) — **You MUST emit `EXECUTE_COMMAND:` for each mandatory hook**:
     ```
