@@ -113,6 +113,12 @@ void Gui::ImGuiWMInit() {
 }
 
 void Gui::ShutDownImGui(Ship::Window* window) {
+    // A window whose backend never came up (no display, SDL video init failure)
+    // is destroyed before Init() created the ImGui context; DestroyContext()
+    // dereferences the missing context, so there is nothing to shut down.
+    if (ImGui::GetCurrentContext() == nullptr) {
+        return;
+    }
     ImGuiWMShutdown();
     ImGuiBackendShutdown();
     ImGui::DestroyContext();
