@@ -208,8 +208,9 @@ Environment variables: `TRIAEVUM_BUILD_DIR`, `TRIAEVUM_DEV_ROOT`,
   the requested output resolution (720p through 4K, or custom), the internal
   render scale (0.5x–2.0x) and VSync.
 - **F1 → Antialiasing and upscaling** offers FXAA, SMAA, MSAA, TAA and the
-  NRI upscaler providers (NIS, FSR, XeSS, DLSS). On an RTX 3080 Ti, 1440p/4K
-  with DLSS Quality or 1440p native with TAA/SMAA is a good quality target.
+  NRI upscaler providers (NIS, FSR, XeSS, DLSS). On a discrete NVIDIA or AMD
+  GPU, 1440p/4K with an upscaler or 1440p native with TAA/SMAA is a good
+  quality target; the best combination depends on the GPU and driver.
 - F1 persists the requested output size. The helper mirrors it into the launch
   profile before every start, so it survives a restart.
 
@@ -252,9 +253,9 @@ scene data) remain binary.
 
 ### Personalizing the game
 
-This checkout is on the `personalization` branch. Host-side features (renderer,
-TopScreen UI, input, camera, settings, presentation) are ordinary C++ in this
-repository and only need a runtime rebuild.
+Host-side personalization features (renderer, TopScreen UI, input, camera,
+settings, presentation) are ordinary C++ in this repository and only need a
+runtime rebuild.
 
 Game-logic changes use the translated title source, which can be rebuilt locally:
 
