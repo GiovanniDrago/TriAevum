@@ -28,15 +28,39 @@ by **chubbycubby**, which Forge downloads for your game's language with your
 consent, and the file selection follows the single-screen design of
 **[Ocarina Reframed](https://github.com/OTPR26/OOT3DHud)** by **OTPR26**.
 
+The ambient occlusion that makes the grass look like it belongs to the ground
+is **MXAO** from **[iMMERSE](https://github.com/martymcmodding/iMMERSE)** by
+**Pascal Gilcher** ([Marty's Mods](https://martysmods.com)), integrated and
+adapted with his explicit permission. Thank you for lending TriAevum a piece
+of work that took years to get this good.
+
 Just as essential are **Azahar, Ship of Harkinian, libultraship, NVIDIA NRI**,
 and the SDL controller-mapping community. And, of course, **Nintendo and
 Grezzo**, who created the original game. [Full credits and licenses](THIRD_PARTY_NOTICES.md).
 
 Forge can also apply an optional mod on your machine: **[Vanilla+ - Link Remodel
 And HD Item Models](https://gamebanana.com/mods/705890)** by **HugAMuffin**
-(testing by Fado, M-1 and seiunsky_1084; tooling by Jameriquiah), CC BY-NC-ND
-4.0. TriAevum does not distribute it: Forge downloads the author's original
-archive when you turn it on ([details](docs/TRIAEVUM_MOD_VANILLA_PLUS_LINK.md)).
+(testing by Fado, M-1 and seiunsky_1084; tooling by Jameriquiah). TriAevum does
+not distribute it: Forge downloads the author's original archive when you turn
+it on ([details](docs/TRIAEVUM_MOD_VANILLA_PLUS_LINK.md)).
+
+**Separately licensed material.** Three parts are not covered by TriAevum's GPL
+and keep their authors' terms:
+
+- **iMMERSE / MXAO** (Pascal Gilcher): "All rights reserved". The module is
+  built as its own library, shipped beside the runtime, and TriAevum uses it
+  under a permission granted to this project only. That permission does not
+  pass to forks, recipients or other projects; redistribute TriAevum without
+  the module unless the author has given you his own. See
+  [LICENSE_SCOPE.md](LICENSE_SCOPE.md#exception-the-immerse-module) and the
+  module's `LICENSE-iMMERSE.txt`.
+- **OoT3D Vanilla UI/HUD** (chubbycubby): [CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/).
+  Packages contain none of its files; Forge downloads the author's original
+  archive from GameBanana on your request and keeps it in your private data
+  folder. See [LICENSES/OoT3D-Vanilla-UI-HUD.md](LICENSES/OoT3D-Vanilla-UI-HUD.md).
+- **Vanilla+ - Link Remodel And HD Item Models** (HugAMuffin): [CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/).
+  Same arrangement: downloaded from GameBanana only when you turn it on, never
+  redistributed by TriAevum. See [LICENSES/Vanilla-Plus-Link-Remodel.md](LICENSES/Vanilla-Plus-Link-Remodel.md).
 
 ## About
 
