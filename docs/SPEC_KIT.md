@@ -33,8 +33,10 @@ the constitution live under `.specify/`.
   setup.
 - Feature work starts from `develop` on a dedicated branch.
 
-The upstream remote is `origin`; the personal fork is `fork`. This keeps upstream
-history available for rebases and comparisons.
+`origin` is the personal fork and is the default remote for fetch, push, and
+GitHub CLI operations. `upstream` is the original `coccofresco/TriAevum`
+repository, kept for read-only synchronization and comparisons; its push URL is
+deliberately disabled.
 
 ## Workflow
 
