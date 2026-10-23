@@ -7,12 +7,15 @@ For every generated task, include:
 
 - **Files**: the exact repository-relative paths the task may create or modify;
 - **Depends on**: the task IDs that must be complete first, or `none`;
+- **Verify**: `static` or `game`;
+- **Scenario** and **Expected**: required when `Verify: game`;
 - the existing task ID, `[P]` marker when applicable, user-story label, and action.
 
 Example:
 
 ```text
-- [ ] T012 [P] [US1] Create entity model — Files: src/models/a.py, src/models/b.py; Depends on: T010
+- [ ] T012 [P] [US1] Create entity model — Files: src/models/a.py, src/models/b.py; Depends on: T010; Verify: static
+- [ ] T020 [US1] Fix P2 spawn — Files: tools/oot3d/native_game_runtime/oot3d_coop_dog.cpp; Depends on: T012; Verify: game; Scenario: coop-p2-smoke; Expected: dog spawns after Start and remains usable
 ```
 
 Rules:
@@ -31,6 +34,11 @@ Rules:
 4. Keep phase boundaries: Setup → Foundational → user stories → Polish.
 5. Tests that must fail before implementation remain ordered before their
    implementation tasks.
+
+Use `Verify: game` for any task that changes gameplay, rendering, UI, input,
+coop runtime, or a scenario fixture. Use `Verify: static` only when the task
+cannot affect runtime behaviour. If a task's verification class is uncertain,
+choose `game`.
 
 Do not invent file paths. If the plan or contracts do not determine the exact
 paths, keep the task sequential and say so in the task description.

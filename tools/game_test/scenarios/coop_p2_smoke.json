@@ -1,0 +1,20 @@
+{
+  "name": "coop-p2-smoke",
+  "package": "${TRIAEVUM_TEST_PACKAGE}",
+  "profile": "${TRIAEVUM_TEST_PROFILE}",
+  "state": "${TRIAEVUM_TEST_STATE}",
+  "save_data": "${TRIAEVUM_TEST_SAVE_DATA}",
+  "p1_timeline": "",
+  "p2_input": "tools/game_test/inputs/coop_p2_smoke.json",
+  "frames": 420,
+  "max_seconds": 90,
+  "width": 1280,
+  "height": 720,
+  "probe_interval": 10,
+  "expected": [
+    "The game reaches gameplay without a runtime fault.",
+    "P2 Start creates the dog.",
+    "The dog remains usable after movement, jump, bark, sprint, and summon.",
+    "The final screenshot shows the dog in the expected scene."
+  ]
+}

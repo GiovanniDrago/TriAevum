@@ -4,7 +4,9 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <string>
+#include <vector>
 
 namespace oot3d::recomp::a32 {
 struct ExecutionResult;
@@ -125,6 +127,9 @@ class CoopDogRuntime {
 
   bool ParseConfig(const std::filesystem::path& path, std::string* error);
   void WriteDefaultConfig(const std::filesystem::path& path) const;
+  void LoadTestInput();
+  void SampleTestInput(uint32_t frame);
+  void MaybeWriteProbe(NativeA32Process& process, uint32_t play);
   uint32_t FindDog(NativeA32Process& process, uint32_t play) const;
   bool IsDogUsable(NativeA32Process& process, uint32_t actor) const;
   bool ActorInCurrentLists(NativeA32Process& process, uint32_t play,
@@ -205,6 +210,32 @@ class CoopDogRuntime {
   bool respawnHeldPrevious_ = false;
   int32_t controllerInstance_ = -1;
   bool loggedNoController_ = false;
+
+  // Test-only deterministic P2 input and runtime probe. Both are opt-in via
+  // environment variables and are never active in a normal launch.
+  struct TestInputSegment {
+    uint32_t StartFrame = 0U;
+    uint32_t EndFrameExclusive = 0U;
+    float MoveX = 0.0F;
+    float MoveY = 0.0F;
+    bool Sprint = false;
+    bool Start = false;
+    bool A = false;
+    bool B = false;
+    bool Summon = false;
+  };
+  std::vector<TestInputSegment> testInputSegments_;
+  bool testInputActive_ = false;
+  uint32_t testFrame_ = 0U;
+  bool testStartHeld_ = false;
+  bool testAHeld_ = false;
+  bool testBHeld_ = false;
+  bool testSummonHeld_ = false;
+  std::string probePath_;
+  std::ofstream probeStream_;
+  uint32_t probeInterval_ = 15U;
+  uint32_t lastProbeFrame_ = 0xFFFFFFFFU;
+  bool probeOpenFailed_ = false;
 };
 
 } // namespace Oot3dNativeGame

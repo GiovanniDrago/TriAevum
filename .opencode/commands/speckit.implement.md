@@ -92,6 +92,41 @@ BLOCKERS: ...
 Launch all lanes of the round in parallel. Do not wait for one lane before
 starting the next lane.
 
+### Runtime gameplay verification gate
+
+After the static implementation of a round is integrated, check the tasks for
+`Verify: game`. Also treat a task as runtime-affecting when its `Files` include
+any of:
+
+```text
+tools/oot3d/native_game_runtime/
+tools/oot3d/ui_*/
+tools/three_ds/input/
+tools/game_test/
+coop_controls
+coop runtime
+```
+
+When a runtime-affecting task exists:
+
+1. Load the `game-tester` subagent through the `subagent` tool. Use
+   `agent: "game-tester"`, `background: true`, and the task's `Scenario` (or
+   `coop-p2-smoke` when no scenario is named).
+2. Give the subagent the task IDs, expected result, package/profile/state
+   environment variable names, and the exact files changed.
+3. Wait for the subagent to finish. Do not launch two game instances against
+   the same display, package, save directory, or GPU cache.
+4. Require a `STATUS: PASS` report with a screenshot path, runtime JSON/probe
+   evidence, and the observed result.
+5. If the report is `FAIL`, `BLOCKED`, or lacks evidence, do not mark the task
+   `[X]` and do not declare the feature complete. Record the failure and ask
+   for the missing input when appropriate.
+6. Only the parent agent updates `tasks.md` and performs Git operations after
+   the gameplay evidence is accepted.
+
+The game-tester is a verifier, not a source editor. It must not edit source,
+`tasks.md`, or Git state.
+
 ### Parent verification gate
 
 After every lane finishes:

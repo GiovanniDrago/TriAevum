@@ -184,6 +184,20 @@ bool CoopDogRuntime::LoadConfig(const std::filesystem::path& path,
       }());
     }
   }
+  LoadTestInput();
+  if (const char* probe = std::getenv("TRIAEVUM_COOP_PROBE");
+      probe != nullptr && probe[0] != '\0') {
+    probePath_ = probe;
+    if (const char* interval = std::getenv("TRIAEVUM_COOP_PROBE_INTERVAL");
+        interval != nullptr && interval[0] != '\0') {
+      char* end = nullptr;
+      const unsigned long value = std::strtoul(interval, &end, 10);
+      if (end != interval && value > 0UL) {
+        probeInterval_ = static_cast<uint32_t>(
+            std::min<unsigned long>(value, 300UL));
+      }
+    }
+  }
   if (path.empty()) return true;
   std::error_code filesystemError;
   if (!std::filesystem::exists(path, filesystemError)) {
@@ -300,6 +314,11 @@ bool CoopDogRuntime::ParseConfig(const std::filesystem::path& path,
 void CoopDogRuntime::PollInput() {
   input_ = {};
   if (!config_.Enabled) return;
+  if (testInputActive_) {
+    SampleTestInput(testFrame_++);
+    return;
+  }
+  ++testFrame_;
 
   Ship::Context* context = Ship::Context::GetRawInstance();
   if (context == nullptr) return;
@@ -428,6 +447,145 @@ void CoopDogRuntime::PollInput() {
   barkHeldPrevious_ = bark;
   respawnHeldPrevious_ = respawn;
   summonHeldPrevious_ = summon;
+}
+
+void CoopDogRuntime::LoadTestInput() {
+  const char* path = std::getenv("TRIAEVUM_COOP_TEST_INPUT");
+  if (path == nullptr || path[0] == '\0') return;
+  std::ifstream stream(path);
+  if (!stream) {
+    Log("cannot open TRIAEVUM_COOP_TEST_INPUT: " + std::string(path));
+    return;
+  }
+  nlohmann::json document;
+  try {
+    stream >> document;
+  } catch (const std::exception& exception) {
+    Log("invalid co-op test input: " + std::string(exception.what()));
+    return;
+  }
+  if (!document.is_object() ||
+      document.value("schema", std::string{}) !=
+          "triaevum.coop.test_input.v1" ||
+      !document.contains("segments") || !document["segments"].is_array()) {
+    Log("invalid co-op test input schema");
+    return;
+  }
+  try {
+    for (const auto& item : document["segments"]) {
+      if (!item.is_object()) continue;
+      TestInputSegment segment;
+      segment.StartFrame = item.value("start_frame", 0U);
+      segment.EndFrameExclusive =
+          item.value("end_frame_exclusive", segment.StartFrame + 1U);
+      segment.MoveX = std::clamp(item.value("move_x", 0.0F), -1.0F, 1.0F);
+      segment.MoveY = std::clamp(item.value("move_y", 0.0F), -1.0F, 1.0F);
+      segment.Sprint = item.value("sprint", false);
+      if (item.contains("buttons") && item["buttons"].is_array()) {
+        for (const auto& button : item["buttons"]) {
+          if (!button.is_string()) continue;
+          const std::string name = Lowercase(button.get<std::string>());
+          if (name == "start") segment.Start = true;
+          else if (name == "a") segment.A = true;
+          else if (name == "b") segment.B = true;
+          else if (name == "dpad_down" || name == "down") segment.Summon = true;
+          else if (name == "zl") segment.Sprint = true;
+        }
+      }
+      if (segment.EndFrameExclusive > segment.StartFrame) {
+        testInputSegments_.push_back(segment);
+      }
+    }
+  } catch (const std::exception& exception) {
+    testInputSegments_.clear();
+    Log("invalid co-op test input value: " + std::string(exception.what()));
+    return;
+  }
+  testInputActive_ = !testInputSegments_.empty();
+  if (testInputActive_) {
+    Log("loaded scripted P2 input: " + std::string(path) + " (" +
+        std::to_string(testInputSegments_.size()) + " segment(s))");
+  }
+}
+
+void CoopDogRuntime::SampleTestInput(uint32_t frame) {
+  input_.Connected = true;
+  bool start = false;
+  bool jump = false;
+  bool bark = false;
+  bool summon = false;
+  for (const auto& segment : testInputSegments_) {
+    if (frame < segment.StartFrame || frame >= segment.EndFrameExclusive) {
+      continue;
+    }
+    input_.MoveX = segment.MoveX;
+    input_.MoveY = segment.MoveY;
+    input_.Sprinting = segment.Sprint;
+    start = start || segment.Start;
+    jump = jump || segment.A;
+    bark = bark || segment.B;
+    summon = summon || segment.Summon;
+  }
+  if (start && !testStartHeld_) respawnLatch_ = true;
+  if (jump && !testAHeld_) jumpLatch_ = true;
+  if (bark && !testBHeld_) barkLatch_ = true;
+  if (summon && !testSummonHeld_) summonLatch_ = true;
+  testStartHeld_ = start;
+  testAHeld_ = jump;
+  testBHeld_ = bark;
+  testSummonHeld_ = summon;
+}
+
+void CoopDogRuntime::MaybeWriteProbe(NativeA32Process& process, uint32_t play) {
+  if (probePath_.empty()) return;
+  auto& memory = process.Memory();
+  uint32_t guestFrame = 0U;
+  memory.Read32(play + 0x5BF4U, &guestFrame);
+  if (guestFrame == lastProbeFrame_) return;
+  if (probeInterval_ > 1U && guestFrame % probeInterval_ != 0U) return;
+  lastProbeFrame_ = guestFrame;
+  if (!probeStream_.is_open()) {
+    probeStream_.open(probePath_, std::ios::out | std::ios::app);
+    if (!probeStream_) {
+      if (!probeOpenFailed_) {
+        probeOpenFailed_ = true;
+        Log("cannot open TRIAEVUM_COOP_PROBE: " + probePath_);
+      }
+      return;
+    }
+  }
+  nlohmann::json probe{
+      {"schema", "triaevum.coop.probe.v1"},
+      {"host_frame", testFrame_},
+      {"guest_frame", guestFrame},
+      {"play", play},
+      {"dog_actor", dogActor_},
+      {"dog_usable", dogActor_ != 0U && IsDogUsable(process, dogActor_)},
+      {"desired_animation", desiredAnimation_},
+  };
+  uint16_t scene = 0U;
+  uint8_t mode = 0U;
+  memory.Read16(play + kPlaySceneId, &scene);
+  memory.Read8(play + kPlayMode, &mode);
+  probe["scene"] = scene;
+  probe["mode"] = mode;
+  if (dogActor_ != 0U) {
+    probe["dog_pos"] = {ReadFloat(memory, dogActor_ + kActorWorldPos),
+                        ReadFloat(memory, dogActor_ + kActorWorldPos + 4U),
+                        ReadFloat(memory, dogActor_ + kActorWorldPos + 8U)};
+    probe["dog_velocity"] = {
+        ReadFloat(memory, dogActor_ + kActorVelocity),
+        ReadFloat(memory, dogActor_ + kActorVelocity + 4U),
+        ReadFloat(memory, dogActor_ + kActorVelocity + 8U)};
+    probe["dog_health"] = ReadU8(memory, dogActor_ + kActorHealth);
+    probe["dog_models_initialized"] =
+        ReadU8(memory, dogActor_ + kActorModelsInitialized);
+    uint32_t modelContext = 0U;
+    memory.Read32(dogActor_ + kActorModelContext, &modelContext);
+    probe["dog_model_context"] = modelContext;
+  }
+  probeStream_ << probe.dump() << '\n';
+  probeStream_.flush();
 }
 
 void CoopDogRuntime::ObserveBlockEntry(
@@ -560,6 +718,7 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
   if (!memory.Read32(kPlayStatePointer, &play) || play == 0U) return;
   uint8_t mode = 0U;
   if (!memory.Read8(play + kPlayMode, &mode) || mode != 3U) return;
+  MaybeWriteProbe(process, play);
 
   const auto resetTransientDogState = [this]() {
     pendingDogActor_ = 0U;

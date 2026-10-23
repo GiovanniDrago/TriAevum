@@ -30,6 +30,9 @@ saves/
 # Spec Kit generated composition cache
 .specify/presets/*/.composed/
 
+# Local gameplay test evidence
+/artifacts/game-tests/
+
 docs/doxygen/
 *.elf
 *.sra

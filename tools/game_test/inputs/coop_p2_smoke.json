@@ -1,0 +1,12 @@
+{
+  "schema": "triaevum.coop.test_input.v1",
+  "frame_origin": "run",
+  "segments": [
+    {"start_frame": 20, "end_frame_exclusive": 24, "buttons": ["start"]},
+    {"start_frame": 60, "end_frame_exclusive": 160, "move_y": 1.0},
+    {"start_frame": 170, "end_frame_exclusive": 174, "buttons": ["a"]},
+    {"start_frame": 230, "end_frame_exclusive": 234, "buttons": ["b"]},
+    {"start_frame": 260, "end_frame_exclusive": 330, "move_y": 1.0, "sprint": true},
+    {"start_frame": 350, "end_frame_exclusive": 354, "buttons": ["dpad_down"]}
+  ]
+}
