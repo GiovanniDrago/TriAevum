@@ -1,6 +1,7 @@
 #include "oot3d_coop_dog.h"
 
 #include "a32_runtime.h"
+#include "oot3d_coop_rupee.h"
 #include "oot3d_native_a32_memory.h"
 #include "oot3d_native_a32_process.h"
 
@@ -63,6 +64,19 @@ constexpr uint32_t kActorObjectSlot = 0x1EU;
 constexpr uint32_t kSkelAnimeModelHandle = 0x28U;
 constexpr uint32_t kActorId = 0x00U;
 constexpr uint32_t kActorParams = 0x1CU;
+// En_Item00 post-actor fields.  The collectible-delay offset is confirmed by a
+// bounded diagnostic; the adjacent s16 values are logged alongside it.
+constexpr uint32_t kItem00CollectibleDelay = 0x1ACU;
+constexpr uint32_t kItem00DelayNeighbor = 0x1AEU;
+constexpr uint32_t kItem00DespawnTimer = 0x1B2U;
+constexpr uint32_t kSaveContext = 0x00587958U;
+constexpr uint32_t kSaveWallet = kSaveContext + 0x48U;          // u16
+constexpr uint32_t kSaveWalletUpgrades = kSaveContext + 0xB8U;  // u32
+constexpr uint32_t kSavePlayerHealth = kSaveContext + 0x44U;    // u16
+// Rupees_ChangeBy accumulates here; it is not the live wallet balance.
+constexpr uint32_t kSaveRupeeAccumulator = 0x00588EB4U;         // s16
+// PlayState CutsceneContext::ActiveCutsceneData, from the typed gameplay wire.
+constexpr uint32_t kPlayActiveCutscene = 0x229CU;                // pointer
 constexpr uint32_t kActorNoop = 0x00161640U;
 constexpr uint32_t kActorSpawn = 0x003738D0U;
 constexpr uint32_t kActorSpawnTransitionActors = 0x0032525CU;
@@ -83,6 +97,15 @@ float ReadFloat(NativeA32Memory& memory, uint32_t address) {
 
 bool WriteFloat(NativeA32Memory& memory, uint32_t address, float value) {
   return memory.Write32(address, std::bit_cast<uint32_t>(value));
+}
+
+// Defensive float read: reports whether the guest word was readable.
+bool ReadFloatChecked(NativeA32Memory& memory, uint32_t address, float* value) {
+  if (value == nullptr) return false;
+  uint32_t bits = 0U;
+  if (!memory.Read32(address, &bits)) return false;
+  *value = std::bit_cast<float>(bits);
+  return true;
 }
 
 int16_t ReadS16(NativeA32Memory& memory, uint32_t address) {
@@ -584,8 +607,119 @@ void CoopDogRuntime::MaybeWriteProbe(NativeA32Process& process, uint32_t play) {
     memory.Read32(dogActor_ + kActorModelContext, &modelContext);
     probe["dog_model_context"] = modelContext;
   }
+  uint16_t wallet = 0U;
+  uint32_t walletUpgrades = 0U;
+  memory.Read16(kSaveWallet, &wallet);
+  memory.Read32(kSaveWalletUpgrades, &walletUpgrades);
+  probe["wallet"] = wallet;
+  probe["wallet_capacity"] = WalletCapacityForUpgrades(walletUpgrades);
+  probe["rupees_collected"] = rupeesCollected_;
+  probe["last_rupee_value"] = lastRupeeValue_;
+  probe["nearby_rupees"] =
+      dogActor_ != 0U ? CountNearbyRupees(memory, play, dogActor_) : 0U;
   probeStream_ << probe.dump() << '\n';
   probeStream_.flush();
+}
+
+uint32_t CoopDogRuntime::CountNearbyRupees(NativeA32Memory& memory,
+                                           uint32_t play, uint32_t dog) {
+  float dogX = 0.0F;
+  float dogY = 0.0F;
+  float dogZ = 0.0F;
+  if (!ReadFloatChecked(memory, dog + kActorWorldPos, &dogX) ||
+      !ReadFloatChecked(memory, dog + kActorWorldPos + 4U, &dogY) ||
+      !ReadFloatChecked(memory, dog + kActorWorldPos + 8U, &dogZ)) {
+    return 0U;
+  }
+  uint32_t count = 0U;
+  for (uint32_t list = 0U; list < kActorListCount; ++list) {
+    uint32_t actor = 0U;
+    if (!memory.Read32(play + kActorContext + kActorListOffset + list * 8U + 4U,
+                       &actor)) {
+      continue;
+    }
+    for (uint32_t index = 0U; actor != 0U && index < 512U; ++index) {
+      uint16_t id = 0U;
+      if (!memory.Read16(actor + kActorId, &id)) break;
+      if (id == kCoopActorItem00) {
+        uint8_t itemCode = 0U;
+        uint16_t params = 0U;
+        float x = 0.0F;
+        float y = 0.0F;
+        float z = 0.0F;
+        uint16_t delay = 0U;
+        const bool readable =
+            memory.Read8(actor + kActorParams, &itemCode) &&
+            memory.Read16(actor + kActorParams, &params) &&
+            ReadFloatChecked(memory, actor + kActorWorldPos, &x) &&
+            ReadFloatChecked(memory, actor + kActorWorldPos + 4U, &y) &&
+            ReadFloatChecked(memory, actor + kActorWorldPos + 8U, &z) &&
+            memory.Read16(actor + kItem00CollectibleDelay, &delay);
+        if (readable && RupeeValueForItemCode(itemCode).has_value()) {
+          LogRupeeDiagnostic(memory, actor, itemCode, params);
+          const float dx = x - dogX;
+          const float dz = z - dogZ;
+          const float distanceXZ = std::sqrt(dx * dx + dz * dz);
+          const float distanceY = std::fabs(y - dogY);
+          if (distanceXZ <= kCoopRupeePickupRadiusXZ &&
+              distanceY <= kCoopRupeePickupRadiusY &&
+              static_cast<int16_t>(delay) <= 0) {
+            ++count;
+          }
+        }
+      }
+      uint32_t next = 0U;
+      if (!memory.Read32(actor + kActorNext, &next)) break;
+      actor = next;
+    }
+  }
+  return count;
+}
+
+// Bounded evidence for the En_Item00 collectible-delay offset (expected 0x1AC).
+// Each rupee actor is logged at most once and the whole run logs a handful.
+void CoopDogRuntime::LogRupeeDiagnostic(NativeA32Memory& memory, uint32_t actor,
+                                        uint8_t itemCode, uint16_t params) {
+  if (!config_.Log) return;
+  if (rupeeProbeLoggedCount_ >= kCoopRupeeDiagnosticLimit) return;
+  for (uint32_t index = 0U; index < rupeeProbeLoggedCount_; ++index) {
+    if (rupeeProbeLoggedActors_[index] == actor) return;
+  }
+  float x = 0.0F;
+  float y = 0.0F;
+  float z = 0.0F;
+  float gravity = 0.0F;
+  uint16_t bgCheckFlags = 0U;
+  uint16_t delay = 0U;
+  uint16_t neighbor = 0U;
+  uint16_t despawnTimer = 0U;
+  if (!ReadFloatChecked(memory, actor + kActorWorldPos, &x) ||
+      !ReadFloatChecked(memory, actor + kActorWorldPos + 4U, &y) ||
+      !ReadFloatChecked(memory, actor + kActorWorldPos + 8U, &z) ||
+      !ReadFloatChecked(memory, actor + kActorGravity, &gravity) ||
+      !memory.Read16(actor + kActorBgCheckFlags, &bgCheckFlags) ||
+      !memory.Read16(actor + kItem00CollectibleDelay, &delay) ||
+      !memory.Read16(actor + kItem00DelayNeighbor, &neighbor) ||
+      !memory.Read16(actor + kItem00DespawnTimer, &despawnTimer)) {
+    return;
+  }
+  rupeeProbeLoggedActors_[rupeeProbeLoggedCount_] = actor;
+  ++rupeeProbeLoggedCount_;
+  char text[320]{};
+  std::snprintf(text, sizeof(text),
+                "En_Item00 rupee diagnostic actor=0x%08X item=0x%02X "
+                "params=0x%04X pos=(%.1f, %.1f, %.1f) gravity=%.1f "
+                "bg=0x%04X s16[0x1AC]=%d s16[0x1AE]=%d s16[0x1B2]=%d",
+                static_cast<unsigned>(actor),
+                static_cast<unsigned>(itemCode),
+                static_cast<unsigned>(params), static_cast<double>(x),
+                static_cast<double>(y), static_cast<double>(z),
+                static_cast<double>(gravity),
+                static_cast<unsigned>(bgCheckFlags),
+                static_cast<int>(static_cast<int16_t>(delay)),
+                static_cast<int>(static_cast<int16_t>(neighbor)),
+                static_cast<int>(static_cast<int16_t>(despawnTimer)));
+  Log(text);
 }
 
 void CoopDogRuntime::ObserveBlockEntry(
@@ -755,8 +889,15 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
   const bool canMove = true;
 
   if (testWarpEntrance_ != 0U && !testWarpRequested_ && canMove) {
-    testWarpRequested_ = true;
-    RequestTestWarp(process, play, testWarpEntrance_);
+    if (testWarpRetryCooldown_ > 0U) {
+      --testWarpRetryCooldown_;
+    } else if (RequestTestWarp(process, play, testWarpEntrance_)) {
+      testWarpRequested_ = true;
+    } else {
+      // The transition slot is often busy during the first gameplay frames.
+      // Retry later instead of disabling the test warp permanently.
+      testWarpRetryCooldown_ = 30U;
+    }
   }
 
   if (dogActor_ != 0U && !IsDogUsable(process, dogActor_)) {
@@ -1257,9 +1398,38 @@ void CoopDogRuntime::ApplyBarkAttack(NativeA32Process& process, uint32_t play,
 void CoopDogRuntime::CollectRupees(NativeA32Process& process, uint32_t play,
                                    uint32_t dog) {
   auto& memory = process.Memory();
-  const float dogX = ReadFloat(memory, dog + kActorWorldPos);
-  const float dogY = ReadFloat(memory, dog + kActorWorldPos + 4U);
-  const float dogZ = ReadFloat(memory, dog + kActorWorldPos + 8U);
+  float dogX = 0.0F;
+  float dogY = 0.0F;
+  float dogZ = 0.0F;
+  if (!ReadFloatChecked(memory, dog + kActorWorldPos, &dogX) ||
+      !ReadFloatChecked(memory, dog + kActorWorldPos + 4U, &dogY) ||
+      !ReadFloatChecked(memory, dog + kActorWorldPos + 8U, &dogZ)) {
+    return;
+  }
+
+  uint8_t mode = 0U;
+  uint32_t activeCutscene = 1U;
+  uint16_t playerHealth = 0U;
+  uint16_t wallet = 0U;
+  uint32_t walletUpgrades = 0U;
+  if (!memory.Read8(play + kPlayMode, &mode) || mode != 3U ||
+      !memory.Read32(play + kPlayActiveCutscene, &activeCutscene) ||
+      !memory.Read16(kSavePlayerHealth, &playerHealth) ||
+      !memory.Read16(kSaveWallet, &wallet) ||
+      !memory.Read32(kSaveWalletUpgrades, &walletUpgrades)) {
+    return;
+  }
+  const uint16_t walletCapacity = WalletCapacityForUpgrades(walletUpgrades);
+  uint16_t pendingCredit = 0U;
+  uint16_t pendingRaw = 0U;
+  if (memory.Read16(kSaveRupeeAccumulator, &pendingRaw)) {
+    const int16_t pending = static_cast<int16_t>(pendingRaw);
+    if (pending > 0) pendingCredit = static_cast<uint16_t>(pending);
+  }
+  const bool gameplayActive = mode == 3U;
+  const bool cutsceneActive = activeCutscene != 0U;
+  const bool playerAlive = playerHealth != 0U;
+
   for (uint32_t list = 0U; list < kActorListCount; ++list) {
     uint32_t actor = 0U;
     if (!memory.Read32(play + kActorContext + kActorListOffset + list * 8U + 4U,
@@ -1267,41 +1437,96 @@ void CoopDogRuntime::CollectRupees(NativeA32Process& process, uint32_t play,
       continue;
     }
     for (uint32_t index = 0U; actor != 0U && index < 512U; ++index) {
+      // Read the next link before any guest call can free this actor.
+      uint32_t next = 0U;
+      const bool hasNext = memory.Read32(actor + kActorNext, &next);
       uint16_t id = 0U;
-      memory.Read16(actor + kActorId, &id);
+      if (!memory.Read16(actor + kActorId, &id)) break;
       if (id == kCoopActorItem00) {
-        const uint16_t params = static_cast<uint16_t>(ReadS16(
-            memory, actor + kActorParams));
-        const uint16_t item = params & 0xFFU;
-        uint32_t amount = 0U;
-        if (item == 0x84U) amount = 1U;
-        else if (item == 0x85U) amount = 5U;
-        else if (item == 0x86U) amount = 20U;
-        else if (item == 0x87U) amount = 50U;
-        else if (item == 0x88U) amount = 200U;
-        if (amount != 0U) {
-          const float x = ReadFloat(memory, actor + kActorWorldPos);
-          const float y = ReadFloat(memory, actor + kActorWorldPos + 4U);
-          const float z = ReadFloat(memory, actor + kActorWorldPos + 8U);
+        uint8_t itemCode = 0U;
+        uint16_t delayRaw = 0U;
+        float x = 0.0F;
+        float y = 0.0F;
+        float z = 0.0F;
+        const bool readable =
+            memory.Read8(actor + kActorParams, &itemCode) &&
+            memory.Read16(actor + kItem00CollectibleDelay, &delayRaw) &&
+            ReadFloatChecked(memory, actor + kActorWorldPos, &x) &&
+            ReadFloatChecked(memory, actor + kActorWorldPos + 4U, &y) &&
+            ReadFloatChecked(memory, actor + kActorWorldPos + 8U, &z);
+        const auto value = RupeeValueForItemCode(itemCode);
+        if (readable && value.has_value()) {
           const float dx = x - dogX;
           const float dz = z - dogZ;
-          if (std::sqrt(dx * dx + dz * dz) <= config_.RupeePickupRange &&
-              std::fabs(y - dogY) <= 60.0F) {
-            const std::array<uint32_t, 1> amountArguments{amount};
-            std::string itemError;
-            process.InvokeFunction(kCoopRupeesChangeBy, amountArguments,
-                                   kDirectCallReturn, &itemError);
-            const std::array<uint32_t, 1> actorArguments{actor};
-            process.InvokeFunction(kCoopActorKill, actorArguments,
-                                   kDirectCallReturn, &itemError);
-            if (config_.Log) {
-              Log("dog collected a rupee (" + std::to_string(amount) + ")");
+          const float distanceXZ = std::sqrt(dx * dx + dz * dz);
+          const float distanceY = std::fabs(y - dogY);
+          const bool alreadyCredited =
+              std::find(creditedRupeeActors_.begin(),
+                        creditedRupeeActors_.end(),
+                        actor) != creditedRupeeActors_.end();
+          RupeePickupQuery query{};
+          query.DistanceXZ = distanceXZ;
+          query.DistanceY = distanceY;
+          query.CollectibleDelay = static_cast<int16_t>(delayRaw);
+          query.GameplayActive = gameplayActive;
+          query.CutsceneActive = cutsceneActive;
+          query.PlayerAlive = playerAlive;
+          query.Wallet = wallet;
+          query.WalletCapacity = walletCapacity;
+          query.PendingCredit = pendingCredit;
+          query.RupeeValue = *value;
+          if (!alreadyCredited &&
+              distanceXZ <= config_.RupeePickupRange &&
+              ShouldCollectRupee(query)) {
+            // Re-validate identity, state and list membership immediately
+            // before the host-to-guest credit call.
+            uint16_t confirmId = 0U;
+            uint16_t confirmParams = 0U;
+            uint16_t confirmDelay = 0U;
+            const bool stillEligible =
+                memory.Read16(actor + kActorId, &confirmId) &&
+                confirmId == kCoopActorItem00 &&
+                memory.Read16(actor + kActorParams, &confirmParams) &&
+                (confirmParams & 0xFFU) == itemCode &&
+                memory.Read16(actor + kItem00CollectibleDelay, &confirmDelay) &&
+                static_cast<int16_t>(confirmDelay) <= 0 &&
+                ActorInCurrentLists(process, play, actor);
+            if (stillEligible) {
+              const std::array<uint32_t, 1> creditArguments{*value};
+              std::string error;
+              if (!process.InvokeFunction(kCoopRupeesChangeBy,
+                                          creditArguments, kDirectCallReturn,
+                                          &error)) {
+                if (config_.Log) {
+                  Log("dog rupee credit failed: " + error);
+                }
+              } else {
+                // Record the address before the kill so a deferred/failed
+                // kill cannot credit the same actor twice.
+                creditedRupeeActors_.push_back(actor);
+                ++rupeesCollected_;
+                lastRupeeValue_ = *value;
+                if (pendingCredit <= 0xFFFFU - *value) {
+                  pendingCredit = static_cast<uint16_t>(pendingCredit + *value);
+                } else {
+                  pendingCredit = 0xFFFFU;
+                }
+                const std::array<uint32_t, 1> killArguments{actor};
+                if (!process.InvokeFunction(kCoopActorKill, killArguments,
+                                            kDirectCallReturn, &error)) {
+                  if (config_.Log) {
+                    Log("dog rupee kill failed: " + error);
+                  }
+                }
+                if (config_.Log) {
+                  Log("dog collected a rupee (" + std::to_string(*value) + ")");
+                }
+              }
             }
           }
         }
       }
-      uint32_t next = 0U;
-      if (!memory.Read32(actor + kActorNext, &next)) break;
+      if (!hasNext) break;
       actor = next;
     }
   }

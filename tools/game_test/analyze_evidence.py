@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -33,11 +35,63 @@ def load_probe(path: Path) -> list[dict[str, Any]]:
     return samples
 
 
+def probe_int(sample: dict[str, Any], key: str) -> int | None:
+    """Return an integer probe field, or None when it is absent or unusable."""
+    value = sample.get(key)
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) and value.is_integer() else None
+    if isinstance(value, str):
+        try:
+            return int(value, 10)
+        except ValueError:
+            return None
+    return None
+
+
+def probe_series(samples: Iterable[dict[str, Any]], key: str) -> list[int | None]:
+    return [probe_int(sample, key) for sample in samples]
+
+
+def first_observed(series: list[int | None]) -> int | None:
+    return next((value for value in series if value is not None), None)
+
+
+def last_observed(series: list[int | None]) -> int | None:
+    return next((value for value in reversed(series) if value is not None), None)
+
+
+def first_increase_index(series: list[int | None]) -> int | None:
+    """Index of the first sample strictly above the previously observed value."""
+    previous: int | None = None
+    for index, value in enumerate(series):
+        if value is None:
+            continue
+        if previous is not None and value > previous:
+            return index
+        previous = value
+    return None
+
+
+def distinct_observed(series: list[int | None]) -> list[int]:
+    seen: list[int] = []
+    for value in series:
+        if value is not None and value not in seen:
+            seen.append(value)
+    return seen
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result", required=True, type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--require-dog", action="store_true")
+    parser.add_argument("--expect-pickups", action="store_true")
+    parser.add_argument("--expect-wallet-delta", type=int)
+    parser.add_argument("--expect-rupee-kept", action="store_true")
     args = parser.parse_args()
 
     result = load_json(args.result)
@@ -57,6 +111,68 @@ def main() -> int:
         previous = current
 
     last = probe[-1] if probe else {}
+    wallet_series = probe_series(probe, "wallet")
+    capacity_series = probe_series(probe, "wallet_capacity")
+    pickups_series = probe_series(probe, "rupees_collected")
+    last_value_series = probe_series(probe, "last_rupee_value")
+    nearby_series = probe_series(probe, "nearby_rupees")
+
+    wallet_first = first_observed(wallet_series)
+    wallet_last = last_observed(wallet_series)
+    wallet_delta = (
+        wallet_last - wallet_first
+        if wallet_first is not None and wallet_last is not None
+        else None
+    )
+    pickups_first = first_observed(pickups_series)
+    pickups_last = last_observed(pickups_series)
+    pickups_total_delta = (
+        pickups_last - pickups_first
+        if pickups_first is not None and pickups_last is not None
+        else None
+    )
+    first_pickup_sample = first_increase_index(pickups_series)
+    capacity_violations = [
+        index
+        for index, (wallet, capacity) in enumerate(
+            zip(wallet_series, capacity_series)
+        )
+        if wallet is not None and capacity is not None and wallet > capacity
+    ]
+
+    failures: list[str] = []
+    if capacity_violations:
+        failures.append(
+            f"wallet > wallet_capacity in {len(capacity_violations)} sample(s); "
+            f"first at sample {capacity_violations[0]}"
+        )
+    if args.expect_pickups:
+        if pickups_first is None:
+            failures.append("rupees_collected is absent from every probe sample")
+        elif first_pickup_sample is None:
+            failures.append("rupees_collected never increases")
+    if args.expect_wallet_delta is not None:
+        if wallet_delta is None:
+            failures.append("wallet balance is absent from the probe")
+        elif wallet_delta != args.expect_wallet_delta:
+            failures.append(
+                f"wallet delta {wallet_delta} does not equal "
+                f"--expect-wallet-delta {args.expect_wallet_delta}"
+            )
+    if args.expect_rupee_kept:
+        if pickups_total_delta is None:
+            failures.append("rupees_collected is absent from the probe")
+        elif pickups_total_delta != 0:
+            failures.append(
+                "rupees_collected increased although the rupee should have been kept"
+            )
+        if wallet_delta is None:
+            failures.append("wallet balance is absent from the probe")
+        elif wallet_delta != 0:
+            failures.append(
+                "wallet changed although the rupee should have been kept"
+            )
+
     summary = {
         "schema": "triaevum.game_test.analysis.v1",
         "result": str(args.result),
@@ -74,6 +190,23 @@ def main() -> int:
         "last_animation": last.get("desired_animation"),
         "last_models_initialized": last.get("dog_models_initialized"),
         "last_model_context": last.get("dog_model_context"),
+        "first_pickup_sample": first_pickup_sample,
+        "first_pickup_host_frame": (
+            probe[first_pickup_sample].get("host_frame")
+            if first_pickup_sample is not None
+            else None
+        ),
+        "wallet_first": wallet_first,
+        "wallet_last": wallet_last,
+        "wallet_delta": wallet_delta,
+        "pickups_first": pickups_first,
+        "pickups_last": pickups_last,
+        "pickups_total_delta": pickups_total_delta,
+        "wallet_capacity_seen": distinct_observed(capacity_series),
+        "nearby_rupees_last": last_observed(nearby_series),
+        "last_rupee_value": last_observed(last_value_series),
+        "wallet_capacity_violations": len(capacity_violations),
+        "failures": failures,
         "runtime": {
             key: runtime.get(key)
             for key in (
@@ -91,6 +224,8 @@ def main() -> int:
     target = args.output or output_dir / "analysis.json"
     target.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2))
+    for failure in failures:
+        print(f"analysis: {failure}", file=sys.stderr)
     if result.get("status") != "COMPLETED":
         return 1
     if args.require_dog and not (
@@ -98,6 +233,8 @@ def main() -> int:
         and summary["dog_usable"]
         and summary["dog_persisted_at_end"]
     ):
+        return 1
+    if failures:
         return 1
     return 0
 

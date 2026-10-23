@@ -1,0 +1,22 @@
+{
+  "name": "coop-p2-rupee-pickup",
+  "package": "${TRIAEVUM_TEST_PACKAGE}",
+  "profile": "${TRIAEVUM_TEST_PROFILE}",
+  "state": "${TRIAEVUM_TEST_STATE}",
+  "save_data": "${TRIAEVUM_TEST_SAVE_DATA}",
+  "p1_timeline": "tools/oot3d/native_game_runtime/input_timelines/title_to_existing_save.json",
+  "p2_input": "tools/game_test/inputs/coop_p2_rupee.json",
+  "frames": 1400,
+  "max_seconds": 220,
+  "width": 1280,
+  "height": 720,
+  "probe_interval": 5,
+  "expected": [
+    "The title/file-select timeline selects the existing save before pressing A (the default empty slot would open name entry).",
+    "The title/file-select timeline loads the existing save or checkpoint.",
+    "P2 Start creates the dog after gameplay begins.",
+    "The dog traverses the seeded area without a runtime fault.",
+    "The probe emits wallet, wallet_capacity, rupees_collected, last_rupee_value, and nearby_rupees.",
+    "Before the pickup fix the dog records zero rupees_collected; after the fix it collects a ground rupee and the wallet delta matches the denomination."
+  ]
+}

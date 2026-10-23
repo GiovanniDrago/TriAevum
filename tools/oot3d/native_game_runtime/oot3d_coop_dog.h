@@ -2,6 +2,7 @@
 
 #include "a32_runtime.h"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -35,6 +36,8 @@ inline constexpr uint32_t kCoopActorKill = 0x00374428U;
 inline constexpr uint32_t kCoopActorApplyDamage = 0x00375EB8U;
 inline constexpr uint32_t kCoopRupeesChangeBy = 0x00376A60U;
 inline constexpr uint16_t kCoopActorItem00 = 0x0015U;
+// Bounded evidence budget for the En_Item00 collectible-delay diagnostic.
+inline constexpr uint32_t kCoopRupeeDiagnosticLimit = 6U;
 
 // The co-op companion reads this from data/config/coop_controls.json.  The
 // controller port is zero-based: port 1 is the second SDL gamepad, so the
@@ -59,7 +62,7 @@ struct CoopDogConfig {
   float Deceleration = 800.0F;
   float BarkRange = 55.0F;
   int BarkDamage = 2;
-  float RupeePickupRange = 45.0F;
+  float RupeePickupRange = 30.0F;
   float TurnSpeed = 180.0F;
   // Camera-relative sign correction, exposed for easy validation on hardware.
   float CameraForwardSign = 1.0F;
@@ -130,6 +133,10 @@ class CoopDogRuntime {
   void LoadTestInput();
   void SampleTestInput(uint32_t frame);
   void MaybeWriteProbe(NativeA32Process& process, uint32_t play);
+  uint32_t CountNearbyRupees(NativeA32Memory& memory, uint32_t play,
+                             uint32_t dog);
+  void LogRupeeDiagnostic(NativeA32Memory& memory, uint32_t actor,
+                          uint8_t itemCode, uint16_t params);
   uint32_t FindDog(NativeA32Process& process, uint32_t play) const;
   bool IsDogUsable(NativeA32Process& process, uint32_t actor) const;
   bool ActorInCurrentLists(NativeA32Process& process, uint32_t play,
@@ -177,6 +184,14 @@ class CoopDogRuntime {
   float currentVelocityZ_ = 0.0F;
   uint32_t lastGameplayFrame_ = 0U;
   bool hasGameplayFrame_ = false;
+  uint32_t testWarpRetryCooldown_ = 0U;
+  // Successful dog pickups for this run. T007 wires the increment; until then
+  // both fields stay zero and the probe reports the baseline.
+  uint32_t rupeesCollected_ = 0U;
+  uint16_t lastRupeeValue_ = 0U;
+  // Actors already credited in this scene. Prevents a second credit if the
+  // guest defers or rejects the kill. Cleared on play/scene change.
+  std::vector<uint32_t> creditedRupeeActors_;
   bool cameraProbeLogged_ = false;
   bool enDogUpdateProbeLogged_ = false;
   bool animationFailureLogged_ = false;
@@ -236,6 +251,11 @@ class CoopDogRuntime {
   uint32_t probeInterval_ = 15U;
   uint32_t lastProbeFrame_ = 0xFFFFFFFFU;
   bool probeOpenFailed_ = false;
+
+  // Bounded, run-scoped evidence for the En_Item00 collectible-delay offset.
+  // Only the first few distinct rupee actors are logged, once each.
+  std::array<uint32_t, kCoopRupeeDiagnosticLimit> rupeeProbeLoggedActors_{};
+  uint32_t rupeeProbeLoggedCount_ = 0U;
 };
 
 } // namespace Oot3dNativeGame

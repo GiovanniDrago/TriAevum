@@ -42,6 +42,14 @@ add_executable(oot3d_native_game_runtime_tests EXCLUDE_FROM_ALL
 target_link_libraries(oot3d_native_game_runtime_tests PRIVATE oot3d_native_game_runtime)
 oot3d_target_defaults(oot3d_native_game_runtime_tests FOLDER Tests)
 
+# Pure unit tests for the co-op rupee item-code map, pickup gate, and wallet
+# capacity table. Header-only, so this target does not link the guest runtime.
+add_executable(oot3d_coop_rupee_tests EXCLUDE_FROM_ALL
+    tools/oot3d/native_game_runtime/oot3d_coop_rupee_tests.cpp)
+target_include_directories(oot3d_coop_rupee_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/oot3d/native_game_runtime")
+oot3d_target_defaults(oot3d_coop_rupee_tests FOLDER Tests)
+
 # Clock verification must also work without the optional legacy cutscene host.
 add_executable(triaevum_presentation_clock_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_frame_rate_tests.cpp
