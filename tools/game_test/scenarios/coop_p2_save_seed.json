@@ -1,0 +1,18 @@
+{
+  "name": "coop-p2-save-seed",
+  "package": "${TRIAEVUM_TEST_PACKAGE}",
+  "profile": "${TRIAEVUM_TEST_PROFILE}",
+  "save_data": "${TRIAEVUM_TEST_SAVE_DATA}",
+  "p1_timeline": "tools/oot3d/native_game_runtime/input_timelines/title_to_existing_save.json",
+  "p2_input": "tools/game_test/inputs/coop_p2_after_save.json",
+  "frames": 700,
+  "max_seconds": 120,
+  "width": 1280,
+  "height": 720,
+  "probe_interval": 10,
+  "expected": [
+    "The title/file-select timeline loads the existing save.",
+    "P2 Start creates the dog after gameplay begins.",
+    "The dog remains usable after movement, jump, bark, sprint, and summon."
+  ]
+}
