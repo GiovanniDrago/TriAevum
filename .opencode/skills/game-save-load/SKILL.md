@@ -37,6 +37,13 @@ If the scenario must load a real save:
 tools/oot3d/native_game_runtime/input_timelines/title_to_existing_save.json
 ```
 
+The timeline must select the existing save before pressing A. On the
+file-select screen the default cursor can sit on an empty slot; pressing A
+there opens name entry and never reaches gameplay. The shared timeline includes
+`circle_y: 1.0` at frame 520 to move to the first save. If the seed is in a
+different slot, change the direction/frame count and record the slot. A
+name-entry stop is a setup failure; do not report it as a gameplay result.
+
 The harness copies the seed into `artifacts/game-tests/<run>/savedata`; the
 guest never writes the user's original files.
 

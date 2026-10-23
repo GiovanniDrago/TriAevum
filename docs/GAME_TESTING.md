@@ -78,6 +78,15 @@ For real save files, set `TRIAEVUM_TEST_SAVE_DATA` and use
 `title_to_existing_save.json`; the harness copies the seed into the run
 directory.
 
+When a save seed is loaded through the title/file-select flow, the P1 timeline
+must move the file-select cursor onto the existing save before pressing A.
+The default cursor can sit on an empty slot; pressing A there opens the
+name-entry screen and never reaches gameplay. `title_to_existing_save.json`
+therefore holds `circle_y: 1.0` at frame 520 to select the first save before
+the A press at frame 600. If the seed lives in a different slot, change the
+direction/frame count and record the slot in the scenario description. A run
+that stops at name entry is a scenario-setup failure, not a gameplay result.
+
 ## P1 input
 
 Use the runtime schema `oot3d.native_game.input_timeline.v1` with
@@ -171,3 +180,38 @@ Edit the relevant `.opencode/skills/game-*/SKILL.md` and
 `docs/GAME_TESTING.md` together. Keep commands copy-pasteable, keep paths
 relative to the repository, and update the scenario/input files when the runtime
 CLI or probe schema changes. Do not add machine-specific paths.
+
+## Co-op rupee probe
+
+The co-op runtime appends these additive fields to
+`triaevum.coop.probe.v1`:
+
+| Field | Meaning |
+| --- | --- |
+| `wallet` | SaveContext rupee balance (`0x00587958 + 0x48`) |
+| `wallet_capacity` | Derived from `UPG_WALLET` (`99`, `200`, `500`) |
+| `rupees_collected` | Monotonic successful dog pickup count |
+| `last_rupee_value` | Denomination of the last successful pickup |
+| `nearby_rupees` | Eligible rupee actors inside the pickup gate |
+
+`analyze_evidence.py` supports `--expect-pickups` and
+`--expect-wallet-delta N`; it always fails when `wallet > wallet_capacity` in a
+sample. Use the rupee scenario at
+`tools/game_test/scenarios/coop_p2_rupee.json` together with a save seed or
+savestate that places the dog near a ground rupee.
+
+The dog pickup uses the game's accumulator path (`Rupees_ChangeBy`); the HUD
+wallet count and its normal count ticks are the feedback. Guest audio is not
+invoked from the host because `Audio_PlayActorSound2` is known to fault in this
+path; a host `NativeAudioService` request is the only sanctioned alternative if
+the initial pickup ding is added later.
+
+### Known verification blockers
+
+- A save seed that starts in a scene without a resident `OBJECT_DOG` cannot
+  spawn the dog: the log reports `OBJECT_DOG object context is not ready yet`.
+  Use a private `TRIAEVUM_TEST_STATE` checkpoint where the dog already exists
+  and is initialized.
+- The bounded `--screenshot` path can return a black or startup frame in some
+  staged packages. Treat a missing final-frame image as a capture defect, not
+  as gameplay evidence.

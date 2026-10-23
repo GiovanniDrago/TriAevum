@@ -48,6 +48,12 @@ Hard boundaries:
 - Never mark a failed or missing artifact as PASS.
 - If the package, display, state, or required tools are unavailable, return
   BLOCKED and state exactly what is missing.
+- When loading a save seed through the title/file-select flow, move the cursor
+  onto the existing save before pressing A. The default cursor can sit on an
+  empty slot; pressing A there opens name entry and never reaches gameplay.
+  Treat a name-entry stop as a setup failure, not a gameplay result. The shared
+  `title_to_existing_save.json` timeline already includes the first-save
+  selection step.
 - The parent agent owns `tasks.md`, verification decisions, and commits.
 
 Use environment variables for machine-specific inputs:

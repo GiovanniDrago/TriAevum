@@ -49,6 +49,10 @@ python3 tools/game_test/analyze_evidence.py \
 - Never modify the user's save data. The harness copies a seed into a temporary
   run directory.
 - Never edit source, tasks.md, or Git state.
+- For a save-seed run, select the existing save on the file-select screen
+  before pressing A. The default cursor may be on an empty slot; A there opens
+  name entry and blocks gameplay. Use the shared `title_to_existing_save.json`
+  timeline or an equivalent explicit selection step.
 - A compile or a log line is not a visual pass. Read the screenshot.
 - If any required input is missing, return `BLOCKED` with the exact missing
   variable or file.

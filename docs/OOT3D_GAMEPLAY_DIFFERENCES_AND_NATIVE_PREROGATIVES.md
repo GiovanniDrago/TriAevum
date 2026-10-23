@@ -222,6 +222,10 @@ Questi comportamenti sono riportati da documentazione indipendente e richiedono 
 
 Le fonti di questa sezione sono di livello B salvo dove gia confermate dal manuale o dalle interviste Nintendo. [Zelda Wiki, other changes][src-zelda-wiki]
 
+### Rupie Del Cane Co-Op (Prerogativa Di Sicurezza)
+
+Il percorso N64 di `En_Item00` consuma una rupia anche quando il portafoglio e pieno: `Rupees_ChangeBy` accumula, `Interface_Update` azzera l'accumulatore al limite e l'attore e gia stato raccolto. La parita OOT3D di questo edge case non e ancora dimostrata. L'implementazione co-op sceglie di lasciare la rupia nel mondo quando `wallet + pending + value > capacity`: e una `native_prerogative` di sicurezza, non una dichiarazione di parita. Se OOT3D viene dimostrato distruttivo, la specifica e lo scenario full-wallet vanno aggiornati insieme.
+
 ## Sistemi Esclusivi E Priorita Di Decompilazione
 
 ### P0 - Bloccanti Per Il Playthrough Main Quest
