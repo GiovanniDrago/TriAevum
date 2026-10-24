@@ -1,0 +1,21 @@
+{
+  "name": "coop-p2-splitscreen-hold",
+  "package": "${TRIAEVUM_TEST_PACKAGE}",
+  "profile": "${TRIAEVUM_TEST_PROFILE}",
+  "state": "${TRIAEVUM_TEST_STATE}",
+  "save_data": "${TRIAEVUM_TEST_SAVE_DATA}",
+  "p1_timeline": "tools/oot3d/native_game_runtime/input_timelines/title_to_existing_save.json",
+  "p2_input": "tools/game_test/inputs/coop_p2_splitscreen_hold.json",
+  "frames": 1700,
+  "max_seconds": 220,
+  "width": 1280,
+  "height": 720,
+  "probe_interval": 5,
+  "expected": [
+    "The title/file-select timeline selects the existing save before pressing A.",
+    "P2 Start creates the dog and the dog remains usable.",
+    "The dog moves away until the scene splits.",
+    "The final frame is still split for the visual evidence.",
+    "The probe records split_panels 2 and ui_passes 1."
+  ]
+}

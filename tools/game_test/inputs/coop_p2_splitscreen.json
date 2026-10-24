@@ -1,0 +1,11 @@
+{
+  "schema": "triaevum.coop.test_input.v1",
+  "frame_origin": "run",
+  "segments": [
+    {"start_frame": 900, "end_frame_exclusive": 904, "buttons": ["start"]},
+    {"start_frame": 940, "end_frame_exclusive": 1300, "move_y": 1.0},
+    {"start_frame": 1300, "end_frame_exclusive": 1500, "buttons": []},
+    {"start_frame": 1500, "end_frame_exclusive": 1860, "move_y": -1.0},
+    {"start_frame": 1900, "end_frame_exclusive": 1904, "buttons": ["start"]}
+  ]
+}

@@ -120,6 +120,30 @@ bool Oot3dPicaPresentationScheduler::Execute(
     const Oot3dPicaVisualFrameViewSample &sample,
     uint64_t renderTargetNamespace, Oot3dPicaPresentationExecutionKind kind,
     bool present, std::string *error) {
+  return ExecuteInternal(backend, sample, nullptr, renderTargetNamespace, kind,
+                         present, error);
+}
+
+bool Oot3dPicaPresentationScheduler::ExecuteSplit(
+    Oot3d::Renderer::PicaRenderBackend &backend,
+    const Oot3dPicaVisualFrameViewSample &sample,
+    const CoopSplitRenderPlan &splitPlan, uint64_t renderTargetNamespace,
+    Oot3dPicaPresentationExecutionKind kind, bool present,
+    std::string *error) {
+  if (splitPlan.Mode != SplitMode::Split) {
+    return Execute(backend, sample, renderTargetNamespace, kind, present,
+                   error);
+  }
+  return ExecuteInternal(backend, sample, &splitPlan, renderTargetNamespace,
+                         kind, present, error);
+}
+
+bool Oot3dPicaPresentationScheduler::ExecuteInternal(
+    Oot3d::Renderer::PicaRenderBackend &backend,
+    const Oot3dPicaVisualFrameViewSample &sample,
+    const CoopSplitRenderPlan *splitPlan, uint64_t renderTargetNamespace,
+    Oot3dPicaPresentationExecutionKind kind, bool present,
+    std::string *error) {
   OptionalTimer executeTimer(mTimings.Enabled, mTimings.ExecuteSeconds);
   if (!mPresentationSerial.has_value()) {
     SetError(error, "PICA presentation execution began without a host frame");
@@ -312,8 +336,8 @@ bool Oot3dPicaPresentationScheduler::Execute(
         return false;
       }
     }
-    const auto overrides = drawView.Overrides();
-    {
+    const auto submitView = [&](const Oot3dPicaVisualDrawView &view) {
+      const auto overrides = view.Overrides();
       OptionalTimer timer(mTimings.Enabled, mTimings.DrawSubmissionSeconds);
       Oot3dPicaVulkanDrawBridgeTiming bridgeTiming;
       const bool submitted = SubmitOot3dPicaVulkanDrawPlan(
@@ -327,11 +351,25 @@ bool Oot3dPicaPresentationScheduler::Execute(
         mTimings.DrawBackendSubmissionSeconds +=
             bridgeTiming.BackendSubmissionSeconds;
       }
-      if (!submitted) {
+      return submitted;
+    };
+    if (splitPlan != nullptr && splitPlan->Mode == SplitMode::Split &&
+        draw.CompositionDomain == Oot3dPicaCompositionDomain::Scene) {
+      Oot3dPicaVisualFrameViewSample oneDraw;
+      oneDraw.Draws.push_back(drawView);
+      const auto splitViews = BuildCoopSplitDrawViews(oneDraw, *splitPlan);
+      for (const auto &splitView : splitViews) {
+        if (!submitView(splitView.View)) {
+          return false;
+        }
+        ++mStats.ExecutedDraws;
+      }
+    } else {
+      if (!submitView(drawView)) {
         return false;
       }
+      ++mStats.ExecutedDraws;
     }
-    ++mStats.ExecutedDraws;
     while (transferIndex < transfers.size() &&
            transfers[transferIndex].AfterDrawSubmissionId ==
                draw.SubmissionId) {

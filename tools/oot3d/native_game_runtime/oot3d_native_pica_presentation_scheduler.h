@@ -105,6 +105,15 @@ public:
                Oot3dPicaPresentationExecutionKind kind, bool present,
                std::string *error = nullptr);
 
+  // Split execution: Scene draws are replayed once per panel; Ui/Unknown draws
+  // and the memory fills/transfers execute once in their original order.
+  bool ExecuteSplit(Oot3d::Renderer::PicaRenderBackend &backend,
+                    const Oot3dPicaVisualFrameViewSample &sample,
+                    const CoopSplitRenderPlan &splitPlan,
+                    uint64_t renderTargetNamespace,
+                    Oot3dPicaPresentationExecutionKind kind, bool present,
+                    std::string *error = nullptr);
+
   bool PresentExisting(Oot3d::Renderer::PicaRenderBackend &backend,
                        const Oot3dPicaDisplayTransferSubmission &transfer,
                        uint64_t renderTargetNamespace,
@@ -132,6 +141,13 @@ public:
 
 private:
   using SnapshotTarget = std::pair<uint64_t, uint32_t>;
+
+  bool ExecuteInternal(Oot3d::Renderer::PicaRenderBackend &backend,
+                       const Oot3dPicaVisualFrameViewSample &sample,
+                       const CoopSplitRenderPlan *splitPlan,
+                       uint64_t renderTargetNamespace,
+                       Oot3dPicaPresentationExecutionKind kind, bool present,
+                       std::string *error);
 
   static SnapshotTarget
   MakeSnapshotTarget(const Oot3dPicaDisplayTransferSubmission &transfer,

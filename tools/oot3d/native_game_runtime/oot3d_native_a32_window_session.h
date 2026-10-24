@@ -217,6 +217,39 @@ class ScopedA32BlockTraceWriter final {
   bool Written = false;
 };
 
+// Inputs for the render-boundary split-screen decision. Filled from the
+// current scene view, actors, gameplay state, and coop config; consumed on the
+// render stream so guest memory is not read from the renderer thread.
+struct CoopSplitFrameInputs {
+  bool DogActive = false;
+  bool DogUsable = false;
+  bool Gameplay = false;
+  bool Cutscene = false;
+  bool Enabled = false;
+  bool LinkValid = false;
+  std::array<float, 3> LinkPosition{};
+  std::array<float, 3> DogPosition{};
+  float DogYaw = 0.0F;
+  uint32_t SceneId = 0xFFFFFFFFU;
+  uint32_t Play = 0U;
+  uint64_t GuestFrame = 0U;
+  uint32_t Width = 0U;
+  uint32_t Height = 0U;
+  float SceneLeft = -1.0F;
+  float SceneRight = 1.0F;
+  float SceneBottom = -1.0F;
+  float SceneTop = 1.0F;
+  float SceneNear = 1.0F;
+  float SceneFar = 1000.0F;
+  std::array<float, 3> SceneEye{};
+  std::array<float, 3> SceneAt{};
+  float GraceMs = 500.0F;
+  float SafeMargin = 0.9F;
+  float DogCameraDistance = 180.0F;
+  float DogCameraHeight = 90.0F;
+  float DogCameraTargetHeight = 30.0F;
+};
+
 // One run of the native A32 window. The members are the former locals of RunOot3dNativeA32Window, in
 // declaration order and with their names: Setup() is the code before the frame loop, RunFrame() its body
 // and Finish() the code after it; the setup's lambdas are member functions. A member constructed with
@@ -289,6 +322,7 @@ private:
   void RestoreSavestatePicaVisualReplayState(const Oot3dNativeGame::NativeA32SavestateRuntimeState &runtime);
   Fast::Renderer3ds::PicaFrameCompositionPolicy ResolveFrameCompositionPolicy(const Fast::Oot3d::PresentationPacingPolicy& pacing);
   void PublishNativeSceneView();
+  void UpdateCoopSplitScreen(const CoopSplitFrameInputs& inputs);
   void RequireStoppedGuest(const char *access);
   std::vector<Fast::Renderer3ds::PicaTextureCopyReference> CollectGuestCopyReferences();
   void PinGpuCopyResources(const Oot3dNativeGame::Oot3dPicaVisualFrameViewSample& sample);
@@ -404,6 +438,11 @@ private:
   std::optional<Oot3dNativeGame::NativeA32Process> processStorage;
   std::optional<Oot3dNativeGame::CoopDogRuntime> coopDogStorage;
   Oot3dNativeGame::CoopDogRuntime *coopDog = nullptr;
+  Oot3dNativeGame::SplitScreenState splitScreenState{};
+  Oot3dNativeGame::CoopSplitRenderPlan splitRenderPlan{};
+  uint64_t splitLastGuestFrame = ~0ULL;
+  uint32_t splitLastScene = 0xFFFFFFFFU;
+  uint32_t splitLastPlay = 0U;
   std::optional<Oot3dNativeGame::Oot3dNativeUiLifecycleBridge> uiLifecycleBridgeStorage;
   std::span<const uint32_t> nativeBlockEntryPcs{};
   NativeCandidateDispatchState nativeCandidateDispatch{};

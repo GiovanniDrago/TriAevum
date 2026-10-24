@@ -369,11 +369,13 @@ bool WithOot3dPicaVulkanDrawView(
         plan.State.Framebuffer.DepthPhysicalAddress;
     draw.FramebufferColorFormat = plan.State.Framebuffer.ColorFormat;
     draw.FramebufferDepthFormat = plan.State.Framebuffer.DepthFormat;
-    draw.ScissorMode = static_cast<uint8_t>(plan.State.Scissor.Mode);
-    draw.ScissorX1 = plan.State.Scissor.X1;
-    draw.ScissorY1 = plan.State.Scissor.Y1;
-    draw.ScissorX2 = plan.State.Scissor.X2;
-    draw.ScissorY2 = plan.State.Scissor.Y2;
+    const auto& scissor = overrides != nullptr && overrides->Scissor != nullptr
+        ? *overrides->Scissor : plan.State.Scissor;
+    draw.ScissorMode = static_cast<uint8_t>(scissor.Mode);
+    draw.ScissorX1 = scissor.X1;
+    draw.ScissorY1 = scissor.Y1;
+    draw.ScissorX2 = scissor.X2;
+    draw.ScissorY2 = scissor.Y2;
     draw.ColorWriteMask = plan.State.OutputMerger.ColorWriteMask;
     draw.FragmentOperationMode =
         plan.State.OutputMerger.FragmentOperationMode;
@@ -411,6 +413,7 @@ bool WithOot3dPicaVulkanDrawView(
     draw.DepthCompare =
         SameValueEnum<Oot3d::Renderer::PicaCompareFunction>(
             plan.State.OutputMerger.Depth.Compare);
+    draw.HostReplay = overrides != nullptr && overrides->HostReplay;
     const auto& stencil = plan.State.OutputMerger.Stencil;
     draw.Stencil.Enabled = stencil.Enabled;
     draw.Stencil.Compare =

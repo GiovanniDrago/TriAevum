@@ -3,6 +3,7 @@
 #include "oot3d_static_shadow_actor_catalog.h"
 
 #include "fast/oot3d/pica_uniform_layout.h"
+#include "fast/renderer3ds/pica_composition_schedule.h"
 
 #include <algorithm>
 #include <array>
@@ -37,6 +38,9 @@ class RecordingBackend final : public Oot3d::Renderer::PicaRenderBackend {
         CompositionSequenceId = sequence.SequenceId;
         CompositionDraws.assign(sequence.Draws.begin(),
                                 sequence.Draws.end());
+        if (!CompositionSchedule.Compile(sequence, &CompositionError)) {
+            return false;
+        }
         return true;
     }
 
@@ -44,6 +48,13 @@ class RecordingBackend final : public Oot3d::Renderer::PicaRenderBackend {
         const Oot3d::Renderer::PicaDrawView& draw,
         std::string*) override {
         Operations.push_back("draw:" + std::to_string(draw.SubmissionId));
+        HostReplayDraws.push_back(draw.HostReplay);
+        if (!draw.HostReplay && CompositionSchedule.Valid() &&
+            !CompositionSchedule.ConsumeDraw(
+                Fast::Renderer3ds::BuildPicaCompositionDrawReference(draw),
+                &CompositionError)) {
+            return false;
+        }
         DrawCalled = true;
         DrawSubmissionId = draw.SubmissionId;
         DrawCommandListAddress = draw.CommandListAddress;
@@ -177,6 +188,9 @@ class RecordingBackend final : public Oot3d::Renderer::PicaRenderBackend {
     uint64_t CompositionSequenceId = 0U;
     std::vector<Oot3d::Renderer::PicaCompositionDrawReference>
         CompositionDraws;
+    Fast::Renderer3ds::PicaCompositionSchedule CompositionSchedule;
+    std::string CompositionError;
+    std::vector<bool> HostReplayDraws;
 };
 
 } // namespace
@@ -577,6 +591,77 @@ int main() {
                 schedulerStats.CompositionPublicationFailures == 0U &&
                 schedulerStats.PreparedDraws == 0U,
             "presentation scheduler exactly-once counters are incorrect");
+
+    // A split scene draw keeps its published native composition entry for the
+    // Link panel. The dog panel is the same draw replayed with different
+    // uniforms/viewport; it must not consume the schedule a second time.
+    {
+        auto splitScene = plan;
+        splitScene.SubmissionId = 91U;
+        auto splitTemporal =
+            std::make_shared<Oot3dNativeGame::Oot3dPicaTemporalVertexProgram>();
+        auto& splitLayout = splitTemporal->Hooks.Transform;
+        splitLayout.Operation =
+            Oot3d::Renderer::PicaVertexTransformOperation::
+                ModelViewProjection3x4;
+        splitLayout.ProjectionFirstUniform = 8;
+        splitLayout.ProjectionRowCount = 4;
+        splitLayout.ViewFirstUniform = 16;
+        splitLayout.ViewRowCount = 3;
+        splitLayout.ModelFirstUniform = 20;
+        splitLayout.ModelRowCount = 3;
+        splitLayout.PositionInputRegister = 0;
+        splitLayout.NormalInputRegister = 1;
+        splitScene.VertexShader.TemporalProgram = splitTemporal;
+
+        auto splitTop = topTransfer;
+        splitTop.CompletionId = 92U;
+        splitTop.AfterDrawSubmissionId = splitScene.SubmissionId;
+
+        Oot3dNativeGame::Oot3dPicaPresentationScheduler splitDrawScheduler;
+        splitDrawScheduler.Capture(splitScene);
+        splitDrawScheduler.Capture(splitTop);
+        const auto splitFrame = splitDrawScheduler.FinishFrame(splitTop);
+        Oot3dNativeGame::Oot3dPicaVisualFrameViewSample splitSample;
+        Require(splitFrame.has_value() &&
+                    Oot3dNativeGame::ViewOot3dPicaVisualFrame(
+                        *splitFrame, splitSample),
+                "split fixture has no visual sample");
+
+        Oot3dNativeGame::CoopSplitRenderPlan splitPlan;
+        splitPlan.Mode = Oot3dNativeGame::SplitMode::Split;
+        splitPlan.Panels[0].Source =
+            Oot3dNativeGame::CoopSplitSource::Link;
+        splitPlan.Panels[0].Rect = {0.0F, 0.5F, 1.0F, 0.5F};
+        splitPlan.Panels[0].Camera.Eye = {0.0F, 0.0F, 10.0F};
+        splitPlan.Panels[0].Camera.At = {0.0F, 0.0F, 0.0F};
+        splitPlan.Panels[0].Camera.Valid = true;
+        splitPlan.Panels[1].Source =
+            Oot3dNativeGame::CoopSplitSource::Dog;
+        splitPlan.Panels[1].Rect = {0.0F, 0.0F, 1.0F, 0.5F};
+        splitPlan.Panels[1].Camera.Eye = {10.0F, 5.0F, 10.0F};
+        splitPlan.Panels[1].Camera.At = {10.0F, 0.0F, 0.0F};
+        splitPlan.Panels[1].Camera.Valid = true;
+
+        RecordingBackend splitDrawBackend;
+        splitDrawScheduler.BeginPresentation(400U);
+        Require(splitDrawScheduler.ExecuteSplit(
+                    splitDrawBackend, splitSample, splitPlan, 7U,
+                    Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::
+                        CurrentFrame,
+                    true, &error),
+                error);
+        Require(splitDrawBackend.CompositionDraws.size() == 1U &&
+                    splitDrawBackend.CompositionSchedule.Valid() &&
+                    splitDrawBackend.CompositionSchedule.Stats()
+                            .ConsumedDrawCount == 1U,
+                "split replay consumed a second native composition entry");
+        Require(splitDrawBackend.HostReplayDraws ==
+                    std::vector<bool>{false, true},
+                "split replay was not marked as the host dog panel");
+        Require(splitDrawScheduler.Stats().ExecutedDraws == 2U,
+                "split replay did not execute both scene panels");
+    }
 
     // A backend that prepares receives the draws it selects after the sequence
     // is published and before it executes; each draw is still submitted once,

@@ -2482,6 +2482,83 @@ void NativeA32WindowSession::UpdateDevFreeCamera(Oot3dNativeGame::NativeA32Input
 }
 #endif
 
+void NativeA32WindowSession::UpdateCoopSplitScreen(
+    const CoopSplitFrameInputs& inputs) {
+  const bool currentKnown = inputs.Play != 0U && inputs.SceneId != 0xFFFFFFFFU;
+  const bool previousKnown =
+      splitLastPlay != 0U && splitLastScene != 0xFFFFFFFFU;
+  const bool sceneChanged =
+      currentKnown && previousKnown &&
+      (inputs.Play != splitLastPlay || inputs.SceneId != splitLastScene);
+  if (inputs.GuestFrame == splitLastGuestFrame &&
+      inputs.Play == splitLastPlay && inputs.SceneId == splitLastScene) {
+    return;
+  }
+  splitLastGuestFrame = inputs.GuestFrame;
+  splitLastPlay = inputs.Play;
+  splitLastScene = inputs.SceneId;
+
+  Oot3dNativeGame::SplitScreenInputs splitInputs;
+  splitInputs.DogActive = inputs.DogActive;
+  splitInputs.P2Active = inputs.DogActive;
+  splitInputs.Gameplay = inputs.Gameplay;
+  splitInputs.Cutscene = inputs.Cutscene;
+  splitInputs.Pause = !inputs.Gameplay;
+  splitInputs.Loading = false;
+  splitInputs.LinkValid = inputs.LinkValid;
+  splitInputs.DogValid = inputs.DogUsable;
+  splitInputs.LinkPosition = inputs.LinkPosition;
+  splitInputs.DogPosition = inputs.DogPosition;
+  splitInputs.DogYaw = inputs.DogYaw;
+  splitInputs.SceneLeft = inputs.SceneLeft;
+  splitInputs.SceneRight = inputs.SceneRight;
+  splitInputs.SceneBottom = inputs.SceneBottom;
+  splitInputs.SceneTop = inputs.SceneTop;
+  splitInputs.SceneNear = inputs.SceneNear;
+  splitInputs.SceneFar = inputs.SceneFar;
+  splitInputs.SceneEye = inputs.SceneEye;
+  splitInputs.SceneAt = inputs.SceneAt;
+  splitInputs.DeltaSeconds = 1.0F / 30.0F;
+  splitInputs.ViewportWidth = static_cast<float>(std::max(1U, inputs.Width));
+  splitInputs.ViewportHeight = static_cast<float>(std::max(1U, inputs.Height));
+  splitInputs.SafeMargin = inputs.SafeMargin;
+  splitInputs.GraceSeconds = std::max(0.0F, inputs.GraceMs) / 1000.0F;
+  splitInputs.DogCameraDistance = inputs.DogCameraDistance;
+  splitInputs.DogCameraHeight = inputs.DogCameraHeight;
+  splitInputs.DogCameraTargetHeight = inputs.DogCameraTargetHeight;
+  splitInputs.ResetRequested = sceneChanged;
+
+  if (!inputs.Enabled) {
+    splitScreenState = {};
+    splitScreenState.Reason = Oot3dNativeGame::SplitReason::Disabled;
+    splitRenderPlan = {};
+    splitRenderPlan.Mode = Oot3dNativeGame::SplitMode::Single;
+    splitRenderPlan.Reason = Oot3dNativeGame::SplitReason::Disabled;
+  } else {
+    const auto result = Oot3dNativeGame::UpdateSplitScreen(splitScreenState, splitInputs);
+    splitScreenState = result.State;
+    splitRenderPlan = result.Plan;
+  }
+
+  Oot3dNativeGame::CoopSplitProbeState probe;
+  probe.Active = splitRenderPlan.Mode == Oot3dNativeGame::SplitMode::Split;
+  probe.Reason = splitScreenState.Reason;
+  probe.TimerMs = (splitScreenState.Mode == Oot3dNativeGame::SplitMode::Split
+                       ? splitScreenState.InsideTimerSeconds
+                       : splitScreenState.OutsideTimerSeconds) *
+                  1000.0F;
+  probe.LinkFramed = splitScreenState.LinkFramed;
+  probe.DogFramed = splitScreenState.DogFramed;
+  probe.SplitCount = splitScreenState.SplitCount;
+  probe.MergeCount = splitScreenState.MergeCount;
+  probe.Panels = probe.Active;
+  if (probe.Active) {
+    probe.DogEye = splitRenderPlan.Panels[1].Camera.Eye;
+    probe.DogAt = splitRenderPlan.Panels[1].Camera.At;
+  }
+  if (coopDog != nullptr) coopDog->PublishSplitProbeState(probe);
+}
+
 void NativeA32WindowSession::PublishNativeSceneView() {
   auto &process = *processStorage;
   // Guest memory is read here; the scene environment, the duplicate check
@@ -2519,7 +2596,54 @@ void NativeA32WindowSession::PublishNativeSceneView() {
   if (devEmitterLog && snapshot)
     devEmitterLog->Observe(++devEmitterFrames, snapshot->PlayStateAddress, snapshot->SceneId, process.Memory());
 #endif
-  renderStream.Submit([&, snapshot, environmentTime, player, freeCamera] {
+  CoopSplitFrameInputs splitInputs;
+  if (snapshot) {
+    splitInputs.SceneId = snapshot->SceneId.value_or(0xFFFFFFFFU);
+    splitInputs.SceneLeft = snapshot->Left;
+    splitInputs.SceneRight = snapshot->Right;
+    splitInputs.SceneBottom = snapshot->Bottom;
+    splitInputs.SceneTop = snapshot->Top;
+    splitInputs.SceneNear = snapshot->NearPlane;
+    splitInputs.SceneFar = snapshot->FarPlane;
+    splitInputs.SceneEye = snapshot->Eye;
+    splitInputs.SceneAt = snapshot->At;
+    splitInputs.LinkValid = snapshot->CameraAvailable && player.has_value();
+  }
+  if (player.has_value()) splitInputs.LinkPosition = player->Position;
+  if (coopDog != nullptr) {
+    const auto& config = coopDog->Config();
+    splitInputs.Enabled = config.SplitScreenEnabled;
+    splitInputs.DogActive = coopDog->DogActor() != 0U;
+    splitInputs.DogUsable = coopDog->DogUsable();
+    splitInputs.DogPosition = coopDog->DogPosition();
+    splitInputs.DogYaw = coopDog->DogYawRadians();
+    splitInputs.GraceMs = config.SplitGraceMs;
+    splitInputs.SafeMargin = config.SplitSafeMargin;
+    splitInputs.DogCameraDistance = config.DogCameraDistance;
+    splitInputs.DogCameraHeight = config.DogCameraHeight;
+    splitInputs.DogCameraTargetHeight = config.DogCameraTargetHeight;
+  }
+  if (snapshot && snapshot->PlayStateAddress != 0U) {
+    auto& memory = process.Memory();
+    const uint32_t playState = snapshot->PlayStateAddress;
+    splitInputs.Play = playState;
+    uint8_t mode = 0U;
+    if (memory.Read8(playState + 0x100U, &mode)) {
+      splitInputs.Gameplay = mode == 3U;
+    }
+    uint32_t cutscene = 0U;
+    if (memory.Read32(playState + 0x229CU, &cutscene)) {
+      splitInputs.Cutscene = cutscene != 0U;
+    }
+    uint32_t guestFrame = 0U;
+    if (memory.Read32(playState + 0x5BF4U, &guestFrame)) {
+      splitInputs.GuestFrame = guestFrame;
+    }
+  }
+  splitInputs.Width = windowPointer != nullptr ? windowPointer->GetWidth() : 1280U;
+  splitInputs.Height = windowPointer != nullptr ? windowPointer->GetHeight() : 720U;
+  renderStream.Submit([&, snapshot, environmentTime, player, freeCamera, splitInputs] {
+    UpdateCoopSplitScreen(splitInputs);
   sceneEnvironment->ObserveScene(snapshot ? snapshot->SceneId : std::nullopt,
       environmentTime.value_or(Oot3dNativeGame::SceneEnvironmentTime{}), player);
   sceneEnvironment->PollProfileFiles();
@@ -2641,9 +2765,16 @@ void NativeA32WindowSession::ExecuteVisualSample(const Oot3dNativeGame::Oot3dPic
   // gave the next displayed sample a backward sweep.
   if (present) Fast::Oot3d::GrassInteractionBridge::Instance().SelectSample(temporalSample);
   PinGpuCopyResources(sample);
-  if (!picaPresentationScheduler.Execute(
-          api, sample, renderTargetNamespace, kind,
-          present, &renderError)) {
+  const bool split = splitRenderPlan.Mode == Oot3dNativeGame::SplitMode::Split &&
+                     kind != Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::DependencyFlush &&
+                     kind != Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::NativeFrame;
+  const bool scheduled = split
+      ? picaPresentationScheduler.ExecuteSplit(
+            api, sample, splitRenderPlan, renderTargetNamespace, kind,
+            present, &renderError)
+      : picaPresentationScheduler.Execute(
+            api, sample, renderTargetNamespace, kind, present, &renderError);
+  if (!scheduled) {
     throw std::runtime_error(
         "native PICA scheduled presentation failed: " + renderError);
   }

@@ -1840,10 +1840,212 @@ Oot3dPicaVulkanDrawOverrides Oot3dPicaVisualDrawView::Overrides() const {
     overrides.VertexUniforms = VertexUniforms.has_value() ? &*VertexUniforms : nullptr;
     overrides.FragmentUniforms = FragmentUniforms.has_value() ? &*FragmentUniforms : nullptr;
     overrides.Viewport = Viewport.has_value() ? &*Viewport : nullptr;
+    overrides.Scissor = Scissor.has_value() ? &*Scissor : nullptr;
     overrides.BlendConstantColor = BlendConstantColor.has_value() ? &*BlendConstantColor : nullptr;
     overrides.LightBinding = LightBinding.has_value() ? &*LightBinding : nullptr;
     overrides.VertexBindings = HasVertexBindingOverrides ? &VertexBindings : nullptr;
+    overrides.HostReplay = HostReplay;
     return overrides;
+}
+
+namespace {
+
+bool CoopSplitViewIsZero(const std::array<std::array<float, 4>, 3>& view) {
+    for (const auto& row : view) {
+        for (const float value : row) {
+            if (value != 0.0F) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+int32_t CoopSplitRoundToPixel(float normalized, uint16_t extent) {
+    if (!std::isfinite(normalized)) {
+        return 0;
+    }
+    const long rounded = std::lround(normalized * static_cast<float>(extent));
+    return static_cast<int32_t>(
+        std::clamp<long>(rounded, 0, static_cast<long>(extent)));
+}
+
+uint16_t CoopSplitClampToPixel(int32_t pixel, uint16_t extent) {
+    return static_cast<uint16_t>(
+        std::clamp(pixel, 0, static_cast<int32_t>(extent)));
+}
+
+// A panel is usable only with a validated camera and a finite, non-empty rect.
+bool CoopSplitPanelUsable(const CoopSplitPanel& panel) {
+    if (!panel.Camera.Valid) {
+        return false;
+    }
+    return std::isfinite(panel.Rect.X) && std::isfinite(panel.Rect.Y) &&
+           std::isfinite(panel.Rect.Width) && std::isfinite(panel.Rect.Height) &&
+           panel.Rect.Width > 0.0F && panel.Rect.Height > 0.0F;
+}
+
+// Writes one panel's camera rows over a copy of the sampled draw's uniforms.
+// The model rows and every other uniform stay as the sample produced them, so
+// interpolated geometry keeps its per-frame overrides.
+std::optional<Oot3dPicaVertexUniformState>
+BuildCoopSplitPanelUniforms(const Oot3dPicaVisualDrawView& view,
+                            const Oot3dPicaVulkanDrawPlan& base,
+                            const SplitCamera& camera) {
+    if (base.VertexShader.TemporalProgram == nullptr) {
+        return std::nullopt;
+    }
+    const auto& layout =
+        base.VertexShader.TemporalProgram->Hooks.Transform;
+    if (!layout.Available()) {
+        return std::nullopt;
+    }
+
+    Oot3dPicaVertexUniformState uniforms =
+        view.VertexUniforms.has_value() ? *view.VertexUniforms
+                                        : base.VertexShader.Uniforms;
+    for (size_t row = 0; row < camera.Projection.size(); ++row) {
+        for (size_t column = 0; column < 4U; ++column) {
+            uniforms.Floats[static_cast<size_t>(layout.ProjectionFirstUniform) +
+                            row][column] = camera.Projection[row][column];
+        }
+    }
+    for (size_t row = 0; row < camera.View.size(); ++row) {
+        for (size_t column = 0; column < 4U; ++column) {
+            uniforms.Floats[static_cast<size_t>(layout.ViewFirstUniform) + row]
+                           [column] = camera.View[row][column];
+        }
+    }
+    return uniforms;
+}
+
+std::optional<Oot3dPicaViewportState>
+BuildCoopSplitPanelViewport(const Oot3dPicaVisualDrawView& view,
+                            const Oot3dPicaVulkanDrawPlan& base,
+                            const CoopSplitPanel& panel) {
+    const uint16_t width = base.State.Framebuffer.Width;
+    const uint16_t height = base.State.Framebuffer.Height;
+    if (width == 0U || height == 0U) {
+        return std::nullopt;
+    }
+    const Oot3dPicaViewportState source =
+        view.Viewport.has_value() ? *view.Viewport : base.State.Viewport;
+    const int32_t cornerX =
+        CoopSplitRoundToPixel(panel.Rect.X, width);
+    const int32_t cornerY =
+        CoopSplitRoundToPixel(panel.Rect.Y, height);
+    const float maxHalfWidth =
+        static_cast<float>(static_cast<int32_t>(width) - cornerX) * 0.5F;
+    const float maxHalfHeight =
+        static_cast<float>(static_cast<int32_t>(height) - cornerY) * 0.5F;
+    Oot3dPicaViewportState viewport = source;
+    viewport.CornerX = static_cast<int16_t>(cornerX);
+    viewport.CornerY = static_cast<int16_t>(cornerY);
+    viewport.HalfWidth =
+        std::clamp(panel.Rect.Width * static_cast<float>(width) * 0.5F, 0.0F,
+                   std::max(0.0F, maxHalfWidth));
+    viewport.HalfHeight =
+        std::clamp(panel.Rect.Height * static_cast<float>(height) * 0.5F, 0.0F,
+                   std::max(0.0F, maxHalfHeight));
+    return viewport;
+}
+
+Oot3dPicaScissorState CoopSplitPanelScissor(const CoopSplitPanel& panel,
+                                            uint16_t width, uint16_t height) {
+    const int32_t x1 = CoopSplitRoundToPixel(panel.Rect.X, width);
+    const int32_t y1 = CoopSplitRoundToPixel(panel.Rect.Y, height);
+    const int32_t x2 = CoopSplitRoundToPixel(panel.Rect.X + panel.Rect.Width,
+                                             width);
+    const int32_t y2 = CoopSplitRoundToPixel(panel.Rect.Y + panel.Rect.Height,
+                                             height);
+    Oot3dPicaScissorState scissor;
+    scissor.Mode = Oot3dPicaScissorMode::Include;
+    scissor.X1 = CoopSplitClampToPixel(std::min(x1, x2), width);
+    scissor.Y1 = CoopSplitClampToPixel(std::min(y1, y2), height);
+    scissor.X2 = CoopSplitClampToPixel(std::max(x1, x2), width);
+    scissor.Y2 = CoopSplitClampToPixel(std::max(y1, y2), height);
+    return scissor;
+}
+
+// Builds one panel's draw view. Returns nothing when the draw cannot be
+// re-cammed (missing transform layout, unusable panel, no base plan), so the
+// caller falls back to a single full-target draw instead of a bad panel.
+std::optional<Oot3dPicaVisualDrawView>
+BuildCoopSplitPanelDrawView(const Oot3dPicaVisualDrawView& view,
+                            const CoopSplitPanel& panel) {
+    if (view.BasePlan == nullptr || !CoopSplitPanelUsable(panel)) {
+        return std::nullopt;
+    }
+    const Oot3dPicaVulkanDrawPlan& base = *view.BasePlan;
+    SplitCamera camera = panel.Camera;
+    if (CoopSplitViewIsZero(camera.View)) {
+        // A plan that only carries eye/at still gets a panel view; the
+        // projection always comes from the plan that built the camera.
+        SplitCamera derived;
+        if (!detail::BuildView(camera.Eye, camera.At, derived)) {
+            return std::nullopt;
+        }
+        camera.View = derived.View;
+        camera.WorldToViewColumnMajor = derived.WorldToViewColumnMajor;
+    }
+
+    auto uniforms = BuildCoopSplitPanelUniforms(view, base, camera);
+    if (!uniforms.has_value()) {
+        return std::nullopt;
+    }
+    auto viewport = BuildCoopSplitPanelViewport(view, base, panel);
+    if (!viewport.has_value()) {
+        return std::nullopt;
+    }
+
+    Fast::Renderer3ds::PicaNativeLightBinding light =
+        view.LightBinding.has_value() ? *view.LightBinding : base.LightBinding;
+    light.WorldToView = camera.WorldToViewColumnMajor;
+
+    Oot3dPicaVisualDrawView output = view;
+    output.VertexUniforms = std::move(*uniforms);
+    output.Viewport = *viewport;
+    output.LightBinding = std::move(light);
+    output.Scissor = CoopSplitPanelScissor(
+        panel, base.State.Framebuffer.Width, base.State.Framebuffer.Height);
+    return output;
+}
+
+} // namespace
+
+std::vector<CoopSplitDrawView>
+BuildCoopSplitDrawViews(const Oot3dPicaVisualFrameViewSample& sample,
+                        const CoopSplitRenderPlan& plan) {
+    std::vector<CoopSplitDrawView> views;
+    views.reserve(sample.Draws.size() * 2U);
+    const bool split = plan.Mode == SplitMode::Split &&
+                       CoopSplitPanelUsable(plan.Panels[0]) &&
+                       CoopSplitPanelUsable(plan.Panels[1]);
+    for (const auto& draw : sample.Draws) {
+        CoopSplitDrawView single;
+        single.View = draw;
+        single.Target = CoopSplitDrawTarget::Single;
+        if (!split || draw.BasePlan == nullptr ||
+            draw.BasePlan->CompositionDomain !=
+                Oot3dPicaCompositionDomain::Scene) {
+            views.push_back(std::move(single));
+            continue;
+        }
+        auto link = BuildCoopSplitPanelDrawView(draw, plan.Panels[0]);
+        auto dog = BuildCoopSplitPanelDrawView(draw, plan.Panels[1]);
+        if (!link.has_value() || !dog.has_value()) {
+            // Fail closed: an unpatched scene draw stays one full-target view.
+            views.push_back(std::move(single));
+            continue;
+        }
+        // Link keeps the native occurrence and consumes the published
+        // composition entry. The dog panel is a host replay of that same draw:
+        // it must not consume the schedule or repeat native-only bookkeeping.
+        dog->HostReplay = true;
+        views.push_back({std::move(*link), CoopSplitDrawTarget::LinkPanel});
+        views.push_back({std::move(*dog), CoopSplitDrawTarget::DogPanel});
+    }
+    return views;
 }
 
 uint64_t

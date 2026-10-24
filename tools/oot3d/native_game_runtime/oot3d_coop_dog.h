@@ -1,11 +1,14 @@
 #pragma once
 
 #include "a32_runtime.h"
+#include "oot3d_coop_splitscreen.h"
 
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <atomic>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -54,6 +57,18 @@ struct CoopDogConfig {
   std::string SummonButton = "dpad_down";
   std::string SprintButton = "zl";
 
+  // Split-screen tuning.  The grace period is expressed in milliseconds and
+  // the safe margin is the inner normalized frame used to decide whether both
+  // characters share the same view.  Camera values are world units.
+  bool SplitScreenEnabled = true;
+  float SplitGraceMs = 500.0F;
+  float SplitSafeMargin = 0.9F;
+  // "horizontal" means top/bottom panels; "vertical" means left/right.
+  std::string SplitLayout = "horizontal";
+  float DogCameraDistance = 180.0F;
+  float DogCameraHeight = 90.0F;
+  float DogCameraTargetHeight = 30.0F;
+
   // Movement and jump values are expressed in world units per second.
   // TurnSpeed is in degrees per second; gravity is positive downward.
   float MoveSpeed = 120.0F;
@@ -83,6 +98,20 @@ struct CoopDogConfig {
   // Dog Lady's palette; the default keeps the native dark dog when present.
   uint16_t DogParams = 0x8001U;
   bool Log = true;
+};
+
+// Snapshot of the render-side split decision for the guest-side probe writer.
+struct CoopSplitProbeState {
+  bool Active = false;
+  SplitReason Reason = SplitReason::NoDog;
+  float TimerMs = 0.0F;
+  bool LinkFramed = false;
+  bool DogFramed = false;
+  uint32_t SplitCount = 0U;
+  uint32_t MergeCount = 0U;
+  bool Panels = false;
+  std::array<float, 3> DogEye{};
+  std::array<float, 3> DogAt{};
 };
 
 class CoopDogRuntime {
@@ -119,6 +148,17 @@ class CoopDogRuntime {
 
   bool Enabled() const noexcept { return config_.Enabled; }
   const CoopDogConfig& Config() const noexcept { return config_; }
+
+  // Read-only dog state for the split-screen controller.  DogUsable() is false
+  // whenever the dog actor is absent or failed validation; DogYawRadians()
+  // reports the actor yaw in radians with 0 facing +Z.
+  uint32_t DogActor() const noexcept { return dogActor_; }
+  bool DogUsable() const noexcept { return dogUsable_; }
+  std::array<float, 3> DogPosition() const noexcept { return dogPosition_; }
+  float DogYawRadians() const noexcept { return dogYawRadians_; }
+
+  // Render-side split decision published for the guest-side probe writer.
+  void PublishSplitProbeState(const CoopSplitProbeState& state);
 
  private:
   struct InputState {
@@ -158,12 +198,22 @@ class CoopDogRuntime {
                  bool canMove);
   float ReadCameraYaw(NativeA32Memory& memory, uint32_t play);
   void ApplyDesiredState(NativeA32Memory& memory, uint32_t actor) const;
+  // Publishes position/yaw for the current dogActor_ after validation.
+  void RefreshDogState(NativeA32Memory& memory);
   void ResetSceneState();
   void Log(const std::string& message) const;
 
   CoopDogConfig config_{};
   InputState input_{};
   uint32_t dogActor_ = 0U;
+  // Published dog state for the split-screen controller.  Only valid while
+  // dogUsable_ is true.
+  bool dogUsable_ = false;
+  std::array<float, 3> dogPosition_{};
+  float dogYawRadians_ = 0.0F;
+  mutable std::mutex splitProbeMutex_;
+  CoopSplitProbeState splitProbe_;
+  std::atomic<bool> splitActive_{false};
   uint32_t pendingDogActor_ = 0U;
   uint32_t pendingDogFrames_ = 0U;
   uint32_t lastPlay_ = 0U;

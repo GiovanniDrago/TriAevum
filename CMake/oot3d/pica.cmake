@@ -623,7 +623,8 @@ endif()
 set_property(TARGET oot3d_native_pica_visual_savestate_tests PROPERTY
     FOLDER Tests)
 target_link_libraries(oot3d_native_pica_vulkan_bridge_tests PRIVATE
-    oot3d_native_pica_vulkan_bridge)
+    oot3d_native_pica_vulkan_bridge
+    ThreeDsRecomp::Renderer3dsPicaCore)
 target_compile_options(oot3d_native_pica_vulkan_bridge_tests PRIVATE
     "${WARNING_OVERRIDE}")
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")

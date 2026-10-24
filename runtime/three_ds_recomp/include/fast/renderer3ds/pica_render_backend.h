@@ -105,6 +105,10 @@ struct PicaDrawView {
     // Explicit producer proof of a stationary world surface. Unknown/moving
     // draws must not inherit camera-only history after a correspondence miss.
     bool TemporalCameraOnly = false;
+    // A host-composited replay of a draw already consumed from the published
+    // native sequence. It rasterizes with per-view overrides but must not
+    // consume the native schedule or repeat native-only bookkeeping.
+    bool HostReplay = false;
 };
 
 // Projects the full transient draw facade into the compact ordered metadata

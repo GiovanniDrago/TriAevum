@@ -206,6 +206,54 @@ invoked from the host because `Audio_PlayActorSound2` is known to fault in this
 path; a host `NativeAudioService` request is the only sanctioned alternative if
 the initial pickup ding is added later.
 
+## Co-op split-screen probe
+
+The split controller appends these additive fields to
+`triaevum.coop.probe.v1`:
+
+| Field | Meaning |
+| --- | --- |
+| `split_active` | The controller selected the split scene composition |
+| `split_reason` | `dog_active`, `no_dog`, `p2_inactive`, `cutscene`, `pause`, `loading`, `invalid_actor`, `invalid_camera`, `reset`, or `disabled` |
+| `split_timer_ms` | Active 0..500 ms split/merge grace timer |
+| `link_framed` / `dog_framed` | Character inside the shared-view safe margin |
+| `split_count` / `merge_count` | Monotonic split and merge transitions |
+| `split_panels` | `0` for one view, `2` while the scene draws are split |
+| `ui_passes` | `1`; the UI draw sequence is never duplicated |
+| `dog_camera_eye` / `dog_camera_at` | Dog panel camera while split |
+
+Only `CompositionDomain::Scene` draws are replayed. `Ui` and `Unknown` draws
+execute once over the full target, so the HUD, dialogue box, minimap, and
+buttons remain a single instance. The two scene panels are disjoint viewport and
+scissor regions of the canonical top target; the top transfer executes after
+both panels and the UI.
+
+A split scene draw that cannot be re-cammed (no transform layout) falls back to
+the single view for that draw. Invalid actors, cameras, menus, cutscenes,
+loading, scene changes, and resets force the single plan and reset the timers.
+The default grace is 500 ms with a 0.9 safe margin; `coop_controls.json` can tune
+the grace, margin, layout, and dog camera. The split path replays scene draws
+only; it never runs a second guest update. If a future scene cannot hold the
+target frame rate, set `splitscreen_enabled` to `false` in
+`coop_controls.json`; the measured split run in the current test scene remains
+above 60 FPS, so no automatic quality reduction is active.
+
+Use `tools/game_test/scenarios/coop_p2_splitscreen.json` (near, away, hold,
+return, summon) or `coop_p2_splitscreen_hold.json` (ends while separated). The
+analyzer supports `--expect-split`, `--expect-single`, `--min-splits N`,
+`--min-merges N`, and `--expect-ui-single`.
+
+Known blocker: in the current test scene the split replay does build two
+panel draw views (`TRIAEVUM_SPLIT_VIEWS count=2`) and the probe reports
+`split_panels` 2, but the presented window still shows one camera, often zoomed
+with corrupted lighting, and the scene freezes while audio and UI continue. The
+split controller and merge transition work; visual acceptance is **not** met.
+The next renderer step is to compose the two panels explicitly (an offscreen
+target or a supported second-view path) before the top transfer instead of
+relying on the native single-view display transfer. Do not mark the visual
+split-scenario task PASS until a presented two-panel frame with one HUD is
+captured.
+
 ### Known verification blockers
 
 - A save seed that starts in a scene without a resident `OBJECT_DOG` cannot

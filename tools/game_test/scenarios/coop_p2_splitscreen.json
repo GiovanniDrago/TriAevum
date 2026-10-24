@@ -1,0 +1,22 @@
+{
+  "name": "coop-p2-splitscreen",
+  "package": "${TRIAEVUM_TEST_PACKAGE}",
+  "profile": "${TRIAEVUM_TEST_PROFILE}",
+  "state": "${TRIAEVUM_TEST_STATE}",
+  "save_data": "${TRIAEVUM_TEST_SAVE_DATA}",
+  "p1_timeline": "tools/oot3d/native_game_runtime/input_timelines/title_to_existing_save.json",
+  "p2_input": "tools/game_test/inputs/coop_p2_splitscreen.json",
+  "frames": 2200,
+  "max_seconds": 240,
+  "width": 1280,
+  "height": 720,
+  "probe_interval": 5,
+  "expected": [
+    "The title/file-select timeline selects the existing save before pressing A.",
+    "P2 Start creates the dog and the dog remains usable.",
+    "The scene is single while Link and the dog are framed together.",
+    "Moving the dog away produces two scene panels and one HUD.",
+    "Returning the dog and pressing Start beside Link merges to one view.",
+    "The probe records split_count and merge_count at least 1 and ui_passes 1."
+  ]
+}

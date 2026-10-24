@@ -1,5 +1,6 @@
 #pragma once
 
+#include "oot3d_coop_splitscreen.h"
 #include "oot3d_native_pica_vulkan_plan.h"
 
 #include <cstddef>
@@ -49,10 +50,27 @@ struct Oot3dPicaVisualDrawView {
     std::optional<Oot3dPicaViewportState> Viewport;
     std::optional<std::array<float, 4>> BlendConstantColor;
     std::optional<Fast::Renderer3ds::PicaNativeLightBinding> LightBinding;
+    // Panel clip a split view wants applied while its scene draws execute. The
+    // backend override carries it (T005); execution without backend support
+    // still renders the panel viewport, never guest-visible state.
+    std::optional<Oot3dPicaScissorState> Scissor;
     std::vector<Oot3dPicaVulkanVertexBinding> VertexBindings;
     bool HasVertexBindingOverrides = false;
+    // The split dog panel replays a scene draw already consumed by the native
+    // composition schedule. The backend rasterizes it without consuming the
+    // schedule again or repeating native-only bookkeeping.
+    bool HostReplay = false;
 
     Oot3dPicaVulkanDrawOverrides Overrides() const;
+};
+
+// Which view a split draw view feeds. Split mode replays each scene draw once
+// for Link and once for the dog; every other draw keeps one full-target pass.
+enum class CoopSplitDrawTarget : uint8_t { Single, LinkPanel, DogPanel };
+
+struct CoopSplitDrawView {
+    Oot3dPicaVisualDrawView View;
+    CoopSplitDrawTarget Target = CoopSplitDrawTarget::Single;
 };
 
 struct Oot3dPicaVisualFrameViewSample {
@@ -69,6 +87,14 @@ struct Oot3dPicaVisualFrameViewSample {
     size_t InterpolatedPerInstanceVertexDraws = 0;
     size_t InterpolatedPerVertexDraws = 0;
 };
+
+// Expands an interpolated sample into the draw views a split frame executes:
+// single mode (or any unusable panel) leaves every sample draw untouched; split
+// mode replays each `Scene` draw once per panel and keeps `Ui`/`Unknown` draws
+// single. Pure data transformation: it never calls into the guest.
+std::vector<CoopSplitDrawView>
+BuildCoopSplitDrawViews(const Oot3dPicaVisualFrameViewSample& sample,
+                        const CoopSplitRenderPlan& plan);
 
 struct Oot3dPicaVisualFrameAccumulatorState {
     uint64_t NextSequence = 1;

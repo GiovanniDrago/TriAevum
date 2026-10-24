@@ -52,8 +52,20 @@ def probe_int(sample: dict[str, Any], key: str) -> int | None:
     return None
 
 
+def probe_bool(sample: dict[str, Any], key: str) -> bool | None:
+    """Return a boolean probe field, or None when it is absent or unusable."""
+    value = sample.get(key)
+    return value if isinstance(value, bool) else None
+
+
 def probe_series(samples: Iterable[dict[str, Any]], key: str) -> list[int | None]:
     return [probe_int(sample, key) for sample in samples]
+
+
+def probe_bool_series(
+    samples: Iterable[dict[str, Any]], key: str
+) -> list[bool | None]:
+    return [probe_bool(sample, key) for sample in samples]
 
 
 def first_observed(series: list[int | None]) -> int | None:
@@ -92,6 +104,11 @@ def main() -> int:
     parser.add_argument("--expect-pickups", action="store_true")
     parser.add_argument("--expect-wallet-delta", type=int)
     parser.add_argument("--expect-rupee-kept", action="store_true")
+    parser.add_argument("--expect-split", action="store_true")
+    parser.add_argument("--expect-single", action="store_true")
+    parser.add_argument("--min-splits", type=int)
+    parser.add_argument("--min-merges", type=int)
+    parser.add_argument("--expect-ui-single", action="store_true")
     args = parser.parse_args()
 
     result = load_json(args.result)
@@ -116,6 +133,13 @@ def main() -> int:
     pickups_series = probe_series(probe, "rupees_collected")
     last_value_series = probe_series(probe, "last_rupee_value")
     nearby_series = probe_series(probe, "nearby_rupees")
+    split_series = probe_bool_series(probe, "split_active")
+    split_panel_series = probe_series(probe, "split_panels")
+    ui_series = probe_series(probe, "ui_passes")
+    split_count_series = probe_series(probe, "split_count")
+    merge_count_series = probe_series(probe, "merge_count")
+    link_framed_series = probe_bool_series(probe, "link_framed")
+    dog_framed_series = probe_bool_series(probe, "dog_framed")
 
     wallet_first = first_observed(wallet_series)
     wallet_last = last_observed(wallet_series)
@@ -140,6 +164,46 @@ def main() -> int:
         if wallet is not None and capacity is not None and wallet > capacity
     ]
 
+    split_active_count = sum(1 for value in split_series if value is True)
+    split_first_sample = next(
+        (index for index, value in enumerate(split_series) if value is True), None
+    )
+    split_last_sample = next(
+        (
+            index
+            for index in range(len(split_series) - 1, -1, -1)
+            if split_series[index] is True
+        ),
+        None,
+    )
+    split_panel_violations = [
+        index
+        for index, active in enumerate(split_series)
+        if active is True
+        and index < len(split_panel_series)
+        and split_panel_series[index] != 2
+    ]
+    ui_pass_violations = [
+        index
+        for index, value in enumerate(ui_series)
+        if value is not None and value != 1
+    ]
+    split_count_max = max(
+        (value for value in split_count_series if value is not None), default=0
+    )
+    merge_count_max = max(
+        (value for value in merge_count_series if value is not None), default=0
+    )
+    split_panels_seen = distinct_observed(split_panel_series)
+    last_split_reason = next(
+        (
+            probe[index].get("split_reason")
+            for index in range(len(probe) - 1, -1, -1)
+            if isinstance(probe[index].get("split_reason"), str)
+        ),
+        None,
+    )
+
     failures: list[str] = []
     if capacity_violations:
         failures.append(
@@ -158,6 +222,34 @@ def main() -> int:
             failures.append(
                 f"wallet delta {wallet_delta} does not equal "
                 f"--expect-wallet-delta {args.expect_wallet_delta}"
+            )
+    if split_panel_violations:
+        failures.append(
+            "split_active is true with split_panels != 2; first at sample "
+            f"{split_panel_violations[0]}"
+        )
+    if args.expect_split and split_active_count == 0:
+        failures.append("split_active is never true")
+    if args.expect_single and split_active_count != 0:
+        failures.append(
+            f"split_active is true in {split_active_count} sample(s); first at "
+            f"sample {split_first_sample}"
+        )
+    if args.min_splits is not None and split_count_max < args.min_splits:
+        failures.append(
+            f"split_count {split_count_max} is below --min-splits {args.min_splits}"
+        )
+    if args.min_merges is not None and merge_count_max < args.min_merges:
+        failures.append(
+            f"merge_count {merge_count_max} is below --min-merges {args.min_merges}"
+        )
+    if args.expect_ui_single:
+        if not any(value is not None for value in ui_series):
+            failures.append("ui_passes is absent from every probe sample")
+        elif ui_pass_violations:
+            failures.append(
+                f"ui_passes != 1 in {len(ui_pass_violations)} sample(s); first at "
+                f"sample {ui_pass_violations[0]}"
             )
     if args.expect_rupee_kept:
         if pickups_total_delta is None:
@@ -206,6 +298,21 @@ def main() -> int:
         "nearby_rupees_last": last_observed(nearby_series),
         "last_rupee_value": last_observed(last_value_series),
         "wallet_capacity_violations": len(capacity_violations),
+        "split_active_count": split_active_count,
+        "split_first_sample": split_first_sample,
+        "split_first_host_frame": (
+            probe[split_first_sample].get("host_frame")
+            if split_first_sample is not None
+            else None
+        ),
+        "split_last_sample": split_last_sample,
+        "split_count": split_count_max,
+        "merge_count": merge_count_max,
+        "split_panels_seen": split_panels_seen,
+        "last_split_reason": last_split_reason,
+        "link_framed_any": any(value is True for value in link_framed_series),
+        "dog_framed_any": any(value is True for value in dog_framed_series),
+        "ui_pass_violations": len(ui_pass_violations),
         "failures": failures,
         "runtime": {
             key: runtime.get(key)

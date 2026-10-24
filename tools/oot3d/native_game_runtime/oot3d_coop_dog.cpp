@@ -128,6 +128,32 @@ std::string Lowercase(std::string value) {
   return value;
 }
 
+const char* SplitReasonName(SplitReason reason) {
+  switch (reason) {
+    case SplitReason::DogActive:
+      return "dog_active";
+    case SplitReason::NoDog:
+      return "no_dog";
+    case SplitReason::P2Inactive:
+      return "p2_inactive";
+    case SplitReason::Cutscene:
+      return "cutscene";
+    case SplitReason::Pause:
+      return "pause";
+    case SplitReason::Loading:
+      return "loading";
+    case SplitReason::InvalidActor:
+      return "invalid_actor";
+    case SplitReason::InvalidCamera:
+      return "invalid_camera";
+    case SplitReason::Reset:
+      return "reset";
+    case SplitReason::Disabled:
+      return "disabled";
+  }
+  return "unknown";
+}
+
 int ButtonForName(const std::string& value) {
   std::string name;
   for (const char character : Lowercase(value)) {
@@ -248,6 +274,13 @@ void CoopDogRuntime::WriteDefaultConfig(const std::filesystem::path& path) const
       {"respawn_button", config_.RespawnButton},
       {"summon_button", config_.SummonButton},
       {"sprint_button", config_.SprintButton},
+      {"splitscreen_enabled", config_.SplitScreenEnabled},
+      {"splitscreen_grace_ms", config_.SplitGraceMs},
+      {"splitscreen_safe_margin", config_.SplitSafeMargin},
+      {"splitscreen_layout", config_.SplitLayout},
+      {"dog_camera_distance", config_.DogCameraDistance},
+      {"dog_camera_height", config_.DogCameraHeight},
+      {"dog_camera_target_height", config_.DogCameraTargetHeight},
       {"move_speed", config_.MoveSpeed},
       {"sprint_speed", config_.SprintSpeed},
       {"bark_range", config_.BarkRange},
@@ -304,6 +337,24 @@ bool CoopDogRuntime::ParseConfig(const std::filesystem::path& path,
     config_.RespawnButton = document.value("respawn_button", config_.RespawnButton);
     config_.SummonButton = document.value("summon_button", config_.SummonButton);
     config_.SprintButton = document.value("sprint_button", config_.SprintButton);
+    config_.SplitScreenEnabled =
+        document.value("splitscreen_enabled", config_.SplitScreenEnabled);
+    config_.SplitGraceMs = std::clamp(
+        document.value("splitscreen_grace_ms", config_.SplitGraceMs), 0.0F,
+        5000.0F);
+    config_.SplitSafeMargin = std::clamp(
+        document.value("splitscreen_safe_margin", config_.SplitSafeMargin),
+        0.0F, 1.0F);
+    config_.SplitLayout = Lowercase(
+        document.value("splitscreen_layout", config_.SplitLayout));
+    if (config_.SplitLayout != "vertical") config_.SplitLayout = "horizontal";
+    config_.DogCameraDistance = std::max(
+        0.0F, document.value("dog_camera_distance", config_.DogCameraDistance));
+    config_.DogCameraHeight = std::max(
+        0.0F, document.value("dog_camera_height", config_.DogCameraHeight));
+    config_.DogCameraTargetHeight =
+        std::max(0.0F, document.value("dog_camera_target_height",
+                                      config_.DogCameraTargetHeight));
     config_.MoveSpeed = std::max(0.0F, document.value("move_speed", config_.MoveSpeed));
     config_.SprintSpeed = std::max(config_.MoveSpeed,
                                    document.value("sprint_speed", config_.SprintSpeed));
@@ -617,6 +668,24 @@ void CoopDogRuntime::MaybeWriteProbe(NativeA32Process& process, uint32_t play) {
   probe["last_rupee_value"] = lastRupeeValue_;
   probe["nearby_rupees"] =
       dogActor_ != 0U ? CountNearbyRupees(memory, play, dogActor_) : 0U;
+  CoopSplitProbeState split;
+  {
+    std::lock_guard<std::mutex> lock(splitProbeMutex_);
+    split = splitProbe_;
+  }
+  probe["split_active"] = split.Active;
+  probe["split_reason"] = SplitReasonName(split.Reason);
+  probe["split_timer_ms"] = split.TimerMs;
+  probe["link_framed"] = split.LinkFramed;
+  probe["dog_framed"] = split.DogFramed;
+  probe["split_count"] = split.SplitCount;
+  probe["merge_count"] = split.MergeCount;
+  probe["split_panels"] = split.Active ? 2 : 0;
+  probe["ui_passes"] = 1;
+  if (split.Active) {
+    probe["dog_camera_eye"] = {split.DogEye[0], split.DogEye[1], split.DogEye[2]};
+    probe["dog_camera_at"] = {split.DogAt[0], split.DogAt[1], split.DogAt[2]};
+  }
   probeStream_ << probe.dump() << '\n';
   probeStream_.flush();
 }
@@ -861,6 +930,9 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
     desiredAnimation_ = 0xFFFFFFFFU;
     currentVelocityX_ = currentVelocityZ_ = 0.0F;
     animationFailureLogged_ = false;
+    // No validated actor remains, so the split controller must not use the
+    // previous dog state.
+    dogUsable_ = false;
   };
 
   if (play != lastPlay_) {
@@ -929,6 +1001,7 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
       hasDesiredState_ = false;
       desiredAnimation_ = 0xFFFFFFFFU;
       // Let the guest draw initialize lastOwnedModel before animating.
+      RefreshDogState(process.Memory());
       return;
     }
     if (pendingDogFrames_ > 20U) {
@@ -991,6 +1064,7 @@ void CoopDogRuntime::BeforeGuest(NativeA32Process& process) {
       }
       hasGameplayFrame_ = false;
       animationFailureLogged_ = false;
+      RefreshDogState(process.Memory());
     }
   }
 
@@ -1593,6 +1667,12 @@ void CoopDogRuntime::TeleportDog(NativeA32Process& process, uint32_t play,
 
 float CoopDogRuntime::ReadCameraYaw(NativeA32Memory& memory,
                                     uint32_t play) {
+  // In split mode the dog view is the dog follow camera, so camera-relative
+  // movement must use the dog yaw.  Single mode keeps the native Link camera.
+  if (splitActive_.load(std::memory_order_relaxed) && dogUsable_ &&
+      std::isfinite(dogYawRadians_)) {
+    return dogYawRadians_;
+  }
   // The main camera struct is embedded in PlayState at +0x364; it is not a
   // pointer stored at that offset.
   const uint32_t camera = play + 0x364U;
@@ -1652,6 +1732,34 @@ void CoopDogRuntime::ApplyDesiredState(NativeA32Memory& memory,
   memory.Write16(actor + kActorShapeYaw, static_cast<uint16_t>(desiredYaw_));
 }
 
+void CoopDogRuntime::PublishSplitProbeState(const CoopSplitProbeState& state) {
+  {
+    std::lock_guard<std::mutex> lock(splitProbeMutex_);
+    splitProbe_ = state;
+  }
+  splitActive_.store(state.Active, std::memory_order_relaxed);
+}
+
+void CoopDogRuntime::RefreshDogState(NativeA32Memory& memory) {
+  dogUsable_ = false;
+  if (dogActor_ == 0U) return;
+  float x = 0.0F;
+  float y = 0.0F;
+  float z = 0.0F;
+  uint16_t yawRaw = 0U;
+  if (!ReadFloatChecked(memory, dogActor_ + kActorWorldPos, &x) ||
+      !ReadFloatChecked(memory, dogActor_ + kActorWorldPos + 4U, &y) ||
+      !ReadFloatChecked(memory, dogActor_ + kActorWorldPos + 8U, &z) ||
+      !memory.Read16(dogActor_ + kActorWorldRot + 2U, &yawRaw)) {
+    return;
+  }
+  dogPosition_ = {x, y, z};
+  // The actor yaw is a 16-bit turn; 0 faces +Z.
+  dogYawRadians_ = static_cast<float>(static_cast<int16_t>(yawRaw)) *
+                   6.28318530717958647692F / 65536.0F;
+  dogUsable_ = true;
+}
+
 void CoopDogRuntime::UpdateDog(NativeA32Process& process, uint32_t play,
                                uint32_t actor, bool canMove) {
   auto& memory = process.Memory();
@@ -1664,6 +1772,7 @@ void CoopDogRuntime::UpdateDog(NativeA32Process& process, uint32_t play,
     }
     animationFailureLogged_ = true;
     dogActor_ = 0U;
+    dogUsable_ = false;
     hasDesiredState_ = false;
     desiredAnimation_ = 0xFFFFFFFFU;
     currentVelocityX_ = currentVelocityZ_ = 0.0F;
@@ -1689,6 +1798,7 @@ void CoopDogRuntime::UpdateDog(NativeA32Process& process, uint32_t play,
     desiredYaw_ = yaw;
     hasDesiredState_ = true;
     ApplyDesiredState(memory, actor);
+    RefreshDogState(memory);
     return;
   }
 
@@ -1791,6 +1901,7 @@ void CoopDogRuntime::UpdateDog(NativeA32Process& process, uint32_t play,
     }
     animationFailureLogged_ = true;
     dogActor_ = 0U;
+    dogUsable_ = false;
     hasDesiredState_ = false;
     desiredAnimation_ = 0xFFFFFFFFU;
     currentVelocityX_ = currentVelocityZ_ = 0.0F;
@@ -1859,6 +1970,7 @@ void CoopDogRuntime::UpdateDog(NativeA32Process& process, uint32_t play,
   desiredYaw_ = yaw;
   hasDesiredState_ = true;
   ApplyDesiredState(memory, actor);
+  RefreshDogState(memory);
   CollectRupees(process, play, actor);
 }
 
