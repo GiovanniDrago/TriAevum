@@ -61,6 +61,7 @@
 #include "oot3d_native_pica_vulkan_plan.h"
 #include "oot3d_native_player_temporal_bridge.h"
 #include "oot3d_netplay.h"
+#include "oot3d_netplay_remote_actor.h"
 #include "oot3d_native_scenario_bootstrap.h"
 #include "oot3d_native_temporal_event_ledger.h"
 #include "oot3d_native_true_aot_blocks.h"
@@ -402,6 +403,7 @@ private:
   Oot3dNativeGame::NativeA32SceneViewProbe sceneViewProbe;
   Oot3dNativeGame::NativeA32PlayerTimingProbe playerTimingProbe;
   Oot3dNativeGame::NetplaySession netplaySession;
+  Oot3dNativeGame::NetplayRemoteActor netplayRemoteActor;
   std::optional<Oot3dNativeGame::NetplayPose> netplayRemotePose;
   std::optional<Oot3dNativeGame::NetplayPose> netplayLocalPose;
   std::ofstream netplayProbe;

@@ -14,6 +14,7 @@ add_library(oot3d_native_game_runtime STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_root_motion.cpp
     tools/oot3d/native_game_runtime/oot3d_native_skel_anime.cpp
     tools/oot3d/native_game_runtime/oot3d_netplay.cpp
+    tools/oot3d/native_game_runtime/oot3d_netplay_remote_actor.cpp
 )
 target_include_directories(oot3d_native_game_runtime PUBLIC
     tools/oot3d/decomp_support/include

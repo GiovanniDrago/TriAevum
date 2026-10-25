@@ -273,6 +273,13 @@ bool CanApplyRemoteWorld(const NetplayPose& local, const NetplayPose& remote) {
   return local.SceneId != 0U && remote.SceneId == local.SceneId;
 }
 
+std::int16_t NetplayYawToBinaryAngle(float radians) {
+  constexpr float kScale = 32768.0F / 3.14159265358979323846F;
+  const float value = std::round(radians * kScale);
+  return static_cast<std::int16_t>(
+      std::max(-32768.0F, std::min(32767.0F, value)));
+}
+
 NetplayScreenPoint ProjectNetplayPoint(
     const NetplayPose& pose, const std::array<float, 3>& eye,
     const std::array<float, 3>& at, float left, float right, float bottom,

@@ -1,6 +1,6 @@
 # Two-Window Netplay Evaluation
 
-**Status**: M0 launcher, M1 loopback pose transport and M2 remote-player proxy are usable. M2.5 has an experimental render-only overlay, disabled by default because cloned Player draws still show a skinned-model artifact. An M3 scaffold synchronizes scene/room identity, clock, health and wallet; full flags, doors, items, enemies and cutscenes remain pending.
+**Status**: M0 launcher, M1 loopback pose transport and M2 remote-player proxy are usable. M2.5 now spawns a guest-owned second Player actor for the remote pose and renders a real second Link. The older host-replay overlay is disabled. M3 has a world-state scaffold (scene/room, clock, health, wallet); flags/doors/chests and the remaining world systems are the current work.
 
 ## Goal
 
@@ -340,13 +340,21 @@ The first renderer overlay path is implemented:
 - the overlay uses the local mesh/animation and skips native temporal/shadow/
   grass side effects.
 
-The overlay is **experimental and off by default**. Enabling it with
-`TRIAEVUM_NETPLAY_REMOTE_LINK=1` clones the Player actor's scene draws and
-currently produces a stretched green mesh from the skinned body draws. A
-baseline capture of the same bed scene has no artifact; the clone is therefore
-not accepted as M2.5. The default path remains the M2 projected P1/P2 marker.
-A correct second Link needs a guest-side remote actor (or a verified skinning
-palette transform), not a host replay of the local skinned draw list.
+The host-replay overlay is **experimental and off by default** because cloned
+skinned Player draws produced a stretched mesh. The accepted M2.5 path is now
+the guest-owned actor in `oot3d_netplay_remote_actor.cpp`:
+
+- the remote pose scene must match the local PlayState scene;
+- `Actor_Spawn(ACTOR_PLAYER)` creates a real second Player actor;
+- its update callback is replaced with the title's no-op immediately; the
+  draw callback and object slot are inherited from the local Player;
+- the host runtime writes only world position, home position and yaw;
+- an invalid/timed-out actor is killed and respawned with a cooldown.
+
+A synthetic loopback peer produced two visible Links in Link's house
+(`/tmp/opencode/netplay-actor5/shot.png`), with the local camera and HUD intact.
+The remote Link still uses its own idle animation rather than the peer's
+animation/equipment; that is the remaining M2.5 polish.
 
 ### M3 - world-state scaffold
 
@@ -369,10 +377,10 @@ flags, doors, chests, items, enemies and cutscenes still diverge.
 - Two real instances connected over loopback and exchanged poses; cold-start
   shader preparation remains the main launcher timing issue, handled by the
   readiness wait and warm-cache source.
-- Visual check: the experimental overlay produced
-  `TRIAEVUM_NETPLAY_OVERLAY actor=...` and cloned draws, but the framebuffer
-  showed a stretched skinned-mesh artifact. A no-netplay baseline capture of
-  the same scene was clean. M2.5 visual PASS is therefore not claimed.
+- Visual check: the guest-owned remote actor produced a second visible Link
+  (`/tmp/opencode/netplay-actor5/shot.png`) with no cloned-draw artifact.
+  Older host-replay overlay captures remain in `/tmp/opencode/netplay-zero2/`
+  as the rejected approach.
 - `title_to_existing_save.json` now selects the occupied save slot with
   `circle_y` before the A press; without it the run stops at name entry.
 

@@ -102,6 +102,14 @@ int main() {
   remoteWorld.SceneId = 0U;
   Require(!Oot3dNativeGame::CanApplyRemoteWorld(localWorld, remoteWorld),
           "pre-play remote world was accepted");
+  Require(Oot3dNativeGame::NetplayYawToBinaryAngle(0.0F) == 0,
+          "zero yaw did not convert");
+  Require(Oot3dNativeGame::NetplayYawToBinaryAngle(3.14159265358979323846F) ==
+              32767,
+          "pi yaw did not clamp");
+  Require(Oot3dNativeGame::NetplayYawToBinaryAngle(
+              -3.14159265358979323846F) == -32768,
+          "negative pi yaw did not clamp");
   Oot3dNativeGame::NetplayPose projectionPose;
   projectionPose.Position = {0.0F, 0.0F, 0.0F};
   const auto centered = Oot3dNativeGame::ProjectNetplayPoint(

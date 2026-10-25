@@ -1391,6 +1391,13 @@ void NativeA32WindowSession::RunGuestRefresh() {
   // PPF unblocks the current guest refresh, not the next presentation.
   // The dependency capture keeps its plans for the complete visual frame.
   (void)FlushNativeDependencies();
+  if (netplaySession.Enabled() && netplaySession.Connected() &&
+      netplayRemotePose.has_value()) {
+    netplayRemoteActor.SetRemotePose(&*netplayRemotePose);
+  } else {
+    netplayRemoteActor.SetRemotePose(nullptr);
+  }
+  netplayRemoteActor.BeforeGuest(process);
   sceneViewProbe.BeginGuestRefresh();
   phaseStart = std::chrono::steady_clock::now();
   processResult =

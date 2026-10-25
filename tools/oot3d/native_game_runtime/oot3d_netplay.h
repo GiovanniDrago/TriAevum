@@ -30,6 +30,10 @@ struct NetplayScreenPoint {
 // sessions have entered the same scene. Scene 0 is the pre-play/title state.
 bool CanApplyRemoteWorld(const NetplayPose& local, const NetplayPose& remote);
 
+// Converts the network's radians to the guest's s16 binary angle. Kept pure so
+// the remote-actor transform and the packet tests share one definition.
+std::int16_t NetplayYawToBinaryAngle(float radians);
+
 NetplayScreenPoint ProjectNetplayPoint(
     const NetplayPose& pose, const std::array<float, 3>& eye,
     const std::array<float, 3>& at, float left, float right, float bottom,
