@@ -31,9 +31,15 @@ struct WirePose {
   float Z = 0.0F;
   float Yaw = 0.0F;
   std::uint32_t Animation = 0;
+  std::uint16_t SceneId = 0;
+  std::uint16_t RoomId = 0;
+  std::uint16_t DayTime = 0;
+  std::uint16_t Health = 0;
+  std::uint16_t Wallet = 0;
+  std::uint16_t Reserved = 0;
 };
 
-static_assert(sizeof(WirePose) == 32U);
+static_assert(sizeof(WirePose) == 44U);
 
 void SetError(std::string* error, std::string message) {
   if (error != nullptr) *error = std::move(message);
@@ -149,6 +155,11 @@ void NetplaySession::SendPacket(PacketType type, const NetplayPose& pose) {
   packet.Z = pose.Position[2];
   packet.Yaw = pose.Yaw;
   packet.Animation = pose.Animation;
+  packet.SceneId = pose.SceneId;
+  packet.RoomId = pose.RoomId;
+  packet.DayTime = pose.DayTime;
+  packet.Health = pose.Health;
+  packet.Wallet = pose.Wallet;
 
   sockaddr_in peer{};
   peer.sin_family = AF_INET;
@@ -182,6 +193,11 @@ void NetplaySession::ConsumePacket(const std::uint8_t* bytes, std::size_t size) 
     pose.Position = {packet.X, packet.Y, packet.Z};
     pose.Yaw = packet.Yaw;
     pose.Animation = packet.Animation;
+    pose.SceneId = packet.SceneId;
+    pose.RoomId = packet.RoomId;
+    pose.DayTime = packet.DayTime;
+    pose.Health = packet.Health;
+    pose.Wallet = packet.Wallet;
     if (!mHasRemote || pose.Sequence >= mRemote.Sequence) {
       mRemote = pose;
       mHasRemote = true;
@@ -252,6 +268,10 @@ void NetplaySession::Poll(double seconds, const NetplayPose& local) {
   SendPacket(PacketType::State, pose);
 }
 
+
+bool CanApplyRemoteWorld(const NetplayPose& local, const NetplayPose& remote) {
+  return local.SceneId != 0U && remote.SceneId == local.SceneId;
+}
 
 NetplayScreenPoint ProjectNetplayPoint(
     const NetplayPose& pose, const std::array<float, 3>& eye,

@@ -25,10 +25,20 @@ void Pump(Oot3dNativeGame::NetplaySession& host,
   hostPose.Position = {1.0F, 2.0F, 3.0F};
   hostPose.Yaw = 0.5F;
   hostPose.Animation = 11U;
+  hostPose.SceneId = 0x55U;
+  hostPose.RoomId = 2U;
+  hostPose.DayTime = 0x8123U;
+  hostPose.Health = 0x30U;
+  hostPose.Wallet = 42U;
   Oot3dNativeGame::NetplayPose clientPose;
   clientPose.Position = {-4.0F, 5.0F, 6.0F};
   clientPose.Yaw = -0.25F;
   clientPose.Animation = 22U;
+  clientPose.SceneId = 0x3EU;
+  clientPose.RoomId = 7U;
+  clientPose.DayTime = 0x4000U;
+  clientPose.Health = 0x2AU;
+  clientPose.Wallet = 99U;
   for (int i = 0; i < iterations; ++i) {
     host.Poll(1.0 / 60.0, hostPose);
     client.Poll(1.0 / 60.0, clientPose);
@@ -67,14 +77,31 @@ int main() {
   Require(client.LatestRemotePose(&clientSees), "client has no remote pose");
   Require(hostSees.Position[0] == -4.0F && hostSees.Position[1] == 5.0F &&
               hostSees.Position[2] == 6.0F && hostSees.Yaw == -0.25F &&
-              hostSees.Animation == 22U,
+              hostSees.Animation == 22U && hostSees.SceneId == 0x3EU &&
+              hostSees.RoomId == 7U && hostSees.DayTime == 0x4000U &&
+              hostSees.Health == 0x2AU && hostSees.Wallet == 99U,
           "host received the wrong client pose");
   Require(clientSees.Position[0] == 1.0F && clientSees.Position[1] == 2.0F &&
               clientSees.Position[2] == 3.0F && clientSees.Yaw == 0.5F &&
-              clientSees.Animation == 11U,
+              clientSees.Animation == 11U && clientSees.SceneId == 0x55U &&
+              clientSees.RoomId == 2U && clientSees.DayTime == 0x8123U &&
+              clientSees.Health == 0x30U && clientSees.Wallet == 42U,
           "client received the wrong host pose");
   Require(hostSees.Sequence != 0U && clientSees.Sequence != 0U,
           "pose sequence was not transported");
+  Oot3dNativeGame::NetplayPose localWorld;
+  localWorld.SceneId = 0x55U;
+  Oot3dNativeGame::NetplayPose remoteWorld;
+  remoteWorld.SceneId = 0x55U;
+  Require(Oot3dNativeGame::CanApplyRemoteWorld(localWorld, remoteWorld),
+          "same-scene remote world was rejected");
+  remoteWorld.SceneId = 0x56U;
+  Require(!Oot3dNativeGame::CanApplyRemoteWorld(localWorld, remoteWorld),
+          "cross-scene remote world was accepted");
+  localWorld.SceneId = 0U;
+  remoteWorld.SceneId = 0U;
+  Require(!Oot3dNativeGame::CanApplyRemoteWorld(localWorld, remoteWorld),
+          "pre-play remote world was accepted");
   Oot3dNativeGame::NetplayPose projectionPose;
   projectionPose.Position = {0.0F, 0.0F, 0.0F};
   const auto centered = Oot3dNativeGame::ProjectNetplayPoint(

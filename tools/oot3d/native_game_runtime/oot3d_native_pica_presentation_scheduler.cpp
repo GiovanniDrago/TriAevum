@@ -146,6 +146,7 @@ std::optional<Oot3dPicaVisualDrawView> BuildNetplayOverlayView(
   if (!overlay.Enabled || source.BasePlan == nullptr) return std::nullopt;
   const auto &draw = *source.BasePlan;
   if (draw.CompositionDomain != Oot3dPicaCompositionDomain::Scene ||
+      draw.Composition.NativeProjectedShadow ||
       !draw.Composition.NativeActorGeometry ||
       (draw.Composition.NativeActorIdentity & 0xFFFFFFFFULL) !=
           overlay.ActorAddress ||
@@ -157,34 +158,48 @@ std::optional<Oot3dPicaVisualDrawView> BuildNetplayOverlayView(
   Oot3dPicaVertexUniformState uniforms =
       source.VertexUniforms.has_value() ? *source.VertexUniforms
                                        : draw.VertexShader.Uniforms;
-  const float dx = overlay.Remote.Position[0] - overlay.Local.Position[0];
-  const float dy = overlay.Remote.Position[1] - overlay.Local.Position[1];
-  const float dz = overlay.Remote.Position[2] - overlay.Local.Position[2];
   const float yaw = overlay.Remote.Yaw - overlay.Local.Yaw;
   const float c = std::cos(yaw);
   const float s = std::sin(yaw);
+  // T(remote) * Ry(yaw) * T(-local), in the column-major layout of the
+  // native model uniforms (three vec4 rows store three matrix columns).
   const float tx = overlay.Remote.Position[0] -
                    (c * overlay.Local.Position[0] +
                     s * overlay.Local.Position[2]);
+  const float ty = overlay.Remote.Position[1] - overlay.Local.Position[1];
   const float tz = overlay.Remote.Position[2] -
                    (-s * overlay.Local.Position[0] +
                     c * overlay.Local.Position[2]);
-  const std::array<std::array<float, 4>, 3> transform{{
-      {c, 0.0F, s, tx},
-      {0.0F, 1.0F, 0.0F, dy},
-      {-s, 0.0F, c, tz},
-  }};
+  const std::array<float, 16> transform{
+      c, 0.0F, -s, 0.0F,
+      0.0F, 1.0F, 0.0F, 0.0F,
+      s, 0.0F, c, 0.0F,
+      tx, ty, tz, 1.0F,
+  };
+  std::array<float, 16> model{};
   for (size_t row = 0; row < 3U; ++row) {
     const size_t index = layout.ModelFirstUniform + row;
     if (index >= uniforms.Floats.size()) return std::nullopt;
-    const auto local = uniforms.Floats[index];
-    std::array<float, 4> result{};
-    for (size_t column = 0; column < 4U; ++column) {
-      result[column] = transform[row][0] * local[0] +
-                       transform[row][1] * local[1] +
-                       transform[row][2] * local[2] + transform[row][3];
+    for (size_t column = 0; column < 4U; ++column)
+      model[column * 4U + row] = uniforms.Floats[index][column];
+  }
+  model[3U] = 0.0F;
+  model[7U] = 0.0F;
+  model[11U] = 0.0F;
+  model[15U] = 1.0F;
+  std::array<float, 16> transformed{};
+  for (size_t column = 0; column < 4U; ++column) {
+    for (size_t row = 0; row < 4U; ++row) {
+      float value = 0.0F;
+      for (size_t k = 0; k < 4U; ++k)
+        value += transform[k * 4U + row] * model[column * 4U + k];
+      transformed[column * 4U + row] = value;
     }
-    uniforms.Floats[index] = result;
+  }
+  for (size_t row = 0; row < 3U; ++row) {
+    const size_t index = layout.ModelFirstUniform + row;
+    for (size_t column = 0; column < 4U; ++column)
+      uniforms.Floats[index][column] = transformed[column * 4U + row];
   }
   Oot3dPicaVisualDrawView clone = source;
   clone.VertexUniforms = std::move(uniforms);

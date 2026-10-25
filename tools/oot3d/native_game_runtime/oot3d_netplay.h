@@ -11,6 +11,11 @@ struct NetplayPose {
   std::array<float, 3> Position{};
   float Yaw = 0.0F;
   std::uint32_t Animation = 0;
+  std::uint16_t SceneId = 0;
+  std::uint16_t RoomId = 0;
+  std::uint16_t DayTime = 0;
+  std::uint16_t Health = 0;
+  std::uint16_t Wallet = 0;
 };
 
 struct NetplayScreenPoint {
@@ -21,6 +26,10 @@ struct NetplayScreenPoint {
 
 // Projects a remote world position through the local scene camera. Kept pure
 // so the M2 proxy visibility can be tested without a running guest.
+// The remote world clock and player resources are only meaningful once both
+// sessions have entered the same scene. Scene 0 is the pre-play/title state.
+bool CanApplyRemoteWorld(const NetplayPose& local, const NetplayPose& remote);
+
 NetplayScreenPoint ProjectNetplayPoint(
     const NetplayPose& pose, const std::array<float, 3>& eye,
     const std::array<float, 3>& at, float left, float right, float bottom,

@@ -615,6 +615,25 @@ bool NativeA32WindowSession::RunFrame() {
           local.Position[axis] = std::bit_cast<float>(bits[axis]);
         local.Yaw = static_cast<float>(static_cast<std::int16_t>(yaw)) *
                     (3.14159265358979323846F / 32768.0F);
+        const auto sceneSnapshot = sceneViewProbe.Capture(process.Memory());
+        if (sceneSnapshot.has_value()) {
+          if (sceneSnapshot->SceneId.has_value())
+            local.SceneId = *sceneSnapshot->SceneId;
+          if (sceneSnapshot->PlayStateAddress != 0U) {
+            std::uint8_t room = 0;
+            if (process.Memory().Read8(
+                    sceneSnapshot->PlayStateAddress + 0x4C30U, &room))
+              local.RoomId = room;
+          }
+        }
+        constexpr std::uint32_t kSaveContext = 0x00587958U;
+        std::uint16_t value = 0;
+        if (process.Memory().Read16(kSaveContext + 0x0CU, &value))
+          local.DayTime = value;
+        if (process.Memory().Read16(kSaveContext + 0x44U, &value))
+          local.Health = value;
+        if (process.Memory().Read16(kSaveContext + 0x48U, &value))
+          local.Wallet = value;
       }
     }
     netplaySession.Poll(1.0 / 60.0, local);
@@ -622,18 +641,44 @@ bool NativeA32WindowSession::RunFrame() {
     if (netplaySession.LatestRemotePose(&remote)) {
       netplayRemotePose = remote;
       netplayLocalPose = local;
+      // Host authority for the fields the current transport carries. The
+      // client keeps its own save, but once both sides are in the same scene
+      // the host's clock and player resources are authoritative. Scene
+      // transitions, flags, doors, items and enemies are still local-only.
+      if (!netplaySession.Options().Host &&
+          Oot3dNativeGame::CanApplyRemoteWorld(local, remote)) {
+        constexpr std::uint32_t kSaveContext = 0x00587958U;
+        static std::uint16_t appliedDayTime = 0xFFFFU;
+        static std::uint16_t appliedHealth = 0xFFFFU;
+        static std::uint16_t appliedWallet = 0xFFFFU;
+        if (remote.DayTime != appliedDayTime) {
+          if (process.Memory().Write16(kSaveContext + 0x0CU, remote.DayTime))
+            appliedDayTime = remote.DayTime;
+        }
+        if (remote.Health != appliedHealth) {
+          if (process.Memory().Write16(kSaveContext + 0x44U, remote.Health))
+            appliedHealth = remote.Health;
+        }
+        if (remote.Wallet != appliedWallet) {
+          if (process.Memory().Write16(kSaveContext + 0x48U, remote.Wallet))
+            appliedWallet = remote.Wallet;
+        }
+      }
       static auto lastLog = std::chrono::steady_clock::time_point{};
       const auto now = std::chrono::steady_clock::now();
       if (now - lastLog >= std::chrono::seconds(1)) {
         lastLog = now;
         std::fprintf(stderr,
                      "TRIAEVUM_NETPLAY connected=%d local=%u local_pos=(%.2f,%.2f,%.2f) "
-                     "remote=(%.2f,%.2f,%.2f) yaw=%.2f seq=%u\n",
+                     "remote=(%.2f,%.2f,%.2f) yaw=%.2f seq=%u "
+                     "scene=%u room=%u day=0x%04X health=0x%04X wallet=%u\n",
                      netplaySession.Connected() ? 1 : 0,
                      static_cast<unsigned>(netplaySession.LocalPlayer()),
                      local.Position[0], local.Position[1], local.Position[2],
                      remote.Position[0], remote.Position[1], remote.Position[2],
-                     remote.Yaw, remote.Sequence);
+                     remote.Yaw, remote.Sequence, remote.SceneId,
+                     remote.RoomId, remote.DayTime, remote.Health,
+                     remote.Wallet);
         if (netplayProbe.is_open()) {
           netplayProbe << "{\"schema\":\"triaevum.netplay.probe.v1\","
                           "\"host_frame\":" << frameCount
@@ -644,6 +689,11 @@ bool NativeA32WindowSession::RunFrame() {
                        << remote.Position[1] << "," << remote.Position[2] << "]"
                        << ",\"remote_yaw\":" << remote.Yaw
                        << ",\"remote_sequence\":" << remote.Sequence
+                       << ",\"scene_id\":" << remote.SceneId
+                       << ",\"room_id\":" << remote.RoomId
+                       << ",\"day_time\":" << remote.DayTime
+                       << ",\"health\":" << remote.Health
+                       << ",\"wallet\":" << remote.Wallet
                        << "}\n";
           netplayProbe.flush();
         }
@@ -3021,7 +3071,10 @@ void NativeA32WindowSession::ExecuteVisualSample(const Oot3dNativeGame::Oot3dPic
   // gave the next displayed sample a backward sweep.
   if (present) Fast::Oot3d::GrassInteractionBridge::Instance().SelectSample(temporalSample);
   PinGpuCopyResources(sample);
+  static const bool remoteLinkOverlayEnabled =
+      std::getenv("TRIAEVUM_NETPLAY_REMOTE_LINK") != nullptr;
   const bool netplayOverlay =
+      remoteLinkOverlayEnabled &&
       kind != Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::DependencyFlush &&
       kind != Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::NativeFrame &&
       netplaySession.Enabled() && netplayLocalPose.has_value() &&

@@ -1,6 +1,6 @@
 # Two-Window Netplay Evaluation
 
-**Status**: M0 launcher, M1 loopback pose transport, M2 remote-player proxy, and M2.5 render-only remote Link overlay implemented on `netplay-m2.5`. Independent remote animation and M3 world sync are still pending.
+**Status**: M0 launcher, M1 loopback pose transport and M2 remote-player proxy are usable. M2.5 has an experimental render-only overlay, disabled by default because cloned Player draws still show a skinned-model artifact. An M3 scaffold synchronizes scene/room identity, clock, health and wallet; full flags, doors, items, enemies and cutscenes remain pending.
 
 ## Goal
 
@@ -340,22 +340,41 @@ The first renderer overlay path is implemented:
 - the overlay uses the local mesh/animation and skips native temporal/shadow/
   grass side effects.
 
-This produces a second visible Link-shaped render at the synchronized remote
-position, but the clone still uses the local player's animation. A true
-independent remote animation/equipment stream is the remaining M2.5 gap.
+The overlay is **experimental and off by default**. Enabling it with
+`TRIAEVUM_NETPLAY_REMOTE_LINK=1` clones the Player actor's scene draws and
+currently produces a stretched green mesh from the skinned body draws. A
+baseline capture of the same bed scene has no artifact; the clone is therefore
+not accepted as M2.5. The default path remains the M2 projected P1/P2 marker.
+A correct second Link needs a guest-side remote actor (or a verified skinning
+palette transform), not a host replay of the local skinned draw list.
+
+### M3 - world-state scaffold
+
+The transport now carries `SceneId`, `RoomId`, `DayTime`, `Health` and
+`Wallet`. The host reads them from the native `PlayState`/`SaveContext`; the
+client applies clock, health and wallet only when both sessions report the same
+non-zero scene (`CanApplyRemoteWorld`). The client keeps its own save and never
+writes the host save. This is not full world replication: scene transitions,
+flags, doors, chests, items, enemies and cutscenes still diverge.
 
 ### Verification
 
-- `oot3d_netplay_tests`: protocol loopback, pose round-trip, center/offscreen/
-  behind-camera projection.
-- LLVM coverage for `oot3d_netplay.cpp`: 90.04% lines, 92.31% functions,
-  88.48% regions.
+- `oot3d_netplay_tests`: protocol loopback, pose/world round-trip,
+  same-scene application policy, center/offscreen/behind-camera projection.
+- LLVM coverage for `oot3d_netplay.cpp`: 90.53% lines, 92.86% functions,
+  88.66% regions.
 - `oot3d_native_a32_input_tests`: controller path/GUID/serial round-trip and
   legacy config compatibility.
 - `three_ds_sdl_controller_tests`: SDL selection and device behavior.
 - Two real instances connected over loopback and exchanged poses; cold-start
   shader preparation remains the main launcher timing issue, handled by the
   readiness wait and warm-cache source.
+- Visual check: the experimental overlay produced
+  `TRIAEVUM_NETPLAY_OVERLAY actor=...` and cloned draws, but the framebuffer
+  showed a stretched skinned-mesh artifact. A no-netplay baseline capture of
+  the same scene was clean. M2.5 visual PASS is therefore not claimed.
+- `title_to_existing_save.json` now selects the occupied save slot with
+  `circle_y` before the A press; without it the run stops at name entry.
 
 ## First spike result
 
