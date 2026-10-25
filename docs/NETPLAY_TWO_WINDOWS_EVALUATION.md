@@ -1,6 +1,6 @@
 # Two-Window Netplay Evaluation
 
-**Status**: M0 launcher, M1 loopback pose transport, and M2 remote-player proxy implemented on `netplay-eval`. Full remote Link model/world sync is still pending.
+**Status**: M0 launcher, M1 loopback pose transport, M2 remote-player proxy, and M2.5 render-only remote Link overlay implemented on `netplay-m2.5`. Independent remote animation and M3 world sync are still pending.
 
 ## Goal
 
@@ -326,6 +326,23 @@ camera and draws a labeled P2/P1 marker over the presented frame. The projection
 is a pure function with tests. This is a **proxy**, not the final second Link
 model: spawning/animating a second full Link without becoming a second `Player`
 is still the next engine-level task.
+
+### M2.5 - render-only remote Link
+
+The first renderer overlay path is implemented:
+
+- `PicaDrawView::HostReplay` lets a draw be rasterized without consuming the
+  native composition schedule or repeating native bookkeeping;
+- the scheduler accepts a `NetplayOverlayDraw` with local/remote pose and actor
+  address;
+- scene draws whose native actor identity matches the local Player are cloned;
+- the clone's model rows are transformed by the remote translation and yaw;
+- the overlay uses the local mesh/animation and skips native temporal/shadow/
+  grass side effects.
+
+This produces a second visible Link-shaped render at the synchronized remote
+position, but the clone still uses the local player's animation. A true
+independent remote animation/equipment stream is the remaining M2.5 gap.
 
 ### Verification
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "oot3d_native_pica_visual_frame.h"
+#include "oot3d_netplay.h"
 #include "oot3d/renderer/pica_render_backend.h"
 
 #include <cstddef>
@@ -13,6 +14,13 @@
 #include <vector>
 
 namespace Oot3dNativeGame {
+
+struct NetplayOverlayDraw {
+  bool Enabled = false;
+  std::uint32_t ActorAddress = 0;
+  NetplayPose Local;
+  NetplayPose Remote;
+};
 
 enum class Oot3dPicaPresentationExecutionKind : uint8_t {
   CurrentFrame,
@@ -106,6 +114,14 @@ public:
                uint64_t renderTargetNamespace,
                Oot3dPicaPresentationExecutionKind kind, bool present,
                std::string *error = nullptr);
+  // Replays the local player's scene draws at the synchronized remote pose as
+  // host-only overlay draws. The guest composition schedule is not extended.
+  bool ExecuteWithNetplay(Oot3d::Renderer::PicaRenderBackend &backend,
+                          const Oot3dPicaVisualFrameViewSample &sample,
+                          const NetplayOverlayDraw &overlay,
+                          uint64_t renderTargetNamespace,
+                          Oot3dPicaPresentationExecutionKind kind, bool present,
+                          std::string *error = nullptr);
 
   bool PresentExisting(Oot3d::Renderer::PicaRenderBackend &backend,
                        const Oot3dPicaDisplayTransferSubmission &transfer,
@@ -140,6 +156,13 @@ public:
   const Oot3dPicaPresentationSchedulerTimings &Timings() const noexcept;
 
 private:
+  bool ExecuteInternal(Oot3d::Renderer::PicaRenderBackend &backend,
+                       const Oot3dPicaVisualFrameViewSample &sample,
+                       const NetplayOverlayDraw *overlay,
+                       uint64_t renderTargetNamespace,
+                       Oot3dPicaPresentationExecutionKind kind, bool present,
+                       std::string *error);
+
   using SnapshotTarget = std::pair<uint64_t, uint32_t>;
 
   static SnapshotTarget

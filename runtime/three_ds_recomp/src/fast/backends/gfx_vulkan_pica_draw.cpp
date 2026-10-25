@@ -834,7 +834,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             throw std::runtime_error("native PICA framebuffer dimensions are zero");
         }
 
-        if (mNativePicaCompositionSchedule.Valid()) {
+        if (mNativePicaCompositionSchedule.Valid() && !draw.HostReplay) {
             std::string scheduleError;
             const bool matched =
                 mNativePicaCompositionSchedule.ConsumeDraw(
@@ -854,6 +854,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 ::Oot3d::Renderer::PicaCompositionLayer::OpaqueWorld;
         const bool nativeMemoryOnly = mNativePicaCompositionSchedule.Purpose() ==
             Renderer3ds::PicaCompositionPurpose::NativeMemory;
+        const bool hostReplay = draw.HostReplay;
 
         const auto& graphicsSettings = mFrameGraphicsSettings;
         if (!nativeMemoryOnly && !mNativeFidelityProfile && sceneDraw &&
@@ -864,9 +865,11 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             // The canonical native-memory replay remains untouched.
             if (mSurfaceCalibrationTrace.Sampling())
                 mSurfaceCalibrationTrace.Count("domain=scene replay=presentation path=skipped admitted=0 reason=native-projected-shadow", draw.VertexCount);
-            auto& target = GetOrCreateNativePicaRenderTarget(draw);
-            ExecuteNativePicaBeforeDrawAnchors(target, draw,
-                cpuTimings.DirectionalShadowMilliseconds, cpuTimings.GrassRenderMilliseconds);
+            if (!hostReplay) {
+                auto& target = GetOrCreateNativePicaRenderTarget(draw);
+                ExecuteNativePicaBeforeDrawAnchors(target, draw,
+                    cpuTimings.DirectionalShadowMilliseconds, cpuTimings.GrassRenderMilliseconds);
+            }
             return true;
         }
         const uint64_t azaharTextureGeneration =
@@ -1790,7 +1793,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
         if (!mPreparationQueue) AdoptNativePicaProgram(shaderIt->second, true);
         finishCpuStage(cpuTimings.ShaderCacheMilliseconds);
 
-        if (!nativeMemoryOnly && mInteractiveGrassProviderPlan.Valid() && opaqueWorldDraw) {
+        if (!hostReplay && !nativeMemoryOnly && mInteractiveGrassProviderPlan.Valid() && opaqueWorldDraw) {
             auto latestGrassPerspective =
                 Oot3d::SceneViewRuntime::Instance()
                     .LatestPerspective();
@@ -1836,8 +1839,10 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
 
         auto& renderTarget = GetOrCreateNativePicaRenderTarget(draw);
         finishCpuStage(cpuTimings.RenderTargetStateMilliseconds);
-        ExecuteNativePicaBeforeDrawAnchors(renderTarget, draw,
-            cpuTimings.DirectionalShadowMilliseconds, cpuTimings.GrassRenderMilliseconds);
+        if (!hostReplay) {
+            ExecuteNativePicaBeforeDrawAnchors(renderTarget, draw,
+                cpuTimings.DirectionalShadowMilliseconds, cpuTimings.GrassRenderMilliseconds);
+        }
         if (collectCpuTimings) cpuStageStart = CpuClock::now();
         renderTarget.WBuffering = draw.WBuffering;
         // The isolated title logo once the boundary before it has resolved the
@@ -1856,9 +1861,11 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             draw.FragmentOperationMode == 0U &&
             draw.DepthTestEnabled && draw.DepthWriteEnabled &&
             (draw.ColorWriteMask & 0x7U) != 0U;
-        renderTarget.ReflectionEnvironment.Observe(
-            mFrameCounter, draw.FragmentShaderSource,
-            draw.FragmentUniformBytes, reflectionEnvironmentEligible, draw.FragmentShaderKey);
+        if (!hostReplay) {
+            renderTarget.ReflectionEnvironment.Observe(
+                mFrameCounter, draw.FragmentShaderSource,
+                draw.FragmentUniformBytes, reflectionEnvironmentEligible, draw.FragmentShaderKey);
+        }
         finishCpuStage(cpuTimings.ReflectionEnvironmentMilliseconds);
         cpuTimings.SceneStateMilliseconds =
             cpuTimings.RenderTargetStateMilliseconds +
@@ -1874,7 +1881,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                       static_cast<float>(renderTarget.Height)}
             : std::array<float, 2>{};
         std::array<float, 4> rigidOriginClip{};
-        const bool temporalEligible = mTemporalMotionEnabled && !nativeMemoryOnly &&
+        const bool temporalEligible = !hostReplay && mTemporalMotionEnabled && !nativeMemoryOnly &&
             sceneDraw && !sceneOverlayDraw &&
             draw.FragmentOperationMode == 0U &&
             draw.DepthTestEnabled && draw.DepthWriteEnabled;
@@ -2907,7 +2914,7 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
                 mPicaExtensionGraph,
                 Oot3d::PicaExtensionPass::DirectionalShadowLighting) &&
             AdmitsOpaqueSceneGeometry(draw);
-        if (nriOwnedDraw && !nativeMemoryOnly) {
+        if (nriOwnedDraw && !nativeMemoryOnly && !hostReplay) {
             std::vector<Oot3d::PicaSceneVertexBufferBinding>
                 sceneVertexBindings;
             sceneVertexBindings.reserve(nriVertexBindings.size());
@@ -3387,12 +3394,13 @@ bool GfxRenderingAPIVulkan::SubmitPicaDraw(
             mNriPicaPipelineBridge.DescriptorsOwnedByNri(),
             mNriPicaPipelineBridge.LastDrawUploadsOwnedByNri(),
             mNriPicaPipelineBridge.LastDrawUploadedBytes());
-        if (opaqueWorldDraw) {
+        if (!hostReplay && opaqueWorldDraw) {
             if (mInteractiveGrassProviderPlan.Valid()) {
                 mGrassWorldTargetsThisFrame.insert(renderTarget.Key);
             }
         }
-        if (draw.CompositionDomain ==
+        if (!hostReplay &&
+            draw.CompositionDomain ==
                 ::Oot3d::Renderer::PicaCompositionDomain::Scene &&
             draw.DepthWriteEnabled) {
             ++mNativePicaDepthWritingDrawsThisFrame;

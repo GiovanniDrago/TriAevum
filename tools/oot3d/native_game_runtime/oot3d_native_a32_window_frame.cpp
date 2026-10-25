@@ -621,15 +621,17 @@ bool NativeA32WindowSession::RunFrame() {
     Oot3dNativeGame::NetplayPose remote;
     if (netplaySession.LatestRemotePose(&remote)) {
       netplayRemotePose = remote;
+      netplayLocalPose = local;
       static auto lastLog = std::chrono::steady_clock::time_point{};
       const auto now = std::chrono::steady_clock::now();
       if (now - lastLog >= std::chrono::seconds(1)) {
         lastLog = now;
         std::fprintf(stderr,
-                     "TRIAEVUM_NETPLAY connected=%d local=%u remote=(%.2f,%.2f,%.2f) "
-                     "yaw=%.2f seq=%u\n",
+                     "TRIAEVUM_NETPLAY connected=%d local=%u local_pos=(%.2f,%.2f,%.2f) "
+                     "remote=(%.2f,%.2f,%.2f) yaw=%.2f seq=%u\n",
                      netplaySession.Connected() ? 1 : 0,
                      static_cast<unsigned>(netplaySession.LocalPlayer()),
+                     local.Position[0], local.Position[1], local.Position[2],
                      remote.Position[0], remote.Position[1], remote.Position[2],
                      remote.Yaw, remote.Sequence);
         if (netplayProbe.is_open()) {
@@ -3019,9 +3021,26 @@ void NativeA32WindowSession::ExecuteVisualSample(const Oot3dNativeGame::Oot3dPic
   // gave the next displayed sample a backward sweep.
   if (present) Fast::Oot3d::GrassInteractionBridge::Instance().SelectSample(temporalSample);
   PinGpuCopyResources(sample);
-  if (!picaPresentationScheduler.Execute(
-          api, sample, renderTargetNamespace, kind,
-          present, &renderError)) {
+  const bool netplayOverlay =
+      kind != Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::DependencyFlush &&
+      kind != Oot3dNativeGame::Oot3dPicaPresentationExecutionKind::NativeFrame &&
+      netplaySession.Enabled() && netplayLocalPose.has_value() &&
+      netplayRemotePose.has_value() &&
+      playerTimingProbe.Stats().LastPlayerAddress != 0U;
+  bool scheduled = false;
+  if (netplayOverlay) {
+    Oot3dNativeGame::NetplayOverlayDraw overlay;
+    overlay.Enabled = true;
+    overlay.ActorAddress = playerTimingProbe.Stats().LastPlayerAddress;
+    overlay.Local = *netplayLocalPose;
+    overlay.Remote = *netplayRemotePose;
+    scheduled = picaPresentationScheduler.ExecuteWithNetplay(
+        api, sample, overlay, renderTargetNamespace, kind, present, &renderError);
+  } else {
+    scheduled = picaPresentationScheduler.Execute(
+        api, sample, renderTargetNamespace, kind, present, &renderError);
+  }
+  if (!scheduled) {
     throw std::runtime_error(
         "native PICA scheduled presentation failed: " + renderError);
   }

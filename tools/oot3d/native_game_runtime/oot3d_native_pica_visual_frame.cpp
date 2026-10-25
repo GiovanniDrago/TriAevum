@@ -1843,6 +1843,7 @@ Oot3dPicaVulkanDrawOverrides Oot3dPicaVisualDrawView::Overrides() const {
     overrides.BlendConstantColor = BlendConstantColor.has_value() ? &*BlendConstantColor : nullptr;
     overrides.LightBinding = LightBinding.has_value() ? &*LightBinding : nullptr;
     overrides.VertexBindings = HasVertexBindingOverrides ? &VertexBindings : nullptr;
+    overrides.HostReplay = HostReplay;
     return overrides;
 }
 

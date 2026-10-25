@@ -4,7 +4,11 @@
 #include "oot3d_native_pica_vulkan_bridge.h"
 #include "oot3d_static_shadow_actor_catalog.h"
 
+#include <array>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <string_view>
 #include <utility>
 
@@ -121,6 +125,92 @@ bool Oot3dPicaPresentationScheduler::Execute(
     const Oot3dPicaVisualFrameViewSample &sample,
     uint64_t renderTargetNamespace, Oot3dPicaPresentationExecutionKind kind,
     bool present, std::string *error) {
+  return ExecuteInternal(backend, sample, nullptr, renderTargetNamespace, kind,
+                         present, error);
+}
+
+bool Oot3dPicaPresentationScheduler::ExecuteWithNetplay(
+    Oot3d::Renderer::PicaRenderBackend &backend,
+    const Oot3dPicaVisualFrameViewSample &sample,
+    const NetplayOverlayDraw &overlay, uint64_t renderTargetNamespace,
+    Oot3dPicaPresentationExecutionKind kind, bool present,
+    std::string *error) {
+  return ExecuteInternal(backend, sample, &overlay, renderTargetNamespace,
+                         kind, present, error);
+}
+
+namespace {
+
+std::optional<Oot3dPicaVisualDrawView> BuildNetplayOverlayView(
+    const Oot3dPicaVisualDrawView &source, const NetplayOverlayDraw &overlay) {
+  if (!overlay.Enabled || source.BasePlan == nullptr) return std::nullopt;
+  const auto &draw = *source.BasePlan;
+  if (draw.CompositionDomain != Oot3dPicaCompositionDomain::Scene ||
+      !draw.Composition.NativeActorGeometry ||
+      (draw.Composition.NativeActorIdentity & 0xFFFFFFFFULL) !=
+          overlay.ActorAddress ||
+      draw.VertexShader.TemporalProgram == nullptr) {
+    return std::nullopt;
+  }
+  const auto &layout = draw.VertexShader.TemporalProgram->Hooks.Transform;
+  if (!layout.Available()) return std::nullopt;
+  Oot3dPicaVertexUniformState uniforms =
+      source.VertexUniforms.has_value() ? *source.VertexUniforms
+                                       : draw.VertexShader.Uniforms;
+  const float dx = overlay.Remote.Position[0] - overlay.Local.Position[0];
+  const float dy = overlay.Remote.Position[1] - overlay.Local.Position[1];
+  const float dz = overlay.Remote.Position[2] - overlay.Local.Position[2];
+  const float yaw = overlay.Remote.Yaw - overlay.Local.Yaw;
+  const float c = std::cos(yaw);
+  const float s = std::sin(yaw);
+  const float tx = overlay.Remote.Position[0] -
+                   (c * overlay.Local.Position[0] +
+                    s * overlay.Local.Position[2]);
+  const float tz = overlay.Remote.Position[2] -
+                   (-s * overlay.Local.Position[0] +
+                    c * overlay.Local.Position[2]);
+  const std::array<std::array<float, 4>, 3> transform{{
+      {c, 0.0F, s, tx},
+      {0.0F, 1.0F, 0.0F, dy},
+      {-s, 0.0F, c, tz},
+  }};
+  for (size_t row = 0; row < 3U; ++row) {
+    const size_t index = layout.ModelFirstUniform + row;
+    if (index >= uniforms.Floats.size()) return std::nullopt;
+    const auto local = uniforms.Floats[index];
+    std::array<float, 4> result{};
+    for (size_t column = 0; column < 4U; ++column) {
+      result[column] = transform[row][0] * local[0] +
+                       transform[row][1] * local[1] +
+                       transform[row][2] * local[2] + transform[row][3];
+    }
+    uniforms.Floats[index] = result;
+  }
+  Oot3dPicaVisualDrawView clone = source;
+  clone.VertexUniforms = std::move(uniforms);
+  clone.HostReplay = true;
+  static bool trace = std::getenv("TRIAEVUM_NETPLAY_OVERLAY_TRACE") != nullptr;
+  if (trace) {
+    std::fprintf(stderr,
+                 "TRIAEVUM_NETPLAY_OVERLAY actor=0x%08X local=(%.2f,%.2f,%.2f) "
+                 "remote=(%.2f,%.2f,%.2f)\n",
+                 overlay.ActorAddress, overlay.Local.Position[0],
+                 overlay.Local.Position[1], overlay.Local.Position[2],
+                 overlay.Remote.Position[0], overlay.Remote.Position[1],
+                 overlay.Remote.Position[2]);
+    trace = false;
+  }
+  return clone;
+}
+
+} // namespace
+
+bool Oot3dPicaPresentationScheduler::ExecuteInternal(
+    Oot3d::Renderer::PicaRenderBackend &backend,
+    const Oot3dPicaVisualFrameViewSample &sample,
+    const NetplayOverlayDraw *overlay, uint64_t renderTargetNamespace,
+    Oot3dPicaPresentationExecutionKind kind, bool present,
+    std::string *error) {
   OptionalTimer executeTimer(mTimings.Enabled, mTimings.ExecuteSeconds);
   if (!mPresentationSerial.has_value()) {
     SetError(error, "PICA presentation execution began without a host frame");
@@ -346,6 +436,18 @@ bool Oot3dPicaPresentationScheduler::Execute(
         return false;
       }
       ++mStats.ExecutedDraws;
+    }
+    if (overlay != nullptr) {
+      const auto clone = BuildNetplayOverlayView(drawView, *overlay);
+      if (clone.has_value()) {
+        const auto cloneOverrides = clone->Overrides();
+        if (!SubmitOot3dPicaVulkanDrawPlan(
+                backend, draw, error, renderTargetNamespace, &cloneOverrides,
+                nullptr)) {
+          return false;
+        }
+        ++mStats.ExecutedDraws;
+      }
     }
     while (transferIndex < transfers.size() &&
            transfers[transferIndex].AfterDrawSubmissionId ==

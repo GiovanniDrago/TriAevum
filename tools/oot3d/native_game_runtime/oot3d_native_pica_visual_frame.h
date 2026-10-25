@@ -51,6 +51,7 @@ struct Oot3dPicaVisualDrawView {
     std::optional<Fast::Renderer3ds::PicaNativeLightBinding> LightBinding;
     std::vector<Oot3dPicaVulkanVertexBinding> VertexBindings;
     bool HasVertexBindingOverrides = false;
+    bool HostReplay = false;
 
     Oot3dPicaVulkanDrawOverrides Overrides() const;
 };

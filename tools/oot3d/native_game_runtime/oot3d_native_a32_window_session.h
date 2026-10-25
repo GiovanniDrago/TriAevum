@@ -403,6 +403,7 @@ private:
   Oot3dNativeGame::NativeA32PlayerTimingProbe playerTimingProbe;
   Oot3dNativeGame::NetplaySession netplaySession;
   std::optional<Oot3dNativeGame::NetplayPose> netplayRemotePose;
+  std::optional<Oot3dNativeGame::NetplayPose> netplayLocalPose;
   std::ofstream netplayProbe;
   Oot3dNativeGame::NativeTemporalEventLedger temporalEventLedger;
   Oot3dNativeGame::NativeA32PlayerTemporalBridge playerTemporalBridge;

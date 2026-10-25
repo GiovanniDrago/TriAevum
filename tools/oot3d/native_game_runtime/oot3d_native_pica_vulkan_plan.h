@@ -141,8 +141,10 @@ struct Oot3dPicaVulkanDrawOverrides {
     const Oot3dPicaFragmentUniformState* FragmentUniforms = nullptr;
     const Fast::Renderer3ds::PicaNativeLightBinding* LightBinding = nullptr;
     const Oot3dPicaViewportState* Viewport = nullptr;
+    const Oot3dPicaScissorState* Scissor = nullptr;
     const std::array<float, 4>* BlendConstantColor = nullptr;
     const std::vector<Oot3dPicaVulkanVertexBinding>* VertexBindings = nullptr;
+    bool HostReplay = false;
 };
 
 struct Oot3dPicaVulkanCachedShaderSource {
