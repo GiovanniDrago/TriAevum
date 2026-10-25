@@ -1,6 +1,6 @@
 # Two-Window Netplay Evaluation
 
-**Status**: M0 launcher, M1 loopback pose transport, M2 remote-player proxy and M2.5 guest-owned remote Link are usable. M3.1 synchronizes scene/room identity, clock, health, wallet, 64 switch flags and 64 collectible flags. Automatic scene transitions are disabled after a reproduced fault; full door/chest actor animation, enemies, items and cutscenes remain pending.
+**Status**: M0 launcher, M1 loopback pose transport, M2 remote-player proxy, M2.5 guest-owned remote Link and M3.1 scene/flag synchronization are usable. Scene transitions now complete in a two-instance run. Door/chest actor animation, enemies, items and cutscenes remain pending.
 
 ## Goal
 
@@ -368,12 +368,14 @@ never writes the host save.
 Flags are applied only when scene and room match; a remote peer in another
 room must transition first rather than inheriting that room's switches.
 
-Automatic scene transitions are **disabled by default**. A real two-instance
-run requested entrance 187 and then faulted at `pc=0x00371788`. A teardown
-interlock and entrance-table sanity check were added, but a controlled
-synthetic transition still faulted at the same PC; the code remains behind
-`TRIAEVUM_NETPLAY_SCENE_TRANSITION=1` for debugging only. The fault is in the
-native transition/renderer path, not in the flag packet.
+Scene transitions are now enabled by default, with a fail-closed guard:
+the entrance table row must match the host's scene and differ from the local
+scene, the local scene must be stable, and the save respawn flag is cleared
+before requesting the transition. Clearing that flag was the fix for the
+earlier `pc=0x00371788` fault: a live respawn flag armed the Player's void-out
+path during the controlled transition. A teardown interlock clears the remote
+Link draw callback first. `TRIAEVUM_NETPLAY_DISABLE_SCENE_TRANSITION=1` forces
+the old local-only behavior.
 
 This is not full world replication: existing door/chest actors may not animate
 immediately, enemies/items/cutscenes are still local-only, room changes without
@@ -400,12 +402,11 @@ bits are carried.
   shows `local_room=0`, `switches=0x...5`, `collectibles=0x...3`, a clean exit
   and no process fault. Host collectible queries are in
   `/tmp/opencode/netplay-world-host/run.log`.
-- Real two-instance check: `/tmp/opencode/netplay-real/p2/run.log` requested
-  entrance 187 and faulted at `pc=0x00371788`; automatic transitions are now
-  fail-closed. A controlled synthetic transition
-  (`/tmp/opencode/netplay-transition/run.log`) also faulted at the same PC
-  even with the remote actor teardown interlock. Scene transitions therefore
-  remain blocked; the flag path is unaffected.
+- Scene-transition PASS: `/tmp/opencode/netplay-transition2/run.log` and
+  `/tmp/opencode/netplay-real2/p2/run.log` transitioned from scene 52 to
+  scene 81, respawned P2 at `(160, 0, 1415)`, spawned the remote Link in scene
+  81 and did not fault. P1 arrived via the developer Hyrule Field warp
+  (`/tmp/opencode/netplay-real2/p1/run.log`).
 - `title_to_existing_save.json` now selects the occupied save slot with
   `circle_y` before the A press; without it the run stops at name entry.
 

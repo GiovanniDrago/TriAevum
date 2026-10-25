@@ -18,6 +18,7 @@ constexpr std::uint32_t kPlaySwitchFlags32 = 0x2228U;
 constexpr std::uint32_t kPlaySwitchFlags64 = 0x222CU;
 constexpr std::uint32_t kSaveContext = 0x00587958U;
 constexpr std::uint32_t kSaveEntrance = kSaveContext + 0x00U;  // s32
+constexpr std::uint32_t kSaveRespawnFlag = kSaveContext + 0x14ECU;
 constexpr std::uint32_t kFlagsGetCollectible = 0x0036405CU;
 constexpr std::uint32_t kFlagsSetCollectible = 0x003329D8U;
 constexpr std::uint32_t kEntranceTable = 0x00543BB8U;
@@ -37,7 +38,7 @@ bool TraceEnabled() {
 
 bool SceneTransitionEnabled() {
   static const bool enabled =
-      std::getenv("TRIAEVUM_NETPLAY_SCENE_TRANSITION") != nullptr;
+      std::getenv("TRIAEVUM_NETPLAY_DISABLE_SCENE_TRANSITION") == nullptr;
   return enabled;
 }
 
@@ -155,6 +156,10 @@ bool NetplayWorldSync::CommitPendingTransition(NativeA32Process& process) {
     }
     return false;
   }
+  // DevWarpRuntime clears this before asking for an entrance. A live
+  // respawn flag makes Player_Init arm void-out damage and leaves the
+  // transition in a state the renderer cannot finish.
+  if (!process.Memory().Write32(kSaveRespawnFlag, 0U)) return false;
   if (RequestTransition(process, play, entrance)) {
     mTransitionCooldown = kTransitionCooldownFrames;
     return true;
