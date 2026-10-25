@@ -15,6 +15,9 @@ bool ConnectedPhysicalDeviceManager::Initialize(const std::string& mappingDataba
         return true;
     }
     SDL_SetHint(SDL_HINT_JOYSTICK_THREAD, "1");
+    // Two TriAevum windows share one desktop. Each process must keep reading
+    // its assigned pad while the other window owns keyboard/mouse focus.
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     ConfigureSDLControllerCapabilities();
     if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) != 0) {
         SPDLOG_ERROR("SDL controller initialization failed: {}", SDL_GetError());

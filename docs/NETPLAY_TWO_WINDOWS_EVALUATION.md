@@ -348,13 +348,20 @@ the guest-owned actor in `oot3d_netplay_remote_actor.cpp`:
 - `Actor_Spawn(ACTOR_PLAYER)` creates a real second Player actor;
 - its update callback is replaced with the title's no-op immediately; the
   draw callback and object slot are inherited from the local Player;
-- the host runtime writes only world position, home position and yaw;
+- the host runtime writes world position, home position and yaw;
+- the local Player's live SkelAnime state is mirrored into the remote actor
+  every frame, because the remote actor's update is intentionally the no-op;
 - an invalid/timed-out actor is killed and respawned with a cooldown.
 
-A synthetic loopback peer produced two visible Links in Link's house
-(`/tmp/opencode/netplay-actor5/shot.png`), with the local camera and HUD intact.
-The remote Link still uses its own idle animation rather than the peer's
-animation/equipment; that is the remaining M2.5 polish.
+A synthetic loopback peer produced two visible Links in Link's house, with the
+local camera and HUD intact (`/tmp/opencode/netplay-anim2/shot_001000.png` and
+`shot_001100.png`). The remote Link now stands upright and visibly animates,
+but it mirrors the local Player's animation rather than the peer's own
+animation/equipment; independent remote animation is still M2.5 polish.
+
+Background controller input is enabled before SDL's controller subsystem
+starts (`SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS`) and in the Vulkan ImGui
+window path, so the unfocused game window keeps its own gamepad active.
 
 ### M3.1 - world state
 
@@ -394,10 +401,10 @@ bits are carried.
 - Two real instances connected over loopback and exchanged poses; cold-start
   shader preparation remains the main launcher timing issue, handled by the
   readiness wait and warm-cache source.
-- Visual check: the guest-owned remote actor produced a second visible Link
-  (`/tmp/opencode/netplay-actor5/shot.png`) with no cloned-draw artifact.
-  Older host-replay overlay captures remain in `/tmp/opencode/netplay-zero2/`
-  as the rejected approach.
+- Visual check: the guest-owned remote actor produced a second upright,
+  animated Link (`/tmp/opencode/netplay-anim2/shot_001000.png` and
+  `shot_001100.png`) with no cloned-draw artifact. Older host-replay overlay
+  captures remain in `/tmp/opencode/netplay-zero2/` as the rejected approach.
 - Synthetic client world check: `/tmp/opencode/netplay-world-client4/run.log`
   shows `local_room=0`, `switches=0x...5`, `collectibles=0x...3`, a clean exit
   and no process fault. Host collectible queries are in

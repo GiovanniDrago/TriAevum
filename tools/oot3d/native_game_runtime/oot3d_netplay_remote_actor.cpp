@@ -27,6 +27,8 @@ constexpr std::uint32_t kActorHomeRot = 0x14U;
 constexpr std::uint32_t kActorWorldPos = 0x28U;
 constexpr std::uint32_t kActorWorldRot = 0x34U;
 constexpr std::uint32_t kActorShapeRot = 0xBCU;
+constexpr std::uint32_t kPlayerSkelAnime = 0x254U;
+constexpr std::uint32_t kSkelAnimeSize = 0x84U;
 constexpr std::uint32_t kActorUpdate = 0x13CU;
 constexpr std::uint32_t kActorDraw = 0x140U;
 constexpr std::uint32_t kActorSpawn = 0x003738D0U;
@@ -298,6 +300,20 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
                  static_cast<std::uint16_t>(yaw));
   memory.Write16(actor + kActorShapeRot + 2U,
                  static_cast<std::uint16_t>(yaw));
+  // The remote actor has no update callback, so its own SkelAnime never
+  // advances. Mirror the local Player's live animation state for now; the
+  // remote's own animation ID will replace this once it is streamed.
+  std::uint32_t localPlayer = 0U;
+  std::uint16_t localId = 0xFFFFU;
+  if (mPlay != 0U &&
+      memory.Read32(mPlay + kPlayPlayer, &localPlayer) && localPlayer != 0U &&
+      memory.Read16(localPlayer + kActorId, &localId) &&
+      localId == kActorPlayer) {
+    std::array<std::uint8_t, kSkelAnimeSize> animation{};
+    if (memory.ReadBytes(localPlayer + kPlayerSkelAnime, animation)) {
+      (void)memory.WriteBytes(actor + kPlayerSkelAnime, animation);
+    }
+  }
 }
 
 void NetplayRemoteActor::PrepareSceneTransition(NativeA32Process& process) {
