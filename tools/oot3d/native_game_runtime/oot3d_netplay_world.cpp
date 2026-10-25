@@ -20,6 +20,8 @@ constexpr std::uint32_t kSaveContext = 0x00587958U;
 constexpr std::uint32_t kSaveEntrance = kSaveContext + 0x00U;  // s32
 constexpr std::uint32_t kFlagsGetCollectible = 0x0036405CU;
 constexpr std::uint32_t kFlagsSetCollectible = 0x003329D8U;
+constexpr std::uint32_t kEntranceTable = 0x00543BB8U;
+constexpr std::uint32_t kEntranceCount = 1586U;
 constexpr std::uint32_t kRequestTransition = 0x003348E8U;
 constexpr std::uint32_t kPrepareTransitionEffect = 0x0035DA3CU;
 constexpr std::uint32_t kDirectCallReturn = 0x60000000U;
@@ -120,17 +122,39 @@ bool NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
   }
   if (remote->EntranceId <= 0 || remote->EntranceId > 0xFFFF) return false;
   mPendingEntrance = remote->EntranceId;
+  mPendingScene = remote->SceneId;
   return true;
 }
 
 bool NetplayWorldSync::CommitPendingTransition(NativeA32Process& process) {
   const std::int32_t entrance = mPendingEntrance;
+  const std::uint16_t targetScene = mPendingScene;
   mPendingEntrance = 0;
+  mPendingScene = 0;
   if (entrance <= 0) return false;
   std::uint32_t play = 0U;
   std::uint16_t scene = 0U;
   std::uint8_t room = 0U;
   if (!ReadPlayState(process, &play, &scene, &room)) return false;
+  // An entrance whose table row already points at the current scene is a
+  // stale/no-op warp; requesting it from a live Player can fault the renderer.
+  // Also require the row to agree with the scene the host reported.
+  if (static_cast<std::uint32_t>(entrance) >= kEntranceCount) return false;
+  std::uint16_t entranceScene = 0U;
+  if (!process.Memory().Read16(kEntranceTable +
+                                   static_cast<std::uint32_t>(entrance) * 4U,
+                               &entranceScene) ||
+      entranceScene == scene || entranceScene != targetScene) {
+    if (TraceEnabled()) {
+      std::fprintf(stderr,
+                   "TRIAEVUM_NETPLAY_WORLD transition_scene_mismatch entrance=%d "
+                   "row=%u local=%u remote=%u\n",
+                   entrance, static_cast<unsigned>(entranceScene),
+                   static_cast<unsigned>(scene),
+                   static_cast<unsigned>(targetScene));
+    }
+    return false;
+  }
   if (RequestTransition(process, play, entrance)) {
     mTransitionCooldown = kTransitionCooldownFrames;
     return true;

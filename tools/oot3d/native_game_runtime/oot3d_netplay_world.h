@@ -40,6 +40,7 @@ private:
   std::uint16_t mLastScene = 0;
   std::uint32_t mPlay = 0;
   std::int32_t mPendingEntrance = 0;
+  std::uint16_t mPendingScene = 0;
 };
 
 } // namespace Oot3dNativeGame

@@ -370,9 +370,10 @@ room must transition first rather than inheriting that room's switches.
 
 Automatic scene transitions are **disabled by default**. A real two-instance
 run requested entrance 187 and then faulted at `pc=0x00371788`. A teardown
-interlock now clears the remote actor draw callback before a controlled
-transition request, but the transition itself has not been revalidated; the
-code remains behind `TRIAEVUM_NETPLAY_SCENE_TRANSITION=1` for debugging only.
+interlock and entrance-table sanity check were added, but a controlled
+synthetic transition still faulted at the same PC; the code remains behind
+`TRIAEVUM_NETPLAY_SCENE_TRANSITION=1` for debugging only. The fault is in the
+native transition/renderer path, not in the flag packet.
 
 This is not full world replication: existing door/chest actors may not animate
 immediately, enemies/items/cutscenes are still local-only, room changes without
@@ -401,8 +402,10 @@ bits are carried.
   `/tmp/opencode/netplay-world-host/run.log`.
 - Real two-instance check: `/tmp/opencode/netplay-real/p2/run.log` requested
   entrance 187 and faulted at `pc=0x00371788`; automatic transitions are now
-  fail-closed. The remote actor teardown interlock is in place, but a new
-  two-instance transition PASS is still required.
+  fail-closed. A controlled synthetic transition
+  (`/tmp/opencode/netplay-transition/run.log`) also faulted at the same PC
+  even with the remote actor teardown interlock. Scene transitions therefore
+  remain blocked; the flag path is unaffected.
 - `title_to_existing_save.json` now selects the occupied save slot with
   `circle_y` before the A press; without it the run stops at name entry.
 
