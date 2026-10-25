@@ -24,6 +24,99 @@ This is the same shape as Ship of Harkinian + Anchor. OOT True Co-op is the
 closest reference because it explicitly runs two windows on one PC with two
 controllers and host-authority enemy sync.
 
+## What Nucleus Co-op / SplitScreenMe Arch confirms
+
+The local `splitscreenme-arch` checkout has two relevant layers: the Windows
+Nucleus runtime and a Linux/Proton reimplementation.
+
+**Remnant: From the Ashes is the better reference.** It has a real JS handler
+with per-instance save/config paths, game-folder symlinks, XInputPlus controller
+remapping, ProtoInput focus handling, and Goldberg/Nemirtingas online identity
+emulation. The working pattern is:
+
+- one process per player;
+- one XInput controller index per process (`Controller1 = GamepadId + 1`);
+- per-player `USERPROFILE`/`APPDATA`/`LOCALAPPDATA` and per-player save/config;
+- the game's own public-game/quickplay path for connection;
+- focus spoofing so both processes keep reading input while another window has
+  OS focus.
+
+**Remnant 2 is the fallback, not the model.** In this checkout it has no JS
+handler, only native C# preparation. It is Steam-only, fails open when EOS or
+Goldberg assets are missing, depends on the default app settings to apply its
+focus/resolution fix, has incomplete process cleanup, and its generic handler
+metadata is actually Remnant 1 metadata. It is useful for save-discovery and
+per-player-prefix ideas, not as the main reference.
+
+The Linux/Proton port contributes directly reusable ideas for a native game:
+
+- evdev grab plus a virtual Xbox 360 `uinput` pad per player;
+- a per-instance controller allow-list and optional bubblewrap device isolation;
+- per-player Wine prefixes and workspaces;
+- a placement watchdog and per-session diagnostics.
+
+It also exposes gaps that matter for TriAevum: no keyboard routing, no
+Windows-style focus spoofing, no final process supervision on stop, and an
+incomplete Remnant 1 `Game.Play` implementation.
+
+For TriAevum, do not port XInputPlus, ProtoInput, Goldberg, Nemirtingas, DLL
+injection or Wine prefixes. Keep the architecture: **supervisor + one process,
+identity, controller and data root per player**, and implement the transport
+natively.
+
+## Launcher decision
+
+A **native launcher/supervisor** is the right place for mode and controller
+choice. It should not be a dialog inside the already-running guest:
+
+1. Start `TriAevum Launcher` before any game process.
+2. Choose `Single player` or `Multiplayer / two players`.
+3. In multiplayer, show only connected gamepads and require two different pads
+   (keyboard and mouse excluded for now).
+4. Choose save profiles: fresh, import a copy of the user's save, or keep the
+   per-player saves already assigned.
+5. Create two private instance roots:
+   - save directory;
+   - game config and controls config;
+   - renderer/shader cache and logs;
+   - runtime output.
+6. Launch the host and client with explicit flags:
+   - `--player 1/2`;
+   - `--controller-path` or ordinal;
+   - `--save-data`, `--config`, `--controls-config`;
+   - `--netplay-host` or `--netplay-connect=127.0.0.1:<port>`.
+7. Keep a parent process that owns child PIDs, window placement, the input
+   router and cleanup.
+
+Single-player stays the current one-instance path. Multiplayer never shares a
+save directory, and the client must not write the host save.
+
+## Controller audit
+
+Two wired Zikway HID gamepads are connected. They are identical in name, VID/PID,
+descriptor and SDL GUID, and neither exposes a serial number. Their stable
+distinction is the physical USB port path (two different ports), not the SDL
+index, `jsN`, `eventN`, GUID or serial.
+
+The current TriAevum controls config has no controller pin (`controller_guid`
+empty, no `controller_serial`). `ResolveSdlController` matches GUID/serial and
+falls back to the lowest SDL instance. Two instances would therefore both bind
+the same first pad. The in-process dog split uses device order and is not a
+cross-process solution.
+
+Required before any two-instance controller test:
+
+- add a per-instance `controller_path` (preferred, using the game controller's
+  device path / stable USB path) or an equivalent ordinal selector;
+- exclude Steam virtual gamepads from the player mapping unless explicitly
+  requested;
+- pass a separate controls config to each instance;
+- verify that each process receives only its own pad while the other window is
+  focused;
+- add a graceful "controller disconnected" prompt, because wireless identity
+  may not be stable and identical pads have no serial.
+
+
 References:
 
 - `coop-anything/playbook/networking.md`: host-authoritative state sync,
@@ -99,6 +192,8 @@ damage and story systems. Build a dedicated puppet path:
 
 - launch two clean instances;
 - separate save-data, config, logs and caches;
+- add controller-path/ordinal selection so each identical pad is assigned to a
+  different process;
 - controller A only in window A, controller B only in window B;
 - both continue while unfocused;
 - measure CPU/GPU/RAM.
@@ -212,10 +307,12 @@ ready state, copy its completed renderer cache to the second instance, then
 start the second instance sequentially with a longer readiness timeout. Do not
 launch both cold clients simultaneously.
 
-No physical controllers were connected during this spike, so controller
-isolation was not executed. The configuration exposes `controller_guid` and
-`controller_serial`; two different pads need a hardware test, and identical
-pads may require an ordinal/index selector.
+The controller audit found two wired, identical Zikway pads with no serial and
+the same SDL GUID. They are distinguishable by USB port path, but TriAevum has
+no controller-path/ordinal setting yet, so both instances would select the same
+pad. Controller isolation is therefore **not solved** until the launcher and
+input selection are extended. The in-process dog split already consumes both
+pads in one instance; that is not usable for two independent processes.
 
 ## Open risks
 
